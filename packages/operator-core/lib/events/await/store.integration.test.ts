@@ -18,6 +18,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
 import { getTestPg } from '@papercusp/test-config/pg';
+import type { GitPipelineSnapshot } from '../../git-pipeline-stats';
 
 const hb = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
 vi.mock('@papercusp/db-org', async () => {
@@ -25,8 +26,29 @@ vi.mock('@papercusp/db-org', async () => {
   return { ...actual, getOrgPg: () => ({ sql: hb.sql }) };
 });
 
-const { registerAwait, upsertInboxWakeAwait, cancelInboxWakeAwaits, cancelClaimableAwaits, cancelAwait, cancelAwaitsForSubscribersOnKeys, cancelAwaitsByIds, listActiveAwaits, listActiveAwaitsForKey, fireAwaitsForKey, listParkedAwaitsForSubscribers, listVerifiedWaitTakeoversForSubscribers, countActiveAwaitsByPrefixes, recordKeyFire, getKeyFireLatch, inspectEventKey, probeKeyFireEvidence, keyFireEvidencePrefix, probePatternMatchScope, claimDueVerifiedAwaits, settleVerifiedAwaitTimeout } =
-  await import('./store');
+const {
+  registerAwait,
+  upsertInboxWakeAwait,
+  cancelInboxWakeAwaits,
+  cancelClaimableAwaits,
+  cancelAwait,
+  cancelAwaitsForSubscribersOnKeys,
+  cancelAwaitsByIds,
+  listActiveAwaits,
+  listActiveAwaitsForKey,
+  fireAwaitsForKey,
+  listParkedAwaitsForSubscribers,
+  listVerifiedWaitTakeoversForSubscribers,
+  countActiveAwaitsByPrefixes,
+  recordKeyFire,
+  getKeyFireLatch,
+  inspectEventKey,
+  probeKeyFireEvidence,
+  keyFireEvidencePrefix,
+  probePatternMatchScope,
+  claimDueVerifiedAwaits,
+  settleVerifiedAwaitTimeout,
+} = await import('./store');
 const { classifyVerifiedWaitTimeout } = await import('./verified-wait');
 const { observeCheckpointProducer } = await import('./checkpoint-verified-wait');
 import type { ProducerHealthCertificate } from './verified-wait';
@@ -106,7 +128,13 @@ beforeEach(async () => {
 
 describe('await-event store (PG)', () => {
   it('registerAwait persists a one-shot watch; listActiveAwaits reads it back', async () => {
-    const row = await registerAwait({ subscriberId: 'sub-1', eventKey: 'k:1', wakeHandle: { sessionId: 's9' } as never, timeoutSec: 60, note: 'hi' });
+    const row = await registerAwait({
+      subscriberId: 'sub-1',
+      eventKey: 'k:1',
+      wakeHandle: { sessionId: 's9' } as never,
+      timeoutSec: 60,
+      note: 'hi',
+    });
     expect(row).toMatchObject({ subscriberId: 'sub-1', eventKey: 'k:1', once: true, note: 'hi' });
     expect(row.wakeHandle).toEqual({ sessionId: 's9' }); // jsonb round-trip
     expect(row.expiresTs).not.toBeNull(); // timeoutSec → expires_ts
@@ -116,9 +144,19 @@ describe('await-event store (PG)', () => {
 
   it('upsertInboxWakeAwait is one-per-agent and KEEPS the prior handle on a null re-arm (COALESCE)', async () => {
     const key = 'coord:inbox-wake:sub-1';
-    await upsertInboxWakeAwait({ subscriberId: 'sub-1', eventKey: key, wakeHandle: { sessionId: 'first' } as never, minSleepSec: 5 });
+    await upsertInboxWakeAwait({
+      subscriberId: 'sub-1',
+      eventKey: key,
+      wakeHandle: { sessionId: 'first' } as never,
+      minSleepSec: 5,
+    });
     // re-arm with NO handle but a new floor → refreshes in place, keeps the handle
-    const rearmed = await upsertInboxWakeAwait({ subscriberId: 'sub-1', eventKey: key, wakeHandle: null, minSleepSec: 30 });
+    const rearmed = await upsertInboxWakeAwait({
+      subscriberId: 'sub-1',
+      eventKey: key,
+      wakeHandle: null,
+      minSleepSec: 30,
+    });
     expect(await rootSql`SELECT 1 FROM harness_shared.event_awaits WHERE event_key=${key}`).toHaveLength(1); // ONE row, not two
     expect(rearmed.wakeHandle).toEqual({ sessionId: 'first' }); // COALESCE kept the prior handle
     expect(rearmed.minSleepSec).toBe(30); // floor replaced by EXCLUDED
@@ -212,7 +250,7 @@ describe('await-event store (PG)', () => {
 
   // EI-10541: on a successful claim, the claim path cancels the agent's stale idle-park
   // `work-item:claimable` await(s) so they stop firing spurious timeout wakes while it works.
-  it('cancelClaimableAwaits cancels ONLY the caller\'s work-item:claimable await(s), key- and subscriber-scoped', async () => {
+  it("cancelClaimableAwaits cancels ONLY the caller's work-item:claimable await(s), key- and subscriber-scoped", async () => {
     // sub-1's standing idle-park claimable await (once:false) — the one that lingers post-claim
     await registerAwait({ subscriberId: 'sub-1', eventKey: 'work-item:claimable', once: false, timeoutSec: 1800 });
     // sub-1's claimable await from a re-register (once:true variant) — also stale on claim
@@ -232,7 +270,7 @@ describe('await-event store (PG)', () => {
   // EI-12457: cancelAwaitsForSubscribersOnKeys — the shared primitive behind sibling-
   // outcome cancellation (checkpoint:await's dual green/red arm) and superseded-wait
   // retirement (re-arming for a moved-on candidate).
-  it('cancelAwaitsForSubscribersOnKeys cancels only the named subscribers\' PENDING rows on the named keys', async () => {
+  it("cancelAwaitsForSubscribersOnKeys cancels only the named subscribers' PENDING rows on the named keys", async () => {
     const green = await registerAwait({ subscriberId: 'sub-a', eventKey: 'release:green:papercusp' });
     await registerAwait({ subscriberId: 'sub-a', eventKey: 'green-checkpoint:red:papercusp' });
     const unrelated = await registerAwait({ subscriberId: 'sub-a', eventKey: 'lock:grant:xyz' });
@@ -306,7 +344,11 @@ describe('await-event store (PG)', () => {
     // sub-a: a genuine parked-on-event await → the ONE row that should surface
     await registerAwait({ subscriberId: 'sub-a', eventKey: 'p2p-git:phase3-open', note: 'benched until phase 3' });
     // sub-a: the always-armed inbox-wake self-key → excluded (liveness, not benching)
-    await upsertInboxWakeAwait({ subscriberId: 'sub-a', eventKey: 'coord:inbox-wake:sub-a', wakeHandle: { sessionId: 's1' } as never });
+    await upsertInboxWakeAwait({
+      subscriberId: 'sub-a',
+      eventKey: 'coord:inbox-wake:sub-a',
+      wakeHandle: { sessionId: 's1' } as never,
+    });
     // sub-a: a fired await → excluded
     await registerAwait({ subscriberId: 'sub-a', eventKey: 'k:already-fired', once: true });
     await fireAwaitsForKey({ eventKey: 'k:already-fired' });
@@ -321,7 +363,11 @@ describe('await-event store (PG)', () => {
 
     const parked = await listParkedAwaitsForSubscribers(['sub-a', 'sub-c']);
     expect(parked).toHaveLength(1);
-    expect(parked[0]).toMatchObject({ subscriberId: 'sub-a', eventKey: 'p2p-git:phase3-open', note: 'benched until phase 3' });
+    expect(parked[0]).toMatchObject({
+      subscriberId: 'sub-a',
+      eventKey: 'p2p-git:phase3-open',
+      note: 'benched until phase 3',
+    });
 
     // empty / all-blank input short-circuits to []
     expect(await listParkedAwaitsForSubscribers([])).toEqual([]);
@@ -392,6 +438,26 @@ describe('await-event store (PG)', () => {
 });
 
 describe('verified-wait fallback campaign (PG)', () => {
+  const checkpointSnapshot = (
+    overrides: {
+      generatedAtMs?: number;
+      activeRun?: GitPipelineSnapshot['activeRun'];
+      greenCheckpoint?: GitPipelineSnapshot['routines']['greenCheckpoint'];
+      recent?: GitPipelineSnapshot['recent'];
+    } = {},
+  ): GitPipelineSnapshot =>
+    ({
+      slug: 'papercusp',
+      generatedAtMs: overrides.generatedAtMs ?? 2_000,
+      activeRun: overrides.activeRun ?? null,
+      routines: {
+        gitSync: null,
+        greenCheckpoint: overrides.greenCheckpoint ?? null,
+        releaseTrigger: null,
+      },
+      recent: overrides.recent ?? [],
+    }) as GitPipelineSnapshot;
+
   const certificate = (overrides: Partial<ProducerHealthCertificate> = {}): ProducerHealthCertificate => ({
     version: 1,
     producer: { kind: 'green-checkpoint', id: 'run-campaign' },
@@ -427,12 +493,7 @@ describe('verified-wait fallback campaign (PG)', () => {
     expect(claimed?.id).toBe(row.id);
 
     const observation = await observeCheckpointProducer(claimed!.producerHealthCertificate!, {
-      snapshot: async () => ({
-        generatedAtMs: 2_000,
-        activeRun: null,
-        routines: { greenCheckpoint: { active: false, lastFiredAtMs: null } },
-        recent: [],
-      }),
+      snapshot: async () => checkpointSnapshot(),
     });
     const result = classifyVerifiedWaitTimeout(claimed!.producerHealthCertificate!, observation);
     expect(result).toMatchObject({ classification: 'absent', nextAction: 'wake-owner-or-takeover' });
@@ -454,12 +515,17 @@ describe('verified-wait fallback campaign (PG)', () => {
     const row = await registerDueVerifiedAwait('waiter-progress');
     const [claimed] = await claimDueVerifiedAwaits();
     const observation = await observeCheckpointProducer(claimed!.producerHealthCertificate!, {
-      snapshot: async () => ({
-        generatedAtMs: 2_000,
-        activeRun: { active: true, candidate: 'abc123', startedAtMs: 1_500 },
-        routines: { greenCheckpoint: { active: true, lastFiredAtMs: 1_500 } },
-        recent: [],
-      }),
+      snapshot: async () =>
+        checkpointSnapshot({
+          activeRun: { active: true, candidate: 'abc123', startedAtMs: 1_500, elapsedSec: 0.5 },
+          greenCheckpoint: {
+            name: 'green-checkpoint',
+            active: true,
+            cron: null,
+            lastFiredAtMs: 1_500,
+            nextFireAtMs: null,
+          },
+        }),
     });
     const result = classifyVerifiedWaitTimeout(claimed!.producerHealthCertificate!, observation);
     expect(result).toMatchObject({ classification: 'progressing', nextAction: 're-await' });
@@ -484,17 +550,18 @@ describe('verified-wait fallback campaign (PG)', () => {
     const row = await registerDueVerifiedAwait('waiter-latched');
     const [claimed] = await claimDueVerifiedAwaits();
     const observation = await observeCheckpointProducer(claimed!.producerHealthCertificate!, {
-      snapshot: async () => ({
-        generatedAtMs: 2_000,
-        activeRun: null,
-        routines: { greenCheckpoint: { active: false, lastFiredAtMs: null } },
-        recent: [{
-          kind: 'green_checkpoint',
-          createdAtMs: 1_950,
-          status: 'advanced',
-          detail: { candidate: 'abc123', runId: 'run-campaign' },
-        }],
-      }),
+      snapshot: async () =>
+        checkpointSnapshot({
+          recent: [
+            {
+              id: 'verdict-campaign',
+              kind: 'green_checkpoint',
+              createdAtMs: 1_950,
+              status: 'advanced',
+              detail: { candidate: 'abc123', runId: 'run-campaign' },
+            },
+          ],
+        }),
     });
     const result = classifyVerifiedWaitTimeout(claimed!.producerHealthCertificate!, observation);
     expect(result).toMatchObject({ classification: 'already-complete', nextAction: 'resume' });
@@ -588,7 +655,13 @@ describe('probeKeyFireEvidence (PG) — EI-18676056143796303, the emitter eviden
 
   it('reports NO evidence for a key whose family has never fired — the genuine-orphan case still warns', async () => {
     const ev = await probeKeyFireEvidence('overwatch:surface-landed');
-    expect(ev).toMatchObject({ prefix: 'overwatch:surface-landed', exact: false, distinctKeys: 0, fires: 0, lastFiredAt: null });
+    expect(ev).toMatchObject({
+      prefix: 'overwatch:surface-landed',
+      exact: false,
+      distinctKeys: 0,
+      fires: 0,
+      lastFiredAt: null,
+    });
   });
 
   it('reports EXACT evidence when this very key has fired', async () => {
@@ -645,11 +718,9 @@ describe('probePatternMatchScope (PG) — EI-19332682533219755, the cross-pipeli
 
     expect(scope.prefix).toBe('release:green');
     expect(scope.matchedKeys).toHaveLength(3);
-    expect(scope.matchedKeys).toEqual(expect.arrayContaining([
-      'release:green:papercusp',
-      'release:green:oddsmith',
-      'release:green:hello-world-3',
-    ]));
+    expect(scope.matchedKeys).toEqual(
+      expect.arrayContaining(['release:green:papercusp', 'release:green:oddsmith', 'release:green:hello-world-3']),
+    );
     expect(scope.truncated).toBe(false);
   });
 
