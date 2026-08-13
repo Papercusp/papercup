@@ -156,6 +156,8 @@ export interface ReplicationLogLiveness {
   keyHex: string;
   verdict: ReplicationLogVerdict;
   knownLength: number;
+  /** Blocks physically present on this receiver, distinct from signed writer high-water. */
+  localLength: number;
   mergedPosition: number | null;
   peersCount: number | null;
   /** ms since the log last showed a live replicator peer; null = never. */
@@ -1498,6 +1500,7 @@ export function getReplicationLiveness(
         keyHex: st.keyHex,
         verdict,
         knownLength: st.knownLength,
+        localLength: st.localLength,
         mergedPosition: st.mergedPosition,
         peersCount: st.peersCount,
         msSinceReplicatorSeen:

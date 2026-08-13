@@ -309,6 +309,7 @@ describe('frozen axis (attached-but-dead: replicator present, ingest not flowing
     expect(episodes.filter((e) => e.kind === 'frozen')).toHaveLength(0);
     const row = getReplicationLiveness({ nowMs: now, graceMs: GRACE })[0]!.logs[0]!;
     expect(row.verdict).toBe('live');
+    expect(row.localLength).toBe(62_356);
     expect(row.mergeQueueIndex).toBe(1);
     expect(row.mergeQueueHeadKeyHex).toBe(HEAD);
     expect(row.msSinceMergeQueueHead).toBeNull();
