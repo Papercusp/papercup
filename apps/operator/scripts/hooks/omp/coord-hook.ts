@@ -1,5 +1,5 @@
 /**
- * Papercusp coordination hook for OMP — one module, six handlers
+ * Papercusp coordination hook for OMP — one module, seven handlers
  * (per agent-coordination-architecture-v2 §7.3 + §12.1 +
  * file-locking-improvements #2):
  *
@@ -10,6 +10,8 @@
  *   turn_start       → assemble + inject the system-reminder payload
  *                      (held locks, unread inbox, changed plans).
  *   turn_end         → persist the watermark pointers consumed.
+ *   auto_retry_start → smooth bare Vertex shared-capacity 429 retries across
+ *                      simultaneous sessions before OMP starts its own wait.
  *   tool_call        → L2 file-lock enforcement — extract paths,
  *                      locks:acquire, block on busy.
  *   tool_result      → release the lock for that toolCallId, AND append any
@@ -47,7 +49,7 @@
  */
 
 import { promises as fsp, existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import {
@@ -93,6 +95,85 @@ export interface ReminderInput {
   inbox: InboxEntry[];
   heldLocks: HeldLock[];
   changedPlans: PlanEventSummary[];
+}
+
+export interface AutoRetryStartEvent {
+  type: 'auto_retry_start';
+  attempt: number;
+  maxAttempts: number;
+  delayMs: number;
+  errorMessage: string;
+  errorId?: number;
+}
+
+/**
+ * OMP 17.2.13 classifies a bare Vertex 429 as transient model capacity, but its
+ * turn-recovery path only applies the reason-specific floor to explicit rate and
+ * concurrency limits. The resulting 0.5/1/2s waits let simultaneously-launched
+ * sessions repeatedly re-form the same burst against Vertex shared capacity.
+ *
+ * Keep this shim deliberately narrow: the observed Vertex wording plus its
+ * canonical error-code URL, with no explicit quota/rate/concurrency detail. OMP
+ * remains authoritative for every richer response and for provider retry-after.
+ */
+const BARE_VERTEX_SHARED_CAPACITY_429_RE =
+  /\bGoogle API error \(429\):\s*Resource exhausted\.\s*Please try again later\./i;
+const VERTEX_429_DOC_RE =
+  /cloud\.google\.com\/vertex-ai\/generative-ai\/docs\/error-code-429/i;
+const EXPLICIT_VERTEX_CAP_DETAIL_RE =
+  /\b(?:quota|rate[-_ ]?limit|per\s+(?:second|minute)|concurren\w*|limit\s+will\s+reset)\b/i;
+
+export const VERTEX_SHARED_CAPACITY_RETRY_BASE_MS = 5_000;
+export const VERTEX_SHARED_CAPACITY_RETRY_EXPONENTIAL_CAP_MS = 20_000;
+export const VERTEX_SHARED_CAPACITY_RETRY_SLOT_COUNT = 16;
+export const VERTEX_SHARED_CAPACITY_RETRY_SLOT_WIDTH_MS = 2_000;
+/** The hook runs before OMP creates its retry AbortController, so cap our unabortable addition. */
+export const VERTEX_SHARED_CAPACITY_RETRY_MAX_ADDED_MS = 45_000;
+
+export function isBareVertexSharedCapacity429(errorMessage: string): boolean {
+  if (!BARE_VERTEX_SHARED_CAPACITY_429_RE.test(errorMessage) || !VERTEX_429_DOC_RE.test(errorMessage)) {
+    return false;
+  }
+  const providerDetail = errorMessage
+    .replace(BARE_VERTEX_SHARED_CAPACITY_429_RE, '')
+    .replace(VERTEX_429_DOC_RE, '');
+  return !EXPLICIT_VERTEX_CAP_DETAIL_RE.test(providerDetail);
+}
+
+/**
+ * Assign a process-lifetime-stable phase slot from the psu session identity.
+ * Cryptographic hashing is used for distribution, not secrecy. Discrete 2s
+ * slots avoid two independent PRNG draws landing only milliseconds apart.
+ */
+export function vertexSharedCapacityRetrySlot(sessionKey: string): number {
+  const key = sessionKey.trim() || 'omp-session-without-id';
+  return createHash('sha256').update(key).digest().readUInt32BE(0) % VERTEX_SHARED_CAPACITY_RETRY_SLOT_COUNT;
+}
+
+/** Total delay OMP plus this hook should observe for a bare shared-capacity retry. */
+export function vertexSharedCapacityRetryTargetMs(attempt: number, sessionKey: string): number {
+  const safeAttempt = Number.isFinite(attempt) ? Math.max(1, Math.trunc(attempt)) : 1;
+  const exponentialFloorMs = Math.min(
+    VERTEX_SHARED_CAPACITY_RETRY_EXPONENTIAL_CAP_MS,
+    VERTEX_SHARED_CAPACITY_RETRY_BASE_MS * 2 ** Math.min(safeAttempt - 1, 2),
+  );
+  return exponentialFloorMs + vertexSharedCapacityRetrySlot(sessionKey) * VERTEX_SHARED_CAPACITY_RETRY_SLOT_WIDTH_MS;
+}
+
+/**
+ * Return only the wait this hook must add. OMP's announced delay is subtracted
+ * so a future upstream fix or an explicit retry-after cannot double-stack.
+ */
+export function vertexSharedCapacityRetrySmoothingMs(
+  event: AutoRetryStartEvent,
+  sessionKey: string,
+): number {
+  if (!isBareVertexSharedCapacity429(event.errorMessage)) return 0;
+  const nativeDelayMs = Number.isFinite(event.delayMs) ? Math.max(0, Math.trunc(event.delayMs)) : 0;
+  return Math.min(
+    VERTEX_SHARED_CAPACITY_RETRY_MAX_ADDED_MS,
+    Math.max(0, vertexSharedCapacityRetryTargetMs(event.attempt, sessionKey) - nativeDelayMs),
+  );
 }
 
 /**
@@ -4391,6 +4472,7 @@ type SessionStartHandler = (event: { type: 'session_start' }, ctx: unknown) => u
 type SessionShutdownHandler = (event: { type: 'session_shutdown' }, ctx: unknown) => unknown;
 type TurnStartHandler = (event: { type: 'turn_start'; turnIndex: number; timestamp: number }, ctx: unknown) => unknown;
 type TurnEndHandler = (event: { type: 'turn_end' }, ctx: unknown) => unknown;
+type AutoRetryStartHandler = (event: AutoRetryStartEvent, ctx: unknown) => unknown;
 type ToolCallHandler = (
   event: ToolCallEvent,
   ctx: unknown,
@@ -4405,6 +4487,7 @@ interface HookApi {
   on(event: 'session_shutdown', handler: SessionShutdownHandler): void;
   on(event: 'turn_start', handler: TurnStartHandler): void;
   on(event: 'turn_end', handler: TurnEndHandler): void;
+  on(event: 'auto_retry_start', handler: AutoRetryStartHandler): void;
   on(event: 'tool_call', handler: ToolCallHandler): void;
   on(event: 'tool_result', handler: ToolResultHandler): void;
   sendMessage(
@@ -4560,6 +4643,19 @@ export default function register(pi: HookApi): void {
         stashAdvisory('coord-owner-ask', nudge);
       }
     }, undefined);
+  });
+
+  pi.on('auto_retry_start', async (event) => {
+    // OMP awaits hook handlers, then creates its own AbortController and waits
+    // event.delayMs. Lift only the missing portion to our bounded, session-stable
+    // target; explicit provider timing and every non-Vertex retry pass through.
+    const smoothingMs = vertexSharedCapacityRetrySmoothingMs(event, hookOwnerId());
+    if (smoothingMs <= 0) return;
+    console.error(
+      `[coord-retry] smoothing bare Vertex shared-capacity 429 by ${smoothingMs}ms ` +
+        `(attempt ${event.attempt}/${event.maxAttempts}, slot ${vertexSharedCapacityRetrySlot(hookOwnerId())})`,
+    );
+    await safe(() => new Promise<void>((resolveWait) => setTimeout(resolveWait, smoothingMs)), undefined);
   });
 
   pi.on('tool_call', async (event) => {

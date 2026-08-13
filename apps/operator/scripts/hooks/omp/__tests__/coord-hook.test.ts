@@ -46,6 +46,11 @@ import {
   formatInboxDelta,
   formatSymlinkRefusal,
   formatTurnStartReminder,
+  isBareVertexSharedCapacity429,
+  vertexSharedCapacityRetrySlot,
+  vertexSharedCapacityRetryTargetMs,
+  vertexSharedCapacityRetrySmoothingMs,
+  VERTEX_SHARED_CAPACITY_RETRY_MAX_ADDED_MS,
   isNativeToolSearch,
   extractToolSearchQuery,
   formatToolFindRedirect,
@@ -167,6 +172,10 @@ import {
 import { BASH_GATE_PAIRS } from '@papercusp/operator-core/lib/bash-substitution/pairs/index';
 import { clearAdvisoryStash, takeAdvisories } from '../non-preempting-delivery';
 
+const OBSERVED_BARE_VERTEX_429 =
+  'Google API error (429): Resource exhausted. Please try again later. ' +
+  'Please refer to https://cloud.google.com/vertex-ai/generative-ai/docs/error-code-429 for more details.';
+
 // ── native-scheduler lockout (native-scheduler-lockout-2026-06-09 P-010) ─────
 
 // hookOwnerId now PREFERS PAPERCUSP_SID; the dev/CI env may carry a real one, which would make the
@@ -189,6 +198,95 @@ afterEach(() => {
   else process.env.PAPERCUSP_SID = _origPaperSidForSuite;
   if (_origPaperAgentForSuite === undefined) delete process.env.PAPERCUSP_AGENT;
   else process.env.PAPERCUSP_AGENT = _origPaperAgentForSuite;
+});
+
+describe('bare Vertex shared-capacity retry smoothing (WI-38388)', () => {
+  const controlSid = 'su-43aed89f-3b8d-4fa5-aaa1-836bc7803a74';
+  const treatmentSid = 'su-09381a7b-4fee-456e-9725-6a70b53e56ab';
+
+  it('matches only the observed bare Vertex 429 shape', () => {
+    expect(isBareVertexSharedCapacity429(OBSERVED_BARE_VERTEX_429)).toBe(true);
+    expect(
+      isBareVertexSharedCapacity429(
+        OBSERVED_BARE_VERTEX_429.replace(
+          'Please try again later.',
+          'Quota exceeded; your limit will reset tomorrow.',
+        ),
+      ),
+    ).toBe(false);
+    expect(
+      isBareVertexSharedCapacity429('Google API error (429): Resource exhausted. Please try again later.'),
+    ).toBe(false);
+    expect(
+      isBareVertexSharedCapacity429(
+        'OpenAI API error (429): Resource exhausted. Please try again later. ' +
+          'https://cloud.google.com/vertex-ai/generative-ai/docs/error-code-429',
+      ),
+    ).toBe(false);
+  });
+
+  it('is deterministic per session, exponential by attempt, and bounded', () => {
+    expect(vertexSharedCapacityRetrySlot(controlSid)).toBe(vertexSharedCapacityRetrySlot(controlSid));
+    const targets = [1, 2, 3, 4, 99].map((attempt) =>
+      vertexSharedCapacityRetryTargetMs(attempt, controlSid),
+    );
+    expect(targets[1]).toBeGreaterThan(targets[0]);
+    expect(targets[2]).toBeGreaterThan(targets[1]);
+    expect(targets[3]).toBe(targets[2]);
+    expect(targets[4]).toBe(targets[2]);
+
+    const added = vertexSharedCapacityRetrySmoothingMs(
+      {
+        type: 'auto_retry_start',
+        attempt: 99,
+        maxAttempts: 100,
+        delayMs: 0,
+        errorMessage: OBSERVED_BARE_VERTEX_429,
+      },
+      controlSid,
+    );
+    expect(added).toBeLessThanOrEqual(VERTEX_SHARED_CAPACITY_RETRY_MAX_ADDED_MS);
+  });
+
+  it('keeps the two observed simultaneous OMP subjects in distinct stable slots', () => {
+    const controlSlot = vertexSharedCapacityRetrySlot(controlSid);
+    const treatmentSlot = vertexSharedCapacityRetrySlot(treatmentSid);
+    expect(controlSlot).not.toBe(treatmentSlot);
+
+    const event = {
+      type: 'auto_retry_start' as const,
+      attempt: 1,
+      maxAttempts: 10,
+      delayMs: 500,
+      errorMessage: OBSERVED_BARE_VERTEX_429,
+    };
+    const separationMs = Math.abs(
+      vertexSharedCapacityRetrySmoothingMs(event, controlSid) -
+        vertexSharedCapacityRetrySmoothingMs(event, treatmentSid),
+    );
+    expect(separationMs).toBeGreaterThanOrEqual(2_000);
+  });
+
+  it('subtracts OMP native delay and does not touch unrelated retries', () => {
+    const targetMs = vertexSharedCapacityRetryTargetMs(1, controlSid);
+    const baseEvent = {
+      type: 'auto_retry_start' as const,
+      attempt: 1,
+      maxAttempts: 10,
+      delayMs: 500,
+      errorMessage: OBSERVED_BARE_VERTEX_429,
+    };
+    expect(vertexSharedCapacityRetrySmoothingMs(baseEvent, controlSid)).toBe(targetMs - 500);
+    expect(
+      vertexSharedCapacityRetrySmoothingMs({ ...baseEvent, delayMs: targetMs + 1 }, controlSid),
+    ).toBe(0);
+    expect(
+      vertexSharedCapacityRetrySmoothingMs(
+        { ...baseEvent, errorMessage: 'Google API error (503): model overloaded' },
+        controlSid,
+      ),
+    ).toBe(0);
+  });
 });
 
 describe('OS_SCHEDULER_CMD_RE (command-position OS-scheduler match)', () => {
@@ -2619,7 +2717,7 @@ describe('register (OMP adapter)', () => {
    *   - tool_call may return ToolCallEventResult to block
    *   - model-facing advisories are stashed for the tool_result seam
    */
-  it('subscribes session_start, turn_start, and tool_call', async () => {
+  it('subscribes the seven coordination and retry lifecycle handlers', async () => {
     const subs = new Map<string, (e: unknown, ctx?: unknown) => unknown>();
     const sent: Array<{ msg: unknown; opts?: unknown }> = [];
     const pi = {
@@ -2633,6 +2731,7 @@ describe('register (OMP adapter)', () => {
     const { default: register } = await import('../coord-hook');
     register(pi as never);
     expect([...subs.keys()].sort()).toEqual([
+      'auto_retry_start',
       'session_shutdown',
       'session_start',
       'tool_call',
@@ -2648,6 +2747,43 @@ describe('register (OMP adapter)', () => {
       {},
     );
     expect(block).toEqual({});
+  });
+
+  it('awaits only the computed smoothing interval for a bare Vertex 429', async () => {
+    vi.useFakeTimers();
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    process.env.PAPERCUSP_SID = 'su-43aed89f-3b8d-4fa5-aaa1-836bc7803a74';
+    _resetHookOwnerIdForTests();
+    const subs = new Map<string, (e: unknown, ctx?: unknown) => unknown>();
+    const pi = {
+      on: (event: string, handler: (e: unknown, ctx?: unknown) => unknown) => {
+        subs.set(event, handler);
+      },
+      sendMessage: vi.fn(),
+    };
+    const { default: register } = await import('../coord-hook');
+    register(pi as never);
+    const event = {
+      type: 'auto_retry_start' as const,
+      attempt: 1,
+      maxAttempts: 10,
+      delayMs: 500,
+      errorMessage: OBSERVED_BARE_VERTEX_429,
+    };
+    const expectedMs = vertexSharedCapacityRetrySmoothingMs(event, process.env.PAPERCUSP_SID);
+    let settled = false;
+    const pending = Promise.resolve(subs.get('auto_retry_start')!(event, {})).then(() => {
+      settled = true;
+    });
+
+    await vi.advanceTimersByTimeAsync(expectedMs - 1);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    await pending;
+    expect(settled).toBe(true);
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('[coord-retry] smoothing bare Vertex'));
+    errorSpy.mockRestore();
+    vi.useRealTimers();
   });
 
   it('has no model-facing pi.sendMessage call site and imports the shared delivery seam', () => {
