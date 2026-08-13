@@ -1,10 +1,12 @@
 import { createHash } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, describe, expect, it, vi } from 'vitest';
 import {
   buildRunOpts,
+  ANDROID_RELEASE_PROVENANCE_PATH,
   classifyArtifact,
   collectedLinuxBundleRoot,
   computeMobileRegression,
@@ -18,6 +20,7 @@ import {
   scanArtifacts,
   scanMobileArtifactSources,
   scanMobileArtifacts,
+  scanProvenancedAndroidArtifactSources,
 } from './record-release-cli';
 
 /**
@@ -29,6 +32,70 @@ function plausibleBytes(tag: string): Buffer {
   const buf = Buffer.alloc(MIN_PLAUSIBLE_ARTIFACT_BYTES + 1024);
   Buffer.from(tag).copy(buf, 0);
   return buf;
+}
+
+type AndroidFixture = {
+  root: string;
+  apk: string;
+  aab: string;
+  manifest: string;
+  commit: string;
+};
+
+function makeAndroidFixture(version = '0.0.9'): AndroidFixture {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mob-provenance-'));
+  execFileSync('git', ['init', '-q'], { cwd: root });
+  execFileSync('git', ['config', 'user.name', 'test'], { cwd: root });
+  execFileSync('git', ['config', 'user.email', 'test@example.invalid'], { cwd: root });
+  fs.writeFileSync(path.join(root, '.gitignore'), '/android/app/build/\n');
+  fs.writeFileSync(path.join(root, 'source.txt'), 'source\n');
+  execFileSync('git', ['add', '.gitignore', 'source.txt'], { cwd: root });
+  execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: root });
+  const commit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
+  const apk = path.join(root, 'android/app/build/outputs/apk/release/app-release.apk');
+  const aab = path.join(root, 'android/app/build/outputs/bundle/release/app-release.aab');
+  const manifest = path.join(root, ANDROID_RELEASE_PROVENANCE_PATH);
+  fs.mkdirSync(path.dirname(apk), { recursive: true });
+  fs.mkdirSync(path.dirname(aab), { recursive: true });
+  const apkBytes = plausibleBytes('release-apk');
+  const aabBytes = plausibleBytes('release-aab');
+  fs.writeFileSync(apk, apkBytes);
+  fs.writeFileSync(aab, aabBytes);
+  fs.writeFileSync(
+    manifest,
+    `${JSON.stringify(
+      {
+        schemaVersion: 1,
+        releaseVersion: version,
+        sourceCommit: commit,
+        sourceDirty: false,
+        builtAt: '2026-08-13T12:00:00Z',
+        artifacts: {
+          apk: {
+            kind: 'apk',
+            path: 'android/app/build/outputs/apk/release/app-release.apk',
+            size: apkBytes.length,
+            sha256: createHash('sha256').update(apkBytes).digest('hex'),
+          },
+          aab: {
+            kind: 'aab',
+            path: 'android/app/build/outputs/bundle/release/app-release.aab',
+            size: aabBytes.length,
+            sha256: createHash('sha256').update(aabBytes).digest('hex'),
+          },
+        },
+      },
+      null,
+      2,
+    )}\n`,
+  );
+  return { root, apk, aab, manifest, commit };
+}
+
+function updateManifest(file: string, mutate: (manifest: any) => void): void {
+  const manifest = JSON.parse(fs.readFileSync(file, 'utf8'));
+  mutate(manifest);
+  fs.writeFileSync(file, `${JSON.stringify(manifest, null, 2)}\n`);
 }
 
 describe('computeReleaseCompleteness — every desktop product×platform, not just GUI (WI-5515)', () => {
@@ -453,118 +520,81 @@ describe('scanArtifacts', () => {
   });
 });
 
-describe('scanMobileArtifacts — the phone builds live in a SEPARATE repo, unversioned names', () => {
+describe('provenanced Android artifacts — requested version + current source + exact bytes', () => {
   it('returns nothing when the mobile root is null or absent (a desktop-only cut is legal)', () => {
     expect(scanMobileArtifacts(null, '0.0.9', 'desktop-v0.0.9-alpha')).toEqual([]);
     expect(scanMobileArtifacts('/no/such/mobile/root', '0.0.9', 'desktop-v0.0.9-alpha')).toEqual([]);
   });
 
-  it('EI-18673480587329034: SKIPS a truncated/partial mobile build the same way scanArtifacts does', () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mob-tiny-'));
-    const apkDir = path.join(root, 'android/app/build/outputs/apk/debug');
-    fs.mkdirSync(apkDir, { recursive: true });
-    fs.writeFileSync(path.join(apkDir, 'app-debug.apk'), 'partial-download'); // far below the floor
-
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    expect(scanMobileArtifacts(root, '0.0.9', 'desktop-v0.0.9-alpha')).toEqual([]);
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining('SKIPPING Papercusp_0.0.9_android.apk'));
-    warn.mockRestore();
-    fs.rmSync(root, { recursive: true, force: true });
-  });
-
-  it('records a debug APK under a SYNTHESIZED versioned name + a RELATIVE url', () => {
+  it('rejects raw debug/release output when no provenance manifest exists', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mob-'));
     const apkDir = path.join(root, 'android/app/build/outputs/apk/debug');
     fs.mkdirSync(apkDir, { recursive: true });
-    // The built APK carries NO version — that is the whole reason this function
-    // synthesizes the recorded name instead of filtering by a version substring.
-    const apkBytes = plausibleBytes('apk-bytes');
-    fs.writeFileSync(path.join(apkDir, 'app-debug.apk'), apkBytes);
-
-    const found = scanMobileArtifacts(root, '0.0.9', 'desktop-v0.0.9-alpha');
-    expect(found).toHaveLength(1);
-    expect(found[0]).toMatchObject({
-      product: 'mobile',
-      platform: 'android-universal',
-      name: 'Papercusp_0.0.9_android.apk',
-      url: 'desktop-v0.0.9-alpha/Papercusp_0.0.9_android.apk',
-      size: apkBytes.length,
-    });
-    expect(found[0].sha256).toMatch(/^[0-9a-f]{64}$/);
-    expect(found[0].url).not.toMatch(/^https?:\/\//); // base path is the secret
+    fs.writeFileSync(path.join(apkDir, 'app-debug.apk'), plausibleBytes('debug'));
+    expect(() => scanMobileArtifactSources(root, '0.0.9')).toThrow(/without .*provenance/i);
     fs.rmSync(root, { recursive: true, force: true });
   });
 
-  it('prefers the release APK over the debug APK — one row, release bytes', () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mob-'));
-    fs.mkdirSync(path.join(root, 'android/app/build/outputs/apk/release'), { recursive: true });
-    fs.mkdirSync(path.join(root, 'android/app/build/outputs/apk/debug'), { recursive: true });
-    const releaseBytes = plausibleBytes('RELEASE');
-    fs.writeFileSync(path.join(root, 'android/app/build/outputs/apk/release/app-release.apk'), releaseBytes);
-    fs.writeFileSync(
-      path.join(root, 'android/app/build/outputs/apk/debug/app-debug.apk'),
-      plausibleBytes('debug-bytes'),
-    );
-
-    const apks = scanMobileArtifacts(root, '0.0.9', 'desktop-v0.0.9-alpha').filter((a) =>
-      a.name.endsWith('.apk'),
-    );
-    expect(apks).toHaveLength(1);
-    expect(apks[0].size).toBe(releaseBytes.length); // release bytes, not debug
-    fs.rmSync(root, { recursive: true, force: true });
-  });
-
-  it('finds an iOS .ipa nested under ios/build once a signed build exists (dormant until enrollment)', () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mob-'));
-    const ipaDir = path.join(root, 'ios/build/export');
-    fs.mkdirSync(ipaDir, { recursive: true });
-    fs.writeFileSync(path.join(ipaDir, 'Papercup.ipa'), plausibleBytes('ipa-bytes'));
-
-    const ios = scanMobileArtifacts(root, '0.0.9', 'desktop-v0.0.9-alpha').find(
-      (a) => a.platform === 'ios-arm64',
-    );
-    expect(ios).toMatchObject({
-      product: 'mobile',
-      name: 'Papercusp_0.0.9_ios.ipa',
-      url: 'desktop-v0.0.9-alpha/Papercusp_0.0.9_ios.ipa',
-    });
-    fs.rmSync(root, { recursive: true, force: true });
-  });
-});
-
-describe('scanMobileArtifactSources — the src↔published-name pairs the UPLOADER consumes', () => {
-  it('returns nothing for a null/absent root, like the artifact scan', () => {
-    expect(scanMobileArtifactSources(null, '0.0.9')).toEqual([]);
-    expect(scanMobileArtifactSources('/no/such/mobile/root', '0.0.9')).toEqual([]);
-  });
-
-  it('maps the real on-disk file to the synthesized name (bytes at src, name for the object key)', () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mob-'));
-    const apkDir = path.join(root, 'android/app/build/outputs/apk/debug');
-    const ipaDir = path.join(root, 'ios/build/export');
-    fs.mkdirSync(apkDir, { recursive: true });
-    fs.mkdirSync(ipaDir, { recursive: true });
-    fs.writeFileSync(path.join(apkDir, 'app-debug.apk'), 'apk-bytes');
-    fs.writeFileSync(path.join(ipaDir, 'Papercup.ipa'), 'ipa-bytes');
-
-    const pairs = scanMobileArtifactSources(root, '0.0.9');
-    expect(pairs).toEqual([
-      { src: path.join(apkDir, 'app-debug.apk'), outName: 'Papercusp_0.0.9_android.apk' },
-      { src: path.join(ipaDir, 'Papercup.ipa'), outName: 'Papercusp_0.0.9_ios.ipa' },
+  it('returns exactly the manifest-bound APK+AAB under synthesized versioned names', () => {
+    const fixture = makeAndroidFixture();
+    expect(scanProvenancedAndroidArtifactSources(fixture.root, '0.0.9')).toEqual([
+      { src: fixture.apk, outName: 'Papercusp_0.0.9_android.apk' },
+      { src: fixture.aab, outName: 'Papercusp_0.0.9_android.aab' },
     ]);
-    fs.rmSync(root, { recursive: true, force: true });
+    const found = scanMobileArtifacts(fixture.root, '0.0.9', 'desktop-v0.0.9-alpha');
+    expect(found.map((artifact) => artifact.name).sort()).toEqual([
+      'Papercusp_0.0.9_android.aab',
+      'Papercusp_0.0.9_android.apk',
+    ]);
+    expect(found.every((artifact) => artifact.url.startsWith('desktop-v0.0.9-alpha/'))).toBe(true);
+    fs.rmSync(fixture.root, { recursive: true, force: true });
   });
 
-  it('release APK claims the name — debug src never appears once release exists', () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mob-'));
-    fs.mkdirSync(path.join(root, 'android/app/build/outputs/apk/release'), { recursive: true });
-    fs.mkdirSync(path.join(root, 'android/app/build/outputs/apk/debug'), { recursive: true });
-    fs.writeFileSync(path.join(root, 'android/app/build/outputs/apk/release/app-release.apk'), 'RELEASE');
-    fs.writeFileSync(path.join(root, 'android/app/build/outputs/apk/debug/app-debug.apk'), 'debug-bytes');
+  it('rejects requested-version, source-commit, and canonical-path drift', () => {
+    const fixture = makeAndroidFixture();
+    expect(() => scanMobileArtifactSources(fixture.root, '0.0.10')).toThrow(/releaseVersion/);
+    updateManifest(fixture.manifest, (manifest) => {
+      manifest.releaseVersion = '0.0.9';
+      manifest.sourceCommit = 'f'.repeat(40);
+    });
+    expect(() => scanMobileArtifactSources(fixture.root, '0.0.9')).toThrow(/current HEAD/);
+    updateManifest(fixture.manifest, (manifest) => {
+      manifest.sourceCommit = fixture.commit;
+      manifest.artifacts.apk.path = 'android/app/build/outputs/apk/debug/app-debug.apk';
+    });
+    expect(() => scanMobileArtifactSources(fixture.root, '0.0.9')).toThrow(/canonical path/);
+    fs.rmSync(fixture.root, { recursive: true, force: true });
+  });
 
-    const apkPairs = scanMobileArtifactSources(root, '0.0.9').filter((p) => p.outName.endsWith('.apk'));
-    expect(apkPairs).toHaveLength(1);
-    expect(apkPairs[0].src).toContain('app-release.apk');
+  it('rejects missing, resized, and hash-tampered members of the required pair', () => {
+    const fixture = makeAndroidFixture();
+    fs.rmSync(fixture.aab);
+    expect(() => scanMobileArtifactSources(fixture.root, '0.0.9')).toThrow(/aab artifact is missing/);
+    fs.writeFileSync(fixture.aab, plausibleBytes('replacement-aab'));
+    expect(() => scanMobileArtifactSources(fixture.root, '0.0.9')).toThrow(/aab sha256/);
+    fs.appendFileSync(fixture.apk, 'tampered');
+    expect(() => scanMobileArtifactSources(fixture.root, '0.0.9')).toThrow(/apk size/);
+    fs.rmSync(fixture.root, { recursive: true, force: true });
+  });
+
+  it('rejects a manifest after tracked source changes', () => {
+    const fixture = makeAndroidFixture();
+    fs.appendFileSync(path.join(fixture.root, 'source.txt'), 'dirty\n');
+    expect(() => scanMobileArtifactSources(fixture.root, '0.0.9')).toThrow(/source tree .* dirty/);
+    fs.rmSync(fixture.root, { recursive: true, force: true });
+  });
+
+  it('keeps signed iOS discovery and permits explicit Android opt-out', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mob-'));
+    const ipa = path.join(root, 'ios/build/export/Papercup.ipa');
+    const rawApk = path.join(root, 'android/app/build/outputs/apk/debug/app-debug.apk');
+    fs.mkdirSync(path.dirname(ipa), { recursive: true });
+    fs.mkdirSync(path.dirname(rawApk), { recursive: true });
+    fs.writeFileSync(ipa, plausibleBytes('ipa'));
+    fs.writeFileSync(rawApk, plausibleBytes('unprovenanced'));
+    expect(scanMobileArtifactSources(root, '0.0.9', { skipAndroid: true })).toEqual([
+      { src: ipa, outName: 'Papercusp_0.0.9_ios.ipa' },
+    ]);
     fs.rmSync(root, { recursive: true, force: true });
   });
 });

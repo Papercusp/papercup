@@ -651,9 +651,10 @@ export function scanMobileArtifacts(
   mobileRoot: string | null,
   version: string,
   tag: string,
+  options: { skipAndroid?: boolean } = {},
 ): ReleaseArtifact[] {
   const found: ReleaseArtifact[] = [];
-  for (const { src, outName } of scanMobileArtifactSources(mobileRoot, version)) {
+  for (const { src, outName } of scanMobileArtifactSources(mobileRoot, version, options)) {
     const kind = classifyArtifact(outName);
     if (!kind) continue;
     const size = fs.statSync(src).size;
@@ -679,6 +680,133 @@ export function scanMobileArtifacts(
   return found.sort((a, b) => a.platform.localeCompare(b.platform) || a.name.localeCompare(b.name));
 }
 
+function mobileGitState(mobileRoot: string): { commit: string; dirty: boolean } {
+  try {
+    const commit = execFileSync('git', ['-C', mobileRoot, 'rev-parse', 'HEAD'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }).trim();
+    const status = execFileSync(
+      'git',
+      ['-C', mobileRoot, 'status', '--porcelain', '--untracked-files=normal'],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
+    ).trim();
+    return { commit, dirty: status.length > 0 };
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`Cannot resolve Android source identity in ${mobileRoot}: ${detail}`);
+  }
+}
+
+function parseAndroidReleaseProvenance(file: string): AndroidReleaseProvenance {
+  let value: unknown;
+  try {
+    value = JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`Invalid Android release provenance ${file}: ${detail}`);
+  }
+  if (!value || typeof value !== 'object') {
+    throw new Error(`Invalid Android release provenance ${file}: expected an object`);
+  }
+  return value as AndroidReleaseProvenance;
+}
+
+/**
+ * Resolve Android only through the build-produced provenance manifest. The
+ * synthesized public version is therefore a verified property of these exact
+ * bytes, not a label applied to whichever unversioned Gradle output is newest.
+ */
+export function scanProvenancedAndroidArtifactSources(
+  mobileRoot: string,
+  version: string,
+): Array<{ src: string; outName: string }> {
+  const manifestFile = path.join(mobileRoot, ANDROID_RELEASE_PROVENANCE_PATH);
+  const rawAndroidPaths = [
+    ANDROID_RELEASE_APK_PATH,
+    ANDROID_RELEASE_AAB_PATH,
+    'android/app/build/outputs/apk/debug/app-debug.apk',
+  ].map((relative) => path.join(mobileRoot, relative));
+  if (!fs.existsSync(manifestFile)) {
+    if (rawAndroidPaths.some((file) => fs.existsSync(file))) {
+      throw new Error(
+        `Android build output exists without ${ANDROID_RELEASE_PROVENANCE_PATH}; ` +
+          `rebuild with PAPERCUP_RELEASE_VERSION=${version} or pass --skip-android explicitly.`,
+      );
+    }
+    return [];
+  }
+
+  const manifest = parseAndroidReleaseProvenance(manifestFile);
+  if (manifest.schemaVersion !== 1) {
+    throw new Error(`Unsupported Android provenance schemaVersion ${String(manifest.schemaVersion)}`);
+  }
+  if (manifest.releaseVersion !== version) {
+    throw new Error(
+      `Android provenance releaseVersion ${String(manifest.releaseVersion)} does not match requested ${version}`,
+    );
+  }
+  if (manifest.sourceDirty !== false) {
+    throw new Error('Android provenance sourceDirty must be false');
+  }
+  if (!/^[0-9a-f]{40,64}$/.test(manifest.sourceCommit ?? '')) {
+    throw new Error('Android provenance sourceCommit is missing or malformed');
+  }
+  if (!manifest.builtAt || Number.isNaN(Date.parse(manifest.builtAt))) {
+    throw new Error('Android provenance builtAt is missing or malformed');
+  }
+
+  const source = mobileGitState(mobileRoot);
+  if (source.dirty) {
+    throw new Error(`Android source tree ${mobileRoot} is dirty; provenance is no longer publishable`);
+  }
+  if (source.commit !== manifest.sourceCommit) {
+    throw new Error(
+      `Android provenance sourceCommit ${manifest.sourceCommit} does not match current HEAD ${source.commit}`,
+    );
+  }
+
+  const expected: Array<{
+    key: 'apk' | 'aab';
+    relativePath: string;
+    outName: string;
+  }> = [
+    { key: 'apk', relativePath: ANDROID_RELEASE_APK_PATH, outName: `Papercusp_${version}_android.apk` },
+    { key: 'aab', relativePath: ANDROID_RELEASE_AAB_PATH, outName: `Papercusp_${version}_android.aab` },
+  ];
+  return expected.map(({ key, relativePath, outName }) => {
+    const entry = manifest.artifacts?.[key];
+    if (!entry || entry.kind !== key || entry.path !== relativePath) {
+      throw new Error(`Android provenance ${key} must name canonical path ${relativePath}`);
+    }
+    if (!Number.isSafeInteger(entry.size) || entry.size < MIN_PLAUSIBLE_ARTIFACT_BYTES) {
+      throw new Error(`Android provenance ${key} has implausible size ${String(entry.size)}`);
+    }
+    if (!/^[0-9a-f]{64}$/.test(entry.sha256 ?? '')) {
+      throw new Error(`Android provenance ${key} sha256 is missing or malformed`);
+    }
+    const src = path.join(mobileRoot, relativePath);
+    let stat: fs.Stats;
+    try {
+      stat = fs.statSync(src);
+    } catch {
+      throw new Error(`Android provenance ${key} artifact is missing: ${src}`);
+    }
+    if (!stat.isFile() || stat.size !== entry.size) {
+      throw new Error(
+        `Android provenance ${key} size ${entry.size} does not match ${src} (${stat.size} bytes)`,
+      );
+    }
+    const actualHash = sha256File(src);
+    if (actualHash !== entry.sha256) {
+      throw new Error(
+        `Android provenance ${key} sha256 ${entry.sha256} does not match ${src} (${actualHash})`,
+      );
+    }
+    return { src, outName };
+  });
+}
+
 /**
  * The source-path ↔ published-name pairs behind `scanMobileArtifacts` — exported
  * separately because the UPLOADER needs it too: mobile artifacts are recorded
@@ -690,31 +818,16 @@ export function scanMobileArtifacts(
 export function scanMobileArtifactSources(
   mobileRoot: string | null,
   version: string,
+  options: { skipAndroid?: boolean } = {},
 ): Array<{ src: string; outName: string }> {
   if (!mobileRoot || !fs.existsSync(mobileRoot)) return [];
-  // Ordered: release preferred over debug. First hit per synthesized name wins.
-  const candidates: Array<{ dir: string; ext: RegExp; recurse?: boolean; outName: string }> = [
-    { dir: 'android/app/build/outputs/apk/release', ext: /\.apk$/i, outName: `Papercusp_${version}_android.apk` },
-    { dir: 'android/app/build/outputs/apk/debug', ext: /\.apk$/i, outName: `Papercusp_${version}_android.apk` },
-    { dir: 'android/app/build/outputs/bundle/release', ext: /\.aab$/i, outName: `Papercusp_${version}_android.aab` },
-    { dir: 'ios/build', ext: /\.ipa$/i, recurse: true, outName: `Papercusp_${version}_ios.ipa` },
-  ];
-  const found: Array<{ src: string; outName: string }> = [];
-  const seen = new Set<string>();
-  for (const c of candidates) {
-    const dir = path.join(mobileRoot, c.dir);
-    if (!fs.existsSync(dir)) continue;
-    if (seen.has(c.outName)) continue; // release already claimed this name → skip debug
-    const files = (c.recurse ? walkFiles(dir, 5) : fs.readdirSync(dir).map((n) => path.join(dir, n))).filter(
-      (f) => c.ext.test(f),
-    );
-    for (const full of files) {
-      if (!fs.statSync(full).isFile()) continue;
-      seen.add(c.outName);
-      found.push({ src: full, outName: c.outName });
-      break; // one artifact per candidate dir
-    }
-  }
+  const found = options.skipAndroid
+    ? []
+    : scanProvenancedAndroidArtifactSources(mobileRoot, version);
+  const iosDir = path.join(mobileRoot, 'ios/build');
+  if (!fs.existsSync(iosDir)) return found;
+  const ipa = walkFiles(iosDir, 5).find((file) => /\.ipa$/i.test(file));
+  if (ipa) found.push({ src: ipa, outName: `Papercusp_${version}_ios.ipa` });
   return found;
 }
 
@@ -882,7 +995,9 @@ export async function run(opts: RecordOpts): Promise<number> {
     // scanMobileArtifacts. Merged into the same record; the page + history.json
     // give `product:'mobile'` its own section, and the desktop auto-update
     // manifest (latest.json) never sees them (it is desktop-platform-only).
-    const mobileArtifacts = scanMobileArtifacts(opts.mobileRoot, opts.version, tag);
+    const mobileArtifacts = scanMobileArtifacts(opts.mobileRoot, opts.version, tag, {
+      skipAndroid: opts.skipAndroid,
+    });
     const artifacts = [...desktopArtifacts, ...mobileArtifacts];
 
     // A release that records only SOME product×platform slots must never look like
@@ -1031,7 +1146,8 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     console.error('   or: record-release-cli --hold-page                  # swap index.html for "NEXT UPDATE COMING SOON"');
     console.error('   or: record-release-cli --restore-page               # put the real releases page back');
     console.error('       (both re-render; publish with papercusp-desktop/bin/publish-release-history.sh)');
-    console.error('   or: record-release-cli --scan-mobile --version <x.y.z>   # print mobile src↔name TSV for the uploader');
+    console.error('   or: record-release-cli --scan-mobile --version <x.y.z> [--skip-android]');
+    console.error('       # print provenanced mobile src↔name TSV for the uploader');
     return 2;
   }
   const opts = buildRunOpts(argv);
@@ -1042,7 +1158,9 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
       console.error('usage: record-release-cli --scan-mobile --version <x.y.z> [--mobile-root <dir>]');
       return 2;
     }
-    for (const { src, outName } of scanMobileArtifactSources(opts.mobileRoot, opts.version)) {
+    for (const { src, outName } of scanMobileArtifactSources(opts.mobileRoot, opts.version, {
+      skipAndroid: opts.skipAndroid,
+    })) {
       console.log(`${src}\t${outName}`);
     }
     return 0;
@@ -1090,6 +1208,8 @@ export function buildRunOpts(argv: string[]): RecordOpts {
   // Optional: null root → no mobile artifacts recorded (a legal desktop-only cut).
   const mobileRoot =
     arg(argv, '--mobile-root') ?? process.env.PAPERCUSP_MOBILE_ROOT ?? resolveMobileRoot();
+  const skipAndroid =
+    argv.includes('--skip-android') || process.env.PAPERCUSP_SKIP_ANDROID === '1';
   const outDir = arg(argv, '--out') ?? path.join(bundleDir, 'release-history');
   const scope: Scope = {
     workspaceId: arg(argv, '--workspace') ?? 'papercusp-workspace',
@@ -1104,6 +1224,7 @@ export function buildRunOpts(argv: string[]): RecordOpts {
     changelogMd,
     bundleDirs,
     mobileRoot,
+    skipAndroid,
     outDir,
     scope,
     cutBy: arg(argv, '--cut-by') ?? process.env.PAPERCUSP_SESSION_ID ?? null,
