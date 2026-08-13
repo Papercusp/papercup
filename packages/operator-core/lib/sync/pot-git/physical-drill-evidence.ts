@@ -339,6 +339,7 @@ function validateLegE(
     verdict = validatePhysicalPhaseE(leg as unknown as PhysicalPhaseEInput);
   } catch (error) {
     errors.push(`legE causal evidence is malformed: ${error instanceof Error ? error.message : String(error)}`);
+    errors.push('legE must contain the complete validated P-306 causal evidence object');
     return;
   }
   for (const error of verdict.errors) errors.push(`legE: ${error}`);
