@@ -34,6 +34,7 @@
  */
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 
 const DIR = __dirname;
@@ -93,20 +94,70 @@ export function ctxKeysRead(files: { name: string; src: string }[]): Map<string,
   return byKey;
 }
 
+function objectPropertyName(property: ts.ObjectLiteralElementLike): string | null {
+  if (ts.isShorthandPropertyAssignment(property)) return property.name.text;
+  if (!('name' in property) || property.name == null) return null;
+  if (ts.isIdentifier(property.name) || ts.isStringLiteral(property.name)) {
+    return property.name.text;
+  }
+  return null;
+}
+
 /** The keys the actionCtx object literal supplies. */
 export function ctxKeysSupplied(modalSrc: string): Set<string> {
-  const start = modalSrc.indexOf('const actionCtx');
-  if (start < 0) {
+  const sourceFile = ts.createSourceFile(
+    'SessionChatModal.tsx',
+    modalSrc,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TSX,
+  );
+  let declaration: ts.VariableDeclaration | null = null;
+  const findDeclaration = (node: ts.Node): void => {
+    if (
+      declaration == null &&
+      ts.isVariableDeclaration(node) &&
+      ts.isIdentifier(node.name) &&
+      node.name.text === 'actionCtx'
+    ) {
+      declaration = node;
+      return;
+    }
+    ts.forEachChild(node, findDeclaration);
+  };
+  findDeclaration(sourceFile);
+
+  if (declaration == null) {
     throw new Error(
       'actionCtx no longer exists in SessionChatModal — if the ctx construction ' +
         'site MOVED, point CTX_SITE at the new one rather than deleting this guard.',
     );
   }
-  /* The literal ends at the ternary's `: null` alternative — the whole useMemo
-     is `sessionOwnerId ? { ...keys } : null`. */
-  const end = modalSrc.indexOf(': null,', start);
-  const literal = stripComments(modalSrc.slice(start, end > start ? end : start + 8000));
-  return new Set([...literal.matchAll(/^\s*([A-Za-z_]\w*)\s*:/gm)].map((m) => m[1]));
+
+  let literal: ts.ObjectLiteralExpression | null = null;
+  const findLiteral = (node: ts.Node): void => {
+    if (literal != null) return;
+    if (ts.isObjectLiteralExpression(node)) {
+      const names = new Set(node.properties.map(objectPropertyName).filter(Boolean));
+      if (names.has('sessionOwnerId') && names.has('ownerLabel')) {
+        literal = node;
+        return;
+      }
+    }
+    ts.forEachChild(node, findLiteral);
+  };
+  findLiteral(declaration);
+
+  if (literal == null) {
+    throw new Error(
+      'actionCtx exists but its SessionChatModal object literal was not found — ' +
+        'update this guard to follow the production construction site.',
+    );
+  }
+
+  return new Set(
+    literal.properties.map(objectPropertyName).filter((name): name is string => name != null),
+  );
 }
 
 function actionModules(): { name: string; src: string }[] {
@@ -145,6 +196,35 @@ describe('chat-action ctx wiring', () => {
     ]);
     expect([...read.keys()]).toContain('aKeyNobodySupplies');
     expect(ctxKeysSupplied(readFileSync(CTX_SITE, 'utf8')).has('aKeyNobodySupplies')).toBe(false);
+  });
+
+  it('reads the full object across nested ternaries and shorthand properties', () => {
+    const supplied = ctxKeysSupplied(`
+      const actionCtx = useMemo(
+        () => sessionOwnerId
+          ? {
+              sessionOwnerId,
+              ownerLabel,
+              agent: roster?.agent ?? null,
+              sessionId: sourceKind === 'claude' ? resolved?.sessionId : null,
+              modes: roster?.modes ?? [],
+              accountPin: roster?.accountPin,
+              metadata: { nested: true },
+            }
+          : null,
+        [sessionOwnerId, roster, resolved],
+      );
+    `);
+
+    expect([...supplied]).toEqual([
+      'sessionOwnerId',
+      'ownerLabel',
+      'agent',
+      'sessionId',
+      'modes',
+      'accountPin',
+      'metadata',
+    ]);
   });
 
   it('ignores a key that only appears in a comment', () => {
