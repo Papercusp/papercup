@@ -1995,6 +1995,7 @@ outSync(
 plannedTaskCount = tasks.length;
 outSync(`Running ${tasks.length} task(s):`);
 for (const t of tasks) outSync(`  - ${t.ws.name} :: ${t.script}`);
+outSync(formatTaskBudgetMarker(SCHEDULER_CONFIG));
 // EI-15802: printed EARLY (before any suite runs) and again in the final
 // summary — a truncated background-task tail is more likely to still show
 // this line than a full multi-suite run's early output, so it survives even
@@ -2204,52 +2205,143 @@ const serialLegs = [];
 const recordLeg = (task, ms) => {
   serialLegs.push({ name: `${task.ws.name} :: ${task.script}`, ms });
 };
-for (const t of tasks) {
-  const isQuarantined = quarantined.has(t.ws.name);
-  outSync(`\n>>> ${t.ws.name} :: ${npmAvailable ? 'npm ' : ''}run ${t.script}${isQuarantined ? ' [QUARANTINED]' : ''}`);
-  // EI-11132: when this script declares --passWithNoTests AND the workspace
-  // genuinely has matching test files on disk, disable passWithNoTests for
-  // THIS run — a glob that stops matching those real files then fails LOUDLY
-  // (vitest's own default zero-match behavior) instead of silently passing.
-  const guardArgs = emptySuiteGuardArgs({
+const taskKey = (task) => `${task.ws.name} :: ${task.script}`;
+const taskContexts = tasks.map((t) => ({
+  t,
+  isQuarantined: quarantined.has(t.ws.name),
+  // EI-11132: when this script declares --passWithNoTests AND the workspace genuinely
+  // has matching test files on disk, disable passWithNoTests for THIS task.
+  guardArgs: emptySuiteGuardArgs({
     scriptText: t.ws.scripts[t.script] ?? '',
     wsAbsDir: join(ROOT, t.ws.dir),
     script: t.script,
+  }),
+}));
+const durationHistory = readDurationHistory(TASK_DURATION_HISTORY_PATH);
+const MAX_CAPTURE_BYTES = 256 * 1024 * 1024;
+
+/**
+ * Async captured child runner. `spawn` keeps the parent event loop free so the scheduler can
+ * overlap tasks, while buffering lets the reporting loop below replay whole task records in
+ * declaration order. Each child gets ITS allocation as the Vitest cap; the sum is bounded by
+ * SCHEDULER_CONFIG, so this cannot multiply the former per-workspace WORKER_CAP.
+ */
+function runCapturedTask(context, allocation, extraArgs = [], scriptOverride = null) {
+  const spawnTask = scriptOverride ? { ...context.t, script: scriptOverride } : context.t;
+  const { cmd, argv, cwd, env: specEnv } = spawnSpecFor(spawnTask, [
+    ...context.guardArgs,
+    ...extraArgs,
+  ]);
+  const childEnv = {
+    ...process.env,
+    ...(specEnv ?? {}),
+    VITEST_MAX_WORKERS: String(allocation.workers),
+    VITEST_MAX_FORKS: String(allocation.workers),
+    VITEST_MAX_THREADS: String(allocation.workers),
+  };
+  const startedAt = Date.now();
+  return new Promise((resolveRun) => {
+    const stdout = [];
+    const stderr = [];
+    let capturedBytes = 0;
+    let spawnError = null;
+    let captureError = null;
+    let settled = false;
+    const child = spawn(cmd, argv, {
+      cwd,
+      env: childEnv,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: BATCH_TIMEOUT_MS,
+      killSignal: BATCH_KILL_SIGNAL,
+    });
+    const capture = (chunks) => (chunk) => {
+      capturedBytes += chunk.length;
+      if (capturedBytes <= MAX_CAPTURE_BYTES) {
+        chunks.push(chunk);
+      } else if (!captureError) {
+        captureError = Object.assign(
+          new Error(`${taskKey(context.t)} exceeded the ${MAX_CAPTURE_BYTES}-byte capture ceiling`),
+          { code: 'ENOBUFS' },
+        );
+        child.kill(BATCH_KILL_SIGNAL);
+      }
+    };
+    child.stdout.on('data', capture(stdout));
+    child.stderr.on('data', capture(stderr));
+    child.once('error', (error) => {
+      spawnError = error;
+    });
+    child.once('close', (status, signal) => {
+      if (settled) return;
+      settled = true;
+      resolveRun({
+        status,
+        signal,
+        stdout: Buffer.concat(stdout).toString('utf8'),
+        stderr: Buffer.concat(stderr).toString('utf8'),
+        error: captureError ?? spawnError,
+        __elapsedMs: Date.now() - startedAt,
+      });
+    });
   });
+}
+
+function emitCapturedTaskOutput(t, r, allocation, label = 'initial') {
+  outSync(
+    `    scheduler ${label}: lane=${allocation.lane} workers=${allocation.workers} ` +
+      `memoryMb=${allocation.memoryMb}`,
+  );
+  if (r.error) errSync(`>>> ${t.ws.name} spawn error: ${r.error.message}`);
+  writeAllSync(1, r.stdout ?? '');
+  writeAllSync(2, r.stderr ?? '');
+  logLine(r.stdout ?? '');
+  logLine(r.stderr ?? '');
+}
+
+const initialPool = await runBudgetedTasks(taskContexts, {
+  ...SCHEDULER_CONFIG,
+  estimateMs: (context) => durationEstimate(durationHistory, taskKey(context.t)),
+  runTask: (context, allocation) => runCapturedTask(context, allocation),
+});
+for (const scheduled of initialPool.results) recordLeg(scheduled.task.t, scheduled.value.__elapsedMs);
+outSync(formatTaskBudgetObservedMarker(initialPool.stats));
+try {
+  // Re-read immediately before the atomic replace so a run that finished while this one was
+  // active is less likely to be overwritten. Atomicity guarantees readers never parse a torn
+  // file; losing one racing observation merely leaves the prior estimate in place.
+  const latestHistory = readDurationHistory(TASK_DURATION_HISTORY_PATH);
+  const nextHistory = mergeDurationHistory(
+    latestHistory,
+    initialPool.results.map(({ task, value }) => ({
+      key: taskKey(task.t),
+      durationMs: value.__elapsedMs,
+    })),
+  );
+  writeDurationHistoryAtomic(TASK_DURATION_HISTORY_PATH, nextHistory, RUN_TOKEN);
+} catch (error) {
+  errSync(`>>> duration history unavailable (continuing without it): ${error.message}`);
+}
+
+for (const scheduled of initialPool.results) {
+  const { t, isQuarantined, guardArgs } = scheduled.task;
+  outSync(`\n>>> ${t.ws.name} :: ${npmAvailable ? 'npm ' : ''}run ${t.script}${isQuarantined ? ' [QUARANTINED]' : ''}`);
   if (guardArgs.length) {
     outSync(`    (EI-11132 empty-suite guard: on-disk test files found — this run's --passWithNoTests is disabled)`);
   }
-  // Under retryFailed we must capture output to learn WHICH files failed; a
-  // non-TTY caller (background task / CI / gate — EI-15802) is ALSO captured
-  // so the full child output can be logged to RUN_LOG_PATH. Only a real
-  // interactive TTY keeps stdio:'inherit' for live streaming with nothing lost
-  // (a human is watching the terminal directly).
-  // EI-19370814345784324: `timeout`/`killSignal` bound the whole batch at the NATIVE
-  // (libuv) level, immune to the child spinning its own event loop — see the constant's
-  // header above. `__elapsedMs` is attached to the plain result object so isWatchdogTimeout
-  // can positively attribute a kill to this bound rather than guess from the signal alone.
-  const run = (extraArgs = [], scriptOverride = null) => {
-    const spawnTask = scriptOverride ? { ...t, script: scriptOverride } : t;
-    const { cmd, argv, cwd, env } = spawnSpecFor(spawnTask, [...guardArgs, ...extraArgs]);
-    const spawnOpts = { timeout: BATCH_TIMEOUT_MS, killSignal: BATCH_KILL_SIGNAL };
-    const startedAt = Date.now();
-    if (!captureOutput()) {
-      const r = spawnSync(cmd, argv, { cwd, env, stdio: 'inherit', ...spawnOpts });
-      r.__elapsedMs = Date.now() - startedAt;
-      recordLeg(t, r.__elapsedMs);
-      return r;
-    }
-    // A full vitest suite emits far beyond spawnSync's 1MB default maxBuffer —
-    // an ENOBUFS-killed child would read as a failure. 256MB clears any suite.
-    const r = spawnSync(cmd, argv, { cwd, env, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, ...spawnOpts });
-    r.__elapsedMs = Date.now() - startedAt;
-    recordLeg(t, r.__elapsedMs);
-    if (r.error) errSync(`>>> ${t.ws.name} spawn error: ${r.error.message}`);
-    writeAllSync(1, r.stdout ?? '');
-    writeAllSync(2, r.stderr ?? '');
-    logLine(r.stdout ?? '');
-    logLine(r.stderr ?? '');
-    return r;
+  emitCapturedTaskOutput(t, scheduled.value, scheduled.allocation);
+  // Retries intentionally begin only here, after `initialPool` has drained. A retry gets the
+  // same global envelope through the same scheduler, but because it is the only admitted task
+  // it can use the full effective worker budget without exceeding either ceiling.
+  const run = async (extraArgs = [], scriptOverride = null) => {
+    const retryPool = await runBudgetedTasks([scheduled.task], {
+      ...SCHEDULER_CONFIG,
+      runTask: (context, allocation) =>
+        runCapturedTask(context, allocation, extraArgs, scriptOverride),
+    });
+    const retry = retryPool.results[0];
+    recordLeg(t, retry.value.__elapsedMs);
+    emitCapturedTaskOutput(t, retry.value, retry.allocation, 'retry');
+    return retry.value;
   };
   /**
    * The fresh-process retry, PC_TEST_LANE-aware (plan gate-suite-speedup-2026-08-12, P-003).
@@ -2272,8 +2364,8 @@ for (const t of tasks) {
    * (resolveWorkspaceTestInvocation). A genuine failure still fails this isolated re-run
    * exactly as it would with no lane split at all, so nothing is absorbed that shouldn't be.
    */
-  const runFreshRetry = (files) => (hasLaneSplit(t.ws) ? run(files, 'test') : run(files));
-  let r = run();
+  const runFreshRetry = async (files) => (hasLaneSplit(t.ws) ? run(files, 'test') : run(files));
+  let r = scheduled.value;
   // WI-38300: absorption state, read by the reporting branch far below to decide whether a
   // surviving failure is a confident red or load-suspect residue. Declared out here because
   // the retry branch and the reporting branch are separate statements over the same task.
@@ -2335,7 +2427,7 @@ for (const t of tasks) {
       errSync(
         `\n>>> ${t.ws.name} FAILED — fresh-process re-run of ${failedFiles.length} failed file(s) (HARDEN-GATE flake absorption): ${failedFiles.join(', ')}`,
       );
-      r = runFreshRetry(failedFiles);
+      r = await runFreshRetry(failedFiles);
       absorptionRan = true;
       // WI-38300: sampled AFTER the re-run, deliberately. loadavg()[0] is a TRAILING 1-minute
       // average, so a post-sample describes the load the RE-RUN itself experienced — the thing
@@ -2358,7 +2450,7 @@ for (const t of tasks) {
         errSync(`>>> ${t.ws.name} failed files passed in a fresh process — counted as a FLAKE, not a failure.`);
     } else {
       errSync(`\n>>> ${t.ws.name} FAILED — retrying once (AFFECTED_RETRY_FAILED, flake absorption)`);
-      r = run();
+      r = await run();
       absorptionRan = true;
       // Post-sample for the same reason as the scoped arm above.
       load1AtRerun = loadavg()[0];
