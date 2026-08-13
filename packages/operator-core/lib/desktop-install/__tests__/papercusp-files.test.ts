@@ -20,6 +20,27 @@ import { installPapercuspFiles, resolveInstallPaths, renderSuPlaybook } from '..
 
 const execFileAsync = promisify(execFile);
 
+/**
+ * Assert that EVERY line where a shim invokes its launcher runs it with `nodePath`.
+ *
+ * There are two shapes. The plain shims end in `exec <node> "$launcher" "$@"`. The psu
+ * shim (WI-38292) runs the same invocation inside a re-exec loop and deliberately does
+ * NOT `exec` — bash has to survive the swap so the terminal's foreground process group
+ * outlives it. Asserting the INVOCATION rather than the `exec ` prefix keeps the guard
+ * meaningful across both, and this is what the guard was always about: an end user's
+ * plain Terminal has no `node` on PATH, so a bare `node …` fails with "command not
+ * found". Checking every match (not just that one exists) makes it stronger than the
+ * `toContain` it replaces — the loop must not smuggle in a second, unresolved
+ * interpreter.
+ */
+function expectLauncherInterpreter(shim: string, nodePath: string): void {
+  const invocations = shim.match(/^[ \t]*(?:exec )?(?:"[^"]*"|\S+) "\$launcher" "\$@"$/gm) ?? [];
+  expect(invocations.length).toBeGreaterThan(0);
+  for (const line of invocations) {
+    expect(line).toContain(JSON.stringify(nodePath));
+  }
+}
+
 let tmpHome: string;
 let tmpAppRoot: string;
 
