@@ -467,6 +467,8 @@ describe('buildHeadlessSpawnCommand (EI-9748 Route A — cgroup escape)', () => 
     expect(bin).toBe('systemd-run');
     expect(args.slice(0, 4)).toEqual(['--user', '--scope', '--collect', '--quiet']);
     expect(args.some((a) => /^--unit=papercup-headless-my-label-/.test(a))).toBe(true);
+    expect(args).toContain('--property=MemoryMax=6442450944');
+    expect(args).toContain('--property=MemorySwapMax=0');
     expect(args.slice(-3)).toEqual(['bash', '-lc', 'exec claude']);
   });
 

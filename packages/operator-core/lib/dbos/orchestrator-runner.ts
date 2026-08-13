@@ -88,7 +88,7 @@ import { initAgentGovernorObserver } from '../agent-governor-observer';
 import { maybeInstallPgGovernorStore } from '../agent-governor-pg-store';
 import { initRateLimitConfig } from '../rate-limit-config';
 import { recordUsageHeaders } from '../agent-usage-telemetry';
-import { SCOPE_LAUNCH_FAILURE_RE, buildIsolatedScopeArgv } from '../systemd-scope';
+import { SCOPE_LAUNCH_FAILURE_RE, agentSpawnScopeMemoryMaxG, buildIsolatedScopeArgv } from '../systemd-scope';
 import {
   beginSyncEnrolment,
   completeSyncEnrolment,
@@ -484,16 +484,6 @@ function reconcileClientFromPostgres(pg: AdminPgClient): ReconcileDbClient {
 /** SIGKILL grace after the SIGTERM on abort/timeout — gives the child a moment
  *  to flush + exit cleanly before we hard-kill. */
 const KILL_GRACE_MS = 2_000;
-
-/** Per-agent-turn memory cap (GiB) for the isolated spawn scope (systemd-run --user
- *  --scope). Sized generously above a single CLI turn's real working set — the point
- *  isn't to squeeze the turn but to keep a runaway/leaking agent's OOM inside ITS OWN
- *  cgroup, away from the launching host's cage (WI-1499: bg-host-agent-spawn-scope-
- *  isolation-2026-07-02). Override: PAPERCUSP_AGENT_SPAWN_MEMORY_MAX_G. */
-function agentSpawnScopeMemoryMaxG(): number {
-  const raw = Number(process.env.PAPERCUSP_AGENT_SPAWN_MEMORY_MAX_G);
-  return Number.isFinite(raw) && raw > 0 ? raw : 6;
-}
 
 /** Isolation kill-switch (peer of release-actions.ts's PAPERCUSP_CHECKPOINT_SCOPE):
  *  PAPERCUSP_AGENT_SPAWN_SCOPE=0 forces the pre-hardening same-cgroup spawn (ops

@@ -20,6 +20,14 @@
 export const SCOPE_LAUNCH_FAILURE_RE =
   /Failed to connect to bus|Failed to start transient scope|Interactive authentication required|No such file or directory/i;
 
+/** Shared per-agent scope budget. Headless fleet members and orchestrated agent
+ * turns are the same resource shape, so they must resolve the same override and
+ * default instead of drifting into capped vs uncapped launch paths. */
+export function agentSpawnScopeMemoryMaxG(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = Number(env.PAPERCUSP_AGENT_SPAWN_MEMORY_MAX_G);
+  return Number.isFinite(raw) && raw > 0 ? raw : 6;
+}
+
 /** Build the systemd-run argv that runs `base` in a transient user SCOPE with its own
  *  memory cap. `--scope` (NOT `--unit`): the payload stays OUR CHILD — stdio piped,
  *  process-group kill + full env inheritance intact — but lands in its own cgroup

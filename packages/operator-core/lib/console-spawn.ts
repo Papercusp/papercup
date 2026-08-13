@@ -60,6 +60,7 @@ import { CLIENT_SERVER_TERMINALS, PROCESS_PER_WINDOW_TERMINALS } from './linux-t
 import { beginSyncEnrolment, completeSyncEnrolment } from './task-manager/enroll-sync';
 import { scopeUnitForTask, sliceForClass } from './task-manager/types';
 import { warmScopeProbe } from './task-manager/managed-spawn';
+import { agentSpawnScopeMemoryMaxG } from './systemd-scope';
 
 warmScopeProbe();
 
@@ -1879,6 +1880,7 @@ function buildScopedSpawnArgv(
   unitPrefix: string,
   probes: { platform?: NodeJS.Platform; hasSystemdRun?: () => boolean } = {},
   taskScope?: { unit: string; slice: string } | null,
+  memoryMaxBytes?: number | null,
 ): { bin: string; args: string[]; scopeUnit: string | null } {
   const platform = probes.platform ?? process.platform;
   const hasSystemdRun = probes.hasSystemdRun ?? (() => isOnPath('systemd-run'));
@@ -1928,6 +1930,9 @@ function buildScopedSpawnArgv(
         '--quiet',
         `--unit=${unitName}`,
         `--slice=${sliceName}`,
+        ...(memoryMaxBytes && memoryMaxBytes > 0
+          ? [`--property=MemoryMax=${Math.floor(memoryMaxBytes)}`, '--property=MemorySwapMax=0']
+          : []),
         '--',
         bin,
         ...args,
@@ -1963,7 +1968,15 @@ export function buildHeadlessSpawnCommand(
    */
   taskScope?: { unit: string; slice: string } | null,
 ): { bin: string; args: string[]; scopeUnit: string | null } {
-  return buildScopedSpawnArgv('bash', ['-lc', oneliner], label, 'papercup-headless', probes, taskScope);
+  return buildScopedSpawnArgv(
+    'bash',
+    ['-lc', oneliner],
+    label,
+    'papercup-headless',
+    probes,
+    taskScope,
+    agentSpawnScopeMemoryMaxG() * 1024 ** 3,
+  );
 }
 
 /**
@@ -2064,7 +2077,8 @@ export async function spawnHeadless(opts: SpawnHeadlessOpts): Promise<SpawnConso
     // being created for EI-9748; this only gives it our slice + a joinable name,
     // and mints the ledger row that makes the member visible in /admin/tasks with
     // its fleet, its log, and its live cost.
-    const enrolment = beginSyncEnrolment({ class: 'agent-session' });
+    const memoryMaxBytes = agentSpawnScopeMemoryMaxG() * 1024 ** 3;
+    const enrolment = beginSyncEnrolment({ class: 'agent-session', memoryMaxBytes });
     const taskScope = enrolment.confined
       ? { unit: scopeUnitForTask(enrolment.taskId, label), slice: sliceForClass('agent-session') }
       : null;
@@ -2100,6 +2114,7 @@ export async function spawnHeadless(opts: SpawnHeadlessOpts): Promise<SpawnConso
         launchedBy: opts.launchedBy ?? 'console-spawn:headless',
         fleetSlug: opts.fleetSlug ?? null,
         logPath,
+        memoryMaxBytes,
         detail: { headless: true, label },
       },
       child.pid ?? null,
