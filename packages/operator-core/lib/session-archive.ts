@@ -520,6 +520,111 @@ export interface RematerializeResult {
   conflicts: string[];
 }
 
+export interface ArchiveReadinessResult {
+  /** A complete archive stamp exists in the canonical store. */
+  archived: boolean;
+  /** Every manifest entry has a corresponding, byte-exact on-disk file. */
+  ready: boolean;
+  reason?: 'not_archived' | 'incomplete_archive' | 'not_materialized' | 'sha_mismatch' | 'bad_relpath' | 'conflict';
+  root?: string;
+  /** Missing manifest rows or on-disk files, reported by relpath. */
+  missing: string[];
+  /** Existing entries that are not the archived file (including symlinks). */
+  conflicts: string[];
+}
+
+/**
+ * Read-only readiness check shared by the rematerialize status route and its
+ * callers. A stamp proves that the archive is complete in PG; it does not
+ * prove that a timed-out rematerialization has finished writing its files.
+ * Keep this check separate from rematerializeSession so a GET never writes
+ * or interprets an in-flight POST as `not_archived`.
+ */
+export async function inspectArchiveReadiness(
+  key: { sourceKind: ArchiveSourceKind; sessionId: string; workspaceId?: string },
+  store: SessionArchiveStore = pgSessionArchiveStore(),
+): Promise<ArchiveReadinessResult> {
+  const missing = new Set<string>();
+  const conflicts = new Set<string>();
+  let shaMismatch = false;
+  const ws = key.workspaceId ?? WS_DEFAULT;
+  const stamp = await store.readStamp(key.sourceKind, key.sessionId, ws);
+  if (!stamp) return { archived: false, ready: false, reason: 'not_archived', missing: [], conflicts: [] };
+
+  const rows = await store.readFiles(key.sourceKind, key.sessionId, ws);
+  const byRel = new Map(rows.map((row) => [row.relpath, row]));
+  const root = stamp.session_root;
+  let realRoot: string | null = null;
+  try {
+    realRoot = await realpath(root);
+  } catch {
+    // The root may not exist until the first rematerialize write. Every
+    // manifest entry is consequently missing, but the archive is still real.
+  }
+
+  for (const manifest of stamp.manifest) {
+    if (isUnsafeArchiveRelpath(manifest.relpath)) {
+      return {
+        archived: true,
+        ready: false,
+        reason: 'bad_relpath',
+        root,
+        missing: [...missing],
+        conflicts: [...conflicts, manifest.relpath],
+      };
+    }
+    if (!byRel.has(manifest.relpath)) missing.add(manifest.relpath);
+    if (!realRoot) {
+      continue;
+    }
+
+    const abs = join(root, manifest.relpath);
+    let entry: Stats | null = null;
+    try {
+      entry = await lstat(abs);
+    } catch {
+      entry = null;
+    }
+    if (!entry) {
+      missing.add(manifest.relpath);
+      continue;
+    }
+    if (!entry.isFile()) {
+      conflicts.add(manifest.relpath);
+      continue;
+    }
+    try {
+      if ((await realpath(abs)) !== join(realRoot, manifest.relpath)) {
+        conflicts.add(manifest.relpath);
+        continue;
+      }
+      const raw = await readFile(abs);
+      if (sha256Hex(raw) !== manifest.sha256) {
+        conflicts.add(manifest.relpath);
+        shaMismatch = true;
+      }
+    } catch {
+      conflicts.add(manifest.relpath);
+    }
+  }
+
+  const missingList = [...missing];
+  const conflictList = [...conflicts];
+  const ready = missingList.length === 0 && conflictList.length === 0;
+  return {
+    archived: true,
+    ready,
+    reason: ready
+      ? undefined
+      : conflictList.length > 0
+        ? shaMismatch ? 'sha_mismatch' : 'conflict'
+        : missingList.some((rel) => byRel.has(rel)) ? 'not_materialized' : 'incomplete_archive',
+    root,
+    missing: missingList,
+    conflicts: conflictList,
+  };
+}
+
 export async function rematerializeSession(
   key: { sourceKind: ArchiveSourceKind; sessionId: string; workspaceId?: string; targetRoot?: string },
   store: SessionArchiveStore = pgSessionArchiveStore(),

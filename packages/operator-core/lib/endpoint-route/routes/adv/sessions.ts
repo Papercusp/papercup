@@ -66,8 +66,85 @@ import {
   getOmpSessionState,
   searchOmpSessions,
 } from '../../../omp-sessions';
+import type {
+  ArchiveSourceKind,
+  ArchiveStampRow,
+  RematerializeResult,
+  SessionArchiveStore,
+} from '../../../session-archive';
 
 const JSON_HEADERS = { 'content-type': 'application/json' } as const;
+
+type RematerializeJobResult = RematerializeResult & {
+  sourceKind: ArchiveSourceKind;
+  owner: string | null;
+  cwd: string | null;
+  sessionRoot: string;
+};
+
+/**
+ * A client can time out while the synchronous archive restore is still
+ * running. Keep the promise observable until its final disk write settles so
+ * the status route can distinguish that state from a missing archive.
+ */
+const rematerializeInFlight = new Map<string, Promise<RematerializeJobResult>>();
+
+function rematerializeJobKey(sourceKind: ArchiveSourceKind, sessionId: string): string {
+  return `${sourceKind}:${sessionId}`;
+}
+
+async function startRematerializeJob({
+  sourceKind,
+  sessionId,
+  stamp,
+  store,
+  rematerializeSession,
+}: {
+  sourceKind: ArchiveSourceKind;
+  sessionId: string;
+  stamp: ArchiveStampRow;
+  store: SessionArchiveStore;
+  rematerializeSession: (key: { sourceKind: ArchiveSourceKind; sessionId: string }, store: SessionArchiveStore) => Promise<RematerializeResult>;
+}): Promise<RematerializeJobResult> {
+  const key = rematerializeJobKey(sourceKind, sessionId);
+  const existing = rematerializeInFlight.get(key);
+  if (existing) return existing;
+
+  const job = (async () => {
+    const result = await rematerializeSession({ sourceKind, sessionId }, store);
+    // psu-resume-relogin leg 2 (owner-reported 2026-07-12): the archive holds
+    // ONLY the transcript, so a claude rematerialize yielded a config dir with
+    // no `.claude.json`/settings/credentials — an INTERACTIVE `psu --resume`
+    // then boots claude into first-run onboarding (a login screen) despite a
+    // healthy system login. Re-ensure the full interactive dir (idempotent —
+    // keeps the restored transcript and any parked playbook) so a
+    // rematerialized dir is launch-ready, not just transcript-bearing.
+    // Guarded to the conventional per-owner dir so a foreign session_root is
+    // never shadowed; best-effort — the restore itself already succeeded.
+    if (result.ok && sourceKind === 'claude' && stamp.owner) {
+      try {
+        const [{ ensureInteractiveClaudeConfig }, { sessionClaudeConfigDir }] = await Promise.all([
+          import('../../../interactive-claude-config'),
+          import('@papercusp/orchestrator/session-launch-dirs'),
+        ]);
+        if (sessionClaudeConfigDir(stamp.owner) === stamp.session_root) {
+          ensureInteractiveClaudeConfig({ sid: stamp.owner });
+        }
+      } catch (e) {
+        console.warn(`[rematerialize] interactive-config seed failed for ${sessionId}: ${(e as Error)?.message ?? e}`);
+      }
+    }
+    return { ...result, sourceKind, owner: stamp.owner, cwd: stamp.cwd, sessionRoot: stamp.session_root };
+  })();
+  rematerializeInFlight.set(key, job);
+  void job.finally(() => {
+    if (rematerializeInFlight.get(key) === job) rematerializeInFlight.delete(key);
+  }).catch(() => {
+    // The original request reports the failure; the registry cleanup must not
+    // create an unhandled rejection when a client has already timed out.
+  });
+  return job;
+}
 type SessionPortRequestBody = {
   protocolVersion?: unknown;
   transformVersion?: unknown;
@@ -1275,36 +1352,9 @@ const rematerialize = defineTool({
     for (const sourceKind of kinds) {
       const stamp = await store.readStamp(sourceKind, sessionId);
       if (!stamp) continue;
-      const r = await rematerializeSession({ sourceKind, sessionId }, store);
-      // psu-resume-relogin leg 2 (owner-reported 2026-07-12): the archive holds
-      // ONLY the transcript, so a claude rematerialize yielded a config dir with
-      // no `.claude.json`/settings/credentials — an INTERACTIVE `psu --resume`
-      // then boots claude into first-run onboarding (a login screen) despite a
-      // healthy system login. Re-ensure the full interactive dir (idempotent —
-      // keeps the restored transcript and any parked playbook) so a
-      // rematerialized dir is launch-ready, not just transcript-bearing.
-      // Guarded to the conventional per-owner dir so a foreign session_root is
-      // never shadowed; best-effort — the restore itself already succeeded.
-      if (r.ok && sourceKind === 'claude' && stamp.owner) {
-        try {
-          const [{ ensureInteractiveClaudeConfig }, { sessionClaudeConfigDir }] = await Promise.all([
-            import('../../../interactive-claude-config'),
-            import('@papercusp/orchestrator/session-launch-dirs'),
-          ]);
-          if (sessionClaudeConfigDir(stamp.owner) === stamp.session_root) {
-            // EI-12938: was a bare writeInteractiveClaudeConfig. The shared
-            // ensure is the same repair behind a ready-check, so the four legs
-            // that need a launch-ready dir now share ONE implementation (this
-            // route was the only one that ever had it — the bug was the other
-            // three not calling it).
-            ensureInteractiveClaudeConfig({ sid: stamp.owner });
-          }
-        } catch (e) {
-          console.warn(`[rematerialize] interactive-config seed failed for ${sessionId}: ${(e as Error)?.message ?? e}`);
-        }
-      }
+      const r = await startRematerializeJob({ sourceKind, sessionId, stamp, store, rematerializeSession });
       return new Response(
-        JSON.stringify({ ...r, sourceKind, owner: stamp.owner, cwd: stamp.cwd, sessionRoot: stamp.session_root }),
+        JSON.stringify(r),
         { status: r.ok ? 200 : 409, headers: JSON_HEADERS },
       );
     }
@@ -1312,6 +1362,72 @@ const rematerialize = defineTool({
       status: 404,
       headers: JSON_HEADERS,
     });
+  },
+});
+
+/**
+ * GET /api/adv/sessions/rematerialize/status — observe a restore after the
+ * POST caller timed out. `pending` is deliberately distinct from
+ * `not_archived`; the synchronous POST may still be writing a large archive.
+ */
+const rematerializeStatus = defineTool({
+  method: 'GET',
+  path: '/adv/sessions/rematerialize/status',
+  auth: 'loopback',
+  async handler(req) {
+    const url = new URL(req.url);
+    const sessionId = url.searchParams.get('sessionId')?.trim() ?? '';
+    if (!sessionId) {
+      return new Response(JSON.stringify({ ok: false, error: 'sessionId required' }), {
+        status: 400,
+        headers: JSON_HEADERS,
+      });
+    }
+    const sourceKindParam = url.searchParams.get('sourceKind')?.trim() || null;
+    const kinds = (['claude', 'codex', 'omp'] as const).filter(
+      (kind) => !sourceKindParam || sourceKindParam === kind,
+    );
+    if (!kinds.length) {
+      return new Response(JSON.stringify({ ok: false, error: `unknown sourceKind "${sourceKindParam}"` }), {
+        status: 400,
+        headers: JSON_HEADERS,
+      });
+    }
+    const { inspectArchiveReadiness, pgSessionArchiveStore } = await import('../../../session-archive');
+    const store = pgSessionArchiveStore();
+    const statuses = await Promise.all(kinds.map(async (sourceKind) => {
+      const inFlight = rematerializeInFlight.has(rematerializeJobKey(sourceKind, sessionId));
+      if (inFlight) {
+        return {
+          sourceKind,
+          state: 'pending' as const,
+          inFlight: true,
+          archived: true,
+          ready: false,
+          reason: 'in_flight' as const,
+          missing: [] as string[],
+          conflicts: [] as string[],
+        };
+      }
+      const readiness = await inspectArchiveReadiness({ sourceKind, sessionId }, store);
+      return {
+        sourceKind,
+        state: readiness.ready ? 'ready' as const : readiness.reason === 'not_archived' ? 'not_archived' as const : 'not_ready' as const,
+        inFlight: false,
+        ...readiness,
+      };
+    }));
+    const pending = statuses.some((status) => status.state === 'pending');
+    const ready = statuses.some((status) => status.ready);
+    return new Response(JSON.stringify({
+      ok: true,
+      sessionId,
+      sourceKind: sourceKindParam,
+      state: pending ? 'pending' : ready ? 'ready' : 'not_ready',
+      pending,
+      ready,
+      statuses,
+    }), { status: 200, headers: JSON_HEADERS });
   },
 });
 
@@ -1712,4 +1828,4 @@ const sessionPortDelivery = defineTool({
   },
 });
 
-export default [list, focus, closeWindow, alive, state, search, ended, searchTranscripts, resumable, rematerialize, ensureClaudeConfig, roster, markLaunched, agentDetail, onDesktopWindows, sessionPortInspect, sessionPortPrepare, sessionPortStatus, sessionPortDelivery];
+export default [list, focus, closeWindow, alive, state, search, ended, searchTranscripts, resumable, rematerialize, rematerializeStatus, ensureClaudeConfig, roster, markLaunched, agentDetail, onDesktopWindows, sessionPortInspect, sessionPortPrepare, sessionPortStatus, sessionPortDelivery];
