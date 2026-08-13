@@ -16,7 +16,65 @@ import { defaultRunGit, ensurePotGitRepo, writeNamespaceRef } from './storage';
 import { serveUploadPack } from './fetch-transport';
 import { STAGING_REF } from './integrator';
 import { type EpochSeq, type SignedStagingAdvance, signStagingAdvance } from './staging-advance';
-import { runWorktreeBridgeTick } from './worktree-bridge-tick';
+import {
+  decideWorktreeBridgeCursor,
+  runWorktreeBridgeTick,
+  WORKTREE_BRIDGE_RETRY_TTL_MS,
+} from './worktree-bridge-tick';
+
+describe('P-505 retryable fed-event cursor policy', () => {
+  const nowMs = 100_000_000;
+  const rows = [
+    { id: 41, tsMs: nowMs - 1_000 },
+    { id: 42, tsMs: nowMs - WORKTREE_BRIDGE_RETRY_TTL_MS },
+    { id: 43, tsMs: nowMs - WORKTREE_BRIDGE_RETRY_TTL_MS - 1 },
+    { id: 44, tsMs: nowMs - WORKTREE_BRIDGE_RETRY_TTL_MS - 2 },
+  ];
+
+  it('consumes the full collected range when the tick durably processed every row', () => {
+    expect(
+      decideWorktreeBridgeCursor({
+        maxRowId: 44,
+        pendingRows: rows,
+        unprocessedFromIndex: null,
+        nowMs,
+      }),
+    ).toEqual({ cursor: 44, expiredRow: null });
+  });
+
+  it('holds immediately before a retryable row through the exact TTL boundary', () => {
+    expect(
+      decideWorktreeBridgeCursor({
+        maxRowId: 44,
+        pendingRows: rows,
+        unprocessedFromIndex: 1,
+        nowMs,
+      }),
+    ).toEqual({ cursor: 41, expiredRow: null });
+  });
+
+  it('consumes only an expired stopped row and keeps its later tail pending', () => {
+    expect(
+      decideWorktreeBridgeCursor({
+        maxRowId: 44,
+        pendingRows: rows,
+        unprocessedFromIndex: 2,
+        nowMs,
+      }),
+    ).toEqual({ cursor: 43, expiredRow: rows[2] });
+  });
+
+  it('holds indefinitely when the stopped row has no trustworthy timestamp', () => {
+    expect(
+      decideWorktreeBridgeCursor({
+        maxRowId: 45,
+        pendingRows: [{ id: 45, tsMs: null }],
+        unprocessedFromIndex: 0,
+        nowMs,
+      }),
+    ).toEqual({ cursor: 44, expiredRow: null });
+  });
+});
 
 async function git(args: string[], cwd: string): Promise<string> {
   const r = await defaultRunGit(args, cwd);

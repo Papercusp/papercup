@@ -49,7 +49,11 @@ import { parseGithubUrl } from '../clone-github';
 import { fetchRepoPushPermission } from '../github-repo-permissions';
 import { BRIDGE_CANONICAL_REF, runGithubBridgeTick } from '../../sync/pot-git/github-bridge-tick';
 import { runIntegratorTick } from '../../sync/pot-git/integrator-tick';
-import { runWorktreeBridgeTick } from '../../sync/pot-git/worktree-bridge-tick';
+import {
+  decideWorktreeBridgeCursor,
+  runWorktreeBridgeTick,
+  WORKTREE_BRIDGE_RETRY_TTL_MS,
+} from '../../sync/pot-git/worktree-bridge-tick';
 import { deriveIntegratorGrant, deriveMaxGrantedEpoch } from '../../sync/pot-git/authority-epoch';
 import { publishHandoffToken } from '../../sync/pot-git/handoff-token';
 import { lockAuthorityForHive } from '../../authority/lock-authority';
@@ -3740,21 +3744,18 @@ async function runWorktreeBridgeLeg(slug: string, workspaceId: string): Promise<
     // only consumes rows strictly before it. Age-bound the hold: an item stuck
     // retryable past the TTL is a genuinely lost object, not a race — consume
     // it (loudly) so one poisoned row can never wedge the bridge forever.
-    const RETRY_TTL_MS = 6 * 60 * 60 * 1000;
-    let newCursor = maxRowId;
-    const k = outcome.unprocessedFromIndex;
-    if (k !== null && k < pendingRows.length) {
-      const stuck = pendingRows[k];
-      const age = stuck.tsMs === null ? null : Date.now() - stuck.tsMs;
-      if (age !== null && age > RETRY_TTL_MS) {
-        console.warn(
-          `[git-sync] ${slug}: staging-advance fed-event row ${stuck.id} stuck retryable past ` +
-            `${Math.round(RETRY_TTL_MS / 3_600_000)}h — consuming it as lost (objects/token never federated)`,
-        );
-        newCursor = stuck.id; // consume the stuck row, hold before the tail
-      } else {
-        newCursor = stuck.id - 1; // hold AT the stuck row — it re-collects next tick
-      }
+    const cursorDecision = decideWorktreeBridgeCursor({
+      maxRowId,
+      pendingRows,
+      unprocessedFromIndex: outcome.unprocessedFromIndex,
+      nowMs: Date.now(),
+    });
+    const newCursor = cursorDecision.cursor;
+    if (cursorDecision.expiredRow) {
+      console.warn(
+        `[git-sync] ${slug}: staging-advance fed-event row ${cursorDecision.expiredRow.id} stuck retryable past ` +
+          `${Math.round(WORKTREE_BRIDGE_RETRY_TTL_MS / 3_600_000)}h — consuming it as lost (objects/token never federated)`,
+      );
     }
 
     // EI-19332963201820362: the acceptance census + the accept-free streak.

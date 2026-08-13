@@ -113,6 +113,45 @@ export interface WorktreeBridgeTickResultEntry {
  */
 export const RETRYABLE_REJECT_REASONS: ReadonlySet<string> = new Set(['unknown-sha', 'ungranted-epoch']);
 
+/** P-505: how long a transient staging-advance rejection may pin the
+ * fed-event cursor before the stopped row is consumed as genuinely lost. */
+export const WORKTREE_BRIDGE_RETRY_TTL_MS = 6 * 60 * 60 * 1000;
+
+export interface WorktreeBridgeCursorRow {
+  id: number;
+  tsMs: number | null;
+}
+
+/**
+ * Translate a tick's stop index into the durable fed-event cursor.
+ *
+ * This is deliberately pure because the boundary is the drop-forever rail:
+ * before the TTL (including the exact boundary, or when age is unknowable),
+ * hold immediately BEFORE the stopped row so it re-collects next tick. After
+ * the TTL, consume ONLY that row and remain before its tail, so one lost
+ * object/token cannot wedge every later announcement.
+ */
+export function decideWorktreeBridgeCursor(input: {
+  maxRowId: number;
+  pendingRows: readonly WorktreeBridgeCursorRow[];
+  unprocessedFromIndex: number | null;
+  nowMs: number;
+  retryTtlMs?: number;
+}): { cursor: number; expiredRow: WorktreeBridgeCursorRow | null } {
+  const retryTtlMs = input.retryTtlMs ?? WORKTREE_BRIDGE_RETRY_TTL_MS;
+  const k = input.unprocessedFromIndex;
+  if (k === null || k < 0 || k >= input.pendingRows.length) {
+    return { cursor: input.maxRowId, expiredRow: null };
+  }
+
+  const stuck = input.pendingRows[k]!;
+  const age = stuck.tsMs === null ? null : input.nowMs - stuck.tsMs;
+  if (age !== null && age > retryTtlMs) {
+    return { cursor: stuck.id, expiredRow: stuck };
+  }
+  return { cursor: stuck.id - 1, expiredRow: null };
+}
+
 export interface WorktreeBridgeTickOutcome {
   ran: boolean;
   results: WorktreeBridgeTickResultEntry[];
