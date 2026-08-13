@@ -1973,7 +1973,7 @@ describe('psu-launcher arg parsing', () => {
     }
   });
 
-  it('OMP resume route transitions replace auto/pin config and restore direct config on default', () => {
+  it('OMP Anthropic resume route transitions replace auto/pin config and restore direct config on default', () => {
     const home = mkdtempSync(join(tmpdir(), 'psu-omp-route-'));
     try {
       const globalAgent = join(home, '.omp', 'agent');
@@ -1987,8 +1987,8 @@ describe('psu-launcher arg parsing', () => {
       const autoModel = applyOmpResumeAccountRoute({
         session,
         env,
-        accountRoute: { mode: 'auto' },
-        model: 'anthropic/claude-opus-4-8:high',
+        accountRoute: { mode: 'auto', provider: 'claude' },
+        model: 'claude-bridge/claude-opus-4-8:high',
         home,
       });
       expect(autoModel).toBe('papercusp-gateway/claude-opus-4-8');
@@ -1997,7 +1997,7 @@ describe('psu-launcher arg parsing', () => {
       const pinModel = applyOmpResumeAccountRoute({
         session,
         env,
-        accountRoute: { mode: 'pin', id: 'acct-7' },
+        accountRoute: { mode: 'pin', id: 'acct-7', provider: 'claude' },
         model: autoModel,
         home,
       });
@@ -2014,6 +2014,75 @@ describe('psu-launcher arg parsing', () => {
       expect(directModel).toBe('anthropic/claude-opus-4-8');
       expect(readFileSync(join(sessionAgent, 'models.yml'), 'utf8')).toBe('providers:\n  anthropic:\n    models: []\n');
       expect(ompDirectModelForRoute('ollama/ornith')).toBe('ollama/ornith');
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('OMP OpenAI resume routes use the Codex pool/OpenAI wire and restore a direct OpenAI selector', () => {
+    const home = mkdtempSync(join(tmpdir(), 'psu-omp-openai-route-'));
+    try {
+      const globalAgent = join(home, '.omp', 'agent');
+      const sessionAgent = join(home, '.papercusp', 'su-omp-homes', 'session-8', 'agent');
+      mkdirSync(globalAgent, { recursive: true });
+      mkdirSync(sessionAgent, { recursive: true });
+      writeFileSync(join(globalAgent, 'models.yml'), 'providers:\n  openai:\n    models: []\n');
+      const session = { agent: 'omp', id: 8, coordOwnerId: 'su-omp-openai', ompThreadId: 'thr-openai' };
+      const env = ompTrackedResumeEnv(session, { home });
+
+      const autoModel = applyOmpResumeAccountRoute({
+        session,
+        env,
+        accountRoute: { mode: 'auto', provider: 'codex' },
+        model: 'openai-codex/gpt-5.6-terra:xhigh',
+        home,
+      });
+      expect(autoModel).toBe('papercusp-gateway/gpt-5.6-terra');
+      const gatewayConfig = readFileSync(join(sessionAgent, 'models.yml'), 'utf8');
+      expect(gatewayConfig).toContain('baseUrl: "http://127.0.0.1:8788/v1"');
+      expect(gatewayConfig).toContain('api: openai-responses');
+
+      const directModel = applyOmpResumeAccountRoute({
+        session,
+        env,
+        accountRoute: { mode: 'default' },
+        model: autoModel,
+        home,
+      });
+      expect(directModel).toBe('openai/gpt-5.6-terra');
+      expect(readFileSync(join(sessionAgent, 'models.yml'), 'utf8')).toBe('providers:\n  openai:\n    models: []\n');
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('OMP resume gateway routes reject incompatible providers and mismatched account pools', () => {
+    const home = mkdtempSync(join(tmpdir(), 'psu-omp-incompatible-route-'));
+    try {
+      const globalAgent = join(home, '.omp', 'agent');
+      const sessionAgent = join(home, '.papercusp', 'su-omp-homes', 'session-9', 'agent');
+      mkdirSync(globalAgent, { recursive: true });
+      mkdirSync(sessionAgent, { recursive: true });
+      writeFileSync(join(globalAgent, 'models.yml'), 'providers: {}\n');
+      const session = { agent: 'omp', id: 9, coordOwnerId: 'su-omp-reject', ompThreadId: 'thr-reject' };
+      const env = ompTrackedResumeEnv(session, { home });
+
+      expect(() => applyOmpResumeAccountRoute({
+        session,
+        env,
+        accountRoute: { mode: 'auto', provider: 'claude' },
+        model: 'amazon-bedrock/anthropic.claude-opus-4-8',
+        home,
+      })).toThrow(/not compatible.*refusing model substitution/i);
+      expect(() => applyOmpResumeAccountRoute({
+        session,
+        env,
+        accountRoute: { mode: 'pin', id: 'claude-main', provider: 'claude' },
+        model: 'openai-codex/gpt-5.6-terra',
+        home,
+      })).toThrow(/requires codex accounts.*resolved claude/i);
+      expect(() => ompDirectModelForRoute('papercusp-gateway/unknown-local-model'))
+        .toThrow(/cannot be restored.*refusing model substitution/i);
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
@@ -2117,14 +2186,46 @@ describe('psu-launcher arg parsing', () => {
     ).rejects.toThrow(/not an allowed pool account.*refusing to fall back/i);
   });
 
-  it('chooseResumeAccount: OMP auto remains an explicit config-carried gateway route', async () => {
+  it('chooseResumeAccount: OMP Claude auto remains an explicit config-carried gateway route', async () => {
     await expect(withAccountChoices(
       { gatewayOn: true, pool: ['allowed'], forcedAccounts: [], excludeAccounts: [], provider: 'claude' },
       () => chooseResumeAccount(
         { agent: 'omp', workspaceId: 'ws1', coordOwnerId: 'su-resume-omp' },
-        { account: 'auto', picker: false },
+        { account: 'auto', picker: false, model: 'claude-bridge/claude-opus-4-8:high' },
       ),
     )).resolves.toMatchObject({ mode: 'auto', auto: true, forward: 'auto', provider: 'claude', env: {} });
+  });
+
+  it('chooseResumeAccount: OMP OpenAI auto resolves against the Codex account pool', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({
+        accounts: { gatewayOn: true, pool: ['codex-main'], forcedAccounts: [], excludeAccounts: [], provider: 'codex' },
+      }), { status: 200, headers: { 'content-type': 'application/json' } }),
+    );
+    try {
+      await expect(chooseResumeAccount(
+        { agent: 'omp', workspaceId: 'ws1', coordOwnerId: 'su-resume-omp-openai' },
+        { account: 'auto', picker: false, model: 'openai-codex/gpt-5.6-terra:xhigh' },
+      )).resolves.toMatchObject({ mode: 'auto', auto: true, forward: 'auto', provider: 'codex', env: {} });
+      expect(String(fetchSpy.mock.calls[0]?.[0])).toContain('agent=codex');
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it('chooseResumeAccount: OMP explicit gateway routes fail closed on incompatible or mismatched providers', async () => {
+    await expect(chooseResumeAccount(
+      { agent: 'omp', workspaceId: 'ws1', coordOwnerId: 'su-resume-omp-foreign' },
+      { account: 'auto', picker: false, model: 'google-vertex/claude-opus-4-8' },
+    )).rejects.toThrow(/not compatible.*refusing model substitution/i);
+
+    await expect(withAccountChoices(
+      { gatewayOn: true, pool: ['claude-main'], forcedAccounts: [], excludeAccounts: [], provider: 'claude' },
+      () => chooseResumeAccount(
+        { agent: 'omp', workspaceId: 'ws1', coordOwnerId: 'su-resume-omp-mismatch' },
+        { account: 'claude-main', picker: false, model: 'openai-codex/gpt-5.6-terra' },
+      ),
+    )).rejects.toThrow(/claude account.*requires codex accounts.*refusing/i);
   });
 
   it('chooseResumeAccount: valid Claude auto remains gateway-only and never carries the default marker', async () => {

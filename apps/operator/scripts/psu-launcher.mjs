@@ -67,7 +67,7 @@ import {
 import { codexGatewayConfigToml } from '@papercusp/orchestrator/codex-gateway-config';
 import {
   ompGatewayModelsConfig,
-  ompModelIdFromSpec,
+  ompGatewayModelFromSpec,
 } from '@papercusp/orchestrator/omp-gateway-config';
 
 export const AGENTS = ['claude', 'omp', 'codex'];
@@ -3073,8 +3073,14 @@ export function ompTrackedResumeEnv(session, { home = homedir() } = {}) {
 
 export function ompDirectModelForRoute(model) {
   const value = String(model || '').trim();
-  const match = value.match(/^papercusp-gateway\/(.+)$/i);
-  return match ? `anthropic/${match[1]}` : model;
+  if (!/^papercusp-gateway\//i.test(value)) return model;
+  const route = ompGatewayModelFromSpec(value);
+  if (!route) {
+    throw new Error(
+      `OMP gateway selector '${value}' cannot be restored to a compatible direct provider; refusing model substitution`,
+    );
+  }
+  return `${route.gatewayProvider}/${route.modelId}`;
 }
 
 /** Apply a selected OMP route to the exact per-session registry used by resume.
@@ -3083,6 +3089,8 @@ export function ompDirectModelForRoute(model) {
 export function applyOmpResumeAccountRoute({ session, env, accountRoute, model, home = homedir() }) {
   if (session?.agent !== 'omp') return model;
   const mode = accountRoute?.mode ?? 'default';
+  const selectedModel = String(model || '').trim();
+  const modelRoute = selectedModel ? ompGatewayModelFromSpec(selectedModel) : null;
   const agentDir = env?.PI_CODING_AGENT_DIR;
   if (!agentDir) {
     if (mode !== 'default') {
@@ -3100,13 +3108,22 @@ export function applyOmpResumeAccountRoute({ session, env, accountRoute, model, 
     copyFileSync(source, target);
     return ompDirectModelForRoute(model);
   }
-  const roleModel = ompModelIdFromSpec(model);
+  if (selectedModel && !modelRoute) {
+    throw new Error(
+      `OMP model '${selectedModel}' is not compatible with gateway account routing; refusing model substitution`,
+    );
+  }
+  if (modelRoute && accountRoute?.provider && accountRoute.provider !== modelRoute.accountProvider) {
+    throw new Error(
+      `selected OMP model '${selectedModel}' requires ${modelRoute.accountProvider} accounts, but the resume route resolved ${accountRoute.provider}; refusing model substitution`,
+    );
+  }
   const config = ompGatewayModelsConfig({
     accountId: mode === 'pin' ? accountRoute.id : null,
     gatewayOn: mode === 'auto',
-    provider: 'anthropic',
+    provider: modelRoute?.gatewayProvider ?? 'anthropic',
     ownerId: session.coordOwnerId,
-    models: roleModel ? [roleModel] : undefined,
+    models: modelRoute ? [modelRoute.modelId] : undefined,
   });
   if (!config) {
     throw new Error(`selected OMP ${mode} route could not be rendered; refusing direct/default fallback`);
@@ -4634,7 +4651,25 @@ export async function chooseResumeAccount(session, args) {
     return { mode: 'default', id: null, env: defaultAccountEnv(), notice: 'using the default system account (inference gateway skipped).' };
   }
 
-  const accounts = await fetchAccountChoices(session.workspaceId, session.agent);
+  const selectedModel = String(args?.model || '').trim();
+  const ompModelRoute = session.agent === 'omp' && selectedModel
+    ? ompGatewayModelFromSpec(selectedModel)
+    : null;
+  if (session.agent === 'omp' && selectedModel && !ompModelRoute) {
+    if (plan.prompt) {
+      return { mode: 'default', id: null, env: defaultAccountEnv(), notice: null };
+    }
+    throw new Error(
+      `--account ${plan.account} could not be honored: OMP model '${selectedModel}' is not compatible with gateway account routing. ` +
+        'Refusing model substitution and default-system fallback.',
+    );
+  }
+  const accountAgent = session.agent === 'omp'
+    ? (ompModelRoute?.accountProvider ?? 'claude')
+    : session.agent;
+  const expectedProvider = ompModelRoute?.accountProvider
+    ?? (session.agent === 'codex' ? 'codex' : 'claude');
+  const accounts = await fetchAccountChoices(session.workspaceId, accountAgent);
   if (!accounts?.gatewayOn || !(Array.isArray(accounts.pool) && accounts.pool.length)) {
     // No explicit nondefault choice exists on the prompt path because the picker
     // hides unavailable gateway rows; omission therefore remains the product's
@@ -4657,13 +4692,12 @@ export async function chooseResumeAccount(session, args) {
     };
   }
 
-  const provider = accountProviderFromChoices(accounts, session.agent);
+  const provider = accountProviderFromChoices(accounts, accountAgent);
 
   if (mode === 'auto') {
-    const expectedProvider = session.agent === 'codex' ? 'codex' : 'claude';
     if (provider !== expectedProvider) {
       throw new Error(
-        `--account auto could not be honored: ${session.agent} requires a ${expectedProvider} account pool. ` +
+        `--account auto could not be honored: ${session.agent}${selectedModel ? ` model '${selectedModel}'` : ''} requires a ${expectedProvider} account pool. ` +
           'Refusing to fall back to the default system login.',
       );
     }
@@ -4692,6 +4726,13 @@ export async function chooseResumeAccount(session, args) {
   if (!provider) {
     throw new Error(
       `--account ${id} could not be honored: account routing is unsupported for ${session.agent}. ` +
+      'Refusing to fall back to the default system login.',
+    );
+  }
+  if (provider !== expectedProvider) {
+    throw new Error(
+      `--account ${id} could not be honored: '${id}' is a ${provider} account, but ` +
+        `${session.agent}${selectedModel ? ` model '${selectedModel}'` : ''} requires ${expectedProvider} accounts. ` +
         'Refusing to fall back to the default system login.',
     );
   }
@@ -7469,7 +7510,10 @@ async function launchResolvedResume(source, args, { tracked }) {
     process.exitCode = 1;
     return;
   }
-  const account = await chooseResumeAccount({ ...source, agent: target.targetAgent }, args);
+  const account = await chooseResumeAccount(
+    { ...source, agent: target.targetAgent },
+    { ...args, model: target.modelSpec },
+  );
   if (target.operation === 'port') {
     await launchSessionPort(source, target, account, args);
     return;
