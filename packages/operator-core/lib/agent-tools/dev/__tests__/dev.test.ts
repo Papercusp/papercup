@@ -129,6 +129,49 @@ describe('dev:build_status', () => {
     expect(result.ok).toBe(true);
     expect(parsePayload(result.result as never)).toMatchObject({ ...data, flake_suspects: [] });
   });
+
+  it('bounds oversized default output and exposes a full-detail re-read path', async () => {
+    const suspects = Array.from({ length: 40 }, (_, i) => ({
+      file_path: `${'very/long/path/'.repeat(30)}${i}.test.ts`,
+      fails: 20 + i,
+      passes: 40,
+      both_status_shas: 4,
+      flake_rate: 0.333,
+      last_fail: '2026-08-13T00:00:00.000Z',
+      last_pass: '2026-08-13T01:00:00.000Z',
+      reason: 'flake-shaped '.repeat(300),
+    }));
+    const data = {
+      prodBuild: { exists: true, mtimeMs: 1000 },
+      devBuild: { exists: true, mtimeMs: 1000 },
+      prodLogTail: 'build output '.repeat(1000),
+      dev3055Reachable: true,
+      prod3070Reachable: true,
+    };
+    vi.doMock('../../../dev-data', () => ({
+      buildStatus: vi.fn(async () => data),
+      testFlakeRollup: vi.fn(async () => ({ entries: [] })),
+      flagFlakeSuspects: vi.fn(() => suspects),
+    }));
+    const { default: tool, BUILD_STATUS_RESPONSE_BUDGET_CHARS } = await import('../build_status');
+
+    const result = await tool.handler({ harness: 'papercusp' }, MAKE_CTX());
+    const payload = parsePayload(result as never);
+    expect(JSON.stringify(payload).length).toBeLessThanOrEqual(BUILD_STATUS_RESPONSE_BUDGET_CHARS);
+    expect(payload.projection).toMatchObject({
+      kind: 'bounded',
+      truncated: true,
+      fullRead: { tool: 'dev:build_status', args: { harness: 'papercusp', detail: 'full' } },
+    });
+    expect(payload.prodLogTail_truncated).toBe(true);
+    expect(payload.prodLogTail_full_chars).toBe(data.prodLogTail.length);
+    expect(payload.flake_suspects_truncated).toBe(true);
+    expect(payload.flake_suspects_total).toBe(suspects.length);
+    expect((payload.flake_suspects as unknown[]).length).toBeLessThan(suspects.length);
+
+    const full = await tool.handler({ harness: 'papercusp', detail: 'full' }, MAKE_CTX());
+    expect(parsePayload(full as never)).toEqual({ ...data, flake_suspects: suspects, awaitable: expect.anything() });
+  });
 });
 
 // ── dev:why ─────────────────────────────────────────────────────────
