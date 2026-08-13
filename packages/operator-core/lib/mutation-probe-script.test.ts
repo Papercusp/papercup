@@ -190,9 +190,33 @@ describe('mutation-probe.sh — copy-out mode (the default)', () => {
   });
 });
 
+/**
+ * `--in-tree` REFUSES to run until the caller says what it did about the git-sync sweep race
+ * (`--sweep-lock-held` or `--accept-sweep-race`). Every in-tree probe below passes
+ * `--accept-sweep-race`, which is the honest answer HERE and not a way around the gate: the
+ * subject is a fresh file under `mkdtempSync(tmpdir())`, so it is not in the swept tree at all
+ * and there is no window for a sweep tick to commit. The refusal itself is pinned separately,
+ * in apps/operator/lib/mutation-probe-sweep-gate.test.ts — do not weaken it here.
+ */
+const ACCEPT_SWEEP = '--accept-sweep-race';
+
 describe('mutation-probe.sh — in-tree mode restores the tracked file', () => {
   it('restores after a normal exit', () => {
-    runProbe(['--in-tree', '--file', subject, '--mutate', 's/beta/BETA/', '--test', 'grep -q "^beta$" {}']);
+    // Assert the exit code, not just the restore: without this the probe REFUSING outright
+    // (exit 2, tracked file never touched) also leaves the file byte-identical, so the restore
+    // assertion alone passes vacuously. That is exactly how the missing sweep-ack went unseen.
+    expect(
+      runProbe([
+        '--in-tree',
+        ACCEPT_SWEEP,
+        '--file',
+        subject,
+        '--mutate',
+        's/beta/BETA/',
+        '--test',
+        'grep -q "^beta$" {}',
+      ]),
+    ).toBe(0);
     expect(read()).toBe(ORIGINAL);
   });
 
@@ -213,7 +237,9 @@ describe('mutation-probe.sh — in-tree mode restores the tracked file', () => {
 
     // in-tree: the mutation lands in the tracked file the command names, so the guard fails on
     // the mutant => CAUGHT => exit 0. And the file is still restored afterwards.
-    expect(runProbe(['--in-tree', '--file', subject, '--mutate', 's/beta/BETA/', '--test', testCmd])).toBe(0);
+    expect(
+      runProbe(['--in-tree', ACCEPT_SWEEP, '--file', subject, '--mutate', 's/beta/BETA/', '--test', testCmd]),
+    ).toBe(0);
     expect(read()).toBe(ORIGINAL);
 
     // Non-vacuousness: the very same command is still rejected without --in-tree, so this is a
@@ -228,6 +254,7 @@ describe('mutation-probe.sh — in-tree mode restores the tracked file', () => {
       [
         SCRIPT,
         '--in-tree',
+        ACCEPT_SWEEP,
         '--file',
         subject,
         '--mutate',
