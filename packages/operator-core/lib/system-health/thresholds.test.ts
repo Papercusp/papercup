@@ -606,9 +606,20 @@ describe('infraSummary — every crit must NAME its cause (the escalation body)'
     expect(infraSummary(d, true)).toContain('DISK 97% used on /full');
   });
 
-  it('keeps infraStatus precedence: a perf wedge outranks a disk crit', () => {
+  it('names host PSI memory separately from an operator per-thread wedge while preserving precedence', () => {
     const d = infra({ perf: { status: 'crit', reasons: ['PSI memory full avg60 13.29 >= 5'] } as InfraHealth['perf'], disk: critDisk });
-    expect(infraSummary(d, true)).toContain('PER-THREAD WEDGE: PSI memory full');
+    const s = infraSummary(d, true);
+    expect(s).toContain('HOST MEMORY PRESSURE: PSI memory full');
+    expect(s).not.toContain('PER-THREAD WEDGE');
+    expect(s).not.toContain('DISK 96%');
+  });
+
+  it.each([
+    'event-loop lag p95 900ms ≥ 750ms',
+    ':3070 CLOSE_WAIT 80 ≥ 64 (event-loop peg)',
+  ])('keeps operator-local perf crits classified as PER-THREAD WEDGE: %s', (reason) => {
+    const s = infraSummary(infra({ perf: { status: 'crit', reasons: [reason] } as InfraHealth['perf'] }), true);
+    expect(s).toBe(`PER-THREAD WEDGE: ${reason}`);
   });
 
   it('a healthy box still renders the PG line, with no disk note at all', () => {

@@ -554,7 +554,15 @@ export function infraSummary(d: InfraHealth, gatewayEnabled: boolean): string {
     return `TOOL FAILING FLEET-WIDE: ${d.toolFailures!.evidence}`;
   }
   if (mcpCrit) return `MCP PROXY FAILING: ${mcpHard} hard tool-call failure(s)/1h (transient-is-normal regression — pages)`;
-  if (perfCrit) return `PER-THREAD WEDGE: ${d.perf!.reasons[0] ?? 'operator degraded'}`;
+  if (perfCrit) {
+    const reason = d.perf!.reasons[0] ?? 'operator degraded';
+    // D-022: memory PSI is sampled from the host's /proc/pressure/memory, so it
+    // cannot by itself attribute the stall to an operator thread. Keep the
+    // per-thread verdict for operator-local signals (event-loop lag, CLOSE_WAIT,
+    // reachability, etc.) while naming host memory pressure on its own scale.
+    const verdict = reason.startsWith('PSI memory ') ? 'HOST MEMORY PRESSURE' : 'PER-THREAD WEDGE';
+    return `${verdict}: ${reason}`;
+  }
   if (diskCrit) {
     // EI-19944041837110102: "writes are about to fail" overstates 94-95% used with a real
     // 100+G buffer still free — scale the wording by actual headroom (both the % and, when
