@@ -271,6 +271,34 @@ export function dedupSignature(title: string): string {
   return [...new Set(tokens)].sort().join(' ');
 }
 
+/**
+ * Server-authored identity persisted on every issue-family admission.
+ *
+ * `titleKey` reuses the exact normalized signature the duplicate and recurrence
+ * machinery already consumes; `signalKey` preserves the stronger source identity
+ * when a watchdog/tool-failure caller has one. Keeping both avoids overloading
+ * `payload.watchdogKey` (which has collector-specific lifecycle semantics) while
+ * making every manual filing machine-groupable instead of keyless.
+ */
+export interface AdmissionIdentity {
+  schemaVersion: 'admission-identity-v1';
+  titleKey: string;
+  signalKey?: string;
+}
+
+export function admissionIdentity(title: string, signalKey?: string): AdmissionIdentity {
+  const signature = dedupSignature(title);
+  // A valid title can consist entirely of short tokens ("UI is up"). The dedup
+  // signature intentionally drops those tokens, but an admission identity may
+  // never be empty, so retain a deterministic normalized-title fallback.
+  const fallback = title.trim().toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+  return {
+    schemaVersion: 'admission-identity-v1',
+    titleKey: `title:${signature || fallback}`,
+    ...(signalKey?.trim() ? { signalKey: signalKey.trim() } : {}),
+  };
+}
+
 function tokenSet(title: string): Set<string> {
   return new Set(dedupSignature(title).split(' ').filter(Boolean));
 }
