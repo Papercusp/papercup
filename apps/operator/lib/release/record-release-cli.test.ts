@@ -666,6 +666,7 @@ describe('Android release producer/consumer source contract (D-004)', () => {
     expect(script.indexOf('verify_16kb_alignment "$RELEASE_APK"')).toBeLessThan(
       script.indexOf('android-release-provenance.sh write'),
     );
+    expect(script).toContain('"$REPO_ROOT/tools/build-scripts/android-release-provenance.sh" write');
   });
 
   it('release-local passes the requested version and treats an enabled Android leg as fatal', () => {
