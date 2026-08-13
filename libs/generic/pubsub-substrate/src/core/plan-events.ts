@@ -21,7 +21,8 @@ export type PlanEventType =
   | 'item_status_changed'
   | 'status_changed'
   | 'promoted'
-  | 'agent_launched';
+  | 'agent_launched'
+  | 'plan_audited';
 
 export interface ReadPlanEventsOpts {
   since_ts?: string;

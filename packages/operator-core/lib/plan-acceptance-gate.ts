@@ -22,8 +22,23 @@ import { activeWorkspaceId } from './workspace-registry';
 import { RUBRIC_TEMPLATE_NAME } from './agent-tools/plans/rubric-template';
 import { getAcceptanceRubricForPlan } from './rubrics';
 import { listScorecards } from './scorecards';
+import {
+  getLatestPlanAudit,
+  getPlanItemStatuses,
+  repoCitationDeps,
+  resolveCitation,
+  UNFINISHED_ITEM_STATUSES,
+} from './plan-audits';
 
-export type PlanAcceptanceGateCode = 'acceptance_rubric_missing' | 'acceptance_ungraded' | 'self_graded_only';
+export type PlanAcceptanceGateCode =
+  | 'acceptance_rubric_missing'
+  | 'acceptance_ungraded'
+  | 'self_graded_only'
+  // plan-completion-audit-and-acceptance-verdict-2026-08-13 — the code-truth family.
+  | 'plan_items_unfinished'
+  | 'acceptance_unaudited'
+  | 'audit_coverage_stale'
+  | 'audit_citations_unresolved';
 
 export interface PlanAcceptanceGateVerdict {
   satisfied: boolean;
@@ -37,6 +52,24 @@ export interface PlanAcceptanceGateVerdict {
   rubricId?: string;
   /** The independent grader satisfying the gate, when satisfied by a grading. */
   gradedBy?: string | null;
+  /** Set when an explicit reasoned `force` waived the code-truth checks (D-003). The
+   *  caller stamps this on the plan so the waiver is permanent and visible, never a
+   *  silent bypass — a force that is easy to hide is worth very little. */
+  forcedPast?: { reason: string; checks: PlanAcceptanceGateCode[] };
+}
+
+export interface PlanAcceptanceGateOpts {
+  /**
+   * An explicit, reasoned override of the CODE-TRUTH family only —
+   * `plan_items_unfinished`, `acceptance_unaudited`, `audit_coverage_stale`,
+   * `audit_citations_unresolved` (plan D-003/D-005).
+   *
+   * It deliberately does NOT waive the rubric family. Those three refusals encode a
+   * different owner ruling (an acceptance rubric, graded by someone other than its
+   * author) and widening force to cover them would collapse two independent guards
+   * into one switch.
+   */
+  force?: { reason: string };
 }
 
 /**
@@ -45,9 +78,14 @@ export interface PlanAcceptanceGateVerdict {
  * feature's default posture for that check (the flag read fails toward ON;
  * the exemption read fails toward "not exempt").
  */
-export async function evaluatePlanAcceptanceGate(planSlug: string): Promise<PlanAcceptanceGateVerdict> {
-  const enabled = await getFlag(FLAGS.ACCEPTANCE_RUBRIC_COMPLETION_GATE, 'system').catch(() => true);
-  if (!enabled) return { satisfied: true, skipped: 'flag-off' };
+export async function evaluatePlanAcceptanceGate(
+  planSlug: string,
+  opts: PlanAcceptanceGateOpts = {},
+): Promise<PlanAcceptanceGateVerdict> {
+  // Each family reads its OWN flag, below, rather than one early return for all of
+  // them: the code-truth checks and the rubric checks are independently killable, so
+  // rolling back one must not silently disable the other.
+  const rubricGate = await getFlag(FLAGS.ACCEPTANCE_RUBRIC_COMPLETION_GATE, 'system').catch(() => true);
 
   // Exemptions: a rubric-template plan does not get an acceptance rubric of its own
   // (infinite regress), and a scheduled template INSTANCE is an auto-generated
@@ -65,6 +103,124 @@ export async function evaluatePlanAcceptanceGate(planSlug: string): Promise<Plan
     if (row?.template_slug) return { satisfied: true, skipped: 'template-instance' };
   } catch {
     /* not exempt — fall through to the rubric check */
+  }
+
+  // ── the CODE-TRUTH family (plan-completion-audit-…-2026-08-13) ───────────────
+  // Ordered cheapest-to-understand first, and ahead of the rubric checks because the
+  // audit is authored BEFORE the rubric (D-004): refusing on a missing rubric while
+  // the plan still has unbuilt items would send the agent to the wrong repair.
+  const forcedChecks: PlanAcceptanceGateCode[] = [];
+  const force = opts.force;
+
+  const itemGate = await getFlag(FLAGS.PLAN_ITEM_COMPLETION_GATE, 'system').catch(() => true);
+  if (itemGate) {
+    const items = await getPlanItemStatuses(planSlug);
+    const unfinished = items.filter((i) =>
+      (UNFINISHED_ITEM_STATUSES as readonly string[]).includes(i.status),
+    );
+    if (unfinished.length > 0) {
+      if (force) {
+        forcedChecks.push('plan_items_unfinished');
+      } else {
+        const list = unfinished.map((i) => `${i.itemId} (${i.status})`).join(', ');
+        return {
+          satisfied: false,
+          code: 'plan_items_unfinished',
+          message:
+            `plan '${planSlug}' cannot be marked shipped: ${unfinished.length} item(s) are still unfinished — ` +
+            `${list}. Finish them, or — if the work went elsewhere and that was deliberate — DROP each one ` +
+            `with a reason: plans:set-status { slug:'${planSlug}', item:'<P-NNN>', status:'dropped', ` +
+            `note:'<why this was departed from>' }. Departing from the plan is legitimate; departing from it ` +
+            `silently is what this refuses. To ship anyway, pass force:{ reason } — it is recorded on the plan.`,
+        };
+      }
+    }
+  }
+
+  const auditGate = await getFlag(FLAGS.PLAN_CODE_AUDIT_GATE, 'system').catch(() => true);
+  if (auditGate) {
+    const audit = await getLatestPlanAudit(planSlug);
+    if (!audit) {
+      if (force) {
+        forcedChecks.push('acceptance_unaudited');
+      } else {
+        return {
+          satisfied: false,
+          code: 'acceptance_unaudited',
+          message:
+            `plan '${planSlug}' cannot be marked shipped: it has no code-truth audit. Compare every item to ` +
+            `the ACTUAL CODE — not the plan text, not the work-item records, not your memory of writing it — ` +
+            `then file what you found: plans:audit { slug:'${planSlug}', items:[{ itemId, verdict, citations }] }. ` +
+            `Citations are resolved against the real tree, so a path that does not exist is refused. Gaps inside ` +
+            `the plan's scope get fixed or dropped with a reason; bugs outside it go in \`findings\` with a filed ` +
+            `work-item ref. To ship without one, pass force:{ reason } — it is recorded on the plan.`,
+        };
+      }
+    } else {
+      // Coverage is re-checked against the CURRENT item list, not the list as it stood
+      // when the audit ran: items added afterwards are exactly the ones nobody looked at.
+      const items = await getPlanItemStatuses(planSlug);
+      const audited = new Set(audit.items.map((i) => i.itemId));
+      const uncovered = items
+        .filter((i) => i.status !== 'dropped' && !audited.has(i.itemId))
+        .map((i) => i.itemId);
+      if (uncovered.length > 0) {
+        if (force) {
+          forcedChecks.push('audit_coverage_stale');
+        } else {
+          return {
+            satisfied: false,
+            code: 'audit_coverage_stale',
+            message:
+              `plan '${planSlug}' cannot be marked shipped: audit #${audit.auditSeq} does not cover ` +
+              `${uncovered.length} current item(s) — ${uncovered.join(', ')}. These were added or reopened after ` +
+              `the audit ran, so nothing has checked them against the code. Re-run plans:audit covering them ` +
+              `(a fresh pass appends, it does not overwrite). To ship anyway, pass force:{ reason }.`,
+          };
+        }
+      } else {
+        // The tree MOVES between audit and ship, so the stored audit is not trusted:
+        // every code/test citation is resolved again, now. A citation that resolved at
+        // audit time and does not resolve today means the evidence for that item is gone.
+        const deps = repoCitationDeps();
+        const broken: string[] = [];
+        for (const entry of audit.items) {
+          for (const c of entry.citations) {
+            if (c.kind !== 'code' && c.kind !== 'test') continue;
+            const res = resolveCitation(c, deps);
+            if (!res.ok) broken.push(`${entry.itemId} → ${c.path ?? '(no path)'} (${res.reason})`);
+          }
+        }
+        if (broken.length > 0) {
+          if (force) {
+            forcedChecks.push('audit_citations_unresolved');
+          } else {
+            return {
+              satisfied: false,
+              code: 'audit_citations_unresolved',
+              message:
+                `plan '${planSlug}' cannot be marked shipped: ${broken.length} citation(s) in audit ` +
+                `#${audit.auditSeq} no longer resolve against the tree — ${broken.slice(0, 5).join('; ')}` +
+                `${broken.length > 5 ? ` (+${broken.length - 5} more)` : ''}. The code moved after the audit, so ` +
+                `the evidence for those items is stale. Re-run plans:audit against the current tree. To ship ` +
+                `anyway, pass force:{ reason }.`,
+            };
+          }
+        }
+      }
+    }
+  }
+
+  // ── the RUBRIC family (acceptance-rubrics-on-every-plan-2026-08-11) ──────────
+  // Independently flagged, and NOT waivable by `force` (D-005): it encodes a separate
+  // owner ruling, and collapsing both families into one switch would make the override
+  // far broader than the one that was actually authorised.
+  if (!rubricGate) {
+    return {
+      satisfied: true,
+      skipped: 'flag-off',
+      ...(forcedChecks.length > 0 && force ? { forcedPast: { reason: force.reason, checks: forcedChecks } } : {}),
+    };
   }
 
   const rubric = await getAcceptanceRubricForPlan(planSlug);
@@ -113,5 +269,10 @@ export async function evaluatePlanAcceptanceGate(planSlug: string): Promise<Plan
         `different agent or the owner must file the grading scorecard.`,
     };
   }
-  return { satisfied: true, rubricId: rubric.rubricId, gradedBy: independent.createdBy ?? null };
+  return {
+    satisfied: true,
+    rubricId: rubric.rubricId,
+    gradedBy: independent.createdBy ?? null,
+    ...(forcedChecks.length > 0 && force ? { forcedPast: { reason: force.reason, checks: forcedChecks } } : {}),
+  };
 }

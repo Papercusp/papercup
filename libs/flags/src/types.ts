@@ -1593,6 +1593,21 @@ export const FLAGS = {
   // Rubric-template plans + scheduled template instances are exempt. Default ON (derived
   // FLAG_DEFAULTS — not in DARK_FLAGS); OFF restores ungated plan shipping byte-identically.
   ACCEPTANCE_RUBRIC_COMPLETION_GATE: "papercusp-acceptance-rubric-completion-gate",
+  // plan-completion-audit-and-acceptance-verdict-2026-08-13 P-009 — the CODE-TRUTH half
+  // of plan completion. The rubric gate above checks the ceremony (a rubric exists, every
+  // criterion carries some rating, the grader is not the author); it reads neither what
+  // the ratings SAY nor the code. This one requires an audit (plans:audit) covering every
+  // non-dropped item, with its citations re-resolved against the CURRENT tree at ship time
+  // because the tree moves between audit and ship. Bypassable per-ship with an explicit
+  // reasoned `force` (D-003). Default ON; OFF restores the pre-audit shipping path.
+  PLAN_CODE_AUDIT_GATE: "papercusp-plan-code-audit-gate",
+  // plan-completion-audit-and-acceptance-verdict-2026-08-13 P-009 — the cheap floor under
+  // the audit: 'shipped' refuses while an item is still todo/wip/blocked/needs-human.
+  // `dropped` passes, because that is a recorded decision (D-002). Deliberately a SEPARATE
+  // flag from PLAN_CODE_AUDIT_GATE: this check costs nothing and would have caught
+  // claude-md-projection-from-pg-2026-08-10 shipping with P-009 still todo, so it should
+  // survive an audit-gate rollback rather than die with it. Default ON.
+  PLAN_ITEM_COMPLETION_GATE: "papercusp-plan-item-completion-gate",
   // infra-perf-reliability-audit-round4 P-005 (D-005): switch listEscalations({status:'open'})
   // to read the materialized harness_shared.coord_open_escalations projection (mig 355) instead
   // of the unbounded ~35k-event full-surface replay that pg_stat_statements pinned as ~88% of
