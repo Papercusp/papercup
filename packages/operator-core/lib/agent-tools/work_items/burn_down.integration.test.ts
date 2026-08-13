@@ -45,6 +45,10 @@ beforeAll(async () => {
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple();
   await applyMigrationForTest(
     db.sql,
+    join(__dirname, '../../../../../libs/papercusp/libs/db/sql/500-agent-modes.sql'),
+  );
+  await applyMigrationForTest(
+    db.sql,
     join(__dirname, '../../../../../libs/papercusp/libs/db/sql/831-issue-occurrence-ledger.sql.DRAFT'),
   );
   // The handler's fleet attribution is intentionally read through the durable
