@@ -222,6 +222,24 @@ const getAccountOverrideMock = vi.fn(async (_ws: string) => ({
   forcedAccounts: [] as string[],
   excludeAccounts: [] as string[],
 }));
+
+const readOmpModelCatalogMock = vi.fn(async () => ({
+  models: [{
+    provider: 'openai-codex',
+    id: 'gpt-5.6-terra',
+    selector: 'openai-codex/gpt-5.6-terra',
+    name: 'GPT-5.6-Terra',
+    contextWindow: 200_000,
+    maxTokens: 128_000,
+    reasoning: true,
+    thinking: ['low', 'medium', 'high'],
+    input: ['text'],
+    cost: { input: 1.25, output: 10, cacheRead: 0.125, cacheWrite: 0 },
+  }],
+}));
+vi.mock('../../omp-config', () => ({
+  readOmpModelCatalog: (...args: unknown[]) => readOmpModelCatalogMock(...args),
+}));
 vi.mock('../../deployment/account-session-override', () => ({
   getAccountOverride: (...a: unknown[]) => getAccountOverrideMock(...(a as [string])),
 }));
@@ -710,6 +728,32 @@ describe('bootstrap-su', () => {
     expect(json.status).toBe('ok');
     expect(json.workspace).toBe('default');
     expect(json.harnesses).toEqual([{ slug: 'papercup', path: '/repo', status: 'active' }]);
+    expect(json.ompCatalog).toMatchObject({
+      status: 'available',
+      source: 'omp models --json',
+      availability: 'enabled-configured',
+      credentials: 'unchecked',
+      upstream: 'unchecked',
+    });
+    expect(json.ompCatalog.models[0].selector).toBe('openai-codex/gpt-5.6-terra');
+  });
+
+  it('options keeps the launcher usable while reporting an unavailable OMP catalog', async () => {
+    readOmpModelCatalogMock.mockRejectedValueOnce(new Error('omp registry unavailable'));
+    const res = await callGet();
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.status).toBe('ok');
+    expect(json.harnesses).toHaveLength(1);
+    expect(json.ompCatalog).toEqual({
+      status: 'unavailable',
+      source: 'omp models --json',
+      availability: 'unknown',
+      credentials: 'unchecked',
+      upstream: 'unchecked',
+      models: [],
+      error: 'omp registry unavailable',
+    });
   });
 
   it('options?harness lists non-archived plan slugs', async () => {

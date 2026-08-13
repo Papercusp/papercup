@@ -2,6 +2,7 @@
  * omp:config — read or update the local `omp` CLI's config tree.
  *
  *   - { op: 'get' }                              → full settings tree
+ *   - { op: 'catalog' }                          → OMP's enabled/configured models
  *   - { op: 'set', key, value }                  → set one knob
  *   - { op: 'unset', key }                       → unset one knob
  *
@@ -12,7 +13,7 @@
 
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
-import { readOmpConfig, setOmpConfig, unsetOmpConfig } from '../../omp-config';
+import { readOmpConfig, readOmpModelCatalog, setOmpConfig, unsetOmpConfig } from '../../omp-config';
 
 export default defineTool({
   name: 'omp:config',
@@ -25,13 +26,14 @@ export default defineTool({
       'omp:sessions (OMP session history)',
     ],
   },
-  description: 'Read or update the local omp CLI config tree (get / set { key, value } / unset { key }).',
+  description: 'Read the local OMP model catalog, or read/update the omp CLI config tree (catalog / get / set / unset).',
   capability: 'omp:write',
   requirePrincipal: false,
   agentRoles: [...SU_ROLES],
   rolesQuota: { operator: { perRun: 50 } },
   args: z.discriminatedUnion('op', [
     z.object({ op: z.literal('get') }),
+    z.object({ op: z.literal('catalog') }),
     // `value` is a typed union (not z.unknown()) so the tool's JSON Schema is
     // valid for STRICT function-calling backends (OpenAI rejects an untyped
     // empty/anyOf-without-type schema: "anyOf must contain schemas with a
@@ -44,6 +46,27 @@ export default defineTool({
     z.object({ op: z.literal('unset'), key: z.string().min(1) }),
   ]),
   async handler(args, ctx) {
+    if (args.op === 'catalog') {
+      try {
+        const { models } = await readOmpModelCatalog();
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              ok: true,
+              availability: {
+                kind: 'enabled-configured',
+                credentials: 'unchecked',
+                upstream: 'unchecked',
+              },
+              models,
+            }),
+          }],
+        };
+      } catch (error) {
+        throw new Error(`omp:config catalog failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
     if (args.op === 'get') {
       const sections = await readOmpConfig();
       return { content: [{ type: 'text', text: JSON.stringify({ ok: true, sections }) }] };

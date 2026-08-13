@@ -281,6 +281,7 @@ describe('omp:config', () => {
     const sections = [{ name: 's', settings: [] }];
     vi.doMock('../../omp-config', () => ({
       readOmpConfig: vi.fn(async () => sections),
+      readOmpModelCatalog: vi.fn(),
       setOmpConfig: vi.fn(),
       unsetOmpConfig: vi.fn(),
     }));
@@ -290,9 +291,49 @@ describe('omp:config', () => {
     expect(payload).toEqual({ ok: true, sections });
   });
 
+  it('catalog returns exact OMP model identities with explicit availability semantics', async () => {
+    const models = [{
+      provider: 'openai-codex',
+      id: 'gpt-5.6-terra',
+      selector: 'openai-codex/gpt-5.6-terra',
+      name: 'GPT-5.6-Terra',
+    }];
+    vi.doMock('../../omp-config', () => ({
+      readOmpConfig: vi.fn(),
+      readOmpModelCatalog: vi.fn(async () => ({ models })),
+      setOmpConfig: vi.fn(),
+      unsetOmpConfig: vi.fn(),
+    }));
+    const { default: tool } = await import('../omp/config');
+    const result = await tool.handler({ op: 'catalog' }, MAKE_CTX({ role: 'architect' }));
+    expect(parsePayload(result as never)).toEqual({
+      ok: true,
+      availability: {
+        kind: 'enabled-configured',
+        credentials: 'unchecked',
+        upstream: 'unchecked',
+      },
+      models,
+    });
+  });
+
+  it('catalog reports an OMP read failure clearly', async () => {
+    vi.doMock('../../omp-config', () => ({
+      readOmpConfig: vi.fn(),
+      readOmpModelCatalog: vi.fn(async () => { throw new Error('registry unavailable'); }),
+      setOmpConfig: vi.fn(),
+      unsetOmpConfig: vi.fn(),
+    }));
+    const { default: tool } = await import('../omp/config');
+    await expect(tool.handler({ op: 'catalog' }, MAKE_CTX())).rejects.toThrow(
+      'omp:config catalog failed: registry unavailable',
+    );
+  });
+
   it('set rejects non-operator', async () => {
     vi.doMock('../../omp-config', () => ({
       readOmpConfig: vi.fn(),
+      readOmpModelCatalog: vi.fn(),
       setOmpConfig: vi.fn(),
       unsetOmpConfig: vi.fn(),
     }));
@@ -306,6 +347,7 @@ describe('omp:config', () => {
     const setOmpConfig = vi.fn(async () => ({ raw: 'v' }));
     vi.doMock('../../omp-config', () => ({
       readOmpConfig: vi.fn(),
+      readOmpModelCatalog: vi.fn(),
       setOmpConfig,
       unsetOmpConfig: vi.fn(),
     }));
@@ -323,6 +365,7 @@ describe('omp:config', () => {
     const unsetOmpConfig = vi.fn(async () => undefined);
     vi.doMock('../../omp-config', () => ({
       readOmpConfig: vi.fn(),
+      readOmpModelCatalog: vi.fn(),
       setOmpConfig: vi.fn(),
       unsetOmpConfig,
     }));

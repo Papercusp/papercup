@@ -88,6 +88,7 @@ import {
 } from '../../../backend-feature-capabilities';
 import { SESSION_PORT_PROTOCOL_VERSION, SESSION_PORT_TRANSFORM_VERSION, type SessionPortContractSummary } from '../../../session-port/types';
 import { recordSessionPortTelemetry } from '../../../session-port/telemetry';
+import { readOmpModelCatalog, type OmpModelCatalogEntry } from '../../../omp-config';
 
 // Exported for the sibling launcher-facing routes split out of this file (the
 // persona refresh) — one copy of the CORS/principal boilerplate, not two.
@@ -1194,6 +1195,48 @@ const optionsGet = defineTool({
     // psu-account-chooser P-005: pool accounts the interactive picker offers (empty +
     // hidden unless the gateway is on — see resolveAccountChoices).
     const accounts = await resolveAccountChoices(workspace, accountAgent);
+    // D-001: OMP remains the source of truth. A catalog read failure must not
+    // take down the rest of the launch picker, but it must remain observable —
+    // an empty successful catalog and an unavailable catalog are different.
+    let ompCatalog:
+      | {
+          status: 'available';
+          source: 'omp models --json';
+          availability: 'enabled-configured';
+          credentials: 'unchecked';
+          upstream: 'unchecked';
+          models: OmpModelCatalogEntry[];
+        }
+      | {
+          status: 'unavailable';
+          source: 'omp models --json';
+          availability: 'unknown';
+          credentials: 'unchecked';
+          upstream: 'unchecked';
+          models: [];
+          error: string;
+        };
+    try {
+      const { models } = await readOmpModelCatalog();
+      ompCatalog = {
+        status: 'available',
+        source: 'omp models --json',
+        availability: 'enabled-configured',
+        credentials: 'unchecked',
+        upstream: 'unchecked',
+        models,
+      };
+    } catch (error) {
+      ompCatalog = {
+        status: 'unavailable',
+        source: 'omp models --json',
+        availability: 'unknown',
+        credentials: 'unchecked',
+        upstream: 'unchecked',
+        models: [],
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
     // named-su-agent-fleets P-006: the durable named fleets this workspace offers
     // for the psu fleet picker. Persist even with zero live members (D-003), so
     // this is the "pick existing fleet" list. Fail-soft: any error ⇒ [] (the picker
@@ -1233,6 +1276,7 @@ const optionsGet = defineTool({
       harnesses,
       roles,
       accounts,
+      ompCatalog,
       fleets,
       nextScheme,
       schemes,

@@ -4,7 +4,7 @@
  * boolean/number/array/enum/unset/string) and the key-shape validation that
  * setOmpConfig/unsetOmpConfig enforce before ever spawning omp.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   createOmpModelCatalogReader,
   parseOmpConfigList,
