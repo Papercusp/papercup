@@ -477,6 +477,35 @@ describe('buildReleaseTrace', () => {
     expect(out.constraints.map((c) => c.code)).toContain('gate-verdict-stale');
     expect(out.nextVerb?.name).toBe('release:checkpoint-run');
   });
+  it('awaits an active checkpoint instead of recommending a duplicate stale-verdict run', () => {
+    const candidate = 'b'.repeat(40);
+    const out = buildReleaseTrace(
+      input({
+        position: position({ positions: { committedLocal: true, onStaging: true, inMain: false, deployed: false } }),
+        gate: {
+          state: 'gate-verdict-stale',
+          authoritative: false,
+          consecutiveReds: 3,
+          failingTests: [],
+          fireStale: false,
+          fireStaleReason: null,
+          verdictStale: true,
+          verdictStaleReason: 'superseded pin',
+          checkpointRunInFlight: {
+            active: true,
+            candidate,
+            activeSource: 'run-lock',
+            startedAtMs: 123,
+            elapsedSec: 42,
+          },
+        },
+      }),
+    );
+
+    expect(out.nextVerb).toMatchObject({ name: 'checkpoint:await', args: { pipeline: 'papercusp' } });
+    expect(out.nextVerb?.args).not.toHaveProperty('candidateSha');
+    expect(out.nextVerb?.reason).toContain(candidate);
+  });
   it('EI-12457: on staging with no red verdict yet, awaits the gate bound to the exact candidate SHA', () => {
     const out = buildReleaseTrace(
       input({

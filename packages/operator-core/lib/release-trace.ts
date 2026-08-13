@@ -275,6 +275,16 @@ function safeNextVerb(input: ReleaseTraceInput): ReleaseTraceNextVerb | null {
     };
   }
   if (!position.positions.inMain) {
+    const checkpointRun = gate.checkpointRunInFlight;
+    if (checkpointRun?.active) {
+      return {
+        name: 'checkpoint:await',
+        args: { pipeline },
+        reason:
+          `A green-checkpoint run is already active${checkpointRun.candidate ? ` on candidate ${checkpointRun.candidate}` : ''}; ` +
+          'await its terminal verdict, then re-read release:trace instead of launching a duplicate.',
+      };
+    }
     if (gate.verdictStale || gate.fireStale) {
       return {
         name: 'release:checkpoint-run',
