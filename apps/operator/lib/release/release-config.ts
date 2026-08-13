@@ -11,6 +11,15 @@ import * as path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { homedir } from 'node:os';
 
+/**
+ * Capacity contract for the green-checkpoint's Vitest workers.
+ *
+ * `shared` is the safe default for a runner that competes with the live fleet. `reserved`
+ * is an operator assertion that this gate has dedicated/cgroup-reserved capacity; it is never
+ * inferred from host size because a large host is not evidence that its capacity is reserved.
+ */
+export type GreenCheckpointCapacityMode = 'shared' | 'reserved';
+
 export interface ReleaseConfig {
   /** The churning shared working tree git-sync commits to (the integration branch). */
   integrationRoot: string;
@@ -59,6 +68,22 @@ export interface ReleaseConfig {
    * never the shipped default. 'off' skips the probe entirely.
    */
   memoryCanaryPolicy: 'off' | 'report' | 'block';
+  /**
+   * Explicit capacity contract for the green-checkpoint test workers. Reserved capacity may
+   * use a higher bounded worker profile; shared capacity retains the production-safe cap.
+   */
+  greenCheckpointCapacityMode: GreenCheckpointCapacityMode;
+}
+
+/** Parse the explicit capacity contract, rejecting typos instead of silently oversubscribing. */
+export function parseGreenCheckpointCapacityMode(
+  raw: string | undefined,
+): GreenCheckpointCapacityMode {
+  if (raw === undefined) return 'shared';
+  if (raw === 'shared' || raw === 'reserved') return raw;
+  throw new Error(
+    `PAPERCUSP_GREEN_CHECKPOINT_CAPACITY_MODE must be "shared" or "reserved"; received ${JSON.stringify(raw)}`,
+  );
 }
 
 /** Last resort when `git rev-parse` fails: walk up from THIS file (apps/operator/lib/release)
@@ -209,6 +234,10 @@ export function releaseConfig(overrides: Partial<ReleaseConfig> = {}): ReleaseCo
     process.env.PAPERCUSP_CHECKPOINT_ROOT ??
     path.join(parent, `${path.basename(integrationRoot)}-checkpoint`);
   const port = process.env.PAPERCUSP_HONO_PORT ?? '3070';
+  const greenCheckpointCapacityMode = parseGreenCheckpointCapacityMode(
+    overrides.greenCheckpointCapacityMode ??
+      process.env.PAPERCUSP_GREEN_CHECKPOINT_CAPACITY_MODE,
+  );
   return {
     integrationRoot,
     releaseRoot,
@@ -239,6 +268,7 @@ export function releaseConfig(overrides: Partial<ReleaseConfig> = {}): ReleaseCo
       overrides.memoryCanaryPolicy ??
       (process.env.PAPERCUSP_MEMORY_CANARY_POLICY as 'off' | 'report' | 'block' | undefined) ??
       'report',
+    greenCheckpointCapacityMode,
   };
 }
 
