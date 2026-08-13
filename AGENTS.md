@@ -779,6 +779,15 @@ locks:acquire_resource { resource: 'git-sync:papercusp', mode: 'exclusive',
                          ttl_sec: 600, reason: 'mutation probe' }
 ```
 
+Keep the returned lock_id for the entire probe. Before half the TTL, and again every half-TTL while the probe runs:
+```
+locks:heartbeat_resource { lock_id: '<returned lock_id>', ttl_sec: 600 }
+```
+Repeat heartbeat_resource for each further interval; then release the lock when done:
+```
+locks:release_resource { lock_id: '<returned lock_id>' }
+```
+
 ## Browser checks — use `verdict`
 
 Ad-hoc/exploratory browser verification → the `verdict` skill, **not** Playwright
