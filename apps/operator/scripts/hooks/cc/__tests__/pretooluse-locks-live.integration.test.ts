@@ -93,8 +93,28 @@ function unregisterSessions(): void {
   } catch { /* best-effort cleanup */ }
 }
 
-/** Call a tool over the real HTTP MCP transport as `client`. */
+/**
+ * Call a tool over the real HTTP MCP transport as `client`.
+ *
+ * ⚠ A file lock is keyed by `(coordination_domain, path)` — that is literally
+ * `agent_file_locks_pkey` — so a peer that omits the domain does NOT contend
+ * with one that sends it, however identical their paths look. This suite's
+ * hooks run against the FIXTURE tree (`PAPERCUSP_CANONICAL_TREE=<repo>`) and
+ * therefore acquire under `coordination_domain: <repo>`, while a bare
+ * `locks:acquire` over MCP falls back to `defaultCoordinationDomain` — the
+ * REAL checkout. Left unpinned the two peers sit in different domains, every
+ * contention assertion silently inverts (deny→allow), and the suite reads as
+ * a product regression when nothing is wrong.
+ *
+ * So pin every locks:* call to the same fixture domain the hook uses. An
+ * explicit `coordination_domain` in `args` still wins.
+ */
 async function callTool(client: string, tool: string, args: unknown): Promise<Record<string, unknown>> {
+  const scopedArgs =
+    tool.startsWith('locks:') && args && typeof args === 'object' && !Array.isArray(args) &&
+    (args as Record<string, unknown>).coordination_domain === undefined
+      ? { ...(args as Record<string, unknown>), coordination_domain: repo }
+      : args;
   const res = await fetch(
     `${BASE}/api/mcp?superuser=1&client=${encodeURIComponent(client)}`,
     {
@@ -108,7 +128,7 @@ async function callTool(client: string, tool: string, args: unknown): Promise<Re
         jsonrpc: '2.0', id: 1, method: 'tools/call',
         // _meta.format:'json' — the MCP result-format default flipped to compact (TOON);
         // this test JSON.parses item.text, so declare json per-call (P-009 negotiation).
-        params: { name: tool, arguments: args, _meta: { format: 'json' } },
+        params: { name: tool, arguments: scopedArgs, _meta: { format: 'json' } },
       }),
       signal: AbortSignal.timeout(15_000),
     },

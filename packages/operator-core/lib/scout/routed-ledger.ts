@@ -32,6 +32,7 @@ import {
   type RoutedIdeaProvenance,
   type RoutedRail,
   type ScoutOutcomeReaders,
+  WORK_ITEM_LOSS_STATUSES,
 } from './outcome-feedback';
 import { CREATIVE_LENSES, type CreativeLens, type SuIdeationLens } from './types';
 
@@ -538,15 +539,19 @@ export async function readRoutedIdeas(opts: ScoutLedgerOpts = {}): Promise<Route
 }
 
 /**
- * Work items that reached a LOSING terminal — status 'deprecated' — shaped as
- * change-feed completion entries whose detail carries the status tag
+ * Work items that reached a LOSING terminal — {@link WORK_ITEM_LOSS_STATUSES} —
+ * shaped as change-feed completion entries whose detail carries the status tag
  * {@link classifyIdeaOutcome} reads. The production Change Feed deliberately
  * surfaces only winning terminals (presence == win for its consumers), so the
  * loss read lives here, scoped to the su-ideate outcome path
- * (su-ideate-learning-substrate P-003): an su idea whose filed feature was
- * deprecated must classify 'lost', not sit 'pending' forever. Deliberately NO
- * terminal-integrity requirement — a hygiene/dedup deprecation is still a
- * negative signal on the idea itself.
+ * (su-ideate-learning-substrate P-003): an su idea whose filed feature died
+ * must classify 'lost', not sit 'pending' forever. Deliberately NO
+ * terminal-integrity requirement — a hygiene/dedup death is still a negative
+ * signal on the idea itself.
+ *
+ * EI-20307121130730172: this read was 'deprecated'-only, which is the rarest
+ * negative terminal in the store and matched ZERO routed refs — 'dropped' is
+ * how work actually dies here, so the wi rail could never register a loss.
  */
 async function readWorkItemLossEntries(): Promise<ChangeFeedEntry[]> {
   const { sql } = getOrgPg();
@@ -561,13 +566,13 @@ async function readWorkItemLossEntries(): Promise<ChangeFeedEntry[]> {
   >`
     SELECT feature_id, harness_slug, title, status, updated_ts
       FROM harness_shared.work_items
-     WHERE status = 'deprecated'
+     WHERE status = ANY(${[...WORK_ITEM_LOSS_STATUSES]}::text[])
      ORDER BY updated_ts DESC NULLS LAST
      LIMIT 500`;
   return rows.map((r) => ({
     id: `wi:${r.feature_id}`,
     kind: 'completion' as const,
-    title: r.title || `Deprecated: ${r.feature_id}`,
+    title: r.title || `${r.status === 'dropped' ? 'Dropped' : 'Deprecated'}: ${r.feature_id}`,
     detail: `Status: ${r.status}`,
     harness: r.harness_slug ?? undefined,
     workItemId: r.feature_id,

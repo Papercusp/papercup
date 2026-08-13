@@ -205,9 +205,10 @@ export interface LensWeightOptions {
  * - `plan-run` / work-item `completion` present → `won` (the change-feed
  *   production readers only surface winning terminal states for these — plan
  *   `op_status=done`, work-item done/passed/resolved/closed — so presence == win)
- *   — EXCEPT a completion entry tagged `Status: deprecated`, the losing
- *   work-item terminal the su-ideate outcome read folds in
- *   (su-ideate-learning-substrate P-003) → `lost`.
+ *   — EXCEPT a completion entry tagged with one of
+ *   {@link WORK_ITEM_LOSS_STATUSES} (`deprecated` — su-ideate-learning-substrate
+ *   P-003 — or `dropped`, EI-20307121130730172), the losing work-item terminals
+ *   the ref-scoped outcome reads fold in → `lost`.
  * - `proposal` (gym) → status decides: accepted → `won`; rejected/superseded → `lost`.
  *
  * The gym status is read from the entry's `detail` ("Status: <status>") with a
@@ -241,11 +242,21 @@ export function classifyIdeaOutcome(
     return 'lost';
   }
   // completion (work-item): the production feed only carries winning terminals
-  // (presence == win), but the su-ideate read (P-003) folds in losing terminals
-  // tagged "Status: deprecated" — honor the tag so a deprecated su filing
-  // classifies lost instead of sitting pending forever. Winning/untagged
-  // entries stay 'won' byte-identically.
-  if (entry.kind === 'completion' && gymStatusOf(entry) === 'deprecated') return 'lost';
+  // (presence == win), but the ledger's ref-scoped reads fold in losing
+  // terminals tagged "Status: <terminal>" — honor the tag so a filing whose
+  // item died classifies lost instead of sitting pending forever.
+  // Winning/untagged entries stay 'won' byte-identically.
+  //
+  // EI-20307121130730172: 'deprecated' alone was the wrong vocabulary. It is
+  // the RAREST negative terminal in the store (31 rows workspace-wide, and
+  // ZERO among 854 routed refs) while 'dropped' — 1,972 rows, 63 of them
+  // routed — was in neither the win set nor the loss set, so it produced no
+  // feed entry at all and read 'pending' forever. The wi rail therefore
+  // recorded 100 wins and *zero* losses in two months: a win-only channel, so
+  // `winRate = won / (won + lost)` could not fall for any ungraded filing.
+  // Human grading masked this for su-ideate (88% graded) but not for scout
+  // (9% graded), which is where the 56 of those 63 rows sit.
+  if (entry.kind === 'completion' && isWorkItemLossStatus(gymStatusOf(entry))) return 'lost';
   // plan-run: SPOF 5 / P-006 (autonomous-loop-prod-audit-2026-07-02) — a plan
   // routed by Scout that reaches the ABANDONED terminal (harness_plans
   // op_status='dropped', isTerminalStatus) must resolve 'lost', not sit
@@ -267,6 +278,28 @@ export function classifyIdeaOutcome(
   if (entry.kind === 'plan-run' && (gymStatusOf(entry) === 'dropped' || gymStatusOf(entry) === 'superseded')) return 'lost';
   // plan-run + winning completions: the feed only carries winning terminals.
   return 'won';
+}
+
+/**
+ * The work-item terminals that are a LOSS for the idea that filed them
+ * (EI-20307121130730172) — the negative counterpart of
+ * {@link CHANGE_FEED_COMPLETION_STATUSES} on the `wi:` rail.
+ *
+ * The production Change Feed carries only WINNING terminals (presence == win
+ * for its consumers), so these never reach the classifier through the feed;
+ * the ledger's ref-scoped reads (routed-ledger.ts) surface them explicitly and
+ * tag them `Status: <terminal>` for {@link classifyIdeaOutcome}.
+ *
+ * `dropped` is the terminal that matters in practice — it is how work actually
+ * dies here (1,972 rows vs `deprecated`'s 31). Both are folded with NO
+ * terminal-integrity requirement: a hygiene/dedup death is still a negative
+ * signal about the idea that proposed the work.
+ */
+export const WORK_ITEM_LOSS_STATUSES = ['deprecated', 'dropped'] as const;
+
+/** True when a status label read off a completion entry is a losing wi terminal. */
+function isWorkItemLossStatus(status: string): boolean {
+  return (WORK_ITEM_LOSS_STATUSES as readonly string[]).includes(status);
 }
 
 /** Extract a status/decision label from a change-feed entry's detail ("Status: <x>") or title. */
