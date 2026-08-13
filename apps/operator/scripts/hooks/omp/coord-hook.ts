@@ -1,5 +1,5 @@
 /**
- * Papercusp coordination hook for OMP — one module, seven handlers
+ * Papercusp coordination hook for OMP — one module, eight handlers
  * (per agent-coordination-architecture-v2 §7.3 + §12.1 +
  * file-locking-improvements #2):
  *
@@ -10,6 +10,9 @@
  *   turn_start       → assemble + inject the system-reminder payload
  *                      (held locks, unread inbox, changed plans).
  *   turn_end         → persist the watermark pointers consumed.
+ *   before_provider_request
+ *                    → proactively space exact Vertex Gemini 3.1 Pro request
+ *                      starts across local OMP processes.
  *   auto_retry_start → smooth bare Vertex shared-capacity 429 retries across
  *                      simultaneous sessions before OMP starts its own wait.
  *   tool_call        → L2 file-lock enforcement — extract paths,
@@ -106,6 +109,18 @@ export interface AutoRetryStartEvent {
   errorId?: number;
 }
 
+export interface ProviderModelRef {
+  provider?: unknown;
+  id?: unknown;
+}
+
+export interface VertexGeminiRequestStartReservation {
+  scheduledAtMs: number;
+  waitMs: number;
+  nextStartAtMs: number;
+  saturated: boolean;
+}
+
 /**
  * OMP 17.2.13 classifies a bare Vertex 429 as transient model capacity, but its
  * turn-recovery path only applies the reason-specific floor to explicit rate and
@@ -129,6 +144,130 @@ export const VERTEX_SHARED_CAPACITY_RETRY_SLOT_COUNT = 16;
 export const VERTEX_SHARED_CAPACITY_RETRY_SLOT_WIDTH_MS = 2_000;
 /** The hook runs before OMP creates its retry AbortController, so cap our unabortable addition. */
 export const VERTEX_SHARED_CAPACITY_RETRY_MAX_ADDED_MS = 45_000;
+
+/**
+ * Google recommends smoothing traffic presented to Dynamic Shared Quota. Keep
+ * this proactive gate narrower than the error-driven retry shim: it applies
+ * only to the exact Vertex Gemini 3.1 Pro preview model that reproduced the
+ * shared-capacity bursts. The 25s ceiling leaves 5s of headroom under OMP's
+ * hard 30s extension-handler timeout.
+ */
+export const VERTEX_GEMINI_REQUEST_START_INTERVAL_MS = 5_000;
+export const VERTEX_GEMINI_REQUEST_START_MAX_WAIT_MS = 25_000;
+const VERTEX_GEMINI_REQUEST_START_LOCK_WAIT_MS = 500;
+const VERTEX_GEMINI_REQUEST_START_LOCK_POLL_MS = 20;
+const VERTEX_GEMINI_REQUEST_START_LOCK_STALE_MS = 30_000;
+const VERTEX_GEMINI_REQUEST_START_STATE_FILE = 'google-vertex-gemini-3.1-pro-preview.json';
+
+export function isVertexGemini31ProRequest(model: ProviderModelRef | null | undefined): boolean {
+  return model?.provider === 'google-vertex' && model.id === 'gemini-3.1-pro-preview';
+}
+
+/**
+ * Pure leaky-bucket reservation. Persisted state is accepted only inside the
+ * horizon this gate itself can produce, so clock jumps or corrupt future data
+ * cannot impose an unbounded wait. At saturation, callers share the bounded
+ * last slot rather than crossing OMP's 30s handler ceiling.
+ */
+export function vertexGeminiRequestStartReservation(
+  nowMs: number,
+  storedNextStartAtMs: number | null | undefined,
+): VertexGeminiRequestStartReservation {
+  const now = Number.isFinite(nowMs) ? Math.max(0, Math.trunc(nowMs)) : 0;
+  const maxPersistedHorizonMs =
+    now + VERTEX_GEMINI_REQUEST_START_MAX_WAIT_MS + VERTEX_GEMINI_REQUEST_START_INTERVAL_MS;
+  const stored = Number.isFinite(storedNextStartAtMs)
+    ? Math.max(0, Math.trunc(storedNextStartAtMs as number))
+    : now;
+  const queuedStartAtMs = stored >= now && stored <= maxPersistedHorizonMs ? stored : now;
+  const latestStartAtMs = now + VERTEX_GEMINI_REQUEST_START_MAX_WAIT_MS;
+  const scheduledAtMs = Math.min(queuedStartAtMs, latestStartAtMs);
+  return {
+    scheduledAtMs,
+    waitMs: scheduledAtMs - now,
+    nextStartAtMs: scheduledAtMs + VERTEX_GEMINI_REQUEST_START_INTERVAL_MS,
+    saturated: queuedStartAtMs > latestStartAtMs,
+  };
+}
+
+function vertexGeminiRequestStartStateDir(): string {
+  return join(homedir(), '.papercusp', 'provider-pacing');
+}
+
+async function pause(ms: number): Promise<void> {
+  await new Promise<void>((resolveWait) => setTimeout(resolveWait, ms));
+}
+
+async function acquireVertexGeminiRequestStartLock(lockPath: string): Promise<{
+  close: () => Promise<void>;
+} | null> {
+  const deadlineMs = Date.now() + VERTEX_GEMINI_REQUEST_START_LOCK_WAIT_MS;
+  for (;;) {
+    try {
+      const handle = await fsp.open(lockPath, 'wx', 0o600);
+      return handle;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== 'EEXIST') return null;
+      try {
+        const stat = await fsp.stat(lockPath);
+        if (Date.now() - stat.mtimeMs > VERTEX_GEMINI_REQUEST_START_LOCK_STALE_MS) {
+          await fsp.unlink(lockPath);
+          continue;
+        }
+      } catch {
+        continue;
+      }
+      const remainingMs = deadlineMs - Date.now();
+      if (remainingMs <= 0) return null;
+      await pause(Math.min(VERTEX_GEMINI_REQUEST_START_LOCK_POLL_MS, remainingMs));
+    }
+  }
+}
+
+/**
+ * Reserve one process-shared start time under an atomic local lock. The gate is
+ * deliberately fail-open: an unwritable home or a contended/stale lock must
+ * not strand a model request. Tests pass an isolated directory explicitly;
+ * production uses ~/.papercusp/provider-pacing.
+ */
+export async function reserveVertexGeminiRequestStart(
+  stateDir: string = vertexGeminiRequestStartStateDir(),
+  nowMs: number = Date.now(),
+): Promise<VertexGeminiRequestStartReservation | null> {
+  try {
+    await fsp.mkdir(stateDir, { recursive: true, mode: 0o700 });
+    const statePath = join(stateDir, VERTEX_GEMINI_REQUEST_START_STATE_FILE);
+    const lockPath = `${statePath}.lock`;
+    const lock = await acquireVertexGeminiRequestStartLock(lockPath);
+    if (!lock) return null;
+    try {
+      let storedNextStartAtMs: number | null = null;
+      try {
+        const parsed = JSON.parse(await fsp.readFile(statePath, 'utf8')) as {
+          nextStartAtMs?: unknown;
+        };
+        if (typeof parsed.nextStartAtMs === 'number') storedNextStartAtMs = parsed.nextStartAtMs;
+      } catch {
+        // Missing/corrupt state is an empty bucket, never a provider blocker.
+      }
+      const reservation = vertexGeminiRequestStartReservation(nowMs, storedNextStartAtMs);
+      const tmpPath = `${statePath}.tmp-${process.pid}-${randomUUID()}`;
+      await fsp.writeFile(
+        tmpPath,
+        JSON.stringify({ version: 1, nextStartAtMs: reservation.nextStartAtMs }),
+        { encoding: 'utf8', mode: 0o600 },
+      );
+      await fsp.rename(tmpPath, statePath);
+      return reservation;
+    } finally {
+      await lock.close().catch(() => undefined);
+      await fsp.unlink(lockPath).catch(() => undefined);
+    }
+  } catch {
+    return null;
+  }
+}
 
 export function isBareVertexSharedCapacity429(errorMessage: string): boolean {
   if (!BARE_VERTEX_SHARED_CAPACITY_429_RE.test(errorMessage) || !VERTEX_429_DOC_RE.test(errorMessage)) {
@@ -4472,6 +4611,10 @@ type SessionStartHandler = (event: { type: 'session_start' }, ctx: unknown) => u
 type SessionShutdownHandler = (event: { type: 'session_shutdown' }, ctx: unknown) => unknown;
 type TurnStartHandler = (event: { type: 'turn_start'; turnIndex: number; timestamp: number }, ctx: unknown) => unknown;
 type TurnEndHandler = (event: { type: 'turn_end' }, ctx: unknown) => unknown;
+type BeforeProviderRequestHandler = (
+  event: { type: 'before_provider_request'; payload: unknown },
+  ctx: { model?: ProviderModelRef },
+) => unknown;
 type AutoRetryStartHandler = (event: AutoRetryStartEvent, ctx: unknown) => unknown;
 type ToolCallHandler = (
   event: ToolCallEvent,
@@ -4487,6 +4630,7 @@ interface HookApi {
   on(event: 'session_shutdown', handler: SessionShutdownHandler): void;
   on(event: 'turn_start', handler: TurnStartHandler): void;
   on(event: 'turn_end', handler: TurnEndHandler): void;
+  on(event: 'before_provider_request', handler: BeforeProviderRequestHandler): void;
   on(event: 'auto_retry_start', handler: AutoRetryStartHandler): void;
   on(event: 'tool_call', handler: ToolCallHandler): void;
   on(event: 'tool_result', handler: ToolResultHandler): void;
@@ -4643,6 +4787,19 @@ export default function register(pi: HookApi): void {
         stashAdvisory('coord-owner-ask', nudge);
       }
     }, undefined);
+  });
+
+  pi.on('before_provider_request', async (_event, ctx) => {
+    // OMP awaits this seam and supplies the model used for this exact provider
+    // request. Return nothing so the payload-transform chain remains unchanged.
+    if (!isVertexGemini31ProRequest(ctx.model)) return;
+    const reservation = await reserveVertexGeminiRequestStart();
+    if (!reservation || reservation.waitMs <= 0) return;
+    console.error(
+      `[coord-provider] pacing Vertex Gemini 3.1 Pro request start by ${reservation.waitMs}ms` +
+        (reservation.saturated ? ' (bounded queue saturated)' : ''),
+    );
+    await pause(reservation.waitMs);
   });
 
   pi.on('auto_retry_start', async (event) => {

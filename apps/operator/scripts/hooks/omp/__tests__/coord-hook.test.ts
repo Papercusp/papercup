@@ -46,6 +46,11 @@ import {
   formatInboxDelta,
   formatSymlinkRefusal,
   formatTurnStartReminder,
+  isVertexGemini31ProRequest,
+  reserveVertexGeminiRequestStart,
+  vertexGeminiRequestStartReservation,
+  VERTEX_GEMINI_REQUEST_START_INTERVAL_MS,
+  VERTEX_GEMINI_REQUEST_START_MAX_WAIT_MS,
   isBareVertexSharedCapacity429,
   vertexSharedCapacityRetrySlot,
   vertexSharedCapacityRetryTargetMs,
@@ -286,6 +291,77 @@ describe('bare Vertex shared-capacity retry smoothing (WI-38388)', () => {
         controlSid,
       ),
     ).toBe(0);
+  });
+});
+
+describe('proactive Vertex Gemini 3.1 Pro request-start smoothing', () => {
+  it('matches only the exact provider + model pair that reproduced shared-capacity bursts', () => {
+    expect(
+      isVertexGemini31ProRequest({
+        provider: 'google-vertex',
+        id: 'gemini-3.1-pro-preview',
+      }),
+    ).toBe(true);
+    expect(
+      isVertexGemini31ProRequest({
+        provider: 'google',
+        id: 'gemini-3.1-pro-preview',
+      }),
+    ).toBe(false);
+    expect(
+      isVertexGemini31ProRequest({
+        provider: 'google-vertex',
+        id: 'gemini-3.1-flash-preview',
+      }),
+    ).toBe(false);
+    expect(isVertexGemini31ProRequest(undefined)).toBe(false);
+  });
+
+  it('reserves a 5s-spaced queue while staying below the OMP handler ceiling', () => {
+    const nowMs = 1_000_000;
+    const first = vertexGeminiRequestStartReservation(nowMs, null);
+    const second = vertexGeminiRequestStartReservation(nowMs, first.nextStartAtMs);
+    const third = vertexGeminiRequestStartReservation(nowMs, second.nextStartAtMs);
+
+    expect([first.waitMs, second.waitMs, third.waitMs]).toEqual([
+      0,
+      VERTEX_GEMINI_REQUEST_START_INTERVAL_MS,
+      VERTEX_GEMINI_REQUEST_START_INTERVAL_MS * 2,
+    ]);
+
+    const saturated = vertexGeminiRequestStartReservation(
+      nowMs,
+      nowMs + VERTEX_GEMINI_REQUEST_START_MAX_WAIT_MS + VERTEX_GEMINI_REQUEST_START_INTERVAL_MS,
+    );
+    expect(saturated).toMatchObject({
+      waitMs: VERTEX_GEMINI_REQUEST_START_MAX_WAIT_MS,
+      saturated: true,
+    });
+
+    const corruptFuture = vertexGeminiRequestStartReservation(
+      nowMs,
+      nowMs + VERTEX_GEMINI_REQUEST_START_MAX_WAIT_MS + VERTEX_GEMINI_REQUEST_START_INTERVAL_MS + 1,
+    );
+    expect(corruptFuture).toMatchObject({ waitMs: 0, saturated: false });
+  });
+
+  it('serializes concurrent reservations through shared local state', async () => {
+    const stateDir = mkdtempSync(join(tmpdir(), 'vertex-request-pacing-'));
+    try {
+      const nowMs = 2_000_000;
+      const reservations = await Promise.all([
+        reserveVertexGeminiRequestStart(stateDir, nowMs),
+        reserveVertexGeminiRequestStart(stateDir, nowMs),
+        reserveVertexGeminiRequestStart(stateDir, nowMs),
+      ]);
+      expect(reservations.map((reservation) => reservation?.waitMs).sort((a, b) => (a ?? 0) - (b ?? 0))).toEqual([
+        0,
+        VERTEX_GEMINI_REQUEST_START_INTERVAL_MS,
+        VERTEX_GEMINI_REQUEST_START_INTERVAL_MS * 2,
+      ]);
+    } finally {
+      rmSync(stateDir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -2721,7 +2797,7 @@ describe('register (OMP adapter)', () => {
    *   - tool_call may return ToolCallEventResult to block
    *   - model-facing advisories are stashed for the tool_result seam
    */
-  it('subscribes the seven coordination and retry lifecycle handlers', async () => {
+  it('subscribes the eight coordination, provider-pacing, and retry lifecycle handlers', async () => {
     const subs = new Map<string, (e: unknown, ctx?: unknown) => unknown>();
     const sent: Array<{ msg: unknown; opts?: unknown }> = [];
     const pi = {
@@ -2736,6 +2812,7 @@ describe('register (OMP adapter)', () => {
     register(pi as never);
     expect([...subs.keys()].sort()).toEqual([
       'auto_retry_start',
+      'before_provider_request',
       'session_shutdown',
       'session_start',
       'tool_call',
