@@ -963,6 +963,12 @@ const searchTranscripts = defineTool({
       embedTimeoutMs,
       filters,
       recency,
+      // The response renders SESSION CARDS, not independent turn rows. Roll
+      // up inside the engine, before its top-N cut, so several strong turns
+      // from one session cannot consume slots that should represent other
+      // matching sessions. The later groupHitsBySession fold is still needed
+      // to shape the wire response, but it cannot backfill rows already cut.
+      groupBy: (hit) => parseTurnRef(hit.source_id)?.sessionId ?? hit.source_id,
       signal,
       // WI-4734: highlights only for the final top-N (one batched ts_headline
       // hydration) instead of inline for the whole limit*3 × 2-ranker
