@@ -155,6 +155,7 @@ describe('the emitted block', () => {
     expect(text).toContain('serial-equivalent');
     expect(text).toContain('scheduler may overlap legs');
     expect(text).not.toContain('one at a time');
+    expect(text).toContain('ideal overlap versus serial execution');
     expect(text).toContain('ceiling');
     // The misreading this guards against is "we will get 1.25x faster".
     expect(text).toMatch(/bound and not a forecast/);

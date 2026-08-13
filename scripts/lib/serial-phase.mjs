@@ -87,8 +87,8 @@ export function formatSerialPhaseSummary(legs, opts = {}) {
     `  task work:    ${secs(summary.serialMs)}s serial-equivalent across ${summary.legs} leg(s) ` +
       `(scheduler may overlap legs)`,
     `  longest leg:  ${secs(summary.longestMs)}s — ${summary.longestName}`,
-    `  ceiling:      ${summary.ceilingX.toFixed(2)}x — the most perfect parallelism could buy here ` +
-      `(bounded by the longest leg; ignores host contention, so it is a bound and not a forecast)`,
+    `  ceiling:      ${summary.ceilingX.toFixed(2)}x — ideal overlap versus serial execution ` +
+      `(bounded by the longest leg; ignores host contention and achieved overlap, so it is a bound and not a forecast)`,
   ];
   for (const leg of summary.slowest.slice(0, topN)) {
     lines.push(`    ${secs(leg.ms).padStart(7)}s  ${leg.name}`);
