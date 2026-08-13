@@ -965,12 +965,13 @@ export async function composeOrient(
   // EI-20287600163306401: callers that already consumed the inbox can pass zero
   // to suppress this duplicate fold. The nested coord:inbox tool requires a
   // positive limit, so do not forward an explicit zero as an invalid call.
-  const inbox = inboxLimit === 0
-    ? undefined
-    : (await call('coord:inbox', {
-        limit: inboxLimit,
-        max_body_chars: args.afterCompaction ? 800 : 300,
-      })) as { summary?: unknown; entries?: unknown } | undefined;
+  const inbox =
+    inboxLimit === 0
+      ? undefined
+      : ((await call('coord:inbox', {
+          limit: inboxLimit,
+          max_body_chars: args.afterCompaction ? 800 : 300,
+        })) as { summary?: unknown; entries?: unknown } | undefined);
 
   // work_items:list returns the bare array (its `result` schema), but be defensive
   // about the wrapped shapes the unwrap may yield.
@@ -1008,9 +1009,7 @@ export async function composeOrient(
           ...(args.harness ? { harness: args.harness } : {}),
         })) as { results?: Array<{ id: string; ok?: boolean; available?: boolean }> } | undefined;
         const gatedIds = new Set(
-          (obs?.results ?? [])
-            .filter((r) => r && r.ok !== false && r.available === false)
-            .map((r) => r.id),
+          (obs?.results ?? []).filter((r) => r && r.ok !== false && r.available === false).map((r) => r.id),
         );
         if (gatedIds.size > 0) {
           claimable = claimableRaw.filter((row) => !gatedIds.has((row as { id?: unknown } | null)?.id as string));
@@ -1339,13 +1338,10 @@ export async function composeOrient(
   // small and bounded, and both exist to OVERRIDE a stale plan. An
   // `afterCompaction` reconcile takes the FULL fold whatever the mode — that call
   // is the one that most needs everything.
-  const factsFold: 'full' | 'never-drop' =
-    !monitor || args.afterCompaction === true ? 'full' : 'never-drop';
+  const factsFold: 'full' | 'never-drop' = !monitor || args.afterCompaction === true ? 'full' : 'never-drop';
   {
     try {
-      const { foldFacts, foldNeverDropFacts, NEVER_DROP_KEY_PREFIXES } = await import(
-        '../../../agent-facts/store'
-      );
+      const { foldFacts, foldNeverDropFacts, NEVER_DROP_KEY_PREFIXES } = await import('../../../agent-facts/store');
       const selectors = [
         { scope: 'workspace' as const },
         ...(ownerId ? [{ scope: 'owner' as const, scopeRef: ownerId }] : []),
@@ -1356,9 +1352,7 @@ export async function composeOrient(
       // a non-fleet caller receives only unrestricted facts.
       const foldOpts = { audiences: fleetSlug ? [`fleet:${fleetSlug}`] : [] };
       const facts =
-        factsFold === 'full'
-          ? await foldFacts(selectors, foldOpts)
-          : await foldNeverDropFacts(selectors, foldOpts);
+        factsFold === 'full' ? await foldFacts(selectors, foldOpts) : await foldNeverDropFacts(selectors, foldOpts);
       // A NARROWED fold must SAY it was narrowed. Otherwise "no ordinary facts in
       // this payload" is indistinguishable from "no ordinary facts exist" — a
       // bounded read rendered as a total, which is the same class of silent
@@ -1452,11 +1446,7 @@ export async function composeOrient(
             // suppressing their `changed` mark on the next FULL orient. A narrowed
             // fold still READS the cursor (so the never-drop rows it did fold are
             // marked correctly); it just must not claim the caller saw the rest.
-            if (
-              factsFold === 'full' &&
-              delta.nextCursor &&
-              delta.nextCursor !== wm.cursors?.[FACTS_CELL_SURFACE]
-            ) {
+            if (factsFold === 'full' && delta.nextCursor && delta.nextCursor !== wm.cursors?.[FACTS_CELL_SURFACE]) {
               await writeWatermark(ownerId, { cursors: { [FACTS_CELL_SURFACE]: delta.nextCursor } });
             }
           } catch {
@@ -1470,9 +1460,7 @@ export async function composeOrient(
         // projectFactRow, whose FACT_MARKER_FIELDS inventory a completeness test walks, so
         // the next omission fails loudly instead of costing an agent the field.
         const { projectFactRow } = await import('../../facts/project-fact-row');
-        result.facts = withDeps.map((f) =>
-          projectFactRow(f, { changed: changedCells.has(factCellKey(f)) }),
-        );
+        result.facts = withDeps.map((f) => projectFactRow(f, { changed: changedCells.has(factCellKey(f)) }));
       }
       if (withheld.length > 0) {
         result.factsWithheld = { count: withheld.length, reason: QUEEN_LOOP_WITHHELD_REASON };
@@ -1571,10 +1559,7 @@ export async function composeOrient(
         if (!p) return null;
         const nextActionableItem =
           (p.items ?? []).find(
-            (it) =>
-              it.effectiveStatus === 'todo' &&
-              (it.unresolvedBlockers?.length ?? 0) === 0 &&
-              !it.needsHuman,
+            (it) => it.effectiveStatus === 'todo' && (it.unresolvedBlockers?.length ?? 0) === 0 && !it.needsHuman,
           ) ?? null;
         // EI-20108229813877389: narrow before filtering — see SelfAgentRow.
         // A collapsed count MUST NOT become `myClaims: []`: that would trade a
@@ -1817,14 +1802,16 @@ export async function composeOrient(
           ...(args.planItems?.length ? { items: args.planItems } : {}),
         },
       })) as
-        | { recipes?: Array<{
-            id?: unknown;
-            title?: unknown;
-            runCount?: unknown;
-            similarity?: unknown;
-            authorityRefs?: unknown;
-            runArgs?: unknown;
-          }> }
+        | {
+            recipes?: Array<{
+              id?: unknown;
+              title?: unknown;
+              runCount?: unknown;
+              similarity?: unknown;
+              authorityRefs?: unknown;
+              runArgs?: unknown;
+            }>;
+          }
         | undefined;
       // EI-20113865649946366: two independent cuts here, both previously silent —
       // the LIST (bounded by recLimit, which is also what the search was asked for, so
@@ -1837,7 +1824,9 @@ export async function composeOrient(
         id: r.id,
         title:
           typeof r.title === 'string'
-            ? (r.title.length > RECIPE_TITLE_CAP ? (recipeTitlesClipped++, `${r.title.slice(0, RECIPE_TITLE_CAP - 1)}…`) : r.title)
+            ? r.title.length > RECIPE_TITLE_CAP
+              ? (recipeTitlesClipped++, `${r.title.slice(0, RECIPE_TITLE_CAP - 1)}…`)
+              : r.title
             : undefined,
         runCount: r.runCount,
         similarity: r.similarity,
@@ -2008,7 +1997,7 @@ export function summarizeLaneClaim(
     summary.warning =
       `NONE of the ${req.length} requested plan item(s) are held — you do NOT hold this lane, ` +
       `even though the declaration itself succeeded.${why} An unclaimed lane is invisible to peers ` +
-      `and the Mug, so work gets double-placed. ${summary.hint ?? 'Claim explicitly via plans:set-status { item, status: \'wip\' } and check its claim object.'}`;
+      `and the Mug, so work gets double-placed. ${summary.hint ?? "Claim explicitly via plans:set-status { item, status: 'wip' } and check its claim object."}`;
   }
   return summary;
 }
@@ -2201,7 +2190,7 @@ export default defineTool({
     '`intent`, a memory recall AND a coord:declare-intent so peers see you. The mandated bootstrap ' +
     '(memory:search + coord:inbox + coord:plan-events + declare + assignments + claimable) in ONE ' +
     'round-trip; a fleet member also gets a compact fleet-health glance. Fleet membership is ' +
-    'inferred from the caller\'s live session — do not pass `fleet` or `workspace`; use `harness` ' +
+    "inferred from the caller's live session — do not pass `fleet` or `workspace`; use `harness` " +
     'when an explicit harness scope is needed.',
   guidance: {
     when:
@@ -2257,9 +2246,25 @@ export default defineTool({
       .max(80)
       .optional()
       .describe('Scope assignments + claimable + recall + declare to this harness.'),
-    claimableState: z.string().max(40).optional().describe("Work-item state for the claimable list (default 'open' — the unified claimable token)."),
-    claimableLimit: z.number().int().nonnegative().max(100).optional().describe('Max claimable items (default 20; 0 skips backlog enumeration).'),
-    inboxLimit: z.number().int().nonnegative().max(50).optional().describe('Max recent inbox entries (default 10; 0 skips the inbox read).'),
+    claimableState: z
+      .string()
+      .max(40)
+      .optional()
+      .describe("Work-item state for the claimable list (default 'open' — the unified claimable token)."),
+    claimableLimit: z
+      .number()
+      .int()
+      .nonnegative()
+      .max(100)
+      .optional()
+      .describe('Max claimable items (default 20; 0 skips backlog enumeration).'),
+    inboxLimit: z
+      .number()
+      .int()
+      .nonnegative()
+      .max(50)
+      .optional()
+      .describe('Max recent inbox entries (default 10; 0 skips the inbox read).'),
     mode: z
       .enum(['full', 'monitor'])
       .optional()
@@ -2281,13 +2286,21 @@ export default defineTool({
       .max(120)
       .nullable()
       .optional()
-      .describe('Plan slug for the declared lane (used with `intent`); null is equivalent to omission for planless lanes.'),
+      .describe(
+        'Plan slug for the declared lane (used with `intent`); null is equivalent to omission for planless lanes.',
+      ),
     planItems: z
       .array(z.string().max(20))
       .max(40)
       .optional()
       .describe('Plan items to claim as your lane (used with `intent` + `planSlug`).'),
-    memoryLimit: z.number().int().nonnegative().max(10).optional().describe('Max memory hits to fold (default 5; 0 skips memory recall).'),
+    memoryLimit: z
+      .number()
+      .int()
+      .nonnegative()
+      .max(10)
+      .optional()
+      .describe('Max memory hits to fold (default 5; 0 skips memory recall).'),
     includePlanEvents: z.boolean().optional().describe('Fold the recent plan-events delta (default true).'),
     planEventsSince: z.string().optional().describe('Only plan-events strictly after this ISO timestamp.'),
     includeRecipes: z
@@ -2310,11 +2323,15 @@ export default defineTool({
     includeFleetCatchup: z
       .boolean()
       .optional()
-      .describe('Deprecated alias for includeFleetCatchUp; accepted for compatibility with stale guidance using the older camelcase spelling.'),
+      .describe(
+        'Deprecated alias for includeFleetCatchUp; accepted for compatibility with stale guidance using the older camelcase spelling.',
+      ),
     includeCatchup: z
       .boolean()
       .optional()
-      .describe('Deprecated alias for includeFleetCatchUp; accepted for compatibility with older launch/checkpoint guidance.'),
+      .describe(
+        'Deprecated alias for includeFleetCatchUp; accepted for compatibility with older launch/checkpoint guidance.',
+      ),
     fleetCatchUpLimit: z
       .number()
       .int()
@@ -2787,7 +2804,7 @@ export default defineTool({
             reason: verdict.unknownReason,
             resolutionTried: state.configDirUnresolvedReason,
             warning:
-              'CONFIG INTEGRITY NOT CHECKED (WI-38349): this session\'s real CLAUDE_CONFIG_DIR could not be located, so the WI-4562 de-enrollment check did not run. This says NOTHING about your hooks, edit-locks, inbox or MCP — do not read it as damage. If you want certainty, check that your live process\'s CLAUDE_CONFIG_DIR holds a settings.json carrying the global hook block.',
+              "CONFIG INTEGRITY NOT CHECKED (WI-38349): this session's real CLAUDE_CONFIG_DIR could not be located, so the WI-4562 de-enrollment check did not run. This says NOTHING about your hooks, edit-locks, inbox or MCP — do not read it as damage. If you want certainty, check that your live process's CLAUDE_CONFIG_DIR holds a settings.json carrying the global hook block.",
           };
         } else if (verdict && !verdict.ok) {
           const repair = repairSessionConfigOnDisk(ownerId, undefined, recordedClient, locator);

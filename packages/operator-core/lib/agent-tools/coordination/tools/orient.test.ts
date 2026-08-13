@@ -114,16 +114,14 @@ describe('coord:orient args', () => {
   });
 
   it('accepts an explicit null planSlug for planless lanes', () => {
-    expect(
-      orientTool.args.safeParse({ intent: 'planless wake', planSlug: null, planItems: [] }).success,
-    ).toBe(true);
+    expect(orientTool.args.safeParse({ intent: 'planless wake', planSlug: null, planItems: [] }).success).toBe(true);
   });
 
   it('teaches that fleet membership is session-inferred instead of accepting fleet scope', () => {
     const description = String((orientTool as { description?: unknown }).description ?? '');
     const when = String((orientTool as { guidance?: { when?: unknown } }).guidance?.when ?? '');
 
-    expect(description).toContain('Fleet membership is inferred from the caller\'s live session');
+    expect(description).toContain("Fleet membership is inferred from the caller's live session");
     expect(description).toContain('do not pass `fleet` or `workspace`');
     expect(when).toContain('do not add a `fleet` or `workspace` argument to coord:orient');
     expect(orientTool.args.safeParse({ fleet: 'nonp2p-bug-drain-headless-0812' }).success).toBe(false);
@@ -161,7 +159,10 @@ describe('coord:orient args', () => {
       if (crossWorkspace.has(name)) {
         expect((tool as { crossWorkspace?: boolean }).crossWorkspace, `${name} must stay crossWorkspace`).toBe(true);
       } else {
-        expect((tool as { skipWorkspaceTx?: boolean }).skipWorkspaceTx, `${name} must opt out of ambient workspace tx`).toBe(true);
+        expect(
+          (tool as { skipWorkspaceTx?: boolean }).skipWorkspaceTx,
+          `${name} must opt out of ambient workspace tx`,
+        ).toBe(true);
       }
     }
   });
@@ -195,7 +196,10 @@ const CORE = {
   // describing exactly what it always did; the oracle-sourcing behaviour itself is
   // owned by the dedicated tests below, which stub it explicitly.
   'work_items:claimable': () => ({ claimable: [] }),
-  'work_items:list': () => [{ id: 'WI-1', state: 'todo' }, { id: 'WI-2', state: 'todo' }],
+  'work_items:list': () => [
+    { id: 'WI-1', state: 'todo' },
+    { id: 'WI-2', state: 'todo' },
+  ],
   // WI-5343: orient batch-observes its fetched claimable rows through the same
   // floors work_items:observe applies (claim-hold / plan-item block / live-claim)
   // and drops anything reported available:false. Default: every row passes
@@ -339,7 +343,11 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
   });
 
   it('omits the agent filter when no ownerId resolved (fleet-wide assignments)', async () => {
-    const { call, calls } = fakeCall({ ...CORE, 'work_items:list': () => [], 'coord:inbox': () => ({ summary: {}, entries: [] }) });
+    const { call, calls } = fakeCall({
+      ...CORE,
+      'work_items:list': () => [],
+      'coord:inbox': () => ({ summary: {}, entries: [] }),
+    });
     await composeOrient({}, call, undefined);
     expect(calls[0].args.agent).toBeUndefined();
   });
@@ -486,8 +494,24 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
   it('with `intent`: folds a memory recall + relevant recipes AND declares the intent (full bootstrap in one call)', async () => {
     const { call, calls } = fakeCall({
       ...CORE,
-      'memory:search': () => ({ ok: true, results: [{ id: 'mem1', memory: 'prefers nuqs over useState', score: 0.9 }] }),
-      'recipes:search': () => ({ ok: true, query: 'implement P-005', recipes: [{ id: 'fan-out-wi', title: 'Fan-out work items', description: 'd', runCount: 7, toolsUsed: ['work_items:get'], similarity: 0.82 }] }),
+      'memory:search': () => ({
+        ok: true,
+        results: [{ id: 'mem1', memory: 'prefers nuqs over useState', score: 0.9 }],
+      }),
+      'recipes:search': () => ({
+        ok: true,
+        query: 'implement P-005',
+        recipes: [
+          {
+            id: 'fan-out-wi',
+            title: 'Fan-out work items',
+            description: 'd',
+            runCount: 7,
+            toolsUsed: ['work_items:get'],
+            similarity: 0.82,
+          },
+        ],
+      }),
       'coord:declare-intent': () => ({ ok: true }),
       // WI-5228: planSlug is passed below, so the new orient-first plan-now leg
       // calls plans:get — register a benign empty-items response so this test
@@ -496,7 +520,12 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
       'plans:get': () => ({ results: [{ now: { state: null, next: null }, items: [] }] }),
     });
     const r = await composeOrient(
-      { intent: 'implement P-005', planSlug: 'tool-call-batching-wrappers-2026-06-21', planItems: ['P-005'], harness: 'h' },
+      {
+        intent: 'implement P-005',
+        planSlug: 'tool-call-batching-wrappers-2026-06-21',
+        planItems: ['P-005'],
+        harness: 'h',
+      },
       call,
       'me',
     );
@@ -512,7 +541,11 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
     const mem = calls.find((c) => c.name === 'memory:search')!;
     expect(mem.args).toMatchObject({ query: 'implement P-005', harness_slug: 'h', limit: 5 });
     const decl = calls.find((c) => c.name === 'coord:declare-intent')!;
-    expect(decl.args).toMatchObject({ intent: 'implement P-005', current_plan_slug: 'tool-call-batching-wrappers-2026-06-21', items: ['P-005'] });
+    expect(decl.args).toMatchObject({
+      intent: 'implement P-005',
+      current_plan_slug: 'tool-call-batching-wrappers-2026-06-21',
+      items: ['P-005'],
+    });
     // recipes:search uses intent plus the live lane identity as a hard authority filter.
     expect(calls.find((c) => c.name === 'recipes:search')!.args).toMatchObject({
       query: 'implement P-005',
@@ -548,30 +581,37 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
     const authority = { version: 1, revision: 'a'.repeat(64), context: { harness: 'papercusp' } };
     const recipeHandler = () => ({
       ok: true,
-      recipes: [{
-        id: 'sweep-stale',
-        title: 'Sweep stale items',
-        description: 'd',
-        runCount: 3,
-        toolsUsed: ['work_items:list'],
-        similarity: 0.7,
-        authorityRefs: { harnesses: ['papercusp'] },
-        runArgs: { id: 'sweep-stale', authority },
-      }],
+      recipes: [
+        {
+          id: 'sweep-stale',
+          title: 'Sweep stale items',
+          description: 'd',
+          runCount: 3,
+          toolsUsed: ['work_items:list'],
+          similarity: 0.7,
+          authorityRefs: { harnesses: ['papercusp'] },
+          runArgs: { id: 'sweep-stale', authority },
+        },
+      ],
     });
     // present + relevant → folded
     {
       const { call, calls } = fakeCall({ ...CORE, 'recipes:search': recipeHandler });
       const r = await composeOrient({ intent: 'tidy the backlog' }, call, 'me');
-      expect(calls.find((c) => c.name === 'recipes:search')!.args).toMatchObject({ query: 'tidy the backlog', limit: 3 });
-      expect(r.recipes).toEqual([{
-        id: 'sweep-stale',
-        title: 'Sweep stale items',
-        runCount: 3,
-        similarity: 0.7,
-        authorityRefs: { harnesses: ['papercusp'] },
-        runArgs: { id: 'sweep-stale', authority },
-      }]);
+      expect(calls.find((c) => c.name === 'recipes:search')!.args).toMatchObject({
+        query: 'tidy the backlog',
+        limit: 3,
+      });
+      expect(r.recipes).toEqual([
+        {
+          id: 'sweep-stale',
+          title: 'Sweep stale items',
+          runCount: 3,
+          similarity: 0.7,
+          authorityRefs: { harnesses: ['papercusp'] },
+          runArgs: { id: 'sweep-stale', authority },
+        },
+      ]);
     }
     // includeRecipes:false → no recipes:search call, field absent
     {
@@ -652,7 +692,11 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
       // admitted hit costs ~200 + id + 24 overhead ≈ 226 chars. Distinct per-hit prefix so
       // the P-008 near-duplicate collapse doesn't fold these (identical text would be — and
       // should be — collapsed); the budget behavior under test is unchanged.
-      results: Array.from({ length: n }, (_, i) => ({ id: `m${i}`, memory: `m${i} ` + 'x'.repeat(5000), score: 0.9 - i * 0.01 })),
+      results: Array.from({ length: n }, (_, i) => ({
+        id: `m${i}`,
+        memory: `m${i} ` + 'x'.repeat(5000),
+        score: 0.9 - i * 0.01,
+      })),
     });
 
     it('admits hits in relevance order under the budget and reports withheldBudget loudly', async () => {
@@ -728,12 +772,20 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
     const { call, calls } = fakeCall({
       ...CORE,
       'coord:whoami': () => ({ fleetSlug: 'backend' }),
-      'coord:catch-up': () => ({ audience: '@fleet:backend', count: 2, total: 5, rows: [{ msg_id: 'f1' }, { msg_id: 'f2' }] }),
+      'coord:catch-up': () => ({
+        audience: '@fleet:backend',
+        count: 2,
+        total: 5,
+        rows: [{ msg_id: 'f1' }, { msg_id: 'f2' }],
+      }),
     });
     const r = await composeOrient({}, call, 'me');
     expect(r.fleetCatchUp).toEqual({ fleet: 'backend', total: 5, recent: [{ msg_id: 'f1' }, { msg_id: 'f2' }] });
     // addressed the caller's OWN fleet, bounded by the default fold limit
-    expect(calls.find((c) => c.name === 'coord:catch-up')!.args).toMatchObject({ audience: '@fleet:backend', limit: 8 });
+    expect(calls.find((c) => c.name === 'coord:catch-up')!.args).toMatchObject({
+      audience: '@fleet:backend',
+      limit: 8,
+    });
   });
 
   it('skips the fleet catch-up for a non-fleet caller (no catch-up call, field absent)', async () => {
@@ -1004,8 +1056,24 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
         counts: { total: 2, terminal: 1, inFlight: 0, parked: 1, unclaimed: 0 },
         cohortAudit: {
           rows: [
-            { id: 'WI-1', title: 'bare close', state: 'done', bucket: 'terminal', evidenceVerdict: 'missing', reopenRecommended: true, recommendation: 'reopen' },
-            { id: 'WI-2', title: 'owner gate', state: 'needs-human', bucket: 'parked', evidenceVerdict: 'not-applicable', reopenRecommended: false, recommendation: null },
+            {
+              id: 'WI-1',
+              title: 'bare close',
+              state: 'done',
+              bucket: 'terminal',
+              evidenceVerdict: 'missing',
+              reopenRecommended: true,
+              recommendation: 'reopen',
+            },
+            {
+              id: 'WI-2',
+              title: 'owner gate',
+              state: 'needs-human',
+              bucket: 'parked',
+              evidenceVerdict: 'not-applicable',
+              reopenRecommended: false,
+              recommendation: null,
+            },
           ],
         },
       };
@@ -1032,10 +1100,16 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
         claimSpec,
         scopedBurndown,
         outOfScopeAssignments: [{ agentId: 'su-1', id: 'WI-outside' }],
-        integrityWarnings: [{
-          id: 'WI-1', title: 'bare close', state: 'done', evidenceVerdict: 'missing',
-          reopenRecommended: true, recommendation: 'reopen',
-        }],
+        integrityWarnings: [
+          {
+            id: 'WI-1',
+            title: 'bare close',
+            state: 'done',
+            evidenceVerdict: 'missing',
+            reopenRecommended: true,
+            recommendation: 'reopen',
+          },
+        ],
         walls: { ok: true, count: 0, walls: [] },
         announcedGates: [],
         release: null,
@@ -1086,17 +1160,10 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
 
     it('FULL mode never triggers the fold, even for a resolvable leader', async () => {
       const { call, calls } = fakeCall({ ...CORE, 'fleet:leader-brief': () => LEADER_BRIEF_RESULT });
-      const r = await composeOrient(
-        {},
-        call,
-        'leader',
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        { fleetSlug: 'p2p-git', fleetRole: 'leader' },
-      );
+      const r = await composeOrient({}, call, 'leader', undefined, undefined, undefined, undefined, undefined, {
+        fleetSlug: 'p2p-git',
+        fleetRole: 'leader',
+      });
       expect(r.leaderBrief).toBeUndefined();
       expect(calls.some((c) => c.name === 'fleet:leader-brief')).toBe(false);
     });
@@ -1340,7 +1407,11 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
     'memory:search': () => ({
       ok: true,
       results: [
-        { id: 'm-steer', memory: 'Owner steering flipped: pauseNewWork=true, maxBees=3. Place no new bees.', score: 0.9 },
+        {
+          id: 'm-steer',
+          memory: 'Owner steering flipped: pauseNewWork=true, maxBees=3. Place no new bees.',
+          score: 0.9,
+        },
         { id: 'm-ok', memory: 'prefers nuqs over useState', score: 0.8 },
       ],
     }),
@@ -1391,7 +1462,13 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
           body: 'fleet-scoped conclusion',
           sourceRef: 'msg:m-1',
           audienceScope: 'fleet:backend',
-          sourceProvenance: { kind: 'msg', verified: true, quote: 'the verbatim origin', label: 'msg m-1', verifiedAt: 't' },
+          sourceProvenance: {
+            kind: 'msg',
+            verified: true,
+            quote: 'the verbatim origin',
+            label: 'msg m-1',
+            verifiedAt: 't',
+          },
         },
         {
           ...baseFact,
@@ -1406,15 +1483,17 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
       const { call } = fakeCall({ ...CORE, ...FLEET_CTX });
       const r = await composeOrient({ harness: 'h' }, call, 'me');
       expect(foldFactsMock).toHaveBeenCalledWith(
-        [
-          { scope: 'workspace' },
-          { scope: 'owner', scopeRef: 'me' },
-          { scope: 'harness', scopeRef: 'h' },
-        ],
+        [{ scope: 'workspace' }, { scope: 'owner', scopeRef: 'me' }, { scope: 'harness', scopeRef: 'h' }],
         { audiences: ['fleet:backend'] },
       );
       expect(r.facts).toEqual([
-        { scope: 'harness', ref: 'h', body: 'fleet-scoped conclusion', src: 'msg:m-1 ✓ "the verbatim origin"', aud: 'fleet:backend' },
+        {
+          scope: 'harness',
+          ref: 'h',
+          body: 'fleet-scoped conclusion',
+          src: 'msg:m-1 ✓ "the verbatim origin"',
+          aud: 'fleet:backend',
+        },
         { scope: 'workspace', ref: null, body: 'plain', src: 'a-plan-slug' },
       ]);
     });
@@ -1491,9 +1570,7 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
     it('a convention and a conclusion with the SAME body are distinguishable', async () => {
       const body = 'Apply migrations via db:migrate.';
       const fold = async (kind: string) => {
-        foldFactsMock.mockResolvedValue([
-          { ...baseFact, id: 1, scope: 'workspace', scopeRef: null, body, kind },
-        ]);
+        foldFactsMock.mockResolvedValue([{ ...baseFact, id: 1, scope: 'workspace', scopeRef: null, body, kind }]);
         const { call } = fakeCall({ ...CORE });
         return (await composeOrient({}, call, 'me')).facts;
       };
@@ -1515,9 +1592,7 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
       ]);
       const { call } = fakeCall({ ...CORE });
       const r = await composeOrient({}, call, 'me');
-      expect(r.facts).toEqual([
-        { scope: 'workspace', ref: null, body: 'b', src: null, kind: 'conclusion' },
-      ]);
+      expect(r.facts).toEqual([{ scope: 'workspace', ref: null, body: 'b', src: null, kind: 'conclusion' }]);
     });
   });
 
@@ -1550,7 +1625,13 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
     });
 
     it('an ACTIVE fleet folds nothing (zero noise on the common path)', async () => {
-      getFleetMock.mockResolvedValue({ fleetSlug: 'backend', controlState: 'active', controlReason: null, controlBy: null, controlAt: null });
+      getFleetMock.mockResolvedValue({
+        fleetSlug: 'backend',
+        controlState: 'active',
+        controlReason: null,
+        controlBy: null,
+        controlAt: null,
+      });
       const { call } = fakeCall({ ...CORE, ...FLEET_CTX });
       const r = await composeOrient({ harness: 'h' }, call, 'me');
       expect(r.fleetControl).toBeUndefined();
@@ -1594,9 +1675,30 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
             {
               now: { state: 'authored', next: 'first free member claims P-001' },
               items: [
-                { id: 'P-001', text: 'Auto-arm the follow-on loop', phase: 'Phase 1', effectiveStatus: 'wip', unresolvedBlockers: [], needsHuman: false },
-                { id: 'P-002', text: 'Orient-first bootstrap', phase: 'Phase 1', effectiveStatus: 'todo', unresolvedBlockers: [], needsHuman: false },
-                { id: 'P-004', text: 'The shrink', phase: 'Phase 2', effectiveStatus: 'todo', unresolvedBlockers: ['P-001'], needsHuman: false },
+                {
+                  id: 'P-001',
+                  text: 'Auto-arm the follow-on loop',
+                  phase: 'Phase 1',
+                  effectiveStatus: 'wip',
+                  unresolvedBlockers: [],
+                  needsHuman: false,
+                },
+                {
+                  id: 'P-002',
+                  text: 'Orient-first bootstrap',
+                  phase: 'Phase 1',
+                  effectiveStatus: 'todo',
+                  unresolvedBlockers: [],
+                  needsHuman: false,
+                },
+                {
+                  id: 'P-004',
+                  text: 'The shrink',
+                  phase: 'Phase 2',
+                  effectiveStatus: 'todo',
+                  unresolvedBlockers: ['P-001'],
+                  needsHuman: false,
+                },
               ],
             },
           ],
@@ -1641,7 +1743,14 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
             {
               now: { state: 'authored', next: 'first free member claims P-001' },
               items: [
-                { id: 'P-002', text: 'Orient-first bootstrap', phase: 'Phase 1', effectiveStatus: 'todo', unresolvedBlockers: [], needsHuman: false },
+                {
+                  id: 'P-002',
+                  text: 'Orient-first bootstrap',
+                  phase: 'Phase 1',
+                  effectiveStatus: 'todo',
+                  unresolvedBlockers: [],
+                  needsHuman: false,
+                },
               ],
             },
           ],
@@ -1712,7 +1821,7 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
       expect(calls.some((c) => c.name === 'plans:get')).toBe(false);
     });
 
-    it('falls back to the self row\'s declaredPlanSlug (fleet:assignments presence) when planSlug is omitted', async () => {
+    it("falls back to the self row's declaredPlanSlug (fleet:assignments presence) when planSlug is omitted", async () => {
       const { call, calls } = fakeCall({
         ...CORE,
         'fleet:assignments': () => ({
@@ -1945,7 +2054,9 @@ describe("mode:'monitor' fleet delta (P-004 server-side cursor)", () => {
 
   it('FAIL-OPEN: a throwing cursor keeps the full roster fold and omits fleetDelta', async () => {
     const { call } = fakeCall({ ...FLEET });
-    const cursor = vi.fn(async () => { throw new Error('pg down'); });
+    const cursor = vi.fn(async () => {
+      throw new Error('pg down');
+    });
     const r = await composeOrient({ mode: 'monitor' }, call, 'su-lead', undefined, undefined, cursor);
     expect(r.fleetDelta).toBeUndefined();
     expect((r.me as { agents: unknown[] }).agents).toHaveLength(3);
@@ -1978,10 +2089,13 @@ describe("mode:'monitor' fleet delta (P-004 server-side cursor)", () => {
 
 describe('P-005 full-mode delta (plan-events + fleet catch-up, server-side cursors)', () => {
   const EVENTS_V1 = [{ msg_id: 'e1', kind: 'item_status_changed', detail: 'P-001' }];
-  const EVENTS_V2 = [{ msg_id: 'e2', kind: 'item_status_changed', detail: 'P-002' }, { msg_id: 'e1', kind: 'item_status_changed', detail: 'P-001' }];
+  const EVENTS_V2 = [
+    { msg_id: 'e2', kind: 'item_status_changed', detail: 'P-002' },
+    { msg_id: 'e1', kind: 'item_status_changed', detail: 'P-001' },
+  ];
   const CATCHUP_V1 = [{ msg_id: 'c1', summary: 'hello' }];
 
-  it('plan-events BASELINE: full delivery, cursor receives this batch\'s id fingerprint', async () => {
+  it("plan-events BASELINE: full delivery, cursor receives this batch's id fingerprint", async () => {
     const { call } = fakeCall({ ...CORE, 'coord:plan-events': () => ({ events: EVENTS_V1, total: 1 }) });
     const cursor = vi.fn(async () => ({ committed: null, baseline: true }));
     const r = await composeOrient({}, call, 'me', undefined, undefined, undefined, cursor);
@@ -2005,7 +2119,9 @@ describe('P-005 full-mode delta (plan-events + fleet catch-up, server-side curso
 
   it('plan-events FAIL-OPEN: a throwing cursor still delivers in full (no unchanged, no throw)', async () => {
     const { call } = fakeCall({ ...CORE, 'coord:plan-events': () => ({ events: EVENTS_V1, total: 1 }) });
-    const cursor = vi.fn(async () => { throw new Error('pg down'); });
+    const cursor = vi.fn(async () => {
+      throw new Error('pg down');
+    });
     const r = await composeOrient({}, call, 'me', undefined, undefined, undefined, cursor);
     expect(r.planEvents).toEqual({ total: 1, recent: EVENTS_V1 });
   });
@@ -2045,7 +2161,9 @@ describe('P-005 full-mode delta (plan-events + fleet catch-up, server-side curso
       'coord:whoami': () => ({ fleetSlug: 'backend' }),
       'coord:catch-up': () => ({ total: 1, rows: CATCHUP_V1 }),
     });
-    const cursor = vi.fn(async () => { throw new Error('pg down'); });
+    const cursor = vi.fn(async () => {
+      throw new Error('pg down');
+    });
     const r = await composeOrient({}, call, 'me', undefined, undefined, undefined, undefined, cursor);
     expect(r.fleetCatchUp).toEqual({ fleet: 'backend', total: 1, recent: CATCHUP_V1 });
   });
@@ -2115,9 +2233,30 @@ describe('P-005 full-mode delta (plan-events + fleet catch-up, server-side curso
   describe('EI-9270 announced-gates fold', () => {
     it('folds gates visible to the caller (own fleet + global), dropping other fleets', async () => {
       listActiveAnnouncementsMock.mockResolvedValue([
-        { eventKey: 'fleet:backend:phase3-open', note: 'opens on verified green', scopeKind: 'fleet', scopeRef: 'backend', subscriberId: 'su-l', expiresTs: null },
-        { eventKey: 'fleet:frontend:phase2-open', note: null, scopeKind: 'fleet', scopeRef: 'frontend', subscriberId: 'su-l', expiresTs: null },
-        { eventKey: 'migration-freeze-lifted', note: 'system-wide', scopeKind: 'global', scopeRef: null, subscriberId: 'su-o', expiresTs: null },
+        {
+          eventKey: 'fleet:backend:phase3-open',
+          note: 'opens on verified green',
+          scopeKind: 'fleet',
+          scopeRef: 'backend',
+          subscriberId: 'su-l',
+          expiresTs: null,
+        },
+        {
+          eventKey: 'fleet:frontend:phase2-open',
+          note: null,
+          scopeKind: 'fleet',
+          scopeRef: 'frontend',
+          subscriberId: 'su-l',
+          expiresTs: null,
+        },
+        {
+          eventKey: 'migration-freeze-lifted',
+          note: 'system-wide',
+          scopeKind: 'global',
+          scopeRef: null,
+          subscriberId: 'su-o',
+          expiresTs: null,
+        },
       ]);
       const { call } = fakeCall({
         ...CORE,
@@ -2126,12 +2265,23 @@ describe('P-005 full-mode delta (plan-events + fleet catch-up, server-side curso
       });
       const r = await composeOrient({}, call, 'me');
       expect(r.announcedGates?.map((g) => g.event)).toEqual(['fleet:backend:phase3-open', 'migration-freeze-lifted']);
-      expect(r.announcedGates?.[0]).toMatchObject({ note: 'opens on verified green', scope: 'fleet:backend', announcedBy: 'su-l' });
+      expect(r.announcedGates?.[0]).toMatchObject({
+        note: 'opens on verified green',
+        scope: 'fleet:backend',
+        announcedBy: 'su-l',
+      });
     });
 
     it('absent when nothing is visible, but monitor still performs the compact gate read', async () => {
       listActiveAnnouncementsMock.mockResolvedValue([
-        { eventKey: 'fleet:frontend:phase2-open', note: null, scopeKind: 'fleet', scopeRef: 'frontend', subscriberId: 'su-l', expiresTs: null },
+        {
+          eventKey: 'fleet:frontend:phase2-open',
+          note: null,
+          scopeKind: 'fleet',
+          scopeRef: 'frontend',
+          subscriberId: 'su-l',
+          expiresTs: null,
+        },
       ]);
       const { call } = fakeCall({ ...CORE });
       const r = await composeOrient({}, call, 'me');
@@ -2144,8 +2294,22 @@ describe('P-005 full-mode delta (plan-events + fleet catch-up, server-side curso
 
     it('monitor mode scopes announced gates with the injected authoritative fleet membership', async () => {
       listActiveAnnouncementsMock.mockResolvedValue([
-        { eventKey: 'fleet:backend:green', note: 'resume', scopeKind: 'fleet', scopeRef: 'backend', subscriberId: 'su-l', expiresTs: null },
-        { eventKey: 'fleet:frontend:green', note: null, scopeKind: 'fleet', scopeRef: 'frontend', subscriberId: 'su-l', expiresTs: null },
+        {
+          eventKey: 'fleet:backend:green',
+          note: 'resume',
+          scopeKind: 'fleet',
+          scopeRef: 'backend',
+          subscriberId: 'su-l',
+          expiresTs: null,
+        },
+        {
+          eventKey: 'fleet:frontend:green',
+          note: null,
+          scopeKind: 'fleet',
+          scopeRef: 'frontend',
+          subscriberId: 'su-l',
+          expiresTs: null,
+        },
       ]);
       const { call } = fakeCall({
         ...CORE,
@@ -2256,7 +2420,8 @@ describe('P-016 role-specific pane folds (papercup paneContext / papercup-deep d
 
   it('folds an injected paneContext render into the result (the fast pane walks in with the pot picture)', async () => {
     const { call } = fakeCall({ ...CORE });
-    const digest = '## Live system status — papercusp\n### Anomalies — detected drift (act on these)\n_no anomalies — system healthy._';
+    const digest =
+      '## Live system status — papercusp\n### Anomalies — detected drift (act on these)\n_no anomalies — system healthy._';
     const r = await composeOrient({}, call, 'me', undefined, undefined, undefined, undefined, undefined, undefined, {
       paneContext: async () => digest,
     });
@@ -2310,9 +2475,20 @@ describe('P-016 role-specific pane folds (papercup paneContext / papercup-deep d
     try {
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       const { call } = fakeCall({ ...CORE });
-      const resultPromise = composeOrient({}, call, 'me', undefined, undefined, undefined, undefined, undefined, undefined, {
-        paneContext: () => new Promise(() => {}),
-      });
+      const resultPromise = composeOrient(
+        {},
+        call,
+        'me',
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        {
+          paneContext: () => new Promise(() => {}),
+        },
+      );
       await vi.advanceTimersByTimeAsync(10_000);
       const r = await resultPromise;
       expect(r.ok).toBe(true);
@@ -2515,7 +2691,7 @@ describe('EI-20013545515660920 laneClaim — a failed lane claim is never silent
  */
 describe('EI-20113865649946366: orient discloses its own trims (two-directional)', () => {
   describe('claimable', () => {
-    it('reports the ORACLE\'s authoritative total — not the limit-bounded row count', async () => {
+    it("reports the ORACLE's authoritative total — not the limit-bounded row count", async () => {
       // The defect this pins: orient sliced rows to `claimableLimit` and published the
       // resulting LENGTH as the total, so a bounded 20 read as "there are 20" while the
       // oracle's own count was ~1677. The oracle returns that count in the SAME response
@@ -2523,7 +2699,10 @@ describe('EI-20113865649946366: orient discloses its own trims (two-directional)
       const { call } = fakeCall({
         ...CORE,
         'work_items:claimable': () => ({
-          claimable: [{ id: 'EI-1', state: 'open' }, { id: 'EI-2', state: 'open' }],
+          claimable: [
+            { id: 'EI-1', state: 'open' },
+            { id: 'EI-2', state: 'open' },
+          ],
           claimableCount: 1677,
         }),
         'work_items:list': () => [],
@@ -2544,7 +2723,10 @@ describe('EI-20113865649946366: orient discloses its own trims (two-directional)
       const { call } = fakeCall({
         ...CORE,
         'work_items:claimable': () => ({
-          claimable: [{ id: 'EI-1', state: 'open' }, { id: 'EI-2', state: 'open' }],
+          claimable: [
+            { id: 'EI-1', state: 'open' },
+            { id: 'EI-2', state: 'open' },
+          ],
           claimableCount: 2,
         }),
         'work_items:list': () => [],
@@ -2560,7 +2742,10 @@ describe('EI-20113865649946366: orient discloses its own trims (two-directional)
       // total here would be the very defect above, one layer down.
       const { call } = fakeCall({
         ...CORE,
-        'work_items:list': () => [{ id: 'WI-1', state: 'todo' }, { id: 'WI-2', state: 'todo' }],
+        'work_items:list': () => [
+          { id: 'WI-1', state: 'todo' },
+          { id: 'WI-2', state: 'todo' },
+        ],
       });
       const r = await composeOrient({ claimableLimit: 2 }, call, 'me');
       expect(r.claimableTruncated?.truncatedByLimit).toBe(true);
@@ -2750,9 +2935,8 @@ describe('EI-18725816532600240: never-drop facts survive a monitor tick', () => 
 
   describe('the narrowing is DISCLOSED (a bounded read is never rendered as a census)', () => {
     it('marks factsNarrowed on a monitor tick, naming the prefixes from the store constant', async () => {
-      const { NEVER_DROP_KEY_PREFIXES, DEAD_END_KEY_PREFIX, WALL_KEY_PREFIX } = await import(
-        '../../../agent-facts/store'
-      );
+      const { NEVER_DROP_KEY_PREFIXES, DEAD_END_KEY_PREFIX, WALL_KEY_PREFIX } =
+        await import('../../../agent-facts/store');
       foldNeverDropFactsMock.mockResolvedValue([DEAD_END]);
       const { call } = fakeCall({ ...CORE });
       const r = await composeOrient({ mode: 'monitor' }, call, 'me');
@@ -2783,7 +2967,7 @@ describe('EI-18725816532600240: never-drop facts survive a monitor tick', () => 
   });
 
   describe('afterCompaction takes the FULL fold whatever the mode', () => {
-    it("monitor + afterCompaction ⇒ full fold, no narrowing marker", async () => {
+    it('monitor + afterCompaction ⇒ full fold, no narrowing marker', async () => {
       foldFactsMock.mockResolvedValue([DEAD_END]);
       const { call } = fakeCall({ ...CORE });
       const r = await composeOrient({ mode: 'monitor', afterCompaction: true }, call, 'me');

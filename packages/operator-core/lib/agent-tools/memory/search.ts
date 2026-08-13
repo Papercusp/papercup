@@ -26,12 +26,7 @@
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import {
-  getMemoryBackend,
-  MemoryUnavailableError,
-  type MemoryEntry,
-  type SearchLegStats,
-} from '../../memory/backend';
+import { getMemoryBackend, MemoryUnavailableError, type MemoryEntry, type SearchLegStats } from '../../memory/backend';
 import { isMemoryWorkspaceScopedRecallOn, keepUserPoolHitForWorkspace } from '../../memory/workspace-scope-recall';
 import {
   MemoryTimeoutError,
@@ -95,9 +90,7 @@ export function toWireRow(e: MemoryEntry): {
   metadata?: Record<string, unknown>;
   score?: number;
 } {
-  const metadata = e.kind !== undefined
-    ? { ...(e.metadata ?? {}), kind: e.kind }
-    : e.metadata;
+  const metadata = e.kind !== undefined ? { ...(e.metadata ?? {}), kind: e.kind } : e.metadata;
   return {
     id: e.id,
     memory: e.text,
@@ -110,12 +103,11 @@ export default defineTool({
   name: 'memory:search',
   capability: 'memory:read',
   description:
-    'Search the user\'s persistent memories by semantic similarity. Returns matched facts ranked by relevance.',
+    "Search the user's persistent memories by semantic similarity. Returns matched facts ranked by relevance.",
   guidance: {
-    when:
-      'When the user references specific context from past sessions ("what did I tell you about pricing?"). Pre-turn auto-injection covers most cases; only call this for targeted lookups.',
+    when: 'When the user references specific context from past sessions ("what did I tell you about pricing?"). Pre-turn auto-injection covers most cases; only call this for targeted lookups.',
     notWhen:
-      'For lookups by exact metadata (kind), use memory:list — it\'s faster than vector search for filter-only queries.',
+      "For lookups by exact metadata (kind), use memory:list — it's faster than vector search for filter-only queries.",
     chaining:
       'Pair with memory:update / memory:forget when the user corrects something you recall. A hit carrying `staleness` has referents that no longer resolve (last nightly anchor sweep) — treat it as evidence to reconcile, never as binding guidance; absence of the field means no dead anchors.',
     seeAlso: [
@@ -140,18 +132,38 @@ export default defineTool({
   args: z.object({
     query: z.string().min(1).max(500),
     limit: z.number().int().min(1).max(20).optional(),
-    harness_slug: z.string().optional()
-      .describe('Scope the search to a single harness in addition to user memory. Omit to fan out across every harness in the workspace.'),
-    harnessOnly: z.boolean().optional()
-      .describe('Scope to ONLY the named harness pool — EXCLUDE the user/personal pool. For ISOLATED per-run pools (e.g. a benchmark capability-injection arm) where the user\'s personal memories would be noise. Requires harness_slug; ignored without it.'),
-    workspace: z.string().optional()
-      .describe('Superuser-only: from an UNSCOPED session, resolve harness fan-out within THIS workspace (the resolved workspace scopes the fan-out). Scoped/power-user sessions ignore it. Omit for personal (user-scoped) recall.'),
-    as_of: z.string().max(64)
+    harness_slug: z
+      .string()
+      .optional()
+      .describe(
+        'Scope the search to a single harness in addition to user memory. Omit to fan out across every harness in the workspace.',
+      ),
+    harnessOnly: z
+      .boolean()
+      .optional()
+      .describe(
+        "Scope to ONLY the named harness pool — EXCLUDE the user/personal pool. For ISOLATED per-run pools (e.g. a benchmark capability-injection arm) where the user's personal memories would be noise. Requires harness_slug; ignored without it.",
+      ),
+    workspace: z
+      .string()
+      .optional()
+      .describe(
+        'Superuser-only: from an UNSCOPED session, resolve harness fan-out within THIS workspace (the resolved workspace scopes the fan-out). Scoped/power-user sessions ignore it. Omit for personal (user-scoped) recall.',
+      ),
+    as_of: z
+      .string()
+      .max(64)
       .refine((v) => Number.isFinite(new Date(v).getTime()), 'as_of must be a parseable ISO 8601 timestamp')
       .optional()
-      .describe('TEMPORAL (temporal-lite): point-in-time recall — only memories whose validity window covers this ISO timestamp ("what did we believe then?"). Hits carry metadata.validity.'),
-    include_superseded: z.boolean().optional()
-      .describe('TEMPORAL (temporal-lite): include superseded/soft-forgotten memories (validity window closed) — excluded from recall by default. Superseded hits carry metadata.validity { status:"superseded", superseded_by }.'),
+      .describe(
+        'TEMPORAL (temporal-lite): point-in-time recall — only memories whose validity window covers this ISO timestamp ("what did we believe then?"). Hits carry metadata.validity.',
+      ),
+    include_superseded: z
+      .boolean()
+      .optional()
+      .describe(
+        'TEMPORAL (temporal-lite): include superseded/soft-forgotten memories (validity window closed) — excluded from recall by default. Superseded hits carry metadata.validity { status:"superseded", superseded_by }.',
+      ),
   }),
   async handler(args, ctx) {
     const user = await getSessionUserOrDefault();
@@ -175,9 +187,7 @@ export default defineTool({
         // P-016: exclude ephemeral/benchmark harness scopes from unscoped
         // production recall so benchmark memories don't pollute results.
         // Explicit harness_slug (above) bypasses this filter intentionally.
-        harnessSlugs = reg.projects
-          .map((p) => p.slug)
-          .filter((s) => !isEphemeralBenchmarkHarnessSlug(s));
+        harnessSlugs = reg.projects.map((p) => p.slug).filter((s) => !isEphemeralBenchmarkHarnessSlug(s));
         // P-018 (scoped-superuser-workspace-clamp / D-009 P-016b): confine the
         // DEFAULT fan-out to the session's hive subtree so a hive-confined
         // session (concrete `ctx.harnessSlug` — a bee or a hive-scoped su) does
@@ -240,7 +250,9 @@ export default defineTool({
         // A down store is a DEGRADED recall, not an informative empty (same
         // EI-9031 posture as the embed-failure branch below).
         return {
-          content: [{ type: 'text', text: JSON.stringify({ ok: false, reason: avail.reason, degraded: true, results: [] }) }],
+          content: [
+            { type: 'text', text: JSON.stringify({ ok: false, reason: avail.reason, degraded: true, results: [] }) },
+          ],
         };
       }
       // The backend fans out per scope (limit applies per pool), merges,
@@ -322,7 +334,9 @@ export default defineTool({
       const { getOrgPg } = await import('@papercusp/db-org');
       const { loadFeedbackSignals, applyFeedbackRerank } = await import('../../memory/feedback-rerank');
       hits = applyFeedbackRerank(hits, await loadFeedbackSignals(getOrgPg().sql));
-    } catch { /* best-effort */ }
+    } catch {
+      /* best-effort */
+    }
 
     // EI-9031: when the production embedder (OpenAI) is in its post-exhaustion
     // cooldown, the 'auto' cascade has silently fallen back to the local vec table
@@ -357,16 +371,16 @@ export default defineTool({
     // today's byte-identical shape. Recall is never blocked by it.
     try {
       if (await getFlag(FLAGS.MEMORY_STALENESS_IN_RECALL, systemDistinctId())) {
-        const ids = results
-          .map((r) => (typeof r.id === 'string' ? r.id : null))
-          .filter((v): v is string => v !== null);
+        const ids = results.map((r) => (typeof r.id === 'string' ? r.id : null)).filter((v): v is string => v !== null);
         if (ids.length > 0) {
           const { getOrgPg } = await import('@papercusp/db-org');
           const { loadMemoryStaleness, applyMemoryStaleness } = await import('../../memory/recall-staleness');
           results = applyMemoryStaleness(results, await loadMemoryStaleness(getOrgPg().sql, ids));
         }
       }
-    } catch { /* best-effort */ }
+    } catch {
+      /* best-effort */
+    }
 
     // Result count into tool_invocations.metadata_json (mirrors plans:search):
     // the negative-space miner (self-learning-frontier P-010) detects zero-hit
@@ -393,9 +407,7 @@ export default defineTool({
         await recordRecallStats(getOrgPg().sql, {
           surface: telemetrySurface,
           entries: hits,
-          scoreScale: usedLexicalFallback
-            ? (backend.lexicalScoreScale ?? null)
-            : (backend.scoreScale ?? null),
+          scoreScale: usedLexicalFallback ? (backend.lexicalScoreScale ?? null) : (backend.scoreScale ?? null),
           // P-041 / migration 706: what was ASKED. The pull path has no session
           // identity on its ctx, so `sessionId` stays NULL here and per-session
           // duplicate detection covers the push path only — which is where the
@@ -403,7 +415,9 @@ export default defineTool({
           query: args.query,
           legs: legStats,
         });
-      } catch { /* swallow — telemetry never fails a recall */ }
+      } catch {
+        /* swallow — telemetry never fails a recall */
+      }
     })();
 
     return {
@@ -425,9 +439,7 @@ export default defineTool({
                 : {}),
             // Loud tier marker (D-004): a non-full session sees WHY hits are
             // clipped and how to widen (payloadTier:"full").
-            ...(sessionTier === 'trimmed' || sessionTier === 'standard'
-              ? { payload_tier: sessionTier }
-              : {}),
+            ...(sessionTier === 'trimmed' || sessionTier === 'standard' ? { payload_tier: sessionTier } : {}),
           }),
         },
       ],
