@@ -56,7 +56,16 @@ export function intentToSubject(intent: string | undefined, agentLabel: string |
   const line = (intent ?? '').replace(/\s+/g, ' ').trim();
   if (!line) return DEFAULT_GIT_SYNC_SUBJECT;
   const who = agentLabel ? ` (${agentLabel.trim()})` : '';
-  return `${line}${who}`.slice(0, 72);
+  const full = `${line}${who}`;
+  if (full.length <= 72) return full;
+  // Clamp at a word boundary (WI-38568): a mid-word clip ("…and focused dom")
+  // reads as a typo in every hive's public history. Cut at the last space past
+  // a floor so we keep most of the budget, and append … so a truncated subject
+  // reads as truncated. 71 + '…' keeps the total within the 72-char budget.
+  const clipped = full.slice(0, 71);
+  const lastSpace = clipped.lastIndexOf(' ');
+  const cut = lastSpace > 40 ? clipped.slice(0, lastSpace) : clipped;
+  return `${cut.replace(/[\s,;:.-]+$/, '')}…`;
 }
 
 /** "Name <email>" for a Co-Authored-By trailer (best-effort), or null when no identity. */
