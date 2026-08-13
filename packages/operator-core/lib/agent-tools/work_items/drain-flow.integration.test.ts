@@ -42,12 +42,12 @@ async function seed(input: {
   closedAt?: number | null;
   terminalOwner?: string | null;
 }): Promise<void> {
-  const payload = JSON.stringify({
+  const payload = {
     _ei: {
       ...(input.createdBy ? { created_by: input.createdBy } : {}),
       ...(input.severity ? { severity: input.severity } : {}),
     },
-  });
+  };
   await db.sql`
     INSERT INTO harness_shared.work_items
       (workspace_id, harness_slug, feature_id, title, summary, status, item_kind,
@@ -55,7 +55,7 @@ async function seed(input: {
     VALUES
       (${WORKSPACE}, ${HARNESS}, ${input.id}, ${input.id}, '',
        ${input.closedAt ? 'done' : 'open'}, ${input.kind ?? 'bug'},
-       ${payload}::jsonb, ${input.createdAt}, ${input.closedAt ?? input.createdAt},
+       ${db.sql.json(payload)}, ${input.createdAt}, ${input.closedAt ?? input.createdAt},
        ${input.closedAt ?? null}, ${input.terminalOwner ?? null})
   `;
 }
