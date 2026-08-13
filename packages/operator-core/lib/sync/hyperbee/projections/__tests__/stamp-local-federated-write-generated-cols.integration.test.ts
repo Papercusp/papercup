@@ -134,12 +134,7 @@ beforeEach(async () => {
 });
 
 /** The projection's apply: an upsert carrying the wire op's provenance verbatim. */
-async function applyRemoteOp(
-  payload: string,
-  fedTs: number,
-  fedHlc: string,
-  signerDevicePubkey: string | null = null,
-) {
+async function applyRemoteOp(payload: string, fedTs: number, fedHlc: string, signerDevicePubkey: string | null = null) {
   await db.sql`
     INSERT INTO harness_shared.fed_generated_col_probe
       (workspace_id, row_id, payload, origin, author_pubkey, signer_device_pubkey,
