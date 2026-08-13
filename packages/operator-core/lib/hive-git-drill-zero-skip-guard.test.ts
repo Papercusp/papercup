@@ -11,7 +11,7 @@
 import { afterAll, describe, expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -46,6 +46,14 @@ const physicalProbe = readFileSync(
   join(repoRoot(), 'papercusp-desktop', 'bin', 'vm-rig', 'hive-git-physical-probe.sh'),
   'utf8',
 );
+const physicalScenarioPath = join(
+  repoRoot(),
+  'papercusp-desktop',
+  'bin',
+  'vm-rig',
+  'hive-git-physical-scenario.sh',
+);
+const physicalScenario = readFileSync(physicalScenarioPath, 'utf8');
 const gateMatch = drill.match(
   /# ZERO-SKIP-RELEASE-GATE-BEGIN[^\n]*\n([\s\S]*?)# ZERO-SKIP-RELEASE-GATE-END/,
 );
@@ -250,17 +258,87 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
     expect(drill).not.toContain('HIVE_GIT_PHYSICAL_EVIDENCE_FILE');
   });
 
-  it('keeps the canonical producer fail-closed until a checked-in physical E/G scenario exists', () => {
+  it('keeps the canonical producer pinned to the checked-in physical E/G scenario', () => {
     expect(physicalProbe).toContain('hive-git-physical-scenario.sh');
-    expect(physicalProbe).toContain('canonical E/G scenario driver is not installed');
+    expect(physicalProbe).toContain('canonical E/G scenario driver is not executable');
     expect(physicalProbe).toContain('"$TSX" "$PRODUCER" preflight');
     expect(physicalProbe).toContain('"$TSX" "$PRODUCER" sign');
     expect(physicalProbe).toContain('"$TSX" "$PRODUCER" finalize');
     expect(physicalProbe).not.toContain('HIVE_GIT_PHYSICAL_SCENARIO_CMD');
-    expect(
-      existsSync(join(repoRoot(), 'papercusp-desktop', 'bin', 'vm-rig', 'hive-git-physical-scenario.sh')),
-      'WI-38569 deliberately ships the receipt/producer seam without fabricating the still-unimplemented physical scenario',
-    ).toBe(false);
+    expect(existsSync(physicalScenarioPath)).toBe(true);
+    expect(statSync(physicalScenarioPath).mode & 0o111).not.toBe(0);
+    expect(physicalProbe.indexOf('"$SCENARIO" --require-ready')).toBeLessThan(
+      physicalProbe.indexOf('ssh "${SSH_OPTS[@]}"'),
+    );
+  });
+
+  it('installs only the offline scenario contract and emits nothing before fixed A-G executors land', () => {
+    const contract = spawnSync(physicalScenarioPath, ['--contract-check'], { encoding: 'utf8' });
+    expect(contract.status).toBe(0);
+    expect(JSON.parse(contract.stdout)).toEqual({
+      schemaVersion: 'hive-git-physical-scenario-contract/v1',
+      implementationState: 'offline-contract-v1',
+      ready: false,
+      phases: [...'ABCDEFG'],
+    });
+
+    const runDir = mkdtempSync(join(evidenceDir, 'scenario-contract-'));
+    const output = join(runDir, 'unsigned-evidence.json');
+    const towerIdentity = join(runDir, 'tower-identity.json');
+    const vmIdentity = join(runDir, 'vm-identity.json');
+    const identity = (hostId: string, byte: number) => ({
+      schemaVersion: 'hive-git-physical-host-identity/v1',
+      hostId,
+      deviceKey: Buffer.alloc(32, byte).toString('base64'),
+      machineFingerprint: byte.toString(16).repeat(64),
+    });
+    writeFileSync(towerIdentity, JSON.stringify(identity('tower', 1)));
+    writeFileSync(vmIdentity, JSON.stringify(identity('vm', 2)));
+
+    const attempted = spawnSync(
+      physicalScenarioPath,
+      [output, towerIdentity, vmIdentity],
+      {
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          HIVE_GIT_PHYSICAL_PLAN: 'p2p-git-live-activation-2026-07-09',
+        },
+      },
+    );
+    expect(attempted.status).toBe(1);
+    expect(attempted.stderr).toContain('scenario is not execution-ready (offline-contract-v1)');
+    expect(existsSync(output)).toBe(false);
+    expect(physicalScenario).toContain('run_all_phases');
+    expect(physicalScenario).not.toContain('HIVE_GIT_PHYSICAL_SCENARIO_CMD');
+    expect(physicalScenario).not.toMatch(/^\s*(?:ssh|scp|psql|git|systemctl)\b/m);
+  });
+
+  it('refuses the canonical wrapper before its first VM ssh while the scenario is incomplete', () => {
+    const runDir = mkdtempSync(join(evidenceDir, 'scenario-wrapper-'));
+    const fakeBin = join(runDir, 'bin');
+    const sshMarker = join(runDir, 'ssh-was-called');
+    const { mkdirSync, chmodSync } = require('node:fs') as typeof import('node:fs');
+    mkdirSync(fakeBin);
+    const fakeSsh = join(fakeBin, 'ssh');
+    writeFileSync(fakeSsh, `#!/usr/bin/env bash\nprintf called > ${JSON.stringify(sshMarker)}\nexit 99\n`);
+    chmodSync(fakeSsh, 0o755);
+
+    const probe = spawnSync(
+      join(repoRoot(), 'papercusp-desktop', 'bin', 'vm-rig', 'hive-git-physical-probe.sh'),
+      [join(runDir, 'evidence.json'), join(runDir, 'trust.json')],
+      {
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          PATH: `${fakeBin}:${process.env.PATH ?? ''}`,
+          HIVE_GIT_PHYSICAL_PLAN: 'p2p-git-live-activation-2026-07-09',
+        },
+      },
+    );
+    expect(probe.status).toBe(1);
+    expect(probe.stderr).toContain('scenario is not execution-ready (offline-contract-v1)');
+    expect(existsSync(sshMarker)).toBe(false);
   });
 
   it('accepts a same-run A-G physical artifact only with hash-matching witnesses from both hosts', () => {
