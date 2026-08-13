@@ -738,6 +738,36 @@ export const SETUP_TREE_TIMEOUT_MS = 30 * 60_000;
  *  lock) before a peer attempt would need to force-reclaim it. */
 export const SELF_WATCHDOG_MS = 3 * 60 * 60_000;
 
+/** Internal transport used only by release-checkpoint-launch.ts's detached MANUAL unit.
+ * Scheduled runs omit it and retain SELF_WATCHDOG_MS as their independent parent-death
+ * backstop. The lower bound is the scheduled parent's complete 120m SIGTERM + 15s SIGKILL
+ * window; accepting anything shorter would let a malformed env kill a healthy run early.
+ * release-timing-invariants.test.ts pins this mirror to the launcher and suite-timeout writers.
+ */
+export const MANUAL_SELF_WATCHDOG_ENV =
+  "PAPERCUSP_MANUAL_GREEN_CHECKPOINT_WATCHDOG_MS";
+export const MIN_MANUAL_SELF_WATCHDOG_MS = 120 * 60_000 + 15_000;
+
+export function selfWatchdogMsFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): number {
+  const raw = env[MANUAL_SELF_WATCHDOG_ENV];
+  if (raw === undefined) return SELF_WATCHDOG_MS;
+  const value = Number(raw);
+  return Number.isSafeInteger(value) &&
+    value >= MIN_MANUAL_SELF_WATCHDOG_MS &&
+    value <= SELF_WATCHDOG_MS
+    ? value
+    : SELF_WATCHDOG_MS;
+}
+
+export function formatSelfWatchdogDuration(ms: number): string {
+  const totalSeconds = Math.round(ms / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return seconds === 0 ? `${minutes}m` : `${minutes}m${seconds}s`;
+}
+
 export function snapshotCheckpointProcessGroup(pid: number): string | null {
   try {
     const r = spawnSync(
@@ -836,7 +866,7 @@ export function armSelfWatchdog(
   const onFireGraceMs = opts.onFireGraceMs ?? SELF_WATCHDOG_ONFIRE_GRACE_MS;
   const timer = setTimeout(() => {
     log(
-      `self-watchdog fired after ${Math.round(ms / 60_000)}m with no normal exit — ` +
+      `self-watchdog fired after ${formatSelfWatchdogDuration(ms)} with no normal exit — ` +
         `presumed-dead parent (release-actions.ts's runScript never landed its SIGTERM+SIGKILL); ` +
         `releasing the run-lock and killing this process's OWN group (pid ${pid}) so no orphan can outlive it`,
     );
@@ -9423,7 +9453,9 @@ if (require.main === module) {
     // WI-1319 root fix (c): arm the self-watchdog for the lifetime of this run —
     // canceled on every normal exit path below, so it only ever fires on a genuine
     // wedge (see armSelfWatchdog's doc comment).
+    const selfWatchdogMs = selfWatchdogMsFromEnv();
     const watchdog = armSelfWatchdog(lock, {
+      ms: selfWatchdogMs,
       // WI-4528 (EI-10800 class): ASYNC + AWAITED. These two effects used to be fire-and-forget
       // `void import(...).then(emit)` — a GUARANTEED lost wake, not merely a race: armSelfWatchdog
       // SIGKILLs this process's own group on the very next synchronous line, so the dynamic
@@ -9439,7 +9471,7 @@ if (require.main === module) {
           green: false,
           reason: "not-green",
           summary:
-            `self-watchdog fired after ${Math.round(SELF_WATCHDOG_MS / 60_000)}m with no normal exit — ` +
+            `self-watchdog fired after ${formatSelfWatchdogDuration(selfWatchdogMs)} with no normal exit — ` +
             `checkpoint run likely lost its supervising parent; run-lock released and process group is being terminated.`,
           runId,
         };
@@ -9510,7 +9542,7 @@ if (require.main === module) {
       checkpointRunLockDir(cfg.checkpointLogDir, cfg.integrationRoot),
       {
         armedAtMs: Date.now(),
-        ms: SELF_WATCHDOG_MS,
+        ms: selfWatchdogMs,
         pid: process.pid,
       },
     );

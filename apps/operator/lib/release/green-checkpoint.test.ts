@@ -85,6 +85,10 @@ import {
   GREEN_CHECKPOINT_MAX_FORKS,
   GREEN_CHECKPOINT_RESERVED_MAX_FORKS,
   SELF_WATCHDOG_MS,
+  MANUAL_SELF_WATCHDOG_ENV,
+  MIN_MANUAL_SELF_WATCHDOG_MS,
+  selfWatchdogMsFromEnv,
+  formatSelfWatchdogDuration,
   isNothingToGate,
   realCheckpointDeps,
   formatGatePromotionTrailer,
@@ -411,6 +415,34 @@ describe("armSelfWatchdog (WI-1319 root fix (c) — orphaned OS process past DBO
 
   it("keeps the self-watchdog at the 3h long-run floor", () => {
     expect(SELF_WATCHDOG_MS).toBeGreaterThanOrEqual(3 * 60 * 60_000);
+  });
+
+  it("uses the validated manual watchdog transport while scheduled runs retain the 3h default", () => {
+    expect(selfWatchdogMsFromEnv({})).toBe(SELF_WATCHDOG_MS);
+    expect(
+      selfWatchdogMsFromEnv({
+        [MANUAL_SELF_WATCHDOG_ENV]: String(MIN_MANUAL_SELF_WATCHDOG_MS),
+      }),
+    ).toBe(MIN_MANUAL_SELF_WATCHDOG_MS);
+
+    for (const invalid of [
+      "0",
+      "NaN",
+      String(MIN_MANUAL_SELF_WATCHDOG_MS - 1),
+      String(SELF_WATCHDOG_MS + 1),
+      `${MIN_MANUAL_SELF_WATCHDOG_MS}.5`,
+    ]) {
+      expect(
+        selfWatchdogMsFromEnv({ [MANUAL_SELF_WATCHDOG_ENV]: invalid }),
+      ).toBe(SELF_WATCHDOG_MS);
+    }
+  });
+
+  it("renders the resolved watchdog duration without hiding the manual kill grace", () => {
+    expect(formatSelfWatchdogDuration(MIN_MANUAL_SELF_WATCHDOG_MS)).toBe(
+      "120m15s",
+    );
+    expect(formatSelfWatchdogDuration(SELF_WATCHDOG_MS)).toBe("180m");
   });
 
   it("does nothing before the deadline", () => {

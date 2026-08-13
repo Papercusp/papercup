@@ -66,7 +66,8 @@ import {
 function resolveHomeGateTarget(): GateVerdictTarget | null {
   try {
     const { activeWorkspaceId } = require('./workspace-registry') as typeof import('./workspace-registry');
-    const { operatorHomeHarnessSlug } = require('./harness/operator-home-harness') as typeof import('./harness/operator-home-harness');
+    const { operatorHomeHarnessSlug } =
+      require('./harness/operator-home-harness') as typeof import('./harness/operator-home-harness');
     const workspaceId = activeWorkspaceId();
     const installSlug = operatorHomeHarnessSlug();
     if (!workspaceId || !installSlug) return null;
@@ -100,11 +101,25 @@ export function checkpointUnitForRoot(root: string): string {
 
 /** Wall-clock ceiling for the detached suite's systemd backstop.
  *
- * Keep this strictly ABOVE the suite's own in-process timeout (55m) so the suite itself
+ * Keep this strictly ABOVE the suite's own watchdog (120m15s) so the suite itself
  * still emits a red/verdict path if it genuinely overruns; the systemd cap is only a guard
  * against a truly wedged launch path, not the primary timeout.
  */
 export const CHECKPOINT_MAX_RUNTIME_SEC = 3 * 60 * 60;
+
+/** Internal env transport from the detached MANUAL launcher to green-checkpoint.ts.
+ *
+ * The scheduled path owns a parent-side 120m suite timeout followed by a 15s SIGKILL grace,
+ * while this detached path has no such parent and previously inherited only the 3h orphan
+ * backstop. Stamp the equivalent full kill window into the transient unit so a wedged manual
+ * run terminates on the same schedule. The 3h systemd cap remains the final launch backstop.
+ *
+ * These values are mirrored in apps/operator/lib/release/green-checkpoint.ts because importing
+ * release-actions.ts here registers routine actions as a module-load side effect. The cross-file
+ * timing test pins the mirror to GREEN_CHECKPOINT_SUITE_TIMEOUT_MS + 15s.
+ */
+export const MANUAL_CHECKPOINT_WATCHDOG_ENV = 'PAPERCUSP_MANUAL_GREEN_CHECKPOINT_WATCHDOG_MS';
+export const MANUAL_CHECKPOINT_WATCHDOG_MS = 120 * 60_000 + 15_000;
 
 export interface LaunchCheckpointResult {
   launched: boolean;
@@ -474,8 +489,7 @@ function excludedCommitsSync(
       const ct = Number(ctRaw);
       // Eligible once its age reaches the quiet window: at ct + quietSec. Unknown/disabled
       // quiet window ⇒ 0 (nothing is being held back by age).
-      const eligibleInSec =
-        quietSec && Number.isFinite(ct) ? Math.max(0, ct + quietSec - nowSec) : 0;
+      const eligibleInSec = quietSec && Number.isFinite(ct) ? Math.max(0, ct + quietSec - nowSec) : 0;
       return { line: `${sha} ${subject}`.trim(), sha, subject, eligibleInSec };
     });
 }
@@ -493,7 +507,10 @@ function pathsBetweenSync(root: string, from: string, to: string, execFn: ExecSy
  *  SEPARATE sync/execFn-based implementation rather than importing apps/operator/lib/release's
  *  async git-ops one: this operator-core module must not depend on apps/operator (the wrong
  *  dependency direction — see checkpointPipelineName's comment for the same constraint). */
-export function currentCheckpointCandidate(root: string, execFn: ExecSyncLike): {
+export function currentCheckpointCandidate(
+  root: string,
+  execFn: ExecSyncLike,
+): {
   current_head: string | null;
   current_candidate: string | null;
   quiet_cut_sec: number | null;
@@ -513,7 +530,8 @@ export function currentCheckpointCandidate(root: string, execFn: ExecSyncLike): 
 
   const cutoff = String(nowSec - quietSec);
   const aged = gitOutput(root, ['rev-list', '-1', `--before=@${cutoff}`, 'HEAD'], execFn);
-  if (!aged || aged === currentHead) return { current_head: currentHead, current_candidate: currentHead, quiet_cut_sec: quietSec };
+  if (!aged || aged === currentHead)
+    return { current_head: currentHead, current_candidate: currentHead, quiet_cut_sec: quietSec };
 
   const ready = gitOutput(root, ['rev-parse', '--verify', 'ready'], execFn);
   if (ready && !gitOk(root, ['merge-base', '--is-ancestor', ready, aged], execFn)) {
@@ -606,7 +624,10 @@ function defaultReadProcessStartMs(pid: number): number | null {
     const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
     const commEnd = stat.lastIndexOf(')');
     if (commEnd < 0) return null;
-    const fields = stat.slice(commEnd + 1).trim().split(/\s+/);
+    const fields = stat
+      .slice(commEnd + 1)
+      .trim()
+      .split(/\s+/);
     // After the comm field, fields[0] is stat field 3 (state); starttime is field 22.
     const startTicks = Number(fields[19]);
     const uptimeSec = Number(readFileSync('/proc/uptime', 'utf8').trim().split(/\s+/)[0]);
@@ -844,7 +865,8 @@ export function checkActiveCheckpointRun(
   if (Number.isFinite(mainPid) && mainPid > 0 && !pidAlive(mainPid)) {
     return { active: false, unit };
   }
-  const startedAt = props.ExecMainStartTimestamp && props.ExecMainStartTimestamp !== '' ? props.ExecMainStartTimestamp : null;
+  const startedAt =
+    props.ExecMainStartTimestamp && props.ExecMainStartTimestamp !== '' ? props.ExecMainStartTimestamp : null;
   const startedMs = startedAt ? Date.parse(startedAt) : NaN;
   const elapsedSec = Number.isFinite(startedMs) ? Math.max(0, Math.floor((Date.now() - startedMs) / 1000)) : null;
   const logPath = `/tmp/${unit}.log`;
@@ -875,7 +897,9 @@ export function checkActiveCheckpointRun(
     // common (no-refire) status reply is byte-for-byte what it was before.
     ...(refireObserved ? { initial_candidate: firstCandidate, refire_observed: true } : {}),
     ...current,
-    candidate_stale: Boolean(candidate && current.current_candidate && !shaMatches(candidate, current.current_candidate)),
+    candidate_stale: Boolean(
+      candidate && current.current_candidate && !shaMatches(candidate, current.current_candidate),
+    ),
     started_at: startedAt,
     elapsed_sec: elapsedSec,
     ...eta,
@@ -1022,6 +1046,7 @@ export function buildCheckpointSystemdArgv(
     `--working-directory=${root}`,
     `--setenv=PATH=${pathEnv}`,
     ...greenCheckpointDbPoolSetenvArgs(),
+    `--setenv=${MANUAL_CHECKPOINT_WATCHDOG_ENV}=${MANUAL_CHECKPOINT_WATCHDOG_MS}`,
     ...verdictEnv,
     'bash',
     '-c',
@@ -1056,9 +1081,7 @@ type CheckpointEligibilityWaitRunner = (
 let checkpointEligibilityWaitRunner: CheckpointEligibilityWaitRunner | null = null;
 
 /** Install the DBOS-backed runner without pulling the DBOS SDK into request handlers. */
-export function setCheckpointEligibilityWaitRunner(
-  runner: CheckpointEligibilityWaitRunner | null,
-): void {
+export function setCheckpointEligibilityWaitRunner(runner: CheckpointEligibilityWaitRunner | null): void {
   checkpointEligibilityWaitRunner = runner;
 }
 
@@ -1593,11 +1616,7 @@ export function checkpointPipelineName(root: string): string {
  */
 export function checkpointEligibilityCompletionEvents(root: string): string[] {
   const pipeline = checkpointPipelineName(root);
-  return [
-    `release:green:${pipeline}`,
-    `green-checkpoint:red:${pipeline}`,
-    `green-checkpoint:inconclusive:${pipeline}`,
-  ];
+  return [`release:green:${pipeline}`, `green-checkpoint:red:${pipeline}`, `green-checkpoint:inconclusive:${pipeline}`];
 }
 
 /**
@@ -1684,7 +1703,10 @@ export function launchDetachedCheckpoint(
   spawnFn: SpawnLike = spawn,
   execFn: ExecSyncLike = defaultExecSync,
   readLogHead: (logPath: string) => string | null = defaultReadLogHead,
-  cancelStaleAwaits: (root: string, staleCandidateSha: string) => Promise<{ cancelled: number }> = cancelStaleCheckpointAwaits,
+  cancelStaleAwaits: (
+    root: string,
+    staleCandidateSha: string,
+  ) => Promise<{ cancelled: number }> = cancelStaleCheckpointAwaits,
   recordDisplacement: (logPath: string, info: CheckpointDisplacementInfo) => void = recordCheckpointDisplacement,
 ): Promise<LaunchCheckpointResult> {
   const root = opts.root ?? integrationRoot();

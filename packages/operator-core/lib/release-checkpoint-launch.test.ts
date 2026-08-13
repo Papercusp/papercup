@@ -33,6 +33,8 @@ import {
   CHECKPOINT_UNIT,
   checkpointUnitForRoot,
   CHECKPOINT_MAX_RUNTIME_SEC,
+  MANUAL_CHECKPOINT_WATCHDOG_ENV,
+  MANUAL_CHECKPOINT_WATCHDOG_MS,
   CHECKPOINT_RUN_LOCK_STALE_MS,
   CANDIDATE_RERESOLVE_WINDOW_SEC,
   REPLACE_STALE_MIN_AGE_SEC,
@@ -45,11 +47,7 @@ import {
 } from './release-checkpoint-launch';
 // WI-38356: the control + calibration cases below call the underlying reads directly, to prove
 // the submodule fixture is exercising the blind spot rather than a broken fake.
-import {
-  containingSubmodulePath,
-  excludedCommitsTouchingPath,
-  gitReadFromExecSync,
-} from './candidate-contains';
+import { containingSubmodulePath, excludedCommitsTouchingPath, gitReadFromExecSync } from './candidate-contains';
 
 // 2026-07-10: every run wrote to /tmp/<unit>.log, so the natural response to a red —
 // re-fire — truncated the failure output that red was telling you to read. Each run now
@@ -92,6 +90,7 @@ describe('buildCheckpointSystemdArgv', () => {
     expect(CHECKPOINT_MAX_RUNTIME_SEC).toBeGreaterThanOrEqual(3 * 60 * 60);
     expect(argv).toContain('--working-directory=/tree');
     expect(argv).toContain('--setenv=PATH=/usr/bin:/bin');
+    expect(argv).toContain(`--setenv=${MANUAL_CHECKPOINT_WATCHDOG_ENV}=${MANUAL_CHECKPOINT_WATCHDOG_MS}`);
     const inner = argv[argv.length - 1]!;
     expect(inner).toContain('apps/operator/lib/release/green-checkpoint.ts');
     expect(inner).toContain("PAPERCUSP_INTEGRATION_ROOT='/tree'");
@@ -300,7 +299,15 @@ describe('checkActiveCheckpointRun (WI-1562 refuse-when-active detection)', () =
       '[green-checkpoint] checkpointing candidate 4961cfb8 (base 94b17b25)',
     ].join('\n');
 
-    const r = checkActiveCheckpointRun('/tree', refireSetup(startedAt), () => head, undefined, undefined, undefined, () => tail);
+    const r = checkActiveCheckpointRun(
+      '/tree',
+      refireSetup(startedAt),
+      () => head,
+      undefined,
+      undefined,
+      undefined,
+      () => tail,
+    );
 
     // The sha actually being judged now — NOT the one the run started on and discarded.
     expect(r.candidate).toBe('4961cfb8');
@@ -314,7 +321,15 @@ describe('checkActiveCheckpointRun (WI-1562 refuse-when-active detection)', () =
     const startedAt = new Date(Date.now() - 5 * 60_000).toISOString();
     const log = '[green-checkpoint] checkpointing candidate 98817077 (base 94b17b25)\nrunning suite...\n';
 
-    const r = checkActiveCheckpointRun('/tree', refireSetup(startedAt), () => log, undefined, undefined, undefined, () => log);
+    const r = checkActiveCheckpointRun(
+      '/tree',
+      refireSetup(startedAt),
+      () => log,
+      undefined,
+      undefined,
+      undefined,
+      () => log,
+    );
 
     expect(r.candidate).toBe('98817077');
     // The common case must stay byte-for-byte what it was before this fix.
@@ -328,7 +343,15 @@ describe('checkActiveCheckpointRun (WI-1562 refuse-when-active detection)', () =
     const head = '[green-checkpoint] checkpointing candidate 98817077 (base 94b17b25)\n';
 
     // Missing / mid-rotation / unreadable log => null, exactly the pre-EI behaviour.
-    const r = checkActiveCheckpointRun('/tree', refireSetup(startedAt), () => head, undefined, undefined, undefined, () => null);
+    const r = checkActiveCheckpointRun(
+      '/tree',
+      refireSetup(startedAt),
+      () => head,
+      undefined,
+      undefined,
+      undefined,
+      () => null,
+    );
 
     expect(r.candidate).toBe('98817077');
     expect(r.refire_observed).toBeUndefined();
@@ -579,34 +602,57 @@ describe('checkActiveCheckpointRun run-lock fallback (WI-5685: the cron-holds-th
 
     it('reports held:false when the lock file is missing/unreadable (no systemctl fork involved)', () => {
       const readLockOwner = vi.fn(() => null);
-      const r = isCheckpointRunLockHeldCheap('/tree', vi.fn(() => true), readLockOwner);
+      const r = isCheckpointRunLockHeldCheap(
+        '/tree',
+        vi.fn(() => true),
+        readLockOwner,
+      );
       expect(r).toEqual({ held: false, elapsedSec: null });
     });
 
     it('reports held:false when the lock owner pid is dead (crashed holder, unreclaimed file)', () => {
       const readLockOwner = vi.fn(() => ({ pid: 9999, startedAt: new Date().toISOString() }));
-      const r = isCheckpointRunLockHeldCheap('/tree', vi.fn(() => false), readLockOwner);
+      const r = isCheckpointRunLockHeldCheap(
+        '/tree',
+        vi.fn(() => false),
+        readLockOwner,
+      );
       expect(r).toEqual({ held: false, elapsedSec: null });
     });
 
     it('reports held:false when a live PID started after the lock (recycled-PID identity guard)', () => {
       const lockStartedAt = Date.now() - 60_000;
       const readLockOwner = vi.fn(() => ({ pid: 9999, startedAt: new Date(lockStartedAt).toISOString() }));
-      const r = isCheckpointRunLockHeldCheap('/tree', vi.fn(() => true), readLockOwner, () => Date.now());
+      const r = isCheckpointRunLockHeldCheap(
+        '/tree',
+        vi.fn(() => true),
+        readLockOwner,
+        () => Date.now(),
+      );
       expect(r).toEqual({ held: false, elapsedSec: null });
     });
 
     it('reports held:false for an over-age live PID when procfs identity is unavailable', () => {
       const lockStartedAt = Date.now() - CHECKPOINT_RUN_LOCK_STALE_MS - 1_000;
       const readLockOwner = vi.fn(() => ({ pid: 9999, startedAt: new Date(lockStartedAt).toISOString() }));
-      const r = isCheckpointRunLockHeldCheap('/tree', vi.fn(() => true), readLockOwner, () => null);
+      const r = isCheckpointRunLockHeldCheap(
+        '/tree',
+        vi.fn(() => true),
+        readLockOwner,
+        () => null,
+      );
       expect(r).toEqual({ held: false, elapsedSec: null });
     });
 
     it('keeps a live PID whose process predates the lock', () => {
       const lockStartedAt = Date.now() - 60_000;
       const readLockOwner = vi.fn(() => ({ pid: 9999, startedAt: new Date(lockStartedAt).toISOString() }));
-      const r = isCheckpointRunLockHeldCheap('/tree', vi.fn(() => true), readLockOwner, () => lockStartedAt - 60_000);
+      const r = isCheckpointRunLockHeldCheap(
+        '/tree',
+        vi.fn(() => true),
+        readLockOwner,
+        () => lockStartedAt - 60_000,
+      );
       expect(r.held).toBe(true);
       expect(r.elapsedSec).toBeGreaterThanOrEqual(59);
     });
@@ -776,7 +822,11 @@ describe('launchDetachedCheckpoint refuse-when-active (WI-1562)', () => {
     // WI-5217: typed as ExecSyncLike (cmd, args) — the untyped 0-arg version below made
     // `.mock.calls.every((c) => c[0] === 'git')` at line ~355 index into an empty `[]`
     // tuple type (no recorded args), even though real calls always pass (cmd, args).
-    const execFn = vi.fn((_cmd: string, _args: string[]) => ({ status: 0, stdout: 'deadbeef00000000000000000000000000000000', stderr: '' }));
+    const execFn = vi.fn((_cmd: string, _args: string[]) => ({
+      status: 0,
+      stdout: 'deadbeef00000000000000000000000000000000',
+      stderr: '',
+    }));
 
     const p = launchDetachedCheckpoint({ root: '/tree', force: true }, spawnFn, execFn);
     child.emit('close', 0);
@@ -962,7 +1012,11 @@ describe('stopActiveCheckpointUnit (EI-9672: the supported cancel a stale run ha
     const execFn = vi.fn(() => ({ status: 0, stdout: '', stderr: '' }));
     const r = stopActiveCheckpointUnit('papercup-green-checkpoint-manual-abc', execFn);
     expect(r).toEqual({ stopped: true });
-    expect(execFn).toHaveBeenCalledWith('systemctl', ['--user', 'stop', 'papercup-green-checkpoint-manual-abc.service']);
+    expect(execFn).toHaveBeenCalledWith('systemctl', [
+      '--user',
+      'stop',
+      'papercup-green-checkpoint-manual-abc.service',
+    ]);
   });
 
   it('reports stopped:false with the stderr reason on a failed stop — never throws', () => {
@@ -1002,10 +1056,14 @@ describe('launchDetachedCheckpoint replaceStale (EI-9672: force alone could not 
     const currentHead = '3333333333333333333333333333333333333333';
     const quietCandidate = '2222222222222222222222222222222222222222';
     return vi.fn((cmd: string, args: string[]) => {
-      if (cmd === 'systemctl' && args[1] === 'show') return fakeSystemctlShow({ ActiveState: 'active', ExecMainStartTimestamp: startedAt });
-      if (cmd === 'systemctl' && args[1] === 'stop') return { status: stopStatus, stdout: '', stderr: stopStatus === 0 ? '' : 'nope' };
-      if (cmd === 'git' && args.slice(-2).join(' ') === 'rev-parse HEAD') return { status: 0, stdout: `${currentHead}\n`, stderr: '' };
-      if (cmd === 'git' && args.includes('--format=%ct')) return { status: 0, stdout: String(Math.floor(Date.now() / 1000) - 30), stderr: '' };
+      if (cmd === 'systemctl' && args[1] === 'show')
+        return fakeSystemctlShow({ ActiveState: 'active', ExecMainStartTimestamp: startedAt });
+      if (cmd === 'systemctl' && args[1] === 'stop')
+        return { status: stopStatus, stdout: '', stderr: stopStatus === 0 ? '' : 'nope' };
+      if (cmd === 'git' && args.slice(-2).join(' ') === 'rev-parse HEAD')
+        return { status: 0, stdout: `${currentHead}\n`, stderr: '' };
+      if (cmd === 'git' && args.includes('--format=%ct'))
+        return { status: 0, stdout: String(Math.floor(Date.now() / 1000) - 30), stderr: '' };
       if (cmd === 'git' && args.includes('rev-list')) return { status: 0, stdout: `${quietCandidate}\n`, stderr: '' };
       if (cmd === 'git' && args.includes('ready')) return { status: 1, stdout: '', stderr: '' };
       return { status: 1, stdout: '', stderr: '' };
@@ -1044,10 +1102,19 @@ describe('launchDetachedCheckpoint replaceStale (EI-9672: force alone could not 
     const execFn = staleActiveExecFn(0, 5); // 5 min old — well under REPLACE_STALE_MIN_AGE_SEC
     const readLogHead = vi.fn(() => '[green-checkpoint] checkpointing candidate 11111111 (base def)\n');
 
-    const r = await launchDetachedCheckpoint({ root: '/tree', replaceStale: true }, spawnFn as never, execFn, readLogHead);
+    const r = await launchDetachedCheckpoint(
+      { root: '/tree', replaceStale: true },
+      spawnFn as never,
+      execFn,
+      readLogHead,
+    );
 
     // The unit was never stopped and nothing launched: the caller must wait for the verdict.
-    expect(execFn).not.toHaveBeenCalledWith('systemctl', ['--user', 'stop', `${checkpointUnitForRoot('/tree')}.service`]);
+    expect(execFn).not.toHaveBeenCalledWith('systemctl', [
+      '--user',
+      'stop',
+      `${checkpointUnitForRoot('/tree')}.service`,
+    ]);
     expect(spawnFn).not.toHaveBeenCalled();
     expect(r.launched).toBe(false);
     expect(r.reason).toBe('already_running');
@@ -1068,15 +1135,25 @@ describe('launchDetachedCheckpoint replaceStale (EI-9672: force alone could not 
         return { status: 0, stdout: '', stderr: '' };
       }
       // ActiveState reported, but NO ExecMainStartTimestamp → elapsed_sec null.
-      if (cmd === 'systemctl' && args[1] === 'show') return fakeSystemctlShow({ ActiveState: 'active', ExecMainStartTimestamp: '' });
-      if (cmd === 'git' && args.slice(-2).join(' ') === 'rev-parse HEAD') return { status: 0, stdout: `${currentHead}\n`, stderr: '' };
-      if (cmd === 'git' && args.includes('--format=%ct')) return { status: 0, stdout: String(Math.floor(Date.now() / 1000) - 30), stderr: '' };
+      if (cmd === 'systemctl' && args[1] === 'show')
+        return fakeSystemctlShow({ ActiveState: 'active', ExecMainStartTimestamp: '' });
+      if (cmd === 'git' && args.slice(-2).join(' ') === 'rev-parse HEAD')
+        return { status: 0, stdout: `${currentHead}\n`, stderr: '' };
+      if (cmd === 'git' && args.includes('--format=%ct'))
+        return { status: 0, stdout: String(Math.floor(Date.now() / 1000) - 30), stderr: '' };
       if (cmd === 'git' && args.includes('rev-list')) return { status: 0, stdout: `${quietCandidate}\n`, stderr: '' };
       return { status: 1, stdout: '', stderr: '' };
     });
-    const readLogHead = vi.fn(() => `[green-checkpoint] checkpointing candidate ${oldCandidate.slice(0, 8)} (base def)\n`);
+    const readLogHead = vi.fn(
+      () => `[green-checkpoint] checkpointing candidate ${oldCandidate.slice(0, 8)} (base def)\n`,
+    );
 
-    const r = await launchDetachedCheckpoint({ root: '/tree', replaceStale: true }, spawnFn as never, execFn, readLogHead);
+    const r = await launchDetachedCheckpoint(
+      { root: '/tree', replaceStale: true },
+      spawnFn as never,
+      execFn,
+      readLogHead,
+    );
 
     expect(stopCall).not.toHaveBeenCalled();
     expect(spawnFn).not.toHaveBeenCalled();
@@ -1094,12 +1171,18 @@ describe('launchDetachedCheckpoint replaceStale (EI-9672: force alone could not 
         return { status: 0, stdout: '', stderr: '' };
       }
       if (cmd === 'systemctl') return fakeSystemctlShow({ ActiveState: 'active', ExecMainStartTimestamp: startedAt });
-      if (cmd === 'git' && args.slice(-2).join(' ') === 'rev-parse HEAD') return { status: 0, stdout: 'abc\n', stderr: '' };
+      if (cmd === 'git' && args.slice(-2).join(' ') === 'rev-parse HEAD')
+        return { status: 0, stdout: 'abc\n', stderr: '' };
       return { status: 1, stdout: '', stderr: '' };
     });
     const readLogHead = vi.fn(() => '[green-checkpoint] checkpointing candidate abc12345 (base def)\n');
 
-    const r = await launchDetachedCheckpoint({ root: '/tree', replaceStale: true }, spawnFn as never, execFn, readLogHead);
+    const r = await launchDetachedCheckpoint(
+      { root: '/tree', replaceStale: true },
+      spawnFn as never,
+      execFn,
+      readLogHead,
+    );
 
     expect(stopCall).not.toHaveBeenCalled();
     expect(spawnFn).not.toHaveBeenCalled();
@@ -1188,7 +1271,13 @@ describe('launchDetachedCheckpoint replaceStale (EI-9672: force alone could not 
     const readLogHead = vi.fn(() => '[green-checkpoint] checkpointing candidate 11111111 (base def)\n');
     const cancelStaleAwaits = vi.fn(async () => ({ cancelled: 0 }));
 
-    await launchDetachedCheckpoint({ root: '/tree', replaceStale: true }, spawnFn as never, execFn, readLogHead, cancelStaleAwaits);
+    await launchDetachedCheckpoint(
+      { root: '/tree', replaceStale: true },
+      spawnFn as never,
+      execFn,
+      readLogHead,
+      cancelStaleAwaits,
+    );
 
     expect(cancelStaleAwaits).not.toHaveBeenCalled();
   });
@@ -1259,7 +1348,12 @@ describe('launchDetachedCheckpoint replaceStale (EI-9672: force alone could not 
     expect(() =>
       recordCheckpointDisplacement(
         '/tmp/some-unit.log',
-        { candidate: 'abc123def456', current_candidate: 'fed654cba321', elapsed_sec: 300, started_at: '2026-08-02T05:15:07Z' },
+        {
+          candidate: 'abc123def456',
+          current_candidate: 'fed654cba321',
+          elapsed_sec: 300,
+          started_at: '2026-08-02T05:15:07Z',
+        },
         throwingAppend,
       ),
     ).not.toThrow();
@@ -1272,7 +1366,12 @@ describe('launchDetachedCheckpoint replaceStale (EI-9672: force alone could not 
     const appendFn = vi.fn();
     recordCheckpointDisplacement(
       '/tmp/some-unit.log',
-      { candidate: 'abc123def456', current_candidate: 'fed654cba321', elapsed_sec: 300, started_at: '2026-08-02T05:15:07.000Z' },
+      {
+        candidate: 'abc123def456',
+        current_candidate: 'fed654cba321',
+        elapsed_sec: 300,
+        started_at: '2026-08-02T05:15:07.000Z',
+      },
       appendFn,
     );
     expect(appendFn).toHaveBeenCalledTimes(1);
@@ -1486,13 +1585,11 @@ describe('renderContainmentWarning (P-004)', () => {
    * the reader does not spend the ~3h suite re-debugging code that was already correct.
    */
   it('names the torn-TDD-pair shape explicitly when splitRisk is detected', () => {
-    const w = renderContainmentWarning(
-      ['a.ts'],
-      [p('a.ts', 'newer-commit')],
-      [],
-      'caller-supplied',
-      { detected: true, includedTests: ['a.test.ts'], missingImpl: ['a.ts'] },
-    );
+    const w = renderContainmentWarning(['a.ts'], [p('a.ts', 'newer-commit')], [], 'caller-supplied', {
+      detected: true,
+      includedTests: ['a.test.ts'],
+      missingImpl: ['a.ts'],
+    });
     expect(w).toMatch(/KNOWN FALSE-RED SHAPE/);
     expect(w).toMatch(/torn TDD pair/);
     expect(w).toMatch(/a\.test\.ts/);
@@ -1522,15 +1619,13 @@ describe('checkpointCandidateContainment (P-004)', () => {
    * COMMIT exists before judging any path, so a fixture that did not answer it would make
    * every case fall into the unknown branch.
    */
-  const fakeExec =
-    (answers: Record<string, string>) =>
-    (_cmd: string, args: string[]) => {
-      const key = args.slice(2).join(' ');
-      if (key.endsWith('^{commit}') && !(key in answers)) return { status: 0, stdout: 'c'.repeat(40), stderr: '' };
-      return key in answers
-        ? { status: 0, stdout: answers[key], stderr: '' }
-        : { status: 128, stdout: '', stderr: 'fatal' };
-    };
+  const fakeExec = (answers: Record<string, string>) => (_cmd: string, args: string[]) => {
+    const key = args.slice(2).join(' ');
+    if (key.endsWith('^{commit}') && !(key in answers)) return { status: 0, stdout: 'c'.repeat(40), stderr: '' };
+    return key in answers
+      ? { status: 0, stdout: answers[key], stderr: '' }
+      : { status: 128, stdout: '', stderr: 'fatal' };
+  };
 
   it('reports included/missing for caller-declared paths', async () => {
     const r = await checkpointCandidateContainment({
