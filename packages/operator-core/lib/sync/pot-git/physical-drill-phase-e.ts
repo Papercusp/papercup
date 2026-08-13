@@ -1,0 +1,652 @@
+/**
+ * Fixed production-spine adapter for P-505 physical Phase E / P-306.
+ *
+ * Phase E is deliberately not a second bridge implementation. The checked-in
+ * scenario flips the fixed canary through `setPotGitMode`, fires the canonical
+ * `git-sync:run` action on both physical hosts, and observes the routine row
+ * written by `runGithubBridgeLeg`. This adapter only supplies fixed, run-bound
+ * remote mutations plus exact observations and a strict causal validator.
+ * Caller-selected commands, repositories, refs, and remote URLs are absent.
+ */
+import { getOrgPg } from '@papercusp/db-org';
+import { loadHarnessRegistry } from '../../harness-registry';
+import { checkGitSyncStall } from '../../release/git-sync-stall-watchdog';
+import { getPotGitMode, readPotGitMode, setPotGitMode, type PotGitMode } from '../../harness/git-sync/hive-git-mode';
+import { BRIDGE_CANONICAL_REF, BRIDGE_REMOTE_STAGING_REF } from './github-bridge-tick';
+import { GITHUB_BRIDGE_ESCALATION_PHASE } from './github-divergence';
+import { defaultRunGit, hiveGitRepoPath, type RunGit } from './storage';
+import { PHASE_A_POT_HOME, PHASE_A_REPO_KEY } from './physical-drill-phase-a';
+import { PHASE_D_WORKSPACE, type PhysicalPhaseDHost } from './physical-drill-phase-d';
+
+export const PHASE_E_INPUT_SCHEMA = 'hive-git-physical-phase-e-input/v1' as const;
+export const PHASE_E_RESULT_SCHEMA = 'hive-git-physical-phase-e-result/v1' as const;
+export const PHASE_E_OBSERVATION_SCHEMA = 'hive-git-physical-phase-e-observation/v1' as const;
+export const PHASE_E_MUTATION_SCHEMA = 'hive-git-physical-phase-e-mutation/v1' as const;
+export const PHASE_E_MODE_CHANGE_SCHEMA = 'hive-git-physical-phase-e-mode-change/v1' as const;
+export const PHASE_E_WATCHDOG_SCHEMA = 'hive-git-physical-phase-e-watchdog/v1' as const;
+export const PHASE_E_RECOVERY_SCHEMA = 'hive-git-physical-phase-e-recovery/v1' as const;
+export const PHASE_E_PLAN_ITEM = 'P-306' as const;
+
+const RUN_ID = /^[A-Za-z0-9._-]{8,120}$/;
+const OID = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
+const DEVICE_KEY = /^[A-Za-z0-9+/]{43}=$/;
+const GIT_SYNC_WATCHDOG_PHASE = 'git-sync-watchdog';
+
+export type PhysicalPhaseEHost = PhysicalPhaseDHost;
+export type PhysicalPhaseEObservationStage =
+  | 'legacy-before'
+  | 'bridged-member'
+  | 'healthy-egress'
+  | 'divergence-before'
+  | 'divergence-after'
+  | 'legacy-after';
+
+export type PhysicalPhaseETrigger = {
+  tool: 'git-sync:run';
+  installSlug: typeof PHASE_A_POT_HOME;
+  host: PhysicalPhaseEHost;
+  role: 'tower-member' | 'vm-member' | 'healthy-ingress' | 'healthy-integrate' | 'healthy-egress' | 'divergence-egress' | 'rollback-observe';
+  fired: true;
+  startedAt: string;
+  finishedAt: string;
+};
+
+export type PhysicalPhaseEModeChange = {
+  schemaVersion: typeof PHASE_E_MODE_CHANGE_SCHEMA;
+  runId: string;
+  hostId: 'tower';
+  tool: 'setPotGitMode';
+  from: 'legacy' | 'bridged';
+  to: 'legacy' | 'bridged';
+  workspaceId: typeof PHASE_D_WORKSPACE;
+  potHomeSlug: typeof PHASE_A_POT_HOME;
+  observedAt: string;
+};
+
+export type PhysicalPhaseERoutine = {
+  active: boolean;
+  lastFiredAt: string | null;
+  pushMode: string | null;
+  lastStatus: string | null;
+  lastPushed: string[];
+  headSha: string | null;
+  watchdogAlerted: boolean;
+  watchdogErrorSweeps: number;
+  watchdogStallSweeps: number;
+  githubBridge: null | {
+    at: number | null;
+    ran: boolean;
+    skipped: string | null;
+    egressTarget: string | null;
+    lastAdmitted: string | null;
+    egressHead: string | null;
+    divergence: string | null;
+    needsOwner: boolean;
+    errors: string[];
+  };
+};
+
+export type PhysicalPhaseEObservation = {
+  schemaVersion: typeof PHASE_E_OBSERVATION_SCHEMA;
+  runId: string;
+  hostId: PhysicalPhaseEHost;
+  deviceKey: string;
+  stage: PhysicalPhaseEObservationStage;
+  observedAt: string;
+  mode: { value: PotGitMode; source: 'set' | 'absent' | 'malformed' | 'error' };
+  routine: PhysicalPhaseERoutine;
+  refs: {
+    canonicalStaging: string | null;
+    upstreamDefault: string | null;
+    remoteStaging: string | null;
+  };
+  bridgeEscalation: Record<string, unknown> | null;
+  watchdogEscalation: Record<string, unknown> | null;
+};
+
+export type PhysicalPhaseERemoteMutation = {
+  schemaVersion: typeof PHASE_E_MUTATION_SCHEMA;
+  runId: string;
+  kind: 'ingress' | 'fork-ahead';
+  hostId: 'tower';
+  method: 'fixed-empty-commit-ff-push';
+  remoteRole: 'upstream' | 'fork';
+  remoteRef: string;
+  baseOid: string;
+  canonicalOid: string;
+  headOid: string;
+  createdAt: string;
+};
+
+export type PhysicalPhaseERemoteRecovery = {
+  schemaVersion: typeof PHASE_E_RECOVERY_SCHEMA;
+  runId: string;
+  hostId: 'tower';
+  method: 'fixed-force-with-lease-restore';
+  remoteRef: typeof BRIDGE_REMOTE_STAGING_REF;
+  expectedDivergenceOid: string;
+  restoredOid: string;
+  observedRemoteOid: string;
+  observedAt: string;
+};
+
+export type PhysicalPhaseEWatchdogSweep = {
+  schemaVersion: typeof PHASE_E_WATCHDOG_SCHEMA;
+  runId: string;
+  hostId: 'tower';
+  ordinal: 1 | 2;
+  tool: 'checkGitSyncStall';
+  startedAt: string;
+  finishedAt: string;
+  fixedRoutineActive: boolean;
+  fixedPushMode: string | null;
+  fixedWatchdogAlerted: boolean;
+  fixedWatchdogErrorSweeps: number;
+  fixedWatchdogStallSweeps: number;
+  alarmed: string[];
+  recovered: string[];
+};
+
+export type PhysicalPhaseEInput = {
+  schemaVersion: typeof PHASE_E_INPUT_SCHEMA;
+  runId: string;
+  window: { startedAt: string; finishedAt: string };
+  identities: { towerDeviceKey: string; vmDeviceKey: string };
+  before: { tower: PhysicalPhaseEObservation; vm: PhysicalPhaseEObservation };
+  activation: {
+    modeChange: PhysicalPhaseEModeChange;
+    towerTrigger: PhysicalPhaseETrigger;
+    vmTrigger: PhysicalPhaseETrigger;
+    tower: PhysicalPhaseEObservation;
+    vm: PhysicalPhaseEObservation;
+  };
+  healthy: {
+    ingressMutation: PhysicalPhaseERemoteMutation;
+    ingressTrigger: PhysicalPhaseETrigger;
+    integrateTrigger: PhysicalPhaseETrigger;
+    egressTrigger: PhysicalPhaseETrigger;
+    observation: PhysicalPhaseEObservation;
+  };
+  watchdogSweeps: [PhysicalPhaseEWatchdogSweep, PhysicalPhaseEWatchdogSweep];
+  divergence: {
+    before: PhysicalPhaseEObservation;
+    mutation: PhysicalPhaseERemoteMutation;
+    trigger: PhysicalPhaseETrigger;
+    after: PhysicalPhaseEObservation;
+    recovery: PhysicalPhaseERemoteRecovery;
+  };
+  rollback: {
+    modeChange: PhysicalPhaseEModeChange;
+    towerTrigger: PhysicalPhaseETrigger;
+    vmTrigger: PhysicalPhaseETrigger;
+    tower: PhysicalPhaseEObservation;
+    vm: PhysicalPhaseEObservation;
+  };
+};
+
+export type PhysicalPhaseEVerdict = {
+  ok: boolean;
+  errors: string[];
+  result: null | {
+    schemaVersion: typeof PHASE_E_RESULT_SCHEMA;
+    phase: 'E';
+    planItem: typeof PHASE_E_PLAN_ITEM;
+    status: 'complete';
+    complete: true;
+    missingAssertions: [];
+    observedAt: string;
+    assertions: {
+      bothHostsConsumedFederatedBridgedMode: true;
+      bothMembersWereCommitOnlyAndDirectPushedNothing: true;
+      ingressAdvancedAdmissionWatermark: true;
+      canonicalDescendedFromAdmittedIngress: true;
+      bridgeAloneFastForwardedRemoteStaging: true;
+      twoProductionWatchdogSweepsStayedQuiet: true;
+      forkAheadWasRefusedWithoutCanonicalMutation: true;
+      controlledRemoteRecoveryAndLegacyRollbackObserved: true;
+    };
+    oids: { ingress: string; admitted: string; canonical: string; divergence: string; restored: string };
+  };
+};
+
+type OrgSql = ReturnType<typeof getOrgPg>['sql'];
+type RemoteContext = { repoPath: string; upstream: string; fork: string; defaultBranch: string };
+type PhaseEDeps = { sql?: OrgSql; runGit?: RunGit; remoteContext?: RemoteContext };
+
+function assertRunId(runId: string): void {
+  if (!RUN_ID.test(runId)) throw new Error(`physical Phase E runId is invalid: ${runId}`);
+}
+
+function assertDeviceKey(deviceKey: string): void {
+  if (!DEVICE_KEY.test(deviceKey) || Buffer.from(deviceKey, 'base64').length !== 32) {
+    throw new Error('physical Phase E requires a raw 32-byte Ed25519 device key in base64');
+  }
+}
+
+async function fixedRemoteContext(deps: PhaseEDeps = {}): Promise<RemoteContext> {
+  if (deps.remoteContext) return deps.remoteContext;
+  const entry = (await loadHarnessRegistry()).projects.find((project) => project.slug === PHASE_A_POT_HOME);
+  if (!entry?.github_remote || !entry.fork_remote) {
+    throw new Error(`physical Phase E fixed canary ${PHASE_A_POT_HOME} requires both upstream and fork remotes`);
+  }
+  return {
+    repoPath: hiveGitRepoPath(PHASE_A_POT_HOME, PHASE_A_REPO_KEY),
+    upstream: entry.github_remote,
+    fork: entry.fork_remote,
+    defaultBranch: entry.github_default_branch ?? 'main',
+  };
+}
+
+async function git(runGit: RunGit, cwd: string, args: string[]): Promise<string> {
+  const result = await runGit(args, cwd, { timeoutMs: 10 * 60_000 });
+  if (result.code !== 0) throw new Error(`physical Phase E git ${args.join(' ')} failed: ${result.stderr.trim()}`);
+  return result.stdout.trim();
+}
+
+async function rev(runGit: RunGit, cwd: string, ref: string): Promise<string | null> {
+  const result = await runGit(['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], cwd);
+  const oid = result.stdout.trim();
+  return result.code === 0 && OID.test(oid) ? oid : null;
+}
+
+async function remoteRef(runGit: RunGit, cwd: string, remote: string, ref: string): Promise<string | null> {
+  const result = await runGit(['ls-remote', '--refs', remote, ref], cwd, { timeoutMs: 10 * 60_000 });
+  if (result.code !== 0) throw new Error(`physical Phase E cannot read fixed remote ${ref}: ${result.stderr.trim()}`);
+  const oid = result.stdout.trim().split(/\s+/)[0] ?? '';
+  return OID.test(oid) ? oid : null;
+}
+
+async function routine(sql: OrgSql): Promise<PhysicalPhaseERoutine> {
+  const rows = await sql<Array<{ active: boolean; last_fired_at: Date | string | null; metadata: Record<string, unknown> | null }>>`
+    SELECT active, last_fired_at, metadata
+      FROM harness_shared.routines
+     WHERE workspace_id = ${PHASE_D_WORKSPACE}
+       AND install_slug = ${PHASE_A_POT_HOME}
+       AND target_role = 'system:git-sync'
+     LIMIT 1
+  `;
+  const row = rows[0];
+  const metadata = row?.metadata ?? {};
+  const bridge = metadata.github_bridge && typeof metadata.github_bridge === 'object'
+    ? metadata.github_bridge as Record<string, unknown>
+    : null;
+  const strings = (value: unknown): string[] => Array.isArray(value) ? value.filter((v): v is string => typeof v === 'string') : [];
+  const integer = (value: unknown): number => Number.isSafeInteger(Number(value)) ? Number(value) : 0;
+  return {
+    active: row?.active === true,
+    lastFiredAt: row?.last_fired_at ? new Date(row.last_fired_at).toISOString() : null,
+    pushMode: typeof metadata.push_mode === 'string' ? metadata.push_mode : null,
+    lastStatus: typeof metadata.last_status === 'string' ? metadata.last_status : null,
+    lastPushed: strings(metadata.last_pushed),
+    headSha: typeof metadata.head_sha === 'string' ? metadata.head_sha : null,
+    watchdogAlerted: metadata.watchdog_alerted === true,
+    watchdogErrorSweeps: integer(metadata.wd_error_sweeps),
+    watchdogStallSweeps: integer(metadata.wd_stall_sweeps),
+    githubBridge: bridge ? {
+      at: Number.isFinite(Number(bridge.at)) ? Number(bridge.at) : null,
+      ran: bridge.ran === true,
+      skipped: typeof bridge.skipped === 'string' ? bridge.skipped : null,
+      egressTarget: typeof bridge.egress_target === 'string' ? bridge.egress_target : null,
+      lastAdmitted: typeof bridge.last_admitted === 'string' ? bridge.last_admitted : null,
+      egressHead: typeof bridge.egress_head === 'string' ? bridge.egress_head : null,
+      divergence: typeof bridge.divergence === 'string' ? bridge.divergence : null,
+      needsOwner: bridge.needs_owner === true,
+      errors: strings(bridge.errors),
+    } : null,
+  };
+}
+
+async function escalation(sql: OrgSql, phase: string): Promise<Record<string, unknown> | null> {
+  const rows = await sql<Array<{ escalation: string | Record<string, unknown> | null }>>`
+    SELECT escalation
+      FROM harness_shared.harness_escalations
+     WHERE workspace_id = ${PHASE_D_WORKSPACE}
+       AND harness_slug = ${PHASE_A_POT_HOME}
+       AND phase = ${phase}
+     LIMIT 1
+  `;
+  const raw = rows[0]?.escalation;
+  if (!raw) return null;
+  if (typeof raw === 'string') {
+    try { return JSON.parse(raw) as Record<string, unknown>; } catch { return { malformed: raw }; }
+  }
+  return raw;
+}
+
+/** Fixed mode flip. The returned record is the evidence of the production write surface used. */
+export async function setPhysicalPhaseEMode(input: { runId: string; mode: 'legacy' | 'bridged' }, deps: PhaseEDeps = {}): Promise<PhysicalPhaseEModeChange> {
+  assertRunId(input.runId);
+  const sql = deps.sql ?? getOrgPg().sql;
+  const from = await getPotGitMode(PHASE_D_WORKSPACE, PHASE_A_POT_HOME, sql);
+  await setPotGitMode(PHASE_D_WORKSPACE, PHASE_A_POT_HOME, input.mode, sql);
+  const after = await getPotGitMode(PHASE_D_WORKSPACE, PHASE_A_POT_HOME, sql);
+  if (after !== input.mode) throw new Error(`physical Phase E mode flip did not persist ${input.mode}`);
+  return {
+    schemaVersion: PHASE_E_MODE_CHANGE_SCHEMA,
+    runId: input.runId,
+    hostId: 'tower',
+    tool: 'setPotGitMode',
+    from,
+    to: after,
+    workspaceId: PHASE_D_WORKSPACE,
+    potHomeSlug: PHASE_A_POT_HOME,
+    observedAt: new Date().toISOString(),
+  };
+}
+
+/** Capture fixed production routine/ref/escalation state on one physical host. */
+export async function capturePhysicalPhaseEObservation(
+  input: { runId: string; hostId: PhysicalPhaseEHost; deviceKey: string; stage: PhysicalPhaseEObservationStage },
+  deps: PhaseEDeps = {},
+): Promise<PhysicalPhaseEObservation> {
+  assertRunId(input.runId);
+  assertDeviceKey(input.deviceKey);
+  const sql = deps.sql ?? getOrgPg().sql;
+  const runGit = deps.runGit ?? defaultRunGit;
+  const context = await fixedRemoteContext(deps);
+  const mode = await readPotGitMode(PHASE_D_WORKSPACE, PHASE_A_POT_HOME, sql);
+  return {
+    schemaVersion: PHASE_E_OBSERVATION_SCHEMA,
+    runId: input.runId,
+    hostId: input.hostId,
+    deviceKey: input.deviceKey,
+    stage: input.stage,
+    observedAt: new Date().toISOString(),
+    mode: { value: mode.mode, source: mode.source },
+    routine: await routine(sql),
+    refs: {
+      canonicalStaging: await rev(runGit, context.repoPath, BRIDGE_CANONICAL_REF),
+      upstreamDefault: await remoteRef(runGit, context.repoPath, context.upstream, `refs/heads/${context.defaultBranch}`),
+      remoteStaging: await remoteRef(runGit, context.repoPath, context.fork, BRIDGE_REMOTE_STAGING_REF),
+    },
+    bridgeEscalation: await escalation(sql, GITHUB_BRIDGE_ESCALATION_PHASE),
+    watchdogEscalation: await escalation(sql, GIT_SYNC_WATCHDOG_PHASE),
+  };
+}
+
+async function createRemoteMutation(
+  input: { runId: string; kind: 'ingress' | 'fork-ahead' },
+  deps: PhaseEDeps = {},
+): Promise<PhysicalPhaseERemoteMutation> {
+  assertRunId(input.runId);
+  const runGit = deps.runGit ?? defaultRunGit;
+  const context = await fixedRemoteContext(deps);
+  const canonical = await rev(runGit, context.repoPath, BRIDGE_CANONICAL_REF);
+  if (!canonical) throw new Error('physical Phase E fixed canonical staging ref is absent');
+  const remoteRole = input.kind === 'ingress' ? 'upstream' : 'fork';
+  const remote = remoteRole === 'upstream' ? context.upstream : context.fork;
+  const remoteRefName = input.kind === 'ingress' ? `refs/heads/${context.defaultBranch}` : BRIDGE_REMOTE_STAGING_REF;
+  const base = input.kind === 'ingress'
+    ? await remoteRef(runGit, context.repoPath, remote, remoteRefName)
+    : await remoteRef(runGit, context.repoPath, remote, remoteRefName);
+  if (!base) throw new Error(`physical Phase E fixed ${remoteRole} ${remoteRefName} is absent`);
+  if (input.kind === 'fork-ahead' && base !== canonical) {
+    throw new Error('physical Phase E divergence control requires fork staging to equal canonical before arming');
+  }
+  if (!(await rev(runGit, context.repoPath, base))) {
+    await git(runGit, context.repoPath, ['fetch', '--no-tags', remote, base]);
+  }
+  const tree = await git(runGit, context.repoPath, ['rev-parse', `${base}^{tree}`]);
+  const head = await git(runGit, context.repoPath, [
+    '-c', 'user.name=Papercusp Physical Drill',
+    '-c', 'user.email=physical-drill@papercusp.local',
+    'commit-tree', tree, '-p', base, '-m', `physical-phase-e ${input.kind} ${input.runId}`,
+  ]);
+  if (!OID.test(head)) throw new Error('physical Phase E commit-tree returned an invalid oid');
+  await git(runGit, context.repoPath, ['push', remote, `${head}:${remoteRefName}`]);
+  const observed = await remoteRef(runGit, context.repoPath, remote, remoteRefName);
+  if (observed !== head) throw new Error(`physical Phase E ${remoteRole} mutation did not land`);
+  return {
+    schemaVersion: PHASE_E_MUTATION_SCHEMA,
+    runId: input.runId,
+    kind: input.kind,
+    hostId: 'tower',
+    method: 'fixed-empty-commit-ff-push',
+    remoteRole,
+    remoteRef: remoteRefName,
+    baseOid: base,
+    canonicalOid: canonical,
+    headOid: head,
+    createdAt: new Date().toISOString(),
+  };
+}
+
+export const createPhysicalPhaseEIngress = (input: { runId: string }, deps: PhaseEDeps = {}): Promise<PhysicalPhaseERemoteMutation> =>
+  createRemoteMutation({ runId: input.runId, kind: 'ingress' }, deps);
+
+export const createPhysicalPhaseEDivergence = (input: { runId: string }, deps: PhaseEDeps = {}): Promise<PhysicalPhaseERemoteMutation> =>
+  createRemoteMutation({ runId: input.runId, kind: 'fork-ahead' }, deps);
+
+/** Restore only the exact fork-ahead mutation this run created, guarded by force-with-lease. */
+export async function restorePhysicalPhaseEDivergence(
+  mutation: PhysicalPhaseERemoteMutation,
+  deps: PhaseEDeps = {},
+): Promise<PhysicalPhaseERemoteRecovery> {
+  if (
+    mutation.schemaVersion !== PHASE_E_MUTATION_SCHEMA || mutation.kind !== 'fork-ahead' ||
+    mutation.remoteRole !== 'fork' || mutation.remoteRef !== BRIDGE_REMOTE_STAGING_REF
+  ) throw new Error('physical Phase E recovery requires the fixed fork-ahead mutation record');
+  assertRunId(mutation.runId);
+  const runGit = deps.runGit ?? defaultRunGit;
+  const context = await fixedRemoteContext(deps);
+  await git(runGit, context.repoPath, [
+    'push', `--force-with-lease=${BRIDGE_REMOTE_STAGING_REF}:${mutation.headOid}`,
+    context.fork, `${mutation.canonicalOid}:${BRIDGE_REMOTE_STAGING_REF}`,
+  ]);
+  const observed = await remoteRef(runGit, context.repoPath, context.fork, BRIDGE_REMOTE_STAGING_REF);
+  if (observed !== mutation.canonicalOid) throw new Error('physical Phase E controlled fork recovery did not restore canonical');
+  return {
+    schemaVersion: PHASE_E_RECOVERY_SCHEMA,
+    runId: mutation.runId,
+    hostId: 'tower',
+    method: 'fixed-force-with-lease-restore',
+    remoteRef: BRIDGE_REMOTE_STAGING_REF,
+    expectedDivergenceOid: mutation.headOid,
+    restoredOid: mutation.canonicalOid,
+    observedRemoteOid: observed,
+    observedAt: new Date().toISOString(),
+  };
+}
+
+/** Execute the production watchdog and bind its outcome to the fixed canary routine. */
+export async function runPhysicalPhaseEWatchdogSweep(
+  input: { runId: string; ordinal: 1 | 2 },
+  deps: PhaseEDeps = {},
+): Promise<PhysicalPhaseEWatchdogSweep> {
+  assertRunId(input.runId);
+  const sql = deps.sql ?? getOrgPg().sql;
+  const startedAt = new Date().toISOString();
+  const outcome = await checkGitSyncStall(sql);
+  const fixed = await routine(sql);
+  return {
+    schemaVersion: PHASE_E_WATCHDOG_SCHEMA,
+    runId: input.runId,
+    hostId: 'tower',
+    ordinal: input.ordinal,
+    tool: 'checkGitSyncStall',
+    startedAt,
+    finishedAt: new Date().toISOString(),
+    fixedRoutineActive: fixed.active,
+    fixedPushMode: fixed.pushMode,
+    fixedWatchdogAlerted: fixed.watchdogAlerted,
+    fixedWatchdogErrorSweeps: fixed.watchdogErrorSweeps,
+    fixedWatchdogStallSweeps: fixed.watchdogStallSweeps,
+    alarmed: outcome.alarmed,
+    recovered: outcome.recovered,
+  };
+}
+
+function ms(value: string, label: string, errors: string[]): number {
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed)) errors.push(`${label} must be ISO-8601`);
+  return parsed;
+}
+
+function validateTrigger(trigger: PhysicalPhaseETrigger, role: PhysicalPhaseETrigger['role'], host: PhysicalPhaseEHost, window: { start: number; finish: number }, errors: string[]): void {
+  if (trigger.tool !== 'git-sync:run' || trigger.installSlug !== PHASE_A_POT_HOME || trigger.fired !== true || trigger.role !== role || trigger.host !== host) {
+    errors.push(`Phase E ${role} must be the fixed ${host} git-sync:run trigger`);
+  }
+  const start = ms(trigger.startedAt, `Phase E ${role}.startedAt`, errors);
+  const finish = ms(trigger.finishedAt, `Phase E ${role}.finishedAt`, errors);
+  if (finish < start || start < window.start || finish > window.finish) errors.push(`Phase E ${role} trigger must be ordered inside the run window`);
+}
+
+function validateObservation(
+  observation: PhysicalPhaseEObservation,
+  expected: { runId: string; host: PhysicalPhaseEHost; key: string; stage: PhysicalPhaseEObservationStage; mode: PotGitMode },
+  window: { start: number; finish: number },
+  errors: string[],
+): void {
+  if (observation.schemaVersion !== PHASE_E_OBSERVATION_SCHEMA || observation.runId !== expected.runId || observation.hostId !== expected.host || observation.deviceKey !== expected.key || observation.stage !== expected.stage) {
+    errors.push(`Phase E ${expected.stage} must be the exact ${expected.host} run-bound observation`);
+  }
+  const at = ms(observation.observedAt, `Phase E ${expected.stage}.observedAt`, errors);
+  if (at < window.start || at > window.finish) errors.push(`Phase E ${expected.stage} observation must fall inside the run window`);
+  if (observation.mode.value !== expected.mode || (expected.mode === 'bridged' && observation.mode.source !== 'set')) {
+    errors.push(`Phase E ${expected.stage} must observe mode ${expected.mode}${expected.mode === 'bridged' ? ' from the federated set row' : ''}`);
+  }
+}
+
+function hasSignal(escalation: Record<string, unknown> | null, kind: string): boolean {
+  const signals = Array.isArray(escalation?.signals) ? escalation.signals : [];
+  return signals.some((value) => value && typeof value === 'object' && (value as Record<string, unknown>).kind === kind);
+}
+
+function validateModeChange(change: PhysicalPhaseEModeChange, runId: string, from: 'legacy' | 'bridged', to: 'legacy' | 'bridged', errors: string[]): void {
+  if (
+    change.schemaVersion !== PHASE_E_MODE_CHANGE_SCHEMA || change.runId !== runId || change.hostId !== 'tower' ||
+    change.tool !== 'setPotGitMode' || change.workspaceId !== PHASE_D_WORKSPACE || change.potHomeSlug !== PHASE_A_POT_HOME ||
+    change.from !== from || change.to !== to
+  ) errors.push(`Phase E mode change must use setPotGitMode ${from}→${to} on the fixed canary`);
+}
+
+/** Strict, pure causal validator for the assembled two-host Phase E evidence. */
+export function validatePhysicalPhaseE(input: PhysicalPhaseEInput): PhysicalPhaseEVerdict {
+  const errors: string[] = [];
+  if (input.schemaVersion !== PHASE_E_INPUT_SCHEMA) errors.push(`schemaVersion must be ${PHASE_E_INPUT_SCHEMA}`);
+  if (!RUN_ID.test(input.runId)) errors.push('Phase E runId is invalid');
+  for (const [label, key] of [['tower', input.identities.towerDeviceKey], ['vm', input.identities.vmDeviceKey]] as const) {
+    try { assertDeviceKey(key); } catch { errors.push(`Phase E ${label} device key is invalid`); }
+  }
+  if (input.identities.towerDeviceKey === input.identities.vmDeviceKey) errors.push('Phase E physical device identities must be distinct');
+  const start = ms(input.window.startedAt, 'Phase E window.startedAt', errors);
+  const finish = ms(input.window.finishedAt, 'Phase E window.finishedAt', errors);
+  if (finish <= start) errors.push('Phase E window must be ordered');
+  const window = { start, finish };
+  const tower = input.identities.towerDeviceKey;
+  const vm = input.identities.vmDeviceKey;
+
+  validateObservation(input.before.tower, { runId: input.runId, host: 'tower', key: tower, stage: 'legacy-before', mode: 'legacy' }, window, errors);
+  validateObservation(input.before.vm, { runId: input.runId, host: 'vm', key: vm, stage: 'legacy-before', mode: 'legacy' }, window, errors);
+  validateModeChange(input.activation.modeChange, input.runId, 'legacy', 'bridged', errors);
+  validateTrigger(input.activation.towerTrigger, 'tower-member', 'tower', window, errors);
+  validateTrigger(input.activation.vmTrigger, 'vm-member', 'vm', window, errors);
+  validateObservation(input.activation.tower, { runId: input.runId, host: 'tower', key: tower, stage: 'bridged-member', mode: 'bridged' }, window, errors);
+  validateObservation(input.activation.vm, { runId: input.runId, host: 'vm', key: vm, stage: 'bridged-member', mode: 'bridged' }, window, errors);
+  for (const [label, observation] of [['tower', input.activation.tower], ['vm', input.activation.vm]] as const) {
+    if (observation.routine.pushMode !== 'commit-only:bridged' || observation.routine.lastPushed.length !== 0 || !observation.routine.active) {
+      errors.push(`Phase E ${label} member must be active, commit-only:bridged, and record no direct pushes`);
+    }
+  }
+
+  const ingress = input.healthy.ingressMutation;
+  if (
+    ingress.schemaVersion !== PHASE_E_MUTATION_SCHEMA || ingress.runId !== input.runId || ingress.kind !== 'ingress' ||
+    ingress.remoteRole !== 'upstream' || ingress.hostId !== 'tower' || ingress.method !== 'fixed-empty-commit-ff-push' ||
+    !OID.test(ingress.baseOid) || !OID.test(ingress.headOid) || ingress.baseOid === ingress.headOid
+  ) errors.push('Phase E healthy ingress must be a fresh fixed FF upstream commit');
+  validateTrigger(input.healthy.ingressTrigger, 'healthy-ingress', 'tower', window, errors);
+  validateTrigger(input.healthy.integrateTrigger, 'healthy-integrate', 'tower', window, errors);
+  validateTrigger(input.healthy.egressTrigger, 'healthy-egress', 'tower', window, errors);
+  validateObservation(input.healthy.observation, { runId: input.runId, host: 'tower', key: tower, stage: 'healthy-egress', mode: 'bridged' }, window, errors);
+  const healthy = input.healthy.observation;
+  const admitted = healthy.routine.githubBridge?.lastAdmitted;
+  const canonical = healthy.refs.canonicalStaging;
+  if (admitted !== ingress.headOid || healthy.refs.upstreamDefault !== ingress.headOid) {
+    errors.push('Phase E healthy bridge must ingress and persist the exact fresh upstream head as last_admitted');
+  }
+  if (
+    !canonical || healthy.routine.githubBridge?.ran !== true || healthy.routine.githubBridge.egressTarget !== 'fork' ||
+    healthy.routine.githubBridge.egressHead !== canonical || healthy.refs.remoteStaging !== canonical ||
+    healthy.routine.githubBridge.divergence !== 'clear' || healthy.bridgeEscalation !== null
+  ) errors.push('Phase E healthy bridge must clear divergence and FF exact canonical staging to the fork');
+  if (canonical === ingress.baseOid || canonical === ingress.canonicalOid) {
+    errors.push('Phase E healthy canonical must advance beyond the pre-ingress staging head');
+  }
+
+  if (input.watchdogSweeps.length !== 2) errors.push('Phase E requires exactly two production watchdog sweeps');
+  input.watchdogSweeps.forEach((sweep, index) => {
+    if (
+      sweep.schemaVersion !== PHASE_E_WATCHDOG_SCHEMA || sweep.runId !== input.runId || sweep.hostId !== 'tower' ||
+      sweep.ordinal !== index + 1 || sweep.tool !== 'checkGitSyncStall' || !sweep.fixedRoutineActive ||
+      sweep.fixedPushMode !== 'commit-only:bridged' || sweep.fixedWatchdogAlerted || sweep.fixedWatchdogErrorSweeps !== 0 ||
+      sweep.fixedWatchdogStallSweeps !== 0 || sweep.alarmed.includes(PHASE_A_POT_HOME)
+    ) errors.push(`Phase E watchdog sweep ${index + 1} must inspect the active commit-only canary without alarming`);
+    const sweepStart = ms(sweep.startedAt, `Phase E watchdog ${index + 1}.startedAt`, errors);
+    const sweepFinish = ms(sweep.finishedAt, `Phase E watchdog ${index + 1}.finishedAt`, errors);
+    if (sweepFinish < sweepStart || sweepStart < window.start || sweepFinish > window.finish) errors.push(`Phase E watchdog sweep ${index + 1} must fall inside the run window`);
+  });
+  if (Date.parse(input.watchdogSweeps[1].startedAt) <= Date.parse(input.watchdogSweeps[0].finishedAt)) {
+    errors.push('Phase E production watchdog sweeps must be distinct and ordered');
+  }
+
+  validateObservation(input.divergence.before, { runId: input.runId, host: 'tower', key: tower, stage: 'divergence-before', mode: 'bridged' }, window, errors);
+  const mutation = input.divergence.mutation;
+  if (
+    mutation.schemaVersion !== PHASE_E_MUTATION_SCHEMA || mutation.runId !== input.runId || mutation.kind !== 'fork-ahead' ||
+    mutation.remoteRole !== 'fork' || mutation.remoteRef !== BRIDGE_REMOTE_STAGING_REF || mutation.baseOid !== mutation.canonicalOid ||
+    mutation.canonicalOid !== input.divergence.before.refs.canonicalStaging || mutation.headOid === mutation.baseOid
+  ) errors.push('Phase E divergence must arm one fresh fork-ahead commit from the observed canonical head');
+  validateTrigger(input.divergence.trigger, 'divergence-egress', 'tower', window, errors);
+  validateObservation(input.divergence.after, { runId: input.runId, host: 'tower', key: tower, stage: 'divergence-after', mode: 'bridged' }, window, errors);
+  const after = input.divergence.after;
+  if (
+    after.refs.canonicalStaging !== mutation.canonicalOid || after.refs.remoteStaging !== mutation.headOid ||
+    after.routine.githubBridge?.divergence !== 'escalate' || after.routine.githubBridge.egressHead !== mutation.canonicalOid ||
+    !hasSignal(after.bridgeEscalation, 'egress-non-ff')
+  ) errors.push('Phase E fork-ahead control must yield egress-non-ff while canonical and remote remain unchanged');
+  const recovery = input.divergence.recovery;
+  if (
+    recovery.schemaVersion !== PHASE_E_RECOVERY_SCHEMA || recovery.runId !== input.runId || recovery.hostId !== 'tower' ||
+    recovery.method !== 'fixed-force-with-lease-restore' || recovery.expectedDivergenceOid !== mutation.headOid ||
+    recovery.restoredOid !== mutation.canonicalOid || recovery.observedRemoteOid !== mutation.canonicalOid
+  ) errors.push('Phase E divergence recovery must lease-guard restore the exact canonical head');
+
+  validateModeChange(input.rollback.modeChange, input.runId, 'bridged', 'legacy', errors);
+  validateTrigger(input.rollback.towerTrigger, 'rollback-observe', 'tower', window, errors);
+  validateTrigger(input.rollback.vmTrigger, 'rollback-observe', 'vm', window, errors);
+  validateObservation(input.rollback.tower, { runId: input.runId, host: 'tower', key: tower, stage: 'legacy-after', mode: 'legacy' }, window, errors);
+  validateObservation(input.rollback.vm, { runId: input.runId, host: 'vm', key: vm, stage: 'legacy-after', mode: 'legacy' }, window, errors);
+
+  const uniqueErrors = [...new Set(errors)];
+  return {
+    ok: uniqueErrors.length === 0,
+    errors: uniqueErrors,
+    result: uniqueErrors.length ? null : {
+      schemaVersion: PHASE_E_RESULT_SCHEMA,
+      phase: 'E',
+      planItem: PHASE_E_PLAN_ITEM,
+      status: 'complete',
+      complete: true,
+      missingAssertions: [],
+      observedAt: input.window.finishedAt,
+      assertions: {
+        bothHostsConsumedFederatedBridgedMode: true,
+        bothMembersWereCommitOnlyAndDirectPushedNothing: true,
+        ingressAdvancedAdmissionWatermark: true,
+        canonicalDescendedFromAdmittedIngress: true,
+        bridgeAloneFastForwardedRemoteStaging: true,
+        twoProductionWatchdogSweepsStayedQuiet: true,
+        forkAheadWasRefusedWithoutCanonicalMutation: true,
+        controlledRemoteRecoveryAndLegacyRollbackObserved: true,
+      },
+      oids: {
+        ingress: ingress.headOid,
+        admitted: admitted!,
+        canonical: canonical!,
+        divergence: mutation.headOid,
+        restored: recovery.observedRemoteOid,
+      },
+    },
+  };
+}
