@@ -607,7 +607,7 @@ describe('infraSummary — every crit must NAME its cause (the escalation body)'
   });
 
   it('names host PSI memory separately from an operator per-thread wedge while preserving precedence', () => {
-    const d = infra({ perf: { status: 'crit', reasons: ['PSI memory full avg60 13.29 >= 5'] } as InfraHealth['perf'], disk: critDisk });
+    const d = infra({ perf: { status: 'crit', reasons: ['PSI memory full avg60 13.29 ≥ 5'] } as InfraHealth['perf'], disk: critDisk });
     const s = infraSummary(d, true);
     expect(s).toContain('HOST MEMORY PRESSURE: PSI memory full');
     expect(s).not.toContain('PER-THREAD WEDGE');
