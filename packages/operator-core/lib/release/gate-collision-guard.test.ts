@@ -18,6 +18,7 @@ import {
   GATE_SENSITIVE_RESTART_TARGETS,
   IMMINENT_FIRE_LOOKAHEAD_SEC,
   IMMINENT_FIRE_LOOKBEHIND_SEC,
+  gateRunCgroupRelation,
   type GateCollisionProbe,
   type GateCollisionProbeDeps,
 } from './gate-collision-guard';
@@ -82,6 +83,70 @@ describe('run-in-flight (the primary condition)', () => {
     expect(v.note).toContain('MID AUTO-REFIRE');
     expect(v.note).toContain('4a9b218b');
     expect(v.detail.refiringCandidate).toBe('4a9b218b');
+  });
+});
+
+describe('mechanism-aware run-in-flight guard', () => {
+  const userSlice = '/user.slice/user-1000.slice/user@1000.service/app.slice';
+  const targetCgroup = `${userSlice}/papercup-bg-host.service`;
+
+  it('treats a target cgroup and its child cgroup as shared', () => {
+    expect(gateRunCgroupRelation(`${targetCgroup}/checkpoint.scope`, targetCgroup)).toBe('same');
+    const v = judge({
+      runLockHeld: true,
+      runElapsedSec: 60,
+      runLockCgroupPath: `${targetCgroup}/checkpoint.scope`,
+      targetCgroupPath: targetCgroup,
+    });
+    expect(v.blocked).toBe(true);
+    expect(v.kind).toBe('run-in-flight');
+    expect(v.detail.cgroupRelation).toBe('same');
+    expect(v.note).not.toContain('EI-18793581783459047');
+  });
+
+  it('proceeds when a detached checkpoint unit is a known sibling cgroup', () => {
+    const v = judge({
+      runLockHeld: true,
+      runElapsedSec: 60,
+      runLockCgroupPath: `${userSlice}/papercup-green-checkpoint-manual.scope`,
+      targetCgroupPath: targetCgroup,
+    });
+    expect(v.blocked).toBe(false);
+    expect(v.kind).toBe('run-in-flight-isolated');
+    expect(v.detail.cgroupRelation).toBe('different');
+    expect(v.note).toContain('residual risk');
+  });
+
+  it('fails open, explicitly, when either cgroup path is unknown', () => {
+    const v = judge({
+      runLockHeld: true,
+      runElapsedSec: 60,
+      runLockCgroupPath: null,
+      targetCgroupPath: null,
+    });
+    expect(v.blocked).toBe(false);
+    expect(v.kind).toBe('run-in-flight-unknown');
+    expect(v.detail.cgroupRelation).toBe('unknown');
+    expect(v.note).toContain('could not be determined');
+  });
+
+  it('passes the actual restart target to the cgroup reader', async () => {
+    const readTargetCgroup = vi.fn(async (target: (typeof GATE_SENSITIVE_RESTART_TARGETS)[number]) => {
+      expect(target).toBe('gateway');
+      return '/user.slice/user-1000.slice/user@1000.service/app.slice/papercup-gateway.service';
+    });
+    const probe = await probeGateCollision(
+      {
+        readRunLock: () => ({ held: true, elapsedSec: 10, pid: 42 }),
+        readRunLockCgroup: () => '/user.slice/user-1000.slice/user@1000.service/app.slice/papercup-gateway.service',
+        readTargetCgroup,
+        readNextFireInSec: async () => 3_000,
+        readRefire: async () => null,
+      },
+      'gateway',
+    );
+    expect(readTargetCgroup).toHaveBeenCalledWith('gateway');
+    expect(judgeGateCollision({ target: 'gateway', probe, override: false }).blocked).toBe(true);
   });
 });
 

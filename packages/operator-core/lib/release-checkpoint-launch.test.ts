@@ -523,6 +523,7 @@ describe('checkActiveCheckpointRun run-lock fallback (WI-5685: the cron-holds-th
       const r = isCheckpointRunLockHeldCheap('/tree', pidAlive, readLockOwner);
 
       expect(r.held).toBe(true);
+      expect(r.pid).toBe(4242);
       expect(r.elapsedSec).toBeGreaterThanOrEqual(89);
       expect(pidAlive).toHaveBeenCalledWith(4242);
     });

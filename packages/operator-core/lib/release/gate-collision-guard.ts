@@ -1,15 +1,16 @@
 /**
  * EI-19385475092979200 — refuse (softly) to restart a gate-critical shared host while a
- * green-checkpoint run is in flight, or is about to be.
+ * green-checkpoint run is in flight or is about to be, but only when the live mechanism
+ * evidence says the restart can actually reach that run.
  *
  * ## The hazard
  *
  * Restarting a shared host the gate's suite depends on — the embedding sidecar, the inference
- * gateway, the background routines host — mid-run can starve that run into a FALSE red
- * (EI-18793581783459047), which is then misdiagnosed as a regression in whatever the run
- * happened to be judging. The plan `local-reranker-gte-modernbert-2026-08-02` documents the
- * hazard in its own `## Now`, so the KNOWLEDGE existed; it was simply not ENFORCED anywhere,
- * and was therefore left to each agent's memory and timing luck.
+ * gateway, the background routines host — can perturb a run. The concrete hard hazard is a
+ * restart that shares the run's systemd cgroup and therefore terminates it; separate detached
+ * checkpoint units do not have that KillMode=control-group reach. Even with separate cgroups,
+ * ambient host load during boot remains a residual risk, so the guard says what it measured
+ * instead of presenting every live lock as an abortable collision.
  *
  * ## Why `ps` is the wrong oracle (the near-miss this is built from)
  *
@@ -35,8 +36,10 @@
  * legitimately need restarting, and an agent that cannot restart it has no recourse inside the
  * tool. Same contract as {@link readInFlightRetriage} and `resolveDeadRoutineOverdueMs`.
  *
- * For the same reason a real collision is a SOFT block: the caller is refused with the run's
- * age and candidate, and told the exact override to re-call with. It never hard-blocks.
+ * For the same reason a confirmed shared-cgroup collision is a SOFT block: the caller is
+ * refused with the run's age and candidate, and told the exact override to re-call with. A
+ * known detached sibling and an unknown cgroup relationship both fail open with an explicit
+ * note rather than silently converting uncertainty into a refusal.
  *
  * Precedent for the shape: `release:checkpoint-run` was taught to read the `inFlightRetriage`
  * marker and refuse with `🚨 AUTO-REFIRE IN FLIGHT — STAND DOWN` (EI-19343516395023183). Same
@@ -44,7 +47,13 @@
  * standing up a third way to ask "what is the gate doing".
  */
 
+import { readFileSync } from 'node:fs';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import type { StoredInFlightRetriage } from './in-flight-retriage';
+import { RESTART_TARGET_UNITS } from '../agent-tools/dev/restart-target-units';
+
+const execFileAsync = promisify(execFile);
 
 /**
  * The restart targets whose blast radius overlaps a green-checkpoint run's dependencies.
@@ -80,6 +89,14 @@ export interface GateCollisionProbe {
   runLockHeld: boolean;
   /** Age of the run holding the lock, when known. */
   runElapsedSec: number | null;
+  /** Verified PID that owns the run-lock, when the lock reader exposes it. */
+  runLockPid?: number | null;
+  /** Unified cgroup path of the checkpoint owner, when it can be read. */
+  runLockCgroupPath?: string | null;
+  /** Unified cgroup path systemd assigns to the restart target, when it can be read. */
+  targetCgroupPath?: string | null;
+  /** True when the cgroup comparison itself could not be completed. */
+  cgroupProbeFailed?: boolean;
   /** Seconds until the next scheduled fire; NEGATIVE = that many seconds PAST it. */
   nextFireInSec: number | null;
   /** An auto-refire in flight — the strongest possible stand-down signal. */
@@ -95,6 +112,10 @@ export type GateCollisionKind =
   | 'clear'
   /** A run holds the shared run-lock right now. */
   | 'run-in-flight'
+  /** A run is active, but its known systemd cgroup is separate from the target. */
+  | 'run-in-flight-isolated'
+  /** A run is active, but its cgroup relationship to the target is unknown. */
+  | 'run-in-flight-unknown'
   /** No lock held, but a scheduled fire is within the two-sided window. */
   | 'imminent-fire';
 
@@ -111,13 +132,69 @@ export interface GateCollisionVerdict {
     nextFireInSec: number | null;
     refiringCandidate: string | null;
     refireAttempt: number | null;
+    runLockPid: number | null;
+    runLockCgroupPath: string | null;
+    targetCgroupPath: string | null;
+    cgroupRelation: GateRunCgroupRelation;
   };
 }
+
+export type GateRunCgroupRelation = 'same' | 'different' | 'unknown';
 
 function humanizeSec(sec: number): string {
   const s = Math.abs(Math.round(sec));
   if (s < 90) return `${s}s`;
   return `${Math.round(s / 60)}min`;
+}
+
+function normalizeCgroupPath(value: string | null | undefined): string | null {
+  const path = value?.trim();
+  if (!path || !path.startsWith('/')) return null;
+  return path.length > 1 ? path.replace(/\/+$/, '') : path;
+}
+
+/**
+ * PURE — systemd's ControlGroup is the cgroup root for a unit, while a process may be in
+ * that unit or in a child cgroup. Only a root/descendant relationship is a collision; sibling
+ * transient units share parents but are deliberately independent for KillMode=control-group.
+ * Missing paths are UNKNOWN, never same — the live guard fails open in that case.
+ *
+ * The legacy `undefined`/`undefined` case is retained for old injectable callers that only
+ * supplied the original lock reader. Production probes populate both fields (or explicit nulls)
+ * whenever they inspect a held lock, so an actual unreadable cgroup never takes this fallback.
+ */
+export function gateRunCgroupRelation(
+  runCgroupPath: string | null | undefined,
+  targetCgroupPath: string | null | undefined,
+): GateRunCgroupRelation {
+  if (runCgroupPath === undefined && targetCgroupPath === undefined) return 'same';
+  const run = normalizeCgroupPath(runCgroupPath);
+  const target = normalizeCgroupPath(targetCgroupPath);
+  if (!run || !target) return 'unknown';
+  const nested = (parent: string, child: string) => child === parent || child.startsWith(`${parent}/`);
+  return nested(target, run) || nested(run, target) ? 'same' : 'different';
+}
+
+function defaultReadProcessCgroup(pid: number): string | null {
+  try {
+    const unified = readFileSync(`/proc/${pid}/cgroup`, 'utf8')
+      .split('\n')
+      .find((line) => line.startsWith('0::'))
+      ?.slice(3)
+      .trim();
+    return normalizeCgroupPath(unified);
+  } catch {
+    return null;
+  }
+}
+
+async function defaultReadTargetCgroup(target: GateSensitiveTarget): Promise<string | null> {
+  const { stdout } = await execFileAsync(
+    'systemctl',
+    ['--user', 'show', RESTART_TARGET_UNITS[target], '-p', 'ControlGroup', '--value'],
+    { timeout: 3_000 },
+  );
+  return normalizeCgroupPath(String(stdout));
 }
 
 /**
@@ -132,11 +209,18 @@ export function judgeGateCollision(input: {
   override: boolean;
 }): GateCollisionVerdict {
   const { target, probe, override } = input;
+  const cgroupRelation = probe.runLockHeld
+    ? gateRunCgroupRelation(probe.runLockCgroupPath, probe.targetCgroupPath)
+    : 'unknown';
   const detail = {
     runElapsedSec: probe.runElapsedSec,
     nextFireInSec: probe.nextFireInSec,
     refiringCandidate: probe.refire?.refiringCandidate ?? null,
     refireAttempt: probe.refire?.refireAttempt ?? null,
+    runLockPid: probe.runLockPid ?? null,
+    runLockCgroupPath: probe.runLockCgroupPath ?? null,
+    targetCgroupPath: probe.targetCgroupPath ?? null,
+    cgroupRelation,
   };
 
   if (!isGateSensitiveTarget(target)) {
@@ -177,6 +261,34 @@ export function judgeGateCollision(input: {
     };
   }
 
+  if (probe.runLockHeld && cgroupRelation === 'different') {
+    return {
+      blocked: false,
+      kind: 'run-in-flight-isolated',
+      overridden: false,
+      note:
+        `A green-checkpoint run IS IN FLIGHT, but its cgroup (${probe.runLockCgroupPath}) is separate from ` +
+        `${target}'s systemd cgroup (${probe.targetCgroupPath}) — restarting ${target} cannot terminate that run ` +
+        `through systemd cgroup membership. Proceeding with residual risk: the restart can still add ambient host ` +
+        `load during boot, while the run's own watchdog covers loss of the parent-side kill timer.`,
+      detail,
+    };
+  }
+
+  if (probe.runLockHeld && cgroupRelation === 'unknown') {
+    return {
+      blocked: false,
+      kind: 'run-in-flight-unknown',
+      overridden: false,
+      note:
+        `A green-checkpoint run IS IN FLIGHT, but its cgroup relationship to ${target} could not be determined ` +
+        `(checkpoint=${probe.runLockCgroupPath ?? 'unknown'}, target=${probe.targetCgroupPath ?? 'unknown'}). ` +
+        `Proceeding because this guard fails open when mechanism metadata is unknown; verify the restart's impact ` +
+        `against systemd if the target is gate-sensitive.`,
+      detail,
+    };
+  }
+
   const kind: GateCollisionKind = probe.runLockHeld ? 'run-in-flight' : 'imminent-fire';
 
   const what = probe.runLockHeld
@@ -191,7 +303,10 @@ export function judgeGateCollision(input: {
       ? `The hourly green-checkpoint gate fires in ${humanizeSec(probe.nextFireInSec)}.`
       : `The hourly green-checkpoint gate fired ${humanizeSec(probe.nextFireInSec ?? 0)} ago and its run may not have taken the shared run-lock yet.`;
 
-  const why = `Restarting ${target} now can starve that run into a FALSE red (EI-18793581783459047), which then gets misdiagnosed as a regression in whatever it was judging.`;
+  const why =
+    `The run shares ${target}'s systemd cgroup, so restarting ${target} can terminate it; even when the cgroups ` +
+    `are separate, ambient host load during boot can still perturb the gate, and a parent restart can drop only ` +
+    `the parent's kill timer (the run's own watchdog is the backstop).`;
 
   if (override) {
     return {
@@ -214,7 +329,11 @@ export function judgeGateCollision(input: {
 
 /** Injectable readers, so the shell is testable without a filesystem or a database. */
 export interface GateCollisionProbeDeps {
-  readRunLock: () => { held: boolean; elapsedSec: number | null };
+  readRunLock: () => { held: boolean; elapsedSec: number | null; pid?: number };
+  /** Read the checkpoint owner's unified cgroup. Optional for backwards-compatible fixtures. */
+  readRunLockCgroup?: (pid: number) => string | null | Promise<string | null>;
+  /** Read the restart target's systemd ControlGroup. Optional for backwards-compatible fixtures. */
+  readTargetCgroup?: (target: GateSensitiveTarget) => string | null | Promise<string | null>;
   readNextFireInSec: () => Promise<number | null>;
   readRefire: () => Promise<StoredInFlightRetriage | null>;
 }
@@ -258,6 +377,8 @@ async function defaultDeps(): Promise<GateCollisionProbeDeps> {
   ]);
   return {
     readRunLock: () => isCheckpointRunLockHeldCheap(integrationRoot()),
+    readRunLockCgroup: defaultReadProcessCgroup,
+    readTargetCgroup: defaultReadTargetCgroup,
     readNextFireInSec: defaultReadNextFireInSec,
     readRefire: () => readInFlightRetriage(),
   };
@@ -268,7 +389,10 @@ async function defaultDeps(): Promise<GateCollisionProbeDeps> {
  * collapsing the whole probe to `probeFailed` — a readable run-lock still blocks correctly
  * when the routines read is what broke.
  */
-export async function probeGateCollision(deps?: GateCollisionProbeDeps): Promise<GateCollisionProbe> {
+export async function probeGateCollision(
+  deps?: GateCollisionProbeDeps,
+  target: GateSensitiveTarget = 'bg-host',
+): Promise<GateCollisionProbe> {
   let d: GateCollisionProbeDeps;
   try {
     d = deps ?? (await defaultDeps());
@@ -279,12 +403,42 @@ export async function probeGateCollision(deps?: GateCollisionProbeDeps): Promise
   let probeFailed = false;
   let runLockHeld = false;
   let runElapsedSec: number | null = null;
+  let runLockPid: number | null | undefined;
+  let runLockCgroupPath: string | null | undefined;
+  let targetCgroupPath: string | null | undefined;
+  let cgroupProbeFailed = false;
   try {
     const lock = d.readRunLock();
     runLockHeld = lock.held;
     runElapsedSec = lock.elapsedSec;
+    runLockPid = lock.pid ?? null;
   } catch {
     probeFailed = true;
+  }
+
+  // Only a held lock needs mechanism analysis. The default deps always provide these readers;
+  // old injectable fixtures that do not provide them retain the pre-cgroup pure-test contract.
+  const hasCgroupReaders = Boolean(d.readRunLockCgroup || d.readTargetCgroup);
+  if (runLockHeld && (runLockPid !== null && runLockPid !== undefined || hasCgroupReaders)) {
+    if (runLockPid !== null && runLockPid !== undefined && d.readRunLockCgroup) {
+      try {
+        runLockCgroupPath = await d.readRunLockCgroup(runLockPid);
+      } catch {
+        cgroupProbeFailed = true;
+        runLockCgroupPath = null;
+      }
+    } else {
+      cgroupProbeFailed = true;
+      runLockCgroupPath = null;
+    }
+    if (d.readTargetCgroup) {
+      try {
+        targetCgroupPath = await d.readTargetCgroup(target);
+      } catch {
+        cgroupProbeFailed = true;
+        targetCgroupPath = null;
+      }
+    }
   }
 
   let nextFireInSec: number | null = null;
@@ -301,7 +455,17 @@ export async function probeGateCollision(deps?: GateCollisionProbeDeps): Promise
     // The refire marker only ENRICHES the message; losing it is never a probe failure.
   }
 
-  return { probeFailed, runLockHeld, runElapsedSec, nextFireInSec, refire };
+  return {
+    probeFailed,
+    runLockHeld,
+    runElapsedSec,
+    ...(runLockPid !== undefined ? { runLockPid } : {}),
+    ...(runLockCgroupPath !== undefined ? { runLockCgroupPath } : {}),
+    ...(targetCgroupPath !== undefined ? { targetCgroupPath } : {}),
+    ...(cgroupProbeFailed ? { cgroupProbeFailed } : {}),
+    nextFireInSec,
+    refire,
+  };
 }
 
 /** Probe + judge, the one call `dev:restart` makes. Never throws. */
@@ -317,6 +481,6 @@ export async function checkGateCollision(
       override,
     });
   }
-  const probe = await probeGateCollision(deps);
+  const probe = await probeGateCollision(deps, target);
   return judgeGateCollision({ target, probe, override });
 }
