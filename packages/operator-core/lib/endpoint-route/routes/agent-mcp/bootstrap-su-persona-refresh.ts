@@ -39,7 +39,7 @@ import { isSuAgent } from '../../../su-agents';
 import { launchContextDir } from '../../../su-launch-context';
 import {
   applySuPromptOverlays,
-  buildSuInstructionRuntime,
+  resolveSuInstructionRuntime,
   parseSuLaunchSpecRecord,
   resolveSuPlanContext,
   suPersonaRefreshPathFor,
@@ -107,7 +107,7 @@ const personaRefresh = defineTool({
         planNow: plan.planNow,
       });
 
-      const instructionRuntime = buildSuInstructionRuntime({
+      const instructionRuntime = await resolveSuInstructionRuntime({
         ownerId: coordOwnerId,
         autoMode: record.autoMode,
         drainMode: record.drainMode,

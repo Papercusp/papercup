@@ -172,6 +172,25 @@ describe('buildSuInstructionRuntime', () => {
     expect(solo.modes).toEqual([]);
     expect(solo.route).toEqual({ kind: 'self' });
   });
+
+  it('lets a live registry mode override the launch snapshot', () => {
+    const live = buildSuInstructionRuntime({
+      ownerId: 'su-1', autoMode: false, drainMode: false,
+      fleet: null, workspaceId: 'ws', harnessSlug: null, planSlug: null,
+      activeModes: ['auto'], modeResolution: 'registry',
+    });
+    expect(live.modes).toEqual(['auto']);
+    expect(live.modeResolution).toBe('registry');
+  });
+
+  it('preserves an unavailable registry state instead of presenting it as empty', () => {
+    const unavailable = buildSuInstructionRuntime({
+      ownerId: 'su-1', autoMode: false, drainMode: false,
+      fleet: null, workspaceId: 'ws', harnessSlug: null, planSlug: null,
+      modeResolution: 'unavailable',
+    });
+    expect(unavailable.modeResolution).toBe('unavailable');
+  });
 });
 
 describe('parseSuLaunchSpecRecord', () => {

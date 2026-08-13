@@ -28,6 +28,7 @@ import {
   lintInstructionText,
   renderInstructionPrecedenceContext,
   type InstructionLintReport,
+  type InstructionModeResolution,
   type InstructionRuntimeContext,
 } from './instruction-lint';
 import { launchContextDir } from './su-launch-context';
@@ -81,7 +82,7 @@ export async function resolveSuPlanContext(opts: {
  * playbook clauses are SUPPRESSED right now, and how to full-resync when the
  * control watermark moves.
  */
-export function buildSuInstructionRuntime(opts: {
+export interface SuInstructionRuntimeOptions {
   ownerId: string;
   autoMode: boolean;
   drainMode: boolean;
@@ -89,8 +90,20 @@ export function buildSuInstructionRuntime(opts: {
   workspaceId: string;
   harnessSlug: string | null;
   planSlug: string | null;
-}): InstructionRuntimeContext {
+  /** Optional live mode rows. When omitted, derive the launch snapshot. */
+  activeModes?: readonly string[];
+  modeResolution?: InstructionModeResolution;
+}
+
+export function buildSuInstructionRuntime(opts: SuInstructionRuntimeOptions): InstructionRuntimeContext {
   const fleetSlug = opts.fleet?.slug ?? null;
+  const modes = opts.activeModes
+    ? [...new Set(opts.activeModes)]
+    : opts.drainMode
+      ? ['auto', 'drain']
+      : opts.autoMode || fleetSlug
+        ? ['auto']
+        : [];
   return {
     source: 'bootstrap-su',
     ownerId: opts.ownerId,
@@ -104,7 +117,8 @@ export function buildSuInstructionRuntime(opts: {
     // the P-003 property ("a respawn's render equals a fresh render") checkable at
     // all — a byte-comparison against a moving timestamp can never hold. (WI-7185)
     observedAt: new Date().toISOString(),
-    modes: opts.drainMode ? ['auto', 'drain'] : opts.autoMode || fleetSlug ? ['auto'] : [],
+    modes,
+    modeResolution: opts.modeResolution ?? 'launch',
     route: fleetSlug
       ? { kind: 'fleet', fleet: fleetSlug, role: opts.fleet?.role ?? null }
       : { kind: 'self' },
@@ -115,6 +129,30 @@ export function buildSuInstructionRuntime(opts: {
       items: [],
     },
   };
+}
+
+/**
+ * Resolve launch/refresh precedence from the same live mode registry that
+ * `mode:set` and `coord:orient` read. A failed read is retained as an explicit
+ * `unavailable` resolution; callers must not mistake it for an empty registry.
+ * The launch flags remain as a best-effort fallback for the prose mode section,
+ * while the structured execution decision renders `unknown` until the registry
+ * can be read.
+ */
+export async function resolveSuInstructionRuntime(
+  opts: SuInstructionRuntimeOptions,
+): Promise<InstructionRuntimeContext> {
+  try {
+    const { getModes } = await import('./modes/store');
+    const rows = await getModes(opts.workspaceId, opts.ownerId);
+    return buildSuInstructionRuntime({
+      ...opts,
+      activeModes: rows.map((row) => row.mode),
+      modeResolution: 'registry',
+    });
+  } catch {
+    return buildSuInstructionRuntime({ ...opts, modeResolution: 'unavailable' });
+  }
 }
 
 /**

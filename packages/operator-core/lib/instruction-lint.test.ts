@@ -103,6 +103,35 @@ describe('lintInstructionText', () => {
     expect(renderInstructionPrecedenceContext(out.precedenceTrace!)).toContain('⟦INSTRUCTION-PRECEDENCE⟧');
   });
 
+  it('uses the live registry mode list even when launch flags are not autonomous', () => {
+    const out = lintInstructionText('', 20, {
+      source: 'bootstrap-su',
+      ownerId: 'su-x',
+      modes: ['auto'],
+      modeResolution: 'registry',
+      route: { kind: 'self' },
+    });
+    expect(out.precedenceTrace?.decisions.find((d) => d.key === 'execution-authorization')).toMatchObject({
+      status: 'effective',
+      effective: { value: 'act-with-disclosure' },
+    });
+  });
+
+  it('renders an explicit unknown when the live mode registry cannot be read', () => {
+    const out = lintInstructionText('', 20, {
+      source: 'bootstrap-su',
+      ownerId: 'su-x',
+      modes: [],
+      modeResolution: 'unavailable',
+      route: { kind: 'self' },
+    });
+    expect(out.precedenceTrace?.decisions.find((d) => d.key === 'execution-authorization')).toMatchObject({
+      status: 'conflict',
+      effective: { value: 'unknown' },
+    });
+    expect(JSON.stringify(out.precedenceTrace)).toContain('unknown, not confirm-first');
+  });
+
   it('makes DRAIN the mission constraint over fleet/plan generics and produces a stable watermark', () => {
     const a = buildInstructionPrecedenceTrace({
       source: 'coord:orient',

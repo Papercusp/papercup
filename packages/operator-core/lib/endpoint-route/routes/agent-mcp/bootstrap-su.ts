@@ -43,7 +43,7 @@ import {
 // call THESE — a second, drifting assembly is the failure mode the fix introduces.
 import {
   applySuPromptOverlays,
-  buildSuInstructionRuntime,
+  resolveSuInstructionRuntime,
   resolveSuPlanContext,
   type SuLaunchSpecRecord,
 } from '../../../su-persona-render';
@@ -2058,7 +2058,7 @@ const post = defineTool({
     // playbook clauses (a later mode transition may need them); it explicitly
     // marks the rules that are suppressed NOW and tells the agent how to full-
     // resync on any watermark/control change.
-    const instructionRuntime: InstructionRuntimeContext = buildSuInstructionRuntime({
+    const instructionRuntime: InstructionRuntimeContext = await resolveSuInstructionRuntime({
       ownerId: sid,
       autoMode,
       drainMode,

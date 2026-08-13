@@ -34,6 +34,10 @@ export interface InstructionRuntimeContext {
   source: 'bootstrap-su' | 'coord:orient' | 'control-anchor';
   ownerId?: string | null;
   modes?: string[];
+  /** Where the active mode list came from. A failed live read is explicit so
+   * the trace cannot silently turn an unknown authority state into the generic
+   * confirm-first posture. */
+  modeResolution?: 'launch' | 'registry' | 'unavailable';
   route?: { kind: 'self' } | { kind: 'mug' } | { kind: 'fleet'; fleet: string; role?: string | null };
   scope?: {
     workspace?: string | null;
@@ -120,6 +124,8 @@ const STALE_RULE_VALUES: Record<string, Record<string, string>> = {
 function stableRuntimeContext(input: InstructionRuntimeContext) {
   return {
     modes: [...new Set(input.modes ?? [])].sort(),
+    modeResolution:
+      input.modeResolution ?? (input.source === 'bootstrap-su' ? ('launch' as const) : ('registry' as const)),
     route: input.route ?? { kind: 'self' as const },
     scope: {
       workspace: input.scope?.workspace ?? null,
@@ -153,7 +159,8 @@ export function buildInstructionPrecedenceTrace(
 ): InstructionPrecedenceTrace {
   const stable = stableRuntimeContext(runtime);
   const modes = new Set(stable.modes);
-  const auto = [...modes].some((m) => modeImpliesAutonomy(m));
+  const modeResolutionUnknown = stable.modeResolution === 'unavailable';
+  const auto = !modeResolutionUnknown && [...modes].some((m) => modeImpliesAutonomy(m));
   const drain = modes.has('drain');
   const ideate = modes.has('ideate');
   const decisions: InstructionPrecedenceDecision[] = [];
@@ -205,7 +212,16 @@ export function buildInstructionPrecedenceTrace(
   }
 
   decisions.push(
-    auto
+    modeResolutionUnknown
+      ? {
+          key: 'execution-authorization',
+          status: 'conflict',
+          effective: { value: 'unknown', source: 'runtime:mode-registry' },
+          suppressed: [],
+          reason:
+            'The canonical agent mode registry could not be read; execution authorization is unknown, not confirm-first.',
+        }
+      : auto
       ? runtimeDecision(
           'execution-authorization',
           'act-with-disclosure',
