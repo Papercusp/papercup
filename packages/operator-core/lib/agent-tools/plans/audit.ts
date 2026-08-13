@@ -116,7 +116,8 @@ export default defineTool({
   modality: ['text'],
   args: argsSchema,
   async handler(args, ctx) {
-    const harnessSlug = resolveCtxHarnessSlug(harnessScopedCtx(args.harness, ctx));
+    const sctx = harnessScopedCtx(args.harness, ctx as { harnessSlug?: string | null });
+    const harnessSlug = resolveCtxHarnessSlug(sctx);
 
     // The plan's real items. An empty read is ambiguous between "no such plan" and "the
     // index read failed", and BOTH must refuse: validating against an empty list would
