@@ -68,7 +68,7 @@ describe('composeFeatureKey / composeIssueKey', () => {
       storageHarnessSlug: 'operator:ws-demo',
       issueId: 'EI-42',
     });
-    expect(parseEngineerIssueKey('EI-42')).toBeNull(); // pre-828 legacy key
+    expect(parseEngineerIssueKey('EI-42')).toBeNull(); // pre-829 legacy key
     expect(parseEngineerIssueKey('/EI-42')).toBeNull();
     expect(parseEngineerIssueKey('papercusp/')).toBeNull();
   });
@@ -496,7 +496,7 @@ describe('outboxRowToLocalWriteOp — engineer_issues (B5 work-queue federation)
     expect(op.value).toBeUndefined();
   });
 
-  it('keeps pre-828 bare-key puts readable while leaving storage identity absent', () => {
+  it('keeps pre-829 bare-key puts readable while leaving storage identity absent', () => {
     const legacy = {
       ...engineerIssueOutboxRow,
       key: 'EI-10',

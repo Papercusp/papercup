@@ -36,7 +36,7 @@ export interface EngineerIssueRow {
   /**
    * Physical work_items.harness_slug.  Added after migration 826 proved that a
    * home log can contain the same issue_id for several authored harnesses.
-   * Optional for pre-828 wire ops; their bare keys remain readable.
+   * Optional for pre-829 wire ops; their bare keys remain readable.
    */
   storage_harness_slug?: string;
   issue_id: string;
@@ -271,7 +271,7 @@ async function writeToPg(
     typeof row.scope === 'string' && row.scope.startsWith('harness:')
       ? row.scope.slice(8)
       : `operator:${opts.workspaceId || 'default'}`;
-  // The storage slug is part of every post-828 op's identity.  Refuse a row
+  // The storage slug is part of every post-829 op's identity.  Refuse a row
   // whose payload disagrees with its scope-derived destination: accepting it
   // would make the put land under one key while its later tombstone targets a
   // different physical row.
@@ -427,7 +427,7 @@ async function deleteFromPg(
       AND feature_id = ${issueId}
       AND item_kind IN ('bug', 'change', 'task')
       -- Remote tombstones may delete only the row materialised from that same
-      -- source log.  This makes every pre-828 bare-key replay fail closed instead
+      -- source log.  This makes every pre-829 bare-key replay fail closed instead
       -- of erasing a same-id local/sibling row (the migration-826 incident).
       AND (${authorPubkey}::text IS NULL OR author_pubkey = ${authorPubkey})
       -- ts-guard the delete (a stale del must not erase a newer row).

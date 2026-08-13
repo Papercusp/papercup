@@ -170,7 +170,7 @@ describe('engineer-issues projection — pure helpers', () => {
     expect(_testing.composeKey(issueRow({ issue_id: 'EI-42' }))).toBe('EI-42');
   });
 
-  it('composeKey includes the physical harness for post-828 rows', () => {
+  it('composeKey includes the physical harness for post-829 rows', () => {
     expect(_testing.composeKey(issueRow({ issue_id: 'EI-42', storage_harness_slug: 'operator:ws-ei-proj' }))).toBe(
       'operator:ws-ei-proj/EI-42',
     );
