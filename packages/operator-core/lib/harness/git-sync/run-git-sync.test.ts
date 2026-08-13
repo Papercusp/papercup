@@ -100,6 +100,67 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(git(repo, 'status', '--porcelain')).toBe('');
   });
 
+  it('EI-20349517520985072: retries GitHub SSH publickey failures once through configured HTTPS credentials', async () => {
+    writeFileSync(join(repo, 'https-fallback.txt'), 'credential-plane fallback\n');
+    const rewrite = 'url.https://github.com/.insteadOf=git@github.com:';
+    const calls: string[][] = [];
+    const failedOnce = new Set<string>();
+    const realRunGit: RunGit = async (args, cwd) => {
+      const result = spawnSync('git', args, { cwd, encoding: 'utf8' });
+      return {
+        code: result.status ?? -1,
+        stdout: String(result.stdout ?? ''),
+        stderr: String(result.stderr ?? ''),
+      };
+    };
+    const runGit: RunGit = async (args, cwd) => {
+      calls.push([...args]);
+      const command = args[0];
+      if ((command === 'fetch' || command === 'push') && !failedOnce.has(command)) {
+        failedOnce.add(command);
+        return { code: 128, stdout: '', stderr: 'git@github.com: Permission denied (publickey).\n' };
+      }
+      return realRunGit(args, cwd);
+    };
+
+    const out = await runGitSync('test', { repoPath: repo, runGit, config: cfg });
+
+    expect(out.status).toBe('synced');
+    if (out.status === 'synced') expect(out.pushed).toContain('superproject');
+    expect(failedOnce).toEqual(new Set(['fetch', 'push']));
+    expect(calls.filter((args) => args[0] === '-c' && args[1] === rewrite)).toEqual([
+      ['-c', rewrite, 'fetch', 'origin', 'main'],
+      ['-c', rewrite, 'push', 'origin', 'HEAD:main'],
+    ]);
+    expect(git(originDir, 'ls-tree', '-r', '--name-only', 'main')).toContain('https-fallback.txt');
+  });
+
+  it('EI-20349517520985072: does not rewrite unrelated SSH publickey failures', async () => {
+    writeFileSync(join(repo, 'no-fallback.txt'), 'keep the original failure\n');
+    const calls: string[][] = [];
+    const realRunGit: RunGit = async (args, cwd) => {
+      const result = spawnSync('git', args, { cwd, encoding: 'utf8' });
+      return {
+        code: result.status ?? -1,
+        stdout: String(result.stdout ?? ''),
+        stderr: String(result.stderr ?? ''),
+      };
+    };
+    const runGit: RunGit = async (args, cwd) => {
+      calls.push([...args]);
+      if (args[0] === 'fetch') {
+        return { code: 128, stdout: '', stderr: 'git@gitlab.com: Permission denied (publickey).\n' };
+      }
+      return realRunGit(args, cwd);
+    };
+
+    const out = await runGitSync('test', { repoPath: repo, runGit, config: cfg });
+
+    expect(out.status).toBe('error');
+    expect(calls.filter((args) => args.includes('fetch'))).toHaveLength(1);
+    expect(calls.some((args) => args.some((arg) => arg.includes('insteadOf=')))).toBe(false);
+  });
+
   it('STRANDING GUARD (2026-06-30 root cause): a nested embedded git repo with NO commit does NOT strand the tree — excludes it + retries + commits the real work', async () => {
     // The file that MUST reach origin.
     writeFileSync(join(repo, 'real-work.txt'), 'agents work here\n');

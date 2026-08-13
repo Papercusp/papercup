@@ -177,7 +177,13 @@ const runGitLocalBounded = (
     // hook only acts on `push`, so setting it on all git-sync git calls is harmless.
     const child = spawn('git', args, {
       cwd,
-      env: { ...process.env, LC_ALL: 'C', LANG: 'C', PAPERCUSP_GIT_SYNC_PUSH: '1' },
+      env: {
+        ...process.env,
+        LC_ALL: 'C',
+        LANG: 'C',
+        PAPERCUSP_GIT_SYNC_PUSH: '1',
+        GIT_TERMINAL_PROMPT: '0',
+      },
     });
     const out = collectChildOutput(child);
     let settled = false;
@@ -256,7 +262,16 @@ export const runGitBounded = async (
   const network = GIT_NETWORK_SUBCOMMANDS.has(gitSubcommand(args));
   const effectiveArgs = network ? withGitProgress(args) : args;
   const hardTimeoutMs = gitHardTimeoutMsFor(args, timeoutMs);
-  const env = { ...process.env, LC_ALL: 'C', LANG: 'C', PAPERCUSP_GIT_SYNC_PUSH: '1' };
+  // git-sync is unattended. A credential helper may answer, but an interactive
+  // prompt can never make progress and would otherwise survive until the network
+  // hang guard fires.
+  const env = {
+    ...process.env,
+    LC_ALL: 'C',
+    LANG: 'C',
+    PAPERCUSP_GIT_SYNC_PUSH: '1',
+    GIT_TERMINAL_PROMPT: '0',
+  };
   if (gitSyncSidecarEnabled()) {
     try {
       return await runGitViaSpawnerSidecar(effectiveArgs, cwd, hardTimeoutMs, env, {
@@ -275,6 +290,39 @@ export const runGitBounded = async (
 
 /** Spawn `git <args>` in `cwd` with the default per-subcommand ceiling (never throws). */
 const defaultRunGit: RunGit = (args, cwd) => runGitBounded(args, cwd, gitTimeoutMsFor(args));
+
+const GITHUB_HTTPS_INSTEAD_OF_ARGS = ['-c', 'url.https://github.com/.insteadOf=git@github.com:'] as const;
+
+/**
+ * The one SSH-auth failure for which git-sync has an equivalent configured
+ * credential plane to try. Keep this exact: network failures, repository
+ * authorization failures, and non-GitHub SSH hosts need their original error.
+ */
+export const isGitHubSshPublicKeyFailure = (result: { stdout: string; stderr: string }): boolean =>
+  /git@github\.com:\s*Permission denied \(publickey\)\.?/i.test(`${result.stdout}\n${result.stderr}`);
+
+/**
+ * Retry one GitHub fetch/push through the existing HTTPS credential helper when
+ * SSH has no usable public key. The -c override is process-local: canonical
+ * remotes and .gitmodules remain untouched, and no credential is put in argv.
+ */
+const runNetworkGitWithGitHubHttpsFallback = async (
+  runGit: RunGit,
+  args: string[],
+  cwd: string,
+  log: (message: string) => void,
+): ReturnType<RunGit> => {
+  const first = await runGit(args, cwd);
+  const command = gitSubcommand(args);
+  if (first.code === 0 || (command !== 'fetch' && command !== 'push') || !isGitHubSshPublicKeyFailure(first)) {
+    return first;
+  }
+
+  log(
+    `[git-sync] ${cwd}: GitHub SSH publickey authentication failed during ${command}; retrying once through configured HTTPS credentials`,
+  );
+  return runGit([...GITHUB_HTTPS_INSTEAD_OF_ARGS, ...args], cwd);
+};
 
 /** GitHub hard-rejects blobs ≥100MB (pre-receive) — a committed oversized blob makes
  *  the whole unpushed range PERMANENTLY unpushable (EI-18: 10.4GB of Rust target/
@@ -1710,7 +1758,7 @@ async function reconcileAndPushOneRepo(
     );
   }
   const tempPacksBeforeFetch = await listTempPackFiles(runGit, repoPath);
-  const fetch = await runGit(['fetch', remote, branch], repoPath);
+  const fetch = await runNetworkGitWithGitHubHttpsFallback(runGit, ['fetch', remote, branch], repoPath, o.log);
   if (fetch.code !== 0) {
     const reclaimed = await pruneFailedFetchTempPacks(runGit, repoPath, tempPacksBeforeFetch, o.log);
     const cleanupNote =
@@ -1780,10 +1828,15 @@ async function reconcileAndPushOneRepo(
     const aheadText = ahead.stdout.trim();
     const aheadCount = ahead.code === 0 && /^\d+$/.test(aheadText) ? Number.parseInt(aheadText, 10) : null;
     if (aheadCount !== 0) {
-      let push = await runGit(['push', remote, `HEAD:${branch}`], repoPath);
+      let push = await runNetworkGitWithGitHubHttpsFallback(
+        runGit,
+        ['push', remote, `HEAD:${branch}`],
+        repoPath,
+        o.log,
+      );
       if (push.code !== 0 && rejectedNonFastForward(push)) {
         // A peer pushed between our fetch and push — re-fetch + re-merge once.
-        await runGit(['fetch', remote, branch], repoPath);
+        await runNetworkGitWithGitHubHttpsFallback(runGit, ['fetch', remote, branch], repoPath, o.log);
         const m2 = await runGit([...GIT_SYNC_IDENTITY_ARGS, 'merge', '--no-edit', `${remote}/${branch}`], repoPath);
         if (m2.code !== 0) {
           const conflicted = await conflictedFiles(runGit, repoPath);
@@ -1796,7 +1849,7 @@ async function reconcileAndPushOneRepo(
           return { status: 'conflict', conflictedFiles: conflicted };
         }
         mergedNew = mergedNew || !/Already up to date/i.test(m2.stdout);
-        push = await runGit(['push', remote, `HEAD:${branch}`], repoPath);
+        push = await runNetworkGitWithGitHubHttpsFallback(runGit, ['push', remote, `HEAD:${branch}`], repoPath, o.log);
       }
       if (push.code !== 0) {
         return { status: 'error', message: `push failed: ${push.stderr.trim() || push.stdout.trim()}` };
