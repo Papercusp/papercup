@@ -40,7 +40,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, existsSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readFileSync, existsSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -78,6 +78,11 @@ function extractAdmissionChain(): string {
 const PRESSURE_LINES = (some: Record<string, number>) =>
   `some avg10=${some.avg10 ?? 0} avg60=${some.avg60 ?? 0} avg300=${some.avg300 ?? 0} total=57044894497\n` +
   `full avg10=0.00 avg60=0.00 avg300=0.00 total=0\n`;
+
+// `verdict` is also the name of the workspace's browser-automation CLI. Every extracted bash
+// harness must shadow it: otherwise a terminal gate branch launches Chromium with the verdict
+// text as its CLI argument and can hold spawnSync's inherited pipes open indefinitely.
+const VERDICT_SHELL_STUB = 'verdict() { echo "$1"; }';
 
 /**
  * Run the REAL §1 chain from the shipping script.
@@ -119,7 +124,7 @@ function runAdmission(opts: {
     // $STATE_DIR/verdicts.jsonl and then echoes the byte-identical line. This harness evals the
     // admission chain in isolation with no STATE_DIR, and what it asserts on is the EMITTED
     // line, so the stub keeps just that half.
-    'verdict() { echo "$1"; }',
+    VERDICT_SHELL_STUB,
     extractAdmissionChain(),
     'echo "REACHED: past-admission"',
   ].join('\n');
@@ -195,13 +200,21 @@ describe('live-federation gate §1 admission (WI-6151)', () => {
       expect(low.stderr).toMatch(/admission OK: loadavg-fallback-no-psi 12 <= gate 108/);
     });
 
-    it('treats a malformed / non-PSI pressure file as "no signal", never as zero pressure', () => {
+    it('treats malformed PSI as "no signal" without resolving the browser verdict CLI', () => {
       // Reading a garbled file as 0 would admit blind; it must fall back to LOAD_GATE instead.
       const dir = mkdtempSync(join(tmpdir(), 'fedgate-admission-bad-'));
       const bad = join(dir, 'cpu.pressure');
       writeFileSync(bad, 'this is not psi output\n');
       const loadFile = join(dir, 'loadavg');
       writeFileSync(loadFile, '149.81 1 1 1/1 1\n');
+      // Make an omitted shell stub fail immediately and deterministically instead of depending
+      // on whether the real browser CLI happens to be installed on the test host.
+      const externalVerdict = join(dir, 'verdict');
+      writeFileSync(
+        externalVerdict,
+        '#!/usr/bin/env bash\necho "EXTERNAL_VERDICT_MUST_NOT_RUN" >&2\nexit 97\n',
+      );
+      chmodSync(externalVerdict, 0o755);
       const script = [
         'set -uo pipefail',
         `LOADAVG_FILE=${JSON.stringify(loadFile)}`,
@@ -212,11 +225,18 @@ describe('live-federation gate §1 admission (WI-6151)', () => {
         'log() { echo "LOG: $*" >&2; }',
         'check_staleness() { :; }',
         'skip_cleanup() { :; }',
+        VERDICT_SHELL_STUB,
         extractAdmissionChain(),
         'echo "REACHED: past-admission"',
       ].join('\n');
-      const out = spawnSync('bash', ['-c', script], { encoding: 'utf8', timeout: 30_000 });
+      const out = spawnSync('bash', ['-c', script], {
+        encoding: 'utf8',
+        timeout: 30_000,
+        env: { ...process.env, PATH: `${dir}:${process.env.PATH ?? ''}` },
+      });
       const stdout = out.stdout ?? '';
+      expect(out.status).toBe(0);
+      expect(out.stderr ?? '').not.toContain('EXTERNAL_VERDICT_MUST_NOT_RUN');
       expect(stdout).not.toContain('REACHED: past-admission');
       expect(stdout).toContain('loadavg-fallback-no-psi 149.81 > 108');
     });
