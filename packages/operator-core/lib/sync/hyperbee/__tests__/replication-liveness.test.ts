@@ -282,6 +282,71 @@ describe('frozen axis (attached-but-dead: replicator present, ingest not flowing
     expect(getReplicationLiveness({ nowMs: now, graceMs: GRACE })[0]!.logs[0]!.verdict).toBe('live');
   });
 
+  it('reports a behind-head log as queued/live instead of falsely frozen', () => {
+    const { episodes, on } = collect();
+    let now = 1_000_000;
+    const HEAD = 'b'.repeat(64);
+    const sampleQueued = () =>
+      sampleReplicationLiveness(
+        WS,
+        HS,
+        {
+          keyHex: KEY,
+          knownLength: 62_356,
+          localLength: 62_356,
+          mergedPosition: 62_256,
+          peersCount: 1,
+          mergeQueueIndex: 1,
+          mergeQueueHeadKeyHex: HEAD,
+        },
+        { graceMs: GRACE, nowMs: now, onStallEpisode: on, onRecovery: () => {} },
+      );
+
+    sampleQueued();
+    now += GRACE * 2;
+    sampleQueued();
+
+    expect(episodes.filter((e) => e.kind === 'frozen')).toHaveLength(0);
+    const row = getReplicationLiveness({ nowMs: now, graceMs: GRACE })[0]!.logs[0]!;
+    expect(row.verdict).toBe('live');
+    expect(row.mergeQueueIndex).toBe(1);
+    expect(row.mergeQueueHeadKeyHex).toBe(HEAD);
+    expect(row.msSinceMergeQueueHead).toBeNull();
+  });
+
+  it('starts a fresh frozen grace window when a queued log becomes merge head', () => {
+    const { episodes, on } = collect();
+    let now = 1_000_000;
+    const HEAD = 'b'.repeat(64);
+    const sample = (mergeQueueIndex: number, mergeQueueHeadKeyHex: string) =>
+      sampleReplicationLiveness(
+        WS,
+        HS,
+        {
+          keyHex: KEY,
+          knownLength: 62_356,
+          mergedPosition: 62_256,
+          peersCount: 1,
+          mergeQueueIndex,
+          mergeQueueHeadKeyHex,
+        },
+        { graceMs: GRACE, nowMs: now, onStallEpisode: on, onRecovery: () => {} },
+      );
+
+    sample(1, HEAD);
+    now += GRACE * 2;
+    sample(0, KEY);
+    expect(episodes).toHaveLength(0);
+    expect(getReplicationLiveness({ nowMs: now, graceMs: GRACE })[0]!.logs[0]!.verdict).toBe(
+      'live',
+    );
+
+    now += GRACE;
+    sample(0, KEY);
+    expect(episodes).toHaveLength(1);
+    expect(episodes[0]!.kind).toBe('frozen');
+  });
+
   // WI-38376: `frozenGraceMs` — the frozen axis's OWN grace, mirroring the
   // WI-5686 split that gave the zombie axis one.
   //
