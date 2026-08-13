@@ -19,6 +19,8 @@ const h = vi.hoisted(() => ({
     reopenDeliveredAfterResumeDeath: vi.fn(async () => 'retrying' as const),
     markDeliveryDeferred: vi.fn(async () => {}),
     recoverStuckDeliveries: vi.fn(async () => 0),
+    claimDueVerifiedAwaits: vi.fn(async (): Promise<AwaitRow[]> => []),
+    settleVerifiedAwaitTimeout: vi.fn(async (): Promise<AwaitRow | null> => null),
     fireTimedOutAwaits: vi.fn(async (): Promise<unknown[]> => []),
     expireLapsedAwaits: vi.fn(async () => 0),
     stampAnnouncementsFired: vi.fn(async () => {}),
@@ -59,6 +61,16 @@ const h = vi.hoisted(() => ({
   // record by default, matching the fail-open default (never suppresses anything
   // existing tests don't explicitly set up).
   repliedMsgIdsBatch: vi.fn(async (_subscriberId: string, _msgIds: readonly string[]): Promise<Set<string>> => new Set()),
+  observeCheckpointProducer: vi.fn(),
+  compose: {
+    bumpNode: vi.fn(),
+    claimDueComposedRoots: vi.fn(async () => []),
+    findRootAnchor: vi.fn(),
+    insertComposedRootDelivery: vi.fn(),
+    loadTreeLeaves: vi.fn(),
+    stampLeafMemberFired: vi.fn(),
+    voidTreeDescendants: vi.fn(),
+  },
 }));
 
 vi.mock('./store', () => h.store);
@@ -71,6 +83,10 @@ vi.mock('../../fleet/governor', () => ({ admitSpawn: h.admitSpawn }));
 vi.mock('../../agent-tools/coordination/inbox-read-freshness', () => ({
   lastInboxReadAtBatch: h.lastInboxReadAtBatch,
 }));
+vi.mock('./checkpoint-verified-wait', () => ({
+  observeCheckpointProducer: h.observeCheckpointProducer,
+}));
+vi.mock('./compose-store', () => h.compose);
 
 const {
   emitAwaitedEvent,
@@ -79,6 +95,7 @@ const {
   cancelSupersededCandidateAwaits,
   isInboxWakeGroupRedundant,
   setAutoPumpEnabledForTests,
+  sweepOnce,
   wakeClaimableAwaitersForSubscribers,
 } = await import('./engine');
 
@@ -135,10 +152,126 @@ function workRow(over: Partial<DeliveryWork> = {}): DeliveryWork {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  h.store.claimDueVerifiedAwaits.mockResolvedValue([]);
+  h.store.settleVerifiedAwaitTimeout.mockResolvedValue(null);
+  h.store.fireTimedOutAwaits.mockResolvedValue([]);
+  h.store.claimDueDeliveries.mockResolvedValue([]);
+  h.compose.claimDueComposedRoots.mockResolvedValue([]);
   // The engine logs wake outcomes deliberately (visible drops, D-004);
   // the suite-wide fail-on-console guard must not count those.
   vi.spyOn(console, 'warn').mockImplementation(() => {});
   delete process.env.PAPERCUSP_AWAIT_MAX_RESUMES_PER_TICK;
+});
+
+describe('sweepOnce — verified-wait producer controls', () => {
+  const verifiedAwait = (over: Partial<AwaitRow> = {}): AwaitRow =>
+    awaitRow({
+      id: 91,
+      subscriberId: 'su-waiter',
+      eventKey: 'release:green:papercusp',
+      firedAt: null,
+      firedReason: null,
+      expiresTs: new Date(2_000).toISOString(),
+      producerHealthCertificate: {
+        version: 1,
+        producer: { kind: 'green-checkpoint', id: 'run-42' },
+        owner: { ownerId: 'su-owner', workItemId: 'WI-42' },
+        issuedAtMs: 1_000,
+        lastProgressAtMs: 900,
+        lastFireAtMs: null,
+        expectedCadenceMs: 500,
+        verificationDeadlineMs: 2_000,
+        details: { pipeline: 'papercusp', runId: 'run-42' },
+      },
+      ...over,
+    });
+
+  it('keeps a progressing producer parked by renewing the same await without a wake delivery', async () => {
+    const awaited = verifiedAwait();
+    h.store.claimDueVerifiedAwaits.mockResolvedValueOnce([awaited]);
+    h.observeCheckpointProducer.mockResolvedValueOnce({
+      checkedAtMs: 2_000,
+      producerPresent: true,
+      lastProgressAtMs: 1_900,
+      lastFireAtMs: null,
+      completedAtMs: null,
+      evidence: { phase: 'suite' },
+    });
+
+    await sweepOnce('ws-test');
+
+    expect(h.store.settleVerifiedAwaitTimeout).toHaveBeenCalledWith({
+      id: 91,
+      result: expect.objectContaining({ classification: 'progressing', nextAction: 're-await' }),
+      nextCertificate: expect.objectContaining({
+        issuedAtMs: 2_000,
+        lastProgressAtMs: 1_900,
+        verificationDeadlineMs: 2_500,
+      }),
+    });
+    expect(h.store.insertDeliveries).not.toHaveBeenCalled();
+  });
+
+  it('wakes a stalled producer with its diagnosis and ownership remedy', async () => {
+    const awaited = verifiedAwait();
+    h.store.claimDueVerifiedAwaits.mockResolvedValueOnce([awaited]);
+    h.observeCheckpointProducer.mockResolvedValueOnce({
+      checkedAtMs: 2_000,
+      producerPresent: true,
+      lastProgressAtMs: 900,
+      lastFireAtMs: null,
+      completedAtMs: null,
+      evidence: { phase: 'suite', active: true },
+    });
+    h.store.settleVerifiedAwaitTimeout.mockImplementationOnce(async ({ result }) =>
+      verifiedAwait({ timeoutVerification: result, firedAt: new Date(2_000).toISOString(), firedReason: 'verified-timeout' }),
+    );
+
+    await sweepOnce('ws-test');
+
+    expect(h.store.insertDeliveries).toHaveBeenCalledWith({
+      awaits: [expect.objectContaining({ id: 91 })],
+      payload: expect.objectContaining({
+        timeout: true,
+        verified: true,
+        results: [expect.objectContaining({
+          classification: 'stalled',
+          nextAction: 'wake-owner-or-takeover',
+          owner: { ownerId: 'su-owner', workItemId: 'WI-42' },
+        })],
+      }),
+      summary: expect.stringContaining('Verified wait fallback classified the producer'),
+    });
+  });
+
+  it('resumes immediately when the authoritative completion latch already fired', async () => {
+    const awaited = verifiedAwait();
+    h.store.claimDueVerifiedAwaits.mockResolvedValueOnce([awaited]);
+    h.observeCheckpointProducer.mockResolvedValueOnce({
+      checkedAtMs: 2_000,
+      producerPresent: false,
+      lastProgressAtMs: null,
+      lastFireAtMs: 1_950,
+      completedAtMs: 1_950,
+      evidence: { verdictStatus: 'advanced' },
+    });
+    h.store.settleVerifiedAwaitTimeout.mockImplementationOnce(async ({ result }) =>
+      verifiedAwait({ timeoutVerification: result, firedAt: new Date(2_000).toISOString(), firedReason: 'verified-timeout' }),
+    );
+
+    await sweepOnce('ws-test');
+
+    expect(h.store.settleVerifiedAwaitTimeout).toHaveBeenCalledWith({
+      id: 91,
+      result: expect.objectContaining({ classification: 'already-complete', nextAction: 'resume' }),
+      nextCertificate: undefined,
+    });
+    expect(h.store.insertDeliveries).toHaveBeenCalledWith(expect.objectContaining({
+      payload: expect.objectContaining({
+        results: [expect.objectContaining({ classification: 'already-complete', nextAction: 'resume' })],
+      }),
+    }));
+  });
 });
 afterEach(() => {
   delete process.env.PAPERCUSP_AWAIT_MAX_RESUMES_PER_TICK;
