@@ -58,9 +58,18 @@ describe('selfUrl — PORT fallback chain', () => {
   });
 
   it('defaults to :3055 when PORT is undefined (the ?? branch)', () => {
-    // Force PORT to be absent. vi.stubEnv(key, undefined) deletes the key.
     vi.stubEnv('PAPERCUSP_SELF_URL', '');
-    vi.stubEnv('PORT', undefined as unknown as string);
+    // Delete PORT OUTRIGHT rather than via vi.stubEnv(key, undefined). This case is the only
+    // one in the file that needs the key genuinely ABSENT (it exercises the `??` branch), and
+    // the stub route does not reliably deliver that under fork reuse: vitest's stub bookkeeping
+    // records an original value per key and `vi.unstubAllEnvs()` restores it, and that state is
+    // not re-initialised per FILE when the forks pool reuses a worker. Under `isolate: true`
+    // (a fresh process per file) the stub route happened to work; under the P-003 pure lane's
+    // `isolate: false` this case read ':8080' — the value THIS FILE's own earlier case stubs at
+    // line 27 — and redded a file that passes in isolation (plan gate-suite-speedup-2026-08-12,
+    // D-034/D-036). A plain delete states the precondition directly and depends on no stub
+    // internals; the afterEach unstub still runs, it just no longer decides this assertion.
+    delete process.env.PORT;
     expect(selfUrl()).toBe('http://127.0.0.1:3055');
   });
 });
