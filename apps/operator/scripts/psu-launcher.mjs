@@ -7148,7 +7148,16 @@ async function chooseResumeTarget(session, args) {
 export async function tryRematerializeFromArchive(
   sessionId,
   sourceKind = null,
-  { fetchImpl = fetch, operatorUrl = OPERATOR_URL, token = null, timeoutMs = 10_000 } = {},
+  {
+    fetchImpl = fetch,
+    operatorUrl = OPERATOR_URL,
+    token = null,
+    timeoutMs = 10_000,
+    statusTimeoutMs = 2_000,
+    statusAttempts = 3,
+    statusDelayMs = 150,
+    sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  } = {},
 ) {
   if (!sessionId) return null;
   try {
@@ -7168,9 +7177,75 @@ export async function tryRematerializeFromArchive(
       `psu: transcript restored from the session archive (${r.sourceKind}, ${r.written} file(s) → ${r.root}).`,
     );
     return r;
-  } catch {
-    return null;
+  } catch (error) {
+    // AbortSignal.timeout only cancels the client request. The synchronous
+    // operator handler can still be decompressing/writing a large archive.
+    if (!isArchiveRequestTimeout(error)) return null;
+    const status = await pollArchiveRematerializeStatus(sessionId, sourceKind, {
+      fetchImpl, operatorUrl, token, timeoutMs: statusTimeoutMs,
+      attempts: statusAttempts, delayMs: statusDelayMs, sleep,
+    });
+    if (status?.ready) {
+      const restored = {
+        ...status,
+        ok: true,
+        sourceKind: status.sourceKind || sourceKind,
+        written: status.written ?? 0,
+        restoredAfterTimeout: true,
+      };
+      console.error(
+        `psu: transcript restored from the session archive (${restored.sourceKind}, ${restored.written} file(s) → ${restored.root ?? 'session store'}).`,
+      );
+      return restored;
+    }
+    return {
+      ok: false,
+      pending: true,
+      timedOut: true,
+      reason: 'in_flight',
+      sessionId,
+      sourceKind: sourceKind || status?.sourceKind || null,
+      archiveStatus: status,
+    };
   }
+}
+
+function isArchiveRequestTimeout(error) {
+  const name = String(error?.name || '').toLowerCase();
+  const message = String(error?.message || '').toLowerCase();
+  return name === 'timeouterror' || name === 'aborterror' || message.includes('timeout') || message.includes('aborted');
+}
+
+async function pollArchiveRematerializeStatus(
+  sessionId,
+  sourceKind,
+  { fetchImpl, operatorUrl, token, timeoutMs, attempts, delayMs, sleep },
+) {
+  const query = new URLSearchParams({ sessionId });
+  if (sourceKind) query.set('sourceKind', sourceKind);
+  const url = `${operatorUrl}/api/adv/sessions/rematerialize/status?${query.toString()}`;
+  let last = null;
+  const count = Math.max(1, Math.min(5, Number(attempts) || 1));
+  for (let attempt = 0; attempt < count; attempt++) {
+    try {
+      const tok = token ?? readToken();
+      const res = await fetchImpl(url, {
+        method: 'GET',
+        signal: AbortSignal.timeout(timeoutMs),
+        headers: { ...(tok ? { authorization: `Bearer ${tok}` } : {}) },
+      });
+      const body = await res.json().catch(() => null);
+      if (body) {
+        last = body;
+        if (body.ready || body.state !== 'pending') return body;
+      }
+    } catch {
+      // An unavailable/older status endpoint is still an UNKNOWN timeout
+      // outcome; the caller must keep the safe pending result.
+    }
+    if (attempt + 1 < count) await sleep(Math.max(0, Number(delayMs) || 0));
+  }
+  return last;
 }
 
 /**
@@ -7206,6 +7281,7 @@ export async function ensureResumeTranscriptPresent(
   if (!source || (source.agent !== 'claude' && source.agent !== 'codex')) return true;
   if (sessionHasTranscript(source, { home })) return true;
   const restored = await rematerialize(source.sessionId || source.ompThreadId, source.agent);
+  if (restored?.pending) return restored;
   return Boolean(restored) && sessionHasTranscript(source, { home });
 }
 
@@ -7384,7 +7460,16 @@ async function launchResolvedResume(source, args, { tracked }) {
   // archive-at-death timer to have deleted it out from under us. Look again, and
   // restore from the archive if it has gone. (A cross-backend PORT returned
   // above: it rebuilds context server-side and owns no on-disk transcript.)
-  if (!(await ensureResumeTranscriptPresent(source))) {
+  const transcriptReady = await ensureResumeTranscriptPresent(source);
+  if (transcriptReady?.pending) {
+    console.error(
+      `psu: archive restore for ${source.sessionId ?? source.ompThreadId ?? ''} is still in progress; ` +
+        'the operator timed out while writing its transcript. Retry in a few seconds.',
+    );
+    process.exitCode = 1;
+    return;
+  }
+  if (!transcriptReady) {
     console.error(
       `psu: session ${source.sessionId ?? source.ompThreadId ?? ''} has no transcript on disk and no copy in ` +
         `the session archive to restore — there is nothing to resume. If it ended moments ago its transcript may ` +
@@ -7437,6 +7522,13 @@ async function resumeFlow(args = {}) {
           tracked.sessionId || tracked.ompThreadId,
           tracked.agent,
         );
+        if (restored?.pending) {
+          console.error(
+            `psu: session #${tracked.id} archive restore is still in progress; the operator timed out while ` +
+              `writing its transcript. Retry psu --resume=${args.resumeId} in a few seconds.`,
+          );
+          process.exit(1);
+        }
         if (!restored || !sessionHasTranscript(tracked)) {
           console.error(
             `psu: session #${tracked.id} (${tracked.agent}${tracked.sessionId ? ` ${tracked.sessionId}` : ''}) ` +
@@ -7454,8 +7546,16 @@ async function resumeFlow(args = {}) {
     //    miss, the transcript may be ARCHIVED (deleted from disk at session
     //    end) — restore it from the session archive and search again.
     let untracked = findUntrackedSession(args.resumeId);
-    if (!untracked && (await tryRematerializeFromArchive(args.resumeId))) {
-      untracked = findUntrackedSession(args.resumeId);
+    if (!untracked) {
+      const restored = await tryRematerializeFromArchive(args.resumeId);
+      if (restored?.pending) {
+        console.error(
+          `psu: session archive restore for ${args.resumeId} is still in progress; the operator timed out while ` +
+            'writing its transcript. Retry in a few seconds.',
+        );
+        process.exit(1);
+      }
+      if (restored) untracked = findUntrackedSession(args.resumeId);
     }
     if (!untracked) {
       const ids = sessions.map((s) => s.id).filter((x) => x != null).join(', ');
