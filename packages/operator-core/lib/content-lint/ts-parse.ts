@@ -171,7 +171,15 @@ function findTsGrammarError(fileName: string, text: string, scriptKind: ts.Scrip
       fileExists: (name) => name === fileName,
       readFile: (name) => (name === fileName ? text : undefined),
     };
-    const program = ts.createProgram([fileName], { noResolve: true, noLib: true }, host);
+    // NestJS and other legacy-decorator consumers are valid TypeScript, but
+    // parameter decorators produce TS1206 unless this syntax mode is enabled.
+    // Keep the checker isolated (no lib/module resolution) while accepting the
+    // decorator syntax used by the projects this guard protects.
+    const program = ts.createProgram(
+      [fileName],
+      { noResolve: true, noLib: true, experimentalDecorators: true },
+      host,
+    );
     diagnostics = [...program.getSyntacticDiagnostics(sf), ...program.getSemanticDiagnostics(sf)];
   } catch {
     return null;

@@ -82,6 +82,16 @@ describe('findTsParseError', () => {
     expect(findTsParseError('C.tsx', tsx)).toBeNull();
   });
 
+  it('does not flag valid parameter decorators used by NestJS controllers', () => {
+    const decorated = [
+      'function Inject(): ParameterDecorator { return () => {}; }',
+      'class Controller {',
+      '  handle(@Inject() value: string): string { return value; }',
+      '}',
+    ].join('\n');
+    expect(findTsParseError('controller.ts', decorated)).toBeNull();
+  });
+
   it('catches an unterminated construct in a .tsx file', () => {
     const brokenTsx = ['export function C() {', '  return <div>oops;', '}'].join('\n');
     expect(findTsParseError('C.tsx', brokenTsx)).not.toBeNull();
