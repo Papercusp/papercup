@@ -667,6 +667,22 @@ describe('runGitSync (real git, with a submodule) — P-007 submodule-push-first
     });
   });
 
+  it('EI-20329530284626235: restores a drifted initialized-submodule origin from canonical .gitmodules before push', async () => {
+    const subRepo = join(repo, 'libs/sub');
+    const staleOrigin = join(root, 'stale-https-equivalent.git');
+    git(subRepo, 'remote', 'set-url', 'origin', staleOrigin);
+    expect(git(subRepo, 'remote', 'get-url', 'origin')).toBe(staleOrigin);
+    expect(git(repo, 'config', '-f', '.gitmodules', '--get', 'submodule.libs/sub.url')).toBe(subOrigin);
+
+    writeFileSync(join(subRepo, 'sub-new.txt'), 'sub-v2\n');
+    const out = await runGitSync('test', { repoPath: repo });
+
+    expect(out.status).toBe('synced');
+    if (out.status === 'synced') expect(out.pushed).toContain('libs/sub');
+    expect(git(subRepo, 'remote', 'get-url', 'origin')).toBe(subOrigin);
+    expect(git(subOrigin, 'log', '--format=%s', 'main')).toMatch(/auto-commit test/);
+  });
+
   it('EI-18689553108460319: superproject push:false (bridged-hive commit-only) does NOT strand the submodule — it still pushes to its own origin', () => {
     // Simulates git-sync-action's hive-mode override — the bridge writer is meant to
     // become the SOLE pusher of the superproject's canonical refs, never of an
@@ -744,8 +760,12 @@ describe('runGitSync (real git, with a submodule) — P-007 submodule-push-first
       // dirty the submodule (→ ahead after its local commit) and the superproject
       writeFileSync(join(repo, 'libs/sub', 'sub-new.txt'), 'sub-v2\n');
       writeFileSync(join(repo, 'super-new.txt'), 'super-v2\n');
-      // break the submodule's origin so its fetch/push fails mid-pass
-      git(join(repo, 'libs/sub'), 'remote', 'set-url', 'origin', join(root, 'gone.git'));
+      // Break the canonical URL as well as the initialized copy. EI-20329530284626235
+      // deliberately heals copy-only drift from `.gitmodules`, so this test must model
+      // a genuinely unreachable canonical origin rather than stale local configuration.
+      const goneOrigin = join(root, 'gone.git');
+      git(repo, 'config', '-f', '.gitmodules', 'submodule.libs/sub.url', goneOrigin);
+      git(join(repo, 'libs/sub'), 'remote', 'set-url', 'origin', goneOrigin);
 
       return runGitSync('test', { repoPath: repo }).then((out) => {
         expect(out.status).toBe('error');
@@ -1063,6 +1083,28 @@ describe('runGitSync — P-002 failure classification (injected git)', () => {
     }
   });
 
+  it('EI-20329530284626235: a failed canonical submodule URL sync is loud and blocks pushes', async () => {
+    let fetchOrPushCalls = 0;
+    const run = fakeGit((args) => {
+      const j = args.join(' ');
+      if (j === 'submodule sync --recursive') return { code: 1, stderr: 'fatal: malformed .gitmodules URL' };
+      if (j.startsWith('fetch') || j.startsWith('push')) fetchOrPushCalls++;
+      if (j.startsWith('status --porcelain')) return { code: 0, stdout: '' };
+      if (j.startsWith('rev-parse HEAD')) return { code: 0, stdout: 'abc123' };
+      return { code: 0, stdout: '' };
+    });
+
+    const out = await runGitSync('test', { repoPath: '/fake', runGit: run, submodulePaths: ['libs/sub'] });
+
+    expect(out.status).toBe('error');
+    if (out.status === 'error') {
+      expect(out.errors).toEqual([
+        { scope: 'submodule-config', message: 'canonical submodule URL sync failed: fatal: malformed .gitmodules URL' },
+      ]);
+    }
+    expect(fetchOrPushCalls).toBe(0);
+  });
+
   it('P-002a: a commit that simply had nothing to commit (all-oversized) is NOT an error', async () => {
     // every dirty file was excluded as oversized → `git commit` exits non-zero with
     // "nothing to commit" — benign, must fall through to fetch/merge, not error.
@@ -1154,6 +1196,33 @@ describe('runGitSync — P-002 failure classification (injected git)', () => {
 
     expect(out.status).toBe('error');
     if (out.status === 'error') expect(out.errors[0]?.message).toMatch(/verify your email address/i);
+    expect(pushCalls).toBe(1);
+  });
+
+  it('EI-20328688606935149: fails open to the push when the ahead comparison is unavailable', async () => {
+    let pushCalls = 0;
+    const run = fakeGit((args) => {
+      const j = args.join(' ');
+      if (j.startsWith('symbolic-ref')) return { code: 0, stdout: 'main' };
+      if (j.startsWith('status --porcelain')) return { code: 0, stdout: '' };
+      if (j.startsWith('fetch')) return { code: 0 };
+      if (j.startsWith('merge')) return { code: 0, stdout: 'Already up to date.' };
+      if (j.startsWith('rev-list --count origin/main..HEAD')) return { code: 1, stderr: 'cannot resolve ref' };
+      if (j.startsWith('push')) {
+        pushCalls++;
+        return { code: 0, stderr: 'Everything up-to-date' };
+      }
+      return { code: 0, stdout: '' };
+    });
+
+    const out = await runGitSync('test', {
+      repoPath: '/fake',
+      runGit: run,
+      submodulePaths: [],
+      config: { pushSubmodules: false },
+    });
+
+    expect(out.status).toBe('nothing');
     expect(pushCalls).toBe(1);
   });
 

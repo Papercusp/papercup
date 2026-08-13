@@ -1662,7 +1662,8 @@ async function reconcileAndPushOneRepo(
     // policy (EI-20328688606935149). If the comparison itself fails, retain the
     // existing push behavior so uncertainty can never strand a real commit.
     const ahead = await runGit(['rev-list', '--count', `${remoteRef}..HEAD`], repoPath);
-    const aheadCount = ahead.code === 0 ? Number.parseInt(ahead.stdout.trim(), 10) || 0 : null;
+    const aheadText = ahead.stdout.trim();
+    const aheadCount = ahead.code === 0 && /^\d+$/.test(aheadText) ? Number.parseInt(aheadText, 10) : null;
     if (aheadCount !== 0) {
       let push = await runGit(['push', remote, `HEAD:${branch}`], repoPath);
       if (push.code !== 0 && rejectedNonFastForward(push)) {
@@ -1859,6 +1860,21 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
     const out = emptyPhase();
     let subPaths: string[] = [];
     if (doSub) {
+      // EI-20329530284626235: `.gitmodules` is the canonical transport declaration,
+      // but an initialized submodule keeps a copied URL in its own `remote.origin.url`.
+      // That copy survives later `.gitmodules` changes, so git-sync could keep pushing
+      // through a stale HTTPS credential path even after the canonical URL moved to SSH.
+      // Reconcile the copies before discovery or any submodule fetch/push. A failure is
+      // correctness-relevant: continuing would knowingly use an unverified transport,
+      // so report it and defer the superproject push like every other submodule error.
+      const urlSync = await runGit(['submodule', 'sync', '--recursive'], repo);
+      if (urlSync.code !== 0) {
+        const detail = (urlSync.stderr || urlSync.stdout || 'no output').trim().slice(0, 300);
+        const message = `canonical submodule URL sync failed: ${detail}`;
+        out.errors.push({ scope: 'submodule-config', message });
+        log(`[git-sync] submodule-config: ${message} — deferring submodule work and superproject push (${slug})`);
+        return out;
+      }
       subPaths = opts.submodulePaths
         ? [...opts.submodulePaths].sort((a, b) => b.split('/').length - a.split('/').length)
         : await discoverSubmodulesRecursive(runGit, repo, log);
