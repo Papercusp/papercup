@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   _resetChatActionsForTests,
   getChatAction,
@@ -19,6 +19,19 @@ function stub(overrides: Partial<ChatAction> = {}): ChatAction {
     ...overrides,
   };
 }
+
+beforeAll(() => {
+  // Reproduce the affected-lane shape: a concrete action module can populate
+  // this module-global registry before this file's first spec runs.
+  registerChatAction(stub({ id: 'preloaded' }));
+});
+
+beforeEach(() => {
+  // The full affected-test lane can load the concrete action modules before
+  // this file's first spec. Reset up front so the first assertion is just as
+  // hermetic as every later assertion, not only focused-run hermetic.
+  _resetChatActionsForTests();
+});
 
 afterEach(() => {
   _resetChatActionsForTests();
