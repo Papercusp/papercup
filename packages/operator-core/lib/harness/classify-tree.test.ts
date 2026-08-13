@@ -347,7 +347,7 @@ describe('walkHarnessTree — integration against papercup`s real libs/', () => 
   const isPapercupCheckout = evaluateIsPapercupCheckout();
 
   it.skipIf(!isPapercupCheckout)(
-    'matches the libs/ layout: 6 submodules + 6 plain (borrowable submodules regrouped under libs/generic/)',
+    'matches the libs/ layout: 6 submodules + 7 plain (including papercusp-publish-auth)',
     (ctx) => {
       // The skipIf above sampled the environment at COLLECTION time. Re-sample it
       // HERE, at execution time, so a tree that de-materialized in between skips
@@ -370,21 +370,23 @@ describe('walkHarnessTree — integration against papercup`s real libs/', () => 
       // Note: we don't assert on `worktrees` or `standalone` here because
       // libs/ isn't expected to contain either; if one shows up that's a
       // signal worth investigating (and this test will catch it).
-      // 6 direct-child submodules + 6 plain dirs (incl. `generic/`, which now
+      // 6 direct-child submodules + 7 plain dirs (incl. `generic/`, which now
       // holds the regrouped borrowable submodules — see CLAUDE.md /
       // BORROWABLE.md). History: 9s+8p pre-regroup → 5s+9p after regroup →
       // 7s+7p once `test-config` + `testing-shell` were promoted to direct
       // libs/* submodules → 7s+6p once `export-state` was retired to
       // `_retired/snapshot-system/` (retire-snapshots-instance-spec, 2026-06-09)
       // → 6s+6p once `zero-harness` was de-materialized (retired; still in
-      // .gitmodules but not checked out — see CLAUDE.md "Zero is retired").
+      // .gitmodules but not checked out — see CLAUDE.md "Zero is retired")
+      // → 6s+7p once the plain `papercusp-publish-auth` package joined libs/.
       expect({ subs: summary.submodules, plain: summary.plain }).toEqual({
         subs: 6,
-        plain: 6,
+        plain: 7,
       });
       expect(summary.worktrees).toBe(0);
       expect(summary.standalone).toBe(0);
-      expect(summary.total).toBe(12);
+      expect(summary.total).toBe(13);
+      expect(nodes.map((node) => node.relPath)).toContain('papercusp-publish-auth');
 
       // Sanity: each submodule has a qualified slug rooted at papercup.
       for (const n of nodes) {

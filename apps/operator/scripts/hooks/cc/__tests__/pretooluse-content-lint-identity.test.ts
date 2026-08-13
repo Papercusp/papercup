@@ -77,21 +77,36 @@ const USER_SEG = `quill${'on'}`;
  *  (`lint:plane-producers`, `lint:declared-consumed`, `lint:no-bespoke-state-read`,
  *  `lint:plane-ratchet`, `lint:plane-guards`), the unscoped scrape swallowed all five, and this
  *  suite reded the release gate for the whole fleet over a change that had nothing to do with
- *  identity. So anchor to the `identityLints` array itself and read only its members. */
+ *  identity. P-005 later folded the identity jobs into the bounded `lowMemoryLintSpecs` table,
+ *  so anchor to that canonical table and select only entries whose `outcomeKey` is
+ *  `lintIdentity`. */
 const GATE = join(REPO_ROOT, 'apps', 'operator', 'lib', 'release', 'green-checkpoint.ts');
 function gateIdentityLints(): string[] {
   const src = readFileSync(GATE, 'utf8');
-  const block = src.match(/const identityLints:[^=]*=\s*\[([\s\S]*?)\]/);
+  const block = src.match(
+    /const lowMemoryLintSpecs:[^=]*=\s*\[([\s\S]*?)\n\s*\];\s*\n\s*const lowMemoryOutcomeKeys:/,
+  );
   // Throw rather than fall back to a whole-file scrape or an empty list: if the gate renames
-  // or restructures that array, the honest outcome is a loud failure here, not a silently
+  // or restructures that table, the honest outcome is a loud failure here, not a silently
   // vacuous assertion that green-lights an identity class with no edit-time coverage.
   if (!block) {
     throw new Error(
-      'green-checkpoint.ts: could not locate the `identityLints` array — this suite can no longer ' +
+      'green-checkpoint.ts: could not locate the `lowMemoryLintSpecs` table — this suite can no longer ' +
         'tell which lints are the identity family. Re-anchor gateIdentityLints() to its new shape.',
     );
   }
-  return [...block[1]!.matchAll(/\{ script: '(lint:[^']+)', label: '/g)].map((m) => m[1]!);
+  const identityScripts = [...block[1]!.matchAll(/\{([\s\S]*?)\n\s*\},?/g)]
+    .map((entry) => entry[1]!)
+    .filter((entry) => /outcomeKey:\s*["']lintIdentity["']/.test(entry))
+    .map((entry) => entry.match(/script:\s*["'](lint:[^"']+)["']/)?.[1])
+    .filter((script): script is string => Boolean(script));
+  if (identityScripts.length === 0) {
+    throw new Error(
+      'green-checkpoint.ts: `lowMemoryLintSpecs` contains no parseable `lintIdentity` members — ' +
+        'this suite would otherwise green-light an identity class with no edit-time coverage.',
+    );
+  }
+  return identityScripts;
 }
 
 /**

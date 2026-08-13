@@ -49,6 +49,40 @@ export function extractLegBanners(source: string): LegBanner[] {
   return out;
 }
 
+/**
+ * P-005 emits the bounded low-memory lint family from declarative specs, so one source
+ * template now owns several concrete banners. Expand that table back into the runtime
+ * banners the gate can actually emit. Requiring the production template as well as the
+ * table keeps this from passing by synthesizing wording the gate no longer uses.
+ */
+export function extractLowMemorySpecBanners(source: string): LegBanner[] {
+  const block = source.match(
+    /const lowMemoryLintSpecs:[^=]*=\s*\[([\s\S]*?)\n\s*\];\s*\n\s*const lowMemoryOutcomeKeys:/,
+  );
+  if (!block) return [];
+  const template = '=== ${spec.label} LINT FAILED (npm run ${spec.script}) — ${spec.failureBanner} ===';
+  if (!source.includes(template)) {
+    throw new Error(
+      'lowMemoryLintSpecs exists but its canonical failure-banner template is missing; ' +
+        'the banner-shape guard can no longer model what the gate emits',
+    );
+  }
+  const banners = [...block[1]!.matchAll(/\{([\s\S]*?)\n\s*\},?/g)]
+    .map((entry) => entry[1]!)
+    .map((entry) => {
+      const script = entry.match(/script:\s*["']([^"']+)["']/)?.[1];
+      const label = entry.match(/label:\s*["']([^"']+)["']/)?.[1];
+      if (!script || !label) return null;
+      const raw = `=== ${label} LINT FAILED (npm run ${script}) — declarative detail ===`;
+      return { label: `${label} LINT FAILED`, script, raw } satisfies LegBanner;
+    })
+    .filter((banner): banner is LegBanner => banner !== null);
+  if (banners.length === 0) {
+    throw new Error('lowMemoryLintSpecs contains no parseable script/label members');
+  }
+  return banners;
+}
+
 /** The property under test: the banner must contain the word the triage grep anchors on. */
 export function bannerIsGreppable(banner: LegBanner): boolean {
   return /FAILED\s*\(npm run/.test(banner.raw);
@@ -76,7 +110,7 @@ const BANNER_SOURCE_PATHS = [
 
 describe('WI-9613: every gate-leg failure banner is greppable', () => {
   const source = BANNER_SOURCE_PATHS.map((p) => readFileSync(p, 'utf8')).join('\n');
-  const banners = extractLegBanners(source);
+  const banners = [...extractLegBanners(source), ...extractLowMemorySpecBanners(source)];
 
   it('finds the leg banners at all (guards a vacuous green from a broken extractor)', () => {
     // A regex that silently stops matching would yield "0 banners, 0 violations" — a pass

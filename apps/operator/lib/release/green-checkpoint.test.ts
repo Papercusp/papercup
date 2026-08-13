@@ -4038,7 +4038,22 @@ describe('realCheckpointDeps.runGreen — the orchestrator transcript reaches th
       spaBuildWorkspace: '', // isolate to the suite leg — no SPA build on a fake tree
       greenCheckpointCapacityMode: capacityMode,
     });
-    await realCheckpointDeps(cfg, exec).runGreen(tree, 'base');
+    // The parent Vitest runner sets its OWN worker limits. They are legitimate explicit
+    // overrides in production, but leaking them into this fixture would make an assertion
+    // about the selected profile report the parent's concurrency instead (16 on the affected
+    // run that exposed this). Scrub only around the real dependency call, then restore exactly.
+    const inheritedForks = process.env.VITEST_MAX_FORKS;
+    const inheritedThreads = process.env.VITEST_MAX_THREADS;
+    delete process.env.VITEST_MAX_FORKS;
+    delete process.env.VITEST_MAX_THREADS;
+    try {
+      await realCheckpointDeps(cfg, exec).runGreen(tree, 'base');
+    } finally {
+      if (inheritedForks === undefined) delete process.env.VITEST_MAX_FORKS;
+      else process.env.VITEST_MAX_FORKS = inheritedForks;
+      if (inheritedThreads === undefined) delete process.env.VITEST_MAX_THREADS;
+      else process.env.VITEST_MAX_THREADS = inheritedThreads;
+    }
     const written = readdirSync(logDir).filter((f) => f.endsWith('.log'));
     expect(written).toHaveLength(1); // exactly one log per run, as the write site promises
     return readFileSync(join(logDir, written[0]!), 'utf8');
