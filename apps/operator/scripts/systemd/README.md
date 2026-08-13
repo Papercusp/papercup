@@ -317,15 +317,16 @@ precedent for the same underlying class of problem (a process-spawning
 workflow with no teardown guarantee against an abrupt parent death).
 
 The first line of defense is now in `scripts/linux-test-vm/boot-vm.sh` itself:
-every disposable `papercusp-testvm-*` QEMU starts inside a named transient
-systemd scope. The scope derives a reclaim threshold and hard ceiling from the
+every disposable `papercusp-testvm-*` QEMU starts inside a regular, escaped,
+named transient systemd scope. The scope derives a reclaim threshold and hard ceiling from the
 existing `PAPERCUSP_TESTVM_RAM_MB` guest-RAM setting (default 16 GiB → 20 GiB
 `MemoryHigh`, 24 GiB `MemoryMax`, 8 GiB `MemorySwapMax`). This preserves QEMU's
 pidfile/daemonized lifecycle and `vmctl down`, while preventing a young or
 abandoned test VM from consuming unbounded host memory during the reaper's
 deliberate six-hour safety window. Startup fails closed when the user systemd
 manager cannot apply the envelope; it never silently falls back to unbounded
-QEMU. Focused regression check:
+QEMU. The focused regression check validates both the hermetic launch argv and,
+when a user manager is reachable, real transient-unit name/property acceptance:
 
 ```bash
 bash papercusp-desktop/scripts/linux-test-vm/resource-control.selftest.sh
