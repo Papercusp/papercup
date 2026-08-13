@@ -361,7 +361,7 @@ export function parseFailingFilesLine(text: string): Array<{
  *             unattributed: Array<{ task: string, reason: string }>,
  *             transformCulprits: string[] }}
  */
-export function attributeFailedTask({ workspace, task, captured, output }: {
+export function attributeFailedTask({ workspace, task, captured, output, fallbackReason }: {
     workspace: string;
     task: string;
     captured: boolean;
