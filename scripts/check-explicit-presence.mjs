@@ -206,7 +206,7 @@ const ALLOW = new Set([
   'packages/operator-core/lib/endpoint-route/routes/harness/testing.ts:67',
   'packages/operator-core/lib/endpoint-route/routes/harness/tests.ts:67',
   'packages/operator-core/lib/endpoint-route/routes/harness/runs.ts:106',
-  'packages/operator-core/lib/sync-resolver/index.ts:1665',
+  'packages/operator-core/lib/sync-resolver/index.ts:1671',
   'libs/papercusp/packages/cli/src/snapshot-cli.ts:663',
 
   // ── absence resolves in the CONSERVATIVE direction ─────────────────────────────────────
