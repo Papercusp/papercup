@@ -856,6 +856,13 @@ export interface ListIssuesFilter {
   /** Case-insensitive literal substring matched against title + body. */
   q?: string;
   scope?: string;
+  /**
+   * Restrict to any of these exact scopes. `scope` wins when both are present;
+   * an explicitly empty array matches nothing. This is the set-valued sibling
+   * of `scope`, used by inherited pot scopes (selected pot + descendants)
+   * without issuing one query per pot.
+   */
+  scopes?: readonly string[];
   assignee?: string;
   /** Durable delegator filter (collapse-delegate D-002): items this owner assigned. */
   assignedBy?: string;
@@ -1424,7 +1431,13 @@ export async function listIssues(filter: ListIssuesFilter = {}): Promise<Enginee
        AND kind = ANY(${kindSet as string[]}::text[])
        AND ${filter.state ? sql`state = ${filter.state}` : sql`TRUE`}
        AND ${q ? sql`(COALESCE(title, '') ILIKE ${likeContainsPattern(q)} ESCAPE '\\' OR COALESCE(body, '') ILIKE ${likeContainsPattern(q)} ESCAPE '\\')` : sql`TRUE`}
-       AND ${filter.scope ? sql`scope = ${filter.scope}` : sql`TRUE`}
+       AND ${
+         filter.scope
+           ? sql`scope = ${filter.scope}`
+           : filter.scopes
+             ? sql`scope = ANY(${filter.scopes as string[]}::text[])`
+             : sql`TRUE`
+       }
        AND ${filter.assignee ? sql`assignee = ${filter.assignee}` : sql`TRUE`}
        AND ${filter.assignedBy ? sql`assigned_by = ${filter.assignedBy}` : sql`TRUE`}
        AND ${filter.severity ? sql`severity = ${filter.severity}` : sql`TRUE`}
@@ -1494,7 +1507,13 @@ export async function countIssues(filter: ListIssuesFilter = {}): Promise<number
        WHERE ei.workspace_id = ${issuesScopeWorkspace()}
          AND ei.kind = ANY(${kindSet as string[]}::text[])
          AND ${filter.state ? sql`ei.state = ${filter.state}` : sql`TRUE`}
-         AND ${filter.scope ? sql`ei.scope = ${filter.scope}` : sql`TRUE`}
+         AND ${
+           filter.scope
+             ? sql`ei.scope = ${filter.scope}`
+             : filter.scopes
+               ? sql`ei.scope = ANY(${filter.scopes as string[]}::text[])`
+               : sql`TRUE`
+         }
          AND ${filter.assignee ? sql`ei.assignee = ${filter.assignee}` : sql`TRUE`}
          AND ${filter.assignedBy ? sql`ei.assigned_by = ${filter.assignedBy}` : sql`TRUE`}
          AND ${filter.severity ? sql`ei.severity = ${filter.severity}` : sql`TRUE`}
@@ -1526,7 +1545,13 @@ export async function countIssues(filter: ListIssuesFilter = {}): Promise<number
      WHERE workspace_id = ${issuesScopeWorkspace()}
        AND kind = ANY(${kindSet as string[]}::text[])
        AND ${filter.state ? sql`state = ${filter.state}` : sql`TRUE`}
-       AND ${filter.scope ? sql`scope = ${filter.scope}` : sql`TRUE`}
+       AND ${
+         filter.scope
+           ? sql`scope = ${filter.scope}`
+           : filter.scopes
+             ? sql`scope = ANY(${filter.scopes as string[]}::text[])`
+             : sql`TRUE`
+       }
        AND ${filter.assignee ? sql`assignee = ${filter.assignee}` : sql`TRUE`}
        AND ${filter.assignedBy ? sql`assigned_by = ${filter.assignedBy}` : sql`TRUE`}
        AND ${filter.severity ? sql`severity = ${filter.severity}` : sql`TRUE`}
@@ -1591,7 +1616,13 @@ export async function countIssuesByState(filter: ListIssuesFilter = {}): Promise
        WHERE ei.workspace_id = ${issuesScopeWorkspace()}
          AND ei.kind = ANY(${kindSet as string[]}::text[])
          AND ${filter.state ? sql`ei.state = ${filter.state}` : sql`TRUE`}
-         AND ${filter.scope ? sql`ei.scope = ${filter.scope}` : sql`TRUE`}
+         AND ${
+           filter.scope
+             ? sql`ei.scope = ${filter.scope}`
+             : filter.scopes
+               ? sql`ei.scope = ANY(${filter.scopes as string[]}::text[])`
+               : sql`TRUE`
+         }
          AND ${filter.assignee ? sql`ei.assignee = ${filter.assignee}` : sql`TRUE`}
          AND ${filter.assignedBy ? sql`ei.assigned_by = ${filter.assignedBy}` : sql`TRUE`}
          AND ${filter.severity ? sql`ei.severity = ${filter.severity}` : sql`TRUE`}
@@ -1622,7 +1653,13 @@ export async function countIssuesByState(filter: ListIssuesFilter = {}): Promise
        WHERE workspace_id = ${issuesScopeWorkspace()}
          AND kind = ANY(${kindSet as string[]}::text[])
          AND ${filter.state ? sql`state = ${filter.state}` : sql`TRUE`}
-         AND ${filter.scope ? sql`scope = ${filter.scope}` : sql`TRUE`}
+         AND ${
+           filter.scope
+             ? sql`scope = ${filter.scope}`
+             : filter.scopes
+               ? sql`scope = ANY(${filter.scopes as string[]}::text[])`
+               : sql`TRUE`
+         }
          AND ${filter.assignee ? sql`assignee = ${filter.assignee}` : sql`TRUE`}
          AND ${filter.assignedBy ? sql`assigned_by = ${filter.assignedBy}` : sql`TRUE`}
          AND ${filter.severity ? sql`severity = ${filter.severity}` : sql`TRUE`}
@@ -1680,7 +1717,13 @@ export async function countObservationsByKind(filter: ListIssuesFilter = {}): Pr
        WHERE ei.workspace_id = ${issuesScopeWorkspace()}
          AND ei.kind = ANY(${kindSet as string[]}::text[])
          AND ${filter.state ? sql`ei.state = ${filter.state}` : sql`TRUE`}
-         AND ${filter.scope ? sql`ei.scope = ${filter.scope}` : sql`TRUE`}
+         AND ${
+           filter.scope
+             ? sql`ei.scope = ${filter.scope}`
+             : filter.scopes
+               ? sql`ei.scope = ANY(${filter.scopes as string[]}::text[])`
+               : sql`TRUE`
+         }
          AND ${filter.assignee ? sql`ei.assignee = ${filter.assignee}` : sql`TRUE`}
          AND ${filter.assignedBy ? sql`ei.assigned_by = ${filter.assignedBy}` : sql`TRUE`}
          AND ${filter.severity ? sql`ei.severity = ${filter.severity}` : sql`TRUE`}
@@ -1722,7 +1765,13 @@ export async function countObservationsByKind(filter: ListIssuesFilter = {}): Pr
      WHERE workspace_id = ${issuesScopeWorkspace()}
        AND kind = ANY(${kindSet as string[]}::text[])
        AND ${filter.state ? sql`state = ${filter.state}` : sql`TRUE`}
-       AND ${filter.scope ? sql`scope = ${filter.scope}` : sql`TRUE`}
+       AND ${
+         filter.scope
+           ? sql`scope = ${filter.scope}`
+           : filter.scopes
+             ? sql`scope = ANY(${filter.scopes as string[]}::text[])`
+             : sql`TRUE`
+       }
        AND ${filter.assignee ? sql`assignee = ${filter.assignee}` : sql`TRUE`}
        AND ${filter.assignedBy ? sql`assigned_by = ${filter.assignedBy}` : sql`TRUE`}
        AND ${filter.severity ? sql`severity = ${filter.severity}` : sql`TRUE`}
