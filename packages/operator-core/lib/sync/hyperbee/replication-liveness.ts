@@ -98,6 +98,14 @@ export interface ReplicationLogSample {
    * the never-alarms churn case (peer genuinely offline).
    */
   swarmConnections?: number;
+  /**
+   * Zero-based position among logs with merge backlog in this pass's
+   * smallest-backlog-first order. `0` is the active head; `>0` is waiting.
+   * Omitted when the caller does not know the queue or this log has no backlog.
+   */
+  mergeQueueIndex?: number;
+  /** Key of queue index 0, paired with `mergeQueueIndex` for diagnostics. */
+  mergeQueueHeadKeyHex?: string;
 }
 
 /** An edge-triggered stall episode (fires ONCE per episode, per kind). */
@@ -156,6 +164,12 @@ export interface ReplicationLogLiveness {
   msSinceIngestProgress: number | null;
   /** ms since this log was last sampled (merge-loop dead-man input). */
   msSinceSampled: number;
+  /** Current backlog queue index: 0=head, >0=waiting, null=not queued/unknown. */
+  mergeQueueIndex: number | null;
+  /** Current backlog head key, when queue position is known. */
+  mergeQueueHeadKeyHex: string | null;
+  /** ms since this log most recently became queue head; null unless index=0. */
+  msSinceMergeQueueHead: number | null;
   /**
    * The swarmConnections value the LAST sample carried — what the
    * connected_never_replicated axis actually sees. null = the sampler never
@@ -242,6 +256,12 @@ interface LogState {
   lastSwarmSeenMs: number | null;
   /** Verbatim swarmConnections from the last sample (null = not passed). */
   lastSwarmConnections: number | null;
+  /** Current smallest-backlog-first merge queue position (0=head). */
+  mergeQueueIndex: number | null;
+  /** Key currently at queue index 0, when the queue is known. */
+  mergeQueueHeadKeyHex: string | null;
+  /** Eligibility clock: when this log most recently became queue head. */
+  lastMergeQueueHeadMs: number | null;
   alarmedNoReplicator: boolean;
   alarmedFrozen: boolean;
   alarmedConnectedNever: boolean;
@@ -763,6 +783,9 @@ export function sampleReplicationLiveness(
       connectedNeverReplSinceMs: null,
       lastSwarmSeenMs: null,
       lastSwarmConnections: null,
+      mergeQueueIndex: sample.mergeQueueIndex ?? null,
+      mergeQueueHeadKeyHex: sample.mergeQueueHeadKeyHex ?? null,
+      lastMergeQueueHeadMs: sample.mergeQueueIndex === 0 ? now : null,
       alarmedNoReplicator: false,
       alarmedFrozen: false,
       alarmedConnectedNever: false,
@@ -781,6 +804,8 @@ export function sampleReplicationLiveness(
   // appeared, and an idle stretch must never pre-age the freeze clock).
   const wasBehind =
     st.mergedPosition !== null && st.knownLength > st.mergedPosition;
+  const becameMergeQueueHead =
+    sample.mergeQueueIndex === 0 && st.mergeQueueIndex !== 0;
   st.lastSampleMs = now;
   // WI-38376: `knownLength` may advance from the signed announce heartbeat even
   // when this receiver has delivered zero blocks. Preserve EI-18778631943888326's
@@ -789,6 +814,10 @@ export function sampleReplicationLiveness(
   st.localLength = localLength;
   st.knownLength = sample.knownLength;
   st.lastSwarmConnections = sample.swarmConnections ?? null;
+  st.mergeQueueIndex = sample.mergeQueueIndex ?? null;
+  st.mergeQueueHeadKeyHex = sample.mergeQueueHeadKeyHex ?? null;
+  if (becameMergeQueueHead) st.lastMergeQueueHeadMs = now;
+  else if (sample.mergeQueueIndex !== 0) st.lastMergeQueueHeadMs = null;
 
   // ── peers-count axis (no_replicator) ──
   if (sample.peersCount !== undefined) {
@@ -1112,7 +1141,36 @@ export function sampleReplicationLiveness(
         });
       }
     };
-    if (prev === null || sample.mergedPosition > prev) {
+    const queuedBehindMergeHead = (sample.mergeQueueIndex ?? 0) > 0;
+    const freezeClockMs =
+      st.lastIngestProgressMs === null
+        ? st.lastMergeQueueHeadMs
+        : st.lastMergeQueueHeadMs === null
+          ? st.lastIngestProgressMs
+          : Math.max(st.lastIngestProgressMs, st.lastMergeQueueHeadMs);
+    if (queuedBehindMergeHead || becameMergeQueueHead) {
+      // EI-20317490590418053: zero movement is expected while another backlog
+      // is ahead. Once this log becomes head it earns a fresh grace window;
+      // otherwise its queued age becomes an instant false freeze before the
+      // merge can attempt its first op.
+      if (wasAlarmedFrozen) {
+        st.alarmedFrozen = false;
+        st.durableProbedFrozen = true;
+        void onRecovery({
+          workspaceId,
+          harnessSlug,
+          logKeyHex: sample.keyHex,
+          kind: 'frozen',
+          stalledForMs: frozenStallMs,
+          detail: queuedBehindMergeHead
+            ? `log=${sample.keyHex.slice(0, 12)}… is waiting at merge queue index ` +
+              `${sample.mergeQueueIndex} behind ${sample.mergeQueueHeadKeyHex?.slice(0, 12) ?? 'unknown'}…; ` +
+              `the prior frozen premise no longer applies`
+            : `log=${sample.keyHex.slice(0, 12)}… became merge queue head and received a fresh ` +
+              `ingest grace window; the prior frozen premise no longer applies`,
+        });
+      }
+    } else if (prev === null || sample.mergedPosition > prev) {
       clearFrozen(); // ingesting — recovered
     } else if (st.knownLength <= sample.mergedPosition) {
       // Caught up: nothing to ingest. Healthy idle — keep the clock fresh so a
@@ -1126,9 +1184,9 @@ export function sampleReplicationLiveness(
       st.alarmedFrozen = false;
     } else if (
       (st.peersCount ?? 0) > 0 &&
-      st.lastIngestProgressMs !== null &&
+      freezeClockMs !== null &&
       !st.alarmedFrozen &&
-      now - st.lastIngestProgressMs >= frozenGraceMs
+      now - freezeClockMs >= frozenGraceMs
     ) {
       // Replicator attached, writer is ahead, and we have ingested NOTHING for
       // the whole grace window. Gated on peers>0 so a plainly-disconnected peer
@@ -1155,8 +1213,8 @@ export function sampleReplicationLiveness(
       // delivered". (Caught by the third attribution test, which failed on `>=`.)
       const deliveringDuringStall =
         st.lastLocalLengthProgressMs !== null &&
-        st.lastLocalLengthProgressMs > st.lastIngestProgressMs;
-      const stalledSecs = Math.round((now - st.lastIngestProgressMs) / 1000);
+        st.lastLocalLengthProgressMs > freezeClockMs;
+      const stalledSecs = Math.round((now - freezeClockMs) / 1000);
       const positions =
         `writer at ${st.knownLength}, merged to ${sample.mergedPosition}, ` +
         `no merge progress for ${stalledSecs}s`;
@@ -1165,7 +1223,7 @@ export function sampleReplicationLiveness(
         harnessSlug,
         logKeyHex: sample.keyHex,
         kind: 'frozen',
-        stalledForMs: now - st.lastIngestProgressMs,
+        stalledForMs: now - freezeClockMs,
         stalledStage: deliveringDuringStall ? 'apply' : 'transport',
         detail: deliveringDuringStall
           ? `log=${sample.keyHex.slice(0, 12)}… APPLY/MERGE frozen — replication is ` +
@@ -1229,13 +1287,21 @@ function deriveVerdict(
   ) {
     return 'no_replicator';
   }
+  const queuedBehindMergeHead = (st.mergeQueueIndex ?? 0) > 0;
+  const freezeClockMs =
+    st.lastIngestProgressMs === null
+      ? st.lastMergeQueueHeadMs
+      : st.lastMergeQueueHeadMs === null
+        ? st.lastIngestProgressMs
+        : Math.max(st.lastIngestProgressMs, st.lastMergeQueueHeadMs);
   if (
-    st.alarmedFrozen ||
-    ((st.peersCount ?? 0) > 0 &&
+    !queuedBehindMergeHead &&
+    (st.alarmedFrozen ||
+      ((st.peersCount ?? 0) > 0 &&
       st.mergedPosition !== null &&
       st.knownLength > st.mergedPosition &&
-      st.lastIngestProgressMs !== null &&
-      now - st.lastIngestProgressMs >= frozenGraceMs)
+      freezeClockMs !== null &&
+      now - freezeClockMs >= frozenGraceMs))
   ) {
     return 'frozen';
   }
@@ -1439,6 +1505,10 @@ export function getReplicationLiveness(
         msSinceIngestProgress:
           st.lastIngestProgressMs === null ? null : now - st.lastIngestProgressMs,
         msSinceSampled: now - st.lastSampleMs,
+        mergeQueueIndex: st.mergeQueueIndex,
+        mergeQueueHeadKeyHex: st.mergeQueueHeadKeyHex,
+        msSinceMergeQueueHead:
+          st.lastMergeQueueHeadMs === null ? null : now - st.lastMergeQueueHeadMs,
         lastSwarmConnections: st.lastSwarmConnections,
       });
     }

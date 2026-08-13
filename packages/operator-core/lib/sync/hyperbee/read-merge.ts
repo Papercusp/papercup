@@ -640,6 +640,80 @@ export interface MergeCursorStore {
 }
 
 /**
+ * EI-20317490590418053 — boot-lifetime cache of PG cursor seeds.
+ *
+ * A substrate boot can admit remote logs AFTER its first merge pass. Loading PG
+ * once and copying every persisted key into the live cursor is unsafe: entries
+ * for not-yet-admitted logs look exactly like REMOVED logs to boot's log-set
+ * invariant, which resets the whole fold. The old one-shot latch then prevents
+ * those late logs from ever receiving their persisted positions, so they replay
+ * from zero and can starve the actual tail indefinitely.
+ *
+ * This cache separates the durable seed SET from the live admitted-log cursor:
+ * it loads once, copies positions only for keys admitted in the current pass,
+ * and remains reusable when another log is admitted later. A real fold
+ * invalidation (removal, projection rebind, or truncation) disables it for the
+ * remainder of the boot; reusing pre-invalidation progress after one of those
+ * events would be the same unsafe skip the original one-shot latch avoided.
+ */
+export interface PgMergeCursorSeedCache {
+  seed(
+    cursor: MergeCursor,
+    store: MergeCursorStore,
+    applyBinding: string | null,
+    admittedKeyHexes: Iterable<string>,
+  ): Promise<void>;
+  invalidate(): void;
+}
+
+/** Copy safe persisted positions into a cursor, optionally filtering to keys
+ * admitted RIGHT NOW. Exported for the direct one-shot helper and focused tests. */
+export function seedCursorFromPgCache(
+  cursor: MergeCursor,
+  saved: ReadonlyMap<string, number>,
+  admittedKeyHexes?: Iterable<string>,
+): void {
+  const entries: Iterable<readonly [string, number]> = admittedKeyHexes
+    ? (function* () {
+        for (const keyHex of admittedKeyHexes) {
+          const position = saved.get(keyHex);
+          if (position !== undefined) yield [keyHex, position] as const;
+        }
+      })()
+    : saved;
+  for (const [keyHex, position] of entries) {
+    if (position > 0 && !cursor.positions.has(keyHex)) {
+      cursor.positions.set(keyHex, position);
+    }
+  }
+}
+
+/** Create one seed cache per booted harness. A failed load is one-shot and
+ * fail-open (the caller logs it; folds start at zero), matching the old latch. */
+export function createPgMergeCursorSeedCache(): PgMergeCursorSeedCache {
+  let saved: ReadonlyMap<string, number> | undefined;
+  let invalidated = false;
+  return {
+    async seed(cursor, store, applyBinding, admittedKeyHexes) {
+      if (invalidated) return;
+      if (!saved) {
+        try {
+          saved = await store.load(applyBinding);
+        } catch (error) {
+          invalidated = true;
+          throw error;
+        }
+      }
+      seedCursorFromPgCache(cursor, saved, admittedKeyHexes);
+    },
+    invalidate() {
+      invalidated = true;
+      saved = undefined;
+    },
+  };
+}
+
+/**
  * WI-2105 REV fix — seed a merge cursor's per-log positions from PG BEFORE the
  * first fold, so a bg-host restart RESUMES each log's fold where it left off
  * instead of re-folding from 0. Only seeds a log with NO in-memory position yet
@@ -671,11 +745,7 @@ export async function seedCursorFromPg(
   applyBinding: string | null,
 ): Promise<void> {
   const saved = await store.load(applyBinding);
-  for (const [keyHex, position] of saved) {
-    if (position > 0 && !cursor.positions.has(keyHex)) {
-      cursor.positions.set(keyHex, position);
-    }
-  }
+  seedCursorFromPgCache(cursor, saved);
 }
 
 /**

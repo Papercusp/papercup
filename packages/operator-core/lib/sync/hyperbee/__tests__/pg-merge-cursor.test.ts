@@ -25,6 +25,7 @@ import { describe, expect, it } from 'vitest';
 import {
   mergeAdmittedLogsIncremental,
   createMergeCursor,
+  createPgMergeCursorSeedCache,
   seedCursorFromPg,
   persistCursor,
   MERGE_PERSIST_EVERY_OPS,
@@ -65,6 +66,7 @@ function fakeStore(
 ): MergeCursorStore & {
   saves: Array<Map<string, number>>;
   saveBindings: Array<string | null>;
+  loadBindings: Array<string | null>;
   data: Map<string, number>;
   bindings: Map<string, string | null>;
 } {
@@ -73,12 +75,15 @@ function fakeStore(
   for (const k of data.keys()) bindings.set(k, initialBinding);
   const saves: Array<Map<string, number>> = [];
   const saveBindings: Array<string | null> = [];
+  const loadBindings: Array<string | null> = [];
   return {
     data,
     bindings,
     saves,
     saveBindings,
+    loadBindings,
     async load(applyBinding: string | null) {
+      loadBindings.push(applyBinding ?? null);
       const out = new Map<string, number>();
       for (const [k, v] of data) {
         if ((bindings.get(k) ?? null) === (applyBinding ?? null)) out.set(k, v);
@@ -127,6 +132,37 @@ describe('seedCursorFromPg (WI-2105)', () => {
     const cursor = createMergeCursor();
     await seedCursorFromPg(cursor, store, null);
     expect(cursor.positions.has('logA')).toBe(false);
+  });
+});
+
+describe('PgMergeCursorSeedCache (EI-20317490590418053 late admission)', () => {
+  it('loads once, seeds only admitted keys, and reuses the cache for a later admission', async () => {
+    const store = fakeStore(new Map([['own', 8], ['remote-late', 62_256]]));
+    const seedCache = createPgMergeCursorSeedCache();
+    const cursor = createMergeCursor();
+
+    await seedCache.seed(cursor, store, null, ['own']);
+    expect(cursor.positions.get('own')).toBe(8);
+    expect(cursor.positions.has('remote-late')).toBe(false);
+    expect(store.loadBindings).toEqual([null]);
+
+    await seedCache.seed(cursor, store, null, ['own', 'remote-late']);
+    expect(cursor.positions.get('remote-late')).toBe(62_256);
+    expect(store.loadBindings).toEqual([null]); // cache reuse — no second PG read
+  });
+
+  it('never reuses or reloads cached progress after a real fold invalidation', async () => {
+    const store = fakeStore(new Map([['remote', 62_256]]));
+    const seedCache = createPgMergeCursorSeedCache();
+    const beforeReset = createMergeCursor();
+    await seedCache.seed(beforeReset, store, null, ['remote']);
+    expect(beforeReset.positions.get('remote')).toBe(62_256);
+
+    seedCache.invalidate();
+    const afterReset = createMergeCursor();
+    await seedCache.seed(afterReset, store, null, ['remote']);
+    expect(afterReset.positions.has('remote')).toBe(false);
+    expect(store.loadBindings).toEqual([null]);
   });
 });
 

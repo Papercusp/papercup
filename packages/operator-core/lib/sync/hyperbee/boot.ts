@@ -62,9 +62,9 @@ import { stampOpHlc } from './hlc-stamp';
 import type { HlcClock } from '@papercusp/locks-core';
 import {
   createMergeCursor,
+  createPgMergeCursorSeedCache,
   mergeAdmittedLogsIncremental,
   seedCursorFromSnapshots,
-  seedCursorFromPg,
   persistCursor,
   findLatestSnapshotIndex,
   DEFAULT_GET_TIMEOUT_MS,
@@ -1942,10 +1942,10 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // reached tail). Unlike snapshot-seeding (own-log only), this resumes ANY
   // admitted log, incl. an orphaned peer log the tower can't snapshot (e06b8704).
   // OFF ⇒ store is null ⇒ no seed + no persist hook ⇒ byte-identical to today.
-  // `pgCursorSeeded` is a ONE-SHOT latch: the seed loads from PG exactly once for
-  // the initial cursor; after a cursor RESET (roster rebind / truncation) we fall
-  // back to folding from 0 (correct — the positions re-accumulate + re-persist),
-  // never re-seeding, so a shrunk/forked log can't seed itself past its own tail.
+  // EI-20317490590418053: load the durable seed set once, but copy only CURRENTLY
+  // admitted keys into the live cursor. The cache remains available for remotes
+  // admitted later in this boot; a real cursor RESET invalidates it permanently,
+  // so a shrunk/forked/removed/rebound log can never seed past an invalid tail.
   // INJECTED by the production caller (substrate-sidecar-host builds the
   // PG-backed store for sidecar boots; boot-all injects the process-global
   // factory bootSubstrateWithFallback installs for in-process boots — WI-3297.
@@ -1953,7 +1953,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // in-memory cursor only, so this function stays PG-free and every merge
   // test is hermetic unless it opts in.
   const pgMergeCursorStore: MergeCursorStore | null = opts.mergeCursorStore ?? null;
-  let pgCursorSeeded = false;
+  const pgCursorSeedCache = pgMergeCursorStore ? createPgMergeCursorSeedCache() : null;
 
   // EI-18773697830188393 — the COLD-BOOT counterpart of the rekey's `forceReFold`.
   // A persisted cursor position claims "every op below this index was APPLIED", but
@@ -3079,6 +3079,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       }
 
       const logs: AdmittedLog[] = [];
+      const rawLogsByKey = new Map<string, AdmittedLog>();
       for (const log of admitted.values()) {
         // Refresh remote logs so `length` reflects the writer's appends.
         // The own log is the local source of truth; calling update() on it
@@ -3109,54 +3110,8 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           } catch {
             // diagnostic-only — swallow
           }
-          // P-004 (WI-1840): feed the replication-liveness registry — the
-          // read-time verdict + durable-EI escalation layer over the edge-only
-          // boot event above. Adds the ATTACHED-BUT-FROZEN axis the peers-count
-          // check can't see: merge position vs the writer's known length
-          // (contiguousLength would false-alarm on snapshot-seeded sparse
-          // replicas — see replication-liveness.ts). Same best-effort posture.
-          try {
-            const maybePeers = log as Partial<{ peersCount(): number | undefined }>;
-            const livenessPeersCount =
-              typeof maybePeers.peersCount === 'function' ? maybePeers.peersCount() : undefined;
-            const livenessMergedPosition = mergeCursor.positions.get(log.keyHex) ?? 0;
-            // WI-38376: only the detector/confirmation plane sees the signed
-            // writer high-water. `logs.push(versionGatedLog(...))` below still
-            // hands read-merge the real log, whose `.length` is local data only.
-            const knownWriterLength = livenessKnownLength(log);
-            sampleReplicationLiveness(
-              opts.workspaceId,
-              opts.harnessSlug,
-              {
-                keyHex: log.keyHex,
-                knownLength: knownWriterLength,
-                localLength: log.length,
-                mergedPosition: livenessMergedPosition,
-                peersCount: livenessPeersCount,
-                // WI-183 zombie axis: live swarm connections for the harness
-                // topic. Read from the CURRENT handle (rekey() reassigns it);
-                // null handle (no swarm joined / mid-rekey window) → undefined
-                // disables the axis for this sample, never alarms.
-                swarmConnections: swarmHandle?.liveConnectionCount,
-              },
-              {
-                graceMs: REPLICATION_STALL_GRACE_MS,
-                connectedNeverReplicatedGraceMs: CONNECTED_NEVER_REPLICATED_GRACE_MS,
-                frozenGraceMs: FROZEN_GRACE_MS,
-              },
-            );
-            // WI-5340: judge any OUTSTANDING post-repair confirmation off the
-            // SAME sample (cheap no-op Map lookup when none is outstanding).
-            checkRepairConfirmation(
-              log.keyHex,
-              livenessMergedPosition,
-              knownWriterLength,
-              livenessPeersCount,
-            );
-          } catch {
-            // diagnostic-only — swallow
-          }
         }
+        rawLogsByKey.set(log.keyHex, log);
         logs.push(versionGatedLog(slug, log));
       }
 
@@ -3211,6 +3166,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       for (const known of mergeCursor.positions.keys()) {
         if (!logKeys.has(known)) {
           mergeCursor = createMergeCursor();
+          pgCursorSeedCache?.invalidate();
           break;
         }
       }
@@ -3222,21 +3178,26 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       // re-fold behaves identically to the log-removal reset path.
       if (forceReFold) {
         mergeCursor = createMergeCursor();
+        pgCursorSeedCache?.invalidate();
         forceReFold = false;
       }
 
-      // WI-2105 REV fix (flag-gated, default ON): seed the cursor's per-log
-      // positions from PG ONCE before the first fold, so a bg-host restart
-      // resumes each log's fold instead of re-folding from 0. One-shot via
-      // `pgCursorSeeded` (a cursor reset falls back to fold-from-0). Runs BEFORE
-      // snapshot-seeding so a PG position (which resumes an orphaned peer log too)
-      // takes precedence; snapshot-seeding then only fills a still-unseeded log.
+      // WI-2105 + EI-20317490590418053 (flag-gated, default ON): load PG once,
+      // but seed only keys admitted in THIS pass. The boot-lifetime cache is
+      // reused for a remote admitted later, without placing absent keys into the
+      // live cursor (where the log-removal invariant would mistake them for a
+      // removal and reset the fold). Runs BEFORE snapshot seeding so a durable PG
+      // resume position takes precedence; snapshot seeding fills only the rest.
       // Isolated (WI-1544): a load failure means "start at 0" (slower, correct) —
       // never aborts the pass via the outer catch.
-      if (pgMergeCursorStore && !pgCursorSeeded) {
-        pgCursorSeeded = true;
+      if (pgMergeCursorStore && pgCursorSeedCache) {
         try {
-          await seedCursorFromPg(mergeCursor, pgMergeCursorStore, currentApplyBinding());
+          await pgCursorSeedCache.seed(
+            mergeCursor,
+            pgMergeCursorStore,
+            currentApplyBinding(),
+            logKeys,
+          );
         } catch (e) {
           recordBootEvent(
             opts.workspaceId,
@@ -3264,6 +3225,63 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
             'merge_error',
             `snapshot-seed: ${e instanceof Error ? e.message : String(e)}`,
           );
+        }
+      }
+
+      // P-004 + EI-20317490590418053: sample liveness AFTER durable/snapshot
+      // seeding, so the detector sees the cursor position the merge will really
+      // use. Also expose the pending-work queue built by the same smallest-
+      // backlog-first comparator as the merge below. A remote waiting behind an
+      // active backlog head is healthy-but-queued, not attached-but-frozen; the
+      // registry suppresses only that false frozen axis while preserving its
+      // sampling-stale dead-man and no-replicator verdicts.
+      const mergeBacklog = [...logs]
+        .filter((log) => log.length > (mergeCursor.positions.get(log.keyHex) ?? 0))
+        .sort(
+          (a, b) =>
+            a.length -
+            (mergeCursor.positions.get(a.keyHex) ?? 0) -
+            (b.length - (mergeCursor.positions.get(b.keyHex) ?? 0)),
+        );
+      const mergeQueueIndex = new Map(mergeBacklog.map((log, index) => [log.keyHex, index]));
+      const mergeQueueHeadKeyHex = mergeBacklog[0]?.keyHex;
+      for (const log of rawLogsByKey.values()) {
+        if (log.keyHex === ownLog.keyHex) continue;
+        try {
+          const maybePeers = log as Partial<{ peersCount(): number | undefined }>;
+          const livenessPeersCount =
+            typeof maybePeers.peersCount === 'function' ? maybePeers.peersCount() : undefined;
+          const livenessMergedPosition = mergeCursor.positions.get(log.keyHex) ?? 0;
+          const knownWriterLength = livenessKnownLength(log);
+          const queueIndex = mergeQueueIndex.get(log.keyHex);
+          sampleReplicationLiveness(
+            opts.workspaceId,
+            opts.harnessSlug,
+            {
+              keyHex: log.keyHex,
+              knownLength: knownWriterLength,
+              localLength: log.length,
+              mergedPosition: livenessMergedPosition,
+              peersCount: livenessPeersCount,
+              swarmConnections: swarmHandle?.liveConnectionCount,
+              ...(queueIndex !== undefined
+                ? { mergeQueueIndex: queueIndex, mergeQueueHeadKeyHex }
+                : {}),
+            },
+            {
+              graceMs: REPLICATION_STALL_GRACE_MS,
+              connectedNeverReplicatedGraceMs: CONNECTED_NEVER_REPLICATED_GRACE_MS,
+              frozenGraceMs: FROZEN_GRACE_MS,
+            },
+          );
+          checkRepairConfirmation(
+            log.keyHex,
+            livenessMergedPosition,
+            knownWriterLength,
+            livenessPeersCount,
+          );
+        } catch {
+          // diagnostic-only — swallow
         }
       }
 
@@ -3445,6 +3463,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           // observability must never abort the merge pass
         }
         mergeCursor = createMergeCursor();
+        pgCursorSeedCache?.invalidate();
         // Reset positions ⇒ orderedLogs is now length-ascending, still a valid
         // fold order (WI-2105 acceleration); reuse it rather than re-sorting.
         result = await mergeAdmittedLogsIncremental(orderedLogs, mergeCursor, mergeOpts);
