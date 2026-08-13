@@ -41,7 +41,11 @@ beforeAll(async () => {
 
 afterAll(async () => db?.cleanup());
 beforeEach(async () => {
-  await db.sql.unsafe(`TRUNCATE harness_shared.work_items, harness_shared.coord_links,
+  await db.sql.unsafe(`
+    DROP TABLE IF EXISTS harness_shared.bak_20260813_work_item_physical_twins,
+      harness_shared.bak_20260813_physical_twin_links,
+      harness_shared.bak_20260813_physical_twin_threads;
+    TRUNCATE harness_shared.work_items, harness_shared.coord_links,
     harness_shared.coord_threads, harness_shared.work_item_claims,
     harness_shared.feature_claims, harness_shared.claim_audit CASCADE`);
 });
@@ -86,7 +90,7 @@ describe('migration 826 physical twin repair', () => {
       { harness_slug: 'quartermaster-hive', feature_id: 'EI-82600000000000001' },
     ]);
     const links = await db.sql.unsafe(`SELECT id,src_ref FROM harness_shared.coord_links ORDER BY id`);
-    expect(links).toEqual([{ id: 1n, src_ref: 'EI-82600000000000001' }, { id: 2n, src_ref: 'EI-11513' }]);
+    expect(links).toEqual([{ id: 1, src_ref: 'EI-82600000000000001' }, { id: 2, src_ref: 'EI-11513' }]);
     const thread = await db.sql.unsafe(`SELECT parent_ref FROM harness_shared.coord_threads`);
     expect(thread[0].parent_ref).toBe('EI-82600000000000001');
   });
