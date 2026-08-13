@@ -8,6 +8,7 @@ import {
   promptSpecsFromSchema,
   coerceArg,
   mergeConvenienceArgs,
+  mergeDispatchProjection,
   prettyText,
   resultToText,
   buildMcpUrl,
@@ -40,6 +41,7 @@ describe('ptool parseArgs', () => {
       listFilter: null,
       workspace: null,
       harness: null,
+      projection: null,
       raw: false,
       url: null,
       tokenFile: null,
@@ -101,6 +103,13 @@ describe('ptool parseArgs', () => {
     const a = parseArgs(['x:y', '--json', '-']);
     expect(a.json).toBe('-');
     expect(a.tool).toBe('x:y');
+  });
+
+  it('parses --projection in both value-flag forms', () => {
+    expect(parseArgs(['x:y', '--projection={"pick":["results[].id"]}']).projection)
+      .toBe('{"pick":["results[].id"]}');
+    expect(parseArgs(['x:y', '--projection', '{"pick":["results[].state"]}']).projection)
+      .toBe('{"pick":["results[].state"]}');
   });
 
   it('parses the quoting-safe code:run script sources', () => {
@@ -545,6 +554,25 @@ describe('ptool mergeConvenienceArgs', () => {
 
   it('ignores null flags', () => {
     expect(mergeConvenienceArgs({ x: 1 }, { workspace: null, harness: null }, schema)).toEqual({ x: 1 });
+  });
+});
+
+describe('ptool mergeDispatchProjection', () => {
+  it('adds a CLI projection to the target tool arguments', () => {
+    expect(mergeDispatchProjection({ id: 'EI-1' }, { pick: ['results[].id'] })).toEqual({
+      id: 'EI-1',
+      projection: { pick: ['results[].id'] },
+    });
+  });
+
+  it('preserves an explicit JSON projection over the CLI convenience flag', () => {
+    const args = { projection: { pick: ['results[].state'] } };
+    expect(mergeDispatchProjection(args, { pick: ['results[].id'] })).toBe(args);
+  });
+
+  it('leaves arguments unchanged when no CLI projection was supplied', () => {
+    const args = { id: 'EI-1' };
+    expect(mergeDispatchProjection(args, undefined)).toBe(args);
   });
 });
 

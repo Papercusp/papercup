@@ -85,6 +85,7 @@ export function parseArgs(argv) {
     listFilter: null,
     workspace: null,
     harness: null,
+    projection: null,
     raw: false,
     url: null,
     tokenFile: null,
@@ -1224,6 +1225,16 @@ async function main() {
       }
     } else {
       callArgs = await collectArgs(tool.inputSchema);
+    }
+    if (args.projection != null) {
+      let projection;
+      try {
+        projection = JSON.parse(args.projection);
+      } catch (e) {
+        console.error(`ptool: --projection is not valid JSON: ${e.message}`);
+        process.exit(1);
+      }
+      callArgs = mergeDispatchProjection(callArgs, projection);
     }
     callArgs = mergeConvenienceArgs(callArgs, { workspace, harness: args.harness }, tool.inputSchema);
 
