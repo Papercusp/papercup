@@ -1664,6 +1664,14 @@
               "kind": "shell",
               "cmd": "bash",
               "args": [
+                "papercusp-desktop/bin/lib/replication-soak-diagnostics.selftest.sh"
+              ],
+              "label": "replication-soak failed-leg detector window + row/outbox/announce high-water diagnostics (WI-38376)"
+            },
+            {
+              "kind": "shell",
+              "cmd": "bash",
+              "args": [
                 "papercusp-desktop/bin/lib/restart-settle-barrier.selftest.sh"
               ],
               "label": "restart settle-barrier budget + WARN_IS_FAIL escalation (WI-6181)"
