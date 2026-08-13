@@ -532,4 +532,77 @@ describe('scout routed-ledger (real PG, migration 194)', () => {
       expect(byId.get('i-plan-superseded')).toBe('lost');
     });
   });
+
+  // ── EI-20307121130730172: the wi rail must be able to record a LOSS AT ALL.
+  //    It could not, for two months: `classifyIdeaOutcome` accepted exactly one
+  //    losing wi terminal, 'deprecated' (31 rows workspace-wide, ZERO among the
+  //    854 routed refs), while 'dropped' — 1,972 rows, and how work actually
+  //    dies here — was in neither the win set nor the loss set. It produced no
+  //    feed entry, so it read 'pending' forever: 100 wins, 0 losses, and a
+  //    `winRate = won/(won+lost)` that could not fall for any ungraded filing.
+  //
+  //    A win-only channel is the metric analogue of a gate that never fires, so
+  //    the assertion that matters is the CHANNEL one — this rail can produce a
+  //    loss — not just that one status string maps somewhere. The 'open' case
+  //    is the calibration control: it must still be pending, or a block where
+  //    everything classifies 'lost' would pass this suite just as happily.
+  describe('EI-20307121130730172: the wi rail can record a loss (dropped is the live loss terminal)', () => {
+    const CYCLE = 'wi-loss-terminal';
+    const T_WI = Date.parse('2026-08-01T00:00:00Z');
+
+    beforeAll(async () => {
+      // The dropped item deliberately carries NO completion-integrity pair
+      // (terminal_owner / terminal_completion_ref): those columns exist to
+      // prove a WIN shipped, and a dropped item never sets them — requiring
+      // them on the loss arm would rebuild the zero-loss channel exactly.
+      await db.adminSql`
+        INSERT INTO harness_shared.harness_features_consolidated
+          (workspace_id, harness_slug, feature_id, title, status, updated_ts)
+        VALUES
+          (${WS}, ${HARNESS}, 'F-WI-DROPPED', 'a dropped scout filing', 'dropped', ${T_WI}),
+          (${WS}, ${HARNESS}, 'F-WI-DEPRECATED', 'a deprecated scout filing', 'deprecated', ${T_WI}),
+          (${WS}, ${HARNESS}, 'F-WI-OPEN', 'a still-open scout filing', 'open', ${T_WI})`;
+      await recordRoutedIdea({
+        ideaId: 'i-wi-dropped', lens: 'first-principles', rail: 'improvement', routedRef: 'wi:F-WI-DROPPED',
+        harnessSlug: HARNESS, cycleId: CYCLE, workspaceId: WS,
+      });
+      await recordRoutedIdea({
+        ideaId: 'i-wi-deprecated', lens: 'constraint-removal', rail: 'improvement', routedRef: 'wi:F-WI-DEPRECATED',
+        harnessSlug: HARNESS, cycleId: CYCLE, workspaceId: WS,
+      });
+      await recordRoutedIdea({
+        ideaId: 'i-wi-open', lens: 'analogical', rail: 'improvement', routedRef: 'wi:F-WI-OPEN',
+        harnessSlug: HARNESS, cycleId: CYCLE, workspaceId: WS,
+      });
+    }, 60_000);
+
+    it('a scout idea whose work-item was DROPPED classifies lost, not pending forever', async () => {
+      const report = await getScoutLensOutcomes({ workspaceId: WS, harnessSlug: HARNESS, cycleId: CYCLE });
+      expect(report.byLens['first-principles']).toMatchObject({ won: 0, lost: 1, pending: 0 }); // pre-fix: pending 1
+      // The rail-level property, stated directly: the loss channel is LIVE.
+      const wiLosses = report.byLens['first-principles'].lost + report.byLens['constraint-removal'].lost;
+      expect(wiLosses).toBeGreaterThan(0);
+    });
+
+    it("'deprecated' still classifies lost — the fix widened the vocabulary, it did not swap it", async () => {
+      const report = await getScoutLensOutcomes({ workspaceId: WS, harnessSlug: HARNESS, cycleId: CYCLE });
+      expect(report.byLens['constraint-removal']).toMatchObject({ won: 0, lost: 1, pending: 0 });
+    });
+
+    it('CONTROL: a still-open work item stays pending — the rail did not simply start calling everything lost', async () => {
+      const report = await getScoutLensOutcomes({ workspaceId: WS, harnessSlug: HARNESS, cycleId: CYCLE });
+      expect(report.byLens.analogical).toMatchObject({ won: 0, lost: 0, pending: 1 });
+    });
+
+    it('refreshScoutOutcomes persists the loss terminals to the ledger', async () => {
+      await refreshScoutOutcomes({ workspaceId: WS, harnessSlug: HARNESS });
+      const rows = await db.adminSql<{ idea_id: string; outcome: string | null }[]>`
+        SELECT idea_id, outcome FROM harness_shared.scout_routed_ideas
+         WHERE workspace_id = ${WS} AND idea_id IN ('i-wi-dropped', 'i-wi-deprecated', 'i-wi-open')`;
+      const byId = new Map(rows.map((r) => [r.idea_id, r.outcome]));
+      expect(byId.get('i-wi-dropped')).toBe('lost');
+      expect(byId.get('i-wi-deprecated')).toBe('lost');
+      expect(byId.get('i-wi-open')).toBe('pending');
+    });
+  });
 });

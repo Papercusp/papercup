@@ -6,9 +6,11 @@
  *    routed artifact's fate — resolved wi ⇒ won, deprecated wi ⇒ lost (the su
  *    loss-read the production feed deliberately omits), open wi ⇒ pending — with
  *    grade passthrough (humanGrade/gradedBy) and grade-BLIND outcome counts (D-002);
- *  - scout isolation BOTH ways: a scout-origin row never appears in the su read,
- *    and the loss-read never reaches the scout path — a scout idea routed to the
- *    SAME deprecated ref stays 'pending' byte-identically;
+ *  - scout isolation: a scout-origin row never appears in the su read, and the
+ *    WORKSPACE-WIDE (un-ref-scoped) su loss-read never reaches the scout path.
+ *    Scout classifies a losing ref through its OWN ref-scoped loss arm instead
+ *    (EI-20307121130730172) — so a scout idea on the same losing ref is 'lost',
+ *    not the 'pending' the win-only wi rail used to return;
  *  - refreshScoutOutcomes({ origin:'su-ideate' }) (the P-016 backfill sweep)
  *    persists the su outcome cache but NEVER writes scout_lens_weights (D-003 —
  *    su lens learning is read-time only), while the default scout refresh still
@@ -172,15 +174,27 @@ describe('su ideation outcome readback (real PG — P-003)', () => {
     expect(Number(weights[0].n)).toBe(0);
   });
 
-  it("the scout default path is byte-identical: the loss-read never reaches it and the weight loop still closes", async () => {
-    // Read path: the scout idea on the deprecated ref classifies 'pending' —
-    // the production feed carries no losing terminals (an origin leak of the
-    // loss-read would flip this to 'lost' and move real lens weights).
+  it("the scout path classifies its OWN ref-scoped loss (EI-20307121130730172) while the unscoped su loss-read stays su-only, and the weight loop still closes", async () => {
+    // Read path: the scout idea on the losing ref classifies 'lost' — via
+    // readScoutRefScopedTerminalEntries' own wi loss arm, which is scoped to
+    // origin='scout' routed refs exactly like the plan (P-006) and gym-archive
+    // (GYM-3) loss arms beside it.
+    //
+    // ⚠ This assertion was 'pending' until EI-20307121130730172, guarding a
+    // real concern (readWorkItemLossEntries is a WORKSPACE-WIDE, un-ref-scoped
+    // LIMIT-500 read — leaking THAT into scout would classify scout ideas off
+    // an unrelated global query). That read is still su-only in
+    // gatherCompletionsForOrigin, and `total === 1` below still pins the
+    // ref-scope. What it ALSO froze, though, was the wi rail being win-only:
+    // 854 routed refs, 100 wins, ZERO losses in two months, so `winRate =
+    // won/(won+lost)` could not fall for any ungraded filing. Scout is ~9%
+    // graded, so it is the population that read was silently protecting from
+    // ever losing.
     const report = await getScoutLensOutcomes({ workspaceId: WS, harnessSlug: HARNESS });
     expect(report.total).toBe(1);
     expect(report.byLens.analogical.routed).toBe(1);
-    expect(report.byLens.analogical.pending).toBe(1);
-    expect(report.byLens.analogical.lost).toBe(0);
+    expect(report.byLens.analogical.lost).toBe(1);
+    expect(report.byLens.analogical.pending).toBe(0);
 
     // Refresh path: same classification persisted, and the D-003 guard is
     // origin-based — the DEFAULT refresh still writes the lens weights.
@@ -188,7 +202,7 @@ describe('su ideation outcome readback (real PG — P-003)', () => {
     const [row] = await db.adminSql<{ outcome: string | null }[]>`
       SELECT outcome FROM harness_shared.scout_routed_ideas
        WHERE workspace_id = ${WS} AND idea_id = 'scout-dep'`;
-    expect(row.outcome).toBe('pending');
+    expect(row.outcome).toBe('lost');
 
     const weights = await db.adminSql<{ n: string }[]>`
       SELECT count(*) AS n FROM harness_shared.scout_lens_weights WHERE workspace_id = ${WS}`;

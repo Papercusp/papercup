@@ -583,7 +583,7 @@ async function readWorkItemLossEntries(): Promise<ChangeFeedEntry[]> {
 
 /**
  * Work-item terminals for the refs the su-ideate ledger actually routed —
- * winning statuses AND 'deprecated' — shaped as change-feed completion entries
+ * winning statuses AND {@link WORK_ITEM_LOSS_STATUSES} — shaped as change-feed completion entries
  * (su-ideate-learning-substrate P-016). The production feed is a top-500
  * recency window over updated_ts: a su filing resolved months ago (the P-016
  * backfilled corpus) falls OUTSIDE it and would sit 'pending' forever under a
@@ -609,7 +609,7 @@ async function readSuRefScopedTerminalEntries(
   >`
     SELECT w.feature_id, w.harness_slug, w.title, w.status, w.updated_ts
       FROM harness_shared.work_items w
-     WHERE w.status = ANY(${[...CHANGE_FEED_COMPLETION_STATUSES, 'deprecated']}::text[])
+     WHERE w.status = ANY(${[...CHANGE_FEED_COMPLETION_STATUSES, ...WORK_ITEM_LOSS_STATUSES]}::text[])
        AND w.feature_id IN (
              SELECT substring(routed_ref FROM 4)
                FROM harness_shared.scout_routed_ideas
@@ -652,9 +652,15 @@ async function readSuRefScopedTerminalEntries(
  * (D-002/D-009) — an aged-out win simply no longer vanishes:
  *   - work_items: the WINNING completion statuses AND the WI-1403/WI-1405
  *     completion-integrity pair (terminal_owner + terminal_completion_ref), so
- *     only genuine shipped wins are recovered — a 'deprecated'/hygiene terminal
- *     still classifies 'pending' (the scout path deliberately folds NO losses,
- *     unlike su's {@link readWorkItemLossEntries});
+ *     only genuine shipped wins are recovered; PLUS (EI-20307121130730172) the
+ *     LOSING terminals {@link WORK_ITEM_LOSS_STATUSES}, without the integrity
+ *     pair — mirroring su's {@link readWorkItemLossEntries}. This arm was
+ *     win-only until then, which is where the defect actually bit: scout is
+ *     ~9% graded (vs su-ideate's ~88%), so 91% of its rows are classified by
+ *     this path ALONE, and 56 of the 63 routed refs sitting on a `dropped`
+ *     item are scout's. The plan and gym-archive rails below already fold
+ *     their loss terminals (P-006 / GYM-3); the wi rail was the last win-only
+ *     channel, and it is the largest — 78% of the corpus;
  *   - gym_proposals: the decided statuses (accepted → won, rejected/superseded →
  *     lost), joined on `variant_id` (GYM-3 — NOT `id`, a compound
  *     `${variantId}__${role}` key that a Scout routedRef, always the bare
@@ -693,7 +699,7 @@ async function readScoutRefScopedTerminalEntries(
        ${opts.harnessSlug ? sql`AND harness_slug = ${opts.harnessSlug}` : sql``}
        ${opts.cycleId ? sql`AND cycle_id = ${opts.cycleId}` : sql``}`;
 
-  const [wiRows, gymRows, gymArchiveWonRows, gymArchiveLostRows, planRows, planShippedRows, droppedPlanRows, planSupersededRows] =
+  const [wiRows, wiLossRows, gymRows, gymArchiveWonRows, gymArchiveLostRows, planRows, planShippedRows, droppedPlanRows, planSupersededRows] =
     await Promise.all([
     sql<
       { feature_id: string; harness_slug: string | null; title: string | null; status: string | null; updated_ts: string | null }[]
@@ -703,6 +709,19 @@ async function readScoutRefScopedTerminalEntries(
        WHERE w.status = ANY(${[...CHANGE_FEED_COMPLETION_STATUSES]}::text[])
          AND w.terminal_owner IS NOT NULL AND w.terminal_owner <> ''
          AND w.terminal_completion_ref IS NOT NULL AND w.terminal_completion_ref <> ''
+         AND ('wi:' || w.feature_id) IN (${scoutRefsFor('wi:')})`,
+    // EI-20307121130730172 — the wi-rail LOSS terminal, the sibling of the
+    // winning read above. Deliberately NO completion-integrity pair: the
+    // integrity columns exist to prove a WIN was genuinely shipped, and a
+    // dropped/deprecated item never sets them, so requiring them here would
+    // re-create exactly the zero-loss channel this fixes. Mirrors
+    // readWorkItemLossEntries' "a hygiene death is still a negative signal".
+    sql<
+      { feature_id: string; harness_slug: string | null; title: string | null; status: string | null; updated_ts: string | null }[]
+    >`
+      SELECT w.feature_id, w.harness_slug, w.title, w.status, w.updated_ts
+        FROM harness_shared.work_items w
+       WHERE w.status = ANY(${[...WORK_ITEM_LOSS_STATUSES]}::text[])
          AND ('wi:' || w.feature_id) IN (${scoutRefsFor('wi:')})`,
     // GYM-3 (autonomous-loop-prod-audit-2026-07-02 P-013): gym_proposals.id is a
     // COMPOUND key (`${variantId}__${role}`, control-plane.ts recordProposal) —
@@ -833,6 +852,16 @@ async function readScoutRefScopedTerminalEntries(
     ref: `wi:${r.feature_id}`,
     ts: epochMsToIso(r.updated_ts),
   }));
+  const wiLoss: ChangeFeedEntry[] = wiLossRows.map((r) => ({
+    id: `wi:${r.feature_id}`,
+    kind: 'completion' as const,
+    title: r.title || `${r.status === 'dropped' ? 'Dropped' : 'Deprecated'}: ${r.feature_id}`,
+    detail: `Status: ${r.status}`,
+    harness: r.harness_slug ?? undefined,
+    workItemId: r.feature_id,
+    ref: `wi:${r.feature_id}`,
+    ts: epochMsToIso(r.updated_ts),
+  }));
   const gymLabel: Record<string, string> = { accepted: 'Accepted', rejected: 'Rejected', superseded: 'Superseded' };
   const gym: ChangeFeedEntry[] = gymRows.map((r) => ({
     id: `gym:${r.variant_id}`,
@@ -898,7 +927,7 @@ async function readScoutRefScopedTerminalEntries(
   // Decided-proposal / op_status entries are listed before their archive- and
   // frontmatter-status-derived siblings so a higher-fidelity explicit decision
   // wins the first-wins-by-ref dedup (computeLensOutcomes) on the rare overlap.
-  return [...wi, ...gym, ...gymArchiveWon, ...gymArchiveLost, ...plan, ...planShipped, ...droppedPlan, ...planSuperseded];
+  return [...wi, ...wiLoss, ...gym, ...gymArchiveWon, ...gymArchiveLost, ...plan, ...planShipped, ...droppedPlan, ...planSuperseded];
 }
 
 /**

@@ -56,6 +56,18 @@ describe('Scout outcome-feedback (P-013 / D-009)', () => {
         'plan:dropped1',
         entry({ ref: 'plan:dropped1', kind: 'plan-run', title: 'Plan abandoned: dropped1', detail: 'Status: dropped' }),
       ],
+      // EI-20307121130730172: the wi-rail LOSS terminals. 'deprecated' was the
+      // only one recognized for two months — and it matched ZERO of 854 routed
+      // refs, while 'dropped' (how work actually dies here) matched 63 and read
+      // 'pending' forever. Both must classify lost.
+      [
+        'wi:F-DROPPED',
+        entry({ ref: 'wi:F-DROPPED', kind: 'completion', title: 'Dropped: F-DROPPED', detail: 'Status: dropped' }),
+      ],
+      [
+        'wi:F-DEPRECATED',
+        entry({ ref: 'wi:F-DEPRECATED', kind: 'completion', title: 'Deprecated: F-DEPRECATED', detail: 'Status: deprecated' }),
+      ],
     ]);
 
     it('pending when the routed artifact is not yet in the feed', () => {
@@ -75,6 +87,20 @@ describe('Scout outcome-feedback (P-013 / D-009)', () => {
     });
 
     it('work-item completion present = won', () => {
+      expect(classifyIdeaOutcome(prov({ lens: 'reframing', routedRef: 'wi:EI-1', rail: 'improvement' }), feed)).toBe(
+        'won',
+      );
+    });
+
+    it('work-item completion tagged dropped OR deprecated = lost (EI-20307121130730172: the wi rail must have a loss channel at all)', () => {
+      expect(
+        classifyIdeaOutcome(prov({ lens: 'reframing', routedRef: 'wi:F-DROPPED', rail: 'improvement' }), feed),
+      ).toBe('lost'); // pre-fix: no entry existed at all, so 'pending' forever
+      expect(
+        classifyIdeaOutcome(prov({ lens: 'reframing', routedRef: 'wi:F-DEPRECATED', rail: 'improvement' }), feed),
+      ).toBe('lost');
+      // CONTROL: a winning terminal on the SAME rail is untouched — the fix
+      // widened the loss vocabulary, it did not make the rail loss-biased.
       expect(classifyIdeaOutcome(prov({ lens: 'reframing', routedRef: 'wi:EI-1', rail: 'improvement' }), feed)).toBe(
         'won',
       );
