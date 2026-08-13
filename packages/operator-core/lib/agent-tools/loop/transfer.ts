@@ -10,11 +10,11 @@ export default defineTool({
   name: 'loop:transfer',
   profile: 'engineer',
   description:
-    'Transfer one active engine loop to another session while preserving its cadence, fire history, limits, carry policy, and parked state. Refuses when the destination already has an active loop.',
+    'Transfer one active engine loop to another session while preserving its cadence, fire history, limits, carry policy, cold carry-note (including declared deps), and parked state. Refuses when the destination already has an active loop.',
   guidance: {
     when: 'A loop objective should continue under a deliberate successor session instead of being ended and recreated.',
     notWhen: 'The original objective is finished — use loop:end. Moving work-item ownership without its loop — use work_items tools.',
-    chaining: 'Use loop:status for both owners after transfer; the destination receives subsequent wakes.',
+    chaining: 'Use loop:status for both owners after transfer; the destination receives subsequent wakes and resumes from the transferred cold carry-note.',
     seeAlso: ['loop:status', 'loop:end'],
   },
   capability: 'routines:write',

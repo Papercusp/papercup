@@ -17,6 +17,7 @@ import {
   materializeLoop,
   getLoopStatus,
   deactivateLoop,
+  transferLoopOwnership,
   loopRoutineName,
   autoArmFleetMemberLoop,
   LOOP_WAKE_ACTION,
@@ -27,6 +28,7 @@ let sql: Sql;
 const WS = 'ws-loop';
 const HARNESS = 'papercusp';
 const OWNER = 'su-pinned-test';
+const NEXT_OWNER = 'su-successor-test';
 
 beforeAll(async () => {
   org = await createOrgTestDb();
@@ -38,7 +40,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await sql`TRUNCATE harness_shared.routines`;
+  await sql`TRUNCATE harness_shared.routines, harness_shared.carry_notes`;
 });
 
 async function rawRow(ownerId: string) {
@@ -120,6 +122,117 @@ describe('loop surface round-trip (real PG)', () => {
     expect(status!.nextFireAt).toBe(new Date(now.getTime() + 300_000).toISOString());
 
     expect(await getLoopStatus('su-nobody', { sql })).toBeNull();
+  });
+
+  it('EI-20313321954782474: transfers the cold carry-note, journal, declared deps, and loop-nag with the routine', async () => {
+    await materializeLoop({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      ownerId: OWNER,
+      intervalSec: 300,
+      kickoff: 'continue from the carry-note',
+      goal: 'finish the source objective',
+      carry: 'cold',
+      sql,
+    });
+    const sourceCarry = `loop:${HARNESS}:${OWNER}`;
+    const targetCarry = `loop:${HARNESS}:${NEXT_OWNER}`;
+    const sourceNag = `loopnag:${HARNESS}:${OWNER}`;
+    const targetNag = `loopnag:${HARNESS}:${NEXT_OWNER}`;
+    const journal = [{ at: 1_700_000_000_000, note: 'earlier source checkpoint' }];
+    const deps = { v: 1, stamps: [{ dep: 'work-item:EI-source', token: 'open', at: 1_700_000_000_000 }] };
+    await sql`
+      INSERT INTO harness_shared.carry_notes (workspace_id, scope, note, journal, updated_ts, deps)
+      VALUES
+        ('default', ${sourceCarry}, 'SOURCE carry-note', ${JSON.stringify(journal)}::text::jsonb,
+         1700000000000, ${JSON.stringify(deps)}::text::jsonb),
+        ('default', ${targetCarry}, 'STALE destination note', '[]'::jsonb, 1700000001000, NULL),
+        ('default', ${sourceNag}, 'source pending-wall nag', '[]'::jsonb, 1700000000000, NULL),
+        ('default', ${targetNag}, 'stale destination nag', '[]'::jsonb, 1700000001000, NULL)`;
+
+    await expect(transferLoopOwnership(OWNER, NEXT_OWNER, { sql })).resolves.toMatchObject({
+      transferred: true,
+    });
+
+    expect(await getLoopStatus(OWNER, { sql })).toBeNull();
+    expect(await getLoopStatus(NEXT_OWNER, { sql })).toMatchObject({
+      ownerId: NEXT_OWNER,
+      carry: 'cold',
+      goal: 'finish the source objective',
+    });
+    const notes = await sql<Array<{ scope: string; note: string; journal: unknown; deps: unknown; updated_ts: number }>>`
+      SELECT scope, note, journal, deps, updated_ts
+        FROM harness_shared.carry_notes
+       WHERE scope IN (${sourceCarry}, ${targetCarry}, ${sourceNag}, ${targetNag})
+       ORDER BY (scope = ${targetCarry}) DESC`;
+    expect(notes).toEqual([
+      {
+        scope: targetCarry,
+        note: 'SOURCE carry-note',
+        journal,
+        deps,
+        updated_ts: 1_700_000_000_000,
+      },
+      {
+        scope: targetNag,
+        note: 'source pending-wall nag',
+        journal: [],
+        deps: null,
+        updated_ts: 1_700_000_000_000,
+      },
+    ]);
+  });
+
+  it('EI-20313321954782474: rolls the routine transfer back when carry-note rekeying fails', async () => {
+    await materializeLoop({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      ownerId: OWNER,
+      intervalSec: 300,
+      kickoff: 'source loop',
+      carry: 'cold',
+      sql,
+    });
+    const sourceCarry = `loop:${HARNESS}:${OWNER}`;
+    const targetCarry = `loop:${HARNESS}:${NEXT_OWNER}`;
+    await sql`
+      INSERT INTO harness_shared.carry_notes (workspace_id, scope, note, journal, updated_ts)
+      VALUES
+        ('default', ${sourceCarry}, 'SOURCE carry-note', '[]'::jsonb, 1700000000000),
+        ('default', ${targetCarry}, 'STALE destination note', '[]'::jsonb, 1700000001000)`;
+    await sql.unsafe(`
+      CREATE OR REPLACE FUNCTION public.fail_test_loop_carry_rekey() RETURNS trigger
+      LANGUAGE plpgsql AS $$
+      BEGIN
+        IF NEW.scope = 'loop:papercusp:su-successor-test' THEN
+          RAISE EXCEPTION 'forced carry-note rekey failure';
+        END IF;
+        RETURN NEW;
+      END
+      $$;
+      CREATE TRIGGER fail_test_loop_carry_rekey
+        BEFORE UPDATE OF scope ON harness_shared.carry_notes
+        FOR EACH ROW EXECUTE FUNCTION public.fail_test_loop_carry_rekey();
+    `);
+
+    try {
+      await expect(transferLoopOwnership(OWNER, NEXT_OWNER, { sql })).rejects.toThrow(
+        'forced carry-note rekey failure',
+      );
+    } finally {
+      await sql`DROP TRIGGER IF EXISTS fail_test_loop_carry_rekey ON harness_shared.carry_notes`;
+      await sql`DROP FUNCTION IF EXISTS public.fail_test_loop_carry_rekey()`;
+    }
+
+    expect(await getLoopStatus(OWNER, { sql })).toMatchObject({ ownerId: OWNER, carry: 'cold' });
+    expect(await getLoopStatus(NEXT_OWNER, { sql })).toBeNull();
+    const notes = await sql<Array<{ scope: string; note: string }>>`
+      SELECT scope, note FROM harness_shared.carry_notes
+       WHERE scope IN (${sourceCarry}, ${targetCarry}) ORDER BY scope`;
+    expect(notes).toEqual([
+      { scope: sourceCarry, note: 'SOURCE carry-note' },
+      { scope: targetCarry, note: 'STALE destination note' },
+    ]);
   });
 
   it('EI-19316779460752535: lastRealTurnAt sees an ordinary assistant turn with NO journal row — and still excludes the session-end marker (WI-6951)', async () => {

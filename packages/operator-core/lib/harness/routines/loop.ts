@@ -561,30 +561,63 @@ export async function transferLoopOwnership(
   if (!fromOwnerId.trim() || !toOwnerId.trim()) throw new Error('fromOwnerId and toOwnerId are required');
   if (fromOwnerId === toOwnerId) return { transferred: false, routineId: null };
   const sql = opts.sql ?? getOrgPg().sql;
-  const rows = await sql<Array<{ id: string }>>`
-    UPDATE harness_shared.routines source
-       SET target_owner_id = ${toOwnerId},
-           name = ${loopRoutineName(toOwnerId)},
-           updated_at = now(),
-           metadata = COALESCE(source.metadata, '{}'::jsonb) || jsonb_build_object(
-             'loop_transferred_from', ${fromOwnerId}::text,
-             'loop_transferred_to', ${toOwnerId}::text,
-             'loop_transferred_at', now()::text
-           )
-     WHERE source.name = ${loopRoutineName(fromOwnerId)}
-       AND source.target_owner_id = ${fromOwnerId}
-       AND source.reschedule_interval_sec IS NOT NULL
-       AND source.active = TRUE
-       AND NOT EXISTS (
-         SELECT 1
-           FROM harness_shared.routines target
-          WHERE target.workspace_id = source.workspace_id
-            AND target.target_owner_id = ${toOwnerId}
-            AND target.reschedule_interval_sec IS NOT NULL
-            AND target.active = TRUE
-       )
-    RETURNING source.id`;
-  return { transferred: rows.length === 1, routineId: rows[0]?.id ?? null };
+  return (await sql.begin(async (tx) => {
+    const rows = await tx<Array<{ id: string; install_slug: string }>>`
+      UPDATE harness_shared.routines source
+         SET target_owner_id = ${toOwnerId},
+             name = ${loopRoutineName(toOwnerId)},
+             updated_at = now(),
+             metadata = COALESCE(source.metadata, '{}'::jsonb) || jsonb_build_object(
+               'loop_transferred_from', ${fromOwnerId}::text,
+               'loop_transferred_to', ${toOwnerId}::text,
+               'loop_transferred_at', now()::text
+             )
+       WHERE source.name = ${loopRoutineName(fromOwnerId)}
+         AND source.target_owner_id = ${fromOwnerId}
+         AND source.reschedule_interval_sec IS NOT NULL
+         AND source.active = TRUE
+         AND NOT EXISTS (
+           SELECT 1
+             FROM harness_shared.routines target
+            WHERE target.workspace_id = source.workspace_id
+              AND target.target_owner_id = ${toOwnerId}
+              AND target.reschedule_interval_sec IS NOT NULL
+              AND target.active = TRUE
+         )
+      RETURNING source.id, source.install_slug`;
+    const moved = rows[0];
+    if (!moved || rows.length !== 1) return { transferred: false, routineId: null };
+
+    // EI-20313321954782474 — a cold loop is not only its routine row. Its next
+    // fresh-context wake reads the carry-note by OWNER scope, so transferring the
+    // routine alone wakes the successor with either no continuity or an unrelated
+    // stale note already left under the destination owner. Move both owner-scoped
+    // carry surfaces in this SAME transaction. Updating only `scope` deliberately
+    // preserves the complete row, including its journal and declared `deps`.
+    //
+    // A destination without an active loop may still have residue from an older
+    // ended loop. The explicitly transferred source objective is authoritative:
+    // clear that residue even when the source has no note, otherwise the successor
+    // can resume the destination's stale goal. Scope is globally owner-unique, but
+    // old producer versions wrote the same scope under different workspace ids, so
+    // move/delete every workspace copy rather than assuming the pinned namespace.
+    const fromCarryScope = `loop:${moved.install_slug}:${fromOwnerId}`;
+    const toCarryScope = `loop:${moved.install_slug}:${toOwnerId}`;
+    const fromNagScope = `loopnag:${moved.install_slug}:${fromOwnerId}`;
+    const toNagScope = `loopnag:${moved.install_slug}:${toOwnerId}`;
+    await tx`
+      DELETE FROM harness_shared.carry_notes
+       WHERE scope IN (${toCarryScope}, ${toNagScope})`;
+    await tx`
+      UPDATE harness_shared.carry_notes
+         SET scope = CASE scope
+                       WHEN ${fromCarryScope} THEN ${toCarryScope}
+                       ELSE ${toNagScope}
+                     END
+       WHERE scope IN (${fromCarryScope}, ${fromNagScope})`;
+
+    return { transferred: true, routineId: moved.id };
+  })) as { transferred: boolean; routineId: string | null };
 }
 
 /** A lean view of an owner's loop, for loop:status / observability. */
