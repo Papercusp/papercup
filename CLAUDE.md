@@ -599,6 +599,22 @@ help. `pgrep -qf X && echo ALIVE || echo gone` prints **`gone`** on the usage
 error — a well-formed answer to the question you asked, while the process is
 very much alive (measured: it printed `gone` while `pgrep -cf` returned **13**).
 
+⚠ **With `pipefail`, do not use an early-exiting pipeline consumer as a
+predicate.** `grep -q`, `grep -m1`, and `head -1` can exit as soon as they
+find a match, sending `SIGPIPE` to the producer. The producer may then return
+141, so `producer | grep -q PAT && echo yes || echo no` reports `no` even
+though `grep` matched. This is a race: the same command can appear to work
+until the producer is fast enough to hit the closed pipe. Capture the producer
+output and match it afterward instead:
+
+```bash
+out=$(producer)
+case "$out" in *PAT*) echo yes ;; *) echo no ;; esac
+```
+
+If a pipeline is necessary, consume to EOF (for example with `grep -c`) rather
+than using an early-exit predicate. A false absence from this pattern is not
+evidence that the guarded string, process, or flag is missing.
 
 > ⚠ `pgrep -x` matches `/proc/<pid>/comm`, which the kernel truncates to **15
 > chars**, so a longer binary name never matches. 
