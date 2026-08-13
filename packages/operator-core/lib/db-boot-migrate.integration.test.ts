@@ -64,7 +64,11 @@ vi.mock('./agent-tools/coordination/messages', async () => {
   return { ...actual, sendMessage: (...args: unknown[]) => h.sendMessage(...args) };
 });
 
-const { applyPendingMigrationsAtBoot, applyPendingMigrationsNow } = await import('./db-boot-migrate');
+const {
+  applyPendingMigrationsAtBoot,
+  applyPendingMigrationsNow,
+  reconcileMigrationReservations,
+} = await import('./db-boot-migrate');
 
 let rootSql: postgres.Sql;
 let bootClient: postgres.Sql;
@@ -384,5 +388,49 @@ describe('boot-apply cross-boot failure cooldown (EI-19403856469813053)', () => 
     const raw = await readFile(cooldownFile, 'utf8').catch(() => '{}');
     const state = JSON.parse(raw) as Record<string, unknown>;
     expect(state['964-temp-broken.sql']).toBeUndefined();
+  });
+});
+
+describe('migration reservation reconciliation (WI-38354)', () => {
+  it('inserts a missing reservation row through the real postgres helper path', async () => {
+    await rootSql.unsafe(`
+      CREATE TABLE IF NOT EXISTS harness_shared.migration_reservations (
+        num integer PRIMARY KEY,
+        filename text,
+        reserved_by text,
+        intent text,
+        reserved_at timestamptz NOT NULL DEFAULT now()
+      )`);
+    await rootSql.unsafe('TRUNCATE harness_shared.migration_reservations');
+    await rootSql.unsafe('TRUNCATE harness_shared.schema_migrations');
+    await rootSql.unsafe(
+      'INSERT INTO harness_shared.schema_migrations (filename, sha256) VALUES ($1, $2)',
+      ['999999-reconcile-regression.sql', '0'.repeat(64)],
+    );
+
+    const logs: string[] = [];
+    const count = await reconcileMigrationReservations(rootSql, (message) => logs.push(message));
+
+    expect(count).toBe(1);
+    expect(logs).toEqual([
+      expect.stringContaining('reconciled 1 migration_reservations row(s)'),
+    ]);
+    const rows = await rootSql<{
+      num: number;
+      filename: string;
+      reserved_by: string;
+      intent: string;
+    }[]>`
+      SELECT num, filename, reserved_by, intent
+        FROM harness_shared.migration_reservations
+       WHERE num = 999999`;
+    expect(rows).toEqual([
+      {
+        num: 999999,
+        filename: '999999-reconcile-regression.sql',
+        reserved_by: 'reconcile-on-apply',
+        intent: 'auto-reconciled (WI-38354): applied without a db:next-migration reservation row',
+      },
+    ]);
   });
 });

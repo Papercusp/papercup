@@ -193,11 +193,14 @@ export async function reconcileMigrationReservations(
       reserved.map((r) => Number(r.num)),
     );
     if (rows.length === 0) return 0;
+    const reservationRows = rows.map((row) => ({
+      ...row,
+      reserved_by: 'reconcile-on-apply',
+      intent: 'auto-reconciled (WI-38354): applied without a db:next-migration reservation row',
+    }));
     await client`
-      INSERT INTO harness_shared.migration_reservations (num, filename, reserved_by, intent)
-      SELECT x.num, x.filename, 'reconcile-on-apply',
-             'auto-reconciled (WI-38354): applied without a db:next-migration reservation row'
-        FROM ${client(rows, 'num', 'filename')} AS x(num, filename)
+      INSERT INTO harness_shared.migration_reservations
+        ${client(reservationRows, 'num', 'filename', 'reserved_by', 'intent')}
       ON CONFLICT (num) DO NOTHING`;
     log(
       `reconciled ${rows.length} migration_reservations row(s) from applied history ` +
