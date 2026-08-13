@@ -11,7 +11,16 @@
 import { afterAll, describe, expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -318,7 +327,6 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
     const runDir = mkdtempSync(join(evidenceDir, 'scenario-wrapper-'));
     const fakeBin = join(runDir, 'bin');
     const sshMarker = join(runDir, 'ssh-was-called');
-    const { mkdirSync, chmodSync } = require('node:fs') as typeof import('node:fs');
     mkdirSync(fakeBin);
     const fakeSsh = join(fakeBin, 'ssh');
     writeFileSync(fakeSsh, `#!/usr/bin/env bash\nprintf called > ${JSON.stringify(sshMarker)}\nexit 99\n`);
