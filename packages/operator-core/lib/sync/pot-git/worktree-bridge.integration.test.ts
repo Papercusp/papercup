@@ -138,9 +138,17 @@ describe('worktree-bridge (G-7: announcement → fetch → accept → ff worktre
   };
 
   it('first announcement seeds an unborn worktree (fetch → accept → advance)', async () => {
+    const dialsBefore = dials;
     const res = await handleStagingAdvance(cfg(watermark), await announce(1, 1, s1));
     expect(res.outcome).toBe('accepted');
     if (res.outcome !== 'accepted') return;
+    // The DIAL ACTUALLY FIRED — this is the on-demand fetch's happy path, and it
+    // is the only case in this file that takes it. Every other `dials` assertion
+    // here is a NEGATIVE one (skip/reject never dialed), so without this positive
+    // check a regression that made `s1` locally present would silently demote this
+    // test to the skip branch and still pass — the fetch would stop being covered
+    // anywhere while the suite stayed green (EI-18682513182543864).
+    expect(dials).toBe(dialsBefore + 1);
     expect(res.watermark).toEqual({ epochSeq: { epoch: 1, seq: 1 }, stagingSha: s1 });
     expect(res.advance.outcome, res.advance.detail).toBe('advanced');
     expect(res.advance.from).toBeNull();
