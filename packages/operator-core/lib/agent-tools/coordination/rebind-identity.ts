@@ -103,6 +103,42 @@ async function readClaimsHeld(sql: Sql, f: string): Promise<boolean> {
   return rows[0]?.held === true;
 }
 
+/**
+ * Recover the launcher's resolved fleet when membership facts were never
+ * stamped.  `adv_sessions.launch_spec` is the durable launch-time record and
+ * is deliberately read through `to_jsonb`: older operators may not have the
+ * additive migration yet, in which case this leg fails soft with the rest of
+ * the fleet-membership surface.
+ */
+async function readLaunchSpecFleet(
+  sql: Sql,
+  ownerId: string,
+): Promise<{
+  workspace_id: string;
+  owner_label: string | null;
+  fleet_slug: string | null;
+  fleet_role: string | null;
+} | null> {
+  const rows = await sql<
+    Array<{
+      workspace_id: string;
+      owner_label: string | null;
+      fleet_slug: string | null;
+      fleet_role: string | null;
+    }>
+  >`
+    SELECT workspace_id,
+           label AS owner_label,
+           to_jsonb(adv)->'launch_spec'->'fleet'->>'slug' AS fleet_slug,
+           to_jsonb(adv)->'launch_spec'->'fleet'->>'role' AS fleet_role
+      FROM harness_shared.adv_sessions AS adv
+     WHERE coord_owner_id = ${ownerId}
+     ORDER BY started_at DESC
+     LIMIT 1
+  `;
+  return rows[0] ?? null;
+}
+
 export interface RebindSurfaceResult {
   surface: string;
   /** Rows re-keyed from → to. */
@@ -296,6 +332,10 @@ export async function rebindIdentity(
   // 4. Fleet membership — APPEND-ONLY facts (WI-1345: never UPDATE/DELETE):
   //    close the old id's membership with a leave-fact and open the same
   //    fleet+role under the new id, unless the new id already sits there.
+  //    A fresh launch persists its resolved fleet in adv_sessions.launch_spec
+  //    before the first presence turn. If the predecessor died before the
+  //    boot-time membership stamp, that record is the only durable fleet
+  //    evidence available to the rebind and must seed the successor.
   await run('fleet-membership', async (r) => {
     const latest = await sql<
       Array<{ workspace_id: string; owner_label: string | null; fleet_slug: string | null; fleet_role: string | null }>
@@ -304,24 +344,33 @@ export async function rebindIdentity(
        WHERE owner_id = ${f} ORDER BY id DESC LIMIT 1
     `;
     const cur = latest[0];
-    if (!cur?.fleet_slug) return;
+    // A latest leave-fact is an explicit no-fleet decision and must win over
+    // the older launch snapshot. Only a genuinely absent membership history
+    // qualifies for launch_spec recovery.
+    const launchFleet = !cur ? await readLaunchSpecFleet(sql, f) : null;
+    const recovered = cur ?? launchFleet;
+    if (!recovered?.fleet_slug) return;
+    const fleetRole = recovered.fleet_role ?? 'member';
     const toLatest = await sql<Array<{ fleet_slug: string | null }>>`
       SELECT fleet_slug FROM harness_shared.fleet_membership_events
        WHERE owner_id = ${t} ORDER BY id DESC LIMIT 1
     `;
-    if (toLatest[0]?.fleet_slug !== cur.fleet_slug) {
+    if (toLatest[0]?.fleet_slug !== recovered.fleet_slug) {
       await sql`
         INSERT INTO harness_shared.fleet_membership_events (workspace_id, owner_id, owner_label, fleet_slug, fleet_role, event)
-        VALUES (${cur.workspace_id}, ${t}, ${cur.owner_label}, ${cur.fleet_slug}, ${cur.fleet_role},
-                ${cur.fleet_role === 'leader' ? 'lead' : 'join'})
+        VALUES (${recovered.workspace_id}, ${t}, ${recovered.owner_label}, ${recovered.fleet_slug}, ${fleetRole},
+                ${fleetRole === 'leader' ? 'lead' : 'join'})
       `;
       r.appended = (r.appended ?? 0) + 1;
     }
-    await sql`
-      INSERT INTO harness_shared.fleet_membership_events (workspace_id, owner_id, owner_label, fleet_slug, fleet_role, event)
-      VALUES (${cur.workspace_id}, ${f}, ${cur.owner_label}, NULL, NULL, 'leave')
-    `;
-    r.appended = (r.appended ?? 0) + 1;
+    // There is no predecessor fact to close on the launch_spec-only path.
+    if (cur) {
+      await sql`
+        INSERT INTO harness_shared.fleet_membership_events (workspace_id, owner_id, owner_label, fleet_slug, fleet_role, event)
+        VALUES (${cur.workspace_id}, ${f}, ${cur.owner_label}, NULL, NULL, 'leave')
+      `;
+      r.appended = (r.appended ?? 0) + 1;
+    }
   });
 
   // 5. Fleet leadership pointer.

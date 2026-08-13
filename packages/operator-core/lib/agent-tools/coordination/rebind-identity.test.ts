@@ -37,6 +37,7 @@ interface FakeOpts {
   noteClash?: Record<string, string>;
   presenceDrop?: number;
   fleetLatest?: { workspace_id: string; owner_label: string | null; fleet_slug: string | null; fleet_role: string | null } | null;
+  launchSpecFleet?: { workspace_id: string; owner_label: string | null; fleet_slug: string | null; fleet_role: string | null } | null;
   fleetToLatest?: { fleet_slug: string | null } | null;
   leaderSlugs?: string[];
   claimSpecDrop?: number;
@@ -90,6 +91,9 @@ function fakeSql(opts: FakeOpts = {}) {
     }
     if (text.includes('SELECT workspace_id, owner_label, fleet_slug, fleet_role FROM harness_shared.fleet_membership_events')) {
       return Promise.resolve(opts.fleetLatest ? [opts.fleetLatest] : []);
+    }
+    if (text.includes('FROM harness_shared.adv_sessions AS adv')) {
+      return Promise.resolve(opts.launchSpecFleet ? [opts.launchSpecFleet] : []);
     }
     if (text.includes('SELECT fleet_slug FROM harness_shared.fleet_membership_events')) {
       return Promise.resolve(opts.fleetToLatest ? [opts.fleetToLatest] : []);
@@ -403,6 +407,40 @@ describe('fleet membership (append-only) + leadership', () => {
     const noFleet = fakeSql({ fleetLatest: { workspace_id: 'coord-ws', owner_label: null, fleet_slug: null, fleet_role: null } });
     const res2 = await rebind(FROM, TO, noFleet);
     expect(surfaceOf(res2, 'fleet-membership').appended).toBeUndefined();
+  });
+
+  it('restores the successor fleet from launch_spec when the predecessor has no membership fact', async () => {
+    const sql = fakeSql({
+      launchSpecFleet: {
+        workspace_id: 'coord-ws',
+        owner_label: 'member 3',
+        fleet_slug: 'bug-drain',
+        fleet_role: 'member',
+      },
+    });
+    const res = await rebind(FROM, TO, sql);
+    expect(surfaceOf(res, 'fleet-membership')).toMatchObject({ appended: 1 });
+    const inserts = sql.calls.filter((c) => c.text.includes('INSERT INTO harness_shared.fleet_membership_events'));
+    expect(inserts).toHaveLength(1);
+    expect(inserts[0].vals).toContain(TO);
+    expect(inserts[0].vals).toContain('bug-drain');
+    expect(inserts[0].vals).toContain('member');
+    expect(inserts[0].vals).toContain('join');
+  });
+
+  it('does not resurrect an explicitly recorded leave from the launch snapshot', async () => {
+    const sql = fakeSql({
+      fleetLatest: { workspace_id: 'coord-ws', owner_label: null, fleet_slug: null, fleet_role: null },
+      launchSpecFleet: {
+        workspace_id: 'coord-ws',
+        owner_label: 'member 3',
+        fleet_slug: 'bug-drain',
+        fleet_role: 'member',
+      },
+    });
+    const res = await rebind(FROM, TO, sql);
+    expect(surfaceOf(res, 'fleet-membership').appended).toBeUndefined();
+    expect(sql.calls.some((c) => c.text.includes('FROM harness_shared.adv_sessions AS adv'))).toBe(false);
   });
 });
 
