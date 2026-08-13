@@ -30,6 +30,19 @@ import {
   type PhysicalPhaseCHost,
   type PhysicalPhaseCInput,
 } from './physical-drill-phase-c';
+import {
+  capturePhysicalPhaseDEvent,
+  capturePhysicalPhaseDObservation,
+  capturePhysicalPhaseDRequest,
+  createPhysicalPhaseDMutation,
+  dirtyPhysicalPhaseDWorktree,
+  ratifyPhysicalPhaseDRequest,
+  validatePhysicalPhaseD,
+  type PhysicalPhaseDHost,
+  type PhysicalPhaseDInput,
+  type PhysicalPhaseDMutationKind,
+  type PhysicalPhaseDObservationStage,
+} from './physical-drill-phase-d';
 
 type JsonRecord = Record<string, unknown>;
 
@@ -292,6 +305,95 @@ async function cli(argv: string[]): Promise<unknown> {
     }
     return verdict;
   }
+  if (mode === 'phase-d-commit') {
+    const [hostId, kind, sourceDeviceKey, runId] = args;
+    if (
+      (hostId !== 'tower' && hostId !== 'vm') ||
+      (kind !== 'below-steer' && kind !== 'dirty-overlap') ||
+      !sourceDeviceKey ||
+      !runId
+    ) {
+      throw new Error(
+        'usage: physical-drill-producer phase-d-commit <tower|vm> <below-steer|dirty-overlap> <source-device-key> <run-id>',
+      );
+    }
+    return createPhysicalPhaseDMutation({
+      sourceHost: hostId as PhysicalPhaseDHost,
+      kind: kind as PhysicalPhaseDMutationKind,
+      sourceDeviceKey,
+      runId,
+    });
+  }
+  if (mode === 'phase-d-dirty') {
+    const [runId] = args;
+    if (!runId) throw new Error('usage: physical-drill-producer phase-d-dirty <run-id>');
+    return dirtyPhysicalPhaseDWorktree({ runId });
+  }
+  if (mode === 'phase-d-request') {
+    const [state, devicePubkey, headSha] = args;
+    if ((state !== 'pending' && state !== 'ratified') || !devicePubkey || !headSha) {
+      throw new Error(
+        'usage: physical-drill-producer phase-d-request <pending|ratified> <device-pubkey> <head-sha>',
+      );
+    }
+    return capturePhysicalPhaseDRequest({ state, devicePubkey, headSha });
+  }
+  if (mode === 'phase-d-ratify') {
+    const [devicePubkey, headSha] = args;
+    if (!devicePubkey || !headSha) {
+      throw new Error('usage: physical-drill-producer phase-d-ratify <device-pubkey> <head-sha>');
+    }
+    return ratifyPhysicalPhaseDRequest({ devicePubkey, headSha });
+  }
+  if (mode === 'phase-d-event') {
+    const [hostId, afterRowIdRaw, integratorDeviceKey, stagingSha] = args;
+    const afterRowId = Number(afterRowIdRaw);
+    if (
+      (hostId !== 'tower' && hostId !== 'vm') ||
+      !Number.isSafeInteger(afterRowId) ||
+      afterRowId < 0 ||
+      !integratorDeviceKey ||
+      !stagingSha
+    ) {
+      throw new Error(
+        'usage: physical-drill-producer phase-d-event <tower|vm> <after-row-id> <integrator-device-key> <staging-sha>',
+      );
+    }
+    return capturePhysicalPhaseDEvent({
+      hostId: hostId as PhysicalPhaseDHost,
+      afterRowId,
+      integratorDeviceKey,
+      stagingSha,
+    });
+  }
+  if (mode === 'phase-d-observe') {
+    const [hostId, stage, integratorDeviceKey, runId] = args;
+    if (
+      (hostId !== 'tower' && hostId !== 'vm') ||
+      !['first-source', 'first-destination', 'dirty-before', 'dirty-after'].includes(stage ?? '') ||
+      !integratorDeviceKey ||
+      !runId
+    ) {
+      throw new Error(
+        'usage: physical-drill-producer phase-d-observe <tower|vm> <first-source|first-destination|dirty-before|dirty-after> <integrator-device-key> <run-id>',
+      );
+    }
+    return capturePhysicalPhaseDObservation({
+      hostId: hostId as PhysicalPhaseDHost,
+      stage: stage as PhysicalPhaseDObservationStage,
+      integratorDeviceKey,
+      runId,
+    });
+  }
+  if (mode === 'phase-d-verify') {
+    const [inputPath] = args;
+    if (!inputPath) throw new Error('usage: physical-drill-producer phase-d-verify <private-run-input.json>');
+    const verdict = validatePhysicalPhaseD(readJson(inputPath) as PhysicalPhaseDInput);
+    if (!verdict.ok) {
+      throw new Error(`physical-drill-producer: Phase D rejected: ${verdict.errors.join('; ')}`);
+    }
+    return verdict;
+  }
   if (mode === 'finalize') {
     const [unsignedEvidencePath, towerReceiptPath, vmReceiptPath, evidencePath, trustPath] = args;
     if (!unsignedEvidencePath || !towerReceiptPath || !vmReceiptPath || !evidencePath || !trustPath) {
@@ -307,7 +409,7 @@ async function cli(argv: string[]): Promise<unknown> {
     return { ok: true, runId: artifacts.evidence.runId, evidencePath, trustPath };
   }
   throw new Error(
-    'physical-drill-producer: mode must be identity, preflight, phase-a-observe, phase-a-quarantine, phase-a-verify, phase-b-observe, phase-b-commit, phase-b-verify, phase-c-run, phase-c-verify, sign, or finalize',
+    'physical-drill-producer: mode must be identity, preflight, phase-a-observe, phase-a-quarantine, phase-a-verify, phase-b-observe, phase-b-commit, phase-b-verify, phase-c-run, phase-c-verify, phase-d-commit, phase-d-dirty, phase-d-request, phase-d-ratify, phase-d-event, phase-d-observe, phase-d-verify, sign, or finalize',
   );
 }
 

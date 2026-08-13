@@ -16,6 +16,10 @@ import {
   validatePhysicalDrillHostReceipt,
   type PhysicalDrillHostReceipt,
 } from './physical-drill-host-receipt';
+import {
+  validatePhysicalPhaseD,
+  type PhysicalPhaseDInput,
+} from './physical-drill-phase-d';
 
 export { physicalDrillSigningBytes } from './physical-drill-host-receipt';
 
@@ -363,6 +367,55 @@ function validateLegE(raw: JsonRecord, hostKeys: Set<string>, errors: string[]):
   expectEqual(divergenceBefore, divergenceAfter, 'legE divergence canonical before/after', errors);
 }
 
+function validateLegD(
+  raw: JsonRecord,
+  runId: string | null,
+  startedAt: number,
+  finishedAt: number,
+  hostKeys: Set<string>,
+  errors: string[],
+): void {
+  const leg = expectRecord(raw, 'legD', errors);
+  if (!leg) return;
+
+  let verdict: ReturnType<typeof validatePhysicalPhaseD>;
+  try {
+    verdict = validatePhysicalPhaseD(leg as unknown as PhysicalPhaseDInput);
+  } catch (error) {
+    errors.push(`legD causal evidence is malformed: ${error instanceof Error ? error.message : String(error)}`);
+    return;
+  }
+  for (const error of verdict.errors) errors.push(`legD: ${error}`);
+  if (!verdict.ok || !verdict.result?.complete) {
+    errors.push('legD must contain the complete validated P-305 causal evidence object');
+  }
+  if (leg.runId !== runId) errors.push('legD.runId must match the enclosing physical run');
+
+  const window = record(leg.window);
+  const legStartedAt = Date.parse(String(window?.startedAt ?? ''));
+  const legFinishedAt = Date.parse(String(window?.finishedAt ?? ''));
+  if (
+    !Number.isFinite(legStartedAt) ||
+    !Number.isFinite(legFinishedAt) ||
+    legStartedAt < startedAt ||
+    legFinishedAt > finishedAt
+  ) {
+    errors.push('legD.window must fall inside the enclosing physical-run window');
+  }
+
+  const identities = record(leg.identities);
+  const legHostKeys = new Set([
+    string(identities?.towerDeviceKey),
+    string(identities?.vmDeviceKey),
+  ].filter((value): value is string => value !== null));
+  if (
+    legHostKeys.size !== hostKeys.size ||
+    [...hostKeys].some((deviceKey) => !legHostKeys.has(deviceKey))
+  ) {
+    errors.push('legD identities must match the two attesting physical devices exactly');
+  }
+}
+
 function validateLegG(raw: JsonRecord, hostKeys: Set<string>, errors: string[]): void {
   const leg = expectRecord(raw, 'legG', errors);
   if (leg?.planItem !== 'P-308') errors.push('legG.planItem must be P-308');
@@ -525,6 +578,7 @@ export function validatePhysicalDrillEvidence(
   validateArtifacts(evidence, hostIds, errors);
   validateAttestations(evidence, hostKeys, errors);
   validateLegVerdicts(evidence, startedAt, finishedAt, errors);
+  validateLegD(evidence, runId, startedAt, finishedAt, hostKeys, errors);
   validateLegE(evidence, hostKeys, errors);
   validateLegG(evidence, hostKeys, errors);
 
@@ -536,7 +590,7 @@ export function validatePhysicalDrillEvidence(
     errors: uniqueErrors,
     summary:
       uniqueErrors.length === 0
-        ? `physical hive-git run ${runId} proves same-run A-G with strict E/P-306 and G/P-308 witnesses`
+        ? `physical hive-git run ${runId} proves same-run A-G with strict D/P-305, E/P-306, and G/P-308 witnesses`
         : `physical hive-git evidence rejected (${uniqueErrors.length} error${uniqueErrors.length === 1 ? '' : 's'})`,
   };
 }
