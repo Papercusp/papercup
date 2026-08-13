@@ -29,6 +29,7 @@ import {
   AUDIT_VERDICTS,
   CITATION_KINDS,
   getPlanItemStatuses,
+  isVerifyingCitation,
   recordPlanAudit,
   repoCitationDeps,
   resolveCitation,
@@ -40,22 +41,22 @@ import { REPO_ROOT } from '../docs/_repo-paths';
 
 const citationSchema = z.object({
   kind: z.enum(CITATION_KINDS).describe(
-    "`code`/`test` RESOLVE against the tree (path required, and it must name a real file). `doc`/`workitem` record a non-source deliverable and need `ref`. `none` is the escape hatch for an item with no citable artifact and REQUIRES `reason` — the none-ratio comes back in the result and is put in front of the independent grader, because a self-audit cannot police its own use of it.",
+    "`code`/`test` RESOLVE against the tree (path required, must name a real file) and are the ONLY kinds that count as verification. `doc` records where a non-source deliverable lives: give `path` if it is a tree file (resolved like any other path) or `ref` + `reason` if it is a PG-canonical doc — either way it never supports `implemented`. `none` is the escape hatch and REQUIRES `reason`. The unverified counts come back in the result and go in front of the independent grader, because a self-audit cannot police its own use of them.",
   ),
   path: z.string().min(1).optional().describe('Repo-relative path. No leading `/` or `~`, no `..` segments — a citation that needs one is not evidence.'),
   line: z.number().int().positive().optional().describe('Optional line number, validated against the file\'s ACTUAL length — a hallucinated line is refused.'),
   symbol: z.string().min(1).optional().describe('Optional symbol that must literally appear in the cited file.'),
-  ref: z.string().min(1).optional().describe('Doc id or work-item id — for kind doc/workitem.'),
-  reason: z.string().min(1).optional().describe('REQUIRED for kind `none`: why this item has no citable artifact.'),
+  ref: z.string().min(1).optional().describe('Doc id — for a `doc` citation naming a PG-canonical doc rather than a tree file. Requires `reason` too.'),
+  reason: z.string().min(1).optional().describe('REQUIRED for kind `none`, and for a `doc` cited by `ref` alone: why this item has no code-resolvable artifact.'),
 });
 
 const itemSchema = z.object({
   itemId: z.string().regex(/^P-\d{3,}$/).describe('The plan item this entry audits.'),
   verdict: z.enum(AUDIT_VERDICTS).describe(
-    'implemented (traced to as-built code — needs a citation) | not-code (a decision/doc/investigation) | partial | missing | dropped (intentionally departed from — REQUIRES `note`). Per plan D-002 no verdict refuses a ship on its own; they RECORD. The ship-blocking question is the item\'s own status.',
+    'implemented (you READ the code that implements it — REQUIRES a resolving `code`/`test` citation; a `doc` citation cannot support this verdict) | not-code (a decision/doc/investigation — REQUIRES `note`, and is counted, because it exempts the item from code verification) | partial | missing | dropped (intentionally departed from — REQUIRES `note`). Per plan D-002 no verdict refuses a ship on its own; they RECORD. The ship-blocking question is the item\'s own status.',
   ),
   citations: z.array(citationSchema).max(20).optional(),
-  note: z.string().min(1).max(2000).optional().describe('Free note. REQUIRED when verdict is `dropped` — that is the intentional-departure reason (D-002): going against the plan is fine, going against it silently is not.'),
+  note: z.string().min(1).max(2000).optional().describe('Free note. REQUIRED when verdict is `dropped` — the intentional-departure reason (D-002): going against the plan is fine, going against it silently is not. Also REQUIRED when verdict is `not-code`: what the deliverable actually is, and why no code implements it.'),
 });
 
 const findingSchema = z.object({
@@ -98,9 +99,11 @@ function resolveHeadSha(): string | null {
 export default defineTool({
   name: 'plans:audit',
   description:
-    "Record a CODE-TRUTH audit of a plan: every item traced to the code that implements it, cited, with citations RESOLVED against the real tree at write time (a path that does not exist is refused, as is a line past the end of the file or a symbol the file does not contain). Run it AFTER implementation and BEFORE authoring the acceptance rubric — `plans:set-plan-status → shipped` refuses a plan with no audit. Every validation problem is returned together rather than one at a time, so a single fix-up pass clears them. Returns { ok, auditSeq, coverage, uncoveredItems } — `coverage.noneRatio` is the number the independent grader reads to judge whether the audit did real work.",
+    "Record a CODE-TRUTH audit of a plan: every item traced to the code that implements it, cited, with citations RESOLVED against the real tree at write time (a path that does not exist is refused, as is a line past the end of the file or a symbol the file does not contain). THE CODE IS THE ONLY SOURCE OF TRUTH — audit the tree as it is NOW, never a doc or work-item asserting completion, and never your memory of writing it. Only `code`/`test` citations verify; `doc` never supports an `implemented` verdict. Run it AFTER implementation and BEFORE authoring the acceptance rubric — `plans:set-plan-status → shipped` refuses a plan with no audit.",
   guidance: {
     when: "You have finished implementing a plan and are heading for `shipped`. Compare every item to the ACTUAL CODE — not the plan text, not the work-item records, not your memory of writing it — then file what you found. Gaps inside the plan's scope get fixed or the item gets dropped with a reason; bugs outside it go in `findings` with a filed work-item ref.",
+    returns:
+      'Returns { ok, auditSeq, coverage, uncoveredItems }. Every validation problem is returned together rather than one at a time, so a single fix-up pass clears them. `coverage.verifiedRatio` (items with >=1 resolving code/test citation ÷ items audited) is THE number the independent grader reads to judge whether the audit did real work — it cannot be inflated by `doc` citations. `coverage.unverifiedItemIds` names the items carrying no code evidence, and `coverage.notCodeItems` names those whose verdict exempts them from code verification; both are surfaced because they are the design\'s widest escape hatches. `uncoveredItems` are plan items this pass did not touch — reported, not refused, since the ship gate is where coverage becomes a condition.',
     notWhen:
       "Mid-implementation — the audit is post-implementation by design and a mid-flight one just goes stale. Grading a plan against its acceptance rubric — that is scorecards:emit. Recording a decision — plans:add-decision.",
     chaining:
@@ -158,6 +161,32 @@ export default defineTool({
           itemId: it.itemId,
           code: 'uncited_verdict',
           detail: `verdict 'implemented' needs at least one citation — that claim is the whole point of the audit`,
+        });
+      } else if (it.verdict === 'implemented' && !citations.some(isVerifyingCitation)) {
+        // D-008. Requiring "at least one citation" was not enough: `doc` satisfied it, so
+        // `implemented` — whose documented meaning is "traced to as-built code the auditor
+        // READ" — could be claimed on a document asserting completion. Only code/test are
+        // evidence; a doc says where a non-source deliverable lives, never that code exists.
+        problems.push({
+          itemId: it.itemId,
+          code: 'implemented_without_code',
+          detail:
+            `verdict 'implemented' requires at least one \`code\` or \`test\` citation resolving against the ` +
+            `tree — a \`doc\` citation cannot support it. Read the CODE and cite the file that implements ` +
+            `'${it.itemId}'; do not rely on a doc, a work-item, or your memory of writing it. If the item's ` +
+            `deliverable genuinely is not source, the verdict is 'not-code' (with \`note\`), not 'implemented'.`,
+        });
+      }
+      if (it.verdict === 'not-code' && !it.note) {
+        // The widest escape hatch in the design — wider than `none`, and unmetered until
+        // D-008. A reason is the minimum bar, and summarizeCoverage now counts these.
+        problems.push({
+          itemId: it.itemId,
+          code: 'not_code_without_reason',
+          detail:
+            `verdict 'not-code' requires \`note\` saying what the deliverable IS and why no code implements ` +
+            `it. This verdict exempts an item from code verification, so it is recorded and counted, never ` +
+            `assumed (D-008).`,
         });
       }
       if (it.verdict === 'dropped' && !it.note) {

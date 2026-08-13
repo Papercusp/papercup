@@ -54,22 +54,44 @@ import { REPO_ROOT } from './agent-tools/docs/_repo-paths';
 export const AUDIT_VERDICTS = ['implemented', 'not-code', 'partial', 'missing', 'dropped'] as const;
 export type AuditVerdict = (typeof AUDIT_VERDICTS)[number];
 
-/** Citation kinds. Only `code`/`test` resolve against the tree — the rest are records
- *  of a non-source deliverable, and `none` is the explicit escape hatch. */
-export const CITATION_KINDS = ['code', 'test', 'doc', 'workitem', 'none'] as const;
+/** Citation kinds. Per plan D-008, **only `code`/`test` constitute VERIFICATION** — they
+ *  resolve against the real tree and are the sole evidence that an item was built. `doc`
+ *  and `none` are explicit declarations of NON-verification: they record where a non-source
+ *  deliverable lives, or why none exists, and both are counted so the ratio is visible to
+ *  the independent grader (P-010) rather than absorbed into a verified-looking total.
+ *
+ *  `workitem` was REMOVED here (D-008). A work-item is a record of INTENT, so citing one as
+ *  proof that code exists is circular — exactly the "documentation or memory" the owner's
+ *  founding instruction excludes. It survives only on `AuditFinding.ref`, where pointing at
+ *  a filed out-of-scope bug is the correct use. */
+export const CITATION_KINDS = ['code', 'test', 'doc', 'none'] as const;
 export type CitationKind = (typeof CITATION_KINDS)[number];
+
+/** The kinds that count as verification against the code. Everything not in this set is
+ *  unverified BY CONSTRUCTION — keep this as the single definition so a future kind cannot
+ *  become evidence merely by being added to CITATION_KINDS. */
+export const VERIFYING_CITATION_KINDS: ReadonlySet<CitationKind> = new Set<CitationKind>(['code', 'test']);
+
+export function isVerifyingCitation(c: AuditCitation): boolean {
+  return VERIFYING_CITATION_KINDS.has(c.kind);
+}
 
 export interface AuditCitation {
   kind: CitationKind;
-  /** Repo-relative path — required for `code`/`test`. */
+  /** Repo-relative path — required for `code`/`test`, optional for `doc` (a doc that IS a
+   *  tree file is resolved like any other path; a PG-canonical `/internal/docs/...` doc has
+   *  no path and carries `ref` + `reason` instead). */
   path?: string;
   /** Optional line number; validated against the file's actual length. */
   line?: number;
   /** Optional symbol that must literally appear in the cited file. */
   symbol?: string;
-  /** A doc id / work-item id — for `doc` and `workitem`. */
+  /** A doc id — for `doc` citations that name a PG-canonical doc rather than a tree file. */
   ref?: string;
-  /** REQUIRED for `none`: why this item has no citable artifact. */
+  /** REQUIRED for `none`, and for a `doc` cited by `ref` alone: why this item has no
+   *  code-resolvable artifact. Parity is deliberate — before D-008 `none` demanded a reason
+   *  while a doc ref demanded only a non-empty string, so the honest escape cost MORE than
+   *  the dodge. */
   reason?: string;
 }
 
@@ -140,13 +162,20 @@ export function resolveCitation(citation: AuditCitation, deps: CitationDeps): Ci
       : { ok: false, reason: 'reason_missing' };
   }
 
-  if (citation.kind === 'doc' || citation.kind === 'workitem') {
-    return citation.ref && citation.ref.trim().length > 0
+  // `doc` (D-008). A doc that IS a tree file resolves exactly like any other path — there
+  // was never a reason to exempt it, and the pre-D-008 behaviour (accept any non-empty
+  // string) made a doc ref a one-character bypass of the whole audit. A PG-canonical doc
+  // (`/internal/docs/...`) has no tree path, so it must carry BOTH a ref and a reason — the
+  // same bar `none` pays. Note this only governs whether the citation is well-formed:
+  // `doc` never counts as verification either way (see VERIFYING_CITATION_KINDS).
+  if (citation.kind === 'doc' && !(citation.path && citation.path.trim().length > 0)) {
+    if (!citation.ref || citation.ref.trim().length === 0) return { ok: false, reason: 'ref_missing' };
+    return citation.reason && citation.reason.trim().length > 0
       ? { ok: true }
-      : { ok: false, reason: 'ref_missing' };
+      : { ok: false, reason: 'reason_missing' };
   }
 
-  // code | test — the resolving kinds.
+  // code | test — and a `doc` that names a tree file. The resolving kinds.
   const rel = citation.path?.trim();
   if (!rel) return { ok: false, reason: 'path_missing' };
   if (rel.startsWith('/') || rel.startsWith('~')) return { ok: false, reason: 'path_absolute' };
@@ -211,13 +240,31 @@ export function repoCitationDeps(repoRoot: string = REPO_ROOT): CitationDeps {
 export interface AuditCoverage {
   /** Items the audit covers. */
   auditedItems: number;
-  /** Of those, how many carry at least one RESOLVING citation (code/test/doc/workitem). */
+  /** THE headline number (D-008): items carrying at least one RESOLVING `code`/`test`
+   *  citation — i.e. actually verified against the tree. This is the figure P-010's
+   *  independent grader spot-checks, and the one no volume of doc refs can inflate.
+   *  Before D-008 the reported figure was `citedItems`, which counted a `doc` ref whose
+   *  only check was that it was a non-empty string. */
+  verifiedItems: number;
+  /** verifiedItems / auditedItems, 2dp. Null when there is nothing to divide. */
+  verifiedRatio: number | null;
+  /** Item ids carrying NO verifying citation — named, not just counted, so the grader can
+   *  go straight to them instead of re-deriving the set. */
+  unverifiedItemIds: string[];
+  /** Of the audited items, how many carry at least one citation of ANY kind. Retained for
+   *  continuity, but deliberately NOT the headline: a `doc` citation makes an item cited
+   *  without making it verified. */
   citedItems: number;
   /** Of those, how many are cited `none` — the escape hatch (D-004's known soft spot). */
   noneItems: number;
   /** noneItems / auditedItems, rounded to 2dp. Reported so the ratio is a number the
    *  independent grader can read, not a vibe. Null when there is nothing to divide. */
   noneRatio: number | null;
+  /** Items whose deliverable is declared non-source. METERED as of D-008: this is the
+   *  widest escape hatch in the design — wider than `none` — and before D-008 it was
+   *  counted nowhere at all, so an audit marking every item `not-code` reported a clean
+   *  sheet. Surfaced beside the unverified counts for exactly that reason. */
+  notCodeItems: string[];
   /** Items whose verdict records incomplete work — informational (D-002). */
   unresolvedVerdicts: string[];
   /** Items intentionally departed from, with their reasons (D-002). */
@@ -228,20 +275,32 @@ export function summarizeCoverage(items: AuditItemEntry[]): AuditCoverage {
   const audited = items.length;
   let cited = 0;
   let none = 0;
+  let verified = 0;
+  const unverifiedIds: string[] = [];
+  const notCode: string[] = [];
   const unresolved: string[] = [];
   const dropped: { itemId: string; reason: string }[] = [];
   for (const it of items) {
     const kinds = it.citations.map((c) => c.kind);
+    // Verification is decided by CITATION KIND, never by the verdict the auditor typed —
+    // the verdict is the claim, the resolving code citation is the evidence for it.
+    if (it.citations.some(isVerifyingCitation)) verified += 1;
+    else unverifiedIds.push(it.itemId);
     if (kinds.some((k) => k !== 'none')) cited += 1;
     if (kinds.length > 0 && kinds.every((k) => k === 'none')) none += 1;
+    if (it.verdict === 'not-code') notCode.push(it.itemId);
     if (it.verdict === 'partial' || it.verdict === 'missing') unresolved.push(it.itemId);
     if (it.verdict === 'dropped') dropped.push({ itemId: it.itemId, reason: it.note ?? '' });
   }
   return {
     auditedItems: audited,
+    verifiedItems: verified,
+    verifiedRatio: audited > 0 ? Math.round((verified / audited) * 100) / 100 : null,
+    unverifiedItemIds: unverifiedIds,
     citedItems: cited,
     noneItems: none,
     noneRatio: audited > 0 ? Math.round((none / audited) * 100) / 100 : null,
+    notCodeItems: notCode,
     unresolvedVerdicts: unresolved,
     droppedItems: dropped,
   };
