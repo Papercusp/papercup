@@ -267,6 +267,15 @@ function startRequestServers(): void {
   // PAPERCUSP_LOOP_PROFILER remains honored for tests/dev only (see the monitor).
   startEventLoopLagMonitor({
     profileOnSaturation: () => getFlag(FLAGS.LOOP_STALL_PROFILER, 'operator-host'),
+    // WI-38449: request workers are the processes carrying the live memory growth
+    // (1.7-2.8 GB PSS each across the release cluster), but heap sampling used to
+    // be armed only by the background primary and substrate sidecar. Keep the safe,
+    // non-blocking sampler on in every request worker so the monitor's independent
+    // high-RSS gate can name allocation sites without enabling a full V8 snapshot.
+    // Reuse the existing shared threshold override; 2 GB is above the small primary
+    // baseline while still crossing before the observed workers reach 2.8+ GB.
+    heapSamplingOnHighRss: true,
+    heapSamplingRssMb: Math.max(1, Number(process.env.PAPERCUSP_HEAP_SNAPSHOT_RSS_MB) || 2048),
   });
 
   // P5-2: closed-loop concurrency feedback. Reads the lag monitor's loopPressure()

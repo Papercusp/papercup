@@ -22,6 +22,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const bootSrc = readFileSync(join(__dirname, 'host-bootstrap.ts'), 'utf8');
+const honoHostSrc = readFileSync(join(__dirname, 'hono-host.ts'), 'utf8');
 const agentToolsCatchallSrc = readFileSync(
   join(__dirname, '../../../packages/operator-core/lib/endpoint-route/routes/agent-tools/catchall.ts'),
   'utf8',
@@ -105,6 +106,16 @@ describe('host-bootstrap wires every startup guard', () => {
   it('calls agentCmdBootWarning() at boot — else a host with no AGENT_CMD/CLAUDE silently falls back to the broken omp -p default', () => {
     expect(bootSrc).toContain('agentCmdBootWarning');
     expect(bootSrc).toMatch(/agentCmdBootWarning\s*\(/);
+  });
+});
+
+describe('hono-host wires request-worker allocation sampling', () => {
+  it('keeps the non-blocking heap sampler enabled with an RSS trigger independent of full snapshots', () => {
+    const monitorCall = honoHostSrc.match(/startEventLoopLagMonitor\s*\(\s*\{[\s\S]*?\}\s*\)/)?.[0] ?? '';
+    expect(monitorCall).toContain('heapSamplingOnHighRss: true');
+    expect(monitorCall).toContain('heapSamplingRssMb:');
+    expect(monitorCall).toContain('PAPERCUSP_HEAP_SNAPSHOT_RSS_MB');
+    expect(monitorCall).not.toContain('heapSnapshotOnHighRss: true');
   });
 });
 
