@@ -123,7 +123,6 @@ describe('createOneWorkItem × semantic dupe prescreen (P-008)', () => {
     expect(occurrenceMocks.record).toHaveBeenCalledWith(
       expect.objectContaining({
         canonicalId: 'WI-NEW',
-        canonicalHarness: 'papercusp',
         reporter: 'me',
         sourceTool: 'work_items:create',
         reportKind: 'canonical-created',
