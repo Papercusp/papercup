@@ -330,6 +330,17 @@ export interface CheckpointVerdict {
   summary?: string;
   failingTests?: string[];
   flakeSuspects?: string[];
+  /** EI-18685042025868279: structural mirror of CheckpointResult.retriedTests — every
+   *  test/workspace the gate had to RE-RUN to reach this verdict, with a measured attempt
+   *  count. Kept as a loose row shape here (not an import) for the same reason every other
+   *  field on this interface is: this is the DESERIALIZED verdict, parsed from the CLI's
+   *  JSON marker, so it must not couple operator-core to apps/operator's types. */
+  retriedTests?: Array<{ name: string; attempts: number; outcome: string; via: string }>;
+  /** EI-18685042025868279: structural mirror of CheckpointResult.cleanGreen. true ⇒ green
+   *  with nothing absorbed; false ⇒ green only after re-runs; ABSENT ⇒ unknown (an older
+   *  CLI, or a red verdict, where the question has no referent). Never coerce absent to
+   *  false — that would manufacture a "not clean" claim from no evidence. */
+  cleanGreen?: boolean;
   advancedTo?: string;
   /** WI-4494: the CLI sets this when IT recorded the verdict (gate_health + pipeline event).
    *  The routine then MUST NOT record it again — a second `trackGateStall` for one verdict would
@@ -429,6 +440,15 @@ export function buildCheckpointDetail(v: CheckpointVerdict): Record<string, unkn
   if (v.failingTests?.length) detail.failingTests = v.failingTests.slice(0, 20);
   // load-flake-isolation-2026-06-23: persist the files the gate ABSORBED as load-flakes.
   if (v.flakeSuspects?.length) detail.flakeSuspects = v.flakeSuspects.slice(0, 20);
+  // EI-18685042025868279: persist the retry accounting, so "was this green clean?" is
+  // answerable from the DURABLE record rather than only from a broadcast that scrolls away.
+  // Without this the whole fix would stop at the log line — /admin/git, the flake ledger and
+  // every gate-history reader would still see a retry-absorbed green as indistinguishable
+  // from a clean one, which is the defect itself.
+  if (v.retriedTests?.length) detail.retriedTests = v.retriedTests.slice(0, 20);
+  // Recorded whenever the CLI stated it — INCLUDING `false`, which is the whole signal. A
+  // truthiness check here would drop exactly the case worth persisting.
+  if (typeof v.cleanGreen === 'boolean') detail.cleanGreen = v.cleanGreen;
   // WI-4957: persist the run identity + exact log reference so /admin/git history (and
   // gate-verdict-freshness's readers) can tell WHICH run produced this row and open its
   // full output directly, instead of only the de-noised failing-test names.

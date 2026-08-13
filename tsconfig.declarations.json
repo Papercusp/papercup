@@ -144,6 +144,15 @@
     // every run; registering it is what makes the emitted set and the tracked set
     // the same set.
     "scripts/okf-frontmatter-sweep.mjs",
+    // WI-38239 — gen-fleet-lessons.ts (a .ts) now imports the OKF planners from these two
+    // so that what it EXPORTS is OKF v0.2 conformant by construction. Without registration
+    // that import is TS7016 "implicitly has an 'any' type" — which is exactly how it was
+    // caught: the suite was 133/133 green and SILENT about types, and lint:tsc:scripts named
+    // the two new errors. They also pull each other in (packs imports insights'
+    // insertIntoFrontmatter and sweep's walk/extractFrontmatter), so tsc emits their
+    // declarations regardless — same reason okf-frontmatter-sweep.mjs is registered above.
+    "scripts/okf-backfill-packs.mjs",
+    "scripts/okf-backfill-insights.mjs",
     "packages/operator-core/lib/inference-gateway/watchdog.mjs",
     // EI-19384804106131566. psu-launcher.mjs is the largest un-enrolled module in the
     // tree by importer count (7,504 lines, 174 exports); five BASELINE entries in

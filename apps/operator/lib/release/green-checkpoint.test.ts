@@ -2691,6 +2691,79 @@ describe('runGreenCheckpoint', () => {
     expect(bodies.some((b) => b.includes('Load-flake absorbed') && b.includes('runner-aggregate.test.ts'))).toBe(true);
   });
 
+  // EI-18685042025868279: a green verdict could not distinguish a clean pass from a
+  // retry-absorbed one — `failingTests: []` rendered identically either way, so a live
+  // flake (or a live intermittent bug) was invisible to anything reading the verdict.
+  describe('cleanGreen — a retry-absorbed green is never reported as an unqualified pass [EI-18685042025868279]', () => {
+    const retried = [
+      { name: '@papercusp/operator-core::lib/flaky.test.ts', attempts: 3, outcome: 'passed-on-rerun' as const, via: 'load-flake-isolation' as const },
+    ];
+
+    it('carries cleanGreen:false + retriedTests onto the ADVANCE verdict, and qualifies the headline', async () => {
+      const c1 = await commit('a', '1', 'c1');
+      await git(repo, ['branch', 'ready', c1]);
+      const c2 = await commit('a', '2', 'c2');
+      const { deps, calls } = stubDeps(true);
+      deps.runGreen = async () => {
+        calls.push('runGreen');
+        return { green: true, summary: 'all pass', retriedTests: retried, cleanGreen: false };
+      };
+      const heads: string[] = [];
+      const bodies: string[] = [];
+      deps.broadcast = async (s: string, body?: string) => {
+        calls.push('broadcast');
+        heads.push(s);
+        if (body) bodies.push(body);
+      };
+      const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+      expect(r).toMatchObject({ advanced: true, green: true, reason: 'advanced', cleanGreen: false });
+      expect(r.retriedTests).toEqual(retried);
+      expect(await revParse(repo, 'ready')).toBe(c2);
+      // THE POINT: the HEADLINE is what most readers act on, so the qualification cannot
+      // live only in the body.
+      expect(heads.some((h) => h.includes('passed on retry') && h.includes('NOT a clean green'))).toBe(true);
+      expect(bodies.some((b) => b.includes('NOT a clean green') && b.includes('flaky.test.ts') && b.includes('3 attempts'))).toBe(true);
+    });
+
+    it('a genuinely clean green reports cleanGreen:true and adds NO retry qualification', async () => {
+      const c1 = await commit('a', '1', 'c1');
+      await git(repo, ['branch', 'ready', c1]);
+      await commit('a', '2', 'c2');
+      const { deps, calls } = stubDeps(true);
+      deps.runGreen = async () => {
+        calls.push('runGreen');
+        return { green: true, summary: 'all pass', cleanGreen: true };
+      };
+      const heads: string[] = [];
+      deps.broadcast = async (s: string) => {
+        calls.push('broadcast');
+        heads.push(s);
+      };
+      const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+      expect(r).toMatchObject({ advanced: true, green: true, cleanGreen: true });
+      expect(r.retriedTests).toBeUndefined();
+      expect(heads.some((h) => h.includes('passed on retry'))).toBe(false);
+    });
+
+    it('a dep that does NOT report cleanGreen leaves it ABSENT — unknown is not coerced to false', async () => {
+      // Every pre-existing stub and older dep is in this state. Coercing absent→false
+      // would flip the meaning of every consumer at once and manufacture a "not clean"
+      // claim from no evidence at all.
+      const c1 = await commit('a', '1', 'c1');
+      await git(repo, ['branch', 'ready', c1]);
+      await commit('a', '2', 'c2');
+      const { deps } = stubDeps(true);
+      const heads: string[] = [];
+      deps.broadcast = async (s: string) => {
+        heads.push(s);
+      };
+      const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+      expect(r).toMatchObject({ advanced: true, green: true });
+      expect(r.cleanGreen).toBeUndefined();
+      expect(heads.some((h) => h.includes('passed on retry'))).toBe(false);
+    });
+  });
+
   // F2 (round-4 P-031): the perf-regression gate runs post-runGreen / pre-advance.
   it('F2: a perf BLOCK holds the green pin even when the candidate is green', async () => {
     const c1 = await commit('a', '1', 'c1');
@@ -4161,6 +4234,87 @@ describe('attemptFlakeAbsorption (orchestration — injected isolation runner)',
     ]);
     // it actually re-ran each originally-failing file
     expect(ran).toHaveLength(2);
+  });
+
+  // EI-18685042025868279: a green verdict reported failingTests:[] whether every test
+  // passed first time or whether failures were absorbed by re-runs — the two rendered
+  // identically, so a retry-absorbed green (a live flake, or a live intermittent bug) was
+  // indistinguishable from a clean pass. These guard the accounting that makes them
+  // distinguishable.
+  describe('retriedTests — a green must not hide that it needed re-runs [EI-18685042025868279]', () => {
+    it('reports each re-run file with a MEASURED attempt count and its outcome', async () => {
+      const isolationRun = async ({ workspace, file }: { workspace: string; file: string }): Promise<IsolationResult> => ({
+        workspace,
+        file,
+        passed: true,
+      });
+      const out = await attemptFlakeAbsorption(INCIDENT_OUTPUT, isolationRun, undefined, {
+        concurrentRun: async ({ workspace }) => ({ workspace, passed: true }),
+      });
+      expect(out.absorbedToGreen).toBe(true);
+      expect(out.retriedTests).toEqual([
+        {
+          name: '@papercusp/operator-core::lib/llm-testing/__tests__/runner-aggregate.test.ts',
+          // 2 = the original full-suite run that failed + the ONE isolation run that passed.
+          // Passing first time in isolation means no retry was spent.
+          attempts: 2,
+          outcome: 'passed-on-rerun',
+          via: 'load-flake-isolation',
+        },
+        {
+          name: '@papercusp/operator-core::lib/scout/scheduler-workspace-scope.test.ts',
+          attempts: 2,
+          outcome: 'passed-on-rerun',
+          via: 'load-flake-isolation',
+        },
+      ]);
+    });
+
+    it('counts the RETRY: a file that fails once then passes reports 3 attempts, not 2', async () => {
+      // The attempt count must be measured, not assumed — this is the case that separates
+      // a real counter from a hardcoded 2.
+      const seen = new Map<string, number>();
+      const isolationRun = async ({ workspace, file }: { workspace: string; file: string }): Promise<IsolationResult> => {
+        const n = (seen.get(file) ?? 0) + 1;
+        seen.set(file, n);
+        // Fail the first isolation attempt, pass the retry. Distinct case lists keep
+        // isDeterministicFailureShape from short-circuiting the retry.
+        return { workspace, file, passed: n > 1, failingCases: n > 1 ? [] : [`case-${n}`] };
+      };
+      const out = await attemptFlakeAbsorption(INCIDENT_OUTPUT, isolationRun, undefined, {
+        sleep: async () => {},
+        concurrentRun: async ({ workspace }) => ({ workspace, passed: true }),
+      });
+      expect(out.absorbedToGreen).toBe(true);
+      expect(out.retriedTests.map((t) => t.attempts)).toEqual([3, 3]);
+      expect(out.retriedTests.every((t) => t.outcome === 'passed-on-rerun')).toBe(true);
+    });
+
+    it('reports re-runs even when it DECLINES to absorb — a red that cost N re-runs is not a red that failed fast', async () => {
+      const isolationRun = async ({ workspace, file }: { workspace: string; file: string }): Promise<IsolationResult> => ({
+        workspace,
+        file,
+        passed: file.includes('runner-aggregate'),
+      });
+      const out = await attemptFlakeAbsorption(INCIDENT_OUTPUT, isolationRun, undefined, { sleep: async () => {} });
+      expect(out.absorbedToGreen).toBe(false);
+      expect(out.retriedTests).toHaveLength(2);
+      expect(out.retriedTests.find((t) => t.name.includes('scheduler-workspace-scope'))?.outcome).toBe('still-failing');
+      expect(out.retriedTests.find((t) => t.name.includes('runner-aggregate'))?.outcome).toBe('passed-on-rerun');
+    });
+
+    it('an early exit that never re-ran anything reports NO retries (not a fabricated empty run)', async () => {
+      const isolationRun = async ({ workspace, file }: { workspace: string; file: string }): Promise<IsolationResult> => ({
+        workspace,
+        file,
+        passed: true,
+      });
+      // A build break: no parseable failing test files, so the absorber returns before the
+      // isolation loop. Nothing was re-run, and it must not claim otherwise.
+      const out = await attemptFlakeAbsorption('=== SPA BUILD FAILED (@papercusp/operator-vite) ===', isolationRun);
+      expect(out.absorbedToGreen).toBe(false);
+      expect(out.retriedTests).toEqual([]);
+    });
   });
 
   it('does NOT absorb when a file still fails in isolation (real break stays red)', async () => {

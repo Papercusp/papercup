@@ -1011,6 +1011,34 @@ describe('WI-4494: recordCheckpointVerdict — the producer records', () => {
     );
   });
 
+  // EI-18685042025868279: the durable record is where "was this green clean?" has to be
+  // answerable. If the retry accounting stops at the broadcast, /admin/git and every gate
+  // history reader still cannot tell a retry-absorbed green from a clean one — which IS the
+  // defect, merely moved one layer down.
+  it('EI-18685042025868279: buildCheckpointDetail persists cleanGreen:FALSE — the one value a truthiness check would silently drop', () => {
+    const d = buildCheckpointDetail({
+      reason: 'advanced',
+      green: true,
+      candidate: 'a'.repeat(40),
+      cleanGreen: false,
+      retriedTests: [{ name: '@p/core::flaky.test.ts', attempts: 3, outcome: 'passed-on-rerun', via: 'load-flake-isolation' }],
+    });
+    // `if (v.cleanGreen)` would drop this and leave a retry-absorbed green recorded exactly
+    // like a clean one. Asserting the FALSE case is the whole point of the test.
+    expect(d.cleanGreen).toBe(false);
+    expect(d.retriedTests).toEqual([
+      { name: '@p/core::flaky.test.ts', attempts: 3, outcome: 'passed-on-rerun', via: 'load-flake-isolation' },
+    ]);
+  });
+
+  it('EI-18685042025868279: an ABSENT cleanGreen stays absent — unknown is never recorded as false', () => {
+    // An older CLI does not report it. Recording `false` there would fabricate a "not
+    // clean" claim from no evidence at all.
+    const d = buildCheckpointDetail({ reason: 'advanced', green: true, candidate: 'a'.repeat(40) });
+    expect('cleanGreen' in d).toBe(false);
+    expect('retriedTests' in d).toBe(false);
+  });
+
   it('EI-15849: buildCheckpointDetail caps an oversized isolationNote at 2000 chars', () => {
     const d = buildCheckpointDetail({ reason: 'not-green', green: false, isolationNote: 'x'.repeat(5000) });
     expect((d.isolationNote as string).length).toBe(2000);

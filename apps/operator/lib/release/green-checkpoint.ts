@@ -146,6 +146,18 @@ export interface CheckpointDeps {
      *  held-gate incident undiagnosable after the fact without grepping raw suite logs that
      *  don't even contain the isolation re-run's own output. */
     isolationNote?: string;
+    /** EI-18685042025868279: every test/workspace this run had to RE-RUN before calling the
+     *  tree green (or red), with a measured per-item attempt count. See {@link RetriedTest}. */
+    retriedTests?: RetriedTest[];
+    /** EI-18685042025868279: true ⇒ green with NOTHING absorbed — every test passed on its
+     *  first run. false ⇒ green, but only after re-runs (a real flake, or a real
+     *  intermittent bug, is live and would otherwise be invisible). ABSENT ⇒ unknown, which
+     *  a consumer must NOT read as either: a stub/older dep that does not compute it is not
+     *  making a claim. Scope boundary: this describes THIS GATE's absorption only. It does
+     *  not, and cannot, speak for retries vitest performed inside a single suite run
+     *  (AFFECTED_RETRY_FAILED) — the gate never sees those, so claiming otherwise would be
+     *  a stronger statement than the evidence supports. */
+    cleanGreen?: boolean;
   }>;
   /** Fast-forward `ready` to `candidate` (advanceReady). */
   advance(candidate: string): Promise<AdvanceResult>;
@@ -442,6 +454,26 @@ export interface CheckpointResult {
    *  gate is GREEN despite the initial red. Surfaced so the P-009 ledger can tally a
    *  chronically-flaky file and the owner can quarantine it accountably. */
   flakeSuspects?: string[];
+  /** EI-18685042025868279: every test/workspace the gate had to RE-RUN to reach this
+   *  verdict, with a measured attempt count — see {@link RetriedTest}. Absent ⇒ no absorber
+   *  ran (or a dep that does not report it). */
+  retriedTests?: RetriedTest[];
+  /** EI-18685042025868279: THE FIX. A green verdict used to report `failingTests: []`
+   *  whether every test passed first time or whether failures were absorbed by re-runs —
+   *  the two rendered identically, so a retry-absorbed green (a live flake, or a live
+   *  intermittent bug) was indistinguishable from a clean pass. Consumers branch on this
+   *  rather than trying to infer it from an empty `flakeSuspects`, which is ambiguous
+   *  between "nothing was absorbed" and "no absorber ran".
+   *
+   *  true ⇒ green, nothing absorbed. false ⇒ green only after re-runs — report it as
+   *  "green (N passed on re-run)", never as an unqualified pass. ABSENT ⇒ UNKNOWN; do not
+   *  coerce it to false, or every pre-existing consumer silently flips meaning.
+   *
+   *  Scope boundary, stated where it is read: this is THIS GATE's absorption only. Retries
+   *  vitest performed inside a single suite run (AFFECTED_RETRY_FAILED) are invisible to
+   *  the gate, so `cleanGreen: true` means "the gate absorbed nothing", NOT "no test was
+   *  ever retried anywhere". */
+  cleanGreen?: boolean;
   /** WI-4957: this run's own identity (see CheckpointDeps.runId) — carried on every
    *  verdict so a consumer can distinguish two runs that happen to judge the same
    *  candidate, and so an events:await can bind to an EXACT run when that matters. */
@@ -3039,6 +3071,34 @@ export const ISOLATION_RETRY_DELAY_MS = 5_000;
  *  attempt), the worst case never regresses below what the gate did before this fix. */
 export const ISOLATION_RETRY_BUDGET_MS = 20 * 60_000;
 
+/**
+ * EI-18685042025868279: ONE test the gate had to re-run before it would call the tree
+ * green — name, how many times this gate actually ran it, and how that ended.
+ *
+ * WHY THIS EXISTS: a green verdict reported `failingTests: []` whether every test passed
+ * first time or whether tests failed and were absorbed by re-runs. Those are different
+ * states, and the second one means a real flake — or a real intermittent bug — is live and
+ * invisible. A green that hides its retries trains everyone to trust green, which is
+ * exactly how a flaky-but-real failure ships.
+ *
+ * `attempts` is a MEASURED count of this gate's own runs of the file, not an estimate: it
+ * is the isolation loop's per-file attempt counter (bounded by {@link ISOLATION_RETRY_MAX}),
+ * plus the original full-suite run that failed. It deliberately does NOT include any retry
+ * vitest performed INSIDE a single run (AFFECTED_RETRY_FAILED) — the gate cannot see those,
+ * and counting them would be invention. See {@link CheckpointResult.cleanGreen} for the
+ * same boundary stated where consumers read it.
+ */
+export interface RetriedTest {
+  /** `workspace::file` for the isolation path; the workspace for a worker-pool crash re-run. */
+  name: string;
+  /** How many times THIS gate ran it (>= 2 whenever it appears here: the original red + re-run(s)). */
+  attempts: number;
+  /** How the re-running ended. */
+  outcome: 'passed-on-rerun' | 'still-failing';
+  /** Which absorber ran it — the two paths have different remedies. */
+  via: 'load-flake-isolation' | 'worker-crash-rerun';
+}
+
 /** The outcome of the whole flake-absorption attempt — what {@link runGreenCheckpoint}
  *  needs to (maybe) flip the verdict, plus the suspects to surface. */
 export interface FlakeAbsorptionOutcome {
@@ -3048,6 +3108,10 @@ export interface FlakeAbsorptionOutcome {
   flakeSuspects: string[];
   /** human-readable note for the log / broadcast. */
   note: string;
+  /** EI-18685042025868279: per-file re-run accounting, populated WHENEVER this absorber
+   *  actually re-ran anything — including when it declined to absorb. A red verdict's
+   *  failingTests already names what broke, but only this says how hard the gate tried. */
+  retriedTests: RetriedTest[];
 }
 
 /**
@@ -3110,7 +3174,18 @@ export async function attemptFlakeAbsorption(
     loadPerCore?: () => number;
   } = {},
 ): Promise<FlakeAbsorptionOutcome> {
-  const keep = (note: string): FlakeAbsorptionOutcome => ({ absorbedToGreen: false, flakeSuspects: [], note });
+  // EI-18685042025868279: filled in as the isolation loop runs, so a DECLINED absorption
+  // still reports what the gate re-ran. Read (not captured) by `keep` below, which is why
+  // it is a mutable binding rather than a parameter — `keep` is called from ~15 early-exit
+  // sites, most of them before any re-run has happened, and threading it through each one
+  // would be 15 chances to forget.
+  let retriedSoFar: RetriedTest[] = [];
+  const keep = (note: string): FlakeAbsorptionOutcome => ({
+    absorbedToGreen: false,
+    flakeSuspects: [],
+    note,
+    retriedTests: retriedSoFar,
+  });
   const retryMax = opts.retryMax ?? ISOLATION_RETRY_MAX;
   const retryDelayMs = opts.retryDelayMs ?? ISOLATION_RETRY_DELAY_MS;
   const retryBudgetMs = opts.retryBudgetMs ?? ISOLATION_RETRY_BUDGET_MS;
@@ -3160,6 +3235,9 @@ export async function attemptFlakeAbsorption(
       }
     };
     const isolationResults: IsolationResult[] = [];
+    /** EI-18685042025868279: `workspace::file` → how many times THIS gate ran it (incl. the
+     *  original full-suite run). Measured, never estimated — see {@link RetriedTest}. */
+    const isolationAttempts = new Map<string, number>();
     for (const f of originalFailing) {
       let result = await runOnce(f);
       let attempt = 1;
@@ -3219,7 +3297,22 @@ export async function attemptFlakeAbsorption(
         attempt++;
       }
       isolationResults.push(result);
+      // EI-18685042025868279: the per-file attempt count is computed right here and was
+      // then discarded, which is why a green verdict could never say how hard the gate had
+      // to work for it. `+ 1` accounts for the ORIGINAL full-suite run that put this file
+      // in `originalFailing` — `attempt` counts isolation runs only.
+      isolationAttempts.set(`${f.workspace}::${f.file}`, attempt + 1);
     }
+    // EI-18685042025868279: publish the re-run accounting BEFORE the verdict branches, so
+    // every `keep(...)` exit below reports it too — a red that cost the gate three re-runs
+    // per file is diagnostically different from one that failed fast, and previously both
+    // rendered identically.
+    retriedSoFar = isolationResults.map((r) => ({
+      name: `${r.workspace}::${r.file}`,
+      attempts: isolationAttempts.get(`${r.workspace}::${r.file}`) ?? 2,
+      outcome: r.passed ? ('passed-on-rerun' as const) : ('still-failing' as const),
+      via: 'load-flake-isolation' as const,
+    }));
     const decision = decideFlakeAbsorption({ originalFailing, isolationResults });
     if (decision.verdict === 'all-flakes') {
       // WI-6956: an isolated PASS is NOT yet proof of weather — for a concurrency-dependent
@@ -3263,7 +3356,7 @@ export async function attemptFlakeAbsorption(
       }
       const note = `isolation: ALL ${decision.flakeAbsorbed.length} originally-failing file(s) PASSED in isolation AND again when re-run CO-EXECUTED — absorbed as load-flake(s): ${decision.flakeAbsorbed.join(', ')}`;
       log(note);
-      return { absorbedToGreen: true, flakeSuspects: decision.flakeAbsorbed, note };
+      return { absorbedToGreen: true, flakeSuspects: decision.flakeAbsorbed, note, retriedTests: retriedSoFar };
     }
     // EI-18673560248447615: this note is the gate's VERDICT line — the one an agent reads
     // to decide whether a red is theirs. Naming the failing cases here is what turns
@@ -3349,6 +3442,11 @@ export interface WorkerCrashAbsorptionOutcome {
   flakeSuspects: string[];
   /** human-readable note for the log / broadcast. */
   note: string;
+  /** EI-18685042025868279: the workspaces this absorber re-ran, so a green it produced is
+   *  never reported as an unqualified pass. `attempts` is 2 by construction here — the
+   *  original crashed run plus exactly one reduced-concurrency re-run (this path has no
+   *  retry loop, unlike the isolation absorber). */
+  retriedTests: RetriedTest[];
 }
 
 /**
@@ -3372,7 +3470,16 @@ export async function attemptWorkerCrashAbsorption(
   workspaceRerun: (input: { workspace: string }) => Promise<WorkspaceRerunResult>,
   log: (s: string) => void = () => {},
 ): Promise<WorkerCrashAbsorptionOutcome> {
-  const keep = (note: string): WorkerCrashAbsorptionOutcome => ({ absorbedToGreen: false, flakeSuspects: [], note });
+  // EI-18685042025868279: same read-a-mutable-binding shape as the isolation absorber, and
+  // for the same reason — `keep` has many early-exit sites, and a workspace that was
+  // re-run before a LATER workspace failed must still be reported.
+  const retriedSoFar: RetriedTest[] = [];
+  const keep = (note: string): WorkerCrashAbsorptionOutcome => ({
+    absorbedToGreen: false,
+    flakeSuspects: [],
+    note,
+    retriedTests: retriedSoFar,
+  });
   try {
     if (!isWorkerPoolCrash(fullOutput)) {
       return keep('worker-crash: output is not a vitest worker-pool crash — not a load-crash flake');
@@ -3407,13 +3514,15 @@ export async function attemptWorkerCrashAbsorption(
       }
       if (!r.passed) {
         const why = r.crashedAgain ? 'crashed AGAIN' : r.realFailure ? 'real failure' : 'did not pass';
+        retriedSoFar.push({ name: workspace, attempts: 2, outcome: 'still-failing', via: 'worker-crash-rerun' });
         return keep(`worker-crash: re-run of ${workspace} ${why} — real break (or persistent infra fault), gate stays red`);
       }
+      retriedSoFar.push({ name: workspace, attempts: 2, outcome: 'passed-on-rerun', via: 'worker-crash-rerun' });
       flakeSuspects.push(`${workspace} (worker-pool crash)`);
     }
     const note = `worker-crash: ALL ${workspaces.length} crashed workspace(s) PASSED on a reduced-concurrency re-run — absorbed as load/infra flake(s): ${workspaces.join(', ')}`;
     log(note);
-    return { absorbedToGreen: true, flakeSuspects, note };
+    return { absorbedToGreen: true, flakeSuspects, note, retriedTests: retriedSoFar };
   } catch (e) {
     return keep(`worker-crash: absorption attempt errored (${e instanceof Error ? e.message : e}) — defaulting to the original (red) verdict`);
   }
@@ -4424,10 +4533,17 @@ export async function runGreenCheckpoint(
       deps.log(line);
     }
   }
-  const { green, summary, failingTests, flakeSuspects, failingFiles = [], logPath, isolationNote } = await deps.runGreen(
-    cfg.checkpointRoot,
-    lastReady,
-  );
+  const {
+    green,
+    summary,
+    failingTests,
+    flakeSuspects,
+    failingFiles = [],
+    logPath,
+    isolationNote,
+    retriedTests,
+    cleanGreen,
+  } = await deps.runGreen(cfg.checkpointRoot, lastReady);
   // EI-20014356905761236: this pass's own verdict log is now known — its PROMOTION outcome is
   // not, because every decision that settles it is taken below this line. Stamp it at each
   // disposition site, so the log records not just the verdict but whether it counted. See
@@ -4444,6 +4560,18 @@ export async function runGreenCheckpoint(
   if (green && flakeSuspects?.length) {
     deps.log(
       `candidate ${candidate.slice(0, 8)} is green (load-flake absorbed: ${flakeSuspects.join(', ')} — failed under load, passed in isolation)`,
+    );
+  }
+  // EI-18685042025868279: a green that needed re-runs is NOT the same state as a clean
+  // pass, and until now both logged identically here whenever absorption declined to
+  // populate flakeSuspects. Say it plainly and quantify it, so "green" in this log can
+  // never be read as "everything passed first time" when it did not.
+  if (green && cleanGreen === false) {
+    const passedOnRerun = (retriedTests ?? []).filter((t) => t.outcome === 'passed-on-rerun');
+    deps.log(
+      `candidate ${candidate.slice(0, 8)} is green (${passedOnRerun.length} test(s) passed on RE-RUN, not first pass) — ` +
+        `a flake or a real intermittent bug is live and would otherwise be invisible: ` +
+        `${passedOnRerun.map((t) => `${t.name} (${t.attempts} attempts)`).join(', ')}`,
     );
   }
   if (!green) {
@@ -5150,13 +5278,30 @@ export async function runGreenCheckpoint(
     await deps.push(cfg.releaseRef, adv.from).catch((e) => deps.log(`warn: push ${cfg.releaseRef} failed: ${e}`));
   }
   deps.log(`✅ ${cfg.releaseRef} advanced ${adv.from?.slice(0, 8) ?? 'none'} → ${candidate.slice(0, 8)} (green)`);
+  // EI-18685042025868279: quantify the re-runs in the broadcast too. `flakeNote` only fires
+  // when absorption SUCCEEDED and named suspects; this fires whenever the gate re-ran
+  // anything to reach green, which is the strictly wider — and more honest — condition.
+  const retryNote =
+    cleanGreen === false && retriedTests?.length
+      ? `\n\n⚠️ NOT a clean green: ${retriedTests.filter((t) => t.outcome === 'passed-on-rerun').length} test(s) passed only on RE-RUN — ${retriedTests
+          .map((t) => `${t.name} (${t.attempts} attempts, ${t.outcome})`)
+          .join(', ')}. A green that hides its retries trains everyone to trust green; treat this as a live flake or a live intermittent bug until proven otherwise.`
+      : '';
   const flakeNote = flakeSuspects?.length
     ? `\n\n⚠️ Load-flake absorbed: ${flakeSuspects.join(', ')} failed under the gate's concurrent load (a per-file flake, or a worker-pool OOM crash) but PASSED on a reduced-concurrency re-run. Consider quarantining / investigating memory if it recurs.`
     : '';
   await deps
     .broadcast(
-      `🟩 green-checkpoint: \`${cfg.releaseRef}\` advanced to ${candidate.slice(0, 8)} (green, deployable)${flakeSuspects?.length ? ' [load-flake absorbed]' : ''}`,
-      `Was ${adv.from?.slice(0, 8) ?? 'unset'}. The next deploy will pick this up.${flakeNote}`,
+      // EI-18685042025868279: the HEADLINE must carry the qualification, not just the body.
+      // "green (N passed on retry)" — never an unqualified pass — because the headline is
+      // what most readers act on, and a retry-absorbed green read as clean is precisely how
+      // a flaky-but-real failure ships.
+      `🟩 green-checkpoint: \`${cfg.releaseRef}\` advanced to ${candidate.slice(0, 8)} (green, deployable)${flakeSuspects?.length ? ' [load-flake absorbed]' : ''}${
+        cleanGreen === false
+          ? ` [${(retriedTests ?? []).filter((t) => t.outcome === 'passed-on-rerun').length} passed on retry — NOT a clean green]`
+          : ''
+      }`,
+      `Was ${adv.from?.slice(0, 8) ?? 'unset'}. The next deploy will pick this up.${retryNote}${flakeNote}`,
     )
     .catch(() => {});
   // P-002: the gate recovered — resolve any open `release-not-green` escalation.
@@ -5206,6 +5351,12 @@ export async function runGreenCheckpoint(
     reason: 'advanced',
     summary,
     ...(flakeSuspects?.length ? { flakeSuspects } : {}),
+    // EI-18685042025868279: THE point of the item — this is the advance verdict, the one a
+    // consumer reads to decide whether `main` moved onto a clean tree. Carrying
+    // cleanGreen/retriedTests here is what makes a retry-absorbed green distinguishable
+    // from a clean one; `failingTests: []` renders identically for both.
+    ...(retriedTests?.length ? { retriedTests } : {}),
+    ...(cleanGreen === undefined ? {} : { cleanGreen }),
     ...(deps.runId ? { runId: deps.runId } : {}),
     ...(logPath ? { logPath } : {}),
   };
@@ -6754,6 +6905,11 @@ export function realCheckpointDeps(
       // isolationNote doc for why (a not-absorbed verdict's reasoning was previously
       // undiagnosable after the fact).
       let isolationNote: string | undefined;
+      // EI-18685042025868279: what the gate had to re-run to reach its verdict. Stays
+      // undefined when no absorber ran at all — which is exactly the "clean pass" case, and
+      // is why an EMPTY array here would be the wrong default (it would be indistinguishable
+      // from "an absorber ran and re-ran nothing").
+      let retriedTests: RetriedTest[] | undefined;
       // WI-6053: did absorption prove the suite's red was flakes? If so the SUITE is no
       // longer what is failing — but the five legs it skipped have still never run.
       let suiteAbsorbed = false;
@@ -6777,6 +6933,10 @@ export function realCheckpointDeps(
           ...flakeAbsorptionOpts,
         });
         isolationNote = outcome.note;
+        // EI-18685042025868279: record what was re-run REGARDLESS of the absorb verdict —
+        // the same reasoning as isolationNote above. A red that cost N re-runs per file is
+        // diagnostically different from one that failed fast.
+        retriedTests = outcome.retriedTests;
         if (outcome.absorbedToGreen) {
           suiteAbsorbed = true;
           flakeSuspects = outcome.flakeSuspects;
@@ -6790,6 +6950,9 @@ export function realCheckpointDeps(
           // real failure stays red. Fail-safe — proof required, never a blanket green.
           const crash = await attemptWorkerCrashAbsorption(fullOutput, workspaceRerun, log);
           isolationNote = crash.note;
+          // Concat, never overwrite: the isolation absorber ran FIRST and its re-runs are
+          // just as real for having failed to absorb. Overwriting here would erase them.
+          retriedTests = [...(retriedTests ?? []), ...crash.retriedTests];
           if (crash.absorbedToGreen) {
             suiteAbsorbed = true;
             flakeSuspects = crash.flakeSuspects;
@@ -6969,6 +7132,14 @@ export function realCheckpointDeps(
         ...(failingFiles.length ? { failingFiles } : {}),
         ...(logPath ? { logPath } : {}),
         ...(isolationNote ? { isolationNote } : {}),
+        ...(retriedTests?.length ? { retriedTests } : {}),
+        // EI-18685042025868279: `cleanGreen` is only MEANINGFUL on a green verdict — on a
+        // red one there is nothing being passed off as clean — so it is emitted only when
+        // green, and stays absent (UNKNOWN) otherwise rather than asserting a false.
+        // `retriedTests === undefined` is the discriminator, not `flakeSuspects`: no
+        // absorber ran at all, so nothing was re-run. An absorber that ran and declined
+        // yields a non-empty list, which correctly makes this false.
+        ...(green ? { cleanGreen: !retriedTests?.length } : {}),
       };
     },
     advance: (candidate) => advanceReady(cfg.integrationRoot, candidate, cfg.releaseRef),
