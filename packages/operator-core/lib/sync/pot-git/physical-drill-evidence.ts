@@ -20,6 +20,10 @@ import {
   validatePhysicalPhaseD,
   type PhysicalPhaseDInput,
 } from './physical-drill-phase-d';
+import {
+  validatePhysicalPhaseE,
+  type PhysicalPhaseEInput,
+} from './physical-drill-phase-e';
 
 export { physicalDrillSigningBytes } from './physical-drill-host-receipt';
 
@@ -319,52 +323,53 @@ function validateLegVerdicts(
   }
 }
 
-function validateLegE(raw: JsonRecord, hostKeys: Set<string>, errors: string[]): void {
+function validateLegE(
+  raw: JsonRecord,
+  runId: string | null,
+  startedAt: number,
+  finishedAt: number,
+  hostKeys: Set<string>,
+  errors: string[],
+): void {
   const leg = expectRecord(raw, 'legE', errors);
-  if (leg?.planItem !== 'P-306') errors.push('legE.planItem must be P-306');
-  if (leg?.status !== 'pass') errors.push('legE.status must be pass');
+  if (!leg) return;
 
-  const assertions = expectRecord(leg, 'assertions', errors);
-  for (const key of [
-    'bothConsumedBridgedMode',
-    'bothCommitOnly',
-    'membersDidNotDirectPush',
-    'soleBridgeWriter',
-    'upstreamUnchanged',
-    'canonicalDescendsFromAdmitted',
-    'divergenceRefused',
-    'rollbackLegacyObserved',
-  ]) {
-    expectTrue(assertions, key, errors);
+  let verdict: ReturnType<typeof validatePhysicalPhaseE>;
+  try {
+    verdict = validatePhysicalPhaseE(leg as unknown as PhysicalPhaseEInput);
+  } catch (error) {
+    errors.push(`legE causal evidence is malformed: ${error instanceof Error ? error.message : String(error)}`);
+    return;
   }
-  const intervals = integer(assertions?.watchdogIntervalsObserved);
-  if (intervals === null || intervals < 2) {
-    errors.push('legE.assertions.watchdogIntervalsObserved must be at least 2');
+  for (const error of verdict.errors) errors.push(`legE: ${error}`);
+  if (!verdict.ok || !verdict.result?.complete) {
+    errors.push('legE must contain the complete validated P-306 causal evidence object');
   }
-  if (integer(assertions?.watchdogFalseAlarms) !== 0) {
-    errors.push('legE.assertions.watchdogFalseAlarms must be exactly 0');
-  }
+  if (leg.runId !== runId) errors.push('legE.runId must match the enclosing physical run');
 
-  const writerDeviceKey = expectDeviceKey(leg, 'writerDeviceKey', errors);
-  if (writerDeviceKey && !hostKeys.has(writerDeviceKey)) {
-    errors.push('legE.writerDeviceKey must belong to one of the two physical hosts');
+  const window = record(leg.window);
+  const legStartedAt = Date.parse(String(window?.startedAt ?? ''));
+  const legFinishedAt = Date.parse(String(window?.finishedAt ?? ''));
+  if (
+    !Number.isFinite(legStartedAt) ||
+    !Number.isFinite(legFinishedAt) ||
+    legStartedAt < startedAt ||
+    legFinishedAt > finishedAt
+  ) {
+    errors.push('legE.window must fall inside the enclosing physical-run window');
   }
 
-  const oids = expectRecord(leg, 'oids', errors);
-  const ingressHead = expectString(oids, 'ingressHead', OID, errors);
-  const lastAdmitted = expectString(oids, 'lastAdmitted', OID, errors);
-  const canonicalStaging = expectString(oids, 'canonicalStaging', OID, errors);
-  const egressHead = expectString(oids, 'egressHead', OID, errors);
-  const remoteStaging = expectString(oids, 'remoteStaging', OID, errors);
-  const upstreamBefore = expectString(oids, 'upstreamBefore', OID, errors);
-  const upstreamAfter = expectString(oids, 'upstreamAfter', OID, errors);
-  const divergenceBefore = expectString(oids, 'divergenceCanonicalBefore', OID, errors);
-  const divergenceAfter = expectString(oids, 'divergenceCanonicalAfter', OID, errors);
-  expectEqual(ingressHead, lastAdmitted, 'legE ingressHead/lastAdmitted', errors);
-  expectEqual(canonicalStaging, egressHead, 'legE canonicalStaging/egressHead', errors);
-  expectEqual(canonicalStaging, remoteStaging, 'legE canonicalStaging/remoteStaging', errors);
-  expectEqual(upstreamBefore, upstreamAfter, 'legE upstream before/after', errors);
-  expectEqual(divergenceBefore, divergenceAfter, 'legE divergence canonical before/after', errors);
+  const identities = record(leg.identities);
+  const legHostKeys = new Set([
+    string(identities?.towerDeviceKey),
+    string(identities?.vmDeviceKey),
+  ].filter((value): value is string => value !== null));
+  if (
+    legHostKeys.size !== hostKeys.size ||
+    [...hostKeys].some((deviceKey) => !legHostKeys.has(deviceKey))
+  ) {
+    errors.push('legE identities must match the two attesting physical devices exactly');
+  }
 }
 
 function validateLegD(
@@ -579,7 +584,7 @@ export function validatePhysicalDrillEvidence(
   validateAttestations(evidence, hostKeys, errors);
   validateLegVerdicts(evidence, startedAt, finishedAt, errors);
   validateLegD(evidence, runId, startedAt, finishedAt, hostKeys, errors);
-  validateLegE(evidence, hostKeys, errors);
+  validateLegE(evidence, runId, startedAt, finishedAt, hostKeys, errors);
   validateLegG(evidence, hostKeys, errors);
 
   const uniqueErrors = [...new Set(errors)];
