@@ -13,7 +13,7 @@ function matchingVerdict(
   issuedAtMs: number,
   details: CheckpointProducerDetails,
 ) {
-  return snapshot.recent.find((event) => {
+  return (snapshot.recent ?? []).find((event) => {
     if (event.kind !== 'green_checkpoint' || event.createdAtMs < issuedAtMs) return false;
     const candidate = typeof event.detail.candidate === 'string' ? event.detail.candidate : null;
     const candidateMatches =
@@ -44,7 +44,8 @@ export function checkpointProducerCertificate(input: {
     },
     owner: { ownerId: input.ownerId, workItemId: input.workItemId ?? null },
     issuedAtMs: input.issuedAtMs,
-    lastProgressAtMs: input.snapshot.activeRun?.startedAtMs ?? input.snapshot.routines.greenCheckpoint?.lastFiredAtMs ?? null,
+    lastProgressAtMs:
+      input.snapshot.activeRun?.startedAtMs ?? input.snapshot.routines?.greenCheckpoint?.lastFiredAtMs ?? null,
     lastFireAtMs: matchingVerdict(input.snapshot, 0, input)?.createdAtMs ?? null,
     expectedCadenceMs: input.expectedCadenceMs,
     verificationDeadlineMs: input.verificationDeadlineMs,
@@ -66,11 +67,11 @@ export async function observeCheckpointProducer(
     details.pipeline,
   );
   const verdict = matchingVerdict(snapshot, certificate.issuedAtMs, details);
-  const producerPresent = snapshot.activeRun?.active === true || snapshot.routines.greenCheckpoint?.active === true;
+  const producerPresent = snapshot.activeRun?.active === true || snapshot.routines?.greenCheckpoint?.active === true;
   return {
     checkedAtMs: snapshot.generatedAtMs,
     producerPresent,
-    lastProgressAtMs: snapshot.activeRun?.startedAtMs ?? snapshot.routines.greenCheckpoint?.lastFiredAtMs ?? null,
+    lastProgressAtMs: snapshot.activeRun?.startedAtMs ?? snapshot.routines?.greenCheckpoint?.lastFiredAtMs ?? null,
     lastFireAtMs: verdict?.createdAtMs ?? null,
     completedAtMs: verdict?.createdAtMs ?? null,
     evidence: {
