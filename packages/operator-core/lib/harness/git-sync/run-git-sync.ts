@@ -210,10 +210,7 @@ const runGitLocalBounded = (
     const armIdleTimer = (): void => {
       if (!progressAware || settled || terminating) return;
       if (idleTimer) clearTimeout(idleTimer);
-      idleTimer = setTimeout(
-        () => terminate(`made no output progress for ${idleTimeoutMs}ms`),
-        idleTimeoutMs,
-      );
+      idleTimer = setTimeout(() => terminate(`made no output progress for ${idleTimeoutMs}ms`), idleTimeoutMs);
       idleTimer.unref?.();
     };
 
@@ -229,10 +226,7 @@ const runGitLocalBounded = (
       );
       hardTimer.unref?.();
     } else {
-      hardTimer = setTimeout(
-        () => terminate(`timed out after ${hardTimeoutMs}ms`),
-        hardTimeoutMs,
-      );
+      hardTimer = setTimeout(() => terminate(`timed out after ${hardTimeoutMs}ms`), hardTimeoutMs);
       hardTimer.unref?.();
     }
     child.on('error', (e) => {
@@ -882,7 +876,10 @@ async function gitDirForRepo(runGit: RunGit, repoPath: string): Promise<string> 
   return gd.code === 0 ? gd.stdout.trim() : '';
 }
 
-async function listTempPackEntries(runGit: RunGit, repoPath: string): Promise<{ gitDir: string; entries: TempPackEntry[] }> {
+async function listTempPackEntries(
+  runGit: RunGit,
+  repoPath: string,
+): Promise<{ gitDir: string; entries: TempPackEntry[] }> {
   const gitDir = await gitDirForRepo(runGit, repoPath);
   if (!gitDir) return { gitDir: '', entries: [] };
   let names: string[];
@@ -1041,16 +1038,22 @@ export async function scavengeStaleTempPacks(
     const path = join(packDir, entry.name);
     try {
       if (await tempPackHasReferences(gitDir, entry)) continue;
-      if (await isOpen(path) !== false) continue;
+      if ((await isOpen(path)) !== false) continue;
       const current = await lstat(path);
       if (
         !current.isFile() ||
         current.size !== entry.size ||
         current.mtimeMs !== entry.mtimeMs ||
         current.nlink > 1 ||
-        (await tempPackHasReferences(gitDir, { ...entry, size: current.size, mtimeMs: current.mtimeMs, nlink: current.nlink })) ||
+        (await tempPackHasReferences(gitDir, {
+          ...entry,
+          size: current.size,
+          mtimeMs: current.mtimeMs,
+          nlink: current.nlink,
+        })) ||
         (await isOpen(path)) !== false
-      ) continue;
+      )
+        continue;
       await unlinkFile(path);
       removed.push(entry.name);
       bytesReclaimed += entry.size;

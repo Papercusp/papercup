@@ -183,16 +183,16 @@ describe('runGitSync (real git, no submodule)', () => {
 
   it('isIndexLockFailure matches the git fatal (and only it)', () => {
     expect(
-      isIndexLockFailure("fatal: Unable to create '/x/repo/.git/index.lock': File exists.\n\nAnother git process seems to be running"),
+      isIndexLockFailure(
+        "fatal: Unable to create '/x/repo/.git/index.lock': File exists.\n\nAnother git process seems to be running",
+      ),
     ).toBe(true);
     expect(isIndexLockFailure("error: 'x/' does not have a commit checked out")).toBe(false);
     expect(isIndexLockFailure('')).toBe(false);
   });
 
   it('isConfigLockFailure matches the git fatal (and only it)', () => {
-    expect(
-      isConfigLockFailure('error: could not lock config file /x/repo/.git/config: File exists'),
-    ).toBe(true);
+    expect(isConfigLockFailure('error: could not lock config file /x/repo/.git/config: File exists')).toBe(true);
     expect(isConfigLockFailure("fatal: Unable to create '/x/repo/.git/index.lock': File exists")).toBe(false);
     expect(isConfigLockFailure('')).toBe(false);
   });
@@ -223,11 +223,11 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(
       await clearStaleConfigLock(fakeRunGit, '/fake', () => {}, {
         inspectLock: async (p) =>
-          p.endsWith('/config.lock')
-            ? { mtimeMs: Date.now() - 10 * 60_000, size: 0, dev: 1, ino: 2 }
-            : null,
+          p.endsWith('/config.lock') ? { mtimeMs: Date.now() - 10 * 60_000, size: 0, dev: 1, ino: 2 } : null,
         isOpen: async () => false,
-        unlinkFile: async (p) => { unlinked.push(p); },
+        unlinkFile: async (p) => {
+          unlinked.push(p);
+        },
       }),
     ).toBe(true);
     expect(unlinked).toEqual(['/fake/.git/config.lock']);
@@ -309,7 +309,9 @@ describe('runGitSync (real git, no submodule)', () => {
     const out = await runGitSync('test', {
       repoPath: repo,
       config: cfg,
-      loadRoster: async () => [{ agent: 'cup-7', agentLabel: 'Cup Seven', intent: 'wire the parser', files: ['mine.txt'] }],
+      loadRoster: async () => [
+        { agent: 'cup-7', agentLabel: 'Cup Seven', intent: 'wire the parser', files: ['mine.txt'] },
+      ],
     });
     expect(out.status).toBe('synced');
     // origin received BOTH the per-agent commit (intent subject) AND the catch-all auto-commit.
@@ -359,7 +361,9 @@ describe('runGitSync (real git, no submodule)', () => {
     const out = await runGitSync('test', {
       repoPath: repo,
       config: cfg,
-      loadRoster: async () => [{ agent: 'cup-7', agentLabel: 'Cup Seven', intent: 'wire the parser', files: ['mine.txt'] }],
+      loadRoster: async () => [
+        { agent: 'cup-7', agentLabel: 'Cup Seven', intent: 'wire the parser', files: ['mine.txt'] },
+      ],
       runGit,
     });
 
@@ -394,7 +398,13 @@ describe('runGitSync (real git, no submodule)', () => {
 
     expect(out.status).toBe('synced'); // the clean file synced despite the broken sibling
     expect(out.contentErrors).toEqual([
-      { scope: 'superproject', file: 'bad.md', detectorKey: 'fake-broken', error: 'contains BROKEN', fixerRole: 'content-fixer' },
+      {
+        scope: 'superproject',
+        file: 'bad.md',
+        detectorKey: 'fake-broken',
+        error: 'contains BROKEN',
+        fixerRole: 'content-fixer',
+      },
     ]);
     const originFiles = git(originDir, 'ls-tree', '-r', '--name-only', 'main');
     expect(originFiles).toContain('good.txt'); // the clean file reached origin…
@@ -698,7 +708,12 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(git(repo, 'status', '--porcelain', '--untracked-files=no')).toBe('');
     // no merge in progress
     let inMerge = false;
-    try { git(repo, 'rev-parse', '--verify', 'MERGE_HEAD'); inMerge = true; } catch { inMerge = false; }
+    try {
+      git(repo, 'rev-parse', '--verify', 'MERGE_HEAD');
+      inMerge = true;
+    } catch {
+      inMerge = false;
+    }
     expect(inMerge).toBe(false);
     // local commit is preserved
     expect(readFileSync(join(repo, 'file.txt'), 'utf8')).toBe('LOCAL-EDIT\n');
@@ -842,60 +857,60 @@ describe('runGitSync (real git, with a submodule) — P-007 submodule-push-first
   });
 
   it('reconciles a DIVERGED submodule (behind its origin) via fetch+merge+push instead of erroring', () => {
-      // a peer advances the submodule's origin → the harness submodule is now behind
-      const subOther = join(root, 'subother');
-      git(root, 'clone', subOrigin, subOther);
-      configUser(subOther);
-      writeFileSync(join(subOther, 'peer.txt'), 'peer-sub-change\n');
-      git(subOther, 'add', '-A');
-      git(subOther, 'commit', '--no-verify', '-m', 'peer sub change');
-      git(subOther, 'push', 'origin', 'main');
+    // a peer advances the submodule's origin → the harness submodule is now behind
+    const subOther = join(root, 'subother');
+    git(root, 'clone', subOrigin, subOther);
+    configUser(subOther);
+    writeFileSync(join(subOther, 'peer.txt'), 'peer-sub-change\n');
+    git(subOther, 'add', '-A');
+    git(subOther, 'commit', '--no-verify', '-m', 'peer sub change');
+    git(subOther, 'push', 'origin', 'main');
 
-      // local change in the submodule → diverged (local commit on a now-behind base)
-      writeFileSync(join(repo, 'libs/sub', 'local-sub.txt'), 'local-sub-change\n');
+    // local change in the submodule → diverged (local commit on a now-behind base)
+    writeFileSync(join(repo, 'libs/sub', 'local-sub.txt'), 'local-sub-change\n');
 
-      return runGitSync('test', { repoPath: repo }).then((out) => {
-        // the OLD pipeline returned {status:'error'} (non-fast-forward); now it merges
-        expect(out.status).toBe('synced');
-        if (out.status === 'synced') expect(out.pushed).toContain('libs/sub');
-        // both the peer's and the local submodule commit are now on the submodule origin
-        const subOriginFiles = git(subOrigin, 'ls-tree', '-r', '--name-only', 'main');
-        expect(subOriginFiles).toContain('peer.txt');
-        expect(subOriginFiles).toContain('local-sub.txt');
-      });
+    return runGitSync('test', { repoPath: repo }).then((out) => {
+      // the OLD pipeline returned {status:'error'} (non-fast-forward); now it merges
+      expect(out.status).toBe('synced');
+      if (out.status === 'synced') expect(out.pushed).toContain('libs/sub');
+      // both the peer's and the local submodule commit are now on the submodule origin
+      const subOriginFiles = git(subOrigin, 'ls-tree', '-r', '--name-only', 'main');
+      expect(subOriginFiles).toContain('peer.txt');
+      expect(subOriginFiles).toContain('local-sub.txt');
     });
+  });
 
-    it('GAP-4: a submodule unreachable while ahead → errors + defers the superproject PUSH (no broken gitlink) but still COMMITS it locally', () => {
-      // dirty the submodule (→ ahead after its local commit) and the superproject
-      writeFileSync(join(repo, 'libs/sub', 'sub-new.txt'), 'sub-v2\n');
-      writeFileSync(join(repo, 'super-new.txt'), 'super-v2\n');
-      // Break the canonical URL as well as the initialized copy. EI-20329530284626235
-      // deliberately heals copy-only drift from `.gitmodules`, so this test must model
-      // a genuinely unreachable canonical origin rather than stale local configuration.
-      const goneOrigin = join(root, 'gone.git');
-      git(repo, 'config', '-f', '.gitmodules', 'submodule.libs/sub.url', goneOrigin);
-      git(join(repo, 'libs/sub'), 'remote', 'set-url', 'origin', goneOrigin);
+  it('GAP-4: a submodule unreachable while ahead → errors + defers the superproject PUSH (no broken gitlink) but still COMMITS it locally', () => {
+    // dirty the submodule (→ ahead after its local commit) and the superproject
+    writeFileSync(join(repo, 'libs/sub', 'sub-new.txt'), 'sub-v2\n');
+    writeFileSync(join(repo, 'super-new.txt'), 'super-v2\n');
+    // Break the canonical URL as well as the initialized copy. EI-20329530284626235
+    // deliberately heals copy-only drift from `.gitmodules`, so this test must model
+    // a genuinely unreachable canonical origin rather than stale local configuration.
+    const goneOrigin = join(root, 'gone.git');
+    git(repo, 'config', '-f', '.gitmodules', 'submodule.libs/sub.url', goneOrigin);
+    git(join(repo, 'libs/sub'), 'remote', 'set-url', 'origin', goneOrigin);
 
-      return runGitSync('test', { repoPath: repo }).then((out) => {
-        expect(out.status).toBe('error');
-        if (out.status === 'error') {
-          expect(out.errors.map((e) => e.scope)).toContain('libs/sub');
-          // the superproject must NOT be pushed — its gitlink would point at an unpushed
-          // submodule commit a fresh clone can't resolve.
-          expect(out.pushed).not.toContain('superproject');
-        }
-        expect(git(superOrigin, 'log', '--format=%s', 'main')).not.toMatch(/auto-commit test/);
+    return runGitSync('test', { repoPath: repo }).then((out) => {
+      expect(out.status).toBe('error');
+      if (out.status === 'error') {
+        expect(out.errors.map((e) => e.scope)).toContain('libs/sub');
+        // the superproject must NOT be pushed — its gitlink would point at an unpushed
+        // submodule commit a fresh clone can't resolve.
+        expect(out.pushed).not.toContain('superproject');
+      }
+      expect(git(superOrigin, 'log', '--format=%s', 'main')).not.toMatch(/auto-commit test/);
 
-        // EI-20182436053613562: the deferral is PUSH-ONLY. The superproject's own dirty
-        // file has no relationship to any submodule pointer, and a local commit publishes
-        // nothing, so it must still land. Gating the commit on this same condition is what
-        // let ONE permanently-failing submodule push (a GitHub 403 no retry can clear)
-        // freeze every agent's work in the shared tree for 12h — including untracked files
-        // that existed on no other disk.
-        expect(git(repo, 'log', '--format=%s', 'HEAD')).toMatch(/auto-commit test/);
-        expect(git(repo, 'status', '--porcelain', 'super-new.txt')).toBe('');
-      });
+      // EI-20182436053613562: the deferral is PUSH-ONLY. The superproject's own dirty
+      // file has no relationship to any submodule pointer, and a local commit publishes
+      // nothing, so it must still land. Gating the commit on this same condition is what
+      // let ONE permanently-failing submodule push (a GitHub 403 no retry can clear)
+      // freeze every agent's work in the shared tree for 12h — including untracked files
+      // that existed on no other disk.
+      expect(git(repo, 'log', '--format=%s', 'HEAD')).toMatch(/auto-commit test/);
+      expect(git(repo, 'status', '--porcelain', 'super-new.txt')).toBe('');
     });
+  });
 });
 
 describe('runGitSync (real git, two submodules) — GAP-1 continue-past-conflict', () => {
@@ -989,7 +1004,6 @@ describe('runGitSync (real git, two submodules) — GAP-1 continue-past-conflict
       expect(git(repo, 'status', '--porcelain', 'super-new.txt')).toBe('');
     });
   });
-
 });
 
 describe('runGitSync — EI-18 oversized-blob guard', () => {
@@ -1163,12 +1177,16 @@ describe('runGitSync — P-002 failure classification (injected git)', () => {
   const stripGitCFlags = (args: string[]): string[] => {
     const out: string[] = [];
     for (let i = 0; i < args.length; i++) {
-      if (args[i] === '-c' || args[i] === '-C') { i++; continue; }
+      if (args[i] === '-c' || args[i] === '-C') {
+        i++;
+        continue;
+      }
       out.push(args[i]!);
     }
     return out;
   };
-  const fakeGit = (handle: (args: string[]) => { code: number; stdout?: string; stderr?: string }): RunGit =>
+  const fakeGit =
+    (handle: (args: string[]) => { code: number; stdout?: string; stderr?: string }): RunGit =>
     async (args) => {
       const r = handle(stripGitCFlags(args));
       return { code: r.code, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
@@ -1184,7 +1202,12 @@ describe('runGitSync — P-002 failure classification (injected git)', () => {
       if (j.startsWith('commit')) return { code: 1, stderr: "fatal: Unable to create '.git/index.lock': File exists" };
       return { code: 0, stdout: '' };
     });
-    const out = await runGitSync('test', { repoPath: '/fake', runGit: run, submodulePaths: [], config: { pushSubmodules: false } });
+    const out = await runGitSync('test', {
+      repoPath: '/fake',
+      runGit: run,
+      submodulePaths: [],
+      config: { pushSubmodules: false },
+    });
     expect(out.status).toBe('error'); // NOT 'conflict' — no merge-resolver dispatched at a phantom
     if (out.status === 'error') {
       expect(out.errors.map((e) => e.scope)).toContain('superproject');
@@ -1228,7 +1251,12 @@ describe('runGitSync — P-002 failure classification (injected git)', () => {
       if (j.startsWith('merge')) return { code: 0, stdout: 'Already up to date.' };
       return { code: 0, stdout: '' };
     });
-    const out = await runGitSync('test', { repoPath: '/fake', runGit: run, submodulePaths: [], config: { push: false, pushSubmodules: false } });
+    const out = await runGitSync('test', {
+      repoPath: '/fake',
+      runGit: run,
+      submodulePaths: [],
+      config: { push: false, pushSubmodules: false },
+    });
     expect(out.status).toBe('nothing'); // benign — not an error
   });
 
@@ -1238,12 +1266,21 @@ describe('runGitSync — P-002 failure classification (injected git)', () => {
       if (j.startsWith('symbolic-ref')) return { code: 0, stdout: 'main' };
       if (j.startsWith('status --porcelain')) return { code: 0, stdout: '' }; // clean tree
       if (j.startsWith('fetch')) return { code: 0 };
-      if (j.startsWith('merge --no-edit')) return { code: 1, stderr: 'error: Your local changes to the following files would be overwritten by merge:\n  file.txt' };
+      if (j.startsWith('merge --no-edit'))
+        return {
+          code: 1,
+          stderr: 'error: Your local changes to the following files would be overwritten by merge:\n  file.txt',
+        };
       if (j.startsWith('diff --name-only --diff-filter=U')) return { code: 0, stdout: '' }; // NO unmerged paths
       if (j.startsWith('merge --abort')) return { code: 0 };
       return { code: 0, stdout: '' };
     });
-    const out = await runGitSync('test', { repoPath: '/fake', runGit: run, submodulePaths: [], config: { pushSubmodules: false } });
+    const out = await runGitSync('test', {
+      repoPath: '/fake',
+      runGit: run,
+      submodulePaths: [],
+      config: { pushSubmodules: false },
+    });
     expect(out.status).toBe('error'); // NOT 'conflict' — nothing for a merge-resolver to merge
     if (out.status === 'error') expect(out.errors[0].message).toMatch(/merge failed \(no conflicted paths\)/);
   });
@@ -1358,7 +1395,12 @@ describe('runGitSync — P-002 failure classification (injected git)', () => {
       if (j.startsWith('merge')) return { code: 0, stdout: 'Already up to date.' };
       return { code: 0, stdout: '' };
     });
-    const out = await runGitSync('test', { repoPath: '/fake', runGit: run, submodulePaths: [], config: { pushSubmodules: false } });
+    const out = await runGitSync('test', {
+      repoPath: '/fake',
+      runGit: run,
+      submodulePaths: [],
+      config: { pushSubmodules: false },
+    });
     expect(out.status).toBe('synced'); // NOT stranded on the transient race
     expect(addAttempts).toBe(3); // the original attempt + 2 retries before it resolved
   });
@@ -1375,7 +1417,8 @@ describe('runGitSync — P-002 failure classification (injected git)', () => {
         if (addAttempts < 3) {
           return {
             code: 128,
-            stderr: "fatal: Unable to create '/fake/.git/index.lock': File exists.\n\nAnother git process seems to be running",
+            stderr:
+              "fatal: Unable to create '/fake/.git/index.lock': File exists.\n\nAnother git process seems to be running",
           };
         }
         return { code: 0 };
@@ -1411,7 +1454,12 @@ describe('runGitSync — P-002 failure classification (injected git)', () => {
       }
       return { code: 0, stdout: '' };
     });
-    const out = await runGitSync('test', { repoPath: '/fake', runGit: run, submodulePaths: [], config: { pushSubmodules: false } });
+    const out = await runGitSync('test', {
+      repoPath: '/fake',
+      runGit: run,
+      submodulePaths: [],
+      config: { pushSubmodules: false },
+    });
     expect(out.status).toBe('error'); // a REAL, persistent failure still surfaces loudly
     if (out.status === 'error') expect(out.errors[0].message).toMatch(/git add -A failed/i);
     expect(addAttempts).toBe(4); // 1 original + TRANSIENT_STAT_FAILURE_MAX_RETRIES(3) retries, then give up
@@ -1424,13 +1472,18 @@ describe('runGitSync — P-002 failure classification (injected git)', () => {
       if (j.startsWith('symbolic-ref')) return { code: 1, stderr: 'fatal: ref HEAD is not a symbolic ref' }; // detached
       if (j.startsWith('rev-parse --abbrev-ref origin/HEAD')) return { code: 0, stdout: 'origin/main' };
       if (j.startsWith('status --porcelain')) return { code: 0, stdout: '' }; // clean
-      if (j.startsWith('fetch')) { fetched.push(args.join(' ')); return { code: 0 }; }
+      if (j.startsWith('fetch')) {
+        fetched.push(args.join(' '));
+        return { code: 0 };
+      }
       if (j.startsWith('merge')) return { code: 0, stdout: 'Already up to date.' };
       return { code: 0, stdout: '' };
     });
     // cfg.branch='staging' (the superproject's branch) must NOT be used for this detached repo.
     const out = await runGitSync('test', {
-      repoPath: '/fake', runGit: run, submodulePaths: [],
+      repoPath: '/fake',
+      runGit: run,
+      submodulePaths: [],
       config: { push: false, pushSubmodules: false, branch: 'staging' },
     });
     expect(out.status).toBe('nothing'); // clean + up-to-date on main
@@ -1447,16 +1500,20 @@ describe('discoverSubmodulesRecursive — stray-gitlink fallback (2026-07-01)', 
   // routine kept reporting "synced". The fallback must (a) SAY SO and (b) still discover
   // the top-level submodules from .gitmodules.
   let dir: string;
-  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'gitsync-discover-')); });
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'gitsync-discover-'));
+  });
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
-  const fakeGit = (onStatus: { code: number; stdout: string; stderr: string }): RunGit =>
+  const fakeGit =
+    (onStatus: { code: number; stdout: string; stderr: string }): RunGit =>
     async (args: string[], _cwd: string) => {
       if (args[0] === 'submodule') return onStatus;
       if (args[0] === 'config' && args.includes('.gitmodules')) {
         return {
           code: 0,
-          stdout: 'submodule.libs/a.path libs/a\nsubmodule.libs/deep/b.path libs/deep/b\nsubmodule.libs/uninit.path libs/uninit\n',
+          stdout:
+            'submodule.libs/a.path libs/a\nsubmodule.libs/deep/b.path libs/deep/b\nsubmodule.libs/uninit.path libs/uninit\n',
           stderr: '',
         };
       }
