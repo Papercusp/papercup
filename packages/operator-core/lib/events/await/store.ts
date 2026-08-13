@@ -485,8 +485,7 @@ export async function listVerifiedWaitTakeoversForSubscribers(
        AND subscriber_id = ANY(${ids as string[]}::text[])
        AND fired_reason = 'verified-timeout'
        AND fired_at >= now() - make_interval(hours => ${boundedHours})
-       AND timeout_verification->>'classification' IN ('stalled', 'absent')
-       AND timeout_verification->>'nextAction' = 'wake-owner-or-takeover'
+       AND timeout_verification IS NOT NULL
      ORDER BY subscriber_id, event_key, fired_at DESC
      LIMIT 500
   `;
