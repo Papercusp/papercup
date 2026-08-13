@@ -30,6 +30,7 @@
  */
 
 import { getOrgPg } from '@papercusp/db-org';
+import { PgLinkStore } from '@papercusp/coordination/capabilities';
 import { activeWorkspaceId } from '../workspace-registry';
 import { recordRoutedIdea } from './routed-ledger';
 import type { RoutedRail } from './outcome-feedback';
@@ -205,17 +206,24 @@ export async function recordShadowVariant(
   });
 
   // The lineage edge: variant --revises--> source, over the SAME generic typed-edge
-  // table (`coord_links`) and the SAME `revises` rel the grade→revise loop uses.
-  // ON CONFLICT DO NOTHING mirrors PgLinkStore#link, so a re-run is idempotent.
-  const { sql } = getOrgPg();
-  await sql`
-    INSERT INTO harness_shared.coord_links
-      (workspace_id, src_kind, src_ref, dst_kind, dst_ref, rel, created_by)
-    VALUES
-      (${ws}, ${SHADOW_VARIANT_LINK_KIND}, ${input.variantIdeaId},
-       ${SHADOW_VARIANT_LINK_KIND}, ${input.sourceIdeaId}, ${SHADOW_VARIANT_REL},
-       ${input.createdBy ?? null})
-    ON CONFLICT (workspace_id, src_kind, src_ref, dst_kind, dst_ref, rel) DO NOTHING`;
+  // store (`PgLinkStore` → coord_links) and the SAME `revises` rel the grade→revise
+  // loop uses. Its link() is ON CONFLICT DO NOTHING, so a re-run is idempotent.
+  //
+  // ⚠ The store is pinned to the LEDGER's workspace, not to issues-engineer's
+  // `coordScopeWorkspace()`. Those two axes can differ, and the edge has to land
+  // in the same workspace `readShadowVariantPairs` reads it back from — a
+  // coord-scoped edge beside ledger-scoped rows would leave every pair silently
+  // unreadable while both writes reported success.
+  await new PgLinkStore({
+    getSql: () => getOrgPg().sql,
+    ensureSchema: async () => {},
+    getWorkspaceId: () => ws,
+  }).link(
+    { kind: SHADOW_VARIANT_LINK_KIND, ref: input.variantIdeaId },
+    { kind: SHADOW_VARIANT_LINK_KIND, ref: input.sourceIdeaId },
+    SHADOW_VARIANT_REL,
+    { ...(input.createdBy ? { created_by: input.createdBy } : {}), created_ts: new Date().toISOString() },
+  );
 
   return { variantIdeaId: input.variantIdeaId, sourceIdeaId: input.sourceIdeaId, source };
 }

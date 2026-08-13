@@ -437,6 +437,16 @@ export async function countStalePendingIdeas(opts: {
      WHERE workspace_id = ${opts.workspaceId}
        AND (outcome IS NULL OR outcome = 'pending')
        AND (outcome_checked_at IS NULL OR outcome_checked_at < ${opts.staleBeforeMs})
+       -- counterfactual-critique-lab D-001. This is the chokepoint that bites
+       -- HARDEST, because a shadow variant matches the stale-pending predicate
+       -- PERMANENTLY: it has no rail artifact to reach a terminal state, and the
+       -- outcome-refresh sweeps that would classify it are origin-scoped, so its
+       -- outcome and outcome_checked_at stay NULL forever. Left uncovered, the
+       -- trial's 20 rows become 20 permanent stuck-idea alerts escalating to a
+       -- human witness — an automatic recurrence produced by trial artifacts,
+       -- which is precisely what D-001 forbids. Unlike the other readers this
+       -- one takes no origin option at all, so the filter has to be unconditional.
+       AND origin <> ${SHADOW_VARIANT_ORIGIN}
        ${opts.harnessSlug ? sql`AND harness_slug = ${opts.harnessSlug}` : sql``}`;
   return Number(rows[0]?.c ?? 0);
 }

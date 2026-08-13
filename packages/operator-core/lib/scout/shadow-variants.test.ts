@@ -255,13 +255,35 @@ describe('ordinary-quota exclusion is enforced in the shipped SQL (D-001)', () =
   // census). A future edit that drops one of these conjuncts is the regression
   // this file exists to catch, and it would not fail any behavioral test.
   it.each([
-    ['routed-ledger.ts', 'readRoutedIdeas origin:all → the Mug meta-pattern digest'],
-    ['cycle-deps.ts', 'readNoveltyCorpus → Scout idea generation'],
-    ['ungraded-scope.ts', 'readUngradedBreakdown → the ungraded-filings census'],
+    ['./routed-ledger.ts', 'readRoutedIdeas origin:all → the Mug meta-pattern digest'],
+    ['./cycle-deps.ts', 'readNoveltyCorpus → Scout idea generation'],
+    ['./ungraded-scope.ts', 'readUngradedBreakdown → the ungraded-filings census'],
+    ['../system-health/compute.ts', '24h graded count → the grading-loop health verdict'],
   ])('%s excludes the shadow-variant origin (%s)', async (file) => {
     const { readFile } = await import('node:fs/promises');
-    const src = await readFile(new URL(`./${file}`, import.meta.url), 'utf8');
+    const src = await readFile(new URL(file, import.meta.url), 'utf8');
     expect(src).toMatch(EXCLUSION_CONJUNCT);
+  });
+
+  /**
+   * routed-ledger.ts carries TWO independent exclusions and the file-level grep
+   * above is satisfied by either one, so the second is pinned by name. This is
+   * the one an audit caught after the first three shipped
+   * (counterfactual-critique-lab, 2026-08-13): countStalePendingIdeas takes no
+   * origin option, and a shadow variant matches its stale-pending predicate
+   * FOREVER — no rail artifact to reach a terminal state, and the
+   * outcome-refresh sweeps that would classify it are origin-scoped. Uncovered,
+   * the trial's own rows become permanent stuck-idea alerts escalating to a
+   * human. Asserted on the function body, not the file, so deleting THIS
+   * conjunct fails even while the others stand.
+   */
+  it('countStalePendingIdeas excludes shadow variants (they are stale-pending forever)', async () => {
+    const { readFile } = await import('node:fs/promises');
+    const src = await readFile(new URL('./routed-ledger.ts', import.meta.url), 'utf8');
+    const start = src.indexOf('export async function countStalePendingIdeas');
+    expect(start).toBeGreaterThan(-1);
+    const body = src.slice(start, src.indexOf('\nexport ', start + 1));
+    expect(body).toMatch(EXCLUSION_CONJUNCT);
   });
 
   // CALIBRATION CONTROL. The three assertions above are source greps, and a

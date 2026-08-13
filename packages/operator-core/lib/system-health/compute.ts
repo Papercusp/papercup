@@ -2441,10 +2441,21 @@ async function collectScout(ctx: HealthCtx): Promise<HealthPanel<ScoutHealth>> {
       // unlabelled scalar.
       const { readUngradedBreakdown, DEFAULT_UNGRADED_EPOCH_POLICY, epochMsForOrigin } =
         await import('../scout/ungraded-scope');
+      // Lazy, matching this block's existing style — compute.ts takes no static
+      // scout imports, and the exclusion vocabulary module is dependency-free.
+      const { SHADOW_VARIANT_ORIGIN } = await import('../scout/shadow-variant-origin');
       const rows = await sql<Array<{ graded: number }>>`
         SELECT (count(*) FILTER (WHERE graded_at IS NOT NULL AND graded_at > now() - interval '24 hours'))::int AS graded
           FROM harness_shared.scout_routed_ideas
-         WHERE workspace_id = ${ctx.ws}`;
+         WHERE workspace_id = ${ctx.ws}
+           -- counterfactual-critique-lab D-001: the shadow trial blind-grades 40
+           -- rows (20 pairs) in one sitting, which would land here as a 24h
+           -- grading-activity spike and read as "the grading loop is healthy"
+           -- during a window when it may not be. A health signal inflated by a
+           -- measurement's own artifacts is a false reading, not a harmless
+           -- over-count -- the trial must not be able to certify the system it
+           -- is running inside.
+           AND origin <> ${SHADOW_VARIANT_ORIGIN}`;
       // D-014: the floor is per-origin. This surface used to pass the su-ideate floor
       // for EVERY origin — the reason scout showed a 592-row "actionable" backlog
       // against a line chosen for a different producer's corpus.
