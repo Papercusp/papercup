@@ -27,7 +27,10 @@ const row = (i: number) => ({
   assignedBy: null,
   severity: null,
   parent: null,
-  payload: { plan_item: { item_id: 'P-010', plan_slug: 'some-plan', harness_slug: 'papercusp' }, other: 'x'.repeat(500) },
+  payload: {
+    plan_item: { item_id: 'P-010', plan_slug: 'some-plan', harness_slug: 'papercusp' },
+    other: 'x'.repeat(500),
+  },
   rank: null,
 });
 
@@ -39,7 +42,13 @@ function fixture(n = 20) {
     claimable: Array.from({ length: n }, (_, i) => row(i)),
     inbox: {
       summary: { total: 3327, returned: 10 },
-      recent: Array.from({ length: 10 }, (_, i) => ({ ts: `t${i}`, kind: 'message', from: 'su-x', summary: 'm'.repeat(400), body: 'b'.repeat(800) })),
+      recent: Array.from({ length: 10 }, (_, i) => ({
+        ts: `t${i}`,
+        kind: 'message',
+        from: 'su-x',
+        summary: 'm'.repeat(400),
+        body: 'b'.repeat(800),
+      })),
     },
     memory: { query: 'q', hits: Array.from({ length: 5 }, (_, i) => ({ id: i, memory: 'x'.repeat(900), score: 0.5 })) },
     planEvents: {
@@ -55,12 +64,21 @@ function fixture(n = 20) {
     fleetCatchUp: {
       fleet: 'fleet-a',
       total: 10,
-      recent: Array.from({ length: 10 }, (_, i) => ({ kind: 'message', from: 'su-x', body: `fleet message ${i} ${'f'.repeat(900)}` })),
+      recent: Array.from({ length: 10 }, (_, i) => ({
+        kind: 'message',
+        from: 'su-x',
+        body: `fleet message ${i} ${'f'.repeat(900)}`,
+      })),
     },
     // Standing facts: mostly noisy workspace-scope, with the load-bearing owner +
     // harness facts buried in the middle (they must survive the count cap).
     facts: [
-      ...Array.from({ length: 10 }, (_, i) => ({ scope: 'workspace', ref: null, body: `ws ${i} ${'w'.repeat(400)}`, src: null })),
+      ...Array.from({ length: 10 }, (_, i) => ({
+        scope: 'workspace',
+        ref: null,
+        body: `ws ${i} ${'w'.repeat(400)}`,
+        src: null,
+      })),
       { scope: 'owner', ref: 'su-abc', body: `OWNER-WALL ${'o'.repeat(400)}`, src: 'WI-1' },
       { scope: 'harness', ref: 'papercusp', body: `HARNESS-FACT ${'h'.repeat(400)}`, src: 'WI-2' },
       ...Array.from({ length: 8 }, (_, i) => ({ scope: 'workspace', ref: null, body: `ws b${i}`, src: null })),
@@ -174,10 +192,12 @@ describe('shapeOrient trimmed', () => {
     // and left the framework's generic projector to drop orientation fields.
     expect(JSON.stringify(out).length).toBeLessThanOrEqual(SHAPER_BUDGET_CHARS);
     expect(shapedMe.agents.length).toBeLessThanOrEqual(6);
-    expect(shapedMe.agents).toEqual(expect.arrayContaining([
-      expect.objectContaining({ agentId: 'su-92', isSelf: true }),
-      expect.objectContaining({ agentId: 'su-91', verdict: 'dead' }),
-    ]));
+    expect(shapedMe.agents).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ agentId: 'su-92', isSelf: true }),
+        expect.objectContaining({ agentId: 'su-91', verdict: 'dead' }),
+      ]),
+    );
     expect(shapedMe.agents_truncated).toBe(true);
     expect(shapedMe.agents_hint).toContain('fleet:assignments');
     expect(shapedMe.orphaned.length).toBeLessThanOrEqual(4);
@@ -224,14 +244,18 @@ describe('shapeOrient trimmed', () => {
     // it — measured on a live fold, "DO NOT retry — the error says so explicitly"
     // sat past the 200-char cut and shipped as a bare '…'. An agent that loses that
     // clause retries the exact call the fact exists to stop.
-    const withFacts = (facts: unknown[]) =>
-      shapeOrient({ ...fixture(), facts }, 'trimmed') as Record<string, unknown>;
+    const withFacts = (facts: unknown[]) => shapeOrient({ ...fixture(), facts }, 'trimmed') as Record<string, unknown>;
 
     const filler = 'x'.repeat(400);
 
     it('preserves a directive that sits PAST the cut', () => {
       const out2 = withFacts([
-        { scope: 'harness', ref: 'papercusp', body: `head ${filler} DO NOT retry — the error is correct.`, src: 'WI-3' },
+        {
+          scope: 'harness',
+          ref: 'papercusp',
+          body: `head ${filler} DO NOT retry — the error is correct.`,
+          src: 'WI-3',
+        },
       ]);
       const body = (out2.facts as Array<{ body: string }>)[0].body;
       expect(body).toContain('⚠ OPERATIVE');
@@ -242,7 +266,9 @@ describe('shapeOrient trimmed', () => {
       // Permanent falsifier. An implementation that always appends the marker (or
       // never truncates at all) passes the test above and fails this one, so the
       // pair cannot both be satisfied by a degenerate implementation.
-      const out2 = withFacts([{ scope: 'harness', ref: 'papercusp', body: `head ${filler} ordinary trailing prose.`, src: 'WI-4' }]);
+      const out2 = withFacts([
+        { scope: 'harness', ref: 'papercusp', body: `head ${filler} ordinary trailing prose.`, src: 'WI-4' },
+      ]);
       const body = (out2.facts as Array<{ body: string }>)[0].body;
       expect(body).not.toContain('⚠ OPERATIVE');
       expect(body).not.toContain('ordinary trailing prose');
@@ -290,7 +316,9 @@ describe('shapeOrient — compaction folds (compaction-fold-audit-2026-07-06)', 
   it('fold #2: a post-compaction payload (recovery present) relaxes the inbox re-cap', () => {
     const base = fixture(); // 10 inbox entries, summaries 400 chars
     // baseline: NO recovery ⇒ the standard trimmed cap (5 entries, 140-char summaries) applies
-    const capped = shapeOrient(base, 'trimmed') as { inbox: { recent: Array<{ summary: string }>; recentTruncated?: unknown } };
+    const capped = shapeOrient(base, 'trimmed') as {
+      inbox: { recent: Array<{ summary: string }>; recentTruncated?: unknown };
+    };
     expect(capped.inbox.recent).toHaveLength(5);
     expect(capped.inbox.recentTruncated).toBeDefined();
     expect(capped.inbox.recent[0].summary.length).toBeLessThanOrEqual(140);
@@ -437,7 +465,9 @@ describe('EI-19314271768708528 leaderBrief shaping (monitor-wake fleet visibilit
   it('shrinks the brief monotonically by tier so the door has no reason to drop it whole', () => {
     const before = JSON.stringify(fatBrief()).length;
     const sized = (tier: 'trimmed' | 'standard') =>
-      JSON.stringify((shapeOrient({ ...fixture(), leaderBrief: fatBrief() }, tier) as { leaderBrief: unknown }).leaderBrief).length;
+      JSON.stringify(
+        (shapeOrient({ ...fixture(), leaderBrief: fatBrief() }, tier) as { leaderBrief: unknown }).leaderBrief,
+      ).length;
     const trimmed = sized('trimmed');
     const standard = sized('standard');
     // Both tiers shrink; trimmed is strictly the leaner projection (standard keeps the
@@ -582,10 +612,10 @@ describe('shapeOrient — in-shaper budget ladder (EI-19408488769901676)', () =>
   it('a payload too big even at floor caps is flagged overBudget rather than silently looking normal', () => {
     // The residue is in an UNCAPPED passthrough field, so no rung can shrink it — the
     // honest answer is to say so, since the generic projection may still drop fields.
-    const out = shapeOrient(
-      { self: { ownerId: 'su-1' }, recovery: { blob: 'z'.repeat(40_000) } },
-      'trimmed',
-    ) as Record<string, any>;
+    const out = shapeOrient({ self: { ownerId: 'su-1' }, recovery: { blob: 'z'.repeat(40_000) } }, 'trimmed') as Record<
+      string,
+      any
+    >;
 
     expect(out.shaperTightened.overBudget).toBe(true);
     expect(out.shaperTightened.rung).toBe('floor');
@@ -779,10 +809,10 @@ describe('EI-20213176698128052: `recovery` is ladder-aware (the last uncapped pa
     // total from the excerpt, which would report ~600 withheld for a checkpoint that is
     // really missing ~19,400. That under-report is a silent-loss regression in the very
     // code that exists to prevent one.
-    const out = shapeOrient(
-      heavy([held(2, { checkpointChars: 1_200, priorTotal: 20_000 })]),
-      'trimmed',
-    ) as Record<string, any>;
+    const out = shapeOrient(heavy([held(2, { checkpointChars: 1_200, priorTotal: 20_000 })]), 'trimmed') as Record<
+      string,
+      any
+    >;
 
     const t = out.recovery.checkpoints[0].checkpointTruncated;
     const kept = out.recovery.checkpoints[0].checkpoint.length;
@@ -827,10 +857,10 @@ describe('EI-20213176698128052: `recovery` is ladder-aware (the last uncapped pa
   it('recovery shapes that carry no `checkpoints` array are left exactly as they were', () => {
     // The fix is deliberately narrow: only the checkpoints list is ladder-aware, so every
     // other recovery key keeps the passthrough guarantee it always had.
-    const out = shapeOrient(
-      { self: { ownerId: 'su-1' }, recovery: { blob: 'z'.repeat(40_000) } },
-      'trimmed',
-    ) as Record<string, any>;
+    const out = shapeOrient({ self: { ownerId: 'su-1' }, recovery: { blob: 'z'.repeat(40_000) } }, 'trimmed') as Record<
+      string,
+      any
+    >;
     expect(out.recovery.blob.length).toBe(40_000);
   });
 });

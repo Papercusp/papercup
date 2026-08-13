@@ -548,18 +548,12 @@ export interface OrientResult {
 
 type OrientClassifiedResultKey =
   | (typeof ORIENT_CORE_RESULT_KEYS)[number]
-  | Extract<
-      (typeof ORIENT_OPTIONAL_PRIORITY.tier4)[number]['fields'][number],
-      keyof OrientResult
-    >
+  | Extract<(typeof ORIENT_OPTIONAL_PRIORITY.tier4)[number]['fields'][number], keyof OrientResult>
   | 'taskToolSchemaPack';
 
 /** Compile-time drift guard: adding an OrientResult field requires assigning it
  *  to the shared core/tier data before this module can typecheck. */
-export const ORIENT_RESULT_PRIORITY_IS_EXHAUSTIVE: Exclude<
-  keyof OrientResult,
-  OrientClassifiedResultKey
-> extends never
+export const ORIENT_RESULT_PRIORITY_IS_EXHAUSTIVE: Exclude<keyof OrientResult, OrientClassifiedResultKey> extends never
   ? true
   : false = true;
 

@@ -40,17 +40,45 @@ export const ORIENT_CORE_RESULT_KEYS = [
  */
 export const ORIENT_OPTIONAL_PRIORITY = {
   tier3: [
-    { name: 'ownerDirectives', fields: ['ownerDirectives'], recoverVia: 'next system prompt / CTRL:transition (automatic re-delivery)' },
+    {
+      name: 'ownerDirectives',
+      fields: ['ownerDirectives'],
+      recoverVia: 'next system prompt / CTRL:transition (automatic re-delivery)',
+    },
     { name: 'modes', fields: ['modes'], recoverVia: 'next system prompt / CTRL:transition (mode registry)' },
-    { name: 'instructionPrecedence', fields: ['instructionPrecedence'], recoverVia: 'next system prompt / CTRL:transition (effective precedence)' },
+    {
+      name: 'instructionPrecedence',
+      fields: ['instructionPrecedence'],
+      recoverVia: 'next system prompt / CTRL:transition (effective precedence)',
+    },
     { name: 'ideate', fields: ['ideate'], recoverVia: "blender:ideation-feedback { scope:'mine', intent }" },
-    { name: 'captureMiss', fields: ['captureMiss'], recoverVia: 'next system prompt / CTRL:transition (automatic re-delivery)' },
-    { name: 'configIntegrity', fields: ['configIntegrity'], recoverVia: 'next system prompt / CTRL:transition (automatic re-delivery)' },
-    { name: 'codexLocks', fields: ['codexLocks'], recoverVia: 'coord:orient (lock mode is re-delivered on the next orient)' },
-    { name: 'taskToolSchemaPack', fields: ['taskToolSchemaPack'], recoverVia: 'coord:orient (the activated task schema pack is re-delivered after compaction)' },
+    {
+      name: 'captureMiss',
+      fields: ['captureMiss'],
+      recoverVia: 'next system prompt / CTRL:transition (automatic re-delivery)',
+    },
+    {
+      name: 'configIntegrity',
+      fields: ['configIntegrity'],
+      recoverVia: 'next system prompt / CTRL:transition (automatic re-delivery)',
+    },
+    {
+      name: 'codexLocks',
+      fields: ['codexLocks'],
+      recoverVia: 'coord:orient (lock mode is re-delivered on the next orient)',
+    },
+    {
+      name: 'taskToolSchemaPack',
+      fields: ['taskToolSchemaPack'],
+      recoverVia: 'coord:orient (the activated task schema pack is re-delivered after compaction)',
+    },
   ] as const satisfies readonly OrientOptionalLeg[],
   tier4: [
-    { name: 'facts', fields: ['facts', 'factsWithheld', 'factsNarrowed', 'factsTruncated', 'factsBodiesTruncated'], recoverVia: 'facts:list { full:true }' },
+    {
+      name: 'facts',
+      fields: ['facts', 'factsWithheld', 'factsNarrowed', 'factsTruncated', 'factsBodiesTruncated'],
+      recoverVia: 'facts:list { full:true }',
+    },
     { name: 'host', fields: ['host'], recoverVia: 'next coord:orient (host snapshot is always re-delivered)' },
     { name: 'memory', fields: ['memory'], recoverVia: 'memory:search { query }' },
     { name: 'planNow', fields: ['planNow'], recoverVia: 'plans:get { slug }' },
@@ -80,4 +108,3 @@ export const ORIENT_OPTIONAL_EVICTION_PRIORITY: readonly (OrientOptionalLeg & { 
   ...[...ORIENT_OPTIONAL_PRIORITY.tier4].reverse().map((leg) => ({ ...leg, tier: 4 as const })),
   ...[...ORIENT_OPTIONAL_PRIORITY.tier3].reverse().map((leg) => ({ ...leg, tier: 3 as const })),
 ];
-

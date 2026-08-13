@@ -19,22 +19,60 @@ import { ORIENT_OPTIONAL_EVICTION_PRIORITY } from './orient-priority';
 
 /** Per-tier caps. `standard` is a looser projection, not a different shape. */
 const CAPS = {
-  trimmed: { claimable: 8, title: 90, inbox: 5, inboxSummary: 140, memory: 3, memoryText: 220, events: 5, eventText: 220, catchUp: 5, meChars: 2_400, facts: 8, factsBody: 200, paneContext: 2_400, briefMembers: 6, briefLists: 5, briefReason: 240, recoveryItems: 6, recoveryCheckpoint: 1_200, recoveryBody: 600 },
-  standard: { claimable: 15, title: 140, inbox: 8, inboxSummary: 240, memory: 5, memoryText: 400, events: 8, eventText: 500, catchUp: 8, meChars: 6_000, facts: 14, factsBody: 400, paneContext: 6_000, briefMembers: 12, briefLists: 10, briefReason: 500, recoveryItems: 8, recoveryCheckpoint: 1_200, recoveryBody: 600 },
+  trimmed: {
+    claimable: 8,
+    title: 90,
+    inbox: 5,
+    inboxSummary: 140,
+    memory: 3,
+    memoryText: 220,
+    events: 5,
+    eventText: 220,
+    catchUp: 5,
+    meChars: 2_400,
+    facts: 8,
+    factsBody: 200,
+    paneContext: 2_400,
+    briefMembers: 6,
+    briefLists: 5,
+    briefReason: 240,
+    recoveryItems: 6,
+    recoveryCheckpoint: 1_200,
+    recoveryBody: 600,
+  },
+  standard: {
+    claimable: 15,
+    title: 140,
+    inbox: 8,
+    inboxSummary: 240,
+    memory: 5,
+    memoryText: 400,
+    events: 8,
+    eventText: 500,
+    catchUp: 8,
+    meChars: 6_000,
+    facts: 14,
+    factsBody: 400,
+    paneContext: 6_000,
+    briefMembers: 12,
+    briefLists: 10,
+    briefReason: 500,
+    recoveryItems: 8,
+    recoveryCheckpoint: 1_200,
+    recoveryBody: 600,
+  },
 } as const;
 
 type TierName = keyof typeof CAPS;
 
-const cap = (s: unknown, n: number): unknown =>
-  typeof s === 'string' && s.length > n ? `${s.slice(0, n - 1)}…` : s;
+const cap = (s: unknown, n: number): unknown => (typeof s === 'string' && s.length > n ? `${s.slice(0, n - 1)}…` : s);
 
 /** Priority for keeping a standing fact when the count is capped: owner-scope
  *  (owner-walls / unverified claims) and this harness's facts are load-bearing;
  *  workspace-scope shared facts are the noisiest and drop first. Array.sort is
  *  stable, so within a rank the fold's original (recency) order is preserved. */
 const FACT_SCOPE_RANK: Record<string, number> = { owner: 0, work_item: 1, harness: 1, role: 2, workspace: 3 };
-const factRank = (f: unknown): number =>
-  FACT_SCOPE_RANK[(f as { scope?: string } | null)?.scope ?? ''] ?? 2;
+const factRank = (f: unknown): number => FACT_SCOPE_RANK[(f as { scope?: string } | null)?.scope ?? ''] ?? 2;
 
 /** The fetch-pointer for standing facts. It names `full:true` deliberately:
  *  bare `facts:list` EXCERPTS bodies by default, so pointing a reader there to
@@ -82,7 +120,8 @@ function briefMemberRank(m: unknown): number {
   const state = String(r.sessionState ?? '');
   const verdict = String(r.verdict ?? '');
   // Gone or wedged — the leader must relaunch/reclaim.
-  if (r.stalled === true || verdict === 'dead' || verdict === 'stalled' || state === 'ended' || state === 'suspect') return 0;
+  if (r.stalled === true || verdict === 'dead' || verdict === 'stalled' || state === 'ended' || state === 'suspect')
+    return 0;
   // About to compact, or sitting on an unanswered directed question.
   const unanswered = (r.unanswered as { count?: number } | undefined)?.count ?? 0;
   const pressure = String(r.contextPressure ?? '');
@@ -117,12 +156,31 @@ function projectBriefMember(m: unknown, titleCap: number, reasonCap: number): un
     ...(typeof r.lastToolCallAgeMs === 'number' ? { lastToolCallAgeMs: r.lastToolCallAgeMs } : {}),
     ...(r.nextFireAt ? { nextFireAt: r.nextFireAt } : {}),
     ...(Array.isArray(r.workItemIds) ? { workItemIds: r.workItemIds } : {}),
-    ...(doing ? { doing: { id: doing.id, title: cap(doing.title, titleCap), ...(doing.status ? { status: doing.status } : {}) } } : {}),
+    ...(doing
+      ? {
+          doing: { id: doing.id, title: cap(doing.title, titleCap), ...(doing.status ? { status: doing.status } : {}) },
+        }
+      : {}),
     // parkedOn is how a leader distinguishes "correctly parked on a gate" from "idle".
     ...(r.parkedOn != null ? { parkedOn: r.parkedOn } : {}),
     ...(r.parkedOnResolved != null ? { parkedOnResolved: r.parkedOnResolved } : {}),
-    ...(unanswered ? { unanswered: { count: unanswered.count, ...(unanswered.oldestAgeMs != null ? { oldestAgeMs: unanswered.oldestAgeMs } : {}) } } : {}),
-    ...(bench ? { benchSuggestion: { kind: bench.kind, ...(bench.item != null ? { item: bench.item } : {}), reason: cap(bench.reason, reasonCap) } } : {}),
+    ...(unanswered
+      ? {
+          unanswered: {
+            count: unanswered.count,
+            ...(unanswered.oldestAgeMs != null ? { oldestAgeMs: unanswered.oldestAgeMs } : {}),
+          },
+        }
+      : {}),
+    ...(bench
+      ? {
+          benchSuggestion: {
+            kind: bench.kind,
+            ...(bench.item != null ? { item: bench.item } : {}),
+            reason: cap(bench.reason, reasonCap),
+          },
+        }
+      : {}),
     ...(r.isSelf === true ? { isSelf: true } : {}),
   };
 }
@@ -210,9 +268,7 @@ function projectCoverageCollision(row: unknown, textCap: number): unknown {
   return {
     ...(r.ref != null ? { ref: cap(r.ref, textCap) } : {}),
     ...(r.directHolder != null ? { directHolder: cap(r.directHolder, textCap) } : {}),
-    ...(Array.isArray(r.principals)
-      ? { principals: r.principals.slice(0, 4).map((v) => cap(v, textCap)) }
-      : {}),
+    ...(Array.isArray(r.principals) ? { principals: r.principals.slice(0, 4).map((v) => cap(v, textCap)) } : {}),
     ...(Array.isArray(r.workItemHolders)
       ? {
           workItemHolders: r.workItemHolders.slice(0, 4).map((v) => {
@@ -256,10 +312,11 @@ function projectAssignmentObject(me: unknown, tier: TierName): unknown {
 
   const d = shaped as Record<string, unknown>;
   const summary = d.summary && typeof d.summary === 'object' ? (d.summary as Record<string, unknown>) : {};
-  const caps = tier === 'trimmed'
-    ? { agents: 6, alerts: 4, collisions: 4, text: 180, coverage: 12 }
-    : { agents: 12, alerts: 8, collisions: 8, text: 260, coverage: 24 };
-  const assignmentAgents = (d.agents as unknown[]);
+  const caps =
+    tier === 'trimmed'
+      ? { agents: 6, alerts: 4, collisions: 4, text: 180, coverage: 12 }
+      : { agents: 12, alerts: 8, collisions: 8, text: 260, coverage: 24 };
+  const assignmentAgents = d.agents as unknown[];
   const sourceAgents = assignmentAgents.filter(
     (agent: unknown) => (agent as Record<string, unknown> | null)?.agentId !== '(truncated)',
   );
@@ -288,7 +345,8 @@ function projectAssignmentObject(me: unknown, tier: TierName): unknown {
     const total = Math.max(reportedTotal, rows.length);
     out[key] = rows.slice(0, caps.alerts).map((row) => projectAssignmentAlert(row, caps.text));
     if (total > Math.min(rows.length, caps.alerts)) {
-      out[`${key}_note`] = `nested orient ${key} showing ${Math.min(rows.length, caps.alerts)} of ${total}; use fleet:assignments for the full list`;
+      out[`${key}_note`] =
+        `nested orient ${key} showing ${Math.min(rows.length, caps.alerts)} of ${total}; use fleet:assignments for the full list`;
     }
   };
   projectAlerts('orphaned', 'orphaned_claims');
@@ -366,15 +424,30 @@ export const SHAPER_BUDGET_CHARS = 17_000;
  *  silently empty a list (an empty list reads as "nothing there", the exact silent-drop
  *  this whole shaper exists to prevent — every rung still leaves the D-004 pointers). */
 const FLOOR_CAPS: Caps = {
-  claimable: 4, title: 60, inbox: 3, inboxSummary: 100, memory: 1, memoryText: 120,
-  events: 2, eventText: 120, catchUp: 2, meChars: 1_200, facts: 4, factsBody: 100,
-  paneContext: 800, briefMembers: 4, briefLists: 3, briefReason: 120,
+  claimable: 4,
+  title: 60,
+  inbox: 3,
+  inboxSummary: 100,
+  memory: 1,
+  memoryText: 120,
+  events: 2,
+  eventText: 120,
+  catchUp: 2,
+  meChars: 1_200,
+  facts: 4,
+  factsBody: 100,
+  paneContext: 800,
+  briefMembers: 4,
+  briefLists: 3,
+  briefReason: 120,
   // EI: `recovery` used to be an UNCAPPED passthrough, which made the ladder
   // mathematically unable to reach budget on the ONE path where `recovery` exists
   // and is the LARGEST field. Measured on a real post-compaction payload: floor
   // came out at 23,786 chars vs a 17,000 budget, with recovery 7,320 of it (30.8%)
   // — larger than the whole 6,786-char overflow. See projectRecovery below.
-  recoveryItems: 2, recoveryCheckpoint: 400, recoveryBody: 200,
+  recoveryItems: 2,
+  recoveryCheckpoint: 400,
+  recoveryBody: 200,
 };
 
 /** Scale every cap toward FLOOR_CAPS, clamped so no leg drops below the floor. */
@@ -463,7 +536,7 @@ function recapDisclosed(
   more: string | undefined,
 ): { text: string; truncation?: Record<string, unknown> } | null {
   if (typeof text !== 'string') return null;
-  const p = (prior && typeof prior === 'object' ? (prior as Record<string, unknown>) : null);
+  const p = prior && typeof prior === 'object' ? (prior as Record<string, unknown>) : null;
   const originalTotal = typeof p?.totalChars === 'number' ? p.totalChars : text.length;
   const r = capPreservingOperativeDetailed(text, max, more ? { more } : undefined);
   // Nothing was cut here and nothing had been cut upstream ⇒ nothing to disclose.
@@ -644,12 +717,24 @@ function projectOrient(d: Record<string, unknown>, c: Caps, tier: TierName): Rec
       // without it would silently re-drop the alias for trimmed/standard sessions
       // (the common fleet-member case) even after coord:orient/coord:inbox added it.
       entries: projectedRecent,
-      ...(recent.length > inboxCap ? { recentTruncated: { total: recent.length, shown: inboxCap, more: 'coord:inbox' } } : {}),
+      ...(recent.length > inboxCap
+        ? { recentTruncated: { total: recent.length, shown: inboxCap, more: 'coord:inbox' } }
+        : {}),
     };
   }
 
   const memory = d.memory as
-    | { query?: unknown; hits?: unknown[]; degraded?: unknown; degradedReason?: unknown; withheld?: unknown; filteredLowScore?: unknown; withheldBudget?: unknown; note?: unknown; bodiesTruncated?: unknown }
+    | {
+        query?: unknown;
+        hits?: unknown[];
+        degraded?: unknown;
+        degradedReason?: unknown;
+        withheld?: unknown;
+        filteredLowScore?: unknown;
+        withheldBudget?: unknown;
+        note?: unknown;
+        bodiesTruncated?: unknown;
+      }
     | null
     | undefined;
   if (memory && typeof memory === 'object' && Array.isArray(memory.hits)) {
@@ -695,7 +780,9 @@ function projectOrient(d: Record<string, unknown>, c: Caps, tier: TierName): Rec
             },
           }
         : {}),
-      ...(memory.hits.length > c.memory ? { hitsTruncated: { total: memory.hits.length, shown: c.memory, more: 'memory:search' } } : {}),
+      ...(memory.hits.length > c.memory
+        ? { hitsTruncated: { total: memory.hits.length, shown: c.memory, more: 'memory:search' } }
+        : {}),
       // EI-9031: carry the LOUD scalar markers through tier-shaping — a trimmed/
       // standard session (a fleet member — the exact case this ticket reports) must
       // still see `degraded` so an empty `hits` isn't read as an informative empty
@@ -747,7 +834,12 @@ function projectOrient(d: Record<string, unknown>, c: Caps, tier: TierName): Rec
       const ranked = [...brief.members].sort((a, b) => briefMemberRank(a) - briefMemberRank(b));
       out2.members = ranked.slice(0, c.briefMembers).map((m) => projectBriefMember(m, c.title, c.briefReason));
       if (total > c.briefMembers) {
-        out2.membersTruncated = { total, shown: c.briefMembers, ranked: 'actionable-first (dead/stalled → pressured/unanswered → idle/benched → healthy)', more: 'fleet:leader-brief' };
+        out2.membersTruncated = {
+          total,
+          shown: c.briefMembers,
+          ranked: 'actionable-first (dead/stalled → pressured/unanswered → idle/benched → healthy)',
+          more: 'fleet:leader-brief',
+        };
       }
     }
     // The advisory rosters are unbounded work-item lists (18 unowned criticals in the
@@ -811,7 +903,10 @@ export function shapeOrient(data: unknown, tier: TierName): unknown {
 
   const ladder: { caps: Caps; rung: string }[] = afterCompaction
     ? [
-        { caps: { ...base, inbox: Math.max(base.inbox, 20), inboxSummary: Math.max(base.inboxSummary, 700) }, rung: 'post-compaction' },
+        {
+          caps: { ...base, inbox: Math.max(base.inbox, 20), inboxSummary: Math.max(base.inboxSummary, 700) },
+          rung: 'post-compaction',
+        },
         { caps: base, rung: tier },
         { caps: tightenCaps(base, 0.5), rung: `${tier}-half` },
         { caps: FLOOR_CAPS, rung: 'floor' },
