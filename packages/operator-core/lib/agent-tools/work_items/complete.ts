@@ -732,7 +732,7 @@ const PRESCRIBED_TEST_RE =
 const COMPLETION_GUARD_RE =
   /\b(?:recurrence|regression|falsifier|guard|assert(?:ion|ing|ed)?|sentinel)\b/i;
 const COMPLETION_NEGATIVE_GUARD_RE =
-  /\b(?:no|not|without|missing|absent|defer(?:red)?|left\s+out|did\s+not|didn['’]?t)\b[\s\S]{0,45}\b(?:recurrence|regression|falsifier|guard|assert(?:ion|ing|ed)?|test|coverage)\b/i;
+  /(?:\b(?:no|not|without|missing|absent|defer(?:red)?|left\s+out|did\s+not|didn['’]?t)\b[\s\S]{0,45}\b(?:recurrence|regression|falsifier|guard|assert(?:ion|ing|ed)?|test|coverage)\b|\b(?:recurrence|regression|falsifier|guard|assert(?:ion|ing|ed)?|test|coverage)\b[\s\S]{0,45}\b(?:not|missing|absent|defer(?:red)?|left\s+out|did\s+not|didn['’]?)\b)/i;
 const EXPLICIT_GUARD_WAIVER_RE =
   /\b(?:waiv(?:e|ed|er)|not\s+applicable)\b[\s\S]{0,160}\b(?:because|since|as|reason|already|existing|covered|present|exists|implemented|by|:|—|-)\b/i;
 
@@ -1779,6 +1779,40 @@ async function completeOne(
       `not checked out, ignore this. Otherwise re-call work_items:complete with the paths verified on disk.`
     : undefined;
 
+  // EI-20288629053504794: a positive path claim is not evidence that this item touched
+  // the path. Surface target files whose last commit predates the item, but never block
+  // or accuse when git history cannot be observed.
+  const preExistingPaths = preExistingChangedPathsInCompletion(existing, it.completion);
+  const preExistingPathsWarning = preExistingPaths
+    ? 'completion for ' +
+      it.id +
+      ' positively claims work on target path(s) whose last commit predates this work-item: ' +
+      preExistingPaths.paths
+        .map(
+          (entry) =>
+            entry.path +
+            ' (last committed ' +
+            entry.lastCommitAt +
+            '; item created ' +
+            preExistingPaths.createdAt +
+            ')',
+        )
+        .join(', ') +
+      '. The completion is RECORDED and this advisory does not block the close, but verify that each named path was actually remediated by this item.'
+    : undefined;
+
+  // EI-20288629053504794: the item may prescribe its own recurrence guard or regression
+  // test. A completion must point to that guard/test (or explicitly waive it with a
+  // reason); this remains warn-only so the completion record is never lost.
+  const prescribedGuardGap = prescribedRecurrenceGuardCoverageGap(existing, it.completion);
+  const prescribedGuardWarning = prescribedGuardGap
+    ? 'completion for ' +
+      it.id +
+      ' does not point to the recurrence guard/test obligation prescribed by the item: ' +
+      prescribedGuardGap.prescriptions.join(' | ') +
+      '. The completion is RECORDED and close is not blocked; cite the guard/test path or explicitly waive it with a reason.'
+    : undefined;
+
   // EI-19455334047866968: the REF-shaped sibling of the path check above — a work-item id
   // cited in this completion's prose is never checked for existence, so a phantom reads
   // identically to a real one. Measured on this very surface: a completion said "Filed
@@ -2055,6 +2089,8 @@ async function completeOne(
     ...(typeEvidenceWarning ? { typeEvidenceWarning } : {}),
     ...(liveDriveEvidenceWarning ? { liveDriveEvidenceWarning } : {}),
     ...(unresolvedPathsWarning ? { unresolvedPathsWarning } : {}),
+    ...(preExistingPathsWarning ? { preExistingPathsWarning } : {}),
+    ...(prescribedGuardWarning ? { prescribedGuardWarning } : {}),
     ...(unresolvedRefsWarningText ? { unresolvedRefsWarning: unresolvedRefsWarningText } : {}),
     ...(ephemeralDeliverableWarning ? { ephemeralDeliverableWarning } : {}),
     ...(assigneeMismatchWarning ? { assigneeMismatchWarning } : {}),
