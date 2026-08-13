@@ -25,7 +25,10 @@ vi.mock('../locks/su-lock-store', () => ({
   tryReleaseResource: vi.fn(async () => ({ released: 1, releasedModes: ['exclusive'], exclusiveResources: [], waiters: {} })),
 }));
 vi.mock('../locks/resource-lock-guard', () => ({ guardResource: vi.fn() }));
-vi.mock('node:child_process', () => ({ spawn: vi.fn(() => ({ unref: vi.fn() })) }));
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:child_process')>();
+  return { ...actual, spawn: vi.fn(() => ({ unref: vi.fn() })) };
+});
 // EI-11137: the systemd truth-check that decides genuine-vs-phantom coalesce.
 vi.mock('./systemd-service-probe', () => ({ probeServiceStart: vi.fn() }));
 // EI-18661647550414959: the pre-kill "can this tree actually boot?" check. Mocked so
