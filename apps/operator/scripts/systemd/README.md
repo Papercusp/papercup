@@ -1,3 +1,48 @@
+# Clustered operator memory envelope — installation (EI-20340243384897336)
+
+`papercup-dev-api.service.d/55-memory-envelope.conf` is the versioned,
+service-wide cgroup policy for the 17-process `:3070` operator. It complements
+the in-process memory watchdog: the watchdog recycles one leaking worker, while
+`MemoryHigh` / `MemoryMax` / `MemorySwapMax` bound the aggregate cluster.
+
+The drop-in also unsets the old `PAPERCUSP_MEMORY_WATCHDOG_LIMIT_MB=12288`
+service override. That variable is process-scoped; after clustering, it allowed
+17 independent 12 GiB budgets rather than one 12 GiB service budget. Request
+workers fall back to the code's role-aware process limit instead.
+
+## Install (one-time, on the shared development host)
+
+Do not activate this while a green-checkpoint run is in flight: restarting
+`papercup-dev-api` also terminates descendants owned by the live checkpoint.
+Once the checkpoint singleton has cleared:
+
+```bash
+cd "$(git rev-parse --show-toplevel)/apps/operator/scripts/systemd"
+mkdir -p ~/.config/systemd/user/papercup-dev-api.service.d
+ln -sfn "$(pwd)/papercup-dev-api.service.d/55-memory-envelope.conf" \
+  ~/.config/systemd/user/papercup-dev-api.service.d/55-memory-envelope.conf
+systemctl --user daemon-reload
+```
+
+Use the managed operator restart door after acquiring the registered
+`dev-server` resource lock; never raw-restart a shared service around peers.
+
+## Verify
+
+```bash
+systemctl --user show papercup-dev-api.service \
+  -p MemoryAccounting -p MemoryHigh -p MemoryMax -p MemorySwapMax -p Environment
+systemd-analyze --user verify papercup-dev-api.service
+```
+
+Expected effective limits are `MemoryHigh=48G`, `MemoryMax=64G`, and
+`MemorySwapMax=16G`, with no `PAPERCUSP_MEMORY_WATCHDOG_LIMIT_MB` in the unit's
+effective environment. Verify `:3070` health and the 17-process cluster after
+the managed restart; a configured drop-in is not proof the running cgroup
+loaded it.
+
+---
+
 # LLM testing nightly cron — installation
 
 Plan §12 Phase 5.
