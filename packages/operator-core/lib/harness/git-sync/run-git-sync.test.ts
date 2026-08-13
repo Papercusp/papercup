@@ -138,6 +138,70 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(git(originDir, 'ls-tree', '-r', '--name-only', 'main')).toContain('https-fallback.txt');
   });
 
+  it('EI-20378687739683215: retries a GitHub SSH email-verification rejection through HTTPS', async () => {
+    writeFileSync(join(repo, 'email-verification-fallback.txt'), 'verified automation account\n');
+    const rewrite = 'url.https://github.com/.insteadOf=git@github.com:';
+    const calls: string[][] = [];
+    let rejectedPush = false;
+    const realRunGit: RunGit = async (args, cwd) => {
+      const result = spawnSync('git', args, { cwd, encoding: 'utf8' });
+      return {
+        code: result.status ?? -1,
+        stdout: String(result.stdout ?? ''),
+        stderr: String(result.stderr ?? ''),
+      };
+    };
+    const runGit: RunGit = async (args, cwd) => {
+      calls.push([...args]);
+      if (args[0] === 'remote' && args[1] === 'get-url') {
+        return { code: 0, stdout: 'git@github.com:Papercusp/papercup.git\n', stderr: '' };
+      }
+      if (args[0] === 'push' && !rejectedPush) {
+        rejectedPush = true;
+        return { code: 1, stdout: '', stderr: 'remote: You must verify your email address.\n' };
+      }
+      return realRunGit(args, cwd);
+    };
+
+    const out = await runGitSync('test', { repoPath: repo, runGit, config: cfg });
+
+    expect(out.status).toBe('synced');
+    if (out.status === 'synced') expect(out.pushed).toContain('superproject');
+    expect(calls).toContainEqual(['remote', 'get-url', 'origin']);
+    expect(calls.filter((args) => args[0] === '-c' && args[1] === rewrite)).toEqual([
+      ['-c', rewrite, 'push', 'origin', 'HEAD:main'],
+    ]);
+    expect(git(originDir, 'ls-tree', '-r', '--name-only', 'main')).toContain(
+      'email-verification-fallback.txt',
+    );
+  });
+
+  it('EI-20378687739683215: does not rewrite a non-GitHub email-verification rejection', async () => {
+    writeFileSync(join(repo, 'no-email-fallback.txt'), 'retain the original error\n');
+    const calls: string[][] = [];
+    const realRunGit: RunGit = async (args, cwd) => {
+      const result = spawnSync('git', args, { cwd, encoding: 'utf8' });
+      return {
+        code: result.status ?? -1,
+        stdout: String(result.stdout ?? ''),
+        stderr: String(result.stderr ?? ''),
+      };
+    };
+    const runGit: RunGit = async (args, cwd) => {
+      calls.push([...args]);
+      if (args[0] === 'push') {
+        return { code: 1, stdout: '', stderr: 'remote: You must verify your email address.\n' };
+      }
+      return realRunGit(args, cwd);
+    };
+
+    const out = await runGitSync('test', { repoPath: repo, runGit, config: cfg });
+
+    expect(out.status).toBe('error');
+    expect(calls).toContainEqual(['remote', 'get-url', 'origin']);
+    expect(calls.some((args) => args.some((arg) => arg.includes('insteadOf=')))).toBe(false);
+  });
+
   it('EI-20349517520985072: does not rewrite unrelated SSH publickey failures', async () => {
     writeFileSync(join(repo, 'no-fallback.txt'), 'keep the original failure\n');
     const calls: string[][] = [];

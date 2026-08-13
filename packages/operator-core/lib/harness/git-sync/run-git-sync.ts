@@ -304,6 +304,18 @@ const GITHUB_HTTPS_INSTEAD_OF_ARGS = ['-c', 'url.https://github.com/.insteadOf=g
 export const isGitHubSshPublicKeyFailure = (result: { stdout: string; stderr: string }): boolean =>
   /git@github\.com:\s*Permission denied \(publickey\)\.?/i.test(`${result.stdout}\n${result.stderr}`);
 
+/** GitHub can authenticate an SSH key successfully and still reject every write because the
+ *  account behind that key has no verified email. The configured HTTPS credential may belong to
+ *  a different, write-capable automation account, so this is the same credential-plane failure
+ *  class as a missing SSH key — but only after the configured remote is proven to be GitHub SSH. */
+export const isGitHubSshEmailVerificationFailure = (result: {
+  stdout: string;
+  stderr: string;
+}): boolean => /(?:remote:\s*)?You must verify your email address\.?/i.test(`${result.stdout}\n${result.stderr}`);
+
+const isGitHubSshRemoteUrl = (url: string): boolean =>
+  /^(?:git@github\.com:|ssh:\/\/git@github\.com\/)/i.test(url.trim());
+
 /**
  * Retry one GitHub fetch/push through the existing HTTPS credential helper when
  * SSH has no usable public key. The -c override is process-local: canonical
@@ -317,12 +329,32 @@ const runNetworkGitWithGitHubHttpsFallback = async (
 ): ReturnType<RunGit> => {
   const first = await runGit(args, cwd);
   const command = gitSubcommand(args);
-  if (first.code === 0 || (command !== 'fetch' && command !== 'push') || !isGitHubSshPublicKeyFailure(first)) {
+  const publicKeyFailure = isGitHubSshPublicKeyFailure(first);
+  const emailVerificationFailure = isGitHubSshEmailVerificationFailure(first);
+  if (
+    first.code === 0 ||
+    (command !== 'fetch' && command !== 'push') ||
+    (!publicKeyFailure && !emailVerificationFailure)
+  ) {
     return first;
   }
 
+  // Unlike the public-key error, GitHub's email-policy response does not name the SSH host.
+  // Prove the remote before applying the process-local insteadOf rewrite; an HTTPS or non-GitHub
+  // account-policy failure must retain its original result rather than retrying the same plane.
+  if (emailVerificationFailure && !publicKeyFailure) {
+    const remote = args[1];
+    if (!remote) return first;
+    const remoteUrl = isGitHubSshRemoteUrl(remote)
+      ? remote
+      : (await runGit(['remote', 'get-url', remote], cwd)).stdout.trim();
+    if (!isGitHubSshRemoteUrl(remoteUrl)) return first;
+  }
+
   log(
-    `[git-sync] ${cwd}: GitHub SSH publickey authentication failed during ${command}; retrying once through configured HTTPS credentials`,
+    `[git-sync] ${cwd}: GitHub SSH ${
+      publicKeyFailure ? 'publickey authentication failed' : 'account requires email verification'
+    } during ${command}; retrying once through configured HTTPS credentials`,
   );
   return runGit([...GITHUB_HTTPS_INSTEAD_OF_ARGS, ...args], cwd);
 };
