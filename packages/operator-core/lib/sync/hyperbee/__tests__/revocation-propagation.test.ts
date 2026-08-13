@@ -176,6 +176,37 @@ async function bootHost(o: HostOpts): Promise<BootedHarnessHandle> {
   return handle;
 }
 
+/**
+ * Drive merge cycles until `id` has merged, or the budget runs out. Returns
+ * whether it arrived — the CALLER asserts, so the failure message stays local
+ * to the invariant being proven.
+ *
+ * "Did this op federate?" is an EVENTUAL property against this real-swarm rig,
+ * never a single-cycle one: `mergeNow()` replays what has ARRIVED, and an op
+ * written a moment earlier on the peer store may still be in flight, so a lone
+ * `await write(); await mergeNow(); expect(...).toContain(id)` is a race under
+ * parallel load (WI-7089 — observed twice against 176 passes, both times as
+ * `['X-1','X-1']` missing 'X-2': the log HAD re-merged, just without its newest
+ * op yet).
+ *
+ * Only the POSITIVE question needs this. The negative one ("X must NOT
+ * federate") needs no polling at all — extra cycles only give a forbidden op
+ * more chances to appear, so its continued absence is a strictly stronger check.
+ */
+async function mergeUntilSeen(
+  handle: BootedHarnessHandle,
+  seen: () => Set<string>,
+  id: string,
+  { cycles = 50, gapMs = 100 }: { cycles?: number; gapMs?: number } = {},
+): Promise<boolean> {
+  for (let i = 0; i < cycles; i++) {
+    await handle.mergeNow();
+    if (seen().has(id)) return true;
+    await new Promise((r) => setTimeout(r, gapMs));
+  }
+  return seen().has(id);
+}
+
 // ───────────────────────────────────────────────────────────────────────────
 // G7 — revocation propagates (the enforcement half, on the peer whose published
 // list now names X). Mirrors the production path where A's revoked_pubkeys row
@@ -269,16 +300,9 @@ describe('G7 — published-revocation propagation enforces a drop at merge time'
       // Y keeps federating; X does not — X-2 must NEVER appear; Y-2 must.
       await X.write('X-2', 200);
       await Y.write('Y-2', 210);
-      // Poll across merge cycles: a single mergeNow() can race the real-swarm
-      // propagation of Y-2 under heavy parallel load (the G7 flake). The
-      // INVARIANT is that Y-2 EVENTUALLY federates and X-2 NEVER does — assert
-      // that, not single-cycle timing. Extra cycles only give X-2 more chances
-      // to (wrongly) appear, so its continued absence is a STRONGER check.
-      for (let i = 0; i < 50; i++) {
-        await handle.mergeNow();
-        if (seen().has('Y-2')) break;
-        await new Promise((r) => setTimeout(r, 100));
-      }
+      // The INVARIANT is that Y-2 EVENTUALLY federates and X-2 NEVER does —
+      // assert that, not single-cycle timing (see mergeUntilSeen).
+      await mergeUntilSeen(handle, seen, 'Y-2');
       expect(seen().has('Y-2'), "Y's post-revocation op must federate").toBe(true);
       expect(seen().has('X-2'), "X's post-revocation op must NOT federate").toBe(false);
     },
@@ -333,10 +357,25 @@ describe('G8 — un-revoke / re-admission (WI-193)', () => {
       ).toMatchObject({ admit: true });
       expect(handle.admitted.has(X.ownLog.keyHex)).toBe(true);
 
-      // And X's ops merge again.
+      // And X's ops merge again — an EVENTUAL property against the real swarm,
+      // so drive cycles until X-2 arrives rather than assuming one merge is
+      // enough (WI-7089; see mergeUntilSeen).
       await X.write('X-2', 200);
-      await handle.mergeNow();
-      expect(writes.map((w) => w.id)).toContain('X-2');
+      const seen = () => new Set(writes.map((w) => w.id));
+
+      // CONTROL (permanent): the poll must be able to return FALSE, or the
+      // assertion below would pass no matter what the merge did. 'X-never' is
+      // never written by anyone, so a bounded poll for it must give up.
+      expect(
+        await mergeUntilSeen(handle, seen, 'X-never', { cycles: 3, gapMs: 10 }),
+        'mergeUntilSeen must give up on an op that was never written',
+      ).toBe(false);
+
+      await mergeUntilSeen(handle, seen, 'X-2');
+      expect(
+        seen().has('X-2'),
+        "a re-admitted peer's NEW ops must federate again, not just its replayed backlog",
+      ).toBe(true);
     },
     30_000,
   );
