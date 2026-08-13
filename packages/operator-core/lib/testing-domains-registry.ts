@@ -1586,7 +1586,7 @@ defineTestDomain({
 // gate's own run, never in CI. Verified hermetic (synthetic localhost-only
 // HTTP listeners + static grep assertions, no docker/ssh/real network) before
 // wiring in. `test:selftests` (papercusp-desktop/package.json, backed by
-// bin/lib/run-selftests.sh) runs the same 7 as one aggregate; this domain
+// bin/lib/run-selftests.sh) runs the same set as one aggregate; this domain
 // surfaces them individually in the Tests tab / admin Testing dashboard,
 // closing the "dark test" gap the same way EI-1610 closed it for the Rust
 // crates above.
@@ -1614,6 +1614,7 @@ defineTestDomain({
         { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/seat-offer-diag.selftest.sh'], label: 'seat-offer b→a failure discriminator (WI-6179)' },
         { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/b9-attestation-precondition.selftest.sh'], label: 'LEG4 attestation precondition + both-frames restore (WI-5064)' },
         { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/b3-revocation-kcut.selftest.sh'], label: 'revocation K-cut: the device-scoped absence assert resolves a KEY-BEARING device (never the synthetic att2dev one), and delivery is not classified as disclosure (EI-18712383368117845)' },
+        { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/replication-soak-diagnostics.selftest.sh'], label: 'replication-soak failed-leg detector window + row/outbox/announce high-water diagnostics (WI-38376)' },
         { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/restart-settle-barrier.selftest.sh'], label: 'restart settle-barrier budget + WARN_IS_FAIL escalation (WI-6181)' },
         { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/rig-wait-converged.selftest.sh'], label: 'rig wait-converged: non-numeric psql is not a false PASS (WI-6181)' },
         { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/roster-scope.selftest.sh'], label: 'roster-gate workspace + pot scoping (WI-6181)' },
