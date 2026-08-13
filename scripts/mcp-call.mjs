@@ -21,10 +21,10 @@
  * arg is `itemId` not `item`). `tools/list` returns empty in this mode, but
  * `tools/call` reaches every tool. Reads the bearer from ~/.papercusp/superuser-token.
  */
-import { readFileSync } from 'node:fs';
+import { readFileSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 
 /** The JSON-RPC id we send; parseSse selects the frame that answers it. */
 const REQUEST_ID = 1;
@@ -170,6 +170,46 @@ export function resolveCandidatePorts(flags = {}, env = process.env) {
   };
 }
 
+/**
+ * Build the scoped-superuser query for the recovery transport.
+ *
+ * `mcp-call` promises JSON on stdout (and vmcall.sh validates that contract),
+ * while the operator's default result encoding is intentionally compact/TOON.
+ * Pin JSON at the transport boundary instead of depending on that mutable
+ * default; otherwise a successful tool call becomes non-JSON output that the
+ * maintained VM-rig driver correctly rejects.
+ */
+export function buildMcpSessionQuery({ client, workspace, harness }) {
+  const qs = new URLSearchParams({
+    superuser: '1',
+    client,
+    workspace,
+    format: 'json',
+  });
+  if (harness) qs.set('harness', harness);
+  return qs;
+}
+
+/**
+ * Decide whether this module is the launched script after resolving filesystem
+ * aliases. macOS exposes `/tmp` as a symlink to `/private/tmp`; the VM-rig
+ * deploy invokes `/tmp/mcp-call.mjs`, while `import.meta.url` canonicalizes to
+ * `/private/tmp/mcp-call.mjs`. Comparing their raw URLs suppresses main() and
+ * produces a false-success, zero-byte result.
+ */
+export function isInvokedDirectly(
+  argv1,
+  moduleUrl,
+  resolveRealpath = realpathSync,
+) {
+  if (!argv1) return false;
+  try {
+    return resolveRealpath(argv1) === resolveRealpath(fileURLToPath(moduleUrl));
+  } catch {
+    return false;
+  }
+}
+
 async function main() {
   const { tool, jsonArgs, flags } = parseArgs(process.argv.slice(2));
   if (!tool || tool === '--help' || tool === '-h') {
@@ -188,12 +228,14 @@ async function main() {
   // back to the generated id, not be sent as a blank client= — `??` alone only catches
   // null/undefined, not "".
   const client = (flags.client && flags.client.trim()) || `mcp-call-${process.pid}`;
-  const qs = new URLSearchParams({ superuser: '1', client });
   // The scoped-superuser session requires a resolved workspace (else
   // `scoped_superuser_workspace_unresolved`). Default to the standard one; override
   // with --workspace or PAPERCUSP_WORKSPACE.
-  qs.set('workspace', flags.workspace ?? process.env.PAPERCUSP_WORKSPACE ?? 'papercusp-workspace');
-  if (flags.harness) qs.set('harness', flags.harness);
+  const qs = buildMcpSessionQuery({
+    client,
+    workspace: flags.workspace ?? process.env.PAPERCUSP_WORKSPACE ?? 'papercusp-workspace',
+    harness: flags.harness,
+  });
   // EI-20182275617587040: PAPERCUSP_HONO_PORT can OUTLIVE the process it described
   // (e.g. a per-session operator that has since died), and a bare fetch at a port with
   // no listener dies as an unactionable `fetch failed`. That is worst precisely HERE:
@@ -272,8 +314,7 @@ async function main() {
 // bare `main()` at module scope executed it on import — so importing the parser
 // fired a real MCP call and then process.exit(1), which reads as a broken test
 // rather than a non-importable module.
-const invokedDirectly =
-  process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
+const invokedDirectly = isInvokedDirectly(process.argv[1], import.meta.url);
 
 if (invokedDirectly) {
   main().catch((e) => { console.error('mcp-call failed:', e?.message ?? e); process.exit(1); });
