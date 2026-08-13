@@ -21,6 +21,7 @@ const hiveGitRepoPathMock = vi.hoisted(() => vi.fn());
 const pathExistsMock = vi.hoisted(() => vi.fn());
 const defaultRunGitMock = vi.hoisted(() => vi.fn());
 const runGithubBridgeTickMock = vi.hoisted(() => vi.fn());
+const emitGitSyncEgressedEventMock = vi.hoisted(() => vi.fn());
 /** The routines row the leg reads its watermarks from. A non-null `wb_sha` is what
  *  arms the catch-up pin at all — without it the pin is skipped for an unrelated
  *  reason and the test would pass vacuously. */
@@ -46,6 +47,10 @@ vi.mock('../../sync/pot-git/github-bridge-tick', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   runGithubBridgeTick: runGithubBridgeTickMock,
 }));
+vi.mock('./git-sync-events', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  emitGitSyncEgressedEvent: emitGitSyncEgressedEventMock,
+}));
 
 import { runGithubBridgeLeg } from './git-sync-action';
 import { BRIDGE_CANONICAL_REF } from '../../sync/pot-git/github-bridge-tick';
@@ -56,8 +61,7 @@ const BARE = '/repos/shop-hive/shop-hive.git';
 
 /** Did the leg spawn git against the bare store? That — not the log text — is the
  *  behaviour under test: on a cold device the spawn itself is what dies. */
-const gitRanAgainstStore = () =>
-  defaultRunGitMock.mock.calls.some((c) => c[1] === BARE);
+const gitRanAgainstStore = () => defaultRunGitMock.mock.calls.some((c) => c[1] === BARE);
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -68,6 +72,7 @@ beforeEach(() => {
   // wb_sha present ⇒ the pin is armed. prev_egress_head/last_admitted are irrelevant here.
   sqlMock.mockResolvedValue([{ la: null, wb_sha: 'a'.repeat(40), prev_egress_head: null }]);
   sqlMock.unsafe.mockReset();
+  emitGitSyncEgressedEventMock.mockReset();
   defaultRunGitMock.mockResolvedValue({ code: 0, stdout: '', stderr: '' });
 });
 
@@ -93,7 +98,7 @@ describe('runGithubBridgeLeg — WI-6282 cold-store catch-up pin', () => {
       pathExistsMock.mockResolvedValue(true);
       // rev-parse non-zero = canonical ref absent = the pin has work to do.
       defaultRunGitMock.mockImplementation(async (args: string[]) =>
-        (args[0] === 'rev-parse' ? { code: 1, stdout: '', stderr: '' } : { code: 0, stdout: '', stderr: '' }),
+        args[0] === 'rev-parse' ? { code: 1, stdout: '', stderr: '' } : { code: 0, stdout: '', stderr: '' },
       );
       await runGithubBridgeLeg(SLUG, WS);
       const argv0s = defaultRunGitMock.mock.calls.map((c) => (c[0] as string[])[0]);
@@ -126,7 +131,7 @@ describe('runGithubBridgeLeg — EI-18751829787526583: a STALE-but-present canon
   const WATERMARK = 'a'.repeat(40);
   const STALE = 'b'.repeat(40);
 
-  it('canonical exists but is a strict ancestor of the watermark → re-pins CAS\'d against the stale sha', async () => {
+  it("canonical exists but is a strict ancestor of the watermark → re-pins CAS'd against the stale sha", async () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       pathExistsMock.mockResolvedValue(true);
@@ -146,7 +151,7 @@ describe('runGithubBridgeLeg — EI-18751829787526583: a STALE-but-present canon
     }
   });
 
-  it('canonical DIVERGED from the watermark (not an ancestor) → never re-pinned (not this guard\'s problem)', async () => {
+  it("canonical DIVERGED from the watermark (not an ancestor) → never re-pinned (not this guard's problem)", async () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       pathExistsMock.mockResolvedValue(true);
@@ -170,7 +175,9 @@ describe('runGithubBridgeLeg — EI-18751829787526583: a STALE-but-present canon
       pathExistsMock.mockResolvedValue(true);
       sqlMock.mockResolvedValue([{ la: null, wb_sha: WATERMARK, prev_egress_head: null }]);
       defaultRunGitMock.mockImplementation(async (args: string[]) =>
-        args[0] === 'rev-parse' ? { code: 0, stdout: `${WATERMARK}\n`, stderr: '' } : { code: 0, stdout: '', stderr: '' },
+        args[0] === 'rev-parse'
+          ? { code: 0, stdout: `${WATERMARK}\n`, stderr: '' }
+          : { code: 0, stdout: '', stderr: '' },
       );
       await runGithubBridgeLeg(SLUG, WS);
       const argv0s = defaultRunGitMock.mock.calls.map((c) => (c[0] as string[])[0]);
@@ -230,5 +237,49 @@ describe('runGithubBridgeLeg — owner-actionable egress failures', () => {
       }),
     });
     expect(metadata.last_error).toEqual(expect.stringContaining('fix the remote account/credential'));
+    expect(emitGitSyncEgressedEventMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('runGithubBridgeLeg — EI-20331175777179195 truthful egress event', () => {
+  const EGRESS_HEAD = 'e'.repeat(40);
+
+  const healthyOutcome = (egressHead: string | null) => ({
+    ran: true,
+    egressTarget: 'upstream' as const,
+    ingressed: { updated: 0, upToDate: 1, nonFF: 0, absent: 0 },
+    admissions: [],
+    lastAdmitted: null,
+    egress: { pushed: egressHead ? 1 : 0, upToDate: 0, rejectedNonFF: 0, blockedSecrets: 0 },
+    egressHead,
+    verdict: { action: 'clear' as const, needsOwner: false, signals: [], detail: '' },
+    errors: [],
+  });
+
+  it('emits only after the writer-backed metadata watermark is persisted', async () => {
+    const order: string[] = [];
+    pathExistsMock.mockResolvedValue(false);
+    runGithubBridgeTickMock.mockResolvedValue(healthyOutcome(EGRESS_HEAD));
+    sqlMock.unsafe.mockImplementation(async () => {
+      order.push('metadata');
+    });
+    emitGitSyncEgressedEventMock.mockImplementation(() => {
+      order.push('event');
+    });
+
+    await runGithubBridgeLeg(SLUG, WS);
+
+    expect(emitGitSyncEgressedEventMock).toHaveBeenCalledOnce();
+    expect(emitGitSyncEgressedEventMock).toHaveBeenCalledWith(EGRESS_HEAD);
+    expect(order.slice(-2)).toEqual(['metadata', 'event']);
+  });
+
+  it('does not emit when the bridge has no successful remote staging proof', async () => {
+    pathExistsMock.mockResolvedValue(false);
+    runGithubBridgeTickMock.mockResolvedValue(healthyOutcome(null));
+
+    await runGithubBridgeLeg(SLUG, WS);
+
+    expect(emitGitSyncEgressedEventMock).not.toHaveBeenCalled();
   });
 });

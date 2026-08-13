@@ -67,11 +67,13 @@ describe('buildKey', () => {
     expect(buildKey('deploy', {})).toBe('release:deployed');
     expect(buildKey('deploy', { sha: '' })).toBe('release:deployed');
     expect(buildKey('git-sync', {})).toBe('git-sync:committed');
+    expect(buildKey('git-sync-egress', {})).toBe('git-sync:egressed');
   });
 
   it('interpolates an OPTIONAL param when supplied (the precise per-sha key)', () => {
     expect(buildKey('deploy', { sha: 'abc123' })).toBe('release:deployed:abc123');
     expect(buildKey('git-sync', { sha: 'def456' })).toBe('git-sync:committed:def456');
+    expect(buildKey('git-sync-egress', { sha: 'def456' })).toBe('git-sync:egressed:def456');
   });
 
   it('gate-verdict keys scope per pipeline when supplied, global when omitted (EI-7646)', () => {
@@ -122,6 +124,7 @@ describe('renderCatalog', () => {
     expect(byFamily['work-item'].awaitable_now).toBe(true); // work-item:status — P-101 LANDED (setWorkItemState emit)
     expect(byFamily['deploy'].awaitable_now).toBe(true); // release:deployed:<sha> — P-102 LANDED (deploy.ts dual-emit)
     expect(byFamily['git-sync'].awaitable_now).toBe(true); // git-sync:committed — P-102 LANDED (git-sync-action emit)
+    expect(byFamily['git-sync-egress'].awaitable_now).toBe(true); // truthful bridged origin/staging proof
     expect(byFamily['service-up'].awaitable_now).toBe(true); // service:up:<name> — P-104 LANDED (service-health tick)
     expect(byFamily['service-down'].awaitable_now).toBe(true); // service:down:<name> — P-104 LANDED (service-health tick)
     expect(byFamily['plan-item'].awaitable_now).toBe(true); // plan-item:done:<slug>:<id> — P-105 LANDED (set-status)
@@ -360,7 +363,7 @@ describe('P-004/D-002 — findZeroParamSuffixMismatch (the zero-param-family-wit
     expect(findZeroParamSuffixMismatch(undefined as unknown as string)).toBeUndefined();
   });
 
-  it('does NOT flag an unrelated orphan key (that is the EI-10870 orphan guard\'s job)', () => {
+  it("does NOT flag an unrelated orphan key (that is the EI-10870 orphan guard's job)", () => {
     expect(findZeroParamSuffixMismatch('overwatch:surface-landed')).toBeUndefined();
   });
 });

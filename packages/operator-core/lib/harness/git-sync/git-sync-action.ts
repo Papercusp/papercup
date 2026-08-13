@@ -74,7 +74,12 @@ import {
   type LocalMirror,
 } from '../../sync/pot-git/convergence-probe';
 import { readSigrefs } from '../../sync/pot-git/sigrefs';
-import { STAGING_ADVANCE_EVENT_KEY, isSignedStagingAdvance, type SignedStagingAdvance, type EpochSeq } from '../../sync/pot-git/staging-advance';
+import {
+  STAGING_ADVANCE_EVENT_KEY,
+  isSignedStagingAdvance,
+  type SignedStagingAdvance,
+  type EpochSeq,
+} from '../../sync/pot-git/staging-advance';
 // EI-19332963201820362: the ONLY sanctioned way to build a `worktree_bridge`
 // metadata value. patchRoutineMetadata is a top-level jsonb merge, so writing
 // that key REPLACES it wholesale — constructing it here means a writer cannot
@@ -148,7 +153,7 @@ import {
   type ScopedOversized,
   type ScopedContentError,
 } from './run-git-sync';
-import { emitGitSyncCommittedEvent } from './git-sync-events';
+import { emitGitSyncCommittedEvent, emitGitSyncEgressedEvent } from './git-sync-events';
 import { parsePapercuspTrailers, recordCommitAttribution, type CommitAttributionRow } from '../../edit-attribution';
 
 const GIT_SYNC_OWNER = 'system:git-sync';
@@ -201,9 +206,7 @@ const CONFLICT_EVENT = 'git-sync:conflict';
  * the value, but `git-sync:run` must not collapse a typed pipeline outcome into
  * a void promise and then guess from a HEAD delta (EI-20197846888469383).
  */
-export type GitSyncFireOutcome =
-  | GitSyncOutcome
-  | { status: 'skipped'; reason: string; blockedOn?: string };
+export type GitSyncFireOutcome = GitSyncOutcome | { status: 'skipped'; reason: string; blockedOn?: string };
 
 /**
  * EI-438 content guard (git-sync-content-guard-2026-06-13 P-004/P-005). Broken
@@ -266,9 +269,7 @@ function configFromTrigger(triggerConfig: Record<string, unknown>): ActionTrigge
       push: triggerConfig.push !== false,
       pushSubmodules: triggerConfig.push_submodules !== false,
       pushSubmoduleOrigins:
-        typeof triggerConfig.pushSubmoduleOrigins === 'boolean'
-          ? triggerConfig.pushSubmoduleOrigins
-          : undefined,
+        typeof triggerConfig.pushSubmoduleOrigins === 'boolean' ? triggerConfig.pushSubmoduleOrigins : undefined,
       branch: typeof triggerConfig.branch === 'string' ? triggerConfig.branch : undefined,
       remote: typeof triggerConfig.remote === 'string' ? triggerConfig.remote : undefined,
       maxBlobBytes: typeof triggerConfig.max_blob_bytes === 'number' ? triggerConfig.max_blob_bytes : undefined,
@@ -300,7 +301,7 @@ export async function registerGitSyncResource(tx: SqlTag, slug: string): Promise
   const resource = gitSyncResourceName(slug);
   const description =
     `The automated git-sync pipeline for harness "${slug}" (commit + submodule push + merge + push to origin). ` +
-    'Concurrent git-sync runs, or a run racing a peer\'s manual git work on this checkout, race the index/refs.';
+    "Concurrent git-sync runs, or a run racing a peer's manual git work on this checkout, race the index/refs.";
   const ruleText =
     `The system:git-sync routine action holds exclusive(${resource}) for the whole ` +
     'commit -> submodule-push -> pointer-bump -> push sequence. A peer doing manual whole-tree git work in this ' +
@@ -325,8 +326,7 @@ interface AcquireOutcome {
 async function releaseAll(cd: string, owner: string, acquired: string[]): Promise<void> {
   for (const resource of acquired.reverse()) {
     try {
-      await inWorkspaceTxn(cd, owner, (tx) =>
-        tryReleaseResource(tx, { coordinationDomain: cd, owner, resource }));
+      await inWorkspaceTxn(cd, owner, (tx) => tryReleaseResource(tx, { coordinationDomain: cd, owner, resource }));
     } catch {
       /* best-effort: TTL reaps it anyway */
     }
@@ -342,12 +342,7 @@ async function releaseAll(cd: string, owner: string, acquired: string[]): Promis
  * round trip must not build an unbounded interval backlog. The stop function
  * waits for an already-started pass before the caller releases the locks.
  */
-function startLockHeartbeat(
-  cd: string,
-  slug: string,
-  resources: string[],
-  owner: string,
-): () => Promise<void> {
+function startLockHeartbeat(cd: string, slug: string, resources: string[], owner: string): () => Promise<void> {
   let inFlight: Promise<void> | null = null;
 
   const refresh = async (): Promise<void> => {
@@ -363,7 +358,8 @@ function startLockHeartbeat(
               ownerLabel: `git-sync:${slug}`,
               reason: `auto-commit ${slug}`,
               ttlSec: LOCK_TTL_SEC,
-            })),
+            }),
+          ),
         );
         if (!result.ok) {
           console.error(
@@ -431,7 +427,8 @@ async function acquireLocks(
             reason: `auto-commit ${slug}`,
             ttlSec: LOCK_TTL_SEC,
           });
-        }));
+        }),
+      );
     } catch (e) {
       // Reaching here on contention means the load window outlasted the retries;
       // the next tick retries without running unlocked. A non-contention error is
@@ -513,11 +510,7 @@ export interface ResolverMarker {
  *   - same-instance 'dispatched' → in flight only until the RESOLVER_INFLIGHT_MS
  *     TTL lapses (the backstop for a genuinely-slow resolver in a live process).
  */
-export function isResolverInFlight(
-  lr: ResolverMarker | null | undefined,
-  now: number,
-  instanceId: string,
-): boolean {
+export function isResolverInFlight(lr: ResolverMarker | null | undefined, now: number, instanceId: string): boolean {
   if (!lr || lr.status !== 'dispatched') return false; // never-run or already settled → retry
   // P-006: orphaned by an operator restart — a marker tagged with a prior incarnation
   // can never settle in this process, so it is not really in flight. (A marker with
@@ -619,7 +612,12 @@ async function writeGitSyncContentEscalation(
 async function writeGitSyncErrorEscalation(
   slug: string,
   workspaceId: string,
-  info: { reasons: EscalationReason[]; consecutiveErrorTicks: number; errors: RepoError[]; oversized: ScopedOversized[] },
+  info: {
+    reasons: EscalationReason[];
+    consecutiveErrorTicks: number;
+    errors: RepoError[];
+    oversized: ScopedOversized[];
+  },
 ): Promise<void> {
   const { sql } = getOrgPg();
   const body = JSON.stringify({
@@ -632,8 +630,12 @@ async function writeGitSyncErrorEscalation(
     emitted_at: Date.now(),
     detail:
       `git-sync needs attention: ${info.reasons.join(' + ')}` +
-      (info.reasons.includes('push-failure') ? ` — push failed ${info.consecutiveErrorTicks} consecutive ticks (commits NOT reaching origin)` : '') +
-      (info.oversized.length > 0 ? ` — ${info.oversized.length} oversized file(s) excluded from auto-commit (gitignore or remove them)` : ''),
+      (info.reasons.includes('push-failure')
+        ? ` — push failed ${info.consecutiveErrorTicks} consecutive ticks (commits NOT reaching origin)`
+        : '') +
+      (info.oversized.length > 0
+        ? ` — ${info.oversized.length} oversized file(s) excluded from auto-commit (gitignore or remove them)`
+        : ''),
   });
   await sql.unsafe(
     `INSERT INTO harness_shared.harness_escalations (harness_slug, phase, escalation, mtime_ms, workspace_id)
@@ -679,7 +681,12 @@ async function readEscalationCounters(
  *      `void … .catch(console.warn)` that went to uncaptured stdout.
  * Query `metadata->'last_resolver'` on the routine to see whether the resolver ran.
  */
-async function spawnMergeResolver(slug: string, workspaceId: string, conflicts: RepoConflict[], superprojectBranch: string): Promise<void> {
+async function spawnMergeResolver(
+  slug: string,
+  workspaceId: string,
+  conflicts: RepoConflict[],
+  superprojectBranch: string,
+): Promise<void> {
   // unify-agent-launches-as-blueprints D-002/D-004: the launch is now DECLARATIVE.
   // The `merge-resolution` launch blueprint declares `triggers.event:
   // git-sync:conflict` + its role (decider merge-resolver); we resolve the role +
@@ -710,12 +717,23 @@ async function spawnMergeResolver(slug: string, workspaceId: string, conflicts: 
   // P-006: stamp THIS process instance so a restart-orphaned dispatch (whose
   // settle-recording promise died with the old process) re-dispatches on the next
   // conflict tick instead of waiting out the RESOLVER_INFLIGHT_MS TTL.
-  await recordResolverDispatch(slug, workspaceId, { at: dispatchedAt, status: 'dispatched', scopes, instance: PROCESS_INSTANCE_ID });
+  await recordResolverDispatch(slug, workspaceId, {
+    at: dispatchedAt,
+    status: 'dispatched',
+    scopes,
+    instance: PROCESS_INSTANCE_ID,
+  });
 
   // Pipeline history (mig 177): log each resolver SETTLE (not the dispatch) so the
   // Git tab can show resolver success rate. Best-effort, like recordResolverDispatch.
   const logResolverSettle = (status: 'ok' | 'failed' | 'error', extra: Record<string, unknown>): Promise<void> =>
-    appendPipelineEvent({ workspaceId, installSlug: slug, kind: 'merge_resolver', status, detail: { scopes, ...extra } });
+    appendPipelineEvent({
+      workspaceId,
+      installSlug: slug,
+      kind: 'merge_resolver',
+      status,
+      detail: { scopes, ...extra },
+    });
 
   // (2) async result recording. The /invoke route reads `extra` (forwarded to
   // invoke-once) — `kickoff` is for human readability only (the route ignores it);
@@ -741,7 +759,13 @@ async function spawnMergeResolver(slug: string, workspaceId: string, conflicts: 
       let timedOut: boolean | undefined;
       let detail = '';
       try {
-        const j = (await res.json()) as { ok?: boolean; exitCode?: number; timedOut?: boolean; stderr?: string; decisionLine?: string };
+        const j = (await res.json()) as {
+          ok?: boolean;
+          exitCode?: number;
+          timedOut?: boolean;
+          stderr?: string;
+          decisionLine?: string;
+        };
         exitCode = j?.exitCode;
         timedOut = j?.timedOut;
         if (j?.ok === false) detail = (j.decisionLine || j.stderr || '').slice(0, 400);
@@ -749,7 +773,10 @@ async function spawnMergeResolver(slug: string, workspaceId: string, conflicts: 
         await recordResolverDispatch(slug, workspaceId, {
           at: dispatchedAt,
           status: settled,
-          httpStatus: res.status, exitCode, timedOut, detail,
+          httpStatus: res.status,
+          exitCode,
+          timedOut,
+          detail,
         });
         await logResolverSettle(settled, { httpStatus: res.status, exitCode, timedOut, detail });
       } catch {
@@ -793,7 +820,11 @@ async function contentFixerInFlight(slug: string, workspaceId: string): Promise<
 }
 
 /** Record the content-fixer dispatch lifecycle onto the routine metadata. */
-async function recordContentFixerDispatch(slug: string, workspaceId: string, info: Record<string, unknown>): Promise<void> {
+async function recordContentFixerDispatch(
+  slug: string,
+  workspaceId: string,
+  info: Record<string, unknown>,
+): Promise<void> {
   try {
     await patchRoutineMetadata(slug, workspaceId, { last_content_fixer: info });
   } catch (e) {
@@ -809,7 +840,11 @@ async function recordContentFixerDispatch(slug: string, workspaceId: string, inf
  * + commits when they pass. It reads its file list from the `--git-sync-content-error`
  * extra (the open escalation is for human visibility, not the fixer's read path).
  */
-async function spawnContentFixer(slug: string, workspaceId: string, contentErrors: ScopedContentError[]): Promise<void> {
+async function spawnContentFixer(
+  slug: string,
+  workspaceId: string,
+  contentErrors: ScopedContentError[],
+): Promise<void> {
   const target = await resolveLaunchTargetForEvent(CONTENT_ERROR_EVENT, { installSlug: slug, workspaceId });
   if (!target) {
     console.warn(`[git-sync] no launch blueprint declares "${CONTENT_ERROR_EVENT}" — skipping content-fixer dispatch`);
@@ -834,10 +869,21 @@ async function spawnContentFixer(slug: string, workspaceId: string, contentError
 
   // (1) durable "dispatched" marker, awaited (instance-tagged so a restart-orphaned
   //     dispatch re-fires next tick rather than waiting out the TTL).
-  await recordContentFixerDispatch(slug, workspaceId, { at: dispatchedAt, status: 'dispatched', files: filePaths, instance: PROCESS_INSTANCE_ID });
+  await recordContentFixerDispatch(slug, workspaceId, {
+    at: dispatchedAt,
+    status: 'dispatched',
+    files: filePaths,
+    instance: PROCESS_INSTANCE_ID,
+  });
 
   const logSettle = (status: 'ok' | 'failed' | 'error', extra: Record<string, unknown>): Promise<void> =>
-    appendPipelineEvent({ workspaceId, installSlug: slug, kind: 'content_fixer', status, detail: { files: filePaths, ...extra } });
+    appendPipelineEvent({
+      workspaceId,
+      installSlug: slug,
+      kind: 'content_fixer',
+      status,
+      detail: { files: filePaths, ...extra },
+    });
 
   // (2) async result recording. Fire-and-forget — never awaited inside the routine step.
   loopbackFetch(url, {
@@ -859,23 +905,44 @@ async function spawnContentFixer(slug: string, workspaceId: string, contentError
       let timedOut: boolean | undefined;
       let detail = '';
       try {
-        const j = (await res.json()) as { ok?: boolean; exitCode?: number; timedOut?: boolean; stderr?: string; decisionLine?: string };
+        const j = (await res.json()) as {
+          ok?: boolean;
+          exitCode?: number;
+          timedOut?: boolean;
+          stderr?: string;
+          decisionLine?: string;
+        };
         exitCode = j?.exitCode;
         timedOut = j?.timedOut;
         if (j?.ok === false) detail = (j.decisionLine || j.stderr || '').slice(0, 400);
         const settled = res.ok && j?.ok !== false ? 'ok' : 'failed';
-        await recordContentFixerDispatch(slug, workspaceId, { at: dispatchedAt, status: settled, httpStatus: res.status, exitCode, timedOut, detail });
+        await recordContentFixerDispatch(slug, workspaceId, {
+          at: dispatchedAt,
+          status: settled,
+          httpStatus: res.status,
+          exitCode,
+          timedOut,
+          detail,
+        });
         await logSettle(settled, { httpStatus: res.status, exitCode, timedOut, detail });
       } catch {
         const settled = res.ok ? 'ok' : 'failed';
-        await recordContentFixerDispatch(slug, workspaceId, { at: dispatchedAt, status: settled, httpStatus: res.status });
+        await recordContentFixerDispatch(slug, workspaceId, {
+          at: dispatchedAt,
+          status: settled,
+          httpStatus: res.status,
+        });
         await logSettle(settled, { httpStatus: res.status });
       }
     })
     .catch(async (e) => {
       const msg = e instanceof Error ? e.message : String(e);
       console.warn(`[git-sync] content-fixer dispatch failed (${slug}): ${msg}`);
-      await recordContentFixerDispatch(slug, workspaceId, { at: dispatchedAt, status: 'error', error: msg.slice(0, 300) });
+      await recordContentFixerDispatch(slug, workspaceId, {
+        at: dispatchedAt,
+        status: 'error',
+        error: msg.slice(0, 300),
+      });
       await logSettle('error', { error: msg.slice(0, 300) });
     });
 }
@@ -1042,7 +1109,9 @@ async function checkForNewStashes(slug: string, workspaceId: string, superRepoPa
     // holding a peer's 36-file, +2205/-804 stash. The detector never observed those
     // stashes being created; it inferred "new" from the absence of its own baseline.
     const baselineRecorded = row !== undefined && row.known !== null && row.known !== undefined;
-    const knownShas = Array.isArray(row?.known) ? (row.known as unknown[]).filter((s): s is string => typeof s === 'string') : [];
+    const knownShas = Array.isArray(row?.known)
+      ? (row.known as unknown[]).filter((s): s is string => typeof s === 'string')
+      : [];
 
     const allShas: string[] = [];
     const fresh: { scope: string; sha: string; subject: string; createdAt: string }[] = [];
@@ -1104,7 +1173,9 @@ async function checkForNewStashes(slug: string, workspaceId: string, superRepoPa
     console.warn(`[git-sync] ${slug}: ${summary}`);
     await sendMessage(GIT_SYNC_IDENTITY, { to: ['*'], summary, category: 'git-sync' }).catch(() => {});
   } catch (e) {
-    console.warn(`[git-sync] ${slug}: stash-check failed (non-fatal, best-effort, never blocks the sync): ${e instanceof Error ? e.message : e}`);
+    console.warn(
+      `[git-sync] ${slug}: stash-check failed (non-fatal, best-effort, never blocks the sync): ${e instanceof Error ? e.message : e}`,
+    );
   }
 }
 
@@ -1125,7 +1196,9 @@ async function gitSyncRuntimeGate(slug: string): Promise<{ gate: GitSyncEligibil
   try {
     entry = (await loadHarnessRegistry()).projects.find((p) => p.slug === slug);
   } catch (e) {
-    console.warn(`[git-sync] ${slug}: registry unreadable for the eligibility gate — proceeding: ${e instanceof Error ? e.message : e}`);
+    console.warn(
+      `[git-sync] ${slug}: registry unreadable for the eligibility gate — proceeding: ${e instanceof Error ? e.message : e}`,
+    );
     return { gate: { eligible: true } };
   }
   // A vanished registry entry reads the same as a vanished checkout: no path.
@@ -1244,9 +1317,7 @@ export function mergeAttributionRosters(
  *  it was claimed under. Ledger entries come FIRST so attributionMapForRepo's first-wins gives
  *  them priority; presence fills any files the ledger window missed (and supplies agentLabels).
  *  Best-effort throughout: a ledger-read failure degrades to presence, exactly as before. */
-async function loadAttributionRosterMerged(
-  workspaceId: string | null,
-): Promise<AttributionRosterEntry[]> {
+async function loadAttributionRosterMerged(workspaceId: string | null): Promise<AttributionRosterEntry[]> {
   let ledger: AttributionRosterEntry[] = [];
   try {
     // WI-37668: scope the ledger read by WORKSPACE, not by this repo's root. `repo_root` in the
@@ -1315,7 +1386,10 @@ async function recordSyncedCommitAttribution(slug: string, workspaceId: string):
 
     const logRes = await runGit(['log', '-n', '50', '--format=%H'], repoRoot);
     if (logRes.code !== 0) return;
-    const shas = logRes.stdout.split('\n').map((s) => s.trim()).filter(Boolean);
+    const shas = logRes.stdout
+      .split('\n')
+      .map((s) => s.trim())
+      .filter(Boolean);
     if (shas.length === 0) return;
 
     // Which of these are already recorded? (idempotent re-run across ticks.)
@@ -1333,7 +1407,10 @@ async function recordSyncedCommitAttribution(slug: string, workspaceId: string):
       // Only OUR attributed git-sync commits carry these — skip everything else.
       if (!t.agent && t.workItems.length === 0) continue;
       const filesRes = await runGit(['show', '--name-only', '--format=', sha], repoRoot);
-      const files = filesRes.stdout.split('\n').map((s) => s.trim()).filter(Boolean);
+      const files = filesRes.stdout
+        .split('\n')
+        .map((s) => s.trim())
+        .filter(Boolean);
       for (const file of files) {
         const base = {
           workspaceId,
@@ -1371,7 +1448,11 @@ async function computeConflictAuthorship(
   repoRoot: string,
   conflicts: RepoConflict[],
 ): Promise<
-  Array<{ scope: string; file: string; recent: Array<{ sha: string; subject: string; workItems: string[]; agent?: string }> }>
+  Array<{
+    scope: string;
+    file: string;
+    recent: Array<{ sha: string; subject: string; workItems: string[]; agent?: string }>;
+  }>
 > {
   try {
     const { runGit } = await import('../docs/git-runner');
@@ -1396,7 +1477,12 @@ async function computeConflictAuthorship(
             const sha = (sep >= 0 ? block.slice(0, sep) : block).trim();
             const body = sep >= 0 ? block.slice(sep + 1) : '';
             const t = parsePapercuspTrailers(body);
-            return { sha: sha.slice(0, 12), subject: body.split('\n')[0]?.trim() ?? '', workItems: t.workItems, agent: t.agent };
+            return {
+              sha: sha.slice(0, 12),
+              subject: body.split('\n')[0]?.trim() ?? '',
+              workItems: t.workItems,
+              agent: t.agent,
+            };
           })
           .filter((r) => r.sha.length > 0);
         if (recent.length > 0) out.push({ scope: c.scope, file, recent });
@@ -1453,7 +1539,7 @@ async function handleGitSync(ctx: SystemActionCtx): Promise<GitSyncFireOutcome> 
       // a routine re-seed (the seeded trigger_config.push predates the flip). Only
       // resolved for hive members (hive_slug) / self_repo hive homes; getPotGitMode
       // is fail-open: absent/junk/store-error all read 'legacy' (today's behavior).
-      const potHomeSlug = entry ? entry.hive_slug ?? (entry.self_repo ? entry.slug : undefined) : undefined;
+      const potHomeSlug = entry ? (entry.hive_slug ?? (entry.self_repo ? entry.slug : undefined)) : undefined;
       if (potHomeSlug && workspaceId) {
         const mode = await getPotGitMode(workspaceId, potHomeSlug);
         if (mode !== 'legacy') return { ...g, hiveGitMode: mode };
@@ -1477,7 +1563,9 @@ async function handleGitSync(ctx: SystemActionCtx): Promise<GitSyncFireOutcome> 
     // git-sync commits and paints an otherwise healthy P2P writer red.
     cfg.reconcileSuperprojectOrigin = false;
     if (cfg.push) {
-      console.log(`[git-sync] ${slug}: hive git mode '${gate.hiveGitMode}' — commit-only this tick (the bridge owns origin pushes)`);
+      console.log(
+        `[git-sync] ${slug}: hive git mode '${gate.hiveGitMode}' — commit-only this tick (the bridge owns origin pushes)`,
+      );
       cfg.push = false;
       // EI-18689553108460319 + WI-6016: the bridge writer owns the
       // SUPERPROJECT's canonical refs — NOT an independently-hosted submodule
@@ -1520,7 +1608,8 @@ async function handleGitSync(ctx: SystemActionCtx): Promise<GitSyncFireOutcome> 
     } else if (lock.blockedReason === 'unknown_resource') {
       console.warn(
         `[git-sync] ${slug}: lock resource "${lock.blockedOn}" is not registered in agent_resource_registry — ` +
-        'skipping this tick. Register it or remove it from trigger_config.extra_lock_resources.');
+          'skipping this tick. Register it or remove it from trigger_config.extra_lock_resources.',
+      );
     } else {
       console.log(`[git-sync] ${slug}: a peer holds ${lock.blockedOn} — skipping this tick`);
     }
@@ -1558,9 +1647,8 @@ async function handleGitSync(ctx: SystemActionCtx): Promise<GitSyncFireOutcome> 
 
   // 'acquired' (locked) or 'error' (unlocked best-effort) → run.
   let outcome: GitSyncOutcome;
-  const stopLockHeartbeat = lock.state === 'acquired'
-    ? startLockHeartbeat(cd, slug, [...acquired], lockOwner)
-    : async () => {};
+  const stopLockHeartbeat =
+    lock.state === 'acquired' ? startLockHeartbeat(cd, slug, [...acquired], lockOwner) : async () => {};
   try {
     outcome = await runGitSync(slug, {
       config: cfg,
@@ -1619,10 +1707,12 @@ async function handleGitSync(ctx: SystemActionCtx): Promise<GitSyncFireOutcome> 
       prevHeadSha,
       attributionOn,
       pushMode: effectivePushMode,
-    }));
+    }),
+  );
 
   // event-await-… P-102: git-sync:committed[:<sha>] — wake anyone awaiting "is my
-  // edit committed to origin/staging yet" instead of polling dev:pipeline_position.
+  // edit a local git commit yet". Remote origin/staging egress is a distinct,
+  // later git-sync:egressed event emitted by runGithubBridgeLeg.
   // Only on a real commit (status 'synced' ⇒ something moved + headSha is set);
   // fire-and-forget, never gates the tick, benign to replay past the record step.
   if (outcome.status === 'synced') emitGitSyncCommittedEvent(outcome.headSha);
@@ -1786,7 +1876,10 @@ export async function runGithubBridgeLeg(slug: string, workspaceId: string): Pro
           if (existingSha && existingSha !== wbSha) {
             const isAncestor = await defaultRunGit(['merge-base', '--is-ancestor', existingSha, wbSha], bareRepoPath);
             if (isAncestor.code === 0) {
-              const pinned = await defaultRunGit(['update-ref', BRIDGE_CANONICAL_REF, wbSha, existingSha], bareRepoPath);
+              const pinned = await defaultRunGit(
+                ['update-ref', BRIDGE_CANONICAL_REF, wbSha, existingSha],
+                bareRepoPath,
+              );
               if (pinned.code !== 0) {
                 console.warn(
                   `[git-sync] ${slug}: bare canonical stale re-pin failed for ${bareRepoPath} ` +
@@ -1876,6 +1969,13 @@ export async function runGithubBridgeLeg(slug: string, workspaceId: string): Pro
         errors: outcome.errors.slice(0, 10),
       },
     });
+
+    // EI-20331175777179195: a local `synced` outcome is NOT proof that a bridged
+    // hive reached origin/staging. GithubBridgeTickOutcome.egressHead is populated
+    // only when the remote staging ref was pushed or was already at canonicalSha.
+    // Emit after the metadata write so a woken waiter can immediately verify the
+    // same writer-backed watermark. A skipped/failed/no-egress tick emits nothing.
+    if (outcome.egressHead) emitGitSyncEgressedEvent(outcome.egressHead);
   } catch (e) {
     console.warn(`[git-sync] ${slug}: github-bridge pass failed: ${e instanceof Error ? e.message : e}`);
   }
@@ -2062,10 +2162,7 @@ async function runOwnHeadPublishLeg(slug: string, workspaceId: string, branch: s
  * up and a LATER tick finds a live topic instead of the harness staying
  * stranded forever. Best-effort: never throws into the calling git-sync tick.
  */
-async function resolveHiveGitTopicHex(
-  workspaceId: string,
-  potHomeSlug: string,
-): Promise<string | undefined> {
+async function resolveHiveGitTopicHex(workspaceId: string, potHomeSlug: string): Promise<string | undefined> {
   const { getBootedHarness, bootSingleHarness } = await import('../../sync/hyperbee/boot-all');
   const handle = getBootedHarness(workspaceId, potHomeSlug);
   if (!handle) {
@@ -2294,8 +2391,7 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
     // namespace as a peer seed, silently skipping bootstrap forever. Fall back
     // to the persisted, keychain-verified announce-identity cache (no network).
     const selfDevicePubkey =
-      actor?.devicePubkey ??
-      (await loadCachedLocalAnnounceIdentity().catch(() => null))?.devicePubkeyBase64;
+      actor?.devicePubkey ?? (await loadCachedLocalAnnounceIdentity().catch(() => null))?.devicePubkeyBase64;
 
     const members = await listHiveMembersForLocalPot(workspaceId, potHomeSlug);
     const memberDevicePubkeysBase64 = [
@@ -2474,99 +2570,98 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
     // ref-announce keeps a per-DEVICE key (there each device is a different
     // namespace on a different remote process) and this leg must not.
     const ladder = await withFetchCoalescing(fetchCoalescerKey(repoPath, '<bootstrap-ladder>'), async () => {
-    for (const peerDevicePubkeyBase64 of candidateDevicePubkeys) {
-      if (liveAttempts >= MAX_LIVE_ATTEMPTS) break;
-      // EI-15333: skip a peer we already know (within the backoff window)
-      // definitively refuses this exact repo — never counts as a live
-      // attempt (nothing was dialed), same as a registry no-path miss.
-      const backoffKey = noSuchRepoBackoffKey(repoKey, peerDevicePubkeyBase64);
-      if (isNoSuchRepoBackoffActive(backoffKey)) {
-        dialLog.push(`${peerDevicePubkeyBase64.slice(0, 8)}:backoff(no-such-repo)`);
-        continue;
-      }
-      const duplex = await openHiveGitDuplexToDevice(Buffer.from(topicHex, 'hex'), peerDevicePubkeyBase64, {
-        repoKey,
-        peerGithubUserId: actor?.githubUserId,
-      });
-      if (duplex.destroyed) {
-        dialLog.push(`${peerDevicePubkeyBase64.slice(0, 8)}:no-path`);
-        continue;
-      }
-      liveAttempts++;
-      // WI-6189: hand the ladder a re-dial so ONE tick can climb several rungs
-      // against this same peer — each rung is a separate `git fetch` and a
-      // pot-git duplex serves exactly one. A dial that fails or comes back dead
-      // resolves to null, which stops the ladder cleanly with its progress
-      // already durable on disk.
-      outcome = await bootstrapFromPeer(repoPath, duplex, {
-        selfDevicePubkey,
-        dial: async () => {
-          const next = await openHiveGitDuplexToDevice(
-            Buffer.from(topicHex, 'hex'),
-            peerDevicePubkeyBase64,
-            { repoKey, peerGithubUserId: actor?.githubUserId },
-          ).catch(() => null);
-          return next && !next.destroyed ? next : null;
-        },
-      });
-      // Surface WHY a LIVE dial then failed — otherwise the tick log only ever
-      // shows the generic ":failed" + fetch-transport's "duplex already
-      // destroyed before fetch began", and the ACTUAL cause (the peer's serve
-      // decision) is invisible on THIS machine, forcing a cross-machine
-      // serve.log read to learn it (P-303 reverse-leg drill 2026-07-17: five
-      // diagnosis wakes stalled on a reason the dialing box already received
-      // over the wire). The peer's `refuse` frame destroys our client duplex
-      // with `pot-git serve refused: <reason>` (serve-wiring.ts handleRefuse) —
-      // no-such-repo / mode-legacy / scope-repo:* / not-serving — and a
-      // transport drop destroys it with `serve channel closed`; node retains
-      // whichever on `duplex.errored` (set synchronously by .destroy(err), so
-      // no event-timing race). Fail-soft: absent/undefined ⇒ bare ":failed".
-      const dialErr = (duplex as { errored?: Error | null }).errored;
-      // WI-6189: a ladder that climbed rungs without finishing is HEALTHY
-      // IN-PROGRESS, not a failure — reporting it as ":failed" is what made a
-      // large cold-join look permanently broken when it was in fact advancing.
-      dialLog.push(
-        `${peerDevicePubkeyBase64.slice(0, 8)}:${
-          outcome.ok
-            ? 'ok'
-            : outcome.progressed
-              ? `progress(${outcome.phase} +${outcome.steps} rungs, ${outcome.quarantineRefs} refs staged${outcome.shallow ? ', still shallow' : ''})`
-              : `failed${dialErr?.message ? `(${dialErr.message})` : ''}`
-        }`,
-      );
-      // EI-15333: a definitive no-such-repo refusal (not a generic/transient
-      // dial failure) arms the backoff so this exact pair stops being
-      // re-dialed every tick.
-      if (!outcome.ok && dialErr?.message?.includes('no-such-repo')) {
-        armNoSuchRepoBackoff(backoffKey);
-      }
-      // WI-6364 (fix C, joiner half): the peer refused because the key we asked
-      // for names a store IT ABANDONED, and told us what its store is really
-      // called. Adopt it — this is the one repair channel that needs nothing but
-      // the dial we just made (see adopt-refused-repo-key.ts). Deliberately NOT
-      // arming any backoff: the whole point is that the NEXT tick dials again,
-      // under the corrected key, against this same peer.
-      const refusedKey = await adoptRefusedRepoKey(slug, dialErr?.message);
-      if (refusedKey.adopted) {
-        console.log(
-          `[git-sync] ${slug}: pot-git RE-KEYED ${refusedKey.from ?? repoKey} → ${refusedKey.adopted} ` +
-            `— peer ${peerDevicePubkeyBase64.slice(0, 8)} refused the old key as a store it has abandoned. ` +
-            `The next tick bootstraps from the live store; the old one at ` +
-            `${refusedKey.from ?? repoKey} is now orphaned locally and can be reclaimed.`,
+      for (const peerDevicePubkeyBase64 of candidateDevicePubkeys) {
+        if (liveAttempts >= MAX_LIVE_ATTEMPTS) break;
+        // EI-15333: skip a peer we already know (within the backoff window)
+        // definitively refuses this exact repo — never counts as a live
+        // attempt (nothing was dialed), same as a registry no-path miss.
+        const backoffKey = noSuchRepoBackoffKey(repoKey, peerDevicePubkeyBase64);
+        if (isNoSuchRepoBackoffActive(backoffKey)) {
+          dialLog.push(`${peerDevicePubkeyBase64.slice(0, 8)}:backoff(no-such-repo)`);
+          continue;
+        }
+        const duplex = await openHiveGitDuplexToDevice(Buffer.from(topicHex, 'hex'), peerDevicePubkeyBase64, {
+          repoKey,
+          peerGithubUserId: actor?.githubUserId,
+        });
+        if (duplex.destroyed) {
+          dialLog.push(`${peerDevicePubkeyBase64.slice(0, 8)}:no-path`);
+          continue;
+        }
+        liveAttempts++;
+        // WI-6189: hand the ladder a re-dial so ONE tick can climb several rungs
+        // against this same peer — each rung is a separate `git fetch` and a
+        // pot-git duplex serves exactly one. A dial that fails or comes back dead
+        // resolves to null, which stops the ladder cleanly with its progress
+        // already durable on disk.
+        outcome = await bootstrapFromPeer(repoPath, duplex, {
+          selfDevicePubkey,
+          dial: async () => {
+            const next = await openHiveGitDuplexToDevice(Buffer.from(topicHex, 'hex'), peerDevicePubkeyBase64, {
+              repoKey,
+              peerGithubUserId: actor?.githubUserId,
+            }).catch(() => null);
+            return next && !next.destroyed ? next : null;
+          },
+        });
+        // Surface WHY a LIVE dial then failed — otherwise the tick log only ever
+        // shows the generic ":failed" + fetch-transport's "duplex already
+        // destroyed before fetch began", and the ACTUAL cause (the peer's serve
+        // decision) is invisible on THIS machine, forcing a cross-machine
+        // serve.log read to learn it (P-303 reverse-leg drill 2026-07-17: five
+        // diagnosis wakes stalled on a reason the dialing box already received
+        // over the wire). The peer's `refuse` frame destroys our client duplex
+        // with `pot-git serve refused: <reason>` (serve-wiring.ts handleRefuse) —
+        // no-such-repo / mode-legacy / scope-repo:* / not-serving — and a
+        // transport drop destroys it with `serve channel closed`; node retains
+        // whichever on `duplex.errored` (set synchronously by .destroy(err), so
+        // no event-timing race). Fail-soft: absent/undefined ⇒ bare ":failed".
+        const dialErr = (duplex as { errored?: Error | null }).errored;
+        // WI-6189: a ladder that climbed rungs without finishing is HEALTHY
+        // IN-PROGRESS, not a failure — reporting it as ":failed" is what made a
+        // large cold-join look permanently broken when it was in fact advancing.
+        dialLog.push(
+          `${peerDevicePubkeyBase64.slice(0, 8)}:${
+            outcome.ok
+              ? 'ok'
+              : outcome.progressed
+                ? `progress(${outcome.phase} +${outcome.steps} rungs, ${outcome.quarantineRefs} refs staged${outcome.shallow ? ', still shallow' : ''})`
+                : `failed${dialErr?.message ? `(${dialErr.message})` : ''}`
+          }`,
         );
-        break; // nothing more this tick can do under a key we just replaced
+        // EI-15333: a definitive no-such-repo refusal (not a generic/transient
+        // dial failure) arms the backoff so this exact pair stops being
+        // re-dialed every tick.
+        if (!outcome.ok && dialErr?.message?.includes('no-such-repo')) {
+          armNoSuchRepoBackoff(backoffKey);
+        }
+        // WI-6364 (fix C, joiner half): the peer refused because the key we asked
+        // for names a store IT ABANDONED, and told us what its store is really
+        // called. Adopt it — this is the one repair channel that needs nothing but
+        // the dial we just made (see adopt-refused-repo-key.ts). Deliberately NOT
+        // arming any backoff: the whole point is that the NEXT tick dials again,
+        // under the corrected key, against this same peer.
+        const refusedKey = await adoptRefusedRepoKey(slug, dialErr?.message);
+        if (refusedKey.adopted) {
+          console.log(
+            `[git-sync] ${slug}: pot-git RE-KEYED ${refusedKey.from ?? repoKey} → ${refusedKey.adopted} ` +
+              `— peer ${peerDevicePubkeyBase64.slice(0, 8)} refused the old key as a store it has abandoned. ` +
+              `The next tick bootstraps from the live store; the old one at ` +
+              `${refusedKey.from ?? repoKey} is now orphaned locally and can be reclaimed.`,
+          );
+          break; // nothing more this tick can do under a key we just replaced
+        }
+        // Stop on a finished join, and ALSO on real durable progress: the rungs
+        // this tick climbed are on disk, so re-dialing a second peer now would
+        // only stack another fetch ceiling for work the next tick resumes anyway.
+        if (outcome.ok || outcome.progressed) break;
       }
-      // Stop on a finished join, and ALSO on real durable progress: the rungs
-      // this tick climbed are on disk, so re-dialing a second peer now would
-      // only stack another fetch ceiling for work the next tick resumes anyway.
-      if (outcome.ok || outcome.progressed) break;
-    }
-    // Hand the ladder's verdict back OUT rather than leaning on the closure's
-    // write to `outcome`: TypeScript's control-flow analysis does not track
-    // assignments made inside a nested function, so without this every read below
-    // narrows to `never` and the whole reporting/metadata block stops
-    // typechecking (the same trap that produced the priorBootstrap `never` errors).
-    return outcome;
+      // Hand the ladder's verdict back OUT rather than leaning on the closure's
+      // write to `outcome`: TypeScript's control-flow analysis does not track
+      // assignments made inside a nested function, so without this every read below
+      // narrows to `never` and the whole reporting/metadata block stops
+      // typechecking (the same trap that produced the priorBootstrap `never` errors).
+      return outcome;
     });
     if (!ladder.ran) {
       // NOT a failure: a fetch for this repo is already streaming, so this tick
@@ -2577,9 +2672,7 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
       // EI-18775478513129278 exists to carry forward. Progress stays on disk in
       // the quarantine refs, which are the resume checkpoint; the next tick
       // continues from there.
-      console.log(
-        `[git-sync] ${slug}: bootstrap-tick stood down — a fetch for this repo is already in flight`,
-      );
+      console.log(`[git-sync] ${slug}: bootstrap-tick stood down — a fetch for this repo is already in flight`);
       return;
     }
     // Re-anchor the narrowing in THIS scope (see the closure's `return` above).
@@ -2868,7 +2961,9 @@ async function runRefAnnounceLeg(slug: string, workspaceId: string): Promise<voi
     `;
     const priorState = rows[0]?.ref_announce ?? null;
     const lastEventId = priorState?.lastEventId ?? 0;
-    const priorBudgetStates = new Map<string, AnnounceBudgetState | null>(Object.entries(priorState?.budgetStates ?? {}));
+    const priorBudgetStates = new Map<string, AnnounceBudgetState | null>(
+      Object.entries(priorState?.budgetStates ?? {}),
+    );
 
     const feRows = await sql<{ id: number; body: Record<string, unknown> }[]>`
       SELECT id, body
@@ -3089,7 +3184,11 @@ async function runRefAnnounceLeg(slug: string, workspaceId: string): Promise<voi
       // and `not-a-superseded-refusal` are the boring no-ops (every ordinary
       // transport failure lands there); anything else means the repair arrived
       // and we turned it down — say which guard did it.
-      if (adoption.skipped && adoption.skipped !== 'not-a-superseded-refusal' && adoption.skipped !== 'already-canonical') {
+      if (
+        adoption.skipped &&
+        adoption.skipped !== 'not-a-superseded-refusal' &&
+        adoption.skipped !== 'already-canonical'
+      ) {
         console.warn(
           `[git-sync] ${slug}: pot-git did NOT adopt the key peer ${f.device.slice(0, 8)} named in its refusal ` +
             `(${adoption.skipped}) — the pair stays diverged until this is resolved.`,
@@ -3133,7 +3232,9 @@ async function runIntegratorLeg(slug: string, workspaceId: string): Promise<void
   // the reason makes "why is canonical stuck" a one-query answer.
   const decline = async (skipped: string, detail?: string): Promise<void> => {
     try {
-      await patchRoutineMetadata(slug, workspaceId, { integrator_status: { at: Date.now(), skipped, detail: detail ?? null } });
+      await patchRoutineMetadata(slug, workspaceId, {
+        integrator_status: { at: Date.now(), skipped, detail: detail ?? null },
+      });
     } catch {
       /* best-effort: diagnostics must never break the tick */
     }
@@ -3226,7 +3327,10 @@ async function runIntegratorLeg(slug: string, workspaceId: string): Promise<void
         if (selfNamespaceSha === canonicalSha) {
           integratorBacklogCommits = 0;
         } else if (selfNamespaceSha) {
-          const counted = await defaultRunGit(['rev-list', '--count', `${canonicalSha}..${selfNamespaceSha}`], repoPath);
+          const counted = await defaultRunGit(
+            ['rev-list', '--count', `${canonicalSha}..${selfNamespaceSha}`],
+            repoPath,
+          );
           if (counted.code === 0) {
             const n = Number.parseInt(counted.stdout.trim(), 10);
             integratorBacklogCommits = Number.isFinite(n) ? n : null;
@@ -3255,11 +3359,13 @@ async function runIntegratorLeg(slug: string, workspaceId: string): Promise<void
                 peerBacklogCommits = Number.isFinite(n) ? n : null;
               }
             }
-            if (!isIntegratorNamespaceBacklogged({
-              namespaceSha: peerNamespaceSha,
-              canonicalSha,
-              aheadCommits: peerBacklogCommits,
-            })) {
+            if (
+              !isIntegratorNamespaceBacklogged({
+                namespaceSha: peerNamespaceSha,
+                canonicalSha,
+                aheadCommits: peerBacklogCommits,
+              })
+            ) {
               eligibleDevices.delete(peerDevicePubkey);
             }
           } catch {
@@ -3847,7 +3953,10 @@ async function recordAndEscalateTick(a: {
         outcome.status === 'conflict'
           ? outcome.conflicts.map((c) => ({ scope: c.scope, files: c.conflictedFiles }))
           : [],
-      errors: ('errors' in outcome ? outcome.errors : []).map((e) => ({ scope: e.scope, message: e.message.slice(0, 300) })),
+      errors: ('errors' in outcome ? outcome.errors : []).map((e) => ({
+        scope: e.scope,
+        message: e.message.slice(0, 300),
+      })),
       oversized: outcome.oversized.length,
       contentErrors: outcome.contentErrors.length,
       consecutiveErrorTicks: errTicks,
@@ -3903,7 +4012,9 @@ async function recordAndEscalateTick(a: {
         await sendMessage(GIT_SYNC_IDENTITY, { to, summary, category: 'git-sync' }).catch(() => {});
       }
     } else if (!(await contentFixerInFlight(slug, workspaceId))) {
-      console.warn(`[git-sync] ${slug}: ${contentErrors.length} content error(s) quarantined — dispatching content-fixer`);
+      console.warn(
+        `[git-sync] ${slug}: ${contentErrors.length} content error(s) quarantined — dispatching content-fixer`,
+      );
       await spawnContentFixer(slug, workspaceId, contentErrors);
     }
   } else if (a.prevContentTicks > 0) {
@@ -3955,7 +4066,9 @@ async function recordAndEscalateTick(a: {
   }
   if (decision.broadcast) {
     console.warn(`[git-sync] ${slug}: ${decision.broadcast}`);
-    await sendMessage(GIT_SYNC_IDENTITY, { to: ['*'], summary: decision.broadcast, category: 'git-sync' }).catch(() => {});
+    await sendMessage(GIT_SYNC_IDENTITY, { to: ['*'], summary: decision.broadcast, category: 'git-sync' }).catch(
+      () => {},
+    );
   }
 }
 

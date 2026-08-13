@@ -3,11 +3,18 @@
  * (event-await-discoverability-and-coverage-2026-07-03 P-102).
  */
 import { describe, expect, it, vi } from 'vitest';
-import { emitGitSyncCommittedEvent } from './git-sync-events';
+import { emitGitSyncCommittedEvent, emitGitSyncEgressedEvent } from './git-sync-events';
 
 type EmitOpts = { key: string; summary?: string; payload?: unknown; to?: string[]; source?: string };
 const typedEmit = () =>
-  vi.fn(async (_opts: EmitOpts) => ({ ok: true as const, key: '', woken: 0, notified: [] as string[], msgId: null, waiters: 0 }));
+  vi.fn(async (_opts: EmitOpts) => ({
+    ok: true as const,
+    key: '',
+    woken: 0,
+    notified: [] as string[],
+    msgId: null,
+    waiters: 0,
+  }));
 
 const SHA = 'abcdef1234567890fedcba';
 
@@ -27,6 +34,8 @@ describe('emitGitSyncCommittedEvent (P-102)', () => {
       });
       // short-sha (12) appears in the human summary
       expect(call[0].summary).toContain(SHA.slice(0, 12));
+      expect(call[0].summary).toContain('local harness checkout');
+      expect(call[0].summary).not.toContain('origin/staging');
     }
   });
 
@@ -56,6 +65,36 @@ describe('emitGitSyncCommittedEvent (P-102)', () => {
     expect(() => emitGitSyncCommittedEvent(SHA, { emit: emit as never })).not.toThrow();
     await new Promise((r) => setTimeout(r, 0));
     expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+});
+
+describe('emitGitSyncEgressedEvent (EI-20331175777179195)', () => {
+  it('fires BOTH remote-egress keys with payload.sha and an explicit origin/staging summary', async () => {
+    const emit = typedEmit();
+    emitGitSyncEgressedEvent(SHA, { emit });
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(emit).toHaveBeenCalledTimes(2);
+    expect(emit.mock.calls.map((c) => c[0].key)).toEqual(['git-sync:egressed', `git-sync:egressed:${SHA}`]);
+    for (const call of emit.mock.calls) {
+      expect(call[0]).toMatchObject({
+        source: 'git-sync',
+        payload: { sha: SHA },
+      });
+      expect(call[0].summary).toContain('origin/staging');
+      expect(call[0].summary).toContain(SHA.slice(0, 12));
+    }
+  });
+
+  it('never rejects on an emit failure (a bridge tick must remain best-effort)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const emit = vi.fn(async () => {
+      throw new Error('engine down');
+    });
+    expect(() => emitGitSyncEgressedEvent(SHA, { emit: emit as never })).not.toThrow();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('egressed-event'));
     warn.mockRestore();
   });
 });
