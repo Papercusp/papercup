@@ -22,14 +22,7 @@ import {
   verifySigrefs,
   type SignedSigrefs,
 } from './sigrefs';
-import {
-  defaultRunGit,
-  deviceNamespaceKey,
-  hiveGitRepoPath,
-  potGitRoot,
-  readNamespaceRef,
-  writeNamespaceRef,
-} from './storage';
+import { defaultRunGit, deviceNamespaceKey, hiveGitRepoPath, readNamespaceRef, writeNamespaceRef } from './storage';
 import { PHASE_A_POT_HOME, PHASE_A_REPO_KEY } from './physical-drill-phase-a';
 
 export const PHASE_C_HOST_SCHEMA = 'hive-git-physical-phase-c-host-result/v1' as const;
@@ -195,14 +188,8 @@ export async function executePhysicalPhaseCHost(input: {
     throw new Error(`physical Phase C refuses a pre-existing run-bound ref: ${ref}`);
   }
 
-  const honestOid = await mintCommit(
-    input.repoPath,
-    `P-505 Phase C ${input.hostId} honest ${input.runId}`,
-  );
-  const rogueOid = await mintCommit(
-    input.repoPath,
-    `P-505 Phase C ${input.hostId} relay-lie ${input.runId}`,
-  );
+  const honestOid = await mintCommit(input.repoPath, `P-505 Phase C ${input.hostId} honest ${input.runId}`);
+  const rogueOid = await mintCommit(input.repoPath, `P-505 Phase C ${input.hostId} relay-lie ${input.runId}`);
   await writeNamespaceRef(input.repoPath, third.pubkeyBase64, ref, honestOid);
   const signedSigrefs = await buildSigrefs(
     input.repoPath,
@@ -239,11 +226,7 @@ export async function executePhysicalPhaseCHost(input: {
   if (restoredMismatches.length !== 0) {
     throw new Error('physical Phase C failed to restore the honest signed namespace after the relay control');
   }
-  const rollbackDecision = acceptFetchedSigrefs(
-    signedSigrefs,
-    third.pubkeyBase64,
-    signedSigrefs.version,
-  );
+  const rollbackDecision = acceptFetchedSigrefs(signedSigrefs, third.pubkeyBase64, signedSigrefs.version);
   if (rollbackDecision.ok || rollbackDecision.reason !== 'rollback') {
     throw new Error('physical Phase C stale sigrefs did not fail the monotonic rollback fence');
   }
@@ -267,11 +250,7 @@ export async function executePhysicalPhaseCHost(input: {
       return false;
     },
   });
-  if (
-    nonMemberDecision.ok ||
-    nonMemberDecision.refusal.reason !== 'not-a-member' ||
-    membershipChecks !== 1
-  ) {
+  if (nonMemberDecision.ok || nonMemberDecision.refusal.reason !== 'not-a-member' || membershipChecks !== 1) {
     throw new Error('physical Phase C non-member scope serve did not fail closed exactly once');
   }
 
@@ -291,7 +270,10 @@ export async function executePhysicalPhaseCHost(input: {
     signedSigrefs,
     signatureAcceptance,
     relayMismatches,
-    rollback: { priorVersion: signedSigrefs.version, decision: rollbackDecision },
+    rollback: {
+      priorVersion: signedSigrefs.version,
+      decision: { ok: false, reason: 'rollback' },
+    },
     nonMember: {
       scopeId: formatScopeId(scope),
       scopeRepoPath: physicalScopeRepo,
@@ -324,10 +306,7 @@ function validateHost(
   if (host.schemaVersion !== PHASE_C_HOST_SCHEMA) errors.push(`${label} host schema is invalid`);
   if (host.hostId !== expected.hostId) errors.push(`${label} hostId is invalid`);
   if (host.runId !== expected.runId) errors.push(`${label} runId is invalid`);
-  if (
-    host.physicalDeviceKey !== expected.physicalDeviceKey ||
-    host.peerDeviceKey !== expected.peerDeviceKey
-  ) {
+  if (host.physicalDeviceKey !== expected.physicalDeviceKey || host.peerDeviceKey !== expected.peerDeviceKey) {
     errors.push(`${label} physical identities are invalid`);
   }
   const suffix = join(PHASE_A_POT_HOME, `${PHASE_A_REPO_KEY}.git`);
@@ -336,10 +315,7 @@ function validateHost(
   }
   try {
     const thirdNamespace = deviceNamespaceKey(host.thirdDeviceKey);
-    if (
-      host.thirdDeviceKey === expected.physicalDeviceKey ||
-      host.thirdDeviceKey === expected.peerDeviceKey
-    ) {
+    if (host.thirdDeviceKey === expected.physicalDeviceKey || host.thirdDeviceKey === expected.peerDeviceKey) {
       errors.push(`${label} third-device identity is not independent`);
     }
     if (host.thirdNamespace !== thirdNamespace) {
@@ -376,11 +352,7 @@ function validateHost(
   ) {
     errors.push(`${label} relay lie is not the exact signed-head mismatch`);
   }
-  const rollback = acceptFetchedSigrefs(
-    host.signedSigrefs,
-    host.thirdDeviceKey,
-    host.rollback.priorVersion,
-  );
+  const rollback = acceptFetchedSigrefs(host.signedSigrefs, host.thirdDeviceKey, host.rollback.priorVersion);
   if (
     host.rollback.priorVersion !== host.signedSigrefs.version ||
     host.rollback.decision.ok !== false ||
@@ -421,6 +393,13 @@ function validateHost(
   const startedAt = time(host.window.startedAt, `${label}.window.startedAt`, errors);
   const finishedAt = time(host.window.finishedAt, `${label}.window.finishedAt`, errors);
   if (finishedAt < startedAt) errors.push(`${label} window must finish after it starts`);
+  if (
+    !Number.isSafeInteger(host.signedSigrefs.ts) ||
+    host.signedSigrefs.ts < startedAt ||
+    host.signedSigrefs.ts > finishedAt
+  ) {
+    errors.push(`${label} signed snapshot must be fresh inside the host control window`);
+  }
 }
 
 export function validatePhysicalPhaseC(input: PhysicalPhaseCInput): PhysicalPhaseCVerdict {
@@ -465,6 +444,19 @@ export function validatePhysicalPhaseC(input: PhysicalPhaseCInput): PhysicalPhas
         },
         errors,
       );
+      for (const host of [byHost.get('tower')!, byHost.get('vm')!]) {
+        const hostStartedAt = Date.parse(host.window.startedAt);
+        const hostFinishedAt = Date.parse(host.window.finishedAt);
+        if (
+          Number.isFinite(startedAt) &&
+          Number.isFinite(finishedAt) &&
+          Number.isFinite(hostStartedAt) &&
+          Number.isFinite(hostFinishedAt) &&
+          (hostStartedAt < startedAt || hostFinishedAt > finishedAt)
+        ) {
+          errors.push(`Phase C ${host.hostId} control is outside the aggregate same-run window`);
+        }
+      }
       if (byHost.get('tower')!.thirdDeviceKey === byHost.get('vm')!.thirdDeviceKey) {
         errors.push('Phase C hosts must generate distinct third-device identities');
       }
@@ -497,15 +489,17 @@ export function validatePhysicalPhaseC(input: PhysicalPhaseCInput): PhysicalPhas
               nonMemberScopeServeRefused: true,
               honestHeadsRestoredAfterTamperControls: true,
             },
-            hosts: input.hostResults.map((host) => ({
-              hostId: host.hostId,
-              thirdDeviceKey: host.thirdDeviceKey,
-              ref: host.ref,
-              honestOid: host.honestOid,
-              rogueOid: host.rogueOid,
-              sigrefsVersion: host.signedSigrefs.version,
-              scopeId: host.nonMember.scopeId,
-            })),
+            hosts: [...input.hostResults]
+              .sort((a, b) => a.hostId.localeCompare(b.hostId))
+              .map((host) => ({
+                hostId: host.hostId,
+                thirdDeviceKey: host.thirdDeviceKey,
+                ref: host.ref,
+                honestOid: host.honestOid,
+                rogueOid: host.rogueOid,
+                sigrefsVersion: host.signedSigrefs.version,
+                scopeId: host.nonMember.scopeId,
+              })),
           },
   };
 }

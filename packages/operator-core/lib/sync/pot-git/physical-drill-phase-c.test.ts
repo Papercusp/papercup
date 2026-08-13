@@ -95,7 +95,10 @@ describe('P-505 fixed physical Phase C trust negative-control executor', () => {
           nonMemberScopeServeRefused: true,
           honestHeadsRestoredAfterTamperControls: true,
         },
-        hosts: [{ hostId: 'tower', sigrefsVersion: 1 }, { hostId: 'vm', sigrefsVersion: 1 }],
+        hosts: [
+          { hostId: 'tower', sigrefsVersion: 1 },
+          { hostId: 'vm', sigrefsVersion: 1 },
+        ],
       },
     });
   });
@@ -105,9 +108,7 @@ describe('P-505 fixed physical Phase C trust negative-control executor', () => {
     const { root, result } = await runHost('tower', runId);
     process.env.PAPERCUSP_POT_GIT_ROOT = root;
     expect(verifySigrefs(result.signedSigrefs, result.thirdDeviceKey)).toBe(true);
-    expect(result.relayMismatches).toEqual([
-      { ref: result.ref, expected: result.honestOid, actual: result.rogueOid },
-    ]);
+    expect(result.relayMismatches).toEqual([{ ref: result.ref, expected: result.honestOid, actual: result.rogueOid }]);
     expect(await readNamespaceRef(result.repoPath, result.thirdDeviceKey, result.ref)).toBe(result.honestOid);
     expect(result.restoredMismatches).toEqual([]);
     expect(result.nonMember.decision).toMatchObject({
@@ -144,6 +145,14 @@ describe('P-505 fixed physical Phase C trust negative-control executor', () => {
     );
   });
 
+  it('rejects a host control banked outside the aggregate same-run window', async () => {
+    const input = clone(await fixture());
+    input.hostResults[0].window.startedAt = new Date(Date.parse(input.window.startedAt) - 60_000).toISOString();
+    expect(validatePhysicalPhaseC(input).errors).toContain(
+      'Phase C tower control is outside the aggregate same-run window',
+    );
+  });
+
   it('requires one independently generated third-device control from each physical host', async () => {
     const input = clone(await fixture());
     input.hostResults[1].thirdDeviceKey = input.hostResults[0].thirdDeviceKey;
@@ -159,8 +168,6 @@ describe('P-505 fixed physical Phase C trust negative-control executor', () => {
 
     const oneHost = clone(await fixture());
     oneHost.hostResults = [oneHost.hostResults[0]] as never;
-    expect(validatePhysicalPhaseC(oneHost).errors).toContain(
-      'Phase C requires exactly two physical host results',
-    );
+    expect(validatePhysicalPhaseC(oneHost).errors).toContain('Phase C requires exactly two physical host results');
   });
 });

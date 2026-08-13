@@ -268,13 +268,7 @@ async function cli(argv: string[]): Promise<unknown> {
   }
   if (mode === 'phase-c-run') {
     const [hostId, repoPath, physicalDeviceKey, peerDeviceKey, runId] = args;
-    if (
-      (hostId !== 'tower' && hostId !== 'vm') ||
-      !repoPath ||
-      !physicalDeviceKey ||
-      !peerDeviceKey ||
-      !runId
-    ) {
+    if ((hostId !== 'tower' && hostId !== 'vm') || !repoPath || !physicalDeviceKey || !peerDeviceKey || !runId) {
       throw new Error(
         'usage: physical-drill-producer phase-c-run <tower|vm> <repo-path> <physical-device-key> <peer-device-key> <run-id>',
       );
