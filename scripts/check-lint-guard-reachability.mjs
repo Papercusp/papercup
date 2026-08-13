@@ -560,10 +560,24 @@ export function classifyGuard({ name, command, corpora, repoWideRegistered = new
  * repo-wide file enumeration. The others are not merely harder — a roots model is the
  * WRONG model for them, and forcing one would manufacture false precision:
  *   • `lint:cell-matrix` queries a LIVE DATABASE over a port; it has no file scope.
- *   • `lint:required-field-strands` is DIFF-driven (`--files=` / `--base`).
  *   • `lint:boundary-check` walks an import graph from an ENTRY POINT.
  * `undetermined` is a real answer here: it says the census has not measured coverage,
  * which is precisely the claim it was previously making silently and wrongly.
+ *
+ * ⚠ AND `undetermined` HAS AN EXIT — registration. `lint:required-field-strands` was this
+ * list's third entry ("DIFF-driven (`--files=` / `--base`)") until WI-38401 registered it in
+ * REPO_WIDE_INVARIANT_GUARDS. MEASURED via the differential this script's own
+ * `LINT_GUARD_REACHABILITY_AFFECTED_TESTS` override makes possible (2026-08-13, HEAD registry
+ * vs working registry): 8 guards `coverage NOT measured` → 7, the guard dropping out. So an
+ * unmeasurable scan shape is a reason coverage cannot be COMPUTED, never a reason the guard
+ * cannot be COVERED.
+ *
+ * ⚠ That same guard is why the enforcement axis must be read with its own caveat rather than
+ * as a verdict: it was classified ENFORCED throughout, on a `test` tier — a vitest file that
+ * exercises its FORMATTERS over fixtures and never diffs the real tree. It ran on no
+ * automated path at all, and the class it detects froze `main` ~14h on 2026-08-12 with
+ * `test:affected` green. ENFORCED means a blocking path runs SOMETHING that imports the
+ * guard; it does not mean that path exercises the guard's actual subject.
  */
 
 /** Workspace directory owning a repo-relative path (longest prefix wins), or null. */

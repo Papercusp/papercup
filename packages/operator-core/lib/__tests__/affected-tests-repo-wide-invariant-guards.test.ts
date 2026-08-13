@@ -854,6 +854,109 @@ describe('affected-tests: ungated mug/kettle guard (EI-20032324229208320)', () =
 });
 
 /*
+ * ── required-field-strands guard (WI-38401 / EI-20020054576584970) ────────────────────
+ *
+ * The guard existed, was tested, was documented in CLAUDE.md — and ran on NO automated
+ * path, so the class it was built for froze `main` ~14h on 2026-08-12 with
+ * `npm run test:affected` green throughout. Its only automated reach was a PostToolUse
+ * nudge that fires solely inside Claude Code Edit|Write|MultiEdit sessions that have it
+ * registered.
+ *
+ * Two halves of the registration can silently reopen that hole, and each fails GREEN:
+ *
+ *   1. the SUBMODULE half of `appliesTo`. A change inside a submodule reaches
+ *      affected-tests.mjs ONLY as the submodule ROOT path (`libs/papercusp`) — the diffs
+ *      run `--ignore-submodules=dirty` and `submoduleDirtyPaths()` reports the root — so a
+ *      TS-family-only predicate cannot attach for 39 submodules' worth of source. The
+ *      measured incident lives inside one, which is what makes this a correctness case and
+ *      not a completeness nicety;
+ *   2. the ADVISORY form. `--typecheck` execs `lint:tsc` over operator-core (~104s cold,
+ *      and it queues behind pc-heavy.sh — measured still queued at 90s under load 93.8).
+ *      "Strengthening" the registration to that variant would put a two-orders-of-magnitude
+ *      cost into every agent's edit loop, and the natural next step is un-registering it.
+ */
+const RFS_SCRIPT = 'lint:required-field-strands';
+const RFS_TASK = `${HOST_WORKSPACE} :: ${RFS_SCRIPT}`;
+/** A TS path outside the host workspace (routes to @papercusp/web, never operator-core). */
+const RFS_OUTSIDE_TS_PATH = 'apps/operator/lib/release/deploy-cli.ts';
+/** A non-source, non-submodule path: the negative half of the submodule differential. */
+const RFS_UNMATCHED_PATH = 'apps/operator/docs/nuqs-audit-2026-05-11.md';
+
+/**
+ * A REAL submodule root, read from `.gitmodules` rather than hardcoded, so retiring one
+ * cannot leave this test asserting against a path that is no longer a submodule (which
+ * would fail as a predicate regression while the predicate was fine).
+ */
+function someSubmodulePath(): string {
+  const res = spawnSync('git', ['config', '--file', '.gitmodules', '--get-regexp', 'path'], {
+    cwd: REPO_ROOT,
+    encoding: 'utf8',
+  });
+  expect(res.status, `could not read .gitmodules: ${res.stderr ?? ''}`).toBe(0);
+  const paths = (res.stdout ?? '')
+    .split('\n')
+    .filter(Boolean)
+    .map((l) => l.slice(l.indexOf(' ') + 1).trim())
+    .filter(Boolean);
+  expect(paths.length, 'no submodules declared — the differential below proves nothing').toBeGreaterThan(0);
+  // Prefer the submodule the measured incident came from; any real one exercises the clause.
+  return paths.find((p) => p === 'libs/papercusp') ?? paths[0];
+}
+
+describe('affected-tests: required-field-strands guard (WI-38401)', () => {
+  it('attaches for a TS change outside the host workspace', () => {
+    expect(
+      dryTasks(RFS_OUTSIDE_TS_PATH),
+      `${RFS_OUTSIDE_TS_PATH} routes to @papercusp/web. A required field added to an ` +
+        'exported interface strands its DEPENDENTS, which no workspace selection and no ' +
+        'scoped typecheck can reach — so the guard must attach on the changed path itself',
+    ).toContain(RFS_TASK);
+  });
+
+  it('attaches for a SUBMODULE ROOT path — the shape the 2026-08-12 main freeze arrived as', () => {
+    const submodule = someSubmodulePath();
+    expect(
+      dryTasks(submodule),
+      `a change inside ${submodule} reaches affected-tests.mjs only as the bare submodule ` +
+        'root, so a TS-family-only appliesTo leaves every submodule-internal required-field ' +
+        'addition unattached while the registration LOOKS complete',
+    ).toContain(RFS_TASK);
+  });
+
+  it('does NOT attach for a non-source path outside every submodule', () => {
+    // The DIFFERENTIAL that makes the case above a real test of the submodule clause: both
+    // paths are non-TS, and only the submodule root attaches. Nothing but
+    // `gitmodulePaths().has(f)` can tell them apart.
+    const out = dryTasks(RFS_UNMATCHED_PATH);
+    expect(
+      out,
+      'must not be skipped via the already-queued branch, or this proves nothing about appliesTo',
+    ).not.toContain(`${HOST_WORKSPACE} :: ${RFS_SCRIPT}`);
+    expect(out).not.toContain(RFS_TASK);
+  });
+
+  it('registers the ADVISORY form, never the --typecheck variant', () => {
+    const pkg = JSON.parse(
+      readFileSync(resolve(REPO_ROOT, 'packages/operator-core/package.json'), 'utf8'),
+    ) as { scripts?: Record<string, string> };
+    const cmd = pkg.scripts?.[RFS_SCRIPT];
+    expect(
+      cmd,
+      `${HOST_WORKSPACE} must define "${RFS_SCRIPT}" or the attachment is inert — ` +
+        'affected-tests.mjs skips a registered-but-undeclared guard with a bare `continue`',
+    ).toBeTruthy();
+    expect(cmd).toContain('check-required-field-strands.mjs');
+    expect(
+      cmd,
+      'the --typecheck variant execs lint:tsc over operator-core (~104s cold, and it queues ' +
+        'behind pc-heavy.sh). Registered here it would be the most expensive guard by two ' +
+        'orders of magnitude, on every edit — the advisory form exits 0 even WITH findings, ' +
+        'and printing the strand into the author\'s own run is the entire value',
+    ).not.toContain('--typecheck');
+  });
+});
+
+/*
  * EI-20026978310669562 — the RECURRENCE GUARD for the class the whole registry above exists
  * to prevent, one level up.
  *

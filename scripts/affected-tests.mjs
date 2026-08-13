@@ -426,21 +426,47 @@ function invariantGuardChangedPaths() {
   return invariantGuardChangedPathsCache;
 }
 
+/**
+ * Every submodule path declared in `.gitmodules` (e.g. `libs/papercusp`), memoized.
+ *
+ * Exists because a submodule path is a CHANGED-PATH SHAPE in its own right, and the only
+ * shape under which a change inside a submodule ever reaches this file: the diffs above run
+ * `--ignore-submodules=dirty` and `submoduleDirtyPaths()` reports the submodule ROOT, so an
+ * edit to `libs/papercusp/packages/locks/src/su-lock-store.ts` arrives here as the bare path
+ * `libs/papercusp` — no extension, and matched by no file-family predicate. A guard whose
+ * `appliesTo` tests only `/\.tsx?$/` therefore CANNOT attach for any submodule-internal
+ * change, which is 39 submodules' worth of source (WI-38401; the 2026-08-12 ~14h `main`
+ * freeze originated in exactly that blind spot).
+ *
+ * Fails OPEN (empty set) for the same reason `invariantGuardChangedPaths()` does.
+ */
+let gitmodulePathsCache = null;
+function gitmodulePaths() {
+  if (gitmodulePathsCache) return gitmodulePathsCache;
+  try {
+    gitmodulePathsCache = new Set(
+      sh('git config --file .gitmodules --get-regexp path')
+        .split('\n')
+        .filter(Boolean)
+        // The value is everything past the first space, so a path containing spaces
+        // survives (splitting on whitespace would truncate it).
+        .map((l) => l.slice(l.indexOf(' ') + 1).trim())
+        .filter(Boolean),
+    );
+  } catch {
+    gitmodulePathsCache = new Set(); // no .gitmodules (or unreadable) — nothing to probe
+  }
+  return gitmodulePathsCache;
+}
+
 // Live submodules with uncommitted work — the blind spot `--ignore-submodules=dirty`
 // leaves. Returns submodule paths (e.g. `libs/generic/memory`), which map to a
 // workspace exactly like a gitlink change does. Best-effort by design: a retired
 // submodule whose gitdir is gone throws, and that is precisely the case we must
 // swallow rather than let abort the run.
 function submoduleDirtyPaths() {
-  let paths;
-  try {
-    paths = sh('git config --file .gitmodules --get-regexp path')
-      .split('\n')
-      .filter(Boolean)
-      .map((l) => l.split(/\s+/)[1]);
-  } catch {
-    return []; // no .gitmodules (or unreadable) — nothing to probe
-  }
+  const paths = [...gitmodulePaths()];
+  if (!paths.length) return [];
   const dirty = [];
   for (const p of paths) {
     try {
@@ -1281,6 +1307,54 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     notCheckedIsNonGating: true,
     // TS-family only: nothing else can declare a runtime export for a factory to omit.
     appliesTo: (f) => /\.[cm]?tsx?$/.test(f),
+  },
+  {
+    // WI-38401 / EI-20020054576584970 — the sibling of the entry above, and the same
+    // MIRROR-IMAGE shape: adding a REQUIRED field to an exported interface strands every
+    // DEPENDENT that constructs it, and `test:affected` cannot select those in principle
+    // (a scoped typecheck compiles the changed file plus what IT imports, never its
+    // importers — build:typecheck states that limitation in its own `scopeToFiles`
+    // contract). So the guard reporting the gap must not be selected by the mechanism
+    // that has it.
+    //
+    // WHY THIS IS REGISTERED AT ALL, given the guard already existed: it ran on NO
+    // automated path. Its only automated reach was a PostToolUse nudge hook, which fires
+    // solely for Claude Code Edit|Write|MultiEdit sessions that have it registered —
+    // nothing for a `psu` non-Claude client, a script-driven edit, or CI. MEASURED
+    // (2026-08-12): `ActiveLockRow.lock_id` gained a required field in
+    // libs/papercusp/packages/locks/, stranded its constructors, and froze `main` ~14h.
+    // `npm run test:affected` was green throughout, because this guard was in it nowhere.
+    //
+    // ⚠ THE ADVISORY FORM, DELIBERATELY — never `lint:required-field-strands:typecheck`.
+    // The `--typecheck` variant execs `lint:tsc` over packages/operator-core (~104s cold,
+    // and it QUEUES behind scripts/pc-heavy.sh: measured 2026-08-13 still queued at 90s
+    // under load 93.8). Putting that in every agent's edit loop would be the most
+    // expensive entry here by two orders of magnitude. The advisory form exits 0 even WITH
+    // findings (`if (!runTypecheck) process.exit(0)`) — being registered is what makes it
+    // SPEAK, printing the strand + the workspace-specific typecheck command into the run
+    // of whoever added the field.
+    //
+    // ~1.72-1.77s (3 runs measured through the workspace script, 9 files examined) — a
+    // `git show` + TS parse per changed file, so cost tracks the working diff, which
+    // git-sync keeps small by sweeping every few minutes.
+    workspace: '@papercusp/operator-core',
+    script: 'lint:required-field-strands',
+    // Its subject is the WORKING DIFF, so a gate checkout — clean by construction — makes
+    // it examine zero files and exit EXIT_NOT_CHECKED on every candidate. Non-gating is
+    // therefore mandatory, not defensive; the strand-family declaration test in
+    // affected-tests-repo-wide-invariant-guards.test.ts asserts it from the guard's own
+    // `not-checked.mjs` import rather than from a hand-maintained list.
+    notCheckedIsNonGating: true,
+    // No hostSuiteRatchet: check-required-field-strands.test.ts exercises the DETECTOR
+    // over fixtures and never diffs the real tree, so operator-core's own suite running
+    // implies nothing about this having executed.
+    //
+    // TS-family files, PLUS submodule roots. That second half is not a nicety: it is the
+    // only shape under which a submodule-internal change reaches this registry at all
+    // (see gitmodulePaths()), and the measured incident above lives inside one. A
+    // `/\.tsx?$/`-only predicate would have left the exact class that froze `main`
+    // unattached while looking fully wired.
+    appliesTo: (f) => /\.[cm]?tsx?$/.test(f) || gitmodulePaths().has(f),
   },
   {
     // WI-37593 — the D-034 shape, and the one instance that corrupts THIS FILE'S OWN
