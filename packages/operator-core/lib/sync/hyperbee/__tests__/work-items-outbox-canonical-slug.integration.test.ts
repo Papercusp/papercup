@@ -89,12 +89,17 @@ afterAll(async () => {
 interface OutboxRow {
   table_name: string;
   harness_slug: string;
+  key: string;
+  row: Record<string, unknown> | null;
 }
 
 async function latestOutbox(key: string): Promise<OutboxRow | undefined> {
   const [r] = await sql<OutboxRow[]>`
-    SELECT table_name, harness_slug FROM harness_shared.substrate_outbox
-     WHERE key = ${key} ORDER BY id DESC LIMIT 1`;
+    SELECT table_name, harness_slug, key, row FROM harness_shared.substrate_outbox
+     WHERE key = ${key}
+        OR row->>'issue_id' = ${key}
+        OR row->>'feature_id' = ${key}
+     ORDER BY id DESC LIMIT 1`;
   return r;
 }
 
@@ -114,6 +119,11 @@ describe('capture_work_items_outbox canonicalizes harness_slug (migration 452, W
     const row = await latestOutbox(id);
     expect(row?.table_name).toBe('engineer_issues');
     expect(row?.harness_slug).toBe('papercusp');
+    // Routing canonicalizes to papercusp, but row identity remains the physical
+    // harness that owns the work_items row.  This distinction prevents a delete
+    // on the shared home log from erasing a same-id papercusp sibling.
+    expect(row?.key).toBe(`papercup/${id}`);
+    expect(row?.row?.storage_harness_slug).toBe('papercup');
   });
 
   it('the papercup-hive alias also canonicalizes to papercusp (issue family)', async () => {
@@ -149,5 +159,8 @@ describe('capture_work_items_outbox canonicalizes harness_slug (migration 452, W
       VALUES (${WS}, 'real-hive', ${featureId}, 'passthrough feature', 'body', 'todo', 'feature', 'local')`;
     expect((await latestOutbox(issueId))?.harness_slug).toBe('real-hive');
     expect((await latestOutbox(featureId))?.harness_slug).toBe('real-hive');
+    expect((await latestOutbox(issueId))?.key).toBe(`real-hive/${issueId}`);
+    // The feature family retains its established per-log key shape.
+    expect((await latestOutbox(featureId))?.key).toBe(featureId);
   });
 });

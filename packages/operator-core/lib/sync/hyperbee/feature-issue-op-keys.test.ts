@@ -28,7 +28,9 @@
 import { describe, it, expect } from 'vitest';
 import {
   composeFeatureKey,
+  composeEngineerIssueKey,
   composeIssueKey,
+  parseEngineerIssueKey,
   composePlanKey,
   CDC_CAPTURED_TABLES,
   outboxRowToLocalWriteOp,
@@ -57,6 +59,18 @@ describe('composeFeatureKey / composeIssueKey', () => {
   it('is deterministic — same id → same key', () => {
     expect(composeFeatureKey('F-001')).toBe(composeFeatureKey('F-001'));
     expect(composeIssueKey('I-001')).toBe(composeIssueKey('I-001'));
+  });
+
+  it('harness-qualifies work-queue issue ids and parses the exact storage identity', () => {
+    const key = composeEngineerIssueKey('operator:ws-demo', 'EI-42');
+    expect(key).toBe('operator:ws-demo/EI-42');
+    expect(parseEngineerIssueKey(key)).toEqual({
+      storageHarnessSlug: 'operator:ws-demo',
+      issueId: 'EI-42',
+    });
+    expect(parseEngineerIssueKey('EI-42')).toBeNull(); // pre-828 legacy key
+    expect(parseEngineerIssueKey('/EI-42')).toBeNull();
+    expect(parseEngineerIssueKey('papercusp/')).toBeNull();
   });
 
   it('composePlanKey is the plan_slug itself (matches projection composeKey)', () => {
@@ -420,10 +434,11 @@ describe('outboxRowToLocalWriteOp — engineer_issues (B5 work-queue federation)
   const engineerIssueOutboxRow: OutboxRow = {
     table_name: 'engineer_issues',
     op: 'put',
-    key: 'EI-10',
+    key: 'papercup/EI-10',
     ts: 1717000000000,
     row: {
       harness_slug: 'papercup', // stamped by the capture trigger
+      storage_harness_slug: 'papercup',
       issue_id: 'EI-10',
       scope: 'harness:papercup',
       kind: 'task',
@@ -447,7 +462,7 @@ describe('outboxRowToLocalWriteOp — engineer_issues (B5 work-queue federation)
   it('maps to the engineer-issues tableTag (NOT the raw table_name)', () => {
     const op = outboxRowToLocalWriteOp(engineerIssueOutboxRow);
     expect(op.table).toBe('engineer-issues');
-    expect(op.hbKey).toBe('EI-10');
+    expect(op.hbKey).toBe('papercup/EI-10');
   });
 
   it('produces a value that passes isEngineerIssueRow, preserving scope/kind/payload + the stamped harness_slug', () => {
@@ -455,6 +470,7 @@ describe('outboxRowToLocalWriteOp — engineer_issues (B5 work-queue federation)
     const v = op.type === 'put' ? (op.value as EngineerIssueRow) : (null as never);
     expect(isEngineerIssueRow(v)).toBe(true);
     expect(v.harness_slug).toBe('papercup');
+    expect(v.storage_harness_slug).toBe('papercup');
     expect(v.scope).toBe('harness:papercup');
     expect(v.kind).toBe('task');
     expect(v.assigned_at).toBe('2026-06-08T12:00:00.000Z'); // ISO preserved (PG casts on insert)
@@ -474,8 +490,21 @@ describe('outboxRowToLocalWriteOp — engineer_issues (B5 work-queue federation)
     const op = outboxRowToLocalWriteOp({ ...engineerIssueOutboxRow, op: 'del', row: null });
     expect(op.type).toBe('del');
     expect(op.table).toBe('engineer-issues');
-    expect(op.hbKey).toBe('EI-10');
+    expect(op.hbKey).toBe('papercup/EI-10');
     expect(op.value).toBeUndefined();
+  });
+
+  it('keeps pre-828 bare-key puts readable while leaving storage identity absent', () => {
+    const legacy = {
+      ...engineerIssueOutboxRow,
+      key: 'EI-10',
+      row: { ...engineerIssueOutboxRow.row },
+    };
+    delete legacy.row.storage_harness_slug;
+    const op = outboxRowToLocalWriteOp(legacy);
+    expect(op.hbKey).toBe('EI-10');
+    expect((op.value as EngineerIssueRow).storage_harness_slug).toBeUndefined();
+    expect(isEngineerIssueRow(op.value)).toBe(true);
   });
 });
 

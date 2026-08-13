@@ -26,12 +26,19 @@ import type postgres from 'postgres';
 import type { TableProjection, ProvenanceContext } from '../projection';
 import { decideMemberContentOp } from '../member-content-guard';
 import type { PendingMembershipContent } from '../pending-membership-content';
+import { composeEngineerIssueKey, parseEngineerIssueKey } from '../feature-issue-op-keys';
 
 /** Wire-shape of an engineer_issues row in Hyperbee — the federated subset plus the
  *  capture-stamped `harness_slug` (the demux key). Defensive on every field. */
 export interface EngineerIssueRow {
   /** The federation slug stamped by the capture trigger (the per-harness demux key). */
   harness_slug: string;
+  /**
+   * Physical work_items.harness_slug.  Added after migration 826 proved that a
+   * home log can contain the same issue_id for several authored harnesses.
+   * Optional for pre-828 wire ops; their bare keys remain readable.
+   */
+  storage_harness_slug?: string;
   issue_id: string;
   scope: string;
   kind: string;
@@ -104,6 +111,7 @@ export function isEngineerIssueRow(input: unknown): input is EngineerIssueRow {
   if (!input || typeof input !== 'object') return false;
   const r = input as Record<string, unknown>;
   if (!isString(r.harness_slug) || r.harness_slug.length === 0) return false;
+  if (r.storage_harness_slug !== undefined && (!isString(r.storage_harness_slug) || r.storage_harness_slug.length === 0)) return false;
   if (!isString(r.issue_id) || r.issue_id.length === 0) return false;
   if (!isString(r.scope) || r.scope.length === 0) return false;
   if (!isString(r.kind)) return false;
@@ -195,7 +203,9 @@ export interface EngineerIssuesProjectionOpts {
 
 /** Per-harness Hyperbee key == issue_id (matches the capture trigger's TG_ARGV[0]). */
 function composeKey(row: EngineerIssueRow): string {
-  return row.issue_id;
+  return row.storage_harness_slug
+    ? composeEngineerIssueKey(row.storage_harness_slug, row.issue_id)
+    : row.issue_id;
 }
 
 function decodeValue(raw: unknown): EngineerIssueRow | null {
@@ -259,6 +269,17 @@ async function writeToPg(
     typeof row.scope === 'string' && row.scope.startsWith('harness:')
       ? row.scope.slice(8)
       : `operator:${opts.workspaceId || 'default'}`;
+  // The storage slug is part of every post-828 op's identity.  Refuse a row
+  // whose payload disagrees with its scope-derived destination: accepting it
+  // would make the put land under one key while its later tombstone targets a
+  // different physical row.
+  if (row.storage_harness_slug && row.storage_harness_slug !== vSlug) {
+    console.warn(
+      `[engineer-issues projection] storage harness mismatch for issue_id=${row.issue_id}: ` +
+        `wire=${row.storage_harness_slug}, scope=${vSlug}; refusing op`,
+    );
+    return;
+  }
   // EI-13285: id-collision guard — see isDistinctEntityCollision's header. Must run
   // BEFORE the upsert below, which would otherwise blindly clobber a distinct local
   // record sharing this issue_id.
@@ -387,16 +408,26 @@ async function deleteFromPg(
   key: string,
   delTs?: number,
   delHlc?: string,
+  provenance?: ProvenanceContext,
 ): Promise<void> {
   if (!key) return;
   const sql = opts.sql ?? getOrgPg().sql;
   const ts = delTs ?? null;
   const hlc = delHlc ?? null;
+  const parsed = parseEngineerIssueKey(key);
+  const storageHarnessSlug = parsed?.storageHarnessSlug ?? opts.harnessSlug;
+  const issueId = parsed?.issueId ?? key;
+  const authorPubkey = provenance?.authorPubkey || null;
   await sql`
     DELETE FROM harness_shared.work_items
     WHERE workspace_id = ${opts.workspaceId}
-      AND feature_id = ${key}
+      AND harness_slug = ${storageHarnessSlug}
+      AND feature_id = ${issueId}
       AND item_kind IN ('bug', 'change', 'task')
+      -- Remote tombstones may delete only the row materialised from that same
+      -- source log.  This makes every pre-828 bare-key replay fail closed instead
+      -- of erasing a same-id local/sibling row (the migration-826 incident).
+      AND (${authorPubkey}::text IS NULL OR author_pubkey = ${authorPubkey})
       -- ts-guard the delete (a stale del must not erase a newer row).
       AND (
         (${hlc}::text IS NULL AND ${ts}::bigint IS NULL)
@@ -413,7 +444,8 @@ export function buildEngineerIssuesProjection(opts: EngineerIssuesProjectionOpts
     composeKey,
     decodeValue,
     writeToPg: (row, provenance) => writeToPg(opts, row, provenance),
-    deleteFromPg: (key, delTs, delHlc) => deleteFromPg(opts, key, delTs, delHlc),
+    deleteFromPg: (key, delTs, delHlc, provenance) =>
+      deleteFromPg(opts, key, delTs, delHlc, provenance),
   };
 }
 

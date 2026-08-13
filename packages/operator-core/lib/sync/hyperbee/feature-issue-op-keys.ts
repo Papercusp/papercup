@@ -276,6 +276,30 @@ export function composeIssueKey(issueId: string): string {
   return issueId;
 }
 
+/**
+ * Work-queue issue identity on the shared Hive log.  A home log can carry rows
+ * authored by several harnesses (plus the workspace operator), so `issue_id`
+ * alone is not unique there.  Keep the storage harness in the key: this is the
+ * same `(harness_slug, feature_id)` identity enforced by the PG primary key.
+ *
+ * Harness slugs and engineer-issued EI/WI ids cannot contain `/`; parsing still
+ * fails closed below so a malformed/legacy key never broad-deletes by id.
+ */
+export function composeEngineerIssueKey(storageHarnessSlug: string, issueId: string): string {
+  return `${storageHarnessSlug}/${issueId}`;
+}
+
+export function parseEngineerIssueKey(
+  key: string,
+): { storageHarnessSlug: string; issueId: string } | null {
+  const separator = key.indexOf('/');
+  if (separator <= 0 || separator === key.length - 1) return null;
+  return {
+    storageHarnessSlug: key.slice(0, separator),
+    issueId: key.slice(separator + 1),
+  };
+}
+
 /** Per-harness Hyperbee key for a plan == its plan_slug (mirrors the
  *  projection's `composeKey`, which returns `row.plan_slug`). */
 export function composePlanKey(planSlug: string): string {
@@ -792,6 +816,10 @@ function toEngineerIssueValue(row: Record<string, unknown>): EngineerIssueRow {
   return {
     created_ts: createdTs,
     harness_slug: String(row.harness_slug ?? ''),
+    storage_harness_slug:
+      typeof row.storage_harness_slug === 'string' && row.storage_harness_slug
+        ? row.storage_harness_slug
+        : undefined,
     issue_id: String(row.issue_id ?? ''),
     scope: String(row.scope ?? ''),
     kind: String(row.kind ?? 'bug'),

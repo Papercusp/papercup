@@ -169,6 +169,14 @@ describe('engineer-issues projection — pure helpers', () => {
   it('composeKey is the issue_id', () => {
     expect(_testing.composeKey(issueRow({ issue_id: 'EI-42' }))).toBe('EI-42');
   });
+
+  it('composeKey includes the physical harness for post-828 rows', () => {
+    expect(
+      _testing.composeKey(
+        issueRow({ issue_id: 'EI-42', storage_harness_slug: 'operator:ws-ei-proj' }),
+      ),
+    ).toBe('operator:ws-ei-proj/EI-42');
+  });
 });
 
 describe('engineer-issues projection — writeToPg / deleteFromPg (real PG)', () => {
@@ -429,6 +437,74 @@ describe('engineer-issues projection — writeToPg / deleteFromPg (real PG)', ()
     expect(await getIssue('EI-11')).not.toBeNull();
     await p.deleteFromPg('EI-11', 200); // newer del — applies
     expect(await getIssue('EI-11')).toBeNull();
+  });
+
+  it('a harness-qualified tombstone deletes only the exact authored twin', async () => {
+    const p = proj();
+    const sameId = 'EI-826-twin';
+    await p.writeToPg(
+      issueRow({ issue_id: sameId, storage_harness_slug: SLUG }),
+      { ts: 100, origin: 'remote', authorPubkey: 'peer-papercup' },
+    );
+    await p.writeToPg(
+      issueRow({
+        issue_id: sameId,
+        scope: 'harness:sibling-hive',
+        storage_harness_slug: 'sibling-hive',
+      }),
+      { ts: 100, origin: 'remote', authorPubkey: 'peer-sibling' },
+    );
+
+    await p.deleteFromPg(`${SLUG}/${sameId}`, 200, undefined, {
+      ts: 200,
+      origin: 'remote',
+      authorPubkey: 'peer-papercup',
+    });
+
+    expect(await getIssueBaseRows(sameId)).toEqual([
+      {
+        feature_id: sameId,
+        harness_slug: 'sibling-hive',
+        status: 'open',
+        origin: 'remote',
+      },
+    ]);
+  });
+
+  it('a legacy bare tombstone cannot erase a same-id row from another author', async () => {
+    const p = proj();
+    const sameId = 'EI-826-legacy';
+    await p.writeToPg(issueRow({ issue_id: sameId }), {
+      ts: 100,
+      origin: 'remote',
+      authorPubkey: 'peer-survivor',
+    });
+
+    await p.deleteFromPg(sameId, 200, undefined, {
+      ts: 200,
+      origin: 'remote',
+      authorPubkey: 'peer-deleted-twin',
+    });
+
+    expect(await getIssueBaseRows(sameId)).toHaveLength(1);
+  });
+
+  it('refuses a put whose storage key disagrees with its scope-derived harness', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await proj().writeToPg(
+        issueRow({
+          issue_id: 'EI-826-mismatch',
+          scope: `harness:${SLUG}`,
+          storage_harness_slug: 'sibling-hive',
+        }),
+        { ts: 100, origin: 'remote', authorPubkey: 'peer' },
+      );
+      expect(await getIssueBaseRows('EI-826-mismatch')).toHaveLength(0);
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('storage harness mismatch'));
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 
   // WI-183/WI-2845/WI-2853: same-op DOUBLE-APPLY (a replayed/re-folded remote op —
