@@ -81,7 +81,7 @@ describe('applyResultDoor', () => {
     expect(spill.endsWith(original)).toBe(true);
   });
 
-  it('structurally projects an oversized JSON body and returns a schema-valid spill cursor', () => {
+  it('structurally projects oversized text without corrupting schema-bearing structuredContent', () => {
     const rows = Array.from({ length: 300 }, (_, i) => ({
       id: `WI-${i}`,
       state: 'open',
@@ -117,7 +117,15 @@ describe('applyResultDoor', () => {
       (doored._meta!.resultDoor as { spillPath: string }).spillPath,
     );
     expect(parsed._projection.next).toContain('follow next_cursor until eof');
-    expect(doored.structuredContent).toEqual(parsed);
+    // EI-20335562969900283: the bounded text projection is intentionally not
+    // valid against an arbitrary tool's full output schema (it may omit rows
+    // or required fields).  structuredContent was explicitly requested as the
+    // lossless schema-bearing response and must therefore survive unchanged.
+    expect(doored.structuredContent).toEqual({ ok: true, rows });
+    expect((doored.structuredContent as { rows: typeof rows }).rows).toHaveLength(300);
+    expect((doored.structuredContent as { rows: typeof rows }).rows.every(
+      (row) => typeof row.id === 'string' && typeof row.state === 'string' && typeof row.detail === 'string',
+    )).toBe(true);
     expect((doored._meta!.resultDoor as { structural: boolean }).structural).toBe(true);
     expect(readSpill('ws-1', 'work_items:list', RUN_ID).endsWith(original)).toBe(true);
   });

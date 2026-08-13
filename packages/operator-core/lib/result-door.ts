@@ -537,7 +537,16 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
           },
         },
         content: structuralContent,
-        ...(result.structuredContent !== undefined ? { structuredContent: projected } : {}),
+        // EI-20335562969900283: `structuredContent` is the schema-bearing MCP
+        // payload, not a second copy of the model-facing text body.  Replacing
+        // it with `projected` makes an otherwise successful tool call violate
+        // its declared outputSchema as soon as the generic projection omits an
+        // array member or one of that member's required fields.  That is what
+        // made large sessions:read windows fail *after* their handler returned
+        // valid turns.  Keep the opt-in structured payload byte-for-byte; only
+        // the text content is subject to this model-context door.  Clients ask
+        // for structuredContent explicitly, so preserving it also honours the
+        // lossless programmatic-response contract they negotiated.
       } as T;
     }
 
