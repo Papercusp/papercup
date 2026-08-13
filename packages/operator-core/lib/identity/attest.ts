@@ -287,6 +287,118 @@ export async function createAttestationGist(
   return { gistId: data.id, gistUrl: data.html_url, body };
 }
 
+// ─── write-capability preflight ───────────────────────────────────────────────
+/**
+ * Whether an account can actually CREATE a gist, and why not when it can't.
+ */
+export type GistWriteCapability =
+  | { ok: true; probedGistId: string; cleanedUp: boolean }
+  | {
+      ok: false;
+      code: 'email_unverified' | 'forbidden' | 'unauthorized' | 'unavailable';
+      status: number | null;
+      detail: string;
+      remediation: string | null;
+    };
+
+/**
+ * What GitHub says when the account's email is unverified — and it does NOT say
+ * the same thing on both surfaces. The gist 422 reads `user must have a
+ * verified email`; the push 403 reads `You must verify your email address`.
+ * Matching only one wording silently reclassifies the block as a generic
+ * failure, which loses the one thing the caller needs: the remediation.
+ */
+const UNVERIFIED_EMAIL_RE = /verif(?:y|ied)\s+(?:your\s+)?email/i;
+
+/**
+ * Probe whether `token`'s account can create a gist, by creating a throwaway
+ * private one and deleting it.
+ *
+ * Why this is a separate surface from `ensureAttestationGist`: that function
+ * short-circuits on an already-valid gist and never reaches `POST /gists`, so a
+ * caller treating its success as proof of attestation health reads the LIST
+ * path and concludes about the WRITE path. GitHub's unverified-email block is
+ * write-only — `GET /user`, `GET /gists` and gist-by-id all keep returning 200
+ * while creation 422s — so that inference fails exactly when it matters: a
+ * fresh device with no gist yet, which is the case the fresh-home federation
+ * gate exists to prove. The identical read-for-write substitution already burned
+ * the push path, where `git ls-remote` exiting 0 was read as evidence that
+ * pushes worked.
+ *
+ * A blocked account fails at the POST in one round-trip, which is the point:
+ * callers use this to fail in seconds rather than discovering it deep in a long
+ * run. Never throws — the caller decides how loud the failure is.
+ */
+export async function probeGistWriteCapability(token: string): Promise<GistWriteCapability> {
+  const headers = {
+    Authorization: 'token ' + token,
+    'Content-Type': 'application/json',
+    Accept: 'application/vnd.github+json',
+    'X-GitHub-Api-Version': '2022-11-28',
+  };
+
+  let resp: { ok: boolean; status: number; text(): Promise<string>; json(): Promise<unknown> };
+  try {
+    resp = (await fetch('https://api.github.com/gists', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        description: 'Papercusp attestation write-capability probe',
+        public: false,
+        files: { 'papercusp-write-probe.txt': { content: 'papercusp write-capability probe' } },
+      }),
+    })) as typeof resp;
+  } catch (err) {
+    return {
+      ok: false,
+      code: 'unavailable',
+      status: null,
+      detail: 'POST /gists failed: ' + String(err),
+      remediation: null,
+    };
+  }
+
+  if (!resp.ok) {
+    const detail = await resp.text().catch(() => '');
+    const emailBlocked = resp.status === 422 && UNVERIFIED_EMAIL_RE.test(detail);
+    return {
+      ok: false,
+      code: emailBlocked
+        ? 'email_unverified'
+        : resp.status === 401
+          ? 'unauthorized'
+          : resp.status === 403
+            ? 'forbidden'
+            : 'unavailable',
+      status: resp.status,
+      detail: 'POST /gists returned ' + resp.status + ': ' + detail,
+      remediation: emailBlocked ? 'https://github.com/settings/emails' : null,
+    };
+  }
+
+  const created = (await resp.json().catch(() => null)) as { id?: string } | null;
+  if (!created?.id) {
+    return {
+      ok: false,
+      code: 'unavailable',
+      status: resp.status,
+      detail: 'POST /gists succeeded but returned no gist id',
+      remediation: null,
+    };
+  }
+
+  // Best-effort cleanup: the probe gist has served its purpose the moment it
+  // exists. A delete failure never invalidates the capability we just proved.
+  const cleanedUp = await fetch('https://api.github.com/gists/' + created.id, {
+    method: 'DELETE',
+    headers,
+  })
+    .then((r: { ok: boolean }) => r.ok)
+    .catch(() => false);
+
+  return { ok: true, probedGistId: created.id, cleanedUp };
+}
+
 /**
  * Idempotently resolve THIS device's attestation gist id under the
  * authenticated user, creating it on first use. Used by the write-free join

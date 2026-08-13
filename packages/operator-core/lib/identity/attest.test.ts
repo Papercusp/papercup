@@ -755,3 +755,189 @@ describe('verifyAttestation — GitHub quota guards', () => {
     expect(mockFetch).toHaveBeenCalledTimes(2);
   });
 });
+
+// ─── write-capability preflight ───────────────────────────────────────────────
+// The defect these pin: GitHub's unverified-email block is WRITE-ONLY, so every
+// read path keeps returning 200 while POST /gists 422s. A preflight that infers
+// write health from a successful read/reuse reports "ready" on an account that
+// cannot attest at all — which is how a fresh-home federation gate burned ~50min
+// of red content legs instead of failing in seconds at identity.
+describe('probeGistWriteCapability', () => {
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  // Verbatim GitHub response body, captured live from the blocked account.
+  // Note the wording: the gist surface says "verified email", while the push
+  // surface says "verify your email address" — a matcher pinned to one form
+  // misses the other, so both are pinned here.
+  const REAL_422_BODY = JSON.stringify({
+    message: 'Validation Failed',
+    errors: [
+      { resource: 'Gist', code: 'custom', field: 'user', message: 'user must have a verified email' },
+    ],
+    documentation_url: 'https://docs.github.com/v3/gists/#create-a-gist',
+    status: '422',
+  });
+
+  it('classifies the unverified-email 422 and carries the remediation', async () => {
+    const { probeGistWriteCapability } = await import('./attest');
+    const fetchMock = vi.fn(async () => ({
+      ok: false,
+      status: 422,
+      text: async () => REAL_422_BODY,
+      json: async () => ({}),
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const cap = await probeGistWriteCapability('tok');
+    expect(cap.ok).toBe(false);
+    if (cap.ok) throw new Error('unreachable');
+    expect(cap.code).toBe('email_unverified');
+    expect(cap.status).toBe(422);
+    expect(cap.remediation).toBe('https://github.com/settings/emails');
+    // Fails in ONE round-trip — no cleanup call, nothing was created.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('also classifies the push-surface wording ("verify your email address")', async () => {
+    const { probeGistWriteCapability } = await import('./attest');
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: false,
+        status: 422,
+        text: async () => 'You must verify your email address.',
+        json: async () => ({}),
+      })),
+    );
+
+    const cap = await probeGistWriteCapability('tok');
+    expect(cap.ok).toBe(false);
+    if (cap.ok) throw new Error('unreachable');
+    expect(cap.code).toBe('email_unverified');
+  });
+
+  it('does NOT claim email_unverified for an unrelated 422', async () => {
+    const { probeGistWriteCapability } = await import('./attest');
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: false,
+        status: 422,
+        text: async () => JSON.stringify({ message: 'Validation Failed: files is too large' }),
+        json: async () => ({}),
+      })),
+    );
+
+    const cap = await probeGistWriteCapability('tok');
+    expect(cap.ok).toBe(false);
+    if (cap.ok) throw new Error('unreachable');
+    expect(cap.code).toBe('unavailable');
+    expect(cap.remediation).toBeNull();
+  });
+
+  it('proves the write path and cleans up the probe gist', async () => {
+    const { probeGistWriteCapability } = await import('./attest');
+    const calls: Array<{ url: string; method: string }> = [];
+    const fetchMock = vi.fn(async (url: unknown, init?: unknown) => {
+      const method = (init as { method?: string } | undefined)?.method ?? 'GET';
+      calls.push({ url: String(url), method });
+      if (method === 'POST') {
+        return {
+          ok: true,
+          status: 201,
+          json: async () => ({ id: 'g-probe' }),
+          text: async () => '',
+        };
+      }
+      return { ok: true, status: 204, json: async () => ({}), text: async () => '' };
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const cap = await probeGistWriteCapability('tok');
+    expect(cap.ok).toBe(true);
+    if (!cap.ok) throw new Error('unreachable');
+    expect(cap.probedGistId).toBe('g-probe');
+    expect(cap.cleanedUp).toBe(true);
+    expect(calls.map((c) => c.method)).toEqual(['POST', 'DELETE']);
+    expect(calls[1].url).toContain('/gists/g-probe');
+  });
+
+  it('CONTROL: a read-only probe cannot detect a blocked account — which is why this exists', async () => {
+    // ensureAttestationGist on the SAME write-blocked account: the list path
+    // returns an already-valid gist, so it succeeds and never reaches the POST
+    // that would have 422'd. This is the exact false "ready" the preflight used
+    // to report; it is asserted here so a future refactor cannot make the write
+    // probe look redundant and delete it.
+    const { ensureAttestationGist, probeGistWriteCapability } = await import('./attest');
+    // Local fixture: `makeFakeGistResponse` is scoped to the verifyAttestation
+    // describe, so build the signed body here from the module-level helpers.
+    const kp = generateKeyPairSync('ed25519');
+    const spkiDer = kp.publicKey.export({ type: 'spki', format: 'der' }) as Buffer;
+    const pubkeyBase64 = extractRawPubkey(spkiDer).toString('base64');
+    const payload = {
+      version: 1,
+      device_pubkey: pubkeyBase64,
+      device_label: 'test-device',
+      github_user_id: 12345,
+      github_login: 'testuser',
+      created_at: Date.now(),
+    };
+    const body = { ...payload, signature_by_device: signCanonical(payload, kp.privateKey) };
+    const filename = attestationGistFilename(pubkeyBase64);
+
+    let postAttempted = false;
+    const fetchMock = vi.fn(async (url: unknown, init?: unknown) => {
+      const method = (init as { method?: string } | undefined)?.method ?? 'GET';
+      if (method === 'POST') {
+        postAttempted = true;
+        return {
+          ok: false,
+          status: 422,
+          text: async () => 'user must have a verified email',
+          json: async () => ({}),
+        };
+      }
+      if (typeof url === 'string' && url.includes('/gists?')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => [{ id: 'g-existing', files: { [filename]: {} } }],
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          id: 'g-existing',
+          owner: { id: 12345 },
+          files: { [filename]: { content: JSON.stringify(body, null, 2) } },
+        }),
+      };
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    // The read path reports success on an account that cannot write.
+    const id = await ensureAttestationGist({
+      keychainId: 'unused-on-find-path',
+      pubkeyBase64,
+      deviceLabel: 'test',
+      githubUserId: 12345,
+      githubLogin: 'testuser',
+      token: 'tok',
+    });
+    expect(id).toBe('g-existing');
+    expect(postAttempted).toBe(false);
+
+    // The write probe, on the very same account, catches it.
+    const cap = await probeGistWriteCapability('tok');
+    expect(cap.ok).toBe(false);
+    if (cap.ok) throw new Error('unreachable');
+    expect(cap.code).toBe('email_unverified');
+    expect(postAttempted).toBe(true);
+  });
+});
