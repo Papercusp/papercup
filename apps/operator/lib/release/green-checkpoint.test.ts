@@ -45,6 +45,9 @@ import {
   sanitizeForkNodeOptions,
   GREEN_CHECKPOINT_FORK_HEAP_MB,
   GREEN_CHECKPOINT_POST_SUITE_HEAP_MB,
+  GREEN_CHECKPOINT_LOW_MEMORY_LINT_HEAP_MB,
+  GREEN_CHECKPOINT_LOW_MEMORY_LINT_BUDGET_MB,
+  GREEN_CHECKPOINT_LOW_MEMORY_LINT_MAX_CONCURRENCY,
   runPostSuiteLegs,
   checkpointFailureSignature,
   historicalFlakeAnnotations,
@@ -5830,6 +5833,170 @@ describe("post-suite legs get their own heap (WI-37510: fork cap OOM'd lint:tsc,
       expect(lintTscNodeOptions?.match(/--max-old-space-size/g)).toHaveLength(1);
       // And it must not eat unrelated flags the gate set.
       expect(lintTscNodeOptions).toContain('--expose-gc');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('P-005: post-suite low-memory scheduling and timing evidence', () => {
+  const lowMemoryScripts = [
+    'lint:no-owner-name-tags',
+    'lint:no-box-identity',
+    'lint:no-identity-literals',
+    'lint:design-primitives',
+    'lint:no-control-bytes',
+    'lint:guard-reachability',
+    'lint:mock-cast-escape',
+    'lint:timer-classification',
+    'lint:no-raw-setinterval',
+  ] as const;
+
+  it('caps the measured lint group at two children and keeps sequential/downstream legs outside it', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'green-postsuite-budget-'));
+    try {
+      writeFileSync(
+        join(dir, 'package.json'),
+        JSON.stringify({
+          name: 'fixture',
+          scripts: Object.fromEntries(
+            [
+              'lint:tsc',
+              'lint:migrations',
+              ...lowMemoryScripts,
+              'lint:plane-producers',
+            ].map((script) => [script, `node ${script}.mjs`]),
+          ),
+        }),
+      );
+
+      const lowMemorySet = new Set<string>(lowMemoryScripts);
+      const events: string[] = [];
+      const lowMemoryNodeOptions: string[] = [];
+      let activeLowMemory = 0;
+      let peakLowMemory = 0;
+      let clock = 100;
+      const exec: CheckpointExec = async (cmd, args, opts) => {
+        const runIndex = args.indexOf('run');
+        const id = cmd === 'npm' && runIndex >= 0 ? args[runIndex + 1]! : cmd;
+        events.push(`start:${id}`);
+        if (lowMemorySet.has(id)) {
+          activeLowMemory++;
+          peakLowMemory = Math.max(peakLowMemory, activeLowMemory);
+          lowMemoryNodeOptions.push(opts?.env?.NODE_OPTIONS ?? '');
+          // Both workers reach this yield before either completes. A third worker would
+          // therefore raise peakLowMemory above the fixed two-child resource envelope.
+          await Promise.resolve();
+          clock += 7;
+          activeLowMemory--;
+        } else {
+          clock += 3;
+        }
+        events.push(`end:${id}`);
+        // `git grep` exit 1 means the candidate contains no conflict markers.
+        return { code: cmd === 'git' ? 1 : 0, stdout: '', stderr: '' };
+      };
+
+      const result = await runPostSuiteLegs(
+        dir,
+        { NODE_ENV: 'test', NODE_OPTIONS: '--expose-gc' },
+        exec,
+        '@papercusp/operator-vite',
+        { now: () => clock },
+      );
+
+      expect(GREEN_CHECKPOINT_LOW_MEMORY_LINT_BUDGET_MB).toBe(
+        GREEN_CHECKPOINT_LOW_MEMORY_LINT_HEAP_MB *
+          GREEN_CHECKPOINT_LOW_MEMORY_LINT_MAX_CONCURRENCY,
+      );
+      expect(peakLowMemory).toBe(GREEN_CHECKPOINT_LOW_MEMORY_LINT_MAX_CONCURRENCY);
+      expect(lowMemoryNodeOptions).toHaveLength(lowMemoryScripts.length);
+      for (const nodeOptions of lowMemoryNodeOptions) {
+        expect(nodeOptions).toContain(
+          `--max-old-space-size=${GREEN_CHECKPOINT_LOW_MEMORY_LINT_HEAP_MB}`,
+        );
+        expect(nodeOptions).not.toContain(
+          `--max-old-space-size=${GREEN_CHECKPOINT_POST_SUITE_HEAP_MB}`,
+        );
+      }
+
+      const typecheckEnd = events.indexOf('end:lint:tsc');
+      const migrationsEnd = events.indexOf('end:lint:migrations');
+      const firstLowMemoryStart = Math.min(
+        ...lowMemoryScripts.map((script) => events.indexOf(`start:${script}`)),
+      );
+      const lastLowMemoryEnd = Math.max(
+        ...lowMemoryScripts.map((script) => events.indexOf(`end:${script}`)),
+      );
+      const planeStart = events.indexOf('start:lint:plane-producers');
+      const buildStart = events.indexOf('start:build');
+      expect(typecheckEnd).toBeLessThan(firstLowMemoryStart);
+      expect(migrationsEnd).toBeLessThan(firstLowMemoryStart);
+      expect(lastLowMemoryEnd).toBeLessThan(planeStart);
+      expect(planeStart).toBeLessThan(buildStart);
+      expect(result.ok).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('emits a stable ordered record and wall timing for every logical post-suite leg', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'green-postsuite-records-'));
+    try {
+      writeFileSync(
+        join(dir, 'package.json'),
+        JSON.stringify({
+          name: 'fixture',
+          scripts: Object.fromEntries(
+            lowMemoryScripts.map((script) => [script, `node ${script}.mjs`]),
+          ),
+        }),
+      );
+
+      let clock = 1_000;
+      const exec: CheckpointExec = async (cmd) => {
+        await Promise.resolve();
+        clock += cmd === 'git' ? 2 : 5;
+        return { code: cmd === 'git' ? 1 : 0, stdout: '', stderr: '' };
+      };
+      const result = await runPostSuiteLegs(
+        dir,
+        { NODE_ENV: 'test' },
+        exec,
+        '@papercusp/operator-vite',
+        { now: () => clock },
+      );
+
+      expect(result.records.map((record) => record.id)).toEqual([
+        'lint:tsc',
+        'lint:tsc:papercusp-libs',
+        'lint:tsc:workspaces',
+        'lint:tsc:orchestrator',
+        'lint:tsc:scripts',
+        'lint:migrations',
+        'lint:migration-forward-compat',
+        'lint:identity-leak',
+        'lint:design-primitives',
+        'lint:no-control-bytes',
+        'lint:guard-reachability',
+        'lint:mock-cast-escape',
+        'lint:timer-classification',
+        'lint:no-raw-setinterval',
+        'lint:plane-integrity',
+        'spa-build',
+      ]);
+      const executed = result.records.filter((record) => record.status === 'passed');
+      expect(executed.length).toBeGreaterThan(0);
+      expect(executed.every((record) => record.durationMs > 0)).toBe(true);
+      for (const record of result.records) {
+        expect(result.output).toContain(
+          `POST_SUITE_LEG id=${record.id} status=${record.status} durationMs=${record.durationMs}`,
+        );
+      }
+      expect(result.output).toContain(
+        `POST_SUITE_SCHEDULER lowMemoryMode=parallel maxConcurrency=${GREEN_CHECKPOINT_LOW_MEMORY_LINT_MAX_CONCURRENCY} memoryBudgetMb=${GREEN_CHECKPOINT_LOW_MEMORY_LINT_BUDGET_MB} workerHeapMb=${GREEN_CHECKPOINT_LOW_MEMORY_LINT_HEAP_MB}`,
+      );
+      expect(result.output).toMatch(/POST_SUITE_RESULT status=passed durationMs=\d+/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
