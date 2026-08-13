@@ -2590,6 +2590,30 @@ export function applyOmpToolsAllowlist(mcpJsonText, toolNames) {
   }
 }
 
+/** Keep only the MCP servers that belong in a default trimmed OMP session.
+ *
+ * The per-session config copy must carry papercusp-su, and may carry the public
+ * context7 server. Copying every server from the user's global mcp.json also
+ * pulls heavyweight/browser and credentialed plugin servers into every worker,
+ * even though the trimmed Papercusp tool spine cannot use them. Full-mode and
+ * role launches deliberately skip this filter by not supplying toolsAllowlist.
+ * Pure string→string; returns the input unchanged on any parse failure.
+ */
+function filterTrimmedOmpMcpServers(mcpJsonText) {
+  try {
+    const obj = JSON.parse(mcpJsonText);
+    const servers = obj?.mcpServers;
+    if (servers && typeof servers === 'object' && !Array.isArray(servers)) {
+      obj.mcpServers = Object.fromEntries(
+        Object.entries(servers).filter(([name]) => name === 'papercusp-su' || name === 'context7'),
+      );
+    }
+    return JSON.stringify(obj, null, 2);
+  } catch {
+    return mcpJsonText;
+  }
+}
+
 /** Rewrite the ORIGIN (scheme+host+port) of every papercusp `/api/mcp` server URL in an OMP
  *  mcp.json to the launcher's resolved operator URL, preserving path + query. The user-level
  *  `~/.omp/agent/mcp.json` pins whatever origin it was minted with (usually direct :3070) — a
@@ -2926,11 +2950,15 @@ export function writeOmpSessionConfigDir(sessionId, opts = {}, home = homedir())
     }
     // OAuth credential store — symlink, never copy (see writeOmpSessionConfigDir doc).
     linkOmpAgentDb(srcAgent, dstAgent);
-    // mcp.json — carry the papercusp-su server (else the relocated session has NO MCP at all),
-    // optionally trimming its advertised surface to the core spine for a weak model.
+    // mcp.json — carry the papercusp-su server (else the relocated session has NO MCP at all).
+    // A default trimmed launch also prunes the SERVER map to papercusp-su + optional context7;
+    // otherwise every future server added to the user's global config silently joins every weak
+    // worker. Explicit --context-size=full and role launches omit toolsAllowlist, preserving the
+    // complete user-selected server map as their opt-out.
     const srcMcp = join(srcAgent, 'mcp.json');
     if (existsSync(srcMcp)) {
       let mcpText = readFileSync(srcMcp, 'utf8');
+      if (toolsAllowlist && toolsAllowlist.length) mcpText = filterTrimmedOmpMcpServers(mcpText);
       mcpText = applyOmpOperatorOrigin(mcpText, operatorUrl);
       if (toolsAllowlist && toolsAllowlist.length) mcpText = applyOmpToolsAllowlist(mcpText, toolsAllowlist);
       // Stamp the caller's backend (always omp here) + resolved model so the operator can inherit

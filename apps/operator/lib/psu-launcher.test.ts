@@ -1037,6 +1037,43 @@ describe('writeOmpSessionConfigDir (WI-1282 + weak-model-tool-tier — OMP per-s
     expect(mcp.mcpServers['papercusp-su'].url).not.toContain('tools='); // no trim without the opt
   });
 
+  it('trimmed mode keeps only papercusp-su plus optional context7 MCP servers (P-032 recurrence guard)', () => {
+    const globalMcp = {
+      mcpServers: {
+        'papercusp-su': JSON.parse(MCP_JSON).mcpServers['papercusp-su'],
+        context7: { command: 'npx', args: ['-y', '@upstash/context7-mcp'] },
+        'playwright-chromium': { command: 'npx', args: ['playwright-mcp'] },
+        github: { type: 'http', url: 'https://api.githubcopilot.com/mcp/' },
+        'cloudflare-docs': { type: 'http', url: 'https://docs.mcp.cloudflare.com/mcp' },
+      },
+    };
+    writeFileSync(join(home, '.omp', 'agent', 'mcp.json'), JSON.stringify(globalMcp));
+
+    writeOmpSessionConfigDir('sess1', { toolsAllowlist: OMP_CORE_MCP_TOOL_NAMES }, home);
+
+    const written = JSON.parse(readFileSync(agentPath('sess1', 'mcp.json'), 'utf8'));
+    expect(Object.keys(written.mcpServers)).toEqual(['papercusp-su', 'context7']);
+    expect(new URL(written.mcpServers['papercusp-su'].url).searchParams.get('tools')!.split(','))
+      .toEqual([...OMP_CORE_MCP_TOOL_NAMES]);
+    expect(JSON.parse(readFileSync(join(home, '.omp', 'agent', 'mcp.json'), 'utf8'))).toEqual(globalMcp);
+  });
+
+  it('full mode preserves the complete user-selected MCP server map', () => {
+    const globalMcp = {
+      mcpServers: {
+        'papercusp-su': JSON.parse(MCP_JSON).mcpServers['papercusp-su'],
+        'playwright-chromium': { command: 'npx', args: ['playwright-mcp'] },
+        github: { type: 'http', url: 'https://api.githubcopilot.com/mcp/' },
+      },
+    };
+    writeFileSync(join(home, '.omp', 'agent', 'mcp.json'), JSON.stringify(globalMcp));
+
+    writeOmpSessionConfigDir('sess1', { discoveryOff: true }, home);
+
+    const written = JSON.parse(readFileSync(agentPath('sess1', 'mcp.json'), 'utf8'));
+    expect(Object.keys(written.mcpServers)).toEqual(Object.keys(globalMcp.mcpServers));
+  });
+
   it('weak trim (toolsAllowlist) rewrites the papercusp-su URL with ?tools=<core>', () => {
     const dir = writeOmpSessionConfigDir('sess1', { toolsAllowlist: OMP_CORE_MCP_TOOL_NAMES }, home);
     const mcp = JSON.parse(readFileSync(join(home, dir!, 'agent', 'mcp.json'), 'utf8'));
