@@ -23,6 +23,7 @@
     "lint:partial-index-alignment": "node ../../scripts/check-partial-index-alignment.mjs",
     "lint:no-undrained-stdout-exit": "node ../../scripts/check-undrained-stdout-exit.mjs",
     "lint:migration-forward-compat": "node ../../scripts/check-migration-forward-compat.mjs",
+    "lint:migrations": "node ../../scripts/lint-migrations.mjs",
     "lint:no-unthreaded-apply": "node ../../scripts/check-no-unthreaded-apply.mjs",
     "lint:okf-conformance": "tsx ../../scripts/check-okf-conformance.mjs",
     "lint:drop-database-force": "node ../../scripts/check-drop-database-force.mjs",

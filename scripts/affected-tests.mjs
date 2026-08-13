@@ -1389,6 +1389,40 @@ const REPO_WIDE_INVARIANT_GUARDS = [
       f.includes('/hyperbee/') ||
       f === 'scripts/check-no-unhosted-remote-core.mjs',
   },
+  {
+    // WI-38351 — `lint:migrations` is a GATE lint that nothing ran locally, so the author of a
+    // bad migration saw a GREEN `npm run test:affected` and the fleet found out hours later, as a
+    // red green-checkpoint that blocks EVERY agent's deploy. Third occurrence of that class
+    // (WI-38348 / migration 815, EI-20224121418388370, EI-10999): each time the detector already
+    // existed, cost ~1.1s, and simply never ran at the one moment it was still cheap to fix.
+    //
+    // Its checks are all whole-corpus by construction — duplicate NNN, raw BEGIN/COMMIT, RENAME
+    // CONSTRAINT, tenant DEFAULT, index-shape swap, and the reservation-row check that produced
+    // all three reds — so a per-workspace suite can never stand in for it.
+    workspace: '@papercusp/operator-core',
+    script: 'lint:migrations',
+    // NO hostSuiteRatchet ON PURPOSE, and here that is load-bearing rather than conventional:
+    // operator-core is pulled into the affected set for EVERY `libs/papercusp/**` path (see the
+    // EI-20026978310669562 note on the runner loop below), so declaring a ratchet would skip this
+    // guard on precisely the changesets it exists for. `lib/lint-migrations.test.ts` also unit-
+    // tests the helpers against fixtures rather than exec'ing the real corpus, so no honest
+    // ratchet is available to declare even if the skip were safe.
+    //
+    // Honest off-box: the reservation leg needs Postgres and SKIPS cleanly when it is unreachable
+    // ("· reservation check skipped (PG unreachable: …)", exit 0), so this does not become a
+    // permanently-red leg in GitHub CI — same degrade-not-fail property that made
+    // gen:authored-docs:check registrable above.
+    appliesTo: (f) =>
+      // The migration corpus itself — the numbered .sql files every check above reads. Kept as a
+      // directory test rather than an `^libs/papercusp/` anchor so a second scan dir (SCAN_DIRS in
+      // lint-migrations.mjs / next-migration.mjs) is covered the day one is added.
+      /(^|\/)libs\/db\/sql\/\d+-.*\.sql$/.test(f) ||
+      // …and the three files that DECIDE what "clean" means. A change to the linter or to the
+      // allocator that hands out the numbers can invalidate the whole corpus at once without any
+      // .sql file moving, which is the same shape as the projector case above.
+      f === 'scripts/lint-migrations.mjs' ||
+      f === 'scripts/next-migration.mjs',
+  },
 ];
 
 const workspaces = [

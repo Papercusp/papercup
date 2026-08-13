@@ -439,6 +439,98 @@ describe('affected-tests: migration forward-compat guard (WI-9573)', () => {
 });
 
 /**
+ * WI-38351 — the SAME class as the forward-compat guard above, on the SAME corpus, found
+ * the same way: `lint:migrations` was a gate-only lint, so the author of a bad migration
+ * saw a green `npm run test:affected` and the fleet learned about it hours later as a red
+ * green-checkpoint that blocked every agent's deploy.
+ *
+ * It had already happened three times when this was wired (WI-38348 / migration 815,
+ * EI-20224121418388370, EI-10999 — each an NNN-*.sql committed with no reservation row),
+ * and the last occurrence was expensive out of proportion to the defect: the 1.1s detector
+ * existed the whole time, four different agents raced to write the same one-line backfill,
+ * and three of those raced files landed. Nothing about that cost was caused by the missing
+ * row; all of it was caused by finding out late.
+ *
+ * The two directions are tested because a registration that attaches to EVERYTHING is as
+ * wrong as one that attaches to nothing — it just fails by spending every agent's edit
+ * budget instead of by staying silent.
+ */
+describe('affected-tests: migration lint guard (WI-38351)', () => {
+  const LM_SCRIPT = 'lint:migrations';
+  const LM_TASK = `${HOST_WORKSPACE} :: ${LM_SCRIPT}`;
+  const MIGRATION_PATH = `${MIGRATION_SQL_DIR}/750-drop-dead-hfc-partial-indexes.sql`;
+
+  it('attaches for a migration .sql change — the moment the number is still cheap to fix', () => {
+    const out = dryTasks(MIGRATION_PATH);
+    expect(
+      out,
+      `a migration at ${MIGRATION_PATH} must run lint:migrations locally. Before this ` +
+        'wiring it ran ONLY inside green-checkpoint, so an unreserved NNN (or a raw ' +
+        'BEGIN/COMMIT, or a duplicate number) got zero local signal and red-pinned the ' +
+        'shared gate for the whole fleet hours later.',
+    ).toContain(LM_TASK);
+  });
+
+  it('attaches when the LINTER itself changes, which can invalidate the whole corpus at once', () => {
+    expect(dryTasks('scripts/lint-migrations.mjs')).toContain(LM_TASK);
+  });
+
+  it('attaches when the ALLOCATOR changes, since it hands out the numbers this lint checks', () => {
+    expect(dryTasks('scripts/next-migration.mjs')).toContain(LM_TASK);
+  });
+
+  it('STILL attaches when the host workspace is affected, because nothing in that suite re-runs it', () => {
+    // The same skip-branch trap the forward-compat sibling documents above, and the reason
+    // this guard deliberately declares NO hostSuiteRatchet: libs/papercusp/** reaches
+    // operator-core through the dependency graph, so a migration .sql pulls the host
+    // workspace into the affected set. Declaring a ratchet would therefore disable the
+    // guard on exactly the changesets it exists for. operator-core's suite does contain
+    // lint-migrations.test.ts, but that exercises the helpers against fixtures and never
+    // scans the real SQL directory or reads the reservations table — so deferring to it
+    // would run nothing at all while looking, from every output, like success.
+    const out = dryTasks(MIGRATION_PATH);
+    expect(out, 'the host workspace should run its own suite here').toContain(
+      `${HOST_WORKSPACE} :: test`,
+    );
+    expect(
+      out,
+      'lint:migrations declares no hostSuiteRatchet, so the host suite running is NOT a ' +
+        `substitute for it. Task list was:\n${out}`,
+    ).toContain(LM_TASK);
+  });
+
+  it('does NOT attach for a migration-looking .sql OUTSIDE the scanned migrations directory', () => {
+    expect(
+      dryTasks('apps/operator/docs/examples/999-not-a-migration.sql'),
+      'only files under the scanned migrations dir can violate the invariant',
+    ).not.toContain(LM_TASK);
+  });
+
+  it('does NOT attach for an unrelated source change', () => {
+    expect(
+      dryTasks('packages/operator-core/lib/agent-tools/index.ts'),
+      'a TS edit cannot change a migration number, so paying the scan here is pure waste',
+    ).not.toContain(LM_TASK);
+  });
+
+  it('keeps the guard script defined ON THE HOST WORKSPACE, so the attachment cannot silently no-op', () => {
+    // Step two of the two-step registration. The router `continue`s when the host
+    // workspace does not define the script, and `lint:migrations` lived ONLY in the root
+    // package.json — so the registry entry alone would have attached nothing and looked
+    // exactly like success from every probe.
+    const pkg = JSON.parse(
+      readFileSync(resolve(REPO_ROOT, 'packages/operator-core/package.json'), 'utf8'),
+    ) as { scripts?: Record<string, string> };
+    expect(
+      pkg.scripts?.[LM_SCRIPT],
+      `${HOST_WORKSPACE} must define "${LM_SCRIPT}" — defining it only in the ROOT ` +
+        'package.json is not enough.',
+    ).toBeTruthy();
+    expect(pkg.scripts?.[LM_SCRIPT]).toContain('lint-migrations.mjs');
+  });
+});
+
+/**
  * WI-35930 (okf-frontmatter-adoption-2026-08-08 P-006) — the FOURTH instance, and the
  * first whose corpus is written by CODE as well as by hand.
  *
