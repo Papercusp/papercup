@@ -27,6 +27,8 @@ import { matchesClaimSpecFilter, claimSpecSubjectFromWorkItem } from '../../sche
 import { shapeBurnDown } from './burn_down-shape';
 import { getModes } from '../../modes/store';
 import { readDrainFlow, type DrainFlowReport } from './drain-flow';
+import { readIssueOccurrenceCounts, type IssueOccurrenceCounts } from '../../issue-occurrence-ledger';
+import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 
 /**
  * P-011 (fleet-lead-instrumentation-audit-2026-08-09) — what a lane fence removed
@@ -255,6 +257,9 @@ export interface BurnDownResult {
    *  canonical bug flow for the CALLER's active DRAIN window. Present only on
    *  a `since`-bounded read by a caller that currently holds DRAIN mode. */
   drainFlow?: DrainFlowReport;
+  /** P-004: canonical stock and raw report flow are different units. This
+   * exact ledger census is never derived from the capped work-item fetch. */
+  issueOccurrences?: IssueOccurrenceCounts;
 }
 
 export type CohortBucket = 'terminal' | 'parked' | 'in-flight' | 'unclaimed' | 'missing';
@@ -929,6 +934,17 @@ export default defineTool({
       })
       .optional(),
     drainFlow: drainFlowSchema.optional(),
+    issueOccurrences: z.object({
+      canonicalClusters: z.number(),
+      rawOccurrences: z.number(),
+      duplicateOccurrences: z.number(),
+      units: z.object({
+        canonicalClusters: z.literal('distinct canonical work-item ids with occurrences'),
+        rawOccurrences: z.literal('append-only report rows'),
+        duplicateOccurrences: z.literal('report rows not creating a canonical item'),
+      }),
+      writer: z.literal('harness_shared.work_item_occurrences'),
+    }).optional(),
     cohortAudit: z
       .object({
         requested: z.number(),
@@ -981,6 +997,10 @@ export default defineTool({
     // Only worth a round-trip when `since` was passed (no `since` ⇒ no delta to split).
     // Best-effort throughout: an attribution read must never cost a leader the census.
     const workspaceId = (ctx as { workspaceId?: string | null }).workspaceId ?? undefined;
+    const occurrenceWorkspaceId = resolveConcreteWorkspaceId(
+      workspaceId,
+      (ctx as { principal?: { workspaceId?: string | null } }).principal?.workspaceId,
+    );
     const self = args.since ? resolveSelfRef(ctx) : undefined;
     const fleetScope = await (async () => {
       if (!args.since) return null;
@@ -1030,6 +1050,13 @@ export default defineTool({
         drainStartedAt: drainMode.setAt,
       });
     })();
+    // P-004 / D-002 / D-004: read the append-only writer directly. Never infer
+    // occurrence flow from created work-item rows or the capped census above.
+    const issueOccurrences = await readIssueOccurrenceCounts({
+      workspaceId: occurrenceWorkspaceId,
+      harnessSlug: args.harness,
+      since: args.since ?? null,
+    });
     // P-011: apply the lane fence BEFORE the census is built, so every count in the
     // response (terminal.*/counts.*/deltaBy.*) describes the same population — a
     // fence applied to the row lists alone would leave the aggregates harness-wide
@@ -1055,6 +1082,7 @@ export default defineTool({
     if (requestedIds) result.cohortAudit = buildCohortAudit(requestedIds, items);
     if (fenced) result.fence = fenced.report;
     if (drainFlow) result.drainFlow = drainFlow;
+    result.issueOccurrences = issueOccurrences;
     return {
       data: result,
     };

@@ -30,15 +30,15 @@ describe('issue occurrence ledger (real PG, migration 831)', () => {
 
   beforeAll(async () => {
     db = await createOrgTestDb();
-    const before = await db.adminSql<{ relation: string | null }[]>`
-      SELECT to_regclass('harness_shared.work_item_occurrences')::text AS relation
+    const before = await db.adminSql<{ exists: boolean }[]>`
+      SELECT to_regclass('harness_shared.work_item_occurrences') IS NOT NULL AS exists
     `;
-    expect(before[0]?.relation).toBeNull();
+    expect(before[0]?.exists).toBe(false);
     await applyMigrationForTest(db.adminSql, MIGRATION);
-    const after = await db.adminSql<{ relation: string | null }[]>`
-      SELECT to_regclass('harness_shared.work_item_occurrences')::text AS relation
+    const after = await db.adminSql<{ exists: boolean }[]>`
+      SELECT to_regclass('harness_shared.work_item_occurrences') IS NOT NULL AS exists
     `;
-    expect(after[0]?.relation).toBe('harness_shared.work_item_occurrences');
+    expect(after[0]?.exists).toBe(true);
   }, 180_000);
 
   afterAll(async () => {

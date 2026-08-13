@@ -293,6 +293,23 @@ function projectDrainFlow(value: unknown, noteCap: number): JsonObject | undefin
   };
 }
 
+function projectIssueOccurrences(value: unknown): JsonObject | undefined {
+  const source = object(value);
+  const units = object(source?.units);
+  if (!source || !units || source.writer !== 'harness_shared.work_item_occurrences') return undefined;
+  return {
+    canonicalClusters: numberOrZero(source.canonicalClusters),
+    rawOccurrences: numberOrZero(source.rawOccurrences),
+    duplicateOccurrences: numberOrZero(source.duplicateOccurrences),
+    units: {
+      canonicalClusters: requiredString(units.canonicalClusters),
+      rawOccurrences: requiredString(units.rawOccurrences),
+      duplicateOccurrences: requiredString(units.duplicateOccurrences),
+    },
+    writer: 'harness_shared.work_item_occurrences',
+  };
+}
+
 export function shapeBurnDown(
   data: unknown,
   tier: BurnDownPayloadTier,
@@ -346,6 +363,8 @@ export function shapeBurnDown(
   if (fence) out.fence = fence;
   const drainFlow = projectDrainFlow(source.drainFlow, caps.note);
   if (drainFlow) out.drainFlow = drainFlow;
+  const issueOccurrences = projectIssueOccurrences(source.issueOccurrences);
+  if (issueOccurrences) out.issueOccurrences = issueOccurrences;
   const cohortAudit = projectCohortAudit(source.cohortAudit, caps.cohortRows, caps.title, caps.reason);
   if (cohortAudit) out.cohortAudit = cohortAudit;
   return out;

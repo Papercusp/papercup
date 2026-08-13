@@ -18,11 +18,13 @@ vi.mock('../coordination/presence', async (importOriginal) => ({
 
 vi.mock('../../modes/store', () => ({ getModes: vi.fn() }));
 vi.mock('./drain-flow', () => ({ readDrainFlow: vi.fn() }));
+vi.mock('../../issue-occurrence-ledger', () => ({ readIssueOccurrenceCounts: vi.fn() }));
 
 import { getWorkItem, listWorkItems, WORK_ITEMS_MAX_LIMIT } from '../../work-items';
 import { listPresence } from '../coordination/presence';
 import { getModes } from '../../modes/store';
 import { readDrainFlow, type DrainFlowReport } from './drain-flow';
+import { readIssueOccurrenceCounts, type IssueOccurrenceCounts } from '../../issue-occurrence-ledger';
 import {
   buildBurnDownResult,
   buildCohortAudit,
@@ -37,6 +39,7 @@ const mockGetWorkItem = vi.mocked(getWorkItem);
 const mockListPresence = vi.mocked(listPresence);
 const mockGetModes = vi.mocked(getModes);
 const mockReadDrainFlow = vi.mocked(readDrainFlow);
+const mockReadIssueOccurrenceCounts = vi.mocked(readIssueOccurrenceCounts);
 const tool = (await import('./burn_down')).default;
 
 const drainFlowReport: DrainFlowReport = {
@@ -58,6 +61,18 @@ const drainFlowReport: DrainFlowReport = {
     rule: 'after the first admitted bug, block while opened >= terminaled',
     reason: '4 opened vs 3 terminaled',
   },
+};
+
+const issueOccurrenceCounts: IssueOccurrenceCounts = {
+  canonicalClusters: 2,
+  rawOccurrences: 5,
+  duplicateOccurrences: 3,
+  units: {
+    canonicalClusters: 'distinct canonical work-item ids with occurrences',
+    rawOccurrences: 'append-only report rows',
+    duplicateOccurrences: 'report rows not creating a canonical item',
+  },
+  writer: 'harness_shared.work_item_occurrences',
 };
 
 function item(overrides: Partial<WorkItem>): WorkItem {
@@ -108,6 +123,7 @@ describe('work_items:burn_down', () => {
     mockGetWorkItem.mockResolvedValue(null);
     mockGetModes.mockResolvedValue([]);
     mockReadDrainFlow.mockResolvedValue(drainFlowReport);
+    mockReadIssueOccurrenceCounts.mockResolvedValue(issueOccurrenceCounts);
   });
 
   it('classifies terminal, in-flight, parked, and unclaimed rows', () => {
@@ -467,10 +483,21 @@ describe('work_items:burn_down', () => {
       ownerId: 'su-drainer',
       drainStartedAt: '2026-08-13T08:00:00.000Z',
     });
-    expect(res.data).toMatchObject({ drainFlow: drainFlowReport });
+    expect(mockReadIssueOccurrenceCounts).toHaveBeenCalledWith({
+      workspaceId: 'ws-test',
+      harnessSlug: 'papercusp',
+      since: '2026-08-13T09:00:00.000Z',
+    });
+    expect(res.data).toMatchObject({
+      drainFlow: drainFlowReport,
+      issueOccurrences: issueOccurrenceCounts,
+    });
     expect((tool as unknown as { result: { safeParse: (value: unknown) => { success: boolean } } })
       .result.safeParse(res.data).success).toBe(true);
-    expect(shapeBurnDown(res.data, 'trimmed')).toMatchObject({ drainFlow: drainFlowReport });
+    expect(shapeBurnDown(res.data, 'trimmed')).toMatchObject({
+      drainFlow: drainFlowReport,
+      issueOccurrences: issueOccurrenceCounts,
+    });
   });
 
   it('omits drain flow outside an active since-bounded DRAIN read', async () => {

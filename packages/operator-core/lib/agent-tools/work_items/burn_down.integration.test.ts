@@ -6,7 +6,8 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
-import { createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
+import { join } from 'node:path';
+import { applyMigrationForTest, createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
 import {
   HARNESS_FEATURES_CONSOLIDATED_DDL,
   USER_TRUST_LIST_DDL,
@@ -42,6 +43,10 @@ beforeAll(async () => {
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
   await db.sql.unsafe(USER_TRUST_LIST_DDL);
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple();
+  await applyMigrationForTest(
+    db.sql,
+    join(__dirname, '../../../../../libs/papercusp/libs/db/sql/831-issue-occurrence-ledger.sql.DRAFT'),
+  );
   // The handler's fleet attribution is intentionally read through the durable
   // membership ledger, not a mocked list or the ephemeral presence projection.
   await db.sql.unsafe(`
@@ -65,7 +70,8 @@ afterAll(async () => {
 beforeEach(async () => {
   await db.sql`TRUNCATE harness_shared.work_items,
                          harness_shared.coord_presence,
-                         harness_shared.fleet_membership_events RESTART IDENTITY`;
+                         harness_shared.fleet_membership_events,
+                         harness_shared.work_item_occurrences RESTART IDENTITY`;
   await db.sql`ALTER SEQUENCE harness_shared.work_item_seq RESTART WITH 1`;
 });
 
@@ -102,6 +108,16 @@ describe('work_items:burn_down real-store fleet attribution', () => {
         (${HARNESS}, 'EI-real-fleet-unclaimed', 'unclaimed work', 'open', 'open', 'task', NULL,
          NULL, NULL, 'default', ${epoch('2026-08-11T19:10:00.000Z')}, ${epoch('2026-08-11T19:10:00.000Z')}, NULL, NULL, NULL)
     `;
+    await db.sql`
+      INSERT INTO harness_shared.work_item_occurrences
+        (workspace_id, canonical_harness_slug, canonical_work_item_id, reporter,
+         source_tool, report_kind, reported_title, evidence)
+      VALUES
+        ('default', ${HARNESS}, 'EI-real-fleet-closed', 'fleet-member-dead',
+         'work_items:create', 'canonical-created', 'closed by fleet member', '{}'::jsonb),
+        ('default', ${HARNESS}, 'EI-real-fleet-closed', 'fleet-member-live',
+         'improvements:capture', 'duplicate', 'same failure again', '{"repro":true}'::jsonb)
+    `;
 
     const response = await (burnDownTool as unknown as {
       handler: (args: unknown, ctx: unknown) => Promise<{ data: Record<string, any> }>;
@@ -123,6 +139,17 @@ describe('work_items:burn_down real-store fleet attribution', () => {
       lastProgressAt: '2026-08-11T19:40:00.000Z',
     }));
     expect(data.terminal.delta).toBe(1);
+    expect(data.issueOccurrences).toEqual({
+      canonicalClusters: 1,
+      rawOccurrences: 2,
+      duplicateOccurrences: 1,
+      units: {
+        canonicalClusters: 'distinct canonical work-item ids with occurrences',
+        rawOccurrences: 'append-only report rows',
+        duplicateOccurrences: 'report rows not creating a canonical item',
+      },
+      writer: 'harness_shared.work_item_occurrences',
+    });
     expect(data.terminal.deltaBy).toEqual(expect.objectContaining({
       fleet: 1,
       otherAgents: 0,
