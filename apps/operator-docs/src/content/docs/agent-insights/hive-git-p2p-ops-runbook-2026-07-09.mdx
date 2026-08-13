@@ -4,28 +4,30 @@
 # Edit the doc with docs:author { overwrite: true } — a hand-edit here is REFUSED by
 # the next projection (it cannot tell your edit from corruption), so it blocks the
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
-title: hive-git P2P ops runbook — mode flip/rollback, integrator/epoch, divergence, sigrefs, drill
-description: Operational playbook for the per-hive P2P git replication plane (lib/sync/pot-git) — how to flip/rollback hiveGit.mode, what the integrator lease + epoch fencing actually guarantee today, how to triage a github-bridge divergence escalation, the 5 sigrefs rejection reasons, how to re-run the drill, and why the git-sync stall watchdog does not false-alarm under commit-only mode.
+title: "hive-git P2P ops runbook — mode flip/rollback, integrator/epoch, divergence, sigrefs, drill"
+description: "Operational playbook for the per-hive P2P git replication plane (lib/sync/pot-git) — how to flip/rollback hiveGit.mode, what the integrator lease + epoch fencing actually guarantee today, how to triage a github-bridge divergence escalation, the 5 sigrefs rejection reasons, how to re-run the drill, and why the git-sync stall watchdog does not false-alarm under commit-only mode."
+type: Insight
 discovered: 2026-07-09
-updated: 2026-07-17
-tags: [hive-git, p2p, federation, git-sync, github-bridge, integrator, sigrefs, runbook, watchdog]
+tags: ["hive-git", "p2p", "federation", "git-sync", "github-bridge", "integrator", "sigrefs", "runbook", "watchdog"]
 status: active
 documents:
-  - packages/operator-core/lib/harness/git-sync/hive-git-mode.ts
-  - packages/operator-core/lib/harness/git-sync/git-sync-action.ts
-  - packages/operator-core/lib/sync/pot-git/integrator.ts
-  - packages/operator-core/lib/sync/pot-git/integrator-tick.ts
-  - packages/operator-core/lib/sync/pot-git/ref-announce-tick.ts
-  - packages/operator-core/lib/sync/pot-git/worktree-bridge-tick.ts
-  - packages/operator-core/lib/sync/pot-git/serve-wiring.ts
-  - packages/operator-core/lib/sync/pot-git/gc.ts
-  - packages/operator-core/lib/sync/pot-git/publish-guard.ts
-  - packages/operator-core/lib/sync/pot-git/sigrefs.ts
-  - packages/operator-core/lib/sync/pot-git/github-divergence.ts
-  - packages/operator-core/lib/authority/lock-authority.ts
-  - packages/operator-core/lib/release/git-sync-stall-watchdog.ts
-  - papercusp-desktop/bin/hive-git-drill.sh
-type: Insight
+  - "packages/operator-core/lib/harness/git-sync/hive-git-mode.ts"
+  - "packages/operator-core/lib/harness/git-sync/git-sync-action.ts"
+  - "packages/operator-core/lib/sync/pot-git/integrator.ts"
+  - "packages/operator-core/lib/sync/pot-git/integrator-tick.ts"
+  - "packages/operator-core/lib/sync/pot-git/authority-epoch.ts"
+  - "packages/operator-core/lib/sync/pot-git/handoff-token.ts"
+  - "packages/operator-core/lib/sync/pot-git/ref-announce-tick.ts"
+  - "packages/operator-core/lib/sync/pot-git/worktree-bridge-tick.ts"
+  - "packages/operator-core/lib/sync/pot-git/serve-wiring.ts"
+  - "packages/operator-core/lib/sync/pot-git/gc.ts"
+  - "packages/operator-core/lib/sync/pot-git/publish-guard.ts"
+  - "packages/operator-core/lib/sync/pot-git/sigrefs.ts"
+  - "packages/operator-core/lib/sync/pot-git/github-divergence.ts"
+  - "packages/operator-core/lib/authority/lock-authority.ts"
+  - "packages/operator-core/lib/release/git-sync-stall-watchdog.ts"
+  - "papercusp-desktop/bin/hive-git-drill.sh"
+updated: 2026-07-17
 generated:
   by: agent
   at: 2026-07-09
@@ -191,17 +193,20 @@ namespace heads into one `staging` ref:
 - **Epoch fencing (G-5d) IS wired**: every staging-advance announcement
   carries `{epoch, seq}`, monotonically increasing, so a stale/duplicate
   advance is fenced by strict `(epoch, seq)` order at the receiving end.
-- **Epoch GRANTING (the lease handoff itself) is NOT wired yet** — this is a
-  **known simplification** flagged directly in `runIntegratorLeg`'s doc
-  comment: today's `epoch` is persisted once per `(hive, repo)` for the life
-  of the routine's own metadata row and only `seq` advances within it. That is
-  correct and safe for a **single-authority dev-box run** (only one epoch is
-  ever in play), but a genuine multi-machine lock-authority HANDOFF (via the
-  G-0 handoff-token library) must be wired in **before** the Phase 3 live
-  2-machine drill (P-301+) — otherwise two machines can each believe they hold
-  epoch 1 and both integrate independently with no fence between them.
-  **Do not treat today's epoch as proof of single-writer safety across
-  machines** — it only fences a single machine's own re-announcements.
+- **Epoch GRANTING (G-0/P-505) IS wired, but physical failover is not yet
+  release-proven.** `runIntegratorLeg` calls `deriveIntegratorGrant` before it
+  may publish. A standing authority keeps its epoch; a successor adopts the
+  best verified handoff token and publishes at `token.epoch + 1`; a tokenless
+  crash successor uses its last accepted foreign bridge watermark and seeds a
+  descendant base from the ancestry-maximal observed staging. A blocked base
+  reconciliation stops the tick without minting an epoch. The receiver derives
+  `maxGrantedEpoch` from verified handoff tokens, and retryable
+  `unknown-sha`/`ungranted-epoch` results hold the fed-event cursor rather than
+  being dropped. These paths are covered by the P-505 unit/integration suite.
+  **Do not treat that in-process coverage as proof of cross-machine
+  single-writer safety.** Plan decision D-002 still requires the genuine
+  two-machine kill/takeover/stale-writer drill with zero skips; until it passes,
+  the implementation is wired but the operational failover claim is open.
 - **Storage note:** the integrator publishes to
   `refs/namespaces/<integratorDeviceHex>/refs/heads/staging` — its OWN
   namespace, not a shared top-level ref. Now that the lease-holder gate is
