@@ -522,6 +522,7 @@ export function evaluateBgHostTicker(
 export const BG_HOST_HOT_PATHS = [
   'packages/operator-core/lib/dbos',
   'packages/operator-core/lib/harness/routines',
+  'packages/operator-core/lib/harness/git-sync',
   'packages/operator-core/lib/events',
   'packages/operator-core/lib/agent-tools/loop',
 ] as const;

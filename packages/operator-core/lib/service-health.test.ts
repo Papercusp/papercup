@@ -13,6 +13,7 @@ import {
   evaluateBgHostTicker,
   evaluateBgHostCodeDrift,
   probeBgHostCodeDrift,
+  BG_HOST_HOT_PATHS,
   BG_HOST_STALE_MS,
   SUPERVISED_PROCESSES,
   supervisedProcesses,
@@ -591,6 +592,10 @@ describe('tcpPreflight — fast connect budget, separate from the HTTP response 
 
 describe('evaluateBgHostCodeDrift (WI-1867 — stale routines-primary detection)', () => {
   const NOW = 1_700_000_000_000;
+
+  it('EI-20365119255138043: git-sync implementation changes are covered by the bg-host drift probe', () => {
+    expect(BG_HOST_HOT_PATHS).toContain('packages/operator-core/lib/harness/git-sync');
+  });
 
   it('hot-path change YOUNGER than the bg-host boot → drift flagged: up stays true (no alarm), note names the restart + the stale symptom', () => {
     const res = evaluateBgHostCodeDrift(NOW - 60 * 60_000, NOW - 10 * 60_000, 'packages/operator-core/lib/harness/routines/loop-fire.ts');
