@@ -11,6 +11,7 @@ import {
   findLiveHost,
   hostSupports,
   hostIsAgentLaunched,
+  hostCodeVersionMatches,
   shutdownViaPty,
   latestRespawnNativeId,
   mcpReconnectViaPty,
@@ -927,5 +928,46 @@ describe('latestRespawnNativeId (WI-5075 rung 3: reconcile a stale adv_sessions 
     // The newest respawn rotated to an id the host did not record; claiming the
     // superseded 'old-1' would re-pin the estimate to a dead predecessor.
     expect(latestRespawnNativeId(owner, dir)).toBeNull();
+  });
+});
+
+describe('hostCodeVersionMatches (WI-38292 — which build is this LIVE host running)', () => {
+  const A = 'a'.repeat(64);
+  const B = 'b'.repeat(64);
+
+  it('reports true when the running host carries the expected build', () => {
+    expect(hostCodeVersionMatches({ hostCodeVersion: A }, A)).toBe(true);
+  });
+
+  it('reports false when the live host predates the expected build', () => {
+    // The reported failure: a fix committed AFTER the host booted cannot run in it,
+    // so the fix looks broken while it is actually only un-adopted.
+    expect(hostCodeVersionMatches({ hostCodeVersion: A }, B)).toBe(false);
+  });
+
+  it('returns null — NOT false — for an older host with no hostCodeVersion field', () => {
+    // Fail-soft direction matters: an unknown must never read as a decided answer.
+    expect(hostCodeVersionMatches({}, A)).toBeNull();
+    expect(hostCodeVersionMatches(null, A)).toBeNull();
+    expect(hostCodeVersionMatches(undefined, A)).toBeNull();
+  });
+
+  it('returns null when the CALLER has no expected version to compare against', () => {
+    expect(hostCodeVersionMatches({ hostCodeVersion: A }, null)).toBeNull();
+    expect(hostCodeVersionMatches({ hostCodeVersion: A }, '')).toBeNull();
+  });
+
+  it('never answers "up to date" from an absent value on either side', () => {
+    // The whole point of the field: the tempting default (assume it matches) is the
+    // bug this exists to end. No combination of unknowns may produce a `true`.
+    for (const host of [null, undefined, {}, { hostCodeVersion: null }, { hostCodeVersion: '  ' }]) {
+      for (const expected of [null, undefined, '', '   ', A]) {
+        expect(hostCodeVersionMatches(host as never, expected)).not.toBe(true);
+      }
+    }
+  });
+
+  it('ignores surrounding whitespace rather than reporting a false mismatch', () => {
+    expect(hostCodeVersionMatches({ hostCodeVersion: ` ${A} ` }, A)).toBe(true);
   });
 });

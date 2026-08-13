@@ -4,7 +4,7 @@
  * (turn-lifecycle-control Phase 3, P-012/P-013). The real-pty round-trip
  * (spawn → socket-inject → cleanup) lives in psu-pty-host.integration.test.ts.
  */
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterAll } from 'vitest';
 import {
   sanitizeKey,
   socketPathFor,
@@ -46,6 +46,9 @@ import {
   ACTIVITY_PERSIST_MS,
   MAX_CONTROL_PAYLOAD_BYTES,
   controlPayloadWithinLimit,
+  hashHostScript,
+  hostCodeStaleness,
+  LOADED_HOST_CODE_VERSION,
   PSU_PTY_DIR,
   pidLooksLikePsuHost,
   findLiveHostFor,
@@ -2867,5 +2870,64 @@ describe('signalNameFromCode — the evidence a session was KILLED (WI-38054)', 
     // Returning null here would silently restore "looks like a clean exit" for any
     // platform signal this Node build cannot name. Keep the evidence, unnamed.
     expect(signalNameFromCode(9999)).toBe('SIG9999');
+  });
+});
+
+describe('host-code staleness (WI-38292 — a respawn replaces the child, never this host)', () => {
+  // Tier-2 falsifiability (repo rule): the subject is a FILE read by path, so every
+  // mutation below happens on a COPY outside the checkout. Nothing here writes to the
+  // shared tree, so there is no git-sync sweep race and no restore to get wrong.
+  const scratch = nodeFs.mkdtempSync(pathJoin(nodeOs.tmpdir(), 'wi38292-'));
+  afterAll(() => nodeFs.rmSync(scratch, { recursive: true, force: true }));
+
+  const write = (name: string, body: string) => {
+    const p = pathJoin(scratch, name);
+    nodeFs.writeFileSync(p, body);
+    return p;
+  };
+
+  it('captures the version of the host source THIS process loaded', () => {
+    // Calibration: the frozen constant must equal a fresh hash of the real file.
+    // Without this the controls below could pass while the constant is garbage.
+    expect(LOADED_HOST_CODE_VERSION).toMatch(/^[0-9a-f]{64}$/);
+    expect(hashHostScript()).toBe(LOADED_HOST_CODE_VERSION);
+  });
+
+  it('hashes identical content identically and different content differently', () => {
+    const a = write('a.mjs', 'export const x = 1;\n');
+    const b = write('b.mjs', 'export const x = 1;\n');
+    const c = write('c.mjs', 'export const x = 2;\n');
+    expect(hashHostScript(a)).toBe(hashHostScript(b));
+    expect(hashHostScript(a)).not.toBe(hashHostScript(c));
+  });
+
+  it('reports NOT stale while the on-disk file still matches what was loaded', () => {
+    const p = write('same.mjs', 'export const same = true;\n');
+    const loaded = hashHostScript(p)!;
+    expect(hostCodeStaleness({ loaded, path: p })).toMatchObject({ stale: false, loaded });
+  });
+
+  it('DETECTS the reported bug: the file on disk moved on after this host loaded it', () => {
+    // The live reproduction — host booted 13:08, fix committed 14:02, host kept
+    // executing the pre-fix code. This is the control that must go red if the
+    // comparison is ever weakened to always-false.
+    const p = write('drift.mjs', 'export const before = true;\n');
+    const loaded = hashHostScript(p)!;
+    nodeFs.writeFileSync(p, 'export const after = true;\n'); // the deployed fix lands
+    const verdict = hostCodeStaleness({ loaded, path: p });
+    expect(verdict.stale).toBe(true);
+    expect(verdict.loaded).toBe(loaded);
+    expect(verdict.onDisk).not.toBe(loaded);
+  });
+
+  it('degrades an UNREADABLE file to "not stale" rather than a warning storm', () => {
+    // Fail-soft: a transient fs error must not make a working respawn path noisy.
+    const verdict = hostCodeStaleness({ loaded: 'a'.repeat(64), path: pathJoin(scratch, 'nope.mjs') });
+    expect(verdict).toMatchObject({ stale: false, onDisk: null });
+  });
+
+  it('never claims staleness when the loaded version is unknown', () => {
+    const p = write('unknown.mjs', 'export const x = 3;\n');
+    expect(hostCodeStaleness({ loaded: null, path: p }).stale).toBe(false);
   });
 });

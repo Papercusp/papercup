@@ -80,6 +80,36 @@ export interface PsuPtyHost {
   //    rather than a heuristic. Consumers MUST fail-soft an absent value to
   //    "human-launched" — the refusing direction (see hostIsAgentLaunched).
   launchedBy?: string | null;
+  // ── Running host build (WI-38292; ADDITIVE — absent on files written by older
+  //    hosts). sha256 of the psu-pty-host.mjs source the host process actually
+  //    LOADED, frozen at import. A carry-respawn replaces only the CLI child, so a
+  //    host that booted before a fix keeps running the old code for its whole life;
+  //    this is the only way to ask a LIVE session which build it carries, and
+  //    therefore the only way to tell "the fix is broken" apart from "this host
+  //    predates the fix". Consumers MUST fail-soft an absent value to "unknown",
+  //    never to "up to date" — see hostCodeVersionMatches.
+  hostCodeVersion?: string | null;
+}
+
+/**
+ * Is this live host running the expected psu-pty-host build? WI-38292.
+ *
+ * Returns `null` — deliberately NOT `false` — when either side is unknown (an older
+ * host that predates the field, or a caller with no expected hash). A boolean here
+ * would force an unknown into one of the two decided answers, and the tempting
+ * default ("assume it matches") is exactly the failure this field exists to end: a
+ * fix that shipped, was tested green, and could not run in any already-live session.
+ *
+ * Pure.
+ */
+export function hostCodeVersionMatches(
+  host: Pick<PsuPtyHost, 'hostCodeVersion'> | null | undefined,
+  expectedVersion: string | null | undefined,
+): boolean | null {
+  const running = String(host?.hostCodeVersion ?? '').trim();
+  const expected = String(expectedVersion ?? '').trim();
+  if (!running || !expected) return null;
+  return running === expected;
 }
 
 /**

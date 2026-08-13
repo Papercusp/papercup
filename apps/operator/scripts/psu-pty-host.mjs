@@ -69,6 +69,42 @@ const require = createRequire(import.meta.url);
  *  emit CLI) and the checkout root. */
 const HOST_SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 
+/** This script's own path — the file whose LOADED contents this process runs.
+ *  Separate from HOST_SCRIPT_DIR because WI-38292 needs the file, not the dir. */
+const HOST_SCRIPT_PATH = fileURLToPath(import.meta.url);
+
+/** WI-38292: sha256 of a host script ON DISK, or null when unreadable.
+ *  `path` is overridable so the staleness guard below can be proven falsifiable
+ *  against a COPY outside the checkout — never by mutating this file in the
+ *  shared tree, which git-sync would sweep into a commit mid-probe. */
+export function hashHostScript(path = HOST_SCRIPT_PATH) {
+  try {
+    return createHash('sha256').update(readFileSync(path)).digest('hex');
+  } catch {
+    return null;
+  }
+}
+
+/** WI-38292: the psu-pty-host version THIS PROCESS IS ACTUALLY RUNNING, frozen at
+ *  module load. psu-launcher.mjs imports this module ONCE into a long-lived process
+ *  and `recycleChild` only ever replaces the CLI child, so a deployed host fix stays
+ *  inert here until the whole launcher restarts. Capturing the hash at load is what
+ *  makes that detectable at all: it is the only value in the process that still
+ *  describes the code actually executing after the file on disk moves on. */
+export const LOADED_HOST_CODE_VERSION = hashHostScript();
+
+/** WI-38292: is this host executing code older than what is on disk?
+ *  `stale` is true ONLY when both hashes are known and differ — an unreadable file
+ *  degrades to "not stale" so a transient fs error can never turn a working respawn
+ *  path into a warning storm. Pure + exported for tests. */
+export function hostCodeStaleness({
+  loaded = LOADED_HOST_CODE_VERSION,
+  path = HOST_SCRIPT_PATH,
+} = {}) {
+  const onDisk = hashHostScript(path);
+  return { stale: Boolean(loaded && onDisk && loaded !== onDisk), loaded, onDisk };
+}
+
 /** The discovery dir. Owner-only (0700). Shared contract with the read side
  *  (operator-core psu-pty-discovery.ts). */
 export const PSU_PTY_DIR = join(homedir(), '.papercusp', 'psu-pty');
@@ -2737,6 +2773,16 @@ export function hostThroughPty(o) {
     // ADDITIVE — absent on files written by older hosts; consumers must fail-soft to
     // "human-launched" (the refusing direction).
     launchedBy: String(env.PAPERCUSP_LAUNCHED_BY || '').trim() || null,
+    // WI-38292: WHICH psu-pty-host BUILD this live host is running — the sha256 of
+    // the module source as loaded, frozen at import. A carry-respawn replaces only
+    // the CLI child, so a host that booted before a fix keeps executing the old code
+    // indefinitely; without this field there is no way to ask a RUNNING session
+    // whether it carries a given fix, and a correctly-shipped fix looks broken
+    // instead of merely un-adopted. Advertised here because discovery is already the
+    // host's public record, so every reader gets the answer without a new channel.
+    // ADDITIVE — absent on files written by older hosts; consumers must fail-soft to
+    // "unknown version", never to "up to date".
+    hostCodeVersion: LOADED_HOST_CODE_VERSION,
   };
   const writeMeta = () => {
     try {
@@ -4337,6 +4383,27 @@ export function hostThroughPty(o) {
       // — the P-018 successor-kill loop left ZERO durable trace outside journalctl.
       // Non-drill respawns now always leave generic respawned/failed/carry rows.
       const respawnMode = systemPromptAddendum ? 'carry-respawn' : 'recycle';
+      // WI-38292: a respawn replaces the CLI child but NOT this host process, so a
+      // host fix committed after this process booted stays inert here — the live
+      // reproduction was a continuation fix (d351ee3084) that a running host simply
+      // could not execute, which looked exactly like the fix not working. Nothing in
+      // the process could report that, so the failure was invisible for its whole
+      // lifetime. Record it at the respawn boundary, where a stale host is about to
+      // decide the session's continuation and the mismatch actually changes outcomes.
+      // Detection only: adoption is a separate, riskier change (a launcher re-exec),
+      // and a silent-but-detectable staleness is strictly better than an undetected one.
+      try {
+        const hostCode = hostCodeStaleness();
+        if (hostCode.stale) {
+          appendHostEvent(ownerId, 'host-code-stale', {
+            mode: respawnMode,
+            loaded: hostCode.loaded,
+            onDisk: hostCode.onDisk,
+          });
+        }
+      } catch {
+        /* diagnostic only — never block a respawn on the staleness probe */
+      }
       // Assemble + persist the NEXT child's argv before killing the current one.
       // If carry-file creation fails, the settled current session remains alive
       // and its native/force-compaction backstops remain available.
