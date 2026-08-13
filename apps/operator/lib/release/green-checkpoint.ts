@@ -356,6 +356,17 @@ export interface CheckpointDeps {
    *  the workspace resolver (a git diff, not a node graph walk). Optional + injected, so
    *  a stub that omits it keeps the old workspace behaviour exactly. */
   changedFilesForRange?(from: string, to: string): Promise<string[] | null>;
+  /** WI-38422: run the candidate-scoped operator-core typecheck BEFORE the expensive
+   *  affected-test sweep. The caller passes the exact committed diff from the last
+   *  green pin to the candidate; the real dep invokes the existing `lint:tsc --files`
+   *  attribution surface in the isolated checkpoint tree. `skipped` means the subject
+   *  hive has no such script, not green. Optional so older/test deps keep their current
+   *  behaviour; runGreen's unscoped post-suite typecheck remains the final assurance. */
+  runChangedFileTypecheckPreflight?(files: string[]): Promise<{
+    status: 'passed' | 'failed' | 'skipped';
+    summary: string;
+    failingSignatures?: string[];
+  }>;
   /** WI-2997 (EI-7443 follow-up, item 3): per-file 7d historical flake stats for
    *  the CURRENTLY failing test files, so the not-green broadcast/escalate can
    *  show flake-vs-regression immediately instead of the release-fixer
@@ -4496,11 +4507,86 @@ export async function runGreenCheckpoint(
       deps.log(`tree-drift preflight failed (${e instanceof Error ? e.message : e})`);
     }
   }
+  // WI-38422: reject a candidate-scoped operator-core type regression BEFORE paying for
+  // the full affected-test sweep. This deliberately reuses BOTH existing seams:
+  // `changedFilesForRange` is the exact committed last-green..candidate diff (including
+  // expanded submodule paths), and the real runner below is `lint:tsc -- --files=...`,
+  // whose explicit attribution cannot confuse a peer's live working-tree edits for this
+  // candidate's own files.
+  //
+  // Applicability is fail-soft but never optimistic. With no prior green pin, no exact
+  // changed-file answer, no operator-core path, an unrepresentable comma-containing path,
+  // or an execution error, we log the reason and retain the unchanged full suite + unscoped
+  // post-suite typecheck. Only a completed non-zero scoped verdict rejects early. A passing
+  // preflight ALSO retains that post-suite check: the early run buys latency, not assurance.
+  let earlyPreflightFailure: Awaited<ReturnType<CheckpointDeps['runGreen']>> | null = null;
+  if (deps.runChangedFileTypecheckPreflight && deps.changedFilesForRange) {
+    const preflightStartedAtMs = Date.now();
+    const elapsed = () => `${((Date.now() - preflightStartedAtMs) / 1000).toFixed(1)}s`;
+    if (!lastReady) {
+      deps.log('early changed-file typecheck preflight: skipped (no prior green pin to diff from) — full gate retained');
+    } else {
+      try {
+        const resolved = await deps.changedFilesForRange(lastReady, candidate);
+        if (resolved === null) {
+          deps.log(
+            `early changed-file typecheck preflight: skipped after ${elapsed()} (changed-file resolution unavailable) — full gate retained`,
+          );
+        } else {
+          const files = [...new Set(resolved.map((file) => file.replaceAll('\\', '/')).filter(Boolean))].sort();
+          const operatorCoreChanged = files.some((file) => file.startsWith('packages/operator-core/'));
+          const commaPath = files.find((file) => file.includes(','));
+          if (!operatorCoreChanged) {
+            deps.log(
+              `early changed-file typecheck preflight: skipped after ${elapsed()} ` +
+                `(${files.length} changed file(s), none under packages/operator-core/) — full gate retained`,
+            );
+          } else if (commaPath) {
+            // `lint:tsc --files` is comma-delimited and has no escaping syntax. Guessing here
+            // would silently judge a different set, so defer to the unscoped final gate.
+            deps.log(
+              `early changed-file typecheck preflight: skipped after ${elapsed()} ` +
+                `(path cannot be represented by --files: ${commaPath}) — full gate retained`,
+            );
+          } else {
+            const preflight = await deps.runChangedFileTypecheckPreflight(files);
+            if (preflight.status === 'failed') {
+              const failingSignatures = preflight.failingSignatures?.length
+                ? [...new Set(preflight.failingSignatures)]
+                : ['lint:tsc'];
+              deps.log(
+                `early changed-file typecheck preflight: FAILED in ${elapsed()} across ${files.length} changed file(s) — ` +
+                  `rejecting before the affected-test sweep; the full post-suite checks remain required for every later passing candidate`,
+              );
+              if (preflight.summary.trim()) deps.log(`early changed-file typecheck output:\n${preflight.summary}`);
+              earlyPreflightFailure = {
+                green: false,
+                summary:
+                  `Early changed-file typecheck failed before the affected-test sweep (${elapsed()}).\n\n` +
+                  preflight.summary,
+                failingTests: failingSignatures,
+              };
+            } else {
+              deps.log(
+                `early changed-file typecheck preflight: ${preflight.status.toUpperCase()} in ${elapsed()} across ` +
+                  `${files.length} changed file(s) — continuing to the full affected-test sweep and post-suite checks`,
+              );
+            }
+          }
+        }
+      } catch (e) {
+        deps.log(
+          `early changed-file typecheck preflight: errored after ${elapsed()} ` +
+            `(${e instanceof Error ? e.message : e}) — falling back to the unchanged full gate`,
+        );
+      }
+    }
+  }
   // WI-7069: report the selection→suite gap RIGHT BEFORE judging — the last moment at which
   // the number is still complete, and the first at which it is actionable. Fail-soft in every
   // direction: a git failure here degrades to logging the gap alone, and nothing below reads
   // the result. See `candidateSelectedAtMs` for why this exists.
-  {
+  if (!earlyPreflightFailure) {
     const selectionToSuiteMs = Date.now() - candidateSelectedAtMs;
     let committedNote = '';
     try {
@@ -4543,7 +4629,7 @@ export async function runGreenCheckpoint(
     isolationNote,
     retriedTests,
     cleanGreen,
-  } = await deps.runGreen(cfg.checkpointRoot, lastReady);
+  } = earlyPreflightFailure ?? await deps.runGreen(cfg.checkpointRoot, lastReady);
   // EI-20014356905761236: this pass's own verdict log is now known — its PROMOTION outcome is
   // not, because every decision that settles it is taken below this line. Stamp it at each
   // disposition site, so the log records not just the verdict but whether it counted. See
@@ -6730,6 +6816,42 @@ export function realCheckpointDeps(
     concurrentRun,
     workspaceRerun,
     runId,
+    // WI-38422: the cheap candidate-scoped rejection pass. This intentionally shells
+    // the SAME lint:tsc script the post-suite leg runs, with the SAME release-gate env
+    // isolation and the SAME 16 GiB sequential-leg heap. The only difference is scope:
+    // `--files` attributes the verdict to the committed last-green..candidate diff.
+    // A pass is provisional; runGreen still runs the unscoped post-suite leg later.
+    async runChangedFileTypecheckPreflight(files) {
+      const scriptCheck = checkNpmScript(cfg.checkpointRoot, 'lint:tsc');
+      if (scriptCheck === 'absent') {
+        return {
+          status: 'skipped',
+          summary: 'candidate provides no lint:tsc script',
+        };
+      }
+      if (scriptCheck === 'unreadable') {
+        return {
+          status: 'failed',
+          summary:
+            `package.json in ${cfg.checkpointRoot} is unreadable while checking for lint:tsc; ` +
+            'the isolated candidate tree cannot be judged',
+          failingSignatures: ['package.json-unreadable'],
+        };
+      }
+      const env = buildGreenCheckpointEnv(null, process.env, runId);
+      env.NODE_OPTIONS = sanitizeForkNodeOptions(env.NODE_OPTIONS, GREEN_CHECKPOINT_POST_SUITE_HEAP_MB);
+      const result = await exec('npm', ['run', 'lint:tsc', '--', `--files=${files.join(',')}`], {
+        cwd: cfg.checkpointRoot,
+        env,
+        allowNonZero: true,
+        heavy: true,
+      });
+      const output = result.stdout + result.stderr;
+      const summary = summarizeSuiteOutput(output).trim() || `npm run lint:tsc exited ${result.code}`;
+      return result.code === 0
+        ? { status: 'passed', summary, failingSignatures: [] }
+        : { status: 'failed', summary, failingSignatures: ['lint:tsc'] };
+    },
     // EI-10800: the single AWAITED emit seam every gate-verdict now flows through. Was a
     // fire-and-forget `void import(...).then(emit)` inlined at each call site — the green
     // full-advance one raced the process teardown and never woke a `release:green:<pipeline>`
