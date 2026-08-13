@@ -282,6 +282,36 @@ describe('attributeFailedTask — a red task never contributes nothing', () => {
     expect(a.unattributed).toEqual([{ task: 'w :: test', reason: 'no-file-rows' }]);
   });
 
+  it('uses a caller-provided fallback only when a watchdog-killed task names no failed file', () => {
+    const silentTimeout = attributeFailedTask({
+      workspace: 'w',
+      task: 'w :: test:lane-stateful',
+      captured: true,
+      output: 'Test Files  1554 passed (1554)\n',
+      fallbackReason: 'batch-timeout',
+    });
+    expect(silentTimeout.entries).toEqual([]);
+    expect(silentTimeout.unattributed).toEqual([
+      { task: 'w :: test:lane-stateful', reason: 'batch-timeout' },
+    ]);
+
+    const parsedTimeout = attributeFailedTask({
+      workspace: 'w',
+      task: 'w :: test:lane-stateful',
+      captured: true,
+      output: [
+        ' ❯ lib/event-loop-lag-monitor.test.ts (44 tests | 1 failed) 50.36m',
+        'FAIL  lib/event-loop-lag-monitor.test.ts',
+        ' Test Files  1 failed | 1551 passed | 2 skipped (1554)',
+      ].join('\n'),
+      fallbackReason: 'batch-timeout',
+    });
+    expect(parsedTimeout.unattributed).toEqual([]);
+    expect(parsedTimeout.entries).toEqual([
+      { workspace: 'w', file: 'lib/event-loop-lag-monitor.test.ts' },
+    ]);
+  });
+
   it('every branch yields exactly one of files-or-a-reason — never silence', () => {
     const cases = [
       { workspace: 'w', task: 't', captured: true, output: REAL_FAILURE_OUTPUT },
@@ -457,6 +487,13 @@ describe('scripts/affected-tests.mjs wires the block in (a helper nothing calls 
     expect(source).toContain('attributeFailedTask({');
     expect(source).toContain('failedFileEntries.push(...a.entries)');
     expect(source).toContain('unattributedTasks.push(...a.unattributed)');
+  });
+
+  it('uses batch-timeout only as the attributor fallback, never as a parser bypass', () => {
+    expect(source).toContain("fallbackReason: watchdogTimedOut ? 'batch-timeout' : undefined");
+    expect(source).not.toMatch(
+      /if \(watchdogTimedOut\)[\s\S]{0,500}unattributedTasks\.push\([\s\S]{0,200}batch-timeout/,
+    );
   });
 
   it('threads the transform culprits through as well — WI-37607', () => {

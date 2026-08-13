@@ -571,14 +571,19 @@ export function parseFailingFilesLine(text) {
  * culprit set off the `unattributed` reason alone would therefore miss exactly the case this
  * was built for.
  *
- * @param {{ workspace: string, task: string, captured: boolean, output?: string }} args
+ * @param {{ workspace: string, task: string, captured: boolean, output?: string,
+ *           fallbackReason?: string }} args
  * @returns {{ entries: Array<{ workspace: string, file: string }>,
  *             unattributed: Array<{ task: string, reason: string }>,
  *             transformCulprits: string[] }}
  */
-export function attributeFailedTask({ workspace, task, captured, output = '' }) {
+export function attributeFailedTask({ workspace, task, captured, output = '', fallbackReason }) {
   if (!captured) {
-    return { entries: [], unattributed: [{ task, reason: 'no-captured-output' }], transformCulprits: [] };
+    return {
+      entries: [],
+      unattributed: [{ task, reason: fallbackReason ?? 'no-captured-output' }],
+      transformCulprits: [],
+    };
   }
   const transformCulprits = transformCulpritsFrom(output);
   // ALL known runner formats (EI-20095409199430877, EI-20098997113620795). A union, never a
@@ -603,7 +608,12 @@ export function attributeFailedTask({ workspace, task, captured, output = '' }) 
   if (files.length === 0) {
     return {
       entries: [],
-      unattributed: [{ task, reason: transformCulprits.length > 0 ? 'transform' : 'no-file-rows' }],
+      unattributed: [
+        {
+          task,
+          reason: transformCulprits.length > 0 ? 'transform' : (fallbackReason ?? 'no-file-rows'),
+        },
+      ],
       transformCulprits,
     };
   }

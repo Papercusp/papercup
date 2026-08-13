@@ -2707,24 +2707,20 @@ for (const scheduled of initialPool.results) {
       // EI-19395701908500754: name the FILES, not just the workspace. Delegated to a
       // unit-tested helper for the same reason as the rendering below — this runs only
       // when the gate is already red, so nothing here is exercised on a green run.
-      if (watchdogTimedOut) {
-        // EI-19370814345784324: a killed-mid-spin worker's captured output has no FAIL
-        // rows to parse (the reporter never got to print one) — `attributeFailedTask`
-        // would just fall through to the generic 'no-file-rows' reason, which reads
-        // identically to an unrelated worker crash. Name the real cause explicitly so a
-        // triager doesn't have to rediscover it from the log above.
-        unattributedTasks.push({ task: `${t.ws.name} :: ${t.script}`, reason: 'batch-timeout' });
-      } else {
-        const a = attributeFailedTask({
-          workspace: t.ws.name,
-          task: `${t.ws.name} :: ${t.script}`,
-          captured: captureOutput(),
-          output: `${r.stdout ?? ''}${r.stderr ?? ''}`,
-        });
-        failedFileEntries.push(...a.entries);
-        unattributedTasks.push(...a.unattributed);
-        transformCulpritPaths.push(...a.transformCulprits);
-      }
+      // EI-20342691406630303: a watchdog kill does not imply that the child produced no
+      // parseable failure rows. A long suite can print its final Vitest summary immediately
+      // before the watchdog lands. Always parse the captured bytes; `batch-timeout` is only
+      // the reason to use when attribution genuinely has no file to return.
+      const a = attributeFailedTask({
+        workspace: t.ws.name,
+        task: `${t.ws.name} :: ${t.script}`,
+        captured: captureOutput(),
+        output: `${r.stdout ?? ''}${r.stderr ?? ''}`,
+        fallbackReason: watchdogTimedOut ? 'batch-timeout' : undefined,
+      });
+      failedFileEntries.push(...a.entries);
+      unattributedTasks.push(...a.unattributed);
+      transformCulpritPaths.push(...a.transformCulprits);
       // EI-19332556961886184: surface a timeout signature right here, in the log a
       // triager reads, instead of letting it collapse into an indistinguishable red.
       // Only possible when the child's output was captured (a non-TTY / background

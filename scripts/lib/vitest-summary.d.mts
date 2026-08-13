@@ -355,7 +355,8 @@ export function parseFailingFilesLine(text: string): Array<{
  * culprit set off the `unattributed` reason alone would therefore miss exactly the case this
  * was built for.
  *
- * @param {{ workspace: string, task: string, captured: boolean, output?: string }} args
+ * @param {{ workspace: string, task: string, captured: boolean, output?: string,
+ *           fallbackReason?: string }} args
  * @returns {{ entries: Array<{ workspace: string, file: string }>,
  *             unattributed: Array<{ task: string, reason: string }>,
  *             transformCulprits: string[] }}
@@ -365,6 +366,7 @@ export function attributeFailedTask({ workspace, task, captured, output }: {
     task: string;
     captured: boolean;
     output?: string;
+    fallbackReason?: string;
 }): {
     entries: Array<{
         workspace: string;
