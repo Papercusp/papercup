@@ -23,11 +23,11 @@
 //   which a git-based probe cannot answer here: git-sync sweeps the whole tree, so no
 //   real commit is ever scoped to just your paths.
 
-import { execSync, execFileSync, spawnSync } from 'node:child_process';
+import { execSync, execFileSync, spawn, spawnSync } from 'node:child_process';
 import { readFileSync, existsSync, appendFileSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { loadavg, availableParallelism } from 'node:os';
+import { loadavg, availableParallelism, tmpdir } from 'node:os';
 import { randomBytes } from 'node:crypto';
 import { parseQuarantineWorkspaces } from './lib/quarantine.mjs';
 import {
@@ -55,6 +55,16 @@ import {
 import { detectCargoTermination } from './lib/cargo-result.mjs';
 // D-021: the serial phase's own cost, measured per-run. See scripts/lib/serial-phase.mjs.
 import { formatSerialPhaseSummary } from './lib/serial-phase.mjs';
+import {
+  durationEstimate,
+  formatTaskBudgetMarker,
+  formatTaskBudgetObservedMarker,
+  mergeDurationHistory,
+  readDurationHistory,
+  resolveTaskBudget,
+  runBudgetedTasks,
+  writeDurationHistoryAtomic,
+} from './lib/budgeted-task-scheduler.mjs';
 // EI-10542: this runner interleaves its own header/status lines (fd 1/2) with
 // child suite output written synchronously via `stdio: 'inherit'`. On a non-TTY
 // fd (the gate captures to a pipe/file) `console.*` is async-buffered and flushes
@@ -189,14 +199,11 @@ process.on('exit', (code) => {
   // (e.g. the unrecognized-flag refusal). A clean path has already set the flag.
   emitAbortMarker(`reason=exit-without-verdict code=${code}`);
 });
-// Whether to run child suites via CAPTURED spawnSync (vs `stdio: 'inherit'`).
-// `retryFailed` already needs capture to learn which files failed. We ALSO
-// capture whenever stdout is not a real TTY — i.e. exactly a background-task /
-// CI / gate invocation, the scenario this bug report is about — so the FULL
-// child output is available to route into RUN_LOG_PATH instead of only
-// whatever slice of 'inherit'-written bytes the caller's own buffer retains.
-// AFFECTED_LOG_FULL=1 forces it even on an interactive TTY (opt-in).
-const captureOutput = () => retryFailed || !process.stdout.isTTY || process.env.AFFECTED_LOG_FULL === '1';
+// The budgeted scheduler runs task children concurrently, so their byte streams cannot be
+// inherited without interleaving one task under another task's header. Capture every task and
+// replay it in declaration order after the initial pool drains. This also leaves every retry,
+// summary cross-check, failure attributor, and the full run log on the same evidence path.
+const captureOutput = () => true;
 
 // ── Shared-host worker cap (WI-3792 follow-up, 2026-07-10) ──────────────────
 // Vitest defaults each suite's fork pool to EVERY core. On the shared 128-core
@@ -220,6 +227,17 @@ const captureOutput = () => retryFailed || !process.stdout.isTTY || process.env.
 // scripts/lib/worker-cap.mjs for the full rationale + the (unit-tested) pure
 // function this wraps.
 const WORKER_CAP = applyWorkerCapEnv({ cores: availableParallelism(), load1: loadavg()[0] });
+const SCHEDULER_WORKER_MEMORY_MB = Number(process.env.AFFECTED_WORKER_MEMORY_MB ?? 1024);
+const SCHEDULER_CONFIG = resolveTaskBudget({
+  workerBudget: process.env.AFFECTED_GLOBAL_WORKER_BUDGET ?? WORKER_CAP,
+  memoryBudgetMb:
+    process.env.AFFECTED_GLOBAL_MEMORY_MB ?? Number(WORKER_CAP) * SCHEDULER_WORKER_MEMORY_MB,
+  workerMemoryMb: SCHEDULER_WORKER_MEMORY_MB,
+  maxConcurrentTasks: process.env.AFFECTED_MAX_CONCURRENT_TASKS ?? 2,
+  reserveWorkers: 1,
+});
+const TASK_DURATION_HISTORY_PATH =
+  process.env.AFFECTED_TASK_HISTORY_PATH ?? join(tmpdir(), 'papercusp-affected-task-durations-v1.json');
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const args = process.argv.slice(2);
