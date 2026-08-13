@@ -120,7 +120,13 @@ registerSystemAction('task-reconcile', async (ctx: SystemActionCtx) => {
   }
   if (isMaintDue({ lastAtMs: lastResidueAtMs, nowMs, intervalMs: RESIDUE_INTERVAL_MS })) {
     lastResidueAtMs = nowMs;
-    await sampleResidue(ctx, tick.scan.userManagerRoot);
+    // EI-20369673282334981: hand the census the pids this very tick just CONFIRMED
+    // alive against the task ledger. `nodeResidueLivenessProbe`'s own contract asks
+    // for exactly this ("a caller that already holds the enrolled-task pids (the
+    // reconcile tick does) should pass them"), and until now the sole production
+    // call site passed nothing — so `knownLive` was `undefined` and listening
+    // sockets were the only liveness evidence the census ever had.
+    await sampleResidue(ctx, tick.scan.userManagerRoot, aliveEnrolledPids(tick));
   }
 });
 
@@ -142,7 +148,31 @@ registerSystemAction('task-reconcile', async (ctx: SystemActionCtx) => {
  * Fail-soft end to end: a census or store failure must never break the reconcile
  * tick it rides alongside.
  */
-async function sampleResidue(ctx: SystemActionCtx, userManagerRoot: string | null): Promise<void> {
+/**
+ * The pids this tick positively matched to a LIVE task-ledger row.
+ *
+ * Only `result.alive` — never `scannedProcesses`. The scan sees every process in
+ * the user manager, so feeding it here would mark essentially the whole box "known
+ * live" and turn the census's one remaining discriminator into a constant. What
+ * makes this set meaningful is precisely that it is small and earned: a row the
+ * reconciler just confirmed against a real process.
+ *
+ * A pid of 0/NaN is dropped rather than added — pid 0 is not a process, and a set
+ * containing it would silently match nothing while looking populated.
+ */
+function aliveEnrolledPids(tick: { result: { alive: readonly { pid: number | null }[] } }): Set<number> {
+  const out = new Set<number>();
+  for (const a of tick.result.alive) {
+    if (typeof a.pid === 'number' && Number.isFinite(a.pid) && a.pid > 0) out.add(a.pid);
+  }
+  return out;
+}
+
+async function sampleResidue(
+  ctx: SystemActionCtx,
+  userManagerRoot: string | null,
+  knownLivePids: ReadonlySet<number>,
+): Promise<void> {
   try {
     const sliceAbs = resolveTerminalSliceAbs(userManagerRoot);
     if (!sliceAbs || !nodeCgroupFs.isDir(sliceAbs)) return;
@@ -153,7 +183,7 @@ async function sampleResidue(ctx: SystemActionCtx, userManagerRoot: string | nul
     // 1 stale and 13 holding live tenants — and the largest was the staging
     // operator still serving :3170.
     const census = censusTerminalResidue(sliceAbs, nodeCgroupFs, {
-      probe: nodeResidueLivenessProbe(),
+      probe: nodeResidueLivenessProbe(knownLivePids),
     });
     const target = { installSlug: ctx.installSlug, workspaceId: ctx.workspaceId };
     const nowMs = Date.now();
@@ -172,6 +202,7 @@ async function sampleResidue(ctx: SystemActionCtx, userManagerRoot: string | nul
       unprobeable: census.unprobeable,
       deadStale: census.deadStale,
       deadLiveServiceHeld: census.deadLiveServiceHeld,
+      deadLiveServiceUnclaimed: census.deadLiveServiceUnclaimed,
       deadIndeterminate: census.deadIndeterminate,
       trend: verdict.trend,
       floorDelta: verdict.floorDelta,
