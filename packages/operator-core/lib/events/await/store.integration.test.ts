@@ -25,8 +25,11 @@ vi.mock('@papercusp/db-org', async () => {
   return { ...actual, getOrgPg: () => ({ sql: hb.sql }) };
 });
 
-const { registerAwait, upsertInboxWakeAwait, cancelInboxWakeAwaits, cancelClaimableAwaits, cancelAwait, cancelAwaitsForSubscribersOnKeys, cancelAwaitsByIds, listActiveAwaits, listActiveAwaitsForKey, fireAwaitsForKey, listParkedAwaitsForSubscribers, listVerifiedWaitTakeoversForSubscribers, countActiveAwaitsByPrefixes, recordKeyFire, getKeyFireLatch, inspectEventKey, probeKeyFireEvidence, keyFireEvidencePrefix, probePatternMatchScope } =
+const { registerAwait, upsertInboxWakeAwait, cancelInboxWakeAwaits, cancelClaimableAwaits, cancelAwait, cancelAwaitsForSubscribersOnKeys, cancelAwaitsByIds, listActiveAwaits, listActiveAwaitsForKey, fireAwaitsForKey, listParkedAwaitsForSubscribers, listVerifiedWaitTakeoversForSubscribers, countActiveAwaitsByPrefixes, recordKeyFire, getKeyFireLatch, inspectEventKey, probeKeyFireEvidence, keyFireEvidencePrefix, probePatternMatchScope, claimDueVerifiedAwaits, settleVerifiedAwaitTimeout } =
   await import('./store');
+const { classifyVerifiedWaitTimeout } = await import('./verified-wait');
+const { observeCheckpointProducer } = await import('./checkpoint-verified-wait');
+import type { ProducerHealthCertificate } from './verified-wait';
 
 let rootSql: postgres.Sql;
 
@@ -385,6 +388,143 @@ describe('await-event store (PG)', () => {
 
     // empty input short-circuits to an empty map
     expect((await countActiveAwaitsByPrefixes([])).size).toBe(0);
+  });
+});
+
+describe('verified-wait fallback campaign (PG)', () => {
+  const certificate = (overrides: Partial<ProducerHealthCertificate> = {}): ProducerHealthCertificate => ({
+    version: 1,
+    producer: { kind: 'green-checkpoint', id: 'run-campaign' },
+    owner: { ownerId: 'su-producer', workItemId: 'WI-producer' },
+    issuedAtMs: 1_000,
+    lastProgressAtMs: 900,
+    lastFireAtMs: null,
+    expectedCadenceMs: 500,
+    verificationDeadlineMs: 2_000,
+    details: { pipeline: 'papercusp', runId: 'run-campaign' },
+    ...overrides,
+  });
+
+  async function registerDueVerifiedAwait(subscriberId: string, cert = certificate()) {
+    const row = await registerAwait({
+      subscriberId,
+      eventKey: 'release:green:papercusp',
+      timeoutBehavior: 'wake',
+      timeoutSec: 60,
+      producerHealthCertificate: cert,
+    });
+    await rootSql`
+      UPDATE harness_shared.event_awaits
+         SET expires_ts = now() - interval '1 second'
+       WHERE id = ${row.id}
+    `;
+    return row;
+  }
+
+  it('producer dies before emit: persists an absent verdict and an owner-aware takeover', async () => {
+    const row = await registerDueVerifiedAwait('waiter-died');
+    const [claimed] = await claimDueVerifiedAwaits();
+    expect(claimed?.id).toBe(row.id);
+
+    const observation = await observeCheckpointProducer(claimed!.producerHealthCertificate!, {
+      snapshot: async () => ({
+        generatedAtMs: 2_000,
+        activeRun: null,
+        routines: { greenCheckpoint: { active: false, lastFiredAtMs: null } },
+        recent: [],
+      }),
+    });
+    const result = classifyVerifiedWaitTimeout(claimed!.producerHealthCertificate!, observation);
+    expect(result).toMatchObject({ classification: 'absent', nextAction: 'wake-owner-or-takeover' });
+    expect(await settleVerifiedAwaitTimeout({ id: row.id, result })).toMatchObject({
+      firedReason: 'verified-timeout',
+      timeoutVerification: { classification: 'absent' },
+    });
+
+    expect(await listVerifiedWaitTakeoversForSubscribers(['waiter-died'])).toEqual([
+      expect.objectContaining({
+        classification: 'absent',
+        owner: { ownerId: 'su-producer', workItemId: 'WI-producer' },
+        remedy: expect.stringContaining('claim/take over WI-producer'),
+      }),
+    ]);
+  });
+
+  it('slow-but-progressing producer: renews the same one-shot row without consuming it', async () => {
+    const row = await registerDueVerifiedAwait('waiter-progress');
+    const [claimed] = await claimDueVerifiedAwaits();
+    const observation = await observeCheckpointProducer(claimed!.producerHealthCertificate!, {
+      snapshot: async () => ({
+        generatedAtMs: 2_000,
+        activeRun: { active: true, candidate: 'abc123', startedAtMs: 1_500 },
+        routines: { greenCheckpoint: { active: true, lastFiredAtMs: 1_500 } },
+        recent: [],
+      }),
+    });
+    const result = classifyVerifiedWaitTimeout(claimed!.producerHealthCertificate!, observation);
+    expect(result).toMatchObject({ classification: 'progressing', nextAction: 're-await' });
+
+    const nextCertificate = certificate({
+      issuedAtMs: observation.checkedAtMs,
+      lastProgressAtMs: observation.lastProgressAtMs,
+      verificationDeadlineMs: observation.checkedAtMs + 500,
+    });
+    expect(await settleVerifiedAwaitTimeout({ id: row.id, result, nextCertificate })).toBeNull();
+    expect(await listActiveAwaitsForKey('release:green:papercusp')).toEqual([
+      expect.objectContaining({
+        id: row.id,
+        firedAt: null,
+        producerHealthCertificate: expect.objectContaining({ verificationDeadlineMs: 2_500 }),
+        timeoutVerification: expect.objectContaining({ classification: 'progressing' }),
+      }),
+    ]);
+  });
+
+  it('latched completion: authoritative completion wins over a missing producer', async () => {
+    const row = await registerDueVerifiedAwait('waiter-latched');
+    const [claimed] = await claimDueVerifiedAwaits();
+    const observation = await observeCheckpointProducer(claimed!.producerHealthCertificate!, {
+      snapshot: async () => ({
+        generatedAtMs: 2_000,
+        activeRun: null,
+        routines: { greenCheckpoint: { active: false, lastFiredAtMs: null } },
+        recent: [{
+          kind: 'green_checkpoint',
+          createdAtMs: 1_950,
+          status: 'advanced',
+          detail: { candidate: 'abc123', runId: 'run-campaign' },
+        }],
+      }),
+    });
+    const result = classifyVerifiedWaitTimeout(claimed!.producerHealthCertificate!, observation);
+    expect(result).toMatchObject({ classification: 'already-complete', nextAction: 'resume' });
+    expect(await settleVerifiedAwaitTimeout({ id: row.id, result })).toMatchObject({
+      firedReason: 'verified-timeout',
+      timeoutVerification: expect.objectContaining({ classification: 'already-complete' }),
+    });
+  });
+
+  it('fallback takeover is race-safe: a pushed completion that wins first cannot be consumed twice', async () => {
+    const row = await registerDueVerifiedAwait('waiter-race');
+    expect((await fireAwaitsForKey({ eventKey: 'release:green:papercusp' })).map((awaited) => awaited.id)).toEqual([
+      row.id,
+    ]);
+    expect(await claimDueVerifiedAwaits()).toEqual([]);
+
+    const fallback = classifyVerifiedWaitTimeout(certificate(), {
+      checkedAtMs: 2_000,
+      producerPresent: false,
+      lastProgressAtMs: null,
+      lastFireAtMs: null,
+      completedAtMs: null,
+    });
+    expect(await settleVerifiedAwaitTimeout({ id: row.id, result: fallback })).toBeNull();
+    const persisted = await rootSql`
+      SELECT fired_reason, timeout_verification
+        FROM harness_shared.event_awaits
+       WHERE id = ${row.id}
+    `;
+    expect(persisted[0]).toMatchObject({ fired_reason: 'event', timeout_verification: null });
   });
 });
 
