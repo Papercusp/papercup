@@ -102,6 +102,7 @@ import { activeWorkspaceId } from '../../../workspace-registry';
 import { loopPressure } from '../../../event-loop-lag-monitor';
 import { isEngineeringDocsSentinel } from '../../../agent-tools/_harness-scope';
 import { evaluateAdmission, ADMISSION_CONTROL_ENABLED } from './mcp-admission';
+import { DeltaProxySessionStore } from './delta-proxy-session-store';
 import {
   classifyAndConsumeFailure,
   logVerificationFailure,
@@ -212,20 +213,10 @@ function buildMcpRequestOrigin(extra: unknown): RequestOriginMetadata | undefine
   };
 }
 
-interface DeltaProxySession {
-  client: DeltaToolClient;
-  fields: Map<string, string>;
-}
+const DELTA_PROXY_SESSIONS = new DeltaProxySessionStore();
 
-const DELTA_PROXY_SESSIONS = new Map<string, DeltaProxySession>();
-
-function deltaProxySession(sessionKey: string): DeltaProxySession {
-  let session = DELTA_PROXY_SESSIONS.get(sessionKey);
-  if (!session) {
-    session = { client: new DeltaToolClient(), fields: new Map<string, string>() };
-    DELTA_PROXY_SESSIONS.set(sessionKey, session);
-  }
-  return session;
+function deltaProxySession(sessionKey: string) {
+  return DELTA_PROXY_SESSIONS.getOrCreate(sessionKey);
 }
 
 function stableJson(value: unknown): string {
