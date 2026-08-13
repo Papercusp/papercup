@@ -195,6 +195,46 @@ describe('work_items pairs — a predicate the verb cannot express is not silent
     expect(claims(byId, "SELECT feature_id FROM w WHERE taken_by='su-1' OR feature_id='WI-5481'")).toBe(false);
   });
 
+  // WI-38365. Each entry of UNPROJECTED_BY_BOTH, pinned individually.
+  //
+  // The denylist was challenged as an accidental over-refusal and re-verified
+  // against the live verb (method + control in the constant's comment): all seven
+  // columns are genuinely absent from a full-tier `work_items:get`, so refusing
+  // these atoms is correct rather than fussy. It is a REAL population — ~88 by-id
+  // calls over 7d — which is exactly why a later reader is tempted to widen it.
+  //
+  // Each case asserts BOTH halves on the same atom: refused WITH the column,
+  // claimed WITHOUT it. The paired half is what makes the refusal meaningful — a
+  // one-sided `toBe(false)` passes just as happily if the shape has stopped
+  // matching anything at all, which is the failure this table is here to catch.
+  //
+  // ⚠ If one of these starts failing, the fix is NOT to delete the entry. It means
+  // the verb now projects that column; delete it from UNPROJECTED_BY_BOTH (which
+  // makes this case pass again by widening the pair, the intended direction) and
+  // update the constant's comment. Deleting only the test re-arms the silent
+  // over-refusal it exists to detect.
+  it.each([
+    ['notes', "SELECT feature_id, notes FROM w WHERE feature_id = 'WI-1'"],
+    ['terminal_reason', "SELECT feature_id, terminal_reason FROM w WHERE feature_id = 'WI-1'"],
+    ['condition_key', "SELECT feature_id, condition_key FROM w WHERE feature_id = 'WI-1'"],
+    ['feature_order', "SELECT feature_id, feature_order FROM w WHERE feature_id = 'WI-1'"],
+    ['source_plan_item_ids', "SELECT feature_id, source_plan_item_ids FROM w WHERE feature_id = 'WI-1'"],
+    ['needs_human_review', "SELECT feature_id, needs_human_review FROM w WHERE feature_id = 'WI-1'"],
+    ['completion_ref', "SELECT feature_id, completion_ref FROM w WHERE feature_id = 'WI-1'"],
+  ])('by-id pair refuses a query PROJECTING %s, which the verb does not return', (_col, atom) => {
+    expect(claims(byId, atom)).toBe(false);
+    // The identical read WITHOUT that column is claimed — so the refusal is about
+    // the projection, not about the shape having gone inert.
+    expect(claims(byId, "SELECT feature_id FROM w WHERE feature_id = 'WI-1'")).toBe(true);
+  });
+
+  // `\b` keeps `completion_ref` from matching inside `terminal_completion_ref`,
+  // which the verb DOES return. Without the boundary this whole family of
+  // forensic reads would be refused for a column that is served.
+  it('by-id pair still claims terminal_completion_ref, which IS projected', () => {
+    expect(claims(byId, "SELECT feature_id, terminal_completion_ref FROM w WHERE feature_id = 'WI-1'")).toBe(true);
+  });
+
   // The flag is unconditional by design. `work_items:list` drops observation-lane
   // rows by default while the raw SELECT returns them, so omitting it renders a
   // call answering with FEWER rows than were asked for.

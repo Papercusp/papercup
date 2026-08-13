@@ -530,6 +530,41 @@ function whereBuiltOnlyFrom(allowed: string): string {
  * projects appears as a KEY even when null, so a name that never appears — `notes`,
  * `terminal_reason` — is genuinely absent rather than merely empty on that row.
  * The gate-health pair sets the same standard for its own unprojected columns.
+ *
+ * ── RE-VERIFIED 2026-08-13 (WI-38365). THIS LIST IS DELIBERATE, NOT INCIDENTAL ──
+ * It was challenged as an accidental over-refusal — the theory being that these
+ * atoms are servable and the pair is merely fussy about the SELECT list. Measured,
+ * that is false: all seven columns are genuinely absent from the verb's output.
+ *
+ * The measurement is stated here because the sentence above ("established by
+ * reading a real result") is not reproducible, and an unfalsifiable claim is what
+ * invited the re-litigation. Method, so the next reader re-runs it instead:
+ *
+ *  1. Pick rows where the DB column is NON-NULL (`count(*) FILTER (WHERE col IS
+ *     NOT NULL)`, then one exemplar id each). A null row cannot distinguish "not
+ *     projected" from "projected and empty", which is the whole trap.
+ *  2. Call `work_items:get { ids, payloadTier: 'full' }` and test KEY PRESENCE
+ *     with `n in workItem` — NOT `=== undefined` and NOT a grep, for the reason
+ *     in step 3.
+ *  3. Carry a control both ways: a nonsense key (`zzzControlNotAKey`) must read
+ *     absent, and a known-projected one (`terminalOwner`) must read present, or
+ *     the probe proves nothing.
+ *
+ * Result on 5 feature-family rows chosen per (1): all 7 names 0/5 at the row
+ * path; `terminalOwner`/`terminalCompletionRef`/`completionAuthority`/`state`/
+ * `assignee` 5/5. ⚠ A whole-body grep DISAGREES and is wrong: `conditionKey`
+ * appears once, at `payload._bridge.conditionKey` — free-form payload content on
+ * one row, not the `condition_key` COLUMN a `SELECT condition_key` reads. Testing
+ * the exact row path is what tells those apart.
+ *
+ * WHAT THE LIST COSTS, so a future widener knows the stakes rather than guessing:
+ * over 7d it is the sole reason ~88 by-id calls stay on raw SQL — `terminal_reason`
+ * 32 calls/21 sessions, `completion_ref` 29/19, `source_plan_item_ids` 8/8,
+ * `condition_key` 7/7, `needs_human_review` 6/5, `feature_order` 4/2. That is a
+ * real population, and refusing it is still correct: routing it would hand back a
+ * row missing the very column the query exists to read. The way to shrink this
+ * list is to make the VERB project a column and then delete it from here — never
+ * to delete it from here alone. `sql-reads-helpers.test.ts` pins each entry.
  */
 const UNPROJECTED_BY_BOTH = String.raw`notes|terminal_reason|condition_key|feature_order|source_plan_item_ids|needs_human_review|completion_ref`;
 
