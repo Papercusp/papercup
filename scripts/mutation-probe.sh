@@ -137,6 +137,16 @@ done
 [ -n "$MUTATE" ]   || die "missing --mutate"
 [ -n "$TEST_CMD" ] || die "missing --test"
 [ -f "$FILE" ]     || die "no such file: $FILE"
+# Resolve --file to an ABSOLUTE path before anything substitutes it. The two
+# runs are not symmetric: the baseline substitutes {} with this original path
+# VERBATIM, while the mutant gets an absolute scratch path. So a relative
+# --file (the natural thing to type from the repo root) makes only the BASELINE
+# cwd-dependent, and any --test that runs from a different directory — a vitest
+# workspace, an npm script — fails there and nowhere else. The script then
+# correctly refuses to score the mutant, but reports "BASELINE FAILED", which
+# reads as "your guard is broken" rather than "your path was relative".
+FILE="$(cd "$(dirname "$FILE")" 2>/dev/null && pwd)/$(basename "$FILE")"
+[ -f "$FILE" ] || die "could not resolve --file to an absolute path: $FILE"
 case "$EXPECT" in caught|survived) ;; *) die "--expect must be 'caught' or 'survived'" ;; esac
 # The `{}` requirement is MODE-SPECIFIC, and the asymmetry is deliberate — do not "tidy" it
 # back into an unconditional check (EI-19455888914364007).
