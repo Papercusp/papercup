@@ -5,7 +5,13 @@
  * setOmpConfig/unsetOmpConfig enforce before ever spawning omp.
  */
 import { describe, expect, it } from 'vitest';
-import { parseOmpConfigList, setOmpConfig, unsetOmpConfig } from './omp-config';
+import {
+  createOmpModelCatalogReader,
+  parseOmpConfigList,
+  parseOmpModelCatalogJson,
+  setOmpConfig,
+  unsetOmpConfig,
+} from './omp-config';
 
 const SAMPLE = `Settings:
 
@@ -66,5 +72,56 @@ describe('setOmpConfig / unsetOmpConfig — key validation (pre-spawn)', () => {
     await expect(setOmpConfig('bad key; rm -rf', true)).rejects.toThrow(/invalid config key/);
     await expect(setOmpConfig('$(whoami)', 'x')).rejects.toThrow(/invalid config key/);
     await expect(unsetOmpConfig('a b')).rejects.toThrow(/invalid config key/);
+  });
+});
+
+const MODEL_ROW = {
+  provider: 'openai-codex',
+  id: 'gpt-5.6-terra',
+  selector: 'openai-codex/gpt-5.6-terra',
+  name: 'GPT-5.6-Terra',
+  contextWindow: 200000,
+  maxTokens: 128000,
+  reasoning: true,
+  thinking: ['low', 'medium', 'high', 'xhigh', 'max'],
+  input: ['text', 'image'],
+  cost: { input: 1.25, output: 10, cacheRead: 0.125, cacheWrite: 0 },
+};
+
+describe('OMP model catalog', () => {
+  it('preserves OMP selector + launch metadata exactly', () => {
+    const catalog = parseOmpModelCatalogJson(JSON.stringify({ models: [MODEL_ROW] }));
+    expect(catalog.models[0]).toEqual(MODEL_ROW);
+  });
+
+  it('rejects a selector that does not match provider/id', () => {
+    expect(() => parseOmpModelCatalogJson(JSON.stringify({
+      models: [{ ...MODEL_ROW, selector: 'openai-codex/not-the-model' }],
+    }))).toThrow(/provider\/id\/selector\/name identity/);
+  });
+
+  it('caches per OMP profile environment, deduplicates concurrent reads, and force-refreshes', async () => {
+    let now = 100;
+    const exec = vi.fn(async (_args: string[], _timeout: number, env: NodeJS.ProcessEnv) => ({
+      stdout: JSON.stringify({ models: [{ ...MODEL_ROW, name: env.HOME ?? 'unknown' }] }),
+      stderr: '',
+      code: 0,
+    }));
+    const read = createOmpModelCatalogReader({ exec, now: () => now, ttlMs: 50 });
+
+    const [first, concurrent] = await Promise.all([
+      read({ env: { HOME: '/u/one', PATH: '/bin' } }),
+      read({ env: { HOME: '/u/one', PATH: '/bin' } }),
+    ]);
+    expect(first).toBe(concurrent);
+    expect(exec).toHaveBeenCalledTimes(1);
+    expect((await read({ env: { HOME: '/u/two', PATH: '/bin' } })).models[0].name).toBe('/u/two');
+    expect(exec).toHaveBeenCalledTimes(2);
+
+    await read({ env: { HOME: '/u/one', PATH: '/bin' }, forceRefresh: true });
+    expect(exec).toHaveBeenCalledTimes(3);
+    now += 51;
+    await read({ env: { HOME: '/u/one', PATH: '/bin' } });
+    expect(exec).toHaveBeenCalledTimes(4);
   });
 });
