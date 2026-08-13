@@ -15,7 +15,14 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { validatePhysicalDrillEvidence } from './sync/pot-git/physical-drill-evidence';
+import {
+  physicalDrillSigningBytes,
+  validatePhysicalDrillEvidence,
+} from './sync/pot-git/physical-drill-evidence';
+import {
+  generateEd25519KeypairDer,
+  signWithPrivateKeyDer,
+} from './identity/ed25519';
 
 function repoRoot(): string {
   let dir = dirname(fileURLToPath(import.meta.url));
@@ -37,6 +44,15 @@ const gateMatch = drill.match(
 );
 
 const evidenceDir = mkdtempSync(join(tmpdir(), 'hive-git-physical-evidence-'));
+const validatorPath = join(
+  repoRoot(),
+  'packages',
+  'operator-core',
+  'lib',
+  'sync',
+  'pot-git',
+  'physical-drill-evidence.ts',
+);
 afterAll(() => rmSync(evidenceDir, { recursive: true, force: true }));
 
 function physicalFixture(): Record<string, any> {
@@ -45,12 +61,12 @@ function physicalFixture(): Record<string, any> {
   writeFileSync(towerLog, 'tower physical witness\n');
   writeFileSync(vmLog, 'vm physical witness\n');
   const digest = (path: string) => createHash('sha256').update(readFileSync(path)).digest('hex');
-  const tower = 'A'.repeat(43);
-  const vm = 'B'.repeat(43);
-  const oldCore = 'C'.repeat(43);
-  const newCore = 'D'.repeat(43);
+  const tower = generateEd25519KeypairDer();
+  const vm = generateEd25519KeypairDer();
+  const oldCore = generateEd25519KeypairDer();
+  const newCore = generateEd25519KeypairDer();
   const oid = (digit: string) => digit.repeat(40);
-  return {
+  const fixture: Record<string, any> = {
     schemaVersion: 'hive-git-physical-evidence/v1',
     plan: 'p2p-git-live-activation-2026-07-09',
     runId: 'physical-run-2026-08-13T120000Z',
@@ -58,8 +74,8 @@ function physicalFixture(): Record<string, any> {
     topology: {
       kind: 'two-physical-machines',
       hosts: [
-        { id: 'tower', deviceKey: tower },
-        { id: 'vm', deviceKey: vm },
+        { id: 'tower', deviceKey: tower.pubkeyBase64 },
+        { id: 'vm', deviceKey: vm.pubkeyBase64 },
       ],
     },
     artifacts: [
@@ -75,7 +91,7 @@ function physicalFixture(): Record<string, any> {
     legE: {
       planItem: 'P-306',
       status: 'pass',
-      writerDeviceKey: tower,
+      writerDeviceKey: tower.pubkeyBase64,
       assertions: {
         bothConsumedBridgedMode: true,
         bothCommitOnly: true,
@@ -125,12 +141,12 @@ function physicalFixture(): Record<string, any> {
       epochs: { priorAccepted: 7, successorGranted: 8, basis: 'crash-takeover' },
       cursor: { beforeRetry: 41, duringUnknownSha: 41, duringUngrantedEpoch: 41, afterAccept: 42 },
       devices: {
-        oldAuthority: tower,
-        survivor: vm,
-        stableDeviceKeyBefore: vm,
-        stableDeviceKeyAfter: vm,
-        oldCoreKey: oldCore,
-        newCoreKey: newCore,
+        oldAuthority: tower.pubkeyBase64,
+        survivor: vm.pubkeyBase64,
+        stableDeviceKeyBefore: vm.pubkeyBase64,
+        stableDeviceKeyAfter: vm.pubkeyBase64,
+        oldCoreKey: oldCore.pubkeyBase64,
+        newCoreKey: newCore.pubkeyBase64,
       },
       oids: {
         preFailureStaging: oid('2'),
@@ -143,6 +159,12 @@ function physicalFixture(): Record<string, any> {
       },
     },
   };
+  const bytes = physicalDrillSigningBytes(fixture);
+  fixture.attestations = [tower, vm].map((device) => ({
+    deviceKey: device.pubkeyBase64,
+    signature: signWithPrivateKeyDer(device.privateKeyDer, bytes).toString('base64'),
+  }));
+  return fixture;
 }
 
 function runGate(input: {
@@ -165,7 +187,7 @@ function runGate(input: {
 
 describe('D-002 hive-git zero-skip release acceptance', () => {
   it('pins the current explicit skip inventory to E/P-306 and G/P-308', () => {
-    const inventory = [...drill.matchAll(/^skipp "LEG ([A-G]) \(P-(\d+)\)/gm)].map(
+    const inventory = [...drill.matchAll(/^\s*skipp "LEG ([A-G]) \(P-(\d+)\)/gm)].map(
       ([, leg, item]) => `${leg}/P-${item}`,
     );
     expect(inventory).toEqual(['E/P-306', 'G/P-308']);
@@ -178,12 +200,45 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
     expect(verdict).toMatchObject({ ok: true, runId: 'physical-run-2026-08-13T120000Z', errors: [] });
   });
 
+  it('executes the real validator CLI against an attested evidence file', () => {
+    const evidencePath = join(evidenceDir, 'accepted-evidence.json');
+    writeFileSync(evidencePath, `${JSON.stringify(physicalFixture())}\n`);
+    const result = spawnSync(join(repoRoot(), 'node_modules', '.bin', 'tsx'), [validatorPath, evidencePath], {
+      encoding: 'utf8',
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      ok: true,
+      schemaVersion: 'hive-git-physical-evidence/v1',
+    });
+  });
+
+  it('rejects a manifest changed after either physical device attested it', () => {
+    const fixture = physicalFixture();
+    fixture.legE.assertions.watchdogIntervalsObserved = 3;
+    const verdict = validatePhysicalDrillEvidence(fixture);
+    expect(verdict.ok).toBe(false);
+    expect(verdict.errors.join('\n')).toContain(
+      'not a valid signature over the canonical evidence payload',
+    );
+  });
+
   it('rejects a structure-only pass claim with no raw physical-host artifacts', () => {
     const fixture = physicalFixture();
     fixture.artifacts = [];
     const verdict = validatePhysicalDrillEvidence(fixture);
     expect(verdict.ok).toBe(false);
     expect(verdict.errors.join('\n')).toContain('raw witness from each physical host');
+  });
+
+  it('rejects a leg verdict banked outside the single physical-run window', () => {
+    const fixture = physicalFixture();
+    fixture.legVerdicts[3].observedAt = '2026-08-13T13:00:00Z';
+    const verdict = validatePhysicalDrillEvidence(fixture);
+    expect(verdict.ok).toBe(false);
+    expect(verdict.errors).toContain(
+      'legVerdicts.D.observedAt must fall inside the one physical-run window',
+    );
   });
 
   it('rejects a Leg E OID chain that did not reach the remote staging ref', () => {

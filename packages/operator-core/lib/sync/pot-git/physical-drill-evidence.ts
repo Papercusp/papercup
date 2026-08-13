@@ -10,13 +10,13 @@ import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { isAbsolute, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { verifyEd25519 } from '../../identity/ed25519';
 
 const SCHEMA = 'hive-git-physical-evidence/v1';
 const PLAN = 'p2p-git-live-activation-2026-07-09';
 const ALL_LEGS = ['A', 'B', 'C', 'D', 'E', 'F', 'G'] as const;
 const PRIOR_LEGS = ['A', 'B', 'C', 'D', 'E', 'F'] as const;
 const OID = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i;
-const KEY = /^[A-Za-z0-9+/_-]{40,96}={0,2}$/;
 const SHA256 = /^[0-9a-f]{64}$/i;
 
 type JsonRecord = Record<string, unknown>;
@@ -43,6 +43,28 @@ function integer(value: unknown): number | null {
   return typeof value === 'number' && Number.isSafeInteger(value) ? value : null;
 }
 
+function validDeviceKey(value: string | null): value is string {
+  if (!value || !/^[A-Za-z0-9+/]{43}=$/.test(value)) return false;
+  return Buffer.from(value, 'base64').length === 32;
+}
+
+function canonical(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonical);
+  const object = record(value);
+  if (!object) return value;
+  return Object.fromEntries(
+    Object.keys(object)
+      .filter((key) => key !== 'attestations')
+      .sort()
+      .map((key) => [key, canonical(object[key])]),
+  );
+}
+
+/** The exact domain-separated bytes both physical device identities attest. */
+export function physicalDrillSigningBytes(raw: unknown): Buffer {
+  return Buffer.from(`${SCHEMA}\n${JSON.stringify(canonical(raw))}`, 'utf8');
+}
+
 function expectRecord(parent: JsonRecord | null, key: string, errors: string[]): JsonRecord | null {
   const value = record(parent?.[key]);
   if (!value) errors.push(`${key} must be an object`);
@@ -62,6 +84,15 @@ function expectString(
   const value = string(parent?.[key]);
   if (!value || !pattern.test(value)) {
     errors.push(`${key} has an invalid or missing value`);
+    return null;
+  }
+  return value;
+}
+
+function expectDeviceKey(parent: JsonRecord | null, key: string, errors: string[]): string | null {
+  const value = string(parent?.[key]);
+  if (!validDeviceKey(value)) {
+    errors.push(`${key} must be a raw 32-byte Ed25519 device key in base64`);
     return null;
   }
   return value;
@@ -123,7 +154,38 @@ function validateArtifacts(
   }
 }
 
-function validateLegVerdicts(raw: JsonRecord, errors: string[]): void {
+function validateAttestations(raw: JsonRecord, hostKeys: Set<string>, errors: string[]): void {
+  const attestations = Array.isArray(raw.attestations) ? raw.attestations : [];
+  if (attestations.length !== hostKeys.size) {
+    errors.push('attestations must contain exactly one signature from each physical device');
+  }
+  const witnessed = new Set<string>();
+  const bytes = physicalDrillSigningBytes(raw);
+  for (const [index, candidate] of attestations.entries()) {
+    const attestation = record(candidate);
+    const deviceKey = string(attestation?.deviceKey);
+    const signatureBase64 = string(attestation?.signature);
+    if (!deviceKey || !hostKeys.has(deviceKey) || witnessed.has(deviceKey)) {
+      errors.push(`attestations[${index}].deviceKey is unknown or duplicated`);
+      continue;
+    }
+    witnessed.add(deviceKey);
+    const signature = signatureBase64 ? Buffer.from(signatureBase64, 'base64') : Buffer.alloc(0);
+    if (signature.length !== 64 || !verifyEd25519(bytes, deviceKey, signature)) {
+      errors.push(`attestations[${index}] is not a valid signature over the canonical evidence payload`);
+    }
+  }
+  for (const deviceKey of hostKeys) {
+    if (!witnessed.has(deviceKey)) errors.push(`no attestation from physical device ${deviceKey}`);
+  }
+}
+
+function validateLegVerdicts(
+  raw: JsonRecord,
+  startedAt: number,
+  finishedAt: number,
+  errors: string[],
+): void {
   const verdicts = Array.isArray(raw.legVerdicts) ? raw.legVerdicts : [];
   if (verdicts.length !== ALL_LEGS.length) {
     errors.push('legVerdicts must contain exactly one same-run verdict for A through G');
@@ -141,6 +203,9 @@ function validateLegVerdicts(raw: JsonRecord, errors: string[]): void {
     if (verdict?.scope !== 'physical') errors.push(`legVerdicts.${leg}.scope must be physical`);
     const observedAt = Date.parse(String(verdict?.observedAt ?? ''));
     if (!Number.isFinite(observedAt)) errors.push(`legVerdicts.${leg}.observedAt must be ISO-8601`);
+    else if (observedAt < startedAt || observedAt > finishedAt) {
+      errors.push(`legVerdicts.${leg}.observedAt must fall inside the one physical-run window`);
+    }
   }
   for (const leg of ALL_LEGS) {
     if (!seen.has(leg)) errors.push(`legVerdicts is missing leg ${leg}`);
@@ -173,7 +238,7 @@ function validateLegE(raw: JsonRecord, hostKeys: Set<string>, errors: string[]):
     errors.push('legE.assertions.watchdogFalseAlarms must be exactly 0');
   }
 
-  const writerDeviceKey = expectString(leg, 'writerDeviceKey', KEY, errors);
+  const writerDeviceKey = expectDeviceKey(leg, 'writerDeviceKey', errors);
   if (writerDeviceKey && !hostKeys.has(writerDeviceKey)) {
     errors.push('legE.writerDeviceKey must belong to one of the two physical hosts');
   }
@@ -257,12 +322,12 @@ function validateLegG(raw: JsonRecord, hostKeys: Set<string>, errors: string[]):
   }
 
   const devices = expectRecord(leg, 'devices', errors);
-  const oldAuthority = expectString(devices, 'oldAuthority', KEY, errors);
-  const survivor = expectString(devices, 'survivor', KEY, errors);
-  const stableBefore = expectString(devices, 'stableDeviceKeyBefore', KEY, errors);
-  const stableAfter = expectString(devices, 'stableDeviceKeyAfter', KEY, errors);
-  const oldCore = expectString(devices, 'oldCoreKey', KEY, errors);
-  const newCore = expectString(devices, 'newCoreKey', KEY, errors);
+  const oldAuthority = expectDeviceKey(devices, 'oldAuthority', errors);
+  const survivor = expectDeviceKey(devices, 'survivor', errors);
+  const stableBefore = expectDeviceKey(devices, 'stableDeviceKeyBefore', errors);
+  const stableAfter = expectDeviceKey(devices, 'stableDeviceKeyAfter', errors);
+  const oldCore = expectDeviceKey(devices, 'oldCoreKey', errors);
+  const newCore = expectDeviceKey(devices, 'newCoreKey', errors);
   for (const [label, key] of [
     ['oldAuthority', oldAuthority],
     ['survivor', survivor],
@@ -334,7 +399,7 @@ export function validatePhysicalDrillEvidence(raw: unknown): PhysicalDrillEviden
     } else {
       hostIds.add(id);
     }
-    if (!deviceKey || !KEY.test(deviceKey) || hostKeys.has(deviceKey)) {
+    if (!validDeviceKey(deviceKey) || hostKeys.has(deviceKey)) {
       errors.push(`topology.hosts[${index}].deviceKey is invalid or duplicate`);
     } else {
       hostKeys.add(deviceKey);
@@ -342,7 +407,8 @@ export function validatePhysicalDrillEvidence(raw: unknown): PhysicalDrillEviden
   }
 
   validateArtifacts(evidence, hostIds, errors);
-  validateLegVerdicts(evidence, errors);
+  validateAttestations(evidence, hostKeys, errors);
+  validateLegVerdicts(evidence, startedAt, finishedAt, errors);
   validateLegE(evidence, hostKeys, errors);
   validateLegG(evidence, hostKeys, errors);
 
