@@ -318,6 +318,10 @@ export async function setPhysicalPhaseEMode(input: { runId: string; mode: 'legac
   assertRunId(input.runId);
   const sql = deps.sql ?? getOrgPg().sql;
   const from = await getPotGitMode(PHASE_D_WORKSPACE, PHASE_A_POT_HOME, sql);
+  const expectedFrom: PhysicalPhaseEModeChange['from'] = input.mode === 'bridged' ? 'legacy' : 'bridged';
+  if (from !== expectedFrom) {
+    throw new Error(`physical Phase E mode flip requires ${expectedFrom} before ${input.mode}; observed ${from}`);
+  }
   await setPotGitMode(PHASE_D_WORKSPACE, PHASE_A_POT_HOME, input.mode, sql);
   const after = await getPotGitMode(PHASE_D_WORKSPACE, PHASE_A_POT_HOME, sql);
   if (after !== input.mode) throw new Error(`physical Phase E mode flip did not persist ${input.mode}`);
@@ -327,7 +331,7 @@ export async function setPhysicalPhaseEMode(input: { runId: string; mode: 'legac
     hostId: 'tower',
     tool: 'setPotGitMode',
     from,
-    to: input.mode,
+    to: after,
     workspaceId: PHASE_D_WORKSPACE,
     potHomeSlug: PHASE_A_POT_HOME,
     observedAt: new Date().toISOString(),
