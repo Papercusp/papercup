@@ -127,4 +127,53 @@ describe('activation receipt model', () => {
     expect((await executeActivationProbeOnce(failed.receipt, { persist: async () => true, invoke })).reason).toBe('terminal');
     expect(invoke).toHaveBeenCalledOnce();
   });
+
+  it('recurs from a blocked stale runtime through restart eligibility to durable probe evidence', async () => {
+    const restart = { tool: 'dev:restart', args: { target: 'bg-host', confirm: true } };
+    const staleLoaded: ActivationReceipt = {
+      ...receipt(),
+      observedIdentity: { kind: 'git-sha', value: 'previous-build' },
+    };
+
+    const deferred = evaluateActivationEligibility(staleLoaded, restart);
+    expect(deferred).toMatchObject({
+      state: 'queued',
+      blockers: [{ kind: 'critical-job', ref: 'green-checkpoint' }],
+      restart,
+      readyEvent: activationReadyEvent(staleLoaded.id),
+    });
+
+    const blockersCleared = { ...staleLoaded, blockers: [] };
+    expect(evaluateActivationEligibility(blockersCleared, restart)).toEqual({
+      state: 'ready',
+      blockers: [],
+      restart,
+      readyEvent: activationReadyEvent(staleLoaded.id),
+    });
+
+    let persisted: ActivationReceipt = {
+      ...blockersCleared,
+      state: 'loaded',
+      observedIdentity: { kind: 'git-sha', value: 'abc123' },
+    };
+    const invoke = vi.fn(async () => ({ passed: true, evidence: 'live runtime returned healthy' }));
+    const execution = await executeActivationProbeOnce(persisted, {
+      persist: async (next, expectedState) => {
+        if (persisted.state !== expectedState) return false;
+        persisted = next;
+        return true;
+      },
+      invoke,
+      nowMs: () => 1_800_000_000_000,
+    });
+
+    expect(execution.executed).toBe(true);
+    expect(invoke).toHaveBeenCalledOnce();
+    expect(persisted).toMatchObject({
+      state: 'verified',
+      observedIdentity: { kind: 'git-sha', value: 'abc123' },
+      evidence: 'live runtime returned healthy',
+    });
+    expect(activationReceiptFromCheck(activationReceiptToCheck(persisted))).toEqual(persisted);
+  });
 });
