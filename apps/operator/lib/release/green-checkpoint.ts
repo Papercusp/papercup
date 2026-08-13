@@ -7528,21 +7528,24 @@ export async function runPostSuiteLegs(
     ]),
     record("spa-build", legs.build, ["spa:conflict-markers", "build"]),
   ];
-  outputs.push(
-    `\nPOST_SUITE_SCHEDULER lowMemoryMode=parallel maxConcurrency=${lowMemoryConcurrency} ` +
+  const telemetry = [
+    `POST_SUITE_SCHEDULER lowMemoryMode=parallel maxConcurrency=${lowMemoryConcurrency} ` +
       `memoryBudgetMb=${GREEN_CHECKPOINT_LOW_MEMORY_LINT_BUDGET_MB} ` +
       `workerHeapMb=${GREEN_CHECKPOINT_LOW_MEMORY_LINT_HEAP_MB}`,
-  );
-  for (const leg of legs.records) {
-    outputs.push(
-      `\nPOST_SUITE_LEG id=${leg.id} status=${leg.status} durationMs=${leg.durationMs}` +
+    ...legs.records.map(
+      (leg) =>
+        `POST_SUITE_LEG id=${leg.id} status=${leg.status} durationMs=${leg.durationMs}` +
         (leg.skipReason ? ` skipReason=${JSON.stringify(leg.skipReason)}` : ""),
-    );
-  }
-  outputs.push(
-    `\nPOST_SUITE_RESULT status=${legs.ok ? "passed" : "failed"} durationMs=${Math.max(0, now() - startedAt)}`,
-  );
-  legs.output = outputs.join("") + "\n";
+    ),
+    `POST_SUITE_RESULT status=${legs.ok ? "passed" : "failed"} durationMs=${Math.max(0, now() - startedAt)}`,
+  ];
+  // Keep telemetry at the FRONT. summarizeSuiteOutput deliberately preserves the raw tail
+  // for non-Vitest failures (typecheck/lint/build diagnostics often have no parseable FAIL
+  // row). Appending sixteen stable timing records after the diagnostics pushed their banners
+  // and stderr out of that bounded summary, leaving operators with a signature but no cause.
+  // The full persisted log retains both sections; front-loading the machine-readable records
+  // preserves the diagnostic tail without weakening the timing evidence.
+  legs.output = `\n${telemetry.join("\n")}${outputs.join("")}\n`;
   legs.failingSignatures = failingSignatures;
   return legs;
 }
