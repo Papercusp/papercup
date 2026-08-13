@@ -53,7 +53,7 @@ beforeEach(async () => {
 async function insertItem(harness: string, id: string, title: string, status: string, payload: object = {}) {
   await db.sql.unsafe(`INSERT INTO harness_shared.work_items
     (workspace_id,harness_slug,feature_id,title,summary,status,payload,item_kind,updated_ts)
-    VALUES ('papercusp-workspace',$1,$2,$3,$3,$4,$5::jsonb,'bug',1)`,
+    VALUES ('papercusp-workspace',$1,$2,$3,$3,$4,$5::text::jsonb,'bug',1)`,
   [harness, id, title, status, JSON.stringify(payload)]);
 }
 
