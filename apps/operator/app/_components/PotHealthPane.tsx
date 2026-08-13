@@ -419,7 +419,7 @@ export function PotHealthPane() {
           </div>
         </section>
 
-        {/* ── 👥 SU AGENTS — who is driving ── */}
+        {/* ── 👥 SU AGENTS — who is driving ─────────────────────────────── */}
         <h3 className="op-ph-sec agent">
           <Users size={12} strokeWidth={2} aria-hidden="true" />
           Who is driving

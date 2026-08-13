@@ -2,8 +2,8 @@
 // PotHealthPane — REBUILT for the su-only era (retire-mug-kettle-su-only-2026-08-09
 // P-018..P-021, design D-032). Pins the three questions the pane now answers —
 // what the pot is POINTED AT (goals), whether it is WORKING (throughput +
-// attention), and who is DRIVING (su agents) — plus the two rulings that are easiest to
-// undo by accident:
+// attention), and who is DRIVING (su agents) — plus the two rulings that are
+// easiest to undo by accident:
 //
 //   1. liveness comes from `fleet.status`'s `sessionState`, NOT from a heartbeat
 //      (the "warm-dead" case below is the regression guard, and it is the whole
@@ -148,13 +148,14 @@ describe('PotHealthPane (su-only rebuild — P-018..P-021 / D-032)', () => {
     seedAll();
     render(<PotHealthPane />);
 
-    const sectionHeadings = screen.getAllByRole('heading', { level: 3 }).map((heading) =>
-      heading.textContent?.replace(/\s+/g, ' ').trim(),
-    );
+    const sectionHeadings = screen.getAllByRole('heading', { level: 3 }).map((heading) => {
+      const suffix = heading.querySelector('.op-ph-sec-d')?.textContent ?? '';
+      return heading.textContent?.replace(suffix, '').trim();
+    });
     expect(sectionHeadings).toEqual([
-      'What the pot is pointed at goals',
-      'Is it working throughput & attention',
-      'Who is driving su agents',
+      'What the pot is pointed at',
+      'Is it working',
+      'Who is driving',
     ]);
   });
 
