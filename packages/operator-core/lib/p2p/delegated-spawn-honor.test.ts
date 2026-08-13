@@ -428,6 +428,45 @@ describe('honorSpawnRequestFromProjection', () => {
       );
     });
 
+    it('presence/window followed by an exit-zero OAuth failure: attributes account_unfulfillable', async () => {
+      const resolveHonorAccount = vi.fn(async () => ({
+        ok: true as const,
+        account: 'default',
+        downgradedFrom: 'auto' as const,
+        loginEvidence: 'assumed-darwin-keychain' as const,
+      }));
+      const verifyLocalMemberBoot = vi.fn(async () => ({
+        observed: false,
+        ownerId: 'su-dead-member',
+        detail: "member su-dead-member registered presence in 'alpha', but no tool invocation was attributed",
+        failureDetail: 'Failed to authenticate: OAuth session expired and could not be refreshed',
+      }));
+      const { d, setDisposition, emitReceipt } = deps({ resolveHonorAccount, verifyLocalMemberBoot });
+
+      expect(await honorSpawnRequestFromProjection(ARGS, d)).toEqual({
+        outcome: 'refused',
+        code: 'account_unfulfillable',
+      });
+      expect(setDisposition).toHaveBeenLastCalledWith(
+        WS,
+        HOME,
+        UID_A,
+        row().offer_id,
+        'refused:account_unfulfillable',
+        { expect: 'honoring' },
+        undefined,
+      );
+      expect(emitReceipt).toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind: 'refusal',
+          refusal: expect.objectContaining({
+            code: 'account_unfulfillable',
+            detail: expect.stringMatching(/could not AUTHENTICATE/),
+          }),
+        }),
+      );
+    });
+
     it('an all-fail spawn never calls verifyLocalMemberBoot (refusal path is unaffected)', async () => {
       const verifyLocalMemberBoot = vi.fn(async () => ({ observed: true, detail: 'unused' }));
       const { d } = deps({
@@ -458,6 +497,35 @@ describe('honorSpawnRequestFromProjection', () => {
           ]),
         }),
       ).resolves.toMatchObject({ observed: false, detail: expect.stringMatching(/presence.*no tool invocation/i) });
+    });
+
+    it('carries a fresh member transcript failure into the post-spawn verdict', async () => {
+      const startedAt = new Date(NOW + 1);
+      const readMemberFailure = vi.fn(async () =>
+        'Failed to authenticate: OAuth session expired and could not be refreshed',
+      );
+      await expect(
+        defaultVerifyLocalMemberBoot({
+          workspaceId: WS,
+          fleetSlug: 'alpha',
+          sinceMs: NOW,
+          windowMs: 0,
+          listPresence: vi.fn(async () => [
+            {
+              ownerId: 'su-dead-member',
+              startedAt,
+              heartbeatAt: new Date(NOW + 2),
+              lastToolCallAt: null,
+            },
+          ]),
+          readMemberFailure,
+        }),
+      ).resolves.toMatchObject({
+        observed: false,
+        ownerId: 'su-dead-member',
+        failureDetail: expect.stringMatching(/OAuth session expired/),
+      });
+      expect(readMemberFailure).toHaveBeenCalledWith('su-dead-member');
     });
 
     it('accepts only when the fresh owner has a post-start attributed tool invocation', async () => {

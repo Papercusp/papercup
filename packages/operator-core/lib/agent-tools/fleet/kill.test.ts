@@ -210,11 +210,15 @@ describe('killOne', () => {
 
   it('reports not_found for a target with no nursery row and no live host', async () => {
     let cleared: string | null = null;
+    let released: string[] = [];
     const deps: KillDeps = {
       cancelNursery: async () => null,
       findHost: () => null,
       clearPresence: async (ownerId) => {
         cleared = ownerId;
+      },
+      releaseSeatConsumptions: async (ownerIds) => {
+        released = ownerIds;
       },
     };
     const r = await killOne({ actor: 'su-me', target: 'su-ghost', closeTerminal: true, reason: 'x' }, deps);
@@ -222,10 +226,12 @@ describe('killOne', () => {
     expect(r.code).toBe('not_found');
     expect(r.error).toContain('terminal_pids'); // the stale-window hint
     expect(cleared).toBe('su-ghost');
+    expect(released).toEqual(['su-ghost']);
   });
 
   it('reports live_unmanaged for a fresh OMP-hook presence without clearing it', async () => {
     let cleared = false;
+    let released = false;
     const audits: Array<{ action: string; subject: string }> = [];
     const deps: KillDeps = {
       cancelNursery: async () => null,
@@ -236,6 +242,9 @@ describe('killOne', () => {
       }),
       clearPresence: async () => {
         cleared = true;
+      },
+      releaseSeatConsumptions: async () => {
+        released = true;
       },
       audit: async (action, subject) => {
         audits.push({ action, subject });
@@ -254,6 +263,7 @@ describe('killOne', () => {
     });
     expect(r.error).toContain('turn:interrupt');
     expect(cleared).toBe(false);
+    expect(released).toBe(false);
     expect(audits).toEqual([{ action: 'fleet.kill_unmanaged', subject: 'su-omp' }]);
   });
 });

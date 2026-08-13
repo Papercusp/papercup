@@ -243,6 +243,12 @@ export interface LocalBootVerifyResult {
   observed: boolean;
   /** Human detail — always states what evidence produced the verdict. */
   detail: string;
+  /** Fresh launcher-authored owner whose first turn was not proven. */
+  ownerId?: string;
+  /** Bounded last assistant turn from that owner's local transcript, when one
+   * exists. This makes an exit-zero CLI failure attributable without treating
+   * every presence-only miss as an account failure. */
+  failureDetail?: string | null;
 }
 
 /** How long to locally poll for the spawned member's first attributed tool call
@@ -252,6 +258,32 @@ export interface LocalBootVerifyResult {
  *  not meaningfully stall the replication-apply loop it runs inside. */
 export const LOCAL_BOOT_VERIFY_MS = 8000;
 const LOCAL_BOOT_VERIFY_POLL_MS = 1000;
+
+/** Read the launched member's last assistant turn from the canonical local
+ * transcript. A Claude auth failure can exit zero after its window/presence was
+ * opened, so console-spawn has no non-zero boot receipt to fold into
+ * SpawnMembersResult.firstError. This post-spawn seam recovers the actual CLI
+ * verdict instead of manufacturing a cause from the missing tool call alone. */
+async function defaultReadLocalMemberFailure(ownerId: string): Promise<string | null> {
+  try {
+    const [{ latestAdvSessionByCoordOwner }, claude, { readLastAssistantTurn }] = await Promise.all([
+      import('../adv-sessions'),
+      import('../claude-sessions'),
+      import('../turn-journal'),
+    ]);
+    const session = await latestAdvSessionByCoordOwner(ownerId);
+    if (session?.agent && session.agent !== 'claude') return null;
+    const transcript = session?.sessionId
+      ? await claude.resolveInteractiveTranscript(session.sessionId, { owner: ownerId })
+      : claude.newestTranscriptUnderOwner(ownerId);
+    if (!transcript) return null;
+    const last = await readLastAssistantTurn(transcript, 'claude');
+    const text = last?.text.trim() ?? '';
+    return text ? text.slice(0, 2000) : null;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * WI-35786: LOCAL first-turn check after a spawn reports `opened > 0`.
@@ -274,6 +306,7 @@ export async function defaultVerifyLocalMemberBoot(args: {
   pollMs?: number;
   sleep?: (ms: number) => Promise<void>;
   listPresence?: (workspaceId: string, fleetSlug: string) => Promise<FleetPresenceRow[]>;
+  readMemberFailure?: (ownerId: string) => Promise<string | null>;
 }): Promise<LocalBootVerifyResult> {
   const windowMs = args.windowMs ?? LOCAL_BOOT_VERIFY_MS;
   const pollMs = args.pollMs ?? LOCAL_BOOT_VERIFY_POLL_MS;
@@ -317,8 +350,12 @@ export async function defaultVerifyLocalMemberBoot(args: {
     };
   }
   if (presenceOnly) {
+    const readMemberFailure = args.readMemberFailure ?? defaultReadLocalMemberFailure;
+    const failureDetail = await readMemberFailure(presenceOnly.ownerId).catch(() => null);
     return {
       observed: false,
+      ownerId: presenceOnly.ownerId,
+      failureDetail,
       detail:
         `member ${presenceOnly.ownerId} registered presence in '${args.fleetSlug}', but no tool invocation ` +
         `was attributed to it within ${Math.round(windowMs / 1000)}s — presence-only is not a boot proof`,
@@ -897,7 +934,19 @@ export async function honorSpawnRequestFromProjection(
     sinceMs: honorStartedAtMs,
   });
   if (!bootVerify.observed) {
-    const code = 'member_boot_unconfirmed';
+    // EI-20348412988546055: a CLI can open/register and then exit ZERO after
+    // printing an auth failure. In that case spawn.opened===1, so the earlier
+    // zero-open classifier never runs. Classify the observed transcript turn;
+    // only an explicit auth signature upgrades the generic fail-closed result.
+    const postSpawnFailure = bootVerify.failureDetail
+      ? classifyHonorSpawnFailure({
+          count: payload.count,
+          firstError: bootVerify.failureDetail,
+          resolved: acct,
+        })
+      : null;
+    const attributedAuthFailure = postSpawnFailure?.code === 'account_unfulfillable' ? postSpawnFailure : null;
+    const code = attributedAuthFailure?.code ?? 'member_boot_unconfirmed';
     await setDisposition(
       args.workspaceId,
       args.potHomeSlug,
@@ -915,9 +964,10 @@ export async function honorSpawnRequestFromProjection(
       action: 'delegated-seat:spawn',
       refusal: {
         code,
-        detail:
-          `spawn opened ${spawn.opened}/${payload.count} member target(s), but no first agent turn was proven: ` +
-          bootVerify.detail,
+        detail: attributedAuthFailure
+          ? `${attributedAuthFailure.detail} First-turn verification also reported: ${bootVerify.detail}`
+          : `spawn opened ${spawn.opened}/${payload.count} member target(s), but no first agent turn was proven: ` +
+            bootVerify.detail,
       },
       requester: { kind: 'session', ref: payload.requesterOwnerId, githubUserId: publisher },
       responderGithubUserId: actor.githubUserId,

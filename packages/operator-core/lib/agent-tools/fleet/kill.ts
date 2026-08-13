@@ -94,6 +94,8 @@ export interface KillDeps {
   ) => Promise<{ spawn_id: string; cancelled: string[]; processes_aborted: number } | null>;
   /** Purge stale presence after the psu-host authority proves a target is gone. */
   clearPresence?: (ownerId: string) => Promise<void>;
+  /** Free delegated-seat consumption after the same authoritative death proof. */
+  releaseSeatConsumptions?: (ownerIds: string[]) => Promise<void>;
   /** Append an audit row. */
   audit?: (action: string, subject: string, details: Record<string, unknown>) => Promise<void>;
   /** Atomically stamp the terminal tuple after this endpoint confirms the host died. */
@@ -293,6 +295,10 @@ export async function killOne(input: KillOneInput, deps: KillDeps): Promise<Kill
     // gone; the structured result remains not_found because it was already
     // dead, not successfully killed.
     await deps.clearPresence?.(input.target).catch(() => {});
+    // EI-20348469225868168: fleet:kill is an explicit reap for this already-dead
+    // owner. Mirror presence-reaper's existing delegated-seat cleanup instead
+    // of leaving a consumption row behind until a later lazy purge.
+    await deps.releaseSeatConsumptions?.([input.target]).catch(() => {});
     return {
       ok: false,
       target: input.target,
@@ -541,6 +547,10 @@ export default defineTool({
       findLiveUnmanaged: (ownerId) => findLiveUnmanagedSession(ownerId, workspaceId),
       cancelNursery: (target, why) => cancelNurseryTarget(target, why, workspaceId, actor),
       clearPresence: (ownerId) => clearPresence(ownerId),
+      releaseSeatConsumptions: async (ownerIds) => {
+        const { releaseSeatConsumptions } = await import('../../fleet/seat-accounting');
+        await releaseSeatConsumptions(ownerIds);
+      },
       markSessionEnded: (id, signal) => markAdvSessionEnded(Number(id), null, 'signal', { signal }),
       audit: (action, subject, details) => writeKillAudit(action, subject, details, workspaceId, actor.ownerId),
     };
