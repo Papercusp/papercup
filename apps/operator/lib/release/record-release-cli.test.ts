@@ -663,10 +663,11 @@ describe('Android release producer/consumer source contract (D-004)', () => {
     );
     expect(script).toContain('PAPERCUP_RELEASE_VERSION');
     expect(script).toContain('rm -f "$RELEASE_APK" "$RELEASE_AAB" "$RELEASE_PROVENANCE"');
+    const provenanceWrite = '"$REPO_ROOT/tools/build-scripts/android-release-provenance.sh" write';
     expect(script.indexOf('verify_16kb_alignment "$RELEASE_APK"')).toBeLessThan(
-      script.indexOf('android-release-provenance.sh write'),
+      script.indexOf(provenanceWrite),
     );
-    expect(script).toContain('"$REPO_ROOT/tools/build-scripts/android-release-provenance.sh" write');
+    expect(script).toContain(provenanceWrite);
   });
 
   it('release-local passes the requested version and treats an enabled Android leg as fatal', () => {
