@@ -29,9 +29,15 @@ export default defineTool({
       probeVoicemodeHealth(),
       isKokoroLocalProvisioned().catch(() => false),
       getLocalVoiceProvisionStatus().catch(() => null),
-      readElevenLabsKey().catch(() => null),
-      readOpenAiKey().then((k) => !!k).catch(() => false),
-      readCartesiaKey().then((k) => !!k).catch(() => false),
+      // Keep legacy-invalid values visible to the health surface; ordinary
+      // outbound callers receive null from the safe default instead.
+      readElevenLabsKey({ allowInvalid: true }).catch(() => null),
+      readOpenAiKey()
+        .then((k) => !!k)
+        .catch(() => false),
+      readCartesiaKey()
+        .then((k) => !!k)
+        .catch(() => false),
     ]);
     const elevenLabsStatus = inspectElevenLabsApiKey(elKey);
     const whisperProvisioned = !!(provision?.whisperBinary.done && provision?.whisperModel.done);

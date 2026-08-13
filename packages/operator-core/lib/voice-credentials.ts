@@ -29,8 +29,7 @@ export interface ElevenLabsApiKeyStatus {
   error: string | null;
 }
 
-const INVALID_ELEVENLABS_KEY_ERROR =
-  'ElevenLabs API keys must begin with sk_; an API key ID cannot authenticate.';
+const INVALID_ELEVENLABS_KEY_ERROR = 'ElevenLabs API keys must begin with sk_; an API key ID cannot authenticate.';
 
 /** Validate the local key shape before persisting or sending it to ElevenLabs. */
 export function inspectElevenLabsApiKey(value: unknown): ElevenLabsApiKeyStatus {
@@ -63,9 +62,24 @@ export function maskKey(key: string | null): string | null {
   return `${key.slice(0, 3)}_••••${tail}`;
 }
 
-/** Return the raw ElevenLabs key (server-side only). Null if not configured. */
-export async function readElevenLabsKey(): Promise<string | null> {
-  return (await readAll()).elevenlabs?.apiKey ?? null;
+export interface ReadElevenLabsKeyOptions {
+  /**
+   * Status/migration readers may opt into seeing a legacy invalid value so the
+   * UI can explain and replace it. Network callers must keep the safe default.
+   */
+  allowInvalid?: boolean;
+}
+
+/**
+ * Return a usable ElevenLabs secret (server-side only), or null when absent or
+ * invalid. Legacy API-key IDs stay visible only to explicit status/migration
+ * readers; the default makes it impossible for a normal outbound call site to
+ * accidentally send one as an `xi-api-key`.
+ */
+export async function readElevenLabsKey(options: ReadElevenLabsKeyOptions = {}): Promise<string | null> {
+  const key = (await readAll()).elevenlabs?.apiKey ?? null;
+  if (key === null || options.allowInvalid) return key;
+  return inspectElevenLabsApiKey(key).healthy ? key : null;
 }
 
 export async function writeElevenLabsKey(apiKey: string | null): Promise<void> {

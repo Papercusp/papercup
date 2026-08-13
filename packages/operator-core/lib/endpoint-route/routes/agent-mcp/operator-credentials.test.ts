@@ -52,10 +52,9 @@ describe('operator credentials ElevenLabs validation', () => {
 
   it('reports a legacy API key ID as unhealthy', async () => {
     vi.mocked(readElevenLabsKey).mockResolvedValue('api_key_id_123');
-    const response = await getRoute.handler(
-      new Request('http://localhost/api/agent-mcp/operator-credentials'),
-      { params: {} },
-    );
+    const response = await getRoute.handler(new Request('http://localhost/api/agent-mcp/operator-credentials'), {
+      params: {},
+    });
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({
       elevenlabs: {
@@ -64,5 +63,6 @@ describe('operator credentials ElevenLabs validation', () => {
         error: expect.stringMatching(/begin with sk_/),
       },
     });
+    expect(readElevenLabsKey).toHaveBeenCalledWith({ allowInvalid: true });
   });
 });

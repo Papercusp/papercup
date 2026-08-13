@@ -24,6 +24,7 @@ vi.mock('../../../voice-node/local-voice-provision', () => ({
 }));
 
 import route from './operator-voice-engine-health';
+import { readElevenLabsKey } from '../../../voice-credentials';
 
 type Route = { handler: (req: Request, ctx: { params: Record<string, unknown> }) => Promise<Response> };
 
@@ -44,5 +45,6 @@ describe('operator voice engine health', () => {
       elevenlabsConfigured: true,
       elevenlabsError: expect.stringMatching(/begin with sk_/),
     });
+    expect(readElevenLabsKey).toHaveBeenCalledWith({ allowInvalid: true });
   });
 });

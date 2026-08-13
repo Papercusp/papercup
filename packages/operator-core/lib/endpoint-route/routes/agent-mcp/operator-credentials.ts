@@ -19,7 +19,9 @@ import {
 import { defineTool } from '@papercusp/agent-mcp';
 
 async function snapshot() {
-  const e = await readElevenLabsKey();
+  // Status must expose (masked) legacy-invalid values so the UI can explain
+  // and replace them. Outbound callers use readElevenLabsKey()'s safe default.
+  const e = await readElevenLabsKey({ allowInvalid: true });
   const o = await readOpenAiKey();
   const c = await readCartesiaKey();
   const d = await readDeepgramKey();
@@ -32,10 +34,10 @@ async function snapshot() {
       healthy: eStatus.healthy,
       error: eStatus.error,
     },
-    openai:     { apiKey: maskKey(o), configured: !!o },
-    cartesia:   { apiKey: maskKey(c), configured: !!c },
-    deepgram:   { apiKey: maskKey(d), configured: !!d },
-    picovoice:  { apiKey: maskKey(p), configured: !!p },
+    openai: { apiKey: maskKey(o), configured: !!o },
+    cartesia: { apiKey: maskKey(c), configured: !!c },
+    deepgram: { apiKey: maskKey(d), configured: !!d },
+    picovoice: { apiKey: maskKey(p), configured: !!p },
   };
 }
 
@@ -53,7 +55,13 @@ const put = defineTool({
   path: '/agent-mcp/operator-credentials',
   auth: 'loopback',
   async handler(req) {
-    let body: { elevenlabsApiKey?: unknown; openaiApiKey?: unknown; cartesiaApiKey?: unknown; deepgramApiKey?: unknown; picovoiceApiKey?: unknown } = {};
+    let body: {
+      elevenlabsApiKey?: unknown;
+      openaiApiKey?: unknown;
+      cartesiaApiKey?: unknown;
+      deepgramApiKey?: unknown;
+      picovoiceApiKey?: unknown;
+    } = {};
     try {
       body = (await req.json()) as typeof body;
     } catch {
@@ -65,12 +73,18 @@ const put = defineTool({
     ): Promise<Response | null> => {
       if (!(field in body)) return null;
       const v = body[field];
-      if (v === null) { await write(null); return null; }
+      if (v === null) {
+        await write(null);
+        return null;
+      }
       if (typeof v === 'string' && v.length > 0) {
         if (field === 'elevenlabsApiKey') {
           const status = inspectElevenLabsApiKey(v);
           if (!status.healthy) {
-            return Response.json({ ok: false, error: 'invalid_elevenlabs_api_key', detail: status.error }, { status: 400 });
+            return Response.json(
+              { ok: false, error: 'invalid_elevenlabs_api_key', detail: status.error },
+              { status: 400 },
+            );
           }
         }
         await write(v);
@@ -80,10 +94,10 @@ const put = defineTool({
     };
     for (const [field, writer] of [
       ['elevenlabsApiKey', writeElevenLabsKey],
-      ['openaiApiKey',     writeOpenAiKey],
-      ['cartesiaApiKey',   writeCartesiaKey],
-      ['deepgramApiKey',   writeDeepgramKey],
-      ['picovoiceApiKey',  writePicovoiceKey],
+      ['openaiApiKey', writeOpenAiKey],
+      ['cartesiaApiKey', writeCartesiaKey],
+      ['deepgramApiKey', writeDeepgramKey],
+      ['picovoiceApiKey', writePicovoiceKey],
     ] as const) {
       const err = await setKey(field, writer);
       if (err) return err;

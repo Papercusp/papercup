@@ -28,33 +28,34 @@ export default defineTool({
   guidance: {
     when: `Check which API credentials (EL, OpenAI, etc.) are configured + valid. Used in onboarding + diagnostics.`,
     notWhen: `For SETTING credentials, use the /settings UI directly — agents shouldn't paste secrets.`,
-    seeAlso: [
-      'accounts:status (per-account credential / rate status)',
-      'accounts:list (registered accounts)',
-    ],
+    seeAlso: ['accounts:status (per-account credential / rate status)', 'accounts:list (registered accounts)'],
   },
   requirePrincipal: false,
   agentRoles: [...SU_ROLES],
   args: z.object({}),
   async handler() {
     const [el, openai, cartesia, deepgram, picovoice] = await Promise.all([
-      readElevenLabsKey(),
+      // Status is the deliberate raw-reader exception: show a masked legacy
+      // value so it can be replaced, while outbound reads stay fail-closed.
+      readElevenLabsKey({ allowInvalid: true }),
       readOpenAiKey(),
       readCartesiaKey(),
       readDeepgramKey(),
       readPicovoiceKey(),
     ]);
     return {
-      content: [{
-        type: 'text',
-        text: JSON.stringify({
-          elevenlabs: { set: !!el, masked: maskKey(el) },
-          openai: { set: !!openai, masked: maskKey(openai) },
-          cartesia: { set: !!cartesia, masked: maskKey(cartesia) },
-          deepgram: { set: !!deepgram, masked: maskKey(deepgram) },
-          picovoice: { set: !!picovoice, masked: maskKey(picovoice) },
-        }),
-      }],
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({
+            elevenlabs: { set: !!el, masked: maskKey(el) },
+            openai: { set: !!openai, masked: maskKey(openai) },
+            cartesia: { set: !!cartesia, masked: maskKey(cartesia) },
+            deepgram: { set: !!deepgram, masked: maskKey(deepgram) },
+            picovoice: { set: !!picovoice, masked: maskKey(picovoice) },
+          }),
+        },
+      ],
     };
   },
 });
