@@ -174,10 +174,20 @@ function gateStatusOf(gate: GitPipelineSnapshot['gate']): HiveGateStatus {
 }
 
 /** The sha `main` was last fast-forwarded to: the newest green_checkpoint event's advancedTo
- *  (partial advance) or candidate (full advance). null when no green event yet. */
+ *  (partial advance) or candidate (full advance). null when no green event yet.
+ *
+ *  WI-38367: `'advanced-prefix'` MUST be in this filter. `detail.advancedTo` is written on
+ *  the partial-advance path and NOWHERE else (green-checkpoint.ts's prefix promotion →
+ *  buildCheckpointDetail), so excluding that status made the `advancedTo` branch below
+ *  unreachable and left this row naming an OLDER pin whenever the most recent thing that
+ *  moved `main` was a prefix promotion — reporting main further back than it actually is,
+ *  for as long as the tip stays red. Same root as WI-38340: a consumer written against the
+ *  status taxonomy that existed before WI-38218 added a new kind of advance. */
 function lastGreenShaOf(recent: GitPipelineSnapshot['recent']): string | null {
   const ev = recent.find(
-    (e) => e.kind === 'green_checkpoint' && (e.status === 'advanced' || e.status === 'up-to-date'),
+    (e) =>
+      e.kind === 'green_checkpoint' &&
+      (e.status === 'advanced' || e.status === 'up-to-date' || e.status === 'advanced-prefix'),
   );
   if (!ev) return null;
   const d = ev.detail || {};

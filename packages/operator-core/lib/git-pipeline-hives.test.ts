@@ -92,7 +92,11 @@ describe('gitPipelineHiveRows', () => {
       'c-hive': snap({
         gate: { consecutiveReds: 2, lastGreenAtMs: 999, stalled: false },
         recent: [
-          { id: '1', kind: 'green_checkpoint', status: 'advanced', detail: { candidate: 'abcdef123456', advancedTo: 'beef00112233' }, createdAtMs: 100 },
+          // WI-38367: `advancedTo` is written ONLY by the partial-advance path, so this row
+          // carries the status that path really emits. It used to say 'advanced', which no
+          // emitter ever pairs with `advancedTo` — and that fiction is what let the reader
+          // filter out 'advanced-prefix' with this assertion still passing.
+          { id: '1', kind: 'green_checkpoint', status: 'advanced-prefix', detail: { candidate: 'abcdef123456', advancedTo: 'beef00112233' }, createdAtMs: 100 },
           { id: '2', kind: 'deploy', status: 'ok', detail: {}, createdAtMs: 200 },
         ],
       }),
@@ -111,6 +115,25 @@ describe('gitPipelineHiveRows', () => {
     expect(row.lastDeployStatus).toBe('ok');
     expect(row.lastDeployAtMs).toBe(200);
     expect(row.stagingMainGap).toBeNull(); // fixture root doesn't exist → best-effort null
+  });
+
+  it('WI-38367: a partial advance is the newest thing that moved main, so it wins over an older FULL advance', async () => {
+    // `recent` is newest-first. Before this fix the reader skipped every 'advanced-prefix'
+    // row, so it reported the OLDER full-advance pin — main further back than it is, for
+    // as long as the tip stays red and only prefixes are promoted.
+    projects = [{ slug: 'p-hive' }];
+    envBySlug = { 'p-hive': enabledEnv('p-hive') };
+    snapBySlug = {
+      'p-hive': snap({
+        recent: [
+          { id: '2', kind: 'green_checkpoint', status: 'advanced-prefix', detail: { candidate: 'ffff00000000', advancedTo: 'newprefix123' }, createdAtMs: 300 },
+          { id: '1', kind: 'green_checkpoint', status: 'advanced', detail: { candidate: 'oldfulladv00' }, createdAtMs: 100 },
+        ],
+      }),
+    };
+    const { gitPipelineHiveRows } = await import('./git-pipeline-hives');
+    const [row] = await gitPipelineHiveRows('default');
+    expect(row.lastGreenSha).toBe('newprefix123');
   });
 
   it('gate status: stalled > held > green > unknown', async () => {
