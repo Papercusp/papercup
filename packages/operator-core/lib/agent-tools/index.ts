@@ -1143,6 +1143,10 @@ import './plans/add-decision';
 // ratify verb so "propose a decision" and "ratify it" are separately governable.
 import './plans/ratify-decision';
 import './plans/add-item';
+// plan-completion-audit-and-acceptance-verdict-2026-08-13 P-002 — the code-truth audit
+// the completion gate reads: every plan item traced to as-built code and cited, with
+// citations resolved against the real tree at write time.
+import './plans/audit';
 // Phase 5 — whole-document write (CAS) + legacy-frontmatter conversion.
 import './plans/set-content';
 import './plans/set-content-chunk';
