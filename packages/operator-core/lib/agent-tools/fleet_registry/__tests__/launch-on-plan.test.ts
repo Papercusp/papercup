@@ -11,6 +11,10 @@ import type { SpecPoolEffect, CollapseGuardVerdict } from '../../../scheduler/sp
 
 const spawnConsoleMock = vi.fn();
 const fetchGatewayHeadroomMock = vi.fn();
+const launchTransaction = vi.hoisted(() => ({
+  verify: vi.fn(async () => ({ agentStarted: true, waitedMs: 1, sessions: [], note: 'verified' })),
+  persist: vi.fn(async () => null),
+}));
 
 vi.mock('../../../console-launcher', () => ({
   buildConsoleEnvelope: vi.fn(async () => ({ cwd: '/tmp/fleet', env: {} })),
@@ -40,6 +44,12 @@ vi.mock('../../../agent-fleets-store', () => ({
   // to a WON slot; suppression semantics live in agent-fleets-store.integration.test.ts.
   claimFleetLaunchSlot: vi.fn(async () => ({ won: true, at: 1 })),
   releaseFleetLaunchSlot: vi.fn(async () => {}),
+  setFleetLaunchTransaction: (...args: unknown[]) => launchTransaction.persist(...args),
+}));
+
+vi.mock('../../../agent-launch-core', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../agent-launch-core')>()),
+  verifyFreshLaunchStarted: (...args: unknown[]) => launchTransaction.verify(...args),
 }));
 
 vi.mock('../../../fleet/fleet-roster', () => ({
@@ -164,6 +174,12 @@ import tool, {
 } from '../launch-on-plan';
 // The REAL claim-spec validator (NOT the mocked claim-spec-STORE) — #4 specs must pass it.
 import { validateClaimSpec } from '../../../scheduler/claim-spec';
+
+beforeEach(() => {
+  launchTransaction.verify.mockReset();
+  launchTransaction.verify.mockResolvedValue({ agentStarted: true, waitedMs: 1, sessions: [], note: 'verified' });
+  launchTransaction.persist.mockClear();
+});
 
 describe('launch-tool routing guidance', () => {
   it('identifies fleet:launch-on-plan as the ergonomic N-agents-on-a-plan door', () => {
@@ -1301,7 +1317,7 @@ describe('fleet:launch-on-plan handler — spawn failures surface failed[], neve
     (releaseFleetLaunchSlot as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
   });
 
-  it('every member spawn failing (the stale D-Bus / gnome-terminal early-exit shape) reports opened:[] + one failed[] entry per member — never a false opened receipt', async () => {
+  it('a canary spawn failure opens no cohort and reports the one attempted failure', async () => {
     spawnConsoleMock.mockReturnValue({
       status: 'error',
       error:
@@ -1322,7 +1338,7 @@ describe('fleet:launch-on-plan handler — spawn failures surface failed[], neve
     // WI-4752 contract is about opened[]/failed[] never lying, not about `ok` staying true.
     expect(payload.ok).toBe(false);
     expect(payload.opened).toEqual([]);
-    expect(payload.failed).toHaveLength(2);
+    expect(payload.failed).toHaveLength(1);
     expect(payload.failed[0].error).toMatch(/ServiceUnknown/);
     expect(payload.failed[0].code).toBe(502);
   });
@@ -1337,12 +1353,12 @@ describe('fleet:launch-on-plan handler — spawn failures surface failed[], neve
     expect(releaseFleetLaunchSlot as ReturnType<typeof vi.fn>).toHaveBeenCalled();
   });
 
-  it('a PARTIAL failure (2 of 3 spawns fail) reports the survivor in opened[] and both failures in failed[] — no phantom members counted', async () => {
+  it('a later wave partial failure preserves verified/opened identities and exposes recovery state', async () => {
     let call = 0;
     spawnConsoleMock.mockImplementation(() => {
       call += 1;
-      if (call === 2) return { status: 'ok', terminal: 'term-2', pid: 222 };
-      return { status: 'error', error: `spawn ${call} failed: no window opened`, code: 502 };
+      if (call < 3) return { status: 'ok', terminal: `term-${call}`, pid: 220 + call };
+      return { status: 'error', error: 'spawn 3 failed: no window opened', code: 502 };
     });
     const res = await tool.handler(
       { name: 'Partial DBus Fleet', plan: 'my-plan', harness: 'papercusp', count: 3 } as never,
@@ -1350,9 +1366,68 @@ describe('fleet:launch-on-plan handler — spawn failures surface failed[], neve
     );
     const payload = JSON.parse((res as any).content[0].text);
     expect(payload.ok).toBe(true);
-    expect(payload.opened).toHaveLength(1);
-    expect(payload.opened[0].terminal).toBe('term-2');
-    expect(payload.failed).toHaveLength(2);
+    expect(payload.opened).toHaveLength(2);
+    expect(payload.failed).toHaveLength(1);
+    expect(payload.launchTransaction.state).toBe('partial');
+    expect(payload.launchTransaction.recovery.retryOwnerIds).toHaveLength(1);
+  });
+});
+
+describe('fleet:launch-on-plan handler — verified canary-first transaction (P-003 / D-001)', () => {
+  beforeEach(async () => {
+    spawnConsoleMock.mockReset();
+    spawnConsoleMock.mockImplementation((_opts) => ({
+      status: 'ok', terminal: `term-${spawnConsoleMock.mock.calls.length}`, pid: 100 + spawnConsoleMock.mock.calls.length,
+    }));
+    fetchGatewayHeadroomMock.mockReset();
+    fetchGatewayHeadroomMock.mockResolvedValue({ reachable: false });
+    const { liveFleetMemberIds } = await import('../../../fleet/fleet-roster');
+    (liveFleetMemberIds as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+  });
+
+  it('does not open the cohort when the canary never reaches a successful tool invocation', async () => {
+    launchTransaction.verify.mockResolvedValueOnce({
+      agentStarted: null, waitedMs: 10_000, sessions: [], note: 'UNVERIFIED',
+    });
+    const res = await tool.handler(
+      { name: 'Canary Stop Fleet', plan: 'my-plan', harness: 'papercusp', count: 5 } as never,
+      {} as never,
+    );
+    const payload = JSON.parse((res as any).content[0].text);
+    expect(spawnConsoleMock).toHaveBeenCalledTimes(1);
+    expect(payload.ok).toBe(false);
+    expect(payload.launchTransaction.state).toBe('partial');
+    expect(payload.launchTransaction.verifiedMemberIds).toEqual([]);
+  });
+
+  it('rolls out one canary then bounded waves, with exact pre-pinned identities', async () => {
+    const res = await tool.handler(
+      { name: 'Bounded Wave Fleet', plan: 'my-plan', harness: 'papercusp', count: 8 } as never,
+      {} as never,
+    );
+    const payload = JSON.parse((res as any).content[0].text);
+    const waveSizes = launchTransaction.verify.mock.calls.map((call) => call[0].expectedOwnerIds.length);
+    expect(waveSizes).toEqual([1, 3, 3, 1]);
+    expect(payload.launchTransaction.state).toBe('verified');
+    expect(payload.launchTransaction.requestedMemberIds).toHaveLength(8);
+    expect(new Set(payload.launchTransaction.requestedMemberIds).size).toBe(8);
+    for (const call of spawnConsoleMock.mock.calls) {
+      expect(call[0].envelope.greetingCmd).toMatch(/--owner-id=su-[0-9a-f-]+/);
+    }
+  });
+
+  it('stops before a later wave after attestation failure and returns the exact retry set', async () => {
+    launchTransaction.verify
+      .mockResolvedValueOnce({ agentStarted: true, waitedMs: 1, sessions: [], note: 'verified' })
+      .mockResolvedValueOnce({ agentStarted: false, waitedMs: 1, sessions: [], note: 'ATTESTATION MISMATCH' });
+    const res = await tool.handler(
+      { name: 'Mismatch Fleet', plan: 'my-plan', harness: 'papercusp', count: 5 } as never,
+      {} as never,
+    );
+    const payload = JSON.parse((res as any).content[0].text);
+    expect(spawnConsoleMock).toHaveBeenCalledTimes(4);
+    expect(payload.launchTransaction.state).toBe('partial');
+    expect(payload.launchTransaction.recovery.retryOwnerIds).toHaveLength(4);
   });
 });
 

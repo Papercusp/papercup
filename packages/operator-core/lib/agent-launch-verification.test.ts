@@ -38,9 +38,10 @@ function fixedProbe(sessions: FreshLaunchSessionProbe[]) {
 const session = (over: Partial<FreshLaunchSessionProbe> = {}): FreshLaunchSessionProbe => ({
   advSessionId: 14842,
   ownerId: 'su-launched',
-  realCalls: 0,
+  successfulCalls: 0,
   msSinceLastSignal: null,
   hasPresence: false,
+  attestationDiffs: [],
   ...over,
 });
 
@@ -51,7 +52,7 @@ describe('verifyFreshLaunchStarted — the ACCEPTANCE CASE (adv_session 14842)',
     // the last signal is long past.
     const verdict = await verifyFreshLaunchStarted(ARGS, {
       ...FAST,
-      probe: fixedProbe([session({ realCalls: 0, hasPresence: false, msSinceLastSignal: 60_000 })]),
+      probe: fixedProbe([session({ successfulCalls: 0, hasPresence: false, msSinceLastSignal: 60_000 })]),
     });
 
     expect(
@@ -75,17 +76,43 @@ describe('verifyFreshLaunchStarted — must NOT cry wolf on a healthy launch (D-
   it('returns agentStarted:TRUE as soon as a real (non-statusline) call lands', async () => {
     const verdict = await verifyFreshLaunchStarted(ARGS, {
       ...FAST,
-      probe: fixedProbe([session({ realCalls: 5, msSinceLastSignal: 500 })]),
+      probe: fixedProbe([session({ successfulCalls: 5, msSinceLastSignal: 500 })]),
     });
     expect(verdict.agentStarted).toBe(true);
   });
 
-  it('returns TRUE on a live presence row even with no real call yet', async () => {
+  it('does not count a live presence row as readiness without a successful agent-chosen call (D-001)', async () => {
     const verdict = await verifyFreshLaunchStarted(ARGS, {
       ...FAST,
-      probe: fixedProbe([session({ realCalls: 0, hasPresence: true, msSinceLastSignal: 500 })]),
+      probe: fixedProbe([session({ successfulCalls: 0, hasPresence: true, msSinceLastSignal: 500 })]),
     });
-    expect(verdict.agentStarted).toBe(true);
+    expect(verdict.agentStarted).toBeNull();
+    expect(verdict.note).toMatch(/UNVERIFIED/);
+  });
+
+  it('fails closed when the exact pinned owner reports a requested-vs-actual attestation mismatch', async () => {
+    const verdict = await verifyFreshLaunchStarted(
+      { ...ARGS, expectedOwnerIds: ['su-launched'] },
+      {
+        ...FAST,
+        probe: fixedProbe([
+          session({
+            successfulCalls: 1,
+            attestationDiffs: [{ field: 'model', requested: 'gpt-5.5:high', actual: 'gpt-5.4:low' }],
+          }),
+        ]),
+      },
+    );
+    expect(verdict.agentStarted).toBe(false);
+    expect(verdict.note).toMatch(/ATTESTATION MISMATCH/);
+  });
+
+  it('requires every exact pinned owner — an unrelated fresh session cannot satisfy the cohort', async () => {
+    const verdict = await verifyFreshLaunchStarted(
+      { ...ARGS, expectedOwnerIds: ['su-wanted'] },
+      { ...FAST, probe: fixedProbe([session({ ownerId: 'su-other', successfulCalls: 1 })]) },
+    );
+    expect(verdict.agentStarted).not.toBe(true);
   });
 
   it('returns NULL (unverified) for a slow starter still signalling — NOT false', async () => {

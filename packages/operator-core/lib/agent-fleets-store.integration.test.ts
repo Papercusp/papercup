@@ -28,6 +28,7 @@ import {
   releaseFleetLaunchSlot,
   setFleetHeadcountTarget,
   setFleetControlState,
+  setFleetLaunchTransaction,
 } from './agent-fleets-store';
 
 const WS = 'ws-flguard';
@@ -76,6 +77,7 @@ beforeAll(async () => {
       headcount_next_attempt_at bigint,
       headcount_backoff_ms bigint DEFAULT 0 NOT NULL,
       headcount_last_error text,
+      last_launch_transaction jsonb,
       CONSTRAINT agent_fleets_pkey PRIMARY KEY (workspace_id, fleet_slug)
     )
   `);
@@ -215,6 +217,27 @@ describe('fleet control state (P-009 / mig 575) — typed wind-down round-trip',
     );
     const read = await getFleet(WS, 'forged-ctl', rootSql);
     expect(read?.controlState).toBe('active');
+  });
+});
+
+describe('fleet launch transaction state (P-003 / mig 830)', () => {
+  it('persists and reads the exact partial-recovery transaction on the fleet row', async () => {
+    await insertFleet('transaction-fleet');
+    const transaction = {
+      version: 1 as const,
+      transactionId: 'tx-1',
+      state: 'partial' as const,
+      requestedAt: 1_000,
+      updatedAt: 2_000,
+      requestedMemberIds: ['su-a', 'su-b'],
+      openedMemberIds: ['su-a'],
+      verifiedMemberIds: ['su-a'],
+      failed: [{ ownerId: 'su-b', phase: 'spawn' as const, reason: 'no window' }],
+      waves: [{ index: 0, ownerIds: ['su-a'], state: 'verified' as const }],
+      recovery: { retryOwnerIds: ['su-b'], nextAction: 'retry only the unresolved member identity' },
+    };
+    await setFleetLaunchTransaction({ workspaceId: WS, fleetSlug: 'transaction-fleet', transaction, sql: rootSql });
+    expect((await getFleet(WS, 'transaction-fleet', rootSql))?.lastLaunchTransaction).toEqual(transaction);
   });
 });
 

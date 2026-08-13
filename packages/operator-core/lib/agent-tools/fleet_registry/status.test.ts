@@ -61,6 +61,12 @@ beforeEach(() => {
     owner: 'su-owner',
     leaderOwnerId: 'su-leader',
     colorScheme: 'forest',
+    lastLaunchTransaction: {
+      version: 1,
+      transactionId: 'tx-1',
+      state: 'partial',
+      recovery: { retryOwnerIds: ['su-missing'], nextAction: 'retry unresolved members' },
+    },
     createdAt: 0,
     updatedAt: 0,
   });
@@ -109,6 +115,7 @@ describe('fleet:status', () => {
     const out = parse(result);
     expect(out.ok).toBe(true);
     expect(out.completionStats).toBeUndefined();
+    expect(out.launchTransaction).toMatchObject({ transactionId: 'tx-1', state: 'partial' });
     expect(h.getCompletionIntegrityStats).not.toHaveBeenCalled();
   });
 
