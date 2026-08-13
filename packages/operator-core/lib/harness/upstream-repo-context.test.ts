@@ -3,15 +3,12 @@
  * (hive-from-github-url P-013 / D-005). All seams injected.
  */
 import { describe, it, expect } from 'vitest';
-import {
-  resolveUpstreamRepoSource,
-  upstreamGateAllows,
-  type UpstreamRepoDeps,
-} from './upstream-repo-context';
+import { resolveUpstreamRepoSource, upstreamGateAllows, type UpstreamRepoDeps } from './upstream-repo-context';
 
-const noGit: Pick<UpstreamRepoDeps, 'gitRemoteUrl' | 'gitOriginHead'> = {
+const noGit: Pick<UpstreamRepoDeps, 'gitRemoteUrl' | 'gitOriginHead' | 'gitRemoteHead'> = {
   gitRemoteUrl: async () => null,
   gitOriginHead: async () => null,
+  gitRemoteHead: async () => null,
 };
 
 describe('resolveUpstreamRepoSource (P-013)', () => {
@@ -82,11 +79,21 @@ describe('resolveUpstreamRepoSource (P-013)', () => {
     expect(src?.default_branch).toBe('trunk');
   });
 
-  it('no known upstream anywhere → null (fork-PR correctly no-ops)', async () => {
+  it('asks the remote HEAD symref when the clone has no local origin/HEAD', async () => {
     const src = await resolveUpstreamRepoSource(
-      { path: '/p' },
-      { loadSharedConfig: () => null, ...noGit },
+      { path: '/p', github_remote: 'https://github.com/acme/shop' },
+      {
+        loadSharedConfig: () => null,
+        gitRemoteUrl: async () => null,
+        gitOriginHead: async () => null,
+        gitRemoteHead: async () => 'master',
+      },
     );
+    expect(src?.default_branch).toBe('master');
+  });
+
+  it('no known upstream anywhere → null (fork-PR correctly no-ops)', async () => {
+    const src = await resolveUpstreamRepoSource({ path: '/p' }, { loadSharedConfig: () => null, ...noGit });
     expect(src).toBeNull();
   });
 
@@ -108,7 +115,7 @@ describe('upstreamGateAllows (P-013 gate)', () => {
   const registrySrc = { source: 'registry' } as never;
 
   it('shared.json always passes (legacy behavior)', () => {
-    expect(upstreamGateAllows({ }, sharedSrc)).toBe(true);
+    expect(upstreamGateAllows({}, sharedSrc)).toBe(true);
   });
 
   it('registry coords pass only for hive members / hive homes', () => {

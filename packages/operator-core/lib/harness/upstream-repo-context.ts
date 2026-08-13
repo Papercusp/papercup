@@ -12,8 +12,9 @@
  *   3. `git remote get-url origin` parsed from the working tree
  *
  * and the default-branch chain: registry `github_default_branch` →
- * `git symbolic-ref refs/remotes/origin/HEAD` → none (caller decides the
- * last-resort fallback). Pure over injected seams.
+ * local `git symbolic-ref refs/remotes/origin/HEAD` → authoritative remote
+ * `git ls-remote --symref origin HEAD` → none (caller decides the last-resort
+ * fallback). Pure over injected seams.
  */
 
 import type { ProjectEntry } from '../harness-registry';
@@ -35,6 +36,8 @@ export interface UpstreamRepoDeps {
   gitRemoteUrl?: (repoPath: string) => Promise<string | null>;
   /** `git -C <path> symbolic-ref --short refs/remotes/origin/HEAD` → 'origin/<branch>' or null. */
   gitOriginHead?: (repoPath: string) => Promise<string | null>;
+  /** `git -C <path> ls-remote --symref origin HEAD` parsed to its branch name, or null. */
+  gitRemoteHead?: (repoPath: string) => Promise<string | null>;
 }
 
 async function defaultGit(repoPath: string, args: string[]): Promise<string | null> {
@@ -55,20 +58,24 @@ async function defaultGit(repoPath: string, args: string[]): Promise<string | nu
  * has no known upstream (a purely local repo) — fork-PR correctly no-ops.
  */
 export async function resolveUpstreamRepoSource(
-  project: Pick<
-    ProjectEntry,
-    'path' | 'github_remote' | 'github_repository_id' | 'github_default_branch'
-  >,
+  project: Pick<ProjectEntry, 'path' | 'github_remote' | 'github_repository_id' | 'github_default_branch'>,
   deps: UpstreamRepoDeps = {},
 ): Promise<UpstreamRepoSource | null> {
-  const loadShared =
-    deps.loadSharedConfig ??
-    (await import('./load-shared-config')).loadSharedConfigFromProjectDir;
-  const gitRemoteUrl =
-    deps.gitRemoteUrl ?? ((p: string) => defaultGit(p, ['remote', 'get-url', 'origin']));
+  const loadShared = deps.loadSharedConfig ?? (await import('./load-shared-config')).loadSharedConfigFromProjectDir;
+  const gitRemoteUrl = deps.gitRemoteUrl ?? ((p: string) => defaultGit(p, ['remote', 'get-url', 'origin']));
   const gitOriginHead =
-    deps.gitOriginHead ??
-    ((p: string) => defaultGit(p, ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD']));
+    deps.gitOriginHead ?? ((p: string) => defaultGit(p, ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD']));
+  const gitRemoteHead =
+    deps.gitRemoteHead ??
+    (async (p: string) => {
+      const out = await defaultGit(p, ['ls-remote', '--symref', 'origin', 'HEAD']);
+      if (!out) return null;
+      for (const line of out.split('\n')) {
+        const match = /^ref:\s+refs\/heads\/([^\s]+)\s+HEAD$/.exec(line.trim());
+        if (match) return match[1];
+      }
+      return null;
+    });
 
   // The remote + id, by source precedence.
   let remote: string | undefined;
@@ -110,6 +117,11 @@ export async function resolveUpstreamRepoSource(
     if (head) {
       // 'origin/main' → 'main' (symbolic-ref --short keeps the remote prefix).
       defaultBranch = head.includes('/') ? head.slice(head.indexOf('/') + 1) : head;
+    } else {
+      // A valid clone does not necessarily carry refs/remotes/origin/HEAD
+      // (papercup-rust-mobile was the live counterexample). Ask the remote for
+      // its authoritative HEAD symref before leaving callers to guess `main`.
+      defaultBranch = (await gitRemoteHead(project.path)) ?? undefined;
     }
   }
 
