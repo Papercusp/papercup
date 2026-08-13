@@ -35,6 +35,8 @@ export interface ProducerHealthCertificate {
   expectedCadenceMs: number;
   /** Earliest instant at which the fallback verifier may classify a timeout. */
   verificationDeadlineMs: number;
+  /** Producer-family inputs needed by its authoritative verifier. */
+  details?: Record<string, unknown>;
 }
 
 export interface ProducerHealthObservation {

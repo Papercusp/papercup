@@ -34,6 +34,7 @@ import type {
   WakeChannel,
   WakeHandle,
 } from './types';
+import type { ProducerHealthCertificate, VerifiedWaitTimeoutResult } from './verified-wait';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -110,6 +111,11 @@ function mapAwait(r: any): AwaitRow {
     rootId: r.root_id != null ? Number(r.root_id) : null,
     memberFiredAt: r.member_fired_at ? new Date(r.member_fired_at).toISOString() : null,
     memberPayload: parseJsonb(r.member_payload),
+    producerHealthCertificate: parseJsonb<ProducerHealthCertificate>(r.producer_health),
+    timeoutVerification: parseJsonb<VerifiedWaitTimeoutResult>(r.timeout_verification),
+    verificationClaimedAt: r.verification_claimed_at
+      ? new Date(r.verification_claimed_at).toISOString()
+      : null,
   };
 }
 
@@ -163,6 +169,8 @@ export async function registerAwait(input: {
    *  emitted payload at fire time, IN ADDITION to the key/pattern match. null/undefined =
    *  no payload predicate (today's fast-path behavior, unchanged). */
   payloadFilter?: unknown | null;
+  /** Optional verified-wait producer certificate. Legacy awaits omit it. */
+  producerHealthCertificate?: ProducerHealthCertificate | null;
 }): Promise<AwaitRow> {
   const { sql } = getOrgPg();
   const ws = eventsWs();
@@ -175,7 +183,7 @@ export async function registerAwait(input: {
   const timeoutBehavior: TimeoutBehavior = input.timeoutBehavior ?? 'wake';
   const rows = await sql`
     INSERT INTO harness_shared.event_awaits
-      (workspace_id, subscriber_id, event_key, policy, note, wake_handle, timeout_behavior, expires_ts, once, min_sleep_sec, urgency, payload_filter)
+      (workspace_id, subscriber_id, event_key, policy, note, wake_handle, timeout_behavior, expires_ts, once, min_sleep_sec, urgency, payload_filter, producer_health)
     VALUES
       (${ws}, ${input.subscriberId}, ${input.eventKey}, ${input.policy ?? 'wake'},
        ${input.note ?? null}, ${input.wakeHandle ? JSON.stringify(input.wakeHandle) : null}::text::jsonb,
@@ -186,7 +194,8 @@ export async function registerAwait(input: {
          input.timeoutSec != null ? new Date(Date.now() + input.timeoutSec * 1000).toISOString() : null
        },
        ${input.once ?? true}, ${input.minSleepSec ?? null}, ${input.urgency ?? false},
-       ${input.payloadFilter != null ? JSON.stringify(input.payloadFilter) : null}::text::jsonb)
+       ${input.payloadFilter != null ? JSON.stringify(input.payloadFilter) : null}::text::jsonb,
+       ${input.producerHealthCertificate ? JSON.stringify(input.producerHealthCertificate) : null}::text::jsonb)
     RETURNING *
   `;
   return mapAwait(rows[0]);
@@ -930,10 +939,74 @@ export async function fireTimedOutAwaits(): Promise<AwaitRow[]> {
        SET fired_at = now(), fired_reason = 'timeout'
      WHERE workspace_id = ${ws} AND timeout_behavior = 'wake'
        AND expires_ts IS NOT NULL AND expires_ts <= now()
+       AND producer_health IS NULL
        AND fired_at IS NULL AND cancelled_at IS NULL
     RETURNING *
   `;
   return rows.map(mapAwait);
+}
+
+/** Claim due verified waits without consuming them; stale verifier leases self-heal. */
+export async function claimDueVerifiedAwaits(limit = 100): Promise<AwaitRow[]> {
+  const { sql } = getOrgPg();
+  const ws = eventsWs();
+  const rows = await sql`
+    WITH due AS (
+      SELECT id
+        FROM harness_shared.event_awaits
+       WHERE workspace_id = ${ws}
+         AND timeout_behavior = 'wake'
+         AND producer_health IS NOT NULL
+         AND expires_ts IS NOT NULL AND expires_ts <= now()
+         AND fired_at IS NULL AND cancelled_at IS NULL
+         AND (verification_claimed_at IS NULL OR verification_claimed_at < now() - interval '2 minutes')
+       ORDER BY expires_ts ASC
+       LIMIT ${Math.min(Math.max(limit, 1), 500)}
+       FOR UPDATE SKIP LOCKED
+    )
+    UPDATE harness_shared.event_awaits a
+       SET verification_claimed_at = now()
+      FROM due
+     WHERE a.id = due.id
+    RETURNING a.*
+  `;
+  return rows.map(mapAwait);
+}
+
+/**
+ * Persist a verified timeout verdict. Progress extends the same one-shot await;
+ * every other classification consumes it and returns the row for wake delivery.
+ */
+export async function settleVerifiedAwaitTimeout(input: {
+  id: number;
+  result: VerifiedWaitTimeoutResult;
+  nextCertificate?: ProducerHealthCertificate;
+}): Promise<AwaitRow | null> {
+  const { sql } = getOrgPg();
+  const ws = eventsWs();
+  if (input.result.classification === 'progressing') {
+    if (!input.nextCertificate) throw new Error('progressing verified wait requires nextCertificate');
+    await sql`
+      UPDATE harness_shared.event_awaits
+         SET producer_health = ${JSON.stringify(input.nextCertificate)}::text::jsonb,
+             expires_ts = to_timestamp(${input.nextCertificate.verificationDeadlineMs} / 1000.0),
+             timeout_verification = ${JSON.stringify(input.result)}::text::jsonb,
+             verification_claimed_at = NULL
+       WHERE workspace_id = ${ws} AND id = ${input.id}
+         AND fired_at IS NULL AND cancelled_at IS NULL
+    `;
+    return null;
+  }
+  const rows = await sql`
+    UPDATE harness_shared.event_awaits
+       SET fired_at = now(), fired_reason = 'verified-timeout',
+           timeout_verification = ${JSON.stringify(input.result)}::text::jsonb,
+           verification_claimed_at = NULL
+     WHERE workspace_id = ${ws} AND id = ${input.id}
+       AND fired_at IS NULL AND cancelled_at IS NULL
+    RETURNING *
+  `;
+  return rows[0] ? mapAwait(rows[0]) : null;
 }
 
 /** Sweep half 2b: timeout-behavior 'expire' awaits past deadline → lapse (visible, no turn). */

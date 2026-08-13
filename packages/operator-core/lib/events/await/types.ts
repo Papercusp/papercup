@@ -124,6 +124,12 @@ export interface AwaitRow {
   memberFiredAt?: string | null;
   /** The emit payload captured at leaf fire → folded into the root wake's { fired: leaf→payload }. */
   memberPayload?: unknown | null;
+  /** Verified-wait fallback metadata; null keeps legacy timeout semantics. */
+  producerHealthCertificate?: import('./verified-wait').ProducerHealthCertificate | null;
+  /** Last diagnosed timeout outcome, retained for status/leader evidence. */
+  timeoutVerification?: import('./verified-wait').VerifiedWaitTimeoutResult | null;
+  /** Internal lease preventing two sweepers from verifying the same due row. */
+  verificationClaimedAt?: string | null;
 }
 
 export type DeliveryStatus = 'pending' | 'parked' | 'delivering' | 'delivered' | 'dropped' | 'dead';

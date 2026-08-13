@@ -30,6 +30,7 @@ import { runWithWorkspace } from '../../workspace-als';
 import {
   cancelAwaitsByIds,
   claimDueDeliveries,
+  claimDueVerifiedAwaits,
   claimSpecificOnceAwaits,
   expireLapsedAwaits,
   fireAwaitsForKey,
@@ -47,6 +48,7 @@ import {
   markDeliveryParked,
   reopenDeliveredAfterResumeDeath,
   recoverStuckDeliveries,
+  settleVerifiedAwaitTimeout,
 } from './store';
 import { payloadMatchesFilter } from './pattern';
 import {
@@ -72,6 +74,8 @@ import {
 } from './timeout-fallback';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
+import { classifyVerifiedWaitTimeout } from './verified-wait';
+import { observeCheckpointProducer } from './checkpoint-verified-wait';
 
 function log(msg: string): void {
   console.warn(`[await-event] ${msg}`);
@@ -1178,6 +1182,66 @@ export async function sweepOnce(workspaceId?: string): Promise<void> {
 
   const recovered = await recoverStuckDeliveries({ olderThanMs: STUCK_DELIVERING_MS });
   if (recovered > 0) log(`recovered ${recovered} stuck deliveries`);
+
+  // Verified waits diagnose the producer before deciding whether a deadline
+  // should spend a wake. A progressing producer simply extends this same
+  // one-shot subscription; push delivery remains primary throughout.
+  const dueVerified = await claimDueVerifiedAwaits();
+  const verifiedWakes: AwaitRow[] = [];
+  for (const awaited of dueVerified) {
+    const certificate = awaited.producerHealthCertificate;
+    if (!certificate) continue;
+    try {
+      const observation =
+        certificate.producer.kind === 'green-checkpoint'
+          ? await observeCheckpointProducer(certificate)
+          : (() => {
+              throw new Error(`no producer verifier registered for ${certificate.producer.kind}`);
+            })();
+      const result = classifyVerifiedWaitTimeout(certificate, observation);
+      const nextCertificate =
+        result.classification === 'progressing'
+          ? {
+              ...certificate,
+              issuedAtMs: observation.checkedAtMs,
+              lastProgressAtMs: observation.lastProgressAtMs,
+              lastFireAtMs: observation.lastFireAtMs,
+              verificationDeadlineMs: observation.checkedAtMs + certificate.expectedCadenceMs,
+            }
+          : undefined;
+      const fired = await settleVerifiedAwaitTimeout({ id: awaited.id, result, nextCertificate });
+      if (fired) verifiedWakes.push(fired);
+    } catch (e) {
+      // A verifier failure is itself diagnosed evidence, never permission to
+      // silently drop the fallback. Classify it as stalled and wake ownership.
+      const checkedAtMs = Math.max(Date.now(), certificate.verificationDeadlineMs);
+      const result = {
+        classification: 'stalled' as const,
+        nextAction: 'wake-owner-or-takeover' as const,
+        producer: certificate.producer,
+        owner: certificate.owner,
+        checkedAtMs,
+        verificationDeadlineMs: certificate.verificationDeadlineMs,
+        lastProgressAtMs: certificate.lastProgressAtMs,
+        lastFireAtMs: certificate.lastFireAtMs,
+        evidence: { verifierError: e instanceof Error ? e.message : String(e) },
+      };
+      const fired = await settleVerifiedAwaitTimeout({ id: awaited.id, result });
+      if (fired) verifiedWakes.push(fired);
+    }
+  }
+  if (verifiedWakes.length > 0) {
+    await insertDeliveries({
+      awaits: verifiedWakes,
+      payload: {
+        timeout: true,
+        verified: true,
+        results: verifiedWakes.map((awaited) => awaited.timeoutVerification),
+        guidance: TIMEOUT_WAKE_GUIDANCE,
+      },
+      summary: 'Verified wait fallback classified the producer; inspect results before re-awaiting or takeover.',
+    });
+  }
 
   const timedOut = await fireTimedOutAwaits();
   if (timedOut.length > 0) {

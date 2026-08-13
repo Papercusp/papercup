@@ -37,6 +37,8 @@ import { readDeployInFlight } from "../../release-deploy-launch";
 import { gitPipelinePosition } from "../../git-pipeline-position";
 import { gitPipelineSnapshot } from "../../git-pipeline-stats";
 import { findGreenCheckpointVerdictForCandidate } from "../../harness/git-sync/pipeline-events";
+import { checkpointProducerCertificate } from "../../events/await/checkpoint-verified-wait";
+import type { ProducerHealthCertificate } from "../../events/await/verified-wait";
 
 // The fallback timeout-wake window + hard cap — one shared source of truth
 // (await-timeout-fallback-defaults-2026-07-03): 30min default, matches events:await.
@@ -98,7 +100,11 @@ async function armAwaits(
   keys: string[],
   note: string,
   timeoutSec: number | undefined,
-  opts: { payloadFilter?: unknown; supersedeKeys?: string[] } = {},
+  opts: {
+    payloadFilter?: unknown;
+    supersedeKeys?: string[];
+    producerHealthCertificate?: ProducerHealthCertificate;
+  } = {},
 ): Promise<{
   ok: true;
   events: string[];
@@ -128,6 +134,7 @@ async function armAwaits(
       timeoutBehavior: "wake",
       timeoutSec: timeoutSec ?? DEFAULT_TIMEOUT_SEC,
       payloadFilter: opts.payloadFilter ?? null,
+      producerHealthCertificate: opts.producerHealthCertificate ?? null,
     });
     awaitIds.push(row.id);
   }
@@ -521,6 +528,20 @@ defineTool({
         // EI-12457: a re-await for this pipeline supersedes any prior pending
         // checkpoint-family wait this same subscriber still holds for it.
         supersedeKeys: keys,
+        ...(pipeline
+          ? {
+              producerHealthCertificate: checkpointProducerCertificate({
+                pipeline,
+                ...(args.candidateSha ? { candidateSha: args.candidateSha } : {}),
+                ...(args.runId ? { runId: args.runId } : {}),
+                ownerId: resolveAgentIdentity(ctx).ownerId,
+                issuedAtMs: Date.now(),
+                expectedCadenceMs: CHECKPOINT_AWAIT_DEFAULT_TIMEOUT_SEC * 1000,
+                verificationDeadlineMs: Date.now() + timeoutSec * 1000,
+                snapshot: await gitPipelineSnapshot(pipeline, { includeActiveRun: true }),
+              }),
+            }
+          : {}),
       }),
     );
   },
