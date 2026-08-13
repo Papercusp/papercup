@@ -24,7 +24,9 @@ vi.mock('@radix-ui/react-select', () => ({
   Icon: ({ children }: { children: ReactNode }) => <>{children}</>,
   Portal: ({ children }: { children: ReactNode }) => <>{children}</>,
   Content: ({ children }: { children: ReactNode }) => <div>{children}</div>,
-  Viewport: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+  Viewport: ({ children, style }: { children: ReactNode; style?: Record<string, unknown> }) => (
+    <div data-testid="select-viewport" style={style}>{children}</div>
+  ),
   Group: ({ children }: { children: ReactNode }) => <div role="group">{children}</div>,
   Label: ({ children }: { children: ReactNode }) => <div data-testid="group-label">{children}</div>,
   Item: ({ children, value, disabled }: { children: ReactNode; value: string; disabled?: boolean }) => (
@@ -82,5 +84,13 @@ describe('Select', () => {
     render(<Select value="a" onChange={onChange} options={[{ value: 'a', label: 'A' }]} />);
     fireEvent.click(screen.getByTestId('fire-change'));
     expect(onChange).toHaveBeenCalledWith('picked');
+  });
+
+  it('bounds long menus to the available viewport and contains their scrolling', () => {
+    render(<Select value="a" onChange={() => {}} options={[{ value: 'a', label: 'A' }]} />);
+    const viewport = screen.getByTestId('select-viewport');
+    expect(viewport.style.maxHeight).toBe('min(420px, var(--radix-select-content-available-height))');
+    expect(viewport.style.overflowY).toBe('auto');
+    expect(viewport.style.overscrollBehavior).toBe('contain');
   });
 });

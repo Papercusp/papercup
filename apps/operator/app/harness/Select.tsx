@@ -85,6 +85,20 @@ const CONTENT_STYLE: CSSProperties = {
   backdropFilter: 'blur(14px) saturate(150%)',
 };
 
+/**
+ * Keep long menus inside Radix's measured collision boundary. The viewport —
+ * not the popper content shell — owns scrolling so keyboard navigation and the
+ * optional Radix scroll buttons keep observing the same scroll container.
+ * `--radix-select-content-available-height` already accounts for the trigger,
+ * viewport edge and collision padding; the fixed cap keeps a menu from taking
+ * over a tall desktop window.
+ */
+const VIEWPORT_STYLE: CSSProperties = {
+  maxHeight: 'min(420px, var(--radix-select-content-available-height))',
+  overflowY: 'auto',
+  overscrollBehavior: 'contain',
+};
+
 const ITEM_STYLE: CSSProperties = {
   display: 'flex',
   alignItems: 'center',
@@ -220,7 +234,7 @@ export function Select({
           sideOffset={4}
           style={{ ...CONTENT_STYLE, zIndex: popperZ, ...contentStyle }}
         >
-          <RS.Viewport>
+          <RS.Viewport style={VIEWPORT_STYLE}>
             {/* Radix throws ("must have a value prop that is not an empty
                 string") if any Item value is '', taking the whole subtree
                 down with it. Drop empty-value options defensively so a bad
