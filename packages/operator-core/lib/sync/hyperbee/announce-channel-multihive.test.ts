@@ -167,7 +167,7 @@ describe('announce channel — A-002 (multi-hive) + A-003 (a′) multi-harness-p
       openAnnounceChannel(socket, t1, {
         ourAnnounce: outbound,
         buildOurAnnounce: async () => outbound,
-        onAnnounce: () => ({ admit: true as const }),
+        onAnnounce: async () => ({ admit: true as const }),
       });
       await Promise.resolve();
 
