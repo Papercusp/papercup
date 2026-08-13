@@ -33,6 +33,7 @@ import { withPlanLock } from './with-plan-lock';
 import { parsePlan } from './parser';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 import { clearStartedForTerminalPlan, isTerminalPlanStatus } from './plan-start-state';
+import { stampTerminalNowBlock } from './terminal-now-stamp';
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -95,8 +96,19 @@ export function applyFrontmatterBlock(current: string, fmBlock: string): string 
   return fmBlock + '\n\n' + current;
 }
 
+/** Convert a legacy body and enforce the terminal-Now invariant in the same write. */
+export function buildFirstClassPlanBody(
+  current: string,
+  args: z.infer<typeof argsSchema>,
+  today: string,
+): { body: string; nowStamped: boolean } {
+  const converted = applyFrontmatterBlock(current, buildFrontmatter(args, today));
+  const stamped = stampTerminalNowBlock(converted, args.status, new Date(`${today}T00:00:00.000Z`));
+  return { body: stamped ?? converted, nowStamped: stamped !== null };
+}
+
 type SetFrontmatterValue =
-  | { ok: true; slug: string }
+  | { ok: true; slug: string; nowStamped: boolean }
   | { ok: false; code: 'not_found' }
   | { ok: false; code: 'already_valid' };
 
@@ -148,8 +160,11 @@ export default defineTool({
           return { newBody: null, value: { ok: false, code: 'already_valid' } };
         }
 
-        const body = applyFrontmatterBlock(current, buildFrontmatter(args, today));
-        return { newBody: body, value: { ok: true, slug: args.slug } };
+        const converted = buildFirstClassPlanBody(current, args, today);
+        return {
+          newBody: converted.body,
+          value: { ok: true, slug: args.slug, nowStamped: converted.nowStamped },
+        };
       },
     );
 
@@ -203,6 +218,7 @@ export default defineTool({
           text: JSON.stringify({
             ok: true,
             slug: result.value.slug,
+            ...(result.value.nowStamped ? { nowStamped: true } : {}),
             filePath: result.filePath,
             revision: rev.recorded.current ? { seq: rev.recorded.current.seq } : null,
           }),

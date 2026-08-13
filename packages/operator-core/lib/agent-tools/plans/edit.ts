@@ -216,6 +216,7 @@ export default defineTool({
             ok: true,
             slug: v.slug,
             contentHash: v.contentHash,
+            ...(v.nowStamped ? { nowStamped: true } : {}),
             version: result.version,
             filePath: result.filePath,
             revision: rev.recorded.current ? { seq: rev.recorded.current.seq } : null,

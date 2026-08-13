@@ -161,6 +161,43 @@ export function flipPlanFrontmatterStatus(
 }
 
 /**
+ * Apply a plan-level lifecycle target and the terminal-Now invariant as one
+ * pure mutation. Unlike {@link flipPlanFrontmatterStatus}, an already-terminal
+ * target is not necessarily a no-op: it repairs an unstamped `## Now` block.
+ * That makes the existing bulk status verb a safe, idempotent backfill path.
+ */
+export function applyPlanStatusBody(
+  body: string,
+  target: string,
+  expectedCurrent?: string,
+  today: Date = new Date(),
+): {
+  newBody: string | null;
+  oldStatus: string | null;
+  code?: 'no_status_line' | 'unexpected_status' | 'noop';
+  changed: boolean;
+  nowStamped: boolean;
+} {
+  const flip = flipPlanFrontmatterStatus(body, target, expectedCurrent);
+  if (flip.code === 'no_status_line' || flip.code === 'unexpected_status') {
+    return { ...flip, changed: false, nowStamped: false };
+  }
+
+  const statusChanged = flip.code !== 'noop';
+  const candidate = flip.newBody ?? body;
+  const stamped = stampTerminalNowBlock(candidate, target, today);
+  if (!statusChanged && stamped === null) {
+    return { ...flip, changed: false, nowStamped: false };
+  }
+  return {
+    newBody: stamped ?? flip.newBody,
+    oldStatus: flip.oldStatus,
+    changed: statusChanged,
+    nowStamped: stamped !== null,
+  };
+}
+
+/**
  * WI-38047 / D-015: best-effort caller ownerId for the no-self-ratification guard.
  * `resolveAgentIdentity` THROWS on an unattributable ctx — the guard then FAILS OPEN
  * (null ownerId ⇒ no originator comparison), which is exactly the rule D-012 set for
@@ -258,39 +295,41 @@ export default defineTool({
             if (current === null) {
               return { newBody: null, value: { ok: false, code: 'not_found' } };
             }
-            const flip = flipPlanFrontmatterStatus(current, status, args.expectedCurrent);
-            if (flip.code === 'no_status_line') {
+            const mutation = applyPlanStatusBody(current, status, args.expectedCurrent);
+            if (mutation.code === 'no_status_line') {
               return { newBody: null, value: { ok: false, code: 'no_status_line' } };
             }
-            if (flip.code === 'unexpected_status') {
+            if (mutation.code === 'unexpected_status') {
               return {
                 newBody: null,
-                value: { ok: false, code: 'unexpected_status', current: flip.oldStatus },
+                value: { ok: false, code: 'unexpected_status', current: mutation.oldStatus },
               };
             }
-            if (flip.code === 'noop' || flip.newBody === null) {
-              // Already at the target — success, nothing written.
+            if (mutation.newBody === null) {
+              // Already at the target and already stamped (or non-terminal) —
+              // success, nothing written.
               return {
                 newBody: null,
-                value: { ok: true, oldStatus: flip.oldStatus, newStatus: status, changed: false },
+                value: {
+                  ok: true,
+                  oldStatus: mutation.oldStatus,
+                  newStatus: status,
+                  changed: false,
+                  nowStamped: false,
+                },
               };
             }
-            // A terminal flip leaves the `## Now` block — the cold-resume
-            // anchor, and the most-read field on the plan — still describing
-            // live work, which reads as authoritative long after it stops
-            // being true. Stamp it in the SAME locked write so the status and
-            // the prose can never disagree, not even transiently. Prepend-only:
-            // the author's State/Next survive verbatim under the banner. See
-            // terminal-now-stamp.ts for the measured failures behind this.
-            const stamped = stampTerminalNowBlock(flip.newBody, status);
             return {
-              newBody: bumpUpdatedDate(stamped ?? flip.newBody),
+              // A terminal flip — or an idempotent re-application to an old
+              // terminal plan — stamps the cold-resume anchor in this SAME
+              // locked write. See terminal-now-stamp.ts / WI-38303.
+              newBody: bumpUpdatedDate(mutation.newBody),
               value: {
                 ok: true,
-                oldStatus: flip.oldStatus,
+                oldStatus: mutation.oldStatus,
                 newStatus: status,
-                changed: true,
-                nowStamped: stamped !== null,
+                changed: mutation.changed,
+                nowStamped: mutation.nowStamped,
               },
             };
           },

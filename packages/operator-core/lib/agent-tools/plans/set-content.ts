@@ -43,6 +43,7 @@ import { lintParsed, type LintFinding } from './lint';
 import { hashPlanContent } from './content-hash';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 import { clearStartedForTerminalPlan, isTerminalPlanStatus } from './plan-start-state';
+import { stampTerminalNowBlock } from './terminal-now-stamp';
 
 const argsSchema = z.object({
   slug: z.string().min(1),
@@ -85,7 +86,7 @@ const argsSchema = z.object({
 });
 
 export type SetContentValue =
-  | { ok: true; slug: string; contentHash: string; warning?: string; parseFeedback: ItemParseSummary }
+  | { ok: true; slug: string; contentHash: string; warning?: string; nowStamped?: boolean; parseFeedback: ItemParseSummary }
   | { ok: false; code: 'not_found' }
   | { ok: false; code: 'stale'; currentContent: string; currentHash: string; currentVersion?: number }
   | {
@@ -402,6 +403,18 @@ export async function evaluateSetContent(
     return { newBody: null, value: { ok: false, code: 'would_orphan_frontmatter' } };
   }
 
+  // WI-38303: raw-content writers can change frontmatter status without going
+  // through plans:set-plan-status. Enforce the same terminal-Now invariant in
+  // their shared evaluator (set-content, set-content-chunk, and plans:edit),
+  // before lint and before the derived indexes are written. Idempotent and
+  // prepend-only; an absent Now block remains absent.
+  const terminalStamp = stampTerminalNowBlock(body, proposed.frontmatter.status);
+  const nowStamped = terminalStamp !== null;
+  if (terminalStamp !== null) {
+    body = terminalStamp;
+    proposed = parsePlan(body, { filePath });
+  }
+
   // 3. Lint the proposed body in-memory; errors block the write — but only the
   //    errors this write INTRODUCES (EI-18804290731494084).
   //    `archived` is cosmetic for the lint rules — set-content targets
@@ -448,6 +461,7 @@ export async function evaluateSetContent(
       slug,
       contentHash: hashPlanContent(body),
       ...(warning ? { warning } : {}),
+      ...(nowStamped ? { nowStamped: true } : {}),
       parseFeedback,
     },
   };
@@ -592,6 +606,7 @@ export default defineTool({
             // Surfacing (EI-83 fix #2): present only when the write removed
             // items/decisions — so even an allowed shrink is visible.
             ...(v.warning ? { warning: v.warning } : {}),
+            ...(v.nowStamped ? { nowStamped: true } : {}),
             version: result.version,
             filePath: result.filePath,
             // Item-parse feedback (WI-3363), computed in evaluateSetContent.

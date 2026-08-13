@@ -419,6 +419,7 @@ export default defineTool({
           // Surfacing (EI-83 fix #2): present only when the commit removed
           // items/decisions, even an allowed shrink.
           ...(result.value.ok && result.value.warning ? { warning: result.value.warning } : {}),
+          ...(result.value.ok && result.value.nowStamped ? { nowStamped: true } : {}),
           filePath: result.filePath,
           revision: rev.recorded.current ? { seq: rev.recorded.current.seq } : null,
           // Item-parse feedback (WI-3363), computed in evaluateSetContent.

@@ -10,6 +10,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { evaluateSetContent } from './set-content';
+import { TERMINAL_NOW_STAMP_MARK } from './terminal-now-stamp';
 
 const FRONTMATTER = `---
 title: EI-1812 Test
@@ -70,5 +71,43 @@ Updated state. The next concrete action, restated.
     expect(value.ok).toBe(true);
     expect(newBody).toBe(proposedWithFm); // written as-is, frontmatter not doubled
     expect((newBody!.match(/^---\r?$/gm) ?? []).length).toBe(2); // exactly one block (open+close)
+  });
+});
+
+describe('evaluateSetContent — terminal Now invariant (WI-38303)', () => {
+  it('stamps an actionable Now when a raw rewrite moves the plan to shipped', async () => {
+    const proposed = CURRENT.replace('status: draft', 'status: shipped');
+    const { newBody, value } = await evaluateSetContent(CURRENT, proposed, 'ei-1812-test', undefined, {
+      allowShrink: true,
+    });
+
+    expect(value.ok).toBe(true);
+    if (!value.ok) return;
+    expect(value.nowStamped).toBe(true);
+    expect(newBody).toContain(TERMINAL_NOW_STAMP_MARK);
+    expect(newBody).toContain('Where it stands now.');
+  });
+
+  it('does not nest a second stamp on a later raw edit', async () => {
+    const first = await evaluateSetContent(
+      CURRENT,
+      CURRENT.replace('status: draft', 'status: shipped'),
+      'ei-1812-test',
+      undefined,
+      { allowShrink: true },
+    );
+    expect(first.newBody).not.toBeNull();
+    const second = await evaluateSetContent(
+      first.newBody,
+      first.newBody!.replace('## Decisions', '## Background\n\nHistorical note.\n\n## Decisions'),
+      'ei-1812-test',
+      undefined,
+      { allowShrink: true },
+    );
+
+    expect(second.value.ok).toBe(true);
+    if (!second.value.ok) return;
+    expect(second.value.nowStamped).toBeUndefined();
+    expect((second.newBody!.match(new RegExp(TERMINAL_NOW_STAMP_MARK, 'g')) ?? [])).toHaveLength(1);
   });
 });
