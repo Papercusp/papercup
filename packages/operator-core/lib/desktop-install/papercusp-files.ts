@@ -291,6 +291,31 @@ export interface OmpHookBundleInstallResult {
 }
 
 /**
+ * Agent-facing hooks are shared mutable executables, not ordinary release
+ * assets: a process from the green release checkout and one from staging can
+ * install into the same home minutes apart. Refuse *any* known older source
+ * here. The generic CC-hook guard keeps a 24h rollback margin, but that margin
+ * is too wide for this surface — one recent missing provider hook is enough to
+ * change the behavior of the next agent launch.
+ */
+async function refuseKnownOlderHookSource(
+  label: string,
+  sourceDir: string,
+  stampDir: string,
+  incoming = await resolveSourceGitProvenance(sourceDir),
+): Promise<boolean> {
+  const existing = await readInstallStamp(stampDir);
+  const verdict = classifyDowngrade(existing, incoming, 0);
+  if (!verdict.downgrade) return false;
+  console.error(
+    `[desktop-install] ${label}: REFUSING downgrade — source ${sourceDir} ` +
+      `(${verdict.incomingAt}) is older than the installed hook source ` +
+      `(${verdict.installedAt}, from ${existing?.sourceDir}). Leaving the newer hooks in place.`,
+  );
+  return true;
+}
+
+/**
  * Install an OMP TypeScript hook together with every sibling `.ts` artifact.
  *
  * The OMP runner loads these files independently from the esbuild bundle, so a
@@ -309,6 +334,9 @@ export async function installOmpHookBundle(opts: {
   entryFile: string;
   destinationDir: string;
   destinationEntry?: string;
+  /** Existing provenance for the shared hook family this copy must not downgrade. */
+  provenanceGuardDir?: string;
+  provenanceLabel?: string;
 }): Promise<OmpHookBundleInstallResult> {
   const destinationEntry = opts.destinationEntry ?? opts.entryFile;
   let entries: import('node:fs').Dirent[];
@@ -326,6 +354,17 @@ export async function installOmpHookBundle(opts: {
     .map((entry) => entry.name)
     .sort();
   if (!sourceFiles.includes(opts.entryFile)) {
+    return { installed: [], unresolved: [] };
+  }
+
+  if (
+    opts.provenanceGuardDir &&
+    (await refuseKnownOlderHookSource(
+      opts.provenanceLabel ?? 'OMP hook bundle',
+      opts.sourceDir,
+      opts.provenanceGuardDir,
+    ))
+  ) {
     return { installed: [], unresolved: [] };
   }
 
@@ -1020,6 +1059,28 @@ export async function installInjectionHooks(home: string, injectSrcDir: string):
   };
   const dispatcherFiles: string[] = [];
   const hooksRoot = path.join(home, '.papercusp', 'hooks');
+  const injectDest = path.join(hooksRoot, 'inject');
+  const ompDest = path.join(hooksRoot, 'omp');
+  // EI-20333884491932817: the release service and staging launchers share this
+  // home. A release process only a few commits behind repeatedly replaced the
+  // proactive Vertex pacing hook, recreating 429s in otherwise-fresh sessions.
+  // Either destination proving a newer install protects the pair as a unit.
+  if (
+    (await refuseKnownOlderHookSource(
+      'injection hooks',
+      injectSrcDir,
+      injectDest,
+      incomingProvenance,
+    )) ||
+    (await refuseKnownOlderHookSource(
+      'OMP injection hook',
+      path.dirname(ompHookSrc),
+      ompDest,
+      incomingProvenance,
+    ))
+  ) {
+    return [];
+  }
   // Hoisted so the EARLY-RETURN path can reach it. It previously sat after the
   // try/catch, which made it unreachable in the one case it exists to report —
   // a missing dispatcher source returns [] from the catch. The warning about the
@@ -1041,7 +1102,6 @@ export async function installInjectionHooks(home: string, injectSrcDir: string):
     // would therefore have skipped the DISPATCHER as well, silently disabling
     // injection for CLAUDE — ~100% of real traffic — over an unrelated omp file.
     // Each artifact now gates only itself; the omp copy is best-effort below.
-    const injectDest = path.join(home, '.papercusp', 'hooks', 'inject');
     await fs.mkdir(path.join(injectDest, 'adapters'), { recursive: true, mode: 0o755 });
 
     for (const rel of ['', 'adapters']) {
@@ -1086,11 +1146,12 @@ export async function installInjectionHooks(home: string, injectSrcDir: string):
   //      as "omp injection inactive on this box", so that mis-report is exactly
   //      the kind of false negative the P-005 coverage detector must not be fed.
   try {
-    const ompDest = path.join(home, '.papercusp', 'hooks', 'omp');
     const ompBundle = await installOmpHookBundle({
       sourceDir: path.dirname(ompHookSrc),
       entryFile: path.basename(ompHookSrc),
       destinationDir: ompDest,
+      provenanceGuardDir: ompDest,
+      provenanceLabel: 'OMP injection hook',
     });
     installed.push(...ompBundle.installed.map((file) => path.join('omp', file)));
     if (ompBundle.installed.length > 0) {
@@ -2643,12 +2704,18 @@ export async function installPapercuspFiles(opts: InstallOpts = {}): Promise<Ins
   // extension as a complete OMP sibling bundle: its destination is renamed,
   // but its relative modules must land beside that renamed entrypoint.
   const playbookWritten = playbookSource ? await writeSplicedPlaybook(playbookSource, paths.playbookPath) : false;
+  // The injection installer stamps this exact OMP source family in hooks/omp.
+  // Reuse that provenance to keep a green-release process from replacing the
+  // newer staging extension loaded by the next visible OMP session.
+  const ompHookProvenanceDir = path.join(paths.papercuspDir, 'hooks', 'omp');
   const extensionBundle = extensionSource
     ? await installOmpHookBundle({
         sourceDir: path.dirname(extensionSource),
         entryFile: path.basename(extensionSource),
         destinationDir: paths.papercuspDir,
         destinationEntry: path.basename(paths.extensionPath),
+        provenanceGuardDir: ompHookProvenanceDir,
+        provenanceLabel: 'OMP coordination extension',
       })
     : { installed: [] as string[], unresolved: [] as string[] };
   const extensionWritten = extensionBundle.installed.includes(path.basename(paths.extensionPath));
