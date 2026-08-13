@@ -109,19 +109,21 @@ export interface SuLaunchOptions {
   refresh: () => void;
 }
 
+const EMPTY_OMP_CATALOG: Extract<OmpLaunchCatalog, { status: 'unavailable' }> = {
+  status: 'unavailable',
+  availability: 'unknown',
+  credentials: 'unchecked',
+  upstream: 'unchecked',
+  models: [],
+  error: null,
+};
+
 const EMPTY: Omit<SuLaunchOptions, 'loading' | 'error' | 'refresh'> = {
   fleets: [],
   nextScheme: null,
   schemes: [],
   accounts: [],
-  ompCatalog: {
-    status: 'unavailable',
-    availability: 'unknown',
-    credentials: 'unchecked',
-    upstream: 'unchecked',
-    models: [],
-    error: null,
-  },
+  ompCatalog: EMPTY_OMP_CATALOG,
 };
 
 /**
@@ -167,15 +169,20 @@ function normalizeOmpModel(raw: unknown): OmpLaunchModel | null {
   const selector = typeof row.selector === 'string' ? row.selector.trim() : '';
   const name = typeof row.name === 'string' ? row.name.trim() : '';
   const nullableNumber = (value: unknown): value is number | null => value === null || finiteNonNegative(value);
-  const thinking = row.thinking === null || (
-    Array.isArray(row.thinking) && row.thinking.every((v) => typeof v === 'string' && v.length > 0)
-  );
-  const input = Array.isArray(row.input) && row.input.every((v) => v === 'text' || v === 'image');
+  const thinking: string[] | null | undefined = row.thinking === null
+    ? null
+    : Array.isArray(row.thinking) && row.thinking.every((v) => typeof v === 'string' && v.length > 0)
+      ? row.thinking as string[]
+      : undefined;
+  const input: Array<'text' | 'image'> | undefined = Array.isArray(row.input) &&
+    row.input.every((v) => v === 'text' || v === 'image')
+    ? row.input as Array<'text' | 'image'>
+    : undefined;
   const cost = row.cost && typeof row.cost === 'object' ? row.cost as Record<string, unknown> : null;
   if (
     !provider || !id || !name || selector !== `${provider}/${id}` ||
     !nullableNumber(row.contextWindow) || !nullableNumber(row.maxTokens) ||
-    typeof row.reasoning !== 'boolean' || !thinking || !input || !cost ||
+    typeof row.reasoning !== 'boolean' || thinking === undefined || input === undefined || !cost ||
     !finiteNonNegative(cost.input) || !finiteNonNegative(cost.output) ||
     !finiteNonNegative(cost.cacheRead) || !finiteNonNegative(cost.cacheWrite)
   ) return null;
@@ -187,8 +194,8 @@ function normalizeOmpModel(raw: unknown): OmpLaunchModel | null {
     contextWindow: row.contextWindow,
     maxTokens: row.maxTokens,
     reasoning: row.reasoning,
-    thinking: row.thinking === null ? null : [...row.thinking] as string[],
-    input: [...row.input] as Array<'text' | 'image'>,
+    thinking: thinking === null ? null : [...thinking],
+    input: [...input],
     cost: {
       input: cost.input,
       output: cost.output,
@@ -203,16 +210,16 @@ export function normalizeOmpCatalog(raw: unknown): OmpLaunchCatalog {
   const value = raw && typeof raw === 'object' ? raw as Record<string, unknown> : null;
   if (value?.status === 'unavailable') {
     return {
-      ...EMPTY.ompCatalog,
+      ...EMPTY_OMP_CATALOG,
       error: typeof value.error === 'string' ? value.error : null,
     };
   }
   if (value?.status !== 'available' || !Array.isArray(value.models)) {
-    return { ...EMPTY.ompCatalog, error: 'Invalid OMP catalog response' };
+    return { ...EMPTY_OMP_CATALOG, error: 'Invalid OMP catalog response' };
   }
   const models = value.models.map(normalizeOmpModel);
   if (models.some((model) => model === null)) {
-    return { ...EMPTY.ompCatalog, error: 'Invalid OMP model metadata' };
+    return { ...EMPTY_OMP_CATALOG, error: 'Invalid OMP model metadata' };
   }
   return {
     status: 'available',

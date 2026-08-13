@@ -63,6 +63,11 @@ import {
 } from 'node:fs';
 import net from 'node:net';
 
+/** Environment fragments injected by launchers and tests need not carry every
+ * ambient key that an application framework merges into NodeJS.ProcessEnv.
+ * @typedef {Record<string, string | undefined>} EnvironmentMap
+ */
+
 const require = createRequire(import.meta.url);
 
 /** This script's own directory — used to locate sibling scripts (the session-compacted
@@ -118,7 +123,9 @@ export const PSU_REEXEC_EXIT_CODE = 87;
  *  wrapper, a direct `node psu-launcher.mjs`) means NOBODY would re-run us, so
  *  the adopting path must never be taken. Returns the code to exit with, or
  *  null. `PAPERCUSP_PSU_HOST_ADOPT=0` is the kill switch — same boot-mode-select
- *  role as PAPERCUSP_CACHE_PROXY_ROUTE, not a product feature gate. */
+ *  role as PAPERCUSP_CACHE_PROXY_ROUTE, not a product feature gate.
+ *  @param {EnvironmentMap} [env]
+ */
 export function reexecExitCodeFrom(env = process.env, ppid = process.ppid) {
   if (String(env.PAPERCUSP_PSU_HOST_ADOPT ?? '').trim() === '0') return null;
   // Number(), NOT parseInt(): parseInt('87.5') is 87 and parseInt('87abc') is 87,
@@ -200,7 +207,12 @@ export function readManagedKickoffFile(path, expectedRenderedHash) {
 
 /** Dedicated verified provenance for the imported-history first turn. It is
  * neither owner input nor a fleet kickoff. Mirror the turn-provenance JSONL
- * envelope/ledger protocol; write the ledger row before PTY submission. */
+ * envelope/ledger protocol; write the ledger row before PTY submission.
+ * @param {string} text
+ * @param {string} sid
+ * @param {EnvironmentMap} [env]
+ * @param {number} [nowMs]
+ */
 export function tagSessionPortTurn(text, sid, env = process.env, nowMs = Date.now()) {
   if (!text || !sid) throw new Error('session-port provenance requires seed text and target sid');
   const nonce = randomBytes(8).toString('hex');
@@ -252,7 +264,9 @@ function nativeTranscriptRoot(agent, env, home) {
 }
 
 /** Find the exact port marker in a recently-written target-native JSONL. This
- * is the delivery authority: PTY output/activity is intentionally insufficient. */
+ * is the delivery authority: PTY output/activity is intentionally insufficient.
+ * @param {{agent: string, env?: EnvironmentMap, marker: string, sinceMs: number, home?: string}} options
+ */
 export function findNativeTranscriptMarker({ agent, env = process.env, marker, sinceMs, home = homedir() }) {
   const root = nativeTranscriptRoot(agent, env, home);
   if (!root || !existsSync(root) || !marker) return null;
@@ -285,6 +299,10 @@ export function findNativeTranscriptMarker({ agent, env = process.env, marker, s
   return null;
 }
 
+/**
+ * @param {{agent: string, env?: EnvironmentMap, marker: string, sinceMs: number,
+ *   home?: string, timeoutMs?: number, pollMs?: number}} options
+ */
 export async function waitForNativeTranscriptMarker({
   agent,
   env = process.env,
@@ -2617,7 +2635,9 @@ function positiveNumber(value, fallback) {
 
 /** The submit delay is backend-specific because each interactive TUI has its
  *  own paste/compose handling. Keep the wire protocol backend-neutral; the
- *  hosting psu process already knows its child agent via PAPERCUSP_AGENT. */
+ *  hosting psu process already knows its child agent via PAPERCUSP_AGENT.
+ *  @param {EnvironmentMap} [env]
+ */
 export function turnSubmitCrDelayForAgent(agent, env = process.env) {
   const normalized = String(agent || '').trim().toLowerCase();
   if (normalized === 'codex') {
@@ -2633,7 +2653,9 @@ function codexTurnResubmitCrDelay(env = process.env) {
 /** Backend-aware write plan for an injected turn. Codex receives one redundant
  *  delayed submit CR because the first CR can be consumed as input, leaving the
  *  turn text visible but unsent. A `reset` (RESET-CONTEXT) is a turn PREFIXED by
- *  the backend's context-clear command (see resetWritesForAgent). */
+ *  the backend's context-clear command (see resetWritesForAgent).
+ *  @param {EnvironmentMap} [env]
+ */
 export function controlWritesForAgent(decoded, agent, env = process.env) {
   if (decoded.mode === 'raw' || decoded.mode === 'osc') return controlWrites(decoded);
   if (decoded.mode === 'reset') return resetWritesForAgent(decoded, agent, env);
@@ -2672,7 +2694,9 @@ export function contextClearCommandForAgent(agent) {
 }
 
 /** The RESET-CONTEXT settle window (repaint budget after the clear submits).
- *  Session-env tunable, module default as fallback. */
+ *  Session-env tunable, module default as fallback.
+ *  @param {EnvironmentMap} [env]
+ */
 export function clearSettleMs(env = process.env) {
   return positiveNumber(env.PAPERCUSP_PSU_PTY_CLEAR_SETTLE_MS, CLEAR_SETTLE_MS);
 }
@@ -2681,7 +2705,9 @@ export function clearSettleMs(env = process.env) {
  *  (WI-2975) — deliberately independent of OUTPUT_QUIET_MS (the busy-gate's
  *  short "back at an idle prompt" threshold; see SUBMIT_VERIFY_QUIET_MS above
  *  for the false-positive this decoupling fixes). Session-env tunable, module
- *  default as fallback. Pure — exported for tests. */
+ *  default as fallback. Pure — exported for tests.
+ *  @param {EnvironmentMap} [env]
+ */
 export function submitVerifyQuietMs(env = process.env) {
   return positiveNumber(env.PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS, SUBMIT_VERIFY_QUIET_MS);
 }
@@ -2737,7 +2763,9 @@ export function fireSessionCompactedEvent(ownerId, focus, opts = {}) {
  *  repaint a fresh prompt, then type + submit the carry-note as the opening turn
  *  of the fresh context (the SAME per-agent paste-safe turn plan, its first write
  *  delayed by the settle). An empty carry ⇒ a bare clear (no opening turn). Pure —
- *  exported for tests. */
+ *  exported for tests.
+ *  @param {EnvironmentMap} [env]
+ */
 export function resetWritesForAgent(decoded, agent, env = process.env) {
   const clearCmd = contextClearCommandForAgent(agent);
   const steps = [
@@ -2762,7 +2790,9 @@ export function resetWritesForAgent(decoded, agent, env = process.env) {
  * console-color-schemes.oscRecolorSequence (the runtime fleet:join path emits the
  * same bytes over the 'osc' control mode); inlined here so this plain-mjs host
  * needs no cross-package import — keep the OSC format in lockstep. Pure;
- * exported for tests + psu-launcher's no-pty fallback. */
+ * exported for tests + psu-launcher's no-pty fallback.
+ * @param {EnvironmentMap} [env]
+ */
 export function fleetOscFromEnv(env = process.env) {
   const bg = env.PAPERCUSP_FLEET_BG;
   if (!bg) return null;

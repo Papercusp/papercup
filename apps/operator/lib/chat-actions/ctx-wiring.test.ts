@@ -148,7 +148,8 @@ export function ctxKeysSupplied(modalSrc: string): Set<string> {
   };
   findLiteral(declaration);
 
-  if (literal == null) {
+  const foundLiteral = literal as ts.ObjectLiteralExpression | null;
+  if (foundLiteral == null) {
     throw new Error(
       'actionCtx exists but its SessionChatModal object literal was not found — ' +
         'update this guard to follow the production construction site.',
@@ -156,7 +157,7 @@ export function ctxKeysSupplied(modalSrc: string): Set<string> {
   }
 
   return new Set(
-    literal.properties.map(objectPropertyName).filter((name): name is string => name != null),
+    foundLiteral.properties.map(objectPropertyName).filter((name): name is string => name != null),
   );
 }
 

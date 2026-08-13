@@ -283,7 +283,7 @@ describe('adapters/omp.mjs — parse (mid-turn)', () => {
         toolResponse: 'Error: invalid_input: harness is required',
       },
     ]);
-    expect(req?.toolCalls?.every((call) => call.toolInput.length <= 400)).toBe(true);
+    expect(req?.toolCalls?.every((call: { toolInput: string }) => call.toolInput.length <= 400)).toBe(true);
   });
 
   it('still emits a result whose call cannot be correlated (output alone is signal)', () => {

@@ -111,6 +111,7 @@ function runGate(
     input: typeof payload === 'string' ? payload : JSON.stringify(payload),
     encoding: 'utf8',
     env: {
+      NODE_ENV: 'test',
       PATH: process.env.PATH ?? '',
       HOME: fakeHome,
       PAPERCUSP_SID: nextSid(),
@@ -167,6 +168,7 @@ function runGateAsync(
       {
         encoding: 'utf8',
         env: {
+          NODE_ENV: 'test',
           PATH: process.env.PATH ?? '',
           HOME: fakeHome,
           PAPERCUSP_SID: nextSid(),
@@ -1135,7 +1137,7 @@ describe('owner sessions + fail-open (D-003)', () => {
       const r = spawnSync('bash', [SCRIPT], {
         input: JSON.stringify(bashCmd('crontab -e')),
         encoding: 'utf8',
-        env: { PATH: process.env.PATH ?? '', HOME: bare, ...AGENT },
+        env: { NODE_ENV: 'test', PATH: process.env.PATH ?? '', HOME: bare, ...AGENT },
         timeout: 15_000,
       });
       expect(r.status).toBe(0);

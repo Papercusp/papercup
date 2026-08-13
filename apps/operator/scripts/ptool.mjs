@@ -64,6 +64,9 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { resolveOperatorBase } from './operator-discovery.mjs';
 
+/** @typedef {Record<string, string | undefined>} EnvironmentMap */
+/** @typedef {{name: string, description?: string, inputSchema?: Record<string, unknown>}} ToolCatalogEntry */
+
 // env → ~/.papercusp/operator.json (packaged installs run the operator on a
 // per-boot dynamic port; :3070 is dev-box-only) → dev fallback.
 const OPERATOR_URL = resolveOperatorBase({}, process.env);
@@ -140,6 +143,8 @@ export function parseArgs(argv) {
  * `PAPERCUSP_HOME`/cwd. Returning null when no tracked scope is available is
  * deliberate — ptool must never guess a tenant. Pure when `env` and `cwd` are
  * supplied; both are injectable for tests.
+ * @param {{workspace?: string | null, env?: EnvironmentMap, cwd?: string}} [options]
+ * @returns {string | null}
  */
 export function resolveWorkspaceScope({ workspace = null, env = process.env, cwd } = {}) {
   const explicit = typeof workspace === 'string' ? workspace.trim() : '';
@@ -170,6 +175,8 @@ export function resolveWorkspaceScope({ workspace = null, env = process.env, cwd
  * hatch for callers that need the unshaped response. Pure when `env` is
  * supplied; values are passed through so the server remains the authority for
  * the supported tier vocabulary.
+ * @param {{contextTier?: string | null, env?: EnvironmentMap}} [options]
+ * @returns {string}
  */
 export function resolveContextTier({ contextTier = null, env = process.env } = {}) {
   const explicit = typeof contextTier === 'string' ? contextTier.trim() : '';
@@ -253,6 +260,8 @@ export function serviceOf(name) {
  * Group a tools array into `{ service: tool[] }`, services and tools each
  * sorted by name. Pure — exported for tests. Each tool keeps its original
  * `{ name, description, inputSchema }`.
+ * @param {ToolCatalogEntry[]} tools
+ * @returns {Map<string, ToolCatalogEntry[]>}
  */
 export function groupTools(tools) {
   const byService = new Map();
@@ -360,6 +369,10 @@ export function coerceArg(kind, raw) {
  * Merge `--workspace`/`--harness` convenience flags into an args object,
  * but ONLY for properties the tool's schema actually declares (so we never
  * inject an arg a tool would reject). Existing keys in `args` win. Pure.
+ * @param {Record<string, unknown>} args
+ * @param {{workspace?: unknown, harness?: unknown}} convenience
+ * @param {{properties?: Record<string, unknown>} | null | undefined} inputSchema
+ * @returns {Record<string, unknown>}
  */
 export function mergeConvenienceArgs(args, { workspace, harness }, inputSchema) {
   const props = (inputSchema && inputSchema.properties) || {};
@@ -623,7 +636,7 @@ function isInvalidTruncatedJson(text) {
  * per-home token remains a fallback when the isolated file is absent. A su
  * session can carry the workspace-scoped HOME even though the shared
  * superuser bearer still lives at `~/.papercusp/superuser-token` (EI-202457).
- * @param {{tokenFile?: string|null, env?: NodeJS.ProcessEnv, home?: string}} [options]
+ * @param {{tokenFile?: string|null, env?: EnvironmentMap, home?: string}} [options]
  */
 export function resolveTokenPaths({ tokenFile = null, env = process.env, home = homedir() } = {}) {
   const explicit = typeof tokenFile === 'string' ? tokenFile.trim() : '';
@@ -644,7 +657,9 @@ export function resolveTokenPaths({ tokenFile = null, env = process.env, home = 
   return isolated && isolated !== shared ? [isolated, shared] : [shared];
 }
 
-/** Resolve the first bearer-token candidate for callers that need one path. */
+/** Resolve the first bearer-token candidate for callers that need one path.
+ * @param {{tokenFile?: string|null, env?: EnvironmentMap, home?: string}} [options]
+ */
 export function resolveTokenPath(options = {}) {
   return resolveTokenPaths(options)[0];
 }

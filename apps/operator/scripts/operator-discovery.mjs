@@ -17,6 +17,8 @@ import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
+/** @typedef {Record<string, string | undefined>} EnvironmentMap */
+
 /**
  * The desktop operator's recorded address from ~/.papercusp/operator.json,
  * or null when the file is missing/unreadable (the dev box).
@@ -35,6 +37,10 @@ export function discoverOperatorUrl({ home = homedir() } = {}) {
 /**
  * Standard CLI precedence: explicit --operator-url arg → PAPERCUSP_OPERATOR_URL
  * env override → live desktop discovery (operator.json) → dev-box :3070.
+ * @param {{operatorUrl?: string | null}} [args]
+ * @param {EnvironmentMap} [env]
+ * @param {{home?: string}} [opts]
+ * @returns {string}
  */
 export function resolveOperatorBase(args = {}, env = process.env, opts = {}) {
   return (
@@ -95,6 +101,21 @@ export function rebaseUrl(url, freshBase) {
  *
  * Deps injected for tests (operator-discovery.test.ts) — fetchImpl/sleep/now
  * make the retry timing deterministic without real sockets or timers.
+ *
+ * @param {string} url
+ * @param {RequestInit} [init]
+ * @param {{
+ *   fetchImpl?: (url: string, init: RequestInit) => Promise<any>,
+ *   sleep?: (ms: number) => Promise<unknown>,
+ *   now?: () => number,
+ *   timeoutMs?: number,
+ *   connectBudgetMs?: number,
+ *   timeoutRetries?: number,
+ *   onRetry?: (() => void) | null,
+ *   rediscover?: (() => string | null) | null,
+ *   onRebase?: ((base: string) => void) | null,
+ * }} [deps]
+ * @returns {Promise<any>}
  */
 export async function fetchResilient(
   url,
