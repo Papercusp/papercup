@@ -53,6 +53,19 @@ describe('workItems P-006 (byHarness slim + detail)', () => {
       expect((rows[0]._meta as { total: number }).total).toBe(1821); // authoritative total preserved
     });
 
+    it('threads an inherited multi-harness scope through both rows and the authoritative count', async () => {
+      const { resolveNamedQueryV2: r } = await import('./index');
+      await r('workItems.byHarness', { harnessSlugs: ['root', 'child'] });
+      expect(listEnrichedWorkItemsMock).toHaveBeenCalledWith(expect.objectContaining({
+        harness: undefined,
+        harnesses: ['root', 'child'],
+      }));
+      expect(countWorkItemsMock).toHaveBeenCalledWith(expect.objectContaining({
+        harness: undefined,
+        harnesses: ['root', 'child'],
+      }));
+    });
+
     it('detail returns the single FULL enriched row (with summary) via getEnrichedWorkItem', async () => {
       getEnrichedWorkItemMock.mockImplementation(async (_h, id) => ({ id, title: 'ti', summary: 'the full summary text', kind: 'change' }));
       const { resolveNamedQueryV2: r } = await import('./index');

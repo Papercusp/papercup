@@ -35,6 +35,29 @@ import { HUD_ASK_KIND_LABEL } from './hud-board-model';
 import { WORK_ITEM_ID, trailingWorkItemId } from '@/lib/work-item-ref';
 import { SEVERITY_TONE } from '../../harness/theme';
 
+/** Structural subset of AdvScope so the shared app layer stays Vite-independent. */
+export interface HudPotScope {
+  allMode: boolean;
+  slug: string | null;
+  harnessSlugs: readonly string[] | null;
+  ready: boolean;
+}
+
+/** null set = workspace-wide; a scoped row must carry an exact matching harness. */
+export function isInHudPotScope(
+  harnessSlug: string | null | undefined,
+  harnessSlugs: readonly string[] | null,
+): boolean {
+  return harnessSlugs === null || (!!harnessSlug && harnessSlugs.includes(harnessSlug));
+}
+
+/** Sync-query argument shared by Goals, Plans, Work items, and Overview counts. */
+export function hudHarnessScopeArgs(
+  harnessSlugs: readonly string[] | null,
+): Record<string, unknown> {
+  return harnessSlugs === null ? {} : { harnessSlugs: [...harnessSlugs] };
+}
+
 /* ── tabs ────────────────────────────────────────────────────────────────── */
 
 /**

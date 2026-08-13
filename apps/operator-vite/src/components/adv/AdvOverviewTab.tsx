@@ -37,6 +37,7 @@ import { requestDockPanelOpen } from '@/app/adv/harnesses/open-dock-panel';
 import { KindPill } from '@/app/harness/primitives';
 import { useLexicon } from '@/lib/useLexicon';
 import { advRosterArgs } from '@/lib/adv-roster-args';
+import { useAdvScope } from './AdvShell';
 
 /**
  * Brief 23 — the Overview / dashboard: the default landing surface of /adv.
@@ -510,6 +511,7 @@ export function selectUnhealthyPanels(
 }
 
 export default function AdvOverviewTab() {
+  const potScope = useAdvScope();
   const lex = useLexicon();
   // Writers only (parseAsString) — AdvShell owns the canonical enum parser, so
   // writing a plain string round-trips identically. Mirrors AdvNowRunning.
@@ -586,16 +588,20 @@ export default function AdvOverviewTab() {
   // NEVER the enriched workItems.byHarness list (payload discipline,
   // whole-app-sync-payload-audit-2026-07-19). Scoped to the focused project
   // (?slug=) when one is selected; workspace-wide otherwise.
-  const [projectSlug] = useQueryState('slug', parseAsString);
+  const workItemScopeArgs = potScope.harnessSlugs === null
+    ? {}
+    : { harnessSlugs: [...potScope.harnessSlugs] };
   const statsQ = useSyncQuery<WorkItemStatsCell>({
     queryName: 'workItems.stats',
-    args: projectSlug ? { harnessSlug: projectSlug } : {},
+    args: workItemScopeArgs,
+    enabled: potScope.ready,
     staleTime: 15_000,
   });
   // P-002: the 24h burn-down companion (same scoping + invalidation bridge).
   const deltaQ = useSyncQuery<WorkItemDeltaCell>({
     queryName: 'workItems.delta24h',
-    args: projectSlug ? { harnessSlug: projectSlug } : {},
+    args: workItemScopeArgs,
+    enabled: potScope.ready,
     staleTime: 15_000,
   });
 

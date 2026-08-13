@@ -23,6 +23,8 @@ import {
   goalBurnLabel,
   goalColumn,
   goalsTruncationNotice,
+  hudHarnessScopeArgs,
+  isInHudPotScope,
   goalSilence,
   partitionGoals,
   goalSpendLabel,
@@ -107,6 +109,21 @@ describe('tabs', () => {
   it('still opens on sessions — leftmost is a position, not the default tab', () => {
     expect(HUD_TABS[0]).toBe('goals');
     expect(HUD_DEFAULT_TAB).toBe('sessions');
+  });
+});
+
+describe('inherited pot scope', () => {
+  it('treats null as workspace-wide and exact arrays as authoritative', () => {
+    expect(isInHudPotScope(null, null)).toBe(true);
+    expect(isInHudPotScope('child', ['root', 'child'])).toBe(true);
+    expect(isInHudPotScope('other', ['root', 'child'])).toBe(false);
+    expect(isInHudPotScope(null, ['root'])).toBe(false);
+  });
+
+  it('omits the resolver arg for All Pots and preserves an explicit empty scope', () => {
+    expect(hudHarnessScopeArgs(null)).toEqual({});
+    expect(hudHarnessScopeArgs(['root', 'child'])).toEqual({ harnessSlugs: ['root', 'child'] });
+    expect(hudHarnessScopeArgs([])).toEqual({ harnessSlugs: [] });
   });
 });
 

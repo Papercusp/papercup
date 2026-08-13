@@ -1,7 +1,11 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ComponentType, type CSSProperties } from 'react';
 import { useSyncQuery } from '@papercusp/sync';
 import { wsLocalKey } from '@papercusp/operator-core/lib/browser-workspace';
-import { HARNESS_SCOPE_MODES, type HarnessScopeMode } from '@papercusp/operator-core/lib/harness/scope';
+import {
+  HARNESS_SCOPE_MODES,
+  resolveHarnessScope,
+  type HarnessScopeMode,
+} from '@papercusp/operator-core/lib/harness/scope';
 import * as Tabs from '@radix-ui/react-tabs';
 import { Command as CmdK } from 'cmdk';
 import { parseAsBoolean, parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
@@ -295,14 +299,47 @@ export function tabOverflowState(
  */
 export interface AdvScope {
   allMode: boolean;
+  scopeMode: HarnessScopeMode;
   /** The raw selection (?slug=), null under All Pots. */
   slug: string | null;
   /** Hive home the selection resolves to; '' ⇒ workspace-wide. */
   hive: string;
+  /** Exact harness set for scoped reads; null means the whole workspace. */
+  harnessSlugs: readonly string[] | null;
   ready: boolean;
 }
 
-const AdvScopeContext = createContext<AdvScope>({ allMode: true, slug: null, hive: '', ready: false });
+const AdvScopeContext = createContext<AdvScope>({
+  allMode: true,
+  scopeMode: 'all',
+  slug: null,
+  hive: '',
+  harnessSlugs: null,
+  ready: false,
+});
+
+/** Resolve the shell's URL scope into the exact set every pot-aware tab reads. */
+export function resolveAdvScopeHarnessSlugs(
+  scopeMode: HarnessScopeMode,
+  slug: string | null,
+  projects: readonly HarnessProjectLite[],
+): readonly string[] | null {
+  if (scopeMode === 'all') return null;
+  if (!slug) return [];
+  if (scopeMode === 'self') return [slug];
+  // The registry's authoritative hive_slug is the parent edge for modern Hive
+  // members; parent_slug remains the legacy tree edge. Normalize both into the
+  // canonical resolver rather than teaching every tab a second tree walk.
+  return resolveHarnessScope(
+    slug,
+    projects.map((project) => ({
+      slug: project.slug,
+      parent_slug:
+        project.parent_slug ??
+        (project.hive_slug && project.hive_slug !== project.slug ? project.hive_slug : null),
+    })),
+  );
+}
 
 /** Read the inherited pot scope from the nearest AdvShell. */
 export function useAdvScope(): AdvScope {
@@ -488,11 +525,13 @@ export default function AdvShell({ children }: { children: React.ReactNode }) {
   const advScope = useMemo<AdvScope>(
     () => ({
       allMode,
+      scopeMode,
       slug: singleSlug,
       hive: !singleSlug ? '' : activeIsHive ? singleSlug : activeProject?.hive_slug || singleSlug,
+      harnessSlugs: resolveAdvScopeHarnessSlugs(scopeMode, singleSlug, projects),
       ready: allMode || projects.length > 0 || Boolean(projectLoadError),
     }),
-    [allMode, singleSlug, activeIsHive, activeProject?.hive_slug, projects.length, projectLoadError],
+    [allMode, scopeMode, singleSlug, activeIsHive, activeProject?.hive_slug, projects, projectLoadError],
   );
 
   // (The Share-button → Shared-badge swap reads the active hive's directory

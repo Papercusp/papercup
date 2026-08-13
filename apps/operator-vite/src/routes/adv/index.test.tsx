@@ -37,6 +37,14 @@ vi.mock('../../components/adv/AdvShell', () => ({
     'evals', 'calendar', 'plans', 'prs', 'insights', 'settings',
     'docs', 'git', 'testing',
   ].map((id) => ({ id })),
+  useAdvScope: () => ({
+    allMode: false,
+    scopeMode: 'expanded',
+    slug: 'pot-a',
+    hive: 'pot-a',
+    harnessSlugs: ['pot-a', 'pot-a-child'],
+    ready: true,
+  }),
 }));
 // The pot bar itself is mocked (it mounts a selector + four live status pills);
 // the DECISION of which tabs get it is the real adv-pot-bar-tabs module, so these
@@ -57,7 +65,11 @@ vi.mock('../../components/adv/AdvHarnessPanelPage', () => ({
   default: ({ panel }: { panel: string }) => <div data-testid="harness-panel" data-panel={panel} />,
 }));
 vi.mock('@/app/adv/harnesses/HarnessesWorkspace', () => ({ default: () => <div data-testid="tab-harnesses" /> }));
-vi.mock('@/app/adv/hud/HudView', () => ({ default: () => <div data-testid="tab-hud" /> }));
+vi.mock('@/app/adv/hud/HudView', () => ({
+  default: ({ potScope }: { potScope?: { harnessSlugs?: string[] } }) => (
+    <div data-testid="tab-hud" data-scope={(potScope?.harnessSlugs ?? []).join(',')} />
+  ),
+}));
 vi.mock('@/app/adv/create/AdvCreateDock', () => ({ default: () => <div data-testid="tab-create-dock" /> }));
 vi.mock('@/app/admin/plans/plans.css', () => ({}));
 
@@ -113,6 +125,11 @@ describe('/adv tab router', () => {
   it('defaults to the overview surface when ?tab is absent', () => {
     renderAdv('');
     expect(screen.getByTestId('tab-overview')).toBeTruthy();
+  });
+
+  it('bridges the shell pot scope structurally into HUD', () => {
+    renderAdv('?tab=hud');
+    expect(screen.getByTestId('tab-hud').getAttribute('data-scope')).toBe('pot-a,pot-a-child');
   });
 
   it('falls back to overview for an unknown ?tab value (enum guard)', () => {

@@ -172,7 +172,7 @@ beforeAll(() => {
   }
 });
 
-import AdvShell, { buildHarnessSelectOptions } from './AdvShell';
+import AdvShell, { buildHarnessSelectOptions, resolveAdvScopeHarnessSlugs } from './AdvShell';
 
 const LS_KEY = () => wsLocalKey('harness.activeProject');
 
@@ -568,5 +568,27 @@ describe('buildHarnessSelectOptions — hive-home folding (the repo-less `-hive`
     );
     expect(tree).toEqual([{ value: 'shop-hive', label: 'shop' }]);
     expect(tree.some((o) => o.label.includes('-hive'))).toBe(false);
+  });
+});
+
+describe('resolveAdvScopeHarnessSlugs', () => {
+  const projects = [
+    { slug: 'team-hive', harness_kind: 'hive' },
+    { slug: 'api', hive_slug: 'team-hive' },
+    { slug: 'web', parent_slug: 'api' },
+    { slug: 'other' },
+  ];
+
+  it('maps All Pots to workspace-wide and self to the exact selected pot', () => {
+    expect(resolveAdvScopeHarnessSlugs('all', 'team-hive', projects)).toBeNull();
+    expect(resolveAdvScopeHarnessSlugs('self', 'team-hive', projects)).toEqual(['team-hive']);
+  });
+
+  it('expands through authoritative hive_slug and legacy parent_slug descendants', () => {
+    expect(resolveAdvScopeHarnessSlugs('expanded', 'team-hive', projects)).toEqual([
+      'team-hive',
+      'api',
+      'web',
+    ]);
   });
 });

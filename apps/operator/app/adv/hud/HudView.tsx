@@ -45,7 +45,14 @@ import HudEntityColumns from './HudEntityColumns';
 import GoalComposer from './GoalComposer';
 import GoalDetailPanel from './GoalDetailPanel';
 import GoalStatusControl from './GoalStatusControl';
-import { goalsTruncationNotice, workItemIdForCard, type HudEntityCard } from './hud-entity-board';
+import {
+  goalsTruncationNotice,
+  hudHarnessScopeArgs,
+  isInHudPotScope,
+  workItemIdForCard,
+  type HudEntityCard,
+  type HudPotScope,
+} from './hud-entity-board';
 import { advRosterArgs } from '@/lib/adv-roster-args';
 import {
   ALL_FLEETS,
@@ -139,7 +146,17 @@ const SEARCH_TIMEOUT_MS = 20_000;
    the literal out separately the two drifted (HudBoard's leading space became a
    raw NUL byte, so this comparison never matched). One definition, imported. */
 
-export default function HudView({ workspaceId = null }: { workspaceId?: string | null }) {
+export default function HudView({
+  workspaceId = null,
+  potScope,
+}: {
+  workspaceId?: string | null;
+  potScope?: HudPotScope;
+}) {
+  // Legacy/direct mounts remain workspace-wide. The live /adv route always
+  // passes the shell's resolved scope structurally.
+  const scopedHarnessSlugs = potScope?.harnessSlugs ?? null;
+  const scopeReady = potScope?.ready ?? true;
   const [focusColumn, setFocusColumn] = useQueryState(
     'hudcol',
     parseAsStringLiteral(HUD_COLUMNS),
@@ -336,7 +353,7 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
   const asks: HudAsk[] = useMemo(() => {
     const scoped = scopeInboxItems(attention.items ?? []);
     return scoped
-      .filter((i) => i.needsHuman)
+      .filter((i) => i.needsHuman && isInHudPotScope(i.harnessSlug, scopedHarnessSlugs))
       .map((i) => ({
         ownerAgentId: i.ownerAgentId,
         title: i.title,
@@ -351,7 +368,7 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
         // routing needs no extra fetch.
         ref: (i as { ref?: { kind: string; slug?: string | null } | null }).ref ?? null,
       }));
-  }, [attention.items]);
+  }, [attention.items, scopedHarnessSlugs]);
 
   const entries: HudRosterEntry[] = useMemo(() => {
     const payload = roster.data?.[0];
@@ -365,8 +382,9 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
     // terminal-spawned psu session is equally real and equally the human's, and
     // before this tier existed it appeared in no column for its whole boot
     // window. Already deduped against `active` server-side.
-    return [...(payload.active ?? []), ...(payload.pending ?? []), ...(payload.starting ?? [])];
-  }, [roster.data]);
+    return [...(payload.active ?? []), ...(payload.pending ?? []), ...(payload.starting ?? [])]
+      .filter((entry) => isInHudPotScope(entry.harnessSlug, scopedHarnessSlugs));
+  }, [roster.data, scopedHarnessSlugs]);
 
   // `null` in the URL array marks the solo group — encoded as the literal
   // "solo" because a URL array cannot carry a null.
@@ -602,7 +620,12 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
   // (it renders in this board's header). useSyncQuery dedupes on
   // ['sync', name, args], so this second caller costs one memo, not one fetch —
   // and the two views can never disagree about what plans exist.
-  const planList = usePlanList({ includeArchived: false, includeLegacy: true });
+  const planList = usePlanList({
+    includeArchived: false,
+    includeLegacy: true,
+    harness_slugs: scopedHarnessSlugs ?? undefined,
+    enabled: scopeReady,
+  });
   const planBoard = useMemo(
     () =>
       buildPlanBoard(planList.data?.plans ?? [], {
@@ -637,8 +660,8 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
     portfolioPots: number;
   }>({
     queryName: 'goals.list',
-    args: { workspaceId: goalWorkspaceId },
-    enabled: tab === 'goals',
+    args: { workspaceId: goalWorkspaceId, ...hudHarnessScopeArgs(scopedHarnessSlugs) },
+    enabled: tab === 'goals' && scopeReady,
   });
   const goalBoard = useMemo(
     () =>
@@ -679,7 +702,14 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
   // localStorage fallback the Create dock uses. Deliberately not a new picker:
   // a second harness selector on this surface would be a second source of
   // truth for "which harness am I looking at".
-  const harnessSlug = useResolvedHarnessSlug();
+  const fallbackHarnessSlug = useResolvedHarnessSlug();
+  const harnessSlug = potScope ? potScope.slug : fallbackHarnessSlug;
+  const workItemScopeArgs = potScope
+    ? hudHarnessScopeArgs(scopedHarnessSlugs)
+    : harnessSlug
+      ? { harnessSlug }
+      : {};
+  const workItemScopeUsable = scopeReady && (scopedHarnessSlugs === null || scopedHarnessSlugs.length > 0);
   const workItems = useSyncQuery<HudWorkItemInput>({
     queryName: 'workItems.byHarness',
     // P-004: a FAIR slice per status, not one `updated_ts DESC` window across
@@ -688,21 +718,21 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
     // needs-you column rendered no work items while reporting a count. This
     // asks for every status the board maps, bounded, and costs LESS data.
     args: {
-      harnessSlug,
+      ...workItemScopeArgs,
       states: HUD_WORK_ITEM_FETCH_STATES,
       perState: WORK_ITEM_PER_STATE,
     },
     // Only fetch when the tab is actually showing: this is the heaviest read
     // on the surface and the HUD's default tab is Sessions.
-    enabled: tab === 'items' && Boolean(harnessSlug),
+    enabled: tab === 'items' && (potScope ? workItemScopeUsable : Boolean(harnessSlug)),
   });
   /* The counts the board REPORTS come from a store-wide aggregate, never from
      the sampled cards — reusing the existing `workItems.stats` feed rather than
      adding a second counting path. */
   const workItemStats = useSyncQuery<{ state?: string | null; n?: number | null }>({
     queryName: 'workItems.stats',
-    args: { harnessSlug },
-    enabled: tab === 'items' && Boolean(harnessSlug),
+    args: workItemScopeArgs,
+    enabled: tab === 'items' && (potScope ? workItemScopeUsable : Boolean(harnessSlug)),
   });
   const itemTotals = useMemo(
     () => (workItemStats.data ? rollUpStateCounts(workItemStats.data) : null),
@@ -976,7 +1006,9 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
         loading={workItems.loading}
         error={workItems.error ? String(workItems.error) : null}
         emptyLabel={
-          harnessSlug
+          scopedHarnessSlugs === null
+            ? 'No work items in this workspace.'
+            : harnessSlug
             ? `No work items in ${harnessSlug}.`
             : 'Pick a harness to see its work items.'
         }
@@ -987,7 +1019,7 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
            items at all (verified live 2026-07-26: 146 needs-you, zero of them
            work items, no explanation on screen). Say what is missing. */
         notice={
-          harnessSlug
+          scopedHarnessSlugs === null || harnessSlug
             ? null
             : 'No harness is selected, so no work items could be loaded — these are asks that belong to no single harness. Pick a harness to see its work items.'
         }

@@ -44,6 +44,15 @@ vi.mock('nuqs', () => ({
 vi.mock('./FleetRateControl', () => ({
   default: () => <div data-testid="fleet-rate-control" />,
 }));
+let advScope = {
+  allMode: true,
+  scopeMode: 'all',
+  slug: null as string | null,
+  hive: '',
+  harnessSlugs: null as string[] | null,
+  ready: true,
+};
+vi.mock('./AdvShell', () => ({ useAdvScope: () => advScope }));
 vi.mock('@/lib/useLexicon', async () => {
   const actual = await vi.importActual<typeof import('@papercusp/lexicon')>('@papercusp/lexicon');
   return { useLexicon: () => actual.lexiconFor('classic') };
@@ -229,6 +238,7 @@ describe('AdvOverviewTab component', () => {
     spendResult = { data: undefined, loading: false };
     accountsResult = { data: [], loading: false };
     reportsResult = { data: [], loading: false };
+    advScope = { allMode: true, scopeMode: 'all', slug: null, hive: '', harnessSlugs: null, ready: true };
   });
 
   afterEach(() => {
@@ -287,6 +297,20 @@ describe('AdvOverviewTab component', () => {
     render(<AdvOverviewTab />);
     expect(screen.getByText('placed WI-900')).toBeTruthy();
     expect(screen.queryByText('infra-liveness sweep')).toBeNull();
+  });
+
+  it('scopes both work-item aggregates to the shell-resolved descendant set', () => {
+    advScope = {
+      allMode: false,
+      scopeMode: 'expanded',
+      slug: 'pot-a',
+      hive: 'pot-a',
+      harnessSlugs: ['pot-a', 'pot-a-child'],
+      ready: true,
+    };
+    render(<AdvOverviewTab />);
+    expect(syncArgs['workItems.stats']).toEqual({ harnessSlugs: ['pot-a', 'pot-a-child'] });
+    expect(syncArgs['workItems.delta24h']).toEqual({ harnessSlugs: ['pot-a', 'pot-a-child'] });
   });
 
   it('renders plan rows with the done/total fraction and the active-count badge', () => {

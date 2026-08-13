@@ -1,6 +1,6 @@
 import { createFileRoute } from '@tanstack/react-router';
 import { parseAsStringEnum, useQueryState } from 'nuqs';
-import AdvShell, { ADV_TABS, type AdvTabId } from '../../components/adv/AdvShell';
+import AdvShell, { ADV_TABS, useAdvScope, type AdvScope, type AdvTabId } from '../../components/adv/AdvShell';
 import AdvPotBar from '../../components/adv/AdvPotBar';
 import { potBarModeForTab } from '../../components/adv/adv-pot-bar-tabs';
 import AdvTabErrorBoundary from '../../components/adv/AdvTabErrorBoundary';
@@ -41,6 +41,7 @@ function AdvIndexPage() {
   // error boundary means a crashed tab still leaves you a pot selector to switch
   // away with.
   const potBar = potBarModeForTab(activeTab);
+  const potScope = useAdvScope();
   return (
     <AdvShell>
       {potBar.show ? <AdvPotBar withStatus={potBar.withStatus} /> : null}
@@ -51,21 +52,21 @@ function AdvIndexPage() {
           navigation. */}
       <div className="pc-advshell__tabbody">
         <AdvTabErrorBoundary key={activeTab} tab={activeTab}>
-          {renderAdvTab(activeTab)}
+          {renderAdvTab(activeTab, potScope)}
         </AdvTabErrorBoundary>
       </div>
     </AdvShell>
   );
 }
 
-function renderAdvTab(tab: AdvTabId) {
+function renderAdvTab(tab: AdvTabId, potScope: AdvScope) {
   switch (tab) {
     case 'overview':
       return <AdvOverviewTab />;
     case 'hud':
       // HUD — the session board: every live session grouped by what it needs
       // (adv-hud-fleet-board-2026-07-25). `/adv/HUD` redirects to ?tab=hud.
-      return <HudView />;
+      return <HudView potScope={potScope} />;
     case 'conversations':
       return <AdvConversationsTab />;
     case 'learning':
