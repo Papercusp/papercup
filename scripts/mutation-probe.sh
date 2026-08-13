@@ -42,6 +42,7 @@
 #                             --mutate <perl -pe expression> \
 #                             --test <command containing {}> \
 #                             [--expect caught|survived] [--in-tree]
+#                             [--sweep-lock-held | --accept-sweep-race]
 #
 #   {} in --test is replaced by the path of the MUTATED COPY (copy-out mode)
 #   or by the tracked path itself (--in-tree mode), so the same --test string
@@ -51,6 +52,18 @@
 #   untouched original and every mutant would falsely "survive") and OPTIONAL
 #   under --in-tree, where the tracked file itself is the mutant and the
 #   substitution is a no-op.
+#
+#   --in-tree REFUSES to run until you say what you did about the sweep, because
+#   the sweep race is the one hazard this script cannot close on its own:
+#       --sweep-lock-held    you hold git-sync:<slug> (the incantation is in the
+#                            refusal message) — git-sync's tick takes that same
+#                            lock and SKIPS while you hold it
+#       --accept-sweep-race  you consciously accept it (an unswept checkout, or
+#                            a run short enough that you have judged the risk)
+#   The choice is echoed into MUTATION_PROBE_RESULT, so an accepted race is
+#   auditable after the fact rather than invisible. This gate exists because the
+#   advice it replaced was a log line printed while the mutation was ALREADY
+#   under way — nothing had to be decided for the probe to proceed.
 #
 #   --mutate is a PERL expression, so on the PATTERN side ( ) { } + ? . * are
 #   REGEX METACHARACTERS. Escape them to match source code literally:
@@ -93,6 +106,14 @@ MUTATE=""
 TEST_CMD=""
 EXPECT="caught"
 IN_TREE=0
+SWEEP_ACK=""
+
+# The resource git-sync's own tick holds for this checkout. Resolved from the
+# repo root rather than hardcoded, so a submodule (which git-sync sweeps under
+# its OWN slug) names its own lock instead of the superproject's.
+sweep_lock_resource() {
+  printf 'git-sync:%s' "$(basename "$(git rev-parse --show-toplevel 2>/dev/null || echo papercusp)")"
+}
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -101,7 +122,13 @@ while [ $# -gt 0 ]; do
     --test)    TEST_CMD="${2:-}"; shift 2 || die "--test needs a value" ;;
     --expect)  EXPECT="${2:-}";   shift 2 || die "--expect needs a value" ;;
     --in-tree) IN_TREE=1; shift ;;
-    -h|--help) sed -n '2,70p' "$0"; exit 0 ;;
+    --sweep-lock-held)   SWEEP_ACK="lock-held";      shift ;;
+    --accept-sweep-race) SWEEP_ACK="race-accepted";  shift ;;
+    # Print the whole header block, bounded by where it actually ends rather
+    # than by a hardcoded line number — the previous '2,70p' silently truncated
+    # mid-section every time the header grew, which is how --help ends up
+    # describing a flag set the script no longer has.
+    -h|--help) awk 'NR>1 { if (/^#/) print; else exit }' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
@@ -128,6 +155,47 @@ if [ "$IN_TREE" -eq 0 ]; then
     *"{}"*) ;;
     *) die "--test must contain {} (where the mutated COPY's path is substituted). If your test cannot take a path — e.g. it imports its subject by a fixed path — use --in-tree, where {} is optional." ;;
   esac
+fi
+
+# --in-tree is the ONLY mode that leaves a deliberately-wrong state in the
+# tracked tree, and the sweep race is the one hazard this script cannot close
+# for you: git-sync commits the WHOLE working tree on a short cadence, so a
+# probe whose test run outlives one tick gets its mutant committed even when
+# nothing goes wrong and the trap never fires. Refuse until the caller has
+# decided what to do about it. This deliberately REPLACES a warning that was
+# logged while the mutation was already under way — a notice you can skim past
+# is not a decision, and the whole point is that one has to be made.
+if [ "$IN_TREE" -eq 1 ] && [ -z "$SWEEP_ACK" ]; then
+  die "--in-tree needs you to say what you did about the git-sync SWEEP race.
+
+      git-sync commits the whole working tree every few minutes. Your mutant is
+      a deliberately-broken tracked file; if a tick lands during the test run it
+      is committed to staging, and a committed RED test freezes every agent's
+      deploys until someone notices. The trap in this script closes the DEATH
+      race (a kill mid-run), not this one.
+
+      PREFERRED — hold the sweep off, then pass --sweep-lock-held:
+
+          locks:acquire_resource { resource: '$(sweep_lock_resource)',
+                                   mode: 'exclusive', ttl_sec: 600,
+                                   reason: 'mutation probe' }
+
+      git-sync's own tick takes that same lock and SKIPS while you hold it, and
+      the TTL auto-releases it if you die holding it.
+
+      OR --accept-sweep-race, if this checkout is not swept (a scratch repo, a
+      fork) or you have judged the exposure yourself. Either choice is recorded
+      in the MUTATION_PROBE_RESULT line.
+
+      BEST — drop --in-tree entirely. Copy-out mode mutates a copy under a
+      scratch dir, so the tracked file is never dirty for an instant and there
+      is no window to protect. It needs only that your --test can be pointed at
+      a path via {}."
+fi
+if [ "$IN_TREE" -eq 0 ] && [ -n "$SWEEP_ACK" ]; then
+  die "--sweep-lock-held / --accept-sweep-race only mean something with --in-tree.
+      Copy-out mode never touches the tracked file, so there is no sweep window
+      to hold open or accept. Drop the flag (or add --in-tree if you meant it)."
 fi
 
 SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/mutation-probe.XXXXXX")" || die "could not create scratch dir"
@@ -227,20 +295,27 @@ run_guard() {
 }
 
 if [ "$IN_TREE" = "1" ]; then
+  TARGET_MODE="in-tree:$SWEEP_ACK"
   log ""
   log "⚠️  --in-tree: the TRACKED file will be mutated in place."
-  log "⚠️  The trap below closes the DEATH race, but NOT the git-sync SWEEP race."
-  log "⚠️  Hold the sweep for the duration of this probe, from your agent session:"
-  log "⚠️      locks:acquire_resource { resource: 'git-sync:$(basename "$(git rev-parse --show-toplevel 2>/dev/null || echo papercusp)")',"
-  log "⚠️                               mode: 'exclusive', ttl_sec: 600, reason: 'mutation probe' }"
-  log "⚠️  git-sync's own tick takes that same lock and SKIPS when a peer holds it."
+  if [ "$SWEEP_ACK" = "lock-held" ]; then
+    log "⚠️  Sweep: you declared $(sweep_lock_resource) HELD — git-sync's tick will skip."
+    log "⚠️  That lock is NOT verified from here; if you did not actually take it,"
+    log "⚠️  or its ttl_sec expires mid-run, the mutant can still be swept."
+  else
+    log "⚠️  Sweep: race ACCEPTED — nothing is holding git-sync off. If a tick lands"
+    log "⚠️  during this run, the mutant is committed to the shared tree."
+  fi
+  log "⚠️  The trap closes the DEATH race (a kill mid-run); it cannot undo a commit."
   log "⚠️  Prefer copy-out mode (drop --in-tree) — it has no window at all."
   log ""
   TARGET="$FILE"
 else
+  TARGET_MODE="copy-out"
   TARGET="$SCRATCH/$(basename "$FILE")"
   cp "$FILE" "$TARGET" || die "could not stage the probe copy"
 fi
+readonly TARGET_MODE
 
 # A nonzero baseline means the command did not establish a runnable, healthy
 # guard before the mutation. Scoring the mutant's later nonzero exit as
@@ -255,7 +330,7 @@ else
   BASELINE_RC=$?
   log "BASELINE FAILED (guard exited $BASELINE_RC) — refusing to score the mutant"
   printf 'MUTATION_PROBE_RESULT verdict=harness-error expected=%s target=%s baseline_exit=%d guard_exit=-1\n' \
-    "$EXPECT" "$([ "$IN_TREE" = "1" ] && echo in-tree || echo copy-out)" "$BASELINE_RC"
+    "$EXPECT" "$TARGET_MODE" "$BASELINE_RC"
   exit 2
 fi
 
@@ -307,7 +382,7 @@ else
 fi
 
 printf 'MUTATION_PROBE_RESULT verdict=%s expected=%s target=%s baseline_exit=%d guard_exit=%d\n' \
-  "$VERDICT" "$EXPECT" "$([ "$IN_TREE" = "1" ] && echo in-tree || echo copy-out)" "$BASELINE_RC" "$TEST_RC"
+  "$VERDICT" "$EXPECT" "$TARGET_MODE" "$BASELINE_RC" "$TEST_RC"
 
 [ "$VERDICT" = "harness-error" ] && exit 2
 [ "$VERDICT" = "$EXPECT" ] || exit 1
