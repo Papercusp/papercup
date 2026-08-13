@@ -2283,7 +2283,7 @@
       "guidance": {
         "when": "Run any shell command — build, test, git status, file inspection, scripts. For literal backticks, dollar signs, or other shell metacharacters in search patterns, prefer fixed-string `rg -F` with a shell-safe single-quoted argument; an unmatched backtick inside a double-quoted pattern fails before `rg` runs. For a command that runs longer than ~1–2 min (build, test suite, dev server), pass run_in_background:true and poll capability:bash_output. A background job still has a wall-clock deadline (4h default, 12h max) and is SIGTERMed then SIGKILLed at it — the launch result names the deadline; raise `timeout` for a longer job.",
         "notWhen": "To read/write/edit a single file, prefer capability:read / capability:write / capability:edit (they coordinate the file lock and mirror the native editors). For read-only queries against the operator PostgreSQL database, use dev:pg_query { sql | describe } instead of psql: capability:bash intentionally strips database credential environment variables. For git, prefer capability:git.",
-        "chaining": "run_in_background:true → returns a bash_id plus durable task_id → capability:bash_output { bash_id } to read incremental output → capability:bash_kill { bash_id } to stop. Never push (git push is refused)."
+        "chaining": "run_in_background:true → returns a bash_id plus durable task_id → preserve task_id across carry and read with capability:bash_output { task_id } (bash_id also works in the launching context) → processes:kill { taskId } to stop. Never push (git push is refused)."
       }
     },
     {
@@ -2368,7 +2368,7 @@
           "POST"
         ]
       },
-      "description": "Read new output from a background shell job (started by capability:bash run_in_background:true). Returns output since the last read plus status (running/completed/failed/…) and exit code.",
+      "description": "Read new output from a background shell job (started by capability:bash run_in_background:true). Accepts its process-local bash_id or durable task_id, so a successor can reattach after carry. Returns output since the last read plus status (running/completed/failed/…) and exit code.",
       "capabilities": [
         "capability:bash"
       ],
@@ -2429,9 +2429,9 @@
         "foreign-session"
       ],
       "guidance": {
-        "when": "Poll a background job started by capability:bash. Call repeatedly to drain output as it runs; the final call after status leaves \"running\" gives the tail + exit code.",
+        "when": "Poll a background job started by capability:bash. Use task_id after compaction/carry; it resolves through the durable task ledger and NEVER starts a replacement job. Call repeatedly to drain output as it runs; the final call after status leaves \"running\" gives the tail + exit code.",
         "notWhen": "For a foreground command — its output is in the capability:bash result directly. A miss WITH a log tail means the job's in-memory tracking is gone while its log survived; three DISTINCT reason codes say what is known, never conflate them. `\"tracking_lost_process_alive\"` = CONFIRMED running (task-ledger pid re-probe) — do NOT re-run, keep polling. `\"job_process_gone\"` = CONFIRMED ended (the ledger observed a terminal state) — safe to re-run. `\"job_liveness_unknown\"` = only a whole-operator restart was ruled out; liveness is UNKNOWN and the job is most often alive but QUEUED behind pc-heavy's slot clamp — check `ps` for your command before re-running, or you add load to the very queue that is delaying it.",
-        "chaining": "capability:bash { run_in_background:true } → capability:bash_output { bash_id } (repeat) → capability:bash_kill to stop early."
+        "chaining": "capability:bash { run_in_background:true } → capability:bash_output { task_id } after carry (or { bash_id } in the launching context) → processes:kill { taskId } to stop early."
       }
     },
     {
@@ -10952,7 +10952,7 @@
           "POST"
         ]
       },
-      "description": "Sleep until git-sync commits the tree (git-sync:committed:<sha>) — the \"is my edit committed yet\" wait — instead of polling dev:pipeline_position. Pass sha to target a commit; omit to wake on the next git-sync commit. Then END YOUR TURN.",
+      "description": "Sleep until git-sync creates a LOCAL commit (git-sync:committed:<sha>) — the \"is my edit committed locally yet\" wait. Pass sha to target a commit; omit to wake on the next local git-sync commit. Then END YOUR TURN.",
       "capabilities": [
         "coord:write"
       ],
@@ -10969,9 +10969,9 @@
         "curator"
       ],
       "guidance": {
-        "when": "You left an edit in the tree and your next step needs it COMMITTED (on origin/staging) — arm this and end your turn instead of re-polling dev:pipeline_position.",
-        "notWhen": "You need it LIVE on :3070 (past commit → gate → deploy) — that is deploy:await. You own the commit yourself — you do not (git-sync owns commit+push).",
-        "chaining": "edit a file → git-sync:await → end turn → on wake it is committed; continue."
+        "when": "You left an edit in the tree and your next step needs it COMMITTED LOCALLY — arm this and end your turn.",
+        "notWhen": "You need bridged-hive origin/staging proof — await git-sync:egressed:<sha> from events:catalog. You need it LIVE on :3070 (past commit → gate → deploy) — that is deploy:await. You own the commit yourself — you do not (git-sync owns the local commit).",
+        "chaining": "edit a file → git-sync:await → end turn → on wake it is a local commit; continue."
       }
     },
     {
@@ -11497,7 +11497,7 @@
           "POST"
         ]
       },
-      "description": "Generate a coding harness from an EXISTING git repo (kind #1 creation). Deterministically detects the test command (and VERIFIES it by running it once), the toolchain, monorepo/frontend flags, and harvests AGENTS.md/CLAUDE.md/TESTING.md into an `extends: coding-factory` blueprint override; validates it; then creates the harness via harness:create. Skips if the repo already has .papercusp/blueprint.yaml. Use `dryRun` to preview the generated override without creating. Returns {ok, slug?, skipped?, override?, detection, validation}.",
+      "description": "Generate a coding harness from an EXISTING git repo (kind #1 creation). Deterministically detects the test command (and VERIFIES it by running it once), the toolchain, monorepo/frontend flags, and harvests AGENTS.md/CLAUDE.md/TESTING.md into an `extends: coding-factory` blueprint override; validates it; then creates the harness via harness:create, persists its discovered origin/default branch, and seeds its active recurring git-sync routine. Skips if the repo already has .papercusp/blueprint.yaml. Use `dryRun` to preview the generated override without creating. Returns {ok, slug?, skipped?, override?, detection, validation, upstream?, gitSync?}.",
       "capabilities": [
         "harness:write"
       ],
@@ -24991,7 +24991,7 @@
           "POST"
         ]
       },
-      "description": "One-call leader census for a harness work queue: terminal counts, in-flight rows with assignee liveness, parked rows (blocked/needs-human/claimHold), and unclaimed rows. Pass `ids` for an exact fixed-cohort census plus one audit row per requested ID: terminal bucket, closure kind, structured-evidence verdict, completion ref, and reopen recommendation. Pass `since` for itemized closed/opened deltas. Replaces hand-joining work_items:list with coord:presence for drain/fleet leader wakes.",
+      "description": "One-call leader census for a harness work queue: terminal counts, in-flight rows with assignee liveness, parked rows (blocked/needs-human/claimHold), and unclaimed rows. Pass `ids` for an exact fixed-cohort census plus one audit row per requested ID: terminal bucket, closure kind, structured-evidence verdict, completion ref, and reopen recommendation. Pass `since` for itemized closed/opened deltas; an active DRAIN caller also receives exact canonical bug-flow economics and breaker state for its DRAIN window. Replaces hand-joining work_items:list with coord:presence for drain/fleet leader wakes.",
       "capabilities": [
         "work_items:read"
       ],
