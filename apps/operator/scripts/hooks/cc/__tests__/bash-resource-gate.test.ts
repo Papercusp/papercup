@@ -1673,6 +1673,37 @@ describe('foreground shell-backgrounding advisory (EI-20202551640426512)', () =>
     expect(JSON.parse(out.stdout).hookSpecificOutput.additionalContext).toContain('300s');
   });
 
+  // EI-20349478936631977 — the orphan-lifetime clause. The deadline text warns the
+  // child may die too EARLY (with the wrapper); a true detach wrapper carries the
+  // opposite hazard, that it dies too LATE — never, because the terminal scope is
+  // KillMode=process. Both can be true of one command, so the clause is additive.
+  const orphanClause = (out: { stdout: string }) =>
+    JSON.parse(out.stdout).hookSpecificOutput.additionalContext as string;
+
+  it('names the KillMode=process orphan hazard for a true detach wrapper', () => {
+    const ctx = orphanClause(runGate(bashWithInput({ command: 'nohup node server.mjs &' })));
+    expect(ctx).toContain('KillMode=process');
+    expect(ctx).toContain('systemd-run --user --scope');
+    // The deadline-bearing alternative must still be named, not replaced.
+    expect(ctx).toContain('run_in_background: true');
+  });
+
+  it('names it for setsid without a background operator', () => {
+    expect(orphanClause(runGate(bashWithInput({ command: 'setsid node server.mjs' })))).toContain(
+      'KillMode=process',
+    );
+  });
+
+  // NARROWNESS is the property that keeps this affordable: a bare `&` is the
+  // common, usually-harmless case and must not pay the extra text on every call.
+  it('does NOT add the orphan clause for a bare shell background operator', () => {
+    const ctx = orphanClause(
+      runGate(bashWithInput({ command: 'npm run test:affected > /tmp/t.log 2>&1 &' })),
+    );
+    expect(ctx).toContain('foreground shell-backgrounding advisory'); // base advisory intact
+    expect(ctx).not.toContain('KillMode=process');
+  });
+
   it('is silent when the native same-session background mode is used', () => {
     expectAllow(
       runGate(

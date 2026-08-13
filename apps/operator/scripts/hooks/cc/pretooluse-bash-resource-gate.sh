@@ -628,14 +628,39 @@ try:
                 _shape.append('`nohup`/`setsid`')
             if _has_shell_bg:
                 _shape.append('a shell background operator `&`')
+            # EI-20349478936631977: a TRUE detach wrapper adds a second, opposite
+            # hazard the deadline text above cannot express. `nohup`/`setsid`
+            # survives the wrapper, so the child is left in this session's
+            # terminal scope — and systemd creates `vte-spawn-*.scope` with
+            # KillMode=process. When the session ends, only the scope's MAIN
+            # process is signalled: the detached child keeps running, owned by
+            # nothing, while the unit reads inactive(dead) (D-015 — unit state
+            # LAUNDERS the residue). It is then invisible to the residue census
+            # too, which protects any pid holding a listening socket, so a leaked
+            # SERVER is the one shape that guard can never report. That is how an
+            # abandoned profiling host held ~70 GiB for 12h after its session
+            # ended. Named only for nohup/setsid: a bare `&` is the common,
+            # usually-harmless case and must not pay this text on every call.
+            _orphan_clause = (
+                'Lifetime, separately: `nohup`/`setsid` outlives this session. The child '
+                'stays in your terminal scope, which systemd sets KillMode=process, so '
+                'session end signals only the scope leader and your process keeps running '
+                'unowned while the unit reads inactive(dead). Nothing reaps it and the '
+                'residue census cannot report it if it holds a listening socket. If it '
+                'must outlive the turn, give it an enforced deadline via '
+                '`run_in_background: true` (SIGTERM then SIGKILL at `timeout`), or put it '
+                'in its own reaped scope with `systemd-run --user --scope`. '
+                if _has_detach_wrapper
+                else ''
+            )
             ADVISORY = (
                 'foreground shell-backgrounding advisory (EI-20202551640426512): this '
                 f'foreground Bash call contains {" and ".join(_shape)}, but the capability '
                 f'wrapper still owns {_deadline_text} and may terminate the child with it. '
                 'A wrapper exit code, vanished PID, or partial log is not proof that the '
                 'job finished successfully. For long work use `run_in_background: true` '
-                'and read the real result from `capability:bash_output`. Advisory only; '
-                'this command is proceeding as issued.'
+                f'and read the real result from `capability:bash_output`. {_orphan_clause}'
+                'Advisory only; this command is proceeding as issued.'
             )
 except Exception:
     pass  # advisory must never wedge a command
