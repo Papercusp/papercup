@@ -131,6 +131,7 @@ import { buildMcpPrelude } from '../../../memory/mcp-prelude';
 import { INSIGHTS_DIR } from '../../../memory/knowledge-read';
 import { getSessionUserOrDefault } from '../../../auth';
 import { advertisedArgsSchema, decode, type ResultFormat } from '@papercusp/result-encoding';
+import type { ResultDoorSkipReason } from '@papercusp/tooldef';
 // Side-effect: register every operator-side first-party tool into the
 // projected-tool registry. Required on dev (next dev compiles routes
 // lazily — without this import, MCP requests would arrive before any
@@ -152,6 +153,40 @@ type McpCallResult = {
   _meta?: Record<string, unknown>;
   structuredContent?: unknown;
 };
+
+// `tools:invoke` returns the target's MCP-shaped result through the wrapper
+// dispatcher, so the outer result-door choke point cannot inspect the target's
+// ProjectedTool definition directly. Carry this one internal-only decision in
+// `_meta` (which is not shown to the model) across that bridge, then consume it
+// at the outer tools/call boundary. This preserves machine-readable target
+// results such as dev:pg_query without weakening the door for ordinary targets.
+const NESTED_RESULT_DOOR_SKIP_META = '__papercusp_nested_result_door_skip';
+
+function isResultDoorSkipReason(value: unknown): value is ResultDoorSkipReason {
+  return value === 'programmatic-caller' || value === 'oversize-by-design';
+}
+
+function nestedResultDoorSkipReason(result: McpCallResult): ResultDoorSkipReason | undefined {
+  const reason = result._meta?.[NESTED_RESULT_DOOR_SKIP_META];
+  return isResultDoorSkipReason(reason) ? reason : undefined;
+}
+
+function carryNestedResultDoorSkip(
+  result: McpCallResult,
+  reason: ResultDoorSkipReason | undefined,
+): McpCallResult {
+  if (!reason) return result;
+  return {
+    ...result,
+    _meta: { ...(result._meta ?? {}), [NESTED_RESULT_DOOR_SKIP_META]: reason },
+  };
+}
+
+function stripNestedResultDoorSkip(result: McpCallResult): McpCallResult {
+  if (!result._meta || !(NESTED_RESULT_DOOR_SKIP_META in result._meta)) return result;
+  const { [NESTED_RESULT_DOOR_SKIP_META]: _reason, ...meta } = result._meta;
+  return { ...result, _meta: Object.keys(meta).length > 0 ? meta : undefined };
+}
 
 const REQUEST_ORIGIN_QUERY_KEYS = new Set([
   'superuser',
@@ -1379,9 +1414,10 @@ async function buildMcpToolContext(
     const dispatched = (await dispatchWithSynthesizedTx(target, spawnCtx, baseCtx, (ctx) =>
       dispatchProjectedToolToMcp(target, canonicalName, dispatchToolArgs, ctx, PROJECTED_DEPS),
     )) as McpCallResult;
-    return projectionSpec
+    const projectedDispatched = projectionSpec
       ? applyResultProjection(dispatched, projectionSpec, { toolName: canonicalName, effect: target.effect })
       : dispatched;
+    return carryNestedResultDoorSkip(projectedDispatched, target.skipResultDoor);
   };
   const builtCtx: UnifiedToolContext = {
     activateTools,
@@ -2334,7 +2370,8 @@ const handler = createMcpHandler(
               // MODEL-FACING tool can also be oversize by design (coord:orient,
               // the session bootstrap). Both skip the door; only the
               // programmatic one must also be spared appended prose (below).
-              const doored = projected.skipResultDoor
+              const resultDoorSkipReason = projected.skipResultDoor ?? nestedResultDoorSkipReason(projectedResult);
+              const doored = resultDoorSkipReason
                 ? projectedResult
                 : applyResultDoor(
                 projectedResult,
@@ -2371,8 +2408,8 @@ const handler = createMcpHandler(
               // may be from the WRONG database" is exactly the warning a bootstrap read must
               // not lose. Only `'programmatic-caller'` needs a byte-clean body.
               const result = annotateStoreIdentitySuspectResult(
-                doored,
-                mayAnnotateResultText(projected.skipResultDoor),
+                stripNestedResultDoorSkip(doored),
+                mayAnnotateResultText(resultDoorSkipReason),
               );
               // EI-19389431406847252: the door spills to scratch but the telemetry
               // row for THIS call was already snapshotted+queued inside

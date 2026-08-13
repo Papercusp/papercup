@@ -646,6 +646,27 @@ describe('applyResultDoor choke point honors projected.skipResultDoor', () => {
   });
 });
 
+/* ─── nested result-door exemption survives tools:invoke (EI-20311977175786095) ── */
+// The inner target owns the `skipResultDoor` declaration, but the outer
+// tools:invoke wrapper is the result that reaches the transport choke point.
+// This must preserve the target's machine-readable body instead of appending a
+// truncation footer that makes the JSON unusable to ptool.
+describe('tools:invoke inherits the nested target result-door exemption', () => {
+  const scoped = (ws: string) => superuserExtra(`&workspace=${ws}`);
+
+  it('keeps an oversized programmatic target body parseable', async () => {
+    const res = await callTool(
+      'tools:invoke',
+      { name: 'gatingtest:door_skip', args: {} },
+      scoped('ws-test'),
+      { format: 'json' },
+    );
+    expect(res.isError).not.toBe(true);
+    expect(res._meta?.resultDoor).toBeUndefined();
+    expect(textOf(res)).toContain(DOOR_TEST_BIG_TEXT);
+  });
+});
+
 /* ─── projection through the tools:invoke re-dispatch path (EI-19386035445533031) ── */
 //
 // The result-door footer tells a caller whose result overflowed to nest
