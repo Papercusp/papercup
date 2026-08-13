@@ -133,6 +133,7 @@ import {
   resetStaleCutoverEscalationsForTests,
   startCompactionComplianceWatchdog,
   discoverPresencelessLoopOwners,
+  carryRespawnLoopEscalationBody,
 } from './compaction-compliance-watchdog';
 import {
   getContextUsage,
@@ -1364,5 +1365,74 @@ describe('dark-presence gap backstop (EI-18127246030401689)', () => {
       expect.arrayContaining([expect.objectContaining({ owner: 'su-unhealable', kind: 'dark-presence' })]),
     );
     expect(openEscalationMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('WI-38347 carry-respawn-loop escalation body is backend-specific', () => {
+  // The defect: this BLOCKER-severity body hardcoded a Claude diagnosis
+  // ("adv_sessions.session_id not re-anchored") and a remedy ("relaunch the
+  // session"), then fired it at 9 live codex owners in 11 minutes. For codex the
+  // named column is never read (resolveSelfSession → rollout), so the fix is a
+  // no-op; and the fallback remedy would have killed multi-hour live agents.
+  // These two strings are the harm, so they are what the guard pins. NOTE the
+  // remedy constant is the FULL prescriptive clause, not the bare words
+  // "relaunch the session": a non-claude body must be free to say "DO NOT
+  // relaunch ...", and a substring guard cannot tell a prescription from a
+  // prohibition. So the absence check pins the prescription, and a separate
+  // POSITIVE check requires the prohibition — together those are unambiguous.
+  const CLAUDE_ONLY_DIAGNOSIS = 'adv_sessions.session_id not re-anchored';
+  const CLAUDE_ONLY_REMEDY = 'relaunch the session so the post-fix launcher reports respawns';
+
+  it('never hands a CODEX owner the claude-only diagnosis or the relaunch remedy', () => {
+    const body = carryRespawnLoopEscalationBody('codex', 3);
+    expect(body).not.toContain(CLAUDE_ONLY_DIAGNOSIS);
+    expect(body).not.toContain(CLAUDE_ONLY_REMEDY);
+    // and it must positively name the mechanism that DOES govern a codex estimate
+    expect(body).toContain('resolveSelfSession');
+    expect(body).toContain('DO NOT relaunch');
+  });
+
+  it('does not assert a root cause for codex — that one is still unestablished (WI-38347)', () => {
+    const body = carryRespawnLoopEscalationBody('codex', 3);
+    expect(body).toContain('NOT yet established');
+  });
+
+  it('still gives a CLAUDE owner the WI-5075 diagnosis, which is correct for that backend', () => {
+    const body = carryRespawnLoopEscalationBody('claude', 4);
+    expect(body).toContain(CLAUDE_ONLY_DIAGNOSIS);
+    expect(body).toContain('WI-5075');
+  });
+
+  it('offers no backend-specific diagnosis when the backend is unresolved', () => {
+    for (const agent of [null, 'omp'] as const) {
+      const body = carryRespawnLoopEscalationBody(agent, 3);
+      expect(body).not.toContain(CLAUDE_ONLY_DIAGNOSIS);
+      expect(body).not.toContain(CLAUDE_ONLY_REMEDY);
+      // the prohibition must be present, not merely the prescription absent
+      expect(body).toContain('DO NOT relaunch');
+    }
+  });
+
+  it('an UNRECOGNIZED backend string gets the neutral body, NOT the claude one', () => {
+    // SessionRef.agent is `string | null`, and this file's usual convention is
+    // "unknown ⇒ treat as claude" — correct for resolving a transcript, wrong
+    // here, where inheriting the claude branch means a no-op fix plus a
+    // destructive "relaunch" at blocker severity. Pinned so the narrowing in
+    // escalateCarryRespawnLoop is not "simplified" back to a cast later.
+    const body = carryRespawnLoopEscalationBody(
+      'some-future-backend' as unknown as 'claude',
+      3,
+    );
+    expect(body).not.toContain(CLAUDE_ONLY_DIAGNOSIS);
+    expect(body).not.toContain(CLAUDE_ONLY_REMEDY);
+    expect(body).toContain('DO NOT relaunch');
+  });
+
+  it('always states the streak and the suppression, on every backend', () => {
+    for (const agent of ['claude', 'codex', 'omp', null] as const) {
+      const body = carryRespawnLoopEscalationBody(agent, 7);
+      expect(body).toContain('7 consecutive cuts');
+      expect(body).toContain('STOPPED respawning');
+    }
   });
 });

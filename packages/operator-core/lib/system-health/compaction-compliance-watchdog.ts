@@ -485,11 +485,69 @@ function forceCompactContinueNote(est: number, limit: number, forceAt: number, b
 }
 
 /**
+ * WI-38347: the escalation body is BACKEND-SPECIFIC, because the diagnosis is.
+ *
+ * The original WI-5075 text names `harness_shared.adv_sessions.session_id` as the
+ * un-re-anchored field and prescribes "re-anchor it, or relaunch the session".
+ * That is a CLAUDE diagnosis: only the claude branch of `maybeCarryRespawn` reads
+ * `ref.sessionId` — a codex owner resolves its transcript through
+ * `resolveSelfSession()` → the codex rollout file and never touches that column.
+ * Handing a human a no-op fix at BLOCKER severity is bad; handing them "relaunch
+ * the session" for a cohort of live multi-hour agents is actively harmful, and
+ * that is what fired at 9 codex owners in 11 minutes on 2026-08-12.
+ *
+ * So: name the mechanism that actually governs THIS owner's estimate, and never
+ * prescribe a remedy that the backend makes a no-op or destructive. The codex
+ * root cause is deliberately stated as UNESTABLISHED rather than guessed — see
+ * WI-38347, where guessing it once already produced a retraction.
+ */
+export function carryRespawnLoopEscalationBody(
+  agent: 'claude' | 'codex' | 'omp' | null,
+  streak: number,
+): string {
+  const shared =
+    `A landed P-018 carry-respawn boots a near-empty successor, so the owner's context estimate must fall below its limit by the next sweep. ` +
+    `It did not — ${streak} consecutive cuts. Each further cut only kills live work. The watchdog has STOPPED respawning this owner until it recovers. `;
+  if (agent === 'codex') {
+    return (
+      shared +
+      `This owner is a CODEX session: its estimate is read from the rollout resolved by resolveSelfSession() ` +
+      `(codexContextSnapshotFromRollout), NOT from the adv_sessions native-session ref — so the WI-5075 ` +
+      `"stale session_id" diagnosis does NOT apply here and re-anchoring that column would be a no-op. ` +
+      `The reason a codex respawn leaves the estimate high is NOT yet established — do not act on a guess. ` +
+      `DO NOT relaunch this session as a remedy: the respawn suppression above has already stopped the kill loop, ` +
+      `the session is live and holding real work, and killing it destroys that work without fixing anything. ` +
+      `Investigate instead: compare the rollout path + tail token accounting before and after a cut. (WI-38347)`
+    );
+  }
+  if (agent === 'claude') {
+    return (
+      shared +
+      `This owner is a CLAUDE session, which resolves its transcript from the adv_sessions native-session ref — ` +
+      `so a still-high estimate means estimateContextTokensForOwner is reading the DEAD predecessor's transcript ` +
+      `(harness_shared.adv_sessions.session_id not re-anchored to the successor's fresh native id: a psu host ` +
+      `launched before the WI-5075 fix, or a regression of that class). ` +
+      `Fix: re-anchor the owner's adv_sessions.session_id to the live native session id (or relaunch the session ` +
+      `so the post-fix launcher reports respawns), then verify the estimate drops. (WI-5075)`
+    );
+  }
+  return (
+    shared +
+    `The session backend could not be resolved, so no backend-specific diagnosis is offered — deliberately, ` +
+    `because the per-backend estimate paths differ and naming the wrong one sends the reader at a no-op fix ` +
+    `(WI-38347). Establish the backend first (harness_shared.adv_sessions.agent for this owner), then read the ` +
+    `matching branch of maybeCarryRespawn to find which transcript the estimate is actually being read from. ` +
+    `DO NOT relaunch this session before that is known — respawns are already suppressed, so the kill loop has ` +
+    `stopped, and a relaunch would destroy live work without fixing anything. (WI-5075, WI-38347)`
+  );
+}
+
+/**
  * WI-5075: the kill-loop breaker. A carry-respawn streak with no recovery in
- * between means the context estimate is NOT tracking the live session (the
- * adv_sessions native-session ref was never re-anchored after the respawn —
- * old-code host, or a regression). Killing again is the bug, not the remedy:
- * raise ONE loud escalation and stop cutting until the owner recovers.
+ * between means the context estimate is NOT tracking the live session. Killing
+ * again is the bug, not the remedy: raise ONE loud escalation and stop cutting
+ * until the owner recovers. The DIAGNOSIS in that escalation is per-backend —
+ * see {@link carryRespawnLoopEscalationBody} (WI-38347).
  */
 async function escalateCarryRespawnLoop(
   ownerId: string,
@@ -503,6 +561,26 @@ async function escalateCarryRespawnLoop(
       `${streak} respawns fired with the context estimate never recovering. Suppressing further ` +
       `respawns for this owner and escalating (WI-5075).`,
   );
+  // WI-38347: resolve the backend so the body names the mechanism that actually
+  // governs THIS owner. Fail-soft to null (the neutral body) — an escalation that
+  // cannot resolve the backend must still fire, just without a wrong diagnosis.
+  //
+  // NOTE the deliberate divergence: SessionRef.agent is `string | null` and this
+  // file's usual convention is "unknown ⇒ treat as claude" (that is the right
+  // default when RESOLVING A TRANSCRIPT, since claude is the majority backend and
+  // a wrong guess is merely a failed lookup). It is the WRONG default here: an
+  // unrecognized backend that inherits the claude branch gets handed a no-op fix
+  // and a destructive "relaunch" instruction at blocker severity — precisely the
+  // harm this function exists to prevent. So anything not positively identified
+  // falls to the neutral body instead.
+  let agent: 'claude' | 'codex' | 'omp' | null = null;
+  try {
+    const resolved = (await resolveSessionRefReconciled(ownerId))?.agent ?? null;
+    agent =
+      resolved === 'claude' || resolved === 'codex' || resolved === 'omp' ? resolved : null;
+  } catch {
+    /* neutral body */
+  }
   try {
     const { openEscalation } = await import('../agent-tools/coordination/escalations');
     await openEscalation(
@@ -516,12 +594,7 @@ async function escalateCarryRespawnLoop(
       {
         severity: 'blocker',
         summary: `carry-respawn LOOP on ${ownerLabel} (${ownerId}): ${streak} successor cuts with the context estimate never dropping — respawns suppressed`,
-        body:
-          `A landed P-018 carry-respawn boots a near-empty successor, so the owner's context estimate must fall below its limit by the next sweep. ` +
-          `It did not — ${streak} consecutive cuts — which means estimateContextTokensForOwner is still reading the DEAD predecessor's transcript ` +
-          `(harness_shared.adv_sessions.session_id not re-anchored to the successor's fresh native id: a psu host launched before the WI-5075 fix, or a regression of that class). ` +
-          `Each further cut only kills live work. The watchdog has STOPPED respawning this owner until it recovers. ` +
-          `Fix: re-anchor the owner's adv_sessions.session_id to the live native session id (or relaunch the session so the post-fix launcher reports respawns), then verify the estimate drops. (WI-5075)`,
+        body: carryRespawnLoopEscalationBody(agent, streak),
         // WI-5848 (sweep of EI-18668025239634541's class): `summary` embeds the
         // live `${streak}` count, so it varies across occurrences for the SAME
         // owner exactly like the fixed lifecycle-death bug — the in-memory
