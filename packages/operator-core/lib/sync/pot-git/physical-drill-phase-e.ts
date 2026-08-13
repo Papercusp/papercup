@@ -327,7 +327,7 @@ export async function setPhysicalPhaseEMode(input: { runId: string; mode: 'legac
     hostId: 'tower',
     tool: 'setPotGitMode',
     from,
-    to: after,
+    to: input.mode,
     workspaceId: PHASE_D_WORKSPACE,
     potHomeSlug: PHASE_A_POT_HOME,
     observedAt: new Date().toISOString(),
