@@ -584,7 +584,7 @@ describe('provenanced Android artifacts — requested version + current source +
     fs.rmSync(fixture.root, { recursive: true, force: true });
   });
 
-  it('keeps signed iOS discovery and permits explicit Android opt-out', () => {
+  it('keeps raw unversioned iOS dormant and permits explicit Android opt-out', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mob-'));
     const ipa = path.join(root, 'ios/build/export/Papercup.ipa');
     const rawApk = path.join(root, 'android/app/build/outputs/apk/debug/app-debug.apk');
@@ -592,9 +592,7 @@ describe('provenanced Android artifacts — requested version + current source +
     fs.mkdirSync(path.dirname(rawApk), { recursive: true });
     fs.writeFileSync(ipa, plausibleBytes('ipa'));
     fs.writeFileSync(rawApk, plausibleBytes('unprovenanced'));
-    expect(scanMobileArtifactSources(root, '0.0.9', { skipAndroid: true })).toEqual([
-      { src: ipa, outName: 'Papercusp_0.0.9_ios.ipa' },
-    ]);
+    expect(scanMobileArtifactSources(root, '0.0.9', { skipAndroid: true })).toEqual([]);
     fs.rmSync(root, { recursive: true, force: true });
   });
 });

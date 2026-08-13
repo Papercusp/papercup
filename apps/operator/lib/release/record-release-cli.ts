@@ -627,7 +627,7 @@ function walkFiles(dir: string, maxDepth: number, depth = 0): string[] {
 }
 
 /**
- * Find the mobile app artifacts (Android APK/AAB, iOS IPA) and describe them.
+ * Find publishable mobile artifacts and describe them.
  *
  * Mobile is DIFFERENT from the desktop tauri artifacts in two ways that this
  * function exists to bridge:
@@ -642,10 +642,10 @@ function walkFiles(dir: string, maxDepth: number, depth = 0): string[] {
  *      like every other artifact. The publisher copies the real bytes to that
  *      name under the tag dir.
  *
- * iOS is DORMANT until Apple Developer enrollment: with no signing identity there
- * is no distributable `.ipa`, so the scan simply finds nothing for iOS until a
- * signed `.ipa` exists — an HONEST omission (no fake iOS row on the page), and the
- * `.ipa` branch is ready the day enrollment lands. Release preferred over debug.
+ * iOS is DORMANT until its release builder emits the same requested-version,
+ * source, path, size, and hash provenance contract. A raw unversioned IPA is not a
+ * candidate: the 0.1.0 Android dry run found a July IPA and would otherwise have
+ * relabeled it as 0.1.0 (D-005).
  */
 export function scanMobileArtifacts(
   mobileRoot: string | null,
@@ -821,14 +821,9 @@ export function scanMobileArtifactSources(
   options: { skipAndroid?: boolean } = {},
 ): Array<{ src: string; outName: string }> {
   if (!mobileRoot || !fs.existsSync(mobileRoot)) return [];
-  const found = options.skipAndroid
+  return options.skipAndroid
     ? []
     : scanProvenancedAndroidArtifactSources(mobileRoot, version);
-  const iosDir = path.join(mobileRoot, 'ios/build');
-  if (!fs.existsSync(iosDir)) return found;
-  const ipa = walkFiles(iosDir, 5).find((file) => /\.ipa$/i.test(file));
-  if (ipa) found.push({ src: ipa, outName: `Papercusp_${version}_ios.ipa` });
-  return found;
 }
 
 /**
