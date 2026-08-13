@@ -37,10 +37,13 @@ import * as fs from 'node:fs';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import { resolveSqlDir, resolveCanonicalStagingSqlDir } from '../../migration-drift';
+import { toIso } from '../_pg-timestamp';
 
 const DEFAULT_LIMIT = 20;
 
-const iso = (d: Date | null) => (d ? d.toISOString() : null);
+// NOT `d.toISOString()`: `applied_at` is timestamptz, which reads back as a STRING on
+// this client, so the old spelling threw on every row. See _pg-timestamp.
+const iso = toIso;
 
 /**
  * Corpus forms are `'727%'`, `'795-%'`, `'774%'` and `ILIKE '%797%'` — i.e. a
@@ -187,7 +190,7 @@ export default defineTool({
     const rows = await sql<
       Array<{
         filename: string;
-        applied_at: Date;
+        applied_at: string | Date;
         sha256: string;
         total: string;
         newest: Date | null;

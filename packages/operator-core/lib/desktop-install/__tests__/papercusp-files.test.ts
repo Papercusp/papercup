@@ -373,7 +373,7 @@ describe('installPapercuspFiles', () => {
     expect(psu).toContain(path.join(tmpAppRoot, 'scripts', 'psu.mjs'));
   });
 
-  it('shim execs the BUNDLED sidecar node (absolute path) when PAPERCUSP_SIDECAR_BIN points at it (A2)', async () => {
+  it('shim runs the BUNDLED sidecar node (absolute path) when PAPERCUSP_SIDECAR_BIN points at it (A2)', async () => {
     // A packaged sidecar exports PAPERCUSP_SIDECAR_BIN so the shim can use the
     // bundled Node by absolute path — an end user's plain Terminal has no `node`
     // on PATH, so a bare `exec node …` fails with "command not found: node".
@@ -387,9 +387,12 @@ describe('installPapercuspFiles', () => {
       const result = await installPapercuspFiles({ home: tmpHome, operatorAppRoot: tmpAppRoot });
       const psu = await fs.readFile(result.psuPath, 'utf8');
       const launcher = path.join(tmpAppRoot, 'scripts', 'psu.mjs');
-      expect(psu).toContain(`exec ${JSON.stringify(bundledNode)} "$launcher" "$@"`);
+      expectLauncherInterpreter(psu, bundledNode);
       expect(psu).toContain(JSON.stringify(launcher));
-      expect(psu).not.toContain('exec "node"'); // not the PATH fallback
+      // Not the PATH fallback. The old spelling of this guard was `not.toContain('exec
+      // "node"')`, which WI-38292 made vacuously true — psu no longer execs at all — so
+      // it is matched against the invocation instead, where it can still fail.
+      expect(psu).not.toMatch(/^[ \t]*(?:exec )?"?node"? "\$launcher"/m);
     } finally {
       if (priorSidecarBin === undefined) {
         delete process.env.PAPERCUSP_SIDECAR_BIN;
@@ -397,6 +400,35 @@ describe('installPapercuspFiles', () => {
         process.env.PAPERCUSP_SIDECAR_BIN = priorSidecarBin;
       }
     }
+  });
+
+  // CONTROL for expectLauncherInterpreter itself. The guard it replaced was a literal
+  // `exec <node> "$launcher" "$@"` match, which WI-38292 broke by design when the psu
+  // shim stopped exec'ing; a replacement that quietly matched nothing would have looked
+  // just as green. These deliberately-wrong shims must make it fail.
+  it('expectLauncherInterpreter rejects an unresolved interpreter and a shim it cannot read', () => {
+    const nodePath = '/opt/pcusp/bin/node';
+    // The PATH fallback the guard exists to forbid.
+    expect(() => expectLauncherInterpreter('exec "node" "$launcher" "$@"', nodePath)).toThrow();
+    // A loop that resolves node once, then re-invokes it unresolved on the second pass —
+    // the failure mode that checking only the FIRST match would miss.
+    expect(() =>
+      expectLauncherInterpreter(
+        `while :; do\n  ${JSON.stringify(nodePath)} "$launcher" "$@"\n  node "$launcher" "$@"\ndone\n`,
+        nodePath,
+      ),
+    ).toThrow();
+    // No invocation at all — a shim shape the regex does not understand must fail loudly
+    // rather than vacuously pass.
+    expect(() => expectLauncherInterpreter('#!/usr/bin/env bash\nexit 0\n', nodePath)).toThrow();
+    // Calibration: the real shapes must still PASS, or the three failures above prove
+    // nothing but that the matcher is broken.
+    expect(() =>
+      expectLauncherInterpreter(`exec ${JSON.stringify(nodePath)} "$launcher" "$@"`, nodePath),
+    ).not.toThrow();
+    expect(() =>
+      expectLauncherInterpreter(`  ${JSON.stringify(nodePath)} "$launcher" "$@"`, nodePath),
+    ).not.toThrow();
   });
 
   it('missing psu launcher: psuShimWritten=false, no throw, other artifacts land (A2)', async () => {

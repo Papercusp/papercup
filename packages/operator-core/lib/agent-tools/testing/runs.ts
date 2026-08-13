@@ -35,6 +35,7 @@ import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import { CRITICAL_P95_MS } from '../../event-loop-lag-monitor';
+import { toIso } from '../_pg-timestamp';
 
 const DEFAULT_LIMIT = 30;
 const OUTPUT_TAIL_CHARS = 800;
@@ -44,7 +45,9 @@ const OUTPUT_TAIL_CHARS = 800;
  *  under-reports a suite that errored before it could fail. */
 const RED_STATUSES: string[] = ['fail', 'error'];
 
-const iso = (d: Date | null) => (d ? d.toISOString() : null);
+// NOT `d.toISOString()`: a timestamptz column arrives as a STRING here, so the old
+// spelling threw on every row and left this tool dead on every call. See _pg-timestamp.
+const iso = toIso;
 
 /**
  * A red row recorded while the host's event loop was past the critical band is
@@ -191,8 +194,10 @@ export default defineTool({
           failed: string;
           failed_files: string;
           files: string;
-          first_start: Date | null;
-          last_finish: Date | null;
+          // timestamptz reads back as a STRING on this client; `Date` here was an
+          // assertion about the driver, not a check of it. Route through toIso.
+          first_start: string | Date | null;
+          last_finish: string | Date | null;
           group_count: string;
         }>
       >`
@@ -245,8 +250,8 @@ export default defineTool({
         status: string;
         framework: string;
         duration_ms: string | null;
-        started_at: Date;
-        finished_at: Date | null;
+        started_at: string | Date;
+        finished_at: string | Date | null;
         output_tail: string | null;
         run_group_id: string | null;
         source: string;
