@@ -11,6 +11,10 @@ import {
   validatePhysicalDrillHostReceipt,
   type PhysicalDrillHostIdentity,
 } from './physical-drill-host-receipt';
+import {
+  finalizePhysicalDrillArtifacts,
+  preflightPhysicalDrillHosts,
+} from './physical-drill-producer';
 
 function evidence(deviceKey: string): Record<string, unknown> {
   return {
@@ -70,6 +74,46 @@ describe('physical drill keychain-bound host receipt', () => {
       resolveMachineFingerprint,
     })).rejects.toThrow('cached announce identity/keychain mismatch');
     expect(resolveMachineFingerprint).not.toHaveBeenCalled();
+  });
+
+  it('rejects a local-only pair that reuses one physical machine fingerprint', () => {
+    const tower = generateEd25519KeypairDer();
+    const vm = generateEd25519KeypairDer();
+    expect(() => preflightPhysicalDrillHosts([
+      {
+        schemaVersion: 'hive-git-physical-host-identity/v1',
+        hostId: 'tower',
+        deviceKey: tower.pubkeyBase64,
+        keychainId: '4242:tower',
+        githubUserId: 4242,
+        githubLogin: 'tower-owner',
+        machineFingerprint: 'a'.repeat(64),
+      },
+      {
+        schemaVersion: 'hive-git-physical-host-identity/v1',
+        hostId: 'vm',
+        deviceKey: vm.pubkeyBase64,
+        keychainId: '4243:vm',
+        githubUserId: 4243,
+        githubLogin: 'vm-owner',
+        machineFingerprint: 'a'.repeat(64),
+      },
+    ])).toThrow('two physical hosts must have distinct machineFingerprint values');
+  });
+
+  it('refuses a scenario manifest that tries to supply pre-banked attestations', () => {
+    const device = generateEd25519KeypairDer();
+    const rawEvidence = {
+      ...evidence(device.pubkeyBase64),
+      attestations: [{
+        deviceKey: device.pubkeyBase64,
+        signature: Buffer.alloc(64).toString('base64'),
+      }],
+    };
+    expect(() => finalizePhysicalDrillArtifacts({
+      evidence: rawEvidence,
+      receipts: [],
+    })).toThrow('scenario output must not contain pre-banked attestations');
   });
 
   it('signs the exact evidence bytes and a host/device/machine binding with the same device key', async () => {

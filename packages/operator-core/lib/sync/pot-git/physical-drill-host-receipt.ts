@@ -239,7 +239,7 @@ export async function createPhysicalDrillHostReceipt(input: {
   const evidenceAttestation = (
     await sign(input.identity.keychainId, evidenceBytes)
   ).toString('base64');
-  const unsigned = {
+  const unsigned: Omit<PhysicalDrillHostReceipt, 'signature'> = {
     schemaVersion: PHYSICAL_DRILL_HOST_RECEIPT_SCHEMA,
     runId,
     hostId: input.identity.hostId,
