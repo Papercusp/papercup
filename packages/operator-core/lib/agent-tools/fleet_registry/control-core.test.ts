@@ -63,6 +63,7 @@ function fleet(over: Partial<AgentFleetRecord> = {}): AgentFleetRecord {
     controlReason: null,
     controlBy: null,
     controlAt: null,
+    lastLaunchTransaction: null,
     createdAt: 1,
     updatedAt: 1,
     ...over,

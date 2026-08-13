@@ -12,8 +12,13 @@ import type { SpecPoolEffect, CollapseGuardVerdict } from '../../../scheduler/sp
 const spawnConsoleMock = vi.fn();
 const fetchGatewayHeadroomMock = vi.fn();
 const launchTransaction = vi.hoisted(() => ({
-  verify: vi.fn(async () => ({ agentStarted: true, waitedMs: 1, sessions: [], note: 'verified' })),
-  persist: vi.fn(async () => null),
+  verify: vi.fn(async (..._args: unknown[]) => ({
+    agentStarted: true as boolean | null,
+    waitedMs: 1,
+    sessions: [],
+    note: 'verified',
+  })),
+  persist: vi.fn(async (..._args: unknown[]) => null),
 }));
 
 vi.mock('../../../console-launcher', () => ({
@@ -152,7 +157,16 @@ vi.mock('../../../scheduler/get-next', async (importOriginal) => ({
 // promotes the plan's items → claimable work-items before opening any terminal. Default: the healthy
 // case (items already promoted upstream by plans:start → skipped>0, promoted:0 → no warning line).
 // Individual tests override with mockResolvedValueOnce.
-const promotePlanItemsMock = vi.fn(async (..._args: unknown[]) => ({ promoted: 0, skipped: 3 }));
+type PromotionMockResult = {
+  promoted: number;
+  skipped: number;
+  specTriadBlocked?: true;
+  specTriadMissing?: string[];
+  specTriadWorkItem?: string | null;
+};
+const promotePlanItemsMock = vi.fn(
+  async (..._args: unknown[]): Promise<PromotionMockResult> => ({ promoted: 0, skipped: 3 }),
+);
 vi.mock('../../../plan-workitem-promotion-run', () => ({
   promotePlanItems: (...args: unknown[]) => promotePlanItemsMock(...args),
 }));
@@ -1406,7 +1420,9 @@ describe('fleet:launch-on-plan handler — verified canary-first transaction (P-
       {} as never,
     );
     const payload = JSON.parse((res as any).content[0].text);
-    const waveSizes = launchTransaction.verify.mock.calls.map((call) => call[0].expectedOwnerIds.length);
+    const waveSizes = launchTransaction.verify.mock.calls.map(
+      (call) => (call[0] as { expectedOwnerIds: string[] }).expectedOwnerIds.length,
+    );
     expect(waveSizes).toEqual([1, 3, 3, 1]);
     expect(payload.launchTransaction.state).toBe('verified');
     expect(payload.launchTransaction.requestedMemberIds).toHaveLength(8);

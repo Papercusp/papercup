@@ -122,7 +122,7 @@ describe('verifyFreshLaunchStarted — must NOT cry wolf on a healthy launch (D-
     // defect it exists to prevent, with the sign flipped.
     const verdict = await verifyFreshLaunchStarted(ARGS, {
       ...FAST,
-      probe: fixedProbe([session({ realCalls: 0, hasPresence: false, msSinceLastSignal: 800 })]),
+      probe: fixedProbe([session({ successfulCalls: 0, hasPresence: false, msSinceLastSignal: 800 })]),
     });
     expect(verdict.agentStarted).toBeNull();
     expect(verdict.note).toMatch(/UNVERIFIED/);
