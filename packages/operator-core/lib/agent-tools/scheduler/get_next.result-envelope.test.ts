@@ -49,6 +49,54 @@ vi.mock('../../scheduler/claim-spec-store', () => ({
   resolveClaimSpecWorkspace: mocks.resolveClaimSpecWorkspace,
 }));
 
+// This is an envelope unit test, not a live coordination/PG integration test.
+// Pin every preflight and post-claim enrichment seam that get_next traverses so
+// a cold module cache or saturated database cannot consume Vitest's 5s timeout
+// before the envelope assertion runs (EI-20308567859934395).
+vi.mock('../coordination/context-pressure', () => ({
+  fetchContextPressure: vi.fn(async () => new Map()),
+}));
+vi.mock('../locks/live-lock-paths', () => ({
+  liveLockedPaths: vi.fn(async () => []),
+}));
+vi.mock('../../scheduler/fleet-scope-admission', () => ({
+  reconcileFleetScopeClaims: vi.fn(async () => ({ scope: null, quarantinedIds: [] })),
+  readFleetPauseState: vi.fn(async () => ({ windingDown: false, reason: null })),
+  diagnoseFleetScopeCooldownMiss: vi.fn(async () => null),
+  diagnoseFleetScopeIssueFloorMiss: vi.fn(async () => null),
+  diagnoseFleetScopeFeatureFamilyMatch: vi.fn(async () => null),
+  diagnoseFleetScopeTerminalExhaustion: vi.fn(async () => null),
+  fleetScopedMiss: vi.fn(() => ({ ok: false, error: 'scoped miss', windDown: true })),
+}));
+vi.mock('../../events/await/store', () => ({
+  cancelClaimableAwaits: vi.fn(async () => 0),
+}));
+vi.mock('../coordination/presence', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  getPresence: vi.fn(async () => null),
+  writePresence: vi.fn(async () => undefined),
+}));
+vi.mock('../../memory/claim-port', () => ({
+  buildClaimRecallBlock: vi.fn(async () => null),
+}));
+vi.mock('../../work-item-checkpoint', () => ({
+  getClaimTimeCheckpointHint: vi.fn(async () => null),
+}));
+vi.mock('../../work-item-prior-work', () => ({
+  getClaimTimePriorWorkHint: vi.fn(async () => null),
+  priorWorkWarning: vi.fn(() => null),
+}));
+vi.mock('../../plan-decisions-claim-port', () => ({
+  getClaimTimePlanDecisions: vi.fn(async () => null),
+  renderPlanDecisionsNote: vi.fn(() => null),
+}));
+vi.mock('../../premises-claim-port', () => ({
+  getClaimTimePremises: vi.fn(async () => null),
+}));
+vi.mock('../work_items/retraction-advisory', () => ({
+  getClaimTimeRetractionAdvisory: vi.fn(async () => null),
+}));
+
 import getNextTool from './get_next';
 
 type ToolDef = {
