@@ -704,6 +704,59 @@ describe('bootHarnessSubstrate — WI-789 owner bootstrap admission', () => {
     expect(rejected.filter((e) => (e.message ?? '').includes('binding_invalid'))).toEqual([]);
   });
 
+  // WI-38344 — the join-pot path can resolve the hive-home before the substrate boot
+  // receives its first announce. The retry safety net must remain armed for this joiner:
+  // a transient binding_invalid is still retryable even though the home slug is already
+  // known. Before the fix, the home-null predicate below closed the window and this test
+  // returned a conclusive binding_invalid instead of pending.
+  it('REGRESSION (WI-38344): binding_invalid BUFFERS when a joiner home is already resolved', async () => {
+    const joiner = makeAnnounceIdentityOverride('joiner-38344-resolved', 9832, 'kc-38344-resolved');
+
+    const handle = await bootHarnessSubstrate({
+      workspaceRoot: tmpWorkspaceRoot(),
+      workspaceId: 'ws-wi38344-resolved',
+      harnessSlug: JOINER_MEMBER_SLUG,
+      swarmBinding: { kind: 'topic', topic_hex: 'e'.repeat(64) },
+      swarmOverride: makeFakeSwarm(),
+      swarmRefreshMs: 0,
+      swarmJoinRetryMs: 0,
+      mergePollMs: 0,
+      pendingRetryMs: 0, // assert the initial BUFFER decision in isolation
+      loadRevokedOverride: async () => new Set(),
+      verifyBindingOverride: async () => 'fail', // gist gate conclusively rejects
+      loadHiveMembersOverride: async () => [],
+      ownerDeviceForTopicOverride: async () => null,
+      joinerPotHomeSlugOverride: async () => POT_HOME_SLUG, // resolved at boot, not rekey
+      announceIdentityOverride: joiner.override,
+    });
+    cleanups.push(() => handle.close());
+
+    const frame = await validAnnounce({
+      github_user_id: 9831,
+      github_login: 'owner-38344',
+      attestation_gist_id: 'gist-38344',
+      harness_slug: OWNER_MEMBER_SLUG,
+      log_core_key: 'e8'.repeat(32),
+    });
+
+    expect(await handle.onAnnounce(frame)).toEqual({ admit: false, reason: 'pending' });
+    expect(handle.admitted.has(frame.log_core_key)).toBe(false);
+
+    const pending = listBootHistory({
+      workspaceId: 'ws-wi38344-resolved',
+      harnessSlug: JOINER_MEMBER_SLUG,
+      kinds: ['announce_pending'],
+    });
+    expect(pending.some((e) => (e.message ?? '').includes('binding_unverified_window'))).toBe(true);
+    expect(
+      listBootHistory({
+        workspaceId: 'ws-wi38344-resolved',
+        harnessSlug: JOINER_MEMBER_SLUG,
+        kinds: ['announce_rejected'],
+      }).filter((e) => (e.message ?? '').includes('binding_invalid')),
+    ).toEqual([]);
+  });
+
   // WI-1544 recovery half — the buffered frame is ADMITTED by the retry tick once the verified
   // directory owner-device binding resolves (the descriptor that lost the race arrives moments
   // later), while the window is still open. Uses a same-slug frame (the owner's log for the
