@@ -1,8 +1,8 @@
 /**
- * Strict adapter for the banked result of the real two-machine hive-git drill.
+ * Strict adapter for the freshly produced result of the real two-machine hive-git drill.
  *
  * This does not simulate a physical run. It only turns the physical runner's
- * raw, hashed artifacts and exact causal assertions into a consumable verdict
+ * raw, hashed artifacts, signed host receipts, and exact causal assertions into a consumable verdict
  * for papercusp-desktop/bin/hive-git-drill.sh. A JSON claim without readable,
  * hash-matching artifacts from both hosts is deliberately insufficient.
  */

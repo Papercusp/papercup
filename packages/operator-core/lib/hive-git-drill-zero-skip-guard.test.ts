@@ -20,6 +20,9 @@ import {
   validatePhysicalDrillEvidence,
 } from './sync/pot-git/physical-drill-evidence';
 import {
+  physicalDrillHostReceiptSigningBytes,
+} from './sync/pot-git/physical-drill-host-receipt';
+import {
   generateEd25519KeypairDer,
   signWithPrivateKeyDer,
 } from './identity/ed25519';
@@ -39,11 +42,16 @@ const drill = readFileSync(
   join(repoRoot(), 'papercusp-desktop', 'bin', 'hive-git-drill.sh'),
   'utf8',
 );
+const physicalProbe = readFileSync(
+  join(repoRoot(), 'papercusp-desktop', 'bin', 'vm-rig', 'hive-git-physical-probe.sh'),
+  'utf8',
+);
 const gateMatch = drill.match(
   /# ZERO-SKIP-RELEASE-GATE-BEGIN[^\n]*\n([\s\S]*?)# ZERO-SKIP-RELEASE-GATE-END/,
 );
 
 const evidenceDir = mkdtempSync(join(tmpdir(), 'hive-git-physical-evidence-'));
+const trustByFixture = new WeakMap<Record<string, any>, Record<string, any>>();
 const validatorPath = join(
   repoRoot(),
   'packages',
@@ -164,21 +172,52 @@ function physicalFixture(): Record<string, any> {
     deviceKey: device.pubkeyBase64,
     signature: signWithPrivateKeyDer(device.privateKeyDer, bytes).toString('base64'),
   }));
+  const receipts = [
+    { hostId: 'tower', device: tower, githubUserId: 4242, githubLogin: 'tower-owner', fingerprint: '8'.repeat(64) },
+    { hostId: 'vm', device: vm, githubUserId: 4243, githubLogin: 'vm-owner', fingerprint: '9'.repeat(64) },
+  ].map(({ hostId, device, githubUserId, githubLogin, fingerprint }) => {
+    const unsigned = {
+      schemaVersion: 'hive-git-physical-host-receipt/v1',
+      runId: fixture.runId,
+      hostId,
+      deviceKey: device.pubkeyBase64,
+      keychainId: `${githubUserId}:${hostId}-machine`,
+      githubUserId,
+      githubLogin,
+      machineFingerprint: fingerprint,
+      evidenceSigningSha256: createHash('sha256').update(bytes).digest('hex'),
+      signedAt: '2026-08-13T12:30:30.000Z',
+      evidenceAttestation: fixture.attestations.find(
+        (attestation: Record<string, any>) => attestation.deviceKey === device.pubkeyBase64,
+      ).signature,
+    };
+    return {
+      ...unsigned,
+      signature: signWithPrivateKeyDer(
+        device.privateKeyDer,
+        physicalDrillHostReceiptSigningBytes(unsigned),
+      ).toString('base64'),
+    };
+  });
+  trustByFixture.set(fixture, {
+    schemaVersion: 'hive-git-physical-trust/v1',
+    source: 'papercusp-vm-rig/v1',
+    runId: fixture.runId,
+    observedAt: fixture.window.finishedAt,
+    hosts: receipts.map((receipt) => ({
+      id: receipt.hostId,
+      deviceKey: receipt.deviceKey,
+      machineFingerprint: receipt.machineFingerprint,
+    })),
+    receipts,
+  });
   return fixture;
 }
 
 function trustedPhysicalAnchor(fixture: Record<string, any>): Record<string, any> {
-  return {
-    schemaVersion: 'hive-git-physical-trust/v1',
-    source: 'papercusp-vm-rig/v1',
-    runId: fixture.runId,
-    observedAt: fixture.window.startedAt,
-    hosts: fixture.topology.hosts.map((host: Record<string, any>, index: number) => ({
-      id: host.id,
-      deviceKey: host.deviceKey,
-      machineFingerprint: String(index + 8).repeat(64),
-    })),
-  };
+  const trust = trustByFixture.get(fixture);
+  if (!trust) throw new Error('fixture trust anchor was not initialized');
+  return trust;
 }
 
 function runGate(input: {
@@ -211,6 +250,19 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
     expect(drill).not.toContain('HIVE_GIT_PHYSICAL_EVIDENCE_FILE');
   });
 
+  it('keeps the canonical producer fail-closed until a checked-in physical E/G scenario exists', () => {
+    expect(physicalProbe).toContain('hive-git-physical-scenario.sh');
+    expect(physicalProbe).toContain('canonical E/G scenario driver is not installed');
+    expect(physicalProbe).toContain('"$TSX" "$PRODUCER" preflight');
+    expect(physicalProbe).toContain('"$TSX" "$PRODUCER" sign');
+    expect(physicalProbe).toContain('"$TSX" "$PRODUCER" finalize');
+    expect(physicalProbe).not.toContain('HIVE_GIT_PHYSICAL_SCENARIO_CMD');
+    expect(
+      existsSync(join(repoRoot(), 'papercusp-desktop', 'bin', 'vm-rig', 'hive-git-physical-scenario.sh')),
+      'WI-38569 deliberately ships the receipt/producer seam without fabricating the still-unimplemented physical scenario',
+    ).toBe(false);
+  });
+
   it('accepts a same-run A-G physical artifact only with hash-matching witnesses from both hosts', () => {
     const fixture = physicalFixture();
     const verdict = validatePhysicalDrillEvidence(fixture, trustedPhysicalAnchor(fixture));
@@ -222,6 +274,17 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
     expect(verdict.ok).toBe(false);
     expect(verdict.errors).toContain(
       'trusted physical-rig anchor is required outside the evidence manifest',
+    );
+  });
+
+  it('rejects a hand-written trust anchor that has no keychain-bound host receipts', () => {
+    const fixture = physicalFixture();
+    const trust = trustedPhysicalAnchor(fixture);
+    delete trust.receipts;
+    const verdict = validatePhysicalDrillEvidence(fixture, trust);
+    expect(verdict.ok).toBe(false);
+    expect(verdict.errors).toContain(
+      'trusted anchor must contain exactly two keychain-bound host receipts',
     );
   });
 
