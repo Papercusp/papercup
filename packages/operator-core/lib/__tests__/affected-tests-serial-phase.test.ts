@@ -1,7 +1,7 @@
 /**
- * `scripts/lib/serial-phase.mjs` measures what the SERIAL phase of `scripts/affected-tests.mjs`
- * costs — the phase that runs workspace suites one at a time (`for (const t of tasks)` around a
- * BLOCKING `spawnSync`) however idle the box is (plan gate-suite-speedup-2026-08-12, D-021).
+ * `scripts/lib/serial-phase.mjs` measures the SERIAL-EQUIVALENT task work performed by
+ * `scripts/affected-tests.mjs`. D-021 introduced it while tasks were serial; P-002 now overlaps
+ * them under a global budget, so the legacy `serialMs` field is a sum, not phase wall time.
  *
  * WHY THIS FILE EXISTS (the WI-37830 argument, same as affected-tests-load-suspect.test.ts):
  * in-process this arithmetic runs only during a real multi-workspace suite run — minutes long,
@@ -152,6 +152,9 @@ describe('the emitted block', () => {
 
   it('calls the number a ceiling in the text a human reads, not a speedup', () => {
     const text = formatSerialPhaseSummary(legs).join('\n');
+    expect(text).toContain('serial-equivalent');
+    expect(text).toContain('scheduler may overlap legs');
+    expect(text).not.toContain('one at a time');
     expect(text).toContain('ceiling');
     // The misreading this guards against is "we will get 1.25x faster".
     expect(text).toMatch(/bound and not a forecast/);
@@ -169,7 +172,7 @@ describe('wiring in affected-tests.mjs', () => {
 
   it('emits the phase block from the shared helper', () => {
     expect(AFFECTED_TESTS_SRC).toContain("from './lib/serial-phase.mjs'");
-    expect(AFFECTED_TESTS_SRC).toContain('formatSerialPhaseSummary(serialLegs)');
+    expect(AFFECTED_TESTS_SRC).toContain('formatSerialPhaseSummary(taskLegs)');
   });
 
   /**

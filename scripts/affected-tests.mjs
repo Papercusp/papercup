@@ -53,7 +53,9 @@ import {
   formatLoadSuspectMarker,
 } from './lib/load-suspect.mjs';
 import { detectCargoTermination } from './lib/cargo-result.mjs';
-// D-021: the serial phase's own cost, measured per-run. See scripts/lib/serial-phase.mjs.
+// D-021/P-002: summed task work, measured per-run. The helper/marker retain their legacy
+// "serial" names, but after budgeted scheduling the sum is serial-equivalent work rather than
+// elapsed wall time. See scripts/lib/serial-phase.mjs.
 import { formatSerialPhaseSummary } from './lib/serial-phase.mjs';
 import {
   durationEstimate,
@@ -2194,16 +2196,14 @@ const loadSuspectTasks = [];
 // break set (`coverage=complete`) whose every entry is a casualty. Measured 2026-08-09: 21 files,
 // zero unattributed, one broken module — a peer mid-write on this shared tree.
 const transformCulpritPaths = [];
-// D-021 (plan gate-suite-speedup-2026-08-12): the per-leg wall time of the SERIAL phase below.
-// `run()` already measures every spawn as `__elapsedMs`, but it was emitted ONLY on the
-// watchdog-kill path — so on a healthy run every leg duration was computed and thrown away, and
-// `logLine` writes the run log with no timestamps, leaving nothing to reconstruct them from.
-// That is why this phase had never been measured, and why the inherited "1.65 parallelism"
-// figure had nothing behind it. A retry is recorded as an ADDITIONAL leg for the same task
-// rather than folded into it, so flake-absorption cost stays separable from first-run cost.
-const serialLegs = [];
+// D-021/P-002: per-leg wall time, summed as SERIAL-EQUIVALENT task work. Before P-002 the tasks
+// actually ran one at a time, so this was also phase wall time. They now overlap under the global
+// scheduler envelope, which makes their sum useful work rather than elapsed time. A retry is
+// recorded as an ADDITIONAL leg for the same task rather than folded into it, so flake-absorption
+// cost stays separable from first-run cost.
+const taskLegs = [];
 const recordLeg = (task, ms) => {
-  serialLegs.push({ name: `${task.ws.name} :: ${task.script}`, ms });
+  taskLegs.push({ name: `${task.ws.name} :: ${task.script}`, ms });
 };
 const taskKey = (task) => `${task.ws.name} :: ${task.script}`;
 const taskContexts = tasks.map((t) => ({
@@ -2570,13 +2570,12 @@ for (const scheduled of initialPool.results) {
   }
 }
 
-// ── D-021: what the SERIAL phase above actually costs ────────────────────────
+// ── D-021/P-002: serial-equivalent task work under the budgeted scheduler ────
 // Emitted every run, so the answer is re-measured rather than inherited — a number this cheap to
 // re-measure should never be quoted from memory. `--print-affected` runs zero tasks, so this
 // emits nothing there and the tests pinning that path's marker-less output stay satisfied by
-// construction rather than by an explicit exemption. Arithmetic + wording live in the helper
-// (see its header for why `ceilingX` is a BOUND and not a forecast).
-for (const line of formatSerialPhaseSummary(serialLegs)) outSync(line);
+// construction rather than by an explicit exemption. Arithmetic + wording live in the helper.
+for (const line of formatSerialPhaseSummary(taskLegs)) outSync(line);
 
 // ── P-009: Wire cargo tests into the same cadence as vitest/playwright ────────
 // Run the Rust/cargo native suite reporter after all vitest tasks complete.

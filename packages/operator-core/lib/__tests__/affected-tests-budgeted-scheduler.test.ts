@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 // @ts-expect-error standalone Node helper intentionally has no declaration file.
 import {
@@ -15,6 +16,9 @@ import {
   runBudgetedTasks,
   writeDurationHistoryAtomic,
 } from '../../../../scripts/lib/budgeted-task-scheduler.mjs';
+
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
+const AFFECTED_TESTS_SRC = readFileSync(resolve(REPO_ROOT, 'scripts/affected-tests.mjs'), 'utf8');
 
 const config = {
   workerBudget: 4,
@@ -172,5 +176,29 @@ describe('operator-visible budget markers', () => {
         observedMaxTasks: 2,
       }),
     ).toBe('AFFECTED_TESTS_SCHEDULER_OBSERVED maxWorkers=4 maxMemoryMb=4096 maxTasks=2');
+  });
+});
+
+describe('affected-tests scheduler wiring', () => {
+  it('awaits the initial budgeted pool and preserves allocation-specific Vitest ceilings', () => {
+    expect(AFFECTED_TESTS_SRC).toContain(
+      'const initialPool = await runBudgetedTasks(taskContexts',
+    );
+    for (const variable of ['VITEST_MAX_WORKERS', 'VITEST_MAX_FORKS', 'VITEST_MAX_THREADS']) {
+      expect(AFFECTED_TESTS_SRC).toContain(`${variable}: String(allocation.workers)`);
+    }
+  });
+
+  it('drains the initial pool before reporting and reuses the same scheduler for retries', () => {
+    const pool = AFFECTED_TESTS_SRC.indexOf(
+      'const initialPool = await runBudgetedTasks(taskContexts',
+    );
+    const reporting = AFFECTED_TESTS_SRC.indexOf('for (const scheduled of initialPool.results) {');
+    const retry = AFFECTED_TESTS_SRC.indexOf(
+      'const retryPool = await runBudgetedTasks([scheduled.task]',
+    );
+    expect(pool).toBeGreaterThan(-1);
+    expect(reporting).toBeGreaterThan(pool);
+    expect(retry).toBeGreaterThan(reporting);
   });
 });

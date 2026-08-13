@@ -1,14 +1,12 @@
 /**
- * D-021 (plan gate-suite-speedup-2026-08-12): report what the SERIAL phase of
- * `scripts/affected-tests.mjs` costs.
+ * D-021/P-002: report the serial-equivalent task work performed by
+ * `scripts/affected-tests.mjs`.
  *
- * That script runs workspace suites STRICTLY SERIALLY — `for (const t of tasks)` wrapped around a
- * BLOCKING `spawnSync` — so exactly one workspace suite executes at a time however idle the box
- * is. `run()` already measured every spawn as `__elapsedMs`, but it was emitted ONLY on the
- * watchdog-kill path, so on a healthy run every leg duration was computed and thrown away; and
- * the run log is written with no timestamps, leaving nothing to reconstruct them from. The phase
- * had therefore never actually been measured, which is why an inherited "1.65 parallelism"
- * figure could circulate with nothing behind it.
+ * D-021 introduced this helper while workspace suites ran strictly serially, so the summed leg
+ * duration was also phase wall time. P-002 now overlaps them under a single worker/memory budget.
+ * The sum remains useful as SERIAL-EQUIVALENT WORK, but it is no longer elapsed wall time. The
+ * exported names and `serialMs` marker field remain stable for downstream compatibility; human
+ * wording must make the updated units explicit.
  *
  * WHY THIS IS A SEPARATE MODULE rather than inline in affected-tests.mjs — the same argument as
  * load-suspect.mjs and task-exit-class.mjs: a claim nothing executes is a claim nothing can
@@ -17,12 +15,10 @@
  * discovered by being quoted in a planning decision rather than by failing a test.
  *
  * ⚠ THE BOUND IS AN UPPER BOUND, AND THAT IS THE WHOLE POINT OF STATING IT CAREFULLY.
- * Run concurrently, the phase still cannot finish faster than its LONGEST single leg, so
- * `serialMs / longestMs` is the most that perfect parallelism could EVER buy. It ignores host
- * contention — which is the entire reason the fork cap exists (WI-3792/WI-5621: the box melted
- * twice) — so it answers "is this lever big enough to be worth pulling", never "you will get
- * this speedup". Anyone quoting `ceilingX` as a forecast has misread it; the field name and the
- * rendered line both say `ceiling` for that reason.
+ * Even with concurrent execution, a batch cannot finish faster than its LONGEST single leg, so
+ * `serialMs / longestMs` is the most perfect overlap could EVER buy versus serial execution. It
+ * ignores host contention and the scheduler's two-lane shape, so it remains a theoretical bound,
+ * never an achieved or forecast speedup.
  */
 
 /**
@@ -40,6 +36,8 @@ export function summarizeSerialPhase(legs) {
     .map((leg) => ({ name: String(leg.name ?? '(unnamed)'), ms: leg.ms }));
   if (clean.length === 0) return null;
 
+  // Legacy field name: this is the sum of task durations (serial-equivalent work), not current
+  // scheduler wall time. Keep the marker stable; make the units explicit in rendered prose.
   const serialMs = clean.reduce((n, leg) => n + leg.ms, 0);
   const longest = clean.reduce((a, b) => (b.ms > a.ms ? b : a));
   // A single leg, or an all-zero set, can buy nothing by being parallelized: 1.00x, never a
@@ -86,7 +84,8 @@ export function formatSerialPhaseSummary(legs, opts = {}) {
   const lines = [
     '',
     formatSerialPhaseMarker(summary),
-    `  serial phase: ${secs(summary.serialMs)}s across ${summary.legs} leg(s), one at a time`,
+    `  task work:    ${secs(summary.serialMs)}s serial-equivalent across ${summary.legs} leg(s) ` +
+      `(scheduler may overlap legs)`,
     `  longest leg:  ${secs(summary.longestMs)}s — ${summary.longestName}`,
     `  ceiling:      ${summary.ceilingX.toFixed(2)}x — the most perfect parallelism could buy here ` +
       `(bounded by the longest leg; ignores host contention, so it is a bound and not a forecast)`,
