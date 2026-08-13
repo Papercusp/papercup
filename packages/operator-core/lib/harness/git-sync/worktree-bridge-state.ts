@@ -1,4 +1,8 @@
 import type { EpochSeq } from '../../sync/pot-git/staging-advance';
+import {
+  decideWorktreeBridgeCursor,
+  type WorktreeBridgeCursorRow,
+} from '../../sync/pot-git/worktree-bridge-tick';
 
 /**
  * EI-19332963201820362 — the COMPLETE persisted shape of
@@ -88,6 +92,17 @@ export interface WorktreeBridgeTickFacts {
   nowMs: number;
 }
 
+/** The outcome fields that jointly determine the cursor and persisted bridge
+ * state. Kept structural so this decision seam does not depend on runtime-only
+ * dial/fetch details from the full tick outcome. */
+export interface WorktreeBridgePersistenceOutcome {
+  unprocessedFromIndex: number | null;
+  watermark: { epochSeq: EpochSeq | null; stagingSha: string | null };
+  results: readonly unknown[];
+  acceptedCount: number;
+  terminalRejections: Record<string, number>;
+}
+
 /** The prior persisted state, as read back from jsonb. Every field is optional:
  *  rows written before a field existed simply lack it, and a `null` from jsonb
  *  must read the same as absent. */
@@ -145,6 +160,41 @@ export function nextWorktreeBridgeState(
     acceptFreeTicks,
     acceptFreeSince,
   };
+}
+
+/**
+ * Decide the P-505 fed-event cursor and the COMPLETE metadata value as one
+ * atomic pure decision. Production persists `bridgeState` only after this
+ * returns. Consequently an invalid stop index throws before any state carrying
+ * `maxRowId` can be constructed, while a retryable stop threads the held cursor
+ * into `lastEventId` instead of accidentally persisting the collected maximum.
+ */
+export function decideWorktreeBridgePersistence(input: {
+  prior: PriorWorktreeBridgeState | null | undefined;
+  maxRowId: number;
+  pendingRows: readonly WorktreeBridgeCursorRow[];
+  outcome: WorktreeBridgePersistenceOutcome;
+  nowMs: number;
+}): {
+  cursorDecision: ReturnType<typeof decideWorktreeBridgeCursor>;
+  bridgeState: WorktreeBridgeState;
+} {
+  const cursorDecision = decideWorktreeBridgeCursor({
+    maxRowId: input.maxRowId,
+    pendingRows: input.pendingRows,
+    unprocessedFromIndex: input.outcome.unprocessedFromIndex,
+    nowMs: input.nowMs,
+  });
+  const bridgeState = nextWorktreeBridgeState(input.prior, {
+    lastEventId: cursorDecision.cursor,
+    epochSeq: input.outcome.watermark.epochSeq,
+    stagingSha: input.outcome.watermark.stagingSha,
+    consumed: input.outcome.results.length,
+    accepted: input.outcome.acceptedCount,
+    rejectedTerminal: input.outcome.terminalRejections,
+    nowMs: input.nowMs,
+  });
+  return { cursorDecision, bridgeState };
 }
 
 /** Warn only once a streak is established — a single accept-free tick is

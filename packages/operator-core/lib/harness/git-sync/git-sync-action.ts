@@ -50,7 +50,6 @@ import { fetchRepoPushPermission } from '../github-repo-permissions';
 import { BRIDGE_CANONICAL_REF, runGithubBridgeTick } from '../../sync/pot-git/github-bridge-tick';
 import { runIntegratorTick } from '../../sync/pot-git/integrator-tick';
 import {
-  decideWorktreeBridgeCursor,
   runWorktreeBridgeTick,
   WORKTREE_BRIDGE_RETRY_TTL_MS,
 } from '../../sync/pot-git/worktree-bridge-tick';
@@ -83,7 +82,11 @@ import { STAGING_ADVANCE_EVENT_KEY, isSignedStagingAdvance, type SignedStagingAd
 // metadata value. patchRoutineMetadata is a top-level jsonb merge, so writing
 // that key REPLACES it wholesale — constructing it here means a writer cannot
 // omit (i.e. silently DELETE) a field. Read that module's header before adding one.
-import { nextWorktreeBridgeState, shouldWarnAcceptFree } from './worktree-bridge-state';
+import {
+  decideWorktreeBridgePersistence,
+  nextWorktreeBridgeState,
+  shouldWarnAcceptFree,
+} from './worktree-bridge-state';
 import {
   defaultRunGit,
   deviceNamespaceKey,
@@ -3744,12 +3747,14 @@ async function runWorktreeBridgeLeg(slug: string, workspaceId: string): Promise<
     // only consumes rows strictly before it. Age-bound the hold: an item stuck
     // retryable past the TTL is a genuinely lost object, not a race — consume
     // it (loudly) so one poisoned row can never wedge the bridge forever.
-    const cursorDecision = decideWorktreeBridgeCursor({
+    const persistenceDecision = decideWorktreeBridgePersistence({
+      prior: priorState,
       maxRowId,
       pendingRows,
-      unprocessedFromIndex: outcome.unprocessedFromIndex,
+      outcome,
       nowMs: Date.now(),
     });
+    const { cursorDecision, bridgeState } = persistenceDecision;
     const newCursor = cursorDecision.cursor;
     if (cursorDecision.expiredRow) {
       console.warn(
@@ -3779,15 +3784,6 @@ async function runWorktreeBridgeLeg(slug: string, workspaceId: string): Promise<
     // decision (carry / increment / reset) that read as a two-way ternary here;
     // the collapsed case silently let a quiet tick erase an in-progress freeze
     // signal. See worktree-bridge-state.ts + its unit tests.
-    const bridgeState = nextWorktreeBridgeState(priorState, {
-      lastEventId: newCursor,
-      epochSeq: outcome.watermark.epochSeq,
-      stagingSha: outcome.watermark.stagingSha,
-      consumed: outcome.results.length,
-      accepted: outcome.acceptedCount,
-      rejectedTerminal: outcome.terminalRejections,
-      nowMs: Date.now(),
-    });
     await patchRoutineMetadata(slug, workspaceId, { worktree_bridge: bridgeState });
 
     // Warn on the STREAK, not on a single accept-free tick — one stale envelope

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   ACCEPT_FREE_WARN_AFTER,
+  decideWorktreeBridgePersistence,
   nextWorktreeBridgeState,
   shouldWarnAcceptFree,
   type WorktreeBridgeTickFacts,
@@ -111,6 +112,53 @@ describe('nextWorktreeBridgeState', () => {
     const recovered = nextWorktreeBridgeState(state, { ...base, consumed: 1, accepted: 1 });
     expect(recovered.acceptFreeTicks).toBe(0);
     expect(recovered.acceptFreeSince).toBeNull();
+  });
+});
+
+describe('decideWorktreeBridgePersistence (P-505 caller/persistence seam)', () => {
+  const nowMs = 100_000_000;
+  const pendingRows = [
+    { id: 41, tsMs: nowMs - 1_000 },
+    { id: 42, tsMs: nowMs - 2_000 },
+    { id: 44, tsMs: nowMs - 3_000 },
+  ];
+  const outcome = {
+    unprocessedFromIndex: 1,
+    watermark: { epochSeq: { epoch: 8, seq: 3 }, stagingSha: 'b'.repeat(40) },
+    results: [{ outcome: 'accepted' }, { outcome: 'rejected' }],
+    acceptedCount: 1,
+    terminalRejections: {},
+  };
+
+  it('threads a retryable stop into persisted lastEventId instead of the collected maximum', () => {
+    const decision = decideWorktreeBridgePersistence({
+      prior: null,
+      maxRowId: 44,
+      pendingRows,
+      outcome,
+      nowMs,
+    });
+
+    expect(decision.cursorDecision).toEqual({ cursor: 41, expiredRow: null });
+    expect(decision.bridgeState).toMatchObject({
+      lastEventId: 41,
+      epochSeq: outcome.watermark.epochSeq,
+      stagingSha: outcome.watermark.stagingSha,
+      consumed: 2,
+      accepted: 1,
+    });
+  });
+
+  it('fails before constructing persistable state when the stop index is not row-aligned', () => {
+    expect(() =>
+      decideWorktreeBridgePersistence({
+        prior: null,
+        maxRowId: 44,
+        pendingRows,
+        outcome: { ...outcome, unprocessedFromIndex: pendingRows.length },
+        nowMs,
+      }),
+    ).toThrow(RangeError);
   });
 });
 
