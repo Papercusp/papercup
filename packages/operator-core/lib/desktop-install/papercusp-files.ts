@@ -302,10 +302,10 @@ async function refuseKnownOlderHookSource(
   label: string,
   sourceDir: string,
   stampDir: string,
-  incoming = await resolveSourceGitProvenance(sourceDir),
+  incoming?: Awaited<ReturnType<typeof resolveSourceGitProvenance>>,
 ): Promise<boolean> {
   const existing = await readInstallStamp(stampDir);
-  const verdict = classifyDowngrade(existing, incoming, 0);
+  const verdict = classifyDowngrade(existing, incoming ?? (await resolveSourceGitProvenance(sourceDir)), 0);
   if (!verdict.downgrade) return false;
   console.error(
     `[desktop-install] ${label}: REFUSING downgrade — source ${sourceDir} ` +
