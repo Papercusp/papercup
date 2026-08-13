@@ -122,13 +122,31 @@ const forceCompactedAt = new Map<string, number>();
 const carryRespawnRequestedAt = new Map<string, number>();
 
 /** WI-5075 rapid-refire guard: owner → consecutive carry-respawns fired while the
- *  owner NEVER recovered below its limit in between. A landed respawn boots a
- *  near-empty successor, so the estimate MUST drop by the next sweep — a streak
- *  means the estimate is not tracking the live session (the adv_sessions
- *  session-ref was not re-anchored: an old-code host, or a regression of the
- *  WI-5075 class) and each further respawn just executes the kill loop again.
- *  Cleared on recovery below the limit. */
-const carryRespawnStreak = new Map<string, { count: number; lastAt: number }>();
+ *  owner NEVER recovered below its limit in between.
+ *
+ *  ⚠ WI-38347 leg 4 — "never recovered BELOW ITS LIMIT" is NOT the same claim as
+ *  "the estimate never dropped", and the original guard conflated them. It read a
+ *  streak as proof that the estimate is not tracking the live session, but it never
+ *  compared one estimate to another: the streak increments purely on "a respawn
+ *  returned true and this owner is over limit again on a later sweep". When the
+ *  limit sits well below the model window, an owner whose cuts are ALL LANDING is
+ *  over limit again within minutes, so the streak fires on healthy churn and blames
+ *  a transcript-resolution defect (measured 2026-08-13: codex su sessions open at
+ *  ~50k, burn ~10k/min, and re-crossed a 158,000 limit in 5–18 min while every cut
+ *  landed correctly). `estAtFirstCut` + `minEstSince` carry the evidence that
+ *  actually separates the two cases — see {@link carryRespawnStreakVerdict}. */
+const carryRespawnStreak = new Map<
+  string,
+  {
+    count: number;
+    lastAt: number;
+    /** Estimate observed at the FIRST cut of this streak — the baseline a later
+     *  observation has to fall below for the cut to have demonstrably landed. */
+    estAtFirstCut: number;
+    /** Lowest estimate observed on ANY over-limit sweep since that first cut. */
+    minEstSince: number;
+  }
+>();
 /** One loop-detected escalation per owner per process; un-deduped on failure. */
 const carryRespawnLoopEscalated = new Set<string>();
 /** Streak trips at this many respawns with no recovery in between. Three cuts
@@ -138,6 +156,45 @@ const carryRespawnLoopEscalated = new Set<string>();
 const CARRY_RESPAWN_MAX_STREAK = 3;
 /** A streak entry older than this is stale history, not an active loop. */
 const CARRY_RESPAWN_STREAK_WINDOW_MS = 30 * 60_000;
+/** WI-38347 leg 4: a later observation at or below this fraction of the streak's
+ *  first-cut estimate proves a cut LANDED (the successor really did boot smaller),
+ *  so the streak is churn — not the pinned-estimate defect. Deliberately loose:
+ *  the discriminating question is "did this number ever move at all", and a real
+ *  landed cut drops it by far more than 15% (measured: 281,426 → 54,218), while a
+ *  genuinely pinned estimate does not move at all. Only over-limit sweeps are ever
+ *  sampled — a drop below the limit clears the streak outright — so this compares
+ *  two ABOVE-LIMIT readings, which is exactly the case the old guard could not
+ *  tell apart from a frozen one. */
+const CARRY_RESPAWN_LANDED_DROP_FACTOR = 0.85;
+
+/** The evidence a streak carries about whether its cuts were landing. */
+export interface CarryRespawnStreakEvidence {
+  /** Estimate at the first cut of the streak. */
+  estAtFirstCut: number;
+  /** Lowest estimate observed on any over-limit sweep since that cut. */
+  minEstSince: number;
+  /** The owner's configured compaction limit. */
+  limit: number;
+  /** The resolved model window, or null when it could not be established. */
+  window: number | null;
+}
+
+/**
+ * WI-38347 leg 4: did this streak's cuts LAND (`'churn'`) or did the estimate
+ * never move (`'pinned'`)?
+ *
+ * `'pinned'` is the conservative default — it is returned when there is no
+ * evidence at all, so an un-instrumented caller keeps the pre-leg-4 diagnosis
+ * rather than silently acquiring a churn verdict nothing measured.
+ */
+export function carryRespawnStreakVerdict(
+  evidence: CarryRespawnStreakEvidence | null | undefined,
+): 'churn' | 'pinned' {
+  if (evidence == null || !(evidence.estAtFirstCut > 0)) return 'pinned';
+  return evidence.minEstSince <= evidence.estAtFirstCut * CARRY_RESPAWN_LANDED_DROP_FACTOR
+    ? 'churn'
+    : 'pinned';
+}
 
 /** EI-9982 diagnostic dedup: warn ONCE per owner when findLiveHost() returns null on the
  *  force-compact path. Before this, a no-live-host miss was completely silent — indistinguishable
@@ -504,10 +561,32 @@ function forceCompactContinueNote(est: number, limit: number, forceAt: number, b
 export function carryRespawnLoopEscalationBody(
   agent: 'claude' | 'codex' | 'omp' | null,
   streak: number,
+  evidence?: CarryRespawnStreakEvidence | null,
 ): string {
+  // WI-38347 leg 4: BEFORE naming a transcript-resolution defect, check whether the
+  // estimate moved at all. Every per-backend body below diagnoses an estimate that is
+  // NOT TRACKING the live session — a claim the streak alone never established. If the
+  // cuts were landing, that whole family of diagnosis is wrong for any backend, and the
+  // reader must be sent at the headroom instead of at a transcript hunt.
+  if (carryRespawnStreakVerdict(evidence) === 'churn' && evidence != null) {
+    const win = evidence.window;
+    const ratio =
+      win != null && win > 0
+        ? `Its limit is ${evidence.limit} against a ${win}-token model window (${Math.round((evidence.limit / win) * 100)}%), `
+        : `Its limit is ${evidence.limit} and the model window could not be resolved, `;
+    return (
+      `${streak} carry-respawns fired for this owner without it recovering below its limit — but the cuts ARE LANDING: ` +
+      `the estimate fell from ~${evidence.estAtFirstCut} to ~${evidence.minEstSince} after a cut and then climbed back over the limit. ` +
+      `This is CHURN (a headroom problem), NOT the WI-5075 pinned-estimate defect, so there is no stale transcript or session ref to hunt ` +
+      `and re-anchoring anything would be a no-op. ${ratio}` +
+      `so a successor re-crosses the limit within minutes of booting and is cut again. ` +
+      `DO NOT relaunch this session — respawns are already suppressed, the session is live and holding real work, and a relaunch only restarts the cycle. ` +
+      `Fix the headroom instead: raise this owner's limit toward its true window, or reduce the successor's boot context. (WI-38347)`
+    );
+  }
   const shared =
     `A landed P-018 carry-respawn boots a near-empty successor, so the owner's context estimate must fall below its limit by the next sweep. ` +
-    `It did not — ${streak} consecutive cuts. Each further cut only kills live work. The watchdog has STOPPED respawning this owner until it recovers. `;
+    `It did not — ${streak} consecutive cuts, with the estimate never moving. Each further cut only kills live work. The watchdog has STOPPED respawning this owner until it recovers. `;
   if (agent === 'codex') {
     return (
       shared +
@@ -553,13 +632,15 @@ async function escalateCarryRespawnLoop(
   ownerId: string,
   ownerLabel: string,
   streak: number,
+  evidence?: CarryRespawnStreakEvidence | null,
 ): Promise<void> {
   if (carryRespawnLoopEscalated.has(ownerId)) return;
   carryRespawnLoopEscalated.add(ownerId);
+  const verdict = carryRespawnStreakVerdict(evidence);
   console.warn(
     `[compaction-watchdog] ${ownerLabel} (${ownerId}) CARRY-RESPAWN LOOP detected — ` +
-      `${streak} respawns fired with the context estimate never recovering. Suppressing further ` +
-      `respawns for this owner and escalating (WI-5075).`,
+      `${streak} respawns fired without recovery below the limit (${verdict}). Suppressing further ` +
+      `respawns for this owner and escalating (WI-5075, WI-38347).`,
   );
   // WI-38347: resolve the backend so the body names the mechanism that actually
   // governs THIS owner. Fail-soft to null (the neutral body) — an escalation that
@@ -593,8 +674,11 @@ async function escalateCarryRespawnLoop(
       },
       {
         severity: 'blocker',
-        summary: `carry-respawn LOOP on ${ownerLabel} (${ownerId}): ${streak} successor cuts with the context estimate never dropping — respawns suppressed`,
-        body: carryRespawnLoopEscalationBody(agent, streak),
+        summary:
+          verdict === 'churn'
+            ? `carry-respawn CHURN on ${ownerLabel} (${ownerId}): ${streak} successor cuts, each landing and each re-crossing the limit within minutes — respawns suppressed`
+            : `carry-respawn LOOP on ${ownerLabel} (${ownerId}): ${streak} successor cuts with the context estimate never dropping — respawns suppressed`,
+        body: carryRespawnLoopEscalationBody(agent, streak, evidence),
         // WI-5848 (sweep of EI-18668025239634541's class): `summary` embeds the
         // live `${streak}` count, so it varies across occurrences for the SAME
         // owner exactly like the fixed lifecycle-death bug — the in-memory
@@ -1374,6 +1458,19 @@ export async function checkCompactionCompliance(sql: Sql): Promise<CompactionCom
         // both duplicate respawns and the older force-compact rung during the
         // shared grace. A failed/unsupported/flag-off attempt falls straight
         // through to the unchanged P-012 hard backstop below.
+        // WI-38347 leg 4: fold EVERY over-limit observation into the streak's running
+        // minimum BEFORE any early-continue below. The grace window right after a cut
+        // is precisely where a landed cut is visible (the successor boots small and
+        // climbs), so sampling only at the next cut would step straight over the
+        // evidence and leave every streak looking frozen.
+        const sampleEntry = carryRespawnStreak.get(r.owner_id);
+        if (
+          sampleEntry != null &&
+          Date.now() - sampleEntry.lastAt < CARRY_RESPAWN_STREAK_WINDOW_MS &&
+          est < sampleEntry.minEstSince
+        ) {
+          sampleEntry.minEstSince = est;
+        }
         const lastCarryAt = carryRespawnRequestedAt.get(r.owner_id);
         const carryRecently =
           lastCarryAt != null && Date.now() - lastCarryAt < FORCE_RETRY_GRACE_MS;
@@ -1387,8 +1484,13 @@ export async function checkCompactionCompliance(sql: Sql): Promise<CompactionCom
         const streakLive =
           streakEntry != null && Date.now() - streakEntry.lastAt < CARRY_RESPAWN_STREAK_WINDOW_MS;
         const streakCount = streakLive ? streakEntry.count : 0;
-        if (streakCount >= CARRY_RESPAWN_MAX_STREAK) {
-          await escalateCarryRespawnLoop(r.owner_id, r.owner_label, streakCount);
+        if (streakCount >= CARRY_RESPAWN_MAX_STREAK && streakEntry != null) {
+          await escalateCarryRespawnLoop(r.owner_id, r.owner_label, streakCount, {
+            estAtFirstCut: streakEntry.estAtFirstCut,
+            minEstSince: streakEntry.minEstSince,
+            limit: r.compaction_limit,
+            window,
+          });
           continue;
         }
         const carryWindow = Math.min(
