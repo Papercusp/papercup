@@ -1,9 +1,9 @@
 /**
  * EI-20243251614343957 — scheduler:get_next must deliver a committed claim
- * receipt and governing decisions before the bulky work-item echo. The result-door
- * keeps the serialized prefix, so this test exercises the real scheduler assembly
- * with the real door and proves the caller receives one parseable, structurally
- * bounded JSON object that preserves the reconciliation-critical fields.
+ * receipt and governing decisions alongside the bulky work-item echo. This test
+ * exercises the real scheduler assembly with the real result door and proves the
+ * caller receives one parseable, structurally bounded JSON object that preserves
+ * the reconciliation-critical fields regardless of their legacy key order.
  */
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';

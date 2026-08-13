@@ -15,10 +15,11 @@
  * post-compaction) an agent has the least spare context to even notice the
  * gap.
  *
- * This exercises the real `assembleOrientOutput` + the real `applyResultDoor`
- * — proving `ok`/`me`/`claimable`/`inbox` survive the door even when every
- * discretionary preamble leg is individually large enough to exceed the
- * whole budget on its own, and that `recovery` still outranks them.
+ * `coord:orient` now avoids that generic fallback in production: it declares a
+ * result-door exemption and applies its own bounded domain shaper. These tests
+ * pin that complete three-leg contract. The remaining direct `applyResultDoor`
+ * cases are defence in depth: pathological JSON must stay parseable and exactly
+ * resumable, while the historical recovery-priority rule remains intact.
  *
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/coordination/tools/orient-core-result-door-priority.test.ts
  */

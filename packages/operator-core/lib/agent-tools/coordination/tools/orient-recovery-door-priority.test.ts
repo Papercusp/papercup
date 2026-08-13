@@ -4,13 +4,12 @@
  * coord:orient {afterCompaction} folds a `recovery` block (held-item
  * checkpoints, armed-loop status, staleness warnings, the self-recall
  * pointer) — the ONE payload a just-compacted successor cannot get any other
- * way. result-door.ts caps a tool result's serialized text at a fixed
- * per-result token budget and keeps only the HEAD (context-doors.ts
- * capInjectionText), spilling the tail to scratch. So the assembled
- * response's KEY ORDER is the survival priority for what's actually in
- * context — a large preamble (ownerDirectives/modes/instructionPrecedence/
- * taskToolSchemaPack/…) serialized AHEAD of `recovery` silently starves it,
- * defeating the entire purpose of `afterCompaction`.
+ * way. result-door.ts caps a tool result at a fixed per-result budget and now
+ * structurally projects parseable JSON, spilling the exact original to scratch.
+ * Projection still traverses fields in assembled order, so the response's key
+ * order remains the survival priority for the in-context preview: a large
+ * preamble serialized AHEAD of `recovery` can starve it and defeat the purpose
+ * of `afterCompaction`.
  *
  * This test exercises `assembleOrientOutput` (the real, exported assembly
  * function orient.ts's handler calls) together with the real `applyResultDoor`
