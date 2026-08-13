@@ -129,7 +129,7 @@ function fixture(): PhysicalPhaseAInput {
 }
 
 describe('P-505 fixed physical Phase A cold-join executor core', () => {
-  it('accepts only an absence-before-canonical-bootstrap two-store parity chain', () => {
+  it('accepts only an absence-before-canonical-bootstrap two-store core and stays partial', () => {
     const verdict = validatePhysicalPhaseA(fixture());
     expect(verdict).toMatchObject({
       ok: true,
@@ -137,7 +137,9 @@ describe('P-505 fixed physical Phase A cold-join executor core', () => {
       result: {
         phase: 'A',
         planItem: 'P-302',
-        status: 'pass',
+        status: 'partial',
+        complete: false,
+        missingAssertions: ['eachDeviceWritesOnlyItsOwnNamespace'],
         assertions: {
           vmStoreQuarantinedByScenario: true,
           vmAbsenceObservedBeforeBootstrap: true,
@@ -146,6 +148,7 @@ describe('P-505 fixed physical Phase A cold-join executor core', () => {
           namespaceRefOidsMatch: true,
           referencedObjectsExistOnBothHosts: true,
           oneObjectDatabasePerRepo: true,
+          identityDerivedNamespacesObserved: true,
         },
       },
     });

@@ -76,7 +76,9 @@ export type PhysicalPhaseAVerdict = {
     schemaVersion: typeof PHASE_A_RESULT_SCHEMA;
     phase: 'A';
     planItem: typeof PHASE_A_PLAN_ITEM;
-    status: 'pass';
+    status: 'partial';
+    complete: false;
+    missingAssertions: ['eachDeviceWritesOnlyItsOwnNamespace'];
     observedAt: string;
     assertions: {
       towerStoreObservedBeforeMutation: true;
@@ -88,7 +90,7 @@ export type PhysicalPhaseAVerdict = {
       namespaceRefOidsMatch: true;
       referencedObjectsExistOnBothHosts: true;
       oneObjectDatabasePerRepo: true;
-      eachDeviceMappedOnlyToOwnNamespace: true;
+      identityDerivedNamespacesObserved: true;
     };
   };
 };
@@ -373,7 +375,9 @@ export function validatePhysicalPhaseA(input: PhysicalPhaseAInput): PhysicalPhas
             schemaVersion: PHASE_A_RESULT_SCHEMA,
             phase: 'A',
             planItem: PHASE_A_PLAN_ITEM,
-            status: 'pass',
+            status: 'partial',
+            complete: false,
+            missingAssertions: ['eachDeviceWritesOnlyItsOwnNamespace'],
             observedAt: input.window.finishedAt,
             assertions: {
               towerStoreObservedBeforeMutation: true,
@@ -385,7 +389,7 @@ export function validatePhysicalPhaseA(input: PhysicalPhaseAInput): PhysicalPhas
               namespaceRefOidsMatch: true,
               referencedObjectsExistOnBothHosts: true,
               oneObjectDatabasePerRepo: true,
-              eachDeviceMappedOnlyToOwnNamespace: true,
+              identityDerivedNamespacesObserved: true,
             },
           },
   };
