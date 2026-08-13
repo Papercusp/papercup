@@ -48,6 +48,30 @@ export interface PerfSignalsV1 {
         full?: { avg60?: number | null } | null;
       } | null;
     } | null;
+    /** Bounded cgroup-v2 memory attribution captured alongside PSI. `memoryBytes`
+     *  is inclusive of descendants, so rows identify ownership hierarchies and
+     *  must not be summed. This is forensic context, not presently a budget. */
+    cgroupMemory?: {
+      accounting: 'cgroup-v2-inclusive-descendants' | string;
+      top: Array<{
+        path: string;
+        memoryBytes: number;
+        swapBytes: number | null;
+        anonBytes: number | null;
+        fileBytes: number | null;
+        shmemBytes: number | null;
+        kernelBytes: number | null;
+        slabBytes: number | null;
+        sockBytes: number | null;
+        directPids: number | null;
+      }>;
+      scannedCgroups: number;
+      candidateCgroups: number;
+      maxScanned: number;
+      maxRows: number;
+      budgetSec: number;
+      partial: boolean;
+    } | null;
     /** Per-uid inotify usage (2026-07-10 meltdown class: a silent watch balloon —
      *  94.5k watches/process × 16 workers — starved the host with no signal). */
     inotify?: {

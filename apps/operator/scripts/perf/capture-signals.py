@@ -213,6 +213,87 @@ def session_dirs():
     }
 
 
+def cgroup_memory(budget_sec=5.0, max_scanned=4096, top_n=40, root=None):
+    """Largest cgroup-v2 memory consumers at capture time.
+
+    PSI tells us *that* the host is thrashing, but not which workload owned the
+    memory while it happened. Preserve a bounded, host-wide attribution sample
+    in the same snapshot so a self-recovered incident remains diagnosable. Values
+    are inclusive of child cgroups (the cgroup-v2 accounting contract), therefore
+    paths are retained rather than pretending the rows are additive.
+
+    The walk is capped by both wall time and cgroup count. A busy host must never
+    make the two-minute capture timer overlap itself just to collect forensics.
+    """
+    root = root or os.environ.get("PAPERCUSP_PERF_CGROUP_ROOT", "/sys/fs/cgroup")
+    deadline = time.monotonic() + budget_sec
+    rows = []
+    scanned = 0
+    partial = False
+
+    def read_int(path):
+        try:
+            return int(open(path).read().strip())
+        except Exception:
+            return None
+
+    try:
+        walker = os.walk(root)
+        for dirpath, dirnames, _files in walker:
+            # Stable traversal makes a capped/partial sample reproducible.
+            dirnames.sort()
+            if time.monotonic() > deadline or scanned >= max_scanned:
+                partial = True
+                break
+            current = read_int(os.path.join(dirpath, "memory.current"))
+            if current is None:
+                continue  # not a cgroup-v2 memory accounting node
+            scanned += 1
+            if current <= 0:
+                continue
+            stats = {}
+            try:
+                with open(os.path.join(dirpath, "memory.stat")) as f:
+                    for line in f:
+                        key, value = line.split(None, 1)
+                        if key in ("anon", "file", "shmem", "kernel", "slab", "sock"):
+                            stats[key] = int(value)
+            except Exception:
+                pass
+            try:
+                direct_pids = sum(1 for line in open(os.path.join(dirpath, "cgroup.procs"))
+                                  if line.strip())
+            except Exception:
+                direct_pids = None
+            relative = os.path.relpath(dirpath, root)
+            rows.append({
+                "path": "/" if relative == "." else "/" + relative,
+                "memoryBytes": current,
+                "swapBytes": read_int(os.path.join(dirpath, "memory.swap.current")),
+                "anonBytes": stats.get("anon"),
+                "fileBytes": stats.get("file"),
+                "shmemBytes": stats.get("shmem"),
+                "kernelBytes": stats.get("kernel"),
+                "slabBytes": stats.get("slab"),
+                "sockBytes": stats.get("sock"),
+                "directPids": direct_pids,
+            })
+    except Exception:
+        partial = True
+
+    rows.sort(key=lambda row: (-row["memoryBytes"], row["path"]))
+    return {
+        "accounting": "cgroup-v2-inclusive-descendants",
+        "top": rows[:top_n],
+        "scannedCgroups": scanned,
+        "candidateCgroups": len(rows),
+        "maxScanned": max_scanned,
+        "maxRows": top_n,
+        "budgetSec": budget_sec,
+        "partial": partial,
+    }
+
+
 def host_state(la):
     """stable | loaded | wedge-suspect — pure-local loadavg proxy. An agent run
     should overwrite with the real event-loop-lag verdict when available."""
@@ -254,6 +335,7 @@ def main():
             "operator_3070_reachable": tcp_reachable(OPERATOR_PORT),
             "kopia": kopia(),
             "psi": psi(),
+            "cgroupMemory": cgroup_memory(),
             "inotify": inotify(),
             "sessionDirs": session_dirs(),
             "_mcp_supplemented": {

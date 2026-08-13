@@ -5,10 +5,18 @@
  * against actual mtimes, not mocked ones.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtemp, rm, writeFile, readdir, utimes } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile, readdir, utimes, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { preserveIncidentCapture } from './perf-budgets';
+
+const execFileAsync = promisify(execFile);
+const CAPTURE_SCRIPT = fileURLToPath(
+  new URL('../../../../apps/operator/scripts/perf/capture-signals.py', import.meta.url),
+);
 
 let dir: string;
 
@@ -90,5 +98,61 @@ describe('preserveIncidentCapture', () => {
     expect(incidents).toHaveLength(100);
     expect(incidents).not.toContain('seed-0-incident-old.json'); // the oldest, pruned
     expect(incidents).toContain('seed-99-incident-old.json'); // newest seed, kept
+  });
+});
+
+describe('capture-signals cgroup memory attribution', () => {
+  async function writeCgroup(
+    root: string,
+    relative: string,
+    memoryBytes: number,
+    anonBytes: number,
+    swapBytes: number,
+  ): Promise<void> {
+    const path = join(root, relative);
+    await mkdir(path, { recursive: true });
+    await writeFile(join(path, 'memory.current'), `${memoryBytes}\n`);
+    await writeFile(
+      join(path, 'memory.stat'),
+      `anon ${anonBytes}\nfile ${memoryBytes - anonBytes}\nshmem 0\nkernel 10\nslab 5\nsock 1\n`,
+    );
+    await writeFile(join(path, 'memory.swap.current'), `${swapBytes}\n`);
+    await writeFile(join(path, 'cgroup.procs'), '101\n102\n');
+  }
+
+  it('records the largest cgroups with memory composition while bounding output rows', async () => {
+    const root = join(dir, 'cgroup');
+    await writeCgroup(root, '', 1_000, 600, 30);
+    await writeCgroup(root, 'user.slice/app.slice/papercup-dev-api.service', 700, 500, 20);
+    await writeCgroup(root, 'system.slice/postgresql.service', 800, 650, 10);
+
+    const code = [
+      'import importlib.util,json,sys',
+      's=importlib.util.spec_from_file_location("capture_signals",sys.argv[1])',
+      'm=importlib.util.module_from_spec(s);s.loader.exec_module(m)',
+      'print(json.dumps(m.cgroup_memory(root=sys.argv[2],budget_sec=10,max_scanned=100,top_n=2)))',
+    ].join(';');
+    const { stdout } = await execFileAsync('python3', ['-c', code, CAPTURE_SCRIPT, root]);
+    const captured = JSON.parse(stdout);
+
+    expect(captured).toMatchObject({
+      accounting: 'cgroup-v2-inclusive-descendants',
+      scannedCgroups: 3,
+      candidateCgroups: 3,
+      maxRows: 2,
+      partial: false,
+    });
+    expect(captured.top).toHaveLength(2);
+    expect(captured.top.map((row: { path: string }) => row.path)).toEqual([
+      '/',
+      '/system.slice/postgresql.service',
+    ]);
+    expect(captured.top[1]).toMatchObject({
+      memoryBytes: 800,
+      anonBytes: 650,
+      fileBytes: 150,
+      swapBytes: 10,
+      directPids: 2,
+    });
   });
 });
