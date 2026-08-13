@@ -427,6 +427,15 @@ describe('AdvShell — selection restore (resolveAdvHarnessSelection wiring)', (
     await waitFor(() => expect(nuqsSetters.scope).toHaveBeenCalledWith('expanded'));
   });
 
+  it('preserves an explicit All Pots URL instead of restoring a persisted concrete pot', async () => {
+    nuqsState.slug = null;
+    nuqsState.scope = 'all';
+    localStorage.setItem(LS_KEY(), 'pot-b');
+    await renderShell();
+    expect(nuqsSetters.slug).not.toHaveBeenCalled();
+    expect(nuqsSetters.scope).not.toHaveBeenCalled();
+  });
+
   it('falls back to All harnesses when nothing usable is persisted', async () => {
     nuqsState.slug = null;
     await renderShell();

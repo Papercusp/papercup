@@ -15,8 +15,8 @@ export const ALL_HARNESSES_OPTION = '__all__';
  * `?slug=` yet). Pure + standalone so the precedence is unit-tested without
  * importing the AdvShell component tree.
  *
- *   1. An explicit, valid `?slug=` in the URL wins — leave it alone (deep
- *      link / refresh).
+ *   1. An explicit `?scope=all` OR valid `?slug=` in the URL wins — leave it
+ *      alone (deep link / refresh).
  *   2. Else restore the persisted selection: a persisted concrete slug (still
  *      a real project) → select it in scope=expanded, which exits "all" mode
  *      so the full per-harness tab strip shows.
@@ -29,10 +29,12 @@ export const ALL_HARNESSES_OPTION = '__all__';
 export function resolveAdvHarnessSelection(opts: {
   projectSlugs: readonly string[];
   urlSlug: string | null;
+  urlScope?: HarnessScopeMode;
   persisted: string | null;
 }): { setSlug?: string; setScope?: HarnessScopeMode } {
-  const { projectSlugs, urlSlug, persisted } = opts;
+  const { projectSlugs, urlSlug, urlScope, persisted } = opts;
   if (projectSlugs.length === 0) return {};
+  if (urlScope === 'all') return {};
   if (urlSlug && projectSlugs.includes(urlSlug)) return {};
   if (persisted && persisted !== ALL_HARNESSES_OPTION && projectSlugs.includes(persisted)) {
     return { setSlug: persisted, setScope: 'expanded' };

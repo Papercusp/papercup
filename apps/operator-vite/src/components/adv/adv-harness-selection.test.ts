@@ -17,6 +17,17 @@ describe('resolveAdvHarnessSelection', () => {
     ).toEqual({});
   });
 
+  it('an explicit ?scope=all wins over a persisted concrete pot', () => {
+    expect(
+      resolveAdvHarnessSelection({
+        projectSlugs: PROJECTS,
+        urlSlug: null,
+        urlScope: 'all',
+        persisted: 'sheets',
+      }),
+    ).toEqual({});
+  });
+
   it('restores a persisted concrete harness into scope=expanded (exits all-mode → full tab strip)', () => {
     expect(
       resolveAdvHarnessSelection({ projectSlugs: PROJECTS, urlSlug: null, persisted: 'sheets' }),

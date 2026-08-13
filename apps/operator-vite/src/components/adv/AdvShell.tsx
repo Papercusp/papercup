@@ -487,6 +487,7 @@ export default function AdvShell({ children }: { children: React.ReactNode }) {
     const decision = resolveAdvHarnessSelection({
       projectSlugs: projects.map((p) => p.slug),
       urlSlug: activeSlug,
+      urlScope: scopeMode,
       persisted,
     });
     // Apply the two writes SEQUENTIALLY (await between them). The custom
