@@ -217,8 +217,51 @@ describe('wiring into scripts/affected-tests.mjs', () => {
     // first pass, which is already known-high (it is what enabled absorption) and would
     // therefore label essentially EVERY residual failure load-suspect. That failure is
     // invisible in output — the notice still renders, with a plausible number.
-    const sites = [...src.matchAll(/r = run\((?:failedFiles)?\);[\s\S]{0,500}?load1AtRerun = loadavg\(\)\[0\];/g)];
+    // `runFreshRetry` is the scoped arm's entry point (P-003): for a lane-split workspace it
+    // re-runs the failed files under the DEFAULT `test` script so the re-run is ISOLATED,
+    // otherwise it delegates to `run`. It is still THE re-run this sample must follow, so the
+    // alternation keeps this guard pointed at both arms rather than silently dropping to one.
+    const sites = [
+      ...src.matchAll(/r = (?:run|runFreshRetry)\((?:failedFiles)?\);[\s\S]{0,500}?load1AtRerun = loadavg\(\)\[0\];/g),
+    ];
     expect(sites).toHaveLength(2); // both arms: scoped fresh-process re-run, and whole-workspace retry
+  });
+
+  it("re-runs a LANE workspace's failed files under the DEFAULT `test` script, so the retry is ISOLATED", () => {
+    // THE INVARIANT THE PURE/STATEFUL LANE SPLIT'S SAFETY RESTS ON (P-003, plan
+    // gate-suite-speedup-2026-08-12). The pure lane runs with vitest's `isolate` OFF, so files
+    // share a fork's module registry — which is the whole speedup, and also means a file can
+    // fail purely because of what a SIBLING left behind. Those are artifacts, not defects.
+    //
+    // MEASURED 2026-08-13: a lane leg failed 14 files; 10 passed when re-run isolated. If the
+    // retry re-invokes the SAME script, PC_TEST_LANE stays set, the files run non-isolated
+    // again, and the artifacts reproduce — so the one class this retry is best placed to
+    // absorb is the one it cannot. Worse, each survivor counts as a failing FILE against
+    // FRESH_RETRY_MAX_FILES (15) here and ISOLATION_MAX_FILES (15) in green-checkpoint.ts,
+    // past which a red is declared a real regression and the isolation rescue is SKIPPED.
+    // Lane artifacts would then spend a budget that exists to absorb genuine load flakes.
+    //
+    // `test` sets no lane env, so it resolves the default config and is isolated BY
+    // CONSTRUCTION — the same property resolveWorkspaceTestInvocation relies on for the gate's
+    // own isolation and confirming co-execution re-runs.
+    expect(src).toMatch(/const runFreshRetry = \(files\) =>\s*\(hasLaneSplit\(t\.ws\) \? run\(files, 'test'\) : run\(files\)\)/);
+    // …and it is the function the scoped arm actually calls. Pinned separately because the
+    // helper could be defined correctly and simply not wired in — a passing definition beside
+    // a bare `run(failedFiles)` call site would look right and behave exactly as before.
+    expect(src).toMatch(/r = runFreshRetry\(failedFiles\);/);
+    expect(src).not.toMatch(/\n\s*r = run\(failedFiles\);/);
+  });
+
+  it('reports as residue what SURVIVED the re-run, not what entered it', () => {
+    // Two-sided partner to the test above. formatLoadSuspectNotice states the files "failed
+    // the first pass AND the fresh-process re-run"; assigning the PRE-retry set made that
+    // sentence false for every file the re-run absorbed. Measured 2026-08-13: 14 in, 4 out,
+    // and the notice named all 14 — sending gate triage at 10 files that had just passed.
+    expect(src).toMatch(/residualFiles = rerunFailedFiles\.length > 0 \? rerunFailedFiles : failedFiles;/);
+    // The fallback direction is deliberate: when the re-run's output does not parse we name
+    // the pre-retry set rather than nothing, because a notice naming NO file is unactionable.
+    expect(src).toMatch(/const rerunFailedFiles = parseFailedFiles\(/);
+    expect(src).not.toMatch(/\n\s*residualFiles = failedFiles;/);
   });
 
   it('emits the advisory marker BEFORE the verdict line, and never inside it', () => {
