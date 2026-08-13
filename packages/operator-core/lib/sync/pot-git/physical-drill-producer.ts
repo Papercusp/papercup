@@ -24,6 +24,12 @@ import {
   type PhysicalPhaseBHost,
   type PhysicalPhaseBInput,
 } from './physical-drill-phase-b';
+import {
+  executePhysicalPhaseCHost,
+  validatePhysicalPhaseC,
+  type PhysicalPhaseCHost,
+  type PhysicalPhaseCInput,
+} from './physical-drill-phase-c';
 
 type JsonRecord = Record<string, unknown>;
 
@@ -260,6 +266,38 @@ async function cli(argv: string[]): Promise<unknown> {
     }
     return verdict;
   }
+  if (mode === 'phase-c-run') {
+    const [hostId, repoPath, physicalDeviceKey, peerDeviceKey, runId] = args;
+    if (
+      (hostId !== 'tower' && hostId !== 'vm') ||
+      !repoPath ||
+      !physicalDeviceKey ||
+      !peerDeviceKey ||
+      !runId
+    ) {
+      throw new Error(
+        'usage: physical-drill-producer phase-c-run <tower|vm> <repo-path> <physical-device-key> <peer-device-key> <run-id>',
+      );
+    }
+    return executePhysicalPhaseCHost({
+      hostId: hostId as PhysicalPhaseCHost,
+      repoPath,
+      physicalDeviceKey,
+      peerDeviceKey,
+      runId,
+    });
+  }
+  if (mode === 'phase-c-verify') {
+    const [inputPath] = args;
+    if (!inputPath) {
+      throw new Error('usage: physical-drill-producer phase-c-verify <private-run-input.json>');
+    }
+    const verdict = validatePhysicalPhaseC(readJson(inputPath) as PhysicalPhaseCInput);
+    if (!verdict.ok) {
+      throw new Error(`physical-drill-producer: Phase C rejected: ${verdict.errors.join('; ')}`);
+    }
+    return verdict;
+  }
   if (mode === 'finalize') {
     const [unsignedEvidencePath, towerReceiptPath, vmReceiptPath, evidencePath, trustPath] = args;
     if (!unsignedEvidencePath || !towerReceiptPath || !vmReceiptPath || !evidencePath || !trustPath) {
@@ -275,7 +313,7 @@ async function cli(argv: string[]): Promise<unknown> {
     return { ok: true, runId: artifacts.evidence.runId, evidencePath, trustPath };
   }
   throw new Error(
-    'physical-drill-producer: mode must be identity, preflight, phase-a-observe, phase-a-quarantine, phase-a-verify, phase-b-observe, phase-b-commit, phase-b-verify, sign, or finalize',
+    'physical-drill-producer: mode must be identity, preflight, phase-a-observe, phase-a-quarantine, phase-a-verify, phase-b-observe, phase-b-commit, phase-b-verify, phase-c-run, phase-c-verify, sign, or finalize',
   );
 }
 
