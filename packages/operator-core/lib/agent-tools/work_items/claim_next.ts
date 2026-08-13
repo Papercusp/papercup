@@ -258,7 +258,7 @@ export default defineTool({
         const cooldownDiag = await diagnoseFleetScopeCooldownMiss({
           scope: reconciliation.scope,
           harness: args.harness,
-          workspaceId: ident.workspaceId,
+          workspaceId: ident.workspaceId ?? undefined,
           states: args.states,
         });
         return fleetScopedMiss(reconciliation.scope, reconciliation.quarantinedIds, {
@@ -414,6 +414,26 @@ export default defineTool({
       }
     };
 
+    const authorshipRevalidationFor = async (
+      wi: { id?: string; harness?: string | null } | null,
+    ): Promise<{ authorshipRevalidation: unknown; authorshipRevalidationWarning: string } | null> => {
+      if (!wi?.id) return null;
+      try {
+        const m = await import('../../work-item-prior-work');
+        const authorshipRevalidation = await m.getClaimTimeAuthorshipRevalidationHint({
+          harness: wi.harness ?? args.harness,
+          workItemId: wi.id,
+          workspaceId: ident.workspaceId,
+        });
+        const authorshipRevalidationWarning = m.authorshipRevalidationWarning(authorshipRevalidation);
+        return authorshipRevalidation && authorshipRevalidationWarning
+          ? { authorshipRevalidation, authorshipRevalidationWarning }
+          : null;
+      } catch {
+        return null;
+      }
+    };
+
     const count = args.count ?? 1;
     // Backward-compatible single-item shape when count is omitted/1.
     if (count === 1) {
@@ -429,11 +449,14 @@ export default defineTool({
       // idle-park await(s) (best-effort, see cancelClaimableAwaits). Mutually exclusive with holding a claim.
       await cancelClaimableAwaits(assignee).catch(() => 0);
       const memory = await recallFor([wiOf(claimed)]);
-      const [planDecisionsResult, premisesResult, retractionAdvisory] = await Promise.all([
-        planDecisionsFor(wiOf(claimed)),
-        premisesFor(wiOf(claimed)),
-        getClaimTimeRetractionAdvisory(wiOf(claimed), args.harness),
-      ]);
+      const [planDecisionsResult, premisesResult, retractionAdvisory, authorshipRevalidationResult] = await Promise.all(
+        [
+          planDecisionsFor(wiOf(claimed)),
+          premisesFor(wiOf(claimed)),
+          getClaimTimeRetractionAdvisory(wiOf(claimed), args.harness),
+          authorshipRevalidationFor(wiOf(claimed)),
+        ],
+      );
       return {
         content: [
           {
@@ -446,6 +469,7 @@ export default defineTool({
                 : {}),
               ...(premisesResult ? { premises: premisesResult.premises, premisesNote: premisesResult.note } : {}),
               ...(retractionAdvisory ? { retractionWarning: retractionAdvisory.retractionWarning } : {}),
+              ...(authorshipRevalidationResult ?? {}),
             }),
           },
         ],
@@ -477,11 +501,13 @@ export default defineTool({
     // return branch.
     const claimedWithDecisions = await Promise.all(
       claimed.map(async (c) => {
-        const [planDecisionsResult, premisesResult, retractionAdvisory] = await Promise.all([
-          planDecisionsFor(wiOf(c)),
-          premisesFor(wiOf(c)),
-          getClaimTimeRetractionAdvisory(wiOf(c), args.harness),
-        ]);
+        const [planDecisionsResult, premisesResult, retractionAdvisory, authorshipRevalidationResult] =
+          await Promise.all([
+            planDecisionsFor(wiOf(c)),
+            premisesFor(wiOf(c)),
+            getClaimTimeRetractionAdvisory(wiOf(c), args.harness),
+            authorshipRevalidationFor(wiOf(c)),
+          ]);
         return {
           ...c,
           ...(planDecisionsResult
@@ -489,6 +515,7 @@ export default defineTool({
             : {}),
           ...(premisesResult ? { premises: premisesResult.premises, premisesNote: premisesResult.note } : {}),
           ...(retractionAdvisory ? { retractionWarning: retractionAdvisory.retractionWarning } : {}),
+          ...(authorshipRevalidationResult ?? {}),
         };
       }),
     );

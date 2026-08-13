@@ -38,7 +38,12 @@ import {
   fleetScopeLeaderRemedy,
 } from '../../scheduler/fleet-scope-admission';
 import { getClaimTimeCheckpointHint } from '../../work-item-checkpoint';
-import { getClaimTimePriorWorkHint, priorWorkWarning } from '../../work-item-prior-work';
+import {
+  authorshipRevalidationWarning,
+  getClaimTimeAuthorshipRevalidationHint,
+  getClaimTimePriorWorkHint,
+  priorWorkWarning,
+} from '../../work-item-prior-work';
 import { planItemClaimCollision } from '../../scheduler/plan-item-claim-collision';
 import { detectBgJobCheckpointClaim } from '../../checkpoint-bg-job-claim';
 import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
@@ -438,58 +443,71 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
     // independent read; no reason to pay a serial round-trip) and is fail-soft for the reason
     // given on readUnresolvedDepBlockers: saying nothing here asserts nothing.
     let checkpointReadFailed = false;
-    const [hint, priorRaw, laneCollision, unresolvedBlockers, premises, planDecisionsResult, retractionAdvisory] =
-      await Promise.all([
-        getClaimTimeCheckpointHint({
-          harness: workItem.harness ?? it.harness ?? null,
-          workItemId: it.id,
-          workspaceId: identity.workspaceId ?? undefined,
-        }).catch(() => {
-          checkpointReadFailed = true;
-          return null;
-        }),
-        getClaimTimePriorWorkHint({
-          harness: workItem.harness ?? it.harness ?? null,
-          workItemId: it.id,
-          workspaceId: identity.workspaceId ?? undefined,
-        }).catch(() => null),
-        planItemClaimCollision(workItem).catch(() => null),
-        readUnresolvedDepBlockers(it.id, workItem.harness ?? it.harness ?? undefined).catch(() => null),
-        // false-premise-in-prescriptive-artifacts-2026-08-02 P-001: the item's own
-        // load-bearing premises, surfaced at the moment before the cost is paid.
-        // Joins this same parallel batch (an independent read) and is fail-soft for
-        // the reason every sibling hint here is: saying nothing asserts nothing.
-        import('../../premises-claim-port')
-          .then((m) =>
-            m.getClaimTimePremises({
-              workItem: {
-                id: workItem.id ?? it.id,
-                payload: workItem.payload,
-                title: workItem.title,
-                summary: workItem.summary,
-              },
-              harness: workItem.harness ?? it.harness ?? null,
-              workspaceId: identity.workspaceId ?? undefined,
-            }),
-          )
-          .catch(() => null),
-        // EI-19387745408924340: agent-trap-guards-2026-07-26 P-003b's plan-Decisions
-        // brief was wired at scheduler:get_next ONLY — a by-id claim (this surface)
-        // of a plan-bound item saw no governing decisions at all. Same fail-soft
-        // seam as every other hint above; rendered via the shared helper so the
-        // note text cannot drift from scheduler:get_next's copy.
-        import('../../plan-decisions-claim-port')
-          .then(async (m) => {
-            const brief = await m.getClaimTimePlanDecisions({
-              workItem: { payload: workItem.payload },
-              harness: workItem.harness ?? it.harness ?? null,
-              workspaceId: identity.workspaceId ?? undefined,
-            });
-            return brief ? { decisions: brief.decisions, note: m.renderPlanDecisionsNote(brief) } : null;
-          })
-          .catch(() => null),
-        getClaimTimeRetractionAdvisory(workItem, workItem.harness ?? it.harness ?? undefined),
-      ]);
+    const [
+      hint,
+      priorRaw,
+      authorshipRevalidation,
+      laneCollision,
+      unresolvedBlockers,
+      premises,
+      planDecisionsResult,
+      retractionAdvisory,
+    ] = await Promise.all([
+      getClaimTimeCheckpointHint({
+        harness: workItem.harness ?? it.harness ?? null,
+        workItemId: it.id,
+        workspaceId: identity.workspaceId ?? undefined,
+      }).catch(() => {
+        checkpointReadFailed = true;
+        return null;
+      }),
+      getClaimTimePriorWorkHint({
+        harness: workItem.harness ?? it.harness ?? null,
+        workItemId: it.id,
+        workspaceId: identity.workspaceId ?? undefined,
+      }).catch(() => null),
+      getClaimTimeAuthorshipRevalidationHint({
+        harness: workItem.harness ?? it.harness ?? null,
+        workItemId: it.id,
+        workspaceId: identity.workspaceId ?? undefined,
+      }).catch(() => null),
+      planItemClaimCollision(workItem).catch(() => null),
+      readUnresolvedDepBlockers(it.id, workItem.harness ?? it.harness ?? undefined).catch(() => null),
+      // false-premise-in-prescriptive-artifacts-2026-08-02 P-001: the item's own
+      // load-bearing premises, surfaced at the moment before the cost is paid.
+      // Joins this same parallel batch (an independent read) and is fail-soft for
+      // the reason every sibling hint here is: saying nothing asserts nothing.
+      import('../../premises-claim-port')
+        .then((m) =>
+          m.getClaimTimePremises({
+            workItem: {
+              id: workItem.id ?? it.id,
+              payload: workItem.payload,
+              title: workItem.title,
+              summary: workItem.summary,
+            },
+            harness: workItem.harness ?? it.harness ?? null,
+            workspaceId: identity.workspaceId ?? undefined,
+          }),
+        )
+        .catch(() => null),
+      // EI-19387745408924340: agent-trap-guards-2026-07-26 P-003b's plan-Decisions
+      // brief was wired at scheduler:get_next ONLY — a by-id claim (this surface)
+      // of a plan-bound item saw no governing decisions at all. Same fail-soft
+      // seam as every other hint above; rendered via the shared helper so the
+      // note text cannot drift from scheduler:get_next's copy.
+      import('../../plan-decisions-claim-port')
+        .then(async (m) => {
+          const brief = await m.getClaimTimePlanDecisions({
+            workItem: { payload: workItem.payload },
+            harness: workItem.harness ?? it.harness ?? null,
+            workspaceId: identity.workspaceId ?? undefined,
+          });
+          return brief ? { decisions: brief.decisions, note: m.renderPlanDecisionsNote(brief) } : null;
+        })
+        .catch(() => null),
+      getClaimTimeRetractionAdvisory(workItem, workItem.harness ?? it.harness ?? undefined),
+    ]);
     const blockedWarning = blockedClaimWarning(unresolvedBlockers);
     const concurrencyWarning = concurrencyClaimWarning(concurrency, it.id);
     // WI-6737: `hint` is null for BOTH "no checkpoint exists" and "the checkpoint read threw"
@@ -500,6 +518,7 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
       ? { ...priorRaw, hasCheckpoint: checkpointReadFailed ? ('unknown' as const) : hint != null }
       : null;
     const priorWorkWarn = priorWorkWarning(priorWork);
+    const authorshipRevalidationWarn = authorshipRevalidationWarning(authorshipRevalidation);
     // EI-18654296679612119: a SEPARATE, CONDITIONAL warning — only when the checkpoint text
     // itself cites a background job/task as evidence — rather than growing the EI-529 text
     // above unconditionally (which would fire on every checkpointed claim, background job or
@@ -529,6 +548,9 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
               }
             : {}),
           ...(priorWorkWarn ? { priorWork, priorWorkWarning: priorWorkWarn } : {}),
+          ...(authorshipRevalidationWarn
+            ? { authorshipRevalidation, authorshipRevalidationWarning: authorshipRevalidationWarn }
+            : {}),
           ...(laneCollision ? { planItemClaimCollision: laneCollision } : {}),
           ...(premises ? { premises: premises.rendered, premisesNote: premises.note } : {}),
           ...(planDecisionsResult
@@ -553,6 +575,9 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
               }
             : {}),
           ...(priorWorkWarn ? { priorWork, priorWorkWarning: priorWorkWarn } : {}),
+          ...(authorshipRevalidationWarn
+            ? { authorshipRevalidation, authorshipRevalidationWarning: authorshipRevalidationWarn }
+            : {}),
           ...(laneCollision ? { planItemClaimCollision: laneCollision } : {}),
           ...(premises ? { premises: premises.rendered, premisesNote: premises.note } : {}),
           ...(planDecisionsResult

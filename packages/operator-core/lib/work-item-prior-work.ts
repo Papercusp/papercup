@@ -66,6 +66,37 @@ interface PriorWorkRow {
   worked_by_history: unknown;
 }
 
+/**
+ * EI-18765234433145274 — a deliberately narrow prompt to revalidate old, never-started-looking
+ * issue-family work before building it.
+ *
+ * Age alone was measured against the live papercusp corpus and was far too broad. The extra signal
+ * is affirmative, not inferred from absence: the authoring session has an `adv_sessions.ended_at`
+ * row and no open continuation under that owner id. A missing activity/presence/session row stays
+ * silent, which is important for federated authors and reaped presence.
+ */
+export const AUTHORSHIP_REVALIDATION_MIN_AGE_MS = 14 * 24 * 60 * 60 * 1_000;
+
+export interface ClaimTimeAuthorshipRevalidationHint {
+  createdBy: string;
+  itemCreatedAtMs: number;
+  itemAgeMs: number;
+  authorSessionEndedAtMs: number;
+  authorSessionEndedBy: string | null;
+}
+
+export interface AuthorshipRevalidationRow {
+  created_ts: number | string | null;
+  created_by: string | null;
+  attempts: number | string | null;
+  last_released_at: string | Date | null;
+  last_progress_at: string | Date | null;
+  worked_by_history: unknown;
+  author_session_ended_at: string | Date | null;
+  author_session_ended_by: string | null;
+  author_has_open_session: boolean | null;
+}
+
 /** Best-effort extraction of agent ids from `worked_by_history`, whose shape has drifted over time
  *  (array of strings, array of `{ owner|agent|ownerId }` objects, or null). Never throws: a shape we
  *  do not recognise yields no workers rather than failing the whole hint. */
@@ -98,6 +129,122 @@ function toEpochMs(v: string | Date | null): number | null {
   if (v == null) return null;
   const ms = v instanceof Date ? v.getTime() : Date.parse(String(v));
   return Number.isFinite(ms) ? ms : null;
+}
+
+/** Bigint epoch-ms columns arrive as either numbers or decimal strings. */
+function epochBigintMs(v: number | string | null): number | null {
+  const ms = typeof v === 'number' ? v : Number(v ?? NaN);
+  return Number.isFinite(ms) && ms > 0 ? ms : null;
+}
+
+/**
+ * Pure qualification seam for the live SQL row. Exported so every exclusion in the measured
+ * conjunction has a regression test instead of being trusted as opaque query prose.
+ */
+export function authorshipRevalidationHintFromRow(
+  row: AuthorshipRevalidationRow | null,
+  nowMs = Date.now(),
+): ClaimTimeAuthorshipRevalidationHint | null {
+  if (!row || !Number.isFinite(nowMs)) return null;
+  const createdBy = String(row.created_by ?? '').trim();
+  const itemCreatedAtMs = epochBigintMs(row.created_ts);
+  const authorSessionEndedAtMs = toEpochMs(row.author_session_ended_at);
+  if (!createdBy || itemCreatedAtMs == null || authorSessionEndedAtMs == null) return null;
+
+  const itemAgeMs = nowMs - itemCreatedAtMs;
+  if (itemAgeMs < AUTHORSHIP_REVALIDATION_MIN_AGE_MS || authorSessionEndedAtMs > nowMs) return null;
+
+  // Never infer "untouched" through an unknown history shape. Null is a legacy empty value; a
+  // concrete array must be empty. Anything else fails soft because silence is safer than a false
+  // revalidation prompt at claim time.
+  const noRecordedWorkers =
+    row.worked_by_history == null || (Array.isArray(row.worked_by_history) && row.worked_by_history.length === 0);
+  if (
+    toCount(row.attempts) > 0 ||
+    row.last_released_at != null ||
+    row.last_progress_at != null ||
+    !noRecordedWorkers ||
+    row.author_has_open_session !== false
+  ) {
+    return null;
+  }
+
+  return {
+    createdBy,
+    itemCreatedAtMs,
+    itemAgeMs,
+    authorSessionEndedAtMs,
+    authorSessionEndedBy: String(row.author_session_ended_by ?? '').trim() || null,
+  };
+}
+
+/**
+ * Read the narrow authorship-revalidation signal for one claimed item. The work-item claim has
+ * already committed when callers invoke this, so this lookup is presentation-only and fail-soft.
+ *
+ * `adv_sessions` is intentionally joined on POSITIVE evidence (`ended_at IS NOT NULL`). We never
+ * call a missing coord_presence/agent_activity row "dead": local retention and federation make
+ * absence ambiguous. An open continuation suppresses an older ended row after a carry/respawn.
+ */
+export async function getClaimTimeAuthorshipRevalidationHint(ref: {
+  harness: string | null;
+  workItemId: string;
+  workspaceId?: string;
+  nowMs?: number;
+}): Promise<ClaimTimeAuthorshipRevalidationHint | null> {
+  const ws = resolveConcreteWorkspaceId(ref.workspaceId);
+  if (!ws || !ref.workItemId) return null;
+  try {
+    const { sql } = getOrgPg();
+    const harness = ref.harness == null || ref.harness === '' || ref.harness === '*' ? null : ref.harness;
+    const rows = await sql<AuthorshipRevalidationRow[]>`
+      SELECT w.created_ts,
+             NULLIF(w.payload #>> '{_ei,created_by}', '') AS created_by,
+             w.attempts,
+             w.last_released_at,
+             w.last_progress_at,
+             w.worked_by_history,
+             ended.ended_at AS author_session_ended_at,
+             ended.ended_by AS author_session_ended_by,
+             EXISTS (
+               SELECT 1
+                 FROM harness_shared.adv_sessions active
+                WHERE active.workspace_id = ${ws}
+                  AND active.coord_owner_id = NULLIF(w.payload #>> '{_ei,created_by}', '')
+                  AND active.ended_at IS NULL
+             ) AS author_has_open_session
+        FROM harness_shared.work_items w
+        LEFT JOIN LATERAL (
+          SELECT s.ended_at, s.ended_by
+            FROM harness_shared.adv_sessions s
+           WHERE s.workspace_id = ${ws}
+             AND s.coord_owner_id = NULLIF(w.payload #>> '{_ei,created_by}', '')
+             AND s.ended_at IS NOT NULL
+           ORDER BY s.ended_at DESC
+           LIMIT 1
+        ) ended ON TRUE
+       WHERE w.workspace_id = ${ws}
+         AND w.feature_id = ${ref.workItemId}
+         AND (${harness}::text IS NULL OR w.harness_slug = ${harness})
+       LIMIT 1`;
+    return authorshipRevalidationHintFromRow(rows[0] ?? null, ref.nowMs ?? Date.now());
+  } catch {
+    return null;
+  }
+}
+
+/** Render only what the row proves; this is a revalidation prompt, never a claim of dead authorship. */
+export function authorshipRevalidationWarning(hint: ClaimTimeAuthorshipRevalidationHint | null): string | null {
+  if (!hint) return null;
+  const ageDays = Math.max(0, Math.floor(hint.itemAgeMs / (24 * 60 * 60 * 1_000)));
+  const endedBy = hint.authorSessionEndedBy ? ` (recorded by ${hint.authorSessionEndedBy})` : '';
+  return (
+    `⚠ AUTHORSHIP REVALIDATION: this item is ${ageDays} days old; the row records no prior claim, ` +
+    `release, or progress; and its authoring session ${hint.createdBy} is recorded ended at ` +
+    `${new Date(hint.authorSessionEndedAtMs).toISOString()}${endedBy}. This signal does NOT say ` +
+    `whether the requested work is missing or already done. Re-read the item and verify its premises ` +
+    `against current source/tests before building. [EI-18765234433145274]`
+  );
 }
 
 /**

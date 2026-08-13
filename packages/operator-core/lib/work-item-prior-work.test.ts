@@ -11,7 +11,15 @@
  * value of this feature, and a future edit that softened it would otherwise pass silently.
  */
 import { describe, expect, it } from 'vitest';
-import { parseWorkedByHistory, priorWorkWarning, type ClaimTimePriorWorkHint } from './work-item-prior-work';
+import {
+  AUTHORSHIP_REVALIDATION_MIN_AGE_MS,
+  authorshipRevalidationHintFromRow,
+  authorshipRevalidationWarning,
+  parseWorkedByHistory,
+  priorWorkWarning,
+  type AuthorshipRevalidationRow,
+  type ClaimTimePriorWorkHint,
+} from './work-item-prior-work';
 
 const hint = (over: Partial<ClaimTimePriorWorkHint> = {}): ClaimTimePriorWorkHint => ({
   lastReleasedBy: null,
@@ -28,7 +36,9 @@ describe('priorWorkWarning', () => {
   });
 
   it('ESCALATES when prior work exists but NO checkpoint was written (the WI-6096 shape)', () => {
-    const w = priorWorkWarning(hint({ lastReleasedBy: 'su-bdd5566b', releasedAtMs: Date.parse('2026-07-26T18:28:00Z') }));
+    const w = priorWorkWarning(
+      hint({ lastReleasedBy: 'su-bdd5566b', releasedAtMs: Date.parse('2026-07-26T18:28:00Z') }),
+    );
     // The three things this message must do, each pinned separately so a reword cannot quietly
     // drop one: name the hazard, name the absent checkpoint, and name the concrete next action.
     expect(w).toMatch(/PRIOR WORK/);
@@ -135,5 +145,72 @@ describe('parseWorkedByHistory', () => {
       expect(() => parseWorkedByHistory(bad)).not.toThrow();
       expect(parseWorkedByHistory(bad)).toEqual([]);
     }
+  });
+});
+
+const NOW = Date.parse('2026-08-13T08:00:00Z');
+const authorshipRow = (over: Partial<AuthorshipRevalidationRow> = {}): AuthorshipRevalidationRow => ({
+  created_ts: NOW - AUTHORSHIP_REVALIDATION_MIN_AGE_MS - 60_000,
+  created_by: 'su-ended-author',
+  attempts: 0,
+  last_released_at: null,
+  last_progress_at: null,
+  worked_by_history: [],
+  author_session_ended_at: '2026-08-08T20:05:49.863Z',
+  author_session_ended_by: 'reaper',
+  author_has_open_session: false,
+  ...over,
+});
+
+describe('authorshipRevalidationHintFromRow', () => {
+  it('qualifies only the measured aged + no-recorded-work + explicitly-ended-session conjunction', () => {
+    expect(authorshipRevalidationHintFromRow(authorshipRow(), NOW)).toEqual({
+      createdBy: 'su-ended-author',
+      itemCreatedAtMs: NOW - AUTHORSHIP_REVALIDATION_MIN_AGE_MS - 60_000,
+      itemAgeMs: AUTHORSHIP_REVALIDATION_MIN_AGE_MS + 60_000,
+      authorSessionEndedAtMs: Date.parse('2026-08-08T20:05:49.863Z'),
+      authorSessionEndedBy: 'reaper',
+    });
+  });
+
+  it.each([
+    ['too young', { created_ts: NOW - AUTHORSHIP_REVALIDATION_MIN_AGE_MS + 1 }],
+    ['missing author', { created_by: null }],
+    ['no affirmative ended session', { author_session_ended_at: null }],
+    ['open continuation exists', { author_has_open_session: true }],
+    ['prior attempt recorded', { attempts: 1 }],
+    ['prior release recorded', { last_released_at: '2026-08-01T00:00:00Z' }],
+    ['prior progress recorded', { last_progress_at: '2026-08-01T00:00:00Z' }],
+    ['prior worker recorded', { worked_by_history: [{ owner: 'su-peer' }] }],
+    ['history shape is unknown', { worked_by_history: { owner: 'su-peer' } }],
+  ] as const)('stays silent when %s', (_label, over) => {
+    expect(authorshipRevalidationHintFromRow(authorshipRow(over), NOW)).toBeNull();
+  });
+
+  it('does not infer session death from missing activity/presence evidence', () => {
+    expect(
+      authorshipRevalidationHintFromRow(
+        authorshipRow({ author_session_ended_at: null, author_has_open_session: false }),
+        NOW,
+      ),
+    ).toBeNull();
+  });
+});
+
+describe('authorshipRevalidationWarning', () => {
+  it('states the proved facts, avoids a dead-author claim, and requires source/premise verification', () => {
+    const warning = authorshipRevalidationWarning(authorshipRevalidationHintFromRow(authorshipRow(), NOW));
+    expect(warning).toMatch(/AUTHORSHIP REVALIDATION/);
+    expect(warning).toMatch(/14 days old/);
+    expect(warning).toContain('su-ended-author');
+    expect(warning).toContain('recorded ended');
+    expect(warning).toContain('recorded by reaper');
+    expect(warning).toMatch(/verify its premises against current source\/tests/i);
+    expect(warning).toMatch(/does NOT say whether the requested work is missing or already done/i);
+    expect(warning).not.toMatch(/author (?:is|was) dead/i);
+  });
+
+  it('returns null when the conjunction does not qualify', () => {
+    expect(authorshipRevalidationWarning(null)).toBeNull();
   });
 });

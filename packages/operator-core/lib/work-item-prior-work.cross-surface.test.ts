@@ -31,6 +31,13 @@ const CLAIM_DECISION_SURFACES = [
   'packages/operator-core/lib/agent-tools/scheduler/get_next.ts',
 ] as const;
 
+/** EI-18765234433145274's revalidation signal belongs on every surface that COMMITS a claim. */
+const CLAIM_COMMIT_SURFACES = [
+  'packages/operator-core/lib/agent-tools/work_items/claim.ts',
+  'packages/operator-core/lib/agent-tools/scheduler/get_next.ts',
+  'packages/operator-core/lib/agent-tools/work_items/claim_next.ts',
+] as const;
+
 describe('P-004 — prior work is distinguishable at every claim-decision surface', () => {
   it.each(CLAIM_DECISION_SURFACES)('%s wires the prior-work banner', async (rel) => {
     const { readFile } = await import('node:fs/promises');
@@ -99,5 +106,16 @@ describe('P-004 — prior work is distinguishable at every claim-decision surfac
     expect(parseWorkedByHistory([{ owner: 'su-A' }, { ownerId: 'su-B' }])).toEqual(['su-A', 'su-B']);
     expect(parseWorkedByHistory(['  ', 'su-C'])).toEqual(['su-C']);
     expect(parseWorkedByHistory('not an array')).toEqual([]);
+  });
+});
+
+describe('EI-18765234433145274 — ended-author revalidation is visible on every claim surface', () => {
+  it.each(CLAIM_COMMIT_SURFACES)('%s wires the shared authorship advisory', async (rel) => {
+    const { readFile } = await import('node:fs/promises');
+    const { resolve } = await import('node:path');
+    const src = await readFile(resolve(__dirname, '../../..', rel), 'utf8');
+    expect(src).toContain('getClaimTimeAuthorshipRevalidationHint');
+    expect(src).toContain('authorshipRevalidationWarning');
+    expect(src).toContain('authorshipRevalidation');
   });
 });

@@ -564,6 +564,8 @@ export function assembleSchedulerClaimResult(legs: {
   retractionWarning?: string | null;
   priorWork?: unknown;
   priorWorkWarning?: unknown;
+  authorshipRevalidation?: unknown;
+  authorshipRevalidationWarning?: unknown;
   planDecisions?: readonly unknown[] | null;
   planDecisionsNote?: string | null;
   premises?: unknown;
@@ -615,6 +617,12 @@ export function assembleSchedulerClaimResult(legs: {
       ? {
           priorWork: legs.priorWork,
           priorWorkWarning: legs.priorWorkWarning,
+        }
+      : {}),
+    ...(legs.authorshipRevalidation
+      ? {
+          authorshipRevalidation: legs.authorshipRevalidation,
+          authorshipRevalidationWarning: legs.authorshipRevalidationWarning,
         }
       : {}),
     ...(legs.premises ? { premises: legs.premises, premisesNote: legs.premisesNote } : {}),
@@ -1249,6 +1257,10 @@ export default defineTool({
     // is the measured way a claimant builds something that already exists.
     let premises: import('../../premises-claim-port').ClaimTimePremisesBrief | null = null;
     let retractionWarning: string | null = null;
+    let authorshipRevalidationHint: {
+      authorshipRevalidation: unknown;
+      authorshipRevalidationWarning: string;
+    } | null = null;
     if (res?.workItem) {
       const wi = res.workItem as {
         id?: string | null;
@@ -1257,30 +1269,45 @@ export default defineTool({
         title?: string | null;
         summary?: string | null;
       };
-      [[planDecisions, planDecisionsNote], premises, retractionWarning] = await Promise.all([
-        import('../../plan-decisions-claim-port')
-          .then(async (m) => {
-            const brief = await m.getClaimTimePlanDecisions({
-              workItem: { payload: wi.payload },
-              harness: wi.harness ?? args.harness,
-              workspaceId: ident.workspaceId,
-            });
-            return [brief, brief ? m.renderPlanDecisionsNote(brief) : null] as const;
-          })
-          .catch(() => [null, null] as const),
-        import('../../premises-claim-port')
-          .then((m) =>
-            m.getClaimTimePremises({
-              workItem: { id: wi.id, payload: wi.payload, title: wi.title, summary: wi.summary },
-              harness: wi.harness ?? args.harness,
-              workspaceId: ident.workspaceId,
-            }),
-          )
-          .catch(() => null),
-        getClaimTimeRetractionAdvisory(wi, wi.harness ?? args.harness)
-          .then((advisory) => advisory?.retractionWarning ?? null)
-          .catch(() => null),
-      ]);
+      [[planDecisions, planDecisionsNote], premises, retractionWarning, authorshipRevalidationHint] = await Promise.all(
+        [
+          import('../../plan-decisions-claim-port')
+            .then(async (m) => {
+              const brief = await m.getClaimTimePlanDecisions({
+                workItem: { payload: wi.payload },
+                harness: wi.harness ?? args.harness,
+                workspaceId: ident.workspaceId ?? undefined,
+              });
+              return [brief, brief ? m.renderPlanDecisionsNote(brief) : null] as const;
+            })
+            .catch(() => [null, null] as const),
+          import('../../premises-claim-port')
+            .then((m) =>
+              m.getClaimTimePremises({
+                workItem: { id: wi.id, payload: wi.payload, title: wi.title, summary: wi.summary },
+                harness: wi.harness ?? args.harness,
+                workspaceId: ident.workspaceId,
+              }),
+            )
+            .catch(() => null),
+          getClaimTimeRetractionAdvisory(wi, wi.harness ?? args.harness)
+            .then((advisory) => advisory?.retractionWarning ?? null)
+            .catch(() => null),
+          import('../../work-item-prior-work')
+            .then(async (m) => {
+              const authorshipRevalidation = await m.getClaimTimeAuthorshipRevalidationHint({
+                harness: wi.harness ?? args.harness,
+                workItemId: wi.id ?? '',
+                workspaceId: ident.workspaceId,
+              });
+              const authorshipRevalidationWarning = m.authorshipRevalidationWarning(authorshipRevalidation);
+              return authorshipRevalidation && authorshipRevalidationWarning
+                ? { authorshipRevalidation, authorshipRevalidationWarning }
+                : null;
+            })
+            .catch(() => null),
+        ],
+      );
     }
     // EI-10541: a successful self-pull means this agent is transitioning idle -> working, so
     // cancel its standing `work-item:claimable` idle-park await(s) — holding a claim and waiting
@@ -1405,6 +1432,8 @@ export default defineTool({
           retractionWarning,
           priorWork: priorWorkHint?.priorWork,
           priorWorkWarning: priorWorkHint?.priorWorkWarning,
+          authorshipRevalidation: authorshipRevalidationHint?.authorshipRevalidation,
+          authorshipRevalidationWarning: authorshipRevalidationHint?.authorshipRevalidationWarning,
           // EI-19396519606401168: this note used to be built from the
           // POST-CAP length, so a capped brief announced itself as the
           // complete set. The shared helper still renders the true total
