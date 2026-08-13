@@ -1,7 +1,7 @@
 /**
- * list-meta.test.ts — the flat-row "_meta on row[0]" total convention. Pure; no
- * PG/React. Proves attach is non-mutating + merges, read falls back to length,
- * and the count label never lets the downloaded length read as the total.
+ * list-meta.test.ts — the flat-row list-metadata convention. Pure; no PG/React.
+ * Proves attach is non-mutating + merges, reads survive set-based delta row
+ * relocation, fall back to length, and never report that length as the total.
  */
 import { describe, expect, it } from 'vitest';
 import { attachListMeta, readListMeta, readListTotal, listCountLabel } from './list-meta';
@@ -36,6 +36,16 @@ describe('readListMeta / readListTotal', () => {
     const out = attachListMeta(rows(), { total: 99 });
     expect(readListMeta(out)?.total).toBe(99);
     expect(readListTotal(out)).toBe(99);
+  });
+
+  it('finds metadata relocated away from row[0] by a set-based delta merge', () => {
+    const merged = [
+      { id: 'old-first' },
+      { id: 'middle' },
+      { id: 'new-first', _meta: { total: 25_006 } },
+    ];
+    expect(readListMeta(merged)?.total).toBe(25_006);
+    expect(readListTotal(merged)).toBe(25_006);
   });
 
   it('falls back to the downloaded length when no _meta is present', () => {

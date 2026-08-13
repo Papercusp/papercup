@@ -17,22 +17,29 @@ import type { ReactNode } from 'react';
 
 interface SyncState { loading?: boolean; fetching?: boolean; data?: unknown; error?: { message: string } | null }
 let wiState: SyncState;
+let wiArgs: unknown;
 const invalidateMock = vi.fn();
 vi.mock('@papercusp/sync', () => ({
   onSyncBusEvent: () => () => {},
-  useSyncQuery: ({ queryName }: { queryName: string }) => {
+  useSyncQuery: ({ queryName, args }: { queryName: string; args?: unknown }) => {
     if (queryName === 'trust.list') return { data: [], loading: false, fetching: false, error: null, invalidate: vi.fn() };
+    wiArgs = args;
     return { ...wiState, invalidate: invalidateMock };
   },
 }));
 vi.mock('@papercusp/grid-core', () => ({
   // The panel renders via VirtualGrid (RichGrid + an owned virtualizer); the mock
   // just renders `rows` so the assertions key off the same row buttons.
-  VirtualGrid: ({ rows, onRowClick }: { rows: { id: string }[]; onRowClick?: (r: { id: string }) => void }) => (
+  VirtualGrid: ({ rows, onRowClick, onEndReached }: {
+    rows: { id: string }[];
+    onRowClick?: (r: { id: string }) => void;
+    onEndReached?: () => void;
+  }) => (
     <div data-testid="grid">
       {rows.map((r) => (
         <button key={r.id} data-testid={`row-${r.id}`} onClick={() => onRowClick?.(r)}>{r.id}</button>
       ))}
+      {onEndReached ? <button onClick={onEndReached}>load-more</button> : null}
     </div>
   ),
   usePersistedColumnWidths: () => [{}, vi.fn()],
@@ -76,7 +83,12 @@ function renderPanel(slug = 'alpha', searchParams = '', onUrlUpdate?: (e: unknow
   );
 }
 
-beforeEach(() => { wiState = { loading: false, fetching: false, data: ROWS, error: null }; setTitle.mockReset(); invalidateMock.mockReset(); });
+beforeEach(() => {
+  wiState = { loading: false, fetching: false, data: ROWS, error: null };
+  wiArgs = undefined;
+  setTitle.mockReset();
+  invalidateMock.mockReset();
+});
 afterEach(cleanup);
 
 describe('WorkItemsPanel', () => {
@@ -114,19 +126,21 @@ describe('WorkItemsPanel', () => {
     expect(screen.getByTestId('wi-count').textContent).toContain('2 items');
   });
 
-  it('shows the DB store total (row[0]._meta.total), never the loaded length — infinite scroll loads the rest', () => {
-    // Resolver stashes the true store total on the first row; the read returned
-    // 2 rows but 57 exist. The user only cares about the total, so title + badge
-    // show 57 — no "loaded of total" / capped wording (that distinction is gone).
+  it('keeps the DB total and load-more when a delta merge relocates _meta off row 0', async () => {
+    // The resolver initially stashes the true total on row 0, but the
+    // order-insensitive delta client may relocate that row while reconstructing
+    // a newly sorted page. The panel must still report 57 and keep paging.
     wiState = {
       loading: false, fetching: false, error: null,
-      data: [{ ...ROWS[0], _meta: { total: 57 } }, ROWS[1]],
+      data: [ROWS[0], { ...ROWS[1], _meta: { total: 57 } }],
     };
     renderPanel();
     expect(setTitle).toHaveBeenCalledWith('Work items · alpha (57)');
     expect(screen.getByTestId('wi-count').textContent).toContain('57 items');
-    // No stale "loaded" wording.
     expect(screen.getByTestId('wi-count').textContent).not.toContain('loaded');
+    expect(wiArgs).toEqual({ harnessSlug: 'alpha', limit: 500 });
+    fireEvent.click(screen.getByRole('button', { name: 'load-more' }));
+    await waitFor(() => expect(wiArgs).toEqual({ harnessSlug: 'alpha', limit: 1000 }));
   });
 
   it('reflects the filter in the title + badge (shown of store total)', () => {

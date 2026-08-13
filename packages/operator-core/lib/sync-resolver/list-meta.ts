@@ -43,11 +43,23 @@ export function attachListMeta<T extends object>(rows: T[], meta: ListMeta): T[]
   );
 }
 
-/** Read the metadata stashed on row[0], or undefined when absent. */
+/**
+ * Read metadata from the row that currently carries it.
+ *
+ * `attachListMeta` always writes row[0], but a set-based delta merge preserves
+ * rows by identity rather than by server position. When the sorted first row
+ * changes, the row carrying `_meta` can therefore move elsewhere in the
+ * reconstructed array. Searching the bounded page keeps the flat-row contract
+ * intact and prevents callers from mistaking the page length for the total.
+ */
 export function readListMeta<T extends object>(
   rows: ReadonlyArray<WithListMeta<T>> | null | undefined,
 ): ListMeta | undefined {
-  return rows && rows.length > 0 ? rows[0]._meta : undefined;
+  if (!rows) return undefined;
+  for (const row of rows) {
+    if (row._meta !== undefined) return row._meta;
+  }
+  return undefined;
 }
 
 /**
