@@ -54,8 +54,7 @@ function readLatestStampFunctionSql(): { file: string; sql: string } {
   // novel generated column slips through and the row is re-stamped origin='local').
   // A guard nobody has watched fail is not a guard.
   const pinned = process.env.STAMP_FN_MIGRATION;
-  const candidates = (pinned ? [pinned] : readdirSync(SQL_DIR))
-    .filter((f) => f.endsWith('.sql'))
+  const candidates = (pinned ? [pinned] : readdirSync(SQL_DIR).filter((f) => f.endsWith('.sql')))
     .filter((f) => readFileSync(resolve(SQL_DIR, f), 'utf8').includes(FN_SIGNATURE))
     .sort((a, b) => Number.parseInt(a, 10) - Number.parseInt(b, 10));
   const file = candidates.at(-1);
@@ -108,6 +107,7 @@ beforeAll(async () => {
       ${NOVEL_GENERATED_COL} text GENERATED ALWAYS AS (workspace_id || '/' || row_id) STORED,
       origin        text,
       author_pubkey text,
+      signer_device_pubkey text,
       fed_ts        bigint,
       fed_hlc       text,
       updated_at    bigint,
@@ -134,18 +134,26 @@ beforeEach(async () => {
 });
 
 /** The projection's apply: an upsert carrying the wire op's provenance verbatim. */
-async function applyRemoteOp(payload: string, fedTs: number, fedHlc: string) {
+async function applyRemoteOp(
+  payload: string,
+  fedTs: number,
+  fedHlc: string,
+  signerDevicePubkey: string | null = null,
+) {
   await db.sql`
     INSERT INTO harness_shared.fed_generated_col_probe
-      (workspace_id, row_id, payload, origin, author_pubkey, fed_ts, fed_hlc, updated_at)
-    VALUES ('default', 'r1', ${payload}, 'remote', 'peer-b-pubkey', ${fedTs}, ${fedHlc}, ${Date.now()})
+      (workspace_id, row_id, payload, origin, author_pubkey, signer_device_pubkey,
+       fed_ts, fed_hlc, updated_at)
+    VALUES ('default', 'r1', ${payload}, 'remote', 'peer-b-pubkey', ${signerDevicePubkey},
+            ${fedTs}, ${fedHlc}, ${Date.now()})
     ON CONFLICT (workspace_id, row_id) DO UPDATE SET
-      payload       = EXCLUDED.payload,
-      origin        = EXCLUDED.origin,
-      author_pubkey = EXCLUDED.author_pubkey,
-      fed_ts        = EXCLUDED.fed_ts,
-      fed_hlc       = EXCLUDED.fed_hlc,
-      updated_at    = EXCLUDED.updated_at
+      payload              = EXCLUDED.payload,
+      origin               = EXCLUDED.origin,
+      author_pubkey        = EXCLUDED.author_pubkey,
+      signer_device_pubkey = EXCLUDED.signer_device_pubkey,
+      fed_ts               = EXCLUDED.fed_ts,
+      fed_hlc              = EXCLUDED.fed_hlc,
+      updated_at           = EXCLUDED.updated_at
   `;
 }
 
@@ -159,7 +167,7 @@ async function readRow() {
 
 describe(`stamp_local_federated_write generated-column mask (live body)`, () => {
   it('loads the function from the highest-numbered migration that defines it', () => {
-    expect(migrationFile).toMatch(/^\d+-.*\.sql$/);
+    expect(migrationFile).toMatch(/^\d+-.*\.sql(?:\.DRAFT)?$/);
   });
 
   it('WI-6210: a same-op double-apply does NOT flip origin/fed_ts, whatever the generated column is called', async () => {
@@ -198,6 +206,41 @@ describe(`stamp_local_federated_write generated-column mask (live body)`, () => 
     expect(row.payload).toBe('locally-edited');
     expect(row.origin).toBe('local');
     expect(row.fed_ts).toBeGreaterThan(fedTs);
+  });
+
+  it("WI-6250: a local write cannot replace a remote publisher-signed record's content", async () => {
+    const fedTs = 1_785_114_852_911;
+    const fedHlc = '001785114852911:00000:d05418f20cc22d33';
+    await applyRemoteOp('publisher-signed-v1', fedTs, fedHlc, 'peer-b-device-pubkey');
+
+    await expect(
+      db.sql`
+        UPDATE harness_shared.fed_generated_col_probe
+           SET payload = 'unsigned-local-replacement'
+         WHERE workspace_id = 'default' AND row_id = 'r1'
+      `,
+    ).rejects.toThrow(/publisher-signed.*remote/i);
+
+    const row = await readRow();
+    expect(row.payload).toBe('publisher-signed-v1');
+    expect(row.origin).toBe('remote');
+    expect(row.fed_ts).toBe(fedTs);
+    expect(row.fed_hlc).toBe(fedHlc);
+  });
+
+  it('WI-6250: a same-millisecond remote update with a newer HLC still applies', async () => {
+    const fedTs = 1_785_114_852_911;
+    const firstHlc = '001785114852911:00000:d05418f20cc22d33';
+    const secondHlc = '001785114852911:00001:d05418f20cc22d33';
+    await applyRemoteOp('publisher-signed-v1', fedTs, firstHlc, 'peer-b-device-pubkey');
+
+    await applyRemoteOp('publisher-signed-v2', fedTs, secondHlc, 'peer-b-device-pubkey');
+
+    const row = await readRow();
+    expect(row.payload).toBe('publisher-signed-v2');
+    expect(row.origin).toBe('remote');
+    expect(row.fed_ts).toBe(fedTs);
+    expect(row.fed_hlc).toBe(secondHlc);
   });
 
   it('a bookkeeping-only touch (updated_at) keeps the prior clock and origin', async () => {
