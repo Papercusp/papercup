@@ -439,7 +439,11 @@ describe('tauri-agent-tools target guard (EI-10939)', () => {
   let dir = '';
   const LIVE_A = process.pid; // this process — definitely alive
   const LIVE_B = process.ppid;
-  const DEAD = 999_999;
+  // Linux documents pid_max as one greater than the maximum allocatable PID, so
+  // it cannot collide with a live process even on a high-churn fleet host.
+  const DEAD = (() => {
+    try { return Number(readFileSync('/proc/sys/kernel/pid_max', 'utf8').trim()); } catch { return 2_147_483_647; }
+  })();
 
   const writeBridge = (pid: number, port: number) =>
     writeFileSync(join(dir, `tauri-dev-bridge-${pid}.token`), JSON.stringify({ port, token: `t-${pid}`, pid }));
