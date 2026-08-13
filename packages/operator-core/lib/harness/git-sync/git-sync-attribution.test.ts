@@ -66,6 +66,19 @@ describe('intentToSubject', () => {
     const long = 'x'.repeat(100);
     expect(intentToSubject(long, undefined).length).toBe(72);
   });
+  it('clamps at a word boundary with an ellipsis instead of clipping mid-word (WI-38568)', () => {
+    const intent = 'WI-38497 P-023: implement the auto-responder judge API, deterministic pre-send guardrail gate';
+    const subject = intentToSubject(intent, undefined);
+    expect(subject.length).toBeLessThanOrEqual(72);
+    expect(subject.endsWith('…')).toBe(true);
+    // Never ends mid-word: the char before the ellipsis is a whole word's end,
+    // i.e. dropping the ellipsis leaves a prefix of the intent ending at a space.
+    const stem = subject.slice(0, -1);
+    expect(intent.startsWith(stem)).toBe(true);
+    expect(intent[stem.length]).toBe(' ');
+    // Trailing punctuation before the cut is trimmed rather than left dangling.
+    expect(intentToSubject('b'.repeat(69) + ', xyz', undefined)).toBe('b'.repeat(69) + '…');
+  });
   it('falls back to the default subject when the intent is empty/blank', () => {
     expect(intentToSubject('', 'Cup')).toBe(DEFAULT_GIT_SYNC_SUBJECT);
     expect(intentToSubject('   ', undefined)).toBe(DEFAULT_GIT_SYNC_SUBJECT);
