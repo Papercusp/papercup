@@ -3597,6 +3597,21 @@ export const GREEN_CHECKPOINT_FORK_HEAP_MB = 4096;
 export const GREEN_CHECKPOINT_POST_SUITE_HEAP_MB = 16384;
 
 /**
+ * Fixed resource envelope for the post-suite checks that are proven cheap enough to
+ * overlap. This is deliberately separate from both the Vitest fork budget and the
+ * 16-GiB ceiling used by the sequential typecheck legs.
+ *
+ * P-005 measured every enrolled command independently on the shared staging host
+ * (2026-08-13): peak RSS ranged from 87–383 MiB and all nine completed in 1.3–16.1s.
+ * A 768-MiB V8 ceiling therefore retains >=2x measured headroom per command, while
+ * the 1.5-GiB group budget admits exactly two commands. Typechecks, migration checks,
+ * plane probes, and the SPA build remain outside this group.
+ */
+export const GREEN_CHECKPOINT_LOW_MEMORY_LINT_HEAP_MB = 768;
+export const GREEN_CHECKPOINT_LOW_MEMORY_LINT_BUDGET_MB = 1536;
+export const GREEN_CHECKPOINT_LOW_MEMORY_LINT_MAX_CONCURRENCY = 2;
+
+/**
  * worker-pool-crash-absorption-2026-06-25 (WI-806): the default vitest fork concurrency
  * the gate runs at. ROOT-CAUSE prevention for the 5×-consecutive-red incident where
  * `@papercusp/operator-core`'s suite CRASHED a worker fork (ENOMEM / OOM-kill under the
@@ -5697,6 +5712,13 @@ interface LegOutcome {
   skipReason?: string;
 }
 
+/** Stable, machine-readable wall-clock evidence for one logical post-suite leg. */
+export interface PostSuiteLegRecord extends LegOutcome {
+  id: string;
+  /** End-to-end wall time for this logical leg. Parallel subcommands use their union span. */
+  durationMs: number;
+}
+
 interface PostSuiteLegs {
   /** True when no leg FAILED. A skipped leg is neither a pass nor a fail: it is the
    *  documented subject-hive opt-out, and it never contributes evidence of green. */
@@ -5744,6 +5766,8 @@ interface PostSuiteLegs {
   output: string;
   /** P-012 signature fragments for whichever legs failed (`lint:tsc`, …). */
   failingSignatures: string[];
+  /** Ordered exactly like the gate's logical dependency chain. */
+  records: PostSuiteLegRecord[];
 }
 
 /** The legs' state when the suite is NOT (yet) considered passing: every one skipped,
@@ -5771,7 +5795,45 @@ function legsNotRun(skipReason: string): PostSuiteLegs {
     build: skipped,
     output: '',
     failingSignatures: [],
+    records: [],
   };
+}
+
+/** Bounded mapper whose result order always matches declaration order. */
+async function mapPostSuiteBounded<T, R>(
+  items: readonly T[],
+  maxConcurrency: number,
+  run: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  const worker = async () => {
+    while (true) {
+      const index = next++;
+      if (index >= items.length) return;
+      results[index] = await run(items[index]!, index);
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(Math.max(1, Math.floor(maxConcurrency)), items.length) }, () => worker()),
+  );
+  return results;
+}
+
+function postSuiteCommandId(cmd: string, args: readonly string[]): string {
+  if (cmd === 'npm') {
+    const runIndex = args.indexOf('run');
+    if (runIndex >= 0 && args[runIndex + 1]) return args[runIndex + 1]!;
+  }
+  if (cmd === 'git' && args[0] === 'grep') return 'spa:conflict-markers';
+  return `${cmd}:${args.join(' ')}`;
+}
+
+interface PostSuiteRunOptions {
+  /** Deterministic test seam; production uses the monotonic-enough wall clock. */
+  now?: () => number;
+  /** Test seam only. Production always uses the fixed resource-derived ceiling. */
+  lowMemoryConcurrency?: number;
 }
 
 /**
@@ -5798,9 +5860,25 @@ function legsNotRun(skipReason: string): PostSuiteLegs {
 export async function runPostSuiteLegs(
   treeDir: string,
   envIn: NodeJS.ProcessEnv,
-  exec: CheckpointExec,
+  execRaw: CheckpointExec,
   spaWorkspace: string,
+  options: PostSuiteRunOptions = {},
 ): Promise<PostSuiteLegs> {
+  const now = options.now ?? Date.now;
+  const startedAt = now();
+  const executionSpans = new Map<string, Array<{ startedAt: number; endedAt: number }>>();
+  const exec: CheckpointExec = async (cmd, args, opts) => {
+    const id = postSuiteCommandId(cmd, args);
+    const commandStartedAt = now();
+    try {
+      return await execRaw(cmd, args, opts);
+    } finally {
+      const commandEndedAt = now();
+      const spans = executionSpans.get(id) ?? [];
+      spans.push({ startedAt: commandStartedAt, endedAt: commandEndedAt });
+      executionSpans.set(id, spans);
+    }
+  };
   // The suite env arrives pinned to GREEN_CHECKPOINT_FORK_HEAP_MB (4 GiB), which is
   // sized for EIGHT CONCURRENT vitest forks. These legs run SEQUENTIALLY, so that cap
   // is a category error here — and it is what OOM'd `lint:tsc` and froze `main` for
