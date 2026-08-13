@@ -501,6 +501,15 @@ import './task-reconcile-action';
 // cover `dropped` plan items too. Seeded ACTIVE (seed-plan-item-orphan-reconcile-routine.ts)
 // — pure data reconciliation, no owner-authority surface (mirrors gc-plan-runs).
 import './plan-item-orphan-reconcile-action';
+// EI-18713141708830049: `system:plan-item-reflect-orphan-reconcile` — the MIRROR of
+// the sweep above, for the reflect direction (work_item terminal → plan item still
+// `todo`). That direction had a reaction rule (plan-items/reflect-rules.ts) and NO
+// periodic backstop, so any missed event left a permanent phantom-todo that agents
+// re-investigate and nearly re-implement (30 measured 2026-08-13). Strict predicate:
+// flips only when EVERY linked work-item is terminal, at least one is done-like, and
+// none carries independent in-flight progress. Fail-closed, idempotent; the flip goes
+// through the real plans:set-status tool. Seeded ACTIVE — same class as its twin.
+import './plan-item-reflect-orphan-reconcile-action';
 // WI-5144 (follow-up from WI-4964 / rubric-system-and-auto-loop-release-profile-
 // 2026-07-15 P-011): `system:autoloop-release-readiness-monitor` — hourly cadence for
 // evaluateAutoloopReleaseProfile() (apps/operator/lib/release/release-profile.ts,

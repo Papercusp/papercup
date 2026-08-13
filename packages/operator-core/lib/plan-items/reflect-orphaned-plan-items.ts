@@ -202,7 +202,7 @@ export async function reflectOrphanedPlanItems(
        AND w.workspace_id                        = p.workspace_id
      WHERE p.status = 'todo'
        AND w.payload->'plan_item' IS NOT NULL
-     GROUP BY p.plan_slug, p.item_id, p.harness_slug
+     GROUP BY p.workspace_id, p.plan_slug, p.item_id, p.harness_slug
      LIMIT ${cap}`;
 
   out.candidatePlanItems = rows.length;
