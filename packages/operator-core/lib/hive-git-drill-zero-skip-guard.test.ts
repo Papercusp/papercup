@@ -256,10 +256,10 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
     expect(contract.status).toBe(0);
     expect(JSON.parse(contract.stdout)).toEqual({
       schemaVersion: 'hive-git-physical-scenario-contract/v1',
-      implementationState: 'offline-phase-a-executor-core-v1',
+      implementationState: 'offline-phase-a-executor-v1',
       ready: false,
       phases: [...'ABCDEFG'],
-      phaseContracts: { A: 'executor-core-installed' },
+      phaseContracts: { A: 'executor-installed' },
     });
 
     const runDir = mkdtempSync(join(evidenceDir, 'scenario-contract-'));
@@ -283,7 +283,7 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
       },
     });
     expect(attempted.status).toBe(1);
-    expect(attempted.stderr).toContain('scenario is not execution-ready (offline-phase-a-executor-core-v1)');
+    expect(attempted.stderr).toContain('scenario is not execution-ready (offline-phase-a-executor-v1)');
     expect(existsSync(output)).toBe(false);
     expect(physicalScenario).toContain('run_all_phases');
     expect(physicalScenario).not.toContain('HIVE_GIT_PHYSICAL_SCENARIO_CMD');
@@ -308,9 +308,9 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
       schemaVersion: 'hive-git-physical-phase-contract/v1',
       phase: 'A',
       planItem: 'P-302',
-      state: 'executor-core-installed',
-      ready: false,
-      missingAssertions: ['eachDeviceWritesOnlyItsOwnNamespace'],
+      state: 'executor-installed',
+      ready: true,
+      missingAssertions: [],
       target: {
         potHomeSlug: 'hello-world-3-pot',
         repoKey: 'gh-1296269',
@@ -331,7 +331,8 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
         'namespaceRefOidsMatch',
         'referencedObjectsExistOnBothHosts',
         'oneObjectDatabasePerRepo',
-        'eachDeviceWritesOnlyItsOwnNamespace',
+        'deviceSignedExactNamespaceSnapshots',
+        'freshVmOwnNamespaceSignature',
         'bootstrapCompletedAfterObservedAbsence',
       ],
       forbiddenEvidence: [
@@ -373,7 +374,7 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
       },
     );
     expect(probe.status).toBe(1);
-    expect(probe.stderr).toContain('scenario is not execution-ready (offline-phase-a-executor-core-v1)');
+    expect(probe.stderr).toContain('scenario is not execution-ready (offline-phase-a-executor-v1)');
     expect(existsSync(sshMarker)).toBe(false);
   });
 

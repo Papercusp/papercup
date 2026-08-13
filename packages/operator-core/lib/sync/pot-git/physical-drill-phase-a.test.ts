@@ -13,10 +13,14 @@ import {
   type PhysicalPhaseAInput,
 } from './physical-drill-phase-a';
 import { deviceNamespaceKey } from './storage';
+import { generateEd25519KeypairDer, signWithPrivateKeyDer } from '../../identity/ed25519';
+import { SIGREFS_REF, sigrefsSigningBytes, type SignedSigrefs } from './sigrefs';
 
 const roots: string[] = [];
-const towerKey = Buffer.alloc(32, 1).toString('base64');
-const vmKey = Buffer.alloc(32, 2).toString('base64');
+const towerDevice = generateEd25519KeypairDer();
+const vmDevice = generateEd25519KeypairDer();
+const towerKey = towerDevice.pubkeyBase64;
+const vmKey = vmDevice.pubkeyBase64;
 const times = [
   '2026-08-13T18:00:00.000Z',
   '2026-08-13T18:00:01.000Z',
@@ -58,6 +62,35 @@ function createRepo(root: string, refs: Array<[string, string]>): string {
   return repo;
 }
 
+function createWitnessedRepo(root: string, refs: Array<[string, string]>): string {
+  const repo = createRepo(root, refs);
+  for (const [device, ts, version] of [
+    [towerDevice, Date.parse(times[0]), 7],
+    [vmDevice, Date.parse(times[5]), 18],
+  ] as const) {
+    const namespace = deviceNamespaceKey(device.pubkeyBase64);
+    const payload = {
+      v: 1,
+      device_pubkey: device.pubkeyBase64,
+      version,
+      ts,
+      refs: refs
+        .filter(([name]) => name.startsWith(`refs/namespaces/${namespace}/`) && !name.endsWith(`/${SIGREFS_REF}`))
+        .map(([name]) => ({
+          ref: name.slice(`refs/namespaces/${namespace}/`.length),
+          sha: runGit(repo, ['rev-parse', name]),
+        })),
+    };
+    const signed: SignedSigrefs = {
+      ...payload,
+      sig: signWithPrivateKeyDer(device.privateKeyDer, sigrefsSigningBytes(payload)).toString('base64'),
+    };
+    const oid = runGit(repo, ['hash-object', '-w', '--stdin'], JSON.stringify(signed));
+    runGit(repo, ['update-ref', `refs/namespaces/${namespace}/${SIGREFS_REF}`, oid]);
+  }
+  return repo;
+}
+
 function newRoot(label: string): string {
   const root = mkdtempSync(join(tmpdir(), `p505-phase-a-${label}-`));
   roots.push(root);
@@ -73,8 +106,8 @@ function fixture(): PhysicalPhaseAInput {
     [`refs/namespaces/${towerNamespace}/refs/heads/work`, 'tower-work'],
     [`refs/namespaces/${vmNamespace}/refs/heads/work`, 'vm-work'],
   ];
-  const towerRepo = createRepo(towerRoot, refs);
-  const vmRepo = createRepo(vmRoot, refs);
+  const towerRepo = createWitnessedRepo(towerRoot, refs);
+  const vmRepo = createWitnessedRepo(vmRoot, refs);
   const towerBefore = capturePhysicalPhaseARepo({
     hostId: 'tower',
     state: 'present',
@@ -93,7 +126,7 @@ function fixture(): PhysicalPhaseAInput {
     peerDeviceKey: towerKey,
     observedAt: times[3],
   });
-  createRepo(vmRoot, refs);
+  createWitnessedRepo(vmRoot, refs);
   const towerAfter = capturePhysicalPhaseARepo({
     hostId: 'tower',
     state: 'present',
@@ -129,7 +162,7 @@ function fixture(): PhysicalPhaseAInput {
 }
 
 describe('P-505 fixed physical Phase A cold-join executor core', () => {
-  it('accepts only an absence-before-canonical-bootstrap two-store core and stays partial', () => {
+  it('accepts only a signed, absence-before-canonical-bootstrap two-store witness', () => {
     const verdict = validatePhysicalPhaseA(fixture());
     expect(verdict).toMatchObject({
       ok: true,
@@ -137,9 +170,9 @@ describe('P-505 fixed physical Phase A cold-join executor core', () => {
       result: {
         phase: 'A',
         planItem: 'P-302',
-        status: 'partial',
-        complete: false,
-        missingAssertions: ['eachDeviceWritesOnlyItsOwnNamespace'],
+        status: 'complete',
+        complete: true,
+        missingAssertions: [],
         assertions: {
           vmStoreQuarantinedByScenario: true,
           vmAbsenceObservedBeforeBootstrap: true,
@@ -149,6 +182,7 @@ describe('P-505 fixed physical Phase A cold-join executor core', () => {
           referencedObjectsExistOnBothHosts: true,
           oneObjectDatabasePerRepo: true,
           identityDerivedNamespacesObserved: true,
+          eachDeviceWritesOnlyItsOwnNamespace: true,
         },
       },
     });
@@ -216,6 +250,29 @@ describe('P-505 fixed physical Phase A cold-join executor core', () => {
         'Phase A observations do not preserve absence-before-bootstrap causal order',
         'VM store absence must come from the scenario atomic-quarantine operation',
       ]),
+    );
+  });
+
+  it('rejects a peer-spoofed namespace snapshot even when the ref OIDs match', () => {
+    const input = fixture();
+    const witness = input.observations.vmAfter.namespaceWitnesses.find((value) => value.deviceKey === vmKey)!;
+    witness.signed.device_pubkey = towerKey;
+    const verdict = validatePhysicalPhaseA(input);
+    expect(verdict.ok).toBe(false);
+    expect(verdict.errors).toContain(
+      `vm namespace ${deviceNamespaceKey(vmKey)} sigrefs signature is invalid`,
+    );
+  });
+
+  it('rejects a VM own-namespace signature banked before the cold bootstrap', () => {
+    const input = fixture();
+    for (const observation of [input.observations.towerAfter, input.observations.vmAfter]) {
+      observation.namespaceWitnesses.find((value) => value.deviceKey === vmKey)!.signed.ts = Date.parse(times[1]);
+    }
+    const verdict = validatePhysicalPhaseA(input);
+    expect(verdict.ok).toBe(false);
+    expect(verdict.errors).toContain(
+      'VM own-namespace signature must be created after cold bootstrap starts and before VM observation',
     );
   });
 });
