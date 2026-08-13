@@ -811,7 +811,7 @@ export function checkActiveCheckpointRun(
     if (lockHeld.held) {
       const current = currentCheckpointCandidate(root, execFn);
       const runPhase = readRunPhase(checkpointRunLockDirMirror(checkpointLogDirFromEnv(), root));
-      const eta = checkpointEta(lockHeld.elapsed_sec, runPhase?.phase === 'delivering');
+      const eta = checkpointEta(lockHeld.elapsed_sec ?? null, runPhase?.phase === 'delivering');
       // EI-18695275971973546: resolve the REAL in-flight candidate from the isolated
       // checkpoint checkout's own HEAD (see checkpointRootMirror's doc comment) instead of
       // reporting `candidate: null` — a null here was being misread as "this run's candidate
