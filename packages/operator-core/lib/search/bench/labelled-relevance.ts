@@ -411,8 +411,35 @@ export async function runLabelledPass(opts: RunLabelledPassOptions): Promise<Lab
       continue;
     }
 
-    const labelled = await mapWithConcurrency(
-      retrieval.hits.slice(0, k),
+    // POOL MODE: judge every candidate in the fused pool, then take the top-k
+    // PREFIX as the page. Judged once, not twice — `hits` and `poolHits` share
+    // the same LabelledHit objects, so the page costs nothing extra and can
+    // never carry a different label from its own pool row.
+    const page = retrieval.hits.slice(0, k);
+    const pool = retrieval.poolHits;
+    if (pool) {
+      // Checked BEFORE any judge call, because it is free here and $3.5/arm
+      // later. A broken prefix means widening the rerank slice perturbed the
+      // top-k, so this run cannot be compared with the top-k runs it exists to
+      // extend — and since that is a code defect it would break identically on
+      // every query. Abort loudly rather than spend the run to find out.
+      if (pool.length < page.length) {
+        throw new Error(
+          `pool-all invariant: poolHits (${pool.length}) is SHORTER than the page (${page.length}) for ${JSON.stringify(q.query.slice(0, 80))}`,
+        );
+      }
+      const drift = page.findIndex((h, i) => pool[i]?.docId !== h.docId);
+      if (drift >= 0) {
+        throw new Error(
+          `pool-all invariant: hits must be the PREFIX of poolHits, but rank ${drift + 1} differs ` +
+            `(page=${page[drift]?.docId} pool=${pool[drift]?.docId}) for ${JSON.stringify(q.query.slice(0, 80))}. ` +
+            `Widening the rerank slice perturbed the top-k, so this arm is NOT comparable with a top-k run.`,
+        );
+      }
+    }
+
+    const judged = await mapWithConcurrency(
+      pool ?? page,
       opts.judgeConcurrency ?? 4,
       async (hit): Promise<LabelledHit> => {
         const verdict = await opts.judge({
@@ -433,6 +460,10 @@ export async function runLabelledPass(opts: RunLabelledPassOptions): Promise<Lab
       },
     );
 
+    // The page is the prefix (asserted above), so this slice re-uses the very
+    // objects `poolHits` holds — never a second judgement of the same pair.
+    const labelled = pool ? judged.slice(0, k) : judged;
+
     const scored = scoreQuery(labelled, k);
     // An EMPTY ranking scores ndcg → 0, indistinguishable from "retrieval
     // worked and everything it found was irrelevant". Those are opposite
@@ -445,13 +476,17 @@ export async function runLabelledPass(opts: RunLabelledPassOptions): Promise<Lab
       query: q.query,
       terms: q.terms,
       hits: labelled,
+      ...(pool ? { poolHits: judged } : {}),
       ndcgAtK: excludedReason ? null : scored.ndcgAtK,
       precisionAtK: excludedReason ? null : scored.precisionAtK,
       accessoryAtK: excludedReason ? null : scored.accessoryAtK,
       coverage: scored.coverage,
       degraded: false,
       rerankApplied: retrieval.rerankApplied,
-      judgeCostUsd: labelled.reduce((a, h) => a + h.judgeCostUsd, 0),
+      // Over everything JUDGED, not just the page — in pool mode the page is
+      // ~40% of what this query actually cost, and a per-query cost that
+      // under-reports by 2.4x makes the run's own spend unauditable from its rows.
+      judgeCostUsd: judged.reduce((a, h) => a + h.judgeCostUsd, 0),
       ...(retrieval.latencyMs !== undefined ? { latencyMs: retrieval.latencyMs } : {}),
       excludedReason,
     };
@@ -459,13 +494,17 @@ export async function runLabelledPass(opts: RunLabelledPassOptions): Promise<Lab
     opts.onQueryDone?.(outcome, i);
     log(
       `[${i + 1}/${opts.queries.length}] ${q.tool} nDCG@${k}=${(outcome.ndcgAtK ?? 0).toFixed(3)} ` +
-        `hits=${labelled.length} $${judgeCostUsd.toFixed(3)} :: ${q.query.slice(0, 60)}`,
+        `hits=${labelled.length}${pool ? `/pool=${judged.length}` : ''} ` +
+        `$${judgeCostUsd.toFixed(3)} :: ${q.query.slice(0, 60)}`,
     );
   }
 
   const excludedDegraded = outcomes.filter((o) => o.degraded).length;
   const excludedEmpty = outcomes.filter((o) => !o.degraded && o.excludedReason !== null).length;
   const noRerank = outcomes.filter((o) => !o.degraded && !o.rerankApplied).length;
+  const pooled = outcomes.filter((o) => o.poolHits !== undefined);
+  const pooledCandidates = pooled.reduce((a, o) => a + (o.poolHits?.length ?? 0), 0);
+  const pooledScored = pooled.reduce((a, o) => a + (o.poolHits?.filter((h) => h.rerankScore !== undefined).length ?? 0), 0);
   // Computed BEFORE the caveats: one of them quotes its ndcgUninformative share,
   // so the prose and the reported aggregate cannot disagree.
   const overallRoll = rollUp('ALL', outcomes);
@@ -493,6 +532,20 @@ export async function runLabelledPass(opts: RunLabelledPassOptions): Promise<Lab
     `Strata are reported separately. D-079: a memory:search / recipes:search run is a SECONDARY stratum ` +
       `and must never be pooled into the headline number.`,
   ];
+
+  if (pooled.length > 0) {
+    caveats.push(
+      `POOL MODE (--pool-all) was on for ${pooled.length}/${outcomes.length} queries: ${pooledCandidates} whole-pool ` +
+        `candidates were labelled into outcomes[].poolHits. EVERY AGGREGATE ABOVE IS STILL TOP-${k} ONLY — it is ` +
+        `computed over outcomes[].hits and nothing here reads poolHits, so these numbers remain directly ` +
+        `comparable with every prior top-k run (D-083). Do not concatenate hits with poolHits: the first ${k} ` +
+        `poolHits entries ARE hits, judged once.`,
+      `Floor study (D-084/D-085): ${pooledScored}/${pooledCandidates} pooled candidates carry a rerankScore. ` +
+        `A candidate WITHOUT one was never judged by the cross-encoder (a degraded stage, or a --no-rerank arm ` +
+        `where it never ran) — that is UNKNOWN, not zero, so a >= x floor must DROP those rows. Counting them ` +
+        `as scored zeros reads a dead engine as a garbage corpus and calibrates the floor HIGH.`,
+    );
+  }
 
   return {
     version: LABELLED_PASS_VERSION,

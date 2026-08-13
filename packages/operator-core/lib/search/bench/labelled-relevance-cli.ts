@@ -17,8 +17,20 @@
  *   npx tsx packages/operator-core/lib/search/bench/labelled-relevance-cli.ts --dry-run
  *   npx tsx ... --queries 150 --k 10 --seed p038-labelled-v1
  *   npx tsx ... --secondary            # the memory/recipes strata, REPORTED SEPARATELY
+ *   npx tsx ... --pool-all             # label the WHOLE fused pool (2.4x cost) — see below
+ *
+ * ⚠ `--pool-all` COSTS 2.4x A NORMAL RUN. It judges every candidate in the fused
+ * pool instead of only the k that make the page — at k=10 that is
+ * `rerankCandidateCount(10)` = 24 candidates per query, so ~$3.5/arm at 20
+ * queries on the anthropic-direct judging path. It exists for D-084's floor
+ * study, which needs labels for the candidates a floor would CUT; those never
+ * reach the page and are invisible to every top-k metric. The aggregates are
+ * UNCHANGED by it — they stay top-k, so a pool run is still directly comparable
+ * with D-083 (see the denominator trap on `rollUp`).
  */
 import fs from 'node:fs';
+
+import type { SearchHit } from '@papercusp/search';
 
 import { llmCall } from '../../llm-testing/llm-client';
 import { judgeRelevance } from './judge-agreement';
@@ -76,6 +88,33 @@ function judgedText(hit: { excerpt: string; highlight: string; source: string })
   return `[${hit.source}] ${deduped.join('\n…\n')}`.slice(0, DOC_CHARS);
 }
 
+/**
+ * One engine hit → the bench's `RankedHit`, carrying ALL THREE per-hit
+ * magnitudes D-084 enumerated so the floor study can plot against each:
+ * `score` (fused RRF — rank-derived, in nobody's units), `rankerScores`
+ * (pre-fusion native), and `rerankScore` (the cross-encoder judgement, the only
+ * one a floor can actually be expressed in).
+ *
+ * ⚠ `rerankScore` is spread CONDITIONALLY on purpose — a candidate the
+ * cross-encoder never scored must arrive with the property ABSENT, never 0
+ * (D-085's load-bearing invariant). `rerankScore: h.rerankScore` would write
+ * `undefined` for those under a non-exactOptionalPropertyTypes reading and
+ * `?? 0` would collapse "never judged" into "judged maximally irrelevant" —
+ * which, since a degrade hits every row of a call, is what makes a floor
+ * calibrated on a dead engine come out HIGH.
+ */
+function toRankedHit(h: SearchHit, i: number): RankedHit {
+  return {
+    docId: `${h.source}:${h.source_id}`,
+    docText: judgedText(h),
+    rank: i + 1,
+    source: h.source,
+    score: h.score,
+    ...(h.rankerScores ? { rankerScores: h.rankerScores } : {}),
+    ...(typeof h.rerankScore === 'number' ? { rerankScore: h.rerankScore } : {}),
+  };
+}
+
 async function main(): Promise<void> {
   const wanted = argInt('--queries', 150);
   const k = argInt('--k', 10);
@@ -94,6 +133,11 @@ async function main(): Promise<void> {
   // in exactly one thing. Over-fetch stays at `rerankCandidateCount(k)` in BOTH
   // arms so the fused pool being cut is the same pool.
   const noRerank = process.argv.includes('--no-rerank');
+  // D-084's whole-pool floor study. Judges every over-fetched candidate, not
+  // just the k that make the page — the floor's whole question is about the
+  // candidates it would CUT, and those are exactly the ones a top-k pass never
+  // labels. 2.4x the judge calls at k=10; the aggregates stay top-k.
+  const poolAll = process.argv.includes('--pool-all');
   const tools = secondary ? SECONDARY_STRATUM_TOOLS : SEARCH_STACK_TOOLS;
 
   const [{ runHybridSearch }, { SEARCH_SOURCES }, { buildQueryEmbedder }, { activeWorkspaceId }, { getOrgPg }] =
@@ -211,27 +255,45 @@ async function main(): Promise<void> {
       deferHighlight: false,
     });
 
+    // POOL MODE reorders the pool WITHOUT cutting it (`rerankRows`' documented
+    // "pass rows.length rather than your page size" case) so every candidate
+    // comes back carrying its cross-encoder score. The page is then this list's
+    // top-k prefix.
+    //
+    // ⚠ WHY THE PAGE IS UNPERTURBED BY THE WIDER SLICE — the property the whole
+    // arm's comparability rests on. In `rankWithReranker` the slice reaches only
+    // two places: `W = window ?? max(limit, 15)` and the trailing
+    // `.slice(0, limit)` (search-core/src/rank.ts:159,182). Both cut a list that
+    // was ALREADY fully sorted by (rerank bucket, qualityScore), and V8's sort is
+    // stable, so a longer cut of the same sorted array shares its prefix
+    // exactly. The one path that could reorder rather than cut is the tiered
+    // `llmRerank` escalation — and `rerankProseHits` passes no `llm`, so it
+    // cannot fire here. `runLabelledPass` re-checks the prefix per query anyway,
+    // before spending a cent: this reasoning is about the code as it stands, and
+    // the invariant must hold for the code as it lands.
+    const sliceTo = poolAll ? results.length : k;
+
     // `attempted` is necessary-not-sufficient (WI-37670): a call that resolved
     // an engine but scored zero rows returns the retrieval order, which is
     // byte-identical to no reranking at all. Require BOTH.
     let rerankApplied = false;
     const reranked = noRerank
-      ? results.slice(0, k)
-      : await rerankProseHits(query, results, k, {
+      ? results.slice(0, sliceTo)
+      : await rerankProseHits(query, results, sliceTo, {
           onOutcome: (o) => {
             rerankApplied = o.attempted && (o.scored ?? 0) > 0;
           },
         });
 
+    const ranked = reranked.map(toRankedHit);
+
     return {
-      hits: reranked.map(
-        (h, i): RankedHit => ({
-          docId: `${h.source}:${h.source_id}`,
-          docText: judgedText(h),
-          rank: i + 1,
-          source: h.source,
-        }),
-      ),
+      hits: ranked.slice(0, k),
+      // NOTE the `--no-rerank` arm carries NO `rerankScore` on any candidate:
+      // the cross-encoder never ran, so there is nothing to floor on. That is
+      // correct and load-bearing — the floor curve is a property of the ON arm,
+      // and the OFF arm's absent scores must not be read as zeros.
+      ...(poolAll ? { poolHits: ranked } : {}),
       degraded: Boolean(legs?.degraded),
       degradeWarning: legs?.warning ?? null,
       rerankApplied,
@@ -241,19 +303,45 @@ async function main(): Promise<void> {
 
   // ---- Dry run ------------------------------------------------------------
   if (dryRun) {
-    console.log(`[labelled] --dry-run: sampled ${queries.length} queries; retrieving 3 of them.\n`);
+    console.log(
+      `[labelled] --dry-run: sampled ${queries.length} queries; retrieving 3 of them.` +
+        (poolAll ? ` POOL MODE: would judge the WHOLE fused pool per query, not just the top-${k}.` : '') +
+        `\n`,
+    );
+    const observedPools: number[] = [];
     for (const q of queries.slice(0, 3)) {
       const r = await retrieve(q.query);
+      observedPools.push(r.poolHits?.length ?? r.hits.length);
       console.log(
         `--- ${q.tool} (${q.terms} terms) degraded=${r.degraded} rerank=${r.rerankApplied} ` +
-          `hits=${r.hits.length} ${r.latencyMs}ms\nquery: ${q.query}`,
+          `hits=${r.hits.length}${r.poolHits ? ` pool=${r.poolHits.length}` : ''} ${r.latencyMs}ms\nquery: ${q.query}`,
       );
       for (const h of r.hits.slice(0, 3)) {
         console.log(`   #${h.rank} ${h.docId}: ${h.docText.slice(0, 160).replace(/\s+/g, ' ')}…`);
       }
+      // The candidates BELOW the page are the entire point of pool mode — they
+      // are what a floor would cut and what no top-k run has ever labelled. Show
+      // the magnitude a floor would be expressed in, printing an unscored one as
+      // ABSENT rather than as a blank or a zero.
+      for (const h of r.poolHits?.slice(k, k + 3) ?? []) {
+        console.log(
+          `   (below page) #${h.rank} ${h.docId} rerankScore=${h.rerankScore ?? 'ABSENT'} ` +
+            `score=${h.score?.toFixed(4) ?? 'ABSENT'}`,
+        );
+      }
     }
+    // Estimated from the pool actually MEASURED above, not from the ceiling
+    // alone: a stratum whose corpus returns fewer than `rerankCandidateCount(k)`
+    // candidates costs less, and quoting the ceiling as the estimate would
+    // overstate the spend that is about to be authorised.
+    const perQuery = poolAll ? Math.max(k, ...observedPools) : k;
     console.log(
-      `\n[labelled] would judge ~${queries.length * k} pairs. No judge calls made, nothing spent.`,
+      `\n[labelled] would judge ~${queries.length * perQuery} pairs (${perQuery}/query` +
+        (poolAll
+          ? `, ≈${(perQuery / k).toFixed(1)}x a top-${k} run; pool ceiling ` +
+            `rerankCandidateCount(${k})=${rerankCandidateCount(k)}, observed pools ${observedPools.join(',')}`
+          : '') +
+        `). No judge calls made, nothing spent.`,
     );
     return;
   }
@@ -266,6 +354,15 @@ async function main(): Promise<void> {
   // the judge's own rationale, never the aggregates, that adjudicate a
   // surprising number. The pilot learned this the expensive way.
   const rowStream = fs.createWriteStream(rowsPath, { flags: 'a' });
+
+  if (poolAll) {
+    console.log(
+      `[labelled] POOL MODE ACTIVE — judging the whole fused pool (ceiling ` +
+        `rerankCandidateCount(${k})=${rerankCandidateCount(k)} per query, ` +
+        `≈${(rerankCandidateCount(k) / k).toFixed(1)}x a top-${k} run). Every aggregate stays TOP-${k}; ` +
+        `the pool labels land in outcomes[].poolHits and feed no mean.`,
+    );
+  }
 
   const report = await runLabelledPass({
     queries,

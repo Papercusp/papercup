@@ -254,6 +254,177 @@ describe('runLabelledPass', () => {
   });
 });
 
+/**
+ * `--pool-all` (D-084/D-085): label the WHOLE fused candidate pool, not just the
+ * page, so the floor study has labels for the candidates a floor would CUT.
+ *
+ * The thing these tests exist to prevent is subtle and expensive: pool labels
+ * reaching the AGGREGATES. `rollUp` computes pollutionRate and ndcgUninformative
+ * over all of `o.hits`, and the pool's tail is exactly where the irrelevant
+ * candidates live — so widening `hits` would send pollution up for a reason that
+ * is a change of denominator, not a change in quality, while the before/after
+ * tables still looked directly comparable with D-083's.
+ */
+describe('runLabelledPass — pool mode', () => {
+  const oneQuery = [{ tool: 'docs:search', query: 'a b c', terms: 3 }];
+  /** A page of `page` hits carried as the PREFIX of a `pool`-deep candidate list. */
+  const pooled = (page: number, pool: number, over: Partial<RetrievalResult> = {}): RetrievalResult => {
+    const all = Array.from({ length: pool }, (_, i) => hit(i + 1));
+    return { hits: all.slice(0, page), poolHits: all, degraded: false, rerankApplied: true, ...over };
+  };
+  /** Relevant on the page, irrelevant below it — the realistic pool shape. */
+  const byDepth = async (input: { docId: string }): Promise<JudgeVerdict> =>
+    verdict(Number(input.docId.slice(1)) <= 10 ? 5 : 0);
+
+  it('leaves EVERY aggregate identical to a top-k run, though the pool tail is all pollution', async () => {
+    // THE DENOMINATOR GUARD. Same page, same labels; the pool arm additionally
+    // labels 14 grade-0 candidates below the page. If any of those reached
+    // rollUp, pollutionRate would jump 0 → 0.583 and read as a quality
+    // regression against D-083.
+    const topK = await runLabelledPass({
+      queries: oneQuery,
+      retrieve: async () => ok(10),
+      judge: byDepth,
+      k: 10,
+      sampleSeed: 's',
+    });
+    const pool = await runLabelledPass({
+      queries: oneQuery,
+      retrieve: async () => pooled(10, 24),
+      judge: byDepth,
+      k: 10,
+      sampleSeed: 's',
+    });
+
+    expect(pool.outcomes[0]!.poolHits).toHaveLength(24);
+    expect(pool.outcomes[0]!.poolHits!.filter((h) => h.grade === 0)).toHaveLength(14);
+    // ...and none of it moved a single number.
+    expect(pool.overall.pollutionRate).toBe(0);
+    expect(pool.overall).toEqual(topK.overall);
+    expect(pool.byTool).toEqual(topK.byTool);
+  });
+
+  it('judges each candidate ONCE — the page IS the pool prefix, not a second judgement', async () => {
+    const judge = vi.fn(byDepth);
+    const report = await runLabelledPass({
+      queries: oneQuery,
+      retrieve: async () => pooled(10, 24),
+      judge,
+      k: 10,
+      sampleSeed: 's',
+    });
+    expect(judge).toHaveBeenCalledTimes(24); // 24, NOT 24 + 10
+    const o = report.outcomes[0]!;
+    expect(o.hits).toHaveLength(10);
+    // Object identity: the page rows ARE the pool's first rows, so the two can
+    // never disagree about a label the way two judgements of one pair could.
+    expect(o.hits[0]).toBe(o.poolHits![0]);
+    expect(o.hits[9]).toBe(o.poolHits![9]);
+  });
+
+  it('ABORTS before spending a cent when the page is not the pool prefix', async () => {
+    // A perturbed top-k means the arm is not comparable with the top-k runs it
+    // exists to extend. That is a code defect, identical on every query, so the
+    // run must die rather than pay to discover it.
+    const judge = vi.fn(byDepth);
+    await expect(
+      runLabelledPass({
+        queries: oneQuery,
+        retrieve: async () => {
+          const r = pooled(10, 24);
+          return { ...r, hits: [hit(1, 'MOVED'), ...r.hits.slice(1)] };
+        },
+        judge,
+        k: 10,
+        sampleSeed: 's',
+      }),
+    ).rejects.toThrow(/PREFIX of poolHits.*rank 1 differs/s);
+    expect(judge).not.toHaveBeenCalled();
+  });
+
+  it('reports the per-query cost over the whole pool, not just the page', async () => {
+    // The page is ~40% of what a pooled query costs; a per-query cost that
+    // under-reports by 2.4x makes the run's own spend unauditable from its rows.
+    const report = await runLabelledPass({
+      queries: oneQuery,
+      retrieve: async () => pooled(10, 24),
+      judge: byDepth,
+      k: 10,
+      sampleSeed: 's',
+    });
+    expect(report.outcomes[0]!.judgeCostUsd).toBeCloseTo(0.24, 6);
+    expect(report.judgeCostUsd).toBeCloseTo(0.24, 6);
+  });
+
+  it('carries rerankScore through ABSENT — never as a zero — and counts the scored share', async () => {
+    // D-085's load-bearing invariant, at the surface the floor study reads. An
+    // unscored candidate must arrive with the property MISSING: a `>= x` floor
+    // has to drop it as UNKNOWN, and a 0 would make a degraded stage look like a
+    // corpus full of garbage and calibrate the floor high.
+    const report = await runLabelledPass({
+      queries: oneQuery,
+      retrieve: async () => {
+        const all = Array.from({ length: 24 }, (_, i) =>
+          i < 10 ? { ...hit(i + 1), rerankScore: 0.9 - i * 0.01, score: 0.016 } : { ...hit(i + 1), score: 0.008 },
+        );
+        return { hits: all.slice(0, 10), poolHits: all, degraded: false, rerankApplied: true };
+      },
+      judge: byDepth,
+      k: 10,
+      sampleSeed: 's',
+    });
+    const pool = report.outcomes[0]!.poolHits!;
+    expect(pool[0]!.rerankScore).toBeCloseTo(0.9, 6);
+    expect(pool[12]!.rerankScore).toBeUndefined();
+    expect('rerankScore' in pool[12]!).toBe(false); // absent, not an undefined-valued key
+    // A floor keeps exactly the scored rows; the unscored ones are dropped as
+    // unknown rather than counted at the bottom.
+    expect(pool.filter((h) => (h.rerankScore ?? -1) >= 0.85)).toHaveLength(6);
+    expect(report.caveats.join(' ')).toContain('10/24 pooled candidates carry a rerankScore');
+  });
+
+  it('says on the report that the aggregates stayed top-k', async () => {
+    const report = await runLabelledPass({
+      queries: oneQuery,
+      retrieve: async () => pooled(10, 24),
+      judge: byDepth,
+      k: 10,
+      sampleSeed: 's',
+    });
+    const caveats = report.caveats.join(' ');
+    expect(caveats).toContain('POOL MODE (--pool-all) was on for 1/1 queries');
+    expect(caveats).toContain('EVERY AGGREGATE ABOVE IS STILL TOP-10 ONLY');
+    expect(caveats).toContain('Do not concatenate hits with poolHits');
+    expect(formatLabelledReport(report)).toContain('EVERY AGGREGATE ABOVE IS STILL TOP-10 ONLY');
+  });
+
+  it('marks a degraded query as pooled-but-empty rather than dropping the field', async () => {
+    const report = await runLabelledPass({
+      queries: oneQuery,
+      retrieve: async () => pooled(10, 24, { degraded: true, degradeWarning: 'semantic leg did not run' }),
+      judge: byDepth,
+      k: 10,
+      sampleSeed: 's',
+    });
+    // Present-and-empty distinguishes "pooled, nothing to judge" from "this run
+    // never pooled at all", which a consumer scanning the rows cannot otherwise tell.
+    expect(report.outcomes[0]!.poolHits).toEqual([]);
+    expect(report.outcomes[0]!.excludedReason).toMatch(/DEGRADED/);
+  });
+
+  it('is OFF by default — a retrieval without poolHits behaves exactly as before', async () => {
+    const report = await runLabelledPass({
+      queries: oneQuery,
+      retrieve: async () => ok(12),
+      judge: byDepth,
+      k: 10,
+      sampleSeed: 's',
+    });
+    expect(report.outcomes[0]!.poolHits).toBeUndefined();
+    expect(report.caveats.join(' ')).not.toContain('POOL MODE');
+  });
+});
+
 describe('aggregateByTool', () => {
   it('returns an empty roll-up for no outcomes rather than dividing by zero', () => {
     expect(aggregateByTool([])).toEqual([]);
