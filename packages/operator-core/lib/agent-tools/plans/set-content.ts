@@ -408,7 +408,7 @@ export async function evaluateSetContent(
   // their shared evaluator (set-content, set-content-chunk, and plans:edit),
   // before lint and before the derived indexes are written. Idempotent and
   // prepend-only; an absent Now block remains absent.
-  const terminalStamp = stampTerminalNowBlock(body, proposed.frontmatter.status);
+  const terminalStamp = stampTerminalNowBlock(body, proposed.frontmatter.status ?? '');
   const nowStamped = terminalStamp !== null;
   if (terminalStamp !== null) {
     body = terminalStamp;
