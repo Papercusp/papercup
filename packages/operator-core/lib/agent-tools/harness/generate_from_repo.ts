@@ -28,7 +28,12 @@ import { stringify as stringifyYaml } from 'yaml';
 import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
 import { resolveAndValidate } from '../blueprint/_resolve';
-import { detectFromRepo, detectionToOverride, DEFAULT_TEST_TIMEOUT_MS, type DetectionResult } from '../../blueprint/detect-from-repo';
+import {
+  detectFromRepo,
+  detectionToOverride,
+  DEFAULT_TEST_TIMEOUT_MS,
+  type DetectionResult,
+} from '../../blueprint/detect-from-repo';
 import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import createTool from './create';
 
@@ -65,8 +70,10 @@ export default defineTool({
     'Generate a coding harness from an EXISTING git repo (kind #1 creation). Deterministically detects the test command (and VERIFIES it by running it once), the toolchain, monorepo/frontend flags, and harvests AGENTS.md/CLAUDE.md/TESTING.md into an `extends: coding-factory` blueprint override; validates it; then creates the harness via harness:create, persists its discovered origin/default branch, and seeds its active recurring git-sync routine. Skips if the repo already has .papercusp/blueprint.yaml. Use `dryRun` to preview the generated override without creating. Returns {ok, slug?, skipped?, override?, detection, validation, upstream?, gitSync?}.',
   guidance: {
     when: 'Onboarding an existing code repository as a managed coding harness — you want the blueprint inferred from the repo (test command, stack, monorepo/frontend) rather than authored by hand.',
-    notWhen: 'The repo already has a .papercusp/blueprint.yaml (it is skipped — edit the file instead). Creating a repo-less / research harness, or one whose blueprint you author explicitly — harness:create with blueprintId/blueprint. Generate-from-plan (kinds #2/#3) is out of scope.',
-    chaining: 'harness:generate-from-repo { slug, path, dryRun:true } → (inspect override) → harness:generate-from-repo { slug, path } (creates). Or blueprint:validate the returned override.',
+    notWhen:
+      'The repo already has a .papercusp/blueprint.yaml (it is skipped — edit the file instead). Creating a repo-less / research harness, or one whose blueprint you author explicitly — harness:create with blueprintId/blueprint. Generate-from-plan (kinds #2/#3) is out of scope.',
+    chaining:
+      'harness:generate-from-repo { slug, path, dryRun:true } → (inspect override) → harness:generate-from-repo { slug, path } (creates). Or blueprint:validate the returned override.',
     seeAlso: [
       'harness:create (create from a folder/blueprint instead of a repo)',
       'blueprint:validate (validate the returned override)',
@@ -83,7 +90,10 @@ export default defineTool({
       .regex(/^[a-z0-9][a-z0-9-]*$/, 'slug must be lowercase alphanumeric + dashes')
       .describe('Unique harness slug for the new harness'),
     path: z.string().min(1).describe('Absolute path to the existing git repo'),
-    dryRun: z.boolean().default(false).describe('Detect + build + validate the override, but do NOT create the harness'),
+    dryRun: z
+      .boolean()
+      .default(false)
+      .describe('Detect + build + validate the override, but do NOT create the harness'),
     runTests: z.boolean().default(true).describe('Run the detected test command once to verify it (D-023)'),
     testTimeoutMs: z
       .number()
@@ -143,7 +153,13 @@ export default defineTool({
     };
     const created = JSON.parse(createRes.content[0].text);
     if (!created.ok) {
-      return text({ ok: false, error: 'harness:create failed', create: created, override, detection: summarizeDetection(det) });
+      return text({
+        ok: false,
+        error: 'harness:create failed',
+        create: created,
+        override,
+        detection: summarizeDetection(det),
+      });
     }
 
     // 4. A generated coding harness is a managed checkout even when it is not
@@ -153,14 +169,11 @@ export default defineTool({
     //    persist those coords atomically, then compose the SAME seeding spine
     //    used by Pot members. This keeps push/permission policy, active defaults,
     //    cron jitter, and idempotency in one place.
-    let upstream: Awaited<ReturnType<typeof import('../../harness/upstream-repo-context').resolveUpstreamRepoSource>> = null;
+    let upstream: Awaited<ReturnType<typeof import('../../harness/upstream-repo-context').resolveUpstreamRepoSource>> =
+      null;
     let gitSync: import('../../harness/git-sync/git-sync-routine').SeedGitSyncRoutineOutcome | undefined;
     try {
-      const workspaceId = resolveConcreteWorkspaceId(
-        undefined,
-        ctx?.workspaceId,
-        ctx?.principal?.workspaceId,
-      );
+      const workspaceId = resolveConcreteWorkspaceId(undefined, ctx?.workspaceId, ctx?.principal?.workspaceId);
       const [{ resolveUpstreamRepoSource }, { mutateHarnessRegistry }, { seedGitSyncRoutineForMember }] =
         await Promise.all([
           import('../../harness/upstream-repo-context'),
@@ -183,9 +196,7 @@ export default defineTool({
         await mutateHarnessRegistry(
           (reg) => ({
             ...reg,
-            projects: reg.projects.map((project) =>
-              project.slug === args.slug ? { ...project, ...entry } : project,
-            ),
+            projects: reg.projects.map((project) => (project.slug === args.slug ? { ...project, ...entry } : project)),
           }),
           workspaceId,
         );

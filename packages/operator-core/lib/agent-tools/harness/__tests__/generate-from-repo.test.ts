@@ -55,7 +55,12 @@ afterEach(() => {
 describe('harness:generate-from-repo', () => {
   it('dryRun: detects + builds + validates an extends:coding override without creating', async () => {
     const root = fixture({
-      'package.json': JSON.stringify({ name: 'x', version: '1.0.0', scripts: { test: 'true' }, dependencies: { vue: '^3' } }),
+      'package.json': JSON.stringify({
+        name: 'x',
+        version: '1.0.0',
+        scripts: { test: 'true' },
+        dependencies: { vue: '^3' },
+      }),
       'pnpm-lock.yaml': '',
       'CLAUDE.md': '# rules\n',
     });
@@ -93,7 +98,9 @@ describe('harness:generate-from-repo', () => {
       'package-lock.json': '',
     });
     mocks.createHandler.mockResolvedValue({
-      content: [{ type: 'text', text: JSON.stringify({ ok: true, slug: 'mobile', path: root, provisioning: { ok: true } }) }],
+      content: [
+        { type: 'text', text: JSON.stringify({ ok: true, slug: 'mobile', path: root, provisioning: { ok: true } }) },
+      ],
     });
     mocks.resolveUpstreamRepoSource.mockResolvedValue({
       github_remote: 'https://github.com/Papercusp/mobile.git',
@@ -104,10 +111,12 @@ describe('harness:generate-from-repo', () => {
     });
 
     let persisted: Record<string, unknown> | undefined;
-    mocks.mutateHarnessRegistry.mockImplementation(async (mutator: (reg: Record<string, unknown>) => Record<string, unknown>, workspaceId: string) => {
-      persisted = mutator({ projects: [{ slug: 'mobile', path: root }] });
-      return persisted;
-    });
+    mocks.mutateHarnessRegistry.mockImplementation(
+      async (mutator: (reg: Record<string, unknown>) => Record<string, unknown>, workspaceId: string) => {
+        persisted = mutator({ projects: [{ slug: 'mobile', path: root }] });
+        return persisted;
+      },
+    );
     mocks.seedGitSyncRoutineForMember.mockResolvedValue({
       seeded: true,
       active: true,
