@@ -80,7 +80,7 @@ describe('composeFeatureKey / composeIssueKey', () => {
 });
 
 describe('CDC_CAPTURED_TABLES — federation completeness guard', () => {
-  it('includes the known federated tables (dropping one silently breaks that table\'s federation)', () => {
+  it("includes the known federated tables (dropping one silently breaks that table's federation)", () => {
     // These are the tables whose local writes MUST ride the peer-log. A regression
     // that removes one from TABLE_NAME_TO_TABLE_TAG would silently un-federate it.
     for (const t of [
@@ -244,8 +244,10 @@ describe('outboxRowToLocalWriteOp — features', () => {
   });
 
   it('an OLD-shape outbox row (no dispatch columns) maps them to null and still validates', () => {
-    const { item_kind, feature_order, swarm_affinity, redundancy, payload, ...oldRow } =
-      featureOutboxRow.row as Record<string, unknown>;
+    const { item_kind, feature_order, swarm_affinity, redundancy, payload, ...oldRow } = featureOutboxRow.row as Record<
+      string,
+      unknown
+    >;
     const op = outboxRowToLocalWriteOp({ ...featureOutboxRow, row: oldRow })!;
     const value = op.value as HarnessFeatureRow;
     expect(isHarnessFeatureRow(value)).toBe(true);

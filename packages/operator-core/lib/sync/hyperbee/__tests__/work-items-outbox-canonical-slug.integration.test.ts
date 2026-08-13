@@ -38,10 +38,7 @@ import { createFreshTestDb, type MigratedTestDb } from '@papercusp/test-config/p
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, '../../../../../..');
 const SQL_DIR = resolve(REPO_ROOT, 'libs/papercusp/libs/db/sql');
-const MIGRATION_RUNNER = resolve(
-  REPO_ROOT,
-  'libs/papercusp/packages/embedded-postgres-server/src/migration-runner.js',
-);
+const MIGRATION_RUNNER = resolve(REPO_ROOT, 'libs/papercusp/packages/embedded-postgres-server/src/migration-runner.js');
 
 // Boot pre-step (roles + extensions) — mirrors embedded-postgres-server boot /
 // stamp-trigger-coverage.integration.test.ts. Roles are cluster-global on the

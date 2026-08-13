@@ -289,9 +289,7 @@ export function composeEngineerIssueKey(storageHarnessSlug: string, issueId: str
   return `${storageHarnessSlug}/${issueId}`;
 }
 
-export function parseEngineerIssueKey(
-  key: string,
-): { storageHarnessSlug: string; issueId: string } | null {
+export function parseEngineerIssueKey(key: string): { storageHarnessSlug: string; issueId: string } | null {
   const separator = key.indexOf('/');
   if (separator <= 0 || separator === key.length - 1) return null;
   return {
@@ -361,8 +359,7 @@ function toFeatureValue(row: Record<string, unknown>): HarnessFeatureRow {
     project_id: strOrNull(row.project_id),
     expected_cost_cents: numOrNull(row.expected_cost_cents),
     tags: row.tags ?? null,
-    needs_human_review:
-      typeof row.needs_human_review === 'boolean' ? row.needs_human_review : null,
+    needs_human_review: typeof row.needs_human_review === 'boolean' ? row.needs_human_review : null,
     ts: numOrNull(row.ts),
     created_ts: numOrNull(row.created_ts),
     updated_ts: numOrNull(row.updated_ts),
@@ -393,12 +390,9 @@ function toFeatureValue(row: Record<string, unknown>): HarnessFeatureRow {
     design_spec_id: strOrNull(row.design_spec_id),
     design_status: strOrNull(row.design_status),
     needs_design: typeof row.needs_design === 'boolean' ? row.needs_design : null,
-    discarded_design_work:
-      typeof row.discarded_design_work === 'boolean' ? row.discarded_design_work : null,
+    discarded_design_work: typeof row.discarded_design_work === 'boolean' ? row.discarded_design_work : null,
     source_plan_slug: strOrNull(row.source_plan_slug),
-    source_plan_item_ids: Array.isArray(row.source_plan_item_ids)
-      ? (row.source_plan_item_ids as string[])
-      : null,
+    source_plan_item_ids: Array.isArray(row.source_plan_item_ids) ? (row.source_plan_item_ids as string[]) : null,
     see_also: Array.isArray(row.see_also) ? (row.see_also as string[]) : null,
     wave: strOrNull(row.wave),
     deprecation_reason: strOrNull(row.deprecation_reason),
@@ -481,9 +475,7 @@ function toPlanValue(row: Record<string, unknown>): HarnessPlanRow {
     template_data: row.template_data ?? null,
     promote_policy: row.promote_policy ?? null,
     input_schema: row.input_schema ?? null,
-    supersedes: Array.isArray(row.supersedes)
-      ? row.supersedes.filter((s): s is string => typeof s === 'string')
-      : [],
+    supersedes: Array.isArray(row.supersedes) ? row.supersedes.filter((s): s is string => typeof s === 'string') : [],
     superseded_by: strOrNull(row.superseded_by),
     archived: typeof row.archived === 'boolean' ? row.archived : false,
     is_legacy: typeof row.is_legacy === 'boolean' ? row.is_legacy : false,
@@ -540,9 +532,7 @@ function toMessageValue(row: Record<string, unknown>): CoordMessageRow {
     surface: String(row.surface ?? ''),
     writer_key: strOrNull(row.writer_key),
     body:
-      row.body && typeof row.body === 'object' && !Array.isArray(row.body)
-        ? (row.body as Record<string, unknown>)
-        : {},
+      row.body && typeof row.body === 'object' && !Array.isArray(row.body) ? (row.body as Record<string, unknown>) : {},
     ts: isoOrMsToEpochMs(row.ts) ?? 0,
   };
 }
@@ -611,9 +601,8 @@ function toBeeClaimSpecValue(row: Record<string, unknown>): BeeClaimSpecRow {
   return {
     harness_slug: String(row.harness_slug ?? ''),
     bee_id: String(row.bee_id ?? ''),
-    spec: (row.spec && typeof row.spec === 'object' && !Array.isArray(row.spec)
-      ? (row.spec as Record<string, unknown>)
-      : {}),
+    spec:
+      row.spec && typeof row.spec === 'object' && !Array.isArray(row.spec) ? (row.spec as Record<string, unknown>) : {},
     revision: Number(row.revision ?? 0),
     updated_by: strOrNull(row.updated_by),
   };
@@ -817,9 +806,7 @@ function toEngineerIssueValue(row: Record<string, unknown>): EngineerIssueRow {
     created_ts: createdTs,
     harness_slug: String(row.harness_slug ?? ''),
     storage_harness_slug:
-      typeof row.storage_harness_slug === 'string' && row.storage_harness_slug
-        ? row.storage_harness_slug
-        : undefined,
+      typeof row.storage_harness_slug === 'string' && row.storage_harness_slug ? row.storage_harness_slug : undefined,
     issue_id: String(row.issue_id ?? ''),
     scope: String(row.scope ?? ''),
     kind: String(row.kind ?? 'bug'),

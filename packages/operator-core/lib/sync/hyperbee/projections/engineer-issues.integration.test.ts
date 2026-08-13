@@ -171,11 +171,9 @@ describe('engineer-issues projection — pure helpers', () => {
   });
 
   it('composeKey includes the physical harness for post-828 rows', () => {
-    expect(
-      _testing.composeKey(
-        issueRow({ issue_id: 'EI-42', storage_harness_slug: 'operator:ws-ei-proj' }),
-      ),
-    ).toBe('operator:ws-ei-proj/EI-42');
+    expect(_testing.composeKey(issueRow({ issue_id: 'EI-42', storage_harness_slug: 'operator:ws-ei-proj' }))).toBe(
+      'operator:ws-ei-proj/EI-42',
+    );
   });
 });
 
@@ -442,10 +440,11 @@ describe('engineer-issues projection — writeToPg / deleteFromPg (real PG)', ()
   it('a harness-qualified tombstone deletes only the exact authored twin', async () => {
     const p = proj();
     const sameId = 'EI-826-twin';
-    await p.writeToPg(
-      issueRow({ issue_id: sameId, storage_harness_slug: SLUG }),
-      { ts: 100, origin: 'remote', authorPubkey: 'peer-papercup' },
-    );
+    await p.writeToPg(issueRow({ issue_id: sameId, storage_harness_slug: SLUG }), {
+      ts: 100,
+      origin: 'remote',
+      authorPubkey: 'peer-papercup',
+    });
     await p.writeToPg(
       issueRow({
         issue_id: sameId,

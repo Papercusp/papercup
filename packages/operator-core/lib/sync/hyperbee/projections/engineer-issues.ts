@@ -111,7 +111,11 @@ export function isEngineerIssueRow(input: unknown): input is EngineerIssueRow {
   if (!input || typeof input !== 'object') return false;
   const r = input as Record<string, unknown>;
   if (!isString(r.harness_slug) || r.harness_slug.length === 0) return false;
-  if (r.storage_harness_slug !== undefined && (!isString(r.storage_harness_slug) || r.storage_harness_slug.length === 0)) return false;
+  if (
+    r.storage_harness_slug !== undefined &&
+    (!isString(r.storage_harness_slug) || r.storage_harness_slug.length === 0)
+  )
+    return false;
   if (!isString(r.issue_id) || r.issue_id.length === 0) return false;
   if (!isString(r.scope) || r.scope.length === 0) return false;
   if (!isString(r.kind)) return false;
@@ -203,9 +207,7 @@ export interface EngineerIssuesProjectionOpts {
 
 /** Per-harness Hyperbee key == issue_id (matches the capture trigger's TG_ARGV[0]). */
 function composeKey(row: EngineerIssueRow): string {
-  return row.storage_harness_slug
-    ? composeEngineerIssueKey(row.storage_harness_slug, row.issue_id)
-    : row.issue_id;
+  return row.storage_harness_slug ? composeEngineerIssueKey(row.storage_harness_slug, row.issue_id) : row.issue_id;
 }
 
 function decodeValue(raw: unknown): EngineerIssueRow | null {
@@ -444,8 +446,7 @@ export function buildEngineerIssuesProjection(opts: EngineerIssuesProjectionOpts
     composeKey,
     decodeValue,
     writeToPg: (row, provenance) => writeToPg(opts, row, provenance),
-    deleteFromPg: (key, delTs, delHlc, provenance) =>
-      deleteFromPg(opts, key, delTs, delHlc, provenance),
+    deleteFromPg: (key, delTs, delHlc, provenance) => deleteFromPg(opts, key, delTs, delHlc, provenance),
   };
 }
 
