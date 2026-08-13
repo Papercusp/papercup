@@ -72,7 +72,11 @@ import {
   liveDriveAcceptanceGap,
   liveDriveAcceptanceMessage,
 } from '../../turn-provenance/owner-visible-surface-acceptance';
-import { authorityForCompletion, countsTowardBurnDown } from '../../work-item-completion-authority';
+import {
+  authorityForCompletion,
+  countsTowardBurnDown,
+  insufficientEvidenceReason,
+} from '../../work-item-completion-authority';
 import { renderCompletion } from '../../coord-lifecycle/render';
 import { renderReflectStep } from '../../harness/improvements/friction-markers';
 import { runBulk, bulkContent, type BulkItemResult } from '../_bulk';
@@ -1573,15 +1577,26 @@ async function completeOne(
   // have avoided it — otherwise the first they learn of it is a leader asking why their
   // burn-down did not move. Names the two fields that flip it, because "supply evidence"
   // is exactly the vague instruction the old gate got away with.
+  // The remedy is reason-specific on purpose. A close refused for `added-tests-without-path`
+  // ALREADY carries verifiedHow + testsRun, so handing it the generic advice below would tell
+  // it to re-send the exact fields it just sent — a refusal loop whose own instructions can
+  // never clear it (EI-18685043434033870).
   const authorityWarning =
     stampedAuthority === 'proposed'
       ? `${it.id} is CLOSED but its completion landed authority:'proposed' — recorded and out of the ` +
         `claimable pool, but NOT counted toward burn-down, and it stays owned by you until it is settled. ` +
-        `\`committed\` requires \`verifiedHow\` ('unit'|'integration'|'live-drove-ui'|'manual'|'already-passing') ` +
-        `PLUS at least one of \`testsRun\` / \`testResult\`. \`filesChanged\` and \`addedTests\` do NOT qualify — ` +
-        `both say what changed, neither says anything was checked. To settle it, re-call ` +
-        `work_items:complete for this id with those fields filled; if the work genuinely cannot be verified, ` +
-        `say so in \`deferred\` and leave it proposed.`
+        (insufficientEvidenceReason(completionEvidenceForGate) === 'added-tests-without-path'
+          ? `Its evidence says \`addedTests: true\` but names no file in \`filesChanged\`. Those cannot both ` +
+            `be true: if this close added or changed tests, it changed at least one file, and a completion ` +
+            `nobody can locate is the exact claim this gate exists to refuse. To settle it, re-call ` +
+            `work_items:complete for this id with \`filesChanged\` listing the test file(s) you touched — ` +
+            `real paths only, never a plausible-looking guess. If it did NOT add tests, pass ` +
+            `\`addedTests: false\` instead; that is not a workaround, it is the accurate record.`
+          : `\`committed\` requires \`verifiedHow\` ('unit'|'integration'|'live-drove-ui'|'manual'|'already-passing') ` +
+            `PLUS at least one of \`testsRun\` / \`testResult\`. \`filesChanged\` and \`addedTests\` do NOT qualify — ` +
+            `both say what changed, neither says anything was checked. To settle it, re-call ` +
+            `work_items:complete for this id with those fields filled; if the work genuinely cannot be verified, ` +
+            `say so in \`deferred\` and leave it proposed.`)
       : undefined;
 
   // Fill provenance defaults so the rendered notification is complete (D-006).
