@@ -377,6 +377,30 @@ export interface SampleReplicationLivenessOpts {
    * WI-5672/WI-5686 false-positive class.
    */
   connectedNeverReplicatedGraceMs?: number;
+  /**
+   * WI-38376: SEPARATE grace window (ms) for the `frozen` axis ONLY. Defaults
+   * to `graceMs` when omitted — unset behavior is unchanged.
+   *
+   * WI-5686 gave the zombie axis its own knob so a rig could shorten it
+   * without collapsing no_replicator's grace, and that reasoning stopped one
+   * axis short. `frozen` is the ONLY axis that covers "a replicator IS
+   * attached and the writer IS ahead, but nothing is arriving" — and it was
+   * left sharing the 180s default with no_replicator. replication_soak
+   * enforces a 90s SLA, so on run m1786592636 its cycle-3 A→B failure produced
+   * ZERO detector events on any of the three frames: the scenario gave up at
+   * 90s, the axis that would have explained it needed 180s. Three prior items
+   * (WI-5448/WI-5634/WI-5639) chased load and host pressure for a signal that
+   * was never going to be emitted.
+   *
+   * Unlike no_replicator, shortening THIS axis does not re-open the
+   * WI-5672/WI-5686 false-positive class. That class came from a cold restart
+   * legitimately holding 0 peers well past 15s; the frozen axis requires
+   * `peersCount > 0` AND a writer-ahead position AND zero merge progress, so a
+   * 0-peer re-peer window cannot arm it at all. It also carries the
+   * transport-vs-apply discriminator (`stalledStage`), which is exactly the
+   * question an SLA miss leaves open.
+   */
+  frozenGraceMs?: number;
   /** Test seam — clock override. */
   nowMs?: number;
   /**
@@ -693,6 +717,9 @@ export function sampleReplicationLiveness(
   // the caller doesn't distinguish (unchanged behavior for every existing
   // caller/test that only ever set `graceMs`).
   const zombieGraceMs = opts.connectedNeverReplicatedGraceMs ?? graceMs;
+  // WI-38376: same pattern for the frozen axis — its own grace, defaulting to
+  // `graceMs` so every existing caller/test is unaffected.
+  const frozenGraceMs = opts.frozenGraceMs ?? graceMs;
   const onEpisode = opts.onStallEpisode ?? reportEpisode;
   const onRecovery = opts.onRecovery ?? reportRecovery;
 
@@ -1086,7 +1113,7 @@ export function sampleReplicationLiveness(
       (st.peersCount ?? 0) > 0 &&
       st.lastIngestProgressMs !== null &&
       !st.alarmedFrozen &&
-      now - st.lastIngestProgressMs >= graceMs
+      now - st.lastIngestProgressMs >= frozenGraceMs
     ) {
       // Replicator attached, writer is ahead, and we have ingested NOTHING for
       // the whole grace window. Gated on peers>0 so a plainly-disconnected peer
@@ -1152,6 +1179,11 @@ function deriveVerdict(
   // WI-5686: defaults to `graceMs` — a caller that doesn't pass this (every
   // pre-existing call site) sees unchanged behavior.
   zombieGraceMs: number = graceMs,
+  // WI-38376: likewise defaults to `graceMs`. This MUST track the sample-time
+  // frozen arming condition — a read-time gate stricter than the alarm makes
+  // the liveness RPC report 'live' for a log the sampler has already alarmed
+  // on (the same trap WI-5639 fixed for the zombie axis).
+  frozenGraceMs: number = graceMs,
 ): ReplicationLogVerdict {
   // WI-3604: a flagged DHT-universe mismatch overrides every other axis for
   // this harness's logs — the split-DHT-universe outage class must read as
@@ -1190,7 +1222,7 @@ function deriveVerdict(
       st.mergedPosition !== null &&
       st.knownLength > st.mergedPosition &&
       st.lastIngestProgressMs !== null &&
-      now - st.lastIngestProgressMs >= graceMs)
+      now - st.lastIngestProgressMs >= frozenGraceMs)
   ) {
     return 'frozen';
   }
@@ -1309,6 +1341,13 @@ export interface GetReplicationLivenessOpts {
    * Defaults to `graceMs` when omitted.
    */
   connectedNeverReplicatedGraceMs?: number;
+  /**
+   * WI-38376: separate read-time grace for the `frozen` axis — mirrors
+   * `SampleReplicationLivenessOpts.frozenGraceMs`. Defaults to `graceMs` when
+   * omitted. Must be fed from the same source as the sample-time value or the
+   * RPC reports 'live' for a log the sampler has already alarmed on.
+   */
+  frozenGraceMs?: number;
 }
 
 /** Read-time snapshot of every tracked (workspace, harness)'s per-log liveness. */
@@ -1318,6 +1357,7 @@ export function getReplicationLiveness(
   const now = opts.nowMs ?? Date.now();
   const graceMs = opts.graceMs ?? DEFAULT_LIVENESS_GRACE_MS;
   const zombieGraceMs = opts.connectedNeverReplicatedGraceMs ?? graceMs;
+  const frozenGraceMs = opts.frozenGraceMs ?? graceMs;
   const out: HarnessReplicationLiveness[] = [];
   // WI-3604: iterate the UNION of registry keys ∪ dhtUniverseState keys — a
   // harness may have the mismatch flag set with zero sampled logs (e.g. it
@@ -1361,7 +1401,14 @@ export function getReplicationLiveness(
     }
     counts.expectedNeverAdmitted = unadmittedRows.length;
     for (const st of logs?.values() ?? []) {
-      const verdict = deriveVerdict(st, now, graceMs, harnessMismatched, zombieGraceMs);
+      const verdict = deriveVerdict(
+        st,
+        now,
+        graceMs,
+        harnessMismatched,
+        zombieGraceMs,
+        frozenGraceMs,
+      );
       if (verdict === 'live') counts.live += 1;
       else if (verdict === 'never_connected') counts.neverConnected += 1;
       else if (verdict === 'no_replicator') counts.noReplicator += 1;

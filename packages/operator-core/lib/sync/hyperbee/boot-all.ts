@@ -814,6 +814,11 @@ export async function bootSingleHarness(
      *  PAPERCUSP_REPLICATION_STALL_GRACE_MS if set, else `replicationStallGraceMs`
      *  (which itself falls back to the 180s production default). */
     connectedNeverReplicatedGraceMs?: number;
+    /** WI-38376: override the `frozen` axis's OWN grace (ms), separate from
+     *  `replicationStallGraceMs`. Default: env
+     *  PAPERCUSP_REPLICATION_FROZEN_GRACE_MS if set, else `replicationStallGraceMs`
+     *  (which itself falls back to the 180s production default). */
+    frozenGraceMs?: number;
   } = {},
 ): Promise<BootSingleResult> {
   const k = key(workspaceId, harnessSlug);
@@ -931,6 +936,23 @@ export async function bootSingleHarness(
   const connectedNeverReplicatedGraceMs =
     opts.connectedNeverReplicatedGraceMs ??
     (Number.isFinite(envGraceMs) && envGraceMs > 0 ? envGraceMs : undefined);
+  // WI-38376: the frozen axis gets its own env knob for the same reason the
+  // zombie axis got one above — with the difference that shortening THIS one
+  // is safe against the WI-5672/WI-5686 false-positive class. That class came
+  // from a cold restart legitimately holding 0 peers past a short grace;
+  // `frozen` requires peersCount > 0 AND a writer-ahead position AND zero
+  // merge progress, so a 0-peer re-peer window cannot arm it at all.
+  //
+  // Why a SEPARATE var rather than reusing PAPERCUSP_REPLICATION_STALL_GRACE_MS:
+  // that one must keep meaning "zombie axis only" — the rig sets it to 15s and
+  // widening its reach to `frozen` would be a behavior change to every existing
+  // rig config. PRODUCTION DEFAULT UNCHANGED (180s) unless explicitly set.
+  const envFrozenGraceMs = Number(process.env.PAPERCUSP_REPLICATION_FROZEN_GRACE_MS);
+  const frozenGraceMs =
+    opts.frozenGraceMs ??
+    (Number.isFinite(envFrozenGraceMs) && envFrozenGraceMs > 0
+      ? envFrozenGraceMs
+      : undefined);
   const resolver = opts.resolveSwarmBinding ?? defaultResolveSwarmBinding;
   // WI-1892: keep a reference to the RAW boot promise (not the raced one) so a
   // boot that outlives the timeout can be ADOPTED instead of zombified — see the
@@ -955,6 +977,7 @@ export async function bootSingleHarness(
       mergeCursorStore,
       replicationStallGraceMs,
       connectedNeverReplicatedGraceMs,
+      frozenGraceMs,
       // WI-752 late-join re-wire: the presence step no-ops against a swarm-less
       // handle and is then marked wired, so a join that only succeeds via the
       // retry left presence-gossip dead for the process lifetime (tower bg-host,

@@ -381,6 +381,17 @@ export interface BootHarnessOpts {
    */
   connectedNeverReplicatedGraceMs?: number;
   /**
+   * WI-38376: SEPARATE grace (ms) for the replication-liveness registry's
+   * `frozen` axis only. Defaults to `replicationStallGraceMs` when omitted, so
+   * a caller that only ever set the one option keeps identical behavior. See
+   * `SampleReplicationLivenessOpts.frozenGraceMs` for the full rationale — in
+   * short, WI-5686 gave the zombie axis its own knob and left `frozen` sharing
+   * the 180s default, which is 2x the 90s SLA replication_soak enforces, so
+   * the one axis that covers "replicator attached, writer ahead, nothing
+   * arriving" could never fire before that scenario gave up.
+   */
+  frozenGraceMs?: number;
+  /**
    * EI-18723690188615364: how many times the post-repair confirmation window
    * may defer judgment because the sample it landed on showed ZERO live
    * replicator peers (the WI-5481 mid-reconnect case) before it gives up and
@@ -1473,6 +1484,8 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // WI-5686: zombie axis gets its own grace, defaulting to the general one.
   const CONNECTED_NEVER_REPLICATED_GRACE_MS =
     opts.connectedNeverReplicatedGraceMs ?? REPLICATION_STALL_GRACE_MS;
+  // WI-38376: frozen axis likewise, defaulting to the general one.
+  const FROZEN_GRACE_MS = opts.frozenGraceMs ?? REPLICATION_STALL_GRACE_MS;
 
   // ── Revocation (D-004) ── the only blocklist. `revoked` holds device pubkeys
   // (base64) the read-admission decider refuses; `pubkeyToLogKey` records the
@@ -3101,6 +3114,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
               {
                 graceMs: REPLICATION_STALL_GRACE_MS,
                 connectedNeverReplicatedGraceMs: CONNECTED_NEVER_REPLICATED_GRACE_MS,
+                frozenGraceMs: FROZEN_GRACE_MS,
               },
             );
             // WI-5340: judge any OUTSTANDING post-repair confirmation off the

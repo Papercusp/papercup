@@ -282,6 +282,92 @@ describe('frozen axis (attached-but-dead: replicator present, ingest not flowing
     expect(getReplicationLiveness({ nowMs: now, graceMs: GRACE })[0]!.logs[0]!.verdict).toBe('live');
   });
 
+  // WI-38376: `frozenGraceMs` — the frozen axis's OWN grace, mirroring the
+  // WI-5686 split that gave the zombie axis one.
+  //
+  // Why it exists: the rig shortens ONLY the zombie grace, so `frozen` kept the
+  // 180s production default — 2x replication_soak's 90s SLA. On full-matrix run
+  // m1786592636 a real A→B stall therefore produced ZERO detector events on all
+  // three frames: the scenario gave up at 90s, and the one axis that covers
+  // "replicator attached, writer ahead, nothing arriving" needed 180s.
+  //
+  // The pair of assertions below is the whole point — a frozenGraceMs that was
+  // simply ignored would still pass the first one on its own.
+  it('fires on frozenGraceMs, not graceMs, when the two differ', () => {
+    const { episodes, on } = collect();
+    let now = 1_000_000;
+    const FROZEN_GRACE = GRACE / 2;
+    const sample = () =>
+      sampleReplicationLiveness(
+        WS,
+        HS,
+        { keyHex: KEY, knownLength: 10, mergedPosition: 4, peersCount: 1 },
+        {
+          graceMs: GRACE,
+          frozenGraceMs: FROZEN_GRACE,
+          nowMs: now,
+          onStallEpisode: on,
+          onRecovery: () => {},
+        },
+      );
+
+    sample(); // seeds the progress clock
+    expect(episodes).toHaveLength(0);
+    now += FROZEN_GRACE;
+    sample();
+    // Fired at the SHORTER window: had the axis still read `graceMs`, nothing
+    // would have fired here — this is the SLA-miss case that went unreported.
+    expect(episodes).toHaveLength(1);
+    expect(episodes[0]!.kind).toBe('frozen');
+    // …and the read-time verdict must AGREE with the sampler at the same grace.
+    // A read-time gate stricter than the alarm makes the liveness RPC report
+    // 'live' for a log the sampler has already alarmed on (the trap WI-5639
+    // fixed for the zombie axis).
+    expect(
+      getReplicationLiveness({ nowMs: now, graceMs: GRACE, frozenGraceMs: FROZEN_GRACE })[0]!
+        .logs[0]!.verdict,
+    ).toBe('frozen');
+  });
+
+  it('leaves the frozen axis on graceMs when frozenGraceMs is omitted', () => {
+    const { episodes, on } = collect();
+    let now = 1_000_000;
+    const sample = () =>
+      sampleReplicationLiveness(
+        WS,
+        HS,
+        { keyHex: KEY, knownLength: 10, mergedPosition: 4, peersCount: 1 },
+        { graceMs: GRACE, nowMs: now, onStallEpisode: on, onRecovery: () => {} },
+      );
+
+    sample();
+    now += GRACE / 2;
+    sample(); // half a grace window — must NOT fire for an omitted override
+    expect(episodes).toHaveLength(0);
+    now += GRACE / 2;
+    sample();
+    expect(episodes).toHaveLength(1);
+  });
+
+  // The safety property that makes shortening this axis in the rig sound: the
+  // WI-5672/WI-5686 false-positive class came from a cold restart legitimately
+  // holding 0 peers past a short grace. `frozen` requires peersCount > 0, so a
+  // 0-peer re-peer window cannot arm it however short frozenGraceMs is set.
+  it('never fires with zero peers, however short frozenGraceMs is', () => {
+    const { episodes, on } = collect();
+    let now = 1_000_000;
+    for (let i = 0; i < 5; i += 1) {
+      sampleReplicationLiveness(
+        WS,
+        HS,
+        { keyHex: KEY, knownLength: 10, mergedPosition: 4, peersCount: 0 },
+        { graceMs: GRACE, frozenGraceMs: 1, nowMs: now, onStallEpisode: on, onRecovery: () => {} },
+      );
+      now += GRACE;
+    }
+    expect(episodes.filter((e) => e.kind === 'frozen')).toHaveLength(0);
+  });
+
   it('a caught-up idle log never freezes (idle writer ≠ dead replication)', () => {
     const { episodes, on } = collect();
     let now = 1_000_000;
