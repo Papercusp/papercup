@@ -808,27 +808,37 @@ export function startupOutputReady(agent: any, output: any): boolean;
  */
 export function signalNameFromCode(signal: any): string | null;
 export function killPtyProcessTree(child: any, signal?: string, kill?: (pid: number, signal?: string | number) => true): boolean;
-/** Kill non-ancestor members left in this host's dedicated session scope. */
-export function reapDetachedPtyScopeResidue(options?: {
-    selfPid?: number;
-    platform?: string;
-    readText?: (path: string) => string | Buffer;
-    readDir?: (path: string) => Array<{ name: string; isDirectory?: () => boolean }>;
-    kill?: (pid: number, signal: string) => unknown;
-    maxPasses?: number;
+/**
+ * Kill residual members of THIS host's exact dedicated session scope while
+ * protecting the host and its full ancestor chain. The cgroup filesystem is the
+ * authority even when systemd reports the transient unit `inactive/dead`: unlike
+ * `systemctl stop`, membership remains readable until the last child exits.
+ *
+ * All IO is injectable so the inactive/dead-with-live-child regression is
+ * reproducible without putting a real process in the test runner's cgroup.
+ */
+export function reapDetachedPtyScopeResidue({ selfPid, platform, readText, readDir, kill, maxPasses, }?: {
+    selfPid?: number | undefined;
+    platform?: NodeJS.Platform | undefined;
+    readText?: ((path: any) => string) | undefined;
+    readDir?: ((path: any) => import("fs").Dirent<string>[]) | undefined;
+    kill?: ((pid: number, signal?: string | number) => true) | undefined;
+    maxPasses?: number | undefined;
 }): {
-    scopeDir: string | null;
-    protectedPids: number[];
-    killedPids: number[];
-    failedPids: number[];
-    skippedReason: string | null;
+    scopeDir: null;
+    protectedPids: any[];
+    killedPids: never[];
+    failedPids: never[];
+    skippedReason: any;
+} | {
+    scopeDir: string;
+    protectedPids: any[];
+    killedPids: any[];
+    failedPids: any[];
+    skippedReason: null;
 };
 /** Only a genuine end of an agent-launched interactive session owns the scope. */
-export function shouldReapDetachedPtyScopeResidue(options?: {
-    bridgeTty?: boolean;
-    launchedBy?: string | null;
-    reexecRequested?: unknown;
-}): boolean;
+export function shouldReapDetachedPtyScopeResidue({ bridgeTty, launchedBy, reexecRequested }?: {}): boolean;
 /** Status of the /mcp dialog row naming `name`: 'connected' | 'not-connected' |
  *  'unknown' | null (row doesn't name it). Negative markers are checked FIRST;
  *  note \bconnected\b does NOT match inside "disconnected" (no word boundary
@@ -1132,6 +1142,7 @@ export function injectTurn(sock: any, text: any): Promise<any>;
  * @param {object} [o.sessionPort]      { renderedHash } for the managed seed
  * @param {(proof:object)=>Promise<void>} [o.onKickoffPersisted] lifecycle acknowledgement
  * @param {object} [o.signalSource]      process-like on/off signal source (tests)
+ * @param {()=>object} [o.reapScopeResidue] exact-session-cgroup cleanup (tests)
  */
 export function hostThroughPty(o: {
     command: string;

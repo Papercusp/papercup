@@ -155,6 +155,7 @@ export function parseArgs(argv: any): {
     auto: null;
     mode: null;
     seat: null;
+    carry: null;
     addDir: never[];
     passthrough: never[];
     setClaudeToken: boolean;
