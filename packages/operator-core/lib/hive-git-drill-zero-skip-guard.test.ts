@@ -403,6 +403,102 @@ function physicalLegE(
   };
 }
 
+function physicalLegF(
+  tower: ReturnType<typeof generateEd25519KeypairDer>,
+  vm: ReturnType<typeof generateEd25519KeypairDer>,
+): Record<string, any> {
+  const runId = 'physical-run-2026-08-13T120000Z';
+  const namespace = (deviceKey: string) => Buffer.from(deviceKey, 'base64').toString('hex');
+  const hostResult = (
+    hostId: 'tower' | 'vm',
+    deviceKey: string,
+    peerDeviceKey: string,
+    observedAt: string,
+  ) => {
+    const live = namespace(deviceKey);
+    const departed = namespace(peerDeviceKey);
+    const beforeRefs = [
+      `refs/namespaces/${departed}/published/v1`,
+      `refs/namespaces/${live}/published/v1`,
+      `refs/namespaces/${live}/published/v2`,
+      `refs/namespaces/${live}/published/v3`,
+      `refs/namespaces/${live}/refs/heads/work`,
+    ].sort();
+    const afterRefs = [
+      `refs/archive/namespaces/${departed}/published/v1`,
+      `refs/namespaces/${live}/published/v2`,
+      `refs/namespaces/${live}/published/v3`,
+      `refs/namespaces/${live}/refs/heads/work`,
+    ].sort();
+    return {
+      schemaVersion: 'hive-git-physical-phase-f-host/v1',
+      runId,
+      planItem: 'P-307',
+      hostId,
+      deviceKey,
+      peerDeviceKey,
+      observedAt,
+      productionSurfaces: ['gcHiveGitRepo', 'checkPublishGuard'],
+      namespaces: { live, departed },
+      gc: {
+        beforeRefs,
+        afterRefs,
+        result: {
+          archivedNamespaces: [departed],
+          deletedRefs: [
+            `refs/namespaces/${live}/published/v1`,
+            `refs/namespaces/${departed}/published/v1`,
+          ],
+          errors: [],
+          keptRefs: afterRefs.filter((ref) => ref.startsWith('refs/namespaces/')),
+          reclaimedTmpPacks: 0,
+          reclaimedTmpPackBytes: 0,
+        },
+      },
+      guards: {
+        clean: {
+          ok: true,
+          refusalCode: null,
+          newObjectCount: 3,
+          newTotalBytes: 280,
+          oversizeCount: 0,
+          secretFindingCount: 0,
+          errors: [],
+        },
+        secret: {
+          ok: false,
+          refusalCode: 'secrets',
+          newObjectCount: 3,
+          newTotalBytes: 340,
+          oversizeCount: 0,
+          secretFindingCount: 1,
+          errors: ['credential.txt: planted AWS access key'],
+        },
+        oversized: {
+          ok: false,
+          refusalCode: 'blob-over-cap',
+          newObjectCount: 3,
+          newTotalBytes: 6_400,
+          oversizeCount: 1,
+          secretFindingCount: 0,
+          errors: ['oversized.bin: 6144 bytes > cap 4096'],
+        },
+      },
+      temporaryReposRemoved: true,
+    };
+  };
+  return {
+    schemaVersion: 'hive-git-physical-phase-f-input/v1',
+    runId,
+    window: { startedAt: '2026-08-13T12:28:00Z', finishedAt: '2026-08-13T12:29:50Z' },
+    identities: { towerDeviceKey: tower.pubkeyBase64, vmDeviceKey: vm.pubkeyBase64 },
+    hostResults: [
+      hostResult('tower', tower.pubkeyBase64, vm.pubkeyBase64, '2026-08-13T12:29:00Z'),
+      hostResult('vm', vm.pubkeyBase64, tower.pubkeyBase64, '2026-08-13T12:29:30Z'),
+    ],
+  };
+}
+
 function physicalFixture(): Record<string, any> {
   const towerLog = join(evidenceDir, 'tower.log');
   const vmLog = join(evidenceDir, 'vm.log');
@@ -438,6 +534,7 @@ function physicalFixture(): Record<string, any> {
     })),
     legD: physicalLegD(tower, vm),
     legE: physicalLegE(tower, vm),
+    legF: physicalLegF(tower, vm),
     legG: {
       planItem: 'P-308',
       status: 'pass',
@@ -576,12 +673,12 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
     );
   });
 
-  it('installs the offline scenario plus fixed Phase A-E executors and emits nothing before fixed A-G executors land', () => {
+  it('installs the offline scenario plus fixed Phase A-F executors and emits nothing before fixed A-G executors land', () => {
     const contract = spawnSync(physicalScenarioPath, ['--contract-check'], { encoding: 'utf8' });
     expect(contract.status).toBe(0);
     expect(JSON.parse(contract.stdout)).toEqual({
       schemaVersion: 'hive-git-physical-scenario-contract/v1',
-      implementationState: 'offline-phase-a-b-c-d-e-executors-v1',
+      implementationState: 'offline-phase-a-b-c-d-e-f-executors-v1',
       ready: false,
       phases: [...'ABCDEFG'],
       phaseContracts: {
@@ -590,6 +687,7 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
         C: 'executor-installed',
         D: 'executor-installed',
         E: 'executor-installed',
+        F: 'executor-installed',
       },
     });
 
@@ -614,7 +712,7 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
       },
     });
     expect(attempted.status).toBe(1);
-    expect(attempted.stderr).toContain('scenario is not execution-ready (offline-phase-a-b-c-d-e-executors-v1)');
+    expect(attempted.stderr).toContain('scenario is not execution-ready (offline-phase-a-b-c-d-e-f-executors-v1)');
     expect(existsSync(output)).toBe(false);
     expect(physicalScenario).toContain('run_all_phases');
     expect(physicalScenario).not.toContain('HIVE_GIT_PHYSICAL_SCENARIO_CMD');
@@ -622,7 +720,7 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
     expect(physicalScenario).toContain("'$VM_CALL' git-sync:run");
     expect(physicalScenario).toContain('phase-a-verify');
     expect(physicalScenario).toContain('physical_run_id="p505-physical-');
-    expect(physicalScenario.match(/local run_id="\$physical_run_id"/g)).toHaveLength(2);
+    expect(physicalScenario.match(/local run_id="\$physical_run_id"/g)).toHaveLength(3);
     expect(physicalScenario.indexOf('[ "$IMPLEMENTATION_STATE" = \'ready-v1\' ]')).toBeLessThan(
       physicalScenario.lastIndexOf('run_all_phases'),
     );
@@ -955,6 +1053,67 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
     expect(physicalScenario).not.toMatch(/['"]git (?:fetch|push|update-ref)/);
   });
 
+  it('pins Phase F to two-host production GC and publish guards over private temporary repositories', () => {
+    const contract = spawnSync(physicalScenarioPath, ['--phase-contract', 'F'], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        HIVE_GIT_PHYSICAL_PHASE_F_CMD: 'git update-ref refs/heads/synthetic deadbeef',
+      },
+    });
+    expect(contract.status).toBe(0);
+    expect(JSON.parse(contract.stdout)).toEqual({
+      schemaVersion: 'hive-git-physical-phase-contract/v1',
+      phase: 'F',
+      planItem: 'P-307',
+      state: 'executor-installed',
+      ready: true,
+      missingAssertions: [],
+      target: {
+        topology: 'two-host-private-lifecycle-repositories',
+        repositoryLifetime: 'one-host-execution',
+      },
+      causalOrder: [
+        'privateBareRepositoriesCreatedOnEachPhysicalHost',
+        'liveAndDepartedNamespacesPopulated',
+        'productionGcCollectorExecuted',
+        'WorkRefAndNewestTwoPublishedRefsRetained',
+        'oldestPublishedRefPruned',
+        'departedNamespaceArchived',
+        'cleanPublishAdmitted',
+        'plantedCredentialRefused',
+        'oversizedBlobRefused',
+        'temporaryRepositoriesRemoved',
+        'twoHostLifecycleEvidenceAggregated',
+      ],
+      requiredObservations: [
+        'towerAndVmProductionLifecycleResults',
+        'identityDerivedLiveAndDepartedNamespaces',
+        'exactBeforeAndAfterRefInventories',
+        'gcHiveGitRepoResult',
+        'checkPublishGuardCleanResult',
+        'checkPublishGuardSecretRefusal',
+        'checkPublishGuardOversizedBlobRefusal',
+        'temporaryRepositoryCleanup',
+      ],
+      forbiddenEvidence: [
+        'singleHostLifecycleResult',
+        'summaryOnlyLegPass',
+        'callerSelectedRepoPath',
+        'callerSelectedNamespaceOrRetentionCap',
+        'preAuthoredManifest',
+        'environmentSuppliedCommand',
+      ],
+      productionSurfaces: ['gcHiveGitRepo', 'checkPublishGuard'],
+      externalCommandOverrides: false,
+    });
+    expect(physicalScenario).not.toContain('HIVE_GIT_PHYSICAL_PHASE_F_CMD');
+    expect(physicalScenario).toContain('phase-f-run tower');
+    expect(physicalScenario).toContain('phase-f-run vm');
+    expect(physicalScenario).toContain('phase-f-verify');
+    expect(physicalScenario).toContain("local run_id=\"$physical_run_id\"");
+  });
+
   it('refuses the canonical wrapper before its first VM ssh while the scenario is incomplete', () => {
     const runDir = mkdtempSync(join(evidenceDir, 'scenario-wrapper-'));
     const fakeBin = join(runDir, 'bin');
@@ -977,7 +1136,7 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
       },
     );
     expect(probe.status).toBe(1);
-    expect(probe.stderr).toContain('scenario is not execution-ready (offline-phase-a-b-c-d-e-executors-v1)');
+    expect(probe.stderr).toContain('scenario is not execution-ready (offline-phase-a-b-c-d-e-f-executors-v1)');
     expect(existsSync(sshMarker)).toBe(false);
   });
 
@@ -1097,6 +1256,32 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
     const verdict = validatePhysicalDrillEvidence(fixture, trustedPhysicalAnchor(fixture));
     expect(verdict.ok).toBe(false);
     expect(verdict.errors).toContain('legE identities must match the two attesting physical devices exactly');
+  });
+
+  it('rejects a generic Leg F pass with no embedded two-host lifecycle evidence', () => {
+    const fixture = physicalFixture();
+    fixture.legF = { planItem: 'P-307', status: 'pass' };
+    const verdict = validatePhysicalDrillEvidence(fixture, trustedPhysicalAnchor(fixture));
+    expect(verdict.ok).toBe(false);
+    expect(verdict.errors).toContain('legF must contain the complete validated P-307 lifecycle evidence object');
+  });
+
+  it('revalidates the embedded Leg F object and rejects an admitted planted credential', () => {
+    const fixture = physicalFixture();
+    fixture.legF.hostResults[0].guards.secret.ok = true;
+    fixture.legF.hostResults[0].guards.secret.refusalCode = null;
+    const verdict = validatePhysicalDrillEvidence(fixture, trustedPhysicalAnchor(fixture));
+    expect(verdict.ok).toBe(false);
+    expect(verdict.errors).toContain('legF: Phase F tower planted credential must be refused as secrets');
+  });
+
+  it('rejects Leg F evidence bound to devices other than the two physical attestations', () => {
+    const fixture = physicalFixture();
+    const other = generateEd25519KeypairDer();
+    fixture.legF.identities.vmDeviceKey = other.pubkeyBase64;
+    const verdict = validatePhysicalDrillEvidence(fixture, trustedPhysicalAnchor(fixture));
+    expect(verdict.ok).toBe(false);
+    expect(verdict.errors).toContain('legF identities must match the two attesting physical devices exactly');
   });
 
   it('rejects a Leg G retry that advanced the cursor before missing evidence arrived', () => {
