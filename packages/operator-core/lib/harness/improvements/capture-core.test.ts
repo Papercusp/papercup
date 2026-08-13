@@ -1214,3 +1214,64 @@ describe('EI-20275452450016416 — the achieved coverage is PERSISTED, not just 
     expect(coverageOf(d)).toBeUndefined();
   });
 });
+
+describe('WI-38403 — stable identity + fail-closed DRAIN admission', () => {
+  const payloadOf = (d: ReturnType<typeof deps>) =>
+    d.created[0].payload as Record<string, unknown> | undefined;
+
+  it('persists the server-authored normalized title identity and stronger signal key', async () => {
+    const d = deps();
+    const res = await captureImprovement(
+      { title: '[bug] Agents file duplicate drain blockers', kind: 'bug', watchdogKey: 'drain:blocked:queue' },
+      { ...d, findSemanticDupes: async () => ({ hard: [], soft: [], thresholds: { hard: 0.93, soft: 0.9 } }) },
+    );
+    expect(res.admissionIdentity).toEqual({
+      schemaVersion: 'admission-identity-v1',
+      titleKey: 'title:agents blockers drain duplicate file',
+      signalKey: 'drain:blocked:queue',
+    });
+    expect(payloadOf(d)?.admissionIdentity).toEqual(res.admissionIdentity);
+  });
+
+  it('marks a failed lexical search unavailable instead of reporting a false all-clear', async () => {
+    const d = deps();
+    const res = await captureImprovement(
+      { title: 'novel direct drain blocker', kind: 'bug', checkDuplicatesOnly: true },
+      {
+        ...d,
+        searchIssues: async () => { throw new Error('search unavailable'); },
+        findSemanticDupes: async () => ({ hard: [], soft: [], thresholds: { hard: 0.93, soft: 0.9 } }),
+      },
+    );
+    expect(res.dedupCoverage).toEqual({ lexical: 'unavailable', semantic: 'ok', degraded: true });
+  });
+
+  it('rejects a DRAIN bug before persistence when any dedup leg is unavailable, even with force', async () => {
+    const d = deps();
+    await expect(
+      captureImprovement(
+        {
+          title: 'direct drain blocker with no semantic verdict',
+          kind: 'bug',
+          force: true,
+          requireCompleteDedupCoverage: true,
+        },
+        { ...d, findSemanticDupes: async () => null },
+      ),
+    ).rejects.toMatchObject({
+      code: 'dedup_unavailable',
+      coverage: { lexical: 'ok', semantic: 'unavailable', degraded: true },
+    });
+    expect(d.created).toHaveLength(0);
+  });
+
+  it('admits a DRAIN bug when both dedup legs returned real verdicts', async () => {
+    const d = deps();
+    const res = await captureImprovement(
+      { title: 'verified unique direct drain blocker', kind: 'bug', requireCompleteDedupCoverage: true },
+      { ...d, findSemanticDupes: async () => ({ hard: [], soft: [], thresholds: { hard: 0.93, soft: 0.9 } }) },
+    );
+    expect(res.created).toBe(true);
+    expect(payloadOf(d)?.dedupCoverage).toEqual({ lexical: 'ok', semantic: 'ok', degraded: false });
+  });
+});

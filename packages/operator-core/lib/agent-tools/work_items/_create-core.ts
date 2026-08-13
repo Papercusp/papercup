@@ -33,6 +33,7 @@ import { getGenericKindDatatype } from '../../datatype-registry-store';
 import { validateDatatypePayload } from '../../datatype-payload-validation';
 import { matchRoutingGateHint, type RoutingGateIntent } from '../../routing-gate-hints';
 import { deriveRepoPathsFromText } from './_derive-paths';
+import { admissionIdentity, type AdmissionIdentity } from '../../harness/improvements/digest';
 
 /**
  * PIPELINE work-item kinds that belong to a HIVE's fleet queue (D-020): a fresh one
@@ -59,6 +60,8 @@ export interface CreateOneWorkItemArgs {
   cadence?: string;
   urgent?: boolean;
   force?: boolean;
+  /** Internal DRAIN rail derived by the tool handler from live mode state. */
+  requireCompleteDedupCoverage?: boolean;
   /** Atomic create+claim target (B-LOOP-4): the agent id to own the new item. */
   assign_to?: string;
   /**
@@ -96,6 +99,12 @@ export interface CreateOneWorkItemCtx {
   harnessSlug?: string | null;
 }
 
+export interface WorkItemDedupCoverage {
+  lexical: 'ok' | 'unavailable' | 'skipped';
+  semantic: 'ok' | 'unavailable' | 'skipped';
+  degraded: boolean;
+}
+
 export type CreateOneWorkItemResult =
   | {
       ok: true;
@@ -119,6 +128,8 @@ export type CreateOneWorkItemResult =
        *  overwhelming majority case, so a silently-broken UPDATE would hide inside it
        *  forever. Mirrors `degradedReasons` in goal-launch-settings.ts. */
       goalStampError?: string;
+      admissionIdentity?: AdmissionIdentity;
+      dedupCoverage?: WorkItemDedupCoverage;
     }
   | {
       ok: false;
@@ -241,14 +252,22 @@ export async function createOneWorkItem(
     // EI-316 lexical mirror-guard above cannot see). Hard match refuses (force:true
     // overrides, same contract as the mirror guard); soft match creates WITH an
     // advisory `similarOpen`. STRICTLY fail-open: null = "no verdict" = proceed.
+    const issueAdmission = familyOf(args.kind) === 'issue';
+    const shouldScreen = !args.force || Boolean(args.requireCompleteDedupCoverage);
+    const signalKey =
+      args.payload && typeof args.payload.watchdogKey === 'string' ? args.payload.watchdogKey : undefined;
+    const identity = admissionIdentity(args.title, signalKey);
+    let semanticLeg: WorkItemDedupCoverage['semantic'] = issueAdmission ? 'skipped' : 'skipped';
+    let lexicalLeg: WorkItemDedupCoverage['lexical'] = issueAdmission ? 'skipped' : 'skipped';
     let similarOpen: SemanticDupeCandidate[] | undefined;
-    if (!args.force) {
+    if (shouldScreen) {
       const dupes = await findSemanticDupes({
         title: args.title,
         summary: args.summary,
         harness: args.harness ?? ctx.harnessSlug ?? undefined,
       });
-      if (dupes && dupes.hard.length > 0) {
+      if (issueAdmission) semanticLeg = dupes ? 'ok' : 'unavailable';
+      if (dupes && dupes.hard.length > 0 && (!args.force || args.requireCompleteDedupCoverage)) {
         const top = dupes.hard[0];
         return {
           ok: false,
@@ -268,7 +287,7 @@ export async function createOneWorkItem(
     // gap that let WI-4242 duplicate WI-4241 one minute after it landed (2026-07-12).
     // Advisory-only, never blocks; merged into the same `similarOpen` field, deduped
     // against anything the semantic guard already found.
-    if (!args.force) {
+    if (shouldScreen) {
       const recentDupes = await findRecentLexicalDupes({
         title: args.title,
         harness: args.harness ?? ctx.harnessSlug ?? undefined,
@@ -286,13 +305,46 @@ export async function createOneWorkItem(
     // field, deduped against anything the guards above already found. Issue-family
     // kinds only — engineer_issues (what searchIssuesForDedup queries) has no
     // feature/chunk rows.
-    if (!args.force && familyOf(args.kind) === 'issue') {
-      const fulltextDupes = await findFulltextLexicalDupes({ title: args.title });
+    let fulltextDupes: SemanticDupeCandidate[] | null = null;
+    if (shouldScreen && issueAdmission) {
+      fulltextDupes = await findFulltextLexicalDupes({ title: args.title });
+      lexicalLeg = fulltextDupes === null ? 'unavailable' : 'ok';
       if (fulltextDupes && fulltextDupes.length > 0) {
         const seen = new Set((similarOpen ?? []).map((c) => c.id));
         const fresh = fulltextDupes.filter((c) => !seen.has(c.id));
         if (fresh.length > 0) similarOpen = [...(similarOpen ?? []), ...fresh];
       }
+    }
+    const dedupCoverage: WorkItemDedupCoverage | undefined = issueAdmission
+      ? {
+          lexical: lexicalLeg,
+          semantic: semanticLeg,
+          degraded: lexicalLeg !== 'ok' || semanticLeg !== 'ok',
+        }
+      : undefined;
+    if (args.requireCompleteDedupCoverage && dedupCoverage?.degraded) {
+      return {
+        ok: false,
+        error: 'dedup_unavailable',
+        message:
+          `DRAIN bug admission requires complete dedup coverage; lexical=${dedupCoverage.lexical}, ` +
+          `semantic=${dedupCoverage.semantic}. No work-item was created — retry when every leg is available.`,
+        ...(similarOpen ? { similarOpen } : {}),
+      };
+    }
+    const exactIdentity = fulltextDupes?.find(
+      (candidate) => admissionIdentity(candidate.title).titleKey === identity.titleKey,
+    );
+    if (args.requireCompleteDedupCoverage && exactIdentity) {
+      return {
+        ok: false,
+        error: 'duplicate_identity',
+        message:
+          `stable admission identity matches OPEN work-item ${exactIdentity.id} "${exactIdentity.title}" — ` +
+          `work that item instead; DRAIN does not admit another bug with the same normalized identity.`,
+        existing: { id: exactIdentity.id, state: exactIdentity.state },
+        similarOpen: [exactIdentity],
+      };
     }
     // EI-728: route the write to the request's workspace. Precedence: explicit
     // `workspace` arg → the request's concrete workspace (ctx.workspaceId) →
@@ -359,10 +411,13 @@ export async function createOneWorkItem(
       ownerIntent: args.routing_intent,
       cadence: args.cadence,
     });
+    const payloadWithAdmission = issueAdmission
+      ? { ...(args.payload ?? {}), admissionIdentity: identity, dedupCoverage }
+      : args.payload;
     const payloadWithHint =
-      routingHint && !(args.payload && 'routingHint' in args.payload)
-        ? { ...(args.payload ?? {}), routingHint }
-        : args.payload;
+      routingHint && !(payloadWithAdmission && 'routingHint' in payloadWithAdmission)
+        ? { ...(payloadWithAdmission ?? {}), routingHint }
+        : payloadWithAdmission;
     // EI-16028: the scheduler's live `affinity(bee.held_paths, item.paths)` rank term
     // reads `payload.paths`, but that field is caller-supplied only — ~90% of
     // work-items never set it, so affinity silently collapses to NEUTRAL for almost
@@ -535,6 +590,7 @@ export async function createOneWorkItem(
       ...(goalStamp ? { goalId: goalStamp } : {}),
       ...(goalStampError ? { goalStampError } : {}),
       ...(similarOpen ? { similarOpen } : {}),
+      ...(issueAdmission ? { admissionIdentity: identity, dedupCoverage } : {}),
       ...(stateError ? { stateError } : {}),
     };
   } catch (e) {

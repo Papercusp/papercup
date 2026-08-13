@@ -41,6 +41,7 @@ import {
 } from '../../scheduler/fleet-scope-admission';
 import type { ClaimSpecSubject } from '../../scheduler/claim-spec-match';
 import { ROUTING_GATE_INTENTS } from '../../routing-gate-hints';
+import { getModes } from '../../modes/store';
 
 /**
  * Inline typed-link spec (WI-3956) — one edge written from the NEW work-item to a
@@ -320,9 +321,15 @@ export default defineTool({
             ...(args.links ? { links: args.links } : {}),
           },
         ];
+    const drainModeActive =
+      list.some((spec) => spec.kind === 'bug') &&
+      (await getModes(ident.workspaceId ?? ctx.workspaceId ?? 'default', ident.ownerId)).some(
+        (mode) => mode.mode === 'drain',
+      );
     const env = await runBulk(
       list,
       async (spec) => {
+        spec.requireCompleteDedupCoverage = drainModeActive && spec.kind === 'bug';
         // EI-18784357226895330: a claim spec governs what a member may PULL from the
         // shared claimable pool. It must NOT govern what a member may FILE. This block
         // used to refuse the whole create, which meant a member who discovered an
@@ -454,6 +461,8 @@ export default defineTool({
                   `toward its goal's spend/rollup: ${res.goalStampError}`,
               }
             : {}),
+          ...(res.admissionIdentity !== undefined ? { admissionIdentity: res.admissionIdentity } : {}),
+          ...(res.dedupCoverage !== undefined ? { dedupCoverage: res.dedupCoverage } : {}),
         };
       },
       { keyOf: (spec) => ({ title: spec.title }) },

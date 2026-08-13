@@ -40,8 +40,12 @@ vi.mock('./fulltext-lexical-dupe-guard', () => ({ findFulltextLexicalDupes: vi.f
 
 import { createOneWorkItem } from './_create-core';
 import { findSemanticDupes, type SemanticDupeResult } from './semantic-dupe-guard';
+import { findFulltextLexicalDupes } from './fulltext-lexical-dupe-guard';
+import { createWorkItem } from '../../work-items';
 
 const guardM = vi.mocked(findSemanticDupes);
+const fulltextM = vi.mocked(findFulltextLexicalDupes);
+const createM = vi.mocked(createWorkItem);
 const ctx = { ownerId: 'me', workspaceId: 'default', harnessSlug: 'papercusp' };
 
 const verdict = (hard: number[], soft: number[]): SemanticDupeResult => ({
@@ -53,6 +57,9 @@ const verdict = (hard: number[], soft: number[]): SemanticDupeResult => ({
 beforeEach(() => {
   guardM.mockReset();
   guardM.mockResolvedValue(null);
+  fulltextM.mockReset();
+  fulltextM.mockResolvedValue([]);
+  createM.mockClear();
 });
 
 describe('createOneWorkItem × semantic dupe prescreen (P-008)', () => {
@@ -91,5 +98,54 @@ describe('createOneWorkItem × semantic dupe prescreen (P-008)', () => {
     expect(r.ok).toBe(true);
     if (!r.ok) throw new Error('unreachable');
     expect('similarOpen' in r).toBe(false);
+  });
+
+  it('persists stable identity + achieved coverage on issue admission', async () => {
+    guardM.mockResolvedValue(verdict([], []));
+    const r = await createOneWorkItem({ kind: 'bug', title: 'Duplicate drain blockers file agents' }, ctx);
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw new Error('unreachable');
+    expect(r.admissionIdentity).toEqual({
+      schemaVersion: 'admission-identity-v1',
+      titleKey: 'title:agents blockers drain duplicate file',
+    });
+    expect(r.dedupCoverage).toEqual({ lexical: 'ok', semantic: 'ok', degraded: false });
+    expect(createM).toHaveBeenCalledWith(
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          admissionIdentity: r.admissionIdentity,
+          dedupCoverage: r.dedupCoverage,
+        }),
+      }),
+    );
+  });
+
+  it('fails DRAIN bug admission closed when semantic coverage is unavailable, including force', async () => {
+    const r = await createOneWorkItem(
+      { kind: 'bug', title: 'direct drain blocker', force: true, requireCompleteDedupCoverage: true },
+      ctx,
+    );
+    expect(r).toMatchObject({ ok: false, error: 'dedup_unavailable' });
+    expect(createM).not.toHaveBeenCalled();
+  });
+
+  it('rejects an exact normalized identity match in DRAIN even when coverage is healthy', async () => {
+    guardM.mockResolvedValue(verdict([], []));
+    fulltextM.mockResolvedValue([
+      {
+        id: 'EI-9',
+        title: 'Agents file duplicate drain blockers',
+        state: 'open',
+        harness: 'papercusp',
+        similarity: 1,
+        source: 'lexical-fulltext',
+      },
+    ]);
+    const r = await createOneWorkItem(
+      { kind: 'bug', title: 'Duplicate blockers drain agents file', requireCompleteDedupCoverage: true },
+      ctx,
+    );
+    expect(r).toMatchObject({ ok: false, error: 'duplicate_identity', existing: { id: 'EI-9' } });
+    expect(createM).not.toHaveBeenCalled();
   });
 });

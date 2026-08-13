@@ -13,12 +13,14 @@ const fleetAdmission = vi.hoisted(() => ({
   admit: vi.fn(async () => fleetAdmission.decision),
   notify: vi.fn(),
 }));
+const modeState = vi.hoisted(() => ({ rows: [] as Array<{ mode: string }> }));
 
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: () => ({ ownerId: 'me' }),
   resolveSelfLiteral: (value: string | undefined, callerOwnerId: string) => (value === 'self' ? callerOwnerId : value),
 }));
 vi.mock('./_create-core', () => ({ createOneWorkItem: vi.fn() }));
+vi.mock('../../modes/store', () => ({ getModes: vi.fn(async () => modeState.rows) }));
 vi.mock('../../scheduler/fleet-scope-admission', () => ({
   admitSubjectForFleetTarget: fleetAdmission.admit,
   notifyFleetScopeRefusal: fleetAdmission.notify,
@@ -91,8 +93,26 @@ const body = async (args: unknown) => (((await tool.handler(parse(args) as never
 
 beforeEach(() => {
   vi.clearAllMocks();
+  modeState.rows = [];
   fleetAdmission.decision = { allowed: true, scoped: false };
   createM.mockImplementation(async (spec) => okCore(spec.title));
+});
+
+describe('DRAIN admission mode derivation (WI-38403)', () => {
+  it('marks only bug specs fail-closed from the live mode registry', async () => {
+    modeState.rows = [{ mode: 'drain' }];
+    await body({ items: [{ kind: 'bug', title: 'direct blocker' }, { kind: 'change', title: 'bookkeeping' }] });
+    expect(createM).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ kind: 'bug', requireCompleteDedupCoverage: true }),
+      expect.anything(),
+    );
+    expect(createM).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ kind: 'change', requireCompleteDedupCoverage: false }),
+      expect.anything(),
+    );
+  });
 });
 
 describe('codeSmellsLikeCode + the task nudge (WI-2874)', () => {

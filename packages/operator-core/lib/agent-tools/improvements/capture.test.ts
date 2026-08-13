@@ -7,6 +7,7 @@ import { noveltyPriorArt } from '../../scout/novelty-precheck';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { recordRoutedIdea } from '../../scout/routed-ledger';
 import { computeObservationsImpact } from '../../scout/observation-impact-leg';
+import { getModes } from '../../modes/store';
 
 // PG-free unit: capture-core has its own 31-test suite; this pins the tool
 // wrapper's two jobs — (1) deriving the `source` label from the caller's
@@ -14,6 +15,7 @@ import { computeObservationsImpact } from '../../scout/observation-impact-leg';
 // the shared core unchanged. (self-learning-central P-001/P-010.)
 vi.mock('../../harness/improvements/capture-core');
 vi.mock('../coordination/identity');
+vi.mock('../../modes/store', () => ({ getModes: vi.fn(async () => []) }));
 // P-008: the novelty pre-check is PG-backed (readNoveltyCorpus) — mock it so this
 // suite stays PG-free. Default = resolved undefined ("check unavailable"), which the
 // handler renders as an ABSENT priorArt field, leaving every pre-P-008 assertion
@@ -33,6 +35,7 @@ const mockCapture = vi.mocked(captureImprovement);
 const mockIdentity = vi.mocked(resolveAgentIdentity);
 const mockPriorArt = vi.mocked(noveltyPriorArt);
 const mockRecordRoutedIdea = vi.mocked(recordRoutedIdea);
+const mockGetModes = vi.mocked(getModes);
 
 function identity(source: ReturnType<typeof resolveAgentIdentity>['source'], ownerId = 'su-test') {
   return {
@@ -161,10 +164,26 @@ describe('improvements:capture tool envelope', () => {
       paths: ['a.ts', 'b.ts'],
       force: true,
       checkDuplicatesOnly: false,
+      requireCompleteDedupCoverage: false,
       origin: 'drill',
       createdBy: 'su-owner',
       source: 'su',
     });
+  });
+
+  it('derives fail-closed dedup admission from live DRAIN mode for bugs only', async () => {
+    mockGetModes.mockResolvedValueOnce([{ mode: 'drain' }] as Awaited<ReturnType<typeof getModes>>);
+    await callTool({ title: 'direct drain blocker', kind: 'bug' });
+    expect(mockCapture).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'bug', requireCompleteDedupCoverage: true }),
+    );
+
+    mockCapture.mockClear();
+    mockGetModes.mockResolvedValueOnce([{ mode: 'drain' }] as Awaited<ReturnType<typeof getModes>>);
+    await callTool({ title: 'drain bookkeeping change', kind: 'change' });
+    expect(mockCapture).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'change', requireCompleteDedupCoverage: false }),
+    );
   });
 
   it("normalizes the common top-level harness spelling to the canonical capture scope", async () => {
