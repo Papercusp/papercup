@@ -6,6 +6,7 @@ import {
   PHASE_E_OBSERVATION_SCHEMA,
   PHASE_E_RECOVERY_SCHEMA,
   PHASE_E_WATCHDOG_SCHEMA,
+  setPhysicalPhaseEMode,
   validatePhysicalPhaseE,
   type PhysicalPhaseEInput,
   type PhysicalPhaseEObservation,
@@ -228,6 +229,18 @@ function validInput(): PhysicalPhaseEInput {
 }
 
 describe('validatePhysicalPhaseE', () => {
+  it('refuses a non-Phase-E starting mode before writing the production setting', async () => {
+    let writes = 0;
+    await expect(setPhysicalPhaseEMode(
+      { runId: RUN, mode: 'bridged' },
+      {
+        getMode: async () => 'p2p-only',
+        setMode: async () => { writes += 1; },
+      },
+    )).rejects.toThrow('physical Phase E mode flip requires legacy before bridged; observed p2p-only');
+    expect(writes).toBe(0);
+  });
+
   it('accepts the complete two-host production-spine causal object', () => {
     const verdict = validatePhysicalPhaseE(validInput());
     expect(verdict.errors).toEqual([]);

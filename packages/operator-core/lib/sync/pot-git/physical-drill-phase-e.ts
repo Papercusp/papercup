@@ -211,7 +211,13 @@ export type PhysicalPhaseEVerdict = {
 
 type OrgSql = ReturnType<typeof getOrgPg>['sql'];
 type RemoteContext = { repoPath: string; upstream: string; fork: string; defaultBranch: string };
-type PhaseEDeps = { sql?: OrgSql; runGit?: RunGit; remoteContext?: RemoteContext };
+type PhaseEDeps = {
+  sql?: OrgSql;
+  runGit?: RunGit;
+  remoteContext?: RemoteContext;
+  getMode?: typeof getPotGitMode;
+  setMode?: typeof setPotGitMode;
+};
 
 function assertRunId(runId: string): void {
   if (!RUN_ID.test(runId)) throw new Error(`physical Phase E runId is invalid: ${runId}`);
@@ -316,14 +322,16 @@ async function escalation(sql: OrgSql, phase: string): Promise<Record<string, un
 /** Fixed mode flip. The returned record is the evidence of the production write surface used. */
 export async function setPhysicalPhaseEMode(input: { runId: string; mode: 'legacy' | 'bridged' }, deps: PhaseEDeps = {}): Promise<PhysicalPhaseEModeChange> {
   assertRunId(input.runId);
-  const sql = deps.sql ?? getOrgPg().sql;
-  const from = await getPotGitMode(PHASE_D_WORKSPACE, PHASE_A_POT_HOME, sql);
+  const getMode = deps.getMode ?? getPotGitMode;
+  const setMode = deps.setMode ?? setPotGitMode;
+  const sql = deps.sql ?? (deps.getMode && deps.setMode ? undefined : getOrgPg().sql);
+  const from = await getMode(PHASE_D_WORKSPACE, PHASE_A_POT_HOME, sql);
   const expectedFrom: PhysicalPhaseEModeChange['from'] = input.mode === 'bridged' ? 'legacy' : 'bridged';
   if (from !== expectedFrom) {
     throw new Error(`physical Phase E mode flip requires ${expectedFrom} before ${input.mode}; observed ${from}`);
   }
-  await setPotGitMode(PHASE_D_WORKSPACE, PHASE_A_POT_HOME, input.mode, sql);
-  const after = await getPotGitMode(PHASE_D_WORKSPACE, PHASE_A_POT_HOME, sql);
+  await setMode(PHASE_D_WORKSPACE, PHASE_A_POT_HOME, input.mode, sql);
+  const after = await getMode(PHASE_D_WORKSPACE, PHASE_A_POT_HOME, sql);
   if (after !== input.mode) throw new Error(`physical Phase E mode flip did not persist ${input.mode}`);
   return {
     schemaVersion: PHASE_E_MODE_CHANGE_SCHEMA,
