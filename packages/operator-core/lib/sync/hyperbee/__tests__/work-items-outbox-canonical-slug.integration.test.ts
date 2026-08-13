@@ -167,42 +167,69 @@ describe('capture_work_items_outbox canonicalizes harness_slug (migration 452, W
   });
 
   it('migration 829 restores an erased Papercusp survivor and emits its harness-qualified identity', async () => {
-    const id = 'EI-1435';
+    const restoreIds = [
+      'EI-1435',
+      'EI-1629',
+      'EI-1700',
+      'EI-2205',
+      'EI-6706',
+      'EI-6707',
+      'EI-6708',
+      'EI-6765',
+      'EI-7019',
+      'EI-7532',
+      'EI-7690',
+      'WI-1993',
+      'WI-2017',
+      'WI-2063',
+      'WI-2124',
+    ] as const;
+    const id = restoreIds[0];
     const survivorPayload = JSON.stringify({ survivor: 'papercusp' });
     const sourcePayload = JSON.stringify({
       source: 'operator',
       _completionEvidence: { testResult: 'green' },
     });
+    const sourceCompletionRef = JSON.stringify({ summary: 'source completion' });
 
     // Reconstruct the production incident from migration 826's durable backup:
     // two content-identical physical rows were preserved, then a legacy bare-key
     // tombstone erased the Papercusp survivor after the redundant source row was
     // removed.  Seed the backup through real work_items rows so its wide schema
-    // stays aligned with HEAD without duplicating the column list here.
-    await sql`
-      INSERT INTO harness_shared.work_items
-        (workspace_id, harness_slug, feature_id, title, summary, status, item_kind, origin, payload)
-      VALUES
-        ('papercusp-workspace', 'papercusp', ${id}, 'restoration witness', 'same body',
-         'open', 'bug', 'local', ${survivorPayload}::text::jsonb),
-        ('papercusp-workspace', 'operator:papercusp-workspace', ${id}, 'restoration witness', 'same body',
-         'open', 'bug', 'local', ${sourcePayload}::text::jsonb)`;
-    await sql`
-      INSERT INTO harness_shared.bak_20260813_work_item_physical_twins
-      SELECT w.* FROM harness_shared.work_items w
-       WHERE w.workspace_id = 'papercusp-workspace' AND w.feature_id = ${id}`;
-    await sql`
-      UPDATE harness_shared.bak_20260813_work_item_physical_twins
-         SET status = 'done',
-             completion_ref = 'source completion',
-             terminal_completion_ref = 'source completion',
-             terminal_owner = 'source-agent',
-             authority = 'committed',
-             payload = ${sourcePayload}::text::jsonb
-       WHERE harness_slug = 'operator:papercusp-workspace' AND feature_id = ${id}`;
-    await sql`
-      DELETE FROM harness_shared.work_items
-       WHERE workspace_id = 'papercusp-workspace' AND feature_id = ${id}`;
+    // stays aligned with HEAD without duplicating the column list here.  All 15
+    // frozen IDs are required: migration 829 deliberately refuses a partial
+    // incident backup instead of guessing which survivor rows should exist.
+    for (const restoreId of restoreIds) {
+      const title = `restoration witness ${restoreId}`;
+      await sql`
+        INSERT INTO harness_shared.work_items
+          (workspace_id, harness_slug, feature_id, title, summary, status, item_kind, origin, payload)
+        VALUES
+          ('papercusp-workspace', 'papercusp', ${restoreId}, ${title}, 'same body',
+           'open', 'bug', 'local', ${restoreId === id ? survivorPayload : '{}'}::text::jsonb),
+          ('papercusp-workspace', 'operator:papercusp-workspace', ${restoreId}, ${title}, 'same body',
+           'open', 'bug', 'local', ${restoreId === id ? sourcePayload : '{}'}::text::jsonb)`;
+      await sql`
+        INSERT INTO harness_shared.bak_20260813_work_item_physical_twins
+        SELECT w.* FROM harness_shared.work_items w
+         WHERE w.workspace_id = 'papercusp-workspace' AND w.feature_id = ${restoreId}`;
+    }
+    await sql.unsafe(
+      `UPDATE harness_shared.bak_20260813_work_item_physical_twins
+          SET status = 'done',
+              completion_ref = $1::jsonb,
+              terminal_completion_ref = 'source completion',
+              terminal_owner = 'source-agent',
+              authority = 'committed',
+              payload = $2::jsonb
+        WHERE harness_slug = 'operator:papercusp-workspace' AND feature_id = $3`,
+      [sourceCompletionRef, sourcePayload, id],
+    );
+    for (const restoreId of restoreIds) {
+      await sql`
+        DELETE FROM harness_shared.work_items
+         WHERE workspace_id = 'papercusp-workspace' AND feature_id = ${restoreId}`;
+    }
 
     await sql.unsafe(MIGRATION_829_SQL);
 
@@ -210,7 +237,7 @@ describe('capture_work_items_outbox canonicalizes harness_slug (migration 452, W
       {
         harness_slug: string;
         status: string;
-        completion_ref: string | null;
+        completion_ref: Record<string, unknown> | null;
         terminal_completion_ref: string | null;
         terminal_owner: string | null;
         authority: string | null;
@@ -225,7 +252,7 @@ describe('capture_work_items_outbox canonicalizes harness_slug (migration 452, W
     expect(rows[0]).toMatchObject({
       harness_slug: 'papercusp',
       status: 'done',
-      completion_ref: 'source completion',
+      completion_ref: { summary: 'source completion' },
       terminal_completion_ref: 'source completion',
       terminal_owner: 'source-agent',
       authority: 'committed',
@@ -252,7 +279,9 @@ describe('capture_work_items_outbox canonicalizes harness_slug (migration 452, W
     await expect(sql.unsafe(MIGRATION_829_SQL)).resolves.toBeDefined();
     const [{ n }] = await sql<{ n: number }[]>`
       SELECT count(*)::int AS n FROM harness_shared.work_items
-       WHERE workspace_id = 'papercusp-workspace' AND feature_id = ${id}`;
-    expect(n).toBe(1);
+       WHERE workspace_id = 'papercusp-workspace'
+         AND harness_slug = 'papercusp'
+         AND feature_id IN ${sql(restoreIds)}`;
+    expect(n).toBe(restoreIds.length);
   });
 });
