@@ -30,6 +30,7 @@
  *     npx vitest run lib/sync/hyperbee/__tests__/work-items-outbox-canonical-slug.integration.test.ts
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import postgres from 'postgres';
@@ -39,6 +40,10 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, '../../../../../..');
 const SQL_DIR = resolve(REPO_ROOT, 'libs/papercusp/libs/db/sql');
 const MIGRATION_RUNNER = resolve(REPO_ROOT, 'libs/papercusp/packages/embedded-postgres-server/src/migration-runner.js');
+const MIGRATION_829_SQL = readFileSync(
+  resolve(SQL_DIR, '829-harness-qualify-engineer-issue-op-identity.sql'),
+  'utf8',
+);
 
 // Boot pre-step (roles + extensions) — mirrors embedded-postgres-server boot /
 // stamp-trigger-coverage.integration.test.ts. Roles are cluster-global on the
