@@ -229,10 +229,13 @@ describe('WI-1416 checkpointed pipeline (real git, submodule)', () => {
   });
 
   it('blocked submodules defer the superproject PUSH: pointer-bump IS minted, the push checkpoint never is', async () => {
-    // Dirty the submodule, then break its origin so its phase errors (GAP-4 shape).
+    // Dirty the submodule, then break its CANONICAL origin so its phase errors
+    // (GAP-4 shape). EI-20329530284626235 reconciles an initialized submodule's
+    // copied origin from .gitmodules before every pass, so poisoning only the copy
+    // is stale fixture setup: git-sync correctly heals it and the test false-reds.
     writeFileSync(join(repo, 'libs/sub', 'sub-work.txt'), 'sub work\n');
     writeFileSync(join(repo, 'super-work.txt'), 'super work\n');
-    git(join(repo, 'libs/sub'), 'remote', 'set-url', 'origin', join(root, 'gone.git'));
+    git(repo, 'config', '-f', '.gitmodules', 'submodule.libs/sub.url', join(root, 'gone.git'));
 
     const names: string[] = [];
     const out = await runGitSync('ckpt', { repoPath: repo, step: makeStepRunner({ names }) });
