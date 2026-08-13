@@ -1507,6 +1507,49 @@ const REPO_WIDE_INVARIANT_GUARDS = [
       f === 'scripts/lint-migrations.mjs' ||
       f === 'scripts/next-migration.mjs',
   },
+  {
+    // WI-5977 (explicit-presence as an ENFORCED convention). The item's own thesis is that
+    // "a convention nobody enforces decays into advice", and that is literally what had
+    // happened to its lint: `lint:explicit-presence` shipped (WI-6004), then ran on NO
+    // blocking path for two weeks and sat in ACKNOWLEDGED_UNREACHABLE
+    // (check-lint-guard-reachability.mjs) as "logic-test only". This registration is the
+    // graduation.
+    //
+    // It gates on a COUNT RATCHET, not on zero. Measured 2026-08-13: 55 unallowlisted
+    // candidates tree-wide with an empty ALLOW, so `--strict` would be a permanently-red
+    // leg — the kind the fleet learns to ignore. `--ratchet` fails only when the count
+    // RISES (baseline in .explicit-presence-baseline.json, ratchet-only-down), which is the
+    // same shape as .mock-cast-escape-baseline.json.
+    //
+    // Deliberately NOT the guard's diff-scoped default mode: with no diff base that mode
+    // prints "nothing new to check" and exits 0 having scanned NOTHING. A verifier that
+    // reports success without measuring is the exact defect class WI-5977 is about, so the
+    // wired invocation is the whole-tree one and its output states the count it measured.
+    workspace: '@papercusp/operator-core',
+    // ~13.5s (measured, 2 runs: 13.46 / 13.55) — the most expensive entry in this list, and
+    // the reason `appliesTo` is pinned to the analyzer's own SCAN_ROOTS rather than every
+    // .ts in the repo: a change outside those roots cannot move the count at all.
+    script: 'lint:explicit-presence',
+    // No hostSuiteRatchet: check-explicit-presence.test.ts execs the analyzer's `--self-test`
+    // (a positive control on the DETECTOR) but never the whole-tree `--ratchet`, so an
+    // operator-core suite run does NOT imply this has executed. Declaring one anyway would
+    // be the phantom ratchet affected-tests-repo-wide-invariant-guards.test.ts forbids —
+    // and it is what let lint:migration-forward-compat silently stop attaching (see the
+    // hostSuiteRatchet note at the selection loop below).
+    appliesTo: (f) =>
+      // The analyzer's SCAN_ROOTS, mirrored — and it only reads `.ts`, so nothing else under
+      // them can move the count. Test files are NOT excluded even though the analyzer skips
+      // them: attaching too often costs seconds, attaching too rarely is a silent coverage
+      // hole, and only one of those two errors is recoverable.
+      (/\.ts$/.test(f) &&
+        (f.startsWith('packages/operator-core/lib/') ||
+          f.startsWith('apps/operator/lib/') ||
+          f.startsWith('libs/papercusp/'))) ||
+      // The detector and its baseline decide what "clean" means, so a change to either can
+      // move the verdict without any scanned file changing.
+      f === 'scripts/check-explicit-presence.mjs' ||
+      f === '.explicit-presence-baseline.json',
+  },
 ];
 
 const workspaces = [

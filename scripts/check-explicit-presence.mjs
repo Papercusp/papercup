@@ -40,14 +40,42 @@
  *   node scripts/check-explicit-presence.mjs             # report candidates in this change (informational)
  *   node scripts/check-explicit-presence.mjs --all        # scan the whole tree
  *   node scripts/check-explicit-presence.mjs --strict     # exit 1 if any unallow-listed candidate
+ *   node scripts/check-explicit-presence.mjs --ratchet    # GATE: whole tree, fail iff the count ROSE above baseline
+ *   node scripts/check-explicit-presence.mjs --ratchet --update   # lower the baseline to the current count
  *   node scripts/check-explicit-presence.mjs --self-test  # verify the analyzer on inline fixtures
  *
  * Informational by default (like lint:generic-first) — a heuristic, so it advises
  * rather than blocks. A field that is genuinely always-present, or whose zero value IS
  * the correct default, is a false positive: add its `path:line` to ALLOW below.
+ *
+ * WHY `--ratchet` EXISTS, AND WHY IT IS THE MODE THAT GETS WIRED (WI-5977, 2026-08-13).
+ * WI-5977's own thesis is that "a convention nobody enforces decays into advice", and
+ * until this mode existed that is exactly what had happened: this guard ran on NO
+ * blocking path and sat in ACKNOWLEDGED_UNREACHABLE (check-lint-guard-reachability.mjs)
+ * as "logic-test only". Two constraints shaped the fix:
+ *   - `--strict` is NOT reachable today. Measured 2026-08-13: 55 unallowlisted candidates
+ *     tree-wide, ALLOW empty. Wiring a permanently-red leg teaches the fleet to ignore it.
+ *   - the DIFF-scoped default mode is VACUITY-PRONE in a gate: with no diff base it prints
+ *     "nothing new to check" and exits 0 having scanned NOTHING — a verifier that reports
+ *     success without measuring, which is the very defect class this file guards against.
+ * So the wired mode scans the WHOLE tree (deterministic, never vacuous) and gates on the
+ * COUNT rising. The baseline is ratchet-only-down and lives in a file, mirroring the
+ * proven sibling convention in check-mock-cast-escape.mjs / .mock-cast-escape-baseline.json
+ * rather than inventing a second one. Cost is stated where it is paid: ~13.5s whole-tree
+ * (measured, 2 runs), which is why the REPO_WIDE_INVARIANT_GUARDS registration in
+ * scripts/affected-tests.mjs keys on the analyzer's own SCAN_ROOTS and nothing wider.
+ *
+ * A REJECTED OPTIMIZATION, recorded so it is not re-attempted blind: pre-filtering each
+ * file on `text.includes('JSON.parse') || …` before the per-line lookback would cut most
+ * of that 13.5s, and every detection path does structurally require one of those markers.
+ * It was still declined — a prefilter derived by hand from the detection regexes silently
+ * stops matching the day someone edits a regex without it, and the failure mode is a
+ * guard that reports a clean tree because it scanned less of it. That is precisely the
+ * "absence read as a measurement" shape this file exists to catch, and EI-20080351414486996
+ * already recorded one count regression here that only reading the drop caught.
  */
 import { execSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { listTrackedFiles, describeUnscanned } from './lib/tracked-files.mjs';
@@ -56,6 +84,74 @@ import { stripCommentsOnly } from './lib/strip-comments-and-strings.mjs';
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
 const SCAN_ROOTS = ['packages/operator-core/lib/', 'apps/operator/lib/', 'libs/papercusp/'];
+
+/**
+ * The ratchet's stored high-water mark. Shape + semantics mirror .mock-cast-escape-baseline.json.
+ *
+ * `EXPLICIT_PRESENCE_BASELINE_FILE` overrides the path, and exists for ONE reason: proving this
+ * gate leg can actually go red. A guard that has never failed is a guard nobody has tested, and
+ * the obvious way to test it — lower the committed baseline, run, restore — is unsafe on this
+ * shared tree, where git-sync sweeps and commits the WHOLE working tree on a schedule and would
+ * happily commit the mutated baseline mid-probe. With this override the probe points at a temp
+ * file OUTSIDE the tree, so the falsifiability check costs nothing and risks nothing:
+ *   printf '{"count":0}' > /tmp/ep.json
+ *   EXPLICIT_PRESENCE_BASELINE_FILE=/tmp/ep.json node scripts/check-explicit-presence.mjs --ratchet
+ *   # → exit 1, "count ROSE above baseline — measured 55 candidate(s) against baseline 0"
+ * It deliberately does NOT weaken the gate: the wired invocation passes no env, and a run that
+ * overrides the baseline says so in its own output.
+ */
+const BASELINE_FILE = process.env.EXPLICIT_PRESENCE_BASELINE_FILE || join(ROOT, '.explicit-presence-baseline.json');
+
+/**
+ * Read the stored baseline count. THROWS rather than defaulting — a baseline that cannot
+ * be read is UNKNOWN, and this file of all files may not answer "unknown" with a zero:
+ * `?? 0` here would turn a missing/corrupt baseline into "the tree must have zero
+ * candidates", which fails every run for a reason that has nothing to do with the tree,
+ * while `?? Infinity` would pass every run and guard nothing. Both are the absent-read-as-
+ * measured defect this script exists to catch, so the caller is made to handle it.
+ */
+export function readBaseline(file = BASELINE_FILE) {
+  const json = JSON.parse(readFileSync(file, 'utf8'));
+  if (typeof json.count !== 'number' || !Number.isFinite(json.count)) {
+    throw new Error(`baseline file ${file} has no numeric \`count\` — refusing to guess one`);
+  }
+  return json.count;
+}
+
+function writeBaseline(count, file = BASELINE_FILE) {
+  writeFileSync(
+    file,
+    `${JSON.stringify(
+      {
+        count,
+        _comment:
+          'RATCHET-ONLY-DOWN (see scripts/check-explicit-presence.mjs). This is the count of ' +
+          'zero-value-defaulted parse/deserialize-boundary reads WI-5977 has not yet burned down. ' +
+          'Lowering it happens with --ratchet --update on a quiet tree; RAISING it is a deliberate ' +
+          'hand-edit that needs a stated justification, never a silent bump.',
+      },
+      null,
+      2,
+    )}\n`,
+  );
+}
+
+/**
+ * The ratchet decision, pure so it is testable without a tree scan.
+ * Deliberately asymmetric, exactly like check-mock-cast-escape.mjs's: a count UNDER the
+ * baseline passes but does NOT silently lock in (a transient drop — a file mid-refactor,
+ * a scan root temporarily unreadable — would otherwise ratchet the baseline down to a
+ * number the tree cannot actually hold, and every later run would fail for it).
+ */
+export function decideRatchet({ count, baselineCount, updateFlag = false }) {
+  if (count > baselineCount) return { verdict: 'fail-exceeds', by: count - baselineCount };
+  if (count < baselineCount) {
+    return updateFlag
+      ? { verdict: 'ok-ratchet', newBaseline: count, belowBy: baselineCount - count }
+      : { verdict: 'ok-below', belowBy: baselineCount - count };
+  }
+  return { verdict: 'ok-at' };
+}
 
 /**
  * `path:line` pairs that are false positives — the zero value IS the correct default
@@ -359,9 +455,59 @@ function changedFiles(base) {
   return [...new Set([...(committed ?? []), ...uncommitted])];
 }
 
+/**
+ * The `--ratchet` verdict. Prints the count it MEASURED on every path, pass or fail —
+ * a gate leg whose green says nothing about what it looked at is unfalsifiable from the
+ * outside, and the real-tree test in packages/operator-core/lib/__tests__/
+ * check-explicit-presence.test.ts parses this line to assert the scan was non-vacuous.
+ */
+function reportRatchet({ candidates, unscanned, updateFlag }) {
+  const count = candidates.length;
+  const baselineCount = readBaseline();
+  const decision = decideRatchet({ count, baselineCount, updateFlag });
+  const measured = `measured ${count} candidate(s) against baseline ${baselineCount}`;
+
+  if (decision.verdict === 'fail-exceeds') {
+    console.error(
+      `✗ explicit-presence: count ROSE above baseline — ${measured} (+${decision.by}).${describeUnscanned(unscanned)}`,
+    );
+    console.error('  WI-5977: absence needs its OWN representation at a parse/deserialize boundary —');
+    console.error('  never the type\'s zero value, because a NULL/missing field and a genuine 0/false/empty');
+    console.error('  then read identically. Fix the NEW read (an `in` check, an explicit `present:` field, or');
+    console.error('  erroring when the two cannot be told apart), or — if the zero value is genuinely the');
+    console.error('  correct default there — add its `path:line` to ALLOW in this script with that reason.\n');
+    for (const c of candidates) console.error(`    ${c.f}:${c.line}\n        ${c.snippet}\n        ${c.reason}`);
+    console.error(`\n  Raising the baseline is a deliberate hand-edit with a justification, never a silent bump.`);
+    process.exit(1);
+  }
+
+  if (decision.verdict === 'ok-ratchet') {
+    writeBaseline(decision.newBaseline);
+    console.log(`✓ explicit-presence: baseline lowered ${baselineCount} → ${count} (--update).${describeUnscanned(unscanned)}`);
+    process.exit(0);
+  }
+
+  if (decision.verdict === 'ok-below') {
+    console.log(
+      `✓ explicit-presence: ${decision.belowBy} under baseline — ${measured}. NOT locked in; run ` +
+        '`node scripts/check-explicit-presence.mjs --ratchet --update` on a quiet tree to lower it deliberately.' +
+        describeUnscanned(unscanned),
+    );
+    process.exit(0);
+  }
+
+  if (updateFlag) console.log('✓ --update: count equals baseline — nothing to lower.');
+  console.log(`✓ explicit-presence: at baseline — ${measured}.${describeUnscanned(unscanned)}`);
+  process.exit(0);
+}
+
 function main() {
   const strict = process.argv.includes('--strict');
-  const all = process.argv.includes('--all');
+  const ratchet = process.argv.includes('--ratchet');
+  const updateFlag = process.argv.includes('--update');
+  // `--ratchet` gates on the WHOLE tree: the diff-scoped mode can legitimately scan zero
+  // files, and a gate that reports success without measuring is the defect class above.
+  const all = process.argv.includes('--all') || ratchet;
   if (process.argv.includes('--self-test')) return selfTest();
 
   let files;
@@ -393,6 +539,8 @@ function main() {
       candidates.push({ f, ...hit });
     }
   }
+
+  if (ratchet) return reportRatchet({ candidates, unscanned, updateFlag });
 
   const scope = all ? 'the app tree' : 'this change';
   if (candidates.length === 0) {

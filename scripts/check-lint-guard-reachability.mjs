@@ -169,7 +169,17 @@ export const ACKNOWLEDGED_UNREACHABLE = new Map([
   // over nothing. Remedy is to deepen the existing test into a real-tree assertion,
   // which is cheaper than wiring a gate leg; that is why these are grouped apart.
   ['lint:as-committed', 'logic-test only; deepen to a real-tree assertion'],
-  ['lint:explicit-presence', 'logic-test only; deepen to a real-tree assertion'],
+  // `lint:explicit-presence` USED TO SIT HERE and is now GONE from this set — the FOURTH
+  // graduation, and the first from the "logic-test only" group. It was NOT fixed the way this
+  // row prescribed: deepening its test into a real-tree assertion would have made the guard
+  // *reachable* while still leaving it advisory, and its own item (WI-5977) is precisely about
+  // conventions that decay into advice. So it was WIRED instead — REPO_WIDE_INVARIANT_GUARDS in
+  // scripts/affected-tests.mjs, keyed on the analyzer's own SCAN_ROOTS — gating on a count
+  // ratchet (.explicit-presence-baseline.json, 55 at wiring time) rather than on `--strict`,
+  // which cannot be green today. Left as a comment rather than silently deleted, like the three
+  // graduations above: entries here are debts to pay, not a parking lot. Measured after the
+  // wiring: the acknowledged set went 11 → 10 and the gate stayed exit 0 (102/112 enforced),
+  // so the watermark drops 14 → 13 with it — the only direction it may ever move.
   ['lint:generic-independence', 'logic-test only; deepen to a real-tree assertion'],
   ['lint:no-raw-spawn', 'logic-test only; deepen to a real-tree assertion'],
   ['lint:no-retired-style', 'logic-test only; deepen to a real-tree assertion'],
@@ -298,7 +308,7 @@ export const ACKNOWLEDGED_UNREACHABLE = new Map([
  * and is never by itself a reason to retire. Do not substitute a generator's header comment
  * for that probe: three of them were measured wrong here, mutually citing each other.
  */
-export const UNREACHABLE_HIGH_WATERMARK = 14;
+export const UNREACHABLE_HIGH_WATERMARK = 13;
 
 /**
  * Guards that ARE enforced, but only over PART of what they scan (EI-19461064447747454).
