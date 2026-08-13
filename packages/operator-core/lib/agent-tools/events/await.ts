@@ -53,6 +53,7 @@ import { getClaimSpecRecord } from '../../scheduler/claim-spec-store';
 import { formatSpecRef } from '../../scheduler/claim-spec';
 import { resolveClaimSpecWorkspace } from '../../scheduler/claim-spec-workspace';
 import { claimSpecFilterToClaimablePayloadFilter } from '../../scheduler/claim-spec-payload-filter';
+import { producerHealthInputSchema, resolveProducerHealthCertificate } from './producer-health';
 
 // The fallback timeout-wake window + hard cap — one shared source of truth
 // (await-timeout-fallback-defaults-2026-07-03): the default is now 30min, not 4h.
@@ -119,6 +120,7 @@ export default defineTool({
       .describe(
         "EI-8998: also require the emitted PAYLOAD to satisfy this predicate before firing, e.g. { queue_depth: { lt: 5 } } — same vocabulary as an ECA rule's `when`. Only takes effect combined with an `event` key/pattern the emitter actually fires. Omitted on event:'work-item:claimable'? EI-13846: it is auto-narrowed to YOUR OWN claim spec when one exists (see auto_scoped_payload_filter in the response) — pass this explicitly to override.",
       ),
+    producer_health: producerHealthInputSchema.optional(),
     fromMsg: hardText(LIMITS.IDENT)
       .optional()
       .describe(
@@ -132,6 +134,12 @@ export default defineTool({
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
     startAwaitSweeper();
+    if (args.producer_health && args.spec) {
+      throw new Error('events:await — producer_health applies to one event/fromMsg wait, not a composed spec');
+    }
+    if (args.producer_health && args.on_timeout === 'expire') {
+      throw new Error('events:await — producer_health requires on_timeout:"wake" so a stalled/absent diagnosis is actionable');
+    }
 
     // EI-383: a REAL registered await ends the turn until the wake — no activity-
     // bus event fires again until then, so any plan-item claim the caller holds
@@ -805,6 +813,16 @@ export default defineTool({
       planRunId: args.plan_run_id,
     });
 
+    const producerHealthCertificate = args.producer_health
+      ? await resolveProducerHealthCertificate({
+          producerHealth: args.producer_health,
+          subscriberId: identity.ownerId,
+          timeoutSec: args.timeout_sec,
+        })
+      : null;
+    const effectiveTimeoutSec =
+      args.timeout_sec ??
+      (args.producer_health ? args.producer_health.expected_cadence_sec : DEFAULT_TIMEOUT_SEC);
     const row = await registerAwait({
       subscriberId: identity.ownerId,
       eventKey,
@@ -812,11 +830,12 @@ export default defineTool({
       note: clampText(args.note, LIMITS.ANNOTATION) ?? null,
       wakeHandle: handle,
       timeoutBehavior: args.on_timeout ?? 'wake',
-      timeoutSec: args.timeout_sec ?? DEFAULT_TIMEOUT_SEC,
+      timeoutSec: effectiveTimeoutSec,
       payloadFilter: effectivePayloadFilter,
+      producerHealthCertificate,
     });
 
-    await extendClaimsForThisAwait(args.timeout_sec ?? DEFAULT_TIMEOUT_SEC);
+    await extendClaimsForThisAwait(effectiveTimeoutSec);
 
     return {
       content: [

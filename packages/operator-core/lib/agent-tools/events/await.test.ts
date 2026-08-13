@@ -50,6 +50,20 @@ vi.mock('../../events/await/store', () => ({
   probePatternMatchScope: vi.fn(async () => ({ prefix: '', matchedKeys: [], truncated: false })),
 }));
 vi.mock('../../events/await/engine', () => ({ startAwaitSweeper: vi.fn() }));
+vi.mock('./producer-health', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./producer-health')>()),
+  resolveProducerHealthCertificate: vi.fn(async () => ({
+    version: 1,
+    producer: { kind: 'green-checkpoint', id: 'run-1' },
+    owner: { ownerId: 'su-awaiter', workItemId: null },
+    issuedAtMs: 1,
+    lastProgressAtMs: 1,
+    lastFireAtMs: null,
+    expectedCadenceMs: 90_000,
+    verificationDeadlineMs: 90_001,
+    details: { pipeline: 'papercusp' },
+  })),
+}));
 vi.mock('../coordination/messages', () => ({ getMessageById: vi.fn() }));
 // EI-10870: the orphan-key guard reads the INSTALLED tier to avoid false-warning on a
 // pack-declared key. Default: no installed packs ⇒ the builtin catalog decides.
@@ -102,6 +116,7 @@ import { planItemEffectiveStatus } from '../../plan-items/assignments';
 import { AWAIT_DEFAULT_TIMEOUT_SEC } from '../../events/await/types';
 import { extendOwnerClaimsForAwait } from '../../plan-items/claims';
 import { mockResolvedTyped } from '../../testing/typed-mock';
+import { resolveProducerHealthCertificate } from './producer-health';
 
 const ctx = { workspaceId: 'ws-x' } as unknown as Parameters<typeof awaitTool.handler>[1];
 const call = async (args: Record<string, unknown>) => {
@@ -140,6 +155,28 @@ describe('events:await wrapper defaults', () => {
     await call({ event: 'k', on_timeout: 'expire', timeout_sec: 30, note: 'why' });
     const arg = vi.mocked(registerAwait).mock.calls[0][0];
     expect(arg).toMatchObject({ timeoutBehavior: 'expire', timeoutSec: 30, note: 'why' });
+  });
+
+  it('verified mode attaches an authoritative producer certificate and derives the first deadline from cadence', async () => {
+    const producerHealth = { kind: 'green-checkpoint', pipeline: 'papercusp', expected_cadence_sec: 90 };
+    await call({ event: 'release:green:papercusp', producer_health: producerHealth });
+    expect(resolveProducerHealthCertificate).toHaveBeenCalledWith({
+      producerHealth,
+      subscriberId: 'su-awaiter',
+      timeoutSec: undefined,
+    });
+    expect(vi.mocked(registerAwait).mock.calls[0][0]).toMatchObject({
+      timeoutBehavior: 'wake',
+      timeoutSec: 90,
+      producerHealthCertificate: expect.objectContaining({ producer: { kind: 'green-checkpoint', id: 'run-1' } }),
+    });
+  });
+
+  it('verified mode refuses silent expiry and composed waits without changing their legacy paths', async () => {
+    const producer_health = { kind: 'green-checkpoint', pipeline: 'papercusp', expected_cadence_sec: 90 };
+    await expect(call({ event: 'k', producer_health, on_timeout: 'expire' })).rejects.toThrow(/requires on_timeout/);
+    await expect(call({ spec: { any: [{ event: 'a' }] }, producer_health })).rejects.toThrow(/not a composed spec/);
+    expect(resolveProducerHealthCertificate).not.toHaveBeenCalled();
   });
 
   it('response carries await_id / event / expires_ts / on_timeout / wake_handle', async () => {

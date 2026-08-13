@@ -24,6 +24,20 @@ vi.mock('../../events/await/engine', () => ({
   startAwaitSweeper: vi.fn(),
   deliverToSpecificAwaits: vi.fn(async (i: { awaitRows: Array<{ id: number }> }) => ({ delivered: i.awaitRows.length })),
 }));
+vi.mock('./producer-health', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./producer-health')>()),
+  resolveProducerHealthCertificate: vi.fn(async () => ({
+    version: 1,
+    producer: { kind: 'green-checkpoint', id: 'run-1' },
+    owner: { ownerId: 'su-watcher', workItemId: null },
+    issuedAtMs: 1,
+    lastProgressAtMs: 1,
+    lastFireAtMs: null,
+    expectedCadenceMs: 120_000,
+    verificationDeadlineMs: 120_001,
+    details: { pipeline: 'papercusp' },
+  })),
+}));
 // P-008: the predicate engine is its own tested module (predicate-watch.test.ts /
 // .integration.test.ts) — here only the tool's ROUTING into it is under test.
 vi.mock('../../events/await/predicate-watch', () => ({
@@ -46,6 +60,7 @@ import { deliverToSpecificAwaits } from '../../events/await/engine';
 import { registerPredicateWatch, evalPredicateWatch, findMatchingActivePredicateWatch } from '../../events/await/predicate-watch';
 import { subscribeTopic } from '../coordination/topics';
 import { subscribeEventKey } from '../coordination/event-subscriptions';
+import { resolveProducerHealthCertificate } from './producer-health';
 
 const ctx = { workspaceId: 'ws-x' } as unknown as Parameters<typeof watch.handler>[1];
 const call = async (args: Record<string, unknown>) => {
@@ -94,6 +109,30 @@ describe('watch routing', () => {
   it('EI-8998: payload_filter on an inject (wake:false) watch is rejected loudly, not silently ignored', async () => {
     await expect(call({ pattern: 'locks', payload_filter: { x: 1 } })).rejects.toThrow(/payload_filter/);
     expect(subscribeTopic).not.toHaveBeenCalled();
+  });
+
+  it('verified one-shot wake attaches producer health and derives its first deadline from cadence', async () => {
+    const producerHealth = { kind: 'green-checkpoint', pipeline: 'papercusp', expected_cadence_sec: 120 };
+    await call({ pattern: 'release:green:papercusp', wake: true, producer_health: producerHealth });
+    expect(resolveProducerHealthCertificate).toHaveBeenCalledWith({
+      producerHealth,
+      subscriberId: 'su-watcher',
+      timeoutSec: undefined,
+    });
+    expect(vi.mocked(registerAwait).mock.calls[0][0]).toMatchObject({
+      once: true,
+      timeoutSec: 120,
+      producerHealthCertificate: expect.objectContaining({ producer: { kind: 'green-checkpoint', id: 'run-1' } }),
+    });
+  });
+
+  it('verified mode refuses inject, standing, predicate, and silent-expiry watches', async () => {
+    const producer_health = { kind: 'green-checkpoint', pipeline: 'papercusp', expected_cadence_sec: 120 };
+    await expect(call({ pattern: 'k', producer_health })).rejects.toThrow(/one-shot wake:true/);
+    await expect(call({ pattern: 'k', wake: true, once: false, producer_health })).rejects.toThrow(/one-shot wake:true/);
+    await expect(call({ pattern: 'k', wake: true, predicate: { tool: 'x', path: 'y', op: 'eq' }, producer_health })).rejects.toThrow(/one-shot wake:true/);
+    await expect(call({ pattern: 'k', wake: true, on_timeout: 'expire', producer_health })).rejects.toThrow(/requires on_timeout/);
+    expect(resolveProducerHealthCertificate).not.toHaveBeenCalled();
   });
 });
 

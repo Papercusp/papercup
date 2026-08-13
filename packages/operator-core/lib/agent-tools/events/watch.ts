@@ -42,6 +42,7 @@ import { activeWorkspaceId } from '../../workspace-registry';
 import { subscribeTopic } from '../coordination/topics';
 import { subscribeEventKey } from '../coordination/event-subscriptions';
 import { softText, clampText, LIMITS } from '../limits';
+import { producerHealthInputSchema, resolveProducerHealthCertificate } from './producer-health';
 
 // The fallback timeout-wake window + hard cap — one shared source of truth
 // (await-timeout-fallback-defaults-2026-07-03): the one-shot wake default is now
@@ -133,6 +134,7 @@ export default defineTool({
       .describe(
         "EI-8998: a predicate tested against the emitted event's PAYLOAD (not just its key/pattern), e.g. { queue_depth: { lt: 5 } } — kills the polling-vigil pattern (\"wake me when X crosses a threshold\") without a bespoke exact key per condition. Same MatchMap/all/any/not vocabulary as an ECA rule's `when`. A filter that never matches the emitter's actual payload shape silently never fires — check the emitting source's payload shape first.",
       ),
+    producer_health: producerHealthInputSchema.optional(),
     plan_run_id: z
       .number()
       .int()
@@ -164,6 +166,13 @@ export default defineTool({
     const wake = args.wake ?? false;
     // Default cardinality follows delivery: a wake is a one-shot grant; an inject is standing.
     const once = args.once ?? wake;
+
+    if (args.producer_health && (!wake || !once || args.predicate)) {
+      throw new Error('watch:create — producer_health requires a one-shot wake:true event watch (not inject, standing, or predicate)');
+    }
+    if (args.producer_health && args.on_timeout === 'expire') {
+      throw new Error('watch:create — producer_health requires on_timeout:"wake" so a stalled/absent diagnosis is actionable');
+    }
 
     if (args.interval_sec != null && !args.predicate) {
       throw new Error('watch:create — interval_sec applies only to a predicate watch (for a wake floor, use min_sleep_sec).');
@@ -391,6 +400,16 @@ export default defineTool({
       };
     }
 
+    const producerHealthCertificate = args.producer_health
+      ? await resolveProducerHealthCertificate({
+          producerHealth: args.producer_health,
+          subscriberId: identity.ownerId,
+          timeoutSec: args.timeout_sec,
+        })
+      : null;
+    const effectiveTimeoutSec =
+      args.timeout_sec ??
+      (args.producer_health ? args.producer_health.expected_cadence_sec : once ? DEFAULT_TIMEOUT_SEC : null);
     const row = await registerAwait({
       subscriberId: identity.ownerId,
       eventKey: args.pattern,
@@ -398,11 +417,12 @@ export default defineTool({
       note: clampText(args.note, LIMITS.ANNOTATION) ?? null,
       wakeHandle: handle,
       timeoutBehavior: args.on_timeout ?? 'wake',
-      timeoutSec: args.timeout_sec ?? (once ? DEFAULT_TIMEOUT_SEC : null),
+      timeoutSec: effectiveTimeoutSec,
       once,
       minSleepSec,
       urgency: args.urgency,
       payloadFilter: args.payload_filter ?? null,
+      producerHealthCertificate,
     });
     return {
       content: [
