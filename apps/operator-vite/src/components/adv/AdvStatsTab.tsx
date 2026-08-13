@@ -345,9 +345,9 @@ export default function AdvStatsTab(props: AdvStatsTabProps = {}) {
       <style>{`
         .pc-stats { container-type: inline-size; display: flex; flex: 1; min-height: 0; flex-direction: column; gap: 14px; padding: 18px; color: var(--fg, #e7f7ff); overflow: auto; }
         .pc-stats__header { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
-        .pc-stats__header h1 { margin: 3px 0 4px; font-size: clamp(20px, 2vw, 28px); line-height: 1.1; letter-spacing: -0.025em; }
+        .pc-stats__header h1 { margin: 3px 0 4px; font-size: clamp(20px, 2vw, 28px); line-height: 1.1; letter-spacing: 0; }
         .pc-stats__header p { margin: 0; color: var(--fg-mute, #7f9bb4); font-size: 12px; }
-        .pc-stats__eyebrow, .pc-stats__panel header span { color: var(--accent-strong, #7dd3fc); font-size: 10px; font-weight: 800; letter-spacing: .09em; text-transform: uppercase; }
+        .pc-stats__eyebrow, .pc-stats__panel header span { color: var(--accent-strong, #7dd3fc); font-size: 10px; font-weight: 800; letter-spacing: 0; text-transform: uppercase; }
         .pc-stats__refresh, .pc-stats__state button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; flex: 0 0 auto; border: 1px solid var(--border-strong, rgba(125,211,252,.3)); border-radius: 9px; background: var(--bg-2, rgba(255,255,255,.045)); color: var(--fg, #e7f7ff); padding: 7px 11px; font: inherit; font-size: 11px; font-weight: 750; cursor: pointer; }
         .pc-stats__refresh:hover:not(:disabled), .pc-stats__state button:hover { border-color: var(--accent-strong, #7dd3fc); }
         .pc-stats__refresh:disabled { cursor: default; opacity: .65; }
@@ -363,7 +363,7 @@ export default function AdvStatsTab(props: AdvStatsTabProps = {}) {
         .pc-stats__metrics { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 9px; }
         .pc-stats__metric { position: relative; display: grid; grid-template-columns: 1fr auto; gap: 3px 8px; min-width: 0; padding: 11px 12px; border: 1px solid var(--border, rgba(125,211,252,.16)); border-radius: 12px; background: radial-gradient(circle at top right, rgba(56,189,248,.09), transparent 55%), var(--bg-2, rgba(255,255,255,.035)); }
         .pc-stats__metric-icon { grid-column: 2; grid-row: 1 / span 2; color: var(--accent-strong, #7dd3fc); opacity: .82; }
-        .pc-stats__metric-label { grid-column: 1; color: var(--fg-mute, #7f9bb4); font-size: 9.5px; font-weight: 750; letter-spacing: .055em; text-transform: uppercase; }
+        .pc-stats__metric-label { grid-column: 1; color: var(--fg-mute, #7f9bb4); font-size: 9.5px; font-weight: 750; letter-spacing: 0; text-transform: uppercase; }
         .pc-stats__metric strong { grid-column: 1; font-size: 21px; line-height: 1.05; font-variant-numeric: tabular-nums; }
         .pc-stats__metric-detail { grid-column: 1 / -1; color: var(--fg-mute, #7f9bb4); font-size: 10px; }
         .pc-stats__push { display: flex; align-items: center; gap: 10px; min-width: 0; padding: 10px 12px; border: 1px solid rgba(52,211,153,.28); border-radius: 12px; background: rgba(52,211,153,.065); }

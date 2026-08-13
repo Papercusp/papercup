@@ -47,6 +47,8 @@ const SOURCE_EXTENSIONS = ['.tsx', '.ts', '.css'] as const;
 const RUNTIME_TOKENS: ReadonlySet<string> = new Set([
   // Radix Select sets this on its trigger to match listbox to trigger width.
   '--radix-select-trigger-width',
+  // Radix Select publishes the viewport space available to its content.
+  '--radix-select-content-available-height',
   // Radix Popover's positioner publishes these on the content element: the
   // trigger's width, and how much room is actually left beside/below it before
   // the viewport edge. harness/Combobox.tsx's panel uses the width to never be

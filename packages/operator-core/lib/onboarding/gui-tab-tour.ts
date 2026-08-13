@@ -78,6 +78,12 @@ export const GUI_TAB_TOUR: ReadonlyArray<GuiTabTourStop> = [
       'The code pipeline: commits flowing from the shared tree, the green gate verdict, and deploys. Agents commit nothing by hand — this shows the automation doing it.',
   },
   {
+    id: 'stats',
+    label: 'Stats',
+    blurb:
+      'Repository statistics and trends — language mix, code volume, contributors, and change history for the selected project.',
+  },
+  {
     id: 'testing',
     label: 'Tests',
     blurb:

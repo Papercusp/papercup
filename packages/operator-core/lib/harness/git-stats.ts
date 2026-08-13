@@ -14,6 +14,7 @@ import { execFile, spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { basename, extname } from 'node:path';
 import { promisify } from 'node:util';
+import { createTextCollector } from '../child-output.js';
 
 const execFileP = promisify(execFile);
 
@@ -508,7 +509,7 @@ function readHeadTree(repoPath: string, head: string | null): Promise<TreeSnapsh
     };
     let pending: Buffer<ArrayBufferLike> = Buffer.alloc(0);
     let outputBytes = 0;
-    let stderr = '';
+    const stderr = createTextCollector(child.stderr);
     let intentionallyKilled = false;
 
     const consumeRecord = (record: string) => {
@@ -569,7 +570,6 @@ function readHeadTree(repoPath: string, head: string | null): Promise<TreeSnapsh
         child.kill('SIGTERM');
       }
     });
-    child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString('utf8').slice(0, 4096); });
     child.on('error', (error) => {
       clearTimeout(timer);
       reject(error);
@@ -577,7 +577,7 @@ function readHeadTree(repoPath: string, head: string | null): Promise<TreeSnapsh
     child.on('close', (code, signal) => {
       clearTimeout(timer);
       if (code !== 0 && !intentionallyKilled && signal !== 'SIGTERM') {
-        reject(new Error(`git ls-tree exited ${code}: ${stderr.slice(0, 400)}`));
+        reject(new Error(`git ls-tree exited ${code}: ${stderr.text().slice(0, 400)}`));
         return;
       }
       resolve(snapshot);
@@ -654,9 +654,8 @@ async function scanHeadBlobs(repoPath: string, tree: TreeSnapshot): Promise<Scan
     stdio: ['pipe', 'pipe', 'pipe'],
   });
   const reader = new AsyncBufferReader(child.stdout);
-  let stderr = '';
+  const stderr = createTextCollector(child.stderr);
   let timedOut = false;
-  child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString('utf8').slice(0, 4096); });
   const timer = setTimeout(() => {
     timedOut = true;
     result.complete = false;
@@ -715,7 +714,7 @@ async function scanHeadBlobs(repoPath: string, tree: TreeSnapshot): Promise<Scan
     if (child.exitCode === null && child.signalCode === null) {
       const [code, signal] = await once(child, 'close') as [number | null, NodeJS.Signals | null];
       if (!timedOut && code !== 0 && signal !== 'SIGTERM') {
-        throw new Error(`git cat-file exited ${code}: ${stderr.slice(0, 400)}`);
+        throw new Error(`git cat-file exited ${code}: ${stderr.text().slice(0, 400)}`);
       }
     }
   }
