@@ -320,7 +320,7 @@ describe('SessionChatModal', () => {
     expect(captured).toBeNull(); // never opened a stream with no session id
   });
 
-  it('names a live Codex agent instead of blaming a missing Claude session', async () => {
+  it('streams a live Codex card through its canonical rollout handle', async () => {
     H.results['advRoster.list'] = {
       data: [
         {
@@ -328,12 +328,22 @@ describe('SessionChatModal', () => {
             {
               ownerId: 'su-live-1',
               agent: 'codex',
+              advSessionId: 9444,
               sessionState: 'live',
               liveness: 'live',
               modes: [],
               claims: [],
               currentFiles: [],
               openAwait: null,
+              nativeSession: {
+                backend: 'codex',
+                source: 'adv_sessions',
+                ownerId: 'su-live-1',
+                codexHome: '/tmp/codex-home',
+                rolloutId: '019f-rollout-1',
+                exactResumeSupported: true,
+                missingReason: null,
+              },
             },
           ],
           pending: [],
@@ -344,17 +354,43 @@ describe('SessionChatModal', () => {
       error: null,
       invalidate: vi.fn(),
     };
-    mockFetchOnce(200, { sessions: [{ source_kind: 'omp', session_id: 'omp-1', last_ts: null }] });
     render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
 
-    await waitFor(() => expect(screen.getByTestId('session-chat-unsupported-agent')).toBeTruthy());
-    expect(screen.getByTestId('session-chat-unsupported-agent').textContent).toContain('codex');
-    expect(screen.getByTestId('session-chat-unsupported-agent').textContent).toContain(
-      'available only for Claude sessions',
+    await waitFor(() => expect(captured).not.toBeNull());
+    expect(captured!.url).toBe(
+      '/api/adv/session/thinking?codexRolloutId=019f-rollout-1',
     );
-    expect(screen.queryByText(/No recent Claude session/)).toBeNull();
-    expect(screen.queryByPlaceholderText(/Reply|Type to wake/i)).toBeNull();
-    expect(captured).toBeNull();
+    expect(screen.getByPlaceholderText(/Reply|Type to wake/i)).toBeTruthy();
+    expect(fetchMock).not.toHaveBeenCalledWith(
+      '/api/admin/coordination/sessions/list',
+      expect.anything(),
+    );
+  });
+
+  it('streams a live OMP card through its native thread handle', async () => {
+    H.results['advRoster.list'] = {
+      data: [{
+        active: [{
+          ownerId: 'su-live-1', agent: 'omp', sessionState: 'live', liveness: 'live',
+          modes: [], claims: [], currentFiles: [], openAwait: null, ompThreadId: '019f-thread-1',
+          nativeSession: {
+            backend: 'omp', source: 'adv_sessions', ownerId: 'su-live-1',
+            ompThreadId: '019f-thread-1', agentHome: '/tmp/omp-home',
+            exactResumeSupported: true, missingReason: null,
+          },
+        }],
+        pending: [],
+      }],
+      loading: false,
+      fetching: false,
+      error: null,
+      invalidate: vi.fn(),
+    };
+    render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+
+    await waitFor(() => expect(captured).not.toBeNull());
+    expect(captured!.url).toBe('/api/adv/session/thinking?ompThreadId=019f-thread-1');
+    expect(screen.getByPlaceholderText(/Reply|Type to wake/i)).toBeTruthy();
   });
 
   it('surfaces a sessions:list resolution failure', async () => {

@@ -10,12 +10,9 @@
  *
  * Data layer — entirely REUSED, nothing new invented (D-005 "generalize
  * OperatorChat... never fork a second chat renderer" + reuse-first):
- *   - owner → session id: POST /api/admin/coordination/sessions/list, the
- *     existing generic coordination admin proxy (sessions:list). Cross-client
- *     under the hood, but this view resolves a CLAUDE session specifically —
- *     matching P-002's "Claude transcripts first" scoping decision; OMP/codex
- *     support is a disclosed follow-up (the live-stream endpoint already
- *     accepts ompThreadId/codexSessionKey, so extending is additive later).
+ *   - owner → native transcript: the canonical advRoster.list nativeSession
+ *     handle for Claude/Codex/OMP, with the existing sessions:list admin proxy
+ *     as the compatibility/history fallback.
  *   - session id → live transcript: the SAME `/api/adv/session/thinking` SSE
  *     stream + `useAgentThinkingStream` hook that already backs
  *     AgentInspectorModal (apps/operator/app/harness/AgentThinkingStream.tsx)
@@ -90,7 +87,6 @@ import {
   contextPct,
   deriveBadges,
   formatAge,
-  hasSessionChatSurface,
   HUD_DEFAULT_THRESHOLDS,
   isInfrastructureAwait,
   shortHandle,
@@ -1030,21 +1026,6 @@ export default function SessionChatModal({
    */
   onSelectPeer?: (ownerId: string) => void;
 }) {
-  /* The session resolve, the SSE url and the send state machine all live in
-     `use-owner-session-chat` (D-011) so the goal popup can host the same
-     conversation without forking any of it. `sentOk` is still the DELIVERY
-     OUTCOME rather than a boolean (P-002); `null` = nothing sent yet. */
-  const {
-    resolved,
-    resolveError,
-    resolving,
-    streamUrl,
-    send: handleSend,
-    sending,
-    sendError,
-    sentOk,
-  } = useOwnerSessionChat(sessionOwnerId, { focusSessionId, focusTerm, focusAnchorTs });
-
   const open = sessionOwnerId !== null;
   // P-008: this owner's pending coord-escalation(s) with named options — the
   // SAME shared `plans.attention` feed InboxPane/the Queue read (no new
@@ -1097,6 +1078,31 @@ export default function SessionChatModal({
     return entries.find((e) => e.ownerId === sessionOwnerId) ?? null;
   }, [actionRoster.data, sessionOwnerId]);
 
+  /* Resolve only after the roster read is in scope: its canonical nativeSession
+     handle is what distinguishes a Codex rollout/adv-row key from an OMP thread
+     and a Claude session id. The hook retains sessions:list as the compatibility
+     path when this popup is opened without a roster row. */
+  const {
+    resolved,
+    resolveError,
+    resolving,
+    streamUrl,
+    send: handleSend,
+    sending,
+    sendError,
+    sentOk,
+  } = useOwnerSessionChat(
+    sessionOwnerId,
+    { focusSessionId, focusTerm, focusAnchorTs },
+    {
+      agent: actionRosterEntry?.agent,
+      advSessionId: actionRosterEntry?.advSessionId,
+      sessionId: actionRosterEntry?.sessionId,
+      ompThreadId: actionRosterEntry?.ompThreadId,
+      nativeSession: actionRosterEntry?.nativeSession,
+    },
+  );
+
   // hud-first-nav-and-dossier-2026-07-26 P-003: the SAME advRoster.list row
   // (actionRoster, already fetched above for the action bar — no new query)
   // re-read as a RosterEntry (AgentDossier's own prop shape) instead of
@@ -1136,16 +1142,6 @@ export default function SessionChatModal({
     if (!payload || !sessionOwnerId) return null;
     return (payload.ended ?? []).find((e) => e.coordOwnerId === sessionOwnerId) ?? null;
   }, [actionRoster.data, sessionOwnerId]);
-
-  // The modal's resolver is intentionally Claude-first, but a live Codex/OMP
-  // roster row is not a missing Claude session. Keep the agent kind as the
-  // authoritative discriminator so the popup cannot blame liveness or mount
-  // a Claude stream/composer for a different native session type.
-  const chatSupported = hasSessionChatSurface(actionRosterEntry?.agent);
-  const unsupportedChatAgent =
-    !chatSupported && actionRosterEntry?.agent?.trim()
-      ? actionRosterEntry.agent.trim().toLowerCase()
-      : null;
 
   const rosterReady = actionRoster.data?.[0] != null && actionRoster.error == null;
   const agentKnown = Boolean(actionRosterEntry || startingEntry || endedEntry || resolved);
@@ -1430,10 +1426,11 @@ export default function SessionChatModal({
         ? {
             sessionOwnerId,
             ownerLabel,
-            // P-006 (session actions): the resolved Claude session id + the
-            // roster entry's agent/advSessionId/windowId.
+            // P-006 (session actions): only Claude consumes `sessionId`; OMP
+            // reads ompThreadId and Codex remains gated by the console-launch
+            // action until its CODEX_HOME/rollout contract is wired there.
             agent: actionRosterEntry?.agent ?? null,
-            sessionId: resolved?.session_id ?? null,
+            sessionId: resolved?.source_kind === 'claude' ? resolved.session_id : null,
             advSessionId: actionRosterEntry?.advSessionId ?? null,
             windowId: actionRosterEntry?.windowId ?? null,
             // SessionActionCtx declares these two as "supplied by
@@ -1742,12 +1739,7 @@ export default function SessionChatModal({
         {actionRosterEntry ? (
           <SessionStateHeader entry={actionRosterEntry} onOpenDetail={scrollToDossierSection} />
         ) : null}
-        {unsupportedChatAgent ? (
-          <div style={BANNER_STYLE} data-testid="session-chat-unsupported-agent">
-            This agent runs on {unsupportedChatAgent}; the chat surface is available only for Claude
-            sessions.
-          </div>
-        ) : resolving ? (
+        {resolving ? (
           <div style={BANNER_STYLE}>Finding this agent's session…</div>
         ) : resolveError ? (
           // WI-5364: friendly headline first — the raw transport error (status
@@ -1834,7 +1826,15 @@ export default function SessionChatModal({
             No agent with this id was found in the current roster or session history.
           </div>
         ) : !resolved ? (
-          <div style={BANNER_STYLE}>No recent Claude session found for this agent.</div>
+          <div style={BANNER_STYLE}>
+            No recent{' '}
+            {actionRosterEntry?.agent === 'codex'
+              ? 'Codex'
+              : actionRosterEntry?.agent === 'omp'
+                ? 'OMP'
+                : 'Claude'}{' '}
+            session found for this agent.
+          </div>
         ) : streamUrl && sessionOwnerId ? (
           <LiveSessionChat
             streamUrl={streamUrl}
@@ -1934,7 +1934,7 @@ export default function SessionChatModal({
             inside what maximize paints — the owner asked for it in both modes.
             The only gate left is `actionCtx`, which is about whether there is a
             live session to act ON, not about layout. ── */}
-        {actionCtx && chatSupported && (
+        {actionCtx && (
           <>
             {/* Renders whatever askUserLocal card an action's params()/confirm
                 step opens (P-002 substrate) — the SAME renderer the

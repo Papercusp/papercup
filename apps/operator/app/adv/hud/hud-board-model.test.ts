@@ -101,14 +101,17 @@ describe('shortHandle', () => {
 });
 
 describe('hasSessionChatSurface', () => {
-  it('keeps Claude, Papercup, and partial legacy rows on the existing surface', () => {
+  it('keeps every supported runtime and partial legacy rows on the shared surface', () => {
     expect(hasSessionChatSurface('claude')).toBe(true);
     expect(hasSessionChatSurface('papercup')).toBe(true);
+    expect(hasSessionChatSurface('codex')).toBe(true);
+    expect(hasSessionChatSurface('OMP')).toBe(true);
     expect(hasSessionChatSurface(null)).toBe(true);
     expect(hasSessionChatSurface(undefined)).toBe(true);
   });
 
-  it.each(['codex', 'OMP', ' codex '])('rejects the native %s surface from Claude chat', (agent) => {
+  it('keeps an actually unsupported future runtime from promising a popup', () => {
+    const agent = 'future-runtime';
     expect(hasSessionChatSurface(agent)).toBe(false);
   });
 });
@@ -571,7 +574,8 @@ describe('deriveBadges', () => {
   it('carries native agent kind and chat support into the card model', () => {
     const session = toHudSession(entry({ agent: 'omp' }), undefined, OPTS);
     expect(session.agent).toBe('omp');
-    expect(session.chatSupported).toBe(false);
+    expect(session.chatSupported).toBe(true);
+    expect(toHudSession(entry({ agent: 'codex' }), undefined, OPTS).chatSupported).toBe(true);
     expect(toHudSession(entry({ agent: 'papercup' }), undefined, OPTS).chatSupported).toBe(true);
   });
 

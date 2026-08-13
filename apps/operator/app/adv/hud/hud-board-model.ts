@@ -22,6 +22,7 @@
 import { deepEqual } from '@papercusp/rules';
 
 import type { Liveness } from '@papercusp/operator-core/lib/liveness';
+import type { NativeSessionHandle } from '@papercusp/operator-core/lib/native-session-handles';
 // Mode chip label + hover come from the registry (pure data, zero imports of its
 // own — safe in the SPA bundle) so the five official modes are explained here
 // without this file keeping its own copy of what each one means.
@@ -219,6 +220,8 @@ export interface HudRosterEntry {
    */
   sessionId?: string | null;
   ompThreadId?: string | null;
+  /** Canonical per-backend transcript/resume handle emitted by advRoster.list. */
+  nativeSession?: NativeSessionHandle | null;
   /**
    * The session's OS pid, when the roster resolved one (adv-roster's
    * `RosterEntry.pid`). Untyped here for the same reason as the two ids above —
@@ -897,14 +900,13 @@ export function isSuSession(e: HudRosterEntry): boolean {
 
 /**
  * Whether the shared SessionChatModal has a transcript/composer surface for
- * this roster agent kind. Claude remains the default for older/partial roster
- * payloads, and `papercup` is a Claude-backed counterparty in the existing
- * chat surface. Codex and OMP sessions have different native transcript
- * identifiers, so presenting the Claude popup for them is a false affordance.
+ * this roster agent kind. All three interactive runtimes use the same popup;
+ * only their native transcript key differs. Claude remains the default for an
+ * older/partial roster payload, and `papercup` is Claude-backed.
  */
 export function hasSessionChatSurface(agent: string | null | undefined): boolean {
   const kind = agent?.trim().toLowerCase();
-  return kind !== 'codex' && kind !== 'omp';
+  return kind == null || kind === '' || kind === 'claude' || kind === 'papercup' || kind === 'codex' || kind === 'omp';
 }
 
 /**
