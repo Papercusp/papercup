@@ -297,6 +297,96 @@ export function __resetCodexRefreshState(): void {
 }
 
 // ---------------------------------------------------------------------------
+// Codex model preflight (EI-20362893066852316)
+// ---------------------------------------------------------------------------
+
+export type CodexModelPreflight =
+  | { verdict: 'ok'; status: number }
+  | { verdict: 'refused'; status: number; detail: string }
+  | { verdict: 'unknown'; status?: number; detail: string };
+
+/** Matches the ChatGPT backend's definitive model refusal, e.g.
+ *  `"detail":"The 'gpt-5.6' model is not supported when using Codex with a ChatGPT account."` */
+const MODEL_REFUSAL_RE = /model is not supported|unsupported model|unknown model/i;
+
+/**
+ * EI-20362893066852316: ONE tiny streaming request against the ChatGPT codex backend to answer
+ * "will this subscription actually serve `model`?" BEFORE a fleet wave opens N terminals onto a
+ * per-turn refusal (burned a 4-member wave on bare 'gpt-5.6', 2026-08-13 — working ids are
+ * family-suffixed, e.g. gpt-5.6-sol).
+ *
+ * FAIL-OPEN BY DESIGN: only a definitive 4xx whose body matches the model-refusal shape returns
+ * `refused`; a transport error, 401/403 (auth), 429 (capacity), 5xx, or an unrecognized body
+ * returns `unknown` and the caller should PROCEED (the preflight must never become a new way for
+ * a healthy launch to fail). A 200 means the stream opened — we cancel it immediately.
+ */
+export async function preflightCodexModel(
+  home: string,
+  model: string,
+  deps: {
+    fetchImpl?: typeof fetch;
+    resolveAuth?: (home: string) => Promise<{ accessToken: string; accountId: string | null }>;
+    timeoutMs?: number;
+  } = {},
+): Promise<CodexModelPreflight> {
+  const fetchImpl = deps.fetchImpl ?? fetch;
+  const timeoutMs = deps.timeoutMs ?? 20_000;
+  let accessToken: string;
+  let accountId: string | null;
+  try {
+    const auth = await (deps.resolveAuth ?? resolveCodexAccessToken)(home);
+    accessToken = auth.accessToken;
+    accountId = auth.accountId ?? null;
+  } catch (e) {
+    return { verdict: 'unknown', detail: `oauth resolve failed: ${(e as Error).message}` };
+  }
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(new Error('codex model preflight timeout')), timeoutMs);
+  timer.unref?.();
+  try {
+    const res = await fetchImpl(`${CODEX_CHATGPT_BACKEND_BASE}/responses`, {
+      method: 'POST',
+      signal: ac.signal,
+      headers: {
+        'content-type': 'application/json',
+        accept: 'text/event-stream',
+        authorization: `Bearer ${accessToken}`,
+        ...(accountId ? { 'chatgpt-account-id': accountId } : {}),
+        'openai-beta': CODEX_OPENAI_BETA,
+        originator: CODEX_ORIGINATOR,
+      },
+      body: JSON.stringify({
+        model,
+        stream: true,
+        store: false,
+        instructions: 'You are a model preflight.',
+        input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: '.' }] }],
+        tools: [],
+        tool_choice: 'auto',
+        parallel_tool_calls: false,
+        reasoning: { effort: 'low' },
+        include: [],
+      }),
+    } as RequestInit);
+    if (res.ok) {
+      // Model accepted — the stream opened. Cancel it; the reply is irrelevant.
+      try { ac.abort(); } catch { /* settled */ }
+      void res.body?.cancel().catch(() => undefined);
+      return { verdict: 'ok', status: res.status };
+    }
+    const bodyText = await res.text().catch(() => '');
+    if (res.status >= 400 && res.status < 500 && res.status !== 401 && res.status !== 403 && res.status !== 429 && MODEL_REFUSAL_RE.test(bodyText)) {
+      return { verdict: 'refused', status: res.status, detail: bodyText.slice(0, 300) };
+    }
+    return { verdict: 'unknown', status: res.status, detail: bodyText.slice(0, 200) };
+  } catch (e) {
+    return { verdict: 'unknown', detail: `preflight transport: ${(e as Error).message}` };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Codex rate-limit header dialect (WI-38582)
 // ---------------------------------------------------------------------------
 
