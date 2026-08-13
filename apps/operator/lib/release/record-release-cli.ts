@@ -26,6 +26,7 @@
  */
 
 import { createHash } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -91,6 +92,8 @@ export interface RecordOpts {
   bundleDirs: string[];
   /** The papercup-rust-mobile repo root (Android/iOS artifacts); null to skip mobile. */
   mobileRoot: string | null;
+  /** Explicit desktop/iOS-only escape hatch. Raw Android outputs are otherwise rejected. */
+  skipAndroid: boolean;
   outDir: string;
   scope: Scope;
   cutBy: string | null;
@@ -430,6 +433,30 @@ export function isSpannedInstaller(dir: string, name: string): boolean {
  * than a size guess.
  */
 export const MIN_PLAUSIBLE_ARTIFACT_BYTES = 1024 * 1024; // 1 MiB
+
+export const ANDROID_RELEASE_PROVENANCE_PATH =
+  'android/app/build/outputs/papercusp-release-provenance.json';
+const ANDROID_RELEASE_APK_PATH = 'android/app/build/outputs/apk/release/app-release.apk';
+const ANDROID_RELEASE_AAB_PATH = 'android/app/build/outputs/bundle/release/app-release.aab';
+
+interface AndroidProvenanceArtifact {
+  kind: 'apk' | 'aab';
+  path: string;
+  size: number;
+  sha256: string;
+}
+
+interface AndroidReleaseProvenance {
+  schemaVersion: 1;
+  releaseVersion: string;
+  sourceCommit: string;
+  sourceDirty: false;
+  builtAt: string;
+  artifacts: {
+    apk: AndroidProvenanceArtifact;
+    aab: AndroidProvenanceArtifact;
+  };
+}
 
 /**
  * Is this file too small to plausibly BE the installer/app its name claims?
