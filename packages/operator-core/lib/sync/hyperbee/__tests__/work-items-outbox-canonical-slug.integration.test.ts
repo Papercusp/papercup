@@ -27,7 +27,7 @@
  *
  * RUN (real testcontainer PG):
  *   cd packages/operator-core && VITEST_UNIT_TIMEOUT_MS=180000 \
- *     npx vitest run lib/sync/hyperbee/__tests__/work-items-outbox-canonical-slug.integration.test.ts
+ *     npm run test:file -- lib/sync/hyperbee/__tests__/work-items-outbox-canonical-slug.integration.test.ts
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
@@ -164,5 +164,95 @@ describe('capture_work_items_outbox canonicalizes harness_slug (migration 452, W
     expect((await latestOutbox(issueId))?.key).toBe(`real-hive/${issueId}`);
     // The feature family retains its established per-log key shape.
     expect((await latestOutbox(featureId))?.key).toBe(featureId);
+  });
+
+  it('migration 829 restores an erased Papercusp survivor and emits its harness-qualified identity', async () => {
+    const id = 'EI-1435';
+    const survivorPayload = JSON.stringify({ survivor: 'papercusp' });
+    const sourcePayload = JSON.stringify({
+      source: 'operator',
+      _completionEvidence: { testResult: 'green' },
+    });
+
+    // Reconstruct the production incident from migration 826's durable backup:
+    // two content-identical physical rows were preserved, then a legacy bare-key
+    // tombstone erased the Papercusp survivor after the redundant source row was
+    // removed.  Seed the backup through real work_items rows so its wide schema
+    // stays aligned with HEAD without duplicating the column list here.
+    await sql`
+      INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, title, summary, status, item_kind, origin, payload)
+      VALUES
+        ('papercusp-workspace', 'papercusp', ${id}, 'restoration witness', 'same body',
+         'open', 'bug', 'local', ${survivorPayload}::text::jsonb),
+        ('papercusp-workspace', 'operator:papercusp-workspace', ${id}, 'restoration witness', 'same body',
+         'open', 'bug', 'local', ${sourcePayload}::text::jsonb)`;
+    await sql`
+      INSERT INTO harness_shared.bak_20260813_work_item_physical_twins
+      SELECT w.* FROM harness_shared.work_items w
+       WHERE w.workspace_id = 'papercusp-workspace' AND w.feature_id = ${id}`;
+    await sql`
+      UPDATE harness_shared.bak_20260813_work_item_physical_twins
+         SET status = 'done',
+             completion_ref = 'source completion',
+             terminal_completion_ref = 'source completion',
+             terminal_owner = 'source-agent',
+             authority = 'committed',
+             payload = ${sourcePayload}::text::jsonb
+       WHERE harness_slug = 'operator:papercusp-workspace' AND feature_id = ${id}`;
+    await sql`
+      DELETE FROM harness_shared.work_items
+       WHERE workspace_id = 'papercusp-workspace' AND feature_id = ${id}`;
+
+    await sql.unsafe(MIGRATION_829_SQL);
+
+    const rows = await sql<
+      {
+        harness_slug: string;
+        status: string;
+        completion_ref: string | null;
+        terminal_completion_ref: string | null;
+        terminal_owner: string | null;
+        authority: string | null;
+        payload: Record<string, unknown>;
+      }[]
+    >`
+      SELECT harness_slug, status, completion_ref, terminal_completion_ref,
+             terminal_owner, authority, payload
+        FROM harness_shared.work_items
+       WHERE workspace_id = 'papercusp-workspace' AND feature_id = ${id}`;
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      harness_slug: 'papercusp',
+      status: 'done',
+      completion_ref: 'source completion',
+      terminal_completion_ref: 'source completion',
+      terminal_owner: 'source-agent',
+      authority: 'committed',
+    });
+    expect(rows[0]?.payload).toMatchObject({
+      survivor: 'papercusp',
+      _completionEvidence: { testResult: 'green' },
+      _physicalTwinRepair: {
+        migration: 826,
+        sourceHarness: 'operator:papercusp-workspace',
+      },
+    });
+
+    const outbox = await latestOutbox(id);
+    expect(outbox).toMatchObject({
+      table_name: 'engineer_issues',
+      harness_slug: 'papercusp',
+      key: `papercusp/${id}`,
+    });
+    expect(outbox?.row?.storage_harness_slug).toBe('papercusp');
+
+    // Re-execution is deliberately safe: an exact restored survivor is retained,
+    // evidence remains merged, and the frozen postcondition still holds.
+    await expect(sql.unsafe(MIGRATION_829_SQL)).resolves.toBeDefined();
+    const [{ n }] = await sql<{ n: number }[]>`
+      SELECT count(*)::int AS n FROM harness_shared.work_items
+       WHERE workspace_id = 'papercusp-workspace' AND feature_id = ${id}`;
+    expect(n).toBe(1);
   });
 });
