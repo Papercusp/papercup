@@ -749,7 +749,7 @@ export const MANUAL_SELF_WATCHDOG_ENV =
 export const MIN_MANUAL_SELF_WATCHDOG_MS = 120 * 60_000 + 15_000;
 
 export function selfWatchdogMsFromEnv(
-  env: NodeJS.ProcessEnv = process.env,
+  env: Readonly<Record<string, string | undefined>> = process.env,
 ): number {
   const raw = env[MANUAL_SELF_WATCHDOG_ENV];
   if (raw === undefined) return SELF_WATCHDOG_MS;
