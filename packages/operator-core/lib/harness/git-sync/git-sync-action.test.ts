@@ -1108,9 +1108,10 @@ describe('isResolverInFlight — dedup window (P-006/P-007)', () => {
     expect(isResolverInFlight({ status: 'dispatched', at: NOW - 2 * WINDOW, instance: ME }, NOW, ME)).toBe(false);
   });
 
-  it('P-006: dispatched by a DIFFERENT instance (restart orphan) → not in flight even INSIDE the window', () => {
-    expect(isResolverInFlight({ status: 'dispatched', at: NOW - 60_000, instance: 'prior-incarnation' }, NOW, ME)).toBe(false);
-    // and once stale it's still not in flight (both reasons agree)
+  it('EI-20336929607862174: a fresh DIFFERENT-instance marker is still in flight (shared multi-process dedup)', () => {
+    expect(isResolverInFlight({ status: 'dispatched', at: NOW - 60_000, instance: 'other-live-operator' }, NOW, ME)).toBe(true);
+    // A genuinely orphaned writer is released by the bounded TTL, never by guessing
+    // liveness from process-instance inequality.
     expect(isResolverInFlight({ status: 'dispatched', at: NOW - 2 * WINDOW, instance: 'prior-incarnation' }, NOW, ME)).toBe(false);
   });
 
@@ -1304,11 +1305,12 @@ describe('EI-438 content-guard path (git-sync-content-error)', () => {
     warn.mockRestore();
   });
 
-  it('does NOT dispatch a second content-fixer while one is genuinely in flight (dedup on last_content_fixer)', async () => {
+  it('does NOT dispatch a second content-fixer while another live operator instance owns the fresh marker', async () => {
     runGitSyncMock.mockResolvedValue(contentErrorOutcome);
     counterRows = [{ et: 0, lo: [], ct: 1 }];
-    // a content-fixer dispatch recorded 1 min ago that has not settled → in flight
-    contentFixerRows = [{ lr: { status: 'dispatched', at: Date.now() - 60_000 } }];
+    // A content-fixer recorded 1 min ago by another live operator process has not
+    // settled. Instance inequality must never overlap a second 6-GiB agent scope.
+    contentFixerRows = [{ lr: { status: 'dispatched', at: Date.now() - 60_000, instance: 'other-live-operator' } }];
 
     await action(ctx);
 

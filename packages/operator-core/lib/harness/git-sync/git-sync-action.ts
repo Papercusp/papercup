@@ -477,15 +477,13 @@ const RESOLVER_INFLIGHT_MARGIN_MS = 5 * 60_000;
 const RESOLVER_INFLIGHT_MS = RESOLVER_INVOKE_TIMEOUT_MS + RESOLVER_INFLIGHT_MARGIN_MS;
 
 /**
- * This operator process incarnation (P-006). The merge-resolver dispatch is a
- * FIRE-AND-FORGET `loopbackFetch` whose settle-recording `.then`/`.catch` lives
- * only in THIS process's memory — so a 'dispatched' marker tagged with a DIFFERENT
- * instance was orphaned by a restart (the operator died mid-resolution; that promise
- * can never settle here) and is NOT really in-flight. Tagging the marker with the
- * instance lets `isResolverInFlight` re-dispatch such an orphan on the very next
- * conflict tick instead of stranding the conflict for the full RESOLVER_INFLIGHT_MS
- * TTL. pid + process-start stamp is unique per incarnation (a restart reusing the
- * same pid in the same millisecond is not physically possible).
+ * This operator process incarnation (P-006). Resolver/fixer dispatches are
+ * FIRE-AND-FORGET `loopbackFetch` calls whose settle-recording `.then`/`.catch`
+ * lives only in the dispatching process, so the marker retains this id for
+ * forensic attribution. It is NOT a liveness oracle: several live operator
+ * processes share the same routine row, and a reader seeing another instance's
+ * marker does not mean that writer died. In-flight dedup therefore uses the
+ * durable status + timestamp below; its TTL is the restart-orphan backstop.
  */
 const PROCESS_INSTANCE_ID = `${process.pid}.${Date.now().toString(36)}`;
 
@@ -493,8 +491,8 @@ const PROCESS_INSTANCE_ID = `${process.pid}.${Date.now().toString(36)}`;
 export interface ResolverMarker {
   status?: string;
   at?: number;
-  /** The operator instance that fired the dispatch (P-006). Absent on legacy
-   *  markers written before instance-tagging — those fall back to the pure TTL. */
+  /** The operator instance that fired the dispatch (P-006), retained for
+   *  attribution only. Absent on legacy markers written before instance-tagging. */
   instance?: string;
 }
 
@@ -506,24 +504,23 @@ export interface ResolverMarker {
  * resolver ceiling). This replaced the old "is an escalation open?" dedup, which
  * permanently suppressed the resolver after a SILENT dispatch failure. The rules:
  *   - never-run / already-settled (status !== 'dispatched') → NOT in flight (retry);
- *   - P-006: a 'dispatched' marker from a DIFFERENT process instance was orphaned
- *     by a restart (its fire-and-forget settle can never land here) → NOT in flight
- *     (re-dispatch next tick, not after the 20-min TTL). A marker with NO instance
- *     (legacy / pre-instance-tagging) falls through to the TTL — no regression;
- *   - same-instance 'dispatched' → in flight only until the RESOLVER_INFLIGHT_MS
- *     TTL lapses (the backstop for a genuinely-slow resolver in a live process).
+ *   - 'dispatched' from ANY instance → in flight until RESOLVER_INFLIGHT_MS
+ *     lapses. Multiple live operator processes share this row, so instance
+ *     inequality cannot prove an orphan; treating it as one caused overlapping
+ *     6-GiB content-fixers and host memory PSI/OOM pressure (EI-20336929607862174);
+ *   - the TTL is both the genuinely-slow-run ceiling and the restart-orphan
+ *     backstop. A crashed writer may delay one retry, but can never spawn an
+ *     unbounded concurrent repair storm.
  */
 export function isResolverInFlight(
   lr: ResolverMarker | null | undefined,
   now: number,
-  instanceId: string,
+  _instanceId: string,
 ): boolean {
   if (!lr || lr.status !== 'dispatched') return false; // never-run or already settled → retry
-  // P-006: orphaned by an operator restart — a marker tagged with a prior incarnation
-  // can never settle in this process, so it is not really in flight. (A marker with
-  // no instance predates instance-tagging → fall through to the TTL, preserving the
-  // old behavior rather than risk a double-dispatch on a live same-process resolver.)
-  if (lr.instance !== undefined && lr.instance !== instanceId) return false;
+  // Instance ids are attribution, not liveness. A different id may be another
+  // healthy operator process serving the same workspace, so only the durable TTL
+  // may declare a dispatched marker stale.
   return typeof lr.at === 'number' && now - lr.at < RESOLVER_INFLIGHT_MS;
 }
 
@@ -707,9 +704,8 @@ async function spawnMergeResolver(slug: string, workspaceId: string, conflicts: 
   const dispatchedAt = Date.now();
 
   // (1) durable "dispatched" marker, awaited — observable even if (2) is lost.
-  // P-006: stamp THIS process instance so a restart-orphaned dispatch (whose
-  // settle-recording promise died with the old process) re-dispatches on the next
-  // conflict tick instead of waiting out the RESOLVER_INFLIGHT_MS TTL.
+  // Stamp THIS process instance for attribution; liveness is deliberately derived
+  // from status + TTL because a different live operator instance shares this row.
   await recordResolverDispatch(slug, workspaceId, { at: dispatchedAt, status: 'dispatched', scopes, instance: PROCESS_INSTANCE_ID });
 
   // Pipeline history (mig 177): log each resolver SETTLE (not the dispatch) so the
@@ -832,8 +828,8 @@ async function spawnContentFixer(slug: string, workspaceId: string, contentError
       'Change nothing else, leave the tree clean, and do NOT push (the next git-sync tick re-checks + commits).'
     : 'Fix ONLY the syntax so each passes its detector, change nothing else, leave the tree clean, and do NOT push (the next git-sync tick re-checks + commits).';
 
-  // (1) durable "dispatched" marker, awaited (instance-tagged so a restart-orphaned
-  //     dispatch re-fires next tick rather than waiting out the TTL).
+  // (1) durable "dispatched" marker, awaited. The instance tag is forensic
+  //     attribution only; status + TTL provide cross-process in-flight dedup.
   await recordContentFixerDispatch(slug, workspaceId, { at: dispatchedAt, status: 'dispatched', files: filePaths, instance: PROCESS_INSTANCE_ID });
 
   const logSettle = (status: 'ok' | 'failed' | 'error', extra: Record<string, unknown>): Promise<void> =>
