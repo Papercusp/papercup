@@ -126,13 +126,28 @@ const CLOCK_TICKS_PER_SEC = 100;
 export function owningSessionId(pid: number): string | null {
   let raw: string;
   try { raw = readFileSync(`/proc/${pid}/environ`, 'utf8'); } catch { return null; }
+  return parseOwningSessionId(raw);
+}
+
+const SID_VAR = 'PAPERCUSP_SID=';
+
+/**
+ * PURE half of `owningSessionId`, split out so the parsing is testable without a
+ * real `/proc` — the same reason this whole module sits outside the census.
+ *
+ * `raw` is the NUL-separated `environ` blob. Entries are whole `NAME=VALUE` pairs,
+ * so a NAME-anchored prefix match is both exact (it cannot be fooled by a variable
+ * whose name merely ENDS with `PAPERCUSP_SID`) and safe for values containing `=`,
+ * which a `split('=')` would truncate.
+ */
+export function parseOwningSessionId(raw: string): string | null {
   for (const entry of raw.split('\0')) {
-    // Prefix-match rather than split('=') — an env VALUE may contain '=' , and a
-    // name-only match keeps this immune to that.
-    if (entry.startsWith('PAPERCUSP_SID=')) {
-      const v = entry.slice('PAPERCUSP_SID='.length).trim();
-      return v || null;
-    }
+    if (!entry.startsWith(SID_VAR)) continue;
+    const v = entry.slice(SID_VAR.length).trim();
+    // An EMPTY value is "not set", not a session named ''. Exported-but-blank is a
+    // real shape (`export PAPERCUSP_SID=` in a partially-initialised shell), and
+    // returning '' would attribute the process to a session that does not exist.
+    return v || null;
   }
   return null;
 }

@@ -72,7 +72,14 @@ describe('censusTerminalResidue', () => {
     // With no probe supplied the disposition is `indeterminate` — never a guess,
     // and never a silently-clean-looking zero.
     expect(c.dead).toEqual([
-      { scope: scope(2), pidCount: 2, disposition: 'indeterminate', oldestPidAgeMs: null },
+      {
+        scope: scope(2),
+        pidCount: 2,
+        disposition: 'indeterminate',
+        oldestPidAgeMs: null,
+        // No probe ⇒ no attribution either; empty means "no opinion" (EI-20369673282334981).
+        owningSessionIds: [],
+      },
     ]);
     expect(c.deadStale).toBe(0);
     expect(c.deadIndeterminate).toBe(1);
@@ -155,9 +162,11 @@ describe('censusTerminalResidue disposition (EI-19418147529720290)', () => {
     knownLive?: number[];
     ages?: Record<number, number | null>;
     defaultAge?: number | null;
+    sids?: Record<number, string | null>;
   }) => ({
     listeningPids: () => new Set(opts.listening ?? []),
     knownLivePids: opts.knownLive ? () => new Set(opts.knownLive!) : undefined,
+    owningSessionId: opts.sids ? (pid: number) => opts.sids![pid] ?? null : undefined,
     pidAgeMs: (pid: number) =>
       (opts.ages && pid in opts.ages ? opts.ages[pid] : opts.defaultAge ?? 30 * DAY_MS),
   });
@@ -167,11 +176,73 @@ describe('censusTerminalResidue disposition (EI-19418147529720290)', () => {
     censusTerminalResidue(TERM, deadBox(scopes), opts);
 
   it('a scope holding a LISTENING socket is a service, not residue', () => {
-    // The 2026-08-03 case exactly: window dead, days old, but serving :3170.
+    // The 2026-08-03 case exactly: window dead, days old, but serving :3170. Old
+    // and unclaimed, so EI-20369673282334981 now NAMES it separately — but the
+    // property this test exists to hold is unchanged and asserted below: a
+    // listener is never `stale`, i.e. never a reclaim candidate.
     const c = census({ [scope(1)]: [2001, 2002] }, { probe: probe({ listening: [2002] }) });
+    expect(c.dead[0]!.disposition).toBe('live-service-unclaimed');
+    expect(c.deadStale).toBe(0);
+  });
+
+  it('a listener that is claimed by a known-live pid stays `live-service-held`, at any age', () => {
+    const c = census(
+      { [scope(1)]: [2001, 2002] },
+      { probe: probe({ listening: [2002], knownLive: [2001], defaultAge: 30 * DAY_MS }) },
+    );
     expect(c.dead[0]!.disposition).toBe('live-service-held');
     expect(c.deadLiveServiceHeld).toBe(1);
+    expect(c.deadLiveServiceUnclaimed).toBe(0);
+  });
+
+  it('a YOUNG listener is `live-service-held` — unclaimed is a claim about AGE too', () => {
+    const c = census(
+      { [scope(1)]: [2001] },
+      { probe: probe({ listening: [2001], ages: { 2001: 60_000 } }) },
+    );
+    expect(c.dead[0]!.disposition).toBe('live-service-held');
+    expect(c.deadLiveServiceUnclaimed).toBe(0);
+  });
+
+  it('an UNREADABLE age keeps a listener `live-service-held` — a failed read is not evidence of age', () => {
+    const c = census(
+      { [scope(1)]: [2001] },
+      { probe: probe({ listening: [2001], ages: { 2001: null } }) },
+    );
+    expect(c.dead[0]!.disposition).toBe('live-service-held');
+    expect(c.dead[0]!.oldestPidAgeMs).toBeNull();
+  });
+
+  /**
+   * EI-20369673282334981, the whole point of the bucket: on 2026-08-13 a Hono host
+   * on :4015 left by an ENDED agent session held ~70 GiB for 12 hours, and the
+   * census could not have reported it at any age — a listener short-circuited
+   * every staleness test into one undifferentiated `live-service-held` count.
+   */
+  it('an OLD listener no known-live pid claims is reported as `live-service-unclaimed`', () => {
+    const c = census(
+      { [scope(1)]: [2001] },
+      { probe: probe({ listening: [2001], knownLive: [9999], ages: { 2001: 12 * 60 * 60_000 } }), staleAfterMs: 6 * 60 * 60_000 },
+    );
+    expect(c.dead[0]!.disposition).toBe('live-service-unclaimed');
+    expect(c.deadLiveServiceUnclaimed).toBe(1);
+    // The safety property: naming it did NOT make it reapable.
     expect(c.deadStale).toBe(0);
+  });
+
+  /**
+   * The guard on the one change that would make this dangerous. `stale` is the
+   * only disposition anything may ever act on, so the new bucket must not become a
+   * back door into it: a listening pid stays protected at ANY age, exactly as
+   * before. If a future edit reorders `classify` so a listener can fall through to
+   * the staleness test, this fails.
+   */
+  it('NO listener reaches `stale`, however old — the split added a label, not kill power', () => {
+    for (const age of [DAY_MS, 30 * DAY_MS, 365 * DAY_MS]) {
+      const c = census({ [scope(1)]: [2001] }, { probe: probe({ listening: [2001], ages: { 2001: age } }) });
+      expect(c.dead[0]!.disposition).not.toBe('stale');
+      expect(c.deadStale).toBe(0);
+    }
   });
 
   it('a scope holding a pid the caller knows is live is spared too', () => {
@@ -231,13 +302,74 @@ describe('censusTerminalResidue disposition (EI-19418147529720290)', () => {
     expect(c.scopesDead).toBe(2);
   });
 
-  it('the three dispositions always partition scopesDead', () => {
+  it('the four dispositions always partition scopesDead', () => {
     const c = census(
-      { [scope(1)]: [2001], [scope(2)]: [2002], [scope(3)]: [2003] },
-      { probe: probe({ listening: [2001], ages: { 2002: 60_000, 2003: 17 * DAY_MS } }) },
+      { [scope(1)]: [2001], [scope(2)]: [2002], [scope(3)]: [2003], [scope(4)]: [2004] },
+      {
+        probe: probe({
+          listening: [2001, 2004],
+          knownLive: [2001],
+          ages: { 2001: 17 * DAY_MS, 2002: 60_000, 2003: 17 * DAY_MS, 2004: 17 * DAY_MS },
+        }),
+      },
     );
-    expect(c.deadStale + c.deadLiveServiceHeld + c.deadIndeterminate).toBe(c.scopesDead);
-    expect([c.deadLiveServiceHeld, c.deadIndeterminate, c.deadStale]).toEqual([1, 1, 1]);
+    expect(
+      c.deadStale + c.deadLiveServiceHeld + c.deadLiveServiceUnclaimed + c.deadIndeterminate,
+    ).toBe(c.scopesDead);
+    expect([
+      c.deadLiveServiceHeld,
+      c.deadLiveServiceUnclaimed,
+      c.deadIndeterminate,
+      c.deadStale,
+    ]).toEqual([1, 1, 1, 1]);
+  });
+
+  /**
+   * EI-20369673282334981 attribution. Validated on this box 2026-08-13: 52 of 200
+   * readable `/proc/<pid>/environ` carry `PAPERCUSP_SID`, and env is inherited, so
+   * a process launched from an agent shell names the session that started it.
+   */
+  describe('owningSessionIds', () => {
+    it('reports the distinct launching session ids, deduped across a scope', () => {
+      // The ordinary shape: one agent shell plus its children, all inheriting the
+      // SAME id. Reporting it three times would read as three sessions.
+      const c = census(
+        { [scope(1)]: [2001, 2002, 2003] },
+        { probe: probe({ sids: { 2001: 'su-aaa', 2002: 'su-aaa', 2003: 'su-bbb' } }) },
+      );
+      expect(c.dead[0]!.owningSessionIds).toEqual(['su-aaa', 'su-bbb']);
+    });
+
+    it('is EMPTY, never a verdict, when environ carries no session id', () => {
+      // 148 of the 200 sampled pids were this case — a systemd unit, a bootstrap,
+      // anything the owner started by hand. Empty must read as "no opinion".
+      const c = census({ [scope(1)]: [2001] }, { probe: probe({ sids: { 2001: null } }) });
+      expect(c.dead[0]!.owningSessionIds).toEqual([]);
+    });
+
+    it('is EMPTY when the probe cannot answer at all, and changes no disposition', () => {
+      // A probe predating this field (owningSessionId undefined) must still
+      // classify exactly as before — attribution is additive reporting only.
+      const c = census({ [scope(1)]: [2001] }, { probe: probe({ ages: { 2001: 17 * DAY_MS } }) });
+      expect(c.dead[0]!.owningSessionIds).toEqual([]);
+      expect(c.dead[0]!.disposition).toBe('stale');
+    });
+
+    it('does NOT influence disposition — an ended-looking session cannot promote a scope', () => {
+      // The binding constraint from D-016: attribution is not authorization. The
+      // `:3170` staging operator is attributable to a session that has long ended
+      // and is still critical shared infra.
+      const withSid = census(
+        { [scope(1)]: [2001] },
+        { probe: probe({ listening: [2001], sids: { 2001: 'su-ended' }, ages: { 2001: 17 * DAY_MS } }) },
+      );
+      const withoutSid = census(
+        { [scope(1)]: [2001] },
+        { probe: probe({ listening: [2001], ages: { 2001: 17 * DAY_MS } }) },
+      );
+      expect(withSid.dead[0]!.disposition).toBe(withoutSid.dead[0]!.disposition);
+      expect(withSid.deadStale).toBe(0);
+    });
   });
 });
 

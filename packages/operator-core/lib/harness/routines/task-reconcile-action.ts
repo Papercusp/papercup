@@ -55,6 +55,8 @@ const GC_INTERVAL_MS = 60 * 60_000;
 const RESIDUE_INTERVAL_MS = 60 * 60_000;
 /** Don't re-broadcast an accumulation report more than once every few hours. */
 const RESIDUE_RENOTIFY_MS = 6 * 60 * 60_000;
+/** Cap on the per-sample `unclaimedScopes` detail written into the routine row. */
+const MAX_REPORTED_UNCLAIMED_SCOPES = 20;
 
 /**
  * EI-19407950136194410 — WALL-CLOCK watermarks, never tick counts.
@@ -204,6 +206,23 @@ async function sampleResidue(
       deadLiveServiceHeld: census.deadLiveServiceHeld,
       deadLiveServiceUnclaimed: census.deadLiveServiceUnclaimed,
       deadIndeterminate: census.deadIndeterminate,
+      // EI-20369673282334981 asks for the new bucket's POPULATION to be measured
+      // for a few days before anyone proposes acting on it, so persist the members
+      // and not just the count — a count cannot tell you afterwards whether the 3
+      // it saw were the same 3 every hour (accumulating residue) or 3 different
+      // ones (ordinary churn), which is the whole question. Bounded so a pathological
+      // host cannot bloat the routine row.
+      unclaimedScopes: census.dead
+        .filter((d) => d.disposition === 'live-service-unclaimed')
+        .slice(0, MAX_REPORTED_UNCLAIMED_SCOPES)
+        .map((d) => ({
+          scope: d.scope,
+          pidCount: d.pidCount,
+          oldestPidAgeMs: d.oldestPidAgeMs,
+          // Empty means "no PAPERCUSP_SID readable", NOT "no owner" — the majority
+          // case on this box. Never render it as unowned.
+          owningSessionIds: d.owningSessionIds,
+        })),
       trend: verdict.trend,
       floorDelta: verdict.floorDelta,
     });
@@ -221,7 +240,17 @@ async function sampleResidue(
         // The split, not just the total: a reader who acts on `scopesDead` will go
         // looking for things to kill, and most of them are live tenants.
         `Of those, ${census.deadStale} look STALE, ${census.deadLiveServiceHeld} hold a live ` +
-        `service or tracked tenant (do not reap), ${census.deadIndeterminate} undecidable.`,
+        `service or tracked tenant (do not reap), ${census.deadIndeterminate} undecidable` +
+        // EI-20369673282334981: the bucket that used to be invisible. Named
+        // separately because "listening, old, and claimed by no tracked tenant" is
+        // the shape a leaked server has — and also the shape the :3170 staging
+        // operator has, which is why the wording asks for a LOOK, never a reap.
+        (census.deadLiveServiceUnclaimed > 0
+          ? `, and ${census.deadLiveServiceUnclaimed} hold a LISTENING socket that no tracked ` +
+            `tenant claims and are past the staleness threshold — worth a look (this is where a ` +
+            `leaked server hides), but NOT reapable: shared infra whose launching window closed ` +
+            `looks identical from here.`
+          : '.'),
       category: 'task-manager',
       kind: 'message',
       harnessSlug: ctx.installSlug,
