@@ -240,6 +240,10 @@ describe('isReaffirmed — fails CLOSED, so an unreadable field can never buy si
 });
 
 describe('ALWAYS_ON_SYSTEM_ROUTINE_NAMES — derived from the registry, never hand-copied', () => {
+  it('contains gc-dead-loops — the registered-without-a-row failure that motivated EI-18752496371939475', () => {
+    expect(isAlwaysOnSystemRoutine('gc-dead-loops')).toBe(true);
+  });
+
   it('contains unguarded-halt-rescue — the routine whose 11.9-day silence motivated D-007', () => {
     expect(isAlwaysOnSystemRoutine('unguarded-halt-rescue')).toBe(true);
   });
