@@ -126,7 +126,10 @@ import {
   grantEpochKeysToMembers,
 } from '../hive-epoch-boundary-wiring';
 import { generateEd25519KeypairDer, signWithPrivateKeyDer } from '../../../identity/ed25519';
-import { _resetForTests as resetDbOrgPools } from '@papercusp/db-org';
+import {
+  _resetForTests as resetDbOrgPools,
+  _resetStoreIdentityForTests,
+} from '@papercusp/db-org';
 // eslint-disable-next-line import/no-relative-packages -- clears the env-URL cache the pool resolver memoizes
 import { _resetUrlCacheForTests } from '../../../../../../libs/papercusp/libs/db/src/connection';
 import { _resetHarnessAdminUrlCacheForTests } from '../../../embedded-pg-discovery';
@@ -148,6 +151,12 @@ afterEach(async () => {
       // best-effort — a thrown assertion must not leak a swarm/dir/db/DHT node
     }
   }
+  // This file deliberately rotates the process-level org DB from the ambient store to a
+  // throwaway testcontainer and back. The production identity latch must survive endpoint
+  // changes, so test isolation has to release that pin explicitly once every routed pool has
+  // been closed; otherwise the next ambient pool is correctly (but spuriously for the test)
+  // diagnosed as a foreign cluster and vitest-fail-on-console turns a green witness red.
+  _resetStoreIdentityForTests();
   _resetCacheForTests();
   _resetBootHistoryForTests();
   mem.clear();
@@ -320,16 +329,27 @@ describe('SIDECAR revocation K-CUT — a banned member CANNOT decrypt post-bound
       await resetDbOrgPools();
       _clearHiveMemberDeviceSetCacheForTest();
       cleanups.push(async () => {
+        // Retire the testcontainer-routed pools while their env pins are still authoritative.
+        // Restoring the ambient URLs first lets surviving sidecar work build a localhost:5432
+        // pool while the throwaway cluster is still the process identity pin, manufacturing a
+        // false foreign-store alarm during teardown (EI-20321995598569419).
+        _resetUrlCacheForTests();
+        _resetHarnessAdminUrlCacheForTests();
+        _clearHiveMemberDeviceSetCacheForTest();
+        await resetDbOrgPools();
+        _resetStoreIdentityForTests();
+
         if (prev.adminUrl === undefined) delete process.env.HARNESS_ADMIN_DATABASE_URL; else process.env.HARNESS_ADMIN_DATABASE_URL = prev.adminUrl;
         if (prev.appUrl === undefined) delete process.env.HARNESS_DATABASE_URL; else process.env.HARNESS_DATABASE_URL = prev.appUrl;
         if (prev.ws === undefined) delete process.env.PAPERCUSP_WORKSPACE_ID; else process.env.PAPERCUSP_WORKSPACE_ID = prev.ws;
         if (prev.skip === undefined) delete process.env.PAPERCUSP_SKIP_PG_DISCOVERY; else process.env.PAPERCUSP_SKIP_PG_DISCOVERY = prev.skip;
         if (prev.pgb === undefined) delete process.env.PAPERCUSP_PGBOUNCER; else process.env.PAPERCUSP_PGBOUNCER = prev.pgb;
         if (prev.rekeyFlag === undefined) delete process.env.PAPERCUSP_FLAG_PAPERCUSP_HIVE_REKEY; else process.env.PAPERCUSP_FLAG_PAPERCUSP_HIVE_REKEY = prev.rekeyFlag;
+        // Drop URL-only caches after the env restore so any later caller resolves the ambient
+        // target afresh. The routed pools themselves were already closed above.
         _resetUrlCacheForTests();
         _resetHarnessAdminUrlCacheForTests();
         _clearHiveMemberDeviceSetCacheForTest();
-        await resetDbOrgPools();
       });
 
       const idOwner = await makeUnifiedIdentity('kcut-owner', 99, 'kc-kcut-owner');
