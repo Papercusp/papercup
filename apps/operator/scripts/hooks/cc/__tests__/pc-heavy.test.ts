@@ -57,6 +57,16 @@ const baseEnv = (extra: Record<string, string> = {}): NodeJS.ProcessEnv => ({
   // failing mid-gate. Same hermeticity reasoning as `cwd: dir` for the git probe.
   // Tests that WANT the clamp plant a lock dir under here explicitly.
   PAPERCUSP_CHECKPOINT_LOG_DIR: join(dir, 'checkpoint-logs'),
+  // Neutralise the MEMORY clamp (EI-20336929607862174) for the same hermeticity
+  // reason as the gate-reserve dir above: it reads the REAL /proc/meminfo, so
+  // without this every slot-count assertion in this file silently depends on how
+  // much memory this box happens to have free — `slots=12` on an idle machine
+  // and `slots=8` while a couple of agents are typechecking. That is not a
+  // theoretical flake: adding the clamp turned 7 existing tests red exactly this
+  // way. A value far above any real budget keeps the clamp non-binding; the
+  // memory-clamp tests below override it explicitly to exercise it.
+  PC_HEAVY_MEMAVAIL_GIB_OVERRIDE: '4096',
+  PC_HEAVY_MEM_PSI_OVERRIDE: '0',
   ...extra,
 });
 
@@ -578,6 +588,119 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
     } finally {
       killGroup(holder);
     }
+  });
+});
+
+describe('pc-heavy.sh — memory clamp (EI-20336929607862174)', () => {
+  /**
+   * Run `jobs` concurrent wrapped commands and return the maximum number that
+   * were ever in flight at once, measured from recorded intervals (robust to
+   * host load: intervals dilate under load, the overlap count does not).
+   *
+   * Each job writes to its OWN file, so the commands differ and pc-heavy's
+   * coalescing cannot collapse them into a single leader — the failure that
+   * makes this whole measurement read 1 regardless of the slot count. Belt and
+   * braces: PC_HEAVY_COALESCE=0.
+   */
+  async function maxOverlap(jobs: number, env: Record<string, string>): Promise<number> {
+    await Promise.all(
+      Array.from({ length: jobs }, (_, i) =>
+        new Promise<void>((res) => {
+          const f = join(dir, `mem.${i}.out`);
+          const p = spawn(
+            'bash',
+            [PC_HEAVY, 'bash', '-c', `s=$(date +%s%3N); sleep 0.4; e=$(date +%s%3N); echo "$s $e" > "${f}"`],
+            { env: baseEnv({ PC_HEAVY_COALESCE: '0', PC_HEAVY_GATE_RESERVE: '0', ...env }), cwd: dir },
+          );
+          p.on('exit', () => res());
+        }),
+      ),
+    );
+    const evts: Array<[number, number]> = [];
+    for (let i = 0; i < jobs; i += 1) {
+      const [s, e] = readFileSync(join(dir, `mem.${i}.out`), 'utf8').trim().split(/\s+/).map(Number);
+      evts.push([s, 1], [e, -1]);
+    }
+    evts.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+    let cur = 0;
+    let max = 0;
+    for (const [, d] of evts) { cur += d; max = Math.max(max, cur); }
+    return max;
+  }
+
+  // The bug this guards: _calc_slots admits on load1 alone, and memory pressure
+  // LOWERS load1 (processes stall in reclaim) — so admission WIDENS exactly when
+  // memory is scarce. Measured 2026-08-13: two concurrent
+  // `tsc -p packages/operator-core` at 4.7 and 6.9 GiB RSS drove app.slice
+  // +5.1 GiB/20s while memory PSI full avg60 hit 4.56 and cpu PSI some was 0.79.
+  //
+  // The CONTROL arm is what makes this falsifiable without mutating the tree:
+  // an identical config with memory headroom must run all 6 at once, so a
+  // clamped result cannot be explained by the semaphore, the gate reserve, or a
+  // slow box — only by the memory budget.
+  it('clamps a FIXED PC_HEAVY_SLOTS down to what MemAvailable can hold', async () => {
+    const headroom = await maxOverlap(6, {
+      PC_HEAVY_SLOTS: '6',
+      PC_HEAVY_MEMAVAIL_GIB_OVERRIDE: '600', // budget 100 — nowhere near binding
+      PC_HEAVY_MEM_PSI_OVERRIDE: '0',
+    });
+    expect(headroom).toBe(6);
+
+    const scarce = await maxOverlap(6, {
+      PC_HEAVY_SLOTS: '6',
+      PC_HEAVY_MEMAVAIL_GIB_OVERRIDE: '12', // 12 / 6 GiB-per-slot => 2
+      PC_HEAVY_MEM_PSI_OVERRIDE: '0',
+    });
+    // Clamps a FIXED slot count too: this is a physical ceiling, not load
+    // adaptation, so PC_HEAVY_SLOTS must not be able to opt out of it.
+    expect(scarce).toBe(2);
+  });
+
+  it('halves the budget once memory PSI says the box is already in reclaim', async () => {
+    // The budget must be sized to bind EXACTLY at the ask, or the halving is
+    // invisible: 24 GiB / 6 GiB-per-slot => 4, the same as PC_HEAVY_SLOTS. The
+    // calm arm then pins that baseline, so the drop to 2 in the second arm is
+    // attributable to PSI alone.
+    const calm = await maxOverlap(4, {
+      PC_HEAVY_SLOTS: '4',
+      PC_HEAVY_MEMAVAIL_GIB_OVERRIDE: '24', // budget 4 — exactly the ask
+      PC_HEAVY_MEM_PSI_OVERRIDE: '0',
+    });
+    expect(calm).toBe(4);
+
+    const reclaiming = await maxOverlap(4, {
+      PC_HEAVY_SLOTS: '4',
+      PC_HEAVY_MEMAVAIL_GIB_OVERRIDE: '24',
+      PC_HEAVY_MEM_PSI_OVERRIDE: '9', // >= PC_HEAVY_MEM_PSI_BACKOFF (5)
+    });
+    expect(reclaiming).toBe(2);
+  });
+
+  it('fails open: an unreadable MemAvailable never throttles, and PC_HEAVY_MEM_CLAMP=0 disables it', async () => {
+    // Every unexpected input must degrade to the pre-clamp behavior. A clamp
+    // that throttles the fleet to 1 because it could not parse /proc/meminfo
+    // would be far worse than the pressure it exists to prevent.
+    const garbage = await maxOverlap(4, {
+      PC_HEAVY_SLOTS: '4',
+      PC_HEAVY_MEMAVAIL_GIB_OVERRIDE: 'not-a-number',
+    });
+    expect(garbage).toBe(4);
+
+    const disabled = await maxOverlap(4, {
+      PC_HEAVY_SLOTS: '4',
+      PC_HEAVY_MEM_CLAMP: '0',
+      PC_HEAVY_MEMAVAIL_GIB_OVERRIDE: '1', // would clamp to 1 if honoured
+    });
+    expect(disabled).toBe(4);
+  });
+
+  it('never clamps below 1 — a starved box still makes forward progress', async () => {
+    const starved = await maxOverlap(2, {
+      PC_HEAVY_SLOTS: '2',
+      PC_HEAVY_MEMAVAIL_GIB_OVERRIDE: '0',
+      PC_HEAVY_MEM_PSI_OVERRIDE: '99',
+    });
+    expect(starved).toBe(1);
   });
 });
 
