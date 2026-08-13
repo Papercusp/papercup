@@ -114,4 +114,46 @@ describe('ensureHiveDirectoryWired', () => {
     );
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('PAPERCUSP_BACKGROUND_WORKERS=0'));
   });
+
+  /**
+   * WI-38355, consumer half. `resolveLocalAnnounceIdentity` now DEGRADES a gist
+   * failure to `attestationGistId: ''` instead of throwing (proved falsifiably
+   * in local-announce-identity.test.ts § 'channel-2 degrade' — the old code
+   * threw there). This pins the OTHER half of that composition: nothing at the
+   * boot-join layer re-imposes a gist requirement, so a gist-less owner still
+   * joins the topic, wires transport, and publishes its descriptor.
+   *
+   * NOTE this test is not by itself a regression proof of the degrade — it mocks
+   * the resolver, so it would pass against the old code too. Its job is to stop
+   * a future change from reintroducing the requirement DOWNSTREAM of the seam.
+   */
+  it('WI-38355: a gist-less (unattested) identity still completes the boot-join', async () => {
+    vi.resetModules();
+    process.env.PAPERCUSP_BACKGROUND_WORKERS = '1';
+
+    const resolveLocalAnnounceIdentity = vi.fn(async () => ({
+      githubLogin: 'alice',
+      githubUserId: 1,
+      devicePubkeyBase64: Buffer.alloc(32, 1).toString('base64'),
+      // The value a GitHub 422 (`user must have a verified email`) now yields.
+      attestationGistId: '',
+      keychainId: 'kc',
+    }));
+
+    vi.doMock('./sync/hyperbee/local-announce-identity', () => ({ resolveLocalAnnounceIdentity }));
+    vi.doMock('./hive-directory-meta', () => ({ listOwnedHiveMeta: vi.fn(async () => []) }));
+    vi.doMock('./identity/hive-keypair', () => ({ loadHivePubkey: vi.fn(async () => null) }));
+    vi.doMock('./hive-member-repos', () => ({ deriveHiveMemberRepoRefs: vi.fn(async () => []) }));
+    vi.doMock('./sync/hyperbee/swarm', () => ({ getSharedSwarm: vi.fn(async () => fakeSwarm()) }));
+
+    const { ensureHiveDirectoryWired, __resetHiveDirectoryWiring } = await import('./hive-directory-boot');
+    __resetHiveDirectoryWiring();
+
+    // Previously this whole call returned null: the rethrow landed in
+    // wireHiveDirectoryForWorkspace's catch and abandoned the entire boot-join.
+    const wiring = await ensureHiveDirectoryWired('ws', { force: true });
+    expect(wiring).not.toBeNull();
+    expect(resolveLocalAnnounceIdentity).toHaveBeenCalledTimes(1);
+    await wiring?.stop();
+  });
 });

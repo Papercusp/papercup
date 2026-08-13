@@ -24,14 +24,20 @@
  *     no log is ever admitted. The pubkey is the SAME raw-32-byte base64 the
  *     two-channel binding uses.
  *
- * Throws when the identity can't be resolved AND no usable cache exists (no gh auth /
- * keychain failure on a device that has never successfully announced before — see
- * `identityFromCache` below, which transparently falls back to the persisted
+ * Throws when the CHANNEL-1 identity can't be resolved AND no usable cache exists (no
+ * gh auth / keychain failure on a device that has never successfully announced before
+ * — see `identityFromCache` below, which transparently falls back to the persisted
  * `~/.papercusp/local-announce-identity.json` on a re-auth failure once one exists).
  * boot.ts's swarm-join catch treats an actual throw as "stay local-only" — a peer that
  * truly can't announce simply doesn't federate. A SUSTAINED stall in that state is
  * escalated by federation-join-stall-watchdog.ts (WI-757 part b), which reads the
  * `swarm_join_failed` boot-history event that catch records.
+ *
+ * A CHANNEL-2 failure does NOT throw (WI-38355): when the attestation gist can't be
+ * resolved the identity degrades to `attestationGistId: ''` and each consumer decides
+ * what an unattested identity means. See `resolveLocalAnnounceIdentity` below for the
+ * full argument and for what deliberately did NOT change (`ingestAnnounce`'s
+ * verified-only admission).
  */
 
 import { loadOrGenerateDeviceKeypair, ensureAttestationGist } from '../../identity/attest';
@@ -97,6 +103,13 @@ export interface ResolveLocalAnnounceIdentityOpts {
    * default to disabled unless they pass a path explicitly.
    */
   cachePath?: string | false;
+  /**
+   * WI-38355 — notified when the CHANNEL-2 attestation gist could not be
+   * resolved and the identity degraded to `attestationGistId: ''` instead of
+   * throwing. Defaults to a warn-once-per-keychain `console.warn`; pass a
+   * no-op to silence it (a per-tick caller), or your own reporter.
+   */
+  onAttestationUnavailable?: (args: { keychainId: string; cause: unknown }) => void;
 }
 
 export interface LocalHiveMemberAnnounceIdentityMember {
@@ -305,9 +318,49 @@ export async function resolveLocalAnnounceIdentityFromHiveMembers(
   return null;
 }
 
+/** Warn-once-per-keychain guard for the WI-38355 channel-2 degrade. A gist
+ *  outage is an ACCOUNT-level condition (see below), so every retry degrades
+ *  identically and an unguarded warn would spam a per-tick announce loop. */
+const warnedAttestationUnavailable = new Set<string>();
+
+function defaultOnAttestationUnavailable({ keychainId, cause }: { keychainId: string; cause: unknown }) {
+  if (warnedAttestationUnavailable.has(keychainId)) return;
+  warnedAttestationUnavailable.add(keychainId);
+  console.warn(
+    `[local-announce-identity] attestation gist unavailable for ${keychainId} — announcing UNATTESTED ` +
+      `(attestation_gist_id: ''). Channel-1 (Ed25519 signature) is unaffected; peers that require ` +
+      `channel-2 will not admit this descriptor until the gist resolves. Cause: ` +
+      `${cause instanceof Error ? cause.message : String(cause)}`,
+  );
+}
+
 /**
- * Resolve the local peer's announce identity. Throws on any failure so the
- * caller's swarm-join catch keeps the harness local-only.
+ * Resolve the local peer's announce identity. Throws when the CHANNEL-1 inputs
+ * (gh user, device keypair) can't be resolved, so the caller's swarm-join catch
+ * keeps the harness local-only.
+ *
+ * WI-38355 — a CHANNEL-2 failure (the attestation gist) is NOT fatal. It
+ * degrades to `attestationGistId: ''` and lets each consumer decide what an
+ * unattested identity means, because:
+ *   - the wire format has always tolerated it: `verifyHiveAnnounce`
+ *     (hive-announce.ts:254) requires only `typeof attestation_gist_id ===
+ *     'string'`, and its own doc states the channel-1/channel-2 split;
+ *   - `resolveLocalAnnounceIdentityFromHiveMembers` (above) ALREADY returns
+ *     `attestation.gist_id ?? ''`, and boot.ts:4355 already PREFERS that
+ *     resolver — so an empty-gist announce is an existing live code path here,
+ *     not a new state this introduces;
+ *   - the throw bought no security. Every downstream verifier still applies its
+ *     own channel-2 policy (`HiveDirectory.ingestAnnounce`, hive-directory.ts,
+ *     rejects `unattested` — a DELIBERATE trust boundary, D-001 verified-only,
+ *     deliberately left untouched here). Refusing to resolve locally only moved
+ *     the failure earlier and took unrelated capability down with it.
+ *
+ * What it took down: `wireHiveDirectoryForWorkspace` (hive-directory-boot.ts:462)
+ * calls this as the FIRST statement in its try, so the rethrow landed in the
+ * catch at :518 and abandoned the ENTIRE directory boot-join — no topic join, no
+ * transport, no descriptor for ANY owned hive. A GitHub account with no verified
+ * email cannot create gists at all (422), which is account-level and therefore
+ * permanent under retry.
  */
 export async function resolveLocalAnnounceIdentity(
   opts: ResolveLocalAnnounceIdentityOpts,
@@ -344,6 +397,8 @@ export async function resolveLocalAnnounceIdentity(
       githubLogin: user.login,
     });
   } catch (e) {
+    // A cached identity for THIS device carries a real, previously-resolved
+    // gist — strictly better than degrading, so it still wins.
     const cached = await identityFromCache(cachePath, loadKeypair);
     if (
       cached &&
@@ -353,7 +408,19 @@ export async function resolveLocalAnnounceIdentity(
     ) {
       return cached;
     }
-    throw e;
+    // WI-38355: channel-2 degrade, NOT a throw. Deliberately NOT persisted to
+    // the cache — the cache means "an identity we fully resolved once", and
+    // writing an empty gist into it would make the offline path (the
+    // resolveUser catch above, which does no match check) hand back an
+    // unattested identity for a device that may well have a real one.
+    (opts.onAttestationUnavailable ?? defaultOnAttestationUnavailable)({ keychainId, cause: e });
+    return {
+      keychainId,
+      devicePubkeyBase64: keypair.pubkeyBase64,
+      githubUserId: user.id,
+      githubLogin: user.login,
+      attestationGistId: '',
+    };
   }
 
   const identity = {

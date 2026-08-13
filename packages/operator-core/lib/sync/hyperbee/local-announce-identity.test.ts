@@ -225,6 +225,123 @@ describe('resolveLocalAnnounceIdentity', () => {
       }),
     ).rejects.toThrow(/GitHub timeout/);
   });
+
+  // WI-38355 — a CHANNEL-2 (attestation gist) failure degrades to an empty gist
+  // id instead of throwing. The rethrow used to land in
+  // wireHiveDirectoryForWorkspace's catch and abandon the ENTIRE directory
+  // boot-join, so a gist-less owner published no descriptor at all.
+  describe('channel-2 degrade (WI-38355)', () => {
+    const gist422 = () =>
+      vi.fn(async () => {
+        throw new Error('422 Gist/user: user must have a verified email');
+      });
+
+    it('degrades to an empty attestationGistId instead of throwing when the gist cannot be resolved', async () => {
+      const identity = await resolveLocalAnnounceIdentity({
+        logCoreKeyHex: LOG_CORE_KEY,
+        resolveGithubUser: stubUser(4242, 'alice'),
+        buildKeychainId: (uid: number) => `${uid}:m`,
+        loadKeypair: stubKeypair(),
+        resolveAttestationGistId: gist422(),
+        onAttestationUnavailable: () => {},
+      });
+
+      // Channel-1 is intact and complete — only the channel-2 anchor is empty.
+      expect(identity).toEqual({
+        keychainId: '4242:m',
+        devicePubkeyBase64: 'PUBKEY==',
+        githubUserId: 4242,
+        githubLogin: 'alice',
+        attestationGistId: '',
+      });
+    });
+
+    it('reports the degrade with the underlying cause rather than degrading silently', async () => {
+      const onAttestationUnavailable = vi.fn();
+
+      await resolveLocalAnnounceIdentity({
+        logCoreKeyHex: LOG_CORE_KEY,
+        resolveGithubUser: stubUser(4242, 'alice'),
+        buildKeychainId: (uid: number) => `${uid}:m`,
+        loadKeypair: stubKeypair(),
+        resolveAttestationGistId: gist422(),
+        onAttestationUnavailable,
+      });
+
+      expect(onAttestationUnavailable).toHaveBeenCalledTimes(1);
+      const [{ keychainId, cause }] = onAttestationUnavailable.mock.calls[0];
+      expect(keychainId).toBe('4242:m');
+      expect((cause as Error).message).toMatch(/verified email/);
+    });
+
+    it('still PREFERS a cached identity carrying a real gist over degrading', async () => {
+      const cachePath = join(await mkdtemp(join(tmpdir(), 'papercusp-announce-')), 'identity.json');
+
+      await resolveLocalAnnounceIdentity({
+        logCoreKeyHex: LOG_CORE_KEY,
+        cachePath,
+        resolveGithubUser: stubUser(4242, 'alice'),
+        buildKeychainId: (uid: number) => `${uid}:m`,
+        loadKeypair: stubKeypair(),
+        resolveAttestationGistId: async () => 'gist-real',
+      });
+
+      const identity = await resolveLocalAnnounceIdentity({
+        logCoreKeyHex: LOG_CORE_KEY,
+        cachePath,
+        resolveGithubUser: stubUser(4242, 'alice'),
+        buildKeychainId: (uid: number) => `${uid}:m`,
+        loadKeypair: stubKeypair(),
+        resolveAttestationGistId: gist422(),
+        onAttestationUnavailable: () => {},
+      });
+
+      expect(identity.attestationGistId).toBe('gist-real');
+    });
+
+    it('does NOT persist the degraded identity — the cache keeps meaning "fully resolved"', async () => {
+      const cachePath = join(await mkdtemp(join(tmpdir(), 'papercusp-announce-')), 'identity.json');
+
+      await resolveLocalAnnounceIdentity({
+        logCoreKeyHex: LOG_CORE_KEY,
+        cachePath,
+        resolveGithubUser: stubUser(4242, 'alice'),
+        buildKeychainId: (uid: number) => `${uid}:m`,
+        loadKeypair: stubKeypair(),
+        resolveAttestationGistId: gist422(),
+        onAttestationUnavailable: () => {},
+      });
+
+      // Nothing was written, so the offline path (the resolveUser catch, which
+      // does no match check) can never hand back an unattested identity for a
+      // device that may well have a real gist.
+      expect(await loadCachedLocalAnnounceIdentity(cachePath)).toBeNull();
+    });
+
+    it('keeps CHANNEL-1 failures fatal — the degrade is scoped to the gist alone', async () => {
+      await expect(
+        resolveLocalAnnounceIdentity({
+          logCoreKeyHex: LOG_CORE_KEY,
+          resolveGithubUser: vi.fn(async () => {
+            throw new Error('gh not authenticated');
+          }),
+          loadKeypair: stubKeypair(),
+          resolveAttestationGistId: async () => 'g',
+        }),
+      ).rejects.toThrow(/gh not authenticated/);
+
+      await expect(
+        resolveLocalAnnounceIdentity({
+          logCoreKeyHex: LOG_CORE_KEY,
+          resolveGithubUser: stubUser(4242, 'alice'),
+          loadKeypair: vi.fn(async () => {
+            throw new Error('keychain locked');
+          }),
+          resolveAttestationGistId: async () => 'g',
+        }),
+      ).rejects.toThrow(/keychain locked/);
+    });
+  });
 });
 
 describe('loadCachedLocalAnnounceIdentity (F1-6/P-014 signer reuse seam)', () => {
