@@ -25,6 +25,8 @@ import { resolveSelfRef } from '../coordination/self-marker';
 import { buildP2pLaneFence } from '../../scheduler/p2p-lane-fence';
 import { matchesClaimSpecFilter, claimSpecSubjectFromWorkItem } from '../../scheduler/claim-spec-match';
 import { shapeBurnDown } from './burn_down-shape';
+import { getModes } from '../../modes/store';
+import { readDrainFlow, type DrainFlowReport } from './drain-flow';
 
 /**
  * P-011 (fleet-lead-instrumentation-audit-2026-08-09) — what a lane fence removed
@@ -249,6 +251,10 @@ export interface BurnDownResult {
   cohortAudit?: CohortAuditResult;
   /** P-011 — present only when `fence` was passed. See {@link BurnDownFenceReport}. */
   fence?: BurnDownFenceReport;
+  /** P-003 (drain-admission-integrity-remediation-2026-08-13) — exact
+   *  canonical bug flow for the CALLER's active DRAIN window. Present only on
+   *  a `since`-bounded read by a caller that currently holds DRAIN mode. */
+  drainFlow?: DrainFlowReport;
 }
 
 export type CohortBucket = 'terminal' | 'parked' | 'in-flight' | 'unclaimed' | 'missing';
@@ -710,11 +716,38 @@ const rowSchema = z.object({
   priority: z.number().nullable(),
 });
 
+const drainFlowCountSchema = z.object({
+  opened: z.number(),
+  terminaled: z.number(),
+  net: z.number(),
+});
+
+const drainFlowSchema = z.object({
+  exact: z.literal(true),
+  windowStart: z.string(),
+  workspaceId: z.string(),
+  harness: z.string(),
+  ownerId: z.string(),
+  totals: drainFlowCountSchema,
+  bySeverity: z.object({
+    critical: drainFlowCountSchema,
+    major: drainFlowCountSchema,
+    minor: drainFlowCountSchema,
+    nit: drainFlowCountSchema,
+  }),
+  breaker: z.object({
+    tripped: z.boolean(),
+    blocksNewBugs: z.boolean(),
+    rule: z.string(),
+    reason: z.string(),
+  }),
+});
+
 export default defineTool({
   name: 'work_items:burn_down',
   profile: 'engineer',
   description:
-    'One-call leader census for a harness work queue: terminal counts, in-flight rows with assignee liveness, parked rows (blocked/needs-human/claimHold), and unclaimed rows. Pass `ids` for an exact fixed-cohort census plus one audit row per requested ID: terminal bucket, closure kind, structured-evidence verdict, completion ref, and reopen recommendation. Pass `since` for itemized closed/opened deltas. Replaces hand-joining work_items:list with coord:presence for drain/fleet leader wakes.',
+    'One-call leader census for a harness work queue: terminal counts, in-flight rows with assignee liveness, parked rows (blocked/needs-human/claimHold), and unclaimed rows. Pass `ids` for an exact fixed-cohort census plus one audit row per requested ID: terminal bucket, closure kind, structured-evidence verdict, completion ref, and reopen recommendation. Pass `since` for itemized closed/opened deltas; an active DRAIN caller also receives exact canonical bug-flow economics and breaker state for its DRAIN window. Replaces hand-joining work_items:list with coord:presence for drain/fleet leader wakes.',
   guidance: {
     when:
       'You are leading a drain/fleet/Mug pass and need to know what is done, actively held by a live or dead assignee, intentionally parked, and still unclaimed.',
@@ -895,6 +928,7 @@ export default defineTool({
         note: z.string(),
       })
       .optional(),
+    drainFlow: drainFlowSchema.optional(),
     cohortAudit: z
       .object({
         requested: z.number(),
@@ -947,6 +981,7 @@ export default defineTool({
     // Only worth a round-trip when `since` was passed (no `since` ⇒ no delta to split).
     // Best-effort throughout: an attribution read must never cost a leader the census.
     const workspaceId = (ctx as { workspaceId?: string | null }).workspaceId ?? undefined;
+    const self = args.since ? resolveSelfRef(ctx) : undefined;
     const fleetScope = await (async () => {
       if (!args.since) return null;
       try {
@@ -959,7 +994,6 @@ export default defineTool({
           // Fall back to the CALLER's own fleet — read from the append-only ledger, not
           // their presence row, so a leader whose own presence has been reaped still
           // attributes correctly.
-          const self = resolveSelfRef(ctx);
           if (!self?.ownerId) return null;
           const mine = await latestFleetMembership(workspaceId ?? '', self.ownerId);
           if (!mine?.fleetSlug) return null;
@@ -975,6 +1009,26 @@ export default defineTool({
       } catch {
         return null;
       }
+    })();
+    // P-003: the leader-facing read must use the SAME exact canonical oracle as
+    // the write-side breaker. Never derive this from the capped census above.
+    // `since` is the monitor-loop signal that asks for flow; the oracle window
+    // still begins at ModeRow.setAt, not at the caller's arbitrary delta bound.
+    // Once an active DRAIN mode is established, oracle failure stays loud: silently
+    // omitting the field would look exactly like "not in DRAIN" and disable the
+    // circuit-breaker monitor's detector.
+    const drainFlow = await (async () => {
+      if (!args.since || !workspaceId || !self?.ownerId) return null;
+      const drainMode = (await getModes(workspaceId, self.ownerId)).find(
+        (mode) => mode.mode === 'drain',
+      );
+      if (!drainMode) return null;
+      return readDrainFlow({
+        workspaceId,
+        harness: args.harness,
+        ownerId: self.ownerId,
+        drainStartedAt: drainMode.setAt,
+      });
     })();
     // P-011: apply the lane fence BEFORE the census is built, so every count in the
     // response (terminal.*/counts.*/deltaBy.*) describes the same population — a
@@ -1000,6 +1054,7 @@ export default defineTool({
     // a fence excluded it would report it as MISSING — a fabricated verdict.
     if (requestedIds) result.cohortAudit = buildCohortAudit(requestedIds, items);
     if (fenced) result.fence = fenced.report;
+    if (drainFlow) result.drainFlow = drainFlow;
     return {
       data: result,
     };

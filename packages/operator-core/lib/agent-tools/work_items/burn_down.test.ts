@@ -16,8 +16,13 @@ vi.mock('../coordination/presence', async (importOriginal) => ({
   PRESENCE_STALE_MS: 60_000,
 }));
 
+vi.mock('../../modes/store', () => ({ getModes: vi.fn() }));
+vi.mock('./drain-flow', () => ({ readDrainFlow: vi.fn() }));
+
 import { getWorkItem, listWorkItems, WORK_ITEMS_MAX_LIMIT } from '../../work-items';
 import { listPresence } from '../coordination/presence';
+import { getModes } from '../../modes/store';
+import { readDrainFlow, type DrainFlowReport } from './drain-flow';
 import {
   buildBurnDownResult,
   buildCohortAudit,
@@ -30,7 +35,30 @@ import { P2P_LANE_EXCLUSION_TERMS, P2P_LANE_REJECTED_ANTI_TERMS } from '../../sc
 const mockListWorkItems = vi.mocked(listWorkItems);
 const mockGetWorkItem = vi.mocked(getWorkItem);
 const mockListPresence = vi.mocked(listPresence);
+const mockGetModes = vi.mocked(getModes);
+const mockReadDrainFlow = vi.mocked(readDrainFlow);
 const tool = (await import('./burn_down')).default;
+
+const drainFlowReport: DrainFlowReport = {
+  exact: true,
+  windowStart: '2026-08-13T08:00:00.000Z',
+  workspaceId: 'ws-test',
+  harness: 'papercusp',
+  ownerId: 'su-drainer',
+  totals: { opened: 4, terminaled: 3, net: 1 },
+  bySeverity: {
+    critical: { opened: 1, terminaled: 0, net: 1 },
+    major: { opened: 1, terminaled: 2, net: -1 },
+    minor: { opened: 2, terminaled: 1, net: 1 },
+    nit: { opened: 0, terminaled: 0, net: 0 },
+  },
+  breaker: {
+    tripped: true,
+    blocksNewBugs: true,
+    rule: 'after the first admitted bug, block while opened >= terminaled',
+    reason: '4 opened vs 3 terminaled',
+  },
+};
 
 function item(overrides: Partial<WorkItem>): WorkItem {
   return {
@@ -78,6 +106,8 @@ describe('work_items:burn_down', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockGetWorkItem.mockResolvedValue(null);
+    mockGetModes.mockResolvedValue([]);
+    mockReadDrainFlow.mockResolvedValue(drainFlowReport);
   });
 
   it('classifies terminal, in-flight, parked, and unclaimed rows', () => {
@@ -406,6 +436,59 @@ describe('work_items:burn_down', () => {
       harness: 'papercusp',
       counts: { total: 1, terminal: 0, inFlight: 1, parked: 0, unclaimed: 0 },
     });
+  });
+
+  it('attaches exact canonical drain flow for a since-bounded read by an active DRAIN caller', async () => {
+    mockListWorkItems.mockResolvedValue([]);
+    mockListPresence.mockResolvedValue([]);
+    mockGetModes.mockResolvedValue([
+      {
+        workspaceId: 'ws-test',
+        ownerId: 'su-drainer',
+        axisKey: 'mission',
+        mode: 'drain',
+        reason: 'drain the queue',
+        setBy: 'su-drainer',
+        ownerDirected: true,
+        setAt: '2026-08-13T08:00:00.000Z',
+        subject: null,
+      },
+    ]);
+
+    const res = await callTool(
+      { harness: 'papercusp', since: '2026-08-13T09:00:00.000Z' },
+      { workspaceId: 'ws-test', isSuperuser: true, uiClientId: 'su-drainer' },
+    );
+
+    expect(mockGetModes).toHaveBeenCalledWith('ws-test', 'su-drainer');
+    expect(mockReadDrainFlow).toHaveBeenCalledWith({
+      workspaceId: 'ws-test',
+      harness: 'papercusp',
+      ownerId: 'su-drainer',
+      drainStartedAt: '2026-08-13T08:00:00.000Z',
+    });
+    expect(res.data).toMatchObject({ drainFlow: drainFlowReport });
+    expect((tool as unknown as { result: { safeParse: (value: unknown) => { success: boolean } } })
+      .result.safeParse(res.data).success).toBe(true);
+    expect(shapeBurnDown(res.data, 'trimmed')).toMatchObject({ drainFlow: drainFlowReport });
+  });
+
+  it('omits drain flow outside an active since-bounded DRAIN read', async () => {
+    mockListWorkItems.mockResolvedValue([]);
+    mockListPresence.mockResolvedValue([]);
+    const ctx = { workspaceId: 'ws-test', isSuperuser: true, uiClientId: 'su-drainer' };
+
+    const unbounded = await callTool({ harness: 'papercusp' }, ctx);
+    expect((unbounded.data as { drainFlow?: unknown }).drainFlow).toBeUndefined();
+    expect(mockGetModes).not.toHaveBeenCalled();
+
+    const inactive = await callTool(
+      { harness: 'papercusp', since: '2026-08-13T09:00:00.000Z' },
+      ctx,
+    );
+    expect((inactive.data as { drainFlow?: unknown }).drainFlow).toBeUndefined();
+    expect(mockGetModes).toHaveBeenCalledWith('ws-test', 'su-drainer');
+    expect(mockReadDrainFlow).not.toHaveBeenCalled();
   });
 
   it('payload-tier shaping keeps a large census schema-valid and never inserts a string into row arrays', () => {
