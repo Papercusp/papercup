@@ -42,6 +42,7 @@ import {
 import type { ClaimSpecSubject } from '../../scheduler/claim-spec-match';
 import { ROUTING_GATE_INTENTS } from '../../routing-gate-hints';
 import { getModes } from '../../modes/store';
+import { withDrainBugAdmission } from './drain-flow';
 
 /**
  * Inline typed-link spec (WI-3956) — one edge written from the NEW work-item to a
@@ -321,15 +322,15 @@ export default defineTool({
             ...(args.links ? { links: args.links } : {}),
           },
         ];
-    const drainModeActive =
-      list.some((spec) => spec.kind === 'bug') &&
-      (await getModes(ident.workspaceId ?? ctx.workspaceId ?? 'default', ident.ownerId)).some(
-        (mode) => mode.mode === 'drain',
-      );
+    const drainMode = list.some((spec) => spec.kind === 'bug')
+      ? (await getModes(ident.workspaceId ?? ctx.workspaceId ?? 'default', ident.ownerId)).find(
+          (mode) => mode.mode === 'drain',
+        )
+      : undefined;
     const env = await runBulk(
       list,
       async (spec) => {
-        spec.requireCompleteDedupCoverage = drainModeActive && spec.kind === 'bug';
+        spec.requireCompleteDedupCoverage = Boolean(drainMode) && spec.kind === 'bug';
         // EI-18784357226895330: a claim spec governs what a member may PULL from the
         // shared claimable pool. It must NOT govern what a member may FILE. This block
         // used to refuse the whole create, which meant a member who discovered an
@@ -398,7 +399,38 @@ export default defineTool({
             };
           }
         }
-        const res = await createOneWorkItem(spec, createCtx);
+        const persist = () => createOneWorkItem(spec, createCtx);
+        const drainHarness = spec.harness ?? createCtx.harnessSlug;
+        if (drainMode && spec.kind === 'bug' && !drainHarness) {
+          return {
+            ok: false as const,
+            title: spec.title,
+            error: 'drain_flow_unavailable',
+            message:
+              'DRAIN bug admission failed closed because no concrete harness was available for the exact flow oracle.',
+          };
+        }
+        const gated = drainMode && spec.kind === 'bug'
+          ? await withDrainBugAdmission(
+              {
+                workspaceId: ident.workspaceId ?? ctx.workspaceId ?? 'default',
+                harness: drainHarness!,
+                ownerId: ident.ownerId,
+                drainStartedAt: drainMode.setAt,
+              },
+              () => persist(),
+            )
+          : null;
+        if (gated && !gated.allowed) {
+          return {
+            ok: false as const,
+            title: spec.title,
+            error: gated.code,
+            message: gated.message,
+            ...('flow' in gated ? { drainFlow: gated.flow } : {}),
+          };
+        }
+        const res = gated ? gated.value : await persist();
         if (!res.ok) {
           return {
             ok: false as const,

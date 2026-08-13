@@ -38,6 +38,7 @@ import {
   type SuspectedToolFailure,
 } from '../../harness/improvements/tool-error-classifier';
 import { getModes } from '../../modes/store';
+import { withDrainBugAdmission } from '../work_items/drain-flow';
 
 const observationRatingsSchema = z.record(
   z.string().min(1),
@@ -687,10 +688,13 @@ export default defineTool({
     // D-001 / WI-38403: mode is server-side standing state, never caller prose or
     // a public bypass flag. Read it only for a claimable bug admission; observations
     // and non-bugs retain their existing availability-first behavior.
-    const requireCompleteDedupCoverage =
-      effectiveKind === 'bug' &&
-      effectiveLane !== 'observation' &&
-      (await getModes(id.workspaceId ?? 'default', id.ownerId)).some((m) => m.mode === 'drain');
+    const drainMode =
+      effectiveKind === 'bug' && effectiveLane !== 'observation'
+        ? (await getModes(id.workspaceId ?? ctxWorkspace ?? 'default', id.ownerId)).find(
+            (mode) => mode.mode === 'drain',
+          )
+        : undefined;
+    const requireCompleteDedupCoverage = Boolean(drainMode);
     const resolvedAssignee = resolveSelfLiteral(args.assign_to, id.ownerId);
     const toolFailureProbation = normalizedToolFailure
       ? {
@@ -708,7 +712,7 @@ export default defineTool({
         }
       : undefined;
     try {
-      const result = await captureImprovement({
+      const persist = () => captureImprovement({
         title: args.title,
         kind: effectiveKind,
         body: args.body,
@@ -760,6 +764,56 @@ export default defineTool({
         filedByRole,
         source,
       });
+      const drainHarness = captureScope?.startsWith('harness:')
+        ? captureScope.slice('harness:'.length)
+        : ctxHarness;
+      if (drainMode && !args.checkDuplicatesOnly && !drainHarness) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({
+                ok: false,
+                created: false,
+                error: 'drain_flow_unavailable',
+                message:
+                  'DRAIN bug admission failed closed because no concrete harness was available for the exact flow oracle.',
+              }),
+            },
+          ],
+        };
+      }
+      // A checkDuplicatesOnly call cannot persist, so it remains available even
+      // while the admission circuit is open. Every real DRAIN bug write is
+      // serialized through the exact flow gate before capture-core may mutate.
+      const gated = drainMode && !args.checkDuplicatesOnly
+        ? await withDrainBugAdmission(
+            {
+              workspaceId: id.workspaceId ?? ctxWorkspace ?? 'default',
+              harness: drainHarness!,
+              ownerId: id.ownerId,
+              drainStartedAt: drainMode.setAt,
+            },
+            () => persist(),
+          )
+        : null;
+      if (gated && !gated.allowed) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({
+                ok: false,
+                created: false,
+                error: gated.code,
+                message: gated.message,
+                ...('flow' in gated ? { drainFlow: gated.flow } : {}),
+              }),
+            },
+          ],
+        };
+      }
+      const result = gated ? gated.value : await persist();
       // Directed @-mention — only when we actually CREATED a claimable item (not a
       // dedup-decline / checkDuplicatesOnly / observation-lane reflection).
       const captured = result as { created?: boolean; issue?: { id: string; title?: string } };
