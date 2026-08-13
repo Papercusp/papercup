@@ -20,9 +20,13 @@ import * as fs from 'node:fs/promises';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 
-import { installInjectionHooks, installOmpHookBundle } from './papercusp-files';
+import { installInjectionHooks, installOmpHookBundle, installPapercuspFiles } from './papercusp-files';
 import { INSTALLED_FROM_BASENAME, readInstallStamp } from './install-provenance';
+
+const run = promisify(execFile);
 
 let root: string;
 let home: string;
@@ -42,6 +46,42 @@ async function makeSources(opts: { dispatcher?: boolean; ompArtifact?: boolean }
     await fs.mkdir(path.join(srcRoot, 'omp'), { recursive: true });
     await fs.writeFile(path.join(srcRoot, 'omp', 'inject-hook.ts'), '// artifact\n');
   }
+}
+
+/**
+ * Make the exact shared hook layout from a real git checkout. The installer
+ * orders competing canonical checkouts by the commit date git reports, so a
+ * mocked provenance value would not guard the source-resolution seam that
+ * regressed live in EI-20333884491932817.
+ */
+async function makeGitHookSource(
+  repo: string,
+  marker: string,
+  committedAt: string,
+): Promise<{ injectDir: string; coordHook: string }> {
+  const hooksDir = path.join(repo, 'scripts', 'hooks');
+  const injectDir = path.join(hooksDir, 'inject');
+  const ompDir = path.join(hooksDir, 'omp');
+  await fs.mkdir(path.join(injectDir, 'adapters'), { recursive: true });
+  await fs.mkdir(ompDir, { recursive: true });
+  await fs.writeFile(path.join(injectDir, 'index.mjs'), `// dispatcher ${marker}\n`);
+  await fs.writeFile(path.join(injectDir, 'adapters', 'omp.mjs'), `// adapter ${marker}\n`);
+  await fs.writeFile(path.join(ompDir, 'inject-hook.ts'), `// inject hook ${marker}\n`);
+  await fs.writeFile(path.join(ompDir, 'coord-hook.ts'), `// coord hook ${marker}\n`);
+
+  await run('git', ['init', '-q'], { cwd: repo });
+  await run('git', ['config', 'user.name', 'Papercusp Test'], { cwd: repo });
+  await run('git', ['config', 'user.email', 'test@papercusp.local'], { cwd: repo });
+  await run('git', ['add', '.'], { cwd: repo });
+  await run('git', ['commit', '-qm', marker], {
+    cwd: repo,
+    env: {
+      ...process.env,
+      GIT_AUTHOR_DATE: committedAt,
+      GIT_COMMITTER_DATE: committedAt,
+    },
+  });
+  return { injectDir, coordHook: path.join(ompDir, 'coord-hook.ts') };
 }
 
 const injectDest = () => path.join(home, '.papercusp', 'hooks', 'inject');
@@ -196,5 +236,48 @@ describe('installInjectionHooks — install provenance', () => {
 
     expect(second).not.toContain(path.join('inject', INSTALLED_FROM_BASENAME));
     expect(second.filter(f => f.includes(INSTALLED_FROM_BASENAME))).toEqual([]);
+  });
+
+  it('refuses a minutes-old real-git source across the shared dispatcher, OMP hook, and root coordination bundle', async () => {
+    const newerRepo = path.join(root, 'newer-checkout');
+    const staleRepo = path.join(root, 'stale-release-checkout');
+    await fs.mkdir(newerRepo, { recursive: true });
+    await fs.mkdir(staleRepo, { recursive: true });
+    const newer = await makeGitHookSource(newerRepo, 'newer', '2026-08-13T12:05:00Z');
+    const stale = await makeGitHookSource(staleRepo, 'stale', '2026-08-13T12:00:00Z');
+
+    await installInjectionHooks(home, newer.injectDir);
+    const newerRootInstall = await installPapercuspFiles({
+      home,
+      operatorAppRoot: newerRepo,
+      playbookSource: path.join(newerRepo, 'missing-playbook.md'),
+      extensionSource: newer.coordHook,
+    });
+    expect(newerRootInstall.extensionWritten).toBe(true);
+
+    const before = {
+      dispatcher: await fs.readFile(path.join(injectDest(), 'index.mjs'), 'utf8'),
+      ompHook: await fs.readFile(path.join(ompDest(), 'inject-hook.ts'), 'utf8'),
+      coordHook: await fs.readFile(path.join(home, '.papercusp', 'papercusp-coord.ts'), 'utf8'),
+      injectStamp: await fs.readFile(path.join(injectDest(), INSTALLED_FROM_BASENAME), 'utf8'),
+      ompStamp: await fs.readFile(path.join(ompDest(), INSTALLED_FROM_BASENAME), 'utf8'),
+    };
+
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    expect(await installInjectionHooks(home, stale.injectDir)).toEqual([]);
+    const staleRootInstall = await installPapercuspFiles({
+      home,
+      operatorAppRoot: staleRepo,
+      playbookSource: path.join(staleRepo, 'missing-playbook.md'),
+      extensionSource: stale.coordHook,
+    });
+
+    expect(staleRootInstall.extensionWritten).toBe(false);
+    expect(await fs.readFile(path.join(injectDest(), 'index.mjs'), 'utf8')).toBe(before.dispatcher);
+    expect(await fs.readFile(path.join(ompDest(), 'inject-hook.ts'), 'utf8')).toBe(before.ompHook);
+    expect(await fs.readFile(path.join(home, '.papercusp', 'papercusp-coord.ts'), 'utf8')).toBe(before.coordHook);
+    expect(await fs.readFile(path.join(injectDest(), INSTALLED_FROM_BASENAME), 'utf8')).toBe(before.injectStamp);
+    expect(await fs.readFile(path.join(ompDest(), INSTALLED_FROM_BASENAME), 'utf8')).toBe(before.ompStamp);
+    expect(error.mock.calls.map(c => String(c[0])).join('\n')).toMatch(/REFUSING downgrade/);
   });
 });
