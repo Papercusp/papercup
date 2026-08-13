@@ -22,6 +22,7 @@ import {
   FRESH_VERIFY_SILENCE_MS,
   LAUNCH_STATUSLINE_TOOLS,
   classifyAgentLaunchCommand,
+  launchAttestationFromLedger,
   verifyFreshLaunchStarted,
   type FreshLaunchSessionProbe,
 } from './agent-launch-core';
@@ -73,6 +74,18 @@ describe('verifyFreshLaunchStarted — the ACCEPTANCE CASE (adv_session 14842)',
 });
 
 describe('verifyFreshLaunchStarted — must NOT cry wolf on a healthy launch (D-004)', () => {
+  it('derives effort/account/carry/visibility from the durable launch argv', () => {
+    expect(launchAttestationFromLedger(
+      {
+        agent: 'codex', workspaceId: 'ws', harnessSlug: 'papercusp', planSlug: 'p', model: 'gpt-5.5:high',
+        fleet: { slug: 'f', role: 'member' },
+      },
+      ['psu', '--model=gpt-5.5:high', '--account=auto', '--carry=cold', '--headless'],
+    )).toMatchObject({
+      effort: 'high', account: 'auto', carry: 'cold', visibility: 'headless',
+    });
+  });
+
   it('returns agentStarted:TRUE as soon as a real (non-statusline) call lands', async () => {
     const verdict = await verifyFreshLaunchStarted(ARGS, {
       ...FAST,

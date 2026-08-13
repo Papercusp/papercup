@@ -1366,6 +1366,7 @@ describe('psu-launcher arg parsing', () => {
       force: false,
       yes: false,
       brain: false,
+      carry: null,
       account: null,
       fleet: null,
       fleetRole: null,
@@ -1443,6 +1444,7 @@ describe('psu-launcher arg parsing', () => {
       force: false,
       yes: false,
       brain: false,
+      carry: null,
       account: null,
       fleet: null,
       fleetRole: null,
@@ -5630,9 +5632,14 @@ describe('psuLaunchArgvRecord (WI-1343 launch_argv reconstruction)', () => {
     expect(argv).not.toContain('--workspace=null');
   });
   it('records the explicit --headless launch discriminator', () => {
-    const args = parseArgs(['--no-picker', '--agent=claude', '--harness=h1', '--no-plan', '--headless']);
+    const args = parseArgs(['--no-picker', '--agent=claude', '--harness=h1', '--no-plan', '--headless', '--carry=cold']);
     const argv = psuLaunchArgvRecord({ agent: 'claude', workspace: null, harness: 'h1', plan: null }, args);
     expect(argv).toContain('--headless');
+    expect(argv).toContain('--carry=cold');
+    expect(args.carry).toBe('cold');
+  });
+  it('rejects an invalid fleet carry attestation instead of recording a lie', () => {
+    expect(() => parseArgs(['--no-picker', '--carry=lukewarm'])).toThrow(/warm\|cold/);
   });
   it('captures fleet, account, profile, context-size, model, add-dir and passthrough', () => {
     const args = parseArgs([

@@ -1427,8 +1427,15 @@ describe('fleet:launch-on-plan handler — verified canary-first transaction (P-
     expect(payload.launchTransaction.state).toBe('verified');
     expect(payload.launchTransaction.requestedMemberIds).toHaveLength(8);
     expect(new Set(payload.launchTransaction.requestedMemberIds).size).toBe(8);
+    expect(launchTransaction.verify.mock.calls[0][0].expectedAttestations[0]).toMatchObject({
+      effort: null,
+      account: 'default',
+      carry: 'warm',
+      visibility: 'visible',
+    });
     for (const call of spawnConsoleMock.mock.calls) {
       expect(call[0].envelope.greetingCmd).toMatch(/--owner-id=su-[0-9a-f-]+/);
+      expect(call[0].envelope.greetingCmd).toContain('--carry=warm');
     }
   });
 

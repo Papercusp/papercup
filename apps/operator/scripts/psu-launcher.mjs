@@ -380,7 +380,7 @@ export const MIN_COMPACTION_LIMIT_TOKENS = 20_000;
 
 /** Parse the scripting-escape flags. Pure — exported for tests. */
 export function parseArgs(argv) {
-  const out = { picker: true, resume: false, resumeId: null, fork: false, agent: null, role: null, feature: null, workspace: null, harness: null, plan: null, noPlan: false, model: null, resumeSession: null, launchContext: null, launchedBy: null, ownerId: null, profile: null, contextSize: null, personaTier: null, compactionLimit: null, force: false, yes: false, brain: false, account: null, fleet: null, fleetRole: null, fleetName: null, fleetScheme: null, auto: null, mode: null, seat: null, addDir: [], passthrough: [], setClaudeToken: false, setClaudeTokenValue: null, clearClaudeToken: false, allowSubagents: null, kickoffPromptText: null, label: null, headless: false };
+  const out = { picker: true, resume: false, resumeId: null, fork: false, agent: null, role: null, feature: null, workspace: null, harness: null, plan: null, noPlan: false, model: null, resumeSession: null, launchContext: null, launchedBy: null, ownerId: null, profile: null, contextSize: null, personaTier: null, compactionLimit: null, force: false, yes: false, brain: false, account: null, fleet: null, fleetRole: null, fleetName: null, fleetScheme: null, auto: null, mode: null, seat: null, carry: null, addDir: [], passthrough: [], setClaudeToken: false, setClaudeTokenValue: null, clearClaudeToken: false, allowSubagents: null, kickoffPromptText: null, label: null, headless: false };
   // Everything after a literal `--` is forwarded VERBATIM to the underlying agent
   // CLI (claude/omp/codex) — a generic escape hatch so a new backend flag needs no
   // psu change. Appended at the END of the launch/resume argv (launchFreshSu /
@@ -438,6 +438,17 @@ export function parseArgs(argv) {
     // park). Sets PAPERCUSP_PSU_HEADLESS=1 for usePtyHost + the child env. Implies
     // --no-picker: there is no terminal to prompt at.
     else if (a === '--headless') { out.headless = true; out.picker = false; }
+    // Fleet-launch attestation token (WI-38513). Carry behavior still comes from
+    // the member baseline's loop:arm directive; this flag makes the resolved
+    // choice durable in adv_sessions.launch_argv so launch verification can prove
+    // the child received warm vs cold instead of trusting the caller's receipt.
+    else if (a.startsWith('--carry=')) {
+      const carry = a.slice('--carry='.length);
+      if (carry !== 'warm' && carry !== 'cold') {
+        throw new Error(`--carry must be warm|cold (got ${carry || 'empty'})`);
+      }
+      out.carry = carry;
+    }
     // THE brain (native-terminal-desktop D-013): resume the canonical pinned
     // brain session exactly (no picker); when none is pinned (or it no longer
     // resolves) launch a fresh claude SU session and pin it server-side.
@@ -6588,6 +6599,7 @@ export function psuLaunchArgvRecord(selections, args, { brain = false } = {}) {
   // recorded. Do not infer it from the environment or rewrite it as an
   // assignment/value form; legacy and interactive rows must stay protected.
   if (args.headless) argv.push('--headless');
+  if (args.carry) argv.push(`--carry=${args.carry}`);
   if (selections.workspace) argv.push(`--workspace=${selections.workspace}`);
   if (selections.harness) argv.push(`--harness=${selections.harness}`);
   argv.push(selections.plan ? `--plan=${selections.plan}` : '--no-plan');

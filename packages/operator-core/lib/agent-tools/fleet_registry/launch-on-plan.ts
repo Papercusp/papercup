@@ -95,6 +95,7 @@ import {
   renderMemberBaseline as sharedRenderMemberBaseline,
   composeMemberLaunchContext as sharedComposeMemberLaunchContext,
   verifyFreshLaunchStarted,
+  modelEffortFromSpec,
   type FleetMemberDefaults,
   type FreshLaunchExpectedAttestation,
   type MemberSpec,
@@ -2422,9 +2423,10 @@ export default defineTool({
         harness,
         plan: planSlug ?? undefined,
         ownerId: requestedMemberIds[i],
-        // The member's own brief file wins over the shared/per-member-path fallback;
-        // `carry` and `claimKinds` are NOT psu flags (they shape the member baseline
-        // and the claim spec respectively), so memberLaunchCommand ignores them.
+        // The member's own brief file wins over the shared/per-member-path fallback.
+        // Carry behavior comes from that baseline, while the psu flag is its durable
+        // attestation token in adv_sessions.launch_argv.
+        carry: folded.carry ?? 'warm',
         launchContext: folded.launchContext ?? memberLaunchContextPathForIndex(i),
       });
     });
@@ -2432,13 +2434,18 @@ export default defineTool({
       { length: openCount },
       (_v, i) => {
         const folded = resolvedMemberConfig(i);
+        const modelSpec = composeModelSpec(folded.model, folded.effort) ?? null;
         return {
           ownerId: requestedMemberIds[i],
           agent: folded.agent,
           workspaceId,
           harnessSlug: harness,
           planSlug: planSlug ?? null,
-          model: composeModelSpec(folded.model, folded.effort) ?? null,
+          model: modelSpec,
+          effort: modelEffortFromSpec(modelSpec),
+          account: folded.account ?? 'default',
+          carry: folded.carry ?? 'warm',
+          visibility: folded.headless ? 'headless' : 'visible',
           fleetSlug,
           fleetRole: 'member',
         };

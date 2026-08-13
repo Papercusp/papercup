@@ -19,7 +19,11 @@ import { z } from 'zod';
 import { getOrgPg } from '@papercusp/db-org';
 import { mapAdvSessionRow, type AdvSessionRow, type AdvSessionEndedBy } from './adv-sessions';
 import { findLiveHost, injectIntoHost, type PsuPtyHost } from './events/await/psu-pty-discovery';
-import { composeLaunchModelSpec, MIN_COMPACTION_LIMIT_TOKENS } from './agent-config-constants';
+import {
+  composeLaunchModelSpec,
+  MIN_COMPACTION_LIMIT_TOKENS,
+  MODEL_EFFORT_LEVELS,
+} from './agent-config-constants';
 
 /** Match `psu` as a command token — start of line, or after whitespace / a
  *  shell separator — followed by whitespace. Shared by every injector. */
@@ -606,6 +610,7 @@ export function memberLaunchCommand(opts: MemberLaunchOpts): string {
   // omits `--plan`; its members self-pull via the fleet claim spec, not a plan lane.
   if (opts.plan) parts.push(`--plan=${identifier('plan', opts.plan)}`);
   if (opts.headless) parts.push('--headless');
+  if (opts.carry) parts.push(`--carry=${opts.carry}`);
   if (opts.account) parts.push(`--account=${quoteLaunchValue(opts.account)}`);
   if (opts.workspace) parts.push(`--workspace=${quoteLaunchValue(opts.workspace)}`);
   if (opts.role) parts.push(`--role=${quoteLaunchValue(opts.role)}`);
@@ -950,8 +955,55 @@ export interface FreshLaunchExpectedAttestation {
   harnessSlug: string | null;
   planSlug: string | null;
   model: string | null;
+  effort: string | null;
+  account: string;
+  carry: 'warm' | 'cold';
+  visibility: 'visible' | 'headless';
   fleetSlug: string | null;
   fleetRole: string | null;
+}
+
+/** A recognized reasoning-effort suffix from the exact psu model spec. */
+export function modelEffortFromSpec(spec: string | null): string | null {
+  if (!spec) return null;
+  const colon = spec.lastIndexOf(':');
+  if (colon <= 0) return null;
+  const suffix = spec.slice(colon + 1).toLowerCase();
+  return (MODEL_EFFORT_LEVELS as readonly string[]).includes(suffix) ? suffix : null;
+}
+
+/** Resolve the actual launch attestation from the durable adv_sessions ledger. */
+export function launchAttestationFromLedger(
+  launchSpecRaw: unknown,
+  launchArgvRaw: unknown,
+): Omit<FreshLaunchExpectedAttestation, 'ownerId'> {
+  const spec = launchSpecRaw && typeof launchSpecRaw === 'object'
+    ? launchSpecRaw as Record<string, unknown>
+    : {};
+  const fleet = spec.fleet && typeof spec.fleet === 'object'
+    ? spec.fleet as Record<string, unknown>
+    : {};
+  const argv = Array.isArray(launchArgvRaw)
+    ? launchArgvRaw.filter((item): item is string => typeof item === 'string')
+    : [];
+  const argValue = (name: string): string | null => {
+    const prefix = `--${name}=`;
+    return argv.find((item) => item.startsWith(prefix))?.slice(prefix.length) ?? null;
+  };
+  const model = typeof spec.model === 'string' ? spec.model : argValue('model');
+  return {
+    agent: typeof spec.agent === 'string' ? spec.agent : null as never,
+    workspaceId: typeof spec.workspaceId === 'string' ? spec.workspaceId : null as never,
+    harnessSlug: typeof spec.harnessSlug === 'string' ? spec.harnessSlug : null,
+    planSlug: typeof spec.planSlug === 'string' ? spec.planSlug : null,
+    model,
+    effort: modelEffortFromSpec(argValue('model') ?? model),
+    account: argValue('account') ?? 'default',
+    carry: (argValue('carry') as 'warm' | 'cold' | null) ?? null as never,
+    visibility: argv.includes('--headless') ? 'headless' : 'visible',
+    fleetSlug: typeof fleet.slug === 'string' ? fleet.slug : null,
+    fleetRole: typeof fleet.role === 'string' ? fleet.role : null,
+  };
 }
 
 export interface FreshLaunchVerdict {
@@ -1137,6 +1189,7 @@ export async function probeFreshLaunchSessions({
         ms_since_last_signal: string | number | null;
         has_presence: boolean;
         launch_spec: unknown;
+        launch_argv: unknown;
       }>
     >`
       SELECT s.id,
@@ -1154,7 +1207,8 @@ export async function probeFreshLaunchSessions({
              EXISTS (SELECT 1 FROM harness_shared.coord_presence p
                       WHERE p.workspace_id = ${workspaceId}
                         AND p.owner_id = s.coord_owner_id) AS has_presence,
-             s.launch_spec
+             s.launch_spec,
+             s.launch_argv
         FROM harness_shared.adv_sessions s
        WHERE s.workspace_id = ${workspaceId}
          AND s.first_seen_at >= to_timestamp(${Math.floor(since / 1000)})
@@ -1165,20 +1219,13 @@ export async function probeFreshLaunchSessions({
     const expectedByOwner = new Map((expectedAttestations ?? []).map((item) => [item.ownerId, item]));
     return rows.filter((r) => !wanted || (r.coord_owner_id != null && wanted.has(r.coord_owner_id))).map((r) => {
       const expected = r.coord_owner_id ? expectedByOwner.get(r.coord_owner_id) : undefined;
-      const spec = r.launch_spec && typeof r.launch_spec === 'object' ? r.launch_spec as Record<string, unknown> : {};
-      const fleet = spec.fleet && typeof spec.fleet === 'object' ? spec.fleet as Record<string, unknown> : {};
-      const actual: Record<string, string | null> = {
-        agent: typeof spec.agent === 'string' ? spec.agent : null,
-        workspaceId: typeof spec.workspaceId === 'string' ? spec.workspaceId : null,
-        harnessSlug: typeof spec.harnessSlug === 'string' ? spec.harnessSlug : null,
-        planSlug: typeof spec.planSlug === 'string' ? spec.planSlug : null,
-        model: typeof spec.model === 'string' ? spec.model : null,
-        fleetSlug: typeof fleet.slug === 'string' ? fleet.slug : null,
-        fleetRole: typeof fleet.role === 'string' ? fleet.role : null,
-      };
+      const actual = launchAttestationFromLedger(r.launch_spec, r.launch_argv);
       const attestationDiffs: FreshLaunchAttestationDiff[] = [];
       if (expected) {
-        for (const field of ['agent', 'workspaceId', 'harnessSlug', 'planSlug', 'model', 'fleetSlug', 'fleetRole'] as const) {
+        for (const field of [
+          'agent', 'workspaceId', 'harnessSlug', 'planSlug', 'model', 'effort',
+          'account', 'carry', 'visibility', 'fleetSlug', 'fleetRole',
+        ] as const) {
           if (expected[field] !== actual[field]) {
             attestationDiffs.push({ field, requested: expected[field], actual: actual[field] });
           }
