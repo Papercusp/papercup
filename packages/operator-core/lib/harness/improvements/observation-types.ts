@@ -105,6 +105,13 @@ export interface StructuredObservation {
    * can be declined without creating a duplicate history row.
    */
   evidenceFingerprint?: string;
+  /**
+   * The scorecard issue this filing corrects. The target remains in the append-only
+   * ledger for audit, but scorecard reads exclude it from the live sample by default.
+   */
+  supersedes?: string;
+  /** A deliberate withdrawal of this scorecard, preserving the original evidence. */
+  retracted?: ScorecardRetraction;
   /** Deterministic instrument snapshots attached by scorecards:emit/evaluate. */
   instrumentSnapshots?: Record<string, unknown>;
   /**
@@ -154,6 +161,13 @@ export interface ObservationSubject {
   windowStart?: string;
   /** ISO — end of the graded window; the drills' `:run_end`. */
   windowEnd?: string;
+}
+
+/** Machine-readable scorecard withdrawal metadata. */
+export interface ScorecardRetraction {
+  at: string;
+  by: string;
+  reason: string;
 }
 
 /** Thrown by `validateObservationRatings` when a rating lacks required evidence
@@ -364,6 +378,19 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
   }
   if (typeof o.evidenceFingerprint === 'string' && o.evidenceFingerprint.trim()) {
     out.evidenceFingerprint = o.evidenceFingerprint;
+  }
+  if (typeof o.supersedes === 'string' && o.supersedes.trim()) {
+    out.supersedes = o.supersedes;
+  }
+  if (o.retracted && typeof o.retracted === 'object' && !Array.isArray(o.retracted)) {
+    const r = o.retracted as Record<string, unknown>;
+    if (
+      typeof r.at === 'string' && r.at.trim() &&
+      typeof r.by === 'string' && r.by.trim() &&
+      typeof r.reason === 'string' && r.reason.trim()
+    ) {
+      out.retracted = { at: r.at, by: r.by, reason: r.reason };
+    }
   }
   if (o.instrumentSnapshots && typeof o.instrumentSnapshots === 'object' && !Array.isArray(o.instrumentSnapshots)) {
     out.instrumentSnapshots = o.instrumentSnapshots as Record<string, unknown>;

@@ -27,12 +27,15 @@ import {
   normalizeScorecardRatings,
   type ObservationRatings,
   type ObservationSubject,
+  type ScorecardRetraction,
   type ScorecardRatingRubric,
 } from './harness/improvements/observation-types';
 import {
+  getIssue,
   issuesScopeWorkspace,
   issuesOutLinksMany,
   issuesSupersededByRevision,
+  resolveIssueWorkspace,
   type IssueOutLink,
 } from './issues-engineer';
 import { getRubric, rubricInstrumentContract, type Rubric, type RubricStatus } from './rubrics';
@@ -260,6 +263,12 @@ export interface ScorecardRow {
   rubricResolved: boolean;
   /** Stable canonical evidence identity when filed through scorecards:emit. */
   evidenceFingerprint?: string;
+  /** The scorecard issue this filing corrected, when present on the raw payload. */
+  supersedes?: string;
+  /** Machine-readable withdrawal metadata, when the scorecard was retracted. */
+  retracted?: ScorecardRetraction;
+  /** The newest payload superseder that points at this scorecard, when known. */
+  supersededBy?: string;
   /**
    * True when this scorecard is a SYNTHESIZED floor (`payload.observation.synthesized`),
    * not an agent emission — the deterministic backstop filed by overwatch/scorecard-backstop
@@ -323,6 +332,15 @@ export interface GradedGeneration {
   bootHeadSha?: string | null;
   scoutCodeHash?: string | null;
   staleHost?: boolean;
+}
+
+/** Result of the scorecards:retract write path. */
+export interface ScorecardRetractionResult {
+  ok: boolean;
+  issueId: string;
+  retracted: boolean;
+  retraction?: ScorecardRetraction;
+  error?: string;
 }
 
 /**
