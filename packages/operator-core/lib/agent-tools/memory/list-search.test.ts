@@ -111,6 +111,7 @@ describe('the byte-stable wire envelope (TUI Memory tab contract)', () => {
     expect(b.search).toHaveBeenCalledWith('q', {
       scope: ['user-1', 'harness:papercup'],
       limit: 3,
+      onLegStats: expect.any(Function),
     });
     expect(out.results).toHaveLength(3);
     expect(out.results.map((r) => r.id)).toEqual(['m0', 'm1', 'm2']);
@@ -122,11 +123,19 @@ describe('the byte-stable wire envelope (TUI Memory tab contract)', () => {
     useBackend(b);
     // harnessOnly + harness_slug → scope is the harness pool alone, no user-1.
     await search.handler({ query: 'q', harness_slug: 'bench-run-1', harnessOnly: true }, ctx);
-    expect(b.search).toHaveBeenCalledWith('q', { scope: ['harness:bench-run-1'], limit: 8 });
+    expect(b.search).toHaveBeenCalledWith('q', {
+      scope: ['harness:bench-run-1'],
+      limit: 8,
+      onLegStats: expect.any(Function),
+    });
     // harnessOnly WITHOUT harness_slug is ignored (nothing to isolate to) → still fans user + workspace.
     b.search.mockClear();
     await search.handler({ query: 'q', harnessOnly: true }, ctx);
-    expect(b.search).toHaveBeenCalledWith('q', { scope: ['user-1', 'harness:papercup'], limit: 8 });
+    expect(b.search).toHaveBeenCalledWith('q', {
+      scope: ['user-1', 'harness:papercup'],
+      limit: 8,
+      onLegStats: expect.any(Function),
+    });
   });
 
   it('PULL path applies NO relevance floor — surfaces weak scored candidates for the LLM to judge (P-021 / D-003)', async () => {
