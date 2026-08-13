@@ -975,6 +975,19 @@ export function deriveKickoffPrompt(opts: {
  * Fleetless launches use the durable human owner surface instead, because they
  * have no fleet role selector to resolve after the launcher session ends.
  */
+export function launchProvenanceFallbackSentence(fleetSlug?: string | null): string {
+  if (!fleetSlug) {
+    return (
+      'If that session ends, use coord:send with to: ["human"] to reach the owner; ' +
+      'this owner surface survives session retirement.'
+    );
+  }
+  return (
+    `If that session ends, use coord:send with to: [\"@fleet-leader:${fleetSlug}\"] to reach the current fleet leader; ` +
+    'this selector survives session retirement and leadership rotation.'
+  );
+}
+
 export function buildLaunchProvenanceFactBody(opts: {
   launchedBy: string;
   planSlug?: string | null;
@@ -986,18 +999,10 @@ export function buildLaunchProvenanceFactBody(opts: {
     (opts.planSlug ? ` on plan ${opts.planSlug}` : '') +
     (opts.launchContextPath ? ` with brief ${basename(opts.launchContextPath)}` : '');
 
-  if (!opts.fleetSlug) {
-    return (
-      `${provenance}. They are your launcher/supervisor; report milestones + anomalies to them while live. ` +
-      'If that session ends, use coord:send with to: ["human"] to reach the owner; ' +
-      'this owner surface survives session retirement.'
-    );
-  }
-
+  const role = opts.fleetSlug ? 'original launcher/supervisor' : 'launcher/supervisor';
   return (
-    `${provenance}. They are your original launcher/supervisor; report milestones + anomalies to them while live. ` +
-    `If that session ends, use coord:send with to: [\"@fleet-leader:${opts.fleetSlug}\"] to reach the current fleet leader; ` +
-    'this selector survives session retirement and leadership rotation.'
+    `${provenance}. They are your ${role}; report milestones + anomalies to them while live. ` +
+    launchProvenanceFallbackSentence(opts.fleetSlug)
   );
 }
 
