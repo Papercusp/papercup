@@ -66,6 +66,23 @@ export function mobileJwtSecretStatus(): MobileJwtSecretStatus {
   };
 }
 
+/**
+ * Refuse a clustered request host whose workers would each mint a different
+ * fallback secret. A per-process fallback is tolerable for a one-process dev
+ * server, but in a reuse-port cluster it makes a token valid only on the worker
+ * that signed it and turns normal load-balancing into intermittent auth.
+ */
+export function assertMobileJwtSecretDurableForCluster(workerCount: number): void {
+  if (workerCount <= 1) return;
+  const status = mobileJwtSecretStatus();
+  if (status.durable) return;
+  throw new Error(
+    `[device-jwt] Refusing to start ${workerCount}-worker host without a durable ` +
+      `MOBILE_JWT_SECRET (>=32 chars): per-process fallback secrets make device JWTs ` +
+      `intermittently invalid across workers. ${status.reason}`,
+  );
+}
+
 let _warnedEphemeral = false;
 
 /**

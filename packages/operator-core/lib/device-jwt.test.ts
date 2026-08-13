@@ -10,6 +10,7 @@ const {
   signDeviceToken,
   verifyDeviceToken,
   mobileJwtSecretStatus,
+  assertMobileJwtSecretDurableForCluster,
   warnIfMobileJwtSecretNotDurable,
   __resetDeviceJwtForTest,
 } = mod;
@@ -157,5 +158,24 @@ describe('device-jwt secret durability (P-001)', () => {
     const status = warnIfMobileJwtSecretNotDurable();
     expect(warn).not.toHaveBeenCalled();
     expect(status).toEqual({ durable: true, source: 'env' });
+  });
+
+  it('refuses a clustered host when the secret would be process-local', () => {
+    delete process.env.MOBILE_JWT_SECRET;
+    process.env.NODE_ENV = 'development';
+    expect(() => assertMobileJwtSecretDurableForCluster(16)).toThrow(
+      /Refusing to start 16-worker host.*intermittently invalid across workers/,
+    );
+  });
+
+  it('allows a single-process dev host to retain the explicit ephemeral fallback', () => {
+    delete process.env.MOBILE_JWT_SECRET;
+    process.env.NODE_ENV = 'development';
+    expect(() => assertMobileJwtSecretDurableForCluster(1)).not.toThrow();
+  });
+
+  it('allows a clustered host when all workers inherit a durable secret', () => {
+    process.env.MOBILE_JWT_SECRET = 'z'.repeat(40);
+    expect(() => assertMobileJwtSecretDurableForCluster(16)).not.toThrow();
   });
 });

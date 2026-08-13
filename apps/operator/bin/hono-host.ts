@@ -93,6 +93,7 @@ import { runSubstrateSidecarServer } from '@papercusp/operator-core/lib/sync/hyp
 import { runSpawnerSidecarServer } from '@papercusp/operator-core/lib/fleet/spawner-sidecar-server';
 import { runGatewaySidecarMain } from '@papercusp/operator-core/lib/inference-gateway/sidecar-main';
 import { runEmbedSidecarServer } from '@papercusp/operator-core/lib/memory/embed-sidecar-server';
+import { assertMobileJwtSecretDurableForCluster } from '@papercusp/operator-core/lib/device-jwt';
 
 // WI-3849: arm Node's diagnostic-report-on-SIGABRT as early as possible (before
 // the sidecar divert, so every process type this entry can become — main host,
@@ -591,6 +592,10 @@ const clusterWorkers = resolveClusterWorkers(process.env, getResourceProfile().h
 // from the boot log instead of ~30min of forensics re-deriving CLUSTER_WORKERS'
 // precedence over CLUSTER by hand.
 console.log(`[cluster] resolved ${clusterWorkers} worker(s) (source: ${describeClusterWorkersSource(process.env)})`);
+// WI-38448: without a durable secret every reuse-port worker mints a different
+// key, so the pairing response works only when later requests happen to land on
+// its signer. Fail before forking. Sidecar re-execs do not serve device routes.
+if (!sidecarMode) assertMobileJwtSecretDurableForCluster(clusterWorkers);
 // PG-pool budget (R1 — infra-perf-robustness-audit-2026-06-18 conn-saturation). Every
 // process sizes its org pools so `pool·procs ≤ max_connections`; the divisor is the
 // count of operator processes sharing this PG. The bug it fixes: on an EMBEDDED-PG host
