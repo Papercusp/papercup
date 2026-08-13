@@ -163,9 +163,10 @@ export interface DerivedQuery {
   miss: DeriveMiss | null;
   /**
    * The tool the miss is ABOUT, when that is not the tool that was called.
-   * Only `tools:invoke` produces this: it dispatches, so an unmapped INNER tool
-   * must be reported under the inner name or the drift alarm names a dispatcher
-   * that is perfectly well mapped and points nobody at the real gap (WI-37589).
+   * `tools:invoke` and OMP XD-device writes produce this: both dispatch, so an
+   * unmapped INNER tool must be reported under the inner name or the drift alarm
+   * names a dispatcher that is perfectly well mapped and points nobody at the
+   * real gap (WI-37589 / P-014).
    */
   missTool?: string;
 }
@@ -534,9 +535,7 @@ const MANGLED_TO_COLON: ReadonlyMap<string, string> = (() => {
     const mangled = colon.replace(/:/g, '_');
     const prior = map.get(mangled);
     if (prior && prior !== colon) {
-      throw new Error(
-        `mid-turn vocabulary: '${prior}' and '${colon}' mangle to the same '${mangled}'`,
-      );
+      throw new Error(`mid-turn vocabulary: '${prior}' and '${colon}' mangle to the same '${mangled}'`);
     }
     map.set(mangled, colon);
   }
@@ -577,6 +576,55 @@ function colonNameFor(tool: string): string {
 }
 
 /**
+ * OMP exposes an MCP dynamic-device call as a native `write` to an `xd://`
+ * path. Unlike an ordinary file write, its `content` is a JSON argument
+ * envelope and the path names the actual tool. Keeping the outer write shape
+ * turns every such call into the generic device path as a recall query (D-012).
+ *
+ * The Papercusp XD spelling is flattened —
+ * `xd://mcp__papercusp_su_tools_invoke`, not the usual
+ * `mcp__papercusp-su__tools_invoke` — so it cannot use `specFor`'s standard
+ * server separator. Resolve the suffix FORWARD through the existing vocabulary
+ * instead of guessing where underscores belong. Unknown suffixes stay loud.
+ *
+ * `content` is accepted only when it decodes to an object. A truncated or
+ * malformed body becomes an empty argument object, never raw query text. That
+ * preserves the body/secret boundary: the resolved inner tool's allow-list is
+ * still the only thing that can admit fields into the embedder.
+ */
+const OMP_XD_MCP_PREFIX = 'xd://mcp__';
+const OMP_XD_PAPERCUSP_PREFIX = `${OMP_XD_MCP_PREFIX}papercusp_su_`;
+const MAX_QUERY_DERIVE_DEPTH = 4;
+
+type NormalizedXdCall = {
+  tool: string;
+  input: Record<string, unknown>;
+};
+
+function normalizeOmpXdCall(tool: string, input: unknown): NormalizedXdCall | null {
+  if (tool !== 'write') return null;
+  const outer = asRecord(input);
+  if (!outer) {
+    // The OMP hook clamps the WHOLE outer argument JSON at 400 chars. If that
+    // cut lands inside `content`, JSON.parse fails; falling through to the
+    // generic known-tool fallback would then embed the raw truncated blob.
+    // Recognise only the explicit path field and fail closed.
+    return typeof input === 'string' && /"path"\s*:\s*"xd:\/\/mcp__/.test(input)
+      ? { tool: TOOLS_INVOKE, input: {} }
+      : null;
+  }
+  const path = str(outer.path);
+  if (!path.startsWith(OMP_XD_MCP_PREFIX)) return null;
+
+  const deviceName = path.slice('xd://'.length);
+  const mangled = path.startsWith(OMP_XD_PAPERCUSP_PREFIX) ? path.slice(OMP_XD_PAPERCUSP_PREFIX.length) : '';
+  return {
+    tool: (mangled && MANGLED_TO_COLON.get(mangled)) || deviceName,
+    input: asRecord(outer.content) ?? {},
+  };
+}
+
+/**
  * Derive the recall query from the tool call, and say WHY when there is none.
  *
  * The tools worth reading are the ones that signal INVESTIGATION — a command, a
@@ -587,14 +635,24 @@ function colonNameFor(tool: string): string {
  * blob of JSON.
  */
 export function deriveQueryDetailed(tool: string, input: unknown): DerivedQuery {
+  return deriveQueryAtDepth(tool, input, 0);
+}
+
+function deriveQueryAtDepth(tool: string, input: unknown, depth: number): DerivedQuery {
+  const xdCall = normalizeOmpXdCall(tool, input);
+  if (xdCall) {
+    if (depth >= MAX_QUERY_DERIVE_DEPTH) return { query: '', miss: 'no-signal' };
+    const inner = deriveQueryAtDepth(xdCall.tool, xdCall.input, depth + 1);
+    return inner.miss === 'unknown-tool' && !inner.missTool ? { ...inner, missTool: xdCall.tool } : inner;
+  }
+
   const spec = specFor(tool);
   // Not in the vocabulary at all. Either a client we have not mapped or a new
   // tool on one we have — the case that must stay VISIBLE, because it is the
   // one that silently zeroed codex and omp for the life of this endpoint.
   if (!spec) return { query: '', miss: 'unknown-tool' };
 
-  const done = (text: string): DerivedQuery =>
-    text ? { query: text, miss: null } : { query: '', miss: 'no-signal' };
+  const done = (text: string): DerivedQuery => (text ? { query: text, miss: null } : { query: '', miss: 'no-signal' });
 
   // ── `tools:invoke` DISPATCHES: the signal is the INNER call, never its own args ──
   // Measured 2026-08-09 it is the single biggest miss in the whole vocabulary
@@ -614,7 +672,8 @@ export function deriveQueryDetailed(tool: string, input: unknown): DerivedQuery 
     // it as no-signal rather than recursing, so a malformed or hostile payload
     // cannot drive unbounded recursion on a path that must never cost a turn.
     if (colonNameFor(innerName) === TOOLS_INVOKE) return { query: '', miss: 'no-signal' };
-    const inner = deriveQueryDetailed(innerName, io.args);
+    if (depth >= MAX_QUERY_DERIVE_DEPTH) return { query: '', miss: 'no-signal' };
+    const inner = deriveQueryAtDepth(innerName, io.args, depth + 1);
     return inner.miss === 'unknown-tool' ? { ...inner, missTool: innerName } : inner;
   }
 
@@ -860,7 +919,12 @@ export function splitLegQueries(derived: string): { cosine: string; lexical: str
   // the generic tokens "no"/"result" are pull without meaning.
   const cosine = stripped
     .split('·')
-    .map((seg) => seg.replace(/\(no result\)/g, ' ').replace(/\s+/g, ' ').trim())
+    .map((seg) =>
+      seg
+        .replace(/\(no result\)/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim(),
+    )
     .filter((seg) => /[A-Za-z0-9]/.test(seg))
     .join(' · ');
   return { cosine: cosine || lexical, lexical };
@@ -967,15 +1031,12 @@ const midTurnContext = defineTool({
         }
       }
 
-      const [
-        { buildMemoryContextBlock },
-        { getSessionUserOrDefault },
-        { resolveClaimedWorkItemIdForOwner },
-      ] = await Promise.all([
-        import('../../../memory/injection'),
-        import('../../../auth'),
-        import('../../../memory/agent-signals'),
-      ]);
+      const [{ buildMemoryContextBlock }, { getSessionUserOrDefault }, { resolveClaimedWorkItemIdForOwner }] =
+        await Promise.all([
+          import('../../../memory/injection'),
+          import('../../../auth'),
+          import('../../../memory/agent-signals'),
+        ]);
       const [user, currentWorkItemId] = await Promise.all([
         getSessionUserOrDefault().catch(() => null),
         resolveClaimedWorkItemIdForOwner({ ownerId: owner, workspaceId }).catch(() => undefined),

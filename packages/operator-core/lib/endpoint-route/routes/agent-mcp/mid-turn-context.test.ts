@@ -22,15 +22,13 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const {
-  buildMemoryContextBlockMock,
-  recordInjectionCoverageMock,
-  resolveClaimedWorkItemIdForOwnerMock,
-} = vi.hoisted(() => ({
-  buildMemoryContextBlockMock: vi.fn(),
-  recordInjectionCoverageMock: vi.fn(),
-  resolveClaimedWorkItemIdForOwnerMock: vi.fn(),
-}));
+const { buildMemoryContextBlockMock, recordInjectionCoverageMock, resolveClaimedWorkItemIdForOwnerMock } = vi.hoisted(
+  () => ({
+    buildMemoryContextBlockMock: vi.fn(),
+    recordInjectionCoverageMock: vi.fn(),
+    resolveClaimedWorkItemIdForOwnerMock: vi.fn(),
+  }),
+);
 
 // Same relative specifiers the source's dynamic imports use (colocated).
 vi.mock('../../../memory/injection', () => ({
@@ -84,12 +82,10 @@ beforeEach(() => {
 
 /** Every coverage event recorded this test, flattened across calls. */
 const coverageEvents = (): Array<Record<string, unknown>> =>
-  recordInjectionCoverageMock.mock.calls.flatMap(
-    (call) => (call[0] ?? []) as Array<Record<string, unknown>>,
-  );
+  recordInjectionCoverageMock.mock.calls.flatMap((call) => (call[0] ?? []) as Array<Record<string, unknown>>);
 
 describe('mid-turn-context — query derivation', () => {
-  it('reads a Bash call as its command plus the agent\'s own description', () => {
+  it("reads a Bash call as its command plus the agent's own description", () => {
     expect(deriveQuery('Bash', { command: 'rg WI-6512 packages', description: 'find the bug' })).toBe(
       'rg WI-6512 packages — find the bug',
     );
@@ -128,10 +124,12 @@ describe('mid-turn-context — batch folding (the PostToolBatch payload)', () =>
   it('marks a BARREN result — the strongest "about to re-derive something" signal there is', () => {
     // Only available because this fires AFTER the tools ran. A grep that found
     // nothing is exactly when recall is most valuable.
-    expect(deriveBatchQuery([{ tool: 'Grep', toolInput: { pattern: 'WI-6512' }, toolResponse: 'No matches found' }]))
-      .toContain('(no result)');
-    expect(deriveBatchQuery([{ tool: 'Grep', toolInput: { pattern: 'WI-6512' }, toolResponse: 'packages/a.ts:12: hit' }]))
-      .not.toContain('(no result)');
+    expect(
+      deriveBatchQuery([{ tool: 'Grep', toolInput: { pattern: 'WI-6512' }, toolResponse: 'No matches found' }]),
+    ).toContain('(no result)');
+    expect(
+      deriveBatchQuery([{ tool: 'Grep', toolInput: { pattern: 'WI-6512' }, toolResponse: 'packages/a.ts:12: hit' }]),
+    ).not.toContain('(no result)');
   });
 
   it('accepts the CLAMPED string tool_input the hook actually sends', () => {
@@ -177,7 +175,7 @@ describe('mid-turn-context — the cost properties', () => {
     expect(out.text).toBe('');
   });
 
-  it('uses a budget an ORDER OF MAGNITUDE under turn-start\'s 4000', async () => {
+  it("uses a budget an ORDER OF MAGNITUDE under turn-start's 4000", async () => {
     // The arithmetic that matters: at turn-start's budget a 50-call turn would
     // inject ~200k chars. If this assertion is ever "fixed" by raising the
     // budget, re-do that arithmetic first.
@@ -377,7 +375,7 @@ describe('mid-turn-context — the budget is enforced HERE, because injection.ts
     const block = `## Possibly relevant (mid-turn)\n\n- [project] (id=abc) ok\n\n${CORPUS}`;
     const out = clampToBudget(block, 20);
     for (const line of out.split('\n').filter((l) => l.startsWith('- [work-item'))) {
-      expect(line.endsWith("}")).toBe(true);
+      expect(line.endsWith('}')).toBe(true);
     }
   });
 });
@@ -441,14 +439,11 @@ describe('splitLegQueries — de-diluting the cosine query (P-044 / F-L, motivat
     // The first one is the measured original: it injected two memories whose
     // only tie to the task was the token `linuxbrew`.
     expect(
-      splitLegQueries('resolve hook events B=$(readlink -f /home/linuxbrew/.linuxbrew/bin/codex); echo bin')
-        .cosine,
+      splitLegQueries('resolve hook events B=$(readlink -f /home/linuxbrew/.linuxbrew/bin/codex); echo bin').cosine,
     ).not.toMatch(/linuxbrew/);
 
     // `);`  `"`  `|`  — closing paren + semicolon, quotes, and a pipe.
-    expect(splitLegQueries('why empty $(cat /home/x/repo/lib/a.ts); done').cosine).toBe(
-      'why empty $(cat ); done',
-    );
+    expect(splitLegQueries('why empty $(cat /home/x/repo/lib/a.ts); done').cosine).toBe('why empty $(cat ); done');
     expect(splitLegQueries('why empty "/home/x/repo/lib/a.ts"').cosine).toBe('why empty " "');
     expect(splitLegQueries('why empty memory/injection.ts|head').cosine).toBe('why empty |head');
   });
@@ -535,9 +530,7 @@ describe('shared tool vocabulary — codex + omp parity (D-005)', () => {
     // Claude is ~100% of current traffic, so a regression here is a net loss
     // even if every new client works perfectly.
     it('Bash still joins command and description with the em-dash separator', () => {
-      expect(deriveQuery('Bash', { command: 'rg foo', description: 'find foo' })).toBe(
-        'rg foo — find foo',
-      );
+      expect(deriveQuery('Bash', { command: 'rg foo', description: 'find foo' })).toBe('rg foo — find foo');
     });
     it('Grep/Glob/Read keep their exact field order and space separator', () => {
       expect(deriveQuery('Grep', { pattern: 'p', path: 'a/b', glob: '*.ts' })).toBe('p a/b *.ts');
@@ -564,9 +557,7 @@ describe('shared tool vocabulary — codex + omp parity (D-005)', () => {
       expect(query).toContain('/home/x/prisma/schema.prisma');
     });
     it('derives from view_image path', () => {
-      expect(deriveQuery('view_image', { path: '/tmp/shot.png', detail: 'high' })).toBe(
-        '/tmp/shot.png',
-      );
+      expect(deriveQuery('view_image', { path: '/tmp/shot.png', detail: 'high' })).toBe('/tmp/shot.png');
     });
   });
 
@@ -582,6 +573,92 @@ describe('shared tool vocabulary — codex + omp parity (D-005)', () => {
     });
     it('derives from grep pattern/path/glob', () => {
       expect(deriveQuery('grep', { pattern: 'needle', path: 'src' })).toBe('needle src');
+    });
+
+    describe('XD dynamic-device writes (P-014 / D-012)', () => {
+      const toolsInvokePath = 'xd://mcp__papercusp_su_tools_invoke';
+
+      it('replays the exact 2026-08-12 00:06:17Z two-call shape without querying on the XD path', () => {
+        const calls = [
+          {
+            tool: 'write',
+            toolInput: JSON.stringify({
+              path: toolsInvokePath,
+              content: '{"args": {}, "name": "coord:inbox"}',
+            }),
+            toolResponse: '{"owner_id":"su-0e500929"}',
+          },
+          {
+            tool: 'write',
+            toolInput: JSON.stringify({
+              path: toolsInvokePath,
+              content: '{"args": {}, "name": "scheduler:get_next"}',
+            }),
+            toolResponse: 'Error: invalid_input: harness is required',
+          },
+        ];
+
+        const detail = deriveBatchQueryDetailed(calls);
+        // Both exact inner calls are deliberate no-signal bookkeeping calls.
+        // The important regression is that neither generic 35-char path is
+        // embedded (twice, joined into D-012's measured 73-char query).
+        expect(detail).toEqual({ query: '', unknownTools: [], noSignalTools: ['write'] });
+        expect(detail.query).not.toContain('xd://');
+        for (const call of calls) {
+          expect(deriveQueryDetailed(call.tool, call.toolInput)).toEqual({
+            query: '',
+            miss: 'no-signal',
+          });
+        }
+      });
+
+      it('derives through the inner tools:invoke vocabulary instead of the dispatcher path', () => {
+        const query = deriveQuery('write', {
+          path: toolsInvokePath,
+          content: JSON.stringify({
+            name: 'dev:pg_query',
+            args: { sql: 'SELECT count(*) FROM harness_shared.work_items' },
+          }),
+        });
+        expect(query).toBe('SELECT count(*) FROM harness_shared.work_items');
+        expect(query).not.toContain('xd://');
+        expect(query).not.toContain('tools_invoke');
+      });
+
+      it('keeps ordinary file writes unchanged and never admits their body', () => {
+        const secret = 'AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI';
+        const query = deriveQuery('write', {
+          path: '/repo/notes.txt',
+          content: secret,
+        });
+        expect(query).toBe('/repo/notes.txt');
+        expect(query).not.toContain(secret);
+      });
+
+      it('never treats malformed XD content as raw query text', () => {
+        const malformed = '{"name":"dev:pg_query","args":{"sql":"AWS_SECRET_ACCESS_KEY=';
+        const detail = deriveQueryDetailed('write', {
+          path: toolsInvokePath,
+          content: malformed,
+        });
+        expect(detail).toEqual({ query: '', miss: 'no-signal' });
+        expect(detail.query).not.toContain('AWS_SECRET_ACCESS_KEY');
+      });
+
+      it("fails closed when the hook's 400-char clamp truncates the outer XD JSON", () => {
+        const truncated = JSON.stringify({
+          path: toolsInvokePath,
+          content: JSON.stringify({
+            name: 'dev:pg_query',
+            args: { sql: `SELECT '${'secret'.repeat(100)}'` },
+          }),
+        }).slice(0, 400);
+        expect(() => JSON.parse(truncated)).toThrow();
+        expect(deriveQueryDetailed('write', truncated)).toEqual({
+          query: '',
+          miss: 'no-signal',
+        });
+      });
     });
   });
 
@@ -669,15 +746,7 @@ describe('shared tool vocabulary — codex + omp parity (D-005)', () => {
     });
 
     it('claude bookkeeping tools read as expected quiet, not as drift', () => {
-      for (const tool of [
-        'AskUserQuestion',
-        'Artifact',
-        'Skill',
-        'Monitor',
-        'TaskCreate',
-        'TaskUpdate',
-        'TaskStop',
-      ]) {
+      for (const tool of ['AskUserQuestion', 'Artifact', 'Skill', 'Monitor', 'TaskCreate', 'TaskUpdate', 'TaskStop']) {
         expect(deriveQueryDetailed(tool, { anything: 'x' }).miss, `${tool}`).toBe('no-signal');
       }
     });
@@ -689,14 +758,14 @@ describe('shared tool vocabulary — codex + omp parity (D-005)', () => {
      * two live rows in context_injection_coverage on 2026-08-09,
      * client=codex port=mid-turn outcome='unknown-tool' tool='get_goal'.
      */
-    it("get_goal reads as expected quiet, not drift — it takes NO arguments", () => {
+    it('get_goal reads as expected quiet, not drift — it takes NO arguments', () => {
       const { query, miss } = deriveQueryDetailed('get_goal', {});
       expect(query).toBe('');
       // The measured production symptom was 'unknown-tool'. This is the fix.
       expect(miss).toBe('no-signal');
     });
 
-    it("update_goal derives nothing — its only argument is a status enum", () => {
+    it('update_goal derives nothing — its only argument is a status enum', () => {
       // Measured from the codex binary: `struct UpdateGoalArgs with 1 element`,
       // admissible values "complete" / "blocked". Embedding "complete" as a
       // recall query matches on a token carrying no topic.
@@ -809,26 +878,22 @@ describe('shared tool vocabulary — codex + omp parity (D-005)', () => {
 describe('derive-miss leaves a trace (D-005 §3b)', () => {
   it('records unknown-tool for an unmapped tool — the previously SILENT path', () => {
     // Before this, the handler returned here having written nothing at all.
-    return post({ owner: owner(), client: 'codex', tool: 'MysteryTool', toolInput: {} }).then(
-      (res) => {
-        expect(res.text).toBe('');
-        expect(coverageEvents()).toContainEqual(
-          expect.objectContaining({
-            port: 'mid-turn',
-            client: 'codex',
-            outcome: 'unknown-tool',
-            tool: 'MysteryTool',
-          }),
-        );
-      },
-    );
+    return post({ owner: owner(), client: 'codex', tool: 'MysteryTool', toolInput: {} }).then((res) => {
+      expect(res.text).toBe('');
+      expect(coverageEvents()).toContainEqual(
+        expect.objectContaining({
+          port: 'mid-turn',
+          client: 'codex',
+          outcome: 'unknown-tool',
+          tool: 'MysteryTool',
+        }),
+      );
+    });
   });
 
   it('records no-signal for a KNOWN tool that carried nothing', async () => {
     await post({ owner: owner(), client: 'codex', tool: 'wait', toolInput: { cell_id: '4' } });
-    expect(coverageEvents()).toContainEqual(
-      expect.objectContaining({ outcome: 'no-signal', tool: 'wait' }),
-    );
+    expect(coverageEvents()).toContainEqual(expect.objectContaining({ outcome: 'no-signal', tool: 'wait' }));
   });
 
   it('records drift even when OTHER calls in the batch DID carry signal', async () => {
@@ -843,9 +908,7 @@ describe('derive-miss leaves a trace (D-005 §3b)', () => {
       ],
     });
     expect(res.text).toContain('MEM'); // the batch DID produce a recall
-    expect(coverageEvents()).toContainEqual(
-      expect.objectContaining({ outcome: 'unknown-tool', tool: 'BrandNewTool' }),
-    );
+    expect(coverageEvents()).toContainEqual(expect.objectContaining({ outcome: 'unknown-tool', tool: 'BrandNewTool' }));
   });
 
   it("records 'recalled' when the recall returned context", async () => {
@@ -899,15 +962,11 @@ describe('papercusp MCP vocabulary — the 97% of drift-alarm noise (WI-37589)',
       );
     });
     it('resolves the COLON name, which is what tools:invoke carries', () => {
-      expect(deriveQuery('dev:pg_query', { sql: 'SELECT 1 FROM plans' })).toBe(
-        'SELECT 1 FROM plans',
-      );
+      expect(deriveQuery('dev:pg_query', { sql: 'SELECT 1 FROM plans' })).toBe('SELECT 1 FROM plans');
     });
     it('capability:bash mirrors claude Bash exactly — same fields, same em-dash', () => {
       const args = { command: 'rg foo', description: 'find foo' };
-      expect(deriveQuery('mcp__papercusp-su__capability_bash', args)).toBe(
-        deriveQuery('Bash', args),
-      );
+      expect(deriveQuery('mcp__papercusp-su__capability_bash', args)).toBe(deriveQuery('Bash', args));
     });
   });
 
@@ -926,9 +985,10 @@ describe('papercusp MCP vocabulary — the 97% of drift-alarm noise (WI-37589)',
       expect(q).not.toContain('dev:pg_query');
     });
     it('an inner tool that carries no signal is no-signal, NOT unknown-tool', () => {
-      expect(
-        deriveQueryDetailed('tools:invoke', { name: 'work_items:get', args: { id: 'WI-1' } }),
-      ).toEqual({ query: '', miss: 'no-signal' });
+      expect(deriveQueryDetailed('tools:invoke', { name: 'work_items:get', args: { id: 'WI-1' } })).toEqual({
+        query: '',
+        miss: 'no-signal',
+      });
     });
     it('an UNMAPPED inner tool is reported under the INNER name, not the dispatcher', () => {
       // Reporting "tools:invoke is unmapped" would put a perfectly mapped tool
