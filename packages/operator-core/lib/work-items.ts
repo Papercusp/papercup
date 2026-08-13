@@ -2570,8 +2570,11 @@ export async function setWorkItemState(
   if (isSecondTerminalClose) {
     const existingSufficient = isSufficientEvidence(wi.terminalCompletionEvidence);
     const incomingSufficient = isSufficientEvidence(opts.completionEvidence);
-    // "Strictly richer" is the EXISTING `committed` bar (verifiedHow AND one of
-    // testsRun/testResult), not a new notion of quality. A TIE does not upgrade: two equally
+    // "Strictly richer" is the EXISTING `committed` bar — whatever `isSufficientEvidence`
+    // currently requires — not a new notion of quality. Deliberately NOT restated inline:
+    // the bar has moved once already (EI-18685043434033870 added the addedTests-implies-a-path
+    // condition), and a copy here would have silently become a false description of the
+    // check running one line below. A TIE does not upgrade: two equally
     // sufficient records leave the FIRST standing, because the property being defended is
     // "a second write must not destroy the first", not "the newest wins".
     const upgrade = incomingSufficient && !existingSufficient;

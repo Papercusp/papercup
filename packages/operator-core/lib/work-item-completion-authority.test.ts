@@ -9,6 +9,7 @@ import {
   authorityForCompletion,
   canTransition,
   countsTowardBurnDown,
+  insufficientEvidenceReason,
   isLegacyClose,
   isSufficientEvidence,
   isWorkItemCompletionAuthority,
