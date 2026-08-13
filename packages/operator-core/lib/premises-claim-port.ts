@@ -78,6 +78,8 @@
 import { type CheckEntry, renderCheckLine } from './carry-note';
 import { planSlugOfWorkItem } from './scheduler/claim-spec-match';
 import type { WorkItem } from './work-items';
+import { ANY_FAMILY_TERMINAL_STATES } from './work-item-dispatch-states';
+import { detectBodyRefs, type HydratableRef } from './agent-tools/coordination/ref-hydrate';
 import { getPlanRow } from './agent-tools/plans/source';
 import { parsePlan } from './agent-tools/plans/parser';
 
@@ -129,6 +131,93 @@ export interface ClaimTimePremisesBrief {
 const MAX_PREMISES = 4;
 /** Bound on a single rendered claim sentence. */
 const CLAIM_CHARS = 220;
+
+/**
+ * EI-18733326519945478 — the high-precision sibling of the absence-premise detector.
+ *
+ * The first proposed dispatch guard ("item is older than seven days") matched 17,205 of
+ * 26,920 open rows (64%); the second ("cites any terminal item") matched 5,140 aged rows
+ * (30%). Both are warnings agents would learn to ignore. The actual incident was narrower:
+ * EI-10203 cited WI-4329, whose own terminal evidence explicitly says the premise was wrong.
+ *
+ * Measured against the live papercusp corpus on 2026-08-13, this semantic matched 13 of
+ * 26,927 open items (0.048%). The age gate changed none of the matches, so age is not used as
+ * a proxy: the referenced item's terminal evidence is the signal. These phrases are the
+ * observed completion vocabulary, deliberately NOT a generic "terminal" check.
+ */
+export const INVALIDATED_PREMISE_COMPLETION_RE =
+  /\b(?:wrong[- ]premise|invalid premise|false[- ]premise|falsified premise|premise (?:was |is )?(?:false|falsified))\b/i;
+
+/** Bound claim-time reference IO. `detectBodyRefs` is the same parser coord hydration uses. */
+export const MAX_PREMISE_CITATION_REFS = 8;
+
+export type PremiseCitationProbe = (
+  id: string,
+) => Promise<Pick<WorkItem, 'id' | 'state' | 'terminalCompletionRef'> | null>;
+
+const defaultPremiseCitationProbe: PremiseCitationProbe = async (id) => {
+  // Dynamic for the same reason the claim surfaces dynamically import THIS module:
+  // claim decoration must not pull the work-items store back through a static cycle.
+  const { getWorkItem } = await import('./work-items');
+  return getWorkItem(id);
+};
+
+function completionExcerpt(text: string, max = 150): string {
+  const oneLine = text.replace(/\s+/g, ' ').trim();
+  return oneLine.length <= max ? oneLine : `${oneLine.slice(0, max - 1)}…`;
+}
+
+/**
+ * Resolve work-item ids cited in a prescriptive body and turn only explicit
+ * wrong/false-premise terminal evidence into claim-time rechecks.
+ *
+ * Fail-soft by construction: an unresolved ref, non-terminal row, ordinary completion, or
+ * probe failure emits nothing. A citation may be DISCUSSING the invalidation rather than
+ * depending on it, so the result is an advisory recheck, never a refusal or an accusation.
+ */
+export async function invalidatedPremiseCitationChecks(
+  text: string | null | undefined,
+  opts: { selfId?: string | null; probe?: PremiseCitationProbe; max?: number } = {},
+): Promise<CheckEntry[]> {
+  const body = (text ?? '').trim();
+  if (!body) return [];
+
+  let ids: string[];
+  try {
+    ids = detectBodyRefs(body, Math.max(0, opts.max ?? MAX_PREMISE_CITATION_REFS))
+      .filter((ref): ref is Extract<HydratableRef, { kind: 'work-item' }> => ref.kind === 'work-item')
+      .map((ref) => ref.id)
+      .filter((id) => id.toUpperCase() !== (opts.selfId ?? '').toUpperCase());
+  } catch {
+    return [];
+  }
+  if (ids.length === 0) return [];
+
+  const probe = opts.probe ?? defaultPremiseCitationProbe;
+  const rows = await Promise.all(
+    ids.map(async (id): Promise<CheckEntry | null> => {
+      try {
+        const cited = await probe(id);
+        const evidence = cited?.terminalCompletionRef?.trim() ?? '';
+        if (!cited || !ANY_FAMILY_TERMINAL_STATES.includes(cited.state) || !INVALIDATED_PREMISE_COMPLETION_RE.test(evidence)) {
+          return null;
+        }
+        return {
+          claim:
+            `${cited.id} is ${cited.state}; its terminal evidence explicitly says its premise was invalid: ` +
+            `"${completionExcerpt(evidence)}"`,
+          recheck:
+            `Re-read ${cited.id}'s terminal evidence before building. This item may already be documenting that ` +
+            `invalidation; if so, confirm the proposed work no longer depends on it. Otherwise correct or drop ` +
+            `this item before implementation.`,
+        };
+      } catch {
+        return null;
+      }
+    }),
+  );
+  return rows.filter((row): row is CheckEntry => row !== null);
+}
 
 /**
  * Strip the spans of a body that are QUOTED MATERIAL rather than the author's
@@ -557,6 +646,7 @@ function overlaps(a: string, b: string): boolean {
 export function buildPremisesBrief(
   declaredRaw: CheckEntry[],
   derived: DerivedPremise[],
+  additional: CheckEntry[] = [],
 ): ClaimTimePremisesBrief | null {
   // P-002 runs FIRST: a declared absence premise whose evidence names no scope is
   // downgraded to PREDICTED here, so it can neither render a ✓ nor silence the
@@ -565,10 +655,11 @@ export function buildPremisesBrief(
   const declared = enforceAbsenceScope(declaredRaw);
   const verifiedDeclared = declared.filter((d) => (d.verified ?? '').trim().length > 0);
   const keptDerived = derived.filter((row) => !verifiedDeclared.some((d) => overlaps(d.claim, row.claim)));
-  const premises: CheckEntry[] = [...declared, ...keptDerived.map(({ claim, recheck }) => ({ claim, recheck }))].slice(
-    0,
-    MAX_PREMISES,
-  );
+  const premises: CheckEntry[] = [
+    ...declared,
+    ...keptDerived.map(({ claim, recheck }) => ({ claim, recheck })),
+    ...additional,
+  ].slice(0, MAX_PREMISES);
   if (premises.length === 0) return null;
   const unverified = premises.filter((p) => (p.verified ?? '').trim().length === 0).length;
   if (unverified === 0) return null; // nothing to warn about — stay silent (D-001 b).
@@ -580,10 +671,17 @@ export function buildPremisesBrief(
     note:
       `This item's text PRESCRIBES an approach that rests on ${unverified} UNVERIFIED premise(s) — ` +
       `treat the item as a HYPOTHESIS, not a spec, and run the re-check BEFORE building. ` +
-      `Absence claims ("there is no X") are the expensive shape: acting on one means building X, while ` +
-      `falsifying one costs a single search — and the measured failure is SCOPE OF INFERENCE, a real ` +
-      `search over too narrow a scope reported as an absolute absence (WI-7042 prescribed a PG module ` +
-      `that already existed). If a premise turns out false, fix the ITEM before building.`,
+      (additional.length > 0
+        ? `At least one cited item's own terminal evidence explicitly INVALIDATED its premise; the current ` +
+          `item may already discuss that correction, but must not silently keep depending on it. `
+        : '') +
+      (derived.length > 0 || declared.some((row) => isAbsenceClaim(row.claim))
+        ? `Absence claims ("there is no X") are the expensive shape: acting on one means building X, while ` +
+          `falsifying one costs a single search — and the measured failure is SCOPE OF INFERENCE, a real ` +
+          `search over too narrow a scope reported as an absolute absence (WI-7042 prescribed a PG module ` +
+          `that already existed). `
+        : '') +
+      `If a premise turns out false, fix the ITEM before building.`,
   };
 }
 
@@ -597,14 +695,20 @@ export function buildPremisesBrief(
  * (silent) for the common case of an item with no absence-shaped premise.
  */
 export async function getClaimTimePremises(opts: {
-  workItem: Pick<WorkItem, 'payload'> & { title?: string | null; summary?: string | null };
+  workItem: Pick<WorkItem, 'payload'> & { id?: string | null; title?: string | null; summary?: string | null };
   harness?: string | null;
   workspaceId?: string | null;
+  /** Test/consumer injection. Omit in production to use the canonical getWorkItem resolver. */
+  citedWorkItemProbe?: PremiseCitationProbe;
 }): Promise<ClaimTimePremisesBrief | null> {
   try {
     const wi = opts.workItem;
     const body = `${wi.title ?? ''}\n${wi.summary ?? ''}`;
     const derived: DerivedPremise[] = detectAbsencePremises(body, 'work-item');
+    const invalidatedCitationsPromise = invalidatedPremiseCitationChecks(body, {
+      selfId: wi.id,
+      probe: opts.citedWorkItemProbe,
+    });
 
     // The plan-item half of P-001: a premise in the plan item's text governs
     // every work-item promoted from it, and is the artifact a claimant is least
@@ -629,7 +733,12 @@ export async function getClaimTimePremises(opts: {
       }
     }
 
-    return buildPremisesBrief(readDeclaredPremises(wi.payload), derived.slice(0, MAX_PREMISES));
+    const invalidatedCitations = await invalidatedCitationsPromise;
+    return buildPremisesBrief(
+      readDeclaredPremises(wi.payload),
+      derived.slice(0, MAX_PREMISES),
+      invalidatedCitations,
+    );
   } catch {
     return null;
   }
