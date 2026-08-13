@@ -55,6 +55,55 @@ describe('capability:read', () => {
     expect(text).toContain('more lines');
   });
 
+  it('returns exact resumable byte pages for a single long line', async () => {
+    const f = join(DIR, 'r-bytes.json');
+    const original = Buffer.from(JSON.stringify({ value: '🙂'.repeat(4_000) }), 'utf8');
+    writeFileSync(f, original);
+
+    const recovered: Buffer[] = [];
+    let byteOffset = 0;
+    let eof = false;
+    while (!eof) {
+      const r = (await readTool.handler!({
+        file_path: f,
+        byte_offset: byteOffset,
+        byte_limit: 997,
+      }, ctx)) as { content: Array<{ text: string }> };
+      const page = parse(r) as {
+        encoding: string;
+        data: string;
+        eof: boolean;
+        next_cursor: { args: { byte_offset: number } } | null;
+      };
+      expect(page.encoding).toBe('base64');
+      recovered.push(Buffer.from(page.data, 'base64'));
+      eof = page.eof;
+      if (!eof) byteOffset = page.next_cursor!.args.byte_offset;
+    }
+
+    expect(Buffer.concat(recovered)).toEqual(original);
+  });
+
+  it('rejects incomplete or mixed byte windows', async () => {
+    const f = join(DIR, 'r-byte-invalid.txt');
+    writeFileSync(f, 'hello');
+    const incomplete = (await readTool.handler!({ file_path: f, byte_offset: 0 }, ctx)) as {
+      content: Array<{ text: string }>;
+      isError?: boolean;
+    };
+    expect(incomplete.isError).toBe(true);
+    expect(parse(incomplete).reason).toBe('invalid_byte_window');
+
+    const mixed = (await readTool.handler!({
+      file_path: f,
+      byte_offset: 0,
+      byte_limit: 4,
+      offset: 1,
+    }, ctx)) as { content: Array<{ text: string }>; isError?: boolean };
+    expect(mixed.isError).toBe(true);
+    expect(parse(mixed).reason).toBe('mixed_window_modes');
+  });
+
   it('errors on a missing file', async () => {
     const r = (await readTool.handler!({ file_path: join(DIR, 'nope.txt') }, ctx)) as { content: Array<{ text: string }>; isError?: boolean };
     expect(r.isError).toBe(true);

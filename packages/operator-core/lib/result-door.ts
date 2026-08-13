@@ -44,6 +44,7 @@
 import { randomUUID } from 'node:crypto';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { projectBoundedPayload } from '@papercusp/tooldef';
 import { CHARS_PER_TOKEN_ESTIMATE, capInjectionText, computeTurnDoors } from './context-doors';
 import { getDoorConstantsSync } from './context-doors-config';
 import { buildScratchUri, safeScratchFilesystemPath } from './scratch-uri';
@@ -436,6 +437,110 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
       }
     }
 
+    const baseResultDoorMeta = {
+      truncated: true,
+      /** null when the spill could NOT be written (WI-36047) — the result was
+       *  still capped, but nothing was parked, so `_mcp-handler`'s outputRef
+       *  backfill correctly declines to advertise a file that is not there. */
+      spillPath: fsPath,
+      spillUri: uri,
+      /** True when the cap applied but the spill write failed, i.e. the cut
+       *  content is gone. Distinct from `upstreamProjected` (content that was
+       *  never serialized) — this is content the door itself discarded. */
+      spillFailed: fsPath == null,
+      /** Full fs error message (carries the failing path — kept OUT of the
+       *  model-facing footer, which gets `spillErrorCode` instead). */
+      spillError,
+      spillErrorCode,
+      originalChars: totalChars,
+      /** Approximate chars of NON-text content (images/binary) this result
+       *  carried. The door does NOT cap these — it measures text only — so this
+       *  field is the only place that number is stated (WI-36613). 0 for the
+       *  overwhelming majority of results. */
+      nonTextChars,
+      doorTokens,
+      /** True when `data` was ALREADY a lossy upstream projection before this
+       *  door saw it — i.e. paging the spill cannot recover what was omitted. */
+      upstreamProjected: Boolean(upstreamProjection),
+      /** Field-level cutoffs the TOOL itself applied; the spill cannot recover
+       *  these either (EI-18745696571494110). Empty when none were detected. */
+      innerTruncationMarkers,
+    };
+
+    // WI-38402 / EI-20244970883634313: character-slicing a serialized JSON
+    // body creates invalid JSON, and the appended prose footer makes it invalid
+    // even when the slice happened to stop at a token boundary. This is the
+    // universal model-facing choke point, so project JSON STRUCTURALLY here and
+    // serialize only after the projection is complete. The durable spill was
+    // written first, so the recovery cursor can be an ordinary schema-valid
+    // capability:read call instead of the framework-reserved payloadTier retry
+    // that direct clients reject.
+    const bodyShape = classifyProjectionBody(textItems);
+    if (bodyShape.json != null) {
+      const recovery = fsPath != null && uri != null
+        ? {
+            cursor: {
+              kind: 'scratch-page',
+              tool: 'capability:read',
+              args: { file_path: fsPath, byte_offset: 0, byte_limit: 3_072 },
+              uri,
+              encoding: 'base64',
+            },
+            next:
+              `Call capability:read with _projection.cursor.args, base64-decode data, then follow ` +
+              `next_cursor until eof to recover the exact spill bytes. The spill begins with a text ` +
+              `header and then contains the result as it reached this door.` +
+              buildProjectionHint(textItems, opts.toolName),
+          }
+        : {
+            cursor: {
+              kind: 'unavailable',
+              tool: opts.toolName,
+              args: {},
+              reason: 'spill-write-failed',
+            },
+            next:
+              `The result was structurally bounded, but its spill write failed ` +
+              `(${spillErrorCode ?? 'unknown error'}), so the omitted bytes are not recoverable. ` +
+              `Re-call ${opts.toolName} with narrower arguments or a projection.` +
+              buildProjectionHint(textItems, opts.toolName),
+          };
+      const projected = projectBoundedPayload(bodyShape.json.parsed, {
+        toolName: opts.toolName,
+        tier: 'trimmed',
+        forced: true,
+        originalChars: totalChars,
+        targetChars: budgetChars,
+        recovery,
+      });
+      const structuralText = JSON.stringify(projected);
+      let inserted = false;
+      const structuralContent: Array<{ type: 'text'; text: string } | Record<string, unknown>> = [];
+      for (const item of items) {
+        if (isTextItem(item)) {
+          if (!inserted) {
+            structuralContent.push({ type: 'text', text: structuralText });
+            inserted = true;
+          }
+        } else {
+          structuralContent.push(item as Record<string, unknown>);
+        }
+      }
+      return {
+        ...result,
+        _meta: {
+          ...(result._meta ?? {}),
+          resultDoor: {
+            ...baseResultDoorMeta,
+            structural: true,
+            recoveryCursor: recovery.cursor,
+          },
+        },
+        content: structuralContent,
+        ...(result.structuredContent !== undefined ? { structuredContent: projected } : {}),
+      } as T;
+    }
+
     // Rebuild content: text items consume the budget in order (the boundary item
     // is cut at a line/space break); non-text items pass through untouched.
     let remainingChars = budgetChars;
@@ -512,38 +617,9 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
     // (serialize-result.ts:241), which is exactly what this door branches on at
     // :181. Stamp the symmetric marker for the door's own truncation, ALONGSIDE
     // the prose (never instead of it — the footer is what teaches the fix).
-    const resultDoorMeta = {
-      truncated: true,
-      /** null when the spill could NOT be written (WI-36047) — the result was
-       *  still capped, but nothing was parked, so `_mcp-handler`'s outputRef
-       *  backfill correctly declines to advertise a file that is not there. */
-      spillPath: fsPath,
-      spillUri: uri,
-      /** True when the cap applied but the spill write failed, i.e. the cut
-       *  content is gone. Distinct from `upstreamProjected` (content that was
-       *  never serialized) — this is content the door itself discarded. */
-      spillFailed: fsPath == null,
-      /** Full fs error message (carries the failing path — kept OUT of the
-       *  model-facing footer, which gets `spillErrorCode` instead). */
-      spillError,
-      spillErrorCode,
-      originalChars: totalChars,
-      /** Approximate chars of NON-text content (images/binary) this result
-       *  carried. The door does NOT cap these — it measures text only — so this
-       *  field is the only place that number is stated (WI-36613). 0 for the
-       *  overwhelming majority of results. */
-      nonTextChars,
-      doorTokens,
-      /** True when `data` was ALREADY a lossy upstream projection before this
-       *  door saw it — i.e. paging the spill cannot recover what was omitted. */
-      upstreamProjected: Boolean(upstreamProjection),
-      /** Field-level cutoffs the TOOL itself applied; the spill cannot recover
-       *  these either (EI-18745696571494110). Empty when none were detected. */
-      innerTruncationMarkers,
-    };
     return {
       ...result,
-      _meta: { ...(result._meta ?? {}), resultDoor: resultDoorMeta },
+      _meta: { ...(result._meta ?? {}), resultDoor: { ...baseResultDoorMeta, structural: false } },
       content: doored,
     };
   } catch {

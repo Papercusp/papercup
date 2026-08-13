@@ -81,6 +81,63 @@ describe('applyResultDoor', () => {
     expect(spill.endsWith(original)).toBe(true);
   });
 
+  it('structurally projects an oversized JSON body and returns a schema-valid spill cursor', () => {
+    const rows = Array.from({ length: 300 }, (_, i) => ({
+      id: `WI-${i}`,
+      state: 'open',
+      detail: 'x'.repeat(200),
+    }));
+    const original = JSON.stringify({ ok: true, rows });
+    expect(original.length).toBeGreaterThan(BUDGET_CHARS);
+
+    const doored = applyResultDoor(
+      { content: [{ type: 'text' as const, text: original }], structuredContent: { ok: true, rows } },
+      { toolName: 'work_items:list', workspaceId: 'ws-1', runId: RUN_ID },
+    );
+    const textItems = doored.content.filter((item) => (item as { type?: string }).type === 'text') as Array<{ text: string }>;
+    expect(textItems).toHaveLength(1);
+    expect(textItems[0].text.length).toBeLessThan(BUDGET_CHARS);
+    const parsed = JSON.parse(textItems[0].text) as {
+      _projection: {
+        kind: string;
+        cursor: { kind: string; tool: string; args: Record<string, unknown> };
+        next: string;
+      };
+    };
+    expect(parsed._projection.kind).toBe('bounded-payload');
+    expect(parsed._projection.cursor).toMatchObject({
+      kind: 'scratch-page',
+      tool: 'capability:read',
+      args: {
+        byte_offset: 0,
+        byte_limit: 3_072,
+      },
+    });
+    expect(parsed._projection.cursor.args.file_path).toBe(
+      (doored._meta!.resultDoor as { spillPath: string }).spillPath,
+    );
+    expect(parsed._projection.next).toContain('follow next_cursor until eof');
+    expect(doored.structuredContent).toEqual(parsed);
+    expect((doored._meta!.resultDoor as { structural: boolean }).structural).toBe(true);
+    expect(readSpill('ws-1', 'work_items:list', RUN_ID).endsWith(original)).toBe(true);
+  });
+
+  it('finds and structurally projects JSON accompanied by advisory prose', () => {
+    const original = JSON.stringify({ rows: Array.from({ length: 300 }, (_, i) => ({ id: i, detail: 'z'.repeat(100) })) });
+    const doored = applyResultDoor(
+      { content: [
+        { type: 'text' as const, text: 'See also: work_items:claimable' },
+        { type: 'text' as const, text: original },
+      ] },
+      { toolName: 'tools:invoke', workspaceId: 'ws-1', runId: RUN_ID },
+    );
+    const textItems = doored.content.filter((item) => (item as { type?: string }).type === 'text') as Array<{ text: string }>;
+    expect(textItems).toHaveLength(1);
+    expect(() => JSON.parse(textItems[0].text)).not.toThrow();
+    expect(JSON.parse(textItems[0].text)._projection.cursor.tool).toBe('capability:read');
+    expect(readSpill('ws-1', 'tools:invoke', RUN_ID)).toContain('See also: work_items:claimable');
+  });
+
   it('every truncation footer teaches `projection` — the knob that would have avoided the spill (P-020)', () => {
     // The projection stage is a DISPATCH-level reserved arg, so it is in no
     // tool's inputSchema and an agent can only learn it exists from a moment

@@ -23,13 +23,14 @@ import { resolveCapabilityBaseDir } from './base-dir';
 export const DEFAULT_LIMIT = 2000;
 const MAX_LINE_CHARS = 2000;
 const MAX_FILE_BYTES = 50 * 1024 * 1024; // refuse absurd reads outright
+export const MAX_BYTE_PAGE = 4_096;
 
 export default defineTool({
   name: 'capability:read',
   description:
-    'Read a file (text) with line numbers, like the native Read tool. offset/limit window large files, tail:N reads the last N lines; long lines are truncated. Path is absolute, ~/-relative, or relative to the project dir.',
+    'Read a file with line-numbered text windows, or exact resumable byte pages. offset/limit window lines; tail:N reads the last N lines. byte_offset+byte_limit returns base64 bytes with a next cursor, including for a single very long line. Path is absolute, ~/-relative, or relative to the project dir.',
   guidance: {
-    when: 'Read a source/text file before editing it, or to inspect content. Use offset+limit to page through a large file, and tail:N to check the end of a log — it replaces `sed -n N,Mp FILE`, `cat FILE`, `head -n N FILE` and `tail -n N FILE`.',
+    when: 'Read a source/text file before editing it, or inspect content. Use offset+limit for line pages, tail:N for a log tail, and byte_offset+byte_limit when exact resumable bytes matter or the file may be one long line.',
     notWhen: 'To run a command, use capability:bash. To search across files, use capability:bash with grep/rg.',
     chaining: 'capability:read → capability:edit (exact string replace) or capability:write (overwrite).',
     seeAlso: [
@@ -51,21 +52,67 @@ export default defineTool({
       .positive()
       .optional()
       .describe('Read the LAST N lines instead of reading forward — the `tail -n N` equivalent. Ignores offset.'),
+    byte_offset: z
+      .number()
+      .int()
+      .nonnegative()
+      .optional()
+      .describe('0-based byte offset for an exact base64 page. Use with byte_limit; mutually exclusive with line offset/limit/tail.'),
+    byte_limit: z
+      .number()
+      .int()
+      .positive()
+      .max(MAX_BYTE_PAGE)
+      .optional()
+      .describe(`Exact bytes to return as base64 (max ${MAX_BYTE_PAGE}). Use with byte_offset.`),
   }),
   async handler(args, ctx) {
     const baseDir = resolveCapabilityBaseDir(ctx);
     const abs = resolveReadPath(args.file_path, baseDir);
 
-    let raw: string;
+    let bytes: Buffer;
     try {
       const st = statSync(abs);
       if (st.isDirectory()) return err('is_a_directory', `${abs} is a directory.`);
       if (st.size > MAX_FILE_BYTES) return err('too_large', `${abs} is ${st.size} bytes (> ${MAX_FILE_BYTES}). Read a slice with capability:bash (sed/head).`);
-      raw = readFileSync(abs, 'utf8');
+      bytes = readFileSync(abs);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       return err('read_failed', msg);
     }
+
+    const byteMode = args.byte_offset !== undefined || args.byte_limit !== undefined;
+    if (byteMode) {
+      if (args.byte_offset === undefined || args.byte_limit === undefined) {
+        return err('invalid_byte_window', 'byte_offset and byte_limit must be supplied together.');
+      }
+      if (args.offset !== undefined || args.limit !== undefined || args.tail !== undefined) {
+        return err('mixed_window_modes', 'byte_offset/byte_limit cannot be combined with offset/limit/tail.');
+      }
+      const start = Math.min(args.byte_offset, bytes.length);
+      const page = bytes.subarray(start, Math.min(bytes.length, start + args.byte_limit));
+      const nextOffset = start + page.length;
+      return {
+        content: [{
+          type: 'text' as const,
+          text: JSON.stringify({
+            ok: true,
+            file_path: abs,
+            encoding: 'base64',
+            byte_offset: start,
+            byte_length: page.length,
+            total_bytes: bytes.length,
+            eof: nextOffset >= bytes.length,
+            data: page.toString('base64'),
+            next_cursor: nextOffset < bytes.length
+              ? { tool: 'capability:read', args: { file_path: abs, byte_offset: nextOffset, byte_limit: args.byte_limit } }
+              : null,
+          }),
+        }],
+      };
+    }
+
+    const raw = bytes.toString('utf8');
 
     const allLines = raw.split('\n');
     // A trailing newline yields a final empty element; drop it so line counts match the file.
