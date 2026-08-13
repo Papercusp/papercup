@@ -30,7 +30,10 @@ const BELOW_ENFORCED = 100;
 
 type Run = { denied: boolean; reason: string; inert: boolean };
 
-function runHook(payload: unknown, env: NodeJS.ProcessEnv = {}): Run {
+// This suite deliberately passes hermetic env fragments without NODE_ENV. The apps/operator
+// ambient types augment NodeJS.ProcessEnv with a required NODE_ENV, but the child hook accepts
+// an ordinary string map and the production process.env spread supplies the rest.
+function runHook(payload: unknown, env: Record<string, string | undefined> = {}): Run {
   const res = spawnSync('node', [HOOK], {
     input: JSON.stringify(payload),
     encoding: 'utf8',
