@@ -52,7 +52,7 @@ import type {
 } from '@papercusp/seed-bundle';
 import { hostname, tmpdir, userInfo } from 'node:os';
 import { openNamedLog, type PeerLogOp } from './peer-log';
-import { isSnapshotOp, produceFilteredSnapshotIntoLog } from './log-snapshot';
+import { DROP_SNAPSHOT_ROW, isSnapshotOp, produceFilteredSnapshotIntoLog } from './log-snapshot';
 import { CURRENT_SCHEMA_VERSION } from './schema-version';
 import {
   findLatestCompleteSnapshotDetailed,
@@ -206,6 +206,18 @@ export function redactSeedValue(value: unknown, literals: readonly string[] = SE
 }
 
 /**
+ * Keys are row addresses, not display text. Rewriting an identity-bearing key would
+ * orphan the row (or collide with another redacted key), so the public seed must omit
+ * that row and let normal replication recover it from the private author log later.
+ */
+function seedKeyCarriesBuildIdentity(
+  hbKey: string,
+  literals: readonly string[] = SEED_BUILD_IDENTITY_LITERALS,
+): boolean {
+  return redactString(hbKey, literals) !== hbKey;
+}
+
+/**
  * Mint the seed's CONTENT core: one filtered snapshot of the owner's log, in a core
  * the owner never wrote (EI-20108164746219771).
  *
@@ -253,7 +265,10 @@ export async function mintFilteredSeedContentCore(inp: {
         now: inp.now ?? Date.now(),
         schemaVersion: CURRENT_SCHEMA_VERSION,
         excludeTables: inp.excludeTables ?? SEED_EXCLUDED_TABLES,
-        transformValue: (value) => redactSeedValue(value, inp.redactValues),
+        transformValue: (value, { hbKey }) =>
+          seedKeyCarriesBuildIdentity(hbKey, inp.redactValues)
+            ? DROP_SNAPSHOT_ROW
+            : redactSeedValue(value, inp.redactValues),
       });
       if (!produced.appended) {
         throw new Error(

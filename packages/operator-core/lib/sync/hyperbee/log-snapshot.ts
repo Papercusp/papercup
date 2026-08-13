@@ -109,7 +109,20 @@ export interface SnapshotPayload {
   chunkCount?: number;
 }
 
-/** Seed-only value projection applied while folding a private log into a public snapshot. */
+/**
+ * Seed-only transform result that removes the row entirely from the public snapshot.
+ *
+ * A key cannot be safely redacted in place: it is part of the row's address (and, for
+ * encrypted rows, its AAD). Rewriting one can orphan the row or collide with another key.
+ * The public seed therefore drops an identity-bearing key and lets normal post-install
+ * replication recover the private row from the original author log.
+ */
+export const DROP_SNAPSHOT_ROW = Symbol('DROP_SNAPSHOT_ROW');
+
+/**
+ * Seed-only value projection applied while folding a private log into a public snapshot.
+ * Return {@link DROP_SNAPSHOT_ROW} to omit the addressed row without mutating the source.
+ */
 export type SnapshotValueTransform = (value: unknown, context: {
   table: string;
   hbKey: string;
@@ -227,11 +240,18 @@ export class SnapshotRowFolder {
       if (payload && Array.isArray(payload.rows)) {
         for (const r of payload.rows) {
           if (this.excludeTables.has(r.table)) continue;
+          const key = `${r.table}::${r.hbKey}`;
           const value = this.transformValue
             ? this.transformValue(r.value, { table: r.table, hbKey: r.hbKey })
             : r.value;
+          if (value === DROP_SNAPSHOT_ROW) {
+            // A prior raw op for the same key may already be in the fold. The newest
+            // snapshot row is authoritative, so a filtered winner must remove it too.
+            this.latest.delete(key);
+            continue;
+          }
           this.latest.set(
-            `${r.table}::${r.hbKey}`,
+            key,
             value === r.value ? r : { ...r, value },
           );
         }
@@ -244,6 +264,12 @@ export class SnapshotRowFolder {
       const value = this.transformValue
         ? this.transformValue(op.value, { table: op.table, hbKey: op.hbKey })
         : op.value;
+      if (value === DROP_SNAPSHOT_ROW) {
+        // The key may have an earlier accepted winner. Dropping the latest PUT must
+        // remove that stale winner rather than silently resurrecting it in the seed.
+        this.latest.delete(key);
+        return;
+      }
       this.latest.set(key, {
         table: op.table,
         hbKey: op.hbKey,
