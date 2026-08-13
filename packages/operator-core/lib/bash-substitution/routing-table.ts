@@ -122,3 +122,115 @@ export function spliceRoutingBlock(content: string, block: string): string {
   }
   return content.slice(0, start) + block + content.slice(end + END_MARKER.length);
 }
+
+/* ── The THIRD routing surface: CLAUDE.md's hand-written storage-policy table ──
+ *
+ * WI-38337 / D-010. An agent reads three surfaces that each name a verb for a
+ * relation: the live in-query advisory (`TOOL_ROUTING_BY_TABLE`), the GENERATED
+ * block above, and a HAND-WRITTEN table under "## Storage policy". Only the first
+ * two were machine-checked against the audited pairs, so a hand-written row could
+ * say "use `issues:list` for work_items" while an audited pair routes the same
+ * relation to `work_items:list`, and the whole suite would stay green. The two
+ * tables are read by the same agent minutes apart.
+ *
+ * WHY PARSE INSTEAD OF GENERATE (D-010). The hand-written table is INTENT-level
+ * guidance and legitimately names verbs no audited pair claims (`plans:items`,
+ * `search:semantic`, `gitnexus.query`); the generated one is COMMAND-level
+ * substitution earned at 100% coverage. Folding either into the other would
+ * delete honest guidance or manufacture pairs to justify prose. They may differ
+ * in COVERAGE — they must never CONTRADICT, and only the second is checkable.
+ *
+ * WHY A HEADING ANCHOR AND NOT MARKERS. The obvious fix is to wrap the region in
+ * BEGIN/END markers like the generated block. It is not available: CLAUDE.md is
+ * itself PROJECTED from `harness_shared.harness_doc_parts`, so markers would have
+ * to be added to the part in Postgres, and a hand-edit of the file is exactly what
+ * that projection exists to refuse. Anchoring on the heading needs no write at
+ * all — at the cost that a reworded heading silently un-anchors the parser, which
+ * is why both failure modes below THROW rather than return an empty list.
+ */
+
+/** The heading the hand-written routing table lives under. */
+export const STORAGE_POLICY_HEADING = '## Storage policy: Postgres by default';
+
+/** One parsed row of the hand-written table. */
+export interface HandWrittenRoutingRow {
+  /** The intent cell — what the agent wants. */
+  want: string;
+  /** The recommendation cell. */
+  use: string;
+  /** The cell naming the shape being replaced. */
+  not: string;
+  /** `server:verb` tokens named in {@link use}. */
+  verbs: string[];
+  /** Known relation names appearing in {@link not}, word-boundary matched. */
+  relations: string[];
+}
+
+/** Split one markdown table row into cells, honouring `\|` inside a cell. */
+function tableCells(line: string): string[] {
+  return line
+    .trim()
+    .replace(/^\|/, '')
+    .replace(/\|$/, '')
+    .split(/(?<!\\)\|/)
+    .map((c) => c.replace(/\\\|/g, '|').trim());
+}
+
+/**
+ * Parse the hand-written storage-policy routing table.
+ *
+ * `knownRelations` is matched with a WORD BOUNDARY on purpose, and it is the one
+ * subtlety here: the table's claimable row names the VIEW `work_items_claimable`,
+ * and a substring match would read that as the `work_items` relation and then
+ * report a contradiction because the row routes to `work_items:claimable` rather
+ * than to a pair's verb. `\b` does not match between `work_items` and `_claimable`
+ * (both sides are word characters), so the view stays a distinct relation.
+ *
+ * THROWS on a missing heading or a heading with no table rows. Returning `[]`
+ * would make every downstream assertion pass vacuously — the failure mode this
+ * whole guard exists to end, one level up.
+ */
+export function parseStoragePolicyRoutingTable(
+  doc: string,
+  knownRelations: readonly string[],
+): HandWrittenRoutingRow[] {
+  const start = doc.indexOf(STORAGE_POLICY_HEADING);
+  if (start === -1) {
+    throw new Error(
+      `routing-table: "${STORAGE_POLICY_HEADING}" not found in CLAUDE.md — the hand-written ` +
+        'routing table is anchored on that heading; if it was reworded, update STORAGE_POLICY_HEADING.',
+    );
+  }
+  const rest = doc.slice(start + STORAGE_POLICY_HEADING.length);
+  const nextHeading = rest.search(/\n##\s/);
+  const region = nextHeading === -1 ? rest : rest.slice(0, nextHeading);
+
+  const rows: HandWrittenRoutingRow[] = [];
+  for (const line of region.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith('|')) continue;
+    const cells = tableCells(trimmed);
+    if (cells.length < 3) continue;
+    // The header row and the `|---|` separator are structure, not data.
+    if (/^-{2,}$/.test(cells[0]!.replace(/[:\s]/g, ''))) continue;
+    if (cells[0]!.toLowerCase() === 'you want') continue;
+    const [want, use, not] = cells as [string, string, string];
+    rows.push({
+      want,
+      use,
+      not,
+      verbs: [...use.matchAll(/\b([a-z][\w-]*:[a-z][\w-]*)\b/g)].map((m) => m[1]!),
+      relations: knownRelations.filter((r) =>
+        new RegExp(String.raw`\b${r.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\b`).test(not),
+      ),
+    });
+  }
+
+  if (rows.length === 0) {
+    throw new Error(
+      `routing-table: found "${STORAGE_POLICY_HEADING}" but no table rows under it — the parser ` +
+        'is anchored but blind, which would make every routing-agreement assertion pass vacuously.',
+    );
+  }
+  return rows;
+}

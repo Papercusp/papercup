@@ -26,6 +26,10 @@ import { describe, expect, it } from 'vitest';
 
 import {
   BEGIN_MARKER,
+  // WI-38337 (D-010): the third routing surface — the hand-written table.
+  parseStoragePolicyRoutingTable,
+  STORAGE_POLICY_HEADING,
+  type HandWrittenRoutingRow,
   END_MARKER,
   renderRoutingBlock,
   routingCell,
@@ -250,6 +254,154 @@ describe('an equivalent SQL pair is not contradicted by the live routing advisor
   it('CONTROL: the same check FAILS on a map naming a different verb', () => {
     const pair = auditedSqlPairs[0]!;
     expect(disagreement(pair, { [pair.relation]: { tool: 'some:other-verb' } })).toMatch(/not /);
+  });
+});
+
+/**
+ * WI-38337 / D-010 — the SAME agreement rule, applied to the third surface.
+ *
+ * The sibling block above guards the LIVE in-query advisory. This one guards
+ * CLAUDE.md's HAND-WRITTEN storage-policy table, which until now no test read at
+ * all: a row could route `work_items` to some other verb while an audited pair
+ * routes it to `work_items:list`, and the suite would stay green.
+ *
+ * THE RULE IS CONDITIONAL, and that is D-010's whole point. Coverage may differ
+ * freely — a hand-written row naming a relation NO pair covers is honest
+ * intent-level guidance (`harness_plans` → `plans:list`), and a pair with no row
+ * is fine too. A CONTRADICTION is narrower: the row names a relation an audited
+ * pair DOES cover, names a verb, and that verb is none of the pair's.
+ */
+describe('the hand-written storage-policy table is not contradicted by an audited pair', () => {
+  const sqlPairs = ALL_PAIRS.filter(
+    (p) => isSqlPair(p) && p.expectedVerdict === 'equivalent',
+  ) as SqlSubstitutionPair[];
+  const byRelation = new Map<string, SqlSubstitutionPair[]>();
+  for (const p of sqlPairs) byRelation.set(p.relation, [...(byRelation.get(p.relation) ?? []), p]);
+  const relations = [...byRelation.keys()];
+  const rows = (): HandWrittenRoutingRow[] =>
+    parseStoragePolicyRoutingTable(readFileSync(CLAUDE_MD, 'utf8'), relations);
+
+  /**
+   * The check as a function, so the CONTROLs below can run it against a
+   * deliberately-wrong row — the same falsifiability discipline as the live-map
+   * guard, and for the same reason: mutating the real CLAUDE.md to prove a guard
+   * can fail is unsafe here, because git-sync sweeps the tree mid-probe.
+   */
+  const contradiction = (row: HandWrittenRoutingRow): string | null => {
+    if (row.verbs.length === 0) return null; // a prose-only row routes nothing
+    for (const rel of row.relations) {
+      const pairs = byRelation.get(rel);
+      if (!pairs) continue; // coverage may differ — only disagreement is a defect
+      const expected = pairs.map((p) => p.toolName);
+      if (!row.verbs.some((v) => expected.includes(v))) {
+        return `"${row.want}" routes ${rel} to ${row.verbs.join(' / ')}, but the audited pair(s) say ${expected.join(' / ')}`;
+      }
+    }
+    return null;
+  };
+
+  it('parses the real table', () => {
+    expect(rows().length).toBeGreaterThan(3);
+  });
+
+  /**
+   * CALIBRATION, and the assertion most likely to save this guard from itself.
+   * Every agreement check below is vacuous unless at least one row actually JOINS
+   * a pair-covered relation — and a row can stop joining silently, by a reworded
+   * `not` cell that no longer names the relation. If this fails because the table
+   * legitimately dropped its `work_items` row, that is a one-line fix; a guard
+   * that quietly stopped checking anything is not.
+   */
+  it('CALIBRATION: at least one row actually joins a pair-covered relation', () => {
+    const joined = rows().filter((r) => r.relations.some((rel) => byRelation.has(rel)));
+    expect(joined.length, 'no hand-written row names a relation any audited pair covers').toBeGreaterThan(0);
+  });
+
+  it('no row contradicts an audited pair', () => {
+    for (const row of rows()) {
+      expect(contradiction(row), 'CLAUDE.md would teach a different verb than the enforced pair').toBeNull();
+    }
+  });
+
+  it('CONTROL: the same check FAILS on a row routing a covered relation elsewhere', () => {
+    const pair = sqlPairs.find((p) => p.relation === 'work_items')!;
+    expect(
+      contradiction({
+        want: 'a filtered slice',
+        use: '`issues:list`',
+        not: `a hand-written \`harness_shared.${pair.relation}\` query`,
+        verbs: ['issues:list'],
+        relations: [pair.relation],
+      }),
+    ).toMatch(/but the audited pair\(s\) say/);
+  });
+
+  it('CONTROL: a relation NO pair covers is not a contradiction (coverage may differ)', () => {
+    expect(
+      contradiction({
+        want: 'what plans exist',
+        use: '`plans:list`',
+        not: 'a hand-written `harness_shared.harness_plans` query',
+        verbs: ['plans:list'],
+        relations: [],
+      }),
+    ).toBeNull();
+  });
+
+  // Both failure modes THROW rather than returning [], because an empty parse
+  // makes every assertion above pass while checking nothing — the exact shape of
+  // the defect this guard was filed for.
+  it('CONTROL: the parser THROWS rather than silently finding nothing', () => {
+    expect(() => parseStoragePolicyRoutingTable('# a doc with no such heading\n', relations)).toThrow(
+      /not found in CLAUDE\.md/,
+    );
+    expect(() => parseStoragePolicyRoutingTable(`${STORAGE_POLICY_HEADING}\n\nprose only.\n`, relations)).toThrow(
+      /no table rows under it/,
+    );
+  });
+
+  /**
+   * END-TO-END falsifier. The CONTROLs above hand-build their row, which proves
+   * `contradiction()` can fail but bypasses the PARSER — so a parser that never
+   * extracted a verb or a relation would still let them pass. This one feeds real
+   * markdown through the real parser and requires the contradiction to surface.
+   */
+  it('CONTROL: a contradicting row written as MARKDOWN is caught end-to-end', () => {
+    const doc = `${STORAGE_POLICY_HEADING}\n\n| you want | use | not |\n|---|---|---|\n| a filtered slice | \`issues:list\` | a hand-written \`harness_shared.work_items\` query |\n`;
+    const [row] = parseStoragePolicyRoutingTable(doc, relations);
+    expect(row!.relations).toContain('work_items');
+    expect(row!.verbs).toContain('issues:list');
+    expect(contradiction(row!)).toMatch(/but the audited pair\(s\) say/);
+  });
+
+  /**
+   * A KNOWN IMPRECISION, pinned rather than papered over: verb extraction is a
+   * best-effort read of prose, so the `gitnexus.query` row yields the literal
+   * placeholder `server:verb` from its own explanatory text. It is inert — the
+   * check only consults `verbs` for a row that names a pair-covered relation, and
+   * that row names none. It is recorded here so a future reader meets it as a
+   * known property rather than rediscovering it as a bug. The residual risk is
+   * one-directional and narrow: since a row passes when ANY named verb matches
+   * (correct — a cell may legitimately name two, as the prose/full-text row does),
+   * a spurious verb can only ever mask a contradiction, never invent one.
+   */
+  it('extracts verbs best-effort from prose, and the known false positive is inert', () => {
+    const gitnexus = rows().find((r) => r.want.includes('code graph'))!;
+    expect(gitnexus.verbs).toContain('server:verb'); // from "not the usual `server:verb` form"
+    expect(gitnexus.relations).toEqual([]);
+    expect(contradiction(gitnexus)).toBeNull();
+  });
+
+  // The view `work_items_claimable` is NOT the relation `work_items`. A substring
+  // match would read the claimable row as routing `work_items` to
+  // `work_items:claimable` and report a false contradiction against the pairs.
+  it('does not read `work_items_claimable` as the `work_items` relation', () => {
+    const parsed = parseStoragePolicyRoutingTable(
+      `${STORAGE_POLICY_HEADING}\n\n| you want | use | not |\n|---|---|---|\n| claimable | \`work_items:claimable\` | the \`work_items_claimable\` view |\n`,
+      relations,
+    );
+    expect(parsed[0]!.relations).toEqual([]);
+    expect(contradiction(parsed[0]!)).toBeNull();
   });
 });
 
