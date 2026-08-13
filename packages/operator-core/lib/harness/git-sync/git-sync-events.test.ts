@@ -7,14 +7,7 @@ import { emitGitSyncCommittedEvent, emitGitSyncEgressedEvent } from './git-sync-
 
 type EmitOpts = { key: string; summary?: string; payload?: unknown; to?: string[]; source?: string };
 const typedEmit = () =>
-  vi.fn(async (_opts: EmitOpts) => ({
-    ok: true as const,
-    key: '',
-    woken: 0,
-    notified: [] as string[],
-    msgId: null,
-    waiters: 0,
-  }));
+  vi.fn(async (_opts: EmitOpts) => ({ ok: true as const, key: '', woken: 0, notified: [] as string[], msgId: null, waiters: 0 }));
 
 const SHA = 'abcdef1234567890fedcba';
 
@@ -76,7 +69,10 @@ describe('emitGitSyncEgressedEvent (EI-20331175777179195)', () => {
     await new Promise((r) => setTimeout(r, 0));
 
     expect(emit).toHaveBeenCalledTimes(2);
-    expect(emit.mock.calls.map((c) => c[0].key)).toEqual(['git-sync:egressed', `git-sync:egressed:${SHA}`]);
+    expect(emit.mock.calls.map((c) => c[0].key)).toEqual([
+      'git-sync:egressed',
+      `git-sync:egressed:${SHA}`,
+    ]);
     for (const call of emit.mock.calls) {
       expect(call[0]).toMatchObject({
         source: 'git-sync',

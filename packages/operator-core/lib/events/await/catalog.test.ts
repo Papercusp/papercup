@@ -363,7 +363,7 @@ describe('P-004/D-002 — findZeroParamSuffixMismatch (the zero-param-family-wit
     expect(findZeroParamSuffixMismatch(undefined as unknown as string)).toBeUndefined();
   });
 
-  it("does NOT flag an unrelated orphan key (that is the EI-10870 orphan guard's job)", () => {
+  it('does NOT flag an unrelated orphan key (that is the EI-10870 orphan guard\'s job)', () => {
     expect(findZeroParamSuffixMismatch('overwatch:surface-landed')).toBeUndefined();
   });
 });

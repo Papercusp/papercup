@@ -74,13 +74,7 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
   {
     family: 'deploy',
     keyTemplate: 'release:deployed:<sha>',
-    params: [
-      {
-        name: 'sha',
-        required: false,
-        describe: 'the target sha; omit to wake on the NEXT deploy of any sha (global key)',
-      },
-    ],
+    params: [{ name: 'sha', required: false, describe: 'the target sha; omit to wake on the NEXT deploy of any sha (global key)' }],
     describe: 'A staging sha reached the live GREEN :3070 operator (the deploy landed).',
     emitter: 'release-gate (apps/operator/lib/release/deploy.ts)',
     exists: true, // P-102: deploy.ts now fires `release:deployed:<sha>` alongside the global `release:deployed`
@@ -104,13 +98,7 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
     // check payload.sha by hand each time. The emitter now fires BOTH the global
     // key and the pipeline-scoped one (basename of its integration root), mirroring
     // the release:deployed:<sha> precedent (P-102). Omit pipeline → the global key.
-    params: [
-      {
-        name: 'pipeline',
-        required: false,
-        describe: "the pipeline's repo basename (e.g. 'papercusp'); omit to wake on ANY pipeline's green (global key)",
-      },
-    ],
+    params: [{ name: 'pipeline', required: false, describe: "the pipeline's repo basename (e.g. 'papercusp'); omit to wake on ANY pipeline's green (global key)" }],
     describe: 'The green-checkpoint PASSED — the candidate advanced onto main (the gate is green).',
     emitter: 'green-checkpoint (apps/operator/lib/release/green-checkpoint.ts)',
     exists: true,
@@ -121,13 +109,7 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
   {
     family: 'checkpoint-red',
     keyTemplate: 'green-checkpoint:red:<pipeline>',
-    params: [
-      {
-        name: 'pipeline',
-        required: false,
-        describe: "the pipeline's repo basename (e.g. 'papercusp'); omit to wake on ANY pipeline's red (global key)",
-      },
-    ],
+    params: [{ name: 'pipeline', required: false, describe: "the pipeline's repo basename (e.g. 'papercusp'); omit to wake on ANY pipeline's red (global key)" }],
     describe: 'The green-checkpoint is HELD — candidate not green (payload.summary = failing-test tail).',
     emitter: 'green-checkpoint (apps/operator/lib/release/green-checkpoint.ts)',
     exists: true,
@@ -142,16 +124,8 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
     // needs a human/agent to look, because it means the gate is WEDGED, not merely red.
     family: 'checkpoint-inconclusive',
     keyTemplate: 'green-checkpoint:inconclusive:<pipeline>',
-    params: [
-      {
-        name: 'pipeline',
-        required: false,
-        describe:
-          "the pipeline's repo basename (e.g. 'papercusp'); omit to wake on ANY pipeline's inconclusive tick (global key)",
-      },
-    ],
-    describe:
-      'The green-checkpoint run ended with NO verdict (payload.reason names why, e.g. migrations-pending/skipped-locked) — not green, not red; just try again once the cause clears.',
+    params: [{ name: 'pipeline', required: false, describe: "the pipeline's repo basename (e.g. 'papercusp'); omit to wake on ANY pipeline's inconclusive tick (global key)" }],
+    describe: 'The green-checkpoint run ended with NO verdict (payload.reason names why, e.g. migrations-pending/skipped-locked) — not green, not red; just try again once the cause clears.',
     emitter: 'green-checkpoint (apps/operator/lib/release/green-checkpoint.ts)',
     exists: true,
     // Deliberately NO sugar. This entry carried `sugar: 'checkpoint:await'`, which the
@@ -206,7 +180,7 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
     family: 'work-item-unblocked',
     keyTemplate: 'work-item:unblocked:<id>',
     params: [{ name: 'id', required: true, describe: 'the work-item id' }],
-    describe: "A work item's LAST live blocker just cleared.",
+    describe: 'A work item\'s LAST live blocker just cleared.',
     emitter: 'work-items-events',
     exists: true,
   },
@@ -238,16 +212,14 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
       {
         name: 'severity',
         required: false,
-        describe:
-          'issue-family severity (minor/major/critical) to scope to; omit to wake on ANY new work item (global key)',
+        describe: "issue-family severity (minor/major/critical) to scope to; omit to wake on ANY new work item (global key)",
       },
     ],
     describe:
       'A work item was CREATED (issue or feature). payload carries {id, kind, severity, harness, title} for filtering kind/harness after waking.',
     emitter: 'work-items-events (packages/operator-core/lib/work-items-events.ts) — fired from createWorkItem',
     exists: true,
-    replacesPoll:
-      'a scheduled poll+diff plan for "alert on new WI matching <severity>" (e.g. critical-severity-alert-2026-07-06)',
+    replacesPoll: 'a scheduled poll+diff plan for "alert on new WI matching <severity>" (e.g. critical-severity-alert-2026-07-06)',
     payloadFiltered: true,
   },
   {
@@ -272,13 +244,7 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
   {
     family: 'git-sync',
     keyTemplate: 'git-sync:committed:<sha>',
-    params: [
-      {
-        name: 'sha',
-        required: false,
-        describe: 'the local commit sha to wait for; omit to wake on the next git-sync commit',
-      },
-    ],
+    params: [{ name: 'sha', required: false, describe: 'the local commit sha to wait for; omit to wake on the next git-sync commit' }],
     describe: 'git-sync committed the tree locally (no claim about bridged origin/staging egress).',
     emitter: 'git-sync action (packages/operator-core/lib/harness/git-sync/git-sync-events.ts)',
     exists: true, // P-102: git-sync-action fires `git-sync:committed[:<sha>]` on a synced tick
@@ -289,13 +255,7 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
   {
     family: 'git-sync-egress',
     keyTemplate: 'git-sync:egressed:<sha>',
-    params: [
-      {
-        name: 'sha',
-        required: false,
-        describe: 'the remote staging head to wait for; omit to wake on the next proven GitHub-bridge egress',
-      },
-    ],
+    params: [{ name: 'sha', required: false, describe: 'the remote staging head to wait for; omit to wake on the next proven GitHub-bridge egress' }],
     describe: 'The GitHub bridge proved canonical staging was pushed to origin/staging or was already at that sha.',
     emitter: 'git-sync GitHub bridge leg (packages/operator-core/lib/harness/git-sync/git-sync-action.ts)',
     exists: true,
@@ -306,22 +266,14 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
     family: 'session-compacted',
     keyTemplate: 'session:compacted:<owner>',
     params: [{ name: 'owner', required: true, describe: 'the ownerId whose compaction to wait on' }],
-    describe:
-      "A session finished a /compact (WI-1804 alt post-compaction wake; a leader can await a member's compaction).",
-    emitter:
-      'psu-pty-host.mjs (mode:compact step-4) → apps/operator/scripts/emit-session-compacted.ts → session-compacted-events.emitSessionCompactedEventAsync',
+    describe: 'A session finished a /compact (WI-1804 alt post-compaction wake; a leader can await a member\'s compaction).',
+    emitter: 'psu-pty-host.mjs (mode:compact step-4) → apps/operator/scripts/emit-session-compacted.ts → session-compacted-events.emitSessionCompactedEventAsync',
     exists: true, // P-103 LANDED: host wire (su-94b69) + the bridge CLI fire session:compacted:<owner> on compaction-complete
   },
   {
     family: 'service-up',
     keyTemplate: 'service:up:<name>',
-    params: [
-      {
-        name: 'name',
-        required: true,
-        describe: 'the service name, e.g. inference-gateway / substrate-sidecar / git-sync',
-      },
-    ],
+    params: [{ name: 'name', required: true, describe: 'the service name, e.g. inference-gateway / substrate-sidecar / git-sync' }],
     describe: 'A monitored service transitioned to HEALTHY (block-until-recovered instead of re-polling).',
     emitter: 'service-health tick (packages/operator-core/lib/service-health-events.ts)',
     exists: true, // P-104: runServiceHealthTick fires `service:up:<name>` on a diffHealth up-transition
@@ -347,7 +299,7 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
     describe: 'A plan item flipped to done.',
     emitter: 'plans:set-status (packages/operator-core/lib/agent-tools/plans/plan-item-events.ts)',
     exists: true, // P-105: setStatusOne fires `plan-item:done:<slug>:<id>` on a →done transition
-    replacesPoll: "polling plans:get for an item's status",
+    replacesPoll: 'polling plans:get for an item\'s status',
     sugar: 'plan-item:await',
   },
   {
@@ -363,7 +315,7 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
     keyTemplate: 'fleet:drained:<slug>',
     params: [{ name: 'slug', required: true, describe: 'the fleet slug' }],
     describe:
-      "Every claimable item in a fleet's lanes is done, OR the fleet's claim-spec view is empty AND every member is idle (a leader can sleep until drain, then loop:end + scorecard).",
+      'Every claimable item in a fleet\'s lanes is done, OR the fleet\'s claim-spec view is empty AND every member is idle (a leader can sleep until drain, then loop:end + scorecard).',
     emitter:
       'fleet-drained-events (packages/operator-core/lib/fleet-drained-events.ts) — fired from plans:set-status when a →done flip drains the plan; ALSO fired by fleet-idle-drain.ts (packages/operator-core/lib/scheduler/fleet-idle-drain.ts) on a scheduler:get_next miss when every fleet member is idle (P-006, WI-3763)',
     exists: true, // WI-1830: set-status fires `fleet:drained:<slug>` on the plan-drain edge
@@ -406,7 +358,7 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
     keyTemplate: 'fleet:context-critical:<slug>',
     params: [{ name: 'slug', required: true, describe: 'the fleet slug' }],
     describe:
-      'A member of this fleet crossed INTO critical context pressure — compaction is imminent, so the leader can force a checkpoint (fleet:require-checkpoint) before state is at risk. Crossing-only, like fleet:member-dead.',
+      "A member of this fleet crossed INTO critical context pressure — compaction is imminent, so the leader can force a checkpoint (fleet:require-checkpoint) before state is at risk. Crossing-only, like fleet:member-dead.",
     emitter:
       'fleet-transition-events (packages/operator-core/lib/fleet-transition-events.ts) — detected by the periodic fleet-transition sweep against the previous roster snapshot',
     exists: true,
@@ -417,7 +369,7 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
     keyTemplate: 'fleet:claim-released:<slug>',
     params: [{ name: 'slug', required: true, describe: 'the fleet slug' }],
     describe:
-      'A member of this fleet released a work-item claim — work is back in the pool for the leader to re-place. The fleet-scoped counterpart of the id-scoped `claim:released:<id>`: use THIS one when you do not know which item will free next (a leader), and that one when you are waiting on a SPECIFIC item (a delegator).',
+      "A member of this fleet released a work-item claim — work is back in the pool for the leader to re-place. The fleet-scoped counterpart of the id-scoped `claim:released:<id>`: use THIS one when you do not know which item will free next (a leader), and that one when you are waiting on a SPECIFIC item (a delegator).",
     emitter:
       'fleet-transition-events, co-fired from releaseWorkItem alongside claim:released:<id> (packages/operator-core/lib/work-items.ts)',
     exists: true,
@@ -428,7 +380,7 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
     keyTemplate: 'fleet:item-completed:<slug>',
     params: [{ name: 'slug', required: true, describe: 'the fleet slug' }],
     describe:
-      'A member of this fleet settled a work-item — the leader can feed it more work or re-judge burn-down. The fleet-scoped counterpart of the id-scoped `work-item:done:<id>`: use THIS one when you do not know which item will finish next (a leader), and that one when awaiting a SPECIFIC child (a delegator).',
+      "A member of this fleet settled a work-item — the leader can feed it more work or re-judge burn-down. The fleet-scoped counterpart of the id-scoped `work-item:done:<id>`: use THIS one when you do not know which item will finish next (a leader), and that one when awaiting a SPECIFIC child (a delegator).",
     emitter:
       'fleet-transition-events, co-fired from emitWorkItemSettledEvents alongside work-item:done:<id> (packages/operator-core/lib/work-items-events.ts)',
     exists: true,
@@ -453,8 +405,7 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
       {
         name: 'workspace',
         required: true,
-        describe:
-          'the workspace whose spawn ceiling you are queued behind (the awaitEvent an over-ceiling cup:spawn rejection returns)',
+        describe: 'the workspace whose spawn ceiling you are queued behind (the awaitEvent an over-ceiling cup:spawn rejection returns)',
       },
     ],
     describe:
@@ -479,13 +430,7 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
   {
     family: 'inbox-wake',
     keyTemplate: 'coord:inbox-wake:<ownerId>',
-    params: [
-      {
-        name: 'ownerId',
-        required: true,
-        describe: 'the agent ownerId to wake — only THAT owner ever watches this key (never a broadcast)',
-      },
-    ],
+    params: [{ name: 'ownerId', required: true, describe: "the agent ownerId to wake — only THAT owner ever watches this key (never a broadcast)" }],
     describe:
       'A directed message / dispatch landed for ONE agent — the always-armed park key every live session holds, and the key `coord:send { wake:true }` / `coord:dispatch` / `coord:wake-queue` fire to re-invoke a sleeping agent.',
     emitter:
@@ -496,11 +441,8 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
   {
     family: 'coord-receipt',
     keyTemplate: 'coord:receipt:<msgId>',
-    params: [
-      { name: 'msgId', required: true, describe: 'the coord msg_id whose federated delivery receipt to wait on' },
-    ],
-    describe:
-      'A federated peer returned a DELIVERY RECEIPT for one of your coord messages (delivered, or quarantined with a reason in the payload).',
+    params: [{ name: 'msgId', required: true, describe: 'the coord msg_id whose federated delivery receipt to wait on' }],
+    describe: "A federated peer returned a DELIVERY RECEIPT for one of your coord messages (delivered, or quarantined with a reason in the payload).",
     emitter:
       'hyperbee coord-message projection (packages/operator-core/lib/sync/hyperbee/projections/coord-message.ts) — the fed_event pass-through on the receiving peer',
     exists: true,
@@ -509,8 +451,7 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
     family: 'work-item-duplicate-settled',
     keyTemplate: 'work-item:duplicate-settled:<id>',
     params: [{ name: 'id', required: true, describe: 'the CANONICAL work-item id (the one your item duplicates)' }],
-    describe:
-      "The canonical item that YOUR item duplicates has settled — targeted at each duplicate-holder's assignee, not a subscriber fan-out.",
+    describe: 'The canonical item that YOUR item duplicates has settled — targeted at each duplicate-holder\'s assignee, not a subscriber fan-out.',
     emitter: 'work-items-events (packages/operator-core/lib/work-items-events.ts) — the `duplicates` edge fan',
     exists: true,
   },
@@ -529,8 +470,7 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
     family: 'escalation-resolved',
     keyTemplate: 'escalation:resolved:<msgId>',
     params: [{ name: 'msgId', required: true, describe: 'the escalation / spawn-request msg_id you raised' }],
-    describe:
-      'An escalation you raised was RESOLVED (or a spawn request was approved) — wake instead of re-polling for the verdict.',
+    describe: 'An escalation you raised was RESOLVED (or a spawn request was approved) — wake instead of re-polling for the verdict.',
     emitter:
       'coord:resolve (packages/operator-core/lib/agent-tools/coordination/tools/resolve.ts) + spawn approve (packages/operator-core/lib/agent-tools/spawn/approve.ts)',
     exists: true,
@@ -539,9 +479,7 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
   {
     family: 'conversation-answered',
     keyTemplate: 'conversation:answered:<conversationId>',
-    params: [
-      { name: 'conversationId', required: true, describe: 'the conversation id you are waiting on an answer for' },
-    ],
+    params: [{ name: 'conversationId', required: true, describe: 'the conversation id you are waiting on an answer for' }],
     describe: 'A conversation you opened received an ANSWER.',
     emitter: 'conversations:answer (packages/operator-core/lib/agent-tools/coordination/conversations.ts)',
     exists: true,
@@ -568,9 +506,7 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
   {
     family: 'rate-limit-exhausted',
     keyTemplate: 'rate-limit:exhausted:<accountId>',
-    params: [
-      { name: 'accountId', required: true, describe: 'the account id that tipped into sustained rate-limiting' },
-    ],
+    params: [{ name: 'accountId', required: true, describe: 'the account id that tipped into sustained rate-limiting' }],
     describe: 'An account tipped into SUSTAINED rate-limiting (distinct from the transient rate-limit:paused pause).',
     emitter: 'account-pool-store (packages/operator-core/lib/deployment/account-pool-store.ts)',
     exists: true,
@@ -580,8 +516,7 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
     family: 'pot-git-ref-announce',
     keyTemplate: 'pot-git:ref-announce',
     params: [],
-    describe:
-      'A federated peer ANNOUNCED a git ref (pot-git gossip). Global key — check the payload for the repo/ref/peer.',
+    describe: 'A federated peer ANNOUNCED a git ref (pot-git gossip). Global key — check the payload for the repo/ref/peer.',
     emitter: 'pot-git ref-announce (packages/operator-core/lib/sync/pot-git/ref-announce.ts — REF_ANNOUNCE_EVENT_KEY)',
     exists: true,
     payloadFiltered: true,
@@ -590,10 +525,8 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
     family: 'pot-git-staging-advance',
     keyTemplate: 'pot-git:staging-advance',
     params: [],
-    describe:
-      "A federated peer's signed staging-advance landed (pot-git gossip). Global key — check the payload for the device/epoch/sha.",
-    emitter:
-      'pot-git staging-advance (packages/operator-core/lib/sync/pot-git/staging-advance.ts — STAGING_ADVANCE_EVENT_KEY)',
+    describe: "A federated peer's signed staging-advance landed (pot-git gossip). Global key — check the payload for the device/epoch/sha.",
+    emitter: 'pot-git staging-advance (packages/operator-core/lib/sync/pot-git/staging-advance.ts — STAGING_ADVANCE_EVENT_KEY)',
     exists: true,
     payloadFiltered: true,
   },
@@ -686,7 +619,10 @@ export function familyKeyPrefix(entry: EventCatalogEntry): string {
  * Pass the MERGED catalog (builtin + installed `provides.events`) so a key emitted
  * by an installed pack is never misreported as an orphan.
  */
-export function keyMatchesCatalog(key: string, entries: readonly EventCatalogEntry[] = EVENT_CATALOG): boolean {
+export function keyMatchesCatalog(
+  key: string,
+  entries: readonly EventCatalogEntry[] = EVENT_CATALOG,
+): boolean {
   const k = String(key ?? '').trim();
   if (!k) return false;
   return entries.some((e) => {
