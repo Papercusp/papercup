@@ -2179,6 +2179,15 @@ locks:acquire_resource { resource: 'git-sync:papercusp', mode: 'exclusive',
                          ttl_sec: 600, reason: 'mutation probe' }
 ```
 
+Keep the returned lock_id for the entire probe. Before half the TTL, and again every half-TTL while the probe runs:
+```
+locks:heartbeat_resource { lock_id: '<returned lock_id>', ttl_sec: 600 }
+```
+Repeat heartbeat_resource for each further interval; then release the lock when done:
+```
+locks:release_resource { lock_id: '<returned lock_id>' }
+```
+
 ⚠ **A `trap` alone does NOT restore promptly — bash will not run a trap handler while
 waiting on a FOREGROUND child.** Measured 2026-08-03: a SIGTERM during a 25s guard
 restored the file only after 23s, i.e. when the child happened to exit. The harness sends
