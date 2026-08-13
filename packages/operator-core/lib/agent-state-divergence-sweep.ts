@@ -164,6 +164,7 @@ interface CallRow {
   intent_event_id: string | number | null;
   goal_ref: string | null;
   args_json: unknown;
+  call_origin: string | null;
 }
 
 /**
@@ -184,11 +185,20 @@ export async function loadRecentCalls(opts: {
   const since = new Date(opts.sinceMs).toISOString();
   const rows = await sql<CallRow[]>`
     SELECT id, coord_owner_id AS owner, tool_name, status, invoked_at,
-           intent_event_id, goal_ref, args_json
+           intent_event_id, goal_ref, args_json, call_origin
       FROM harness_shared.tool_invocations
      WHERE workspace_id = ${opts.workspaceId}
        AND invoked_at > ${since}
        AND coord_owner_id IS NOT NULL
+       -- Platform reaction rows are telemetry about the wake mechanism, not
+       -- agent-authored actions. Keep the predicate deliberately narrow: an
+       -- unattributed pot:wake with the event source and its stamped reason.
+       AND NOT (
+         tool_name = 'pot:wake'
+         AND call_origin IS NULL
+         AND args_json->>'source' = 'event'
+         AND args_json->>'reason' LIKE 'subscribed event (%'
+       )
      ORDER BY invoked_at
      LIMIT ${opts.limit ?? SWEEP_ROW_CAP}
   `;

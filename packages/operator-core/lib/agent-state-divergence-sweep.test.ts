@@ -12,6 +12,7 @@ import {
   divergenceSweep,
   divergenceFireKey,
   formatDivergenceAlert,
+  loadRecentCalls,
   DIVERGENCE_REPEAT_LOOKBACK_HOURS,
   DIVERGENCE_DEBOUNCE_HOURS,
 } from './agent-state-divergence-sweep';
@@ -53,6 +54,27 @@ function deps(over: Parameters<typeof divergenceSweep>[0] = {}) {
     ...over,
   } as unknown as Parameters<typeof divergenceSweep>[0] & Record<string, ReturnType<typeof vi.fn>>;
 }
+
+describe('loadRecentCalls', () => {
+  it('excludes only platform-emitted subscribed-event pot:wake rows', async () => {
+    const sql = vi.fn(async () => []);
+    await loadRecentCalls({
+      workspaceId: 'test-workspace',
+      sinceMs: T0,
+      limit: 10,
+      sql: sql as never,
+    });
+
+    expect(sql).toHaveBeenCalledTimes(1);
+    const [template] = sql.mock.calls[0] as unknown as [TemplateStringsArray, ...unknown[]];
+    const query = Array.from(template).join(' ');
+    expect(query).toContain('args_json, call_origin');
+    expect(query).toContain("tool_name = 'pot:wake'");
+    expect(query).toContain("call_origin IS NULL");
+    expect(query).toContain("args_json->>'source' = 'event'");
+    expect(query).toContain("args_json->>'reason' LIKE 'subscribed event (%'");
+  });
+});
 
 describe('formatDivergenceAlert', () => {
   const loop: Divergence = {
