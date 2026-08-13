@@ -93,6 +93,26 @@ describe('migration 826 physical twin repair', () => {
     expect(links).toEqual([{ id: 1, src_ref: 'EI-82600000000000001' }, { id: 2, src_ref: 'EI-11513' }]);
     const thread = await db.sql.unsafe(`SELECT parent_ref FROM harness_shared.coord_threads`);
     expect(thread[0].parent_ref).toBe('EI-82600000000000001');
+
+    await expect(db.sql.unsafe(SQL)).resolves.toBeDefined();
+    const rerunIds = await db.sql.unsafe(`SELECT harness_slug,feature_id FROM harness_shared.work_items ORDER BY harness_slug`);
+    expect(rerunIds).toEqual(ids);
+    const backups = await db.sql.unsafe(`SELECT count(*)::int n FROM harness_shared.bak_20260813_work_item_physical_twins`);
+    expect(backups[0].n).toBe(2);
+  });
+
+  it('fails closed without mutating when the frozen identical classification drifts', async () => {
+    await insertItem('papercusp', 'EI-1', 'manifest title', 'open');
+    await insertItem('operator:papercusp-workspace', 'EI-1', 'drifted title', 'done');
+
+    await expect(db.sql.unsafe(SQL)).rejects.toThrow('P-004 identical-twin classification drifted for EI-1');
+    const rows = await db.sql.unsafe(`SELECT harness_slug,title,status FROM harness_shared.work_items ORDER BY harness_slug`);
+    expect(rows).toEqual([
+      { harness_slug: 'operator:papercusp-workspace', title: 'drifted title', status: 'done' },
+      { harness_slug: 'papercusp', title: 'manifest title', status: 'open' },
+    ]);
+    const backupTable = await db.sql.unsafe(`SELECT to_regclass('harness_shared.bak_20260813_work_item_physical_twins')::text AS name`);
+    expect(backupTable[0].name).toBeNull();
   });
 
   it('is a no-op on a fresh ledger without the manifested collisions', async () => {
