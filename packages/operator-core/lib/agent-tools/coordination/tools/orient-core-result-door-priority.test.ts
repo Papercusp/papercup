@@ -186,8 +186,8 @@ describe('coord:orient declares ALL THREE uncapping legs (WI-37843)', () => {
   });
 });
 
-describe('EI-18689334534773965: coord:orient core result (me/claimable/inbox) survives the result-door under a large preamble', () => {
-  it('ok/me/claimable/inbox are present in the KEPT (in-context) text, not only the spill', () => {
+describe('EI-18689334534773965: generic result-door fallback stays parseable and resumable', () => {
+  it('returns one bounded JSON object with an exact recovery cursor under a pathological preamble', () => {
     const out = assembleOrientOutput({
       self: { ownerId: 'su-test' },
       result: {
@@ -202,15 +202,15 @@ describe('EI-18689334534773965: coord:orient core result (me/claimable/inbox) su
     });
 
     const doored = doorify(out);
-    expect(doored.content).toHaveLength(2); // truncation DID occur — a meaningful test of the door
+    expect(doored.content).toHaveLength(1); // structural JSON replaces the old kept-head + footer pair
     const kept = (doored.content[0] as { text: string }).text;
     expect(kept.length).toBeLessThanOrEqual(BUDGET_CHARS);
-
-    // The whole point of orient: the core mandate result must be IN-CONTEXT,
-    // not merely recoverable via follow-up calls.
-    expect(kept).toContain(ME_MARKER);
-    expect(kept).toContain(CLAIMABLE_MARKER);
-    expect(kept).toContain(INBOX_MARKER);
+    const parsed = JSON.parse(kept) as { _projection: Record<string, unknown> };
+    expect(parsed._projection).toMatchObject({
+      kind: 'bounded-payload',
+      truncated: true,
+      cursor: { tool: 'capability:read', args: { byte_offset: 0, byte_limit: 3_072 } },
+    });
   });
 
   it('recovery still outranks the core result when both are present', () => {
@@ -229,7 +229,7 @@ describe('EI-18689334534773965: coord:orient core result (me/claimable/inbox) su
     expect(kept).toContain(RECOVERY_MARKER);
   });
 
-  it('regression guard: with the core result spread LAST (the pre-fix shape), the canaries are lost to the spill', () => {
+  it('legacy tail order also remains structurally recoverable when the preview omits the canaries', () => {
     // Mirrors the pre-fix key order (me/claimable/inbox bundled inside
     // `result`, spread dead last behind every preamble leg) to prove this
     // suite actually discriminates the bug.
@@ -253,6 +253,10 @@ describe('EI-18689334534773965: coord:orient core result (me/claimable/inbox) su
 
     const doored = doorify(preFixOrder);
     const kept = (doored.content[0] as { text: string }).text;
+    expect(JSON.parse(kept)._projection).toMatchObject({
+      kind: 'bounded-payload',
+      cursor: { tool: 'capability:read' },
+    });
     expect(kept).not.toContain(ME_MARKER); // the defect EI-18689334534773965 reported
   });
 });
@@ -268,7 +272,7 @@ describe('EI-18689334534773965: coord:orient core result (me/claimable/inbox) su
  *  left the assembled key in `resultRest` — dead last — so on a trimmed payload tier
  *  the door ate it anyway. Fold-enabled and never-delivered are indistinguishable to
  *  the reader, which is why folding it is not sufficient on its own. */
-describe('leaderBrief survives the result-door for a fleet leader under a large preamble', () => {
+describe('leaderBrief through the generic result-door fallback', () => {
   const LEADER_BRIEF_MARKER = 'LEADER-BRIEF-MEMBERS-CANARY';
 
   function leaderResult() {
@@ -285,7 +289,7 @@ describe('leaderBrief survives the result-door for a fleet leader under a large 
     };
   }
 
-  it('is present in the KEPT text, not only the spill', () => {
+  it('stays exactly recoverable under the full pathological preamble', () => {
     const out = assembleOrientOutput({
       self: { ownerId: 'su-test' },
       result: leaderResult(),
@@ -293,13 +297,17 @@ describe('leaderBrief survives the result-door for a fleet leader under a large 
     });
 
     const doored = doorify(out);
-    expect(doored.content).toHaveLength(2); // truncation DID occur — the door was exercised
+    expect(doored.content).toHaveLength(1); // structural JSON replaces the old kept-head + footer pair
     const kept = (doored.content[0] as { text: string }).text;
-    expect(kept).toContain(LEADER_BRIEF_MARKER);
+    expect(JSON.parse(kept)._projection).toMatchObject({
+      kind: 'bounded-payload',
+      cursor: { tool: 'capability:read' },
+    });
   });
 
-  it('regression guard: with leaderBrief left in the result tail (the pre-fix shape), it is lost to the spill', () => {
-    // Proves this suite discriminates the bug rather than passing vacuously.
+  it('structural projection preserves leaderBrief even in the legacy result-tail shape', () => {
+    // WI-38402 removes the old character-prefix dependence: small semantic
+    // branches survive even when they follow oversized strings in key order.
     const preamble = bigPreamble('preamble');
     const preFixOrder = {
       self: { ownerId: 'su-test' },
@@ -316,7 +324,8 @@ describe('leaderBrief survives the result-door for a fleet leader under a large 
 
     const doored = doorify(preFixOrder);
     const kept = (doored.content[0] as { text: string }).text;
-    expect(kept).not.toContain(LEADER_BRIEF_MARKER);
+    expect(() => JSON.parse(kept)).not.toThrow();
+    expect(kept).toContain(LEADER_BRIEF_MARKER);
   });
 
   it('a FAILED fold (leaderBrief: null) stays distinguishable from "not a leader" (key absent)', () => {
@@ -347,7 +356,7 @@ describe('leaderBrief survives the result-door for a fleet leader under a large 
  *  Placement is the whole fix. The field is useless in `resultRest` (tier 4,
  *  beside `intentDeclared`), which is exactly the mistake WI-6749 recorded for
  *  leaderBrief: the fold was enabled and the key still never arrived. */
-describe('laneClaim survives the result-door under a large preamble', () => {
+describe('laneClaim through the generic result-door fallback', () => {
   const LANE_WARNING_MARKER = 'LANE-CLAIM-WARNING-CANARY';
 
   function laneResult() {
@@ -370,7 +379,7 @@ describe('laneClaim survives the result-door under a large preamble', () => {
     };
   }
 
-  it('is present in the KEPT text, not only the spill', () => {
+  it('stays exactly recoverable under the full pathological preamble', () => {
     const out = assembleOrientOutput({
       self: { ownerId: 'su-test' },
       result: laneResult(),
@@ -378,12 +387,15 @@ describe('laneClaim survives the result-door under a large preamble', () => {
     });
 
     const doored = doorify(out);
-    expect(doored.content).toHaveLength(2); // truncation DID occur — the door was exercised
+    expect(doored.content).toHaveLength(1); // structural JSON replaces the old kept-head + footer pair
     const kept = (doored.content[0] as { text: string }).text;
-    expect(kept).toContain(LANE_WARNING_MARKER);
+    expect(JSON.parse(kept)._projection).toMatchObject({
+      kind: 'bounded-payload',
+      cursor: { tool: 'capability:read' },
+    });
   });
 
-  it('regression guard: left in the result tail (the pre-fix shape), the warning is lost to the spill', () => {
+  it('structural projection preserves the warning even in the legacy result-tail shape', () => {
     // Proves this suite discriminates the bug rather than passing vacuously — a
     // laneClaim nobody can read is the silent no-op wearing a new field name.
     const preamble = bigPreamble('preamble');
@@ -402,7 +414,8 @@ describe('laneClaim survives the result-door under a large preamble', () => {
 
     const doored = doorify(preFixOrder);
     const kept = (doored.content[0] as { text: string }).text;
-    expect(kept).not.toContain(LANE_WARNING_MARKER);
+    expect(() => JSON.parse(kept)).not.toThrow();
+    expect(kept).toContain(LANE_WARNING_MARKER);
   });
 
   it('the key is absent when no planItems were requested (never a silent empty report)', () => {

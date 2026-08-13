@@ -96,9 +96,10 @@ describe('WI-5656: coord:orient recovery block survives the result-door under a 
     });
 
     const doored = doorify(out);
-    expect(doored.content).toHaveLength(2); // truncation DID occur — this is a meaningful test of the door, not a no-op
+    expect(doored.content).toHaveLength(1); // structural JSON replaces the old kept-head + footer pair
     const kept = (doored.content[0] as { text: string }).text;
     expect(kept.length).toBeLessThanOrEqual(BUDGET_CHARS);
+    expect(() => JSON.parse(kept)).not.toThrow();
 
     // The whole point of afterCompaction: this must be IN-CONTEXT, not merely
     // recoverable via a second paging round-trip to the spill file.

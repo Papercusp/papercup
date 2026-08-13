@@ -2,8 +2,8 @@
  * EI-20243251614343957 — scheduler:get_next must deliver a committed claim
  * receipt and governing decisions before the bulky work-item echo. The result-door
  * keeps the serialized prefix, so this test exercises the real scheduler assembly
- * with the real door and proves the caller can reconcile a destructive claim rather
- * than blindly retrying after a truncation.
+ * with the real door and proves the caller receives one parseable, structurally
+ * bounded JSON object that preserves the reconciliation-critical fields.
  */
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -87,15 +87,26 @@ describe('scheduler:get_next claim-time decisions survive the result-door', () =
     ]);
 
     const doored = doorify(assembled);
-    expect(doored.content).toHaveLength(2); // the bulky echo still exercises the door
+    expect(doored.content).toHaveLength(1); // structural JSON replaces the old kept-head + footer pair
     const kept = (doored.content[0] as { text: string }).text;
-    expect(kept).toContain('"claimReceipt":{"committed":true,"workItemId":"EI-20243251614343957"');
+    const parsed = JSON.parse(kept) as {
+      claimReceipt: Record<string, unknown>;
+      _projection: Record<string, unknown>;
+    };
+    expect(parsed._projection).toMatchObject({
+      kind: 'bounded-payload',
+      cursor: { tool: 'capability:read' },
+    });
+    expect(parsed.claimReceipt).toMatchObject({
+      committed: true,
+      workItemId: 'EI-20243251614343957',
+    });
     expect(kept).toContain(RETRACTION_MARKER);
     expect(kept).toContain(DECISION_MARKER);
     expect(kept).toContain('planDecisionsNote');
   });
 
-  it('distinguishes the pre-fix tail placement, where the same decision was cut away', () => {
+  it('preserves the governing decision even in the legacy tail placement', () => {
     const preFixOrder = {
       ok: true,
       workItem: bulkyWorkItem(),
@@ -106,6 +117,7 @@ describe('scheduler:get_next claim-time decisions survive the result-door', () =
 
     const doored = doorify(preFixOrder);
     const kept = (doored.content[0] as { text: string }).text;
-    expect(kept).not.toContain(DECISION_MARKER);
+    expect(() => JSON.parse(kept)).not.toThrow();
+    expect(kept).toContain(DECISION_MARKER);
   });
 });
