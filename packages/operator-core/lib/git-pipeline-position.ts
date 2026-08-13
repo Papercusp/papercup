@@ -3437,7 +3437,7 @@ export function summarizePosition(p: Omit<PipelinePosition, 'summary'>): string 
       : '';
     return `${label} @${p.targetShortSha}${subj} [submodule ${p.submodule}]: committed ${tick(
       p.positions.committedLocal,
-    )} · pushed-to-origin ${tick(p.positions.onStaging)}${dirty} — superproject→main→deploy chain not tracked for submodule paths.${pin}`;
+    )} · staging-candidate ${tick(p.positions.onStaging)}${dirty} — superproject→main→deploy chain not tracked for submodule paths.${pin}`;
   }
   // EI-18719549079738452: a torn git-sync candidate (impl + its matching fixture
   // landing as two separate commits) can red a scheduled run whose failure does
