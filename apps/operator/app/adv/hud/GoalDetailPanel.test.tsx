@@ -16,10 +16,16 @@
  *      furniture — the normal case, and the one most likely to regress into an
  *      empty-state placeholder that implies something is missing.
  */
-import { describe, expect, it, vi, afterEach, beforeEach } from 'vitest';
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
-import { nuqsParsers } from '@papercusp/test-config/nuqs-mock';
-import type { GoalDetailInput } from './goal-detail-model';
+import { describe, expect, it, vi, afterEach, beforeEach } from "vitest";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  within,
+} from "@testing-library/react";
+import { nuqsParsers } from "@papercusp/test-config/nuqs-mock";
+import type { GoalDetailInput } from "./goal-detail-model";
 
 /* P-023: the popup's two expand buttons reach the DESKTOP shell for full
    SCREEN. Mocked to spies so this suite asserts the panel's BRANCH (which
@@ -28,12 +34,19 @@ import type { GoalDetailInput } from './goal-detail-model';
    imports @tauri-apps, which jsdom cannot resolve. */
 const desktopFs = vi.hoisted(() => ({
   isDesktopShell: vi.fn(() => false),
-  enterDesktopWindowFullscreen: vi.fn(async () => ({ active: true, owned: true })),
+  enterDesktopWindowFullscreen: vi.fn(async () => ({
+    active: true,
+    owned: true,
+  })),
   exitDesktopWindowFullscreen: vi.fn(async () => {}),
 }));
-vi.mock('@/lib/desktop-window-fullscreen', () => desktopFs);
+vi.mock("@/lib/desktop-window-fullscreen", () => desktopFs);
 
-const syncCalls: Array<{ queryName: string; args?: Record<string, unknown>; enabled?: boolean }> = [];
+const syncCalls: Array<{
+  queryName: string;
+  args?: Record<string, unknown>;
+  enabled?: boolean;
+}> = [];
 let syncResult: { data: unknown[] | null; loading: boolean; error: unknown } = {
   data: null,
   loading: false,
@@ -45,8 +58,8 @@ let syncResult: { data: unknown[] | null; loading: boolean; error: unknown } = {
    local stand-in the other component suites use (OperatorChatSidebar,
    PlansPane): a real adapter would drag the router in for a param whose only
    job here is to flip a boolean. */
-vi.mock('nuqs', async () => {
-  const React = await import('react');
+vi.mock("nuqs", async () => {
+  const React = await import("react");
   /* The parsers come from the SHARED mock (`@papercusp/test-config/nuqs-mock`),
      which carries every parser nuqs exports and is itself pinned against the
      installed package — the fix for EI-8821's whole class.
@@ -68,11 +81,20 @@ vi.mock('nuqs', async () => {
          state to `{} | null`, and the setter below then rejects the `unknown`
          it is handed (TS2345). Invisible to vitest, which does not typecheck —
          it reds `lint:tsc:operator` instead. */
-      const [value, setValue] = React.useState<unknown>(p?.defaultValue ?? null);
-      const set = React.useCallback((next: unknown) => {
-        setValue(typeof next === 'function' ? (next as (prev: unknown) => unknown)(value) : next);
-        return Promise.resolve(new URLSearchParams());
-      }, [value]);
+      const [value, setValue] = React.useState<unknown>(
+        p?.defaultValue ?? null,
+      );
+      const set = React.useCallback(
+        (next: unknown) => {
+          setValue(
+            typeof next === "function"
+              ? (next as (prev: unknown) => unknown)(value)
+              : next,
+          );
+          return Promise.resolve(new URLSearchParams());
+        },
+        [value],
+      );
       return [value, set];
     },
   };
@@ -84,16 +106,22 @@ vi.mock('nuqs', async () => {
    roster reader too, which is not merely untidy — it would make the fleet rail
    assertions untestable, because a payload with no `active[]` derives a null
    fleet model no matter what the component does. */
-let rosterResult: { data: unknown[] | null; loading: boolean; error: unknown } = {
-  data: null,
-  loading: false,
-  error: null,
-};
-vi.mock('@papercusp/sync', () => ({
+let rosterResult: { data: unknown[] | null; loading: boolean; error: unknown } =
+  {
+    data: null,
+    loading: false,
+    error: null,
+  };
+vi.mock("@papercusp/sync", () => ({
   onSyncBusEvent: () => () => {},
-  useSyncQuery: (opts: { queryName: string; args?: Record<string, unknown>; enabled?: boolean }) => {
+  useSyncQuery: (opts: {
+    queryName: string;
+    args?: Record<string, unknown>;
+    enabled?: boolean;
+  }) => {
     syncCalls.push(opts);
-    const result = opts.queryName === 'advRoster.list' ? rosterResult : syncResult;
+    const result =
+      opts.queryName === "advRoster.list" ? rosterResult : syncResult;
     return { ...result, fetching: false, invalidate: vi.fn() };
   },
 }));
@@ -110,7 +138,7 @@ vi.mock('@papercusp/sync', () => ({
    composer was added. A test that cannot fail is not evidence. */
 let chatState: Record<string, unknown> = {};
 const chatSends: string[] = [];
-vi.mock('@/app/_components/chat/use-owner-session-chat', () => ({
+vi.mock("@/app/_components/chat/use-owner-session-chat", () => ({
   useOwnerSessionChat: (ownerId: string | null) => ({
     streamUrl: null,
     resolved: null,
@@ -125,11 +153,19 @@ vi.mock('@/app/_components/chat/use-owner-session-chat', () => ({
     ...(ownerId ? chatState : {}),
   }),
 }));
-vi.mock('@/app/_components/chat/SessionChatModal', () => ({
-  LiveSessionChat: (p: { streamUrl: string; sessionOwnerId: string; onSend: (t: string) => void }) => (
-    <div data-testid="live-chat" data-owner={p.sessionOwnerId} data-stream={p.streamUrl}>
+vi.mock("@/app/_components/chat/SessionChatModal", () => ({
+  LiveSessionChat: (p: {
+    streamUrl: string;
+    sessionOwnerId: string;
+    onSend: (t: string) => void;
+  }) => (
+    <div
+      data-testid="live-chat"
+      data-owner={p.sessionOwnerId}
+      data-stream={p.streamUrl}
+    >
       <textarea aria-label="Message" />
-      <button type="button" onClick={() => p.onSend('hello')}>
+      <button type="button" onClick={() => p.onSend("hello")}>
         Send
       </button>
     </div>
@@ -156,17 +192,17 @@ beforeEach(() => {
 afterEach(cleanup);
 
 // eslint-disable-next-line import/first
-import GoalDetailPanel from './GoalDetailPanel';
+import GoalDetailPanel from "./GoalDetailPanel";
 
-const NOW = Date.parse('2026-08-09T12:00:00.000Z');
+const NOW = Date.parse("2026-08-09T12:00:00.000Z");
 
 function detail(over: Partial<GoalDetailInput> = {}): GoalDetailInput {
   return {
     goal: {
-      id: 'goal-1',
-      title: 'Ship a paid app',
-      status: 'active',
-      killCriterion: 'Stop if no paying user by day 30.',
+      id: "goal-1",
+      title: "Ship a paid app",
+      status: "active",
+      killCriterion: "Stop if no paying user by day 30.",
       spendUsd: 310,
       budgetCents: 50_000,
       ...over.goal,
@@ -175,13 +211,16 @@ function detail(over: Partial<GoalDetailInput> = {}): GoalDetailInput {
     waitingOnYou: [],
     activity: [],
     spendByDay: [],
-    spendLabel: 'fleet spend',
-    spendNote: 'Goal spend figures do not sum.',
+    spendLabel: "fleet spend",
+    spendNote: "Goal spend figures do not sum.",
     ...over,
   };
 }
 
-function renderPanel(data: GoalDetailInput | null, props: Record<string, unknown> = {}) {
+function renderPanel(
+  data: GoalDetailInput | null,
+  props: Record<string, unknown> = {},
+) {
   syncResult = { data: data ? [data] : null, loading: false, error: null };
   return render(
     <GoalDetailPanel
@@ -199,75 +238,107 @@ function renderPanel(data: GoalDetailInput | null, props: Record<string, unknown
  * leave it open when already expanded so multi-toggle tests exercise the real
  * keep-open interaction instead of accidentally closing the chooser. */
 function openPanelsMenu() {
-  const trigger = screen.getByTestId('goal-panels-trigger');
-  if (trigger.getAttribute('aria-expanded') !== 'true') fireEvent.click(trigger);
-  return screen.getByRole('dialog', { name: 'Panel visibility' });
+  const trigger = screen.getByTestId("goal-panels-trigger");
+  if (trigger.getAttribute("aria-expanded") !== "true")
+    fireEvent.click(trigger);
+  return screen.getByRole("dialog", { name: "Panel visibility" });
 }
 
-describe('GoalDetailPanel', () => {
-  it('renders nothing and fires no query while closed', () => {
-    render(<GoalDetailPanel goalId={null} workspaceId="ws-real" nowMs={NOW} onClose={() => {}} />);
-    expect(document.body.textContent).not.toContain('This goal ends when');
+describe("GoalDetailPanel", () => {
+  it("renders nothing and fires no query while closed", () => {
+    render(
+      <GoalDetailPanel
+        goalId={null}
+        workspaceId="ws-real"
+        nowMs={NOW}
+        onClose={() => {}}
+      />,
+    );
+    expect(document.body.textContent).not.toContain("This goal ends when");
     expect(syncCalls[0]?.enabled).toBe(false);
   });
 
-  it('asks goals.detail for the workspace it was GIVEN, never a default', () => {
+  it("asks goals.detail for the workspace it was GIVEN, never a default", () => {
     // A silent 'default' here returns a real-looking empty page for the wrong
     // tenant — the failure mode that is hardest to see, because "no goals yet"
     // is a state this surface legitimately shows (the WI-5125 shape).
     renderPanel(detail());
-    const call = syncCalls.find((c) => c.queryName === 'goals.detail');
+    const call = syncCalls.find((c) => c.queryName === "goals.detail");
     expect(call).toBeTruthy();
-    expect(call?.args).toMatchObject({ workspaceId: 'ws-real', goalId: 'goal-1' });
+    expect(call?.args).toMatchObject({
+      workspaceId: "ws-real",
+      goalId: "goal-1",
+    });
     expect(call?.enabled).toBe(true);
   });
 
-  it('leads with the kill criterion, verbatim', () => {
+  it("leads with the kill criterion, verbatim", () => {
     renderPanel(detail());
-    expect(screen.getByTestId('goal-kill-criterion').textContent).toBe(
-      'Stop if no paying user by day 30.',
+    expect(screen.getByTestId("goal-kill-criterion").textContent).toBe(
+      "Stop if no paying user by day 30.",
     );
   });
 
-  it('shouts when NO kill criterion is set', () => {
-    renderPanel(detail({ goal: { id: 'goal-1', title: 'g', status: 'active', killCriterion: null } }));
-    const el = screen.getByTestId('goal-kill-criterion');
-    expect(el.textContent).toMatch(/nothing can stop this goal/i);
-    expect(el.className).toContain('hud-goal__criterion--missing');
-  });
-
-  it('renders a free-text criterion with NO tripwire furniture', () => {
-    // Tripwires are optional; the no-bars case must look finished, not empty.
-    renderPanel(detail());
-    expect(screen.queryByTestId('goal-tripwires')).toBeNull();
-    expect(screen.getByTestId('goal-kill-criterion')).toBeTruthy();
-  });
-
-  it('renders tripwire bars, and does NOT fill an unmeasured one', () => {
+  it("shouts when NO kill criterion is set", () => {
     renderPanel(
       detail({
         goal: {
-          id: 'goal-1',
-          title: 'g',
-          status: 'active',
-          killCriterion: 'stop at 30 days or $500',
+          id: "goal-1",
+          title: "g",
+          status: "active",
+          killCriterion: null,
+        },
+      }),
+    );
+    const el = screen.getByTestId("goal-kill-criterion");
+    expect(el.textContent).toMatch(/nothing can stop this goal/i);
+    expect(el.className).toContain("hud-goal__criterion--missing");
+  });
+
+  it("renders a free-text criterion with NO tripwire furniture", () => {
+    // Tripwires are optional; the no-bars case must look finished, not empty.
+    renderPanel(detail());
+    expect(screen.queryByTestId("goal-tripwires")).toBeNull();
+    expect(screen.getByTestId("goal-kill-criterion")).toBeTruthy();
+  });
+
+  it("renders tripwire bars, and does NOT fill an unmeasured one", () => {
+    renderPanel(
+      detail({
+        goal: {
+          id: "goal-1",
+          title: "g",
+          status: "active",
+          killCriterion: "stop at 30 days or $500",
           tripwires: [
-            { metric: 'elapsed', label: 'Elapsed', threshold: 30, current: 12, unit: 'days' },
-            { metric: 'spend', label: 'Spend', threshold: 500, current: 310, unit: 'usd' },
-            { metric: 'builds', label: 'Shipped builds', threshold: 1 },
+            {
+              metric: "elapsed",
+              label: "Elapsed",
+              threshold: 30,
+              current: 12,
+              unit: "days",
+            },
+            {
+              metric: "spend",
+              label: "Spend",
+              threshold: 500,
+              current: 310,
+              unit: "usd",
+            },
+            { metric: "builds", label: "Shipped builds", threshold: 1 },
           ],
         },
       }),
     );
-    const bars = screen.getByTestId('goal-tripwires');
-    expect(bars.textContent).toContain('day 12 of 30');
-    expect(bars.textContent).toContain('$310 of $500');
-    expect(bars.textContent).toContain('not measured yet');
+    const bars = screen.getByTestId("goal-tripwires");
+    expect(bars.textContent).toContain("day 12 of 30");
+    expect(bars.textContent).toContain("$310 of $500");
+    expect(bars.textContent).toContain("not measured yet");
 
     // Three bars, but only TWO fills: the unread one must be visually distinct
     // from a real zero rather than a zero-width fill nobody can tell apart.
-    expect(bars.querySelectorAll('.hud-goal__bar-fill')).toHaveLength(2);
-    expect(bars.querySelectorAll('.hud-goal__bar-unread')).toHaveLength(1);
+    expect(bars.querySelectorAll(".hud-goal__bar-fill")).toHaveLength(2);
+    expect(bars.querySelectorAll(".hud-goal__bar-unread")).toHaveLength(1);
 
     // The same distinction, machine-readable. Styling can be restyled away;
     // this is the hook that survives it.
@@ -275,7 +346,7 @@ describe('GoalDetailPanel', () => {
     expect(bars.querySelectorAll('[data-measured="false"]')).toHaveLength(1);
   });
 
-  it('marks an UNMEASURED tripwire apart from one measured at zero, in the DOM', () => {
+  it("marks an UNMEASURED tripwire apart from one measured at zero, in the DOM", () => {
     // P-002's core claim: "0 of 30" for a tripwire nobody wired up is
     // indistinguishable from a real zero — and a real zero is the most
     // REASSURING reading available, so the failure points at "nothing to worry
@@ -285,119 +356,174 @@ describe('GoalDetailPanel', () => {
     renderPanel(
       detail({
         goal: {
-          id: 'goal-1',
-          title: 'g',
-          status: 'active',
-          killCriterion: 'stop at 30 days or $500',
+          id: "goal-1",
+          title: "g",
+          status: "active",
+          killCriterion: "stop at 30 days or $500",
           tripwires: [
             // Nobody has wired this up.
-            { metric: 'unwired', label: 'Unwired', threshold: 30, unit: 'days' },
+            {
+              metric: "unwired",
+              label: "Unwired",
+              threshold: 30,
+              unit: "days",
+            },
             // Genuinely measured, and the reading happens to be zero.
-            { metric: 'real-zero', label: 'Real zero', threshold: 30, current: 0, unit: 'days' },
+            {
+              metric: "real-zero",
+              label: "Real zero",
+              threshold: 30,
+              current: 0,
+              unit: "days",
+            },
           ],
         },
       }),
     );
-    const bars = screen.getByTestId('goal-tripwires');
-    const [unwired, realZero] = Array.from(bars.querySelectorAll('.hud-goal__bar'));
+    const bars = screen.getByTestId("goal-tripwires");
+    const [unwired, realZero] = Array.from(
+      bars.querySelectorAll(".hud-goal__bar"),
+    );
 
-    expect(unwired.getAttribute('data-measured')).toBe('false');
-    expect(realZero.getAttribute('data-measured')).toBe('true');
+    expect(unwired.getAttribute("data-measured")).toBe("false");
+    expect(realZero.getAttribute("data-measured")).toBe("true");
 
     // …and they must not read the same to a human either.
-    expect(unwired.textContent).toContain('not measured yet');
-    expect(realZero.textContent).toContain('day 0 of 30');
+    expect(unwired.textContent).toContain("not measured yet");
+    expect(realZero.textContent).toContain("day 0 of 30");
   });
 
-  it('KEEPS a closed pot on the page, with its reason', () => {
+  it("KEEPS a closed pot on the page, with its reason", () => {
     // The invariant the item singles out. A `.filter(p => !p.removed)` in the
     // component would leave every model test green and delete the only
     // evidence that the agent closes things.
     renderPanel(
       detail({
         pots: [
-          { harnessSlug: 'alpha', role: 'owner', killCriterion: 'ship by day 14', servesGoals: 1 },
           {
-            harnessSlug: 'beta',
-            role: 'contributing',
-            killCriterion: 'ship by day 14',
+            harnessSlug: "alpha",
+            role: "owner",
+            killCriterion: "ship by day 14",
             servesGoals: 1,
-            removedAt: '2026-08-05T00:00:00Z',
-            note: 'no traction after two weeks',
+          },
+          {
+            harnessSlug: "beta",
+            role: "contributing",
+            killCriterion: "ship by day 14",
+            servesGoals: 1,
+            removedAt: "2026-08-05T00:00:00Z",
+            note: "no traction after two weeks",
           },
         ],
       }),
     );
-    expect(screen.getByTestId('goal-pots').textContent).toContain('alpha');
+    expect(screen.getByTestId("goal-pots").textContent).toContain("alpha");
 
-    const closed = screen.getByTestId('goal-pots-closed');
-    expect(closed.textContent).toContain('beta');
-    expect(closed.textContent).toContain('no traction after two weeks');
-    expect(closed.querySelector('.hud-goal__proj--removed')).toBeTruthy();
+    const closed = screen.getByTestId("goal-pots-closed");
+    expect(closed.textContent).toContain("beta");
+    expect(closed.textContent).toContain("no traction after two weeks");
+    expect(closed.querySelector(".hud-goal__proj--removed")).toBeTruthy();
   });
 
-  it('shows each pot its OWN kill criterion and the shared badge', () => {
+  it("shows each pot its OWN kill criterion and the shared badge", () => {
     renderPanel(
       detail({
         pots: [
-          { harnessSlug: 'alpha', role: 'owner', killCriterion: 'ship by day 14', servesGoals: 3 },
-          { harnessSlug: 'gamma', role: 'contributing', servesGoals: 1 },
+          {
+            harnessSlug: "alpha",
+            role: "owner",
+            killCriterion: "ship by day 14",
+            servesGoals: 3,
+          },
+          { harnessSlug: "gamma", role: "contributing", servesGoals: 1 },
         ],
       }),
     );
-    const grid = screen.getByTestId('goal-pots');
-    expect(grid.textContent).toContain('ship by day 14');
-    expect(grid.textContent).toContain('shared with 2 other goals');
+    const grid = screen.getByTestId("goal-pots");
+    expect(grid.textContent).toContain("ship by day 14");
+    expect(grid.textContent).toContain("shared with 2 other goals");
     // Clause 4 requires one per pot — its absence is surfaced, not hidden.
-    expect(grid.textContent).toContain('No kill criterion for this pot');
+    expect(grid.textContent).toContain("No kill criterion for this pot");
   });
 
-  it('lists waiting-on-you above activity and opens an item', () => {
+  it("lists waiting-on-you above activity and opens an item", () => {
     const onOpenWorkItem = vi.fn();
     renderPanel(
       detail({
         waitingOnYou: [
-          { id: 'WI-1', title: 'Approve the pricing page', harnessSlug: 'alpha', updatedAt: '2026-08-09T08:00:00Z' },
+          {
+            id: "WI-1",
+            title: "Approve the pricing page",
+            harnessSlug: "alpha",
+            updatedAt: "2026-08-09T08:00:00Z",
+          },
         ],
         activity: [
-          { id: 'WI-2', title: 'Built the checkout', harnessSlug: 'alpha', closedAt: '2026-08-09T09:00:00Z' },
+          {
+            id: "WI-2",
+            title: "Built the checkout",
+            harnessSlug: "alpha",
+            closedAt: "2026-08-09T09:00:00Z",
+          },
         ],
       }),
       { onOpenWorkItem },
     );
-    const body = document.body.textContent ?? '';
-    expect(body.indexOf('Waiting on you')).toBeLessThan(body.indexOf('Activity'));
+    const body = document.body.textContent ?? "";
+    expect(body.indexOf("Waiting on you")).toBeLessThan(
+      body.indexOf("Activity"),
+    );
 
-    fireEvent.click(screen.getByRole('button', { name: 'Approve the pricing page' }));
-    expect(onOpenWorkItem).toHaveBeenCalledWith('WI-1');
+    fireEvent.click(
+      screen.getByRole("button", { name: "Approve the pricing page" }),
+    );
+    expect(onOpenWorkItem).toHaveBeenCalledWith("WI-1");
   });
 
-  it('carries the do-not-sum caveat next to the spend chart', () => {
+  it("carries the do-not-sum caveat next to the spend chart", () => {
     // D-021: a shared pot counts in full against every goal it serves, so
     // these figures do not add up. This is the section most likely to be
     // screenshotted, so the caveat travels with it.
     renderPanel(
       detail({
         spendByDay: [
-          { day: '2026-08-01', harnessSlug: 'alpha', costUsd: 3 },
-          { day: '2026-08-02', harnessSlug: 'alpha', costUsd: 8 },
+          { day: "2026-08-01", harnessSlug: "alpha", costUsd: 3 },
+          { day: "2026-08-02", harnessSlug: "alpha", costUsd: 8 },
         ],
       }),
     );
-    expect(screen.getByTestId('goal-spend-chart').querySelectorAll('.hud-goal__col')).toHaveLength(2);
-    expect(document.body.textContent).toContain('Goal spend figures do not sum.');
+    expect(
+      screen.getByTestId("goal-spend-chart").querySelectorAll(".hud-goal__col"),
+    ).toHaveLength(2);
+    expect(document.body.textContent).toContain(
+      "Goal spend figures do not sum.",
+    );
   });
 
-  it('says a goal is gone rather than rendering an empty shell', () => {
+  it("says a goal is gone rather than rendering an empty shell", () => {
     syncResult = { data: [{ goal: null }], loading: false, error: null };
-    render(<GoalDetailPanel goalId="goal-1" workspaceId="ws-real" nowMs={NOW} onClose={() => {}} />);
-    expect(document.body.textContent).toContain('no longer exists');
+    render(
+      <GoalDetailPanel
+        goalId="goal-1"
+        workspaceId="ws-real"
+        nowMs={NOW}
+        onClose={() => {}}
+      />,
+    );
+    expect(document.body.textContent).toContain("no longer exists");
   });
 
-  it('surfaces a load error instead of an empty page', () => {
-    syncResult = { data: null, loading: false, error: new Error('boom') };
-    render(<GoalDetailPanel goalId="goal-1" workspaceId="ws-real" nowMs={NOW} onClose={() => {}} />);
-    expect(document.body.textContent).toContain('Could not load this goal');
+  it("surfaces a load error instead of an empty page", () => {
+    syncResult = { data: null, loading: false, error: new Error("boom") };
+    render(
+      <GoalDetailPanel
+        goalId="goal-1"
+        workspaceId="ws-real"
+        nowMs={NOW}
+        onClose={() => {}}
+      />,
+    );
+    expect(document.body.textContent).toContain("Could not load this goal");
   });
 
   /* ── P-018: the SessionChatModal frame ──────────────────────────────────
@@ -405,34 +531,36 @@ describe('GoalDetailPanel', () => {
      and the rail have to sit OUTSIDE the scrolling body, or they scroll away
      with it and the "glance" the band exists to provide is gone exactly when
      the reader has scrolled down to look for detail. */
-  it('puts the vitals band OUTSIDE the scrolling body, not inside it', () => {
+  it("puts the vitals band OUTSIDE the scrolling body, not inside it", () => {
     renderPanel(detail());
-    const vitals = screen.getByTestId('goal-vitals');
-    const body = screen.getByTestId('goal-detail');
+    const vitals = screen.getByTestId("goal-vitals");
+    const body = screen.getByTestId("goal-detail");
     expect(vitals).toBeTruthy();
     // The bug this pins is a one-line nesting slip that looks identical on a
     // short goal and breaks completely on a long one.
     expect(body.contains(vitals)).toBe(false);
-    expect(screen.getByTestId('goal-detail-modal').contains(vitals)).toBe(true);
+    expect(screen.getByTestId("goal-detail-modal").contains(vitals)).toBe(true);
   });
 
-  it('leads the band with status, the stopping condition and spend-vs-ceiling', () => {
+  it("leads the band with status, the stopping condition and spend-vs-ceiling", () => {
     renderPanel(detail());
-    const vitals = screen.getByTestId('goal-vitals');
-    expect(vitals.textContent).toContain('active');
-    expect(vitals.textContent).toContain('Stop if no paying user by day 30.');
-    expect(vitals.textContent).toContain('$310');
+    const vitals = screen.getByTestId("goal-vitals");
+    expect(vitals.textContent).toContain("active");
+    expect(vitals.textContent).toContain("Stop if no paying user by day 30.");
+    expect(vitals.textContent).toContain("$310");
   });
 
-  it('renders the status ONCE — the band owns it, the header no longer repeats it', () => {
-    renderPanel(detail({ goal: { status: 'paused' } as never }));
+  it("renders the status ONCE — the band owns it, the header no longer repeats it", () => {
+    renderPanel(detail({ goal: { status: "paused" } as never }));
     // Two copies of one status is how a stale one goes unnoticed. Asserted as
     // "the band has it, the title row does not" rather than by counting DOM
     // nodes, which is what the status word is actually claimed to be.
-    expect(screen.getByTestId('goal-vitals').textContent).toContain('paused');
-    const titleRow = document.body.querySelector('.hud-goal__title-row') as HTMLElement;
+    expect(screen.getByTestId("goal-vitals").textContent).toContain("paused");
+    const titleRow = document.body.querySelector(
+      ".hud-goal__title-row",
+    ) as HTMLElement;
     expect(titleRow).toBeTruthy();
-    expect(titleRow.textContent).not.toContain('paused');
+    expect(titleRow.textContent).not.toContain("paused");
   });
 
   /* ── D-011 (the RETRACTION): the popup EMBEDS the conversation ─────────────
@@ -441,166 +569,242 @@ describe('GoalDetailPanel', () => {
      never resolved a session — so it was asserting an absence produced by the
      test environment rather than by the design. */
 
-  it('EMBEDS the live conversation for the goal’s agent, reusing LiveSessionChat', () => {
-    chatState = { resolved: { session_id: 's1', source_kind: 'claude' }, streamUrl: '/api/adv/session/thinking?x=1' };
-    renderPanel(detail({ agents: [{ ownerId: 'su-abc', setAt: null, setBy: 'operator-ui' }] }), {
-      onOpenAgent: () => {},
-    });
-    const chat = screen.getByTestId('live-chat');
+  it("EMBEDS the live conversation for the goal’s agent, reusing LiveSessionChat", () => {
+    chatState = {
+      resolved: { session_id: "s1", source_kind: "claude" },
+      streamUrl: "/api/adv/session/thinking?x=1",
+    };
+    renderPanel(
+      detail({
+        agents: [{ ownerId: "su-abc", setAt: null, setBy: "operator-ui" }],
+      }),
+      {
+        onOpenAgent: () => {},
+      },
+    );
+    const chat = screen.getByTestId("live-chat");
     // Wired to THIS goal's agent and THIS stream — not merely present.
-    expect(chat.getAttribute('data-owner')).toBe('su-abc');
-    expect(chat.getAttribute('data-stream')).toBe('/api/adv/session/thinking?x=1');
+    expect(chat.getAttribute("data-owner")).toBe("su-abc");
+    expect(chat.getAttribute("data-stream")).toBe(
+      "/api/adv/session/thinking?x=1",
+    );
     // The composer the owner reported missing.
-    expect(document.body.querySelector('textarea')).not.toBeNull();
+    expect(document.body.querySelector("textarea")).not.toBeNull();
   });
 
-  it('sends through the SHARED wiring rather than a second send path', () => {
-    chatState = { resolved: { session_id: 's1', source_kind: 'claude' }, streamUrl: '/s' };
-    renderPanel(detail({ agents: [{ ownerId: 'su-abc', setAt: null, setBy: 'operator-ui' }] }), {
-      onOpenAgent: () => {},
-    });
-    fireEvent.click(screen.getByText('Send'));
-    expect(chatSends).toEqual(['hello']);
+  it("sends through the SHARED wiring rather than a second send path", () => {
+    chatState = {
+      resolved: { session_id: "s1", source_kind: "claude" },
+      streamUrl: "/s",
+    };
+    renderPanel(
+      detail({
+        agents: [{ ownerId: "su-abc", setAt: null, setBy: "operator-ui" }],
+      }),
+      {
+        onOpenAgent: () => {},
+      },
+    );
+    fireEvent.click(screen.getByText("Send"));
+    expect(chatSends).toEqual(["hello"]);
   });
 
-  it('renders a plain statement and NO composer when no agent runs the goal', () => {
+  it("renders a plain statement and NO composer when no agent runs the goal", () => {
     // D-011: "a composer that looks live and can reach nobody is worse than
     // none." Unlike the test this replaced, the absence here is caused by the
     // component's own branch — the hook is mocked as resolvable.
-    chatState = { resolved: { session_id: 's1', source_kind: 'claude' }, streamUrl: '/s' };
+    chatState = {
+      resolved: { session_id: "s1", source_kind: "claude" },
+      streamUrl: "/s",
+    };
     renderPanel(detail({ agents: [] }), { onOpenAgent: () => {} });
-    expect(screen.getByTestId('goal-chat-no-agent')).toBeTruthy();
-    expect(screen.queryByTestId('live-chat')).toBeNull();
-    expect(document.body.querySelector('textarea')).toBeNull();
+    expect(screen.getByTestId("goal-chat-no-agent")).toBeTruthy();
+    expect(screen.queryByTestId("live-chat")).toBeNull();
+    expect(document.body.querySelector("textarea")).toBeNull();
   });
 
-  it('says so, without a composer, when the agent has no recent session', () => {
+  it("says so, without a composer, when the agent has no recent session", () => {
     chatState = { resolved: null, streamUrl: null };
-    renderPanel(detail({ agents: [{ ownerId: 'su-abc', setAt: null, setBy: 'operator-ui' }] }), {
-      onOpenAgent: () => {},
-    });
-    expect(screen.getByTestId('goal-chat-no-session')).toBeTruthy();
-    expect(document.body.querySelector('textarea')).toBeNull();
+    renderPanel(
+      detail({
+        agents: [{ ownerId: "su-abc", setAt: null, setBy: "operator-ui" }],
+      }),
+      {
+        onOpenAgent: () => {},
+      },
+    );
+    expect(screen.getByTestId("goal-chat-no-session")).toBeTruthy();
+    expect(document.body.querySelector("textarea")).toBeNull();
   });
 
-  it('surfaces a resolve FAILURE instead of an empty chat that looks idle', () => {
-    chatState = { resolveError: 'sessions:list → 500', resolved: null, streamUrl: null };
-    renderPanel(detail({ agents: [{ ownerId: 'su-abc', setAt: null, setBy: 'operator-ui' }] }), {
-      onOpenAgent: () => {},
-    });
-    expect(screen.getByTestId('goal-chat-error').textContent).toContain('sessions:list → 500');
+  it("surfaces a resolve FAILURE instead of an empty chat that looks idle", () => {
+    chatState = {
+      resolveError: "sessions:list → 500",
+      resolved: null,
+      streamUrl: null,
+    };
+    renderPanel(
+      detail({
+        agents: [{ ownerId: "su-abc", setAt: null, setBy: "operator-ui" }],
+      }),
+      {
+        onOpenAgent: () => {},
+      },
+    );
+    expect(screen.getByTestId("goal-chat-error").textContent).toContain(
+      "sessions:list → 500",
+    );
   });
 
-  it('routes to the goal’s agent when there IS one, and renders no dead button when there is not', () => {
+  it("routes to the goal’s agent when there IS one, and renders no dead button when there is not", () => {
     const seen: string[] = [];
     const { unmount } = renderPanel(
-      detail({ agents: [{ ownerId: 'su-abc', setAt: null, setBy: 'operator-ui' }] }),
+      detail({
+        agents: [{ ownerId: "su-abc", setAt: null, setBy: "operator-ui" }],
+      }),
       { onOpenAgent: (id: string) => seen.push(id) },
     );
-    const openConversation = screen.getByTestId('goal-open-agent');
+    const openConversation = screen.getByTestId("goal-open-agent");
     // Icon-only in the compact band: the accessible action survives while the
     // visible "Open full-size" label no longer competes with panel controls.
-    expect(openConversation.textContent).toBe('');
-    expect(openConversation.querySelector('svg')).toBeTruthy();
-    expect(openConversation.getAttribute('aria-label')).toBe('Open conversation full-size');
+    expect(openConversation.textContent).toBe("");
+    expect(openConversation.querySelector("svg")).toBeTruthy();
+    expect(openConversation.getAttribute("aria-label")).toBe(
+      "Open conversation full-size",
+    );
     fireEvent.click(openConversation);
-    expect(seen).toEqual(['su-abc']);
+    expect(seen).toEqual(["su-abc"]);
     unmount();
     cleanup();
 
     // No agent stamped on the goal ⇒ the control is ABSENT, not present-and-inert.
     renderPanel(detail({ agents: [] }), { onOpenAgent: () => {} });
-    expect(screen.queryByTestId('goal-open-agent')).toBeNull();
+    expect(screen.queryByTestId("goal-open-agent")).toBeNull();
     cleanup();
 
     // Host cannot route ⇒ also absent. WI-6742's dead-button shape.
-    renderPanel(detail({ agents: [{ ownerId: 'su-abc' }] }));
-    expect(screen.queryByTestId('goal-open-agent')).toBeNull();
+    renderPanel(detail({ agents: [{ ownerId: "su-abc" }] }));
+    expect(screen.queryByTestId("goal-open-agent")).toBeNull();
   });
 
   /* ── P-019: the work rail ──────────────────────────────────────────────── */
-  it('seats the rail as a SIBLING of the body so it does not scroll away', () => {
+  it("seats the rail as a SIBLING of the body so it does not scroll away", () => {
     renderPanel(detail());
-    const rail = screen.getByTestId('goal-work-rail');
-    expect(screen.getByTestId('goal-detail').contains(rail)).toBe(false);
-    expect(screen.getByTestId('goal-detail-modal').contains(rail)).toBe(true);
+    const rail = screen.getByTestId("goal-work-rail");
+    expect(screen.getByTestId("goal-detail").contains(rail)).toBe(false);
+    expect(screen.getByTestId("goal-detail-modal").contains(rail)).toBe(true);
   });
 
-  it('lists the goal’s plans and work items, showing an overlapping item ONCE', () => {
+  it("lists the goal’s plans and work items, showing an overlapping item ONCE", () => {
     renderPanel(
       detail({
         plans: [
           {
-            planSlug: 'ship-it',
-            harnessSlug: 'papercusp',
-            title: 'Ship it',
+            planSlug: "ship-it",
+            harnessSlug: "papercusp",
+            title: "Ship it",
             items: 4,
             openItems: 2,
             stamped: false,
           },
         ],
-        waitingOnYou: [{ id: 'WI-1', title: 'Needs a decision', harnessSlug: 'papercusp' }],
+        waitingOnYou: [
+          { id: "WI-1", title: "Needs a decision", harnessSlug: "papercusp" },
+        ],
         activity: [
-          { id: 'WI-1', title: 'Needs a decision', harnessSlug: 'papercusp', status: 'open' },
-          { id: 'WI-2', title: 'In flight', harnessSlug: 'papercusp', status: 'wip' },
+          {
+            id: "WI-1",
+            title: "Needs a decision",
+            harnessSlug: "papercusp",
+            status: "open",
+          },
+          {
+            id: "WI-2",
+            title: "In flight",
+            harnessSlug: "papercusp",
+            status: "wip",
+          },
         ],
       }),
     );
-    const rail = screen.getByTestId('goal-work-rail');
-    expect(rail.textContent).toContain('Ship it');
+    const rail = screen.getByTestId("goal-work-rail");
+    expect(rail.textContent).toContain("Ship it");
     // The dedupe, asserted where the reader actually sees it: WI-1 arrives in
     // BOTH waitingOnYou and activity, and must render exactly one row.
-    const rows = Array.from(rail.querySelectorAll('[data-testid="goal-rail-item"]'));
-    expect(rows.filter((r) => r.getAttribute('data-id') === 'WI-1')).toHaveLength(1);
+    const rows = Array.from(
+      rail.querySelectorAll('[data-testid="goal-rail-item"]'),
+    );
+    expect(
+      rows.filter((r) => r.getAttribute("data-id") === "WI-1"),
+    ).toHaveLength(1);
     expect(rows).toHaveLength(2);
   });
 
-  it('rail rows reuse the panel’s EXISTING work-item route, not a second one', () => {
+  it("rail rows reuse the panel’s EXISTING work-item route, not a second one", () => {
     const opened: string[] = [];
-    renderPanel(detail({ activity: [{ id: 'WI-7', title: 'Openable', status: 'wip' }] }), {
-      onOpenWorkItem: (id: string) => opened.push(id),
-    });
+    renderPanel(
+      detail({ activity: [{ id: "WI-7", title: "Openable", status: "wip" }] }),
+      {
+        onOpenWorkItem: (id: string) => opened.push(id),
+      },
+    );
     const row = screen
-      .getByTestId('goal-work-rail')
-      .querySelector('[data-testid="goal-rail-item"][data-id="WI-7"]') as HTMLElement;
+      .getByTestId("goal-work-rail")
+      .querySelector(
+        '[data-testid="goal-rail-item"][data-id="WI-7"]',
+      ) as HTMLElement;
     fireEvent.click(row);
-    expect(opened).toEqual(['WI-7']);
+    expect(opened).toEqual(["WI-7"]);
   });
 
-  it('says WHY the rail is empty instead of rendering bare headings', () => {
+  it("says WHY the rail is empty instead of rendering bare headings", () => {
     // D-010: this is the LIVE state of every goal in this workspace today, so
     // it is the state most likely to be seen — not an edge case.
     renderPanel(detail());
-    const rail = screen.getByTestId('goal-work-rail');
-    expect(screen.getByTestId('goal-rail-empty')).toBeTruthy();
+    const rail = screen.getByTestId("goal-work-rail");
+    expect(screen.getByTestId("goal-rail-empty")).toBeTruthy();
     // Three empty section headings read as a panel that failed to load.
-    expect(rail.querySelectorAll('.pc-peers__cap')).toHaveLength(0);
-    expect(rail.textContent).toContain('Nothing is under this goal yet');
+    expect(rail.querySelectorAll(".pc-peers__cap")).toHaveLength(0);
+    expect(rail.textContent).toContain("Nothing is under this goal yet");
   });
 
-  it('the toggle actually hides the rail', () => {
+  it("the toggle actually hides the rail", () => {
     renderPanel(detail());
-    expect(screen.queryByTestId('goal-work-rail')).toBeTruthy();
+    expect(screen.queryByTestId("goal-work-rail")).toBeTruthy();
     openPanelsMenu();
-    fireEvent.click(screen.getByTestId('goal-rail-toggle'));
-    expect(screen.queryByTestId('goal-work-rail')).toBeNull();
+    fireEvent.click(screen.getByTestId("goal-rail-toggle"));
+    expect(screen.queryByTestId("goal-work-rail")).toBeNull();
   });
 
-  it('does not total the plan rows into a goal-wide figure (D-002/D-021)', () => {
+  it("does not total the plan rows into a goal-wide figure (D-002/D-021)", () => {
     renderPanel(
       detail({
         plans: [
-          { planSlug: 'a', harnessSlug: 'h', title: 'A', items: 3, openItems: 2, stamped: false },
-          { planSlug: 'b', harnessSlug: 'h', title: 'B', items: 4, openItems: 3, stamped: false },
+          {
+            planSlug: "a",
+            harnessSlug: "h",
+            title: "A",
+            items: 3,
+            openItems: 2,
+            stamped: false,
+          },
+          {
+            planSlug: "b",
+            harnessSlug: "h",
+            title: "B",
+            items: 4,
+            openItems: 3,
+            stamped: false,
+          },
         ],
       }),
     );
-    const rail = screen.getByTestId('goal-work-rail');
+    const rail = screen.getByTestId("goal-work-rail");
     // 2+3=5 and 3+4=7 must appear nowhere: these figures deliberately do not
     // sum, and a parent/child layout is the one that most tempts a reader to
     // add them. The per-row counts themselves stay visible.
-    expect(rail.textContent).toContain('2 open of 3 on this goal');
-    expect(rail.textContent).toContain('3 open of 4 on this goal');
+    expect(rail.textContent).toContain("2 open of 3 on this goal");
+    expect(rail.textContent).toContain("3 open of 4 on this goal");
     expect(rail.textContent).not.toMatch(/\b5 open\b/);
     expect(rail.textContent).not.toMatch(/\b7 (open|total)\b/);
   });
@@ -613,49 +817,70 @@ describe('GoalDetailPanel', () => {
     renderPanel(
       detail({
         plans: [
-          { planSlug: 'panda-gallery-v1', harnessSlug: 'h', title: 'Panda gallery', items: 0, openItems: 0, stamped: true },
+          {
+            planSlug: "panda-gallery-v1",
+            harnessSlug: "h",
+            title: "Panda gallery",
+            items: 0,
+            openItems: 0,
+            stamped: true,
+          },
         ],
       }),
     );
-    const rail = screen.getByTestId('goal-work-rail');
-    expect(rail.textContent).toContain('started by this goal');
-    expect(rail.textContent).not.toContain('0 open of 0 on this goal');
+    const rail = screen.getByTestId("goal-work-rail");
+    expect(rail.textContent).toContain("started by this goal");
+    expect(rail.textContent).not.toContain("0 open of 0 on this goal");
   });
 
-  it('keeps the counts for a stamped plan that HAS produced work', () => {
+  it("keeps the counts for a stamped plan that HAS produced work", () => {
     // The flag must not swallow a real reading: once work exists, the counts
     // are the more informative answer and stay.
     renderPanel(
       detail({
         plans: [
-          { planSlug: 'p', harnessSlug: 'h', title: 'P', items: 4, openItems: 1, stamped: true },
+          {
+            planSlug: "p",
+            harnessSlug: "h",
+            title: "P",
+            items: 4,
+            openItems: 1,
+            stamped: true,
+          },
         ],
       }),
     );
-    const rail = screen.getByTestId('goal-work-rail');
-    expect(rail.textContent).toContain('1 open of 4 on this goal');
-    expect(rail.textContent).not.toContain('started by this goal');
+    const rail = screen.getByTestId("goal-work-rail");
+    expect(rail.textContent).toContain("1 open of 4 on this goal");
+    expect(rail.textContent).not.toContain("started by this goal");
   });
 
-  it('leaves an INHERITED plan with no goal items reading as zero, not as started', () => {
+  it("leaves an INHERITED plan with no goal items reading as zero, not as started", () => {
     // stamped:false + zero items is a different state — the goal never authored
     // this plan — and must not borrow the reassuring copy.
     renderPanel(
       detail({
         plans: [
-          { planSlug: 'inherited', harnessSlug: 'h', title: 'Inherited', items: 0, openItems: 0, stamped: false },
+          {
+            planSlug: "inherited",
+            harnessSlug: "h",
+            title: "Inherited",
+            items: 0,
+            openItems: 0,
+            stamped: false,
+          },
         ],
       }),
     );
-    const rail = screen.getByTestId('goal-work-rail');
-    expect(rail.textContent).toContain('0 open of 0 on this goal');
-    expect(rail.textContent).not.toContain('started by this goal');
+    const rail = screen.getByTestId("goal-work-rail");
+    expect(rail.textContent).toContain("0 open of 0 on this goal");
+    expect(rail.textContent).not.toContain("started by this goal");
   });
 
-  it('closing clears the selection', () => {
+  it("closing clears the selection", () => {
     const onClose = vi.fn();
     renderPanel(detail(), { onClose });
-    fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
     expect(onClose).toHaveBeenCalled();
   });
 
@@ -664,21 +889,24 @@ describe('GoalDetailPanel', () => {
      because they fail independently: that the number is HONEST (the resolver
      caps the rows at 25 and counts unbounded), and that it is a DESTINATION
      rather than the readout it used to be. */
-  describe('waiting-on-you count', () => {
+  describe("waiting-on-you count", () => {
     const waiting = (n: number) =>
-      Array.from({ length: n }, (_, i) => ({ id: `WI-${i}`, title: `Ask ${i}` }));
+      Array.from({ length: n }, (_, i) => ({
+        id: `WI-${i}`,
+        title: `Ask ${i}`,
+      }));
 
-    it('renders the count as a CONTROL that jumps to the section it counts', () => {
+    it("renders the count as a CONTROL that jumps to the section it counts", () => {
       renderPanel(detail({ waitingOnYou: waiting(3), waitingOnYouTotal: 3 }));
       // A <button>, not a <span>: getByRole is what discriminates. The card's
       // chip deliberately stays a span (nested-button rule) — this band does not.
-      const jump = screen.getByTestId('goal-waiting-jump');
-      expect(jump.tagName).toBe('BUTTON');
-      expect(jump.textContent).toContain('3 waiting on you');
+      const jump = screen.getByTestId("goal-waiting-jump");
+      expect(jump.tagName).toBe("BUTTON");
+      expect(jump.textContent).toContain("3 waiting on you");
 
       // jsdom implements neither, and their ABSENCE is what the old dead-text
       // version relied on — so stub and assert they are actually called.
-      const section = screen.getByTestId('goal-waiting-section');
+      const section = screen.getByTestId("goal-waiting-section");
       const scrollIntoView = vi.fn();
       const focus = vi.fn();
       section.scrollIntoView = scrollIntoView;
@@ -692,57 +920,65 @@ describe('GoalDetailPanel', () => {
       expect(focus).toHaveBeenCalled();
     });
 
-    it('shows the TOTAL and discloses the cap when rows are truncated', () => {
+    it("shows the TOTAL and discloses the cap when rows are truncated", () => {
       // The resolver's LIMIT 25 against a true 31. Before D-018 the panel
       // rendered `waiting.length`, so it said 25 while the goal card — which
       // counts unbounded — said 31, with nothing explaining the difference.
       renderPanel(detail({ waitingOnYou: waiting(25), waitingOnYouTotal: 31 }));
-      expect(screen.getByTestId('goal-waiting-jump').textContent).toContain('31 waiting on you');
-      expect(screen.getByTestId('goal-waiting-note').textContent).toBe('showing 25 of 31');
-      const section = screen.getByTestId('goal-waiting-section');
+      expect(screen.getByTestId("goal-waiting-jump").textContent).toContain(
+        "31 waiting on you",
+      );
+      expect(screen.getByTestId("goal-waiting-note").textContent).toBe(
+        "showing 25 of 31",
+      );
+      const section = screen.getByTestId("goal-waiting-section");
       // The capped length must not appear as the headline anywhere.
-      expect(section.querySelector('.hud__chip')?.textContent).toBe('31');
+      expect(section.querySelector(".hud__chip")?.textContent).toBe("31");
     });
 
-    it('adds no cap note when the list is complete', () => {
+    it("adds no cap note when the list is complete", () => {
       renderPanel(detail({ waitingOnYou: waiting(2), waitingOnYouTotal: 2 }));
-      expect(screen.queryByTestId('goal-waiting-note')).toBeNull();
-      expect(screen.getByTestId('goal-waiting-jump').textContent).toContain('2 waiting on you');
+      expect(screen.queryByTestId("goal-waiting-note")).toBeNull();
+      expect(screen.getByTestId("goal-waiting-jump").textContent).toContain(
+        "2 waiting on you",
+      );
     });
 
-    it('keeps the brief BESIDE the conversation, never wrapping it (P-022)', () => {
+    it("keeps the brief BESIDE the conversation, never wrapping it (P-022)", () => {
       // The owner's ask was "the conversation takes up the full height", and the
       // mechanism is structural: the brief is a SIBLING zone, so the chat column
       // has nothing stacked above it. Asserted as containment rather than by
       // reading a flex value, because a style assertion would still pass if the
       // brief were nested back inside the conversation column.
       renderPanel(detail());
-      const brief = screen.getByTestId('goal-brief-rail');
-      const chat = screen.getByTestId('goal-chat');
+      const brief = screen.getByTestId("goal-brief-rail");
+      const chat = screen.getByTestId("goal-chat");
       expect(brief.contains(chat)).toBe(false);
       expect(chat.contains(brief)).toBe(false);
       // Same invariant SessionChatModal states twice for its own rails: a zone
       // that becomes a PARENT of the conversation silently breaks the layout
       // contract, and nothing else in the tree would catch it.
-      expect(screen.getByTestId('goal-detail-modal').contains(brief)).toBe(true);
+      expect(screen.getByTestId("goal-detail-modal").contains(brief)).toBe(
+        true,
+      );
     });
 
-    it('the brief zone can be closed, and closing it leaves the conversation mounted', () => {
+    it("the brief zone can be closed, and closing it leaves the conversation mounted", () => {
       renderPanel(detail());
-      expect(screen.getByTestId('goal-brief-rail')).toBeTruthy();
+      expect(screen.getByTestId("goal-brief-rail")).toBeTruthy();
       openPanelsMenu();
-      fireEvent.click(screen.getByTestId('goal-brief-toggle'));
-      expect(screen.queryByTestId('goal-brief-rail')).toBeNull();
+      fireEvent.click(screen.getByTestId("goal-brief-toggle"));
+      expect(screen.queryByTestId("goal-brief-rail")).toBeNull();
       // The point of the toggle is more room for the conversation — so the
       // conversation must survive it.
-      expect(screen.getByTestId('goal-chat')).toBeTruthy();
+      expect(screen.getByTestId("goal-chat")).toBeTruthy();
     });
 
-    it('stays silent at zero — no control, no note', () => {
+    it("stays silent at zero — no control, no note", () => {
       renderPanel(detail({ waitingOnYou: [], waitingOnYouTotal: 0 }));
-      expect(screen.queryByTestId('goal-waiting-jump')).toBeNull();
-      expect(screen.queryByTestId('goal-waiting-note')).toBeNull();
-      expect(document.body.textContent).toContain('Nothing is parked on you.');
+      expect(screen.queryByTestId("goal-waiting-jump")).toBeNull();
+      expect(screen.queryByTestId("goal-waiting-note")).toBeNull();
+      expect(document.body.textContent).toContain("Nothing is parked on you.");
     });
   });
 
@@ -756,8 +992,8 @@ describe('GoalDetailPanel', () => {
      zone has been nested back inside the conversation — which is precisely the
      regression that would undo P-022's full-height contract while every number
      still looked right. */
-  describe('P-021: the borrowed session rails', () => {
-    const AGENT = { ownerId: 'su-abc', setAt: null, setBy: 'operator-ui' };
+  describe("P-021: the borrowed session rails", () => {
+    const AGENT = { ownerId: "su-abc", setAt: null, setBy: "operator-ui" };
     const withAgent = () => detail({ agents: [AGENT] });
 
     /** A roster row, complete enough to survive `toHudSession`.
@@ -770,15 +1006,17 @@ describe('GoalDetailPanel', () => {
      *  ⚠ The right fix for that throw is THIS, not a `?? []` in the component:
      *  defaulting a required field in production would hide a genuinely
      *  malformed payload behind an empty rail. */
-    function rosterEntry(over: Record<string, unknown> = {}): Record<string, unknown> {
+    function rosterEntry(
+      over: Record<string, unknown> = {},
+    ): Record<string, unknown> {
       return {
-        ownerId: 'su-abc',
-        label: 'su · abc',
-        source: 'presence',
-        intent: 'working the goal',
+        ownerId: "su-abc",
+        label: "su · abc",
+        source: "presence",
+        intent: "working the goal",
         currentFiles: [],
-        liveness: 'live',
-        sessionState: 'live',
+        liveness: "live",
+        sessionState: "live",
         stale: false,
         lastActiveAt: new Date(NOW).toISOString(),
         intentDeclaredAt: new Date(NOW).toISOString(),
@@ -788,13 +1026,13 @@ describe('GoalDetailPanel', () => {
         claims: [],
         declaredUnclaimed: false,
         currentPlanSlug: null,
-        harnessSlug: 'papercusp',
-        agentPaneKind: 'claude',
-        role: 'su',
-        agent: 'claude',
+        harnessSlug: "papercusp",
+        agentPaneKind: "claude",
+        role: "su",
+        agent: "claude",
         advSessionId: 1,
         windowId: null,
-        wakeMode: 'auto',
+        wakeMode: "auto",
         pendingWakes: 0,
         /** The field that decides whether there is a fleet at all — absent, and
          *  `deriveFleetPeers` returns null, which is the common case for a
@@ -812,25 +1050,29 @@ describe('GoalDetailPanel', () => {
     function rosterRows(rows: Array<Record<string, unknown>>) {
       rosterResult = { data: [{ active: rows }], loading: false, error: null };
     }
-    const inFleet = [rosterEntry({ fleetSlug: 'fleet-x' })];
+    const inFleet = [rosterEntry({ fleetSlug: "fleet-x" })];
 
-    it('renders the three borrowed zones IN ADDITION to the goal’s own two, never instead of them', () => {
+    it("renders the three borrowed zones IN ADDITION to the goal’s own two, never instead of them", () => {
       rosterRows(inFleet);
       renderPanel(withAgent());
       // The goal's own two — the thing "in addition, not instead of" protects.
-      expect(screen.getByTestId('goal-brief-rail')).toBeTruthy();
-      expect(screen.getByTestId('goal-work-rail')).toBeTruthy();
+      expect(screen.getByTestId("goal-brief-rail")).toBeTruthy();
+      expect(screen.getByTestId("goal-work-rail")).toBeTruthy();
       // …and the three borrowed from the sessions popup.
-      expect(screen.getByTestId('goal-orders-rail')).toBeTruthy();
-      expect(screen.getByTestId('goal-dossier-rail')).toBeTruthy();
-      expect(screen.getByTestId('goal-peers-rail')).toBeTruthy();
+      expect(screen.getByTestId("goal-orders-rail")).toBeTruthy();
+      expect(screen.getByTestId("goal-dossier-rail")).toBeTruthy();
+      expect(screen.getByTestId("goal-peers-rail")).toBeTruthy();
     });
 
-    it('seats every borrowed zone as a SIBLING of the conversation, never inside or around it', () => {
+    it("seats every borrowed zone as a SIBLING of the conversation, never inside or around it", () => {
       rosterRows(inFleet);
       renderPanel(withAgent());
-      const chat = screen.getByTestId('goal-chat');
-      for (const id of ['goal-orders-rail', 'goal-dossier-rail', 'goal-peers-rail']) {
+      const chat = screen.getByTestId("goal-chat");
+      for (const id of [
+        "goal-orders-rail",
+        "goal-dossier-rail",
+        "goal-peers-rail",
+      ]) {
         const zone = screen.getByTestId(id);
         // Containment asserted BOTH ways: nesting a zone inside the
         // conversation, or wrapping the conversation in one, are the two shapes
@@ -841,7 +1083,7 @@ describe('GoalDetailPanel', () => {
       }
     });
 
-    it('keeps DOM order equal to the promised reading order, so tab order cannot contradict the layout', () => {
+    it("keeps DOM order equal to the promised reading order, so tab order cannot contradict the layout", () => {
       rosterRows(inFleet);
       renderPanel(withAgent());
       /* Orders │ Brief │ conversation │ Sessions │ Work │ Activity │ Fleet.
@@ -855,13 +1097,13 @@ describe('GoalDetailPanel', () => {
          seated at the far edge, which is the one placement that was ruled out
          explicitly. */
       const nodes = [
-        'goal-orders-rail',
-        'goal-brief-rail',
-        'goal-chat',
-        'goal-sessions-rail',
-        'goal-work-rail',
-        'goal-dossier-rail',
-        'goal-peers-rail',
+        "goal-orders-rail",
+        "goal-brief-rail",
+        "goal-chat",
+        "goal-sessions-rail",
+        "goal-work-rail",
+        "goal-dossier-rail",
+        "goal-peers-rail",
       ].map((id) => screen.getByTestId(id));
       for (let i = 1; i < nodes.length; i += 1) {
         const rel = nodes[i - 1]!.compareDocumentPosition(nodes[i]!);
@@ -869,71 +1111,71 @@ describe('GoalDetailPanel', () => {
       }
     });
 
-    it('renders no borrowed zone and no toggle for one when the goal has no agent', () => {
+    it("renders no borrowed zone and no toggle for one when the goal has no agent", () => {
       rosterRows(inFleet);
       renderPanel(detail({ agents: [] }));
       openPanelsMenu();
       // Absent, not present-and-inert — WI-6742's dead-control shape, which
       // this popup has already been filed against once.
       for (const id of [
-        'goal-orders-rail',
-        'goal-dossier-rail',
-        'goal-peers-rail',
-        'goal-orders-toggle',
-        'goal-activity-toggle',
-        'goal-fleet-toggle',
+        "goal-orders-rail",
+        "goal-dossier-rail",
+        "goal-peers-rail",
+        "goal-orders-toggle",
+        "goal-activity-toggle",
+        "goal-fleet-toggle",
         /* P-024's zone goes with them. It is not a BORROWED rail — it describes
            the goal, not the agent — but its five sections exist to report
            coverage gaps in a goal that is RUNNING, and a goal with no agent
            stamp has none to report. Five empty sections beside the popup's own
            "no agent is running this goal yet" sentence would be saying that a
            sixth time, in a shape that reads as a fault. */
-        'goal-sessions-rail',
-        'goal-sessions-toggle',
+        "goal-sessions-rail",
+        "goal-sessions-toggle",
       ]) {
         expect(screen.queryByTestId(id)).toBeNull();
       }
       // The goal's own zones are untouched: the borrowed rails are context
       // ABOUT an agent, never a precondition for showing the goal.
-      expect(screen.getByTestId('goal-brief-rail')).toBeTruthy();
-      expect(screen.getByTestId('goal-work-rail')).toBeTruthy();
+      expect(screen.getByTestId("goal-brief-rail")).toBeTruthy();
+      expect(screen.getByTestId("goal-work-rail")).toBeTruthy();
     });
 
-    it('shows the fleet zone only when the agent is actually in a fleet — never an empty column', () => {
+    it("shows the fleet zone only when the agent is actually in a fleet — never an empty column", () => {
       rosterRows(inFleet);
       const { unmount } = renderPanel(withAgent());
-      expect(screen.getByTestId('goal-peers-rail')).toBeTruthy();
+      expect(screen.getByTestId("goal-peers-rail")).toBeTruthy();
       openPanelsMenu();
-      expect(screen.getByTestId('goal-fleet-toggle')).toBeTruthy();
+      expect(screen.getByTestId("goal-fleet-toggle")).toBeTruthy();
       unmount();
       cleanup();
 
       // Same agent, no fleet. The zone AND its toggle go away together.
       rosterRows([rosterEntry({ fleetSlug: null })]);
       renderPanel(withAgent());
-      expect(screen.queryByTestId('goal-peers-rail')).toBeNull();
+      expect(screen.queryByTestId("goal-peers-rail")).toBeNull();
       openPanelsMenu();
-      expect(screen.queryByTestId('goal-fleet-toggle')).toBeNull();
+      expect(screen.queryByTestId("goal-fleet-toggle")).toBeNull();
       // …while the two that need no fleet stay. A regression that gated all
       // three on the fleet model would pass the previous assertions alone.
-      expect(screen.getByTestId('goal-orders-rail')).toBeTruthy();
-      expect(screen.getByTestId('goal-dossier-rail')).toBeTruthy();
+      expect(screen.getByTestId("goal-orders-rail")).toBeTruthy();
+      expect(screen.getByTestId("goal-dossier-rail")).toBeTruthy();
     });
 
-    it('closing a borrowed zone leaves the conversation and the other zones mounted', () => {
+    it("closing a borrowed zone leaves the conversation and the other zones mounted", () => {
       rosterRows(inFleet);
       renderPanel(withAgent());
       openPanelsMenu();
-      fireEvent.click(screen.getByTestId('goal-orders-toggle'));
-      expect(screen.queryByTestId('goal-orders-rail')).toBeNull();
+      fireEvent.click(screen.getByTestId("goal-orders-toggle"));
+      expect(screen.queryByTestId("goal-orders-rail")).toBeNull();
       // The point of every toggle here is more room for the conversation, so
       // the conversation must survive each one.
-      expect(screen.getByTestId('goal-chat')).toBeTruthy();
-      expect(screen.getByTestId('goal-dossier-rail')).toBeTruthy();
-      expect(screen.getByTestId('goal-peers-rail')).toBeTruthy();
+      expect(screen.getByTestId("goal-chat")).toBeTruthy();
+      expect(screen.getByTestId("goal-dossier-rail")).toBeTruthy();
+      expect(screen.getByTestId("goal-peers-rail")).toBeTruthy();
     });
 
-    it('adds exactly ONE query of its own for the borrowed rails — the shared roster read', () => {
+    it("adds exactly ONE query of its own for the borrowed rails — the shared roster read", () => {
       rosterRows(inFleet);
       renderPanel(withAgent());
       /* The reuse-first claim, pinned — and stated honestly. The two rails are
@@ -950,10 +1192,10 @@ describe('GoalDetailPanel', () => {
          A set, not a tally, because React re-renders re-issue the same calls
          and a raw count would be flaky. */
       expect([...new Set(syncCalls.map((c) => c.queryName))].sort()).toEqual([
-        'advRoster.list',
-        'agentDetail.byOwner',
-        'agentOrders.byOwner',
-        'goals.detail',
+        "advRoster.list",
+        "agentDetail.byOwner",
+        "agentOrders.byOwner",
+        "goals.detail",
       ]);
     });
 
@@ -968,7 +1210,7 @@ describe('GoalDetailPanel', () => {
        one-expression regression that leaves a plausible-looking rail on screen,
        which is exactly the class a passing model test cannot see. Nested inside
        the P-021 block for its `withAgent`/`rosterEntry` fixtures. */
-    describe('P-024: the sessions zone', () => {
+    describe("P-024: the sessions zone", () => {
       /** `rosterRows` sets `active` only; the panel reads BOTH legs. */
       function rosterLegs(legs: {
         active?: Array<Record<string, unknown>>;
@@ -977,9 +1219,11 @@ describe('GoalDetailPanel', () => {
         rosterResult = { data: [legs], loading: false, error: null };
       }
       const owners = () =>
-        screen.queryAllByTestId('goal-session-row').map((n) => n.getAttribute('data-owner'));
+        screen
+          .queryAllByTestId("goal-session-row")
+          .map((n) => n.getAttribute("data-owner"));
 
-      it('seats the zone IMMEDIATELY left of the work rail, not merely somewhere before it', () => {
+      it("seats the zone IMMEDIATELY left of the work rail, not merely somewhere before it", () => {
         rosterRows(inFleet);
         renderPanel(withAgent());
         /* The owner's placement was specific, and "somewhere to the left" is
@@ -988,19 +1232,19 @@ describe('GoalDetailPanel', () => {
            between the two fails here rather than silently re-reading the
            instruction. Both zones are open in this fixture, so the sibling
            relation is the real one and not an artefact of a closed neighbour. */
-        expect(screen.getByTestId('goal-sessions-rail').nextElementSibling).toBe(
-          screen.getByTestId('goal-work-rail'),
-        );
+        expect(
+          screen.getByTestId("goal-sessions-rail").nextElementSibling,
+        ).toBe(screen.getByTestId("goal-work-rail"));
       });
 
-      it('counts a session that is still LAUNCHING — the pending leg, not just the live one', () => {
+      it("counts a session that is still LAUNCHING — the pending leg, not just the live one", () => {
         /* `payload.active ?? []` is the natural thing to write here (it is what
            the fleet rail beside it does) and it silently drops every agent that
            has been spawned but has not yet taken a turn — precisely the window
            in which a reader opens this popup to ask whether the goal is moving.
            The rail would render, correctly shaped, one row short. */
         rosterLegs({
-          active: [rosterEntry({ ownerId: 'su-abc', fleetSlug: 'fleet-x' })],
+          active: [rosterEntry({ ownerId: "su-abc", fleetSlug: "fleet-x" })],
           /* In the goal's fleet, so it is genuinely ON the goal by membership
              leg 2 — a launching MEMBER, which is what `pending` mostly holds.
              (A pending row that is neither stamped nor in the fleet is
@@ -1009,14 +1253,18 @@ describe('GoalDetailPanel', () => {
              dropped" and "this pending row does not belong" produce the same
              empty rail and only one of them is a bug.) */
           pending: [
-            rosterEntry({ ownerId: 'su-booting', label: 'su · booting', fleetSlug: 'fleet-x' }),
+            rosterEntry({
+              ownerId: "su-booting",
+              label: "su · booting",
+              fleetSlug: "fleet-x",
+            }),
           ],
         });
         renderPanel(withAgent());
-        expect(owners()).toContain('su-booting');
+        expect(owners()).toContain("su-booting");
       });
 
-      it('keeps a SECOND stamped agent’s fleet, not just the primary’s', () => {
+      it("keeps a SECOND stamped agent’s fleet, not just the primary’s", () => {
         /* D-006's "one directed agent" is the normal case, not a guarantee — the
            resolver surfaces a second stamp rather than hiding it. Passing only
            `agentOwnerId` (which is `agents[0]`, and is what the dossier and the
@@ -1025,38 +1273,38 @@ describe('GoalDetailPanel', () => {
            membership leg 2 walks the fleets of the stamped set. */
         rosterLegs({
           active: [
-            rosterEntry({ ownerId: 'su-abc', fleetSlug: 'fleet-x' }),
-            rosterEntry({ ownerId: 'su-def', fleetSlug: 'fleet-y' }),
+            rosterEntry({ ownerId: "su-abc", fleetSlug: "fleet-x" }),
+            rosterEntry({ ownerId: "su-def", fleetSlug: "fleet-y" }),
             // Stamped by NEITHER. It is on the goal only because it shares
             // fleet-y with the second stamped agent.
-            rosterEntry({ ownerId: 'su-member-y', fleetSlug: 'fleet-y' }),
+            rosterEntry({ ownerId: "su-member-y", fleetSlug: "fleet-y" }),
           ],
         });
         renderPanel(
           detail({
             agents: [
-              { ownerId: 'su-abc', setAt: null, setBy: 'operator-ui' },
-              { ownerId: 'su-def', setAt: null, setBy: 'operator-ui' },
+              { ownerId: "su-abc", setAt: null, setBy: "operator-ui" },
+              { ownerId: "su-def", setAt: null, setBy: "operator-ui" },
             ],
           }),
         );
-        expect(owners()).toContain('su-member-y');
+        expect(owners()).toContain("su-member-y");
       });
 
-      it('closing it leaves the conversation and both neighbours mounted', () => {
+      it("closing it leaves the conversation and both neighbours mounted", () => {
         rosterRows(inFleet);
         renderPanel(withAgent());
         openPanelsMenu();
-        fireEvent.click(screen.getByTestId('goal-sessions-toggle'));
-        expect(screen.queryByTestId('goal-sessions-rail')).toBeNull();
+        fireEvent.click(screen.getByTestId("goal-sessions-toggle"));
+        expect(screen.queryByTestId("goal-sessions-rail")).toBeNull();
         // The point of the toggle is room for the conversation, so it survives —
         // as do the zones on either side, which a mis-scoped visibility test
         // would take down with it.
-        expect(screen.getByTestId('goal-chat')).toBeTruthy();
-        expect(screen.getByTestId('goal-work-rail')).toBeTruthy();
+        expect(screen.getByTestId("goal-chat")).toBeTruthy();
+        expect(screen.getByTestId("goal-work-rail")).toBeTruthy();
       });
 
-      it('adds NO query of its own — it is a third reader of the roster row', () => {
+      it("adds NO query of its own — it is a third reader of the roster row", () => {
         rosterRows(inFleet);
         renderPanel(withAgent());
         /* The reuse-first claim for this zone specifically. `useSyncQuery`
@@ -1064,10 +1312,10 @@ describe('GoalDetailPanel', () => {
            row the dossier and fleet rail already hold costs nothing; a
            panel-level fetch added for it would appear here as a fifth name. */
         expect([...new Set(syncCalls.map((c) => c.queryName))].sort()).toEqual([
-          'advRoster.list',
-          'agentDetail.byOwner',
-          'agentOrders.byOwner',
-          'goals.detail',
+          "advRoster.list",
+          "agentDetail.byOwner",
+          "agentOrders.byOwner",
+          "goals.detail",
         ]);
       });
     });
@@ -1078,73 +1326,119 @@ describe('GoalDetailPanel', () => {
        and full-screen pair. The six panel states now live in one checked
        chooser grouped by physical side; the expand pair remains exactly the
        shared P-023 behavior below. */
-    describe('P-025: panel visibility chooser + the P-023 expand pair', () => {
-      it('groups every available panel by the side it occupies, in layout order', () => {
+    describe("P-025: panel visibility chooser + the P-023 expand pair", () => {
+      it("keeps the trailing controls in one end-aligned cluster above every panel overlay", () => {
         rosterRows(inFleet);
-        renderPanel(withAgent());
-        const menu = openPanelsMenu();
-        const left = within(menu).getByRole('group', { name: 'Left side' });
-        const right = within(menu).getByRole('group', { name: 'Right side' });
-        expect(within(left).getAllByRole('checkbox').map((box) => box.parentElement?.textContent)).toEqual([
-          'Orders',
-          'Brief',
-        ]);
-        expect(within(right).getAllByRole('checkbox').map((box) => box.parentElement?.textContent)).toEqual([
-          'Sessions',
-          'Work',
-          'Activity',
-          'Fleet',
-        ]);
+        renderPanel(withAgent(), { onOpenAgent: () => {} });
+        const toolbar = screen.getByTestId("goal-panel-toolbar");
+        const controls = [
+          "goal-open-agent",
+          "goal-full-window",
+          "goal-full-screen",
+          "goal-panels-trigger",
+        ].map((id) => screen.getByTestId(id));
+
+        for (const control of controls)
+          expect(toolbar.contains(control)).toBe(true);
+        for (let i = 1; i < controls.length; i += 1) {
+          expect(
+            controls[i - 1]!.compareDocumentPosition(controls[i]!) &
+              Node.DOCUMENT_POSITION_FOLLOWING,
+          ).toBeTruthy();
+        }
+
+        // At the Tauri shell's 1280px width the former four independent flex
+        // items split 3+1; Panels wrapped to the band's left edge underneath
+        // the Orders overlay and could no longer close it. The unit must wrap
+        // as a whole to the clear END edge, and it must remain above Fleet's
+        // outermost overlay (z-index 7) if a right rail overlays too.
+        expect(toolbar.style.display).toBe("flex");
+        expect(toolbar.style.flexWrap).toBe("nowrap");
+        expect(toolbar.style.marginLeft).toBe("auto");
+        expect(toolbar.style.position).toBe("relative");
+        expect(Number(toolbar.style.zIndex)).toBeGreaterThan(7);
       });
 
-      it('shows checked visibility state and stays open while several panels are changed', () => {
+      it("groups every available panel by the side it occupies, in layout order", () => {
         rosterRows(inFleet);
         renderPanel(withAgent());
         const menu = openPanelsMenu();
-        const brief = within(menu).getByRole('checkbox', { name: 'Brief' });
-        const work = within(menu).getByRole('checkbox', { name: 'Work' });
-        expect(brief.getAttribute('aria-checked')).toBe('true');
-        expect(work.getAttribute('aria-checked')).toBe('true');
+        const left = within(menu).getByRole("group", { name: "Left side" });
+        const right = within(menu).getByRole("group", { name: "Right side" });
+        expect(
+          within(left)
+            .getAllByRole("checkbox")
+            .map((box) => box.parentElement?.textContent),
+        ).toEqual(["Orders", "Brief"]);
+        expect(
+          within(right)
+            .getAllByRole("checkbox")
+            .map((box) => box.parentElement?.textContent),
+        ).toEqual(["Sessions", "Work", "Activity", "Fleet"]);
+      });
+
+      it("shows checked visibility state and stays open while several panels are changed", () => {
+        rosterRows(inFleet);
+        renderPanel(withAgent());
+        const menu = openPanelsMenu();
+        const brief = within(menu).getByRole("checkbox", { name: "Brief" });
+        const work = within(menu).getByRole("checkbox", { name: "Work" });
+        expect(brief.getAttribute("aria-checked")).toBe("true");
+        expect(work.getAttribute("aria-checked")).toBe("true");
 
         fireEvent.click(brief);
-        expect(screen.getByRole('dialog', { name: 'Panel visibility' })).toBe(menu);
-        expect(screen.getByTestId('goal-panels-trigger').getAttribute('aria-expanded')).toBe('true');
-        expect(screen.getByRole('checkbox', { name: 'Brief' }).getAttribute('aria-checked')).toBe('false');
-        expect(screen.queryByTestId('goal-brief-rail')).toBeNull();
+        expect(screen.getByRole("dialog", { name: "Panel visibility" })).toBe(
+          menu,
+        );
+        expect(
+          screen
+            .getByTestId("goal-panels-trigger")
+            .getAttribute("aria-expanded"),
+        ).toBe("true");
+        expect(
+          screen
+            .getByRole("checkbox", { name: "Brief" })
+            .getAttribute("aria-checked"),
+        ).toBe("false");
+        expect(screen.queryByTestId("goal-brief-rail")).toBeNull();
 
-        fireEvent.click(screen.getByRole('checkbox', { name: 'Work' }));
-        expect(screen.getByRole('dialog', { name: 'Panel visibility' })).toBe(menu);
-        expect(screen.queryByTestId('goal-work-rail')).toBeNull();
+        fireEvent.click(screen.getByRole("checkbox", { name: "Work" }));
+        expect(screen.getByRole("dialog", { name: "Panel visibility" })).toBe(
+          menu,
+        );
+        expect(screen.queryByTestId("goal-work-rail")).toBeNull();
       });
 
-      it('offers BOTH expand modes, and they are not the same control', () => {
+      it("offers BOTH expand modes, and they are not the same control", () => {
         rosterRows(inFleet);
         renderPanel(withAgent());
-        const win = screen.getByTestId('goal-full-window');
-        const scr = screen.getByTestId('goal-full-screen');
+        const win = screen.getByTestId("goal-full-window");
+        const scr = screen.getByTestId("goal-full-screen");
         // Distinct affordances, not one duplicated: full WINDOW and full SCREEN
         // are different modes on the desktop, which is why there are two.
-        expect(win.getAttribute('aria-label')).toBe('Full window');
-        expect(scr.getAttribute('aria-label')).toBe('Full screen');
-        expect(win.getAttribute('aria-pressed')).toBe('false');
+        expect(win.getAttribute("aria-label")).toBe("Full window");
+        expect(scr.getAttribute("aria-label")).toBe("Full screen");
+        expect(win.getAttribute("aria-pressed")).toBe("false");
       });
 
-      it('full window maximizes the popup and grows the ✕ that maximize makes necessary', () => {
+      it("full window maximizes the popup and grows the ✕ that maximize makes necessary", () => {
         rosterRows(inFleet);
         renderPanel(withAgent());
         /* Unmaximized, the Modal's backdrop and Esc are the exits, so a ✕ would
            be a third one. Maximized, the popup COVERS the backdrop — without
            this control there is no way out but the expand buttons themselves. */
-        expect(screen.queryByTestId('goal-close')).toBeNull();
-        fireEvent.click(screen.getByTestId('goal-full-window'));
-        expect(screen.getByTestId('goal-full-window').getAttribute('aria-pressed')).toBe('true');
-        expect(screen.getByTestId('goal-full-window').getAttribute('aria-label')).toBe(
-          'Exit full window',
-        );
-        expect(screen.getByTestId('goal-close')).toBeTruthy();
+        expect(screen.queryByTestId("goal-close")).toBeNull();
+        fireEvent.click(screen.getByTestId("goal-full-window"));
+        expect(
+          screen.getByTestId("goal-full-window").getAttribute("aria-pressed"),
+        ).toBe("true");
+        expect(
+          screen.getByTestId("goal-full-window").getAttribute("aria-label"),
+        ).toBe("Exit full window");
+        expect(screen.getByTestId("goal-close")).toBeTruthy();
       });
 
-      it('full screen falls back to full WINDOW when the host cannot paint us fullscreen', async () => {
+      it("full screen falls back to full WINDOW when the host cannot paint us fullscreen", async () => {
         rosterRows(inFleet);
         renderPanel(withAgent());
         /* jsdom implements no Fullscreen API, which is the same shape as a
@@ -1152,20 +1446,22 @@ describe('GoalDetailPanel', () => {
            bigger-we-still-have rather than doing nothing. A dead "make it
            bigger" button is the worse failure — and this is the branch the
            sessions popup was filed against. */
-        fireEvent.click(screen.getByTestId('goal-full-screen'));
-        await screen.findByTestId('goal-close');
-        expect(screen.getByTestId('goal-full-window').getAttribute('aria-pressed')).toBe('true');
+        fireEvent.click(screen.getByTestId("goal-full-screen"));
+        await screen.findByTestId("goal-close");
+        expect(
+          screen.getByTestId("goal-full-window").getAttribute("aria-pressed"),
+        ).toBe("true");
       });
 
-      it('does not gate the expand pair on there being an agent', () => {
+      it("does not gate the expand pair on there being an agent", () => {
         rosterRows(inFleet);
         renderPanel(detail({ agents: [] }));
         /* The three BORROWED toggles are absent without an agent (asserted
            above) — but maximize acts on the POPUP, which exists either way.
            Hiding it here would be the mirror of the WI-6742 dead-control bug:
            a live control missing rather than a dead one present. */
-        expect(screen.getByTestId('goal-full-window')).toBeTruthy();
-        expect(screen.getByTestId('goal-full-screen')).toBeTruthy();
+        expect(screen.getByTestId("goal-full-window")).toBeTruthy();
+        expect(screen.getByTestId("goal-full-screen")).toBeTruthy();
       });
     });
   });
@@ -1175,87 +1471,135 @@ describe('GoalDetailPanel', () => {
      and BREACH — the state it exists to announce — was conveyed by colour
      alone, so it reached neither a screen reader nor anyone who cannot
      distinguish the colour. */
-  describe('P-012: tripwire bars are readable by assistive tech', () => {
+  describe("P-012: tripwire bars are readable by assistive tech", () => {
     function withTripwires(tripwires: unknown[]) {
       return detail({
         goal: {
-          id: 'goal-1',
-          title: 'g',
-          status: 'active',
-          killCriterion: 'stop at 30 days or $500',
+          id: "goal-1",
+          title: "g",
+          status: "active",
+          killCriterion: "stop at 30 days or $500",
           tripwires,
-        } as GoalDetailInput['goal'],
+        } as GoalDetailInput["goal"],
       });
     }
 
-    it('exposes each bar as a progressbar named by its label', () => {
-      renderPanel(withTripwires([
-        { metric: 'spend', label: 'Spend', threshold: 500, current: 310, unit: 'usd' },
-      ]));
-      const bar = screen.getByRole('progressbar', { name: 'Spend' });
-      expect(bar.getAttribute('aria-valuemin')).toBe('0');
-      expect(bar.getAttribute('aria-valuemax')).toBe('100');
-      expect(bar.getAttribute('aria-valuenow')).toBe('62');
+    it("exposes each bar as a progressbar named by its label", () => {
+      renderPanel(
+        withTripwires([
+          {
+            metric: "spend",
+            label: "Spend",
+            threshold: 500,
+            current: 310,
+            unit: "usd",
+          },
+        ]),
+      );
+      const bar = screen.getByRole("progressbar", { name: "Spend" });
+      expect(bar.getAttribute("aria-valuemin")).toBe("0");
+      expect(bar.getAttribute("aria-valuemax")).toBe("100");
+      expect(bar.getAttribute("aria-valuenow")).toBe("62");
       // The figures, not just the ratio — a bare "62" is not the reading.
-      expect(bar.getAttribute('aria-valuetext')).toBe('$310 of $500');
+      expect(bar.getAttribute("aria-valuetext")).toBe("$310 of $500");
     });
 
-    it('reports the TRUE figures for an OVERSHOT tripwire, though the bar is clamped', () => {
+    it("reports the TRUE figures for an OVERSHOT tripwire, though the bar is clamped", () => {
       /* The item's specific requirement, and the subtlest one. The fill is
          deliberately capped at 100% so it cannot render past its track — that
          clamp stays. But ARIA requires `aria-valuenow` to sit within
          valuemin..valuemax, so it CANNOT carry 120 either; `aria-valuetext` is
          the sanctioned carrier and screen readers prefer it. This asserts the
          listener hears the real overshoot rather than a comfortable "100". */
-      renderPanel(withTripwires([
-        { metric: 'spend', label: 'Spend', threshold: 500, current: 600, unit: 'usd' },
-      ]));
-      const bar = screen.getByRole('progressbar', { name: 'Spend' });
-      expect(bar.getAttribute('aria-valuenow')).toBe('100');
-      expect(bar.getAttribute('aria-valuetext')).toBe('$600 of $500 — past limit');
+      renderPanel(
+        withTripwires([
+          {
+            metric: "spend",
+            label: "Spend",
+            threshold: 500,
+            current: 600,
+            unit: "usd",
+          },
+        ]),
+      );
+      const bar = screen.getByRole("progressbar", { name: "Spend" });
+      expect(bar.getAttribute("aria-valuenow")).toBe("100");
+      expect(bar.getAttribute("aria-valuetext")).toBe(
+        "$600 of $500 — past limit",
+      );
       // …and the visual clamp it must not have broken.
-      const fill = bar.querySelector('.hud-goal__bar-fill') as HTMLElement | null;
-      expect(fill?.style.width).toBe('100%');
+      const fill = bar.querySelector(
+        ".hud-goal__bar-fill",
+      ) as HTMLElement | null;
+      expect(fill?.style.width).toBe("100%");
     });
 
-    it('announces BREACH in text, not by colour alone', () => {
-      renderPanel(withTripwires([
-        { metric: 'spend', label: 'Spend', threshold: 500, current: 600, unit: 'usd' },
-        { metric: 'elapsed', label: 'Elapsed', threshold: 30, current: 12, unit: 'days' },
-      ]));
+    it("announces BREACH in text, not by colour alone", () => {
+      renderPanel(
+        withTripwires([
+          {
+            metric: "spend",
+            label: "Spend",
+            threshold: 500,
+            current: 600,
+            unit: "usd",
+          },
+          {
+            metric: "elapsed",
+            label: "Elapsed",
+            threshold: 30,
+            current: 12,
+            unit: "days",
+          },
+        ]),
+      );
       /* Exactly one of the two is breached, so this fails both if the marker
          disappears AND if it starts rendering on every bar. Asserting TEXT
          rather than a class is the point: a class is still a colour hook, and
          the whole defect was that the state lived only in the styling. */
-      const breaches = screen.getAllByTestId('goal-tripwire-breach');
+      const breaches = screen.getAllByTestId("goal-tripwire-breach");
       expect(breaches).toHaveLength(1);
       expect(breaches[0]!.textContent).toMatch(/past limit/i);
-      expect(screen.getByTestId('goal-tripwires').textContent).toMatch(/past limit/i);
+      expect(screen.getByTestId("goal-tripwires").textContent).toMatch(
+        /past limit/i,
+      );
     });
 
-    it('leaves an INDETERMINATE bar with no aria-valuenow — never a comfortable 0', () => {
+    it("leaves an INDETERMINATE bar with no aria-valuenow — never a comfortable 0", () => {
       /* `pct` is null for TWO different reasons and both are genuinely
          indeterminate: nobody took a reading, OR there is a reading but no
          threshold to measure it against. Sending 0 for either would re-import
          the unmeasured-reads-as-zero defect (P-002) into the a11y tree, where
          it is harder to notice — 0 is the most REASSURING value available, so
          the failure points at "nothing to worry about". */
-      renderPanel(withTripwires([
-        { metric: 'builds', label: 'Shipped builds', threshold: 1 },
-        { metric: 'signups', label: 'Signups', current: 5 },
-        { metric: 'elapsed', label: 'Elapsed', threshold: 30, current: 0, unit: 'days' },
-      ]));
-      const unread = screen.getByRole('progressbar', { name: 'Shipped builds' });
-      expect(unread.hasAttribute('aria-valuenow')).toBe(false);
-      expect(unread.getAttribute('aria-valuetext')).toMatch(/not measured yet/i);
+      renderPanel(
+        withTripwires([
+          { metric: "builds", label: "Shipped builds", threshold: 1 },
+          { metric: "signups", label: "Signups", current: 5 },
+          {
+            metric: "elapsed",
+            label: "Elapsed",
+            threshold: 30,
+            current: 0,
+            unit: "days",
+          },
+        ]),
+      );
+      const unread = screen.getByRole("progressbar", {
+        name: "Shipped builds",
+      });
+      expect(unread.hasAttribute("aria-valuenow")).toBe(false);
+      expect(unread.getAttribute("aria-valuetext")).toMatch(
+        /not measured yet/i,
+      );
 
-      const noThreshold = screen.getByRole('progressbar', { name: 'Signups' });
-      expect(noThreshold.hasAttribute('aria-valuenow')).toBe(false);
+      const noThreshold = screen.getByRole("progressbar", { name: "Signups" });
+      expect(noThreshold.hasAttribute("aria-valuenow")).toBe(false);
 
       // …while a genuine zero DOES report one. This is the pair that makes the
       // assertion above meaningful rather than vacuous.
-      const realZero = screen.getByRole('progressbar', { name: 'Elapsed' });
-      expect(realZero.getAttribute('aria-valuenow')).toBe('0');
+      const realZero = screen.getByRole("progressbar", { name: "Elapsed" });
+      expect(realZero.getAttribute("aria-valuenow")).toBe("0");
     });
   });
 });
