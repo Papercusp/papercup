@@ -103,9 +103,9 @@ import { useOwnerSessionChat } from '@/app/_components/chat/use-owner-session-ch
    verbatim-reuse rule P-021 states for the rails and P-018 for the CSS. The
    toggle carries the constant-label + chevron grammar; the hook carries the
    full-window/full-screen pair with its browser-vs-desktop split. */
-import PanelToggleButton, { PANEL_TOOLBAR_BUTTON_STYLE } from '@/app/_components/chat/PanelToggleButton';
+import { PANEL_TOOLBAR_BUTTON_STYLE } from '@/app/_components/chat/PanelToggleButton';
 import { usePopupMaximize } from '@/app/_components/chat/use-popup-maximize';
-import { Maximize, Maximize2, Minimize, Minimize2, X } from 'lucide-react';
+import { Maximize, Maximize2, MessagesSquare, Minimize, Minimize2, X } from 'lucide-react';
 /* ── P-021 [owner 2026-08-10]: the sessions popup's three rails, IN ADDITION ──
    "the conversation popup for goals should have all the same left and right
    panels as the conversation popup in the sessions tab. the additional ones
@@ -121,6 +121,7 @@ import AgentDossier from '../sessions/AgentDossier';
 import FleetPeersRail from '@/app/_components/chat/FleetPeersRail';
 import { deriveFleetPeers } from '@/app/_components/chat/fleet-peers';
 import GoalSessionsRail from './GoalSessionsRail';
+import GoalPanelVisibilityMenu, { type GoalPanelVisibilityOption } from './GoalPanelVisibilityMenu';
 import { deriveGoalSessions } from './goal-sessions';
 import { advRosterArgs } from '@/lib/adv-roster-args';
 import type { RosterEntry } from '../sessions/SessionsRosterView';
@@ -668,6 +669,71 @@ export default function GoalDetailPanel({
        column taking no width. */
     (sessionsVisible && !isSessionsNarrow ? SESSIONS_WIDTH + 16 : 0);
 
+  /* P-025 [owner 2026-08-13]: the six directional toolbar controls became one
+     explicit visibility chooser. The underlying states and URL keys stay the
+     same — this is a clearer control surface over the existing behavior, not a
+     second panel system. Unavailable rows are omitted on the same gates as the
+     zones themselves, so the chooser never offers a checkbox that cannot seat
+     anything. */
+  const panelVisibilityOptions: GoalPanelVisibilityOption[] = [
+    ...(agentOwnerId
+      ? [{
+          id: 'orders',
+          label: 'Orders',
+          side: 'left' as const,
+          checked: ordersOpen,
+          onChange: (checked: boolean) => void setOrdersOpen(checked),
+          testId: 'goal-orders-toggle',
+        }]
+      : []),
+    {
+      id: 'brief',
+      label: 'Brief',
+      side: 'left',
+      checked: briefOpen,
+      onChange: (checked) => void setBriefOpen(checked),
+      testId: 'goal-brief-toggle',
+    },
+    ...(goalSessions
+      ? [{
+          id: 'sessions',
+          label: 'Sessions',
+          side: 'right' as const,
+          checked: sessionsOpen,
+          onChange: (checked: boolean) => void setSessionsOpen(checked),
+          testId: 'goal-sessions-toggle',
+        }]
+      : []),
+    {
+      id: 'work',
+      label: 'Work',
+      side: 'right',
+      checked: railOpen,
+      onChange: (checked) => void setRailOpen(checked),
+      testId: 'goal-rail-toggle',
+    },
+    ...(agentOwnerId
+      ? [{
+          id: 'activity',
+          label: 'Activity',
+          side: 'right' as const,
+          checked: dossierOpen,
+          onChange: (checked: boolean) => void setDossierOpen(checked),
+          testId: 'goal-activity-toggle',
+        }]
+      : []),
+    ...(agentOwnerId && fleetPeers
+      ? [{
+          id: 'fleet',
+          label: 'Fleet',
+          side: 'right' as const,
+          checked: peersOpen,
+          onChange: (checked: boolean) => void setPeersOpen(checked),
+          testId: 'goal-fleet-toggle',
+        }]
+      : []),
+  ];
+
   return (
     <Modal
       open={open}
@@ -849,8 +915,10 @@ export default function GoalDetailPanel({
                   className="pc-button"
                   data-testid="goal-open-agent"
                   onClick={() => onOpenAgent(primaryAgent.ownerId)}
+                  aria-label="Open conversation full-size"
+                  style={PANEL_TOOLBAR_BUTTON_STYLE}
                 >
-                  Open full-size
+                  <MessagesSquare size={12} aria-hidden="true" />
                 </button>
               </Tooltip>
             ) : null}
@@ -905,82 +973,11 @@ export default function GoalDetailPanel({
                 {screenActive ? <Minimize size={12} aria-hidden="true" /> : <Maximize size={12} aria-hidden="true" />}
               </button>
             </Tooltip>
-            {/* P-022/P-021/P-024: the zone toggles, in the SAME left-to-right
-                order as the zones they move — Orders, Brief, Sessions, Work,
-                Activity, Fleet.
-                A toggle row whose order contradicts the layout makes the reader
-                hunt for which button moves which column.
-
-                P-023: each one is the sessions popup's PanelToggleButton, so the
-                label stays CONSTANT and a chevron carries the verb — `side` is
-                the edge the zone opens from, and the chevron follows the motion
-                from there. The old labels swapped text on click ("Orders" →
-                "Hide orders"), which re-widened the button under the reader's
-                cursor and made five controls shuffle sideways on every press.
-
-                The three borrowed toggles render only when there is an agent to
-                describe, and Fleet only when that agent is actually in a fleet:
-                a control for a zone that cannot open is a dead button, which is
-                the defect WI-6742 filed against this very popup. */}
-            {agentOwnerId ? (
-              <PanelToggleButton
-                label="Orders"
-                describe="the agent’s orders"
-                side="left"
-                open={ordersOpen}
-                onToggle={() => void setOrdersOpen(!ordersOpen)}
-                data-testid="goal-orders-toggle"
-              />
-            ) : null}
-            <PanelToggleButton
-              label="Brief"
-              describe="the goal brief"
-              side="left"
-              open={briefOpen}
-              onToggle={() => void setBriefOpen(!briefOpen)}
-              data-testid="goal-brief-toggle"
-            />
-            {/* P-024. Gated on the MODEL, like Fleet — a goal with no agent
-                stamp has no sessions to seat, and a toggle that opens nothing
-                is the dead control WI-6742 filed against this popup. */}
-            {goalSessions ? (
-              <PanelToggleButton
-                label="Sessions"
-                describe="who’s working on this goal"
-                side="right"
-                open={sessionsOpen}
-                onToggle={() => void setSessionsOpen(!sessionsOpen)}
-                data-testid="goal-sessions-toggle"
-              />
-            ) : null}
-            <PanelToggleButton
-              label="Work"
-              describe="plans and work items"
-              side="right"
-              open={railOpen}
-              onToggle={() => void setRailOpen(!railOpen)}
-              data-testid="goal-rail-toggle"
-            />
-            {agentOwnerId ? (
-              <PanelToggleButton
-                label="Activity"
-                describe="agent activity"
-                side="right"
-                open={dossierOpen}
-                onToggle={() => void setDossierOpen(!dossierOpen)}
-                data-testid="goal-activity-toggle"
-              />
-            ) : null}
-            {agentOwnerId && fleetPeers ? (
-              <PanelToggleButton
-                label="Fleet"
-                describe="fleet peers"
-                side="right"
-                open={peersOpen}
-                onToggle={() => void setPeersOpen(!peersOpen)}
-                data-testid="goal-fleet-toggle"
-              />
-            ) : null}
+            {/* P-025: one chooser answers "which panels are visible?" without
+                turning the status band into a row of directional glyphs. The
+                grouped order still mirrors the layout — Orders/Brief on the
+                left, then Sessions/Work/Activity/Fleet on the right. */}
+            <GoalPanelVisibilityMenu options={panelVisibilityOptions} />
             {/* Maximized covers the backdrop, and in full screen Esc is spoken
                 for — so without an explicit ✕ there is no way out of this popup
                 but the two expand buttons. (Unmaximized, the Modal's own
