@@ -43,6 +43,19 @@ import {
   type PhysicalPhaseDMutationKind,
   type PhysicalPhaseDObservationStage,
 } from './physical-drill-phase-d';
+import {
+  capturePhysicalPhaseEObservation,
+  createPhysicalPhaseEDivergence,
+  createPhysicalPhaseEIngress,
+  restorePhysicalPhaseEDivergence,
+  runPhysicalPhaseEWatchdogSweep,
+  setPhysicalPhaseEMode,
+  validatePhysicalPhaseE,
+  type PhysicalPhaseEHost,
+  type PhysicalPhaseEInput,
+  type PhysicalPhaseEObservationStage,
+  type PhysicalPhaseERemoteMutation,
+} from './physical-drill-phase-e';
 
 type JsonRecord = Record<string, unknown>;
 
@@ -394,6 +407,63 @@ async function cli(argv: string[]): Promise<unknown> {
     }
     return verdict;
   }
+  if (mode === 'phase-e-mode') {
+    const [nextMode, runId] = args;
+    if ((nextMode !== 'legacy' && nextMode !== 'bridged') || !runId) {
+      throw new Error('usage: physical-drill-producer phase-e-mode <legacy|bridged> <run-id>');
+    }
+    return setPhysicalPhaseEMode({ runId, mode: nextMode });
+  }
+  if (mode === 'phase-e-observe') {
+    const [hostId, stage, deviceKey, runId] = args;
+    if (
+      (hostId !== 'tower' && hostId !== 'vm') ||
+      !['legacy-before', 'bridged-member', 'healthy-egress', 'divergence-before', 'divergence-after', 'legacy-after'].includes(stage ?? '') ||
+      !deviceKey || !runId
+    ) {
+      throw new Error(
+        'usage: physical-drill-producer phase-e-observe <tower|vm> <legacy-before|bridged-member|healthy-egress|divergence-before|divergence-after|legacy-after> <device-key> <run-id>',
+      );
+    }
+    return capturePhysicalPhaseEObservation({
+      hostId: hostId as PhysicalPhaseEHost,
+      stage: stage as PhysicalPhaseEObservationStage,
+      deviceKey,
+      runId,
+    });
+  }
+  if (mode === 'phase-e-ingress') {
+    const [runId] = args;
+    if (!runId) throw new Error('usage: physical-drill-producer phase-e-ingress <run-id>');
+    return createPhysicalPhaseEIngress({ runId });
+  }
+  if (mode === 'phase-e-diverge') {
+    const [runId] = args;
+    if (!runId) throw new Error('usage: physical-drill-producer phase-e-diverge <run-id>');
+    return createPhysicalPhaseEDivergence({ runId });
+  }
+  if (mode === 'phase-e-recover') {
+    const [mutationPath] = args;
+    if (!mutationPath) throw new Error('usage: physical-drill-producer phase-e-recover <fork-ahead-mutation.json>');
+    return restorePhysicalPhaseEDivergence(readJson(mutationPath) as PhysicalPhaseERemoteMutation);
+  }
+  if (mode === 'phase-e-watchdog') {
+    const [ordinalRaw, runId] = args;
+    const ordinal = Number(ordinalRaw);
+    if ((ordinal !== 1 && ordinal !== 2) || !runId) {
+      throw new Error('usage: physical-drill-producer phase-e-watchdog <1|2> <run-id>');
+    }
+    return runPhysicalPhaseEWatchdogSweep({ runId, ordinal: ordinal as 1 | 2 });
+  }
+  if (mode === 'phase-e-verify') {
+    const [inputPath] = args;
+    if (!inputPath) throw new Error('usage: physical-drill-producer phase-e-verify <private-run-input.json>');
+    const verdict = validatePhysicalPhaseE(readJson(inputPath) as PhysicalPhaseEInput);
+    if (!verdict.ok) {
+      throw new Error(`physical-drill-producer: Phase E rejected: ${verdict.errors.join('; ')}`);
+    }
+    return verdict;
+  }
   if (mode === 'finalize') {
     const [unsignedEvidencePath, towerReceiptPath, vmReceiptPath, evidencePath, trustPath] = args;
     if (!unsignedEvidencePath || !towerReceiptPath || !vmReceiptPath || !evidencePath || !trustPath) {
@@ -409,7 +479,7 @@ async function cli(argv: string[]): Promise<unknown> {
     return { ok: true, runId: artifacts.evidence.runId, evidencePath, trustPath };
   }
   throw new Error(
-    'physical-drill-producer: mode must be identity, preflight, phase-a-observe, phase-a-quarantine, phase-a-verify, phase-b-observe, phase-b-commit, phase-b-verify, phase-c-run, phase-c-verify, phase-d-commit, phase-d-dirty, phase-d-request, phase-d-ratify, phase-d-event, phase-d-observe, phase-d-verify, sign, or finalize',
+    'physical-drill-producer: mode must be identity, preflight, phase-a-observe, phase-a-quarantine, phase-a-verify, phase-b-observe, phase-b-commit, phase-b-verify, phase-c-run, phase-c-verify, phase-d-commit, phase-d-dirty, phase-d-request, phase-d-ratify, phase-d-event, phase-d-observe, phase-d-verify, phase-e-mode, phase-e-observe, phase-e-ingress, phase-e-diverge, phase-e-recover, phase-e-watchdog, phase-e-verify, sign, or finalize',
   );
 }
 
