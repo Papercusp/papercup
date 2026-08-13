@@ -42,12 +42,44 @@ vi.mock('../../fleet/assignments', () => ({
   listFleetAssignments: vi.fn(async () => []),
   groupByAgent: vi.fn((rows: unknown[]) => rows),
 }));
+// WI-5938: default to a DRAINED lane so every pre-existing stage-mode test keeps
+// exercising the bench path it was written for; the refusal tests opt in per-case.
+vi.mock('../../fleet/lane-health', () => ({
+  readFleetLaneHealth: vi.fn(async () => ({
+    claimable: 0,
+    matchedByFilter: 0,
+    excluded: {},
+    spec: {
+      ref: 'spec-x (spec rev 3)',
+      specId: 'spec-x',
+      revision: 3,
+      matchedBy: 'fleet-slug',
+      harness: 'papercusp',
+      assigneeScoped: null,
+    },
+  })),
+}));
 
-import benchTool, { projectBenchRows } from './bench';
+import benchTool, { projectBenchRows, benchQueueVerdict } from './bench';
 import { registerAwait, listParkedAwaitsForSubscribers } from '../../events/await/store';
 import { captureWakeHandleForOwner } from '../../events/await/handle';
 import { listFleetAssignments, groupByAgent } from '../../fleet/assignments';
 import { deriveFleetMembership } from '../coordination/identity';
+import { readFleetLaneHealth } from '../../fleet/lane-health';
+
+const lane = (claimable: number, matchedByFilter = claimable) => ({
+  claimable,
+  matchedByFilter,
+  excluded: {},
+  spec: {
+    ref: 'spec-x (spec rev 3)',
+    specId: 'spec-x',
+    revision: 3,
+    matchedBy: 'fleet-slug',
+    harness: 'papercusp',
+    assigneeScoped: null,
+  },
+});
 
 const ctx = { workspaceId: 'ws-x' } as unknown as Parameters<typeof benchTool.handler>[1];
 const call = async (args: Record<string, unknown>) => {
@@ -121,6 +153,84 @@ describe('fleet:bench — stage mode', () => {
     const out = await call({ member: 'su-worker', wakeEvent: '@fleet:red-team', stagedAssignment: 'x' });
     expect(vi.mocked(registerAwait).mock.calls[0][0].eventKey).toBe('fleet:*:red-team');
     expect(out).toMatchObject({ pattern: true });
+  });
+});
+
+describe('benchQueueVerdict (pure) — park/pull is derived state, not prose [WI-5938]', () => {
+  it('claimable > 0 ⇒ REFUSE: the lane is live, so park is the wrong verb', () => {
+    expect(benchQueueVerdict(lane(4))).toMatchObject({
+      refuse: true,
+      claimable: 4,
+      reason: 'queue-nonempty',
+      specRef: 'spec-x (spec rev 3)',
+    });
+  });
+
+  it('a genuinely drained lane (0 claimable, 0 matching) still benches', () => {
+    expect(benchQueueVerdict(lane(0, 0))).toMatchObject({ refuse: false, reason: 'drained' });
+  });
+
+  it('GATED is not drained but IS benchable: 0 claimable with rows still matching the filter', () => {
+    // EI-18689489507862177 — the backlog exists, every row is behind a claim floor. That
+    // is a BLOCKED lane, which is exactly what benching is for.
+    expect(benchQueueVerdict(lane(0, 113))).toMatchObject({ refuse: false, reason: 'gated' });
+  });
+
+  it('an UNREADABLE count fails OPEN as unknown — never refuses, and never reports "drained"', () => {
+    // A read error must not wedge every bench on the fleet, and must not be laundered
+    // into a verified-empty queue. Both halves matter.
+    const v = benchQueueVerdict(null);
+    expect(v).toMatchObject({ refuse: false, reason: 'unknown', claimable: null });
+    expect(v.reason).not.toBe('drained');
+  });
+});
+
+describe('fleet:bench — stage mode refuses a live lane [WI-5938 acceptance]', () => {
+  it('ACCEPTANCE: a member with claimable > 0 gets the typed refusal, and NOTHING is staged', async () => {
+    vi.mocked(readFleetLaneHealth).mockResolvedValueOnce(lane(7));
+    const out = await call({ member: 'su-worker', wakeEvent: 'k', stagedAssignment: 'x' });
+    expect(out).toMatchObject({
+      ok: false,
+      error: 'bench_refused_queue_nonempty',
+      member: 'su-worker',
+      claimable: 7,
+      spec_ref: 'spec-x (spec rev 3)',
+    });
+    // The refusal must happen BEFORE staging — a refused bench that still registered an
+    // await would park the member anyway while reporting that it had not.
+    expect(registerAwait).not.toHaveBeenCalled();
+    expect(captureWakeHandleForOwner).not.toHaveBeenCalled();
+  });
+
+  it('ACCEPTANCE: a genuinely drained lane still benches normally', async () => {
+    vi.mocked(readFleetLaneHealth).mockResolvedValueOnce(lane(0, 0));
+    const out = await call({ member: 'su-worker', wakeEvent: 'k', stagedAssignment: 'x' });
+    expect(out).toMatchObject({ ok: true, bench_id: 42, lane: { verdict: 'drained', claimable: 0 } });
+    expect(registerAwait).toHaveBeenCalled();
+  });
+
+  it('scopes the claimable floors to the MEMBER being benched, not the calling leader', async () => {
+    // Their own held claims must not count against them as an exclusion, or a member
+    // holding work reads as a gated lane rather than a live one.
+    await call({ member: 'su-worker', wakeEvent: 'k', stagedAssignment: 'x' });
+    expect(vi.mocked(readFleetLaneHealth).mock.calls[0][0]).toMatchObject({
+      fleet: 'p2p-git',
+      assignee: 'su-worker',
+    });
+  });
+
+  it('{ force: true } benches past a live lane but reports the override rather than hiding it', async () => {
+    vi.mocked(readFleetLaneHealth).mockResolvedValueOnce(lane(7));
+    const out = await call({ member: 'su-worker', wakeEvent: 'k', stagedAssignment: 'x', force: true });
+    expect(out).toMatchObject({ ok: true, forced: true, lane: { verdict: 'queue-nonempty', claimable: 7 } });
+    expect(out.force_note as string).toContain('7 claimable');
+    expect(registerAwait).toHaveBeenCalled();
+  });
+
+  it('an unreadable lane count does NOT wedge the bench (fails open, and says so)', async () => {
+    vi.mocked(readFleetLaneHealth).mockResolvedValueOnce(null);
+    const out = await call({ member: 'su-worker', wakeEvent: 'k', stagedAssignment: 'x' });
+    expect(out).toMatchObject({ ok: true, lane: { verdict: 'unknown', claimable: null } });
   });
 });
 

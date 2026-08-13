@@ -46,11 +46,85 @@ import { registerAwait, listParkedAwaitsForSubscribers } from '../../events/awai
 import { isPattern, expandPatternMacro, assertUsablePattern } from '../../events/await/pattern';
 import { AWAIT_DEFAULT_TIMEOUT_SEC, AWAIT_MAX_TIMEOUT_SEC } from '../../events/await/types';
 import { hardText, softText, clampText, LIMITS } from '../limits';
+import { readFleetLaneHealth } from '../../fleet/lane-health';
 
 /** Tags a bench-staged await's `note` so `list` can pick it out from every
  *  OTHER reason an agent might hold an active await (a plain events:await, a
  *  lock wake_on_grant, …) sharing the same table. */
 const BENCH_NOTE_PREFIX = '[fleet:bench] ';
+
+/**
+ * WI-5938 — PARK/PULL IS DERIVED STATE, NOT PROSE.
+ *
+ * The incident: a leader sent ONE message that both asserted the lane was live AND told
+ * members to park. Park is correct only for a DRAINED lane; pull is correct for a live
+ * one. The directive was self-contradictory, five members obeyed the park half, and they
+ * idled beside a nonempty queue. `fleet:leader-brief` already knew better — it emits the
+ * literal advice "DO NOT fleet:bench it either — the lane is not drained" — but that
+ * advice was PROSE the leader had to read, remember and re-derive, while `fleet:bench`
+ * itself would happily park anyone.
+ *
+ * So the invariant moves out of the leader's memory and into the tool: benching is for a
+ * drained or blocked lane BY DEFINITION, and a bench against a member with claimable work
+ * is not a judgement call the leader gets to make loosely — it is a contradiction. This
+ * makes an incorrect bench IMPOSSIBLE by default rather than merely discouraged.
+ *
+ * Two deliberate design choices, both about failure direction:
+ *
+ *  1. UNKNOWN FAILS OPEN. `readFleetLaneHealth` returns `null` (never 0) when the count
+ *     could not be read. A null must NOT refuse: that would let a transient spec/PG read
+ *     error wedge every bench on the fleet, converting a read failure into a coordination
+ *     outage. Refuse only on a number we actually have, and say so in the reply.
+ *  2. GATED IS NOT DRAINED — BUT IT IS STILL BENCHABLE. `claimable === 0` with
+ *     `matchedByFilter > 0` means the backlog exists but every row is behind a claim floor
+ *     (EI-18689489507862177). That is precisely a BLOCKED lane, which is a legitimate
+ *     reason to bench. The refusal therefore keys on `claimable > 0` — work the member
+ *     could take RIGHT NOW — not on the mere existence of matching rows.
+ *
+ * `force: true` is the escape hatch, mirroring `work_items:claim`'s claim-hold bypass: a
+ * leader with a genuine cross-lane reason (bench everyone until a migration lands) is not
+ * wedged, but must ask for it deliberately, and the refusal detail is echoed back on the
+ * response so the override is visible rather than silent.
+ */
+export interface BenchQueueVerdict {
+  refuse: boolean;
+  claimable: number | null;
+  matchedByFilter: number | null;
+  specRef: string | null;
+  /** Why we did NOT refuse, when we did not — so a caller never reads silence as "drained". */
+  reason: 'queue-nonempty' | 'drained' | 'gated' | 'unknown';
+}
+
+/** PURE: the whole park/pull decision, exported for direct unit-testing (no PG/DI). */
+export function benchQueueVerdict(
+  lane: { claimable: number; matchedByFilter: number; spec?: { ref?: string | null } } | null,
+): BenchQueueVerdict {
+  if (!lane) {
+    // Fails OPEN — see (1) above. An unreadable count is not a drained lane, and it is
+    // also not grounds to block the leader.
+    return { refuse: false, claimable: null, matchedByFilter: null, specRef: null, reason: 'unknown' };
+  }
+  const specRef = lane.spec?.ref ?? null;
+  if (lane.claimable > 0) {
+    return {
+      refuse: true,
+      claimable: lane.claimable,
+      matchedByFilter: lane.matchedByFilter,
+      specRef,
+      reason: 'queue-nonempty',
+    };
+  }
+  return {
+    refuse: false,
+    claimable: lane.claimable,
+    matchedByFilter: lane.matchedByFilter,
+    specRef,
+    // See (2) above: 0 claimable with rows still matching the filter is a GATED lane,
+    // which is a blocked lane, which is a benchable lane — but the caller is told which
+    // of the two it was, because the remedies are completely different.
+    reason: lane.matchedByFilter > 0 ? 'gated' : 'drained',
+  };
+}
 
 export interface BenchedMember {
   member: string;
@@ -101,10 +175,24 @@ export default defineTool({
       "fleet:bench { member, wakeEvent, stagedAssignment } → (later) events:emit { event: " +
       "wakeEvent } wakes them, staged leg rides the wake note → fleet:bench { list: true } " +
       "any time to check current bench state.",
+    returns:
+      "STAGE mode REFUSES with { ok:false, error:'bench_refused_queue_nonempty' } when the " +
+      "member's own lane still has claimable work (WI-5938): park is correct only for a " +
+      'DRAINED or BLOCKED lane, pull is correct for a live one, and a leader message that ' +
+      'asserts both is self-contradictory — five members once obeyed the park half and idled ' +
+      'beside a nonempty queue. The refusal carries `claimable`, `matched_by_filter` and ' +
+      '`spec_ref` so you can see the count and the exact scoping that produced it. Wake them ' +
+      'to pull instead; pass { force: true } only for a genuine cross-lane hold (the override ' +
+      'is echoed back as `forced` + `force_note`, never silent). Every successful bench also ' +
+      "carries `lane.verdict`: 'drained' (0 claimable, 0 matching) | 'gated' (0 claimable but " +
+      "rows matched — blocked, still benchable) | 'unknown' (the count could not be read, so " +
+      'the guard failed OPEN rather than wedging the fleet on a read error) — never a ' +
+      'zero-ish reading dressed up as a verified-empty queue.',
     seeAlso: [
       'events:await (a member self-registering, instead of the leader staging it for them)',
       'events:emit (fires the key — reports waiters/woken)',
       'fleet:leader-brief (whole-fleet health glance, including parkedOn)',
+      'work_items:claimable (the excludedBreakdown behind a gated lane — read it before forcing)',
     ],
   },
   capability: 'coord:write',
@@ -131,6 +219,15 @@ export default defineTool({
     stagedAssignment: softText(LIMITS.ANNOTATION)
       .optional()
       .describe("(stage mode) What the member should pick up once woken — echoed on the wake and readable via { list: true }."),
+    force: z
+      .boolean()
+      .optional()
+      .describe(
+        '(stage mode) Bench ANYWAY when the member\'s lane still has claimable work — the ' +
+          'bench_refused_queue_nonempty override. For a genuine cross-lane hold (bench everyone ' +
+          'until a migration lands), not for routine benching: the refused count is echoed back ' +
+          'on the response so the override is visible rather than silent.',
+      ),
     timeout_sec: z
       .number()
       .int()
@@ -199,6 +296,47 @@ export default defineTool({
       };
     }
 
+    // WI-5938: park/pull is derived state — resolve it BEFORE staging anything, so a
+    // refused bench never leaves a half-registered await behind.
+    const benchFleet = args.fleet ?? deriveFleetMembership().fleetSlug;
+    const laneHealth = benchFleet
+      ? await readFleetLaneHealth({
+          fleet: benchFleet,
+          harness: args.harness,
+          workspaceId: resolveConcreteWorkspaceId(args.workspace, actorWorkspace),
+          // Scope the floors to the MEMBER being benched: their own held claims must not
+          // count against them as an exclusion, or a member holding work would read as a
+          // gated lane rather than a live one.
+          assignee: args.member,
+        })
+      : null;
+    const verdict = benchQueueVerdict(laneHealth);
+
+    if (verdict.refuse && !args.force) {
+      return {
+        data: {
+          ok: false,
+          error: 'bench_refused_queue_nonempty',
+          member: args.member,
+          fleet: benchFleet,
+          claimable: verdict.claimable,
+          matched_by_filter: verdict.matchedByFilter,
+          spec_ref: verdict.specRef,
+          hint:
+            `REFUSED: ${verdict.claimable} item(s) are claimable RIGHT NOW for ${args.member} under ` +
+            `${verdict.specRef ?? 'this fleet\'s claim spec'}. Benching parks them next to work they ` +
+            'should be pulling — the lane is not drained, so park is the wrong verb. Wake them to ' +
+            'pull instead (coord:wake / scheduler:get_next). If the lane looks drained to you, the ' +
+            "disagreement is the point: read work_items:claimable's excludedBreakdown under this " +
+            'same spec before overriding. Genuine cross-lane hold? Re-send with { force: true }.',
+          advice:
+            'This is the WI-5938 invariant: fleet:bench is for a DRAINED or BLOCKED lane by ' +
+            'definition. A leader message that both asserts the lane is live and tells members to ' +
+            'park is self-contradictory — that contradiction is what this refusal makes impossible.',
+        },
+      };
+    }
+
     const patternAwait = isPattern(args.wakeEvent);
     const eventKey = patternAwait ? expandPatternMacro(args.wakeEvent) : args.wakeEvent;
     if (patternAwait) assertUsablePattern(eventKey);
@@ -228,6 +366,25 @@ export default defineTool({
         registered: handle !== null,
         wake_handle_note: handleNote,
         benched_by: ownerId,
+        // WI-5938: always report WHICH lane state justified the park, so a bench is never
+        // just an assertion. 'unknown' is reported honestly rather than rendered as
+        // 'drained' — the whole bug class here is a zero-ish reading standing in for a
+        // verified-empty queue.
+        lane: {
+          verdict: verdict.reason,
+          claimable: verdict.claimable,
+          matched_by_filter: verdict.matchedByFilter,
+          spec_ref: verdict.specRef,
+        },
+        ...(verdict.refuse && args.force
+          ? {
+              forced: true,
+              force_note:
+                `OVERRIDE: benched past ${verdict.claimable} claimable item(s) under ` +
+                `${verdict.specRef ?? "this fleet's claim spec"} because { force: true } was passed. ` +
+                'This member is now parked beside work it could have pulled.',
+            }
+          : {}),
         advice:
           handle !== null
             ? 'Benched. events:emit on this key will wake them; the staged assignment rides the wake note.'
