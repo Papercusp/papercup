@@ -211,7 +211,20 @@ export function diffLockAndTree(deps: LockTreeDriftDeps): LockTreeDriftResult {
 
   const lockRaw = readFile(join(deps.rootDir, 'package-lock.json'));
   const lock = JSON.parse(lockRaw) as { packages?: Record<string, LockPackageEntry> };
-  const packages = lock.packages ?? {};
+  // A lockfile with no `packages` map (lockfileVersion 1, or a truncated write) is
+  // UNMEASURABLE, not clean. Defaulting it to `{}` walked zero entries and returned
+  // `{ ok: true, missing: [], extraneous: [] }` — a boot-integrity ALL-CLEAR sourced from a
+  // check that never ran, which is the exact absent-read-as-measured shape (WI-5977) this
+  // preflight exists to catch in the tree it inspects. Throwing is in-contract: the doc
+  // above already promises to throw on an unreadable lock, and `checkLockTreeDrift` turns
+  // that into `skipped: true` + the reason, so the caller sees "not measured", never "fine".
+  if (!lock.packages || typeof lock.packages !== 'object') {
+    throw new Error(
+      'package-lock.json has no `packages` map (lockfileVersion 1 or a partial write) — ' +
+        'lock/tree drift cannot be measured from it',
+    );
+  }
+  const packages = lock.packages;
   const nmDir = join(deps.rootDir, 'node_modules');
 
   // Direction A: lock-required, disk-absent. Also builds the lock-name set Direction B

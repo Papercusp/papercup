@@ -131,7 +131,14 @@ export function defaultOutcomeProbes(sql: Sql): OutcomeProbes {
          ORDER BY updated_at DESC LIMIT 1
       `;
       if (rows.length === 0) return null;
-      return String(rows[0].status ?? '') === 'shipped';
+      // harness_plans.status is NULLABLE with no default. `?? ''` resolved a NULL status to
+      // `false` — "this plan did not ship" — from a row that records no status at all, which
+      // is the one thing this resolver must not do: `null` is its own "cannot decide yet"
+      // answer (the no-row branch above), and a bet resolved false on absent evidence is
+      // scored against the forecaster (WI-5977: absence needs its own representation).
+      const status = rows[0].status;
+      if (status === null || status === undefined) return null;
+      return String(status) === 'shipped';
     },
     async flakeRecurred(bet) {
       if (!bet.watchdogKey) return null;

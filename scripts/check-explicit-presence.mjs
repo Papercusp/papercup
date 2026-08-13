@@ -158,7 +158,69 @@ export function decideRatchet({ count, baselineCount, updateFlag = false }) {
  * here (a genuine config default, not a parse/deserialize boundary reading absence as
  * zero), or the field is structurally guaranteed present. Curate as real ones surface.
  */
-const ALLOW = new Set([]);
+const ALLOW = new Set([
+  // ── postgres.js RESULT-ARRAY `.count`, not a row column ────────────────────────────────
+  // Every one of these is `<result>.count` on the object postgres.js returns from a
+  // DELETE/UPDATE — the driver's affected-row count, which it populates on every command.
+  // The analyzer sees `x.count ?? 0` on a variable assigned from a sql`` template and cannot
+  // tell that apart from `rows[0].count` (a real, NULLable column read). The `?? 0` here is
+  // a no-op, and the zero it would produce is the honest "nothing matched".
+  'packages/operator-core/lib/blueprint/commit-reproject-real.ts:110',
+  'packages/operator-core/lib/harness/routines/coord-invariant-actions.ts:1410',
+  'packages/operator-core/lib/search/session-ingest.ts:1969',
+  'packages/operator-core/lib/search/session-ingest.ts:1970',
+  'packages/operator-core/lib/search/session-ingest.ts:2001',
+  'packages/operator-core/lib/search/session-ingest.ts:2002',
+  'packages/operator-core/lib/steering-churn.ts:316',
+  'packages/operator-core/lib/sync/hyperbee/coord-quarantine-store.ts:139',
+
+  // ── absence IS the encoder's representation of empty ───────────────────────────────────
+  // encodeSessionCursor (same file, ~line 90) OMITS `bounds` when it is empty:
+  // `...(bounds && Object.keys(bounds).length > 0 ? { bounds } : {})`. So an absent `bounds`
+  // does not mean "unknown" here — it is how this codec spells "no bounds".
+  'packages/operator-core/lib/agent-tools/sessions/cursor.ts:103',
+  // `!Number.isInteger(payload.offset)` earlier in the SAME `||` disjunction already rejects
+  // an absent offset, so this arm is unreachable for absence. (Its sibling on the preceding
+  // line uses the correct `?? -1` sentinel; only the reachability argument saves this one.)
+  'packages/operator-core/lib/agent-tools/sessions/cursor.ts:119',
+
+  // ── schema-verified: the column cannot be absent, or NULL and {} are indistinguishable ──
+  // harness_shared.routines.trigger_config is NOT NULL (information_schema, 2026-08-13).
+  'packages/operator-core/lib/plugin-host.ts:246',
+  // payload_template IS nullable, but it is immediately spread into a merge — `{...null}` and
+  // `{...{}}` produce the identical object, so no reader can distinguish the two outcomes.
+  'packages/operator-core/lib/plugin-host.ts:248',
+
+  // ── the zero is a declared sentinel the no-data branch already uses ────────────────────
+  // A high-water mark: the surrounding expression is `hwmRows.length ? Number(...) : 0`, so 0
+  // is this function's stated "no HWM yet" value; a NULL mtime_ms means the same thing and
+  // errs toward re-ingesting, never toward skipping.
+  'packages/operator-core/lib/search/session-ingest.ts:1864',
+
+  // ── the file-absent branch above already yields exactly this empty value ───────────────
+  // Each of these reads an optional list/map out of a config or state file whose enclosing
+  // function ALREADY returns the same empty value when the file does not exist. An absent key
+  // and an empty collection therefore reach every caller identically; there is no reader that
+  // could act on the distinction even if it were preserved.
+  'packages/operator-core/lib/plugin-grants.ts:45',
+  'packages/operator-core/lib/endpoint-route/routes/harness/testing.ts:67',
+  'packages/operator-core/lib/endpoint-route/routes/harness/tests.ts:67',
+  'packages/operator-core/lib/endpoint-route/routes/harness/runs.ts:106',
+  'packages/operator-core/lib/sync-resolver/index.ts:1665',
+  'libs/papercusp/packages/cli/src/snapshot-cli.ts:663',
+
+  // ── absence resolves in the CONSERVATIVE direction ─────────────────────────────────────
+  // An ollama manifest with no `layers` finds no model layer, so the loop `continue`s to the
+  // next root and ultimately reports needsDownload — the same outcome the adjacent catch gives
+  // a malformed manifest. Absence can only cause a redundant download, never a false hit.
+  'packages/operator-core/lib/provisioner/weights.ts:96',
+
+  // ── free-text field where empty and absent carry the same meaning ──────────────────────
+  // The auditor's `reasons` is prose shown to a human; the VERDICT it explains is validated
+  // separately on the line above and a missing verdict returns null. "No reason given" is
+  // what both an absent and an empty `reasons` mean.
+  'libs/papercusp/packages/orchestrator/src/auditor-dispatch.ts:233',
+]);
 
 // v1 (whole-file "does this file mention JSON.parse anywhere" gate) was tried first and
 // measured 1264 hits on this tree — cry-wolf, the exact failure check-generic-first.mjs's
@@ -576,12 +638,32 @@ function main() {
   files = files.filter((f) => SCAN_ROOTS.some((r) => f.startsWith(r)) && f.endsWith('.ts'));
 
   const candidates = [];
+  const allowUsed = new Set();
   for (const f of files) {
     let text;
     try { text = readFileSync(join(ROOT, f), 'utf8'); } catch { continue; }
     for (const hit of analyzeForExplicitPresence({ path: f, text })) {
-      if (ALLOW.has(`${f}:${hit.line}`)) continue;
+      const key = `${f}:${hit.line}`;
+      if (ALLOW.has(key)) { allowUsed.add(key); continue; }
       candidates.push({ f, ...hit });
+    }
+  }
+
+  // ALLOW is keyed on `path:line`, so ANY edit above an entry silently re-points it at a
+  // different line. An entry that suppresses nothing is this guard's own subject one level
+  // up: a suppression believed to be doing work while it measures nothing. Only meaningful
+  // under `--all`, which scans every file an entry could name (a diff-scoped run legitimately
+  // touches almost none of them). Advisory — a drifted entry must not red the gate leg,
+  // because the correct response is re-triaging the moved line, not deleting the reason.
+  if (all) {
+    const stale = [...ALLOW].filter((k) => !allowUsed.has(k));
+    if (stale.length > 0) {
+      console.error(
+        `⚠ explicit-presence: ${stale.length} ALLOW entr(ies) matched NO candidate — the line moved, or the\n` +
+          '  code was fixed. Re-point or delete them; a suppression that suppresses nothing hides the next hit:',
+      );
+      for (const k of stale) console.error(`    ${k}`);
+      console.error('');
     }
   }
 
