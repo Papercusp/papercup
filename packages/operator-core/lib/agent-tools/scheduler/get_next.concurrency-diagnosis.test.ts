@@ -46,6 +46,8 @@ vi.mock('@papercusp/flags/server', async (importOriginal) => ({
 vi.mock('../../scheduler/fleet-scope-admission', () => ({
   // No fleet scope in play — the miss must fall through to buildMissDiagnosis.
   reconcileFleetScopeClaims: vi.fn(async () => ({ scope: null, quarantinedIds: [] })),
+  diagnoseFleetScopePlanTerminality: vi.fn(async () => null),
+  diagnoseFleetScopeLeaderLiveness: vi.fn(async () => null),
   fleetScopedMiss: vi.fn(),
 }));
 vi.mock('../../scheduler/claim-spec-store', async (importOriginal) => {

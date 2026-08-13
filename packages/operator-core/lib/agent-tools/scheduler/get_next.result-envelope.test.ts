@@ -66,6 +66,8 @@ vi.mock('../../scheduler/fleet-scope-admission', () => ({
   diagnoseFleetScopeIssueFloorMiss: vi.fn(async () => null),
   diagnoseFleetScopeFeatureFamilyMatch: vi.fn(async () => null),
   diagnoseFleetScopeTerminalExhaustion: vi.fn(async () => null),
+  diagnoseFleetScopePlanTerminality: vi.fn(async () => null),
+  diagnoseFleetScopeLeaderLiveness: vi.fn(async () => null),
   fleetScopedMiss: vi.fn(() => ({ ok: false, error: 'scoped miss', windDown: true })),
 }));
 vi.mock('../../events/await/store', () => ({

@@ -88,6 +88,10 @@ vi.mock('../../scheduler/fleet-scope-admission', () => ({
   // WI-7151: only ever reached when a breakdown reports matchedByFilter===0 (the issueFloorMiss
   // mock above always returns null, so this path is unreachable here) — defensive stub only.
   diagnoseFleetScopeFeatureFamilyMatch: vi.fn(async () => null),
+  // EI-20260781488788952: the zero-match enrichment reads these diagnostics alongside the
+  // existing family/exhaustion seams; keep this mock's module shape aligned with production.
+  diagnoseFleetScopePlanTerminality: vi.fn(async () => null),
+  diagnoseFleetScopeLeaderLiveness: vi.fn(async () => null),
   fleetScopedMiss: (
     scope: any,
     quarantinedIds: string[],

@@ -25,6 +25,8 @@ import { beforeEach, describe, it, expect, vi } from 'vitest';
 const getNextForBeeM = vi.hoisted(() => vi.fn());
 const issueFloorMissM = vi.hoisted(() => vi.fn());
 const terminalExhaustionM = vi.hoisted(() => vi.fn());
+const planTerminalityM = vi.hoisted(() => vi.fn());
+const leaderLivenessM = vi.hoisted(() => vi.fn());
 const fleetScopedMissM = vi.hoisted(() => vi.fn());
 const cooldownMissM = vi.hoisted(() => vi.fn());
 
@@ -50,6 +52,8 @@ vi.mock('../../scheduler/fleet-scope-admission', () => ({
   diagnoseFleetScopeCooldownMiss: cooldownMissM,
   diagnoseFleetScopeIssueFloorMiss: issueFloorMissM,
   diagnoseFleetScopeTerminalExhaustion: terminalExhaustionM,
+  diagnoseFleetScopePlanTerminality: planTerminalityM,
+  diagnoseFleetScopeLeaderLiveness: leaderLivenessM,
   // WI-7151: only ever reached when a breakdown reports matchedByFilter===0 — none of this
   // file's fixtures do (survivors/drained are both 22), so this is a defensive stub only.
   diagnoseFleetScopeFeatureFamilyMatch: vi.fn(async () => null),
@@ -88,6 +92,8 @@ describe('WI-5947 — scheduler:get_next re-confirms a would-be divergence befor
     vi.clearAllMocks();
     cooldownMissM.mockResolvedValue(null);
     terminalExhaustionM.mockResolvedValue(null);
+    planTerminalityM.mockResolvedValue(null);
+    leaderLivenessM.mockResolvedValue(null);
     fleetScopedMissM.mockReturnValue({ ok: false, error: 'miss', windDown: false });
   });
 
@@ -156,6 +162,26 @@ describe('WI-5947 — scheduler:get_next re-confirms a would-be divergence befor
     expect(getNextForBeeM).toHaveBeenCalledTimes(1);
     expect(terminalExhaustionM).toHaveBeenCalledTimes(1);
     expect(missOpts()?.terminalExhaustion).toEqual({ matchedByFilter: 2, terminalMatchedByFilter: 2 });
+  });
+
+  it('passes plan terminality and leader liveness to the zero-match miss verdict', async () => {
+    const zeroMatches = { matchedByFilter: 0, claimable: 0, excluded: {} as never };
+    const planTerminality = {
+      planSlugs: ['finished-plan'],
+      terminalPlanSlugs: ['finished-plan'],
+      allTerminal: true,
+    };
+    getNextForBeeM.mockResolvedValue(null);
+    issueFloorMissM.mockResolvedValue(zeroMatches);
+    planTerminalityM.mockResolvedValue(planTerminality);
+    leaderLivenessM.mockResolvedValue(false);
+
+    const res = await call();
+
+    expect(res.ok).toBe(false);
+    expect(planTerminalityM).toHaveBeenCalledTimes(1);
+    expect(leaderLivenessM).toHaveBeenCalledTimes(1);
+    expect(missOpts()).toMatchObject({ planTerminality, leaderLiveness: false });
   });
 
   it('does not retry on a successful first claim (the hot path is untouched)', async () => {
