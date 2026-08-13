@@ -17,7 +17,7 @@
  *      empty-state placeholder that implies something is missing.
  */
 import { describe, expect, it, vi, afterEach, beforeEach } from 'vitest';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { nuqsParsers } from '@papercusp/test-config/nuqs-mock';
 import type { GoalDetailInput } from './goal-detail-model';
 
@@ -192,6 +192,16 @@ function renderPanel(data: GoalDetailInput | null, props: Record<string, unknown
       {...props}
     />,
   );
+}
+
+/** The visibility rows live in a Radix popover rather than permanently
+ * occupying the toolbar. Open it only when a test needs to act on panel state;
+ * leave it open when already expanded so multi-toggle tests exercise the real
+ * keep-open interaction instead of accidentally closing the chooser. */
+function openPanelsMenu() {
+  const trigger = screen.getByTestId('goal-panels-trigger');
+  if (trigger.getAttribute('aria-expanded') !== 'true') fireEvent.click(trigger);
+  return screen.getByRole('dialog', { name: 'Panel visibility' });
 }
 
 describe('GoalDetailPanel', () => {
@@ -487,7 +497,13 @@ describe('GoalDetailPanel', () => {
       detail({ agents: [{ ownerId: 'su-abc', setAt: null, setBy: 'operator-ui' }] }),
       { onOpenAgent: (id: string) => seen.push(id) },
     );
-    fireEvent.click(screen.getByTestId('goal-open-agent'));
+    const openConversation = screen.getByTestId('goal-open-agent');
+    // Icon-only in the compact band: the accessible action survives while the
+    // visible "Open full-size" label no longer competes with panel controls.
+    expect(openConversation.textContent).toBe('');
+    expect(openConversation.querySelector('svg')).toBeTruthy();
+    expect(openConversation.getAttribute('aria-label')).toBe('Open conversation full-size');
+    fireEvent.click(openConversation);
     expect(seen).toEqual(['su-abc']);
     unmount();
     cleanup();
@@ -565,6 +581,7 @@ describe('GoalDetailPanel', () => {
   it('the toggle actually hides the rail', () => {
     renderPanel(detail());
     expect(screen.queryByTestId('goal-work-rail')).toBeTruthy();
+    openPanelsMenu();
     fireEvent.click(screen.getByTestId('goal-rail-toggle'));
     expect(screen.queryByTestId('goal-work-rail')).toBeNull();
   });
@@ -713,6 +730,7 @@ describe('GoalDetailPanel', () => {
     it('the brief zone can be closed, and closing it leaves the conversation mounted', () => {
       renderPanel(detail());
       expect(screen.getByTestId('goal-brief-rail')).toBeTruthy();
+      openPanelsMenu();
       fireEvent.click(screen.getByTestId('goal-brief-toggle'));
       expect(screen.queryByTestId('goal-brief-rail')).toBeNull();
       // The point of the toggle is more room for the conversation — so the
@@ -854,6 +872,7 @@ describe('GoalDetailPanel', () => {
     it('renders no borrowed zone and no toggle for one when the goal has no agent', () => {
       rosterRows(inFleet);
       renderPanel(detail({ agents: [] }));
+      openPanelsMenu();
       // Absent, not present-and-inert — WI-6742's dead-control shape, which
       // this popup has already been filed against once.
       for (const id of [
@@ -884,6 +903,7 @@ describe('GoalDetailPanel', () => {
       rosterRows(inFleet);
       const { unmount } = renderPanel(withAgent());
       expect(screen.getByTestId('goal-peers-rail')).toBeTruthy();
+      openPanelsMenu();
       expect(screen.getByTestId('goal-fleet-toggle')).toBeTruthy();
       unmount();
       cleanup();
@@ -892,6 +912,7 @@ describe('GoalDetailPanel', () => {
       rosterRows([rosterEntry({ fleetSlug: null })]);
       renderPanel(withAgent());
       expect(screen.queryByTestId('goal-peers-rail')).toBeNull();
+      openPanelsMenu();
       expect(screen.queryByTestId('goal-fleet-toggle')).toBeNull();
       // …while the two that need no fleet stay. A regression that gated all
       // three on the fleet model would pass the previous assertions alone.
@@ -902,6 +923,7 @@ describe('GoalDetailPanel', () => {
     it('closing a borrowed zone leaves the conversation and the other zones mounted', () => {
       rosterRows(inFleet);
       renderPanel(withAgent());
+      openPanelsMenu();
       fireEvent.click(screen.getByTestId('goal-orders-toggle'));
       expect(screen.queryByTestId('goal-orders-rail')).toBeNull();
       // The point of every toggle here is more room for the conversation, so
@@ -1024,6 +1046,7 @@ describe('GoalDetailPanel', () => {
       it('closing it leaves the conversation and both neighbours mounted', () => {
         rosterRows(inFleet);
         renderPanel(withAgent());
+        openPanelsMenu();
         fireEvent.click(screen.getByTestId('goal-sessions-toggle'));
         expect(screen.queryByTestId('goal-sessions-rail')).toBeNull();
         // The point of the toggle is room for the conversation, so it survives —
@@ -1049,71 +1072,49 @@ describe('GoalDetailPanel', () => {
       });
     });
 
-    /* ── P-023: the sessions popup's hide + expand controls ──────────────────
-       [owner 2026-08-10] "mimic the design used in the equivalent popup in the
-       sessions tab for the hide and expand buttons instead of how it is
-       currently 'hide order hide brief etc.'"
-
-       The grammar itself is pinned once, in PanelToggleButton.test.tsx. What is
-       only provable HERE is that this popup's five toggles actually reach it —
-       with the right `side` per zone, which no shared-component test can know —
-       and that the expand pair exists and is wired. Nested inside the P-021
-       block for its `withAgent`/`rosterRows`/`inFleet` fixtures. */
-    describe('P-023: panel toggles + the expand pair', () => {
-      it('names the panel and never the verb — the label is identical open and closed', () => {
+    /* ── P-025: one panel chooser; P-023: the unchanged expand pair ──────────
+       [owner 2026-08-13] the confusing controls are the individual
+       Orders/Brief/Sessions/Work/Activity/Fleet chevrons, not the full-window
+       and full-screen pair. The six panel states now live in one checked
+       chooser grouped by physical side; the expand pair remains exactly the
+       shared P-023 behavior below. */
+    describe('P-025: panel visibility chooser + the P-023 expand pair', () => {
+      it('groups every available panel by the side it occupies, in layout order', () => {
         rosterRows(inFleet);
         renderPanel(withAgent());
-        /* The owner-reported defect, exactly: these five used to read "Hide
-           orders" / "Hide brief" / "Hide work" … while open, so every press
-           re-widened the button under the cursor and shifted the rest of the
-           row. Asserted on the VISIBLE text, which is what was complained
-           about — the `aria-label` below is the half that SHOULD carry a verb. */
-        const ids = [
-          'goal-orders-toggle',
-          'goal-brief-toggle',
-          'goal-sessions-toggle',
-          'goal-rail-toggle',
-          'goal-activity-toggle',
-          'goal-fleet-toggle',
-        ];
-        const before = ids.map((id) => screen.getByTestId(id).textContent);
-        expect(before).toEqual(['Orders', 'Brief', 'Sessions', 'Work', 'Activity', 'Fleet']);
-        for (const id of ids) fireEvent.click(screen.getByTestId(id));
-        // Same five words after every one of them has been pressed.
-        expect(ids.map((id) => screen.getByTestId(id).textContent)).toEqual(before);
+        const menu = openPanelsMenu();
+        const left = within(menu).getByRole('group', { name: 'Left side' });
+        const right = within(menu).getByRole('group', { name: 'Right side' });
+        expect(within(left).getAllByRole('checkbox').map((box) => box.parentElement?.textContent)).toEqual([
+          'Orders',
+          'Brief',
+        ]);
+        expect(within(right).getAllByRole('checkbox').map((box) => box.parentElement?.textContent)).toEqual([
+          'Sessions',
+          'Work',
+          'Activity',
+          'Fleet',
+        ]);
       });
 
-      it('points each chevron at the edge its own zone moves toward', () => {
+      it('shows checked visibility state and stays open while several panels are changed', () => {
         rosterRows(inFleet);
         renderPanel(withAgent());
-        const dir = (id: string) =>
-          screen.getByTestId(id).querySelector('svg')?.classList.contains('lucide-chevron-left')
-            ? 'left'
-            : 'right';
-        /* All five start OPEN (the wide-viewport default), so the left-edge
-           zones close leftward and the right-edge ones close rightward. A toggle
-           wired with the wrong `side` renders a chevron pointing away from its
-           own panel — plausible-looking, and invisible to a test that only
-           clicks the button and asserts the zone unmounted. */
-        expect(dir('goal-orders-toggle')).toBe('left');
-        expect(dir('goal-brief-toggle')).toBe('left');
-        expect(dir('goal-sessions-toggle')).toBe('right');
-        expect(dir('goal-rail-toggle')).toBe('right');
-        expect(dir('goal-activity-toggle')).toBe('right');
-        expect(dir('goal-fleet-toggle')).toBe('right');
-      });
+        const menu = openPanelsMenu();
+        const brief = within(menu).getByRole('checkbox', { name: 'Brief' });
+        const work = within(menu).getByRole('checkbox', { name: 'Work' });
+        expect(brief.getAttribute('aria-checked')).toBe('true');
+        expect(work.getAttribute('aria-checked')).toBe('true');
 
-      it('keeps the Hide/Show verb where a screen reader can reach it', () => {
-        rosterRows(inFleet);
-        renderPanel(withAgent());
-        const btn = screen.getByTestId('goal-brief-toggle');
-        expect(btn.getAttribute('aria-label')).toBe('Hide the goal brief');
-        expect(btn.getAttribute('aria-pressed')).toBe('true');
-        fireEvent.click(btn);
-        expect(screen.getByTestId('goal-brief-toggle').getAttribute('aria-label')).toBe(
-          'Show the goal brief',
-        );
-        expect(screen.getByTestId('goal-brief-toggle').getAttribute('aria-pressed')).toBe('false');
+        fireEvent.click(brief);
+        expect(screen.getByRole('dialog', { name: 'Panel visibility' })).toBe(menu);
+        expect(screen.getByTestId('goal-panels-trigger').getAttribute('aria-expanded')).toBe('true');
+        expect(screen.getByRole('checkbox', { name: 'Brief' }).getAttribute('aria-checked')).toBe('false');
+        expect(screen.queryByTestId('goal-brief-rail')).toBeNull();
+
+        fireEvent.click(screen.getByRole('checkbox', { name: 'Work' }));
+        expect(screen.getByRole('dialog', { name: 'Panel visibility' })).toBe(menu);
+        expect(screen.queryByTestId('goal-work-rail')).toBeNull();
       });
 
       it('offers BOTH expand modes, and they are not the same control', () => {
