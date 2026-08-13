@@ -281,14 +281,15 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
     );
   });
 
-  it('installs only the offline scenario contract and emits nothing before fixed A-G executors land', () => {
+  it('installs only the offline scenario and Phase A contracts and emits nothing before fixed A-G executors land', () => {
     const contract = spawnSync(physicalScenarioPath, ['--contract-check'], { encoding: 'utf8' });
     expect(contract.status).toBe(0);
     expect(JSON.parse(contract.stdout)).toEqual({
       schemaVersion: 'hive-git-physical-scenario-contract/v1',
-      implementationState: 'offline-contract-v1',
+      implementationState: 'offline-phase-a-contract-v1',
       ready: false,
       phases: [...'ABCDEFG'],
+      phaseContracts: { A: 'contract-only' },
     });
 
     const runDir = mkdtempSync(join(evidenceDir, 'scenario-contract-'));
@@ -316,11 +317,68 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
       },
     );
     expect(attempted.status).toBe(1);
-    expect(attempted.stderr).toContain('scenario is not execution-ready (offline-contract-v1)');
+    expect(attempted.stderr).toContain(
+      'scenario is not execution-ready (offline-phase-a-contract-v1)',
+    );
     expect(existsSync(output)).toBe(false);
     expect(physicalScenario).toContain('run_all_phases');
     expect(physicalScenario).not.toContain('HIVE_GIT_PHYSICAL_SCENARIO_CMD');
     expect(physicalScenario).not.toMatch(/^\s*(?:ssh|scp|psql|git|systemctl)\b/m);
+  });
+
+  it('pins a falsifiable Phase A cold-join adapter contract with no command override', () => {
+    const contract = spawnSync(physicalScenarioPath, ['--phase-contract', 'A'], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        HIVE_GIT_PHYSICAL_PHASE_A_CMD: 'printf synthetic-pass',
+      },
+    });
+    expect(contract.status).toBe(0);
+    expect(JSON.parse(contract.stdout)).toEqual({
+      schemaVersion: 'hive-git-physical-phase-contract/v1',
+      phase: 'A',
+      planItem: 'P-302',
+      state: 'contract-only',
+      ready: false,
+      target: {
+        potHomeSlug: 'hello-world-3-pot',
+        repoKey: 'gh-1296269',
+        topology: 'tower-to-vm-cold-join',
+      },
+      causalOrder: [
+        'towerStoreObserved',
+        'vmStoreRemovedByScenario',
+        'vmStoreAbsenceObserved',
+        'canonicalGitSyncBootstrapTriggered',
+        'vmStoreRecreatedAfterBootstrap',
+        'twoHostNamespaceAndObjectParityObserved',
+      ],
+      requiredObservations: [
+        'towerBareRepo',
+        'vmBareRepo',
+        'bothPhysicalDeviceNamespacesOnBothHosts',
+        'namespaceRefOidsMatch',
+        'referencedObjectsExistOnBothHosts',
+        'oneObjectDatabasePerRepo',
+        'eachDeviceWritesOnlyItsOwnNamespace',
+        'bootstrapCompletedAfterObservedAbsence',
+      ],
+      forbiddenEvidence: [
+        'preExistingVmStoreAsColdJoinProof',
+        'singleHostObservation',
+        'preAuthoredManifest',
+        'environmentSuppliedCommand',
+      ],
+      externalCommandOverrides: false,
+    });
+    expect(physicalScenario).not.toContain('HIVE_GIT_PHYSICAL_PHASE_A_CMD');
+
+    const unsupported = spawnSync(physicalScenarioPath, ['--phase-contract', 'B'], {
+      encoding: 'utf8',
+    });
+    expect(unsupported.status).toBe(1);
+    expect(unsupported.stderr).toContain('phase B has no installed offline contract');
   });
 
   it('refuses the canonical wrapper before its first VM ssh while the scenario is incomplete', () => {
@@ -345,7 +403,9 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
       },
     );
     expect(probe.status).toBe(1);
-    expect(probe.stderr).toContain('scenario is not execution-ready (offline-contract-v1)');
+    expect(probe.stderr).toContain(
+      'scenario is not execution-ready (offline-phase-a-contract-v1)',
+    );
     expect(existsSync(sshMarker)).toBe(false);
   });
 
