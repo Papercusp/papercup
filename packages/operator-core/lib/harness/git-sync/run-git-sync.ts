@@ -46,6 +46,9 @@ import { DEFAULT_CONTENT_DETECTORS, type ContentDetector } from '../../content-l
 import {
   groupFilesForAttribution,
   attributionMapForRepo,
+  diffDerivedSubject,
+  parseNumstat,
+  DEFAULT_GIT_SYNC_SUBJECT,
   type FileAttribution,
   type AttributionRosterEntry,
 } from './git-sync-attribution';
@@ -480,6 +483,10 @@ export interface RunGitSyncOpts {
    *  derives a per-repo attribution map and peels per-agent commits; when absent (flag OFF / no
    *  caller) commits are unchanged (today's single whole-tree commit). DERIVED, never authored. */
   loadRoster?: () => Promise<AttributionRosterEntry[]>;
+  /** WI-38594 (flag GIT_SYNC_DIFF_SUBJECTS, default ON): commit subjects are DIFF-derived
+   *  (`sync(<areas>): <what> (<n> files, +A/-D)`) with the agent's intent line demoted to
+   *  the commit body. false = the pre-WI-38594 subjects (intent line / message stem). */
+  diffSubjects?: boolean;
   /** WI-EI-20224214315801764: override the age floor for crash-left `tmp_pack_*` files. */
   staleTempPackMs?: number;
   /** Test seam for proving whether a candidate temp pack is still open by a process.
@@ -1426,6 +1433,7 @@ export async function commitAttributedGroups(
   attribution: Map<string, FileAttribution>,
   excludePaths: string[],
   message: string,
+  opts: { diffSubjects?: boolean } = {},
 ): Promise<{ committedAny: boolean; error?: string }> {
   const excludeSet = new Set(excludePaths);
   const dirty = (await dirtyFiles(runGit, repoPath)).filter((f) => !excludeSet.has(f));
@@ -1435,7 +1443,20 @@ export async function commitAttributedGroups(
   for (const g of groups) {
     if (g.agent === null || g.files.length === 0) continue; // catch-all handled by the caller's add -A
     await runGit(['add', '--', ...g.files], repoPath);
-    const args = [...GIT_SYNC_IDENTITY_ARGS, 'commit', '--no-verify', '-m', `${g.subject}${suffix}`];
+    // WI-38594 (flag GIT_SYNC_DIFF_SUBJECTS): the subject describes the DIFF (what this
+    // commit actually contains — from the just-staged numstat); the agent's intent line
+    // (the pre-WI-38594 subject) rides as the first BODY paragraph, ahead of the
+    // provenance trailers, so it stays greppable without masquerading as a diff summary.
+    // A failed numstat only drops the ±counts — never blocks the commit.
+    let subject = g.subject;
+    let intentBody: string | null = null;
+    if (opts.diffSubjects !== false) {
+      const ns = await runGit(['diff', '--cached', '--numstat', '--', ...g.files], repoPath);
+      subject = diffDerivedSubject(g.files, ns.code === 0 ? parseNumstat(ns.stdout) : undefined);
+      if (g.subject && g.subject !== DEFAULT_GIT_SYNC_SUBJECT) intentBody = g.subject;
+    }
+    const args = [...GIT_SYNC_IDENTITY_ARGS, 'commit', '--no-verify', '-m', `${subject}${suffix}`];
+    if (intentBody) args.push('-m', intentBody);
     if (g.coAuthor) args.push('-m', `Co-Authored-By: ${g.coAuthor}`);
     // P-004 (deterministic-commit-workitem-attribution-2026-06-22): bounded provenance
     // trailers so the commit↔work-item link travels IN git history (and is read back
@@ -1472,6 +1493,8 @@ interface CommitRepoOpts {
    *  `git add -A` commit (today's behavior) sweeps the remainder. Absent/empty = byte-identical
    *  to today's single commit. */
   attribution?: Map<string, FileAttribution>;
+  /** WI-38594 (flag GIT_SYNC_DIFF_SUBJECTS): diff-derived commit subjects (see RunGitSyncOpts). */
+  diffSubjects?: boolean;
 }
 
 /** JSON-serializable — checkpointed as the superproject `git-sync:pointer-bump` step output. */
@@ -1581,7 +1604,9 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
     // each declaring agent's dirty files into its OWN commit (intent subject + Co-Authored-By)
     // BEFORE the catch-all. Absent/empty → no-op, so the flag-OFF path stays byte-identical.
     if (o.attribution && o.attribution.size > 0) {
-      const res = await commitAttributedGroups(runGit, repoPath, o.attribution, excludePaths, message);
+      const res = await commitAttributedGroups(runGit, repoPath, o.attribution, excludePaths, message, {
+        diffSubjects: o.diffSubjects,
+      });
       if (res.error) {
         // STRANDING GUARD (2026-06-30): a failed per-agent attributed commit — e.g. an
         // index.lock race under heavy fleet contention — must NEVER short-circuit the
@@ -1687,7 +1712,29 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
         };
       }
     }
-    const c = await runGit([...GIT_SYNC_IDENTITY_ARGS, 'commit', '--no-verify', '-m', message], repoPath);
+    // WI-38594 (flag GIT_SYNC_DIFF_SUBJECTS): the catch-all subject too is derived from
+    // what is ACTUALLY staged (numstat over the staged set); the original message (the
+    // sweep's intent/default stem, incl. its own [skip ci]) is demoted to the body for
+    // traceability. Numstat failure or an empty staged set falls back to `message` alone
+    // — byte-identical to the pre-WI-38594 commit.
+    const commitArgs = [...GIT_SYNC_IDENTITY_ARGS, 'commit', '--no-verify'];
+    let catchAllSubjected = false;
+    if (o.diffSubjects !== false) {
+      const ns = await runGit(['diff', '--cached', '--numstat'], repoPath);
+      if (ns.code === 0) {
+        const stats = parseNumstat(ns.stdout);
+        if (stats.length > 0) {
+          const subject = diffDerivedSubject(
+            stats.map((s) => s.file),
+            stats,
+          );
+          commitArgs.push('-m', `${subject}${skipCiSuffix(message)}`, '-m', message);
+          catchAllSubjected = true;
+        }
+      }
+    }
+    if (!catchAllSubjected) commitArgs.push('-m', message);
+    const c = await runGit(commitArgs, repoPath);
     if (c.code === 0) {
       committedAny = true;
     } else if (!nothingToCommit(c)) {
@@ -1949,6 +1996,7 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
     log,
     staleTempPackMs: opts.staleTempPackMs ?? STALE_TEMP_PACK_MS,
     isTempPackOpen: opts.isTempPackOpen,
+    diffSubjects: opts.diffSubjects ?? true,
   };
 
   const repo = opts.repoPath ?? (await projectDirForSlug(slug));

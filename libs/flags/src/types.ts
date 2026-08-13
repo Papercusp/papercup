@@ -969,6 +969,15 @@ export const FLAGS = {
   // subjects with zero sentinel subjects. No new agent ceremony (attribution is DERIVED).
   // Flipping it back OFF remains the tested rollback: one whole-tree `git add -A` commit.
   GIT_SYNC_DERIVED_ATTRIBUTION: "papercusp-git-sync-derived-attribution",
+  // WI-38594 [owner 2026-08-13]: diff-derived git-sync commit SUBJECTS — the subject
+  // becomes the commit's actual content (`sync(<areas>): <what> (<n> files, +A/-D)`,
+  // from the just-staged numstat) and the agent's intent line (the previous subject)
+  // is demoted to the first commit-body paragraph, ahead of the Papercusp-* trailers —
+  // still greppable, no longer masquerading as a diff description. Applies to BOTH the
+  // per-agent attributed commits and the catch-all whole-tree commit. Default ON
+  // (derived FLAG_DEFAULTS — not in DARK_FLAGS). OFF = the instant off-switch back to
+  // the pre-WI-38594 subjects (intent line / message stem), no deploy needed.
+  GIT_SYNC_DIFF_SUBJECTS: "papercusp-git-sync-diff-subjects",
   // docs-corpus-audit WS2 P-008 / deterministic-commit-workitem-attribution P-005: the
   // doc-steward — the post-git-sync freshness sweep, on a drifted doc, dispatches a
   // doc-steward agent to re-verify/regenerate it against the current code (the LLM consumer

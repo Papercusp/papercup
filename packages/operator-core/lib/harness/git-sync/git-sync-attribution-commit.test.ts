@@ -8,12 +8,17 @@ type RunGit = (args: string[], cwd: string) => Promise<GitResult>;
 function fakeGit(opts: {
   porcelain?: string;
   commitResults?: Array<Partial<GitResult>>;
+  /** WI-38594: stdout for the per-group `git diff --cached --numstat` read. */
+  numstat?: string;
 }): { runGit: RunGit; calls: string[][] } {
   const calls: string[][] = [];
   let commitIdx = 0;
   const runGit: RunGit = async (args) => {
     calls.push(args);
     if (args[0] === 'status') return { code: 0, stdout: opts.porcelain ?? '', stderr: '' };
+    if (args[0] === 'diff' && args.includes('--numstat')) {
+      return { code: 0, stdout: opts.numstat ?? '', stderr: '' };
+    }
     // WI-5111: commitAttributedGroups now prepends `-c user.name=... -c
     // user.email=...` (GIT_SYNC_IDENTITY_ARGS) before `commit` — match on
     // inclusion, not args[0].
@@ -37,9 +42,12 @@ describe('dirtyFiles (-z porcelain parse)', () => {
   });
 });
 
-describe('commitAttributedGroups (P-004)', () => {
-  it('peels per-agent commits (intent subject + [skip ci] + Co-Authored-By), leaving the remainder to the caller', async () => {
-    const { runGit, calls } = fakeGit({ porcelain: ' M a.ts\0 M b.ts\0 M c.ts\0' });
+describe('commitAttributedGroups (P-004 + WI-38594 diff subjects)', () => {
+  it('peels per-agent commits (diff subject + [skip ci], intent in the body, Co-Authored-By), leaving the remainder to the caller', async () => {
+    const { runGit, calls } = fakeGit({
+      porcelain: ' M a.ts\0 M b.ts\0 M c.ts\0',
+      numstat: '10\t2\ta.ts\n5\t1\tb.ts\n',
+    });
     const attribution = new Map<string, FileAttribution>([
       ['a.ts', { agent: 'ag1', intent: 'fix a' }],
       ['b.ts', { agent: 'ag1', intent: 'fix a' }],
@@ -51,12 +59,28 @@ describe('commitAttributedGroups (P-004)', () => {
     // staged exactly ag1's files (sorted), nothing about c.ts
     const add = calls.find((c) => c[0] === 'add');
     expect(add).toEqual(['add', '--', 'a.ts', 'b.ts']);
-    // the per-agent commit: intent subject WITH the [skip ci] marker preserved + a Co-Authored-By trailer
+    // WI-38594: numstat read is scoped to the group's just-staged files
+    const numstat = calls.find((c) => c[0] === 'diff')!;
+    expect(numstat).toEqual(['diff', '--cached', '--numstat', '--', 'a.ts', 'b.ts']);
+    // the per-agent commit: DIFF subject WITH the [skip ci] marker, intent line as the
+    // first body paragraph, + a Co-Authored-By trailer
     const commit = calls.find((c) => c.includes('commit'))!;
-    expect(commit).toContain('fix a [skip ci]');
+    expect(commit).toContain('sync(root): a.ts, b.ts (2 files, +15/-3) [skip ci]');
+    expect(commit).toContain('fix a'); // demoted to the body, not lost
     expect(commit).toContain('Co-Authored-By: ag1 <ag1@agents.papercusp>');
     // exactly ONE attributed commit (c.ts is the catch-all, left for the caller's add -A)
     expect(calls.filter((c) => c.includes('commit'))).toHaveLength(1);
+  });
+
+  it('diffSubjects:false preserves the pre-WI-38594 intent subject byte-identically (kill-switch)', async () => {
+    const { runGit, calls } = fakeGit({ porcelain: ' M a.ts\0' });
+    const attribution = new Map<string, FileAttribution>([['a.ts', { agent: 'ag1', intent: 'fix a' }]]);
+    await commitAttributedGroups(runGit, '/repo', attribution, [], MSG, { diffSubjects: false });
+    const commit = calls.find((c) => c.includes('commit'))!;
+    expect(commit).toContain('fix a [skip ci]');
+    // no numstat read, no body demotion on the OFF path
+    expect(calls.some((c) => c[0] === 'diff')).toBe(false);
+    expect(commit.filter((a) => a === 'fix a')).toHaveLength(0);
   });
 
   it('is a no-op when nothing is attributed (flag-OFF degradation): no add, no commit', async () => {
@@ -102,8 +126,10 @@ describe('commitAttributedGroups (P-004)', () => {
     expect(commit).toContain('Papercusp-Work-Item: WI-1, WI-2');
     expect(commit).toContain('Papercusp-Session: sess-9');
     expect(commit).toContain('Papercusp-Plan: plan-x');
-    // still carries the standard subject + Co-Authored-By
-    expect(commit).toContain('fix a [skip ci]');
+    // still carries a subject (diff-derived; empty numstat → no ±counts), the intent
+    // body, + Co-Authored-By
+    expect(commit).toContain('sync(root): a.ts (1 file) [skip ci]');
+    expect(commit).toContain('fix a');
     expect(commit).toContain('Co-Authored-By: ag1 <ag1@agents.papercusp>');
   });
 

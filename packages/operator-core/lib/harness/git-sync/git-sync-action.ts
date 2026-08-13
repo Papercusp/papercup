@@ -1558,6 +1558,9 @@ async function handleGitSync(ctx: SystemActionCtx): Promise<GitSyncFireOutcome> 
   // peels per-agent commits. DERIVED, never authored — agents stay git-free. Flag-gated read; a
   // presence-read failure degrades to no attribution (today's single commit).
   const attributionOn = await getFlag(FLAGS.GIT_SYNC_DERIVED_ATTRIBUTION, slug);
+  // WI-38594: diff-derived commit subjects (default ON) — subject = the staged diff,
+  // intent line demoted to the body. OFF = pre-WI-38594 subjects, no deploy needed.
+  const diffSubjectsOn = await getFlag(FLAGS.GIT_SYNC_DIFF_SUBJECTS, slug);
 
   // 'acquired' (locked) or 'error' (unlocked best-effort) → run.
   let outcome: GitSyncOutcome;
@@ -1569,6 +1572,7 @@ async function handleGitSync(ctx: SystemActionCtx): Promise<GitSyncFireOutcome> 
       config: cfg,
       contentDetectors: contentGuardOn ? undefined : [],
       deletionGuard: deletionGuardOn,
+      diffSubjects: diffSubjectsOn,
       loadRoster: attributionOn ? () => loadAttributionRosterMerged(workspaceId) : undefined,
       // WI-1416: checkpoint each pipeline phase (submodules → pointer-bump → push) as
       // a DBOS sub-step; a passthrough outside a workflow (fireGitSyncNow, tests).

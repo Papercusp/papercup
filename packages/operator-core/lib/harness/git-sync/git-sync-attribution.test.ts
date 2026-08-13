@@ -5,6 +5,9 @@ import {
   agentsForScopedFiles,
   intentToSubject,
   coAuthorTrailer,
+  clampSubject,
+  diffDerivedSubject,
+  parseNumstat,
   DEFAULT_GIT_SYNC_SUBJECT,
   type FileAttribution,
 } from './git-sync-attribution';
@@ -135,5 +138,87 @@ describe('attributionMapForRepo', () => {
       { agent: 'second', files: ['a.ts'] },
     ];
     expect(attributionMapForRepo(dup, '').get('a.ts')?.agent).toBe('first');
+  });
+});
+
+// ————— WI-38594: diff-derived subjects (pure halves) —————
+
+describe('parseNumstat (WI-38594)', () => {
+  it('parses added/deleted/path rows, null for binary, skipping non-matching lines', () => {
+    const out = parseNumstat('10\t2\tapps/api/x.ts\n-\t-\tlogo.png\n\nwarning: junk\n5\t0\tdb/y.sql\n');
+    expect(out).toEqual([
+      { file: 'apps/api/x.ts', added: 10, deleted: 2 },
+      { file: 'logo.png', added: null, deleted: null },
+      { file: 'db/y.sql', added: 5, deleted: 0 },
+    ]);
+  });
+});
+
+describe('diffDerivedSubject (WI-38594)', () => {
+  it('lists basenames for <=2 files with summed ±counts', () => {
+    const files = ['apps/api/policy-rules.ts', 'apps/api/policy.types.ts'];
+    const stats = parseNumstat('600\t0\tapps/api/policy-rules.ts\n69\t0\tapps/api/policy.types.ts');
+    expect(diffDerivedSubject(files, stats)).toBe('sync(api): policy-rules.ts, policy.types.ts (2 files, +669/-0)');
+  });
+
+  it('falls to dir labels for >2 files, deduped, apps/* kept two segments', () => {
+    const files = [
+      'apps/api/a.ts',
+      'apps/api/b.ts',
+      'apps/api/c.ts',
+      'apps/api/d.ts',
+      'apps/api/e.ts',
+      'db/m1.sql',
+      'db/m2.sql',
+    ];
+    const stats = files.map((f, i) => ({ file: f, added: 100 + i, deleted: i }));
+    expect(diffDerivedSubject(files, stats)).toBe('sync(api,db): apps/api + db (7 files, +721/-21)');
+  });
+
+  it('omits ±counts when stats are unavailable and treats binary (null) as 0', () => {
+    expect(diffDerivedSubject(['db/x.sql'], undefined)).toBe('sync(db): x.sql (1 file)');
+    const stats = [{ file: 'db/x.sql', added: null, deleted: null }];
+    expect(diffDerivedSubject(['db/x.sql'], stats)).toBe('sync(db): x.sql (1 file, +0/-0)');
+  });
+
+  it('root files area as "root"; empty input degrades to the default subject', () => {
+    expect(diffDerivedSubject(['README.md'], [{ file: 'README.md', added: 3, deleted: 0 }])).toBe(
+      'sync(root): README.md (1 file, +3/-0)',
+    );
+    expect(diffDerivedSubject([], [])).toBe(DEFAULT_GIT_SYNC_SUBJECT);
+  });
+
+  it('degrades the middle instead of overflowing 72 chars', () => {
+    // Two files whose basenames are far too long for the budget → falls to dir labels.
+    const files = [
+      'packages/operator-core/very-long-file-name-that-never-ends-at-all-truly.ts',
+      'packages/operator-core/second-very-long-file-name-also-interminable.ts',
+    ];
+    const s = diffDerivedSubject(files, [
+      { file: files[0], added: 1, deleted: 1 },
+      { file: files[1], added: 1, deleted: 1 },
+    ]);
+    expect(s).toBe('sync(operator-core): packages/operator-core (2 files, +2/-2)');
+    expect(s.length).toBeLessThanOrEqual(72);
+  });
+
+  it('caps a wide dir spread with +N more and stays within budget', () => {
+    const files = ['a/x.ts', 'b/x.ts', 'c/x.ts', 'd/x.ts', 'e/x.ts', 'f/x.ts'];
+    const s = diffDerivedSubject(
+      files,
+      files.map((f) => ({ file: f, added: 1, deleted: 0 })),
+    );
+    expect(s).toBe('sync(a,b,c +3): a + b + c +3 more (6 files, +6/-0)');
+    expect(s.length).toBeLessThanOrEqual(72);
+  });
+});
+
+describe('clampSubject (WI-38568 extraction)', () => {
+  it('returns short subjects unchanged and clamps long ones at a word boundary with …', () => {
+    expect(clampSubject('short')).toBe('short');
+    const long = 'word '.repeat(30).trim();
+    const clamped = clampSubject(long);
+    expect(clamped.length).toBeLessThanOrEqual(72);
+    expect(clamped.endsWith('…')).toBe(true);
   });
 });
