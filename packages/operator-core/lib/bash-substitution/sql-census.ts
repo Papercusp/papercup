@@ -38,8 +38,14 @@
 
 import { plainSingleRelationRead } from '../pg-read-query';
 import { scrubIdentity } from './corpus';
+import { SQL_READ_NO_PAIR_DECISIONS } from './pairs';
 import { sqlPairClaimsAtom } from './sql-corpus';
-import type { EquivalenceVerdict, SampledCommand, SqlSubstitutionPair } from './types';
+import type {
+  DeliberateNoPairDecision,
+  EquivalenceVerdict,
+  SampledCommand,
+  SqlSubstitutionPair,
+} from './types';
 
 /**
  * Schemas whose qualifier is STYLE rather than meaning, so `harness_shared.work_items`
@@ -98,6 +104,10 @@ export interface CensusCluster {
    * responder is most likely to mis-triage as "already done".
    */
   relationHasPairs: boolean;
+  /** True when the relation-level NULL intent is a measured, registry-backed no-pair decision. */
+  deliberatelyUnpaired: boolean;
+  /** The decision and baseline carried through to persistence when deliberate. */
+  deliberateNoPairDecision: DeliberateNoPairDecision | null;
   coveringTool: string | null;
   equivalenceVerdict: EquivalenceVerdict | null;
   /** Distinct AGENTS (coord owner ids) in this cluster — the D-007 ranking unit. */
@@ -127,8 +137,12 @@ export interface CensusCluster {
 export function computeSqlCensus(
   atoms: readonly SampledCommand[],
   pairs: readonly SqlSubstitutionPair[],
+  noPairDecisions: readonly DeliberateNoPairDecision[] = SQL_READ_NO_PAIR_DECISIONS,
 ): CensusCluster[] {
   const pairRelations = new Set(pairs.map((p) => censusRelationKeyOfDeclared(p.relation)));
+  const decisionsByRelation = new Map(
+    noPairDecisions.map((decision) => [censusRelationKeyOfDeclared(decision.relation), decision]),
+  );
 
   interface Acc {
     relation: string;
@@ -179,10 +193,18 @@ export function computeSqlCensus(
 
   const out: CensusCluster[] = [];
   for (const acc of byCluster.values()) {
+    // A deliberate no-pair decision is relation-level. Do not let it mask an
+    // unserved SHAPE on a relation that already has a positive pair.
+    const deliberateNoPairDecision =
+      acc.intentLabel === null && !pairRelations.has(acc.relation)
+        ? (decisionsByRelation.get(acc.relation) ?? null)
+        : null;
     out.push({
       relation: acc.relation,
       intentLabel: acc.intentLabel,
       relationHasPairs: pairRelations.has(acc.relation),
+      deliberatelyUnpaired: deliberateNoPairDecision !== null,
+      deliberateNoPairDecision,
       coveringTool: acc.coveringTool,
       equivalenceVerdict: acc.verdict,
       distinctAgents: acc.agents.size,
@@ -225,7 +247,7 @@ export function evaluateUncoveredDemand(
 ): UncoveredCrossing[] {
   if (!Number.isFinite(threshold) || threshold <= 0) return [];
   return clusters
-    .filter((c) => c.intentLabel === null && c.distinctAgents >= threshold)
+    .filter((c) => c.intentLabel === null && !c.deliberatelyUnpaired && c.distinctAgents >= threshold)
     .map((c) => ({
       relation: c.relation,
       distinctAgents: c.distinctAgents,
@@ -234,6 +256,47 @@ export function evaluateUncoveredDemand(
       sampleAtom: c.sampleAtom,
     }))
     .sort((a, b) => b.distinctAgents - a.distinctAgents || a.relation.localeCompare(b.relation));
+}
+
+// ── (a2) deliberate no-pair drift ───────────────────────────────────────────
+
+export interface DeliberateNoPairDrift {
+  relation: string;
+  decisionRef: string;
+  baselineDistinctAgents: number;
+  currentDistinctAgents: number;
+  thresholdDistinctAgents: number;
+  sampleAtom: string | null;
+}
+
+/**
+ * PURE: re-raise a deliberate no-pair decision when independent-agent demand
+ * materially exceeds the measured population that justified it. Calls are
+ * intentionally ignored here: D-007 established that one polling session can
+ * dominate call volume, so only independent agents can reopen the decision.
+ */
+export function evaluateDeliberateNoPairDrift(
+  clusters: readonly CensusCluster[],
+): DeliberateNoPairDrift[] {
+  const out: DeliberateNoPairDrift[] = [];
+  for (const cluster of clusters) {
+    const decision = cluster.deliberateNoPairDecision;
+    if (!cluster.deliberatelyUnpaired || !decision) continue;
+    const threshold =
+      decision.reRaiseAtDistinctAgents ?? Math.ceil(decision.baseline.distinctAgents * 1.5);
+    if (cluster.relationDistinctAgents < threshold) continue;
+    out.push({
+      relation: cluster.relation,
+      decisionRef: decision.decisionRef,
+      baselineDistinctAgents: decision.baseline.distinctAgents,
+      currentDistinctAgents: cluster.relationDistinctAgents,
+      thresholdDistinctAgents: threshold,
+      sampleAtom: cluster.sampleAtom,
+    });
+  }
+  return out.sort(
+    (a, b) => b.currentDistinctAgents - a.currentDistinctAgents || a.relation.localeCompare(b.relation),
+  );
 }
 
 // ── (b) verdict drift ────────────────────────────────────────────────────────
@@ -441,6 +504,7 @@ export interface CensusAlarms {
   uncovered: UncoveredCrossing[];
   drift: VerdictDrift[];
   noFall: NoFallCrossing[];
+  deliberateNoPairDrift?: DeliberateNoPairDrift[];
 }
 
 export interface CensusEscalation {
@@ -467,11 +531,32 @@ export interface CensusEscalation {
  */
 export function buildCensusEscalation(alarms: CensusAlarms, windowDays: number): CensusEscalation | null {
   const { uncovered, drift, noFall } = alarms;
-  if (uncovered.length === 0 && drift.length === 0 && noFall.length === 0) return null;
+  const deliberateNoPairDrift = alarms.deliberateNoPairDrift ?? [];
+  if (uncovered.length === 0 && drift.length === 0 && noFall.length === 0 && deliberateNoPairDrift.length === 0) {
+    return null;
+  }
 
   const parts: string[] = [];
   const scopeKeys: string[] = [];
   const headline: string[] = [];
+
+  if (deliberateNoPairDrift.length > 0) {
+    scopeKeys.push('deliberate-no-pair-drift');
+    headline.push(`${deliberateNoPairDrift.length} deliberate no-pair decision(s) exceeded their agent baseline`);
+    parts.push(
+      `## (a2) DELIBERATE NO-PAIR DEMAND DRIFT — ${deliberateNoPairDrift.length}\n\n` +
+        `These relations were intentionally left without a routing pair, but independent-agent demand ` +
+        `now exceeds the measured decision baseline. Re-evaluate the decision before adding a pair.\n\n` +
+        deliberateNoPairDrift
+          .map(
+            (d) =>
+              `- \`${d.relation}\` — decision \`${d.decisionRef}\`, ${d.currentDistinctAgents} independent agents ` +
+              `(baseline ${d.baselineDistinctAgents}, re-raise threshold ${d.thresholdDistinctAgents})` +
+              (d.sampleAtom ? `\n  e.g. \`${d.sampleAtom}\`` : ''),
+          )
+          .join('\n'),
+    );
+  }
 
   if (noFall.length > 0) {
     scopeKeys.push('no-fall');

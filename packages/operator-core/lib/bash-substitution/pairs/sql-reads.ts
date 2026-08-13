@@ -47,7 +47,30 @@ import {
   notInStatesFor,
   selectListOf,
 } from './sql-reads-helpers';
-import type { CoverageResult, SqlSubstitutionPair } from '../types';
+import type { CoverageResult, DeliberateNoPairDecision, SqlSubstitutionPair } from '../types';
+
+/**
+ * Measured negative SQL-routing decisions. This is deliberately adjacent to
+ * SQL_READ_PAIRS: a no-pair ruling is registry data, not a relation skip-list
+ * hidden in the census action.
+ */
+export const SQL_READ_NO_PAIR_DECISIONS: readonly DeliberateNoPairDecision[] = [
+  {
+    relation: 'pg_stat_activity',
+    decisionRef: 'sql-escape-tool-routing-2026-08-12#D-007',
+    rationale:
+      'dev:pg_active_queries served 0/956 real calls; the measured population was one-session-heavy and the verb cannot express its query filters or required columns.',
+    baseline: {
+      windowDays: 14,
+      calls: 956,
+      atoms: 235,
+      distinctAgents: 72,
+    },
+    // 100 independent agents is materially above the 72-agent measured
+    // baseline and is intentionally an explicit, reviewable threshold.
+    reRaiseAtDistinctAgents: 100,
+  },
+];
 
 /**
  * P-009a — `SELECT column_name … FROM information_schema.columns WHERE

@@ -20,14 +20,16 @@ import {
   censusRelationKey,
   censusRelationKeyOfDeclared,
   computeSqlCensus,
+  evaluateDeliberateNoPairDrift,
   evaluateNoFallAfterShip,
   evaluateUncoveredDemand,
   evaluateVerdictDrift,
   type CensusCluster,
+  type DeliberateNoPairDrift,
   type PriorCensusRow,
 } from './sql-census';
 import { SQL_READ_PAIRS } from './pairs';
-import type { SampledCommand, SqlSubstitutionPair } from './types';
+import type { DeliberateNoPairDecision, SampledCommand, SqlSubstitutionPair } from './types';
 
 const atom = (sid: string, sql: string): SampledCommand => ({ sid, ts: '2026-08-12T00:00:00Z', atom: sql });
 
@@ -51,6 +53,8 @@ const WIDGET_PAIR: SqlSubstitutionPair = {
 const cluster = (over: Partial<CensusCluster> & Pick<CensusCluster, 'relation'>): CensusCluster => ({
   intentLabel: null,
   relationHasPairs: false,
+  deliberatelyUnpaired: false,
+  deliberateNoPairDecision: null,
   coveringTool: null,
   equivalenceVerdict: null,
   distinctAgents: 1,
@@ -178,6 +182,46 @@ describe('computeSqlCensus', () => {
     expect(out[0].coveringTool).toBe('db:migrations');
     expect(out[0].intentLabel).toBe('applied-migration-lookup');
   });
+
+  it('classifies a registry-backed no-pair relation as deliberate, not uncovered', () => {
+    const decision: DeliberateNoPairDecision = {
+      relation: 'pg_stat_activity',
+      decisionRef: 'plan#D-007',
+      rationale: 'The available verb cannot faithfully serve this population.',
+      baseline: { windowDays: 14, calls: 956, atoms: 235, distinctAgents: 72 },
+      reRaiseAtDistinctAgents: 100,
+    };
+    const [out] = computeSqlCensus(
+      [atom('su-a', "SELECT pid, query FROM pg_stat_activity WHERE query ILIKE '%issues%'")],
+      [],
+      [decision],
+    );
+    expect(out).toMatchObject({
+      relation: 'pg_stat_activity',
+      intentLabel: null,
+      relationHasPairs: false,
+      deliberatelyUnpaired: true,
+      deliberateNoPairDecision: decision,
+    });
+    expect(evaluateUncoveredDemand([out], 1)).toEqual([]);
+  });
+
+  it('does not let a relation-level no-pair decision mask an unserved shape on a paired relation', () => {
+    const decision: DeliberateNoPairDecision = {
+      relation: 'widgets',
+      decisionRef: 'plan#D-007',
+      rationale: 'Only the unpaired shape is deliberate.',
+      baseline: { windowDays: 14, calls: 10, atoms: 4, distinctAgents: 3 },
+    };
+    const narrowed: SqlSubstitutionPair = { ...WIDGET_PAIR, sqlShape: /order_id\s*=/i };
+    const [out] = computeSqlCensus(
+      [atom('su-a', "SELECT * FROM widgets WHERE colour = 'red'")],
+      [narrowed],
+      [decision],
+    );
+    expect(out.deliberatelyUnpaired).toBe(false);
+    expect(evaluateUncoveredDemand([out], 1)).toHaveLength(1);
+  });
 });
 
 describe('(a) uncovered demand', () => {
@@ -206,6 +250,92 @@ describe('(a) uncovered demand', () => {
   it('KILL SWITCH: threshold <= 0 disables the leg entirely', () => {
     expect(evaluateUncoveredDemand(clusters, 0)).toEqual([]);
     expect(evaluateUncoveredDemand(clusters, -1)).toEqual([]);
+  });
+
+  it('excludes a stable deliberate no-pair decision from the uncovered alarm', () => {
+    expect(
+      evaluateUncoveredDemand(
+        [
+          cluster({
+            relation: 'pg_stat_activity',
+            distinctAgents: 25,
+            relationDistinctAgents: 25,
+            deliberatelyUnpaired: true,
+            deliberateNoPairDecision: {
+              relation: 'pg_stat_activity',
+              decisionRef: 'plan#D-007',
+              rationale: 'No faithful tool form.',
+              baseline: { windowDays: 14, calls: 956, atoms: 235, distinctAgents: 72 },
+              reRaiseAtDistinctAgents: 100,
+            },
+          }),
+        ],
+        10,
+      ),
+    ).toEqual([]);
+  });
+});
+
+describe('(a2) deliberate no-pair demand drift', () => {
+  const decision: DeliberateNoPairDecision = {
+    relation: 'pg_stat_activity',
+    decisionRef: 'plan#D-007',
+    rationale: 'No faithful tool form.',
+    baseline: { windowDays: 14, calls: 956, atoms: 235, distinctAgents: 72 },
+    reRaiseAtDistinctAgents: 100,
+  };
+
+  it('re-raises only when independent-agent demand reaches the explicit threshold', () => {
+    const hits = evaluateDeliberateNoPairDrift([
+      cluster({
+        relation: 'pg_stat_activity',
+        calls: 20_000,
+        relationCalls: 20_000,
+        relationDistinctAgents: 100,
+        distinctAgents: 100,
+        deliberatelyUnpaired: true,
+        deliberateNoPairDecision: decision,
+      }),
+    ]);
+    expect(hits).toEqual<DeliberateNoPairDrift[]>([
+      {
+        relation: 'pg_stat_activity',
+        decisionRef: 'plan#D-007',
+        baselineDistinctAgents: 72,
+        currentDistinctAgents: 100,
+        thresholdDistinctAgents: 100,
+        sampleAtom: null,
+      },
+    ]);
+  });
+
+  it('does not re-raise on call growth from the same small agent population', () => {
+    expect(
+      evaluateDeliberateNoPairDrift([
+        cluster({
+          relation: 'pg_stat_activity',
+          calls: 100_000,
+          relationCalls: 100_000,
+          relationDistinctAgents: 72,
+          distinctAgents: 1,
+          deliberatelyUnpaired: true,
+          deliberateNoPairDecision: decision,
+        }),
+      ]),
+    ).toEqual([]);
+  });
+
+  it('does not re-raise below the material independent-agent threshold', () => {
+    expect(
+      evaluateDeliberateNoPairDrift([
+        cluster({
+          relation: 'pg_stat_activity',
+          relationDistinctAgents: 99,
+          deliberatelyUnpaired: true,
+          deliberateNoPairDecision: decision,
+        }),
+      ]),
+    ).toEqual([]);
   });
 });
 
@@ -391,6 +521,31 @@ describe('the escalation', () => {
     expect(esc!.body).toContain('routines');
     expect(esc!.body).toContain('D-006');
     expect(esc!.body).toContain('D-007');
+  });
+
+  it('names deliberate no-pair drift as its own alarm class', () => {
+    const esc = buildCensusEscalation(
+      {
+        uncovered: [],
+        drift: [],
+        noFall: [],
+        deliberateNoPairDrift: [
+          {
+            relation: 'pg_stat_activity',
+            decisionRef: 'plan#D-007',
+            baselineDistinctAgents: 72,
+            currentDistinctAgents: 100,
+            thresholdDistinctAgents: 100,
+            sampleAtom: null,
+          },
+        ],
+      },
+      7,
+    );
+    expect(esc).not.toBeNull();
+    expect(esc!.scopeKeys).toEqual(['deliberate-no-pair-drift']);
+    expect(esc!.body).toContain('plan#D-007');
+    expect(esc!.body).toContain('100 independent agents');
   });
 
   it('CAPS the uncovered list rather than pasting fifteen clusters into one page', () => {

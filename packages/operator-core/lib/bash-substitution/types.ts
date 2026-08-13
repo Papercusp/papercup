@@ -50,6 +50,32 @@ export type SubstitutionTier =
  */
 export type SubstitutionCorpus = 'bash' | 'sql';
 
+/**
+ * A measured decision that a SQL relation should remain without a routing pair.
+ *
+ * This lives beside the pair registry rather than in the census action so the
+ * decision is reviewed, tested and projected with the same source of truth as
+ * positive routing claims. The census uses the independent-agent baseline to
+ * re-raise the decision only when materially new demand appears.
+ */
+export interface DeliberateNoPairDecision {
+  /** The relation key after the census qualifier-normalisation rule. */
+  relation: string;
+  /** Durable plan/decision reference that records why no pair is faithful. */
+  decisionRef: string;
+  /** Short operator-facing explanation of the settled decision. */
+  rationale: string;
+  /** The measured population against which future independent-agent demand is compared. */
+  baseline: {
+    windowDays: number;
+    calls: number;
+    atoms: number;
+    distinctAgents: number;
+  };
+  /** Absolute independent-agent count at which the decision must be re-reviewed. */
+  reRaiseAtDistinctAgents?: number;
+}
+
 /** One real command atom drawn from the audit corpus — the evidence unit. */
 export interface SampledCommand {
   /** Session that issued it (`su-…`) — lets a verdict be traced to source. */

@@ -29,10 +29,11 @@
 import { getOrgPg } from '@papercusp/db-org';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 import { fetchSqlCorpusAtoms } from '../../bash-substitution/sql-corpus';
-import { SQL_READ_PAIRS } from '../../bash-substitution/pairs';
+import { SQL_READ_NO_PAIR_DECISIONS, SQL_READ_PAIRS } from '../../bash-substitution/pairs';
 import {
   buildCensusEscalation,
   computeSqlCensus,
+  evaluateDeliberateNoPairDrift,
   evaluateNoFallAfterShip,
   evaluateUncoveredDemand,
   evaluateVerdictDrift,
@@ -92,6 +93,7 @@ export interface CensusRunResult {
   uncovered: number;
   drift: number;
   noFall: number;
+  deliberateNoPairDrift: number;
   reason?: string;
 }
 
@@ -116,17 +118,32 @@ async function writeCensus(
     await sql`
       INSERT INTO harness_shared.sql_read_census (
         workspace_id, ran_on, window_days, relation, intent_label, relation_has_pairs,
+        deliberately_unpaired, deliberate_decision_ref,
+        deliberate_baseline_window_days, deliberate_baseline_calls,
+        deliberate_baseline_atoms, deliberate_baseline_distinct_agents,
         covering_tool, equivalence_verdict, distinct_agents, calls,
         relation_distinct_agents, relation_calls, sample_atom
       ) VALUES (
         ${workspaceId}, ${ranOn}::date, ${windowDays}, ${c.relation}, ${c.intentLabel},
-        ${c.relationHasPairs}, ${c.coveringTool}, ${c.equivalenceVerdict},
+        ${c.relationHasPairs}, ${c.deliberatelyUnpaired},
+        ${c.deliberateNoPairDecision?.decisionRef ?? null},
+        ${c.deliberateNoPairDecision?.baseline.windowDays ?? null},
+        ${c.deliberateNoPairDecision?.baseline.calls ?? null},
+        ${c.deliberateNoPairDecision?.baseline.atoms ?? null},
+        ${c.deliberateNoPairDecision?.baseline.distinctAgents ?? null},
+        ${c.coveringTool}, ${c.equivalenceVerdict},
         ${c.distinctAgents}, ${c.calls}, ${c.relationDistinctAgents}, ${c.relationCalls},
         ${c.sampleAtom}
       )
       ON CONFLICT (workspace_id, ran_on, relation, (COALESCE(intent_label, ''))) DO UPDATE SET
         window_days              = EXCLUDED.window_days,
         relation_has_pairs       = EXCLUDED.relation_has_pairs,
+        deliberately_unpaired    = EXCLUDED.deliberately_unpaired,
+        deliberate_decision_ref = EXCLUDED.deliberate_decision_ref,
+        deliberate_baseline_window_days = EXCLUDED.deliberate_baseline_window_days,
+        deliberate_baseline_calls = EXCLUDED.deliberate_baseline_calls,
+        deliberate_baseline_atoms = EXCLUDED.deliberate_baseline_atoms,
+        deliberate_baseline_distinct_agents = EXCLUDED.deliberate_baseline_distinct_agents,
         covering_tool            = EXCLUDED.covering_tool,
         equivalence_verdict      = EXCLUDED.equivalence_verdict,
         distinct_agents          = EXCLUDED.distinct_agents,
@@ -194,11 +211,19 @@ export async function runSqlReadCensus(
   const workspaceId = opts.workspaceId ?? 'papercusp-workspace';
   const installSlug = opts.installSlug ?? 'papercusp';
   const windowDays = Math.max(1, Math.floor(opts.windowDays ?? DEFAULT_CENSUS_WINDOW_DAYS));
-  const base: CensusRunResult = { outcome: 'empty', ranOn, clusters: 0, uncovered: 0, drift: 0, noFall: 0 };
+  const base: CensusRunResult = {
+    outcome: 'empty',
+    ranOn,
+    clusters: 0,
+    uncovered: 0,
+    drift: 0,
+    noFall: 0,
+    deliberateNoPairDrift: 0,
+  };
 
   try {
     const atoms = await (deps.fetchAtoms ?? fetchSqlCorpusAtoms)({ workspaceId, windowDays });
-    const clusters = computeSqlCensus(atoms, SQL_READ_PAIRS);
+    const clusters = computeSqlCensus(atoms, SQL_READ_PAIRS, SQL_READ_NO_PAIR_DECISIONS);
     if (clusters.length === 0) {
       return { ...base, reason: 'corpus held no plain single-relation reads' };
     }
@@ -207,6 +232,7 @@ export async function runSqlReadCensus(
     const history = await readHistory(workspaceId, ranOn);
     const uncovered = evaluateUncoveredDemand(clusters, censusAgentThreshold(opts.agentThreshold ?? 10));
     const drift = evaluateVerdictDrift(clusters, history);
+    const deliberateNoPairDrift = evaluateDeliberateNoPairDrift(clusters);
     const noFall = evaluateNoFallAfterShip(clusters, history, {
       today: ranOn,
       graceDays: opts.graceDays,
@@ -219,9 +245,10 @@ export async function runSqlReadCensus(
       uncovered: uncovered.length,
       drift: drift.length,
       noFall: noFall.length,
+      deliberateNoPairDrift: deliberateNoPairDrift.length,
     };
 
-    const escalation = buildCensusEscalation({ uncovered, drift, noFall }, windowDays);
+    const escalation = buildCensusEscalation({ uncovered, drift, noFall, deliberateNoPairDrift }, windowDays);
     if (!escalation) return { ...counts, outcome: 'wrote' };
 
     // Debounce per ALARM CLASS, not per run: a gap that persists for a fortnight is
@@ -272,7 +299,8 @@ registerSystemAction('sql-read-census', async (ctx: SystemActionCtx) => {
   });
   const line =
     `[sql-read-census] ${ctx.workspaceId} ${result.ranOn}: ${result.outcome} — ` +
-    `${result.clusters} cluster(s), uncovered ${result.uncovered}, drift ${result.drift}, no-fall ${result.noFall}` +
+    `${result.clusters} cluster(s), uncovered ${result.uncovered}, drift ${result.drift}, ` +
+    `no-pair drift ${result.deliberateNoPairDrift}, no-fall ${result.noFall}` +
     (result.reason ? ` (${result.reason})` : '');
   if (result.outcome === 'error' || result.outcome === 'alerted') console.warn(line);
   else console.log(line);
