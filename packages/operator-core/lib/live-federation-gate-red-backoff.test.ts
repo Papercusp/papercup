@@ -195,6 +195,10 @@ log() { echo "LOG: $*" >&2; }
 skip_cleanup() { echo "CLEANUP" >&2; }
 check_matrix_staleness() { :; }
 matrix_stale_suffix() { return 0; }
+# Keep this hermetic: verdict is also the name of a globally installed browser
+# verification CLI on developer hosts. The extracted shipping block calls the
+# gate-local function, so the harness must provide that function too.
+verdict() { echo "$1"; }
 ${extractOneLineFn('now_s')}
 ${extractOneLineFn('age_h')}
 ${FRESH_EXIT_BLOCK}
