@@ -2097,11 +2097,15 @@ export function formatSessionPortInspection(result: any): any[];
  *  `token` (mirrors reportSessionResumed) so this — previously untested — is
  *  unit-testable without a live operator; a real caller always hits the real
  *  operator via the defaults. */
-export function tryRematerializeFromArchive(sessionId: any, sourceKind?: null, { fetchImpl, operatorUrl, token, timeoutMs }?: {
+export function tryRematerializeFromArchive(sessionId: any, sourceKind?: null, { fetchImpl, operatorUrl, token, timeoutMs, statusTimeoutMs, statusAttempts, statusDelayMs, sleep, }?: {
     fetchImpl?: typeof fetch | undefined;
     operatorUrl?: any;
     token?: null | undefined;
     timeoutMs?: number | undefined;
+    statusTimeoutMs?: number | undefined;
+    statusAttempts?: number | undefined;
+    statusDelayMs?: number | undefined;
+    sleep?: ((ms: any) => Promise<any>) | undefined;
 }): Promise<any>;
 /**
  * Re-verify — and if necessary RESTORE — a resume's transcript in the last
@@ -2132,7 +2136,7 @@ export function tryRematerializeFromArchive(sessionId: any, sourceKind?: null, {
 export function ensureResumeTranscriptPresent(source: any, { home, rematerialize }?: {
     home?: string | undefined;
     rematerialize?: typeof tryRematerializeFromArchive | undefined;
-}): Promise<boolean>;
+}): Promise<any>;
 /**
  * Is a claude session's isolated `CLAUDE_CONFIG_DIR` LAUNCH-READY, or merely
  * transcript-bearing? The .mjs mirror of operator-core's
