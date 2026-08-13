@@ -34,6 +34,11 @@ import { validateDatatypePayload } from '../../datatype-payload-validation';
 import { matchRoutingGateHint, type RoutingGateIntent } from '../../routing-gate-hints';
 import { deriveRepoPathsFromText } from './_derive-paths';
 import { admissionIdentity, type AdmissionIdentity } from '../../harness/improvements/digest';
+import {
+  recordIssueOccurrence,
+  selectCanonicalIssue,
+  type IssueOccurrenceKind,
+} from '../../issue-occurrence-ledger';
 
 /**
  * PIPELINE work-item kinds that belong to a HIVE's fleet queue (D-020): a fresh one
@@ -215,11 +220,59 @@ async function stampGoalProvenance(
   return goalId;
 }
 
+function workItemOccurrenceEvidence(
+  args: CreateOneWorkItemArgs,
+  similarOpen: readonly SemanticDupeCandidate[] | undefined,
+  dedupCoverage: WorkItemDedupCoverage | undefined,
+): Record<string, unknown> {
+  return {
+    kind: args.kind,
+    summary: args.summary ?? null,
+    severity: args.severity ?? null,
+    parent: args.parent ?? null,
+    topics: args.topics ?? [],
+    payload: args.payload ?? null,
+    urgent: args.urgent ?? false,
+    force: args.force ?? false,
+    assignTo: args.assign_to ?? null,
+    similarOpen: similarOpen ?? [],
+    dedupCoverage: dedupCoverage ?? null,
+  };
+}
+
+/** Occurrence evidence never changes the create verdict. The shared recorder
+ * is already fail-open; the catch also protects mocked/alternate recorders. */
+async function appendWorkItemOccurrence(
+  args: CreateOneWorkItemArgs,
+  ctx: CreateOneWorkItemCtx,
+  identity: AdmissionIdentity,
+  reportKind: IssueOccurrenceKind,
+  canonicalId: string,
+  canonicalHarness: string | null | undefined,
+  similarOpen?: readonly SemanticDupeCandidate[],
+  dedupCoverage?: WorkItemDedupCoverage,
+): Promise<void> {
+  await recordIssueOccurrence({
+    canonicalId,
+    ...(canonicalHarness ? { canonicalHarness } : {}),
+    reporter: ctx.ownerId,
+    sourceTool: 'work_items:create',
+    reportKind,
+    reportedTitle: args.title,
+    evidence: workItemOccurrenceEvidence(args, similarOpen, dedupCoverage),
+    admissionIdentity: identity,
+  }).catch(() => null);
+}
+
 export async function createOneWorkItem(
   args: CreateOneWorkItemArgs,
   ctx: CreateOneWorkItemCtx,
 ): Promise<CreateOneWorkItemResult> {
   try {
+    const issueAdmission = familyOf(args.kind) === 'issue';
+    const signalKey =
+      args.payload && typeof args.payload.watchdogKey === 'string' ? args.payload.watchdogKey : undefined;
+    const identity = admissionIdentity(args.title, signalKey);
     // EI-316 mirror-duplicate guard: a title embedding an existing OPEN work-item id
     // ("WI-118: …") is almost always an accidental mirror — refuse with the live id
     // (override: force:true). Flag-gated so a misfire is instantly reversible.
@@ -232,6 +285,16 @@ export async function createOneWorkItem(
       // lineage (a follow-up), which is the opposite of the accidental mirror
       // this guard catches — so consult it before refusing.
       if (mirror && !hasDeclaredLineageTo(args.links, mirror.id)) {
+        if (issueAdmission) {
+          await appendWorkItemOccurrence(
+            args,
+            ctx,
+            identity,
+            'duplicate',
+            mirror.id,
+            args.harness ?? ctx.harnessSlug,
+          );
+        }
         return {
           ok: false,
           error: 'duplicate_mirror',
@@ -252,11 +315,7 @@ export async function createOneWorkItem(
     // EI-316 lexical mirror-guard above cannot see). Hard match refuses (force:true
     // overrides, same contract as the mirror guard); soft match creates WITH an
     // advisory `similarOpen`. STRICTLY fail-open: null = "no verdict" = proceed.
-    const issueAdmission = familyOf(args.kind) === 'issue';
     const shouldScreen = !args.force || Boolean(args.requireCompleteDedupCoverage);
-    const signalKey =
-      args.payload && typeof args.payload.watchdogKey === 'string' ? args.payload.watchdogKey : undefined;
-    const identity = admissionIdentity(args.title, signalKey);
     let semanticLeg: WorkItemDedupCoverage['semantic'] = issueAdmission ? 'skipped' : 'skipped';
     let lexicalLeg: WorkItemDedupCoverage['lexical'] = issueAdmission ? 'skipped' : 'skipped';
     let similarOpen: SemanticDupeCandidate[] | undefined;
@@ -268,7 +327,23 @@ export async function createOneWorkItem(
       });
       if (issueAdmission) semanticLeg = dupes ? 'ok' : 'unavailable';
       if (dupes && dupes.hard.length > 0 && (!args.force || args.requireCompleteDedupCoverage)) {
-        const top = dupes.hard[0];
+        const canonical = selectCanonicalIssue(
+          identity,
+          dupes.hard.map((candidate) => ({ ...candidate, eligible: true })),
+        );
+        const top = dupes.hard.find((candidate) => candidate.id === canonical?.id) ?? dupes.hard[0];
+        if (issueAdmission) {
+          await appendWorkItemOccurrence(
+            args,
+            ctx,
+            identity,
+            'duplicate',
+            top.id,
+            top.harness,
+            dupes.hard,
+            { lexical: 'skipped', semantic: 'ok', degraded: false },
+          );
+        }
         return {
           ok: false,
           error: 'duplicate_semantic',
@@ -336,6 +411,16 @@ export async function createOneWorkItem(
       (candidate) => admissionIdentity(candidate.title).titleKey === identity.titleKey,
     );
     if (args.requireCompleteDedupCoverage && exactIdentity) {
+      await appendWorkItemOccurrence(
+        args,
+        ctx,
+        identity,
+        'duplicate',
+        exactIdentity.id,
+        exactIdentity.harness,
+        [exactIdentity],
+        dedupCoverage,
+      );
       return {
         ok: false,
         error: 'duplicate_identity',
@@ -488,6 +573,18 @@ export async function createOneWorkItem(
       assignee: args.assign_to,
       assignedBy: args.assign_to ? ctx.ownerId : undefined,
     });
+    if (issueAdmission) {
+      await appendWorkItemOccurrence(
+        args,
+        ctx,
+        identity,
+        'canonical-created',
+        workItem.id,
+        workItem.harness ?? harnessForItem ?? ctx.harnessSlug,
+        similarOpen,
+        dedupCoverage,
+      );
+    }
     // EI-10897: apply the requested initial state as a real transition (not a raw
     // column write), so it goes through the same state machine, guards and fan-out as
     // any other set_state. Best-effort + NON-FATAL, exactly like the edges below: the

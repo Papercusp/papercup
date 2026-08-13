@@ -11,6 +11,10 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+const occurrenceMocks = vi.hoisted(() => ({
+  record: vi.fn(async () => null),
+}));
+
 vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn(async () => false) }));
 vi.mock('../../work-items', () => ({
   createWorkItem: vi.fn(async (input: { kind: string; title: string }) => ({
@@ -37,6 +41,12 @@ vi.mock('../../issue-blocks-merge', () => ({ planItemRef: (s: string, i: string)
 vi.mock('./semantic-dupe-guard', () => ({ findSemanticDupes: vi.fn(async () => null) }));
 vi.mock('./recent-lexical-dupe-guard', () => ({ findRecentLexicalDupes: vi.fn(async () => null) }));
 vi.mock('./fulltext-lexical-dupe-guard', () => ({ findFulltextLexicalDupes: vi.fn(async () => null) }));
+vi.mock('../../issue-occurrence-ledger', async () => {
+  const actual = await vi.importActual<typeof import('../../issue-occurrence-ledger')>(
+    '../../issue-occurrence-ledger',
+  );
+  return { ...actual, recordIssueOccurrence: occurrenceMocks.record };
+});
 
 import { createOneWorkItem } from './_create-core';
 import { findSemanticDupes, type SemanticDupeResult } from './semantic-dupe-guard';
@@ -60,6 +70,7 @@ beforeEach(() => {
   fulltextM.mockReset();
   fulltextM.mockResolvedValue([]);
   createM.mockClear();
+  occurrenceMocks.record.mockClear();
 });
 
 describe('createOneWorkItem × semantic dupe prescreen (P-008)', () => {
@@ -73,6 +84,17 @@ describe('createOneWorkItem × semantic dupe prescreen (P-008)', () => {
     expect(r.similarOpen?.map((c) => c.id)).toEqual(['EI-1']);
     expect(r.message).toContain('EI-1');
     expect(r.message).toContain('force:true');
+    expect(occurrenceMocks.record).toHaveBeenCalledWith(
+      expect.objectContaining({
+        canonicalId: 'EI-1',
+        canonicalHarness: 'papercusp',
+        reporter: 'me',
+        sourceTool: 'work_items:create',
+        reportKind: 'duplicate',
+        reportedTitle: 'agents keep filing the same bug',
+        admissionIdentity: expect.objectContaining({ schemaVersion: 'admission-identity-v1' }),
+      }),
+    );
   });
 
   it('force:true skips the prescreen entirely (mirrors the EI-316 override contract)', async () => {
@@ -94,10 +116,21 @@ describe('createOneWorkItem × semantic dupe prescreen (P-008)', () => {
   });
 
   it('null verdict (guard fail-open) creates cleanly with no advisory key', async () => {
-    const r = await createOneWorkItem({ kind: 'bug', title: 't' }, ctx);
+    const r = await createOneWorkItem({ kind: 'bug', title: 't', summary: 'fresh evidence' }, ctx);
     expect(r.ok).toBe(true);
     if (!r.ok) throw new Error('unreachable');
     expect('similarOpen' in r).toBe(false);
+    expect(occurrenceMocks.record).toHaveBeenCalledWith(
+      expect.objectContaining({
+        canonicalId: 'WI-NEW',
+        canonicalHarness: 'papercusp',
+        reporter: 'me',
+        sourceTool: 'work_items:create',
+        reportKind: 'canonical-created',
+        reportedTitle: 't',
+        evidence: expect.objectContaining({ summary: 'fresh evidence' }),
+      }),
+    );
   });
 
   it('persists stable identity + achieved coverage on issue admission', async () => {

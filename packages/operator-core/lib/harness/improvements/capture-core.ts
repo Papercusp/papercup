@@ -60,6 +60,13 @@ import { initializeIdeaLifecycle } from './lifecycle';
 import { extractCitedIds } from './triage';
 import { DEFAULT_SIGNAL_ORIGIN, effectiveOrigin, type SignalOrigin } from './provenance';
 import { isFlakeKey } from '../../calibration/types';
+import {
+  recordIssueOccurrence,
+  selectCanonicalIssue,
+  type IssueOccurrenceKind,
+  type RecordIssueOccurrenceInput,
+  type RecordedIssueOccurrence,
+} from '../../issue-occurrence-ledger';
 
 /** The fileable improvement kinds (companion D-001). */
 export type ImprovementKind = 'bug' | 'change' | 'feature';
@@ -354,6 +361,11 @@ export interface CaptureDeps {
   mergeIssuePayload?: (id: string, patch: Record<string, unknown>) => Promise<EngineerIssue | null>;
   tagIssue?: (id: string, topic: string, by?: string) => Promise<void>;
   untagIssue?: (id: string, topic: string) => Promise<void>;
+  /** P-004 append-only evidence seam. Optional so pure callers can inject a
+   * recorder; the production default writes through issue-occurrence-ledger. */
+  recordIssueOccurrence?: (
+    input: RecordIssueOccurrenceInput,
+  ) => Promise<RecordedIssueOccurrence | null>;
 }
 
 // WI-4308: use the dedup-widened search (also checks the legacy DEFAULT_COORD_WORKSPACE
@@ -364,7 +376,62 @@ const defaultDeps: CaptureDeps = {
   getIssue,
   loadRubric: getRubric,
   autoRatifyRubric: autoRatifyRubricOnFirstScorecard,
+  recordIssueOccurrence,
 };
+
+function harnessFromScope(scope: string | undefined): string | null {
+  return scope?.startsWith('harness:') ? scope.slice('harness:'.length) || null : null;
+}
+
+function captureOccurrenceEvidence(
+  input: CaptureImprovementInput,
+  possibleDuplicates: readonly PossibleDuplicate[],
+  dedupCoverage: DedupCoverage,
+): Record<string, unknown> {
+  return {
+    kind: input.kind,
+    body: input.body ?? null,
+    severity: input.severity ?? null,
+    scope: input.scope ?? null,
+    subTopic: input.subTopic ?? null,
+    foundDuring: input.foundDuring ?? null,
+    paths: input.paths ?? [],
+    watchdogKey: input.watchdogKey ?? null,
+    evidenceAt: input.evidenceAt ?? null,
+    sourceRole: input.sourceRole ?? null,
+    filedByRole: input.filedByRole ?? null,
+    source: input.source ?? null,
+    origin: input.origin ?? DEFAULT_SIGNAL_ORIGIN,
+    findingClass: input.findingClass ?? null,
+    payloadExtra: input.payloadExtra ?? null,
+    possibleDuplicates,
+    dedupCoverage,
+  };
+}
+
+/** Record the report before returning its admission verdict. The ledger is
+ * diagnostic evidence, so an unavailable recorder never changes admission. */
+async function appendCaptureOccurrence(
+  deps: CaptureDeps,
+  input: CaptureImprovementInput,
+  identity: AdmissionIdentity,
+  reportKind: IssueOccurrenceKind,
+  canonicalId: string,
+  possibleDuplicates: readonly PossibleDuplicate[],
+  dedupCoverage: DedupCoverage,
+  canonicalHarness: string | null = harnessFromScope(input.scope),
+): Promise<void> {
+  await (deps.recordIssueOccurrence ?? recordIssueOccurrence)({
+    canonicalId,
+    ...(canonicalHarness ? { canonicalHarness } : {}),
+    reporter: input.createdBy ?? null,
+    sourceTool: 'improvements:capture',
+    reportKind,
+    reportedTitle: input.title,
+    evidence: captureOccurrenceEvidence(input, possibleDuplicates, dedupCoverage),
+    admissionIdentity: identity,
+  }).catch(() => null);
+}
 
 /**
  * Capture-time provenance for work-item references in a Scout proposal.
@@ -500,6 +567,11 @@ export async function captureImprovement(
   const isObservation = input.lane === 'observation';
   const sourceRole = input.sourceRole ?? 'human';
   const identity = admissionIdentity(input.title, input.watchdogKey);
+  const skippedDedupCoverage: DedupCoverage = {
+    lexical: 'skipped',
+    semantic: 'skipped',
+    degraded: false,
+  };
   // Rubric-grading evidence gate (rubric-driven-observations-2026-06-20 D-002):
   // FAIL FAST — a structured observation whose ratings lack evidence (or whose
   // ratings block names no rubric) is a contract violation, rejected before any
@@ -553,6 +625,16 @@ export async function captureImprovement(
     if (probation) {
       const promoted = await promoteToolFailureProbation(probation, input, deps);
       if (promoted) {
+        await appendCaptureOccurrence(
+          deps,
+          input,
+          identity,
+          'promoted',
+          promoted.id,
+          [],
+          skippedDedupCoverage,
+          harnessFromScope(promoted.scope),
+        );
         return {
           ok: true,
           created: false,
@@ -562,7 +644,7 @@ export async function captureImprovement(
           issue: promoted,
           topics: [IMPROVEMENT_TOPIC, ...(input.subTopic ? [input.subTopic] : [])],
           possibleDuplicates: [],
-          dedupCoverage: { lexical: 'skipped', semantic: 'skipped', degraded: false },
+          dedupCoverage: skippedDedupCoverage,
         };
       }
     }
@@ -734,6 +816,27 @@ export async function captureImprovement(
     blockingDuplicates = compatible;
   }
   if (blockingDuplicates.length > 0 && !input.force) {
+    const canonical = selectCanonicalIssue(
+      identity,
+      blockingDuplicates.map((candidate) => ({
+        id: candidate.id,
+        title: candidate.title,
+        similarity: candidate.similarity,
+        eligible: true,
+      })),
+    );
+    if (canonical) {
+      await appendCaptureOccurrence(
+        deps,
+        input,
+        identity,
+        'duplicate',
+        canonical.id,
+        possibleDuplicates,
+        dedupCoverage,
+        harnessFromScope(candidateById.get(canonical.id)?.scope),
+      );
+    }
     return {
       ok: true,
       created: false,
@@ -789,6 +892,16 @@ export async function captureImprovement(
       if (priorProbation?.state === 'probation' && incomingProbation && priorReporters.length > 0 && independentReporter) {
         const promoted = await promoteToolFailureProbation(prior, input, deps);
         if (promoted) {
+          await appendCaptureOccurrence(
+            deps,
+            input,
+            identity,
+            'promoted',
+            promoted.id,
+            possibleDuplicates,
+            dedupCoverage,
+            harnessFromScope(promoted.scope),
+          );
           return {
             ok: true,
             created: false,
@@ -832,6 +945,16 @@ export async function captureImprovement(
         confirmShrink: true,
       }).catch(() => null);
       const finalIssue = (refreshed && 'id' in refreshed ? refreshed : merged) ?? prior;
+      await appendCaptureOccurrence(
+        deps,
+        input,
+        identity,
+        'coalesced',
+        finalIssue.id,
+        possibleDuplicates,
+        dedupCoverage,
+        harnessFromScope(finalIssue.scope),
+      );
       return {
         ok: true,
         created: false,
@@ -920,6 +1043,16 @@ export async function captureImprovement(
     signalOrigin: origin,
     payload: Object.keys(payload).length > 0 ? payload : undefined,
   });
+  await appendCaptureOccurrence(
+    deps,
+    input,
+    identity,
+    'canonical-created',
+    issue.id,
+    possibleDuplicates,
+    dedupCoverage,
+    harnessFromScope(issue.scope) ?? harnessFromScope(input.scope),
+  );
   // WI-20261780231648564: improvements:capture can atomically claim an item for the
   // current agent, but request-compaction's flush gate requires every same-turn claim
   // to have a successor-visible checkpoint. Seed a minimal handoff immediately after

@@ -10,6 +10,7 @@ import {
 import { titleSimilarity, titleContainment } from './digest';
 import { IMPROVEMENT_TOPIC, OBSERVATION_TOPIC } from './read-items';
 import type { CreateIssueInput, EngineerIssue } from '../../issues-engineer';
+import type { RecordIssueOccurrenceInput } from '../../issue-occurrence-ledger';
 
 function existing(p: Partial<EngineerIssue> & { id: string; title: string }): EngineerIssue {
   return {
@@ -47,12 +48,18 @@ function existing(p: Partial<EngineerIssue> & { id: string; title: string }): En
 
 function deps(
   opts: { found?: EngineerIssue[]; setCheckpoint?: CaptureDeps['setCheckpoint'] } = {},
-): CaptureDeps & { created: CreateIssueInput[] } {
+): CaptureDeps & { created: CreateIssueInput[]; occurrences: RecordIssueOccurrenceInput[] } {
   const created: CreateIssueInput[] = [];
+  const occurrences: RecordIssueOccurrenceInput[] = [];
   return {
     created,
+    occurrences,
     searchIssues: async () => opts.found ?? [],
     setCheckpoint: opts.setCheckpoint,
+    recordIssueOccurrence: async (input) => {
+      occurrences.push(input);
+      return null;
+    },
     createIssue: async (input) => {
       created.push(input);
       return existing({ id: 'EI-100', title: input.title, kind: (input.kind as 'bug' | 'change') ?? 'bug' });
@@ -240,7 +247,7 @@ describe('captureImprovement — correlated tool-failure probation (P-013)', () 
     const mergedPatches: Record<string, unknown>[] = [];
     const tags: string[] = [];
     const untags: string[] = [];
-    const d: CaptureDeps & { created: CreateIssueInput[] } = {
+    const d: CaptureDeps & { created: CreateIssueInput[]; occurrences: RecordIssueOccurrenceInput[] } = {
       ...deps(),
       findIssuesByWatchdogKeys: async () => [prior],
       updateIssuePatch: async (_id, patch) => existing({ ...prior, ...patch }),
@@ -270,6 +277,14 @@ describe('captureImprovement — correlated tool-failure probation (P-013)', () 
     });
     expect(tags).toEqual([IMPROVEMENT_TOPIC]);
     expect(untags).toEqual([OBSERVATION_TOPIC]);
+    expect(d.occurrences).toEqual([
+      expect.objectContaining({
+        canonicalId: 'EI-PROBATION',
+        reporter: 'su-b',
+        sourceTool: 'improvements:capture',
+        reportKind: 'promoted',
+      }),
+    ]);
   });
 
   it('lets the invocation-ledger watchdog promote an exact-key probation row without minting a duplicate', async () => {
@@ -278,7 +293,7 @@ describe('captureImprovement — correlated tool-failure probation (P-013)', () 
       title: 'one-off report',
       payload: { lane: 'observation', watchdogKey: key, toolFailureProbation: probation('su-a') },
     });
-    const d: CaptureDeps & { created: CreateIssueInput[] } = {
+    const d: CaptureDeps & { created: CreateIssueInput[]; occurrences: RecordIssueOccurrenceInput[] } = {
       ...deps(),
       findIssuesByWatchdogKeys: async () => [prior],
       updateIssuePatch: async (_id, patch) => existing({ ...prior, ...patch }),
@@ -297,6 +312,14 @@ describe('captureImprovement — correlated tool-failure probation (P-013)', () 
     );
     expect(res).toMatchObject({ created: false, reason: 'promoted', issue: { id: 'EI-PROBATION' } });
     expect(d.created).toHaveLength(0);
+    expect(d.occurrences).toEqual([
+      expect.objectContaining({
+        canonicalId: 'EI-PROBATION',
+        reporter: 'system:improvement-watchdog',
+        sourceTool: 'improvements:capture',
+        reportKind: 'promoted',
+      }),
+    ]);
   });
 });
 
@@ -445,11 +468,25 @@ describe('captureImprovement — search-first dedup (D-001)', () => {
 
   it('declines a likely duplicate by default (link instead)', async () => {
     const d = deps({ found: [dup] });
-    const res = await captureImprovement({ title: 'presence list dumps stale rows', kind: 'bug' }, d);
+    const res = await captureImprovement(
+      { title: 'presence list dumps stale rows', kind: 'bug', body: 'fresh repro evidence', createdBy: 'su-reporter' },
+      d,
+    );
     expect(res.created).toBe(false);
     expect(res.reason).toBe('likely-duplicate');
     expect(res.possibleDuplicates[0].id).toBe('EI-7');
     expect(d.created).toHaveLength(0);
+    expect(d.occurrences).toEqual([
+      expect.objectContaining({
+        canonicalId: 'EI-7',
+        reporter: 'su-reporter',
+        sourceTool: 'improvements:capture',
+        reportKind: 'duplicate',
+        reportedTitle: 'presence list dumps stale rows',
+        admissionIdentity: expect.objectContaining({ schemaVersion: 'admission-identity-v1' }),
+        evidence: expect.objectContaining({ body: 'fresh repro evidence' }),
+      }),
+    ]);
   });
 
   it('force overrides the decline', async () => {
@@ -487,6 +524,39 @@ describe('captureImprovement — search-first dedup (D-001)', () => {
     const d = deps({ found: [existing({ id: 'EI-8', title: 'completely different subject entirely' })] });
     const res = await captureImprovement({ title: 'presence list dumps stale rows', kind: 'bug' }, d);
     expect(res.created).toBe(true);
+  });
+});
+
+describe('captureImprovement — canonical occurrence recording (P-004)', () => {
+  it('records the newly created issue as the canonical occurrence with its evidence', async () => {
+    const d = deps();
+    const res = await captureImprovement(
+      {
+        title: 'new canonical control-plane failure',
+        kind: 'bug',
+        body: 'journal evidence and reproduction steps',
+        scope: 'harness:papercusp',
+        createdBy: 'su-reporter',
+        payloadExtra: { observation: { confidence: 'high' } },
+      },
+      d,
+    );
+
+    expect(res).toMatchObject({ created: true, issue: { id: 'EI-100' } });
+    expect(d.occurrences).toEqual([
+      expect.objectContaining({
+        canonicalId: 'EI-100',
+        canonicalHarness: 'papercusp',
+        reporter: 'su-reporter',
+        sourceTool: 'improvements:capture',
+        reportKind: 'canonical-created',
+        reportedTitle: 'new canonical control-plane failure',
+        evidence: expect.objectContaining({
+          body: 'journal evidence and reproduction steps',
+          payloadExtra: { observation: { confidence: 'high' } },
+        }),
+      }),
+    ]);
   });
 });
 
@@ -879,13 +949,23 @@ describe('captureImprovement — observation coalescing by conditionKey (EI-1544
    *  updateIssuePatch all operate on the SAME in-memory `store` array so a 2nd call
    *  in the same test genuinely finds the 1st call's row — exercising the real
    *  coalesce loop, not a canned return. */
-  function coalesceDeps(): CaptureDeps & { created: CreateIssueInput[]; store: EngineerIssue[] } {
+  function coalesceDeps(): CaptureDeps & {
+    created: CreateIssueInput[];
+    store: EngineerIssue[];
+    occurrences: RecordIssueOccurrenceInput[];
+  } {
     const created: CreateIssueInput[] = [];
     const store: EngineerIssue[] = [];
+    const occurrences: RecordIssueOccurrenceInput[] = [];
     let nextId = 100;
     return {
       created,
       store,
+      occurrences,
+      recordIssueOccurrence: async (input) => {
+        occurrences.push(input);
+        return null;
+      },
       searchIssues: async () => [],
       createIssue: async (input) => {
         created.push(input);
@@ -940,6 +1020,12 @@ describe('captureImprovement — observation coalescing by conditionKey (EI-1544
     expect((d.store[0].payload as Record<string, unknown>).repeatCount).toBe(2);
     expect(d.store[0].title).toBe('escalation-aging holding flat at 318'); // title refreshed to latest reading
     expect(second.issue?.id).toBe(first.issue?.id);
+    expect(d.occurrences.map((occurrence) => occurrence.reportKind)).toEqual(['canonical-created', 'coalesced']);
+    expect(d.occurrences[1]).toMatchObject({
+      canonicalId: first.issue?.id,
+      sourceTool: 'improvements:capture',
+      reportedTitle: 'escalation-aging holding flat at 318',
+    });
   });
 
   it('a 3rd call with the same key bumps repeatCount to 3 (running count, not a flip-flag)', async () => {
