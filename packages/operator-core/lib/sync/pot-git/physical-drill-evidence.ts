@@ -1,0 +1,391 @@
+/**
+ * Strict adapter for the banked result of the real two-machine hive-git drill.
+ *
+ * This does not simulate a physical run. It only turns the physical runner's
+ * raw, hashed artifacts and exact causal assertions into a consumable verdict
+ * for papercusp-desktop/bin/hive-git-drill.sh. A JSON claim without readable,
+ * hash-matching artifacts from both hosts is deliberately insufficient.
+ */
+import { createHash } from 'node:crypto';
+import { existsSync, readFileSync, statSync } from 'node:fs';
+import { isAbsolute, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const SCHEMA = 'hive-git-physical-evidence/v1';
+const PLAN = 'p2p-git-live-activation-2026-07-09';
+const ALL_LEGS = ['A', 'B', 'C', 'D', 'E', 'F', 'G'] as const;
+const PRIOR_LEGS = ['A', 'B', 'C', 'D', 'E', 'F'] as const;
+const OID = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i;
+const KEY = /^[A-Za-z0-9+/_-]{40,96}={0,2}$/;
+const SHA256 = /^[0-9a-f]{64}$/i;
+
+type JsonRecord = Record<string, unknown>;
+
+export type PhysicalDrillEvidenceVerdict = {
+  ok: boolean;
+  schemaVersion: typeof SCHEMA;
+  runId: string | null;
+  errors: string[];
+  summary: string;
+};
+
+function record(value: unknown): JsonRecord | null {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? (value as JsonRecord)
+    : null;
+}
+
+function string(value: unknown): string | null {
+  return typeof value === 'string' ? value : null;
+}
+
+function integer(value: unknown): number | null {
+  return typeof value === 'number' && Number.isSafeInteger(value) ? value : null;
+}
+
+function expectRecord(parent: JsonRecord | null, key: string, errors: string[]): JsonRecord | null {
+  const value = record(parent?.[key]);
+  if (!value) errors.push(`${key} must be an object`);
+  return value;
+}
+
+function expectTrue(parent: JsonRecord | null, key: string, errors: string[]): void {
+  if (parent?.[key] !== true) errors.push(`${key} must be true`);
+}
+
+function expectString(
+  parent: JsonRecord | null,
+  key: string,
+  pattern: RegExp,
+  errors: string[],
+): string | null {
+  const value = string(parent?.[key]);
+  if (!value || !pattern.test(value)) {
+    errors.push(`${key} has an invalid or missing value`);
+    return null;
+  }
+  return value;
+}
+
+function expectEqual(
+  left: string | null,
+  right: string | null,
+  label: string,
+  errors: string[],
+): void {
+  if (left === null || right === null || left !== right) errors.push(`${label} must match exactly`);
+}
+
+function validateArtifacts(
+  raw: JsonRecord,
+  hostIds: Set<string>,
+  errors: string[],
+): void {
+  const artifacts = Array.isArray(raw.artifacts) ? raw.artifacts : [];
+  if (artifacts.length < hostIds.size) {
+    errors.push('artifacts must include at least one raw witness from each physical host');
+  }
+
+  const witnessedHosts = new Set<string>();
+  for (const [index, candidate] of artifacts.entries()) {
+    const artifact = record(candidate);
+    if (!artifact) {
+      errors.push(`artifacts[${index}] must be an object`);
+      continue;
+    }
+    const host = string(artifact.host);
+    const path = string(artifact.path);
+    const expectedHash = string(artifact.sha256);
+    if (!host || !hostIds.has(host)) {
+      errors.push(`artifacts[${index}].host must name one of the two topology hosts`);
+    } else {
+      witnessedHosts.add(host);
+    }
+    if (!path || !isAbsolute(path)) {
+      errors.push(`artifacts[${index}].path must be absolute`);
+      continue;
+    }
+    if (!expectedHash || !SHA256.test(expectedHash)) {
+      errors.push(`artifacts[${index}].sha256 must be a 64-hex digest`);
+      continue;
+    }
+    if (!existsSync(path) || !statSync(path).isFile()) {
+      errors.push(`artifacts[${index}].path is not a readable file: ${path}`);
+      continue;
+    }
+    const actualHash = createHash('sha256').update(readFileSync(path)).digest('hex');
+    if (actualHash !== expectedHash.toLowerCase()) {
+      errors.push(`artifacts[${index}] sha256 mismatch for ${path}`);
+    }
+  }
+  for (const host of hostIds) {
+    if (!witnessedHosts.has(host)) errors.push(`no raw artifact witnesses physical host ${host}`);
+  }
+}
+
+function validateLegVerdicts(raw: JsonRecord, errors: string[]): void {
+  const verdicts = Array.isArray(raw.legVerdicts) ? raw.legVerdicts : [];
+  if (verdicts.length !== ALL_LEGS.length) {
+    errors.push('legVerdicts must contain exactly one same-run verdict for A through G');
+  }
+  const seen = new Set<string>();
+  for (const candidate of verdicts) {
+    const verdict = record(candidate);
+    const leg = string(verdict?.leg);
+    if (!leg || !ALL_LEGS.includes(leg as (typeof ALL_LEGS)[number]) || seen.has(leg)) {
+      errors.push('legVerdicts contains a missing, unknown, or duplicate leg');
+      continue;
+    }
+    seen.add(leg);
+    if (verdict?.status !== 'pass') errors.push(`legVerdicts.${leg}.status must be pass`);
+    if (verdict?.scope !== 'physical') errors.push(`legVerdicts.${leg}.scope must be physical`);
+    const observedAt = Date.parse(String(verdict?.observedAt ?? ''));
+    if (!Number.isFinite(observedAt)) errors.push(`legVerdicts.${leg}.observedAt must be ISO-8601`);
+  }
+  for (const leg of ALL_LEGS) {
+    if (!seen.has(leg)) errors.push(`legVerdicts is missing leg ${leg}`);
+  }
+}
+
+function validateLegE(raw: JsonRecord, hostKeys: Set<string>, errors: string[]): void {
+  const leg = expectRecord(raw, 'legE', errors);
+  if (leg?.planItem !== 'P-306') errors.push('legE.planItem must be P-306');
+  if (leg?.status !== 'pass') errors.push('legE.status must be pass');
+
+  const assertions = expectRecord(leg, 'assertions', errors);
+  for (const key of [
+    'bothConsumedBridgedMode',
+    'bothCommitOnly',
+    'membersDidNotDirectPush',
+    'soleBridgeWriter',
+    'upstreamUnchanged',
+    'canonicalDescendsFromAdmitted',
+    'divergenceRefused',
+    'rollbackLegacyObserved',
+  ]) {
+    expectTrue(assertions, key, errors);
+  }
+  const intervals = integer(assertions?.watchdogIntervalsObserved);
+  if (intervals === null || intervals < 2) {
+    errors.push('legE.assertions.watchdogIntervalsObserved must be at least 2');
+  }
+  if (integer(assertions?.watchdogFalseAlarms) !== 0) {
+    errors.push('legE.assertions.watchdogFalseAlarms must be exactly 0');
+  }
+
+  const writerDeviceKey = expectString(leg, 'writerDeviceKey', KEY, errors);
+  if (writerDeviceKey && !hostKeys.has(writerDeviceKey)) {
+    errors.push('legE.writerDeviceKey must belong to one of the two physical hosts');
+  }
+
+  const oids = expectRecord(leg, 'oids', errors);
+  const ingressHead = expectString(oids, 'ingressHead', OID, errors);
+  const lastAdmitted = expectString(oids, 'lastAdmitted', OID, errors);
+  const canonicalStaging = expectString(oids, 'canonicalStaging', OID, errors);
+  const egressHead = expectString(oids, 'egressHead', OID, errors);
+  const remoteStaging = expectString(oids, 'remoteStaging', OID, errors);
+  const upstreamBefore = expectString(oids, 'upstreamBefore', OID, errors);
+  const upstreamAfter = expectString(oids, 'upstreamAfter', OID, errors);
+  const divergenceBefore = expectString(oids, 'divergenceCanonicalBefore', OID, errors);
+  const divergenceAfter = expectString(oids, 'divergenceCanonicalAfter', OID, errors);
+  expectEqual(ingressHead, lastAdmitted, 'legE ingressHead/lastAdmitted', errors);
+  expectEqual(canonicalStaging, egressHead, 'legE canonicalStaging/egressHead', errors);
+  expectEqual(canonicalStaging, remoteStaging, 'legE canonicalStaging/remoteStaging', errors);
+  expectEqual(upstreamBefore, upstreamAfter, 'legE upstream before/after', errors);
+  expectEqual(divergenceBefore, divergenceAfter, 'legE divergence canonical before/after', errors);
+}
+
+function validateLegG(raw: JsonRecord, hostKeys: Set<string>, errors: string[]): void {
+  const leg = expectRecord(raw, 'legG', errors);
+  if (leg?.planItem !== 'P-308') errors.push('legG.planItem must be P-308');
+  if (leg?.status !== 'pass') errors.push('legG.status must be pass');
+  const afterLegs = Array.isArray(leg?.afterLegs) ? leg.afterLegs : [];
+  if (
+    afterLegs.length !== PRIOR_LEGS.length ||
+    PRIOR_LEGS.some((expected, index) => afterLegs[index] !== expected)
+  ) {
+    errors.push('legG.afterLegs must be the ordered same-run live sequence A through F');
+  }
+
+  const assertions = expectRecord(leg, 'assertions', errors);
+  for (const key of [
+    'preFailureConverged',
+    'survivorElected',
+    'grantReady',
+    'successorDescendsFromPreFailure',
+    'successorFederatedAndAccepted',
+    'oldAuthorityRejectedStaleEpochSeq',
+    'oldAuthorityCouldNotMoveRefs',
+    'retryableUnknownShaHeldCursor',
+    'retryableUngrantedEpochHeldCursor',
+    'retryAcceptedAfterEvidence',
+    'pgBlipFailedOpenLegacy',
+    'pgBlipNoForcePush',
+    'pgBlipLoserNoisy',
+    'restartCoreKeyChanged',
+    'stableDeviceIdentityPreserved',
+    'postRestartRoundTripExact',
+  ]) {
+    expectTrue(assertions, key, errors);
+  }
+
+  const epochs = expectRecord(leg, 'epochs', errors);
+  const priorEpoch = integer(epochs?.priorAccepted);
+  const successorEpoch = integer(epochs?.successorGranted);
+  if (priorEpoch === null || priorEpoch < 0) errors.push('legG.epochs.priorAccepted must be >= 0');
+  if (successorEpoch === null || priorEpoch === null || successorEpoch <= priorEpoch) {
+    errors.push('legG.epochs.successorGranted must be strictly greater than priorAccepted');
+  }
+  if (epochs?.basis !== 'crash-takeover' && epochs?.basis !== 'token-adoption') {
+    errors.push('legG.epochs.basis must be crash-takeover or token-adoption');
+  }
+
+  const cursor = expectRecord(leg, 'cursor', errors);
+  const beforeRetry = integer(cursor?.beforeRetry);
+  const duringUnknownSha = integer(cursor?.duringUnknownSha);
+  const duringUngrantedEpoch = integer(cursor?.duringUngrantedEpoch);
+  const afterAccept = integer(cursor?.afterAccept);
+  if (
+    beforeRetry === null ||
+    duringUnknownSha !== beforeRetry ||
+    duringUngrantedEpoch !== beforeRetry
+  ) {
+    errors.push('legG retryable unknown-sha/ungranted-epoch must hold the fed-event cursor');
+  }
+  if (beforeRetry === null || afterAccept === null || afterAccept <= beforeRetry) {
+    errors.push('legG cursor must advance after the missing evidence is accepted');
+  }
+
+  const devices = expectRecord(leg, 'devices', errors);
+  const oldAuthority = expectString(devices, 'oldAuthority', KEY, errors);
+  const survivor = expectString(devices, 'survivor', KEY, errors);
+  const stableBefore = expectString(devices, 'stableDeviceKeyBefore', KEY, errors);
+  const stableAfter = expectString(devices, 'stableDeviceKeyAfter', KEY, errors);
+  const oldCore = expectString(devices, 'oldCoreKey', KEY, errors);
+  const newCore = expectString(devices, 'newCoreKey', KEY, errors);
+  for (const [label, key] of [
+    ['oldAuthority', oldAuthority],
+    ['survivor', survivor],
+    ['stableDeviceKeyBefore', stableBefore],
+    ['stableDeviceKeyAfter', stableAfter],
+  ] as const) {
+    if (key && !hostKeys.has(key)) errors.push(`legG.devices.${label} must belong to a physical host`);
+  }
+  expectEqual(stableBefore, stableAfter, 'legG stable device identity before/after restart', errors);
+  if (oldAuthority !== null && survivor !== null && oldAuthority === survivor) {
+    errors.push('legG oldAuthority and survivor must be different devices');
+  }
+  if (oldCore !== null && newCore !== null && oldCore === newCore) {
+    errors.push('legG oldCoreKey and newCoreKey must differ after restart');
+  }
+
+  const oids = expectRecord(leg, 'oids', errors);
+  const successorStaging = expectString(oids, 'successorStaging', OID, errors);
+  const receiverStaging = expectString(oids, 'receiverStaging', OID, errors);
+  const staleBefore = expectString(oids, 'beforeStaleAuthorityReplay', OID, errors);
+  const staleAfter = expectString(oids, 'afterStaleAuthorityReplay', OID, errors);
+  const restartCanonical = expectString(oids, 'postRestartCanonical', OID, errors);
+  const restartWorktree = expectString(oids, 'postRestartWorktree', OID, errors);
+  expectString(oids, 'preFailureStaging', OID, errors);
+  expectEqual(successorStaging, receiverStaging, 'legG successor/receiver staging', errors);
+  expectEqual(staleBefore, staleAfter, 'legG refs before/after stale-authority replay', errors);
+  expectEqual(restartCanonical, restartWorktree, 'legG post-restart canonical/worktree', errors);
+}
+
+export function validatePhysicalDrillEvidence(raw: unknown): PhysicalDrillEvidenceVerdict {
+  const errors: string[] = [];
+  const evidence = record(raw);
+  if (!evidence) {
+    return {
+      ok: false,
+      schemaVersion: SCHEMA,
+      runId: null,
+      errors: ['evidence root must be an object'],
+      summary: 'invalid physical hive-git evidence',
+    };
+  }
+
+  if (evidence.schemaVersion !== SCHEMA) errors.push(`schemaVersion must be ${SCHEMA}`);
+  if (evidence.plan !== PLAN) errors.push(`plan must be ${PLAN}`);
+  const runId = string(evidence.runId);
+  if (!runId || !/^[A-Za-z0-9._:-]{8,160}$/.test(runId)) errors.push('runId is invalid or missing');
+
+  const window = expectRecord(evidence, 'window', errors);
+  const startedAt = Date.parse(String(window?.startedAt ?? ''));
+  const finishedAt = Date.parse(String(window?.finishedAt ?? ''));
+  if (!Number.isFinite(startedAt) || !Number.isFinite(finishedAt) || finishedAt <= startedAt) {
+    errors.push('window must contain ordered ISO-8601 startedAt/finishedAt timestamps');
+  }
+
+  const topology = expectRecord(evidence, 'topology', errors);
+  if (topology?.kind !== 'two-physical-machines') {
+    errors.push('topology.kind must be two-physical-machines');
+  }
+  const hosts = Array.isArray(topology?.hosts) ? topology.hosts : [];
+  if (hosts.length !== 2) errors.push('topology.hosts must contain exactly two physical hosts');
+  const hostIds = new Set<string>();
+  const hostKeys = new Set<string>();
+  for (const [index, candidate] of hosts.entries()) {
+    const host = record(candidate);
+    const id = string(host?.id);
+    const deviceKey = string(host?.deviceKey);
+    if (!id || !/^[A-Za-z0-9._:-]{1,80}$/.test(id) || hostIds.has(id)) {
+      errors.push(`topology.hosts[${index}].id is invalid or duplicate`);
+    } else {
+      hostIds.add(id);
+    }
+    if (!deviceKey || !KEY.test(deviceKey) || hostKeys.has(deviceKey)) {
+      errors.push(`topology.hosts[${index}].deviceKey is invalid or duplicate`);
+    } else {
+      hostKeys.add(deviceKey);
+    }
+  }
+
+  validateArtifacts(evidence, hostIds, errors);
+  validateLegVerdicts(evidence, errors);
+  validateLegE(evidence, hostKeys, errors);
+  validateLegG(evidence, hostKeys, errors);
+
+  const uniqueErrors = [...new Set(errors)];
+  return {
+    ok: uniqueErrors.length === 0,
+    schemaVersion: SCHEMA,
+    runId: runId ?? null,
+    errors: uniqueErrors,
+    summary:
+      uniqueErrors.length === 0
+        ? `physical hive-git run ${runId} proves same-run A-G with strict E/P-306 and G/P-308 witnesses`
+        : `physical hive-git evidence rejected (${uniqueErrors.length} error${uniqueErrors.length === 1 ? '' : 's'})`,
+  };
+}
+
+export function validatePhysicalDrillEvidenceFile(path: string): PhysicalDrillEvidenceVerdict {
+  try {
+    const parsed = JSON.parse(readFileSync(path, 'utf8')) as unknown;
+    return validatePhysicalDrillEvidence(parsed);
+  } catch (error) {
+    return {
+      ok: false,
+      schemaVersion: SCHEMA,
+      runId: null,
+      errors: [error instanceof Error ? error.message : String(error)],
+      summary: 'physical hive-git evidence could not be read',
+    };
+  }
+}
+
+const invokedPath = process.argv[1] ? resolve(process.argv[1]) : null;
+if (invokedPath === fileURLToPath(import.meta.url)) {
+  const path = process.argv[2];
+  const verdict = path
+    ? validatePhysicalDrillEvidenceFile(path)
+    : {
+        ok: false,
+        schemaVersion: SCHEMA,
+        runId: null,
+        errors: ['usage: physical-drill-evidence.ts /absolute/path/to/evidence.json'],
+        summary: 'physical hive-git evidence path missing',
+      };
+  process.stdout.write(`${JSON.stringify(verdict)}\n`);
+  if (!verdict.ok) process.exitCode = 1;
+}
