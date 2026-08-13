@@ -248,13 +248,31 @@ describe('mutation-probe.sh — in-tree mode restores the tracked file', () => {
     expect(read()).toBe(ORIGINAL);
   });
 
+  it('keeps the post-mutation dirty window free of signal-unsafe command substitutions', () => {
+    const source = readFileSync(SCRIPT, 'utf8');
+    const mutationAt = source.indexOf('perl -pi -e "$MUTATE" "$TARGET"');
+    const supervisedGuardAt = source.indexOf('run_guard mutant "mutant guard"', mutationAt);
+    expect(mutationAt).toBeGreaterThan(-1);
+    expect(supervisedGuardAt).toBeGreaterThan(mutationAt);
+
+    // EI-20320511174710484 / WI-38375: SIGTERM landed inside a nested
+    // post-mutation hash substitution and Bash reported an unmatched closing
+    // parenthesis while entering the trap. finish() never ran, leaving BETA in
+    // the subject. The dirty interval may use parameter expansion and builtins,
+    // but it must contain neither modern nor legacy command substitution.
+    const dirtyWindow = source.slice(mutationAt, supervisedGuardAt);
+    expect(dirtyWindow).not.toContain('$(');
+    expect(dirtyWindow).not.toContain(String.fromCharCode(96));
+  });
+
   it('restores PROMPTLY on SIGTERM mid-probe — not merely eventually', async () => {
-    // Make the historical race deterministic. `finish()` reaps descendants by
-    // walking `ps --ppid`; on the shared host (~10k processes) one scan can be
-    // slow enough that cleanup-before-restore consumes the whole 5s integrity
-    // budget. Delay the FIRST scan past that budget. A correct trap restores
-    // before invoking ps, so the delay affects only child cleanup, never the
-    // tracked-file invariant.
+    // Make the cleanup-order hardening deterministic. finish() reaps
+    // descendants by walking ps --ppid; on the shared host (~10k processes)
+    // one scan can be slow enough that cleanup-before-restore consumes the
+    // whole 5s integrity budget. Delay the FIRST scan past that budget. A
+    // correct trap restores before invoking ps, so the delay affects only child
+    // cleanup, never the tracked-file invariant. The separate source guard
+    // above pins the observed command-substitution parse-abort root cause.
     const slowBin = join(dir, 'slow-bin');
     const slowPs = join(slowBin, 'ps');
     const slowPsMarker = join(dir, 'slow-ps-ran');

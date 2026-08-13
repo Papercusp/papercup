@@ -373,7 +373,12 @@ if cmp -s "$TARGET" "$BASE"; then
 
       Only the PATTERN (left) side needs escaping — the replacement is literal."
 fi
-log "mutant applied: $(git hash-object "$BASE" | cut -c1-8) -> $(git hash-object "$TARGET" | cut -c1-8)"
+# Keep the DIRTY window free of command substitutions. A SIGTERM that landed
+# inside the old nested hash-object substitutions could make Bash abort trap
+# parsing with an unmatched closing parenthesis; finish() then never ran and
+# the tracked mutant stayed behind. ORIG_SUM is already available, and the
+# exact mutant hash is diagnostic convenience rather than integrity evidence.
+log "mutant applied: ${ORIG_SUM:0:8} -> changed ($TARGET_MODE)"
 
 # --- run the guard against the mutant --------------------------------------
 CMD="${TEST_CMD//\{\}/$TARGET}"
