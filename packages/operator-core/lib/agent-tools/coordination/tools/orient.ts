@@ -706,6 +706,32 @@ export async function composeOrient(
   cellIdentity?: { reader: CellReader; env: CellReadEnv },
 ): Promise<OrientResult> {
   const monitor = args.mode === 'monitor';
+  // EI-18748795522559631: memory recall is independent of the roster, backlog,
+  // inbox, and leader folds below, but it used to START only after all of them.
+  // Launch it now and consume it at the existing admission point so its
+  // embed/lexical latency overlaps that useful bootstrap work. The promise is
+  // settled here (rather than left rejectable until a much later await) so an
+  // early backend failure cannot become an unhandled rejection; the existing
+  // fold still renders that failure as `memory: null`.
+  const memQuery = monitor ? undefined : (args.memoryQuery ?? args.intent);
+  const memLimit = Math.min(args.memoryLimit ?? 5, MEMORY_HITS_CAP);
+  const inFlightMemory =
+    memQuery && memLimit > 0
+      ? (async () => {
+          try {
+            return {
+              ok: true as const,
+              value: await call('memory:search', {
+                query: memQuery,
+                ...(args.harness ? { harness_slug: args.harness } : {}),
+                limit: memLimit,
+              }),
+            };
+          } catch (error) {
+            return { ok: false as const, error };
+          }
+        })()
+      : null;
   // EI-18731216945970087: only exercised when presence itself found no fleet at all,
   // in monitor mode (the original failure's exact shape). EI-20201050911711528
   // adds the same registry authority check for a named fleet whose role projection
@@ -1167,15 +1193,13 @@ export async function composeOrient(
   // not break orientation. EI-8300: a monitor tick skips the recall ENTIRELY, even
   // when `intent`/`memoryQuery` is set — declare-intent (below) still fires, so peers
   // still see the caller's status.
-  const memQuery = monitor ? undefined : (args.memoryQuery ?? args.intent);
-  const memLimit = Math.min(args.memoryLimit ?? 5, MEMORY_HITS_CAP);
-  if (memQuery && memLimit > 0) {
+  if (inFlightMemory && memQuery) {
     try {
-      const mem = (await call('memory:search', {
-        query: memQuery,
-        ...(args.harness ? { harness_slug: args.harness } : {}),
-        limit: memLimit,
-      })) as { results?: OrientMemoryHit[]; degraded?: boolean; reason?: string; degraded_reason?: string } | undefined;
+      const settledMemory = await inFlightMemory;
+      if (!settledMemory.ok) throw settledMemory.error;
+      const mem = settledMemory.value as
+        | { results?: OrientMemoryHit[]; degraded?: boolean; reason?: string; degraded_reason?: string }
+        | undefined;
       // EI-20113865649946366: a body cut at MEMORY_TEXT_CAP (200) used to end
       // mid-sentence with NOTHING saying so, so a clipped fact read as the whole fact.
       // `ORIENT_MEMORY_NOTE` does not cover this: it says the RECALL is non-exhaustive

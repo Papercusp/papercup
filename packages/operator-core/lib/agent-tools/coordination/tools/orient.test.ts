@@ -437,6 +437,45 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
     expect(calls.some(({ name }) => name === 'memory:search')).toBe(false);
   });
 
+  it('starts memory recall before independent bootstrap folds and awaits it only at the admission point', async () => {
+    let resolveMemory!: (value: { ok: true; results: [] }) => void;
+    const memoryDone = new Promise<{ ok: true; results: [] }>((resolve) => {
+      resolveMemory = resolve;
+    });
+    let memoryResolved = false;
+    let assignmentsStartedWhileMemoryPending = false;
+    const { call, calls } = fakeCall({
+      ...CORE,
+      'memory:search': async () => {
+        const result = await memoryDone;
+        memoryResolved = true;
+        return result;
+      },
+      'fleet:assignments': () => {
+        assignmentsStartedWhileMemoryPending = !memoryResolved;
+        return CORE['fleet:assignments']();
+      },
+      'coord:declare-intent': () => ({ ok: true }),
+    });
+
+    const pending = composeOrient({ intent: 'overlap recall' }, call, 'me');
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    expect(assignmentsStartedWhileMemoryPending).toBe(true);
+    expect(calls.map((c) => c.name).slice(0, 2)).toEqual(['memory:search', 'fleet:assignments']);
+    let orientResolved = false;
+    void pending.then(() => {
+      orientResolved = true;
+    });
+    await Promise.resolve();
+    expect(orientResolved).toBe(false);
+
+    resolveMemory({ ok: true, results: [] });
+    const result = await pending;
+    expect(result.ok).toBe(true);
+    expect(result.memory).toEqual({ query: 'overlap recall', hits: [] });
+  });
+
   it('accepts inboxLimit=0 and skips the duplicate inbox read', async () => {
     const { call, calls } = fakeCall({ ...CORE });
     const r = await composeOrient({ harness: 'h', inboxLimit: 0 }, call, 'me');
@@ -485,17 +524,18 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
       },
     });
     expect(r.recipes).toEqual([{ id: 'fan-out-wi', title: 'Fan-out work items', runCount: 7, similarity: 0.82 }]);
-    // order: core three → observe (WI-5343 claimable floor check) → memory →
-    // whoami (P-007: hoisted above the facts fold) → plan-events → planNow
+    // order: memory STARTS first so its latency overlaps the independent core
+    // reads; core three → observe → memory ADMISSION → whoami (P-007: hoisted
+    // above the facts fold) → plan-events → planNow
     // (WI-5228: planSlug was passed) → recipes → declare
     expect(calls.map((c) => c.name)).toEqual([
+      'memory:search',
       'fleet:assignments',
       // EI-19452326548245557: issue lane from the claim oracle, feature lane from the list.
       'work_items:claimable',
       'work_items:list',
       'coord:inbox',
       'work_items:observe',
-      'memory:search',
       'coord:whoami',
       'coord:plan-events',
       'plans:get',

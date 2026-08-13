@@ -61,12 +61,24 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
 }));
 
 import search from './search';
-import { getMemoryBackend } from '../../memory/backend';
+import { getMemoryBackend, type SearchLegStats, type SearchOptions } from '../../memory/backend';
+
+const LEG_STATS: SearchLegStats = {
+  mode: 'floored-union',
+  cosine: { ran: true, candidates: 1, qualifying: 1, depth: 5, durationMs: 12.5 },
+  lexical: { ran: true, candidates: 2, qualifying: 1, depth: 15, durationMs: 8.25 },
+  fused: 1,
+  fusionMs: 0.5,
+  totalMs: 13.25,
+};
 
 const oneHitBackend = () => ({
   name: 'one-hit',
   available: vi.fn(async () => ({ ok: true })),
-  search: vi.fn(async () => [{ id: 'm1', text: 'a relevant memory', scope: 'user', score: 0.8 }]),
+  search: vi.fn(async (_query: string, opts: SearchOptions) => {
+    opts.onLegStats?.(LEG_STATS);
+    return [{ id: 'm1', text: 'a relevant memory', scope: 'user', score: 0.8 }];
+  }),
   list: vi.fn(async () => [] as unknown[]),
   get: vi.fn(async () => null),
   remember: vi.fn(async () => ({ ids: [] })),
@@ -87,7 +99,7 @@ describe('memory:search recall-telemetry surface (P-001)', () => {
     await search.handler({ query: 'anything relevant' } as never, { principal: { workspaceId: 'ws-test' } } as never);
     await flush();
     expect(recordRecallStatsMock).toHaveBeenCalledTimes(1);
-    expect(recordRecallStatsMock.mock.calls[0]![1]).toMatchObject({ surface: 'search' });
+    expect(recordRecallStatsMock.mock.calls[0]![1]).toMatchObject({ surface: 'search', legs: LEG_STATS });
   });
 
   it("a compound-stamped ctx (telemetrySurface:'orient') records under 'orient'", async () => {

@@ -26,7 +26,12 @@
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { getMemoryBackend, MemoryUnavailableError, type MemoryEntry } from '../../memory/backend';
+import {
+  getMemoryBackend,
+  MemoryUnavailableError,
+  type MemoryEntry,
+  type SearchLegStats,
+} from '../../memory/backend';
 import { isMemoryWorkspaceScopedRecallOn, keepUserPoolHitForWorkspace } from '../../memory/workspace-scope-recall';
 import {
   MemoryTimeoutError,
@@ -225,6 +230,10 @@ export default defineTool({
     // Tracked separately from `overloadDegradedReason` because that one is a
     // wire-envelope concern; this one decides what the telemetry row means.
     let usedLexicalFallback = false;
+    // P-002's backend callback already powers the push/injection path. Capture
+    // the same structured counts + timings here so direct memory:search rows do
+    // not remain the observability blind half of the same retrieval backend.
+    let legStats: SearchLegStats | null = null;
     try {
       const avail = await withMemoryToolTimeout(backend.available(), 'memory:search available');
       if (!avail.ok) {
@@ -237,7 +246,14 @@ export default defineTool({
       // The backend fans out per scope (limit applies per pool), merges,
       // de-dupes by id and sorts by score; we apply the global cap here.
       hits = await withMemoryToolTimeout(
-        backend.search(args.query, { scope, limit, ...temporal }),
+        backend.search(args.query, {
+          scope,
+          limit,
+          ...temporal,
+          onLegStats: (stats) => {
+            legStats = stats;
+          },
+        }),
         'memory:search search',
       );
     } catch (err) {
@@ -284,6 +300,9 @@ export default defineTool({
       // every hygiene/scoping invariant of the healthy path.
       hits = fallbackHits;
       usedLexicalFallback = true;
+      // The fallback is a separate, embed-free retrieval call. Any stats a
+      // failed semantic attempt happened to report do not describe these hits.
+      legStats = null;
       overloadDegradedReason = reason;
     }
 
@@ -382,6 +401,7 @@ export default defineTool({
           // duplicate detection covers the push path only — which is where the
           // Phase 11 defect lives.
           query: args.query,
+          legs: legStats,
         });
       } catch { /* swallow — telemetry never fails a recall */ }
     })();
