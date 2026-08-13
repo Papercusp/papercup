@@ -506,7 +506,7 @@ function readHeadTree(repoPath: string, head: string | null): Promise<TreeSnapsh
       complete: true,
       reason: null,
     };
-    let pending = Buffer.alloc(0);
+    let pending: Buffer<ArrayBufferLike> = Buffer.alloc(0);
     let outputBytes = 0;
     let stderr = '';
     let intentionallyKilled = false;
@@ -586,11 +586,11 @@ function readHeadTree(repoPath: string, head: string | null): Promise<TreeSnapsh
 }
 
 class AsyncBufferReader {
-  private buffer = Buffer.alloc(0);
-  private readonly iterator: AsyncIterator<Buffer>;
+  private buffer: Buffer<ArrayBufferLike> = Buffer.alloc(0);
+  private readonly iterator: AsyncIterator<Buffer<ArrayBufferLike>>;
 
   constructor(stream: NodeJS.ReadableStream) {
-    this.iterator = stream[Symbol.asyncIterator]() as AsyncIterator<Buffer>;
+    this.iterator = stream[Symbol.asyncIterator]() as AsyncIterator<Buffer<ArrayBufferLike>>;
   }
 
   private async fill(size: number): Promise<void> {
@@ -616,7 +616,7 @@ class AsyncBufferReader {
     return line;
   }
 
-  async bytes(size: number): Promise<Buffer> {
+  async bytes(size: number): Promise<Buffer<ArrayBufferLike>> {
     await this.fill(size);
     const value = this.buffer.subarray(0, size);
     this.buffer = this.buffer.subarray(size);
