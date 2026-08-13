@@ -62,6 +62,7 @@ import {
 import {
   describeIntegrationRoot,
   toolingRoot,
+  type GreenCheckpointCapacityMode,
   type ReleaseConfig,
 } from "./release-config";
 import { runPerfGate, perfGatePolicyFromFlags } from "./perf-gate";
@@ -4012,10 +4013,28 @@ export const GREEN_CHECKPOINT_LOW_MEMORY_LINT_MAX_CONCURRENCY = 2;
  * chronically-swapping box; the gate is hourly + acquireCheckpointRunLock serializes fires, so
  * the slower run can't overlap-OOM. NOTE: fewer forks is a MITIGATION — the deeper root is the
  * box's memory BASELINE (the operator cluster size); if 2 still flakes, the durable fix is
- * operator-cluster reduction or a memory-aware gate-defer, not fewer forks. Configurable via
- * VITEST_MAX_FORKS/THREADS (a pre-set value always wins).
+ * operator-cluster reduction or a memory-aware gate-defer, not fewer forks. `shared` remains
+ * this safe two-fork default. `reserved` selects the bounded higher profile only through
+ * `ReleaseConfig.greenCheckpointCapacityMode`; VITEST_MAX_FORKS/THREADS remain authoritative
+ * per-variable overrides in either mode.
  */
 export const GREEN_CHECKPOINT_MAX_FORKS = 2;
+
+/**
+ * Higher, still-bounded Vitest profile for a runner whose CPU/memory capacity is explicitly
+ * reserved for the gate. This is deliberately not selected from host/cgroup size: resource
+ * discovery says what exists, not whether the live fleet is entitled to use it concurrently.
+ */
+export const GREEN_CHECKPOINT_RESERVED_MAX_FORKS = 8;
+
+/** Resolve the bounded profile selected by the operator's explicit capacity contract. */
+export function greenCheckpointMaxForksForCapacity(
+  capacityMode: GreenCheckpointCapacityMode,
+): number {
+  return capacityMode === "reserved"
+    ? GREEN_CHECKPOINT_RESERVED_MAX_FORKS
+    : GREEN_CHECKPOINT_MAX_FORKS;
+}
 
 /**
  * Strip any inherited `--max-old-space-size` (both `=value` and space-separated
@@ -4061,9 +4080,12 @@ export function sanitizeForkNodeOptions(
  * - `AFFECTED_BASE=<base>` (when given) so test:affected runs exactly the candidate's delta;
  *   any host-leaked AFFECTED_BASE is dropped — the `base` arg is the ONLY source, so a
  *   base-null full run is never silently narrowed by an inherited value.
- * - `VITEST_MAX_FORKS/THREADS` default to {@link GREEN_CHECKPOINT_MAX_FORKS} (respecting a
- *   pre-set value): the checkpoint shares the box with the live fleet; uncapped/too-high
- *   worker concurrency under that load produces timeout FLAKES (a 1-of-8881 load-flake held
+ * - `VITEST_MAX_FORKS/THREADS` default to the bounded profile selected by the explicit
+ *   capacity mode (respecting a pre-set value). Shared mode uses
+ *   {@link GREEN_CHECKPOINT_MAX_FORKS}; reserved mode uses
+ *   {@link GREEN_CHECKPOINT_RESERVED_MAX_FORKS}. The checkpoint normally shares the box with
+ *   the live fleet; uncapped/too-high worker concurrency under that load produces timeout
+ *   FLAKES (a 1-of-8881 load-flake held
  *   `main` back 2026-06-06) AND OOM-killed worker forks (WI-806: 8 × 4 GiB bloated past the
  *   box's free memory and crashed the pool, wedging the gate 5× in a row).
  * - `AFFECTED_RETRY_FAILED` defaults to 1 (respecting a pre-set value): re-run a failed
@@ -4080,6 +4102,8 @@ export function buildGreenCheckpointEnv(
    *  it produces (`run_group_id`) so one run's per-file outcomes are queryable as a
    *  unit. Optional — omitted ⇒ rows still record as `source='ci'`, just ungrouped. */
   runId?: string,
+  /** Explicit operator capacity contract. `shared` remains the safe default. */
+  capacityMode: GreenCheckpointCapacityMode = "shared",
 ): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...source };
   for (const k of Object.keys(env)) {
@@ -4133,10 +4157,9 @@ export function buildGreenCheckpointEnv(
   // WI-806: cap fork concurrency to a MEMORY-SAFE default (4, not the old 8) so the
   // forks can't collectively bloat past the box's free memory and OOM-kill a worker
   // under live-fleet load — the worker-pool crash that wedged the gate 5× in a row.
-  env.VITEST_MAX_FORKS =
-    env.VITEST_MAX_FORKS ?? String(GREEN_CHECKPOINT_MAX_FORKS);
-  env.VITEST_MAX_THREADS =
-    env.VITEST_MAX_THREADS ?? String(GREEN_CHECKPOINT_MAX_FORKS);
+  const profileMaxForks = greenCheckpointMaxForksForCapacity(capacityMode);
+  env.VITEST_MAX_FORKS = env.VITEST_MAX_FORKS ?? String(profileMaxForks);
+  env.VITEST_MAX_THREADS = env.VITEST_MAX_THREADS ?? String(profileMaxForks);
   env.AFFECTED_RETRY_FAILED = env.AFFECTED_RETRY_FAILED ?? "1";
   // VITEST_UNIT_TIMEOUT_MS=180000 (respecting a pre-set value): the gate runs
   // operator-core's heaviest `await import()` unit tests (create-*, hive/guard,
@@ -4147,6 +4170,27 @@ export function buildGreenCheckpointEnv(
   // (libs/test-config reads this env; unset ⇒ 60s).
   env.VITEST_UNIT_TIMEOUT_MS = env.VITEST_UNIT_TIMEOUT_MS ?? "180000";
   return env;
+}
+
+/**
+ * Stable operator-facing evidence for the actual capacity settings handed to the suite.
+ * The real run tees this line into its persisted orchestrator transcript before spawning
+ * Vitest, so a slow/failed verdict can be attributed without reconstructing host env.
+ */
+export function greenCheckpointCapacityEvidence(
+  capacityMode: GreenCheckpointCapacityMode,
+  env: NodeJS.ProcessEnv,
+): string {
+  const heapMatch = env.NODE_OPTIONS?.match(
+    /--max[-_]old[-_]space[-_]size=(\d+)/,
+  );
+  return (
+    `GREEN_CHECKPOINT_CAPACITY mode=${capacityMode} ` +
+    `maxForks=${env.VITEST_MAX_FORKS ?? "unset"} ` +
+    `maxThreads=${env.VITEST_MAX_THREADS ?? "unset"} ` +
+    `forkHeapMb=${heapMatch?.[1] ?? "unknown"} ` +
+    `profileMaxForks=${greenCheckpointMaxForksForCapacity(capacityMode)}`
+  );
 }
 
 /** P-012 failure signature for the release-fixer dedup, folding the SPA-build break in:
