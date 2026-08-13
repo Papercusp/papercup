@@ -19,6 +19,11 @@ import {
   slashToolVisibleTo,
   renderSlashPromptForTool,
 } from '../_mcp-slash-prompts';
+import { preserveProjectionRegistryBaseline } from '../../../../testing/projection-registry-baseline';
+
+// This file EMPTIES the process-global tool registry below. Put back whatever was there, or
+// every later file in a reused fork reads an empty catalog (D-034). See the helper's header.
+preserveProjectionRegistryBaseline();
 
 afterEach(() => {
   _resetProjectionRegistryForTests();

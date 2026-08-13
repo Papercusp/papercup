@@ -2,7 +2,7 @@
  * boot-history tests.
  */
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   _resetBootHistoryForTests,
   _setCapForTests,
@@ -11,6 +11,16 @@ import {
   listBootHistory,
   recordBootEvent,
 } from '../boot-history';
+
+// Reset BEFORE as well as after. The buffer is module-scoped process-global state, so an
+// afterEach alone only guarantees cleanliness for the SECOND test onward — the first test
+// ('starts empty') inherits whatever a sibling file recorded earlier. Under `isolate: true`
+// that was invisible (a fresh process per file); under the P-003 pure lane's `isolate: false`
+// the forks pool reuses the worker and a sibling's entries leak in, so 'starts empty' read
+// 20 events from ws-wi37553/flush-missing (plan gate-suite-speedup-2026-08-12, D-034).
+beforeEach(() => {
+  _resetBootHistoryForTests();
+});
 
 afterEach(() => {
   _resetBootHistoryForTests();

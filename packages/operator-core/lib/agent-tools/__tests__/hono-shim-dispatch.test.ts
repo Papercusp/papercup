@@ -28,6 +28,7 @@ import {
   type ProjectedTool,
   type UnifiedToolContext,
 } from '@papercusp/agent-mcp';
+import { preserveProjectionRegistryBaseline } from '../../testing/projection-registry-baseline';
 
 type Recorded = { kind: 'event' | 'raw'; name: string; data: unknown };
 
@@ -108,6 +109,10 @@ function makeCtx(over: Partial<UnifiedToolContext> = {}): UnifiedToolContext {
     ...over,
   } as UnifiedToolContext;
 }
+
+// This file EMPTIES the process-global tool registry below. Put back whatever was there, or
+// every later file in a reused fork reads an empty catalog (D-034). See the helper's header.
+preserveProjectionRegistryBaseline();
 
 beforeEach(() => {
   _resetProjectionRegistryForTests();

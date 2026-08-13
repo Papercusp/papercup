@@ -80,7 +80,19 @@ describe('armEphemeralExecutor', () => {
     await armEphemeralExecutor(deps);
     expect(ephemeralExecutorArmed()).toBe(true);
     expect(armedEphemeralIds().sort()).toEqual(['a', 'b']);
-    const names = listManaged().map((e) => e.name).sort();
+    // Scope to the category this test owns. `listManaged()` is a PROCESS-GLOBAL registry, so
+    // asserting it equals exactly this test's two entries also asserts that nothing else in
+    // the process ever armed a managed timer — which is not this test's claim (the case name
+    // says "category ephemeral-harness") and is not true under fork reuse. Under `isolate:
+    // true` a fresh process per file made it accidentally hold; under the P-003 pure lane's
+    // `isolate: false` sibling files' module-scope timers (config-refresh:*,
+    // hyperbee-merge-poll) are already registered and the assertion read 6 entries
+    // (plan gate-suite-speedup-2026-08-12, D-034). Filtering keeps the real claim — ONE timer
+    // per active ephemeral routine — and stops it depending on process-global emptiness.
+    const names = listManaged()
+      .filter((e) => e.category === 'ephemeral-harness')
+      .map((e) => e.name)
+      .sort();
     expect(names).toEqual(['ephemeral:a', 'ephemeral:b']);
     expect(getManaged('ephemeral:a')?.category).toBe('ephemeral-harness');
     expect(getManaged('ephemeral:a')?.shed).toBe(true);

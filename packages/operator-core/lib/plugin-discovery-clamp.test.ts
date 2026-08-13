@@ -24,6 +24,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { registerPluginTools, type LoadedPlugin } from '@papercusp/plugin-loader';
 import { _resetProjectionRegistryForTests } from '@papercusp/agent-mcp';
+import { preserveProjectionRegistryBaseline } from './testing/projection-registry-baseline';
 
 const DEFAULT_DISCOVERY_TIMEOUT_MS = 10_000;
 const FLOOR = 100;
@@ -81,6 +82,10 @@ async function effectiveTimeoutFor(
   expect(m, `error did not report a timeout: ${result.errors[0].error}`).not.toBeNull();
   return Number(m![1]);
 }
+
+// This file EMPTIES the process-global tool registry below. Put back whatever was there, or
+// every later file in a reused fork reads an empty catalog (D-034). See the helper's header.
+preserveProjectionRegistryBaseline();
 
 beforeEach(() => {
   _resetProjectionRegistryForTests();
