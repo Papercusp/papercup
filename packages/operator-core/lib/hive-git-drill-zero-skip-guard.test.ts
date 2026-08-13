@@ -251,15 +251,15 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
     );
   });
 
-  it('installs the offline scenario plus fixed Phase A executor and emits nothing before fixed A-G executors land', () => {
+  it('installs the offline scenario plus fixed Phase A-B executors and emits nothing before fixed A-G executors land', () => {
     const contract = spawnSync(physicalScenarioPath, ['--contract-check'], { encoding: 'utf8' });
     expect(contract.status).toBe(0);
     expect(JSON.parse(contract.stdout)).toEqual({
       schemaVersion: 'hive-git-physical-scenario-contract/v1',
-      implementationState: 'offline-phase-a-executor-v1',
+      implementationState: 'offline-phase-a-b-executors-v1',
       ready: false,
       phases: [...'ABCDEFG'],
-      phaseContracts: { A: 'executor-installed' },
+      phaseContracts: { A: 'executor-installed', B: 'executor-installed' },
     });
 
     const runDir = mkdtempSync(join(evidenceDir, 'scenario-contract-'));
@@ -283,7 +283,7 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
       },
     });
     expect(attempted.status).toBe(1);
-    expect(attempted.stderr).toContain('scenario is not execution-ready (offline-phase-a-executor-v1)');
+    expect(attempted.stderr).toContain('scenario is not execution-ready (offline-phase-a-b-executors-v1)');
     expect(existsSync(output)).toBe(false);
     expect(physicalScenario).toContain('run_all_phases');
     expect(physicalScenario).not.toContain('HIVE_GIT_PHYSICAL_SCENARIO_CMD');
@@ -345,11 +345,69 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
     });
     expect(physicalScenario).not.toContain('HIVE_GIT_PHYSICAL_PHASE_A_CMD');
 
-    const unsupported = spawnSync(physicalScenarioPath, ['--phase-contract', 'B'], {
+    const unsupported = spawnSync(physicalScenarioPath, ['--phase-contract', 'C'], {
       encoding: 'utf8',
     });
     expect(unsupported.status).toBe(1);
-    expect(unsupported.stderr).toContain('phase B has no installed offline contract');
+    expect(unsupported.stderr).toContain('phase C has no installed offline contract');
+  });
+
+  it('pins a bidirectional Phase B ref-announcement adapter with no direct-fetch or command override seam', () => {
+    const contract = spawnSync(physicalScenarioPath, ['--phase-contract', 'B'], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        HIVE_GIT_PHYSICAL_PHASE_B_CMD: 'git fetch synthetic bundle',
+      },
+    });
+    expect(contract.status).toBe(0);
+    expect(JSON.parse(contract.stdout)).toEqual({
+      schemaVersion: 'hive-git-physical-phase-contract/v1',
+      phase: 'B',
+      planItem: 'P-303',
+      state: 'executor-installed',
+      ready: true,
+      missingAssertions: [],
+      target: {
+        potHomeSlug: 'hello-world-3-pot',
+        repoKey: 'gh-1296269',
+        topology: 'bidirectional-tower-vm-ref-announce',
+      },
+      causalOrder: [
+        'transferRefAbsentOnBothHosts',
+        'freshSourceNamespaceCommitCreated',
+        'sourceGitSyncPublishTriggered',
+        'sourceSignedSigrefsAdvanced',
+        'destinationGitSyncReceiveTriggered',
+        'exactSignedNamespaceAndObjectsObservedOnDestination',
+        'reverseDirectionRepeated',
+      ],
+      requiredObservations: [
+        'freshRunBoundCommitInEachDeviceNamespace',
+        'sourceAndDestinationPreMutationAbsence',
+        'deviceSignedExactNamespaceSnapshot',
+        'sameSigrefsOidOnSourceAndDestination',
+        'sameCommitAndPayloadOnSourceAndDestination',
+        'reachableObjectCounts',
+        'boundedTransferLatency',
+        'canonicalGitSyncPublishAndReceiveTicks',
+      ],
+      forbiddenEvidence: [
+        'preExistingTransferRef',
+        'directGitFetch',
+        'bundleTransfer',
+        'preAuthoredManifest',
+        'environmentSuppliedCommand',
+      ],
+      transport: 'ref-announce-protomux-git-upload-pack-v2',
+      externalCommandOverrides: false,
+    });
+    expect(physicalScenario).not.toContain('HIVE_GIT_PHYSICAL_PHASE_B_CMD');
+    expect(physicalScenario).toContain('phase-b-commit tower tower-to-vm');
+    expect(physicalScenario).toContain('phase-b-commit vm vm-to-tower');
+    expect(physicalScenario).toContain('phase-b-verify');
+    expect(physicalScenario).toContain('git-sync:run');
+    expect(physicalScenario).not.toMatch(/['"]git (?:fetch|bundle)/);
   });
 
   it('refuses the canonical wrapper before its first VM ssh while the scenario is incomplete', () => {
@@ -374,7 +432,7 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
       },
     );
     expect(probe.status).toBe(1);
-    expect(probe.stderr).toContain('scenario is not execution-ready (offline-phase-a-executor-v1)');
+    expect(probe.stderr).toContain('scenario is not execution-ready (offline-phase-a-b-executors-v1)');
     expect(existsSync(sshMarker)).toBe(false);
   });
 
