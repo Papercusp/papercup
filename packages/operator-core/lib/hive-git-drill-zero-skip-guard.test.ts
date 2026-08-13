@@ -576,12 +576,12 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
     );
   });
 
-  it('installs the offline scenario plus fixed Phase A-D executors and emits nothing before fixed A-G executors land', () => {
+  it('installs the offline scenario plus fixed Phase A-E executors and emits nothing before fixed A-G executors land', () => {
     const contract = spawnSync(physicalScenarioPath, ['--contract-check'], { encoding: 'utf8' });
     expect(contract.status).toBe(0);
     expect(JSON.parse(contract.stdout)).toEqual({
       schemaVersion: 'hive-git-physical-scenario-contract/v1',
-      implementationState: 'offline-phase-a-b-c-d-executors-v1',
+      implementationState: 'offline-phase-a-b-c-d-e-executors-v1',
       ready: false,
       phases: [...'ABCDEFG'],
       phaseContracts: {
@@ -589,6 +589,7 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
         B: 'executor-installed',
         C: 'executor-installed',
         D: 'executor-installed',
+        E: 'executor-installed',
       },
     });
 
@@ -613,13 +614,15 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
       },
     });
     expect(attempted.status).toBe(1);
-    expect(attempted.stderr).toContain('scenario is not execution-ready (offline-phase-a-b-c-d-executors-v1)');
+    expect(attempted.stderr).toContain('scenario is not execution-ready (offline-phase-a-b-c-d-e-executors-v1)');
     expect(existsSync(output)).toBe(false);
     expect(physicalScenario).toContain('run_all_phases');
     expect(physicalScenario).not.toContain('HIVE_GIT_PHYSICAL_SCENARIO_CMD');
     expect(physicalScenario).toContain('phase-a-quarantine');
     expect(physicalScenario).toContain("'$VM_CALL' git-sync:run");
     expect(physicalScenario).toContain('phase-a-verify');
+    expect(physicalScenario).toContain('physical_run_id="p505-physical-');
+    expect(physicalScenario.match(/local run_id="\$physical_run_id"/g)).toHaveLength(2);
     expect(physicalScenario.indexOf('[ "$IMPLEMENTATION_STATE" = \'ready-v1\' ]')).toBeLessThan(
       physicalScenario.lastIndexOf('run_all_phases'),
     );
@@ -869,6 +872,89 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
     expect(physicalScenario).not.toMatch(/['"]git (?:fetch|update-ref)/);
   });
 
+  it('pins Phase E to commit-only members, the sole bridge writer, watchdog sweeps, and fail-closed recovery', () => {
+    const contract = spawnSync(physicalScenarioPath, ['--phase-contract', 'E'], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        HIVE_GIT_PHYSICAL_PHASE_E_CMD: 'git push synthetic refs/heads/staging',
+      },
+    });
+    expect(contract.status).toBe(0);
+    expect(JSON.parse(contract.stdout)).toEqual({
+      schemaVersion: 'hive-git-physical-phase-contract/v1',
+      phase: 'E',
+      planItem: 'P-306',
+      state: 'executor-installed',
+      ready: true,
+      missingAssertions: [],
+      target: {
+        potHomeSlug: 'hello-world-3-pot',
+        repoKey: 'gh-1296269',
+        topology: 'two-host-commit-only-members-to-single-github-bridge-writer',
+      },
+      causalOrder: [
+        'legacyModeObservedOnBothHosts',
+        'bridgedModePersistedThroughSetPotGitMode',
+        'bothPhysicalMemberGitSyncTicksTriggered',
+        'bothMembersObservedCommitOnlyWithNoDirectPushes',
+        'freshFixedUpstreamIngressCreated',
+        'bridgeIngressAdmissionAndIntegrationTicksTriggered',
+        'lastAdmittedReachedExactIngressHead',
+        'canonicalAndForkStagingConverged',
+        'twoProductionWatchdogSweepsStayedQuiet',
+        'freshForkAheadControlCreated',
+        'bridgeReportedStructuredEgressNonFastForward',
+        'canonicalStayedFixedDuringDivergence',
+        'forkRestoredWithForceWithLease',
+        'legacyModeRestoredAndObservedOnBothHosts',
+      ],
+      requiredObservations: [
+        'federatedModeRowOnBothPhysicalHosts',
+        'commitOnlyRoutineMetadataAndEmptyLastPushed',
+        'freshUpstreamHead',
+        'githubBridgeLastAdmitted',
+        'canonicalStagingOid',
+        'forkRemoteStagingOid',
+        'productionGitSyncTriggers',
+        'twoDistinctCheckGitSyncStallResults',
+        'structuredEgressNonFfEscalation',
+        'unchangedCanonicalAcrossForkAheadControl',
+        'forceWithLeaseRecoveryRecord',
+        'legacyRollbackOnBothHosts',
+      ],
+      forbiddenEvidence: [
+        'memberDirectPush',
+        'summaryOnlyLegPass',
+        'singleHostObservation',
+        'callerSelectedRepoRefOrRemote',
+        'directCanonicalRefMutation',
+        'preAuthoredManifest',
+        'environmentSuppliedCommand',
+      ],
+      productionSurfaces: [
+        'setPotGitMode',
+        'git-sync:run',
+        'runGithubBridgeLeg',
+        'checkGitSyncStall',
+        'github-bridge-divergence',
+      ],
+      externalCommandOverrides: false,
+    });
+    expect(physicalScenario).not.toContain('HIVE_GIT_PHYSICAL_PHASE_E_CMD');
+    expect(physicalScenario).toContain('phase-e-mode bridged');
+    expect(physicalScenario).toContain('phase-e-observe vm bridged-member');
+    expect(physicalScenario).toContain('phase-e-ingress');
+    expect(physicalScenario).toContain('phase-e-watchdog 1');
+    expect(physicalScenario).toContain('phase-e-watchdog 2');
+    expect(physicalScenario).toContain('phase-e-diverge');
+    expect(physicalScenario).toContain('phase-e-recover');
+    expect(physicalScenario).toContain('phase-e-mode legacy');
+    expect(physicalScenario).toContain('trap _phase_e_cleanup RETURN');
+    expect(physicalScenario).toContain('phase-e-verify');
+    expect(physicalScenario).not.toMatch(/['"]git (?:fetch|push|update-ref)/);
+  });
+
   it('refuses the canonical wrapper before its first VM ssh while the scenario is incomplete', () => {
     const runDir = mkdtempSync(join(evidenceDir, 'scenario-wrapper-'));
     const fakeBin = join(runDir, 'bin');
@@ -891,7 +977,7 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
       },
     );
     expect(probe.status).toBe(1);
-    expect(probe.stderr).toContain('scenario is not execution-ready (offline-phase-a-b-c-d-executors-v1)');
+    expect(probe.stderr).toContain('scenario is not execution-ready (offline-phase-a-b-c-d-e-executors-v1)');
     expect(existsSync(sshMarker)).toBe(false);
   });
 
