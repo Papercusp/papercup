@@ -24,14 +24,18 @@
  *
  * ── The envelope, read from the tool, not assumed ────────────────────────────
  * `capability:read` (packages/operator-core/lib/agent-tools/capability/read.ts)
- * takes `{ file_path, offset?, limit? }` where `offset` is a 1-based line to
- * start from and `limit` a max line count (default 2000). Notably:
+ * takes line windows (`offset`/`limit`/`tail`) and exact byte pages
+ * (`byte_offset`/`byte_limit`). Notably:
  *  • An ABSOLUTE path bypasses the capability base dir entirely, so /tmp and
  *    /var/log — a large share of real targets — ARE readable. The plan flagged
  *    this as a risk; it is not one.
- *  • Windowing is line-based and anchored at the START of the file. There is no
- *    from-the-end read, which is exactly what `tail` is for.
- *  • One `file_path` per call; `-c`/byte windows have no expression.
+ *  • Line windowing supports both start-anchored ranges and `tail: N`.
+ *  • Byte pages are start-offset, bounded, and returned as structured base64.
+ *    That is useful for exact/resumable inspection, but it is not the raw-byte
+ *    stdout emitted by `head -c` / `tail -c`; tail bytes also need an
+ *    EOF-relative offset the tool does not accept. Those commands therefore
+ *    remain outside this answer-equivalent substitution family.
+ *  • One `file_path` per call.
  */
 
 import type { AnswerEnvelope, CoverageResult, ReplayToolCall, BashSubstitutionPair } from '../types';
@@ -291,10 +295,18 @@ function checkSingleLiteralFile(parsed: ParsedAtom): CoverageResult | null {
   return null;
 }
 
-/** `-c`/`--bytes` windows are byte-based; capability:read windows lines only. */
+/**
+ * `-c`/`--bytes` emits raw bytes. capability:read can inspect the same bytes,
+ * but its byte mode deliberately returns a structured base64 page + cursor.
+ * The replay contract only strips framing; it never decodes or rewrites an
+ * answer, so treating the two outputs as equivalent would be a false green.
+ */
 function checkByteWindow(parsed: ParsedAtom): CoverageResult | null {
   if (parsed.flags.some((f) => f === '-c' || f.startsWith('--bytes'))) {
-    return { covered: false, reason: 'byte-count window (-c); capability:read windows by LINE only' };
+    return {
+      covered: false,
+      reason: 'byte-count window (-c) emits raw bytes; capability:read byte pages return structured base64',
+    };
   }
   return null;
 }
@@ -466,15 +478,16 @@ export const headFileRead: BashSubstitutionPair = {
  * could not do the job, which is precisely the failure D-001 exists to prevent.
  *
  * Closed by widening the tool rather than by lowering the bar: `capability:read`
- * now takes `tail: N`. Streaming (`tail -f`) and byte windows (`-c`) remain
- * outside the pattern — they are different intents, not missing coverage.
+ * now takes `tail: N`. Streaming (`tail -f`) remains a different intent. Byte
+ * windows (`-c`) remain outside because byte mode returns structured base64
+ * rather than raw stdout, and has no EOF-relative byte offset.
  */
 export const tailFileRead: BashSubstitutionPair = {
   id: 'file-read.tail',
   intentLabel: 'file-tail-read',
   // `-f`/`--follow` and `-c` are excluded by the pattern: a stream follow and a
-  // byte window are different intents, so per D-008 they fall outside rather
-  // than dragging the verdict down.
+  // raw-byte stdout window are different answer shapes, so per D-008 they fall
+  // outside rather than dragging the verdict down.
   bashPattern: readPattern(
     String.raw`tail\s+(?!-f\b)(?!--follow\b)(?!-c\b)(?:-n\s*\d+\s+|-\d+\s+)?${SINGLE_FILE_OPERAND}`,
   ),

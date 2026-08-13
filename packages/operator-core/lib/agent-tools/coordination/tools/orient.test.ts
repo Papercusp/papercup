@@ -119,11 +119,11 @@ describe('coord:orient args', () => {
 
   it('teaches that fleet membership is session-inferred instead of accepting fleet scope', () => {
     const description = String((orientTool as { description?: unknown }).description ?? '');
-    const when = String((orientTool as { guidance?: { when?: unknown } }).guidance?.when ?? '');
 
-    expect(description).toContain("Fleet membership is inferred from the caller's live session");
-    expect(description).toContain('do not pass `fleet` or `workspace`');
-    expect(when).toContain('do not add a `fleet` or `workspace` argument to coord:orient');
+    // e3597dcb shortened the catalog prose to satisfy the hard guidance budget;
+    // pin the load-bearing semantics rather than the retired long wording.
+    expect(description).toContain('Fleet and workspace are inferred');
+    expect(description).toContain('pass `harness` only for explicit harness scope');
     expect(orientTool.args.safeParse({ fleet: 'nonp2p-bug-drain-headless-0812' }).success).toBe(false);
   });
 

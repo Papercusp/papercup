@@ -299,12 +299,22 @@ describe('file-read.ts model tracks the real capability:read (D-015)', () => {
     expectArgSurface(
       capabilityRead,
       'capability:read',
-      ['file_path', 'limit', 'offset', 'tail'],
-      'the four pairs in this family map directly onto these args: sed→offset+limit, head→limit, tail→tail, ' +
-        'cat→file_path. `tail` in particular was ADDED to close the family\'s real gap (1,752 `tail -n N FILE` ' +
-        'atoms across 63 sessions had no tool form); losing it would silently restore that gap while the pair ' +
-        'still records `equivalent`. A multi-file or byte-window arg would invalidate the "single file_path" and ' +
-        '"windows by LINE only" refusal reasons cover() returns.',
+      [
+        // These two do NOT widen this answer-equivalent text family: byte mode
+        // returns structured base64 pages, while head/tail -c emit raw bytes;
+        // tail bytes additionally require an EOF-relative start the tool lacks.
+        'byte_limit',
+        'byte_offset',
+        'file_path',
+        'limit',
+        'offset',
+        'tail',
+      ],
+      'the four text-output pairs map directly onto file_path/offset/limit/tail. `tail` in particular was ADDED ' +
+        'to close the family\'s real gap (1,752 `tail -n N FILE` atoms across 63 sessions had no tool form); losing ' +
+        'it would silently restore that gap while the pair still records `equivalent`. The byte args are accounted ' +
+        'for but deliberately remain outside this family because their structured base64 answer is not raw-byte ' +
+        'stdout. A multi-file arg or a raw/EOF-relative byte mode would require re-deriving coverage.',
     );
   });
 

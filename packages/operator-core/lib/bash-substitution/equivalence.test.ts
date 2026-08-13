@@ -261,9 +261,22 @@ describe('file-read pattern boundaries', () => {
     expect(catFileRead.cover('cat ~/.papercusp/state').covered).toBe(true);
   });
 
-  it('excludes follow mode and byte windows as different intents', () => {
+  it('excludes follow mode and raw-byte windows as different answer shapes', () => {
     expect(claims(tailFileRead, 'tail -f /tmp/run.log')).toBe(false);
+    expect(claims(headFileRead, 'head -c 2000 /tmp/run.log')).toBe(false);
     expect(claims(tailFileRead, 'tail -c 2000 /tmp/run.log')).toBe(false);
+
+    // The byte-page tool surface is real, but it returns JSON/base64 rather than
+    // the raw stdout these commands emit. Keep the ENVELOPE loud too, so a later
+    // pattern regression cannot silently promote a false equivalence.
+    expect(headFileRead.cover('head -c 2000 /tmp/run.log')).toMatchObject({
+      covered: false,
+      reason: expect.stringContaining('structured base64'),
+    });
+    expect(tailFileRead.cover('tail -c 2000 /tmp/run.log')).toMatchObject({
+      covered: false,
+      reason: expect.stringContaining('structured base64'),
+    });
   });
 
   it('maps a sed range onto offset+limit exactly', () => {
