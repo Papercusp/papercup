@@ -15,14 +15,21 @@
  * @param {string} args.reservedBy    Who/what reserved it (for the printed `reserved_by`).
  * @param {boolean} args.dryRun       True when nothing was actually reserved.
  * @param {string} [args.canonicalDir] Override for the sql dir (tests only).
+ * @param {string|null} [args.redundancyWarning] WI-38353: a non-blocking "a
+ *   near-identical migration already exists" notice, surfaced on the SUCCESS
+ *   path so a probable duplicate is visible even when it is not refused.
  */
-export function buildAllocationResult({ next, filename, reservedBy, dryRun, canonicalDir }: {
+export function buildAllocationResult({ next, filename, reservedBy, dryRun, canonicalDir, redundancyWarning, }: {
     next: number;
     filename: string;
     reservedBy: string;
     dryRun: boolean;
     canonicalDir?: string | undefined;
+    redundancyWarning?: string | null | undefined;
 }): {
+    forward_compat: string;
+    note: string;
+    redundancy_warning?: string | undefined;
     ok: boolean;
     number: number;
     reserved: boolean;
@@ -31,6 +38,4 @@ export function buildAllocationResult({ next, filename, reservedBy, dryRun, cano
     arm_path: string;
     arm_command: string;
     reserved_by: string;
-    forward_compat: string;
-    note: string;
 };
