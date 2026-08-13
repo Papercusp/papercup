@@ -7,10 +7,7 @@
  * operator boot. (It imports su-584a8's @papercusp/operator-core/lib/authority.)
  * No PG, no network.
  */
-import { describe, it, expect } from 'vitest';
-import { getClaimAuthority, LocalClaimAuthority } from '../../plan-items/claim-authority';
-import { registeredAuthorityOpKinds } from '../../authority';
-import { PLAN_ITEM_CLAIM_OP_KINDS } from '../../plan-items/claims';
+import { describe, it, expect, vi } from 'vitest';
 
 describe('plan_items tool barrel boots cleanly', () => {
   // 180s timeout (EI-8386, 2026-07-07: bumped again from 60s — 4 timeout failures
@@ -28,6 +25,15 @@ describe('plan_items tool barrel boots cleanly', () => {
   // isolated tree, peers deploying) a tight timeout flakes while the import is
   // merely SLOW, not hung (it passes in ~1.6-3s isolated).
   it('importing the barrel installs the swarm claim authority + claim op handlers without throwing', { timeout: 180_000 }, async () => {
+    // The full suite deliberately shares workers. Another file can therefore
+    // import the production agent-tools barrel before this assertion and leave
+    // the process-global authority installed. Start from a fresh module graph so
+    // this test measures THIS barrel's boot side effects, not test-file order.
+    vi.resetModules();
+    const { getClaimAuthority, LocalClaimAuthority } = await import('../../plan-items/claim-authority');
+    const { registeredAuthorityOpKinds } = await import('../../authority');
+    const { PLAN_ITEM_CLAIM_OP_KINDS } = await import('../../plan-items/claims');
+
     // Default before the barrel loads: the pure single-peer local authority.
     expect(getClaimAuthority()).toBeInstanceOf(LocalClaimAuthority);
 
