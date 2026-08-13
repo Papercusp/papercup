@@ -11,30 +11,13 @@
 import { afterAll, describe, expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import {
-  chmodSync,
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import {
-  physicalDrillSigningBytes,
-  validatePhysicalDrillEvidence,
-} from './sync/pot-git/physical-drill-evidence';
-import {
-  physicalDrillHostReceiptSigningBytes,
-} from './sync/pot-git/physical-drill-host-receipt';
-import {
-  generateEd25519KeypairDer,
-  signWithPrivateKeyDer,
-} from './identity/ed25519';
+import { physicalDrillSigningBytes, validatePhysicalDrillEvidence } from './sync/pot-git/physical-drill-evidence';
+import { physicalDrillHostReceiptSigningBytes } from './sync/pot-git/physical-drill-host-receipt';
+import { generateEd25519KeypairDer, signWithPrivateKeyDer } from './identity/ed25519';
 
 function repoRoot(): string {
   let dir = dirname(fileURLToPath(import.meta.url));
@@ -47,25 +30,14 @@ function repoRoot(): string {
   throw new Error('could not locate papercusp-desktop/bin/hive-git-drill.sh');
 }
 
-const drill = readFileSync(
-  join(repoRoot(), 'papercusp-desktop', 'bin', 'hive-git-drill.sh'),
-  'utf8',
-);
+const drill = readFileSync(join(repoRoot(), 'papercusp-desktop', 'bin', 'hive-git-drill.sh'), 'utf8');
 const physicalProbe = readFileSync(
   join(repoRoot(), 'papercusp-desktop', 'bin', 'vm-rig', 'hive-git-physical-probe.sh'),
   'utf8',
 );
-const physicalScenarioPath = join(
-  repoRoot(),
-  'papercusp-desktop',
-  'bin',
-  'vm-rig',
-  'hive-git-physical-scenario.sh',
-);
+const physicalScenarioPath = join(repoRoot(), 'papercusp-desktop', 'bin', 'vm-rig', 'hive-git-physical-scenario.sh');
 const physicalScenario = readFileSync(physicalScenarioPath, 'utf8');
-const gateMatch = drill.match(
-  /# ZERO-SKIP-RELEASE-GATE-BEGIN[^\n]*\n([\s\S]*?)# ZERO-SKIP-RELEASE-GATE-END/,
-);
+const gateMatch = drill.match(/# ZERO-SKIP-RELEASE-GATE-BEGIN[^\n]*\n([\s\S]*?)# ZERO-SKIP-RELEASE-GATE-END/);
 
 const evidenceDir = mkdtempSync(join(tmpdir(), 'hive-git-physical-evidence-'));
 const trustByFixture = new WeakMap<Record<string, any>, Record<string, any>>();
@@ -210,10 +182,9 @@ function physicalFixture(): Record<string, any> {
     };
     return {
       ...unsigned,
-      signature: signWithPrivateKeyDer(
-        device.privateKeyDer,
-        physicalDrillHostReceiptSigningBytes(unsigned),
-      ).toString('base64'),
+      signature: signWithPrivateKeyDer(device.privateKeyDer, physicalDrillHostReceiptSigningBytes(unsigned)).toString(
+        'base64',
+      ),
     };
   });
   trustByFixture.set(fixture, {
@@ -237,11 +208,10 @@ function trustedPhysicalAnchor(fixture: Record<string, any>): Record<string, any
   return trust;
 }
 
-function runGate(input: {
-  fail: number;
-  skipped: number;
-  requireZeroSkips?: boolean;
-}): { status: number | null; output: string } {
+function runGate(input: { fail: number; skipped: number; requireZeroSkips?: boolean }): {
+  status: number | null;
+  output: string;
+} {
   expect(gateMatch, 'zero-skip release gate markers must remain in the drill').toBeTruthy();
   const script = [
     'set -uo pipefail',
@@ -281,15 +251,15 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
     );
   });
 
-  it('installs only the offline scenario and Phase A contracts and emits nothing before fixed A-G executors land', () => {
+  it('installs the offline scenario plus fixed Phase A executor and emits nothing before fixed A-G executors land', () => {
     const contract = spawnSync(physicalScenarioPath, ['--contract-check'], { encoding: 'utf8' });
     expect(contract.status).toBe(0);
     expect(JSON.parse(contract.stdout)).toEqual({
       schemaVersion: 'hive-git-physical-scenario-contract/v1',
-      implementationState: 'offline-phase-a-contract-v1',
+      implementationState: 'offline-phase-a-executor-v1',
       ready: false,
       phases: [...'ABCDEFG'],
-      phaseContracts: { A: 'contract-only' },
+      phaseContracts: { A: 'executor-installed' },
     });
 
     const runDir = mkdtempSync(join(evidenceDir, 'scenario-contract-'));
@@ -305,25 +275,24 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
     writeFileSync(towerIdentity, JSON.stringify(identity('tower', 1)));
     writeFileSync(vmIdentity, JSON.stringify(identity('vm', 2)));
 
-    const attempted = spawnSync(
-      physicalScenarioPath,
-      [output, towerIdentity, vmIdentity],
-      {
-        encoding: 'utf8',
-        env: {
-          ...process.env,
-          HIVE_GIT_PHYSICAL_PLAN: 'p2p-git-live-activation-2026-07-09',
-        },
+    const attempted = spawnSync(physicalScenarioPath, [output, towerIdentity, vmIdentity], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        HIVE_GIT_PHYSICAL_PLAN: 'p2p-git-live-activation-2026-07-09',
       },
-    );
+    });
     expect(attempted.status).toBe(1);
-    expect(attempted.stderr).toContain(
-      'scenario is not execution-ready (offline-phase-a-contract-v1)',
-    );
+    expect(attempted.stderr).toContain('scenario is not execution-ready (offline-phase-a-executor-v1)');
     expect(existsSync(output)).toBe(false);
     expect(physicalScenario).toContain('run_all_phases');
     expect(physicalScenario).not.toContain('HIVE_GIT_PHYSICAL_SCENARIO_CMD');
-    expect(physicalScenario).not.toMatch(/^\s*(?:ssh|scp|psql|git|systemctl)\b/m);
+    expect(physicalScenario).toContain('phase-a-quarantine');
+    expect(physicalScenario).toContain("'$VM_CALL' git-sync:run");
+    expect(physicalScenario).toContain('phase-a-verify');
+    expect(physicalScenario.indexOf('[ "$IMPLEMENTATION_STATE" = \'ready-v1\' ]')).toBeLessThan(
+      physicalScenario.lastIndexOf('run_all_phases'),
+    );
   });
 
   it('pins a falsifiable Phase A cold-join adapter contract with no command override', () => {
@@ -339,7 +308,7 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
       schemaVersion: 'hive-git-physical-phase-contract/v1',
       phase: 'A',
       planItem: 'P-302',
-      state: 'contract-only',
+      state: 'executor-installed',
       ready: false,
       target: {
         potHomeSlug: 'hello-world-3-pot',
@@ -348,7 +317,7 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
       },
       causalOrder: [
         'towerStoreObserved',
-        'vmStoreRemovedByScenario',
+        'vmStoreQuarantinedByScenario',
         'vmStoreAbsenceObserved',
         'canonicalGitSyncBootstrapTriggered',
         'vmStoreRecreatedAfterBootstrap',
@@ -403,9 +372,7 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
       },
     );
     expect(probe.status).toBe(1);
-    expect(probe.stderr).toContain(
-      'scenario is not execution-ready (offline-phase-a-contract-v1)',
-    );
+    expect(probe.stderr).toContain('scenario is not execution-ready (offline-phase-a-executor-v1)');
     expect(existsSync(sshMarker)).toBe(false);
   });
 
@@ -418,9 +385,7 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
   it('rejects a self-declared locally signed fixture without an out-of-manifest VM-rig trust anchor', () => {
     const verdict = validatePhysicalDrillEvidence(physicalFixture());
     expect(verdict.ok).toBe(false);
-    expect(verdict.errors).toContain(
-      'trusted physical-rig anchor is required outside the evidence manifest',
-    );
+    expect(verdict.errors).toContain('trusted physical-rig anchor is required outside the evidence manifest');
   });
 
   it('rejects a hand-written trust anchor that has no keychain-bound host receipts', () => {
@@ -429,9 +394,7 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
     delete trust.receipts;
     const verdict = validatePhysicalDrillEvidence(fixture, trust);
     expect(verdict.ok).toBe(false);
-    expect(verdict.errors).toContain(
-      'trusted anchor must contain exactly two keychain-bound host receipts',
-    );
+    expect(verdict.errors).toContain('trusted anchor must contain exactly two keychain-bound host receipts');
   });
 
   it('executes the real validator CLI against an attested evidence file', () => {
@@ -440,9 +403,13 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
     const fixture = physicalFixture();
     writeFileSync(evidencePath, `${JSON.stringify(fixture)}\n`);
     writeFileSync(trustPath, `${JSON.stringify(trustedPhysicalAnchor(fixture))}\n`);
-    const result = spawnSync(join(repoRoot(), 'node_modules', '.bin', 'tsx'), [validatorPath, evidencePath, trustPath], {
-      encoding: 'utf8',
-    });
+    const result = spawnSync(
+      join(repoRoot(), 'node_modules', '.bin', 'tsx'),
+      [validatorPath, evidencePath, trustPath],
+      {
+        encoding: 'utf8',
+      },
+    );
     expect(result.status, result.stderr).toBe(0);
     expect(JSON.parse(result.stdout)).toMatchObject({
       ok: true,
@@ -455,9 +422,7 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
     fixture.legE.assertions.watchdogIntervalsObserved = 3;
     const verdict = validatePhysicalDrillEvidence(fixture, trustedPhysicalAnchor(fixture));
     expect(verdict.ok).toBe(false);
-    expect(verdict.errors.join('\n')).toContain(
-      'not a valid signature over the canonical evidence payload',
-    );
+    expect(verdict.errors.join('\n')).toContain('not a valid signature over the canonical evidence payload');
   });
 
   it('rejects a structure-only pass claim with no raw physical-host artifacts', () => {
@@ -473,9 +438,7 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
     fixture.legVerdicts[3].observedAt = '2026-08-13T13:00:00Z';
     const verdict = validatePhysicalDrillEvidence(fixture, trustedPhysicalAnchor(fixture));
     expect(verdict.ok).toBe(false);
-    expect(verdict.errors).toContain(
-      'legVerdicts.D.observedAt must fall inside the one physical-run window',
-    );
+    expect(verdict.errors).toContain('legVerdicts.D.observedAt must fall inside the one physical-run window');
   });
 
   it('rejects a Leg E OID chain that did not reach the remote staging ref', () => {
@@ -491,9 +454,7 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
     fixture.legG.cursor.duringUnknownSha = 42;
     const verdict = validatePhysicalDrillEvidence(fixture, trustedPhysicalAnchor(fixture));
     expect(verdict.ok).toBe(false);
-    expect(verdict.errors).toContain(
-      'legG retryable unknown-sha/ungranted-epoch must hold the fed-event cursor',
-    );
+    expect(verdict.errors).toContain('legG retryable unknown-sha/ungranted-epoch must hold the fed-event cursor');
   });
 
   it('rejects a Leg G takeover without a strictly higher authority epoch', () => {
@@ -501,9 +462,7 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
     fixture.legG.epochs.successorGranted = 7;
     const verdict = validatePhysicalDrillEvidence(fixture, trustedPhysicalAnchor(fixture));
     expect(verdict.ok).toBe(false);
-    expect(verdict.errors).toContain(
-      'legG.epochs.successorGranted must be strictly greater than priorAccepted',
-    );
+    expect(verdict.errors).toContain('legG.epochs.successorGranted must be strictly greater than priorAccepted');
   });
 
   it('preserves the default scaffold pass while reporting unproven legs', () => {

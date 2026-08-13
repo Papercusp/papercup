@@ -10,13 +10,17 @@ import {
   type PhysicalDrillHostReceipt,
 } from './physical-drill-host-receipt';
 import { validatePhysicalDrillEvidence } from './physical-drill-evidence';
+import {
+  capturePhysicalPhaseARepo,
+  quarantinePhysicalPhaseARepo,
+  validatePhysicalPhaseA,
+  type PhysicalPhaseAInput,
+} from './physical-drill-phase-a';
 
 type JsonRecord = Record<string, unknown>;
 
 function record(value: unknown): JsonRecord | null {
-  return value !== null && typeof value === 'object' && !Array.isArray(value)
-    ? (value as JsonRecord)
-    : null;
+  return value !== null && typeof value === 'object' && !Array.isArray(value) ? (value as JsonRecord) : null;
 }
 
 function readJson(path: string): unknown {
@@ -44,10 +48,10 @@ export function preflightPhysicalDrillHosts(rawIdentities: unknown[]): PhysicalD
   return identities;
 }
 
-export function finalizePhysicalDrillArtifacts(input: {
-  evidence: unknown;
-  receipts: unknown[];
-}): { evidence: JsonRecord; trust: JsonRecord } {
+export function finalizePhysicalDrillArtifacts(input: { evidence: unknown; receipts: unknown[] }): {
+  evidence: JsonRecord;
+  trust: JsonRecord;
+} {
   const evidence = record(input.evidence);
   if (!evidence) throw new Error('physical-drill-producer: unsigned evidence must be an object');
   if (Array.isArray(evidence.attestations) && evidence.attestations.length > 0) {
@@ -64,15 +68,17 @@ export function finalizePhysicalDrillArtifacts(input: {
     }
     return verdict.receipt;
   });
-  assertDistinctHosts(receipts.map((receipt) => ({
-    schemaVersion: 'hive-git-physical-host-identity/v1',
-    hostId: receipt.hostId,
-    deviceKey: receipt.deviceKey,
-    keychainId: receipt.keychainId,
-    githubUserId: receipt.githubUserId,
-    githubLogin: receipt.githubLogin,
-    machineFingerprint: receipt.machineFingerprint,
-  })));
+  assertDistinctHosts(
+    receipts.map((receipt) => ({
+      schemaVersion: 'hive-git-physical-host-identity/v1',
+      hostId: receipt.hostId,
+      deviceKey: receipt.deviceKey,
+      keychainId: receipt.keychainId,
+      githubUserId: receipt.githubUserId,
+      githubLogin: receipt.githubLogin,
+      machineFingerprint: receipt.machineFingerprint,
+    })),
+  );
 
   const finalizedEvidence: JsonRecord = {
     ...evidence,
@@ -139,20 +145,55 @@ async function cli(argv: string[]): Promise<unknown> {
     }
     return {
       ok: true,
-      hosts: preflightPhysicalDrillHosts([
-        readJson(towerIdentityPath),
-        readJson(vmIdentityPath),
-      ]),
+      hosts: preflightPhysicalDrillHosts([readJson(towerIdentityPath), readJson(vmIdentityPath)]),
     };
   }
   if (mode === 'sign') {
     const [evidencePath, hostId, cachePath] = args;
     if (!evidencePath || !hostId || !cachePath) {
-      throw new Error(
-        'usage: physical-drill-producer sign <unsigned-evidence.json> <host-id> <absolute-cache-path>',
-      );
+      throw new Error('usage: physical-drill-producer sign <unsigned-evidence.json> <host-id> <absolute-cache-path>');
     }
     return issuePhysicalDrillHostReceipt({ evidencePath, hostId, cachePath });
+  }
+  if (mode === 'phase-a-observe') {
+    const [hostId, state, repoPath, ownDeviceKey, peerDeviceKey, observedAt] = args;
+    if (
+      (hostId !== 'tower' && hostId !== 'vm') ||
+      (state !== 'present' && state !== 'absent') ||
+      !repoPath ||
+      !ownDeviceKey ||
+      !peerDeviceKey
+    ) {
+      throw new Error(
+        'usage: physical-drill-producer phase-a-observe <tower|vm> <present|absent> <repo-path> <own-device-key> <peer-device-key> [observed-at]',
+      );
+    }
+    return capturePhysicalPhaseARepo({
+      hostId,
+      state,
+      repoPath,
+      ownDeviceKey,
+      peerDeviceKey,
+      ...(observedAt ? { observedAt } : {}),
+    });
+  }
+  if (mode === 'phase-a-quarantine') {
+    const [repoPath, runId] = args;
+    if (!repoPath || !runId) {
+      throw new Error('usage: physical-drill-producer phase-a-quarantine <canonical-vm-repo-path> <run-id>');
+    }
+    return quarantinePhysicalPhaseARepo({ repoPath, runId });
+  }
+  if (mode === 'phase-a-verify') {
+    const [inputPath] = args;
+    if (!inputPath) {
+      throw new Error('usage: physical-drill-producer phase-a-verify <private-run-input.json>');
+    }
+    const verdict = validatePhysicalPhaseA(readJson(inputPath) as PhysicalPhaseAInput);
+    if (!verdict.ok) {
+      throw new Error(`physical-drill-producer: Phase A rejected: ${verdict.errors.join('; ')}`);
+    }
+    return verdict;
   }
   if (mode === 'finalize') {
     const [unsignedEvidencePath, towerReceiptPath, vmReceiptPath, evidencePath, trustPath] = args;
@@ -168,7 +209,9 @@ async function cli(argv: string[]): Promise<unknown> {
     writeOutputsAtomically(evidencePath, trustPath, artifacts);
     return { ok: true, runId: artifacts.evidence.runId, evidencePath, trustPath };
   }
-  throw new Error('physical-drill-producer: mode must be identity, preflight, sign, or finalize');
+  throw new Error(
+    'physical-drill-producer: mode must be identity, preflight, phase-a-observe, phase-a-quarantine, phase-a-verify, sign, or finalize',
+  );
 }
 
 const invokedPath = process.argv[1] ? resolve(process.argv[1]) : null;

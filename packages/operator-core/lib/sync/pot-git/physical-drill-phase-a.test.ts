@@ -1,0 +1,218 @@
+import { afterEach, describe, expect, it } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import {
+  PHASE_A_INPUT_SCHEMA,
+  PHASE_A_POT_HOME,
+  PHASE_A_REPO_KEY,
+  capturePhysicalPhaseARepo,
+  quarantinePhysicalPhaseARepo,
+  validatePhysicalPhaseA,
+  type PhysicalPhaseAInput,
+} from './physical-drill-phase-a';
+import { deviceNamespaceKey } from './storage';
+
+const roots: string[] = [];
+const towerKey = Buffer.alloc(32, 1).toString('base64');
+const vmKey = Buffer.alloc(32, 2).toString('base64');
+const times = [
+  '2026-08-13T18:00:00.000Z',
+  '2026-08-13T18:00:01.000Z',
+  '2026-08-13T18:00:02.000Z',
+  '2026-08-13T18:00:03.000Z',
+  '2026-08-13T18:00:04.000Z',
+  '2026-08-13T18:00:05.000Z',
+  '2026-08-13T18:00:06.000Z',
+  '2026-08-13T18:00:07.000Z',
+  '2026-08-13T18:00:08.000Z',
+] as const;
+
+afterEach(() => {
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
+
+function runGit(repo: string, args: string[], input?: string): string {
+  const result = spawnSync('git', ['--git-dir', repo, ...args], {
+    encoding: 'utf8',
+    input,
+    env: { ...process.env, LC_ALL: 'C', LANG: 'C' },
+  });
+  if (result.status !== 0) throw new Error(result.stderr);
+  return result.stdout.trim();
+}
+
+function repoPath(root: string): string {
+  return join(root, PHASE_A_POT_HOME, `${PHASE_A_REPO_KEY}.git`);
+}
+
+function createRepo(root: string, refs: Array<[string, string]>): string {
+  const repo = repoPath(root);
+  const init = spawnSync('git', ['init', '--bare', repo], { encoding: 'utf8' });
+  if (init.status !== 0) throw new Error(init.stderr);
+  for (const [name, body] of refs) {
+    const oid = runGit(repo, ['hash-object', '-w', '--stdin'], body);
+    runGit(repo, ['update-ref', name, oid]);
+  }
+  return repo;
+}
+
+function newRoot(label: string): string {
+  const root = mkdtempSync(join(tmpdir(), `p505-phase-a-${label}-`));
+  roots.push(root);
+  return root;
+}
+
+function fixture(): PhysicalPhaseAInput {
+  const towerRoot = newRoot('tower');
+  const vmRoot = newRoot('vm');
+  const towerNamespace = deviceNamespaceKey(towerKey);
+  const vmNamespace = deviceNamespaceKey(vmKey);
+  const refs: Array<[string, string]> = [
+    [`refs/namespaces/${towerNamespace}/refs/heads/work`, 'tower-work'],
+    [`refs/namespaces/${vmNamespace}/refs/heads/work`, 'vm-work'],
+  ];
+  const towerRepo = createRepo(towerRoot, refs);
+  const vmRepo = createRepo(vmRoot, refs);
+  const towerBefore = capturePhysicalPhaseARepo({
+    hostId: 'tower',
+    state: 'present',
+    repoPath: towerRepo,
+    ownDeviceKey: towerKey,
+    peerDeviceKey: vmKey,
+    observedAt: times[1],
+  });
+  const quarantine = quarantinePhysicalPhaseARepo({ repoPath: vmRepo, runId: 'run-physical-a-1' });
+  quarantine.observedAt = times[2];
+  const vmAbsent = capturePhysicalPhaseARepo({
+    hostId: 'vm',
+    state: 'absent',
+    repoPath: vmRepo,
+    ownDeviceKey: vmKey,
+    peerDeviceKey: towerKey,
+    observedAt: times[3],
+  });
+  createRepo(vmRoot, refs);
+  const towerAfter = capturePhysicalPhaseARepo({
+    hostId: 'tower',
+    state: 'present',
+    repoPath: towerRepo,
+    ownDeviceKey: towerKey,
+    peerDeviceKey: vmKey,
+    observedAt: times[6],
+  });
+  const vmAfter = capturePhysicalPhaseARepo({
+    hostId: 'vm',
+    state: 'present',
+    repoPath: vmRepo,
+    ownDeviceKey: vmKey,
+    peerDeviceKey: towerKey,
+    observedAt: times[7],
+  });
+  return {
+    schemaVersion: PHASE_A_INPUT_SCHEMA,
+    runId: 'run-physical-a-1',
+    window: { startedAt: times[0], finishedAt: times[8] },
+    identities: { towerDeviceKey: towerKey, vmDeviceKey: vmKey },
+    quarantine,
+    bootstrap: {
+      tool: 'git-sync:run',
+      installSlug: PHASE_A_POT_HOME,
+      targetHost: 'vm',
+      fired: true,
+      startedAt: times[4],
+      finishedAt: times[5],
+    },
+    observations: { towerBefore, vmAbsent, towerAfter, vmAfter },
+  };
+}
+
+describe('P-505 fixed physical Phase A cold-join executor core', () => {
+  it('accepts only an absence-before-canonical-bootstrap two-store parity chain', () => {
+    const verdict = validatePhysicalPhaseA(fixture());
+    expect(verdict).toMatchObject({
+      ok: true,
+      errors: [],
+      result: {
+        phase: 'A',
+        planItem: 'P-302',
+        status: 'pass',
+        assertions: {
+          vmStoreQuarantinedByScenario: true,
+          vmAbsenceObservedBeforeBootstrap: true,
+          canonicalGitSyncBootstrapTriggered: true,
+          bothPhysicalDeviceNamespacesOnBothHosts: true,
+          namespaceRefOidsMatch: true,
+          referencedObjectsExistOnBothHosts: true,
+          oneObjectDatabasePerRepo: true,
+        },
+      },
+    });
+  });
+
+  it('cannot label a warm VM store absent', () => {
+    const root = newRoot('warm');
+    const repo = createRepo(root, []);
+    expect(() =>
+      capturePhysicalPhaseARepo({
+        hostId: 'vm',
+        state: 'absent',
+        repoPath: repo,
+        ownDeviceKey: vmKey,
+        peerDeviceKey: towerKey,
+      }),
+    ).toThrow(/expected absent repo/);
+  });
+
+  it('quarantines only the fixed canonical target and preserves it as a sibling', () => {
+    const root = newRoot('quarantine');
+    const repo = createRepo(root, []);
+    const result = quarantinePhysicalPhaseARepo({ repoPath: repo, runId: 'run-physical-a-2' });
+    expect(result).toMatchObject({ method: 'atomic-rename', sourcePath: repo });
+    expect(result.quarantinePath).toBe(`${repo}.p505-phase-a-run-physical-a-2`);
+    expect(() =>
+      quarantinePhysicalPhaseARepo({
+        repoPath: join(root, 'wrong-pot', 'wrong.git'),
+        runId: 'run-physical-a-3',
+      }),
+    ).toThrow(/must target/);
+  });
+
+  it('rejects ref divergence, missing objects, alternates, and a single-store witness', () => {
+    const input = fixture();
+    input.observations.vmAfter.refs[0]!.oid = 'a'.repeat(40);
+    input.observations.vmAfter.refs[0]!.objectExists = false;
+    input.observations.vmAfter.alternates = ['/prebanked/object-store'];
+    input.observations.vmAfter.repoFingerprint = input.observations.towerAfter.repoFingerprint;
+    const verdict = validatePhysicalPhaseA(input);
+    expect(verdict.ok).toBe(false);
+    expect(verdict.errors).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('does not resolve to a local object'),
+        'vm object database must not use alternates',
+        'tower and vm namespaced ref OIDs must match exactly after bootstrap',
+        'tower and vm observations must come from distinct physical repo directories',
+      ]),
+    );
+  });
+
+  it('rejects a non-canonical bootstrap or a causal timestamp inversion', () => {
+    const input = fixture();
+    input.bootstrap.tool = 'git-sync:run';
+    input.bootstrap.installSlug = PHASE_A_POT_HOME;
+    input.bootstrap.targetHost = 'vm';
+    input.bootstrap.startedAt = times[2];
+    input.bootstrap.finishedAt = times[2];
+    input.quarantine.method = 'atomic-rename';
+    input.quarantine.sourcePath = '/tmp/not-the-observed-store';
+    const verdict = validatePhysicalPhaseA(input);
+    expect(verdict.ok).toBe(false);
+    expect(verdict.errors).toEqual(
+      expect.arrayContaining([
+        'Phase A observations do not preserve absence-before-bootstrap causal order',
+        'VM store absence must come from the scenario atomic-quarantine operation',
+      ]),
+    );
+  });
+});
