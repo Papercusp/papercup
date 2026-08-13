@@ -26,8 +26,8 @@
  * bug had it existed at HEAD before this fix.
  *
  * RUN (real testcontainer PG):
- *   cd packages/operator-core && VITEST_UNIT_TIMEOUT_MS=180000 \
- *     npm run test:file -- lib/sync/hyperbee/__tests__/work-items-outbox-canonical-slug.integration.test.ts
+ *   VITEST_UNIT_TIMEOUT_MS=180000 npm run test:file -- \
+ *     packages/operator-core/lib/sync/hyperbee/__tests__/work-items-outbox-canonical-slug.integration.test.ts
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
