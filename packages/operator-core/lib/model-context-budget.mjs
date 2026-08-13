@@ -13,6 +13,30 @@ export const RUNTIME_OVERHEAD_TOKENS = Object.freeze({ full: 152_000, trimmed: 5
 export const DEFAULT_CONTEXT_WINDOWS = Object.freeze({ claude: 200_000, codex: 272_000, omp: 200_000 });
 export const MAX_LAUNCH_CONTEXT_BYTES = 1024 * 1024;
 
+const CODEX_REASONING_EFFORT_RE = /:(low|medium|high|xhigh|max)$/i;
+
+/**
+ * Map Papercusp's user-facing Codex model selectors to model ids the native
+ * Codex CLI accepts. This sits in the existing plain-ESM launch-policy module
+ * because both the bare-node psu launcher and TypeScript spawn paths need the
+ * exact same rule.
+ *
+ * The GPT-5.6 family names are product-facing aliases, not native model ids.
+ * Preserve a recognized reasoning-effort suffix so callers can split it into
+ * Codex's `model_reasoning_effort` config after normalizing the model itself.
+ * Full/native ids remain byte-identical.
+ */
+export function normalizeCodexCliModel(model) {
+  const trimmed = model.trim();
+  const effort = CODEX_REASONING_EFFORT_RE.exec(trimmed)?.[0] ?? '';
+  const base = effort ? trimmed.slice(0, -effort.length) : trimmed;
+  const chatgpt = /^chatgpt:(.+)$/i.exec(base);
+  const unprefixed = chatgpt ? `gpt-${chatgpt[1]}` : base;
+  const family = /^(sol|terra|luna)$/i.exec(unprefixed);
+  const normalized = family ? `gpt-5.6-${family[1].toLowerCase()}` : unprefixed;
+  return `${normalized}${effort}`;
+}
+
 const POSITIVE = (v) => {
   const n = Number(v);
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : null;

@@ -95,6 +95,10 @@ const HEADLESS_LOG_RECEIPT_RE = /^headless \(log: ([^)\r\n]+)\)$/;
 /** The provider dialog observed live in WI-6821, after ANSI/control stripping. */
 const CLAUDE_WEEKLY_LIMIT_RE = /you(?:'|’)?ve hit your weekly limit(?:\s*[\u00b7•-]\s*resets\s+([^\r\n]+))?/i;
 
+/** The native Codex JSON error observed on WI-6821 row 15363. */
+const CODEX_CHATGPT_MODEL_RE =
+  /the\s+['‘’"]([^'‘’"\r\n]+)['‘’"]\s+model is not supported when using codex with a chatgpt account/i;
+
 /**
  * Remove terminal paint instructions while preserving visible text. This is
  * deliberately local rather than an app-layer import: this .mjs is shared by
@@ -164,13 +168,26 @@ function readFileTailBytes(file, bytes) {
  */
 export function detectPsuHeadlessLaunchBlockHint(logText) {
   if (typeof logText !== 'string' || logText.length === 0) return null;
-  const match = CLAUDE_WEEKLY_LIMIT_RE.exec(stripTerminalControls(logText));
-  if (!match) return null;
-  const reset = match[1]?.trim().replace(/\s+/g, ' ') ?? '';
-  return (
-    `Claude's weekly usage limit was reached${reset ? `; it resets ${reset}` : ''}. ` +
-    'Launch with Codex or an available account, or retry after the reset.'
-  );
+  const visible = stripTerminalControls(logText);
+  const weeklyLimit = CLAUDE_WEEKLY_LIMIT_RE.exec(visible);
+  if (weeklyLimit) {
+    const reset = weeklyLimit[1]?.trim().replace(/\s+/g, ' ') ?? '';
+    return (
+      `Claude's weekly usage limit was reached${reset ? `; it resets ${reset}` : ''}. ` +
+      'Launch with Codex or an available account, or retry after the reset.'
+    );
+  }
+
+  const unsupportedCodexModel = CODEX_CHATGPT_MODEL_RE.exec(visible);
+  if (unsupportedCodexModel) {
+    const model = unsupportedCodexModel[1].trim().replace(/\s+/g, ' ');
+    return (
+      `Codex rejected model \`${model}\` for this ChatGPT account. ` +
+      'Retry with a supported full Codex model id or choose another model.'
+    );
+  }
+
+  return null;
 }
 
 /**

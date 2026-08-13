@@ -20,7 +20,10 @@ import { augmentedSpawnPath, resolveBin } from './plugin-spawn-impl';
 import { getHarnessAdminUrl } from './embedded-pg-discovery';
 import { roleModelDefault } from '@papercusp/orchestrator/role-models';
 import { DEFAULT_BACKEND_CMDS, normalizeModelSpec, type AgentBackend } from './agent-config-constants';
+import { normalizeCodexCliModel } from './model-context-budget.mjs';
 import type { TurnBackend } from '@papercusp/papercusp-shared/agent';
+
+export { normalizeCodexCliModel } from './model-context-budget.mjs';
 
 /** Backend a command's binary drives (the same discriminator
     resolveSpawnBackendModel / effectiveBackend use). */
@@ -121,13 +124,6 @@ export function inferBackendFromModelSpec(spec?: string): AgentBackend | undefin
   if (!id) return undefined;
   if (id.startsWith('openai-codex/') || id.startsWith('chatgpt:') || /^gpt-\d/.test(id)) return 'codex';
   return undefined;
-}
-
-/** Map Papercusp's user-facing Codex aliases to the ids Codex CLI knows. */
-export function normalizeCodexCliModel(model: string): string {
-  const trimmed = model.trim();
-  const chatgpt = /^chatgpt:(.+)$/i.exec(trimmed);
-  return chatgpt ? `gpt-${chatgpt[1]}` : trimmed;
 }
 
 /**

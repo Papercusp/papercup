@@ -40,6 +40,7 @@ import { PSU_REQUEST_TIMEOUT_MS } from '../lib/mcp-proxy/budgets.mjs';
 import {
   RUNTIME_OVERHEAD_TOKENS,
   buildContextBudget,
+  normalizeCodexCliModel,
 } from '../../../packages/operator-core/lib/model-context-budget.mjs';
 // EI-996: the ONE su-tier role list, shared with the server-side allow-list in
 // su-role-addendum.ts. Plain .mjs so this bare-node script and the tsx/bundled
@@ -686,13 +687,18 @@ export function ompModelCompatibilityNotice(model) {
 
 export function modelArgsFor(agent, model) {
   if (!model) return [];
-  const effectiveModel = agent === 'omp' ? normalizeOmpModelSpec(model) : model;
+  const effectiveModel =
+    agent === 'codex'
+      ? normalizeCodexCliModel(model)
+      : agent === 'omp'
+        ? normalizeOmpModelSpec(model)
+        : model;
   const m = /^(.+):(low|medium|high|xhigh|max)$/.exec(effectiveModel);
   if (agent === 'codex') {
     if (m) {
       return ['-m', m[1], '-c', `model_reasoning_effort="${m[2]}"`];
     }
-    return ['-m', model];
+    return ['-m', effectiveModel];
   }
   if (agent === 'claude' && m) return ['--model', m[1], '--effort', m[2]];
   return ['--model', effectiveModel];
@@ -4047,7 +4053,9 @@ export function normalizeModelSpec(spec) {
  * OMP model ids are provider-configured/open vocabulary, and Codex has its
  * own context controls, so both must remain byte-identical. */
 export function normalizeModelSpecForAgent(agent, spec) {
-  return agent === 'claude' ? normalizeModelSpec(spec) : spec;
+  if (agent === 'claude') return normalizeModelSpec(spec);
+  if (agent === 'codex' && spec) return normalizeCodexCliModel(spec);
+  return spec;
 }
 
 // (The COMPACTION_LIMIT_1M_* mirrors lived here for the P-014 window backstop

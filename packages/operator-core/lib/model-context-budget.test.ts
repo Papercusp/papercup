@@ -7,11 +7,20 @@ import * as modelContextBudget from './model-context-budget.mjs';
 const {
   buildContextBudget,
   formatCodexLaunchContextSection,
+  normalizeCodexCliModel,
   readLaunchContextText,
   resolveModelContextWindow,
 } = modelContextBudget;
 
 describe('model-context-budget', () => {
+  it('normalizes user-facing Codex families while preserving native ids and effort', () => {
+    expect(normalizeCodexCliModel('sol')).toBe('gpt-5.6-sol');
+    expect(normalizeCodexCliModel('terra:xhigh')).toBe('gpt-5.6-terra:xhigh');
+    expect(normalizeCodexCliModel('luna:max')).toBe('gpt-5.6-luna:max');
+    expect(normalizeCodexCliModel('chatgpt:5.5:high')).toBe('gpt-5.5:high');
+    expect(normalizeCodexCliModel('gpt-5.6-sol:high')).toBe('gpt-5.6-sol:high');
+  });
+
   it('reads the selected Codex model window from the installed cache', () => {
     const home = mkdtempSync(join(tmpdir(), 'psu-budget-codex-'));
     mkdirSync(join(home, '.codex'), { recursive: true });

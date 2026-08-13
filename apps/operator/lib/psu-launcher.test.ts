@@ -3108,7 +3108,7 @@ describe('cross-backend resume target + protocol-v1 launcher contract', () => {
       sourceAgent: 'claude',
       targetAgent: 'codex',
       provider: 'openai',
-      modelSpec: 'sol:xhigh',
+      modelSpec: 'gpt-5.6-sol:xhigh',
     });
   });
 
@@ -3137,7 +3137,7 @@ describe('cross-backend resume target + protocol-v1 launcher contract', () => {
       workspace: 'papercusp-workspace',
       sourceAdvSessionId: 42,
       targetBackend: 'codex',
-      targetModel: 'sol:high',
+      targetModel: 'gpt-5.6-sol:high',
       targetAccount: 'acct-openai',
       contextSize: 'trimmed',
       launchContext: '/brief.md',
@@ -3323,6 +3323,23 @@ describe('cloud model-family/backend coupling (owner Luna→Claude incident 2026
     const parsed = parseArgs(['--no-picker', '--model=gpt-5.6-luna:high']);
     expect(parsed.agent).toBe('codex');
     expect(parsed.model).toBe('gpt-5.6-luna:high');
+  });
+
+  it('canonicalizes a user-facing Codex family before constructing fresh-launch argv', () => {
+    const parsed = parseArgs(['--no-picker', '--model=sol:xhigh']);
+    expect(parsed).toMatchObject({ agent: 'codex', model: 'gpt-5.6-sol:xhigh' });
+    expect(modelArgsFor(parsed.agent, parsed.model)).toEqual([
+      '-m',
+      'gpt-5.6-sol',
+      '-c',
+      'model_reasoning_effort="xhigh"',
+    ]);
+    expect(modelArgsFor('codex', 'gpt-5.6-terra:high')).toEqual([
+      '-m',
+      'gpt-5.6-terra',
+      '-c',
+      'model_reasoning_effort="high"',
+    ]);
   });
 
   it('rejects an explicit native backend mismatch regardless of flag order', () => {
@@ -4600,6 +4617,7 @@ describe('WI-3758 — psu --resume model select + last-active model', () => {
     // codex: bare -m + config-override effort, preserving max verbatim.
     expect(modelArgsFor('codex', 'gpt-5.5:max')).toEqual(['-m', 'gpt-5.5', '-c', 'model_reasoning_effort="max"']);
     expect(modelArgsFor('codex', 'gpt-5.5')).toEqual(['-m', 'gpt-5.5']);
+    expect(modelArgsFor('codex', 'sol:high')).toEqual(['-m', 'gpt-5.6-sol', '-c', 'model_reasoning_effort="high"']);
     // omp understands the suffixed spec natively.
     expect(modelArgsFor('omp', 'opus:high')).toEqual(['--model', 'opus:high']);
     expect(modelArgsFor('claude', null)).toEqual([]);

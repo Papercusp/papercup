@@ -133,6 +133,16 @@ describe('headless pre-turn launch blockage', () => {
     );
   });
 
+  it('recognizes the live Codex ChatGPT invalid-model JSON instead of leaving the popup generic', () => {
+    const raw =
+      '\x1b[31m{"error":{"message":"The \'sol\' model is not supported when using Codex with a ChatGPT account.",' +
+      '"type":"invalid_request_error"}}\x1b[0m';
+    expect(detectPsuHeadlessLaunchBlockHint(raw)).toBe(
+      'Codex rejected model `sol` for this ChatGPT account. ' +
+        'Retry with a supported full Codex model id or choose another model.',
+    );
+  });
+
   it('does not turn ordinary boot chatter or a generic reset word into a diagnosis', () => {
     expect(detectPsuHeadlessLaunchBlockHint('Claude Code booting\nMCP connected')).toBeNull();
     expect(detectPsuHeadlessLaunchBlockHint('settings reset at 7am')).toBeNull();

@@ -233,7 +233,7 @@ describe('applyRoleModel — per-role model override', () => {
   it('maps <model>:<effort> to Codex config instead of unsupported --effort', () => {
     vi.stubEnv(
       'AGENT_MODELS',
-      JSON.stringify({ kettle: 'gpt-5.5:high', blender: 'chatgpt:5.5:high', worker: 'gpt-5.5:max' }),
+      JSON.stringify({ kettle: 'gpt-5.5:high', blender: 'chatgpt:5.5:high', worker: 'sol:max' }),
     );
     expect(applyRoleModel('codex exec --model gpt-5.4 -c model_reasoning_effort="low"', 'kettle')).toBe(
       'codex exec --model gpt-5.5 -c model_reasoning_effort="high"',
@@ -242,7 +242,7 @@ describe('applyRoleModel — per-role model override', () => {
       'codex exec --model gpt-5.5 -c model_reasoning_effort="high"',
     );
     expect(applyRoleModel('codex exec -m gpt-5.4', 'worker')).toBe(
-      'codex exec --model gpt-5.5 -c model_reasoning_effort="max"',
+      'codex exec --model gpt-5.6-sol -c model_reasoning_effort="max"',
     );
   });
 
