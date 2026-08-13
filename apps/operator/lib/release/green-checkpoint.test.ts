@@ -42,6 +42,7 @@ import {
   DEFAULT_REFIRE_RUN_BUDGET_MS,
   evaluateDeployStaleness,
   buildGreenCheckpointEnv,
+  greenCheckpointCapacityEvidence,
   sanitizeForkNodeOptions,
   GREEN_CHECKPOINT_FORK_HEAP_MB,
   GREEN_CHECKPOINT_POST_SUITE_HEAP_MB,
@@ -75,6 +76,7 @@ import {
   attemptWorkerCrashAbsorption,
   WORKER_CRASH_MAX_WORKSPACES,
   GREEN_CHECKPOINT_MAX_FORKS,
+  GREEN_CHECKPOINT_RESERVED_MAX_FORKS,
   SELF_WATCHDOG_MS,
   isNothingToGate,
   realCheckpointDeps,
@@ -99,7 +101,7 @@ import {
   orchestratorStdoutTag,
 } from './green-checkpoint';
 import { git, revParse, advanceReady } from './git-ops';
-import { releaseConfig } from './release-config';
+import { releaseConfig, type GreenCheckpointCapacityMode } from './release-config';
 import { formatFailingFilesLine } from '../../../../scripts/lib/vitest-summary.mjs';
 
 let repo: string;
@@ -3756,6 +3758,30 @@ describe('buildGreenCheckpointEnv (the gate measures COMMITTED defaults)', () =>
     expect(preset.AFFECTED_RETRY_FAILED).toBe('0'); // '0' is a value, not absent — honored
   });
 
+  it('uses the bounded reserved profile only when explicitly selected and preserves per-variable overrides', () => {
+    const reserved = buildGreenCheckpointEnv('b', {}, undefined, 'reserved');
+    expect(reserved.VITEST_MAX_FORKS).toBe(String(GREEN_CHECKPOINT_RESERVED_MAX_FORKS));
+    expect(reserved.VITEST_MAX_THREADS).toBe(String(GREEN_CHECKPOINT_RESERVED_MAX_FORKS));
+    expect(GREEN_CHECKPOINT_RESERVED_MAX_FORKS).toBe(8);
+
+    const overridden = buildGreenCheckpointEnv(
+      'b',
+      { VITEST_MAX_FORKS: '6', VITEST_MAX_THREADS: '7' },
+      undefined,
+      'reserved',
+    );
+    expect(overridden.VITEST_MAX_FORKS).toBe('6');
+    expect(overridden.VITEST_MAX_THREADS).toBe('7');
+  });
+
+  it('renders the effective mode, fork/thread limits, and sanitized heap as stable evidence', () => {
+    const env = buildGreenCheckpointEnv('b', {}, undefined, 'reserved');
+    expect(greenCheckpointCapacityEvidence('reserved', env)).toBe(
+      `GREEN_CHECKPOINT_CAPACITY mode=reserved maxForks=8 maxThreads=8 ` +
+        `forkHeapMb=${GREEN_CHECKPOINT_FORK_HEAP_MB} profileMaxForks=8`,
+    );
+  });
+
   it('strips the host 128 GiB --max-old-space-size from NODE_OPTIONS, pins a sane per-fork heap', () => {
     // The exact bg-host/staging env that held `main` red ~16h: a 128 GiB heap +
     // --expose-gc inherited straight into the 8 vitest forks.
@@ -3994,7 +4020,10 @@ describe('realCheckpointDeps.runGreen — the orchestrator transcript reaches th
     resetOrchestratorLog();
   });
 
-  const runAndReadLog = async (suiteStdout: string): Promise<string> => {
+  const runAndReadLog = async (
+    suiteStdout: string,
+    capacityMode: GreenCheckpointCapacityMode = 'shared',
+  ): Promise<string> => {
     const { readdirSync, readFileSync } = await import('node:fs');
     writeFileSync(join(tree, 'package.json'), JSON.stringify({ name: 'x', scripts: { 'test:affected': 'true' } }));
     const exec: CheckpointExec = async (cmd, args) => {
@@ -4007,6 +4036,7 @@ describe('realCheckpointDeps.runGreen — the orchestrator transcript reaches th
       checkpointLogDir: logDir,
       greenCmd: 'npm run test:affected',
       spaBuildWorkspace: '', // isolate to the suite leg — no SPA build on a fake tree
+      greenCheckpointCapacityMode: capacityMode,
     });
     await realCheckpointDeps(cfg, exec).runGreen(tree, 'base');
     const written = readdirSync(logDir).filter((f) => f.endsWith('.log'));
@@ -4029,6 +4059,14 @@ describe('realCheckpointDeps.runGreen — the orchestrator transcript reaches th
     expect(fenceEnd).toBeGreaterThan(fenceStart);
     expect(body.indexOf('checkpointing candidate abc12345')).toBeGreaterThan(fenceStart);
     expect(body.indexOf('checkpointing candidate abc12345')).toBeLessThan(fenceEnd);
+  });
+
+  it('persists the effective reserved-capacity settings in the operator transcript', async () => {
+    const body = await runAndReadLog('Test Files  3 passed (3)\n', 'reserved');
+    expect(body).toContain(
+      `GREEN_CHECKPOINT_CAPACITY mode=reserved maxForks=8 maxThreads=8 ` +
+        `forkHeapMb=${GREEN_CHECKPOINT_FORK_HEAP_MB} profileMaxForks=8`,
+    );
   });
 
   it('does not displace the suite output the log already existed to preserve', async () => {

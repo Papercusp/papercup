@@ -7641,7 +7641,12 @@ export function realCheckpointDeps(
     workspace: string;
     file: string;
   }): Promise<IsolationResult> => {
-    const env = buildGreenCheckpointEnv(null);
+    const env = buildGreenCheckpointEnv(
+      null,
+      process.env,
+      undefined,
+      cfg.greenCheckpointCapacityMode,
+    );
     env.VITEST_MAX_FORKS = "1";
     env.VITEST_MAX_THREADS = "1";
     // EI-18669336904251384: measure wall-clock duration so the retry-loop log can tell a
@@ -7711,7 +7716,12 @@ export function realCheckpointDeps(
     workspace: string;
     files: string[];
   }): Promise<ConcurrentRerunResult> => {
-    const env = buildGreenCheckpointEnv(null);
+    const env = buildGreenCheckpointEnv(
+      null,
+      process.env,
+      undefined,
+      cfg.greenCheckpointCapacityMode,
+    );
     try {
       // EI-19332206710686203: this re-run needs the generous per-test deadline too, and the
       // reason is easy to get backwards. Absorption requires BOTH every file to pass alone
@@ -7759,7 +7769,12 @@ export function realCheckpointDeps(
   }: {
     workspace: string;
   }): Promise<WorkspaceRerunResult> => {
-    const env = buildGreenCheckpointEnv(null);
+    const env = buildGreenCheckpointEnv(
+      null,
+      process.env,
+      undefined,
+      cfg.greenCheckpointCapacityMode,
+    );
     env.VITEST_MAX_FORKS = "1";
     env.VITEST_MAX_THREADS = "1";
     // EI-19332206710686203: same rescue-discrimination problem as isolationRun — this re-runs
@@ -7811,7 +7826,12 @@ export function realCheckpointDeps(
           failingSignatures: ["package.json-unreadable"],
         };
       }
-      const env = buildGreenCheckpointEnv(null, process.env, runId);
+      const env = buildGreenCheckpointEnv(
+        null,
+        process.env,
+        runId,
+        cfg.greenCheckpointCapacityMode,
+      );
       env.NODE_OPTIONS = sanitizeForkNodeOptions(
         env.NODE_OPTIONS,
         GREEN_CHECKPOINT_POST_SUITE_HEAP_MB,
@@ -8015,7 +8035,13 @@ export function realCheckpointDeps(
       // last green, caps vitest parallelism + retries once to absorb load-flakes, and
       // marks GREEN_CHECKPOINT=1 (its doc records the incidents behind each rule).
       // EI-19307211919650123: `runId` groups every test_runs row this run writes.
-      const env = buildGreenCheckpointEnv(base, process.env, runId);
+      const env = buildGreenCheckpointEnv(
+        base,
+        process.env,
+        runId,
+        cfg.greenCheckpointCapacityMode,
+      );
+      log(greenCheckpointCapacityEvidence(cfg.greenCheckpointCapacityMode, env));
       // EI-78 `heavy`: the single biggest CPU consumer on this box outside the fleet itself
       // (measured 274s-2773s per run over 19 runs on 2026-07-26).
       const r = await exec(cmd, args, {
@@ -8395,7 +8421,12 @@ export function realCheckpointDeps(
           ...(byWorkspace.get(f.workspace) ?? []),
           f.file,
         ]);
-      const env = buildGreenCheckpointEnv(null);
+      const env = buildGreenCheckpointEnv(
+        null,
+        process.env,
+        undefined,
+        cfg.greenCheckpointCapacityMode,
+      );
       env.VITEST_MAX_FORKS = "1";
       env.VITEST_MAX_THREADS = "1";
       const summaries: string[] = [headNote];
@@ -8484,7 +8515,12 @@ export function realCheckpointDeps(
       // the resolved (workspace, script) pair so two entries naming the same script run
       // it once.
       const runs = resolveGateRuns(gateIds);
-      const env = buildGreenCheckpointEnv(null);
+      const env = buildGreenCheckpointEnv(
+        null,
+        process.env,
+        undefined,
+        cfg.greenCheckpointCapacityMode,
+      );
       const summaries: string[] = [headNote];
       for (const { script, workspace } of runs) {
         const label = workspace ? `${workspace} :: ${script}` : script;

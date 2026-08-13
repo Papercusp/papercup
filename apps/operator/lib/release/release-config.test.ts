@@ -39,6 +39,7 @@ const RELEASE_ENV_KEYS = [
   'PAPERCUSP_GREEN_CMD',
   'PAPERCUSP_CHECKPOINT_LOG_DIR',
   'PAPERCUSP_HONO_PORT',
+  'PAPERCUSP_GREEN_CHECKPOINT_CAPACITY_MODE',
 ] as const;
 
 describe('releaseConfig — per-hive env seam (P-008)', () => {
@@ -67,6 +68,19 @@ describe('releaseConfig — per-hive env seam (P-008)', () => {
     expect(cfg.releaseRef).toBe('main');
     expect(cfg.integrationBranch).toBe('staging');
     expect(cfg.greenCmd).toBe('npm run test:affected');
+    expect(cfg.greenCheckpointCapacityMode).toBe('shared');
+  });
+
+  it('selects reserved capacity only when explicitly configured', () => {
+    process.env.PAPERCUSP_GREEN_CHECKPOINT_CAPACITY_MODE = 'reserved';
+    expect(releaseConfig().greenCheckpointCapacityMode).toBe('reserved');
+  });
+
+  it('rejects an invalid capacity mode instead of silently oversubscribing the shared host', () => {
+    process.env.PAPERCUSP_GREEN_CHECKPOINT_CAPACITY_MODE = 'dedicated';
+    expect(() => releaseConfig()).toThrow(
+      /PAPERCUSP_GREEN_CHECKPOINT_CAPACITY_MODE must be "shared" or "reserved".*dedicated/,
+    );
   });
 
   it('two integration roots under ONE parent → DISTINCT checkpoint roots (cross-lineage race fix, 2026-07-02)', () => {
@@ -111,9 +125,15 @@ describe('releaseConfig — per-hive env seam (P-008)', () => {
   it('explicit caller override beats env (operator-host overlay must not defeat throwaway-repo test overrides)', () => {
     process.env.PAPERCUSP_INTEGRATION_ROOT = '/tmp/hives/oddsmith-hive';
     process.env.PAPERCUSP_GREEN_CMD = 'npm run test:ci';
-    const cfg = releaseConfig({ integrationRoot: '/tmp/throwaway', greenCmd: 'echo green' });
+    process.env.PAPERCUSP_GREEN_CHECKPOINT_CAPACITY_MODE = 'reserved';
+    const cfg = releaseConfig({
+      integrationRoot: '/tmp/throwaway',
+      greenCmd: 'echo green',
+      greenCheckpointCapacityMode: 'shared',
+    });
     expect(cfg.integrationRoot).toBe('/tmp/throwaway');
     expect(cfg.greenCmd).toBe('echo green');
+    expect(cfg.greenCheckpointCapacityMode).toBe('shared');
   });
 });
 
