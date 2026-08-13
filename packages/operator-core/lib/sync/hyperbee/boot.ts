@@ -1284,6 +1284,15 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // the pre-rekey topic (the retry loop could even rejoin the OLD topic during the
   // swarmHandle=null window mid-rekey). Kept current by rekey(); read it, not opts.
   let currentBinding: SwarmBinding | null = opts.swarmBinding ?? null;
+  // WI-38344: a join-pot joiner can resolve its hive home before the first
+  // announce arrives, so home resolution cannot identify the bootstrap phase.
+  // Track the start of each join/rekey instead and bound the retry safety net
+  // to the same finite grace budget used by pending-peer retries.
+  let joinBootstrapStartedAt: number | null = null;
+  // A known owner-device binding is conclusive evidence that a mismatching
+  // device is not the owner; keep that adversarial path conclusive even while
+  // the bounded bootstrap window is open.
+  let joinedHiveOwnerDevice: string | null = null;
   let hiveHomeProjectionSlug = await resolveHiveHomeProjectionSlug(opts.swarmBinding);
   // A-003 diagnostic (env-gated, off by default → zero test impact): show the
   // boot-time hive-home binding decision in the harness log so a live witness can
@@ -3609,13 +3618,17 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     // boot-time opts snapshot — post-rekey the owner lookup must key off the
     // NEW hive/topic or the bootstrap-admit vouches for the wrong hive.
     const binding = currentBinding;
-    if (!binding) return null;
+    if (!binding) {
+      joinedHiveOwnerDevice = null;
+      return null;
+    }
     const resolved =
       binding.kind === 'hive'
         ? await ownerDeviceForHive(binding.hive_pubkey).catch(() => null)
         : binding.kind === 'topic'
           ? await ownerDeviceForTopic(binding.topic_hex).catch(() => null)
           : null;
+    joinedHiveOwnerDevice = resolved;
     // A→B owner-admit diagnostic (PAPERCUSP_A003_TRACE, off by default/in tests): did the
     // directory cache resolve the joined hive's owner device? `<null>` here is the live A→B
     // root — the owner-bootstrap admit + the roster member-set both depend on this resolving.
@@ -3801,8 +3814,9 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   }
 
   // WI-1544 (round-1 live REJECT) — is this boot still inside its hive-JOIN bootstrap window?
-  // True for a JOINER boot (a `hive`/`topic` swarm binding — an invite/link joiner) whose
-  // hive-home has NOT yet resolved (home resolves at the 2c rekey's rebind). Inside this
+  // True for a JOINER boot (a `hive`/`topic` swarm binding — an invite/link joiner) during the
+  // bounded interval after joinForBinding starts. The home may already be resolved by the time
+  // the first announce arrives (WI-38344), so home-null is not a safe proxy for this phase. Inside this
   // window an identity-stage `binding_invalid` is NOT conclusive: the owner's log announce
   // races the hive-directory descriptor + the rekey by milliseconds, so the gist gate can
   // conclusively 'fail' BEFORE the verified owner-device binding (resolveJoinedHiveOwnerDevice)
@@ -3815,9 +3829,16 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // and BOOT_PENDING_GRACE_MS caps the buffer. bad_sig / revoked stay conclusive always.
   // A standalone (non-joiner) boot never enters this window, keeping conclusive-reject
   // observability for genuinely foreign frames.
-  const inJoinBootstrapWindow = (): boolean =>
-    hiveHomeProjectionSlug == null &&
-    (currentBinding?.kind === 'hive' || currentBinding?.kind === 'topic');
+  const inJoinBootstrapWindow = (): boolean => {
+    if (joinBootstrapStartedAt == null) return false;
+    const elapsedMs = Date.now() - joinBootstrapStartedAt;
+    return (
+      elapsedMs >= 0 &&
+      elapsedMs <= BOOT_PENDING_GRACE_MS &&
+      joinedHiveOwnerDevice == null &&
+      (currentBinding?.kind === 'hive' || currentBinding?.kind === 'topic')
+    );
+  };
 
   async function onAnnounce(frame: SignedAnnounce): Promise<AdmissionResult> {
     let decision: AdmissionResult;
@@ -4320,6 +4341,10 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // the feature never crosses. Re-keying in place leaves the replication streams
   // intact, so serving continues seamlessly onto the new topic.
   async function joinForBinding(binding: SwarmBinding): Promise<void> {
+    // WI-38344: set this before the first await so announces racing the join
+    // setup are covered even when the joiner's home is already resolved.
+    joinBootstrapStartedAt = Date.now();
+    joinedHiveOwnerDevice = null;
     // WI-1910 hardening: 'join_started' BEFORE the first await. The run-#5
     // forensics had no signal separating "joinForBinding never ran" from "it
     // ran and wedged on an await" — both looked like a silent local-only
