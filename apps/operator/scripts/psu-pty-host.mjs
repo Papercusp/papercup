@@ -2832,20 +2832,30 @@ export function injectTurn(sock, text) {
  * @param {string} o.command            binary to launch (the *-su wrapper / raw CLI)
  * @param {string[]} [o.args]           its args
  * @param {string} [o.cwd]              launch dir
- * @param {object} [o.env]              child env (must carry PAPERCUSP_SID = ownerId)
+ * @param {EnvironmentMap} [o.env]      child env (must carry PAPERCUSP_SID = ownerId)
  * @param {string} o.ownerId            coord ownerId (PAPERCUSP_SID) — the discovery key
  * @param {number|string} [o.advSessionId]  adv_sessions row id, when known
- * @param {object} [o.io]               { stdin, stdout } override (tests); default process.*
+ * @param {{stdin?: any, stdout?: any}} [o.io] { stdin, stdout } override (tests); default process.*
  * @param {(code:number, killedBySignal:string|null)=>void} [o.onExit]  exit handler;
  *   default process.exit. `killedBySignal` is the signal NAME when the child was killed
  *   (WI-38054) and null on a voluntary exit — it is the only thing distinguishing the
  *   two, because node-pty reports a signal death with exitCode 0.
  * @param {boolean} [o.bridgeTty]       force the TTY bridge on/off; default = stdin.isTTY
+ * @param {string | null} [o.kickoff]   first-turn text for a scripted launch
  * @param {string} [o.kickoffFile]      server-owned session-port seed (never a CLI arg)
- * @param {object} [o.sessionPort]      { renderedHash } for the managed seed
- * @param {(proof:object)=>Promise<void>} [o.onKickoffPersisted] lifecycle acknowledgement
+ * @param {{renderedHash?: string}} [o.sessionPort] { renderedHash } for the managed seed
+ * @param {(proof:any)=>Promise<void>} [o.onKickoffPersisted] lifecycle acknowledgement
  * @param {object} [o.signalSource]      process-like on/off signal source (tests)
  * @param {()=>object} [o.reapScopeResidue] exact-session-cgroup cleanup (tests)
+ * @param {(args:string[])=>any} [o.mintRecycleArgs] mint argv for an ordinary recycle
+ * @param {(args:string[])=>any} [o.mintCarryRespawnArgs] mint argv for a carry respawn
+ * @param {()=>Promise<any>} [o.refreshPersonaFile] refresh the rendered persona before respawn
+ * @param {(...args:any[])=>any} [o.onRespawn] lifecycle callback after a respawn
+ * @param {((...args:any[])=>any) | null} [o.onReexec] handoff callback for host re-exec
+ * @param {()=>any} [o.hostCodeStalenessFn] injectable loaded-vs-disk probe
+ * @param {()=>number} [o.parentPidFn] injectable parent-pid probe
+ * @param {number} [o.activityPersistMs] discovery activity refresh interval
+ * @param {number} [o.nativePersistenceTimeoutMs] managed kickoff persistence deadline
  */
 export function hostThroughPty(o) {
   const {

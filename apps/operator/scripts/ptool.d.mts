@@ -29,11 +29,14 @@ export function parseArgs(argv: any): {
  * `PAPERCUSP_HOME`/cwd. Returning null when no tracked scope is available is
  * deliberate — ptool must never guess a tenant. Pure when `env` and `cwd` are
  * supplied; both are injectable for tests.
+ * @param {{workspace?: string | null, env?: EnvironmentMap, cwd?: string}} [options]
+ * @returns {string | null}
  */
 export function resolveWorkspaceScope({ workspace, env, cwd }?: {
-    workspace?: null | undefined;
-    env?: NodeJS.ProcessEnv | undefined;
-}): any;
+    workspace?: string | null;
+    env?: EnvironmentMap;
+    cwd?: string;
+}): string | null;
 /**
  * Resolve the MCP payload tier for a ptool session. Direct ptool invocations
  * do not inherit psu's URL interpolation, so they must carry the same bounded
@@ -41,11 +44,13 @@ export function resolveWorkspaceScope({ workspace, env, cwd }?: {
  * hatch for callers that need the unshaped response. Pure when `env` is
  * supplied; values are passed through so the server remains the authority for
  * the supported tier vocabulary.
+ * @param {{contextTier?: string | null, env?: EnvironmentMap}} [options]
+ * @returns {string}
  */
 export function resolveContextTier({ contextTier, env }?: {
-    contextTier?: null | undefined;
-    env?: NodeJS.ProcessEnv | undefined;
-}): any;
+    contextTier?: string | null;
+    env?: EnvironmentMap;
+}): string;
 /**
  * Decide where a ptool invocation's JSON args payload comes from, given
  * parsed args. Pure — the actual file/stdin read is impure and lives in
@@ -94,8 +99,10 @@ export function serviceOf(name: any): any;
  * Group a tools array into `{ service: tool[] }`, services and tools each
  * sorted by name. Pure — exported for tests. Each tool keeps its original
  * `{ name, description, inputSchema }`.
+ * @param {ToolCatalogEntry[]} tools
+ * @returns {Map<string, ToolCatalogEntry[]>}
  */
-export function groupTools(tools: any): Map<any, any>;
+export function groupTools(tools: ToolCatalogEntry[]): Map<string, ToolCatalogEntry[]>;
 /** First non-empty line of a (possibly multi-line guidance) description,
  *  trimmed + truncated to `max` chars. Pure. */
 export function firstLine(desc: any, max?: number): string;
@@ -129,11 +136,17 @@ export function coerceArg(kind: any, raw: any): any;
  * Merge `--workspace`/`--harness` convenience flags into an args object,
  * but ONLY for properties the tool's schema actually declares (so we never
  * inject an arg a tool would reject). Existing keys in `args` win. Pure.
+ * @param {Record<string, unknown>} args
+ * @param {{workspace?: unknown, harness?: unknown}} convenience
+ * @param {{properties?: Record<string, unknown>} | null | undefined} inputSchema
+ * @returns {Record<string, unknown>}
  */
-export function mergeConvenienceArgs(args: any, { workspace, harness }: {
-    workspace: any;
-    harness: any;
-}, inputSchema: any): any;
+export function mergeConvenienceArgs(args: Record<string, unknown>, { workspace, harness }: {
+    workspace?: unknown;
+    harness?: unknown;
+}, inputSchema: {
+    properties?: Record<string, unknown>;
+} | null | undefined): Record<string, unknown>;
 /**
  * Add a caller-owned result projection to a direct tool call. The MCP
  * transport reserves `projection` at the dispatch layer, so it must travel
@@ -171,15 +184,21 @@ export function resultToText(result: any, { raw }?: {
  * per-home token remains a fallback when the isolated file is absent. A su
  * session can carry the workspace-scoped HOME even though the shared
  * superuser bearer still lives at `~/.papercusp/superuser-token` (EI-202457).
- * @param {{tokenFile?: string|null, env?: NodeJS.ProcessEnv, home?: string}} [options]
+ * @param {{tokenFile?: string|null, env?: EnvironmentMap, home?: string}} [options]
  */
 export function resolveTokenPaths({ tokenFile, env, home }?: {
     tokenFile?: string | null;
-    env?: NodeJS.ProcessEnv;
+    env?: EnvironmentMap;
     home?: string;
 }): string[];
-/** Resolve the first bearer-token candidate for callers that need one path. */
-export function resolveTokenPath(options?: {}): string;
+/** Resolve the first bearer-token candidate for callers that need one path.
+ * @param {{tokenFile?: string|null, env?: EnvironmentMap, home?: string}} [options]
+ */
+export function resolveTokenPath(options?: {
+    tokenFile?: string | null;
+    env?: EnvironmentMap;
+    home?: string;
+}): string;
 /** Build the `tools/call` params for a ptool invocation. Pure and exported so
  *  the MCP result negotiation is regression-tested without opening a
  *  transport. Object-rooted output schemas need `_meta.structured` because
@@ -309,3 +328,9 @@ export const PTOOL_GIT_SYNC_RUN_TIMEOUT_MS: 60000;
 /** Number of reconnects allowed after a connected tools/call fails. */
 export const PTOOL_POST_CONNECT_RETRIES: 1;
 export const PTOOL_USAGE: "ptool \u2014 call any Papercusp defineTool endpoint from the terminal.\n\n  ptool                         interactive: pick service \u2192 endpoint \u2192 args\n  ptool <group:verb>            skip the pickers, prompt for that tool's args\n  ptool <group:verb> --json - <<'EOF'  read JSON args from stdin (safe)\n  {\"copy\": \"it's fine now\"}\n  EOF\n  ptool <group:verb> --json-file payload.json   read JSON args from a file (safe)\n  ptool <group:verb> --json '<args>'   inline, quote-free JSON only\n  ptool <group:verb> --projection '<spec>'  bound the result at dispatch time\n  ptool code:run --script-file batch.js   read the script from a file\n  ptool code:run --script - <<'EOF'      read the script from stdin\n  return await tools.dev.build_status({});\n  EOF\n  ptool --list [filter]         print the catalog (optionally name-filtered)\n\nPrefer --json-file or --json - for any payload that is not a trivial,\nquote-free literal \u2014 especially loop:checkpoint checks/walls with recheck text.\nA shell-quoted --json '<inline>' cannot safely carry an apostrophe (the quote\nterminates early). For code:run, prefer --script-file or --script - for source\nthat contains nested shell commands or quoted strings.\n\nFlags:\n  --json <json> / --args <json>   args object for a direct (non-interactive) call;\n                                   '-' reads the JSON from stdin instead\n  --json-file <path>              read the args JSON from a file (quoting-free)\n  --projection <json>             dispatch-level result projection (quote-free JSON)\n  --script <source>               direct code:run JavaScript source; '-' reads stdin\n  --script-file <path>            direct code:run JavaScript source (quoting-free)\n  --workspace <ws>                scope the session (needed for harness:*, features:*, \u2026)\n  --harness <slug>                scope the session to a harness\n  --token-file <path>             bearer token file (default $PAPERCUSP_MCP_TOKEN_FILE, $PAPERCUSP_HOME/superuser-token, or ~/.papercusp/superuser-token)\n  PAPERCUSP_CONTEXT_TIER=full     explicit escape hatch for unshaped MCP payloads (default: trimmed)\n  --raw                           print the raw result text (no JSON pretty-print)\n  --url=<http://host:port>        operator URL (default $PAPERCUSP_OPERATOR_URL or :3070)\n  -h, --help                      this help\n";
+export type EnvironmentMap = Record<string, string | undefined>;
+export type ToolCatalogEntry = {
+    name: string;
+    description?: string;
+    inputSchema?: Record<string, unknown>;
+};

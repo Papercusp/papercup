@@ -24,8 +24,10 @@ export function hostCodeStaleness({ loaded, path, }?: {
  *  wrapper, a direct `node psu-launcher.mjs`) means NOBODY would re-run us, so
  *  the adopting path must never be taken. Returns the code to exit with, or
  *  null. `PAPERCUSP_PSU_HOST_ADOPT=0` is the kill switch — same boot-mode-select
- *  role as PAPERCUSP_CACHE_PROXY_ROUTE, not a product feature gate. */
-export function reexecExitCodeFrom(env?: NodeJS.ProcessEnv, ppid?: number): number | null;
+ *  role as PAPERCUSP_CACHE_PROXY_ROUTE, not a product feature gate.
+ *  @param {EnvironmentMap} [env]
+ */
+export function reexecExitCodeFrom(env?: EnvironmentMap, ppid?: number): number | null;
 /** Byte-accurate (not JS-code-unit) wire limit check. Exported so the exact
  * UTF-8 boundary is regression-tested without weakening the runtime guard. */
 export function controlPayloadWithinLimit(payload: any, maxBytes?: number): boolean;
@@ -40,29 +42,40 @@ export function readManagedKickoffFile(path: any, expectedRenderedHash: any): {
 };
 /** Dedicated verified provenance for the imported-history first turn. It is
  * neither owner input nor a fleet kickoff. Mirror the turn-provenance JSONL
- * envelope/ledger protocol; write the ledger row before PTY submission. */
-export function tagSessionPortTurn(text: any, sid: any, env?: NodeJS.ProcessEnv, nowMs?: number): string;
+ * envelope/ledger protocol; write the ledger row before PTY submission.
+ * @param {string} text
+ * @param {string} sid
+ * @param {EnvironmentMap} [env]
+ * @param {number} [nowMs]
+ */
+export function tagSessionPortTurn(text: string, sid: string, env?: EnvironmentMap, nowMs?: number): string;
 /** Chunk a large paste without splitting a UTF-16 surrogate pair. 16k code
  * units is at most 64 KiB of UTF-8, keeping node-pty writes bounded while the
  * concatenated stream remains byte-identical. */
 export function ptyWriteChunks(value: any, maxCodeUnits?: number): string[];
 /** Find the exact port marker in a recently-written target-native JSONL. This
- * is the delivery authority: PTY output/activity is intentionally insufficient. */
+ * is the delivery authority: PTY output/activity is intentionally insufficient.
+ * @param {{agent: string, env?: EnvironmentMap, marker: string, sinceMs: number, home?: string}} options
+ */
 export function findNativeTranscriptMarker({ agent, env, marker, sinceMs, home }: {
-    agent: any;
-    env?: NodeJS.ProcessEnv | undefined;
-    marker: any;
-    sinceMs: any;
-    home?: string | undefined;
+    agent: string;
+    env?: EnvironmentMap;
+    marker: string;
+    sinceMs: number;
+    home?: string;
 }): string | null;
+/**
+ * @param {{agent: string, env?: EnvironmentMap, marker: string, sinceMs: number,
+ *   home?: string, timeoutMs?: number, pollMs?: number}} options
+ */
 export function waitForNativeTranscriptMarker({ agent, env, marker, sinceMs, home, timeoutMs, pollMs, }: {
-    agent: any;
-    env?: NodeJS.ProcessEnv | undefined;
-    marker: any;
-    sinceMs: any;
-    home?: string | undefined;
-    timeoutMs?: number | undefined;
-    pollMs?: number | undefined;
+    agent: string;
+    env?: EnvironmentMap;
+    marker: string;
+    sinceMs: number;
+    home?: string;
+    timeoutMs?: number;
+    pollMs?: number;
 }): Promise<{
     persisted: boolean;
     nativeRef: string;
@@ -1045,13 +1058,17 @@ export function controlWrites(decoded: any, crDelayMs?: number): {
 }[];
 /** The submit delay is backend-specific because each interactive TUI has its
  *  own paste/compose handling. Keep the wire protocol backend-neutral; the
- *  hosting psu process already knows its child agent via PAPERCUSP_AGENT. */
-export function turnSubmitCrDelayForAgent(agent: any, env?: NodeJS.ProcessEnv): any;
+ *  hosting psu process already knows its child agent via PAPERCUSP_AGENT.
+ *  @param {EnvironmentMap} [env]
+ */
+export function turnSubmitCrDelayForAgent(agent: any, env?: EnvironmentMap): any;
 /** Backend-aware write plan for an injected turn. Codex receives one redundant
  *  delayed submit CR because the first CR can be consumed as input, leaving the
  *  turn text visible but unsent. A `reset` (RESET-CONTEXT) is a turn PREFIXED by
- *  the backend's context-clear command (see resetWritesForAgent). */
-export function controlWritesForAgent(decoded: any, agent: any, env?: NodeJS.ProcessEnv): ({
+ *  the backend's context-clear command (see resetWritesForAgent).
+ *  @param {EnvironmentMap} [env]
+ */
+export function controlWritesForAgent(decoded: any, agent: any, env?: EnvironmentMap): ({
     data: any;
     delayMs: number;
 } | {
@@ -1065,14 +1082,18 @@ export function controlWritesForAgent(decoded: any, agent: any, env?: NodeJS.Pro
  *  conversation with `/new`. Pure — exported for tests. */
 export function contextClearCommandForAgent(agent: any): "/new" | "/clear";
 /** The RESET-CONTEXT settle window (repaint budget after the clear submits).
- *  Session-env tunable, module default as fallback. */
-export function clearSettleMs(env?: NodeJS.ProcessEnv): any;
+ *  Session-env tunable, module default as fallback.
+ *  @param {EnvironmentMap} [env]
+ */
+export function clearSettleMs(env?: EnvironmentMap): any;
 /** The submit-verifier's OWN "is a turn genuinely running" quiet threshold
  *  (WI-2975) — deliberately independent of OUTPUT_QUIET_MS (the busy-gate's
  *  short "back at an idle prompt" threshold; see SUBMIT_VERIFY_QUIET_MS above
  *  for the false-positive this decoupling fixes). Session-env tunable, module
- *  default as fallback. Pure — exported for tests. */
-export function submitVerifyQuietMs(env?: NodeJS.ProcessEnv): any;
+ *  default as fallback. Pure — exported for tests.
+ *  @param {EnvironmentMap} [env]
+ */
+export function submitVerifyQuietMs(env?: EnvironmentMap): any;
 /**
  * Fire the server-side `session:compacted:<owner>` event (event-await-discoverability
  * P-103) after a server-requested compaction COMPLETES, so a peer can
@@ -1096,8 +1117,10 @@ export function fireSessionCompactedEvent(ownerId: any, focus: any, opts?: {}): 
  *  repaint a fresh prompt, then type + submit the carry-note as the opening turn
  *  of the fresh context (the SAME per-agent paste-safe turn plan, its first write
  *  delayed by the settle). An empty carry ⇒ a bare clear (no opening turn). Pure —
- *  exported for tests. */
-export function resetWritesForAgent(decoded: any, agent: any, env?: NodeJS.ProcessEnv): {
+ *  exported for tests.
+ *  @param {EnvironmentMap} [env]
+ */
+export function resetWritesForAgent(decoded: any, agent: any, env?: EnvironmentMap): {
     data: string;
     delayMs: any;
 }[];
@@ -1110,8 +1133,10 @@ export function resetWritesForAgent(decoded: any, agent: any, env?: NodeJS.Proce
  * console-color-schemes.oscRecolorSequence (the runtime fleet:join path emits the
  * same bytes over the 'osc' control mode); inlined here so this plain-mjs host
  * needs no cross-package import — keep the OSC format in lockstep. Pure;
- * exported for tests + psu-launcher's no-pty fallback. */
-export function fleetOscFromEnv(env?: NodeJS.ProcessEnv): string | null;
+ * exported for tests + psu-launcher's no-pty fallback.
+ * @param {EnvironmentMap} [env]
+ */
+export function fleetOscFromEnv(env?: EnvironmentMap): string | null;
 /**
  * Connect to a live host's control socket and inject `text` as a submitted turn
  * (idle-gated). Used by tooling/tests; the OPERATOR's wake-executor implements
@@ -1129,36 +1154,61 @@ export function injectTurn(sock: any, text: any): Promise<any>;
  * @param {string} o.command            binary to launch (the *-su wrapper / raw CLI)
  * @param {string[]} [o.args]           its args
  * @param {string} [o.cwd]              launch dir
- * @param {object} [o.env]              child env (must carry PAPERCUSP_SID = ownerId)
+ * @param {EnvironmentMap} [o.env]      child env (must carry PAPERCUSP_SID = ownerId)
  * @param {string} o.ownerId            coord ownerId (PAPERCUSP_SID) — the discovery key
  * @param {number|string} [o.advSessionId]  adv_sessions row id, when known
- * @param {object} [o.io]               { stdin, stdout } override (tests); default process.*
+ * @param {{stdin?: any, stdout?: any}} [o.io] { stdin, stdout } override (tests); default process.*
  * @param {(code:number, killedBySignal:string|null)=>void} [o.onExit]  exit handler;
  *   default process.exit. `killedBySignal` is the signal NAME when the child was killed
  *   (WI-38054) and null on a voluntary exit — it is the only thing distinguishing the
  *   two, because node-pty reports a signal death with exitCode 0.
  * @param {boolean} [o.bridgeTty]       force the TTY bridge on/off; default = stdin.isTTY
+ * @param {string | null} [o.kickoff]   first-turn text for a scripted launch
  * @param {string} [o.kickoffFile]      server-owned session-port seed (never a CLI arg)
- * @param {object} [o.sessionPort]      { renderedHash } for the managed seed
- * @param {(proof:object)=>Promise<void>} [o.onKickoffPersisted] lifecycle acknowledgement
+ * @param {{renderedHash?: string}} [o.sessionPort] { renderedHash } for the managed seed
+ * @param {(proof:any)=>Promise<void>} [o.onKickoffPersisted] lifecycle acknowledgement
  * @param {object} [o.signalSource]      process-like on/off signal source (tests)
  * @param {()=>object} [o.reapScopeResidue] exact-session-cgroup cleanup (tests)
+ * @param {(args:string[])=>any} [o.mintRecycleArgs] mint argv for an ordinary recycle
+ * @param {(args:string[])=>any} [o.mintCarryRespawnArgs] mint argv for a carry respawn
+ * @param {()=>Promise<any>} [o.refreshPersonaFile] refresh the rendered persona before respawn
+ * @param {(...args:any[])=>any} [o.onRespawn] lifecycle callback after a respawn
+ * @param {((...args:any[])=>any) | null} [o.onReexec] handoff callback for host re-exec
+ * @param {()=>any} [o.hostCodeStalenessFn] injectable loaded-vs-disk probe
+ * @param {()=>number} [o.parentPidFn] injectable parent-pid probe
+ * @param {number} [o.activityPersistMs] discovery activity refresh interval
+ * @param {number} [o.nativePersistenceTimeoutMs] managed kickoff persistence deadline
  */
 export function hostThroughPty(o: {
     command: string;
     args?: string[] | undefined;
     cwd?: string | undefined;
-    env?: object | undefined;
+    env?: EnvironmentMap | undefined;
     ownerId: string;
     advSessionId?: string | number | undefined;
-    io?: object | undefined;
+    io?: {
+        stdin?: any;
+        stdout?: any;
+    } | undefined;
     onExit?: ((code: number, killedBySignal: string | null) => void) | undefined;
     bridgeTty?: boolean | undefined;
+    kickoff?: string | null | undefined;
     kickoffFile?: string | undefined;
-    sessionPort?: object | undefined;
-    onKickoffPersisted?: ((proof: object) => Promise<void>) | undefined;
+    sessionPort?: {
+        renderedHash?: string;
+    } | undefined;
+    onKickoffPersisted?: ((proof: any) => Promise<void>) | undefined;
     signalSource?: object | undefined;
     reapScopeResidue?: (() => object) | undefined;
+    mintRecycleArgs?: ((args: string[]) => any) | undefined;
+    mintCarryRespawnArgs?: ((args: string[]) => any) | undefined;
+    refreshPersonaFile?: (() => Promise<any>) | undefined;
+    onRespawn?: ((...args: any[]) => any) | undefined;
+    onReexec?: ((...args: any[]) => any) | null | undefined;
+    hostCodeStalenessFn?: (() => any) | undefined;
+    parentPidFn?: (() => number) | undefined;
+    activityPersistMs?: number | undefined;
+    nativePersistenceTimeoutMs?: number | undefined;
 }): Promise<any>;
 /** WI-38292: the psu-pty-host version THIS PROCESS IS ACTUALLY RUNNING, frozen at
  *  module load. psu-launcher.mjs imports this module ONCE into a long-lived process
@@ -1211,3 +1261,8 @@ export const DELIVERY_DEDUP_TTL_MS: number;
  *  event-await-discoverability plan / P-103). The host resolves it relative to itself so
  *  the same path works from the staging AND release checkouts. */
 export const SESSION_COMPACTED_EMIT_ENTRY: string;
+/**
+ * Environment fragments injected by launchers and tests need not carry every
+ * ambient key that an application framework merges into NodeJS.ProcessEnv.
+ */
+export type EnvironmentMap = Record<string, string | undefined>;
