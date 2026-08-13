@@ -223,8 +223,13 @@ export interface ActiveCheckpointCheck {
   /** Seconds since the unit started — null when systemd did not report a start timestamp. */
   elapsed_sec?: number | null;
   /** Seconds remaining before the systemd backstop (CHECKPOINT_MAX_RUNTIME_SEC)
-   *  would kill it — a rough "how much longer" estimate, not a promise. */
+   *  would kill it — a rough "how much longer" estimate, not a promise. Null when the
+   *  run has reached `delivering`: the backstop remainder is no longer an honest estimate
+   *  of time to verdict, and no bounded delivery-phase duration is published. */
   eta_sec?: number | null;
+  /** What `eta_sec` measures. `full-suite` is the systemd backstop remainder; `delivery-phase`
+   *  deliberately carries a null `eta_sec` until the run publishes a bounded verdict estimate. */
+  eta_basis?: 'full-suite' | 'delivery-phase';
   /** EI-11667: set when a `replaceStale:true` request found the run stale but YOUNGER than
    *  REPLACE_STALE_MIN_AGE_SEC — the stop was refused (a young stale run is healthy-in-progress
    *  on a busy tree, not wedged; see the constant's doc for the 2026-07-13 replace-storm). */
@@ -636,6 +641,22 @@ function defaultReadRunPhase(lockDir: string): { phase?: string; at?: string } |
   }
 }
 
+/** Keep the already-running reply honest about what its ETA measures. Once the run publishes
+ *  `delivering`, the suite is complete and the remaining systemd runtime is unrelated to the
+ *  time-to-verdict. There is no bounded delivery estimate to substitute, so return null rather
+ *  than a number that invites callers to kill a healthy self-healing run. */
+function checkpointEta(
+  elapsedSec: number | null,
+  delivering: boolean,
+): { eta_sec: number | null; eta_basis: 'full-suite' | 'delivery-phase' } {
+  return delivering
+    ? { eta_sec: null, eta_basis: 'delivery-phase' }
+    : {
+        eta_sec: elapsedSec != null ? Math.max(0, CHECKPOINT_MAX_RUNTIME_SEC - elapsedSec) : null,
+        eta_basis: 'full-suite',
+      };
+}
+
 /**
  * WI-5685 root fix: is the green-checkpoint RUN LOCK — the file-based, per-root lock
  * `acquireCheckpointRunLock` in green-checkpoint.ts serializes EVERY invocation on, cron
@@ -789,6 +810,8 @@ export function checkActiveCheckpointRun(
     const lockHeld = checkRunLockHeld(root, pidAlive, readLockOwner, readProcessStartMs);
     if (lockHeld.held) {
       const current = currentCheckpointCandidate(root, execFn);
+      const runPhase = readRunPhase(checkpointRunLockDirMirror(checkpointLogDirFromEnv(), root));
+      const eta = checkpointEta(lockHeld.elapsed_sec, runPhase?.phase === 'delivering');
       // EI-18695275971973546: resolve the REAL in-flight candidate from the isolated
       // checkpoint checkout's own HEAD (see checkpointRootMirror's doc comment) instead of
       // reporting `candidate: null` — a null here was being misread as "this run's candidate
@@ -807,7 +830,8 @@ export function checkActiveCheckpointRun(
         candidate_stale: false,
         started_at: lockHeld.started_at ?? null,
         elapsed_sec: lockHeld.elapsed_sec ?? null,
-        eta_sec: lockHeld.elapsed_sec != null ? Math.max(0, CHECKPOINT_MAX_RUNTIME_SEC - lockHeld.elapsed_sec) : null,
+        ...eta,
+        ...(runPhase?.phase ? { delivering: runPhase.phase === 'delivering' } : {}),
         held_externally: true,
       };
     }
@@ -823,7 +847,6 @@ export function checkActiveCheckpointRun(
   const startedAt = props.ExecMainStartTimestamp && props.ExecMainStartTimestamp !== '' ? props.ExecMainStartTimestamp : null;
   const startedMs = startedAt ? Date.parse(startedAt) : NaN;
   const elapsedSec = Number.isFinite(startedMs) ? Math.max(0, Math.floor((Date.now() - startedMs) / 1000)) : null;
-  const etaSec = elapsedSec != null ? Math.max(0, CHECKPOINT_MAX_RUNTIME_SEC - elapsedSec) : null;
   const logPath = `/tmp/${unit}.log`;
   const logHead = readLogHead(logPath);
   // EI-19327704778173646: the head-read can only ever show the FIRST candidate. Prefer the
@@ -843,6 +866,7 @@ export function checkActiveCheckpointRun(
   // EI-18757156963245979: read the run's OWN published phase. A run past its suite is in the
   // verdict path (re-triage -> auto-refire -> salvage) and must not be replaced at any age.
   const runPhase = readRunPhase(checkpointRunLockDirMirror(checkpointLogDirFromEnv(), root));
+  const eta = checkpointEta(elapsedSec, runPhase?.phase === 'delivering');
   return {
     active: true,
     unit,
@@ -854,7 +878,7 @@ export function checkActiveCheckpointRun(
     candidate_stale: Boolean(candidate && current.current_candidate && !shaMatches(candidate, current.current_candidate)),
     started_at: startedAt,
     elapsed_sec: elapsedSec,
-    eta_sec: etaSec,
+    ...eta,
     ...(runPhase?.phase ? { delivering: runPhase.phase === 'delivering' } : {}),
   };
 }

@@ -20,8 +20,10 @@
  * bare "may already be running" string — unclear enough that a concurrent caller could read it
  * as a transient failure and retry (or manually intervene), which starved the gate of a verdict.
  * Now the pre-launch check returns a STRUCTURED `already_running` reply (unit/candidate/
- * started_at/eta_sec) so a caller can tell "wait for it" from "try again" — pass `force:true` to
- * launch anyway.
+ * started_at/eta_sec/eta_basis) so a caller can tell "wait for it" from "try again" — pass
+ * `force:true` to launch anyway. `eta_sec` is null with `eta_basis:'delivery-phase'`: the suite
+ * is done, but no bounded verdict-duration estimate exists, so the full-suite backstop remainder
+ * must not be presented as time to verdict.
  */
 import { z } from 'zod';
 import { defineTool, SU_ROLES, readJsonResult, type SeeAlsoEntry } from '@papercusp/agent-mcp';
@@ -754,6 +756,7 @@ export default defineTool({
               started_at: a.started_at ?? null,
               elapsed_sec: a.elapsed_sec ?? null,
               eta_sec: a.eta_sec ?? null,
+              eta_basis: a.eta_basis ?? null,
               replace_refused_young: a.replace_refused_young ?? false,
               // EI-18757736867106199: expose the phase signal the decision actually turns on.
               // It was computed and enforced but never returned, so a caller could not see WHY

@@ -240,6 +240,27 @@ describe('checkActiveCheckpointRun (WI-1562 refuse-when-active detection)', () =
     expect(readLogHead).toHaveBeenCalledWith(`/tmp/${checkpointUnitForRoot('/tree')}.log`);
   });
 
+  it('does not report the full-suite remainder as ETA after the run enters delivering', () => {
+    const startedAt = new Date(Date.now() - 25 * 60_000).toISOString();
+    const phase = vi.fn(() => ({ phase: 'delivering' as const, at: new Date().toISOString() }));
+    const r = checkActiveCheckpointRun(
+      '/tree',
+      refireSetup(startedAt),
+      () => '[green-checkpoint] checkpointing candidate 98817077 (base 94b17b25)\n',
+      undefined,
+      undefined,
+      phase,
+    );
+
+    expect(r).toMatchObject({
+      active: true,
+      delivering: true,
+      eta_sec: null,
+      eta_basis: 'delivery-phase',
+    });
+    expect(phase).toHaveBeenCalled();
+  });
+
   /**
    * EI-19327704778173646 — recurrence guard.
    *
@@ -497,6 +518,34 @@ describe('checkActiveCheckpointRun run-lock fallback (WI-5685: the cron-holds-th
     expect(r.held_externally).toBe(true);
     expect(r.candidate).toBeNull();
     expect(r.candidate_stale).toBe(false);
+  });
+
+  it('keeps a cron-held delivering run from exposing the full-suite remainder as ETA', () => {
+    const startedAt = new Date(Date.now() - 25 * 60_000).toISOString();
+    const execFn = vi.fn((cmd: string, args: string[]) => {
+      if (cmd === 'systemctl') return inactiveUnit();
+      if (cmd === 'git' && args.slice(-2).join(' ') === 'rev-parse HEAD')
+        return { status: 0, stdout: 'checkpoint-head\n', stderr: '' };
+      if (cmd === 'git' && args.includes('--format=%ct'))
+        return { status: 0, stdout: String(Math.floor(Date.now() / 1000) - 500), stderr: '' };
+      return { status: 1, stdout: '', stderr: '' };
+    });
+    const r = checkActiveCheckpointRun(
+      '/tree',
+      execFn,
+      () => null,
+      () => true,
+      () => ({ pid: 4242, startedAt }),
+      () => ({ phase: 'delivering', at: new Date().toISOString() }),
+    );
+
+    expect(r).toMatchObject({
+      active: true,
+      held_externally: true,
+      delivering: true,
+      eta_sec: null,
+      eta_basis: 'delivery-phase',
+    });
   });
 
   it('reports active:false when the run-lock file is missing/unreadable (the common case — nothing running)', () => {

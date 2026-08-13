@@ -574,7 +574,8 @@ describe('release:checkpoint-run', () => {
         // Past the age line (the e4a93f8b shape: suite ran 1180s vs a 1200s threshold) — an
         // age-only rule calls this wedged and recommends the kill.
         elapsed_sec: 25 * 60,
-        eta_sec: 1800,
+        eta_sec: null,
+        eta_basis: 'delivery-phase',
         delivering: true,
         replace_refused_delivering: true,
       },
@@ -592,6 +593,8 @@ describe('release:checkpoint-run', () => {
       already_running: true,
       candidate_stale: true,
       delivering: true,
+      eta_sec: null,
+      eta_basis: 'delivery-phase',
       replace_refused_delivering: true,
       // The policy verdict itself is now part of the reply, so the note can be checked
       // against it rather than the two drifting apart again.
