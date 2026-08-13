@@ -11,6 +11,8 @@
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",
     "test": "vitest run --passWithNoTests",
+    "test:lane-pure": "PC_TEST_LANE=pure vitest run --passWithNoTests",
+    "test:lane-stateful": "PC_TEST_LANE=stateful vitest run --passWithNoTests",
     "setup-wake-runtime": "bash scripts/setup-wake-runtime.sh",
     "setup-vad-runtime": "bash scripts/setup-vad-runtime.sh",
     "setup-vditor-runtime": "bash scripts/setup-vditor-runtime.sh",

@@ -11,6 +11,10 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 export default mergeConfig(
   defineVitestConfig({
     layer: 'unit',
+    // Opt this workspace into affected-tests' pure/stateful split. Ordinary `npm test` and
+    // every gate confirm/retry remain the full isolated suite because they set no lane env;
+    // only the dedicated affected-test lane scripts above select explicit file complements.
+    laneSplit: true,
     exclude: ['**/test/**', '**/node_modules/**', '**/.next/**', '**/.next-prod/**'],
     // ResizeObserver polyfill for dockview-react in jsdom-environment
     // tests. Phase 0 of dockview-migration v4.
