@@ -3,6 +3,9 @@
  * template sql (mirrors seed-hive-release-routines.test.ts); no PG.
  */
 import { describe, expect, it } from 'vitest';
+import { readdirSync, readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   ALWAYS_ON_SYSTEM_ROUTINE_NAMES,
   BESPOKE_ACTIVE_SEEDS,
@@ -30,6 +33,17 @@ const paused = (name: string, pause: Record<string, unknown> | null): FakeRow =>
   active: false,
   metadata: pause ? { pause } : null,
 });
+
+const ROUTINES_DIR = dirname(fileURLToPath(import.meta.url));
+const ACTIVE_BY_DEFAULT = /const\s+active\s*=\s*!process\.argv\.includes\(['"]--inactive['"]\);/;
+const INACTIVE_BY_DEFAULT = /const\s+active\s*=\s*process\.argv\.includes\(['"]--active['"]\);/;
+
+function seedSources(): Array<{ file: string; source: string }> {
+  return readdirSync(ROUTINES_DIR)
+    .filter((file) => /^seed-.*-routine\.ts$/.test(file))
+    .sort()
+    .map((file) => ({ file, source: readFileSync(resolve(ROUTINES_DIR, file), 'utf8') }));
+}
 
 describe('checkBespokeActiveSeeds', () => {
   it('all present + active → ok, nothing missing or inactive', async () => {
@@ -153,7 +167,11 @@ describe('escalatable — which pauses actually warrant waking a human', () => {
       sql: fakeSql([
         { name: 'foo-routine', active: true },
         { name: 'bar-routine', active: true },
-        paused('baz-routine', { reason: 'Paused via the Agents pane', pausedBy: 'loopback', pausedAtMs: 1785191563941 }),
+        paused('baz-routine', {
+          reason: 'Paused via the Agents pane',
+          pausedBy: 'loopback',
+          pausedAtMs: 1785191563941,
+        }),
       ]),
       installSlug: 'papercusp',
       workspaceId: 'ws',
@@ -185,7 +203,10 @@ describe('escalatable — which pauses actually warrant waking a human', () => {
 
   it('a MISSING row always escalates — there is no row to carry a reviewBy on', async () => {
     const res = await checkBespokeActiveSeeds({
-      sql: fakeSql([{ name: 'foo-routine', active: true }, { name: 'bar-routine', active: true }]),
+      sql: fakeSql([
+        { name: 'foo-routine', active: true },
+        { name: 'bar-routine', active: true },
+      ]),
       installSlug: 'papercusp',
       workspaceId: 'ws',
       entries: ENTRIES,
@@ -230,6 +251,30 @@ describe('ALWAYS_ON_SYSTEM_ROUTINE_NAMES — derived from the registry, never ha
     // registry cannot forget to also add it here.
     expect([...ALWAYS_ON_SYSTEM_ROUTINE_NAMES].sort()).toEqual(BESPOKE_ACTIVE_SEEDS.map((s) => s.name).sort());
     expect(ALWAYS_ON_SYSTEM_ROUTINE_NAMES.size).toBe(BESPOKE_ACTIVE_SEEDS.length);
+  });
+
+  it('registers every seed script whose executable writer defaults active', () => {
+    const sources = seedSources();
+    const activeSeedScripts = sources.filter(({ source }) => ACTIVE_BY_DEFAULT.test(source)).map(({ file }) => file);
+    const registeredSeedScripts = BESPOKE_ACTIVE_SEEDS.map(({ seedScript }) => seedScript).sort();
+
+    expect(
+      registeredSeedScripts,
+      'Every seed script whose writer defaults active must be covered by the live missing/inactive-row guard. ' +
+        'Add the script and its routine row name to BESPOKE_ACTIVE_SEEDS in bespoke-active-seeds-check.ts.',
+    ).toEqual(activeSeedScripts);
+  });
+
+  it('makes every bespoke seed writer declare active or inactive as its executable default', () => {
+    const unclassified = seedSources()
+      .filter(({ source }) => !ACTIVE_BY_DEFAULT.test(source) && !INACTIVE_BY_DEFAULT.test(source))
+      .map(({ file }) => file);
+
+    expect(
+      unclassified,
+      "A bespoke seed must use one explicit default: `!process.argv.includes('--inactive')` for always-on, " +
+        "or `process.argv.includes('--active')` for human-gated. This is the source of truth for the live guard.",
+    ).toEqual([]);
   });
 
   it('does not claim a routine that is NOT always-on', () => {

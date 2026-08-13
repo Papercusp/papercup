@@ -13,12 +13,13 @@
  * routines row is missing.
  *
  * BESPOKE_ACTIVE_SEEDS is the explicit registry of every `seed-*-routine.ts` in this
- * directory whose header commits to "SEEDED ACTIVE by default" (i.e. the intended
- * steady state is an ACTIVE row for the operator-home harness right after a fresh
- * checkout/deploy, not a human-gated bring-up). Grep for the marker to keep this list
- * honest:
- *
- *   grep -rl 'SEEDED ACTIVE by default' packages/operator-core/lib/harness/routines/*.ts
+ * directory whose WRITER defaults `active=true` (i.e. the intended steady state is an
+ * ACTIVE row for the operator-home harness right after a fresh checkout/deploy, not a
+ * human-gated bring-up). `bespoke-active-seeds-check.test.ts` reads every seed script
+ * and derives that property from the executable `--inactive`/`--active` default, then
+ * requires an exact match with this registry. Do not infer it from prose: capitalization
+ * drift in "Seeded ACTIVE" left `gc-dead-loops` and seventeen later seeders outside this
+ * guard while all tests stayed green (EI-18752496371939475).
  *
  * Adding a NEW always-on bespoke seed script? Add its {name, seedScript} pair below in
  * the SAME change that lands the seed script — that is what closes the loop this
@@ -72,14 +73,34 @@ export interface BespokeActiveSeed {
 }
 
 export const BESPOKE_ACTIVE_SEEDS: BespokeActiveSeed[] = [
+  { name: 'cargo-test', seedScript: 'seed-cargo-test-routine.ts' },
+  { name: 'claim-discipline-watch', seedScript: 'seed-claim-discipline-routine.ts' },
+  { name: 'corpus-term-df', seedScript: 'seed-corpus-term-df-routine.ts' },
+  { name: 'cross-hive-outbox-drain', seedScript: 'seed-cross-hive-drain-routine.ts' },
+  { name: 'fleet-headcount-governor', seedScript: 'seed-fleet-headcount-routine.ts' },
+  { name: 'gc-dead-loops', seedScript: 'seed-gc-dead-loops-routine.ts' },
+  { name: 'gc-plan-runs', seedScript: 'seed-gc-plan-runs-routine.ts' },
+  { name: 'gc-verify-instances', seedScript: 'seed-gc-verify-instances-routine.ts' },
+  { name: 'gitnexus-reindex', seedScript: 'seed-gitnexus-reindex-routine.ts' },
+  { name: 'hive-canary', seedScript: 'seed-hive-canary-routine.ts' },
+  { name: 'hive-canary-sla', seedScript: 'seed-hive-canary-sla-routine.ts' },
+  { name: 'improvement-human-digest', seedScript: 'seed-human-digest-routine.ts' },
+  { name: 'plan-item-orphan-reconcile', seedScript: 'seed-plan-item-orphan-reconcile-routine.ts' },
+  {
+    name: 'plan-item-reflect-orphan-reconcile',
+    seedScript: 'seed-plan-item-reflect-orphan-reconcile-routine.ts',
+  },
+  { name: 'precompute-derived-reads', seedScript: 'seed-precompute-derived-reads-routine.ts' },
+  { name: 'sql-read-census', seedScript: 'seed-sql-read-census-routine.ts' },
+  { name: 'supervision-reconcile', seedScript: 'seed-supervision-reconcile-routine.ts' },
+  { name: 'sweep-stalled-loops', seedScript: 'seed-stalled-loops-routine.ts' },
+  { name: 'sweep-wedged-pty-hosts', seedScript: 'seed-pty-host-wedge-routine.ts' },
+  { name: 'sync-read-audit', seedScript: 'seed-sync-read-audit-routine.ts' },
+  { name: 'task-reconcile', seedScript: 'seed-task-reconcile-routine.ts' },
   { name: 'unguarded-halt-rescue', seedScript: 'seed-unguarded-halt-rescue-routine.ts' },
   { name: 'unclaimed-work-digest', seedScript: 'seed-unclaimed-work-digest-routine.ts' },
-  { name: 'improvement-human-digest', seedScript: 'seed-human-digest-routine.ts' },
-  { name: 'claim-discipline-watch', seedScript: 'seed-claim-discipline-routine.ts' },
-  { name: 'task-reconcile', seedScript: 'seed-task-reconcile-routine.ts' },
-  { name: 'supervision-reconcile', seedScript: 'seed-supervision-reconcile-routine.ts' },
-  { name: 'corpus-term-df', seedScript: 'seed-corpus-term-df-routine.ts' },
-  { name: 'sql-read-census', seedScript: 'seed-sql-read-census-routine.ts' },
+  { name: 'wake-brain', seedScript: 'seed-wake-brain-routine.ts' },
+  { name: 'worker-breaker-watch', seedScript: 'seed-worker-breaker-watch-routine.ts' },
 ];
 
 /**
@@ -94,9 +115,7 @@ export const BESPOKE_ACTIVE_SEEDS: BespokeActiveSeed[] = [
  * Anchor membership to the PROPERTY (this routine's own header commits it to ACTIVE), never
  * to a spelling someone has to remember to copy.
  */
-export const ALWAYS_ON_SYSTEM_ROUTINE_NAMES: ReadonlySet<string> = new Set(
-  BESPOKE_ACTIVE_SEEDS.map((s) => s.name),
-);
+export const ALWAYS_ON_SYSTEM_ROUTINE_NAMES: ReadonlySet<string> = new Set(BESPOKE_ACTIVE_SEEDS.map((s) => s.name));
 
 /** Is this routine one whose own seed script commits it to ACTIVE — i.e. is a pause of it
  *  always worth a human's attention, no matter how old it gets? */
@@ -175,7 +194,9 @@ interface PauseMeta {
 }
 
 /** Narrow `metadata.pause` (free-form jsonb) to the three fields this check reports. */
-function readPause(metadata: { pause?: PauseMeta } | null): Pick<InactiveBespokeSeed, 'pauseReason' | 'reviewBy' | 'pausedAtMs'> {
+function readPause(
+  metadata: { pause?: PauseMeta } | null,
+): Pick<InactiveBespokeSeed, 'pauseReason' | 'reviewBy' | 'pausedAtMs'> {
   const p = metadata?.pause ?? null;
   return {
     pauseReason: typeof p?.reason === 'string' && p.reason.length > 0 ? p.reason : null,
