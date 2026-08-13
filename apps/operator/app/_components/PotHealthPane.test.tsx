@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 // PotHealthPane — REBUILT for the su-only era (retire-mug-kettle-su-only-2026-08-09
 // P-018..P-021, design D-032). Pins the three questions the pane now answers —
-// what the pot is POINTED AT (goals), who is DRIVING (su agents), and whether it
-// is WORKING (throughput + attention) — plus the two rulings that are easiest to
+// what the pot is POINTED AT (goals), whether it is WORKING (throughput +
+// attention), and who is DRIVING (su agents) — plus the two rulings that are easiest to
 // undo by accident:
 //
 //   1. liveness comes from `fleet.status`'s `sessionState`, NOT from a heartbeat
@@ -142,6 +142,20 @@ describe('PotHealthPane (su-only rebuild — P-018..P-021 / D-032)', () => {
 
     expect(h.queryNames).not.toContain('goals.detail');
     expect(h.queryNames.filter((q) => q === 'goals.list')).toHaveLength(1);
+  });
+
+  it('orders WHO IS DRIVING after IS IT WORKING at the bottom of the pane', () => {
+    seedAll();
+    render(<PotHealthPane />);
+
+    const sectionHeadings = screen.getAllByRole('heading', { level: 3 }).map((heading) =>
+      heading.textContent?.replace(/\s+/g, ' ').trim(),
+    );
+    expect(sectionHeadings).toEqual([
+      'What the pot is pointed at goals',
+      'Is it working throughput & attention',
+      'Who is driving su agents',
+    ]);
   });
 
   it('renders a loading placeholder while every query is cold', () => {

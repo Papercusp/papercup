@@ -27738,8 +27738,8 @@ body.has-op-chat:has(.operator-panel) .op-chat-sidebar {
 
 /* ── Pot Health full-height pane (WI-4778; rebuilt P-018..P-021 / D-032) ─────
    Replaces the chat body while the header Pot Health toggle is on. One scroll:
-   GOALS (what the pot is pointed at) over SU AGENTS (who is driving) over
-   THROUGHPUT (is it working). Reuses the op-pot-* row/chip/dot idioms above;
+   GOALS (what the pot is pointed at) over THROUGHPUT (is it working) over
+   SU AGENTS (who is driving). Reuses the op-pot-* row/chip/dot idioms above;
    only pane-scoped layout lives here.
 
    Section hues ride the SEMANTIC tokens (design docs § tokens — never a palette

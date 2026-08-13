@@ -11,8 +11,8 @@
  *
  *   🎯 GOALS      — what the pot is POINTED AT: each goal's kill criterion, its
  *                   tripwire bars, and its spend against ceiling.
- *   👥 SU AGENTS  — who is DRIVING: liveness, lane, and current intent.
  *   📈 THROUGHPUT — is it WORKING, and what needs the owner.
+ *   👥 SU AGENTS  — who is DRIVING: liveness, lane, and current intent.
  *
  * Sections are ordered by the QUESTION each answers, following the convention
  * `goal-detail-model.ts` states for the goal surfaces — not by the order the
@@ -374,50 +374,6 @@ export function PotHealthPane() {
           );
         })}
 
-        {/* ── 👥 SU AGENTS — who is driving ──────────────────────────────── */}
-        <h3 className="op-ph-sec agent">
-          <Users size={12} strokeWidth={2} aria-hidden="true" />
-          Who is driving
-          <span className="op-ph-sec-d">su agents</span>
-        </h3>
-
-        <section className="op-ph-card agent" aria-label="Agents">
-          <h4 className="op-ph-card-h">
-            Agents
-            {agents.length > 0 && (
-              <span className="op-ph-card-n">
-                {liveAgents} live of {agents.length}
-              </span>
-            )}
-          </h4>
-          {agents.length === 0 ? (
-            <div className="op-pot-empty">nobody is driving this pot right now</div>
-          ) : (
-            <ul className="op-pot-list op-ph-agents">
-              {agents.map((a) => {
-                const tone = livenessTone(a.sessionState);
-                const lane = a.fleetSlug
-                  ? `${a.fleetSlug}${a.fleetRole ? ` · ${a.fleetRole}` : ''}`
-                  : (a.planSlug ?? a.role ?? '—');
-                return (
-                  <li className="op-ph-agent" key={a.ownerId}>
-                    <span className={`op-pot-dot ${tone}`} aria-hidden="true" />
-                    <span className="op-ph-agent-id">{a.label}</span>
-                    <span className="op-ph-agent-state">{livenessWord(a.sessionState)}</span>
-                    <span className="op-ph-agent-lane">{lane}</span>
-                    <span className="op-ph-agent-intent">{a.intent ?? 'no declared intent'}</span>
-                    <span className="op-ph-agent-age">
-                      {a.lastActiveSecAgo == null
-                        ? '—'
-                        : compactAge(nowMs - a.lastActiveSecAgo * 1000, nowMs)}
-                    </span>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-        </section>
-
         {/* ── 📈 THROUGHPUT + ATTENTION — is it working, what needs you ──── */}
         <h3 className="op-ph-sec flow">
           <Activity size={12} strokeWidth={2} aria-hidden="true" />
@@ -461,6 +417,50 @@ export function PotHealthPane() {
               />
             )}
           </div>
+        </section>
+
+        {/* ── 👥 SU AGENTS — who is driving ── */}
+        <h3 className="op-ph-sec agent">
+          <Users size={12} strokeWidth={2} aria-hidden="true" />
+          Who is driving
+          <span className="op-ph-sec-d">su agents</span>
+        </h3>
+
+        <section className="op-ph-card agent" aria-label="Agents">
+          <h4 className="op-ph-card-h">
+            Agents
+            {agents.length > 0 && (
+              <span className="op-ph-card-n">
+                {liveAgents} live of {agents.length}
+              </span>
+            )}
+          </h4>
+          {agents.length === 0 ? (
+            <div className="op-pot-empty">nobody is driving this pot right now</div>
+          ) : (
+            <ul className="op-pot-list op-ph-agents">
+              {agents.map((a) => {
+                const tone = livenessTone(a.sessionState);
+                const lane = a.fleetSlug
+                  ? `${a.fleetSlug}${a.fleetRole ? ` · ${a.fleetRole}` : ''}`
+                  : (a.planSlug ?? a.role ?? '—');
+                return (
+                  <li className="op-ph-agent" key={a.ownerId}>
+                    <span className={`op-pot-dot ${tone}`} aria-hidden="true" />
+                    <span className="op-ph-agent-id">{a.label}</span>
+                    <span className="op-ph-agent-state">{livenessWord(a.sessionState)}</span>
+                    <span className="op-ph-agent-lane">{lane}</span>
+                    <span className="op-ph-agent-intent">{a.intent ?? 'no declared intent'}</span>
+                    <span className="op-ph-agent-age">
+                      {a.lastActiveSecAgo == null
+                        ? '—'
+                        : compactAge(nowMs - a.lastActiveSecAgo * 1000, nowMs)}
+                    </span>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
         </section>
       </div>
     </div>
