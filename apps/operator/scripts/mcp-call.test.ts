@@ -1,11 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-// eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-ignore -- plain .mjs launcher script, no type declarations.
 import {
   buildMcpSessionQuery,
   isInvokedDirectly,
   parseArgs,
+  // @ts-expect-error -- plain .mjs launcher script, no type declarations.
 } from '../../../scripts/mcp-call.mjs';
 
 describe('mcp-call argument parsing', () => {
