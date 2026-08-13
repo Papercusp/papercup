@@ -92,11 +92,24 @@ describe('normalizeCodexChatGptResponsesBody', () => {
       model: 'gpt-5.6-terra',
       input: [{ role: 'user', content: [{ type: 'input_text', text: 'hello' }] }],
       stream: true,
+      store: false,
     });
   });
 
-  it('keeps list input and malformed JSON byte-identical', () => {
-    const list = Buffer.from(JSON.stringify({ input: [{ role: 'user', content: [] }] }));
+  it('forces the ChatGPT backend store:false contract even when input is already canonical', () => {
+    for (const store of [undefined, true]) {
+      const body = Buffer.from(JSON.stringify({ input: [{ role: 'user', content: [] }], store }));
+      const result = normalizeCodexChatGptResponsesBody(body);
+      expect(result.inputNormalized).toBe(false);
+      expect(JSON.parse(result.body.toString('utf8'))).toEqual({
+        input: [{ role: 'user', content: [] }],
+        store: false,
+      });
+    }
+  });
+
+  it('keeps compatible list input and malformed JSON byte-identical', () => {
+    const list = Buffer.from(JSON.stringify({ input: [{ role: 'user', content: [] }], store: false }));
     expect(normalizeCodexChatGptResponsesBody(list)).toEqual({ body: list, inputNormalized: false });
     const malformed = Buffer.from('{oops');
     expect(normalizeCodexChatGptResponsesBody(malformed)).toEqual({ body: malformed, inputNormalized: false });

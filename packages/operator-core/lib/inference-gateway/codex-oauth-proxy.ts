@@ -135,14 +135,17 @@ export function codexBackendUrl(incomingUrl: string): string {
 }
 
 /**
- * Normalize the public Responses API's `input: string` shorthand for the proprietary
- * ChatGPT subscription backend, which accepts only the canonical input-item LIST.
+ * Normalize public Responses API bodies for the proprietary ChatGPT subscription
+ * backend, which accepts only the canonical input-item LIST and requires `store:false`.
  *
  * The public API defines a string as one user text message, so the expansion is
- * semantics-preserving. Array input is returned byte-identically, as are malformed or
- * non-object bodies. This belongs at the ChatGPT OAuth seam (not the bearer OpenAI path):
- * api.openai.com already accepts the shorthand, while chatgpt.com rejects it with
- * `400 Input must be a list`.
+ * semantics-preserving. ChatGPT subscription requests cannot use API-side response
+ * storage, so force that backend contract here instead of making every compatible
+ * gateway client know it. Bodies that already use list input and `store:false` are
+ * returned byte-identically, as are malformed or non-object bodies. This belongs at
+ * the ChatGPT OAuth seam (not the bearer OpenAI path): api.openai.com already accepts
+ * the shorthand and its own storage semantics, while chatgpt.com rejects incompatible
+ * bodies with `400 Input must be a list` / `400 Store must be set to false`.
  */
 export function normalizeCodexChatGptResponsesBody(
   bodyBuf: Buffer,
@@ -154,9 +157,14 @@ export function normalizeCodexChatGptResponsesBody(
       return { body: bodyBuf, inputNormalized: false };
     }
     const body = parsed as Record<string, unknown>;
-    if (typeof body.input !== 'string') return { body: bodyBuf, inputNormalized: false };
-    body.input = [{ role: 'user', content: [{ type: 'input_text', text: body.input }] }];
-    return { body: Buffer.from(JSON.stringify(body), 'utf8'), inputNormalized: true };
+    const inputNormalized = typeof body.input === 'string';
+    if (inputNormalized) {
+      body.input = [{ role: 'user', content: [{ type: 'input_text', text: body.input }] }];
+    }
+    const storeNormalized = body.store !== false;
+    if (storeNormalized) body.store = false;
+    if (!inputNormalized && !storeNormalized) return { body: bodyBuf, inputNormalized: false };
+    return { body: Buffer.from(JSON.stringify(body), 'utf8'), inputNormalized };
   } catch {
     return { body: bodyBuf, inputNormalized: false };
   }

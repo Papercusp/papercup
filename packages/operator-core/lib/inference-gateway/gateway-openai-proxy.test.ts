@@ -443,6 +443,7 @@ describe('proxyOpenAi — resilience parity (rotate, do not surface)', () => {
             : '';
         const forwardedBody = JSON.parse(bodyText) as Record<string, unknown>;
         expect(Array.isArray(forwardedBody.input)).toBe(true);
+        expect(forwardedBody.store).toBe(false);
         expect(forwardedBody.prompt_cache_options).toBeUndefined();
         expect(forwardedBody.prompt_cache_retention).toBeUndefined();
         expect(forwardedBody.prompt_cache_key).toMatch(/^psu-/);
