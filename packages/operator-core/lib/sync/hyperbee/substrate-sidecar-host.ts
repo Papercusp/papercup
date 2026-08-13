@@ -450,6 +450,10 @@ export function createSubstrateSidecarHost(deps: SubstrateSidecarHostDeps = {}):
         schema_version: raw.schema_version,
         hlc: raw.hlc,
         author_pubkey: raw.author_pubkey ?? '',
+        // A raw PeerLogOp is already wire-shaped. Preserve the re-key epoch just
+        // like HLC; dropping it leaves ciphertext looking like plaintext on the
+        // receiver and makes the merge cursor advance past an unapplied row.
+        epoch: raw.epoch,
       });
       return { ok: true, ownLogLength: ownLog.length, hlc: raw.hlc ?? null };
     }
@@ -466,6 +470,12 @@ export function createSubstrateSidecarHost(deps: SubstrateSidecarHostDeps = {}):
       // STAGE-5 (mirrors boot.ts): thread the real device pubkey when the claim
       // rewrite lands; until then attribute to the write's clobber pubkey.
       author_pubkey: stamped.writerPubkey ?? '',
+      // WI-5333 / P-505: mirror boot.ts's in-process append seam. The outbox
+      // encryptor stamps this field alongside the ciphertext; omitting it here
+      // made relocated-sidecar writes reach the remote decrypt gate with
+      // `epoch == null`, where they were treated as plaintext, rejected by the
+      // projection, and then permanently skipped as the merge cursor advanced.
+      epoch: stamped.epoch,
     };
     await ownLog.append(peerOp);
     return { ok: true, ownLogLength: ownLog.length, hlc: stamped.hlc };

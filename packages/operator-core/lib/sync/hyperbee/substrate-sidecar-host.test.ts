@@ -149,7 +149,7 @@ describe('substrate sidecar host — store relocation (P-001)', () => {
 
     const r1 = (await host.methods['substrate:appendOp']({
       storeId: boot.storeId,
-      op: localOp({ hbKey: 'k-1', value: { feature_id: 'F-1' } }),
+      op: localOp({ hbKey: 'k-1', value: { __rekey: true, ciphertext: 'sealed' }, epoch: 7 }),
     })) as { ok: boolean; ownLogLength: number; hlc: string | null };
     const r2 = (await host.methods['substrate:appendOp']({
       storeId: boot.storeId,
@@ -181,7 +181,7 @@ describe('substrate sidecar host — store relocation (P-001)', () => {
     expect(log.keyHex).toBe(boot.ownLogKey);
     const op0 = (await log.get(0)) as PeerLogOp;
     const op1 = (await log.get(1)) as PeerLogOp;
-    expect(op0).toMatchObject({ type: 'put', table: 'feature_queue', hbKey: 'k-1' });
+    expect(op0).toMatchObject({ type: 'put', table: 'feature_queue', hbKey: 'k-1', epoch: 7 });
     expect(op0.hlc).toBeTruthy();
     expect(op1).toMatchObject({ hbKey: 'k-2' });
   });
@@ -203,6 +203,7 @@ describe('substrate sidecar host — store relocation (P-001)', () => {
       ts: 200,
       schema_version: 1,
       author_pubkey: 'devkeyA',
+      epoch: 8,
       // no hlc — the append-only claim path never carries one
     };
     const r = (await host.methods['substrate:appendOp']({ storeId: boot.storeId, op: rawOp, raw: true })) as {
@@ -218,7 +219,12 @@ describe('substrate sidecar host — store relocation (P-001)', () => {
     await verifyStore.ready();
     const log = await openOwnLog(verifyStore);
     const op0 = (await log.get(0)) as PeerLogOp;
-    expect(op0).toMatchObject({ table: 'feature_claims', hbKey: 'claim-1', author_pubkey: 'devkeyA' });
+    expect(op0).toMatchObject({
+      table: 'feature_claims',
+      hbKey: 'claim-1',
+      author_pubkey: 'devkeyA',
+      epoch: 8,
+    });
     expect(op0.hlc).toBeUndefined();
   });
 
