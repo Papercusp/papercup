@@ -3759,14 +3759,14 @@ describe('buildGreenCheckpointEnv (the gate measures COMMITTED defaults)', () =>
   });
 
   it('uses the bounded reserved profile only when explicitly selected and preserves per-variable overrides', () => {
-    const reserved = buildGreenCheckpointEnv('b', {}, undefined, 'reserved');
+    const reserved = buildGreenCheckpointEnv('b', partialEnv({}), undefined, 'reserved');
     expect(reserved.VITEST_MAX_FORKS).toBe(String(GREEN_CHECKPOINT_RESERVED_MAX_FORKS));
     expect(reserved.VITEST_MAX_THREADS).toBe(String(GREEN_CHECKPOINT_RESERVED_MAX_FORKS));
     expect(GREEN_CHECKPOINT_RESERVED_MAX_FORKS).toBe(8);
 
     const overridden = buildGreenCheckpointEnv(
       'b',
-      { VITEST_MAX_FORKS: '6', VITEST_MAX_THREADS: '7' },
+      partialEnv({ VITEST_MAX_FORKS: '6', VITEST_MAX_THREADS: '7' }),
       undefined,
       'reserved',
     );
@@ -3775,7 +3775,7 @@ describe('buildGreenCheckpointEnv (the gate measures COMMITTED defaults)', () =>
   });
 
   it('renders the effective mode, fork/thread limits, and sanitized heap as stable evidence', () => {
-    const env = buildGreenCheckpointEnv('b', {}, undefined, 'reserved');
+    const env = buildGreenCheckpointEnv('b', partialEnv({}), undefined, 'reserved');
     expect(greenCheckpointCapacityEvidence('reserved', env)).toBe(
       `GREEN_CHECKPOINT_CAPACITY mode=reserved maxForks=8 maxThreads=8 ` +
         `forkHeapMb=${GREEN_CHECKPOINT_FORK_HEAP_MB} profileMaxForks=8`,
