@@ -10,6 +10,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const fleetAdmission = vi.hoisted(() => ({
   decision: { allowed: true, scoped: false } as any,
+  admit: vi.fn(async () => fleetAdmission.decision),
   notify: vi.fn(),
 }));
 
@@ -19,7 +20,7 @@ vi.mock('../coordination/identity', () => ({
 }));
 vi.mock('./_create-core', () => ({ createOneWorkItem: vi.fn() }));
 vi.mock('../../scheduler/fleet-scope-admission', () => ({
-  admitSubjectForFleetTarget: vi.fn(async () => fleetAdmission.decision),
+  admitSubjectForFleetTarget: fleetAdmission.admit,
   notifyFleetScopeRefusal: fleetAdmission.notify,
   fleetScopeLeaderRemedy: vi.fn(() => 'remedy: scheduler:set_claim_spec { … }'),
 }));
@@ -215,6 +216,9 @@ describe('work_items:create handler (keyed-array)', () => {
   it('EI-7766: assign_to:"self" resolves to the caller ownerId, not the literal string (single-create path)', async () => {
     await body({ kind: 'bug', title: 'a', assign_to: 'self' });
     expect(createM).toHaveBeenCalledWith(expect.objectContaining({ title: 'a', assign_to: 'me' }), expect.anything());
+    expect(fleetAdmission.admit).toHaveBeenCalledWith(
+      expect.objectContaining({ target: 'me', createdBy: 'me', subject: expect.objectContaining({ kind: 'bug' }) }),
+    );
   });
 
   it('EI-7766: assign_to:"self" resolves to the caller ownerId in the bulk items[] path too', async () => {

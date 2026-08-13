@@ -71,6 +71,7 @@ vi.mock('@papercusp/db-org', () => ({
 }));
 
 import {
+  admitSubjectForFleetTarget,
   admitWorkItemForFleetTarget,
   selfFiledFalloutAdmission,
   diagnoseFleetScopeCooldownMiss,
@@ -1947,6 +1948,48 @@ describe('self-filed fallout admission (EI-18732199386440540)', () => {
       workspaceId: 'papercusp-workspace',
     });
     expect(admission).toMatchObject({ allowed: true, scoped: true });
+  });
+
+  it('keeps atomic create+assign atomic for a server-attributed self-filed bug', async () => {
+    admissionMocks.latestFleetMembership.mockResolvedValue({ fleetSlug: 'mail-retirement', fleetRole: 'member' });
+    admissionMocks.getClaimSpecRecord.mockResolvedValue(scope.record);
+    admissionMocks.getFleet.mockResolvedValue({ controlState: 'active', controlReason: null });
+
+    const admission = await admitSubjectForFleetTarget({
+      target: 'su-member',
+      createdBy: 'su-member',
+      subject: { ...base, kind: 'bug', plan: null, planItem: [] },
+      workspaceId: 'papercusp-workspace',
+    });
+    expect(admission).toMatchObject({ allowed: true, scoped: true });
+  });
+
+  it('does not turn the atomic seam into a peer-assignment escape hatch', async () => {
+    admissionMocks.latestFleetMembership.mockResolvedValue({ fleetSlug: 'mail-retirement', fleetRole: 'member' });
+    admissionMocks.getClaimSpecRecord.mockResolvedValue(scope.record);
+    admissionMocks.getFleet.mockResolvedValue({ controlState: 'active', controlReason: null });
+
+    const admission = await admitSubjectForFleetTarget({
+      target: 'su-member',
+      createdBy: 'su-other-member',
+      subject: { ...base, kind: 'bug', plan: null, planItem: [] },
+      workspaceId: 'papercusp-workspace',
+    });
+    expect(admission).toMatchObject({ allowed: false, code: 'fleet_scope_violation' });
+  });
+
+  it('does not let atomic self-filing bypass a winding-down fleet', async () => {
+    admissionMocks.latestFleetMembership.mockResolvedValue({ fleetSlug: 'mail-retirement', fleetRole: 'member' });
+    admissionMocks.getClaimSpecRecord.mockResolvedValue(scope.record);
+    admissionMocks.getFleet.mockResolvedValue({ controlState: 'winding-down', controlReason: 'owner pause' });
+
+    const admission = await admitSubjectForFleetTarget({
+      target: 'su-member',
+      createdBy: 'su-member',
+      subject: { ...base, kind: 'bug', plan: null, planItem: [] },
+      workspaceId: 'papercusp-workspace',
+    });
+    expect(admission).toMatchObject({ allowed: false, code: 'fleet_winding_down' });
   });
 
   it('ORDERING CONTROL — a winding-down fleet still refuses the self-filed bug (EI-12832 keeps precedence)', async () => {

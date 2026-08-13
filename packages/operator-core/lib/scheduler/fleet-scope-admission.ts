@@ -203,9 +203,10 @@ async function itemMatchesScope(item: WorkItem, scope: FleetScopeContext): Promi
  * holding nothing, and the death-resilience reclaim-on-death net never engages". So the
  * status quo buys no containment; it just loses the ledger edge and the reclaim net.
  *
- * WHY `createdBy` AND NOT A NEW PROVENANCE STAMP: `createdBy` is written server-side
- * from the calling identity at create time (engineer_issues.created_by) and is never
- * caller-supplied, so it cannot be forged by a member composing its own payload — the
+ * WHY `createdBy` AND NOT A NEW PROVENANCE STAMP: `createdBy` is server-derived from
+ * the calling identity — persisted as engineer_issues.created_by after creation, and
+ * passed directly from resolveAgentIdentity during atomic create+assign admission.
+ * It is never caller-supplied, so a member cannot forge it in its payload — the
  * property a `foundDuring`-style free-text match could not offer. It is issue-family
  * only (feature rows are always null), which is exactly the population that can be
  * filed mid-run anyway.
@@ -220,7 +221,10 @@ async function itemMatchesScope(item: WorkItem, scope: FleetScopeContext): Promi
  * `source === 'default'` denyMissing branch. A self-filed bug must never become the
  * hole in either.
  */
-export function selfFiledFalloutAdmission(item: WorkItem, scope: FleetScopeContext): boolean {
+export function selfFiledFalloutAdmission(
+  item: Pick<WorkItem, 'kind' | 'createdBy'>,
+  scope: FleetScopeContext,
+): boolean {
   if (item.kind !== 'bug') return false;
   if (!item.createdBy) return false;
   return item.createdBy === scope.ownerId;
@@ -360,6 +364,8 @@ export async function admitWorkItemForFleetTarget(args: {
 export async function admitSubjectForFleetTarget(args: {
   target: string;
   subject: ClaimSpecSubject;
+  /** Server-derived creator identity for atomic create+assign; never caller input. */
+  createdBy?: string | null;
   workspaceId?: string | null;
 }): Promise<FleetScopeAdmission> {
   const scope = await resolveFleetScopeContext(args.target, args.workspaceId);
@@ -369,6 +375,18 @@ export async function admitSubjectForFleetTarget(args: {
   if (paused) return paused;
   if (scope.record.source === 'default') return denyMissing(scope);
   if (matchesClaimSpecFilter(args.subject, scope.record.spec.view.filter)) {
+    return { allowed: true, scoped: true, scope };
+  }
+  // The item does not exist yet on the atomic create+assign path, so apply the same
+  // narrow predicate to the server-derived creator + requested kind. This keeps
+  // work_items:create { kind:'bug', assign_to:'self' } atomic instead of filing the
+  // fallout unassigned and requiring a second work_items:claim round-trip.
+  if (
+    selfFiledFalloutAdmission(
+      { kind: args.subject.kind, createdBy: args.createdBy ?? null },
+      scope,
+    )
+  ) {
     return { allowed: true, scoped: true, scope };
   }
   return {

@@ -346,6 +346,10 @@ export default defineTool({
           const admission = await admitSubjectForFleetTarget({
             target: spec.assign_to,
             subject: createAdmissionSubject(spec),
+            // EI-18732199386440540: server-derived, never caller-supplied. Lets a
+            // fleet member atomically create+claim its own out-of-spec fallout bug;
+            // peer assignments and non-bugs still take the normal downgrade path.
+            createdBy: ident.ownerId,
             workspaceId: ident.workspaceId,
           });
           if (!admission.allowed) {
