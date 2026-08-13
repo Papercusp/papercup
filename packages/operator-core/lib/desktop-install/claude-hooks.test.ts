@@ -23,7 +23,8 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
     // (Edit|Write|MultiEdit, EI-20204186116417704) +
     // schedule-wakeup-provenance (ScheduleWakeup, EI-18680056073436345) +
     // write-overwrite-guard (Write, EI-19966323166806405) + generated-file-edit-guard
-    // (Edit|Write|MultiEdit, claude-md-projection-from-pg-2026-08-10 P-006), in install order.
+    // (Edit|Write|MultiEdit, claude-md-projection-from-pg-2026-08-10 P-006) +
+    // unreserved-migration-guard (Edit|Write|MultiEdit, WI-38352), in install order.
     expect(commandsFor(cfg, 'PreToolUse')).toEqual([
       `${DEST}/pretooluse-locks-acquire.sh`,
       `${DEST}/pretooluse-activity-report.sh`,
@@ -38,6 +39,7 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
       `${DEST}/pretooluse-schedule-wakeup-provenance.mjs`,
       `${DEST}/pretooluse-write-overwrite-guard.mjs`,
       `${DEST}/pretooluse-generated-file-edit-guard.mjs`,
+      `${DEST}/pretooluse-unreserved-migration-guard.mjs`,
     ]);
     expect(cfg.hooks.PreToolUse[0].matcher).toBe('Edit|Write|MultiEdit');
     expect(cfg.hooks.PreToolUse[1].matcher).toBe('*'); // activity-pre
@@ -54,6 +56,7 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
     expect(cfg.hooks.PreToolUse[10].matcher).toBe('ScheduleWakeup'); // schedule-wakeup-provenance
     expect(cfg.hooks.PreToolUse[11].matcher).toBe('Write'); // write-overwrite-guard
     expect(cfg.hooks.PreToolUse[12].matcher).toBe('Edit|Write|MultiEdit'); // generated-file-edit-guard
+    expect(cfg.hooks.PreToolUse[13].matcher).toBe('Edit|Write|MultiEdit'); // unreserved-migration-guard
 
     // PostToolBatch: mid-turn context push (context-injection-audit-2026-07-28 P-015).
     // ⚠ It lives HERE and not on PreToolUse deliberately (D-027) — PreToolUse only

@@ -49,6 +49,7 @@ import {
   evaluateGreenStall,
   greenStallEscalationBody,
   evaluateMainBehindStaging,
+  mainBehindRecoverySummary,
   computeMainBehindStaging,
   checkMainBehindStaging,
   evaluateReleaseTriggerFreeze,
@@ -407,6 +408,116 @@ describe('evaluateMainBehindStaging gate-advance suppression (EI-10202)', () => 
     // lag with a stale green is still healthy (depth/age not met).
     const v = evaluateMainBehindStaging({ commitsBehind: 3, behindMs: 5 * H, lastGreenAgeMs: 9 * H });
     expect(v.stalled).toBe(false);
+  });
+});
+
+describe('evaluateMainBehindStaging: motion is not progress (WI-38340)', () => {
+  const MIN = 60 * 1000;
+
+  // THE INCIDENT, to scale. 2026-08-12T22:27Z: the partial-green salvage (WI-38218)
+  // advanced main 8779b1c7 → e16f9529 — the longest green PREFIX, 3 commits — while
+  // the tip stayed red and `main` sat 327 commits behind `staging`. That advance
+  // reset `lastGreenAt`, EI-10202's `recentlyAdvanced` flipped true, `stalled` went
+  // false, and the fleet was broadcast an all-clear.
+  const salvage = { commitsBehind: 327, behindMs: 30 * H, lastGreenAgeMs: 4 * MIN };
+
+  it('THE BUG: a fresh PREFIX advance against a deep old backlog no longer suppresses the alarm', () => {
+    const v = evaluateMainBehindStaging(salvage);
+    expect(v.stalled).toBe(true);
+    expect(v.reason).toContain('327 commits');
+  });
+
+  it('the alarm does not misstate its own trigger — it says the gate DID advance, not that it stopped', () => {
+    // An alarm claiming "no green-checkpoint advance in ~0.1h" about a gate that
+    // just advanced sends the reader hunting a wedge that is not there.
+    const reason = evaluateMainBehindStaging(salvage).reason ?? '';
+    expect(reason).toContain('the gate DID advance main');
+    expect(reason).toContain('advanced the tip end, not this backlog');
+    expect(reason).not.toContain('no green-checkpoint advance');
+  });
+
+  it('RE-ARMING: repeated prefix advances cannot silence it forever — each pass still alarms', () => {
+    // The compounding half of the bug: the suppression re-arms on EVERY partial
+    // advance, so a persistently-red tip that keeps salvaging small green prefixes
+    // would reset `lastGreenAgeMs` each cycle and the alarm would never fire again.
+    for (const sinceAdvanceMin of [1, 20, 60, 119]) {
+      const v = evaluateMainBehindStaging({ ...salvage, lastGreenAgeMs: sinceAdvanceMin * MIN });
+      expect(v.stalled, `${sinceAdvanceMin}m after a prefix advance`).toBe(true);
+    }
+  });
+
+  it('PRESERVES EI-10202: a real advance that DID consume the backlog still suppresses', () => {
+    // The distinction is measured, not asserted. After a genuine full advance the
+    // oldest un-promoted commit is young — `behindMs` collapses to about the
+    // candidate's own age and then grows one-for-one with elapsed time. Here the
+    // gate greened 35m ago and the oldest un-promoted commit is 70m old: consistent
+    // with real consumption. Still churn, still no alarm.
+    const v = evaluateMainBehindStaging({ commitsBehind: 45, behindMs: 70 * MIN, lastGreenAgeMs: 35 * MIN });
+    expect(v.stalled).toBe(false);
+  });
+
+  it('the boundary is behindMs vs (lastGreenAgeMs + advanceHorizonMs), not depth', () => {
+    // Depth is deliberately NOT the discriminator: a deep backlog being actively
+    // consumed is healthy, and a shallow one that is stuck is not this alarm's job.
+    const consuming = { commitsBehind: 500, behindMs: 2 * H, lastGreenAgeMs: 10 * MIN };
+    expect(evaluateMainBehindStaging(consuming).stalled).toBe(false); // 2h <= 10m + 2h
+    const stuck = { ...consuming, behindMs: 2 * H + 11 * MIN }; // just past 10m + 2h
+    expect(evaluateMainBehindStaging(stuck).stalled).toBe(true);
+  });
+
+  it('honors a custom advanceHorizonMs', () => {
+    const s = { commitsBehind: 40, behindMs: 90 * MIN, lastGreenAgeMs: 10 * MIN };
+    expect(evaluateMainBehindStaging(s).stalled).toBe(false); // 90m <= 10m + 2h
+    expect(evaluateMainBehindStaging(s, { advanceHorizonMs: 30 * MIN }).stalled).toBe(true); // 90m > 10m + 30m
+  });
+
+  it('an UNKNOWN advance signal still falls back to depth+age — never silently suppresses', () => {
+    // Unchanged contract: the new condition can only ever REMOVE a suppression, so
+    // a null gate signal behaves exactly as before.
+    const v = evaluateMainBehindStaging({ commitsBehind: 30, behindMs: 2 * H, lastGreenAgeMs: null });
+    expect(v.stalled).toBe(true);
+  });
+
+  it('still never manufactures an alarm: a shallow backlog stays quiet however unproductive the advance', () => {
+    const v = evaluateMainBehindStaging({ commitsBehind: 3, behindMs: 30 * H, lastGreenAgeMs: 1 * MIN });
+    expect(v.stalled).toBe(false);
+  });
+});
+
+describe('mainBehindRecoverySummary — an all-clear may not claim what it did not measure (WI-38340)', () => {
+  it('THE BROADCAST THAT WAS WRONG: still-deep behind is NOT reported as "recovered"', () => {
+    // Verbatim shape of the 2026-08-12T23:03Z broadcast: `main RECOVERED on
+    // papercusp — no longer meaningfully behind staging`, sent at 327 behind.
+    const s = mainBehindRecoverySummary('papercusp', { commitsBehind: 327 });
+    expect(s).toContain('STILL 327 commits behind');
+    expect(s).not.toContain('RECOVERED');
+    expect(s).not.toContain('no longer meaningfully behind');
+  });
+
+  it('a genuine catch-up IS reported as recovered, and states the number it measured', () => {
+    const s = mainBehindRecoverySummary('papercusp', { commitsBehind: 4 });
+    expect(s).toContain('RECOVERED');
+    expect(s).toContain('4 commits behind');
+  });
+
+  it('the threshold is the boundary between the two arms, and is configurable', () => {
+    expect(mainBehindRecoverySummary('h', { commitsBehind: 20 })).toContain('RECOVERED');
+    expect(mainBehindRecoverySummary('h', { commitsBehind: 21 })).toContain('STILL 21 commits');
+    expect(mainBehindRecoverySummary('h', { commitsBehind: 21 }, { commitsThreshold: 50 })).toContain('RECOVERED');
+  });
+
+  it('an UNMEASURABLE distance is its own arm — never dressed up as a recovery', () => {
+    // A missing branch / git error clears the alarm because the signal went
+    // unreadable, which is not evidence main caught up.
+    const s = mainBehindRecoverySummary('papercusp', { commitsBehind: null });
+    expect(s).toContain('could NOT be measured');
+    expect(s).not.toContain('RECOVERED');
+  });
+
+  it('every arm names the harness', () => {
+    for (const commitsBehind of [4, 327, null]) {
+      expect(mainBehindRecoverySummary('oddsmith', { commitsBehind })).toContain('oddsmith');
+    }
   });
 });
 

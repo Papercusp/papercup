@@ -144,6 +144,70 @@ export function sanitizeKey(ownerId: string): string {
 const RESPAWN_SCAN_TAIL_BYTES = 64 * 1024;
 
 /**
+ * One parsed line of a host's `<owner>.events.jsonl` lifecycle ledger.
+ *
+ * Deliberately open-shaped. The ledger is written by `appendHostEvent` in
+ * psu-pty-host.mjs with a per-`kind` payload, and — the property that makes the
+ * ledger worth reading at all — it is written IDENTICALLY by hosts of every code
+ * vintage. A closed interface here would have to be widened for each new event
+ * kind, and a reader that only understands today's kinds would silently drop the
+ * evidence written by the OLD hosts that most need observing.
+ */
+export interface PtyHostEvent {
+  kind?: unknown;
+  ts?: unknown;
+  [k: string]: unknown;
+}
+
+/**
+ * The tail of an owner's lifecycle ledger, parsed, OLDEST-FIRST.
+ *
+ * Extracted from {@link latestRespawnNativeId} (which now consumes it) so a second
+ * consumer cannot drift from the first on the two things that are easy to get
+ * wrong here: the tail window may start MID-LINE, so the first line routinely
+ * fails to parse and must be skipped rather than treated as corruption; and the
+ * read must stay bounded, because a long-lived owner's ledger reaches megabytes
+ * (13k `respawned` rows measured on this box) and no consumer wants all of it.
+ *
+ * Best-effort by contract: a missing/unreadable ledger yields `[]`, never a throw.
+ * An EMPTY result therefore means "nothing readable", NOT "nothing happened" —
+ * callers that treat absence as a verdict must say which they mean.
+ */
+export function readHostEventTail(
+  ownerId: string,
+  dir: string = PSU_PTY_DIR,
+  maxBytes: number = RESPAWN_SCAN_TAIL_BYTES,
+): PtyHostEvent[] {
+  let text: string;
+  try {
+    const path = join(dir, `${sanitizeKey(ownerId)}.events.jsonl`);
+    const { size } = statSync(path);
+    const start = Math.max(0, size - maxBytes);
+    const fd = openSync(path, 'r');
+    try {
+      const buf = Buffer.alloc(size - start);
+      readSync(fd, buf, 0, buf.length, start);
+      text = buf.toString('utf8');
+    } finally {
+      closeSync(fd);
+    }
+  } catch {
+    return [];
+  }
+  const out: PtyHostEvent[] = [];
+  for (const line of text.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    try {
+      out.push(JSON.parse(trimmed) as PtyHostEvent);
+    } catch {
+      // A partial first line (the tail window can start mid-line) — skip it.
+    }
+  }
+  return out;
+}
+
+/**
  * WI-5075 rung 3: the native session id of this owner's MOST RECENT
  * carry-respawn/recycle, straight from the host's own event log — or null when
  * the owner has never respawned (or the log is unreadable).
@@ -176,30 +240,10 @@ export function latestRespawnNativeId(
   try {
     const startedAt = hostStartedAt(ownerId, dir);
     if (startedAt == null) return null;
-    const path = join(dir, `${sanitizeKey(ownerId)}.events.jsonl`);
-    const { size } = statSync(path);
-    const start = Math.max(0, size - RESPAWN_SCAN_TAIL_BYTES);
-    const fd = openSync(path, 'r');
-    let text: string;
-    try {
-      const buf = Buffer.alloc(size - start);
-      readSync(fd, buf, 0, buf.length, start);
-      text = buf.toString('utf8');
-    } finally {
-      closeSync(fd);
-    }
-    // Scan backwards: the newest respawn wins. A partial first line (the tail
-    // window can start mid-line) simply fails JSON.parse and is skipped.
-    const lines = text.split('\n');
-    for (let i = lines.length - 1; i >= 0; i--) {
-      const line = lines[i].trim();
-      if (!line) continue;
-      let ev: { kind?: unknown; nativeId?: unknown; ts?: unknown };
-      try {
-        ev = JSON.parse(line) as typeof ev;
-      } catch {
-        continue;
-      }
+    // Scan backwards: the newest respawn wins.
+    const events = readHostEventTail(ownerId, dir, RESPAWN_SCAN_TAIL_BYTES);
+    for (let i = events.length - 1; i >= 0; i--) {
+      const ev = events[i] as { kind?: unknown; nativeId?: unknown; ts?: unknown };
       // Drill respawns rotate the native id exactly like a real one.
       if (ev.kind !== 'respawned' && ev.kind !== 'carry-drill-respawned') continue;
       // A respawn from a PREVIOUS host (and everything before it) is history.
@@ -213,10 +257,20 @@ export function latestRespawnNativeId(
   }
 }
 
-/** The CURRENT psu host's start time (epoch ms) from its discovery file, or null
- *  when the owner has no host record. Deliberately NOT liveness-gated: a host
- *  mid-restart must not silently re-enable a stale predecessor id. */
-function hostStartedAt(ownerId: string, dir: string): number | null {
+/**
+ * The CURRENT psu host's start time (epoch ms) from its discovery file, or null
+ * when the owner has no host record. Deliberately NOT liveness-gated: a host
+ * mid-restart must not silently re-enable a stale predecessor id.
+ *
+ * EXPORTED because it is the scoping boundary every ledger reader needs, not an
+ * implementation detail of one. The `<owner>.events.jsonl` ledger is per-OWNER and
+ * OUTLIVES any single host process, so events below this timestamp belong to a
+ * PREVIOUS incarnation. Measured cost of forgetting that (2026-08-12): a wedge
+ * census that counted defers unscoped charged four hosts with their predecessors'
+ * incidents — caught only because several "defers" were timestamped BEFORE the host
+ * they were attributed to had started.
+ */
+export function hostStartedAt(ownerId: string, dir: string = PSU_PTY_DIR): number | null {
   try {
     const meta = JSON.parse(
       readFileSync(join(dir, `${sanitizeKey(ownerId)}.json`), 'utf8'),

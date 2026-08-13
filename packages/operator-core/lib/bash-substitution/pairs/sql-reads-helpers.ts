@@ -12,6 +12,11 @@
  * unambiguous — a wrong translation would route an agent to a describe call that
  * answers a different question, which is worse than leaving the query alone.
  */
+// WI-38339: `notTerminal` is servable only for a NOT-IN list that IS the canonical
+// terminal union, so the comparison must read the SOURCE constant. Its own header
+// records why nothing here may re-list the words: hand-copied terminal sets drifted
+// and scored ~88% of finished units as stranded.
+import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
 
 /** A SQL string literal's contents, for a `col = 'value'` predicate. */
 function literalAfter(atom: string, column: string): string | null {
@@ -362,6 +367,60 @@ function inListFor(atom: string, column: string): string[] {
   return list ? [...list.matchAll(/'([^']+)'/g)].map((m) => m[1]!) : [];
 }
 
+/* ── WI-38339 readers: the four slices the widened `work_items:list` can ask for ──
+ *
+ * Kept beside `inListFor` because they share its one real subtlety: `\bstatus\s+in`
+ * cannot match `status NOT IN (…)` (the `not` sits between), so the positive and
+ * negative list readers below never claim each other's atoms.
+ */
+
+/** The SELECT list — everything between `select` and the first `from`. */
+export function selectListOf(atom: string): string {
+  return /\bselect\b([\s\S]*?)\bfrom\b/i.exec(atom)?.[1] ?? '';
+}
+
+/** `status IN ('a','b')` / `state IN (…)` → lowercased members. */
+export function inStatesFor(atom: string): string[] {
+  return [...inListFor(atom, 'status'), ...inListFor(atom, 'state')].map((s) => s.toLowerCase());
+}
+
+/** `status NOT IN ('done','dropped',…)` → lowercased members. */
+export function notInStatesFor(atom: string): string[] {
+  const list = /\b(?:status|state)\s+not\s+in\s*\(([^)]*)\)/i.exec(atom)?.[1];
+  return list ? [...list.matchAll(/'([^']+)'/g)].map((m) => m[1]!.toLowerCase()) : [];
+}
+
+/**
+ * SET-equality against {@link ANY_FAMILY_TERMINAL_STATES} — the whole servability
+ * test for `notTerminal`, and the reason it is a set comparison rather than a
+ * regex. Measured over 7d of real agent SQL naming `work_items`: 100 statements
+ * carry a `NOT IN` state list, and the dominant ones enumerate EXACTLY this union
+ * in a dozen different ORDERS — i.e. the corpus is full of hand-copied terminal
+ * sets, which is precisely the drift the constant exists to end.
+ *
+ * A PROPER SUBSET (`NOT IN ('done','dropped')`, 4 calls) must NOT be claimed:
+ * `notTerminal` would additionally exclude `resolved`/`closed`/`passed`/
+ * `deprecated`, answering with FEWER rows than the query asked for — the silent
+ * narrowing fact `substitution-pair-narrowing-over-claim` records. A SUPERSET is
+ * refused for the mirror reason. Order and case are irrelevant; membership is not.
+ */
+export function isCanonicalTerminalUnion(states: readonly string[]): boolean {
+  const want = new Set(ANY_FAMILY_TERMINAL_STATES.map((s) => s.toLowerCase()));
+  const got = new Set(states);
+  return got.size === want.size && [...got].every((s) => want.has(s));
+}
+
+/**
+ * `created_at >= '…'` → the literal. INCLUSIVE ONLY, deliberately: `createdSince`
+ * is `>=`, and rendering an exclusive `>` as an inclusive arg shifts the boundary
+ * by exactly the rows sitting on it — a difference invisible in the result, which
+ * is the same trap that kept the issue family's EXCLUSIVE `createdAfter` from
+ * being reused for this argument in the first place.
+ */
+function inclusiveBoundFor(atom: string, column: 'created' | 'updated'): string | null {
+  return new RegExp(String.raw`\b${column}_(?:at|ts)\s*>=\s*'([^']+)'`, 'i').exec(atom)?.[1] ?? null;
+}
+
 /** `work_items:get` takes 1–100 ids per call (get.ts `ids`: maxItems 100). */
 export const WORK_ITEMS_GET_MAX_IDS = 100;
 
@@ -416,12 +475,38 @@ const ID_PREDICATE = String.raw`${ALIAS}\b(?:feature_id|id)\s*(?:=\s*${STR}|in\s
  */
 const SCOPE_PREDICATE = String.raw`${ALIAS}\b(?:workspace_id|harness_slug|scope)\s*=\s*${STR}`;
 
-/** The typed slices `work_items:list` can actually ask for. */
+/**
+ * The typed slices `work_items:list` can actually ask for.
+ *
+ * WI-38339 widened the VERB with four more (`states`, `notTerminal`,
+ * `createdSince`/`updatedSince`, `sourcePlanSlug`), and this whitelist does NOT
+ * follow automatically — it is positive by construction, so every new argument
+ * has to be admitted here deliberately. That is the point: a shape that grew on
+ * its own would start claiming atoms nobody checked a rendering for.
+ *
+ * Three deliberate NARROWINGS, each of which leaves real corpus traffic to SQL:
+ *  • `IN (…)` is admitted, but a NOT-IN list is only SERVABLE when it is exactly
+ *    the canonical terminal union — `cover()` decides that, not this regex,
+ *    because it is a set comparison and not a syntactic one.
+ *  • A time bound is admitted ONLY as `>= 'literal'`. Exclusive `>` is left to
+ *    SQL on purpose: `createdSince` is INCLUSIVE, and this item's own design
+ *    decision was that a boundary silently shifting by one row is exactly the
+ *    kind of difference no reader can see in a result set. A `now() - interval`
+ *    bound cannot match either (the literal does not follow the operator), which
+ *    is correct — its value is re-evaluated per run, and a rendered constant is
+ *    not the same query.
+ *  • `source_plan_slug` is admitted as a FILTER only. The verb projects it for
+ *    feature rows and not for issue rows, so a query SELECTING it is refused in
+ *    `cover()` rather than served a row missing the column it exists to read.
+ */
 const FILTER_PREDICATE =
   String.raw`${ALIAS}\b(?:(?:title|summary)\s+i?like\s*${STR}` +
   String.raw`|(?:status|state)\s*=\s*${STR}` +
+  String.raw`|(?:status|state)\s+(?:not\s+)?in\s*\(\s*${STR}(?:\s*,\s*${STR})*\s*\)` +
   String.raw`|(?:item_kind|kind)\s*=\s*${STR}` +
   String.raw`|(?:taken_by|assignee)\s*=\s*${STR}` +
+  String.raw`|source_plan_slug\s*=\s*${STR}` +
+  String.raw`|(?:created|updated)_(?:at|ts)\s*>=\s*${STR}` +
   String.raw`|(?:completion_)?authority\s*=\s*${STR})`;
 
 /**
@@ -569,8 +654,29 @@ export function workItemsListCallFromQuery(atom: string): string | null {
     if (kind) args.push(['kind', JSON.stringify(kind.toLowerCase())]);
   }
 
+  // WI-38339 — a state SET. `states` ANDs with `state`, exactly as the SQL ANDs an
+  // `IN` list with an `=`, so an atom carrying both still renders one faithful call.
+  const states = inStatesFor(atom);
+  if (states.length) args.push(['states', `[${states.map((s) => JSON.stringify(s)).join(', ')}]`]);
+
+  // WI-38339 — "everything still live". Only when the NOT-IN list IS the canonical
+  // union (see isCanonicalTerminalUnion); `cover()` refuses every other list rather
+  // than letting this silently render the wrong exclusion.
+  const notIn = notInStatesFor(atom);
+  if (notIn.length && isCanonicalTerminalUnion(notIn)) args.push(['notTerminal', 'true']);
+
   const assignee = literalAfter(atom, 'taken_by') ?? literalAfter(atom, 'assignee');
   if (assignee) args.push(['assignee', JSON.stringify(assignee)]);
+
+  // WI-38339 — "what work came out of this plan": 104 hand-written statements/7d.
+  const sourcePlanSlug = literalAfter(atom, 'source_plan_slug');
+  if (sourcePlanSlug) args.push(['sourcePlanSlug', JSON.stringify(sourcePlanSlug)]);
+
+  // WI-38339 — the INCLUSIVE created/updated window.
+  const createdSince = inclusiveBoundFor(atom, 'created');
+  if (createdSince) args.push(['createdSince', JSON.stringify(createdSince)]);
+  const updatedSince = inclusiveBoundFor(atom, 'updated');
+  if (updatedSince) args.push(['updatedSince', JSON.stringify(updatedSince)]);
 
   const harness = literalAfter(atom, 'harness_slug');
   if (harness) args.push(['harness', JSON.stringify(harness)]);
@@ -583,6 +689,18 @@ export function workItemsListCallFromQuery(atom: string): string | null {
   if (authority) args.push(['completionAuthority', JSON.stringify(authority.toLowerCase())]);
 
   if (args.length === 0) return null;
+
+  // WI-38339 — the PROJECTION half of the widening, and the half that is easy to
+  // miss: the verb can now FILTER on a created/updated window, but its default
+  // (trimmed/standard) tiers project neither timestamp — id, kind, harness, title,
+  // summary, state, assignee, severity, priority, plan_ref and the holder scalars,
+  // and nothing else. MEASURED on a live full-tier call, where `createdAt` /
+  // `updatedAt` / `closedAt` do come back. So a query that READS the column it
+  // filters on needs the full tier, exactly as the by-id pair does for `payload`.
+  // Restricted to the SELECT list: a WHERE-only mention needs no wider result.
+  if (/\b(?:created|updated)_(?:at|ts)\b/i.test(selectListOf(atom))) {
+    args.push(['payloadTier', JSON.stringify('full')]);
+  }
 
   // See the banner. This flag is UNCONDITIONAL: the raw SELECT being replaced
   // returns observation-lane rows and the verb's default drops them.

@@ -73,6 +73,37 @@ const DEFAULT_MAIN_BEHIND_MS = 60 * 60 * 1000; // 1h — deliberately far tighte
  *  deep old backlog is the genuinely-stuck signature (persistent red / killed
  *  runs) EI-9762 was built to catch. */
 const DEFAULT_MAIN_BEHIND_RECENT_GREEN_MS = 2 * 60 * 60 * 1000; // 2h ≈ ~2 hourly green-checkpoint cycles
+/** WI-38340: how far `behindMs` may exceed `lastGreenAgeMs` before a recent
+ *  advance stops counting as evidence the backlog is being CONSUMED.
+ *
+ *  EI-10202's suppression asks "did the gate advance main recently?" and answers
+ *  a DIFFERENT question — "is main catching up?" — by assuming the two are the
+ *  same. WI-38218's partial-green salvage broke that equivalence: it advances
+ *  `main` to the longest green PREFIX while the tip stays red, so the gate can
+ *  emit advance after advance (each one resetting `lastGreenAt`) while the old
+ *  end of the backlog never moves. Measured 2026-08-12: a 3-commit prefix
+ *  advance against a 327-commit backlog reset the suppression and fired an
+ *  all-clear. Worse, it RE-ARMS on every partial advance, so the alarm can
+ *  never fire again while the tip stays red.
+ *
+ *  The fix is to stop inferring progress from motion and MEASURE it, using a
+ *  signal we already compute. `behindMs` is the age of the OLDEST commit on
+ *  staging but not main — the old END of the backlog, which only a genuine
+ *  advance consumes. Right after a FULL advance `main` IS the candidate, so
+ *  everything older than that candidate's cut is gone and `behindMs` collapses
+ *  to roughly the candidate's own age; from there it grows one-for-one with
+ *  elapsed time. So a real advance `t` ago leaves `behindMs ≲ t + (one suite
+ *  cut)`. When `behindMs` runs FURTHER ahead than that, whatever the gate
+ *  advanced was not the old backlog, and the advance proves nothing about
+ *  catch-up — do not suppress.
+ *
+ *  Deliberately measured rather than keyed on the gate's `advanced-prefix`
+ *  status: the same hole opens for any future mechanism that moves `main`
+ *  without consuming the backlog (a pin moved outside the routine by a manual
+ *  prefix promotion already does), and a depth/age measurement cannot fall
+ *  behind a taxonomy it does not know about. 2h covers a full ~55-min
+ *  green-checkpoint suite plus slack. */
+const DEFAULT_MAIN_BEHIND_ADVANCE_HORIZON_MS = 2 * 60 * 60 * 1000; // 2h ≈ one full suite + slack
 const MAIN_BEHIND_PHASE = 'main-behind-staging-watchdog';
 
 /** Phase + kind for the durable escalation — distinct from the in-routine
@@ -447,16 +478,29 @@ export interface MainBehindStagingVerdict {
  *  Exported for unit testing. */
 export function evaluateMainBehindStaging(
   s: MainBehindStagingSnapshot,
-  opts: { commitsThreshold?: number; msThreshold?: number; recentGreenMs?: number } = {},
+  opts: {
+    commitsThreshold?: number;
+    msThreshold?: number;
+    recentGreenMs?: number;
+    advanceHorizonMs?: number;
+  } = {},
 ): MainBehindStagingVerdict {
   const commitsThreshold = opts.commitsThreshold ?? DEFAULT_MAIN_BEHIND_COMMITS;
   const msThreshold = opts.msThreshold ?? DEFAULT_MAIN_BEHIND_MS;
   const recentGreenMs = opts.recentGreenMs ?? DEFAULT_MAIN_BEHIND_RECENT_GREEN_MS;
+  const advanceHorizonMs = opts.advanceHorizonMs ?? DEFAULT_MAIN_BEHIND_ADVANCE_HORIZON_MS;
   if (s.commitsBehind == null || s.behindMs == null) return { stalled: false, reason: null };
   // EI-10202: the gate is demonstrably advancing main → a deep backlog is churn,
   // not a stall. Only known-and-recent green suppresses; an unknown/absent signal
   // does not (fall through to depth+age so a real stall still alarms).
-  const recentlyAdvanced = s.lastGreenAgeMs != null && s.lastGreenAgeMs <= recentGreenMs;
+  // WI-38340: …and only when that advance actually CONSUMED the backlog. A recent
+  // advance whose `behindMs` still runs far ahead of it moved the tip end, not the
+  // old end (the partial-green salvage's signature) — motion, not progress. See
+  // DEFAULT_MAIN_BEHIND_ADVANCE_HORIZON_MS for the derivation of the bound.
+  const advanceConsumedBacklog =
+    s.lastGreenAgeMs != null && s.behindMs <= s.lastGreenAgeMs + advanceHorizonMs;
+  const recentlyAdvanced =
+    s.lastGreenAgeMs != null && s.lastGreenAgeMs <= recentGreenMs && advanceConsumedBacklog;
   const stalled = s.commitsBehind > commitsThreshold && s.behindMs > msThreshold && !recentlyAdvanced;
   if (!stalled) return { stalled: false, reason: null };
   const hoursBehind = (s.behindMs / 3_600_000).toFixed(1);
@@ -464,11 +508,29 @@ export function evaluateMainBehindStaging(
   // alarm from "main is behind" (ambiguous) into "main is behind AND the gate has
   // not advanced it in ~Xh" (the actual stall), and proves the depth number wasn't
   // the sole trigger (EI-10202).
-  const noGreenClause =
-    s.lastGreenAgeMs != null ? ` (no green-checkpoint advance in ~${(s.lastGreenAgeMs / 3_600_000).toFixed(1)}h)` : '';
+  // WI-38340: there are now TWO ways to reach this alarm, and they need OPPOSITE
+  // responses, so they must not share one sentence. The clause below used to be
+  // emitted off `lastGreenAgeMs != null` alone — which, once a recent-but-
+  // unproductive advance could reach here, would have printed "no green-checkpoint
+  // advance in ~0.1h" about a gate that had just advanced. An alarm that misstates
+  // its own trigger sends the reader hunting a wedged gate that is running fine.
+  const advanceAgeHours = s.lastGreenAgeMs != null ? (s.lastGreenAgeMs / 3_600_000).toFixed(1) : null;
+  // The gate advanced main recently, yet the old end of the backlog did not move:
+  // the partial-green-salvage signature (WI-38218 promotes the longest green PREFIX
+  // while the tip stays red). Motion without progress.
+  const advancedButUnproductive =
+    s.lastGreenAgeMs != null && s.lastGreenAgeMs <= recentGreenMs && !advanceConsumedBacklog;
+  const noGreenClause = advancedButUnproductive
+    ? ` (the gate DID advance main ~${advanceAgeHours}h ago, but the oldest un-promoted commit is still ~${hoursBehind}h old — it advanced the tip end, not this backlog)`
+    : advanceAgeHours != null
+      ? ` (no green-checkpoint advance in ~${advanceAgeHours}h)`
+      : '';
+  const notAdvancing = advancedButUnproductive
+    ? 'the gate is not consuming this backlog'
+    : 'the gate is not advancing main';
   const lede =
-    `\`main\` is ${s.commitsBehind} commits / ~${hoursBehind}h behind \`staging\`${noGreenClause} — the gate is not ` +
-    `advancing main, regardless of why (red verdicts, a killed/wedged run, or a wedged routine engine). `;
+    `\`main\` is ${s.commitsBehind} commits / ~${hoursBehind}h behind \`staging\`${noGreenClause} — ${notAdvancing}, regardless ` +
+    `of why (red verdicts, a killed/wedged run, or a wedged routine engine). `;
   // EI-19459452257836856: the remedy is the part that was wrong, and it is read by
   // every agent in the hive at once. Point at the run's OWN authoritative break-set
   // line rather than the old undirected "find whatever is failing" — the agent who
@@ -507,6 +569,51 @@ export function evaluateMainBehindStaging(
       `(dev:pipeline_position → gate.checkpointRunInFlight) before launching one: firing inside a live run's ` +
       `re-triage window discards an in-progress rescue. If none is running, fire one — then fix what it names: ${breakSet}`,
   };
+}
+
+/** WI-38340: the all-clear text for the main-behind-staging alarm.
+ *
+ *  The bug that produced this function: the recovery broadcast was a CONSTANT
+ *  string asserting `main` was "no longer meaningfully behind staging", emitted
+ *  purely off `stalled` flipping false. But `stalled` can flip false via the
+ *  recent-advance suppression ALONE, with `commitsBehind` untouched — so on
+ *  2026-08-12T23:03Z the fleet was told main had recovered while it was measured
+ *  327 commits behind. An all-clear must never claim a property it did not
+ *  measure; both arms below state the number they actually read.
+ *
+ *  The two arms are genuinely different situations and are worded so a reader can
+ *  tell them apart:
+ *    · caught up  — the backlog really is at/below the alarm threshold.
+ *    · suppressed — the alarm is CLEARED, but main is still deep behind; what
+ *      changed is that the gate is advancing again. Saying "recovered" flatly
+ *      here is the false all-clear this fixes.
+ *
+ *  Pure + exported for a DB-free regression test, matching the convention
+ *  `evaluateMainBehindStaging` / `shouldWarnOnStallClearMiss` already set. */
+export function mainBehindRecoverySummary(
+  harnessSlug: string,
+  s: Pick<MainBehindStagingSnapshot, 'commitsBehind'>,
+  opts: { commitsThreshold?: number } = {},
+): string {
+  const commitsThreshold = opts.commitsThreshold ?? DEFAULT_MAIN_BEHIND_COMMITS;
+  const behind = s.commitsBehind;
+  // Unmeasurable depth (a branch missing / git error) is its own arm: the alarm is
+  // cleared because the signal went unreadable, which is NOT evidence main caught
+  // up. Never dress that up as a recovery.
+  if (behind == null) {
+    return (
+      `main-behind-staging alarm CLEARED on ${harnessSlug} — but the staging/main distance could NOT be measured ` +
+      `on this pass, so this is not a confirmation that main caught up. Re-check with dev:pipeline_position.`
+    );
+  }
+  if (behind <= commitsThreshold) {
+    return `main RECOVERED on ${harnessSlug} — now ${behind} commits behind staging (at/below the ${commitsThreshold} threshold); the earlier stall alarm is stale.`;
+  }
+  return (
+    `main-behind-staging alarm CLEARED on ${harnessSlug}, but main is STILL ${behind} commits behind staging — ` +
+    `cleared because the gate has advanced main recently and is consuming the backlog, NOT because main caught up. ` +
+    `Do not read this as "the pipeline is fine": re-check the real distance with dev:pipeline_position.`
+  );
 }
 
 function gitOut(root: string, args: string[]): string | null {
@@ -601,6 +708,8 @@ export async function checkMainBehindStaging(
     commitsThreshold?: number;
     msThreshold?: number;
     recentGreenMs?: number;
+    /** WI-38340 — threaded straight through to evaluateMainBehindStaging. */
+    advanceHorizonMs?: number;
     mainBranch?: string;
     stagingBranch?: string;
   } = {},
@@ -718,7 +827,11 @@ export async function checkMainBehindStaging(
          WHERE harness_slug = ${harnessSlug} AND phase = ${MAIN_BEHIND_PHASE} AND escalation IS NOT NULL`;
       await broadcastSevereEventResolved({
         conditionKey: `main-behind-staging:${harnessSlug}`,
-        summary: `main RECOVERED on ${harnessSlug} — no longer meaningfully behind staging; the earlier stall alarm is stale.`,
+        // WI-38340: state the depth we actually measured on THIS pass. The old
+        // constant claimed main was "no longer meaningfully behind staging" off
+        // nothing but `stalled` going false, and broadcast that to the whole fleet
+        // while main was 327 commits behind.
+        summary: mainBehindRecoverySummary(harnessSlug, snapshot, opts),
       });
       out.recovered = true;
     }

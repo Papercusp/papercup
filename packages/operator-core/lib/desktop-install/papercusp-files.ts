@@ -822,6 +822,16 @@ const CC_HOOK_FILES = [
   // Measured: 54 of 21,267 tracked files carry such a banner, every one a real generated
   // artifact. Generators are untouched — they write via node:fs, not tool calls.
   'pretooluse-generated-file-edit-guard.mjs',
+  // WI-38352: PreToolUse (matcher "Edit|Write|MultiEdit") BLOCKING guard on a write to
+  // libs/papercusp/libs/db/sql/<NNN>-*.sql whose NNN was hand-picked rather than allocated
+  // via `node scripts/next-migration.mjs` (no row in harness_shared.migration_reservations).
+  // Such a file red-pins lint:migrations, which is a RELEASE-CUT PREFLIGHT, so it blocks
+  // EVERY agent's cut — 3 occurrences in ~24h, the last costing ~2h of fleet-wide block.
+  // Write time is the only seam where the repair is still a `mv`: boot auto-apply reaches
+  // the file within minutes and the number is immutable from then on. Imports ENFORCED_FROM
+  // from the repo's own scripts/lint-migrations.mjs so guard and lint cannot drift, and
+  // FAILS OPEN (loudly, on stderr) when PG is unreachable — the lint stays the backstop.
+  'pretooluse-unreserved-migration-guard.mjs',
   // EI-19374535041074908: PostToolUse (matcher "Edit|Write|MultiEdit") ADVISORY nudge
   // when an edit adds a REQUIRED field to an exported interface (or tightens one from
   // optional), which silently strands every construction site in files the change never
@@ -2260,6 +2270,15 @@ export function mergeClaudeHookSettings(
     hooks.PreToolUse = replaceOurHookEntries(ev('PreToolUse'), ours('pretooluse-generated-file-edit-guard.mjs'), {
       matcher: 'Edit|Write|MultiEdit',
       hooks: cmd('pretooluse-generated-file-edit-guard.mjs'),
+    });
+  // merge_unreserved_migration_guard_hook — PreToolUse, matcher 'Edit|Write|MultiEdit'
+  // (WI-38352). Hard DENY on a hand-numbered migration; keyed on the PATH + the live
+  // reservations table, not on the file's prior existence, because the primary case is a
+  // Write CREATING one. Fails open when PG is unreachable — see the script header.
+  if (has('pretooluse-unreserved-migration-guard.mjs'))
+    hooks.PreToolUse = replaceOurHookEntries(ev('PreToolUse'), ours('pretooluse-unreserved-migration-guard.mjs'), {
+      matcher: 'Edit|Write|MultiEdit',
+      hooks: cmd('pretooluse-unreserved-migration-guard.mjs'),
     });
 
   return cfg;

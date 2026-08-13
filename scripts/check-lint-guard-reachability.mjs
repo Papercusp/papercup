@@ -243,17 +243,15 @@ export const ACKNOWLEDGED_UNREACHABLE = new Map([
   // Nothing is lost: the generator's OWN documented check form is `npm run gen:openapi -- --check`,
   // which appends the flag to the surviving writer alias and never used this one.
   //
-  // ⚠ `gen:tool-catalog:check` LOOKS like the same case AND IS NOT — do not retire it by analogy.
-  // gen-openapi-spec.ts's header claims "same stance + reasons as gen-tool-catalog.ts", and
-  // gen-tool-catalog.ts's header claims its artifact is "NOT committed". MEASURED 2026-08-12
-  // against the tree, that claim is FALSE: `.papercusp/tool-catalog.json` is TRACKED (1.1MB, last
-  // committed a101156ae1) and is not ignored. So there IS a real committed artifact with a real
-  // drift invariant, and this guard is a genuine WIRE candidate, not a category error. What still
-  // blocks it is cost, not meaning: it cold-imports the full ~300-tool registry, which is the
-  // documented reason its doc sibling is CI-informational and the reason the projections umbrella
-  // needed a per-child SIGKILL timeout. Measure it on a quiet box before wiring; the stale header
-  // claim is corrected in that file.
-  ['gen:tool-catalog:check', 'artifact IS committed, so a real invariant; blocked on cost — heavy full-registry import, needs a quiet-box measurement before wiring'],
+  // ⚠ `gen:tool-catalog:check` LOOKED like the same case and WAS THE MIRROR IMAGE — it is now
+  // WIRED (REPO_WIDE_INVARIANT_GUARDS in affected-tests.mjs), not acknowledged. The SAME one
+  // probe decided both, in opposite directions: openapi's artifact is gitignored (no repo-level
+  // invariant exists, so retire), tool-catalog's is TRACKED (a real invariant exists, so wire).
+  // Note gen-openapi-spec.ts's header justified its stance as "same stance + reasons as
+  // gen-tool-catalog.ts", whose header in turn claimed its artifact was "NOT committed" — false
+  // against the tree. Two headers agreeing is not corroboration when one cites the other; both
+  // are corrected in place. The cost objection that held tool-catalog back also did not survive
+  // measurement: ~10s, DB-less, idempotent.
 ]);
 
 /**
@@ -274,8 +272,25 @@ export const ACKNOWLEDGED_UNREACHABLE = new Map([
  * still shrink-only from this new baseline, and a guard orphaned from here on fails the
  * build rather than landing here. Raising it again to park a newly-rotted guard would be
  * precisely the abuse the sibling `KNOWN_DARK_FLAGS` rule exists to stop.
+ *
+ * ── 22 → 15, paid down one guard at a time on 2026-08-12/13, all under WI-38239. ──
+ * Each step REGISTERED or RETIRED a guard and moved the ceiling DOWN with it; the set was
+ * never appended to. 22→21 gen:authored-docs:check (wired), 21→20 gen:claude-md-manifest:check
+ * (retired — CLAUDE.md is projector output and its generator deliberately refuses a generated
+ * source), 20→18 gen:compaction:check + gen:knowledge-packs:check (wired), 18→16
+ * gen:doc-projections:check + gen:openapi:check (retired — an umbrella whose five children are
+ * each already CI-enforced, and a guard over a gitignored artifact), 16→15
+ * gen:tool-catalog:check (wired).
+ *
+ * ONE PROBE decided wire-vs-retire in every one of those cases and it is the first thing to
+ * run on the next candidate: `git ls-files <artifact>` + `git check-ignore -v <artifact>`.
+ * An IGNORED artifact has no repo-level invariant at all — `--check` treats a missing file as
+ * stale, so wiring it red-pins every fresh checkout. A TRACKED artifact has a real invariant
+ * however heavy its generator, and the only remaining objection is COST — which is measurable,
+ * and is never by itself a reason to retire. Do not substitute a generator's header comment
+ * for that probe: three of them were measured wrong here, mutually citing each other.
  */
-export const UNREACHABLE_HIGH_WATERMARK = 16;
+export const UNREACHABLE_HIGH_WATERMARK = 15;
 
 /**
  * Guards that ARE enforced, but only over PART of what they scan (EI-19461064447747454).

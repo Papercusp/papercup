@@ -578,3 +578,55 @@ describe('rerankRows — the generic core', () => {
     expect(vi.mocked(rankWithReranker)).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * The cross-encoder score is the ONLY per-hit number that is a true relevance
+ * MAGNITUDE — the fused `score` is rank-derived, so thresholding on it is a rank
+ * cutoff `limit` already performs. It used to be computed and discarded, which
+ * is why a relevance floor could not be expressed at all.
+ *
+ * The load-bearing case is the LAST one: an unscored row must come back with the
+ * field ABSENT, never 0. `@papercusp/rerank`'s degrade path reports `score: 0`
+ * for rows it never judged, so collapsing that into the field would make every
+ * degraded hit look maximally irrelevant — and a floor calibrated on that data
+ * would be silently wrong in the safe-looking direction.
+ */
+describe('rerankProseHits — cross-encoder score exposure', () => {
+  /** Drive `onRerankScores` with a caller-supplied score per row, in row order. */
+  const scoringWith = (scores: Array<number | null>) =>
+    vi.mocked(rankWithReranker).mockImplementation(async (_q, docs, o) => {
+      const rows = docs.map((d) => d.row as SearchHit);
+      (o as { onRerankScores?: (r: Array<{ row: SearchHit; score: number | null }>) => void })
+        .onRerankScores?.(rows.map((row, i) => ({ row, score: scores[i] ?? null })));
+      return rows.slice(0, o.limit);
+    });
+
+  it('attaches the score the cross-encoder gave each returned hit', async () => {
+    scoringWith([0.9, 0.5, 0.1]);
+    const out = await rerankProseHits('q', HITS, 3);
+    expect(out.map((h) => h.rerankScore)).toEqual([0.9, 0.5, 0.1]);
+  });
+
+  it('does not mutate the caller’s hits — the annotation is a copy', async () => {
+    scoringWith([0.9, 0.5, 0.1]);
+    await rerankProseHits('q', HITS, 3);
+    expect(HITS.every((h) => !('rerankScore' in h))).toBe(true);
+  });
+
+  it('a stage that never reached the engine annotates nothing', async () => {
+    vi.mocked(rankWithReranker).mockRejectedValue(new Error('rerank api down'));
+    const out = await rerankProseHits('q', HITS, 3);
+    expect(out.every((h) => !('rerankScore' in h))).toBe(true);
+  });
+
+  it('leaves rerankScore ABSENT for an unscored row — never 0', async () => {
+    scoringWith([0.9, null, null]);
+    const out = await rerankProseHits('q', HITS, 3);
+    expect(out[0].rerankScore).toBe(0.9);
+    expect(out[1]).not.toHaveProperty('rerankScore');
+    expect(out[2]).not.toHaveProperty('rerankScore');
+    // The whole point: absent ≠ 0. A consumer filtering `>= 0.2` must DROP these
+    // as unknown, not keep them as a scored zero.
+    expect(out.filter((h) => typeof h.rerankScore === 'number')).toHaveLength(1);
+  });
+});

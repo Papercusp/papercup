@@ -41,6 +41,11 @@ import {
   workItemsListCallFromQuery,
   WORK_ITEMS_BY_ID_SHAPE,
   WORK_ITEMS_SEARCH_SHAPE,
+  // WI-38339 — the semantic halves of the widened search shape: set-equality
+  // against the terminal union, and the SELECT-list read the projection rule needs.
+  isCanonicalTerminalUnion,
+  notInStatesFor,
+  selectListOf,
 } from './sql-reads-helpers';
 import type { CoverageResult, SqlSubstitutionPair } from '../types';
 
@@ -540,25 +545,32 @@ export const workItemsSearch: SqlSubstitutionPair = {
   intentLabel: 'work-item-search',
   corpus: 'sql',
   relation: 'work_items',
-  // Excluded because the verb cannot ASK them, not because they render awkwardly:
-  // a TIME predicate (no time-window arg — translating without it would WIDEN the
-  // answer), `source_plan_slug` (no arg at all), and an id predicate (that is the
-  // by-id pair above, and `list` has no id filter).
   // The same positive whitelist, over the typed slices `work_items:list` can ask
-  // for. Everything the corpus writes that the verb CANNOT ask — `state NOT IN
-  // (…)`, `taken_by IS NULL`, `feature_order IS NOT NULL`, a time window, an
-  // `item_kind IN (…)` list, a `lane` filter, an OR across two columns — fails to
-  // match and is left to SQL. An id selector is excluded because that is the
-  // by-id pair above and `list` has no id filter at all.
+  // for. Everything the corpus writes that the verb CANNOT ask — `taken_by IS
+  // NULL`, `feature_order IS NOT NULL`, an `item_kind IN (…)` list, a `lane`
+  // filter, an OR across two columns — fails to match and is left to SQL. An id
+  // selector is excluded because that is the by-id pair above and `list` has no
+  // id filter at all.
+  //
+  // WI-38339 WIDENED THIS, and the widening was NOT automatic: the tool grew four
+  // arguments (`states`, `notTerminal`, `createdSince`/`updatedSince`,
+  // `sourcePlanSlug`) and this whitelist admitted them one at a time, each with a
+  // rendering read by eye. Three shapes the corpus writes are STILL excluded on
+  // purpose, and the reasons are semantic rather than syntactic — see `cover()`
+  // and `inclusiveBoundFor`: an exclusion set that is not the canonical terminal
+  // union, an exclusive `>` / `now() - interval` time bound, and a query that
+  // PROJECTS `source_plan_slug` (filtering on it is served; reading it back is
+  // not, on issue-family rows).
   sqlShape: WORK_ITEMS_SEARCH_SHAPE,
   toolName: 'work_items:list',
   advisoryText:
-    "work_items:list { q, state, kind, assignee, harness, completionAuthority, limit } reads a filtered slice with server-side filters. ⚠ `q` is a literal substring over title AND body/summary, so a title-only ILIKE routes to a SUPERSET. ⚠ It EXCLUDES observation-lane rows by default — pass includeObservations:true to match what a raw SELECT returns. No id filter (that is work_items:get), no time-window arg and no source_plan_slug filter, so a created_at slice, a plan-slug slice, a kind IN-list, a payload-> predicate, an aggregate or a JOIN still wants SQL.",
+    "work_items:list { q, state, states, notTerminal, kind, assignee, harness, sourcePlanSlug, createdSince, updatedSince, completionAuthority, limit } reads a filtered slice with server-side filters. ⚠ `q` is a literal substring over title AND body/summary, so a title-only ILIKE routes to a SUPERSET. ⚠ It EXCLUDES observation-lane rows by default — pass includeObservations:true to match what a raw SELECT returns. ⚠ `notTerminal` means one specific set (the canonical terminal union) — for any OTHER exclusion, stay in SQL. ⚠ createdSince/updatedSince are INCLUSIVE (`>=`) and take an ISO literal, so an exclusive `>` or a `now() - interval` bound stays SQL, and reading either timestamp back needs payloadTier:\"full\". No id filter (that is work_items:get), and source_plan_slug can be FILTERED but is projected on feature rows only, so selecting it, a kind IN-list, a payload-> predicate, an aggregate or a JOIN still wants SQL.",
   routing: {
-    want: 'a filtered work-item / issue slice by text, state, kind or assignee',
-    use: '`work_items:list { q, state, kind, assignee, limit }` — add includeObservations:true to match a raw SELECT, and completionAuthority to list under-evidenced closes',
+    want: 'a filtered work-item / issue slice — text, state set, kind, assignee, plan of origin, or a created/updated window',
+    use: '`work_items:list { q, state, states, notTerminal, kind, assignee, sourcePlanSlug, createdSince, updatedSince, limit }` — add includeObservations:true to match a raw SELECT, and completionAuthority to list under-evidenced closes',
+    // ⚠ Under 300 chars — routing-table.test.ts budgets this as a table cell.
     insteadOf:
-      "`SELECT … FROM work_items WHERE title ILIKE '%x%'`. ⚠ `q` spans title AND summary (a superset); no id, time-window or source_plan_slug filter, so those slices, kind IN-lists, payload-> predicates, aggregates and JOINs stay SQL",
+      "`SELECT … WHERE title ILIKE '%x%'`, or a hand-copied `status NOT IN ('done',…)` — that IS `notTerminal`. ⚠ `q` spans title+summary (a superset). No id filter; an exclusive `>`/`now()` window, a non-union exclusion set, a source_plan_slug PROJECTION, aggregates and JOINs stay SQL",
   },
   expectedVerdict: 'equivalent',
   cover(atom: string): CoverageResult {
@@ -584,6 +596,27 @@ export const workItemsSearch: SqlSubstitutionPair = {
     }
     if (inListCount(atom, 'item_kind') > 1) {
       return { covered: false, reason: 'an IN-list of kinds; `kind` takes one value per call' };
+    }
+    // WI-38339 — `notTerminal` is the ONLY exclusion the verb can express, and it
+    // means one specific set. A NOT-IN list that is not set-equal to the canonical
+    // terminal union is refused rather than approximated: a proper subset renders a
+    // strictly NARROWER answer (the classic silent narrowing), a superset a wider
+    // one, and neither is visible in the rows that come back. The shape admits the
+    // syntax so this check can run; set equality is not a thing a regex decides.
+    const notIn = notInStatesFor(atom);
+    if (notIn.length > 0 && !isCanonicalTerminalUnion(notIn)) {
+      return {
+        covered: false,
+        reason: 'excludes a state set that is not the canonical terminal union; the verb has notTerminal, not an arbitrary exclusion list',
+      };
+    }
+    // WI-38339 — filtering on `source_plan_slug` is served; PROJECTING it is not.
+    // The verb carries it on feature-family rows only (the issue-family mapper does
+    // not emit the key at all), so a query selecting the column would be handed a
+    // result missing it for half the rows — the residual-PROJECTION rule, which is
+    // why `sourcePlanSlug` was admitted to the filter whitelist and not here.
+    if (/\bsource_plan_slug\b/i.test(selectListOf(atom))) {
+      return { covered: false, reason: 'projects source_plan_slug; work_items:list returns it on feature-family rows only' };
     }
     const call = workItemsListCallFromQuery(atom);
     if (!call) return { covered: false, reason: 'no text fragment or typed slice to translate into work_items:list args' };

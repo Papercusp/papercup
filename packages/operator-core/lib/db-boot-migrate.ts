@@ -90,6 +90,127 @@ export function contentionRetryBackoffMs(attempt: number): number {
   return Math.min(CONTENTION_RETRY_BASE_DELAY_MS * 2 ** (attempt - 1), CONTENTION_RETRY_MAX_DELAY_MS);
 }
 
+// ---------------------------------------------------------------------------
+// WI-38354: keep harness_shared.migration_reservations DERIVED from what is
+// actually applied, instead of maintained in parallel by hand.
+//
+// THE CLASS THIS CLOSES. `lint:migrations` check 5 fails any on-disk
+// `<NNN>-*.sql` with NNN >= ENFORCED_FROM that has no `migration_reservations`
+// row. It is a GATE lint, so ONE hand-numbered migration red-pins
+// green-checkpoint AND every agent's `release:cut` — hours after the file
+// landed, in somebody else's lane. That has now happened six times (EI-6843,
+// WI-3052, EI-10999 — nine files at once, EI-12709, EI-20224121418388370,
+// WI-38348/WI-38350), and every previous fix was a one-off backfill migration,
+// which leaves the trap armed. On 2026-08-13 migration 815 held the gate ~2h,
+// killed a 0.0.16-alpha release cut, and then FOUR agents independently raced
+// four backfill migrations in 48 seconds (816/817/818 all applied, near
+// byte-identical) — permanently spending three migration numbers to repair one
+// missing row.
+//
+// WHY BACKFILLING HERE IS SAFE, i.e. why this does not weaken the allocator.
+// The reservation table is NOT what makes numbering collision-safe.
+// `scripts/next-migration.mjs:171` (the EI-6852 TOCTOU fix) scans
+// `maxNumberOnDisk(SCAN_DIRS)` INSIDE the pg advisory lock, immediately before
+// the reservation INSERT, and allocates
+// `GREATEST(fsMax, maxReserved, maxApplied) + 1`. So a number already present
+// on disk can never be handed out again, row or no row. What the table uniquely
+// protects is the RESERVE-BEFORE-WRITE window — a number claimed whose file does
+// not exist yet — and this reconcile never touches that: it only ever inserts
+// rows for migrations that are ALREADY APPLIED, i.e. whose files certainly
+// exist. `ON CONFLICT (num) DO NOTHING` means an existing reservation (someone
+// else's, with their intent) is never overwritten.
+//
+// WHERE IT RUNS. This function is the one chokepoint every apply path funnels
+// through: native boot-apply, `applyPendingMigrationsNow()`, and the
+// green-checkpoint migration PREFLIGHT (green-checkpoint.ts calls it before it
+// lints). So the gate reconciles the ledger in the same run that would
+// otherwise red on it.
+//
+// FAIL-SOFT, ALWAYS. Bookkeeping must never be able to break booting. Every
+// failure here is logged and swallowed: the caller's migration result is
+// unaffected, and the pre-existing lint still catches anything this misses.
+
+/**
+ * Mirror of ENFORCED_FROM in `scripts/lint-migrations.mjs` — the number at
+ * which reservation discipline began. Numbers below it are grandfathered
+ * legacy history and are deliberately left alone.
+ *
+ * Pinned against the linter by `db-boot-migrate-reservations.test.ts` so the
+ * two cannot drift into disagreeing about which migrations are enforced.
+ */
+export const RESERVATION_ENFORCED_FROM = 494;
+
+/** `<NNN>-<slug>.sql` → NNN, or null when the name carries no numeric prefix. */
+export function migrationNumberOf(filename: string): number | null {
+  const m = /^(\d+)-/.exec(filename);
+  if (!m) return null;
+  const n = Number.parseInt(m[1], 10);
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * PURE — the whole decision, with no DB, so it is unit-testable and so the
+ * SQL below stays a dumb executor of an already-made choice.
+ *
+ * Given the applied migration filenames and the reservation numbers that
+ * already exist, return the rows that must be inserted to make the ledger
+ * complete. Deduplicates by number (two applied files sharing a prefix — the
+ * EI-12709 collision shape — yields ONE row, the first seen, rather than a
+ * conflicting pair).
+ */
+export function missingReservationRows(
+  appliedFilenames: readonly string[],
+  reservedNums: readonly number[],
+  enforcedFrom: number = RESERVATION_ENFORCED_FROM,
+): { num: number; filename: string }[] {
+  const reserved = new Set(reservedNums);
+  const out = new Map<number, string>();
+  for (const filename of appliedFilenames) {
+    const num = migrationNumberOf(filename);
+    if (num === null || num < enforcedFrom || reserved.has(num) || out.has(num)) continue;
+    out.set(num, filename);
+  }
+  return [...out].map(([num, filename]) => ({ num, filename }));
+}
+
+/**
+ * Insert a reservation row for every APPLIED migration >= ENFORCED_FROM that
+ * lacks one. Fail-soft: returns 0 and logs on any error.
+ *
+ * `client` is the postgres-js handle the caller already holds.
+ */
+export async function reconcileMigrationReservations(
+  client: postgres.Sql,
+  log: (s: string) => void = (s) => console.log(`[boot-migrate] ${s}`),
+): Promise<number> {
+  try {
+    const applied = await client<{ filename: string }[]>`
+      SELECT filename FROM harness_shared.schema_migrations`;
+    const reserved = await client<{ num: number }[]>`
+      SELECT num FROM harness_shared.migration_reservations`;
+    const rows = missingReservationRows(
+      applied.map((r) => r.filename),
+      reserved.map((r) => Number(r.num)),
+    );
+    if (rows.length === 0) return 0;
+    await client`
+      INSERT INTO harness_shared.migration_reservations (num, filename, reserved_by, intent)
+      SELECT x.num, x.filename, 'reconcile-on-apply',
+             'auto-reconciled (WI-38354): applied without a db:next-migration reservation row'
+        FROM ${client(rows, 'num', 'filename')} AS x(num, filename)
+      ON CONFLICT (num) DO NOTHING`;
+    log(
+      `reconciled ${rows.length} migration_reservations row(s) from applied history ` +
+        `(${rows.map((r) => r.num).join(', ')}) — lint:migrations check 5 would otherwise red the shared gate`,
+    );
+    return rows.length;
+  } catch (e) {
+    // Bookkeeping must never break the boot or the gate preflight.
+    log(`migration_reservations reconcile skipped: ${(e as Error)?.message ?? String(e)}`);
+    return 0;
+  }
+}
+
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 // EI-19403856469813053: a CROSS-BOOT cooldown for a migration file that keeps
@@ -328,6 +449,13 @@ export async function applyPendingMigrationsNow(): Promise<BootMigrateResult | n
     if (appliedCount > 0) {
       console.log(`[boot-migrate] applied ${appliedCount} pending migration(s) (of ${totalKnown} known)`);
     }
+    // WI-38354: keep the reservation ledger DERIVED from applied history. Runs
+    // UNCONDITIONALLY, not only when appliedCount > 0 — the migration that
+    // needs reconciling is usually one a DIFFERENT process already applied
+    // (that is exactly the 815 case: applied by a peer's boot at 23:05Z, then
+    // red-pinning the gate for two hours), so gating this on "did I apply
+    // something just now" would skip the case it exists for. Fail-soft inside.
+    await reconcileMigrationReservations(client);
     if (failed.length > 0) {
       const files = failed.map((f) => f.file).join(', ');
       console.error(

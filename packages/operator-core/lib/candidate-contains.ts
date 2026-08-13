@@ -659,6 +659,31 @@ export async function excludedCommitsTouchingPath(
   return out ? out.split('\n').filter(Boolean) : [];
 }
 
+/**
+ * WI-38356 — the gitlink prefix that CONTAINS `relPath`, or null when it is not inside any of
+ * `submodulePaths` (pair with `submodulePrefixes`, whose longest-first order this preserves).
+ *
+ * Why this is needed at all: `excludedCommitsTouchingPath` above runs a SUPERPROJECT
+ * `git log -- <relPath>`, and a submodule's contents are not superproject paths — a commit that
+ * bumps `libs/papercusp` touches exactly that gitlink, never
+ * `libs/papercusp/libs/db/sql/816-x.sql`. So that read's honest answer for a submodule-internal
+ * path is "no commits", which a caller cannot distinguish from "nothing touched it". Resolving
+ * the containing gitlink is what makes the two separable.
+ *
+ * A path EQUAL to a gitlink is deliberately NOT "inside" it: that path already resolves in the
+ * superproject, so it needs no attribution. (`classifyPathsAgainstCandidate`'s own `submoduleFor`
+ * matches equality too, because it must answer "is this path submodule-governed at all" — a
+ * different question from "which commit carries this file".)
+ */
+export function containingSubmodulePath(submodulePaths: string[], relPath: string): string | null {
+  let best: string | null = null;
+  for (const p of submodulePaths) {
+    if (!p || !relPath.startsWith(`${p}/`)) continue;
+    if (best === null || p.length > best.length) best = p;
+  }
+  return best;
+}
+
 /* NOTE: the "every path touched by (from, to]" read deliberately does NOT live here.
  * Its only consumer is `willJudge.excludedPaths` in release-checkpoint-launch.ts, which
  * must stay SYNCHRONOUS — that function's steps from the active-run check to `spawnFn`

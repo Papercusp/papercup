@@ -37,8 +37,12 @@ import {
   gateHealthCallFromQuery,
   workItemsGetCallFromQuery,
   workItemsListCallFromQuery,
+  isCanonicalTerminalUnion,
 } from './sql-reads-helpers';
 import { SQL_READ_PAIRS } from './sql-reads';
+// WI-38339: the drift guard below builds its atom FROM the canonical union, so a
+// state added to (or removed from) it re-points the test instead of stranding it.
+import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
 
 const WS = "install_slug='papercusp' AND workspace_id='papercusp-workspace'";
 
@@ -173,9 +177,13 @@ describe('work_items pairs — a predicate the verb cannot express is not silent
   });
 
   it.each([
-    ['state NOT IN — dropping it WIDENS the answer', "SELECT id FROM w WHERE title ILIKE '%x%' AND state NOT IN ('done','dropped')"],
     ['IS NULL — not expressible as a filter argument', "SELECT id FROM w WHERE status = 'open' AND taken_by IS NULL"],
-    ['a time window — the verb has no time argument at all', "SELECT id FROM w WHERE status='open' AND created_at > '2026-08-01'"],
+    // WI-38339 widened the verb to an INCLUSIVE `>=` window. An exclusive `>` is
+    // still left to SQL — rendering it as `createdSince` would shift the boundary
+    // by exactly the rows sitting on it, which no reader can see in the result.
+    ['an EXCLUSIVE time bound — createdSince is >=, and the difference is invisible', "SELECT id FROM w WHERE status='open' AND created_at > '2026-08-01'"],
+    // A `now()`-relative bound re-evaluates per run; a rendered constant does not.
+    ['a now()-relative window — the rendered constant would be a different query', "SELECT id FROM w WHERE status='open' AND created_at >= now() - interval '7 days'"],
     ['an OR across two columns — the verb ANDs its filters', "SELECT id FROM w WHERE title ILIKE '%v%' OR payload::text ILIKE '%v%'"],
     ['a lane filter — there is an include-observations boolean, not a lane arg', "SELECT id FROM w WHERE lane = 'observation' AND title LIKE '%x%'"],
     ['an unprojected column — the rows would come back without it', "SELECT terminal_reason FROM w WHERE status = 'open'"],
@@ -203,5 +211,105 @@ describe('work_items pairs — a predicate the verb cannot express is not silent
     expect(call).toContain('kind: "feature"');
     expect(call).toContain('assignee: "su-9"');
     expect(call).toContain('harness: "papercusp"');
+  });
+
+  /* ── WI-38339: the four widened slices ────────────────────────────────────────
+   *
+   * The tool grew `states` / `notTerminal` / `createdSince` / `updatedSince` /
+   * `sourcePlanSlug`; this pair had to be widened DELIBERATELY to match, because
+   * its shape is a positive whitelist. The division of labour these tests pin:
+   * the SHAPE decides syntax, `cover()` decides semantics. Two of the three
+   * remaining refusals below are only expressible in `cover()` — set equality
+   * against the terminal union, and whether a column is PROJECTED — so a test
+   * asserting them on the shape alone would be asserting the wrong thing.
+   */
+
+  const covers = (pair: typeof search, atom: string): boolean => pair.cover!(atom).covered;
+
+  // CALIBRATION, and not a formality: every refusal below would also pass against
+  // a widening that matched nothing at all. This says each new slice really is
+  // claimed, so the refusals mean "discerning" rather than "inert".
+  it('CALIBRATION: the widened shape claims each new slice', () => {
+    const atoms = [
+      "SELECT id FROM harness_shared.work_items WHERE status IN ('open','wip') AND harness_slug='papercusp'",
+      "SELECT id FROM harness_shared.work_items WHERE status NOT IN ('done','dropped','resolved','closed','passed','deprecated')",
+      "SELECT id FROM harness_shared.work_items WHERE source_plan_slug = 'my-plan'",
+      "SELECT id FROM harness_shared.work_items WHERE created_at >= '2026-08-01' AND status='open'",
+    ];
+    for (const atom of atoms) {
+      expect(claims(search, atom), atom).toBe(true);
+      expect(covers(search, atom), atom).toBe(true);
+    }
+  });
+
+  it('renders a state SET as `states`, lowercased', () => {
+    const call = workItemsListCallFromQuery("SELECT id FROM w WHERE status IN ('OPEN','wip')");
+    expect(call).toContain('states: ["open", "wip"]');
+  });
+
+  // THE HIGH-VALUE CASE. Measured over 7d of real agent SQL naming `work_items`:
+  // 100 statements carry a NOT-IN state list, and the dominant ones enumerate this
+  // exact union in a dozen different ORDERS — hand-copied terminal sets, which is
+  // the drift ANY_FAMILY_TERMINAL_STATES exists to end. Order must not matter.
+  it('renders a scrambled copy of the canonical terminal union as notTerminal', () => {
+    const call = workItemsListCallFromQuery(
+      "SELECT id FROM w WHERE state NOT IN ('passed','deprecated','resolved','closed','done','dropped')",
+    );
+    expect(call).toContain('notTerminal: true');
+  });
+
+  // A PROPER SUBSET is the trap: `notTerminal` would additionally exclude
+  // resolved/closed/passed/deprecated, answering with FEWER rows than were asked
+  // for. The shape admits the syntax so this check can run; cover() refuses it.
+  it('refuses an exclusion set that is not the canonical terminal union', () => {
+    const subset = "SELECT id FROM w WHERE title ILIKE '%x%' AND state NOT IN ('done','dropped')";
+    expect(claims(search, subset)).toBe(true);
+    expect(covers(search, subset)).toBe(false);
+    const superset = "SELECT id FROM w WHERE state NOT IN ('done','dropped','resolved','closed','passed','deprecated','blocked')";
+    expect(covers(search, superset)).toBe(false);
+  });
+
+  // DRIFT GUARD: `notTerminal` is servable only against the SOURCE constant. If a
+  // state is ever added to or removed from the union, a hard-coded copy in the
+  // renderer would keep claiming the old set — silently, since a wrong exclusion
+  // still returns plausible rows. Built FROM the constant, so it cannot lag it.
+  it('tracks ANY_FAMILY_TERMINAL_STATES rather than a copy of its members', () => {
+    const fromSource = `SELECT id FROM w WHERE status NOT IN (${ANY_FAMILY_TERMINAL_STATES.map((s) => `'${s}'`).join(',')})`;
+    expect(workItemsListCallFromQuery(fromSource)).toContain('notTerminal: true');
+    expect(isCanonicalTerminalUnion([...ANY_FAMILY_TERMINAL_STATES])).toBe(true);
+    // …and one state short of it is not the union, whatever the union becomes.
+    expect(isCanonicalTerminalUnion(ANY_FAMILY_TERMINAL_STATES.slice(1))).toBe(false);
+  });
+
+  it('renders a plan-of-origin filter, and an INCLUSIVE created/updated window', () => {
+    expect(workItemsListCallFromQuery("SELECT id FROM w WHERE source_plan_slug='my-plan'")).toContain(
+      'sourcePlanSlug: "my-plan"',
+    );
+    const windowed = workItemsListCallFromQuery(
+      "SELECT id FROM w WHERE created_at >= '2026-08-01' AND updated_at >= '2026-08-05'",
+    );
+    expect(windowed).toContain('createdSince: "2026-08-01"');
+    expect(windowed).toContain('updatedSince: "2026-08-05"');
+  });
+
+  // The PROJECTION half of the widening. The verb can now FILTER on the window,
+  // but its default tiers project neither timestamp — so a query that READS the
+  // column it filters on must be sent to the full tier, exactly as the by-id pair
+  // does for `payload`. A WHERE-only mention needs no wider result.
+  it('asks for the full tier only when a timestamp is actually SELECTED', () => {
+    expect(workItemsListCallFromQuery("SELECT id, created_at FROM w WHERE created_at >= '2026-08-01'")).toContain(
+      'payloadTier: "full"',
+    );
+    expect(workItemsListCallFromQuery("SELECT id, title FROM w WHERE created_at >= '2026-08-01'")).not.toContain(
+      'payloadTier',
+    );
+  });
+
+  // FILTERING on source_plan_slug is served; PROJECTING it is not — the verb
+  // carries it on feature-family rows only, so half the rows would come back
+  // without the column the query exists to read.
+  it('refuses a source_plan_slug PROJECTION while serving the filter', () => {
+    expect(covers(search, "SELECT id, source_plan_slug FROM w WHERE status='open'")).toBe(false);
+    expect(covers(search, "SELECT id, title FROM w WHERE source_plan_slug='my-plan'")).toBe(true);
   });
 });

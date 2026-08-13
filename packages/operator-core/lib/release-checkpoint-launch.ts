@@ -37,8 +37,10 @@ import { quietCutSecFromEnv } from './release/quiet-cut';
 import { gateVerdictEnv, type GateVerdictTarget } from './release/gate-verdict-target';
 import {
   callerEditsInCandidate,
+  containingSubmodulePath,
   excludedCommitsTouchingPath,
   gitReadFromExecSync,
+  submodulePrefixes,
   testImplSplitRisk,
   uncommittedPaths,
   type MissingReason,
@@ -1172,8 +1174,31 @@ export async function checkpointCandidateContainment(args: {
 
   const excludedCommitsTouchingYourFiles: { path: string; commits: string[] }[] = [];
   if (args.candidateSha && tipSha && args.candidateSha !== tipSha) {
+    // WI-38356: a path inside a SUBMODULE is invisible to the superproject `git log -- <path>`
+    // this read performs — an excluded commit touches the GITLINK (`libs/papercusp`), never
+    // `libs/papercusp/libs/db/sql/816-x.sql`. Left unattributed, every submodule path yields
+    // zero commits, which empties `blockedPaths` in assessPreLaunchExclusion and downgrades a
+    // DECIDED miss ('newer-commit', with the bump commit sitting right there in the quiet
+    // window) to 'exclusion-undecidable'. That fails OPEN, so the pre-launch refusal cannot
+    // arm and `waitForEligibility` becomes a silent no-op — measured 2026-08-13T01:56:22Z,
+    // spending a ~55min suite on a candidate provably lacking all four declared paths, the
+    // exact WI-6946 defect this guard exists to prevent.
+    //
+    // This is the COMMON case here, not an edge one: every migration lives under
+    // `libs/papercusp/libs/db/sql/` and every borrowable lib under `libs/generic/*`, so the
+    // guard was blind precisely where release-cut preflights (lint:migrations) send agents to
+    // fire a manual gate run.
+    const submodules = verdict.missing.length ? await submodulePrefixes(git) : [];
     for (const p of verdict.missing) {
-      const commits = await excludedCommitsTouchingPath(git, args.candidateSha, tipSha, p);
+      let commits = await excludedCommitsTouchingPath(git, args.candidateSha, tipSha, p);
+      if (!commits.length) {
+        const gitlink = containingSubmodulePath(submodules, p);
+        // Recorded under the ORIGINAL declared path, not the gitlink: the caller asked about
+        // `p`, the downstream eligibility join keys on `p`, and the gitlink bump IS the commit
+        // that carries `p` into a later candidate — so waiting for it provably resolves the
+        // exclusion, which is the precondition for refusing rather than launching.
+        if (gitlink) commits = await excludedCommitsTouchingPath(git, args.candidateSha, tipSha, gitlink);
+      }
       if (commits.length) excludedCommitsTouchingYourFiles.push({ path: p, commits });
     }
   }

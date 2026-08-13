@@ -53,8 +53,47 @@ import {
   formatPackResidue,
   resolvePackIdentityEntries,
 } from '../packages/operator-core/lib/knowledge-packs/pack-residue';
+// OKF v0.2 frontmatter, applied ON EXPORT — see okfExportBody below. Both modules
+// guard their own entrypoint (`if (import.meta.url === invokedPath) main()`), so
+// importing them runs nothing.
+import { planDocAddition, planManifestAddition } from './okf-backfill-packs.mjs';
+import { insertIntoFrontmatter } from './okf-backfill-insights.mjs';
 
 const PACK_ID = 'fleet-lessons';
+
+/**
+ * Normalize one exported file to OKF v0.2 — the shape `lint:okf-conformance`
+ * REQUIRES of everything under its PACKS_PREFIX scan root.
+ *
+ * WHY THIS EXISTS (WI-38239, measured 2026-08-13): this exporter used to copy the
+ * curated pack VERBATIM, while the committed copy had been backfilled to OKF v0.2
+ * by scripts/okf-backfill-packs.mjs. The curated source has no such backfill, so
+ * `--check` reported 4 files "differ" and told the reader to run the writer — and
+ * running it would have STRIPPED `okf_version` / `type:` from the committed pack
+ * and turned `lint:okf-conformance` red. Two guards over the same files, each
+ * prescribing a state the other rejects, with the red one prescribing the break.
+ *
+ * The asymmetry is real and permanent: the curated pack is machine-local fleet
+ * state that nothing lints, while the committed copy is what SHIPS and is linted.
+ * So conformance is the EXPORTER's job, not the source's — applied here, what ships
+ * is conformant by construction no matter what the curated side holds, and the
+ * class cannot recur for a pack adopted tomorrow.
+ *
+ * Idempotent: both planners no-op (`already-backfilled`) when the field is present,
+ * so a file that already conforms round-trips byte-identical and reports no drift.
+ */
+function okfExportBody(file: string, text: string): string {
+  if (file === 'manifest.yaml') {
+    const { next } = planManifestAddition(text);
+    return next ?? text;
+  }
+  const { lines } = planDocAddition(text);
+  // insertIntoFrontmatter returns null when there is no frontmatter block to
+  // insert into; that is not ours to repair here — ship the text unchanged and
+  // let lint:okf-conformance name it, rather than silently rewriting a doc shape
+  // this exporter does not understand.
+  return insertIntoFrontmatter(text, lines) ?? text;
+}
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 const destDir = join(
@@ -125,7 +164,9 @@ async function main(): Promise<number> {
   };
 
   for (const f of srcFiles) {
-    const body = bodies.get(f)!;
+    // Residue was judged on the RAW source above; conformance is applied to what
+    // actually ships, so the comparison below is committed-vs-what-we-would-write.
+    const body = okfExportBody(f, bodies.get(f)!);
     const dst = join(destDir, f);
     const current = await fs.readFile(dst, 'utf8').catch(() => null);
     if (current !== body) {

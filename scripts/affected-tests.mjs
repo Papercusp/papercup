@@ -858,6 +858,51 @@ const REPO_WIDE_INVARIANT_GUARDS = [
       f === 'scripts/gen-knowledge-packs.mjs',
   },
   {
+    // WI-38239 — `gen:tool-catalog:check`, the last WIRE-able member of the orphaned `gen:*:check`
+    // cohort the census widening exposed. It guards `.papercusp/tool-catalog.json`, the 1.1MB
+    // projection of the `defineTool` registry (docs-and-memory-as-projections D-002).
+    //
+    // TRACKED-VS-IGNORED DECIDES WIRE-VS-RETIRE, and here it decided AGAINST the generator's own
+    // header: this generator and its openapi sibling BOTH claimed the artifact was "NOT committed"
+    // — the sibling citing this one BY NAME as its justification. Measured against the tree that is
+    // false (`git ls-files` returns it; `git check-ignore` does not), so a genuinely committed
+    // artifact carries a genuine drift invariant. The openapi sibling was RETIRED on the opposite
+    // measurement: that artifact IS gitignored, and `--check` treats a missing file as stale, so
+    // wiring it would have red-pinned every fresh checkout. Two headers agreeing with each other is
+    // not corroboration when one inherits from the other — verify against the tree.
+    //
+    // THE INVARIANT WAS ALREADY VIOLATED WHEN THIS ENTRY WAS WRITTEN, which is the case for wiring
+    // it rather than an argument for it: the committed catalog was missing FOUR tools that exist in
+    // the registry (db:migrations, issues:list, testing:runs, work_items:stranded) plus a batch of
+    // edited descriptions/guidance. Nothing reported it, and the repo's own CLAUDE.md routing table
+    // already documented three of the four as available to agents.
+    //
+    // The cost objection in that header — "it cold-imports the full ~300-tool registry" — is the
+    // only real one, and it does not survive measurement: ~10s (3 runs: 10.2 / 9.6 / 10.6), 3/3
+    // completions, idempotent (regenerate, then `--check` exits 0). It needs NO database and no
+    // network — against a dead PG port with an empty PAPERCUSP_HOME it still exits 0 in 10.6s — so
+    // it is runnable in GitHub CI exactly as it is here (the import registers definitions; pools
+    // open lazily and nothing queries).
+    workspace: '@papercusp/operator-core',
+    script: 'gen:tool-catalog:check',
+    // No hostSuiteRatchet: nothing execs gen-tool-catalog.ts, and the only repo references to it
+    // are the scaffold tool's instructional text. Declaring one would be the phantom ratchet the
+    // registry test forbids.
+    appliesTo: (f) =>
+      // All 12 randomly sampled catalog entries define under agent-tools/; endpoint-route
+      // contributes none (every one of the 729 entries carries BOTH an MCP name and an http path).
+      // `.test.ts` is excluded deliberately — a test beside a tool registers nothing.
+      (f.startsWith('packages/operator-core/lib/agent-tools/') && !f.endsWith('.test.ts')) ||
+      // The projection surface itself: `listAllProjectedTools` and `defineTool` decide WHAT is
+      // projected and WHICH fields land, so a change here can move all 729 entries at once with no
+      // tool file edited.
+      (f.startsWith('packages/agent-mcp/src/') && !f.endsWith('.test.ts')) ||
+      (f.startsWith('libs/generic/tooldef/src/') && !f.endsWith('.test.ts')) ||
+      f === 'scripts/gen-tool-catalog.ts' ||
+      // Drift in the other direction: a hand-edit to the generated artifact.
+      f === '.papercusp/tool-catalog.json',
+  },
+  {
     // WI-38312 — `lint:sidecar-fallback-reported` (EI-20281745253229841) shipped enforcing
     // NOTHING: its only coverage was a logic-test of its predicate over fixtures, so
     // lint:guard-reachability went red for every agent whose change mapped into

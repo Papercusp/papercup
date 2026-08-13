@@ -43,6 +43,13 @@ import {
   renderPreLaunchRefusal,
   PRELAUNCH_EXCLUSION_MAX_WAIT_SEC,
 } from './release-checkpoint-launch';
+// WI-38356: the control + calibration cases below call the underlying reads directly, to prove
+// the submodule fixture is exercising the blind spot rather than a broken fake.
+import {
+  containingSubmodulePath,
+  excludedCommitsTouchingPath,
+  gitReadFromExecSync,
+} from './candidate-contains';
 
 // 2026-07-10: every run wrote to /tmp/<unit>.log, so the natural response to a red —
 // re-fire — truncated the failure output that red was telling you to read. Each run now
@@ -1553,6 +1560,88 @@ describe('checkpointCandidateContainment (P-004)', () => {
     expect(r.unknown).toEqual(['a.ts']);
     expect(r.included).toEqual([]);
     expect(r.warning).toBeNull();
+  });
+
+  /**
+   * WI-38356, reproduced from the live 2026-08-13T01:56:22Z inputs.
+   *
+   * A declared path INSIDE a submodule, missing for `newer-commit`, whose carrying commit is the
+   * superproject GITLINK BUMP sitting in the quiet window. `excludedCommitsTouchingYourFiles`
+   * must attribute that bump to the declared path — because that list is the sole input to
+   * `assessPreLaunchExclusion`'s `blockedPaths`, and an empty list there silently downgrades a
+   * DECIDED miss to `exclusion-undecidable`, which fails OPEN and spends a ~55min suite on a
+   * candidate that provably lacks the fix (and makes `waitForEligibility:true` a no-op).
+   *
+   * The stakes are structural, not incidental: every migration lives under
+   * `libs/papercusp/libs/db/sql/` and every borrowable lib under `libs/generic/*`, so before this
+   * the guard was blind for the entire surface whose own preflight (`lint:migrations`) is what
+   * sends agents to fire a manual gate run.
+   */
+  it('attributes a submodule GITLINK bump to the declared path inside it (WI-38356)', async () => {
+    const SUB = 'libs/papercusp';
+    const REL = 'libs/db/sql/816-backfill-migration-reservation-815-wi38348.sql';
+    const FULL = `${SUB}/${REL}`;
+    const PIN = 'cba68157b0142fd4a90ab0d0c023990a4a26c658'; // the candidate's stale gitlink
+    const BUMP = 'e0a0e71b12 Resume AUTO work loop';
+
+    const answers = {
+      'config --file .gitmodules --get-regexp path': `submodule.${SUB}.path ${SUB}`,
+      // Committed in the submodule (HEAD blob === worktree blob) ⇒ reason `newer-commit`,
+      // never `uncommitted`: waiting for the bump is the lever that actually works.
+      [`-C ${SUB} hash-object -- ${REL}`]: BLOB_NEW,
+      [`-C ${SUB} rev-parse --verify HEAD:${REL}`]: BLOB_NEW,
+      // The candidate pins an OLDER submodule commit, which does not carry the file at all.
+      [`ls-tree cand -- ${SUB}`]: `160000 commit ${PIN}\t${SUB}`,
+      // The gitlink bump is a SUPERPROJECT commit touching only `libs/papercusp`. Note there is
+      // deliberately NO answer for `-- ${FULL}`: a superproject log for a submodule-internal
+      // path legitimately finds nothing, and that honest nothing is what used to end the story.
+      [`log --oneline --no-decorate cand..tip -- ${SUB}`]: BUMP,
+    };
+
+    const r = await checkpointCandidateContainment({
+      root: '/repo',
+      candidateSha: 'cand',
+      tipSha: 'tip',
+      paths: [FULL],
+      execFn: fakeExec(answers),
+    });
+
+    expect(r.paths).toEqual([{ path: FULL, inCandidate: false, reason: 'newer-commit', unknownReason: null }]);
+    expect(r.missing).toEqual([FULL]);
+    // Keyed by the DECLARED path, not the gitlink: assessPreLaunchExclusion joins on what the
+    // caller asked about, so attributing this to `libs/papercusp` would not arm the refusal.
+    expect(r.excludedCommitsTouchingYourFiles).toEqual([{ path: FULL, commits: [BUMP] }]);
+
+    /* CONTROL, kept permanently: the pre-fix attributor, which consulted ONLY the declared path.
+       It runs against the very same fixture and must come back empty — otherwise this test would
+       pass with the fix reverted, and would be proving nothing. (Per the repo's falsifiability
+       discipline, a module-level subject gets a wrong implementation held in the test file rather
+       than a mutation of the shared tree.) */
+    const preFix = await (async () => {
+      const git = gitReadFromExecSync(fakeExec(answers), '/repo');
+      return excludedCommitsTouchingPath(git, 'cand', 'tip', FULL);
+    })();
+    expect(preFix).toEqual([]);
+
+    /* CALIBRATION: the same fixture, asked about the gitlink itself, DOES yield the bump — so the
+       control's emptiness above is the submodule blind spot, not a broken fixture. */
+    const atGitlink = await (async () => {
+      const git = gitReadFromExecSync(fakeExec(answers), '/repo');
+      return excludedCommitsTouchingPath(git, 'cand', 'tip', SUB);
+    })();
+    expect(atGitlink).toEqual([BUMP]);
+  });
+
+  it('containingSubmodulePath: longest match wins, and a gitlink is not inside ITSELF', () => {
+    const subs = ['libs/generic/sync', 'libs/papercusp', 'libs/papercusp/nested'];
+    expect(containingSubmodulePath(subs, 'libs/papercusp/libs/db/sql/816.sql')).toBe('libs/papercusp');
+    // A nested submodule must beat its parent regardless of the order handed in.
+    expect(containingSubmodulePath(subs, 'libs/papercusp/nested/a.ts')).toBe('libs/papercusp/nested');
+    // Equality is NOT containment: the gitlink path already resolves in the superproject.
+    expect(containingSubmodulePath(subs, 'libs/papercusp')).toBeNull();
+    expect(containingSubmodulePath(subs, 'packages/operator-core/lib/x.ts')).toBeNull();
+    // No `.gitmodules` ⇒ no attribution, which restores plain superproject behaviour exactly.
+    expect(containingSubmodulePath([], 'libs/papercusp/libs/db/sql/816.sql')).toBeNull();
   });
 
   /**
