@@ -23,6 +23,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   getAncestryChain,
   getOperationalArgv,
+  isStructuredPayloadArg,
   listProcesses,
   matchExternalProcesses,
   matchExternalProcessesDetailed,
@@ -75,6 +76,68 @@ describe('parseArgv and getOperationalArgv', () => {
       'mac_hdd_ng.img',
     ];
     expect(getOperationalArgv(argv)).toEqual(['/usr/bin/gnome-terminal', '--wait', '--target', 'mac_hdd_ng.img']);
+  });
+
+  it('removes a peer agent JSON payload but retains the executable and real args', () => {
+    const argv = [
+      'node',
+      '/repo/scripts/ptool.mjs',
+      'work_items:checkpoint',
+      '{"id":"WI-38341","checkpoint":"waiting on green-checkpoint"}',
+      '--json',
+    ];
+    expect(getOperationalArgv(argv)).toEqual(['node', '/repo/scripts/ptool.mjs', 'work_items:checkpoint', '--json']);
+  });
+});
+
+// EI-20303820187580514. Ancestor-exclusion cannot reach these: a peer's hook
+// process is an unrelated third party, not the caller's ancestor, and its
+// payload carries no fixed marker to match on. The discriminator is structural.
+describe('isStructuredPayloadArg', () => {
+  it('treats a hook envelope as payload, at the sizes really observed (12KB)', () => {
+    const envelope = JSON.stringify({
+      session_id: '019ff901-330d-7dd2-a4c4-88523cbe11e4',
+      transcript_path: '/home/x/.papercusp/session-claude/t.jsonl',
+      tool_name: 'Bash',
+      tool_input: { command: "ptool work_items:checkpoint --json - <<'JSON' ... green-checkpoint ..." },
+      padding: 'x'.repeat(12_000),
+    });
+    expect(isStructuredPayloadArg(envelope)).toBe(true);
+  });
+
+  it('treats a settings blob and a JSON array as payload', () => {
+    expect(isStructuredPayloadArg('{"apiKeyHelper":"","env":{"ANTHROPIC_BASE_URL":"http://127.0.0.1:9073"}}')).toBe(
+      true,
+    );
+    expect(isStructuredPayloadArg('["green-checkpoint","release-cut"]')).toBe(true);
+  });
+
+  it('tolerates surrounding whitespace, as a shell-quoted payload can carry it', () => {
+    expect(isStructuredPayloadArg('  {"tool_name":"Bash"}\n')).toBe(true);
+  });
+
+  // The controls. These must stay operational: a jq program and a brace-glob
+  // both START like JSON, so a naive first-character check would swallow them
+  // and silently turn real matches into non-matches.
+  it('does NOT treat a jq program as payload (starts with { but is not valid JSON)', () => {
+    expect(isStructuredPayloadArg('{a:1}')).toBe(false);
+    expect(isStructuredPayloadArg('{"green-checkpoint"')).toBe(false);
+  });
+
+  it('does NOT treat ordinary arguments as payload', () => {
+    expect(isStructuredPayloadArg('green-checkpoint')).toBe(false);
+    expect(isStructuredPayloadArg('/var/log/green-checkpoint.log')).toBe(false);
+    expect(isStructuredPayloadArg('')).toBe(false);
+    expect(isStructuredPayloadArg('{}')).toBe(true);
+  });
+
+  // Calibration: a JSON SCALAR is not a payload envelope. Without this, a
+  // subject that returned true for everything parseable would still pass the
+  // positive cases above.
+  it('does NOT treat a bare JSON scalar as payload', () => {
+    expect(isStructuredPayloadArg('123')).toBe(false);
+    expect(isStructuredPayloadArg('"green-checkpoint"')).toBe(false);
+    expect(isStructuredPayloadArg('null')).toBe(false);
   });
 });
 
@@ -187,6 +250,68 @@ describe('matchExternalProcesses — the EI-18666147162251862 regression', () =>
     expect(report.matches.map((m) => m.pid)).toEqual([777]);
     expect(report.fullMatches.map((m) => m.pid)).toEqual([777, 778, 779]);
     expect(report.argvTextOnly.map((m) => m.pid)).toEqual([778, 779]);
+    expect(matchExternalProcesses(PATTERN, { procRoot: fixtureRoot, selfPid: 100 }).map((m) => m.pid)).toEqual([777]);
+  });
+
+  // EI-20303820187580514, the live repro: `check green-checkpoint` reported 4
+  // matches while exactly ONE green-checkpoint process existed. The other three
+  // were peers' hook/tool processes whose JSON argv named the gate because those
+  // agents were writing checkpoints ABOUT it. A false POSITIVE here reads as
+  // concurrent gate runs, and the standing rule is to stand down for those.
+  it('does NOT count a peer agent whose JSON payload merely NAMES the pattern', () => {
+    fixtureRoot = mkdtempSync(join(tmpdir(), 'proc-guard-fixture-'));
+    const PATTERN = 'green-checkpoint';
+    fixtureProc(fixtureRoot, 1, 0, ['/sbin/init']);
+    fixtureProc(fixtureRoot, 100, 1, ['node', 'scripts/proc-guard.mjs', 'check', PATTERN]);
+    // The one real gate process — the ground truth the CLI must report.
+    fixtureProc(fixtureRoot, 777, 1, ['node', 'apps/operator/lib/release/green-checkpoint.ts']);
+    // A peer's PostToolUse hook: the gate name rides inside the tool_input.
+    fixtureProc(fixtureRoot, 269555, 1, [
+      'python3',
+      '-',
+      JSON.stringify({
+        session_id: '21e71b6f-7059-41ed-bb16-54ee447c00ce',
+        tool_name: 'Bash',
+        tool_input: { command: 'ptool work_items:checkpoint ... green-checkpoint ...' },
+      }),
+    ]);
+    // A peer's ptool call, checkpointing ABOUT the gate.
+    fixtureProc(fixtureRoot, 269556, 1, [
+      'node',
+      '/repo/scripts/ptool.mjs',
+      'work_items:checkpoint',
+      '{"id":"WI-38341","checkpoint":"blocked on green-checkpoint"}',
+    ]);
+    // A peer claude launcher carrying a --settings blob.
+    fixtureProc(fixtureRoot, 269557, 1, [
+      'claude',
+      '--settings',
+      '{"env":{"PAPERCUSP_GATE":"green-checkpoint"}}',
+    ]);
+
+    const report = matchExternalProcessesDetailed(PATTERN, { procRoot: fixtureRoot, selfPid: 100 });
+    // The verdict: one real process, not four.
+    expect(report.matches.map((m) => m.pid)).toEqual([777]);
+    // Nothing is silently dropped — the ignored rows stay auditable. Sorted
+    // because row order follows /proc readdir order, which is lexicographic.
+    expect(report.fullMatches.map((m) => m.pid).sort((a, b) => a - b)).toEqual([777, 269555, 269556, 269557]);
+    expect(report.argvTextOnly.map((m) => m.pid).sort((a, b) => a - b)).toEqual([269555, 269556, 269557]);
+  });
+
+  // Calibration for the test above: the payload rule must not be so broad that
+  // it suppresses a real process. A gate process invoked WITH a JSON argument
+  // still matches, because the pattern is in its script path, not the payload.
+  it('still matches a real process that happens to also carry a JSON argument', () => {
+    fixtureRoot = mkdtempSync(join(tmpdir(), 'proc-guard-fixture-'));
+    const PATTERN = 'green-checkpoint';
+    fixtureProc(fixtureRoot, 1, 0, ['/sbin/init']);
+    fixtureProc(fixtureRoot, 100, 1, ['node', 'scripts/proc-guard.mjs', 'check', PATTERN]);
+    fixtureProc(fixtureRoot, 777, 1, [
+      'node',
+      'apps/operator/lib/release/green-checkpoint.ts',
+      '{"candidate":"bb026a02ba"}',
+    ]);
+
     expect(matchExternalProcesses(PATTERN, { procRoot: fixtureRoot, selfPid: 100 }).map((m) => m.pid)).toEqual([777]);
   });
 });

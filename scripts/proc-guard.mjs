@@ -40,6 +40,28 @@
  * image/path arguments). The detailed matcher reports both views so a caller can
  * audit what was ignored instead of mistaking a raw argv count for liveness.
  *
+ * A THIRD false-positive class, and the one that grows with fleet size, is a
+ * PEER's structured payload (EI-20303820187580514). Agent hook and tool
+ * processes are invoked as `python3 - '<json>'` / `node <tool> '<json>'`, where
+ * the JSON argument carries whatever that agent is currently working on — so a
+ * peer writing a checkpoint ABOUT the green-checkpoint gate puts the literal
+ * text "green-checkpoint" in its argv. Ancestor-exclusion above cannot help:
+ * those peers are unrelated third parties, not the caller's ancestors. Marker
+ * matching could not help either, because the payload carries no fixed marker.
+ * The discriminator is STRUCTURAL — an argv entry that parses as a JSON
+ * object/array is data the process was handed, never the process's identity —
+ * and it was validated against this box's live /proc rather than assumed:
+ * across 3,288 processes plus a 20s sweep of transient hook processes, all 49
+ * observed JSON-shaped payloads (`{"session_id":…}` hook envelopes up to 12KB,
+ * `claude --settings {…}`, `ptool` checkpoint bodies) parsed cleanly, and ZERO
+ * argv entries started like JSON but failed to parse — so no length heuristic
+ * or truncation fallback is warranted.
+ *
+ * Note the failure direction this protects: a false NEGATIVE is corrected by
+ * the very next check, but a false POSITIVE reports "4 gate processes running"
+ * when one is, which reads as a stampede and invites an agent to intervene
+ * against a healthy run — or to stand down from a stalled one.
+ *
  * CLI:
  *   node scripts/proc-guard.mjs check <pattern>
  *     Exit 0 + print every operationally matching row (pid + full cmdline) when
@@ -52,7 +74,8 @@
  * `procRoot` / `selfPid` are both injectable for that reason):
  *   listProcesses(procRoot?)              -> [{ pid, ppid, argv, cmdline }]
  *   getAncestryChain(pid, byPid)           -> Set<pid> (pid + every ancestor, incl. pid 1)
- *   getOperationalArgv(argv)              -> argv with known prompt payloads removed
+ *   isStructuredPayloadArg(arg)           -> is this argv entry a JSON payload (data, not identity)?
+ *   getOperationalArgv(argv)              -> argv with prompt + structured payloads removed
  *   matchExternalProcesses(pattern, opts) -> operational matching rows, self + ancestors excluded
  *   matchExternalProcessesDetailed(...)   -> operational, full, and argv-text-only rows
  */
@@ -97,15 +120,52 @@ export function parseArgv(raw) {
 }
 
 /**
- * Remove known agent-launch prompt payloads from argv before process matching.
- * The executable and every non-prompt argument remain eligible, so commands
- * such as `qemu-system-x86_64 ... mac_hdd_ng.img` retain their target args.
+ * Is this argv entry a structured payload the process was HANDED, rather than
+ * part of the process's own identity?
+ *
+ * An argument that parses as a JSON object/array is by construction data — a
+ * hook envelope, a settings blob, a tool-call body. Its contents name whatever
+ * the emitting agent was working on, so matching against it reports a peer's
+ * SUBJECT as if it were a running process (EI-20303820187580514).
+ *
+ * The check is deliberately strict: it requires balanced object/array
+ * delimiters AND a successful parse, so a shell/jq argument that merely starts
+ * with `{` (e.g. jq's `{a:1}`, which is not valid JSON) stays operational.
+ *
+ * @param {string} arg
+ * @returns {boolean}
+ */
+export function isStructuredPayloadArg(arg) {
+  const trimmed = arg.trim();
+  if (trimmed.length < 2) return false;
+  const first = trimmed[0];
+  const last = trimmed[trimmed.length - 1];
+  if (!((first === '{' && last === '}') || (first === '[' && last === ']'))) return false;
+  try {
+    const parsed = JSON.parse(trimmed);
+    return typeof parsed === 'object' && parsed !== null;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Remove agent prompt payloads and peers' structured (JSON) payloads from argv
+ * before process matching. The executable and every real argument remain
+ * eligible, so commands such as `qemu-system-x86_64 ... mac_hdd_ng.img` retain
+ * their target args.
+ *
+ * Index 0 is always kept: the executable is the process's identity even in the
+ * pathological case of a binary whose path parses as JSON.
  *
  * @param {string[]} argv
  * @returns {string[]}
  */
 export function getOperationalArgv(argv) {
-  return argv.filter((arg, index) => index === 0 || !PROMPT_ARG_MARKERS.some((marker) => arg.includes(marker)));
+  return argv.filter(
+    (arg, index) =>
+      index === 0 || (!PROMPT_ARG_MARKERS.some((marker) => arg.includes(marker)) && !isStructuredPayloadArg(arg)),
+  );
 }
 
 /**
@@ -190,9 +250,9 @@ export function getAncestryChain(pid, byPid, maxHops = 512) {
 /**
  * Processes matching `pattern` (a RegExp source) against operational argv,
  * EXCLUDING the caller's own pid and its whole ancestor chain. Operational argv
- * keeps the executable and real process arguments but excludes known agent
- * prompt payloads. A genuinely unrelated external process with the same
- * pattern in a real argument still matches.
+ * keeps the executable and real process arguments but excludes agent prompt
+ * payloads and peers' structured (JSON) payloads. A genuinely unrelated
+ * external process with the same pattern in a real argument still matches.
  *
  * @param {string} pattern - A RegExp source, matched against operational argv.
  * @param {{ procRoot?: string; selfPid?: number }} [opts]
@@ -205,7 +265,9 @@ export function matchExternalProcesses(pattern, opts = {}) {
 /**
  * Return both the liveness-safe matches and the raw-argv matches for audit.
  * `argvTextOnly` contains external processes where the pattern appears only in
- * a recognized prompt payload; those must never make a liveness check positive.
+ * a prompt payload or a structured (JSON) payload; those must never make a
+ * liveness check positive. They stay visible in the counts so a caller can
+ * audit what was ignored — nothing is silently dropped.
  *
  * @param {string} pattern - A RegExp source.
  * @param {{ procRoot?: string; selfPid?: number }} [opts]
