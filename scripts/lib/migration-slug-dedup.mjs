@@ -121,7 +121,8 @@ export function slugSimilarity(a, b) {
  * @property {string} filename         The reserved `NNN-slug.sql` filename.
  * @property {string} [reservedBy]     Ledger label of whoever reserved it.
  * @property {string} [intent]         Free-text intent, echoed back for context.
- * @property {number} [reservedAtMs]   Epoch ms the number was reserved.
+ * @property {number|null} [reservedAtMs] Epoch ms the number was reserved, null/undefined
+ *   when unknown (an applied-but-never-reserved row has no reservation time).
  * @property {number|null} [appliedAtMs] Epoch ms it was applied, null/undefined if not.
  */
 

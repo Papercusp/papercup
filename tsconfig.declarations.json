@@ -123,6 +123,17 @@
     "scripts/lint-tsc-workspaces.mjs",
     "scripts/check-no-unenrolled-detached-spawn.mjs",
     "scripts/next-migration.mjs",
+    // WI-38353 — the migration-slug redundancy detector shared by BOTH reservation
+    // doors. Registered for both reasons this list exists: it is imported directly by
+    // migration-slug-dedup.test.ts AND by next_migration.ts (the MCP tool), which would
+    // otherwise each pay a TS7016, and it is imported by the already-registered
+    // next-migration.mjs, so tsc emits its declaration regardless — leaving it
+    // unregistered makes that an untracked byproduct --check cannot police. Hit the
+    // silent-absence mode this file warns about (EI-20035436440627349) while building
+    // it: two consecutive runs reported "emitted 47 declaration file(s)" and exit 0
+    // while leaving a STALE declaration on disk, so a typedef fix never reached the
+    // importers and lint:tsc still reported the 4 errors it was meant to clear.
+    "scripts/lib/migration-slug-dedup.mjs",
     // WI-37775 / template-supply-chain-repair P-006 — the templates-mirror drift guard.
     // Registered for the first reason this list exists: its diff engine is imported
     // directly by templates-mirror-sync-cli.test.ts, which is what makes the guard
