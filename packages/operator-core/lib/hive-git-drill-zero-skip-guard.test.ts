@@ -18,6 +18,7 @@ import { fileURLToPath } from 'node:url';
 import { physicalDrillSigningBytes, validatePhysicalDrillEvidence } from './sync/pot-git/physical-drill-evidence';
 import { physicalDrillHostReceiptSigningBytes } from './sync/pot-git/physical-drill-host-receipt';
 import { generateEd25519KeypairDer, signWithPrivateKeyDer } from './identity/ed25519';
+import { stagingAdvanceSigningBytes } from './sync/pot-git/staging-advance';
 
 function repoRoot(): string {
   let dir = dirname(fileURLToPath(import.meta.url));
@@ -52,6 +53,157 @@ const validatorPath = join(
 );
 afterAll(() => rmSync(evidenceDir, { recursive: true, force: true }));
 
+function physicalLegD(
+  tower: ReturnType<typeof generateEd25519KeypairDer>,
+  vm: ReturnType<typeof generateEd25519KeypairDer>,
+): Record<string, any> {
+  const runId = 'physical-run-2026-08-13T120000Z';
+  const base = 'a'.repeat(40);
+  const first = 'b'.repeat(40);
+  const second = 'c'.repeat(40);
+  const dirtyHash = 'd'.repeat(64);
+  const advance = (seq: number, stagingSha: string, ts: number) => {
+    const payload = {
+      v: 1,
+      device_pubkey: tower.pubkeyBase64,
+      epoch: 9,
+      seq,
+      staging_sha: stagingSha,
+      ts,
+    };
+    return {
+      ...payload,
+      sig: signWithPrivateKeyDer(tower.privateKeyDer, stagingAdvanceSigningBytes(payload)).toString('base64'),
+    };
+  };
+  const firstAdvance = advance(1, first, Date.parse('2026-08-13T12:12:00Z'));
+  const secondAdvance = advance(2, second, Date.parse('2026-08-13T12:17:00Z'));
+  const trigger = (host: 'tower' | 'vm', role: string, startedAt: string, finishedAt: string) => ({
+    tool: 'git-sync:run',
+    installSlug: 'hello-world-3-pot',
+    host,
+    role,
+    fired: true,
+    startedAt,
+    finishedAt,
+  });
+  const observation = (input: {
+    hostId: 'tower' | 'vm';
+    stage: string;
+    stagingSha: string;
+    rowId: number;
+    seq: number;
+    observedAt: string;
+    worktreeHead?: string;
+    dirty?: boolean;
+  }) => ({
+    schemaVersion: 'hive-git-physical-phase-d-observation/v1',
+    hostId: input.hostId,
+    runId,
+    stage: input.stage,
+    observedAt: input.observedAt,
+    repoPath: `/${input.hostId}/.papercusp/pot-git/hello-world-3-pot/gh-1296269.git`,
+    worktreePath: `/${input.hostId}/hello-world-3-pot`,
+    integratorDeviceKey: tower.pubkeyBase64,
+    integratorNamespaceStagingOid: input.stagingSha,
+    canonicalStagingOid: input.stagingSha,
+    worktreeHeadOid: input.worktreeHead ?? input.stagingSha,
+    dirtyPaths: input.dirty ? ['p505-phase-d-overlap.txt'] : [],
+    protectedPath: 'p505-phase-d-overlap.txt',
+    protectedFileSha256: input.dirty ? dirtyHash : null,
+    cursor: {
+      lastEventId: input.rowId,
+      epochSeq: { epoch: 9, seq: input.seq },
+      stagingSha: input.stagingSha,
+    },
+  });
+  const event = (hostId: 'tower' | 'vm', rowId: number, observedAt: string, payload: Record<string, any>) => ({
+    schemaVersion: 'hive-git-physical-phase-d-event/v1',
+    hostId,
+    rowId,
+    observedAt,
+    key: 'pot-git:staging-advance',
+    source: 'git-sync-integrator',
+    repoKey: 'gh-1296269',
+    payload,
+  });
+  const pending = {
+    workspaceId: 'papercusp-workspace',
+    potSlug: 'hello-world-3-pot',
+    repoKey: 'gh-1296269',
+    devicePubkey: vm.pubkeyBase64,
+    headSha: first,
+    authorGithubUserId: 4243,
+    reason: 'below-steer-tier',
+    state: 'pending',
+    createdTs: Date.parse('2026-08-13T12:10:30Z'),
+    ratifiedTs: null,
+  };
+  return {
+    schemaVersion: 'hive-git-physical-phase-d-input/v1',
+    runId,
+    window: { startedAt: '2026-08-13T12:08:00Z', finishedAt: '2026-08-13T12:19:00Z' },
+    identities: { towerDeviceKey: tower.pubkeyBase64, vmDeviceKey: vm.pubkeyBase64 },
+    belowSteer: {
+      mutation: {
+        schemaVersion: 'hive-git-physical-phase-d-mutation/v1',
+        runId,
+        kind: 'below-steer',
+        sourceHost: 'vm',
+        sourceDeviceKey: vm.pubkeyBase64,
+        method: 'fixed-worktree-commit',
+        worktreePath: '/vm/hello-world-3-pot',
+        protectedPath: 'p505-phase-d-overlap.txt',
+        baseOid: base,
+        headOid: first,
+        payloadSha256: '1'.repeat(64),
+        createdAt: '2026-08-13T12:09:00Z',
+      },
+      publishTrigger: trigger('vm', 'below-steer-publish', '2026-08-13T12:09:10Z', '2026-08-13T12:09:30Z'),
+      queueTrigger: trigger('tower', 'queue-receive', '2026-08-13T12:10:00Z', '2026-08-13T12:10:20Z'),
+      pendingReceipt: pending,
+      ratification: {
+        schemaVersion: 'hive-git-physical-phase-d-ratification/v1',
+        tool: 'ratifyIntegrationRequest',
+        accepted: true,
+        observedAt: '2026-08-13T12:11:00Z',
+        pending,
+        ratified: { ...pending, state: 'ratified', ratifiedTs: Date.parse('2026-08-13T12:11:00Z') },
+      },
+    },
+    firstAdvance: {
+      integratorTrigger: trigger('tower', 'ratified-integrate', '2026-08-13T12:11:10Z', '2026-08-13T12:11:40Z'),
+      sourceEvent: event('tower', 101, '2026-08-13T12:12:01Z', firstAdvance),
+      destinationEvent: event('vm', 501, '2026-08-13T12:12:10Z', firstAdvance),
+      destinationTrigger: trigger('vm', 'first-bridge', '2026-08-13T12:12:20Z', '2026-08-13T12:12:40Z'),
+      sourceObservation: observation({ hostId: 'tower', stage: 'first-source', stagingSha: first, rowId: 101, seq: 1, observedAt: '2026-08-13T12:12:41Z' }),
+      destinationObservation: observation({ hostId: 'vm', stage: 'first-destination', stagingSha: first, rowId: 501, seq: 1, observedAt: '2026-08-13T12:12:42Z' }),
+    },
+    dirtyAdvance: {
+      mutation: {
+        schemaVersion: 'hive-git-physical-phase-d-mutation/v1',
+        runId,
+        kind: 'dirty-overlap',
+        sourceHost: 'tower',
+        sourceDeviceKey: tower.pubkeyBase64,
+        method: 'fixed-worktree-commit',
+        worktreePath: '/tower/hello-world-3-pot',
+        protectedPath: 'p505-phase-d-overlap.txt',
+        baseOid: first,
+        headOid: second,
+        payloadSha256: '2'.repeat(64),
+        createdAt: '2026-08-13T12:15:00Z',
+      },
+      integratorTrigger: trigger('tower', 'dirty-integrate', '2026-08-13T12:16:10Z', '2026-08-13T12:16:40Z'),
+      sourceEvent: event('tower', 102, '2026-08-13T12:17:01Z', secondAdvance),
+      destinationEvent: event('vm', 502, '2026-08-13T12:17:10Z', secondAdvance),
+      destinationTrigger: trigger('vm', 'dirty-bridge', '2026-08-13T12:17:20Z', '2026-08-13T12:17:40Z'),
+      dirtyBefore: observation({ hostId: 'vm', stage: 'dirty-before', stagingSha: first, rowId: 501, seq: 1, observedAt: '2026-08-13T12:14:00Z', dirty: true }),
+      dirtyAfter: observation({ hostId: 'vm', stage: 'dirty-after', stagingSha: second, worktreeHead: first, rowId: 502, seq: 2, observedAt: '2026-08-13T12:17:41Z', dirty: true }),
+    },
+  };
+}
+
 function physicalFixture(): Record<string, any> {
   const towerLog = join(evidenceDir, 'tower.log');
   const vmLog = join(evidenceDir, 'vm.log');
@@ -85,6 +237,7 @@ function physicalFixture(): Record<string, any> {
       scope: 'physical',
       observedAt: `2026-08-13T12:${String(index).padStart(2, '0')}:00Z`,
     })),
+    legD: physicalLegD(tower, vm),
     legE: {
       planItem: 'P-306',
       status: 'pass',
@@ -558,6 +711,34 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
     const verdict = validatePhysicalDrillEvidence(fixture, trustedPhysicalAnchor(fixture));
     expect(verdict.ok).toBe(false);
     expect(verdict.errors).toContain('legVerdicts.D.observedAt must fall inside the one physical-run window');
+  });
+
+  it('rejects a generic Leg D pass with no embedded production-spine causal evidence', () => {
+    const fixture = physicalFixture();
+    delete fixture.legD;
+    const verdict = validatePhysicalDrillEvidence(fixture, trustedPhysicalAnchor(fixture));
+    expect(verdict.ok).toBe(false);
+    expect(verdict.errors).toContain('legD must be an object');
+  });
+
+  it('revalidates the embedded Leg D object and rejects a cursor that did not move', () => {
+    const fixture = physicalFixture();
+    fixture.legD.dirtyAdvance.dirtyAfter.cursor.lastEventId =
+      fixture.legD.dirtyAdvance.dirtyBefore.cursor.lastEventId;
+    const verdict = validatePhysicalDrillEvidence(fixture, trustedPhysicalAnchor(fixture));
+    expect(verdict.ok).toBe(false);
+    expect(verdict.errors).toContain(
+      'legD: Phase D dirty-after observation must advance the mirror and production bridge cursor',
+    );
+  });
+
+  it('rejects Leg D evidence bound to devices other than the two physical attestations', () => {
+    const fixture = physicalFixture();
+    const other = generateEd25519KeypairDer();
+    fixture.legD.identities.vmDeviceKey = other.pubkeyBase64;
+    const verdict = validatePhysicalDrillEvidence(fixture, trustedPhysicalAnchor(fixture));
+    expect(verdict.ok).toBe(false);
+    expect(verdict.errors).toContain('legD identities must match the two attesting physical devices exactly');
   });
 
   it('rejects a Leg E OID chain that did not reach the remote staging ref', () => {
