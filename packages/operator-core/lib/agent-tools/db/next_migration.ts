@@ -28,6 +28,14 @@ import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import { resolveSqlDir } from '../../migration-drift';
 import { resolveAgentIdentity } from '../coordination/identity';
+// WI-38353 — shared with scripts/next-migration.mjs so the two doors cannot
+// diverge on what counts as duplicate work. Both are postgres.js callers, so
+// the ledger query itself is shared too, not just the judgement.
+import {
+  fetchRedundancyCandidates,
+  formatRedundancyMessage,
+  judgeRedundantReservation,
+} from '../../../../../scripts/lib/migration-slug-dedup.mjs';
 
 // Fixed advisory-lock key for migration-number allocation — serialises
 // concurrent db:next-migration calls across connections/processes.
@@ -123,6 +131,12 @@ export default defineTool({
       .max(200)
       .optional()
       .describe('Optional reservation label, matching scripts/next-migration.mjs --by. Defaults to the resolved caller identity.'),
+    force: z
+      .boolean()
+      .optional()
+      .describe(
+        'Reserve even when a near-identical migration was just reserved or already applied (WI-38353) — matches scripts/next-migration.mjs --force.',
+      ),
   }),
   async handler(args, ctx) {
     const sqlDirs = candidateSqlDirs();
@@ -164,11 +178,34 @@ export default defineTool({
       // WRITE TO gets the `.DRAFT` suffix (EI-19366138707071397). Reservation
       // and on-disk armed state are deliberately independent.
       const filename = `${String(next).padStart(3, '0')}-${slug}.sql`;
+      // WI-38353: the NUMBER is unique, but the WORK may not be — four agents
+      // answering one gate red reserved four numbers for one repair in 48s.
+      // Read the recent ledger under the SAME advisory lock that serialises
+      // allocation; reading it outside would leave the very race this closes.
+      const judgement = judgeRedundantReservation({
+        slug,
+        candidates: await fetchRedundancyCandidates(tx),
+        nowMs: Date.now(),
+      });
+      if (judgement.verdict === 'block' && !args.force) {
+        return { next, filename, judgement, blocked: true as const };
+      }
       await tx`
         INSERT INTO harness_shared.migration_reservations (num, filename, reserved_by, intent)
           VALUES (${next}, ${filename}, ${reservedBy}, ${args.intent ?? null})`;
-      return { next, filename };
+      return { next, filename, judgement, blocked: false as const };
     });
+
+    if (allocated.blocked) {
+      return json({
+        ok: false,
+        error: 'redundant_migration',
+        blocked_number: allocated.next,
+        message: formatRedundancyMessage(allocated.judgement, { slug, forceFlag: 'force: true' }),
+        matches: allocated.judgement.matches,
+        note: `Nothing was reserved — ${String(allocated.next).padStart(3, '0')} is still free. If you already hold one of the numbers above, write your file there. If this is genuinely distinct work, re-call with force: true.`,
+      });
+    }
 
     const armPath = path.posix.join('libs/papercusp/libs/db/sql', allocated.filename);
     const draftPath = `${armPath}.DRAFT`;
@@ -180,6 +217,10 @@ export default defineTool({
       arm_path: armPath,
       arm_command: `mv ${draftPath} ${armPath}`,
       reserved_by: reservedBy,
+      ...(() => {
+        const warning = formatRedundancyMessage(allocated.judgement, { slug, forceFlag: 'force: true' });
+        return warning ? { redundancy_warning: warning } : {};
+      })(),
       ...(args.harness ? { requested_from_harness: args.harness } : {}),
       note: `Reserved. Write + iterate the migration at ${draftPath} (a ".DRAFT" suffix). The runner only ever applies files matching *.sql, so this draft is INVISIBLE to boot auto-apply / db:migrate / the green-checkpoint preflight while you edit it — including any deliberate temporary both-ways guard-test mutation. Once it's ready and tested, ARM it for auto-apply with: ${`mv ${draftPath} ${armPath}`}`,
     });

@@ -35,11 +35,22 @@
  *
  * Exits non-zero (without reserving) when PG is unreachable — a number handed out
  * without a ledger row would re-introduce the very race this prevents.
+ *
+ * WI-38353: the number is unique but the WORK may not be. Before inserting, the
+ * recent ledger is checked for a near-identical filename slug (see
+ * scripts/lib/migration-slug-dedup.mjs) and the reservation is REFUSED when one
+ * was applied recently or reserved moments ago — the signature of several agents
+ * racing the same repair after one gate red. `--force` overrides.
  */
 import { readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { resolve as resolvePath } from 'node:path';
 import { resolveScriptPgUrl } from './lib/pg-url.mjs';
+import {
+  fetchRedundancyCandidates,
+  formatRedundancyMessage,
+  judgeRedundantReservation,
+} from './lib/migration-slug-dedup.mjs';
 
 const ALLOC_ADVISORY_KEY = 873_135; // must match next_migration.ts
 
@@ -54,6 +65,7 @@ function parseArgs(argv) {
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--dry-run') args.dryRun = true;
+    else if (a === '--force') args.force = true;
     else if (a === '--name') args.name = argv[++i];
     else if (a === '--intent') args.intent = argv[++i];
     else if (a === '--by') args.by = argv[++i];
@@ -103,8 +115,18 @@ function maxNumberOnDisk(dirs) {
  * @param {string} args.reservedBy    Who/what reserved it (for the printed `reserved_by`).
  * @param {boolean} args.dryRun       True when nothing was actually reserved.
  * @param {string} [args.canonicalDir] Override for the sql dir (tests only).
+ * @param {string|null} [args.redundancyWarning] WI-38353: a non-blocking "a
+ *   near-identical migration already exists" notice, surfaced on the SUCCESS
+ *   path so a probable duplicate is visible even when it is not refused.
  */
-export function buildAllocationResult({ next, filename, reservedBy, dryRun, canonicalDir = CANONICAL_DIR }) {
+export function buildAllocationResult({
+  next,
+  filename,
+  reservedBy,
+  dryRun,
+  canonicalDir = CANONICAL_DIR,
+  redundancyWarning = null,
+}) {
   const armPath = `${canonicalDir}/${filename}`;
   const draftPath = `${armPath}.DRAFT`;
   return {
@@ -116,6 +138,7 @@ export function buildAllocationResult({ next, filename, reservedBy, dryRun, cano
     arm_path: armPath,
     arm_command: `mv ${draftPath} ${armPath}`,
     reserved_by: reservedBy,
+    ...(redundancyWarning ? { redundancy_warning: redundancyWarning } : {}),
     // Authoring-time reminder for the forward-compat guard (EI-19462877357083817).
     //
     // ⚠ Deliberately phrased so it does NOT satisfy check-migration-forward-compat's
@@ -144,7 +167,8 @@ async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (args.help) {
     console.log(
-      'Usage: node scripts/next-migration.mjs --name <slug> [--intent "..."] [--by <label>] [--dry-run]',
+      'Usage: node scripts/next-migration.mjs --name <slug> [--intent "..."] [--by <label>] [--dry-run] [--force]\n' +
+        '  --force   reserve even when a near-identical migration was just reserved or already applied (WI-38353).',
     );
     process.exit(0);
   }
@@ -183,13 +207,33 @@ async function main() {
       // the path we tell the caller to WRITE TO gets the `.DRAFT` suffix. The
       // reservation and the on-disk armed state are deliberately independent.
       const filename = `${String(next).padStart(3, '0')}-${slug}.sql`;
+      // WI-38353: the number is unique, but the WORK may not be. Read the
+      // recent ledger under the SAME advisory lock that serialises allocation —
+      // reading it outside would leave the exact race window this closes.
+      const judgement = judgeRedundantReservation({
+        slug,
+        candidates: await fetchRedundancyCandidates(tx),
+        nowMs: Date.now(),
+      });
+      if (judgement.verdict === 'block' && !args.force) {
+        return { next, filename, judgement, blocked: true };
+      }
       if (!args.dryRun) {
         await tx`
           INSERT INTO harness_shared.migration_reservations (num, filename, reserved_by, intent)
           VALUES (${next}, ${filename}, ${reservedBy}, ${args.intent ?? null})`;
       }
-      return { next, filename };
+      return { next, filename, judgement, blocked: false };
     });
+
+    if (allocated.blocked) {
+      console.error(
+        `${formatRedundancyMessage(allocated.judgement, { slug })}\n\n` +
+          `Nothing was reserved (${String(allocated.next).padStart(3, '0')} is still free).`,
+      );
+      process.exitCode = 1;
+      return;
+    }
     console.log(
       JSON.stringify(
         buildAllocationResult({
@@ -197,6 +241,7 @@ async function main() {
           filename: allocated.filename,
           reservedBy,
           dryRun: args.dryRun,
+          redundancyWarning: formatRedundancyMessage(allocated.judgement, { slug }),
         }),
         null,
         2,
