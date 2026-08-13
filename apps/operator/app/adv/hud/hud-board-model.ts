@@ -142,6 +142,10 @@ export interface HudRosterEntry {
    * finding and is NOT the same as null/absent (no log at all).
    */
   launchFailureHint?: string | null;
+  /** The live headless client is parked at a recognized pre-turn provider wall. */
+  launchBlocked?: boolean;
+  /** Actionable, constructed remediation for `launchBlocked`. */
+  launchBlockedHint?: string | null;
   claims: Array<{ id?: string; planSlug?: string | null; status?: string | null }>;
   declaredUnclaimed: boolean;
   currentPlanSlug: string | null;
@@ -1039,12 +1043,30 @@ export function deriveColumn(
   //     calling it "needs you" would put unfixable rows in the column whose whole
   //     value is that everything in it is actionable.
   if (e.lastActiveAt == null && !e.stale && e.liveness !== 'stale') {
+    const sinceStart = ageSec(e.startedAt ?? null, nowMs);
+    // Observed server states outrank the generic fresh-session copy immediately;
+    // neither needs to wait for the age-based fallback to guess.
+    if (e.launchFailed === true) {
+      return {
+        column: 'needs-you',
+        reason: 'Launch failed before the session came online. Relaunch it.',
+        sinceSec: sinceStart,
+      };
+    }
+    if (e.launchBlocked === true) {
+      return {
+        column: 'needs-you',
+        reason:
+          e.launchBlockedHint?.trim() ||
+          'Launch blocked before its first turn. Choose another account or backend, or retry after the provider limit resets.',
+        sinceSec: sinceStart,
+      };
+    }
     // WI-6376: a TERMINAL launch that is still un-registered well past the point
     // it should have booted is not "fresh", it is a launch that failed — the
     // terminal never opened, or psu died on startup. Say so. It stays in
     // needs-you because it is still the human's to fix (relaunch it); what
     // changes is that the card stops implying a healthy session is on its way.
-    const sinceStart = ageSec(e.startedAt ?? null, nowMs);
     if (
       e.display === 'terminal' &&
       sinceStart != null &&

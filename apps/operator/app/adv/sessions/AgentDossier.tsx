@@ -527,6 +527,7 @@ export default function AgentDossier({
   onClose,
   startingUp = false,
   launchFailed = false,
+  launchBlocked = false,
   sessionEnded = false,
   sessionEndedAt = null,
   unknownSession = false,
@@ -544,6 +545,8 @@ export default function AgentDossier({
    *  Without this the rail keeps saying "starting up" about a corpse — the same
    *  lie as the banner, in the surface right next to it. */
   launchFailed?: boolean;
+  /** WI-6821: live process, but native client is stopped at a provider wall. */
+  launchBlocked?: boolean;
   /** The owner is known from session history, but its session is terminal. */
   sessionEnded?: boolean;
   /** The server-observed terminal timestamp, when the roster supplied one. */
@@ -710,6 +713,8 @@ export default function AgentDossier({
         <div className="pc-dossier__intent">{entry.intent || '(no declared intent)'}</div>
       ) : launchFailed ? (
         <div className="pc-dossier__note">This session's launch failed — it never came online.</div>
+      ) : launchBlocked ? (
+        <div className="pc-dossier__note">This session is blocked before its first turn.</div>
       ) : startingUp ? (
         <div className="pc-dossier__note">Starting up — this agent hasn't registered yet.</div>
       ) : sessionEnded ? (

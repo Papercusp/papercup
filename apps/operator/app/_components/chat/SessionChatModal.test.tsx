@@ -2249,6 +2249,51 @@ describe('SessionChatModal', () => {
       expect(screen.queryByText(OBSERVED_FAILED)).toBeNull();
     });
 
+    // A headless native client can stay alive forever at a provider dialog. It
+    // is not a dead launch, and the 60s timeout is not the source of truth.
+    it('reports a recognized live usage-limit block immediately and actionably', async () => {
+      seedTiers({
+        starting: [
+          {
+            ownerId: 'su-new-1',
+            startedAt: new Date().toISOString(),
+            launchFailed: false,
+            launchBlocked: true,
+            launchBlockedHint:
+              "Claude's weekly usage limit was reached; it resets 7am. Launch with Codex or an available account, or retry after the reset.",
+          },
+        ],
+      });
+      mockFetchOnce(200, { sessions: [] });
+      render(<SessionChatModal sessionOwnerId="su-new-1" onClose={vi.fn()} />);
+
+      await waitFor(() => expect(screen.getByTestId('session-chat-launch-blocked')).toBeTruthy());
+      expect(screen.getByTestId('session-chat-launch-blocked-hint').textContent).toContain(
+        'Launch with Codex or an available account',
+      );
+      expect(screen.queryByText(STARTING)).toBeNull();
+      expect(screen.queryByText(OBSERVED_FAILED)).toBeNull();
+    });
+
+    it('tells the dossier rail the launch is blocked, not merely starting', async () => {
+      seedTiers({
+        starting: [
+          {
+            ownerId: 'su-new-1',
+            startedAt: new Date().toISOString(),
+            launchBlocked: true,
+            launchBlockedHint: 'Choose another account.',
+          },
+        ],
+      });
+      mockFetchOnce(200, { sessions: [] });
+      render(<SessionChatModal sessionOwnerId="su-new-1" onClose={vi.fn()} />);
+
+      await waitFor(() => expect(screen.getByTestId('session-chat-dossier-rail')).toBeTruthy());
+      expect(lastAgentDossierProps?.launchBlocked).toBe(true);
+      expect(lastAgentDossierProps?.launchFailed).toBe(false);
+    });
+
     // An older operator (or a mid-deploy SSE push) sends no such field. That must
     // degrade to today's behaviour, never to a fabricated failure.
     it('degrades to the timer path when the payload omits launchFailed entirely', async () => {

@@ -580,6 +580,14 @@ describe('AgentDossier', () => {
     expect(queryByText('This agent is no longer in the live roster.')).toBeNull();
   });
 
+  it('says a provider-blocked launch is blocked, not still starting', () => {
+    const { getByText, queryByText } = render(
+      <AgentDossier ownerId="su-blocked-1" entry={null} onClose={() => {}} startingUp launchBlocked />,
+    );
+    expect(getByText('This session is blocked before its first turn.')).toBeTruthy();
+    expect(queryByText("Starting up — this agent hasn't registered yet.")).toBeNull();
+  });
+
   // A live entry always wins: startingUp is only a tiebreaker for `entry: null`,
   // so a registered agent must still show its declared intent.
   it('prefers a real roster entry over startingUp', () => {

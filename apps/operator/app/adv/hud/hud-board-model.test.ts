@@ -498,6 +498,47 @@ describe('deriveColumn — precedence', () => {
       expect(v.reason).not.toMatch(/never came online/);
     });
 
+    it('reports a recognized live provider wall immediately, with its remediation', () => {
+      const hint =
+        "Claude's weekly usage limit was reached; it resets 7am. " +
+        'Launch with Codex or an available account, or retry after the reset.';
+      const v = deriveColumn(
+        entry({
+          liveness: 'pending',
+          lastActiveAt: null,
+          display: 'terminal',
+          startedAt: iso(5_000),
+          launchBlocked: true,
+          launchBlockedHint: hint,
+        }),
+        undefined,
+        OPTS,
+      );
+      expect(v.column).toBe('needs-you');
+      expect(v.reason).toBe(hint);
+      expect(v.reason).not.toMatch(/Fresh session/);
+      expect(v.reason).not.toMatch(/terminal closed/i);
+    });
+
+    it('keeps observed launch death distinct from a live provider blockage', () => {
+      const v = deriveColumn(
+        entry({
+          liveness: 'pending',
+          lastActiveAt: null,
+          display: 'terminal',
+          startedAt: iso(5_000),
+          launchFailed: true,
+          launchBlocked: false,
+        }),
+        undefined,
+        OPTS,
+      );
+      expect(v.column).toBe('needs-you');
+      expect(v.reason).toMatch(/Launch failed/);
+      expect(v.reason).not.toMatch(/provider limit/);
+      expect(v.reason).not.toMatch(/Fresh session/);
+    });
+
     it('never applies the failed-launch reason to a WORKBENCH pending launch', () => {
       // Non-vacuity guard on the `display` discriminator: same age, other tier.
       const v = deriveColumn(

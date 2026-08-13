@@ -1189,6 +1189,14 @@ export default function SessionChatModal({
     launchFailed && typeof startingEntry?.launchFailureHint === 'string'
       ? startingEntry.launchFailureHint.trim()
       : '';
+  // WI-6821 follow-up: a live headless host parked at a provider usage-limit
+  // dialog is neither healthy boot nor process death. The roster derives this
+  // from the bounded headless log receipt and supplies constructed remediation.
+  const launchBlocked = !launchFailed && startingEntry?.launchBlocked === true;
+  const launchBlockedHint =
+    launchBlocked && typeof startingEntry?.launchBlockedHint === 'string'
+      ? startingEntry.launchBlockedHint.trim()
+      : '';
 
   // When the boot window started, for the did-not-come-online fallback below.
   // The caller's launch moment wins when we have it (it is the earlier and more
@@ -1792,6 +1800,29 @@ export default function SessionChatModal({
                     ) : null}
                   </>
                 )
+              : launchBlocked
+                ? (
+                  <>
+                    <div data-testid="session-chat-launch-blocked">
+                      This session is waiting at a provider usage-limit screen, so it cannot take a
+                      turn.
+                    </div>
+                    <div
+                      data-testid="session-chat-launch-blocked-hint"
+                      style={{
+                        marginTop: 4,
+                        fontSize: 10,
+                        fontFamily: 'var(--font-mono, monospace)',
+                        color: 'var(--fg-mute)',
+                        overflowWrap: 'anywhere',
+                        whiteSpace: 'pre-wrap',
+                      }}
+                    >
+                      {launchBlockedHint ||
+                        'Choose another account or backend, or retry after the provider limit resets.'}
+                    </div>
+                  </>
+                )
               : startupTimedOut
                 ? rosterUnreadable
                   ? "Can't reach the operator to check on this session — this looks like a connection problem, not a failed launch. Relaunching won't help until it's back."
@@ -1951,6 +1982,9 @@ export default function SessionChatModal({
               // WI-6821: and the rail must not keep saying "starting up" about a
               // launch the banner beside it already reports as dead.
               launchFailed={launchFailed}
+              // Same distinct state as the banner: keep the adjacent activity
+              // rail from promising that a quota-blocked client is still booting.
+              launchBlocked={launchBlocked}
               sessionEnded={sessionEnded}
               sessionEndedAt={endedEntry?.endedAt ?? null}
               unknownSession={unknownSession}
