@@ -7,7 +7,7 @@
  * a rendered component.
  */
 import { describe, expect, it } from 'vitest';
-import { normalizeAccountChoices } from './use-su-launch-options';
+import { normalizeAccountChoices, normalizeOmpCatalog } from './use-su-launch-options';
 
 describe('normalizeAccountChoices (WI-6321)', () => {
   it('accepts the bare-array shape', () => {
@@ -43,5 +43,55 @@ describe('normalizeAccountChoices (WI-6321)', () => {
     expect(normalizeAccountChoices(null)).toEqual([]);
     expect(normalizeAccountChoices('nonsense')).toEqual([]);
     expect(normalizeAccountChoices({ unexpected: true })).toEqual([]);
+  });
+});
+
+const OMP_MODEL = {
+  provider: 'openai-codex',
+  id: 'gpt-5.6-terra',
+  selector: 'openai-codex/gpt-5.6-terra',
+  name: 'GPT-5.6-Terra',
+  contextWindow: 200_000,
+  maxTokens: 128_000,
+  reasoning: true,
+  thinking: ['low', 'medium', 'high', 'xhigh', 'max'],
+  input: ['text', 'image'],
+  cost: { input: 1.25, output: 10, cacheRead: 0.125, cacheWrite: 0 },
+};
+
+describe('normalizeOmpCatalog', () => {
+  it('preserves exact provider/id selector and launch metadata', () => {
+    expect(normalizeOmpCatalog({ status: 'available', models: [OMP_MODEL] })).toEqual({
+      status: 'available',
+      availability: 'enabled-configured',
+      credentials: 'unchecked',
+      upstream: 'unchecked',
+      models: [OMP_MODEL],
+      error: null,
+    });
+  });
+
+  it('keeps unavailable distinct from an available empty catalog', () => {
+    expect(normalizeOmpCatalog({ status: 'unavailable', models: [], error: 'omp missing' })).toMatchObject({
+      status: 'unavailable',
+      models: [],
+      error: 'omp missing',
+    });
+    expect(normalizeOmpCatalog({ status: 'available', models: [] })).toMatchObject({
+      status: 'available',
+      models: [],
+      error: null,
+    });
+  });
+
+  it('fails closed instead of repairing a mismatched selector', () => {
+    expect(normalizeOmpCatalog({
+      status: 'available',
+      models: [{ ...OMP_MODEL, selector: 'openai-codex/not-terra' }],
+    })).toMatchObject({
+      status: 'unavailable',
+      models: [],
+      error: 'Invalid OMP model metadata',
+    });
   });
 });

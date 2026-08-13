@@ -48,7 +48,7 @@ import {
 // is: registry.ts has ZERO imports (pure data + pure functions), so reading it
 // here drags no node/server subtree into the renderer bundle.
 import { launchableModes } from '@papercusp/operator-core/lib/modes/registry';
-import { useSuLaunchOptions } from './use-su-launch-options';
+import { useSuLaunchOptions, type OmpLaunchModel } from './use-su-launch-options';
 import {
   formatAbsoluteUpdated,
   formatRelativeUpdated,
@@ -80,6 +80,37 @@ export const OMP_MODEL_OPTIONS: ComboboxOption[] = [
     detail: m.backend === 'codex' ? 'codex CLI' : 'claude CLI',
   })),
 ];
+
+function formatTokenCount(value: number | null): string | null {
+  if (value === null) return null;
+  if (value >= 1_000_000) return `${value / 1_000_000}M context`;
+  if (value >= 1_000) return `${Math.round(value / 1_000)}k context`;
+  return `${value} context`;
+}
+
+/** Native aliases stay stable; host-local OMP selectors live in their own group. */
+export function buildModelOptions(models: OmpLaunchModel[]): ComboboxEntry[] {
+  const native = OMP_MODEL_OPTIONS.filter((option) => option.value !== MODEL_SELECT_DEFAULT);
+  const groups: ComboboxEntry[] = [
+    OMP_MODEL_OPTIONS[0],
+    { kind: 'group', label: 'Papercusp aliases', options: native },
+  ];
+  if (models.length > 0) {
+    groups.push({
+      kind: 'group',
+      label: 'OMP installed models',
+      options: models.map((model) => ({
+        value: model.selector,
+        label: model.name,
+        detail: [model.provider, formatTokenCount(model.contextWindow), model.reasoning ? 'reasoning' : null]
+          .filter(Boolean)
+          .join(' · '),
+        keywords: [model.provider, model.id, model.selector, ...model.input],
+      })),
+    });
+  }
+  return groups;
+}
 
 export const EFFORT_SELECT_DEFAULT = '__default_effort__';
 
@@ -117,6 +148,19 @@ export const EFFORT_OPTIONS: ComboboxOption[] = [
   })),
 ];
 
+/** OMP publishes per-model effort support; never offer a suffix it did not. */
+export function buildEffortOptions(model?: OmpLaunchModel | null): ComboboxOption[] {
+  if (!model) return EFFORT_OPTIONS;
+  return [
+    EFFORT_OPTIONS[0],
+    ...(model.thinking ?? []).map((level) => ({
+      value: level,
+      label: EFFORT_LABELS[level]?.label ?? level,
+      detail: EFFORT_LABELS[level]?.detail,
+    })),
+  ];
+}
+
 /**
  * Compose the `--model` spec from the two controls. Effort is meaningless
  * without an explicit model (the default model's effort is the backend's to
@@ -141,8 +185,15 @@ export function modelBackend(model: string): SuAgent | undefined {
   const m = model.trim();
   if (!m || m === MODEL_SELECT_DEFAULT) return undefined;
   // Tolerate a "<model>:<effort>" spec as well as a bare model id.
-  const base = m.split(':')[0];
-  return CLOUD_MODEL_MENU.find((c) => c.value === base)?.backend as SuAgent | undefined;
+  const colon = m.lastIndexOf(':');
+  const base = colon > 0 && (MODEL_EFFORT_LEVELS as readonly string[]).includes(m.slice(colon + 1))
+    ? m.slice(0, colon)
+    : m;
+  const native = CLOUD_MODEL_MENU.find((c) => c.value === base)?.backend as SuAgent | undefined;
+  if (native) return native;
+  // OMP's validated launch identity is always `provider/id`. The exact selector
+  // is the wire value; do not collapse it to a friendly alias.
+  return base.includes('/') ? 'omp' : undefined;
 }
 
 /**
@@ -447,6 +498,15 @@ export default function NewSessionLauncher({
   // psu's OWN option source — see use-su-launch-options' header. Keyed to the
   // backend the picked model implies, because pool pinning is per-backend.
   const launchOptions = useSuLaunchOptions(null, modelBackend(model) ?? 'claude');
+  const modelOptions = useMemo(
+    () => buildModelOptions(launchOptions.ompCatalog.models),
+    [launchOptions.ompCatalog.models],
+  );
+  const selectedOmpModel = useMemo(
+    () => launchOptions.ompCatalog.models.find((entry) => entry.selector === model) ?? null,
+    [launchOptions.ompCatalog.models, model],
+  );
+  const effortOptions = useMemo(() => buildEffortOptions(selectedOmpModel), [selectedOmpModel]);
   const fleetOptions = useMemo(
     () => buildFleetOptions(launchOptions.fleets, launchOptions.nextScheme?.name),
     [launchOptions.fleets, launchOptions.nextScheme],
@@ -648,11 +708,14 @@ export default function NewSessionLauncher({
           triggerClassName="pc-new-session-launcher__select pc-new-session-launcher__select--model"
           value={model || MODEL_SELECT_DEFAULT}
           emptyValue={MODEL_SELECT_DEFAULT}
-          onChange={(value) => setModel(value === MODEL_SELECT_DEFAULT ? '' : value)}
+          onChange={(value) => {
+            setModel(value === MODEL_SELECT_DEFAULT ? '' : value);
+            setEffort('');
+          }}
           ariaLabel="Model for new session"
           placeholder="Default"
           emptyLabel="No models match"
-          options={OMP_MODEL_OPTIONS}
+          options={modelOptions}
         />
         <Combobox
           triggerClassName="pc-new-session-launcher__select pc-new-session-launcher__select--effort"
@@ -662,7 +725,7 @@ export default function NewSessionLauncher({
           ariaLabel="Effort level for new session"
           placeholder="Default effort"
           emptyLabel="No effort levels match"
-          options={EFFORT_OPTIONS}
+          options={effortOptions}
         />
         {/* WI-6321 (owner ask 2026-07-27): "the new session panel should ahve all
             the same options as the psu utility. i.e. fleet selection and the

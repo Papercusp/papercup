@@ -44,6 +44,25 @@ const h = vi.hoisted(() => ({
     nextScheme: null as { name: string } | null,
     schemes: [] as Array<{ name: string; bg: string; fg: string; cursor: string }>,
     accounts: [] as Array<{ id: string; label?: string | null; detail?: string | null }>,
+    ompCatalog: {
+      status: 'available' as const,
+      availability: 'enabled-configured' as const,
+      credentials: 'unchecked' as const,
+      upstream: 'unchecked' as const,
+      error: null,
+      models: [{
+        provider: 'openai-codex',
+        id: 'gpt-5.6-terra',
+        selector: 'openai-codex/gpt-5.6-terra',
+        name: 'GPT-5.6-Terra',
+        contextWindow: 200_000,
+        maxTokens: 128_000,
+        reasoning: true,
+        thinking: ['low', 'medium', 'high', 'xhigh', 'max'],
+        input: ['text' as const, 'image' as const],
+        cost: { input: 1.25, output: 10, cacheRead: 0.125, cacheWrite: 0 },
+      }],
+    },
   },
   optionsRefresh: vi.fn(),
 }));
@@ -75,6 +94,7 @@ vi.mock('./use-su-launch-options', () => ({
     nextScheme: h.launchOptions.nextScheme,
     schemes: h.launchOptions.schemes,
     accounts: h.launchOptions.accounts,
+    ompCatalog: h.launchOptions.ompCatalog,
     loading: false,
     error: null,
     refresh: h.optionsRefresh,
@@ -127,6 +147,8 @@ import NewSessionLauncher, {
   buildContextSizeOptions,
   buildFleetOptions,
   buildModeOptions,
+  buildModelOptions,
+  buildEffortOptions,
   MODE_SELECT_NONE,
   composeModelSpec,
   modelBackend,
@@ -189,6 +211,31 @@ describe('model + effort options are derived from the psu vocabulary (WI-6300)',
     expect(OMP_MODEL_OPTIONS.map((o) => o.value)).toEqual([
       MODEL_SELECT_DEFAULT,
       ...CLOUD_MODEL_MENU.map((m) => m.value),
+    ]);
+  });
+
+  it('groups the seven native aliases separately from exact OMP selectors', () => {
+    const options = buildModelOptions(h.launchOptions.ompCatalog.models);
+    const groups = options.filter((option) => 'kind' in option);
+    expect(groups.map((group) => group.label)).toEqual(['Papercusp aliases', 'OMP installed models']);
+    expect(groups[0].options.map((option) => option.value)).toEqual(CLOUD_MODEL_MENU.map((m) => m.value));
+    expect(groups[1].options[0]).toMatchObject({
+      value: 'openai-codex/gpt-5.6-terra',
+      label: 'GPT-5.6-Terra',
+    });
+  });
+
+  it('uses OMP model-specific thinking levels', () => {
+    expect(buildEffortOptions(h.launchOptions.ompCatalog.models[0]).map((option) => option.value)).toEqual([
+      EFFORT_SELECT_DEFAULT,
+      'low',
+      'medium',
+      'high',
+      'xhigh',
+      'max',
+    ]);
+    expect(buildEffortOptions({ ...h.launchOptions.ompCatalog.models[0], thinking: null })).toEqual([
+      EFFORT_OPTIONS[0],
     ]);
   });
 
@@ -329,6 +376,22 @@ describe('NewSessionLauncher', () => {
       expect((await launchWithModel('opus')).agent).toBe('claude');
     });
 
+    it('an OMP catalog model launches omp with the exact provider/id selector', async () => {
+      render(<NewSessionLauncher />, { wrapper: withNuqsTestingAdapter() });
+      fireEvent.change(screen.getByRole('combobox', { name: 'Model for new session' }), {
+        target: { value: 'openai-codex/gpt-5.6-terra' },
+      });
+      fireEvent.change(screen.getByRole('combobox', { name: 'Effort level for new session' }), {
+        target: { value: 'xhigh' },
+      });
+      fireEvent.click(screen.getByRole('button', { name: '+ New session' }));
+      await waitFor(() => expect(h.launchAgent).toHaveBeenCalledTimes(1));
+      expect(h.launchAgent).toHaveBeenCalledWith(expect.objectContaining({
+        agent: 'omp',
+        model: 'openai-codex/gpt-5.6-terra:xhigh',
+      }));
+    });
+
     it('no model chosen sends NO agent, leaving the configured default intact', async () => {
       render(<NewSessionLauncher />, { wrapper: withNuqsTestingAdapter() });
       fireEvent.click(screen.getByRole('button', { name: '+ New session' }));
@@ -344,6 +407,7 @@ describe('NewSessionLauncher', () => {
       }
       expect(modelBackend('')).toBeUndefined();
       expect(modelBackend('not-a-model')).toBeUndefined();
+      expect(modelBackend('amazon-bedrock/anthropic.claude-3-5-haiku-20241022-v1:0')).toBe('omp');
     });
   });
 

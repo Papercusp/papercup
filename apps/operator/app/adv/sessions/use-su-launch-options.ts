@@ -55,6 +55,45 @@ export interface AccountChoice {
   detail?: string | null;
 }
 
+export interface OmpLaunchModelCost {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+}
+
+/** Exact launch metadata from the host-local `omp models --json` registry. */
+export interface OmpLaunchModel {
+  provider: string;
+  id: string;
+  selector: string;
+  name: string;
+  contextWindow: number | null;
+  maxTokens: number | null;
+  reasoning: boolean;
+  thinking: string[] | null;
+  input: Array<'text' | 'image'>;
+  cost: OmpLaunchModelCost;
+}
+
+export type OmpLaunchCatalog =
+  | {
+      status: 'available';
+      availability: 'enabled-configured';
+      credentials: 'unchecked';
+      upstream: 'unchecked';
+      models: OmpLaunchModel[];
+      error: null;
+    }
+  | {
+      status: 'unavailable';
+      availability: 'unknown';
+      credentials: 'unchecked';
+      upstream: 'unchecked';
+      models: [];
+      error: string | null;
+    };
+
 export interface SuLaunchOptions {
   fleets: FleetChoice[];
   /** The colour a NEW fleet would be allocated — lets the create row preview the
@@ -63,6 +102,7 @@ export interface SuLaunchOptions {
   /** The full curated catalog, for the new-fleet colour picker. */
   schemes: FleetColorScheme[];
   accounts: AccountChoice[];
+  ompCatalog: OmpLaunchCatalog;
   loading: boolean;
   error: string | null;
   /** Re-read after a launch creates a fleet, so the new one appears without a reload. */
@@ -74,6 +114,14 @@ const EMPTY: Omit<SuLaunchOptions, 'loading' | 'error' | 'refresh'> = {
   nextScheme: null,
   schemes: [],
   accounts: [],
+  ompCatalog: {
+    status: 'unavailable',
+    availability: 'unknown',
+    credentials: 'unchecked',
+    upstream: 'unchecked',
+    models: [],
+    error: null,
+  },
 };
 
 /**
@@ -107,6 +155,75 @@ export function normalizeAccountChoices(raw: unknown): AccountChoice[] {
     .filter((a): a is AccountChoice => a !== null);
 }
 
+function finiteNonNegative(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0;
+}
+
+function normalizeOmpModel(raw: unknown): OmpLaunchModel | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const row = raw as Record<string, unknown>;
+  const provider = typeof row.provider === 'string' ? row.provider.trim() : '';
+  const id = typeof row.id === 'string' ? row.id.trim() : '';
+  const selector = typeof row.selector === 'string' ? row.selector.trim() : '';
+  const name = typeof row.name === 'string' ? row.name.trim() : '';
+  const nullableNumber = (value: unknown): value is number | null => value === null || finiteNonNegative(value);
+  const thinking = row.thinking === null || (
+    Array.isArray(row.thinking) && row.thinking.every((v) => typeof v === 'string' && v.length > 0)
+  );
+  const input = Array.isArray(row.input) && row.input.every((v) => v === 'text' || v === 'image');
+  const cost = row.cost && typeof row.cost === 'object' ? row.cost as Record<string, unknown> : null;
+  if (
+    !provider || !id || !name || selector !== `${provider}/${id}` ||
+    !nullableNumber(row.contextWindow) || !nullableNumber(row.maxTokens) ||
+    typeof row.reasoning !== 'boolean' || !thinking || !input || !cost ||
+    !finiteNonNegative(cost.input) || !finiteNonNegative(cost.output) ||
+    !finiteNonNegative(cost.cacheRead) || !finiteNonNegative(cost.cacheWrite)
+  ) return null;
+  return {
+    provider,
+    id,
+    selector,
+    name,
+    contextWindow: row.contextWindow,
+    maxTokens: row.maxTokens,
+    reasoning: row.reasoning,
+    thinking: row.thinking === null ? null : [...row.thinking] as string[],
+    input: [...row.input] as Array<'text' | 'image'>,
+    cost: {
+      input: cost.input,
+      output: cost.output,
+      cacheRead: cost.cacheRead,
+      cacheWrite: cost.cacheWrite,
+    },
+  };
+}
+
+/** Normalize the browser boundary without silently changing selector identity. */
+export function normalizeOmpCatalog(raw: unknown): OmpLaunchCatalog {
+  const value = raw && typeof raw === 'object' ? raw as Record<string, unknown> : null;
+  if (value?.status === 'unavailable') {
+    return {
+      ...EMPTY.ompCatalog,
+      error: typeof value.error === 'string' ? value.error : null,
+    };
+  }
+  if (value?.status !== 'available' || !Array.isArray(value.models)) {
+    return { ...EMPTY.ompCatalog, error: 'Invalid OMP catalog response' };
+  }
+  const models = value.models.map(normalizeOmpModel);
+  if (models.some((model) => model === null)) {
+    return { ...EMPTY.ompCatalog, error: 'Invalid OMP model metadata' };
+  }
+  return {
+    status: 'available',
+    availability: 'enabled-configured',
+    credentials: 'unchecked',
+    upstream: 'unchecked',
+    models: models as OmpLaunchModel[],
+    error: null,
+  };
+}
+
 export function useSuLaunchOptions(workspaceId?: string | null, agent = 'claude'): SuLaunchOptions {
   const [state, setState] = useState(EMPTY);
   const [loading, setLoading] = useState(true);
@@ -133,6 +250,7 @@ export function useSuLaunchOptions(workspaceId?: string | null, agent = 'claude'
           nextScheme: (data.nextScheme as FleetColorScheme | null) ?? null,
           schemes: Array.isArray(data.schemes) ? (data.schemes as FleetColorScheme[]) : [],
           accounts: normalizeAccountChoices(data.accounts),
+          ompCatalog: normalizeOmpCatalog(data.ompCatalog),
         });
         setError(null);
       })
