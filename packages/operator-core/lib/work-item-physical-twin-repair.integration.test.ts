@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 
-const MIGRATION = join(__dirname, '../../../libs/papercusp/libs/db/sql/826-repair-work-item-physical-twins.sql.DRAFT');
+const MIGRATION = join(__dirname, '../../../libs/papercusp/libs/db/sql/826-repair-work-item-physical-twins.sql');
 const SQL = readFileSync(MIGRATION, 'utf8');
 let db: FreshPgDb;
 
@@ -76,9 +76,12 @@ describe('migration 826 physical twin repair', () => {
   it('rekeys divergent records and moves only provenance-owned links and threads', async () => {
     await insertItem('papercusp', 'EI-11513', 'papercusp work', 'open');
     await insertItem('quartermaster-hive', 'EI-11513', 'quartermaster work', 'done');
+    await insertItem('papercusp', 'EI-8869', 'older papercusp replication finding', 'dropped');
+    await insertItem('operator:papercusp-workspace', 'EI-8869', 'later operator replication finding', 'dropped');
     await db.sql.unsafe(`INSERT INTO harness_shared.coord_links VALUES
       (1,'papercusp-workspace','issue','EI-11513','topic','external','tagged','system:improvement-watchdog',now()),
-      (2,'papercusp-workspace','issue','EI-11513','topic','local','tagged','another-author',now());
+      (2,'papercusp-workspace','issue','EI-11513','topic','local','tagged','another-author',now()),
+      (3,'papercusp-workspace','issue','EI-8869','topic','replication-liveness','tagged','system:replication-liveness',now());
       INSERT INTO harness_shared.coord_threads
       (workspace_id,thread_id,parent_kind,parent_ref,created_by,post_count)
       VALUES ('papercusp-workspace','issue-thread-EI-11513','issue','EI-11513','system:improvement-watchdog',1);`);
@@ -86,11 +89,17 @@ describe('migration 826 physical twin repair', () => {
 
     const ids = await db.sql.unsafe(`SELECT harness_slug,feature_id FROM harness_shared.work_items ORDER BY harness_slug`);
     expect(ids).toEqual([
+      { harness_slug: 'operator:papercusp-workspace', feature_id: 'EI-82600000000000011' },
       { harness_slug: 'papercusp', feature_id: 'EI-11513' },
+      { harness_slug: 'papercusp', feature_id: 'EI-8869' },
       { harness_slug: 'quartermaster-hive', feature_id: 'EI-82600000000000001' },
     ]);
     const links = await db.sql.unsafe(`SELECT id,src_ref FROM harness_shared.coord_links ORDER BY id`);
-    expect(links).toEqual([{ id: 1, src_ref: 'EI-82600000000000001' }, { id: 2, src_ref: 'EI-11513' }]);
+    expect(links).toEqual([
+      { id: 1, src_ref: 'EI-82600000000000001' },
+      { id: 2, src_ref: 'EI-11513' },
+      { id: 3, src_ref: 'EI-8869' },
+    ]);
     const thread = await db.sql.unsafe(`SELECT parent_ref FROM harness_shared.coord_threads`);
     expect(thread[0].parent_ref).toBe('EI-82600000000000001');
 
@@ -98,7 +107,7 @@ describe('migration 826 physical twin repair', () => {
     const rerunIds = await db.sql.unsafe(`SELECT harness_slug,feature_id FROM harness_shared.work_items ORDER BY harness_slug`);
     expect(rerunIds).toEqual(ids);
     const backups = await db.sql.unsafe(`SELECT count(*)::int n FROM harness_shared.bak_20260813_work_item_physical_twins`);
-    expect(backups[0].n).toBe(2);
+    expect(backups[0].n).toBe(4);
   });
 
   it('fails closed without mutating when the frozen identical classification drifts', async () => {
