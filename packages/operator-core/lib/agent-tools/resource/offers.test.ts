@@ -117,11 +117,26 @@ describe('resource:offers toSummaryRow', () => {
     expect(toSummaryRow(row)?.fleetSlug).toBe('alpha');
   });
 
-  it('returns null for a non-seat / unparsed record instead of throwing', () => {
+  it('returns null for a spawn-request / unparsed record instead of throwing', () => {
     expect(toSummaryRow({ ...seatOffer({ publisherGithubUserId: 4 }), record: null })).toBeNull();
-    const workKind = { ...seatOffer({ publisherGithubUserId: 5 }) };
-    workKind.record = { ...workKind.record!, kind: 'work', seat: null };
-    expect(toSummaryRow(workKind)).toBeNull();
+    const spawnRequest = { ...seatOffer({ publisherGithubUserId: 5 }) };
+    spawnRequest.record = {
+      ...spawnRequest.record!,
+      fleetSlug: 'alpha',
+      potSlug: null,
+      kind: 'spawn_request',
+      seat: null,
+      spawnRequest: {
+        targetPublisherGithubUserId: 6,
+        targetOfferId: 'seat-6',
+        count: 1,
+        planSlug: 'plan-alpha',
+        requesterOwnerId: 'su-owner',
+        requestedAtMs: 1,
+        launchContext: null,
+      },
+    };
+    expect(toSummaryRow(spawnRequest)).toBeNull();
   });
 });
 

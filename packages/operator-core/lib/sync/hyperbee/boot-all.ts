@@ -1423,10 +1423,10 @@ export async function bootAllHarnessesForActiveWorkspace(
     }
   })();
 
-  // WI-5327 (p2p-public-release-remaining-lanes-2026-07-16 P-406/P-407): once-
+  // WI-5327 (p2p-public-release-remaining-lanes-2026-07-16 P-407): once-
   // per-process seeding of THIS host's p2p production routines
-  // (sweep-orphaned-foreign-harnesses, p2p-foreign-supervision,
-  // p2p-work-intake) — host identity resolved from existing seams only (see
+  // (sweep-orphaned-foreign-harnesses, p2p-foreign-supervision) — host identity
+  // resolved from existing seams only (see
   // ensure-host-routines.ts's module doc), never fabricated. Same posture as
   // the git-sync reconcile hygiene block above: lazy-import + fire-and-forget
   // with its own catch — it must NEVER affect harness boot — and the

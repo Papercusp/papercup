@@ -12,8 +12,6 @@
  * Run: cd packages/operator-core && npx vitest run lib/p2p/offer-store-schema.test.ts
  */
 import { describe, expect, it } from 'vitest';
-import type { OfferAuthorship } from './offer-authorship';
-import type { WorkOffer } from './offer-budget';
 import {
   WORK_OFFER_STORE_SIG_DOMAIN,
   canonicalWorkOfferRecordJson,
@@ -23,20 +21,6 @@ import {
   workOfferStoreSignedBytes,
   type WorkOfferStoreRecord,
 } from './offer-store-schema';
-
-const OFFER: WorkOffer = {
-  offerId: 'wo-1',
-  fleetSlug: 'alpha',
-  publisherRef: 'pub-dev-1',
-  billedTo: 'host-pays',
-  modelClass: 'bulk',
-  priority: 5,
-  isolationReqs: [],
-  budget: { remote: null, local: { cap: 10, unit: 'slots', maxPerCall: null } },
-  publishedAt: 1000,
-  ttlMs: 60_000,
-};
-const AUTHORSHIP: OfferAuthorship = { devicePubkey: 'dpk', signatureByDevice: 'c2ln', epoch: 3 };
 
 const SEAT_RECORD = {
   offerId: 'seat-abc123',
@@ -48,19 +32,6 @@ const SEAT_RECORD = {
   workOffer: null,
   authorship: null,
   seat: { model: 'haiku', effort: 'low', count: 2, accountScope: 'auto', hostLabel: 'box-b' },
-  recordVersion: 1,
-};
-
-const WORK_RECORD = {
-  offerId: 'wo-1',
-  publisherGithubUserId: 279242982,
-  fleetSlug: 'alpha',
-  kind: 'work',
-  status: 'open',
-  cancelReason: null,
-  workOffer: OFFER,
-  authorship: AUTHORSHIP,
-  seat: null,
   recordVersion: 1,
 };
 
@@ -98,8 +69,8 @@ describe('coerceWorkOfferStoreRecord — seat kind', () => {
     }
   });
 
-  it("rejects work-kind fields on a seat record (kind discrimination is closed)", () => {
-    expect(coerceWorkOfferStoreRecord({ ...SEAT_RECORD, workOffer: OFFER, authorship: AUTHORSHIP }).ok).toBe(false);
+  it("rejects retired work-offer fields on a seat record (kind discrimination is closed)", () => {
+    expect(coerceWorkOfferStoreRecord({ ...SEAT_RECORD, workOffer: {}, authorship: {} }).ok).toBe(false);
     expect(coerceWorkOfferStoreRecord({ ...SEAT_RECORD, seat: null }).ok).toBe(false);
   });
 });
@@ -158,8 +129,7 @@ describe('coerceWorkOfferStoreRecord — seat kind P-001 pot-scoped grantee (pot
     ).toBe(false);
   });
 
-  it("rejects potSlug set on 'work' or 'spawn_request' kinds (only 'seat' may be pot-scoped)", () => {
-    expect(coerceWorkOfferStoreRecord({ ...WORK_RECORD, potSlug: 'my-pot' }).ok).toBe(false);
+  it("rejects potSlug set on 'spawn_request' (only 'seat' may be pot-scoped)", () => {
     expect(coerceWorkOfferStoreRecord({ ...SPAWN_REQUEST_RECORD, potSlug: 'my-pot' }).ok).toBe(false);
   });
 
@@ -246,15 +216,12 @@ describe('coerceWorkOfferStoreRecord — spawn_request kind (P-009)', () => {
     ).toBe(false);
   });
 
-  it('kind discrimination is closed: no seat/work payloads on a spawn_request, no spawnRequest elsewhere', () => {
+  it('kind discrimination is closed: no seat/retired-work payloads on a spawn_request, no spawnRequest elsewhere', () => {
     expect(coerceWorkOfferStoreRecord({ ...SPAWN_REQUEST_RECORD, seat: SEAT_RECORD.seat }).ok).toBe(false);
-    expect(coerceWorkOfferStoreRecord({ ...SPAWN_REQUEST_RECORD, workOffer: OFFER, authorship: AUTHORSHIP }).ok).toBe(false);
+    expect(coerceWorkOfferStoreRecord({ ...SPAWN_REQUEST_RECORD, workOffer: {}, authorship: {} }).ok).toBe(false);
     expect(coerceWorkOfferStoreRecord({ ...SPAWN_REQUEST_RECORD, spawnRequest: null }).ok).toBe(false);
     expect(
       coerceWorkOfferStoreRecord({ ...SEAT_RECORD, spawnRequest: SPAWN_REQUEST_RECORD.spawnRequest }).ok,
-    ).toBe(false);
-    expect(
-      coerceWorkOfferStoreRecord({ ...WORK_RECORD, spawnRequest: SPAWN_REQUEST_RECORD.spawnRequest }).ok,
     ).toBe(false);
   });
 
@@ -267,34 +234,19 @@ describe('coerceWorkOfferStoreRecord — spawn_request kind (P-009)', () => {
   });
 });
 
-describe('coerceWorkOfferStoreRecord — work kind (H17 single-validator reuse)', () => {
-  it('accepts a valid work record (offer + inner authorship)', () => {
-    const c = coerceWorkOfferStoreRecord(WORK_RECORD);
-    expect(c.ok).toBe(true);
-    if (!c.ok) return;
-    expect(c.record.workOffer).toEqual(OFFER);
-    expect(c.record.authorship).toEqual(AUTHORSHIP);
-    expect(c.record.seat).toBeNull();
-  });
-
-  it('refuses through the H17 intake gate on a malformed inner offer', () => {
+describe('coerceWorkOfferStoreRecord — retired work kind', () => {
+  it('fails closed on a legacy work record', () => {
     const c = coerceWorkOfferStoreRecord({
-      ...WORK_RECORD,
-      workOffer: { ...OFFER, budget: undefined },
+      ...SEAT_RECORD,
+      offerId: 'wo-legacy',
+      kind: 'work',
+      seat: null,
+      workOffer: { offerId: 'wo-legacy' },
+      authorship: { devicePubkey: 'legacy' },
     });
     expect(c.ok).toBe(false);
     if (c.ok) return;
-    expect(c.error).toContain('H17');
-  });
-
-  it('rejects cuckoo key fields (store key must BE the offer identity)', () => {
-    expect(coerceWorkOfferStoreRecord({ ...WORK_RECORD, offerId: 'wo-other' }).ok).toBe(false);
-    expect(coerceWorkOfferStoreRecord({ ...WORK_RECORD, fleetSlug: 'beta' }).ok).toBe(false);
-  });
-
-  it('requires the inner pair and refuses a seat payload', () => {
-    expect(coerceWorkOfferStoreRecord({ ...WORK_RECORD, authorship: null }).ok).toBe(false);
-    expect(coerceWorkOfferStoreRecord({ ...WORK_RECORD, seat: SEAT_RECORD.seat }).ok).toBe(false);
+    expect(c.error).toMatch(/legacy 'work' intake is retired/);
   });
 });
 
@@ -313,11 +265,12 @@ describe('coerceWorkOfferStoreRecord — shared gates', () => {
 
 describe('canonical bytes + parse round-trip', () => {
   it('canonical json parses back to the identical record (author↔verifier stability)', () => {
-    const c = coerceWorkOfferStoreRecord(WORK_RECORD);
+    const c = coerceWorkOfferStoreRecord(SPAWN_REQUEST_RECORD);
     expect(c.ok).toBe(true);
     if (!c.ok) return;
     const json = canonicalWorkOfferRecordJson(c.record);
     expect(json.includes('\n')).toBe(false);
+    expect(JSON.parse(json)).toMatchObject({ workOffer: null, authorship: null });
     expect(parseWorkOfferRecordJson(json)).toEqual(c.record);
   });
 

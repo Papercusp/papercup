@@ -258,17 +258,10 @@ import './foreign-git-sync-action';
 // superviseForeignSessions liveness/orphan-ORIGIN sweep (foreign-supervision.ts) —
 // see foreign-supervision-action.ts below, which now closes that gap.
 import './sweep-orphaned-foreign-harnesses-action';
-// `system:p2p-work-intake` — p2p-public-release-remaining-lanes-2026-07-16
-// P-406 (D-004): the minimal production intake loop — lists open work
-// offers and ticks the WI-3629 evaluatePull->pullAndExecuteOffer seam.
-// Seeded at boot by p2p/ensure-host-routines.ts (WI-5327/WI-6680), which
-// resolves the host identity the action itself has no seam to discover.
-import './work-intake-action';
 // `system:p2p-foreign-supervision` — p2p-public-release-remaining-lanes-2026-07-16
 // P-407 (D-004): P-104's H12/H13 foreign-session liveness + orphan-origin
 // wind-down sweep, now bound to production data (foreign-supervision-production.ts)
-// + scheduled. Seeded at boot by p2p/ensure-host-routines.ts alongside
-// system:p2p-work-intake above (see foreign-supervision-action.ts's module doc).
+// + scheduled. Seeded at boot by p2p/ensure-host-routines.ts.
 import './foreign-supervision-action';
 // papercusp-dogfood-phase7-pr-lifecycle P-042 (un-vaporware, PR-1): `system:pr-poll`
 // — per-harness inbound-PR poll daemon (notice PR → track → trigger reviewer →

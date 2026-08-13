@@ -136,27 +136,26 @@ describe.skipIf(!scriptExists)('work-distribution-drill wiring census — probe 
     expect(existsAsCode('listOffers'), 'listOffers not found as code — the source search is broken').toBe(true);
   });
 
-  it('requires the work-intake routine to be active before SPAWN or RESULTS can pass', () => {
+  it('pins PULL/SPAWN/RESULTS to the shipped seat-delegation chain, never the retired work-intake routine', () => {
     const script = readFileSync(DRILL, 'utf8');
+    const pullStart = script.indexOf('# PULL —');
     const spawnStart = script.indexOf('# SPAWN —');
     const resultsStart = script.indexOf('# RESULTS —', spawnStart);
     const meteringStart = script.indexOf('# METERING —', resultsStart);
 
+    expect(pullStart, 'PULL census section missing').toBeGreaterThanOrEqual(0);
     expect(spawnStart, 'SPAWN census section missing').toBeGreaterThanOrEqual(0);
+    expect(spawnStart).toBeGreaterThan(pullStart);
     expect(resultsStart, 'RESULTS census section missing').toBeGreaterThan(spawnStart);
     expect(meteringStart, 'METERING census section missing').toBeGreaterThan(resultsStart);
 
+    const pull = script.slice(pullStart, spawnStart);
     const spawn = script.slice(spawnStart, resultsStart);
     const results = script.slice(resultsStart, meteringStart);
 
-    expect(spawn).toMatch(
-      /elif routine_active 'p2p-work-intake'; then\s+ok "SPAWN wired:/,
-    );
-    expect(spawn).toMatch(
-      /elif routine_seeded 'p2p-work-intake'; then\s+skipp "SPAWN — DETECTED: p2p-work-intake is seeded but inactive:/,
-    );
-    expect(results).toMatch(
-      /if routine_active 'p2p-work-intake' && bundle_has 'runForeignGitSyncTick'; then\s+ok "RESULTS wired:/,
-    );
+    expect(pull).toMatch(/bundle_has 'listOffers' && bundle_has 'publishSpawnRequest'/);
+    expect(spawn).toMatch(/bundle_has 'honorSpawnRequestFromProjection'/);
+    expect(results).toMatch(/bundle_has 'resolveDelegatedSpawnOutcome' && bundle_has 'listP2pReceipts'/);
+    expect(`${pull}\n${spawn}\n${results}`).not.toContain('p2p-work-intake');
   });
 });

@@ -389,7 +389,6 @@ export const TARGET_ROLE_SPEND: Readonly<Record<string, SpendEntry>> = {
   'system:autonomy-trust-scan': { spend: 'none', why: 'Scores autonomy trust from recorded dispositions' },
   'system:hive-canary-sla': { spend: 'none', why: 'Checks yesterday’s canaries against their deadline' },
   'system:cross-hive-outbox-drain': { spend: 'none', why: 'Drains durable cross-hive outboxes' },
-  'system:p2p-work-intake': { spend: 'none', why: 'Ingests federated work items' },
   'system:p2p-foreign-supervision': { spend: 'none', why: 'Supervises foreign harness rows' },
   'system:sweep-orphaned-foreign-harnesses': { spend: 'none', why: 'Sweeps orphaned foreign harnesses' },
   'system:p2p-perf-tier1': { spend: 'none', why: 'Nightly p2p bench' },

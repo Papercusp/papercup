@@ -10,15 +10,7 @@
  * member-side projection (projections/work-offers.ts) BOTH derive the signed
  * bytes from {@link workOfferStoreSignedBytes}, so they can never drift.
  *
- * THREE OFFER KINDS in one store record (kind-discriminated):
- *   'work' — a P-102 WorkOffer + its inner OfferAuthorship envelope. The inner
- *            envelope is the artifact the receiver-side chain
- *            (offer-authorship.verifyOfferAuthorship / standing-puller) verifies
- *            at CLAIM time; the store's OUTER signature (below) authenticates
- *            the store row itself — publish, pause, cancel — so lifecycle
- *            transitions are signed too. Validation of the inner pair REUSES
- *            standing-puller's H17 intake gate (parseOfferPayload) — one
- *            validator, no drift.
+ * TWO OFFER KINDS in one store record (kind-discriminated):
  *   'seat' — a D-005 STANDING seat-offer: an agent_slot delegation advertised
  *            to the fleet owner ("this machine: N model·effort seats, fleet X").
  *            No inner envelope (there is no WorkOffer to claim); the outer store
@@ -49,9 +41,6 @@
  */
 
 import { canonicalJson } from '../authority/authority-rpc-envelope';
-import type { WorkOffer } from './offer-budget';
-import type { OfferAuthorship } from './offer-authorship';
-import { parseOfferPayload } from './standing-puller';
 
 /** Publisher-authoritative lifecycle. 'open' = claimable/live; 'paused' = kept
  *  but not claimable (a paused delegation); 'cancelled' = terminal, publisher-
@@ -118,15 +107,16 @@ export interface WorkOfferStoreRecord {
   fleetSlug: string | null;
   /** P-001: for kind 'seat', the pot-scoped grantee (the pot's hive topic —
    *  ANY fleet in the pot may spend it, audience-gated) instead of one named
-   *  fleet. Null for 'work'/'spawn_request' and for a fleet-scoped seat offer. */
+   *  fleet. Null for 'spawn_request' and for a fleet-scoped seat offer. */
   potSlug: string | null;
-  kind: 'work' | 'seat' | 'spawn_request';
+  kind: 'seat' | 'spawn_request';
   status: OfferStoreStatus;
   /** Why a 'cancelled' record was cancelled (display/receipts), or null. */
   cancelReason: string | null;
-  /** kind 'work': the P-102 offer + inner authorship envelope. null otherwise. */
-  workOffer: WorkOffer | null;
-  authorship: OfferAuthorship | null;
+  /** Retired v1 work-offer fields. Kept as typed nulls so the canonical JSON
+   *  bytes for existing seat/spawn_request records do not change. */
+  workOffer: null;
+  authorship: null;
   /** kind 'seat': the D-005 payload. null otherwise. */
   seat: SeatOfferPayload | null;
   /** kind 'spawn_request': the P-009 payload. null otherwise. */
@@ -258,9 +248,8 @@ function coerceSpawnRequestPayload(
  * Validate + accept an UNTRUSTED record input (authoring API body / a parsed
  * remote record). CLOSED schema (fleet-directory-schema discipline): this feeds
  * authority + capacity decisions, so anything malformed is a rejection, never a
- * passthrough. The work-kind inner pair is validated by standing-puller's H17
- * intake gate (size-capped, strict, never-throws) so the store and the pull
- * loop can never disagree about what a well-formed offer is.
+ * passthrough. The retired `work` kind is rejected; v1 delegation uses the
+ * signed seat → spawn_request path exclusively.
  */
 export function coerceWorkOfferStoreRecord(
   raw: unknown,
@@ -275,10 +264,10 @@ export function coerceWorkOfferStoreRecord(
   if (!isPositiveInt(r.publisherGithubUserId)) {
     return { ok: false, error: 'record.publisherGithubUserId must be a positive integer (X9: numeric id, never a login)' };
   }
-  if (r.kind !== 'work' && r.kind !== 'seat' && r.kind !== 'spawn_request') {
-    return { ok: false, error: "record.kind must be 'work', 'seat' or 'spawn_request'" };
+  if (r.kind !== 'seat' && r.kind !== 'spawn_request') {
+    return { ok: false, error: "record.kind must be 'seat' or 'spawn_request' (legacy 'work' intake is retired)" };
   }
-  // P-001: the grantee. 'work'/'spawn_request' are always fleet-scoped
+  // P-001: the grantee. 'spawn_request' is always fleet-scoped
   // (fleetSlug required, potSlug must be absent) — unchanged pre-P-001
   // behavior. 'seat' generalizes to exactly one of fleetSlug/potSlug (a
   // standing seat-offer may target a whole pot instead of one fleet).
@@ -316,40 +305,12 @@ export function coerceWorkOfferStoreRecord(
     return { ok: false, error: 'record.recordVersion must be a positive integer' };
   }
 
-  let workOffer: WorkOffer | null = null;
-  let authorship: OfferAuthorship | null = null;
+  const workOffer = null;
+  const authorship = null;
   let seat: SeatOfferPayload | null = null;
   let spawnRequest: SpawnRequestPayload | null = null;
 
-  if (r.kind === 'work') {
-    if (r.seat != null) return { ok: false, error: "record.seat must be absent/null for kind 'work'" };
-    if (r.spawnRequest != null) return { ok: false, error: "record.spawnRequest must be absent/null for kind 'work'" };
-    if (r.workOffer == null || r.authorship == null) {
-      return { ok: false, error: "record.workOffer + record.authorship are required for kind 'work'" };
-    }
-    // One validator source: the H17 intake gate. The JSON round-trip also
-    // enforces the same size cap the pull loop applies (an oversized offer can
-    // never be stored that the puller would then refuse to parse).
-    let serialized: string;
-    try {
-      serialized = JSON.stringify({ offer: r.workOffer, authorship: r.authorship });
-    } catch {
-      return { ok: false, error: 'record.workOffer/authorship are not JSON-serializable' };
-    }
-    const parsed = parseOfferPayload(serialized);
-    if (!parsed.ok) {
-      return { ok: false, error: `record.workOffer/authorship failed the H17 intake gate: ${parsed.code} — ${parsed.detail}` };
-    }
-    workOffer = parsed.payload.offer;
-    authorship = parsed.payload.authorship;
-    // No-cuckoo cross-checks: the store key fields must BE the offer's.
-    if (workOffer.offerId !== r.offerId) {
-      return { ok: false, error: `record.offerId '${r.offerId}' != workOffer.offerId '${workOffer.offerId}'` };
-    }
-    if (workOffer.fleetSlug !== r.fleetSlug) {
-      return { ok: false, error: `record.fleetSlug '${r.fleetSlug}' != workOffer.fleetSlug '${workOffer.fleetSlug}'` };
-    }
-  } else if (r.kind === 'seat') {
+  if (r.kind === 'seat') {
     if (r.workOffer != null || r.authorship != null) {
       return { ok: false, error: "record.workOffer/authorship must be absent/null for kind 'seat'" };
     }

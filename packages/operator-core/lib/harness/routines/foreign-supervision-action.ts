@@ -5,7 +5,7 @@
  * H12/H13 liveness + orphan-origin wind-down) against production data via
  * `buildProductionSupervisionDeps` (p2p/foreign-supervision-production.ts).
  * Mirrors sweep-orphaned-foreign-harnesses-action.ts / foreign-git-sync-action.ts
- * / work-intake-action.ts exactly (registered system action + upsertRoutine,
+ * (registered system action + upsertRoutine,
  * repo rule: no bare setInterval, no new scheduler).
  *
  * Distinct from `system:sweep-orphaned-foreign-harnesses` (registry-row
@@ -14,22 +14,21 @@
  * SUPERVISION sweep foreign-supervision.ts's own module doc named as the
  * remaining gap.
  *
- * HOST IDENTITY (same discipline as work-intake-action.ts, P-406's sibling
- * production tick, for the identical reason): `responderGithubUserId` /
+ * HOST IDENTITY: `responderGithubUserId` /
  * `responderDevicePubkey` are the identity THIS host wound-down receipts are
  * attributed to. That is an OWNER-CONFIGURED value (which github user id /
  * device this host authenticates as) with no seam to discover on its own —
  * inventing one would silently diverge from (or silently coincide by
  * accident with) whatever an owner sets up elsewhere. Read from the routine's
- * `triggerConfig`, exactly like work-intake-action.ts's `readHostIdentity`;
- * missing/malformed config is a LOUD no-op, never a fabricated identity.
+ * `triggerConfig`; missing/malformed config is a LOUD no-op, never a
+ * fabricated identity.
  *
  * SEEDING: `ensureP2pForeignSupervisionRoutine` is called at boot by
  * p2p/ensure-host-routines.ts (WI-5327), which resolves this host's identity
  * from existing seams — it needs only responderGithubUserId + the device
- * pubkey, so unlike work-intake it seeds on a packaged install too. The
- * previous "NOT YET CALLED FROM ANYWHERE" note was stale from 2026-07-18 and
- * was corrected under WI-6680.
+ * pubkey and therefore seeds on a packaged install. The previous "NOT YET
+ * CALLED FROM ANYWHERE" note was stale from 2026-07-18 and was corrected under
+ * WI-6680.
  */
 import { getOrgPg, upsertRoutine, type RoutineRow } from '@papercusp/db-org';
 import type { Sql } from 'postgres';
