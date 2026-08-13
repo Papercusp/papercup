@@ -312,10 +312,10 @@ export async function registerGitSyncResource(tx: SqlTag, slug: string): Promise
   `;
 }
 
-type AcquireState = 'acquired' | 'held' | 'error';
+type AcquireState = 'acquired' | 'held' | 'contended' | 'error';
 interface AcquireOutcome {
   state: AcquireState;
-  /** The resource that blocked the acquisition (state 'held'). */
+  /** The resource that blocked the acquisition (state 'held' or 'contended'). */
   blockedOn?: string;
   /** The store's refusal reason (state 'held') — 'unknown_resource' means the
    *  name isn't registered, not that a peer holds it. */
@@ -433,16 +433,19 @@ async function acquireLocks(
           });
         }));
     } catch (e) {
-      // Reaching here on contention means the load window outlasted the retries
-      // (the next tick retries); otherwise it's SU-lock DB unreachable / not
-      // bootstrapped — proceed unlocked (best-effort).
+      // Reaching here on contention means the load window outlasted the retries;
+      // the next tick retries without running unlocked. A non-contention error is
+      // SU-lock DB unreachable / not bootstrapped — proceed unlocked (best-effort).
       const contended = isWorkspaceContended(e);
       console.warn(
         `[git-sync] lock ${contended ? 'contended after retries' : 'infra unavailable'} (${resource}): ${e instanceof Error ? e.message : e}`,
       );
       await releaseAll(cd, owner, acquired);
       acquired.length = 0;
-      return { state: 'error' };
+      return {
+        state: contended ? 'contended' : 'error',
+        ...(contended ? { blockedOn: resource, blockedReason: 'lock_contended' } : {}),
+      };
     }
     if (!r.ok) {
       // A peer holds it (or an extra name is unregistered) — skip this tick, retry next.
@@ -1511,8 +1514,10 @@ async function handleGitSync(ctx: SystemActionCtx): Promise<GitSyncFireOutcome> 
   const acquired: string[] = [];
   const lockOwner = newGitSyncLockOwner();
   const lock = await acquireLocks(cd, slug, resources, acquired, lockOwner);
-  if (lock.state === 'held') {
-    if (lock.blockedReason === 'unknown_resource') {
+  if (lock.state === 'held' || lock.state === 'contended') {
+    if (lock.state === 'contended') {
+      console.log(`[git-sync] ${slug}: lock contention persisted on ${lock.blockedOn} — skipping this tick`);
+    } else if (lock.blockedReason === 'unknown_resource') {
       console.warn(
         `[git-sync] ${slug}: lock resource "${lock.blockedOn}" is not registered in agent_resource_registry — ` +
         'skipping this tick. Register it or remove it from trigger_config.extra_lock_resources.');
@@ -1521,7 +1526,7 @@ async function handleGitSync(ctx: SystemActionCtx): Promise<GitSyncFireOutcome> 
     }
     return {
       status: 'skipped',
-      reason: lock.blockedReason ?? 'lock_held',
+      reason: lock.blockedReason ?? (lock.state === 'contended' ? 'lock_contended' : 'lock_held'),
       ...(lock.blockedOn ? { blockedOn: lock.blockedOn } : {}),
     };
   }

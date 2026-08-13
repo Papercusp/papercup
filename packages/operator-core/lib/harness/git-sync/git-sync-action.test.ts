@@ -8,9 +8,10 @@
  *     tick acquires `git-sync:<slug>` (auto-registered in the same txn) plus the
  *     routine's `trigger_config.extra_lock_resources` (papercup: the legacy
  *     `git-sync` + `libs-papercusp-submodule` back-off names). Peer-held lock →
- *     skip the tick (back-pressure, partial acquisitions released); an UNKNOWN
- *     extra name → skip with a loud log (never auto-registered); lock INFRA
- *     error → proceed UNLOCKED (fail-open); every fire uses a distinct lock
+ *     skip the tick (back-pressure, partial acquisitions released); exhausted
+ *     workspace contention → skip after bounded retry; an UNKNOWN extra name →
+ *     skip with a loud log (never auto-registered); lock INFRA error → proceed
+ *     UNLOCKED (fail-open); every fire uses a distinct lock
  *     owner so cron/manual fires cannot coalesce; long runs refresh every held
  *     lease before its TTL; locks released after the run — success, error, and
  *     throw.
@@ -479,6 +480,37 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
     expect(releasedResources()).toEqual(['git-sync', 'git-sync:papercup']);
     expect(log).toHaveBeenCalledWith(expect.stringContaining('a peer holds libs-papercusp-submodule'));
     log.mockRestore();
+  });
+
+  it('SKIPS after workspace-lock contention exhausts retries — it never runs unlocked', async () => {
+    vi.useFakeTimers();
+    try {
+      const contention = Object.assign(
+        new Error('workspace "ws-42" contended (pg 57014: lock/statement timeout)'),
+        { name: 'WorkspaceContendedError', pgCode: '57014' },
+      );
+      tryAcquireResourceMock.mockRejectedValue(contention);
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      const running = action(ctx);
+      await vi.advanceTimersByTimeAsync(6_000);
+      const outcome = await running;
+
+      expect(outcome).toEqual({
+        status: 'skipped',
+        reason: 'lock_contended',
+        blockedOn: 'git-sync:papercup',
+      });
+      expect(tryAcquireResourceMock).toHaveBeenCalledTimes(4); // initial + 3 bounded retries
+      expect(runGitSyncMock).not.toHaveBeenCalled();
+      expect(appendPipelineEventMock).not.toHaveBeenCalled();
+      expect(routinePatches()).toEqual([]);
+      expect(releasedResources()).toEqual([]);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('lock contended after retries'));
+      warn.mockRestore();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('proceeds UNLOCKED when the lock infra errors (fail-open) — partials released, no release after the run', async () => {
