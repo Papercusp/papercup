@@ -1146,7 +1146,7 @@ export async function probeFreshLaunchSessions({
                           AND t.coord_owner_id = s.coord_owner_id
                           AND t.status = 'ok'
                           AND t.call_origin = 'agent'
-                          AND NOT (t.tool_name = ANY (${LAUNCH_STATUSLINE_TOOLS as string[]}))), 0) AS real_calls,
+                          AND NOT (t.tool_name = ANY (${LAUNCH_STATUSLINE_TOOLS as string[]}))), 0) AS successful_calls,
              (SELECT EXTRACT(EPOCH FROM (now() - max(t.invoked_at))) * 1000
                 FROM harness_shared.tool_invocations t
                WHERE t.workspace_id = ${workspaceId}

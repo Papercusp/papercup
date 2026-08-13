@@ -50,6 +50,8 @@ import {
   getFleetScheme,
   releaseFleetLaunchSlot,
   setFleetLeader,
+  setFleetLaunchTransaction,
+  type FleetLaunchTransaction,
 } from '../../agent-fleets-store';
 import { DEFAULT_CLAIM_SPEC, validateClaimSpec, formatSpecRef, type ClaimSpec } from '../../scheduler/claim-spec';
 import type { SpecPoolEffect } from '../../scheduler/spec-pool-preview';
@@ -92,7 +94,9 @@ import {
   MEMBER_BASELINE_RULES as sharedMemberBaselineRules,
   renderMemberBaseline as sharedRenderMemberBaseline,
   composeMemberLaunchContext as sharedComposeMemberLaunchContext,
+  verifyFreshLaunchStarted,
   type FleetMemberDefaults,
+  type FreshLaunchExpectedAttestation,
   type MemberSpec,
 } from '../../agent-launch-core';
 export type { MemberLaunchOpts } from '../../agent-launch-core';
@@ -2408,6 +2412,8 @@ export default defineTool({
     /** The folded, fully-resolved config for member `i` (0-indexed). */
     const resolvedMemberConfig = (i: number): FleetMemberDefaults =>
       foldMemberSpec(fleetDefaults, memberSpecs[i]);
+    const launchRequestedAt = Date.now();
+    const requestedMemberIds = Array.from({ length: openCount }, () => `su-${randomUUID()}`);
     const memberCommands = Array.from({ length: openCount }, (_v, i) => {
       const folded = resolvedMemberConfig(i);
       return memberLaunchCommand({
@@ -2415,12 +2421,29 @@ export default defineTool({
         fleetSlug,
         harness,
         plan: planSlug ?? undefined,
+        ownerId: requestedMemberIds[i],
         // The member's own brief file wins over the shared/per-member-path fallback;
         // `carry` and `claimKinds` are NOT psu flags (they shape the member baseline
         // and the claim spec respectively), so memberLaunchCommand ignores them.
         launchContext: folded.launchContext ?? memberLaunchContextPathForIndex(i),
       });
     });
+    const expectedAttestations: FreshLaunchExpectedAttestation[] = Array.from(
+      { length: openCount },
+      (_v, i) => {
+        const folded = resolvedMemberConfig(i);
+        return {
+          ownerId: requestedMemberIds[i],
+          agent: folded.agent,
+          workspaceId,
+          harnessSlug: harness,
+          planSlug: planSlug ?? null,
+          model: composeModelSpec(folded.model, folded.effort) ?? null,
+          fleetSlug,
+          fleetRole: 'member',
+        };
+      },
+    );
     // Back-compat: `command` (singular) is reported/reused where every member is
     // identical (the common case — no perMemberLaunchContext).
     const command = memberCommands[0] ?? '';
@@ -2445,13 +2468,58 @@ export default defineTool({
         })
       : null;
     const opened: Array<{
+      ownerId: string;
       terminal: string;
       pid: number | null;
       display: string | null;
       desktopEnvResolvedVia: 'operator-env' | 'active-seat' | 'socket-scan' | 'caller-override' | null;
       command: string;
     }> = [];
-    const failed: Array<{ error: string; code: number }> = [];
+    const failed: Array<{ ownerId?: string; error: string; code: number }> = [];
+    const launchTransaction: FleetLaunchTransaction = {
+      version: 1,
+      transactionId: randomUUID(),
+      state: 'launching',
+      requestedAt: launchRequestedAt,
+      updatedAt: launchRequestedAt,
+      requestedMemberIds,
+      openedMemberIds: [],
+      verifiedMemberIds: [],
+      failed: [],
+      waves: [],
+      recovery: {
+        retryOwnerIds: requestedMemberIds.slice(),
+        nextAction: 'resume from the first unresolved pre-pinned member identity; never relaunch verified members',
+      },
+      requestedMembers: Array.from({ length: openCount }, (_v, i) => {
+        const folded = resolvedMemberConfig(i);
+        return {
+          index: i,
+          ownerId: requestedMemberIds[i],
+          agent: folded.agent,
+          model: composeModelSpec(folded.model, folded.effort) ?? null,
+          account: folded.account ?? 'default',
+          carry: memberSpecs[i]?.carry ?? args.carry ?? 'warm',
+          headless: !!args.headless,
+        };
+      }),
+    };
+    const refreshLaunchRecovery = (): void => {
+      const verified = new Set(launchTransaction.verifiedMemberIds);
+      launchTransaction.recovery.retryOwnerIds = requestedMemberIds.filter((id) => !verified.has(id));
+      launchTransaction.updatedAt = Date.now();
+    };
+    const persistLaunchTransaction = async (): Promise<void> => {
+      refreshLaunchRecovery();
+      await setFleetLaunchTransaction({ workspaceId, fleetSlug, transaction: launchTransaction });
+    };
+    try {
+      await persistLaunchTransaction();
+    } catch (e: any) {
+      return err(
+        `Failed to persist the fleet launch transaction before spawning (${e?.message ?? e}) — NO members were opened.`,
+      );
+    }
     // Concurrent spawns: spawnConsole is async since WI-1886 (it verifies each
     // window survives an early-exit probe instead of reporting ok+pid for a
     // client that died off-screen) — a serial loop would stack N probe windows.
@@ -2573,40 +2641,106 @@ export default defineTool({
       };
     }
 
-    const results = await Promise.all(
-      Array.from({ length: openCount }, (_v, i) =>
-        args.headless
-          ? spawnHeadless({
-              envelope: { ...base, greetingCmd: memberCommands[i], cwd: base.cwd },
-              label: `${fleetSlug} · member ${i + 1}/${openCount} (${planSlug ?? 'claim-spec'})`,
-              logDir: headlessLogDir,
-            })
-          : spawnConsole({
-              envelope: { ...base, greetingCmd: memberCommands[i], cwd: base.cwd },
-              label: `${fleetSlug} · member ${i + 1}/${openCount} (${planSlug ?? 'claim-spec'})`,
-              writeMcpJson: false,
-              scheme,
-              // WI-3289: on a Windows desktop host, relay each member window to the
-              // desktop shell's Tauri console_launch instead of hard-501ing.
-              allowDesktopBridge: true,
-              // WI-4272: caller-pinned demo-stage display (skips seat resolution).
-              displayOverride: args.display,
-            }),
-      ),
-    );
-    results.forEach((result, i) => {
-      if (result.status === 'ok') {
-        opened.push({
-          terminal: result.terminal,
-          pid: result.pid,
-          display: result.display,
-          desktopEnvResolvedVia: result.desktopEnvResolvedVia,
-          command: memberCommands[i],
-        });
-      } else {
-        failed.push({ error: result.error, code: result.code });
+    const waveIndices: number[][] = [];
+    if (openCount > 0) waveIndices.push([0]);
+    for (let start = 1; start < openCount; start += 3) {
+      waveIndices.push(Array.from({ length: Math.min(3, openCount - start) }, (_v, offset) => start + offset));
+    }
+    for (let waveIndex = 0; waveIndex < waveIndices.length; waveIndex += 1) {
+      const indices = waveIndices[waveIndex];
+      const ownerIds = indices.map((i) => requestedMemberIds[i]);
+      const wave: FleetLaunchTransaction['waves'][number] = { index: waveIndex, ownerIds, state: 'opening' };
+      launchTransaction.waves.push(wave);
+      await persistLaunchTransaction();
+
+      const waveResults = await Promise.all(
+        indices.map((i) =>
+          args.headless
+            ? spawnHeadless({
+                envelope: { ...base, greetingCmd: memberCommands[i], cwd: base.cwd },
+                label: `${fleetSlug} · member ${i + 1}/${openCount} (${planSlug ?? 'claim-spec'})`,
+                logDir: headlessLogDir,
+              })
+            : spawnConsole({
+                envelope: { ...base, greetingCmd: memberCommands[i], cwd: base.cwd },
+                label: `${fleetSlug} · member ${i + 1}/${openCount} (${planSlug ?? 'claim-spec'})`,
+                writeMcpJson: false,
+                scheme,
+                allowDesktopBridge: true,
+                displayOverride: args.display,
+              }),
+        ),
+      );
+      const openedThisWave: string[] = [];
+      waveResults.forEach((result, offset) => {
+        const i = indices[offset];
+        const ownerId = requestedMemberIds[i];
+        if (result.status === 'ok') {
+          openedThisWave.push(ownerId);
+          launchTransaction.openedMemberIds.push(ownerId);
+          opened.push({
+            ownerId,
+            terminal: result.terminal,
+            pid: result.pid,
+            display: result.display,
+            desktopEnvResolvedVia: result.desktopEnvResolvedVia,
+            command: memberCommands[i],
+          });
+        } else {
+          failed.push({ ownerId, error: result.error, code: result.code });
+          launchTransaction.failed.push({ ownerId, phase: 'spawn', reason: result.error });
+        }
+      });
+      wave.openedOwnerIds = openedThisWave;
+
+      let waveVerified = false;
+      if (openedThisWave.length > 0) {
+        try {
+          const verdict = await verifyFreshLaunchStarted({
+            workspaceId,
+            launcherOwnerId: ownerId,
+            since: launchRequestedAt,
+            expected: openedThisWave.length,
+            expectedOwnerIds: openedThisWave,
+            expectedAttestations: expectedAttestations.filter((item) => openedThisWave.includes(item.ownerId)),
+          });
+          waveVerified = verdict.agentStarted === true;
+          if (waveVerified) {
+            launchTransaction.verifiedMemberIds.push(...openedThisWave);
+            wave.verifiedOwnerIds = openedThisWave.slice();
+          } else {
+            const phase = verdict.note.includes('ATTESTATION MISMATCH') ? 'attestation' : 'verification';
+            for (const memberOwnerId of openedThisWave) {
+              launchTransaction.failed.push({ ownerId: memberOwnerId, phase, reason: verdict.note });
+              failed.push({ ownerId: memberOwnerId, error: verdict.note, code: 502 });
+            }
+          }
+        } catch (e: any) {
+          for (const memberOwnerId of openedThisWave) {
+            const reason = `launch verification instrument failed: ${e?.message ?? e}`;
+            launchTransaction.failed.push({ ownerId: memberOwnerId, phase: 'verification', reason });
+            failed.push({ ownerId: memberOwnerId, error: reason, code: 502 });
+          }
+        }
       }
-    });
+
+      const spawnFailed = waveResults.some((result) => result.status !== 'ok');
+      if (waveVerified && !spawnFailed && openedThisWave.length === ownerIds.length) {
+        wave.state = 'verified';
+        await persistLaunchTransaction();
+        continue;
+      }
+      wave.state = 'partial';
+      launchTransaction.state = 'partial';
+      await persistLaunchTransaction();
+      break;
+    }
+    if (launchTransaction.verifiedMemberIds.length === requestedMemberIds.length) {
+      launchTransaction.state = 'verified';
+    } else {
+      launchTransaction.state = 'partial';
+    }
+    await persistLaunchTransaction();
 
     // The slot was claimed BEFORE spawning (the atomic winner). If the launch opened NOTHING
     // (every spawn failed), release it so an immediate legitimate retry isn't suppressed for
@@ -2767,7 +2901,7 @@ export default defineTool({
 
     return json(
       {
-        ok: opened.length > 0,
+        ok: launchTransaction.verifiedMemberIds.length > 0,
         fleet: fleetSlug,
         leaderRole,
         // The launch result is the moment the caller BECOMES a leader — leadership
@@ -2823,9 +2957,10 @@ export default defineTool({
         briefReadError,
         opened,
         failed,
+        launchTransaction,
         message: lines.join('\n'),
       },
-      opened.length === 0,
+      launchTransaction.verifiedMemberIds.length === 0,
     );
   },
 });

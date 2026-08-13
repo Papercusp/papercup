@@ -374,6 +374,7 @@ export default defineTool({
       // P-009 (H4): the typed control state — 'winding-down' means members must
       // checkpoint + release and pull no new work until fleet:resume.
       controlState: fleet.controlState,
+      launchTransaction: fleet.lastLaunchTransaction,
       ...(fleet.controlState !== 'active'
         ? { controlReason: fleet.controlReason, controlBy: fleet.controlBy, controlAt: fleet.controlAt }
         : {}),
