@@ -371,6 +371,11 @@ export interface MemberLaunchOpts {
   plan?: string;
   headless?: boolean;
   /**
+   * psu --carry: persist the member's warm/cold carry choice in launch_argv so
+   * fresh-launch attestation can compare the requested and actual session.
+   */
+  carry?: 'warm' | 'cold';
+  /**
    * psu --owner-id: PRE-PIN this launch's coord identity instead of letting
    * bootstrap-su mint one. Same flag, same semantics and same FRESH-LAUNCH-ONLY
    * rule as buildAgentLaunchCommand's `ownerId` — see that option's doc for why a
@@ -420,9 +425,9 @@ export interface MemberLaunchOpts {
  * role / brief / claim lane — generalizing today's brief-only
  * `perMemberLaunchContext` to ALL settings.
  *
- * `carry` and `claimKinds` are NOT psu command flags (carry shapes the member
- * baseline + loop:arm; claimKinds seeds the per-member claim spec), so they are
- * threaded by the launch tool, not by {@link memberLaunchCommand}.
+ * `carry` shapes the member baseline + loop:arm and is also emitted as a psu
+ * flag so launch_argv can attest it. `claimKinds` is not a psu flag; it seeds
+ * the per-member claim spec and is threaded by the launch tool.
  */
 export interface MemberSpec {
   model?: string;
