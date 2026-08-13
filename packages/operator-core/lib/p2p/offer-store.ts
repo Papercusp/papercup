@@ -8,10 +8,10 @@
  * read/authoring path (signing is INJECTED — the keychain stays out,
  * identity/sign-with-device-key.ts at the call site); the member-side
  * verify-on-apply lives in sync/hyperbee/projections/work-offers.ts. Rows read
- * here are therefore already-verified for LOCAL trust decisions; the CONSUME
- * path (puller/executor) still runs the full P-102 receiver chain
- * (verifyOfferAuthorship) — publisher-set membership + epoch fences are decided
- * at claim time, never frozen at apply time.
+ * here are therefore already-verified for LOCAL trust decisions. V1 delegation
+ * consumes the supported seat/spawn_request records through the delegated-spawn
+ * admission and honor chain; the retired legacy work-offer puller is not a
+ * consumer of this store.
  *
  * C6: every read is a DIRECT PG read per call — no memoization, no TTL — so an
  * offer cancelled one statement ago is refused on the very next claim check.
@@ -150,8 +150,8 @@ export interface ListWorkOffersFilter {
  *
  * ⚠ GENERIC over `filter.kind` — this lists either supported kind (`seat` |
  * `spawn_request`), not legacy work-offers. It was called `listWorkOffers` until
- * 2026-08-09, and that name cost a real misdiagnosis: a reader saw
- * a dead `kind:'work'` intake branch existed. A reader took the NAME as evidence
+ * 2026-08-09, and that name cost a real misdiagnosis: a reader saw that
+ * a dead `kind:'work'` intake branch existed. The reader took the NAME as evidence
  * that branch was THE pull leg and concluded its zero publishers made the live
  * path unreachable. It did not: v1 delegation runs on SEATS
  * (`request-remote-spawn.ts:175` calls this with `kind:'seat'`). Renamed under

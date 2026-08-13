@@ -102,8 +102,8 @@ export interface WorkOfferStoreRecord {
   publisherGithubUserId: number;
   /** The fleet channel the offer targets (H5 owner-prefixed at the scope layer).
    *  For kind 'seat' this is nullable — exactly one of fleetSlug/potSlug is set
-   *  (pot-seat-pools-prose-ux-2026-07-18 P-001). 'work'/'spawn_request' always
-   *  carry a non-null fleetSlug (potSlug must be null for those kinds). */
+   *  (pot-seat-pools-prose-ux-2026-07-18 P-001). 'spawn_request' always carries
+   *  a non-null fleetSlug (potSlug must be null for that kind). */
   fleetSlug: string | null;
   /** P-001: for kind 'seat', the pot-scoped grantee (the pot's hive topic —
    *  ANY fleet in the pot may spend it, audience-gated) instead of one named
