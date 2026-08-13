@@ -93,7 +93,7 @@ describe('applyResultDoor', () => {
     const doored = applyResultDoor(
       { content: [{ type: 'text' as const, text: original }], structuredContent: { ok: true, rows } },
       { toolName: 'work_items:list', workspaceId: 'ws-1', runId: RUN_ID },
-    );
+    ) as DoorableResult;
     const textItems = doored.content.filter((item) => (item as { type?: string }).type === 'text') as Array<{ text: string }>;
     expect(textItems).toHaveLength(1);
     expect(textItems[0].text.length).toBeLessThan(BUDGET_CHARS);

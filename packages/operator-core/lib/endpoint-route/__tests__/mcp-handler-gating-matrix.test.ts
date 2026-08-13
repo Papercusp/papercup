@@ -623,8 +623,14 @@ describe('applyResultDoor choke point honors projected.skipResultDoor', () => {
   it('doors (truncates + spills) an oversized result by default', async () => {
     const res = await callTool('gatingtest:door_default', {}, scoped('ws-test'));
     expect(res.isError).not.toBe(true);
-    expect(res._meta?.resultDoor).toMatchObject({ truncated: true });
+    expect(res._meta?.resultDoor).toMatchObject({ truncated: true, structural: true });
     expect(textOf(res)).not.toContain(DOOR_TEST_BIG_TEXT);
+    const body = JSON.parse((res.content[0] as { text: string }).text);
+    expect(body._projection.cursor).toMatchObject({
+      kind: 'scratch-page',
+      tool: 'capability:read',
+      args: { byte_offset: 0, byte_limit: 3_072 },
+    });
   });
 
   it("skipResultDoor:'programmatic-caller' on the tool definition skips the door entirely — full body, no spill", async () => {
@@ -664,6 +670,23 @@ describe('tools:invoke inherits the nested target result-door exemption', () => 
     expect(res.isError).not.toBe(true);
     expect(res._meta?.resultDoor).toBeUndefined();
     expect(textOf(res)).toContain(DOOR_TEST_BIG_TEXT);
+  });
+
+  it('structurally bounds an ordinary oversized target body at the outer shared door', async () => {
+    const res = await callTool(
+      'tools:invoke',
+      { name: 'gatingtest:door_default', args: {} },
+      scoped('ws-test'),
+      { format: 'json' },
+    );
+    expect(res.isError).not.toBe(true);
+    expect(res._meta?.resultDoor).toMatchObject({ truncated: true, structural: true });
+    const body = JSON.parse((res.content[0] as { text: string }).text);
+    expect(body._projection).toMatchObject({
+      kind: 'bounded-payload',
+      cursor: { kind: 'scratch-page', tool: 'capability:read' },
+    });
+    expect(textOf(res)).not.toContain(DOOR_TEST_BIG_TEXT);
   });
 });
 
