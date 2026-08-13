@@ -140,6 +140,41 @@ describe('ptool keyed post-connect replay recovery (EI-20245300628078356)', () =
     });
   });
 
+  it('negotiates projected object-schema calls as JSON instead of requesting the unprojected structured twin', () => {
+    expect(buildCallToolParams(
+      'sessions:read',
+      { session: 'sess-1', projection: { pick: ['turns[].turn_idx'] } },
+      { outputSchema: { type: 'object' }, idempotencyKey: 'ptool-projected-1' },
+    )).toEqual({
+      name: 'sessions:read',
+      arguments: { session: 'sess-1', projection: { pick: ['turns[].turn_idx'] } },
+      _meta: { format: 'json', idempotencyKey: 'ptool-projected-1' },
+    });
+  });
+
+  it('uses schema-neutral MCP request validation for a projected call', async () => {
+    const result = { content: [{ type: 'text', text: '{"turns":[{"turn_idx":1}]}' }] };
+    const client = {
+      callTool: vi.fn(),
+      request: vi.fn().mockResolvedValue(result),
+    };
+    const params = buildCallToolParams(
+      'sessions:read',
+      { session: 'sess-1', projection: { pick: ['turns[].turn_idx'] } },
+      { outputSchema: { type: 'object' } },
+    );
+
+    await expect(callToolWithPressureRetry(client, params, {
+      maxAttempts: 1,
+      timeoutMs: 1,
+    })).resolves.toBe(result);
+
+    expect(client.callTool).not.toHaveBeenCalled();
+    expect(client.request).toHaveBeenCalledTimes(1);
+    expect(client.request.mock.calls[0][0]).toEqual({ method: 'tools/call', params });
+    expect(client.request.mock.calls[0][2]).toEqual({ timeout: 1, maxTotalTimeout: 1 });
+  });
+
   it('recognizes MCP stream-close/deadline failures but not tool errors', () => {
     expect(isTransportFailure(Object.assign(new Error('Connection closed'), { code: -32000 }))).toBe(true);
     expect(isTransportFailure(Object.assign(new Error('Request timed out'), { code: -32001 }))).toBe(true);

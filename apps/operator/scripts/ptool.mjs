@@ -665,8 +665,12 @@ function readToken({ tokenFile = null, env = process.env, home = homedir() } = {
 /** Build the `tools/call` params for a ptool invocation. Pure and exported so
  *  the MCP result negotiation is regression-tested without opening a
  *  transport. Object-rooted output schemas need `_meta.structured` because
- *  the MCP SDK validates their structured response field (EI-13245). Array-
- *  rooted tools deliberately omit `outputSchema` because MCP requires
+ *  the MCP SDK validates their structured response field (EI-13245), EXCEPT
+ *  when the caller supplied a dispatch-level `projection`: the projection
+ *  deliberately drops the unprojected structured twin so it cannot defeat the
+ *  requested reduction. Projected calls therefore negotiate JSON text and use
+ *  the schema-neutral request path in callToolWithPressureRetry below.
+ *  Array-rooted tools deliberately omit `outputSchema` because MCP requires
  *  `structuredContent` to be an object; ask those tools for JSON text instead
  *  so ptool still emits a lossless scripting payload.
  *  @param {string} toolName
@@ -674,7 +678,13 @@ function readToken({ tokenFile = null, env = process.env, home = homedir() } = {
  *  @param {{outputSchema?: {type?: string}, idempotencyKey?: string}} [options]
  */
 export function buildCallToolParams(toolName, callArgs, { outputSchema, idempotencyKey } = {}) {
-  const objectRooted = outputSchema?.type === 'object';
+  const projected = Boolean(
+    callArgs &&
+    typeof callArgs === 'object' &&
+    !Array.isArray(callArgs) &&
+    Object.hasOwn(callArgs, 'projection'),
+  );
+  const objectRooted = outputSchema?.type === 'object' && !projected;
   const meta = objectRooted ? { structured: true } : { format: 'json' };
   if (idempotencyKey) meta.idempotencyKey = idempotencyKey;
   return {
@@ -771,13 +781,33 @@ export async function callToolWithPressureRetry(
   let lastError;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
-      return await client.callTool(
-        params,
-        undefined,
-        timeoutMs > 0
-          ? { timeout: timeoutMs, maxTotalTimeout: timeoutMs }
-          : undefined,
+      const requestOptions = timeoutMs > 0
+        ? { timeout: timeoutMs, maxTotalTimeout: timeoutMs }
+        : undefined;
+      const projected = Boolean(
+        params?.arguments &&
+        typeof params.arguments === 'object' &&
+        !Array.isArray(params.arguments) &&
+        Object.hasOwn(params.arguments, 'projection'),
       );
+      if (projected) {
+        // EI-20335329169958057: Client.callTool() performs a SECOND semantic
+        // validation using the outputSchema cached from tools/list. A
+        // dispatch projection intentionally removes structuredContent (the
+        // complete, unprojected payload), so that validator throws
+        // "has an output schema but did not return structured content" after
+        // the server already returned a valid reduced result. Use the SDK's
+        // ordinary request primitive with the protocol CallToolResult schema:
+        // wire-shape validation remains, while the incompatible cached
+        // full-output-schema check is correctly skipped for this partial view.
+        const { CallToolResultSchema } = await import('@modelcontextprotocol/sdk/types.js');
+        return await client.request(
+          { method: 'tools/call', params },
+          CallToolResultSchema,
+          requestOptions,
+        );
+      }
+      return await client.callTool(params, undefined, requestOptions);
     } catch (error) {
       lastError = error;
       if (!isLoopPressureShed(error) || attempt === maxAttempts) throw error;
