@@ -41,7 +41,7 @@ vi.mock('../../components/adv/AdvShell', () => ({
   ADV_TABS: [
     'overview', 'hud', 'conversations', 'learning', 'harnesses', 'health', 'frames',
     'evals', 'calendar', 'plans', 'prs', 'insights', 'settings',
-    'docs', 'git', 'testing',
+    'docs', 'git', 'stats', 'testing',
   ].map((id) => ({ id })),
   useAdvScope: () => advScopeBoundary.entered
     ? {
@@ -70,6 +70,7 @@ vi.mock('../../components/adv/AdvPotBar', () => ({
   ),
 }));
 vi.mock('../../components/adv/AdvOverviewTab', () => ({ default: () => <div data-testid="tab-overview" /> }));
+vi.mock('../../components/adv/AdvStatsTab', () => ({ default: () => <div data-testid="tab-stats" /> }));
 vi.mock('../../components/adv/AdvConversationsTab', () => ({ default: () => <div data-testid="tab-conversations" /> }));
 vi.mock('../../components/adv/LearningTab', () => ({ default: () => <div data-testid="tab-learning" /> }));
 vi.mock('../../components/adv/AdvFramesTab', () => ({ default: () => <div data-testid="tab-frames" /> }));
@@ -115,6 +116,7 @@ describe('/adv tab router', () => {
     { tab: 'evals', child: 'tab-evals', bar: false, pills: false },
     { tab: 'calendar', child: 'tab-calendar', bar: false, pills: false },
     { tab: 'plans', child: 'tab-create-dock', bar: true, pills: false },
+    { tab: 'stats', child: 'tab-stats', bar: true, pills: false },
   ] as const;
 
   it.each(FIRST_CLASS)('renders the $tab surface (pot bar: $bar, pills: $pills)', ({ tab, child, bar, pills }) => {

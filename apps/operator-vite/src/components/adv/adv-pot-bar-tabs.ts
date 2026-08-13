@@ -22,7 +22,7 @@ import type { AdvTabId } from './AdvShell';
  *   plans      — the Create dock's plan list resolves a pot the same way.
  *   harnesses  — "Work" IS the per-pot work view.
  *   learning   — filters observations/ideas by the inherited pot (useAdvScope).
- *   insights · settings · docs · git · testing · prs
+ *   insights · settings · docs · git · stats · testing · prs
  *              — AdvHarnessPanelPage: every one is a single-pot panel (one repo,
  *                one docs tree, one settings form).
  *
@@ -40,6 +40,7 @@ export const POT_BAR_TAB_IDS: ReadonlySet<AdvTabId> = new Set<AdvTabId>([
   'settings',
   'docs',
   'git',
+  'stats',
   'testing',
   'prs',
 ]);

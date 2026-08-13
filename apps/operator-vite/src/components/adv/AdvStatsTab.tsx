@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import {
   AlertTriangle,
   ArrowDown,
@@ -121,7 +121,7 @@ function CompositionBar({ value, label }: { value: GitLineComposition; label: st
   );
 }
 
-function StateCard({ children, tone = 'neutral' }: { children: React.ReactNode; tone?: 'neutral' | 'error' }) {
+function StateCard({ children, tone = 'neutral' }: { children: ReactNode; tone?: 'neutral' | 'error' }) {
   return <div className="pc-stats__state" data-tone={tone}>{children}</div>;
 }
 

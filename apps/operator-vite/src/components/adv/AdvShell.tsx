@@ -11,6 +11,7 @@ import { Command as CmdK } from 'cmdk';
 import { parseAsBoolean, parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
 import {
   BookOpen,
+  BarChart3,
   Boxes,
   CalendarClock,
   Check,
@@ -57,7 +58,7 @@ import './adv-header-pills.css';
 // 'brainstorm' removed 2026-07-13 (quick-panel-saved-prompts P-010): the brainstorm
 // surface lives in the Quick Panel popup's Brainstorm tab now (owner ask). Old
 // ?tab=brainstorm deep links fall back to 'overview' via the enum parser.
-const ADV_TAB_IDS = ['overview', 'hud', 'harnesses', 'health', 'prs', 'insights', 'conversations', 'learning', 'settings', 'docs', 'git', 'testing', 'plans', 'calendar', 'frames', 'evals'] as const;
+const ADV_TAB_IDS = ['overview', 'hud', 'harnesses', 'health', 'prs', 'insights', 'conversations', 'learning', 'settings', 'docs', 'git', 'stats', 'testing', 'plans', 'calendar', 'frames', 'evals'] as const;
 export type AdvTabId = (typeof ADV_TAB_IDS)[number];
 
 /**
@@ -106,6 +107,7 @@ export const ADV_TABS: ReadonlyArray<{
   // was dropped in favour of this Health tab. system-health-tab P-008, 2026-06-15.)
   { id: 'frames', label: 'Frames', icon: MonitorPlay, accent: 'var(--accent-strong, var(--accent))', accentRgb: 'var(--accent-rgb, 56, 189, 248)' },
   { id: 'git', label: 'Git', icon: GitBranch, accent: CATEGORICAL.green500.hex, accentRgb: CATEGORICAL.green500.rgb },
+  { id: 'stats', label: 'Stats', icon: BarChart3, accent: CATEGORICAL.violet300.hex, accentRgb: CATEGORICAL.violet300.rgb },
   { id: 'testing', label: 'Tests', icon: FlaskConical, accent: CATEGORICAL.lime500.hex, accentRgb: CATEGORICAL.lime500.rgb },
   { id: 'docs', label: 'Docs', icon: BookOpen, accent: CATEGORICAL.blue400.hex, accentRgb: CATEGORICAL.blue400.rgb },
   { id: 'insights', label: 'Insights', icon: TrendingUp, accent: CATEGORICAL.teal500.hex, accentRgb: CATEGORICAL.teal500.rgb },
@@ -188,7 +190,7 @@ export const PRIMARY_ADV_TAB_IDS: ReadonlySet<AdvTabId> = new Set<AdvTabId>([
  * otherwise silently vanish (no strip entry, no More-menu entry).
  */
 export const SECONDARY_TAB_GROUPS: ReadonlyArray<{ id: string; label: string; tabIds: readonly AdvTabId[] }> = [
-  { id: 'build', label: 'Build', tabIds: ['plans', 'git', 'testing', 'docs'] },
+  { id: 'build', label: 'Build', tabIds: ['plans', 'git', 'stats', 'testing', 'docs'] },
   // Was "Work" holding ['harnesses','conversations','calendar'] — 'harnesses'
   // IS the Work tab now (promoted to the strip 2026-07-26), so the group was
   // relabelled "Activity" to avoid two things called "Work" in the same nav.

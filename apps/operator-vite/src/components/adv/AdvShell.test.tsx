@@ -356,7 +356,7 @@ describe('AdvShell — "More" menu (D-001 mitigations: grouped, searchable, rece
     expect(headings).toEqual(['Build', 'Activity', 'Insights', 'System']);
     const items = Array.from(document.querySelectorAll('[cmdk-item]')).map((el) => el.textContent?.trim());
     expect(items).toEqual(
-      expect.arrayContaining(['Create', 'Git', 'Tests', 'Docs', 'Conversations', 'Calendar', 'Insights', 'Evaluation', 'Health', 'Frames', 'Settings']),
+      expect.arrayContaining(['Create', 'Git', 'Stats', 'Tests', 'Docs', 'Conversations', 'Calendar', 'Insights', 'Evaluation', 'Health', 'Frames', 'Settings']),
     );
     // Promoted tabs are strip tabs, NOT More-menu items.
     expect(items).not.toContain('Work');

@@ -5,6 +5,7 @@ import AdvPotBar from '../../components/adv/AdvPotBar';
 import { potBarModeForTab } from '../../components/adv/adv-pot-bar-tabs';
 import AdvTabErrorBoundary from '../../components/adv/AdvTabErrorBoundary';
 import AdvOverviewTab from '../../components/adv/AdvOverviewTab';
+import AdvStatsTab from '../../components/adv/AdvStatsTab';
 import AdvConversationsTab from '../../components/adv/AdvConversationsTab';
 import LearningTab from '../../components/adv/LearningTab';
 import AdvFramesTab from '../../components/adv/AdvFramesTab';
@@ -98,6 +99,8 @@ function renderAdvTab(tab: AdvTabId, potScope: AdvScope) {
       // Evaluation — the impartial-benchmark surface (External benchmarks |
       // Internal trends | Report) (impartial-benchmark-suite-2026-06-15 D-007).
       return <AdvEvalsTab />;
+    case 'stats':
+      return <AdvStatsTab />;
     case 'calendar':
       // Calendar — the schedulable time-surface: FullCalendar over the
       // backend-computed scheduled-plan occurrences (scheduled-recurring-plans P-018/P-019).

@@ -79,7 +79,7 @@ describe('ADV_TABS', () => {
     expect(ADV_TABS.map((t) => t.id)).toEqual([
       // ('brainstorm' removed 2026-07-13 — the surface lives in the Quick Panel popup now; P-010.)
       // HUD takes the first slot right of Overview (owner ask 2026-07-25).
-      'overview', 'hud', 'plans', 'calendar', 'harnesses', 'health', 'frames', 'git', 'testing', 'docs', 'insights',
+      'overview', 'hud', 'plans', 'calendar', 'harnesses', 'health', 'frames', 'git', 'stats', 'testing', 'docs', 'insights',
       'conversations', 'learning', 'evals', 'settings',
     ]);
   });

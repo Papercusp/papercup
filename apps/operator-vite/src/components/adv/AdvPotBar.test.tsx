@@ -219,7 +219,7 @@ afterEach(() => {
 describe('AdvPotBar — which tabs get it (owner ask 2026-07-27 #2/#3)', () => {
   it('shows the bar on the pot-scoped tabs and NOT on the workspace-wide ones', () => {
     // The pot-scoped set: every tab whose content is filtered by ?slug=.
-    for (const id of ['hud', 'overview', 'plans', 'harnesses', 'learning', 'git', 'docs', 'testing', 'insights', 'settings', 'prs'] as const) {
+    for (const id of ['hud', 'overview', 'plans', 'harnesses', 'learning', 'git', 'stats', 'docs', 'testing', 'insights', 'settings', 'prs'] as const) {
       expect(potBarModeForTab(id).show, `${id} should carry the pot bar`).toBe(true);
     }
     // The workspace aggregates: a pot picker there would change nothing on
@@ -232,7 +232,7 @@ describe('AdvPotBar — which tabs get it (owner ask 2026-07-27 #2/#3)', () => {
 
   it('gives the pot status widgets to HUD ONLY — that is where the owner moved them', () => {
     expect(potBarModeForTab('hud').withStatus).toBe(true);
-    for (const id of ['overview', 'plans', 'harnesses', 'learning', 'git'] as const) {
+    for (const id of ['overview', 'plans', 'harnesses', 'learning', 'git', 'stats'] as const) {
       expect(potBarModeForTab(id).withStatus, `${id} must not duplicate the widgets`).toBe(false);
     }
   });
