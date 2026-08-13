@@ -6,9 +6,8 @@
  * triaging su filings) promotes an idea into a DRAFT plan the Queen/owner then
  * greenlights. It rides the SAME draft seam Scout's broad rail uses
  * ({@link createScoutPlanDraft} — scout-plan-draft.ts), so the draft is pinned
- * to the DEFAULT workspace (the register-scout-action lesson: a draft under the
- * caller's ctx workspace is invisible to every plan UI/read) and the routed-idea
- * ledger row carries origin='su-ideate'. P-003/P-004 grade→outcome→feedback
+ * to the caller's concrete workspace and the routed-idea ledger row carries
+ * origin='su-ideate'. P-003/P-004 grade→outcome→feedback
  * attribution then works unchanged — classifyIdeaOutcome already follows a
  * `plan:<slug>` ref's terminal states.
  *
@@ -29,7 +28,6 @@ import { getIssue, linkIssue } from '../../issues-engineer';
 import { recordRoutedIdea } from '../../scout/routed-ledger';
 import { createScoutPlanDraft, type CreateScoutPlanDraftInput } from '../../scout/scout-plan-draft';
 import { SU_IDEATION_LENSES, type SuIdeationLens } from '../../scout/types';
-import { DEFAULT_WORKSPACE_ID } from '../../workspace-id-constant';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { hardText, softText, LIMITS } from '../limits';
 
@@ -103,12 +101,12 @@ export interface RouteIdeaDeps {
 }
 
 /**
- * Production createPlanDraft: the shared idempotent draft seam, pinned to the
- * DEFAULT workspace (register-scout-action.ts: a draft under the caller's ctx
- * workspace is invisible to every plan UI/read — 3 stranded drafts, 2026-06-11).
+ * Production createPlanDraft: the shared idempotent draft seam. runRouteIdea
+ * supplies the caller's concrete workspace on every write so a scoped su route
+ * cannot strand the plan in the legacy `default` partition (EI-20333672116088584).
  */
 const defaultDeps: RouteIdeaDeps = {
-  createPlanDraft: (input) => createScoutPlanDraft({ ...input, workspaceId: DEFAULT_WORKSPACE_ID }),
+  createPlanDraft: createScoutPlanDraft,
   recordRoutedIdea,
   getIssue,
   linkIssue,
@@ -163,6 +161,7 @@ export async function runRouteIdea(
   deps: RouteIdeaDeps = defaultDeps,
 ): Promise<RouteIdeaResult> {
   const identity = resolveAgentIdentity(ctx as Parameters<typeof resolveAgentIdentity>[0]);
+  const workspaceId = identity.workspaceId;
   const ctxHarnessRaw = (ctx as { harnessSlug?: unknown }).harnessSlug;
   const harnessSlug =
     typeof ctxHarnessRaw === 'string' && ctxHarnessRaw && ctxHarnessRaw !== '*' ? ctxHarnessRaw : 'papercusp';
@@ -176,6 +175,7 @@ export async function runRouteIdea(
       slug: slugStemFromTitle(issue.title),
       title: issue.title,
       harnessSlug,
+      ...(workspaceId ? { workspaceId } : {}),
       rationale: buildRouteRationale({ framing: issue.body || null, sourceRef: `wi:${issue.id}` }),
     });
     const planRef = `plan:${slug}`;
@@ -209,6 +209,7 @@ export async function runRouteIdea(
     slug: slugStemFromTitle(d.title),
     title: d.title,
     harnessSlug,
+    ...(workspaceId ? { workspaceId } : {}),
     rationale: buildRouteRationale({
       framing: d.framing,
       mechanism: d.mechanism,

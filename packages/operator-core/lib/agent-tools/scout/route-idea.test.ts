@@ -136,6 +136,7 @@ describe('runRouteIdea — draft path', () => {
         slug: 'adaptive-triage-batching',
         title: 'Adaptive triage batching',
         harnessSlug: 'papercusp',
+        workspaceId: 'ws-1',
         rationale: expect.stringContaining('**Mechanism:** the how'),
       }),
     );
@@ -180,7 +181,11 @@ describe('runRouteIdea — re-route (featureId) path', () => {
 
     expect(getIssue).toHaveBeenCalledWith('EI-500');
     expect(createPlanDraft).toHaveBeenCalledWith(
-      expect.objectContaining({ slug: 'adaptive-triage-batching', title: 'Adaptive triage batching' }),
+      expect.objectContaining({
+        slug: 'adaptive-triage-batching',
+        title: 'Adaptive triage batching',
+        workspaceId: 'ws-1',
+      }),
     );
     expect(recordRoutedIdea).toHaveBeenCalledWith(
       expect.objectContaining({
