@@ -609,6 +609,7 @@ describe('buildRunOpts — the mobileRoot-drop regression guard', () => {
     const opts = buildRunOpts(['--version', '0.0.9', '--mobile-root', '/tmp/some-mobile-root']);
     expect(opts.mobileRoot).toBe('/tmp/some-mobile-root');
     expect(opts.version).toBe('0.0.9');
+    expect(opts.skipAndroid).toBe(false);
     expect(Array.isArray(opts.bundleDirs)).toBe(true);
   });
 
@@ -636,6 +637,50 @@ describe('buildRunOpts — the mobileRoot-drop regression guard', () => {
     expect(opts.channel).toBe('beta');
     expect(opts.dryRun).toBe(true);
     expect(opts.mobileRoot).toBe('/x');
+  });
+
+  it('requires an explicit flag or env value to skip Android provenance enforcement', () => {
+    expect(buildRunOpts(['--version', '1.2.3', '--skip-android']).skipAndroid).toBe(true);
+    const previous = process.env.PAPERCUSP_SKIP_ANDROID;
+    process.env.PAPERCUSP_SKIP_ANDROID = '1';
+    try {
+      expect(buildRunOpts(['--version', '1.2.3']).skipAndroid).toBe(true);
+    } finally {
+      if (previous === undefined) delete process.env.PAPERCUSP_SKIP_ANDROID;
+      else process.env.PAPERCUSP_SKIP_ANDROID = previous;
+    }
+  });
+});
+
+describe('Android release producer/consumer source contract (D-004)', () => {
+  const desktopDir = path.resolve(__dirname, '../../../../papercusp-desktop');
+  const mobileDir = path.resolve(__dirname, '../../../../../papercup-rust-mobile');
+
+  it('build-android deletes the old pair/manifest and writes provenance only after verification', () => {
+    const script = fs.readFileSync(
+      path.join(mobileDir, 'tools/build-scripts/build-android.sh'),
+      'utf8',
+    );
+    expect(script).toContain('PAPERCUP_RELEASE_VERSION');
+    expect(script).toContain('rm -f "$RELEASE_APK" "$RELEASE_AAB" "$RELEASE_PROVENANCE"');
+    expect(script.indexOf('verify_16kb_alignment "$RELEASE_APK"')).toBeLessThan(
+      script.indexOf('android-release-provenance.sh write'),
+    );
+  });
+
+  it('release-local passes the requested version and treats an enabled Android leg as fatal', () => {
+    const script = fs.readFileSync(path.join(desktopDir, 'bin/release-local.sh'), 'utf8');
+    expect(script).toContain('PAPERCUP_RELEASE_VERSION="$VERSION"');
+    expect(script).toContain('join_leg "$ANDROID_PID" android "$ANDROID_LEG_LOG"');
+    expect(script).toContain('exactly one provenanced APK and one AAB');
+    expect(script).not.toContain('android leg did not produce a usable APK');
+  });
+
+  it('uploader propagates verifier failures and requires the pair unless explicitly skipped', () => {
+    const script = fs.readFileSync(path.join(desktopDir, 'bin/upload-mobile-release.sh'), 'utf8');
+    expect(script).toContain('if ! scan_output="$(cd "$ROOT" && npx tsx');
+    expect(script).toContain('upload requires exactly one provenanced Android APK and AAB');
+    expect(script).toContain('PAPERCUSP_SKIP_ANDROID=1');
   });
 });
 
