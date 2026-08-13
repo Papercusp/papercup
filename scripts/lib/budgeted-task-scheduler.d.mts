@@ -56,6 +56,20 @@ export interface DurationHistory {
 
 export const DURATION_HISTORY_VERSION: number;
 
+export function resolveGlobalWorkerBudget(input: {
+  affectedWorkerBudget?: number | string;
+  vitestMaxWorkers?: number | string;
+  vitestMaxForks?: number | string;
+  vitestMaxThreads?: number | string;
+  fallback: number | string;
+}): number;
+
+export function resolveWorkerMemoryMb(input: {
+  affectedWorkerMemoryMb?: number | string;
+  nodeOptions?: string;
+  fallback: number | string;
+}): number;
+
 export function resolveTaskBudget(input: TaskBudgetInput): ResolvedTaskBudget;
 
 export function runBudgetedTasks<Task, Value>(

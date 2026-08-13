@@ -11,7 +11,9 @@ import {
   formatTaskBudgetObservedMarker,
   mergeDurationHistory,
   readDurationHistory,
+  resolveGlobalWorkerBudget,
   resolveTaskBudget,
+  resolveWorkerMemoryMb,
   runBudgetedTasks,
   writeDurationHistoryAtomic,
 } from '../../../../scripts/lib/budgeted-task-scheduler.mjs';
@@ -29,10 +31,12 @@ const config = {
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((done) => {
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((done, fail) => {
     resolve = done;
+    reject = fail;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }
 
 describe('runBudgetedTasks', () => {
@@ -131,6 +135,96 @@ describe('runBudgetedTasks', () => {
     expect(() => resolveTaskBudget({ ...config, memoryBudgetMb: 512 })).toThrow(
       /cannot admit one workerMemoryMb=1024 token/,
     );
+  });
+
+  it('drains the other in-flight lane after a rejection without admitting another task', async () => {
+    const tasks = [
+      { id: 'long', estimateMs: 100 },
+      { id: 'medium', estimateMs: 50 },
+      { id: 'short', estimateMs: 5 },
+    ];
+    const gates = new Map(tasks.map((task) => [task.id, deferred<string>()]));
+    const starts: string[] = [];
+    const running = runBudgetedTasks(tasks, {
+      ...config,
+      estimateMs: (task: (typeof tasks)[number]) => task.estimateMs,
+      runTask: (task: (typeof tasks)[number]) => {
+        starts.push(task.id);
+        return gates.get(task.id)!.promise;
+      },
+    });
+    const outcome = running.then(
+      () => ({ error: null as Error | null }),
+      (error: Error) => ({ error }),
+    );
+
+    await Promise.resolve();
+    expect(starts).toEqual(['long', 'short']);
+    gates.get('long')!.reject(new Error('primary failed'));
+    await new Promise<void>((done) => setImmediate(done));
+    expect(starts).toEqual(['long', 'short']);
+
+    let settled = false;
+    void outcome.then(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    gates.get('short')!.resolve('short-result');
+    expect((await outcome).error?.message).toBe('primary failed');
+    expect(starts).toEqual(['long', 'short']);
+  });
+});
+
+describe('resolveGlobalWorkerBudget', () => {
+  it('keeps the green-checkpoint two-fork rail binding when modern max-workers was filled higher', () => {
+    expect(
+      resolveGlobalWorkerBudget({
+        vitestMaxWorkers: '12',
+        vitestMaxForks: '2',
+        vitestMaxThreads: '2',
+        fallback: 12,
+      }),
+    ).toBe(2);
+  });
+
+  it('lets an affected-tests-specific ceiling tighten but never widen an inherited limit', () => {
+    expect(
+      resolveGlobalWorkerBudget({
+        affectedWorkerBudget: '1',
+        vitestMaxWorkers: '12',
+        fallback: 12,
+      }),
+    ).toBe(1);
+    expect(
+      resolveGlobalWorkerBudget({
+        affectedWorkerBudget: '16',
+        vitestMaxWorkers: '4',
+        fallback: 12,
+      }),
+    ).toBe(4);
+  });
+});
+
+describe('resolveWorkerMemoryMb', () => {
+  it('accounts for the inherited V8 heap instead of understating a gate worker as 1 GiB', () => {
+    expect(
+      resolveWorkerMemoryMb({
+        nodeOptions: '--expose-gc --max-old-space-size=4096',
+        fallback: 1024,
+      }),
+    ).toBe(4096);
+  });
+
+  it('accepts both NODE_OPTIONS spellings and never lets an explicit estimate shrink the heap', () => {
+    expect(
+      resolveWorkerMemoryMb({
+        affectedWorkerMemoryMb: '2048',
+        nodeOptions: '--max_old_space_size 8192',
+        fallback: 1024,
+      }),
+    ).toBe(8192);
   });
 });
 

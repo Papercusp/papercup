@@ -12,6 +12,51 @@ const positiveInteger = (value, name) => {
 };
 
 /**
+ * Collapse every inherited/test-runner worker spelling into one global ceiling.
+ *
+ * Vitest 4 reads VITEST_MAX_WORKERS, while older/config-specific paths still set
+ * VITEST_MAX_FORKS or VITEST_MAX_THREADS. The green checkpoint deliberately exports only the
+ * latter two as its two-fork safety rail. Taking the minimum keeps any pre-set ceiling binding;
+ * an affected-tests-specific value may tighten that rail but can never silently widen it.
+ */
+export function resolveGlobalWorkerBudget({
+  affectedWorkerBudget,
+  vitestMaxWorkers,
+  vitestMaxForks,
+  vitestMaxThreads,
+  fallback,
+}) {
+  const candidates = [
+    ['AFFECTED_GLOBAL_WORKER_BUDGET', affectedWorkerBudget],
+    ['VITEST_MAX_WORKERS', vitestMaxWorkers],
+    ['VITEST_MAX_FORKS', vitestMaxForks],
+    ['VITEST_MAX_THREADS', vitestMaxThreads],
+  ].flatMap(([name, value]) => (value == null || value === '' ? [] : [positiveInteger(value, name)]));
+  if (candidates.length === 0) return positiveInteger(fallback, 'fallback');
+  return Math.min(...candidates);
+}
+
+/**
+ * Size one scheduler memory token from the largest credible per-worker ceiling.
+ *
+ * The child inherits NODE_OPTIONS, so a V8 old-space pin is part of its possible footprint even
+ * when AFFECTED_WORKER_MEMORY_MB is unset. Treat the explicit estimate and the inherited heap as
+ * lower bounds rather than alternatives: an override may add native/RSS headroom, but it must not
+ * make a 4 GiB heap look like a 1 GiB worker to the global admission budget.
+ */
+export function resolveWorkerMemoryMb({ affectedWorkerMemoryMb, nodeOptions, fallback }) {
+  const candidates = [positiveInteger(fallback, 'fallback')];
+  if (affectedWorkerMemoryMb != null && affectedWorkerMemoryMb !== '') {
+    candidates.push(positiveInteger(affectedWorkerMemoryMb, 'AFFECTED_WORKER_MEMORY_MB'));
+  }
+  const heapPattern = /(?:^|\s)--max[-_]old[-_]space[-_]size(?:=|\s+)(\d+)(?=\s|$)/g;
+  for (const match of String(nodeOptions ?? '').matchAll(heapPattern)) {
+    candidates.push(positiveInteger(match[1], 'NODE_OPTIONS max-old-space-size'));
+  }
+  return Math.max(...candidates);
+}
+
+/**
  * Resolve the single resource envelope shared by every concurrently-running task.
  * Memory is represented as tokens per worker: the scheduler never admits more worker
  * tokens than either the worker ceiling OR the memory ceiling can pay for.
@@ -111,6 +156,7 @@ export async function runBudgetedTasks(tasks, options) {
   let observedMaxWorkers = 0;
   let observedMaxMemoryMb = 0;
   let observedMaxTasks = 0;
+  let firstError = null;
 
   const runOne = async (entry, lane, workers) => {
     const memoryMb = workers * budget.workerMemoryMb;
@@ -130,6 +176,9 @@ export async function runBudgetedTasks(tasks, options) {
     try {
       const value = await runTask(entry.task, allocation, entry.index);
       results[entry.index] = { task: entry.task, index: entry.index, allocation, value };
+    } catch (error) {
+      firstError ??= error;
+      throw error;
     } finally {
       activeWorkers -= workers;
       activeTasks -= 1;
@@ -137,17 +186,22 @@ export async function runBudgetedTasks(tasks, options) {
   };
 
   const runLane = async (lane, workers, take) => {
-    while (pending.length > 0) {
+    while (pending.length > 0 && firstError == null) {
       const entry = take(pending);
       await runOne(entry, lane, workers);
     }
   };
 
   if (budget.mode === 'parallel' && pending.length > 1) {
-    await Promise.all([
+    // Promise.all rejects before its siblings settle. A task failure must instead stop NEW
+    // admission, drain the child already running in the other lane, and only then reject so the
+    // caller never tears down while an unobserved child is still writing output/history.
+    const lanes = await Promise.allSettled([
       runLane('primary', budget.primaryWorkers, takeLongest),
       runLane('reserved', budget.reserveLaneWorkers, takeShortest),
     ]);
+    const rejected = lanes.find((lane) => lane.status === 'rejected');
+    if (rejected) throw rejected.reason;
   } else {
     await runLane('serial', budget.effectiveWorkerBudget, takeLongest);
   }

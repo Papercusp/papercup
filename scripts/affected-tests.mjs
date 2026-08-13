@@ -63,7 +63,9 @@ import {
   formatTaskBudgetObservedMarker,
   mergeDurationHistory,
   readDurationHistory,
+  resolveGlobalWorkerBudget,
   resolveTaskBudget,
+  resolveWorkerMemoryMb,
   runBudgetedTasks,
   writeDurationHistoryAtomic,
 } from './lib/budgeted-task-scheduler.mjs';
@@ -229,11 +231,27 @@ const captureOutput = () => true;
 // scripts/lib/worker-cap.mjs for the full rationale + the (unit-tested) pure
 // function this wraps.
 const WORKER_CAP = applyWorkerCapEnv({ cores: availableParallelism(), load1: loadavg()[0] });
-const SCHEDULER_WORKER_MEMORY_MB = Number(process.env.AFFECTED_WORKER_MEMORY_MB ?? 1024);
+const SCHEDULER_WORKER_MEMORY_MB = resolveWorkerMemoryMb({
+  affectedWorkerMemoryMb: process.env.AFFECTED_WORKER_MEMORY_MB,
+  nodeOptions: process.env.NODE_OPTIONS,
+  fallback: 1024,
+});
+// The green checkpoint currently pins VITEST_MAX_FORKS/THREADS=2 but not
+// VITEST_MAX_WORKERS. `applyWorkerCapEnv` fills the missing modern spelling from host load, which
+// can be much larger. Collapse ALL spellings after that fill and take the minimum so the gate's
+// pre-existing two-fork safety rail remains the global scheduler ceiling.
+const SCHEDULER_WORKER_BUDGET = resolveGlobalWorkerBudget({
+  affectedWorkerBudget: process.env.AFFECTED_GLOBAL_WORKER_BUDGET,
+  vitestMaxWorkers: process.env.VITEST_MAX_WORKERS,
+  vitestMaxForks: process.env.VITEST_MAX_FORKS,
+  vitestMaxThreads: process.env.VITEST_MAX_THREADS,
+  fallback: WORKER_CAP,
+});
 const SCHEDULER_CONFIG = resolveTaskBudget({
-  workerBudget: process.env.AFFECTED_GLOBAL_WORKER_BUDGET ?? WORKER_CAP,
+  workerBudget: SCHEDULER_WORKER_BUDGET,
   memoryBudgetMb:
-    process.env.AFFECTED_GLOBAL_MEMORY_MB ?? Number(WORKER_CAP) * SCHEDULER_WORKER_MEMORY_MB,
+    process.env.AFFECTED_GLOBAL_MEMORY_MB ??
+    SCHEDULER_WORKER_BUDGET * SCHEDULER_WORKER_MEMORY_MB,
   workerMemoryMb: SCHEDULER_WORKER_MEMORY_MB,
   maxConcurrentTasks: process.env.AFFECTED_MAX_CONCURRENT_TASKS ?? 2,
   reserveWorkers: 1,
