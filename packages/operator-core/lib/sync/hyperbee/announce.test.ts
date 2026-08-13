@@ -157,6 +157,45 @@ describe('announce', () => {
     expect(announceSigningBytes(body).toString('utf8')).not.toContain('harness_slug');
   });
 
+  it('WI-38376: log_length round-trips as a signed writer high-water and tampering it fails verification', async () => {
+    const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+    const body: AnnounceBody = {
+      ...makeBody(rawPubkeyBase64(publicKey)),
+      log_length: 42,
+    };
+    const frame = await buildTestAnnounce(body, privateKey);
+
+    expect(frame.log_length).toBe(42);
+    expect(announceSigningBytes(frame).toString('utf8')).toContain('"log_length":42');
+    expect(verifyAnnounce(frame, { nowMs: FIXED_NOW_MS })).toBe(true);
+    expect(
+      verifyAnnounce({ ...frame, log_length: 43 }, { nowMs: FIXED_NOW_MS }),
+    ).toBe(false);
+  });
+
+  it('WI-38376 backward-compat: absent/undefined log_length preserves legacy signing bytes', () => {
+    const { publicKey } = generateKeyPairSync('ed25519');
+    const body = makeBody(rawPubkeyBase64(publicKey));
+    const withUndefined: AnnounceBody = { ...body, log_length: undefined };
+
+    expect(announceSigningBytes(withUndefined).equals(announceSigningBytes(body))).toBe(true);
+    expect(announceSigningBytes(body).toString('utf8')).not.toContain('log_length');
+  });
+
+  it.each([-1, 1.5, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1])(
+    'WI-38376: malformed log_length %s is rejected before signature verification',
+    async (logLength) => {
+      const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+      const frame = await buildTestAnnounce(makeBody(rawPubkeyBase64(publicKey)), privateKey);
+      expect(
+        verifyAnnounceDetailed(
+          { ...frame, log_length: logLength },
+          { nowMs: FIXED_NOW_MS },
+        ),
+      ).toEqual({ ok: false, reason: 'malformed' });
+    },
+  );
+
   it('rejects a sig that does not match the body (different key)', async () => {
     const a = generateKeyPairSync('ed25519');
     const b = generateKeyPairSync('ed25519');
