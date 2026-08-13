@@ -83,6 +83,18 @@ describe('DRAIN flow exact-store oracle', () => {
     await seed({ id: 'opened-default-minor', createdBy: OWNER, createdAt: START_MS + 6_000 });
     await seed({ id: 'non-bug', kind: 'change', severity: 'critical', createdBy: OWNER, createdAt: START_MS + 7_000 });
 
+    const stored = await db.sql<Array<{ feature_id: string; created_by: string | null; severity: string | null }>>`
+      SELECT feature_id,
+             payload #>> '{_ei,created_by}' AS created_by,
+             payload #>> '{_ei,severity}' AS severity
+        FROM harness_shared.work_items
+       ORDER BY feature_id
+    `;
+    expect(stored).toEqual(expect.arrayContaining([
+      expect.objectContaining({ feature_id: 'opened-critical', created_by: OWNER, severity: 'critical' }),
+      expect.objectContaining({ feature_id: 'opened-default-minor', created_by: OWNER, severity: null }),
+    ]));
+
     const report = await readDrainFlow({
       workspaceId: WORKSPACE,
       harness: HARNESS,
@@ -107,8 +119,8 @@ describe('DRAIN flow exact-store oracle', () => {
         (workspace_id, harness_slug, feature_id, title, summary, status, item_kind,
          payload, created_ts, updated_ts)
       SELECT ${WORKSPACE}, ${HARNESS}, 'EI-many-' || n, 'many ' || n, '', 'open', 'bug',
-             jsonb_build_object('_ei', jsonb_build_object('created_by', ${OWNER}, 'severity', 'nit')),
-             ${START_MS} + n, ${START_MS} + n
+             jsonb_build_object('_ei', jsonb_build_object('created_by', ${OWNER}::text, 'severity', 'nit')),
+             ${START_MS}::bigint + n, ${START_MS}::bigint + n
         FROM generate_series(1, 2105) AS n
     `;
 
