@@ -75,6 +75,10 @@ export interface RefAnnouncePublishTickInput {
   /** Device signer seam (prod: `bytes => signWithDeviceKey(keychainId, bytes)`). */
   sign: (bytes: Buffer) => Promise<Buffer>;
   nowMs?: number;
+  /** Last version this device durably recorded outside the bare store. A cold
+   *  join removes the store-local watermark; this floor prevents the rebuilt
+   *  device from resetting to v1 and being rejected by peers as rollback. */
+  versionFloor?: number;
   runGit?: RunGit;
   /** G-10 own-namespace publish-admission caps (secrets-guard.ts / P-205).
    *  Omit for the module defaults (matches foreign-mirror-quarantine's own
@@ -142,6 +146,13 @@ export async function runRefAnnouncePublishTick(
   const runGit = input.runGit ?? defaultRunGit;
   const nowMs = input.nowMs ?? Date.now();
   const noop: RefAnnouncePublishTickOutcome = { ran: false, changed: false, announcement: null, refused: null, errors };
+  if (
+    input.versionFloor !== undefined &&
+    (!Number.isSafeInteger(input.versionFloor) || input.versionFloor < 0)
+  ) {
+    errors.push('versionFloor must be a non-negative safe integer');
+    return noop;
+  }
 
   let currentRefs: NamespaceRef[];
   try {
@@ -158,7 +169,7 @@ export async function runRefAnnouncePublishTick(
     return { ran: true, changed: false, announcement: null, refused: null, errors };
   }
 
-  let prior: { refs: readonly NamespaceRef[] } | null = null;
+  let prior: { version: number; refs: readonly NamespaceRef[] } | null = null;
   try {
     prior = await readSigrefs(input.repoPath, input.devicePubkeyBase64, runGit);
   } catch (e) {
@@ -168,7 +179,7 @@ export async function runRefAnnouncePublishTick(
       `reading prior sigrefs failed (proceeding as if first-ever snapshot): ${e instanceof Error ? e.message : e}`,
     );
   }
-  if (prior && sameRefs(prior.refs, currentRefs)) {
+  if (prior && sameRefs(prior.refs, currentRefs) && prior.version >= (input.versionFloor ?? 0)) {
     return { ran: true, changed: false, announcement: null, refused: null, errors };
   }
 
@@ -227,7 +238,11 @@ export async function runRefAnnouncePublishTick(
   }
 
   try {
-    await buildSigrefs(input.repoPath, input.devicePubkeyBase64, input.sign, { nowMs, runGit });
+    await buildSigrefs(input.repoPath, input.devicePubkeyBase64, input.sign, {
+      nowMs,
+      versionFloor: input.versionFloor,
+      runGit,
+    });
     const announcement = await buildRefAnnouncement(input.repoPath, input.devicePubkeyBase64, input.sign, {
       nowMs,
       runGit,

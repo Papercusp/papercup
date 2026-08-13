@@ -165,6 +165,25 @@ describe('ref-announce-tick (P-202 runtime driver)', () => {
       expect(out.announcement?.version).toBe(2);
     });
 
+    it('P-505: resumes above the durable version floor after the local bare store is rebuilt', async () => {
+      const rebuilt = await ensurePotGitRepo('hive-a', 'repo-cold-rejoin', defaultRunGit, { fresh: true });
+      const device = mkDevice();
+      const head = await mintCommit(rebuilt, 'work after full-store cold join');
+      await writeNamespaceRef(rebuilt, device.pubkeyBase64, 'refs/heads/work', head);
+
+      const out = await runRefAnnouncePublishTick({
+        repoPath: rebuilt,
+        devicePubkeyBase64: device.pubkeyBase64,
+        sign: device.sign,
+        nowMs: 4_000,
+        versionFloor: 17,
+      });
+
+      expect(out).toMatchObject({ ran: true, changed: true, errors: [] });
+      expect(out.announcement?.version).toBe(18);
+      expect((await readSigrefs(rebuilt, device.pubkeyBase64))?.version).toBe(18);
+    });
+
     it('P-505: announces a handoff-token ref written after the prior sigrefs snapshot', async () => {
       const devHandoff = mkDevice();
       const staging = await mintCommit(repoB, 'handoff staging');

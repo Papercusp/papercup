@@ -10,6 +10,7 @@ import { existsSync, readFileSync, realpathSync, renameSync, statSync } from 'no
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { deviceNamespaceKey } from './storage';
+import { SIGREFS_REF, verifySigrefs, type SignedSigrefs } from './sigrefs';
 
 export const PHASE_A_REPO_SCHEMA = 'hive-git-physical-phase-a-repo/v1' as const;
 export const PHASE_A_INPUT_SCHEMA = 'hive-git-physical-phase-a-input/v1' as const;
@@ -40,6 +41,14 @@ export type PhysicalPhaseARepoObservation = {
   objectDatabasePath: string | null;
   alternates: string[];
   refs: PhysicalPhaseARef[];
+  namespaceWitnesses: PhysicalPhaseANamespaceWitness[];
+};
+
+export type PhysicalPhaseANamespaceWitness = {
+  deviceKey: string;
+  namespace: string;
+  sigrefsOid: string;
+  signed: SignedSigrefs;
 };
 
 export type PhysicalPhaseAInput = {
@@ -76,9 +85,9 @@ export type PhysicalPhaseAVerdict = {
     schemaVersion: typeof PHASE_A_RESULT_SCHEMA;
     phase: 'A';
     planItem: typeof PHASE_A_PLAN_ITEM;
-    status: 'partial';
-    complete: false;
-    missingAssertions: ['eachDeviceWritesOnlyItsOwnNamespace'];
+    status: 'complete';
+    complete: true;
+    missingAssertions: [];
     observedAt: string;
     assertions: {
       towerStoreObservedBeforeMutation: true;
@@ -91,6 +100,7 @@ export type PhysicalPhaseAVerdict = {
       referencedObjectsExistOnBothHosts: true;
       oneObjectDatabasePerRepo: true;
       identityDerivedNamespacesObserved: true;
+      eachDeviceWritesOnlyItsOwnNamespace: true;
     };
   };
 };
@@ -157,6 +167,7 @@ export function capturePhysicalPhaseARepo(input: {
       objectDatabasePath: null,
       alternates: [],
       refs: [],
+      namespaceWitnesses: [],
     };
   }
 
@@ -190,6 +201,20 @@ export function capturePhysicalPhaseARepo(input: {
         return { name, oid, objectExists: object.status === 0 };
       })
     : [];
+  const namespaceWitnesses = [input.ownDeviceKey, input.peerDeviceKey].flatMap(
+    (deviceKey): PhysicalPhaseANamespaceWitness[] => {
+      const namespace = deviceNamespaceKey(deviceKey);
+      const sigrefsRef = `refs/namespaces/${namespace}/${SIGREFS_REF}`;
+      const sigrefsOid = refs.find((ref) => ref.name === sigrefsRef)?.oid;
+      if (!sigrefsOid) return [];
+      const blob = git(input.repoPath, ['cat-file', 'blob', sigrefsOid]);
+      try {
+        return [{ deviceKey, namespace, sigrefsOid, signed: JSON.parse(blob) as SignedSigrefs }];
+      } catch {
+        throw new Error(`physical Phase A sigrefs blob is not JSON for namespace ${namespace}`);
+      }
+    },
+  );
 
   return {
     schemaVersion: PHASE_A_REPO_SCHEMA,
@@ -204,6 +229,7 @@ export function capturePhysicalPhaseARepo(input: {
     objectDatabasePath: objectPath,
     alternates,
     refs,
+    namespaceWitnesses,
   };
 }
 
@@ -273,6 +299,41 @@ function validatePresent(
   for (const ref of observation.refs) {
     if (!OID.test(ref.oid) || !ref.objectExists) {
       errors.push(`${expectedHost} ref ${ref.name} does not resolve to a local object`);
+    }
+  }
+}
+
+function validateNamespaceWitnesses(
+  observation: PhysicalPhaseARepoObservation,
+  devices: readonly string[],
+  errors: string[],
+): void {
+  for (const deviceKey of devices) {
+    const namespace = deviceNamespaceKey(deviceKey);
+    const matches = observation.namespaceWitnesses.filter(
+      (witness) => witness.deviceKey === deviceKey && witness.namespace === namespace,
+    );
+    if (matches.length !== 1) {
+      errors.push(`${observation.hostId} must contain exactly one signed witness for namespace ${namespace}`);
+      continue;
+    }
+    const witness = matches[0]!;
+    const sigrefsName = `refs/namespaces/${namespace}/${SIGREFS_REF}`;
+    if (!OID.test(witness.sigrefsOid) || !observation.refs.some((ref) => ref.name === sigrefsName && ref.oid === witness.sigrefsOid)) {
+      errors.push(`${observation.hostId} namespace ${namespace} witness must come from its observed sigrefs ref`);
+    }
+    if (!verifySigrefs(witness.signed, deviceKey)) {
+      errors.push(`${observation.hostId} namespace ${namespace} sigrefs signature is invalid`);
+      continue;
+    }
+    const prefix = `refs/namespaces/${namespace}/`;
+    const actual = observation.refs
+      .filter((ref) => ref.name.startsWith(prefix) && ref.name !== sigrefsName)
+      .map((ref) => `${ref.name.slice(prefix.length)}\t${ref.oid}`)
+      .sort();
+    const signed = witness.signed.refs.map((ref) => `${ref.ref}\t${ref.sha}`).sort();
+    if (JSON.stringify(actual) !== JSON.stringify(signed)) {
+      errors.push(`${observation.hostId} namespace ${namespace} refs must exactly match its device-signed snapshot`);
     }
   }
 }
@@ -351,6 +412,22 @@ export function validatePhysicalPhaseA(input: PhysicalPhaseAInput): PhysicalPhas
   }
   validatePresent(input.observations.towerAfter, 'tower', towerNamespace, vmNamespace, errors);
   validatePresent(input.observations.vmAfter, 'vm', vmNamespace, towerNamespace, errors);
+  validateNamespaceWitnesses(
+    input.observations.towerAfter,
+    [input.identities.towerDeviceKey, input.identities.vmDeviceKey],
+    errors,
+  );
+  validateNamespaceWitnesses(
+    input.observations.vmAfter,
+    [input.identities.towerDeviceKey, input.identities.vmDeviceKey],
+    errors,
+  );
+  const vmWitness = input.observations.vmAfter.namespaceWitnesses.find(
+    (witness) => witness.deviceKey === input.identities.vmDeviceKey,
+  );
+  if (!vmWitness || vmWitness.signed.ts < bootstrapStartedAt || vmWitness.signed.ts > vmAfterAt) {
+    errors.push('VM own-namespace signature must be created after cold bootstrap starts and before VM observation');
+  }
 
   const towerRefs = refMap(input.observations.towerAfter);
   const vmRefs = refMap(input.observations.vmAfter);
@@ -375,9 +452,9 @@ export function validatePhysicalPhaseA(input: PhysicalPhaseAInput): PhysicalPhas
             schemaVersion: PHASE_A_RESULT_SCHEMA,
             phase: 'A',
             planItem: PHASE_A_PLAN_ITEM,
-            status: 'partial',
-            complete: false,
-            missingAssertions: ['eachDeviceWritesOnlyItsOwnNamespace'],
+            status: 'complete',
+            complete: true,
+            missingAssertions: [],
             observedAt: input.window.finishedAt,
             assertions: {
               towerStoreObservedBeforeMutation: true,
@@ -390,6 +467,7 @@ export function validatePhysicalPhaseA(input: PhysicalPhaseAInput): PhysicalPhas
               referencedObjectsExistOnBothHosts: true,
               oneObjectDatabasePerRepo: true,
               identityDerivedNamespacesObserved: true,
+              eachDeviceWritesOnlyItsOwnNamespace: true,
             },
           },
   };

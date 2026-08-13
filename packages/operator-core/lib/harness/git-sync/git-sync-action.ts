@@ -2825,6 +2825,29 @@ async function runRefAnnounceLeg(slug: string, workspaceId: string): Promise<voi
       ...new Set(members.flatMap((m) => m.deviceAttestations.map((a) => a.device_pubkey).filter(Boolean))),
     ];
 
+    // P-505 cold-rejoin fence: sigrefs' normal rollback watermark lives in the
+    // bare store itself. A deliberate full-store cold join removes that ref, so
+    // retain this device's last published version in the already-durable routine
+    // metadata and feed it back as a floor before signing the rebuilt namespace.
+    // This is per git-sync routine/repo, and it never imports a peer-controlled
+    // copy of our own namespace.
+    const { sql } = getOrgPg();
+    type RefAnnounceRoutineState = {
+      lastEventId: number;
+      budgetStates: Record<string, AnnounceBudgetState | null>;
+      publishVersion?: number;
+    };
+    const stateRows = await sql<{ ref_announce: RefAnnounceRoutineState | null }[]>`
+      SELECT metadata->'ref_announce' AS ref_announce
+        FROM harness_shared.routines
+       WHERE install_slug = ${slug} AND workspace_id = ${workspaceId} AND target_role = 'system:git-sync'
+       LIMIT 1
+    `;
+    const priorState = stateRows[0]?.ref_announce ?? null;
+    const priorPublishVersion = Number.isSafeInteger(priorState?.publishVersion)
+      ? Math.max(0, priorState?.publishVersion ?? 0)
+      : 0;
+
     const repoPath = hiveGitRepoPath(potHomeSlug, repoKey);
     const keychainId = resolveDeviceKeychainId(actor.githubUserId);
     const sign = (bytes: Buffer): Promise<Buffer> => signWithDeviceKey(keychainId, bytes);
@@ -2840,6 +2863,7 @@ async function runRefAnnounceLeg(slug: string, workspaceId: string): Promise<voi
       genesisBaselineSha: await deriveGenesisBaselineSha(entry, undefined),
       // WI-5738: runtime secrets-guard path exemptions apply here too.
       workspaceId,
+      versionFloor: priorPublishVersion,
     });
     if (publishOutcome.announcement) {
       const announcement = publishOutcome.announcement;
@@ -2864,6 +2888,17 @@ async function runRefAnnounceLeg(slug: string, workspaceId: string): Promise<voi
           fed_event: { key: REF_ANNOUNCE_EVENT_KEY, payload: announcement, source: identity.ownerId },
         },
       });
+      // Persist only after the signed snapshot + announcement exist. A crash
+      // before this write leaves the store-local version authoritative; a later
+      // full-store rebuild resumes above the greatest version recorded here.
+      await patchRoutineMetadata(slug, workspaceId, {
+        ref_announce: {
+          lastEventId: priorState?.lastEventId ?? 0,
+          budgetStates: priorState?.budgetStates ?? {},
+          publishVersion: Math.max(priorPublishVersion, announcement.version),
+          at: Date.now(),
+        },
+      });
     }
     if (publishOutcome.errors.length) {
       console.warn(`[git-sync] ${slug}: ref-announce publish reported errors: ${publishOutcome.errors.join('; ')}`);
@@ -2872,16 +2907,6 @@ async function runRefAnnounceLeg(slug: string, workspaceId: string): Promise<voi
     if (memberDevicePubkeysBase64.length === 0) return; // no attested peers to receive from yet
 
     // 2. Receive: pending peer ref-announce fed-events since our watermark.
-    const { sql } = getOrgPg();
-    const rows = await sql<
-      { ref_announce: { lastEventId: number; budgetStates: Record<string, AnnounceBudgetState | null> } | null }[]
-    >`
-      SELECT metadata->'ref_announce' AS ref_announce
-        FROM harness_shared.routines
-       WHERE install_slug = ${slug} AND workspace_id = ${workspaceId} AND target_role = 'system:git-sync'
-       LIMIT 1
-    `;
-    const priorState = rows[0]?.ref_announce ?? null;
     const lastEventId = priorState?.lastEventId ?? 0;
     const priorBudgetStates = new Map<string, AnnounceBudgetState | null>(Object.entries(priorState?.budgetStates ?? {}));
 
@@ -2909,7 +2934,12 @@ async function runRefAnnounceLeg(slug: string, workspaceId: string): Promise<voi
       // Rows existed (e.g. a malformed payload) but nothing usable — still
       // advance the cursor past them so a bad row can't loop forever.
       await patchRoutineMetadata(slug, workspaceId, {
-        ref_announce: { lastEventId: maxRowId, budgetStates: priorState?.budgetStates ?? {}, at: Date.now() },
+        ref_announce: {
+          lastEventId: maxRowId,
+          budgetStates: priorState?.budgetStates ?? {},
+          publishVersion: Math.max(priorPublishVersion, publishOutcome.announcement?.version ?? 0),
+          at: Date.now(),
+        },
       });
       return;
     }
@@ -3002,6 +3032,7 @@ async function runRefAnnounceLeg(slug: string, workspaceId: string): Promise<voi
       ref_announce: {
         lastEventId: cursorDecision.cursor,
         budgetStates: Object.fromEntries(receiveOutcome.budgetStates),
+        publishVersion: Math.max(priorPublishVersion, publishOutcome.announcement?.version ?? 0),
         at: Date.now(),
       },
     });

@@ -209,7 +209,7 @@ export async function buildSigrefs(
   repoPath: string,
   devicePubkeyBase64: string,
   sign: (bytes: Buffer) => Promise<Buffer>,
-  opts: { nowMs: number; version?: number; runGit?: RunGit } = { nowMs: 0 },
+  opts: { nowMs: number; version?: number; versionFloor?: number; runGit?: RunGit } = { nowMs: 0 },
 ): Promise<SignedSigrefs> {
   const runGit = opts.runGit ?? defaultRunGit;
   const all = await listNamespaceRefs(repoPath, devicePubkeyBase64, runGit);
@@ -220,7 +220,18 @@ export async function buildSigrefs(
   let version = opts.version;
   if (version === undefined) {
     const prior = await readSigrefs(repoPath, devicePubkeyBase64, runGit);
-    version = (prior?.version ?? 0) + 1;
+    if (
+      opts.versionFloor !== undefined &&
+      (!Number.isSafeInteger(opts.versionFloor) || opts.versionFloor < 0)
+    ) {
+      throw new Error('sigrefs: versionFloor must be a non-negative safe integer');
+    }
+    // A cold join may legitimately rebuild the bare store while retaining the
+    // same device identity. The store-local sigrefs ref then disappears, but a
+    // peer can still hold a later version and will (correctly) reject a reset to
+    // v1 as rollback. The runtime persists the last locally-published version in
+    // the existing git-sync routine metadata and supplies it as this floor.
+    version = Math.max(prior?.version ?? 0, opts.versionFloor ?? 0) + 1;
   }
   const payload: SigrefsPayload = {
     v: SIGREFS_SCHEMA_VERSION,
