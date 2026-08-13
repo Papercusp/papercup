@@ -213,7 +213,93 @@ def session_dirs():
     }
 
 
-def cgroup_memory(budget_sec=5.0, max_scanned=4096, top_n=40, root=None):
+def _process_identity(pid, proc_root="/proc"):
+    """Bounded, privacy-conscious identity for a direct cgroup process.
+
+    Incident scopes can disappear seconds after a capture. Preserve enough of
+    the process identity in the same snapshot to diagnose that event later,
+    without copying arbitrary command arguments (which may contain prompts or
+    credentials). argvPreview therefore keeps argv[0], flag NAMES (never
+    ``--flag=value`` values), and existing script paths; inline ``-e``/``-c``
+    payloads and free-form arguments are deliberately omitted.
+    """
+    base = os.path.join(proc_root, str(pid))
+    try:
+        status = {}
+        with open(os.path.join(base, "status")) as f:
+            for line in f:
+                key, _, value = line.partition(":")
+                if key in ("State", "VmRSS", "VmSwap"):
+                    status[key] = value.strip()
+        with open(os.path.join(base, "comm")) as f:
+            comm = f.read().strip()[:80]
+        try:
+            exe = os.readlink(os.path.join(base, "exe"))[:240]
+        except Exception:
+            exe = None
+        try:
+            with open(os.path.join(base, "cmdline"), "rb") as f:
+                argv = [part.decode("utf-8", "replace")
+                        for part in f.read(4096).split(b"\0") if part]
+        except Exception:
+            argv = []
+
+        preview = []
+        truncated = False
+        for index, arg in enumerate(argv):
+            if len(preview) >= 3:
+                truncated = True
+                break
+            if index == 0:
+                # Chromium/Electron and a few process-title setters rewrite
+                # argv[0] into one space-delimited string containing all their
+                # valued flags. Treat only its first token as executable
+                # identity; `exe` above retains the exact executable path.
+                executable_token = arg.split(None, 1)[0] if arg else ""
+                preview.append(executable_token[:240])
+                truncated = truncated or executable_token != arg or len(executable_token) > 240
+                continue
+            if arg in ("-e", "--eval", "-c", "--command"):
+                preview.append(arg)
+                truncated = True
+                break
+            if arg.startswith("-"):
+                flag = arg.split("=", 1)[0]
+                preview.append(flag[:120])
+                truncated = truncated or "=" in arg or len(flag) > 120
+                continue
+            if os.path.exists(arg):
+                preview.append(arg[:240])
+                truncated = truncated or len(arg) > 240
+                continue
+            # Never persist a free-form positional argument. It may be a user
+            # prompt, an inline query, or a credential passed without a flag.
+            truncated = True
+            break
+
+        def kib(field):
+            raw = status.get(field, "")
+            match = re.match(r"(\d+)\s+kB$", raw)
+            return int(match.group(1)) * 1024 if match else None
+
+        return {
+            "pid": pid,
+            "comm": comm,
+            "exe": exe,
+            "state": status.get("State"),
+            "rssBytes": kib("VmRSS"),
+            "swapBytes": kib("VmSwap"),
+            "argvPreview": preview,
+            "argvTruncated": truncated,
+        }
+    except Exception:
+        # The process may have exited between cgroup.procs and /proc. The
+        # caller records the miss explicitly rather than fabricating identity.
+        return None
+
+
+def cgroup_memory(budget_sec=5.0, max_scanned=4096, top_n=40, root=None,
+                  proc_root=None, max_processes_per_cgroup=8):
     """Largest cgroup-v2 memory consumers at capture time.
 
     PSI tells us *that* the host is thrashing, but not which workload owned the
@@ -226,6 +312,7 @@ def cgroup_memory(budget_sec=5.0, max_scanned=4096, top_n=40, root=None):
     make the two-minute capture timer overlap itself just to collect forensics.
     """
     root = root or os.environ.get("PAPERCUSP_PERF_CGROUP_ROOT", "/sys/fs/cgroup")
+    proc_root = proc_root or os.environ.get("PAPERCUSP_PERF_PROC_ROOT", "/proc")
     deadline = time.monotonic() + budget_sec
     rows = []
     scanned = 0
@@ -261,10 +348,20 @@ def cgroup_memory(budget_sec=5.0, max_scanned=4096, top_n=40, root=None):
             except Exception:
                 pass
             try:
-                direct_pids = sum(1 for line in open(os.path.join(dirpath, "cgroup.procs"))
-                                  if line.strip())
+                with open(os.path.join(dirpath, "cgroup.procs")) as f:
+                    pids = [int(line.strip()) for line in f if line.strip().isdigit()]
+                direct_pids = len(pids)
             except Exception:
+                pids = []
                 direct_pids = None
+            direct_processes = []
+            unresolved_sampled_pids = 0
+            for pid in pids[:max_processes_per_cgroup]:
+                identity = _process_identity(pid, proc_root=proc_root)
+                if identity is None:
+                    unresolved_sampled_pids += 1
+                else:
+                    direct_processes.append(identity)
             relative = os.path.relpath(dirpath, root)
             rows.append({
                 "path": "/" if relative == "." else "/" + relative,
@@ -277,6 +374,9 @@ def cgroup_memory(budget_sec=5.0, max_scanned=4096, top_n=40, root=None):
                 "slabBytes": stats.get("slab"),
                 "sockBytes": stats.get("sock"),
                 "directPids": direct_pids,
+                "directProcesses": direct_processes,
+                "unresolvedSampledPids": unresolved_sampled_pids,
+                "directProcessSampleTruncated": len(pids) > max_processes_per_cgroup,
             })
     except Exception:
         partial = True
@@ -289,6 +389,7 @@ def cgroup_memory(budget_sec=5.0, max_scanned=4096, top_n=40, root=None):
         "candidateCgroups": len(rows),
         "maxScanned": max_scanned,
         "maxRows": top_n,
+        "maxProcessesPerCgroup": max_processes_per_cgroup,
         "budgetSec": budget_sec,
         "partial": partial,
     }
