@@ -33,6 +33,21 @@ export interface FreshPgDb {
 }
 
 /**
+ * Minimal projection of migration 143 for fixtures that exercise the
+ * agent_activity-backed holder-liveness reader. Keep only the columns read by
+ * activeTurnHolderFragment; callers that need the full activity write path
+ * should apply the real migration instead.
+ */
+export const AGENT_ACTIVITY_DDL = `
+  CREATE TABLE IF NOT EXISTS harness_shared.agent_activity (
+    id BIGSERIAL PRIMARY KEY,
+    owner_id text NOT NULL,
+    kind text NOT NULL,
+    summary text,
+    created_at timestamptz NOT NULL DEFAULT now()
+  )`;
+
+/**
  * EI-6887 — apply ONE real migration SQL file to a hand-provisioned test DB
  * (e.g. `createFreshPgDb` above) via `sql.unsafe`, which speaks SQL, not psql.
  * Newer migrations (461/462/464/465+) carry `\set ON_ERROR_STOP on` psql

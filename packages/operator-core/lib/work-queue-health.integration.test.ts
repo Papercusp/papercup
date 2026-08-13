@@ -4,7 +4,7 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type postgres from 'postgres';
-import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
+import { AGENT_ACTIVITY_DDL, createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 import { HARNESS_FEATURES_CONSOLIDATED_DDL } from '../test/_work-items-schema';
 import {
   readWorkQueueHealth,
@@ -55,6 +55,7 @@ beforeAll(async () => {
   await sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
   await sql.unsafe(PRESENCE_DDL);
   await sql.unsafe(SPAWNED_DDL);
+  await sql.unsafe(AGENT_ACTIVITY_DDL);
   await sql.unsafe(ENGINEER_ISSUES_DDL);
   await sql.unsafe(SWEEP_RUNS_DDL);
   await sql.unsafe(PLAN_ASSIGNMENTS_DDL);
@@ -64,7 +65,7 @@ beforeAll(async () => {
 afterAll(async () => { await db?.cleanup(); });
 
 beforeEach(async () => {
-  await sql`TRUNCATE harness_shared.work_items, harness_shared.coord_presence, harness_shared.spawned_agents, harness_shared.periodic_sweep_runs, harness_shared.plan_item_assignments, harness_shared.agent_name_sessions `;
+  await sql`TRUNCATE harness_shared.work_items, harness_shared.coord_presence, harness_shared.spawned_agents, harness_shared.agent_activity, harness_shared.periodic_sweep_runs, harness_shared.plan_item_assignments, harness_shared.agent_name_sessions `;
 });
 
 async function seedFeature(id: string, status: string, takenBy: string | null, takenAgoMin: number, harness = H): Promise<void> {
@@ -128,6 +129,15 @@ describe('readWorkQueueHealth — stuck-items metric (P-008)', () => {
     await sql`UPDATE harness_shared.harness_features_consolidated
                  SET taken_at = NULL WHERE feature_id = 'F-noanchor-live'`;
     await sql`INSERT INTO harness_shared.coord_presence VALUES ('su-live-noanchor', now())`;
+    const h = await readWorkQueueHealth(sql, { workspaceId: WS });
+    expect(h.deadHeldFeatures).toBe(0);
+  });
+
+  it('recent native activity keeps a holder live without a coord heartbeat', async () => {
+    await seedFeature('F-native-active', 'in_progress', 'su-native-active', 30);
+    await sql`
+      INSERT INTO harness_shared.agent_activity (owner_id, kind, summary, created_at)
+      VALUES ('su-native-active', 'tool', '▶ focused test', now())`;
     const h = await readWorkQueueHealth(sql, { workspaceId: WS });
     expect(h.deadHeldFeatures).toBe(0);
   });
