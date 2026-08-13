@@ -11,6 +11,7 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { sessionSearchEnabled, disabledResult, SESSION_SOURCE_KINDS, refreshLiveSessionsBeforeRead } from './_shared';
 import { decodeSessionCursor, encodeSessionCursor, sessionCursorFingerprint } from './cursor';
 import type { PapercuspUnifiedToolContext } from '../_tool-context';
+import type { Sql } from 'postgres';
 
 const ALL_ROLES = [...SU_ROLES, 'papercup', 'kettle'] as const;
 
@@ -59,12 +60,229 @@ interface OutSession {
   active?: boolean;
 }
 
+interface HistoricalSessionListRow {
+  source_kind: string | null;
+  session_id: string | null;
+  owner: string;
+  first_seen_at: string | null;
+  first_event_at: string | null;
+  last_event_at: string | null;
+  event_count: number;
+  event_sources: string[] | null;
+  harness_slug: string | null;
+  cwd: string | null;
+  fleet_slug: string | null;
+  fleet_role: string | null;
+  model: string | null;
+  effort: string | null;
+  total_matching: number;
+}
+
+interface OutHistoricalSession {
+  source_kind: string | null;
+  session_id: string | null;
+  owner: string;
+  first_seen_at: string | null;
+  first_event_at: string | null;
+  last_event_at: string | null;
+  event_count: number;
+  event_sources: string[];
+  harness_slug: string | null;
+  cwd: string | null;
+  fleet_slug: string | null;
+  fleet_role: string | null;
+  model: string | null;
+  effort: string | null;
+}
+
+/**
+ * Read a bounded historical session census. This is intentionally a separate
+ * query path from the indexed transcript list below: a historical census must
+ * begin with append-only events, not with a mutable live-session roster.
+ */
+async function readHistoricalCensus(
+  tx: Sql,
+  options: {
+    workspaceId: string;
+    since: string;
+    until: string;
+    owner: string | null;
+    sourceKind: string | undefined;
+    cwdContains: string | undefined;
+    limit: number;
+    offset: number;
+    fingerprint: string;
+  },
+) {
+  const activityScopes = [...new Set([options.workspaceId, '*'])];
+  const rows: HistoricalSessionListRow[] = await tx<HistoricalSessionListRow[]>`
+    WITH raw_events AS (
+      SELECT owner AS owner_id,
+             session_id,
+             source_kind,
+             harness_slug,
+             cwd,
+             COALESCE(ts, ingested_at) AS event_at,
+             'session_turns'::text AS event_source
+        FROM harness_shared.session_turns
+       WHERE (workspace_id = ${options.workspaceId} OR workspace_id = 'default')
+         AND owner IS NOT NULL
+         AND session_id IS NOT NULL
+         AND COALESCE(ts, ingested_at) >= ${options.since}::timestamptz
+         AND COALESCE(ts, ingested_at) < ${options.until}::timestamptz
+      UNION ALL
+      SELECT owner_id,
+             session_id,
+             agent AS source_kind,
+             harness_slug,
+             cwd,
+             created_at AS event_at,
+             'agent_activity'::text AS event_source
+        FROM harness_shared.agent_activity
+       WHERE workspace_id = ANY(${activityScopes}::text[])
+         AND owner_id IS NOT NULL
+         AND created_at >= ${options.since}::timestamptz
+         AND created_at < ${options.until}::timestamptz
+      UNION ALL
+      SELECT coord_owner_id AS owner_id,
+             NULL::text AS session_id,
+             NULL::text AS source_kind,
+             harness_slug,
+             NULL::text AS cwd,
+             invoked_at AS event_at,
+             'tool_invocations'::text AS event_source
+        FROM harness_shared.tool_invocations
+       WHERE workspace_id = ANY(${activityScopes}::text[])
+         AND coord_owner_id IS NOT NULL
+         AND invoked_at >= ${options.since}::timestamptz
+         AND invoked_at < ${options.until}::timestamptz
+    ),
+    enriched_events AS (
+      SELECT e.*,
+             a.session_id AS adv_session_id,
+             a.agent AS adv_agent,
+             a.first_seen_at AS adv_first_seen_at,
+             a.launch_spec AS adv_launch_spec,
+             a.harness_slug AS adv_harness_slug,
+             a.cwd AS adv_cwd
+        FROM raw_events e
+        LEFT JOIN LATERAL (
+          SELECT session_id, agent, first_seen_at, launch_spec, harness_slug, cwd
+            FROM harness_shared.adv_sessions
+           WHERE coord_owner_id = e.owner_id
+             AND (e.session_id IS NULL OR session_id = e.session_id)
+           ORDER BY CASE WHEN e.session_id IS NOT NULL AND session_id = e.session_id THEN 0 ELSE 1 END,
+                    first_seen_at ASC NULLS LAST,
+                    id ASC
+           LIMIT 1
+        ) a ON true
+    ),
+    event_groups AS (
+      SELECT owner_id AS owner,
+             COALESCE(session_id, adv_session_id) AS session_id,
+             COALESCE(max(adv_agent), max(source_kind), 'unknown') AS source_kind,
+             min(adv_first_seen_at) AS first_seen_at,
+             min(event_at) AS first_event_at,
+             max(event_at) AS last_event_at,
+             count(*)::int AS event_count,
+             array_agg(DISTINCT event_source ORDER BY event_source) AS event_sources,
+             COALESCE(max(adv_harness_slug), max(harness_slug)) AS harness_slug,
+             COALESCE(max(adv_cwd), max(cwd)) AS cwd,
+             max(adv_launch_spec->>'model') AS model,
+             max(adv_launch_spec->>'effort') AS effort
+        FROM enriched_events
+       GROUP BY owner_id, COALESCE(session_id, adv_session_id)
+    ),
+    membership_as_of_window AS (
+      SELECT DISTINCT ON (owner_id)
+             owner_id,
+             fleet_slug,
+             fleet_role
+        FROM harness_shared.fleet_membership_events
+       WHERE workspace_id = ${options.workspaceId}
+         AND at < ${options.until}::timestamptz
+       ORDER BY owner_id, id DESC
+    )
+    SELECT e.source_kind,
+           e.session_id,
+           e.owner,
+           to_json(e.first_seen_at) #>> '{}' AS first_seen_at,
+           to_json(e.first_event_at) #>> '{}' AS first_event_at,
+           to_json(e.last_event_at) #>> '{}' AS last_event_at,
+           e.event_count,
+           e.event_sources,
+           e.harness_slug,
+           e.cwd,
+           m.fleet_slug,
+           m.fleet_role,
+           e.model,
+           e.effort,
+           count(*) OVER ()::int AS total_matching
+      FROM event_groups e
+      LEFT JOIN membership_as_of_window m ON m.owner_id = e.owner
+     WHERE (${options.owner}::text IS NULL OR e.owner = ${options.owner})
+       AND (${options.sourceKind ?? null}::text IS NULL OR e.source_kind = ${options.sourceKind ?? null})
+       AND (${options.cwdContains ?? null}::text IS NULL OR e.cwd ILIKE '%' || ${options.cwdContains ?? null} || '%')
+     ORDER BY e.last_event_at DESC NULLS LAST, e.owner, e.session_id NULLS LAST
+     LIMIT ${options.limit + 1}
+    OFFSET ${options.offset}
+  `;
+
+  const total = rows[0]?.total_matching ?? options.offset;
+  const sessions: OutHistoricalSession[] = rows.slice(0, options.limit).map((r) => ({
+    source_kind: r.source_kind,
+    session_id: r.session_id,
+    owner: r.owner,
+    first_seen_at: r.first_seen_at,
+    first_event_at: r.first_event_at,
+    last_event_at: r.last_event_at,
+    event_count: r.event_count,
+    event_sources: r.event_sources ?? [],
+    harness_slug: r.harness_slug,
+    cwd: r.cwd,
+    fleet_slug: r.fleet_slug,
+    fleet_role: r.fleet_role,
+    model: r.model,
+    effort: r.effort,
+  }));
+  const hasMore = total > options.offset + sessions.length;
+  const nextCursor = hasMore
+    ? encodeSessionCursor('sessions:list', options.offset + sessions.length, options.fingerprint, { until: options.until })
+    : undefined;
+
+  return {
+    content: [{
+      type: 'text' as const,
+      text: JSON.stringify({
+        ok: true,
+        mode: 'historical',
+        count: sessions.length,
+        total,
+        hasMore,
+        window: { since: options.since, until: options.until },
+        ...(nextCursor ? { nextCursor } : {}),
+        ...(hasMore
+          ? {
+              truncated: `Showing ${sessions.length} historical sessions at offset ${options.offset} of ${total} (newest event first). Continue with nextCursor or narrow with owner / source_kind / cwd_contains.`,
+            }
+          : {}),
+        note:
+          'Historical census rows are selected from the UNION of bounded session_turns, agent_activity, and tool_invocations events. ' +
+          'adv_sessions.first_seen_at, launch_spec, and the append-only fleet_membership_events ledger provide session birth, model, and as-of membership evidence. ' +
+          'The census does not use mutable adv_sessions.started_at or current coord presence as historical evidence.',
+        sessions,
+      }),
+    }],
+  };
+}
+
 export default defineTool({
   name: 'sessions:list',
   crossWorkspace: true,
   capability: 'search:read',
   description:
     'List indexed agent sessions across ALL clients (claude/omp/codex/harness chats) — newest first, with size/effort counts, owner, cwd, and time range. Filter by owner (self), source_kind, cwd substring, or time; continue a bounded result with nextCursor. ' +
+    'Pass mode:"historical" with both since and until for an explicit bounded [since, until) fleet census; it selects owners from append-only activity and maps immutable session/membership evidence. ' +
     'UNITS (EI-9970): `turns` = indexed TEXT-turn rows only (real user+assistant text; excludes tool_use/tool_result/thinking-only lines by design) — NOT a raw record count, NOT one row per model call; don\'t use it alone for cost/effort audits. Use `prompt_count` (real user prompts), `response_count` (distinct model-inference calls, deduped by request/message id — one call can span several raw lines), and `tool_call_count` (real tool invocations) instead; the latter two are null for source_kind=agent_chat (no tool-call signal in that shape).',
   guidance: {
     when:
@@ -87,6 +305,9 @@ export default defineTool({
     source_kind: z.enum(SESSION_SOURCE_KINDS).optional(),
     cwd_contains: z.string().max(200).optional().describe('Substring match on the session cwd.'),
     since: z.string().max(40).optional().describe('Only sessions active after this ISO timestamp.'),
+    until: z.string().max(40).optional().describe('Historical mode upper bound (exclusive ISO timestamp); required with mode:"historical".'),
+    mode: z.enum(['indexed', 'historical']).optional().describe('Default indexed transcript list; historical requires explicit since + until and returns an append-only event census.'),
+    historical: z.boolean().optional().describe('Compatibility alias for mode:"historical"; still requires explicit since + until.'),
     limit: z.number().int().min(1).max(100).optional().describe('Default 30.'),
     cursor: z.string().min(1).max(512).optional().describe('Opaque nextCursor from a prior sessions:list call with the same filters.'),
   }),
@@ -101,11 +322,16 @@ export default defineTool({
     const workspaceId = ctx.workspaceId ?? '';
     const limit = args.limit ?? 30;
     const owner = args.owner === 'self' ? (resolveAgentIdentity(ctx).ownerId ?? '') : (args.owner ?? null);
+    const historicalMode = args.mode === 'historical' || args.historical === true;
     const fingerprint = sessionCursorFingerprint({
       owner: args.owner ?? null,
       source_kind: args.source_kind ?? null,
       cwd_contains: args.cwd_contains ?? null,
       since: args.since ?? null,
+      // Keep the pre-census fingerprint byte-for-byte compatible for the
+      // default indexed path; only the new mode adds new cursor dimensions.
+      until: historicalMode ? args.until ?? null : undefined,
+      mode: historicalMode ? 'historical' : undefined,
     }, {
       workspaceId,
       selfOwnerId: args.owner === 'self' ? owner ?? undefined : undefined,
@@ -115,6 +341,39 @@ export default defineTool({
       return { content: [{ type: 'text' as const, text: JSON.stringify({ ...cursor, ok: false }) }] };
     }
     const offset = cursor.offset;
+
+    if (historicalMode) {
+      const sinceDate = args.since ? new Date(args.since) : null;
+      const untilDate = args.until ? new Date(args.until) : null;
+      if (!sinceDate || Number.isNaN(sinceDate.getTime()) || !untilDate || Number.isNaN(untilDate.getTime())) {
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({ ok: false, error: 'mode:"historical" requires valid ISO since and until bounds' }),
+          }],
+        };
+      }
+      if (sinceDate.getTime() >= untilDate.getTime()) {
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({ ok: false, error: 'historical since must be earlier than until' }),
+          }],
+        };
+      }
+      return readHistoricalCensus(tx, {
+        workspaceId,
+        since: sinceDate.toISOString(),
+        until: untilDate.toISOString(),
+        owner,
+        sourceKind: args.source_kind,
+        cwdContains: args.cwd_contains,
+        limit,
+        offset,
+        fingerprint,
+      });
+    }
+
     // Freeze the upper time boundary on page one and carry it in every cursor.
     // Without this, a newly-ingested live turn shifts OFFSET and page two can
     // repeat page one's session (the production recurrence that reopened P-009).

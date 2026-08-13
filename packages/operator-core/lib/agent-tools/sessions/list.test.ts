@@ -43,17 +43,20 @@ const tool = (await import('./list')).default;
 
 interface ParsedResult {
   ok: boolean;
+  mode?: string;
   count: number;
   total: number;
   hasMore: boolean;
+  window?: { since?: string; until: string };
   nextCursor?: string;
   sessions: Array<{
     source_kind: string;
-    session_id: string;
+    session_id: string | null;
     turns: number;
     prompt_count: number;
     owner: string | null;
     active?: boolean;
+    event_sources?: string[];
   }>;
 }
 
@@ -62,12 +65,14 @@ interface ParsedResult {
  *  when the fallback fires, once more for the owner-independent aggregate. */
 function makeTx(results: unknown[][]) {
   let i = 0;
-  const tx = vi.fn(async () => {
+  const queries: string[] = [];
+  const tx = vi.fn(async (strings: unknown) => {
+    if (Array.isArray(strings)) queries.push(strings.join(' '));
     const r = results[i] ?? [];
     i += 1;
     return r;
   });
-  return { tx, calledTimes: () => tx.mock.calls.length };
+  return { tx, calledTimes: () => tx.mock.calls.length, queries };
 }
 
 function callTool(args: Record<string, unknown>, tx: unknown) {
@@ -79,9 +84,9 @@ function callTool(args: Record<string, unknown>, tx: unknown) {
 }
 
 async function run(args: Record<string, unknown>, results: unknown[][]) {
-  const { tx, calledTimes } = makeTx(results);
+  const { tx, calledTimes, queries } = makeTx(results);
   const res = await callTool(args, tx);
-  return { parsed: JSON.parse(res.content[0].text) as ParsedResult, txCalls: calledTimes() };
+  return { parsed: JSON.parse(res.content[0].text) as ParsedResult, txCalls: calledTimes(), queries };
 }
 
 describe('sessions:list EI-11403 active-session fallback', () => {
@@ -201,5 +206,97 @@ describe('sessions:list EI-11403 active-session fallback', () => {
     );
 
     expect(parsed.sessions).toHaveLength(0); // no lens for that kind — omit, don't guess
+  });
+});
+
+describe('sessions:list historical bounded census', () => {
+  it('requires an explicit finite [since, until) window', async () => {
+    const { parsed, txCalls } = await run(
+      { mode: 'historical', since: '2026-07-13T13:30:00Z' },
+      [],
+    );
+
+    expect(txCalls).toBe(0);
+    expect(parsed.ok).toBe(false);
+    expect(JSON.stringify(parsed)).toMatch(/requires valid ISO since and until bounds/);
+  });
+
+  it('unions all three append-only event legs and maps immutable evidence', async () => {
+    const { parsed, txCalls, queries } = await run(
+      {
+        mode: 'historical',
+        since: '2026-07-13T13:30:00Z',
+        until: '2026-07-13T14:30:00Z',
+      },
+      [[
+        {
+          source_kind: 'codex',
+          session_id: 'sess-historical',
+          owner: 'su-historical',
+          first_seen_at: '2026-07-01T10:00:00.000Z',
+          first_event_at: '2026-07-13T13:35:00.000Z',
+          last_event_at: '2026-07-13T14:20:00.000Z',
+          event_count: 3,
+          event_sources: ['agent_activity', 'session_turns', 'tool_invocations'],
+          harness_slug: 'papercusp',
+          cwd: '/repo',
+          fleet_slug: 'fleet-a',
+          fleet_role: 'member',
+          model: 'gpt-5.6',
+          effort: 'xhigh',
+          total_matching: 1,
+        },
+      ]],
+    );
+
+    expect(txCalls).toBe(1);
+    expect(parsed.ok).toBe(true);
+    expect(parsed.mode).toBe('historical');
+    expect(parsed.window).toEqual({ since: '2026-07-13T13:30:00.000Z', until: '2026-07-13T14:30:00.000Z' });
+    expect(parsed.count).toBe(1);
+    expect(parsed.sessions[0].event_sources).toEqual(['agent_activity', 'session_turns', 'tool_invocations']);
+
+    const sql = queries[0];
+    expect(sql).toContain('FROM harness_shared.session_turns');
+    expect(sql).toContain('FROM harness_shared.agent_activity');
+    expect(sql).toContain('FROM harness_shared.tool_invocations');
+    expect(sql).toContain('coord_owner_id AS owner_id');
+    expect(sql).toContain('fleet_membership_events');
+    expect(sql).toContain('first_seen_at');
+    expect(sql).toContain('launch_spec');
+    expect(sql).toContain('>=');
+    expect(sql).toContain('<');
+    expect(sql).not.toMatch(/\bstarted_at\b/);
+    expect(sql).not.toContain('spawn_id');
+  });
+
+  it('supports the historical compatibility alias while retaining the same bounds', async () => {
+    const { parsed } = await run(
+      {
+        historical: true,
+        since: '2026-07-13T13:30:00-04:00',
+        until: '2026-07-13T14:30:00-04:00',
+      },
+      [[]],
+    );
+
+    expect(parsed.ok).toBe(true);
+    expect(parsed.mode).toBe('historical');
+    expect(parsed.window).toEqual({ since: '2026-07-13T17:30:00.000Z', until: '2026-07-13T18:30:00.000Z' });
+  });
+
+  it('rejects an inverted historical window before touching the database', async () => {
+    const { parsed, txCalls } = await run(
+      {
+        mode: 'historical',
+        since: '2026-07-13T14:30:00Z',
+        until: '2026-07-13T13:30:00Z',
+      },
+      [],
+    );
+
+    expect(txCalls).toBe(0);
+    expect(parsed.ok).toBe(false);
+    expect(JSON.stringify(parsed)).toMatch(/since must be earlier than until/);
   });
 });
