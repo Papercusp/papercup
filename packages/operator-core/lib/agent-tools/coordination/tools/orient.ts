@@ -2185,31 +2185,25 @@ export const ORIENT_CROSS_WORKSPACE_FOLD_TOOL_NAMES = ['memory:search'] as const
 export default defineTool({
   name: 'coord:orient',
   description:
-    'One agent wake-orientation + session-bootstrap read: your assignments (+lane+load), ' +
-    'the claimable backlog, your inbox summary, and the recent plan-events delta — plus, with ' +
-    '`intent`, a memory recall AND a coord:declare-intent so peers see you. The mandated bootstrap ' +
-    '(memory:search + coord:inbox + coord:plan-events + declare + assignments + claimable) in ONE ' +
-    'round-trip; a fleet member also gets a compact fleet-health glance. Fleet membership is ' +
-    "inferred from the caller's live session — do not pass `fleet` or `workspace`; use `harness` " +
-    'when an explicit harness scope is needed.',
+    'Wake/session bootstrap in one read: assignments and load, claimable work, inbox, plan events, ' +
+    'and fleet health. With `intent`, it also recalls memory and declares the intent. Fleet and ' +
+    'workspace are inferred; pass `harness` only for explicit harness scope.',
   guidance: {
     when:
-      'At the START of a turn / on waking. Pass `intent` (your one-line task) for the whole ' +
-      'bootstrap in ONE round-trip: assignments + claimable + inbox + plan-events + a memory recall ' +
-      '+ your intent DECLARED to peers. Omit `intent` for a lighter re-orientation. On a repeating ' +
-      "LEADER/MONITOR tick pass `mode:'monitor'` — skips the claimable/facts/plan-events/fleet/" +
-      'recipes/recall legs, keeping fleet:assignments + inbox + declare. Fleet membership is ' +
-      'inferred from your live session; do not add a `fleet` or `workspace` argument to ' +
-      'coord:orient. Use `harness` only when you need to name the harness scope.',
+      'At turn start or wake. Pass `intent` to recall memory and declare it. For repeating leader ' +
+      "ticks, pass `mode:'monitor'` to skip heavy backlog/facts/events/catch-up/recipes/recall folds " +
+      'while keeping assignments, inbox, and declaration. Pass `afterCompaction:true` on the first ' +
+      'post-compaction call.',
     notWhen:
-      'A human status-surface render (coord:glance display block — orient folds only the health ' +
-      'counts) or the full presence roster (coord:presence). After a successful orient do NOT ' +
-      're-call coord:plan-events / memory:search / coord:inbox / coord:glance / coord:declare-intent ' +
-      '— it ALREADY returned them (pass afterCompaction:true for fuller inbox + the recovery block).',
+      'A human status display or full presence roster; use coord:glance or coord:presence. Do not ' +
+      'immediately re-call folds returned here.',
     chaining:
-      'Bundles fleet:assignments + work_items:list + coord:inbox + coord:plan-events [+ memory:search ' +
-      '+ recipes:search + declare with `intent`] — prefer at wake over separate calls. A close ' +
-      '`recipes` hit → recipes:run it. → work_items:pickup { id, intent }. claimable[] is advisory (EI-6468).',
+      'Prefer over separate bootstrap calls. A close `recipes` hit → recipes:run it. Then ' +
+      'work_items:pickup { id, intent }; claimable[] is advisory (EI-6468).',
+    returns:
+      'Full mode folds assignments, claimable work, inbox, plan events, memory/recipes when queried, ' +
+      'fleet catch-up/health, and post-compaction recovery when requested. Individual folds are ' +
+      'bounded and best-effort, so inspect their own degraded/null markers.',
   },
   capability: 'coord:read',
   // tool-call-batching-wrappers P-010 — composite marker: the primitives this bundles.

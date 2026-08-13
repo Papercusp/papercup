@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 729,
+  "count": 730,
   "tools": [
     {
       "name": "ablation:report",
@@ -2873,7 +2873,7 @@
           "POST"
         ]
       },
-      "description": "Read a file (text) with line numbers, like the native Read tool. offset/limit window large files, tail:N reads the last N lines; long lines are truncated. Path is absolute, ~/-relative, or relative to the project dir.",
+      "description": "Read a file with line-numbered text windows, or exact resumable byte pages. offset/limit window lines; tail:N reads the last N lines. byte_offset+byte_limit returns base64 bytes with a next cursor, including for a single very long line. Path is absolute, ~/-relative, or relative to the project dir.",
       "capabilities": [
         "capability:fs-read"
       ],
@@ -2934,7 +2934,7 @@
         "foreign-session"
       ],
       "guidance": {
-        "when": "Read a source/text file before editing it, or to inspect content. Use offset+limit to page through a large file, and tail:N to check the end of a log — it replaces `sed -n N,Mp FILE`, `cat FILE`, `head -n N FILE` and `tail -n N FILE`.",
+        "when": "Read a source/text file before editing it, or inspect content. Use offset+limit for line pages, tail:N for a log tail, and byte_offset+byte_limit when exact resumable bytes matter or the file may be one long line.",
         "notWhen": "To run a command, use capability:bash. To search across files, use capability:bash with grep/rg.",
         "chaining": "capability:read → capability:edit (exact string replace) or capability:write (overwrite)."
       }
@@ -5180,7 +5180,7 @@
           "POST"
         ]
       },
-      "description": "One agent wake-orientation + session-bootstrap read: your assignments (+lane+load), the claimable backlog, your inbox summary, and the recent plan-events delta — plus, with `intent`, a memory recall AND a coord:declare-intent so peers see you. The mandated bootstrap (memory:search + coord:inbox + coord:plan-events + declare + assignments + claimable) in ONE round-trip; a fleet member also gets a compact fleet-health glance.",
+      "description": "Wake/session bootstrap in one read: assignments and load, claimable work, inbox, plan events, and fleet health. With `intent`, it also recalls memory and declares the intent. Fleet and workspace are inferred; pass `harness` only for explicit harness scope.",
       "capabilities": [
         "coord:read"
       ],
@@ -5202,9 +5202,9 @@
         "doc-steward"
       ],
       "guidance": {
-        "when": "At the START of a turn / on waking. Pass `intent` (your one-line task) for the whole bootstrap in ONE round-trip: assignments + claimable + inbox + plan-events + a memory recall + your intent DECLARED to peers. Omit `intent` for a lighter re-orientation. On a repeating LEADER/MONITOR tick pass `mode:'monitor'` — skips the claimable/facts/plan-events/fleet/recipes/recall legs, keeping fleet:assignments + inbox + declare.",
-        "notWhen": "A human status-surface render (coord:glance display block — orient folds only the health counts) or the full presence roster (coord:presence). After a successful orient do NOT re-call coord:plan-events / memory:search / coord:inbox / coord:glance / coord:declare-intent — it ALREADY returned them (pass afterCompaction:true for fuller inbox + the recovery block).",
-        "chaining": "Bundles fleet:assignments + work_items:list + coord:inbox + coord:plan-events [+ memory:search + recipes:search + declare with `intent`] — prefer at wake over separate calls. A close `recipes` hit → recipes:run it. → work_items:pickup { id, intent }. claimable[] is advisory (EI-6468)."
+        "when": "At turn start or wake. Pass `intent` to recall memory and declare it. For repeating leader ticks, pass `mode:'monitor'` to skip heavy backlog/facts/events/catch-up/recipes/recall folds while keeping assignments, inbox, and declaration. Pass `afterCompaction:true` on the first post-compaction call.",
+        "notWhen": "A human status display or full presence roster; use coord:glance or coord:presence. Do not immediately re-call folds returned here.",
+        "chaining": "Prefer over separate bootstrap calls. A close `recipes` hit → recipes:run it. Then work_items:pickup { id, intent }; claimable[] is advisory (EI-6468)."
       }
     },
     {
@@ -7919,6 +7919,36 @@
       "guidance": {
         "when": "Diagnostic snapshot of PG health — connections, longest query, lock count. For the /dev/pg dashboard.",
         "notWhen": "For application-level health, use `harness:health`. pg_health is the database layer."
+      }
+    },
+    {
+      "name": "dev:pg_hot_queries",
+      "http": {
+        "path": "/api/agent-tools/dev/pg_hot_queries",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Sample pg_stat_statements twice and rank queries by IN-WINDOW execution-time delta. Returns calls/s, ms/call and rows/call beside lifetime totals, plus stale lifetime leaders with zero-call statistical power.",
+      "capabilities": [
+        "intel:read"
+      ],
+      "agentRoles": [
+        "operator",
+        "architect",
+        "debugger",
+        "cup",
+        "mug",
+        "scoper",
+        "reviewer",
+        "validator",
+        "worker"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "You need to know what is burning database time NOW, or whether a catastrophic pg_stat_statements lifetime total is still advancing. This catches frequent short queries that an instantaneous pg_stat_activity read misses.",
+        "notWhen": "You need one currently-running/blocked query → dev:pg_active_queries. You need ad-hoc SQL or EXPLAIN → dev:pg_query. This call intentionally waits windowSec between snapshots.",
+        "chaining": "Start with the default 15s window. A zero is conclusive only when zeroCallVerdict is dead; too-rare-to-tell needs a longer window or a stored long-running baseline. Use filter for a case-insensitive query-text substring."
       }
     },
     {
@@ -14125,7 +14155,7 @@
           "POST"
         ]
       },
-      "description": "Write or clear the su AUTO loop carry-note read by a COLD wake after reset/recycle; the live transcript does not survive. Pass { did, left, insight, next } or raw { note }; blank/null clears. The note is keyed by ownerId. Supplying { walls } or { checks } uses rowsMode:'merge' by default (supplied rows add/update without dropping unmentioned carried rows); use rowsMode:'replace' to retire omitted rows, and use an empty list with replace to clear that row set. Returns { ok, harness, ownerId, cleared, length, verified, contentHash, walls, checks }; writes verify-read.",
+      "description": "Write or clear the su AUTO loop carry-note read by a COLD wake after reset/recycle; the live transcript does not survive. Pass { did, left, insight, next } (or goal as an alias for next) or raw { note }; blank/null clears. The note is keyed by ownerId. Supplying { walls } or { checks } uses rowsMode:'merge' by default (supplied rows add/update without dropping unmentioned carried rows); use rowsMode:'replace' to retire omitted rows, and use an empty list with replace to clear that row set. Returns { ok, harness, ownerId, cleared, length, verified, contentHash, walls, checks }; writes verify-read.",
       "capabilities": [
         "routines:write"
       ],
@@ -14305,7 +14335,7 @@
           "POST"
         ]
       },
-      "description": "Transfer one active engine loop to another session while preserving its cadence, fire history, limits, carry policy, and parked state. Refuses when the destination already has an active loop.",
+      "description": "Transfer one active engine loop to another session while preserving its cadence, fire history, limits, carry policy, cold carry-note (including declared deps), and parked state. Refuses when the destination already has an active loop.",
       "capabilities": [
         "routines:write"
       ],
@@ -14330,7 +14360,7 @@
       "guidance": {
         "when": "A loop objective should continue under a deliberate successor session instead of being ended and recreated.",
         "notWhen": "The original objective is finished — use loop:end. Moving work-item ownership without its loop — use work_items tools.",
-        "chaining": "Use loop:status for both owners after transfer; the destination receives subsequent wakes."
+        "chaining": "Use loop:status for both owners after transfer; the destination receives subsequent wakes and resumes from the transferred cold carry-note."
       }
     },
     {
@@ -22933,7 +22963,7 @@
           "POST"
         ]
       },
-      "description": "List indexed agent sessions across ALL clients (claude/omp/codex/harness chats) — newest first, with size/effort counts, owner, cwd, and time range. Filter by owner (self), source_kind, cwd substring, or time; continue a bounded result with nextCursor. UNITS (EI-9970): `turns` = indexed TEXT-turn rows only (real user+assistant text; excludes tool_use/tool_result/thinking-only lines by design) — NOT a raw record count, NOT one row per model call; don't use it alone for cost/effort audits. Use `prompt_count` (real user prompts), `response_count` (distinct model-inference calls, deduped by request/message id — one call can span several raw lines), and `tool_call_count` (real tool invocations) instead; the latter two are null for source_kind=agent_chat (no tool-call signal in that shape).",
+      "description": "List indexed agent sessions across ALL clients (claude/omp/codex/harness chats) — newest first, with size/effort counts, owner, cwd, and time range. Filter by owner (self), source_kind, cwd substring, or time; continue a bounded result with nextCursor. Pass mode:\"historical\" with both since and until for an explicit bounded [since, until) fleet census; it selects owners from append-only activity and maps immutable session/membership evidence. UNITS (EI-9970): `turns` = indexed TEXT-turn rows only (real user+assistant text; excludes tool_use/tool_result/thinking-only lines by design) — NOT a raw record count, NOT one row per model call; don't use it alone for cost/effort audits. Use `prompt_count` (real user prompts), `response_count` (distinct model-inference calls, deduped by request/message id — one call can span several raw lines), and `tool_call_count` (real tool invocations) instead; the latter two are null for source_kind=agent_chat (no tool-call signal in that shape).",
       "capabilities": [
         "search:read"
       ],
