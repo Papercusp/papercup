@@ -2150,10 +2150,6 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
   // single-commit behavior. Read ONCE; per-repo maps are derived below (super + each submodule).
   const roster = opts.loadRoster ? await opts.loadRoster() : [];
 
-  /** EI-20402093158205519: the strand census for this pass. Stays null unless submodule
-   *  discovery actually ran and measured it — see GitSyncOutcome.strandedSubmodules. */
-  let strandedSubmodules: StrandedSubmodule[] | null = null;
-
   /** One phase's collected results — JSON-serializable so it checkpoints as a step output. */
   interface PhaseCollect {
     conflicts: RepoConflict[];
@@ -2162,6 +2158,9 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
     merged: string[];
     oversized: ScopedOversized[];
     contentErrors: ScopedContentError[];
+    /** Checkpoint the census with the phase. Outer mutable state disappears on replay,
+     *  turning a measured [] into null and changing the reconstructed outcome. */
+    strandedSubmodules: StrandedSubmodule[] | null;
     didSomething: boolean;
   }
   const emptyPhase = (): PhaseCollect => ({
@@ -2171,6 +2170,7 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
     merged: [],
     oversized: [],
     contentErrors: [],
+    strandedSubmodules: null,
     didSomething: false,
   });
 
@@ -2269,7 +2269,7 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
             // EI-20402093158205519: record the strand census measured by THIS pass. An
             // explicit submodulePaths override (tests) skips discovery entirely and so
             // measures nothing — this stays null, and null never implies an all-clear.
-            strandedSubmodules = census;
+            out.strandedSubmodules = census;
           });
     }
     for (const s of subPaths) {
@@ -2291,6 +2291,7 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
     }
     return out;
   });
+  const strandedSubmodules = sub.strandedSubmodules;
 
   // Superproject last. An unreconciled submodule defers its PUSH — and ONLY its push.
   // (Oversized exclusions defer nothing: the submodule's commit — without the big
