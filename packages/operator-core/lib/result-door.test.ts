@@ -115,7 +115,7 @@ describe('applyResultDoor', () => {
       const doored = applyResultDoor(
         { content: [{ type: 'text' as const, text: signatures }] },
         { toolName, workspaceId: 'ws-1', runId: RUN_ID },
-      );
+      ) as DoorableResult;
       const body = boundedBody(doored);
       expect(body.text).toContain('declare const tools0');
       expect(body._projection).toMatchObject({
