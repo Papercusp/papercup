@@ -62,6 +62,11 @@ import {
   type PhysicalPhaseFHost,
   type PhysicalPhaseFInput,
 } from './physical-drill-phase-f';
+import {
+  executePhysicalPhaseG,
+  validatePhysicalPhaseG,
+  type PhysicalPhaseGInput,
+} from './physical-drill-phase-g';
 
 type JsonRecord = Record<string, unknown>;
 
@@ -493,6 +498,24 @@ async function cli(argv: string[]): Promise<unknown> {
     }
     return verdict;
   }
+  if (mode === 'phase-g-run') {
+    const [towerDeviceKey, vmDeviceKey, runId] = args;
+    if (!towerDeviceKey || !vmDeviceKey || !runId) {
+      throw new Error(
+        'usage: physical-drill-producer phase-g-run <tower-device-key> <vm-device-key> <run-id>',
+      );
+    }
+    return executePhysicalPhaseG({ runId, towerDeviceKey, vmDeviceKey });
+  }
+  if (mode === 'phase-g-verify') {
+    const [inputPath] = args;
+    if (!inputPath) throw new Error('usage: physical-drill-producer phase-g-verify <private-run-input.json>');
+    const verdict = validatePhysicalPhaseG(readJson(inputPath) as PhysicalPhaseGInput);
+    if (!verdict.ok) {
+      throw new Error(`physical-drill-producer: Phase G rejected: ${verdict.errors.join('; ')}`);
+    }
+    return verdict;
+  }
   if (mode === 'finalize') {
     const [unsignedEvidencePath, towerReceiptPath, vmReceiptPath, evidencePath, trustPath] = args;
     if (!unsignedEvidencePath || !towerReceiptPath || !vmReceiptPath || !evidencePath || !trustPath) {
@@ -508,7 +531,7 @@ async function cli(argv: string[]): Promise<unknown> {
     return { ok: true, runId: artifacts.evidence.runId, evidencePath, trustPath };
   }
   throw new Error(
-    'physical-drill-producer: mode must be identity, preflight, phase-a-observe, phase-a-quarantine, phase-a-verify, phase-b-observe, phase-b-commit, phase-b-verify, phase-c-run, phase-c-verify, phase-d-commit, phase-d-dirty, phase-d-request, phase-d-ratify, phase-d-event, phase-d-observe, phase-d-verify, phase-e-mode, phase-e-observe, phase-e-ingress, phase-e-diverge, phase-e-recover, phase-e-watchdog, phase-e-verify, phase-f-run, phase-f-verify, sign, or finalize',
+    'physical-drill-producer: mode must be identity, preflight, phase-a-observe, phase-a-quarantine, phase-a-verify, phase-b-observe, phase-b-commit, phase-b-verify, phase-c-run, phase-c-verify, phase-d-commit, phase-d-dirty, phase-d-request, phase-d-ratify, phase-d-event, phase-d-observe, phase-d-verify, phase-e-mode, phase-e-observe, phase-e-ingress, phase-e-diverge, phase-e-recover, phase-e-watchdog, phase-e-verify, phase-f-run, phase-f-verify, phase-g-run, phase-g-verify, sign, or finalize',
   );
 }
 

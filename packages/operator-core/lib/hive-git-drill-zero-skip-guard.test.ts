@@ -8,7 +8,7 @@
  * Extract the real summary block from the shipping bash script so this test
  * fails if its exit semantics drift without running the heavyweight drill.
  */
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
@@ -19,6 +19,11 @@ import { physicalDrillSigningBytes, validatePhysicalDrillEvidence } from './sync
 import { physicalDrillHostReceiptSigningBytes } from './sync/pot-git/physical-drill-host-receipt';
 import { generateEd25519KeypairDer, signWithPrivateKeyDer } from './identity/ed25519';
 import { stagingAdvanceSigningBytes } from './sync/pot-git/staging-advance';
+import {
+  PHASE_G_INPUT_SCHEMA,
+  executePhysicalPhaseG,
+  type PhysicalPhaseGInput,
+} from './sync/pot-git/physical-drill-phase-g';
 
 function repoRoot(): string {
   let dir = dirname(fileURLToPath(import.meta.url));
@@ -51,6 +56,24 @@ const validatorPath = join(
   'pot-git',
   'physical-drill-evidence.ts',
 );
+const physicalRunId = 'physical-run-2026-08-13T120000Z';
+let physicalPhaseGBaseline: PhysicalPhaseGInput;
+
+beforeAll(async () => {
+  const tower = generateEd25519KeypairDer();
+  const vm = generateEd25519KeypairDer();
+  const result = await executePhysicalPhaseG(
+    { runId: physicalRunId, towerDeviceKey: tower.pubkeyBase64, vmDeviceKey: vm.pubkeyBase64 },
+    { now: () => '2026-08-13T12:20:00Z' },
+  );
+  physicalPhaseGBaseline = {
+    schemaVersion: PHASE_G_INPUT_SCHEMA,
+    runId: physicalRunId,
+    window: { startedAt: '2026-08-13T12:19:00Z', finishedAt: '2026-08-13T12:21:00Z' },
+    identities: { towerDeviceKey: tower.pubkeyBase64, vmDeviceKey: vm.pubkeyBase64 },
+    result,
+  };
+}, 60_000);
 afterAll(() => rmSync(evidenceDir, { recursive: true, force: true }));
 
 function physicalLegD(
@@ -507,13 +530,10 @@ function physicalFixture(): Record<string, any> {
   const digest = (path: string) => createHash('sha256').update(readFileSync(path)).digest('hex');
   const tower = generateEd25519KeypairDer();
   const vm = generateEd25519KeypairDer();
-  const oldCore = generateEd25519KeypairDer();
-  const newCore = generateEd25519KeypairDer();
-  const oid = (digit: string) => digit.repeat(40);
   const fixture: Record<string, any> = {
     schemaVersion: 'hive-git-physical-evidence/v1',
     plan: 'p2p-git-live-activation-2026-07-09',
-    runId: 'physical-run-2026-08-13T120000Z',
+    runId: physicalRunId,
     window: { startedAt: '2026-08-13T12:00:00Z', finishedAt: '2026-08-13T12:30:00Z' },
     topology: {
       kind: 'two-physical-machines',
@@ -535,48 +555,16 @@ function physicalFixture(): Record<string, any> {
     legD: physicalLegD(tower, vm),
     legE: physicalLegE(tower, vm),
     legF: physicalLegF(tower, vm),
-    legG: {
-      planItem: 'P-308',
-      status: 'pass',
-      afterLegs: [...'ABCDEF'],
-      assertions: {
-        preFailureConverged: true,
-        survivorElected: true,
-        grantReady: true,
-        successorDescendsFromPreFailure: true,
-        successorFederatedAndAccepted: true,
-        oldAuthorityRejectedStaleEpochSeq: true,
-        oldAuthorityCouldNotMoveRefs: true,
-        retryableUnknownShaHeldCursor: true,
-        retryableUngrantedEpochHeldCursor: true,
-        retryAcceptedAfterEvidence: true,
-        pgBlipFailedOpenLegacy: true,
-        pgBlipNoForcePush: true,
-        pgBlipLoserNoisy: true,
-        restartCoreKeyChanged: true,
-        stableDeviceIdentityPreserved: true,
-        postRestartRoundTripExact: true,
-      },
-      epochs: { priorAccepted: 7, successorGranted: 8, basis: 'crash-takeover' },
-      cursor: { beforeRetry: 41, duringUnknownSha: 41, duringUngrantedEpoch: 41, afterAccept: 42 },
-      devices: {
-        oldAuthority: tower.pubkeyBase64,
-        survivor: vm.pubkeyBase64,
-        stableDeviceKeyBefore: vm.pubkeyBase64,
-        stableDeviceKeyAfter: vm.pubkeyBase64,
-        oldCoreKey: oldCore.pubkeyBase64,
-        newCoreKey: newCore.pubkeyBase64,
-      },
-      oids: {
-        preFailureStaging: oid('2'),
-        successorStaging: oid('4'),
-        receiverStaging: oid('4'),
-        beforeStaleAuthorityReplay: oid('4'),
-        afterStaleAuthorityReplay: oid('4'),
-        postRestartCanonical: oid('5'),
-        postRestartWorktree: oid('5'),
-      },
-    },
+    legG: (() => {
+      const input = structuredClone(physicalPhaseGBaseline);
+      input.identities = { towerDeviceKey: tower.pubkeyBase64, vmDeviceKey: vm.pubkeyBase64 };
+      input.result.physicalExecutionBinding = {
+        provenance: 'outer-manifest-host-receipts',
+        towerDeviceKey: tower.pubkeyBase64,
+        vmDeviceKey: vm.pubkeyBase64,
+      };
+      return input;
+    })(),
   };
   const bytes = physicalDrillSigningBytes(fixture);
   fixture.attestations = [tower, vm].map((device) => ({
@@ -673,13 +661,13 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
     );
   });
 
-  it('installs the offline scenario plus fixed Phase A-F executors and emits nothing before fixed A-G executors land', () => {
+  it('installs the ready fixed A-G scenario but refuses physical mutation without the explicit execution grant', () => {
     const contract = spawnSync(physicalScenarioPath, ['--contract-check'], { encoding: 'utf8' });
     expect(contract.status).toBe(0);
     expect(JSON.parse(contract.stdout)).toEqual({
       schemaVersion: 'hive-git-physical-scenario-contract/v1',
-      implementationState: 'offline-phase-a-b-c-d-e-f-executors-v1',
-      ready: false,
+      implementationState: 'ready-v1',
+      ready: true,
       phases: [...'ABCDEFG'],
       phaseContracts: {
         A: 'executor-installed',
@@ -688,6 +676,7 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
         D: 'executor-installed',
         E: 'executor-installed',
         F: 'executor-installed',
+        G: 'executor-installed',
       },
     });
 
@@ -712,7 +701,9 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
       },
     });
     expect(attempted.status).toBe(1);
-    expect(attempted.stderr).toContain('scenario is not execution-ready (offline-phase-a-b-c-d-e-f-executors-v1)');
+    expect(attempted.stderr).toContain(
+      'destructive physical run requires HIVE_GIT_PHYSICAL_EXECUTE to equal the canonical plan slug',
+    );
     expect(existsSync(output)).toBe(false);
     expect(physicalScenario).toContain('run_all_phases');
     expect(physicalScenario).not.toContain('HIVE_GIT_PHYSICAL_SCENARIO_CMD');
@@ -720,7 +711,7 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
     expect(physicalScenario).toContain("'$VM_CALL' git-sync:run");
     expect(physicalScenario).toContain('phase-a-verify');
     expect(physicalScenario).toContain('physical_run_id="p505-physical-');
-    expect(physicalScenario.match(/local run_id="\$physical_run_id"/g)).toHaveLength(3);
+    expect(physicalScenario.match(/local run_id="\$physical_run_id"/g)).toHaveLength(4);
     expect(physicalScenario.indexOf('[ "$IMPLEMENTATION_STATE" = \'ready-v1\' ]')).toBeLessThan(
       physicalScenario.lastIndexOf('run_all_phases'),
     );
@@ -1114,30 +1105,52 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
     expect(physicalScenario).toContain("local run_id=\"$physical_run_id\"");
   });
 
-  it('refuses the canonical wrapper before its first VM ssh while the scenario is incomplete', () => {
-    const runDir = mkdtempSync(join(evidenceDir, 'scenario-wrapper-'));
-    const fakeBin = join(runDir, 'bin');
-    const sshMarker = join(runDir, 'ssh-was-called');
-    mkdirSync(fakeBin);
-    const fakeSsh = join(fakeBin, 'ssh');
-    writeFileSync(fakeSsh, `#!/usr/bin/env bash\nprintf called > ${JSON.stringify(sshMarker)}\nexit 99\n`);
-    chmodSync(fakeSsh, 0o755);
-
-    const probe = spawnSync(
-      join(repoRoot(), 'papercusp-desktop', 'bin', 'vm-rig', 'hive-git-physical-probe.sh'),
-      [join(runDir, 'evidence.json'), join(runDir, 'trust.json')],
-      {
-        encoding: 'utf8',
-        env: {
-          ...process.env,
-          PATH: `${fakeBin}:${process.env.PATH ?? ''}`,
-          HIVE_GIT_PHYSICAL_PLAN: 'p2p-git-live-activation-2026-07-09',
-        },
+  it('pins Phase G to the truthful physical-attester versus ephemeral-protocol boundary', () => {
+    const contract = spawnSync(physicalScenarioPath, ['--phase-contract', 'G'], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        HIVE_GIT_PHYSICAL_PHASE_G_CMD: 'git push --force synthetic',
       },
-    );
-    expect(probe.status).toBe(1);
-    expect(probe.stderr).toContain('scenario is not execution-ready (offline-phase-a-b-c-d-e-f-executors-v1)');
-    expect(existsSync(sshMarker)).toBe(false);
+    });
+    expect(contract.status).toBe(0);
+    expect(JSON.parse(contract.stdout)).toMatchObject({
+      schemaVersion: 'hive-git-physical-phase-contract/v1',
+      phase: 'G',
+      planItem: 'P-308',
+      state: 'executor-installed',
+      ready: true,
+      missingAssertions: [],
+      target: { topology: 'two-host-attested-ephemeral-protocol-adapter' },
+      forbiddenEvidence: expect.arrayContaining([
+        'protocolSignerRepresentedAsPhysicalHost',
+        'summaryOnlyLegPass',
+        'preAuthoredManifest',
+        'environmentSuppliedCommand',
+      ]),
+      productionSurfaces: expect.arrayContaining([
+        'publishHandoffToken',
+        'deriveIntegratorGrant',
+        'acceptStagingAdvanceFF',
+        'runWorktreeBridgeTick',
+        'decideWorktreeBridgePersistence',
+        'readPotGitMode',
+        'runGitSync',
+        'openOwnLog',
+      ]),
+      externalCommandOverrides: false,
+    });
+    expect(physicalScenario).not.toContain('HIVE_GIT_PHYSICAL_PHASE_G_CMD');
+    expect(physicalScenario).toContain('phase-g-run');
+    expect(physicalScenario).toContain('phase-g-verify');
+    expect(physicalScenario).toContain('assemble_unsigned_evidence');
+  });
+
+  it('reports the fixed scenario ready without performing a physical run', () => {
+    const readiness = spawnSync(physicalScenarioPath, ['--require-ready'], { encoding: 'utf8' });
+    expect(readiness.status).toBe(0);
+    expect(readiness.stdout).toBe('');
+    expect(readiness.stderr).toBe('');
   });
 
   it('accepts a same-run A-G physical artifact only with hash-matching witnesses from both hosts', () => {
@@ -1284,20 +1297,38 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
     expect(verdict.errors).toContain('legF identities must match the two attesting physical devices exactly');
   });
 
-  it('rejects a Leg G retry that advanced the cursor before missing evidence arrived', () => {
+  it('rejects a generic Leg G pass with no complete production-seam evidence', () => {
     const fixture = physicalFixture();
-    fixture.legG.cursor.duringUnknownSha = 42;
+    fixture.legG = { planItem: 'P-308', status: 'pass' };
     const verdict = validatePhysicalDrillEvidence(fixture, trustedPhysicalAnchor(fixture));
     expect(verdict.ok).toBe(false);
-    expect(verdict.errors).toContain('legG retryable unknown-sha/ungranted-epoch must hold the fed-event cursor');
+    expect(verdict.errors).toContain('legG must contain the complete validated P-308 chaos evidence object');
+  });
+
+  it('rejects a Leg G retry that advanced the cursor before missing evidence arrived', () => {
+    const fixture = physicalFixture();
+    fixture.legG.result.retryPersistence.duringUnknownSha = 42;
+    const verdict = validatePhysicalDrillEvidence(fixture, trustedPhysicalAnchor(fixture));
+    expect(verdict.ok).toBe(false);
+    expect(verdict.errors).toContain('legG: Phase G retryable unknown-sha must hold the fed-event cursor');
   });
 
   it('rejects a Leg G takeover without a strictly higher authority epoch', () => {
     const fixture = physicalFixture();
-    fixture.legG.epochs.successorGranted = 7;
+    fixture.legG.result.authorityFence.grant.epoch = 7;
     const verdict = validatePhysicalDrillEvidence(fixture, trustedPhysicalAnchor(fixture));
     expect(verdict.ok).toBe(false);
-    expect(verdict.errors).toContain('legG.epochs.successorGranted must be strictly greater than priorAccepted');
+    expect(verdict.errors).toContain('legG: Phase G successor grant must advance to epoch 8 at a fresh sequence');
+  });
+
+  it('rejects a Leg G result that relabels an ephemeral authority as a physical host', () => {
+    const fixture = physicalFixture();
+    fixture.legG.result.protocolIdentities.oldAuthority = fixture.legG.identities.towerDeviceKey;
+    const verdict = validatePhysicalDrillEvidence(fixture, trustedPhysicalAnchor(fixture));
+    expect(verdict.ok).toBe(false);
+    expect(verdict.errors).toContain(
+      'legG: Phase G ephemeral protocol signers must not be represented as physical hosts',
+    );
   });
 
   it('preserves the default scaffold pass while reporting unproven legs', () => {
