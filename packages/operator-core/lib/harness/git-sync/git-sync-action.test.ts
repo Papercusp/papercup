@@ -213,11 +213,24 @@ import {
   isResolverInFlight,
   acquireWithContentionRetry,
   formatOwnHeadPublishedLine,
+  isIntegratorActorAdmitted,
   mergeAttributionRosters,
   isGenericLockIntent,
 } from './git-sync-action';
 import { intentToSubject, DEFAULT_GIT_SYNC_SUBJECT } from './git-sync-attribution';
 import type { OwnHeadPublishTickOutcome } from '../../sync/pot-git/own-head-publish';
+
+describe('isIntegratorActorAdmitted — canonical signer membership gate (WI-38968)', () => {
+  it('admits only an exact device pubkey present in the Pot roster', () => {
+    expect(isIntegratorActorAdmitted('device-b', ['device-a', 'device-b'])).toBe(true);
+    expect(isIntegratorActorAdmitted('device-c', ['device-a', 'device-b'])).toBe(false);
+  });
+
+  it('never treats an empty actor or empty roster as admitted', () => {
+    expect(isIntegratorActorAdmitted('', ['device-a'])).toBe(false);
+    expect(isIntegratorActorAdmitted('device-a', [])).toBe(false);
+  });
+});
 import { getSystemAction, getSystemActionEntry, type SystemActionCtx } from '../routines/system-actions';
 
 // --- helpers over the captured PG writes ------------------------------------------

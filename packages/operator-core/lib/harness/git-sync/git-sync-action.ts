@@ -3382,6 +3382,26 @@ async function runIntegratorLeg(slug: string, workspaceId: string): Promise<void
     ];
     if (memberDevicePubkeysBase64.length === 0) return void (await decline('no_attested_devices'));
 
+    // WI-38968: lockAuthorityForHive deliberately adds SELF after applying its
+    // peer eligibility filter, so an otherwise-empty election always makes
+    // progress. That liveness floor is unsafe for the integrator when this
+    // process's device key is NOT one of the Pot's admitted devices: SELF can
+    // win, sign a staging-advance, and then every worktree bridge (including
+    // this same process) correctly rejects the envelope as `wrong-device`.
+    // Live papercusp reproduction 2026-08-14: the actor signed epoch 87 / seq
+    // 17 for 37c20c2, while its own bridge consumed and terminally rejected the
+    // event, freezing canonical + GitHub egress at 143af9. Never relax the
+    // receiver gate to repair this. Refuse the unadmitted signer before the
+    // election and name the identity drift in the existing status surface.
+    if (!isIntegratorActorAdmitted(actor.devicePubkey, memberDevicePubkeysBase64)) {
+      const detail =
+        `local device ${actor.devicePubkey.slice(0, 12)} is not in the Pot's ` +
+        `${memberDevicePubkeysBase64.length} attested device(s); refusing to sign a canonical advance`;
+      console.warn(`[git-sync] ${slug}: ${detail}`);
+      await decline('self_device_not_attested', detail);
+      return;
+    }
+
     // WI-5395: capability-gated election. Integration is per (hive, REPO), but
     // the lease used to be elected per HIVE over raw presence — so a member
     // with no bare store for THIS repo could win the lease and stall the repo
@@ -3761,6 +3781,19 @@ async function runIntegratorLeg(slug: string, workspaceId: string): Promise<void
   } catch (e) {
     console.warn(`[git-sync] ${slug}: integrator-tick failed: ${e instanceof Error ? e.message : e}`);
   }
+}
+
+/**
+ * The integrator signs an authority-bearing canonical advance, so its local
+ * actor must pass the same exact device-membership gate as the receiver. Kept
+ * pure/exported so the election's self-admission boundary has a direct
+ * regression test instead of being inferred from an end-to-end mock.
+ */
+export function isIntegratorActorAdmitted(
+  actorDevicePubkey: string,
+  admittedDevicePubkeys: readonly string[],
+): boolean {
+  return actorDevicePubkey.length > 0 && admittedDevicePubkeys.includes(actorDevicePubkey);
 }
 
 /**
