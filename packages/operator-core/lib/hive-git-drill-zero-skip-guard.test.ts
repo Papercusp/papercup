@@ -11,7 +11,16 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -822,7 +831,80 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
     expect(phaseAScenario).toContain(
       'phase A canonical bootstrap did not reach strict two-host convergence within 20 minutes',
     );
+    expect(physicalScenario).toContain('dev:dogfood_substrate_status');
+    expect(physicalScenario).toContain('status?.reachedSubstrateOwner === true');
+    expect(physicalScenario).toContain('status.bootedCount > 0');
+    expect(physicalScenario).toContain(
+      'row?.workspaceId === workspaceId && row?.harnessSlug === harnessSlug',
+    );
+    expect(phaseAScenario.indexOf('require_vm_phase_a_substrate_ready >')).toBeLessThan(
+      phaseAScenario.indexOf('phase-a-quarantine'),
+    );
 
+  });
+
+  it('fails closed before Phase A quarantine when the VM substrate has no booted hello-world handle', () => {
+    const runDir = mkdtempSync(join(evidenceDir, 'phase-a-substrate-readiness-'));
+    const fakeBin = join(runDir, 'bin');
+    const output = join(runDir, 'unsigned-evidence.json');
+    const towerIdentity = join(runDir, 'tower-identity.json');
+    const vmIdentity = join(runDir, 'vm-identity.json');
+    const quarantineMarker = join(runDir, 'quarantine-reached');
+    const identity = (hostId: string, byte: number) => ({
+      schemaVersion: 'hive-git-physical-host-identity/v1',
+      hostId,
+      deviceKey: Buffer.alloc(32, byte).toString('base64'),
+      machineFingerprint: byte.toString(16).repeat(64),
+    });
+    writeFileSync(towerIdentity, JSON.stringify(identity('tower', 1)));
+    writeFileSync(vmIdentity, JSON.stringify(identity('vm', 2)));
+    mkdirSync(fakeBin);
+
+    const producer = join(
+      repoRoot(),
+      'packages',
+      'operator-core',
+      'lib',
+      'sync',
+      'pot-git',
+      'physical-drill-producer.ts',
+    );
+    const producerSha = createHash('sha256').update(readFileSync(producer)).digest('hex');
+    const fakeSsh = join(fakeBin, 'ssh');
+    writeFileSync(
+      fakeSsh,
+      `#!/bin/sh
+case "$*" in
+  *shasum*) printf '%s\\n' '${producerSha}' ;;
+  *dev:dogfood_substrate_status*) printf '%s\\n' '{"substrateActive":true,"bootedCount":0,"harnesses":[],"reachedSubstrateOwner":true}' ;;
+  *phase-a-quarantine*) printf '%s\\n' reached > '${quarantineMarker}'; exit 90 ;;
+  *) exit 91 ;;
+esac
+`,
+    );
+    chmodSync(fakeSsh, 0o755);
+
+    const attempted = spawnSync(
+      physicalScenarioPath,
+      [output, towerIdentity, vmIdentity],
+      {
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          PATH: `${fakeBin}:${process.env.PATH ?? ''}`,
+          HIVE_GIT_PHYSICAL_PLAN: 'p2p-git-live-activation-2026-07-09',
+          HIVE_GIT_PHYSICAL_EXECUTE: 'p2p-git-live-activation-2026-07-09',
+          HIVE_GIT_PHYSICAL_VM_SOURCE: '/tmp/hive-git-physical-source.123',
+        },
+      },
+    );
+
+    expect(attempted.status).toBe(1);
+    expect(attempted.stderr).toContain(
+      'phase A VM substrate readiness gate failed: papercusp-workspace::hello-world is not booted and reachable',
+    );
+    expect(existsSync(quarantineMarker)).toBe(false);
+    expect(existsSync(output)).toBe(false);
   });
 
   it('pins a bidirectional Phase B ref-announcement adapter with no direct-fetch or command override seam', () => {
