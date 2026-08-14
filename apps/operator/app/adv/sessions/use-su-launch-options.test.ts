@@ -71,6 +71,23 @@ describe('normalizeOmpCatalog', () => {
     });
   });
 
+  it('preserves OMP dynamic-router cost sentinels', () => {
+    const dynamicRouter = {
+      ...OMP_MODEL,
+      provider: 'openrouter',
+      id: 'openrouter/auto',
+      selector: 'openrouter/openrouter/auto',
+      name: 'Auto Router',
+      cost: { input: -1_000_000, output: -1_000_000, cacheRead: 0, cacheWrite: 0 },
+    };
+
+    expect(normalizeOmpCatalog({ status: 'available', models: [dynamicRouter] })).toMatchObject({
+      status: 'available',
+      models: [dynamicRouter],
+      error: null,
+    });
+  });
+
   it('keeps unavailable distinct from an available empty catalog', () => {
     expect(normalizeOmpCatalog({ status: 'unavailable', models: [], error: 'omp missing' })).toMatchObject({
       status: 'unavailable',

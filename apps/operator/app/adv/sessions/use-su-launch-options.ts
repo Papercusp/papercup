@@ -56,6 +56,7 @@ export interface AccountChoice {
 }
 
 export interface OmpLaunchModelCost {
+  /** OMP may use a negative finite sentinel when a router's price is dynamic. */
   input: number;
   output: number;
   cacheRead: number;
@@ -161,6 +162,10 @@ function finiteNonNegative(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0;
 }
 
+function finiteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
 function normalizeOmpModel(raw: unknown): OmpLaunchModel | null {
   if (!raw || typeof raw !== 'object') return null;
   const row = raw as Record<string, unknown>;
@@ -183,8 +188,8 @@ function normalizeOmpModel(raw: unknown): OmpLaunchModel | null {
     !provider || !id || !name || selector !== `${provider}/${id}` ||
     !nullableNumber(row.contextWindow) || !nullableNumber(row.maxTokens) ||
     typeof row.reasoning !== 'boolean' || thinking === undefined || input === undefined || !cost ||
-    !finiteNonNegative(cost.input) || !finiteNonNegative(cost.output) ||
-    !finiteNonNegative(cost.cacheRead) || !finiteNonNegative(cost.cacheWrite)
+    !finiteNumber(cost.input) || !finiteNumber(cost.output) ||
+    !finiteNumber(cost.cacheRead) || !finiteNumber(cost.cacheWrite)
   ) return null;
   return {
     provider,
