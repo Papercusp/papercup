@@ -1114,8 +1114,11 @@ function renderCompletionEvidence(item: ShippedItem): string {
   addText('Verified how', evidence?.verifiedHow);
   addText('Tests run', evidence?.testsRun);
   addText('Test result', evidence?.testResult);
-  if (evidence?.filesChanged?.length) {
-    rows.push(`<li><strong>Files changed:</strong> ${evidence.filesChanged.map((file) => `<code>${escapeHtml(file)}</code>`).join(', ')}</li>`);
+  const filesChanged = Array.isArray(evidence?.filesChanged)
+    ? evidence.filesChanged.filter((file): file is string => typeof file === 'string')
+    : [];
+  if (filesChanged.length) {
+    rows.push(`<li><strong>Files changed:</strong> ${filesChanged.map((file) => `<code>${escapeHtml(file)}</code>`).join(', ')}</li>`);
   }
   if (evidence?.addedTests !== undefined) {
     rows.push(`<li><strong>Tests added or changed:</strong> ${evidence.addedTests ? 'Yes' : 'No'}</li>`);
@@ -1129,7 +1132,10 @@ function renderCompletionEvidence(item: ShippedItem): string {
       ['Residue', evidence.coverage.residue],
     ] as const;
     for (const [label, values] of coverage) {
-      if (values?.length) rows.push(`<li><strong>${label}:</strong> ${values.map(escapeHtml).join(', ')}</li>`);
+      const safeValues = Array.isArray(values)
+        ? values.filter((value): value is string => typeof value === 'string')
+        : [];
+      if (safeValues.length) rows.push(`<li><strong>${label}:</strong> ${safeValues.map(escapeHtml).join(', ')}</li>`);
     }
   }
   if (evidence?.treeStamp?.headSha) {

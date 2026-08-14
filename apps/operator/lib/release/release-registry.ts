@@ -24,7 +24,10 @@
  */
 
 import type { Sql } from 'postgres';
-import type { CompletionVerificationEvidence } from '@papercusp/operator-core/lib/coord-lifecycle/records';
+import {
+  CompletionVerificationEvidenceSchema,
+  type CompletionVerificationEvidence,
+} from '@papercusp/operator-core/lib/coord-lifecycle/records';
 
 /** Terminal statuses — an item in one of these SHIPPED. (Issue-family settles to
  *  `resolved`, feature-family to `passed`; `closed` covers both.) */
@@ -268,7 +271,7 @@ export async function hydrateRelease(
       updated_ts: number | string | null;
       closed_ts: number | string | null;
       terminal_completion_ref: string | null;
-      completion_evidence: CompletionVerificationEvidence | null;
+      completion_evidence: unknown;
       authority: string | null;
     }>
   >`
@@ -293,12 +296,35 @@ export async function hydrateRelease(
     updatedAt: epochMillisIso(r.updated_ts),
     closedAt: epochMillisIso(r.closed_ts),
     terminalCompletionRef: r.terminal_completion_ref,
-    terminalCompletionEvidence: r.completion_evidence,
+    terminalCompletionEvidence: normalizeCompletionEvidence(r.completion_evidence),
     completionAuthority: r.authority,
   }));
   const plans =
     row.planSlugs.length > 0 ? await fetchPlans(sql, scope, row.planSlugs, items) : [];
   return { items, plans, internalCount };
+}
+
+/**
+ * Treat Postgres JSON as untrusted at the projection boundary.
+ *
+ * Three legacy rows predate the typed completion writer and carry
+ * `filesChanged` as a string instead of string[]. The current Zod writer rejects
+ * that shape, but a static-history regeneration reads old and new rows together.
+ * Drop only that malformed optional field, retain the rest when it validates,
+ * and discard any otherwise-invalid evidence object rather than crashing (or
+ * stringifying raw payload data onto a public page).
+ */
+function normalizeCompletionEvidence(value: unknown): CompletionVerificationEvidence | null {
+  const parsed = CompletionVerificationEvidenceSchema.safeParse(value);
+  if (parsed.success) return parsed.data;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+
+  const candidate = { ...(value as Record<string, unknown>) };
+  if ('filesChanged' in candidate && !Array.isArray(candidate.filesChanged)) {
+    delete candidate.filesChanged;
+  }
+  const legacy = CompletionVerificationEvidenceSchema.safeParse(candidate);
+  return legacy.success ? legacy.data : null;
 }
 
 /** Work-item timestamps are epoch millis (bigint, returned as string by postgres-js). */

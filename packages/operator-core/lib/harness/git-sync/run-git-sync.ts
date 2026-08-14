@@ -493,8 +493,14 @@ export type GitSyncOutcome = {
    *  tracked work this pass could not see (see StrandedSubmodule). Present on every
    *  status — a strand is orthogonal to whether the visible tree synced, and reporting
    *  it ONLY on failure is precisely the silence that let it run for hours: the pass
-   *  that strands work is otherwise a perfectly clean 'synced'. */
-  strandedSubmodules: StrandedSubmodule[];
+   *  that strands work is otherwise a perfectly clean 'synced'.
+   *
+   *  `null` means NOT MEASURED this pass (discovery failed, or a submodulePaths override
+   *  bypassed it) and is deliberately distinct from `[]` (measured, nothing stranded).
+   *  Collapsing the two would let an unmeasured pass retire a live warning — the exact
+   *  failure mode this whole field exists to prevent, reintroduced one level up. The
+   *  nullable type forces every consumer to decide which it is. */
+  strandedSubmodules: StrandedSubmodule[] | null;
 } & (
   | { status: 'nothing' }
   | { status: 'synced'; headSha: string; pushed: string[]; merged: string[] }
@@ -1228,6 +1234,12 @@ export const discoverSubmodulesRecursive = async (
   runGit: RunGit,
   repo: string,
   log: (msg: string) => void = () => {},
+  /** EI-20402093158205519: receives the strand census whenever this pass actually MEASURED
+   *  it (the `git submodule status` exit-0 path), including the empty result — an empty
+   *  census is a real all-clear the caller uses to clear a stale escalation. Deliberately
+   *  NOT called on the discovery-failure fallback: we did not measure, and reporting an
+   *  unmeasured [] there would read as an all-clear and silently retire a live warning. */
+  onStrandCensus?: (stranded: StrandedSubmodule[]) => void,
 ): Promise<string[]> => {
   const r = await runGit(['submodule', 'status', '--recursive'], repo);
   if (r.code === 0) {
@@ -1249,7 +1261,7 @@ export const discoverSubmodulesRecursive = async (
     // (not auto-syncing) is deliberate — these worktrees are commonly parked on deliberate
     // detached pins, so pulling them into the normal path would fetch/merge/push and UNPIN
     // them. Registering is the operator's call; losing the work silently is not.
-    const strandRisk: string[] = [];
+    const stranded: StrandedSubmodule[] = [];
     for (const l of lines) {
       if (l[0] !== '-') continue;
       const p = rowPath(l);
@@ -1262,17 +1274,29 @@ export const discoverSubmodulesRecursive = async (
       const dirty = await runGit(['status', '--porcelain=v1', '--untracked-files=no'], join(repo, p));
       // Count TRACKED modifications only: scratch/untracked churn (e.g. .vitest-tmp/) would
       // otherwise cry wolf on every tick that a test run happens to be in flight.
-      const n = dirty.code === 0 ? dirty.stdout.split('\n').filter(Boolean).length : 0;
-      if (n > 0) strandRisk.push(`${p} (${n} tracked file(s))`);
+      const rows = dirty.code === 0 ? dirty.stdout.split('\n').filter(Boolean) : [];
+      if (rows.length > 0) {
+        stranded.push({
+          path: p,
+          trackedFiles: rows.length,
+          // Porcelain v1 row is "XY <path>"; keep the paths so the escalation can name the
+          // actual files a human must rescue, not just a count they then have to go find.
+          files: rows.slice(0, 20).map((r) => r.slice(3).trim()),
+        });
+      }
     }
-    if (strandRisk.length > 0) {
+    if (stranded.length > 0) {
+      const list = stranded.map((s) => `${s.path} (${s.trackedFiles} tracked file(s))`).join(', ');
       log(
-        `[git-sync] ⚠ STRANDED WORK: ${strandRisk.length} POPULATED but UNREGISTERED submodule(s) hold uncommitted tracked changes ` +
-          `that git-sync cannot see and will NEVER commit: ${strandRisk.join(', ')} — ` +
+        `[git-sync] ⚠ STRANDED WORK: ${stranded.length} POPULATED but UNREGISTERED submodule(s) hold uncommitted tracked changes ` +
+          `that git-sync cannot see and will NEVER commit: ${list} — ` +
           `they are absent from .git/config (no submodule.<name>.url), so 'git submodule status' marks them '-' and discovery skips them. ` +
           `Fix with: git submodule init <path> (idempotent; copies the .gitmodules URL into .git/config), then re-check the pin before the next tick.`,
       );
     }
+    // Fire even when EMPTY: the caller needs the all-clear to retire a stale escalation.
+    // Only on this (measured) path — see the param doc.
+    onStrandCensus?.(stranded);
     return paths.sort((a, b) => b.split('/').length - a.split('/').length);
   }
   // ONE stray index gitlink with no .gitmodules mapping (e.g. a test's temp repo swept in
@@ -2107,6 +2131,9 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
       merged: [],
       oversized: [],
       contentErrors: [],
+      // No repo to inspect: nothing was measured, so null (never []) — an all-clear we
+      // did not earn would retire a live strand escalation.
+      strandedSubmodules: null,
     };
   }
 
@@ -2114,6 +2141,10 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
   // the caller flag-gated. Empty when the flag is OFF (or no caller) → no attribution, today's
   // single-commit behavior. Read ONCE; per-repo maps are derived below (super + each submodule).
   const roster = opts.loadRoster ? await opts.loadRoster() : [];
+
+  /** EI-20402093158205519: the strand census for this pass. Stays null unless submodule
+   *  discovery actually ran and measured it — see GitSyncOutcome.strandedSubmodules. */
+  let strandedSubmodules: StrandedSubmodule[] | null = null;
 
   /** One phase's collected results — JSON-serializable so it checkpoints as a step output. */
   interface PhaseCollect {
@@ -2200,7 +2231,12 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
       }
       subPaths = opts.submodulePaths
         ? [...opts.submodulePaths].sort((a, b) => b.split('/').length - a.split('/').length)
-        : await discoverSubmodulesRecursive(runGit, repo, log);
+        : await discoverSubmodulesRecursive(runGit, repo, log, (census) => {
+            // EI-20402093158205519: record the strand census measured by THIS pass. An
+            // explicit submodulePaths override (tests) skips discovery entirely and so
+            // measures nothing — this stays null, and null never implies an all-clear.
+            strandedSubmodules = census;
+          });
     }
     for (const s of subPaths) {
       // P-004: a submodule's last-resort default is its own 'main' (resolved via
@@ -2306,9 +2342,14 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
   const contentErrors = [...sub.contentErrors, ...supr.contentErrors];
   const didSomething = sub.didSomething || supr.didSomething;
 
-  if (conflicts.length > 0) return { status: 'conflict', conflicts, errors, pushed, merged, oversized, contentErrors };
-  if (errors.length > 0) return { status: 'error', errors, pushed, merged, oversized, contentErrors };
-  if (!didSomething) return { status: 'nothing', oversized, contentErrors };
+  if (conflicts.length > 0)
+    return { status: 'conflict', conflicts, errors, pushed, merged, oversized, contentErrors, strandedSubmodules };
+  if (errors.length > 0)
+    return { status: 'error', errors, pushed, merged, oversized, contentErrors, strandedSubmodules };
+  // NOTE 'nothing' carries the census too. A tick that commits nothing is the MOST likely
+  // one to be stranding work — the visible tree is clean precisely because the dirty repo
+  // is invisible — so this is the last status that should omit it.
+  if (!didSomething) return { status: 'nothing', oversized, contentErrors, strandedSubmodules };
   // superHeadSha comes from the push step's checkpoint; a 'synced' verdict implies that
   // step ran (blocked/commit-error passes return above). Fallback read for safety only.
   return {
@@ -2318,5 +2359,6 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
     merged,
     oversized,
     contentErrors,
+    strandedSubmodules,
   };
 }

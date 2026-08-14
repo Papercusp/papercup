@@ -173,6 +173,30 @@ describe('work-item detail pages and explicit navigation', () => {
     expect(html).not.toContain('_completionEvidence');
     expect(html).not.toContain('checkpoint');
   });
+
+  it('does not crash or publish a malformed legacy filesChanged string', () => {
+    const html = renderWorkItemPageHtml(
+      {
+        id: 'WI-legacy',
+        title: 'Legacy completion evidence',
+        summary: 'Still renderable.',
+        planSlug: null,
+        terminalCompletionEvidence: {
+          summary: 'The valid part survives.',
+          filesChanged: '/legacy/not-an-array.ts' as never,
+        },
+      },
+      {
+        generatedAt: GENERATED_AT,
+        analytics: null,
+        redact: [],
+        version: '0.0.1',
+        channel: 'alpha',
+      },
+    );
+    expect(html).toContain('The valid part survives.');
+    expect(html).not.toContain('/legacy/not-an-array.ts');
+  });
 });
 
 describe('the beacon — the leak detector [owner: "collect stats on visits to make sure it isnt leaked"]', () => {

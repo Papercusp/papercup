@@ -6,7 +6,11 @@
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/locks/release.test.ts
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { mockResolvedOnceTyped, mockResolvedTyped } from '../../testing/typed-mock';
+import { mockRejectedTyped, mockResolvedOnceTyped, mockResolvedTyped } from '../../testing/typed-mock';
+import type { ActiveLockRow } from './su-lock-store';
+
+/** The release outcome release.ts decodes — see its `ReleaseOutcome`. */
+type ReleaseOutcomeShape = { released: string[]; heldBefore: number | null };
 
 // WI-38252: file locks resolve their default domain via readFileLockIdentity.
 vi.mock('./identity', () => {
@@ -62,7 +66,7 @@ beforeEach(() => {
     value: { released: [`released:${(op.remote?.payload as { lockId?: string } | undefined)?.lockId ?? 'all'}`] },
   }) as never);
   releaseResourcesM.mockResolvedValue({ released: 0, exclusiveResources: [], waiters: {} } as never);
-  readQueueM.mockResolvedValue({ active_locks: [], waiting: [] } as never);
+  mockResolvedTyped(readQueueM, { active_locks: [], waiting: [] });
 });
 
 /**
@@ -150,7 +154,7 @@ describe('locks:release cross-domain fallback (EI-20405390083792304)', () => {
   });
 
   it('reports an honest empty release when the owner holds nothing anywhere', async () => {
-    routeM.mockResolvedValue({ value: { released: [], heldBefore: 0 }, via: 'local-authority' } as never);
+    routeByDomain(() => ({ value: { released: [], heldBefore: 0 }, via: 'local-authority' }));
     const b = body(await call({ all_mine: true }));
     expect(b.released).toEqual([]);
     expect(b.held_before).toBe(0);
@@ -158,8 +162,8 @@ describe('locks:release cross-domain fallback (EI-20405390083792304)', () => {
   });
 
   it('never fails the caller\'s release because the cross-domain lookup faulted', async () => {
-    routeM.mockResolvedValue({ value: { released: [], heldBefore: 0 }, via: 'local-authority' } as never);
-    readQueueM.mockRejectedValue(new Error('pool exhausted') as never);
+    routeByDomain(() => ({ value: { released: [], heldBefore: 0 }, via: 'local-authority' }));
+    mockRejectedTyped(readQueueM, new Error('pool exhausted'));
     const b = body(await call({ all_mine: true }));
     expect(b.ok).toBe(true);
     expect(b.released).toEqual([]);
@@ -167,15 +171,10 @@ describe('locks:release cross-domain fallback (EI-20405390083792304)', () => {
 
   it('keeps an unknown heldBefore unknown rather than laundering it into a number', async () => {
     // A peer authority that does not report the count must not be summed into 0.
-    routeM.mockImplementation(async (domain) => (
-      domain === HIVE
-        ? { value: { released: ['x.ts'], heldBefore: null }, via: 'local-authority' }
-        : { value: { released: [], heldBefore: 0 }, via: 'local-authority' }
-    ) as never);
-    readQueueM.mockResolvedValue({
-      active_locks: [{ lock_id: LOCK, owner: 'me', coordination_domain: HIVE }],
-      waiting: [],
-    } as never);
+    routeByDomain((domain) => domain === HIVE
+      ? { value: { released: ['x.ts'], heldBefore: null }, via: 'local-authority' }
+      : { value: { released: [], heldBefore: 0 }, via: 'local-authority' });
+    heldIn(activeLock(LOCK, HIVE));
     const b = body(await call({ lock_id: LOCK }));
     expect(b.results[0].held_before).toBeNull();
   });

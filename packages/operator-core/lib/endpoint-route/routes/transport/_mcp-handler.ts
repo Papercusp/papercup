@@ -1232,6 +1232,25 @@ export async function __buildMcpToolContext_forTests(
   return buildMcpToolContext(...args);
 }
 
+/**
+ * A projection consumes the complete intermediate result in-process, then only
+ * its reduction crosses the model-facing transport. Promote that intermediate
+ * context instead of synthesizing a framework-reserved tool argument: raw
+ * ProjectedTool registrations must never observe transport controls in args.
+ */
+function projectionMaterializationContext(
+  ctx: UnifiedToolContext,
+  needsFullSource: boolean,
+): UnifiedToolContext {
+  if (!needsFullSource) return ctx;
+  return {
+    ...ctx,
+    contextTier: 'full',
+    payloadTierOverride: 'full',
+    transportCapExempt: true,
+  };
+}
+
 async function buildMcpToolContext(
   spawn: BuiltSpawnContext,
   progressToken: string | number | undefined,
@@ -1377,6 +1396,7 @@ async function buildMcpToolContext(
     let dispatchToolArgs: Record<string, unknown> =
       (toolArgs && typeof toolArgs === 'object' ? (toolArgs as Record<string, unknown>) : {});
     let projectionSpec: ProjectionSpec | null = null;
+    let projectionNeedsFullSource = false;
     if (PROJECTION_ARG in dispatchToolArgs) {
       const parsed = parseProjection(dispatchToolArgs[PROJECTION_ARG]);
       if (!parsed.ok) {
@@ -1397,12 +1417,10 @@ async function buildMcpToolContext(
       dispatchToolArgs = rest;
       // P-008: caller projection must see the MATERIALIZED source, not an
       // excerpt already cut by defineTool's session tier / hard ceiling. An
-      // explicit caller payloadTier still wins; otherwise promote this inner
-      // call to the framework-reserved full tier and reduce it below, before
-      // the result crosses the MCP transport boundary.
-      if (!('payloadTier' in dispatchToolArgs)) {
-        dispatchToolArgs = { ...dispatchToolArgs, payloadTier: 'full' };
-      }
+      // explicit caller payloadTier still wins; otherwise promote only the
+      // INNER dispatch context. Do not synthesize a tool argument: framework
+      // controls stay transport-only even for raw ProjectedTool registrations.
+      projectionNeedsFullSource = !('payloadTier' in dispatchToolArgs);
     }
     // EI-6982: bind the tx/principal the TARGET tool needs — NOT the outer
     // tools:invoke ctx (requirePrincipal:false, so tx-less). Without this, every
@@ -1419,9 +1437,16 @@ async function buildMcpToolContext(
       effectiveWs === ctxRef.current!.workspaceId
         ? ctxRef.current!
         : { ...ctxRef.current!, workspaceId: effectiveWs };
-    const dispatched = (await dispatchWithSynthesizedTx(target, spawnCtx, baseCtx, (ctx) =>
-      dispatchProjectedToolToMcp(target, canonicalName, dispatchToolArgs, ctx, PROJECTED_DEPS),
-    )) as McpCallResult;
+    const dispatched = (await dispatchWithSynthesizedTx(target, spawnCtx, baseCtx, (ctx) => {
+      const materializationCtx = projectionMaterializationContext(ctx, projectionNeedsFullSource);
+      return dispatchProjectedToolToMcp(
+        target,
+        canonicalName,
+        dispatchToolArgs,
+        materializationCtx,
+        PROJECTED_DEPS,
+      );
+    })) as McpCallResult;
     const projectedDispatched = projectionSpec
       ? applyResultProjection(dispatched, projectionSpec, { toolName: canonicalName, effect: target.effect })
       : dispatched;
@@ -2179,6 +2204,7 @@ const handler = createMcpHandler(
           // lines they did not agree to pay for. A spec that is well-formed but
           // does not FIT the result fails open instead — see applyResultProjection.
           let projectionSpec: ProjectionSpec | null = null;
+          let projectionNeedsFullSource = false;
           if (dispatchArgs && typeof dispatchArgs === 'object' && PROJECTION_ARG in (dispatchArgs as Record<string, unknown>)) {
             const raw = (dispatchArgs as Record<string, unknown>)[PROJECTION_ARG];
             const parsed = parseProjection(raw);
@@ -2202,10 +2228,10 @@ const handler = createMcpHandler(
             // materialized source. Payload shaping happens inside defineTool,
             // before this transport-level stage; without the reserved full
             // override, coord:orient's 18KB ceiling can discard the selected
-            // field before `pick` sees it. Preserve an explicit caller tier.
-            if (!('payloadTier' in dispatchArgs)) {
-              dispatchArgs = { ...dispatchArgs, payloadTier: 'full' };
-            }
+            // field before `pick` sees it. Preserve an explicit caller tier;
+            // otherwise promote only the inner dispatch context so neither
+            // reserved control is exposed to the target's validated args.
+            projectionNeedsFullSource = !('payloadTier' in dispatchArgs);
           }
           if ((spawnRes.ctx.isPowerUser || scopedSuperuserClamp) && args && typeof args === 'object') {
             for (const key of WORKSPACE_TARGET_ARGS) {
@@ -2371,13 +2397,20 @@ const handler = createMcpHandler(
                 requestedFormat,
                 explicitDelta,
                 itemKeyField: projected.delta?.itemKeyField,
-                runRaw: async (autoRequestedDelta, overrideDelta = true) => (await dispatchProjectedToolToMcp(
-                  projected,
-                  toolName,
-                  dispatchArgs,
-                  overrideDelta ? { ...ctx, requestedDelta: autoRequestedDelta } : ctx,
-                  PROJECTED_DEPS,
-                )) as McpCallResult,
+                runRaw: async (autoRequestedDelta, overrideDelta = true) => {
+                  const deltaCtx = overrideDelta ? { ...ctx, requestedDelta: autoRequestedDelta } : ctx;
+                  const materializationCtx = projectionMaterializationContext(
+                    deltaCtx,
+                    projectionNeedsFullSource,
+                  );
+                  return (await dispatchProjectedToolToMcp(
+                    projected,
+                    toolName,
+                    dispatchArgs,
+                    materializationCtx,
+                    PROJECTED_DEPS,
+                  )) as McpCallResult;
+                },
                 }),
                 projectionSpec,
                 { toolName, effect: projected?.effect },
