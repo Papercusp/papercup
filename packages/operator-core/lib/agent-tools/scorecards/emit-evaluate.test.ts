@@ -24,6 +24,10 @@ vi.mock('../../rubrics', async (importOriginal) => {
 });
 vi.mock('../../scout/generation-watermark', () => ({ readRunningGeneration: vi.fn(async () => null) }));
 vi.mock('../../harness/improvements/capture-core', () => ({ captureImprovement: vi.fn() }));
+vi.mock('../../issues-engineer', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../issues-engineer')>();
+  return { ...actual, getIssue: vi.fn() };
+});
 vi.mock('../../scorecards', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../scorecards')>();
   return { ...actual, listScorecards: vi.fn(async () => [] as ScorecardRow[]) };
@@ -31,6 +35,7 @@ vi.mock('../../scorecards', async (importOriginal) => {
 
 import { getRubric } from '../../rubrics';
 import { captureImprovement } from '../../harness/improvements/capture-core';
+import { getIssue } from '../../issues-engineer';
 import { listScorecards } from '../../scorecards';
 import { emitScorecard } from './emit';
 import { evaluateScorecard } from './evaluate';
@@ -38,6 +43,7 @@ import { evaluateScorecard } from './evaluate';
 const getRubricM = vi.mocked(getRubric);
 const captureM = vi.mocked(captureImprovement);
 const listM = vi.mocked(listScorecards);
+const getIssueM = vi.mocked(getIssue);
 
 const RUBRIC: Rubric = {
   rubricId: 'test-rubric',
@@ -67,6 +73,7 @@ beforeEach(() => {
   getRubricM.mockResolvedValue(RUBRIC);
   listM.mockResolvedValue([]);
   captureM.mockResolvedValue({ created: true, issue: { id: 'ISS-1' } } as never);
+  getIssueM.mockResolvedValue(null);
 });
 
 describe('emitScorecard', () => {
@@ -160,6 +167,42 @@ describe('emitScorecard', () => {
     const r = await emitScorecard({ rubricRef: 'test-rubric', ratings: RATINGS, force: true }, { createdBy: 'su-1' });
     expect(r).toMatchObject({ ok: true, created: true });
     expect(captureM).toHaveBeenCalledTimes(1);
+  });
+
+  it('a corrected filing records supersedes and is not swallowed by unchanged-evidence dedup', async () => {
+    const first = (await emitScorecard({ rubricRef: 'test-rubric', ratings: RATINGS }, { createdBy: 'su-1' })) as {
+      evidenceFingerprint: string;
+    };
+    captureM.mockClear();
+    getIssueM.mockResolvedValue({
+      payload: { observation: { rubricRef: 'test-rubric', ratings: RATINGS } },
+    } as never);
+    listM.mockResolvedValue([{
+      issueId: 'ISS-OLD', rubricRef: 'test-rubric', ratings: RATINGS,
+      missingKeys: [], rubricResolved: true, evidenceFingerprint: first.evidenceFingerprint,
+      synthesized: false, score10: null, linkedItems: [],
+    } as unknown as ScorecardRow]);
+
+    const r = await emitScorecard(
+      { rubricRef: 'test-rubric', ratings: RATINGS, supersedes: 'ISS-OLD' },
+      { createdBy: 'su-1' },
+    );
+    expect(r).toMatchObject({ ok: true, created: true, supersedes: 'ISS-OLD' });
+    expect(captureM.mock.calls[0][0]).toMatchObject({
+      payloadExtra: { observation: { rubricRef: 'test-rubric', supersedes: 'ISS-OLD' } },
+    });
+  });
+
+  it('refuses to supersede a scorecard from another rubric', async () => {
+    getIssueM.mockResolvedValue({
+      payload: { observation: { rubricRef: 'other-rubric', ratings: RATINGS } },
+    } as never);
+    const r = await emitScorecard(
+      { rubricRef: 'test-rubric', ratings: RATINGS, supersedes: 'ISS-OTHER' },
+      { createdBy: 'su-1' },
+    );
+    expect(r).toMatchObject({ ok: false, error: expect.stringContaining("grades 'other-rubric'") });
+    expect(captureM).not.toHaveBeenCalled();
   });
 
   it('release-gating rubric with an invalid instrument contract refuses to file (never calls captureImprovement)', async () => {

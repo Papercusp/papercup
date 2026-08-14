@@ -61,6 +61,14 @@ export default defineTool({
       .describe(
         'also return SYNTHESIZED floor scorecards (turn-end backstop + scheduled-pulse). Default false — agent-emission reads exclude floors; pass true to verify the data layer itself (e.g. is the pulse filing while overwatch is paused?)',
       ),
+    includeSuperseded: z
+      .boolean()
+      .optional()
+      .describe('Audit view: also include scorecards replaced by a later payload-native supersedes filing.'),
+    includeRetracted: z
+      .boolean()
+      .optional()
+      .describe('Audit view: also include deliberately retracted scorecards and their withdrawal metadata.'),
   }),
   async handler(args, ctx) {
     resolveAgentIdentity(ctx);
@@ -71,6 +79,8 @@ export default defineTool({
       since: args.since,
       limit: args.limit,
       includeSynthesized: args.includeSynthesized,
+      includeSuperseded: args.includeSuperseded,
+      includeRetracted: args.includeRetracted,
       // WI-6124: links are opt-IN. This tool returns whole rows to an agent, so it is a
       // surfacing read — keep it true or agents silently see every scorecard as unlinked.
       includeLinks: true,

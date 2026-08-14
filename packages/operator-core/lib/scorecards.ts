@@ -35,6 +35,7 @@ import {
   issuesScopeWorkspace,
   issuesOutLinksMany,
   issuesSupersededByRevision,
+  mergeIssuePayload,
   resolveIssueWorkspace,
   type IssueOutLink,
 } from './issues-engineer';
@@ -341,6 +342,59 @@ export interface ScorecardRetractionResult {
   retracted: boolean;
   retraction?: ScorecardRetraction;
   error?: string;
+}
+
+/**
+ * Retract one scorecard without deleting or flattening its evidence payload.
+ * `mergeIssuePayload` only merges the payload root, so the COMPLETE nested
+ * observation must be written back with the retraction marker attached.
+ */
+export async function retractScorecard(
+  issueId: string,
+  input: { by: string; reason: string; at?: string },
+  deps: {
+    getIssue?: typeof getIssue;
+    mergeIssuePayload?: typeof mergeIssuePayload;
+  } = {},
+): Promise<ScorecardRetractionResult> {
+  const issue = await (deps.getIssue ?? getIssue)(issueId);
+  if (!issue) return { ok: false, issueId, retracted: false, error: `scorecard '${issueId}' not found` };
+
+  const payload = issue.payload && typeof issue.payload === 'object' && !Array.isArray(issue.payload)
+    ? issue.payload as Record<string, unknown>
+    : {};
+  const rawObservation = payload.observation;
+  if (!rawObservation || typeof rawObservation !== 'object' || Array.isArray(rawObservation)) {
+    return { ok: false, issueId, retracted: false, error: `'${issueId}' is not a scorecard` };
+  }
+  const observation = asStructuredObservation(rawObservation);
+  if (!observation?.rubricRef || !observation.ratings) {
+    return { ok: false, issueId, retracted: false, error: `'${issueId}' is not a complete scorecard` };
+  }
+  if (observation.retracted) {
+    return { ok: true, issueId, retracted: true, retraction: observation.retracted };
+  }
+
+  const retraction: ScorecardRetraction = {
+    at: input.at ?? new Date().toISOString(),
+    by: input.by,
+    reason: input.reason.trim(),
+  };
+  const updated = await (deps.mergeIssuePayload ?? mergeIssuePayload)(issueId, {
+    observation: { ...(rawObservation as Record<string, unknown>), retracted: retraction },
+  });
+  if (!updated) {
+    return { ok: false, issueId, retracted: false, error: `failed to retract scorecard '${issueId}'` };
+  }
+
+  void import('./sync-sse')
+    .then((m) => {
+      m.notifySyncInvalidate('scorecards.list');
+      m.notifySyncInvalidate('rubrics.trend');
+      m.notifySyncInvalidate('learning.releaseReadiness');
+    })
+    .catch(() => {});
+  return { ok: true, issueId, retracted: true, retraction };
 }
 
 /**

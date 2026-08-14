@@ -4,6 +4,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { getRubric } from '../../rubrics';
+import { getIssue } from '../../issues-engineer';
 import { captureImprovement } from '../../harness/improvements/capture-core';
 import {
   normalizeScorecardRatings,
@@ -12,6 +13,7 @@ import {
   validateScorecardRatingValues,
   ObservationEvidenceError,
   type ObservationRatings,
+  asStructuredObservation,
 } from '../../harness/improvements/observation-types';
 import { readRunningGeneration } from '../../scout/generation-watermark';
 import {
@@ -34,6 +36,12 @@ export const scorecardEmitArgs = z
     body: z.string().max(8000).optional(),
     ratings: z.record(z.string().min(1), scorecardRatingEntrySchema),
     instrumentSnapshots: z.record(z.string().min(1), scorecardInstrumentSnapshotSchema).optional(),
+    supersedes: z
+      .string()
+      .min(1)
+      .max(120)
+      .optional()
+      .describe('Issue id of the earlier scorecard this corrected filing replaces.'),
     force: z
       .boolean()
       .optional()
@@ -105,6 +113,28 @@ export async function emitScorecard(
       };
     }
     const sourceHive = args.sourceHive ?? input.ctxHarness;
+    if (args.supersedes) {
+      const superseded = await getIssue(args.supersedes);
+      const raw = superseded?.payload && typeof superseded.payload === 'object' && !Array.isArray(superseded.payload)
+        ? (superseded.payload as { observation?: unknown }).observation
+        : undefined;
+      const prior = asStructuredObservation(raw);
+      if (!prior?.rubricRef || !prior.ratings) {
+        return { ok: false as const, error: `superseded scorecard '${args.supersedes}' not found` };
+      }
+      if (prior.rubricRef !== args.rubricRef) {
+        return {
+          ok: false as const,
+          error: `superseded scorecard '${args.supersedes}' grades '${prior.rubricRef}', not '${args.rubricRef}'`,
+        };
+      }
+      if ((prior.sourceHive ?? undefined) !== (sourceHive ?? undefined)) {
+        return {
+          ok: false as const,
+          error: `superseded scorecard '${args.supersedes}' belongs to sourceHive '${prior.sourceHive ?? ''}', not '${sourceHive ?? ''}'`,
+        };
+      }
+    }
     const latest = (
       await listScorecards({ rubricRef: args.rubricRef, sourceHive, limit: 1 })
     )[0];
@@ -112,7 +142,8 @@ export async function emitScorecard(
       ? latest.evidenceFingerprint ??
         scorecardEvidenceFingerprint({ rubricRef: latest.rubricRef, ratings: latest.ratings })
       : null;
-    if (!args.force && latestFingerprint === evidenceFingerprint) {
+    const sameCorrectionAlreadyExists = args.supersedes && latest?.supersedes === args.supersedes;
+    if (!args.force && latestFingerprint === evidenceFingerprint && (!args.supersedes || sameCorrectionAlreadyExists)) {
       const acceptanceGraderCleanup = rubric.kind === 'acceptance' && input.role === 'judge'
         ? await cleanupAcceptanceGraderTasks(args.rubricRef, { workspaceId: input.workspaceId })
         : undefined;
@@ -143,6 +174,7 @@ export async function emitScorecard(
           ...(args.targetHive ? { targetHive: args.targetHive } : {}),
           ...(instrumentSnapshots ? { instrumentSnapshots } : {}),
           evidenceFingerprint,
+          ...(args.supersedes ? { supersedes: args.supersedes } : {}),
           ...(gradedGeneration ? { gradedGeneration } : {}),
         },
       },
@@ -166,6 +198,7 @@ export async function emitScorecard(
       created: result.created,
       issueId: result.issue?.id ?? null,
       evidenceFingerprint,
+      ...(args.supersedes ? { supersedes: args.supersedes } : {}),
       canonicalRatings: ratings,
       ...(acceptanceGraderCleanup ? { acceptanceGraderCleanup } : {}),
     };

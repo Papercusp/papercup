@@ -905,6 +905,7 @@ import './scorecards/freshness';
 // canonical ratings, deterministic instrument snapshots, and unchanged-evidence dedup.
 import './scorecards/evaluate';
 import './scorecards/emit';
+import './scorecards/retract';
 
 // System health — the Health tab's owner acknowledge/snooze verbs
 // (health-tab-v2-2026-07-12 P-004, D-A: the one deliberate amendment to the
