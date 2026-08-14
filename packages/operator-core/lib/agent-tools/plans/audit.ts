@@ -31,13 +31,12 @@ import {
   getPlanItemStatuses,
   isVerifyingCitation,
   recordPlanAudit,
-  repoCitationDeps,
+  repoCitationContextForHarness,
   resolveCitation,
   summarizeCoverage,
   type AuditCitation,
   type AuditItemEntry,
 } from '../../plan-audits';
-import { REPO_ROOT } from '../docs/_repo-paths';
 
 const citationSchema = z.object({
   kind: z.enum(CITATION_KINDS).describe(
@@ -83,10 +82,10 @@ interface Problem {
 
 /** Best-effort local HEAD. An audit whose sha cannot be resolved is still a real
  *  audit, so this never throws — the column is nullable for exactly this case. */
-function resolveHeadSha(): string | null {
+function resolveHeadSha(repoRoot: string): string | null {
   try {
     return execFileSync('git', ['rev-parse', 'HEAD'], {
-      cwd: REPO_ROOT,
+      cwd: repoRoot,
       stdio: ['ignore', 'pipe', 'ignore'],
     })
       .toString()
@@ -140,7 +139,19 @@ export default defineTool({
     }
     const known = new Set(planItems.map((i) => i.itemId));
 
-    const deps = repoCitationDeps();
+    const citationContext = await repoCitationContextForHarness(harnessSlug);
+    if (!citationContext) {
+      return { data: {
+        ok: false as const,
+        slug: args.slug,
+        error: 'harness_repo_unresolved',
+        message:
+          `The canonical source root for harness '${harnessSlug ?? '(none)'}' could not be resolved. ` +
+          `No audit was recorded; register/fix the harness path rather than validating citations ` +
+          `against a different checkout.`,
+      } };
+    }
+    const deps = citationContext.deps;
     const problems: Problem[] = [];
     const entries: AuditItemEntry[] = [];
     let citationsChecked = 0;
@@ -243,7 +254,7 @@ export default defineTool({
       // defineTool overload supplies — the whole call then fails overload resolution with
       // a TS2769 that points at `handler` and says nothing about identity.
       createdBy: resolveAgentIdentity(ctx as Parameters<typeof resolveAgentIdentity>[0]).ownerId,
-      auditedSha: args.auditedSha ?? resolveHeadSha(),
+      auditedSha: args.auditedSha ?? resolveHeadSha(citationContext.repoRoot),
       items: entries,
       findings: args.findings ?? [],
       summary: args.summary ?? null,

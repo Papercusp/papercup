@@ -16,7 +16,12 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { resolveCitation, repoCitationDeps, type AuditCitation } from './plan-audits';
+import {
+  harnessCitationRepoRoot,
+  resolveCitation,
+  repoCitationDeps,
+  type AuditCitation,
+} from './plan-audits';
 
 let workspaceRoot: string;
 let repoRoot: string;
@@ -68,6 +73,35 @@ describe('repoCitationDeps — in-repo citations (unchanged behaviour)', () => {
     const res = resolveCitation(code('apps/operator/does-not-exist.ts'), deps);
     expect(res.ok).toBe(false);
     expect(res).toMatchObject({ reason: 'file_not_found' });
+  });
+});
+
+describe('harnessCitationRepoRoot — canonical registry precedence (WI-38854)', () => {
+  it('uses the registered hive checkout instead of a stale same-slug workspace sibling', () => {
+    const canonical = path.join(workspaceRoot, '.papercusp', 'hives', 'sidestage');
+    fs.mkdirSync(path.join(canonical, 'apps', 'web', 'src'), { recursive: true });
+    fs.mkdirSync(path.join(canonical, '.git'), { recursive: true });
+    fs.writeFileSync(
+      path.join(canonical, 'apps', 'web', 'src', 'EventReadinessPanel.tsx'),
+      'export function EventReadinessPanel() { return null; }\n',
+    );
+
+    const root = harnessCitationRepoRoot(
+      { projects: [{ slug: 'sidestage', path: canonical }] },
+      'sidestage',
+    );
+    expect(root).toBe(canonical);
+    expect(
+      resolveCitation(
+        { kind: 'code', path: 'apps/web/src/EventReadinessPanel.tsx', symbol: 'EventReadinessPanel' },
+        repoCitationDeps(root!),
+      ),
+    ).toEqual({ ok: true });
+    expect(resolveCitation(code('apps/web/src/EventReadinessPanel.tsx'), repoCitationDeps(repoRoot)).ok).toBe(false);
+  });
+
+  it('fails closed for an unregistered explicit harness', () => {
+    expect(harnessCitationRepoRoot({ projects: [] }, 'missing')).toBeNull();
   });
 });
 

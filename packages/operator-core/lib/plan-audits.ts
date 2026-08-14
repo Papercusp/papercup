@@ -42,6 +42,11 @@ import { getOrgPg } from '@papercusp/db-org';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { activeWorkspaceId } from './workspace-registry';
+import {
+  loadHarnessRegistry,
+  resolveHarnessContentPath,
+  type HarnessRegistry,
+} from './harness-registry';
 // The monorepo-root walk-up lives in the docs tool helper only because that is where
 // it was first needed; it is imported rather than re-derived so there stays exactly
 // ONE implementation of "where is the repo root" rather than two that can disagree.
@@ -310,6 +315,36 @@ export function repoCitationDeps(repoRoot: string = REPO_ROOT): CitationDeps {
       }
     },
   };
+}
+
+/** Resolve the canonical source root for an explicitly-scoped harness.
+ *
+ * A harness registry path outranks a same-slug workspace sibling: the latter may be
+ * an old clone while the live staging hive is rooted under ~/.papercusp/hives. Keeping
+ * this pure seam separate makes that precedence testable without reading PG. */
+export function harnessCitationRepoRoot(
+  reg: Pick<HarnessRegistry, 'projects'>,
+  harnessSlug: string,
+): string | null {
+  return resolveHarnessContentPath(reg, harnessSlug) ?? null;
+}
+
+/** Citation context shared by audit-write and ship-time revalidation.
+ * An explicit but unregistered harness fails closed instead of silently validating
+ * against Papercusp's own checkout. */
+export async function repoCitationContextForHarness(
+  harnessSlug: string | null | undefined,
+): Promise<{ repoRoot: string; deps: CitationDeps } | null> {
+  if (!harnessSlug || harnessSlug === '*') {
+    return { repoRoot: REPO_ROOT, deps: repoCitationDeps(REPO_ROOT) };
+  }
+  try {
+    const reg = await loadHarnessRegistry();
+    const repoRoot = harnessCitationRepoRoot(reg, harnessSlug);
+    return repoRoot ? { repoRoot, deps: repoCitationDeps(repoRoot) } : null;
+  } catch {
+    return null;
+  }
 }
 
 // ── coverage ──────────────────────────────────────────────────────────────────

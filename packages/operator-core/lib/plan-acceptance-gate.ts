@@ -25,7 +25,7 @@ import { listScorecards } from './scorecards';
 import {
   getLatestPlanAudit,
   getPlanItemStatuses,
-  repoCitationDeps,
+  repoCitationContextForHarness,
   resolveCitation,
   UNFINISHED_ITEM_STATUSES,
 } from './plan-audits';
@@ -182,13 +182,17 @@ export async function evaluatePlanAcceptanceGate(
         // The tree MOVES between audit and ship, so the stored audit is not trusted:
         // every code/test citation is resolved again, now. A citation that resolved at
         // audit time and does not resolve today means the evidence for that item is gone.
-        const deps = repoCitationDeps();
         const broken: string[] = [];
-        for (const entry of audit.items) {
-          for (const c of entry.citations) {
-            if (c.kind !== 'code' && c.kind !== 'test') continue;
-            const res = resolveCitation(c, deps);
-            if (!res.ok) broken.push(`${entry.itemId} → ${c.path ?? '(no path)'} (${res.reason})`);
+        const citationContext = await repoCitationContextForHarness(audit.harnessSlug);
+        if (!citationContext) {
+          broken.push(`audit harness '${audit.harnessSlug}' has no registered canonical source root`);
+        } else {
+          for (const entry of audit.items) {
+            for (const c of entry.citations) {
+              if (c.kind !== 'code' && c.kind !== 'test') continue;
+              const res = resolveCitation(c, citationContext.deps);
+              if (!res.ok) broken.push(`${entry.itemId} → ${c.path ?? '(no path)'} (${res.reason})`);
+            }
           }
         }
         if (broken.length > 0) {
