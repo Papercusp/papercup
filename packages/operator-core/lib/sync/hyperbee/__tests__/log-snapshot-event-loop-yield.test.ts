@@ -21,8 +21,16 @@ import type { OwnLog, PeerLogOp } from '../peer-log';
  *
  * THE INSTRUMENT. A `setTimeout(…, 0)` armed before the read fires from the TIMER phase, so
  * it can only run if the read reaches that phase. Whether it lands DURING or AFTER the read
- * is therefore a direct, wall-clock-independent read of "did this operation yield". No
- * sleeping, no timing thresholds, nothing load-dependent.
+ * is therefore a direct read of "did this operation yield": it asserts no threshold and
+ * sleeps for nothing.
+ *
+ * ⚠ It is NOT wall-clock-INDEPENDENT, and reading it that way has red-pinned the fleet's
+ * release gate twice. Node clamps `setTimeout(…, 0)` to 1ms, so a read that yields perfectly
+ * AND finishes inside that clamp still reports `'after'` — the probe never got a turn to
+ * land. Any case whose verdict is `'during'` must therefore span MORE wall clock than the
+ * clamp: by yielding against a budget (CONTROL 2) or by reading a corpus big enough to
+ * outlive it (`SPANNING_READ_WINDOWS`). A case tuned to a fixed count instead is a race that
+ * is eventually lost on a busy box — twice now, on trees where nothing had changed.
  *
  * THE CONTROL (`foldWithoutYielding`, below) is permanently resident and deliberately wrong:
  * the same loop with the yield removed. The same instrument must report it STARVED. Without
@@ -67,6 +75,28 @@ function corpus(n: number): PeerLogOp[] {
 }
 
 const OP_COUNT = SNAPSHOT_READ_CONCURRENCY * 3;
+
+/**
+ * Windows a case must span when its verdict depends on the armed probe LANDING (`'during'`).
+ *
+ * The probe is a `setTimeout(…, 0)` clamped to 1ms, so `'during'` requires the read to still
+ * be running 1ms after it starts. Three windows over a warm log is close enough to that 1ms
+ * to be decided by whatever else is true of the process — and the gate runs this file in a
+ * long-lived worker that has already executed thousands of tests (rssMb ~1018 on the
+ * 2026-08-14 failure, against ~120 running the file alone), where a warmed JIT makes the same
+ * read materially faster. A read that finishes inside the clamp reports `'after'` no matter
+ * how faithfully it yielded.
+ *
+ * ⚠ Do NOT re-derive this as an event-loop CONTENTION story: loopLagP95Ms was 20.4 on that
+ * failure versus 20.5-31.3 on contemporaneous passes, i.e. not elevated. The margin that
+ * matters is the read's own duration against the clamp, which is why the fix is to lengthen
+ * the read rather than to wait longer for the timer.
+ *
+ * ⚠ This is why the fix is a bigger corpus rather than a loosened assertion: it CANNOT weaken
+ * the guard. A read that does not yield starves the timer at every corpus size — precisely
+ * what CONTROL 1 asserts — so `'during'` still means the yield genuinely happened.
+ */
+const SPANNING_READ_WINDOWS = 200;
 
 /**
  * How long the CONTROL below keeps yielding for. Must comfortably exceed Node's 1ms floor on
@@ -155,9 +185,16 @@ describe('event-loop yield (P-014 half 3)', () => {
   });
 
   it('produceLogSnapshot yields to the timer phase while reading a warm log', async () => {
-    const log = warmLog(corpus(OP_COUNT));
+    // ⚠ Spans SPANNING_READ_WINDOWS rather than OP_COUNT's three. At three windows the read is
+    // near enough to the probe's 1ms clamp that the verdict turns on how fast the process
+    // happens to be running this file, not on whether the read yielded. That is the same
+    // defect CONTROL 2 was hardened against on 2026-08-09 — the correction was simply never
+    // carried across to the subject — and it red-pinned the gate again on 2026-08-14 as the
+    // sole failure in a 4,533-row run whose tree differed by three .md files.
+    const opCount = SNAPSHOT_READ_CONCURRENCY * SPANNING_READ_WINDOWS;
+    const log = warmLog(corpus(opCount));
     const verdict = await observeYield(() =>
-      produceLogSnapshot(log, { now: OP_COUNT + 10, schemaVersion: 1 }),
+      produceLogSnapshot(log, { now: opCount + 10, schemaVersion: 1 }),
     );
     expect(verdict).toBe('during');
   });
@@ -183,9 +220,14 @@ describe('event-loop yield (P-014 half 3)', () => {
     // This case needs a corpus big enough that the read spans real time: a repeating timer
     // can only fire once it is DUE, so at OP_COUNT (3 windows, sub-millisecond) it would
     // report 0 ticks against a perfectly correct implementation. That is a statement about
-    // the clock, not about yielding — hence the larger corpus here and the single-shot,
-    // wall-clock-independent probe above as the primary guard.
-    const many = SNAPSHOT_READ_CONCURRENCY * 200;
+    // the clock, not about yielding — hence the larger corpus here.
+    //
+    // The single-shot probe above needs it for exactly the same reason, which is what this
+    // comment used to miss when it called that probe "wall-clock-independent": a 1ms-clamped
+    // `setTimeout` is no more able to fire inside a sub-millisecond read than a 1ms
+    // `setInterval` is. The insight was applied to this case and not to that one, and that
+    // gap is what kept red-pinning the gate. Both now share the one constant.
+    const many = SNAPSHOT_READ_CONCURRENCY * SPANNING_READ_WINDOWS;
     const log = warmLog(corpus(many));
     let ticks = 0;
     const timer = setInterval(() => {
