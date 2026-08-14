@@ -1315,6 +1315,106 @@ const ensureClaudeConfig = defineTool({
 });
 
 /**
+ * POST /api/adv/sessions/ensure-codex-home — make a session's per-session
+ * `CODEX_HOME` launch-ready for a codex resume, and report whether it had to be
+ * repaired. Body: `{ owner: string, advSessionId: number, requireGatewayProvider?: boolean }`.
+ * Returns `{ ok, codexHome, repaired, reason? }`.
+ *
+ * WI-38706, and the exact codex counterpart of `ensure-claude-config` above —
+ * same asymmetry, same remedy: a FRESH psu launch has its home materialized
+ * server-side by bootstrap-su (`writeSuCodexHome`), a RESUME does no bootstrap
+ * POST, and psu-launcher.mjs is plain node outside operator-core so it can
+ * neither sign the MCP url nor read the superuser bearer. Without this the
+ * resume leg simply trusted the home to be intact — and when the archiver had
+ * unlinked its `config.toml`, codex re-created an 87-byte trust-only stub and
+ * `thread/resume` died on the missing model provider (11 homes, 89 rollouts).
+ *
+ * NON-DESTRUCTIVE BY CONSTRUCTION. It calls `ensureSuCodexHomeConfig`, which
+ * writes ONE file into an EXISTING home — never `writeSuCodexHome`, whose
+ * `freshCodexHome` rm -rf's the directory and would delete the very rollouts
+ * being resumed. A healthy home is left byte-identical (`repaired: false`).
+ *
+ * `requireGatewayProvider` is set by the launcher when the rollout it is about to
+ * resume names `papercusp-codex-gateway` in its `session_meta`. The rebuilt
+ * config then carries the UNPINNED provider table: the original account pin is
+ * not recorded anywhere replayable, and the gateway auto-selects when no pin
+ * header is present, so the thread resumes on the pool instead of failing shut.
+ * A pinned resume re-pins immediately afterwards via the launcher's own
+ * `applyCodexGatewayRoute`.
+ *
+ * `loopback` auth, matching its claude sibling: it writes under the operator
+ * user's own home and is only ever called by a local launcher.
+ */
+const ensureCodexHome = defineTool({
+  method: 'POST',
+  path: '/adv/sessions/ensure-codex-home',
+  auth: 'loopback',
+  async handler(req) {
+    let body: { owner?: unknown; advSessionId?: unknown; requireGatewayProvider?: unknown } = {};
+    try {
+      const text = await req.text();
+      if (text.trim()) body = JSON.parse(text);
+    } catch { /* validated below */ }
+    const owner = typeof body.owner === 'string' ? body.owner.trim() : '';
+    const advSessionId = Number(body.advSessionId);
+    if (!owner || !Number.isSafeInteger(advSessionId) || advSessionId <= 0) {
+      return new Response(JSON.stringify({ ok: false, error: 'owner + advSessionId required' }), {
+        status: 400,
+        headers: JSON_HEADERS,
+      });
+    }
+    // `owner` is baked into the MCP url's &client=; keep it a plain token.
+    if (!/^[A-Za-z0-9._-]+$/.test(owner)) {
+      return new Response(JSON.stringify({ ok: false, error: 'invalid owner' }), {
+        status: 400,
+        headers: JSON_HEADERS,
+      });
+    }
+    const [{ readSuLaunchSpecByOwner }, { parseSuLaunchSpecRecord }, { buildLaunchSpec }, { ensureSuCodexHomeConfig }, { readSuperuserToken }] =
+      await Promise.all([
+        import('../../../adv-sessions'),
+        import('../../../su-persona-render'),
+        import('../../../role-launch-spec'),
+        import('../../../role-codex-home'),
+        import('../../../superuser-token'),
+      ]);
+    const record = parseSuLaunchSpecRecord(await readSuLaunchSpecByOwner(owner));
+    // Fail SOFT like persona-refresh: the caller's only sane response to any of
+    // these is "launch anyway with what is on disk", and a resume that died
+    // because the spec was unreadable would be strictly worse than one that
+    // boots degraded. `reason` keeps it diagnosable rather than silent.
+    if (!record) return new Response(JSON.stringify({ ok: true, repaired: false, reason: 'no-launch-spec' }), { status: 200, headers: JSON_HEADERS });
+    if (record.agent !== 'codex') {
+      return new Response(JSON.stringify({ ok: true, repaired: false, reason: 'unsupported-agent', agent: record.agent }), { status: 200, headers: JSON_HEADERS });
+    }
+    const spec = await buildLaunchSpec({
+      kind: 'su',
+      agent: 'codex',
+      workspaceId: record.workspaceId,
+      operatorBaseUrl: new URL(req.url).origin,
+      harnessSlug: record.harnessSlug,
+      profile: record.profile,
+      contextSize: record.contextSize,
+      personaTier: record.personaTier,
+      model: record.model,
+      planSlug: record.planSlug,
+    });
+    const r = ensureSuCodexHomeConfig({
+      sessionKey: advSessionId,
+      mcpUrl: spec.mcpUrl,
+      sid: owner,
+      token: readSuperuserToken(),
+      codexGatewayAuto: body.requireGatewayProvider === true,
+      trustDir: null, // the home's inherited trust tables already cover the cwd
+    });
+    return new Response(JSON.stringify({ ok: true, owner, advSessionId, ...r }), {
+      status: 200,
+      headers: JSON_HEADERS,
+    });
+  },
+});
+
+/**
  * POST /api/adv/sessions/rematerialize — restore an ARCHIVED session's files
  * from harness_shared.session_archives back onto disk (WI-3859 F4). The
  * archive-at-death lifecycle deletes an ended session's transcript ~15s after
@@ -1834,4 +1934,4 @@ const sessionPortDelivery = defineTool({
   },
 });
 
-export default [list, focus, closeWindow, alive, state, search, ended, searchTranscripts, resumable, rematerialize, rematerializeStatus, ensureClaudeConfig, roster, markLaunched, agentDetail, onDesktopWindows, sessionPortInspect, sessionPortPrepare, sessionPortStatus, sessionPortDelivery];
+export default [list, focus, closeWindow, alive, state, search, ended, searchTranscripts, resumable, rematerialize, rematerializeStatus, ensureClaudeConfig, ensureCodexHome, roster, markLaunched, agentDetail, onDesktopWindows, sessionPortInspect, sessionPortPrepare, sessionPortStatus, sessionPortDelivery];

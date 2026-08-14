@@ -772,6 +772,85 @@ export type { CodexHomeDiagnostics, CodexPapercuspDiagnostics } from './codex-ho
  * (rebuilt each launch), exactly like claude's `~/.claude.json` header.
  * Launcher execs codex with `--dangerously-bypass-hook-trust`.
  */
+/** Inputs the su `config.toml` is rendered from — the subset of
+ *  `writeSuCodexHome`'s options that end up IN the file. */
+export interface SuCodexConfigInput {
+  mcpUrl: string;
+  sid: string;
+  token?: string | null;
+  codexGatewayAccountId?: string | null;
+  codexGatewayAuto?: boolean;
+  trustDir?: string | null;
+}
+
+/**
+ * The su `config.toml` body. ONE renderer, two callers: `writeSuCodexHome`
+ * (fresh home) and `ensureSuCodexHomeConfig` (repair an existing home). Kept
+ * as a shared function rather than copied into the repair path because a second
+ * renderer that drifted would make a repaired home quietly differ from a freshly
+ * launched one — the exact drift class the codex-gateway-config extraction was
+ * done to end (WI-3645).
+ *
+ * The per-session client identity is baked into the url because codex cannot
+ * env-expand config.toml, and the superuser bearer rides as an http_headers
+ * Authorization (D-006 — the env-var form doesn't deliver on codex 0.135).
+ */
+export function suCodexConfigToml(opts: SuCodexConfigInput): string {
+  const sep = opts.mcpUrl.includes('?') ? '&' : '?';
+  const url = `${opts.mcpUrl}${sep}client=${encodeURIComponent(opts.sid)}`;
+  const gatewayConfig = codexGatewayConfigToml(opts.codexGatewayAccountId, { gatewayOn: opts.codexGatewayAuto });
+  return [
+    ...gatewayConfig.root,
+    ...CODEX_DANGER_TOML,
+    CODEX_ISOLATION_PREAMBLE,
+    ...inheritedCodexTrustToml(opts.trustDir),
+    ...gatewayConfig.tables,
+    ...CODEX_TUI_TOML,
+    '# Per-session codex SU home config (managed by bootstrap-su / writeSuCodexHome).',
+    '[mcp_servers.papercusp-su]',
+    `url = "${tomlEscape(url)}"`,
+    ...(opts.token ? [`http_headers = { Authorization = "Bearer ${tomlEscape(opts.token)}" }`] : []),
+    '',
+  ].join('\n');
+}
+
+/**
+ * REPAIR an existing CODEX_HOME's `config.toml` in place — the resume-leg
+ * counterpart to `writeSuCodexHome`, and deliberately NOT that function.
+ *
+ * `writeSuCodexHome` starts with `freshCodexHome`, which rm -rf's the directory.
+ * That is right for preparing a session, and catastrophic for repairing one: the
+ * home holds every `sessions/**​/rollout-*.jsonl` the resume is about to read, so
+ * rebuilding it would destroy the very transcripts being resumed. This writes one
+ * file and touches nothing else.
+ *
+ * WI-38706: the archiver had been unlinking these configs (it took the home's
+ * shared state under one thread's session id), leaving codex to re-create an
+ * 87-byte trust-only stub on the next launch — no MCP server, no approvals
+ * bypass, no gateway provider — so the resume either died on the missing provider
+ * or came up silently uncoordinated. `existsSync(home)` is required, not created:
+ * a home that is not there has no rollouts to resume and must not be conjured.
+ *
+ * Idempotent: a home already carrying `[mcp_servers.papercusp-su]` is left
+ * byte-identical and reported `repaired: false`.
+ */
+export function ensureSuCodexHomeConfig(
+  opts: SuCodexConfigInput & { sessionKey: string | number },
+): { codexHome: string; configPath: string; repaired: boolean; reason?: 'no-home' } {
+  const codexHome = codexHomeForSessionKey(opts.sessionKey);
+  const configPath = join(codexHome, 'config.toml');
+  if (!existsSync(codexHome)) return { codexHome, configPath, repaired: false, reason: 'no-home' };
+  try {
+    if (readFileSync(configPath, 'utf8').includes('[mcp_servers.papercusp-su]')) {
+      return { codexHome, configPath, repaired: false };
+    }
+  } catch {
+    /* absent or unreadable — that is precisely the repair case */
+  }
+  writeFileSync(configPath, suCodexConfigToml(opts), { mode: 0o600 });
+  return { codexHome, configPath, repaired: true };
+}
+
 export function writeSuCodexHome(opts: {
   sessionKey: string | number;
   /** Superuser MCP url (?superuser=1&workspace=…) from buildLaunchSpec(su). */
@@ -837,24 +916,8 @@ export function writeSuCodexHome(opts: {
   // Bake the per-session client identity into the url (codex can't env-expand
   // config.toml) + the superuser bearer as an http_headers Authorization
   // (D-006 — the env-var form doesn't deliver on codex 0.135).
-  const sep = opts.mcpUrl.includes('?') ? '&' : '?';
-  const url = `${opts.mcpUrl}${sep}client=${encodeURIComponent(opts.sid)}`;
   const configPath = join(codexHome, 'config.toml');
-  const gatewayConfig = codexGatewayConfigToml(opts.codexGatewayAccountId, { gatewayOn: opts.codexGatewayAuto });
-  const toml = [
-    ...gatewayConfig.root,
-    ...CODEX_DANGER_TOML,
-    CODEX_ISOLATION_PREAMBLE,
-    ...inheritedCodexTrustToml(opts.trustDir),
-    ...gatewayConfig.tables,
-    ...CODEX_TUI_TOML,
-    '# Per-session codex SU home config (managed by bootstrap-su / writeSuCodexHome).',
-    '[mcp_servers.papercusp-su]',
-    `url = "${tomlEscape(url)}"`,
-    ...(opts.token ? [`http_headers = { Authorization = "Bearer ${tomlEscape(opts.token)}" }`] : []),
-    '',
-  ].join('\n');
-  writeFileSync(configPath, toml, { mode: 0o600 });
+  writeFileSync(configPath, suCodexConfigToml(opts), { mode: 0o600 });
 
   // SU sessions pass coordSid so the merged activity hook's coord fold stays
   // ON (new coord:inbox messages folded into the SAME activity:report round

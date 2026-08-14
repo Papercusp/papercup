@@ -305,6 +305,7 @@ export async function runSessionArchiveReconcileOnce(deps: ReconcilerDeps = {}):
             store,
           );
           stats.diskLeftoversDeleted += del.deleted;
+          stats.diskLeftoversRetained += del.retained.length;
           continue;
         }
         const r = await archiveAndDeleteSession(

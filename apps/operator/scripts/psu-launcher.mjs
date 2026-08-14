@@ -64,7 +64,7 @@ import {
   prunePsuLaunchLogs,
   PSU_LAUNCH_LOG_MAX_BYTES,
 } from '../../../packages/operator-core/lib/psu-launch-log.mjs';
-import { codexGatewayConfigToml } from '@papercusp/orchestrator/codex-gateway-config';
+import { CODEX_GATEWAY_PROVIDER_ID, codexGatewayConfigToml } from '@papercusp/orchestrator/codex-gateway-config';
 import {
   ompGatewayModelsConfig,
   ompGatewayModelFromSpec,
@@ -3331,14 +3331,46 @@ export function stripCodexGatewayConfig(configText) {
     .replace(/^\n+/, '');
 }
 
-export function codexGatewayConfigPatch(configText, account = null, { gatewayOn = false, ownerId = null } = {}) {
+export function codexGatewayConfigPatch(
+  configText,
+  account = null,
+  { gatewayOn = false, ownerId = null, keepExistingWhenUnrouted = false } = {},
+) {
   const stripped = stripCodexGatewayConfig(configText).trimEnd();
   const patch = codexGatewayConfigToml(account, { gatewayOn, ownerId });
-  if (!patch.root.length && !patch.tables.length) return stripped ? `${stripped}\n` : '';
+  if (!patch.root.length && !patch.tables.length) {
+    // WI-38706: "no gateway route for THIS launch" must not mean "delete the
+    // provider table this thread is already bound to". codex stamps the
+    // provider id into every rollout's `session_meta`, then resolves it against
+    // the CURRENT config at `thread/resume` — so stripping the table out from
+    // under a gateway-born thread fails the resume outright ("Model provider
+    // `papercusp-codex-gateway` not found", -32600). A default-route RESUME of
+    // such a thread therefore keeps the config as-is; only a launch whose
+    // thread never referenced the provider gets the strip.
+    if (keepExistingWhenUnrouted) return configText;
+    return stripped ? `${stripped}\n` : '';
+  }
   return `${patch.root.join('\n')}${stripped ? `${stripped}\n\n` : ''}${patch.tables.join('\n')}`;
 }
 
-function applyCodexGatewayRoute(codexHome, { mode = 'default', id = null, ownerId = null } = {}) {
+/** The provider id a codex rollout is BOUND to (`session_meta.model_provider`
+ *  on its first line), or null. Read at resume so the route patch below cannot
+ *  remove a provider the thread needs. Pure-ish (one file read); exported for
+ *  tests. */
+export function codexRolloutModelProvider(rolloutPath) {
+  try {
+    const fh = readFileSync(rolloutPath, 'utf8');
+    const firstLine = fh.slice(0, fh.indexOf('\n') === -1 ? fh.length : fh.indexOf('\n'));
+    const payload = JSON.parse(firstLine)?.payload;
+    const p = payload?.model_provider;
+    return typeof p === 'string' && p ? p : null;
+  } catch { return null; }
+}
+
+function applyCodexGatewayRoute(
+  codexHome,
+  { mode = 'default', id = null, ownerId = null, keepExistingWhenUnrouted = false } = {},
+) {
   const configPath = join(codexHome, 'config.toml');
   const current = existsSync(configPath) ? readFileSync(configPath, 'utf8') : '';
   writeFileSync(
@@ -3346,6 +3378,7 @@ function applyCodexGatewayRoute(codexHome, { mode = 'default', id = null, ownerI
     codexGatewayConfigPatch(current, mode === 'pin' ? id : null, {
       gatewayOn: mode === 'auto',
       ownerId,
+      keepExistingWhenUnrouted,
     }),
     { mode: 0o600 },
   );
@@ -6518,10 +6551,26 @@ async function launchResume(session, { brain = false, fork = false, passthrough 
     if (resumeModelNotice) console.error(resumeModelNotice);
   }
   if (session.agent === 'codex' && env.CODEX_HOME) {
+    // WI-38706 — REBUILD BEFORE PATCHING. The claude branch above re-ensures its
+    // config dir server-side on every resume; codex never did, so a home whose
+    // config.toml had been deleted (or reduced to codex's trust-only stub) went
+    // straight into the patch below, which happily wrote a gateway-less config
+    // into the hole and left `codex resume` to fail on the missing provider.
+    // The provider THIS thread is bound to decides both halves below: the rebuild
+    // must re-emit that provider's table, and the patch must not then remove it.
+    // A resume with no explicit --account resolves to mode 'default'
+    // (chooseResumeAccount does not inherit the session's original pin), so an
+    // unguarded patch strips the very `[model_providers.…]` table the rollout names.
+    const rollout = findCodexRollout(join(env.CODEX_HOME, 'sessions'), session.sessionId ?? '');
+    const boundProvider = rollout ? codexRolloutModelProvider(rollout) : null;
+    await ensureCodexHomeViaOperator(session.coordOwnerId ?? null, env.CODEX_HOME, session.id ?? null, {
+      requireGatewayProvider: boundProvider === CODEX_GATEWAY_PROVIDER_ID,
+    });
     applyCodexGatewayRoute(env.CODEX_HOME, {
       mode: accountEnv?.mode ?? 'default',
       id: accountEnv?.id ?? null,
       ownerId: session.coordOwnerId ?? null,
+      keepExistingWhenUnrouted: boundProvider === CODEX_GATEWAY_PROVIDER_ID,
     });
   }
 
@@ -7462,6 +7511,85 @@ export async function ensureInteractiveConfigViaOperator(
     if (r.repaired) {
       console.error(
         'psu: repaired this session\'s claude config dir (it carried a transcript but no account/MCP state — a resume would have hit the first-run login screen).',
+      );
+    }
+    return r;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Is this per-session CODEX_HOME launch-ready — the codex twin of
+ * `isClaudeConfigDirLaunchReady`?
+ *
+ * `config.toml` IS the codex home: the superuser MCP server + its baked bearer,
+ * the approvals/sandbox bypass, `[features] remote_compaction_v2 = false`, and
+ * the `[model_providers.papercusp-codex-gateway]` table every gateway-born
+ * thread resolves at resume. `[mcp_servers.papercusp-su]` is the marker because
+ * it is the part codex itself will never write back: after the file goes
+ * missing, codex re-creates an 87-byte trust-only stub on the next launch, which
+ * LOOKS like a config and carries none of the above — the resume then either
+ * dies on the missing provider or, worse, comes up quietly with no coordination
+ * MCP at all. Presence of the MCP block distinguishes ours from that stub.
+ */
+export function isCodexHomeLaunchReady(codexHome) {
+  try {
+    if (!codexHome) return false;
+    const text = readFileSync(join(codexHome, 'config.toml'), 'utf8'); // throws when absent
+    return text.includes('[mcp_servers.papercusp-su]');
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * WI-38706 — the codex twin of `ensureInteractiveConfigViaOperator`, and for the
+ * same structural reason: a FRESH psu launch has its CODEX_HOME materialized
+ * server-side by bootstrap-su (`writeSuCodexHome`), while a RESUME does no
+ * bootstrap POST. The launcher cannot rebuild the home itself — psu-launcher.mjs
+ * is plain node outside operator-core, so it can neither sign the MCP url nor
+ * import the writer.
+ *
+ * Until now the resume leg simply ASSUMED the home was intact. It often wasn't:
+ * the session archiver was unlinking the home's `config.toml` (it archived
+ * directory-shared state under one thread's session id — fixed in
+ * session-archive.ts), and the launcher's own gateway patch would then write a
+ * gateway-less config into the hole. Owner-hit 2026-08-14: 11 homes, 89
+ * rollouts, all failing `thread/resume` on the missing provider.
+ *
+ * Idempotent and non-destructive: a healthy home is left byte-identical and the
+ * call reports `repaired: false`.
+ */
+export async function ensureCodexHomeViaOperator(
+  owner,
+  codexHome,
+  advSessionId,
+  { requireGatewayProvider = false, fetchImpl = fetch, operatorUrl = OPERATOR_URL, token = null, timeoutMs = 10_000 } = {},
+) {
+  if (!owner || !codexHome || advSessionId == null) return null;
+  // The server keys the home by ADV SESSION ID, so it can only ensure the
+  // conventional path. A resume pointed at a relocated/foreign home would
+  // otherwise have a DIFFERENT home rebuilt behind its back while the one it
+  // actually launches with stays broken (the same guard the claude twin uses).
+  if (codexHome !== join(homedir(), '.papercusp', 'su-codex-homes', `session-${advSessionId}`)) return null;
+  if (isCodexHomeLaunchReady(codexHome)) return null; // healthy — no call, no write
+  try {
+    const tok = token ?? readToken();
+    const res = await fetchImpl(operatorUrl + '/api/adv/sessions/ensure-codex-home', {
+      method: 'POST',
+      signal: AbortSignal.timeout(timeoutMs),
+      headers: {
+        'content-type': 'application/json',
+        ...(tok ? { authorization: `Bearer ${tok}` } : {}),
+      },
+      body: JSON.stringify({ owner, advSessionId, requireGatewayProvider }),
+    });
+    const r = await res.json().catch(() => null);
+    if (!r?.ok) return null;
+    if (r.repaired) {
+      console.error(
+        'psu: rebuilt this session\'s codex home config (it carried rollouts but no MCP/provider state — the resume would have failed on a missing model provider, or come up with no coordination MCP).',
       );
     }
     return r;
