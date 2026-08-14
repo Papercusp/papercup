@@ -571,7 +571,15 @@ describe('reclaimStaleWorkItemClaims', () => {
     await seedItem('F-ST4', 'su-fresh', 2, 'in_progress', 0, null); // claimed 2 min ago, no progress yet
     await sql`INSERT INTO harness_shared.coord_presence VALUES ('su-fresh', now())`;
     const r = await reclaimStaleWorkItemClaims(sql, { includeStalled: true });
-    expect(r.released).toHaveLength(0); // COALESCE(last_progress_at, taken_at) is recent → not stalled
+    expect(r.released).toHaveLength(0); // taken_at is recent → not stalled
+  });
+
+  it('EI-18838892159155751: stalled flag keeps a fresh reclaim with retained older progress', async () => {
+    await seedItem('F-ST4-RECLAIM', 'su-fresh-reclaim', 2, 'in_progress', 0, 30);
+    await sql`INSERT INTO harness_shared.coord_presence VALUES ('su-fresh-reclaim', now())`;
+    const r = await reclaimStaleWorkItemClaims(sql, { includeStalled: true });
+    expect(r.released).toHaveLength(0);
+    expect((await statusOf('F-ST4-RECLAIM')).taken_by).toBe('su-fresh-reclaim');
   });
 
   it('stalled: flag ON — improvement-runner (parked routine lane) is EXEMPT', async () => {

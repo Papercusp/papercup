@@ -465,6 +465,10 @@ export async function reclaimStaleWorkItemClaims(
            -- (b) SPAWN-EXIT: a confirmed-terminal spawn's alias — no grace.
            OR EXISTS (SELECT 1 FROM dead_spawn ds WHERE ds.alias = f.taken_by)
            -- (c) STALLED (flag-gated): holder ALIVE but not progressing in the window.
+           -- EI-18838892159155751: use the newest claim/progress anchor. A same-holder
+           -- re-claim deliberately retains last_progress_at; when that timestamp is
+           -- older than the new taken_at, COALESCE picked the old value and could
+           -- reclaim the fresh claim before its grace window elapsed.
            -- WI-6015 (EI-18691099450966094 trap c): last_progress_at is bumped
            -- ONLY by an explicit work_items:checkpoint call, so a holder doing
            -- substantial real work (edits, tool calls, tests) WITHOUT
@@ -479,7 +483,7 @@ export async function reclaimStaleWorkItemClaims(
            OR ( ${includeStalled ? sql`(
                   EXISTS (SELECT 1 FROM live_holder h WHERE h.alias = f.taken_by)
                   AND f.taken_by <> 'improvement-runner'
-                  AND (now() - COALESCE(f.last_progress_at, f.taken_at)) > make_interval(secs => ${stalledSec})
+                  AND (now() - GREATEST(f.last_progress_at, f.taken_at)) > make_interval(secs => ${stalledSec})
                   AND NOT EXISTS (
                     SELECT 1 FROM harness_shared.agent_activity aa
                      WHERE aa.owner_id = f.taken_by

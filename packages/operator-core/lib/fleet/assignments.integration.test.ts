@@ -282,6 +282,23 @@ describe('fleet_assignment view + reader (P-001/P-002)', () => {
     expect(openRow?.stalled).toBe(true);
   });
 
+  it('EI-18838892159155751: a fresh reclaim outranks retained older progress for the stall window', async () => {
+    await seedPresence('su-fresh-reclaim', { ageSeconds: 0 });
+    await admin`
+      INSERT INTO harness_shared.harness_features_consolidated
+        (workspace_id, harness_slug, feature_id, title, status, taken_by, taken_at, last_progress_at)
+      VALUES
+        (${WS}, 'demo', 'FA-TEST-FRESH-RECLAIM', 'fresh reclaim', 'open',
+         'su-fresh-reclaim', now() - interval '2 minutes', now() - interval '4 hours')
+    `;
+
+    const rows = await listFleetAssignments({ workspaceId: WS });
+    const reclaimed = rows.find((r) => r.workItemId === 'FA-TEST-FRESH-RECLAIM');
+    expect(reclaimed?.holderAlive).toBe(true);
+    expect(reclaimed?.lastProgressAt).not.toBeNull();
+    expect(reclaimed?.stalled).toBe(false);
+  });
+
   it('filters: by plan ("who\'s on P"), by agent ("what is X doing"), by workspace', async () => {
     await seedPresence('su-a', { planSlug: 'plan-x' });
     await seedPlanClaim('su-a', { plan: 'plan-x', item: 'P-001' });
