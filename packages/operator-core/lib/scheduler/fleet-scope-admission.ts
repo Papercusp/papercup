@@ -758,9 +758,13 @@ export async function diagnoseFleetScopePlanTerminality(args: {
 
 /**
  * EI-20260781488788952: read the fleet's LEADER specifically, rather than
- * answering the weaker question "is anyone else alive?". A successful roster
- * with no `present && alive && fleetRole=leader` row is a known dead/absent
- * leader (`false`); a roster/query failure is unknown (`null`) so the old
+ * answering the weaker question "is anyone else alive?". The fleet registry's
+ * `leaderOwnerId` is authoritative: one owner may lead several fleets while its
+ * soft presence row can carry only ONE `fleetSlug`/`fleetRole` label
+ * (EI-20379918871807679). Resolve that owner first, then ask the shared roster
+ * liveness oracle whether the owner is present and alive without requiring the
+ * presence label to match this fleet. A successful read with no live registered
+ * leader is `false`; a registry/roster failure is unknown (`null`) so the old
  * escalation wording remains safe.
  */
 export async function diagnoseFleetScopeLeaderLiveness(args: {
@@ -769,12 +773,14 @@ export async function diagnoseFleetScopeLeaderLiveness(args: {
   try {
     const ws = resolveClaimSpecWorkspace(args.scope.workspaceId);
     if (!ws) return null;
+    const { getFleet } = await import('../agent-fleets-store');
+    const fleet = await getFleet(ws, args.scope.fleetSlug);
+    const leaderOwnerId = fleet?.leaderOwnerId ?? null;
+    if (!leaderOwnerId) return false;
     const { listFleetAssignments, groupByAgent } = await import('../fleet/assignments');
-    const rows = await listFleetAssignments({ workspaceId: ws });
-    const leaders = groupByAgent(rows).filter(
-      (agent) => agent.fleetSlug === args.scope.fleetSlug && agent.fleetRole === 'leader',
-    );
-    return leaders.some((leader) => leader.present && leader.alive);
+    const rows = await listFleetAssignments({ workspaceId: ws, agent: leaderOwnerId });
+    const leader = groupByAgent(rows).find((agent) => agent.agentId === leaderOwnerId);
+    return Boolean(leader?.present && leader.alive);
   } catch {
     return null;
   }
