@@ -2160,7 +2160,7 @@ interface HiveGitDialContext {
   /** Present only for an in-process swarm. A relocated sidecar owns its topic
    * and observability maps, so main-process diagnostics must stay UNKNOWN. */
   topicHex?: string;
-  path: 'in-process' | 'sidecar';
+  path: 'in-process' | 'sidecar' | 'sidecar-advertised';
   openDuplex(devicePubkeyBase64: string, request: HiveGitDuplexRequest): Promise<Duplex>;
 }
 
@@ -2186,6 +2186,38 @@ async function resolveHiveGitDialContext(
   const { getBootedHarness, bootSingleHarness } = await import('../../sync/hyperbee/boot-all');
   const handle = getBootedHarness(workspaceId, installSlug);
   if (!handle) {
+    // EI-20438405483051865: routines and the substrate owner can be separate OS
+    // processes.  The boot-all registry is intentionally process-local, so a
+    // healthy relocated handle is invisible here.  Reuse the existing
+    // cross-service owner advertisement and accept it only for this exact
+    // (workspace, install) pair; the open helper's FIRST RPC is an
+    // existing-only boot (`createIfMissing:false`), so a stale/wrong socket can
+    // never mint a store or identity.
+    const { getPgRelocatedHarnessEndpoint } = await import(
+      '../../sync/hyperbee/substrate-booted-handles-pg'
+    );
+    const advertised = await getPgRelocatedHarnessEndpoint(workspaceId, installSlug).catch(
+      () => null,
+    );
+    if (advertised) {
+      return {
+        path: 'sidecar-advertised',
+        openDuplex: async (devicePubkeyBase64, request) => {
+          const [{ openHiveGitDuplexViaExistingSidecar }, { workspacesRoot }] = await Promise.all([
+            import('../../sync/hyperbee/remote-booted-harness'),
+            import('../../workspace-registry'),
+          ]);
+          return openHiveGitDuplexViaExistingSidecar({
+            socketPath: advertised.socketPath,
+            workspaceRoot: join(workspacesRoot(), workspaceId),
+            workspaceId,
+            harnessSlug: installSlug,
+            devicePubkeyBase64,
+            request,
+          });
+        },
+      };
+    }
     void bootSingleHarness(workspaceId, installSlug).catch(() => {
       // best-effort demand-boot; a failure just leaves the harness unbooted
       // for this tick — the next tick's access retries.

@@ -41,6 +41,7 @@ import type { SwarmBinding } from './derive-swarm-topic';
 import type { ScopeId } from '../pot-git/scope-repo';
 import type { ScopeFederation } from './scope-federation';
 import type { HiveGitDuplexRequest } from '../pot-git/peer-dial-registry';
+import { SubstrateIpcClient } from './substrate-ipc-client';
 
 /** The subset of the IPC client this proxy needs (injectable for tests). */
 export interface SubstrateRpcCaller {
@@ -79,6 +80,12 @@ interface OpenHiveGitDuplexResponse {
   error?: string;
 }
 
+interface ExistingSidecarBootResponse {
+  storeId: string;
+  ownLogKey: string;
+  ownLogLength?: number;
+}
+
 /** Match the in-process peer-dial registry's fail-soft contract: callers get a
  * destroyed Duplex and inspect `.destroyed`/`.errored`, never an IPC exception. */
 function destroyedHiveGitDuplex(message: string): Duplex {
@@ -91,6 +98,57 @@ function destroyedHiveGitDuplex(message: string): Duplex {
   duplex.on('error', () => {});
   duplex.destroy(new Error(message));
   return duplex;
+}
+
+/**
+ * Dial pot-git through a sidecar discovered outside this process.
+ *
+ * The first RPC is intentionally `substrate:bootHarness` with
+ * `createIfMissing:false`: the advertised endpoint may be stale or may belong
+ * to another local operator instance, and discovery must never mint a new
+ * corestore identity as a side effect.  Only an already-booted exact handle can
+ * yield the store id needed by `RemoteBootedHarnessHandle`.
+ */
+export async function openHiveGitDuplexViaExistingSidecar(
+  opts: {
+    socketPath: string;
+    workspaceRoot: string;
+    workspaceId: string;
+    harnessSlug: string;
+    devicePubkeyBase64: string;
+    request: HiveGitDuplexRequest;
+  },
+  deps: {
+    client?: SubstrateRpcCaller & { close?: () => void };
+  } = {},
+): Promise<Duplex> {
+  const ownedClient = deps.client ? null : new SubstrateIpcClient(opts.socketPath);
+  const client = deps.client ?? ownedClient!;
+  try {
+    const booted = await client.call<ExistingSidecarBootResponse>('substrate:bootHarness', {
+      workspaceRoot: opts.workspaceRoot,
+      workspaceId: opts.workspaceId,
+      harnessSlug: opts.harnessSlug,
+      createIfMissing: false,
+    });
+    const handle = new RemoteBootedHarnessHandle({
+      workspaceId: opts.workspaceId,
+      harnessSlug: opts.harnessSlug,
+      storeId: booted.storeId,
+      ownLogKey: booted.ownLogKey,
+      ownLogLength: booted.ownLogLength,
+      client,
+    });
+    return await handle.openHiveGitDuplexToDevice(opts.devicePubkeyBase64, opts.request);
+  } catch (error) {
+    return destroyedHiveGitDuplex(
+      `pot-git: advertised substrate sidecar discovery failed closed: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  } finally {
+    ownedClient?.close();
+  }
 }
 
 /** A mutable own-log length, shared by the handle's `append` (LWW seam) and the
