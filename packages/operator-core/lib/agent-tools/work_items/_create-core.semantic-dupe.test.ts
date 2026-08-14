@@ -227,4 +227,41 @@ describe('createOneWorkItem × semantic dupe prescreen (P-008)', () => {
     expect(r).toMatchObject({ ok: false, error: 'duplicate_identity', existing: { id: 'EI-9' } });
     expect(createM).not.toHaveBeenCalled();
   });
+
+  it('rejects an exact normalized identity outside DRAIN and preserves the repeat as an occurrence', async () => {
+    guardM.mockResolvedValue(verdict([], []));
+    fulltextM.mockResolvedValue([
+      {
+        id: 'EI-9',
+        title: 'Agents file duplicate drain blockers',
+        state: 'open',
+        harness: 'papercusp',
+        similarity: 1,
+        source: 'lexical-fulltext',
+      },
+    ]);
+
+    const r = await createOneWorkItem(
+      { kind: 'bug', title: 'Duplicate blockers drain agents file' },
+      ctx,
+    );
+
+    expect(r).toMatchObject({
+      ok: false,
+      error: 'duplicate_identity',
+      existing: { id: 'EI-9' },
+      message: expect.stringContaining('force:true'),
+    });
+    expect(createM).not.toHaveBeenCalled();
+    expect(occurrenceMocks.record).toHaveBeenCalledWith(
+      expect.objectContaining({
+        canonicalId: 'EI-9',
+        canonicalHarness: 'papercusp',
+        reporter: 'me',
+        sourceTool: 'work_items:create',
+        reportKind: 'duplicate',
+        reportedTitle: 'Duplicate blockers drain agents file',
+      }),
+    );
+  });
 });

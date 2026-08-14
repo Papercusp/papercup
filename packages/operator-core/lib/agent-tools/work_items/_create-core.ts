@@ -427,7 +427,15 @@ export async function createOneWorkItem(
     const exactIdentity = fulltextDupes?.find(
       (candidate) => admissionIdentity(candidate.title).titleKey === identity.titleKey,
     );
-    if (args.requireCompleteDedupCoverage && exactIdentity) {
+    // EI-20449994308545912: exact normalized identity is a synchronous writer-side
+    // invariant, not a DRAIN-only policy. A rapid `items:[…]` batch is processed
+    // sequentially, but the semantic embedding for the first row is not available
+    // before the next item runs. The full-text leg already sees that fresh row and
+    // computes `exactIdentity`; ignoring it outside DRAIN admitted every repeated
+    // report as a new canonical work item. Preserve every repeat as an occurrence
+    // on the first row instead. `force:true` remains the explicit escape for genuinely
+    // distinct work; DRAIN's complete-coverage contract intentionally overrides force.
+    if (exactIdentity && (!args.force || args.requireCompleteDedupCoverage)) {
       await appendWorkItemOccurrence(
         args,
         ctx,
@@ -443,7 +451,9 @@ export async function createOneWorkItem(
         error: 'duplicate_identity',
         message:
           `stable admission identity matches OPEN work-item ${exactIdentity.id} "${exactIdentity.title}" — ` +
-          `work that item instead; DRAIN does not admit another bug with the same normalized identity.`,
+          (args.requireCompleteDedupCoverage
+            ? 'work that item instead; DRAIN does not admit another bug with the same normalized identity.'
+            : 'work that item instead, or pass force:true if this is genuinely distinct work.'),
         existing: { id: exactIdentity.id, state: exactIdentity.state },
         similarOpen: [exactIdentity],
       };
