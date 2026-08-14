@@ -4511,6 +4511,25 @@ export interface UnresolvedDepBlocker {
   kind: string;
 }
 
+/** One active item a member already holds that is blocked by a refused dependency. */
+export interface DependencyEscapeBlockedItem {
+  id: string;
+  kind: string;
+  harness: string | null;
+}
+
+/**
+ * The dependency relationship that turns an ordinary fleet-scope refusal into a
+ * control-plane escape: the refused row is an unresolved blocker of work the same
+ * member already owns.
+ */
+export interface HeldDependencyEscapeContext {
+  dependencyId: string;
+  /** The edge writer's canonical endpoint family (`issue` | `feature`). */
+  dependencyKind: string;
+  blockedHeldItems: DependencyEscapeBlockedItem[];
+}
+
 /**
  * NAME the unresolved blockers of ONE work-item (P-013) — the read behind
  * `blockedClaimWarning` in work_items:claim.
@@ -4554,6 +4573,74 @@ export async function readUnresolvedDepBlockers(
      ORDER BY d.blocker_ref
      LIMIT 25`;
   return rows.map((r) => ({ ref: r.blocker_ref, kind: r.blocker_kind }));
+}
+
+/**
+ * Find active work held by `member` whose unresolved blocker is `dependencyId`.
+ *
+ * This is the read-side proof for the fleet dependency-escape lane. It reuses the
+ * same per-family ref convention and the same `unsatisfiedBlockerSql` predicate as
+ * the scheduler readiness floor, so the refusal cannot call something a dependency
+ * that the queue itself considers satisfied. One bounded query covers every held
+ * item; no per-claim/N+1 reads.
+ */
+export async function readHeldDependencyEscapeContext(args: {
+  dependencyId: string;
+  member: string;
+  harness?: string | null;
+}): Promise<HeldDependencyEscapeContext | null> {
+  const dependencyId = args.dependencyId.trim();
+  const member = args.member.trim();
+  if (!dependencyId || !member) return null;
+  const { sql } = getOrgPg();
+  const rows = await sql<{
+    dependency_kind: string;
+    blocked_id: string;
+    blocked_kind: string;
+    blocked_harness: string | null;
+  }[]>`
+    WITH refused AS (
+      SELECT feature_id, item_kind, harness_slug,
+             CASE
+               WHEN item_kind IN ('bug', 'change', 'task') THEN feature_id
+               ELSE harness_slug || '#' || feature_id
+             END AS dependency_ref
+        FROM harness_shared.work_items
+       WHERE workspace_id = ${activeWorkspaceId()}
+         AND feature_id = ${dependencyId}
+         AND ${args.harness ? sql`harness_slug = ${args.harness}` : sql`TRUE`}
+       LIMIT 1
+    )
+    SELECT DISTINCT d.blocker_kind AS dependency_kind,
+           wi.feature_id AS blocked_id,
+           wi.item_kind AS blocked_kind,
+           wi.harness_slug AS blocked_harness
+      FROM refused r
+      JOIN harness_shared.work_item_deps d
+        ON d.workspace_id = 'default'
+       AND d.dep_type = 'blocks'
+       AND d.blocker_ref = r.dependency_ref
+      JOIN harness_shared.work_items wi
+        ON wi.workspace_id = ${activeWorkspaceId()}
+       AND d.blocked_ref = CASE
+             WHEN wi.item_kind IN ('bug', 'change', 'task') THEN wi.feature_id
+             ELSE wi.harness_slug || '#' || wi.feature_id
+           END
+     WHERE wi.taken_by = ${member}
+       AND NOT (wi.status = ANY(${ANY_FAMILY_TERMINAL_STATES as string[]}::text[]))
+       AND ${unsatisfiedBlockerSql(sql)}
+     ORDER BY wi.feature_id
+     LIMIT 25`;
+  if (rows.length === 0) return null;
+  return {
+    dependencyId,
+    dependencyKind: rows[0]?.dependency_kind ?? 'unknown',
+    blockedHeldItems: rows.map((row) => ({
+      id: row.blocked_id,
+      kind: row.blocked_kind,
+      harness: row.blocked_harness,
+    })),
+  };
 }
 
 /**

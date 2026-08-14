@@ -22,6 +22,7 @@
  * brief that consumes it.
  */
 import { coordSql, coordWorkspaceId, coordHasPgFastPath } from './log';
+import type { FleetDependencyEscape } from '../../scheduler/fleet-scope-admission';
 
 /** The coord message category every fleet-scope admission notice is sent under. */
 export const FLEET_ADMISSION_BLOCK_CATEGORY = 'fleet-scope-admission';
@@ -64,6 +65,8 @@ export interface FleetAdmissionBlock {
   atMs: number;
   /** How many times this same (item, member) pair was refused inside the window. */
   occurrences: number;
+  /** Typed critical-path escape, present only when this refusal blocks held work. */
+  dependencyEscape: FleetDependencyEscape | null;
 }
 
 /** The row shape the SQL below selects — one envelope carrying a stamp. */
@@ -85,6 +88,32 @@ const asId = (value: unknown): string | null => {
   if (typeof value !== 'string') return null;
   const trimmed = value.trim();
   return trimmed ? trimmed : null;
+};
+
+const asDependencyEscape = (value: unknown): FleetDependencyEscape | null => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const rec = value as Record<string, unknown>;
+  const dependency = rec.dependency as Record<string, unknown> | undefined;
+  const routes = Array.isArray(rec.routes) ? rec.routes : [];
+  const routeKinds = routes.map((route) =>
+    route && typeof route === 'object' && !Array.isArray(route)
+      ? (route as Record<string, unknown>).kind
+      : null,
+  );
+  if (
+    rec.kind !== 'dependency_escape' ||
+    rec.ownershipPreserved !== true ||
+    !asId(dependency?.id) ||
+    !asId(dependency?.kind) ||
+    !asId(rec.member) ||
+    !Array.isArray(rec.blockedHeldItemIds) ||
+    rec.blockedHeldItemIds.length === 0 ||
+    !rec.blockedHeldItemIds.every((id) => Boolean(asId(id))) ||
+    !routeKinds.includes('spec_widen') ||
+    !routeKinds.includes('outside_lane_placement') ||
+    !routeKinds.includes('leader_claim')
+  ) return null;
+  return value as FleetDependencyEscape;
 };
 
 /**
@@ -123,6 +152,7 @@ export function parseAdmissionBlockStamp(
     msgId: meta.msgId,
     atMs: meta.atMs,
     occurrences: 1,
+    dependencyEscape: asDependencyEscape(rec.dependencyEscape),
   };
 }
 

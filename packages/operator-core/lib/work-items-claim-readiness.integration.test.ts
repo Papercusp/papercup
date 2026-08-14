@@ -76,6 +76,14 @@ async function blockByIssue(blockedId: string, issueId: string) {
     VALUES (${WS}, 'feature', ${`${H}#${blockedId}`}, 'issue', ${issueId}, 'blocks')`;
 }
 
+/** An issue blocked by a feature dependency: bare issue target, qualified feature blocker. */
+async function blockIssueByFeature(blockedId: string, blockerId: string) {
+  await db.sql`
+    INSERT INTO harness_shared.work_item_deps
+      (workspace_id, blocked_kind, blocked_ref, blocker_kind, blocker_ref, dep_type)
+    VALUES (${WS}, 'issue', ${blockedId}, 'feature', ${`${H}#${blockerId}`}, 'blocks')`;
+}
+
 // `assignee` (mapped to work_items.taken_by by the engineer_issues view's INSTEAD OF
 // trigger) defaults to a placeholder "someone already has it" owner: P-007
 // (SCHEDULER_ISSUES_CLAIMABLE, default-ON) additively falls through to self-select an
@@ -249,5 +257,54 @@ describe('claimNextWorkItem readiness — unblocked work is unaffected', () => {
     await blockByFeature('F-blocked', 'F-blocker');
     // Oldest-first would pick F-blocked, but it's blocked ⇒ the claim skips to F-ready.
     expect((await wi.claimNextWorkItem({ harness: H, assignee: 'w1' }))?.id).toBe('F-ready');
+  });
+});
+
+describe('readHeldDependencyEscapeContext — fleet critical-path escape (P-006)', () => {
+  it('identifies an excluded issue dependency as blocking active work held by that member', async () => {
+    await seedIssue('WI-blocker', 'open', { assignee: null });
+    await seedFeature('F-held', { status: 'wip', takenBy: 'member-1' });
+    await seedFeature('F-other', { status: 'wip', takenBy: 'member-2' });
+    await seedFeature('F-done', { status: 'done', takenBy: 'member-1' });
+    await blockByIssue('F-held', 'WI-blocker');
+    await blockByIssue('F-other', 'WI-blocker');
+    await blockByIssue('F-done', 'WI-blocker');
+
+    await expect(wi.readHeldDependencyEscapeContext({
+      dependencyId: 'WI-blocker',
+      member: 'member-1',
+      harness: H,
+    })).resolves.toEqual({
+      dependencyId: 'WI-blocker',
+      dependencyKind: 'issue',
+      blockedHeldItems: [{ id: 'F-held', kind: 'feature', harness: H }],
+    });
+  });
+
+  it('honors the qualified feature ref when the member-held item is issue-family', async () => {
+    await seedFeature('F-blocker', { status: 'wip' });
+    await seedIssue('WI-held', 'open', { assignee: 'member-1' });
+    await blockIssueByFeature('WI-held', 'F-blocker');
+
+    await expect(wi.readHeldDependencyEscapeContext({
+      dependencyId: 'F-blocker',
+      member: 'member-1',
+      harness: H,
+    })).resolves.toEqual({
+      dependencyId: 'F-blocker',
+      dependencyKind: 'feature',
+      blockedHeldItems: [{ id: 'WI-held', kind: 'change', harness: H }],
+    });
+  });
+
+  it('returns null after the dependency is terminal (same falsifier as readiness)', async () => {
+    await seedIssue('WI-blocker', 'done', { assignee: null });
+    await seedFeature('F-held', { status: 'wip', takenBy: 'member-1' });
+    await blockByIssue('F-held', 'WI-blocker');
+    await expect(wi.readHeldDependencyEscapeContext({
+      dependencyId: 'WI-blocker',
+      member: 'member-1',
+      harness: H,
+    })).resolves.toBeNull();
   });
 });

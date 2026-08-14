@@ -36,6 +36,7 @@ import {
   admitWorkItemForFleetTarget,
   notifyFleetScopeRefusal,
   fleetScopeLeaderRemedy,
+  renderFleetDependencyEscape,
 } from '../../scheduler/fleet-scope-admission';
 import { getClaimTimeCheckpointHint } from '../../work-item-checkpoint';
 import {
@@ -308,7 +309,7 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
     // the spec is refusing a CLASS. This is the seam that produced the original evidence —
     // WI-7264 was refused here twice under one spec revision, and the advice both times was
     // to widen for that row.
-    const { liveRouteTarget, classRefusal } =
+    const { liveRouteTarget, classRefusal, dependencyEscape } =
       (await notifyFleetScopeRefusal(identity, admission, `work_items:claim ${it.id} → ${claimer}`, {
         harness: it.harness,
         // EI-18680302159738037: name the pair structurally so fleet:leader-brief can
@@ -319,6 +320,7 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
       ok: false,
       id: it.id,
       error: admission.code,
+      ...(dependencyEscape ? { dependencyEscape } : {}),
       // EI-18673501896258575: surface the SAME concrete remedy the fleet leader was just
       // notified with, to the CALLER too — previously only fleetScopeLeaderRemedy's text
       // reached the leader (via notifyFleetScopeRefusal); the refused caller saw only the
@@ -326,7 +328,10 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
       // the exact scheduler:set_claim_spec call shape, so a member acting on an explicit
       // leader directive had to file the work unclaimed and wait, blind, for their leader
       // to notice the notification.
-      hint: `${admission.reason}. The claim was refused before mutation. ${fleetScopeLeaderRemedy(admission, liveRouteTarget, classRefusal)}`,
+      hint:
+        `${admission.reason}. The claim was refused before mutation. ` +
+        `${fleetScopeLeaderRemedy(admission, liveRouteTarget, classRefusal)}` +
+        (dependencyEscape ? ` ${renderFleetDependencyEscape(dependencyEscape)}` : ''),
     };
   }
   // WI-5946: the by-id claim path never checked `payload._claimHold` — an owner-gated hold

@@ -55,6 +55,8 @@ vi.mock('../../scheduler/fleet-scope-admission', () => ({
   admitWorkItemForFleetTarget: vi.fn(async () => fleetAdmission.decision),
   notifyFleetScopeRefusal: fleetAdmission.notify,
   fleetScopeLeaderRemedy: vi.fn(() => 'remedy: scheduler:set_claim_spec { … }'),
+  renderFleetDependencyEscape: vi.fn((escape: { dependency: { id: string } }) =>
+    `DEPENDENCY ESCAPE: ${escape.dependency.id}`),
 }));
 // Claim-time recall port (P-008) is exercised in its own memory/claim-port.test.ts;
 // mock it here so the handler test stays a hermetic unit (no real memory backend).
@@ -157,6 +159,48 @@ describe('work_items:claim handler (keyed-array)', () => {
     // notified with — not just a bare refusal reason, so a member acting on an
     // explicit leader directive knows the scheduler:set_claim_spec fix exists.
     expect(b.results[0].hint).toMatch(/remedy: scheduler:set_claim_spec/);
+  });
+
+  it('returns the typed dependency escape produced by the refusal seam', async () => {
+    fleetAdmission.decision = {
+      allowed: false,
+      scoped: true,
+      code: 'fleet_scope_violation',
+      reason: 'WI-blocker is outside fleet-bugs@4',
+      scope: {
+        fleetSlug: 'bugs', ownerId: 'bee-7', fleetRole: 'member',
+        record: { spec: { specId: 'fleet-bugs', revision: 4 } },
+      },
+    };
+    const dependencyEscape = {
+      kind: 'dependency_escape',
+      dependency: { id: 'WI-blocker', kind: 'issue' },
+      blockedHeldItems: [{ id: 'WI-held', kind: 'change', harness: 'papercusp' }],
+      blockedHeldItemIds: ['WI-held'],
+      member: 'bee-7',
+      ownershipPreserved: true,
+      routes: [
+        { kind: 'spec_widen', calls: [] },
+        { kind: 'outside_lane_placement', calls: [] },
+        { kind: 'leader_claim', calls: [] },
+      ],
+    };
+    fleetAdmission.notify.mockResolvedValue({
+      liveRouteTarget: true,
+      classRefusal: null,
+      dependencyEscape,
+    });
+    const b = await body({ id: 'WI-blocker', assignee: 'bee-7', harness: 'papercusp' });
+    expect(b.results[0]).toMatchObject({
+      ok: false,
+      error: 'fleet_scope_violation',
+      dependencyEscape: {
+        dependency: { id: 'WI-blocker' },
+        blockedHeldItemIds: ['WI-held'],
+        ownershipPreserved: true,
+      },
+    });
+    expect(b.results[0].hint).toMatch(/DEPENDENCY ESCAPE/);
   });
 
   it('refuses implicit claims as the shared su-loopback fallback', async () => {

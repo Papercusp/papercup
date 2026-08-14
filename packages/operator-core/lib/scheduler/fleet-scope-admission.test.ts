@@ -16,6 +16,7 @@ const admissionMocks = vi.hoisted(() => ({
   listFleetAssignments: vi.fn(),
   getWorkItem: vi.fn(),
   releaseWorkItem: vi.fn(),
+  readHeldDependencyEscapeContext: vi.fn(),
   sendMessage: vi.fn(),
   getFleet: vi.fn(),
   // EI-13520: diagnoseFleetScopeCooldownMiss's own seam-level dependencies —
@@ -49,6 +50,7 @@ vi.mock('../fleet/assignments', async (importOriginal) => {
 vi.mock('../work-items', () => ({
   getWorkItem: admissionMocks.getWorkItem,
   releaseWorkItem: admissionMocks.releaseWorkItem,
+  readHeldDependencyEscapeContext: admissionMocks.readHeldDependencyEscapeContext,
   claimFloorsWhereSql: admissionMocks.claimFloorsWhereSql,
   releaseCooldownSec: admissionMocks.releaseCooldownSec,
   // EI-19393442073558754: specIsIssueFamilyOnly (fleet-scope-admission.ts) imports the REAL
@@ -109,6 +111,7 @@ describe('fleet scope assignment admission (P-016)', () => {
   beforeEach(() => {
     for (const mock of Object.values(admissionMocks)) mock.mockReset();
     admissionMocks.sendMessage.mockResolvedValue(undefined);
+    admissionMocks.readHeldDependencyEscapeContext.mockResolvedValue(null);
   });
 
   it('evaluates the full boolean grammar, including id cohort + non-P2P exclusion', () => {
@@ -1522,6 +1525,38 @@ describe('fleet scope assignment admission (P-016)', () => {
       // …AND the leader now gets the one-call widen action instead of "re-steer somehow".
       expect(payload.body).toMatch(/scheduler:set_claim_spec/);
       expect(payload.body).not.toMatch(/Re-steer the member's claim spec or route the work elsewhere\./);
+    });
+
+    it('returns and stamps a typed dependency escape when the refused row blocks member-held work', async () => {
+      admissionMocks.readHeldDependencyEscapeContext.mockResolvedValue({
+        dependencyId: 'WI-5700',
+        dependencyKind: 'issue',
+        blockedHeldItems: [{ id: 'WI-held', kind: 'change', harness: 'papercusp' }],
+      });
+      const result = await notifyFleetScopeRefusal(
+        { ownerId: 'su-member' } as never,
+        violation,
+        'work_items:claim WI-5700 → su-member',
+        { harness: 'papercusp', subject: { itemId: 'WI-5700', member: 'su-member' } },
+      );
+      expect(result.dependencyEscape).toMatchObject({
+        kind: 'dependency_escape',
+        dependency: { id: 'WI-5700', kind: 'issue' },
+        blockedHeldItemIds: ['WI-held'],
+        member: 'su-member',
+        ownershipPreserved: true,
+      });
+      expect(result.dependencyEscape?.routes.map((route) => route.kind)).toEqual([
+        'spec_widen',
+        'outside_lane_placement',
+        'leader_claim',
+      ]);
+      const payload = admissionMocks.sendMessage.mock.calls[0]?.[1] as {
+        body: string;
+        extra: { fleetAdmissionBlock: { dependencyEscape: unknown } };
+      };
+      expect(payload.body).toMatch(/DEPENDENCY ESCAPE/);
+      expect(payload.extra.fleetAdmissionBlock.dependencyEscape).toEqual(result.dependencyEscape);
     });
   });
 

@@ -2085,6 +2085,7 @@ export default defineTool({
     // action-required row does not survive a 5-figure inbox. Read failures already
     // fail soft to `[]` inside fetchFleetAdmissionBlocks.
     const admissionBlocked: FleetAdmissionBlock[] = await fetchFleetAdmissionBlocks(fleet);
+    const admissionDependencyEscapes = admissionBlocked.filter((block) => block.dependencyEscape != null);
     // EI-18693470222331709: items released mid-flight (progress recorded, now
     // unassigned) — read failures already fail soft to `[]`.
     const orphanedInFlight: OrphanedInFlightCandidate[] = await readOrphanedInFlightForFleet({
@@ -2295,6 +2296,9 @@ export default defineTool({
       // the only remedy is a spec write YOU make (scheduler:set_claim_spec); no
       // amount of member discipline clears it. See `admissionBlocked` for the rows.
       admission_blocked: admissionBlocked.length,
+      // P-006: the critical subset whose refused item is an unresolved dependency
+      // of work the member already holds. Rows carry the exact dependency + three routes.
+      admission_dependency_escapes: admissionDependencyEscapes.length,
       // EI-18703234178947959: this fleet's own control_state is winding-down (fleet:pause /
       // fleet:wind-down). Emitted EXPLICITLY rather than left implicit, because it is the
       // reason the idle-member alerts above read 0/false: idle members are COMPLYING with
@@ -2630,6 +2634,11 @@ export default defineTool({
                 `NOT member discipline — ${admissionBlocked.length} (item, member) pair(s) were refused by THIS ` +
                 `fleet's claim spec; only YOUR spec write clears it: scheduler:set_claim_spec { fleet, … } to widen ` +
                 `the lane, or route the item to a member whose lane admits it. ` +
+                (admissionDependencyEscapes.length > 0
+                  ? `${admissionDependencyEscapes.length} row(s) are typed DEPENDENCY ESCAPES: each names the ` +
+                    `dependency and blocked held item ids, preserves the member's ownership, and carries three ` +
+                    `routes (spec_widen, outside_lane_placement, leader_claim). `
+                  : '') +
                 `Each row names the specId + revision that refused it; after a widen the member self-claims on its ` +
                 `next scheduler:get_next, with no re-dispatch. \`occurrences\` > 1 means that member is stuck in a ` +
                 `refusal LOOP, burning a wake each time.`,

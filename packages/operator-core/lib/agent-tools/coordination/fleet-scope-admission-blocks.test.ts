@@ -36,6 +36,7 @@ const block = (over: Partial<FleetAdmissionBlock> = {}): FleetAdmissionBlock => 
   msgId: 'msg-1',
   atMs: 1_000,
   occurrences: 1,
+  dependencyEscape: null,
   ...over,
 });
 
@@ -92,6 +93,36 @@ describe('parseAdmissionBlockStamp', () => {
   it('clips a pathological reason instead of letting it into the brief whole', () => {
     const parsed = parseAdmissionBlockStamp(stamp({ reason: 'x'.repeat(5_000) }), META);
     expect(parsed?.reason?.length).toBeLessThanOrEqual(240);
+  });
+
+  it('recovers a typed three-route dependency escape from the refusal stamp', () => {
+    const dependencyEscape = {
+      kind: 'dependency_escape',
+      dependency: { id: 'WI-blocker', kind: 'issue' },
+      blockedHeldItems: [{ id: 'WI-held', kind: 'change', harness: 'papercusp' }],
+      blockedHeldItemIds: ['WI-held'],
+      member: 'su-b0971',
+      ownershipPreserved: true,
+      routes: [
+        { kind: 'spec_widen', calls: [] },
+        { kind: 'outside_lane_placement', calls: [] },
+        { kind: 'leader_claim', calls: [] },
+      ],
+    };
+    expect(parseAdmissionBlockStamp(stamp({ dependencyEscape }), META)?.dependencyEscape).toMatchObject({
+      kind: 'dependency_escape',
+      dependency: { id: 'WI-blocker', kind: 'issue' },
+      blockedHeldItemIds: ['WI-held'],
+      ownershipPreserved: true,
+    });
+  });
+
+  it('drops a malformed dependency escape without dropping the admission block', () => {
+    const parsed = parseAdmissionBlockStamp(stamp({
+      dependencyEscape: { kind: 'dependency_escape', blockedHeldItemIds: [] },
+    }), META);
+    expect(parsed).not.toBeNull();
+    expect(parsed?.dependencyEscape).toBeNull();
   });
 });
 

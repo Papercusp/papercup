@@ -9,7 +9,11 @@
  */
 import { getOrgPg } from '@papercusp/db-org';
 import type { AgentIdentity } from '../agent-tools/coordination/identity';
-import { ISSUE_FAMILY_KINDS, type WorkItem } from '../work-items';
+import {
+  ISSUE_FAMILY_KINDS,
+  type HeldDependencyEscapeContext,
+  type WorkItem,
+} from '../work-items';
 import type { ClaimSpecRecord } from './claim-spec-store';
 import { resolveClaimSpecWorkspace } from './claim-spec-workspace';
 import {
@@ -18,7 +22,7 @@ import {
   type ClaimSpecSubject,
 } from './claim-spec-match';
 import { claimSpecFilterToClaimablePayloadFilter } from './claim-spec-payload-filter';
-import { formatSpecRef } from './claim-spec';
+import { formatSpecRef, type ClaimSpec } from './claim-spec';
 
 /**
  * EI-19393442073558754: pull the `kind in [...]` leaf's value out of a claim spec's
@@ -110,6 +114,129 @@ export type FleetScopeAdmission =
       reason: string;
       scope: FleetScopeContext;
     };
+
+export type FleetDependencyEscapeCall = {
+  tool: string;
+  args: Record<string, unknown>;
+};
+
+/**
+ * Typed, persisted escape contract for a blocker the fleet member cannot claim
+ * because the blocker sits outside its lane. The member keeps its held work;
+ * the leader chooses exactly one route for the dependency.
+ */
+export interface FleetDependencyEscape {
+  kind: 'dependency_escape';
+  dependency: { id: string; kind: string };
+  blockedHeldItems: Array<{ id: string; kind: string; harness: string | null }>;
+  blockedHeldItemIds: string[];
+  member: string;
+  ownershipPreserved: true;
+  routes: [
+    {
+      kind: 'spec_widen';
+      calls: [FleetDependencyEscapeCall, FleetDependencyEscapeCall];
+    },
+    {
+      kind: 'outside_lane_placement';
+      substitute: { liveNonMemberAssignee: string };
+      calls: [FleetDependencyEscapeCall, FleetDependencyEscapeCall];
+    },
+    {
+      kind: 'leader_claim';
+      calls: [FleetDependencyEscapeCall];
+    },
+  ];
+}
+
+/** PURE: turn a verified dependency edge into the three executable recovery routes. */
+export function buildFleetDependencyEscape(args: {
+  admission: Extract<FleetScopeAdmission, { allowed: false }>;
+  context: HeldDependencyEscapeContext;
+  harness?: string | null;
+}): FleetDependencyEscape {
+  const { admission, context } = args;
+  const current = admission.scope.record.spec;
+  const idLeaf = { field: 'id' as const, op: '=' as const, value: context.dependencyId };
+  const currentFilter = current.view.filter;
+  const proposed: ClaimSpec = {
+    ...current,
+    specId: admission.scope.record.source === 'default'
+      ? `${admission.scope.fleetSlug}-lane`
+      : current.specId,
+    revision: current.revision + 1,
+    view: {
+      ...current.view,
+      filter: currentFilter ? { any: [currentFilter, idLeaf] } : idLeaf,
+    },
+  };
+  const scopedHarness = args.harness?.trim() || undefined;
+  const harnessArg = scopedHarness ? { harness: scopedHarness } : {};
+  const outsideAssignee = '<live-non-member-owner-id>';
+  return {
+    kind: 'dependency_escape',
+    dependency: { id: context.dependencyId, kind: context.dependencyKind },
+    blockedHeldItems: context.blockedHeldItems,
+    blockedHeldItemIds: context.blockedHeldItems.map((item) => item.id),
+    member: admission.scope.ownerId,
+    ownershipPreserved: true,
+    routes: [
+      {
+        kind: 'spec_widen',
+        calls: [
+          {
+            tool: 'scheduler:preview_spec_delta',
+            args: { fleet: admission.scope.fleetSlug, proposed, ...harnessArg },
+          },
+          {
+            tool: 'scheduler:set_claim_spec',
+            args: { fleet: admission.scope.fleetSlug, spec: proposed, ...harnessArg },
+          },
+        ],
+      },
+      {
+        kind: 'outside_lane_placement',
+        substitute: { liveNonMemberAssignee: outsideAssignee },
+        calls: [
+          {
+            tool: 'work_items:claim',
+            args: { id: context.dependencyId, assignee: outsideAssignee, ...harnessArg },
+          },
+          {
+            tool: 'coord:send',
+            args: {
+              to: [outsideAssignee],
+              expects: 'action',
+              wake: 'required',
+              body: [{
+                text: `Claim dependency ${context.dependencyId}; it blocks ${context.blockedHeldItems.map((item) => item.id).join(', ')} held by ${admission.scope.ownerId}.`,
+                forYouBecause: { relation: 'owns', ref: context.dependencyId },
+              }],
+            },
+          },
+        ],
+      },
+      {
+        kind: 'leader_claim',
+        calls: [{
+          tool: 'work_items:claim',
+          // No assignee on purpose: invoked by the fleet leader, this bypasses the
+          // MEMBER-only lane without changing/releasing the blocked member's claim.
+          args: { id: context.dependencyId, ...harnessArg },
+        }],
+      },
+    ],
+  };
+}
+
+export function renderFleetDependencyEscape(escape: FleetDependencyEscape): string {
+  return (
+    `DEPENDENCY ESCAPE: ${escape.dependency.id} (${escape.dependency.kind}) blocks held ` +
+    `${escape.blockedHeldItemIds.join(', ')} for ${escape.member}; ownership is preserved. ` +
+    'Choose one typed route from dependencyEscape.routes: preview+apply spec_widen, place with a live ' +
+    'non-member and wake them, or have the fleet leader claim the dependency directly.'
+  );
+}
 
 /** Resolve only MEMBER scope. Leaders supervise fleets but do not consume their member lane. */
 export async function resolveFleetScopeContext(
@@ -749,11 +876,17 @@ export async function notifyFleetScopeRefusal(
   // minus the stamp, and the reader SKIPS an unstamped row rather than prose-parsing
   // `action` — a guessed itemId on a leader's dashboard is worse than an absent one.
   opts?: { harness?: string | null; subject?: { itemId?: string | null; member?: string | null } },
-): Promise<{ liveRouteTarget: boolean | null; classRefusal: FleetScopeClassRefusal | null }> {
+): Promise<{
+  liveRouteTarget: boolean | null;
+  classRefusal: FleetScopeClassRefusal | null;
+  dependencyEscape?: FleetDependencyEscape;
+}> {
   // WI-6326: irrelevant while winding-down (that remedy branch never mentions
   // "route elsewhere" at all) — skip the extra lookup.
   const windingDown = admission.code === 'fleet_winding_down';
-  const [liveRouteTarget, classRefusal, retiredPlans] = await Promise.all([
+  const itemId = opts?.subject?.itemId?.trim() ?? '';
+  const member = opts?.subject?.member?.trim() ?? '';
+  const [liveRouteTarget, classRefusal, retiredPlans, dependencyContext] = await Promise.all([
     windingDown
       ? Promise.resolve(null)
       : hasLiveFleetRouteTarget(admission.scope.fleetSlug, admission.scope.workspaceId, admission.scope.ownerId),
@@ -763,7 +896,19 @@ export async function notifyFleetScopeRefusal(
       ? Promise.resolve(null)
       : diagnoseFleetScopeClassRefusal({ scope: admission.scope, harness: opts.harness }),
     windingDown ? Promise.resolve([]) : diagnoseFleetScopeRetiredPlans({ scope: admission.scope }),
+    windingDown || !itemId || !member
+      ? Promise.resolve(null)
+      : import('../work-items')
+          .then((m) => m.readHeldDependencyEscapeContext({
+            dependencyId: itemId,
+            member,
+            harness: opts?.harness,
+          }))
+          .catch(() => null),
   ]);
+  const dependencyEscape = dependencyContext
+    ? buildFleetDependencyEscape({ admission, context: dependencyContext, harness: opts?.harness })
+    : null;
   const { sendMessage } = await import('../agent-tools/coordination/messages');
   // Lazy, like every other agent-tools seam in this file: the constants live with
   // the READER (agent-tools/coordination), and a static edge would drag the coord
@@ -774,8 +919,6 @@ export async function notifyFleetScopeRefusal(
   // EI-18680302159738037: stamp the block structurally alongside the prose. Only
   // when the caller named BOTH item and member — the reader requires the pair, so a
   // half stamp would be dead weight on the envelope.
-  const itemId = opts?.subject?.itemId?.trim() ?? '';
-  const member = opts?.subject?.member?.trim() ?? '';
   const stamp = itemId && member
     ? {
         [FLEET_ADMISSION_BLOCK_STAMP]: {
@@ -786,17 +929,25 @@ export async function notifyFleetScopeRefusal(
           code: admission.code,
           action,
           reason: admission.reason,
+          ...(dependencyEscape ? { dependencyEscape } : {}),
         },
       }
     : undefined;
   await sendMessage(identity, {
     to: [`@fleet-leader:${admission.scope.fleetSlug}`],
     summary: `fleet-scope admission blocked ${action}`,
-    body: `${admission.reason}. The assignment was not mutated. ${fleetScopeLeaderRemedy(admission, liveRouteTarget, classRefusal, retiredPlans)}`,
+    body:
+      `${admission.reason}. The assignment was not mutated. ` +
+      `${fleetScopeLeaderRemedy(admission, liveRouteTarget, classRefusal, retiredPlans)}` +
+      (dependencyEscape ? ` ${renderFleetDependencyEscape(dependencyEscape)}` : ''),
     category: FLEET_ADMISSION_BLOCK_CATEGORY,
     ...(stamp ? { extra: stamp } : {}),
   }).catch(() => undefined);
-  return { liveRouteTarget, classRefusal };
+  return {
+    liveRouteTarget,
+    classRefusal,
+    ...(dependencyEscape ? { dependencyEscape } : {}),
+  };
 }
 
 export interface FleetScopeReconciliation {
