@@ -114,6 +114,18 @@ const argsSchema = z
       .max(12)
       .optional()
       .describe('deprecate-learnings only: refs grounding the learnings (the deprecated plan ref is always included).'),
+    // The acceptance gate has implemented `force` since D-003 and EVERY one of its
+    // refusals tells the caller to "pass force:{ reason }" — but the key was never
+    // declared here and never threaded to evaluatePlanAcceptanceGate, so the schema
+    // rejected it as an unrecognized key. The advertised escape hatch did not exist,
+    // which is half of EI-20430092702151575: a plan that could not satisfy the gate
+    // could not force past it either, and so could not ship at all.
+    force: z
+      .object({ reason: z.string().min(1).max(2000) })
+      .optional()
+      .describe(
+        "status='shipped' only: ship past the acceptance gate's code-truth checks, recording the reason on the plan (`forcedPast`). A waived ship is deliberately loud, never silent. Does NOT waive the independently-flagged checks the gate marks non-waivable.",
+      ),
   })
   .refine((a) => Boolean(a.slug) || (a.slugs?.length ?? 0) > 0, {
     message: 'pass `slug` or `slugs`',
