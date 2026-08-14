@@ -262,7 +262,7 @@ describe('locks:release handler', () => {
       routeM.mockRejectedValue(new Error('authority route unavailable'));
       const tryReleaseM = vi.mocked((await import('./su-lock-store')).tryRelease);
       tryReleaseM.mockRejectedValueOnce(contended);
-      mockResolvedTyped(tryReleaseM, { released: ['a.ts'] });
+      mockResolvedTyped(tryReleaseM, { released: ['a.ts'], heldBefore: 1 });
 
       const pending = call({ lock_id: '11111111-1111-1111-1111-111111111111' });
       await vi.runAllTimersAsync();
