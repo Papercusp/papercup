@@ -474,6 +474,10 @@ export default defineTool({
           ...(mappedFrom ? { mappedFrom } : {}),
           ...(learningsObservation ? { learningsObservation } : {}),
           ...(acceptanceRubricRetired ? { acceptanceRubricRetired } : {}),
+          // A forced ship is loud in the RESPONSE too, not only in the plan
+          // file: the caller who waived the gate should not have to re-read the
+          // plan to see what they waived.
+          ...(forcedPast ? { forcedPast: { reason: forcedPast.reason, checks: [...forcedPast.checks] } } : {}),
           revision: result.value.changed && rev.recorded.current ? { seq: rev.recorded.current.seq } : null,
         };
       },
