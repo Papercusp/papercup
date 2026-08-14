@@ -16,6 +16,9 @@
  */
 
 import { spawn } from 'node:child_process';
+import { delimiter } from 'node:path';
+
+import { resolveSpawnPathDirs } from './backend-bin-resolve.mjs';
 
 export interface OmpModelCatalogCost {
   input: number;
@@ -121,7 +124,22 @@ function execOmp(
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<{ stdout: string; stderr: string; code: number }> {
   return new Promise((resolve, reject) => {
-    const child = spawn('omp', args, { stdio: ['ignore', 'pipe', 'pipe'], env });
+    // The deployed operator often has a service PATH that omits the target
+    // user's install roots. Resolve the same canonical backend locations used
+    // by console launches and carry both the binary's directory and its
+    // shebang interpreter's directory (OMP is commonly `#!/usr/bin/env bun`).
+    const spawnPath = resolveSpawnPathDirs({
+      home: env.HOME ?? env.USERPROFILE,
+      env,
+      agents: ['omp'],
+    });
+    const ompBin = spawnPath.resolved.find((entry) => entry.agent === 'omp')?.bin ?? 'omp';
+    const inheritedPath = env.PATH ?? env.Path ?? '';
+    const childEnv = {
+      ...env,
+      PATH: [...spawnPath.dirs, inheritedPath].filter(Boolean).join(delimiter),
+    };
+    const child = spawn(ompBin, args, { stdio: ['ignore', 'pipe', 'pipe'], env: childEnv });
     let stdout = '';
     let stderr = '';
     let outputBytes = 0;

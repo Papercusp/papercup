@@ -5,6 +5,9 @@
  * setOmpConfig/unsetOmpConfig enforce before ever spawning omp.
  */
 import { describe, expect, it, vi } from 'vitest';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   createOmpModelCatalogReader,
   parseOmpConfigList,
@@ -124,4 +127,30 @@ describe('OMP model catalog', () => {
     await read({ env: { HOME: '/u/one', PATH: '/bin' } });
     expect(exec).toHaveBeenCalledTimes(4);
   });
+
+  it.runIf(process.platform !== 'win32')(
+    'resolves an installed OMP binary and its shebang interpreter under a stripped service PATH',
+    async () => {
+      const home = mkdtempSync(join(tmpdir(), 'omp-config-bin-'));
+      const ompDir = join(home, '.bun', 'bin');
+      const interpreterDir = join(home, '.local', 'bin');
+      mkdirSync(ompDir, { recursive: true });
+      mkdirSync(interpreterDir, { recursive: true });
+      writeFileSync(join(ompDir, 'omp'), '#!/usr/bin/env fakebun\n', { mode: 0o755 });
+      writeFileSync(
+        join(interpreterDir, 'fakebun'),
+        `#!/bin/sh\nprintf '%s\\n' '${JSON.stringify({ models: [MODEL_ROW] })}'\n`,
+        { mode: 0o755 },
+      );
+
+      try {
+        const read = createOmpModelCatalogReader({ ttlMs: 0 });
+        await expect(read({ env: { HOME: home, PATH: '/usr/bin:/bin' } })).resolves.toEqual({
+          models: [MODEL_ROW],
+        });
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+      }
+    },
+  );
 });
