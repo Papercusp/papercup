@@ -109,6 +109,82 @@ export function matchExternalProcessesDetailed(pattern: string, opts?: {
     argvTextOnly: ProcRow[];
 };
 /**
+ * Parse the cgroup-v2 path out of a `/proc/<pid>/cgroup` body (`0::<path>`).
+ *
+ * @param {Buffer | string} raw
+ * @returns {string | null} null when there is no v2 line (cgroup v1-only host).
+ */
+export function parseCgroupPath(raw: Buffer | string): string | null;
+/**
+ * Parse `usage_usec <n>` out of a cgroup `cpu.stat` body. This counter is
+ * MONOTONIC, which is what makes a two-sample delta a true rate even as
+ * children spawn and exit between the samples.
+ *
+ * @param {Buffer | string} raw
+ * @returns {number | null}
+ */
+export function parseUsageUsec(raw: Buffer | string): number | null;
+/**
+ * Cores busy = Δusage_usec / elapsed.
+ *
+ * ⚠ Divide by the MEASURED elapsed time, never by the requested sleep: a
+ * loaded box oversleeps, and dividing by the request inflates the rate.
+ *
+ * @param {number} deltaUsec
+ * @param {number} elapsedMs
+ * @returns {number | null} null when elapsed is non-positive (rate undefined).
+ */
+export function computeCoresBusy(deltaUsec: number, elapsedMs: number): number | null;
+/**
+ * Two-sample CPU rate over a pid's WHOLE cgroup — the answer to "is it
+ * actually WORKING", as opposed to `check`'s "is it RUNNING".
+ *
+ * The cgroup is the instrument on purpose (EI-20425164406230624): it accounts
+ * for EVERY descendant at ANY depth, so nothing can hide below a walk bound.
+ * A hand-rolled /proc tree walk reports a confident FALSE IDLE two ways — a
+ * depth-bounded walk halts on a 0-tick shell wrapper (this repo's test
+ * entrypoint is ~8 levels deep), and one pid's utime+stime+cutime+cstime
+ * credits `c*` only on wait(), which vitest never does for its own workers.
+ *
+ * Returns a discriminated result: an unreadable cgroup is `unknown`, NEVER 0
+ * cores — "could not measure" and "measured, idle" must not render alike.
+ *
+ * @param {number} pid
+ * @param {{ procRoot?: string; cgroupRoot?: string; sampleMs?: number;
+ *           sleep?: (ms: number) => Promise<void>; now?: () => number }} [opts]
+ */
+export function sampleCgroupBusy(pid: number, opts?: {
+    procRoot?: string;
+    cgroupRoot?: string;
+    sampleMs?: number;
+    sleep?: (ms: number) => Promise<void>;
+    now?: () => number;
+}): Promise<{
+    status: string;
+    reason: string;
+    cgroupPath?: undefined;
+    cores?: undefined;
+    procs?: undefined;
+    elapsedMs?: undefined;
+} | {
+    status: string;
+    reason: string;
+    cgroupPath: string;
+    cores?: undefined;
+    procs?: undefined;
+    elapsedMs?: undefined;
+} | {
+    status: string;
+    cores: number;
+    procs: number | null;
+    elapsedMs: number;
+    cgroupPath: string;
+    reason?: undefined;
+}>;
+/** Render one `--busy` line (+ its falsifier when near-zero). Pure, so the
+ *  wording is pinned by tests rather than by eyeballing terminal output. */
+export function formatBusy(sample: any): string[];
+/**
  * One live process, as read out of `/proc`.
  */
 export type ProcRow = {
