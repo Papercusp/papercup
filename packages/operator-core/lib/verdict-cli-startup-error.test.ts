@@ -5,7 +5,7 @@
  * test launches the installed CLI and replaces only the spawned `node` command
  * with a deterministic failing daemon fixture.
  */
-import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { delimiter, join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -45,6 +45,7 @@ exit 1
               ...process.env,
               PATH: `${fixtureRoot}${delimiter}${process.env.PATH ?? ''}`,
               VERDICT_DATA_DIR: dataDir,
+              VERDICT_START_TIMEOUT_MS: '750',
               VERDICT_TEST_SENTINEL: sentinel,
             },
             maxBuffer: 32 * 1024,
@@ -60,12 +61,84 @@ exit 1
         typeof failure === 'object' && failure !== null && 'stderr' in failure
           ? String((failure as { stderr?: unknown }).stderr ?? '')
           : '';
-      expect(stderr).toContain('Server failed to start within 15 seconds');
+      expect(stderr).toContain('Server failed to start within 750ms');
       expect(stderr).toContain('--- server stderr ---');
       expect(stderr).toContain(sentinel);
       expect(stderr).toContain('npx playwright install');
+
+      const cliSource = await readFile(require.resolve('verdict-cli/bin/browse.mjs'), 'utf8');
+      expect(cliSource).toContain(': 30_000;');
     } finally {
       await rm(fixtureRoot, { recursive: true, force: true });
     }
-  }, 20_000);
+  }, 5_000);
+
+  it('exits after a successful first command while the detached daemon stays alive', async () => {
+    const fixtureRoot = await mkdtemp(join(tmpdir(), 'verdict-cli-startup-unref-'));
+    const fakeNode = join(fixtureRoot, 'node');
+    const dataDir = join(fixtureRoot, 'data');
+    let daemonPid: number | null = null;
+
+    try {
+      await writeFile(
+        fakeNode,
+        `#!${process.execPath}
+const { createServer } = require('node:http');
+const { mkdirSync, writeFileSync } = require('node:fs');
+const { resolve } = require('node:path');
+const dataDir = process.env.VERDICT_DATA_DIR;
+const token = 'fixture-token';
+const server = createServer(async (req, res) => {
+  for await (const _chunk of req) {}
+  res.writeHead(200);
+  res.end('fixture-ready');
+});
+server.listen(0, '127.0.0.1', () => {
+  mkdirSync(dataDir, { recursive: true });
+  writeFileSync(resolve(dataDir, 'verdict.json'), JSON.stringify({
+    port: server.address().port,
+    token,
+    pid: process.pid,
+    started: new Date().toISOString(),
+  }));
+});
+process.on('SIGTERM', () => server.close(() => process.exit(0)));
+`,
+        'utf8',
+      );
+      await chmod(fakeNode, 0o755);
+
+      const { stdout, stderr } = await execFileAsync(
+        process.execPath,
+        [require.resolve('verdict-cli/bin/browse.mjs'), 'status'],
+        {
+          env: {
+            ...process.env,
+            PATH: `${fixtureRoot}${delimiter}${process.env.PATH ?? ''}`,
+            VERDICT_DATA_DIR: dataDir,
+            VERDICT_START_TIMEOUT_MS: '3000',
+          },
+          maxBuffer: 32 * 1024,
+          timeout: 5_000,
+        },
+      );
+
+      expect(stdout).toContain('fixture-ready');
+      expect(stderr).toContain('Server ready');
+      const state = JSON.parse(await readFile(join(dataDir, 'verdict.json'), 'utf8')) as {
+        pid: number;
+      };
+      daemonPid = state.pid;
+      expect(() => process.kill(state.pid, 0)).not.toThrow();
+    } finally {
+      if (daemonPid !== null) {
+        try {
+          process.kill(daemonPid, 'SIGTERM');
+        } catch {
+          // The fixture daemon may already have exited during test teardown.
+        }
+      }
+      await rm(fixtureRoot, { recursive: true, force: true });
+    }
+  }, 8_000);
 });

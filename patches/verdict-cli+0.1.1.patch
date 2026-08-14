@@ -1,8 +1,20 @@
 diff --git a/node_modules/verdict-cli/bin/browse.mjs b/node_modules/verdict-cli/bin/browse.mjs
-index a3392d2..6b33823 100755
+index a3392d2..b6ecbf5 100755
 --- a/node_modules/verdict-cli/bin/browse.mjs
 +++ b/node_modules/verdict-cli/bin/browse.mjs
-@@ -43,7 +43,12 @@ function isAlive(pid) {
+@@ -31,6 +31,11 @@ const [command, ...args] = filtered;
+ 
+ const DATA_DIR = sessionName ? resolve(BASE_DATA_DIR, 'sessions', sessionName) : BASE_DATA_DIR;
+ const STATE_FILE = resolve(DATA_DIR, 'verdict.json');
++const configuredStartTimeoutMs = Number.parseInt(process.env.VERDICT_START_TIMEOUT_MS ?? '', 10);
++const START_TIMEOUT_MS = Number.isFinite(configuredStartTimeoutMs) && configuredStartTimeoutMs >= 250
++  ? configuredStartTimeoutMs
++  : 30_000;
++const START_POLL_MS = 250;
+ 
+ function readState() {
+   try { return existsSync(STATE_FILE) ? JSON.parse(readFileSync(STATE_FILE, 'utf8')) : null; } catch { return null; }
+@@ -43,10 +48,20 @@ function isAlive(pid) {
  async function startServer() {
    const env = { ...process.env };
    if (sessionName) env.VERDICT_SESSION = sessionName;
@@ -13,22 +25,32 @@ index a3392d2..6b33823 100755
 +    stderr += chunk.toString();
 +    if (stderr.length > 8192) stderr = stderr.slice(-8192);
 +  });
++  // The server is intentionally long-lived. Keeping its stderr pipe referenced
++  // pins the short-lived CLI client until the daemon exits, even after a
++  // successful command. The startup loop below remains referenced while it
++  // needs diagnostics; after it returns, this pipe must not keep Node alive.
++  child.stderr?.unref?.();
    child.unref();
-   for (let i = 0; i < 60; i++) {
-     await new Promise(r => setTimeout(r, 250));
-@@ -60,7 +65,10 @@ async function startServer() {
+-  for (let i = 0; i < 60; i++) {
+-    await new Promise(r => setTimeout(r, 250));
++  for (let elapsedMs = 0; elapsedMs < START_TIMEOUT_MS; elapsedMs += START_POLL_MS) {
++    await new Promise(r => setTimeout(r, Math.min(START_POLL_MS, START_TIMEOUT_MS - elapsedMs)));
+     const state = readState();
+     if (state && isAlive(state.pid)) {
+       // Verify the server actually responds before returning
+@@ -60,7 +75,10 @@ async function startServer() {
        } catch {}
      }
    }
 -  throw new Error('Server failed to start within 15 seconds');
 +  const diagnostic = stderr.trim();
 +  throw new Error(
-+    `Server failed to start within 15 seconds${diagnostic ? `\n--- server stderr ---\n${diagnostic}` : ''}`,
++    `Server failed to start within ${START_TIMEOUT_MS}ms${diagnostic ? `\n--- server stderr ---\n${diagnostic}` : ''}`,
 +  );
  }
  
  async function send(state, command, args) {
-@@ -193,9 +201,18 @@ if (!state || !isAlive(state.pid)) {
+@@ -193,9 +211,18 @@ if (!state || !isAlive(state.pid)) {
  try {
    output(await send(state, command, args));
  } catch (e) {
