@@ -14,7 +14,8 @@
 
 import { afterEach, describe, it, expect, vi } from 'vitest';
 import Corestore from 'corestore';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { createConnection } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
@@ -341,6 +342,56 @@ describe('substrate sidecar host — store relocation (P-001)', () => {
     const binding = { kind: 'gh', github_repository_id: 123 };
     await host.methods['substrate:rekey']({ storeId: boot.storeId, binding });
     expect(fake.rekey).toHaveBeenCalledWith(binding);
+  });
+
+  it('EI-20438405483051865: exposes a sidecar-owned pot-git Duplex through one bounded one-shot Unix socket', async () => {
+    const base = makeFakeBootedHandle({
+      workspaceId: WS,
+      harnessSlug: SLUG,
+      keyHex: 'ab'.repeat(32),
+    }).handle;
+    const fake = { ...base, swarm: { topicHex: 'deadbeef' } as never } satisfies BootedHarnessHandle;
+    const peer = new PassThrough();
+    const openHiveGitDuplex = vi.fn(async () => peer);
+    const tunnelDir = tempStoragePath('reloc-hive-git-tunnel-');
+    const host = createSubstrateSidecarHost({
+      bootHarnessImpl: async () => fake,
+      wireOutbox: async () => {},
+      wirePresence: async () => {},
+      openHiveGitDuplex,
+      hiveGitTunnelDir: tunnelDir,
+      hiveGitTunnelTtlMs: 1_000,
+    });
+    cleanups.push(() => host.closeAll());
+
+    const boot = (await host.methods['substrate:bootHarness']({
+      workspaceId: WS,
+      harnessSlug: SLUG,
+      workspaceRoot: tempWorkspace('reloc-hive-git-').workspaceRoot,
+    })) as { storeId: string };
+    const prepared = (await host.methods['substrate:openHiveGitDuplex']({
+      storeId: boot.storeId,
+      devicePubkeyBase64: 'peer-device',
+      repoKey: 'gh-1296269',
+      peerGithubUserId: 42,
+    })) as { socketPath: string; topicHex: string };
+
+    expect(prepared.topicHex).toBe('deadbeef');
+    expect(openHiveGitDuplex).toHaveBeenCalledWith(
+      Buffer.from('deadbeef', 'hex'),
+      'peer-device',
+      { repoKey: 'gh-1296269', peerGithubUserId: 42 },
+    );
+
+    const client = createConnection(prepared.socketPath);
+    client.on('error', () => {});
+    await once(client, 'connect');
+    const received = once(client, 'data');
+    client.write(Buffer.from('tunnel-ping'));
+    expect(Buffer.from((await received)[0] as Buffer).toString()).toBe('tunnel-ping');
+
+    await vi.waitFor(() => expect(existsSync(prepared.socketPath)).toBe(false));
+    client.destroy();
   });
 });
 
