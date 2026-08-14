@@ -154,6 +154,7 @@ import {
   type RepoError,
   type ScopedOversized,
   type ScopedContentError,
+  type StrandedSubmodule,
 } from './run-git-sync';
 import { emitGitSyncCommittedEvent, emitGitSyncEgressedEvent } from './git-sync-events';
 import { parsePapercuspTrailers, recordCommitAttribution, type CommitAttributionRow } from '../../edit-attribution';
@@ -239,6 +240,28 @@ const CONTENT_ERROR_EVENT = 'git-sync:content-error';
  *  the content-fixer and surface to a human (P-005: never an infinite silent fix loop).
  *  The file stays quarantined regardless, so `staging` is never at risk. */
 const MAX_CONTENT_FIXER_ATTEMPTS = 5;
+
+/**
+ * EI-20402093158205519 (stranded-submodule census). A POPULATED but UNREGISTERED
+ * submodule — a real worktree on disk that `.git/config` carries no
+ * `submodule.<name>.url` for — is invisible to every leg of this pipeline:
+ * `git submodule status` marks it '-', discovery skips it, so git-sync never
+ * visits the repo and CANNOT commit its dirty files. The edit LOOKS landed (the
+ * file is on disk and the local build is green) while a clean clone of the branch
+ * does not have it at all. That divergence is the defect, and its signature is
+ * SILENCE: the pass that strands the work is otherwise a perfectly clean 'synced'.
+ *
+ * Like the content guard this rides its OWN phase row, separate from the
+ * conflict/error row ('git-sync'), so a strand and a merge conflict coexist and
+ * clear independently. UNLIKE the content guard it dispatches no fixer, because
+ * git-sync must not auto-resolve a strand: these worktrees are commonly parked on
+ * deliberate detached pins, and registering one would fetch/merge/push it and
+ * UNPIN it. Registering is the operator's call; losing the work silently is not.
+ * The row is the whole deliverable — visible, queryable, and self-clearing on the
+ * first pass that measures a clean tree.
+ */
+const STRAND_ESCALATION_PHASE = 'git-sync-strand';
+const STRAND_KIND = 'git-sync-strand';
 
 /** Coord identity for git-sync's own broadcasts (mirrors service-health's). */
 const GIT_SYNC_IDENTITY: AgentIdentity = {
@@ -611,6 +634,50 @@ async function writeGitSyncContentEscalation(
      ON CONFLICT (harness_slug, phase)
      DO UPDATE SET escalation = EXCLUDED.escalation, mtime_ms = EXCLUDED.mtime_ms`,
     [slug, CONTENT_ESCALATION_PHASE, body, Date.now(), workspaceId],
+  );
+}
+
+/**
+ * EI-20402093158205519: write/refresh the `git-sync-strand` escalation — the
+ * human-visible record that N populated-but-unregistered submodules hold tracked
+ * work this pass could not reach. Its own phase row, unconditional upsert (no other
+ * kind shares 'git-sync-strand'), so it can never clobber the conflict/error row.
+ *
+ * The body names the FILES, not just a count: the whole failure mode is an agent
+ * believing an edit landed, so a reader must be able to see which edits did not
+ * without going to hunt for them. `files` is already capped upstream (20/submodule).
+ */
+async function writeGitSyncStrandEscalation(
+  slug: string,
+  workspaceId: string,
+  stranded: StrandedSubmodule[],
+): Promise<void> {
+  const { sql } = getOrgPg();
+  const totalFiles = stranded.reduce((n, s) => n + s.trackedFiles, 0);
+  const list = stranded.map((s) => `${s.path} (${s.trackedFiles} tracked file(s))`).join(', ');
+  const body = JSON.stringify({
+    kind: STRAND_KIND,
+    harness_slug: slug,
+    submodules: stranded.map((s) => ({ path: s.path, tracked_files: s.trackedFiles, files: s.files })),
+    stranded_submodule_count: stranded.length,
+    stranded_file_count: totalFiles,
+    emitted_at: Date.now(),
+    detail:
+      `git-sync CANNOT COMMIT ${totalFiles} tracked file(s) in ${stranded.length} POPULATED but UNREGISTERED ` +
+      `submodule(s): ${list}. They are absent from .git/config (no submodule.<name>.url), so ` +
+      `'git submodule status' marks them '-' and discovery skips them entirely — the edits are NOT committed, ` +
+      `NOT on origin, and a clean clone of this branch does not have them, even though they are on disk and the ` +
+      `local build passes. Fix with: git submodule init <path> (idempotent; copies the .gitmodules URL into ` +
+      `.git/config), then re-check the pin before the next tick. git-sync deliberately does NOT auto-resolve ` +
+      `this — these worktrees are often parked on deliberate detached pins, and registering one here would ` +
+      `fetch/merge/push it and UNPIN it.`,
+  });
+  await sql.unsafe(
+    `INSERT INTO harness_shared.harness_escalations (harness_slug, phase, escalation, mtime_ms, workspace_id)
+     VALUES ($1, $2, $3, $4, $5)
+     ON CONFLICT (harness_slug, phase)
+     DO UPDATE SET escalation = EXCLUDED.escalation, mtime_ms = EXCLUDED.mtime_ms`,
+    [slug, STRAND_ESCALATION_PHASE, body, Date.now(), workspaceId],
   );
 }
 
@@ -3947,6 +4014,35 @@ async function recordAndEscalateTick(a: {
     // content-error escalation (mirror the merge-resolver's clean-pass clear). Gated on the
     // prior counter so a no-content tick doesn't issue a pointless UPDATE every 10 min.
     await clearGitSyncEscalation(slug, [CONTENT_ERROR_KIND], CONTENT_ESCALATION_PHASE);
+  }
+
+  // EI-20402093158205519 strand census: populated-but-unregistered submodules holding
+  // tracked work this pass could not see. INDEPENDENT of outcome.status (like the
+  // content guard) — a strand is orthogonal to whether the visible tree synced, and
+  // the pass that strands work is otherwise a perfectly clean 'synced'.
+  //
+  // THREE-WAY on purpose. `null` means the census did not RUN (discovery failed, or a
+  // submodulePaths override bypassed it), which is NOT the same as running and finding
+  // nothing: treating it as clean would let an unmeasured pass retire a live warning —
+  // the exact silence this field exists to break, reintroduced one level up. So an
+  // unmeasured tick leaves any existing row untouched, and only a MEASURED clean tick
+  // clears it.
+  const stranded = outcome.strandedSubmodules;
+  if (stranded === null) {
+    // Not measured this pass — say nothing, retire nothing.
+  } else if (stranded.length > 0) {
+    console.warn(
+      `[git-sync] ${slug}: ${stranded.length} unregistered submodule(s) hold uncommitted tracked work — ` +
+        stranded.map((s) => `${s.path} (${s.trackedFiles})`).join(', '),
+    );
+    await writeGitSyncStrandEscalation(slug, workspaceId, stranded);
+  } else {
+    // Measured and clean: every populated submodule is registered (or has nothing dirty).
+    // Unconditional, matching the conflict-clear above rather than the content path's
+    // counter gate — there is no strand counter in routine metadata, and the clear is a
+    // primary-key UPDATE guarded by `escalation IS NOT NULL`, so a no-strand tick costs
+    // one statement that matches zero rows.
+    await clearGitSyncEscalation(slug, [STRAND_KIND], STRAND_ESCALATION_PHASE);
   }
 
   // P-003/D-004: after a real sync, sweep this harness's docs for drift — flip
