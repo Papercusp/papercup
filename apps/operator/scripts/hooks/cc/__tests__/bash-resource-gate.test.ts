@@ -232,27 +232,62 @@ async function mapWithConcurrency<T, R>(
  *
  * `runGate` already captures stderr; this reports it, plus whether each credential
  * file actually existed and its size, so the next occurrence explains itself.
+ *
+ * EI-20437152261657452 — BUT IT MUST READ THAT EVIDENCE BEFORE NAMING A CAUSE.
+ * In this hook's protocol SILENCE IS ALLOW (see `expectAllow`, which asserts exactly
+ * an empty stdout). So `status 0 + empty stdout` has TWO causes, not one:
+ *   (a) the credential preamble fail-opened — the flake this helper was built for; or
+ *   (b) the guard ran fine and DELIBERATELY ALLOWED the command — i.e. the test's
+ *       expectation is stale, which is a real finding and not a flake at all.
+ * This message used to assert (a) unconditionally, and explicitly rule out a logic
+ * failure ("not a logic failure") — while printing `token: … (size=11)` two lines
+ * later, evidence that falsifies its own diagnosis. Observed live: after the
+ * native-scheduler lockout was changed to allow `crontab -l` (EI-20419484186942049),
+ * a stale `expectDeny(… "sh -c 'crontab -l'")` failed with this text, which sent the
+ * reader hunting a credential bug that did not exist. So: stat first, then diagnose.
+ *
+ * NB the branch describes the DEFAULT `fakeHome` credentials that every deny test
+ * uses. A test that overrides HOME via runGate's env spread is outside what these
+ * paths can speak to — the sizes are printed either way, so the reader can tell.
  */
 function parseDecision(out: { stdout: string; stderr?: string; status: number | null }): {
   hookSpecificOutput: { permissionDecision: string; permissionDecisionReason: string };
 } {
   if (out.status === 0 && out.stdout.trim() === '') {
-    const describeFile = (p: string) => {
+    const sizeOrNull = (p: string): number | null => {
       try {
-        return `${p} (size=${statSync(p).size})`;
+        return statSync(p).size;
       } catch {
-        return `${p} (MISSING)`;
+        return null;
       }
     };
     const { token, agentId } = credPaths();
-    throw new Error(
-      'gate hook exited 0 with EMPTY stdout — it FAIL-OPENED instead of emitting a decision. ' +
-        'This is the credential-precondition shape (EI-18829641916212203), not a logic failure: ' +
+    const tokenSize = sizeOrNull(token);
+    const agentIdSize = sizeOrNull(agentId);
+    const describeFile = (p: string, size: number | null) =>
+      size === null ? `${p} (MISSING)` : `${p} (size=${size})`;
+    // The precondition the hook's preamble actually tests: both files present AND non-empty.
+    const credentialsUsable = (tokenSize ?? 0) > 0 && (agentIdSize ?? 0) > 0;
+    const lead = credentialsUsable
+      ? 'gate hook exited 0 with EMPTY stdout, which in this hook\'s protocol means it ALLOWED ' +
+        'the command (silence = allow). Both $HOME credential files are present and NON-EMPTY ' +
+        'RIGHT NOW (sizes below), so the evidence does NOT support the credential fail-open ' +
+        'shape (EI-18829641916212203): the likeliest reading is that the guard ran and simply ' +
+        'did not match. Check the EXPECTATION first — a rail that legitimately stopped denying ' +
+        'this command, or a probe string that is now allowed, looks exactly like this.\n' +
+        '  Caveat, stated so this does not mis-diagnose in the other direction: these files are ' +
+        'stat-ed AFTER the run, so a credential that was transiently unreadable under load and ' +
+        'has since been restored would also land here. RE-RUN 3x — that is what separates them: ' +
+        'a load flake does not fail deterministically, a stale expectation does. Diagnostics:\n'
+      : 'gate hook exited 0 with EMPTY stdout — it FAIL-OPENED instead of emitting a decision. ' +
+        'This IS the credential-precondition shape (EI-18829641916212203), not a logic failure: ' +
         "the hook's preamble allows unconditionally when either $HOME credential file is missing " +
-        'or empty. Diagnostics:\n' +
+        'or empty, and one of them is (see below). Diagnostics:\n';
+    throw new Error(
+      lead +
         `  stderr:   ${JSON.stringify(out.stderr ?? '(not captured)')}\n` +
-        `  token:    ${describeFile(token)}\n` +
-        `  agent-id: ${describeFile(agentId)}\n` +
+        `  token:    ${describeFile(token, tokenSize)}\n` +
+        `  agent-id: ${describeFile(agentId, agentIdSize)}\n` +
         `  HOME:     ${fakeHome}`,
     );
   }
@@ -445,6 +480,32 @@ describe('native-scheduler lockout: read-only listings are exempt (EI-2041948418
     const r = runGate(bashCmd('crontab -e'), AGENT);
     expectDeny(r);
     expect(`${r.stdout}${r.stderr}`).toMatch(/crontab -l/);
+  });
+});
+
+// ── EI-20437152261657452: `status 0 + empty stdout` is BOTH the credential
+// fail-open AND an ordinary allow (silence = allow). The diagnostic must read the
+// credential sizes it already collects before naming a cause, or it sends the
+// reader after a credential bug that does not exist — which is exactly what it did
+// when the crontab read-exemption above made a stale deny expectation come true.
+describe('parseDecision diagnoses an empty stdout from the evidence (EI-20437152261657452)', () => {
+  it('reads a healthy-credential ALLOW as an allow, not as a credential fail-open', () => {
+    // `ls -la` is allowed by every guard, so expectDeny MUST throw here. The bug was
+    // never whether it throws — it is which cause the message asserts.
+    let msg = '';
+    try {
+      expectDeny(runGate(bashCmd('ls -la'), AGENT));
+    } catch (e) {
+      msg = (e as Error).message;
+    }
+    expect(msg).toMatch(/silence = allow/);
+    expect(msg).toMatch(/NOT the credential fail-open shape/);
+    expect(msg).toMatch(/Check the EXPECTATION before suspecting a flake/);
+    // The old text asserted the credential shape unconditionally. It must not return.
+    expect(msg).not.toMatch(/it FAIL-OPENED instead of emitting a decision/);
+    // And it must still surface the evidence that justifies the branch it took.
+    expect(msg).toMatch(/token:.*size=/);
+    expect(msg).toMatch(/agent-id:.*size=/);
   });
 });
 
