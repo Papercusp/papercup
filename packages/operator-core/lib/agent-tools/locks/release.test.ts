@@ -21,6 +21,10 @@ vi.mock('./in-workspace-txn', () => ({
 vi.mock('./su-lock-store', () => ({
   tryRelease: vi.fn(),
   releaseAllResourcesForOwner: vi.fn(),
+  // EI-20405390083792304 root fix: the cross-domain resolve reads the queue.
+  readQueue: vi.fn(),
+  getTxPool: vi.fn(() => ({})),
+  ensureBootstrap: vi.fn(),
 }));
 vi.mock('./resource-broadcast', () => ({ broadcastResourceBackUp: vi.fn() }));
 vi.mock('../../authority/file-lock-routing', () => ({ routeFileLockOp: vi.fn() }));
@@ -38,11 +42,12 @@ vi.mock('../../authority/lock-event-stream', () => ({ recordLockEvent: vi.fn() }
 
 import { routeFileLockOp } from '../../authority/file-lock-routing';
 import { recordLockEvent } from '../../authority/lock-event-stream';
-import { releaseAllResourcesForOwner } from './su-lock-store';
+import { releaseAllResourcesForOwner, readQueue } from './su-lock-store';
 import { resolveExplicitFileLockDomain } from './coordination-domain';
 
 const routeM = vi.mocked(routeFileLockOp);
 const releaseResourcesM = vi.mocked(releaseAllResourcesForOwner);
+const readQueueM = vi.mocked(readQueue);
 const recordEventM = vi.mocked(recordLockEvent);
 const resolveDomainM = vi.mocked(resolveExplicitFileLockDomain);
 const tool = (await import('./release')).default;
@@ -57,6 +62,123 @@ beforeEach(() => {
     value: { released: [`released:${(op.remote?.payload as { lockId?: string } | undefined)?.lockId ?? 'all'}`] },
   }) as never);
   releaseResourcesM.mockResolvedValue({ released: 0, exclusiveResources: [], waiters: {} } as never);
+  readQueueM.mockResolvedValue({ active_locks: [], waiting: [] } as never);
+});
+
+/**
+ * EI-20405390083792304 — the ROOT fix. A file lock's coordination domain is the
+ * physical repo root of the EDITED file, which the PreToolUse hook sends
+ * explicitly; an agent's own bare `locks:release` resolves
+ * `<workspace_root>/papercusp` instead. When those differ the release matched
+ * zero rows and still answered `ok:true, released:[]` — indistinguishable from
+ * "you held nothing" — so the holder believed it was clear while the lock sat
+ * until TTL and peers stayed blocked (proven live 2026-08-14).
+ */
+describe('locks:release cross-domain fallback (EI-20405390083792304)', () => {
+  const LOCK = '33333333-3333-3333-3333-333333333333';
+  // Opaque domain strings. Deliberately NOT a real home path: a hardcoded
+  // /home/<user>/… in shipped source reds the identity-lint gate leg.
+  const HIVE = '/hives/sidestage';
+
+  type ReleaseRoute = { value: ReleaseOutcomeShape; via: string; scope?: string };
+  /**
+   * `routeFileLockOp` is generic in its op's return type, so vi.mocked() cannot
+   * infer a concrete impl signature. ONE assertion at this seam keeps every call
+   * site below fully typed — rather than an `as never` per fixture, which is what
+   * the lint:mock-cast-escape ratchet exists to prevent.
+   */
+  const routeByDomain = (byDomain: (domain: string) => ReleaseRoute): void => {
+    routeM.mockImplementation(
+      ((domain: string) => Promise.resolve(byDomain(domain))) as unknown as typeof routeFileLockOp,
+    );
+  };
+
+  /** A COMPLETE ActiveLockRow, so a new required column fails here at compile time. */
+  const activeLock = (lockId: string, domain: string): ActiveLockRow => ({
+    lock_id: lockId,
+    path: 'f.ts',
+    owner: 'me',
+    owner_label: 'Me',
+    intent: 'test',
+    acquired_ts: new Date(0),
+    expires_ts: new Date(Date.now() + 60_000),
+    coordination_domain: domain,
+  });
+
+  const heldIn = (...rows: ActiveLockRow[]): void => {
+    mockResolvedTyped(readQueueM, { active_locks: rows, waiting: [] });
+  };
+
+  /** Frees nothing in `dom` (the caller's domain), everything in `HIVE`. */
+  const onlyHiveHolds = (paths: string[]) => {
+    routeByDomain((domain) => domain === HIVE
+      ? { value: { released: paths, heldBefore: paths.length }, via: 'local-authority' }
+      : { value: { released: [], heldBefore: 0 }, via: 'local-authority' });
+  };
+
+  it('releases a lock held in another domain instead of silently no-opping', async () => {
+    onlyHiveHolds(['app.module.ts']);
+    heldIn(activeLock(LOCK, HIVE));
+
+    const b = body(await call({ lock_id: LOCK }));
+    expect(b.results[0].released).toEqual(['app.module.ts']);
+    expect(b.results[0].cross_domain_released).toEqual([
+      { coordination_domain: HIVE, released: ['app.module.ts'] },
+    ]);
+    // It must route to the domain that actually holds the lock, not the caller's.
+    expect(routeM.mock.calls.map((c) => c[0])).toEqual(['dom', HIVE]);
+  });
+
+  it('does NOT pay for the cross-domain read when the caller\'s own domain frees the lock', async () => {
+    // The hot path must stay exactly as cheap as before the fix.
+    await call({ lock_id: LOCK });
+    expect(readQueueM).not.toHaveBeenCalled();
+    expect(routeM).toHaveBeenCalledTimes(1);
+  });
+
+  it('all_mine sweeps every domain the owner holds locks in', async () => {
+    const OTHER = '/hives/other';
+    routeByDomain((domain) => domain === 'dom'
+      ? { value: { released: [], heldBefore: 0 }, via: 'local-authority' }
+      : { value: { released: [`${domain}/f.ts`], heldBefore: 1 }, via: 'local-authority' });
+    heldIn(activeLock('a', HIVE), activeLock('b', OTHER), activeLock('c', HIVE));
+
+    const b = body(await call({ all_mine: true }));
+    expect(b.released).toEqual([`${HIVE}/f.ts`, `${OTHER}/f.ts`]);
+    // Each domain visited once, deduped.
+    expect(routeM.mock.calls.map((c) => c[0])).toEqual(['dom', HIVE, OTHER]);
+  });
+
+  it('reports an honest empty release when the owner holds nothing anywhere', async () => {
+    routeM.mockResolvedValue({ value: { released: [], heldBefore: 0 }, via: 'local-authority' } as never);
+    const b = body(await call({ all_mine: true }));
+    expect(b.released).toEqual([]);
+    expect(b.held_before).toBe(0);
+    expect(b.cross_domain_released).toBeUndefined();
+  });
+
+  it('never fails the caller\'s release because the cross-domain lookup faulted', async () => {
+    routeM.mockResolvedValue({ value: { released: [], heldBefore: 0 }, via: 'local-authority' } as never);
+    readQueueM.mockRejectedValue(new Error('pool exhausted') as never);
+    const b = body(await call({ all_mine: true }));
+    expect(b.ok).toBe(true);
+    expect(b.released).toEqual([]);
+  });
+
+  it('keeps an unknown heldBefore unknown rather than laundering it into a number', async () => {
+    // A peer authority that does not report the count must not be summed into 0.
+    routeM.mockImplementation(async (domain) => (
+      domain === HIVE
+        ? { value: { released: ['x.ts'], heldBefore: null }, via: 'local-authority' }
+        : { value: { released: [], heldBefore: 0 }, via: 'local-authority' }
+    ) as never);
+    readQueueM.mockResolvedValue({
+      active_locks: [{ lock_id: LOCK, owner: 'me', coordination_domain: HIVE }],
+      waiting: [],
+    } as never);
+    const b = body(await call({ lock_id: LOCK }));
+    expect(b.results[0].held_before).toBeNull();
+  });
 });
 
 describe('locks:release handler', () => {
