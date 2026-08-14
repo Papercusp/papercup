@@ -14,6 +14,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 type FakeDuplex = { on: (ev: string, cb: () => void) => void };
+type FakeBootedHarness = {
+  swarm?: { topicHex?: string } | null;
+  openHiveGitDuplexToDevice?: (device: string, request: unknown) => Promise<unknown>;
+};
 type BootstrapOutcome = {
   ok: boolean;
   namespaces: string[];
@@ -74,7 +78,7 @@ const {
   // the same fail-soft floor the real code falls back to — so the existing
   // happy-path assertions below (any Duplex, selfDevicePubkey passed through)
   // stay valid without a real swarm.
-  getBootedHarnessMock: vi.fn((_ws: string, _hive: string) => null as { swarm?: { topicHex?: string } } | null),
+  getBootedHarnessMock: vi.fn((_ws: string, _hive: string) => null as FakeBootedHarness | null),
   // WI-5247: resolveHiveGitTopicHex demand-boots when getBootedHarness misses
   // (a harness never booted this process, not just an evicted one) — mocked
   // as a resolved no-op so the existing fail-soft-stub assertions stay valid.
@@ -605,6 +609,24 @@ describe('runBootstrapLeg', () => {
     expect(Buffer.isBuffer(topic) && (topic as Buffer).toString('hex')).toBe('deadbeef');
     expect(device).toBe(PEER_DEVICE); // dials a peer, never self (WI-1559 squat guard stays in bootstrapFromPeer)
     expect((req as { repoKey: string }).repoKey).toBe(SLUG);
+    expect(bootstrapFromPeerMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('EI-20438405483051865: uses the relocated sidecar dial when swarm is intentionally null in the main process', async () => {
+    const sidecarDial = vi.fn(async () => dialDuplex(false));
+    getBootedHarnessMock.mockReturnValue({
+      swarm: null,
+      openHiveGitDuplexToDevice: sidecarDial,
+    });
+
+    await runBootstrapLeg(SLUG, WS);
+
+    expect(sidecarDial).toHaveBeenCalledTimes(1);
+    expect(sidecarDial).toHaveBeenCalledWith(
+      PEER_DEVICE,
+      expect.objectContaining({ repoKey: SLUG }),
+    );
+    expect(openHiveGitDuplexToDeviceMock).not.toHaveBeenCalled();
     expect(bootstrapFromPeerMock).toHaveBeenCalledTimes(1);
   });
 

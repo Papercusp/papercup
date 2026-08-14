@@ -121,7 +121,10 @@ import { runOwnHeadPublishTick, type OwnHeadPublishTickOutcome } from '../../syn
 import { describePublishRefusal } from '../../sync/pot-git/publish-guard';
 import { bootstrapFromPeer, hasPendingQuarantine } from '../../sync/pot-git/bootstrap';
 import { fetchCoalescerKey, withFetchCoalescing } from '../../sync/pot-git/fetch-coalescer';
-import { openHiveGitDuplexToDevice } from '../../sync/pot-git/peer-dial-registry';
+import {
+  openHiveGitDuplexToDevice,
+  type HiveGitDuplexRequest,
+} from '../../sync/pot-git/peer-dial-registry';
 import { Duplex } from 'node:stream';
 // EI-18777176681958978: `potHomeSlug` here is the LOCAL registry handle
 // (`entry.hive_slug ?? entry.slug`), which on a joiner can differ from the
@@ -2153,10 +2156,33 @@ async function runOwnHeadPublishLeg(slug: string, workspaceId: string, branch: s
  * up and a LATER tick finds a live topic instead of the harness staying
  * stranded forever. Best-effort: never throws into the calling git-sync tick.
  */
-async function resolveHiveGitTopicHex(
+interface HiveGitDialContext {
+  /** Present only for an in-process swarm. A relocated sidecar owns its topic
+   * and observability maps, so main-process diagnostics must stay UNKNOWN. */
+  topicHex?: string;
+  path: 'in-process' | 'sidecar';
+  openDuplex(devicePubkeyBase64: string, request: HiveGitDuplexRequest): Promise<Duplex>;
+}
+
+interface RelocatedHiveGitDialHandle {
+  openHiveGitDuplexToDevice(
+    devicePubkeyBase64: string,
+    request: HiveGitDuplexRequest,
+  ): Promise<Duplex>;
+}
+
+function hasRelocatedHiveGitDial(handle: unknown): handle is RelocatedHiveGitDialHandle {
+  return (
+    typeof handle === 'object' &&
+    handle !== null &&
+    typeof (handle as Partial<RelocatedHiveGitDialHandle>).openHiveGitDuplexToDevice === 'function'
+  );
+}
+
+async function resolveHiveGitDialContext(
   workspaceId: string,
   installSlug: string,
-): Promise<string | undefined> {
+): Promise<HiveGitDialContext | undefined> {
   const { getBootedHarness, bootSingleHarness } = await import('../../sync/hyperbee/boot-all');
   const handle = getBootedHarness(workspaceId, installSlug);
   if (!handle) {
@@ -2164,8 +2190,23 @@ async function resolveHiveGitTopicHex(
       // best-effort demand-boot; a failure just leaves the harness unbooted
       // for this tick — the next tick's access retries.
     });
+    return undefined;
   }
-  return handle?.swarm?.topicHex;
+  if (hasRelocatedHiveGitDial(handle)) {
+    return {
+      path: 'sidecar',
+      openDuplex: (devicePubkeyBase64, request) =>
+        handle.openHiveGitDuplexToDevice(devicePubkeyBase64, request),
+    };
+  }
+  const topicHex = handle.swarm?.topicHex;
+  if (!topicHex) return undefined;
+  return {
+    path: 'in-process',
+    topicHex,
+    openDuplex: (devicePubkeyBase64, request) =>
+      openHiveGitDuplexToDevice(Buffer.from(topicHex, 'hex'), devicePubkeyBase64, request),
+  };
 }
 
 /**
@@ -2470,8 +2511,8 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
     // pre-WI-3583 destroyed stub when it doesn't (private/local-only harness,
     // or not yet booted onto a swarm) — mirrors runRefAnnounceLeg's own
     // openStream floor exactly.
-    const topicHex = await resolveHiveGitTopicHex(workspaceId, slug);
-    if (!topicHex) {
+    const dialContext = await resolveHiveGitDialContext(workspaceId, slug);
+    if (!dialContext) {
       const stub = new Duplex({
         read() {},
         write(_chunk, _enc, cb) {
@@ -2575,7 +2616,7 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
         dialLog.push(`${peerDevicePubkeyBase64.slice(0, 8)}:backoff(no-such-repo)`);
         continue;
       }
-      const duplex = await openHiveGitDuplexToDevice(Buffer.from(topicHex, 'hex'), peerDevicePubkeyBase64, {
+      const duplex = await dialContext.openDuplex(peerDevicePubkeyBase64, {
         repoKey,
         peerGithubUserId: actor?.githubUserId,
       });
@@ -2592,11 +2633,12 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
       outcome = await bootstrapFromPeer(repoPath, duplex, {
         selfDevicePubkey,
         dial: async () => {
-          const next = await openHiveGitDuplexToDevice(
-            Buffer.from(topicHex, 'hex'),
-            peerDevicePubkeyBase64,
-            { repoKey, peerGithubUserId: actor?.githubUserId },
-          ).catch(() => null);
+          const next = await dialContext
+            .openDuplex(peerDevicePubkeyBase64, {
+              repoKey,
+              peerGithubUserId: actor?.githubUserId,
+            })
+            .catch(() => null);
           return next && !next.destroyed ? next : null;
         },
       });
@@ -2739,9 +2781,10 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
       // connected and exchanging data one second either side. That misreading
       // cost two separate investigations a wrong root cause (this item, and the
       // WI-6299 cold-join drill), so the log now carries the distinction.
+      const topicLabel = dialContext.topicHex?.slice(0, 12) ?? 'sidecar-owned';
       const missBase =
         `[git-sync] ${slug}: bootstrap-tick: no candidate member device was registered in the pot-git dial registry at this instant ` +
-        `(topic ${topicHex.slice(0, 12)}…, dialed: ${dialLog.join(', ')})`;
+        `(topic ${topicLabel}${dialContext.topicHex ? '…' : ''}, dial path ${dialContext.path}, dialed: ${dialLog.join(', ')})`;
       if (missRunLength >= BOOTSTRAP_PERSISTENT_MISS_THRESHOLD) {
         // WI-37226: this is the branch the old wording PROMISED and never had. Note what
         // it does NOT say: it names no cause. The single-miss text below is right that a
@@ -2762,7 +2805,7 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
         // peer (the rig guest was dark; ARP FAILED).
         //
         // Dynamically imported for exactly the reason getBootedHarness is (see
-        // resolveHiveGitTopicHex): a static import drags swarm.ts's real module graph
+        // resolveHiveGitDialContext): a static import drags swarm.ts's real module graph
         // into every caller's test, and swarm.ts pulls symbols from peer-dial-registry
         // that partial mocks do not provide.
         //
@@ -2771,9 +2814,12 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
         // that must never throw.
         let swarmEvidence = 'contentPeers=UNKNOWN lastAnnounceRecv=UNKNOWN (swarm state unreadable this tick)';
         try {
+          if (!dialContext.topicHex) {
+            throw new Error('swarm observability is sidecar-owned');
+          }
           const { contentPeerCountForTopic, lastContentAnnounceRecvMs } = await import('../../sync/hyperbee/swarm');
-          const peers = contentPeerCountForTopic(topicHex);
-          const lastMs = lastContentAnnounceRecvMs(topicHex);
+          const peers = contentPeerCountForTopic(dialContext.topicHex);
+          const lastMs = lastContentAnnounceRecvMs(dialContext.topicHex);
           const lastTxt = lastMs == null ? 'never' : `~${Math.max(0, Math.round((Date.now() - lastMs) / 60_000))}m ago`;
           swarmEvidence = `contentPeers=${peers} lastAnnounceRecv=${lastTxt}`;
         } catch {
@@ -3078,12 +3124,12 @@ async function runRefAnnounceLeg(slug: string, workspaceId: string): Promise<voi
         // modules from a leaf call site (e.g. boot.ts's own
         // `await import('../../hive-membership-store')`), so it loads only
         // when a fetch is actually attempted, never at module-init time.
-        const topicHex = await resolveHiveGitTopicHex(workspaceId, slug);
-        if (!topicHex) {
+        const dialContext = await resolveHiveGitDialContext(workspaceId, slug);
+        if (!dialContext) {
           return destroyedStub('hive-git: no live swarm join for this harness yet');
         }
         dialedThisTick.add(device);
-        return openHiveGitDuplexToDevice(Buffer.from(topicHex, 'hex'), device, {
+        return dialContext.openDuplex(device, {
           repoKey,
           peerGithubUserId: actor.githubUserId,
         });
@@ -3830,11 +3876,11 @@ async function runWorktreeBridgeLeg(slug: string, workspaceId: string): Promise<
     // (it only fires when the sha is genuinely missing), which is what makes it
     // safe to wire unconditionally on a self-announcing single-machine box.
     const actor = await resolveUsageActor();
-    const topicHex = actor ? await resolveHiveGitTopicHex(workspaceId, slug) : null;
+    const dialContext = actor ? await resolveHiveGitDialContext(workspaceId, slug) : null;
     const openDuplex =
-      actor && topicHex
+      actor && dialContext
         ? (devicePubkeyBase64: string): Promise<Duplex> =>
-            openHiveGitDuplexToDevice(Buffer.from(topicHex, 'hex'), devicePubkeyBase64, {
+            dialContext.openDuplex(devicePubkeyBase64, {
               repoKey,
               peerGithubUserId: actor.githubUserId,
             })

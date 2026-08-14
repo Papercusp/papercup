@@ -32,7 +32,9 @@
 
 /// <reference path="./holepunch.d.ts" />
 
-import { mkdir } from 'node:fs/promises';
+import { mkdir, unlink } from 'node:fs/promises';
+import * as net from 'node:net';
+import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import * as crypto from 'node:crypto';
 import type { Duplex } from 'node:stream';
@@ -54,6 +56,10 @@ import { getReplicationLiveness } from './replication-liveness';
 import { createPgMergeCursorStore } from './pg-merge-cursor-store';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
+import {
+  openHiveGitDuplexToDevice,
+  type HiveGitDuplexRequest,
+} from '../pot-git/peer-dial-registry';
 
 /**
  * Minimal Hypercore surface used by the observability methods. corestore's
@@ -97,6 +103,10 @@ interface HandoffEntry {
 const HANDOFF_HANDLE_TIMEOUT_MS = 10_000;
 /** Idle prepared handoffs expire so a never-completed token can't leak. */
 const HANDOFF_TTL_MS = 60_000;
+/** A prepared pot-git stream socket is single-use and short-lived. If the main
+ * process never connects (crash/race), both the listener and peer Duplex are
+ * destroyed instead of leaking in the long-lived sidecar. */
+const HIVE_GIT_TUNNEL_TTL_MS = 10_000;
 
 /** JSON-RPC error carrying a specific code (defaults to -32603 otherwise). */
 export class RpcMethodError extends Error {
@@ -125,6 +135,16 @@ export interface SubstrateSidecarHostDeps {
   wireOutbox?: (handle: BootedHarnessHandle) => Promise<void>;
   /** Override presence wiring for the relocated boot. Default: wirePresenceAnnounceForHarness. */
   wirePresence?: (handle: BootedHarnessHandle) => Promise<void>;
+  /** Override the sidecar-local pot-git registry dial (tests). */
+  openHiveGitDuplex?: (
+    topic: Buffer,
+    devicePubkeyBase64: string,
+    request: HiveGitDuplexRequest,
+  ) => Promise<Duplex>;
+  /** Directory for the bounded one-shot stream sockets (tests). */
+  hiveGitTunnelDir?: string;
+  /** Prepared-socket lifetime before fail-closed teardown (tests). */
+  hiveGitTunnelTtlMs?: number;
 }
 
 export type RpcHandler = (params: unknown) => unknown | Promise<unknown>;
@@ -198,6 +218,104 @@ interface BootHarnessRequest {
   createIfMissing?: boolean;
 }
 
+interface OpenHiveGitDuplexRequest extends HiveGitDuplexRequest {
+  storeId: string;
+  devicePubkeyBase64: string;
+}
+
+interface OneShotUnixTunnel {
+  socketPath: string;
+  close(error?: Error): void;
+  closed: Promise<void>;
+}
+
+/**
+ * Expose one already-open peer Duplex through a single-use Unix socket. The
+ * accepted local socket and the peer stream share the same mutual-teardown
+ * primitive as the replication-offload path, so a close/error on either side
+ * cannot strand the other. The listener is removed after the first accept and
+ * expires if no client arrives within `ttlMs`.
+ */
+async function createOneShotUnixTunnel(
+  peer: Duplex,
+  socketDir: string,
+  ttlMs: number,
+): Promise<OneShotUnixTunnel> {
+  await mkdir(socketDir, { recursive: true });
+  const socketPath = path.join(
+    socketDir,
+    `pc-hg-${process.pid}-${crypto.randomBytes(8).toString('hex')}.sock`,
+  );
+
+  let accepted = false;
+  let closed = false;
+  let local: Duplex | null = null;
+  let timeout: NodeJS.Timeout | null = null;
+  let resolveClosed!: () => void;
+  const closedPromise = new Promise<void>((resolve) => {
+    resolveClosed = resolve;
+  });
+  const server = net.createServer();
+
+  const removeSocket = (): void => {
+    void unlink(socketPath).catch(() => {
+      // Best-effort: close/unlink races are normal for Unix sockets.
+    });
+  };
+  const close = (error?: Error): void => {
+    if (closed) return;
+    closed = true;
+    if (timeout) clearTimeout(timeout);
+    timeout = null;
+    try {
+      server.close();
+    } catch {
+      // The listener may already be closed after its one accepted client.
+    }
+    removeSocket();
+    if (local && !local.destroyed) local.destroy(error);
+    if (!peer.destroyed) peer.destroy(error);
+    resolveClosed();
+  };
+
+  // A timeout/error may destroy the peer before any consumer has installed an
+  // error listener. Keep that fail-soft stream contract here at its owner.
+  peer.on('error', () => {});
+  server.on('connection', (socket) => {
+    if (accepted || closed) {
+      socket.destroy();
+      return;
+    }
+    accepted = true;
+    local = socket;
+    if (timeout) clearTimeout(timeout);
+    timeout = null;
+    server.close(removeSocket);
+    pipeWithMutualTeardown(socket, peer);
+    socket.once('close', () => close());
+    peer.once('close', () => close());
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    let listening = false;
+    server.once('error', (error) => {
+      close(error);
+      if (!listening) reject(error);
+    });
+    server.listen(socketPath, () => {
+      listening = true;
+      timeout = setTimeout(
+        () => close(new Error('substrate hive-git stream tunnel expired before connect')),
+        ttlMs,
+      );
+      timeout.unref?.();
+      resolve();
+    });
+  });
+
+  return { socketPath, close, closed: closedPromise };
+}
+
 /**
  * Build a substrate sidecar host. Owns the relocated stores + the handoff table;
  * returns the JSON-RPC method map + the out-of-band handle receiver. Pure over
@@ -210,9 +328,13 @@ export function createSubstrateSidecarHost(deps: SubstrateSidecarHostDeps = {}):
   const bootHarnessImpl = deps.bootHarnessImpl ?? bootHarnessSubstrate;
   const wireOutbox = deps.wireOutbox ?? defaultWireOutbox;
   const wirePresence = deps.wirePresence ?? wirePresenceAnnounceForHarness;
+  const openHiveGitDuplex = deps.openHiveGitDuplex ?? openHiveGitDuplexToDevice;
+  const hiveGitTunnelDir = deps.hiveGitTunnelDir ?? tmpdir();
+  const hiveGitTunnelTtlMs = deps.hiveGitTunnelTtlMs ?? HIVE_GIT_TUNNEL_TTL_MS;
 
   const storeMap = new Map<string, StoreRecord>();
   const handoffs = new Map<string, HandoffEntry>();
+  const hiveGitTunnels = new Set<OneShotUnixTunnel>();
   // Send-side wiring is idempotent + retryable (mirrors boot-all.ts
   // `ensureSendSideWired`): each leg is marked wired ONLY on success and skipped
   // once wired, keyed by `${workspaceId}::${harnessSlug}`. This is what makes it
@@ -627,6 +749,65 @@ export function createSubstrateSidecarHost(deps: SubstrateSidecarHostDeps = {}):
     return { ok: true, rekeyed: true };
   }
 
+  /**
+   * Relocation-aware pot-git dial. The swarm and its verified device→socket
+   * registry live in this process, so resolve the peer HERE and expose the
+   * resulting fetch Duplex through one bounded, single-use Unix socket. JSON
+   * RPC remains control-only; raw git protocol bytes never enter its framing.
+   */
+  async function handleOpenHiveGitDuplex(params: unknown): Promise<unknown> {
+    const p = params as OpenHiveGitDuplexRequest;
+    if (
+      !p?.storeId ||
+      typeof p.devicePubkeyBase64 !== 'string' ||
+      !p.devicePubkeyBase64 ||
+      typeof p.repoKey !== 'string' ||
+      !p.repoKey
+    ) {
+      throw new RpcMethodError(
+        -32602,
+        'openHiveGitDuplex requires { storeId, devicePubkeyBase64, repoKey }',
+      );
+    }
+    const rec = requireRecord(p.storeId);
+    if (!rec.booted) throw new RpcMethodError(-32000, 'Harness is not booted in the sidecar');
+    const topicHex = rec.booted.swarm?.topicHex;
+    if (!topicHex) {
+      return { socketPath: null, topicHex: null, error: 'hive-git: no live swarm join for this harness yet' };
+    }
+    if (!/^(?:[0-9a-f]{2})+$/i.test(topicHex)) {
+      throw new RpcMethodError(-32000, 'Harness swarm returned an invalid topicHex');
+    }
+
+    const request: HiveGitDuplexRequest = {
+      repoKey: p.repoKey,
+      ...(typeof p.peerGithubUserId === 'number'
+        ? { peerGithubUserId: p.peerGithubUserId }
+        : {}),
+      ...(typeof p.waitForRegistrationMs === 'number'
+        ? { waitForRegistrationMs: p.waitForRegistrationMs }
+        : {}),
+    };
+    const peer = await openHiveGitDuplex(
+      Buffer.from(topicHex, 'hex'),
+      p.devicePubkeyBase64,
+      request,
+    );
+    if (peer.destroyed) {
+      const error = (peer as Duplex & { errored?: Error | null }).errored;
+      return {
+        socketPath: null,
+        topicHex,
+        error: error?.message ?? `pot-git: no live connection to device ${p.devicePubkeyBase64.slice(0, 12)}…`,
+      };
+    }
+
+    const tunnel = await createOneShotUnixTunnel(peer, hiveGitTunnelDir, hiveGitTunnelTtlMs);
+    hiveGitTunnels.add(tunnel);
+    void tunnel.closed.then(() => hiveGitTunnels.delete(tunnel));
+    return { socketPath: tunnel.socketPath, topicHex };
+  }
+
   // ── socket handoff (Option B replication-offload, preserved) ────────────────
 
   function handlePrepareSocketHandoff(params: unknown): unknown {
@@ -759,6 +940,7 @@ export function createSubstrateSidecarHost(deps: SubstrateSidecarHostDeps = {}):
     'substrate:rekey': handleRekey,
     'substrate:ensureScopeParticipation': handleEnsureScopeParticipation,
     'substrate:rediscloseScopes': handleRediscloseScopes,
+    'substrate:openHiveGitDuplex': handleOpenHiveGitDuplex,
     'substrate:prepareSocketHandoff': handlePrepareSocketHandoff,
     'substrate:attachSocket': handleAttachSocket,
     'substrate:getCoreInfo': handleGetCoreInfo,
@@ -784,6 +966,8 @@ export function createSubstrateSidecarHost(deps: SubstrateSidecarHostDeps = {}):
   }
 
   async function closeAll(): Promise<void> {
+    for (const tunnel of [...hiveGitTunnels]) tunnel.close();
+    hiveGitTunnels.clear();
     for (const [, rec] of storeMap) {
       if (rec.booted) {
         try {

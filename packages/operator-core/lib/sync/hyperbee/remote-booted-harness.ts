@@ -27,6 +27,8 @@
  * `swarm` is null, `admitted` is empty, `onAnnounce` throws.
  */
 
+import * as net from 'node:net';
+import { Duplex } from 'node:stream';
 import type Corestore from 'corestore';
 import type { BootedHarnessHandle, LocalWriteOp } from './boot';
 import type { OwnLog, PeerLogOp } from './peer-log';
@@ -38,6 +40,7 @@ import type { AdmissionResult } from './read-admission';
 import type { SwarmBinding } from './derive-swarm-topic';
 import type { ScopeId } from '../pot-git/scope-repo';
 import type { ScopeFederation } from './scope-federation';
+import type { HiveGitDuplexRequest } from '../pot-git/peer-dial-registry';
 
 /** The subset of the IPC client this proxy needs (injectable for tests). */
 export interface SubstrateRpcCaller {
@@ -68,6 +71,26 @@ interface GetOwnLogOpResponse {
   length: number;
   keyHex: string;
   op: PeerLogOp | null;
+}
+
+interface OpenHiveGitDuplexResponse {
+  socketPath: string | null;
+  topicHex: string | null;
+  error?: string;
+}
+
+/** Match the in-process peer-dial registry's fail-soft contract: callers get a
+ * destroyed Duplex and inspect `.destroyed`/`.errored`, never an IPC exception. */
+function destroyedHiveGitDuplex(message: string): Duplex {
+  const duplex = new Duplex({
+    read() {},
+    write(_chunk, _encoding, callback) {
+      callback();
+    },
+  });
+  duplex.on('error', () => {});
+  duplex.destroy(new Error(message));
+  return duplex;
 }
 
 /** A mutable own-log length, shared by the handle's `append` (LWW seam) and the
@@ -229,6 +252,64 @@ export class RemoteBootedHarnessHandle implements BootedHarnessHandle {
   get swarm(): SwarmHandle | null {
     // The swarm lives in the sidecar.
     return null;
+  }
+
+  /**
+   * Open a pot-git fetch stream through the relocated sidecar. The control RPC
+   * asks the sidecar (which owns both swarm + peer registry) to prepare a
+   * bounded one-shot Unix socket; this process connects to it and returns the
+   * resulting `net.Socket`, a standard Duplex indistinguishable to git-sync
+   * from the in-process registry's stream.
+   */
+  async openHiveGitDuplexToDevice(
+    devicePubkeyBase64: string,
+    request: HiveGitDuplexRequest,
+  ): Promise<Duplex> {
+    try {
+      const response = await this.client.call<OpenHiveGitDuplexResponse>(
+        'substrate:openHiveGitDuplex',
+        {
+          storeId: this.storeId,
+          devicePubkeyBase64,
+          ...request,
+        },
+      );
+      if (!response?.socketPath) {
+        return destroyedHiveGitDuplex(
+          response?.error ?? `pot-git: sidecar could not dial device ${devicePubkeyBase64.slice(0, 12)}…`,
+        );
+      }
+
+      const socket = net.createConnection(response.socketPath);
+      // Keep the registry's never-unhandled-error contract across the local
+      // Unix hop too; downstream may add its own listener after this resolves.
+      socket.on('error', () => {});
+      return await new Promise<Duplex>((resolve) => {
+        let settled = false;
+        const finish = (): void => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timeout);
+          resolve(socket);
+        };
+        const timeout = setTimeout(() => {
+          if (!socket.destroyed) {
+            socket.destroy(
+              new Error(`pot-git: timed out connecting to substrate stream at ${response.socketPath}`),
+            );
+          }
+          finish();
+        }, 5_000);
+        timeout.unref?.();
+        socket.once('connect', finish);
+        socket.once('error', finish);
+        socket.once('close', finish);
+      });
+    } catch (error) {
+      return destroyedHiveGitDuplex(
+        `pot-git: substrate sidecar dial failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
   }
 
   async rekey(binding: SwarmBinding): Promise<void> {

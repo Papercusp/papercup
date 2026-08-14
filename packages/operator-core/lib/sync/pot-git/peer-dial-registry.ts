@@ -801,6 +801,15 @@ export function resolveVerifiedDevicePubkeyForSocket(socket: unknown): string | 
   return verifiedDeviceBySocket.get(socket);
 }
 
+/** Transport-neutral request carried by every pot-git per-device dial.
+ * Exported so the relocated substrate proxy can forward the exact same request
+ * into the sidecar-owned dial registry without duplicating its shape. */
+export interface HiveGitDuplexRequest {
+  repoKey: string;
+  peerGithubUserId?: number;
+  waitForRegistrationMs?: number;
+}
+
 /**
  * Build (or fail soft) a live fetch Duplex to `devicePubkeyBase64` on
  * `topic`'s pot-git channel — the real cross-machine `openDuplex` seam
@@ -813,7 +822,7 @@ export function resolveVerifiedDevicePubkeyForSocket(socket: unknown): string | 
 export async function openHiveGitDuplexToDevice(
   topic: Buffer,
   devicePubkeyBase64: string,
-  req: { repoKey: string; peerGithubUserId?: number; waitForRegistrationMs?: number },
+  req: HiveGitDuplexRequest,
 ): Promise<Duplex> {
   let socket = resolvePotGitPeerSocket(topic, devicePubkeyBase64);
   if (!socket) {

@@ -13,6 +13,11 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
+import { createServer } from 'node:net';
+import { once } from 'node:events';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { RemoteBootedHarnessHandle, type SubstrateRpcCaller } from './remote-booted-harness';
 import type { LocalWriteOp } from './boot';
 import type { PeerLogOp } from './peer-log';
@@ -137,6 +142,47 @@ describe('RemoteBootedHarnessHandle (P-001)', () => {
     await h.rekey({ kind: 'hive', value: 'pub' } as never);
     expect(calls[0]).toMatchObject({ method: 'substrate:revoke', params: { storeId: 'store-1', devicePubkey: 'devpub' } });
     expect(calls[1]).toMatchObject({ method: 'substrate:rekey', params: { storeId: 'store-1' } });
+  });
+
+  it('EI-20438405483051865: connects to the sidecar one-shot socket and returns a standard Duplex', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'remote-hive-git-'));
+    const socketPath = join(dir, 'stream.sock');
+    const server = createServer((socket) => socket.pipe(socket));
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(socketPath, resolve);
+    });
+
+    try {
+      const { client, calls } = makeClient((method) =>
+        method === 'substrate:openHiveGitDuplex'
+          ? { socketPath, topicHex: 'deadbeef' }
+          : undefined,
+      );
+      const h = makeHandle(client);
+      const duplex = await h.openHiveGitDuplexToDevice('peer-device', {
+        repoKey: 'gh-1296269',
+        peerGithubUserId: 42,
+      });
+
+      expect(duplex.destroyed).toBe(false);
+      expect(calls[0]).toEqual({
+        method: 'substrate:openHiveGitDuplex',
+        params: {
+          storeId: 'store-1',
+          devicePubkeyBase64: 'peer-device',
+          repoKey: 'gh-1296269',
+          peerGithubUserId: 42,
+        },
+      });
+      const received = once(duplex, 'data');
+      duplex.write(Buffer.from('ping'));
+      expect(Buffer.from((await received)[0] as Buffer).toString()).toBe('ping');
+      duplex.destroy();
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('close runs close-hooks (in order) then substrate:closeStore; idempotent', async () => {
