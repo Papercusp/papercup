@@ -2127,8 +2127,17 @@ async function runOwnHeadPublishLeg(slug: string, workspaceId: string, branch: s
  * path end-to-end.
  */
 /**
- * Resolve the live swarm topic for a hive-git-enabled harness, DEMANDING a
- * boot when the substrate isn't currently resident in this process (WI-5247).
+ * Resolve the live swarm topic for a hive-git-enabled LOCAL install, DEMANDING
+ * a boot when the substrate isn't currently resident in this process
+ * (WI-5247).
+ *
+ * The lookup key is deliberately the runnable install slug, NOT the pot-home
+ * slug. They are identical on a hive home, which hid this distinction in the
+ * original tests, but differ on a joined member (`hello-world` locally views
+ * the `hello-world-3-pot` hive). `boot-all` indexes its in-memory handles by
+ * that local registry entry; looking up the pot home on a joiner therefore
+ * returned a permanent no-topic stub even while the joiner's actual swarm was
+ * healthy and connected (WI-3496 physical Phase A, 2026-08-14).
  *
  * `getBootedHarness` only re-boots an engine the P-008 reaper EVICTED —  a
  * harness that was simply never booted in this process (a joined hive whose
@@ -2146,12 +2155,12 @@ async function runOwnHeadPublishLeg(slug: string, workspaceId: string, branch: s
  */
 async function resolveHiveGitTopicHex(
   workspaceId: string,
-  potHomeSlug: string,
+  installSlug: string,
 ): Promise<string | undefined> {
   const { getBootedHarness, bootSingleHarness } = await import('../../sync/hyperbee/boot-all');
-  const handle = getBootedHarness(workspaceId, potHomeSlug);
+  const handle = getBootedHarness(workspaceId, installSlug);
   if (!handle) {
-    void bootSingleHarness(workspaceId, potHomeSlug).catch(() => {
+    void bootSingleHarness(workspaceId, installSlug).catch(() => {
       // best-effort demand-boot; a failure just leaves the harness unbooted
       // for this tick — the next tick's access retries.
     });
@@ -2461,7 +2470,7 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
     // pre-WI-3583 destroyed stub when it doesn't (private/local-only harness,
     // or not yet booted onto a swarm) — mirrors runRefAnnounceLeg's own
     // openStream floor exactly.
-    const topicHex = await resolveHiveGitTopicHex(workspaceId, potHomeSlug);
+    const topicHex = await resolveHiveGitTopicHex(workspaceId, slug);
     if (!topicHex) {
       const stub = new Duplex({
         read() {},
@@ -3069,7 +3078,7 @@ async function runRefAnnounceLeg(slug: string, workspaceId: string): Promise<voi
         // modules from a leaf call site (e.g. boot.ts's own
         // `await import('../../hive-membership-store')`), so it loads only
         // when a fetch is actually attempted, never at module-init time.
-        const topicHex = await resolveHiveGitTopicHex(workspaceId, potHomeSlug);
+        const topicHex = await resolveHiveGitTopicHex(workspaceId, slug);
         if (!topicHex) {
           return destroyedStub('hive-git: no live swarm join for this harness yet');
         }
@@ -3821,7 +3830,7 @@ async function runWorktreeBridgeLeg(slug: string, workspaceId: string): Promise<
     // (it only fires when the sha is genuinely missing), which is what makes it
     // safe to wire unconditionally on a self-announcing single-machine box.
     const actor = await resolveUsageActor();
-    const topicHex = actor ? await resolveHiveGitTopicHex(workspaceId, potHomeSlug) : null;
+    const topicHex = actor ? await resolveHiveGitTopicHex(workspaceId, slug) : null;
     const openDuplex =
       actor && topicHex
         ? (devicePubkeyBase64: string): Promise<Duplex> =>

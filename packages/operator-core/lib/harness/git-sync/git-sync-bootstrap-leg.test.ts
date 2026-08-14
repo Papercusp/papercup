@@ -687,6 +687,30 @@ describe('runBootstrapLeg', () => {
     expect(bootSingleHarnessMock).toHaveBeenCalledWith(WS, SLUG);
   });
 
+  it('WI-3496: a joined member resolves the live swarm by its local install slug, not the pot-home slug', async () => {
+    const potHomeSlug = 'shop-hive-home';
+    loadHarnessRegistryMock.mockResolvedValue({
+      projects: [{
+        slug: SLUG,
+        hive_slug: potHomeSlug,
+        self_repo: false,
+        github_repository_id: 1_296_269,
+      }],
+    });
+    getBootedHarnessMock.mockImplementation((_workspaceId, installSlug) =>
+      installSlug === SLUG ? { swarm: { topicHex: 'deadbeef' } } : null,
+    );
+    openHiveGitDuplexToDeviceMock.mockImplementation(async () => dialDuplex(false));
+
+    await runBootstrapLeg(SLUG, WS);
+
+    expect(ensurePotGitRepoMock).toHaveBeenCalledWith(potHomeSlug, 'gh-1296269');
+    expect(getBootedHarnessMock).toHaveBeenCalledWith(WS, SLUG);
+    expect(getBootedHarnessMock).not.toHaveBeenCalledWith(WS, potHomeSlug);
+    expect(bootSingleHarnessMock).not.toHaveBeenCalled();
+    expect(openHiveGitDuplexToDeviceMock).toHaveBeenCalled();
+  });
+
   it('WI-5247: does NOT demand-boot when getBootedHarness already returns a live handle', async () => {
     getBootedHarnessMock.mockReturnValue({ swarm: { topicHex: 'deadbeef' } });
     await runBootstrapLeg(SLUG, WS);
