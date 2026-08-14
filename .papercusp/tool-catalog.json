@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 731,
+  "count": 732,
   "tools": [
     {
       "name": "ablation:report",
@@ -12208,6 +12208,37 @@
       "guidance": {
         "when": "Static enum of supported hook event names — use to validate an event string before firing or registering for it.",
         "notWhen": "For PENDING events queued up, use `pending_events:list`. For firing an event, use `plugins:fire_event`."
+      }
+    },
+    {
+      "name": "host:memory_pressure",
+      "http": {
+        "path": "/api/agent-tools/host/memory_pressure",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Read the canonical infra-liveness memory-pressure verdict from the latest perf-signals capture, plus an independent free-memory falsifier. Normally call state:read { cell:\"host.memoryPressure\" }; this is its resolver lens.",
+      "capabilities": [
+        "intel:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator",
+        "release-fixer"
+      ],
+      "guidance": {
+        "when": "As the resolver behind host.memoryPressure. Direct use is mainly for debugging the state-cell wiring.",
+        "notWhen": "General service health, process forensics, or waiting for the condition to change. Use state:read/state:subscribe on host.memoryPressure.",
+        "chaining": "state:read { cell:\"host.memoryPressure\" } → branch on value + unknownHoist; state:subscribe waits for a band transition."
       }
     },
     {
