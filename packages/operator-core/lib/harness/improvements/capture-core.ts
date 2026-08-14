@@ -61,8 +61,11 @@ import { extractCitedIds } from './triage';
 import { DEFAULT_SIGNAL_ORIGIN, effectiveOrigin, type SignalOrigin } from './provenance';
 import { isFlakeKey } from '../../calibration/types';
 import {
+  decideIssueAdmissionCircuit,
+  readIssueAdmissionPressure,
   recordIssueOccurrence,
   selectCanonicalIssue,
+  type IssueAdmissionPressure,
   type IssueOccurrenceKind,
   type RecordIssueOccurrenceInput,
   type RecordedIssueOccurrence,
@@ -291,6 +294,9 @@ export interface CaptureImprovementResult {
   dedupCoverage?: DedupCoverage;
   /** Server-authored normalized title identity (+ stronger signal key when present). */
   admissionIdentity?: AdmissionIdentity;
+  /** P-005 rolling writer-backed circuit observation, when an advisory canonical
+   * candidate made pressure relevant to this admission. */
+  queueAdmission?: IssueAdmissionPressure;
   /**
    * "Already decided" recall (self-learning-central P-003): prior RESOLVED/closed
    * items whose STABLE signature matches this capture — so the loop recognises a
@@ -366,6 +372,11 @@ export interface CaptureDeps {
   recordIssueOccurrence?: (
     input: RecordIssueOccurrenceInput,
   ) => Promise<RecordedIssueOccurrence | null>;
+  /** P-005 bounded pressure reader. Optional/injectable so pure tests never open PG. */
+  readIssueAdmissionPressure?: (input: {
+    canonicalId: string;
+    canonicalHarness?: string | null;
+  }) => Promise<IssueAdmissionPressure | null>;
 }
 
 // WI-4308: use the dedup-widened search (also checks the legacy DEFAULT_COORD_WORKSPACE
@@ -377,6 +388,7 @@ const defaultDeps: CaptureDeps = {
   loadRubric: getRubric,
   autoRatifyRubric: autoRatifyRubricOnFirstScorecard,
   recordIssueOccurrence,
+  readIssueAdmissionPressure,
 };
 
 function harnessFromScope(scope: string | undefined): string | null {
@@ -387,6 +399,7 @@ function captureOccurrenceEvidence(
   input: CaptureImprovementInput,
   possibleDuplicates: readonly PossibleDuplicate[],
   dedupCoverage: DedupCoverage,
+  queueAdmission?: IssueAdmissionPressure,
 ): Record<string, unknown> {
   return {
     kind: input.kind,
@@ -406,6 +419,7 @@ function captureOccurrenceEvidence(
     payloadExtra: input.payloadExtra ?? null,
     possibleDuplicates,
     dedupCoverage,
+    ...(queueAdmission ? { queueAdmission } : {}),
   };
 }
 
@@ -420,6 +434,7 @@ async function appendCaptureOccurrence(
   possibleDuplicates: readonly PossibleDuplicate[],
   dedupCoverage: DedupCoverage,
   canonicalHarness: string | null = harnessFromScope(input.scope),
+  queueAdmission?: IssueAdmissionPressure,
 ): Promise<void> {
   await (deps.recordIssueOccurrence ?? recordIssueOccurrence)({
     canonicalId,
@@ -428,7 +443,7 @@ async function appendCaptureOccurrence(
     sourceTool: 'improvements:capture',
     reportKind,
     reportedTitle: input.title,
-    evidence: captureOccurrenceEvidence(input, possibleDuplicates, dedupCoverage),
+    evidence: captureOccurrenceEvidence(input, possibleDuplicates, dedupCoverage, queueAdmission),
     admissionIdentity: identity,
   }).catch(() => null);
 }
@@ -849,6 +864,81 @@ export async function captureImprovement(
     };
   }
 
+  // P-005: during a concentrated low-diversity burst, an advisory SOFT semantic
+  // sibling becomes a safe occurrence home instead of allowing another canonical
+  // row into the scheduler. Containment-only hits stay ineligible: a broad title
+  // can cover a genuinely novel narrow finding. No candidate and critical severity
+  // both pass, so the circuit cannot swallow critical novelty. The pressure read is
+  // fail-open and exact/uncapped; every coalesce appends the complete report below.
+  let queueAdmission: IssueAdmissionPressure | undefined;
+  const burstCandidates = possibleDuplicates.filter((candidate) => {
+    if (candidate.semantic !== 'soft' || candidate.state !== 'open') return false;
+    if (!input.watchdogKey) return true;
+    const candidateKey = candidateKeyOf(candidate.id);
+    return candidateKey == null || candidateKey === input.watchdogKey;
+  });
+  if (!input.force && input.severity !== 'critical' && burstCandidates.length > 0) {
+    const pressureCandidate = selectCanonicalIssue(
+      identity,
+      burstCandidates.map((candidate) => ({
+        id: candidate.id,
+        title: candidate.title,
+        similarity: candidate.similarity,
+        canonicalHarness: harnessFromScope(candidateById.get(candidate.id)?.scope),
+        eligible: true,
+      })),
+    );
+    if (pressureCandidate) {
+      queueAdmission = (await (deps.readIssueAdmissionPressure ?? readIssueAdmissionPressure)({
+        canonicalId: pressureCandidate.id,
+        canonicalHarness: pressureCandidate.canonicalHarness,
+      }).catch(() => null)) ?? undefined;
+      const decision = decideIssueAdmissionCircuit({
+        identity,
+        candidates: burstCandidates.map((candidate) => ({
+          id: candidate.id,
+          title: candidate.title,
+          similarity: candidate.similarity,
+          canonicalHarness: harnessFromScope(candidateById.get(candidate.id)?.scope),
+          eligible: true,
+        })),
+        pressure: queueAdmission ?? null,
+        severity: input.severity,
+        force: input.force,
+      });
+      if (decision.action === 'coalesce' && decision.canonical) {
+        const canonicalIssue = candidateById.get(decision.canonical.id);
+        await appendCaptureOccurrence(
+          deps,
+          input,
+          identity,
+          'coalesced',
+          decision.canonical.id,
+          possibleDuplicates,
+          dedupCoverage,
+          harnessFromScope(canonicalIssue?.scope),
+          queueAdmission,
+        );
+        return {
+          ok: true,
+          created: false,
+          reason: 'coalesced',
+          kind: canonicalIssue?.kind as 'bug' | 'change' | undefined,
+          improvementKind: input.kind,
+          ...(canonicalIssue ? { issue: canonicalIssue } : {}),
+          possibleDuplicates,
+          dedupCoverage,
+          admissionIdentity: identity,
+          queueAdmission,
+          ...(alreadyDecided.length ? { alreadyDecided } : {}),
+          hint:
+            `Low-diversity admission burst: preserved this report as an occurrence on ${decision.canonical.id}; ` +
+            'no new scheduler row was created.',
+        };
+      }
+    }
+  }
+
   // D-001 / WI-38403: DRAIN is the deliberate exception to the global
   // availability-first filing rule. It suppresses incidental bug creation, and
   // the remaining direct blocker may not enter the queue on an unmeasured dedup
@@ -1052,6 +1142,7 @@ export async function captureImprovement(
     possibleDuplicates,
     dedupCoverage,
     harnessFromScope(issue.scope) ?? harnessFromScope(input.scope),
+    queueAdmission,
   );
   // WI-20261780231648564: improvements:capture can atomically claim an item for the
   // current agent, but request-compaction's flush gate requires every same-turn claim
