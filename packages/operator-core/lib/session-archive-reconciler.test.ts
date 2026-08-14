@@ -145,8 +145,16 @@ describe('runSessionArchiveReconcileOnce', () => {
     expect(store.stamps.has(`claude:${SID_DEAD}`)).toBe(true);
     expect(store.stamps.has(`codex:${SID_CODEX}`)).toBe(true);
     expect(store.stamps.has(`claude:${SID_LIVE}`)).toBe(false);
-    // codex home-level state rode along in the archive
-    expect(store.stamps.get(`codex:${SID_CODEX}`)!.manifest.map((m) => m.relpath)).toContain('config.toml');
+    // WI-38706 — this used to assert the OPPOSITE ("codex home-level state rode
+    // along in the archive"). That is the exact behaviour that broke `codex
+    // resume` fleet-wide: a CODEX_HOME holds MANY sessions (codex mints a new
+    // rollout uuid per thread/resume), so archiving the home's shared
+    // config.toml under whichever session the reconciler swept first, then
+    // deleting it, left every sibling thread resolving a provider that no longer
+    // existed. This is the end-to-end pin: the reconciler is the production path
+    // that did it.
+    expect(store.stamps.get(`codex:${SID_CODEX}`)!.manifest.map((m) => m.relpath)).not.toContain('config.toml');
+    expect(existsSync(join(codexHome, 'config.toml'))).toBe(true); // survives the sweep
   });
 
   it('disk-side: already-archived leftovers get the sha-checked delete', async () => {
