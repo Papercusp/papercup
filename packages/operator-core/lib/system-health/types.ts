@@ -15,6 +15,7 @@
  */
 
 import type { PerfVerdict } from './perf-budgets';
+import type { GitSyncFailingLeg } from '../harness/git-sync/git-sync-escalation';
 
 /**
  * A panel's health light. `unknown` = the source could not be read this tick
@@ -475,7 +476,7 @@ export interface DeployHealth {
    *  routine's own `last_error` (plus `push_mode`, since a `commit-only:*` member
    *  cannot have a push failure by definition). Never render "push" / "not
    *  reaching origin" unless this is 'push'. null when nothing is failing. */
-  gitSyncFailingLeg: 'commit' | 'push' | 'conflict' | 'unknown' | null;
+  gitSyncFailingLeg: GitSyncFailingLeg | null;
   /** Live superproject + submodule commits ahead of upstream. 0 proves a stale
    *  error counter no longer means commits are waiting to reach origin; null means
    *  the live git check was unavailable, so the metadata counter stays authoritative. */
