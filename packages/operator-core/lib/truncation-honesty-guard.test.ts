@@ -208,10 +208,17 @@ describe('truncation honesty — every door is registered with an explicit dispo
     const found = sites();
     // If this fails, the detector stopped matching — every other assertion in
     // this file would then pass vacuously.
-    expect(found.filter((s) => s.kind === 'cap-call').length).toBeGreaterThanOrEqual(3);
+    // The result door stopped calling the character-slicing primitive when
+    // EI-20435986111760474 made every overflow structurally projected. Two
+    // genuine capInjectionText doors remain; the result door is still covered
+    // independently by its runtime `_meta.resultDoor` assertion below.
+    expect(found.filter((s) => s.kind === 'cap-call').length).toBeGreaterThanOrEqual(2);
+    // Result overflows are now a single parseable JSON value with
+    // `_projection` plus `_meta.resultDoor`, never a prose footer appended to a
+    // sliced value. The runtime marker assertion below calibrates that arm.
     expect(
       found.filter((s) => s.kind === 'footer-emit' && s.doorName === 'result-door').length,
-    ).toBeGreaterThanOrEqual(1);
+    ).toBe(0);
     expect(
       found.filter((s) => s.kind === 'footer-emit' && s.doorName === 'injection-door').length,
     ).toBeGreaterThanOrEqual(1);

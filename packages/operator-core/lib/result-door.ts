@@ -481,6 +481,7 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
     // written first, so both forms carry the same schema-valid capability:read
     // cursor and no client ever has to parse a chopped prefix plus a prose footer.
     const bodyShape = classifyProjectionBody(textItems);
+    const parsedJsonBody = bodyShape.json != null;
     const recovery = fsPath != null && uri != null
       ? {
           cursor: {
@@ -494,17 +495,25 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
             `Call capability:read with _projection.cursor.args, base64-decode data, then follow ` +
             `next_cursor until eof to recover the exact spill bytes. The spill begins with a text ` +
             `header and then contains the result as it reached this door.` +
-            (upstreamProjection
-              ? ` ⚠ This is NOT the tool's full output: it was ALREADY tier-projected upstream ` +
-                `(tier=${upstreamProjection.tier}, forced=${upstreamProjection.forced}, ` +
-                `omittedCount=${upstreamProjection.omittedCount}); paging cannot recover those omitted ` +
-                `fields. Re-call ${opts.toolName} with payloadTier:'full' for full detail.`
-              : innerTruncationMarkers.length > 0
-                ? ` ⚠ The TOOL ITSELF already truncated field(s) before this door ` +
-                  `(${innerTruncationMarkers.join(', ')}); paging preserves what it emitted but cannot ` +
-                  `recover those fields. Re-call ${opts.toolName} with a wider per-field limit.`
-                : ` No upstream truncation marker was detected; that does not prove the tool emitted ` +
-                  `every field in full.`) +
+            // Keep the established JSON recovery pointer deliberately terse. The
+            // payload projector budgets the pointer together with the retained
+            // JSON preview; expanding it here can evict coord:orient's recovery
+            // fields from that preview (WI-5656). Raw text needs the fuller
+            // honesty wording because its new `{ text, _projection }` envelope
+            // replaced the former prose footer that carried those disclosures.
+            (parsedJsonBody
+              ? ''
+              : upstreamProjection
+                ? ` ⚠ This is NOT the tool's full output: it was ALREADY tier-projected upstream ` +
+                  `(tier=${upstreamProjection.tier}, forced=${upstreamProjection.forced}, ` +
+                  `omittedCount=${upstreamProjection.omittedCount}); paging cannot recover those omitted ` +
+                  `fields. Re-call ${opts.toolName} with payloadTier:'full' for full detail.`
+                : innerTruncationMarkers.length > 0
+                  ? ` ⚠ The TOOL ITSELF already truncated field(s) before this door ` +
+                    `(${innerTruncationMarkers.join(', ')}); paging preserves what it emitted but cannot ` +
+                    `recover those fields. Re-call ${opts.toolName} with a wider per-field limit.`
+                  : ` No upstream truncation marker was detected; that does not prove the tool emitted ` +
+                    `every field in full.`) +
             buildProjectionHint(textItems, opts.toolName),
         }
       : {
@@ -525,7 +534,7 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
             buildProjectionHint(textItems, opts.toolName),
         };
     const projected = projectBoundedPayload(
-      bodyShape.json != null ? bodyShape.json.parsed : { text: fullText },
+      parsedJsonBody ? bodyShape.json!.parsed : { text: fullText },
       {
         toolName: opts.toolName,
         tier: 'trimmed',
