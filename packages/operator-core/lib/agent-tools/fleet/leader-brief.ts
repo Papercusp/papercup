@@ -104,6 +104,7 @@ import { buildCapacityReport } from '../../fleet/capacity-dispatch';
 import type { AccountProvider } from '../../deployment/account-pool';
 import { providerForModel, readProviderAvailability } from './capacity';
 import type { FleetBriefDelta } from '../../fleet-brief-delta';
+import type { FleetCampaign } from './fleet-campaign';
 import { computeMemberIdleVerdict, summariseIdleCauses } from '../../fleet-member-idle-verdict';
 import type { MemberIdleCause } from '../../fleet-member-idle-verdict';
 import { computePoolReservation } from '../../fleet-pool-reservation';
@@ -1981,8 +1982,10 @@ export default defineTool({
     // someone still working. The whole rule is in leadership-disposition.ts.
     let notLeader: NotLeaderNotice | undefined;
     let leadershipClaimed: AutoClaimedNotice | undefined;
+    let fleetCreatedAtMs: number | null = null;
     try {
       const fleetRecord = await getFleet(workspaceId, fleet);
+      fleetCreatedAtMs = fleetRecord?.createdAt ?? null;
       const registeredLeader = fleetRecord?.leaderOwnerId ?? null;
       const leaderRow = registeredLeader
         ? rosterEntries.find((e) => e.agentId === registeredLeader)
@@ -2539,6 +2542,27 @@ export default defineTool({
         /* best-effort — an absent delta block reads as absent, never as a set of zeroes */
       }
     }
+    // P-007: cross-epoch campaign measurements are derived live from authoritative
+    // writers. Keep this adjacent to the existing wake delta: delta answers "what
+    // changed since my last wake" while campaign answers "what has this fleet done
+    // since the explicit/fleet-created boundary". Best-effort preserves the health
+    // brief if any campaign reader is unavailable; individual axes carry their own
+    // unavailable-not-zero verdicts.
+    let campaign: FleetCampaign | undefined;
+    if (fleetCreatedAtMs != null) {
+      try {
+        const { readFleetCampaign } = await import('./fleet-campaign');
+        campaign = await readFleetCampaign({
+          workspaceId,
+          fleetSlug: fleet,
+          fleetCreatedAtMs,
+          since: args.since ?? null,
+          harnessSlug: args.harness ?? null,
+        });
+      } catch {
+        /* best-effort — absence is not a fabricated empty campaign */
+      }
+    }
     return {
       data: {
         ok: true,
@@ -2570,6 +2594,7 @@ export default defineTool({
         // A→B" a monitor tick actually reads; `delta` carries the per-axis availability so a
         // reader can tell an unmeasured axis from a quiet one.
         ...(delta ? { delta, deltaSummary } : {}),
+        ...(campaign ? { campaign } : {}),
         // P-023: counts by cause. A cause that never fired is ABSENT, not 0 — a zero row
         // invites reading an unpopulated cause as a measured absence.
         idleCauses,

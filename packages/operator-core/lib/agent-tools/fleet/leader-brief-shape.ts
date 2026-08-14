@@ -229,6 +229,42 @@ function compactReservation(value: unknown, cap: number): unknown {
   return out;
 }
 
+function compactCampaignValue(value: unknown, recentCap: number, depth = 0): unknown {
+  if (typeof value === 'string') return clip(value, depth <= 1 ? 150 : 100) ?? value;
+  if (typeof value === 'number' || typeof value === 'boolean' || value === null) return value;
+  if (Array.isArray(value)) return value.slice(0, recentCap).map((entry) => compactCampaignValue(entry, recentCap, depth + 1));
+  const source = asDict(value);
+  if (!source) return String(value);
+  const out: Dict = {};
+  for (const [key, item] of Object.entries(source).slice(0, depth >= 3 ? 10 : 20)) {
+    if (key === 'rows' && Array.isArray(item)) {
+      out.rows = item.slice(0, recentCap).map((entry) => compactCampaignValue(entry, recentCap, depth + 1));
+      continue;
+    }
+    out[key] = compactCampaignValue(item, recentCap, depth + 1);
+  }
+  return out;
+}
+
+/** P-007: keep every campaign axis' availability/writer/units while bounding only
+ * recent evidence rows. Exact aggregate scalars and the boundary always survive. */
+export function compactCampaign(value: unknown, recentCap = 2): unknown {
+  const source = asDict(value);
+  if (!source) return value;
+  const out: Dict = {};
+  if ('boundary' in source) out.boundary = compactCampaignValue(source.boundary, recentCap);
+  if ('everMembers' in source) out.everMembers = compactCampaignValue(source.everMembers, recentCap);
+  const axes = asDict(source.axes);
+  if (axes) {
+    const projected: Dict = {};
+    for (const [name, axis] of Object.entries(axes)) {
+      projected[name] = compactCampaignValue(axis, recentCap);
+    }
+    out.axes = projected;
+  }
+  return out;
+}
+
 function addCappedArray(out: Dict, source: Dict, key: string, cap: number, project: (value: unknown) => unknown): void {
   const rows = source[key];
   if (!Array.isArray(rows)) return;
@@ -258,6 +294,7 @@ function buildProjection(data: Dict, tier: LeaderBriefPayloadTier, caps: typeof 
   if ('summary' in data) out.summary = compactSummary(data.summary);
   if ('deltaSummary' in data) out.deltaSummary = clip(data.deltaSummary, 220) ?? data.deltaSummary;
   if ('delta' in data) out.delta = data.delta;
+  if ('campaign' in data) out.campaign = compactCampaign(data.campaign, tier === 'trimmed' ? 1 : 2);
   if ('idleCauses' in data) out.idleCauses = data.idleCauses;
   if ('reservation' in data) out.reservation = compactReservation(data.reservation, caps.reservationMembers);
 
@@ -323,5 +360,11 @@ export function shapeLeaderBrief(data: unknown, tier: LeaderBriefPayloadTier): u
     ...(Array.isArray(source.memberVerdicts) ? { memberVerdicts: source.memberVerdicts.slice(0, 1).map(compactVerdict) } : {}),
     leaderBriefProjection: { tier, emergency: true, note: 'Further optional detail was omitted to keep the monitor response valid JSON.' },
   };
+  if (source.campaign !== undefined) {
+    const campaign = compactCampaign(source.campaign, 0);
+    if (JSON.stringify({ ...emergency, campaign }).length <= LEADER_BRIEF_SHAPER_BUDGET_CHARS) {
+      emergency.campaign = campaign;
+    }
+  }
   return emergency;
 }
