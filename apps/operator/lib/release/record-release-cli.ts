@@ -73,6 +73,8 @@ import {
   renderHoldingHtml,
   renderIndexHtml,
   renderPlanPageHtml,
+  renderWorkItemPageHtml,
+  workItemPagePath,
   type HydratedRelease,
 } from './release-history-page';
 
@@ -877,6 +879,7 @@ export async function generateSite(
 
   const opts = { generatedAt: new Date(), analytics: POSTHOG_PUBLIC_DEFAULTS };
   fs.mkdirSync(path.join(outDir, 'plans'), { recursive: true });
+  fs.mkdirSync(path.join(outDir, 'work-items'), { recursive: true });
   // ── The hold swaps ONLY index.html. ────────────────────────────────────────
   // history.json and the plan pages are still written, and the installers on the
   // host are untouched, so: the in-app Update Center keeps working (it reads
@@ -911,6 +914,28 @@ export async function generateSite(
       seen.add(plan.slug);
       const html = renderPlanPageHtml(plan, { ...opts, version: rel.row.version });
       fs.writeFileSync(path.join(outDir, planPagePath(plan.slug)), html, 'utf8');
+      pages++;
+    }
+  }
+
+  // One page per work item. A frozen item id can appear in more than one release;
+  // listReleases() is newest-first, so the first occurrence carries the freshest
+  // canonical metadata and identifies the most recent release that shipped it.
+  const seenItems = new Set<string>();
+  for (const rel of hydratedAll) {
+    for (const item of rel.items) {
+      if (seenItems.has(item.id)) continue;
+      seenItems.add(item.id);
+      const plan = item.planSlug
+        ? rel.plans.find((candidate) => candidate.slug === item.planSlug) ?? null
+        : null;
+      const html = renderWorkItemPageHtml(item, {
+        ...opts,
+        version: rel.row.version,
+        channel: rel.row.channel,
+        plan,
+      });
+      fs.writeFileSync(path.join(outDir, workItemPagePath(item.id)), html, 'utf8');
       pages++;
     }
   }

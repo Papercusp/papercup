@@ -764,5 +764,11 @@ describe('linux bundle root — producer/consumer contract (EI-18103803991060000
     expect(bundleLine!.replace('$DESKTOP_ROOT', '/repo/papercusp-desktop')).toBe(
       collectedLinuxBundleRoot('/repo/papercusp-desktop'),
     );
+
+    // The publisher must ship and publicly verify the new detail-page directory;
+    // otherwise a locally-correct index advertises links that all 404 in R2.
+    expect(publish).toContain('aws s3 sync "$SITE_DIR/work-items"');
+    expect(publish).toContain('linked work-item detail page served and byte-identical');
+    expect(publish).toContain('"${BASE}/${DETAIL_PAGE}"');
   });
 });

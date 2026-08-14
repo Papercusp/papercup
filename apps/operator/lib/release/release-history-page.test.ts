@@ -6,6 +6,8 @@ import {
   renderHoldingHtml,
   renderIndexHtml,
   renderPlanPageHtml,
+  renderWorkItemPageHtml,
+  workItemPagePath,
   type Analytics,
   type HydratedRelease,
 } from './release-history-page';
@@ -102,6 +104,74 @@ describe('work items expand to their full body (WI-5525)', () => {
     );
     expect(html).toContain('&lt;img src=x onerror=alert(1)&gt;');
     expect(html).not.toContain('<img src=x onerror=alert(1)>');
+  });
+});
+
+describe('work-item detail pages and explicit navigation', () => {
+  it('builds relative, sanitized paths without exposing the secret base', () => {
+    expect(workItemPagePath('WI-123')).toBe('work-items/WI-123.html');
+    expect(workItemPagePath('../WI 123/secret')).toBe('work-items/..-WI-123-secret.html');
+  });
+
+  it('links every item and plan explicitly from the release index', () => {
+    const html = renderIndexHtml([hydrated()], {
+      generatedAt: GENERATED_AT,
+      analytics: null,
+      redact: [],
+    });
+    expect(html).toContain('href="work-items/WI-1.html"');
+    expect(html).toContain('View full work item →');
+    expect(html).toContain('href="plans/a-plan.html"');
+    expect(html).toContain('View full plan →');
+  });
+
+  it('renders canonical metadata and structured verification while escaping public content', () => {
+    const html = renderWorkItemPageHtml(
+      {
+        id: 'WI-9',
+        title: 'Ship <safe> details',
+        summary: 'Public description <script>alert(1)</script>',
+        planSlug: 'a-plan',
+        kind: 'change',
+        state: 'done',
+        createdAt: '2026-08-10T12:00:00.000Z',
+        updatedAt: '2026-08-11T13:00:00.000Z',
+        closedAt: '2026-08-12T14:00:00.000Z',
+        terminalCompletionRef: 'Verified release detail pages.',
+        terminalCompletionEvidence: {
+          summary: 'Published and checked.',
+          verifiedHow: 'integration',
+          testsRun: 'vitest release-history-page.test.ts',
+          testResult: 'all green',
+          filesChanged: ['apps/operator/<renderer>.ts'],
+          addedTests: true,
+        },
+        completionAuthority: 'committed',
+      },
+      {
+        generatedAt: GENERATED_AT,
+        analytics: ANALYTICS,
+        redact: [],
+        version: '0.0.16',
+        channel: 'alpha',
+        plan: plan(),
+      },
+    );
+
+    expect(html).toContain('Ship &lt;safe&gt; details');
+    expect(html).toContain('Public description &lt;script&gt;alert(1)&lt;/script&gt;');
+    expect(html).not.toContain('<script>alert(1)</script>');
+    expect(html).toContain('<dt>Type</dt><dd>change</dd>');
+    expect(html).toContain('<dt>State</dt><dd>done</dd>');
+    expect(html).toContain('2026-08-12 14:00:00 UTC');
+    expect(html).toContain('Verified release detail pages.');
+    expect(html).toContain('vitest release-history-page.test.ts');
+    expect(html).toContain('apps/operator/&lt;renderer&gt;.ts');
+    expect(html).toContain('href="../plans/a-plan.html"');
+    expect(html).toContain('href="../index.html"');
+    expect(html).toContain('var PAGE_PATH = "/work-items/WI-9.html"');
+    expect(html).not.toContain('_completionEvidence');
+    expect(html).not.toContain('checkpoint');
   });
 });
 
@@ -232,6 +302,8 @@ describe('PostHog parity with papercusp.com [owner 2026-07-27: "the same sort of
       'discord_clicked',
       'outbound_link_clicked',
       'plan_page_opened',
+      'work_item_page_opened',
+      'release_history_returned',
       'demo_video_played',
     ]) {
       expect(html).toContain(ev);
