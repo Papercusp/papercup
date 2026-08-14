@@ -1180,13 +1180,58 @@ export function stripShellQuotes(s: string): string {
 }
 
 /**
+ * Same anchors as {@link OS_SCHEDULER_CMD_RE}, but CAPTURING the invocation head
+ * so a match can be widened to the command segment it starts and then classified
+ * read-vs-write. Global: a compound command can hold several invocations.
+ */
+const OS_SCHEDULER_CMD_HEAD_RE = /(?:^|[;&|\n]\s*|\bsudo\s+)((?:crontab|at|batch|systemd-run)\b)/g;
+
+/** Read-only crontab shapes: `-l`, optionally with `-u <user>`. Nothing else. */
+const CRONTAB_READONLY_ARGS_RE = /^crontab((?:\s+(?:-l|-u\s+\S+))*)\s*$/;
+
+/**
+ * EI-20419484186942049 — the lockout exists to stop an agent CREATING an OS
+ * schedule the hive's pause/status/liveness machinery cannot see. A pure LISTING
+ * creates nothing, so denying it bought no safety and taught agents to route
+ * AROUND the rail: observed live, the reporter dropped a `crontab -l` audit of a
+ * reconciler's entry and verified it indirectly through journal output instead.
+ * A guard that blocks reads is the one a session learns to distrust.
+ *
+ * ALLOWLIST, deliberately — exempt only when the ENTIRE argument list is a
+ * recognised listing, so an unrecognised shape (including a mutating flag some
+ * future crontab adds) still denies and the guard fails CLOSED. Still denied:
+ * `crontab -e`, `crontab -r`, `crontab <file>`, `crontab -`, bare `crontab`.
+ *
+ * Mirrors `_is_readonly_scheduler_invocation()` in the Claude/Codex hook
+ * (scripts/hooks/cc/pretooluse-bash-resource-gate.sh) — a guard fixed in one
+ * path must be fixed in both.
+ */
+export function isReadOnlySchedulerInvocation(seg: string): boolean {
+  const s = seg.trim().replace(/^sudo\s+/, '').trim();
+  const m = CRONTAB_READONLY_ARGS_RE.exec(s);
+  // `-l` must be PRESENT, not merely permitted by the shape: bare
+  // `crontab -u bob` installs bob's crontab FROM STDIN.
+  if (m) return /(?:^|\s)-l(?=\s|$)/.test(m[1]);
+  // `at -l` is `atq` spelled differently — a queue listing, not a new job.
+  return /^at\s+-l\s*$/.test(s);
+}
+
+/**
  * True when `cmd` creates a persistent OS schedule at command position, IGNORING
- * `;&|` operators that appear inside quoted arguments (EI-9937). This is the
- * matcher the guard uses; {@link OS_SCHEDULER_CMD_RE} stays exported for the
- * raw-anchor unit tests.
+ * `;&|` operators that appear inside quoted arguments (EI-9937) and read-only
+ * listings (EI-20419484186942049). This is the matcher the guard uses;
+ * {@link OS_SCHEDULER_CMD_RE} stays exported for the raw-anchor unit tests.
  */
 export function isOsSchedulerCommand(cmd: string): boolean {
-  return OS_SCHEDULER_CMD_RE.test(stripShellQuotes(cmd));
+  const scannable = stripShellQuotes(cmd);
+  const re = new RegExp(OS_SCHEDULER_CMD_HEAD_RE.source, 'g');
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(scannable)) !== null) {
+    const headStart = m.index + m[0].length - m[1].length;
+    const seg = scannable.slice(headStart).split(/[;&|\n]/, 1)[0] ?? '';
+    if (!isReadOnlySchedulerInvocation(seg)) return true;
+  }
+  return false;
 }
 
 /**
@@ -1237,7 +1282,11 @@ export function osSchedulerDenyReason(cmd: string): string {
     'native-scheduler lockout: agent sessions must not create OS schedules ' +
     '(crontab / at / batch / systemd-run). Declare your wake via ' +
     'pot:declare-wake instead — the routines table is the only scheduler ' +
-    'the hive’s pause/status/liveness machinery can see.'
+    'the hive’s pause/status/liveness machinery can see. ' +
+    '(Read-only listings are NOT blocked — `crontab -l`, `atq` / `at -l` and ' +
+    '`systemctl list-timers` all pass. This refusal is specifically about ' +
+    'CREATING or MODIFYING a schedule, so if you were only trying to VERIFY an ' +
+    'existing entry, re-run the listing form on its own.)'
   );
 }
 

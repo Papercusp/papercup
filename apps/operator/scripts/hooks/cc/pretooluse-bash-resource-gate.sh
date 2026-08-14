@@ -1917,7 +1917,11 @@ def _os_scheduler_deny_reason(cmd):
         'native-scheduler lockout: agent sessions must not create OS schedules '
         '(crontab / at / batch / systemd-run). Declare your wake via '
         'pot:declare-wake instead — the routines table is the only scheduler '
-        "the hive's pause/status/liveness machinery can see."
+        "the hive's pause/status/liveness machinery can see. "
+        '(Read-only listings are NOT blocked — `crontab -l`, `atq` / `at -l` and '
+        '`systemctl list-timers` all pass. This refusal is specifically about '
+        'CREATING or MODIFYING a schedule, so if you were only trying to VERIFY '
+        'an existing entry, re-run the listing form on its own.)'
     )
 
 
@@ -1981,10 +1985,61 @@ def _is_agent_or_fleet_session():
 # here. This guard remains valuable as a deterrent for the common, naive case
 # and is kept for that reason — it is not, and was never meant to be, a hard
 # security boundary against a determined bypass.
-if _is_agent_or_fleet_session() and re.search(
-        r'(?:^|[;&|\n]\s*|\bsudo\s+)(?:crontab|batch|systemd-run)\b'
-        r'|(?:^|[;&|\n]\s*|\bsudo\s+)at\s+(?:now|midnight|noon|teatime|\+?\d)',
-        _scannable_quote_stripped()):
+#
+# EI-20419484186942049: the lockout's job is to stop an agent CREATING an OS
+# schedule the hive's pause/status/liveness machinery cannot see. A pure
+# LISTING creates nothing. `crontab -l` is the natural way to VERIFY an
+# existing entry — exactly what an agent auditing a scheduled routine needs —
+# and denying it bought no safety while teaching agents to route AROUND the
+# rail: observed live, the reporter dropped the crontab read entirely and
+# verified a reconciler indirectly via journal output, leaving the direct
+# probe unused. A guard that blocks reads is the one a session learns to
+# distrust. So classify the invocation and exempt the read-only forms.
+#
+# This is an ALLOWLIST, deliberately: an invocation is exempt only when its
+# ENTIRE argument list is recognised as a listing, so any unrecognised shape —
+# including a mutating flag some future crontab adds — still denies. The guard
+# fails CLOSED. Still denied: `crontab -e`, `crontab -r`, `crontab <file>`,
+# `crontab -` (stdin install), bare `crontab`, and `crontab -l -e`.
+_CRONTAB_READONLY_ARGS_RE = re.compile(r'^crontab((?:\s+(?:-l|-u\s+\S+))*)\s*$')
+
+
+def _is_readonly_scheduler_invocation(seg):
+    """True when `seg` only READS schedules — it creates/changes nothing."""
+    s = re.sub(r'^sudo\s+', '', seg.strip()).strip()
+    m = _CRONTAB_READONLY_ARGS_RE.match(s)
+    if m:
+        # `-l` must be PRESENT, not merely permitted by the arg shape: bare
+        # `crontab -u bob` installs bob's crontab FROM STDIN, and the shape
+        # alone would wave it through.
+        return bool(re.search(r'(?:^|\s)-l(?=\s|$)', m.group(1)))
+    # `at -l` is `atq` spelled differently — a queue listing. (`atq` never
+    # matched at all: the `at` alternative below requires a time argument.)
+    # Kept so BOTH hooks classify identically per the mirror-invariant above;
+    # this hook's `at` pattern already excludes reads by construction.
+    return bool(re.match(r'^at\s+-l\s*$', s))
+
+
+# Group 1 is the invocation HEAD (the binary), so a match can be widened to the
+# command segment it starts and classified read-vs-write.
+_OS_SCHEDULER_CMD_RE = re.compile(
+    r'(?:^|[;&|\n]\s*|\bsudo\s+)'
+    r'((?:crontab|batch|systemd-run)\b'
+    r'|at\s+(?:now|midnight|noon|teatime|\+?\d))'
+)
+
+
+def _os_scheduler_violation(scannable):
+    """The first scheduler invocation that is NOT a pure read, else None."""
+    for m in _OS_SCHEDULER_CMD_RE.finditer(scannable):
+        seg = re.split(r'[;&|\n]', scannable[m.start(1):], maxsplit=1)[0]
+        if not _is_readonly_scheduler_invocation(seg):
+            return seg.strip()
+    return None
+
+
+if _is_agent_or_fleet_session() and _os_scheduler_violation(
+        _scannable_quote_stripped()) is not None:
     deny(_os_scheduler_deny_reason(command))
 
 # ── systemd user-manager exit/kill guard (EI-13135, 2026-07-17) ─────────────
