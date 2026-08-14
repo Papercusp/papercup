@@ -21,6 +21,7 @@ import {
   scanMobileArtifactSources,
   scanMobileArtifacts,
   scanProvenancedAndroidArtifactSources,
+  validateMobileProductName,
 } from './record-release-cli';
 
 /**
@@ -550,6 +551,26 @@ describe('provenanced Android artifacts — requested version + current source +
     fs.rmSync(fixture.root, { recursive: true, force: true });
   });
 
+  it('uses an explicit mobile product identity without changing the Papercusp default', () => {
+    const fixture = makeAndroidFixture();
+    expect(
+      scanMobileArtifactSources(fixture.root, '0.0.9', { productName: 'SideStage' }).map(
+        ({ outName }) => outName,
+      ),
+    ).toEqual(['SideStage_0.0.9_android.apk', 'SideStage_0.0.9_android.aab']);
+    expect(scanMobileArtifactSources(fixture.root, '0.0.9').map(({ outName }) => outName)).toEqual([
+      'Papercusp_0.0.9_android.apk',
+      'Papercusp_0.0.9_android.aab',
+    ]);
+    fs.rmSync(fixture.root, { recursive: true, force: true });
+  });
+
+  it('rejects mobile product names that could escape the object-key directory or TSV row', () => {
+    expect(() => validateMobileProductName('../SideStage')).toThrow(/Invalid mobile product name/);
+    expect(() => validateMobileProductName('SideStage\tMobile')).toThrow(/Invalid mobile product name/);
+    expect(validateMobileProductName(' SideStage ')).toBe('SideStage');
+  });
+
   it('rejects requested-version, source-commit, and canonical-path drift', () => {
     const fixture = makeAndroidFixture();
     expect(() => scanMobileArtifactSources(fixture.root, '0.0.10')).toThrow(/releaseVersion/);
@@ -606,9 +627,24 @@ describe('buildRunOpts — the mobileRoot-drop regression guard', () => {
   it('wires --mobile-root through onto the opts object', () => {
     const opts = buildRunOpts(['--version', '0.0.9', '--mobile-root', '/tmp/some-mobile-root']);
     expect(opts.mobileRoot).toBe('/tmp/some-mobile-root');
+    expect(opts.mobileProductName).toBe('Papercusp');
     expect(opts.version).toBe('0.0.9');
     expect(opts.skipAndroid).toBe(false);
     expect(Array.isArray(opts.bundleDirs)).toBe(true);
+  });
+
+  it('wires an explicit mobile product identity through argv and env', () => {
+    expect(
+      buildRunOpts(['--version', '1.2.3', '--mobile-product-name', 'SideStage']).mobileProductName,
+    ).toBe('SideStage');
+    const previous = process.env.PAPERCUSP_MOBILE_PRODUCT_NAME;
+    process.env.PAPERCUSP_MOBILE_PRODUCT_NAME = 'EnvStage';
+    try {
+      expect(buildRunOpts(['--version', '1.2.3']).mobileProductName).toBe('EnvStage');
+    } finally {
+      if (previous === undefined) delete process.env.PAPERCUSP_MOBILE_PRODUCT_NAME;
+      else process.env.PAPERCUSP_MOBILE_PRODUCT_NAME = previous;
+    }
   });
 
   it('falls back to PAPERCUSP_MOBILE_ROOT when --mobile-root is absent', () => {
@@ -681,6 +717,7 @@ describe('Android release producer/consumer source contract (D-004)', () => {
     expect(script).toContain('if ! scan_output="$(cd "$ROOT" && npx tsx');
     expect(script).toContain('upload requires exactly one provenanced Android APK and AAB');
     expect(script).toContain('PAPERCUSP_SKIP_ANDROID=1');
+    expect(script).toContain('--mobile-product-name "$MOBILE_PRODUCT_NAME"');
   });
 });
 

@@ -94,6 +94,8 @@ export interface RecordOpts {
   bundleDirs: string[];
   /** The papercup-rust-mobile repo root (Android/iOS artifacts); null to skip mobile. */
   mobileRoot: string | null;
+  /** Brand stem used for synthesized mobile download names (defaults to Papercusp). */
+  mobileProductName: string;
   /** Explicit desktop/iOS-only escape hatch. Raw Android outputs are otherwise rejected. */
   skipAndroid: boolean;
   outDir: string;
@@ -653,7 +655,7 @@ export function scanMobileArtifacts(
   mobileRoot: string | null,
   version: string,
   tag: string,
-  options: { skipAndroid?: boolean } = {},
+  options: { skipAndroid?: boolean; productName?: string } = {},
 ): ReleaseArtifact[] {
   const found: ReleaseArtifact[] = [];
   for (const { src, outName } of scanMobileArtifactSources(mobileRoot, version, options)) {
@@ -722,7 +724,9 @@ function parseAndroidReleaseProvenance(file: string): AndroidReleaseProvenance {
 export function scanProvenancedAndroidArtifactSources(
   mobileRoot: string,
   version: string,
+  productName = 'Papercusp',
 ): Array<{ src: string; outName: string }> {
+  const artifactStem = validateMobileProductName(productName);
   const manifestFile = path.join(mobileRoot, ANDROID_RELEASE_PROVENANCE_PATH);
   const rawAndroidPaths = [
     ANDROID_RELEASE_APK_PATH,
@@ -773,8 +777,8 @@ export function scanProvenancedAndroidArtifactSources(
     relativePath: string;
     outName: string;
   }> = [
-    { key: 'apk', relativePath: ANDROID_RELEASE_APK_PATH, outName: `Papercusp_${version}_android.apk` },
-    { key: 'aab', relativePath: ANDROID_RELEASE_AAB_PATH, outName: `Papercusp_${version}_android.aab` },
+    { key: 'apk', relativePath: ANDROID_RELEASE_APK_PATH, outName: `${artifactStem}_${version}_android.apk` },
+    { key: 'aab', relativePath: ANDROID_RELEASE_AAB_PATH, outName: `${artifactStem}_${version}_android.aab` },
   ];
   return expected.map(({ key, relativePath, outName }) => {
     const entry = manifest.artifacts?.[key];
@@ -820,12 +824,27 @@ export function scanProvenancedAndroidArtifactSources(
 export function scanMobileArtifactSources(
   mobileRoot: string | null,
   version: string,
-  options: { skipAndroid?: boolean } = {},
+  options: { skipAndroid?: boolean; productName?: string } = {},
 ): Array<{ src: string; outName: string }> {
   if (!mobileRoot || !fs.existsSync(mobileRoot)) return [];
   return options.skipAndroid
     ? []
-    : scanProvenancedAndroidArtifactSources(mobileRoot, version);
+    : scanProvenancedAndroidArtifactSources(mobileRoot, version, options.productName);
+}
+
+/**
+ * Product identity becomes part of an R2 object key, so accept a human-readable
+ * filename stem but reject separators/control characters that could escape the
+ * version directory or corrupt the scanner's TSV contract.
+ */
+export function validateMobileProductName(productName: string): string {
+  const value = productName.trim();
+  if (!/^[A-Za-z0-9][A-Za-z0-9 _-]{0,63}$/.test(value)) {
+    throw new Error(
+      `Invalid mobile product name ${JSON.stringify(productName)}; expected 1-64 letters, numbers, spaces, underscores, or hyphens`,
+    );
+  }
+  return value;
 }
 
 /**
@@ -1017,6 +1036,7 @@ export async function run(opts: RecordOpts): Promise<number> {
     // manifest (latest.json) never sees them (it is desktop-platform-only).
     const mobileArtifacts = scanMobileArtifacts(opts.mobileRoot, opts.version, tag, {
       skipAndroid: opts.skipAndroid,
+      productName: opts.mobileProductName,
     });
     const artifacts = [...desktopArtifacts, ...mobileArtifacts];
 
@@ -1166,7 +1186,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     console.error('   or: record-release-cli --hold-page                  # swap index.html for "NEXT UPDATE COMING SOON"');
     console.error('   or: record-release-cli --restore-page               # put the real releases page back');
     console.error('       (both re-render; publish with papercusp-desktop/bin/publish-release-history.sh)');
-    console.error('   or: record-release-cli --scan-mobile --version <x.y.z> [--skip-android]');
+    console.error('   or: record-release-cli --scan-mobile --version <x.y.z> [--mobile-product-name <name>] [--skip-android]');
     console.error('       # print provenanced mobile src↔name TSV for the uploader');
     return 2;
   }
@@ -1180,6 +1200,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     }
     for (const { src, outName } of scanMobileArtifactSources(opts.mobileRoot, opts.version, {
       skipAndroid: opts.skipAndroid,
+      productName: opts.mobileProductName,
     })) {
       console.log(`${src}\t${outName}`);
     }
@@ -1228,6 +1249,9 @@ export function buildRunOpts(argv: string[]): RecordOpts {
   // Optional: null root → no mobile artifacts recorded (a legal desktop-only cut).
   const mobileRoot =
     arg(argv, '--mobile-root') ?? process.env.PAPERCUSP_MOBILE_ROOT ?? resolveMobileRoot();
+  const mobileProductName = validateMobileProductName(
+    arg(argv, '--mobile-product-name') ?? process.env.PAPERCUSP_MOBILE_PRODUCT_NAME ?? 'Papercusp',
+  );
   const skipAndroid =
     argv.includes('--skip-android') || process.env.PAPERCUSP_SKIP_ANDROID === '1';
   const outDir = arg(argv, '--out') ?? path.join(bundleDir, 'release-history');
@@ -1244,6 +1268,7 @@ export function buildRunOpts(argv: string[]): RecordOpts {
     changelogMd,
     bundleDirs,
     mobileRoot,
+    mobileProductName,
     skipAndroid,
     outDir,
     scope,
