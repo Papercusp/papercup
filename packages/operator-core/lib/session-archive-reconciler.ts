@@ -117,6 +117,11 @@ export interface ReconcileStats {
   diskDirsScanned: number;
   diskSessionsArchived: number;
   diskLeftoversDeleted: number;
+  /** Manifest entries left ON DISK because they are not keyed by the session
+   *  being archived — directory-shared state a sibling session still needs
+   *  (`isSessionKeyedRelpath`, WI-38706). Nonzero is EXPECTED while pre-fix
+   *  codex manifests survive; it is the guard working, not a failure. */
+  diskLeftoversRetained: number;
   diskFailed: number;
   /** Sessions skipped this tick: files still CHANGING (possibly a live
    *  untracked session the protected set cannot see) — retried once quiet. */
@@ -160,6 +165,7 @@ export async function runSessionArchiveReconcileOnce(deps: ReconcilerDeps = {}):
     diskDirsScanned: 0,
     diskSessionsArchived: 0,
     diskLeftoversDeleted: 0,
+    diskLeftoversRetained: 0,
     diskFailed: 0,
     diskSkippedFresh: 0,
     ompFilesArchived: 0,
@@ -235,6 +241,7 @@ export async function runSessionArchiveReconcileOnce(deps: ReconcilerDeps = {}):
               store,
             );
             stats.diskLeftoversDeleted += del.deleted;
+            stats.diskLeftoversRetained += del.retained.length;
             if (!del.ok && del.refused.length) {
               // bytes drifted since the stamp — re-archive fresh, then delete
               const r = await archiveAndDeleteSession(
