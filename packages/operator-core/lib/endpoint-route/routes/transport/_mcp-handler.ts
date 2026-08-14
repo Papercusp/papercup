@@ -1395,6 +1395,14 @@ async function buildMcpToolContext(
       projectionSpec = parsed.spec;
       const { [PROJECTION_ARG]: _stripped, ...rest } = dispatchToolArgs;
       dispatchToolArgs = rest;
+      // P-008: caller projection must see the MATERIALIZED source, not an
+      // excerpt already cut by defineTool's session tier / hard ceiling. An
+      // explicit caller payloadTier still wins; otherwise promote this inner
+      // call to the framework-reserved full tier and reduce it below, before
+      // the result crosses the MCP transport boundary.
+      if (!('payloadTier' in dispatchToolArgs)) {
+        dispatchToolArgs = { ...dispatchToolArgs, payloadTier: 'full' };
+      }
     }
     // EI-6982: bind the tx/principal the TARGET tool needs — NOT the outer
     // tools:invoke ctx (requirePrincipal:false, so tx-less). Without this, every
@@ -1417,7 +1425,14 @@ async function buildMcpToolContext(
     const projectedDispatched = projectionSpec
       ? applyResultProjection(dispatched, projectionSpec, { toolName: canonicalName, effect: target.effect })
       : dispatched;
-    return carryNestedResultDoorSkip(projectedDispatched, target.skipResultDoor);
+    // A projected call was temporarily promoted to payloadTier:'full' above.
+    // Do not carry the target's door exemption across that seam: a successful
+    // projection is already small so the outer door is a no-op, while a
+    // fail-open/miss must be bounded instead of leaking the full promoted body.
+    return carryNestedResultDoorSkip(
+      projectedDispatched,
+      projectionSpec ? undefined : target.skipResultDoor,
+    );
   };
   const builtCtx: UnifiedToolContext = {
     activateTools,
@@ -2183,6 +2198,14 @@ const handler = createMcpHandler(
             projectionSpec = parsed.spec;
             const { [PROJECTION_ARG]: _stripped, ...rest } = dispatchArgs as Record<string, unknown>;
             dispatchArgs = rest;
+            // P-008: projection is exhaustive only when it runs over the
+            // materialized source. Payload shaping happens inside defineTool,
+            // before this transport-level stage; without the reserved full
+            // override, coord:orient's 18KB ceiling can discard the selected
+            // field before `pick` sees it. Preserve an explicit caller tier.
+            if (!('payloadTier' in dispatchArgs)) {
+              dispatchArgs = { ...dispatchArgs, payloadTier: 'full' };
+            }
           }
           if ((spawnRes.ctx.isPowerUser || scopedSuperuserClamp) && args && typeof args === 'object') {
             for (const key of WORKSPACE_TARGET_ARGS) {
@@ -2370,7 +2393,14 @@ const handler = createMcpHandler(
               // MODEL-FACING tool can also be oversize by design (coord:orient,
               // the session bootstrap). Both skip the door; only the
               // programmatic one must also be spared appended prose (below).
-              const resultDoorSkipReason = projected.skipResultDoor ?? nestedResultDoorSkipReason(projectedResult);
+              // A caller projection temporarily promotes an otherwise-unspecified
+              // payload tier to full before dispatch. Let the shared door inspect
+              // that result even for an exempt tool: a successful reduction fits
+              // and passes byte-identically, while a fail-open/miss is bounded
+              // instead of exporting the full promoted source.
+              const resultDoorSkipReason = projectionSpec
+                ? undefined
+                : projected.skipResultDoor ?? nestedResultDoorSkipReason(projectedResult);
               const doored = resultDoorSkipReason
                 ? projectedResult
                 : applyResultDoor(

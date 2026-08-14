@@ -728,6 +728,18 @@ describe('applyResultDoor choke point honors projected.skipResultDoor', () => {
     });
     expect(textOf(res)).not.toContain(DOOR_TEST_BIG_TEXT);
   });
+
+  it('doors the promoted full source when an orient projection misses and fails open', async () => {
+    const res = await callTool(
+      'gatingtest:orient_ceiling_projection',
+      { projection: { pick: ['notARealOrientField'] } },
+      scoped('ws-test'),
+      { format: 'json' },
+    );
+    expect(res.isError).not.toBe(true);
+    expect(res._meta?.resultProjection).toMatchObject({ applied: true });
+    expect(res._meta?.resultDoor).toMatchObject({ truncated: true, structural: true });
+  });
 });
 
 /* ─── nested result-door exemption survives tools:invoke (EI-20311977175786095) ── */
@@ -767,6 +779,24 @@ describe('tools:invoke inherits the nested target result-door exemption', () => 
       codexLocks: { lockMode: 'automatic' },
     });
     expect(textOf(res)).not.toContain(DOOR_TEST_BIG_TEXT);
+  });
+
+  it('projects a hard-ceiling orient target before nested tools:invoke carries it outward', async () => {
+    const res = await callTool(
+      'tools:invoke',
+      {
+        name: 'gatingtest:orient_ceiling_projection',
+        args: { projection: { pick: ['codexLocks.lockMode'] } },
+      },
+      scoped('ws-test'),
+      { format: 'json' },
+    );
+    expect(res.isError).not.toBe(true);
+    expect(res._meta?.resultDoor).toBeUndefined();
+    expect(res._meta?.resultProjection).toMatchObject({ applied: true });
+    expect(JSON.parse((res.content[0] as { text: string }).text)).toEqual({
+      codexLocks: { lockMode: 'automatic' },
+    });
   });
 
   it('structurally bounds an ordinary oversized target body at the outer shared door', async () => {
