@@ -13,7 +13,7 @@ import { readFileLockIdentity } from './identity';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { inWorkspaceTxn } from './in-workspace-txn';
 import { acquireWithContentionRetry } from './contention-retry';
-import { tryRelease, releaseAllResourcesForOwner } from './su-lock-store';
+import { tryRelease, releaseAllResourcesForOwner, readQueue, getTxPool, ensureBootstrap } from './su-lock-store';
 import { notifyPlanLockChange } from './notify-lock-change';
 import { broadcastResourceBackUp } from './resource-broadcast';
 import { routeFileLockOp } from '../../authority/file-lock-routing';
@@ -139,11 +139,50 @@ export default defineTool({
      */
     type ReleaseOutcome = { released: string[]; heldBefore: number | null };
 
-    async function releaseFileLocks(lockId: string | undefined, allMine = false) {
+    /**
+     * EI-20405390083792304 (ROOT FIX). The domains this owner ACTUALLY holds
+     * live locks in, other than `exclude` — resolved from the lock rows
+     * themselves rather than guessed from a candidate list.
+     *
+     * WHY NOT A CANDIDATE LIST. The resource-lock side solves the identical
+     * "released by lock_id alone, domain unknown at this call site" problem with
+     * `candidateResourceLockDomains()` — a FIXED list (caller / host-global /
+     * workspace). That shape cannot work here: a file lock's domain is the
+     * physical repo root of the edited file, and the PreToolUse hook sends it
+     * EXPLICITLY, so the domain set is unbounded and discovered at runtime (one
+     * per hive tree under ~/.papercusp/hives/*, per worktree, per checkout).
+     * Enumerating candidates would silently miss whichever tree nobody thought
+     * of — the same class of miss as the bug itself. A lock_id is a UUID and
+     * `owner` is globally unique (WI-5979), so the rows can just be ASKED.
+     *
+     * Reuses `readQueue`'s null-domain diagnostic read — the exact path proven
+     * live to see hive-domain rows — instead of adding parallel SQL.
+     */
+    async function domainsHoldingLocks(lockId: string | undefined, exclude: string): Promise<string[]> {
+      await ensureBootstrap();
+      const snapshot = await acquireWithContentionRetry(() =>
+        readQueue(getTxPool(), { coordinationDomain: null, owner: ownerId }),
+      );
+      const domains = new Set<string>();
+      for (const row of snapshot.active_locks) {
+        if (row.coordination_domain === exclude) continue;
+        // A selected release only reaches into the domain holding THAT lock;
+        // all_mine reaches into every domain this owner holds anything in.
+        if (lockId && row.lock_id !== lockId) continue;
+        domains.add(row.coordination_domain);
+      }
+      return [...domains];
+    }
+
+    async function releaseInDomain(
+      domain: string,
+      lockId: string | undefined,
+      allMine: boolean,
+    ): Promise<ReleaseOutcome> {
       const localRelease = (): Promise<ReleaseOutcome> =>
-        inWorkspaceTxn(coordinationDomain, ownerId, async (tx) =>
+        inWorkspaceTxn(domain, ownerId, async (tx) =>
           tryRelease(tx, {
-            coordinationDomain,
+            coordinationDomain: domain,
             owner: ownerId,
             lockId,
             paths: args.paths,
@@ -163,7 +202,7 @@ export default defineTool({
         // payload); this local note keeps the local-authority + fail-open paths
         // covered and is a harmless mirror otherwise.
         if (released && released.length > 0) {
-          noteShaTokenRelease(coordinationDomain, released, args.published_sha ?? null, Date.now());
+          noteShaTokenRelease(domain, released, args.published_sha ?? null, Date.now());
         }
         // P-025: push the release to the plan lock banner. Uses the paths the
         // store actually released rather than `args.paths`, which is absent on
@@ -175,7 +214,7 @@ export default defineTool({
       try {
         const routed = await acquireWithContentionRetry(() =>
           routeFileLockOp<ReleaseOutcome>(
-            coordinationDomain,
+            domain,
             {
               local: localRelease,
               remote: {
@@ -185,7 +224,7 @@ export default defineTool({
                   lockId,
                   paths: args.paths,
                   allMine,
-                  coordinationDomain,
+                  coordinationDomain: domain,
                   publishedSha: args.published_sha ?? null,
                 } satisfies FileLockReleaseParams,
                 decode: (raw) => {
@@ -229,15 +268,70 @@ export default defineTool({
       }
     }
 
+    /** Domains the fallback below actually reached into, for the reply. */
+    const crossDomainReleases: Array<{ coordination_domain: string; released: string[] }> = [];
+
+    /**
+     * EI-20405390083792304 (ROOT FIX). Release in the caller's domain FIRST —
+     * that path is unchanged and pays nothing new — and only when it frees
+     * NOTHING, resolve where the owner's locks actually live and release there
+     * too. Ordering mirrors `candidateResourceLockDomains()`'s documented shape
+     * ("the caller's own domain is tried FIRST... the special-domain families
+     * are tried only as a fallback when the first attempt finds nothing"), so
+     * the hot path keeps its exact previous cost and the extra read happens only
+     * in the case that was previously a SILENT NO-OP.
+     *
+     * The bug this closes, measured live: a lock acquired by the PreToolUse hook
+     * under a HIVE tree's domain could not be released by its own holder, because
+     * an agent's bare `locks:release` resolves `<workspace_root>/papercusp`. The
+     * caller got `ok:true, released:[]` — indistinguishable from "you held
+     * nothing" — and the lock sat until TTL while peers stayed blocked. It also
+     * meant `all_mine:true` at session end could not clear hive locks AT ALL.
+     */
+    async function releaseFileLocks(lockId: string | undefined, allMine = false): Promise<ReleaseOutcome> {
+      const primary = await releaseInDomain(coordinationDomain, lockId, allMine);
+      if (primary.released.length > 0) return primary;
+
+      let others: string[];
+      try {
+        others = await domainsHoldingLocks(lockId, coordinationDomain);
+      } catch {
+        // The resolve is a best-effort widening of a release that already
+        // returned. Never fail the caller's release because the lookup faulted.
+        return primary;
+      }
+      if (others.length === 0) return primary;
+
+      const released = [...primary.released];
+      let heldBefore = primary.heldBefore;
+      for (const domain of others) {
+        const extra = await releaseInDomain(domain, lockId, allMine);
+        if (extra.released.length > 0) {
+          crossDomainReleases.push({ coordination_domain: domain, released: extra.released });
+          released.push(...extra.released);
+        }
+        // Sum what we can see. `null` (a peer authority that does not report the
+        // count) stays null — an unknown must not be laundered into a number.
+        if (heldBefore !== null && extra.heldBefore !== null) heldBefore += extra.heldBefore;
+        else if (extra.heldBefore === null) heldBefore = null;
+      }
+      return { released, heldBefore };
+    }
+
     if (lockIds.length > 0) {
       const env = await runBulk(
         lockIds,
         async (lockId) => {
+          const before = crossDomainReleases.length;
           const result = await releaseFileLocks(lockId);
+          // Attribute only the entries THIS lock_id produced — the array is
+          // shared across the bulk loop.
+          const crossed = crossDomainReleases.slice(before);
           return {
             ok: true as const,
             lock_id: lockId,
             released: result.released,
+            ...(crossed.length > 0 ? { cross_domain_released: crossed } : {}),
             // EI-20405390083792304: per-lock, so one dud id in a bulk release is
             // visible instead of averaging into the batch looking successful.
             held_before: result.heldBefore,
@@ -284,6 +378,11 @@ export default defineTool({
           text: JSON.stringify({
             ok: true,
             released: result.released,
+            // EI-20405390083792304 (root fix): present ONLY when the caller's own
+            // domain freed nothing and the lock was found — and freed — in the
+            // domain that actually held it (a hook-acquired hive-tree lock). Its
+            // presence means the release would have been a silent no-op before.
+            ...(crossDomainReleases.length > 0 ? { cross_domain_released: crossDomainReleases } : {}),
             // EI-20405390083792304: read this BEFORE concluding you are clear.
             // released:[] + held_before:0 ⇒ you held nothing (correct no-op).
             // released:[] + held_before:>0 ⇒ you still hold locks the selector
