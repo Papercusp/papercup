@@ -31,10 +31,11 @@
  */
 import { describe, it, expect } from 'vitest';
 
-import { unresolvedPathsInCompletion } from './complete';
+import { completionRepoRootsFromRegistry, unresolvedPathsInCompletion } from './complete';
 import type { CompletionVerificationEvidence } from '../../coord-lifecycle/records';
 
 const ROOT = '/repo';
+const SIDESTAGE_ROOT = '/hives/sidestage';
 
 /** The pretend tree — absolute paths, mirroring the real ones from the measured incident. */
 const TREE = new Set<string>([
@@ -46,6 +47,9 @@ const TREE = new Set<string>([
   '/repo/packages/operator-core/lib/agent-tools/work_items/create.test.ts',
   '/repo/libs/papercusp/libs/db/sql',
   '/repo/libs/papercusp/libs/db/sql/790-expose-goal-id-on-engineer-issues-view.sql',
+  `${SIDESTAGE_ROOT}/apps/api/src/auction/auction.service.ts`,
+  `${SIDESTAGE_ROOT}/apps/api/src/app.module.ts`,
+  '/another-repo/only-there.ts',
 ]);
 
 const DIR_ENTRIES: Record<string, string[]> = {
@@ -128,8 +132,21 @@ describe('unresolvedPathsInCompletion — stays SILENT (the fail-open contract)'
   });
 
   it('says nothing when the repo root cannot be resolved — it must never guess', () => {
+    expect(unresolvedPathsInCompletion(ev(['definitely/not/here.ts']), { ...probe, repoRoot: null })).toBeUndefined();
+  });
+
+  it('resolves one registered sibling Hive checkout as a unit (the measured SideStage case)', () => {
+    const roots = completionRepoRootsFromRegistry(ROOT, {
+      projects: [
+        { slug: 'papercusp', path: ROOT, harness_kind: 'hive', self_repo: true },
+        { slug: 'sidestage', path: SIDESTAGE_ROOT },
+      ],
+    });
     expect(
-      unresolvedPathsInCompletion(ev(['definitely/not/here.ts']), { ...probe, repoRoot: null }),
+      unresolvedPathsInCompletion(ev(['apps/api/src/auction/auction.service.ts', 'apps/api/src/app.module.ts']), {
+        ...probe,
+        repoRoots: roots,
+      }),
     ).toBeUndefined();
   });
 
@@ -156,6 +173,16 @@ describe('unresolvedPathsInCompletion — stays SILENT (the fail-open contract)'
     const many = Array.from({ length: 500 }, (_, i) => `made/up/path-${i}.ts`);
     const got = unresolvedPathsInCompletion(ev(many), probe);
     expect(got?.missing.length).toBeLessThanOrEqual(60);
+  });
+});
+
+describe('unresolvedPathsInCompletion — multiple checkout integrity', () => {
+  it('does not combine partial matches from different repositories into one false green', () => {
+    const got = unresolvedPathsInCompletion(ev(['packages/operator-core/lib/issues-engineer.ts', 'only-there.ts']), {
+      ...probe,
+      repoRoots: [ROOT, '/another-repo'],
+    });
+    expect(got?.missing.map((entry) => entry.path)).toEqual(['only-there.ts']);
   });
 });
 

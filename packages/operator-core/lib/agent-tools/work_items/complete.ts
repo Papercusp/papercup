@@ -31,6 +31,7 @@ import { z } from 'zod';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import * as nodePath from 'node:path';
 import { detectPapercupRoot } from '../../harness/register-papercusp';
+import { loadHarnessRegistry, resolveHarnessContentPath, type HarnessRegistry } from '../../harness-registry';
 import {
   assumptionsArg,
   ASSUMPTIONS_REQUIRED_MESSAGE,
@@ -84,16 +85,13 @@ import { shapeWorkItemWriteEcho } from './write-echo-shape';
 import { coerceCompletionShape, gatherFlatCompletion } from './completion-coerce';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
-import { activeWorkspaceId } from '../../workspace-registry';
+import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import { itemTestGate } from '../../harness-test-gate';
 import { FEATURE_TERMINAL_STATES, normalizeFeatureStateInput } from '../../work-item-dispatch-states';
 import { setWorkItemCheckpoint } from '../../work-item-checkpoint';
 import { unresolvedRefsInBody, unresolvedRefsWarning } from './unresolved-refs';
 import { fireReactionInProcess } from '../../events';
-import {
-  detectEphemeralDeliverableReferences,
-  renderEphemeralDeliverableWarning,
-} from '../../turn-end-tracking';
+import { detectEphemeralDeliverableReferences, renderEphemeralDeliverableWarning } from '../../turn-end-tracking';
 import {
   discoverSiblingTypecheckGates,
   gateCoveringFile,
@@ -372,9 +370,7 @@ function repoRelativeTypecheckFile(root: string, file: string, gates: TypecheckG
     : raw.split(nodePath.sep).join('/');
   if (gateCoveringFile(gates, normalized)) return normalized;
 
-  const prefixes = [...new Set(gates.flatMap((gate) => gate.prefixes))].sort(
-    (a, b) => b.length - a.length,
-  );
+  const prefixes = [...new Set(gates.flatMap((gate) => gate.prefixes))].sort((a, b) => b.length - a.length);
   for (const prefix of prefixes) {
     if (!prefix || normalized.startsWith(prefix)) continue;
     const candidate = `${prefix}${normalized}`;
@@ -391,7 +387,8 @@ function repoRelativeTypecheckFile(root: string, file: string, gates: TypecheckG
  * repository gate can be derived.
  */
 async function typecheckCommandsForFiles(files: string[]): Promise<string> {
-  const fallback = `npm run lint:tsc -- --files=${files.join(',')}  (files outside packages/operator-core need ` +
+  const fallback =
+    `npm run lint:tsc -- --files=${files.join(',')}  (files outside packages/operator-core need ` +
     `their own project: npx tsc --noEmit -p <workspace>/tsconfig.json)`;
   const root = detectPapercupRoot();
   if (!root) return fallback;
@@ -471,6 +468,12 @@ export function typeEvidenceGapInCompletion(
 /** Injectable filesystem seam so the check below is unit-testable without a real tree. */
 export interface CompletionPathProbe {
   repoRoot?: string | null;
+  /**
+   * Candidate checkout roots for workspace/fleet completions whose files can live outside the
+   * Papercusp source tree. One root must account for the whole completion; paths are never
+   * combined across repositories. `repoRoot` remains the single-root compatibility seam.
+   */
+  repoRoots?: Array<string | null>;
   exists?: (absPath: string) => boolean;
   siblings?: (absDir: string) => string[];
 }
@@ -516,12 +519,20 @@ export function unresolvedPathsInCompletion(
   const declared = evidence?.filesChanged;
   if (!declared?.length) return undefined;
 
-  // `in` rather than `??`: an EXPLICIT `repoRoot: null` means "I could not resolve a root,
-  // do not guess", which is a different instruction from omitting the key. Collapsing the
-  // two would silently fall back to detection and judge paths against the wrong tree —
+  // `in` rather than `??`: an EXPLICIT null/empty roots value means "I could not resolve a
+  // root, do not guess", which is a different instruction from omitting the key. Collapsing
+  // the two would silently fall back to detection and judge paths against the wrong tree —
   // the same absent-vs-explicitly-empty conflation this whole check exists to catch.
-  const repoRoot = 'repoRoot' in probe ? probe.repoRoot : detectPapercupRoot();
-  if (!repoRoot) return undefined; // cannot judge → say nothing
+  const rawRoots =
+    'repoRoots' in probe ? probe.repoRoots : ['repoRoot' in probe ? probe.repoRoot : detectPapercupRoot()];
+  const repoRoots = [
+    ...new Set(
+      (rawRoots ?? [])
+        .filter((root): root is string => typeof root === 'string' && root.trim().length > 0)
+        .map((root) => nodePath.resolve(root)),
+    ),
+  ];
+  if (repoRoots.length === 0) return undefined; // cannot judge → say nothing
 
   const exists = probe.exists ?? ((abs: string) => existsSync(abs));
   const siblings =
@@ -534,30 +545,79 @@ export function unresolvedPathsInCompletion(
       }
     });
 
-  const missing: Array<{ path: string; didYouMean?: string }> = [];
-  for (const raw of declared.slice(0, MAX_PATHS_PROBED)) {
-    const declaredPath = raw.trim();
-    // A glob is a description of many files, not a claim that one path exists.
-    if (!declaredPath || declaredPath.includes('*') || declaredPath.includes('?')) continue;
+  // A completion describes ONE checkout. Score each candidate as a unit and choose the root
+  // that resolves the most paths (stable ties keep the primary root first). This fixes a fleet
+  // member completing SideStage work through the Papercusp coordination harness without
+  // letting two half-matching repositories combine into one false-green completion.
+  let best: { found: number; missing: Array<{ path: string; didYouMean?: string }> } | undefined;
+  for (const repoRoot of repoRoots) {
+    let found = 0;
+    const missing: Array<{ path: string; didYouMean?: string }> = [];
+    for (const raw of declared.slice(0, MAX_PATHS_PROBED)) {
+      const declaredPath = raw.trim();
+      // A glob is a description of many files, not a claim that one path exists.
+      if (!declaredPath || declaredPath.includes('*') || declaredPath.includes('?')) continue;
 
-    let abs: string;
-    try {
-      abs = nodePath.resolve(repoRoot, declaredPath);
-    } catch {
-      continue;
-    }
-    // Outside the repo we have no standing to judge (and no business probing).
-    if (abs !== repoRoot && !abs.startsWith(repoRoot + nodePath.sep)) continue;
+      let abs: string;
+      try {
+        abs = nodePath.resolve(repoRoot, declaredPath);
+      } catch {
+        continue;
+      }
+      // Outside the repo we have no standing to judge (and no business probing).
+      if (abs !== repoRoot && !abs.startsWith(repoRoot + nodePath.sep)) continue;
 
-    try {
-      if (exists(abs)) continue;
-      missing.push({ path: declaredPath, didYouMean: suggestExistingPath(declaredPath, repoRoot, exists, siblings) });
-    } catch {
-      continue; // fs trouble is never the caller's problem
+      try {
+        if (exists(abs)) {
+          found += 1;
+          continue;
+        }
+        missing.push({
+          path: declaredPath,
+          didYouMean: suggestExistingPath(declaredPath, repoRoot, exists, siblings),
+        });
+      } catch {
+        continue; // fs trouble is never the caller's problem
+      }
     }
+
+    if (missing.length === 0) return undefined;
+    if (!best || found > best.found) best = { found, missing };
   }
 
-  return missing.length > 0 ? { missing } : undefined;
+  return best?.missing.length ? { missing: best.missing } : undefined;
+}
+
+/**
+ * Reuse the canonical harness-content resolver to enumerate the code checkouts registered in
+ * this workspace. The Papercusp tree stays first so legacy/single-repo completions retain their
+ * exact behavior; duplicate paths are collapsed before any filesystem work.
+ */
+export function completionRepoRootsFromRegistry(
+  primaryRoot: string | null,
+  registry: Pick<HarnessRegistry, 'projects'>,
+): string[] {
+  const roots = new Set<string>();
+  if (primaryRoot) roots.add(nodePath.resolve(primaryRoot));
+  for (const project of registry.projects) {
+    const contentPath = resolveHarnessContentPath(registry, project.slug);
+    if (contentPath) roots.add(nodePath.resolve(contentPath));
+  }
+  return [...roots];
+}
+
+async function completionRepoRootsForWorkspace(workspaceId?: string): Promise<string[]> {
+  const primaryRoot = detectPapercupRoot();
+  try {
+    return completionRepoRootsFromRegistry(
+      primaryRoot,
+      await loadHarnessRegistry(resolveConcreteWorkspaceId(workspaceId)),
+    );
+  } catch {
+    // This is an advisory check on an already-recorded completion. Registry trouble must never
+    // make the completion fail; preserve the old Papercusp-only behavior when it is available.
+    return primaryRoot ? [primaryRoot] : [];
+  }
 }
 
 /** Injectable commit-history seam for the path-vintage detector below. */
@@ -720,17 +780,14 @@ export function preExistingChangedPathsInCompletion(
     if (commitSec === undefined || commitSec >= createdAtSec) continue;
     hits.push({ path, lastCommitAt: new Date(commitSec * 1000).toISOString() });
   }
-  return hits.length > 0
-    ? { createdAt: new Date(createdAtSec * 1000).toISOString(), paths: hits }
-    : undefined;
+  return hits.length > 0 ? { createdAt: new Date(createdAtSec * 1000).toISOString(), paths: hits } : undefined;
 }
 
 const PRESCRIBED_GUARD_RE =
   /\b(?:recurrence\s+guard|regression\s+(?:guard|test)|falsifier|guard|assert(?:ion|ing|ed)?|sentinel)\b/i;
 const PRESCRIBED_TEST_RE =
   /\b(?:add|added|create|created|write|written|include|included|provide|provided|require|required|must|should|prescrib(?:e|ed|es)|ensure|ensures|needed|needs|point(?:ed)?|cover(?:ed)?)\b[\s\S]{0,70}\b(?:test|coverage|assert(?:ion|ing)?)\b/i;
-const COMPLETION_GUARD_RE =
-  /\b(?:recurrence|regression|falsifier|guard|assert(?:ion|ing|ed)?|sentinel)\b/i;
+const COMPLETION_GUARD_RE = /\b(?:recurrence|regression|falsifier|guard|assert(?:ion|ing|ed)?|sentinel)\b/i;
 const COMPLETION_NEGATIVE_GUARD_RE =
   /(?:\b(?:no|not|without|missing|absent|defer(?:red)?|left\s+out|did\s+not|didn['’]?t)\b[\s\S]{0,45}\b(?:recurrence|regression|falsifier|guard|assert(?:ion|ing|ed)?|test|coverage)\b|\b(?:recurrence|regression|falsifier|guard|assert(?:ion|ing|ed)?|test|coverage)\b[\s\S]{0,45}\b(?:not|missing|absent|defer(?:red)?|left\s+out|did\s+not|didn['’]?)\b)/i;
 const EXPLICIT_GUARD_WAIVER_RE =
@@ -744,9 +801,9 @@ function prescribedItemText(item: { title?: unknown; summary?: unknown; payload?
   return [
     typeof item.title === 'string' ? item.title : '',
     typeof item.summary === 'string' ? item.summary : '',
-    ...(['body', 'description', 'fix', 'proposedFix', 'acceptance'].flatMap((key) =>
+    ...['body', 'description', 'fix', 'proposedFix', 'acceptance'].flatMap((key) =>
       typeof payload[key] === 'string' ? [payload[key] as string] : [],
-    )),
+    ),
   ]
     .filter(Boolean)
     .join('\n');
@@ -1738,9 +1795,7 @@ async function completeOne(
   // TYPES. Same evidence extraction as every other check above, so it can never
   // disagree with what the caller actually supplied.
   const typeEvidenceGap = typeEvidenceGapInCompletion(completionEvidenceForGate);
-  const typecheckCommands = typeEvidenceGap
-    ? await typecheckCommandsForFiles(typeEvidenceGap.tsFiles)
-    : undefined;
+  const typecheckCommands = typeEvidenceGap ? await typecheckCommandsForFiles(typeEvidenceGap.tsFiles) : undefined;
   const typeEvidenceWarning = typeEvidenceGap
     ? `completion for ${it.id} rests on a TEST RUN (\`verifiedHow: '${completionEvidenceForGate?.verifiedHow}'\`) and ` +
       `changed ${typeEvidenceGap.tsFiles.length} TypeScript file(s), but cites no typecheck. Vitest transforms via ` +
@@ -1764,7 +1819,16 @@ async function completeOne(
   // EI-20093150500083378: `filesChanged` is the one evidence field nothing challenged, and
   // it is the one most often written from memory rather than observation. Same evidence
   // extraction as every check above, so it can never disagree with what the caller supplied.
-  const unresolvedPaths = unresolvedPathsInCompletion(completionEvidenceForGate);
+  const initialUnresolvedPaths = unresolvedPathsInCompletion(completionEvidenceForGate);
+  // EI-20341749505351776: fleet work can be coordinated from the Papercusp harness while the
+  // edited checkout is a registered sibling Hive (SideStage in the measured incident). Only pay
+  // the registry lookup on the warning path; then re-evaluate the entire filesChanged set against
+  // one candidate checkout root. Any registry failure preserves the original Papercusp verdict.
+  const unresolvedPaths = initialUnresolvedPaths
+    ? unresolvedPathsInCompletion(completionEvidenceForGate, {
+        repoRoots: await completionRepoRootsForWorkspace(ctx.workspaceId),
+      })
+    : undefined;
   const unresolvedPathsWarning = unresolvedPaths
     ? `completion for ${it.id} names ${unresolvedPaths.missing.length} \`filesChanged\` path(s) that do NOT ` +
       `exist in the repo: ${unresolvedPaths.missing
