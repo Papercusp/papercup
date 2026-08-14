@@ -109,6 +109,20 @@ describe('host-bootstrap wires every startup guard', () => {
   });
 });
 
+describe('host-bootstrap arms the engine-death sentinel only on a DBOS-owning host', () => {
+  it('uses the same dbosLaunchesHere() predicate as the DBOS launch gate', () => {
+    const start = bootSrc.indexOf('// Red Queen engine-death sentinel');
+    const end = bootSrc.indexOf('// EI-1622:', start);
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+
+    const sentinelSection = bootSrc.slice(start, end);
+    expect(sentinelSection).toContain('if (dbosLaunchesHere())');
+    expect(sentinelSection).toMatch(/dbosLaunchesHere\(\)[\s\S]*armEngineDeathSentinel\(\)/);
+    expect(sentinelSection).not.toMatch(/if\s*\(\s*backgroundWorkers\s*\)/);
+  });
+});
+
 describe('hono-host wires request-worker allocation sampling', () => {
   it('keeps the non-blocking heap sampler enabled with an RSS trigger independent of full snapshots', () => {
     const monitorCall = honoHostSrc.match(/startEventLoopLagMonitor\s*\(\s*\{[\s\S]*?\}\s*\)/)?.[0] ?? '';

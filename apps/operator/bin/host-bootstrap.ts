@@ -27,7 +27,11 @@ import { startEventLoopLagMonitor } from '@papercusp/operator-core/lib/event-loo
 // started; all-waves-up-front promotion + the dispatch frontier replace it.
 import { registerAllExpirables } from '@papercusp/operator-core/lib/expirable-registrations';
 import { setLaunchBlueprintResolver, installedAwareLaunchResolver } from '@papercusp/operator-core/lib/blueprint/launch-blueprint';
-import { backgroundWorkersEnabled, utilityHostEnabled } from '@papercusp/operator-core/lib/background-workers';
+import {
+  backgroundWorkersEnabled,
+  dbosLaunchesHere,
+  utilityHostEnabled,
+} from '@papercusp/operator-core/lib/background-workers';
 import { startClaudeCredentialSync } from '@papercusp/operator-core/lib/claude-credential-sync';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
@@ -1688,8 +1692,15 @@ export function runBootstrap(): void {
   // PLAIN interval, deliberately outside DBOS/routines, so it survives exactly
   // the failure it watches for — the swallowed '[dbos] boot failed' above left
   // every routine dead for 80+ min on 2026-06-12 with nothing detecting it.
+  // Arm only where DBOS is SUPPOSED to launch. `backgroundWorkers` alone is too
+  // broad: packaged desktop/test sidecars commonly set BACKGROUND_WORKERS=1 but
+  // leave DBOS_ENABLE unset, so they do not own a routines engine. An 18h-old
+  // acceptance tower in exactly that state emitted a false critical capture
+  // every five minutes (EI-20416585496609835). dbosLaunchesHere() mirrors the
+  // launch gate above while remaining true when startDbos() itself fails, which
+  // preserves detection of the real swallowed-boot-error incident.
   // Inert while the papercusp-red-queen flag is OFF (checked every pass).
-  if (backgroundWorkers) {
+  if (dbosLaunchesHere()) {
     void (async () => {
       try {
         const { armEngineDeathSentinel } = await import('@papercusp/operator-core/lib/red-queen/engine-death');
