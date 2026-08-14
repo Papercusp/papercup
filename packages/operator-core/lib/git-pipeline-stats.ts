@@ -312,6 +312,9 @@ export interface GitPipelineSnapshot {
    *  every other snapshot read. */
   activeRun: {
     active: boolean;
+    /** Stable symlink to the active manual run's log. Absent when the run was observed only
+     *  through the shared lock and its output path is therefore unknown. */
+    logPath?: string | null;
     /** Short/full sha the live run is judging — null if unreadable.
      *
      * EI-19327704778173646: this is the run's CURRENT candidate (the LAST
@@ -516,6 +519,7 @@ export interface GitPipelineSnapshotOpts {
    *  checkActiveCheckpointRun, dynamic-imported only when opted in). */
   probeActiveRun?: (root: string) => {
     active: boolean;
+    log_path?: string | null;
     candidate?: string | null;
     started_at?: string | null;
     elapsed_sec?: number | null;
@@ -526,6 +530,7 @@ export interface GitPipelineSnapshotOpts {
  *  `activeRun` shape (systemd timestamp → epoch ms; absent fields → null). */
 export function mapActiveRun(r: {
   active: boolean;
+  log_path?: string | null;
   candidate?: string | null;
   // EI-19327704778173646: refire provenance from the probe, carried through so a caller
   // can tell a candidate that legitimately MOVED from a field that looks unstable.
@@ -537,6 +542,7 @@ export function mapActiveRun(r: {
   const startedAtMs = r.started_at ? Date.parse(r.started_at) : NaN;
   return {
     active: r.active,
+    ...(r.log_path ? { logPath: r.log_path } : {}),
     candidate: r.candidate ?? null,
     // Emitted ONLY on an actual refire, so the common reply shape is unchanged.
     ...(r.refire_observed ? { initialCandidate: r.initial_candidate ?? null, refireObserved: true } : {}),

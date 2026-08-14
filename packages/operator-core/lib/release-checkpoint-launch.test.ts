@@ -229,6 +229,7 @@ describe('checkActiveCheckpointRun (WI-1562 refuse-when-active detection)', () =
 
     expect(r.active).toBe(true);
     expect(r.unit).toBe(checkpointUnitForRoot('/tree'));
+    expect(r.log_path).toBe(`/tmp/${checkpointUnitForRoot('/tree')}.log`);
     expect(r.candidate).toBe('98817077');
     expect(r.current_head).toBe('98817077fd79af9dfee00076a1c6e90445d268af');
     expect(r.current_candidate).toBe('98817077fd79af9dfee00076a1c6e90445d268af');

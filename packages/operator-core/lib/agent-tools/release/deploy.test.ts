@@ -115,6 +115,7 @@ function checkpointRun(
 ): NonNullable<DeployStatus['checkpointRunInFlight']> {
   return {
     active: true,
+    logPath: '/tmp/papercup-green-checkpoint-manual-demo.log',
     candidate: 'fb941a2c',
     initialCandidate: '80cde64e',
     refireObserved: true,
@@ -280,6 +281,7 @@ describe('release:deploy — trigger', () => {
     const b = body(await tool.handler({ op: 'status' } as never, { role: 'cup' } as never));
     expect(b.checkpointRunInFlight).toMatchObject({
       active: true,
+      logPath: '/tmp/papercup-green-checkpoint-manual-demo.log',
       candidate: 'fb941a2c',
       initialCandidate: '80cde64e',
       refireObserved: true,

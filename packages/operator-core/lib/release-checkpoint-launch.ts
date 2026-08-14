@@ -191,6 +191,11 @@ export interface LaunchCheckpointResult {
 export interface ActiveCheckpointCheck {
   active: boolean;
   unit: string;
+  /** Stable symlink for the active manual run's output (`/tmp/<unit>.log`). Null/absent
+   *  when liveness came only from the shared run lock (for example the hourly cron), because
+   *  that process does not publish its output path through the manual systemd unit. Readers
+   *  should use this instead of guessing a timestamped per-run filename. */
+  log_path?: string | null;
   /** Best-effort candidate sha the live run is judging. For the manual-unit case, parsed
    *  from its log's LAST "checkpointing candidate <sha>" line (null if the log isn't
    *  readable yet/at all). For the `held_externally` case (see below), resolved instead
@@ -892,6 +897,7 @@ export function checkActiveCheckpointRun(
   return {
     active: true,
     unit,
+    log_path: logPath,
     candidate,
     // EI-19327704778173646: provenance only when the run actually re-candidated, so the
     // common (no-refire) status reply is byte-for-byte what it was before.

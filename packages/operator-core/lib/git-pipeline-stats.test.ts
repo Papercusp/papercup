@@ -131,12 +131,14 @@ describe('mapActiveRun (overview-tab-expansion P-001)', () => {
   it('maps a live judging run: systemd timestamp → epoch ms, candidate + elapsed through', () => {
     const m = mapActiveRun({
       active: true,
+      log_path: '/tmp/papercup-green-checkpoint-manual-demo.log',
       candidate: '06a0eb9577deadbeef',
       started_at: '2026-07-20T04:00:00.000Z',
       elapsed_sec: 840,
     });
     expect(m).toEqual({
       active: true,
+      logPath: '/tmp/papercup-green-checkpoint-manual-demo.log',
       candidate: '06a0eb9577deadbeef',
       startedAtMs: Date.parse('2026-07-20T04:00:00.000Z'),
       elapsedSec: 840,

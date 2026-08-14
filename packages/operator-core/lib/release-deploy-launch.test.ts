@@ -116,12 +116,14 @@ describe('computeDeployStatus — decision tree', () => {
       ),
       activeRun: {
         active: true,
+        logPath: '/tmp/papercup-green-checkpoint-manual-demo.log',
         candidate: '80cde64e',
         startedAtMs: Date.now() - 15 * 60_000,
         elapsedSec: 900,
       },
     });
     expect(s.gate.fireStale).toBe(false);
+    expect(s.checkpointRunInFlight?.logPath).toBe('/tmp/papercup-green-checkpoint-manual-demo.log');
     expect(s.gate.fireStaleReason).toBeNull();
     expect(s.state).toBe('staging-buffered');
     expect(s.recommendation).not.toMatch(/WEDGED/);
