@@ -4636,6 +4636,30 @@ describe('mapCheckpointRunInFlight — pure mapper (EI-18793581783459047)', () =
       expect(out?.candidate).toBe('abc123');
     });
 
+    it('EI-20444707119723892: a not-held lock overturns a FRESH cache of an OLD run that just finished', () => {
+      const justFinished = {
+        activeRun: {
+          active: true,
+          candidate: 'old-run',
+          startedAtMs: NOW - 120 * 60_000,
+          elapsedSec: 120 * 60 - 1,
+        },
+        // The cache was computed one second ago, immediately before the watchdog released
+        // the lock. Cache freshness cannot turn a two-hour-old run back into a startup race.
+        computedAtMs: NOW - 1_000,
+      };
+      const out = mapCheckpointRunInFlight(
+        justFinished,
+        NOW,
+        null,
+        { held: false, elapsedSec: null },
+      );
+      expect(out).toMatchObject({ active: false, activeSource: 'run-lock' });
+      expect(out?.candidate).toBeNull();
+      expect(out?.startedAtMs).toBeNull();
+      expect(out?.elapsedSec).toBeNull();
+    });
+
     it('answers liveness with NO cache at all — previously UNKNOWN, though the lock could answer for free', () => {
       expect(mapCheckpointRunInFlight(null, NOW, null, { held: true, elapsedSec: 60 })).toMatchObject({
         active: true,
@@ -4697,6 +4721,7 @@ describe('gitPipelinePosition wires checkpointRunInFlight into gate + notes (EI-
           activeRun: { active: true, candidate: 'deadbeef1234', startedAtMs: Date.now() - 3 * 60_000, elapsedSec: 180 },
           computedAtMs: Date.now(),
         }),
+        readCheckpointRunLock: async () => ({ held: true, elapsedSec: 180 }),
       },
     );
     expect(res.gate.checkpointRunInFlight?.active).toBe(true);
@@ -5158,6 +5183,7 @@ describe('WI-36259: judgingSha prefers the re-triage marker over the probe', () 
           },
           computedAtMs: Date.now(),
         }),
+        readCheckpointRunLock: async () => ({ held: true, elapsedSec: 1800 }),
         // The probe leg the OLD code trusted unconditionally. It deliberately disagrees with
         // the marker: before the fix this sha reached the cell verbatim.
         resolveGateCandidates: async () => ({ judgingSha: 'stale-worktree-head', nextCandidateSha: 'next999' }),

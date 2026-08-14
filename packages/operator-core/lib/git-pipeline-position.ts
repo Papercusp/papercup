@@ -3066,16 +3066,19 @@ const realReadCheckpointRunLock = async (root: string): Promise<{ held: boolean;
 };
 
 /**
- * How fresh a cached reading has to be for us to let it stand against a `held: false`
- * lock read. The producer's ttl is 90s and it recomputes on every ~2min routine tick, so
- * anything inside this window was observed by the systemctl probe very recently.
+ * How fresh BOTH a cached reading and the run it describes have to be for us to let the
+ * cache stand against a `held: false` lock read. The producer's ttl is 90s and it recomputes
+ * on every ~2min routine tick, so anything inside this window was observed by the systemctl
+ * probe very recently.
  *
  * This window exists for ONE documented blind spot, not as general distrust of the lock:
  * `isCheckpointRunLockHeldCheap` "misses a manual-unit run that hasn't (yet) raced for
  * the shared run-lock" (its own doc). During that startup sliver the systemd probe sees a
- * run the lock does not, so a FRESH cached `active: true` outranks `held: false`. Once the
- * cache is older than this, it is no longer evidence of anything current and the live lock
- * wins.
+ * run the lock does not, so a FRESH cached `active: true` for a run that is ITSELF still in
+ * this startup window outranks `held: false`. A freshly-computed cache entry for a 120m-old
+ * run is not startup evidence: after that run releases its lock, retaining the cached
+ * `active` resurrects a finished run for 90s (EI-20444707119723892). Once either age exceeds
+ * this window, the live lock wins.
  */
 const CHECKPOINT_CACHE_TRUSTED_MS = 90_000;
 
@@ -3142,13 +3145,25 @@ export function mapCheckpointRunInFlight(
   const cacheAgeMs =
     cached && cached.computedAtMs !== null ? Math.max(0, nowMs - cached.computedAtMs) : null;
   const cachedActive = cachedRun?.active === true;
-  const cacheIsTrusted = cacheAgeMs !== null && cacheAgeMs <= CHECKPOINT_CACHE_TRUSTED_MS;
+  const cacheIsTrusted =
+    cacheAgeMs !== null && cacheAgeMs <= CHECKPOINT_CACHE_TRUSTED_MS;
+  const cachedRunAgeMs = cachedActive
+    ? cachedRun!.startedAtMs !== null
+      ? Math.max(0, nowMs - cachedRun!.startedAtMs)
+      : cachedRun!.elapsedSec !== null
+        ? Math.max(0, cachedRun!.elapsedSec * 1000 + (cacheAgeMs ?? 0))
+        : null
+    : null;
+  const cacheCoversStartup =
+    cacheIsTrusted &&
+    cachedRunAgeMs !== null &&
+    cachedRunAgeMs <= CHECKPOINT_CACHE_TRUSTED_MS;
 
   // Liveness precedence. A held lock is positive, pid-verified evidence and always wins. A
   // NOT-held lock wins too, EXCEPT against a still-trusted cached `active` (the manual-run
   // startup sliver documented on CHECKPOINT_CACHE_TRUSTED_MS) — that one case is the only
   // way a run can exist that the lock cannot see.
-  const lockDecides = liveLock != null && (liveLock.held || !(cachedActive && cacheIsTrusted));
+  const lockDecides = liveLock != null && (liveLock.held || !(cachedActive && cacheCoversStartup));
   const active = lockDecides ? liveLock!.held : cachedActive;
 
   // Does the cached DETAIL describe the run we are now reporting? When the lock overturned
