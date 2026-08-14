@@ -266,23 +266,37 @@ function parseDecision(out: { stdout: string; stderr?: string; status: number | 
     const agentIdSize = sizeOrNull(agentId);
     const describeFile = (p: string, size: number | null) =>
       size === null ? `${p} (MISSING)` : `${p} (size=${size})`;
-    // The precondition the hook's preamble actually tests: both files present AND non-empty.
+    // TWO signals, and BOTH must look healthy before this can be read as an ordinary
+    // allow. Credentials: the precondition the hook's preamble actually tests (present
+    // AND non-empty). Stderr: a deliberate allow is silent on BOTH streams, so anything
+    // on stderr means the hook ERRORED rather than chose — that is a fail-open however
+    // healthy the credential files look right now. (The stderr half is not a guess: the
+    // EI-18829641916212203 test above pins exactly that case — healthy files, stderr
+    // 'hook error: token unreadable' — and it is the reason this branch is a conjunction
+    // instead of a credential check alone.)
     const credentialsUsable = (tokenSize ?? 0) > 0 && (agentIdSize ?? 0) > 0;
-    const lead = credentialsUsable
-      ? 'gate hook exited 0 with EMPTY stdout, which in this hook\'s protocol means it ALLOWED ' +
-        'the command (silence = allow). Both $HOME credential files are present and NON-EMPTY ' +
-        'RIGHT NOW (sizes below), so the evidence does NOT support the credential fail-open ' +
-        'shape (EI-18829641916212203): the likeliest reading is that the guard ran and simply ' +
-        'did not match. Check the EXPECTATION first — a rail that legitimately stopped denying ' +
-        'this command, or a probe string that is now allowed, looks exactly like this.\n' +
-        '  Caveat, stated so this does not mis-diagnose in the other direction: these files are ' +
-        'stat-ed AFTER the run, so a credential that was transiently unreadable under load and ' +
-        'has since been restored would also land here. RE-RUN 3x — that is what separates them: ' +
-        'a load flake does not fail deterministically, a stale expectation does. Diagnostics:\n'
+    const stderrQuiet = (out.stderr ?? '').trim() === '';
+    const lead = credentialsUsable && stderrQuiet
+      ? 'gate hook exited 0 with EMPTY stdout and an EMPTY stderr, which in this hook\'s ' +
+        'protocol means it ALLOWED the command (silence = allow). Both $HOME credential files ' +
+        'are present and NON-EMPTY right now (sizes below), so the evidence does not support ' +
+        'the credential fail-open shape (EI-18829641916212203): the likeliest reading is that ' +
+        'the guard ran and simply did not match. Check the EXPECTATION first — a rail that ' +
+        'legitimately stopped denying this command, or a probe string that is now allowed, ' +
+        'looks exactly like this.\n' +
+        '  Caveat, stated so this cannot mis-diagnose in the other direction: the files are ' +
+        'stat-ed AFTER the run, so a credential transiently unreadable under load and since ' +
+        'restored would also land here. RE-RUN 3x — that is what separates them: a load flake ' +
+        'does not fail deterministically, a stale expectation does. Diagnostics:\n'
       : 'gate hook exited 0 with EMPTY stdout — it FAIL-OPENED instead of emitting a decision. ' +
-        'This IS the credential-precondition shape (EI-18829641916212203), not a logic failure: ' +
-        "the hook's preamble allows unconditionally when either $HOME credential file is missing " +
-        'or empty, and one of them is (see below). Diagnostics:\n';
+        (credentialsUsable
+          ? 'The credential files are present and non-empty, but the hook wrote to STDERR (below), ' +
+            'so it ERRORED OUT rather than deliberately allowing — read this as the fail-open ' +
+            'shape (EI-18829641916212203), not as a guard that chose to allow. '
+          : 'This is the credential-precondition shape (EI-18829641916212203), not a logic ' +
+            "failure: the hook's preamble allows unconditionally when either $HOME credential " +
+            'file is missing or empty, and one of them is (see below). ') +
+        'Diagnostics:\n';
     throw new Error(
       lead +
         `  stderr:   ${JSON.stringify(out.stderr ?? '(not captured)')}\n` +
