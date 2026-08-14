@@ -80,12 +80,22 @@ const OP_COUNT = SNAPSHOT_READ_CONCURRENCY * 3;
  * Windows a case must span when its verdict depends on the armed probe LANDING (`'during'`).
  *
  * The probe is a `setTimeout(…, 0)` clamped to 1ms, so `'during'` requires the read to still
- * be running 1ms after it starts. Three windows over a warm log is close enough to that 1ms
- * to be decided by whatever else is true of the process — and the gate runs this file in a
- * long-lived worker that has already executed thousands of tests (rssMb ~1018 on the
- * 2026-08-14 failure, against ~120 running the file alone), where a warmed JIT makes the same
- * read materially faster. A read that finishes inside the clamp reports `'after'` no matter
- * how faithfully it yielded.
+ * be running 1ms after it starts. Three windows over a warm log sits close enough to that 1ms
+ * that the verdict is decided by whatever else is true of the process: a read finishing inside
+ * the clamp reports `'after'` no matter how faithfully it yielded.
+ *
+ * MEASURED on the 2026-08-14 failure: rssMb ~1018, against ~120 for the same file run alone.
+ * loopLagP95Ms 20.4, against 20.5-31.3 on contemporaneous passes.
+ *
+ * HYPOTHESIS — NOT VERIFIED, do not cite it as the cause: that the gate's long-lived worker
+ * (warm JIT, thousands of tests already executed) runs the same read fast enough to finish
+ * inside the clamp. It fits every number above, but read duration was never measured cold
+ * against warm. What the numbers DO rule out is event-loop contention — loopLag is flat, and
+ * that was the first wrong guess on both occasions this file bit.
+ *
+ * The sizing below deliberately does not rest on which mechanism is right. Every candidate
+ * reduces to "the read stopped before the probe landed", and a longer read widens that margin
+ * under all of them.
  *
  * ⚠ Do NOT re-derive this as an event-loop CONTENTION story: loopLagP95Ms was 20.4 on that
  * failure versus 20.5-31.3 on contemporaneous passes, i.e. not elevated. The margin that
