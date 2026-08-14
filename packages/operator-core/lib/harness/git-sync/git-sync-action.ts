@@ -773,7 +773,7 @@ async function spawnMergeResolver(slug: string, workspaceId: string, conflicts: 
   let authorship: Awaited<ReturnType<typeof computeConflictAuthorship>> = [];
   try {
     const { projectDirForSlug } = await import('../../operator-notes');
-    const repoRoot = await projectDirForSlug(slug);
+    const repoRoot = await projectDirForSlug(slug, workspaceId);
     if (repoRoot) authorship = await computeConflictAuthorship(repoRoot, conflicts);
   } catch {
     /* best-effort: the resolver prompt has a git-log fallback */
@@ -1193,17 +1193,27 @@ async function checkForNewStashes(slug: string, workspaceId: string, superRepoPa
  * and run time can never disagree on the vocabulary. Best-effort: an unreadable
  * registry FAILS OPEN (the pipeline's own path resolution will surface the error).
  */
-async function gitSyncRuntimeGate(slug: string): Promise<{ gate: GitSyncEligibility; entry?: ProjectEntry }> {
+async function gitSyncRuntimeGate(
+  slug: string,
+  workspaceId: string,
+  repoPathOverride?: string | null,
+): Promise<{ gate: GitSyncEligibility; entry?: ProjectEntry }> {
   let entry: ProjectEntry | undefined;
   try {
-    entry = (await loadHarnessRegistry()).projects.find((p) => p.slug === slug);
+    entry = (await loadHarnessRegistry(workspaceId)).projects.find((p) => p.slug === slug);
   } catch (e) {
     console.warn(`[git-sync] ${slug}: registry unreadable for the eligibility gate — proceeding: ${e instanceof Error ? e.message : e}`);
     return { gate: { eligible: true } };
   }
   // A vanished registry entry reads the same as a vanished checkout: no path.
   if (!entry) return { gate: { eligible: false, reason: 'no_path' } };
-  return { gate: gitSyncEligibility(entry), entry };
+  // A manual fire pins the exact tree it measured before entering the action.
+  // Validate that pinned path rather than silently gating a freshly-resolved
+  // sibling checkout if the ambient registry changes underneath the call.
+  const gatedEntry = repoPathOverride === undefined
+    ? entry
+    : { ...entry, path: repoPathOverride ?? '' };
+  return { gate: gitSyncEligibility(gatedEntry), entry: gatedEntry };
 }
 
 /** P-004/P-006: build the live attribution roster (active agents + their declared files) from
@@ -1357,7 +1367,7 @@ async function assigneesForContentErrors(
     // Resolve the superproject root so absolute current_files normalize to repo-relative (lazy
     // import to keep the registry load-graph acyclic, like loadAttributionRoster's presence read).
     const { projectDirForSlug } = await import('../../operator-notes');
-    const superRoot = (await projectDirForSlug(slug)) ?? undefined;
+    const superRoot = (await projectDirForSlug(slug, workspaceId ?? undefined)) ?? undefined;
     const agents = agentsForScopedFiles(
       roster,
       contentErrors.map((c) => ({ scope: c.scope, file: c.file })),
@@ -1382,7 +1392,7 @@ async function assigneesForContentErrors(
 async function recordSyncedCommitAttribution(slug: string, workspaceId: string): Promise<void> {
   try {
     const { projectDirForSlug } = await import('../../operator-notes');
-    const repoRoot = await projectDirForSlug(slug);
+    const repoRoot = await projectDirForSlug(slug, workspaceId);
     if (!repoRoot) return;
     const { runGit } = await import('../docs/git-runner');
 
@@ -1496,7 +1506,10 @@ async function computeConflictAuthorship(
  * (see GitSyncStepRunner in run-git-sync.ts): a re-run commit is `nothing to commit`,
  * a re-run push is `Everything up-to-date` — no double-commit.
  */
-async function handleGitSync(ctx: SystemActionCtx): Promise<GitSyncFireOutcome> {
+async function handleGitSync(
+  ctx: SystemActionCtx,
+  repoPathOverride?: string | null,
+): Promise<GitSyncFireOutcome> {
   const { installSlug: slug, workspaceId } = ctx;
   const { config: cfg, extraLockResources } = configFromTrigger(ctx.triggerConfig);
   const cd = workspaceId || '*';
@@ -1510,9 +1523,9 @@ async function handleGitSync(ctx: SystemActionCtx): Promise<GitSyncFireOutcome> 
   // recorded), never escalate.
   const gate = await runCheckpointedStep(
     'git-sync:eligibility',
-    async (): Promise<GitSyncEligibility & { hiveGitMode?: PotGitMode }> => {
+    async (): Promise<GitSyncEligibility & { hiveGitMode?: PotGitMode; repoPath?: string }> => {
       await patchRoutineMetadata(slug, workspaceId, { fire_started_at: Date.now() });
-      const { gate: g, entry } = await gitSyncRuntimeGate(slug);
+      const { gate: g, entry } = await gitSyncRuntimeGate(slug, workspaceId, repoPathOverride);
       if (!g.eligible) {
         await patchRoutineMetadata(slug, workspaceId, {
           last_status: 'skipped',
@@ -1529,15 +1542,22 @@ async function handleGitSync(ctx: SystemActionCtx): Promise<GitSyncFireOutcome> 
       const potHomeSlug = entry ? entry.hive_slug ?? (entry.self_repo ? entry.slug : undefined) : undefined;
       if (potHomeSlug && workspaceId) {
         const mode = await getPotGitMode(workspaceId, potHomeSlug);
-        if (mode !== 'legacy') return { ...g, hiveGitMode: mode };
+        if (mode !== 'legacy') return { ...g, hiveGitMode: mode, ...(entry?.path ? { repoPath: entry.path } : {}) };
       }
-      return g;
+      return { ...g, ...(entry?.path ? { repoPath: entry.path } : {}) };
     },
   );
   if (!gate.eligible) {
     console.log(`[git-sync] ${slug}: ineligible (${gate.reason}) — skipping this tick`);
     return { status: 'skipped', reason: gate.reason ?? 'ineligible' };
   }
+  // The scoped eligibility snapshot already resolved the canonical tree. Keep
+  // that ONE path through the entire tick; only the fail-open unreadable-registry
+  // case needs a final workspace-scoped lookup. Explicit null from a manual fire
+  // remains authoritative and must not fall back to ambient state.
+  const repoPath = repoPathOverride !== undefined
+    ? repoPathOverride
+    : gate.repoPath ?? await (await import('../../operator-notes')).projectDirForSlug(slug, workspaceId);
   // github-bridge P-003: on a bridged/p2p-only hive, member git-sync is COMMIT-ONLY —
   // the bridge writer (integrator lease holder) is the sole origin pusher (S-1).
   // The local commit still runs; the dedicated GitHub-ingress/admission and P2P
@@ -1610,7 +1630,7 @@ async function handleGitSync(ctx: SystemActionCtx): Promise<GitSyncFireOutcome> 
   // exact paths this tick moved. Best-effort — never gate the sync on it.
   let prevHeadSha: string | null = null;
   try {
-    prevHeadSha = await (await import('../docs/sweep-after-sync')).captureHeadSha(slug);
+    prevHeadSha = await (await import('../docs/sweep-after-sync')).captureHeadSha(slug, workspaceId, repoPath);
   } catch {
     /* best-effort */
   }
@@ -1639,6 +1659,7 @@ async function handleGitSync(ctx: SystemActionCtx): Promise<GitSyncFireOutcome> 
     : async () => {};
   try {
     outcome = await runGitSync(slug, {
+      repoPath,
       config: cfg,
       contentDetectors: contentGuardOn ? undefined : [],
       deletionGuard: deletionGuardOn,
@@ -1659,10 +1680,8 @@ async function handleGitSync(ctx: SystemActionCtx): Promise<GitSyncFireOutcome> 
   // (lazy-imported like the other operator-notes call sites in this file) — a failure
   // here must never break the tick this deep into the pipeline.
   try {
-    const { projectDirForSlug } = await import('../../operator-notes');
-    const stashRepoPath = await projectDirForSlug(slug);
-    if (stashRepoPath) {
-      await runCheckpointedStep('git-sync:stash-check', () => checkForNewStashes(slug, workspaceId, stashRepoPath));
+    if (repoPath) {
+      await runCheckpointedStep('git-sync:stash-check', () => checkForNewStashes(slug, workspaceId, repoPath));
     }
   } catch {
     // Best-effort, silent degrade — mirrors loadAttributionRoster's fallback above:
@@ -1694,6 +1713,7 @@ async function handleGitSync(ctx: SystemActionCtx): Promise<GitSyncFireOutcome> 
       prevOversizedKeys: prev.oversizedKeys,
       cfgBranch: cfg.branch,
       prevHeadSha,
+      repoPath,
       attributionOn,
       pushMode: effectivePushMode,
     }));
@@ -1787,7 +1807,7 @@ export async function runGithubBridgeLeg(slug: string, workspaceId: string): Pro
   try {
     let entry: ProjectEntry | undefined;
     try {
-      entry = (await loadHarnessRegistry()).projects.find((p) => p.slug === slug);
+      entry = (await loadHarnessRegistry(workspaceId)).projects.find((p) => p.slug === slug);
     } catch {
       return; // registry unreadable — next tick retries
     }
@@ -2004,7 +2024,7 @@ async function runOwnHeadPublishLeg(slug: string, workspaceId: string, branch: s
   try {
     let entry: ProjectEntry | undefined;
     try {
-      entry = (await loadHarnessRegistry()).projects.find((p) => p.slug === slug);
+      entry = (await loadHarnessRegistry(workspaceId)).projects.find((p) => p.slug === slug);
     } catch {
       return; // registry unreadable — next tick retries
     }
@@ -2393,7 +2413,7 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
   try {
     let entry: ProjectEntry | undefined;
     try {
-      entry = (await loadHarnessRegistry()).projects.find((p) => p.slug === slug);
+      entry = (await loadHarnessRegistry(workspaceId)).projects.find((p) => p.slug === slug);
     } catch {
       return; // registry unreadable — next tick retries
     }
@@ -2961,7 +2981,7 @@ async function runRefAnnounceLeg(slug: string, workspaceId: string): Promise<voi
   try {
     let entry: ProjectEntry | undefined;
     try {
-      entry = (await loadHarnessRegistry()).projects.find((p) => p.slug === slug);
+      entry = (await loadHarnessRegistry(workspaceId)).projects.find((p) => p.slug === slug);
     } catch {
       return; // registry unreadable — next tick retries
     }
@@ -3341,7 +3361,7 @@ async function runIntegratorLeg(slug: string, workspaceId: string): Promise<void
   try {
     let entry: ProjectEntry | undefined;
     try {
-      entry = (await loadHarnessRegistry()).projects.find((p) => p.slug === slug);
+      entry = (await loadHarnessRegistry(workspaceId)).projects.find((p) => p.slug === slug);
     } catch {
       await decline('registry_unreadable');
       return; // next tick retries
@@ -3783,7 +3803,7 @@ async function runWorktreeBridgeLeg(slug: string, workspaceId: string): Promise<
   try {
     let entry: ProjectEntry | undefined;
     try {
-      entry = (await loadHarnessRegistry()).projects.find((p) => p.slug === slug);
+      entry = (await loadHarnessRegistry(workspaceId)).projects.find((p) => p.slug === slug);
     } catch {
       return; // registry unreadable — next tick retries
     }
@@ -3880,7 +3900,7 @@ async function runWorktreeBridgeLeg(slug: string, workspaceId: string): Promise<
 
     const repoPath = hiveGitRepoPath(potHomeSlug, repoKey);
     const { projectDirForSlug } = await import('../../operator-notes');
-    const worktreePath = await projectDirForSlug(slug);
+    const worktreePath = await projectDirForSlug(slug, workspaceId);
     if (!worktreePath) return; // no checked-out tree for this slug — next tick retries
 
     // P-505: the insider-poisoning cap must recognize a LEGITIMATE grant — the
@@ -4016,6 +4036,7 @@ async function recordAndEscalateTick(a: {
   prevOversizedKeys: string[];
   cfgBranch: string | undefined;
   prevHeadSha: string | null;
+  repoPath: string | null;
   attributionOn: boolean;
   /** EI-18812945811758018: 'push' | 'commit-only:<reason>' for THIS tick. */
   pushMode: string;
@@ -4141,6 +4162,7 @@ async function recordAndEscalateTick(a: {
       await runDocFreshnessSweepAfterSync({
         harnessSlug: slug,
         workspaceId,
+        repoRoot: a.repoPath,
         prevSha: a.prevHeadSha ?? undefined,
         headSha: outcome.headSha,
       });
@@ -4185,14 +4207,18 @@ async function recordAndEscalateTick(a: {
  * stale tree when git-sync is lagging/wedged — WI-1320). Reads the routine's own
  * trigger_config so it behaves exactly like a tick; default config when the row is absent.
  */
-export async function fireGitSyncNow(installSlug: string, workspaceId: string): Promise<GitSyncFireOutcome> {
+export async function fireGitSyncNow(
+  installSlug: string,
+  workspaceId: string,
+  repoPath?: string | null,
+): Promise<GitSyncFireOutcome> {
   const { sql } = getOrgPg();
   const rows = (await sql`
     SELECT trigger_config FROM harness_shared.routines
      WHERE workspace_id = ${workspaceId} AND install_slug = ${installSlug} AND name = 'git-sync'
      LIMIT 1`) as Array<{ trigger_config: Record<string, unknown> | null }>;
   const triggerConfig = rows[0]?.trigger_config ?? {};
-  return handleGitSync({ installSlug, workspaceId, triggerConfig, payloadTemplate: null });
+  return handleGitSync({ installSlug, workspaceId, triggerConfig, payloadTemplate: null }, repoPath);
 }
 
 // WI-1416: ownSteps — the handler checkpoints its OWN DBOS sub-steps, so the routine

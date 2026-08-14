@@ -35,7 +35,7 @@ describe('git-sync:run', () => {
     const result = await tool.handler({}, MAKE_CTX());
 
     expect(fireSpy).toHaveBeenCalledTimes(1);
-    expect(fireSpy).toHaveBeenCalledWith('papercusp', 'default');
+    expect(fireSpy).toHaveBeenCalledWith('papercusp', 'default', null);
     expect(parse(result as never)).toMatchObject({ ok: true, fired: true, slug: 'papercusp', committed: false });
   });
 
@@ -50,7 +50,7 @@ describe('git-sync:run', () => {
     const result = await tool.handler({ harness: 'papercusp' }, MAKE_CTX());
 
     expect(fireSpy).toHaveBeenCalledTimes(1);
-    expect(fireSpy).toHaveBeenCalledWith('papercusp', 'default');
+    expect(fireSpy).toHaveBeenCalledWith('papercusp', 'default', null);
     expect(parse(result as never)).toMatchObject({ ok: true, fired: true, slug: 'papercusp', committed: false });
   });
 
@@ -163,6 +163,39 @@ describe('git-sync:run', () => {
 
     expect(execFileMock).toHaveBeenCalled();
     expect(parse(result as never)).toMatchObject({ ok: true, fired: true, head_before: null, head_after: null });
+  });
+
+  it('pins the workspace-scoped canonical tree through both HEAD probes and the fired action', async () => {
+    const canonical = '/hives/sidestage';
+    const sibling = '/workspace/sidestage';
+    const projectDirForSlug = vi.fn(async (_slug: string, workspaceId?: string) =>
+      workspaceId === 'papercusp-workspace' ? canonical : sibling);
+    const execFileMock = vi.fn(
+      (_file: string, _args: string[], opts: Record<string, unknown>, cb: (...a: unknown[]) => void) =>
+        cb(null, 'abc123\n', ''),
+    );
+    const fireSpy = vi.fn(async () => ({
+      status: 'nothing' as const,
+      pushed: [],
+      merged: [],
+      oversized: [],
+      contentErrors: [],
+      strandedSubmodules: [],
+    }));
+    vi.doMock('node:child_process', () => ({ execFile: execFileMock }));
+    vi.doMock('../../harness/operator-home-harness', () => ({ operatorHomeHarnessSlug: () => 'operator-home' }));
+    vi.doMock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'papercusp-workspace' }));
+    vi.doMock('../../operator-notes', () => ({ projectDirForSlug }));
+    vi.doMock('../../harness/git-sync/git-sync-action', () => ({ fireGitSyncNow: fireSpy }));
+
+    const { default: tool } = await import('./run');
+    await tool.handler({ installSlug: 'sidestage' }, MAKE_CTX());
+
+    expect(projectDirForSlug).toHaveBeenCalledExactlyOnceWith('sidestage', 'papercusp-workspace');
+    expect(execFileMock).toHaveBeenCalledTimes(2);
+    expect(execFileMock.mock.calls.map((call) => call[2]?.cwd)).toEqual([canonical, canonical]);
+    expect(fireSpy).toHaveBeenCalledExactlyOnceWith('sidestage', 'papercusp-workspace', canonical);
+    expect(fireSpy).not.toHaveBeenCalledWith('sidestage', 'papercusp-workspace', sibling);
   });
 
   // EI-18117741153424215: git-sync:run is the COMMIT lever of the three-part release

@@ -70,8 +70,12 @@ vi.mock('../../agent-tools/locks/in-workspace-txn', () => ({
 // Harness registry (P-008 gate): configurable per test; default = an eligible
 // papercup entry pointing at a real on-disk repo dir (the gate stats the path).
 let registryProjects: Array<Record<string, unknown>> = [];
+let ambientRegistryProjects: Array<Record<string, unknown>> | null = null;
+const loadHarnessRegistryMock = vi.fn(async (workspaceId?: string) => ({
+  projects: workspaceId ? registryProjects : ambientRegistryProjects ?? registryProjects,
+}));
 vi.mock('../../harness-registry', () => ({
-  loadHarnessRegistry: async () => ({ projects: registryProjects }),
+  loadHarnessRegistry: (workspaceId?: string) => loadHarnessRegistryMock(workspaceId),
 }));
 
 let potGitMode: 'legacy' | 'bridged' | 'p2p-only' = 'legacy';
@@ -337,6 +341,8 @@ beforeEach(() => {
   templateCalls.length = 0;
   txQueries.length = 0;
   registryProjects = [{ slug: 'papercup', path: repoDir }];
+  ambientRegistryProjects = null;
+  loadHarnessRegistryMock.mockClear();
   potGitMode = 'legacy';
 });
 
@@ -380,6 +386,26 @@ describe('WI-1416 durable-fire breadcrumbs', () => {
     const result = await fireGitSyncNow(ctx.installSlug, ctx.workspaceId);
 
     expect(result).toMatchObject({ status: 'synced', headSha: syncedOutcome.headSha, pushed: syncedOutcome.pushed });
+  });
+
+  it('scopes every registry read and runs the exact path pinned by a manual fire when an ambient sibling exists', async () => {
+    const canonicalRepo = join(tmpRoot, 'canonical-repo');
+    const ambientSibling = join(tmpRoot, 'ambient-sibling');
+    mkdirSync(join(canonicalRepo, '.git'), { recursive: true });
+    mkdirSync(join(ambientSibling, '.git'), { recursive: true });
+    registryProjects = [{ slug: 'papercup', path: canonicalRepo }];
+    ambientRegistryProjects = [{ slug: 'papercup', path: ambientSibling }];
+    runGitSyncMock.mockResolvedValue({ status: 'nothing', oversized: [], contentErrors: [], strandedSubmodules: [] });
+
+    await fireGitSyncNow('papercup', 'ws-42', canonicalRepo);
+
+    expect(runGitSyncMock).toHaveBeenCalledWith('papercup', expect.objectContaining({ repoPath: canonicalRepo }));
+    expect(loadHarnessRegistryMock).toHaveBeenCalled();
+    expect(loadHarnessRegistryMock.mock.calls.every(([workspaceId]) => workspaceId === 'ws-42')).toBe(true);
+    expect(runGitSyncMock).not.toHaveBeenCalledWith(
+      'papercup',
+      expect.objectContaining({ repoPath: ambientSibling }),
+    );
   });
 });
 
@@ -792,6 +818,7 @@ describe('clean sync outcome', () => {
 
     // trigger config defaults flow into the pipeline (+ WI-1416: the checkpoint seam)
     expect(runGitSyncMock).toHaveBeenCalledWith('papercup', {
+      repoPath: repoDir,
       config: expect.objectContaining({ push: true, pushSubmodules: true }),
       deletionGuard: true,
       diffSubjects: true, // WI-38594: flag-driven (mock getFlag defaults true)
@@ -844,6 +871,7 @@ describe('clean sync outcome', () => {
     expect(runDocSweepMock).toHaveBeenCalledExactlyOnceWith({
       harnessSlug: 'papercup',
       workspaceId: 'ws-42',
+      repoRoot: repoDir,
       prevSha: 'prev-sha-000',
       headSha: 'abc123def456',
     });
@@ -880,6 +908,7 @@ describe('clean sync outcome', () => {
     });
 
     expect(runGitSyncMock).toHaveBeenCalledWith('papercup', {
+      repoPath: repoDir,
       config: {
         push: false,
         pushSubmodules: false,

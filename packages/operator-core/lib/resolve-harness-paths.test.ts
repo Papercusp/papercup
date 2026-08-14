@@ -37,6 +37,7 @@ describe('resolveHarnessPaths — registry hit', () => {
     });
 
     const out = await resolveHarnessPaths('papercup', 'ws-1');
+    expect(loadHarnessRegistry).toHaveBeenCalledWith('ws-1');
     expect(out).toEqual({
       projectDir: '/home/me/papercup',
       stateDir: '/home/me/papercup/.papercusp',
