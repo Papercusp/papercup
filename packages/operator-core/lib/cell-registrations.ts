@@ -601,8 +601,10 @@ export const HOST_MEMORY_PRESSURE_CELL: CellSpec = {
       '"memory pressure is ok" read as "the host has abundant free RAM". A low-free-memory host can be reclaim-stable right now, while a high-free-memory reading can coexist with a transient PSI window; pressure and capacity are not the same claim.',
   },
 
-  /** Missing/stale captures and missing PSI legs yield `pressure:null`; every reason
-   *  is hoisted in `memory.unknown`, never collapsed to a healthy zero. */
+  /** Missing/stale inputs that cannot establish a band yield `pressure:null`.
+   *  A measured threshold crossing may still establish a lower-bound warn/crit
+   *  while the other missing leg stays hoisted in `memory.unknown`; absence is
+   *  never collapsed to a healthy zero. */
   nullable: true,
   unknownHoist: 'memory.unknown',
   callerRelativity: { kind: 'global' },

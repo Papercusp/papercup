@@ -365,11 +365,6 @@ export function evaluateMemoryPressure(
       ],
     };
   }
-  // A non-critical band requires BOTH PSI legs. `some` can prove at least warn,
-  // but without `full` it cannot exclude crit; publishing warn would turn a
-  // missing definitive-wedge measurement into false precision. A measured crit
-  // above is still decisive even if `some` is absent.
-  if (psiMemorySome60 === null || psiMemoryFull60 === null) return common;
   if (psiMemorySome60 !== null && psiMemorySome60 >= budgets.psiMemorySomeWarn) {
     return {
       ...common,
@@ -379,7 +374,10 @@ export function evaluateMemoryPressure(
       ],
     };
   }
-  return { ...common, pressure: 'ok' };
+  if (psiMemorySome60 !== null && psiMemoryFull60 !== null) {
+    return { ...common, pressure: 'ok' };
+  }
+  return common;
 }
 
 /**

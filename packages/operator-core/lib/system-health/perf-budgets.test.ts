@@ -312,12 +312,14 @@ describe('evaluateMemoryPressure (host.memoryPressure shared writer)', () => {
     });
   });
 
-  it('refuses a non-critical band when either PSI leg is missing', () => {
+  it('preserves missing-leg unknowns alongside any band the measured leg establishes', () => {
     const missingFull = evaluateMemoryPressure(
       sig({ psi: { memory: { some: { avg60: 15 } } } }),
       NOW,
     );
-    expect(missingFull.pressure).toBeNull();
+    // `some` establishes at least the early-warning band even though the missing
+    // `full` leg means a critical full-stall cannot be excluded.
+    expect(missingFull.pressure).toBe('warn');
     expect(missingFull.unknown.map((u) => u.code)).toContain('psi-memory-full-unmeasured');
 
     const missingSome = evaluateMemoryPressure(
