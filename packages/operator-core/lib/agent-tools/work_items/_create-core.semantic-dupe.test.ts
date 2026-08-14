@@ -13,7 +13,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const occurrenceMocks = vi.hoisted(() => ({
   record: vi.fn(async () => null),
-  readPressure: vi.fn(async () => null),
+  readPressure: vi.fn(async (): Promise<
+    import('../../issue-occurrence-ledger').IssueAdmissionPressure | null
+  > => null),
 }));
 
 vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn(async () => false) }));
