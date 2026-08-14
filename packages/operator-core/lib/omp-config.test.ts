@@ -97,6 +97,21 @@ describe('OMP model catalog', () => {
     expect(catalog.models[0]).toEqual(MODEL_ROW);
   });
 
+  it('preserves OMP dynamic-router cost sentinels', () => {
+    const dynamicRouter = {
+      ...MODEL_ROW,
+      provider: 'openrouter',
+      id: 'openrouter/auto',
+      selector: 'openrouter/openrouter/auto',
+      name: 'Auto Router',
+      cost: { input: -1_000_000, output: -1_000_000, cacheRead: 0, cacheWrite: 0 },
+    };
+
+    expect(parseOmpModelCatalogJson(JSON.stringify({ models: [dynamicRouter] })).models[0]).toEqual(
+      dynamicRouter,
+    );
+  });
+
   it('rejects a selector that does not match provider/id', () => {
     expect(() => parseOmpModelCatalogJson(JSON.stringify({
       models: [{ ...MODEL_ROW, selector: 'openai-codex/not-the-model' }],

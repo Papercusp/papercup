@@ -21,6 +21,7 @@ import { delimiter } from 'node:path';
 import { resolveSpawnPathDirs } from './backend-bin-resolve.mjs';
 
 export interface OmpModelCatalogCost {
+  /** OMP may use a negative finite sentinel when a router's price is dynamic. */
   input: number;
   output: number;
   cacheRead: number;
@@ -234,7 +235,9 @@ export function parseOmpModelCatalogJson(output: string): OmpModelCatalog {
     const cost = row.cost as Record<string, unknown>;
     const costNumber = (field: keyof OmpModelCatalogCost): number => {
       const value = cost[field];
-      if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+      // Preserve OMP's numeric contract exactly. Dynamic routers currently use
+      // a negative finite sentinel for prices that cannot be known up front.
+      if (typeof value !== 'number' || !Number.isFinite(value)) {
         throw new Error(`omp models --json row ${index} has invalid cost.${field}`);
       }
       return value;
