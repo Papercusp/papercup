@@ -107,7 +107,30 @@ export function reactionGraph(): Array<{ on: string; ruleId: string; fire: strin
   return engine().describe();
 }
 
-/** Test-only: empty the registry. */
+/**
+ * Test-only: empty the registry.
+ *
+ * ⚠ THIS CLEARS PROCESS-GLOBAL STATE THAT OTHER TEST FILES CANNOT REBUILD. The engine is
+ * pinned to the realm (`pinModuleState` above), so a clear here is visible to every file
+ * sharing the vitest worker — and most rules register by IMPORT SIDE-EFFECT (`events/index.ts`
+ * → `events/rules.ts` → e.g. `decision-ledger/bet-signal-rule.ts`). ESM runs a module body
+ * ONCE per worker, so after this clear a later file's `await import('./its-rule')` is a cached
+ * no-op that silently restores NOTHING. The victim file then asserts against a registry holding
+ * only whatever registered after the clear.
+ *
+ * That is not hypothetical: it red-pinned `decision-ledger/bet-signal-rule.test.ts` ~6×/6h
+ * (EI-20413591345557630 + 3 earlier duplicates), failing ONLY in whole-workspace CI runs and
+ * never locally, because it depends on which files share a worker and in what order.
+ *
+ * So: if you assert that a rule "self-registers", do NOT rely on a static/dynamic import
+ * having done it. Force the module body to re-run first:
+ *
+ *     vi.resetModules();
+ *     await import('./the-rule');   // body re-runs → re-registers into this same pinned engine
+ *
+ * and prefer snapshotting + restoring around your clear so your file does not degrade the
+ * registry for whatever runs next (see `bet-signal-rule.test.ts` for the worked pattern).
+ */
 export function _resetReactionsForTests(): void {
   engine().clear();
 }

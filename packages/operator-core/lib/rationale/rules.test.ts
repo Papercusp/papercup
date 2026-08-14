@@ -4,10 +4,19 @@
  * projections-2026-06-05 D-003). Pure: asserts the rule objects in the registry; it
  * does not fire dispatch.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, beforeAll, it, expect, vi } from 'vitest';
 import type { ToolInvocationEvent } from '../events';
 import { listReactionRules } from '../events';
 import './rules'; // self-registers
+
+// The import above registers ONCE per worker, but the registry is process-global and any
+// of the files calling `_resetReactionsForTests()` can clear it out from under us — after
+// which a cached re-import restores nothing (see the hazard note on that function). Force
+// the module body to re-run so these assertions never depend on worker file-ordering.
+beforeAll(async () => {
+  vi.resetModules();
+  await import('./rules');
+});
 
 function ruleById(id: string) {
   return listReactionRules().find((r) => r.id === id);

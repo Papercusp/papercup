@@ -1,6 +1,6 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
 import { betSignalView, betSignalWhy, betSignalDispositionArgs, BET_SIGNAL_ACTION } from './bet-signal-rule';
-import type { ToolInvocationEvent } from '../events/types';
+import type { ReactionRule, ToolInvocationEvent } from '../events/types';
 
 /** A minimal `work_items:complete` event (single-item shape) carrying a bet-analysis Signal. */
 function completeEvent(over: {
@@ -73,11 +73,55 @@ describe('betSignalDispositionArgs — the fired autonomy:record_disposition arg
   });
 });
 
+/**
+ * ⚠ This block is ordering-hardened on purpose — it was a chronic gate flake
+ * (EI-20345838853265287 / EI-20354160652342594 / EI-20377731359136136 /
+ * EI-20413591345557630, red ~6×/6h and a suspect in a 21h green-checkpoint red streak).
+ *
+ * The mechanism: the reaction registry is ONE process-global instance (pinned via
+ * `pinModuleState` in events/registry.ts). This module registers by IMPORT SIDE-EFFECT,
+ * and `events/index.ts` → `events/rules.ts` side-effect-imports it, so in a shared vitest
+ * worker it is usually already evaluated by the time this file runs. ESM evaluates a
+ * module body ONCE per worker, so a plain `await import('./bet-signal-rule')` is a cached
+ * no-op that CANNOT re-register. Any of the 13 files calling `_resetReactionsForTests()`
+ * therefore wipes this rule with no way for this test to restore it — which is exactly
+ * what CI saw: the registry held only `['cache-tag-eca:table-changed']`.
+ *
+ * So the test no longer depends on worker file-ordering: it forces the hostile
+ * precondition itself, then re-registers via `vi.resetModules()`.
+ */
 describe('rule registration', () => {
-  it('self-registers on the work_items:complete event', async () => {
-    await import('./bet-signal-rule');
+  let snapshot: ReactionRule[] = [];
+
+  beforeAll(async () => {
     const { listReactionRules } = await import('../events/registry');
-    const ids = listReactionRules().map((r) => r.id);
-    expect(ids).toContain('oddsmith:bet-signal-disposition');
+    snapshot = listReactionRules().slice();
+  });
+
+  afterAll(async () => {
+    // Leave the SHARED registry exactly as we found it — this file must not itself
+    // become another cross-file polluter for whatever runs next in this worker.
+    const { _resetReactionsForTests, registerReactionRule } = await import('../events/registry');
+    _resetReactionsForTests();
+    for (const r of snapshot) registerReactionRule(r);
+  });
+
+  // CONTROL — pins the hazard itself. If a bare re-import ever DOES restore the
+  // registration, the premise above changed and the guard below can be simplified.
+  it('a bare re-import can NOT restore the rule once a peer cleared the shared registry', async () => {
+    const { _resetReactionsForTests, listReactionRules } = await import('../events/registry');
+    _resetReactionsForTests();
+    await import('./bet-signal-rule'); // already evaluated ⇒ body does not re-run
+    expect(listReactionRules().map((r) => r.id)).not.toContain('oddsmith:bet-signal-disposition');
+  });
+
+  it('self-registers on the work_items:complete event', async () => {
+    const { _resetReactionsForTests, listReactionRules } = await import('../events/registry');
+    _resetReactionsForTests(); // hostile precondition: a peer file cleared the registry
+
+    vi.resetModules(); // drop the cached module record …
+    await import('./bet-signal-rule'); // … so the body re-runs and re-applies its registration
+
+    expect(listReactionRules().map((r) => r.id)).toContain('oddsmith:bet-signal-disposition');
   });
 });

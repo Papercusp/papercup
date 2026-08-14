@@ -23,16 +23,30 @@
  *       ownerId-sorted).
  *   (c) re-bootstrap-on-compaction (D-007) → presence-rebootstrap.test.ts.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, beforeAll, it, expect, vi } from 'vitest';
 import { listReactionRules } from '../../events';
 // Importing the lifecycle rules registers them (module side effect) so
 // listReactionRules() sees the real auto-emit set.
 import '../../coord-lifecycle/lifecycle-rules';
 import { PRESENCE_LIVENESS_FIELDS, PRESENCE_DELTA_FIELDS } from './presence-payload';
 
+// That import registers ONCE per worker, but the registry is process-global and any file
+// calling `_resetReactionsForTests()` can clear it first — after which a cached re-import
+// restores nothing (see the hazard note on that function). This matters MORE here than in a
+// normal test: the emptiness assertions below would pass VACUOUSLY against a cleared
+// registry, i.e. this guard would go green having guarded nothing.
+beforeAll(async () => {
+  vi.resetModules();
+  await import('../../coord-lifecycle/lifecycle-rules');
+});
+
 describe('two-lane emit boundary (P-013(d) / D-005 / D-008)', () => {
   it('no reaction rule emits a [coord+N] delta from a presence read or liveness signal', () => {
     const rules = listReactionRules();
+    // CALIBRATION — the assertions below are all "expect nothing"; against an empty
+    // registry they hold trivially. Prove we are looking at a populated registry first,
+    // so a vacuous pass can never be mistaken for a real one.
+    expect(rules.some((r) => r.id === 'lifecycle:intent')).toBe(true);
     // A rule on any of these would turn liveness churn / a read into an injected
     // delta. activity:report is the sharpest case — it fires on EVERY tool call,
     // so a rule there would be a fleet-wide notify-storm.
