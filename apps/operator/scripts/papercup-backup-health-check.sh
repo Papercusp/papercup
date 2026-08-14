@@ -184,11 +184,60 @@ file_ei() { # <title> <body> — best-effort curl-MCP; loud echo + journald are 
 # `df -Pk TARGET` is portable across GNU/Linux and macOS. Parse the explicit
 # NN% field instead of assuming a fixed column: a mount path containing spaces
 # can shift the final field, while the percentage token remains unambiguous.
+#
+# ── WHY A TREND (WI-38595, 2026-08-14) ───────────────────────────────────
+# A LEVEL alone is not actionable, and this alarm proved it: WI-38595 was filed
+# at 90%, sat unclaimed 19.4h, and was found at 95% — ~104 GiB gone in the gap.
+# Nothing on the item said the volume was STILL FALLING, so a genuine "~17h to
+# ENOSPC, fleet-wide Postgres outage" read like a chronic "disk is fullish"
+# warning. The DERIVATIVE is what turns this alarm into a deadline.
+#
+# It is also the only thing we can afford. A `du` of a multi-TiB shared root
+# volume is ~7 MINUTES of heavy IO (measured on this box), so a probe that runs
+# hourly must not scan for consumers — but remembering each df reading is O(1).
+# Hence: report the rate we get for free, and hand over the scan RECIPE for the
+# receiving agent to run ONCE, instead of scanning on every tick.
+#
+# The trend deliberately does NOT go in the title. work_items:create dedupes on
+# admissionIdentity(title).titleKey (_create-core.ts), so a title carrying a
+# changing "~17h to full" would mint a BRAND NEW item on every refile instead of
+# deduping onto the open one. Keep the title stable; put the varying part here.
+disk_trend_line() { # <avail_kb> — echoes ONE human line. Never fails, never blocks the alarm.
+  local avail_kb="${1:-}" hist="$STATE_DIR/db-disk-history" now="" line_count=0
+  now="$(now_s)"
+  [[ "$avail_kb" =~ ^[0-9]+$ ]] || { echo "trend: unavailable (available-space field unparseable)"; return 0; }
+  # Append BEFORE reading, so even a first-ever run leaves a baseline for the next.
+  printf '%s %s\n' "$now" "$avail_kb" >>"$hist" 2>/dev/null || true
+  line_count="$(wc -l <"$hist" 2>/dev/null || echo 0)"
+  if [ "${line_count:-0}" -gt 240 ] 2>/dev/null; then
+    { tail -n 240 "$hist" >"$hist.tmp" 2>/dev/null && mv "$hist.tmp" "$hist" 2>/dev/null; } || true
+  fi
+  # A malformed/garbage history must degrade to "no baseline", never to a wrong number.
+  awk -v now="$now" -v cur="$avail_kb" '
+    /^[0-9]+ [0-9]+$/ && $1 < now { if (oldest == 0 || $1 < oldest) { oldest = $1; oldest_avail = $2 } }
+    END {
+      if (oldest == 0) { print "trend: no prior sample yet (this run seeds the baseline)"; exit }
+      span_h = (now - oldest) / 3600.0
+      if (span_h < 0.5) { printf "trend: baseline too recent (%dm) to extrapolate\n", int(span_h * 60); exit }
+      lost_kb = oldest_avail - cur
+      rate = lost_kb / 1048576.0 / span_h
+      if (rate <= 0.01) {
+        printf "trend: NOT shrinking over the last %.1fh (free space changed %+.1f GiB)\n", span_h, -lost_kb / 1048576.0
+        exit
+      }
+      printf "trend: losing %.2f GiB/h over the last %.1fh — ETA TO FULL ~%.0fh at this rate\n", rate, span_h, (cur / 1048576.0) / rate
+    }
+  ' "$hist" 2>/dev/null || echo "trend: unavailable"
+}
+
 check_db_disk_headroom() {
-  local df_line="" disk_pct="" red_marker=""
+  local df_line="" disk_pct="" red_marker="" avail_kb="" trend=""
   if [ -e "$BACKUP_DB_DATA_DIR" ]; then
     df_line="$(df -Pk "$BACKUP_DB_DATA_DIR" 2>/dev/null | tail -n1)"
     disk_pct="$(printf '%s' "$df_line" | awk '{for (i = 1; i <= NF; i++) if ($i ~ /^[0-9]+%$/) print $i}' | tr -d '%' | tail -n1)"
+    # Available is the field immediately BEFORE the capacity token — located the
+    # same way as disk_pct above, so a mount path containing spaces cannot shift it.
+    avail_kb="$(printf '%s' "$df_line" | awk '{for (i = 1; i <= NF; i++) if ($i ~ /^[0-9]+%$/) { print $(i - 1); exit }}')"
   fi
 
   if [ -z "$disk_pct" ]; then
@@ -200,13 +249,32 @@ check_db_disk_headroom() {
     return 0
   fi
 
-  log "Postgres data-volume usage at $BACKUP_DB_DATA_DIR: ${disk_pct}% (warn threshold ${BACKUP_DISK_WARN_PCT}%)"
+  # Sample on EVERY run, green included — a baseline that only starts accumulating
+  # once the volume is already red can never produce a rate when one is needed.
+  trend="$(disk_trend_line "$avail_kb")"
+  log "Postgres data-volume usage at $BACKUP_DB_DATA_DIR: ${disk_pct}% (warn threshold ${BACKUP_DISK_WARN_PCT}%) | ${trend}"
   red_marker="$STATE_DIR/db-disk-red-ei-filed"
   if [ "$disk_pct" -ge "$BACKUP_DISK_WARN_PCT" ]; then
     local host
     host="$(hostname 2>/dev/null || echo unknown-host)"
     local title="Postgres data-volume disk usage ${disk_pct}% (>= ${BACKUP_DISK_WARN_PCT}% threshold) on ${host}"
-    local body="EI-20115751074601731 durable disk-headroom probe: the filesystem containing PostgreSQL data path '$BACKUP_DB_DATA_DIR' is ${disk_pct}% used (warn threshold ${BACKUP_DISK_WARN_PCT}%). A full shared root volume takes PostgreSQL down fleet-wide by preventing WAL, lock, and data-directory writes.\n\nACTION: inspect current filesystem consumers and free space before starting disk-heavy work. This probe is detection-only; it never deletes files or restarts PostgreSQL.\ndf output:\n${df_line}"
+    # Real newlines, not literal "\n": the body is JSON-encoded by jstr(), so a
+    # backslash-n survived into the stored summary and rendered as the two
+    # characters \n to every agent that read it.
+    local body="EI-20115751074601731 durable disk-headroom probe: the filesystem containing PostgreSQL data path '$BACKUP_DB_DATA_DIR' is ${disk_pct}% used (warn threshold ${BACKUP_DISK_WARN_PCT}%). A full shared root volume takes PostgreSQL down fleet-wide by preventing WAL, lock, and data-directory writes.
+
+${trend}
+
+ACTION: inspect current filesystem consumers and free space before starting disk-heavy work. This probe is detection-only; it never deletes files or restarts PostgreSQL.
+
+df output:
+${df_line}
+
+INVESTIGATION RECIPE (verified while working WI-38595, 2026-08-14 — each of these four traps cost real time):
+1. PostgreSQL is usually NOT the consumer, despite this alarm's title. The probe watches the VOLUME holding PGDATA, and that volume is shared with \$HOME. Measured on this box: PGDATA was 34 GiB of a 1.9 TiB volume (1.8%), while VM disk images were 566 GiB (37%). Size PGDATA with 'sudo -n du -xsh $BACKUP_DB_DATA_DIR' — an unprivileged du prints a SILENT '4.0K' (permission denied) rather than an error, which reads as 'Postgres is tiny' for the wrong reason.
+2. CONFIRM WHICH VOLUME a directory is on before reclaiming anything: 'findmnt -T <path>' or 'stat -c %d <path>'. On this box /tmp is a BIND MOUNT from a second physical disk, so deleting 136 GiB of stale /tmp scratch frees exactly nothing on the volume this alarm is about.
+3. Enumerate consumers in ONE bounded backgrounded pass: 'nice -n 19 ionice -c3 du -x -d3 / | sort -hr > /tmp/scan-1.txt' (~7 min here). Re-run it later into scan-2.txt and DIFF the two — a diff of two snapshots is the only reliable attribution of NET growth per directory.
+4. Do NOT attribute growth by mtime ('find -newermt'). It counts a file's WHOLE size when the file is merely touched, so a single live VM image reads as hundreds of GiB 'written' in 26h. Note also that qcow2 images grow monotonically and never return space the guest frees — and the .img suffix lies, so check the magic ('QFI\\373' = qcow2)."
     if [ "$(age_h "$red_marker")" -lt "$BACKUP_RED_REFILE_H" ]; then
       log "RED already tracked (Postgres data volume, filed $(age_h "$red_marker")h ago < ${BACKUP_RED_REFILE_H}h) — skipping duplicate filing."
     else
@@ -383,6 +451,56 @@ if [ "${1:-}" = "--self-test" ]; then
   # 12. A host without the native PostgreSQL path is skipped, not a false alarm.
   check_disk "Postgres data path absent: probe skipped" \
         missing no
+
+  # ── WI-38595 recurrence guard: the disk TREND ────────────────────────────
+  # The bug this alarm actually had was not a crash — it was reporting a LEVEL
+  # with no derivative, so a volume falling ~5 GiB/h read the same as a stable
+  # one and sat 19.4h. The trend fixes that, which means the trend itself now
+  # gets read as a deadline. So the thing to guard is not "does it print" but
+  # "can it print a number it has not earned": one sample, a too-recent
+  # baseline, or a corrupt history must all degrade to an explicit no-baseline
+  # message, NEVER to a fabricated rate or ETA.
+  check_trend() {
+    local name="$1" seed="$2" want_re="$3" out=""
+    rm -rf "${t:?}/state" "$t/dump/pg" "$t/db-data"
+    mkdir -p "$t/state" "$t/dump/pg/papercusp" "$t/dump/pg/restart" "$t/db-data"
+    : > "$t/dump/pg/papercusp/toc.dat"; : > "$t/dump/pg/restart/toc.dat"
+    [ -n "$seed" ] && printf '%s\n' "$seed" > "$t/state/db-disk-history"
+    out="$(env BACKUP_DUMP_DIR="$t/dump" BACKUP_STATE_DIR="$t/state" \
+        BACKUP_DB_DATA_DIR="$t/db-data" \
+        BACKUP_HOOK_LOG="$t/no-such-log.log" \
+        OPERATOR_MCP_URL="http://127.0.0.1:9/dead" \
+        BACKUP_OPTIONAL_ARTIFACTS="" BACKUP_NO_FILE=1 \
+        bash "$self" 2>&1 >/dev/null)"
+    if printf '%s' "$out" | grep -qE "$want_re"; then
+      printf '  ok    %s\n' "$name"; p=$((p+1))
+    else
+      printf '  FAIL  %s — wanted /%s/ in probe output, got: %s\n' \
+        "$name" "$want_re" "$(printf '%s' "$out" | grep -i 'data-volume usage' | head -1)"; f=$((f+1))
+    fi
+  }
+  # Anchor the synthetic history to the REAL current free space, so the expected
+  # rate is exact rather than dependent on whatever this host happens to have.
+  trend_now_s="$(date +%s)"
+  trend_avail_kb="$(df -Pk "$t" 2>/dev/null | tail -n1 | awk '{for (i = 1; i <= NF; i++) if ($i ~ /^[0-9]+%$/) { print $(i - 1); exit }}')"
+  # 13. No history at all: seeds a baseline and says so — no rate from one sample.
+  check_trend "trend with no prior sample: seeds baseline, invents no rate" \
+        "" "no prior sample yet"
+  # 14. A 2h-old baseline with 10 GiB more free space = losing exactly 5 GiB/h.
+  check_trend "trend over a 2h baseline: reports the rate AND an ETA" \
+        "$((trend_now_s - 7200)) $((trend_avail_kb + 10485760))" \
+        "losing 5\.0[0-9] GiB/h .* ETA TO FULL ~[0-9]+h"
+  # 15. Space FREED must never render as a countdown to full.
+  check_trend "trend when the volume is recovering: NOT shrinking, no ETA" \
+        "$((trend_now_s - 7200)) $((trend_avail_kb - 10485760))" \
+        "NOT shrinking"
+  # 16. A corrupt history degrades to no-baseline, not to a garbage rate.
+  check_trend "trend with a corrupt history: degrades to no-baseline" \
+        "not-a-timestamp garbage" "no prior sample yet"
+  # 17. A baseline minutes old cannot support an hourly extrapolation.
+  check_trend "trend with a 6-minute baseline: refuses to extrapolate" \
+        "$((trend_now_s - 360)) $((trend_avail_kb + 10485760))" \
+        "baseline too recent"
   printf '  ---- %d passed, %d failed (post disk-headroom block)\n' "$p" "$f"
   [ "$f" -eq 0 ] || exit 1
   exit 0
