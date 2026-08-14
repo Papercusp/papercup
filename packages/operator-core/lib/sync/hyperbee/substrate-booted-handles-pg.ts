@@ -37,13 +37,37 @@
 
 import { managedSetInterval } from '@papercusp/scheduled-registry';
 import { isSubstrateOwnerProcess } from '../../background-workers';
-import { listBootedHandles, type BootedHandleSummary } from './boot-all';
+import {
+  listBootedHandles,
+  listRelocatedBootedHandles,
+  type BootedHandleSummary,
+} from './boot-all';
 import { readOperatorState, writeOperatorState } from '../../operator-state-pg';
 import type { RemoteBootedHandlesSnapshot } from './cluster-booted-handles-sync';
+import { resolveSubstrateSocketPath } from './substrate-socket-path';
+import { isAbsolute } from 'node:path';
+
+interface PgRelocatedSidecarAdvertisement {
+  /** Absolute, machine-local JSON-RPC socket owned by the substrate process. */
+  socketPath: string;
+  /** Exact handles that are relocated behind this socket. */
+  handles: BootedHandleSummary[];
+}
 
 interface PgBootedHandlesPayload {
   handles: BootedHandleSummary[];
   sentAt: number;
+  /**
+   * Optional for backward compatibility with pre-EI-20438405483051865 rows and
+   * absent for an in-process substrate owner.  This extends the existing
+   * cross-service owner advertisement instead of inventing a second registry.
+   */
+  sidecar?: PgRelocatedSidecarAdvertisement;
+}
+
+export interface PgRelocatedHarnessEndpoint {
+  socketPath: string;
+  advertisedAt: number;
 }
 
 export interface BootedHandlesPgPublisherHandle {
@@ -72,10 +96,21 @@ export function startBootedHandlesPgPublisher(opts: {
   const now = opts.now ?? (() => Date.now());
   const beat = (): void => {
     if (!(opts.ownsSubstrate ?? isSubstrateOwnerProcess())) return;
-    void writeOperatorState<PgBootedHandlesPayload>('substrate_booted_handles_status', {
-      handles: listBootedHandles(),
+    const handles = listBootedHandles();
+    const relocated = listRelocatedBootedHandles();
+    const payload: PgBootedHandlesPayload = {
+      handles,
       sentAt: now(),
-    }).catch(() => {
+      ...(relocated.length > 0
+        ? {
+            sidecar: {
+              socketPath: resolveSubstrateSocketPath(),
+              handles: relocated,
+            },
+          }
+        : {}),
+    };
+    void writeOperatorState<PgBootedHandlesPayload>('substrate_booted_handles_status', payload).catch(() => {
       /* best-effort — a transient PG hiccup here must never crash boot; the
        * next beat retries, and a reader falling back to this row already
        * treats "row missing/stale" as an honest reachedSubstrateOwner:false. */
@@ -104,6 +139,25 @@ export function startBootedHandlesPgPublisher(opts: {
  *  tolerated, a genuinely dead/wedged owner is not). */
 const DEFAULT_PG_SNAPSHOT_MAX_AGE_MS = 30_000;
 
+async function readFreshPgBootedHandlesPayload(opts?: {
+  maxAgeMs?: number;
+  now?: () => number;
+}): Promise<PgBootedHandlesPayload | null> {
+  const maxAgeMs = opts?.maxAgeMs ?? DEFAULT_PG_SNAPSHOT_MAX_AGE_MS;
+  const now = opts?.now ?? (() => Date.now());
+  let row: PgBootedHandlesPayload | null;
+  try {
+    row = await readOperatorState<PgBootedHandlesPayload>('substrate_booted_handles_status', undefined, {
+      fresh: true,
+    });
+  } catch {
+    return null;
+  }
+  if (!row || !Array.isArray(row.handles) || typeof row.sentAt !== 'number') return null;
+  if (now() - row.sentAt > maxAgeMs) return null;
+  return row;
+}
+
 /**
  * READER side (any process, any host): read back the cross-service snapshot,
  * or `null` if there is none / it is stale. Shaped identically to
@@ -119,17 +173,40 @@ export async function getPgBootedHandlesSnapshotFallback(opts?: {
   maxAgeMs?: number;
   now?: () => number;
 }): Promise<RemoteBootedHandlesSnapshot | null> {
-  const maxAgeMs = opts?.maxAgeMs ?? DEFAULT_PG_SNAPSHOT_MAX_AGE_MS;
-  const now = opts?.now ?? (() => Date.now());
-  let row: PgBootedHandlesPayload | null;
-  try {
-    row = await readOperatorState<PgBootedHandlesPayload>('substrate_booted_handles_status', undefined, {
-      fresh: true,
-    });
-  } catch {
-    return null; // best-effort: a PG hiccup here degrades to the honest blind spot, never a throw.
-  }
-  if (!row || !Array.isArray(row.handles) || typeof row.sentAt !== 'number') return null;
-  if (now() - row.sentAt > maxAgeMs) return null;
+  const row = await readFreshPgBootedHandlesPayload(opts);
+  if (!row) return null;
   return { handles: row.handles, receivedAt: row.sentAt };
+}
+
+/**
+ * Resolve the true substrate owner's machine-local sidecar socket for one
+ * exact relocated harness.
+ *
+ * This is deliberately stricter than the diagnostic snapshot reader: the row
+ * must be fresh, the path must be absolute, and the requested `(workspace,
+ * harness)` must appear in the sidecar-specific handle list.  The caller still
+ * performs an existing-only `substrate:bootHarness` RPC before dialing, which
+ * is the final fail-closed guard against a stale or misdirected advertisement.
+ */
+export async function getPgRelocatedHarnessEndpoint(
+  workspaceId: string,
+  harnessSlug: string,
+  opts?: { maxAgeMs?: number; now?: () => number },
+): Promise<PgRelocatedHarnessEndpoint | null> {
+  const row = await readFreshPgBootedHandlesPayload(opts);
+  const sidecar = row?.sidecar;
+  if (
+    !row ||
+    !sidecar ||
+    typeof sidecar.socketPath !== 'string' ||
+    !isAbsolute(sidecar.socketPath) ||
+    !Array.isArray(sidecar.handles)
+  ) {
+    return null;
+  }
+  const exact = sidecar.handles.some(
+    (handle) => handle?.workspaceId === workspaceId && handle?.harnessSlug === harnessSlug,
+  );
+  if (!exact) return null;
+  return { socketPath: sidecar.socketPath, advertisedAt: row.sentAt };
 }

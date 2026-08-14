@@ -1807,6 +1807,27 @@ export function listBootedHandles(): BootedHandleSummary[] {
 }
 
 /**
+ * Snapshot only the handles whose engine lives in the substrate sidecar.
+ *
+ * Kept separate from `listBootedHandles()` so the long-standing diagnostic
+ * shape remains stable.  The cross-service PG publisher uses this list to
+ * advertise the sidecar socket only when the owner can prove that the exact
+ * handle is relocated; an in-process handle must never make another process
+ * attempt a sidecar dial.
+ */
+export function listRelocatedBootedHandles(): BootedHandleSummary[] {
+  const out: BootedHandleSummary[] = [];
+  for (const handle of handles.values()) {
+    if (!(handle instanceof RemoteBootedHarnessHandle)) continue;
+    out.push({
+      workspaceId: handle.workspaceId,
+      harnessSlug: handle.harnessSlug,
+    });
+  }
+  return out;
+}
+
+/**
  * Gather each booted harness's eviction-relevant liveness facts for the
  * LAZY_SUBSTRATE_BOOT reaper (P-008). Pure read over the live handle map.
  *
