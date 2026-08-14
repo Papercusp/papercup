@@ -12,6 +12,7 @@ import {
   findCodexRolloutPath,
   findCodexRolloutPathByUuid,
   findOmpSessionPath,
+  ompSessionsRootForSessionKey,
   __resetTranscriptResolverCaches,
 } from './session-transcript-resolvers';
 
@@ -52,6 +53,15 @@ describe('findCodexRolloutPath', () => {
 });
 
 describe('findOmpSessionPath', () => {
+  it('routes tracked sessions to their isolated OMP home and untracked sessions to the shared home', () => {
+    expect(ompSessionsRootForSessionKey(42, '/home/test')).toBe(
+      '/home/test/.papercusp/su-omp-homes/session-42/agent/sessions',
+    );
+    expect(ompSessionsRootForSessionKey(undefined, '/home/test')).toBe(
+      '/home/test/.omp/agent/sessions',
+    );
+  });
+
   it('resolves by _<threadId>.jsonl suffix across cwd dirs; rejects malformed ids', async () => {
     const root = await fs.mkdtemp(join(tmpdir(), 'omp-root-'));
     const dir = join(root, '-home-x-proj');

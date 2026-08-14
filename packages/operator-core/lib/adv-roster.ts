@@ -1295,7 +1295,11 @@ export async function resolveThinkingForEntries(
       } else if (e.agent === 'codex' && e.advSessionId != null) {
         e.thinking = await isCodexSessionThinking(e.advSessionId, { nowMs, activeMs: SESSION_THINKING_ACTIVE_MS }).catch(() => false);
       } else if (e.ompThreadId) {
-        e.thinking = await isOmpThreadThinking(e.ompThreadId, { nowMs, activeMs: SESSION_THINKING_ACTIVE_MS }).catch(() => false);
+        e.thinking = await isOmpThreadThinking(e.ompThreadId, {
+          nowMs,
+          activeMs: SESSION_THINKING_ACTIVE_MS,
+          sessionKey: e.advSessionId ?? undefined,
+        }).catch(() => false);
       }
     }),
   );

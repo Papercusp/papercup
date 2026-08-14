@@ -14,10 +14,14 @@ import { lexiconFor } from '@papercusp/lexicon';
 
 const H = vi.hoisted(() => ({
   active: [] as unknown[],
+  queryOpts: null as Record<string, unknown> | null,
 }));
 
 vi.mock('@papercusp/sync', () => ({
-  useSyncQuery: () => ({ data: [{ active: H.active }] }),
+  useSyncQuery: (opts: Record<string, unknown>) => {
+    H.queryOpts = opts;
+    return { data: [{ active: H.active }] };
+  },
   onSyncBusEvent: () => () => {},
 }));
 vi.mock('@/app/coord/presence-ui', () => ({
@@ -274,6 +278,14 @@ describe('thinkingStreamUrl (pure — EI-16982: ended=1 for archive-rematerializ
 });
 
 describe('<AgentsRunningPill>', () => {
+  it('refreshes the filesystem-derived thinking gauge inside its 10s activity window', () => {
+    render(<Pill />);
+    expect(H.queryOpts).toMatchObject({
+      queryName: 'advRoster.list',
+      pollIntervalMs: 5_000,
+    });
+  });
+
   it('renders nothing when no non-stale agents are present', () => {
     H.active = [agent({ liveness: 'stale' })];
     const { container } = render(<Pill />);

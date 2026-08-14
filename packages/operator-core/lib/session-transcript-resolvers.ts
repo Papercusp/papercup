@@ -23,10 +23,19 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { codexHomeForSessionKey } from '@papercusp/orchestrator/session-launch-dirs';
 
-/** ~/.omp/agent/sessions — mirrors omp-sessions.ts (kept lazy for the same
- *  bundler reason: `homedir()` at module scope breaks the vite renderer stub). */
-function defaultOmpSessionsRoot(): string {
-  return join(homedir(), '.omp', 'agent', 'sessions');
+/**
+ * OMP transcript root. Tracked psu sessions isolate PI_CODING_AGENT_DIR under
+ * `~/.papercusp/su-omp-homes/session-<adv id>/agent`; only untracked OMP
+ * sessions use the shared `~/.omp/agent` home. Kept lazy because `homedir()` at
+ * module scope breaks the vite renderer stub.
+ */
+export function ompSessionsRootForSessionKey(
+  sessionKey?: string | number,
+  home: string = homedir(),
+): string {
+  return sessionKey == null
+    ? join(home, '.omp', 'agent', 'sessions')
+    : join(home, '.papercusp', 'su-omp-homes', `session-${sessionKey}`, 'agent', 'sessions');
 }
 
 interface CachedPath {
@@ -234,9 +243,12 @@ export async function isCodexSessionThinking(
 
 export async function isOmpThreadThinking(
   threadId: string,
-  opts: { nowMs?: number; activeMs?: number; rootOverride?: string } = {},
+  opts: { nowMs?: number; activeMs?: number; rootOverride?: string; sessionKey?: string | number } = {},
 ): Promise<boolean> {
-  const p = await findOmpSessionPath(threadId, { rootOverride: opts.rootOverride });
+  const p = await findOmpSessionPath(threadId, {
+    rootOverride: opts.rootOverride,
+    sessionKey: opts.sessionKey,
+  });
   if (!p) return false;
   const mtime = await statMtime(p);
   if (mtime === null) return false;
@@ -251,10 +263,10 @@ export async function isOmpThreadThinking(
  */
 export async function findOmpSessionPath(
   threadId: string,
-  opts: { rootOverride?: string } = {},
+  opts: { rootOverride?: string; sessionKey?: string | number } = {},
 ): Promise<string | null> {
   if (!/^[A-Za-z0-9_-]{6,}$/.test(threadId)) return null;
-  const root = opts.rootOverride ?? defaultOmpSessionsRoot();
+  const root = opts.rootOverride ?? ompSessionsRootForSessionKey(opts.sessionKey);
   const cacheKey = pathCacheKey('omp', threadId, root);
   const cached = ompPathCache.get(cacheKey);
   if (cached) {

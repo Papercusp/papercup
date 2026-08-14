@@ -461,6 +461,11 @@ export default function AgentsRunningPill() {
   const { data } = useSyncQuery<RosterResponse>({
     queryName: 'advRoster.list',
     args: advRosterArgs(null),
+    // `thinking` is derived from transcript mtimes rather than a database row,
+    // so no SSE invalidation can announce either edge of its 10s activity
+    // window. Keep this always-mounted header observer on a small explicit
+    // cadence; all roster consumers share the same structurally keyed query.
+    pollIntervalMs: 5_000,
   });
   // A 1s clock — only while the roster is open — so the last-active pills tick up
   // live between the sync query's pushes.
