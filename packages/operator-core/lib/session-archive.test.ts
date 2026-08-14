@@ -20,6 +20,7 @@ import {
   archiveSession,
   collectSessionFiles,
   deleteArchivedSessionFiles,
+  isSessionKeyedRelpath,
   listClaudeSessionIds,
   rematerializeSession,
   sha256Hex,
@@ -220,7 +221,16 @@ describe('collectors — symlink safety + per-CLI shapes', () => {
     expect(rels).toEqual([join('projects', '-x', `${SID}.jsonl`), join('todos', `${SID}-agent.json`)]);
   });
 
-  it('codex per-session home: rollout + memories/goals sqlite + config.toml; symlinked sqlite skipped', async () => {
+  // WI-38706 — this case used to assert the OPPOSITE (that a per-session
+  // CODEX_HOME also contributes config.toml + goals_*/memories_*.sqlite). That
+  // premise was false and shipped an outage: psu allocates one CODEX_HOME per
+  // ADV session, but codex mints a NEW rollout uuid per thread/resume, so a home
+  // holds MANY sessions. Collecting home-level files under whichever session
+  // ended first made the delete leg unlink the config.toml its siblings were
+  // still using, and every later `codex resume` there died with "Model provider
+  // `papercusp-codex-gateway` not found". Collection is now session-keyed only,
+  // matching collectClaude/collectOmp.
+  it('codex per-session home: ONLY the session-keyed rollout — config.toml/sqlite are shared state, never collected', async () => {
     const home = await tmp('sa-codex-home-');
     const elsewhere = await tmp('sa-codex-elsewhere-');
     await mkdir(join(home, 'sessions', '2026', '07', '10'), { recursive: true });
@@ -234,12 +244,39 @@ describe('collectors — symlink safety + per-CLI shapes', () => {
     const rels = (await collectSessionFiles({ sourceKind: 'codex', sessionId: SID, sessionRoot: home }))
       .map((f) => f.rel)
       .sort();
-    expect(rels).toEqual([
-      'config.toml',
-      'goals_1.sqlite',
-      'memories_1.sqlite',
-      join('sessions', '2026', '07', '10', `rollout-2026-07-10T01-00-00-${SID}.jsonl`),
-    ]);
+    expect(rels).toEqual([join('sessions', '2026', '07', '10', `rollout-2026-07-10T01-00-00-${SID}.jsonl`)]);
+    // stated positively, so a regression that re-adds ANY of them fails by name
+    expect(rels).not.toContain('config.toml');
+    expect(rels).not.toContain('goals_1.sqlite');
+    expect(rels).not.toContain('memories_1.sqlite');
+  });
+
+  // WI-38706 recurrence guard (the exact outage shape). A home with SEVERAL
+  // rollouts archives+deletes ONE session end-to-end; the shared config.toml and
+  // every OTHER session's rollout must survive on disk.
+  it('codex home with N rollouts: archiving one session deletes only that rollout, config.toml survives', async () => {
+    const home = await tmp('sa-codex-multi-');
+    const dir = join(home, 'sessions', '2026', '07', '10');
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, `rollout-2026-07-10T01-00-00-${SID}.jsonl`), 'mine\n');
+    await writeFile(join(dir, `rollout-2026-07-10T02-00-00-${OTHER}.jsonl`), 'sibling\n');
+    const cfg = join(home, 'config.toml');
+    await writeFile(cfg, '[model_providers.papercusp-codex-gateway]\nname = "gw"\n');
+
+    const store = new MemStore();
+    const { archive, delete: del } = await archiveAndDeleteSession(
+      { sourceKind: 'codex', sessionId: SID, sessionRoot: home, advSessionId: 7 },
+      store,
+    );
+    expect(archive.ok).toBe(true);
+    expect(archive.fileCount).toBe(1);
+    expect(del?.deleted).toBe(1);
+
+    expect(existsSync(join(dir, `rollout-2026-07-10T01-00-00-${SID}.jsonl`))).toBe(false);
+    // the two things the outage destroyed:
+    expect(existsSync(cfg)).toBe(true);
+    expect(await readFile(cfg, 'utf8')).toContain('papercusp-codex-gateway');
+    expect(existsSync(join(dir, `rollout-2026-07-10T02-00-00-${OTHER}.jsonl`))).toBe(true);
   });
 
   it('codex SHARED ~/.codex: only the rollout — home-level state is not per-session', async () => {
@@ -372,6 +409,54 @@ describe('archive → delete → rematerialize (the safety core)', () => {
     const r = await archiveSession({ sourceKind: 'claude', sessionId: SID, sessionRoot: empty }, store);
     expect(r).toMatchObject({ ok: false, reason: 'no_files' });
     expect(store.stamps.size).toBe(0);
+  });
+});
+
+describe('shared-state retention on delete (WI-38706)', () => {
+  // Fixing the collector stops NEW shared state entering a manifest, but ~2,764
+  // codex manifests already name one. The delete leg is what actually unlinks,
+  // so it carries the invariant independently: a manifest entry that is not
+  // keyed by THIS session id is retained, never unlinked.
+
+  it('a LEGACY manifest naming config.toml is RETAINED, not deleted (and ok stays true)', async () => {
+    const home = await tmp('sa-codex-legacy-');
+    const dir = join(home, 'sessions', '2026', '07', '10');
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, `rollout-2026-07-10T01-00-00-${SID}.jsonl`), 'r\n');
+    const cfgBody = '[model_providers.papercusp-codex-gateway]\nname = "gw"\n';
+    await writeFile(join(home, 'config.toml'), cfgBody);
+
+    const store = new MemStore();
+    const ref = { sourceKind: 'codex' as const, sessionId: SID, sessionRoot: home };
+    expect((await archiveSession(ref, store)).ok).toBe(true);
+
+    // simulate the OLD collector's manifest — config.toml archived under this session
+    const stamp = store.stamps.get(`codex:${SID}`)!;
+    stamp.manifest.push({
+      relpath: 'config.toml',
+      sha256: sha256Hex(Buffer.from(cfgBody)),
+      bytes_raw: Buffer.byteLength(cfgBody),
+    });
+
+    const del = await deleteArchivedSessionFiles(ref, store);
+    expect(existsSync(join(home, 'config.toml'))).toBe(true); // THE outage invariant
+    expect(del.retained).toEqual(['config.toml']);
+    // retained is NOT refused: refused would make the reconciler re-archive and
+    // re-attempt the delete forever, defeating the retention.
+    expect(del.refused).toEqual([]);
+    expect(del.ok).toBe(true);
+    expect(del.deleted).toBe(1); // the session's own rollout still goes
+  });
+
+  it('isSessionKeyedRelpath: only paths carrying the session id are deletable', () => {
+    expect(isSessionKeyedRelpath(SID, join('sessions', '2026', '07', '10', `rollout-x-${SID}.jsonl`))).toBe(true);
+    expect(isSessionKeyedRelpath(SID, join('todos', `${SID}-agent.json`))).toBe(true);
+    expect(isSessionKeyedRelpath(SID, 'config.toml')).toBe(false);
+    expect(isSessionKeyedRelpath(SID, 'goals_1.sqlite')).toBe(false);
+    expect(isSessionKeyedRelpath(SID, 'memories_1.sqlite')).toBe(false);
+    expect(isSessionKeyedRelpath(SID, join('sessions', '2026', '07', '10', `rollout-x-${OTHER}.jsonl`))).toBe(false);
+    // an empty session id must never make everything deletable
+    expect(isSessionKeyedRelpath('', 'config.toml')).toBe(false);
   });
 });
 
