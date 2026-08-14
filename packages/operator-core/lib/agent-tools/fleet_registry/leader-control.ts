@@ -7,6 +7,7 @@
  * transition events. The effect is idempotent and repairs partial/stale state.
  */
 import { getModes, setMode } from '../../modes/store';
+import { modeImpliesAutonomy } from '../../modes/registry';
 import {
   buildLoopWakePrompt,
   getLoopStatus,
@@ -87,7 +88,7 @@ export async function ensureFleetLeaderControl(
   const mode = { healthy: false, changed: false } as LeaderControlOutcome['mode'];
   try {
     const held = await getModes(input.workspaceId, input.ownerId);
-    if (held.some((row) => row.mode === 'auto')) {
+    if (held.some((row) => modeImpliesAutonomy(row.mode))) {
       mode.healthy = true;
     } else {
       const result = await setMode({

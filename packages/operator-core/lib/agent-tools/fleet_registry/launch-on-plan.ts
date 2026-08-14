@@ -68,6 +68,10 @@ import { fleetRoleFor, json, recolorCallerTerminal, resolveFleetCaller } from '.
 import { extractWorkItemIds, TERMINAL_WORK_ITEM_STATES } from '../work_items/mirror-guard';
 import { itemMatchesRawClaimSpec } from '../../scheduler/fleet-scope-admission';
 import { reseedLeaderCompactionLimit } from './take-leadership-core';
+import {
+  ensureFleetLeaderControl,
+  type LeaderControlOutcome,
+} from './leader-control';
 import { resolveSeatLaunch, seatAvailabilityForFleet } from '../../fleet/seat-accounting';
 import {
   resolveWorkspaceHiveScope,
@@ -1374,6 +1378,7 @@ export default defineTool({
     // P-009: the compaction-cap re-seed applied when launching INTO leadership (null unless
     // the caller was a member launching a fleet, i.e. stuck at the 300k member cap).
     let leaderReseed: Awaited<ReturnType<typeof reseedLeaderCompactionLimit>> = null;
+    let leaderControl: LeaderControlOutcome | null = null;
     // ── goal-mode-hardening P-009 / D-013: who leads ─────────────────────────────
     // 'spawn' means a FRESH agent leads and the caller stays out of the fleet. Its coord
     // identity is minted HERE, pre-spawn — the "state a spawner keys pre-spawn" case `psu
@@ -1426,6 +1431,16 @@ export default defineTool({
         leaderRole = 'delegator';
       } else {
         await setPresenceFleet(workspaceId, ownerId, fleetSlug, leaderRole);
+        if (leaderRole === 'leader') {
+          leaderControl = await ensureFleetLeaderControl({
+            workspaceId,
+            ownerId,
+            fleetSlug,
+            harnessSlug: harness,
+            planSlug,
+            carry: args.carry ?? 'warm',
+          });
+        }
         // P-009 (incl. via launch): now that presence marks the caller this fleet's leader, lift a
         // stuck 300k member-cap seed to the leader default (400k on [1m]). Auto-only (no explicit
         // leader contextSize/limit arg on this door), and precise — it no-ops unless the caller was
@@ -1956,7 +1971,8 @@ export default defineTool({
           ok: remotePlacements.length > 0,
           fleet: fleetSlug,
           leaderRole,
-          autoModeEntered: remotePlacements.length > 0,
+          autoModeEntered: leaderControl?.mode.healthy === true,
+          leaderControl,
           plan: planSlug,
           harness,
           placement: 'remote',
@@ -2741,6 +2757,16 @@ export default defineTool({
       } catch {
         leaderRegistered = false;
       }
+      if (leaderRegistered) {
+        leaderControl = await ensureFleetLeaderControl({
+          workspaceId,
+          ownerId: spawnedLeaderOwnerId,
+          fleetSlug,
+          harnessSlug: harness,
+          planSlug,
+          carry: args.carry ?? 'warm',
+        });
+      }
       spawnedLeader = {
         ownerId: spawnedLeaderOwnerId,
         terminal: leaderResult.terminal,
@@ -3017,16 +3043,11 @@ export default defineTool({
         ok: launchTransaction.verifiedMemberIds.length > 0,
         fleet: fleetSlug,
         leaderRole,
-        // The launch result is the moment the caller BECOMES a leader — leadership
-        // auto-enters AUTO mode (persona rule; see the message text). Structured so
-        // non-prose consumers (hooks, scorers) can key on it.
-        //
-        // goal-mode-hardening P-009: NOT when the leader was spawned. The caller
-        // delegated leadership precisely so it would not be leading, so the rule that
-        // fires on becoming a leader must not fire on it — it stays a portfolio manager
-        // in whatever posture it already held. The SPAWNED leader gets the directive
-        // instead, in its own launch brief.
-        autoModeEntered: opened.length > 0 && !spawnedLeader,
+        // Machine-readable fact about the ACTUAL registered leader, never inferred from
+        // how many member terminals happened to open. On leader:'spawn' this describes
+        // the spawned leader; the caller remains a delegator as the message below states.
+        autoModeEntered: leaderControl?.mode.healthy === true,
+        leaderControl,
         // goal-mode-hardening P-009 / D-013: the agent launched to lead this fleet
         // (null on an ordinary caller-led launch). `ownerId` is the PRE-PINNED coord
         // identity already recorded as the fleet's leader, so it is addressable

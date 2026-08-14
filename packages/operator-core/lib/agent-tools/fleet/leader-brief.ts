@@ -45,6 +45,10 @@ import type { AgentIdentity } from '../coordination/identity';
 import { getFleet } from '../../agent-fleets-store';
 import { takeFleetLeadership } from '../fleet_registry/take-leadership-core';
 import {
+  ensureFleetLeaderControl,
+  type LeaderControlOutcome,
+} from '../fleet_registry/leader-control';
+import {
   decideLeadershipDisposition,
   buildNotLeaderNotice,
   type NotLeaderNotice,
@@ -1982,6 +1986,7 @@ export default defineTool({
     // someone still working. The whole rule is in leadership-disposition.ts.
     let notLeader: NotLeaderNotice | undefined;
     let leadershipClaimed: AutoClaimedNotice | undefined;
+    let leaderControl: LeaderControlOutcome | undefined;
     let fleetCreatedAtMs: number | null = null;
     try {
       const fleetRecord = await getFleet(workspaceId, fleet);
@@ -1998,7 +2003,10 @@ export default defineTool({
       if (disposition.kind === 'not-leader') {
         notLeader = buildNotLeaderNotice(disposition, fleet);
       } else if (disposition.kind === 'auto-claim' && fleetRecord && agentIdentity && ownerId) {
-        const out = await takeFleetLeadership(workspaceId, fleetRecord, agentIdentity, ownerId);
+        const out = await takeFleetLeadership(workspaceId, fleetRecord, agentIdentity, ownerId, {
+          harnessSlug: args.harness,
+        });
+        leaderControl = out.control;
         leadershipClaimed = {
           claimed: true,
           reason: disposition.reason,
@@ -2009,6 +2017,13 @@ export default defineTool({
               ? `'${fleet}' had NO registered leader; you are now installed as its leader. A fleet nobody leads is how a whole fleet dies unnoticed — you now own monitoring it.`
               : `The registered leader of '${fleet}' (${out.previousLeader}) is gone, so leadership passed to you. Nothing live was displaced.`,
         };
+      } else if (disposition.kind === 'is-leader' && fleetRecord && ownerId) {
+        leaderControl = await ensureFleetLeaderControl({
+          workspaceId,
+          ownerId,
+          fleetSlug: fleet,
+          harnessSlug: args.harness,
+        });
       }
     } catch {
       /* best-effort: leadership bookkeeping must NEVER fail the health brief */
@@ -2572,6 +2587,7 @@ export default defineTool({
         // member rows — the value of this branch is that the caller learns it.
         ...(notLeader ? { notLeader } : {}),
         ...(leadershipClaimed ? { leadershipClaimed } : {}),
+        ...(leaderControl ? { leaderControl } : {}),
         // P-019/P-012: the arbitrated "which layer is blocking my fleet" verdict, placed
         // ABOVE the summary on purpose — the alert booleans below are flat and co-fire, and
         // reading them in field order is what produced the inverted remedy this fixes.

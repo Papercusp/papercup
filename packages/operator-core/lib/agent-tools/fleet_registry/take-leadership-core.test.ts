@@ -13,6 +13,7 @@ const heartbeatPresence = vi.fn();
 const setPresenceFleet = vi.fn();
 const fetchPresenceFleet = vi.fn();
 const sendMessage = vi.fn();
+const ensureFleetLeaderControl = vi.fn();
 
 vi.mock('../../agent-fleets-store', () => ({
   setFleetLeader: (...a: unknown[]) => setFleetLeader(...a),
@@ -26,6 +27,9 @@ vi.mock('../coordination/presence-fleet', () => ({
 }));
 vi.mock('../coordination/messages', () => ({
   sendMessage: (...a: unknown[]) => sendMessage(...a),
+}));
+vi.mock('./leader-control', () => ({
+  ensureFleetLeaderControl: (...a: unknown[]) => ensureFleetLeaderControl(...a),
 }));
 
 import { takeFleetLeadership } from './take-leadership-core';
@@ -54,6 +58,10 @@ beforeEach(() => {
   fetchPresenceFleet.mockResolvedValue(new Map()); // default: prior leader carries no fleet label
   sendMessage.mockResolvedValue({ msg_id: 'm1' });
   setFleetLeader.mockResolvedValue(fleet({ leaderOwnerId: 'su-bob' }));
+  ensureFleetLeaderControl.mockResolvedValue({
+    healthy: true,
+    mode: { healthy: true, changed: true },
+  });
 });
 
 describe('takeFleetLeadership (D-002 single-leader + notify, EI-5705/EI-5704)', () => {
@@ -61,8 +69,22 @@ describe('takeFleetLeadership (D-002 single-leader + notify, EI-5705/EI-5704)', 
     const out = await takeFleetLeadership(WS, fleet({ leaderOwnerId: null }), identity, 'su-bob');
     expect(setFleetLeader).toHaveBeenCalledWith(WS, SLUG, 'su-bob', undefined, null);
     expect(setPresenceFleet).toHaveBeenCalledWith(WS, 'su-bob', SLUG, 'leader');
+    expect(ensureFleetLeaderControl).toHaveBeenCalledWith({
+      workspaceId: WS,
+      ownerId: 'su-bob',
+      fleetSlug: SLUG,
+      harnessSlug: undefined,
+      planSlug: undefined,
+      carry: undefined,
+    });
     expect(sendMessage).not.toHaveBeenCalled();
-    expect(out).toMatchObject({ leader: 'su-bob', previousLeader: null, demotedPriorLeader: null, notified: false });
+    expect(out).toMatchObject({
+      leader: 'su-bob',
+      previousLeader: null,
+      demotedPriorLeader: null,
+      notified: false,
+      control: { healthy: true },
+    });
   });
 
   it('re-taking your OWN leadership does not demote or notify yourself', async () => {

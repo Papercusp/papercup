@@ -5,6 +5,7 @@ const createFleetIfAbsentMock = vi.fn();
 const heartbeatPresenceMock = vi.fn();
 const setPresenceFleetMock = vi.fn();
 const recolorCallerTerminalMock = vi.fn();
+const ensureFleetLeaderControlMock = vi.fn();
 
 vi.mock('../../../agent-fleets-store', () => ({
   createFleetIfAbsent: (...args: unknown[]) => createFleetIfAbsentMock(...args),
@@ -35,6 +36,10 @@ vi.mock('../../../inference-gateway/observability', () => ({
   fetchGatewayHeadroom: (...args: unknown[]) => fetchGatewayHeadroomMock(...args),
 }));
 
+vi.mock('../leader-control', () => ({
+  ensureFleetLeaderControl: (...args: unknown[]) => ensureFleetLeaderControlMock(...args),
+}));
+
 import tool from '../create';
 
 describe('fleet:create', () => {
@@ -47,6 +52,10 @@ describe('fleet:create', () => {
     heartbeatPresenceMock.mockResolvedValue(undefined);
     setPresenceFleetMock.mockResolvedValue(undefined);
     recolorCallerTerminalMock.mockResolvedValue(undefined);
+    ensureFleetLeaderControlMock.mockResolvedValue({
+      healthy: true,
+      mode: { healthy: true, changed: true },
+    });
   });
 
   it('surfaces a sizing advisory only when planned members exceed healthy account headroom', async () => {
@@ -106,5 +115,20 @@ describe('fleet:create', () => {
     expect(payload.requested).toBeNull();
     expect(payload.sizingAdvisory).toBeNull();
     expect(fetchGatewayHeadroomMock).not.toHaveBeenCalled();
+  });
+
+  it('atomically installs and reports leader control after labeling the caller as leader', async () => {
+    const res = await tool.handler({ name: 'Alpha Fleet' } as never, {} as never);
+    const payload = JSON.parse((res as any).content[0].text);
+
+    expect(ensureFleetLeaderControlMock).toHaveBeenCalledWith({
+      workspaceId: 'ws-1',
+      ownerId: 'owner-1',
+      fleetSlug: 'alpha-fleet',
+    });
+    expect(setPresenceFleetMock.mock.invocationCallOrder[0]).toBeLessThan(
+      ensureFleetLeaderControlMock.mock.invocationCallOrder[0],
+    );
+    expect(payload.control).toMatchObject({ healthy: true, mode: { healthy: true } });
   });
 });

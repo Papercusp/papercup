@@ -11,6 +11,11 @@ import type { SpecPoolEffect, CollapseGuardVerdict } from '../../../scheduler/sp
 
 const spawnConsoleMock = vi.fn();
 const fetchGatewayHeadroomMock = vi.fn();
+const createFleetIfAbsentMock = vi.fn();
+const setFleetLeaderMock = vi.fn();
+const heartbeatPresenceMock = vi.fn();
+const setPresenceFleetMock = vi.fn();
+const ensureFleetLeaderControlMock = vi.fn();
 const launchTransaction = vi.hoisted(() => ({
   verify: vi.fn(async (..._args: unknown[]) => ({
     agentStarted: true as boolean | null,
@@ -40,15 +45,14 @@ vi.mock('../../../papercusp-root', () => ({
 }));
 
 vi.mock('../../../agent-fleets-store', () => ({
-  createFleetIfAbsent: vi.fn(async () => ({
-    record: { leaderOwnerId: 'owner-1', colorScheme: { name: 'Ocean' } },
-  })),
+  createFleetIfAbsent: (...args: unknown[]) => createFleetIfAbsentMock(...args),
   fleetSlugFromName: (name: string) => name.toLowerCase().replace(/\s+/g, '-'),
   getFleetScheme: vi.fn(async () => ({ name: 'Ocean' })),
   // The P-005 idempotency guard (PG-backed, migration 484): default every handler test
   // to a WON slot; suppression semantics live in agent-fleets-store.integration.test.ts.
   claimFleetLaunchSlot: vi.fn(async () => ({ won: true, at: 1 })),
   releaseFleetLaunchSlot: vi.fn(async () => {}),
+  setFleetLeader: (...args: unknown[]) => setFleetLeaderMock(...args),
   setFleetLaunchTransaction: (...args: unknown[]) => launchTransaction.persist(...args),
 }));
 
@@ -67,8 +71,12 @@ vi.mock('../../coordination/presence', async (importOriginal) => ({
   // Spread the real module so PRESENCE_STALE_MS (consumed transitively via
   // presence-wakeability.ts) survives; override only the fns we stub.
   ...(await importOriginal<typeof import('../../coordination/presence')>()),
-  heartbeatPresence: vi.fn(async () => undefined),
-  setPresenceFleet: vi.fn(async () => undefined),
+  heartbeatPresence: (...args: unknown[]) => heartbeatPresenceMock(...args),
+  setPresenceFleet: (...args: unknown[]) => setPresenceFleetMock(...args),
+}));
+
+vi.mock('../leader-control', () => ({
+  ensureFleetLeaderControl: (...args: unknown[]) => ensureFleetLeaderControlMock(...args),
 }));
 
 // Contract-shaped on purpose. The real readPlanBySlug resolves
@@ -193,6 +201,22 @@ beforeEach(() => {
   launchTransaction.verify.mockReset();
   launchTransaction.verify.mockResolvedValue({ agentStarted: true, waitedMs: 1, sessions: [], note: 'verified' });
   launchTransaction.persist.mockClear();
+  createFleetIfAbsentMock.mockReset();
+  createFleetIfAbsentMock.mockResolvedValue({
+    record: { leaderOwnerId: 'owner-1', colorScheme: { name: 'Ocean' } },
+    created: true,
+  });
+  setFleetLeaderMock.mockReset();
+  setFleetLeaderMock.mockResolvedValue({ leaderOwnerId: 'leader-1' });
+  heartbeatPresenceMock.mockReset();
+  heartbeatPresenceMock.mockResolvedValue(undefined);
+  setPresenceFleetMock.mockReset();
+  setPresenceFleetMock.mockResolvedValue(undefined);
+  ensureFleetLeaderControlMock.mockReset();
+  ensureFleetLeaderControlMock.mockResolvedValue({
+    healthy: true,
+    mode: { healthy: true, changed: true },
+  });
 });
 
 describe('launch-tool routing guidance', () => {
@@ -201,6 +225,80 @@ describe('launch-tool routing guidance', () => {
     expect(tool.guidance?.when).toContain('capability:terminal');
     expect(tool.guidance?.notWhen).toContain('capability:launch-agent');
     expect(tool.guidance?.notWhen).toContain('launching-agents-which-tool-for-which-door');
+  });
+});
+
+describe('fleet:launch-on-plan handler — atomic leader control (WI-38804)', () => {
+  beforeEach(() => {
+    spawnConsoleMock.mockReset();
+    spawnConsoleMock.mockImplementation(() => ({
+      status: 'ok',
+      terminal: `term-${spawnConsoleMock.mock.calls.length}`,
+      pid: 100 + spawnConsoleMock.mock.calls.length,
+    }));
+    fetchGatewayHeadroomMock.mockReset();
+    fetchGatewayHeadroomMock.mockResolvedValue({ reachable: false });
+  });
+
+  it('installs caller-led control immediately after the presence role and reports its health', async () => {
+    const res = await tool.handler(
+      { name: 'Caller Led', plan: 'my-plan', harness: 'papercusp', count: 1 } as never,
+      {} as never,
+    );
+    const payload = JSON.parse((res as any).content[0].text);
+
+    expect(ensureFleetLeaderControlMock).toHaveBeenCalledWith({
+      workspaceId: 'ws-1',
+      ownerId: 'owner-1',
+      fleetSlug: 'caller-led',
+      harnessSlug: 'papercusp',
+      planSlug: 'my-plan',
+      carry: 'warm',
+    });
+    expect(setPresenceFleetMock.mock.invocationCallOrder[0]).toBeLessThan(
+      ensureFleetLeaderControlMock.mock.invocationCallOrder[0],
+    );
+    expect(payload.autoModeEntered).toBe(true);
+    expect(payload.leaderControl).toMatchObject({ healthy: true, mode: { healthy: true } });
+  });
+
+  it('installs control for a spawned leader only after the registry names that launched owner', async () => {
+    createFleetIfAbsentMock.mockResolvedValueOnce({
+      record: { leaderOwnerId: null, colorScheme: { name: 'Ocean' } },
+      created: true,
+    });
+
+    const res = await tool.handler(
+      {
+        name: 'Spawn Led',
+        plan: 'my-plan',
+        harness: 'papercusp',
+        count: 1,
+        leader: 'spawn',
+      } as never,
+      {} as never,
+    );
+    const payload = JSON.parse((res as any).content[0].text);
+
+    expect(payload.spawnedLeader).toMatchObject({ registered: true });
+    expect(setFleetLeaderMock).toHaveBeenCalledWith(
+      'ws-1',
+      'spawn-led',
+      payload.spawnedLeader.ownerId,
+    );
+    expect(ensureFleetLeaderControlMock).toHaveBeenCalledWith({
+      workspaceId: 'ws-1',
+      ownerId: payload.spawnedLeader.ownerId,
+      fleetSlug: 'spawn-led',
+      harnessSlug: 'papercusp',
+      planSlug: 'my-plan',
+      carry: 'warm',
+    });
+    expect(setFleetLeaderMock.mock.invocationCallOrder[0]).toBeLessThan(
+      ensureFleetLeaderControlMock.mock.invocationCallOrder[0],
+    );
+    expect(payload.autoModeEntered).toBe(true);
+    expect(payload.leaderControl).toMatchObject({ healthy: true, mode: { healthy: true } });
   });
 });
 

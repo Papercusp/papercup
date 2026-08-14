@@ -17,6 +17,7 @@ import { heartbeatPresence, setPresenceFleet } from '../coordination/presence';
 import { fleetRoleFor, json, recolorCallerTerminal, resolveFleetCaller, ROUTING_LADDER } from './_shared';
 import { fetchGatewayHeadroom } from '../../inference-gateway/observability';
 import { buildCapacityReport, buildFleetSizingAdvisory } from '../../fleet/capacity-dispatch';
+import { ensureFleetLeaderControl } from './leader-control';
 
 export default defineTool({
   name: 'fleet:create',
@@ -74,6 +75,10 @@ export default defineTool({
     const role = fleetRoleFor(record.leaderOwnerId, ownerId);
     await heartbeatPresence(identity); // guarantee a presence row to label
     await setPresenceFleet(workspaceId, ownerId, fleetSlug, role);
+    const control =
+      role === 'leader'
+        ? await ensureFleetLeaderControl({ workspaceId, ownerId, fleetSlug })
+        : null;
     // Recolor the caller's live window to the new fleet's bound scheme — no second
     // call (fleet-color-schemes). Best-effort: a no-op for non-psu-hosted callers.
     await recolorCallerTerminal(ownerId, record);
@@ -95,6 +100,7 @@ export default defineTool({
       title: record.title,
       leader: record.leaderOwnerId,
       role,
+      control,
       scheme: record.colorScheme,
       requested: args.count ?? null,
       sizingAdvisory,
