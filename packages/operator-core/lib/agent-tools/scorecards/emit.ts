@@ -21,6 +21,9 @@ import {
   type ScorecardInstrumentSnapshot,
 } from '../../scorecards';
 import { scorecardInstrumentSnapshotSchema, scorecardRatingEntrySchema } from './evaluate';
+import { acceptanceGraderLabelPrefix } from '../../acceptance-grader';
+import { killTask } from '../../task-manager/control';
+import { listTasks } from '../../task-manager/store';
 
 export const scorecardEmitArgs = z
   .object({
@@ -38,9 +41,38 @@ export const scorecardEmitArgs = z
   })
   .strict();
 
+export async function cleanupAcceptanceGraderTasks(
+  rubricRef: string,
+  input: { workspaceId?: string } = {},
+  deps: {
+    list?: typeof listTasks;
+    kill?: typeof killTask;
+  } = {},
+) {
+  const prefix = acceptanceGraderLabelPrefix(rubricRef);
+  const tasks = await (deps.list ?? listTasks)({
+    ...(input.workspaceId ? { workspaceId: input.workspaceId } : {}),
+    states: ['pending', 'running'],
+    classes: ['agent-session'],
+    limit: 2_000,
+  });
+  const matched = tasks.filter(
+    (task) => task.detail.headless === true &&
+      typeof task.detail.label === 'string' &&
+      task.detail.label.startsWith(prefix),
+  );
+  const results = await Promise.all(
+    matched.map(async (task) => ({
+      taskId: task.taskId,
+      outcome: await (deps.kill ?? killTask)(task.taskId, { includeSubtree: true }),
+    })),
+  );
+  return { prefix, matched: matched.length, results };
+}
+
 export async function emitScorecard(
   args: z.infer<typeof scorecardEmitArgs>,
-  input: { createdBy: string; ctxHarness?: string },
+  input: { createdBy: string; ctxHarness?: string; role?: string; workspaceId?: string },
 ) {
   const rubric = await getRubric(args.rubricRef);
   if (!rubric) return { ok: false as const, error: `rubric '${args.rubricRef}' not found` };
@@ -81,6 +113,9 @@ export async function emitScorecard(
         scorecardEvidenceFingerprint({ rubricRef: latest.rubricRef, ratings: latest.ratings })
       : null;
     if (!args.force && latestFingerprint === evidenceFingerprint) {
+      const acceptanceGraderCleanup = rubric.kind === 'acceptance' && input.role === 'judge'
+        ? await cleanupAcceptanceGraderTasks(args.rubricRef, { workspaceId: input.workspaceId })
+        : undefined;
       return {
         ok: true as const,
         created: false,
@@ -88,6 +123,7 @@ export async function emitScorecard(
         evidenceFingerprint,
         previousIssueId: latest?.issueId ?? null,
         canonicalRatings: ratings,
+        ...(acceptanceGraderCleanup ? { acceptanceGraderCleanup } : {}),
       };
     }
 
@@ -122,12 +158,16 @@ export async function emitScorecard(
         })
         .catch(() => {});
     }
+    const acceptanceGraderCleanup = rubric.kind === 'acceptance' && input.role === 'judge'
+      ? await cleanupAcceptanceGraderTasks(args.rubricRef, { workspaceId: input.workspaceId })
+      : undefined;
     return {
       ok: true as const,
       created: result.created,
       issueId: result.issue?.id ?? null,
       evidenceFingerprint,
       canonicalRatings: ratings,
+      ...(acceptanceGraderCleanup ? { acceptanceGraderCleanup } : {}),
     };
   } catch (error) {
     if (error instanceof ObservationEvidenceError) return { ok: false as const, error: error.message };
@@ -150,7 +190,7 @@ export default defineTool({
   },
   capability: 'coord:write',
   requirePrincipal: false,
-  agentRoles: [...COORD_ROLES],
+  agentRoles: [...COORD_ROLES, 'judge'],
   args: scorecardEmitArgs,
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
@@ -158,6 +198,13 @@ export default defineTool({
       typeof ctx.harnessSlug === 'string' && ctx.harnessSlug && ctx.harnessSlug !== '*'
         ? ctx.harnessSlug
         : undefined;
-    return { data: await emitScorecard(args, { createdBy: identity.ownerId, ctxHarness }) };
+    return {
+      data: await emitScorecard(args, {
+        createdBy: identity.ownerId,
+        ctxHarness,
+        role: ctx.role,
+        workspaceId: identity.workspaceId,
+      }),
+    };
   },
 });

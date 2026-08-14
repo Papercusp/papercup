@@ -243,6 +243,9 @@ export default defineTool({
     });
     if (!claim.won) {
       const prior = claim.priorSummary && Object.keys(claim.priorSummary).length ? claim.priorSummary : null;
+      const priorLaunch = prior && typeof prior.launch === 'object' && prior.launch !== null
+        ? prior.launch as Record<string, unknown>
+        : prior;
       const when = claim.priorLaunchedAt ? new Date(claim.priorLaunchedAt).toISOString() : 'earlier';
       return {
         content: [
@@ -254,6 +257,12 @@ export default defineTool({
               (prior ? `That call reported: ${JSON.stringify(prior)}` : 'No summary was recorded for that call — check /adv/sessions for what it opened.'),
           },
         ],
+        data: {
+          deduped: true,
+          launch: priorLaunch
+            ? { ...priorLaunch, deduped: true }
+            : { deduped: true, opened: 0, failed: 0, mode: 'deduped', fleet: null, tasks: [] },
+        },
       };
     }
 
@@ -492,16 +501,19 @@ export default defineTool({
     // P-003: the correlation floor for verifyFreshLaunchStarted — only sessions
     // that registered AFTER this instant can belong to this call.
     const spawnStartedAt = Date.now();
+    const memberLabels = memberCommands.map((_, i) => (count > 1 ? `${label} (${i + 1}/${count})` : label));
     const results = await Promise.all(
       memberCommands.map((cmd, i) => {
         const memberBrief = (memberSpecs[i]?.brief?.trim() || args.brief) ?? undefined;
         const env = memberBrief ? { ...base.env, PAPERCUSP_KICKOFF_PROMPT: memberBrief } : base.env;
-        const memberLabel = count > 1 ? `${label} (${i + 1}/${count})` : label;
+        const memberLabel = memberLabels[i];
         return foldedConfigs[i].headless
           ? spawnHeadless({
               envelope: { ...base, env, greetingCmd: cmd, cwd },
               label: memberLabel,
               logDir: headlessLogDir,
+              launchedBy: callerOwnerId ?? undefined,
+              fleetSlug,
             })
           : spawnConsole({
               envelope: { ...base, env, greetingCmd: cmd, cwd },
@@ -619,23 +631,38 @@ export default defineTool({
       lines.push(`✗ launch failed (${f.code}): ${f.error}`);
     }
 
+    const launchSummary = {
+      deduped: false,
+      opened: opened.length,
+      failed: failed.length,
+      command,
+      fleet: fleetSlug,
+      mode: isResume ? (fork ? 'fork' : 'resume') : 'fresh',
+      resumedOwnerId: resumeOwnerId,
+      tasks: results.flatMap((result, i) =>
+        result.status === 'ok'
+          ? [{
+              taskId: result.taskId ?? null,
+              logPath: result.logPath ?? null,
+              pid: result.pid,
+              label: memberLabels[i],
+              headless: !!foldedConfigs[i].headless,
+            }]
+          : [],
+      ),
+      ...(resumeVerifyFailed ? { resumeVerified: false } : {}),
+      ...(freshVerdict ? { agentStarted: freshVerdict.agentStarted } : {}),
+    };
+
     await recordAgentLaunchResult({
       workspaceId,
       idempotencyKey: args.idempotencyKey,
-      summary: {
-        opened: opened.length,
-        failed: failed.length,
-        command,
-        fleet: fleetSlug,
-        mode: isResume ? (fork ? 'fork' : 'resume') : 'fresh',
-        resumedOwnerId: resumeOwnerId,
-        ...(resumeVerifyFailed ? { resumeVerified: false } : {}),
-        ...(freshVerdict ? { agentStarted: freshVerdict.agentStarted } : {}),
-      },
+      summary: launchSummary,
     });
 
     return {
       content: [{ type: 'text' as const, text: lines.join('\n') }],
+      data: { deduped: false, launch: launchSummary },
       // Only an OBSERVED failure is an error. `agentStarted === null` (unverified —
       // still booting) must NOT set isError: most healthy launches land there
       // inside this window (D-004), and flagging them would make the tool cry wolf

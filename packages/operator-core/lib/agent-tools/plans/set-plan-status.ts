@@ -31,6 +31,7 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { emitDeprecateLearnings, type DeprecateLearnings } from '../../harness/improvements/deprecate-learnings';
 import { ObservationEvidenceError } from '../../harness/improvements/observation-types';
 import { evaluatePlanAcceptanceGate } from '../../plan-acceptance-gate';
+import { launchAcceptanceGrader, type AcceptanceGraderLifecycle } from '../../acceptance-grader';
 import { evaluateScoutRatificationGate } from '../../scout/ratification-gate';
 import { retireAcceptanceRubricForPlan } from '../../rubrics';
 import { bulkContent, mergeIds, runBulk } from '../_bulk';
@@ -214,6 +215,21 @@ function resolveRatifierOwnerId(ctx: unknown): string | null {
   }
 }
 
+const ACCEPTANCE_GRADER_GATE_CODES = new Set(['acceptance_ungraded', 'self_graded_only']);
+
+/** D-006: a grading refusal launches one fresh, dedicated judge. Keeping this
+ * decision in a small exported seam makes the trigger independently testable and
+ * prevents unrelated acceptance failures from spawning agents. */
+export async function launchAcceptanceGraderForGate(
+  slug: string,
+  gate: { satisfied: boolean; code?: string },
+  ctx: Parameters<typeof launchAcceptanceGrader>[1],
+  launch: typeof launchAcceptanceGrader = launchAcceptanceGrader,
+): Promise<AcceptanceGraderLifecycle | undefined> {
+  if (gate.satisfied || !gate.code || !ACCEPTANCE_GRADER_GATE_CODES.has(gate.code)) return undefined;
+  return launch(slug, ctx);
+}
+
 export default defineTool({
   name: 'plans:set-plan-status',
   description:
@@ -247,12 +263,14 @@ export default defineTool({
         if (status === 'shipped') {
           const gate = await evaluatePlanAcceptanceGate(slug);
           if (!gate.satisfied) {
+            const acceptanceGrader = await launchAcceptanceGraderForGate(slug, gate, ctx);
             return {
               ok: false as const,
               slug,
               error: gate.code ?? 'acceptance_gate_failed',
               message: gate.message,
               ...(gate.rubricId ? { rubricId: gate.rubricId } : {}),
+              ...(acceptanceGrader ? { acceptanceGrader } : {}),
             };
           }
         }

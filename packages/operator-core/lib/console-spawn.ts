@@ -1023,6 +1023,11 @@ export type SpawnConsoleResult =
       status: 'ok';
       pid: number | null;
       terminal: string;
+      /** Task-manager identity for an enrolled headless launch. Visible desktop
+       *  launches do not currently have a task row at this seam. */
+      taskId?: string;
+      /** Durable per-session output for a headless launch. */
+      logPath?: string;
       /**
        * The spawned terminal's Node handle (Linux/macOS server-side spawns) so
        * callers can attach exit watchers / adv-session bookkeeping. `null` on
@@ -2204,6 +2209,8 @@ export async function spawnHeadless(opts: SpawnHeadlessOpts): Promise<SpawnConso
       status: 'ok',
       pid: child.pid ?? null,
       terminal: `headless (log: ${logPath})`,
+      taskId: enrolment.taskId,
+      logPath,
       child,
       display: null,
       desktopEnvResolvedVia: null,
