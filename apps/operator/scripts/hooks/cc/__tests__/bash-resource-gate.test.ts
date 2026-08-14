@@ -349,10 +349,14 @@ describe('native-scheduler lockout (agent sessions)', () => {
     ['plain crontab', 'crontab -e'],
     ['bare crontab (stdin form)', 'crontab'],
     ['compound &&', 'cd /tmp && crontab evil-tab'],
-    ['compound ;', 'git status; crontab -l'],
+    // NB: these two carry a MUTATING form on purpose. They exist to test the
+    // separator anchor (`;` / newline), and until EI-20419484186942049 they
+    // spelled it `crontab -l` — a listing, which is now correctly exempt. A
+    // read here would have made them pass for the wrong reason forever after.
+    ['compound ;', 'git status; crontab -e'],
     ['piped at', 'echo done | at midnight'],
     ['sudo form', 'sudo crontab -u root -e'],
-    ['newline-separated', 'true\ncrontab -l'],
+    ['newline-separated', 'true\ncrontab -e'],
     ['batch', 'batch < jobs.txt'],
     ['systemd-run timer', 'systemd-run --on-calendar=daily echo hi'],
     // EI-9937: quote-stripping must NOT weaken a genuine deny — the scheduler
@@ -385,11 +389,62 @@ describe('native-scheduler lockout (agent sessions)', () => {
   });
 
   it('accepts codex shell tool names (exec_command) — same wire contract', () => {
-    expectDeny(runGate(bashCmd('crontab -l', { tool: 'exec_command' }), AGENT));
+    expectDeny(runGate(bashCmd('crontab -e', { tool: 'exec_command' }), AGENT));
   });
 
   it('ignores non-shell tools even in agent sessions', () => {
     expectAllow(runGate({ tool_name: 'Edit', tool_input: { file_path: '/x' } }, AGENT));
+  });
+});
+
+// ── EI-20419484186942049: the lockout stops an agent CREATING a schedule the
+// hive cannot see. A pure LISTING creates nothing, so it must not be blocked —
+// `crontab -l` is the direct way to VERIFY an existing entry, and denying it
+// bought no safety while teaching agents to route around the rail (the reporter
+// dropped the read and audited a reconciler via journal output instead).
+//
+// The exemption is an ALLOWLIST and these tests pin BOTH halves: the reads that
+// must now pass, and — the half that matters more — the mutating forms that must
+// still deny, including the ones that merely LOOK like the read.
+describe('native-scheduler lockout: read-only listings are exempt (EI-20419484186942049)', () => {
+  it.each([
+    ['crontab -l on its own', 'crontab -l'],
+    ['crontab -l after a ; separator', 'git status; crontab -l'],
+    ['crontab -l after a newline', 'true\ncrontab -l'],
+    ['crontab -l piped into a filter', 'crontab -l | grep session-archive'],
+    ['crontab -l inside a compound with unrelated probes', 'find . -name x.ts && crontab -l'],
+    ['another user’s crontab, listed', 'crontab -u root -l'],
+    ['flag order reversed', 'crontab -l -u root'],
+    ['sudo crontab -l', 'sudo crontab -l'],
+    ['at -l is atq spelled differently', 'at -l'],
+    ['atq never matched the anchor at all', 'atq'],
+    ['systemctl list-timers is not systemd-run', 'systemctl --user list-timers'],
+  ])('allows %s', (_label, command) => {
+    expectAllow(runGate(bashCmd(command), AGENT));
+  });
+
+  it.each([
+    // The allowlist must not be widened by shape alone. `-u <user>` WITHOUT
+    // `-l` is the stdin-install form — it creates a schedule for that user.
+    ['crontab -u bob (stdin install, no -l)', 'crontab -u bob'],
+    ['bare crontab (stdin install)', 'crontab'],
+    ['crontab - (explicit stdin install)', 'crontab -'],
+    ['crontab -r (removes the schedule)', 'crontab -r'],
+    ['crontab -e (edits the schedule)', 'crontab -e'],
+    ['crontab <file> (installs a file)', 'crontab my-jobs.txt'],
+    // A read TOKEN does not launder a mutating invocation, in either order.
+    ['read flag alongside an edit', 'crontab -l -e'],
+    ['read first, then a write in the same compound', 'crontab -l && crontab -e'],
+    ['read first, then a write after a ;', 'crontab -l; crontab -r'],
+    ['a listing piped INTO crontab still installs', 'crontab -l | crontab -'],
+  ])('still denies %s', (_label, command) => {
+    expectDeny(runGate(bashCmd(command), AGENT));
+  });
+
+  it('names the read/write boundary in the refusal, so the rail teaches instead of just blocking', () => {
+    const r = runGate(bashCmd('crontab -e'), AGENT);
+    expectDeny(r);
+    expect(`${r.stdout}${r.stderr}`).toMatch(/crontab -l/);
   });
 });
 
