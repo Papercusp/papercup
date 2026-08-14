@@ -180,6 +180,46 @@ export const PERF_BUDGETS: PerfBudgets = {
   blindMs: 30 * 60_000,
 };
 
+/**
+ * The memory-only verdict projected by the `host.memoryPressure` state cell.
+ *
+ * This is deliberately a CHILD of the canonical perf evaluator rather than a
+ * second threshold implementation. `evaluatePerfSignals()` consumes this exact
+ * object for its infra-panel alarm reasons, while the state-cell resolver exposes
+ * it for a fresh pull. One writer, two lenses.
+ */
+export interface MemoryPressureVerdict {
+  /** Null means the capture cannot honestly establish a band. Read `unknown`. */
+  pressure: 'ok' | 'warn' | 'crit' | null;
+  /** When the underlying perf capture was taken, not when this projection was read. */
+  measuredAt: string | null;
+  ageMs: number | null;
+  stale: boolean;
+  /** PSI values are percentages of wall time over the trailing 60-second window. */
+  psiMemorySome60: number | null;
+  psiMemoryFull60: number | null;
+  /** The exact budget source and values used by the infra-liveness writer. */
+  thresholds: {
+    source: 'PERF_BUDGETS';
+    psiMemorySomeWarn: number;
+    psiMemoryFullCrit: number;
+    staleMs: number;
+    blindMs: number;
+  };
+  reasons: string[];
+  /** Missing/stale inputs stay in-band; absence never becomes a reassuring zero. */
+  unknown: Array<{
+    code:
+      | 'capture-absent'
+      | 'schema-invalid'
+      | 'captured-at-invalid'
+      | 'capture-stale'
+      | 'psi-memory-some-unmeasured'
+      | 'psi-memory-full-unmeasured';
+    detail: string;
+  }>;
+}
+
 export interface PerfVerdict {
   /** ok | warn | crit | unknown (stale, or no usable signals). */
   status: PanelStatus;
@@ -203,6 +243,8 @@ export interface PerfVerdict {
   /** PSI memory `full avg60` — %time ALL non-idle tasks stalled on memory (real
    *  thrashing; WI-5471's actual root-cause signal). */
   psiMemoryFull60: number | null;
+  /** The canonical memory-only projection. The infra alarm and state cell share it. */
+  memoryPressure: MemoryPressureVerdict;
   /** Per-session dir populations (archive-at-death lifecycle gauge). */
   sessionDirs: { claudeOwnerDirs: number | null; codexHomes: number | null } | null;
   ageMs: number | null;
@@ -220,6 +262,122 @@ export interface PerfVerdict {
 function lagP95(s: PerfSignalsV1['signals']): number | null {
   const v = s.eventLoopLag?.lag_p95_ms ?? s._mcp_supplemented?.eventLoopLag?.lag_p95_ms;
   return typeof v === 'number' ? v : null;
+}
+
+/**
+ * Evaluate ONLY the memory-pressure portion of a perf capture.
+ *
+ * The full evaluator below calls this and copies its reasons into the infra verdict;
+ * the `host.memoryPressure` cell calls the same function. Keeping the threshold
+ * branch here is what prevents the pull surface and alert writer from disagreeing.
+ */
+export function evaluateMemoryPressure(
+  signals: PerfSignalsV1 | null | undefined,
+  nowMs: number,
+  budgets: PerfBudgets = PERF_BUDGETS,
+): MemoryPressureVerdict {
+  const thresholds: MemoryPressureVerdict['thresholds'] = {
+    source: 'PERF_BUDGETS',
+    psiMemorySomeWarn: budgets.psiMemorySomeWarn,
+    psiMemoryFullCrit: budgets.psiMemoryFullCrit,
+    staleMs: budgets.staleMs,
+    blindMs: budgets.blindMs,
+  };
+  const base = {
+    pressure: null,
+    measuredAt: signals?.capturedAt ?? null,
+    ageMs: null,
+    stale: false,
+    psiMemorySome60: null,
+    psiMemoryFull60: null,
+    thresholds,
+    reasons: [],
+    unknown: [],
+  } satisfies MemoryPressureVerdict;
+
+  if (!signals) {
+    return {
+      ...base,
+      unknown: [{ code: 'capture-absent', detail: 'no perf-signals-v1 capture was available' }],
+    };
+  }
+  if (signals.schemaVersion !== 'perf-signals-v1') {
+    return {
+      ...base,
+      unknown: [
+        {
+          code: 'schema-invalid',
+          detail: `expected perf-signals-v1, received ${signals.schemaVersion || 'an empty schema version'}`,
+        },
+      ],
+    };
+  }
+
+  const capturedMs = Date.parse(signals.capturedAt);
+  if (!Number.isFinite(capturedMs)) {
+    return {
+      ...base,
+      unknown: [{ code: 'captured-at-invalid', detail: `capture timestamp is not parseable: ${signals.capturedAt}` }],
+    };
+  }
+
+  const ageMs = Math.max(0, nowMs - capturedMs);
+  const stale = ageMs > budgets.staleMs;
+  const memory = signals.signals?.psi?.memory;
+  const psiMemorySome60 = typeof memory?.some?.avg60 === 'number' ? memory.some.avg60 : null;
+  const psiMemoryFull60 = typeof memory?.full?.avg60 === 'number' ? memory.full.avg60 : null;
+  const unknown: MemoryPressureVerdict['unknown'] = [];
+  if (stale) {
+    unknown.push({
+      code: 'capture-stale',
+      detail: `perf capture is ${ageMs}ms old, beyond the ${budgets.staleMs}ms freshness budget`,
+    });
+  }
+  if (psiMemorySome60 === null) {
+    unknown.push({
+      code: 'psi-memory-some-unmeasured',
+      detail: 'PSI memory some avg60 was absent; do not read it as 0%',
+    });
+  }
+  if (psiMemoryFull60 === null) {
+    unknown.push({
+      code: 'psi-memory-full-unmeasured',
+      detail: 'PSI memory full avg60 was absent; do not read it as 0%',
+    });
+  }
+
+  const common = {
+    ...base,
+    measuredAt: signals.capturedAt,
+    ageMs,
+    stale,
+    psiMemorySome60,
+    psiMemoryFull60,
+    unknown,
+  };
+  if (stale) return common;
+  if (psiMemoryFull60 !== null && psiMemoryFull60 >= budgets.psiMemoryFullCrit) {
+    return {
+      ...common,
+      pressure: 'crit',
+      reasons: [
+        `PSI memory full avg60 ${psiMemoryFull60} ≥ ${budgets.psiMemoryFullCrit} — all tasks stalled on memory reclaim/swap (WI-5471 class: real thrashing, not a CPU issue)`,
+      ],
+    };
+  }
+  if (psiMemorySome60 !== null && psiMemorySome60 >= budgets.psiMemorySomeWarn) {
+    return {
+      ...common,
+      pressure: 'warn',
+      reasons: [
+        `PSI memory some avg60 ${psiMemorySome60} ≥ ${budgets.psiMemorySomeWarn} — sustained memory reclaim pressure`,
+      ],
+    };
+  }
+  if (psiMemorySome60 !== null && psiMemoryFull60 !== null) {
+    return { ...common, pressure: 'ok' };
+  }
+  return common;
 }
 
 /**
@@ -289,12 +447,13 @@ export function evaluatePerfSignals(
    *  — those are never expected during a routine restart, so they still page. */
   deployInProgress = false,
 ): PerfVerdict {
+  const memoryPressure = evaluateMemoryPressure(signals, nowMs, budgets);
   const base: PerfVerdict = {
     status: 'unknown', degraded: false, reasons: [], hostState: null,
     worstWorkerCpuPct: null, worstWorkerRssKb: null, closeWait: null,
     eventLoopLagP95Ms: null, operatorReachable: null,
     inotifyTotalWatches: null, inotifyMaxPerProc: null, psiCpuSome60: null,
-    psiMemorySome60: null, psiMemoryFull60: null,
+    psiMemorySome60: null, psiMemoryFull60: null, memoryPressure,
     sessionDirs: null,
     ageMs: null, stale: false, suppressedReasons: [],
   };
@@ -313,8 +472,8 @@ export function evaluatePerfSignals(
   const inotifyOwnedMax = worstOwnedInotifyHolder(s.inotify?.topProcs ?? null);
   const inotifyLimit = typeof s.inotify?.limits?.maxUserWatches === 'number' ? s.inotify.limits.maxUserWatches : null;
   const psiCpu = typeof s.psi?.cpu?.some?.avg60 === 'number' ? s.psi.cpu.some.avg60 : null;
-  const psiMemSome = typeof s.psi?.memory?.some?.avg60 === 'number' ? s.psi.memory.some.avg60 : null;
-  const psiMemFull = typeof s.psi?.memory?.full?.avg60 === 'number' ? s.psi.memory.full.avg60 : null;
+  const psiMemSome = memoryPressure.psiMemorySome60;
+  const psiMemFull = memoryPressure.psiMemoryFull60;
   const sessionDirs = s.sessionDirs
     ? {
         claudeOwnerDirs: typeof s.sessionDirs.claudeOwnerDirs === 'number' ? s.sessionDirs.claudeOwnerDirs : null,
@@ -371,9 +530,7 @@ export function evaluatePerfSignals(
     crit.push(`inotify watches ${inotifyTotal} ≥ ${Math.round(budgets.inotifyLimitCritFrac * 100)}% of max_user_watches ${inotifyLimit} — ENOSPC imminent, fs.watch boots will fail fleet-wide`);
   }
   if (psiCpu !== null && psiCpu >= budgets.psiCpuSomeCrit) crit.push(`PSI cpu some avg60 ${psiCpu} ≥ ${budgets.psiCpuSomeCrit} — tasks starved for CPU (host saturation)`);
-  if (psiMemFull !== null && psiMemFull >= budgets.psiMemoryFullCrit) {
-    crit.push(`PSI memory full avg60 ${psiMemFull} ≥ ${budgets.psiMemoryFullCrit} — all tasks stalled on memory reclaim/swap (WI-5471 class: real thrashing, not a CPU issue)`);
-  }
+  if (memoryPressure.pressure === 'crit') crit.push(...memoryPressure.reasons);
   if (crit.length) return { ...v, status: 'crit', degraded: true, reasons: crit, suppressedReasons: suppressed };
 
   // ── WARN: hot-but-not-fatal ────────────────────────────────────────────────────
@@ -401,7 +558,7 @@ export function evaluatePerfSignals(
     warn.push(`inotify watches ${inotifyTotal} ≥ ${Math.round(budgets.inotifyLimitWarnFrac * 100)}% of max_user_watches ${inotifyLimit}`);
   }
   if (psiCpu !== null && psiCpu >= budgets.psiCpuSomeWarn) warn.push(`PSI cpu some avg60 ${psiCpu} ≥ ${budgets.psiCpuSomeWarn} — sustained CPU starvation pressure`);
-  if (psiMemSome !== null && psiMemSome >= budgets.psiMemorySomeWarn) warn.push(`PSI memory some avg60 ${psiMemSome} ≥ ${budgets.psiMemorySomeWarn} — sustained memory reclaim pressure`);
+  if (memoryPressure.pressure === 'warn') warn.push(...memoryPressure.reasons);
   for (const [label, n] of [
     ['session-claude owner dirs', sessionDirs?.claudeOwnerDirs],
     ['codex per-session homes', sessionDirs?.codexHomes],

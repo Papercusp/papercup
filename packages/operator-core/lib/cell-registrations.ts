@@ -575,6 +575,55 @@ export const MAIN_BEHIND_STAGING_CELL: CellSpec = {
     '{ verdictProvenance: { mainBehindStaging, mainFastForwarded, lastGreenSha, lastGreenAgeMs, deployedBehindGreenPin, deployOrigin }, verdictUnknown[] }',
 };
 
+/*
+ * EI-20449419111876508 — HOST MEMORY-PRESSURE CELL.
+ *
+ * The infra-liveness alarm already had the authoritative derivation:
+ * `readLatestPerfSignals()` → `evaluatePerfSignals()`. What it lacked was a
+ * re-readable cell, leaving agents to reconstruct CURRENT pressure from old
+ * fired/cleared messages. The resolver lens exposes `evaluateMemoryPressure()`,
+ * which the full evaluator itself now consumes, so the pull surface and alarm
+ * cannot drift into separate threshold implementations.
+ */
+export const HOST_MEMORY_PRESSURE_CELL: CellSpec = {
+  cell: 'host.memoryPressure',
+  owner: 'su-30c473f3-c5b8-43d0-bba2-8d6b40e1aabd',
+  headline: 'memory.pressure',
+
+  /** PSI measures tasks STALLING on reclaim; freemem measures immediately-free
+   *  capacity. Different inputs can disagree legitimately, making the latter a
+   *  real falsifier instead of a second rendering of the headline. */
+  falsifier: {
+    field: 'host.memFreePct',
+    measurement:
+      'node:os freemem()/totalmem() sampled in-process at read time — independent of the periodic /proc/pressure PSI capture that produces the headline',
+    kills:
+      '"memory pressure is ok" read as "the host has abundant free RAM". A low-free-memory host can be reclaim-stable right now, while a high-free-memory reading can coexist with a transient PSI window; pressure and capacity are not the same claim.',
+  },
+
+  /** Missing/stale captures and missing PSI legs yield `pressure:null`; every reason
+   *  is hoisted in `memory.unknown`, never collapsed to a healthy zero. */
+  nullable: true,
+  unknownHoist: 'memory.unknown',
+  callerRelativity: { kind: 'global' },
+
+  provenance: {
+    obtainedBy:
+      'the newest perf-signals-v1 capture via readLatestPerfSignals(), evaluated by the same evaluateMemoryPressure() branch consumed by the infra-liveness perf verdict; free-memory falsifier via getHostSnapshot()',
+    liveExercised: true,
+    evidence:
+      'host:memory_pressure run against the live 2026-08-14 perf capture returned a timestamped memory verdict with both PSI units, the exact PERF_BUDGETS thresholds, and an independently-sampled host.memFreePct; cell-falsifier-reality exercises the real handler so shape drift cannot hide behind fixtures.',
+  },
+
+  resolver:
+    'evaluateMemoryPressure(readLatestPerfSignals()) @ packages/operator-core/lib/system-health/perf-budgets.ts',
+  visibility: { kind: 'workspace' },
+  federation: { kind: 'local' },
+  changeSignal: { kind: 'poll', tool: 'host:memory_pressure', path: 'memory.pressure' },
+  shape:
+    '{ memory: { pressure: "ok"|"warn"|"crit"|null, measuredAt, ageMs, stale, psiMemorySome60, psiMemoryFull60, thresholds: { source, psiMemorySomeWarn, psiMemoryFullCrit, staleMs, blindMs }, reasons[], unknown[] }, host: { measuredAt, memFreePct, memTotalGb, psiMemSome60 } }',
+};
+
 /* ═══════════════════════════════════════════════════════════════════════════════
  * P-016 — THE AGENT GOAL CELL
  *
@@ -702,6 +751,7 @@ export const BUILTIN_CELLS: CellSpec[] = [
   GATE_OWNERSHIP_CELL,
   DEPLOYED_SHA_CELL,
   MAIN_BEHIND_STAGING_CELL,
+  HOST_MEMORY_PRESSURE_CELL,
   AGENT_GOAL_CELL,
 ];
 
