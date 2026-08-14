@@ -3934,6 +3934,41 @@ describe('P-005 ACCEPTANCE TEST — one call answers "is it live, and if not wha
         loadDeploy: async () => deploy(over.deployedAtMs ? { deployedAtMs: over.deployedAtMs } : {}),
         loadSnapshot: async () => snap(),
         resolveGateCandidates: async () => ({ judgingSha: null, nextCandidateSha: null }),
+        /**
+         * EI-20134961617539316. WITHOUT this stub these cases are NOT hermetic:
+         * `gitPipelinePosition` falls back to `realReadDeployInFlight()` (deps.readDeployInFlight
+         * ?? realReadDeployInFlight), which probes REAL systemd. A deploy that happens to be in
+         * flight on the host then sets `restartSupersededBy`, which withholds the SERVING lever
+         * BY DESIGN (EI-19447523039740352) — so `nextAction` becomes null and the SERVING case
+         * below fails.
+         *
+         * The reported symptom named the wrong culprit and cost that investigation its lead:
+         * ".toMatch() expects to receive a string, but got object" is emitted by @vitest/expect
+         * as `typeof actual`, and `typeof null === 'object'` — so it says "object" for a plain
+         * NULL. There is no non-string `restartLever` to find; every branch of
+         * `servingRestartLever` returns a string.
+         *
+         * It is self-inflicted and recurs: the gate promotes `main`, release-trigger deploys it,
+         * and the NEXT gate run reddens here. Measured 2026-08-14 — papercup-auto-deploy started
+         * 12:52:16Z, this case failed at 12:56:22Z, having passed every earlier CI run that day.
+         * The `EI-19447523039740352` describe below already asserts the other arm
+         * (`expect(running.nextAction).toBeNull()`), so leaving this unstubbed made the two
+         * blocks contradict each other exactly when a deploy happened to be running.
+         *
+         * MEASURED-IDLE, not "unknown": `active:false` with `source:'systemd'` is an affirmative
+         * reading, which keeps the lever. `source:'systemd-unavailable'` would mean UNKNOWN and
+         * is deliberately not what these cases assert against.
+         */
+        readDeployInFlight: async (): Promise<DeployInFlight> => ({
+          active: false,
+          unit: 'papercup-auto-deploy',
+          activeState: 'inactive',
+          subState: 'dead',
+          startedAtMs: null,
+          logPath: '/tmp/auto-deploy.log',
+          logMtimeMs: null,
+          source: 'systemd',
+        }),
       },
     );
 
