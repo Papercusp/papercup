@@ -27,6 +27,7 @@ import { emitPlanEventForCaller } from '../coordination/plan-events';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 import { clearStartedForTerminalPlan, isTerminalPlanStatus } from './plan-start-state';
 import { stampTerminalNowBlock } from './terminal-now-stamp';
+import { stampForcedPastWaiver } from './forced-past-stamp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { emitDeprecateLearnings, type DeprecateLearnings } from '../../harness/improvements/deprecate-learnings';
 import { ObservationEvidenceError } from '../../harness/improvements/observation-types';
@@ -132,7 +133,15 @@ const argsSchema = z
   });
 
 type SetPlanStatusValue =
-  | { ok: true; oldStatus: string | null; newStatus: string; changed: boolean; nowStamped?: boolean }
+  | {
+      ok: true;
+      oldStatus: string | null;
+      newStatus: string;
+      changed: boolean;
+      nowStamped?: boolean;
+      /** True when this write appended a forced-ship waiver — see forced-past-stamp.ts. */
+      forcedPastStamped?: boolean;
+    }
   | { ok: false; code: 'not_found' | 'no_status_line' | 'unexpected_status'; current?: string | null };
 
 /** Frontmatter `status:` line, captured value in group 2, trailing ws in group 3. */
@@ -272,8 +281,13 @@ export default defineTool({
         // authoring nudge (author it post-implementation, D-007; grader ≠ implementer,
         // D-005). Flag ACCEPTANCE_RUBRIC_COMPLETION_GATE (default ON); rubric-template
         // plans + scheduled template instances are exempt inside the gate.
+        // Hoisted out of the `shipped` branch: the gate decides the waiver, but
+        // the WRITE below is what makes it permanent, so the record has to
+        // survive the branch that produced it.
+        let forcedPast: { reason: string; checks: readonly string[] } | undefined;
         if (status === 'shipped') {
           const gate = await evaluatePlanAcceptanceGate(slug, args.force ? { force: args.force } : undefined);
+          forcedPast = gate.forcedPast;
           if (!gate.satisfied) {
             const acceptanceGrader = await launchAcceptanceGraderForGate(slug, gate, ctx);
             return {
@@ -335,9 +349,18 @@ export default defineTool({
                 value: { ok: false, code: 'unexpected_status', current: mutation.oldStatus },
               };
             }
-            if (mutation.newBody === null) {
-              // Already at the target and already stamped (or non-terminal) —
-              // success, nothing written.
+            // A forced ship records its waiver in this SAME locked write, so a
+            // plan can never be observed as shipped-clean when it was shipped
+            // forced — the gate's `forcedPast` contract ("permanent and
+            // visible, never a silent bypass"). Applied to the post-flip body
+            // when there is one, and to `current` when the flip itself is a
+            // no-op: an idempotent re-application must still not lose the
+            // waiver. See forced-past-stamp.ts.
+            const waived = stampForcedPastWaiver(mutation.newBody ?? current, forcedPast);
+            const finalBody = waived ?? mutation.newBody;
+            if (finalBody === null) {
+              // Already at the target and already stamped (or non-terminal),
+              // with no waiver to record — success, nothing written.
               return {
                 newBody: null,
                 value: {
@@ -346,6 +369,7 @@ export default defineTool({
                   newStatus: status,
                   changed: false,
                   nowStamped: false,
+                  forcedPastStamped: false,
                 },
               };
             }
@@ -353,13 +377,14 @@ export default defineTool({
               // A terminal flip — or an idempotent re-application to an old
               // terminal plan — stamps the cold-resume anchor in this SAME
               // locked write. See terminal-now-stamp.ts / WI-38303.
-              newBody: bumpUpdatedDate(mutation.newBody),
+              newBody: bumpUpdatedDate(finalBody),
               value: {
                 ok: true,
                 oldStatus: mutation.oldStatus,
                 newStatus: status,
                 changed: mutation.changed,
                 nowStamped: mutation.nowStamped,
+                forcedPastStamped: waived !== null,
               },
             };
           },
