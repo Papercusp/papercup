@@ -31,7 +31,7 @@
  */
 
 import { join } from 'node:path';
-import { readdir } from 'node:fs/promises';
+import { readdir, stat } from 'node:fs/promises';
 import type { Dirent } from 'node:fs';
 import { getOrgPg } from '@papercusp/db-org';
 import {
@@ -129,6 +129,22 @@ export interface ReconcileStats {
   ompFilesArchived: number;
   /** Gauge after the tick — the P-007 watchdog reads this trend. */
   endedUnarchivedRemaining: number;
+  /** INVARIANT (EI-20419472483823685): codex home dirs examined for the
+   *  "every codex home contains a config.toml" property. Deliberately NOT
+   *  `diskDirsScanned` — that counter is filtered by the protected set, by
+   *  `ids.length`, and by `dirBudget`, so it cannot see the case this exists
+   *  to catch (WI-38706 hit a LIVE, protected home). See runCodexHomeConfigInvariant. */
+  codexHomesScanned: number;
+  /** Codex homes that exist but have NO config.toml — `codex resume` against
+   *  one dies with "Model provider papercusp-codex-gateway not found". */
+  codexHomesMissingConfig: number;
+  /** The offending dirs (bounded), since the repair is mechanical from here. */
+  codexHomesMissingConfigDirs: string[];
+  /** Set when the invariant could NOT be evaluated. Without this, a sweep that
+   *  threw reports `codexHomesMissingConfig: 0`, which is indistinguishable
+   *  from "checked, all healthy" — the precise ambiguity that let WI-38706's
+   *  damage sit unnoticed. Readers must treat a set value as UNKNOWN, not OK. */
+  codexHomeInvariantError?: string;
   /** Set when the disk-side sweep was ABORTED before touching anything
    *  (fail-closed, mirrors session-dir-gc's degraded abort). */
   skippedDisk?: 'degraded-protected-set';
@@ -152,6 +168,49 @@ async function dirents(dir: string): Promise<Dirent[]> {
   }
 }
 
+/**
+ * INVARIANT SWEEP (EI-20419472483823685) — "every codex home dir contains a
+ * config.toml". The recurrence guard for WI-38706's whole class: that bug
+ * deleted the SHARED per-home config.toml, and while the CAUSE is fixed,
+ * nothing DETECTED the damage — one home sat unresumable for up to ~4 days
+ * and was found only because a human-directed census happened to run.
+ *
+ * ⚠ This deliberately walks the roots ITSELF instead of riding the archive
+ * loop in runSessionArchiveReconcileOnce, even though that loop also visits
+ * these dirs. That loop CANNOT see the failing case: it skips dirs in the
+ * protected set, dirs with no archivable rollout ids, and anything past
+ * `dirBudget` — and the home that actually broke was LIVE, hence protected,
+ * hence skipped. Riding it would have produced a detector that misses exactly
+ * what it exists to catch. Cost here is one stat() per home, no archive work.
+ *
+ * `missing` is the TRUE count and is NOT bounded by `limitNamed`, which caps
+ * only the named list — a capped census rendered as a total is how a floor
+ * gets read as a verdict.
+ */
+export async function runCodexHomeConfigInvariant(
+  roots: SessionDirRoot[] = defaultSessionDirRoots(),
+  limitNamed = 10,
+): Promise<{ scanned: number; missing: number; missingDirs: string[] }> {
+  let scanned = 0;
+  const missing: string[] = [];
+  for (const rootSpec of roots) {
+    // config.toml is a CODEX home artifact; the claude/mcp owner dirs have none.
+    if (rootSpec.keyKind !== 'session') continue;
+    for (const d of await dirents(rootSpec.root)) {
+      if (!d.isDirectory()) continue;
+      const dirPath = join(rootSpec.root, d.name);
+      scanned++;
+      try {
+        const st = await stat(join(dirPath, 'config.toml'));
+        if (!st.isFile()) missing.push(dirPath);
+      } catch {
+        missing.push(dirPath); // ENOENT — the WI-38706 deletion signature
+      }
+    }
+  }
+  return { scanned, missing: missing.length, missingDirs: missing.slice(0, limitNamed) };
+}
+
 export async function runSessionArchiveReconcileOnce(deps: ReconcilerDeps = {}): Promise<ReconcileStats> {
   const db = deps.db ?? pgReconcilerDb();
   const store = deps.store ?? pgSessionArchiveStore();
@@ -170,6 +229,9 @@ export async function runSessionArchiveReconcileOnce(deps: ReconcilerDeps = {}):
     diskSkippedFresh: 0,
     ompFilesArchived: 0,
     endedUnarchivedRemaining: 0,
+    codexHomesScanned: 0,
+    codexHomesMissingConfig: 0,
+    codexHomesMissingConfigDirs: [],
   };
 
   // ── (a) DB-side: ended-but-unarchived adv rows ──────────────────────────
@@ -324,6 +386,21 @@ export async function runSessionArchiveReconcileOnce(deps: ReconcilerDeps = {}):
     stats.endedUnarchivedRemaining = await db.countEndedUnarchived();
   } catch {
     /* gauge is best-effort */
+  }
+
+  // ── (c) INVARIANT: every codex home has its config.toml (EI-20419472483823685)
+  // Runs unconditionally — including when the disk sweep was skipped as
+  // degraded — because it only READS and its whole value is being present on
+  // the ticks where something else went wrong.
+  try {
+    const inv = await runCodexHomeConfigInvariant(deps.dirRoots ?? defaultSessionDirRoots());
+    stats.codexHomesScanned = inv.scanned;
+    stats.codexHomesMissingConfig = inv.missing;
+    stats.codexHomesMissingConfigDirs = inv.missingDirs;
+  } catch (e) {
+    // Never let a read-only invariant fail the tick — but never let it report
+    // a silent zero either (see codexHomeInvariantError).
+    stats.codexHomeInvariantError = (e as Error)?.message ?? String(e);
   }
   return stats;
 }
