@@ -134,6 +134,7 @@ import {
   onTurnStart,
   OS_SCHEDULER_CMD_RE,
   isOsSchedulerCommand,
+  isReadOnlySchedulerInvocation,
   isResourceLimitInvocation,
   osSchedulerDenyReason,
   tauriSubcommand,
@@ -365,6 +366,11 @@ describe('proactive Vertex Gemini 3.1 Pro request-start smoothing', () => {
   });
 });
 
+// NB: this describe pins the RAW ANCHOR only — "is a scheduler binary at command
+// position", which is deliberately blind to the subcommand. It therefore still
+// matches `crontab -l`, while `isOsSchedulerCommand` (the matcher the guard
+// actually uses) exempts that read per EI-20419484186942049. The split is the
+// point: the anchor finds candidates, the matcher classifies them.
 describe('OS_SCHEDULER_CMD_RE (command-position OS-scheduler match)', () => {
   it('matches schedulers at command position, incl. compound + sudo forms', () => {
     for (const cmd of [
@@ -502,6 +508,69 @@ describe('the lockout refusal answers the INTENT, not the token (EI-10940)', () 
     for (const cmd of [...RESOURCE_LIMITS, ...SCHEDULES]) {
       expect(isOsSchedulerCommand(cmd)).toBe(true);
     }
+  });
+});
+
+describe('read-only listings are exempt from the lockout (EI-20419484186942049)', () => {
+  // The lockout exists to stop an agent CREATING a schedule the hive's
+  // pause/status/liveness machinery cannot see. A pure LISTING creates nothing,
+  // so blocking it bought no safety and taught agents to route around the rail —
+  // observed live: the reporter dropped a `crontab -l` audit of a reconciler's
+  // entry and verified it indirectly through journal output instead.
+  //
+  // MIRROR: the same classification lives in the Claude/Codex shell hook
+  // (scripts/hooks/cc/pretooluse-bash-resource-gate.sh). Fix one, fix both.
+  const READS = [
+    'crontab -l',
+    'git status; crontab -l',
+    'crontab -l | grep session-archive',
+    'find . -name x.ts && crontab -l',
+    'crontab -u root -l',
+    'crontab -l -u root',
+    'sudo crontab -l',
+    'at -l', // `atq` spelled differently
+    'true\ncrontab -l',
+  ];
+
+  // The exemption is an ALLOWLIST. These are the shapes that LOOK adjacent to a
+  // read and must still deny — they are what stops the fix from becoming a hole.
+  const WRITES = [
+    'crontab -u bob', // -u WITHOUT -l is the stdin-install form
+    'crontab', // bare: stdin install
+    'crontab -', // explicit stdin install
+    'crontab -r',
+    'crontab -e',
+    'crontab my-jobs.txt',
+    'crontab -l -e', // a read token does not launder a write
+    'crontab -l && crontab -e',
+    'crontab -l; crontab -r',
+    'crontab -l | crontab -', // listing piped INTO an install
+  ];
+
+  it('classifies a bare listing invocation as read-only', () => {
+    // The classifier sees ONE invocation (the guard splits compounds for it),
+    // so feed it single segments here rather than deriving them from the
+    // compound forms above.
+    for (const seg of ['crontab -l', 'crontab -u root -l', 'crontab -l -u root', 'sudo crontab -l', 'at -l']) {
+      expect(isReadOnlySchedulerInvocation(seg)).toBe(true);
+    }
+    for (const seg of ['crontab', 'crontab -', 'crontab -e', 'crontab -r', 'crontab -u bob', 'crontab jobs.txt', 'at midnight']) {
+      expect(isReadOnlySchedulerInvocation(seg)).toBe(false);
+    }
+  });
+
+  it('allows every read through the matcher the guard uses', () => {
+    for (const cmd of READS) expect(isOsSchedulerCommand(cmd)).toBe(false);
+  });
+
+  it('STILL denies every mutating form — the allowlist is not a hole', () => {
+    for (const cmd of WRITES) expect(isOsSchedulerCommand(cmd)).toBe(true);
+  });
+
+  it('the refusal names the read/write boundary, so the rail teaches instead of just blocking', () => {
+    const reason = osSchedulerDenyReason('crontab -e');
+    expect(reason).toMatch(/crontab -l/);
+    expect(reason).toMatch(/CREATING or MODIFYING/);
   });
 });
 
