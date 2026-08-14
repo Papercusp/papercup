@@ -45,7 +45,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { projectBoundedPayload } from '@papercusp/tooldef';
-import { CHARS_PER_TOKEN_ESTIMATE, capInjectionText, computeTurnDoors } from './context-doors';
+import { CHARS_PER_TOKEN_ESTIMATE, computeTurnDoors } from './context-doors';
 import { getDoorConstantsSync } from './context-doors-config';
 import { buildScratchUri, safeScratchFilesystemPath } from './scratch-uri';
 import { buildSpillIndex } from './result-door-index';
@@ -467,170 +467,104 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
       innerTruncationMarkers,
     };
 
-    // WI-38402 / EI-20244970883634313: character-slicing a serialized JSON
-    // body creates invalid JSON, and the appended prose footer makes it invalid
-    // even when the slice happened to stop at a token boundary. This is the
-    // universal model-facing choke point, so project JSON STRUCTURALLY here and
-    // serialize only after the projection is complete. The durable spill was
-    // written first, so the recovery cursor can be an ordinary schema-valid
-    // capability:read call instead of the framework-reserved payloadTier retry
-    // that direct clients reject.
+    // WI-38402 / EI-20244970883634313 / EI-20435986111760474: character-slicing
+    // ANY oversized text body creates an incomplete transport value. JSON was
+    // the obvious case, but raw text is equally unsafe for a machine-readable
+    // caller: code:tools emits TypeScript, and tools:invoke used to return a
+    // sliced declaration followed by prose. ptool correctly refused that as an
+    // incomplete payload, so a ten-signature acceptance read could not recover.
+    //
+    // This is the universal model-facing choke point. Project both JSON and
+    // non-JSON text STRUCTURALLY and serialize only after projection completes.
+    // Non-JSON text gets a stable `{ text, _projection }` envelope; JSON retains
+    // its native object/array shape plus `_projection`. The durable spill is
+    // written first, so both forms carry the same schema-valid capability:read
+    // cursor and no client ever has to parse a chopped prefix plus a prose footer.
     const bodyShape = classifyProjectionBody(textItems);
-    if (bodyShape.json != null) {
-      const recovery = fsPath != null && uri != null
-        ? {
-            cursor: {
-              kind: 'scratch-page',
-              tool: 'capability:read',
-              args: { file_path: fsPath, byte_offset: 0, byte_limit: 3_072 },
-              uri,
-              encoding: 'base64',
-            },
-            next:
-              `Call capability:read with _projection.cursor.args, base64-decode data, then follow ` +
-              `next_cursor until eof to recover the exact spill bytes. The spill begins with a text ` +
-              `header and then contains the result as it reached this door.` +
-              buildProjectionHint(textItems, opts.toolName),
-          }
-        : {
-            cursor: {
-              kind: 'unavailable',
-              tool: opts.toolName,
-              args: {},
-              reason: 'spill-write-failed',
-            },
-            next:
-              `The result was structurally bounded, but its spill write failed ` +
-              `(${spillErrorCode ?? 'unknown error'}), so the omitted bytes are not recoverable. ` +
-              `Re-call ${opts.toolName} with narrower arguments or a projection.` +
-              buildProjectionHint(textItems, opts.toolName),
-          };
-      const projected = projectBoundedPayload(bodyShape.json.parsed, {
+    const recovery = fsPath != null && uri != null
+      ? {
+          cursor: {
+            kind: 'scratch-page',
+            tool: 'capability:read',
+            args: { file_path: fsPath, byte_offset: 0, byte_limit: 3_072 },
+            uri,
+            encoding: 'base64',
+          },
+          next:
+            `Call capability:read with _projection.cursor.args, base64-decode data, then follow ` +
+            `next_cursor until eof to recover the exact spill bytes. The spill begins with a text ` +
+            `header and then contains the result as it reached this door.` +
+            (upstreamProjection
+              ? ` ⚠ This is NOT the tool's full output: it was ALREADY tier-projected upstream ` +
+                `(tier=${upstreamProjection.tier}, forced=${upstreamProjection.forced}, ` +
+                `omittedCount=${upstreamProjection.omittedCount}); paging cannot recover those omitted ` +
+                `fields. Re-call ${opts.toolName} with payloadTier:'full' for full detail.`
+              : innerTruncationMarkers.length > 0
+                ? ` ⚠ The TOOL ITSELF already truncated field(s) before this door ` +
+                  `(${innerTruncationMarkers.join(', ')}); paging preserves what it emitted but cannot ` +
+                  `recover those fields. Re-call ${opts.toolName} with a wider per-field limit.`
+                : ` No upstream truncation marker was detected; that does not prove the tool emitted ` +
+                  `every field in full.`) +
+            buildProjectionHint(textItems, opts.toolName),
+        }
+      : {
+          cursor: {
+            kind: 'unavailable',
+            tool: opts.toolName,
+            args: {},
+            reason: 'spill-write-failed',
+          },
+          next:
+            `The result was structurally bounded, but its spill write failed ` +
+            `(${spillErrorCode ?? 'unknown error'}), so the omitted bytes are NOT recoverable and no ` +
+            `spill path exists. Re-call ${opts.toolName} with narrower arguments or a projection.` +
+            (upstreamProjection
+              ? ` It was ALSO tier-projected upstream (omittedCount=${upstreamProjection.omittedCount}), ` +
+                `so those fields were never serialized either.`
+              : '') +
+            buildProjectionHint(textItems, opts.toolName),
+        };
+    const projected = projectBoundedPayload(
+      bodyShape.json != null ? bodyShape.json.parsed : { text: fullText },
+      {
         toolName: opts.toolName,
         tier: 'trimmed',
         forced: true,
         originalChars: totalChars,
         targetChars: budgetChars,
         recovery,
-      });
-      const structuralText = JSON.stringify(projected);
-      let inserted = false;
-      const structuralContent: Array<{ type: 'text'; text: string } | Record<string, unknown>> = [];
-      for (const item of items) {
-        if (isTextItem(item)) {
-          if (!inserted) {
-            structuralContent.push({ type: 'text', text: structuralText });
-            inserted = true;
-          }
-        } else {
-          structuralContent.push(item as Record<string, unknown>);
+      },
+    );
+    const structuralText = JSON.stringify(projected);
+    let inserted = false;
+    const structuralContent: Array<{ type: 'text'; text: string } | Record<string, unknown>> = [];
+    for (const item of items) {
+      if (isTextItem(item)) {
+        if (!inserted) {
+          structuralContent.push({ type: 'text', text: structuralText });
+          inserted = true;
         }
+      } else {
+        structuralContent.push(item as Record<string, unknown>);
       }
-      return {
-        ...result,
-        _meta: {
-          ...(result._meta ?? {}),
-          resultDoor: {
-            ...baseResultDoorMeta,
-            structural: true,
-            recoveryCursor: recovery.cursor,
-          },
-        },
-        content: structuralContent,
-        // EI-20335562969900283: `structuredContent` is the schema-bearing MCP
-        // payload, not a second copy of the model-facing text body.  Replacing
-        // it with `projected` makes an otherwise successful tool call violate
-        // its declared outputSchema as soon as the generic projection omits an
-        // array member or one of that member's required fields.  That is what
-        // made large sessions:read windows fail *after* their handler returned
-        // valid turns.  Keep the opt-in structured payload byte-for-byte; only
-        // the text content is subject to this model-context door.  Clients ask
-        // for structuredContent explicitly, so preserving it also honours the
-        // lossless programmatic-response contract they negotiated.
-      } as T;
     }
-
-    // Rebuild content: text items consume the budget in order (the boundary item
-    // is cut at a line/space break); non-text items pass through untouched.
-    let remainingChars = budgetChars;
-    const doored: Array<{ type: 'text'; text: string } | Record<string, unknown>> = [];
-    for (const it of items) {
-      if (!isTextItem(it)) {
-        doored.push(it as Record<string, unknown>);
-        continue;
-      }
-      if (remainingChars <= 0) continue; // fully in the spill
-      if (it.text.length <= remainingChars) {
-        doored.push(it);
-        remainingChars -= it.text.length;
-        continue;
-      }
-      const { kept } = capInjectionText(it.text, Math.floor(remainingChars / CHARS_PER_TOKEN_ESTIMATE));
-      if (kept.length > 0) doored.push({ type: 'text', text: kept });
-      remainingChars = 0;
-    }
-    doored.push({
-      type: 'text',
-      text: fsPath == null
-        ? // WI-36047: the cap still applied, but there is no file. Say so plainly
-          // and name no path — a footer pointing at a spill that was never written
-          // is worse than no footer, because the reader spends a call discovering it.
-          `\n[result-door: this result exceeded the ~${doorTokens}-token per-result budget ` +
-          `(~${Math.ceil(totalChars / CHARS_PER_TOKEN_ESTIMATE)} tokens) and was truncated. ` +
-          `⚠ THE OVERFLOW WAS DISCARDED, NOT SPILLED — writing the spill file FAILED ` +
-          `(${spillErrorCode ?? 'unknown error'}), so there is no file to page and the cut content is ` +
-          `NOT recoverable from anywhere. Re-call ${opts.toolName} with narrower args or a ` +
-          `projection to get what you need within the budget` +
-          (upstreamProjection
-            ? `; note it was ALSO tier-projected upstream (omittedCount=` +
-              `${upstreamProjection.omittedCount}), so those field(s) were never serialized either`
-            : '') +
-          `.]`
-        : upstreamProjection
-        ? `\n[result-door: this result exceeded the ~${doorTokens}-token per-result budget ` +
-          `(~${Math.ceil(totalChars / CHARS_PER_TOKEN_ESTIMATE)} tokens) and was truncated. ` +
-          `⚠ this is NOT the tool's full output — it was ALREADY tier-projected upstream ` +
-          `(payloadProjection: tier=${upstreamProjection.tier} forced=${upstreamProjection.forced} ` +
-          `omittedCount=${upstreamProjection.omittedCount}) before reaching this door. The spilled ` +
-          `file at ${fsPath} (scratch URI: ${uri}) contains only that already-partial projection, NOT ` +
-          `the omitted content — paging it will never recover what was omitted upstream. For full ` +
-          `detail, re-call ${opts.toolName} with payloadTier:'full'.]`
-        : innerTruncationMarkers.length > 0
-        ? `\n[result-door: this result exceeded the ~${doorTokens}-token per-result budget ` +
-          `(~${Math.ceil(totalChars / CHARS_PER_TOKEN_ESTIMATE)} tokens) and was truncated. ` +
-          `⚠ it ALSO contains field(s) the TOOL ITSELF already truncated before spilling ` +
-          `(marker${innerTruncationMarkers.length > 1 ? 's' : ''}: ${innerTruncationMarkers.join(', ')}). ` +
-          `The spilled file at ${fsPath} (scratch URI: ${uri}) preserves everything the tool emitted, ` +
-          `but those marked field(s) were never fully serialized — paging it will NOT recover them. ` +
-          `Re-call ${opts.toolName} with a wider per-field limit/budget argument for the missing detail.]`
-        : `\n[result-door: this result exceeded the ~${doorTokens}-token per-result budget ` +
-          `(~${Math.ceil(totalChars / CHARS_PER_TOKEN_ESTIMATE)} tokens) and was truncated. ` +
-          `The result as it reached this door is at ${fsPath} (scratch URI: ${uri}) — page it with a ` +
-          `bounded read (offset/limit) instead of re-running the tool. (No upstream truncation marker ` +
-          `was detected, but that is not a guarantee the tool emitted every field in full — if a field ` +
-          `still looks cut short after paging, re-call ${opts.toolName} with a wider per-field ` +
-          `limit/budget argument or payloadTier:'full'.)]`,
-    });
-    // Appended to whichever footer variant fired — every truncation is a chance
-    // to teach the one knob that would have prevented it — but only the form of
-    // it that can actually reduce THIS payload (see buildProjectionHint, D-012).
-    const lastItem = doored[doored.length - 1] as { type: 'text'; text: string };
-    lastItem.text = `${lastItem.text.slice(0, -1)}${buildProjectionHint(textItems, opts.toolName)}]`;
-    // P-009 (plan agent-context-firewall-and-output-spill-2026-08-02): until now
-    // the door announced its OWN cut ONLY in the prose footer above, so a reader
-    // had to string-match an English sentence to learn its data was truncated —
-    // one refactor away from silently trusting a truncated result. That is the
-    // highest-frequency truncation path on the box (68,649 spills in 24h,
-    // measured 2026-08-02), and it was the only one with no machine-readable
-    // signal: payload-tier already stamps `_meta.payloadProjection`
-    // (serialize-result.ts:241), which is exactly what this door branches on at
-    // :181. Stamp the symmetric marker for the door's own truncation, ALONGSIDE
-    // the prose (never instead of it — the footer is what teaches the fix).
     return {
       ...result,
-      _meta: { ...(result._meta ?? {}), resultDoor: { ...baseResultDoorMeta, structural: false } },
-      content: doored,
-    };
+      _meta: {
+        ...(result._meta ?? {}),
+        resultDoor: {
+          ...baseResultDoorMeta,
+          structural: true,
+          recoveryCursor: recovery.cursor,
+        },
+      },
+      content: structuralContent,
+      // EI-20335562969900283: `structuredContent` is the schema-bearing MCP
+      // payload, not a second copy of the model-facing text body. Replacing it
+      // with `projected` can violate the declared outputSchema after a generic
+      // projection omits rows/required fields. Preserve it byte-for-byte; only
+      // model-facing text is subject to this context door.
+    } as T;
   } catch {
     return result; // fail-soft: never let the door break a good result
   }

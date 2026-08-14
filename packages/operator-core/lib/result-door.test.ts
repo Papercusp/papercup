@@ -57,28 +57,74 @@ function readSpill(ws: string, tool: string, runId: string): string {
   return readFileSync(join(dir, files[0]), 'utf8');
 }
 
+function boundedBody(result: DoorableResult): {
+  text?: string;
+  _projection: {
+    cursor: Record<string, unknown>;
+    next: string;
+    kind: string;
+    truncated: boolean;
+  };
+} {
+  const textItems = result.content.filter(
+    (item) => (item as { type?: unknown }).type === 'text',
+  ) as Array<{ text: string }>;
+  expect(textItems).toHaveLength(1);
+  return JSON.parse(textItems[0].text) as {
+    text?: string;
+    _projection: {
+      cursor: Record<string, unknown>;
+      next: string;
+      kind: string;
+      truncated: boolean;
+    };
+  };
+}
+
 describe('applyResultDoor', () => {
   it('a result within the budget passes through as the SAME object (no copy, no spill)', () => {
     const result = { content: [{ type: 'text' as const, text: 'small result' }] };
     expect(applyResultDoor(result, { toolName: 'plans:get', workspaceId: 'ws-1', runId: RUN_ID })).toBe(result);
   });
 
-  it('an over-door result is capped + pointered, and the spill file holds the WHOLE original', () => {
+  it('an over-door text result is structurally bounded + pointered, and the spill holds the original', () => {
     const original = longText(BUDGET_CHARS * 3);
     const doored = applyResultDoor(
       { content: [{ type: 'text' as const, text: original }] },
       { toolName: 'plans:get', workspaceId: 'ws-1', runId: RUN_ID },
     );
-    expect(doored.content).toHaveLength(2); // kept head + pointer
-    const kept = (doored.content[0] as { text: string }).text;
-    const pointer = (doored.content[1] as { text: string }).text;
-    expect(kept.length).toBeLessThanOrEqual(BUDGET_CHARS);
-    expect(original.startsWith(kept)).toBe(true);
-    expect(pointer).toContain('[result-door:');
-    expect(pointer).toContain('papercusp://scratch/ws-1/plans:get/' + RUN_ID);
+    const body = boundedBody(doored);
+    expect(body.text).toContain('line 0 of a very long tool result');
+    expect(body.text).not.toBe(original);
+    expect(body._projection).toMatchObject({ kind: 'bounded-payload', truncated: true });
+    expect(JSON.stringify(body._projection.cursor)).toContain(
+      'papercusp://scratch/ws-1/plans:get/' + RUN_ID,
+    );
     const spill = readSpill('ws-1', 'plans:get', RUN_ID);
     expect(spill).toContain('# tool: plans:get');
     expect(spill.endsWith(original)).toBe(true);
+  });
+
+  it('EI-20435986111760474: oversized code:tools TypeScript stays valid JSON for direct and nested calls', () => {
+    const signatures = Array.from({ length: 80 }, (_, i) =>
+      `declare const tools${i}: { dev: { pgQuery(args: { sql: string }): Promise<unknown> } };`,
+    ).join('\n');
+    expect(signatures.length).toBeGreaterThan(BUDGET_CHARS);
+
+    for (const toolName of ['code:tools', 'tools:invoke']) {
+      const doored = applyResultDoor(
+        { content: [{ type: 'text' as const, text: signatures }] },
+        { toolName, workspaceId: 'ws-1', runId: RUN_ID },
+      );
+      const body = boundedBody(doored);
+      expect(body.text).toContain('declare const tools0');
+      expect(body._projection).toMatchObject({
+        kind: 'bounded-payload',
+        truncated: true,
+        cursor: { kind: 'scratch-page', tool: 'capability:read' },
+      });
+      expect((doored._meta!.resultDoor as { structural: boolean }).structural).toBe(true);
+    }
   });
 
   it('structurally projects oversized text without corrupting schema-bearing structuredContent', () => {
@@ -155,11 +201,10 @@ describe('applyResultDoor', () => {
       { content: [{ type: 'text' as const, text: longText(BUDGET_CHARS * 3) }] },
       { toolName: 'coord:orient', workspaceId: 'ws-1', runId: RUN_ID },
     );
-    const pointer = (doored.content[doored.content.length - 1] as { text: string }).text;
-    expect(pointer).toContain('projection:');
-    expect(pointer).toContain('pick');
-    expect(pointer).toContain('head');
-    expect(pointer.endsWith(']')).toBe(true); // the footer stays a single well-formed bracket
+    const next = boundedBody(doored)._projection.next;
+    expect(next).toContain('projection:');
+    expect(next).toContain('pick');
+    expect(next).toContain('head');
   });
 
   it('non-text items pass through intact; text budget is consumed in order', () => {
@@ -175,8 +220,9 @@ describe('applyResultDoor', () => {
       { toolName: 'plans:get', workspaceId: 'ws-1', runId: RUN_ID },
     );
     expect(doored.content).toContainEqual(img);
-    // the trailing text item fell entirely into the spill
-    expect(doored.content.filter((c) => (c as { type?: string }).type === 'text')).toHaveLength(2);
+    // Every text item is represented by one complete JSON envelope; the exact
+    // original ordering remains in the spill.
+    expect(doored.content.filter((c) => (c as { type?: string }).type === 'text')).toHaveLength(1);
     const spill = readSpill('ws-1', 'plans:get', RUN_ID);
     expect(spill).toContain('trailing text fully over budget');
   });
@@ -350,9 +396,9 @@ describe('applyResultDoor', () => {
         { content: [{ type: 'text' as const, text: longText(BUDGET_CHARS * 2) }] },
         { toolName: 'plans:get', workspaceId: 'ws-1', runId: RUN_ID },
       );
-      const footer = (doored.content[doored.content.length - 1] as { text: string }).text;
+      const footer = boundedBody(doored)._projection.next;
 
-      expect(footer).toContain('THE OVERFLOW WAS DISCARDED, NOT SPILLED');
+      expect(footer).toContain('spill write failed');
       expect(footer).toContain('NOT recoverable');
       // No scratch URI, no filesystem path — the reader must not spend a call
       // discovering the file is absent.
@@ -396,10 +442,10 @@ describe('applyResultDoor', () => {
         workspaceId: 'ws-1',
         runId: RUN_ID,
       });
-      const footer = (doored.content[doored.content.length - 1] as { text: string }).text;
+      const footer = boundedBody(doored)._projection.next;
       const meta = (doored._meta as { resultDoor?: Record<string, unknown> } | undefined)?.resultDoor;
 
-      expect(footer).toContain('papercusp://scratch');
+      expect(JSON.stringify(boundedBody(doored)._projection.cursor)).toContain('papercusp://scratch');
       expect(footer).not.toContain('THE OVERFLOW WAS DISCARDED');
       expect(meta?.spillFailed).toBe(false);
       expect(typeof meta?.spillPath).toBe('string');
@@ -455,9 +501,9 @@ describe('applyResultDoor', () => {
           { content: [{ type: 'text' as const, text: longText(BUDGET_CHARS * 3) }] },
           { toolName: 'plans:get', workspaceId: 'ws-1', runId: RUN_ID },
         );
-        const pointer = (doored.content.at(-1) as { text: string }).text;
+        const pointer = boundedBody(doored)._projection.next;
         expect(pointer).not.toContain('The FULL result is at');
-        expect(pointer).toContain('The result as it reached this door is at');
+        expect(pointer).toContain('recover the exact spill bytes');
         expect(pointer).toContain('No upstream truncation marker was detected');
         const spill = readSpill('ws-1', 'plans:get', RUN_ID);
         expect(spill).not.toContain('# result-door spill — FULL tool result');
@@ -529,7 +575,7 @@ describe('applyResultDoor', () => {
         { content: [{ type: 'text' as const, text }] },
         { toolName: 'coord:inbox', workspaceId: 'ws-1', runId: RUN_ID },
       );
-      const pointer = (doored.content.at(-1) as { text: string }).text;
+      const pointer = boundedBody(doored)._projection.next;
       expect(pointer).not.toContain('page it with a bounded read');
       expect(pointer).toContain('TOOL ITSELF already truncated');
       expect(pointer).toContain('body_truncated');
@@ -550,7 +596,7 @@ describe('applyResultDoor', () => {
         { content: [{ type: 'text' as const, text }] },
         { toolName: 'plans:items', workspaceId: 'ws-1', runId: RUN_ID },
       );
-      const pointer = (doored.content.at(-1) as { text: string }).text;
+      const pointer = boundedBody(doored)._projection.next;
       expect(pointer).toContain('summary_truncated');
       expect(pointer).toContain('body_truncated');
       // deduped: body_truncated appears twice in the source but once in the marker list
@@ -563,8 +609,8 @@ describe('applyResultDoor', () => {
         { content: [{ type: 'text' as const, text }] },
         { toolName: 'coord:inbox', workspaceId: 'ws-1', runId: RUN_ID },
       );
-      const pointer = (doored.content.at(-1) as { text: string }).text;
-      expect(pointer).toContain('page it with a bounded read');
+      const pointer = boundedBody(doored)._projection.next;
+      expect(pointer).toContain('recover the exact spill bytes');
       expect(pointer).not.toContain('TOOL ITSELF already truncated');
     });
 
@@ -628,7 +674,7 @@ describe('buildProjectionHint — D-012 payload-aware spill footer', () => {
 
   function footerFor(content: Array<{ type: 'text'; text: string }>, toolName = 'work_items:list'): string {
     const doored = applyResultDoor({ content }, { toolName, workspaceId: 'ws-1', runId: RUN_ID });
-    return (doored.content.at(-1) as { text: string }).text;
+    return boundedBody(doored)._projection.next;
   }
 
   it('a JSON body leads with `pick` and states that `pipe` cannot reduce it', () => {
