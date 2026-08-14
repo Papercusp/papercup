@@ -1634,6 +1634,39 @@ describe('work_items:complete (keyed-array)', () => {
       expect(r.verificationCoverageError).toBeUndefined();
     });
 
+    it('rejects an explicit empty residue array even without universal-claim wording', async () => {
+      const ordinaryVerification = {
+        ...item,
+        id: 'WI-ordinary-residue',
+        kind: 'task',
+        family: 'issue',
+        state: 'open',
+        title: 'Capture one browser baseline',
+        summary: 'Record the current rendered state.',
+      };
+      getWorkItem.mockResolvedValue(ordinaryVerification);
+
+      const r = await one({
+        id: 'WI-ordinary-residue',
+        state: 'resolved',
+        completion: {
+          summary: 'Captured the baseline.',
+          verifiedHow: 'manual',
+          testResult: 'baseline recorded',
+          coverage: {
+            population: ['browser baseline'],
+            checked: ['browser baseline'],
+            residue: [],
+          },
+        },
+      });
+
+      expect(r.ok).toBe(false);
+      expect(r.verificationCoverageError).toContain('empty array');
+      expect(r.verificationCoverageError).toContain("residue:['none']");
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+    });
+
     it('keeps the helper contract explicit for verification markers and coverage accounting', () => {
       expect(isVerificationWorkItem(verificationItem)).toBe(true);
       expect(claimsUniversalVerification(universalCompletion)).toBe(true);

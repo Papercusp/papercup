@@ -1560,13 +1560,27 @@ async function completeOne(
     typeof it.completion.duplicateOf === 'string' &&
     it.completion.duplicateOf.trim().length > 0 &&
     it.completion.duplicateOf.trim() !== it.id;
-  const verificationCoverageGap =
+  // EI-20471001877504040: an explicitly supplied empty residue array is not
+  // the same thing as "no residue". WI-39043 closed with `residue: []` while
+  // its buyer-visible production probe event was still live because the
+  // universal-claim wording gate below did not apply to that otherwise
+  // ordinary verification completion. Omission remains valid for completions
+  // that make no residue claim at all; once a caller supplies the field, they
+  // must state either the real residue or the deliberate zero form `['none']`.
+  const explicitEmptyResidue =
     closeIntentRequested &&
-    !duplicateCloseCoverageException &&
-    isVerificationWorkItem(existing) &&
-    claimsUniversalVerification(it.completion) &&
-    !hasEnumeratedVerificationCoverage(completionEvidenceForGate?.coverage);
-  const verificationCoverageError = verificationCoverageGap
+    Array.isArray(completionEvidenceForGate?.coverage?.residue) &&
+    completionEvidenceForGate.coverage.residue.length === 0;
+  const verificationCoverageGap =
+    explicitEmptyResidue ||
+    (closeIntentRequested &&
+      !duplicateCloseCoverageException &&
+      isVerificationWorkItem(existing) &&
+      claimsUniversalVerification(it.completion) &&
+      !hasEnumeratedVerificationCoverage(completionEvidenceForGate?.coverage));
+  const verificationCoverageError = explicitEmptyResidue
+    ? `REJECTED — ${it.id} supplied completion.verification.coverage.residue as an empty array. An empty array is not evidence that residue was checked. List the actual residue, or pass residue:['none'] to make an explicit zero-residue claim.`
+    : verificationCoverageGap
     ? // EI-20223460482316333 / EI-20224260070669261 / EI-20225113964896785 /
       // EI-20225202699515538 / EI-20222447336206097 — five agents filed the SAME
       // friction on 2026-08-12 alone: the refusal named the *concept* ("enumerated
