@@ -254,6 +254,31 @@ describe('runEngineDeathSentinelPass (the live out-of-band leg)', () => {
     expect('origin' in input).toBe(false);
   });
 
+  it('workspace rows all overdue + a recent host-global routine fire ⇒ engine alive, no false capture', async () => {
+    const hasRecentGlobalRoutineFire = vi.fn(async () => true);
+    const { d, capture } = deps({ hasRecentGlobalRoutineFire });
+    const res = await runEngineDeathSentinelPass(d, {}, NOW);
+
+    expect(res.verdict?.dead).toBe(true);
+    expect(res.globalLivenessProven).toBe(true);
+    expect(res.captured).toBeUndefined();
+    expect(hasRecentGlobalRoutineFire).toHaveBeenCalledWith(10 * 60_000);
+    expect(capture).not.toHaveBeenCalled();
+  });
+
+  it('a failed host-global liveness read is UNKNOWN and never suppresses a real capture', async () => {
+    const logs: string[] = [];
+    const { d, capture } = deps({
+      hasRecentGlobalRoutineFire: async () => { throw new Error('heartbeat read failed'); },
+      log: (m) => logs.push(m),
+    });
+    const res = await runEngineDeathSentinelPass(d, {}, NOW);
+
+    expect(res.captured).toBe(true);
+    expect(capture).toHaveBeenCalledTimes(1);
+    expect(logs.some((l) => l.includes('UNKNOWN does not suppress'))).toBe(true);
+  });
+
   it('never throws — a read failure is a logged skip', async () => {
     const logs: string[] = [];
     const { d } = deps({
