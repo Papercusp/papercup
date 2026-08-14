@@ -1676,6 +1676,53 @@ describe('discoverSubmodulesRecursive — stray-gitlink fallback (2026-07-01)', 
     expect(logs.join('\n')).toContain('git rm --cached'); // ...with the fix command
   });
 
+  // EI-20402093158205519: a '-' row means only that `submodule.<name>.url` is missing from
+  // .git/config — NOT that the worktree is empty. On the sidestage tree 7 of 8 submodules
+  // were '-'-prefixed yet fully populated, so discovery returned 1 path and three tracked
+  // files sat uncommitted for days with no error on any tick. Discovery must not stay
+  // silent about a populated worktree it is skipping while that worktree holds real work.
+  it('POPULATED but unregistered submodule holding tracked changes is reported, not silently skipped', async () => {
+    // libs/uninit is '-' (never `git submodule init`-ed) but its worktree is on disk with
+    // a real .git AND two tracked modifications — exactly the silent-strand shape.
+    mkdirSync(join(dir, 'libs', 'uninit', '.git'), { recursive: true });
+    const logs: string[] = [];
+    const runGit: RunGit = async (args: string[], cwd: string) => {
+      if (args[0] === 'submodule') {
+        return { code: 0, stdout: ' abc123 libs/a (v1)\n-000000 libs/uninit\n', stderr: '' };
+      }
+      if (args[0] === 'status' && cwd.endsWith(join('libs', 'uninit'))) {
+        return { code: 0, stdout: ' M grid-core/src/RichGrid.tsx\n M grid-core/src/index.ts\n', stderr: '' };
+      }
+      return { code: 0, stdout: '', stderr: '' };
+    };
+
+    const paths = await discoverSubmodulesRecursive(runGit, dir, (m) => logs.push(m));
+
+    // Behavior is unchanged — reporting only. These worktrees commonly sit on deliberate
+    // detached pins, so auto-syncing them would fetch/merge/push and UNPIN them.
+    expect(paths).toEqual(['libs/a']);
+    const out = logs.join('\n');
+    expect(out).toContain('STRANDED WORK');
+    expect(out).toContain('libs/uninit'); // the at-risk path is NAMED
+    expect(out).toContain('2 tracked file(s)'); // ...with how much is at risk
+    expect(out).toContain('git submodule init'); // ...and the operator fix command
+  });
+
+  it('unregistered submodule with NO tracked changes stays quiet (scratch churn must not cry wolf)', async () => {
+    // Same shape, but the only dirt is untracked scratch (.vitest-tmp/ during a test run).
+    // `--untracked-files=no` must make this a non-event, or the warning fires on every tick
+    // that any suite happens to be running and is quickly learned to be noise.
+    mkdirSync(join(dir, 'libs', 'uninit', '.git'), { recursive: true });
+    const logs: string[] = [];
+    const runGit: RunGit = async (args: string[]) =>
+      args[0] === 'submodule'
+        ? { code: 0, stdout: ' abc123 libs/a (v1)\n-000000 libs/uninit\n', stderr: '' }
+        : { code: 0, stdout: '', stderr: '' }; // tracked-only status → clean
+
+    expect(await discoverSubmodulesRecursive(runGit, dir, (m) => logs.push(m))).toEqual(['libs/a']);
+    expect(logs.join('\n')).not.toContain('STRANDED WORK');
+  });
+
   it('fallback with no .gitmodules yields [] without throwing', async () => {
     const runGit: RunGit = async (args) =>
       args[0] === 'submodule'

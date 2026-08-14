@@ -1200,12 +1200,48 @@ export const discoverSubmodulesRecursive = async (
 ): Promise<string[]> => {
   const r = await runGit(['submodule', 'status', '--recursive'], repo);
   if (r.code === 0) {
-    const paths = r.stdout
-      .split('\n')
-      .filter(Boolean)
+    const lines = r.stdout.split('\n').filter(Boolean);
+    const rowPath = (l: string) => l.slice(1).trim().split(/\s+/)[1]; // "<flag><sha> <path> (<describe>)" → path
+    const paths = lines
       .filter((l) => l[0] !== '-') // skip uninitialized
-      .map((l) => l.slice(1).trim().split(/\s+/)[1]) // "<flag><sha> <path> (<describe>)" → path
+      .map(rowPath)
       .filter(Boolean);
+    // EI-20402093158205519: a '-' row means only that `submodule.<name>.url` is absent from
+    // .git/config (`git submodule init` never ran). It says NOTHING about whether the
+    // worktree is POPULATED — and a populated one can hold real, uncommitted agent work.
+    // This path's test is therefore strictly WEAKER than the .gitmodules fallback below,
+    // which lstats `<path>/.git`; and because the fallback runs ONLY when discovery FAILS,
+    // the weak test governs the normal (exit 0) case. Measured on the sidestage tree
+    // 2026-08-14: 7 of 8 submodules '-'-prefixed but fully populated, discovery returned
+    // exactly 1 path, and three tracked files sat uncommitted with no error on any tick —
+    // git-sync never visited those repos at all. Silence is the defect: SAY SO. Reporting
+    // (not auto-syncing) is deliberate — these worktrees are commonly parked on deliberate
+    // detached pins, so pulling them into the normal path would fetch/merge/push and UNPIN
+    // them. Registering is the operator's call; losing the work silently is not.
+    const strandRisk: string[] = [];
+    for (const l of lines) {
+      if (l[0] !== '-') continue;
+      const p = rowPath(l);
+      if (!p) continue;
+      try {
+        await lstat(join(repo, p, '.git')); // populated worktree, just unregistered
+      } catch {
+        continue; // genuinely uninitialized — nothing on disk to strand
+      }
+      const dirty = await runGit(['status', '--porcelain=v1', '--untracked-files=no'], join(repo, p));
+      // Count TRACKED modifications only: scratch/untracked churn (e.g. .vitest-tmp/) would
+      // otherwise cry wolf on every tick that a test run happens to be in flight.
+      const n = dirty.code === 0 ? dirty.stdout.split('\n').filter(Boolean).length : 0;
+      if (n > 0) strandRisk.push(`${p} (${n} tracked file(s))`);
+    }
+    if (strandRisk.length > 0) {
+      log(
+        `[git-sync] ⚠ STRANDED WORK: ${strandRisk.length} POPULATED but UNREGISTERED submodule(s) hold uncommitted tracked changes ` +
+          `that git-sync cannot see and will NEVER commit: ${strandRisk.join(', ')} — ` +
+          `they are absent from .git/config (no submodule.<name>.url), so 'git submodule status' marks them '-' and discovery skips them. ` +
+          `Fix with: git submodule init <path> (idempotent; copies the .gitmodules URL into .git/config), then re-check the pin before the next tick.`,
+      );
+    }
     return paths.sort((a, b) => b.split('/').length - a.split('/').length);
   }
   // ONE stray index gitlink with no .gitmodules mapping (e.g. a test's temp repo swept in
