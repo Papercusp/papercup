@@ -51,7 +51,7 @@
  */
 import { describe, it, expect } from 'vitest';
 
-import { completionTreeStamp } from './complete';
+import { completionTreeStamp, completionTreeStampForEvidence } from './complete';
 
 const ROOT = '/repo';
 const SHA = 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678';
@@ -231,5 +231,53 @@ describe('completionTreeStamp (EI-18682004530991057)', () => {
       expect(reads).toEqual(['/repo/.git', '/repo/.git/HEAD', '/repo/.git/refs/heads/staging']);
       expect(reads.length).toBeLessThanOrEqual(3);
     });
+  });
+});
+
+describe('completionTreeStampForEvidence (EI-20460682854560939)', () => {
+  const OPERATOR_ROOT = '/operator';
+  const SIDESTAGE_ROOT = '/sidestage';
+  const OPERATOR_SHA = '1111111111111111111111111111111111111111';
+  const SIDESTAGE_SHA = '2222222222222222222222222222222222222222';
+  const files = {
+    '/operator/.git/HEAD': OPERATOR_SHA,
+    '/sidestage/.git/HEAD': SIDESTAGE_SHA,
+  };
+  const readFile = (abs: string): string | undefined => files[abs as keyof typeof files];
+
+  it('stamps the registered sibling checkout that owns the declared changed file', () => {
+    expect(
+      completionTreeStampForEvidence(
+        { filesChanged: ['apps/web/src/BuyerTab.thumbnail.test.tsx'] },
+        [OPERATOR_ROOT, SIDESTAGE_ROOT],
+        {
+          exists: (abs) => abs === '/sidestage/apps/web/src/BuyerTab.thumbnail.test.tsx',
+          readFile,
+        },
+      ),
+    ).toEqual({ headSha: SIDESTAGE_SHA });
+  });
+
+  it('keeps the primary checkout on a tie so legacy completions do not change repositories', () => {
+    expect(
+      completionTreeStampForEvidence(
+        { filesChanged: ['shared/path.ts'] },
+        [OPERATOR_ROOT, SIDESTAGE_ROOT],
+        {
+          exists: (abs) => abs.endsWith('/shared/path.ts'),
+          readFile,
+        },
+      ),
+    ).toEqual({ headSha: OPERATOR_SHA });
+  });
+
+  it('keeps the primary checkout when the completion declares no resolvable files', () => {
+    expect(
+      completionTreeStampForEvidence(
+        { filesChanged: ['missing.ts'] },
+        [OPERATOR_ROOT, SIDESTAGE_ROOT],
+        { exists: () => false, readFile },
+      ),
+    ).toEqual({ headSha: OPERATOR_SHA });
   });
 });

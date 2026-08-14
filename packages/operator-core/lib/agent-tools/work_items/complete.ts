@@ -951,6 +951,65 @@ export function completionTreeStamp(probe: CompletionTreeStampProbe = {}): Compl
   }
 }
 
+export interface CompletionTreeStampForEvidenceProbe {
+  /** Injectable path probe so repository selection stays pure in unit tests. */
+  exists?: (abs: string) => boolean;
+  /** Forwarded to completionTreeStamp after the owning repository is selected. */
+  readFile?: (abs: string) => string | undefined;
+}
+
+/**
+ * Select the ONE registered checkout that owns this completion's declared files, then
+ * stamp that checkout's HEAD. A completion coordinated through the Papercusp operator can
+ * describe work in SideStage (or any other registered Hive); blindly stamping the server
+ * checkout anchors valid evidence to an unrelated commit that cannot resolve in the repo
+ * whose code was actually verified.
+ *
+ * Stable ties and an unresolvable declaration preserve the first/root checkout, matching
+ * completionRepoRootsFromRegistry's backwards-compatible ordering. This remains spawn-free:
+ * ownership uses bounded existsSync probes and HEAD resolution still reads git refs directly.
+ */
+export function completionTreeStampForEvidence(
+  evidence: CompletionVerificationEvidence,
+  repoRoots: string[],
+  probe: CompletionTreeStampForEvidenceProbe = {},
+): CompletionTreeStamp | undefined {
+  const roots = [
+    ...new Set(
+      repoRoots
+        .filter((root): root is string => typeof root === 'string' && root.trim().length > 0)
+        .map((root) => nodePath.resolve(root)),
+    ),
+  ];
+  if (roots.length === 0) return undefined;
+
+  const exists = probe.exists ?? ((abs: string) => existsSync(abs));
+  const declared = (evidence.filesChanged ?? []).slice(0, MAX_PATHS_PROBED);
+  let selectedRoot = roots[0]!;
+  let selectedMatches = -1;
+
+  for (const repoRoot of roots) {
+    let matches = 0;
+    for (const raw of declared) {
+      const declaredPath = raw.trim();
+      if (!declaredPath || declaredPath.includes('*') || declaredPath.includes('?')) continue;
+      try {
+        const abs = nodePath.resolve(repoRoot, declaredPath);
+        if (abs !== repoRoot && !abs.startsWith(repoRoot + nodePath.sep)) continue;
+        if (exists(abs)) matches += 1;
+      } catch {
+        // An unreadable candidate is not evidence that another checkout owns the file.
+      }
+    }
+    if (matches > selectedMatches) {
+      selectedRoot = repoRoot;
+      selectedMatches = matches;
+    }
+  }
+
+  return completionTreeStamp({ repoRoot: selectedRoot, readFile: probe.readFile });
+}
+
 /**
  * EI-19455334047866968 / EI-19411072468868467: gather EVERY prose field the caller
  * actually wrote into this completion, for the dangling-ref scan.
@@ -1531,6 +1590,14 @@ async function completeOne(
     ? { ...(completionEvidenceForGate ?? {}), summary: summaryText }
     : completionEvidenceForGate;
 
+  // Cross-repository completions are common: an su can coordinate through Papercusp while
+  // verifying SideStage. Reuse the same registered-root fallback as the filesChanged audit,
+  // and only pay for the registry lookup when the primary checkout cannot resolve the paths.
+  const initialUnresolvedPaths = unresolvedPathsInCompletion(completionEvidenceForGate);
+  const registeredRepoRoots = initialUnresolvedPaths
+    ? await completionRepoRootsForWorkspace(ctx.workspaceId)
+    : undefined;
+
   // EI-18682004530991057 (proposal 3): stamp WHAT TREE this evidence was observed
   // against. Applied to the PERSISTED object only — never to `completionEvidenceForGate`
   // — for the same reason `summary` is kept out of it above: `hasTests`,
@@ -1542,7 +1609,11 @@ async function completeOne(
   // Deliberately stamps ONLY a record that already exists: a close carrying nothing at
   // all stays `undefined` rather than gaining an `_completionEvidence` object whose one
   // key came from the server, which a later reader could mistake for caller-supplied proof.
-  const treeStamp = completionEvidenceBeforeStamp ? completionTreeStamp() : undefined;
+  const treeStamp = completionEvidenceBeforeStamp
+    ? registeredRepoRoots
+      ? completionTreeStampForEvidence(completionEvidenceBeforeStamp, registeredRepoRoots)
+      : completionTreeStamp()
+    : undefined;
   const completionEvidenceToPersist: CompletionVerificationEvidence | undefined =
     completionEvidenceBeforeStamp && treeStamp
       ? { ...completionEvidenceBeforeStamp, treeStamp }
@@ -1819,14 +1890,13 @@ async function completeOne(
   // EI-20093150500083378: `filesChanged` is the one evidence field nothing challenged, and
   // it is the one most often written from memory rather than observation. Same evidence
   // extraction as every check above, so it can never disagree with what the caller supplied.
-  const initialUnresolvedPaths = unresolvedPathsInCompletion(completionEvidenceForGate);
   // EI-20341749505351776: fleet work can be coordinated from the Papercusp harness while the
   // edited checkout is a registered sibling Hive (SideStage in the measured incident). Only pay
   // the registry lookup on the warning path; then re-evaluate the entire filesChanged set against
   // one candidate checkout root. Any registry failure preserves the original Papercusp verdict.
   const unresolvedPaths = initialUnresolvedPaths
     ? unresolvedPathsInCompletion(completionEvidenceForGate, {
-        repoRoots: await completionRepoRootsForWorkspace(ctx.workspaceId),
+        repoRoots: registeredRepoRoots ?? [],
       })
     : undefined;
   const unresolvedPathsWarning = unresolvedPaths
