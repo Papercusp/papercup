@@ -455,7 +455,12 @@ defineTool({
   args: z.object({}),
   agentRoles: ['scoper'],
   skipResultDoor: 'oversize-by-design',
-  handler: async () => ({ data: { big: DOOR_TEST_BIG_TEXT } }),
+  handler: async () => ({
+    data: {
+      big: DOOR_TEST_BIG_TEXT,
+      codexLocks: { lockMode: 'automatic' },
+    },
+  }),
 });
 
 afterAll(() => {
@@ -661,6 +666,22 @@ describe('applyResultDoor choke point honors projected.skipResultDoor', () => {
     expect(res._meta?.resultDoor).toBeUndefined();
     expect(textOf(res)).toContain(DOOR_TEST_BIG_TEXT);
   });
+
+  it('projects an orient-shaped oversize-by-design result before applying its door exemption', async () => {
+    const res = await callTool(
+      'gatingtest:door_skip_oversize',
+      { projection: { pick: ['codexLocks.lockMode'] } },
+      scoped('ws-test'),
+      { format: 'json' },
+    );
+    expect(res.isError).not.toBe(true);
+    expect(res._meta?.resultDoor).toBeUndefined();
+    expect(res._meta?.resultProjection).toMatchObject({ applied: true });
+    expect(JSON.parse((res.content[0] as { text: string }).text)).toEqual({
+      codexLocks: { lockMode: 'automatic' },
+    });
+    expect(textOf(res)).not.toContain(DOOR_TEST_BIG_TEXT);
+  });
 });
 
 /* ─── nested result-door exemption survives tools:invoke (EI-20311977175786095) ── */
@@ -681,6 +702,25 @@ describe('tools:invoke inherits the nested target result-door exemption', () => 
     expect(res.isError).not.toBe(true);
     expect(res._meta?.resultDoor).toBeUndefined();
     expect(textOf(res)).toContain(DOOR_TEST_BIG_TEXT);
+  });
+
+  it('projects an orient-shaped oversize-by-design target before carrying its outer exemption', async () => {
+    const res = await callTool(
+      'tools:invoke',
+      {
+        name: 'gatingtest:door_skip_oversize',
+        args: { projection: { pick: ['codexLocks.lockMode'] } },
+      },
+      scoped('ws-test'),
+      { format: 'json' },
+    );
+    expect(res.isError).not.toBe(true);
+    expect(res._meta?.resultDoor).toBeUndefined();
+    expect(res._meta?.resultProjection).toMatchObject({ applied: true });
+    expect(JSON.parse((res.content[0] as { text: string }).text)).toEqual({
+      codexLocks: { lockMode: 'automatic' },
+    });
+    expect(textOf(res)).not.toContain(DOOR_TEST_BIG_TEXT);
   });
 
   it('structurally bounds an ordinary oversized target body at the outer shared door', async () => {
