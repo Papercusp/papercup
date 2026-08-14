@@ -760,6 +760,10 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
   });
 
   it('pins a falsifiable Phase A cold-join adapter contract with no command override', () => {
+    const phaseAScenario = physicalScenario.slice(
+      physicalScenario.indexOf('phase_a_storage_join()'),
+      physicalScenario.indexOf('phase_b_ref_announce()'),
+    );
     const contract = spawnSync(physicalScenarioPath, ['--phase-contract', 'A'], {
       encoding: 'utf8',
       env: {
@@ -808,6 +812,16 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
       externalCommandOverrides: false,
     });
     expect(physicalScenario).not.toContain('HIVE_GIT_PHYSICAL_PHASE_A_CMD');
+    expect(physicalScenario).toContain('now_iso()');
+    expect(physicalScenario).not.toContain('%S.000Z');
+    expect(phaseAScenario).toContain('while :; do');
+    expect(phaseAScenario.indexOf('>"$phase_dir/tower-after.json"')).toBeLessThan(
+      phaseAScenario.indexOf('>"$phase_dir/vm-after.json"'),
+    );
+    expect(phaseAScenario).toContain('phase-a-verify "$phase_dir/verify-input.json"');
+    expect(phaseAScenario).toContain(
+      'phase A canonical bootstrap did not reach strict two-host convergence within 20 minutes',
+    );
 
   });
 
