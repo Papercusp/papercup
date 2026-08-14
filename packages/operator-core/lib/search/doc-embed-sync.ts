@@ -242,7 +242,7 @@ async function upsertPageSections(
     page.slug,
   ]);
   if (sections.length === 0) return 0;
-  const params: unknown[] = [];
+  const params: string[] = [];
   const values = sections
     .map((s, i) => {
       params.push(sourceKey, page.slug, s.anchor, s.title, page.url, s.content, sha);
@@ -282,18 +282,33 @@ async function upsertPageSections(
  * NOTE the caller must invalidate any adapter page/body cache FIRST, or this
  * re-indexes the pre-write bytes it still has memoized.
  */
-export async function refreshDocPageSections(
+export type DocPageRefresh =
+  | { ok: true; sections: number; unchanged: boolean }
+  | { ok: false; reason: string };
+
+/** The sql-taking core, separated so it is testable against a fake Sql like
+ *  syncDocSourceSections is. Callers outside tests want the wrapper below. */
+export async function refreshDocPageSectionsWithSql(
+  sql: Sql,
   source: DocSource,
   slug: string,
-): Promise<{ ok: true; sections: number; unchanged: boolean } | { ok: false; reason: string }> {
+): Promise<DocPageRefresh> {
   try {
-    const { sql } = getOrgPg();
-    if (!(await docSectionsTableExists(sql))) return { ok: false, reason: 'migration_552_absent' };
     const page = await source.getPage(slug);
     if (!page) return { ok: false, reason: `page_not_found:${slug}` };
     const body = await source.getContent(page);
     const written = await upsertPageSections(sql, source.name, page, body);
     return { ok: true, sections: written ?? 0, unchanged: written === null };
+  } catch (e) {
+    return { ok: false, reason: (e as Error).message };
+  }
+}
+
+export async function refreshDocPageSections(source: DocSource, slug: string): Promise<DocPageRefresh> {
+  try {
+    const { sql } = getOrgPg();
+    if (!(await docSectionsTableExists(sql))) return { ok: false, reason: 'migration_552_absent' };
+    return await refreshDocPageSectionsWithSql(sql, source, slug);
   } catch (e) {
     return { ok: false, reason: (e as Error).message };
   }

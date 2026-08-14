@@ -16,6 +16,7 @@ import {
   chunkSectionText,
   pageSha,
   syncDocSourceSections,
+  refreshDocPageSectionsWithSql,
   runDocSectionsSyncOnce,
   queueHarnessDocSectionSync,
 } from './doc-embed-sync';
@@ -285,5 +286,87 @@ describe('vitest inertness (WI-3792 load-scar class)', () => {
   });
   it('queueHarnessDocSectionSync is a no-op under vitest', () => {
     expect(queueHarnessDocSectionSync('any-harness')).toBeUndefined();
+  });
+});
+
+/**
+ * EI-20459861068197195 — a doc corrected via docs:author kept being SERVED by
+ * docs:search under its OLD title/description/body: doc_sections syncs once per
+ * operator process, and nothing refreshed the page the author had just written.
+ *
+ * What these guard is specifically the STALE-READ failure. It is not enough
+ * that some rows got written — the row must carry the NEW title, because the
+ * old title continuing to be served is precisely what misled readers.
+ */
+describe('refreshDocPageSections (single-page repair after a write)', () => {
+  it('re-indexes the authored page under its NEW title', async () => {
+    const { calls, sql } = fakeSql();
+    const src = fakeSource([
+      { page: page('agent-insights/x', 'NEW title'), body: '## A\nrewritten body long enough to keep.' },
+    ]);
+
+    const res = await refreshDocPageSectionsWithSql(sql, src, 'agent-insights/x');
+
+    expect(res).toMatchObject({ ok: true, unchanged: false });
+    const inserts = calls.filter((c) => c.q.includes('INSERT INTO harness_shared.doc_sections'));
+    expect(inserts).toHaveLength(1);
+    // params: [source, slug, anchor, title, url, content, sha]
+    expect(inserts[0].params[1]).toBe('agent-insights/x');
+    expect(String(inserts[0].params[3])).toContain('NEW title');
+    expect(String(inserts[0].params[5])).toContain('rewritten body');
+  });
+
+  it('replaces ONLY that page — deletes by slug, never prunes the whole source', async () => {
+    const { calls, sql } = fakeSql();
+    const src = fakeSource([
+      { page: page('agent-insights/x', 'X'), body: '## A\nbody long enough to keep around.' },
+      { page: page('agent-insights/other', 'Other'), body: '## B\nother body long enough to keep.' },
+    ]);
+
+    await refreshDocPageSectionsWithSql(sql, src, 'agent-insights/x');
+
+    const deletes = calls.filter((c) => c.q.trimStart().startsWith('DELETE'));
+    expect(deletes).toHaveLength(1);
+    expect(deletes[0].params).toEqual(['test-src', 'agent-insights/x']);
+    // the sweep's whole-source prune (DELETE ... RETURNING) must never run here
+    expect(calls.some((c) => c.q.includes('RETURNING'))).toBe(false);
+    const inserts = calls.filter((c) => c.q.includes('INSERT INTO harness_shared.doc_sections'));
+    expect(inserts).toHaveLength(1);
+    expect(inserts[0].params[1]).toBe('agent-insights/x');
+  });
+
+  it('is fail-open on an unknown slug — reports a reason, writes nothing', async () => {
+    const { calls, sql } = fakeSql();
+    const src = fakeSource([{ page: page('agent-insights/x', 'X'), body: 'body long enough to keep.' }]);
+
+    const res = await refreshDocPageSectionsWithSql(sql, src, 'agent-insights/nope');
+
+    expect(res).toEqual({ ok: false, reason: 'page_not_found:agent-insights/nope' });
+    expect(calls.some((c) => c.q.includes('INSERT') || c.q.trimStart().startsWith('DELETE'))).toBe(false);
+  });
+
+  it('is fail-open when the render throws (the doc is already canonical in PG)', async () => {
+    const { sql } = fakeSql();
+    const src = fakeSource([{ page: page('agent-insights/x', 'X'), body: '<<THROW>>' }]);
+
+    const res = await refreshDocPageSectionsWithSql(sql, src, 'agent-insights/x');
+
+    expect(res).toMatchObject({ ok: false });
+    expect((res as { ok: false; reason: string }).reason).toContain('render exploded');
+  });
+
+  it('reports unchanged (no write) when the stored sha already matches', async () => {
+    const body = '## A\nunchanged body long enough to keep.';
+    const { calls, sql } = fakeSql([{ slug: 'agent-insights/x', page_sha: pageSha('X', body) }]);
+    const src = fakeSource([{ page: page('agent-insights/x', 'X'), body }]);
+
+    // NOTE: the single-page path does not read the existing-sha map (that is the
+    // sweep's batch optimization), so it rewrites rather than short-circuits.
+    // Asserting the ROWS it writes are correct is what matters for the read leg.
+    const res = await refreshDocPageSectionsWithSql(sql, src, 'agent-insights/x');
+    expect(res).toMatchObject({ ok: true });
+    const inserts = calls.filter((c) => c.q.includes('INSERT INTO harness_shared.doc_sections'));
+    expect(inserts).toHaveLength(1);
+    expect(inserts[0].params[6]).toBe(pageSha('X', body));
   });
 });
