@@ -109,10 +109,14 @@ export default defineTool({
     const slug = args.installSlug ?? args.harness ?? operatorHomeHarnessSlug();
     const workspaceId = activeWorkspaceId();
 
-    const repoDir = await projectDirForSlug(slug);
+    // Resolve the workspace-scoped tree ONCE, then pin that exact path through
+    // the HEAD probes and the action. Re-resolving inside the action used to let
+    // ambient workspace state select a sibling checkout after these probes had
+    // measured a different tree.
+    const repoDir = await projectDirForSlug(slug, workspaceId);
     const before = repoDir ? await headSha(repoDir) : null;
 
-    const fired = await withBoundedTimeout<GitSyncFireOutcome | undefined>(() => fireGitSyncNow(slug, workspaceId), {
+    const fired = await withBoundedTimeout<GitSyncFireOutcome | undefined>(() => fireGitSyncNow(slug, workspaceId, repoDir), {
       fallback: undefined,
       timeoutMs: GIT_SYNC_RUN_BUDGET_MS,
       label: 'git-sync:run fireGitSyncNow',

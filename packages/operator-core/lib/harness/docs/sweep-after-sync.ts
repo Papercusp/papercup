@@ -65,8 +65,14 @@ export function buildDocDriftDigest(harnessSlug: string, staleDocs: DriftedDoc[]
 }
 
 /** Read a harness repo's current HEAD sha (captured pre-sync to bound the diff). */
-export async function captureHeadSha(harnessSlug: string): Promise<string | null> {
-  const repoRoot = await projectDirForSlug(harnessSlug);
+export async function captureHeadSha(
+  harnessSlug: string,
+  workspaceId?: string,
+  repoRootOverride?: string | null,
+): Promise<string | null> {
+  const repoRoot = repoRootOverride === undefined
+    ? await projectDirForSlug(harnessSlug, workspaceId)
+    : repoRootOverride;
   if (!repoRoot) return null;
   return repoHeadSha(repoRoot);
 }
@@ -97,6 +103,8 @@ export async function runOkfExpirySweep(
 export interface SweepAfterSyncInput {
   harnessSlug: string;
   workspaceId: string;
+  /** Exact tree the sync ran against; null means the scoped lookup found none. */
+  repoRoot?: string | null;
   /** HEAD before the sync (omit/blank → recompute all anchored docs). */
   prevSha?: string;
   /** HEAD after the sync. */
@@ -114,7 +122,9 @@ export async function runDocFreshnessSweepAfterSync(input: SweepAfterSyncInput):
   // unregistered harness degrades to "no sweep", never a silent cross-workspace read (D-003).
   const workspaceId = await resolveWorkspaceForHarness(harnessSlug, input.workspaceId);
 
-  const repoRoot = await projectDirForSlug(harnessSlug);
+  const repoRoot = input.repoRoot === undefined
+    ? await projectDirForSlug(harnessSlug, workspaceId)
+    : input.repoRoot;
   if (!repoRoot) return null;
 
   // P-005 (okf-frontmatter-adoption): the TIME-based freshness leg. Runs BEFORE every

@@ -20,7 +20,7 @@ export async function resolveHarnessPaths(
 ): Promise<{ projectDir: string; stateDir: string }> {
   try {
     const { loadHarnessRegistry } = await import('./harness-registry');
-    const reg = await loadHarnessRegistry();
+    const reg = await loadHarnessRegistry(workspaceId);
     const proj = reg.projects.find((p) => p.slug === harnessSlug);
     if (proj?.path) {
       return { projectDir: proj.path, stateDir: join(proj.path, '.papercusp') };

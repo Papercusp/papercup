@@ -525,8 +525,12 @@ export type GitSyncOutcome = {
 export type GitSyncStepRunner = <T>(name: string, fn: () => Promise<T>) => Promise<T>;
 
 export interface RunGitSyncOpts {
-  /** Override the repo path (tests); else resolved via `projectDirForSlug(slug)`. */
-  repoPath?: string;
+  /**
+   * Override the repo path (manual-fire pin + tests); else resolve via
+   * `projectDirForSlug(slug)`. An explicit null is authoritative: the caller
+   * already performed a scoped lookup and found no registered tree.
+   */
+  repoPath?: string | null;
   /** Inject the git runner (tests). */
   runGit?: RunGit;
   /** WI-1416: run each pipeline phase as a checkpointed durable step (see
@@ -2130,7 +2134,7 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
     diffSubjects: opts.diffSubjects ?? true,
   };
 
-  const repo = opts.repoPath ?? (await projectDirForSlug(slug));
+  const repo = opts.repoPath === undefined ? await projectDirForSlug(slug) : opts.repoPath;
   if (!repo) {
     return {
       status: 'error',

@@ -60,8 +60,8 @@ export interface ReadOperatorNotesResult {
 }
 
 /** Resolve harness slug → project directory via the registry. */
-export async function projectDirForSlug(slug: string): Promise<string | null> {
-  return (await loadHarnessRegistry()).projects.find((p) => p.slug === slug)?.path ?? null;
+export async function projectDirForSlug(slug: string, workspaceId?: string): Promise<string | null> {
+  return (await loadHarnessRegistry(workspaceId)).projects.find((p) => p.slug === slug)?.path ?? null;
 }
 
 /**
