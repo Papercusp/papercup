@@ -3,9 +3,9 @@
 /**
  * PlanEditor — the decorated markdown surface for one plan.
  *
- * Read mode (default, D-007): static `Vditor.preview` via MarkdownPreview,
- * decorated post-render by `decoratePlanDom` and equipped with a single
- * delegated click listener via `attachPlanRefClickHandler` (P-106).
+ * Read mode (default, D-007): the shared `PlanDocumentView` owns Vditor,
+ * core plan decoration, outline, and reference navigation. This adapter adds
+ * only operator-specific live badges, status actions, and perf timing.
  *
  * Edit mode: MarkdownEditor with IR-mode Lute renderers registered via
  * `inst.vditor.lute.SetJSRenderers({ Md2VditorIRDOM })` on instance
@@ -23,14 +23,14 @@
  */
 
 import { useCallback, useEffect, useRef } from 'react';
+import { PlanDocumentView } from '@papercusp/ui-primitives';
 import {
   MarkdownEditor,
-  MarkdownPreview,
   type MarkdownEditorToolbar,
 } from '@/app/_components/MarkdownEditor';
 import { endInteraction, PERF_INTERACTIONS } from '@/app/_components/perf/perf-marks';
 import type { PlanItem } from './plans-api';
-import { attachPlanRefClickHandler, decoratePlanDom, decoratePromotedBlock, decoratePlanItemBadges, decoratePlanItemTestBadges, attachFeatureBadgeClickHandler, type PromotedFeature } from './plan-renderers';
+import { decoratePromotedBlock, decoratePlanItemBadges, decoratePlanItemTestBadges, attachFeatureBadgeClickHandler, type PromotedFeature } from './plan-renderers';
 import {
   attachStatusClickHandler,
   buildPlanIRRenderers,
@@ -117,7 +117,6 @@ export default function PlanEditor({
       // matching beginInteraction ran (only the Plans-face popup click sets it),
       // so this is inert in PlanDetail's other mount contexts.
       endInteraction(PERF_INTERACTIONS.planPopupOpen);
-      decoratePlanDom(root, items);
       if (promotedFeaturesRef.current?.length) {
         decoratePromotedBlock(root, promotedFeaturesRef.current);
       }
@@ -131,7 +130,6 @@ export default function PlanEditor({
       // change — detach the previous handlers before re-attaching so each
       // post-render pass owns exactly one listener per concern.
       readDetachRef.current?.();
-      const detachRefs = attachPlanRefClickHandler(root);
       const detachStatus = onStatusClickRef.current
         ? attachStatusClickHandler(root, (t, s) => onStatusClickRef.current?.(t, s))
         : () => {};
@@ -139,7 +137,6 @@ export default function PlanEditor({
         ? attachFeatureBadgeClickHandler(root, (id) => onFeatureClickRef.current?.(id))
         : () => {};
       readDetachRef.current = () => {
-        detachRefs();
         detachStatus();
         detachFeature();
       };
@@ -191,7 +188,14 @@ export default function PlanEditor({
   if (readOnly) {
     return (
       <div className="pc-plan-editor">
-        <MarkdownPreview value={value} outline={outline} onParsed={handleParsed} />
+        <PlanDocumentView
+          value={value}
+          items={items}
+          outline={outline}
+          showJump={false}
+          showFrontmatter={false}
+          onParsed={handleParsed}
+        />
       </div>
     );
   }

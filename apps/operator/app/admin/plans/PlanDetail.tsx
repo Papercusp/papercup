@@ -18,6 +18,7 @@ import { Tooltip } from '@/app/harness/Tooltip';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Drawer } from 'vaul';
 import { useSyncQuery } from '@papercusp/sync';
+import { PlanDocumentFrontmatter } from '@papercusp/ui-primitives';
 import { parseAsInteger, parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
 import {
   setPlanContent,
@@ -485,7 +486,7 @@ export default function PlanDetail({ slug, harnessSlug, onClose, showBack = true
         </div>
       ) : null}
       {!data.legacy && data.frontmatter ? (
-        <FrontmatterCard slug={data.slug} frontmatter={data.frontmatter} />
+        <PlanDocumentFrontmatter slug={data.slug} frontmatter={data.frontmatter} />
       ) : null}
       {data.now ? (
         <NowHero
@@ -801,65 +802,6 @@ function TabButton({
       {label}
       {hint ? <span className="pc-plans__tab-hint"> · {hint}</span> : null}
     </button></Tooltip>
-  );
-}
-
-function FrontmatterCard({
-  slug,
-  frontmatter,
-}: {
-  slug: string;
-  frontmatter: Record<string, unknown>;
-}) {
-  const rows: Array<[string, string]> = [];
-  const formatScalar = (val: unknown): string | null => {
-    if (val === undefined || val === null) return null;
-    if (val instanceof Date) {
-      const iso = val.toISOString();
-      // YYYY-MM-DD if the time component is zeroed (typical for plan
-      // `created:` / `updated:` fields written as bare dates).
-      return /T00:00:00\.000Z$/.test(iso) ? iso.slice(0, 10) : iso;
-    }
-    if (typeof val === 'string' || typeof val === 'number' || typeof val === 'boolean') {
-      const s = String(val).trim();
-      return s.length === 0 ? null : s;
-    }
-    if (Array.isArray(val)) {
-      const parts = val.map((v) => formatScalar(v)).filter((s): s is string => s != null);
-      return parts.length > 0 ? parts.join(', ') : null;
-    }
-    // Nested object — skip rather than render `[object Object]`. The
-    // human-relevant fields are scalars (title/slug/status/created/
-    // updated/owner); structured side-data isn't useful in a metadata
-    // bar.
-    return null;
-  };
-  const push = (label: string, val: unknown) => {
-    const s = formatScalar(val);
-    if (s == null) return;
-    rows.push([label, s]);
-  };
-  push('slug', (frontmatter.slug as string | undefined) ?? slug);
-  push('status', frontmatter.status);
-  push('created', frontmatter.created);
-  push('updated', frontmatter.updated);
-  push('owner', frontmatter.owner);
-  for (const k of Object.keys(frontmatter)) {
-    if (['title', 'slug', 'status', 'created', 'updated', 'owner'].includes(k)) continue;
-    push(k, frontmatter[k]);
-  }
-  if (rows.length === 0) return null;
-  return (
-    <section className="pc-plan-fm" aria-label="Plan metadata">
-      <dl className="pc-plan-fm__grid">
-        {rows.map(([label, val]) => (
-          <div className="pc-plan-fm__row" key={label}>
-            <dt className="pc-plan-fm__key">{label}</dt>
-            <dd className="pc-plan-fm__val">{val}</dd>
-          </div>
-        ))}
-      </dl>
-    </section>
   );
 }
 

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 /**
  * PlanEditor.test.tsx — render-tier coverage for the decorated markdown surface.
- * The component's one real branch is readOnly → <MarkdownPreview> (the static
+ * The component's one real branch is readOnly → <PlanDocumentView> (the static
  * decorated preview) vs edit → <MarkdownEditor> (the IR editor). The heavy Vditor
  * children + the DOM-walking renderer helpers are stubbed; the preview/editor
  * stubs surface the props PlanEditor feeds them so we can assert the branch, the
@@ -20,16 +20,18 @@ vi.mock('@/app/_components/perf/perf-marks', () => ({
   PERF_INTERACTIONS: { planPopupOpen: 'plan-popup-open' },
 }));
 // Vditor-backed; stub both surfaces to plain DOM that echoes the key props.
-// MarkdownPreview fires onParsed via a ref callback (mimicking the real "after
+// PlanDocumentView fires onParsed via a ref callback (mimicking the real "after
 // Vditor.preview" call) so handleParsed's decorators + the endInteraction hook run.
-vi.mock('@/app/_components/MarkdownEditor', () => ({
-  MarkdownPreview: ({ value, outline, onParsed }: { value: string; outline: unknown; onParsed?: (root: HTMLElement) => void }) => (
+vi.mock('@papercusp/ui-primitives', () => ({
+  PlanDocumentView: ({ value, outline, onParsed }: { value: string; outline: unknown; onParsed?: (root: HTMLElement) => void }) => (
     <div
       data-testid="preview"
       data-outline={String(outline)}
       ref={(node) => { if (node) onParsed?.(node); }}
     >{value}</div>
   ),
+}));
+vi.mock('@/app/_components/MarkdownEditor', () => ({
   MarkdownEditor: ({
     value,
     onChange,
