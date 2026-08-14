@@ -9,7 +9,13 @@ import {
   checkWorktreeCoverage,
   isNotARepoError,
   KNOWN_UNCOVERED_WORKTREE_PATTERNS,
+  normalizeCheckoutPath,
+  resolveGitSyncCoverage,
+  findUncoveredDirtyCheckouts,
+  listSiblingCheckoutsWithDirtyState,
+  checkGitSyncCoverage,
   type WorktreeInfo,
+  type CheckoutInfo,
 } from './worktree-coverage-watchdog';
 
 const CANONICAL = '/home/dev/papercupai-workspace/papercusp';
@@ -186,5 +192,237 @@ describe('isNotARepoError (EI-9922 not-a-repo classifier)', () => {
     expect(isNotARepoError(new Error('git not found'))).toBe(false);
     expect(isNotARepoError(new Error('could not read Username for https://github.com'))).toBe(false);
     expect(isNotARepoError(undefined)).toBe(false);
+  });
+});
+
+// ===========================================================================
+// Sibling-CLONE coverage — WI-38857 / EI-20443492691207801
+// ===========================================================================
+
+const WS_ROOT = '/home/dev/papercupai-workspace';
+const SIDESTAGE = `${WS_ROOT}/sidestage`;
+
+function co(path: string, dirtyFileCount: number, lastCommitEpochSec: number | null = 1_700_000_000): CheckoutInfo {
+  return { path, dirty: dirtyFileCount > 0, dirtyFileCount, lastCommitEpochSec };
+}
+
+describe('normalizeCheckoutPath', () => {
+  it('makes a trailing slash irrelevant, so a covered tree is never read as uncovered', () => {
+    expect(normalizeCheckoutPath(`${SIDESTAGE}/`)).toBe(SIDESTAGE);
+    expect(normalizeCheckoutPath(`${SIDESTAGE}///`)).toBe(SIDESTAGE);
+    expect(normalizeCheckoutPath(`  ${SIDESTAGE}  `)).toBe(SIDESTAGE);
+  });
+
+  it('does not eat a lone root slash', () => {
+    expect(normalizeCheckoutPath('/')).toBe('/');
+  });
+});
+
+describe('resolveGitSyncCoverage (pure)', () => {
+  const projects = [
+    { slug: 'papercusp', path: `${WS_ROOT}/papercusp` },
+    { slug: 'sidestage-mobile', path: `${WS_ROOT}/sidestage-mobile` },
+    { slug: 'gone', path: `${WS_ROOT}/deleted-long-ago` },
+  ];
+  const existing = new Set([`${WS_ROOT}/papercusp`, `${WS_ROOT}/sidestage-mobile`]);
+
+  it('covers exactly the paths an ACTIVE routine resolves to through the registry', () => {
+    const { coveredPaths } = resolveGitSyncCoverage(['papercusp', 'sidestage-mobile'], projects, existing);
+    expect(coveredPaths.sort()).toEqual([`${WS_ROOT}/papercusp`, `${WS_ROOT}/sidestage-mobile`]);
+  });
+
+  it('reports an active routine whose registry path is gone as STALE coverage (the inverse failure)', () => {
+    const { coveredPaths, staleCoverage } = resolveGitSyncCoverage(['gone'], projects, existing);
+    expect(coveredPaths).toEqual([]);
+    expect(staleCoverage).toEqual([{ installSlug: 'gone', path: `${WS_ROOT}/deleted-long-ago` }]);
+  });
+
+  it('a routine slug with no registry entry covers nothing and is not miscounted as stale', () => {
+    const { coveredPaths, staleCoverage } = resolveGitSyncCoverage(['no-such-slug'], projects, existing);
+    expect(coveredPaths).toEqual([]);
+    expect(staleCoverage).toEqual([]);
+  });
+
+  it('an INACTIVE routine confers no coverage (callers pass active slugs only)', () => {
+    expect(resolveGitSyncCoverage([], projects, existing).coveredPaths).toEqual([]);
+  });
+});
+
+describe('findUncoveredDirtyCheckouts (pure classifier)', () => {
+  const covered = [`${WS_ROOT}/papercusp`, `${WS_ROOT}/sidestage-mobile`];
+
+  it('FLAGS the real incident: a dirty sibling clone no git-sync routine covers', () => {
+    const out = findUncoveredDirtyCheckouts([co(SIDESTAGE, 54)], { canonicalPath: CANONICAL, coveredPaths: covered });
+    expect(out.map((c) => c.path)).toEqual([SIDESTAGE]);
+  });
+
+  it('stays silent on a covered checkout even when it is dirty (the hive tree mid-sweep)', () => {
+    const out = findUncoveredDirtyCheckouts([co(`${WS_ROOT}/sidestage-mobile`, 9)], {
+      canonicalPath: CANONICAL,
+      coveredPaths: covered,
+    });
+    expect(out).toEqual([]);
+  });
+
+  it('never flags a clean checkout, covered or not', () => {
+    const out = findUncoveredDirtyCheckouts([co(`${WS_ROOT}/some-idle-clone`, 0)], {
+      canonicalPath: CANONICAL,
+      coveredPaths: covered,
+    });
+    expect(out).toEqual([]);
+  });
+
+  it('never flags the canonical tree itself', () => {
+    const out = findUncoveredDirtyCheckouts([co(CANONICAL, 3)], { canonicalPath: CANONICAL, coveredPaths: [] });
+    expect(out).toEqual([]);
+  });
+
+  it('does not double-report a LINKED worktree the other pass already judges', () => {
+    const linked = `${WS_ROOT}/papercusp-staging`;
+    const out = findUncoveredDirtyCheckouts([co(linked, 4)], {
+      canonicalPath: CANONICAL,
+      coveredPaths: [],
+      linkedWorktreePaths: [linked],
+    });
+    expect(out).toEqual([]);
+  });
+
+  it('honours the documented exclusions, including -relcut- release-cut trees', () => {
+    const out = findUncoveredDirtyCheckouts(
+      [
+        co(`${WS_ROOT}/papercup-release`, 12),
+        co(`${WS_ROOT}/papercusp-checkpoint`, 1),
+        co(`${WS_ROOT}/papercusp-relcut-0016`, 1),
+        co(`${WS_ROOT}/papercusp-relcut-0017-stable`, 1),
+      ],
+      { canonicalPath: CANONICAL, coveredPaths: [] },
+    );
+    expect(out).toEqual([]);
+  });
+
+  it('flags a LONG-stale tree just the same — staleness is not part of the verdict', () => {
+    // The ~70-day-dirty trees (papercup-improvement-runner, papercusp-desktop) are the
+    // cases an age floor would have hidden; nothing will ever commit them either.
+    const out = findUncoveredDirtyCheckouts(
+      [co(`${WS_ROOT}/papercup-improvement-runner`, 22, 1_600_000_000), co(`${WS_ROOT}/fresh-clone`, 2, null)],
+      { canonicalPath: CANONICAL, coveredPaths: [] },
+    );
+    expect(out.map((c) => c.path).sort()).toEqual([`${WS_ROOT}/fresh-clone`, `${WS_ROOT}/papercup-improvement-runner`]);
+  });
+});
+
+describe('listSiblingCheckoutsWithDirtyState', () => {
+  const runGit = (topLevels: Record<string, string>, status: Record<string, string>) =>
+    vi.fn(async (args: string[], cwd: string) => {
+      if (args[0] === 'rev-parse') {
+        const t = topLevels[cwd];
+        if (!t) throw new Error('fatal: not a git repository');
+        return `${t}\n`;
+      }
+      if (args[0] === 'status') return status[cwd] ?? '';
+      if (args[0] === 'log') return '1700000000\n';
+      throw new Error(`unexpected git ${args.join(' ')}`);
+    });
+
+  it('dedupes a SYMLINKED sibling so papercup->papercusp is not scanned twice', async () => {
+    const real = `${WS_ROOT}/papercusp`;
+    const out = await listSiblingCheckoutsWithDirtyState(WS_ROOT, {
+      listChildDirs: async () => [`${WS_ROOT}/papercup`, real],
+      realpath: async () => real,
+      runGit: runGit({ [real]: real }, { [real]: ' M a.ts\n' }),
+    });
+    expect(out).toHaveLength(1);
+    expect(out[0]?.path).toBe(real);
+  });
+
+  it('skips a directory that is not a checkout ROOT (a subdir of one)', async () => {
+    const out = await listSiblingCheckoutsWithDirtyState(WS_ROOT, {
+      listChildDirs: async () => [`${WS_ROOT}/papercusp-subdir`],
+      realpath: async (p) => p,
+      // rev-parse reports the PARENT as toplevel — this dir is inside a checkout, not one.
+      runGit: runGit({ [`${WS_ROOT}/papercusp-subdir`]: `${WS_ROOT}/papercusp` }, {}),
+    });
+    expect(out).toEqual([]);
+  });
+
+  it('skips a non-git directory without failing the sweep', async () => {
+    const out = await listSiblingCheckoutsWithDirtyState(WS_ROOT, {
+      listChildDirs: async () => [`${WS_ROOT}/not-a-repo`, SIDESTAGE],
+      realpath: async (p) => p,
+      runGit: runGit({ [SIDESTAGE]: SIDESTAGE }, { [SIDESTAGE]: ' M x.ts\n M y.ts\n' }),
+    });
+    expect(out.map((c) => c.path)).toEqual([SIDESTAGE]);
+    expect(out[0]?.dirtyFileCount).toBe(2);
+  });
+});
+
+describe('checkGitSyncCoverage', () => {
+  const baseDeps = {
+    listChildDirs: async () => [SIDESTAGE],
+    realpath: async (p: string) => p,
+    pathExists: async () => true,
+    runGit: vi.fn(async (args: string[], cwd: string) => {
+      if (args[0] === 'rev-parse') return `${cwd}\n`;
+      if (args[0] === 'status') return ' M a.ts\n';
+      if (args[0] === 'log') return '1700000000\n';
+      if (args[0] === 'worktree') return `worktree ${CANONICAL}\n`;
+      throw new Error('unexpected');
+    }),
+  };
+
+  it('reports the uncovered sibling and logs it', async () => {
+    const log = vi.fn();
+    const res = await checkGitSyncCoverage(CANONICAL, {
+      ...baseDeps,
+      log,
+      loadActiveGitSyncSlugs: async () => ['papercusp'],
+      loadRegistryProjects: async () => [{ slug: 'papercusp', path: CANONICAL }],
+    });
+    expect(res.coverageResolved).toBe(true);
+    expect(res.uncovered.map((c) => c.path)).toEqual([SIDESTAGE]);
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('NO active git-sync routine'));
+  });
+
+  it('reports NOTHING and says so when the coverage set cannot be loaded', async () => {
+    // The load-bearing safety property: without the authoritative signal every dirty
+    // sibling looks uncovered, so guessing would emit confident false positives.
+    const log = vi.fn();
+    const res = await checkGitSyncCoverage(CANONICAL, {
+      ...baseDeps,
+      log,
+      loadActiveGitSyncSlugs: async () => {
+        throw new Error('PG down');
+      },
+      loadRegistryProjects: async () => [],
+    });
+    expect(res.coverageResolved).toBe(false);
+    expect(res.uncovered).toEqual([]);
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('NOT MEASURED'));
+  });
+
+  it('goes quiet when the sibling IS covered', async () => {
+    const log = vi.fn();
+    const res = await checkGitSyncCoverage(CANONICAL, {
+      ...baseDeps,
+      log,
+      loadActiveGitSyncSlugs: async () => ['sidestage'],
+      loadRegistryProjects: async () => [{ slug: 'sidestage', path: SIDESTAGE }],
+    });
+    expect(res.uncovered).toEqual([]);
+    expect(log).not.toHaveBeenCalled();
+  });
+
+  it('never throws — a detector must not be able to crash the host it watches', async () => {
+    const res = await checkGitSyncCoverage(CANONICAL, {
+      log: vi.fn(),
+      listChildDirs: async () => {
+        throw new Error('readdir exploded');
+      },
+      loadActiveGitSyncSlugs: async () => [],
+      loadRegistryProjects: async () => [],
+      pathExists: async () => true,
+    });
+    expect(res.uncovered).toEqual([]);
+    expect(res.coverageResolved).toBe(false);
   });
 });

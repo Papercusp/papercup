@@ -65,6 +65,11 @@ export const KNOWN_UNCOVERED_WORKTREE_PATTERNS: readonly RegExp[] = [
   /\.papercusp(-workspaces\/[^/]+\/\.papercusp)?\/env-trees\//,
   // Migration/synthesis isolation worktrees — their OWN dedicated sync path.
   /\.papercusp\/worktrees\//,
+  // Release-cut trees (`*-relcut-NNNN`, `*-relcut-NNNN-stable`) — cut from a pinned ref
+  // for a release and left dirty by design, same class as -release/-checkpoint above.
+  // Measured 2026-08-14: papercusp-relcut-0016 and -0017-stable each carry 1 dirty file
+  // permanently, so without this they are a standing false positive on every sweep.
+  /-relcut-/,
 ];
 
 /**
@@ -212,9 +217,322 @@ export function startWorktreeCoverageWatchdog(
 
   const run = (): void => {
     void checkWorktreeCoverage(canonicalPath, opts);
+    // WI-38857: the linked-worktree pass above CANNOT see a sibling clone of another repo.
+    // Both legs share this one timer so there is a single watchdog surface (and a single
+    // kill-switch) rather than two schedules reporting on overlapping trees.
+    void checkGitSyncCoverage(canonicalPath, opts);
   };
 
   run(); // boot check
   if (watchdogTimer) watchdogTimer.stop();
   watchdogTimer = managedSetInterval('worktree-coverage-watchdog', intervalMs, run, { category: 'watchdog' });
+}
+
+// ---------------------------------------------------------------------------
+// Sibling-CLONE coverage — WI-38857 (detector) / EI-20443492691207801 (the loss)
+//
+// Everything above can only ever see LINKED WORKTREES OF ONE REPO: it enumerates
+// with `git worktree list --porcelain` run inside the canonical checkout, so an
+// independent CLONE of a DIFFERENT repo sitting next to it in the workspace root
+// is structurally invisible — not "missed", *unreachable*. That is exactly how
+// ~/papercupai-workspace/sidestage accumulated 54 dirty files / 1,406 insertions
+// whose content existed in NO git object store, while a healthy hive checkout of
+// the same repo synced normally two directories away. The same blind spot was
+// hiding ~9 more dirty sibling checkouts at the time this was written
+// (papercup-improvement-runner 22 dirty / ~70d, papercusp-desktop 18 / ~67d,
+// storewolf-central-server 13, Storewolf-Libs 13, ...).
+//
+// Coverage is decided by the AUTHORITATIVE signal, never a directory marker: an
+// ACTIVE harness_shared.routines row with target_role='system:git-sync' whose
+// install_slug resolves, through the harness registry (ProjectEntry {slug,path}),
+// to that checkout's realpath. WI-38857 records why a per-directory marker proxy
+// (".papercusp/blueprint.yaml" et al) is wrong — it reports the canonical papercusp
+// tree itself as unregistered though it is definitely swept, so a guard built on it
+// emits confident false positives AND misses real gaps.
+// ---------------------------------------------------------------------------
+
+/** A git checkout found by scanning a workspace root (a CLONE, not a linked worktree). */
+export interface CheckoutInfo extends WorktreeInfo {
+  /** Committer epoch (seconds) of HEAD, or null when the checkout has no commits.
+   *  Reported for triage only — staleness is NOT part of the uncovered verdict. */
+  lastCommitEpochSec: number | null;
+}
+
+/** An ACTIVE git-sync routine whose registry path no longer exists on disk — the
+ *  INVERSE failure WI-38857 asks for: coverage that looks present but sweeps nothing. */
+export interface StaleCoverage {
+  installSlug: string;
+  path: string;
+}
+
+export interface GitSyncCoverage {
+  /** Realpath-normalized checkout paths an active git-sync routine actually resolves to. */
+  coveredPaths: string[];
+  staleCoverage: StaleCoverage[];
+}
+
+/** Trailing-slash-insensitive comparison key. `git worktree list` and a readdir join
+ *  disagree about trailing slashes, and an unnormalized compare silently reports a
+ *  covered tree as uncovered. */
+export function normalizeCheckoutPath(p: string): string {
+  const trimmed = p.trim();
+  return trimmed.length > 1 ? trimmed.replace(/\/+$/, '') : trimmed;
+}
+
+/**
+ * Pure: resolve ACTIVE git-sync install slugs against registry entries, splitting into
+ * paths that ARE covered and coverage rows pointing at a path that no longer exists.
+ * `existingPaths` is the set of paths confirmed present on disk (injected, so this stays
+ * pure and unit-testable without a filesystem).
+ */
+export function resolveGitSyncCoverage(
+  activeGitSyncSlugs: readonly string[],
+  projects: readonly { slug: string; path: string }[],
+  existingPaths: ReadonlySet<string>,
+): GitSyncCoverage {
+  const bySlug = new Map(projects.map((p) => [p.slug, normalizeCheckoutPath(p.path)]));
+  const coveredPaths: string[] = [];
+  const staleCoverage: StaleCoverage[] = [];
+  for (const slug of activeGitSyncSlugs) {
+    const path = bySlug.get(slug);
+    // A routine whose slug has NO registry entry resolves to no path at all: it cannot
+    // make any checkout covered, and it is not "stale coverage of a path" either — there
+    // is no path to have gone missing. Silently contributing nothing is correct.
+    if (!path) continue;
+    if (existingPaths.has(path)) coveredPaths.push(path);
+    else staleCoverage.push({ installSlug: slug, path });
+  }
+  return { coveredPaths, staleCoverage };
+}
+
+/**
+ * Pure: classify which scanned checkouts are UNCOVERED — carrying uncommitted work with
+ * no active git-sync routine resolving to them.
+ *
+ * Deliberately NOT part of the verdict: staleness. A tree dirty for 70 days and a tree
+ * dirty for 70 seconds are the same defect (nothing will ever commit either); adding an
+ * age floor would only have hidden the ~70-day cases that motivated this.
+ */
+export function findUncoveredDirtyCheckouts(
+  checkouts: readonly CheckoutInfo[],
+  opts: {
+    canonicalPath: string;
+    coveredPaths: readonly string[];
+    /** Linked worktrees of the canonical repo — already judged by the pass above; excluded
+     *  here so one tree can never produce two findings. */
+    linkedWorktreePaths?: readonly string[];
+    patterns?: readonly RegExp[];
+  },
+): CheckoutInfo[] {
+  const patterns = opts.patterns ?? KNOWN_UNCOVERED_WORKTREE_PATTERNS;
+  const canonical = normalizeCheckoutPath(opts.canonicalPath);
+  const covered = new Set(opts.coveredPaths.map(normalizeCheckoutPath));
+  const linked = new Set((opts.linkedWorktreePaths ?? []).map(normalizeCheckoutPath));
+  return checkouts.filter((c) => {
+    const path = normalizeCheckoutPath(c.path);
+    if (!c.dirty) return false;
+    if (path === canonical) return false;
+    if (covered.has(path)) return false;
+    if (linked.has(path)) return false;
+    return !patterns.some((re) => re.test(path));
+  });
+}
+
+export interface GitSyncCoverageDeps extends WorktreeCoverageDeps {
+  /** Absolute paths of the immediate children of `root`. Injected for tests. */
+  listChildDirs?: (root: string) => Promise<string[]>;
+  /** Resolve symlinks; `~/papercupai-workspace/papercup` is a SYMLINK to the canonical
+   *  `papercusp` tree, so without this it is scanned twice under two names. */
+  realpath?: (p: string) => Promise<string>;
+  pathExists?: (p: string) => Promise<boolean>;
+  /** install_slugs of ACTIVE `target_role='system:git-sync'` routines. */
+  loadActiveGitSyncSlugs?: () => Promise<string[]>;
+  loadRegistryProjects?: () => Promise<{ slug: string; path: string }[]>;
+}
+
+async function defaultListChildDirs(root: string): Promise<string[]> {
+  const { readdir } = await import('node:fs/promises');
+  const { join } = await import('node:path');
+  const entries = await readdir(root, { withFileTypes: true });
+  return entries.filter((e) => e.isDirectory() || e.isSymbolicLink()).map((e) => join(root, e.name));
+}
+
+async function defaultPathExists(p: string): Promise<boolean> {
+  const { access } = await import('node:fs/promises');
+  try {
+    await access(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function defaultRealpath(p: string): Promise<string> {
+  const { realpath } = await import('node:fs/promises');
+  try {
+    return await realpath(p);
+  } catch {
+    return p;
+  }
+}
+
+async function defaultLoadActiveGitSyncSlugs(): Promise<string[]> {
+  const { getOrgPg } = await import('@papercusp/db-org');
+  const { sql } = getOrgPg();
+  const rows = await sql<Array<{ install_slug: string }>>`
+    SELECT DISTINCT install_slug
+      FROM harness_shared.routines
+     WHERE active = true AND target_role = 'system:git-sync'
+  `;
+  return rows.map((r) => r.install_slug);
+}
+
+async function defaultLoadRegistryProjects(): Promise<{ slug: string; path: string }[]> {
+  const { loadHarnessRegistry } = await import('../harness-registry');
+  const registry = await loadHarnessRegistry();
+  return (registry.projects ?? []).map((p) => ({ slug: p.slug, path: p.path }));
+}
+
+/**
+ * Enumerate the git CHECKOUTS directly under `root` (one level — these are sibling clones,
+ * not a recursive tree walk), each with its dirty-file count and HEAD commit time.
+ * Deduped by realpath. Best-effort per entry: a directory that is not a checkout, or whose
+ * git commands fail, is skipped rather than failing the sweep.
+ */
+export async function listSiblingCheckoutsWithDirtyState(
+  root: string,
+  deps: GitSyncCoverageDeps = {},
+): Promise<CheckoutInfo[]> {
+  const runGit = deps.runGit ?? defaultRunGit;
+  const listChildDirs = deps.listChildDirs ?? defaultListChildDirs;
+  const realpath = deps.realpath ?? defaultRealpath;
+
+  const children = await listChildDirs(root);
+  const seen = new Set<string>();
+  const results: CheckoutInfo[] = [];
+  for (const child of children) {
+    const path = normalizeCheckoutPath(await realpath(child));
+    if (seen.has(path)) continue; // the papercup -> papercusp symlink lands here
+    seen.add(path);
+    try {
+      // Only a checkout ROOT counts. A subdirectory of one would report its parent's
+      // dirty state and be reported under a path no routine is ever keyed to.
+      const top = normalizeCheckoutPath((await runGit(['rev-parse', '--show-toplevel'], path)).trim());
+      if (top !== path) continue;
+      const statusOut = await runGit(['status', '--porcelain'], path);
+      const lines = statusOut.split('\n').filter((l) => l.trim().length > 0);
+      let lastCommitEpochSec: number | null = null;
+      try {
+        const ts = (await runGit(['log', '-1', '--format=%ct'], path)).trim();
+        lastCommitEpochSec = ts ? Number.parseInt(ts, 10) : null;
+        if (Number.isNaN(lastCommitEpochSec)) lastCommitEpochSec = null;
+      } catch {
+        lastCommitEpochSec = null; // a checkout with no commits yet
+      }
+      results.push({ path, dirty: lines.length > 0, dirtyFileCount: lines.length, lastCommitEpochSec });
+    } catch {
+      // Not a git checkout, or git failed on it — nothing this detector can say.
+    }
+  }
+  return results;
+}
+
+export interface GitSyncCoverageCheckResult {
+  uncovered: CheckoutInfo[];
+  staleCoverage: StaleCoverage[];
+  /** False when the authoritative coverage set could not be loaded. `uncovered` is then
+   *  EMPTY BY CONSTRUCTION — read it as "not measured", never as "nothing is stranded". */
+  coverageResolved: boolean;
+}
+
+/**
+ * One sibling-clone coverage pass. Never throws (same contract as checkWorktreeCoverage).
+ *
+ * If the coverage set cannot be resolved, this reports NOTHING rather than guessing:
+ * without the registry+routines join every dirty sibling looks uncovered, and a detector
+ * that alarms without its authoritative input trains everyone to ignore it.
+ */
+export async function checkGitSyncCoverage(
+  canonicalPath: string,
+  deps: GitSyncCoverageDeps = {},
+): Promise<GitSyncCoverageCheckResult> {
+  const log = deps.log ?? ((m: string) => console.log(m));
+  const empty: GitSyncCoverageCheckResult = { uncovered: [], staleCoverage: [], coverageResolved: false };
+  try {
+    const { dirname } = await import('node:path');
+    const pathExists = deps.pathExists ?? defaultPathExists;
+    const loadSlugs = deps.loadActiveGitSyncSlugs ?? defaultLoadActiveGitSyncSlugs;
+    const loadProjects = deps.loadRegistryProjects ?? defaultLoadRegistryProjects;
+
+    let activeSlugs: string[];
+    let projects: { slug: string; path: string }[];
+    try {
+      [activeSlugs, projects] = await Promise.all([loadSlugs(), loadProjects()]);
+    } catch (e) {
+      log(
+        `[worktree-coverage-watchdog] git-sync coverage NOT MEASURED this pass ` +
+          `(registry/routines unavailable: ${e instanceof Error ? e.message : String(e)}) — ` +
+          `reporting nothing rather than guessing`,
+      );
+      return empty;
+    }
+
+    const existing = new Set<string>();
+    for (const p of projects) {
+      if (await pathExists(p.path)) existing.add(normalizeCheckoutPath(p.path));
+    }
+    const { coveredPaths, staleCoverage } = resolveGitSyncCoverage(activeSlugs, projects, existing);
+
+    const root = dirname(normalizeCheckoutPath(canonicalPath));
+    const checkouts = await listSiblingCheckoutsWithDirtyState(root, deps);
+
+    let linkedWorktreePaths: string[] = [];
+    try {
+      const runGit = deps.runGit ?? defaultRunGit;
+      linkedWorktreePaths = parseWorktreeListPorcelain(
+        await runGit(['worktree', 'list', '--porcelain'], canonicalPath),
+      );
+    } catch {
+      // Packaged install / not a repo — the linked set is simply empty.
+    }
+
+    const uncovered = findUncoveredDirtyCheckouts(checkouts, {
+      canonicalPath,
+      coveredPaths,
+      linkedWorktreePaths,
+    });
+
+    if (uncovered.length > 0) {
+      const detail = uncovered
+        .map((c) => {
+          const age =
+            c.lastCommitEpochSec === null
+              ? 'no commits'
+              : `last commit ${Math.floor((Date.now() / 1000 - c.lastCommitEpochSec) / 3600)}h ago`;
+          return `${c.path} (${c.dirtyFileCount} dirty, ${age})`;
+        })
+        .join('; ');
+      log(
+        `[worktree-coverage-watchdog] ${uncovered.length} sibling checkout(s) carry uncommitted ` +
+          `work with NO active git-sync routine covering them — work there is stranded ` +
+          `(WI-38857 / EI-20443492691207801 class): ${detail}`,
+      );
+    }
+    if (staleCoverage.length > 0) {
+      log(
+        `[worktree-coverage-watchdog] ${staleCoverage.length} active git-sync routine(s) resolve ` +
+          `to a path that no longer exists — coverage that sweeps nothing: ` +
+          staleCoverage.map((s) => `${s.installSlug} -> ${s.path}`).join('; '),
+      );
+    }
+    return { uncovered, staleCoverage, coverageResolved: true };
+  } catch (e) {
+    if (!isNotARepoError(e)) {
+      log(
+        `[worktree-coverage-watchdog] git-sync coverage pass failed (non-fatal): ` +
+          `${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+    return empty;
+  }
 }
