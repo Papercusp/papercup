@@ -653,7 +653,9 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
     expect(physicalProbe).toContain('"$TSX" "$PRODUCER" preflight');
     expect(physicalProbe).toContain('HIVE_GIT_PHYSICAL_EXECUTE="$HIVE_GIT_PHYSICAL_PLAN"');
     expect(physicalProbe).toContain('git -C "$REPO_ROOT" archive --format=tar HEAD');
-    expect(physicalProbe).toContain('packages libs/generic package.json tsconfig.base.json');
+    expect(physicalProbe).toContain(
+      'packages/operator-core libs/generic scripts package.json tsconfig.base.json',
+    );
     expect(physicalProbe).toContain('git -C "$REPO_ROOT/libs/papercusp" archive');
     expect(physicalProbe).toContain('--prefix=libs/papercusp/ HEAD');
     expect(physicalProbe).toContain("path.join(runRoot, 'libs', 'generic')");
