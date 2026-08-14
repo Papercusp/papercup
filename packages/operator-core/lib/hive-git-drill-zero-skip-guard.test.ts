@@ -652,6 +652,18 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
     expect(physicalProbe).toContain('canonical E/G scenario driver is not executable');
     expect(physicalProbe).toContain('"$TSX" "$PRODUCER" preflight');
     expect(physicalProbe).toContain('HIVE_GIT_PHYSICAL_EXECUTE="$HIVE_GIT_PHYSICAL_PLAN"');
+    expect(physicalProbe).toContain('git -C "$REPO_ROOT" archive --format=tar HEAD');
+    expect(physicalProbe).toContain('packages/operator-core package.json tsconfig.base.json');
+    expect(physicalProbe).toContain("VM='aviweiss@172.31.44.2'");
+    expect(physicalProbe).not.toContain('PCUSP_VM_SSH');
+    expect(physicalProbe).not.toContain('PCUSP_VM_PHYSICAL_PRODUCER');
+    expect(physicalProbe).toContain('staged VM physical-drill producer does not match the tower working tree');
+    expect(physicalProbe).toContain('HIVE_GIT_PHYSICAL_VM_SOURCE="$remote_source"');
+    expect(physicalProbe).toContain("if [ \"${1:-}\" = '--source-preflight' ]");
+    expect(physicalProbe).toContain('hive-git-physical-source-preflight/v1');
+    expect(physicalProbe.indexOf('hive-git-physical-source-preflight/v1')).toBeLessThan(
+      physicalProbe.indexOf('HIVE_GIT_PHYSICAL_EXECUTE="$HIVE_GIT_PHYSICAL_PLAN"'),
+    );
     expect(physicalProbe).toContain('"$TSX" "$PRODUCER" sign');
     expect(physicalProbe).toContain('"$TSX" "$PRODUCER" finalize');
     expect(physicalProbe).not.toContain('HIVE_GIT_PHYSICAL_SCENARIO_CMD');
@@ -711,6 +723,11 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
     expect(physicalScenario).toContain('phase-a-quarantine');
     expect(physicalScenario).toContain("'$VM_CALL' git-sync:run");
     expect(physicalScenario).toContain('phase-a-verify');
+    expect(physicalScenario).toContain('physical VM source must be the canonical probe staging directory');
+    expect(physicalScenario).toContain('physical VM producer digest does not match the tower');
+    expect(physicalScenario.indexOf('verify_physical_vm_source')).toBeLessThan(
+      physicalScenario.lastIndexOf('run_all_phases'),
+    );
     expect(physicalScenario).toContain('physical_run_id="p505-physical-');
     expect(physicalScenario.match(/local run_id="\$physical_run_id"/g)).toHaveLength(4);
     expect(physicalScenario.indexOf('[ "$IMPLEMENTATION_STATE" = \'ready-v1\' ]')).toBeLessThan(
