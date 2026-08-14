@@ -14,7 +14,12 @@ import { existsSync, statSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { deviceNamespaceKey } from './storage';
-import { PHASE_A_POT_HOME, PHASE_A_REPO_KEY } from './physical-drill-phase-a';
+import {
+  PHASE_A_POT_HOME,
+  PHASE_A_REPO_KEY,
+  physicalDrillGitSyncSlug,
+  type PhysicalDrillGitSyncSlug,
+} from './physical-drill-phase-a';
 import { SIGREFS_REF, verifySigrefs, type SignedSigrefs } from './sigrefs';
 
 export const PHASE_B_OBSERVATION_SCHEMA = 'hive-git-physical-phase-b-observation/v1' as const;
@@ -66,7 +71,7 @@ export type PhysicalPhaseBMutation = {
 
 export type PhysicalPhaseBTrigger = {
   tool: 'git-sync:run';
-  installSlug: typeof PHASE_A_POT_HOME;
+  installSlug: PhysicalDrillGitSyncSlug;
   host: PhysicalPhaseBHost;
   role: 'source-publish' | 'destination-receive';
   fired: true;
@@ -398,7 +403,7 @@ function validateTrigger(
 ): void {
   if (
     trigger.tool !== 'git-sync:run' ||
-    trigger.installSlug !== PHASE_A_POT_HOME ||
+    trigger.installSlug !== physicalDrillGitSyncSlug(expectedHost) ||
     trigger.host !== expectedHost ||
     trigger.role !== expectedRole ||
     trigger.fired !== true

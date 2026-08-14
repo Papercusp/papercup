@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { generateEd25519KeypairDer, signWithPrivateKeyDer } from '../../identity/ed25519';
 import { signStagingAdvance } from './staging-advance';
 import { defaultRunGit } from './storage';
+import { physicalDrillGitSyncSlug } from './physical-drill-phase-a';
 import {
   PHASE_D_EVENT_SCHEMA,
   PHASE_D_INPUT_SCHEMA,
@@ -38,7 +39,7 @@ function trigger(
 ): PhysicalPhaseDTrigger {
   return {
     tool: 'git-sync:run',
-    installSlug: 'hello-world-3-pot',
+    installSlug: physicalDrillGitSyncSlug(host),
     host,
     role,
     fired: true,

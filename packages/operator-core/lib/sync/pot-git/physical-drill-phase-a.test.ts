@@ -151,7 +151,7 @@ function fixture(): PhysicalPhaseAInput {
     quarantine,
     bootstrap: {
       tool: 'git-sync:run',
-      installSlug: PHASE_A_POT_HOME,
+      installSlug: 'hello-world',
       targetHost: 'vm',
       fired: true,
       startedAt: times[4],
@@ -237,7 +237,7 @@ describe('P-505 fixed physical Phase A cold-join executor core', () => {
   it('rejects a non-canonical bootstrap or a causal timestamp inversion', () => {
     const input = fixture();
     input.bootstrap.tool = 'git-sync:run';
-    input.bootstrap.installSlug = PHASE_A_POT_HOME;
+    input.bootstrap.installSlug = 'hello-world-3-pot' as never;
     input.bootstrap.targetHost = 'vm';
     input.bootstrap.startedAt = times[2];
     input.bootstrap.finishedAt = times[2];

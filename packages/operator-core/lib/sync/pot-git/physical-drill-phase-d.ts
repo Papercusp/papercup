@@ -29,7 +29,12 @@ import {
 } from './staging-advance';
 import { defaultRunGit, deviceNamespaceKey, hiveGitRepoPath } from './storage';
 import { WORKTREE_STAGING_REF } from './worktree-bridge';
-import { PHASE_A_POT_HOME, PHASE_A_REPO_KEY } from './physical-drill-phase-a';
+import {
+  PHASE_A_POT_HOME,
+  PHASE_A_REPO_KEY,
+  physicalDrillGitSyncSlug,
+  type PhysicalDrillGitSyncSlug,
+} from './physical-drill-phase-a';
 
 export const PHASE_D_INPUT_SCHEMA = 'hive-git-physical-phase-d-input/v1' as const;
 export const PHASE_D_RESULT_SCHEMA = 'hive-git-physical-phase-d-result/v1' as const;
@@ -66,7 +71,7 @@ export type PhysicalPhaseDMutation = {
 
 export type PhysicalPhaseDTrigger = {
   tool: 'git-sync:run';
-  installSlug: typeof PHASE_A_POT_HOME;
+  installSlug: PhysicalDrillGitSyncSlug;
   host: PhysicalPhaseDHost;
   role:
     | 'below-steer-publish'
@@ -509,7 +514,7 @@ function validateTrigger(
   const label = `Phase D ${expected.role}`;
   if (
     trigger.tool !== 'git-sync:run' ||
-    trigger.installSlug !== PHASE_A_POT_HOME ||
+    trigger.installSlug !== physicalDrillGitSyncSlug(expected.host) ||
     trigger.host !== expected.host ||
     trigger.role !== expected.role ||
     trigger.fired !== true

@@ -17,7 +17,23 @@ export const PHASE_A_INPUT_SCHEMA = 'hive-git-physical-phase-a-input/v1' as cons
 export const PHASE_A_RESULT_SCHEMA = 'hive-git-physical-phase-a-result/v1' as const;
 export const PHASE_A_PLAN_ITEM = 'P-302' as const;
 export const PHASE_A_POT_HOME = 'hello-world-3-pot' as const;
+export const PHASE_A_TOWER_GIT_SYNC_SLUG = PHASE_A_POT_HOME;
+export const PHASE_A_VM_GIT_SYNC_SLUG = 'hello-world' as const;
 export const PHASE_A_REPO_KEY = 'gh-1296269' as const;
+
+export type PhysicalDrillHost = 'tower' | 'vm';
+export type PhysicalDrillGitSyncSlug =
+  | typeof PHASE_A_TOWER_GIT_SYNC_SLUG
+  | typeof PHASE_A_VM_GIT_SYNC_SLUG;
+
+/**
+ * The fixed rig's pot-home slug is not the joiner's runnable member slug.
+ * On the VM, hello-world-3-pot is an intentionally ineligible remote-hive
+ * view; hello-world is its self_repo member and owns system:git-sync.
+ */
+export function physicalDrillGitSyncSlug(host: PhysicalDrillHost): PhysicalDrillGitSyncSlug {
+  return host === 'tower' ? PHASE_A_TOWER_GIT_SYNC_SLUG : PHASE_A_VM_GIT_SYNC_SLUG;
+}
 
 const OID = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
 const RUN_ID = /^[A-Za-z0-9._-]{8,120}$/;
@@ -64,7 +80,7 @@ export type PhysicalPhaseAInput = {
   };
   bootstrap: {
     tool: 'git-sync:run';
-    installSlug: typeof PHASE_A_POT_HOME;
+    installSlug: typeof PHASE_A_VM_GIT_SYNC_SLUG;
     targetHost: 'vm';
     fired: true;
     startedAt: string;
@@ -387,7 +403,7 @@ export function validatePhysicalPhaseA(input: PhysicalPhaseAInput): PhysicalPhas
   }
   if (
     input.bootstrap.tool !== 'git-sync:run' ||
-    input.bootstrap.installSlug !== PHASE_A_POT_HOME ||
+    input.bootstrap.installSlug !== PHASE_A_VM_GIT_SYNC_SLUG ||
     input.bootstrap.targetHost !== 'vm' ||
     input.bootstrap.fired !== true
   ) {

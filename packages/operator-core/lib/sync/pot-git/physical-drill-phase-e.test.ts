@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { physicalDrillGitSyncSlug } from './physical-drill-phase-a';
 import {
   PHASE_E_INPUT_SCHEMA,
   PHASE_E_MODE_CHANGE_SCHEMA,
@@ -31,7 +32,7 @@ function trigger(
 ): PhysicalPhaseETrigger {
   return {
     tool: 'git-sync:run',
-    installSlug: 'hello-world-3-pot',
+    installSlug: physicalDrillGitSyncSlug(host),
     host,
     role,
     fired: true,

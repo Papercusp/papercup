@@ -7,7 +7,7 @@ import { generateEd25519KeypairDer, signWithPrivateKeyDer } from '../../identity
 import { buildSigrefs } from './sigrefs';
 import { deviceNamespaceKey } from './storage';
 import { peerNamespaceRefspec } from './fetch-transport';
-import { PHASE_A_POT_HOME, PHASE_A_REPO_KEY } from './physical-drill-phase-a';
+import { PHASE_A_POT_HOME, PHASE_A_REPO_KEY, physicalDrillGitSyncSlug } from './physical-drill-phase-a';
 import {
   PHASE_B_INPUT_SCHEMA,
   capturePhysicalPhaseBRepo,
@@ -75,7 +75,7 @@ function trigger(
 ) {
   return {
     tool: 'git-sync:run' as const,
-    installSlug: PHASE_A_POT_HOME,
+    installSlug: physicalDrillGitSyncSlug(host),
     host,
     role,
     fired: true as const,

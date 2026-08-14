@@ -15,7 +15,12 @@ import { getPotGitMode, readPotGitMode, setPotGitMode, type PotGitMode } from '.
 import { BRIDGE_CANONICAL_REF, BRIDGE_REMOTE_STAGING_REF } from './github-bridge-tick';
 import { GITHUB_BRIDGE_ESCALATION_PHASE } from './github-divergence';
 import { defaultRunGit, hiveGitRepoPath, type RunGit } from './storage';
-import { PHASE_A_POT_HOME, PHASE_A_REPO_KEY } from './physical-drill-phase-a';
+import {
+  PHASE_A_POT_HOME,
+  PHASE_A_REPO_KEY,
+  physicalDrillGitSyncSlug,
+  type PhysicalDrillGitSyncSlug,
+} from './physical-drill-phase-a';
 import { PHASE_D_WORKSPACE, type PhysicalPhaseDHost } from './physical-drill-phase-d';
 
 export const PHASE_E_INPUT_SCHEMA = 'hive-git-physical-phase-e-input/v1' as const;
@@ -43,7 +48,7 @@ export type PhysicalPhaseEObservationStage =
 
 export type PhysicalPhaseETrigger = {
   tool: 'git-sync:run';
-  installSlug: typeof PHASE_A_POT_HOME;
+  installSlug: PhysicalDrillGitSyncSlug;
   host: PhysicalPhaseEHost;
   role: 'tower-member' | 'vm-member' | 'healthy-ingress' | 'healthy-integrate' | 'healthy-egress' | 'divergence-egress' | 'rollback-observe';
   fired: true;
@@ -495,7 +500,7 @@ function ms(value: string, label: string, errors: string[]): number {
 }
 
 function validateTrigger(trigger: PhysicalPhaseETrigger, role: PhysicalPhaseETrigger['role'], host: PhysicalPhaseEHost, window: { start: number; finish: number }, errors: string[]): void {
-  if (trigger.tool !== 'git-sync:run' || trigger.installSlug !== PHASE_A_POT_HOME || trigger.fired !== true || trigger.role !== role || trigger.host !== host) {
+  if (trigger.tool !== 'git-sync:run' || trigger.installSlug !== physicalDrillGitSyncSlug(host) || trigger.fired !== true || trigger.role !== role || trigger.host !== host) {
     errors.push(`Phase E ${role} must be the fixed ${host} git-sync:run trigger`);
   }
   const start = ms(trigger.startedAt, `Phase E ${role}.startedAt`, errors);
