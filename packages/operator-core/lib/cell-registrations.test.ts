@@ -13,6 +13,7 @@ import {
   DEPLOYED_SHA_CELL,
   MAIN_BEHIND_STAGING_CELL,
   AGENT_GOAL_CELL,
+  HOST_MEMORY_PRESSURE_CELL,
   BUILTIN_CELLS,
   registerBuiltinCells,
 } from './cell-registrations';
@@ -113,6 +114,7 @@ describe('P-007: the four verdict cells', () => {
       'gate.greenCheckpoint.verdict',
       'git.mainBehindStaging',
       'git.pipelinePosition',
+      'host.memoryPressure',
     ]);
   });
 
@@ -341,6 +343,39 @@ describe('P-007: the four verdict cells', () => {
     expect(spec.provenance.liveExercised).toBe(true);
     expect(spec.provenance.evidence).toContain('dev:pipeline_position');
     expect(spec.provenance.evidence).toMatch(/2026-07-27/);
+  });
+});
+
+describe('EI-20449419111876508: host.memoryPressure is a readable shared-writer cell', () => {
+  beforeEach(() => __resetCellRegistryForTests());
+
+  it('validates and registers under the workspace-visible global contract', () => {
+    expect(validateCellSpec(HOST_MEMORY_PRESSURE_CELL)).toEqual([]);
+    registerBuiltinCells();
+    expect(getCell('host.memoryPressure', { ownerId: 'su-anyone' })).toEqual(
+      HOST_MEMORY_PRESSURE_CELL,
+    );
+    expect(HOST_MEMORY_PRESSURE_CELL.callerRelativity).toEqual({ kind: 'global' });
+    expect(HOST_MEMORY_PRESSURE_CELL.visibility).toEqual({ kind: 'workspace' });
+  });
+
+  it('routes through the canonical memory writer and hoists incomplete inputs', () => {
+    expect(HOST_MEMORY_PRESSURE_CELL.changeSignal).toEqual({
+      kind: 'poll',
+      tool: 'host:memory_pressure',
+      path: 'memory.pressure',
+    });
+    expect(HOST_MEMORY_PRESSURE_CELL.resolver).toContain('evaluateMemoryPressure');
+    expect(HOST_MEMORY_PRESSURE_CELL.nullable).toBe(true);
+    expect(HOST_MEMORY_PRESSURE_CELL.unknownHoist).toBe('memory.unknown');
+  });
+
+  it('declares the in-process free-memory measurement as an independent falsifier', () => {
+    expect(HOST_MEMORY_PRESSURE_CELL.falsifier.field).toBe('host.memFreePct');
+    expect(HOST_MEMORY_PRESSURE_CELL.falsifier.field).not.toBe(
+      HOST_MEMORY_PRESSURE_CELL.headline,
+    );
+    expect(HOST_MEMORY_PRESSURE_CELL.falsifier.measurement).toMatch(/freemem\(\)\/totalmem\(\)/);
   });
 });
 

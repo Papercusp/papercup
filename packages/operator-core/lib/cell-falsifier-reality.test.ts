@@ -44,6 +44,7 @@ import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
 import type { CellSpec } from './cell-registry';
 import { BUILTIN_CELLS } from './cell-registrations';
 import { gitPipelinePosition } from './git-pipeline-position';
+import hostMemoryPressureTool from './agent-tools/state/host-memory';
 
 /**
  * EI-19316737896654304 — this file takes the no-real-PG rail's DOCUMENTED opt-out
@@ -132,6 +133,9 @@ function declaredPaths(spec: CellSpec): Array<{ label: string; path: string; opt
 
 const PIPELINE_CELLS = BUILTIN_CELLS.filter((c) => c.changeSignal.kind === 'poll' && c.changeSignal.tool === 'dev:pipeline_position');
 const GOAL_CELLS = BUILTIN_CELLS.filter((c) => c.changeSignal.kind === 'poll' && c.changeSignal.tool === 'coord:goal');
+const HOST_MEMORY_CELLS = BUILTIN_CELLS.filter(
+  (c) => c.changeSignal.kind === 'poll' && c.changeSignal.tool === 'host:memory_pressure',
+);
 
 /**
  * The `dev:pipeline_position` handler spreads the resolver result unmodified
@@ -145,6 +149,19 @@ async function livePipelinePayload(path?: string) {
   return gitPipelinePosition(path === undefined ? {} : { path });
 }
 
+/** Drive the actual poll-tool handler because that serialized payload is what readCell walks. */
+async function liveHostMemoryPayload(): Promise<unknown> {
+  const result = await (
+    hostMemoryPressureTool as unknown as {
+      handler: (
+        args: unknown,
+        context: unknown,
+      ) => Promise<{ content: Array<{ type: string; text: string }> }>;
+    }
+  ).handler({}, {});
+  return JSON.parse(result.content[0].text);
+}
+
 describe('P-011: every registered cell declares paths its resolver ACTUALLY produces', () => {
   /**
    * NON-VACUITY, and it is not ceremony here. P-009 found that every scanning guard
@@ -155,9 +172,12 @@ describe('P-011: every registered cell declares paths its resolver ACTUALLY prod
    */
   it('examines the WHOLE registry — no cell is silently unrouted', () => {
     expect(BUILTIN_CELLS.length).toBeGreaterThanOrEqual(6);
-    expect(PIPELINE_CELLS.length + GOAL_CELLS.length).toBe(BUILTIN_CELLS.length);
+    expect(PIPELINE_CELLS.length + GOAL_CELLS.length + HOST_MEMORY_CELLS.length).toBe(
+      BUILTIN_CELLS.length,
+    );
     expect(PIPELINE_CELLS.length).toBeGreaterThanOrEqual(5);
     expect(GOAL_CELLS.length).toBeGreaterThanOrEqual(1);
+    expect(HOST_MEMORY_CELLS).toHaveLength(1);
   });
 
   /**
@@ -189,6 +209,22 @@ describe('P-011: every registered cell declares paths its resolver ACTUALLY prod
             `(missing at "${r.missingAt}"${optional ? `; checked its container "${target}" because this path is optional-by-design` : ''}). ` +
             `The cell is unreadable: readCell would report insufficient-data. ` +
             `Either the resolver's shape changed or the declaration has a typo — a declaration test cannot tell you.`,
+        ).toBe(true);
+      }
+    },
+    20_000,
+  );
+
+  it.each(HOST_MEMORY_CELLS.map((c) => [c.cell, c] as const))(
+    '%s — every declared path exists in the real host:memory_pressure handler payload',
+    async (_id, spec) => {
+      const payload = await liveHostMemoryPayload();
+      for (const { label, path } of declaredPaths(spec)) {
+        const r = pathExists(payload, path);
+        expect(
+          r.exists,
+          `${spec.cell}: declared ${label} "${path}" is ABSENT from the live resolver payload ` +
+            `(missing at "${r.missingAt}").`,
         ).toBe(true);
       }
     },

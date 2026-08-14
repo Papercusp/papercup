@@ -5,7 +5,12 @@
  * (stale never reds; null/wrong-schema → unknown).
  */
 import { describe, it, expect } from 'vitest';
-import { evaluatePerfSignals, worstOwnedInotifyHolder, type PerfSignalsV1 } from './perf-budgets';
+import {
+  evaluateMemoryPressure,
+  evaluatePerfSignals,
+  worstOwnedInotifyHolder,
+  type PerfSignalsV1,
+} from './perf-budgets';
 
 const NOW = Date.parse('2026-06-19T16:35:00Z');
 const sig = (
@@ -280,6 +285,74 @@ describe('evaluatePerfSignals (per-thread SLO budgets)', () => {
     expect(ok.status).toBe('ok');
     const absent = evaluatePerfSignals(sig(), NOW);
     expect(absent.sessionDirs).toBeNull();
+  });
+});
+
+describe('evaluateMemoryPressure (host.memoryPressure shared writer)', () => {
+  it('is the exact child verdict consumed by the full infra-liveness evaluator', () => {
+    const capture = sig({ psi: { memory: { some: { avg60: 11.15 }, full: { avg60: 8.17 } } } });
+    const memory = evaluateMemoryPressure(capture, NOW);
+
+    expect(evaluatePerfSignals(capture, NOW).memoryPressure).toEqual(memory);
+    expect(memory).toMatchObject({
+      pressure: 'crit',
+      measuredAt: '2026-06-19T16:34:50Z',
+      ageMs: 10_000,
+      stale: false,
+      psiMemorySome60: 11.15,
+      psiMemoryFull60: 8.17,
+      thresholds: {
+        source: 'PERF_BUDGETS',
+        psiMemorySomeWarn: 10,
+        psiMemoryFullCrit: 5,
+        staleMs: 600_000,
+        blindMs: 1_800_000,
+      },
+      unknown: [],
+    });
+  });
+
+  it('refuses a non-critical band when either PSI leg is missing', () => {
+    const missingFull = evaluateMemoryPressure(
+      sig({ psi: { memory: { some: { avg60: 15 } } } }),
+      NOW,
+    );
+    expect(missingFull.pressure).toBeNull();
+    expect(missingFull.unknown.map((u) => u.code)).toContain('psi-memory-full-unmeasured');
+
+    const missingSome = evaluateMemoryPressure(
+      sig({ psi: { memory: { full: { avg60: 1 } } } }),
+      NOW,
+    );
+    expect(missingSome.pressure).toBeNull();
+    expect(missingSome.unknown.map((u) => u.code)).toContain('psi-memory-some-unmeasured');
+  });
+
+  it('keeps stale critical-looking data unknown, with capture age and cause in-band', () => {
+    const memory = evaluateMemoryPressure(
+      sig(
+        { psi: { memory: { some: { avg60: 50 }, full: { avg60: 25 } } } },
+        { capturedAt: '2026-06-19T16:20:00Z' },
+      ),
+      NOW,
+    );
+
+    expect(memory.pressure).toBeNull();
+    expect(memory.stale).toBe(true);
+    expect(memory.ageMs).toBe(15 * 60_000);
+    expect(memory.unknown.map((u) => u.code)).toContain('capture-stale');
+    expect(memory.reasons).toEqual([]);
+  });
+
+  it('distinguishes an absent capture from a healthy zero', () => {
+    const memory = evaluateMemoryPressure(null, NOW);
+    expect(memory.pressure).toBeNull();
+    expect(memory.measuredAt).toBeNull();
+    expect(memory.psiMemorySome60).toBeNull();
+    expect(memory.psiMemoryFull60).toBeNull();
+    expect(memory.unknown).toEqual([
+      { code: 'capture-absent', detail: 'no perf-signals-v1 capture was available' },
+    ]);
   });
 });
 
