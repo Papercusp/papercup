@@ -25,6 +25,8 @@ import {
   findFactKeyMatches,
   findFactKeyElsewhere,
   foldFacts,
+  countLiveFacts,
+  listFacts,
   foldDeadEndFacts,
   foldNeverDropFacts,
   NEVER_DROP_KEY_PREFIXES,
@@ -1692,5 +1694,85 @@ describe('P-006 / D-001 — the version-chain producer the dispute detector cons
     const chain = await factVersions({ scope: 'owner', scopeRef: 'su-me', key: 'buried', workspaceId: WS }, db.sql);
     expect(chain[0]!.kind).not.toBe('undecidable');
     expect(chain[1]).toMatchObject({ kind: 'undecidable', settledBy: 'a primary read' });
+  });
+});
+
+// WI-38910 — `facts:list` returned `count: <page size>` and nothing else, so a
+// scope holding hundreds of live facts read as "4 facts stand". That is not a
+// cosmetic label: agents are instructed to read standing facts BEFORE asserting,
+// and a dedup check that sees 4 of N cannot find the key it is looking for. The
+// duplicate assert that follows then EVICTS a peer's still-valid fact, because
+// the busy scopes sit permanently at FACTS_PER_SCOPE_CAP.
+//
+// These pin the property that makes a reported `total` worth trusting: it counts
+// EXACTLY the rows the page draws from, and the page limit does not bound it.
+describe('countLiveFacts is the census behind a listFacts page (WI-38910)', () => {
+  const base = {
+    workspaceId: WS,
+    scope: 'workspace' as const,
+    scopeRef: null,
+    createdBy: 'su-me',
+  };
+  const sel = { scope: 'workspace' as const, scopeRef: null };
+
+  async function seat(n: number, prefix = 'census') {
+    for (let i = 0; i < n; i += 1) {
+      await assertFact({ ...base, key: `${prefix}-${i}`, body: `fact ${i}` }, db.sql);
+    }
+  }
+
+  it('counts every live fact while the page stays capped — the page size must NOT bound the census', async () => {
+    await seat(7);
+
+    const page = await listFacts(sel, { workspaceId: WS, limit: 3 }, db.sql);
+    const total = await countLiveFacts(sel, { workspaceId: WS, audiences: 'all' }, db.sql);
+
+    expect(page).toHaveLength(3);
+    expect(total).toBe(7);
+    // The defect in one line: reading the page length as the population. If a
+    // future change ever caps the census at the page limit, this is what fails.
+    expect(total).toBeGreaterThan(page.length);
+  });
+
+  it('agrees exactly with the unbounded fold — a census over a DIFFERENT population is a new lie, not a fix', async () => {
+    await seat(5);
+    // Excluded rows are the whole point: same table is not the same population.
+    // A retracted fact must be invisible to BOTH, or `total` overstates what the
+    // reader could actually page to — untrustworthy in the other direction.
+    await assertFact({ ...base, key: 'retracted-one', body: 'retract me' }, db.sql);
+    await retractFact({ scope: 'workspace', scopeRef: null, key: 'retracted-one', workspaceId: WS }, db.sql);
+
+    const all = await foldFacts([sel], { workspaceId: WS, limitPerSelector: 1000, audiences: 'all' }, db.sql);
+    const total = await countLiveFacts(sel, { workspaceId: WS, audiences: 'all' }, db.sql);
+
+    expect(total).toBe(all.length);
+    expect(total).toBe(5);
+    expect(all.map((f) => f.key)).not.toContain('retracted-one');
+  });
+
+  it('an EXPIRED fact is excluded by both, so the census cannot drift from the fold as TTLs lapse', async () => {
+    await seat(2);
+    await assertFact({ ...base, key: 'already-lapsed', body: 'short ttl' }, db.sql);
+    await db.sql.unsafe(
+      `UPDATE harness_shared.agent_facts SET expires_at = now() - interval '1 hour' WHERE key = 'already-lapsed'`,
+    );
+
+    const all = await foldFacts([sel], { workspaceId: WS, limitPerSelector: 1000, audiences: 'all' }, db.sql);
+    const total = await countLiveFacts(sel, { workspaceId: WS, audiences: 'all' }, db.sql);
+
+    expect(total).toBe(all.length);
+    expect(total).toBe(2);
+  });
+
+  it('an unset optional scope dimension censuses 0 — matching the fold, which folds nothing', async () => {
+    await seat(3);
+    // foldFacts skips a non-workspace selector with a blank ref rather than
+    // returning every ref in the scope; the census must make the same choice or
+    // it reports a population the caller can never page to.
+    const folded = await foldFacts([{ scope: 'harness', scopeRef: '' }], { workspaceId: WS, audiences: 'all' }, db.sql);
+    const total = await countLiveFacts({ scope: 'harness', scopeRef: '' }, { workspaceId: WS, audiences: 'all' }, db.sql);
+
+    expect(folded).toHaveLength(0);
+    expect(total).toBe(0);
   });
 });

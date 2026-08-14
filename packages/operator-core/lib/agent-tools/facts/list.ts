@@ -7,6 +7,7 @@ import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import {
   listFacts,
+  countLiveFacts,
   factVersions,
   FACT_SCOPES,
   isPermanentFactExpiry,
@@ -326,10 +327,48 @@ export default defineTool({
     // the one that blew up. Excerpt by default, exactly as work_items:list already does.
     const rows = annotated.map((f) => projectFact(f, args.full === true));
     const limitDisclosure = factsListLimitDisclosure(args.limit);
+    // WI-38910: `count` is the PAGE SIZE, and the page is 4 rows by default. Read
+    // alone it is indistinguishable from a census — on this box `count: 4` came
+    // back for a workspace scope holding hundreds of live facts. That matters
+    // because agents are instructed to read standing facts BEFORE asserting: a
+    // dedup check against 4 of N cannot see the key it is looking for, and the
+    // duplicate assert that follows EVICTS a peer's still-valid fact (the busy
+    // scopes sit permanently at FACTS_PER_SCOPE_CAP).
+    //
+    // So the census is reported unconditionally, NOT only when the caller passed
+    // an explicit `limit` — the default no-arg call is both the most common one
+    // and the one with no disclosure at all today. Fail-soft: a census that
+    // errors must not break the read it annotates, but it must also never
+    // silently degrade into a confident-looking number, so on failure `total` is
+    // omitted and `totalUnknown` says why.
+    let census: { total?: number; totalUnknown?: string } = {};
+    try {
+      const total = await countLiveFacts(
+        { scope: args.scope, scopeRef: scopeRef ?? null },
+        { audiences: 'all' },
+      );
+      census = { total };
+    } catch {
+      census = { totalUnknown: 'census_query_failed' };
+    }
+    const truncatedByLimit = census.total !== undefined && census.total > rows.length;
     return {
       data: {
         ok: true,
         count: rows.length,
+        ...census,
+        ...(truncatedByLimit
+          ? {
+              truncatedByLimit: true,
+              note_truncated:
+                `Showing ${rows.length} of ${census.total} live facts in this scope — ` +
+                `\`count\` is the PAGE SIZE, not the census. The page is the ${rows.length} most ` +
+                `recently updated. Pass \`key\` to check one specific fact (the read to make ` +
+                `before asserting, since a duplicate assert evicts a peer's fact), or narrow ` +
+                `the scope; the page size itself is capped at ${FACTS_LIST_MAX_LIMIT} to stay ` +
+                `inside the result door.`,
+            }
+          : {}),
         ...(limitDisclosure ?? {}),
         ...(args.full !== true ? { excerpted: true, note: FACTS_LIST_EXCERPT_NOTE } : {}),
         facts: rows,
