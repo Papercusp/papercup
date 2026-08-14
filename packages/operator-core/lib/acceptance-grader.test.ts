@@ -55,7 +55,7 @@ function deps(launch: ReturnType<typeof vi.fn>) {
 
 describe('launchAcceptanceGrader', () => {
   it('launches exactly one fresh headless judge with stable identity and a parseable frozen snapshot', async () => {
-    const launch = vi.fn(async () => ({
+    const launch = vi.fn(async (_args: Record<string, unknown>) => ({
       content: [{ type: 'text', text: 'launched' }],
       data: { deduped: false, launch: { tasks: [{ taskId: 'task-1', logPath: '/tmp/judge.log' }] } },
     }));
@@ -69,7 +69,7 @@ describe('launchAcceptanceGrader', () => {
     expect(first.label).toBe(second.label);
     expect(first.label).toMatch(/^acceptance-grader:acceptance-ship-the-thing:/);
 
-    const args = launch.mock.calls[0][0] as Record<string, unknown>;
+    const args = launch.mock.calls[0][0];
     expect(args).toMatchObject({
       harness: 'papercusp',
       headless: true,

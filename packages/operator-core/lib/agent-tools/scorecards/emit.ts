@@ -203,7 +203,7 @@ export default defineTool({
         createdBy: identity.ownerId,
         ctxHarness,
         role: ctx.role,
-        workspaceId: identity.workspaceId,
+        workspaceId: identity.workspaceId ?? undefined,
       }),
     };
   },
