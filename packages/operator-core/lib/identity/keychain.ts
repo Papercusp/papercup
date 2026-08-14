@@ -4,12 +4,18 @@
  * P-011); now also the per-HIVE identity key (shared-hive-federation P-002),
  * which passes a distinct `serviceName`.
  *
- * Tiers, tried in order:
+ * Load tiers, tried in order:
  *   1. `secret-tool` (Linux, libsecret / GNOME Keyring)
  *   2. `security` CLI (macOS Keychain)
  *   3. Encrypted-file fallback in PAPERCUSP_IDENTITY_DIR or
  *      ~/.papercusp/identity/ (AES-256-GCM, machine-derived PBKDF2 key from
  *      hostname + username)
+ *
+ * Stores deliberately converge an available OS backend AND tier 3. macOS can
+ * boot headlessly with the login Keychain locked (`security` exits 36), so an
+ * OS-only device key would disappear precisely when the sidecar must restart
+ * without an Aqua login. The encrypted mirror must contain the SAME DER: using
+ * an older readable fallback would fork the announced device identity.
  *
  * Tier 3 is not as strong as an OS keychain but avoids storing the
  * private key in plain text. Acceptable for Phase 1b; a full Tauri
@@ -103,8 +109,10 @@ function invalidateLoadCache(serviceName: string, keychainId: string): void {
 // ─── public API ──────────────────────────────────────────────────────────────
 
 /**
- * Store a private key DER buffer under keychainId. Overwrites any
- * existing entry. Uses the first available backend.
+ * Store a private key DER buffer under keychainId. Overwrites any existing
+ * entry. An available OS backend receives the key first, then the encrypted
+ * file mirror is written unconditionally so a later locked/headless session
+ * resolves the exact same device identity.
  */
 export async function keychainStore(
   keychainId: string,
@@ -114,8 +122,15 @@ export async function keychainStore(
   const b64 = privateKeyDer.toString('base64');
 
   invalidateLoadCache(serviceName, keychainId);
-  if (await trySecretTool('store', keychainId, b64, serviceName)) return;
-  if (await trySecurityCli('store', keychainId, b64, serviceName)) return;
+  const secretToolResult = await trySecretTool('store', keychainId, b64, serviceName);
+  if (secretToolResult === null) {
+    await trySecurityCli('store', keychainId, b64, serviceName);
+  }
+  // Do not turn this into a first-success return. Both OS store helpers return
+  // the empty string on success, and the historical truthiness checks happened
+  // to fall through here. That accidental behavior kept most keys converged but
+  // had no recurrence guard; a future "cleanup" could strand the OS-only key in
+  // a locked login Keychain and split the device identity again (D-005).
   await fileStore(keychainId, privateKeyDer);
 }
 

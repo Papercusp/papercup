@@ -20,6 +20,9 @@ let origHome: string | undefined;
 let origIdentityDir: string | undefined;
 let origSeedRealHostname: string | undefined;
 let execFileCalls = 0;
+let securityStoreSucceeds = false;
+let securityLoadSecret: string | null = null;
+const execFileArgv: Array<{ command: string; args: string[] }> = [];
 
 beforeEach(() => {
   vi.resetModules();
@@ -32,9 +35,30 @@ beforeEach(() => {
   delete process.env.PAPERCUSP_SEED_REAL_HOSTNAME;
   // Make the OS keychain CLIs look uninstalled so both tiers fall through to the file backend.
   execFileCalls = 0;
+  securityStoreSucceeds = false;
+  securityLoadSecret = null;
+  execFileArgv.length = 0;
   vi.doMock('node:child_process', () => ({
-    execFile: (_cmd: string, _args: string[], _opts: unknown, cb: (e: Error) => void) => {
+    execFile: (
+      command: string,
+      args: string[],
+      _opts: unknown,
+      cb: (error: Error | null, stdout?: string, stderr?: string) => void,
+    ) => {
       execFileCalls += 1;
+      execFileArgv.push({ command, args });
+      if (command === 'security') {
+        if (args[0] === 'add-generic-password' && securityStoreSucceeds) {
+          cb(null, '', '');
+          return;
+        }
+        if (args[0] === 'find-generic-password' && securityLoadSecret !== null) {
+          cb(null, `${securityLoadSecret}\n`, '');
+          return;
+        }
+        cb(Object.assign(new Error('security: User interaction is not allowed (exit code 36)'), { code: 36 }));
+        return;
+      }
       cb(Object.assign(new Error('spawn ENOENT'), { code: 'ENOENT' }));
     },
   }));
@@ -70,6 +94,42 @@ describe('keychain (encrypted-file fallback)', () => {
     const res = await keychainLoad('gh123:fp');
     expect(res.kind).toBe('ok');
     if (res.kind === 'ok') expect(res.value.equals(der)).toBe(true);
+  });
+
+  it('mirrors a successful macOS Keychain store for a later locked headless load (D-005)', async () => {
+    const platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform');
+    Object.defineProperty(process, 'platform', { configurable: true, value: 'darwin' });
+    securityStoreSucceeds = true;
+    try {
+      const { keychainStore, keychainLoad } = await loadKeychain();
+      const id = '1567022:headless-mirror';
+      const der = Buffer.from('same-device-private-key-der');
+
+      await keychainStore(id, der);
+
+      expect(execFileArgv).toContainEqual({
+        command: 'security',
+        args: [
+          'add-generic-password',
+          '-s',
+          'papercusp-device-keypair',
+          '-a',
+          id,
+          '-w',
+          der.toString('base64'),
+          '-U',
+        ],
+      });
+      expect(existsSync(encPath(id))).toBe(true);
+
+      // The login Keychain is now ACL/lock-blocked (the VM's SSH/loginwindow
+      // state). Loading must still recover the exact DER written above, never a
+      // stale fallback key and never a newly minted identity.
+      securityLoadSecret = null;
+      expect(await keychainLoad(id)).toEqual({ kind: 'ok', value: der });
+    } finally {
+      if (platformDescriptor) Object.defineProperty(process, 'platform', platformDescriptor);
+    }
   });
 
   it('load returns not_found when nothing was stored', async () => {
