@@ -14,6 +14,7 @@ import {
 import {
   finalizePhysicalDrillArtifacts,
   preflightPhysicalDrillHosts,
+  samePhysicalDrillPath,
 } from './physical-drill-producer';
 
 function evidence(deviceKey: string): Record<string, unknown> {
@@ -36,6 +37,16 @@ function evidence(deviceKey: string): Record<string, unknown> {
 }
 
 describe('physical drill keychain-bound host receipt', () => {
+  it('recognizes the macOS /tmp alias as the same direct CLI module path', () => {
+    const macRealpath = (path: string): string => path.replace(/^\/tmp\//, '/private/tmp/');
+    expect(samePhysicalDrillPath(
+      '/tmp/hive-git-physical-source.123/packages/operator-core/lib/sync/pot-git/physical-drill-producer.ts',
+      '/private/tmp/hive-git-physical-source.123/packages/operator-core/lib/sync/pot-git/physical-drill-producer.ts',
+      macRealpath,
+    )).toBe(true);
+    expect(samePhysicalDrillPath('/tmp/producer.ts', '/private/tmp/other.ts', macRealpath)).toBe(false);
+  });
+
   it('resolves only an existing cached announce identity and stable machine fingerprint', async () => {
     const device = generateEd25519KeypairDer();
     const loadIdentity = vi.fn(async () => ({

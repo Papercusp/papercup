@@ -670,6 +670,8 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
     expect(physicalProbe).not.toContain('PCUSP_VM_SSH');
     expect(physicalProbe).not.toContain('PCUSP_VM_PHYSICAL_PRODUCER');
     expect(physicalProbe).toContain('staged VM physical-drill producer does not match the tower working tree');
+    expect(physicalProbe).toContain('tower identity command produced no JSON');
+    expect(physicalProbe).toContain('VM identity command produced no JSON');
     expect(physicalProbe).toContain('HIVE_GIT_PHYSICAL_VM_SOURCE="$remote_source"');
     expect(physicalProbe).toContain("if [ \"${1:-}\" = '--source-preflight' ]");
     expect(physicalProbe).toContain('hive-git-physical-source-preflight/v1');

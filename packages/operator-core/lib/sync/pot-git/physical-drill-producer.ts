@@ -1,5 +1,5 @@
 /** Canonical assembly CLI for the two-machine hive-git physical probe. */
-import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -76,6 +76,23 @@ function record(value: unknown): JsonRecord | null {
 
 function readJson(path: string): unknown {
   return JSON.parse(readFileSync(path, 'utf8')) as unknown;
+}
+
+/**
+ * Match the CLI entrypoint by physical path, not merely its spelling. macOS
+ * exposes `/tmp` through `/private/tmp`; comparing `resolve(argv[1])` with the
+ * module URL therefore made a successfully loaded CLI exit 0 without running.
+ */
+export function samePhysicalDrillPath(
+  left: string,
+  right: string,
+  canonicalize: (path: string) => string = realpathSync,
+): boolean {
+  try {
+    return canonicalize(left) === canonicalize(right);
+  } catch {
+    return resolve(left) === resolve(right);
+  }
 }
 
 function assertDistinctHosts(identities: PhysicalDrillHostIdentity[]): void {
@@ -535,8 +552,8 @@ async function cli(argv: string[]): Promise<unknown> {
   );
 }
 
-const invokedPath = process.argv[1] ? resolve(process.argv[1]) : null;
-if (invokedPath === fileURLToPath(import.meta.url)) {
+const invokedPath = process.argv[1];
+if (invokedPath && samePhysicalDrillPath(invokedPath, fileURLToPath(import.meta.url))) {
   cli(process.argv.slice(2))
     .then((result) => process.stdout.write(`${JSON.stringify(result)}\n`))
     .catch((error) => {
