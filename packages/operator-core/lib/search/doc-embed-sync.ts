@@ -28,6 +28,19 @@
  * harness_docs:record / harness_docs:ingest — the documenter just wrote the
  * files), coalesced per harness so a 200-doc bulk record triggers one resync,
  * not 200.
+ *
+ * ⚠ That "frozen corpus" invariant holds only while NOTHING writes the
+ * engineering surface mid-process — and docs:author does exactly that: it
+ * projects the .mdx AND calls invalidateEngineeringAdapter(), which unfreezes
+ * the LEXICAL leg while leaving doc_sections on the pre-write corpus. So the
+ * two legs diverge for that page, and the once-per-process latch means they
+ * stay diverged until the operator restarts (measured: 77+ min and still open,
+ * EI-20459861068197195 — docs:search served a doc's OLD title and description
+ * after a successful authored correction, with the new content absent from the
+ * index entirely). docs:author therefore repairs its own page inline via
+ * refreshDocPageSections below. The latch is deliberately left alone: a full
+ * engineering sync renders 600+ pages, so per-page repair is the affordable
+ * unit, not a general un-latching.
  */
 
 import { createHash } from 'node:crypto';
@@ -206,6 +219,86 @@ export function splitDocSections(pageTitle: string, body: string): DocSection[] 
  * to never run off an empty listing (an adapter that failed to list must not
  * wipe its surface).
  */
+/**
+ * Replace ONE page's section rows. The single write path shared by the
+ * whole-source sweep and the single-page refresh below, so the two can never
+ * disagree about section splitting, sha stamping, or row shape.
+ *
+ * Returns the number of section rows written, or `null` when `knownSha` already
+ * matches (unchanged page ⇒ no PG writes at all, the sweep's short-circuit).
+ */
+async function upsertPageSections(
+  sql: Sql,
+  sourceKey: string,
+  page: { slug: string; title: string; url: string },
+  body: string,
+  knownSha?: string,
+): Promise<number | null> {
+  const sha = pageSha(page.title, body);
+  if (knownSha === sha) return null;
+  const sections = splitDocSections(page.title, body);
+  await sql.unsafe(`DELETE FROM harness_shared.doc_sections WHERE source_key = $1 AND slug = $2`, [
+    sourceKey,
+    page.slug,
+  ]);
+  if (sections.length === 0) return 0;
+  const params: unknown[] = [];
+  const values = sections
+    .map((s, i) => {
+      params.push(sourceKey, page.slug, s.anchor, s.title, page.url, s.content, sha);
+      const b = i * 7;
+      return `($${b + 1},$${b + 2},$${b + 3},$${b + 4},$${b + 5},$${b + 6},$${b + 7})`;
+    })
+    .join(', ');
+  await sql.unsafe(
+    `INSERT INTO harness_shared.doc_sections (source_key, slug, anchor, title, url, content, page_sha)
+     VALUES ${values}
+     ON CONFLICT (source_key, slug, anchor) DO NOTHING`,
+    params,
+  );
+  return sections.length;
+}
+
+/**
+ * Refresh ONE page's sections, for a writer that just changed that page.
+ *
+ * Why this exists (EI-20459861068197195): `runDocSectionsSyncOnce` is
+ * once-per-process BY DESIGN — it matches the starlight adapter's own
+ * process-lifetime memoization, and a full engineering sync renders 600+ MDX
+ * pages, which is not something a single `docs:author` call can pay. But that
+ * left the engineering surface with NO write-time path at all: a doc authored
+ * after the first sync stayed stale in `docs:search` until the operator
+ * restarted, unbounded and unsignalled, while the every-5-min tick kept
+ * returning `{ skipped: 'already_synced' }` so the surface LOOKED scheduled.
+ *
+ * `getPage(slug)` makes the targeted repair one render instead of six hundred,
+ * so the writer can pay it inline. Deliberately does NOT touch the
+ * once-per-process latch — this refreshes the page and nothing else.
+ *
+ * Strictly fail-open: the doc is already canonical in PG before this runs, so a
+ * search-index refresh must never fail the write that triggered it. The caller
+ * gets a reason back and can surface it as a warning.
+ *
+ * NOTE the caller must invalidate any adapter page/body cache FIRST, or this
+ * re-indexes the pre-write bytes it still has memoized.
+ */
+export async function refreshDocPageSections(
+  source: DocSource,
+  slug: string,
+): Promise<{ ok: true; sections: number; unchanged: boolean } | { ok: false; reason: string }> {
+  try {
+    const { sql } = getOrgPg();
+    if (!(await docSectionsTableExists(sql))) return { ok: false, reason: 'migration_552_absent' };
+    const page = await source.getPage(slug);
+    if (!page) return { ok: false, reason: `page_not_found:${slug}` };
+    const body = await source.getContent(page);
+    const written = await upsertPageSections(sql, source.name, page, body);
+    return { ok: true, sections: written ?? 0, unchanged: written === null };
+  } catch (e) {
+    return { ok: false, reason: (e as Error).message };
+  }
+}
+
 export async function syncDocSourceSections(
   sql: Sql,
   source: DocSource,
@@ -224,30 +317,9 @@ export async function syncDocSourceSections(
   for (const page of pages) {
     try {
       const body = await source.getContent(page);
-      const sha = pageSha(page.title, body);
-      if (existing.get(page.slug) === sha) continue;
-      const sections = splitDocSections(page.title, body);
-      await sql.unsafe(`DELETE FROM harness_shared.doc_sections WHERE source_key = $1 AND slug = $2`, [
-        source.name,
-        page.slug,
-      ]);
-      if (sections.length > 0) {
-        const params: unknown[] = [];
-        const values = sections
-          .map((s, i) => {
-            params.push(source.name, page.slug, s.anchor, s.title, page.url, s.content, sha);
-            const b = i * 7;
-            return `($${b + 1},$${b + 2},$${b + 3},$${b + 4},$${b + 5},$${b + 6},$${b + 7})`;
-          })
-          .join(', ');
-        await sql.unsafe(
-          `INSERT INTO harness_shared.doc_sections (source_key, slug, anchor, title, url, content, page_sha)
-           VALUES ${values}
-           ON CONFLICT (source_key, slug, anchor) DO NOTHING`,
-          params,
-        );
-        stats.sections += sections.length;
-      }
+      const written = await upsertPageSections(sql, source.name, page, body, existing.get(page.slug));
+      if (written === null) continue;
+      stats.sections += written;
       stats.changed += 1;
     } catch {
       stats.errors += 1;
