@@ -22518,7 +22518,8 @@
         "papercup",
         "papercup-deep",
         "kettle",
-        "doc-steward"
+        "doc-steward",
+        "judge"
       ],
       "profile": "engineer",
       "guidance": {
