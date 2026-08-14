@@ -1047,6 +1047,12 @@ describe('dependency-install deny boundaries (P-028)', () => {
     expect(claims('npm install --legacy-peer-deps > /tmp/install.log 2>&1 &')).toBe(true);
   });
 
+  it('claims named-package installs in the current shared tree (EI-20412068513394843)', () => {
+    expect(claims('npm install --no-save --package-lock=false verdict-cli')).toBe(true);
+    expect(claims('npm install apache-arrow@21 --silent 2>&1')).toBe(true);
+    expect(claims('npm install @apache-arrow/adbc-driver-manager apache-arrow postgres')).toBe(true);
+  });
+
   it('never claims the SAFE form it is telling agents to use', () => {
     // The one false positive that would make the rule unsatisfiable.
     expect(claims('npm run install:safe')).toBe(false);
@@ -1075,16 +1081,9 @@ describe('dependency-install deny boundaries (P-028)', () => {
     expect(claims("npm install' 2>&1")).toBe(false);
   });
 
-  /**
-   * `install:safe` always runs npm with `cwd: REPO_ROOT`, so it is not a
-   * substitute for an install into a scratch tree — one corpus session created
-   * `/tmp/adbc-test` and installed into it. A named package operand is the only
-   * signal available on a single atom, so it is the exclusion.
-   */
-  it('never claims an install that names a package, which may target another tree', () => {
-    expect(claims('npm install apache-arrow@21 --silent 2>&1')).toBe(false);
-    expect(claims('npm install @apache-arrow/adbc-driver-manager apache-arrow postgres')).toBe(false);
+  it('never claims an explicit --prefix scratch-tree install', () => {
     expect(claims('npm install --prefix /tmp/other-tree')).toBe(false);
+    expect(claims('npm install --prefix /tmp/other-tree verdict-cli')).toBe(false);
   });
 
   it('never claims a command that changes nothing', () => {
@@ -1099,7 +1098,10 @@ describe('dependency-install deny boundaries (P-028)', () => {
 
   it('renders a pass-through invocation, flags intact and redirects dropped', () => {
     expect(unsafeDependencyInstall.cover('npm install --legacy-peer-deps 2>&1').expression).toBe(
-      'npm run install:safe -- --legacy-peer-deps',
+      'npm run install:safe -- install --legacy-peer-deps',
+    );
+    expect(unsafeDependencyInstall.cover('npm install --no-save verdict-cli').expression).toBe(
+      'npm run install:safe -- install --no-save verdict-cli',
     );
     expect(unsafeDependencyInstall.cover('npm ci').expression).toBe('npm run install:safe -- ci');
     expect(unsafeDependencyInstall.cover('npm install').expression).toBe('npm run install:safe');

@@ -28,7 +28,7 @@
  *      failing npm run with a dep verdict.
  */
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
@@ -36,7 +36,7 @@ import { join } from 'node:path';
 import { findUnextractedDeps, findUnextractedDepsWithRetry, resolveWorkspaceDirs, resolvesOnDisk } from '../../../../scripts/check-declared-deps-extracted.mjs';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — same, for the post-install verification wired into install:safe.
-import { verifyDepsExtracted } from '../../../../scripts/npm-install-safe.mjs';
+import { normalizeNpmArgs, parseCliArgs, repoLockName, verifyDepsExtracted } from '../../../../scripts/npm-install-safe.mjs';
 
 const made: string[] = [];
 afterEach(() => {
@@ -235,5 +235,39 @@ describe('install:safe post-install verification (the half the mutex cannot cove
     });
     expect(status).toBe(1);
     expect(calls).toHaveLength(1); // ONE bounded repair, not a loop
+  });
+});
+
+describe('install:safe managed-repo targeting (EI-20412068513394843)', () => {
+  it('targets an explicit managed hive root without consuming npm arguments', () => {
+    expect(
+      parseCliArgs(
+        ['--repo-root', '../sidestage', '--', 'install', '--no-save', 'verdict-cli'],
+        { cwd: '/managed/papercusp' },
+      ),
+    ).toEqual({
+      repoRoot: '/managed/sidestage',
+      npmArgs: ['install', '--no-save', 'verdict-cli'],
+    });
+  });
+
+  it('keeps the documented flags-only form faithful by inserting install', () => {
+    expect(normalizeNpmArgs([])).toEqual(['install']);
+    expect(normalizeNpmArgs(['--legacy-peer-deps'])).toEqual(['install', '--legacy-peer-deps']);
+    expect(normalizeNpmArgs(['ci', '--ignore-scripts'])).toEqual(['ci', '--ignore-scripts']);
+  });
+
+  it('keys the mutex by the selected root realpath, including symlink aliases', () => {
+    const parent = mkdtempSync(join(tmpdir(), 'install-safe-root-'));
+    made.push(parent);
+    const target = join(parent, 'target');
+    const alias = join(parent, 'alias');
+    const other = join(parent, 'other');
+    mkdirSync(target);
+    mkdirSync(other);
+    symlinkSync(target, alias);
+
+    expect(repoLockName(alias)).toBe(repoLockName(target));
+    expect(repoLockName(other)).not.toBe(repoLockName(target));
   });
 });

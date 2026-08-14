@@ -30,9 +30,15 @@
  * during the incident) before failing loudly. Set PAPERCUSP_SKIP_DEP_VERIFY=1 to
  * skip the verification.
  *
+ * Managed hives reuse this same implementation with `--repo-root`; the lock
+ * and npm cwd both follow that explicit target instead of this script's repo.
+ * A `--prefix` install remains outside this wrapper because npm owns the target
+ * selection in that shape and the global guard deliberately leaves it alone.
+ *
  * Usage: npm run install:safe [-- <npm args>]   (defaults to plain `npm install`)
  *        node scripts/npm-install-safe.mjs ci
  *        node scripts/npm-install-safe.mjs install --legacy-peer-deps
+ *        node scripts/npm-install-safe.mjs --repo-root /path/to/hive -- install --no-save pkg
  */
 import { spawnSync } from 'node:child_process';
 import { realpathSync } from 'node:fs';
@@ -42,7 +48,7 @@ import { fileURLToPath } from 'node:url';
 import { withFsMutex } from './lib/fs-mutex.mjs';
 import { findUnextractedDepsWithRetry, formatMissing } from './check-declared-deps-extracted.mjs';
 
-const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const DEFAULT_REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 const REPAIR_ARGS = ['install', '--legacy-peer-deps'];
 
@@ -52,7 +58,7 @@ const REPAIR_ARGS = ['install', '--legacy-peer-deps'];
  *
  * @returns {Promise<0|1>} 0 = healthy (possibly after repair), 1 = still broken.
  */
-export async function verifyDepsExtracted({ repoRoot = REPO_ROOT, runNpm, deps = {} } = {}) {
+export async function verifyDepsExtracted({ repoRoot = DEFAULT_REPO_ROOT, runNpm, deps = {} } = {}) {
   const spawn = runNpm ?? ((args) => spawnSync('npm', args, { cwd: repoRoot, stdio: 'inherit' }).status ?? 1);
 
   const first = await findUnextractedDepsWithRetry({ repoRoot, deps });
@@ -72,29 +78,60 @@ export async function verifyDepsExtracted({ repoRoot = REPO_ROOT, runNpm, deps =
   return 1;
 }
 
-export function repoLockName() {
+export function repoLockName(repoRoot = DEFAULT_REPO_ROOT) {
   // realpath so the `papercup` -> `papercusp` symlink and the canonical path
   // both resolve to the identical lock; a genuinely different checkout
   // (different real path) gets its own lock instead of blocking on this one.
-  const real = realpathSync(REPO_ROOT);
+  const real = realpathSync(resolve(repoRoot));
   const digest = createHash('sha1').update(real).digest('hex').slice(0, 12);
   return `npm-install-${digest}`;
 }
 
+/**
+ * npm treats config flags before a command as global flags. Preserve the
+ * long-documented `npm run install:safe -- --legacy-peer-deps` form by making
+ * the implicit install explicit before spawning npm.
+ */
+export function normalizeNpmArgs(argv) {
+  if (argv.length === 0) return ['install'];
+  return argv[0].startsWith('-') ? ['install', ...argv] : argv;
+}
+
+/**
+ * Parse the wrapper-only target selector without stealing npm's own flags.
+ * `--repo-root` is recognized only as the first wrapper argument and an
+ * optional `--` cleanly separates it from the npm argv.
+ */
+export function parseCliArgs(argv = process.argv.slice(2), { cwd = process.cwd() } = {}) {
+  let repoRoot = DEFAULT_REPO_ROOT;
+  let npmArgv = [...argv];
+
+  if (npmArgv[0] === '--repo-root' || npmArgv[0]?.startsWith('--repo-root=')) {
+    const inline = npmArgv[0].startsWith('--repo-root=') ? npmArgv[0].slice('--repo-root='.length) : null;
+    const rawRoot = inline ?? npmArgv[1];
+    if (!rawRoot) throw new Error('--repo-root requires a path');
+    repoRoot = resolve(cwd, rawRoot);
+    npmArgv = npmArgv.slice(inline === null ? 2 : 1);
+  }
+  if (npmArgv[0] === '--') npmArgv = npmArgv.slice(1);
+
+  return { repoRoot, npmArgs: normalizeNpmArgs(npmArgv) };
+}
+
 export function main(argv = process.argv.slice(2)) {
-  const npmArgs = argv.length > 0 ? argv : ['install'];
-  const lockName = repoLockName();
+  const { repoRoot, npmArgs } = parseCliArgs(argv);
+  const lockName = repoLockName(repoRoot);
 
   return withFsMutex(
     lockName,
     async () => {
-      console.log(`NPM_INSTALL_SAFE running: npm ${npmArgs.join(' ')} (lock=${lockName})`);
-      const result = spawnSync('npm', npmArgs, { cwd: REPO_ROOT, stdio: 'inherit' });
+      console.log(`NPM_INSTALL_SAFE running: npm ${npmArgs.join(' ')} (root=${repoRoot}, lock=${lockName})`);
+      const result = spawnSync('npm', npmArgs, { cwd: repoRoot, stdio: 'inherit' });
       if (result.error) throw result.error;
       const status = result.status ?? 1;
       // A FAILED npm run reports its own error — never mask it with a dep verdict.
       if (status !== 0 || process.env.PAPERCUSP_SKIP_DEP_VERIFY === '1') return status;
-      return verifyDepsExtracted({ repoRoot: REPO_ROOT });
+      return verifyDepsExtracted({ repoRoot });
     },
     {
       onWaiting: ({ owner, elapsedMs }) => {
