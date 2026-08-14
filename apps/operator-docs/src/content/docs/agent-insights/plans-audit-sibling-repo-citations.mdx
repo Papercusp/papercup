@@ -4,11 +4,11 @@
 # Edit the doc with docs:author { overwrite: true } — a hand-edit here is REFUSED by
 # the next projection (it cannot tell your edit from corruption), so it blocks the
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
-title: "Auditing a plan whose code lives in a sibling repo: cite workspace-relative"
-description: "plans:audit resolves citations from the papercusp tree, so a sidestage/greenfield plan must cite 'sidestage/apps/web/...' — not the path relative to its own repo. How multi-root resolution admits siblings, why git worktrees are excluded, and the force escape hatch."
+title: "Auditing a plan whose code lives in a sibling repo: which root citations resolve against"
+description: "plans:audit resolves citations against a root chosen by the plan's harness — TWO branches with OPPOSITE fixes. A papercusp-harness plan citing sibling code must write 'sidestage/apps/web/...'; a plan whose OWN harness is sidestage must write the bare 'apps/web/...' and the 'sidestage/' prefix MISSES. How multi-root resolution admits siblings, why git worktrees are excluded, how to read the refusal's root, and the force escape hatch."
 type: Insight
 discovered: 2026-08-14
-tags: ["plans", "acceptance-gate", "citations", "sibling-repos"]
+tags: ["plans", "acceptance-gate", "citations", "sibling-repos", "harness-scoped"]
 status: active
 documents:
   - "packages/operator-core/lib/plan-audits.ts"
@@ -31,9 +31,35 @@ Cite **workspace-relative** — the first segment is the sibling repo's director
 ❌ ../sidestage/apps/web/src/…     → path_escapes_repo
 ```
 
+⚠ **That rule holds only while the plan's harness is `papercusp`.** The opposite case exists and inverts the fix — read the next section before applying it, because the two branches disagree about the same file.
+
+## The other branch: when the plan's OWN harness is the sibling
+
+A plan whose `harness` IS the sibling (`harness: 'sidestage'`) resolves against a different root, so the prefix above becomes wrong.
+
+`repoCitationContextForHarness(harnessSlug)` (`plan-audits.ts:365`) resolves an explicit harness through `resolveHarnessContentPath()` and hands THAT root to `repoCitationDeps()`. Citations are therefore resolved against the harness's own tree (here `~/.papercusp/hives/sidestage`), and the correct shape is **bare, harness-tree-relative**:
+
+```
+harness: 'sidestage'
+✅ apps/web/src/SellerDock.tsx
+❌ sidestage/apps/web/src/SellerDock.tsx   → citation_file_not_found
+```
+
+The `sidestage/` prefix does not merely become redundant — it **misses**. `independentSiblingRepos()` realpath-dedupes the repo root out of its own sibling set, so from root `~/.papercusp/hives/sidestage` the segment `sidestage` names no admitted sibling; resolution falls through to the in-repo branch and looks for `<hive>/sidestage/apps/...`, which does not exist. (That scan also walks `~/.papercusp/hives`, not the workspace root — the admitted siblings of a hive are the OTHER hives.)
+
+Measured 2026-08-14 against the live resolver, root `/home/marsh-office/.papercusp/hives/sidestage`:
+
+```
+db/schema.sql            → ok
+sidestage/db/schema.sql  → citation_file_not_found
+                           "sidestage/db/schema.sql (searched /home/marsh-office/.papercusp/hives/sidestage)"
+```
+
+**Read the refusal's root, not this doc's rule.** Since 2026-08-14 a `citation_file_not_found` detail names the roots the path was actually tried under (`describeRoots`), and that string tells you which branch you are in without guessing: **one root** ⇒ the first segment is not an admitted sibling, so drop the prefix and cite bare; **two roots** ⇒ workspace-relative resolution was attempted and the file is genuinely absent under the sibling.
+
 ## How resolution works
 
-`repoCitationDeps()` in `packages/operator-core/lib/plan-audits.ts`:
+`repoCitationDeps()` in `packages/operator-core/lib/plan-audits.ts`, against whichever `repoRoot` the citation context resolved (see the branch above):
 
 1. **In-repo first — and it wins only if the file EXISTS.** A sibling can never shadow a real monorepo file.
 2. Otherwise take the first path segment; if it names an admitted sibling, resolve against the **workspace root**.
@@ -47,7 +73,7 @@ A direct child of the workspace root whose `.git` is a **directory**.
 
 - ✅ **Independent clones** — `sidestage`, `sidestage-mobile`, `papercusp-desktop`, `papercup-native`, the `greenfield-*` repos.
 - ❌ **git worktrees** — their `.git` is a *file* (a gitdir pointer). This is what keeps `papercup-release`, `papercusp-checkpoint`, `papercusp-staging` and the relcut worktrees out, and that exclusion matters: auditing against the release checkout would validate your plan's citations against **deployed** code instead of the tree you are shipping.
-- ❌ **The monorepo re-entering under a second name** — `papercup` is a symlink to `papercusp`; it is realpath-deduped.
+- ❌ **The monorepo re-entering under a second name** — `papercup` is a symlink to `papercusp`; it is realpath-deduped. The same dedupe is what makes a hive's own slug unusable as a prefix in the branch above.
 
 Two behaviours worth recognizing before you file a bug about them:
 
@@ -65,3 +91,5 @@ Prefer fixing the citation shape — since multi-root resolution landed, a sibli
 ## Provenance
 
 Landed 2026-08-14 (`EI-20430092702151575`) while shipping `sidestage-seller-dockview-2026-08-14`, whose 20 citations all pointed into the `sidestage` repo. Guards: `plan-audits.test.ts` (9 tests) and `forced-past-stamp.test.ts` (8 tests).
+
+The harness-scoped branch was added 2026-08-14 (`WI-38960`) after this doc's workspace-relative rule was applied to a `harness:'sidestage'` plan and produced the opposite of the fix. Three agents hit that class the same day; the `describeRoots` refusal detail shipped alongside (`EI-20449557927956357`) so the refusal itself now discriminates the two branches.
