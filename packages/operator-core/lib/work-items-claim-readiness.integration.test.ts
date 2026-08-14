@@ -263,6 +263,7 @@ describe('claimNextWorkItem readiness — unblocked work is unaffected', () => {
 describe('readHeldDependencyEscapeContext — fleet critical-path escape (P-006)', () => {
   it('identifies an excluded issue dependency as blocking active work held by that member', async () => {
     await seedIssue('WI-blocker', 'open', { assignee: null });
+    await db.sql`UPDATE harness_shared.work_items SET harness_slug = ${H} WHERE feature_id = 'WI-blocker'`;
     await seedFeature('F-held', { status: 'wip', takenBy: 'member-1' });
     await seedFeature('F-other', { status: 'wip', takenBy: 'member-2' });
     await seedFeature('F-done', { status: 'done', takenBy: 'member-1' });
@@ -284,6 +285,10 @@ describe('readHeldDependencyEscapeContext — fleet critical-path escape (P-006)
   it('honors the qualified feature ref when the member-held item is issue-family', async () => {
     await seedFeature('F-blocker', { status: 'wip' });
     await seedIssue('WI-held', 'open', { assignee: 'member-1' });
+    await db.sql`
+      UPDATE harness_shared.work_items
+         SET harness_slug = ${H}, item_kind = 'change'
+       WHERE feature_id = 'WI-held'`;
     await blockIssueByFeature('WI-held', 'F-blocker');
 
     await expect(wi.readHeldDependencyEscapeContext({
