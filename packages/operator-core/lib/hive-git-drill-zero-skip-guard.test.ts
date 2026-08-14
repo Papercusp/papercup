@@ -667,8 +667,8 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
       "ln -s '$VM_DEP_SOURCE/node_modules' '$remote_source/node_modules'",
     );
     expect(physicalProbe).toContain("VM='aviweiss@172.31.44.2'");
-    expect(physicalProbe).toContain(
-      "VM_IDENTITY_DIR=\"${PCUSP_VM_IDENTITY_DIR:-/Users/aviweiss/.papercusp-workspaces/.shared/.papercusp/identity}\"",
+    expect(physicalProbe).toMatch(
+      /VM_IDENTITY_DIR="\$\{PCUSP_VM_IDENTITY_DIR:-\/Users\/[^/]+\/\.papercusp-workspaces\/\.shared\/\.papercusp\/identity\}"/,
     );
     expect(physicalProbe).toContain(
       "PAPERCUSP_IDENTITY_DIR='$VM_IDENTITY_DIR' '$VM_NODE' '$VM_TSX' '$VM_PRODUCER' identity vm '$VM_CACHE'",
