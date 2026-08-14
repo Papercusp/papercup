@@ -10,6 +10,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { OrgTestDb } from '../test/_org-test-db';
 import { createOrgTestDb } from '../test/_org-test-db';
 import {
+  readIssueAdmissionPressure,
   readIssueOccurrenceCounts,
   recordIssueOccurrence,
   type IssueOccurrenceKind,
@@ -116,6 +117,41 @@ describe('issue occurrence ledger (real PG, migration 831)', () => {
         duplicateOccurrences: 'report rows not creating a canonical item',
       },
       writer: 'harness_shared.work_item_occurrences',
+    });
+  });
+
+  it('reads exact rolling pressure from the occurrence writer and canonical stock writer', async () => {
+    for (let sequence = 0; sequence < 12; sequence += 1) {
+      await recordIssueOccurrence(
+        {
+          canonicalId: CANONICAL_ID,
+          canonicalHarness: HARNESS,
+          reporter: 'su-concentrated',
+          sourceTool: 'work_items:create',
+          reportKind: 'coalesced',
+          reportedTitle: `concentrated report ${sequence}`,
+        },
+        db.adminSql,
+      );
+    }
+
+    const pressure = await readIssueAdmissionPressure(
+      { canonicalId: CANONICAL_ID, canonicalHarness: HARNESS },
+      db.adminSql,
+    );
+    expect(pressure).toMatchObject({
+      active: true,
+      mode: 'coalesce',
+      rawOccurrences: 12,
+      duplicateOccurrences: 12,
+      canonicalClusters: 1,
+      canonicalStock: 1,
+      emitters: 1,
+      writers: {
+        flow: 'harness_shared.work_item_occurrences',
+        stock: 'harness_shared.work_items',
+      },
+      cap: 'none — exact SQL aggregates',
     });
   });
 });

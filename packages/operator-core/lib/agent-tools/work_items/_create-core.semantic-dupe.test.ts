@@ -13,6 +13,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const occurrenceMocks = vi.hoisted(() => ({
   record: vi.fn(async () => null),
+  readPressure: vi.fn(async () => null),
 }));
 
 vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn(async () => false) }));
@@ -45,13 +46,18 @@ vi.mock('../../issue-occurrence-ledger', async () => {
   const actual = await vi.importActual<typeof import('../../issue-occurrence-ledger')>(
     '../../issue-occurrence-ledger',
   );
-  return { ...actual, recordIssueOccurrence: occurrenceMocks.record };
+  return {
+    ...actual,
+    recordIssueOccurrence: occurrenceMocks.record,
+    readIssueAdmissionPressure: occurrenceMocks.readPressure,
+  };
 });
 
 import { createOneWorkItem } from './_create-core';
 import { findSemanticDupes, type SemanticDupeResult } from './semantic-dupe-guard';
 import { findFulltextLexicalDupes } from './fulltext-lexical-dupe-guard';
 import { createWorkItem } from '../../work-items';
+import { assessIssueAdmissionPressure } from '../../issue-occurrence-ledger';
 
 const guardM = vi.mocked(findSemanticDupes);
 const fulltextM = vi.mocked(findFulltextLexicalDupes);
@@ -71,6 +77,8 @@ beforeEach(() => {
   fulltextM.mockResolvedValue([]);
   createM.mockClear();
   occurrenceMocks.record.mockClear();
+  occurrenceMocks.readPressure.mockReset();
+  occurrenceMocks.readPressure.mockResolvedValue(null);
 });
 
 describe('createOneWorkItem × semantic dupe prescreen (P-008)', () => {
@@ -113,6 +121,43 @@ describe('createOneWorkItem × semantic dupe prescreen (P-008)', () => {
     expect(r.similarOpen?.map((c) => c.id)).toEqual(['WI-10', 'WI-11']);
     // The guard saw the item's own harness fallback (args.harness ?? ctx.harnessSlug).
     expect(guardM).toHaveBeenCalledWith({ title: 't', summary: 's', harness: 'papercusp' });
+  });
+
+  it('P-005 coalesces a soft candidate under concentrated pressure without creating a row', async () => {
+    guardM.mockResolvedValue(verdict([], [0.91]));
+    occurrenceMocks.readPressure.mockResolvedValue(assessIssueAdmissionPressure({
+      rawOccurrences: 455,
+      duplicateOccurrences: 455,
+      canonicalStock: 2_494,
+      canonicalClusterCounts: [430, 5, 5, 5, 5, 5],
+      emitterCounts: [430, 5, 5, 5, 5, 5],
+    }));
+
+    const r = await createOneWorkItem({ kind: 'bug', title: 't', summary: 'burst report' }, ctx);
+    expect(r).toMatchObject({
+      ok: false,
+      error: 'coalesced',
+      existing: { id: 'WI-10' },
+      queueAdmission: { active: true, rawOccurrences: 455, canonicalStock: 2_494 },
+    });
+    expect(createM).not.toHaveBeenCalled();
+    expect(occurrenceMocks.record).toHaveBeenCalledWith(
+      expect.objectContaining({
+        canonicalId: 'WI-10',
+        reportKind: 'coalesced',
+        evidence: expect.objectContaining({
+          queueAdmission: expect.objectContaining({ active: true, rawOccurrences: 455 }),
+        }),
+      }),
+    );
+  });
+
+  it('P-005 always passes a critical finding without reading burst pressure', async () => {
+    guardM.mockResolvedValue(verdict([], [0.91]));
+    const r = await createOneWorkItem({ kind: 'bug', title: 'critical novelty', severity: 'critical' }, ctx);
+    expect(r.ok).toBe(true);
+    expect(occurrenceMocks.readPressure).not.toHaveBeenCalled();
+    expect(createM).toHaveBeenCalledOnce();
   });
 
   it('null verdict (guard fail-open) creates cleanly with no advisory key', async () => {

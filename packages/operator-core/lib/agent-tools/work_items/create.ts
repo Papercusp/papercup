@@ -440,6 +440,9 @@ export default defineTool({
             ...(res.existing !== undefined ? { existing: res.existing } : {}),
             // P-008: duplicate_semantic carries the cosine-matched OPEN items.
             ...(res.similarOpen !== undefined ? { similarOpen: res.similarOpen } : {}),
+            ...(res.admissionIdentity !== undefined ? { admissionIdentity: res.admissionIdentity } : {}),
+            ...(res.dedupCoverage !== undefined ? { dedupCoverage: res.dedupCoverage } : {}),
+            ...(res.queueAdmission !== undefined ? { queueAdmission: res.queueAdmission } : {}),
           };
         }
         // WI-2874 non-blocking nudge: `task` is NON-CODE only. If a fresh task smells
@@ -495,6 +498,7 @@ export default defineTool({
             : {}),
           ...(res.admissionIdentity !== undefined ? { admissionIdentity: res.admissionIdentity } : {}),
           ...(res.dedupCoverage !== undefined ? { dedupCoverage: res.dedupCoverage } : {}),
+          ...(res.queueAdmission !== undefined ? { queueAdmission: res.queueAdmission } : {}),
         };
       },
       { keyOf: (spec) => ({ title: spec.title }) },

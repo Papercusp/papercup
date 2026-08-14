@@ -10,7 +10,10 @@ import {
 import { titleSimilarity, titleContainment } from './digest';
 import { IMPROVEMENT_TOPIC, OBSERVATION_TOPIC } from './read-items';
 import type { CreateIssueInput, EngineerIssue } from '../../issues-engineer';
-import type { RecordIssueOccurrenceInput } from '../../issue-occurrence-ledger';
+import {
+  assessIssueAdmissionPressure,
+  type RecordIssueOccurrenceInput,
+} from '../../issue-occurrence-ledger';
 
 function existing(p: Partial<EngineerIssue> & { id: string; title: string }): EngineerIssue {
   return {
@@ -860,6 +863,62 @@ describe('captureImprovement — P-011 semantic candidate widening (shared-embed
     expect(res.possibleDuplicates).toEqual([
       expect.objectContaining({ id: 'EI-51', semantic: 'soft', similarity: 0.87 }),
     ]);
+  });
+
+  it('P-005 coalesces a SOFT semantic sibling during a concentrated low-diversity burst', async () => {
+    const worded = existing({ id: 'EI-57', title: 'similar queue admission failure' });
+    const base = deps({ found: [] });
+    const d = semDeps(base, { hard: [], soft: [{ id: 'EI-57', similarity: 0.91 }] }, [worded]);
+    d.readIssueAdmissionPressure = async () => assessIssueAdmissionPressure({
+      rawOccurrences: 455,
+      duplicateOccurrences: 455,
+      canonicalStock: 2_494,
+      canonicalClusterCounts: [430, 5, 5, 5, 5, 5],
+      emitterCounts: [430, 5, 5, 5, 5, 5],
+    });
+
+    const res = await captureImprovement({ title: 'differently worded queue admission failure', kind: 'bug' }, d);
+    expect(res).toMatchObject({
+      created: false,
+      reason: 'coalesced',
+      issue: { id: 'EI-57' },
+      queueAdmission: { active: true, rawOccurrences: 455, canonicalStock: 2_494 },
+    });
+    expect(base.created).toHaveLength(0);
+    expect(base.occurrences).toEqual([
+      expect.objectContaining({
+        canonicalId: 'EI-57',
+        reportKind: 'coalesced',
+        evidence: expect.objectContaining({
+          queueAdmission: expect.objectContaining({ active: true, rawOccurrences: 455 }),
+        }),
+      }),
+    ]);
+  });
+
+  it('P-005 never consults the burst circuit for a critical finding', async () => {
+    const worded = existing({ id: 'EI-58', title: 'near critical finding' });
+    const base = deps({ found: [] });
+    const d = semDeps(base, { hard: [], soft: [{ id: 'EI-58', similarity: 0.91 }] }, [worded]);
+    let pressureReads = 0;
+    d.readIssueAdmissionPressure = async () => {
+      pressureReads += 1;
+      return assessIssueAdmissionPressure({
+        rawOccurrences: 455,
+        duplicateOccurrences: 455,
+        canonicalStock: 2_494,
+        canonicalClusterCounts: [455],
+        emitterCounts: [455],
+      });
+    };
+
+    const res = await captureImprovement(
+      { title: 'novel critical queue failure', kind: 'bug', severity: 'critical' },
+      d,
+    );
+    expect(res.created).toBe(true);
+    expect(pressureReads).toBe(0);
+    expect(base.created).toHaveLength(1);
   });
 
   // ── D-033 (learning-loop-identity-and-consumption-2026-08-08 P-008):

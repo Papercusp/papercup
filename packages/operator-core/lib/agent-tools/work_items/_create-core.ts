@@ -35,8 +35,11 @@ import { matchRoutingGateHint, type RoutingGateIntent } from '../../routing-gate
 import { deriveRepoPathsFromText } from './_derive-paths';
 import { admissionIdentity, type AdmissionIdentity } from '../../harness/improvements/digest';
 import {
+  decideIssueAdmissionCircuit,
+  readIssueAdmissionPressure,
   recordIssueOccurrence,
   selectCanonicalIssue,
+  type IssueAdmissionPressure,
   type IssueOccurrenceKind,
 } from '../../issue-occurrence-ledger';
 
@@ -135,6 +138,9 @@ export type CreateOneWorkItemResult =
       goalStampError?: string;
       admissionIdentity?: AdmissionIdentity;
       dedupCoverage?: WorkItemDedupCoverage;
+      /** P-005 exact rolling pressure observation when a soft canonical candidate
+       *  made the queue-admission circuit relevant to this create. */
+      queueAdmission?: IssueAdmissionPressure;
     }
   | {
       ok: false;
@@ -143,6 +149,10 @@ export type CreateOneWorkItemResult =
       existing?: { id: string; state: string };
       /** duplicate_semantic only: the OPEN items the new title cosine-matched. */
       similarOpen?: SemanticDupeCandidate[];
+      admissionIdentity?: AdmissionIdentity;
+      dedupCoverage?: WorkItemDedupCoverage;
+      /** P-005: present on a losslessly coalesced low-diversity burst report. */
+      queueAdmission?: IssueAdmissionPressure;
     };
 
 /**
@@ -224,6 +234,7 @@ function workItemOccurrenceEvidence(
   args: CreateOneWorkItemArgs,
   similarOpen: readonly SemanticDupeCandidate[] | undefined,
   dedupCoverage: WorkItemDedupCoverage | undefined,
+  queueAdmission?: IssueAdmissionPressure,
 ): Record<string, unknown> {
   return {
     kind: args.kind,
@@ -237,6 +248,7 @@ function workItemOccurrenceEvidence(
     assignTo: args.assign_to ?? null,
     similarOpen: similarOpen ?? [],
     dedupCoverage: dedupCoverage ?? null,
+    ...(queueAdmission ? { queueAdmission } : {}),
   };
 }
 
@@ -251,6 +263,7 @@ async function appendWorkItemOccurrence(
   canonicalHarness: string | null | undefined,
   similarOpen?: readonly SemanticDupeCandidate[],
   dedupCoverage?: WorkItemDedupCoverage,
+  queueAdmission?: IssueAdmissionPressure,
 ): Promise<void> {
   await recordIssueOccurrence({
     canonicalId,
@@ -259,7 +272,7 @@ async function appendWorkItemOccurrence(
     sourceTool: 'work_items:create',
     reportKind,
     reportedTitle: args.title,
-    evidence: workItemOccurrenceEvidence(args, similarOpen, dedupCoverage),
+    evidence: workItemOccurrenceEvidence(args, similarOpen, dedupCoverage, queueAdmission),
     admissionIdentity: identity,
   }).catch(() => null);
 }
@@ -319,6 +332,7 @@ export async function createOneWorkItem(
     let semanticLeg: WorkItemDedupCoverage['semantic'] = issueAdmission ? 'skipped' : 'skipped';
     let lexicalLeg: WorkItemDedupCoverage['lexical'] = issueAdmission ? 'skipped' : 'skipped';
     let similarOpen: SemanticDupeCandidate[] | undefined;
+    let burstCandidates: SemanticDupeCandidate[] = [];
     if (shouldScreen) {
       const dupes = await findSemanticDupes({
         title: args.title,
@@ -355,7 +369,10 @@ export async function createOneWorkItem(
           similarOpen: dupes.hard,
         };
       }
-      if (dupes && dupes.soft.length > 0) similarOpen = dupes.soft;
+      if (dupes && dupes.soft.length > 0) {
+        burstCandidates = dupes.soft;
+        similarOpen = dupes.soft;
+      }
     }
     // EI-9940 recent-lexical dupe prescreen: catches a near-duplicate title created
     // moments ago, BEFORE the async embed-backfill sweep has indexed it — exactly the
@@ -430,6 +447,63 @@ export async function createOneWorkItem(
         existing: { id: exactIdentity.id, state: exactIdentity.state },
         similarOpen: [exactIdentity],
       };
+    }
+    // P-005: a SOFT semantic sibling is advisory during normal flow, but becomes
+    // a lossless occurrence home when BOTH canonical-cluster and emitter entropy
+    // collapse in the exact rolling ledger. Recent/full-text lexical candidates
+    // stay advisory-only: their looser metrics are not strong enough to suppress
+    // a new row. Critical novelty and force bypass this circuit; a missing reader
+    // verdict fails open. The coalesced outcome is returned as a non-creation so
+    // the handler never emits a false `work item created` demand event.
+    let queueAdmission: IssueAdmissionPressure | undefined;
+    if (issueAdmission && !args.force && args.severity !== 'critical' && burstCandidates.length > 0) {
+      const candidates = burstCandidates.map((candidate) => ({
+        id: candidate.id,
+        title: candidate.title,
+        similarity: candidate.similarity,
+        canonicalHarness: candidate.harness,
+        eligible: true,
+      }));
+      const pressureCandidate = selectCanonicalIssue(identity, candidates);
+      if (pressureCandidate) {
+        queueAdmission = (await readIssueAdmissionPressure({
+          canonicalId: pressureCandidate.id,
+          canonicalHarness: pressureCandidate.canonicalHarness,
+        }).catch(() => null)) ?? undefined;
+        const decision = decideIssueAdmissionCircuit({
+          identity,
+          candidates,
+          pressure: queueAdmission ?? null,
+          severity: args.severity,
+          force: args.force,
+        });
+        if (decision.action === 'coalesce' && decision.canonical) {
+          const canonical = burstCandidates.find((candidate) => candidate.id === decision.canonical?.id);
+          await appendWorkItemOccurrence(
+            args,
+            ctx,
+            identity,
+            'coalesced',
+            decision.canonical.id,
+            decision.canonical.canonicalHarness,
+            similarOpen,
+            dedupCoverage,
+            queueAdmission,
+          );
+          return {
+            ok: false,
+            error: 'coalesced',
+            message:
+              `low-diversity admission burst: preserved this report as an occurrence on ` +
+              `${decision.canonical.id}; no new scheduler row was created`,
+            existing: { id: decision.canonical.id, state: canonical?.state ?? 'open' },
+            ...(similarOpen ? { similarOpen } : {}),
+            admissionIdentity: identity,
+            dedupCoverage,
+            queueAdmission,
+          };
+        }
+      }
     }
     // EI-728: route the write to the request's workspace. Precedence: explicit
     // `workspace` arg → the request's concrete workspace (ctx.workspaceId) →
@@ -583,6 +657,7 @@ export async function createOneWorkItem(
         workItem.harness ?? harnessForItem,
         similarOpen,
         dedupCoverage,
+        queueAdmission,
       );
     }
     // EI-10897: apply the requested initial state as a real transition (not a raw
@@ -688,6 +763,7 @@ export async function createOneWorkItem(
       ...(goalStampError ? { goalStampError } : {}),
       ...(similarOpen ? { similarOpen } : {}),
       ...(issueAdmission ? { admissionIdentity: identity, dedupCoverage } : {}),
+      ...(queueAdmission ? { queueAdmission } : {}),
       ...(stateError ? { stateError } : {}),
     };
   } catch (e) {

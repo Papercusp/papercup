@@ -39,6 +39,7 @@ vi.mock('../../memory/claim-port', () => ({ buildClaimRecallBlock: vi.fn(async (
 
 import { createOneWorkItem, type CreateOneWorkItemResult } from './_create-core';
 import type { WorkItem } from '../../work-items';
+import { assessIssueAdmissionPressure } from '../../issue-occurrence-ledger';
 const createM = vi.mocked(createOneWorkItem);
 
 /**
@@ -262,6 +263,48 @@ describe('work_items:create handler (keyed-array)', () => {
     // ...but the caller is told, and told what it COSTS, not just that it threw.
     expect(b.results[0].goalStampError).toMatch(/goal attribution was NOT recorded/);
     expect(b.results[0].goalStampError).toMatch(/column "goal_id" does not exist/);
+  });
+
+  it('surfaces queueAdmission on a successful pass-through create', async () => {
+    const queueAdmission = assessIssueAdmissionPressure({
+      rawOccurrences: 2_949,
+      duplicateOccurrences: 455,
+      canonicalStock: 2_494,
+      canonicalClusterCounts: Array.from({ length: 140 }, () => 21),
+      emitterCounts: Array.from({ length: 90 }, () => 33),
+    });
+    createM.mockImplementation(async (spec) => okCore(spec.title, { queueAdmission }));
+    const b = await body({ kind: 'bug', title: 'broad cohort item' });
+    expect(b.results[0].queueAdmission).toEqual(queueAdmission);
+  });
+
+  it('surfaces queueAdmission and canonical identity on a coalesced non-creation', async () => {
+    const queueAdmission = assessIssueAdmissionPressure({
+      rawOccurrences: 455,
+      duplicateOccurrences: 455,
+      canonicalStock: 2_494,
+      canonicalClusterCounts: [455],
+      emitterCounts: [455],
+    });
+    createM.mockResolvedValue({
+      ok: false,
+      error: 'coalesced',
+      message: 'preserved as occurrence',
+      existing: { id: 'EI-57', state: 'open' },
+      similarOpen: [],
+      admissionIdentity: { schemaVersion: 'admission-identity-v1', titleKey: 'title:burst report' },
+      dedupCoverage: { lexical: 'ok', semantic: 'ok', degraded: false },
+      queueAdmission,
+    });
+    const b = await body({ kind: 'bug', title: 'burst report' });
+    expect(b.results[0]).toMatchObject({
+      ok: false,
+      error: 'coalesced',
+      existing: { id: 'EI-57' },
+      admissionIdentity: { titleKey: 'title:burst report' },
+      dedupCoverage: { degraded: false },
+      queueAdmission: { active: true, rawOccurrences: 455, canonicalStock: 2_494 },
+    });
   });
 
   it('CONTROL: an ordinary create (no goal) carries neither goal field', async () => {
