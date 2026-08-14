@@ -204,14 +204,91 @@ export function resolveCitation(citation: AuditCitation, deps: CitationDeps): Ci
   return { ok: true };
 }
 
-/** Real-filesystem deps rooted at the monorepo. */
+/**
+ * Sibling repositories a plan's citations may legitimately reach.
+ *
+ * This workspace hosts several INDEPENDENT repos beside the monorepo (sidestage,
+ * greenfield-*), and a plan filed under one harness routinely delivers its code into
+ * one of them. Rooting citation resolution at REPO_ROOT alone made those plans
+ * structurally UNAUDITABLE: the repo-relative path did not exist, the
+ * workspace-prefixed shape did not exist either, `..` was refused by both traversal
+ * guards, and an absolute path is schema-refused — so no expressible citation could
+ * resolve and the ship gate could never be satisfied honestly. That is
+ * EI-20430092702151575, which blocked sidestage-seller-dockview-2026-08-14 with all
+ * 12 items complete and independently graded.
+ *
+ * ADMISSION RULE: a direct child of the workspace root whose `.git` is a DIRECTORY.
+ * That is precisely "an independent repository", and it EXCLUDES the release and
+ * checkpoint worktrees — whose `.git` is a pointer FILE — because those are deploy
+ * artifacts of THIS repo and must never stand as evidence for it. Measured on this
+ * box: `sidestage/.git` is a directory, while `papercup-release/.git` and
+ * `papercup-checkpoint/.git` are worktree pointer files.
+ *
+ * Citations into a sibling are written workspace-relative (`sidestage/apps/web/...`),
+ * which is the shape an operator reaches for first. Containment is still enforced
+ * per-root, so the strictness the module header describes is unchanged: a citation
+ * passes only when it names a real file under an allowed root.
+ */
+function independentSiblingRepos(repoRoot: string): ReadonlySet<string> {
+  const workspaceRoot = path.dirname(repoRoot);
+  const names = new Set<string>();
+  let realRepo = repoRoot;
+  try {
+    realRepo = fs.realpathSync(repoRoot);
+  } catch {
+    /* keep the literal root */
+  }
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(workspaceRoot, { withFileTypes: true });
+  } catch {
+    return names;
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
+    const abs = path.join(workspaceRoot, entry.name);
+    try {
+      // `papercup` is a symlink to the monorepo — realpath dedupes it so the repo
+      // can never re-enter as its own sibling under a second name.
+      if (fs.realpathSync(abs) === realRepo) continue;
+      if (!fs.statSync(path.join(abs, '.git')).isDirectory()) continue;
+    } catch {
+      continue;
+    }
+    names.add(entry.name);
+  }
+  return names;
+}
+
+/** Real-filesystem deps rooted at the monorepo, plus independent sibling repos. */
 export function repoCitationDeps(repoRoot: string = REPO_ROOT): CitationDeps {
-  const within = (rel: string): string | null => {
-    const abs = path.resolve(repoRoot, rel);
+  const workspaceRoot = path.dirname(repoRoot);
+  let siblings: ReadonlySet<string> | null = null;
+
+  const contained = (root: string, rel: string): string | null => {
+    const abs = path.resolve(root, rel);
     // Second traversal guard, on the RESOLVED path: catches symlink-free `..`
     // survivors and any shape the segment check above did not anticipate.
-    const rootWithSep = repoRoot.endsWith(path.sep) ? repoRoot : repoRoot + path.sep;
-    return abs === repoRoot || abs.startsWith(rootWithSep) ? abs : null;
+    const rootWithSep = root.endsWith(path.sep) ? root : root + path.sep;
+    return abs === root || abs.startsWith(rootWithSep) ? abs : null;
+  };
+
+  const within = (rel: string): string | null => {
+    const inRepo = contained(repoRoot, rel);
+    // In-repo always wins, so a sibling can never shadow a real monorepo file.
+    if (inRepo !== null && fs.existsSync(inRepo)) return inRepo;
+    const first = rel.split('/')[0];
+    if (first) {
+      // Computed lazily: the overwhelmingly common in-repo citation pays no scan.
+      siblings ??= independentSiblingRepos(repoRoot);
+      if (siblings.has(first)) {
+        const inWorkspace = contained(workspaceRoot, rel);
+        if (inWorkspace !== null) return inWorkspace;
+      }
+    }
+    // A genuine miss still reports against the repo, so `file_not_found` names the
+    // path the caller actually wrote rather than a sibling guess.
+    return inRepo;
   };
   return {
     statFile: (rel) => {
