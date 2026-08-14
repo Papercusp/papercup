@@ -114,7 +114,7 @@ const argsSchema = z
       .boolean()
       .optional()
       .describe(
-        'Non-destructive DROP: when flipping an item to `dropped`, SKIP the flip (reported `skipped:"coverage_guard"`, ok:true) if ANOTHER non-terminal work-item is still linked to this plan item (via the `implements` conversion edge, the `relates` coverage edge, or the `payload.plan_item` stamp). Prevents dropping ONE work-item (e.g. a duplicate) from cascading `dropped` onto a plan item that another live work-item still covers (EI-19972048649686949). No effect on any status other than `dropped`. For AUTOMATED reflections (a work-item state change cascading onto its plan item); a human deliberately abandoning the item just omits it.',
+        'Non-destructive TERMINAL flip: when flipping an item to `done` or `dropped`, SKIP it (reported `skipped:"coverage_guard"`, ok:true) if ANOTHER non-terminal work-item is still linked to this plan item (via the `implements` conversion edge, the `relates` coverage edge, or the `payload.plan_item` stamp). Stops ONE work-item closing or dropping from de-queueing a plan item other live work still covers (EI-19972048649686949; WI-38908 — a 1:N lane auto-closed on its first sibling). No effect on a non-terminal status. For AUTOMATED reflections; a human closing/abandoning the item deliberately just omits it.',
       ),
     onlyIfNotCompleted: z
       .boolean()
@@ -141,9 +141,9 @@ interface StatusItem {
    *  for automated reflections that must never un-finish shipped work. See the guard
    *  inside the plan lock. */
   onlyIfNotTerminal?: boolean;
-  /** Skip (don't flip) a →dropped flip when another non-terminal work-item still covers
-   *  this plan item — for automated reflections cascading a single work-item's drop. See
-   *  the coverage guard below. */
+  /** Skip (don't flip) a →done/→dropped flip when another non-terminal work-item still
+   *  covers this plan item — for automated reflections cascading a single work-item's
+   *  terminal state (WI-38908 widened this from drop-only). See the coverage guard below. */
   onlyIfNoOtherOpenCoverage?: boolean;
   /** Skip (don't flip) a `done` →`dropped` flip — an automated cascade must never
    *  downgrade finished work. See `completedGuardTrips`. */
@@ -713,8 +713,20 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
   // the residual-coverage advisory below which only reads `relates`. By the time
   // this reaction fires, the triggering work-item's OWN state is already committed
   // terminal, so it self-excludes from `stillCovered` without any special-casing.
-  // Best-effort: a lookup hiccup must never block a legitimate drop.
-  if (it.onlyIfNoOtherOpenCoverage && it.status === 'dropped') {
+  // Best-effort: a lookup hiccup must never block a legitimate flip.
+  //
+  // WI-38908 WIDENED THIS FROM `dropped` TO EITHER TERMINAL STATUS. It was originally
+  // drop-only on the assumption that a `done` cascade means the work genuinely finished
+  // — true only when ONE work-item implements the plan item. For a 1:N lane (a fix-loop
+  // item with many bugs stamped to it) completing the FIRST sibling flipped the whole
+  // item `done` while the rest were still open, which both hides open blockers from the
+  // release criteria and — because a plan-scoped claim spec admits through that item —
+  // stops anyone claiming them. Live: sidestage-public-release-testing-2026-08-14#P-009
+  // auto-closed 3x in ~1h with 8+ non-terminal stamped bugs; a leader hand-restored it
+  // each time. Marking terminal and abandoning are the same hazard here: both de-queue
+  // an item other live work still covers, so both take the guard. When the LAST sibling
+  // goes terminal, coverage is empty and the flip proceeds — 1:1 behaviour is unchanged.
+  if (it.onlyIfNoOtherOpenCoverage && (it.status === 'dropped' || it.status === 'done')) {
     try {
       const linked = await findAllLinkedWorkItems(it.slug, it.itemId);
       const stillCovered = linked.filter((wi) => !TERMINAL_WORK_ITEM_STATES.has(wi.state));
@@ -728,7 +740,7 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
           reason:
             `left open — ${stillCovered.length} other linked work-item(s) ` +
             `(${stillCovered.map((wi) => wi.id).join(', ')}) still cover this plan item; ` +
-            `dropping this one does not abandon the work`,
+            `marking it ${it.status} would de-queue work that is not finished`,
         };
       }
     } catch (e) {

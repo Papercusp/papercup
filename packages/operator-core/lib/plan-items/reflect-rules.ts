@@ -121,11 +121,15 @@ function setStatusArgs(e: ToolInvocationEvent, status: string, why: string): Rec
     item: stamp.item_id,
     status,
     note: `← ${wi.id ?? 'work_item'} ${why}`,
-    // EI-19972048649686949: an AUTOMATED cascade to `dropped` must not de-queue a
-    // plan item another non-terminal work-item still covers (the classic case:
-    // dropping a hand-filed duplicate of an already-claimed implementer). No effect
-    // on any other status — a genuine `done`/reopen/park flip is unaffected, and
-    // set-status.ts's guard is a no-op unless `status === 'dropped'`.
+    // EI-19972048649686949 + WI-38908: an AUTOMATED cascade to EITHER terminal status
+    // must not de-queue a plan item another non-terminal work-item still covers — the
+    // original case was dropping a hand-filed duplicate of an already-claimed
+    // implementer; the `done` half is the 1:N lane, where completing the FIRST of many
+    // stamped siblings marked the whole item finished (live: 3x in ~1h on
+    // sidestage-public-release-testing-2026-08-14#P-009, with 8+ open stamped bugs).
+    // Reopen/park flips are still unaffected — set-status.ts's guard is a no-op unless
+    // the status is terminal. `onlyIfNotCompleted` stays drop-only: it exists purely to
+    // stop a `done` → `dropped` DOWNGRADE, which a → `done` flip cannot be.
     //
     // EI-20129670928216719: `onlyIfNotCompleted` covers the case the line above CANNOT —
     // the sibling that completed the plan item is itself `done`, i.e. terminal, so it is
@@ -134,7 +138,8 @@ function setStatusArgs(e: ToolInvocationEvent, status: string, why: string): Rec
     // plan item (live: fix-0014-platform-defects-2026-08-10#P-005, downgraded 67ms after
     // WI-37872 was dropped, while its real completer WI-37735 sat `done`). The two guards
     // are complementary, not redundant: open coverage vs. finished coverage.
-    ...(status === 'dropped' ? { onlyIfNoOtherOpenCoverage: true, onlyIfNotCompleted: true } : {}),
+    ...(status === 'dropped' || status === 'done' ? { onlyIfNoOtherOpenCoverage: true } : {}),
+    ...(status === 'dropped' ? { onlyIfNotCompleted: true } : {}),
   };
 }
 

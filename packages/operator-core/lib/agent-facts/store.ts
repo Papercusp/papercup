@@ -1690,6 +1690,82 @@ export interface FactSelector {
  *                     or it becomes unmanageable (you can't retract what you
  *                     can't see). Audience is delivery RELEVANCE, not secrecy.
  */
+/**
+ * The scoping + liveness predicate for ONE selector, shared by {@link foldFacts}
+ * (which returns a bounded PAGE) and {@link countLiveFacts} (which returns the
+ * unbounded CENSUS of that same population).
+ *
+ * WI-38910: `facts:list` reported `count: 4` — its page size — for a scope
+ * holding hundreds of live facts, with no `total`. Agents are told to read
+ * standing facts before asserting, so a census that is silently a page makes
+ * that dedup check ~1% effective; the duplicate assert then EVICTS a peer's
+ * still-valid fact, because the busy scopes run permanently at
+ * {@link FACTS_PER_SCOPE_CAP}.
+ *
+ * The count is therefore only trustworthy if it describes EXACTLY the rows the
+ * page draws from. A hand-copied second WHERE is how that guarantee gets lost
+ * one edit later — so both callers compose this single fragment, and
+ * `count-page-parity` in store.integration.test.ts asserts the two agree.
+ */
+function liveFactPredicate(
+  sql: Sql,
+  ws: string,
+  scope: string,
+  ref: string,
+  keyPrefixes: readonly string[],
+  audiences: readonly string[] | 'all',
+) {
+  return sql`workspace_id = ${ws} AND scope = ${scope}
+         AND coalesce(scope_ref,'') = ${ref}
+         -- P-008 (a): CURRENT versions only. A fold that saw the superseded tail
+         -- would serve an agent both the corrected value and the value it
+         -- corrected, as peers.
+         AND superseded_at IS NULL
+         AND retracted_at IS NULL AND expires_at > now()
+         AND ${
+           keyPrefixes.length > 0
+             ? sql`key LIKE ANY(${keyPrefixes.map((p) => p + '%')})`
+             : sql`TRUE`
+         }
+         AND ${
+           audiences === 'all'
+             ? sql`TRUE`
+             : audiences.length > 0
+               ? sql`(audience_scope IS NULL OR audience_scope = ANY(${audiences as string[]}))`
+               : sql`audience_scope IS NULL`
+         }`;
+}
+
+/**
+ * How many LIVE facts one selector actually has — the census behind a
+ * {@link listFacts} page. Deliberately NOT limited: this is the number that
+ * tells a reader whether the page they are holding is the whole population.
+ *
+ * Returns the count under the same audience semantics the caller will read with
+ * ('all' for the explicit facts:list read), so `total` and `count` are directly
+ * comparable rather than two different questions.
+ */
+export async function countLiveFacts(
+  sel: FactSelector,
+  opts: { workspaceId?: string; audiences?: readonly string[] | 'all'; keyPrefixes?: readonly string[] } = {},
+  inject?: Sql,
+): Promise<number> {
+  const sql = sqlOf(inject);
+  const ws = opts.workspaceId ?? activeWorkspaceId();
+  const ref = sel.scope === 'workspace' ? '' : (sel.scopeRef ?? '').trim();
+  // Same guard foldFacts applies: an unset optional dimension folds nothing, so
+  // its census is 0 rather than "every fact in every ref of this scope".
+  if (sel.scope !== 'workspace' && !ref) return 0;
+  const keyPrefixes = (opts.keyPrefixes ?? []).map((p) => p.trim()).filter(Boolean);
+  const audiences =
+    opts.audiences === 'all' ? 'all' : (opts.audiences ?? []).map((a) => a.trim()).filter(Boolean);
+  const rows = await sql<{ n: string }[]>`
+    SELECT count(*)::text AS n
+      FROM harness_shared.agent_facts
+     WHERE ${liveFactPredicate(sql, ws, sel.scope, ref, keyPrefixes, audiences)}`;
+  return Number(rows[0]?.n ?? 0);
+}
+
 export async function foldFacts(
   selectors: readonly FactSelector[],
   opts: {
@@ -1730,25 +1806,7 @@ export async function foldFacts(
              -- the reader's cursor without a second query.
              fed_hlc
         FROM harness_shared.agent_facts
-       WHERE workspace_id = ${ws} AND scope = ${sel.scope}
-         AND coalesce(scope_ref,'') = ${ref}
-         -- P-008 (a): CURRENT versions only. A fold that saw the superseded tail
-         -- would serve an agent both the corrected value and the value it
-         -- corrected, as peers.
-         AND superseded_at IS NULL
-         AND retracted_at IS NULL AND expires_at > now()
-         AND ${
-           keyPrefixes.length > 0
-             ? sql`key LIKE ANY(${keyPrefixes.map((p) => p + '%')})`
-             : sql`TRUE`
-         }
-         AND ${
-           audiences === 'all'
-             ? sql`TRUE`
-             : audiences.length > 0
-               ? sql`(audience_scope IS NULL OR audience_scope = ANY(${audiences as string[]}))`
-               : sql`audience_scope IS NULL`
-         }
+       WHERE ${liveFactPredicate(sql, ws, sel.scope, ref, keyPrefixes, audiences)}
        ORDER BY updated_at DESC
        LIMIT ${limit}`;
     out.push(...rows.map(rowToFact));

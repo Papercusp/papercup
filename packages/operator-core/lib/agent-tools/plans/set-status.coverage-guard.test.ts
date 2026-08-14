@@ -127,15 +127,104 @@ describe('plans:set-status coverage guard (EI-19972048649686949)', () => {
     expect(reconcileMocks.findAllLinkedWorkItems).not.toHaveBeenCalled();
   });
 
-  it('never checks coverage on a status other than dropped, even with the flag set', async () => {
-    lockReturnsMutatorValue(new Set(['P-012']), 'todo');
+  // WI-38908 CHANGED THIS CONTRACT. This test previously asserted the guard never fired
+  // on `done` ("never checks coverage on a status other than dropped") — that assertion
+  // WAS the bug, pinned. The guard now covers either TERMINAL status; only non-terminal
+  // flips (reopen/park) still skip the check outright.
+  it('never checks coverage on a NON-TERMINAL status, even with the flag set', async () => {
+    reconcileMocks.findAllLinkedWorkItems.mockResolvedValue([
+      { id: 'WI-37457', state: 'open' } as never,
+    ]);
+    lockReturnsMutatorValue(new Set(['P-012']), 'done');
     const b = await body({
       slug: 'demo-plan',
       item: 'P-012',
+      status: 'wip',
+      onlyIfNoOtherOpenCoverage: true,
+    });
+    expect(b.results[0].skipped).toBeUndefined();
+    expect(reconcileMocks.findAllLinkedWorkItems).not.toHaveBeenCalled();
+  });
+
+  /**
+   * WI-38908 — the 1:N lane. The guard was drop-only on the assumption that ONE work-item
+   * implements a plan item, so a `done` cascade always meant "finished". A fix-loop lane
+   * has MANY bugs stamped to one item: completing the first sibling marked the whole lane
+   * done while the rest were open, which hid open blockers AND (because a plan-scoped claim
+   * spec admits through that item) stopped anyone claiming them. Live: three auto-closes in
+   * ~1h on sidestage-public-release-testing-2026-08-14#P-009 with 8+ non-terminal siblings.
+   */
+  it('SKIPS a → done flip while sibling work-items stamped to the same plan item are still open', async () => {
+    reconcileMocks.findAllLinkedWorkItems.mockResolvedValue([
+      { id: 'WI-38872', state: 'done' } as never, // the sibling that just completed
+      { id: 'WI-38876', state: 'open' } as never, // still open — a CRITICAL blocker
+      { id: 'WI-38863', state: 'wip' } as never,
+    ]);
+    lockReturnsMutatorValue(new Set(['P-009']));
+    const b = await body({
+      slug: 'sidestage-public-release-testing-2026-08-14',
+      item: 'P-009',
+      status: 'done',
+      onlyIfNoOtherOpenCoverage: true,
+    });
+    expect(b.results[0].ok).toBe(true); // a deliberate no-op, never a hard error
+    expect(b.results[0].skipped).toBe('coverage_guard');
+    // The completed sibling self-excludes (terminal); only the live ones are named.
+    expect(b.results[0].coveredBy).toEqual(['WI-38876', 'WI-38863']);
+    expect(b.results[0].reason).toMatch(/would de-queue work that is not finished/);
+    expect(lockM).not.toHaveBeenCalled();
+  });
+
+  /**
+   * FALSIFIABILITY for the case above: same lane, same flag — but every sibling is now
+   * terminal, which is what closing the LAST bug looks like. The flip must proceed. Without
+   * this, the test above could pass against a guard that simply refused every `done` flip.
+   */
+  it('proceeds with the → done flip once the LAST stamped sibling goes terminal', async () => {
+    reconcileMocks.findAllLinkedWorkItems.mockResolvedValue([
+      { id: 'WI-38872', state: 'done' } as never,
+      { id: 'WI-38876', state: 'done' } as never,
+      { id: 'WI-38863', state: 'dropped' } as never,
+    ]);
+    lockReturnsMutatorValue(new Set(['P-009']));
+    const b = await body({
+      slug: 'sidestage-public-release-testing-2026-08-14',
+      item: 'P-009',
+      status: 'done',
+      onlyIfNoOtherOpenCoverage: true,
+    });
+    expect(b.results[0].ok).toBe(true);
+    expect(b.results[0].skipped).toBeUndefined();
+    expect(b.results[0].newStatus).toBe('done');
+  });
+
+  // The 1:1 case the guard must leave exactly as it was: one implementer, it completes,
+  // nothing else covers the item, so the plan item still auto-completes.
+  it('leaves the 1:1 completion path unchanged — a lone implementer still closes its plan item', async () => {
+    reconcileMocks.findAllLinkedWorkItems.mockResolvedValue([
+      { id: 'WI-40001', state: 'done' } as never,
+    ]);
+    lockReturnsMutatorValue(new Set(['P-003']));
+    const b = await body({
+      slug: 'demo-plan',
+      item: 'P-003',
       status: 'done',
       onlyIfNoOtherOpenCoverage: true,
     });
     expect(b.results[0].skipped).toBeUndefined();
+    expect(b.results[0].newStatus).toBe('done');
+  });
+
+  // Opt-in, like every other guard here: a leader deliberately closing a lane with open
+  // children omits the flag and must still be able to (this is the manual restore path).
+  it('is a no-op on → done unless the caller opts in — a bare human close still works with open coverage', async () => {
+    reconcileMocks.findAllLinkedWorkItems.mockResolvedValue([
+      { id: 'WI-38876', state: 'open' } as never,
+    ]);
+    lockReturnsMutatorValue(new Set(['P-009']));
+    const b = await body({ slug: 'demo-plan', item: 'P-009', status: 'done' });
+    expect(b.results[0].skipped).toBeUndefined();
+    expect(b.results[0].newStatus).toBe('done');
     expect(reconcileMocks.findAllLinkedWorkItems).not.toHaveBeenCalled();
   });
 

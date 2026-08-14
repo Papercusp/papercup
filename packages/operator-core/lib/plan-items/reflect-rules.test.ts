@@ -140,9 +140,13 @@ describe('plan-item-reflect:complete', () => {
     const closed = evt('work_items:complete', stamped('closed', { completion: { summary: 's' } }));
     expect(renderArgs(rule, closed)).toMatchObject({ status: 'dropped', onlyIfNoOtherOpenCoverage: true });
 
-    // A → done completion is UNAFFECTED — the guard is scoped to `dropped` only.
+    // WI-38908: a → done completion now carries the coverage guard TOO. It used to be
+    // drop-only, which meant completing the first of N siblings stamped to one plan item
+    // marked the whole item finished. It does NOT carry onlyIfNotCompleted — that guard
+    // exists solely to stop a done → dropped DOWNGRADE, which a → done flip cannot be.
     const done = evt('work_items:complete', stamped('resolved', { completion: { summary: 's' } }));
-    expect(renderArgs(rule, done)).not.toHaveProperty('onlyIfNoOtherOpenCoverage');
+    expect(renderArgs(rule, done)).toMatchObject({ status: 'done', onlyIfNoOtherOpenCoverage: true });
+    expect(renderArgs(rule, done)).not.toHaveProperty('onlyIfNotCompleted');
   });
 
   it('does NOT fire without a completion record, without a stamp, or when the resulting state is non-terminal', () => {
@@ -173,14 +177,18 @@ describe('plan-item-reflect:set-state', () => {
     expect(renderArgs(rule, reopen)).toMatchObject({ status: 'todo' });
   });
 
-  it('EI-19972048649686949: renders onlyIfNoOtherOpenCoverage on a → dropped flip only, never on done/todo/blocked', () => {
+  // WI-38908 widened this from drop-only to EITHER TERMINAL status. The boundary that
+  // still matters is terminal vs non-terminal: marking an item done and abandoning it are
+  // the same hazard (both de-queue an item other live work still covers), while a reopen
+  // or a park adds no coverage claim and must never pay for the lookup.
+  it('EI-19972048649686949 + WI-38908: renders onlyIfNoOtherOpenCoverage on a TERMINAL flip (done or dropped), never on todo/blocked', () => {
     const rule = ruleById('work_items:set_state', 'plan-item-reflect:set-state');
 
     const drop = evt('work_items:set_state', stamped('deprecated'));
     expect(renderArgs(rule, drop)).toMatchObject({ status: 'dropped', onlyIfNoOtherOpenCoverage: true });
 
     const done = evt('work_items:set_state', stamped('resolved'));
-    expect(renderArgs(rule, done)).not.toHaveProperty('onlyIfNoOtherOpenCoverage');
+    expect(renderArgs(rule, done)).toMatchObject({ status: 'done', onlyIfNoOtherOpenCoverage: true });
 
     const reopen = evt('work_items:set_state', stamped('open'));
     expect(renderArgs(rule, reopen)).not.toHaveProperty('onlyIfNoOtherOpenCoverage');
