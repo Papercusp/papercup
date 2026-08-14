@@ -122,7 +122,13 @@ export async function takeFleetLeadership(
   fleet: AgentFleetRecord,
   identity: AgentIdentity,
   ownerId: string,
-  opts?: { compactionLimit?: number; contextSize?: 'full' | 'trimmed' },
+  opts?: {
+    compactionLimit?: number;
+    contextSize?: 'full' | 'trimmed';
+    harnessSlug?: string | null;
+    planSlug?: string | null;
+    carry?: 'warm' | 'cold';
+  },
 ): Promise<TakeLeadershipOutcome> {
   const slug = fleet.fleetSlug;
   const previousLeader = fleet.leaderOwnerId; // may be null, or already === caller
