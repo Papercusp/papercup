@@ -118,7 +118,13 @@ export function adaptSuLockStore(): FileLockCoordinator {
         }),
         { paths: p.paths },
       );
-      return { ok: true, released: r.released };
+      // EI-20405390083792304: carry `heldBefore` back to the requester so a
+      // routed release can distinguish "held nothing" from "matched nothing"
+      // exactly like a local one. Without it the remote path would have to
+      // report the count as unknown, and the requester's `released: []` would
+      // stay ambiguous on precisely the cross-tree/cross-machine setups where
+      // a domain mismatch is most likely in the first place.
+      return { ok: true, released: r.released, heldBefore: r.heldBefore };
     },
 
     async queue(p) {

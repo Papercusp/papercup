@@ -125,8 +125,22 @@ export default defineTool({
       };
     }
 
+    /**
+     * EI-20405390083792304. `heldBefore` is how many live locks this owner held in
+     * this coordination domain at release time, so an empty `released` is no longer
+     * ambiguous: 0 ⇒ the owner held nothing (correct no-op); >0 ⇒ the owner held
+     * locks the selector did not match (a release that silently did nothing while
+     * answering ok:true).
+     *
+     * NULLABLE ON PURPOSE — null means NOT DETERMINED, and is never collapsed to 0.
+     * A routed release whose peer authority predates this field would otherwise be
+     * rendered as "you held nothing", which is exactly the false reassurance this
+     * change exists to remove; the honest answer there is "unknown".
+     */
+    type ReleaseOutcome = { released: string[]; heldBefore: number | null };
+
     async function releaseFileLocks(lockId: string | undefined, allMine = false) {
-      const localRelease = (): Promise<Awaited<ReturnType<typeof tryRelease>>> =>
+      const localRelease = (): Promise<ReleaseOutcome> =>
         inWorkspaceTxn(coordinationDomain, ownerId, async (tx) =>
           tryRelease(tx, {
             coordinationDomain,
@@ -160,7 +174,7 @@ export default defineTool({
       };
       try {
         const routed = await acquireWithContentionRetry(() =>
-          routeFileLockOp<Awaited<ReturnType<typeof tryRelease>>>(
+          routeFileLockOp<ReleaseOutcome>(
             coordinationDomain,
             {
               local: localRelease,
@@ -174,7 +188,16 @@ export default defineTool({
                   coordinationDomain,
                   publishedSha: args.published_sha ?? null,
                 } satisfies FileLockReleaseParams,
-                decode: (raw) => ({ released: (raw as { released?: string[] }).released ?? [] }),
+                decode: (raw) => {
+                  const r = raw as { released?: string[]; heldBefore?: number };
+                  return {
+                    released: r.released ?? [],
+                    // `?? null`, never `?? 0`: a peer authority that does not send
+                    // the field leaves the count UNKNOWN, and reporting unknown as
+                    // 0 would assert "you held nothing" on no evidence.
+                    heldBefore: typeof r.heldBefore === 'number' ? r.heldBefore : null,
+                  };
+                },
               },
             },
           ),
@@ -211,7 +234,14 @@ export default defineTool({
         lockIds,
         async (lockId) => {
           const result = await releaseFileLocks(lockId);
-          return { ok: true as const, lock_id: lockId, released: result.released };
+          return {
+            ok: true as const,
+            lock_id: lockId,
+            released: result.released,
+            // EI-20405390083792304: per-lock, so one dud id in a bulk release is
+            // visible instead of averaging into the batch looking successful.
+            held_before: result.heldBefore,
+          };
         },
         { keyOf: (lockId) => ({ lock_id: lockId }) },
       );
@@ -254,6 +284,13 @@ export default defineTool({
           text: JSON.stringify({
             ok: true,
             released: result.released,
+            // EI-20405390083792304: read this BEFORE concluding you are clear.
+            // released:[] + held_before:0 ⇒ you held nothing (correct no-op).
+            // released:[] + held_before:>0 ⇒ you still hold locks the selector
+            // did not match — you are NOT clear, and telling a blocked peer you
+            // released is wrong. null ⇒ not determined (routed to a peer
+            // authority that does not report it); treat as unknown, not as zero.
+            held_before: result.heldBefore,
             resources_released: resourcesReleased,
             owner: ownerId,
             owner_label: ownerLabel,

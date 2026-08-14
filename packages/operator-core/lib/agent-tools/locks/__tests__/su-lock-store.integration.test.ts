@@ -361,6 +361,81 @@ describe('tryRelease + grant cascade', () => {
     expect(rel.released.sort()).toEqual(['x.ts', 'y.ts']);
   });
 
+  /**
+   * EI-20405390083792304 — `heldBefore` exists to separate two situations that
+   * both produce `released: []` and previously looked identical to the caller:
+   * a correct no-op (held nothing) vs a release that silently did nothing (held
+   * locks, matched none). The second one is what lets an agent tell a blocked
+   * peer "you're unblocked" while still holding the lock.
+   *
+   * The DISCRIMINATOR test is the second one below. The first is its control:
+   * without it, an implementation that hardcoded `heldBefore: 0` would still
+   * pass a lone "no-op reports 0" assertion.
+   */
+  it('release reports heldBefore 0 when the owner genuinely holds nothing', async () => {
+    const ws = nextWs();
+    const rel = await inWorkspaceTxn(ws, 'nobody', (tx) =>
+      tryRelease(tx, { coordinationDomain: ws, owner: 'nobody', allMine: true }),
+    );
+    expect(rel.released).toEqual([]);
+    expect(rel.heldBefore).toBe(0);
+  });
+
+  it('release reports heldBefore > 0 when the owner holds locks the selector did not match', async () => {
+    const ws = nextWs();
+    const held = await inWorkspaceTxn(ws, 'a', (tx) =>
+      tryAcquire(tx, {
+        coordinationDomain: ws,
+        owner: 'a',
+        ownerLabel: 'A',
+        paths: ['still-held.ts'],
+        intent: 'A',
+        ttlSec: 60,
+      }),
+    );
+    if (!held.ok) throw new Error('A should acquire');
+
+    // A well-formed lock_id that is NOT the one we hold — the same shape as the
+    // real incident (a selector that resolves to nothing) without needing a
+    // second coordination domain.
+    const rel = await inWorkspaceTxn(ws, 'a', (tx) =>
+      tryRelease(tx, {
+        coordinationDomain: ws,
+        owner: 'a',
+        lockId: '00000000-0000-4000-8000-000000000000',
+      }),
+    );
+
+    // Released nothing — indistinguishable from the no-op case before this field.
+    expect(rel.released).toEqual([]);
+    // ...but the owner demonstrably still holds a lock, so this is NOT "clear".
+    expect(rel.heldBefore).toBe(1);
+
+    // And the lock really is still enforced, not merely miscounted.
+    const q = await readQueue(getTxPool(), { coordinationDomain: ws, paths: ['still-held.ts'] });
+    expect(q.active_locks.map((l) => l.path)).toEqual(['still-held.ts']);
+  });
+
+  it('heldBefore counts only the calling owner, not a peer holding other paths', async () => {
+    const ws = nextWs();
+    await inWorkspaceTxn(ws, 'peer', (tx) =>
+      tryAcquire(tx, {
+        coordinationDomain: ws,
+        owner: 'peer',
+        ownerLabel: 'PEER',
+        paths: ['theirs.ts'],
+        intent: 'PEER',
+        ttlSec: 60,
+      }),
+    );
+    const rel = await inWorkspaceTxn(ws, 'me', (tx) =>
+      tryRelease(tx, { coordinationDomain: ws, owner: 'me', allMine: true }),
+    );
+    // A peer's lock must not inflate my count into a false "you still hold locks".
+    expect(rel.released).toEqual([]);
+    expect(rel.heldBefore).toBe(0);
+  });
+
   it('release grants the first waiter via cascade', async () => {
     const ws = nextWs();
     const sql = getTxPool();

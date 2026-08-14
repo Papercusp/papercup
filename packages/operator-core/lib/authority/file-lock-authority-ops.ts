@@ -94,8 +94,16 @@ export interface FileLockAcquireResult {
 export interface FileLockCoordinator {
   acquire(p: FileLockAcquireParams): Promise<FileLockAcquireResult>;
   /** `released` is the list of paths actually released — carried (not a count) so the
-   *  requester's routed-release response matches the local-release shape exactly. */
-  release(p: FileLockReleaseParams): Promise<{ ok: boolean; released?: string[] }>;
+   *  requester's routed-release response matches the local-release shape exactly.
+   *
+   *  `heldBefore` (EI-20405390083792304) is how many live locks the owner held in
+   *  this domain at release time. It disambiguates an empty `released`: 0 means the
+   *  owner genuinely held nothing (a correct no-op), >0 means the owner held locks
+   *  the selector did not match (a release that silently did nothing). OPTIONAL on
+   *  purpose — an older peer authority, or an injected fake, may not supply it, and
+   *  the requester must render that as UNKNOWN rather than defaulting it to 0, which
+   *  would fabricate the very "you held nothing" answer this field exists to stop. */
+  release(p: FileLockReleaseParams): Promise<{ ok: boolean; released?: string[]; heldBefore?: number }>;
   queue(p: FileLockQueueParams): Promise<unknown>;
 }
 
