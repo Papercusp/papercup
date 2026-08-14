@@ -150,6 +150,23 @@ export interface CitationDeps {
   statFile: (rel: string) => { isFile: boolean } | null;
   /** Repo-relative → file contents, or null when unreadable. */
   readFile: (rel: string) => string | null;
+  /**
+   * Repo-relative → the absolute root(s) a miss was actually searched under.
+   *
+   * A `file_not_found` that names only the path the caller wrote is ambiguous in the
+   * one way that costs real time: it cannot distinguish "you wrote the wrong path
+   * shape" from "you are resolving against a root you did not expect". Those two have
+   * OPPOSITE fixes, and this tool has two roots (the monorepo + admitted siblings, or
+   * an explicitly-scoped harness's own tree), so the reader cannot infer which applied.
+   * Optional so injected/pure test deps stay a two-field object.
+   */
+  describeRoots?: (rel: string) => string | null;
+}
+
+/** `file_not_found` detail: the path the caller wrote, plus where we actually looked. */
+function missDetail(rel: string, deps: CitationDeps): string {
+  const roots = deps.describeRoots?.(rel);
+  return roots ? `${rel} (searched ${roots})` : rel;
 }
 
 /**
@@ -189,7 +206,7 @@ export function resolveCitation(citation: AuditCitation, deps: CitationDeps): Ci
   if (rel.split('/').some((seg) => seg === '..')) return { ok: false, reason: 'path_escapes_repo' };
 
   const stat = deps.statFile(rel);
-  if (!stat) return { ok: false, reason: 'file_not_found', detail: rel };
+  if (!stat) return { ok: false, reason: 'file_not_found', detail: missDetail(rel, deps) };
   if (!stat.isFile) return { ok: false, reason: 'not_a_file', detail: rel };
 
   if (citation.line != null || citation.symbol != null) {
