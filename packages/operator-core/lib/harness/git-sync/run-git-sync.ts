@@ -445,6 +445,31 @@ export interface ScopedContentError extends ContentOffender {
 }
 
 /**
+ * EI-20402093158205519: a submodule that is POPULATED on disk and holds uncommitted
+ * TRACKED changes, but is absent from `.git/config` (`git submodule init` never ran).
+ * `git submodule status` marks it '-', discovery skips it, and git-sync therefore never
+ * visits the repo at all — so the edits are invisible to every tick, forever, with no
+ * error anywhere. Measured on the sidestage hive 2026-08-14: 7 of 8 submodules '-'-flagged
+ * but fully populated; discovery returned 1 path; 3 tracked files sat stranded across two
+ * repos while the routine reported a clean 'synced' every tick.
+ *
+ * This is NOT an error the pass can fix, and deliberately does NOT make the pass
+ * `status:'error'` — that would defer the superproject push on EVERY tick and wedge the
+ * whole hive over a condition git-sync must not auto-resolve (registering a deliberately
+ * pinned worktree would fetch/merge/push it and UNPIN it). It rides its own escalation
+ * row instead: visible and queryable, non-blocking, self-clearing.
+ */
+export interface StrandedSubmodule {
+  /** Repo-relative submodule path, e.g. 'libs/papergrid'. */
+  path: string;
+  /** Count of TRACKED modified files. Untracked scratch (.vitest-tmp/ &c.) is excluded
+   *  on purpose — counting it would cry wolf on every tick a test run is in flight. */
+  trackedFiles: number;
+  /** The tracked porcelain paths, capped for the escalation body. */
+  files: string[];
+}
+
+/**
  * The aggregate result of one whole-repo pass. `pushed`/`merged` name the scopes
  * ('superproject' or submodule paths) that were pushed to / merged from origin, so
  * a caller can report exactly what moved. A pass NO LONGER stops at the first
@@ -464,6 +489,12 @@ export type GitSyncOutcome = {
    *  escalates these + dispatches a content-fixer, which self-heals on a later tick.
    *  Present on every status. */
   contentErrors: ScopedContentError[];
+  /** EI-20402093158205519: populated-but-unregistered submodules holding uncommitted
+   *  tracked work this pass could not see (see StrandedSubmodule). Present on every
+   *  status — a strand is orthogonal to whether the visible tree synced, and reporting
+   *  it ONLY on failure is precisely the silence that let it run for hours: the pass
+   *  that strands work is otherwise a perfectly clean 'synced'. */
+  strandedSubmodules: StrandedSubmodule[];
 } & (
   | { status: 'nothing' }
   | { status: 'synced'; headSha: string; pushed: string[]; merged: string[] }
