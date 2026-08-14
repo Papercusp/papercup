@@ -96,6 +96,39 @@ export function isUnsafeArchiveRelpath(rel: string): boolean {
   return rel.split(/[/\\]/).some((seg) => seg === '..');
 }
 
+/**
+ * Is this relpath keyed by the session it was archived under — i.e. is it THIS
+ * session's own file, or state the session merely SHARED with its neighbours?
+ *
+ * WI-38706 (owner-hit 2026-08-14, "psu --resume ... Model provider
+ * `papercusp-codex-gateway` not found"). The archive's delete leg may only
+ * unlink files that BELONG to the archived session. Every collector names a
+ * per-session file with the session id in its path — claude
+ * `projects/<cwd>/<sid>.jsonl` + `todos/<sid>*`, omp `<cwd>/<ts>_<sid>.jsonl`,
+ * codex `sessions/YYYY/MM/DD/rollout-<ts>-<sid>.jsonl` — so this predicate is
+ * satisfied by construction for anything session-scoped, and fails exactly for
+ * state that is scoped to the DIRECTORY instead.
+ *
+ * That distinction is not cosmetic: a per-session CODEX_HOME is shared by every
+ * codex THREAD in it (psu reuses one home per adv session while codex mints a
+ * new rollout uuid per resume — 7 rollouts in one home here, 217 in another), so
+ * archiving one dead thread was unlinking the `config.toml` that every sibling
+ * thread and every future resume needs. Losing it drops
+ * `[model_providers.papercusp-codex-gateway]`, which codex records in each
+ * rollout's `session_meta` and resolves against the CURRENT config at
+ * `thread/resume` — hence the -32600 above, on 11 homes / 89 rollouts.
+ *
+ * Measured over the live archive when this landed: 16,014 claude rows and 672
+ * omp rows are session-keyed (0 exceptions), against 2,764 codex rows that are
+ * not — precisely the `config.toml` / `goals_*.sqlite` / `memories_*.sqlite`
+ * population. So this is a no-op for claude and omp and a guard only where the
+ * bug lives, INCLUDING for the manifests already written before the collector
+ * stopped producing them.
+ */
+export function isSessionKeyedRelpath(sessionId: string, rel: string): boolean {
+  return Boolean(sessionId) && rel.includes(sessionId);
+}
+
 /** Decompress one archived file row back to its raw bytes (codec-aware). */
 export async function decompressArchiveBlob(row: Pick<ArchiveFileRow, 'codec' | 'blob'>): Promise<Buffer> {
   return row.codec === 'zstd' ? zstdDecompress(row.blob) : row.blob;
@@ -278,17 +311,39 @@ async function collectCodex(ref: SessionArchiveRef): Promise<CollectedFile[]> {
       }
     }
   }
-  // Per-session CODEX_HOME (≠ shared ~/.codex): the home-level state is part
-  // of the session — memories/goals sqlite + config.toml (opaque; D-003).
-  const perSessionHome = basename(ref.sessionRoot) !== '.codex';
-  if (perSessionHome) {
-    const HOME_STATE = /^(memories_.+\.sqlite|goals_.+\.sqlite|config\.toml)$/;
-    for (const f of await dirents(ref.sessionRoot)) {
-      if (!f.isFile() || !HOME_STATE.test(f.name)) continue;
-      const st = await statFile(join(ref.sessionRoot, f.name));
-      if (st) out.push({ rel: f.name, abs: join(ref.sessionRoot, f.name), ...st });
-    }
-  }
+  // WI-38706 — HOME-LEVEL STATE IS DELIBERATELY NOT COLLECTED, matching
+  // collectClaude/collectOmp, which take only files named for the session.
+  //
+  // This used to also take `config.toml` + `goals_*.sqlite` + `memories_*.sqlite`
+  // whenever the root was a per-session CODEX_HOME (≠ shared ~/.codex), on the
+  // premise (D-003) that "the home-level state is part of the session". That
+  // premise is false: psu allocates one CODEX_HOME per ADV session, while codex
+  // mints a new rollout uuid per thread/resume — so a home holds many sessions
+  // (7 rollouts in one home when this was found, 217 in another). Collecting
+  // shared files under whichever session ended first made the delete leg unlink
+  // the `config.toml` its siblings were still using, and every subsequent
+  // `codex resume` there died with "Model provider `papercusp-codex-gateway`
+  // not found" (11 homes / 89 rollouts, owner-hit 2026-08-14).
+  //
+  // Nor is losing the archive copy a real cost. Claude proves it: its config
+  // (settings.json / .claude.json / credentials) is likewise never archived, and
+  // the resume leg REBUILDS it — `ensureInteractiveConfigViaOperator` →
+  // POST /adv/sessions/ensure-claude-config → writeInteractiveClaudeConfig. Codex
+  // now has the same contract (`ensure-codex-home` → writeSuCodexHome), so its
+  // config.toml is regenerable from the SSOT rather than restorable from a copy —
+  // and a regenerated one is strictly better, since a restored copy can carry a
+  // stale MCP tool list. `memories_*` is inert in managed homes anyway (the
+  // generated config sets `memories = false`).
+  //
+  // The archive copy was also never a trustworthy backup: keyed per session id,
+  // a re-archive of the same session OVERWRITES it — which is how 5 of the 11
+  // broken homes had their good 3,440-byte config replaced by the 87-byte
+  // trust-only stub codex writes after the delete. A backup that the failure
+  // mode corrupts is not a backup.
+  //
+  // Byte impact of dropping it, measured on the live archive: rollouts are
+  // 8,593 MB raw of 8,641 MB total — home state was 0.5%. All of the FS→DB
+  // reclaim this pipeline exists for is in the rollouts above.
   return out;
 }
 
@@ -450,6 +505,13 @@ export interface DeleteArchivedResult {
   /** relpaths whose on-disk bytes no longer match the archived sha — NOT
    *  deleted; the caller must re-archive before retrying. */
   refused: string[];
+  /** relpaths RETAINED on disk because they are not keyed by this session
+   *  (`isSessionKeyedRelpath`) — directory-shared state a sibling session or a
+   *  future resume still needs, archived under one session's id by an older
+   *  collector. Deliberately NOT `refused`: refusal means "the bytes drifted,
+   *  re-archive and retry", and the reconciler acts on it by re-archiving then
+   *  deleting — which would delete exactly what this is protecting (WI-38706). */
+  retained: string[];
 }
 
 export async function deleteArchivedSessionFiles(
@@ -457,14 +519,26 @@ export async function deleteArchivedSessionFiles(
   store: SessionArchiveStore = pgSessionArchiveStore(),
 ): Promise<DeleteArchivedResult> {
   const stamp = await store.readStamp(ref.sourceKind, ref.sessionId, ref.workspaceId ?? WS_DEFAULT);
-  if (!stamp) return { ok: false, reason: 'not_archived', deleted: 0, missing: 0, refused: [] };
+  if (!stamp) {
+    return { ok: false, reason: 'not_archived', deleted: 0, missing: 0, refused: [], retained: [] };
+  }
   const root = ref.sessionRoot ?? stamp.session_root;
   let deleted = 0;
   let missing = 0;
   const refused: string[] = [];
+  const retained: string[] = [];
   for (const m of stamp.manifest) {
     if (isUnsafeArchiveRelpath(m.relpath)) {
       refused.push(m.relpath); // poisoned/corrupt manifest — never resolve it
+      continue;
+    }
+    // WI-38706: the archive may only unlink files that BELONG to this session.
+    // Anything else in the manifest is directory-shared state (an older
+    // collector took the codex home's config.toml/goals/memories under whichever
+    // session happened to end first) that a sibling thread or a future resume
+    // still reads off disk. Keep the archived COPY, keep the file.
+    if (!isSessionKeyedRelpath(ref.sessionId, m.relpath)) {
+      retained.push(m.relpath);
       continue;
     }
     const abs = join(root, m.relpath);
@@ -495,7 +569,9 @@ export async function deleteArchivedSessionFiles(
     await unlink(abs);
     deleted++;
   }
-  return { ok: refused.length === 0, deleted, missing, refused };
+  // `retained` deliberately does NOT clear `ok`: nothing went wrong and there is
+  // nothing to retry — those files are simply not this session's to delete.
+  return { ok: refused.length === 0, deleted, missing, refused, retained };
 }
 
 /** The end-of-session fast path atom: archive, then delete what was archived. */
