@@ -160,6 +160,11 @@ export function planPagePath(slug: string): string {
   return `plans/${slug.replace(/[^a-zA-Z0-9._-]/g, '-')}.html`;
 }
 
+/** `work-items/<id>.html`, relative — never absolute (the base path is secret). */
+export function workItemPagePath(id: string): string {
+  return `work-items/${id.replace(/[^a-zA-Z0-9._-]/g, '-')}.html`;
+}
+
 /**
  * The beacon. A single fetch to PostHog's anonymous capture endpoint — no
  * posthog-js, no CDN, no cookie. The `phc_*` key is a public anonymous-capture
@@ -346,8 +351,12 @@ function beaconScript(
           // nothing scrubs it — the page's identity gate only ever sees the HTML.
           // Without this branch the address would ALSO be misfiled as a download.
           capture('contact_clicked');
-        } else if (/^plans\\//.test(href)) {
-          capture('plan_page_opened', { plan: href.replace(/^plans\\//, '').replace(/\\.html$/, '') });
+        } else if (/^(?:\\.\\.\\/)*plans\\//.test(href)) {
+          capture('plan_page_opened', { plan: href.replace(/^(?:\\.\\.\\/)*plans\\//, '').replace(/\\.html$/, '') });
+        } else if (/^(?:\\.\\.\\/)*work-items\\//.test(href)) {
+          capture('work_item_page_opened', { work_item: href.replace(/^(?:\\.\\.\\/)*work-items\\//, '').replace(/\\.html$/, '') });
+        } else if (/^(?:\\.\\.\\/)*index\\.html(?:#.*)?$/.test(href)) {
+          capture('release_history_returned');
         } else if (href && href.indexOf('#') !== 0) {
           // a relative, non-anchor link on this page is a release artifact
           capture('download_clicked', { artifact: href, link_text: text });
@@ -444,6 +453,7 @@ h1 {
    hero; "Desktop auto-update fully operational (manifest fixes → proxy → 2-cut E2E
    on win/mac/linux VMs)" at that size is three lines of shouting. */
 h1.plan-title { font-size: clamp(1.7rem, 3.2vw, 2.15rem); line-height: 1.2; }
+h1.item-title { font-size: clamp(1.55rem, 3vw, 2rem); line-height: 1.22; }
 h2 { font-size: 1.45rem; margin: 0; letter-spacing: -.02em; font-weight: 640; }
 a { color: var(--accent-deep); text-decoration-color: rgba(2, 132, 199, .35); text-underline-offset: 2px; }
 a:hover { color: var(--accent); }
@@ -510,6 +520,9 @@ ul.items { list-style: none; padding: 0; margin: .6rem 0 0; }
 ul.items li { padding: .35rem 0; font-size: .89rem; color: var(--fg-dim); border-bottom: 1px solid var(--grid); }
 ul.items li:last-child { border-bottom: 0; }
 .wid { font-family: var(--mono); font-size: .76rem; color: var(--accent-2); margin-right: .55rem; }
+.item-row, .plan-heading { display: flex; align-items: baseline; justify-content: space-between; gap: .8rem; }
+.item-row > details { flex: 1 1 auto; min-width: 0; }
+.detail-link { flex: 0 0 auto; font-size: .76rem; font-weight: 600; white-space: nowrap; }
 /* Per-item click-to-expand (WI-5525). Scope OVER the top-level details/summary
    rules above so a nested item expander keeps the compact item look, not the big
    section-header look. */
@@ -523,7 +536,22 @@ ul.items li details[open] summary::before { transform: rotate(90deg); }
 ul.items li .item-body { margin: .45rem 0 .35rem 1.1em; padding: .55rem .75rem; white-space: pre-wrap; overflow-wrap: anywhere; font-size: .82rem; line-height: 1.5; color: var(--muted); background: rgba(255,255,255,.02); border-left: 2px solid var(--border); border-radius: 4px; max-height: 24rem; overflow: auto; }
 .plan-group { margin: 1.25rem 0 0; }
 .plan-group > h4 { margin: 0 0 .1rem; font-size: .95rem; font-weight: 640; letter-spacing: -.01em; }
+.plan-heading > h4 { margin: 0; font-size: .95rem; font-weight: 640; letter-spacing: -.01em; }
 .plan-group > .n { color: var(--muted); font-size: .78rem; margin: 0 0 .35rem; }
+.detail-card { border: 1px solid var(--border); border-radius: 12px; padding: 1.15rem 1.25rem; margin: 1.25rem 0; background: var(--surface); }
+.detail-card h2 { font-size: 1.05rem; margin-bottom: .75rem; }
+.detail-grid { display: grid; grid-template-columns: minmax(8rem, .38fr) minmax(0, 1fr); gap: .45rem 1rem; margin: 0; font-size: .88rem; }
+.detail-grid dt { color: var(--muted); font-weight: 600; }
+.detail-grid dd { margin: 0; color: var(--fg-dim); overflow-wrap: anywhere; }
+.detail-text { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--fg-dim); margin: 0; }
+.evidence-list { margin: 0; padding-left: 1.15rem; color: var(--fg-dim); }
+.evidence-list li { margin: .45rem 0; overflow-wrap: anywhere; }
+.evidence-list code { white-space: pre-wrap; }
+@media (max-width: 620px) {
+  .item-row, .plan-heading { align-items: flex-start; flex-direction: column; gap: .3rem; }
+  .detail-grid { grid-template-columns: 1fr; gap: .1rem; }
+  .detail-grid dd { margin-bottom: .55rem; }
+}
 .empty { color: var(--muted); font-style: italic; }
 .back { display: inline-block; margin-bottom: 1.75rem; font-size: .88rem; font-weight: 550; }
 .prose { margin-top: 1.5rem; color: var(--fg-dim); }
@@ -766,14 +794,15 @@ function renderItemList(items: ShippedItem[]): string {
 ${items
   .map((i) => {
     const head = `<span class="wid">${escapeHtml(i.id)}</span>${escapeHtml(i.title)}`;
+    const link = `<a class="detail-link" href="${escapeHtml(workItemPagePath(i.id))}">View full work item →</a>`;
     const body = (i.summary ?? '').trim();
     // No body → a plain row (unchanged look). With a body → a click-to-expand
     // <details> (WI-5525): summary is the id+title row (same look), the panel is
     // the full item text. Body is ESCAPED + white-space:pre-wrap — faithful and
     // XSS-safe (no markdown eval); identity is scrubbed with the whole page in
     // shell(). Pure HTML, no JS — works on the static R2 page.
-    if (!body) return `      <li>${head}</li>`;
-    return `      <li><details><summary>${head}</summary><div class="item-body">${escapeHtml(body)}</div></details></li>`;
+    if (!body) return `      <li><div class="item-row"><span>${head}</span>${link}</div></li>`;
+    return `      <li><div class="item-row"><details><summary>${head}</summary><div class="item-body">${escapeHtml(body)}</div></details>${link}</div></li>`;
   })
   .join('\n')}
     </ul>`;
@@ -791,7 +820,7 @@ function renderWork(rel: HydratedRelease): string {
       // internal workflow state, it says nothing to a tester, and on a page listing
       // what SHIPPED, "plan draft" reads as a contradiction rather than as metadata.
       const heading = g.plan
-        ? `<h4><a href="${escapeHtml(planPagePath(g.plan.slug))}">${escapeHtml(g.plan.title)}</a></h4>
+        ? `<div class="plan-heading"><h4><a href="${escapeHtml(planPagePath(g.plan.slug))}">${escapeHtml(g.plan.title)}</a></h4><a class="detail-link" href="${escapeHtml(planPagePath(g.plan.slug))}">View full plan →</a></div>
       <p class="n">${g.items.length} item${g.items.length === 1 ? '' : 's'}</p>`
         : `<h4>Not part of a plan</h4>
       <p class="n">${g.items.length} item${g.items.length === 1 ? '' : 's'}</p>`;
@@ -1062,4 +1091,94 @@ ${content}`;
     beacon,
     opts.redact ?? identityLiterals(),
   );
+}
+
+function formatItemTimestamp(value: string | null | undefined): string {
+  if (!value) return 'Not recorded';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toISOString().replace('T', ' ').replace(/\.000Z$/, ' UTC');
+}
+
+function renderCompletionEvidence(item: ShippedItem): string {
+  const evidence = item.terminalCompletionEvidence;
+  const rows: string[] = [];
+  const addText = (label: string, value: unknown) => {
+    if (typeof value === 'string' && value.trim()) {
+      rows.push(`<li><strong>${escapeHtml(label)}:</strong> <span class="detail-text">${escapeHtml(value.trim())}</span></li>`);
+    }
+  };
+
+  addText('Completion record', item.terminalCompletionRef);
+  if (evidence?.summary !== item.terminalCompletionRef) addText('Outcome', evidence?.summary);
+  addText('Verified how', evidence?.verifiedHow);
+  addText('Tests run', evidence?.testsRun);
+  addText('Test result', evidence?.testResult);
+  if (evidence?.filesChanged?.length) {
+    rows.push(`<li><strong>Files changed:</strong> ${evidence.filesChanged.map((file) => `<code>${escapeHtml(file)}</code>`).join(', ')}</li>`);
+  }
+  if (evidence?.addedTests !== undefined) {
+    rows.push(`<li><strong>Tests added or changed:</strong> ${evidence.addedTests ? 'Yes' : 'No'}</li>`);
+  }
+  if (evidence?.coverage) {
+    const coverage = [
+      ['Population', evidence.coverage.population],
+      ['Checked', evidence.coverage.checked],
+      ['Not checked', evidence.coverage.notChecked],
+      ['Not applicable', evidence.coverage.notApplicable],
+      ['Residue', evidence.coverage.residue],
+    ] as const;
+    for (const [label, values] of coverage) {
+      if (values?.length) rows.push(`<li><strong>${label}:</strong> ${values.map(escapeHtml).join(', ')}</li>`);
+    }
+  }
+  if (evidence?.treeStamp?.headSha) {
+    rows.push(`<li><strong>Verified tree:</strong> <code>${escapeHtml(evidence.treeStamp.headSha)}</code></li>`);
+  }
+  if (item.completionAuthority) {
+    rows.push(`<li><strong>Evidence status:</strong> ${escapeHtml(item.completionAuthority)}</li>`);
+  }
+
+  return rows.length > 0
+    ? `<ul class="evidence-list">${rows.join('')}</ul>`
+    : `<p class="empty">No completion or verification evidence was recorded.</p>`;
+}
+
+/** One complete public work-item page. Raw payloads/checkpoints never enter this projection. */
+export function renderWorkItemPageHtml(
+  item: ShippedItem,
+  opts: PageOptions & { version: string; channel: string; plan?: ShippedPlan | null },
+): string {
+  const plan = opts.plan ?? null;
+  const planValue = plan
+    ? `<a href="../${escapeHtml(planPagePath(plan.slug))}">${escapeHtml(plan.title)}</a>`
+    : item.planSlug
+      ? escapeHtml(item.planSlug)
+      : 'Not part of a plan';
+  const description = item.summary?.trim()
+    ? `<p class="detail-text">${escapeHtml(item.summary.trim())}</p>`
+    : `<p class="empty">No description was recorded.</p>`;
+
+  const body = `<a class="back" href="../index.html">← All releases</a>
+<p class="sub"><span class="wid">${escapeHtml(item.id)}</span></p>
+<h1 class="item-title">${escapeHtml(item.title)}</h1>
+<section class="detail-card">
+  <h2>Work item</h2>
+  <dl class="detail-grid">
+    <dt>Type</dt><dd>${escapeHtml(item.kind ?? 'work item')}</dd>
+    <dt>State</dt><dd>${escapeHtml(item.state ?? 'unknown')}</dd>
+    <dt>Release</dt><dd><a href="../index.html">${escapeHtml(opts.version)} (${escapeHtml(opts.channel)})</a></dd>
+    <dt>Plan</dt><dd>${planValue}</dd>
+    <dt>Created</dt><dd>${escapeHtml(formatItemTimestamp(item.createdAt))}</dd>
+    <dt>Updated</dt><dd>${escapeHtml(formatItemTimestamp(item.updatedAt))}</dd>
+    <dt>Completed</dt><dd>${escapeHtml(formatItemTimestamp(item.closedAt))}</dd>
+  </dl>
+</section>
+<section class="detail-card"><h2>Description</h2>${description}</section>
+<section class="detail-card"><h2>Completion and verification</h2>${renderCompletionEvidence(item)}</section>`;
+
+  const beacon = opts.analytics
+    ? beaconScript(opts.analytics, 'work-item', opts.version, `/${workItemPagePath(item.id)}`)
+    : '';
+  return shell(`${item.id}: ${item.title} — Papercusp`, body, beacon, opts.redact ?? identityLiterals());
 }

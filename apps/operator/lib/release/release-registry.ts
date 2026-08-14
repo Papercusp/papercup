@@ -24,6 +24,7 @@
  */
 
 import type { Sql } from 'postgres';
+import type { CompletionVerificationEvidence } from '@papercusp/operator-core/lib/coord-lifecycle/records';
 
 /** Terminal statuses — an item in one of these SHIPPED. (Issue-family settles to
  *  `resolved`, feature-family to `passed`; `closed` covers both.) */
@@ -69,6 +70,15 @@ export interface ShippedItem {
    */
   summary?: string;
   planSlug: string | null;
+  /** Public detail-page fields loaded from the canonical work-item row. */
+  kind?: string;
+  state?: string;
+  createdAt?: string | null;
+  updatedAt?: string | null;
+  closedAt?: string | null;
+  terminalCompletionRef?: string | null;
+  terminalCompletionEvidence?: CompletionVerificationEvidence | null;
+  completionAuthority?: string | null;
 }
 
 /** One plan whose work landed in this window. */
@@ -252,9 +262,20 @@ export async function hydrateRelease(
       title: string;
       summary: string | null;
       source_plan_slug: string | null;
+      item_kind: string | null;
+      status: string | null;
+      created_ts: number | string | null;
+      updated_ts: number | string | null;
+      closed_ts: number | string | null;
+      terminal_completion_ref: string | null;
+      completion_evidence: CompletionVerificationEvidence | null;
+      authority: string | null;
     }>
   >`
-    SELECT feature_id, title, summary, source_plan_slug
+    SELECT feature_id, title, summary, source_plan_slug, item_kind, status,
+           created_ts, updated_ts, closed_ts, terminal_completion_ref,
+           payload -> '_completionEvidence' AS completion_evidence,
+           authority
       FROM harness_shared.work_items
      WHERE workspace_id = ${scope.workspaceId}
        AND harness_slug = ${scope.harnessSlug}
@@ -266,10 +287,27 @@ export async function hydrateRelease(
     title: r.title ?? '',
     summary: r.summary ?? '',
     planSlug: r.source_plan_slug,
+    kind: r.item_kind ?? 'work item',
+    state: r.status ?? 'unknown',
+    createdAt: epochMillisIso(r.created_ts),
+    updatedAt: epochMillisIso(r.updated_ts),
+    closedAt: epochMillisIso(r.closed_ts),
+    terminalCompletionRef: r.terminal_completion_ref,
+    terminalCompletionEvidence: r.completion_evidence,
+    completionAuthority: r.authority,
   }));
   const plans =
     row.planSlugs.length > 0 ? await fetchPlans(sql, scope, row.planSlugs, items) : [];
   return { items, plans, internalCount };
+}
+
+/** Work-item timestamps are epoch millis (bigint, returned as string by postgres-js). */
+function epochMillisIso(value: number | string | null): string | null {
+  if (value == null) return null;
+  const millis = typeof value === 'string' ? Number(value) : value;
+  if (!Number.isFinite(millis)) return null;
+  const date = new Date(millis);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
 }
 
 async function fetchPlans(
