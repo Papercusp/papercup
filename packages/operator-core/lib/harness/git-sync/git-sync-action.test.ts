@@ -828,9 +828,11 @@ describe('clean sync outcome', () => {
     // a clean pass clears the conflict escalation AND (errTicks 0) the error one —
     // targeting the P-007 constant 'git-sync' phase row. (The content escalation clear is
     // gated on a PRIOR content quarantine — none here — so it does not fire this tick.)
-    expect(escalationClears()).toEqual([['git-sync-conflict'], ['git-sync-error']]);
+    // The strand clear (EI-20402093158205519) rides between them on its OWN phase: it is
+    // deliberately NOT counter-gated, so a MEASURED-clean census clears on every status.
+    expect(escalationClears()).toEqual([['git-sync-conflict'], ['git-sync-strand'], ['git-sync-error']]);
     const clears = unsafeCalls.filter((c) => c.text.includes('SET escalation = NULL'));
-    expect(clears.map((c) => c.params[2])).toEqual(['git-sync', 'git-sync']); // phase
+    expect(clears.map((c) => c.params[2])).toEqual(['git-sync', 'git-sync-strand', 'git-sync']); // phase
     expect(escalationUpserts()).toEqual([]);
 
     // no resolver business on a clean tick
@@ -855,7 +857,8 @@ describe('clean sync outcome', () => {
     const [patch] = routinePatches();
     expect(patch).toMatchObject({ last_status: 'nothing', consecutive_error_ticks: 0, consecutive_content_error_ticks: 0 });
     expect(patch).not.toHaveProperty('head_sha');
-    expect(escalationClears()).toEqual([['git-sync-conflict'], ['git-sync-error']]);
+    // + the strand clear on its own phase (measured-clean census, not counter-gated).
+    expect(escalationClears()).toEqual([['git-sync-conflict'], ['git-sync-strand'], ['git-sync-error']]);
     expect(runDocSweepMock).not.toHaveBeenCalled();
     expect(appendPipelineEventMock).toHaveBeenCalledWith(
       expect.objectContaining({ kind: 'git_sync', status: 'nothing' }));
@@ -956,8 +959,10 @@ describe('P-010/P-012 merge-conflict path', () => {
     expect(ups[0].params[0]).toBe('papercup'); // harness_slug
     expect(ups[0].params[1]).toBe('git-sync'); // phase — P-007: git-sync's own constant row key
     expect(ups[0].params[4]).toBe('ws-42'); // workspace_id
-    // a conflict tick clears NOTHING (the resolver clears by producing a clean pass)
-    expect(escalationClears()).toEqual([]);
+    // a conflict tick clears no CONFLICT/ERROR escalation (the resolver clears those by
+    // producing a clean pass). The strand clear is orthogonal and does fire: the census
+    // measured clean, and a strand is independent of whether the merge succeeded.
+    expect(escalationClears()).toEqual([['git-sync-strand']]);
 
     // dispatch resolved declaratively from the launch blueprint by event key
     expect(resolveLaunchTargetForEventMock).toHaveBeenCalledExactlyOnceWith(
@@ -1140,8 +1145,9 @@ describe('EI-18 repeated-failure escalation (git-sync-error)', () => {
       last_error: 'superproject: push failed: HTTP 500',
     });
     expect(escalationUpserts()).toEqual([]);
-    // an error tick must NOT clear an open conflict escalation either
-    expect(escalationClears()).toEqual([]);
+    // an error tick must NOT clear an open conflict escalation either — only the strand
+    // row (own phase/kind, measured-clean census) clears on an error tick.
+    expect(escalationClears()).toEqual([['git-sync-strand']]);
     expect(sendMessageMock).not.toHaveBeenCalled();
     expect(loopbackFetchMock).not.toHaveBeenCalled();
   });
@@ -1168,9 +1174,10 @@ describe('EI-18 repeated-failure escalation (git-sync-error)', () => {
     expect(ups[0].params[5]).toBe('git-sync-error');
 
     // it is NOT a merge conflict: no resolver dispatch, no conflict-escalation clear
+    // (the strand row still clears — own phase/kind, measured-clean census).
     expect(resolveLaunchTargetForEventMock).not.toHaveBeenCalled();
     expect(loopbackFetchMock).not.toHaveBeenCalled();
-    expect(escalationClears()).toEqual([]);
+    expect(escalationClears()).toEqual([['git-sync-strand']]);
 
     // the transition broadcast (fires exactly at the threshold) goes fleet-wide
     expect(sendMessageMock).toHaveBeenCalledTimes(1);
@@ -1379,6 +1386,100 @@ describe('EI-438 content-guard path (git-sync-content-error)', () => {
 
     const clears = unsafeCalls.filter((c) => c.text.includes('SET escalation = NULL'));
     expect(clears.some((c) => c.params[2] === 'git-sync-content')).toBe(false);
+  });
+});
+
+describe('EI-20402093158205519 stranded-submodule census (git-sync-strand)', () => {
+  /** Strand escalation upserts — their OWN phase, never the conflict/content rows. */
+  const strandUpserts = () => escalationUpserts().filter((u) => u.params[1] === 'git-sync-strand');
+  /** Strand escalation clears — the UPDATE ... SET escalation = NULL on our phase. */
+  const strandClears = () =>
+    unsafeCalls.filter((c) => c.text.includes('SET escalation = NULL') && c.params[2] === 'git-sync-strand');
+
+  /** A tick that synced the visible tree while two unregistered submodules held work. */
+  const strandedOutcome: GitSyncOutcome = {
+    ...syncedOutcome,
+    strandedSubmodules: [
+      { path: 'libs/papergrid', trackedFiles: 2, files: ['grid-core/src/RichGrid.tsx', 'grid-core/src/index.ts'] },
+      { path: 'libs/sync', trackedFiles: 1, files: ['package.json'] },
+    ],
+  };
+
+  beforeEach(() => {
+    counterRows = [{ et: 0, lo: [], ct: 0 }];
+  });
+
+  it('a strand tick writes the escalation on its OWN phase, naming the files and the fix', async () => {
+    runGitSyncMock.mockResolvedValue(strandedOutcome);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await action(ctx);
+
+    const ups = strandUpserts();
+    expect(ups).toHaveLength(1);
+    expect(ups[0].text).toContain('INSERT INTO harness_shared.harness_escalations');
+    expect(ups[0].params[1]).toBe('git-sync-strand');
+    expect(ups[0].body).toMatchObject({
+      kind: 'git-sync-strand',
+      harness_slug: 'papercup',
+      stranded_submodule_count: 2,
+      stranded_file_count: 3,
+    });
+    // The body must name the FILES, not just a count: the failure mode is an agent
+    // believing an edit landed, so a reader has to see WHICH edits did not.
+    expect(ups[0].body.submodules).toEqual([
+      { path: 'libs/papergrid', tracked_files: 2, files: ['grid-core/src/RichGrid.tsx', 'grid-core/src/index.ts'] },
+      { path: 'libs/sync', tracked_files: 1, files: ['package.json'] },
+    ]);
+    // ...and the actionable fix, not just the diagnosis.
+    expect(String(ups[0].body.detail)).toContain('git submodule init');
+    warn.mockRestore();
+  });
+
+  it('a MEASURED-clean tick ([]) clears the strand escalation (own phase + kind)', async () => {
+    runGitSyncMock.mockResolvedValue(syncedOutcome); // strandedSubmodules: []
+
+    await action(ctx);
+
+    const clears = strandClears();
+    expect(clears).toHaveLength(1);
+    expect(clears[0].params[3]).toEqual(['git-sync-strand']);
+    expect(strandUpserts()).toEqual([]);
+  });
+
+  it('an UNMEASURED tick (null) neither writes NOR clears — an unmeasured pass must not retire a live warning', async () => {
+    // This is the design decision the nullable type exists to enforce (see
+    // GitSyncOutcome.strandedSubmodules). `null` = the census did not RUN; collapsing it
+    // into `[]` would let a pass that measured NOTHING silently retire a real strand
+    // warning — the exact silence the whole field exists to break. If a future refactor
+    // drops the tri-state, this is the test that fails.
+    runGitSyncMock.mockResolvedValue({ ...syncedOutcome, strandedSubmodules: null });
+
+    await action(ctx);
+
+    expect(strandUpserts()).toEqual([]);
+    expect(strandClears()).toEqual([]);
+  });
+
+  it('a strand rides ALONGSIDE a conflict — separate phase rows, neither clobbering the other', async () => {
+    // A strand must not make the pass fail, and must not contend for the 'git-sync' row a
+    // merge-resolver may be reading. Both rows are written, on their own phases.
+    runGitSyncMock.mockResolvedValue({
+      ...conflictOutcome,
+      strandedSubmodules: [{ path: 'libs/papergrid', trackedFiles: 1, files: ['grid-core/src/RichGrid.tsx'] }],
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await action(ctx);
+
+    const phases = escalationUpserts().map((u) => u.params[1]);
+    expect(phases).toContain('git-sync');
+    expect(phases).toContain('git-sync-strand');
+    // The strand write targets ONLY its own phase row.
+    expect(strandUpserts()).toHaveLength(1);
+    // ...and does not clear the conflict row it rode in with.
+    expect(strandClears()).toEqual([]);
+    warn.mockRestore();
   });
 });
 
