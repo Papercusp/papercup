@@ -273,7 +273,7 @@ export default defineTool({
         // D-005). Flag ACCEPTANCE_RUBRIC_COMPLETION_GATE (default ON); rubric-template
         // plans + scheduled template instances are exempt inside the gate.
         if (status === 'shipped') {
-          const gate = await evaluatePlanAcceptanceGate(slug);
+          const gate = await evaluatePlanAcceptanceGate(slug, args.force ? { force: args.force } : undefined);
           if (!gate.satisfied) {
             const acceptanceGrader = await launchAcceptanceGraderForGate(slug, gate, ctx);
             return {
