@@ -30,6 +30,11 @@ import {
   parseArgv,
   parseCmdline,
   parsePpid,
+  parseCgroupPath,
+  parseUsageUsec,
+  computeCoresBusy,
+  sampleCgroupBusy,
+  formatBusy,
 } from '../../../scripts/proc-guard.mjs';
 
 let fixtureRoot: string | null = null;
@@ -326,5 +331,125 @@ describe('listProcesses', () => {
 
     const procs = listProcesses(fixtureRoot);
     expect(procs.map((p) => p.pid)).toEqual([3]);
+  });
+});
+
+/**
+ * EI-20425164406230624 — `--busy`: "is it WORKING", as opposed to `check`'s
+ * "is it RUNNING". Two agents measured the SAME live gate run within one
+ * minute and reached OPPOSITE conclusions, because a hand-rolled /proc tree
+ * walk false-idles here two ways (a depth-bounded walk halts on a 0-tick shell
+ * wrapper; `c*` ticks are credited only on wait(), which vitest never does for
+ * its own workers). The cgroup cannot be escaped, so it is the instrument.
+ */
+describe('proc-guard --busy: cgroup CPU sampling', () => {
+  describe('parseCgroupPath', () => {
+    it('extracts the cgroup-v2 path', () => {
+      expect(parseCgroupPath('0::/user.slice/user-1000.slice/run-u123272.scope\n')).toBe(
+        '/user.slice/user-1000.slice/run-u123272.scope',
+      );
+    });
+
+    it('returns null on a v1-only host rather than guessing a path', () => {
+      expect(parseCgroupPath('12:pids:/user.slice\n4:cpu,cpuacct:/user.slice\n')).toBeNull();
+    });
+  });
+
+  describe('parseUsageUsec', () => {
+    it('reads usage_usec out of a cpu.stat body', () => {
+      expect(parseUsageUsec('usage_usec 123456\nuser_usec 100000\nsystem_usec 23456\n')).toBe(123456);
+    });
+
+    it('returns null when the field is absent', () => {
+      expect(parseUsageUsec('nr_periods 0\nnr_throttled 0\n')).toBeNull();
+    });
+  });
+
+  describe('computeCoresBusy', () => {
+    it('converts a usec delta over elapsed ms into cores', () => {
+      expect(computeCoresBusy(2_000_000, 1000)).toBeCloseTo(2.0, 5);
+    });
+
+    it('returns null rather than Infinity when elapsed is zero', () => {
+      expect(computeCoresBusy(1_000_000, 0)).toBeNull();
+    });
+  });
+
+  describe('sampleCgroupBusy', () => {
+    function busyFixture(usageSeries: number[]): { procRoot: string; cgroupRoot: string; advance: () => void } {
+      fixtureRoot = mkdtempSync(join(tmpdir(), 'proc-guard-busy-'));
+      const procRoot = join(fixtureRoot, 'proc');
+      const cgroupRoot = join(fixtureRoot, 'cgroup');
+      mkdirSync(join(procRoot, '42'), { recursive: true });
+      writeFileSync(join(procRoot, '42', 'cgroup'), '0::/test.scope\n');
+      mkdirSync(join(cgroupRoot, 'test.scope'), { recursive: true });
+      const statPath = join(cgroupRoot, 'test.scope', 'cpu.stat');
+      writeFileSync(join(cgroupRoot, 'test.scope', 'cgroup.procs'), '42\n43\n44\n');
+      let i = 0;
+      const write = () => writeFileSync(statPath, `usage_usec ${usageSeries[i]}\n`);
+      write();
+      return { procRoot, cgroupRoot, advance: () => { i = Math.min(i + 1, usageSeries.length - 1); write(); } };
+    }
+
+    it('divides by MEASURED elapsed, not the requested sample window', async () => {
+      // 1 core-second of CPU observed over a MEASURED 500ms => 2 cores.
+      // If the implementation divided by sampleMs (10s) it would say 0.10 —
+      // so this number is what pins the correct divisor.
+      const { procRoot, cgroupRoot, advance } = busyFixture([1_000_000, 2_000_000]);
+      let t = 0;
+      const res = await sampleCgroupBusy(42, {
+        procRoot,
+        cgroupRoot,
+        sampleMs: 10_000,
+        sleep: async () => { advance(); t = 500; },
+        now: () => t,
+      });
+
+      expect(res.status).toBe('ok');
+      expect(res.cores).toBeCloseTo(2.0, 5);
+      expect(res.elapsedMs).toBe(500);
+      expect(res.procs).toBe(3); // every descendant, not just the pid asked about
+    });
+
+    it('reports UNKNOWN — never 0 cores — when the cgroup cannot be read', async () => {
+      // "could not measure" and "measured, idle" must not render alike: the
+      // whole incident behind this feature was an unmeasurable read being
+      // reported as an idle one.
+      fixtureRoot = mkdtempSync(join(tmpdir(), 'proc-guard-busy-none-'));
+      const procRoot = join(fixtureRoot, 'proc');
+      mkdirSync(join(procRoot, '42'), { recursive: true });
+      writeFileSync(join(procRoot, '42', 'cgroup'), '0::/test.scope\n');
+
+      const res = await sampleCgroupBusy(42, {
+        procRoot,
+        cgroupRoot: join(fixtureRoot, 'cgroup-does-not-exist'),
+        sampleMs: 1,
+        sleep: async () => {},
+      });
+
+      expect(res.status).toBe('unknown');
+      expect(res.reason).toBe('cpu-stat-unreadable');
+      expect(res.cores).toBeUndefined();
+    });
+  });
+
+  describe('formatBusy', () => {
+    it('attaches the falsifier to a near-zero reading', () => {
+      const lines = formatBusy({ status: 'ok', cores: 0.0, procs: 1, elapsedMs: 10_000, cgroupPath: '/t.scope' });
+      expect(lines.join(' ')).toMatch(/near-zero/);
+      expect(lines.join(' ')).toMatch(/DIFFERENT cgroup/);
+    });
+
+    it('does NOT cry wolf on a genuinely busy reading', () => {
+      const lines = formatBusy({ status: 'ok', cores: 2.54, procs: 15, elapsedMs: 10_000, cgroupPath: '/t.scope' });
+      expect(lines.join(' ')).toContain('2.54 core(s)');
+      expect(lines.join(' ')).not.toMatch(/near-zero/);
+    });
+
+    it('renders an unknown sample as UNKNOWN and explicitly not idle', () => {
+      const lines = formatBusy({ status: 'unknown', reason: 'no-cgroup-entry' });
+      expect(lines.join(' ')).toContain('UNKNOWN');
+      expect(lines.join(' ')).toMatch(/NOT "idle"/);
+    });
   });
 });
