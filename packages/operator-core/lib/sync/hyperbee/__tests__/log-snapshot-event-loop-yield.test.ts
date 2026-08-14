@@ -108,30 +108,32 @@ const OP_COUNT = SNAPSHOT_READ_CONCURRENCY * 3;
  */
 const SPANNING_READ_WINDOWS = 200;
 
-/**
- * How long the CONTROL below keeps yielding for. Must comfortably exceed Node's 1ms floor on
- * `setTimeout(…, 0)` so the armed probe lands regardless of host load; small enough that the
- * case stays fast. Not a timeout — the loop exits as soon as the budget elapses either way.
- */
-const CONTROL_YIELD_BUDGET_MS = 5;
-
 /** Hard bound on that loop, so a broken instrument fails fast instead of spinning. */
 const CONTROL_YIELD_SPIN_CAP = 10_000;
 
 /**
  * Arms a timer-phase probe, runs `op`, and reports whether the timer got a turn WHILE `op`
  * was still running. `'during'` = the operation yielded; `'after'` = it starved the loop.
+ *
+ * `op` receives `probeLanded()` — whether the armed timer has ALREADY had its turn. That
+ * predicate is what lets a yield-until-observed case (the second CONTROL) stop on the event
+ * it is actually waiting for instead of on a guessed duration. A case that does not care
+ * simply ignores the argument; a zero-arg `op` stays assignable.
  */
-async function observeYield(op: () => Promise<unknown>): Promise<'during' | 'after'> {
+async function observeYield(
+  op: (probeLanded: () => boolean) => Promise<unknown>,
+): Promise<'during' | 'after'> {
   let finished = false;
+  let fired = false;
   let landed: 'during' | 'after' | null = null;
   const armed = new Promise<void>((resolve) => {
     setTimeout(() => {
+      fired = true;
       landed = finished ? 'after' : 'during';
       resolve();
     }, 0);
   });
-  await op();
+  await op(() => fired);
   finished = true;
   await armed;
   // `landed` is assigned in the timer callback that `armed` resolves from.
@@ -173,21 +175,26 @@ describe('event-loop yield (P-014 half 3)', () => {
     // WITHOUT having passed back through the timers phase — so a single yield can resolve
     // before the armed timer ever gets a turn.
     //
-    // ⚠ Yield until the armed timer has CERTAINLY had its turn, never a fixed count.
-    // `observeYield` arms `setTimeout(…, 0)`, which Node clamps to 1ms, so "how many
-    // yields before the timer lands" is a WALL-CLOCK RACE, not a constant: a few CHECK-phase
-    // turns take microseconds on a quiet box and milliseconds on a busy one. The previous
-    // hardcoded 3 was tuned empirically and won a race it could also lose — measured
-    // 2026-08-09 at load average 25 it reported 'after' on 2 of 3 consecutive runs and
-    // red-pinned the fleet's release gate on a file nothing had changed.
+    // ⚠ Yield until the armed timer has OBSERVABLY had its turn — never a fixed count, and
+    // never a wall-clock budget. Two earlier shapes of this loop both raced the host:
+    //   - a hardcoded 3 yields (tuned empirically) reported 'after' on 2 of 3 consecutive
+    //     runs at load average 25 on 2026-08-09;
+    //   - a 5ms budget replaced it and lost the SAME race on 2026-08-14, because a saturated
+    //     timers phase can be delayed past any fixed budget. Waiting "long enough" for a
+    //     phase whose delay is unbounded under load is not a fix, it is a longer race.
+    // Both failures red-pinned the fleet's release gate on a file nothing had changed.
     //
-    // This does NOT weaken the control. Every iteration is still a real yield, so if
-    // `observeYield` ever goes stuck-at-'after' the assertion below still fails — which is
-    // the property this case exists to police. The spin cap keeps a BROKEN instrument
-    // failing fast instead of hanging.
-    const verdict = await observeYield(async () => {
-      const deadline = Date.now() + CONTROL_YIELD_BUDGET_MS;
-      for (let spins = 0; spins < CONTROL_YIELD_SPIN_CAP && Date.now() < deadline; spins += 1) {
+    // `probeLanded()` is the event this case was always really waiting for, so it now waits
+    // on THAT rather than on a proxy for it. The loop exits the moment the timer has run,
+    // whatever the host is doing — no clock, no tuned constant, nothing load-dependent.
+    //
+    // This does NOT weaken the control. Every iteration is still a real yield, and the
+    // assertion is unchanged: if `observeYield` ever goes stuck-at-'after', `probeLanded()`
+    // still flips (the callback ran) and the verdict it recorded is 'after', so the case
+    // fails exactly as it should. The spin cap keeps a BROKEN instrument — one whose timer
+    // never runs at all — failing fast instead of spinning forever.
+    const verdict = await observeYield(async (probeLanded) => {
+      for (let spins = 0; spins < CONTROL_YIELD_SPIN_CAP && !probeLanded(); spins += 1) {
         await new Promise<void>((resolve) => setImmediate(resolve));
       }
     });
