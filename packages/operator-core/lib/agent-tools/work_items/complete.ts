@@ -85,7 +85,7 @@ import { shapeWorkItemWriteEcho } from './write-echo-shape';
 import { coerceCompletionShape, gatherFlatCompletion } from './completion-coerce';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
-import { resolveConcreteWorkspaceId } from '../../workspace-registry';
+import { activeWorkspaceId, resolveConcreteWorkspaceId } from '../../workspace-registry';
 import { itemTestGate } from '../../harness-test-gate';
 import { FEATURE_TERMINAL_STATES, normalizeFeatureStateInput } from '../../work-item-dispatch-states';
 import { setWorkItemCheckpoint } from '../../work-item-checkpoint';
