@@ -251,7 +251,7 @@ export function resolveCitation(citation: AuditCitation, deps: CitationDeps): Ci
  * per-root, so the strictness the module header describes is unchanged: a citation
  * passes only when it names a real file under an allowed root.
  */
-function independentSiblingRepos(repoRoot: string): ReadonlySet<string> {
+export function independentSiblingRepos(repoRoot: string): ReadonlySet<string> {
   const workspaceRoot = path.dirname(repoRoot);
   const names = new Set<string>();
   let realRepo = repoRoot;
