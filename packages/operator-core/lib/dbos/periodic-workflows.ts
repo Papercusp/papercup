@@ -241,42 +241,67 @@ DBOS.registerScheduled(coordEscalationGcWorkflow, { name: 'coordEscalationGc', c
 // SESSION_ARCHIVE_AT_END kill-switch as the fast path. This sweep is also the
 // engine that drains the pre-plan backlog (P-011). Never throws out of the
 // step (D-016 classification: skip-missed periodic).
+/**
+ * EI-20419472483823685 — emit the codex-home config.toml invariant on its OWN
+ * line, UNCONDITIONALLY, including a clean `0/N`.
+ *
+ * ⚠ Never fold this into the reconciler's activity summary. That line is gated
+ * on something having HAPPENED, so a quiet tick prints nothing at all — the
+ * precise ambiguity that let WI-38706's damage sit unnoticed, because the
+ * absence of a clause could not be told apart from "checked, all healthy".
+ * The absence of THIS line must mean the check did not run.
+ */
+function logCodexHomeInvariant(
+  missing: number | null,
+  scanned: number | null,
+  missingDirs: string[],
+  error?: string,
+): void {
+  const head = '[session-archive-reconciler] codex-home config.toml invariant';
+  if (error || missing === null || scanned === null) {
+    console.warn(`${head}: UNKNOWN — ${error ?? 'not evaluated'}`);
+    return;
+  }
+  const line = `${head}: ${missing}/${scanned} missing`;
+  // A missing config.toml makes `codex resume` die with "Model provider
+  // papercusp-codex-gateway not found" — warn so it reaches supervision.
+  if (missing > 0) console.warn(`${line}${missingDirs.length ? ` — ${missingDirs.join(', ')}` : ''}`);
+  else console.log(line);
+}
+
 async function sessionArchiveReconcileTick(): Promise<void> {
   await DBOS.runStep(async () => {
     try {
+      const { runSessionArchiveReconcileOnce, runCodexHomeConfigInvariant } = await import(
+        '../session-archive-reconciler'
+      );
       const enabled = await getFlag(FLAGS.SESSION_ARCHIVE_AT_END, 'system').catch(() => false);
-      if (!enabled) return;
-      const { runSessionArchiveReconcileOnce } = await import('../session-archive-reconciler');
+      if (!enabled) {
+        // The invariant is READ-ONLY and detects damage that OUTLIVES the
+        // archiver, so it must NOT be gated on the archiver's own flag —
+        // doing so reproduces WI-38706's actual failure (nobody noticing) for
+        // exactly as long as the flag is off, and it demonstrably has been off.
+        try {
+          const only = await runCodexHomeConfigInvariant();
+          logCodexHomeInvariant(only.missing, only.scanned, only.missingDirs);
+        } catch (e) {
+          logCodexHomeInvariant(null, null, [], (e as Error)?.message ?? String(e));
+        }
+        return;
+      }
       const s = await runSessionArchiveReconcileOnce();
       if (s.dbArchived || s.diskSessionsArchived || s.ompFilesArchived || s.dbStampedEmpty || s.dbFailed || s.diskFailed || s.diskSkippedFresh || s.skippedDisk) {
         console.log(
           `[session-archive-reconciler] db: ${s.dbArchived} archived / ${s.dbStampedEmpty} stamped-empty / ${s.dbFailed} failed (${s.endedUnarchivedRemaining} remaining); disk: ${s.diskSessionsArchived} archived + ${s.diskLeftoversDeleted} leftovers${s.diskLeftoversRetained ? ` (+${s.diskLeftoversRetained} shared-state RETAINED)` : ''} across ${s.diskDirsScanned} dirs (${s.diskSkippedFresh} fresh-skipped${s.skippedDisk ? `; SWEEP SKIPPED: ${s.skippedDisk}` : ''}); omp: ${s.ompFilesArchived}`,
         );
       }
-      // INVARIANT (EI-20419472483823685) — "every codex home has its
-      // config.toml", the recurrence guard for WI-38706's class. Deliberately
-      // its OWN line, emitted UNCONDITIONALLY including a clean 0/N.
-      //
-      // ⚠ Do NOT fold this into the summary above. That line is gated on
-      // something having HAPPENED, so a quiet tick prints nothing at all —
-      // which is the precise reason the `(+N shared-state RETAINED)` clause
-      // could not distinguish "correctly zero" from "never ran" during
-      // WI-38706 verification, and cost real time. Absence of THIS line must
-      // mean the check did not run, never that it ran clean.
-      const inv = s.codexHomeInvariantError
-        ? `[session-archive-reconciler] codex-home config.toml invariant: UNKNOWN — ${s.codexHomeInvariantError}`
-        : `[session-archive-reconciler] codex-home config.toml invariant: ${s.codexHomesMissingConfig}/${s.codexHomesScanned} missing`;
-      if (s.codexHomesMissingConfig > 0 || s.codexHomeInvariantError) {
-        // A missing config.toml makes `codex resume` die with "Model provider
-        // papercusp-codex-gateway not found" — surfaced as a warning so it
-        // reaches supervision rather than sitting in a quiet info line.
-        const named = s.codexHomesMissingConfigDirs.length
-          ? ` — ${s.codexHomesMissingConfigDirs.join(', ')}`
-          : '';
-        console.warn(`${inv}${named}`);
-      } else {
-        console.log(inv);
-      }
+      // INVARIANT (EI-20419472483823685) — always emitted, see the helper.
+      logCodexHomeInvariant(
+        s.codexHomesMissingConfig,
+        s.codexHomesScanned,
+        s.codexHomesMissingConfigDirs,
+        s.codexHomeInvariantError,
+      );
     } catch (e) {
       console.warn(`[session-archive-reconciler] tick failed: ${(e as Error)?.message ?? e}`);
     }

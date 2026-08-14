@@ -13,7 +13,11 @@ import { mkdtemp, mkdir, rm, utimes, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { runSessionArchiveReconcileOnce, type ReconcilerDb } from './session-archive-reconciler';
+import {
+  runCodexHomeConfigInvariant,
+  runSessionArchiveReconcileOnce,
+  type ReconcilerDb,
+} from './session-archive-reconciler';
 import { archiveSession, type ArchiveFileRow, type ArchiveStampRow, type SessionArchiveStore } from './session-archive';
 
 const SID_DEAD = 'dddddddd-1111-2222-3333-444444444444';
@@ -286,5 +290,92 @@ describe('runSessionArchiveReconcileOnce', () => {
     expect(existsSync(oldAbs)).toBe(false);
     expect(existsSync(freshAbs)).toBe(true);
     expect(store.stamps.has(`omp:${SID_OMP_OLD}`)).toBe(true);
+  });
+});
+
+/**
+ * EI-20419472483823685 — the codex-home config.toml invariant.
+ *
+ * WI-38706 deleted the SHARED per-home config.toml, breaking `codex resume`
+ * fleet-wide. The CAUSE was fixed, but nothing DETECTED the damage: one home
+ * sat unresumable for up to ~4 days and was found only because a hand-run
+ * census happened. These pin the detector — and in particular pin WHY it does
+ * not ride the archive sweep.
+ */
+describe('runCodexHomeConfigInvariant', () => {
+  async function codexHome(root: string, name: string, withConfig: boolean): Promise<string> {
+    const dir = join(root, name);
+    await mkdir(dir, { recursive: true });
+    if (withConfig) {
+      await writeFile(join(dir, 'config.toml'), 'model_provider = "papercusp-codex-gateway"\n');
+    }
+    return dir;
+  }
+
+  it('counts every codex home and names the ones missing config.toml', async () => {
+    const codexRoot = await tmp('sar-codex-');
+    await codexHome(codexRoot, 'session-1', true);
+    await codexHome(codexRoot, 'session-2', true);
+    const broken = await codexHome(codexRoot, 'session-3', false);
+
+    const inv = await runCodexHomeConfigInvariant([
+      { root: codexRoot, keyKind: 'session', label: 'su-codex-homes' },
+    ]);
+
+    expect(inv.scanned).toBe(3);
+    expect(inv.missing).toBe(1);
+    expect(inv.missingDirs).toEqual([broken]);
+  });
+
+  it('ignores owner-kind roots — config.toml is a codex-home artifact, not a claude one', async () => {
+    const ownerRoot = await tmp('sar-owner-');
+    await mkdir(join(ownerRoot, 'some-owner'), { recursive: true });
+
+    const inv = await runCodexHomeConfigInvariant([
+      { root: ownerRoot, keyKind: 'owner', label: 'session-claude' },
+    ]);
+
+    // Not "0 missing out of 1": the dir must not be SCANNED at all, or every
+    // claude owner dir reports as a false positive forever.
+    expect(inv.scanned).toBe(0);
+    expect(inv.missing).toBe(0);
+  });
+
+  it('reports the TRUE missing count even when the named list is capped', async () => {
+    const codexRoot = await tmp('sar-codex-many-');
+    for (let i = 0; i < 5; i++) await codexHome(codexRoot, `session-${i}`, false);
+
+    const inv = await runCodexHomeConfigInvariant(
+      [{ root: codexRoot, keyKind: 'session', label: 'su-codex-homes' }],
+      2,
+    );
+
+    // A capped census rendered as a total is how a floor gets read as a verdict.
+    expect(inv.missing).toBe(5);
+    expect(inv.missingDirs).toHaveLength(2);
+  });
+
+  it('CONTROL: sees a home the ARCHIVE SWEEP skips — the whole reason it does not ride that loop', async () => {
+    // The home that actually broke (WI-38706, session-14801) was LIVE, so the
+    // archive loop skipped it as protected. A home with no archivable rollout
+    // ids is skipped by that same loop for an equivalent reason — it `continue`s
+    // before diskDirsScanned++. If someone "simplifies" this by moving the
+    // check inside that loop, this test fails. That is the point of it.
+    const codexRoot = await tmp('sar-codex-skipped-');
+    await mkdir(join(codexRoot, 'session-14801'), { recursive: true });
+    // No config.toml, and no rollout files => invisible to the archive sweep.
+
+    const stats = await runSessionArchiveReconcileOnce({
+      db: fakeDb([]),
+      store: new MiniStore(),
+      dirRoots: [{ root: codexRoot, keyKind: 'session', label: 'su-codex-homes' }],
+      ompRoot: await tmp('sar-none-'),
+      protectedIdentity: { ownerIds: new Set(), sessionKeys: new Set() },
+    });
+
+    expect(stats.diskDirsScanned).toBe(0); // the archive sweep never counted it
+    expect(stats.codexHomesScanned).toBe(1); // the invariant did
+    expect(stats.codexHomesMissingConfig).toBe(1);
+    expect(stats.codexHomeInvariantError).toBeUndefined();
   });
 });
