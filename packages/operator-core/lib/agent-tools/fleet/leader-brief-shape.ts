@@ -378,9 +378,25 @@ export function shapeLeaderBrief(data: unknown, tier: LeaderBriefPayloadTier): u
     ok: source.ok === true,
     ...(source.blockedAt !== undefined ? { blockedAt: compactBlockedAt(source.blockedAt) } : {}),
     ...(source.summary !== undefined ? { summary: compactSummary(source.summary, true) } : {}),
-    ...(Array.isArray(source.memberVerdicts) ? { memberVerdicts: source.memberVerdicts.slice(0, 1).map(compactVerdict) } : {}),
     leaderBriefProjection: { tier, emergency: true, note: 'Further optional detail was omitted to keep the monitor response valid JSON.' },
   };
+  // Emergency is a byte-pressure tier, not permission to turn bounded arrays
+  // into unexplained omissions. Keep one actionable member/verdict and retain
+  // truthful zero-shown pointers for every dropped family.
+  addCappedArray(emergency, source, 'memberVerdicts', 1, compactVerdict);
+  addCappedArray(emergency, source, 'members', 1, compactMember);
+  for (const key of ['unownedCriticals', 'unownedCriticalsFederated', 'abandonedUnclaimed', 'orphanedInFlight']) {
+    addCappedArray(emergency, source, key, 0, compactAdvisory);
+  }
+  addCappedArray(emergency, source, 'admissionBlocked', 0, compactAdmissionBlock);
+  addCappedArray(emergency, source, 'customInvariants', 0, compactInvariant);
+  if (source.specFilter !== undefined) {
+    emergency.specFilterOmitted = {
+      reason: 'bounded for monitor transport',
+      chars: (() => { try { return JSON.stringify(source.specFilter).length; } catch { return null; } })(),
+      more: 'scheduler:get_claim_spec { fleet }',
+    };
+  }
   if (source.campaign !== undefined) {
     const campaign = compactCampaign(source.campaign, 0);
     if (JSON.stringify({ ...emergency, campaign }).length <= LEADER_BRIEF_SHAPER_BUDGET_CHARS) {
