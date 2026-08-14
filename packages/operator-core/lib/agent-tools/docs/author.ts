@@ -33,7 +33,8 @@ import { anchorManualDoc } from '../../harness/docs/manual-anchor';
 import { applyProjectionBanner } from '../../harness/docs/authored-doc-projection';
 import { getAuthoredDocContent } from '../../harness/docs/doc-record';
 import { resolveHarnessScope, isEngineeringDocsSentinel } from '../_harness-scope';
-import { invalidateEngineeringAdapter } from './_engineering-adapter';
+import { engineeringAdapter, invalidateEngineeringAdapter } from './_engineering-adapter';
+import { refreshDocPageSections } from '../../search/doc-embed-sync';
 
 // ── Pure helpers (exported for unit tests — these encode the footgun-prevention) ──
 
@@ -536,15 +537,37 @@ export default defineTool({
     // doc projected by a corpus-wide run are byte-identical. A failure here is genuinely
     // recoverable and must NOT lose the doc: the prose is already canonical in Postgres,
     // so the next projector run writes the file.
+    let projected = true;
     try {
       await fs.mkdir(dirname(abs), { recursive: true });
       await fs.writeFile(abs, applyProjectionBanner(content, docId), 'utf8');
       if (harnessRes.engineering) invalidateEngineeringAdapter();
     } catch (e) {
+      projected = false;
       warnings.push(
         `the doc is saved (Postgres is canonical) but its .mdx projection failed to write (${(e as Error).message}) — ` +
           `run: node --import tsx scripts/project-authored-docs.ts --write`,
       );
+    }
+
+    // ── The search index ───────────────────────────────────────────────────────────
+    // EI-20459861068197195: docs:search reads harness_shared.doc_sections, which is a
+    // DIFFERENT store from the canonical row, the .mdx and the curated index. Its
+    // engineering sync is once-per-process, so without this the doc we just corrected
+    // keeps being SERVED with its old title/description/body until the operator
+    // restarts — the tool having reported success. Repair this one page inline.
+    //
+    // Ordering matters: this must follow invalidateEngineeringAdapter() above, or the
+    // adapter re-indexes the bytes it memoized before the write. Fail-open — the doc
+    // is already canonical, so a stale index is a warning, never a failed author.
+    if (projected && harnessRes.engineering) {
+      const refreshed = await refreshDocPageSections(engineeringAdapter, docId.replace(/\.mdx$/, ''));
+      if (!refreshed.ok) {
+        warnings.push(
+          `the doc is saved and projected, but its docs:search index entry was NOT refreshed (${refreshed.reason}) — ` +
+            `docs:search will keep returning this page's PREVIOUS title/description/content until the operator restarts.`,
+        );
+      }
     }
 
     const indexNudge = insightsIndexNudge(section, harnessSlug);
