@@ -23,7 +23,7 @@ import type { RepoError, ScopedOversized } from './run-git-sync';
 export const PUSH_FAILURE_ESCALATION_TICKS = 3;
 
 /** Which LEG of a git-sync tick failed (EI-19275994927087666). */
-export type GitSyncFailingLeg = 'commit' | 'push' | 'conflict' | 'unknown';
+export type GitSyncFailingLeg = 'commit' | 'push' | 'conflict' | 'config-lock' | 'unknown';
 
 /**
  * PURE: classify which leg actually failed, from the error text git-sync recorded.
@@ -46,6 +46,7 @@ export function classifyGitSyncFailingLeg(
 ): GitSyncFailingLeg {
   const e = (lastError ?? '').toLowerCase();
   if (e.includes('conflict')) return 'conflict';
+  if (e.includes('could not lock config file') && e.includes('config')) return 'config-lock';
   if (e.includes('commit failed') || e.includes('commit error')) return 'commit';
   if (e.includes('push')) return 'push';
   // No usable error text: a commit-only member still cannot have push-failed.
@@ -63,6 +64,8 @@ export function gitSyncLegPhrase(leg: GitSyncFailingLeg | null): string {
       return 'COMMIT failing — nothing has reached the push stage; origin is unaffected';
     case 'conflict':
       return 'merge conflict — needs a resolver';
+    case 'config-lock':
+      return 'submodule config-lock contention — canonical URL sync blocked locally; origin is unaffected';
     default:
       return "cause unclassified — read that routine's last_error";
   }

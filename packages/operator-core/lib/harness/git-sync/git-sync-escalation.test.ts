@@ -132,6 +132,22 @@ describe('classifyGitSyncFailingLeg (EI-19275994927087666)', () => {
     expect(classifyGitSyncFailingLeg('merge conflict in lib/x.ts; commit aborted', 'push')).toBe('conflict');
   });
 
+  it('EI-20347384139844425: classifies submodule config-lock contention by its local cause', () => {
+    const actual =
+      'submodule-config: canonical submodule URL sync failed: error: could not lock config file /repo/.git/config: File exists';
+    expect(classifyGitSyncFailingLeg(actual, 'push')).toBe('config-lock');
+
+    const decision = decideGitSyncEscalation({
+      ...base,
+      status: 'error',
+      consecutiveErrorTicks: PUSH_FAILURE_ESCALATION_TICKS,
+      errors: [{ scope: 'submodule-config', message: actual }],
+    });
+    expect(decision.broadcast).toContain('submodule config-lock contention');
+    expect(decision.broadcast).toContain('origin is unaffected');
+    expect(decision.broadcast).not.toContain('cause unclassified');
+  });
+
   it('infers commit for a commit-only member when the error text is unusable', () => {
     // A commit-only:* member never pushes, so its failure cannot be a push failure.
     expect(classifyGitSyncFailingLeg(null, 'commit-only:bridged')).toBe('commit');

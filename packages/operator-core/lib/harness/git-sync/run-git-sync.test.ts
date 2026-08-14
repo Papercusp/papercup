@@ -1365,6 +1365,45 @@ describe('runGitSync — P-002 failure classification (injected git)', () => {
     expect(fetchOrPushCalls).toBe(0);
   });
 
+  it('EI-20347384139844425: live config.lock contention retries before failing the tick', async () => {
+    let urlSyncAttempts = 0;
+    const logs: string[] = [];
+    const run = fakeGit((args) => {
+      const j = args.join(' ');
+      if (j === 'submodule sync --recursive') {
+        urlSyncAttempts++;
+        if (urlSyncAttempts < 3) {
+          return {
+            code: 1,
+            stderr: 'error: could not lock config file /fake/.git/config: File exists',
+          };
+        }
+        return { code: 0 };
+      }
+      // Fail the stale-lock probe closed: this fixture represents a live writer,
+      // never an orphan that git-sync is allowed to unlink.
+      if (j === 'rev-parse --absolute-git-dir') return { code: 1, stderr: 'not a git directory' };
+      if (j.startsWith('symbolic-ref')) return { code: 0, stdout: 'main' };
+      if (j.startsWith('status --porcelain')) return { code: 0, stdout: '' };
+      if (j.startsWith('fetch')) return { code: 0 };
+      if (j.startsWith('merge')) return { code: 0, stdout: 'Already up to date.' };
+      if (j.startsWith('rev-list --count')) return { code: 0, stdout: '0' };
+      return { code: 0, stdout: '' };
+    });
+
+    const out = await runGitSync('test', {
+      repoPath: '/fake',
+      runGit: run,
+      submodulePaths: [],
+      config: { push: false, pushSubmodules: true, pushSubmoduleOrigins: false },
+      log: (message) => logs.push(message),
+    });
+
+    expect(out.status).toBe('nothing');
+    expect(urlSyncAttempts).toBe(3);
+    expect(logs.filter((message) => message.includes('live config.lock contention'))).toHaveLength(2);
+  });
+
   it('P-002a: a commit that simply had nothing to commit (all-oversized) is NOT an error', async () => {
     // every dirty file was excluded as oversized → `git commit` exits non-zero with
     // "nothing to commit" — benign, must fall through to fetch/merge, not error.

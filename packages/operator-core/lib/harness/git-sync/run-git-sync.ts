@@ -820,6 +820,14 @@ const TRANSIENT_STAT_FAILURE_RETRY_DELAY_MS = 150;
 export const INDEX_LOCK_CONTENTION_MAX_RETRIES = 3;
 export const INDEX_LOCK_CONTENTION_RETRY_BASE_DELAY_MS = 100;
 
+/** `git submodule sync` writes repository config through `.git/config.lock`, so
+ * it can race the same short-lived local git writers as the index path above.
+ * Keep the retry budget deliberately small: a live writer normally releases in
+ * milliseconds, while a persistent lock still reaches the stale-lock guard and
+ * the loud error path in this same tick. */
+export const CONFIG_LOCK_CONTENTION_MAX_RETRIES = 3;
+export const CONFIG_LOCK_CONTENTION_RETRY_BASE_DELAY_MS = 100;
+
 /** A lock YOUNGER than this is treated as live contention (git rewrites the lock
  *  file as it builds the new index, so an in-flight writer keeps the mtime fresh);
  *  older = the writer is dead and the lock is an orphan. git-sync ticks run ~2min
@@ -2221,6 +2229,32 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
       if (urlSync.code !== 0 && isConfigLockFailure(`${urlSync.stdout}\n${urlSync.stderr}`)) {
         const cleared = await clearStaleConfigLock(runGit, repo, log);
         if (cleared) urlSync = await runGit(['submodule', 'sync', '--recursive'], repo);
+
+        // EI-20347384139844425: a fresh config.lock is live contention, not an
+        // orphan we may delete. It is nevertheless normally gone within a few
+        // milliseconds. Retry the exact idempotent sync with the same bounded
+        // exponential-backoff pattern as live index.lock contention; persistent
+        // failures still surface and the next guard can remove only a lock that
+        // has since become provably stale.
+        for (
+          let attempt = 1;
+          urlSync.code !== 0 &&
+          isConfigLockFailure(`${urlSync.stdout}\n${urlSync.stderr}`) &&
+          attempt <= CONFIG_LOCK_CONTENTION_MAX_RETRIES;
+          attempt++
+        ) {
+          const delayMs = CONFIG_LOCK_CONTENTION_RETRY_BASE_DELAY_MS * 2 ** (attempt - 1);
+          log(
+            `[git-sync] ${repo}: canonical submodule URL sync hit live config.lock contention — retrying after ${delayMs}ms (attempt ${attempt}/${CONFIG_LOCK_CONTENTION_MAX_RETRIES})`,
+          );
+          await new Promise((resolve) => setTimeout(resolve, delayMs));
+          urlSync = await runGit(['submodule', 'sync', '--recursive'], repo);
+        }
+
+        if (urlSync.code !== 0 && isConfigLockFailure(`${urlSync.stdout}\n${urlSync.stderr}`)) {
+          const clearedAfterRetry = await clearStaleConfigLock(runGit, repo, log);
+          if (clearedAfterRetry) urlSync = await runGit(['submodule', 'sync', '--recursive'], repo);
+        }
       }
       if (urlSync.code !== 0) {
         const detail = (urlSync.stderr || urlSync.stdout || 'no output').trim().slice(0, 300);
