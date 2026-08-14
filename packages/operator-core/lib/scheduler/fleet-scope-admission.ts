@@ -901,7 +901,11 @@ export async function notifyFleetScopeRefusal(
       : import('../work-items')
           .then((m) => m.readHeldDependencyEscapeContext({
             dependencyId: itemId,
-            member,
+            // Admission has already resolved a stable agent name to the canonical
+            // owner id. Query both because claimWorkItem stores explicit assignees
+            // verbatim, so older held work may use either representation.
+            member: admission.scope.ownerId,
+            memberAliases: [member],
             harness: opts?.harness,
           }))
           .catch(() => null),

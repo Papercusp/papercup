@@ -312,4 +312,22 @@ describe('readHeldDependencyEscapeContext — fleet critical-path escape (P-006)
       harness: H,
     })).resolves.toBeNull();
   });
+
+  it('matches held work stored under a stable-name alias of the canonical fleet owner', async () => {
+    await seedIssue('WI-blocker', 'open', { assignee: null });
+    await db.sql`UPDATE harness_shared.work_items SET harness_slug = ${H} WHERE feature_id = 'WI-blocker'`;
+    await seedFeature('F-held', { status: 'wip', takenBy: 'stable-builder' });
+    await blockByIssue('F-held', 'WI-blocker');
+
+    await expect(wi.readHeldDependencyEscapeContext({
+      dependencyId: 'WI-blocker',
+      member: 'su-member',
+      memberAliases: ['stable-builder'],
+      harness: H,
+    })).resolves.toEqual({
+      dependencyId: 'WI-blocker',
+      dependencyKind: 'issue',
+      blockedHeldItems: [{ id: 'F-held', kind: 'feature', harness: H }],
+    });
+  });
 });

@@ -4586,12 +4586,19 @@ export async function readUnresolvedDepBlockers(
  */
 export async function readHeldDependencyEscapeContext(args: {
   dependencyId: string;
+  /** Canonical fleet-member owner id resolved by admission. */
   member: string;
+  /** Stable-name/raw claim targets that may already be stored verbatim as `taken_by`. */
+  memberAliases?: readonly string[];
   harness?: string | null;
 }): Promise<HeldDependencyEscapeContext | null> {
   const dependencyId = args.dependencyId.trim();
   const member = args.member.trim();
   if (!dependencyId || !member) return null;
+  const memberRefs = [...new Set([
+    member,
+    ...(args.memberAliases ?? []).map((alias) => alias.trim()).filter(Boolean),
+  ])];
   const { sql } = getOrgPg();
   const rows = await sql<{
     dependency_kind: string;
@@ -4626,7 +4633,7 @@ export async function readHeldDependencyEscapeContext(args: {
              WHEN wi.item_kind IN ('bug', 'change', 'task') THEN wi.feature_id
              ELSE wi.harness_slug || '#' || wi.feature_id
            END
-     WHERE wi.taken_by = ${member}
+     WHERE wi.taken_by = ANY(${memberRefs}::text[])
        AND NOT (wi.status = ANY(${ANY_FAMILY_TERMINAL_STATES as string[]}::text[]))
        AND ${unsatisfiedBlockerSql(sql)}
      ORDER BY wi.feature_id

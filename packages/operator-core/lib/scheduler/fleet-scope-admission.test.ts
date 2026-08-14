@@ -1536,9 +1536,15 @@ describe('fleet scope assignment admission (P-016)', () => {
       const result = await notifyFleetScopeRefusal(
         { ownerId: 'su-member' } as never,
         violation,
-        'work_items:claim WI-5700 → su-member',
-        { harness: 'papercusp', subject: { itemId: 'WI-5700', member: 'su-member' } },
+        'work_items:claim WI-5700 → stable-builder',
+        { harness: 'papercusp', subject: { itemId: 'WI-5700', member: 'stable-builder' } },
       );
+      expect(admissionMocks.readHeldDependencyEscapeContext).toHaveBeenCalledWith({
+        dependencyId: 'WI-5700',
+        member: 'su-member',
+        memberAliases: ['stable-builder'],
+        harness: 'papercusp',
+      });
       expect(result.dependencyEscape).toMatchObject({
         kind: 'dependency_escape',
         dependency: { id: 'WI-5700', kind: 'issue' },
