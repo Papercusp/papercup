@@ -28,6 +28,10 @@ import {
   validatePhysicalPhaseF,
   type PhysicalPhaseFInput,
 } from './physical-drill-phase-f';
+import {
+  validatePhysicalPhaseG,
+  type PhysicalPhaseGInput,
+} from './physical-drill-phase-g';
 
 export { physicalDrillSigningBytes } from './physical-drill-host-receipt';
 
@@ -36,8 +40,6 @@ const TRUST_SCHEMA = 'hive-git-physical-trust/v1';
 const TRUST_SOURCE = 'papercusp-vm-rig/v1';
 const PLAN = 'p2p-git-live-activation-2026-07-09';
 const ALL_LEGS = ['A', 'B', 'C', 'D', 'E', 'F', 'G'] as const;
-const PRIOR_LEGS = ['A', 'B', 'C', 'D', 'E', 'F'] as const;
-const OID = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i;
 const SHA256 = /^[0-9a-f]{64}$/i;
 
 type JsonRecord = Record<string, unknown>;
@@ -60,10 +62,6 @@ function string(value: unknown): string | null {
   return typeof value === 'string' ? value : null;
 }
 
-function integer(value: unknown): number | null {
-  return typeof value === 'number' && Number.isSafeInteger(value) ? value : null;
-}
-
 function validDeviceKey(value: string | null): value is string {
   if (!value || !/^[A-Za-z0-9+/]{43}=$/.test(value)) return false;
   return Buffer.from(value, 'base64').length === 32;
@@ -73,10 +71,6 @@ function expectRecord(parent: JsonRecord | null, key: string, errors: string[]):
   const value = record(parent?.[key]);
   if (!value) errors.push(`${key} must be an object`);
   return value;
-}
-
-function expectTrue(parent: JsonRecord | null, key: string, errors: string[]): void {
-  if (parent?.[key] !== true) errors.push(`${key} must be true`);
 }
 
 function expectString(
@@ -91,24 +85,6 @@ function expectString(
     return null;
   }
   return value;
-}
-
-function expectDeviceKey(parent: JsonRecord | null, key: string, errors: string[]): string | null {
-  const value = string(parent?.[key]);
-  if (!validDeviceKey(value)) {
-    errors.push(`${key} must be a raw 32-byte Ed25519 device key in base64`);
-    return null;
-  }
-  return value;
-}
-
-function expectEqual(
-  left: string | null,
-  right: string | null,
-  label: string,
-  errors: string[],
-): void {
-  if (left === null || right === null || left !== right) errors.push(`${label} must match exactly`);
 }
 
 function validateArtifacts(
@@ -130,27 +106,37 @@ function validateArtifacts(
     }
     const host = string(artifact.host);
     const path = string(artifact.path);
+    const contentBase64 = string(artifact.contentBase64);
     const expectedHash = string(artifact.sha256);
     if (!host || !hostIds.has(host)) {
       errors.push(`artifacts[${index}].host must name one of the two topology hosts`);
     } else {
       witnessedHosts.add(host);
     }
-    if (!path || !isAbsolute(path)) {
-      errors.push(`artifacts[${index}].path must be absolute`);
-      continue;
-    }
     if (!expectedHash || !SHA256.test(expectedHash)) {
       errors.push(`artifacts[${index}].sha256 must be a 64-hex digest`);
       continue;
     }
-    if (!existsSync(path) || !statSync(path).isFile()) {
-      errors.push(`artifacts[${index}].path is not a readable file: ${path}`);
+    let bytes: Buffer | null = null;
+    if (contentBase64 !== null) {
+      bytes = Buffer.from(contentBase64, 'base64');
+      if (bytes.length === 0 || bytes.toString('base64') !== contentBase64) {
+        errors.push(`artifacts[${index}].contentBase64 must be canonical non-empty base64`);
+        continue;
+      }
+    } else if (path && isAbsolute(path)) {
+      if (!existsSync(path) || !statSync(path).isFile()) {
+        errors.push(`artifacts[${index}].path is not a readable file: ${path}`);
+        continue;
+      }
+      bytes = readFileSync(path);
+    } else {
+      errors.push(`artifacts[${index}] must contain embedded contentBase64 or an absolute path`);
       continue;
     }
-    const actualHash = createHash('sha256').update(readFileSync(path)).digest('hex');
+    const actualHash = createHash('sha256').update(bytes).digest('hex');
     if (actualHash !== expectedHash.toLowerCase()) {
-      errors.push(`artifacts[${index}] sha256 mismatch for ${path}`);
+      errors.push(`artifacts[${index}] sha256 mismatch${path ? ` for ${path}` : ''}`);
     }
   }
   for (const host of hostIds) {
@@ -476,101 +462,54 @@ function validateLegD(
   }
 }
 
-function validateLegG(raw: JsonRecord, hostKeys: Set<string>, errors: string[]): void {
+function validateLegG(
+  raw: JsonRecord,
+  runId: string | null,
+  startedAt: number,
+  finishedAt: number,
+  hostKeys: Set<string>,
+  errors: string[],
+): void {
   const leg = expectRecord(raw, 'legG', errors);
-  if (leg?.planItem !== 'P-308') errors.push('legG.planItem must be P-308');
-  if (leg?.status !== 'pass') errors.push('legG.status must be pass');
-  const afterLegs = Array.isArray(leg?.afterLegs) ? leg.afterLegs : [];
+  if (!leg) return;
+
+  let verdict: ReturnType<typeof validatePhysicalPhaseG>;
+  try {
+    verdict = validatePhysicalPhaseG(leg as unknown as PhysicalPhaseGInput);
+  } catch (error) {
+    errors.push(`legG causal evidence is malformed: ${error instanceof Error ? error.message : String(error)}`);
+    errors.push('legG must contain the complete validated P-308 chaos evidence object');
+    return;
+  }
+  for (const error of verdict.errors) errors.push(`legG: ${error}`);
+  if (!verdict.ok || !verdict.result?.complete) {
+    errors.push('legG must contain the complete validated P-308 chaos evidence object');
+  }
+  if (leg.runId !== runId) errors.push('legG.runId must match the enclosing physical run');
+
+  const window = record(leg.window);
+  const legStartedAt = Date.parse(String(window?.startedAt ?? ''));
+  const legFinishedAt = Date.parse(String(window?.finishedAt ?? ''));
   if (
-    afterLegs.length !== PRIOR_LEGS.length ||
-    PRIOR_LEGS.some((expected, index) => afterLegs[index] !== expected)
+    !Number.isFinite(legStartedAt) ||
+    !Number.isFinite(legFinishedAt) ||
+    legStartedAt < startedAt ||
+    legFinishedAt > finishedAt
   ) {
-    errors.push('legG.afterLegs must be the ordered same-run live sequence A through F');
+    errors.push('legG.window must fall inside the enclosing physical-run window');
   }
 
-  const assertions = expectRecord(leg, 'assertions', errors);
-  for (const key of [
-    'preFailureConverged',
-    'survivorElected',
-    'grantReady',
-    'successorDescendsFromPreFailure',
-    'successorFederatedAndAccepted',
-    'oldAuthorityRejectedStaleEpochSeq',
-    'oldAuthorityCouldNotMoveRefs',
-    'retryableUnknownShaHeldCursor',
-    'retryableUngrantedEpochHeldCursor',
-    'retryAcceptedAfterEvidence',
-    'pgBlipFailedOpenLegacy',
-    'pgBlipNoForcePush',
-    'pgBlipLoserNoisy',
-    'restartCoreKeyChanged',
-    'stableDeviceIdentityPreserved',
-    'postRestartRoundTripExact',
-  ]) {
-    expectTrue(assertions, key, errors);
-  }
-
-  const epochs = expectRecord(leg, 'epochs', errors);
-  const priorEpoch = integer(epochs?.priorAccepted);
-  const successorEpoch = integer(epochs?.successorGranted);
-  if (priorEpoch === null || priorEpoch < 0) errors.push('legG.epochs.priorAccepted must be >= 0');
-  if (successorEpoch === null || priorEpoch === null || successorEpoch <= priorEpoch) {
-    errors.push('legG.epochs.successorGranted must be strictly greater than priorAccepted');
-  }
-  if (epochs?.basis !== 'crash-takeover' && epochs?.basis !== 'token-adoption') {
-    errors.push('legG.epochs.basis must be crash-takeover or token-adoption');
-  }
-
-  const cursor = expectRecord(leg, 'cursor', errors);
-  const beforeRetry = integer(cursor?.beforeRetry);
-  const duringUnknownSha = integer(cursor?.duringUnknownSha);
-  const duringUngrantedEpoch = integer(cursor?.duringUngrantedEpoch);
-  const afterAccept = integer(cursor?.afterAccept);
+  const identities = record(leg.identities);
+  const legHostKeys = new Set([
+    string(identities?.towerDeviceKey),
+    string(identities?.vmDeviceKey),
+  ].filter((value): value is string => value !== null));
   if (
-    beforeRetry === null ||
-    duringUnknownSha !== beforeRetry ||
-    duringUngrantedEpoch !== beforeRetry
+    legHostKeys.size !== hostKeys.size ||
+    [...hostKeys].some((deviceKey) => !legHostKeys.has(deviceKey))
   ) {
-    errors.push('legG retryable unknown-sha/ungranted-epoch must hold the fed-event cursor');
+    errors.push('legG identities must match the two attesting physical devices exactly');
   }
-  if (beforeRetry === null || afterAccept === null || afterAccept <= beforeRetry) {
-    errors.push('legG cursor must advance after the missing evidence is accepted');
-  }
-
-  const devices = expectRecord(leg, 'devices', errors);
-  const oldAuthority = expectDeviceKey(devices, 'oldAuthority', errors);
-  const survivor = expectDeviceKey(devices, 'survivor', errors);
-  const stableBefore = expectDeviceKey(devices, 'stableDeviceKeyBefore', errors);
-  const stableAfter = expectDeviceKey(devices, 'stableDeviceKeyAfter', errors);
-  const oldCore = expectDeviceKey(devices, 'oldCoreKey', errors);
-  const newCore = expectDeviceKey(devices, 'newCoreKey', errors);
-  for (const [label, key] of [
-    ['oldAuthority', oldAuthority],
-    ['survivor', survivor],
-    ['stableDeviceKeyBefore', stableBefore],
-    ['stableDeviceKeyAfter', stableAfter],
-  ] as const) {
-    if (key && !hostKeys.has(key)) errors.push(`legG.devices.${label} must belong to a physical host`);
-  }
-  expectEqual(stableBefore, stableAfter, 'legG stable device identity before/after restart', errors);
-  if (oldAuthority !== null && survivor !== null && oldAuthority === survivor) {
-    errors.push('legG oldAuthority and survivor must be different devices');
-  }
-  if (oldCore !== null && newCore !== null && oldCore === newCore) {
-    errors.push('legG oldCoreKey and newCoreKey must differ after restart');
-  }
-
-  const oids = expectRecord(leg, 'oids', errors);
-  const successorStaging = expectString(oids, 'successorStaging', OID, errors);
-  const receiverStaging = expectString(oids, 'receiverStaging', OID, errors);
-  const staleBefore = expectString(oids, 'beforeStaleAuthorityReplay', OID, errors);
-  const staleAfter = expectString(oids, 'afterStaleAuthorityReplay', OID, errors);
-  const restartCanonical = expectString(oids, 'postRestartCanonical', OID, errors);
-  const restartWorktree = expectString(oids, 'postRestartWorktree', OID, errors);
-  expectString(oids, 'preFailureStaging', OID, errors);
-  expectEqual(successorStaging, receiverStaging, 'legG successor/receiver staging', errors);
-  expectEqual(staleBefore, staleAfter, 'legG refs before/after stale-authority replay', errors);
-  expectEqual(restartCanonical, restartWorktree, 'legG post-restart canonical/worktree', errors);
 }
 
 export function validatePhysicalDrillEvidence(
@@ -641,7 +580,7 @@ export function validatePhysicalDrillEvidence(
   validateLegD(evidence, runId, startedAt, finishedAt, hostKeys, errors);
   validateLegE(evidence, runId, startedAt, finishedAt, hostKeys, errors);
   validateLegF(evidence, runId, startedAt, finishedAt, hostKeys, errors);
-  validateLegG(evidence, hostKeys, errors);
+  validateLegG(evidence, runId, startedAt, finishedAt, hostKeys, errors);
 
   const uniqueErrors = [...new Set(errors)];
   return {
