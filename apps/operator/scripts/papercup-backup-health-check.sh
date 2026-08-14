@@ -109,9 +109,9 @@ set -uo pipefail
 # and exit path are untouched — only the FILING is withheld, so a test still gets the truth.
 # BACKUP_ALERT_FORCE=1 files anyway, for the rare case a non-default threshold should.
 if [ -z "${BACKUP_ALERT_FORCE:-}" ] \
-   && { [ -n "${BACKUP_MAX_AGE_H+x}" ] || [ -n "${BACKUP_MAX_FAILS+x}" ] || [ -n "${BACKUP_STALE_TMP_MAX_H+x}" ] || [ -n "${BACKUP_DISK_WARN_PCT+x}" ]; } \
+   && { [ -n "${BACKUP_MAX_AGE_H+x}" ] || [ -n "${BACKUP_MAX_FAILS+x}" ] || [ -n "${BACKUP_STALE_TMP_MAX_H+x}" ] || [ -n "${BACKUP_DISK_WARN_PCT+x}" ] || [ -n "${BACKUP_TMPDIR_MAX_ENTRIES+x}" ]; } \
    && [ "${BACKUP_NO_FILE:-0}" != 1 ]; then
-  echo "[backup-health] ALARM SUPPRESSED: a threshold was overridden (BACKUP_MAX_AGE_H/BACKUP_MAX_FAILS/BACKUP_STALE_TMP_MAX_H/BACKUP_DISK_WARN_PCT) — that is a TEST run, not production. Forcing BACKUP_NO_FILE=1 (no EI will be filed). Set BACKUP_ALERT_FORCE=1 to file anyway." >&2
+  echo "[backup-health] ALARM SUPPRESSED: a threshold was overridden (BACKUP_MAX_AGE_H/BACKUP_MAX_FAILS/BACKUP_STALE_TMP_MAX_H/BACKUP_DISK_WARN_PCT/BACKUP_TMPDIR_MAX_ENTRIES) — that is a TEST run, not production. Forcing BACKUP_NO_FILE=1 (no EI will be filed). Set BACKUP_ALERT_FORCE=1 to file anyway." >&2
   BACKUP_NO_FILE=1
 fi
 
@@ -131,6 +131,12 @@ BACKUP_MAX_FAILS="${BACKUP_MAX_FAILS:-3}"
 BACKUP_STALE_TMP_MAX_H="${BACKUP_STALE_TMP_MAX_H:-2}"
 BACKUP_DB_DATA_DIR="${BACKUP_DB_DATA_DIR:-/var/lib/postgresql/18/main}"
 BACKUP_DISK_WARN_PCT="${BACKUP_DISK_WARN_PCT:-90}"
+# Colon-separated. /tmp/pcv is the TMPDIR libs/test-config/src/vitest-config.ts FORCES for
+# every test process, which is why it is watched explicitly and not merely as part of /tmp:
+# it is a subdirectory, so a count of /tmp's top level cannot see inside it. That exact blind
+# spot is why WI-38830 went unnoticed (see check_tmpdir_entry_count below).
+BACKUP_TMPDIR_WATCH="${BACKUP_TMPDIR_WATCH:-/tmp:/tmp/pcv}"
+BACKUP_TMPDIR_MAX_ENTRIES="${BACKUP_TMPDIR_MAX_ENTRIES:-50000}"
 BACKUP_HOOK_LOG="${BACKUP_HOOK_LOG:-$BACKUP_DUMP_DIR/db-backup.log}"
 OPERATOR_MCP_URL="${OPERATOR_MCP_URL:-http://127.0.0.1:3070/api/mcp?superuser=1}"
 BACKUP_NO_FILE="${BACKUP_NO_FILE:-0}"
@@ -284,6 +290,91 @@ INVESTIGATION RECIPE (verified while working WI-38595, 2026-08-14 — each of th
   else
     rm -f "$red_marker"
   fi
+}
+
+# ── (e) TMPDIR ENTRY-COUNT ────────────────────────────────────────────────
+# ── WHY A COUNT, WHEN (d) ALREADY WATCHES THE SAME DISK (WI-38830, 2026-08-14) ──
+# Because the two measure different things, and this failure is INVISIBLE to bytes.
+# A leaked per-test-process scratch dir costs ~6 KiB, so 449,259 of them — the state
+# this check was written after — were 2.6 GiB total. Every space-based probe on this
+# box read that as noise. The damage is not the space: it is that ~500k dirents in one
+# directory degrade every mkdir/readdir/stat the whole fleet does under the shared
+# TMPDIR, which the 2026-07-09 incident tied to spurious integration-test timeouts and
+# elevated host load. A volume can be perfectly healthy on df while a directory in it
+# is pathological, so a byte threshold cannot be made sensitive enough to see this —
+# it is the wrong instrument, not a badly-tuned one.
+#
+# The same leak has now shipped TWICE (2026-07-09 ~700k dirs, 2026-08-14 ~500k) and was
+# found BY ACCIDENT both times, while chasing an unrelated disk alarm. That is the gap
+# this closes: not the bug, which is fixed in libs/test-config/src/hermetic-tmpdir.ts,
+# but the fact that nothing was watching the axis it grows along.
+#
+# NAMING THE CULPRIT IS THE POINT. "62,000 entries in /tmp" is a fact; "62,000 entries,
+# 71,529 of them matching voice-ipc-hermetic-*" is a diagnosis. Same lesson as the trend
+# line in (d): a level with no attribution reads as chronic weather and gets ignored.
+# So the body carries the dominant name-shape histogram, computed from the SAME listing
+# that produced the count — no second scan.
+tmpdir_top_shapes() { # <dir> — echoes up to 5 "<count> <shape>" lines; never fails.
+  # Collapse the random suffix mktemp/mkdtemp appends so N unique names become ONE shape.
+  # This is what turns an unreadable wall of names into a single actionable line.
+  ls -U "$1" 2>/dev/null \
+    | sed -E 's/[A-Za-z0-9]{6,}$/<rand>/; s/[0-9a-f]{8,}/<hex>/g; s/[0-9]{3,}/<n>/g' \
+    | sort | uniq -c | sort -rn | head -n 5 || true
+}
+
+check_tmpdir_entry_count() {
+  local dir="" count="" red_marker="" shapes="" host=""
+  local old_ifs="$IFS"; IFS=':'; local watch_list=($BACKUP_TMPDIR_WATCH); IFS="$old_ifs"
+  if ! [[ "$BACKUP_TMPDIR_MAX_ENTRIES" =~ ^[0-9]+$ ]]; then
+    log "SKIP tmpdir entry-count probe: invalid threshold (BACKUP_TMPDIR_MAX_ENTRIES='$BACKUP_TMPDIR_MAX_ENTRIES')."
+    return 0
+  fi
+  for dir in "${watch_list[@]}"; do
+    [ -n "$dir" ] || continue
+    [ -d "$dir" ] || continue
+    # `ls -U` is unsorted, so this is one readdir pass with no sort buffer. Measured
+    # ~0.6s on a 486k-entry directory; the probe runs hourly, so pay it and get a real
+    # number rather than a sampled guess that cannot be quoted in the alarm body.
+    count="$(ls -U "$dir" 2>/dev/null | wc -l | tr -d ' ')"
+    [[ "$count" =~ ^[0-9]+$ ]] || continue
+    # Marker path must be unique per watched dir AND filesystem-safe: '/tmp/pcv' would
+    # otherwise write into a nonexistent nested path. Same reason the title below names
+    # the dir — two watched dirs must not dedupe onto each other's work-item.
+    red_marker="$STATE_DIR/tmpdir-entries-red$(printf '%s' "$dir" | tr -c 'A-Za-z0-9' '-')"
+    if [ "$count" -lt "$BACKUP_TMPDIR_MAX_ENTRIES" ]; then
+      log "TMPDIR entry count $dir: ${count} (warn threshold ${BACKUP_TMPDIR_MAX_ENTRIES})"
+      rm -f "$red_marker"
+      continue
+    fi
+    shapes="$(tmpdir_top_shapes "$dir")"
+    log "TMPDIR entry count $dir: ${count} — OVER threshold ${BACKUP_TMPDIR_MAX_ENTRIES}"
+    host="$(hostname 2>/dev/null || echo unknown-host)"
+    # Stable title (no count) for the same dedupe reason as (d): admissionIdentity is
+    # derived from the title, so a changing number would mint a new item every refile.
+    local title="Shared TMPDIR '$dir' has too many entries on ${host} — something is leaking scratch"
+    local body="WI-38830 recurrence-guard probe: '$dir' currently holds ${count} entries (warn threshold ${BACKUP_TMPDIR_MAX_ENTRIES}).
+
+THIS IS NOT A DISK-SPACE ALARM. Leaked scratch dirs are individually tiny — 449,259 of them measured 2.6 GiB total — so every byte-based probe reads this as noise. The cost is that a directory with hundreds of thousands of dirents degrades every mkdir/readdir/stat the fleet performs under the shared TMPDIR, including the testcontainer start-lock. That was tied to spurious integration-test timeouts and elevated host load fleet-wide (2026-07-09).
+
+DOMINANT NAME SHAPES (random suffixes collapsed — the top line is almost always the culprit):
+${shapes}
+
+HOW TO ACT ON THIS:
+1. Take the top shape above and find who creates it: grep -rn '<the literal prefix>' --include=*.ts --include=*.mjs --include=*.sh . | grep -v node_modules
+2. Read that creation site's cleanup. If the cleanup is a 'process.on(\"exit\")' handler, IT IS DEAD CODE under vitest: vitest-config.ts pins pool:'forks' and tinypool SIGNAL-KILLS each per-file worker, so Node never runs exit handlers there. Falsify it in both directions before believing either result — run the module under 'tsx -e' (a normal exit, cleanup runs) and under 'npm run test:file' with an isolated TMPDIR (a signal kill, cleanup does not).
+3. The durable fix shape is in libs/test-config/src/hermetic-tmpdir.ts: NEST per-process scratch under one parent so a leak costs the shared TMPDIR one top-level entry, and SWEEP siblings whose creating pid is dead on create. Cleanup that requires the dying process to cooperate is not cleanup — a SIGKILLed process runs nothing.
+4. Reclaiming is safe only with an age floor, so a live run's scratch is never deleted under it: find '$dir' -maxdepth 1 -mindepth 1 -type d -name '<shape>*' -mmin +240 -exec rm -rf {} +
+
+WHY BOTH /tmp AND /tmp/pcv ARE WATCHED: vitest-config.ts FORCES TMPDIR=/tmp/pcv for every test process, so a count of /tmp's top level cannot see the directory where test scratch actually lands. Measuring only /tmp under-reported this exact leak by 6x (74,385 seen vs 523,644 real). If a new tool forces its own TMPDIR, add it to BACKUP_TMPDIR_WATCH.
+
+This probe is detection-only; it never deletes anything."
+    if [ "$(age_h "$red_marker")" -lt "$BACKUP_RED_REFILE_H" ]; then
+      log "RED already tracked (tmpdir entries, $dir) — skipping duplicate filing."
+    else
+      file_ei "$title" "$body"
+      mark_red "$red_marker"
+    fi
+  done
 }
 
 # ── SELF-TEST: prove the alarm DISCRIMINATES (EI-10746) ────────────────────
@@ -502,6 +593,54 @@ if [ "${1:-}" = "--self-test" ]; then
         "$((trend_now_s - 360)) $((trend_avail_kb + 10485760))" \
         "baseline too recent"
   printf '  ---- %d passed, %d failed (post disk-headroom block)\n' "$p" "$f"
+
+  # ── WI-38830 recurrence guard: signal (e), TMPDIR entry count ─────────────
+  # Every case below points a WATCHED dir at an isolated fixture, never at the real
+  # /tmp — a self-test that judged live host state would pass or fail for reasons that
+  # have nothing to do with the code under test.
+  check_entries() { # <name> <n-entries> <threshold> <want-marker> [subdir-entries] [ENV=VAL ...]
+    local name="$1" n="$2" thresh="$3" want_marker="$4" sub="${5:-0}"; shift 5
+    rm -rf "${t:?}/state" "$t/tmpwatch"; mkdir -p "$t/state" "$t/tmpwatch/nested"
+    local i=0
+    while [ "$i" -lt "$n" ]; do mkdir -p "$t/tmpwatch/leaky-scratch-$i"; i=$((i+1)); done
+    i=0
+    while [ "$i" -lt "$sub" ]; do mkdir -p "$t/tmpwatch/nested/leaky-scratch-$i"; i=$((i+1)); done
+    env BACKUP_DUMP_DIR="$t/dump" BACKUP_STATE_DIR="$t/state" \
+        BACKUP_DB_DATA_DIR="$t/no-db-data" \
+        BACKUP_HOOK_LOG="$t/no-such-log.log" \
+        OPERATOR_MCP_URL="http://127.0.0.1:9/dead" \
+        BACKUP_OPTIONAL_ARTIFACTS="" \
+        BACKUP_TMPDIR_WATCH="$t/tmpwatch" BACKUP_TMPDIR_MAX_ENTRIES="$thresh" \
+        "$@" bash "$self" >/dev/null 2>&1
+    local got_marker=no
+    compgen -G "$t/state/tmpdir-entries-red*" >/dev/null 2>&1 && got_marker=yes
+    if [ "$got_marker" = "$want_marker" ]; then
+      printf '  ok    %s (marker=%s)\n' "$name" "$got_marker"; p=$((p+1))
+    else
+      printf '  FAIL  %s — wanted marker=%s, got marker=%s\n' "$name" "$want_marker" "$got_marker"; f=$((f+1))
+    fi
+  }
+  # 18. NOT A HAIR-TRIGGER: a normally-populated TMPDIR is green and silent.
+  check_entries "entry count under threshold: green, no marker" 3 10 no 0
+  # 19. NOT A MUTE BUTTON: it must actually be able to fire.
+  check_entries "entry count over threshold + ALERT_FORCE: marker set" \
+        12 10 yes 0 BACKUP_ALERT_FORCE=1
+  # 20. The EI-10746 safety rule holds for this threshold too — overriding it is a TEST.
+  #     (Cases 18/19 override it as well; 18 is green anyway and 19 opts in via FORCE,
+  #     so this is the case that actually pins the suppression.)
+  check_entries "entry count over threshold, no FORCE: suppressed, no marker" 12 10 no 0
+  # 21. THE BLIND SPOT THIS PROBE EXISTS FOR (WI-38830): entries nested in a SUBDIRECTORY
+  #     do not count toward the parent, so watching only the parent under-reports a leak
+  #     that lands one level down. Measuring /tmp while the leak was in /tmp/pcv is exactly
+  #     how 523,644 leaked dirs were reported as 74,385. A green here with 40 nested
+  #     entries and a threshold of 10 is the CORRECT reading of the parent — and is
+  #     precisely why /tmp/pcv must be named in BACKUP_TMPDIR_WATCH in its own right.
+  check_entries "nested entries do NOT inflate the parent's count (the /tmp vs /tmp/pcv trap)" \
+        3 10 no 40 BACKUP_ALERT_FORCE=1
+  # 22. A non-numeric threshold must SKIP, never crash the whole health check.
+  check_entries "invalid threshold: skips cleanly, no marker" 12 abc no 0 BACKUP_ALERT_FORCE=1
+  printf '  ---- %d passed, %d failed (post tmpdir-entries block)\n' "$p" "$f"
+
   [ "$f" -eq 0 ] || exit 1
   exit 0
 fi
@@ -509,6 +648,7 @@ fi
 # Check the PostgreSQL data filesystem before the artifact probes. A shared root
 # volume can take PostgreSQL down even while every backup artifact is still fresh.
 check_db_disk_headroom
+check_tmpdir_entry_count
 
 # ── (a) FRESHNESS — judge the ARTIFACT, not the log ────────────────────────
 # Deliberately artifact-based: a rotated/truncated hook.log must never make a dead
