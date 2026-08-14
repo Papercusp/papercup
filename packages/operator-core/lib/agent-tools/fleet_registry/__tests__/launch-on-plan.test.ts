@@ -1439,6 +1439,55 @@ describe('fleet:launch-on-plan handler — verified canary-first transaction (P-
     }
   });
 
+  it('P-008: a partial 50-member campaign preserves the exact verified/retry boundary', async () => {
+    // This is an intentional handler-level adversarial scale case. The public
+    // `fleet:launch-on-plan` schema keeps its 12-member operator safety ceiling;
+    // the transaction seam still needs to stay correct if a larger campaign is
+    // admitted by a future policy or another trusted caller.
+    let spawn = 0;
+    spawnConsoleMock.mockImplementation(() => {
+      spawn += 1;
+      if (spawn === 9) {
+        return { status: 'error', error: 'member 9 failed: no window opened', code: 502 };
+      }
+      return { status: 'ok', terminal: `term-${spawn}`, pid: 500 + spawn };
+    });
+
+    const res = await tool.handler(
+      { name: 'Partial Fifty Fleet', plan: 'my-plan', harness: 'papercusp', count: 50 } as never,
+      {} as never,
+    );
+    const payload = JSON.parse((res as any).content[0].text);
+    const tx = payload.launchTransaction;
+    const requestedIds = tx.requestedMemberIds as string[];
+    const verifiedIds = tx.verifiedMemberIds as string[];
+    const retryIds = tx.recovery.retryOwnerIds as string[];
+
+    expect(requestedIds).toHaveLength(50);
+    expect(new Set(requestedIds).size).toBe(50);
+    // Canary + two verified 3-member waves + one partial 3-member wave.
+    expect(spawnConsoleMock).toHaveBeenCalledTimes(10);
+    expect(tx.waves.map((wave: { ownerIds: string[] }) => wave.ownerIds.length)).toEqual([1, 3, 3, 3]);
+    // The failed member is excluded from the verification probe for its wave.
+    expect(
+      launchTransaction.verify.mock.calls.map(
+        (call) => (call[0] as { expectedOwnerIds: string[] }).expectedOwnerIds.length,
+      ),
+    ).toEqual([1, 3, 3, 2]);
+
+    expect(payload.ok).toBe(true);
+    expect(payload.opened).toHaveLength(9);
+    expect(payload.failed).toHaveLength(1);
+    expect(tx.state).toBe('partial');
+    expect(tx.waves.at(-1)?.state).toBe('partial');
+    expect(verifiedIds).toHaveLength(9);
+    expect(retryIds).toHaveLength(41);
+    expect(new Set([...verifiedIds, ...retryIds])).toEqual(new Set(requestedIds));
+    expect(retryIds).toContain(payload.failed[0].ownerId);
+    expect(payload.fleetComplete).toBe(false);
+    expect(payload.shortfall).toBe(41);
+  });
+
   it('stops before a later wave after attestation failure and returns the exact retry set', async () => {
     launchTransaction.verify
       .mockResolvedValueOnce({ agentStarted: true, waitedMs: 1, sessions: [], note: 'verified' })
