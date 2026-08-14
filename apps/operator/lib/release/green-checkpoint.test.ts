@@ -463,6 +463,32 @@ describe("armSelfWatchdog (WI-1319 root fix (c) — orphaned OS process past DBO
     expect(kill).toHaveBeenCalledWith(-999, "SIGKILL");
   });
 
+  it("WI-38688: kills the ACTUAL inherited process group when a manual unit wrapper is the group leader", () => {
+    const release = vi.fn();
+    const kill = vi.fn();
+    const log = vi.fn();
+    const snapshotProcessGroup = vi.fn(() => " 777 1 777 Ss bash");
+    const resolveProcessGroupId = vi.fn(() => 777);
+    armSelfWatchdog(
+      { release },
+      {
+        ms: 1000,
+        kill,
+        pid: 999,
+        log,
+        snapshotProcessGroup,
+        resolveProcessGroupId,
+      },
+    );
+    vi.advanceTimersByTime(1000);
+    expect(resolveProcessGroupId).toHaveBeenCalledWith(999);
+    expect(snapshotProcessGroup).toHaveBeenCalledWith(777);
+    expect(kill).toHaveBeenCalledWith(-777, "SIGKILL");
+    expect(log).toHaveBeenCalledWith(
+      expect.stringContaining("(pid 999, pgid 777)"),
+    );
+  });
+
   it("runs a SYNC onFire hook before the process-group kill so the watchdog can emit a loud red verdict", () => {
     const release = vi.fn();
     const kill = vi.fn();

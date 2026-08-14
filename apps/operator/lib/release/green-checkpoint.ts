@@ -788,6 +788,34 @@ export function snapshotCheckpointProcessGroup(pid: number): string | null {
   }
 }
 
+/** Resolve the process group that ACTUALLY contains `pid`.
+ *
+ * Scheduled checkpoints are launched detached, so their node process is normally
+ * the group leader and `pgid === pid`. Manual checkpoints run inside a transient
+ * systemd unit whose `bash -c` wrapper is the group leader, so the checkpoint node
+ * inherits the wrapper's pgid and `pgid !== pid`. Killing `-pid` in that shape
+ * targets a group that does not exist and leaves the whole unit wedged after the
+ * watchdog emits its terminal result.
+ *
+ * `ps` is already a required Unix primitive for the diagnostic snapshot above.
+ * Fail soft to the historical `pid` target so a missing/broken probe cannot disable
+ * the last-resort kill path.
+ */
+export function resolveCheckpointProcessGroupId(pid: number): number | null {
+  try {
+    const r = spawnSync("ps", ["-o", "pgid=", "-p", String(pid)], {
+      encoding: "utf8",
+      maxBuffer: 8 * 1024,
+    });
+    const raw = `${r.stdout ?? ""}${r.stderr ?? ""}`.trim();
+    const pgid = Number(raw.split(/\s+/)[0]);
+    if (r.error || !Number.isSafeInteger(pgid) || pgid <= 0) return null;
+    return pgid;
+  } catch {
+    return null;
+  }
+}
+
 /** WI-4528 (EI-10800 class): how long the self-watchdog waits for an ASYNC `onFire` — the loud
  *  RED-verdict emit + the urgent attention-notify — to actually SETTLE before it delivers the
  *  guaranteed SIGKILL. Negligible against the 3h watchdog, and BOUNDED so a wedged/hanging emit
@@ -843,6 +871,7 @@ export function armSelfWatchdog(
     pid?: number;
     log?: (msg: string) => void;
     snapshotProcessGroup?: (pid: number) => string | null;
+    resolveProcessGroupId?: (pid: number) => number | null;
     /** WI-4528 (EI-10800 class): onFire MAY BE ASYNC. It emits the loud RED verdict that parked
      *  agents wake on (`checkpoint:await` → `green-checkpoint:red:<pipeline>`) plus the urgent
      *  attention-notify — both are async DB/IO writes. We BOUND-AWAIT a returned promise before
@@ -863,15 +892,23 @@ export function armSelfWatchdog(
   const log = opts.log ?? ((m: string) => console.error(m));
   const snapshotProcessGroup =
     opts.snapshotProcessGroup ?? snapshotCheckpointProcessGroup;
+  const resolveProcessGroupId =
+    opts.resolveProcessGroupId ??
+    ((candidatePid: number) =>
+      candidatePid === process.pid
+        ? resolveCheckpointProcessGroupId(candidatePid)
+        : null);
   const onFireGraceMs = opts.onFireGraceMs ?? SELF_WATCHDOG_ONFIRE_GRACE_MS;
   const timer = setTimeout(() => {
+    const processGroupId = resolveProcessGroupId(pid) ?? pid;
     log(
       `self-watchdog fired after ${formatSelfWatchdogDuration(ms)} with no normal exit — ` +
         `presumed-dead parent (release-actions.ts's runScript never landed its SIGTERM+SIGKILL); ` +
-        `releasing the run-lock and killing this process's OWN group (pid ${pid}) so no orphan can outlive it`,
+        `releasing the run-lock and killing this process's ACTUAL group ` +
+        `(pid ${pid}, pgid ${processGroupId}) so no orphan can outlive it`,
     );
     try {
-      const snapshot = snapshotProcessGroup(pid);
+      const snapshot = snapshotProcessGroup(processGroupId);
       if (snapshot) {
         log(
           `self-watchdog process-group snapshot before SIGKILL:\n${snapshot}`,
@@ -887,7 +924,7 @@ export function armSelfWatchdog(
     }
     const doKill = () => {
       try {
-        kill(-pid, "SIGKILL"); // negative pid → the whole group (this process + every runCmd-spawned vitest/tsx worker)
+        kill(-processGroupId, "SIGKILL"); // negative pgid → wrapper + this process + every runCmd-spawned worker
       } catch {
         /* group already gone */
       }
