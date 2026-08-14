@@ -285,7 +285,12 @@ function addAlertFields(out: Dict, source: Dict): void {
   }
 }
 
-function buildProjection(data: Dict, tier: LeaderBriefPayloadTier, caps: typeof TIER_CAPS.trimmed): Dict {
+function buildProjection(
+  data: Dict,
+  tier: LeaderBriefPayloadTier,
+  caps: typeof TIER_CAPS.trimmed,
+  campaignRecentRows: number,
+): Dict {
   const out: Dict = { ok: data.ok === true };
   for (const key of ['self', 'notLeader', 'leadershipClaimed']) {
     if (key in data) out[key] = pick(data[key], ['ownerId', 'ownerLabel', 'registeredLeader', 'leaderState', 'reason', 'note', 'claimWith', 'previousLeader', 'notified'], 180) ?? data[key];
@@ -294,7 +299,7 @@ function buildProjection(data: Dict, tier: LeaderBriefPayloadTier, caps: typeof 
   if ('summary' in data) out.summary = compactSummary(data.summary);
   if ('deltaSummary' in data) out.deltaSummary = clip(data.deltaSummary, 220) ?? data.deltaSummary;
   if ('delta' in data) out.delta = data.delta;
-  if ('campaign' in data) out.campaign = compactCampaign(data.campaign, tier === 'trimmed' ? 1 : 2);
+  if ('campaign' in data) out.campaign = compactCampaign(data.campaign, campaignRecentRows);
   if ('idleCauses' in data) out.idleCauses = data.idleCauses;
   if ('reservation' in data) out.reservation = compactReservation(data.reservation, caps.reservationMembers);
 
@@ -344,12 +349,28 @@ export function shapeLeaderBrief(data: unknown, tier: LeaderBriefPayloadTier): u
   if (!source) return data;
   const initial = TIER_CAPS[tier];
   const attempts = [
-    initial,
-    { ...initial, memberVerdicts: 4, members: 2, advisories: 1, invariants: 1, reservationMembers: 1 },
-    { memberVerdicts: 2, members: 1, advisories: 1, invariants: 1, reservationMembers: 1 },
+    { caps: initial, campaignRecentRows: tier === 'trimmed' ? 1 : 2 },
+    {
+      caps: { ...initial, memberVerdicts: 4, members: 2, advisories: 1, invariants: 1, reservationMembers: 1 },
+      campaignRecentRows: 1,
+    },
+    {
+      caps: { memberVerdicts: 2, members: 1, advisories: 1, invariants: 1, reservationMembers: 1 },
+      // Preserve every campaign axis and its exact aggregates before sacrificing
+      // the pre-existing truthful truncation pointers. Recent rows remain
+      // available from a standard/full follow-up and are the only lossy field.
+      campaignRecentRows: 0,
+    },
+    {
+      // Last normal projection: retain one actionable member row plus truthful
+      // zero-shown pointers for every other high-fanout family. This is still
+      // materially richer than the emergency tier and keeps campaign aggregates.
+      caps: { memberVerdicts: 1, members: 1, advisories: 0, invariants: 0, reservationMembers: 0 },
+      campaignRecentRows: 0,
+    },
   ];
-  for (const caps of attempts) {
-    const out = buildProjection(source, tier, caps);
+  for (const attempt of attempts) {
+    const out = buildProjection(source, tier, attempt.caps, attempt.campaignRecentRows);
     if (JSON.stringify(out).length <= LEADER_BRIEF_SHAPER_BUDGET_CHARS) return out;
   }
   // A pathological invariant/reason string must not defeat the safety rail.
