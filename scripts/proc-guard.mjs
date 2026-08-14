@@ -288,10 +288,149 @@ export function matchExternalProcessesDetailed(pattern, opts = {}) {
   return { matches, fullMatches, argvTextOnly };
 }
 
-function main(argv) {
-  const [cmd, pattern] = argv;
-  if (cmd !== 'check' || !pattern) {
-    console.error('usage: node scripts/proc-guard.mjs check <pattern>');
+const DEFAULT_CGROUP_ROOT = '/sys/fs/cgroup';
+const DEFAULT_SAMPLE_MS = 10_000;
+/** Below this, report the reading as near-zero and print its falsifier. */
+const NEAR_ZERO_CORES = 0.05;
+
+/**
+ * Parse the cgroup-v2 path out of a `/proc/<pid>/cgroup` body (`0::<path>`).
+ *
+ * @param {Buffer | string} raw
+ * @returns {string | null} null when there is no v2 line (cgroup v1-only host).
+ */
+export function parseCgroupPath(raw) {
+  for (const line of String(raw).split('\n')) {
+    const m = /^0::(.*)$/.exec(line.trim());
+    if (m) return m[1] || '/';
+  }
+  return null;
+}
+
+/**
+ * Parse `usage_usec <n>` out of a cgroup `cpu.stat` body. This counter is
+ * MONOTONIC, which is what makes a two-sample delta a true rate even as
+ * children spawn and exit between the samples.
+ *
+ * @param {Buffer | string} raw
+ * @returns {number | null}
+ */
+export function parseUsageUsec(raw) {
+  const m = /^usage_usec\s+(\d+)/m.exec(String(raw));
+  return m ? Number(m[1]) : null;
+}
+
+/**
+ * Cores busy = Δusage_usec / elapsed.
+ *
+ * ⚠ Divide by the MEASURED elapsed time, never by the requested sleep: a
+ * loaded box oversleeps, and dividing by the request inflates the rate.
+ *
+ * @param {number} deltaUsec
+ * @param {number} elapsedMs
+ * @returns {number | null} null when elapsed is non-positive (rate undefined).
+ */
+export function computeCoresBusy(deltaUsec, elapsedMs) {
+  if (!(elapsedMs > 0)) return null;
+  return deltaUsec / 1000 / elapsedMs;
+}
+
+/**
+ * Two-sample CPU rate over a pid's WHOLE cgroup — the answer to "is it
+ * actually WORKING", as opposed to `check`'s "is it RUNNING".
+ *
+ * The cgroup is the instrument on purpose (EI-20425164406230624): it accounts
+ * for EVERY descendant at ANY depth, so nothing can hide below a walk bound.
+ * A hand-rolled /proc tree walk reports a confident FALSE IDLE two ways — a
+ * depth-bounded walk halts on a 0-tick shell wrapper (this repo's test
+ * entrypoint is ~8 levels deep), and one pid's utime+stime+cutime+cstime
+ * credits `c*` only on wait(), which vitest never does for its own workers.
+ *
+ * Returns a discriminated result: an unreadable cgroup is `unknown`, NEVER 0
+ * cores — "could not measure" and "measured, idle" must not render alike.
+ *
+ * @param {number} pid
+ * @param {{ procRoot?: string; cgroupRoot?: string; sampleMs?: number;
+ *           sleep?: (ms: number) => Promise<void>; now?: () => number }} [opts]
+ */
+export async function sampleCgroupBusy(pid, opts = {}) {
+  const procRoot = opts.procRoot ?? DEFAULT_PROC_ROOT;
+  const cgroupRoot = opts.cgroupRoot ?? DEFAULT_CGROUP_ROOT;
+  const sampleMs = opts.sampleMs ?? DEFAULT_SAMPLE_MS;
+  const sleep = opts.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
+  const now = opts.now ?? (() => Date.now());
+
+  let cgPath = null;
+  try {
+    cgPath = parseCgroupPath(readFileSync(path.join(procRoot, String(pid), 'cgroup'), 'utf8'));
+  } catch {
+    return { status: 'unknown', reason: 'no-cgroup-entry' };
+  }
+  if (!cgPath) return { status: 'unknown', reason: 'not-cgroup-v2' };
+
+  const statPath = path.join(cgroupRoot, cgPath, 'cpu.stat');
+  const readUsage = () => {
+    try {
+      return parseUsageUsec(readFileSync(statPath, 'utf8'));
+    } catch {
+      return null;
+    }
+  };
+
+  const a = readUsage();
+  if (a === null) return { status: 'unknown', reason: 'cpu-stat-unreadable', cgroupPath: cgPath };
+  const t0 = now();
+  await sleep(sampleMs);
+  const b = readUsage();
+  const elapsedMs = now() - t0;
+  if (b === null) return { status: 'unknown', reason: 'cpu-stat-unreadable', cgroupPath: cgPath };
+  const cores = computeCoresBusy(b - a, elapsedMs);
+  if (cores === null) return { status: 'unknown', reason: 'zero-elapsed', cgroupPath: cgPath };
+
+  let procs = null;
+  try {
+    procs = readFileSync(path.join(cgroupRoot, cgPath, 'cgroup.procs'), 'utf8')
+      .split('\n')
+      .filter((l) => l.trim() !== '').length;
+  } catch {
+    /* the proc count is a nicety; the rate is the answer */
+  }
+  return { status: 'ok', cores, procs, elapsedMs, cgroupPath: cgPath };
+}
+
+/** Render one `--busy` line (+ its falsifier when near-zero). Pure, so the
+ *  wording is pinned by tests rather than by eyeballing terminal output. */
+export function formatBusy(sample) {
+  if (sample.status !== 'ok') {
+    return [
+      `busy: UNKNOWN (${sample.reason}) — this is NOT "idle"; the cgroup could not be read`,
+    ];
+  }
+  const secs = (sample.elapsedMs / 1000).toFixed(1);
+  const out = [
+    `busy: ${sample.cores.toFixed(2)} core(s) over ${secs}s across ${sample.procs ?? '?'} proc(s) in ${sample.cgroupPath}`,
+  ];
+  if (sample.cores < NEAR_ZERO_CORES) {
+    out.push(
+      `⚠ near-zero — before calling this STALLED: if the pid is a SUPERVISOR its children may sit in a DIFFERENT cgroup, so check the proc count above (1 proc often means you measured the wrapper, not the work).`,
+    );
+  }
+  return out;
+}
+
+async function main(argv) {
+  const flags = argv.filter((a) => a.startsWith('--'));
+  const positional = argv.filter((a) => !a.startsWith('--'));
+  const [cmd, pattern] = positional;
+  const busy = flags.includes('--busy');
+  const sampleMsFlag = flags.find((f) => f.startsWith('--sample-ms='));
+  const sampleMs = sampleMsFlag ? Number(sampleMsFlag.slice('--sample-ms='.length)) : DEFAULT_SAMPLE_MS;
+  if (cmd !== 'check' || !pattern || !(sampleMs > 0)) {
+    console.error(
+      'usage: node scripts/proc-guard.mjs check <pattern> [--busy] [--sample-ms=<n>]\n' +
+        '  --busy  also answer "is it WORKING" — a two-sample cgroup CPU rate per match,\n' +
+        '          which sees every descendant at any depth (a /proc tree walk does not).',
+    );
     process.exit(2);
     return;
   }
@@ -313,9 +452,21 @@ function main(argv) {
       ? ''
       : ` (${fullMatches.length} full-argv match(es): ${argvTextOnly.length} argv-text-only ignored)`;
   console.log(`proc-guard: ${matches.length} external process(es) match /${pattern}/${rawSuffix}:`);
-  for (const m of matches) console.log(`  ${m.pid}  ${m.cmdline}`);
+  for (const m of matches) {
+    console.log(`  ${m.pid}  ${m.cmdline}`);
+    if (!busy) continue;
+    const sample = await sampleCgroupBusy(m.pid, { sampleMs });
+    for (const line of formatBusy(sample)) console.log(`         ${line}`);
+  }
   process.exit(0);
 }
 
 const isMain = process.argv[1] && import.meta.url === `file://${process.argv[1]}`;
-if (isMain) main(process.argv.slice(2));
+if (isMain) {
+  // main() is async now (--busy samples over time); without this catch a throw
+  // becomes an unhandled rejection whose exit code is NOT the guard's contract.
+  main(process.argv.slice(2)).catch((e) => {
+    console.error(`proc-guard: ${e?.message ?? e}`);
+    process.exit(2);
+  });
+}
