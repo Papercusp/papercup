@@ -463,6 +463,36 @@ defineTool({
   }),
 });
 
+// P-008 faithful coord:orient ordering probe. Unlike the smaller synthetic
+// control above, this carries the four defineTool traits that matter on the
+// live orient path: the model-facing door exemption, a per-tool hard ceiling,
+// the session-tier opt-out, and a domain shaper that can still miss the
+// ceiling. The no-op shaper deliberately models that last-resort overshoot so
+// the framework's generic bounded projection drops the late codexLocks field
+// before the transport-level caller projection gets a chance to select it.
+defineTool({
+  name: 'gatingtest:orient_ceiling_projection',
+  requirePrincipal: false,
+  capability: 'agent_tools:read',
+  args: z.object({}),
+  agentRoles: ['scoper'],
+  skipResultDoor: 'oversize-by-design',
+  payloadTierCeilingChars: 18_000,
+  ignoreSessionPayloadTier: true,
+  shape: {
+    standard: (data) => data,
+    trimmed: (data) => data,
+  },
+  handler: async () => ({
+    data: {
+      ...Object.fromEntries(
+        Array.from({ length: 60 }, (_, i) => [`noise${i}`, DOOR_TEST_BIG_TEXT.slice(0, 500)]),
+      ),
+      codexLocks: { lockMode: 'automatic' },
+    },
+  }),
+});
+
 afterAll(() => {
   unregisterProjectedToolsForPlugin('gating-matrix-test');
 });
@@ -670,6 +700,22 @@ describe('applyResultDoor choke point honors projected.skipResultDoor', () => {
   it('projects an orient-shaped oversize-by-design result before applying its door exemption', async () => {
     const res = await callTool(
       'gatingtest:door_skip_oversize',
+      { projection: { pick: ['codexLocks.lockMode'] } },
+      scoped('ws-test'),
+      { format: 'json' },
+    );
+    expect(res.isError).not.toBe(true);
+    expect(res._meta?.resultDoor).toBeUndefined();
+    expect(res._meta?.resultProjection).toMatchObject({ applied: true });
+    expect(JSON.parse((res.content[0] as { text: string }).text)).toEqual({
+      codexLocks: { lockMode: 'automatic' },
+    });
+    expect(textOf(res)).not.toContain(DOOR_TEST_BIG_TEXT);
+  });
+
+  it('projects the unshaped orient payload before its defineTool hard ceiling can discard the selected field', async () => {
+    const res = await callTool(
+      'gatingtest:orient_ceiling_projection',
       { projection: { pick: ['codexLocks.lockMode'] } },
       scoped('ws-test'),
       { format: 'json' },
