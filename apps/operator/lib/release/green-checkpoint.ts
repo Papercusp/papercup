@@ -726,12 +726,15 @@ export const SETUP_TREE_TIMEOUT_MS = 30 * 60_000;
  *  in place (that window only cancels the DBOS-level bookkeeping row — it has
  *  no reach into an already-orphaned OS process tree).
  *
- *  Fix: THIS process arms its own watchdog on startup. If it fires, the parent
- *  is presumed dead (a live parent's SIGTERM+SIGKILL would have landed well
- *  before this — see the margin below), so this process releases its own lock,
- *  emits a loud red verdict through the normal checkpoint result path, and then
- *  SIGKILLs its OWN process group (`-process.pid`, covering itself + every
- *  runCmd-spawned vitest/tsx worker in one shot) — no orphan can outlive it.
+ *  Fix: THIS process arms its own watchdog on startup. On the scheduled path, a
+ *  fire means the parent is presumed dead (a live parent's SIGTERM+SIGKILL would
+ *  have landed well before this — see the margin below). On the detached manual
+ *  path, the launcher deliberately transports a shorter primary run deadline;
+ *  that deadline says nothing about parent liveness. In either case this process
+ *  releases its own lock, emits a loud red verdict through the normal checkpoint
+ *  result path, and then SIGKILLs its OWN process group (`-process.pid`, covering
+ *  itself + every runCmd-spawned vitest/tsx worker in one shot) — no orphan can
+ *  outlive it.
  *
  *  INVARIANT: strictly greater than the parent's full kill window (120m SIGTERM
  *  + 15s SIGKILL escalation), so a LIVE parent's kill always wins the race and
@@ -752,17 +755,46 @@ export const MANUAL_SELF_WATCHDOG_ENV =
   "PAPERCUSP_MANUAL_GREEN_CHECKPOINT_WATCHDOG_MS";
 export const MIN_MANUAL_SELF_WATCHDOG_MS = 120 * 60_000 + 15_000;
 
+export type SelfWatchdogTrigger =
+  | "scheduled-parent-backstop"
+  | "manual-run-deadline";
+
+export interface SelfWatchdogConfig {
+  ms: number;
+  trigger: SelfWatchdogTrigger;
+}
+
+/** Resolve the deadline AND what that deadline means from the same validated transport.
+ *
+ * A scheduled run inherits a live parent-side 120m timeout, so its later 180m watchdog can
+ * only fire after that parent failed to land the normal kill. A detached manual run has no
+ * such parent timer: the launcher deliberately transports 120m15s into THIS watchdog, while
+ * systemd remains a 3h outer backstop. Reusing the scheduled "presumed-dead parent" diagnosis
+ * for that manual deadline created the false lost-supervisor incident in EI-20444707119723892.
+ */
+export function selfWatchdogConfigFromEnv(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): SelfWatchdogConfig {
+  const raw = env[MANUAL_SELF_WATCHDOG_ENV];
+  if (raw === undefined)
+    return {
+      ms: SELF_WATCHDOG_MS,
+      trigger: "scheduled-parent-backstop",
+    };
+  const value = Number(raw);
+  const valid =
+    Number.isSafeInteger(value) &&
+    value >= MIN_MANUAL_SELF_WATCHDOG_MS &&
+    value <= SELF_WATCHDOG_MS;
+  return valid
+    ? { ms: value, trigger: "manual-run-deadline" }
+    : { ms: SELF_WATCHDOG_MS, trigger: "scheduled-parent-backstop" };
+}
+
 export function selfWatchdogMsFromEnv(
   env: Readonly<Record<string, string | undefined>> = process.env,
 ): number {
-  const raw = env[MANUAL_SELF_WATCHDOG_ENV];
-  if (raw === undefined) return SELF_WATCHDOG_MS;
-  const value = Number(raw);
-  return Number.isSafeInteger(value) &&
-    value >= MIN_MANUAL_SELF_WATCHDOG_MS &&
-    value <= SELF_WATCHDOG_MS
-    ? value
-    : SELF_WATCHDOG_MS;
+  return selfWatchdogConfigFromEnv(env).ms;
 }
 
 export function formatSelfWatchdogDuration(ms: number): string {
@@ -876,6 +908,10 @@ export function armSelfWatchdog(
     log?: (msg: string) => void;
     snapshotProcessGroup?: (pid: number) => string | null;
     resolveProcessGroupId?: (pid: number) => number | null;
+    /** Why this timer exists. Scheduled runs use it only after their parent-side timeout
+     * disappears; detached manual runs use it as the primary suite deadline while systemd
+     * remains alive. The distinction is diagnostic, not a timing or kill-policy change. */
+    trigger?: SelfWatchdogTrigger;
     /** WI-4528 (EI-10800 class): onFire MAY BE ASYNC. It emits the loud RED verdict that parked
      *  agents wake on (`checkpoint:await` → `green-checkpoint:red:<pipeline>`) plus the urgent
      *  attention-notify — both are async DB/IO writes. We BOUND-AWAIT a returned promise before
@@ -905,9 +941,13 @@ export function armSelfWatchdog(
   const onFireGraceMs = opts.onFireGraceMs ?? SELF_WATCHDOG_ONFIRE_GRACE_MS;
   const timer = setTimeout(() => {
     const processGroupId = resolveProcessGroupId(pid) ?? pid;
+    const triggerDetail =
+      opts.trigger === "manual-run-deadline"
+        ? "manual checkpoint deadline elapsed (this timer does not imply parent loss)"
+        : "presumed-dead parent (release-actions.ts's runScript never landed its SIGTERM+SIGKILL)";
     log(
       `self-watchdog fired after ${formatSelfWatchdogDuration(ms)} with no normal exit — ` +
-        `presumed-dead parent (release-actions.ts's runScript never landed its SIGTERM+SIGKILL); ` +
+        `${triggerDetail}; ` +
         `releasing the run-lock and killing this process's ACTUAL group ` +
         `(pid ${pid}, pgid ${processGroupId}) so no orphan can outlive it`,
     );
@@ -9538,11 +9578,12 @@ if (require.main === module) {
       });
   } else {
     // WI-1319 root fix (c): arm the self-watchdog for the lifetime of this run —
-    // canceled on every normal exit path below, so it only ever fires on a genuine
-    // wedge (see armSelfWatchdog's doc comment).
-    const selfWatchdogMs = selfWatchdogMsFromEnv();
+    // canceled on every normal exit path below, so it only ever fires when this run
+    // misses its configured deadline (see armSelfWatchdog's doc comment).
+    const selfWatchdog = selfWatchdogConfigFromEnv();
     const watchdog = armSelfWatchdog(lock, {
-      ms: selfWatchdogMs,
+      ms: selfWatchdog.ms,
+      trigger: selfWatchdog.trigger,
       // WI-4528 (EI-10800 class): ASYNC + AWAITED. These two effects used to be fire-and-forget
       // `void import(...).then(emit)` — a GUARANTEED lost wake, not merely a race: armSelfWatchdog
       // SIGKILLs this process's own group on the very next synchronous line, so the dynamic
@@ -9558,8 +9599,11 @@ if (require.main === module) {
           green: false,
           reason: "not-green",
           summary:
-            `self-watchdog fired after ${formatSelfWatchdogDuration(selfWatchdogMs)} with no normal exit — ` +
-            `checkpoint run likely lost its supervising parent; run-lock released and process group is being terminated.`,
+            selfWatchdog.trigger === "manual-run-deadline"
+              ? `manual checkpoint exceeded its ${formatSelfWatchdogDuration(selfWatchdog.ms)} deadline with no normal exit — ` +
+                `run-lock released and process group is being terminated.`
+              : `self-watchdog fired after ${formatSelfWatchdogDuration(selfWatchdog.ms)} with no normal exit — ` +
+                `checkpoint run likely lost its supervising parent; run-lock released and process group is being terminated.`,
           runId,
         };
         await emitResult(red);
@@ -9629,7 +9673,7 @@ if (require.main === module) {
       checkpointRunLockDir(cfg.checkpointLogDir, cfg.integrationRoot),
       {
         armedAtMs: Date.now(),
-        ms: selfWatchdogMs,
+        ms: selfWatchdog.ms,
         pid: process.pid,
       },
     );

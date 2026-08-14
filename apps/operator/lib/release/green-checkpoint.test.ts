@@ -87,6 +87,7 @@ import {
   SELF_WATCHDOG_MS,
   MANUAL_SELF_WATCHDOG_ENV,
   MIN_MANUAL_SELF_WATCHDOG_MS,
+  selfWatchdogConfigFromEnv,
   selfWatchdogMsFromEnv,
   formatSelfWatchdogDuration,
   isNothingToGate,
@@ -438,6 +439,21 @@ describe("armSelfWatchdog (WI-1319 root fix (c) — orphaned OS process past DBO
     }
   });
 
+  it("classifies a validated manual deadline separately from the scheduled parent-death backstop", () => {
+    expect(selfWatchdogConfigFromEnv({})).toEqual({
+      ms: SELF_WATCHDOG_MS,
+      trigger: "scheduled-parent-backstop",
+    });
+    expect(
+      selfWatchdogConfigFromEnv({
+        [MANUAL_SELF_WATCHDOG_ENV]: String(MIN_MANUAL_SELF_WATCHDOG_MS),
+      }),
+    ).toEqual({
+      ms: MIN_MANUAL_SELF_WATCHDOG_MS,
+      trigger: "manual-run-deadline",
+    });
+  });
+
   it("renders the resolved watchdog duration without hiding the manual kill grace", () => {
     expect(formatSelfWatchdogDuration(MIN_MANUAL_SELF_WATCHDOG_MS)).toBe(
       "120m15s",
@@ -487,6 +503,32 @@ describe("armSelfWatchdog (WI-1319 root fix (c) — orphaned OS process past DBO
     expect(log).toHaveBeenCalledWith(
       expect.stringContaining("(pid 999, pgid 777)"),
     );
+  });
+
+  it("EI-20444707119723892: a manual deadline never invents a lost parent while killing the inherited group", () => {
+    const release = vi.fn();
+    const kill = vi.fn();
+    const log = vi.fn();
+    armSelfWatchdog(
+      { release },
+      {
+        ms: 1000,
+        trigger: "manual-run-deadline",
+        kill,
+        pid: 999,
+        log,
+        resolveProcessGroupId: () => 777,
+      },
+    );
+    vi.advanceTimersByTime(1000);
+    expect(log).toHaveBeenCalledWith(
+      expect.stringContaining("manual checkpoint deadline elapsed"),
+    );
+    expect(log).not.toHaveBeenCalledWith(
+      expect.stringContaining("presumed-dead parent"),
+    );
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(kill).toHaveBeenCalledWith(-777, "SIGKILL");
   });
 
   it("runs a SYNC onFire hook before the process-group kill so the watchdog can emit a loud red verdict", () => {
