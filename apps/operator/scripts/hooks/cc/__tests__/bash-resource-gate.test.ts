@@ -851,7 +851,11 @@ describe('wrapped/quoted command evasion (EI-19294800751120438)', () => {
     it.each([
       ['bash -c', 'bash -c "crontab -e"'],
       ['command substitution', '$(echo crontab) -e'],
-      ['sh -c', "sh -c 'crontab -l'"],
+      // Mutating payload on purpose: this case tests that a WRAPPED payload is
+      // surfaced and scanned at all, and until EI-20419484186942049 it spelled
+      // that payload `crontab -l` — a listing, now correctly exempt. A read here
+      // would assert the evasion path is closed while proving nothing about it.
+      ['sh -c', "sh -c 'crontab -e'"],
     ])('denies %s', (_label, command) => {
       expectDeny(runGate(bashCmd(command), AGENT));
     });
