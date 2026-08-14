@@ -686,15 +686,20 @@ describe("runGreenCheckpoint", () => {
   // arg so the dispatched test.yml run can diff against what this promotion actually
   // changed instead of comparing the pushed tip to itself (green by vacuity —
   // AFFECTED_BASE defaulting to origin/main, which on a workflow_dispatch run
-  // checked out at main IS the same commit as HEAD).
-  it("WI-7013: push is called with the pre-FF sha (AdvanceResult.from) as its baseSha arg", async () => {
+  // checked out at main IS the same commit as HEAD). The tested candidate is the third
+  // arg so origin moves BEFORE the local green pin.
+  it("WI-7013: push receives the pre-FF base and exact tested candidate", async () => {
     const c1 = await commit("a", "1", "c1");
     await git(repo, ["branch", "ready", c1]);
     const c2 = await commit("a", "2", "c2");
     const { deps } = stubDeps(true);
-    const pushCalls: Array<{ ref: string; baseSha?: string | null }> = [];
-    deps.push = async (ref, baseSha) => {
-      pushCalls.push({ ref, baseSha });
+    const pushCalls: Array<{
+      ref: string;
+      baseSha?: string | null;
+      candidateSha?: string;
+    }> = [];
+    deps.push = async (ref, baseSha, candidateSha) => {
+      pushCalls.push({ ref, baseSha, candidateSha });
     };
     const r = await runGreenCheckpoint(cfg(), deps, {}); // noPush NOT set — push actually runs
     expect(r).toMatchObject({
@@ -703,7 +708,9 @@ describe("runGreenCheckpoint", () => {
       green: true,
       reason: "advanced",
     });
-    expect(pushCalls).toEqual([{ ref: "ready", baseSha: c1 }]);
+    expect(pushCalls).toEqual([
+      { ref: "ready", baseSha: c1, candidateSha: c2 },
+    ]);
   });
 
   // The dual: on the VERY FIRST advance (no prior `ready` branch), AdvanceResult.from
@@ -713,9 +720,13 @@ describe("runGreenCheckpoint", () => {
   it("WI-7013: push is called with baseSha=null when `ready` is created fresh (no prior tip to diff from)", async () => {
     const c1 = await commit("a", "1", "c1"); // candidate; no `ready` branch exists yet
     const { deps } = stubDeps(true);
-    const pushCalls: Array<{ ref: string; baseSha?: string | null }> = [];
-    deps.push = async (ref, baseSha) => {
-      pushCalls.push({ ref, baseSha });
+    const pushCalls: Array<{
+      ref: string;
+      baseSha?: string | null;
+      candidateSha?: string;
+    }> = [];
+    deps.push = async (ref, baseSha, candidateSha) => {
+      pushCalls.push({ ref, baseSha, candidateSha });
     };
     const r = await runGreenCheckpoint(cfg(), deps, {});
     expect(r).toMatchObject({
@@ -724,7 +735,50 @@ describe("runGreenCheckpoint", () => {
       green: true,
       reason: "advanced",
     });
-    expect(pushCalls).toEqual([{ ref: "ready", baseSha: null }]);
+    expect(pushCalls).toEqual([
+      { ref: "ready", baseSha: null, candidateSha: c1 },
+    ]);
+  });
+
+  it("a rejected origin push aborts before local advance and surfaces the held promotion", async () => {
+    const c1 = await commit("a", "1", "c1");
+    await git(repo, ["branch", "ready", c1]);
+    const c2 = await commit("a", "2", "c2");
+    const { deps, calls } = stubDeps(true);
+    const logs: string[] = [];
+    const broadcasts: Array<{ summary: string; body?: string }> = [];
+    const escalations: Array<{ summary: string; body: string }> = [];
+    deps.push = async () => {
+      calls.push("push");
+      throw new Error("remote: You must verify your email address");
+    };
+    deps.log = (line) => logs.push(line);
+    deps.broadcast = async (summary, body) => {
+      broadcasts.push({ summary, body });
+    };
+    deps.escalate = async (summary, body) => {
+      escalations.push({ summary, body });
+    };
+
+    await expect(runGreenCheckpoint(cfg(), deps, {})).rejects.toThrow(
+      "You must verify your email address",
+    );
+
+    expect(await revParse(repo, "ready")).toBe(c1);
+    expect(calls).toEqual([`setup:${c2.slice(0, 7)}`, "runGreen", "push"]);
+    expect(broadcasts).toHaveLength(1);
+    expect(broadcasts[0]).toMatchObject({
+      summary: expect.stringContaining("push FAILED"),
+      body: expect.stringContaining("local ready remains at"),
+    });
+    expect(escalations).toHaveLength(1);
+    expect(escalations[0]).toMatchObject({
+      summary: expect.stringContaining("push failed"),
+      body: expect.stringContaining("was NOT published to origin/ready"),
+    });
+    expect(logs).toContainEqual(
+      expect.stringContaining("ERROR: green-checkpoint push failed"),
+    );
   });
 
   it("EI-13992: an absent ensureMigrationsCurrent (existing stub) never blocks the run — unaffected call order", async () => {

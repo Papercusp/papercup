@@ -178,11 +178,15 @@ export interface CheckpointDeps {
   }>;
   /** Fast-forward `ready` to `candidate` (advanceReady). */
   advance(candidate: string): Promise<AdvanceResult>;
-  /** Publish `ready` to origin. `baseSha` (WI-7013) — the sha `ref` advanced FROM
-   *  (typically `AdvanceResult.from`) — is threaded through to the CI dispatch as the
-   *  affected-test diff base, so the remote gate's `workflow_dispatch` run judges what
-   *  this promotion actually changed instead of comparing the pushed tip to itself. */
-  push(ref: string, baseSha?: string | null): Promise<void>;
+  /** Publish a green candidate to `ref` on origin. `baseSha` (WI-7013) is the sha
+   *  `ref` will advance FROM and is threaded through to the CI dispatch as the
+   *  affected-test diff base. `candidateSha` is pushed directly before the local green
+   *  pin advances, so a rejected remote push cannot leave local `main` falsely ahead. */
+  push(
+    ref: string,
+    baseSha?: string | null,
+    candidateSha?: string,
+  ): Promise<void>;
   broadcast(summary: string, body?: string): Promise<void>;
   /** Resolve the CURRENT tip of the integration branch (may be newer than `candidate`,
    *  which the quiet-cut deliberately holds back). Optional: absent ⇒ no re-triage. */
@@ -4421,6 +4425,43 @@ export function partialGreenGateEnabledFromEnv(
 }
 
 /**
+ * Publish the tested candidate before advancing the local green pin. A remote push is part
+ * of promotion, not a best-effort after-effect: swallowing it lets local `main` advance,
+ * emits a false deployable verdict, and makes every later run look up-to-date even though
+ * origin is still stale. Keep the durable escalation best-effort, then rethrow the original
+ * push failure so no success path can run.
+ */
+async function pushGreenCandidateOrThrow(
+  cfg: ReleaseConfig,
+  deps: CheckpointDeps,
+  candidate: string,
+  baseSha: string | null,
+): Promise<void> {
+  try {
+    await deps.push(cfg.releaseRef, baseSha, candidate);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    const summary =
+      `green-checkpoint push failed: green candidate ${candidate.slice(0, 12)} was NOT published ` +
+      `to origin/${cfg.releaseRef}; local ${cfg.releaseRef} remains at ${baseSha?.slice(0, 12) ?? "unset"}. ${detail}`;
+    deps.log(`ERROR: ${summary}`);
+    await deps
+      .escalate?.(
+        `green-checkpoint held: ${candidate.slice(0, 8)} push failed`,
+        summary,
+      )
+      .catch(() => {});
+    await deps
+      .broadcast(
+        `🟥 green-checkpoint: origin/${cfg.releaseRef} push FAILED — promotion held`,
+        summary,
+      )
+      .catch(() => {});
+    throw error;
+  }
+}
+
+/**
  * P-016 (D-010): salvage the LONGEST GREEN PREFIX when the candidate (the batch tip) is
  * red, so one unrelated red commit no longer holds every clean change behind it hostage.
  *
@@ -4628,12 +4669,13 @@ async function tryLongestGreenPrefix(
         `(after ${recoveryAttempts} additional confirm${recoveryAttempts === 1 ? "" : "s"})`,
     );
   }
+  // The remote ref is part of the promotion transaction. Publish the tested sha first so a
+  // rejected push leaves the local green pin at `lastReady` and the next tick can retry.
+  if (!noPush) {
+    await pushGreenCandidateOrThrow(cfg, deps, prefixTip, lastReady);
+  }
   const adv = await deps.advance(prefixTip);
   if (!adv.advanced) return null;
-  if (!noPush)
-    await deps
-      .push(cfg.releaseRef, adv.from)
-      .catch((e) => deps.log(`warn: push ${cfg.releaseRef} failed: ${e}`));
   logPartialGreenGate(
     `✅ partial-green-gate: ${cfg.releaseRef} advanced ${adv.from?.slice(0, 8) ?? "none"} → ${prefixTip.slice(0, 8)} ` +
       `(longest green prefix; tip ${candidate.slice(0, 8)} still red)`,
@@ -6209,12 +6251,13 @@ export async function runGreenCheckpoint(
     }
   }
 
-  const adv = await deps.advance(candidate);
-  if (adv.advanced && !opts.noPush) {
-    await deps
-      .push(cfg.releaseRef, adv.from)
-      .catch((e) => deps.log(`warn: push ${cfg.releaseRef} failed: ${e}`));
+  // Publish the exact tested candidate before moving the local green pin. The old order
+  // advanced local `main`, swallowed a rejected push, and then emitted a false deployable
+  // verdict; every later tick saw local `main` as up-to-date and never retried origin.
+  if (!opts.noPush) {
+    await pushGreenCandidateOrThrow(cfg, deps, candidate, lastReady);
   }
+  const adv = await deps.advance(candidate);
   deps.log(
     `✅ ${cfg.releaseRef} advanced ${adv.from?.slice(0, 8) ?? "none"} → ${candidate.slice(0, 8)} (green)`,
   );
@@ -8787,10 +8830,17 @@ export function realCheckpointDeps(
     // PAPERCUSP_MAIN_PUSH_OK=1 — green-checkpoint is the ONE writer allowed past
     // the pre-push guard on `main` (bin/git-hooks/pre-push). Everyone else's
     // pushes to main are blocked by that hook.
-    push: async (ref, baseSha) => {
+    push: async (ref, baseSha, candidateSha) => {
+      const remoteRef = ref.startsWith("refs/") ? ref : `refs/heads/${ref}`;
       await exec(
         "git",
-        ["-C", cfg.integrationRoot, "push", "origin", `${ref}:${ref}`],
+        [
+          "-C",
+          cfg.integrationRoot,
+          "push",
+          "origin",
+          `${candidateSha ?? ref}:${remoteRef}`,
+        ],
         {
           env: { ...process.env, PAPERCUSP_MAIN_PUSH_OK: "1" },
         },
