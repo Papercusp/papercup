@@ -17,6 +17,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { physicalDrillSigningBytes, validatePhysicalDrillEvidence } from './sync/pot-git/physical-drill-evidence';
 import { physicalDrillHostReceiptSigningBytes } from './sync/pot-git/physical-drill-host-receipt';
+import { physicalDrillGitSyncSlug } from './sync/pot-git/physical-drill-phase-a';
 import { generateEd25519KeypairDer, signWithPrivateKeyDer } from './identity/ed25519';
 import { stagingAdvanceSigningBytes } from './sync/pot-git/staging-advance';
 import {
@@ -103,7 +104,7 @@ function physicalLegD(
   const secondAdvance = advance(2, second, Date.parse('2026-08-13T12:17:00Z'));
   const trigger = (host: 'tower' | 'vm', role: string, startedAt: string, finishedAt: string) => ({
     tool: 'git-sync:run',
-    installSlug: 'hello-world-3-pot',
+    installSlug: physicalDrillGitSyncSlug(host),
     host,
     role,
     fired: true,
@@ -255,7 +256,7 @@ function physicalLegE(
     finishedAt: string,
   ) => ({
     tool: 'git-sync:run',
-    installSlug: 'hello-world-3-pot',
+    installSlug: physicalDrillGitSyncSlug(host),
     host,
     role,
     fired: true,
