@@ -37,6 +37,17 @@ function largeBrief() {
     idleCauses: { 'genuinely-idle': 22 },
     strandedFleetAlertReason: 'x'.repeat(1000),
     strandedFleetAlertFalsifier: { tool: 'fleet:capacity', check: 'x'.repeat(1000) },
+    campaign: {
+      boundary: { at: '2026-08-13T00:00:00.000Z', source: 'fleet-created-at' },
+      everMembers: { available: true, count: 53, writer: 'harness_shared.fleet_membership_events' },
+      axes: Object.fromEntries(['membership', 'speaking', 'claims', 'terminals', 'issues', 'gateEvents', 'jobs', 'corrections'].map((name) => [name, {
+        available: true,
+        writer: `writer:${name}`,
+        units: { total: 'exact rows from the authoritative writer' },
+        cap: { aggregates: 'none', recentRows: 12 },
+        data: { total: 53, recent: { total: 53, shown: 12, truncated: true, rows: members.slice(0, 12) } },
+      }])),
+    },
   };
 }
 
@@ -58,6 +69,10 @@ describe('fleet:leader-brief payload projection (EI-20243661938229668)', () => {
     expect(out.blockedAt).toMatchObject({ layer: 'members' });
     expect(out.summary).toMatchObject({ fleet: 'large-fleet', members: 53, claimable_now: 1432 });
     expect(out.leaderBriefProjection).toMatchObject({ tier: 'trimmed' });
+    expect(out.campaign).toMatchObject({
+      boundary: { source: 'fleet-created-at' },
+      axes: { speaking: { available: true, writer: 'writer:speaking' } },
+    });
   });
 
   it('bounds every high-fanout row family with truthful counts and follow-up pointers', () => {
@@ -72,4 +87,3 @@ describe('fleet:leader-brief payload projection (EI-20243661938229668)', () => {
     expect(out.specFilterOmitted).toMatchObject({ reason: 'bounded for monitor transport' });
   });
 });
-
