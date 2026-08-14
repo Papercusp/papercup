@@ -18,7 +18,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const loadHarnessRegistry = vi.fn();
 
 vi.mock('./harness-registry', () => ({
-  loadHarnessRegistry: () => loadHarnessRegistry(),
+  loadHarnessRegistry: (workspaceId?: string) => loadHarnessRegistry(workspaceId),
 }));
 
 import { resolveHarnessPaths } from './resolve-harness-paths';
