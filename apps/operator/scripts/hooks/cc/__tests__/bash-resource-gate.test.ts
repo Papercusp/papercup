@@ -246,6 +246,11 @@ async function mapWithConcurrency<T, R>(
  * a stale `expectDeny(… "sh -c 'crontab -l'")` failed with this text, which sent the
  * reader hunting a credential bug that did not exist. So: stat first, then diagnose.
  *
+ * The allow reading requires BOTH signals healthy — usable credentials AND a quiet
+ * stderr — because a deliberate allow is silent on both streams. Anything on stderr
+ * means the hook errored rather than chose, which is a fail-open no matter how good
+ * the credential files look afterwards.
+ *
  * NB the branch describes the DEFAULT `fakeHome` credentials that every deny test
  * uses. A test that overrides HOME via runGate's env spread is outside what these
  * paths can speak to — the sizes are printed either way, so the reader can tell.
@@ -513,13 +518,28 @@ describe('parseDecision diagnoses an empty stdout from the evidence (EI-20437152
       msg = (e as Error).message;
     }
     expect(msg).toMatch(/silence = allow/);
-    expect(msg).toMatch(/NOT the credential fail-open shape/);
-    expect(msg).toMatch(/Check the EXPECTATION before suspecting a flake/);
+    expect(msg).toMatch(/does not support the credential fail-open shape/);
+    expect(msg).toMatch(/Check the EXPECTATION first/);
     // The old text asserted the credential shape unconditionally. It must not return.
     expect(msg).not.toMatch(/it FAIL-OPENED instead of emitting a decision/);
     // And it must still surface the evidence that justifies the branch it took.
     expect(msg).toMatch(/token:.*size=/);
     expect(msg).toMatch(/agent-id:.*size=/);
+  });
+
+  it('does NOT read healthy credentials alone as an allow when the hook wrote to stderr', () => {
+    // The conjunction that matters, and the case a credential-only check gets wrong:
+    // the files are fine, but the hook ERRORED (it did not choose to allow). Silence on
+    // stdout ALONE is not consent — a deliberate allow is quiet on both streams.
+    let msg = '';
+    try {
+      parseDecision({ stdout: '   ', stderr: 'hook error: token unreadable', status: 0 });
+    } catch (e) {
+      msg = (e as Error).message;
+    }
+    expect(msg).toContain('FAIL-OPENED');
+    expect(msg).toMatch(/wrote to STDERR/);
+    expect(msg).not.toMatch(/silence = allow/);
   });
 });
 

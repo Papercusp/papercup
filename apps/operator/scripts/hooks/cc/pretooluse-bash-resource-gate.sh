@@ -1986,6 +1986,22 @@ def _is_agent_or_fleet_session():
 # and is kept for that reason — it is not, and was never meant to be, a hard
 # security boundary against a determined bypass.
 #
+# THE HEREDOC SHAPE, in the same accepted-limitation family (EI-20437163620658780).
+# `\n` is a command-position separator, so a heredoc BODY is scanned as if each of
+# its lines were a command — and `cat <<EOF … crontab -e … EOF` DENIES even though
+# writing text that mentions a crontab line creates no schedule. That false positive
+# is REAL and is accepted, because the obvious fix is unsafe: blanking heredoc bodies
+# the way quoted spans are blanked would open a working bypass, since a heredoc body
+# is only data when the RECEIVING command treats it as data — `cat <<EOF` writes
+# text, but `bash <<EOF` / `sh <<EOF` / `<<EOF | bash` EXECUTE every line of it, and
+# the same stroke would weaken the destructive-git and systemctl-exit guards that
+# share this scanner. Classifying it correctly means knowing the receiving command,
+# i.e. the shell parsing this file deliberately declines to do (see above). The only
+# safe direction, if ever revisited, is a fail-CLOSED whitelist: blank the body only
+# for known non-executing consumers (`cat`, `tee`, a plain file redirect), deny
+# otherwise. Practical workaround: write the file with the Write/Edit tool instead
+# of a heredoc, which the shell-write guard steers you to anyway.
+#
 # EI-20419484186942049: the lockout's job is to stop an agent CREATING an OS
 # schedule the hive's pause/status/liveness machinery cannot see. A pure
 # LISTING creates nothing. `crontab -l` is the natural way to VERIFY an
