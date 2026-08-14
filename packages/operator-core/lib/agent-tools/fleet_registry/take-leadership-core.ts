@@ -18,6 +18,10 @@ import { fetchPresenceFleet } from '../coordination/presence-fleet';
 import { sendMessage } from '../coordination/messages';
 import type { AgentIdentity } from '../coordination/identity';
 import { shouldDemotePriorLeader } from './_shared';
+import {
+  ensureFleetLeaderControl,
+  type LeaderControlOutcome,
+} from './leader-control';
 
 /** P-009: the outcome of the become-a-leader compaction-cap re-seed (below). */
 export interface LeaderReseedOutcome {
@@ -48,6 +52,8 @@ export interface TakeLeadershipOutcome {
   notified: boolean;
   /** P-009: the compaction-cap re-seed applied to the new leader (null = re-seed skipped/failed). */
   reseed: LeaderReseedOutcome | null;
+  /** Durable AUTO + monitor-loop + transition-watch state installed with leadership. */
+  control: LeaderControlOutcome;
 }
 
 /**
@@ -67,7 +73,13 @@ export interface TakeLeadershipOutcome {
  */
 export async function reseedLeaderCompactionLimit(
   ownerId: string,
-  opts?: { compactionLimit?: number; contextSize?: 'full' | 'trimmed' },
+  opts?: {
+    compactionLimit?: number;
+    contextSize?: 'full' | 'trimmed';
+    harnessSlug?: string | null;
+    planSlug?: string | null;
+    carry?: 'warm' | 'cold';
+  },
 ): Promise<LeaderReseedOutcome | null> {
   try {
     const { resolveModelSpecForOwner } = await import('../../compaction-usage');
@@ -160,5 +172,22 @@ export async function takeFleetLeadership(
     }
   }
 
-  return { slug, leader: ownerId, previousLeader: previousLeader ?? null, demotedPriorLeader, notified, reseed };
+  const control = await ensureFleetLeaderControl({
+    workspaceId,
+    ownerId,
+    fleetSlug: slug,
+    harnessSlug: opts?.harnessSlug,
+    planSlug: opts?.planSlug,
+    carry: opts?.carry,
+  });
+
+  return {
+    slug,
+    leader: ownerId,
+    previousLeader: previousLeader ?? null,
+    demotedPriorLeader,
+    notified,
+    reseed,
+    control,
+  };
 }
