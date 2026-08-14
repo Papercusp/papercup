@@ -49,13 +49,25 @@
  *
  * PURE: the filesystem is injected, so this never touches a real tree.
  */
-import { describe, it, expect } from 'vitest';
+import { afterEach, describe, it, expect } from 'vitest';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
-import { completionTreeStamp, completionTreeStampForEvidence } from './complete';
+import {
+  completionRepoRootsFromRegistry,
+  completionTreeStamp,
+  completionTreeStampForEvidence,
+} from './complete';
 
 const ROOT = '/repo';
 const SHA = 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678';
 const OTHER_SHA = '0000111122223333444455556666777788889999';
+const TEMP_ROOTS: string[] = [];
+
+afterEach(() => {
+  for (const root of TEMP_ROOTS.splice(0)) rmSync(root, { recursive: true, force: true });
+});
 
 /** Build a probe over a pretend git dir; also records every path read. */
 function probeOver(files: Record<string, string>, repoRoot: string | null = ROOT) {
@@ -244,6 +256,28 @@ describe('completionTreeStampForEvidence (EI-20460682854560939)', () => {
     '/sidestage/.git/HEAD': SIDESTAGE_SHA,
   };
   const readFile = (abs: string): string | undefined => files[abs as keyof typeof files];
+
+  it('discovers and stamps an unregistered independent sibling checkout', () => {
+    const workspaceRoot = mkdtempSync(join(tmpdir(), 'completion-tree-stamp-sibling-'));
+    TEMP_ROOTS.push(workspaceRoot);
+    const operatorRoot = join(workspaceRoot, 'papercusp');
+    const sidestageRoot = join(workspaceRoot, 'sidestage');
+    mkdirSync(join(operatorRoot, '.git'), { recursive: true });
+    mkdirSync(join(sidestageRoot, '.git'), { recursive: true });
+    mkdirSync(join(sidestageRoot, 'apps', 'web', 'src'), { recursive: true });
+    writeFileSync(join(operatorRoot, '.git', 'HEAD'), `${OPERATOR_SHA}\n`);
+    writeFileSync(join(sidestageRoot, '.git', 'HEAD'), `${SIDESTAGE_SHA}\n`);
+    writeFileSync(join(sidestageRoot, 'apps', 'web', 'src', 'BuyerTab.thumbnail.test.tsx'), 'test\n');
+
+    const roots = completionRepoRootsFromRegistry(operatorRoot, { projects: [] });
+    expect(roots).toEqual([operatorRoot, sidestageRoot]);
+    expect(
+      completionTreeStampForEvidence(
+        { filesChanged: ['apps/web/src/BuyerTab.thumbnail.test.tsx'] },
+        roots,
+      ),
+    ).toEqual({ headSha: SIDESTAGE_SHA });
+  });
 
   it('stamps the registered sibling checkout that owns the declared changed file', () => {
     expect(

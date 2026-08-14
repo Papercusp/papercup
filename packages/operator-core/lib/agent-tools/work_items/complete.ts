@@ -87,6 +87,7 @@ import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { activeWorkspaceId, resolveConcreteWorkspaceId } from '../../workspace-registry';
 import { itemTestGate } from '../../harness-test-gate';
+import { independentSiblingRepos } from '../../plan-audits';
 import { FEATURE_TERMINAL_STATES, normalizeFeatureStateInput } from '../../work-item-dispatch-states';
 import { setWorkItemCheckpoint } from '../../work-item-checkpoint';
 import { unresolvedRefsInBody, unresolvedRefsWarning } from './unresolved-refs';
@@ -590,8 +591,13 @@ export function unresolvedPathsInCompletion(
 
 /**
  * Reuse the canonical harness-content resolver to enumerate the code checkouts registered in
- * this workspace. The Papercusp tree stays first so legacy/single-repo completions retain their
- * exact behavior; duplicate paths are collapsed before any filesystem work.
+ * this workspace, then admit independent sibling repositories through the same bounded,
+ * spawn-free rule used by plan citation resolution. The sibling leg is required for checkouts
+ * such as SideStage that live beside Papercusp but are not registered as harness projects.
+ *
+ * The Papercusp tree stays first so legacy/single-repo completions retain their exact behavior;
+ * registered roots stay ahead of discovered siblings, and duplicate paths are collapsed before
+ * any filesystem work.
  */
 export function completionRepoRootsFromRegistry(
   primaryRoot: string | null,
@@ -602,6 +608,12 @@ export function completionRepoRootsFromRegistry(
   for (const project of registry.projects) {
     const contentPath = resolveHarnessContentPath(registry, project.slug);
     if (contentPath) roots.add(nodePath.resolve(contentPath));
+  }
+  if (primaryRoot) {
+    const workspaceRoot = nodePath.dirname(primaryRoot);
+    for (const siblingName of independentSiblingRepos(primaryRoot)) {
+      roots.add(nodePath.resolve(workspaceRoot, siblingName));
+    }
   }
   return [...roots];
 }
