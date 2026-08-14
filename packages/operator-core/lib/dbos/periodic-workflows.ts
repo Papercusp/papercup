@@ -253,6 +253,30 @@ async function sessionArchiveReconcileTick(): Promise<void> {
           `[session-archive-reconciler] db: ${s.dbArchived} archived / ${s.dbStampedEmpty} stamped-empty / ${s.dbFailed} failed (${s.endedUnarchivedRemaining} remaining); disk: ${s.diskSessionsArchived} archived + ${s.diskLeftoversDeleted} leftovers${s.diskLeftoversRetained ? ` (+${s.diskLeftoversRetained} shared-state RETAINED)` : ''} across ${s.diskDirsScanned} dirs (${s.diskSkippedFresh} fresh-skipped${s.skippedDisk ? `; SWEEP SKIPPED: ${s.skippedDisk}` : ''}); omp: ${s.ompFilesArchived}`,
         );
       }
+      // INVARIANT (EI-20419472483823685) — "every codex home has its
+      // config.toml", the recurrence guard for WI-38706's class. Deliberately
+      // its OWN line, emitted UNCONDITIONALLY including a clean 0/N.
+      //
+      // ⚠ Do NOT fold this into the summary above. That line is gated on
+      // something having HAPPENED, so a quiet tick prints nothing at all —
+      // which is the precise reason the `(+N shared-state RETAINED)` clause
+      // could not distinguish "correctly zero" from "never ran" during
+      // WI-38706 verification, and cost real time. Absence of THIS line must
+      // mean the check did not run, never that it ran clean.
+      const inv = s.codexHomeInvariantError
+        ? `[session-archive-reconciler] codex-home config.toml invariant: UNKNOWN — ${s.codexHomeInvariantError}`
+        : `[session-archive-reconciler] codex-home config.toml invariant: ${s.codexHomesMissingConfig}/${s.codexHomesScanned} missing`;
+      if (s.codexHomesMissingConfig > 0 || s.codexHomeInvariantError) {
+        // A missing config.toml makes `codex resume` die with "Model provider
+        // papercusp-codex-gateway not found" — surfaced as a warning so it
+        // reaches supervision rather than sitting in a quiet info line.
+        const named = s.codexHomesMissingConfigDirs.length
+          ? ` — ${s.codexHomesMissingConfigDirs.join(', ')}`
+          : '';
+        console.warn(`${inv}${named}`);
+      } else {
+        console.log(inv);
+      }
     } catch (e) {
       console.warn(`[session-archive-reconciler] tick failed: ${(e as Error)?.message ?? e}`);
     }
