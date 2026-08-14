@@ -13,7 +13,7 @@ import { readFileLockIdentity } from './identity';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { inWorkspaceTxn } from './in-workspace-txn';
 import { acquireWithContentionRetry } from './contention-retry';
-import { tryRelease, releaseAllResourcesForOwner, readQueue, getTxPool, ensureBootstrap } from './su-lock-store';
+import { tryRelease, releaseAllResourcesForOwner } from './su-lock-store';
 import { notifyPlanLockChange } from './notify-lock-change';
 import { broadcastResourceBackUp } from './resource-broadcast';
 import { routeFileLockOp } from '../../authority/file-lock-routing';
@@ -26,6 +26,7 @@ import { recordLockEvent } from '../../authority/lock-event-stream';
 import { noteShaTokenRelease } from '../../authority/sha-token-registry';
 import { bulkContent, mergeIds, runBulk } from '../_bulk';
 import { resolveExplicitFileLockDomain } from './coordination-domain';
+import { domainsHoldingLocks } from './owner-lock-domains';
 
 const lockIdSchema = z.string().uuid({
   error: (issue) => {
@@ -141,38 +142,12 @@ export default defineTool({
 
     /**
      * EI-20405390083792304 (ROOT FIX). The domains this owner ACTUALLY holds
-     * live locks in, other than `exclude` — resolved from the lock rows
-     * themselves rather than guessed from a candidate list.
-     *
-     * WHY NOT A CANDIDATE LIST. The resource-lock side solves the identical
-     * "released by lock_id alone, domain unknown at this call site" problem with
-     * `candidateResourceLockDomains()` — a FIXED list (caller / host-global /
-     * workspace). That shape cannot work here: a file lock's domain is the
-     * physical repo root of the edited file, and the PreToolUse hook sends it
-     * EXPLICITLY, so the domain set is unbounded and discovered at runtime (one
-     * per hive tree under ~/.papercusp/hives/*, per worktree, per checkout).
-     * Enumerating candidates would silently miss whichever tree nobody thought
-     * of — the same class of miss as the bug itself. A lock_id is a UUID and
-     * `owner` is globally unique (WI-5979), so the rows can just be ASKED.
-     *
-     * Reuses `readQueue`'s null-domain diagnostic read — the exact path proven
-     * live to see hive-domain rows — instead of adding parallel SQL.
+     * live locks in — resolved from the lock rows themselves rather than
+     * guessed from a candidate list. Lives in `./owner-lock-domains` because
+     * `locks:heartbeat` hits the identical "selected by lock_id alone, domain
+     * unknown at this call site" problem (EI-20413003247462580); see that
+     * module for why a fixed candidate list cannot work for file locks.
      */
-    async function domainsHoldingLocks(lockId: string | undefined, exclude: string): Promise<string[]> {
-      await ensureBootstrap();
-      const snapshot = await acquireWithContentionRetry(() =>
-        readQueue(getTxPool(), { coordinationDomain: null, owner: ownerId }),
-      );
-      const domains = new Set<string>();
-      for (const row of snapshot.active_locks) {
-        if (row.coordination_domain === exclude) continue;
-        // A selected release only reaches into the domain holding THAT lock;
-        // all_mine reaches into every domain this owner holds anything in.
-        if (lockId && row.lock_id !== lockId) continue;
-        domains.add(row.coordination_domain);
-      }
-      return [...domains];
-    }
 
     async function releaseInDomain(
       domain: string,
@@ -294,7 +269,7 @@ export default defineTool({
 
       let others: string[];
       try {
-        others = await domainsHoldingLocks(lockId, coordinationDomain);
+        others = await domainsHoldingLocks({ ownerId, lockId, exclude: coordinationDomain });
       } catch {
         // The resolve is a best-effort widening of a release that already
         // returned. Never fail the caller's release because the lookup faulted.
