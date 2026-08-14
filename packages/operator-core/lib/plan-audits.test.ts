@@ -176,3 +176,64 @@ describe('repoCitationDeps — containment is unchanged', () => {
     expect(res).toMatchObject({ reason: 'path_absolute' });
   });
 });
+
+/**
+ * `file_not_found` names the ROOT it searched (EI-20449557927956357).
+ *
+ * The class this guards: the refusal for "your path shape is wrong" and the refusal for
+ * "you are resolving against a root you did not expect" were BYTE-IDENTICAL — both just
+ * echoed the path back. Those two have opposite fixes, so the reader cannot act on the
+ * message; measured cost was ~20min of bisecting a shipping plan's ship gate, and a
+ * second agent hit the same wall the same day from the other direction.
+ *
+ * Asserting on the ROOT rather than on prose keeps this a behavioural guard: reword the
+ * message freely, but a detail that stops naming where it looked fails here.
+ */
+describe('resolveCitation — a miss says WHERE it looked (EI-20449557927956357)', () => {
+  it('names the repo root when nothing matched', () => {
+    const deps = repoCitationDeps(repoRoot);
+    const res = resolveCitation(code('apps/operator/does-not-exist.ts'), deps);
+    expect(res).toMatchObject({ ok: false, reason: 'file_not_found' });
+    const detail = (res as { detail: string }).detail;
+    expect(detail).toContain('apps/operator/does-not-exist.ts');
+    expect(detail).toContain(repoRoot);
+  });
+
+  it('names the HARNESS root when resolution is scoped to a harness tree', () => {
+    // The exact shape that cost the 20 minutes: a plan whose harness is a sibling hive.
+    // A citation written workspace-relative (`sidestage/...`) misses, and the old detail
+    // could not reveal that the search was rooted INSIDE the hive already.
+    const canonical = path.join(workspaceRoot, '.papercusp', 'hives', 'sidestage');
+    fs.mkdirSync(path.join(canonical, '.git'), { recursive: true });
+    const deps = repoCitationDeps(canonical);
+    const res = resolveCitation(code('sidestage/apps/web/src/SellerDock.tsx'), deps);
+    expect(res).toMatchObject({ ok: false, reason: 'file_not_found' });
+    expect((res as { detail: string }).detail).toContain(canonical);
+  });
+
+  it('names BOTH roots when the first segment is an admitted sibling', () => {
+    const deps = repoCitationDeps(repoRoot);
+    const res = resolveCitation(code('sidestage/apps/web/src/NoSuchFile.tsx'), deps);
+    expect(res).toMatchObject({ ok: false, reason: 'file_not_found' });
+    const detail = (res as { detail: string }).detail;
+    expect(detail).toContain(repoRoot);
+    expect(detail).toContain(path.join(workspaceRoot, 'sidestage'));
+  });
+
+  it('does not name a sibling root that was never consulted', () => {
+    // Control: without this, "names both roots" would also pass an implementation that
+    // blindly appends every admitted sibling to every miss — which buries the one root
+    // that matters and is the failure mode this whole change exists to remove.
+    const deps = repoCitationDeps(repoRoot);
+    const res = resolveCitation(code('apps/operator/does-not-exist.ts'), deps);
+    expect((res as { detail: string }).detail).not.toContain(path.join(workspaceRoot, 'sidestage'));
+  });
+
+  it('stays pure: injected deps without describeRoots return the bare path', () => {
+    const res = resolveCitation(code('apps/operator/nope.ts'), {
+      statFile: () => null,
+      readFile: () => null,
+    });
+    expect(res).toEqual({ ok: false, reason: 'file_not_found', detail: 'apps/operator/nope.ts' });
+  });
+});

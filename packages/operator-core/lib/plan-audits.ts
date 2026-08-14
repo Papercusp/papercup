@@ -211,7 +211,7 @@ export function resolveCitation(citation: AuditCitation, deps: CitationDeps): Ci
 
   if (citation.line != null || citation.symbol != null) {
     const body = deps.readFile(rel);
-    if (body == null) return { ok: false, reason: 'file_not_found', detail: rel };
+    if (body == null) return { ok: false, reason: 'file_not_found', detail: missDetail(rel, deps) };
     if (citation.line != null) {
       const lines = body.split('\n').length;
       if (citation.line < 1 || citation.line > lines) {
@@ -330,6 +330,19 @@ export function repoCitationDeps(repoRoot: string = REPO_ROOT): CitationDeps {
       } catch {
         return null;
       }
+    },
+    // Report the roots this rel was ACTUALLY tried under, not the admitted-sibling
+    // catalogue: naming every sibling would bury the one root that matters. The repo
+    // root is always consulted; the workspace root only when the first segment names
+    // an admitted sibling, which is exactly when the `sibling/...` prefix is the fix.
+    describeRoots: (rel) => {
+      const roots = [repoRoot];
+      const first = rel.split('/')[0];
+      if (first) {
+        siblings ??= independentSiblingRepos(repoRoot);
+        if (siblings.has(first)) roots.push(path.join(workspaceRoot, first));
+      }
+      return roots.join(', ');
     },
   };
 }
