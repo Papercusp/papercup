@@ -56,7 +56,7 @@ function deps(over: Parameters<typeof divergenceSweep>[0] = {}) {
 }
 
 describe('loadRecentCalls', () => {
-  it('excludes only platform-emitted subscribed-event pot:wake rows', async () => {
+  it('excludes machine lifecycle/reaction rows while retaining contextual agent actions', async () => {
     const sql = vi.fn(async () => []);
     await loadRecentCalls({
       workspaceId: 'test-workspace',
@@ -69,6 +69,13 @@ describe('loadRecentCalls', () => {
     const [template] = sql.mock.calls[0] as unknown as [TemplateStringsArray, ...unknown[]];
     const query = Array.from(template).join(' ');
     expect(query).toContain('args_json, call_origin');
+    // WI-38670 live falsifier: the lifecycle intent `coord:emit` carried the old
+    // EI goal under the new intent event id, then the first real call carried the
+    // new goal. `coord:emit` is system-authored by contract, so it cannot be one
+    // side of an agent reasoning/action divergence. `coord:send` is the
+    // contextual, agent-authored sibling and must remain in the population.
+    expect(query).toContain("tool_name <> 'coord:emit'");
+    expect(query).not.toContain("tool_name <> 'coord:send'");
     expect(query).toContain("tool_name = 'pot:wake'");
     expect(query).toContain("call_origin IS NULL");
     expect(query).toContain("args_json->>'source' = 'event'");

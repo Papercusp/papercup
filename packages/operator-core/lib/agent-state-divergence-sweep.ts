@@ -190,6 +190,18 @@ export async function loadRecentCalls(opts: {
      WHERE workspace_id = ${opts.workspaceId}
        AND invoked_at > ${since}
        AND coord_owner_id IS NOT NULL
+       -- coord:emit is the canonical MACHINE lifecycle fire-target. It is
+       -- telemetry about a declaration/claim/completion that just happened,
+       -- never the agent-authored action this detector judges. In particular,
+       -- an intent declaration mutates the live goal before its reaction emits:
+       -- the emit can therefore carry the OLD goal under the NEW intent event
+       -- id. Comparing it with the first post-declaration call manufactures a
+       -- goal drift on every legitimate goal transition (WI-38670).
+       --
+       -- Exclude the whole surface, not only category='intent': emit.ts defines
+       -- every call as system-authored lifecycle. Contextual agent traffic uses
+       -- coord:send and remains eligible evidence.
+       AND tool_name <> 'coord:emit'
        -- Platform reaction rows are telemetry about the wake mechanism, not
        -- agent-authored actions. Keep the predicate deliberately narrow: an
        -- unattributed pot:wake with the event source and its stamped reason.
