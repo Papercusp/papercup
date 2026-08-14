@@ -718,19 +718,28 @@ describe('D-039 — the unknown hoist rides the SAME dispatch to the reader', ()
  * future refactor that drops the hoist reds here instead of going quiet.
  */
 describe('D-039 — every nullable BUILTIN cell reaches a reader with its hoist', () => {
-  /** Build `{a:{b:value}}` from "a.b" — the resolver shape each cell declares. */
-  function payloadAtPath(path: string, value: unknown): Record<string, unknown> {
-    const segs = path.split('.');
+  /** Build one resolver payload from dotted paths, preserving shared parents. A
+   *  shallow spread (or a literal computed key) breaks cells whose headline and
+   *  hoist are siblings, such as `memory.pressure` + `memory.unknown`. */
+  function payloadAtPaths(
+    entries: ReadonlyArray<readonly [path: string, value: unknown]>,
+  ): Record<string, unknown> {
     const root: Record<string, unknown> = {};
-    let cur = root;
-    segs.forEach((seg, i) => {
-      if (i === segs.length - 1) cur[seg] = value;
-      else {
-        const next: Record<string, unknown> = {};
-        cur[seg] = next;
-        cur = next;
-      }
-    });
+    for (const [path, value] of entries) {
+      const segs = path.split('.');
+      let cur = root;
+      segs.forEach((seg, i) => {
+        if (i === segs.length - 1) {
+          cur[seg] = value;
+          return;
+        }
+        const existing = cur[seg];
+        if (existing === null || typeof existing !== 'object' || Array.isArray(existing)) {
+          cur[seg] = {};
+        }
+        cur = cur[seg] as Record<string, unknown>;
+      });
+    }
     return root;
   }
 
@@ -750,10 +759,12 @@ describe('D-039 — every nullable BUILTIN cell reaches a reader with its hoist'
       registerCell(s);
       const hoistKey = s.unknownHoist as string;
       const path = (s.changeSignal as { path: string }).path;
-      dispatchReadOnlyTool.mockResolvedValue({
-        ...payloadAtPath(path, null), // the nullable headline, degraded — the case that matters
-        [hoistKey]: 'measured-unknown-reason',
-      });
+      dispatchReadOnlyTool.mockResolvedValue(
+        payloadAtPaths([
+          [path, null], // the nullable headline, degraded — the case that matters
+          [hoistKey, 'measured-unknown-reason'],
+        ]),
+      );
 
       const subject = s.callerRelativity.kind === 'parameter' ? 'a-subject' : undefined;
       const r = await readCell(s.cell, READER, ENV, subject);
