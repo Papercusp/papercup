@@ -47,6 +47,9 @@ const {
   sqlTagMock,
   getBootedHarnessMock,
   bootSingleHarnessMock,
+  getPgRelocatedHarnessEndpointMock,
+  openHiveGitDuplexViaExistingSidecarMock,
+  workspacesRootMock,
   openHiveGitDuplexToDeviceMock,
   loadCachedLocalAnnounceIdentityMock,
   contentPeerCountForTopicMock,
@@ -83,6 +86,15 @@ const {
   // (a harness never booted this process, not just an evicted one) — mocked
   // as a resolved no-op so the existing fail-soft-stub assertions stay valid.
   bootSingleHarnessMock: vi.fn(async (_ws: string, _hive: string) => ({ state: 'booted' as const })),
+  getPgRelocatedHarnessEndpointMock: vi.fn(async (_ws: string, _hive: string) => null as {
+    socketPath: string;
+    advertisedAt: number;
+  } | null),
+  openHiveGitDuplexViaExistingSidecarMock: vi.fn(async (_opts: unknown) => ({
+    on: (_ev: string, _cb: () => void) => {},
+    destroyed: false,
+  })),
+  workspacesRootMock: vi.fn(() => '/workspaces'),
   openHiveGitDuplexToDeviceMock: vi.fn(async (_topic: Buffer, _device: string, _req: unknown) => {
     const d = { on: (_ev: string, _cb: () => void) => {} };
     return d;
@@ -189,6 +201,16 @@ vi.mock('../../sync/hyperbee/boot-all', () => ({
   getBootedHarness: getBootedHarnessMock,
   bootSingleHarness: bootSingleHarnessMock,
 }));
+vi.mock('../../sync/hyperbee/substrate-booted-handles-pg', () => ({
+  getPgRelocatedHarnessEndpoint: getPgRelocatedHarnessEndpointMock,
+}));
+vi.mock('../../sync/hyperbee/remote-booted-harness', () => ({
+  openHiveGitDuplexViaExistingSidecar: openHiveGitDuplexViaExistingSidecarMock,
+}));
+vi.mock('../../workspace-registry', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return { ...actual, workspacesRoot: workspacesRootMock };
+});
 vi.mock('../../sync/pot-git/peer-dial-registry', () => ({ openHiveGitDuplexToDevice: openHiveGitDuplexToDeviceMock }));
 vi.mock('../../sync/hyperbee/local-announce-identity', () => ({ loadCachedLocalAnnounceIdentity: loadCachedLocalAnnounceIdentityMock }));
 vi.mock('../../sync/hyperbee/swarm', () => ({
@@ -258,6 +280,12 @@ beforeEach(() => {
   sqlTagMock.mockResolvedValue([]); // default: no prior routine row
   getBootedHarnessMock.mockClear();
   bootSingleHarnessMock.mockClear();
+  getPgRelocatedHarnessEndpointMock.mockClear();
+  getPgRelocatedHarnessEndpointMock.mockResolvedValue(null);
+  openHiveGitDuplexViaExistingSidecarMock.mockClear();
+  openHiveGitDuplexViaExistingSidecarMock.mockResolvedValue(dialDuplex(false));
+  workspacesRootMock.mockClear();
+  workspacesRootMock.mockReturnValue('/workspaces');
   openHiveGitDuplexToDeviceMock.mockClear();
   loadCachedLocalAnnounceIdentityMock.mockClear();
   loadCachedLocalAnnounceIdentityMock.mockResolvedValue(null); // default: cache empty (actor path is used)
@@ -626,6 +654,29 @@ describe('runBootstrapLeg', () => {
       PEER_DEVICE,
       expect.objectContaining({ repoKey: SLUG }),
     );
+    expect(openHiveGitDuplexToDeviceMock).not.toHaveBeenCalled();
+    expect(bootstrapFromPeerMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('EI-20438405483051865: uses a fresh exact sidecar advertisement when the process-local registry misses', async () => {
+    getBootedHarnessMock.mockReturnValue(null);
+    getPgRelocatedHarnessEndpointMock.mockResolvedValue({
+      socketPath: '/tmp/substrate-owner.sock',
+      advertisedAt: 5_000,
+    });
+
+    await runBootstrapLeg(SLUG, WS);
+
+    expect(getPgRelocatedHarnessEndpointMock).toHaveBeenCalledWith(WS, SLUG);
+    expect(openHiveGitDuplexViaExistingSidecarMock).toHaveBeenCalledWith({
+      socketPath: '/tmp/substrate-owner.sock',
+      workspaceRoot: '/workspaces/ws-1',
+      workspaceId: WS,
+      harnessSlug: SLUG,
+      devicePubkeyBase64: PEER_DEVICE,
+      request: expect.objectContaining({ repoKey: SLUG }),
+    });
+    expect(bootSingleHarnessMock).not.toHaveBeenCalled();
     expect(openHiveGitDuplexToDeviceMock).not.toHaveBeenCalled();
     expect(bootstrapFromPeerMock).toHaveBeenCalledTimes(1);
   });

@@ -18,7 +18,11 @@ import { once } from 'node:events';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { RemoteBootedHarnessHandle, type SubstrateRpcCaller } from './remote-booted-harness';
+import {
+  openHiveGitDuplexViaExistingSidecar,
+  RemoteBootedHarnessHandle,
+  type SubstrateRpcCaller,
+} from './remote-booted-harness';
 import type { LocalWriteOp } from './boot';
 import type { PeerLogOp } from './peer-log';
 
@@ -223,5 +227,98 @@ describe('RemoteBootedHarnessHandle (P-001)', () => {
     const unsub = h.onAdmitted(() => {});
     expect(typeof unsub).toBe('function');
     unsub();
+  });
+});
+
+describe('openHiveGitDuplexViaExistingSidecar (EI-20438405483051865)', () => {
+  it('existing-only boots the exact handle before dialing with the returned store id', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'advertised-hive-git-'));
+    const socketPath = join(dir, 'stream.sock');
+    const server = createServer((socket) => socket.pipe(socket));
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(socketPath, resolve);
+    });
+
+    try {
+      const { client, calls } = makeClient((method) => {
+        if (method === 'substrate:bootHarness') {
+          return { storeId: 'existing-store', ownLogKey: KEY, ownLogLength: 9 };
+        }
+        if (method === 'substrate:openHiveGitDuplex') {
+          return { socketPath, topicHex: 'deadbeef' };
+        }
+        return undefined;
+      });
+      const duplex = await openHiveGitDuplexViaExistingSidecar(
+        {
+          socketPath: '/tmp/advertised-substrate.sock',
+          workspaceRoot: '/workspaces/ws',
+          workspaceId: 'ws',
+          harnessSlug: 'h-1',
+          devicePubkeyBase64: 'peer-device',
+          request: { repoKey: 'gh-1296269', peerGithubUserId: 42 },
+        },
+        { client },
+      );
+
+      expect(duplex.destroyed).toBe(false);
+      expect(calls).toEqual([
+        {
+          method: 'substrate:bootHarness',
+          params: {
+            workspaceRoot: '/workspaces/ws',
+            workspaceId: 'ws',
+            harnessSlug: 'h-1',
+            createIfMissing: false,
+          },
+        },
+        {
+          method: 'substrate:openHiveGitDuplex',
+          params: {
+            storeId: 'existing-store',
+            devicePubkeyBase64: 'peer-device',
+            repoKey: 'gh-1296269',
+            peerGithubUserId: 42,
+          },
+        },
+      ]);
+      duplex.destroy();
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('fails closed without dialing when the advertised socket has no existing exact handle', async () => {
+    const { client, calls } = makeClient((method) => {
+      if (method === 'substrate:bootHarness') throw new Error('store not booted');
+      throw new Error(`unexpected RPC: ${method}`);
+    });
+
+    const duplex = await openHiveGitDuplexViaExistingSidecar(
+      {
+        socketPath: '/tmp/stale-substrate.sock',
+        workspaceRoot: '/workspaces/ws',
+        workspaceId: 'ws',
+        harnessSlug: 'h-1',
+        devicePubkeyBase64: 'peer-device',
+        request: { repoKey: 'gh-1296269' },
+      },
+      { client },
+    );
+
+    expect(duplex.destroyed).toBe(true);
+    expect(calls).toEqual([
+      {
+        method: 'substrate:bootHarness',
+        params: {
+          workspaceRoot: '/workspaces/ws',
+          workspaceId: 'ws',
+          harnessSlug: 'h-1',
+          createIfMissing: false,
+        },
+      },
+    ]);
   });
 });

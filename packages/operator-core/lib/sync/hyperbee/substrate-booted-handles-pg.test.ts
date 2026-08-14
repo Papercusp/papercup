@@ -13,18 +13,24 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const H = vi.hoisted(() => {
   const state: {
     booted: Array<{ workspaceId: string; harnessSlug: string }>;
+    relocated: Array<{ workspaceId: string; harnessSlug: string }>;
     row: unknown;
-  } = { booted: [], row: null };
+  } = { booted: [], relocated: [], row: null };
   return {
     state,
     listBootedHandles: () => state.booted,
+    listRelocatedBootedHandles: () => state.relocated,
     readOperatorState: vi.fn(async () => state.row),
     writeOperatorState: vi.fn(async (_table: string, payload: unknown) => {
       state.row = payload;
     }),
   };
 });
-vi.mock('./boot-all', () => ({ listBootedHandles: H.listBootedHandles }));
+vi.mock('./boot-all', () => ({
+  listBootedHandles: H.listBootedHandles,
+  listRelocatedBootedHandles: H.listRelocatedBootedHandles,
+}));
+vi.mock('./substrate-socket-path', () => ({ resolveSubstrateSocketPath: () => '/tmp/substrate-owner.sock' }));
 vi.mock('../../operator-state-pg', () => ({
   readOperatorState: H.readOperatorState,
   writeOperatorState: H.writeOperatorState,
@@ -33,10 +39,12 @@ vi.mock('../../operator-state-pg', () => ({
 import {
   startBootedHandlesPgPublisher,
   getPgBootedHandlesSnapshotFallback,
+  getPgRelocatedHarnessEndpoint,
 } from './substrate-booted-handles-pg';
 
 beforeEach(() => {
   H.state.booted = [];
+  H.state.relocated = [];
   H.state.row = null;
   H.readOperatorState.mockClear();
   H.writeOperatorState.mockClear();
@@ -105,6 +113,25 @@ describe('startBootedHandlesPgPublisher (SUBSTRATE-OWNER side)', () => {
       vi.useRealTimers();
     }
   });
+
+  it('EI-20438405483051865: advertises the sidecar socket with relocated handles only', () => {
+    H.state.booted = [
+      { workspaceId: 'ws1', harnessSlug: 'in-process' },
+      { workspaceId: 'ws1', harnessSlug: 'relocated' },
+    ];
+    H.state.relocated = [{ workspaceId: 'ws1', harnessSlug: 'relocated' }];
+
+    const h = startBootedHandlesPgPublisher({ ownsSubstrate: true, now: () => 5_000 });
+    expect(H.writeOperatorState).toHaveBeenLastCalledWith('substrate_booted_handles_status', {
+      handles: H.state.booted,
+      sentAt: 5_000,
+      sidecar: {
+        socketPath: '/tmp/substrate-owner.sock',
+        handles: [{ workspaceId: 'ws1', harnessSlug: 'relocated' }],
+      },
+    });
+    h.stop();
+  });
 });
 
 describe('getPgBootedHandlesSnapshotFallback (READER side)', () => {
@@ -141,5 +168,45 @@ describe('getPgBootedHandlesSnapshotFallback (READER side)', () => {
     expect(await getPgBootedHandlesSnapshotFallback({ now: () => 1_000 })).toBeNull();
     H.state.row = { handles: [] }; // sentAt missing
     expect(await getPgBootedHandlesSnapshotFallback({ now: () => 1_000 })).toBeNull();
+  });
+});
+
+describe('getPgRelocatedHarnessEndpoint (cross-process dial discovery)', () => {
+  it('returns only a fresh, absolute-path advertisement for the exact relocated handle', async () => {
+    H.state.row = {
+      handles: [
+        { workspaceId: 'ws1', harnessSlug: 'in-process' },
+        { workspaceId: 'ws1', harnessSlug: 'relocated' },
+      ],
+      sentAt: 1_000,
+      sidecar: {
+        socketPath: '/tmp/substrate-owner.sock',
+        handles: [{ workspaceId: 'ws1', harnessSlug: 'relocated' }],
+      },
+    };
+
+    await expect(
+      getPgRelocatedHarnessEndpoint('ws1', 'relocated', { now: () => 1_500 }),
+    ).resolves.toEqual({ socketPath: '/tmp/substrate-owner.sock', advertisedAt: 1_000 });
+    await expect(
+      getPgRelocatedHarnessEndpoint('ws1', 'in-process', { now: () => 1_500 }),
+    ).resolves.toBeNull();
+    await expect(
+      getPgRelocatedHarnessEndpoint('other-ws', 'relocated', { now: () => 1_500 }),
+    ).resolves.toBeNull();
+
+    await expect(
+      getPgRelocatedHarnessEndpoint('ws1', 'relocated', { now: () => 31_001, maxAgeMs: 30_000 }),
+    ).resolves.toBeNull();
+    H.state.row = {
+      ...(H.state.row as Record<string, unknown>),
+      sidecar: {
+        socketPath: 'relative/substrate.sock',
+        handles: [{ workspaceId: 'ws1', harnessSlug: 'relocated' }],
+      },
+    };
+    await expect(
+      getPgRelocatedHarnessEndpoint('ws1', 'relocated', { now: () => 1_500 }),
+    ).resolves.toBeNull();
   });
 });
