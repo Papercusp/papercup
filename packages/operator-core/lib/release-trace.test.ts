@@ -497,6 +497,7 @@ describe('buildReleaseTrace', () => {
             activeSource: 'run-lock',
             startedAtMs: 123,
             elapsedSec: 42,
+            asOfAgeMs: null,
           },
         },
       }),
