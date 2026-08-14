@@ -57,6 +57,8 @@ const spawnHeadlessMock = vi.fn(
     status: 'ok',
     pid: 777,
     terminal: 'headless',
+    taskId: 'task777',
+    logPath: '/tmp/papercusp-ws/fleet-logs/judge.log',
     child: {} as never,
     display: null,
     desktopEnvResolvedVia: null,
@@ -130,6 +132,7 @@ const launchAgent = (await import('./launch-agent')).default;
 
 const ctx = { workspaceId: 'ws-test', harnessSlug: 'papercusp', role: 'su' } as never;
 const textOf = (res: unknown): string => (res as { content: Array<{ text: string }> }).content[0].text;
+const dataOf = (res: unknown) => (res as { data?: { deduped?: boolean; launch?: Record<string, unknown> } }).data;
 const isError = (res: unknown): boolean => !!(res as { isError?: boolean }).isError;
 /** The command the tool actually handed to the spawner. */
 const spawnedCommand = (mock = spawnConsoleMock): string =>
@@ -238,7 +241,17 @@ describe('headless composition (D-003: an ARG, not a separate tool)', () => {
     expect(spawnHeadlessMock).toHaveBeenCalledTimes(1);
     expect(spawnConsoleMock).not.toHaveBeenCalled();
     expect(spawnedCommand(spawnHeadlessMock)).toContain('--headless');
-    expect(spawnHeadlessMock.mock.calls[0][0]).toMatchObject({ logDir: '/tmp/papercusp-ws/fleet-logs' });
+    expect(spawnHeadlessMock.mock.calls[0][0]).toMatchObject({
+      logDir: '/tmp/papercusp-ws/fleet-logs',
+      launchedBy: 'su-caller',
+      fleetSlug: null,
+    });
+    expect(dataOf(res)?.launch).toMatchObject({
+      deduped: false,
+      opened: 1,
+      failed: 0,
+      tasks: [{ taskId: 'task777', logPath: '/tmp/papercusp-ws/fleet-logs/judge.log', pid: 777, headless: true }],
+    });
     expect(textOf(res)).toContain('EI-9748');
   });
 });
@@ -356,7 +369,7 @@ describe('idempotency (P-014: a replay must not open a second set of windows)', 
   it('spawns nothing and reports the ORIGINAL launch when the key was already claimed', async () => {
     claimAgentLaunchMock.mockResolvedValue({
       won: false,
-      priorSummary: { opened: 2, mode: 'fresh' },
+      priorSummary: { opened: 2, mode: 'fresh', tasks: [{ taskId: 'task-original', logPath: '/tmp/original.log' }] },
       priorLaunchedAt: 1_760_000_000_000,
       priorLaunchedBy: 'su-caller',
     });
@@ -365,6 +378,10 @@ describe('idempotency (P-014: a replay must not open a second set of windows)', 
     expect(spawnConsoleMock).not.toHaveBeenCalled();
     expect(textOf(res)).toContain('Already launched (deduped)');
     expect(textOf(res)).toContain('"opened":2');
+    expect(dataOf(res)).toMatchObject({
+      deduped: true,
+      launch: { deduped: true, opened: 2, tasks: [{ taskId: 'task-original', logPath: '/tmp/original.log' }] },
+    });
   });
 
   it('records what the winning launch did, so a later replay can report it', async () => {
@@ -372,7 +389,13 @@ describe('idempotency (P-014: a replay must not open a second set of windows)', 
     expect(recordAgentLaunchResultMock).toHaveBeenCalledWith(
       expect.objectContaining({
         idempotencyKey: 'retry-1',
-        summary: expect.objectContaining({ opened: 1, failed: 0, mode: 'fresh' }),
+        summary: expect.objectContaining({
+          deduped: false,
+          opened: 1,
+          failed: 0,
+          mode: 'fresh',
+          tasks: [expect.objectContaining({ pid: 4242, headless: false })],
+        }),
       }),
     );
   });

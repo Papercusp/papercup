@@ -1,5 +1,9 @@
-import { describe, expect, it } from 'vitest';
-import { normalizePlanStatus, flipPlanFrontmatterStatus } from './set-plan-status';
+import { describe, expect, it, vi } from 'vitest';
+import {
+  normalizePlanStatus,
+  flipPlanFrontmatterStatus,
+  launchAcceptanceGraderForGate,
+} from './set-plan-status';
 
 // Caller-DX (watchdog P-006): plans:set-plan-status previously zod-REJECTED the
 // status words agents reach for ('active' from old plans, 'done' confused with the
@@ -27,5 +31,36 @@ describe('flipPlanFrontmatterStatus with mapped alias', () => {
     expect(flip.oldStatus).toBe('draft');
     expect(flip.newBody).toContain('status: ready');
     expect(flip.code).toBeUndefined();
+  });
+});
+
+describe('launchAcceptanceGraderForGate (D-006)', () => {
+  it.each(['acceptance_ungraded', 'self_graded_only'])('launches once for %s', async (code) => {
+    const launch = vi.fn(async () => ({
+      state: 'launched' as const,
+      idempotencyKey: 'acceptance-grader:key',
+      label: 'acceptance-grader:rubric:key',
+    }));
+    const result = await launchAcceptanceGraderForGate(
+      'plan-a',
+      { satisfied: false, code },
+      {} as never,
+      launch as never,
+    );
+    expect(launch).toHaveBeenCalledTimes(1);
+    expect(launch).toHaveBeenCalledWith('plan-a', {});
+    expect(result?.state).toBe('launched');
+  });
+
+  it('does not recruit a judge for unrelated acceptance failures', async () => {
+    const launch = vi.fn();
+    const result = await launchAcceptanceGraderForGate(
+      'plan-a',
+      { satisfied: false, code: 'acceptance_unaudited' },
+      {} as never,
+      launch as never,
+    );
+    expect(result).toBeUndefined();
+    expect(launch).not.toHaveBeenCalled();
   });
 });

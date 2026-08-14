@@ -53,6 +53,15 @@ describe('loadRoleCapabilities', () => {
     expect(caps.has('search:read')).toBe(true);
   });
 
+  test('judge gets only the capability needed by its narrowly allowlisted scorecard writer', async () => {
+    const caps = await loadRoleCapabilities(fakeTx([]), 'ws', 'judge');
+    expect(caps.has('coord:write')).toBe(true);
+    expect(caps.has('capability:fs-write')).toBe(false);
+    expect(caps.has('capability:bash')).toBe(false);
+    const { default: emit } = await import('../../../agent-tools/scorecards/emit.js');
+    expect(emit.agentRoles).toContain('judge');
+  });
+
   // ── bee — the generic fleet IMPLEMENTER (OWNER-PRIORITY fs-write/bash fix, 2026-06-15) ──
   describe('bee — the IMPLEMENTER surface (can write code + run bash)', () => {
     test('bee gets capability:fs-write + capability:bash so it can LAND a fix, not just diagnose', async () => {

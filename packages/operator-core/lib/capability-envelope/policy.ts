@@ -79,6 +79,12 @@ export interface RoleEnvelope {
  * `bee` entry here to re-confine. Live behind `papercusp-capability-envelope`.
  */
 export const ROLE_ENVELOPES: Partial<Record<string, RoleEnvelope>> = {
+  // A dedicated acceptance judge is evidence-only: it may read the frozen
+  // launch context and emit one scorecard, but it may not mutate the tree, run
+  // a shell, or use the git subprocess surface.
+  judge: {
+    denyCapabilities: ['capability:fs-write', 'capability:bash', 'capability:git'],
+  },
   // The SENTINEL — the fleet watcher re-homed onto the always-on, voice-first
   // HERALD (Sentinel-as-Herald). The Herald WATCHES the fleet and NARRATES it to
   // the user (one role): it talks (operator:converse), drives voice (voice:*),

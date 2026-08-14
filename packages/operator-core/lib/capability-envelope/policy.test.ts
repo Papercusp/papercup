@@ -125,6 +125,19 @@ describe('evaluateCapabilityEnvelope — bee write-capable (confinement LIFTED 2
   });
 });
 
+describe('evaluateCapabilityEnvelope — dedicated acceptance judge', () => {
+  const judge = (capability: string, toolName = 't') =>
+    evaluateCapabilityEnvelope({ toolName, capabilities: [capability], ctx: { role: 'judge' } });
+
+  it('denies every implementation mutation surface while leaving read + scorecard coordination open', () => {
+    for (const capability of ['capability:fs-write', 'capability:bash', 'capability:git']) {
+      expect(judge(capability).withinEnvelope, capability).toBe(false);
+    }
+    expect(judge('capability:fs-read', 'capability:read').withinEnvelope).toBe(true);
+    expect(judge('coord:write', 'scorecards:emit').withinEnvelope).toBe(true);
+  });
+});
+
 describe('evaluateCapabilityEnvelope — overwatch read+nudge confinement (overwatch-role-2026-06-15 B-01 / D-002)', () => {
   const ow = (capabilities: readonly string[], toolName = 't') =>
     evaluateCapabilityEnvelope({ toolName, capabilities, ctx: { role: 'kettle' } });
@@ -220,6 +233,7 @@ describe('envelope constants', () => {
     expect(FLEET_ENVELOPE_ROLES.has('worker')).toBe(true);
     expect(FLEET_ENVELOPE_ROLES.has('mug')).toBe(true);
     expect(FLEET_ENVELOPE_ROLES.has('cup')).toBe(true);
+    expect(FLEET_ENVELOPE_ROLES.has('judge')).toBe(true);
   });
 
   it('the protected set is non-empty (the only active B-06 constraint)', () => {

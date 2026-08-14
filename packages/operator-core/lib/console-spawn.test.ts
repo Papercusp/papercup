@@ -392,6 +392,8 @@ describe('spawnHeadless — no-window managed-pty launch (headless-fleet-launch 
     const r = await spawnHeadless({ envelope, label: 'hl', logDir: null, ...noSystemdRun });
     expect(r.status).toBe('ok');
     expect((r as { pid: number | null }).pid).toBe(7777);
+    expect((r as { taskId?: string }).taskId).toMatch(/^[0-9a-z]{4,64}$/);
+    expect((r as { logPath?: string }).logPath).toMatch(/hl-.*\.log$/);
     // the spawned program is bash -lc <oneliner>, NOT a terminal emulator
     const [bin, args] = spawnMock.mock.calls[0];
     expect(bin).toBe('bash');
