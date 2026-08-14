@@ -448,6 +448,46 @@ describe('shared-state retention on delete (WI-38706)', () => {
     expect(del.deleted).toBe(1); // the session's own rollout still goes
   });
 
+  // CONTROL (falsifiability, CLAUDE.md § "Proving a guard is falsifiable", tier 1).
+  // The test above is only meaningful if its fixture can actually exhibit the
+  // outage — otherwise config.toml survives because nothing ever tried to delete
+  // it, and the guard would pass just as happily with the fix reverted. This
+  // replays the PRE-FIX delete rule ("unlink every manifest entry whose bytes
+  // still match") over the same fixture and shows it DOES destroy the config.
+  // Deliberately-wrong on purpose; never call it from production code.
+  async function preFixDeleteRule(root: string, manifest: Array<{ relpath: string; sha256: string }>) {
+    const unlinked: string[] = [];
+    for (const m of manifest) {
+      const abs = join(root, m.relpath);
+      if (!existsSync(abs)) continue;
+      if (sha256Hex(await readFile(abs)) !== m.sha256) continue;
+      await rm(abs);
+      unlinked.push(m.relpath);
+    }
+    return unlinked;
+  }
+
+  it('CONTROL: the pre-fix delete rule DOES destroy the shared config on this same fixture', async () => {
+    const home = await tmp('sa-codex-control-');
+    const dir = join(home, 'sessions', '2026', '07', '10');
+    await mkdir(dir, { recursive: true });
+    const rollout = `rollout-2026-07-10T01-00-00-${SID}.jsonl`;
+    await writeFile(join(dir, rollout), 'r\n');
+    const cfgBody = '[model_providers.papercusp-codex-gateway]\nname = "gw"\n';
+    await writeFile(join(home, 'config.toml'), cfgBody);
+
+    const manifest = [
+      { relpath: join('sessions', '2026', '07', '10', rollout), sha256: sha256Hex(Buffer.from('r\n')) },
+      { relpath: 'config.toml', sha256: sha256Hex(Buffer.from(cfgBody)) },
+    ];
+    const unlinked = await preFixDeleteRule(home, manifest);
+
+    // If this ever stops holding, the fixture no longer reproduces the outage and
+    // the retention test above has quietly become vacuous.
+    expect(unlinked).toContain('config.toml');
+    expect(existsSync(join(home, 'config.toml'))).toBe(false);
+  });
+
   it('isSessionKeyedRelpath: only paths carrying the session id are deletable', () => {
     expect(isSessionKeyedRelpath(SID, join('sessions', '2026', '07', '10', `rollout-x-${SID}.jsonl`))).toBe(true);
     expect(isSessionKeyedRelpath(SID, join('todos', `${SID}-agent.json`))).toBe(true);
