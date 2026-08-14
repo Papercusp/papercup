@@ -87,7 +87,7 @@ mkdirSync(join(repoDir, '.git'), { recursive: true });
 mkdirSync(noGitDir, { recursive: true });
 afterAll(() => rmSync(tmpRoot, { recursive: true, force: true }));
 
-const runGitSyncMock = vi.fn(async (_slug: string, _opts: Record<string, unknown>): Promise<GitSyncOutcome> => ({ status: 'nothing', oversized: [], contentErrors: [] }));
+const runGitSyncMock = vi.fn(async (_slug: string, _opts: Record<string, unknown>): Promise<GitSyncOutcome> => ({ status: 'nothing', oversized: [], contentErrors: [], strandedSubmodules: [] }));
 // The stash-check sweep (checkForNewStashes) also imports discoverSubmodulesRecursive
 // from this module — without it on the mock, its best-effort catch console.warns and
 // vitest-fail-on-console reds every test whose tick reaches the sweep (EI-14928 class:
@@ -280,6 +280,7 @@ const syncedOutcome: GitSyncOutcome = {
   merged: ['superproject'],
   oversized: [],
   contentErrors: [],
+  strandedSubmodules: [],
 };
 const conflictOutcome: GitSyncOutcome = {
   status: 'conflict',
@@ -289,6 +290,7 @@ const conflictOutcome: GitSyncOutcome = {
   merged: [],
   oversized: [],
   contentErrors: [],
+  strandedSubmodules: [],
 };
 const errorOutcome: GitSyncOutcome = {
   status: 'error',
@@ -297,6 +299,7 @@ const errorOutcome: GitSyncOutcome = {
   merged: [],
   oversized: [],
   contentErrors: [],
+  strandedSubmodules: [],
 };
 /** EI-438: a tick that quarantined a broken .mdx (synced everything else). */
 const contentErrorOutcome: GitSyncOutcome = {
@@ -308,6 +311,7 @@ const contentErrorOutcome: GitSyncOutcome = {
   contentErrors: [
     { scope: 'superproject', file: 'apps/operator-docs/src/content/docs/x.mdx', detectorKey: 'mdx', error: 'MDX compile error at line 7: closing tag for `<date>`', fixerRole: 'content-fixer' },
   ],
+  strandedSubmodules: [],
 };
 
 const action = getSystemAction('git-sync')!;
@@ -348,7 +352,7 @@ describe('registry population', () => {
 
 describe('WI-1416 durable-fire breadcrumbs', () => {
   it('stamps fire_started_at as the FIRST metadata write of every fire (before locks/gate)', async () => {
-    runGitSyncMock.mockResolvedValue({ status: 'nothing', oversized: [], contentErrors: [] });
+    runGitSyncMock.mockResolvedValue({ status: 'nothing', oversized: [], contentErrors: [], strandedSubmodules: [] });
 
     await action(ctx);
 
@@ -687,7 +691,7 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
 
   it('a harness with NO extra_lock_resources acquires only its own per-slug resource', async () => {
     registryProjects = [{ slug: 'otherapp', path: repoDir }];
-    runGitSyncMock.mockResolvedValue({ status: 'nothing', oversized: [], contentErrors: [] });
+    runGitSyncMock.mockResolvedValue({ status: 'nothing', oversized: [], contentErrors: [], strandedSubmodules: [] });
 
     await action({ ...ctx, installSlug: 'otherapp', triggerConfig: {} });
 
@@ -844,7 +848,7 @@ describe('clean sync outcome', () => {
   });
 
   it("a 'nothing' pass also clears escalations but records no head_sha and runs no doc sweep", async () => {
-    runGitSyncMock.mockResolvedValue({ status: 'nothing', oversized: [], contentErrors: [] });
+    runGitSyncMock.mockResolvedValue({ status: 'nothing', oversized: [], contentErrors: [], strandedSubmodules: [] });
 
     await action(ctx);
 
@@ -858,7 +862,7 @@ describe('clean sync outcome', () => {
   });
 
   it('maps the routine trigger_config onto the pipeline config', async () => {
-    runGitSyncMock.mockResolvedValue({ status: 'nothing', oversized: [], contentErrors: [] });
+    runGitSyncMock.mockResolvedValue({ status: 'nothing', oversized: [], contentErrors: [], strandedSubmodules: [] });
 
     await action({
       ...ctx,
@@ -892,7 +896,7 @@ describe('clean sync outcome', () => {
     async (mode) => {
       potGitMode = mode;
       registryProjects = [{ slug: 'papercup', path: repoDir, hive_slug: 'papercup' }];
-      runGitSyncMock.mockResolvedValue({ status: 'nothing', oversized: [], contentErrors: [] });
+      runGitSyncMock.mockResolvedValue({ status: 'nothing', oversized: [], contentErrors: [], strandedSubmodules: [] });
       const log = vi.spyOn(console, 'log').mockImplementation(() => {});
       try {
         await action(ctx);
@@ -913,7 +917,7 @@ describe('clean sync outcome', () => {
   it('EI-20232774599730947: a pre-seeded P2P member stays superproject commit-only and honors its explicit submodule-origin push', async () => {
     potGitMode = 'bridged';
     registryProjects = [{ slug: 'papercup', path: repoDir, hive_slug: 'papercup' }];
-    runGitSyncMock.mockResolvedValue({ status: 'nothing', oversized: [], contentErrors: [] });
+    runGitSyncMock.mockResolvedValue({ status: 'nothing', oversized: [], contentErrors: [], strandedSubmodules: [] });
 
     await action({
       ...ctx,
