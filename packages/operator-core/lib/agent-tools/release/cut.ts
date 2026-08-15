@@ -204,14 +204,6 @@ export default defineTool({
           reason: `bad_version '${args.version}' — expected X.Y.Z with an optional -prerelease suffix.`,
         });
       }
-      if (!isValidSourceSha(args.sourceSha)) {
-        return json({
-          ok: false,
-          op: 'run-leg',
-          refused: true,
-          reason: `bad_source_sha '${args.sourceSha ?? '<missing>'}' — expected the exact 40-character lowercase superproject commit authorized for this cut.`,
-        });
-      }
       const h = collectHandoff(args.version);
       if (!h.found) {
         return json({
@@ -307,6 +299,14 @@ export default defineTool({
           op: 'run-leg',
           refused: true,
           reason: `bad_version '${args.version}' — expected X.Y.Z with an optional -prerelease suffix (e.g. 0.0.8, 1.2.3-rc.1).`,
+        });
+      }
+      if (!isValidSourceSha(args.sourceSha)) {
+        return json({
+          ok: false,
+          op: 'run-leg',
+          refused: true,
+          reason: `bad_source_sha '${args.sourceSha ?? '<missing>'}' — expected the exact 40-character lowercase superproject commit authorized for this cut.`,
         });
       }
       const channel = args.channel as Channel;
