@@ -1146,6 +1146,37 @@ export function resolveKickoffText(args, env = process.env) {
 }
 
 /**
+ * Finish a fresh ROLE launch argv with the same scripted first-turn seam used by
+ * fresh SU launches. Role launches used to stop after flags/passthrough, so a
+ * headless acceptance judge could inherit PAPERCUSP_KICKOFF_PROMPT yet open at
+ * an empty prompt forever. Keep the positional prompt last (after every flag),
+ * tag it as machine-origin, and expose whether a turn was actually seeded so
+ * the caller can report the launch honestly. Pure except for the existing
+ * provenance-ledger write performed by tagKickoffProvenance.
+ */
+export function finalizeFreshRoleArgs(backend, launchArgs, res, args, env = process.env) {
+  const baseArgs = [
+    ...launchArgs,
+    ...addDirArgs(backend, args?.addDir || []),
+    ...(args?.passthrough || []),
+  ];
+  const kickoffArgs = kickoffPositionalArgs(res, {
+    ...args,
+    kickoffPromptText: resolveKickoffText(args, env),
+  });
+  if (!kickoffArgs.length) return { args: baseArgs, kickoffSeeded: false };
+
+  const sidForTag = res?.envelopeEnv?.PAPERCUSP_SID || env?.PAPERCUSP_SID || null;
+  return {
+    args: [
+      ...baseArgs,
+      ...kickoffArgs.map((text) => tagKickoffProvenance(text, sidForTag, env)),
+    ],
+    kickoffSeeded: true,
+  };
+}
+
+/**
  * The kickoff text for a RESUME / FORK launch, under the SAME gating as the
  * fresh path (scripted `--no-picker` only, honors `--no-kickoff`) — but with no
  * server-supplied plan kickoff to fall back on, because a resume does no
@@ -7990,9 +8021,16 @@ async function roleFlow(args, role, rolesMeta) {
   if (args.addDir?.length && res.agent === 'omp') {
     console.error('psu: omp has no --add-dir; ignoring it. Pass a backend flag verbatim with `-- <flag>` if omp supports one.');
   }
-  // First-class --add-dir (claude/codex) + generic `--` passthrough, forwarded to the
-  // backend CLI after psu's role flags — parity with the su (launchFreshSu) + resume paths.
-  const roleArgs = [...launchArgs, ...addDirArgs(res.agent, args.addDir || []), ...(args.passthrough || [])];
+  // First-class --add-dir (claude/codex) + generic `--` passthrough, followed by
+  // the scripted first turn as the final positional argument. Fresh SU launches
+  // already use this kickoff seam; roles must too because acceptance graders are
+  // fresh headless role sessions and have no human to submit an empty prompt.
+  const { args: roleArgs, kickoffSeeded: roleKickoffSeeded } = finalizeFreshRoleArgs(
+    res.agent,
+    launchArgs,
+    res,
+    args,
+  );
   let roleOmpConfigDir = null;
   if (res.agent === 'omp' && res.envelopeEnv?.PAPERCUSP_OMP_MODELS_YML) {
     roleOmpConfigDir = writeOmpSessionConfigDir(res.sessionId, {
@@ -8016,6 +8054,9 @@ async function roleFlow(args, role, rolesMeta) {
     if (subagentRisk) console.error(subagentRisk);
   }
   console.error(`psu: cwd ${res.cwd}  —  role-scoped MCP (${res.role}); resume from here`);
+  if (roleKickoffSeeded) {
+    console.error(`psu: kickoff — seeding the role session's first turn (suppress with --no-kickoff)`);
+  }
   // Role sessions are AGENT sessions across all backends: the marker arms the
   // hook-level scheduler guard (bash gate / omp coord-hook / codex hooks.json)
   // (native-scheduler-lockout P-010).

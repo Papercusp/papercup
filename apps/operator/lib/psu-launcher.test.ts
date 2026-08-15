@@ -108,6 +108,7 @@ import {
   kickoffPositionalArgs,
   tagKickoffProvenance,
   resolveKickoffText,
+  finalizeFreshRoleArgs,
   resumeKickoffText,
   agentInvalidForRole,
   suWrapperExtraArgs,
@@ -2673,6 +2674,51 @@ describe('psu-launcher arg parsing', () => {
 
 describe('roleLaunchArgs (interactive role session)', () => {
   const files = { promptFile: '/lc/session-7.md', mcpJsonPath: '/proj/.mcp.json' };
+
+  it('EI-204995: a scripted headless role receives the env kickoff as its final tagged positional turn', () => {
+    const provenanceDir = mkdtempSync(join(tmpdir(), 'role-kickoff-prov-'));
+    try {
+      const parsed = parseArgs([
+        '--no-picker',
+        '--agent=claude',
+        '--headless',
+        '--role=judge',
+        '--add-dir=/evidence',
+        '--',
+        '--effort',
+        'high',
+      ]);
+      const env = {
+        PAPERCUSP_KICKOFF_PROMPT: 'Grade the frozen acceptance evidence.',
+        PAPERCUSP_SID: 'role-judge-1',
+        PAPERCUSP_TURN_PROVENANCE_DIR: provenanceDir,
+      };
+      const result = finalizeFreshRoleArgs(
+        'claude',
+        ['--permission-mode', 'bypassPermissions'],
+        { envelopeEnv: { PAPERCUSP_SID: 'role-judge-1' } },
+        parsed,
+        env,
+      );
+
+      expect(result.kickoffSeeded).toBe(true);
+      expect(result.args.slice(0, -1)).toEqual([
+        '--permission-mode', 'bypassPermissions',
+        '--add-dir=/evidence',
+        '--effort', 'high',
+      ]);
+      expect(result.args.at(-1)).toMatch(
+        /^⟦turn-origin:fleet-kickoff nonce:[a-f0-9]{16}⟧\nGrade the frozen acceptance evidence\.$/,
+      );
+      const rows = readFileSync(join(provenanceDir, 'role-judge-1.jsonl'), 'utf8').trim().split('\n');
+      expect(JSON.parse(rows.at(-1)!)).toMatchObject({
+        sid: 'role-judge-1',
+        origin: 'fleet-kickoff',
+      });
+    } finally {
+      rmSync(provenanceDir, { recursive: true, force: true });
+    }
+  });
 
   it('claude: raw claude, role prompt, strict role-scoped MCP, skip perms, scheduler lockout, no-subagent-fanout', () => {
     const { bin, args } = roleLaunchArgs('claude', files);

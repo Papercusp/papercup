@@ -317,6 +317,11 @@ export function kickoffPositionalArgs(res: any, args: any): any[];
  * quotes included). Pure — exported for tests.
  */
 export function resolveKickoffText(args: any, env?: NodeJS.ProcessEnv): any;
+/** Finish a fresh role argv with its tagged scripted first turn, when present. */
+export function finalizeFreshRoleArgs(backend: any, launchArgs: any[], res: any, args: any, env?: NodeJS.ProcessEnv): {
+    args: any[];
+    kickoffSeeded: boolean;
+};
 /**
  * The kickoff text for a RESUME / FORK launch, under the SAME gating as the
  * fresh path (scripted `--no-picker` only, honors `--no-kickoff`) — but with no
