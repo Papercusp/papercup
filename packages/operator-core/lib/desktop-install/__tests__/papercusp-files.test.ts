@@ -16,7 +16,13 @@ import * as os from 'node:os';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
-import { installPapercuspFiles, resolveInstallPaths, renderSuPlaybook } from '../papercusp-files';
+import {
+  installPapercuspFiles,
+  projectHistoryDispatcherExec,
+  projectHistoryLauncherCandidates,
+  resolveInstallPaths,
+  renderSuPlaybook,
+} from '../papercusp-files';
 
 const execFileAsync = promisify(execFile);
 
@@ -50,14 +56,8 @@ beforeEach(async () => {
   // Lay out a fake operator app tree with the sources the installer looks for.
   await fs.mkdir(path.join(tmpAppRoot, 'prompts'), { recursive: true });
   await fs.mkdir(path.join(tmpAppRoot, 'scripts', 'hooks', 'omp'), { recursive: true });
-  await fs.writeFile(
-    path.join(tmpAppRoot, 'prompts', 'papercusp-su-engineer.tools.md'),
-    '# Playbook v1\n',
-  );
-  await fs.writeFile(
-    path.join(tmpAppRoot, 'scripts', 'hooks', 'omp', 'coord-hook.ts'),
-    '// coord-hook v1\n',
-  );
+  await fs.writeFile(path.join(tmpAppRoot, 'prompts', 'papercusp-su-engineer.tools.md'), '# Playbook v1\n');
+  await fs.writeFile(path.join(tmpAppRoot, 'scripts', 'hooks', 'omp', 'coord-hook.ts'), '// coord-hook v1\n');
   // psu/ptool launcher sources the shim writer points at (A2). Dev names —
   // the bundled `psu.mjs` test below adds the bundled name explicitly.
   await fs.writeFile(path.join(tmpAppRoot, 'scripts', 'psu-launcher.mjs'), '// psu-launcher v1\n');
@@ -97,14 +97,8 @@ describe('installPapercuspFiles', () => {
     const agentIdBefore = (await fs.readFile(first.agentIdPath, 'utf8')).trim();
 
     // Update source files in place — simulates an app update.
-    await fs.writeFile(
-      path.join(tmpAppRoot, 'prompts', 'papercusp-su-engineer.tools.md'),
-      '# Playbook v2\n',
-    );
-    await fs.writeFile(
-      path.join(tmpAppRoot, 'scripts', 'hooks', 'omp', 'coord-hook.ts'),
-      '// coord-hook v2\n',
-    );
+    await fs.writeFile(path.join(tmpAppRoot, 'prompts', 'papercusp-su-engineer.tools.md'), '# Playbook v2\n');
+    await fs.writeFile(path.join(tmpAppRoot, 'scripts', 'hooks', 'omp', 'coord-hook.ts'), '// coord-hook v2\n');
 
     const second = await installPapercuspFiles({ home: tmpHome, operatorAppRoot: tmpAppRoot });
 
@@ -160,20 +154,8 @@ describe('installPapercuspFiles', () => {
   it('resolves the integration launcher at runtime and falls back to the release launcher', async () => {
     const integrationRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'pcusp-install-integration-'));
     const releaseRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'pcusp-install-release-'));
-    const integrationLauncher = path.join(
-      integrationRoot,
-      'apps',
-      'operator',
-      'scripts',
-      'psu-launcher.mjs',
-    );
-    const releaseLauncher = path.join(
-      releaseRoot,
-      'apps',
-      'operator',
-      'scripts',
-      'psu-launcher.mjs',
-    );
+    const integrationLauncher = path.join(integrationRoot, 'apps', 'operator', 'scripts', 'psu-launcher.mjs');
+    const releaseLauncher = path.join(releaseRoot, 'apps', 'operator', 'scripts', 'psu-launcher.mjs');
     await fs.mkdir(path.dirname(integrationLauncher), { recursive: true });
     await fs.mkdir(path.dirname(releaseLauncher), { recursive: true });
     await fs.writeFile(integrationLauncher, 'console.log("integration");\n');
@@ -235,9 +217,7 @@ describe('installPapercuspFiles', () => {
     expect(sentinel).toContain('model_args=("--model=$spec")');
     // Execs the ALREADY-RESOLVED psu shim's concrete path, not a bare `psu`
     // relying on PATH resolution a second time.
-    expect(sentinel).toContain(
-      `exec ${JSON.stringify(result.psuPath)} --no-picker --agent=claude --role=papercup`,
-    );
+    expect(sentinel).toContain(`exec ${JSON.stringify(result.psuPath)} --no-picker --agent=claude --role=papercup`);
     expect((await fs.stat(result.psuSentinelPath)).mode & 0o777).toBe(0o755);
   });
 
@@ -246,9 +226,7 @@ describe('installPapercuspFiles', () => {
 
     expect(result.psuShimWritten).toBe(true);
     expect(result.psuSentinelDeepShimWritten).toBe(true);
-    expect(result.psuSentinelDeepPath).toBe(
-      path.join(tmpHome, '.papercusp', 'bin', 'psu-sentinel-deep'),
-    );
+    expect(result.psuSentinelDeepPath).toBe(path.join(tmpHome, '.papercusp', 'bin', 'psu-sentinel-deep'));
 
     const deep = await fs.readFile(result.psuSentinelDeepPath, 'utf8');
     expect(deep).toMatch(/^#!\/usr\/bin\/env bash\n/);
@@ -268,9 +246,7 @@ describe('installPapercuspFiles', () => {
     expect(deep).toContain("spec='opus:xhigh'");
     expect(deep).not.toContain("spec='sonnet:medium'");
     // Execs the ALREADY-RESOLVED psu shim as the hidden papercup-deep role.
-    expect(deep).toContain(
-      `exec ${JSON.stringify(result.psuPath)} --no-picker --agent=claude --role=papercup-deep`,
-    );
+    expect(deep).toContain(`exec ${JSON.stringify(result.psuPath)} --no-picker --agent=claude --role=papercup-deep`);
     expect((await fs.stat(result.psuSentinelDeepPath)).mode & 0o777).toBe(0o755);
   });
 
@@ -280,9 +256,16 @@ describe('installPapercuspFiles', () => {
     expect(result.papercuspCliWritten).toBe(false);
     expect(result.onboardLauncherSource).toBe('');
 
+    // A dev install with onboarding but no usable History launcher must not
+    // advertise a route that falls through to usage.
+    await fs.writeFile(path.join(tmpAppRoot, 'scripts', 'onboard.mjs'), '// bundled concierge\n');
+    result = await installPapercuspFiles({ home: tmpHome, operatorAppRoot: tmpAppRoot });
+    let cli = await fs.readFile(result.papercuspCliPath, 'utf8');
+    expect(cli).toContain('usage: papercusp <setup|tutorial>');
+    expect(cli).not.toContain('project-history)');
+
     // Bundled concierge + generator present → dispatcher lands with onboarding
     // and the portable Project History subcommand.
-    await fs.writeFile(path.join(tmpAppRoot, 'scripts', 'onboard.mjs'), '// bundled concierge\n');
     await fs.writeFile(path.join(tmpAppRoot, 'scripts', 'project-history.mjs'), '// bundled generator\n');
     result = await installPapercuspFiles({ home: tmpHome, operatorAppRoot: tmpAppRoot });
     expect(result.papercuspCliWritten).toBe(true);
@@ -291,7 +274,7 @@ describe('installPapercuspFiles', () => {
     expect(result.onboardLauncherSource).toBe(launcher);
     expect(result.projectHistoryLauncherSource).toBe(projectHistoryLauncher);
     expect(result.papercuspCliPath).toBe(path.join(tmpHome, '.papercusp', 'bin', 'papercusp'));
-    const cli = await fs.readFile(result.papercuspCliPath, 'utf8');
+    cli = await fs.readFile(result.papercuspCliPath, 'utf8');
     expect(cli).toMatch(/^#!\/usr\/bin\/env bash\n/);
     // `setup` + `tutorial` open the unified shell on their tab (#4); `onboard` is the
     // back-compat linear concierge.
@@ -309,6 +292,17 @@ describe('installPapercuspFiles', () => {
     );
     expect(cli).toContain('usage: papercusp <setup|tutorial|project-history>');
     expect((await fs.stat(result.papercuspCliPath)).mode & 0o777).toBe(0o755);
+  });
+
+  it('routes an unbundled dev install through the canonical source CLI', () => {
+    const operatorRoot = path.join(path.sep, 'repo', 'apps', 'operator');
+    const sourceCli = path.join(path.sep, 'repo', 'libs', 'papercusp', 'packages', 'cli', 'bin', 'papercusp');
+
+    expect(projectHistoryLauncherCandidates(operatorRoot, false)).toContain(sourceCli);
+    expect(projectHistoryLauncherCandidates(operatorRoot, true)).not.toContain(sourceCli);
+    expect(projectHistoryDispatcherExec('/sidecar/bin/node', sourceCli)).toBe(
+      `${JSON.stringify(sourceCli)} project-history`,
+    );
   });
 
   it('writes a macOS "Papercusp Tutorial & Setup.app" wrapper on darwin once the dispatcher resolves (WI-2197)', async () => {
@@ -433,9 +427,7 @@ describe('installPapercuspFiles', () => {
     expect(() =>
       expectLauncherInterpreter(`exec ${JSON.stringify(nodePath)} "$launcher" "$@"`, nodePath),
     ).not.toThrow();
-    expect(() =>
-      expectLauncherInterpreter(`  ${JSON.stringify(nodePath)} "$launcher" "$@"`, nodePath),
-    ).not.toThrow();
+    expect(() => expectLauncherInterpreter(`  ${JSON.stringify(nodePath)} "$launcher" "$@"`, nodePath)).not.toThrow();
   });
 
   it('missing psu launcher: psuShimWritten=false, no throw, other artifacts land (A2)', async () => {
@@ -680,12 +672,8 @@ describe('installPapercuspFiles', () => {
       expect(result.claudeHooksInstalled).toContain('userpromptsubmit-memory.sh');
       expect(result.claudeSettingsMerged).toBe(true);
       expect(result.extensionWritten).toBe(true);
-      const settings = JSON.parse(
-        await fs.readFile(path.join(tmpHome, '.claude', 'settings.json'), 'utf8'),
-      );
-      expect(JSON.stringify(settings.hooks?.UserPromptSubmit ?? [])).toContain(
-        'userpromptsubmit-memory.sh',
-      );
+      const settings = JSON.parse(await fs.readFile(path.join(tmpHome, '.claude', 'settings.json'), 'utf8'));
+      expect(JSON.stringify(settings.hooks?.UserPromptSubmit ?? [])).toContain('userpromptsubmit-memory.sh');
     } finally {
       process.chdir(prevCwd);
     }
@@ -703,8 +691,7 @@ describe('installPapercuspFiles', () => {
     // rename step was skipped or the write path reverted to in-place).
     const ccDir = path.join(tmpAppRoot, 'scripts', 'hooks', 'cc');
     await fs.mkdir(ccDir, { recursive: true });
-    const gateSrc =
-      '#!/bin/bash\n# resource gate\npython3 <<\'PYEOF\'\nprint("(hi)")\nPYEOF\n';
+    const gateSrc = '#!/bin/bash\n# resource gate\npython3 <<\'PYEOF\'\nprint("(hi)")\nPYEOF\n';
     await fs.writeFile(path.join(ccDir, 'pretooluse-locks-acquire.sh'), '#!/bin/bash\n', {
       mode: 0o755,
     });
@@ -741,9 +728,7 @@ describe('installPapercuspFiles', () => {
     const written = await fs.readFile(result.extensionPath, 'utf8');
     expect(written).toBe(content); // full content, never a truncated prefix
 
-    const leftovers = (await fs.readdir(path.dirname(result.extensionPath))).filter((n) =>
-      n.endsWith('.tmp'),
-    );
+    const leftovers = (await fs.readdir(path.dirname(result.extensionPath))).filter((n) => n.endsWith('.tmp'));
     expect(leftovers).toEqual([]);
   });
 
@@ -753,10 +738,7 @@ describe('installPapercuspFiles', () => {
       path.join(ompDir, 'coord-hook.ts'),
       "import { stashAdvisory } from './non-preempting-delivery';\nexport { stashAdvisory };\n",
     );
-    await fs.writeFile(
-      path.join(ompDir, 'non-preempting-delivery.ts'),
-      'export const stashAdvisory = () => {};\n',
-    );
+    await fs.writeFile(path.join(ompDir, 'non-preempting-delivery.ts'), 'export const stashAdvisory = () => {};\n');
 
     const result = await installPapercuspFiles({ home: tmpHome, operatorAppRoot: tmpAppRoot });
     const installRoot = path.join(tmpHome, '.papercusp');
@@ -765,9 +747,7 @@ describe('installPapercuspFiles', () => {
     expect(await fs.readFile(path.join(installRoot, 'papercusp-coord.ts'), 'utf8')).toContain(
       'non-preempting-delivery',
     );
-    expect(await fs.readFile(path.join(installRoot, 'non-preempting-delivery.ts'), 'utf8')).toContain(
-      'stashAdvisory',
-    );
+    expect(await fs.readFile(path.join(installRoot, 'non-preempting-delivery.ts'), 'utf8')).toContain('stashAdvisory');
   });
 });
 
@@ -808,7 +788,7 @@ describe('renderSuPlaybook (psu-only-launch-unification P-011)', () => {
     expect(omp.text).not.toContain('## CLAUDE tooling');
   });
 
-  it("profile selects the base file (power → papercusp-su-power.tools.md)", async () => {
+  it('profile selects the base file (power → papercusp-su-power.tools.md)', async () => {
     const power = await renderSuPlaybook({ agent: 'claude', profile: 'power', operatorAppRoot: tmpAppRoot });
     expect(power.text).toContain('# Power base');
     expect(power.baseSource).toBe(path.join(tmpAppRoot, 'prompts', 'papercusp-su-power.tools.md'));
@@ -849,7 +829,7 @@ describe('renderSuPlaybook (psu-only-launch-unification P-011)', () => {
       new URL('../../../../../apps/operator/prompts/papercusp-su.codex.md', import.meta.url),
       'utf8',
     );
-    expect(canonicalOverlay).toContain("ptool tools:find --json - \"${ptool_scope[@]}\" <<'JSON'");
+    expect(canonicalOverlay).toContain('ptool tools:find --json - "${ptool_scope[@]}" <<\'JSON\'');
     expect(canonicalOverlay).toContain("ptool <group:verb> --json - <<'JSON'");
     expect(canonicalOverlay).toContain('Use `--json-file`');
     expect(canonicalOverlay).not.toContain("ptool tools:find --json '{");

@@ -35,7 +35,21 @@ import {
   resolveSourceGitProvenance,
   gcStrandedInstallTmp,
 } from './install-provenance';
-import { spliceAtMarker, spliceToolingOverlay, spliceGeneratedSection, WIRE_SCHEMAS_MARKER, COORD_LEGEND_MARKER, WORKSPACE_MAP_MARKER, PROMOTION_MODEL_MARKER, PROJECT_GUIDE_MARKER, AUTO_MODE_MARKER, COMPACTION_MARKER, COMPACTION_CLIENT_OVERLAY_MARKER, RESULT_DOOR_MARKER, SHARED_BASE_NOTES_MARKER } from './splice-tooling-overlay';
+import {
+  spliceAtMarker,
+  spliceToolingOverlay,
+  spliceGeneratedSection,
+  WIRE_SCHEMAS_MARKER,
+  COORD_LEGEND_MARKER,
+  WORKSPACE_MAP_MARKER,
+  PROMOTION_MODEL_MARKER,
+  PROJECT_GUIDE_MARKER,
+  AUTO_MODE_MARKER,
+  COMPACTION_MARKER,
+  COMPACTION_CLIENT_OVERLAY_MARKER,
+  RESULT_DOOR_MARKER,
+  SHARED_BASE_NOTES_MARKER,
+} from './splice-tooling-overlay';
 import { renderResultDoorSection } from '../result-door-prompt';
 import { renderModesPolicy } from '../operating-modes-policy';
 import { renderDeployPipelineNote } from '../deploy-pipeline-policy';
@@ -248,15 +262,17 @@ function localOmpImportCandidates(importer: string, specifier: string): string[]
   const raw = path.resolve(path.dirname(importer), cleanSpecifier);
   const ext = path.extname(raw);
   const stem = ext ? raw.slice(0, -ext.length) : raw;
-  return [...new Set([
-    raw,
-    `${raw}.ts`,
-    `${stem}.ts`,
-    `${stem}.mts`,
-    `${stem}.tsx`,
-    path.join(raw, 'index.ts'),
-    path.join(stem, 'index.ts'),
-  ])];
+  return [
+    ...new Set([
+      raw,
+      `${raw}.ts`,
+      `${stem}.ts`,
+      `${stem}.mts`,
+      `${stem}.tsx`,
+      path.join(raw, 'index.ts'),
+      path.join(stem, 'index.ts'),
+    ]),
+  ];
 }
 
 /**
@@ -385,8 +401,7 @@ export async function installOmpHookBundle(opts: {
   }
   if (unresolved.length > 0) {
     console.error(
-      `[desktop-install] OMP hook bundle load check FAILED in ${opts.destinationDir}: ` +
-        unresolved.join('; '),
+      `[desktop-install] OMP hook bundle load check FAILED in ${opts.destinationDir}: ` + unresolved.join('; '),
     );
   }
   return { installed, unresolved };
@@ -493,7 +508,7 @@ export function renderProjectGuideSection(guideText: string): string {
   return (
     '## Project guide — repo conventions\n\n' +
     "> The following is the working repo's project guide (`CLAUDE.md` at the\n" +
-    "> repo root — the single editable source; `AGENTS.md` is a symlink to it).\n" +
+    '> repo root — the single editable source; `AGENTS.md` is a symlink to it).\n' +
     '> It is spliced in here so a psu session gets these conventions WITHOUT the\n' +
     '> client auto-loading the file (which would also drag in the launching\n' +
     "> user's personal/global config). To change it, edit the repo's `CLAUDE.md`.\n\n" +
@@ -556,10 +571,7 @@ async function resolveProjectGuideText(
  * left untouched. Inserted just before the project-guide section so they sit in the playbook body,
  * not buried under the 600-line guide.
  */
-function injectSharedBaseNotes(
-  text: string,
-  opts: { repoSpecific?: boolean; eligible?: boolean } = {},
-): string {
+function injectSharedBaseNotes(text: string, opts: { repoSpecific?: boolean; eligible?: boolean } = {}): string {
   // POSITION and ELIGIBILITY are now decided SEPARATELY. Conflating them is what caused the
   // 12-day silent drop (see SHARED_BASE_NOTES_MARKER's doc-comment):
   //
@@ -638,7 +650,11 @@ async function writeSplicedPlaybook(baseSrc: string, dst: string): Promise<boole
     throw e;
   }
   const overlay = await readAgentOverlay(baseSrc, 'omp');
-  let out = spliceGeneratedSection(spliceToolingOverlay(base, overlay), WIRE_SCHEMAS_MARKER, renderWireSchemasSection());
+  let out = spliceGeneratedSection(
+    spliceToolingOverlay(base, overlay),
+    WIRE_SCHEMAS_MARKER,
+    renderWireSchemasSection(),
+  );
   out = spliceGeneratedSection(out, COORD_LEGEND_MARKER, renderCoordLegend());
   out = spliceGeneratedSection(out, WORKSPACE_MAP_MARKER, renderWorkspaceMapSection());
   // per-hive-git-and-release-gate P-012: the staging→main promotion contract, generated
@@ -747,9 +763,10 @@ function playbookCandidates(operatorAppRoot: string, explicitRoot: boolean, prof
   // OTHER profile keeps the strict single-candidate behavior so a typo'd/missing profile
   // file still THROWS (defense-in-depth alongside the bootstrap-su allow-list) rather than
   // silently masking to engineer.
-  const files = profile === 'generic'
-    ? [`papercusp-su-${profile}.tools.md`, 'papercusp-su-engineer.tools.md']
-    : [`papercusp-su-${profile}.tools.md`];
+  const files =
+    profile === 'generic'
+      ? [`papercusp-su-${profile}.tools.md`, 'papercusp-su-engineer.tools.md']
+      : [`papercusp-su-${profile}.tools.md`];
   const roots = promptsDirCandidates(operatorAppRoot, explicitRoot);
   // Specificity-first: try the profile-specific file in every root before the
   // engineer fallback in every root, so a real generic file (if later authored) wins.
@@ -1068,18 +1085,8 @@ export async function installInjectionHooks(home: string, injectSrcDir: string):
   // proactive Vertex pacing hook, recreating 429s in otherwise-fresh sessions.
   // Either destination proving a newer install protects the pair as a unit.
   if (
-    (await refuseKnownOlderHookSource(
-      'injection hooks',
-      injectSrcDir,
-      injectDest,
-      incomingProvenance,
-    )) ||
-    (await refuseKnownOlderHookSource(
-      'OMP injection hook',
-      path.dirname(ompHookSrc),
-      ompDest,
-      incomingProvenance,
-    ))
+    (await refuseKnownOlderHookSource('injection hooks', injectSrcDir, injectDest, incomingProvenance)) ||
+    (await refuseKnownOlderHookSource('OMP injection hook', path.dirname(ompHookSrc), ompDest, incomingProvenance))
   ) {
     return [];
   }
@@ -1211,6 +1218,29 @@ function cliLauncherCandidates(operatorAppRoot: string, explicitRoot: boolean, n
 }
 
 /**
+ * Resolve Project History's packaged bundle first, then the canonical source
+ * CLI on a dev checkout. The source fallback keeps the installed
+ * `papercusp project-history` contract usable before a desktop sidecar has
+ * been built; packaged installs still select their self-contained bundle.
+ */
+export function projectHistoryLauncherCandidates(operatorAppRoot: string, explicitRoot: boolean): string[] {
+  const bundled = cliLauncherCandidates(operatorAppRoot, explicitRoot, ['project-history.mjs']);
+  if (explicitRoot) return bundled;
+
+  const sourceCli = path.join('libs', 'papercusp', 'packages', 'cli', 'bin', 'papercusp');
+  return [...bundled, path.resolve(operatorAppRoot, '..', '..', sourceCli), path.resolve(process.cwd(), sourceCli)];
+}
+
+/** Render the command after `exec` for the Project History dispatcher case. */
+export function projectHistoryDispatcherExec(nodeCmd: string, launcherPath: string): string {
+  const isSourceCli =
+    path.basename(launcherPath) === 'papercusp' && path.basename(path.dirname(launcherPath)) === 'bin';
+  return isSourceCli
+    ? `${JSON.stringify(launcherPath)} project-history`
+    : `${JSON.stringify(nodeCmd)} ${JSON.stringify(launcherPath)}`;
+}
+
+/**
  * Resolve the node binary a CLI shim should exec. Prefer the BUNDLED node over
  * a bare PATH `node` (end users — a macOS Terminal, a WSL distro, a fresh Linux
  * dogfood install — rarely have node on PATH; bare `node` → "node not found",
@@ -1303,12 +1333,11 @@ function launcherNameVariants(launcherPath: string): string[] {
 }
 
 function launcherRelativePaths(launcherPath: string): string[] {
-  return [...new Set(
-    launcherNameVariants(launcherPath).flatMap((name) => [
-      `apps/operator/scripts/${name}`,
-      `scripts/${name}`,
-    ]),
-  )];
+  return [
+    ...new Set(
+      launcherNameVariants(launcherPath).flatMap((name) => [`apps/operator/scripts/${name}`, `scripts/${name}`]),
+    ),
+  ];
 }
 
 /**
@@ -1444,8 +1473,17 @@ async function writeDispatcherShim(
   projectHistoryLauncherPath?: string,
 ): Promise<boolean> {
   const nodeCmd = await resolveShimNode(launcherPath);
+  const projectHistoryExec = projectHistoryLauncherPath
+    ? projectHistoryDispatcherExec(nodeCmd, projectHistoryLauncherPath)
+    : '';
   const projectHistoryCase = projectHistoryLauncherPath
-    ? `  project-history) shift; exec ${JSON.stringify(nodeCmd)} ${JSON.stringify(projectHistoryLauncherPath)} "$@" ;;\n`
+    ? `  project-history) shift; exec ${projectHistoryExec} "$@" ;;\n`
+    : '';
+  const usage = projectHistoryLauncherPath
+    ? 'usage: papercusp <setup|tutorial|project-history>'
+    : 'usage: papercusp <setup|tutorial>';
+  const projectHistoryHelp = projectHistoryLauncherPath
+    ? '    echo "  project-history  generate a versioned project History artifact"\n'
     : '';
   const body =
     '#!/usr/bin/env bash\n' +
@@ -1462,10 +1500,10 @@ async function writeDispatcherShim(
     `  onboard)  shift; exec ${JSON.stringify(nodeCmd)} ${JSON.stringify(launcherPath)} "$@" ;;\n` +
     projectHistoryCase +
     '  *)\n' +
-    '    echo "usage: papercusp <setup|tutorial|project-history>"\n' +
+    `    echo "${usage}"\n` +
     '    echo "  setup     open the Tutorial & Setup shell on the Setup tab"\n' +
     '    echo "  tutorial  open the Tutorial & Setup shell on the Tutorial tab"\n' +
-    '    echo "  project-history  generate a versioned project History artifact"\n' +
+    projectHistoryHelp +
     '    exit 2 ;;\n' +
     'esac\n';
   await fs.writeFile(shimPath, body, { mode: 0o755 });
@@ -1576,10 +1614,7 @@ async function writeMacTutorialApp(appPath: string): Promise<boolean> {
   // that copy into /Applications, don't write a second one into ~/Applications —
   // LaunchServices would surface two identical apps. This first-boot write remains
   // the fallback for installs that skipped dragging the tutorial app.
-  for (const installed of [
-    '/Applications/Papercusp Tutorial.app',
-    '/Applications/Papercusp Tutorial & Setup.app',
-  ]) {
+  for (const installed of ['/Applications/Papercusp Tutorial.app', '/Applications/Papercusp Tutorial & Setup.app']) {
     if (await pathExists(installed)) return false;
   }
   const contentsDir = path.join(appPath, 'Contents');
@@ -1666,7 +1701,16 @@ export async function writeLinuxTutorialDesktopEntry(
       path.join(operatorAppRoot, 'resources', 'icons', '128x128.png'),
     ]);
     if (iconSrc) {
-      const iconDst = path.join(home, '.local', 'share', 'icons', 'hicolor', '128x128', 'apps', 'papercusp-desktop.png');
+      const iconDst = path.join(
+        home,
+        '.local',
+        'share',
+        'icons',
+        'hicolor',
+        '128x128',
+        'apps',
+        'papercusp-desktop.png',
+      );
       try {
         await fs.mkdir(path.dirname(iconDst), { recursive: true });
         await fs.writeFile(iconDst, await fs.readFile(iconSrc), { mode: 0o644 });
@@ -2198,7 +2242,9 @@ export function mergeClaudeHookSettings(
       hooks: cmd('workitem-verify-nudge.sh'),
     });
     for (const e of ['Stop', 'SessionEnd'])
-      hooks[e] = replaceOurHookEntries(ev(e), ours('workitem-verify-nudge.sh'), { hooks: cmd('workitem-verify-nudge.sh') });
+      hooks[e] = replaceOurHookEntries(ev(e), ours('workitem-verify-nudge.sh'), {
+        hooks: cmd('workitem-verify-nudge.sh'),
+      });
   }
   // merge_required_field_strand_nudge_hook — PostToolUse, matcher 'Edit|Write|MultiEdit'
   // (EI-19374535041074908). Advisory only: it can never deny, because adding a required
@@ -2244,10 +2290,14 @@ export function mergeClaudeHookSettings(
   // OTHER *.integration.test.ts already builds the exact table via an inline CREATE TABLE
   // and is missing exactly the new column.
   if (has('posttooluse-migration-fixture-drift-nudge.mjs'))
-    hooks.PostToolUse = replaceOurHookEntries(ev('PostToolUse'), ours('posttooluse-migration-fixture-drift-nudge.mjs'), {
-      matcher: 'Edit|Write|MultiEdit',
-      hooks: cmd('posttooluse-migration-fixture-drift-nudge.mjs'),
-    });
+    hooks.PostToolUse = replaceOurHookEntries(
+      ev('PostToolUse'),
+      ours('posttooluse-migration-fixture-drift-nudge.mjs'),
+      {
+        matcher: 'Edit|Write|MultiEdit',
+        hooks: cmd('posttooluse-migration-fixture-drift-nudge.mjs'),
+      },
+    );
   // merge_migration_forward_compat_nudge_hook — PostToolUse, matcher 'Edit|Write|MultiEdit'
   // (EI-19462877357083817). Advisory only: it can never deny — destructive DDL is often
   // correct, and the acknowledgment is the point, not abstention. Fires only when the file
@@ -2257,10 +2307,14 @@ export function mergeClaudeHookSettings(
   // so the nudge and the gate leg cannot drift apart and leave the nudge quiet on a file the
   // gate still fails.
   if (has('posttooluse-migration-forward-compat-nudge.mjs'))
-    hooks.PostToolUse = replaceOurHookEntries(ev('PostToolUse'), ours('posttooluse-migration-forward-compat-nudge.mjs'), {
-      matcher: 'Edit|Write|MultiEdit',
-      hooks: cmd('posttooluse-migration-forward-compat-nudge.mjs'),
-    });
+    hooks.PostToolUse = replaceOurHookEntries(
+      ev('PostToolUse'),
+      ours('posttooluse-migration-forward-compat-nudge.mjs'),
+      {
+        matcher: 'Edit|Write|MultiEdit',
+        hooks: cmd('posttooluse-migration-forward-compat-nudge.mjs'),
+      },
+    );
   // merge_tool_prompt_weight_nudge_hook — PostToolUse, matcher 'Edit|Write|MultiEdit'
   // (EI-19459260956682226). Advisory only: it can never deny — growing a tool description
   // is normal, and this fires only when the edited file contains a tool that is OVER the
@@ -2289,14 +2343,10 @@ export function mergeClaudeHookSettings(
   // (.css/.ts/.tsx under apps/operator/app + apps/operator-vite/src, tests excluded) — nudging
   // outside that set would be a false positive by construction.
   if (has('posttooluse-css-design-primitives-nudge.mjs'))
-    hooks.PostToolUse = replaceOurHookEntries(
-      ev('PostToolUse'),
-      ours('posttooluse-css-design-primitives-nudge.mjs'),
-      {
-        matcher: 'Edit|Write|MultiEdit',
-        hooks: cmd('posttooluse-css-design-primitives-nudge.mjs'),
-      },
-    );
+    hooks.PostToolUse = replaceOurHookEntries(ev('PostToolUse'), ours('posttooluse-css-design-primitives-nudge.mjs'), {
+      matcher: 'Edit|Write|MultiEdit',
+      hooks: cmd('posttooluse-css-design-primitives-nudge.mjs'),
+    });
   // merge_statusline — non-destructive: set only when absent or already ours.
   if (has('statusline-fleet.sh')) {
     const sl = p('statusline-fleet.sh');
@@ -2580,7 +2630,9 @@ export function mergeCodexStatusLineToml(raw: string): { toml: string; changed: 
     return { toml: raw, changed: false };
   }
   const tui =
-    obj.tui && typeof obj.tui === 'object' && !Array.isArray(obj.tui) ? (obj.tui as Record<string, any>) : (obj.tui = {});
+    obj.tui && typeof obj.tui === 'object' && !Array.isArray(obj.tui)
+      ? (obj.tui as Record<string, any>)
+      : (obj.tui = {});
   if (tui.status_line !== undefined) return { toml: raw, changed: false };
   tui.status_line = [...CODEX_STATUS_LINE_ITEMS];
   return { toml: TOML.stringify(obj as any), changed: true };
@@ -2684,8 +2736,7 @@ export async function installPapercuspFiles(opts: InstallOpts = {}): Promise<Ins
   };
 
   const playbookSource =
-    opts.playbookSource ??
-    (await resolveSource('su playbook', playbookCandidates(operatorAppRoot, explicitRoot)));
+    opts.playbookSource ?? (await resolveSource('su playbook', playbookCandidates(operatorAppRoot, explicitRoot)));
   const extensionSource =
     opts.extensionSource ??
     (await resolveSource('coord extension', extensionCandidates(operatorAppRoot, explicitRoot)));
@@ -2705,7 +2756,7 @@ export async function installPapercuspFiles(opts: InstallOpts = {}): Promise<Ins
   );
   const projectHistoryLauncherSource = await resolveSource(
     'project-history launcher',
-    cliLauncherCandidates(operatorAppRoot, explicitRoot, ['project-history.mjs']),
+    projectHistoryLauncherCandidates(operatorAppRoot, explicitRoot),
   );
 
   const paths = resolveInstallPaths(home);
@@ -2741,10 +2792,7 @@ export async function installPapercuspFiles(opts: InstallOpts = {}): Promise<Ins
   // Mac/Windows apps shipped neither, so Claude rendered a blank statusline + lock/coord
   // enforcement was silently off. Cross-platform (Node native on macOS / WSL distro on
   // Windows). Best-effort: sources not shipped ⇒ nothing installed, settings untouched.
-  const ccHookSrcDir = await resolveSource(
-    'cc hooks',
-    ccHookDirCandidates(operatorAppRoot, explicitRoot),
-  );
+  const ccHookSrcDir = await resolveSource('cc hooks', ccHookDirCandidates(operatorAppRoot, explicitRoot));
   const claudeHooks = ccHookSrcDir
     ? await installClaudeHooks(home, ccHookSrcDir)
     : { installed: [] as string[], settingsMerged: false };
@@ -2787,19 +2835,14 @@ export async function installPapercuspFiles(opts: InstallOpts = {}): Promise<Ins
   // scoped `user` profile, C1/C2).
   await fs.mkdir(paths.binDir, { recursive: true, mode: 0o700 });
   const psuShimWritten = psuLauncherSource
-    ? await writeShim(
-        paths.psuPath,
-        psuLauncherSource,
-        'superuser launcher (psu)',
-        {
-          ...shimRuntimeOptions(psuLauncherSource, 'PAPERCUSP_PSU_LAUNCHER'),
-          // WI-38292: psu ALONE gets the re-exec loop. It is the only shim whose
-          // target is a long-lived host process that outlives the code it loaded;
-          // ptool/onboard/tutorial-runner are short-lived and re-read disk on
-          // every invocation already.
-          reexecExitCode: PSU_REEXEC_EXIT_CODE,
-        },
-      )
+    ? await writeShim(paths.psuPath, psuLauncherSource, 'superuser launcher (psu)', {
+        ...shimRuntimeOptions(psuLauncherSource, 'PAPERCUSP_PSU_LAUNCHER'),
+        // WI-38292: psu ALONE gets the re-exec loop. It is the only shim whose
+        // target is a long-lived host process that outlives the code it loaded;
+        // ptool/onboard/tutorial-runner are short-lived and re-read disk on
+        // every invocation already.
+        reexecExitCode: PSU_REEXEC_EXIT_CODE,
+      })
     : false;
   const ptoolShimWritten = ptoolLauncherSource
     ? await writeShim(
@@ -3047,9 +3090,7 @@ export async function renderSuPlaybook(input: RenderSuPlaybookInput): Promise<Re
     WIRE_SCHEMAS_MARKER,
     // P-017: the fleet tier keeps only the spine families' legend entries.
     renderWireSchemasSection(
-      tier === 'fleet'
-        ? (name) => FLEET_WIRE_SCHEMA_FAMILIES.some((f) => name.startsWith(f))
-        : undefined,
+      tier === 'fleet' ? (name) => FLEET_WIRE_SCHEMA_FAMILIES.some((f) => name.startsWith(f)) : undefined,
     ),
   );
   const withLegend = spliceGeneratedSection(withWire, COORD_LEGEND_MARKER, renderCoordLegend());
