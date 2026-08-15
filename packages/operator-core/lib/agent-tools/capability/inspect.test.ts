@@ -133,6 +133,20 @@ describe('resolveInspectCommand — verb mapping', () => {
     }
   });
 
+  it('refuses a covered-but-missing onlyPath instead of manufacturing a scoped green', () => {
+    const r = resolveScopedTypecheckCommand(
+      { check: 'typecheck', package: 'packages/operator-core', onlyPaths: ['lib/does-not-exist.ts'] },
+      BASE,
+      OPERATOR_CORE_GATES,
+      () => false,
+    );
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.reason).toBe('only_path_not_found');
+      expect(r.message).toContain('never present');
+    }
+  });
+
   it('refuses paths spanning multiple baseline gates instead of producing one misleading verdict', () => {
     const r = resolveScopedTypecheckCommand(
       {
