@@ -498,6 +498,13 @@
         .queue-action .badge { display: none; }
       }
 
+      @media (max-width: 420px) {
+        .comparison,
+        .comparison.mobile-preview {
+          grid-template-columns: repeat(3, minmax(0, calc(100vw - 28px)));
+        }
+      }
+
       @media (prefers-reduced-motion: reduce) {
         html { scroll-behavior: auto; }
         *, *::before, *::after { transition: none !important; }
