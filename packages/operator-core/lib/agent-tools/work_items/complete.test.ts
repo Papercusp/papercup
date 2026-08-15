@@ -693,6 +693,35 @@ describe('work_items:complete (keyed-array)', () => {
       expect(r.workItem.state).toBe('passed');
     });
 
+    it('canonical nested verification evidence wins over weaker legacy aliases', async () => {
+      getWorkItem.mockResolvedValue(item);
+      setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...item, state: 'passed' }));
+      const r = await one({
+        id: 'F-12',
+        state: 'passed',
+        completion: {
+          summary: 'fixed the layout bug',
+          testResult: 'pass',
+          verifiedHow: 'live-drove-ui',
+          verification: {
+            testResult: `PASS with inspected screenshot ${artifactDir}/hud-fix.png`,
+            verifiedHow: 'live-drove-ui',
+          },
+        },
+      });
+      expect(r.ok).toBe(true);
+      expect(r.error).toBeUndefined();
+      expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledWith(
+        'F-12',
+        'passed',
+        expect.objectContaining({
+          completionEvidence: expect.objectContaining({
+            testResult: `PASS with inspected screenshot ${artifactDir}/hud-fix.png`,
+          }),
+        }),
+      );
+    });
+
     it('a BACKED claim (screenshot path in filesChanged) closes normally', async () => {
       getWorkItem.mockResolvedValue(item);
       setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...item, state: 'passed' }));

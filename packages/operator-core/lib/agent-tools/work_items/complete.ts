@@ -1107,12 +1107,18 @@ function completionEvidenceFromRecord(
   rec: Omit<CompletionRecord, 'workItem'> & { workItem?: string },
 ): CompletionVerificationEvidence | undefined {
   const nested = rec.verification ?? {};
-  const filesChanged = rec.filesChanged ?? nested.filesChanged;
-  const testsRun = rec.testsRun ?? nested.testsRun ?? rec.tests;
-  const testResult = rec.testResult ?? nested.testResult;
-  const verifiedHow = rec.verifiedHow ?? nested.verifiedHow;
-  const addedTests = rec.addedTests ?? nested.addedTests;
-  const coverage = rec.coverage ?? nested.coverage;
+  // EI-20489220527537464: `verification` is the canonical evidence object and the
+  // top-level siblings are legacy aliases (CompletionRecordSchema says exactly that),
+  // so canonical values must win when a caller supplies both. The inverse precedence
+  // discarded a real screenshot cited in `verification.testResult` whenever a terse
+  // legacy `testResult: "pass"` was also present, causing the live-UI close guard to
+  // reject the evidence until the caller duplicated the path into the alias.
+  const filesChanged = nested.filesChanged ?? rec.filesChanged;
+  const testsRun = nested.testsRun ?? rec.testsRun ?? rec.tests;
+  const testResult = nested.testResult ?? rec.testResult;
+  const verifiedHow = nested.verifiedHow ?? rec.verifiedHow;
+  const addedTests = nested.addedTests ?? rec.addedTests;
+  const coverage = nested.coverage ?? rec.coverage;
   const evidence: CompletionVerificationEvidence = {};
   if (filesChanged?.length) evidence.filesChanged = filesChanged;
   if (testsRun?.trim()) evidence.testsRun = testsRun;
