@@ -11,7 +11,7 @@
  *
  * Run with: npx vitest run packages/operator-core/lib/agent-tools/tools/find.test.ts
  */
-import { describe, it, expect, vi } from 'vitest';
+import { beforeEach, describe, it, expect, vi } from 'vitest';
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import releaseTrace from '../release/trace';
@@ -22,12 +22,21 @@ vi.mock('../search/embedder', () => ({
   interactiveEmbedAcquireBudgetMs: () => 4000,
 }));
 
+const hiveMocks = vi.hoisted(() => ({
+  potHomeSlugForHarness: vi.fn(),
+}));
+
+vi.mock('../../hive-federation', () => ({
+  potHomeSlugForHarness: hiveMocks.potHomeSlugForHarness,
+}));
+
 import toolFind, {
   boundDiscoveryHits,
   buildEmbeddingIndex,
   buildCorpus,
   compactSchemaForResult,
   DISCOVERY_RESULT_MAX_BYTES,
+  filterCorpusForConfirmedHiveScope,
   warmToolFindIndex,
 } from './find';
 
@@ -39,8 +48,8 @@ type ToolDef = {
   handler: (a: unknown, c?: unknown) => Promise<{ content: Array<{ text: string }> }>;
 };
 
-async function callHandler(args: Record<string, unknown>) {
-  const res = await (toolFind as unknown as ToolDef).handler(args, {});
+async function callHandler(args: Record<string, unknown>, ctx: Record<string, unknown> = {}) {
+  const res = await (toolFind as unknown as ToolDef).handler(args, ctx);
   return JSON.parse(res.content[0].text) as {
     query: string;
     count: number;
@@ -49,6 +58,11 @@ async function callHandler(args: Record<string, unknown>) {
     howToCall: string;
   };
 }
+
+beforeEach(() => {
+  hiveMocks.potHomeSlugForHarness.mockReset();
+  hiveMocks.potHomeSlugForHarness.mockResolvedValue(null);
+});
 
 describe('tools:find tool registration', () => {
   it('registers with the expected name + capability + args', () => {
@@ -147,6 +161,64 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     expect(entry?.argSchema).toContain('path?:string');
     expect(entry?.argSchema).toContain('sha?:string');
     expect(schemaByTool.get('release:trace')).toMatchObject({ anyOf: expect.any(Array) });
+  });
+});
+
+describe('confirmed hive discovery visibility (WI-39255)', () => {
+  it('removes cross_harness tools only after a concrete hive resolution', async () => {
+    const { corpus } = buildCorpus();
+    expect(corpus.some((entry) => entry.tool.startsWith('cross_harness:'))).toBe(true);
+    const resolveHive = vi.fn().mockResolvedValue('home-hive');
+
+    const visible = await filterCorpusForConfirmedHiveScope(
+      corpus,
+      { workspaceId: 'ws-1', harnessSlug: 'member-a' },
+      resolveHive,
+    );
+
+    expect(resolveHive).toHaveBeenCalledWith('ws-1', 'member-a');
+    expect(visible.some((entry) => entry.tool.startsWith('cross_harness:'))).toBe(false);
+    expect(visible.some((entry) => entry.tool === 'plans:search')).toBe(true);
+  });
+
+  it('fails open when the harness is standalone or hive resolution throws', async () => {
+    const { corpus } = buildCorpus();
+
+    await expect(filterCorpusForConfirmedHiveScope(
+      corpus,
+      { workspaceId: 'ws-1', harnessSlug: 'standalone' },
+      vi.fn().mockResolvedValue(null),
+    )).resolves.toBe(corpus);
+    await expect(filterCorpusForConfirmedHiveScope(
+      corpus,
+      { workspaceId: 'ws-1', harnessSlug: 'member-a' },
+      vi.fn().mockRejectedValue(new Error('registry unavailable')),
+    )).resolves.toBe(corpus);
+  });
+
+  it('does not resolve hive membership for an unscoped caller', async () => {
+    const { corpus } = buildCorpus();
+    const resolveHive = vi.fn();
+
+    await expect(filterCorpusForConfirmedHiveScope(
+      corpus,
+      { workspaceId: 'ws-1', harnessSlug: '*' },
+      resolveHive,
+    )).resolves.toBe(corpus);
+    expect(resolveHive).not.toHaveBeenCalled();
+  });
+
+  it('ranks a callable local plan reader first after hiding the forbidden exact match', async () => {
+    hiveMocks.potHomeSlugForHarness.mockResolvedValue('home-hive');
+
+    const out = await callHandler(
+      { query: 'cross_harness:plans_search', limit: 1 },
+      { workspaceId: 'ws-1', harnessSlug: 'member-a' },
+    );
+
+    expect(hiveMocks.potHomeSlugForHarness).toHaveBeenCalledWith('ws-1', 'member-a');
+    expect(out.hits).toHaveLength(1);
+    expect(out.hits[0]?.tool).toBe('plans:search');
   });
 });
 

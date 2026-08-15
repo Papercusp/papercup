@@ -296,6 +296,49 @@ export function buildCorpus(): {
   return { corpus, embedText, returnsByTool, schemaByTool };
 }
 
+type DiscoveryScopeContext = {
+  workspaceId?: unknown;
+  harnessSlug?: unknown;
+};
+
+type HiveHomeResolver = (workspaceId: string, harnessSlug: string) => Promise<string | null>;
+
+/**
+ * Mirror the transport's confirmed hive visibility before ranking. A
+ * hive-scoped superuser cannot call `cross_harness:*`, so leaving those rows in
+ * the discovery corpus can spend a narrow result (especially `limit: 1`) on a
+ * tool the same request path must reject. Resolution is deliberately fail-open:
+ * only a concrete, positively resolved hive scope removes catalog entries.
+ */
+export async function filterCorpusForConfirmedHiveScope(
+  corpus: ToolDiscoveryEntry[],
+  ctx: DiscoveryScopeContext,
+  resolveHiveHome: HiveHomeResolver,
+): Promise<ToolDiscoveryEntry[]> {
+  const workspaceId = typeof ctx.workspaceId === 'string' ? ctx.workspaceId.trim() : '';
+  const harnessSlug = typeof ctx.harnessSlug === 'string' ? ctx.harnessSlug.trim() : '';
+  if (
+    !workspaceId ||
+    workspaceId === '*' ||
+    workspaceId === 'all' ||
+    !harnessSlug ||
+    harnessSlug === '*' ||
+    harnessSlug === 'all'
+  ) {
+    return corpus;
+  }
+
+  let hiveHome: string | null;
+  try {
+    hiveHome = await resolveHiveHome(workspaceId, harnessSlug);
+  } catch {
+    return corpus;
+  }
+  if (!hiveHome) return corpus;
+
+  return corpus.filter((entry) => !entry.tool.startsWith('cross_harness:'));
+}
+
 // ── Boot-time embedding index over the full catalog (module-scoped cache) ─────
 // Built ONCE at startup (see warmToolFindIndex below) so the semantic leg is
 // live for the FIRST agent call rather than each cold worker warming lazily on
@@ -433,7 +476,15 @@ export default defineTool({
     limit: z.number().int().positive().max(25).optional(),
   }),
   async handler(args, ctx) {
-    const { corpus, embedText, schemaByTool } = buildCorpus();
+    const { corpus: fullCorpus, embedText, schemaByTool } = buildCorpus();
+    const corpus = await filterCorpusForConfirmedHiveScope(
+      fullCorpus,
+      ctx,
+      async (workspaceId, harnessSlug) => {
+        const { potHomeSlugForHarness } = await import('../../hive-federation');
+        return potHomeSlugForHarness(workspaceId, harnessSlug);
+      },
+    );
     const embedder = await getEmbedder();
     // Self-heal: rebuild if boot warm didn't run or the catalog drifted. Non-
     // blocking — this call uses whatever index is ready right now.
