@@ -362,22 +362,6 @@ need_node_modules() {
       # DANGLES (exists by name but does not resolve) — the name-set diff below
       # cannot see a broken-but-named symlink. Step 3's rm -rf + cp -al re-links it.
       [ -n "$(unresolved_workspace_pkgs)" ] && return 0
-      # WI-39243: the root dependency tree can be current while a package-local
-      # node_modules is absent. Release cleanup intentionally removes ignored
-      # package-local dependency dirs, and the copy step refreshes them only when
-      # THIS predicate returns true. Missing SSE-local TypeScript 5.9 therefore
-      # made its pinned build fall back to root TypeScript 6 and fail with TS5107,
-      # even though the root package set and lockfile matched exactly. Check every
-      # integration package-local tree whose package also exists at this pin; a
-      # package absent from RELEASE_ROOT belongs to a newer staging pin and must
-      # not make an old rollback ref perpetually dirty.
-      while IFS= read -r integration_nm; do
-        [ "$integration_nm" = "$INTEGRATION_ROOT/node_modules" ] && continue
-        rel="${integration_nm#"$INTEGRATION_ROOT"/}"
-        package_rel="${rel%/node_modules}"
-        [ -e "$RELEASE_ROOT/$package_rel/package.json" ] || continue
-        [ -d "$RELEASE_ROOT/$rel" ] || return 0
-      done < <(find "$INTEGRATION_ROOT" -name node_modules -type d -prune -print)
       # Check scoped packages (@papercusp, @papercup).
       for scope in @papercusp @papercup; do
         if ! diff -q <(ls -1 "$INTEGRATION_ROOT/node_modules/$scope" 2>/dev/null | sort) \
