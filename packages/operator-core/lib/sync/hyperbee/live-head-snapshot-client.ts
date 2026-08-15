@@ -527,6 +527,26 @@ function sameHolder(a: SiblingOperator, b: SiblingOperator): boolean {
   return a.port === b.port && a.pid === b.pid && a.startedAt === b.startedAt;
 }
 
+/**
+ * OS-level liveness for the exact process the endpoint registry identified.
+ *
+ * A head snapshot deliberately occupies the holder for minutes. Requiring that
+ * same busy process to answer another short HTTP request in order to prove it is
+ * alive creates a circular failure: the work we are waiting for makes the probe
+ * miss its deadline, and the missed probe aborts the work. The per-port endpoint
+ * registry already gives us a PID + boot identity, so the watcher below checks
+ * that identity directly instead.
+ */
+function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    // EPERM still proves that a process with this PID exists.
+    return (e as NodeJS.ErrnoException)?.code === 'EPERM';
+  }
+}
+
 function describeHolderLoss(found: FindHiveHolderOutcome, previous: SiblingOperator): string {
   if (found.kind === 'holder') {
     return `a replacement holder is ${found.sibling.pid}@${found.sibling.port} ` +
@@ -539,8 +559,13 @@ function describeHolderLoss(found: FindHiveHolderOutcome, previous: SiblingOpera
 
 /**
  * Monitor one specific holder until the request completes or its process identity
- * changes. The timer is intentionally local to this long-lived HTTP request; it is
- * not a datastore polling loop, and it stops as soon as the POST settles.
+ * changes. This deliberately reads the endpoint PROCESS registry instead of calling
+ * `findLiveOperatorHoldingHive`: the latter asks the busy holder to answer a 1.5s
+ * HTTP probe, while the O(own-log) snapshot is documented to make that same event
+ * loop unresponsive for minutes. A slow probe is not evidence that the process died.
+ *
+ * The timer is intentionally local to this long-lived HTTP request; it is not a
+ * datastore polling loop, and it stops as soon as the POST settles.
  */
 function watchHolderLiveness(inp: {
   readonly workspaceId: string;
@@ -555,47 +580,52 @@ function watchHolderLiveness(inp: {
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const intervalMs = inp.holderLivenessIntervalMs ?? DEFAULT_HEAD_SNAPSHOT_HOLDER_LIVENESS_INTERVAL_MS;
+  const listSiblings = inp.listSiblingsImpl ?? listSiblingOperators;
 
-  const check = async (): Promise<void> => {
-    if (stopped) return;
-    const found = await findLiveOperatorHoldingHive({
-      workspaceId: inp.workspaceId,
-      hive: inp.hive,
-      probeTimeoutMs: inp.probeTimeoutMs,
-      fetchImpl: inp.fetchImpl,
-      listSiblingsImpl: inp.listSiblingsImpl,
-    });
-    if (stopped) return;
-    if (found.kind !== 'holder' || !sameHolder(found.sibling, inp.holder)) {
-      stopped = true;
-      inp.onLost(found);
-      return;
-    }
+  const scheduleNext = (): void => {
     timer = setTimeout(() => {
       void check().catch(() => {
-        // A failed liveness probe is treated as holder loss. The outer request
-        // retry will run a fresh discovery instead of leaving a dead POST in flight.
-        if (!stopped) {
-          stopped = true;
-          inp.onLost({
-            kind: 'no-holder',
-            answered: [],
-            probed: [inp.holder.port],
-            staleBuild: [],
-          });
-        }
+        // Registry read failure is UNKNOWN, never proof the holder died. The real
+        // request is independently bounded; keep watching rather than aborting it.
+        if (!stopped) scheduleNext();
       });
     }, intervalMs);
   };
 
-  timer = setTimeout(() => {
-    void check().catch(() => {
-      if (!stopped) {
-        stopped = true;
-        inp.onLost({ kind: 'no-holder', answered: [], probed: [inp.holder.port], staleBuild: [] });
-      }
-    });
-  }, intervalMs);
+  const check = async (): Promise<void> => {
+    if (stopped) return;
+    const siblings = await listSiblings({ selfPort: -1 });
+    if (stopped) return;
+
+    const exact = siblings.find((s) => sameHolder(s, inp.holder));
+    if (exact) {
+      scheduleNext();
+      return;
+    }
+
+    // A per-port discovery file can be briefly unreadable while another process
+    // rewrites/prunes the registry. If the original PID still exists and no new
+    // process has claimed its port, that is uncertainty — not holder death. Let the
+    // real POST's own 15-minute deadline remain authoritative and check again.
+    const replacement = siblings.find((s) => s.port === inp.holder.port);
+    if (!replacement && pidAlive(inp.holder.pid)) {
+      scheduleNext();
+      return;
+    }
+
+    const found: FindHiveHolderOutcome = replacement
+      ? { kind: 'holder', sibling: replacement }
+      : {
+          kind: 'no-holder',
+          answered: [],
+          probed: siblings.map((s) => s.port),
+          staleBuild: [],
+        };
+    stopped = true;
+    inp.onLost(found);
+  };
+
+  scheduleNext();
 
   return () => {
     stopped = true;

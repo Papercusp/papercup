@@ -316,6 +316,76 @@ describe('retrying across a holder recycle', () => {
     expect(realCalls).toBe(2);
   });
 
+  it('does NOT abort a live holder just because another short HTTP probe would time out', async () => {
+    // EI-20514105789487043: the real head snapshot is O(own-log) and can make the
+    // holder's HTTP loop miss the 1.5s discovery deadline for minutes. The liveness
+    // watcher used to run findLiveOperatorHoldingHive here, so the snapshot made its
+    // own probe time out and the client aborted a process that never died.
+    let markRealStarted!: () => void;
+    const realStarted = new Promise<void>((resolve) => {
+      markRealStarted = resolve;
+    });
+    let finishReal!: () => void;
+    let aborted = false;
+    let probeCalls = 0;
+    const holder = { port: 3271, pid: 4271, startedAt: 1 };
+    const listSiblingsImpl = (async () => [holder]) as never;
+    const fetchImpl = (async (_url: string, init: { body: string; signal: AbortSignal }) => {
+      const body = JSON.parse(init.body) as Record<string, unknown>;
+      if (body.probeOnly === true) {
+        probeCalls += 1;
+        if (probeCalls === 1) {
+          return { ok: true, status: 200, json: async () => ({ ok: true, booted: true }) };
+        }
+        // CONTROL for the old implementation: any liveness HTTP probe stalls past
+        // its deadline, exactly as the live bg-host did while producing the snapshot.
+        return await new Promise<never>((_resolve, reject) => {
+          init.signal.addEventListener('abort', () => reject(new Error('probe timed out')), {
+            once: true,
+          });
+        });
+      }
+
+      markRealStarted();
+      return await new Promise<{
+        ok: true;
+        status: 200;
+        json: () => Promise<Record<string, unknown>>;
+      }>((resolve, reject) => {
+        finishReal = () =>
+          resolve({
+            ok: true,
+            status: 200,
+            json: async () => ({ ok: true, appended: true, coversUpTo: 17 }),
+          });
+        init.signal.addEventListener(
+          'abort',
+          () => {
+            aborted = true;
+            reject(new Error('live holder was falsely aborted'));
+          },
+          { once: true },
+        );
+      });
+    }) as never;
+
+    const request = requestLiveOperatorHeadSnapshot({
+      ...base,
+      listSiblingsImpl,
+      fetchImpl,
+      retryBudgetMs: 0,
+      probeTimeoutMs: 1,
+      holderLivenessIntervalMs: 1,
+    });
+    await realStarted;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(aborted).toBe(false);
+    expect(probeCalls).toBe(1); // discovery only; liveness is process-identity based
+    finishReal();
+    await expect(request).resolves.toMatchObject({ kind: 'produced', coversUpTo: 17 });
+  });
+
   it('CONTROL: the same recycle KILLS the cut when retry is disabled', async () => {
     // Without this the test above passes just as happily against a build that never
     // retries at all — the fake would simply not get asked a second time.
