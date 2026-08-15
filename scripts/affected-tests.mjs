@@ -41,6 +41,7 @@ import { emptySuiteGuardArgs } from "./lib/empty-suite-guard.mjs";
 import { applyWorkerCapEnv } from "./lib/worker-cap.mjs";
 import {
   resolveBatchTimeoutMs,
+  resolveTaskTimeoutMs,
   isWatchdogTimeout,
   parseBatchProgress,
   classifyBatchProgress,
@@ -2257,9 +2258,13 @@ const FRESH_RETRY_MAX_FILES = 15; // a broader red is a real regression, not a f
 // a wedge. green-checkpoint runs this same script and nothing overrides this env var,
 // so that was a latent red-pin for every deploy. Still far below the ~120m gate
 // ceiling this exists to protect, which is the bound that actually matters.
-const BATCH_TIMEOUT_MS = resolveBatchTimeoutMs(
+const BATCH_TIMEOUT_FLOOR_MS = 45 * 60_000;
+const BATCH_TIMEOUT_MAX_MS = 90 * 60_000;
+const BATCH_TIMEOUT_HEADROOM_MULTIPLIER = 2;
+const BATCH_TIMEOUT_QUANTUM_MS = 5 * 60_000;
+const BATCH_TIMEOUT_OVERRIDE_MS = resolveBatchTimeoutMs(
   process.env.AFFECTED_BATCH_TIMEOUT_MS,
-  45 * 60 * 1000,
+  null,
 );
 const BATCH_KILL_SIGNAL = "SIGKILL";
 
@@ -2463,7 +2468,13 @@ function dependencyProvenanceForTask(t) {
 }
 
 const taskVerdictGateConfig = {
-  batchTimeoutMs: BATCH_TIMEOUT_MS,
+  batchTimeout: {
+    overrideMs: BATCH_TIMEOUT_OVERRIDE_MS,
+    floorMs: BATCH_TIMEOUT_FLOOR_MS,
+    headroomMultiplier: BATCH_TIMEOUT_HEADROOM_MULTIPLIER,
+    quantumMs: BATCH_TIMEOUT_QUANTUM_MS,
+    maxMs: BATCH_TIMEOUT_MAX_MS,
+  },
   batchKillSignal: BATCH_KILL_SIGNAL,
   captureOutput: captureOutput(),
   scheduler: SCHEDULER_CONFIG,
@@ -2558,6 +2569,23 @@ function runCapturedTask(
   const spawnTask = scriptOverride
     ? { ...context.t, script: scriptOverride }
     : context.t;
+  const spawnTaskKey = taskKey(spawnTask);
+  const taskDurationMs = durationEstimate(durationHistory, spawnTaskKey);
+  const taskTimeoutMs = resolveTaskTimeoutMs({
+    overrideMs: BATCH_TIMEOUT_OVERRIDE_MS,
+    floorMs: BATCH_TIMEOUT_FLOOR_MS,
+    durationMs: taskDurationMs,
+    headroomMultiplier: BATCH_TIMEOUT_HEADROOM_MULTIPLIER,
+    quantumMs: BATCH_TIMEOUT_QUANTUM_MS,
+    maxMs: BATCH_TIMEOUT_MAX_MS,
+  });
+  const taskTimeoutSource = BATCH_TIMEOUT_OVERRIDE_MS != null
+    ? "override"
+    : taskDurationMs == null || taskTimeoutMs === BATCH_TIMEOUT_FLOOR_MS
+      ? "floor"
+      : taskTimeoutMs === BATCH_TIMEOUT_MAX_MS
+        ? "history-capped"
+        : "history";
   const {
     cmd,
     argv,
@@ -2594,7 +2622,14 @@ function runCapturedTask(
         // never written to the cache. Keeping the COMPLETE env is conservative: an unfamiliar
         // variable cannot silently become relevant without invalidating reuse.
         environment: childEnv,
-        gateConfig: taskVerdictGateConfig,
+        gateConfig: {
+          ...taskVerdictGateConfig,
+          batchTimeout: {
+            ...taskVerdictGateConfig.batchTimeout,
+            effectiveMs: taskTimeoutMs,
+            source: taskTimeoutSource,
+          },
+        },
         dependencyHash: context.cacheProvenance.hash,
       });
       cacheDecision = decidePassingTaskVerdict({
@@ -2617,6 +2652,9 @@ function runCapturedTask(
         stderr: "",
         error: null,
         __elapsedMs: 0,
+        __timeoutMs: taskTimeoutMs,
+        __timeoutSource: taskTimeoutSource,
+        __durationEstimateMs: taskDurationMs,
         __cacheStatus: "hit",
         __cacheReason: cacheDecision.reason,
         __cacheIdentity: cacheIdentity,
@@ -2635,7 +2673,7 @@ function runCapturedTask(
       cwd,
       env: childEnv,
       stdio: ["ignore", "pipe", "pipe"],
-      timeout: BATCH_TIMEOUT_MS,
+      timeout: taskTimeoutMs,
       killSignal: BATCH_KILL_SIGNAL,
     });
     const progressTask = JSON.stringify(taskKey(spawnTask));
@@ -2645,7 +2683,9 @@ function runCapturedTask(
       // It contains no child bytes, so concurrent tasks cannot misattribute test output.
       rawErrSync(
         `AFFECTED_TASK_PROGRESS state=${state} task=${progressTask} ` +
-          `elapsedSec=${Math.floor((Date.now() - startedAt) / 1000)} capturedBytes=${capturedBytes}`,
+          `elapsedSec=${Math.floor((Date.now() - startedAt) / 1000)} capturedBytes=${capturedBytes} ` +
+          `timeoutMs=${taskTimeoutMs} timeoutSource=${taskTimeoutSource} ` +
+          `durationEstimateMs=${taskDurationMs ?? "unknown"}`,
       );
     };
     let progressTimer = null;
@@ -2690,6 +2730,9 @@ function runCapturedTask(
         stderr: Buffer.concat(stderr).toString("utf8"),
         error: captureError ?? spawnError,
         __elapsedMs: Date.now() - startedAt,
+        __timeoutMs: taskTimeoutMs,
+        __timeoutSource: taskTimeoutSource,
+        __durationEstimateMs: taskDurationMs,
         ...(cacheDecision
           ? {
               __cacheStatus: "miss",
@@ -2814,7 +2857,7 @@ for (const scheduled of initialPool.results) {
   let residualFiles = [];
   const watchdogTimedOut = isWatchdogTimeout(
     { signal: r.signal, status: r.status, elapsedMs: r.__elapsedMs },
-    { killSignal: BATCH_KILL_SIGNAL, timeoutMs: BATCH_TIMEOUT_MS },
+    { killSignal: BATCH_KILL_SIGNAL, timeoutMs: r.__timeoutMs },
   );
   if (watchdogTimedOut) {
     // Not retried: a wedge that reproduces once burns the exact same window again, turning
@@ -2843,7 +2886,10 @@ for (const scheduled of initialPool.results) {
     );
     errSync(
       `\n>>> ${t.ws.name} :: ${t.script} WATCHDOG-KILLED after ${(r.__elapsedMs / 60000).toFixed(1)}m with no exit ` +
-        `(AFFECTED_BATCH_TIMEOUT_MS=${BATCH_TIMEOUT_MS}ms fired). NOT retrying. ${progress}. ` +
+        `(effective timeout=${r.__timeoutMs}ms source=${r.__timeoutSource} ` +
+        `durationEstimateMs=${r.__durationEstimateMs ?? "unknown"}; ` +
+        `AFFECTED_BATCH_TIMEOUT_MS=${process.env.AFFECTED_BATCH_TIMEOUT_MS ?? "unset"}). ` +
+        `NOT retrying. ${progress}. ` +
         `A synchronously-spinning test remains a hypothesis only when a live progress signal shows progress ` +
         `stopped; captured output without timing must not be used to assert a spin ` +
         `(EI-19370814345784324).`,

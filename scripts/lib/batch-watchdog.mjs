@@ -35,6 +35,44 @@ export function resolveBatchTimeoutMs(envValue, defaultMs) {
 }
 
 /**
+ * Resolve the watchdog for one task. Unknown tasks retain the configured floor;
+ * tasks with history receive measured headroom, rounded up so small EWMA changes
+ * do not churn the passing-verdict cache. The adaptive branch is capped below
+ * the gate-wide ceiling, while an explicit operator override remains authoritative.
+ *
+ * @param {{ overrideMs?: number | null, floorMs: number, durationMs?: number | null,
+ *   headroomMultiplier?: number, quantumMs?: number, maxMs: number }} opts
+ * @returns {number}
+ */
+export function resolveTaskTimeoutMs({
+  overrideMs,
+  floorMs,
+  durationMs,
+  headroomMultiplier = 2,
+  quantumMs = 5 * 60_000,
+  maxMs,
+}) {
+  if (Number.isFinite(overrideMs) && overrideMs > 0) return overrideMs;
+  if (!Number.isFinite(floorMs) || floorMs <= 0) {
+    throw new TypeError('floorMs must be a positive finite number');
+  }
+  if (!Number.isFinite(maxMs) || maxMs < floorMs) {
+    throw new TypeError('maxMs must be a finite number greater than or equal to floorMs');
+  }
+  if (!Number.isFinite(headroomMultiplier) || headroomMultiplier < 1) {
+    throw new TypeError('headroomMultiplier must be a finite number greater than or equal to 1');
+  }
+  if (!Number.isFinite(quantumMs) || quantumMs <= 0) {
+    throw new TypeError('quantumMs must be a positive finite number');
+  }
+  if (!Number.isFinite(durationMs) || durationMs <= 0) return floorMs;
+
+  const measuredWithHeadroom = durationMs * headroomMultiplier;
+  const rounded = Math.ceil(measuredWithHeadroom / quantumMs) * quantumMs;
+  return Math.min(maxMs, Math.max(floorMs, rounded));
+}
+
+/**
  * Did THIS `spawnSync` result come from our own batch-level watchdog kill,
  * rather than the child's own normal exit or an unrelated external signal
  * (an operator's manual kill, the kernel OOM killer — both can also send

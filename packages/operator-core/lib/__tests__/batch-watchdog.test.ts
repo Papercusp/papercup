@@ -16,6 +16,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   resolveBatchTimeoutMs,
+  resolveTaskTimeoutMs,
   isWatchdogTimeout,
   parseBatchProgress,
   classifyBatchProgress,
@@ -39,6 +40,34 @@ describe('resolveBatchTimeoutMs', () => {
   it('falls back on zero or negative — spawnSync treats timeout:0 as "no timeout"', () => {
     expect(resolveBatchTimeoutMs('0', 1_200_000)).toBe(1_200_000);
     expect(resolveBatchTimeoutMs('-5', 1_200_000)).toBe(1_200_000);
+  });
+});
+
+const TASK_TIMEOUT_POLICY = {
+  overrideMs: null,
+  floorMs: 45 * 60_000,
+  headroomMultiplier: 2,
+  quantumMs: 5 * 60_000,
+  maxMs: 90 * 60_000,
+};
+
+describe('resolveTaskTimeoutMs', () => {
+  it('keeps an unknown task at the configured floor', () => {
+    expect(resolveTaskTimeoutMs({ ...TASK_TIMEOUT_POLICY, durationMs: null })).toBe(45 * 60_000);
+  });
+
+  it('gives a measured long task headroom and rounds the policy to a stable quantum', () => {
+    expect(resolveTaskTimeoutMs({ ...TASK_TIMEOUT_POLICY, durationMs: 1_873_919 })).toBe(65 * 60_000);
+  });
+
+  it('caps history-derived headroom below the gate-wide 120-minute ceiling', () => {
+    expect(resolveTaskTimeoutMs({ ...TASK_TIMEOUT_POLICY, durationMs: 70 * 60_000 })).toBe(90 * 60_000);
+  });
+
+  it('keeps an explicit operator override authoritative even when it exceeds the adaptive cap', () => {
+    expect(
+      resolveTaskTimeoutMs({ ...TASK_TIMEOUT_POLICY, overrideMs: 100 * 60_000, durationMs: 70 * 60_000 }),
+    ).toBe(100 * 60_000);
   });
 });
 
