@@ -11,6 +11,7 @@ import {
   isLoopPressureShed,
   isTransportFailure,
   printResult,
+  PTOOL_BACKUP_SNAPSHOT_CREATE_TIMEOUT_MS,
   PTOOL_CALL_TOOL_TIMEOUT_MS,
   PTOOL_GIT_SYNC_RUN_TIMEOUT_MS,
   PTOOL_POST_CONNECT_RETRIES,
@@ -78,10 +79,20 @@ describe('ptool bearer-token resolution', () => {
 });
 
 describe('ptool call deadlines', () => {
-  it('keeps the normal liveness ceiling while allowing git-sync:run to return its continuation', () => {
+  it('keeps the normal liveness ceiling while allowing durable continuations to return', () => {
     expect(timeoutForTool('coord:send')).toBe(PTOOL_CALL_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('git-sync:run')).toBe(PTOOL_GIT_SYNC_RUN_TIMEOUT_MS);
+    expect(timeoutForTool('backup:snapshot_create')).toBe(PTOOL_BACKUP_SNAPSHOT_CREATE_TIMEOUT_MS);
+    expect(timeoutForTool('tools:invoke', {
+      name: 'backup:snapshot_create',
+      args: { reason: 'pre_destructive' },
+    })).toBe(PTOOL_BACKUP_SNAPSHOT_CREATE_TIMEOUT_MS);
+    expect(timeoutForTool('tools:invoke', {
+      name: 'coord:send',
+      args: {},
+    })).toBe(PTOOL_CALL_TOOL_TIMEOUT_MS);
     expect(PTOOL_GIT_SYNC_RUN_TIMEOUT_MS).toBeGreaterThan(PTOOL_CALL_TOOL_TIMEOUT_MS);
+    expect(PTOOL_BACKUP_SNAPSHOT_CREATE_TIMEOUT_MS).toBeGreaterThan(PTOOL_CALL_TOOL_TIMEOUT_MS);
   });
 
   it('passes the selected deadline to both MCP timeout guards', async () => {

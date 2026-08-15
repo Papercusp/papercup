@@ -729,8 +729,26 @@ export const PTOOL_CALL_TOOL_TIMEOUT_MS = 30_000;
 // continuation instead of cutting the MCP request off at 30s.
 export const PTOOL_GIT_SYNC_RUN_TIMEOUT_MS = 60_000;
 
-export function timeoutForTool(toolName) {
-  return toolName === 'git-sync:run' ? PTOOL_GIT_SYNC_RUN_TIMEOUT_MS : PTOOL_CALL_TOOL_TIMEOUT_MS;
+// `backup:snapshot_create` has the same continuation contract: its handler
+// races the heavyweight kopia snapshot against 45s, then returns the durable
+// `snapshotId` while the snapshot continues. The ordinary 30s ptool ceiling
+// otherwise wins first and turns a successful, observable mutation into an
+// ambiguous transport timeout (EI-20477679208771292).
+export const PTOOL_BACKUP_SNAPSHOT_CREATE_TIMEOUT_MS = 60_000;
+
+const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
+  ['git-sync:run', PTOOL_GIT_SYNC_RUN_TIMEOUT_MS],
+  ['backup:snapshot_create', PTOOL_BACKUP_SNAPSHOT_CREATE_TIMEOUT_MS],
+]);
+
+export function timeoutForTool(toolName, callArgs) {
+  // Deferred callers may route the same logical call through tools:invoke.
+  // Honor the inner tool's contract there too; budgeting only the wrapper name
+  // would recreate the 30s cutoff on the sanctioned fallback path.
+  const effectiveToolName = toolName === 'tools:invoke' && typeof callArgs?.name === 'string'
+    ? callArgs.name
+    : toolName;
+  return PTOOL_LONG_RUNNING_TIMEOUTS_MS.get(effectiveToolName) ?? PTOOL_CALL_TOOL_TIMEOUT_MS;
 }
 
 /**
@@ -1308,7 +1326,7 @@ async function main() {
           idempotencyKey: randomUUID(),
         }),
         {
-          timeoutMs: timeoutForTool(toolName),
+          timeoutMs: timeoutForTool(toolName, callArgs),
           reconnect: () => connectWithLocalRetry(connect, operatorUrl, scope),
         },
       );
