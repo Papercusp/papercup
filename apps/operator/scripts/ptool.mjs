@@ -741,6 +741,10 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   ['backup:snapshot_create', PTOOL_BACKUP_SNAPSHOT_CREATE_TIMEOUT_MS],
 ]);
 
+/**
+ * @param {string} toolName
+ * @param {{name?: string} | undefined} [callArgs]
+ */
 export function timeoutForTool(toolName, callArgs) {
   // Deferred callers may route the same logical call through tools:invoke.
   // Honor the inner tool's contract there too; budgeting only the wrapper name
