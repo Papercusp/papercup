@@ -1218,17 +1218,74 @@ function cliLauncherCandidates(operatorAppRoot: string, explicitRoot: boolean, n
 }
 
 /**
+ * Max directory levels to walk upward when locating a repo-root-anchored path.
+ * 8 clears every layout on this box with room to spare (the deepest real anchor,
+ * a release checkout's `apps/operator`, needs 2).
+ */
+const REPO_ANCHORED_WALK_DEPTH = 8;
+
+/**
+ * Candidates for a REPO-ROOT-ANCHORED `relPath`, walking UP from `start`.
+ *
+ * Why a walk instead of a fixed number of `..` hops: the caller never reliably
+ * knows its own depth below the repo root. `resolveOperatorAppRoot()` returns
+ * `<repo>/apps/operator` in the tsx SOURCE layout but `<repo>/apps` in the
+ * esbuild-BUNDLED layout (the bundle sits at `apps/operator/dist-host/`, one
+ * level deeper than the source file it replaces, so the same two-hop walk lands
+ * one level high). `process.cwd()` is no better: the deployed operator runs with
+ * cwd `<release>/apps/operator`, not the repo root.
+ *
+ * A fixed hop count therefore encodes ONE layout and silently misses the others —
+ * the resolver returns null, and the caller degrades to an install with the
+ * feature quietly absent (WI-39140/P-006: the shipped `papercusp project-history`
+ * route vanished from the installed dispatcher in exactly this way, on a green
+ * deploy, with nothing failing).
+ *
+ * Walking up and testing for the artifact ITSELF is self-validating: it cannot be
+ * fooled by a layout it was not written for, because the thing it looks for is
+ * the thing it needs. Emitting candidates (rather than resolving here) keeps the
+ * existing "candidates -> firstExisting" contract, so an absent file still falls
+ * through to the next legitimate source exactly as before.
+ */
+function repoAnchoredCandidates(start: string, relPath: string, depth = REPO_ANCHORED_WALK_DEPTH): string[] {
+  const out: string[] = [];
+  let dir = path.resolve(start);
+  for (let i = 0; i <= depth; i++) {
+    out.push(path.join(dir, relPath));
+    const parent = path.dirname(dir);
+    if (parent === dir) break; // filesystem root — stop, do not emit duplicates
+    dir = parent;
+  }
+  return out;
+}
+
+/**
  * Resolve Project History's packaged bundle first, then the canonical source
  * CLI on a dev checkout. The source fallback keeps the installed
  * `papercusp project-history` contract usable before a desktop sidecar has
  * been built; packaged installs still select their self-contained bundle.
+ *
+ * The source fallback is anchored by an upward WALK (see repoAnchoredCandidates)
+ * rather than a fixed hop count, so it resolves under the source, bundled and
+ * release-checkout layouts alike. This is a strict SUPERSET of the previous
+ * two-candidate list — the old `../..`-from-operatorAppRoot and cwd-relative
+ * paths are still emitted, at walk depth 2 and 0 respectively.
  */
 export function projectHistoryLauncherCandidates(operatorAppRoot: string, explicitRoot: boolean): string[] {
   const bundled = cliLauncherCandidates(operatorAppRoot, explicitRoot, ['project-history.mjs']);
   if (explicitRoot) return bundled;
 
   const sourceCli = path.join('libs', 'papercusp', 'packages', 'cli', 'bin', 'papercusp');
-  return [...bundled, path.resolve(operatorAppRoot, '..', '..', sourceCli), path.resolve(process.cwd(), sourceCli)];
+  const seen = new Set<string>();
+  const source = [
+    ...repoAnchoredCandidates(operatorAppRoot, sourceCli),
+    ...repoAnchoredCandidates(process.cwd(), sourceCli),
+  ].filter((candidate) => {
+    if (seen.has(candidate)) return false;
+    seen.add(candidate);
+    return true;
+  });
+  return [...bundled, ...source];
 }
 
 /** Render the command after `exec` for the Project History dispatcher case. */
