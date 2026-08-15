@@ -70,10 +70,7 @@ export interface ClaimedRoutineDispatchRef {
   rescheduleIntervalSec: number | null;
 }
 
-export async function claimedRoutineDispatchAllowed(
-  sql: Sql,
-  routine: ClaimedRoutineDispatchRef,
-): Promise<boolean> {
+export async function claimedRoutineDispatchAllowed(sql: Sql, routine: ClaimedRoutineDispatchRef): Promise<boolean> {
   const hasRecurrence = !!(routine.triggerConfig.cron || routine.triggerConfig.rrule);
   const isLoop = routine.rescheduleIntervalSec != null;
   if (!hasRecurrence && !isLoop) return true;

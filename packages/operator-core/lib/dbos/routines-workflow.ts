@@ -49,10 +49,7 @@ import { clearStaleReaperLastError } from './dbos-executor-reaper';
 import { poolPressure, recordPoolShed, lastPoolProbeMs, recordPoolShedEvent } from './pool-pressure';
 import { activeWorkspaceId } from '../workspace-registry';
 import { shouldShedSchedulerTickUnderLoopPressure } from './tick-load-shed';
-import {
-  anotherRoutinesTickInFlight,
-  ROUTINE_TICK_OVERLAP_STATEMENT_TIMEOUT_MS,
-} from './routine-tick-overlap-guard';
+import { anotherRoutinesTickInFlight, ROUTINE_TICK_OVERLAP_STATEMENT_TIMEOUT_MS } from './routine-tick-overlap-guard';
 // Side-effect import: registers every `system:<action>` handler before the first tick.
 import '../harness/routines/register-system-actions';
 // Side-effect import (F-E1 phase 1): wire papercusp-routines-per-workspace into the routines lib.
@@ -182,9 +179,7 @@ async function routineFireImpl(
       { name: 'routine-fire-active-fence' },
     );
     if (!dispatchAllowed) {
-      console.warn(
-        `[routines] ${routineId} fire CANCELLED — recurring routine was paused or removed after claim`,
-      );
+      console.warn(`[routines] ${routineId} fire CANCELLED — recurring routine was paused or removed after claim`);
       return;
     }
 
@@ -438,7 +433,7 @@ async function routinesTickImpl(): Promise<void> {
   // directly. Fail-soft + stale-safe (see routine-tick-overlap-guard.ts).
   if (
     !poolCritical &&
-    await anotherRoutinesTickInFlight(DBOS.workflowID ?? '', {
+    (await anotherRoutinesTickInFlight(DBOS.workflowID ?? '', {
       queryInFlight: (selfId, cutoffEpochMs) =>
         sql.begin(async (tx) => {
           // The overlap probe is a read-only guard, not routine work. Keep its
@@ -455,7 +450,7 @@ async function routinesTickImpl(): Promise<void> {
                AND started_at_epoch_ms > ${cutoffEpochMs}
              LIMIT 1`;
         }),
-    })
+    }))
   ) {
     console.warn(`[routines-tick] SKIPPED — another routinesTick invocation already in flight (EI-9935 overlap guard)`);
     return;
@@ -546,9 +541,8 @@ async function routinesTickImpl(): Promise<void> {
   await DBOS.runStep(
     async () => {
       try {
-        const { reconcileDeadLoopEscalations, reconcileLoopLifecycleDeathEscalations } = await import(
-          '../harness/routines/reconcile-loop-routines'
-        );
+        const { reconcileDeadLoopEscalations, reconcileLoopLifecycleDeathEscalations } =
+          await import('../harness/routines/reconcile-loop-routines');
         const [deadLoop, lifecycleDeath] = await Promise.all([
           reconcileDeadLoopEscalations({ sql }),
           reconcileLoopLifecycleDeathEscalations({ sql }),
@@ -560,9 +554,7 @@ async function routinesTickImpl(): Promise<void> {
           );
         }
       } catch (e) {
-        console.warn(
-          `[loop-watchdog-escalation-reconcile] pass failed: ${e instanceof Error ? e.message : e}`,
-        );
+        console.warn(`[loop-watchdog-escalation-reconcile] pass failed: ${e instanceof Error ? e.message : e}`);
       }
     },
     { name: 'loop-watchdog-escalation-reconcile' },
@@ -1078,9 +1070,7 @@ async function routinesTickImpl(): Promise<void> {
           );
         }
       } catch (e) {
-        console.warn(
-          `[substitution-compliance] resolve failed: ${e instanceof Error ? e.message : e}`,
-        );
+        console.warn(`[substitution-compliance] resolve failed: ${e instanceof Error ? e.message : e}`);
       }
     },
     { name: 'substitution-compliance-resolve' },
@@ -1184,9 +1174,7 @@ async function routinesTickImpl(): Promise<void> {
   await DBOS.runStep(
     async () => {
       try {
-        const { planeMeasurementSweep, formatMeasurementLog } = await import(
-          '../agent-plane-measurement-sweep'
-        );
+        const { planeMeasurementSweep, formatMeasurementLog } = await import('../agent-plane-measurement-sweep');
         const out = await planeMeasurementSweep({ divergence: divergenceReport ?? null });
         if (out.outcome === 'error') console.warn(`[plane-measurement] ${out.reason}`);
         // Logged in full: the line leads with how much is MEASURABLE and names the
@@ -1207,9 +1195,8 @@ async function routinesTickImpl(): Promise<void> {
   // 12 days dead with 72 errors and no witness).
   await DBOS.runStep(
     async () => {
-      const { autoloopChronicFailureSweep, shouldLogChronicOutcome } = await import(
-        '../harness/routines/autoloop-chronic-failure'
-      );
+      const { autoloopChronicFailureSweep, shouldLogChronicOutcome } =
+        await import('../harness/routines/autoloop-chronic-failure');
       const results = await autoloopChronicFailureSweep();
       for (const r of results) {
         if (r.outcome === 'debounced') continue;

@@ -151,14 +151,7 @@ describe('autoloop circuit-breaker lifecycle (P-003)', () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     let cancelled = false;
     try {
-      await routineFireWorkflow(
-        PAUSED_RID,
-        WS,
-        SLUG,
-        ROLE,
-        { cron: '*/30 * * * * *' },
-        null,
-      );
+      await routineFireWorkflow(PAUSED_RID, WS, SLUG, ROLE, { cron: '*/30 * * * * *' }, null);
       cancelled = warnSpy.mock.calls.some((call) => String(call[0]).includes('fire CANCELLED'));
     } finally {
       warnSpy.mockRestore();
