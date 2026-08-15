@@ -54,6 +54,10 @@ vi.mock('../../events/await/handle', () => ({ captureWakeHandleForOwner: vi.fn(a
 vi.mock('../../events/await/store', () => ({ registerAwait: vi.fn(async () => ({ id: 'A1' })) }));
 vi.mock('../../events/await/engine', () => ({ startAwaitSweeper: vi.fn() }));
 vi.mock('../coordination/identity', () => ({ resolveAgentIdentity: vi.fn(() => ({ workspaceId: 'ws-1' })) }));
+vi.mock('../../agent-state-stamp', () => ({
+  readAgentStateStamp: vi.fn(() => ({ intentEventId: null, assumptionSetId: null, goalRef: 'WI-current' })),
+}));
+vi.mock('../../edit-attribution', () => ({ recordEditAttribution: vi.fn(async () => {}) }));
 vi.mock('../../authority/file-lock-routing', () => ({ routeFileLockOp: vi.fn() }));
 vi.mock('../../authority/file-lock-authority-ops', () => ({
   FILE_LOCK_OP_KINDS: { acquire: 'acquire' },
@@ -70,6 +74,8 @@ import { WorkspaceContendedError } from './in-workspace-txn';
 import { routeFileLockOp } from '../../authority/file-lock-routing';
 import { recordLockEvent } from '../../authority/lock-event-stream';
 import { resolveExplicitFileLockDomain } from './coordination-domain';
+import { readAgentStateStamp } from '../../agent-state-stamp';
+import { recordEditAttribution } from '../../edit-attribution';
 const normM = vi.mocked(normalizePaths);
 const insertM = vi.mocked(tryInsertWaiter);
 const routeM = vi.mocked(routeFileLockOp);
@@ -79,6 +85,8 @@ const pokeM = vi.mocked(pokeWorkspace);
 const expireM = vi.mocked(expireWaiter);
 const tryAcquireM = vi.mocked(tryAcquire);
 const resolveDomainM = vi.mocked(resolveExplicitFileLockDomain);
+const readStampM = vi.mocked(readAgentStateStamp);
+const recordAttributionM = vi.mocked(recordEditAttribution);
 const tool = (await import('./acquire')).default;
 
 /** postgres-js's own shape for a connection drop mid-query (EI-19324204900062056). */
@@ -140,6 +148,12 @@ describe('locks:acquire — outcome branches', () => {
       ok: true, lock_id: 'L1', owner: 'me', owner_label: 'Me',
       expires_ts: '2026-02-01T00:00:00.000Z', held: ['a.ts'],
     });
+    expect(readStampM).toHaveBeenCalledWith('me');
+    expect(recordAttributionM).toHaveBeenCalledWith(expect.objectContaining({
+      agentId: 'me',
+      workspaceId: 'ws-1',
+      goalRef: 'WI-current',
+    }));
   });
 
   it('uses the client edit hook domain when supplied, so a release-tree operator cannot split the lock namespace', async () => {
@@ -469,7 +483,7 @@ describe('locks:acquire — EI-9033 pending_edit (apply-on-grant) guardrails', (
     expect(insertM).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
-        pendingEdit: { file: 'a.ts', old_string: 'OLD', new_string: 'NEW' },
+        pendingEdit: { file: 'a.ts', old_string: 'OLD', new_string: 'NEW', goal_ref: 'WI-current' },
       }),
     );
   });

@@ -19,6 +19,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { getActiveClaimForOwner } from './work-item-claims';
 import { getPresence } from './agent-tools/coordination/presence';
 import { isLifecycleIntent } from './agent-tools/coordination/presence-payload';
+import { ANY_FAMILY_TERMINAL_STATES } from './work-item-dispatch-states';
 
 export interface RecordEditAttributionInput {
   /** The lock's coordination domain — the physical repo root (the join key). */
@@ -31,6 +32,12 @@ export interface RecordEditAttributionInput {
   intent?: string;
   /** The editing agent's workspace — required to look up its claimed lane. */
   workspaceId?: string;
+  /**
+   * The caller's queue-time/current goal pointer. When present it is validated
+   * against canonical work-item ownership and never replaced with a guessed
+   * claim. Absent preserves the legacy claim-store fallback.
+   */
+  goalRef?: string;
   sessionId?: string;
   contributor?: string;
 }
@@ -45,15 +52,38 @@ export async function recordEditAttribution(input: RecordEditAttributionInput): 
     const files = (input.files ?? []).filter(Boolean);
     if (files.length === 0 || !input.agentId || !input.repoRoot) return;
 
-    // The work-item join, at edit time (D-002). One cheap single-row claim read; NULL when
-    // the agent holds no live claim → an honest unattributed edit (D-003), never a guess.
+    const { sql } = getOrgPg();
+
+    // The work-item join, at edit time (D-002). The state stamp disambiguates owners who
+    // hold several canonical work-items at once. Validate the exact pointer against the
+    // canonical row's workspace, holder, and lifecycle; a stale/foreign/non-item pointer
+    // becomes honest NULL and MUST NOT fall through to a different legacy claim. Only
+    // callers without a pointer retain the old work_item_claims fallback.
     let harnessSlug: string | null = null;
     let workItemId: string | null = null;
     if (input.workspaceId) {
-      const claim = await getActiveClaimForOwner(input.workspaceId, input.agentId).catch(() => null);
-      if (claim) {
-        harnessSlug = claim.harnessSlug ?? null;
-        workItemId = claim.workItemId ?? null;
+      const goalRef = input.goalRef?.trim() || null;
+      if (goalRef) {
+        const rows = await sql<Array<{ harness_slug: string; feature_id: string }>>`
+          SELECT harness_slug, feature_id
+            FROM harness_shared.work_items
+           WHERE workspace_id = ${input.workspaceId}
+             AND feature_id = ${goalRef}
+             AND taken_by = ${input.agentId}
+             AND NOT (status = ANY(${[...ANY_FAMILY_TERMINAL_STATES]}::text[]))
+           LIMIT 1
+        `.catch(() => []);
+        const item = rows[0];
+        if (item) {
+          harnessSlug = item.harness_slug;
+          workItemId = item.feature_id;
+        }
+      } else {
+        const claim = await getActiveClaimForOwner(input.workspaceId, input.agentId).catch(() => null);
+        if (claim) {
+          harnessSlug = claim.harnessSlug ?? null;
+          workItemId = claim.workItemId ?? null;
+        }
       }
     }
 
@@ -98,7 +128,6 @@ export async function recordEditAttribution(input: RecordEditAttributionInput): 
       : rawIntent;
     const acquiredVia = lifecycleLabel ? rawIntent : null;
 
-    const { sql } = getOrgPg();
     // One row per file via unnest — a single round-trip on the hot path.
     await sql`
       INSERT INTO harness_shared.edit_attribution_ledger

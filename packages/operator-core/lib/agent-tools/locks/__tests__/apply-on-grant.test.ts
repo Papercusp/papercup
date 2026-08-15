@@ -80,7 +80,7 @@ describe('applyExactEdit (exact single-match contract)', () => {
 
 const grant = (over: Partial<GrantedPendingEdit> = {}): GrantedPendingEdit => ({
   ticket_id: 't-1',
-  pending_edit: { file: 'boot.ts', old_string: 'OLD', new_string: 'NEW' },
+  pending_edit: { file: 'boot.ts', old_string: 'OLD', new_string: 'NEW', goal_ref: 'WI-queue-time' },
   granted_lock_id: 'lock-1',
   coordination_domain: '/repo',
   owner: 'su-queuer',
@@ -121,6 +121,7 @@ describe('applyPendingEditOnGrant (orchestration)', () => {
       owner: 'su-queuer',
       workspaceId: 'ws',
       intent: 'wire the new tool',
+      goalRef: 'WI-queue-time',
     });
     // lock released (edit done — don't strand the next waiter behind us)
     expect(calls.releaseLock).toHaveBeenCalledOnce();

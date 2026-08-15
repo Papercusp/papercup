@@ -52,6 +52,7 @@ import { registerAwait } from '../../events/await/store';
 import { startAwaitSweeper } from '../../events/await/engine';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { recordEditAttribution } from '../../edit-attribution';
+import { readAgentStateStamp } from '../../agent-state-stamp';
 import { routeFileLockOp } from '../../authority/file-lock-routing';
 import {
   noteShaTokenGrant,
@@ -203,12 +204,16 @@ export default defineTool({
     const waitClamped = requestedWaitSec > MAX_WAIT_SEC;
     const maxWaitSec = waitClamped ? MAX_WAIT_SEC : requestedWaitSec;
     const startedAt = Date.now();
+    // Snapshot once, before either the instant-grant or queued-edit path. An owner can
+    // hold several work-items and change its active goal while a waiter is blocked; the
+    // queue-time pointer is the only honest attribution for the eventual edit.
+    const goalRef = readAgentStateStamp(ownerId).goalRef ?? undefined;
 
     // ── pending_edit guardrails (EI-9033) ───────────────────────────
     // Apply-on-grant is single-file + wake-only by construction. Validate the
     // shape up front so a malformed request fails loudly here rather than
     // silently queueing a waiter whose edit can never satisfy the guardrail.
-    let pendingEdit: { file: string; old_string: string; new_string: string } | undefined;
+    let pendingEdit: { file: string; old_string: string; new_string: string; goal_ref?: string } | undefined;
     if (args.pending_edit) {
       if (!args.wake_on_grant) {
         return errorResult('pending_edit requires wake_on_grant:true (apply-on-grant runs on the wake queue, not a blocking wait).');
@@ -226,6 +231,7 @@ export default defineTool({
         file: editFile,
         old_string: args.pending_edit.old_string,
         new_string: args.pending_edit.new_string,
+        goal_ref: goalRef,
       };
     }
 
@@ -327,6 +333,7 @@ export default defineTool({
         agentId: ownerId,
         intent: args.intent,
         workspaceId: attrId.workspaceId ?? undefined,
+        goalRef,
         contributor: attrId.userId ?? undefined,
       });
       // Notify firehose removed at the source (D-002, fleet-coordination-painpoints):

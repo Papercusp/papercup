@@ -168,6 +168,67 @@ describe('recordEditAttribution — plan_slug fill (WI-6584)', () => {
   });
 });
 
+describe('recordEditAttribution — authoritative state-stamp goal (WI-39137)', () => {
+  beforeEach(() => {
+    insertCalls.length = 0;
+    sqlStub.rows = [];
+    sqlStub.throws = false;
+    mockClaim = null;
+    mockPresence = null;
+  });
+
+  const recordedWorkItem = () => {
+    const insert = insertCalls.at(-1)!;
+    return { harnessSlug: insert[5], workItemId: insert[6] };
+  };
+
+  it('uses the exact nonterminal canonical work-item owned by the editor', async () => {
+    sqlStub.rows = [{ harness_slug: 'papercusp', feature_id: 'WI-39137' }];
+    mockClaim = { harnessSlug: 'papercusp', workItemId: 'WI-wrong-newest' };
+
+    await recordEditAttribution({
+      repoRoot: '/repo',
+      files: ['a.ts'],
+      agentId: 'su-1',
+      workspaceId: 'ws-1',
+      goalRef: 'WI-39137',
+    });
+
+    expect(insertCalls).toHaveLength(2); // canonical validation + ledger INSERT
+    expect(insertCalls[0]).toEqual(expect.arrayContaining(['ws-1', 'WI-39137', 'su-1']));
+    expect(recordedWorkItem()).toEqual({ harnessSlug: 'papercusp', workItemId: 'WI-39137' });
+  });
+
+  it('writes honest nulls for an invalid explicit goal instead of guessing from a competing claim', async () => {
+    mockClaim = { harnessSlug: 'papercusp', workItemId: 'WI-wrong-newest' };
+
+    await recordEditAttribution({
+      repoRoot: '/repo',
+      files: ['a.ts'],
+      agentId: 'su-1',
+      workspaceId: 'ws-1',
+      goalRef: 'plan:history#P-003',
+    });
+
+    expect(insertCalls).toHaveLength(2);
+    expect(recordedWorkItem()).toEqual({ harnessSlug: null, workItemId: null });
+  });
+
+  it('preserves the legacy live-claim fallback only when no goal pointer was supplied', async () => {
+    mockClaim = { harnessSlug: 'legacy-harness', workItemId: 'WI-legacy' };
+
+    await recordEditAttribution({
+      repoRoot: '/repo',
+      files: ['a.ts'],
+      agentId: 'su-1',
+      workspaceId: 'ws-1',
+    });
+
+    expect(insertCalls).toHaveLength(1); // no canonical validation read
+    expect(recordedWorkItem()).toEqual({ harnessSlug: 'legacy-harness', workItemId: 'WI-legacy' });
+  });
+});
+
 describe('recordEditAttribution — intent is DECLARED work, never the lock hook label (EI-20055604348536487)', () => {
   // THE REGRESSION GUARD. Before this fix, `intent` was written straight from the lock's own
   // `args.intent`, which for the automatic per-edit file-lock hook is the literal

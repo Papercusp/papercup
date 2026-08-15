@@ -127,6 +127,7 @@ export interface ApplyOnGrantDeps {
     owner: string;
     workspaceId?: string;
     intent?: string;
+    goalRef?: string;
   }) => Promise<void>;
   releaseLock?: (g: GrantedPendingEdit) => Promise<void>;
   cancelWakeAwaits?: (ticketId: string, owner: string) => Promise<void>;
@@ -144,6 +145,7 @@ async function defaultRecordAttribution(input: {
   owner: string;
   workspaceId?: string;
   intent?: string;
+  goalRef?: string;
 }): Promise<void> {
   await recordEditAttribution({
     repoRoot: input.repoRoot,
@@ -151,6 +153,7 @@ async function defaultRecordAttribution(input: {
     agentId: input.owner,
     intent: input.intent,
     workspaceId: input.workspaceId,
+    goalRef: input.goalRef,
   });
 }
 
@@ -247,6 +250,7 @@ export async function applyPendingEditOnGrant(
     owner: claimed.owner,
     workspaceId,
     intent: claimed.intent,
+    goalRef: claimed.pending_edit.goal_ref,
   }).catch(() => {});
   await releaseLock(claimed).catch(() => {});
   await setOutcome(ticketId, 'applied').catch(() => {});
