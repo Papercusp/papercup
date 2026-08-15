@@ -342,6 +342,7 @@ describe('classifyToolError — by error_code, with a legacy error_message fallb
     expect(classifyToolError('handler_error', 'error', 'No harness specified. `harness` is a per-call arg')).toBe('caller');
     expect(classifyToolError('harness_required', 'error', 'x')).toBe('caller');
     expect(classifyToolError('handler_error', 'error', "resolvePlanScope: harness 'papercup-hive' is not registered in harness_shared.projects in any workspace")).toBe('caller');
+    expect(classifyToolError('handler_error', 'error', "resolvePlanScope: plans are Hive-scoped, but 'sidestage-mobile' is not a Hive home and does not belong to one in workspace 'papercusp-workspace'")).toBe('caller');
     expect(classifyToolError(null, 'error', 'No harness specified')).toBe('caller');
     // A missing WORKSPACE-scope deliberately stays structural (a wiring gap, not a caller arg).
     expect(classifyToolError('unauthorized', 'error', 'built-in tool "memory:search" requires a workspace-scoped call')).toBe('structural');

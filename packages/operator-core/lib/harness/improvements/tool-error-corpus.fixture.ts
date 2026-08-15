@@ -110,6 +110,12 @@ export const TOOL_ERROR_CORPUS: readonly ToolErrorCorpusRow[] = [
     note: 'unregistered harness — caller named a harness that does not exist',
   },
   {
+    n: 3, errorCode: 'handler_error', status: 'error',
+    message: "resolvePlanScope: plans are Hive-scoped, but 'sidestage-mobile' is not a Hive home and does not belong to one in workspace 'papercusp-workspace'. Add it to a Hive or pass the Hive home slug explicitly; refusing to create/read a non-Hive-scoped plan.",
+    expectedClass: 'caller',
+    note: 'registered standalone harness — caller must pass the Hive home that owns the plan store (EI-20459566365031398)',
+  },
+  {
     n: 39, errorCode: 'harness_required', status: 'error',
     message: 'No harness specified. `harness` is a per-call arg — pass it on THIS call (you don\'t need a differently-scoped session): a concrete slug for a managed harness',
     expectedClass: 'caller',

@@ -77,12 +77,13 @@ export const TIMEOUT_MESSAGE_PATTERN = 'exceeded timeout|timed? *out';
 
 /** Caller-side arg/scope error in the MESSAGE: an `invalid_args:` prefix
  *  (regardless of the row's error_code — this is the bit the old TS fn missed),
- *  or a missing / unregistered harness. A missing WORKSPACE-scope
+ *  a missing / unregistered harness, or a registered standalone harness passed
+ *  to the Hive-scoped plan store. A missing WORKSPACE-scope
  *  ("requires a workspace-scoped call") is deliberately NOT here — a
  *  workspace-scoping gap is treated as `structural` (a wiring gap worth catching
  *  at the low bar), and the fingerprint separates it from anything it used to mask. */
 export const CALLER_MESSAGE_PATTERN =
-  '^invalid_args:|No harness specified|not registered in (any workspace|harness_shared)';
+  '^invalid_args:|No harness specified|not registered in (any workspace|harness_shared)|resolvePlanScope:.*is not a Hive home';
 
 /** An EXTERNAL provider rate-limit / quota (OpenAI embedding TPM 429,
  *  "Rate limit reached", surfaced as `openai_embed_failed_429`). CAPACITY, not a
