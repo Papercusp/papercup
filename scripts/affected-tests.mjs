@@ -877,6 +877,38 @@ function declarationMjsInputs() {
 
 const REPO_WIDE_INVARIANT_GUARDS = [
   {
+    // EI-20551144708194616 — three guards that police papercusp-desktop/bin/*.sh live in
+    // apps/operator (@papercusp/web), and the router's path->workspace map sends those two
+    // to DISJOINT workspaces. Measured:
+    //   papercusp-desktop/bin/release-local.sh              -> AFFECTED_WS @papercusp/desktop
+    //   apps/operator/lib/release/<any of these>.test.ts    -> AFFECTED_WS @papercusp/web
+    // So each guard ran only when apps/operator changed — precisely when its subject had NOT
+    // moved. The one change that would reintroduce the regression was the one change that did
+    // not run the test: the confidence of coverage with none of the coverage.
+    //
+    // These are invariants over SHELL SCRIPTS, not unit tests of a workspace's code, so
+    // attaching them here (rather than relocating them into @papercusp/desktop) is the
+    // faithful fix — the subject and its guard now route together no matter which workspace
+    // a change selects. Each failure class is measured in whole release cuts: a signing-key
+    // regression destroyed a tri-platform cut ~35 min in, and the rootfs/versionName ordering
+    // regressions each abort every leg via join_leg's fatal exit.
+    workspace: "@papercusp/web",
+    script: "test:release-script-guards",
+    // Cheap by construction: all three are pure file READS + string assertions — no DB, no
+    // network, no build — so this is runnable in GitHub CI exactly as it is here. Vitest exits
+    // 1 when a named path matches nothing (verified: `passWithNoTests` is NOT set on this
+    // script), so renaming a guard file fails loudly instead of silently guarding nothing.
+    //
+    // NO hostSuiteRatchet, deliberately — the fail-safe direction. @papercusp/web's own `test`
+    // task does re-run these three files, but a ratchet is only honest when the guard's subject
+    // and its host suite are selected by the SAME change, and here they are selected by disjoint
+    // ones: that disjointness is the entire defect being fixed. Declaring a ratchet would let a
+    // papercusp-desktop/bin change skip the guard on the strength of a suite that change does not
+    // run — reintroducing the hole in a subtler form. (The registry test enforces this: it
+    // rejected a ratchet naming a file outside the host workspace's own package.)
+    appliesTo: (f) => f.startsWith("papercusp-desktop/bin/"),
+  },
+  {
     // WI-38089. See declarationMjsInputs() above for the measurement and the derive-vs-mirror
     // rationale.
     workspace: "@papercusp/operator-core",
