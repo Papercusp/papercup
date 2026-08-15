@@ -110,3 +110,104 @@ describe('windows WSL-rootfs preflight', () => {
     expect(winCross).toContain(ROOTFS_ARTIFACT);
   });
 });
+
+/**
+ * WI-39339 — the SAME class as the rootfs above, for the Windows leg's host-capability
+ * preconditions (cargo-xwin, the rustup target, wine, xvfb-run, ISCC, the signing key).
+ * build-windows-cross.sh:139-149 already checked all six, but INSIDE the leg, which is
+ * launched in parallel and joined fatally — so host state that could not change during the
+ * cut was discovered ~10 minutes in and took the healthy legs down with it.
+ */
+describe('windows toolchain preflight', () => {
+  // The executable anchor, never a comment — the block's header comment names these same
+  // tools, so matching on prose would let a deleted preflight satisfy this guard.
+  const PREFLIGHT_ANCHOR = 'win_missing=()';
+
+  it('settles the Windows toolchain BEFORE the FIRST build leg is launched', () => {
+    const preflightAt = releaseLocal.indexOf(PREFLIGHT_ANCHOR);
+    expect(preflightAt, 'release-local.sh has no executable Windows toolchain preflight').toBeGreaterThan(-1);
+
+    const launches = LEG_LAUNCH_ANCHORS.map((anchor) => ({ anchor, at: releaseLocal.indexOf(anchor) }));
+    for (const { anchor, at } of launches) {
+      expect(at, `could not find the ${anchor} leg launch`).toBeGreaterThan(-1);
+    }
+    const first = launches.reduce((a, b) => (a.at <= b.at ? a : b));
+    expect(
+      preflightAt,
+      `the Windows toolchain preflight must run BEFORE the FIRST leg is launched (${first.anchor}) — ` +
+        'a missing wine or an unprovisioned Inno prefix cannot change during a cut, so discovering ' +
+        'it after a leg is already building buys nothing and costs every other leg.',
+    ).toBeLessThan(first.at);
+  });
+
+  it('is gated on the windows leg being enabled and not reused', () => {
+    // A desktop cut with WITH_WINDOWS=0, or a PAPERCUSP_REUSE_WIN=1 rerun that skips the
+    // windows build entirely, must not be refused for a toolchain it will never invoke.
+    const preflightAt = releaseLocal.indexOf(PREFLIGHT_ANCHOR);
+    const gateAt = releaseLocal.lastIndexOf('if [[ "$WITH_WINDOWS" == "1"', preflightAt);
+    expect(gateAt, 'the toolchain preflight is not gated on WITH_WINDOWS=1').toBeGreaterThan(-1);
+    const gateLine = releaseLocal.slice(gateAt, releaseLocal.indexOf('\n', gateAt));
+    expect(gateLine, 'the toolchain preflight must also skip a PAPERCUSP_REUSE_WIN=1 rerun').toContain(
+      'PAPERCUSP_REUSE_WIN',
+    );
+  });
+
+  it('reports EVERY missing prerequisite at once, not just the first', () => {
+    // Failing on the first missing tool turns provisioning a fresh host into an N-cut
+    // discovery loop. The accumulate-then-report shape is the property worth pinning.
+    const preflightAt = releaseLocal.indexOf(PREFLIGHT_ANCHOR);
+    const block = releaseLocal.slice(preflightAt, preflightAt + 3000);
+    expect(block).toContain('win_missing+=(');
+    expect(block).toContain('${#win_missing[@]}');
+  });
+
+  it('mirrors build-windows-cross.sh’s OWN path defaults, so the preflight and the leg agree', () => {
+    // THE FAILURE THIS EXISTS FOR: the preflight re-derives ISCC/key/target paths that are
+    // DEFINED in build-windows-cross.sh. If those defaults drift apart, the preflight happily
+    // verifies one path while the leg uses another — a guard that passes while the leg dies,
+    // which is strictly worse than no guard because it also buys false confidence.
+    // Leading whitespace is allowed: release-local.sh's copies sit INDENTED inside the
+    // `if [[ "$WITH_WINDOWS" == "1" ... ]]` block, while build-windows-cross.sh's are at
+    // column 0. (A column-0-anchored pattern matched neither of the indented ones and the
+    // calibration assertions below caught it — which is what they are there for.)
+    const rhs = (text: string, name: string): string | null => {
+      const m = text.match(new RegExp(`^[ \\t]*${name}="([^\\n]*)"$`, 'm'));
+      return m ? m[1] : null;
+    };
+    // Normalise only the ONE legitimate difference: the two files name the wine-prefix
+    // variable differently, and nothing else about the values may differ.
+    const norm = (v: string | null): string | null =>
+      v === null ? null : v.replace('$win_wineprefix_inno', '$WINEPREFIX_INNO');
+
+    const pairs: Array<[string, string]> = [
+      ['TARGET', 'win_target'],
+      ['KEY_FILE', 'win_key_file'],
+      ['WINEPREFIX_INNO', 'win_wineprefix_inno'],
+      ['ISCC_EXE', 'win_iscc_exe'],
+    ];
+    for (const [legName, preflightName] of pairs) {
+      const legValue = rhs(winCross, legName);
+      const preflightValue = norm(rhs(releaseLocal, preflightName));
+      // Calibration: a null on either side means the assignment was renamed, which would make
+      // a bare equality check pass vacuously (null === null). Fail loudly instead.
+      expect(legValue, `build-windows-cross.sh no longer defines ${legName} — re-anchor this guard`).not.toBeNull();
+      expect(
+        preflightValue,
+        `release-local.sh no longer defines ${preflightName} — re-anchor this guard`,
+      ).not.toBeNull();
+      expect(
+        preflightValue,
+        `${preflightName} in release-local.sh has drifted from ${legName} in build-windows-cross.sh. ` +
+          'The preflight would check a different path than the leg uses.',
+      ).toBe(legValue);
+    }
+  });
+
+  it('keeps the in-leg toolchain checks as the backstop', () => {
+    // build-windows-cross.sh must stay safe to invoke directly, outside a cut, where no
+    // preflight has run. This is defence in depth, not relocation.
+    for (const needle of ['cargo-xwin', 'wine', 'xvfb-run', 'ISCC', 'signing key']) {
+      expect(winCross, `in-leg check for ${needle} disappeared`).toContain(needle);
+    }
+  });
+});
