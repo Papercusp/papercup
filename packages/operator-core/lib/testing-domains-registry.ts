@@ -1604,6 +1604,7 @@ defineTestDomain({
       runners: [
         { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/federation-asserts.selftest.sh'], label: 'federation port self-discovery' },
         { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/release-artifacts.selftest.sh'], label: 'release artifacts guard' },
+        { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/release-tag-pin.selftest.sh'], label: 'release tag pin + exact repair guard' },
         { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/gen-latest-manifest.selftest.sh'], label: 'latest-manifest generation' },
         { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/live-federation-gate-reaper.selftest.sh'], label: 'live-federation-gate reaper' },
         { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/release-local-leg-reaper.selftest.sh'], label: 'release local-leg reaper' },
