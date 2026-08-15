@@ -13,7 +13,9 @@
  *      integration-tree artifact across the submodule pin), and
  *   2. a repository-wide detector requires every workspace package that
  *      declares a gitignored main/require/default target to appear in the
- *      block's explicit registry.
+ *      block's explicit registry, and
+ *   3. the desktop sidecar rebuilds the same registry after its scoped npm
+ *      install, which can erase generated outputs behind intact symlinks.
  */
 import { spawnSync } from 'node:child_process';
 import {
@@ -41,6 +43,8 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, '../../../..');
 const SCRIPT_PATH = resolve(HERE, '../../bin/release/setup-release-checkout.sh');
 const SCRIPT = readFileSync(SCRIPT_PATH, 'utf8');
+const SIDECAR_SCRIPT_PATH = resolve(REPO_ROOT, 'papercusp-desktop/bin/build-desktop-sidecar.sh');
+const SIDECAR_SCRIPT = readFileSync(SIDECAR_SCRIPT_PATH, 'utf8');
 
 function extractRuntimeBuildBlock(): string {
   const lines = SCRIPT.split('\n');
@@ -52,6 +56,14 @@ function extractRuntimeBuildBlock(): string {
 }
 
 const BLOCK = extractRuntimeBuildBlock();
+
+function extractSidecarPostInstallRuntimeBuildBlock(): string {
+  return SIDECAR_SCRIPT.match(
+    /# POST-INSTALL RUNTIME BUILDS[^\n]*\n([\s\S]*?)# END POST-INSTALL RUNTIME BUILDS/,
+  )?.[1] ?? '';
+}
+
+const SIDECAR_POST_INSTALL_BLOCK = extractSidecarPostInstallRuntimeBuildBlock();
 
 describe('setup-release-checkout pinned workspace runtime builds', () => {
   const tempRoots: string[] = [];
@@ -139,6 +151,74 @@ describe('setup-release-checkout pinned workspace runtime builds', () => {
         'build it from pinned source. Add its package name to RUNTIME_BUILD_WORKSPACES; copying integration ' +
         'dist would violate submodule pin isolation.',
     ).toEqual([]);
+  });
+
+  it('rebuilds every ignored runtime entry after the desktop scoped install', () => {
+    expect(
+      SIDECAR_POST_INSTALL_BLOCK,
+      'the desktop post-install runtime-build block is missing',
+    ).not.toBe('');
+
+    const installIndex = SIDECAR_SCRIPT.indexOf('npm install --legacy-peer-deps');
+    const blockIndex = SIDECAR_SCRIPT.indexOf('# POST-INSTALL RUNTIME BUILDS');
+    const resolutionGuardIndex = SIDECAR_SCRIPT.indexOf('echo "→ verifying workspace deps resolved"');
+    expect(installIndex).toBeGreaterThan(-1);
+    expect(blockIndex).toBeGreaterThan(installIndex);
+    expect(resolutionGuardIndex).toBeGreaterThan(blockIndex);
+
+    const registered = extractRegisteredRuntimeBuildWorkspaces(SIDECAR_POST_INSTALL_BLOCK);
+    const uncovered = listIgnoredRuntimeEntryWorkspaces(REPO_ROOT)
+      .filter(({ name }) => !registered.has(name));
+    expect(
+      uncovered,
+      'A workspace package exposes a gitignored runtime entry but the desktop sidecar does not rebuild it ' +
+        'after its scoped install. Add it to the post-install RUNTIME_BUILD_WORKSPACES registry.',
+    ).toEqual([]);
+
+    const root = mkdtempSync(join(tmpdir(), 'sidecar-post-install-runtime-build-'));
+    tempRoots.push(root);
+    const fakeBin = join(root, 'bin');
+    const packageRoot = join(root, 'libs/generic/sse');
+    const trace = join(root, 'npm-trace');
+    mkdirSync(fakeBin, { recursive: true });
+    mkdirSync(packageRoot, { recursive: true });
+
+    const fakeNpm = join(fakeBin, 'npm');
+    writeFileSync(
+      fakeNpm,
+      [
+        '#!/usr/bin/env bash',
+        'set -euo pipefail',
+        'test "$*" = "--workspace @papercusp/sse run build"',
+        'printf "%s|%s\\n" "$PWD" "$*" > "$NPM_TRACE"',
+        'mkdir -p "$PWD/libs/generic/sse/dist"',
+        'printf "rebuilt-after-install\\n" > "$PWD/libs/generic/sse/dist/index.js"',
+      ].join('\n'),
+    );
+    chmodSync(fakeNpm, 0o755);
+
+    const runner = join(root, 'run.sh');
+    writeFileSync(
+      runner,
+      [
+        '#!/usr/bin/env bash',
+        'set -euo pipefail',
+        `REPO_ROOT=${JSON.stringify(root)}`,
+        SIDECAR_POST_INSTALL_BLOCK,
+      ].join('\n'),
+    );
+
+    const run = spawnSync('bash', [runner], {
+      env: { ...process.env, PATH: `${fakeBin}:${process.env.PATH ?? ''}`, NPM_TRACE: trace },
+      encoding: 'utf8',
+    });
+    expect(run.status, run.stderr).toBe(0);
+    expect(readFileSync(trace, 'utf8').trim()).toBe(
+      `${root}|--workspace @papercusp/sse run build`,
+    );
+    expect(readFileSync(join(packageRoot, 'dist/index.js'), 'utf8')).toBe(
+      'rebuilt-after-install\n',
+    );
   });
 
   it('skips a package present before an older rollback pin registered it as a workspace', () => {
