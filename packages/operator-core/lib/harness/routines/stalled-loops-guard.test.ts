@@ -30,10 +30,15 @@ type ResolveOwnerWorkspacesFn = NonNullable<StalledLoopsSweepDeps['resolveOwnerW
 
 /** Minimal fake `harness_shared.routines` SELECT — the sweep's only direct SQL read. */
 function fakeSql(rows: Array<{ id: string; target_owner_id: string }>) {
-  return ((strings: TemplateStringsArray) => {
+  const sql = ((strings: TemplateStringsArray) => {
     if (/SELECT/i.test(strings.join('?'))) return Promise.resolve(rows);
     return Promise.resolve([]);
-  }) as never;
+  }) as unknown as {
+    (strings: TemplateStringsArray): Promise<unknown[]>;
+    array: (values: unknown[]) => unknown[];
+  };
+  sql.array = (values) => values;
+  return sql as never;
 }
 
 function status(overrides: Partial<LoopStatus> & { turnsStalled: boolean }): LoopStatus {
@@ -590,8 +595,12 @@ describe('sweepStalledLoops — fire-starved vs turn-stalled (EI-194065341599395
     const rearm = vi.fn<RearmFn>(async () => {});
     const probeReachability = reach(true);
     const broadcast = vi.fn<BroadcastFn>(async () => true);
+    const notify = vi.fn<NotifyFn>(async () => {});
 
-    const res = await sweepStalledLoops({ sql, workspaceId: 'ws' }, { getStatuses, autoPause, rearm, probeReachability, broadcast });
+    const res = await sweepStalledLoops(
+      { sql, workspaceId: 'ws' },
+      { getStatuses, autoPause, rearm, probeReachability, broadcast, notify },
+    );
 
     expect(autoPause).not.toHaveBeenCalled();
     expect(rearm).toHaveBeenCalledTimes(1);

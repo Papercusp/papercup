@@ -4,8 +4,9 @@
  * instants (and feed the lib's own ISO output back as EXDATE) rather than
  * asserting exact wall-clock instants, so they pass regardless of the runner tz.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { createRequire } from 'node:module';
+import { RRuleSet } from 'rrule';
 import { computeNextFire, computeNextFireFromRrule, expandOccurrences, validateRrule, frequencyWarning, type ScheduleTrigger } from './schedule-next';
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -247,15 +248,27 @@ describe('expandOccurrences — cost is bounded by `limit`, not by range width (
     expect(ms).toBeGreaterThan(BUDGET_MS);
   }, 60_000);
 
-  it('bounded expansion stays under budget across a 20-year window', () => {
-    const ms = elapsedMs(() => expandOccurrences(LIVE, start, wideEnd, LIMIT));
-    expect(ms).toBeLessThan(BUDGET_MS);
+  it('bounded expansion passes a stopping iterator across a 20-year window', () => {
+    const between = vi.spyOn(RRuleSet.prototype, 'between');
+    const occ = expandOccurrences(LIVE, start, wideEnd, LIMIT);
+    const stop = between.mock.calls.at(-1)?.[3] as ((d: Date, len: number) => boolean) | undefined;
+    expect(stop).toBeTypeOf('function');
+    expect(stop!(new Date(), LIMIT - 1)).toBe(true);
+    expect(stop!(new Date(), LIMIT)).toBe(false);
+    expect(occ).toHaveLength(LIMIT);
+    between.mockRestore();
   }, 60_000);
 
   it('the tzid branch is bounded too (it is a separate expansion path)', () => {
+    const between = vi.spyOn(RRuleSet.prototype, 'between');
     const zoned: ScheduleTrigger = { ...LIVE, tzid: 'America/New_York' };
-    const ms = elapsedMs(() => expandOccurrences(zoned, start, wideEnd, LIMIT));
-    expect(ms).toBeLessThan(BUDGET_MS);
+    const occ = expandOccurrences(zoned, start, wideEnd, LIMIT);
+    const stop = between.mock.calls.at(-1)?.[3] as ((d: Date, len: number) => boolean) | undefined;
+    expect(stop).toBeTypeOf('function');
+    expect(stop!(new Date(), LIMIT - 1)).toBe(true);
+    expect(stop!(new Date(), LIMIT)).toBe(false);
+    expect(occ).toHaveLength(LIMIT);
+    between.mockRestore();
   }, 60_000);
 
   it('stopping early returns exactly `limit` occurrences, identical to slicing', () => {

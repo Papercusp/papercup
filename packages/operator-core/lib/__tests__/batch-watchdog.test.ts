@@ -16,6 +16,7 @@
 import { spawn } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { describe, it, expect } from 'vitest';
+import { createTextCollector } from '../child-output';
 import {
   resolveBatchTimeoutMs,
   resolveTaskTimeoutMs,
@@ -156,13 +157,13 @@ describe('killSpawnedProcessTree', () => {
       { detached: true, stdio: ['ignore', 'pipe', 'ignore'] },
     );
     const closePromise = new Promise<void>((resolve) => child.once('close', () => resolve()));
+    const stdout = createTextCollector(child.stdout);
     let grandchildPid = 0;
     try {
       grandchildPid = await new Promise<number>((resolve, reject) => {
         const timer = setTimeout(() => reject(new Error('grandchild pid was not emitted')), 2_000);
-        let buffered = '';
-        child.stdout!.on('data', (chunk) => {
-          buffered += chunk.toString();
+        child.stdout!.on('data', () => {
+          const buffered = stdout.peek();
           const lineEnd = buffered.indexOf('\n');
           if (lineEnd < 0) return;
           clearTimeout(timer);

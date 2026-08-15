@@ -18,6 +18,24 @@ import type { ComponentManifest } from "./component-manifest.js";
 
 export const COMPONENT_CATALOG: ComponentManifest[] = [
   {
+    id: "plan-parser",
+    version: "0.1.0",
+    tier: "A",
+    kind: "package",
+    provides: ["plan-document-parsing", "project-history-schema", "project-history-assembler"],
+    composesWith: [],
+    source: {
+      repo: "Papercusp/plan-parser",
+      path: "libs/generic/plan-parser",
+      package: "@papercusp/plan-parser",
+    },
+    tests: "npm test in the lib (vitest); the installed papercusp project-history CLI exercises the provider boundary end to end",
+    summary:
+      "Pure plan-document algebra plus the versioned Project History read-model contract and assembler. " +
+      "The package owns schema and deterministic assembly; the installed papercusp CLI supplies Papercusp-ledger and Git I/O, " +
+      "so consuming apps keep only a thin generated-artifact adapter.",
+  },
+  {
     id: "pot-app-seam",
     version: "0.1.0",
     tier: "B",
