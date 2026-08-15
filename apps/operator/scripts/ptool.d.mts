@@ -232,11 +232,11 @@ export function buildCallToolParams(toolName: string, callArgs: any, { outputSch
 };
 /**
  * @param {string} toolName
- * @param {{name?: string} | undefined} [callArgs]
+ * @param {(Record<string, unknown> & {name?: string}) | undefined} [callArgs]
  */
-export function timeoutForTool(toolName: string, callArgs?: {
+export function timeoutForTool(toolName: string, callArgs?: (Record<string, unknown> & {
     name?: string;
-} | undefined): 60000 | 30000;
+}) | undefined): number;
 /**
  * P-010 admission control may reject a tools/call before dispatch when the
  * operator event loop is critically saturated. That refusal is explicitly
