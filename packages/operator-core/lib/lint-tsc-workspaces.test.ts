@@ -36,6 +36,7 @@ import {
   GATE_COVERAGE,
   main,
   orderPackages,
+  ownedBySiblingGate,
   selectGatedPackages,
 } from '../../../scripts/lint-tsc-workspaces.mjs';
 
@@ -546,8 +547,106 @@ describe('the REAL tree', () => {
 
   it('the superproject roots this leg covers are disjoint from the libs/papercusp fan-out', () => {
     // Covering a package twice doubles its compile and reports one regression as two.
+    //
+    // ⚠ THE STRING CHECKS BELOW ARE NO LONGER THE LOAD-BEARING ONES (EI-20549967837064185).
+    // DEFAULT_ROOTS is now `libs`, which does not START WITH 'libs/papercusp' and yet REACHES
+    // it by descent — so these two assertions pass while the property they name is violated.
+    // They are kept because a root literally named 'libs/papercusp' would still be wrong, but
+    // the real guard is the selection assertion in the next test. A guard that can only see the
+    // spelling of a constant cannot see coverage arriving through the walk.
     expect(DEFAULT_ROOTS).not.toContain('libs/papercusp');
     expect(DEFAULT_ROOTS.some((r: string) => r.startsWith('libs/papercusp'))).toBe(false);
+  });
+
+  // EI-20549967837064185. The disjointness that matters is a property of WHAT GETS COMPILED, so
+  // assert it there. This runs against the REAL tree on purpose: a fixture would prove only that
+  // the filter works on a tree I built to suit it, and the thing that actually broke was the real
+  // root list drifting away from the real directory layout.
+  it('no libs/papercusp package is selected, even though the libs root walks into it', () => {
+    const selected = selectGatedPackages();
+    const doubled = selected.packages.filter((p: { rel: string }) => ownedBySiblingGate(p.rel));
+    expect(
+      doubled.map((p: { rel: string }) => p.rel),
+      'lint:tsc:papercusp-libs already compiles these — selecting them here reports one regression as two',
+    ).toEqual([]);
+
+    // …and the exclusion is REAL, not vacuous: the walk must actually be reaching that subtree,
+    // or this test would pass just as well with the coverage hole restored. This is the negative
+    // control — without it, narrowing DEFAULT_ROOTS back to 'libs/generic' would still be green.
+    expect(
+      selected.siblingOwned.length,
+      'the libs root should be walking INTO libs/papercusp and excluding it at selection; ' +
+        'zero here means the root narrowed and the nine libs/* workspaces are dark again',
+    ).toBeGreaterThan(0);
+  });
+
+  // EI-20549967837064185. The original defect in one assertion: these roots existed, held real
+  // TypeScript, and were reachable by nothing. Naming them individually is deliberate — this is
+  // the population the item was filed about, and a count would drift silently.
+  it('every libs/* workspace root is reachable by this leg (the EI-20549967837064185 hole)', () => {
+    const selected = selectGatedPackages();
+    const reachable = new Set<string>([
+      ...selected.packages.map((p: { rel: string }) => p.rel),
+      ...selected.heldBack.map((p: { rel: string }) => p.rel),
+      ...selected.stillInvisible.map((p: { rel: string }) => p.rel),
+      ...selected.exempted.map((p: { rel: string }) => p.rel),
+    ]);
+    for (const rel of [
+      'libs/agent-chat',
+      'libs/flags',
+      'libs/host-platform',
+      'libs/marketplace-public-ui',
+      'libs/papercusp-db',
+      'libs/papercusp-publish-auth',
+      'libs/papercusp-shared',
+      'libs/test-config',
+      'libs/testing-shell',
+    ]) {
+      expect(
+        reachable.has(rel),
+        `${rel} is covered by NO gate again — it must appear in the gated, held-back or ` +
+          'report-only population, never be absent from all of them',
+      ).toBe(true);
+    }
+  });
+
+  // The feature-flag SSOT specifically: it is the one whose silence was most expensive, and it
+  // is GATED (not merely reachable) as of 2026-08-15, so a regression to report-only is a fail.
+  it('libs/flags — the feature-flag SSOT — is BLOCKING, not report-only', () => {
+    const rels = selectGatedPackages().packages.map((p: { rel: string }) => p.rel);
+    expect(rels).toContain('libs/flags');
+  });
+
+  // NEGATIVE CONTROL for the two tests above (EI-20549967837064185).
+  //
+  // A guard that has never failed is a guard nobody has tested, and the two assertions above
+  // would pass just as happily against a tree where nothing was ever broken. This drives the
+  // SAME selector with the OLD root list — the exact configuration the item was filed about —
+  // and asserts it FAILS to reach the nine. It is the deliberately-wrong implementation kept
+  // permanently as a control, per the repo's mutation-probe discipline: it proves the property
+  // is falsifiable WITHOUT mutating the shared tree, so there is no restore step to lose to a
+  // kill and no window for the git-sync sweep to commit a mutant.
+  //
+  // If someone narrows DEFAULT_ROOTS back to 'libs/generic', the tests above go red and THIS one
+  // stays green — which is exactly the pairing that tells you the hole is real and not a fixture.
+  it('CONTROL: the old libs/generic root cannot reach those same nine, which is the defect', () => {
+    const old = selectGatedPackages({ roots: ['apps', 'packages', 'libs/generic'] });
+    const reachable = new Set<string>([
+      ...old.packages.map((p: { rel: string }) => p.rel),
+      ...old.heldBack.map((p: { rel: string }) => p.rel),
+      ...old.stillInvisible.map((p: { rel: string }) => p.rel),
+      ...old.exempted.map((p: { rel: string }) => p.rel),
+    ]);
+    for (const rel of ['libs/flags', 'libs/papercusp-shared', 'libs/testing-shell']) {
+      expect(
+        reachable.has(rel),
+        `${rel} was reachable under the OLD root list — then this control no longer describes ` +
+          'the defect, and the tests above are not proving what they claim',
+      ).toBe(false);
+    }
+    // And the old list reached libs/papercusp not at all, so its siblingOwned is empty — the
+    // mirror of the positive control above.
+    expect(old.siblingOwned).toEqual([]);
   });
 });
 

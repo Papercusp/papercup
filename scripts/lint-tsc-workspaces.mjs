@@ -466,11 +466,32 @@ export function main({
   warn = console.warn,
   error = console.error,
 } = {}) {
-  const { presentRoots, absentRoots, packages, promoted, exempted, heldBack, stillInvisible, unreadable } =
-    selectGatedPackages({ repoRoot, roots, exempt, untypecheckable });
+  const {
+    presentRoots,
+    absentRoots,
+    packages,
+    promoted,
+    exempted,
+    heldBack,
+    stillInvisible,
+    unreadable,
+    siblingOwned,
+  } = selectGatedPackages({ repoRoot, roots, exempt, untypecheckable });
 
   for (const r of absentRoots) {
     warn(`⚠ root ${r} does not exist in this tree — skipping (nothing to gate there).`);
+  }
+
+  // Printed every run for the same reason EXEMPT is: this is the ONE thing standing between a
+  // deliberately-wide root and double-compiling the sibling gate's submodule. An exclusion nobody
+  // can see is indistinguishable from a root that silently lost coverage.
+  if (siblingOwned.length) {
+    log(
+      `\n  ⓘ ${siblingOwned.length} director${siblingOwned.length === 1 ? 'y' : 'ies'} under ` +
+        `${SIBLING_GATE_PREFIXES.join(', ')} skipped — a sibling gate ` +
+        `(lint:tsc:papercusp-libs) compiles them; covering them here would report one ` +
+        `regression as two.`,
+    );
   }
 
   for (const p of unreadable) {
