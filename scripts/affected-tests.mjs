@@ -891,7 +891,9 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     // faithful fix — the subject and its guard now route together no matter which workspace
     // a change selects. Each failure class is measured in whole release cuts: a signing-key
     // regression destroyed a tri-platform cut ~35 min in, and the rootfs/versionName ordering
-    // regressions each abort every leg via join_leg's fatal exit.
+    // regressions each fail the whole cut from inside a leg, ~10 min in. A fourth guard
+    // (parallel-leg-supervisor) pins the CONCURRENT supervision that keeps such a failure
+    // from also reaping its still-building siblings (EI-20549139616021387).
     workspace: "@papercusp/web",
     script: "test:release-script-guards",
     // Cheap by construction: all three are pure file READS + string assertions — no DB, no

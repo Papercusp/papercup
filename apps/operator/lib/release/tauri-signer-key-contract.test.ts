@@ -17,7 +17,9 @@
  * the deref, and it killed the 0.0.17-alpha cut — after a full cargo compile and two
  * signed multi-GB debs, roughly 35 minutes in. Because release-local.sh's join_leg() does
  * a hard `exit 1` on any leg's nonzero rc and the legs run in PARALLEL, that one line
- * also reaped the still-running Windows and macOS legs. There is no partial-success path.
+ * also reaped the still-running Windows and macOS legs. (Since EI-20549139616021387 the
+ * legs are supervised concurrently and healthy siblings are SALVAGED rather than reaped —
+ * but the cut still fails outright, so a signer defect still costs the whole release.)
  *
  * So the property worth pinning is not "repack-deb-xz.sh is fixed" — that is a single
  * commit and a test asserting it would go stale the moment the file is refactored. It is
