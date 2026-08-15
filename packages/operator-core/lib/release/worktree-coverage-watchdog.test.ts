@@ -14,8 +14,11 @@ import {
   findUncoveredDirtyCheckouts,
   listSiblingCheckoutsWithDirtyState,
   checkGitSyncCoverage,
+  matchTriagedScopeOut,
+  TRIAGED_CHECKOUT_SCOPE_OUTS,
   type WorktreeInfo,
   type CheckoutInfo,
+  type TriagedCheckoutScopeOut,
 } from './worktree-coverage-watchdog';
 
 const CANONICAL = '/home/dev/papercupai-workspace/papercusp';
@@ -301,13 +304,16 @@ describe('findUncoveredDirtyCheckouts (pure classifier)', () => {
   });
 
   it('flags a LONG-stale tree just the same — staleness is not part of the verdict', () => {
-    // The ~70-day-dirty trees (papercup-improvement-runner, papercusp-desktop) are the
-    // cases an age floor would have hidden; nothing will ever commit them either.
+    // The ~70-day-dirty trees are the cases an age floor would have hidden; nothing will
+    // ever commit them either. (This once used the real papercup-improvement-runner and
+    // papercusp-desktop paths as the illustration; both have since been triaged under
+    // WI-38888 and carry per-checkout scope-outs, so a generic stale path is used here —
+    // the property being asserted is age-independence, not those particular names.)
     const out = findUncoveredDirtyCheckouts(
-      [co(`${WS_ROOT}/papercup-improvement-runner`, 22, 1_600_000_000), co(`${WS_ROOT}/fresh-clone`, 2, null)],
+      [co(`${WS_ROOT}/long-stale-clone`, 22, 1_600_000_000), co(`${WS_ROOT}/fresh-clone`, 2, null)],
       { canonicalPath: CANONICAL, coveredPaths: [] },
     );
-    expect(out.map((c) => c.path).sort()).toEqual([`${WS_ROOT}/fresh-clone`, `${WS_ROOT}/papercup-improvement-runner`]);
+    expect(out.map((c) => c.path).sort()).toEqual([`${WS_ROOT}/fresh-clone`, `${WS_ROOT}/long-stale-clone`]);
   });
 });
 
@@ -424,5 +430,83 @@ describe('checkGitSyncCoverage', () => {
     });
     expect(res.uncovered).toEqual([]);
     expect(res.coverageResolved).toBe(false);
+  });
+});
+
+describe('triaged per-checkout scope-outs (WI-38888)', () => {
+  const scoped: TriagedCheckoutScopeOut[] = [
+    {
+      pattern: /\/triaged-clone$/,
+      reason: 'test fixture: dirty content verified superseded upstream',
+      triagedAt: '2026-08-15',
+      workItem: 'WI-38888',
+      dirtyFileCountAtTriage: 3,
+    },
+  ];
+
+  it('suppresses a triaged checkout while its dirty set is UNCHANGED', () => {
+    const out = findUncoveredDirtyCheckouts([co(`${WS_ROOT}/triaged-clone`, 3)], {
+      canonicalPath: CANONICAL,
+      coveredPaths: [],
+      scopeOuts: scoped,
+    });
+    expect(out).toEqual([]);
+  });
+
+  // The property the whole mechanism exists for: an exclusion that cannot expire is a
+  // permanent blind spot, so the verdict is bound to the dirty set it was reached against.
+  it('RE-ARMS when the dirty set drifts — new content the recorded verdict never saw', () => {
+    const out = findUncoveredDirtyCheckouts([co(`${WS_ROOT}/triaged-clone`, 4)], {
+      canonicalPath: CANONICAL,
+      coveredPaths: [],
+      scopeOuts: scoped,
+    });
+    expect(out.map((c) => c.path)).toEqual([`${WS_ROOT}/triaged-clone`]);
+  });
+
+  it('re-arms on a SHRINKING dirty set too (content changed, not just grew)', () => {
+    const out = findUncoveredDirtyCheckouts([co(`${WS_ROOT}/triaged-clone`, 1)], {
+      canonicalPath: CANONICAL,
+      coveredPaths: [],
+      scopeOuts: scoped,
+    });
+    expect(out).toHaveLength(1);
+  });
+
+  it('matchTriagedScopeOut reports the drift verdict, and null for an untriaged path', () => {
+    expect(matchTriagedScopeOut(`${WS_ROOT}/triaged-clone`, 3, scoped)?.drifted).toBe(false);
+    expect(matchTriagedScopeOut(`${WS_ROOT}/triaged-clone`, 9, scoped)?.drifted).toBe(true);
+    expect(matchTriagedScopeOut(`${WS_ROOT}/never-triaged`, 3, scoped)).toBeNull();
+  });
+
+  it('tolerates a trailing slash (readdir/worktree-list disagree about it)', () => {
+    expect(matchTriagedScopeOut(`${WS_ROOT}/triaged-clone/`, 3, scoped)?.entry.workItem).toBe('WI-38888');
+  });
+
+  // A scope-out without a stated reason is the rot this mechanism is meant to prevent:
+  // the next reader cannot tell a considered exclusion from a silenced alarm.
+  it('every REAL registry entry carries a reason, a date, a work-item and a triage count', () => {
+    expect(TRIAGED_CHECKOUT_SCOPE_OUTS.length).toBeGreaterThan(0);
+    for (const entry of TRIAGED_CHECKOUT_SCOPE_OUTS) {
+      expect(entry.reason.length, `${entry.pattern} needs a substantive reason`).toBeGreaterThan(80);
+      expect(entry.triagedAt).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+      expect(entry.workItem).toMatch(/^(WI|EI|F)-\d+$/);
+      expect(entry.dirtyFileCountAtTriage).toBeGreaterThan(0);
+    }
+  });
+
+  // The Storewolf pair carries UNCOMMITTED SOURCE on the owner's personal remote and is an
+  // open owner-gated question. Scoping it out would silence the one alarm still pointing at
+  // real unbacked work — the exact opposite of what this mechanism is for.
+  it('does NOT scope out the storewolf checkouts (open owner wall — must keep alarming)', () => {
+    for (const name of ['Storewolf-Libs', 'storewolf-central-server']) {
+      expect(matchTriagedScopeOut(`${WS_ROOT}/${name}`, 26), `${name} must still alarm`).toBeNull();
+    }
+  });
+
+  // Control: proves the real registry's patterns are anchored, not substring-happy.
+  it('real patterns do not match an unrelated sibling that merely shares a prefix', () => {
+    expect(matchTriagedScopeOut(`${WS_ROOT}/papercusp-registry-experiments`, 2)).toBeNull();
+    expect(matchTriagedScopeOut(`${WS_ROOT}/templates-mirror-backup`, 1)).toBeNull();
   });
 });
