@@ -743,7 +743,7 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
 
 /**
  * @param {string} toolName
- * @param {{name?: string} | undefined} [callArgs]
+ * @param {(Record<string, unknown> & {name?: string}) | undefined} [callArgs]
  */
 export function timeoutForTool(toolName, callArgs) {
   // Deferred callers may route the same logical call through tools:invoke.
