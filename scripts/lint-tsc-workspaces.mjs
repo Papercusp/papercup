@@ -175,14 +175,11 @@ export const UNTYPECHECKABLE = {
     errors: 9,
     filedAs: 'EI-20549967837064185',
   },
-  'libs/papercusp-shared': {
-    detail:
-      'measured 2026-08-15, first tsconfig: 4 errors, all in *.test.ts — 2 TS7006 implicit-any ' +
-      'params in chat-stream-resolve.test.ts and 2 TS6133 unused bindings. Trivial, and this ' +
-      'package is imported by 51 files, so it is the highest-value entry here to clear.',
-    errors: 4,
-    filedAs: 'EI-20549967837064185',
-  },
+  // libs/papercusp-shared WAS here (4 errors, measured 2026-08-15) and is deliberately GONE:
+  // its 2 TS7006 implicit-any params and 2 TS6133 unused bindings were fixed the same hour, so
+  // it is now gated. That is the intended lifecycle of an entry here — held only for as long as
+  // it takes to clear, never as an accepted state. It mattered most of the three: 51 files
+  // import it.
   'libs/marketplace-public-ui': {
     detail:
       'measured 2026-08-15: 6 errors — 2 TS2339/TS2604 pairs where a dynamic `Icon` element ' +
