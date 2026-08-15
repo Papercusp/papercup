@@ -376,8 +376,11 @@ export interface RosterEntry {
  * Native claude session ids keyed by the bee's coord owner (= its spawnId, which
  * is `spawned_agents.spawn_id`). Recorded by operator-spawn for CLAUDE bees only
  * (mig 203 / P-016); lets the roster hand pui a `claude --resume <id>` handle for
- * the bee pane (P-004). Best-effort: a read error yields an empty map (no resume
- * handle → the bee gets no dock pane; it stays visible in the colony roster).
+ * the LIVE bee pane (P-004). Terminal spawn history must stay out of this read:
+ * resolving every historical session recursively scans the per-owner transcript
+ * tree and can saturate every request worker. Best-effort: a read error yields an
+ * empty map (no resume handle → the bee gets no dock pane; it stays visible in
+ * the colony roster).
  */
 export async function spawnedAgentNativeSessionsByOwner(): Promise<Map<string, NativeSessionHandle>> {
   const out = new Map<string, NativeSessionHandle>();
@@ -386,7 +389,8 @@ export async function spawnedAgentNativeSessionsByOwner(): Promise<Map<string, N
     const rows = await sql`
       SELECT spawn_id, session_owner, child_role, model_spec, session_id
       FROM harness_shared.spawned_agents
-      WHERE COALESCE(session_owner, spawn_id) IS NOT NULL
+      WHERE status IN ('running', 'restarting')
+        AND COALESCE(session_owner, spawn_id) IS NOT NULL
     `;
     for (const r of rows as unknown as Array<{
       spawn_id: string;

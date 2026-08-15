@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { describe, it, expect } from 'vitest';
@@ -26,6 +26,17 @@ it('liveness STALE_MS leaf mirrors coordination PRESENCE_STALE_MS (no drift)', (
 
 const NOW = 1_700_000_000_000;
 const iso = (ms: number): string => new Date(ms).toISOString();
+
+it('bounds spawned-session handle resolution to live/restarting rows', () => {
+  const source = readFileSync(new URL('./adv-roster.ts', import.meta.url), 'utf8');
+  const resolver = source.match(
+    /export async function spawnedAgentNativeSessionsByOwner[\s\S]*?export async function spawnedAgentSessionsByOwner/,
+  )?.[0];
+
+  expect(resolver).toBeDefined();
+  expect(resolver).toContain("WHERE status IN ('running', 'restarting')");
+  expect(resolver).not.toMatch(/FROM harness_shared\.spawned_agents\s+WHERE COALESCE/);
+});
 
 function presence(overrides: Partial<PresenceRecord> = {}): PresenceRecord {
   return {
