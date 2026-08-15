@@ -76,6 +76,11 @@ const FS_REQUIRE_FNS = new Set([
   'readFile', 'stat', 'lstat', 'readdir', 'open', 'access', 'realpath', 'copyFile',
 ]);
 
+/** Cheap source prefilter derived from the authoritative call set above. */
+const FS_REQUIRE_PREFILTER = new RegExp(
+  `\\b(?:${[...FS_REQUIRE_FNS].sort((a, b) => b.length - a.length).join('|')})\\b`,
+);
+
 /** Path-composition helpers whose arguments are path FRAGMENTS. */
 const PATH_JOIN_FNS = new Set(['resolve', 'join', 'normalize', 'relative']);
 
@@ -349,10 +354,10 @@ export function scanRequiredIgnoredAssets(opts: {
     } catch {
       continue;
     }
-    // Cheap prefilter. Must stay in sync with FS_REQUIRE_FNS — an entry point
-    // missing here is invisible no matter how good the AST pass is, which is
-    // exactly how the promise-based `readFile` case was missed at first.
-    if (!/\b(existsSync|readFile|statSync|lstat|readdir|accessSync|access|openSync|realpath|copyFile|createReadStream|stat)\b/.test(src)) {
+    // Cheap prefilter. It is generated from FS_REQUIRE_FNS because a second
+    // hand-maintained list silently skipped readFileSync-only tests even while
+    // the AST pass claimed that spelling was supported.
+    if (!FS_REQUIRE_PREFILTER.test(src)) {
       continue;
     }
     parsed++;

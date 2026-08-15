@@ -128,7 +128,7 @@ describe('release setup coverage — no test may hard-require a gitignored path 
       result.violations,
       result.violations.length === 0
         ? ''
-        : `A test hard-requires ${result.violations.length} GITIGNORED path(s) that block 3b does not provision:\n` +
+        : `A test hard-requires ${result.violations.length} GITIGNORED path(s) that release setup does not provision:\n` +
           `${detail}\n\n` +
           `apps/operator/bin/release/setup-release-checkout.sh provisions only: ` +
           `${PROVISIONED_ROOTS.join(', ')}.\n` +
@@ -173,6 +173,7 @@ describe('pinned runtime-build coverage — registration is the coverage authori
   it('covers an ignored boot entry because its workspace is built from pinned source', () => {
     expect(ORACLE(CONTROL_PATH)).toBe(true);
     const result = scanWith(PROVISIONED_ROOTS);
+    expect(result.stats.parsed).toBe(1);
     expect(result.violations).toEqual([]);
     expect(result.covered.map((site) => site.path)).toContain(CONTROL_PATH);
   });
