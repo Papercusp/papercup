@@ -51,7 +51,10 @@ import { SESSION_END_MARKER } from '../../agent-tools/activity/lifecycle-markers
 // loop.ts whose db-org mock used a bare factory instead of spreading `importOriginal`
 // (measured: loop.test.ts, EI-19986796515232861). loop.ts is a core routines module reached
 // from many lightweight import graphs — keep this import light.
-import { agentToolInvocationPredicate } from '../../agent-tools/sessions/automatic-tool-names';
+import {
+  CARRY_NOTE_BOOKKEEPING_TOOL_NAMES,
+  agentToolInvocationPredicate,
+} from '../../agent-tools/sessions/automatic-tool-names';
 
 /**
  * The `target_role` a loop routine carries. The DBOS fire (B-LOOP-3) recognises
@@ -1570,6 +1573,13 @@ export async function getLoopStatus(ownerId: string, opts: { sql?: Sql } = {}): 
  * bounced-fire notice instead of sending the successor on a reconciliation hunt for work
  * that never happened.
  *
+ * EI-20543456503122446: the carry-note bookkeeping calls (CARRY_NOTE_BOOKKEEPING_TOOL_NAMES)
+ * are excluded. The window OPENS at the note's `updated_at`, but a tool_invocations row is
+ * stamped at INSERT — after the handler's write commits — so the loop:checkpoint that WROTE
+ * the note lands strictly inside the window and counted itself. Any session that checkpointed
+ * and then died scored >= 1 by construction, and one that never checkpointed has no note to be
+ * stale against, so the `0` downgrade was unreachable in exactly the case it exists for.
+ *
  * Returns `null` on any query failure — callers MUST treat null as "evidence unavailable"
  * and never read it as zero, or a transient query error would silently suppress a real
  * warning (the existing, safe default). Best-effort only: never let this delay or drop a
@@ -1590,6 +1600,7 @@ export async function countAgentToolCallsInWindow(
        WHERE coord_owner_id = ${ownerId}
          AND invoked_at > ${new Date(sinceMs).toISOString()}::timestamptz
          AND invoked_at <= ${new Date(untilMs).toISOString()}::timestamptz
+         AND tool_name <> ALL(${[...CARRY_NOTE_BOOKKEEPING_TOOL_NAMES]}::text[])
          AND ${agentToolPredicate}
     `;
     return row ? Number(row.n) : 0;

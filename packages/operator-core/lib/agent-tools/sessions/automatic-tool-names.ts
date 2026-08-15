@@ -21,6 +21,34 @@ import type { Sql } from 'postgres';
 export const AUTOMATIC_TOOL_NAMES = ['activity:report', 'coord:glance', 'coord:inbox'] as const;
 
 /**
+ * EI-20543456503122446: calls that WRITE the very carry surfaces a "did any work happen
+ * after the note?" question is asked ABOUT. These are agent-authored (the model chooses
+ * them), so they are deliberately NOT in AUTOMATIC_TOOL_NAMES — sessions:timeline's
+ * activity audit must keep counting them as real agent behavior, and folding them in
+ * there would silently rewrite that audit too.
+ *
+ * They matter only to countAgentToolCallsInWindow, whose window OPENS at the carry
+ * note's `updated_at`. A tool_invocations row is stamped at INSERT, after the handler's
+ * write commits — measured on this very path: note updated_at 18:20:06.840Z, its own
+ * loop:checkpoint row invoked_at 18:20:07.136Z (duration 391ms). So the note-writing
+ * call always lands strictly INSIDE (noteUpdatedAt, lastTurnAt] and counts ITSELF as
+ * evidence of post-note work. Every session that checkpoints and then dies therefore
+ * scored >= 1 by construction, and a session that never checkpointed has no note for
+ * the banner to be stale against — leaving the guard structurally dead in exactly the
+ * case it was built for (a usage-wall bounce that did nothing).
+ *
+ * Excluding them cannot suppress a REAL alarm: work that actually happened leaves other
+ * agent-authored rows in the same window, so the count only reaches 0 when these
+ * bookkeeping calls were the ONLY thing that happened — which is precisely the
+ * bounced-fire case. And their content is by definition already checkpointed, so there
+ * is nothing un-checkpointed for a successor to recover from them.
+ */
+export const CARRY_NOTE_BOOKKEEPING_TOOL_NAMES = [
+  'loop:checkpoint',
+  'work_items:checkpoint',
+] as const;
+
+/**
  * Explicit origins are the source of truth once migration 809 has stamped a row.
  * NULL means the row predates origin tracking, so it deliberately falls back to the
  * legacy tool-name classification. Keep these lists beside the fallback names so
