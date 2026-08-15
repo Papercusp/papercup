@@ -599,7 +599,7 @@ describe('classifyLoopLifecycleTurn — pure classifier (EI-13818)', () => {
 
   it('never shortens the rearm below the loop interval', () => {
     // A reset time in the very near future (or already past — "already passed today" pushes to
-    // tomorrow per parseUsageResetMs, but even a same-second edge case must never UNDERCUT the
+    // tomorrow per parseUsageReset, but even a same-second edge case must never UNDERCUT the
     // caller's own interval floor).
     const verdict = classifyLoopLifecycleTurn("hit your usage limit · resets now", 5 * 60_000, NOW);
     expect(verdict?.rearmDelayMs).toBeGreaterThanOrEqual(5 * 60_000);
