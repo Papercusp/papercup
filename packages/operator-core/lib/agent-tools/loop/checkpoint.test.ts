@@ -94,10 +94,11 @@ vi.mock('../../pot/wake', () => ({
     return concrete(explicit) ?? concrete(ctxSlug) ?? 'home-hive';
   }),
 }));
-// WI-2148: the fix under test — loop:checkpoint resolves harness from the ARMED routine
-// (getLoopStatus) FIRST, so it matches whatever the cold-wake reader resolves. Default
-// (most tests): no armed routine found (null) ⇒ falls through to the old arg/ctx/home-hive
-// chain, preserving every pre-existing test's behavior unchanged.
+// WI-2148: loop:checkpoint resolves its default harness from the ARMED routine
+// (getLoopStatus), so it matches whatever the cold-wake reader resolves. A concrete
+// EXPLICIT harness remains an intentional cross-harness address and wins over that
+// default. Most tests have no armed routine (null), so they fall through to the old
+// arg/ctx/home-hive chain.
 vi.mock('../../harness/routines/loop', () => ({ getLoopStatus: (...a: unknown[]) => getLoopStatus(...a) }));
 vi.mock('../../bounded-timeout', () => ({
   withBoundedTimeout: (...a: unknown[]) => withBoundedTimeout(...a),
@@ -301,6 +302,21 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
     expect(setLoopCarryNote).toHaveBeenCalledWith(
       expect.objectContaining({ harness: 'other-harness' }),
       expect.any(String),
+    );
+  });
+
+  it('honors an explicit cross-harness target over another active loop', async () => {
+    getLoopStatus.mockResolvedValueOnce({ harnessSlug: 'papercusp' } as never);
+
+    await call({ next: 'x', harness: 'sidestage' }, { harnessSlug: 'papercusp', workspaceId: 'ws-1' });
+
+    expect(getLoopStatus).toHaveBeenCalledWith('su-caller');
+    expect(setLoopCarryNote).toHaveBeenCalledWith(
+      expect.objectContaining({ harness: 'sidestage', ownerId: 'su-caller' }),
+      expect.any(String),
+    );
+    expect(getLoopCarryNoteWithMeta).toHaveBeenCalledWith(
+      expect.objectContaining({ harness: 'sidestage', ownerId: 'su-caller' }),
     );
   });
 

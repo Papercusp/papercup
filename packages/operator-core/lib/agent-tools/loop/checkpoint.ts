@@ -356,16 +356,24 @@ export default defineTool({
     // resolved differently across wakes) — writing under the session's transient harness
     // instead of the routine's fixed one creates a SECOND, stale-diverging carry_notes row;
     // a cold reset that resolves the note by the routine's install_slug then reads whichever
-    // row is stale. Resolve from the armed routine FIRST (the single source of truth the
-    // reader also uses); only fall back to the old session-context chain when no routine is
-    // armed yet (e.g. a checkpoint written before the first loop:arm — an edge case, since
+    // row is stale. An EXPLICIT harness is an intentional cross-harness address and must
+    // win (loop:end/status similarly accept explicit owner-scoped control); otherwise
+    // resolve from the armed routine FIRST (the single source of truth the reader also
+    // uses). Only fall back to the old session-context chain when no routine is armed yet
+    // (e.g. a checkpoint written before the first loop:arm — an edge case, since
     // loop:checkpoint's whole purpose assumes an armed loop already exists).
     const armedRoutine = await getLoopStatus(ownerId).catch(() => null);
     // EI-7734: the pre-armed-routine fallback is routed through resolvePotHomeSlug
     // (not a raw `??` chain) so its '*'-skip logic runs — every superuser/operator
     // session sets ctx.harnessSlug='*' (the wildcard sentinel), which would otherwise
     // win this chain outright and scope the carry-note under the literal '*' namespace.
-    const harness = armedRoutine?.harnessSlug ?? resolvePotHomeSlug(args.harness, ctx.harnessSlug);
+    const requestedHarness = args.harness?.trim();
+    const explicitHarness =
+      requestedHarness && requestedHarness !== '*' && requestedHarness.toLowerCase() !== 'all'
+        ? resolvePotHomeSlug(requestedHarness, undefined)
+        : null;
+    const harness =
+      explicitHarness ?? armedRoutine?.harnessSlug ?? resolvePotHomeSlug(undefined, ctx.harnessSlug);
     if (!harness) {
       return {
         content: [
