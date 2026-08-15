@@ -11,6 +11,14 @@ function deps(over: Partial<DeployDeps> = {}): { deps: DeployDeps; calls: string
       calls.push('drain');
       return fn();
     },
+    readReleaseTriggerControl: async () => ({
+      name: 'release-trigger',
+      active: true,
+      cron: null,
+      lastFiredAtMs: null,
+      nextFireAtMs: null,
+      pause: null,
+    }),
     snapshot: async () => null,
     runSetup: async (sha) => {
       calls.push(`setup:${sha.slice(0, 4)}`);

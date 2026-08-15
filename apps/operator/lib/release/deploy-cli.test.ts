@@ -53,6 +53,14 @@ function makePlan(over: Partial<DeployPlan> = {}): DeployPlan {
 function makeStubDeps(over: Partial<DeployDeps> = {}): DeployDeps {
   return {
     withDrain: async (fn) => fn(),
+    readReleaseTriggerControl: async () => ({
+      name: 'release-trigger',
+      active: true,
+      cron: null,
+      lastFiredAtMs: null,
+      nextFireAtMs: null,
+      pause: null,
+    }),
     snapshot: async () => null,
     runSetup: async () => {},
     migrate: async () => ({ appliedCount: 0, totalKnown: 0, applied: [], sqlDir: '/tmp' }),

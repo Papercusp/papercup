@@ -96,6 +96,14 @@ function makeDeps(health: () => Promise<{ healthy: boolean; attempts: number; el
   const calls: string[] = [];
   const deps: DeployDeps = {
     withDrain: (fn) => fn(),
+    readReleaseTriggerControl: async () => ({
+      name: 'release-trigger',
+      active: true,
+      cron: null,
+      lastFiredAtMs: null,
+      nextFireAtMs: null,
+      pause: null,
+    }),
     snapshot: async () => {
       calls.push('snapshot');
       return { snapshotId: 1, kopiaSnapshotId: 'e2e-snap' } as SnapshotInfo;

@@ -52,6 +52,14 @@ function makeDeps(over: Partial<DeployDeps> & { fail?: string } = {}): { deps: D
         calls.push('drain:release');
       }
     },
+    readReleaseTriggerControl: async () => ({
+      name: 'release-trigger',
+      active: true,
+      cron: null,
+      lastFiredAtMs: null,
+      nextFireAtMs: null,
+      pause: null,
+    }),
     snapshot: () => rec('snapshot', { snapshotId: 1, kopiaSnapshotId: 'kopia-abc' } as SnapshotInfo),
     runSetup: (sha) => rec(`runSetup:${sha.slice(0, 4)}`, undefined).then(() => undefined),
     migrate: () => rec('migrate', { appliedCount: 1, totalKnown: 5, applied: ['200-x.sql'], sqlDir: '/x' }),
