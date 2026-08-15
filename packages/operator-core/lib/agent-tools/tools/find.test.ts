@@ -15,6 +15,8 @@ import { beforeEach, describe, it, expect, vi } from 'vitest';
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import releaseTrace from '../release/trace';
+import plansSearch from '../plans/search';
+import crossHarnessPlansSearch from '../cross_harness/plans_search';
 
 // Force lexical-only: buildQueryEmbedder resolves to null (unconfigured embedder).
 vi.mock('../search/embedder', () => ({
@@ -166,6 +168,8 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
 
 describe('confirmed hive discovery visibility (WI-39255)', () => {
   it('removes cross_harness tools only after a concrete hive resolution', async () => {
+    expect(plansSearch.name).toBe('plans:search');
+    expect(crossHarnessPlansSearch.name).toBe('cross_harness:plans_search');
     const { corpus } = buildCorpus();
     expect(corpus.some((entry) => entry.tool.startsWith('cross_harness:'))).toBe(true);
     const resolveHive = vi.fn().mockResolvedValue('home-hive');
