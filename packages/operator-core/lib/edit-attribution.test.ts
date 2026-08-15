@@ -32,6 +32,7 @@ vi.mock('./agent-tools/coordination/presence', () => ({
 }));
 
 import { parsePapercuspTrailers, readEditAttributionRoster, recordEditAttribution } from './edit-attribution';
+import { ANY_FAMILY_TERMINAL_STATES } from './work-item-dispatch-states';
 
 describe('readEditAttributionRoster — workspace-scoped, never repo_root-scoped (WI-37668)', () => {
   beforeEach(() => {
@@ -196,6 +197,7 @@ describe('recordEditAttribution — authoritative state-stamp goal (WI-39137)', 
 
     expect(insertCalls).toHaveLength(2); // canonical validation + ledger INSERT
     expect(insertCalls[0]).toEqual(expect.arrayContaining(['ws-1', 'WI-39137', 'su-1']));
+    expect(insertCalls[0]).toContainEqual([...ANY_FAMILY_TERMINAL_STATES]);
     expect(recordedWorkItem()).toEqual({ harnessSlug: 'papercusp', workItemId: 'WI-39137' });
   });
 

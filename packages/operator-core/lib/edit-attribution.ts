@@ -44,8 +44,8 @@ export interface RecordEditAttributionInput {
 
 /**
  * Append edit-attribution ledger rows for a just-granted lock. Resolves the holder's
- * work-item from its active claim (one cheap indexed read) and writes one row per file.
- * Never throws.
+ * exact canonical work-item from a supplied goal pointer, or from the legacy active
+ * claim when no pointer exists, then writes one row per file. Never throws.
  */
 export async function recordEditAttribution(input: RecordEditAttributionInput): Promise<void> {
   try {
