@@ -74,6 +74,9 @@ const FS_REQUIRE_FNS = new Set([
 /** Path-composition helpers whose arguments are path FRAGMENTS. */
 const PATH_JOIN_FNS = new Set(['resolve', 'join', 'normalize', 'relative']);
 
+/** Constructors that make a path private to a test fixture, not the checkout. */
+const TEMP_ROOT_FNS = new Set(['mkdtemp', 'mkdtempSync', 'tmpdir']);
+
 /** A literal that looks like a repo-relative path into this monorepo. */
 const REPO_RELATIVE = /^(apps|packages|libs|scripts|docs|bin|papercusp-desktop|e2e)\//;
 
@@ -186,6 +189,42 @@ function toleratesAbsence(call: ts.CallExpression): boolean {
     if (ts.isCallExpression(n) && /skipIf|runIf/.test(calleeName(n))) return true;
   }
   return false;
+}
+
+/**
+ * Does a required path derive from a temporary fixture root?
+ *
+ * A fixture may intentionally mirror a repository layout below
+ * `mkdtempSync(tmpdir())`, for example `<tmp>/libs/generic/sse/dist`. The
+ * literal suffix still looks repo-relative, but `git clean` can never remove
+ * it from the release checkout because it is not in that checkout at all.
+ * Keep that provenance while following local const aliases so the scanner
+ * does not turn fixture fidelity into a permanent false red.
+ */
+function derivesFromTemporaryFixture(
+  node: ts.Node | undefined,
+  consts: Map<string, ts.Expression>,
+  depth = 0,
+  seen: Set<string> = new Set(),
+): boolean {
+  if (!node || depth > 12) return false;
+
+  if (ts.isIdentifier(node)) {
+    if (seen.has(node.text)) return false;
+    const init = consts.get(node.text);
+    if (!init) return false;
+    const next = new Set(seen);
+    next.add(node.text);
+    return derivesFromTemporaryFixture(init, consts, depth + 1, next);
+  }
+
+  if (ts.isCallExpression(node) && TEMP_ROOT_FNS.has(calleeName(node))) return true;
+
+  let found = false;
+  ts.forEachChild(node, (child) => {
+    if (!found && derivesFromTemporaryFixture(child, consts, depth + 1, seen)) found = true;
+  });
+  return found;
 }
 
 /** Candidate repo-relative paths implied by one fs-require site. */
@@ -323,6 +362,10 @@ export function scanRequiredIgnoredAssets(opts: {
       if (ts.isCallExpression(n) && n.arguments.length > 0) {
         const fn = calleeName(n);
         if (FS_REQUIRE_FNS.has(fn) && !toleratesAbsence(n)) {
+          if (derivesFromTemporaryFixture(n.arguments[0], consts)) {
+            ts.forEachChild(n, visit);
+            return;
+          }
           const literals = literalsOf(n.arguments[0], consts);
           const line = sf.getLineAndCharacterOfPosition(n.getStart(sf)).line + 1;
           for (const path of candidatePathsFor(literals)) {

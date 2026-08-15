@@ -334,6 +334,28 @@ describe('negative controls — the guard reds on a seeded violation', () => {
 });
 
 describe('false-positive controls — the noise that would get this guard disabled', () => {
+  it('does NOT treat a repository-shaped path below mkdtempSync as a checkout requirement', () => {
+    const result = scanFixture(
+      {
+        'packages/p/temp-fixture.test.ts': `
+          import { mkdtempSync, readFileSync } from 'node:fs';
+          import { tmpdir } from 'node:os';
+          import { join } from 'node:path';
+          const root = mkdtempSync(join(tmpdir(), 'release-fixture-'));
+          const packageRoot = join(root, 'libs/generic/sse');
+          it('checks its generated fixture', () => {
+            readFileSync(join(packageRoot, 'node_modules/PINNED_TOOLCHAIN'), 'utf8');
+            readFileSync(join(packageRoot, 'dist/index.js'), 'utf8');
+          });
+        `,
+      },
+      { ignored: ['libs/generic/sse/node_modules', 'libs/generic/sse/dist'], coveredRoots: [] },
+    );
+
+    expect(result.violations).toEqual([]);
+    expect(result.required).toEqual([]);
+  });
+
   it('does NOT flag a test that tolerates absence via a skip guard', () => {
     const result = scanFixture(
       {
