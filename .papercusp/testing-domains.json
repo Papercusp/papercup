@@ -1584,6 +1584,14 @@
               "kind": "shell",
               "cmd": "bash",
               "args": [
+                "papercusp-desktop/bin/lib/release-tag-pin.selftest.sh"
+              ],
+              "label": "release tag pin + exact repair guard"
+            },
+            {
+              "kind": "shell",
+              "cmd": "bash",
+              "args": [
                 "papercusp-desktop/bin/lib/gen-latest-manifest.selftest.sh"
               ],
               "label": "latest-manifest generation"
