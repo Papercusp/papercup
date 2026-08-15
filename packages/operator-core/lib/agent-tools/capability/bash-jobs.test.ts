@@ -58,17 +58,13 @@ describe('runForeground', () => {
   });
 
   it('captures stderr and a non-zero exit', async () => {
-    const r = await runForeground(
-      { command: 'echo oops >&2; exit 3', cwd: STATE, stateDir: STATE },
-      never,
-      10_000,
-    );
+    const r = await runForeground({ command: 'echo oops >&2; exit 3', cwd: STATE, stateDir: STATE }, never, 10_000);
     expect(r.exitCode).toBe(3);
     expect(r.status).toBe('failed');
     expect(r.output).toContain('oops');
   });
 
-  it('a failing command piped through a truncating filter (tail) reports the PIPELINE exit code, not the filter\'s (EI-13414)', async () => {
+  it("a failing command piped through a truncating filter (tail) reports the PIPELINE exit code, not the filter's (EI-13414)", async () => {
     // Without `-o pipefail`, bash reports the LAST command's exit status for a
     // pipe — `exit 1 | tail -60` would report 0 (tail always succeeds), silently
     // masking the real failure. This is the exact near-miss that filed EI-13414:
@@ -84,18 +80,18 @@ describe('runForeground', () => {
   });
 
   it('a successful pipeline still reports exit 0 (pipefail does not false-positive on a clean pipe)', async () => {
-    const r = await runForeground(
-      { command: 'echo hello | tail -1', cwd: STATE, stateDir: STATE },
-      never,
-      10_000,
-    );
+    const r = await runForeground({ command: 'echo hello | tail -1', cwd: STATE, stateDir: STATE }, never, 10_000);
     expect(r.exitCode).toBe(0);
     expect(r.status).toBe('completed');
   });
 
   it('spills large output to a log file and trims the inline result', async () => {
     const r = await runForeground(
-      { command: 'for i in $(seq 1 4000); do echo "line-$i padding padding padding padding"; done', cwd: STATE, stateDir: STATE },
+      {
+        command: 'for i in $(seq 1 4000); do echo "line-$i padding padding padding padding"; done',
+        cwd: STATE,
+        stateDir: STATE,
+      },
       never,
       20_000,
     );
@@ -136,6 +132,15 @@ describe('integration credential output redaction (EI-20478240377353884)', () =>
     expect(safe).toBe('before:[REDACTED integration credential]:after');
     expect(safe).not.toContain(secret);
     expect(safe).not.toContain(secret.slice(0, 21));
+  });
+
+  it('chooses a replacement marker that cannot reproduce a short saved secret', () => {
+    const collidingSecret = 'REDACTED';
+    const redactor = createStreamingSecretRedactor([collidingSecret])!;
+    const safe = redactor.push(`before:${collidingSecret}:after`) + redactor.flush();
+
+    expect(safe).toMatch(/^before:.+:after$/);
+    expect(safe).not.toContain(collidingSecret);
   });
 
   it('redacts foreground result, stream events, and the spill log through one shared boundary', async () => {
@@ -389,7 +394,11 @@ describe('operator secrets are NOT inherited by a spawned command (EI-1617)', ()
   });
 
   it('a plain allowlisted var (PATH) still reaches the child', async () => {
-    const r = await runForeground({ command: 'test -n "$PATH" && echo has-path', cwd: STATE, stateDir: STATE }, never, 10_000);
+    const r = await runForeground(
+      { command: 'test -n "$PATH" && echo has-path', cwd: STATE, stateDir: STATE },
+      never,
+      10_000,
+    );
     expect(r.status).toBe('completed');
     expect(r.output).toContain('has-path');
   });
@@ -544,15 +553,12 @@ describe('background job deadlines (WI-6677)', () => {
   });
 
   it('clamps to the BACKGROUND ceiling, not the foreground one', () => {
-    const job = startBackground(
-      { command: 'sleep 60', cwd: STATE, stateDir: STATE },
-      MAX_BACKGROUND_TIMEOUT_MS * 10,
-    );
+    const job = startBackground({ command: 'sleep 60', cwd: STATE, stateDir: STATE }, MAX_BACKGROUND_TIMEOUT_MS * 10);
     expect(job.timeoutMs).toBe(MAX_BACKGROUND_TIMEOUT_MS);
     killJob(job);
   });
 
-  it('⭐ hitting the deadline SIGTERMs first, so the job\'s own cleanup trap still runs (it used to SIGKILL and leak)', async () => {
+  it("⭐ hitting the deadline SIGTERMs first, so the job's own cleanup trap still runs (it used to SIGKILL and leak)", async () => {
     const marker = join(STATE, `cleanup-ran-${Date.now()}`);
     const job = startBackground(
       {
@@ -569,7 +575,7 @@ describe('background job deadlines (WI-6677)', () => {
     expect(readFileSync(marker, 'utf8')).toContain('cleaned');
   }, 30_000);
 
-  it('⭐ says WHY it died, in the job output — a silent death reads as an OOM or a peer\'s pkill', async () => {
+  it("⭐ says WHY it died, in the job output — a silent death reads as an OOM or a peer's pkill", async () => {
     const job = startBackground({ command: 'echo working; sleep 30', cwd: STATE, stateDir: STATE }, 400);
     await waitForEnd(job.id);
     const out = readJobOutput(job);
@@ -598,7 +604,7 @@ describe('background job deadlines (WI-6677)', () => {
     expect(out).toContain('most likely died QUEUED');
   }, 30_000);
 
-  it('⭐ omits the queued hint once the job\'s output shows the pc-heavy slot-acquired marker — it really was mid-execution', async () => {
+  it("⭐ omits the queued hint once the job's output shows the pc-heavy slot-acquired marker — it really was mid-execution", async () => {
     const job = startBackground(
       { command: `echo '${PC_HEAVY_SLOT_ACQUIRED_MARKER}'; sleep 30`, cwd: STATE, stateDir: STATE },
       400,

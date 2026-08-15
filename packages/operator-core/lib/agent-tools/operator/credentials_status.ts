@@ -26,7 +26,8 @@ const INTEGRATION_KEY_NAME_RE = /^[A-Z][A-Z0-9_]*$/;
 export default defineTool({
   name: 'operator:credentials_status',
   profile: 'engineer',
-  description: 'Masked credential status for voice providers plus an optional encrypted integration credential lookup by name. Read-only — never returns raw keys. Integration lookup distinguishes missing from saved-not-injected.',
+  description:
+    'Masked credential status for voice providers plus an optional encrypted integration credential lookup by name. Read-only — never returns raw keys. Integration lookup distinguishes missing from saved-not-injected.',
   capability: 'secrets:operator-credentials:read',
   guidance: {
     when: `Check which API credentials (EL, OpenAI, etc.) are configured + valid. Used in onboarding + diagnostics.`,

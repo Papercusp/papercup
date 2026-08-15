@@ -425,10 +425,7 @@ export function detectBufferingLastStage(command: string): string | null {
  * job, but it cannot recover a buffered pipeline once the registry and terminal
  * marker are gone; a file redirect is the durable recovery path for a rerun.
  */
-export function formatBufferingPipelineAdvice(
-  stage: string,
-  context: 'launch' | 'tracking-lost',
-): string {
+export function formatBufferingPipelineAdvice(stage: string, context: 'launch' | 'tracking-lost'): string {
   const redirect =
     `For a rerun, redirect output to a file you own (for example \`cmd > /tmp/job.log 2>&1; echo "EXIT=$?" >> /tmp/job.log\`)` +
     ` instead of piping through \`${stage}\``;
@@ -500,14 +497,26 @@ export interface StreamingSecretRedactor {
  * specific value in one marker. Empty values are ignored: matching an empty
  * string would insert a marker between every character and provides no secrecy.
  */
-export function createStreamingSecretRedactor(
-  values: readonly string[] | undefined,
-): StreamingSecretRedactor | null {
-  const secrets = [...new Set((values ?? []).filter((value) => value.length > 0))]
-    .sort((a, b) => b.length - a.length);
+export function createStreamingSecretRedactor(values: readonly string[] | undefined): StreamingSecretRedactor | null {
+  const secrets = [...new Set((values ?? []).filter((value) => value.length > 0))].sort((a, b) => b.length - a.length);
   if (secrets.length === 0) return null;
 
   const longest = secrets[0]!.length;
+  const marker =
+    ['[REDACTED integration credential]', '[REDACTED]', '<removed>'].find((candidate) =>
+      secrets.every((secret) => !candidate.includes(secret)),
+    ) ??
+    (() => {
+      // A marker must not itself reproduce a short or human-readable secret
+      // (for example a saved value literally equal to "REDACTED"). The private-use
+      // fallback chooses a character absent from every finite input value, so the
+      // replacement cannot contain any exact secret even in that adversarial case.
+      for (let codePoint = 0xe000; codePoint <= 0x10ffff; codePoint += 1) {
+        const candidate = String.fromCodePoint(codePoint);
+        if (secrets.every((secret) => !secret.includes(candidate))) return candidate.repeat(8);
+      }
+      throw new Error('unable to construct a non-secret redaction marker');
+    })();
   let pending = '';
 
   const scan = (input: string, startLimit: number): { output: string; consumed: number } => {
@@ -516,7 +525,7 @@ export function createStreamingSecretRedactor(
     while (index < startLimit) {
       const match = secrets.find((secret) => input.startsWith(secret, index));
       if (match) {
-        output += '[REDACTED integration credential]';
+        output += marker;
         index += match.length;
       } else {
         output += input[index];
@@ -569,7 +578,11 @@ export function runForeground(opts: RunOptions, signal: AbortSignal, timeoutMs: 
       if (!s) return;
       totalBytes += Buffer.byteLength(s, 'utf8');
       if (buffer.length < MEM_BUFFER_CAP) buffer += s;
-      try { logStream?.write(s); } catch { /* ignore spill fault */ }
+      try {
+        logStream?.write(s);
+      } catch {
+        /* ignore spill fault */
+      }
       opts.onChunk?.(s);
     };
     const appendRawOutput = (s: string): void => {
@@ -584,10 +597,13 @@ export function runForeground(opts: RunOptions, signal: AbortSignal, timeoutMs: 
     child.stdout?.on('data', onData);
     child.stderr?.on('data', onData);
 
-    const timer = setTimeout(() => {
-      timedOut = true;
-      killProcessTree(child, 'SIGKILL');
-    }, Math.min(timeoutMs, MAX_TIMEOUT_MS));
+    const timer = setTimeout(
+      () => {
+        timedOut = true;
+        killProcessTree(child, 'SIGKILL');
+      },
+      Math.min(timeoutMs, MAX_TIMEOUT_MS),
+    );
 
     const onAbort = (): void => {
       aborted = true;
@@ -640,7 +656,11 @@ export function runForeground(opts: RunOptions, signal: AbortSignal, timeoutMs: 
       };
       if (logStream) {
         logStream.on('error', settleOnce);
-        try { logStream.end(settleOnce); } catch { settleOnce(); }
+        try {
+          logStream.end(settleOnce);
+        } catch {
+          settleOnce();
+        }
       } else {
         settleOnce();
       }
@@ -790,13 +810,21 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
     // tell "finished" from "nothing written yet" without a second call.
     appendRawOutput(formatJobLogEndMarker(job.status, job.exitCode, job.endedAt));
     flushRedactor();
-    try { job.logStream?.end(); } catch { /* ignore */ }
+    try {
+      job.logStream?.end();
+    } catch {
+      /* ignore */
+    }
     job.logStream = null;
-    finishSyncEnrolment(enrolment, {
-      state: 'exited',
-      exitCode: null,
-      exitReason: `spawn error: ${err instanceof Error ? err.message : String(err)}`,
-    }, { scopeCgroupPath });
+    finishSyncEnrolment(
+      enrolment,
+      {
+        state: 'exited',
+        exitCode: null,
+        exitReason: `spawn error: ${err instanceof Error ? err.message : String(err)}`,
+      },
+      { scopeCgroupPath },
+    );
   });
   child.on('close', (code) => {
     if (job.status === 'running') job.status = code === 0 ? 'completed' : 'failed';
@@ -806,16 +834,24 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
     // EI-18764990059061608: see formatJobLogEndMarker's doc.
     appendRawOutput(formatJobLogEndMarker(job.status, job.exitCode, job.endedAt));
     flushRedactor();
-    try { job.logStream?.end(); } catch { /* ignore */ }
+    try {
+      job.logStream?.end();
+    } catch {
+      /* ignore */
+    }
     job.logStream = null;
     // `timed_out` is preserved distinctly rather than collapsed into a kill: the
     // ledger's job is to say WHY something ended, and "hit its own deadline" and
     // "someone killed it" are different answers to that.
-    finishSyncEnrolment(enrolment, {
-      state: job.status === 'timed_out' ? 'timed_out' : job.status === 'killed' ? 'killed' : 'exited',
-      exitCode: code,
-      exitReason: job.status === 'timed_out' ? `exceeded ${effectiveTimeoutMs}ms timeout` : null,
-    }, { scopeCgroupPath });
+    finishSyncEnrolment(
+      enrolment,
+      {
+        state: job.status === 'timed_out' ? 'timed_out' : job.status === 'killed' ? 'killed' : 'exited',
+        exitCode: code,
+        exitReason: job.status === 'timed_out' ? `exceeded ${effectiveTimeoutMs}ms timeout` : null,
+      },
+      { scopeCgroupPath },
+    );
   });
 
   return job;
@@ -852,7 +888,11 @@ export function killJob(job: BashJob): { ok: boolean; alreadyDone: boolean } {
     // `close` handler once the OS confirms the process has actually terminated —
     // that is the correct liveness signal for this guard.
     if (job.exitCode === null) {
-      try { killProcessTree(job.child, 'SIGKILL'); } catch { /* ignore */ }
+      try {
+        killProcessTree(job.child, 'SIGKILL');
+      } catch {
+        /* ignore */
+      }
     }
   }, 2_000);
   job.status = 'killed';
@@ -875,8 +915,16 @@ function pruneFinished(): void {
 /** Test-only: clear the registry. */
 export function __resetBashJobs(): void {
   for (const j of JOBS.values()) {
-    try { j.child.kill('SIGKILL'); } catch { /* ignore */ }
-    try { j.logStream?.end(); } catch { /* ignore */ }
+    try {
+      j.child.kill('SIGKILL');
+    } catch {
+      /* ignore */
+    }
+    try {
+      j.logStream?.end();
+    } catch {
+      /* ignore */
+    }
   }
   JOBS.clear();
 }

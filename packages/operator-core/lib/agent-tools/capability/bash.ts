@@ -156,31 +156,31 @@ export default defineTool({
         value: await readIntegrationKey(sourceName),
       })),
     );
-    const missingIntegrationSources = [...new Set(
-      resolvedIntegrationEntries.filter((entry) => !entry.value).map((entry) => entry.sourceName),
-    )];
+    const missingIntegrationSources = [
+      ...new Set(resolvedIntegrationEntries.filter((entry) => !entry.value).map((entry) => entry.sourceName)),
+    ];
     if (missingIntegrationSources.length > 0) {
       throw new Error(
         `capability:bash integration_env references missing saved integration credential(s): ${missingIntegrationSources.join(', ')}`,
       );
     }
-    const integrationEnv = Object.fromEntries(
-      resolvedIntegrationEntries.map((entry) => [entry.envName, entry.value!]),
-    );
+    const integrationEnv = Object.fromEntries(resolvedIntegrationEntries.map((entry) => [entry.envName, entry.value!]));
     const integrationEnvView = Object.fromEntries(
-      resolvedIntegrationEntries.map((entry) => [entry.envName, {
-        source: entry.sourceName,
-        masked: maskIntegrationKey(entry.value),
-      }]),
+      resolvedIntegrationEntries.map((entry) => [
+        entry.envName,
+        {
+          source: entry.sourceName,
+          masked: maskIntegrationKey(entry.value),
+        },
+      ]),
     );
     const childEnv = {
       ...(desktopEnv ?? {}),
       ...integrationEnv,
     };
     const redactValues = resolvedIntegrationEntries.map((entry) => entry.value!);
-    const integrationHeader = integrationEntries.length > 0
-      ? ` · integration_env ${JSON.stringify(integrationEnvView)}`
-      : '';
+    const integrationHeader =
+      integrationEntries.length > 0 ? ` · integration_env ${JSON.stringify(integrationEnvView)}` : '';
 
     if (args.run_in_background) {
       const job = startBackground(

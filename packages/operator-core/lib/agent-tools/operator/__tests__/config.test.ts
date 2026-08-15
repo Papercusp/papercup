@@ -19,7 +19,7 @@ const MAKE_CTX = (over: Record<string, unknown> = {}) =>
     runId: 'run_T',
     spawnId: 'spw_T',
     ...over,
-  } as never);
+  }) as never;
 
 beforeEach(() => {
   vi.resetModules();
@@ -39,9 +39,7 @@ afterEach(() => {
 // Accepts BOTH ToolResponse shapes — the canonical { data } and the legacy
 // inline-JSON { content:[{ text }] } — so migrating a tool to { data } never
 // requires repointing this helper again (2026-07-26 batch's pattern).
-function parsePayload(
-  result: { data: unknown } | { content: Array<{ text: string }> },
-): Record<string, unknown> {
+function parsePayload(result: { data: unknown } | { content: Array<{ text: string }> }): Record<string, unknown> {
   if ('data' in result) return result.data as Record<string, unknown>;
   return JSON.parse(result.content[0].text);
 }
@@ -75,9 +73,9 @@ describe('operator:budget', () => {
       setBudget: vi.fn(),
     }));
     const { default: tool } = await import('../budget');
-    await expect(
-      tool.handler({ op: 'set', dailyCapUsd: 99 }, MAKE_CTX({ role: 'architect' })),
-    ).rejects.toThrow(/operator role/i);
+    await expect(tool.handler({ op: 'set', dailyCapUsd: 99 }, MAKE_CTX({ role: 'architect' }))).rejects.toThrow(
+      /operator role/i,
+    );
   });
 
   it('set as operator persists the new cap', async () => {
@@ -87,10 +85,7 @@ describe('operator:budget', () => {
       setBudget,
     }));
     const { default: tool } = await import('../budget');
-    const result = await tool.handler(
-      { op: 'set', dailyCapUsd: 50 },
-      MAKE_CTX({ role: 'operator' }),
-    );
+    const result = await tool.handler({ op: 'set', dailyCapUsd: 50 }, MAKE_CTX({ role: 'operator' }));
     expect(setBudget).toHaveBeenCalledWith(50);
     const payload = parsePayload(result as never);
     expect(payload).toEqual({ ok: true, dailyCapUsd: 50 });
@@ -157,10 +152,7 @@ describe('operator:preferences', () => {
       removePreferenceEntry: vi.fn(),
     }));
     const { default: tool } = await import('../preferences');
-    const result = await tool.handler(
-      { op: 'append', entry: 'a queen pref' },
-      MAKE_CTX({ role: 'mug' }),
-    );
+    const result = await tool.handler({ op: 'append', entry: 'a queen pref' }, MAKE_CTX({ role: 'mug' }));
     expect(appendPreferenceEntry).toHaveBeenCalledWith('a queen pref');
     const payload = parsePayload(result as never);
     expect(payload.ok).toBe(true);
@@ -174,10 +166,7 @@ describe('operator:preferences', () => {
       removePreferenceEntry: vi.fn(),
     }));
     const { default: tool } = await import('../preferences');
-    const result = await tool.handler(
-      { op: 'append', entry: 'a new pref' },
-      MAKE_CTX({ role: 'architect' }),
-    );
+    const result = await tool.handler({ op: 'append', entry: 'a new pref' }, MAKE_CTX({ role: 'architect' }));
     expect(appendPreferenceEntry).toHaveBeenCalledWith('a new pref');
     const payload = parsePayload(result as never);
     expect(payload.ok).toBe(true);
@@ -190,10 +179,7 @@ describe('operator:preferences', () => {
       removePreferenceEntry: vi.fn(async () => false),
     }));
     const { default: tool } = await import('../preferences');
-    const result = await tool.handler(
-      { op: 'remove', key: 'missing' },
-      MAKE_CTX({ role: 'operator' }),
-    );
+    const result = await tool.handler({ op: 'remove', key: 'missing' }, MAKE_CTX({ role: 'operator' }));
     const payload = parsePayload(result as never);
     expect(payload).toEqual({ ok: false, key: 'missing' });
   });
@@ -260,16 +246,13 @@ describe('operator:credentials_status', () => {
       readPicovoiceKey: vi.fn(async () => null),
     }));
     vi.doMock('../../../integration-credentials', () => ({
-      readIntegrationKey: vi.fn(async (name: string) =>
-        name === 'SIDESTAGE_DEEPGRAM_API_KEY' ? raw : undefined),
+      readIntegrationKey: vi.fn(async (name: string) => (name === 'SIDESTAGE_DEEPGRAM_API_KEY' ? raw : undefined)),
       maskIntegrationKey: vi.fn((value?: string | null) =>
-        value ? `${value.slice(0, 3)}...${value.slice(-4)}` : null),
+        value ? `${value.slice(0, 3)}...${value.slice(-4)}` : null,
+      ),
     }));
     const { default: tool } = await import('../credentials_status');
-    const result = await tool.handler(
-      { integration_name: 'SIDESTAGE_DEEPGRAM_API_KEY' },
-      MAKE_CTX(),
-    );
+    const result = await tool.handler({ integration_name: 'SIDESTAGE_DEEPGRAM_API_KEY' }, MAKE_CTX());
     const payload = parsePayload(result as never);
 
     expect(payload.integration).toEqual({
@@ -295,10 +278,7 @@ describe('operator:credentials_status', () => {
       maskIntegrationKey: vi.fn(() => null),
     }));
     const { default: tool } = await import('../credentials_status');
-    const result = await tool.handler(
-      { integration_name: 'MISSING_API_KEY' },
-      MAKE_CTX(),
-    );
+    const result = await tool.handler({ integration_name: 'MISSING_API_KEY' }, MAKE_CTX());
     const payload = parsePayload(result as never);
 
     expect(payload.integration).toEqual({

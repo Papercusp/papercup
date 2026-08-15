@@ -88,12 +88,9 @@ describe('capability:bash integration_env', () => {
 
   it('fails closed for a non-operator caller before reading the saved secret', async () => {
     const { ctx } = makeCtx({ role: 'cup', isSuperuser: false });
-    await expect(
-      bash.handler(
-        { command: 'true', integration_env: { [DESTINATION]: SOURCE } },
-        ctx,
-      ),
-    ).rejects.toThrow(/requires superuser or operator, architect, or mug authority/i);
+    await expect(bash.handler({ command: 'true', integration_env: { [DESTINATION]: SOURCE } }, ctx)).rejects.toThrow(
+      /requires superuser or operator, architect, or mug authority/i,
+    );
     expect(h.read).not.toHaveBeenCalled();
   });
 
@@ -111,10 +108,7 @@ describe('capability:bash integration_env', () => {
     h.value = undefined;
     const { ctx } = makeCtx();
     await expect(
-      bash.handler(
-        { command: 'echo SHOULD_NOT_RUN', integration_env: { [DESTINATION]: SOURCE } },
-        ctx,
-      ),
+      bash.handler({ command: 'echo SHOULD_NOT_RUN', integration_env: { [DESTINATION]: SOURCE } }, ctx),
     ).rejects.toThrow(`missing saved integration credential(s): ${SOURCE}`);
     expect(process.env[DESTINATION]).toBeUndefined();
   });
