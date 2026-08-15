@@ -25,7 +25,9 @@
  *      cut that degraded to full history and said so only in a warn.
  *   3. `coreSparseFrom` present, every core starting above 0 → a genuine sparse cut.
  * State 1 is still gated, but by the SIZE floor rather than the label, because a 50x installer
- * is a defect whether or not it is honestly described.
+ * is a defect whether or not it is honestly described — QUALIFIED, since 2026-08-15, by block
+ * count: bytes alone cannot separate a history dump from a big current-state projection, so the
+ * size floor only fires on a payload long enough to HOLD history. See the size floor below.
  */
 
 import type { SeedManifest, SeedStoreEntry } from '@papercusp/seed-bundle';
@@ -34,9 +36,24 @@ import type { SeedManifest, SeedStoreEntry } from '@papercusp/seed-bundle';
 export const SEED_ACK_FULL_HISTORY_ENV = 'PAPERCUSP_SEED_ACK_FULL_HISTORY';
 
 /**
- * A corestore above this ships history, not a head span. The sparse cut advertises ~40 MB;
- * the degraded 2026-07-21 core was 1,998,388,355 B. 256 MB sits an order of magnitude clear
- * of both, so neither a healthy sparse seed nor the known-bad one is a borderline call.
+ * A corestore above this ships history, not a head span — BUT ONLY when the payload is long
+ * enough to hold history (see `historyCapable` at the size check; bytes alone cannot tell a
+ * history dump from a big current-state projection).
+ *
+ * CALIBRATION, and the population it originally MISSED. This floor was set against two
+ * artifact classes: the sparse cut advertises ~40 MB, and the degraded 2026-07-21 core was
+ * 1,998,388,355 B. 256 MB sits clear of both, so neither is a borderline call — that much is
+ * still true, and it is why the constant is not simply raised.
+ *
+ * There is a THIRD class the original calibration never contemplated, and it is what the
+ * shipping path actually produces: a FILTERED current-state projection. The 0.0.17-alpha cut
+ * measured 318,544,683 B across 76 blocks — 7.6x the sparse figure, so ABOVE this floor, while
+ * being 6.1x SMALLER and carrying 1,430x fewer blocks than the corestore that actually shipped
+ * on 2026-07-05 (1,955,653,943 B / 108,633 blocks, per that cut's committed seed manifest).
+ * Healthy, in other words, and well above the floor. Do NOT re-derive this as "the floor is
+ * miscalibrated for the filtered path" and raise the constant: raising it would blind the
+ * SPARSE path to the very regression the floor exists to catch. The block-count qualifier is
+ * what separates the classes; the byte floor stays where it is.
  */
 export const DEFAULT_CORESTORE_SIZE_FLOOR_BYTES = 256 * 1024 * 1024;
 
