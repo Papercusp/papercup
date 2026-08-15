@@ -675,6 +675,22 @@ function completionTextParts(completion: unknown): string[] {
   ];
 }
 
+/**
+ * EI-20551121122206657: `addedTests` read from BOTH placements, mirroring
+ * completionFilesChanged below. The tool's own description tells callers to put
+ * structured evidence under `completion.verification`, so reading only the top level
+ * silently ignored the flag for every caller who followed that advice.
+ */
+function completionAddedTests(completion: unknown): boolean {
+  if (!completion || typeof completion !== 'object' || Array.isArray(completion)) return false;
+  const rec = completion as Record<string, unknown>;
+  const nested =
+    rec.verification && typeof rec.verification === 'object' && !Array.isArray(rec.verification)
+      ? (rec.verification as Record<string, unknown>)
+      : {};
+  return rec.addedTests === true || nested.addedTests === true;
+}
+
 function completionFilesChanged(completion: unknown): string[] {
   if (!completion || typeof completion !== 'object' || Array.isArray(completion)) return [];
   const rec = completion as Record<string, unknown>;
@@ -850,15 +866,31 @@ export function prescribedRecurrenceGuardCoverageGap(
     completion && typeof completion === 'object' && !Array.isArray(completion)
       ? (completion as Record<string, unknown>)
       : {};
-  const completionText = completionTextParts(record).join('\n');
+  // EI-20551121122206657: match PER PART, never over the parts joined together.
+  // These three regexes are sentence-scoped heuristics with windows of 45–160 chars,
+  // and completionTextParts returns INDEPENDENT fields (summary, whatLanded[], deferred[],
+  // verification.testsRun, …). Joining them first let the tail of one field and the head
+  // of an unrelated one form a phantom match across the boundary. Measured on the close of
+  // EI-20547482952043431: summary ended "…read before filing, not duplicated." and
+  // whatLanded[0] began "ordering guard generalized from…", producing the negation
+  // "not duplicated.\nordering guard" — which cancelled a correct guard citation and
+  // emitted the warning against a completion that named its guard three times over.
+  // Neither field is negative about a guard in isolation, so the false alarm was
+  // unreproducible from reading any single field, and it grew MORE likely the longer and
+  // better-documented the completion was.
+  const parts = completionTextParts(record);
+  const partNegative = (part: string): boolean => COMPLETION_NEGATIVE_GUARD_RE.test(part);
   const filesChanged = completionFilesChanged(record);
   const testPath = filesChanged.some((path) =>
     /(?:^|[/\\])(?:test|tests|__tests__)(?:[/\\]|$)|\.(?:test|spec)\.[^.]+$/i.test(path),
   );
-  const negative = COMPLETION_NEGATIVE_GUARD_RE.test(completionText);
-  const pointsToGuard = COMPLETION_GUARD_RE.test(completionText) && !negative;
-  const pointsToAddedTest = record.addedTests === true && testPath && !negative;
-  const explicitWaiver = EXPLICIT_GUARD_WAIVER_RE.test(completionText);
+  // A disclaimer anywhere still withholds credit from the bare addedTests+path pair (that
+  // pair carries no prose of its own to disclaim); it is now evaluated per part, so only a
+  // real disclaimer counts, not one manufactured at a field boundary.
+  const negativeSomewhere = parts.some(partNegative);
+  const pointsToGuard = parts.some((part) => COMPLETION_GUARD_RE.test(part) && !partNegative(part));
+  const pointsToAddedTest = completionAddedTests(record) && testPath && !negativeSomewhere;
+  const explicitWaiver = parts.some((part) => EXPLICIT_GUARD_WAIVER_RE.test(part));
   if (pointsToGuard || pointsToAddedTest || explicitWaiver) return undefined;
   return { prescriptions };
 }

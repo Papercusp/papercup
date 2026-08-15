@@ -61,6 +61,52 @@ describe('prescribedRecurrenceGuardCoverageGap', () => {
     ).toBeUndefined();
   });
 
+  // EI-20551121122206657 — the three cases below pin the PER-PART matching rule. The first
+  // is the observed false alarm; the second is the flag placement the tool's own description
+  // recommends; the third is the calibration that keeps the fix from being a blanket
+  // weakening (a real disclaimer must still suppress, wherever it lives).
+  it('does not manufacture a negation across two independent completion fields', () => {
+    // Observed on the close of EI-20547482952043431. Each string is innocuous alone; joined
+    // with "\n" they read as "not <25 chars> guard" to the 45-char negation window, which
+    // cancelled a summary that cited its guard by path three separate times.
+    expect(
+      prescribedRecurrenceGuardCoverageGap(item, {
+        summary:
+          'RECURRENCE GUARD: apps/operator/lib/release/windows-rootfs-preflight.test.ts — 4 passing. ' +
+          'The join_leg half is covered by EI-20549139616021387 — read before filing, not duplicated.',
+        whatLanded: ["ordering guard generalized from 'before the win leg' to 'before the FIRST leg'"],
+        testsRun: 'windows-rootfs-preflight.test.ts',
+        testResult: '4 passed / 0 failed',
+      }),
+    ).toBeUndefined();
+  });
+
+  it('credits addedTests declared under verification, not only at the top level', () => {
+    expect(
+      prescribedRecurrenceGuardCoverageGap(item, {
+        summary: 'closed it',
+        verification: {
+          addedTests: true,
+          filesChanged: ['packages/operator-core/lib/agent-tools/work_items/complete.prescribed-guard.test.ts'],
+        },
+      }),
+    ).toBeUndefined();
+  });
+
+  it('still honours a real disclaimer that lives outside the summary', () => {
+    // CALIBRATION for the two cases above: per-part matching must not degrade into "never
+    // negative". The only guard-ish mention here is inside deferred[0], and it disclaims —
+    // so the part that mentions the guard is the part that negates it, and the warning must
+    // still fire. Without this case, the fix above could have been an unconditional
+    // `pointsToGuard = true` and the suite would not have noticed.
+    expect(
+      prescribedRecurrenceGuardCoverageGap(item, {
+        summary: 'closed it out',
+        deferred: ['no recurrence guard added — deferred to a follow-up item'],
+      }),
+    ).toBeDefined();
+  });
+
   it('fails open for malformed item data and warns on an explicit missing guard', () => {
     expect(prescribedRecurrenceGuardCoverageGap({ title: null, summary: 42 }, null)).toBeUndefined();
     expect(
