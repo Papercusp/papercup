@@ -142,10 +142,14 @@ describe('the hook is WIRED, not merely present', () => {
   });
 
   it('is merged into the PostToolUse hooks with an Edit|Write|MultiEdit matcher', () => {
-    const idx = source.indexOf(`replaceOurHookEntries(ev('PostToolUse'), ours('${HOOK_BASENAME}')`);
-    expect(idx, 'no PostToolUse merge entry for the forward-compat nudge').toBeGreaterThan(-1);
-    // The matcher must accompany the merge call, or the hook is registered for nothing.
-    expect(source.slice(idx, idx + 400)).toContain("matcher: 'Edit|Write|MultiEdit'");
+    const escapedBasename = HOOK_BASENAME.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const registration = new RegExp(
+      String.raw`replaceOurHookEntries\(\s*ev\('PostToolUse'\),\s*ours\('${escapedBasename}'\),\s*\{[\s\S]{0,400}?matcher:\s*'Edit\|Write\|MultiEdit'`,
+    );
+    expect(
+      source.match(registration),
+      'no PostToolUse merge entry for the forward-compat nudge with an Edit|Write|MultiEdit matcher',
+    ).not.toBeNull();
   });
 });
 
