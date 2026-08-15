@@ -15,7 +15,7 @@
  *      declares a gitignored main/require/default target to appear in the
  *      block's explicit registry.
  */
-import { execFileSync, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import {
   chmodSync,
   existsSync,
@@ -32,6 +32,11 @@ import { fileURLToPath } from 'node:url';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
+import {
+  extractRegisteredRuntimeBuildWorkspaces,
+  listIgnoredRuntimeEntryWorkspaces,
+} from './runtime-workspace-build-coverage';
+
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, '../../../..');
 const SCRIPT_PATH = resolve(HERE, '../../bin/release/setup-release-checkout.sh');
@@ -47,58 +52,6 @@ function extractRuntimeBuildBlock(): string {
 }
 
 const BLOCK = extractRuntimeBuildBlock();
-
-function registeredRuntimeBuildWorkspaces(): Set<string> {
-  const body = BLOCK.match(/RUNTIME_BUILD_WORKSPACES=\(([\s\S]*?)\)/)?.[1] ?? '';
-  return new Set([...body.matchAll(/["']([^"']+)["']/g)].map((match) => match[1]));
-}
-
-function exportRuntimeTargets(value: unknown): string[] {
-  if (!value || typeof value !== 'object') return [];
-  const out: string[] = [];
-  for (const [condition, target] of Object.entries(value as Record<string, unknown>)) {
-    if (condition === 'require' || condition === 'default') {
-      if (typeof target === 'string') out.push(target);
-      else out.push(...exportRuntimeTargets(target));
-      continue;
-    }
-    // Export subpaths (".", "./react", ...) contain their own condition maps.
-    if (condition.startsWith('.')) out.push(...exportRuntimeTargets(target));
-  }
-  return out;
-}
-
-function ignoredRuntimeEntryWorkspaces(): Array<{ name: string; manifest: string; target: string }> {
-  const manifests = execFileSync(
-    'git',
-    ['ls-files', '--recurse-submodules', '--', ':(glob)**/package.json'],
-    { cwd: REPO_ROOT, encoding: 'utf8' },
-  ).trim().split('\n').filter(Boolean);
-
-  const hits: Array<{ name: string; manifest: string; target: string }> = [];
-  for (const manifest of manifests) {
-    const packageDir = dirname(resolve(REPO_ROOT, manifest));
-    let parsed: { name?: string; main?: unknown; exports?: unknown };
-    try {
-      parsed = JSON.parse(readFileSync(resolve(REPO_ROOT, manifest), 'utf8')) as typeof parsed;
-    } catch {
-      continue;
-    }
-    if (!parsed.name?.startsWith('@papercusp/') && !parsed.name?.startsWith('@papercup/')) continue;
-
-    const targets = new Set<string>();
-    if (typeof parsed.main === 'string') targets.add(parsed.main);
-    for (const target of exportRuntimeTargets(parsed.exports)) targets.add(target);
-
-    for (const rawTarget of targets) {
-      const target = rawTarget.replace(/^\.\//, '');
-      if (!target || target.includes('*')) continue;
-      const ignored = spawnSync('git', ['check-ignore', '-q', '--', target], { cwd: packageDir });
-      if (ignored.status === 0) hits.push({ name: parsed.name, manifest, target });
-    }
-  }
-  return hits;
-}
 
 describe('setup-release-checkout pinned workspace runtime builds', () => {
   const tempRoots: string[] = [];
@@ -177,8 +130,9 @@ describe('setup-release-checkout pinned workspace runtime builds', () => {
   });
 
   it('covers every workspace package whose declared runtime entry is gitignored', () => {
-    const registered = registeredRuntimeBuildWorkspaces();
-    const uncovered = ignoredRuntimeEntryWorkspaces().filter(({ name }) => !registered.has(name));
+    const registered = extractRegisteredRuntimeBuildWorkspaces(BLOCK);
+    const uncovered = listIgnoredRuntimeEntryWorkspaces(REPO_ROOT)
+      .filter(({ name }) => !registered.has(name));
     expect(
       uncovered,
       'A workspace package exposes a gitignored main/require/default entry but the release setup does not ' +
