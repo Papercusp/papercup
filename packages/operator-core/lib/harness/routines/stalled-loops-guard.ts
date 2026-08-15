@@ -871,7 +871,7 @@ export async function sweepStalledLoops(
     //
     // When a provider usage/rate wall kills a loop's wake turn, the lifecycle-death backoff
     // (loop-turn-outcome.ts P1a / reconcile-loop-routines.ts) does the RIGHT thing: it pushes
-    // `next_fire_at` out by the provider's own retry-after — up to LIFECYCLE_DEATH_REARM_CAP_MS
+    // `next_fire_at` out by the provider's own retry-after — up to the `clampUsageRearmDelayMs` cap
     // (6h) — and leaves the loop ARMED so it resumes when the wall lifts. Self-healing by design.
     //
     // But that healthy state is, by construction, byte-identical to the corpse signature this

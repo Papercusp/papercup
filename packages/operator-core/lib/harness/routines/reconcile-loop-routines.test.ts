@@ -11,7 +11,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Sql } from 'postgres';
-import { parseUsageResetMs } from '@papercusp/papercusp-shared/agent';
+import { parseUsageReset } from '@papercusp/papercusp-shared/agent';
 import { reconcileLoopRoutines, classifyLoopLifecycleTurn, defaultEscalateLifecycleDeath } from './reconcile-loop-routines';
 
 // EI-18668025239634541 recurrence guard: mocked so the test below can assert on the
@@ -526,9 +526,9 @@ describe('classifyLoopLifecycleTurn — pure classifier (EI-13818)', () => {
     expect(verdict?.reason).toBe('usage_limit');
     expect(verdict?.evidence).toContain('session limit');
     // Cross-check against the SAME reset parser the verdict reuses — no independent TZ math.
-    const expectedReset = parseUsageResetMs(text, NOW);
+    const expectedReset = parseUsageReset(text, NOW);
     expect(expectedReset).toBeDefined();
-    expect(verdict?.rearmDelayMs).toBe(Math.min(Math.max(expectedReset! - NOW, 60_000), 6 * 3_600_000));
+    expect(verdict?.rearmDelayMs).toBe(Math.min(Math.max(expectedReset!.atMs - NOW, 60_000), 6 * 3_600_000));
     expect(verdict?.rearmDelayMs).toBeGreaterThan(60_000); // strictly more than the bare interval
   });
 
@@ -553,6 +553,40 @@ describe('classifyLoopLifecycleTurn — pure classifier (EI-13818)', () => {
       60_000,
       NOW,
     );
+    expect(verdict?.rearmDelayMs).toBe(6 * 3_600_000);
+  });
+
+  // EI-20544023385610622 — THE DEFECT, at the layer that exhibited it. EI-20542327908037306 taught
+  // the parser the weekly form, but this caller then clipped the correctly-parsed ~113h hold to the
+  // 6h cap tuned for DAILY walls, so a walled loop still re-fired ~4x/day into a window it already
+  // knew was closed — each COLD fire burning a full context reset for zero work.
+  it('holds a date-qualified WEEKLY wall in full instead of clipping it to the daily 6h cap', () => {
+    // Sat Aug 15 → the following Thu Aug 20: days out, and the message NAMES the date.
+    const now = Date.parse('2026-08-15T17:47:00Z');
+    const text = "You've hit your weekly limit · resets Aug 20, 7am (America/New_York)";
+    const verdict = classifyLoopLifecycleTurn(text, 60_000, now);
+    expect(verdict?.reason).toBe('usage_limit');
+    // Pinned against the same parser, so no independent TZ math can drift.
+    const reset = parseUsageReset(text, now);
+    expect(reset?.precision).toBe('dated');
+    expect(verdict?.rearmDelayMs).toBe(reset!.atMs - now);
+    // The regression this pins: the old single cap returned exactly 6h here.
+    expect(verdict?.rearmDelayMs).toBeGreaterThan(6 * 3_600_000);
+    expect(verdict?.rearmDelayMs).toBeGreaterThan(4 * 86_400_000);
+  });
+
+  // The other half of the same decision: widening the ceiling for a NAMED instant must not widen
+  // it for an INFERRED one, or the mis-parse hazard the rail exists to prevent comes back for
+  // every loop on the box.
+  it('does NOT extend the ceiling for a bare-clock reset, whose day is inferred', () => {
+    const now = Date.parse('2026-08-15T17:47:00Z');
+    // "resets 4am" ~10h out by the next-occurrence rule — beyond 6h, and still clipped to it.
+    const verdict = classifyLoopLifecycleTurn(
+      "You've hit your session limit · resets 4am (America/New_York)",
+      60_000,
+      now,
+    );
+    expect(parseUsageReset('resets 4am', now)?.precision).toBe('clock');
     expect(verdict?.rearmDelayMs).toBe(6 * 3_600_000);
   });
 

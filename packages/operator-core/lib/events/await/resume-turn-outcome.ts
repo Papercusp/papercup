@@ -20,7 +20,7 @@
  *    re-arm (P0b/P1a).
  */
 
-import { classifySubprocessResult, parseUsageResetMs, type TurnError } from '@papercusp/papercusp-shared/agent';
+import { classifySubprocessResult, parseUsageReset, type TurnError } from '@papercusp/papercusp-shared/agent';
 import { classifyWedgeText } from '../../search/session-end-reason';
 
 /**
@@ -132,14 +132,18 @@ export function classifyResumeTurnExit(raw: ResumeTurnExitRaw, now: number = Dat
     }
     const wedge = classifyWedgeText(raw.stdoutTail);
     if (wedge) {
-      const resetAt = wedge.reason === 'usage_limit' ? parseUsageResetMs(wedge.evidence, now) : undefined;
+      const reset = wedge.reason === 'usage_limit' ? parseUsageReset(wedge.evidence, now) : undefined;
       const error: TurnError = {
         class: wedge.reason === 'auth_wall' ? 'auth' : 'usage_limit',
         message: wedge.evidence,
         provider,
         retryable: false,
         surfaceToUser: true,
-        ...(resetAt !== undefined ? { resetAt } : {}),
+        // `resetPrecision` must travel with `resetAt` on this hand-built error, not just on the
+        // classifier-built ones: this is the resume-headless channel that feeds
+        // `computeDeathRearmMs`, so dropping it here would silently deny the long re-arm ceiling
+        // to the exact path a walled loop dies on (EI-20544023385610622).
+        ...(reset !== undefined ? { resetAt: reset.atMs, resetPrecision: reset.precision } : {}),
       };
       return { ok: false, error };
     }

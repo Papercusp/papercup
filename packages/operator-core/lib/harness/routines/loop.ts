@@ -889,7 +889,12 @@ export function turnsStalledFloorMs(intervalSec: number | null | undefined): num
 /** EI-19325288514307343: a loop backed off on a provider usage-wall (a "lifecycle
  *  death" — see reconcile-loop-routines.ts's classifyLoopLifecycleTurn) is, from
  *  every liveness surface an owner actually looks at, PIXEL-IDENTICAL to a
- *  genuinely dead loop for up to `LIFECYCLE_DEATH_REARM_CAP_MS` (currently 6h): it
+ *  genuinely dead loop for the whole backoff — up to the `clampUsageRearmDelayMs`
+ *  ceiling, which since EI-20544023385610622 is 6h for an INFERRED reset but up to
+ *  7d for one the provider NAMED (a weekly wall). Widening that ceiling widens this
+ *  window, which is precisely why `lifecycleBackoff` below is not optional: it is the
+ *  only thing that distinguishes the two states, and the longer hold makes reading it
+ *  (rather than `active`/`nextFireAt` alone) mandatory, not merely advisable. It
  *  reads `active:true` with a `nextFireAt` far in the future and nothing else
  *  distinguishes "walled, will resume" from "wedged, needs a human". The
  *  escalation the reconciler fires (defaultEscalateLifecycleDeath) is correctly

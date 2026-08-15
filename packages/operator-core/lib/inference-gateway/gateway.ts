@@ -33,7 +33,7 @@ import {
   tierOf,
   shedTierCaps,
   classifyHttpError,
-  parseUsageResetMs,
+  parseUsageReset,
   type RateLimitGovernor,
   type AdmissionSnapshot,
   type AimdSnapshot,
@@ -3653,7 +3653,11 @@ export function createInferenceGateway(deps: GatewayDeps) {
             peekedRest = peek.rest;
             const text = peek.head.toString('utf8');
             if (classifyHttpError({ status: undefined, message: text }, 'anthropic').class === 'usage_limit') {
-              usageCapResetAt = parseUsageResetMs(text) ?? Date.now() + USAGE_LIMIT_DEFAULT_PAUSE_MS;
+              // Instant only: this path pauses the ACCOUNT, not a loop's re-arm, so it is not a
+              // consumer of the re-arm precision tiers (EI-20544023385610622). Its own bound is
+              // the parser's 35d `USAGE_RESET_MAX_HORIZON_MS`, and the separate account-pause
+              // clamp is `WEEKLY_CAP_MAX_PAUSE_MS` above — deliberately left as they were.
+              usageCapResetAt = parseUsageReset(text)?.atMs ?? Date.now() + USAGE_LIMIT_DEFAULT_PAUSE_MS;
             }
           }
           // Hard-evidence 429-shape suffix (gateway-429-shape-observability): everything needed is in scope here

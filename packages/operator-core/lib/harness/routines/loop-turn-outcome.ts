@@ -38,6 +38,7 @@
  */
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
+import { clampUsageRearmDelayMs } from '@papercusp/papercusp-shared/agent';
 import { runWithWorkspace } from '../../workspace-als';
 import { classifyFireError, recordFire as defaultRecordFire } from '../../autoloop';
 import { getLoopCarryNote as defaultGetLoopCarryNote, splitCarryNoteWalls } from '../../carry-note';
@@ -64,12 +65,9 @@ export function loopRoutineIdFromSource(source: string | null | undefined): stri
   return id || null;
 }
 
-/** Re-arm backoff is never longer than this — a SANITY ceiling on a bogus parse, not a normal
- *  bound. WI-6852: was 1h, which clipped every real usage-limit wall (measured: 13 of 15
- *  lifecycle-death re-arms landed on exactly the 60m cap, so each under-waited and re-fired into
- *  a still-active wall). Provider walls here commonly run ~3-5h. Kept in step with
- *  reconcile-loop-routines.ts's LIFECYCLE_DEATH_REARM_CAP_MS. */
-const REARM_BACKOFF_CAP_MS = 6 * 3_600_000;
+/* The 6h re-arm ceiling that used to live here (and again in reconcile-loop-routines.ts, each
+ * asking the other to be kept in step) is now the shared `clampUsageRearmDelayMs` — see its doc
+ * comment. EI-20544023385610622 made it two-tier, and duplicating that twice would drift. */
 
 /**
  * EI-19381528967421062: below this, a rate_limited/overloaded backoff is ORDINARY
@@ -102,7 +100,15 @@ export function computeDeathRearmMs(outcome: ResumeTurnOutcome, intervalMs: numb
     const fromRetryAfter = error.retryAfterMs != null && error.retryAfterMs > 0 ? error.retryAfterMs : undefined;
     const fromReset = error.resetAt != null ? error.resetAt - now : undefined;
     const hint = fromRetryAfter ?? (fromReset != null && fromReset > 0 ? fromReset : undefined);
-    if (hint != null) return Math.min(Math.max(hint, intervalMs), REARM_BACKOFF_CAP_MS);
+    // The LONG ceiling is earned by two things at once, and both are required
+    // (EI-20544023385610622). (1) The hint must be the RESET INSTANT, not `retry-after`: a
+    // retry-after is a duration the provider expects you back after, never evidence of a
+    // multi-day wall, so `usedRetryAfter` keeps the tight rail even on a usage_limit. (2) The
+    // class must be `usage_limit`: a transient RPM 429 recovers in seconds, so however
+    // confidently its reset instant was derived, parking a loop on it for days is never right.
+    const usedRetryAfter = fromRetryAfter != null;
+    const precision = error.class === 'usage_limit' && !usedRetryAfter ? error.resetPrecision : undefined;
+    if (hint != null) return clampUsageRearmDelayMs(hint, intervalMs, precision);
   }
   return intervalMs;
 }

@@ -116,7 +116,7 @@
  *     lifecycle-signal path specifically: re-classify the completed turn's OWN text (reusing
  *     `classifySessionEnd`, the same text-pattern classifier session digests trust) and, on a
  *     kill signature, override the verdict to 'error' + a rate-limit-aware re-arm delay (reusing
- *     `parseUsageResetMs`) instead of the blind interval, and raise one loud advisory escalation
+ *     `parseUsageReset`) instead of the blind interval, and raise one loud advisory escalation
  *     so a human sees a loop is dying on a provider wall instead of discovering it via
  *     session-archaeology hours later. An armed loop
  *     has no discrete "failed fire attempt" streak to gate on (it isn't failing to fire — it
@@ -184,7 +184,7 @@ import {
 import type { AgentIdentity } from '../../agent-tools/coordination/identity';
 import { SESSION_END_MARKER, SESSION_START_MARKER } from '../../agent-tools/activity/lifecycle-markers';
 import { classifySessionEnd, type SessionEndReason } from '../../search/session-end-reason';
-import { parseUsageResetMs } from '@papercusp/papercusp-shared/agent';
+import { parseUsageReset, clampUsageRearmDelayMs } from '@papercusp/papercusp-shared/agent';
 import { recordLoopTransition } from './loop-transition-log';
 
 /**
@@ -345,7 +345,7 @@ export interface LoopLifecycleDeathVerdict {
  * Re-classify a completed loop turn's OWN text for a provider-kill signature a clean 'ended'
  * lifecycle marker cannot distinguish from a real success (EI-13818). Pure + reuses the
  * existing text-pattern classifier (`classifySessionEnd`) and reset-time parser
- * (`parseUsageResetMs`) rather than inventing a second taxonomy. Returns null when the text is
+ * (`parseUsageReset`) rather than inventing a second taxonomy. Returns null when the text is
  * a genuine settle (or absent — a read miss must never manufacture a false death).
  */
 export function classifyLoopLifecycleTurn(
@@ -358,9 +358,11 @@ export function classifyLoopLifecycleTurn(
   if (!LOOP_LIFECYCLE_DEATH_REASONS.has(cls.reason)) return null;
   let rearmDelayMs = intervalMs;
   if (cls.reason === 'usage_limit') {
-    const resetAt = parseUsageResetMs(text, nowMs);
-    if (resetAt != null && resetAt > nowMs) {
-      rearmDelayMs = Math.min(Math.max(resetAt - nowMs, intervalMs), LIFECYCLE_DEATH_REARM_CAP_MS);
+    const reset = parseUsageReset(text, nowMs);
+    if (reset != null && reset.atMs > nowMs) {
+      // The ceiling follows the parse's PRECISION: a date-qualified weekly wall ("resets Aug 20,
+      // 7am") is held in full, while a bare-clock guess keeps the tight 6h rail.
+      rearmDelayMs = clampUsageRearmDelayMs(reset.atMs - nowMs, intervalMs, reset.precision);
     }
   }
   return { reason: cls.reason, evidence: cls.evidence, rearmDelayMs };
