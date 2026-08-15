@@ -363,8 +363,143 @@
     .host-copy span { display: block; margin-top: 0.35rem; color: #c5c8ce; font-size: 0.65rem; }
     .sound { border: 1px solid rgb(255 255 255 / 22%); border-radius: 0.58rem; padding: 0.5rem 0.62rem; color: #f5efe8; background: rgb(8 11 16 / 52%); font-size: 0.6rem; font-weight: 750; }
     .stream-tabs { display: flex; gap: 0.35rem; margin-top: 0.75rem; }
-    .stream-tabs button { min-height: 2.2rem; border: 1px solid var(--border); border-radius: 0.6rem; padding: 0.5rem 0.75rem; color: var(--muted); background: var(--surface); font-size: 0.61rem; font-weight: 800; }
-    .stream-tabs .active { border-color: color-mix(in srgb, var(--red) 35%, var(--border)); color: var(--red-dark); background: color-mix(in srgb, var(--red) 5%, var(--surface)); }
+    .stream-tabs button {
+      display: inline-flex;
+      min-height: 2.2rem;
+      align-items: center;
+      gap: 0.38rem;
+      border: 1px solid var(--border);
+      border-radius: 0.6rem;
+      padding: 0.5rem 0.75rem;
+      color: var(--muted);
+      background: var(--surface);
+      font-size: 0.61rem;
+      font-weight: 800;
+    }
+    .stream-tabs button span {
+      display: grid;
+      min-width: 1.15rem;
+      height: 1.15rem;
+      place-items: center;
+      border-radius: 999px;
+      padding-inline: 0.25rem;
+      color: var(--muted);
+      background: var(--surface-soft);
+      font-size: 0.5rem;
+    }
+    .stream-tabs button[aria-selected="true"] {
+      border-color: color-mix(in srgb, var(--red) 35%, var(--border));
+      color: var(--red-dark);
+      background: color-mix(in srgb, var(--red) 5%, var(--surface));
+      box-shadow: 0 6px 16px color-mix(in srgb, var(--red) 8%, transparent);
+    }
+    .stream-tabs button[aria-selected="true"] span { color: white; background: var(--red); }
+    .stream-tabs button:focus-visible { outline: 3px solid color-mix(in srgb, var(--yellow) 58%, transparent); outline-offset: 2px; }
+
+    .room-context {
+      margin-top: 0.5rem;
+      overflow: hidden;
+      border: 1px solid var(--border);
+      border-radius: 0.88rem;
+      background: var(--surface);
+      box-shadow: 0 12px 30px rgb(var(--shadow) / 8%);
+    }
+    .room-panel { min-height: 18.5rem; padding: 0.9rem; }
+    .room-panel[hidden] { display: none; }
+    .room-panel-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 1rem;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 0.72rem;
+    }
+    .room-panel-kicker {
+      display: block;
+      margin-bottom: 0.2rem;
+      color: var(--red-dark);
+      font-size: 0.51rem;
+      font-weight: 900;
+      letter-spacing: 0.13em;
+      text-transform: uppercase;
+    }
+    .room-panel-header h3 { margin: 0; font-size: 0.9rem; letter-spacing: -0.025em; }
+    .room-panel-meta { color: var(--muted); font-size: 0.55rem; font-weight: 750; white-space: nowrap; }
+
+    .chat-thread { display: grid; gap: 0.62rem; margin: 0; padding: 0.78rem 0; list-style: none; }
+    .chat-message { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 0.58rem; align-items: start; }
+    .chat-avatar, .seller-avatar {
+      display: grid;
+      flex: 0 0 auto;
+      place-items: center;
+      border: 1px solid color-mix(in srgb, var(--red) 18%, var(--border));
+      border-radius: 50%;
+      color: var(--red-dark);
+      background: color-mix(in srgb, var(--red) 7%, var(--surface));
+      font-size: 0.52rem;
+      font-weight: 950;
+    }
+    .chat-avatar { width: 1.8rem; height: 1.8rem; }
+    .chat-message-copy { min-width: 0; }
+    .chat-author { display: flex; align-items: center; gap: 0.38rem; font-size: 0.58rem; font-weight: 900; }
+    .chat-author time { margin-left: auto; color: var(--muted); font-size: 0.49rem; font-weight: 650; }
+    .host-tag, .verified-tag {
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      padding: 0.18rem 0.34rem;
+      color: #2b2104;
+      background: var(--yellow);
+      font-size: 0.43rem;
+      font-weight: 950;
+      letter-spacing: 0.07em;
+      text-transform: uppercase;
+    }
+    .chat-message p { margin: 0.18rem 0 0; color: var(--muted); font-size: 0.6rem; line-height: 1.48; }
+    .chat-compose { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0.45rem; border-top: 1px solid var(--border); padding-top: 0.72rem; }
+    .chat-field {
+      min-width: 0;
+      min-height: 2.55rem;
+      border: 1px solid var(--border-strong);
+      border-radius: var(--control-radius);
+      outline: 0;
+      padding: 0.62rem 0.7rem;
+      color: var(--text);
+      background: var(--surface-soft);
+      font-size: 0.63rem;
+    }
+    .chat-field:focus { border-color: color-mix(in srgb, var(--red) 42%, var(--border)); box-shadow: 0 0 0 3px color-mix(in srgb, var(--red) 8%, transparent); }
+    .chat-compose .primary { width: auto; }
+    .chat-helper, .room-action-status { min-height: 0.85rem; margin: 0.35rem 0 0; color: var(--muted); font-size: 0.51rem; line-height: 1.4; }
+
+    .detail-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.52rem; margin-top: 0.78rem; }
+    .detail-card { border: 1px solid var(--border); border-radius: 0.62rem; padding: 0.62rem; background: var(--surface-soft); }
+    .detail-card span, .seller-stat span { display: block; color: var(--muted); font-size: 0.48rem; font-weight: 850; letter-spacing: 0.1em; text-transform: uppercase; }
+    .detail-card strong { display: block; margin-top: 0.22rem; font-size: 0.62rem; line-height: 1.4; }
+    .detail-story { margin: 0.72rem 0 0; color: var(--muted); font-size: 0.59rem; line-height: 1.58; }
+    .info-banner {
+      margin-top: 0.7rem;
+      border-left: 3px solid var(--yellow-dark);
+      border-radius: 0.52rem;
+      padding: 0.62rem 0.68rem;
+      color: var(--text);
+      background: color-mix(in srgb, var(--yellow) 10%, var(--surface));
+      font-size: 0.56rem;
+      line-height: 1.48;
+    }
+
+    .seller-profile { display: flex; align-items: center; gap: 0.72rem; margin-top: 0.82rem; }
+    .seller-avatar { width: 3.2rem; height: 3.2rem; font-size: 0.72rem; }
+    .seller-identity { min-width: 0; }
+    .seller-name { display: flex; align-items: center; gap: 0.4rem; }
+    .seller-name strong { font-size: 0.78rem; }
+    .verified-tag { color: white; background: var(--success); }
+    .seller-identity p { margin: 0.24rem 0 0; color: var(--muted); font-size: 0.56rem; }
+    .seller-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.45rem; margin-top: 0.8rem; }
+    .seller-stat { border: 1px solid var(--border); border-radius: 0.62rem; padding: 0.58rem; background: var(--surface-soft); }
+    .seller-stat strong { display: block; margin-top: 0.25rem; font-size: 0.78rem; letter-spacing: -0.02em; }
+    .seller-bio { margin: 0.72rem 0 0; color: var(--muted); font-size: 0.59rem; line-height: 1.55; }
+    .seller-actions { display: grid; grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr); gap: 0.45rem; margin-top: 0.72rem; }
 
     .offer-slot {
       min-width: 0;
@@ -596,6 +731,13 @@
       .stream-stage { min-height: 18rem; }
       .host-card { align-items: flex-start; flex-direction: column; }
       .sound { display: none; }
+      .stream-tabs button { flex: 1 1 0; justify-content: center; padding-inline: 0.35rem; }
+      .room-panel { min-height: auto; }
+      .detail-grid { grid-template-columns: 1fr; }
+      .seller-profile { align-items: flex-start; }
+      .seller-stats { grid-template-columns: 1fr; }
+      .seller-actions, .chat-compose { grid-template-columns: 1fr; }
+      .chat-compose .primary { width: 100%; }
       .auction-top { grid-template-columns: 4.7rem minmax(0, 1fr); }
       .ring { width: 4.7rem; height: 4.7rem; }
       .bid-form { grid-template-columns: 1fr; }
@@ -683,10 +825,78 @@
                   <button class="sound" type="button">Sound on</button>
                 </div>
               </div>
-              <div class="stream-tabs" aria-label="Mock room tabs">
-                <button class="active" type="button">Chat · 126</button>
-                <button type="button">Details</button>
-                <button type="button">Seller</button>
+              <div class="stream-tabs" role="tablist" aria-label="Room information">
+                <button id="room-tab-chat" role="tab" type="button" data-room-tab="chat" aria-selected="true" aria-controls="room-panel-chat" tabindex="0" aria-label="Chat, 126 messages">Chat <span id="chat-count">126</span></button>
+                <button id="room-tab-details" role="tab" type="button" data-room-tab="details" aria-selected="false" aria-controls="room-panel-details" tabindex="-1">Details</button>
+                <button id="room-tab-seller" role="tab" type="button" data-room-tab="seller" aria-selected="false" aria-controls="room-panel-seller" tabindex="-1">Seller</button>
+              </div>
+
+              <div class="room-context">
+                <section class="room-panel" id="room-panel-chat" role="tabpanel" data-room-panel="chat" aria-labelledby="room-tab-chat" tabindex="0">
+                  <div class="room-panel-header">
+                    <div><span class="room-panel-kicker">Room conversation</span><h3>Live chat</h3></div>
+                    <span class="room-panel-meta">84 watching</span>
+                  </div>
+                  <ol class="chat-thread" id="chat-thread" aria-label="Recent live chat messages">
+                    <li class="chat-message">
+                      <span class="chat-avatar" aria-hidden="true">MR</span>
+                      <div class="chat-message-copy"><div class="chat-author"><span>Maya R.</span><time datetime="2026-08-14T20:14:00">8:14</time></div><p>Does this run true to size, or is it more of a relaxed fit?</p></div>
+                    </li>
+                    <li class="chat-message">
+                      <span class="chat-avatar" aria-hidden="true">SA</span>
+                      <div class="chat-message-copy"><div class="chat-author"><span>Studio Archive Co.</span><span class="host-tag">Seller</span><time datetime="2026-08-14T20:14:12">8:14</time></div><p>Relaxed through the body—23 inches pit to pit. Jules will show the back next.</p></div>
+                    </li>
+                    <li class="chat-message">
+                      <span class="chat-avatar" aria-hidden="true">MO</span>
+                      <div class="chat-message-copy"><div class="chat-author"><span>Morgan</span><time datetime="2026-08-14T20:14:18">8:14</time></div><p>That hand-finished chenille is perfect. 🔥</p></div>
+                    </li>
+                  </ol>
+                  <form class="chat-compose" id="chat-form">
+                    <input class="chat-field" id="chat-message" type="text" maxlength="160" autocomplete="off" aria-label="Message the room" placeholder="Ask about fit, condition, or styling…" />
+                    <button class="primary" type="submit">Send</button>
+                  </form>
+                  <p class="chat-helper" id="chat-status" role="status" aria-live="polite">Everyone in the room can see messages you send.</p>
+                </section>
+
+                <section class="room-panel" id="room-panel-details" role="tabpanel" data-room-panel="details" aria-labelledby="room-tab-details" tabindex="0" hidden>
+                  <div class="room-panel-header">
+                    <div><span class="room-panel-kicker">Current item</span><h3>Stage Varsity Jacket</h3></div>
+                    <span class="room-panel-meta">Lot 04 · Live</span>
+                  </div>
+                  <div class="detail-grid">
+                    <div class="detail-card"><span>Condition</span><strong>Excellent vintage · light sleeve patina</strong></div>
+                    <div class="detail-card"><span>Size</span><strong>Unisex M · 23 in pit to pit</strong></div>
+                    <div class="detail-card"><span>Materials</span><strong>Wool body · leather sleeves · chenille</strong></div>
+                    <div class="detail-card"><span>Fulfillment</span><strong>$12 shipping · leaves Brooklyn in 2 days</strong></div>
+                  </div>
+                  <p class="detail-story">Late-1990s Canadian varsity with a heavyweight body and hand-finished archive lettering. The host can inspect any area live before the auction closes.</p>
+                  <div class="info-banner" role="note"><strong>Auction terms:</strong> final sale after the live inspection. Buyer protection still covers damage or details that were not disclosed on stream.</div>
+                </section>
+
+                <section class="room-panel" id="room-panel-seller" role="tabpanel" data-room-panel="seller" aria-labelledby="room-tab-seller" tabindex="0" hidden>
+                  <div class="room-panel-header">
+                    <div><span class="room-panel-kicker">Who you’re buying from</span><h3>Meet the seller</h3></div>
+                    <span class="room-panel-meta">Usually replies in 1 hr</span>
+                  </div>
+                  <div class="seller-profile">
+                    <span class="seller-avatar" aria-hidden="true">SA</span>
+                    <div class="seller-identity">
+                      <div class="seller-name"><strong>Studio Archive Co.</strong><span class="verified-tag">Verified</span></div>
+                      <p>@studioarchive · Brooklyn, New York · selling since 2019</p>
+                    </div>
+                  </div>
+                  <div class="seller-stats" aria-label="Seller reputation">
+                    <div class="seller-stat"><span>Rating</span><strong>4.9 ★</strong></div>
+                    <div class="seller-stat"><span>Completed sales</span><strong>1.8k</strong></div>
+                    <div class="seller-stat"><span>Ships in 2 days</span><strong>98%</strong></div>
+                  </div>
+                  <p class="seller-bio">Curated sportswear, collegiate graphics, and one-of-one repairs. Every live item is measured and condition-checked on camera.</p>
+                  <div class="seller-actions">
+                    <button class="secondary" id="follow-seller" type="button" aria-pressed="false">Follow seller</button>
+                    <button class="primary" id="view-shop" type="button">View 38 shop items</button>
+                  </div>
+                  <p class="room-action-status" id="seller-status" role="status" aria-live="polite"></p>
+                </section>
               </div>
             </div>
 
@@ -829,6 +1039,8 @@
       const description = document.querySelector("#state-description");
       const controls = Array.from(document.querySelectorAll("[data-state-target]"));
       const panels = Array.from(document.querySelectorAll("[data-state-panel]"));
+      const roomTabs = Array.from(document.querySelectorAll("[data-room-tab]"));
+      const roomPanels = Array.from(document.querySelectorAll("[data-room-panel]"));
 
       function showState(state) {
         module.dataset.state = state;
@@ -843,6 +1055,86 @@
 
       controls.forEach((control) => {
         control.addEventListener("click", () => showState(control.dataset.stateTarget));
+      });
+
+      function showRoomPanel(room, focusPanel = false) {
+        roomTabs.forEach((tab) => {
+          const selected = tab.dataset.roomTab === room;
+          tab.setAttribute("aria-selected", String(selected));
+          tab.tabIndex = selected ? 0 : -1;
+        });
+        roomPanels.forEach((panel) => {
+          panel.hidden = panel.dataset.roomPanel !== room;
+          if (!panel.hidden && focusPanel) panel.focus();
+        });
+      }
+
+      roomTabs.forEach((tab, index) => {
+        tab.addEventListener("click", () => showRoomPanel(tab.dataset.roomTab));
+        tab.addEventListener("keydown", (event) => {
+          let targetIndex = index;
+          if (event.key === "ArrowRight") targetIndex = (index + 1) % roomTabs.length;
+          else if (event.key === "ArrowLeft") targetIndex = (index - 1 + roomTabs.length) % roomTabs.length;
+          else if (event.key === "Home") targetIndex = 0;
+          else if (event.key === "End") targetIndex = roomTabs.length - 1;
+          else return;
+          event.preventDefault();
+          const target = roomTabs[targetIndex];
+          showRoomPanel(target.dataset.roomTab);
+          target.focus();
+        });
+      });
+
+      document.querySelector("#chat-form").addEventListener("submit", (event) => {
+        event.preventDefault();
+        const field = document.querySelector("#chat-message");
+        const message = field.value.trim();
+        const status = document.querySelector("#chat-status");
+        if (!message) {
+          status.textContent = "Type a message before sending.";
+          field.focus();
+          return;
+        }
+        const item = document.createElement("li");
+        item.className = "chat-message";
+        const avatar = document.createElement("span");
+        avatar.className = "chat-avatar";
+        avatar.setAttribute("aria-hidden", "true");
+        avatar.textContent = "YO";
+        const copy = document.createElement("div");
+        copy.className = "chat-message-copy";
+        const author = document.createElement("div");
+        author.className = "chat-author";
+        const name = document.createElement("span");
+        name.textContent = "You";
+        const time = document.createElement("time");
+        time.textContent = "now";
+        const body = document.createElement("p");
+        body.textContent = message;
+        author.append(name, time);
+        copy.append(author, body);
+        item.append(avatar, copy);
+        document.querySelector("#chat-thread").append(item);
+        const count = document.querySelector("#chat-count");
+        const nextCount = Number(count.textContent) + 1;
+        count.textContent = String(nextCount);
+        document.querySelector("#room-tab-chat").setAttribute("aria-label", `Chat, ${nextCount} messages`);
+        field.value = "";
+        status.textContent = "Preview: your message appears in the live room.";
+      });
+
+      document.querySelector("#follow-seller").addEventListener("click", (event) => {
+        const button = event.currentTarget;
+        const following = button.getAttribute("aria-pressed") !== "true";
+        button.setAttribute("aria-pressed", String(following));
+        button.textContent = following ? "Following" : "Follow seller";
+        document.querySelector("#seller-status").textContent = following
+          ? "Preview: Studio Archive Co. is now in your followed sellers."
+          : "Preview: seller removed from your followed list.";
+      });
+
+      document.querySelector("#view-shop").addEventListener("click", () => {
+        document.querySelector("#seller-status").textContent = "Preview: this opens Studio Archive Co.’s shop without leaving the live room behind.";
       });
 
       document.querySelector("#hold-item").addEventListener("click", () => {
