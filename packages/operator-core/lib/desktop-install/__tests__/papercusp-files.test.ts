@@ -9,7 +9,7 @@
  *   - Missing source files don't crash (logged via *Written=false)
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import * as os from 'node:os';
@@ -308,6 +308,53 @@ describe('installPapercuspFiles', () => {
     expect(projectHistoryDispatcherExec('/sidecar/bin/node', sourceCli)).toBe(
       `${JSON.stringify(sourceCli)} project-history`,
     );
+  });
+
+  /**
+   * WI-39140 / P-006 regression.
+   *
+   * The test above pins the tsx SOURCE layout, where resolveOperatorAppRoot()
+   * returns `<repo>/apps/operator`. Production does not supply that anchor, and
+   * the mismatch is invisible: the resolver simply returns null, the dispatcher
+   * is written WITHOUT its `project-history` case, and the install reports
+   * success. It shipped on a green deploy with nothing failing.
+   *
+   * Both anchors below were MEASURED on the deployed operator (pid running
+   * `<release>/apps/operator/dist-host/hono-host.mjs`), not assumed.
+   */
+  const RELEASE_REPO = path.join(path.sep, 'release');
+  const RELEASE_SOURCE_CLI = path.join(RELEASE_REPO, 'libs', 'papercusp', 'packages', 'cli', 'bin', 'papercusp');
+  // resolveOperatorAppRoot() walks up 2 from the module dir. The esbuild bundle
+  // lives at `apps/operator/dist-host/`, one level DEEPER than the source file it
+  // replaces, so the same two hops land one level HIGH — on `<release>/apps`.
+  const BUNDLED_APP_ROOT = path.join(RELEASE_REPO, 'apps');
+  const DEPLOYED_CWD = path.join(RELEASE_REPO, 'apps', 'operator');
+
+  it('resolves the source CLI from the BUNDLED app root and the deployed cwd (WI-39140/P-006)', () => {
+    const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(DEPLOYED_CWD);
+    try {
+      expect(projectHistoryLauncherCandidates(BUNDLED_APP_ROOT, false)).toContain(RELEASE_SOURCE_CLI);
+    } finally {
+      cwdSpy.mockRestore();
+    }
+  });
+
+  /**
+   * PERMANENT CALIBRATION CONTROL — keeps the test above from passing vacuously.
+   *
+   * This reimplements the RETIRED fixed-hop resolution and asserts it misses the
+   * real production anchors. It is a pure function of path strings, so it stays
+   * true forever. If someone reverts the upward walk to a fixed number of `..`
+   * hops, the test above goes red rather than silently shipping a dispatcher with
+   * the feature missing again.
+   */
+  it('CONTROL: the retired fixed-hop resolution misses both production anchors', () => {
+    const rel = path.join('libs', 'papercusp', 'packages', 'cli', 'bin', 'papercusp');
+    const retiredFixedHop = [
+      path.resolve(BUNDLED_APP_ROOT, '..', '..', rel), // -> <workspace>/libs/... (one level too high)
+      path.resolve(DEPLOYED_CWD, rel), // -> <release>/apps/operator/libs/... (cwd is not the repo root)
+    ];
+    expect(retiredFixedHop).not.toContain(RELEASE_SOURCE_CLI);
   });
 
   it('writes a macOS "Papercusp Tutorial & Setup.app" wrapper on darwin once the dispatcher resolves (WI-2197)', async () => {
