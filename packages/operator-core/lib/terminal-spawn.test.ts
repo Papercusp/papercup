@@ -8,7 +8,7 @@
  */
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const existsSyncMock = vi.fn((_p: string): boolean => false);
+const existsSyncMock = vi.hoisted(() => vi.fn((_p: string): boolean => false));
 vi.mock('node:fs', async () => {
   const actual = await vi.importActual<typeof import('node:fs')>('node:fs');
   return { ...actual, existsSync: (...a: unknown[]) => existsSyncMock(...(a as [string])) };

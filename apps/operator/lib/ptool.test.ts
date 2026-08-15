@@ -3,7 +3,8 @@ import { once } from 'node:events';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { describe, it, expect, vi } from 'vitest';
 import { MCP_PROXY_RETRY_WINDOW_MS } from '../lib/mcp-proxy/budgets.mjs';
@@ -452,7 +453,7 @@ describe('ptool local operator connect retry (EI-20207246136942518)', () => {
       await promisify(execFile)(
         process.execPath,
         [
-          resolve('apps/operator/scripts/ptool.mjs'),
+          fileURLToPath(new URL('../scripts/ptool.mjs', import.meta.url)),
           '--list',
           `--url=http://127.0.0.1:${proxyPort}`,
           `--token-file=${tokenFile}`,

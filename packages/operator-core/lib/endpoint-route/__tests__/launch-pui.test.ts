@@ -55,7 +55,7 @@ function makeChild(): FakeChild {
 }
 
 const spawnMock = vi.fn((_bin?: string, _args?: string[], _opts?: unknown): FakeChild => makeChild());
-const existsSyncMock = vi.fn((_p: string): boolean => true);
+const existsSyncMock = vi.hoisted(() => vi.fn((_p: string): boolean => true));
 const killSpy = vi.spyOn(process, 'kill').mockReturnValue(true);
 
 vi.mock('node:child_process', async () => {
