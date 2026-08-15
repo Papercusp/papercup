@@ -65,7 +65,12 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  await fs.rm(tmpHome, { recursive: true, force: true });
+  // installPapercuspFiles refreshes the Linux desktop database in a detached,
+  // best-effort child. On a loaded gate that child can briefly recreate
+  // mimeinfo.cache while the fixture tree is being removed. Match the focused
+  // Linux launcher tests' bounded retry so cleanup observes that documented
+  // lifecycle instead of turning it into an ENOTEMPTY suite failure.
+  await fs.rm(tmpHome, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
   await fs.rm(tmpAppRoot, { recursive: true, force: true });
 });
 
