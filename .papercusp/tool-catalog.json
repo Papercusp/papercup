@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 732,
+  "count": 733,
   "tools": [
     {
       "name": "ablation:report",
@@ -2220,7 +2220,7 @@
           "POST"
         ]
       },
-      "description": "Run a shell command (bash -c) server-side in the project dir. Streams combined output; large output spills to a log file. Set run_in_background for long jobs (build/test/dev-server) and poll with capability:bash_output.",
+      "description": "Run a shell command (bash -c) server-side in the project dir. Streams combined output; large output spills to a log file. Set run_in_background for long jobs (build/test/dev-server) and poll with capability:bash_output. Operator-authority callers may bind encrypted integration credentials into named child-only environment variables by reference; exact values are redacted from all returned/streamed/spilled output.",
       "capabilities": [
         "capability:bash"
       ],
@@ -2281,7 +2281,7 @@
         "foreign-session"
       ],
       "guidance": {
-        "when": "Run any shell command — build, test, git status, file inspection, scripts. For literal backticks, dollar signs, or other shell metacharacters in search patterns, prefer fixed-string `rg -F` with a shell-safe single-quoted argument; an unmatched backtick inside a double-quoted pattern fails before `rg` runs. For a command that runs longer than ~1–2 min (build, test suite, dev server), pass run_in_background:true and poll capability:bash_output. A background job still has a wall-clock deadline (4h default, 12h max) and is SIGTERMed then SIGKILLed at it — the launch result names the deadline; raise `timeout` for a longer job.",
+        "when": "Run shell commands for builds, tests, status checks, file inspection, or scripts. Quote shell metacharacters; use single-quoted `rg -F` for literal searches. For jobs over 1–2 minutes, set run_in_background:true and read with capability:bash_output. Background jobs have deadlines (4h default, 12h max); raise `timeout` when needed.",
         "notWhen": "To read/write/edit a single file, prefer capability:read / capability:write / capability:edit (they coordinate the file lock and mirror the native editors). For read-only queries against the operator PostgreSQL database, use dev:pg_query { sql | describe } instead of psql: capability:bash intentionally strips database credential environment variables. For git, prefer capability:git.",
         "chaining": "run_in_background:true → returns a bash_id plus durable task_id → preserve task_id across carry and read with capability:bash_output { task_id } (bash_id also works in the launching context) → processes:kill { taskId } to stop. Never push (git push is refused)."
       }
@@ -10982,7 +10982,7 @@
           "POST"
         ]
       },
-      "description": "FIRE git-sync NOW — run the git-sync routine action once on demand (commit + push the current install's dirty tree) instead of waiting for the ≤3-min cron tick. The manual lever git-sync otherwise lacks (only routines:set cron/pause exists): makes a (force-)deploy ship CURRENT staging, not stale. Same action a cron tick runs (lock, content-guard, attribution). release:deploy now fires this FIRST so it ships the latest agents' work.",
+      "description": "FIRE git-sync NOW — run the git-sync routine action once on demand instead of waiting for the ≤3-min cron tick. The response distinguishes a LOCAL commit from CONFIRMED origin egress: on bridged/commit-only hives, status:'committed' + remote_egress.confirmed:false means wait for git-sync:egressed:<sha> or verify the remote ref before claiming delivery. The manual lever git-sync otherwise lacks (only routines:set cron/pause exists). Same action a cron tick runs (lock, content-guard, attribution). release:deploy fires this first, then follows the normal publication/gate path.",
       "capabilities": [
         "operator:write"
       ],
@@ -15081,7 +15081,7 @@
           "POST"
         ]
       },
-      "description": "Masked credential status for voice providers (set/not-set + tail). Read-only — never returns raw keys.",
+      "description": "Masked credential status for voice providers plus an optional encrypted integration credential lookup by name. Read-only — never returns raw keys. Integration lookup distinguishes missing from saved-not-injected.",
       "capabilities": [
         "secrets:operator-credentials:read"
       ],
@@ -22665,6 +22665,43 @@
         "when": "You want to SEE the rubric scorecards that have been emitted — e.g. did the Kettle emit a COMPLETE pot-coordination-health scorecard recently (missingKeys empty)? what is one criterion's rating over time? is there an emission gap? The data substrate for trend/freshness/self-comparison monitoring.",
         "notWhen": "You want the RUBRIC definition (criteria/model/method) — rubrics:get / rubrics:list. You want the cross-corpus meta-pattern rollup incl. rubric ratings grouped for ideation — curation:state-of-pot. You are FILING a scorecard — scorecards:emit.",
         "chaining": "scorecards:list { rubricRef: \"pot-coordination-health\", since } → inspect missingKeys for completeness / ratings for the latest standing → drill into a row via work_items:get { id: issueId }, or rubrics:get { rubricRef } for the criterion definitions."
+      }
+    },
+    {
+      "name": "scorecards:retract",
+      "http": {
+        "path": "/api/agent-tools/scorecards/retract",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Retract one rubric scorecard by issue id. Preserves the original evidence and adds machine-readable {at,by,reason} withdrawal metadata; default scorecard reads exclude it while audit reads can opt in.",
+      "capabilities": [
+        "coord:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "cup",
+        "mug",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "doc-steward",
+        "judge"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "A scorecard is wholly invalid and must stop contributing to live list, trend, freshness, or gate reads.",
+        "notWhen": "You have a corrected replacement — emit it with scorecards:emit { supersedes:<old issue id> } instead.",
+        "chaining": "scorecards:retract { issueId, reason } → scorecards:list { rubricRef } to verify it disappeared; add includeRetracted:true for the audit view."
       }
     },
     {
