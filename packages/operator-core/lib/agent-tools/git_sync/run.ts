@@ -62,7 +62,7 @@ export default defineTool({
   name: 'git-sync:run',
   profile: 'engineer',
   description:
-    "FIRE git-sync NOW — run the git-sync routine action once on demand (commit + push the current install's dirty tree) instead of waiting for the ≤3-min cron tick. The manual lever git-sync otherwise lacks (only routines:set cron/pause exists): makes a (force-)deploy ship CURRENT staging, not stale. Same action a cron tick runs (lock, content-guard, attribution). release:deploy now fires this FIRST so it ships the latest agents' work.",
+    "FIRE git-sync NOW — run the git-sync routine action once on demand instead of waiting for the ≤3-min cron tick. The response distinguishes a LOCAL commit from CONFIRMED origin egress: on bridged/commit-only hives, status:'committed' + remote_egress.confirmed:false means wait for git-sync:egressed:<sha> or verify the remote ref before claiming delivery. The manual lever git-sync otherwise lacks (only routines:set cron/pause exists). Same action a cron tick runs (lock, content-guard, attribution). release:deploy fires this first, then follows the normal publication/gate path.",
   capability: 'operator:write',
   guidance: {
     when: 'You need the latest work COMMITTED right now — before a (force-)deploy or gate run, or to recover when git-sync is lagging/wedged. (git-sync also auto-runs every ~3 min; this just fires it on demand.)',
@@ -124,13 +124,42 @@ export default defineTool({
 
     const after = repoDir ? await headSha(repoDir) : null;
     const outcome = fired.value;
+    const pushedScopes = outcome && 'pushed' in outcome ? outcome.pushed : [];
+    const superprojectPushConfirmed = pushedScopes.includes('superproject');
+    // EI-20474698737216059: `GitSyncOutcome.status === 'synced'` means the LOCAL
+    // pipeline created/advanced a commit. On bridged/commit-only hives the
+    // superproject deliberately does not push here; a later bridge leg owns origin
+    // egress. Forwarding the internal word as the tool's top-level status made a
+    // local commit look like origin/staging had advanced even when `pushed` was
+    // empty. Keep the internal outcome intact for diagnostics, but make the
+    // caller-facing status and egress proof say what actually happened.
+    const committedWithoutConfirmedEgress = outcome?.status === 'synced' && !superprojectPushConfirmed;
     const status = fired.degraded
       ? fired.reason === 'error'
         ? 'error'
         : 'in_progress'
-      : outcome?.status ?? 'unknown';
+      : committedWithoutConfirmedEgress
+        ? 'committed'
+        : outcome?.status ?? 'unknown';
     const committed = Boolean(before && after && before !== after) || outcome?.status === 'synced';
     const success = outcome?.status === 'synced' || outcome?.status === 'nothing';
+    const remoteEgress = outcome?.status === 'synced'
+      ? superprojectPushConfirmed
+        ? {
+            status: 'confirmed',
+            confirmed: true,
+            pushed_scopes: pushedScopes,
+            evidence: 'outcome.pushed includes superproject',
+          }
+        : {
+            status: 'unverified',
+            confirmed: false,
+            pushed_scopes: pushedScopes,
+            evidence: 'outcome.pushed does not include superproject',
+            completion_event: { key: `git-sync:egressed:${outcome.headSha}`, payload_field: 'sha' },
+            await_tool: 'events:await',
+          }
+      : undefined;
     // A timeout means the fire was accepted but its promise is still running in the
     // background. Keep that state explicitly non-terminal and hand the caller the
     // existing commit event + durable routine fields that settle/prove it, rather than
@@ -154,7 +183,11 @@ export default defineTool({
         : `git-sync fired but did not finish within ${GIT_SYNC_RUN_BUDGET_MS}ms — status is in_progress; ` +
           'the action may still commit/push or self-skip. Re-check the routine outcome before re-firing.'
       : outcome?.status === 'synced'
-        ? 'git-sync completed with status synced; commit/push details are in outcome.'
+        ? superprojectPushConfirmed
+          ? 'git-sync completed a local commit and confirmed the superproject push in outcome.pushed.'
+          : `git-sync completed local commit ${outcome.headSha}, but origin/staging egress is NOT confirmed ` +
+            '(outcome.pushed does not include superproject). This is not a delivery signal; await ' +
+            `git-sync:egressed:${outcome.headSha} or verify the remote ref before claiming publication.`
         : outcome?.status === 'nothing'
           ? 'git-sync completed with status nothing; no repo changes were committed.'
           : outcome?.status === 'skipped'
@@ -175,6 +208,7 @@ export default defineTool({
             committed,
             head_before: before,
             head_after: after,
+            ...(remoteEgress ? { remote_egress: remoteEgress } : {}),
             ...(outcome ? { outcome } : {}),
             ...(fired.degraded ? { degraded: true } : {}),
             ...(fired.errorMessage ? { error: fired.errorMessage } : {}),

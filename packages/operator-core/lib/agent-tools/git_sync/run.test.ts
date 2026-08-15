@@ -77,8 +77,54 @@ describe('git-sync:run', () => {
       status: 'synced',
       success: true,
       committed: true,
+      remote_egress: {
+        status: 'confirmed',
+        confirmed: true,
+        pushed_scopes: ['superproject'],
+        evidence: 'outcome.pushed includes superproject',
+      },
       outcome: { status: 'synced', headSha: 'abc123def456', pushed: ['superproject'] },
     });
+  });
+
+  it('does not report remote sync when a bridged/commit-only tick only creates a local commit', async () => {
+    const outcome = {
+      status: 'synced' as const,
+      headSha: '99dd16f98c9715157cf562e004439f1219067934',
+      pushed: [],
+      merged: [],
+      oversized: [],
+      contentErrors: [],
+      strandedSubmodules: [],
+    };
+    vi.doMock('../../harness/operator-home-harness', () => ({ operatorHomeHarnessSlug: () => 'sidestage' }));
+    vi.doMock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'default' }));
+    vi.doMock('../../operator-notes', () => ({ projectDirForSlug: async () => null }));
+    vi.doMock('../../harness/git-sync/git-sync-action', () => ({ fireGitSyncNow: vi.fn(async () => outcome) }));
+
+    const { default: tool } = await import('./run');
+    const result = parse((await tool.handler({}, MAKE_CTX())) as never);
+
+    expect(result).toMatchObject({
+      ok: true,
+      status: 'committed',
+      success: true,
+      committed: true,
+      remote_egress: {
+        status: 'unverified',
+        confirmed: false,
+        pushed_scopes: [],
+        evidence: 'outcome.pushed does not include superproject',
+        completion_event: {
+          key: 'git-sync:egressed:99dd16f98c9715157cf562e004439f1219067934',
+          payload_field: 'sha',
+        },
+        await_tool: 'events:await',
+      },
+      outcome: { status: 'synced', headSha: '99dd16f98c9715157cf562e004439f1219067934', pushed: [] },
+    });
+    expect(result.note).toMatch(/origin\/staging egress is NOT confirmed/);
+    expect(result.note).toMatch(/not a delivery signal/);
   });
 
   it('surfaces an explicit error outcome and does not report a clean-tree success', async () => {
@@ -225,6 +271,11 @@ describe('git-sync:run', () => {
   );
 
   it('advertises the invoke allowlist to the red-fix cohort (mirrors release:checkpoint-run / release:deploy)', async () => {
+    vi.doMock('../../harness/operator-home-harness', () => ({ operatorHomeHarnessSlug: () => 'papercusp' }));
+    vi.doMock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'default' }));
+    vi.doMock('../../operator-notes', () => ({ projectDirForSlug: async () => null }));
+    vi.doMock('../../harness/git-sync/git-sync-action', () => ({ fireGitSyncNow: vi.fn(async () => undefined) }));
+
     const { default: tool } = await import('./run');
     const roles = (tool as { agentRoles?: readonly string[] }).agentRoles ?? [];
     for (const r of ['worker', 'scoper', 'validator', 'reviewer', 'debugger', 'cup', 'release-fixer', 'release-manager']) {
