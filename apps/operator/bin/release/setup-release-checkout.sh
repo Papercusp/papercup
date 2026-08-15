@@ -601,7 +601,7 @@ RUNTIME_BUILD_WORKSPACES=(
 )
 
 build_pinned_workspace_runtime_outputs() {
-  local workspace scope package manifest
+  local workspace scope package manifest integration_workspace_root release_workspace_root
   for workspace in "${RUNTIME_BUILD_WORKSPACES[@]}"; do
     scope="${workspace%%/*}"
     package="${workspace#*/}"
@@ -616,8 +616,46 @@ build_pinned_workspace_runtime_outputs() {
       continue
     fi
 
+    # A submodule can exist at an older rollback pin before the root manifest
+    # registered it as an npm workspace. `npm --workspace ... run build` is not
+    # valid there even though node_modules still exposes the package symlink.
+    # Treat root workspace membership—not source-directory presence—as the
+    # compatibility boundary, so a forward-only registry never makes a known-
+    # good older release impossible to restore.
+    if ! (cd "$RELEASE_ROOT" && npm --workspace "$workspace" pkg get name >/dev/null 2>&1); then
+      log "pinned runtime workspace $workspace is not registered at ${TARGET_SHA:0:10} — skipping build"
+      continue
+    fi
+
+    # Step 2 replaces submodule source wholesale, including its gitignored
+    # package-local node_modules. If the root dependency snapshot was otherwise
+    # unchanged, step 3 legitimately skips its global refresh and the package
+    # build silently falls back to the root toolchain (TypeScript 6 instead of
+    # @papercusp/sse's pinned 5.9 in the incident that earned this guard).
+    # Restore the workspace-local dependency tree explicitly, using the same
+    # atomic hardlink copier as the root refresh. This remains source-consistent:
+    # all release node_modules are sourced from the integration dependency
+    # snapshot; only package SOURCE is pinned independently.
+    integration_workspace_root="$(readlink -f "$INTEGRATION_ROOT/node_modules/$scope/$package" 2>/dev/null || true)"
+    release_workspace_root="$(readlink -f "$RELEASE_ROOT/node_modules/$scope/$package" 2>/dev/null || true)"
+    if [ -n "$integration_workspace_root" ] && [ -d "$integration_workspace_root/node_modules" ]; then
+      case "$integration_workspace_root:$release_workspace_root" in
+        "$INTEGRATION_ROOT"/*:"$RELEASE_ROOT"/*)
+          log "restoring package-local toolchain for $workspace"
+          sync_one_node_modules "$integration_workspace_root/node_modules" "$release_workspace_root/node_modules"
+          ;;
+        *)
+          echo "[setup-release] FATAL: runtime workspace $workspace resolves outside the integration/release roots — refusing a cross-tree toolchain copy" >&2
+          return 1
+          ;;
+      esac
+    fi
+
     log "building pinned runtime output for $workspace"
-    if ! (cd "$RELEASE_ROOT" && npm --workspace "$workspace" run build 1>/dev/null); then
+    # Keep build stdout visible on failure. TypeScript reports diagnostics on
+    # stdout, and discarding it reduced the original deploy failure to an opaque
+    # lifecycle exit code with no actionable file/line evidence.
+    if ! (cd "$RELEASE_ROOT" && npm --workspace "$workspace" run build); then
       echo "[setup-release] FATAL: pinned runtime build failed for $workspace at ${TARGET_SHA:0:10} — refusing a release tree whose declared runtime entry points may be absent" >&2
       return 1
     fi
