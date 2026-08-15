@@ -18,7 +18,7 @@ export function groupByRoot(entries: any): Map<any, any>;
  * is what lets `GATE_COVERAGE` reuse it without emitting a word.
  *
  * @param {{repoRoot?: string, roots?: string[], exempt?: Record<string, Exemption>, untypecheckable?: Record<string, {detail: string, errors: number, filedAs: string}>}} [opts]
- * @returns {{presentRoots: string[], absentRoots: string[], packages: any[], promoted: any[], exempted: any[], heldBack: any[], stillInvisible: any[], unreadable: any[]}}
+ * @returns {{presentRoots: string[], absentRoots: string[], packages: any[], promoted: any[], exempted: any[], heldBack: any[], stillInvisible: any[], unreadable: any[], siblingOwned: any[]}}
  */
 export function selectGatedPackages({ repoRoot, roots, exempt, untypecheckable, }?: {
     repoRoot?: string;
@@ -38,6 +38,7 @@ export function selectGatedPackages({ repoRoot, roots, exempt, untypecheckable, 
     heldBack: any[];
     stillInvisible: any[];
     unreadable: any[];
+    siblingOwned: any[];
 };
 /**
  * Read one package's INTERNAL dependency names — its `@papercusp/*` entries from
@@ -103,8 +104,37 @@ export function main({ repoRoot, roots, exempt, untypecheckable, listOnly, listI
  * The superproject roots. `libs/papercusp` is deliberately ABSENT: it is a git submodule with its
  * own leg (`lint:tsc:papercusp-libs`) and its own stale-pin semantics. Covering it twice would
  * double every compile and report one regression as two.
+ *
+ * ⚠ THE ROOT IS `libs`, NOT `libs/generic` (EI-20549967837064185). Naming the SUBDIRECTORY made
+ * the walk structurally blind to every OTHER libs/* workspace: nine of them — including
+ * `libs/flags`, the feature-flag SSOT, and `libs/papercusp-shared` (imported by 51 files) — were
+ * covered by no gate at all, and were not even reported as invisible, because a root that is
+ * never scanned cannot produce a finding. That is the failure mode this whole leg exists to
+ * prevent, reproduced one level up: a hole in the ROOT LIST is invisible in exactly the way a
+ * hole in a package roster is, and it is worse, because the invisible-set report — the mechanism
+ * that turns "no gate" into a finding — is itself scoped to the roots.
+ *
+ * Widening to `libs` keeps discovery total: a new `libs/<anything>` is walked the day it lands,
+ * with no list to remember to update. Disjointness from the sibling submodule gate is preserved
+ * by SIBLING_GATE_PREFIXES below, which is enforced against the SELECTION rather than against
+ * this array's spelling — a string check on this constant cannot see a root that reaches
+ * libs/papercusp by descent.
  */
 export const DEFAULT_ROOTS: string[];
+/**
+ * Repo-relative prefixes this leg walks INTO but must never SELECT, because another gate already
+ * compiles them (EI-20549967837064185).
+ *
+ * `libs` contains `libs/papercusp`, a git submodule owned by `lint:tsc:papercusp-libs`. Excluding
+ * it HERE — on the selection, by prefix — rather than by keeping the root narrow is what lets the
+ * root stay wide enough to be total. The two mechanisms fail differently and that is the point:
+ * a narrow root silently drops whatever it does not name, while an explicit exclusion is printed
+ * on every run and is asserted by a test, so it cannot go quiet.
+ *
+ * @type {string[]}
+ */
+export const SIBLING_GATE_PREFIXES: string[];
+export function ownedBySiblingGate(rel: any, prefixes?: string[]): boolean;
 /**
  * Roots where a bare `tsconfig.json` is enough to be GATED, with no `typecheck` script
  * (EI-19409185011887864).
