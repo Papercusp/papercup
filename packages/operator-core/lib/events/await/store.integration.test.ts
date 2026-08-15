@@ -524,6 +524,7 @@ describe('verified-wait fallback campaign (PG)', () => {
             cron: null,
             lastFiredAtMs: 1_500,
             nextFireAtMs: null,
+            pause: null,
           },
         }),
     });

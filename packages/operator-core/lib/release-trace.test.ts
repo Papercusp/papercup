@@ -175,6 +175,12 @@ function deploy(over: Partial<DeployStatus> = {}): DeployStatus {
     deployInFlight: null,
     deployTerminal: null,
     checkpointRunInFlight: null,
+    releaseTrigger: {
+      active: true,
+      pause: null,
+      blocked: false,
+      blockReason: null,
+    },
     canTriggerGreen: false,
     nothingToDeploy: true,
     state: 'up-to-date',
