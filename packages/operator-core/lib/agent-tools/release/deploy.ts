@@ -279,7 +279,14 @@ export default defineTool({
         });
       }
       const launch = await launchDetachedDeploy({});
-      await recordDeployAudit('trigger', actor, {
+      // EI-20536291988678536: systemd has already accepted the detached deploy here.  Do not
+      // put the launch receipt behind another unbounded I/O hop: this process is the operator
+      // the deploy will restart, so a slow audit INSERT can otherwise hold the MCP response
+      // until that restart cuts the transport.  The caller then sees an empty result even
+      // though the deploy is running.  recordDeployAudit is deliberately best-effort and
+      // catches its own rejection; let it finish in the several-minute deploy window while
+      // returning the authoritative launch receipt immediately.
+      void recordDeployAudit('trigger', actor, {
         mode: 'trigger',
         greenPinSha: status.deploy.greenPinSha,
         commitsAhead: status.deploy.deployedBehindGreenPin,

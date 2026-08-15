@@ -8,6 +8,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { DeployStatus } from '../../release-deploy-launch';
 
+const auditUnsafeM = vi.hoisted(() => vi.fn());
+
 vi.mock('../../release-deploy-launch', () => ({
   readDeployStatus: vi.fn(),
   launchDetachedDeploy: vi.fn(),
@@ -16,7 +18,7 @@ vi.mock('../../release-deploy-launch', () => ({
 // real OTHER exports of these modules; we override only the single function each touches.
 vi.mock('@papercusp/db-org', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/db-org')>()),
-  getOrgPg: () => ({ sql: { unsafe: vi.fn() } }) as never,
+  getOrgPg: () => ({ sql: { unsafe: auditUnsafeM } }) as never,
 }));
 vi.mock('../../workspace-registry', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../workspace-registry')>()),
@@ -134,6 +136,7 @@ function checkpointRun(
 
 beforeEach(() => {
   vi.clearAllMocks();
+  auditUnsafeM.mockResolvedValue(undefined);
   launchM.mockResolvedValue({ launched: true, unit: 'papercup-auto-deploy', mode: 'trigger', argv: [], logPath: '/tmp/x.log' });
 });
 
@@ -273,6 +276,32 @@ describe('release:deploy — trigger', () => {
     const b = body(await tool.handler({ op: 'trigger', confirm: true } as never, { role: 'operator' } as never));
     expect(b).toMatchObject({ ok: true, launched: true });
     expect(launchM).toHaveBeenCalledWith({}); // green deploy — no force/commit
+  });
+
+  it('returns the launch receipt without waiting for a post-launch audit insert', async () => {
+    statusM.mockResolvedValue(
+      mkStatus({
+        state: 'green-deployable',
+        canTriggerGreen: true,
+        nothingToDeploy: false,
+        deploy: { ...mkStatus().deploy, deployedBehindGreenPin: 2 },
+      }),
+    );
+    auditUnsafeM.mockImplementation(() => new Promise<void>(() => {}));
+
+    const outcome = await Promise.race([
+      tool
+        .handler({ op: 'trigger', confirm: true } as never, { role: 'operator' } as never)
+        .then((value) => ({ kind: 'result' as const, value })),
+      new Promise<{ kind: 'timeout' }>((resolve) => setTimeout(() => resolve({ kind: 'timeout' }), 250)),
+    ]);
+
+    expect(outcome.kind).toBe('result');
+    if (outcome.kind === 'result') {
+      expect(body(outcome.value)).toMatchObject({ ok: true, op: 'trigger', launched: true });
+    }
+    expect(launchM).toHaveBeenCalledWith({});
+    expect(auditUnsafeM).toHaveBeenCalledTimes(1);
   });
 
   /**
