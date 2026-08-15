@@ -173,6 +173,7 @@ function deploy(over: Partial<DeployStatus> = {}): DeployStatus {
       deployedAtMs: 1,
     },
     deployInFlight: null,
+    deployTerminal: null,
     checkpointRunInFlight: null,
     canTriggerGreen: false,
     nothingToDeploy: true,

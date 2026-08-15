@@ -505,6 +505,8 @@ describe('release-trigger — noop gating + detached auto-deploy', () => {
     const sh = args[args.length - 1];
     expect(sh).toContain('deploy-cli.ts --execute');
     expect(sh).toContain('PAPERCUSP_ALLOW_DEV_RESTART=1');
+    expect(sh).toContain('/tmp/papercup-auto-deploy.terminal.json');
+    expect(sh).toContain('trap _papercusp_write_deploy_terminal EXIT');
 
     // The deploy outcome event is recorded by deploy.ts (the surviving
     // process), never by this routine.

@@ -6,6 +6,10 @@
  * Run: cd packages/operator-core && npx vitest run lib/release-deploy-launch.test.ts
  */
 import { EventEmitter } from 'node:events';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   computeDeployStatus,
@@ -21,6 +25,11 @@ import {
 import type { DeployInFlight } from './release-deploy-launch';
 import type { GitPipelineSnapshot } from './git-pipeline-stats';
 import type { PipelineEventRow } from './harness/git-sync/pipeline-events';
+import {
+  buildDeployTerminalShell,
+  DEPLOY_TERMINAL_MARKER_PATH,
+  readDeployTerminalMarker,
+} from './release-deploy-terminal';
 
 /** Minimal snapshot fixture — computeDeployStatus reads gate + deploy (+ recent, EI-10902).
  *  Tests that exercise live checkpoint liveness add `activeRun` explicitly. */
@@ -204,6 +213,40 @@ describe('buildSystemdRunArgv', () => {
     expect(inner).toMatch(/PAPERCUSP_ALLOW_DEV_RESTART=1/);
     expect(inner).toMatch(/deploy-cli\.ts --execute/);
     expect(inner).toMatch(/> \/tmp\/x\.log 2>&1/);
+    expect(inner).toContain(DEPLOY_TERMINAL_MARKER_PATH);
+    expect(inner).toContain('trap _papercusp_write_deploy_terminal EXIT');
+  });
+});
+
+describe('detached deploy terminal marker', () => {
+  it('removes stale evidence, atomically records failure, and preserves the payload exit code', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'deploy-terminal-'));
+    const marker = join(dir, 'terminal.json');
+    try {
+      writeFileSync(marker, '{"exitCode":0,"finishedAt":"2000-01-01T00:00:00Z"}\n');
+      const shell = buildDeployTerminalShell('test ! -e "$marker"; exit 7', marker);
+      const result = spawnSync('bash', ['-c', shell], { encoding: 'utf8' });
+
+      expect(result.status).toBe(7);
+      expect(readDeployTerminalMarker(marker)).toMatchObject({
+        exitCode: 7,
+        markerPath: marker,
+      });
+      expect(readdirSync(dir)).toEqual(['terminal.json']);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('treats malformed terminal evidence as unknown, never as success', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'deploy-terminal-'));
+    const marker = join(dir, 'terminal.json');
+    try {
+      writeFileSync(marker, '{"exitCode":"zero","finishedAt":"not-a-date"}\n');
+      expect(readDeployTerminalMarker(marker)).toBeNull();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -519,11 +562,17 @@ describe('computeDeployInFlight', () => {
   });
 
   it('systemd unreadable ⇒ source flags UNKNOWN rather than silently asserting "idle"', () => {
-    const f = computeDeployInFlight({ props: null, logPath: '/l', logMtimeMs: 7 });
+    const f = computeDeployInFlight({
+      props: null,
+      logPath: '/l',
+      logMtimeMs: 7,
+      terminal: { exitCode: 17, finishedAt: '2026-08-15T09:00:00Z', markerPath: '/tmp/terminal' },
+    });
     expect(f.source).toBe('systemd-unavailable');
     expect(f.active).toBe(false);
     expect(f.activeState).toBeNull();
     expect(f.logMtimeMs).toBe(7);
+    expect(f.terminal?.exitCode).toBe(17);
   });
 });
 
@@ -545,9 +594,18 @@ describe('readDeployInFlight', () => {
   });
 
   it('a non-zero systemctl exit degrades to UNKNOWN, never throws', async () => {
-    const f = await readDeployInFlight({ spawnFn: fakeShowSpawn('', 1), logMtimeMs: () => null });
+    const f = await readDeployInFlight({
+      spawnFn: fakeShowSpawn('', 1),
+      logMtimeMs: () => null,
+      terminalMarker: () => ({
+        exitCode: 9,
+        finishedAt: '2026-08-15T09:00:00Z',
+        markerPath: '/tmp/terminal',
+      }),
+    });
     expect(f.source).toBe('systemd-unavailable');
     expect(f.active).toBe(false);
+    expect(f.terminal?.exitCode).toBe(9);
   });
 
   it('a spawn error (no systemd on the box) degrades to UNKNOWN, never throws', async () => {
@@ -645,6 +703,15 @@ describe('EI-18724155280048738: an in-flight deploy must be distinguishable from
 
   it('deployInFlight rides on the status object for the tool to surface', () => {
     expect(computeDeployStatus(mkSnap({}, {}), inFlight()).deployInFlight?.active).toBe(true);
+  });
+
+  it('the durable terminal record rides top-level on status after unit collection', () => {
+    const terminal = {
+      exitCode: 23,
+      finishedAt: '2026-08-15T09:00:00Z',
+      markerPath: '/tmp/terminal',
+    };
+    expect(computeDeployStatus(mkSnap({}, {}), inFlight({ active: false, terminal })).deployTerminal).toEqual(terminal);
   });
 
   it('BACK-COMPAT: the pure one-arg call (staleness watchdog) is unchanged and reports null', () => {

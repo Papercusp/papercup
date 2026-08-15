@@ -25,6 +25,12 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { GitPipelineSnapshot } from './git-pipeline-stats';
 import { gitPipelineSnapshot } from './git-pipeline-stats';
+import {
+  buildDeployTerminalShell,
+  readDeployTerminalMarker,
+  RELEASE_DEPLOY_UNIT,
+  type DeployTerminalMarker,
+} from './release-deploy-terminal';
 
 /**
  * The fixed transient systemd unit the detached deploy runs as. MUST match
@@ -34,7 +40,7 @@ import { gitPipelineSnapshot } from './git-pipeline-stats';
  * deploy at a time. A concurrent attempt returns "deploy already in flight" instead of two
  * deploys racing the same checkout (which storms the live :3070 operator).
  */
-export const DEPLOY_UNIT = 'papercup-auto-deploy';
+export const DEPLOY_UNIT = RELEASE_DEPLOY_UNIT;
 
 /** The integration tree the deploy operates in. Explicit env (set in the :3070 unit env at
  *  the release-gate cutover) so it stays correct after the operator itself runs from the
@@ -88,6 +94,8 @@ export interface DeployInFlight {
   logPath: string;
   /** Corroboration only (see above); null when the log does not exist. */
   logMtimeMs: number | null;
+  /** Durable last terminal outcome. Populated even after --collect erases the unit. */
+  terminal?: DeployTerminalMarker | null;
   /** How `active` was decided — 'systemd-unavailable' means treat `active:false` as UNKNOWN. */
   source: 'systemd' | 'systemd-unavailable';
 }
@@ -119,8 +127,9 @@ export function computeDeployInFlight(args: {
   props: Record<string, string> | null;
   logPath: string;
   logMtimeMs: number | null;
+  terminal?: DeployTerminalMarker | null;
 }): DeployInFlight {
-  const { props, logPath, logMtimeMs } = args;
+  const { props, logPath, logMtimeMs, terminal = null } = args;
   if (!props) {
     return {
       active: false,
@@ -130,6 +139,7 @@ export function computeDeployInFlight(args: {
       startedAtMs: null,
       logPath,
       logMtimeMs,
+      terminal,
       source: 'systemd-unavailable',
     };
   }
@@ -143,6 +153,7 @@ export function computeDeployInFlight(args: {
     startedAtMs: Number.isFinite(parsed) ? parsed : null,
     logPath,
     logMtimeMs,
+    terminal,
     source: 'systemd',
   };
 }
@@ -151,6 +162,8 @@ export interface ReadDeployInFlightDeps {
   spawnFn?: SpawnLike;
   /** Injectable stat seam (default: fs.statSync mtime, or null when absent). */
   logMtimeMs?: () => number | null;
+  /** Injectable durable terminal-marker seam. */
+  terminalMarker?: () => DeployTerminalMarker | null;
 }
 
 /** Read whether a deploy is running right now. Never throws — an unreadable systemd degrades
@@ -168,6 +181,7 @@ export function readDeployInFlight(deps: ReadDeployInFlightDeps = {}): Promise<D
       }
     });
   const logMtimeMs = readMtime();
+  const terminal = (deps.terminalMarker ?? readDeployTerminalMarker)();
 
   return new Promise<DeployInFlight>((resolve) => {
     const stdoutOut = createTextCollector();
@@ -175,7 +189,7 @@ export function readDeployInFlight(deps: ReadDeployInFlightDeps = {}): Promise<D
     const done = (props: Record<string, string> | null) => {
       if (settled) return;
       settled = true;
-      resolve(computeDeployInFlight({ props, logPath, logMtimeMs }));
+      resolve(computeDeployInFlight({ props, logPath, logMtimeMs, terminal }));
     };
     try {
       const child = spawnFn('systemctl', [
@@ -268,6 +282,8 @@ export interface DeployStatus {
    *  WITHOUT probing (the pure `computeDeployStatus(snap)` path, e.g. the staleness watchdog);
    *  `readDeployStatus()` always populates it. */
   deployInFlight: DeployInFlight | null;
+  /** Last detached shell outcome, retained after systemd --collect removes the unit. */
+  deployTerminal: DeployTerminalMarker | null;
   /** EI-20234052054064013: the live green-checkpoint singleton probe. This is separate from
    *  completed gate-health metadata: an active run (including an in-process auto-refire) is
    *  authoritative evidence that a fresh verdict is already being produced. Null means the
@@ -459,6 +475,7 @@ export function computeDeployStatus(snap: GitPipelineSnapshot, inFlight: DeployI
       deployedAtMs: d.deployedAtMs,
     },
     deployInFlight: inFlight,
+    deployTerminal: inFlight?.terminal ?? null,
     checkpointRunInFlight,
     canTriggerGreen,
     nothingToDeploy,
@@ -533,9 +550,10 @@ export function buildDeployCliArgs(opts: { force?: boolean; commit?: string }): 
  *  PAPERCUSP_ALLOW_DEV_RESTART=1 to self-authorize the restart step — the role gate at the tool
  *  IS the authorization). Exported for unit testing the command construction. */
 export function buildSystemdRunArgv(root: string, deployCliArgs: string[], logPath: string, pathEnv: string): string[] {
-  const inner =
+  const payload =
     `PAPERCUSP_ALLOW_DEV_RESTART=1 PAPERCUSP_INTEGRATION_ROOT='${root}' '${tsxBin(root)}' ` +
     `apps/operator/lib/release/deploy-cli.ts ${deployCliArgs.join(' ')} > ${logPath} 2>&1`;
+  const inner = buildDeployTerminalShell(payload);
   return [
     '--user',
     '--collect',

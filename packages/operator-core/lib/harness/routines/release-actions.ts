@@ -48,6 +48,10 @@ import { orchestratorStdoutTag } from '../../release/checkpoint-log-tags';
 import { greenCheckpointDbPoolEnv } from '../../release/checkpoint-db-pool';
 import { buildIsolatedScopeArgv, SCOPE_LAUNCH_FAILURE_RE } from '../../systemd-scope';
 import type { FlakeSuspect } from '../../dev-data';
+import {
+  buildDeployTerminalShell,
+  RELEASE_DEPLOY_UNIT,
+} from '../../release-deploy-terminal';
 
 // Kept as exports from this historical module for callers/tests that already
 // use the release-actions config surface. The implementation is shared with
@@ -1925,7 +1929,7 @@ async function dispatchReleaseFixer(ctx: GateVerdictTarget, candidate: string, f
 /** The fixed transient-unit name for the detached auto-deploy — fixed on
  *  purpose: systemd-run refuses a second unit with the same name while one is
  *  active, which is exactly the dedup we want across trigger ticks. */
-export const AUTO_DEPLOY_UNIT = 'papercup-auto-deploy';
+export const AUTO_DEPLOY_UNIT = RELEASE_DEPLOY_UNIT;
 
 /** The subset of the deploy plan (deploy.ts `DeployPlan`, emitted as JSON by
  *  `deploy-cli`) that the auto-serve gate reads. */
@@ -2129,7 +2133,9 @@ registerSystemAction('release-trigger', async (ctx: SystemActionCtx) => {
       '-c',
       // P-014: `>` (truncate), not `>>` — each deploy's log is self-contained, so the
       // file can't grow unbounded; the durable record is pipeline_events + the journal.
-      `PAPERCUSP_ALLOW_DEV_RESTART=1 PAPERCUSP_INTEGRATION_ROOT='${root}' '${tsxBin(root)}' apps/operator/lib/release/deploy-cli.ts --execute > /tmp/${AUTO_DEPLOY_UNIT}.log 2>&1`,
+      buildDeployTerminalShell(
+        `PAPERCUSP_ALLOW_DEV_RESTART=1 PAPERCUSP_INTEGRATION_ROOT='${root}' '${tsxBin(root)}' apps/operator/lib/release/deploy-cli.ts --execute > /tmp/${AUTO_DEPLOY_UNIT}.log 2>&1`,
+      ),
     ]);
     let stderr = '';
     child.stderr?.on('data', (d) => (stderr += String(d)));
