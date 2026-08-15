@@ -1371,6 +1371,7 @@ export default defineTool({
     // caller's presence — same path as fleet:create.
     const fleetSlug = fleetSlugFromName(args.name);
     let leaderRole = 'leader';
+    let priorLaunchTransaction: FleetLaunchTransaction | null = null;
     // NOTE ON THE NAME `P-009` IN THIS FILE: the comments below about the compaction-cap
     // re-seed belong to a DIFFERENT plan's P-009. The `leader:'spawn'` work is
     // goal-mode-hardening P-009 (D-013) and is always spelled out in full. Two unrelated
@@ -1411,6 +1412,7 @@ export default defineTool({
         // setFleetLeader only after that agent's terminal actually opens.
         leaderOwnerId: wantsSpawnedLeader ? null : ownerId,
       });
+      priorLaunchTransaction = record.lastLaunchTransaction ?? null;
       if (wantsSpawnedLeader && !created) {
         // Idempotency beats the flag: a relaunch/top-up of an existing fleet must not
         // mint a rival leader. Fall back to the ordinary join path for this call.
@@ -1686,6 +1688,7 @@ export default defineTool({
     // and working). Presence is authoritative once members register; the window below covers only
     // the boot gap before they do. A read failure never blocks a launch (fail open to the window).
     let liveMembers = 0;
+    let liveMemberOwnerIds: string[] = [];
     try {
       const localLive = (await liveFleetMemberIds(fleetSlug, workspaceId)).filter((id) => id !== ownerId);
       let live = localLive;
@@ -1706,8 +1709,10 @@ export default defineTool({
           live = localLive;
         }
       }
+      liveMemberOwnerIds = live;
       liveMembers = live.length;
     } catch {
+      liveMemberOwnerIds = [];
       liveMembers = 0;
     }
     if (liveMembers >= count) {
@@ -2136,6 +2141,7 @@ export default defineTool({
     }
 
     let slot;
+    let resumeOwnerIds: string[] | null = null;
     try {
       slot = await claimFleetLaunchSlot({
         workspaceId,
@@ -2162,6 +2168,35 @@ export default defineTool({
         });
       } catch {
         /* keep the lost slot — the window self-heals */
+      }
+    }
+    if (!slot.won && priorLaunchTransaction?.state === 'partial') {
+      // EI-20497372063255974: a canary may miss the bounded verifier and then take its
+      // first real turn seconds later. The launch transaction already proves that ONLY
+      // its first wave opened; its recovery set holds the exact pre-pinned identities
+      // that were never opened. Once every opened identity is now LIVE, continuing that
+      // same transaction cannot double-spawn the prior wave. Reclaim the slot and resume
+      // only when the unopened identity count exactly equals the current live deficit.
+      const opened = new Set(priorLaunchTransaction.openedMemberIds);
+      const live = new Set(liveMemberOwnerIds);
+      const unopenedRetryOwnerIds = priorLaunchTransaction.recovery.retryOwnerIds.filter(
+        (memberOwnerId) => !opened.has(memberOwnerId),
+      );
+      const openedWaveRecovered =
+        opened.size > 0 && [...opened].every((memberOwnerId) => live.has(memberOwnerId));
+      if (openedWaveRecovered && unopenedRetryOwnerIds.length === requestedOpenCount) {
+        try {
+          await releaseFleetLaunchSlot({ workspaceId, fleetSlug, at: slot.priorAt });
+          slot = await claimFleetLaunchSlot({
+            workspaceId,
+            fleetSlug,
+            count: openCount,
+            windowMs: RELAUNCH_SUPPRESS_MS,
+          });
+          if (slot.won) resumeOwnerIds = unopenedRetryOwnerIds;
+        } catch {
+          /* keep the lost slot — the window self-heals */
+        }
       }
     }
     if (!slot.won) {
@@ -2536,7 +2571,8 @@ export default defineTool({
     const resolvedMemberConfig = (i: number): FleetMemberDefaults =>
       foldMemberSpec(fleetDefaults, memberSpecs[i]);
     const launchRequestedAt = Date.now();
-    const requestedMemberIds = Array.from({ length: openCount }, () => `su-${randomUUID()}`);
+    const requestedMemberIds =
+      resumeOwnerIds ?? Array.from({ length: openCount }, () => `su-${randomUUID()}`);
     const memberCommands = Array.from({ length: openCount }, (_v, i) => {
       const folded = resolvedMemberConfig(i);
       return memberLaunchCommand({
