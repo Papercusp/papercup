@@ -24,6 +24,7 @@
  */
 
 import { isAbsolute, basename, dirname, relative, resolve } from 'node:path';
+import { existsSync } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
@@ -38,6 +39,10 @@ import {
 import { capabilityExecSandboxEnabled } from './exec-sandbox';
 import { resolveCapabilityBaseDir } from './base-dir';
 import { TSC_HEAP_MB, tscHeapEnv } from '../tsc-heap';
+import {
+  discoverSiblingTypecheckGates,
+  gateCoveringFile,
+} from '../../../../../scripts/lib/tsc-baseline-gate.mjs';
 
 /**
  * A repo-relative path token safe to embed literally in a `bash -c` command: a
@@ -67,11 +72,14 @@ export interface InspectArgs {
   check: 'typecheck' | 'test';
   package?: string;
   path?: string;
+  onlyPaths?: string[];
 }
 
 export type InspectResolution =
   | { ok: true; command: string; cwd: string }
   | { ok: false; reason: string; message: string };
+
+const TSCONFIG_BASENAME = /^tsconfig(\.[\w-]+)?\.json$/;
 
 /**
  * Pure: map the validated args to the fixed verification command + cwd, or an
@@ -96,10 +104,15 @@ export function resolveInspectCommand(args: InspectArgs, baseDir: string): Inspe
     pathArg = v.rel;
   }
 
+  if (args.check === 'test' && args.onlyPaths && args.onlyPaths.length > 0) {
+    return { ok: false, reason: 'bad_args', message: '`onlyPaths` is only valid for check:"typecheck".' };
+  }
+
   if (args.check === 'typecheck') {
     if (args.package === undefined) {
       return { ok: false, reason: 'bad_args', message: 'typecheck requires `package` (the dir holding tsconfig.json).' };
     }
+
     return { ok: true, command: 'npx tsc --noEmit', cwd };
   }
 
@@ -108,7 +121,106 @@ export function resolveInspectCommand(args: InspectArgs, baseDir: string): Inspe
   return { ok: true, command, cwd };
 }
 
-const TSCONFIG_BASENAME = /^tsconfig(\.[\w-]+)?\.json$/;
+interface TypecheckGate {
+  npmScript: string;
+  prefixes: string[];
+}
+
+/**
+ * Build the baseline-aware command for an `onlyPaths` typecheck from the gate
+ * roster's OWN declared coverage.
+ *
+ * EI-20475898313139226: `onlyPaths` used to be a foreground-only output filter
+ * over raw `npx tsc --noEmit`; the background branch returned before it and
+ * silently ignored the scope. Blindly appending `--files=` to the package's
+ * `typecheck` script is also unsafe — some workspaces still expose raw `tsc -p`,
+ * where `--files` is an unknown compiler option. The root `lint:tsc*` roster is
+ * the canonical reusable surface: each gate declares the prefixes it compiles,
+ * and `gateCoveringFile` selects the most specific one.
+ */
+export function resolveScopedTypecheckCommand(
+  args: InspectArgs,
+  baseDir: string,
+  gates: TypecheckGate[],
+  pathExists: (repoRelativePath: string) => boolean = (path) => existsSync(resolve(baseDir, path)),
+): InspectResolution {
+  if (args.check !== 'typecheck' || !args.onlyPaths || args.onlyPaths.length === 0) {
+    return {
+      ok: false,
+      reason: 'bad_args',
+      message: 'A scoped typecheck requires check:"typecheck" and non-empty `onlyPaths`.',
+    };
+  }
+  if (args.package === undefined) {
+    return { ok: false, reason: 'bad_args', message: 'typecheck requires `package` (the dir holding tsconfig.json).' };
+  }
+
+  const pkg = validateRelPath(args.package, baseDir);
+  if (!pkg.ok) return { ok: false, reason: 'bad_package', message: pkg.reason };
+  const packageRel = TSCONFIG_BASENAME.test(basename(pkg.rel)) ? dirname(pkg.rel) : pkg.rel;
+
+  const normalized: string[] = [];
+  const selectedScripts = new Set<string>();
+  for (const raw of args.onlyPaths) {
+    const stripped = raw.replace(/^\.\//, '');
+    const direct = validateRelPath(stripped, baseDir);
+    if (!direct.ok) return { ok: false, reason: 'bad_only_path', message: direct.reason };
+
+    const alreadyPackageRelative = stripped === packageRel || stripped.startsWith(`${packageRel}/`);
+    const prefixed = alreadyPackageRelative
+      ? direct
+      : validateRelPath(`${packageRel}/${stripped}`, baseDir);
+    if (!prefixed.ok) return { ok: false, reason: 'bad_only_path', message: prefixed.reason };
+
+    // A literal repo-relative spelling that is covered by a declared gate wins;
+    // otherwise interpret the value relative to `package`. This makes both
+    // documented forms work and prevents `apps/other/src/x.ts` from becoming
+    // the plausible-but-wrong `packages/current/apps/other/src/x.ts`.
+    const prefixedGate = pathExists(prefixed.rel) ? gateCoveringFile(gates, prefixed.rel) : null;
+    const directGate = alreadyPackageRelative
+      ? prefixedGate
+      : pathExists(direct.rel)
+        ? gateCoveringFile(gates, direct.rel)
+        : null;
+    const chosen = directGate
+      ? { path: direct.rel, gate: directGate }
+      : prefixedGate
+        ? { path: prefixed.rel, gate: prefixedGate }
+        : null;
+    if (!chosen) {
+      const coveredButMissing =
+        gateCoveringFile(gates, prefixed.rel) !== null || gateCoveringFile(gates, direct.rel) !== null;
+      return {
+        ok: false,
+        reason: coveredButMissing ? 'only_path_not_found' : 'no_baseline_gate',
+        message: coveredButMissing
+          ? `onlyPath "${raw}" does not resolve to an existing repository file (tried "${prefixed.rel}" and "${direct.rel}"). ` +
+            'Refusing a scoped green from a file set that was never present.'
+          : `No resolvable repository baseline gate covers onlyPath "${raw}" (tried "${prefixed.rel}" and "${direct.rel}"). ` +
+            'A scoped verifier cannot honestly judge this file; run the owning project gate or add its coverage declaration.',
+      };
+    }
+    normalized.push(chosen.path);
+    selectedScripts.add(chosen.gate.npmScript);
+  }
+
+  if (selectedScripts.size !== 1) {
+    return {
+      ok: false,
+      reason: 'mixed_baseline_gates',
+      message:
+        `onlyPaths span multiple repository typecheck gates (${[...selectedScripts].sort().join(', ')}). ` +
+        'Split them into one capability:inspect call per gate so each verdict remains attributable.',
+    };
+  }
+
+  const npmScript = [...selectedScripts][0];
+  return {
+    ok: true,
+    command: `npm run ${npmScript} -- --files=${normalized.join(',')}`,
+    cwd: baseDir,
+  };
+}
 
 /**
  * EI-19332092038566982 / EI-19331889744736428: `child_process.spawn`'s `cwd` must be a real
@@ -143,14 +255,21 @@ export function resolveTypecheckCwd(
 }
 
 /**
- * Filter raw `tsc --noEmit` output to only the error lines referencing one of
- * `onlyPaths`. A package with PRE-EXISTING errors floods the output, so verifying
- * "did MY change add a NEW error" otherwise means hand-grepping for your own files.
+ * Parse raw `tsc --noEmit` output and optionally retain diagnostics referencing
+ * selected paths. This remains the shared diagnostic counter used by the dead-run
+ * guard below.
+ *
+ * EI-20475898313139226: this is deliberately NO LONGER the implementation of
+ * capability:inspect's `onlyPaths` verdict. Post-filtering raw tsc output cannot
+ * distinguish an accepted per-file baseline from a new regression, and the
+ * background branch never reached the filter at all. The handler now discovers
+ * the repository baseline gate whose declared coverage owns each path and
+ * carries `onlyPaths` into its `--files=` command for both execution modes.
+ *
  * A tsc error line is `path/to/file.ts(line,col): error TS####: msg`; we match the
  * path token before "(" against each onlyPath loosely (either string contains the
  * other) so package-relative and repo-relative spellings both work. Pure +
- * exported so the (output-only, non-security) filter is unit-tested. `onlyPaths` is
- * NEVER part of the executed command — purely a post-process of the output.
+ * exported so the parser/filter remains unit-tested.
  */
 /**
  * Classify a typecheck run that emitted ZERO diagnostics: did it pass, or did it DIE?
@@ -325,7 +444,7 @@ export default defineTool({
       .max(50)
       .optional()
       .describe(
-        'typecheck only (foreground): post-FILTER the tsc output to error lines referencing these (package- or repo-relative) paths, plus an "N matching of M total" summary. The fix for verifying "did MY change add a NEW error" against a package that has pre-existing errors. Output-filter only — never part of the command.',
+        'typecheck only (foreground or background): discover the repository baseline gate that covers these package- or repo-relative paths, then scope its verdict via `--files=`. Use this to verify your changed files without treating accepted pre-existing diagnostics elsewhere as your regression. Mixed or uncovered gate scopes are refused rather than guessed.',
       ),
     run_in_background: z
       .boolean()
@@ -343,7 +462,29 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     const baseDir = resolveCapabilityBaseDir(ctx);
-    const resolved = resolveInspectCommand(args, baseDir);
+    let resolved: InspectResolution;
+    if (args.check === 'typecheck' && args.onlyPaths && args.onlyPaths.length > 0) {
+      const discovered = await discoverSiblingTypecheckGates(baseDir);
+      if (!discovered.rosterReadable) {
+        return err(
+          'baseline_gate_roster_unreadable',
+          'Could not read the repository typecheck-gate roster from package.json, so `onlyPaths` cannot be judged honestly.',
+        );
+      }
+      resolved = resolveScopedTypecheckCommand(args, baseDir, discovered.gates);
+      if (!resolved.ok && resolved.reason === 'no_baseline_gate' && discovered.unresolved.length > 0) {
+        const unresolved = discovered.unresolved
+          .slice(0, 5)
+          .map((gate) => `${gate.npmScript}: ${gate.reason}`)
+          .join('; ');
+        resolved = {
+          ...resolved,
+          message: `${resolved.message} Unresolved roster entries (coverage UNKNOWN): ${unresolved}`,
+        };
+      }
+    } else {
+      resolved = resolveInspectCommand(args, baseDir);
+    }
     if (!resolved.ok) return err(resolved.reason, resolved.message);
     const { command } = resolved;
     let cwd = resolved.cwd;
@@ -412,39 +553,6 @@ export default defineTool({
       ctx.signal,
       timeoutMs,
     );
-
-    // onlyPaths (typecheck): collapse a noisy package's tsc output to just the
-    // errors in the agent's changed files + an "N matching of M total" summary —
-    // the answer to "did MY change add a NEW error". Output post-process only.
-    if (args.check === 'typecheck' && args.onlyPaths && args.onlyPaths.length > 0) {
-      const f = filterTscOutputToPaths(r.output, args.onlyPaths);
-      // EI-20019651513530828: a DEAD run reaches here with totalErrors 0, so the filter
-      // finds nothing and the body below would assert "(no tsc errors in the specified
-      // paths)" — a clean verdict from a compile that never ran. Decide that FIRST.
-      const dead = deadTypecheckVerdict({
-        exitCode: r.exitCode,
-        status: r.status,
-        output: r.output,
-        parsedErrors: f.totalErrors,
-      });
-      const summary =
-        `${args.check} · exit ${r.exitCode ?? 'null'}` +
-        (r.status !== 'completed' ? ` (${r.status})` : '') +
-        ` · ${(r.durationMs / 1000).toFixed(1)}s · onlyPaths(${args.onlyPaths.length}): ` +
-        (dead
-          ? 'NO VERDICT — the run died (see below)'
-          : `${f.matchedErrors} matching error(s) of ${f.totalErrors} total`) +
-        (r.truncated ? ` · ⚠ output truncated (${r.totalBytes} bytes) → ${r.logPath}; the filter saw the head only` : '');
-      const body = dead
-        ? `${dead.headline}\n${dead.advice}\nreason: ${dead.reason}\n\n--- raw output ---\n${r.output || '(no output)'}`
-        : f.matchedLines.length > 0
-          ? f.matchedLines.join('\n')
-          : '(no tsc errors in the specified paths)';
-      return {
-        content: [{ type: 'text' as const, text: `${cwdCorrectionNote}${summary}${foregroundTimeoutHint(r.status, timeoutMs)}\n${body}` }],
-        isError: dead !== null,
-      };
-    }
 
     // Unfiltered typecheck: the same false green, one step earlier. `(no output)` or a
     // truncated OOM trace reads as "nothing to report" unless the death is NAMED.

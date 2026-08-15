@@ -4,7 +4,7 @@
  * security-load-bearing part is the PURE command construction + path validation,
  * which is what these cover — proving the agent can never inject a shell command.
  */
-import { mkdirSync, mkdtempSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
@@ -20,9 +20,18 @@ vi.mock('./exec-sandbox', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./exec-sandbox')>()),
   capabilityExecSandboxEnabled: vi.fn(async () => false),
 }));
+vi.mock('../../../../../scripts/lib/tsc-baseline-gate.mjs', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../../../scripts/lib/tsc-baseline-gate.mjs')>()),
+  discoverSiblingTypecheckGates: vi.fn(async () => ({
+    gates: [{ npmScript: 'lint:tsc', prefixes: ['packages/operator-core/', 'pkg/'] }],
+    unresolved: [],
+    rosterReadable: true,
+  })),
+}));
 
 import {
   resolveInspectCommand,
+  resolveScopedTypecheckCommand,
   resolveTypecheckCwd,
   filterTscOutputToPaths,
   clampForegroundTimeoutMs,
@@ -35,9 +44,12 @@ import inspectTool from './inspect';
 import { startBackground } from './bash-jobs';
 
 const BASE = '/repo';
+const OPERATOR_CORE_GATES = [{ npmScript: 'lint:tsc', prefixes: ['packages/operator-core/'] }];
 const INSPECT_STATE = mkdtempSync(join(tmpdir(), 'cap-inspect-response-'));
 const INSPECT_PACKAGE = join(INSPECT_STATE, 'pkg');
 mkdirSync(INSPECT_PACKAGE);
+mkdirSync(join(INSPECT_PACKAGE, 'src'));
+writeFileSync(join(INSPECT_PACKAGE, 'src/a.ts'), 'export const a = 1;\n');
 
 type ToolResultish = { content: Array<{ text: string }>; isError?: boolean };
 type Tool = { handler: (a: unknown, c: unknown) => Promise<ToolResultish> };
@@ -66,6 +78,83 @@ describe('resolveInspectCommand — verb mapping', () => {
       command: 'npx tsc --noEmit',
       cwd: '/repo/packages/operator-core',
     });
+  });
+
+  it('typecheck with package-relative onlyPaths → the package baseline gate with repo-relative files', () => {
+    expect(
+      resolveScopedTypecheckCommand(
+        {
+          check: 'typecheck',
+          package: 'packages/operator-core',
+          onlyPaths: ['lib/agent-tools/git_sync/run.ts', 'lib/agent-tools/git_sync/run.test.ts'],
+        },
+        BASE,
+        OPERATOR_CORE_GATES,
+        () => true,
+      ),
+    ).toEqual({
+      ok: true,
+      command:
+        'npm run lint:tsc -- --files=packages/operator-core/lib/agent-tools/git_sync/run.ts,packages/operator-core/lib/agent-tools/git_sync/run.test.ts',
+      cwd: BASE,
+    });
+  });
+
+  it('typecheck with repo-relative onlyPaths does not double-prefix the package', () => {
+    expect(
+      resolveScopedTypecheckCommand(
+        {
+          check: 'typecheck',
+          package: 'packages/operator-core',
+          onlyPaths: ['packages/operator-core/lib/agent-tools/git_sync/run.ts'],
+        },
+        BASE,
+        OPERATOR_CORE_GATES,
+        () => true,
+      ),
+    ).toEqual({
+      ok: true,
+      command: 'npm run lint:tsc -- --files=packages/operator-core/lib/agent-tools/git_sync/run.ts',
+      cwd: BASE,
+    });
+  });
+
+  it('refuses a scoped run when no declared baseline gate covers the file', () => {
+    const r = resolveScopedTypecheckCommand(
+      { check: 'typecheck', package: 'libs/raw-tsc-package', onlyPaths: ['src/a.ts'] },
+      BASE,
+      OPERATOR_CORE_GATES,
+      () => true,
+    );
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.reason).toBe('no_baseline_gate');
+      expect(r.message).toContain('cannot honestly judge');
+    }
+  });
+
+  it('refuses paths spanning multiple baseline gates instead of producing one misleading verdict', () => {
+    const r = resolveScopedTypecheckCommand(
+      {
+        check: 'typecheck',
+        package: 'packages/operator-core',
+        onlyPaths: [
+          'packages/operator-core/lib/a.ts',
+          'apps/operator-vite/src/b.ts',
+        ],
+      },
+      BASE,
+      [
+        ...OPERATOR_CORE_GATES,
+        { npmScript: 'lint:tsc:operator-vite', prefixes: ['apps/operator-vite/'] },
+      ],
+      () => true,
+    );
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.reason).toBe('mixed_baseline_gates');
+      expect(r.message).toContain('Split them');
+    }
   });
 
   it('test with no package → repo `npm run test:affected` at the root', () => {
@@ -101,6 +190,12 @@ describe('resolveInspectCommand — verb mapping', () => {
   it('path is rejected for typecheck', () => {
     expect(resolveInspectCommand({ check: 'typecheck', package: 'p', path: 'x' }, BASE).ok).toBe(false);
   });
+
+  it('onlyPaths is rejected for tests', () => {
+    const r = resolveInspectCommand({ check: 'test', package: 'p', onlyPaths: ['x.test.ts'] }, BASE);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe('bad_args');
+  });
 });
 
 describe('capability:inspect — background launch response', () => {
@@ -128,6 +223,34 @@ describe('capability:inspect — background launch response', () => {
       expect.any(Number),
     );
   });
+
+  it('honors onlyPaths in the launched background command instead of silently dropping it', async () => {
+    vi.mocked(startBackground).mockReturnValue({
+      id: 'bash-scoped-typecheck',
+      taskId: 'task-scoped-typecheck',
+      logPath: '/tmp/bash-scoped-typecheck.log',
+    } as never);
+
+    const result = await inspect.handler(
+      { check: 'typecheck', package: 'pkg', onlyPaths: ['src/a.ts'], run_in_background: true },
+      inspectCtx(),
+    );
+    const payload = JSON.parse(result.content[0].text) as Record<string, unknown>;
+
+    expect(payload).toMatchObject({
+      ok: true,
+      bash_id: 'bash-scoped-typecheck',
+      status: 'running',
+      command: 'npm run lint:tsc -- --files=pkg/src/a.ts',
+    });
+    expect(vi.mocked(startBackground)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        command: 'npm run lint:tsc -- --files=pkg/src/a.ts',
+        cwd: INSPECT_STATE,
+      }),
+      expect.any(Number),
+    );
+  });
 });
 
 describe('resolveInspectCommand — security (no shell injection / traversal)', () => {
@@ -140,6 +263,19 @@ describe('resolveInspectCommand — security (no shell injection / traversal)', 
   it('rejects shell metacharacters in path', () => {
     for (const bad of ['a.test.ts; rm -rf /', 'a && x', 'a|b', 'a $(b)']) {
       expect(resolveInspectCommand({ check: 'test', package: 'pkg', path: bad }, BASE).ok, `path "${bad}" must be rejected`).toBe(false);
+    }
+  });
+
+  it('rejects shell metacharacters in onlyPaths now that they enter the fixed command', () => {
+    for (const bad of ['x.ts; rm -rf /', 'x.ts && curl evil', 'x.ts|tee', 'x $(whoami).ts', 'x,y.ts']) {
+      const r = resolveScopedTypecheckCommand(
+        { check: 'typecheck', package: 'pkg', onlyPaths: [bad] },
+        BASE,
+        [{ npmScript: 'lint:tsc', prefixes: ['pkg/'] }],
+        () => true,
+      );
+      expect(r.ok, `onlyPath "${bad}" must be rejected`).toBe(false);
+      if (!r.ok) expect(r.reason).toBe('bad_only_path');
     }
   });
 
