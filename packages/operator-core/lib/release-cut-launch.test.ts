@@ -10,6 +10,7 @@ import { describe, expect, it } from 'vitest';
 import {
   isValidVersion,
   isValidChannel,
+  isValidSourceSha,
   buildCutEnv,
   buildCutArgv,
   readCutStatus,
@@ -47,24 +48,38 @@ describe('version / channel validation', () => {
     expect(isValidChannel('alpha')).toBe(true);
     expect(isValidChannel('nightly')).toBe(false);
   });
+  it('accepts only an exact lowercase 40-char source SHA', () => {
+    expect(isValidSourceSha('1feac8dd867c6566af834445a58b5a2e43b14649')).toBe(true);
+    expect(isValidSourceSha('1feac8dd')).toBe(false);
+    expect(isValidSourceSha('1FEAC8DD867C6566AF834445A58B5A2E43B14649')).toBe(false);
+  });
 });
 
 describe('buildCutEnv — LOCAL-only enforced', () => {
+  const sourceSha = '1feac8dd867c6566af834445a58b5a2e43b14649';
   it('always disables GitHub publish; adds only requested legs', () => {
-    expect(buildCutEnv({})).toEqual({ PAPERCUSP_PUBLISH_GITHUB: '0' });
-    expect(buildCutEnv({ mac: true, windows: true, arm64: true })).toEqual({
+    expect(buildCutEnv({}, sourceSha)).toEqual({
       PAPERCUSP_PUBLISH_GITHUB: '0',
+      PAPERCUSP_EXPECTED_SOURCE_SHA: sourceSha,
+    });
+    expect(buildCutEnv({ mac: true, windows: true, arm64: true }, sourceSha)).toEqual({
+      PAPERCUSP_PUBLISH_GITHUB: '0',
+      PAPERCUSP_EXPECTED_SOURCE_SHA: sourceSha,
       WITH_MAC: '1',
       WITH_WINDOWS: '1',
       WITH_ARM64: '1',
     });
     // A false/undefined leg is not injected.
-    expect(buildCutEnv({ mac: false })).toEqual({ PAPERCUSP_PUBLISH_GITHUB: '0' });
+    expect(buildCutEnv({ mac: false }, sourceSha)).toEqual({
+      PAPERCUSP_PUBLISH_GITHUB: '0',
+      PAPERCUSP_EXPECTED_SOURCE_SHA: sourceSha,
+    });
   });
 });
 
 describe('buildCutArgv', () => {
-  const argv = buildCutArgv('/root/papercusp-desktop', '0.0.8', 'alpha', { mac: true }, '/usr/bin:/bin');
+  const sourceSha = '1feac8dd867c6566af834445a58b5a2e43b14649';
+  const argv = buildCutArgv('/root/papercusp-desktop', '0.0.8', 'alpha', { mac: true }, sourceSha, '/usr/bin:/bin');
   const inner = argv[argv.length - 1];
 
   it('targets the dedicated detached unit + desktop working dir', () => {
@@ -75,6 +90,7 @@ describe('buildCutArgv', () => {
   it('runs the cutter LOCAL-only, clears the stale sentinel, records the exit code', () => {
     expect(inner).toContain(`rm -f ${CUT_DONE}`);
     expect(inner).toContain("PAPERCUSP_PUBLISH_GITHUB='0'");
+    expect(inner).toContain(`PAPERCUSP_EXPECTED_SOURCE_SHA='${sourceSha}'`);
     expect(inner).toContain("WITH_MAC='1'");
     expect(inner).toContain("bin/release-local.sh '0.0.8' 'alpha'");
     expect(inner).toContain(`> ${CUT_LOG} 2>&1`);
@@ -423,7 +439,15 @@ describe('legsForPlatform', () => {
 
 describe('buildCutArgv with a platform', () => {
   it('targets the per-leg unit + log + done, not the whole-cut ones', () => {
-    const argv = buildCutArgv('/root/papercusp-desktop', '0.0.8', 'alpha', { mac: true }, '/usr/bin:/bin', 'mac');
+    const argv = buildCutArgv(
+      '/root/papercusp-desktop',
+      '0.0.8',
+      'alpha',
+      { mac: true },
+      '1feac8dd867c6566af834445a58b5a2e43b14649',
+      '/usr/bin:/bin',
+      'mac',
+    );
     const inner = argv[argv.length - 1]!;
     const unit = cutUnitFor('mac');
     expect(argv).toContain(`--unit=${unit}`);

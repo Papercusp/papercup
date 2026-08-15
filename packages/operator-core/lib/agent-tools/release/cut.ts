@@ -53,6 +53,7 @@ import {
   buildCutArgv,
   desktopRoot,
   isValidVersion,
+  isValidSourceSha,
   CHANNELS,
   CUT_UNIT,
   PLATFORMS,
@@ -96,7 +97,7 @@ export default defineTool({
   name: 'release:cut',
   profile: 'engineer',
   description:
-    'CUT a LOCAL Papercusp desktop release — build+sign installer(s) for the owner to upload (⛔ LOCAL-only, never GitHub). Wraps bin/release-local.sh. op:preflight (go/no-go). op:run (fire the WHOLE cut detached; dry-run unless confirm:true; operator role). op:run-leg (WI-4233: fire ONE platform leg — linux/mac/windows/arm64 — on its own unit, for a fleet-split cut; same gate). op:abort-leg (stop one leg). op:status (poll; optional `platform` for a per-leg poll). op:gate-status (read/establish the shared BUILD_SHA gate for version+channel so split legs cannot drift onto different shas). op:handoff (collect signed artifacts+sha256 — leg-agnostic).',
+    'CUT a LOCAL Papercusp desktop release — build+sign installer(s) for the owner to upload (⛔ LOCAL-only, never GitHub). Every run/run-leg requires sourceSha, the exact 40-char superproject commit the cutter must still be on; drift refuses before writes, and LOCAL cuts never mutate remote tags. Wraps bin/release-local.sh. op:preflight (go/no-go). op:run (fire the WHOLE cut detached; dry-run unless confirm:true; operator role). op:run-leg (WI-4233: fire ONE platform leg — linux/mac/windows/arm64 — on its own unit, for a fleet-split cut; same gate). op:abort-leg (stop one leg). op:status (poll; optional `platform` for a per-leg poll). op:gate-status (read/establish the shared BUILD_SHA gate for version+channel so split legs cannot drift onto different shas). op:handoff (collect signed artifacts+sha256 — leg-agnostic).',
   guidance: {
     when:
       'Cutting a desktop release. Solo: preflight → run{confirm:true} → poll status → verify → handoff. Fleet-split (one agent per leg): each agent gate-status first (agree on ONE buildSha) → run-leg{platform,confirm:true} → poll status{platform} → once every leg is done, handoff (collects across all legs).',
@@ -125,6 +126,7 @@ export default defineTool({
       op: z.literal('run'),
       version: z.string().min(1).describe('Release version X.Y.Z (optional -prerelease), e.g. 0.0.8 or 1.2.3-rc.1.'),
       channel: z.enum(['stable', 'beta', 'alpha']).describe('Release channel.'),
+      sourceSha: z.string().regex(/^[0-9a-f]{40}$/).describe('Exact 40-char superproject commit authorized for this cut.'),
       mac: z.boolean().optional().describe('Include the macOS leg (build VM on SSH :2222).'),
       windows: z.boolean().optional().describe('Include the Windows leg (build VM on SSH :2223).'),
       arm64: z.boolean().optional().describe('Include the linux-arm64 cross-compile leg.'),
@@ -146,6 +148,7 @@ export default defineTool({
       platform: z.enum(PLATFORMS as [Platform, ...Platform[]]).describe('Which platform leg to fire on its own unit.'),
       version: z.string().min(1).describe('Release version X.Y.Z (optional -prerelease), e.g. 0.0.8 or 1.2.3-rc.1.'),
       channel: z.enum(['stable', 'beta', 'alpha']).describe('Release channel.'),
+      sourceSha: z.string().regex(/^[0-9a-f]{40}$/).describe('Exact 40-char superproject commit authorized for this leg.'),
       confirm: z
         .boolean()
         .optional()
@@ -199,6 +202,14 @@ export default defineTool({
           op: 'handoff',
           refused: true,
           reason: `bad_version '${args.version}' — expected X.Y.Z with an optional -prerelease suffix.`,
+        });
+      }
+      if (!isValidSourceSha(args.sourceSha)) {
+        return json({
+          ok: false,
+          op: 'run-leg',
+          refused: true,
+          reason: `bad_source_sha '${args.sourceSha ?? '<missing>'}' — expected the exact 40-character lowercase superproject commit authorized for this cut.`,
         });
       }
       const h = collectHandoff(args.version);
@@ -314,7 +325,7 @@ export default defineTool({
       }
 
       if (!args.confirm) {
-        const argv = buildCutArgv(desktopRoot(), args.version, channel, legs, '<PATH>', platform);
+        const argv = buildCutArgv(desktopRoot(), args.version, channel, legs, args.sourceSha, '<PATH>', platform);
         return json({
           ok: true,
           op: 'run-leg',
@@ -322,6 +333,7 @@ export default defineTool({
           platform,
           version: args.version,
           channel,
+          sourceSha: args.sourceSha,
           legs,
           localOnly: true,
           unit: cutUnitFor(platform),
@@ -335,11 +347,12 @@ export default defineTool({
 
       const { ownerLabel } = readIdentity(ctx);
       const actor = `${ownerLabel} (role:${ctx.role ?? 'unknown'})`;
-      const launch = await launchDetachedCut({ version: args.version, channel, legs, platform });
+      const launch = await launchDetachedCut({ version: args.version, channel, expectedSourceSha: args.sourceSha, legs, platform });
       await recordCutAudit('run-leg', actor, {
         platform,
         version: args.version,
         channel,
+        sourceSha: args.sourceSha,
         legs,
         localOnly: true,
         launched: launch.launched,
@@ -353,6 +366,7 @@ export default defineTool({
         launched: launch.launched,
         version: args.version,
         channel,
+        sourceSha: args.sourceSha,
         legs,
         localOnly: true,
         unit: launch.unit,
@@ -382,6 +396,14 @@ export default defineTool({
         reason: `bad_version '${args.version}' — expected X.Y.Z with an optional -prerelease suffix (e.g. 0.0.8, 1.2.3-rc.1).`,
       });
     }
+    if (!isValidSourceSha(args.sourceSha)) {
+      return json({
+        ok: false,
+        op: 'run',
+        refused: true,
+        reason: `bad_source_sha '${args.sourceSha ?? '<missing>'}' — expected the exact 40-character lowercase superproject commit authorized for this cut.`,
+      });
+    }
     const channel = args.channel as Channel;
     const legs = legsFrom(args);
 
@@ -398,13 +420,14 @@ export default defineTool({
     }
 
     if (!args.confirm) {
-      const argv = buildCutArgv(desktopRoot(), args.version, channel, legs, '<PATH>');
+      const argv = buildCutArgv(desktopRoot(), args.version, channel, legs, args.sourceSha, '<PATH>');
       return json({
         ok: true,
         op: 'run',
         dry_run: true,
         version: args.version,
         channel,
+        sourceSha: args.sourceSha,
         legs,
         localOnly: true,
         preflight: { go: pre.go, blockers: pre.blockers },
@@ -417,10 +440,11 @@ export default defineTool({
 
     const { ownerLabel } = readIdentity(ctx);
     const actor = `${ownerLabel} (role:${ctx.role ?? 'unknown'})`;
-    const launch = await launchDetachedCut({ version: args.version, channel, legs });
+    const launch = await launchDetachedCut({ version: args.version, channel, expectedSourceSha: args.sourceSha, legs });
     await recordCutAudit('run', actor, {
       version: args.version,
       channel,
+      sourceSha: args.sourceSha,
       legs,
       localOnly: true,
       launched: launch.launched,
@@ -433,6 +457,7 @@ export default defineTool({
       launched: launch.launched,
       version: args.version,
       channel,
+      sourceSha: args.sourceSha,
       legs,
       localOnly: true,
       unit: launch.unit,

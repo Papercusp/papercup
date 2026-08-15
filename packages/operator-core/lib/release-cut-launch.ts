@@ -13,9 +13,10 @@
  *
  * ⛔ LOCAL-only (papercusp-desktop/RELEASE-RUNBOOK.md → "Releases are LOCAL-only";
  * owner directive 2026-07-08). The cut is fired with PAPERCUSP_PUBLISH_GITHUB=0 so
- * release-local.sh SKIPS its (superseded) tag-push + GitHub-Release steps — the signed
- * artifacts on disk are the deliverable. `handoff` collects the local paths + sha256 for
- * the owner to upload; this lever NEVER pushes a tag or creates a GitHub Release.
+ * release-local.sh never mutates a remote tag or creates a GitHub Release — the signed
+ * artifacts on disk are the deliverable. Every launch is bound to one exact superproject
+ * SHA, which the cutter verifies before any write. `handoff` collects the local paths +
+ * sha256 for the owner to upload.
  */
 
 import { spawn } from 'node:child_process';
@@ -36,6 +37,7 @@ export type Channel = 'stable' | 'beta' | 'alpha';
 export const CHANNELS: readonly Channel[] = ['stable', 'beta', 'alpha'] as const;
 // Semver-ish: X.Y.Z with an optional -prerelease suffix (e.g. 0.0.8, 1.2.3-rc.1).
 const VERSION_RE = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?$/;
+const SOURCE_SHA_RE = /^[0-9a-f]{40}$/;
 
 // ─── Per-leg (fleet-split) support (WI-4233) ───────────────────────────────────
 //
@@ -86,6 +88,9 @@ export function isValidVersion(v: string): boolean {
 export function isValidChannel(c: string): c is Channel {
   return (CHANNELS as readonly string[]).includes(c);
 }
+export function isValidSourceSha(sha: string): boolean {
+  return SOURCE_SHA_RE.test(sha);
+}
 
 /** Integration tree root (mirrors release-deploy-launch.integrationRoot). */
 export function integrationRoot(): string {
@@ -106,8 +111,11 @@ export interface CutLegs {
 /** Pure: the env the detached cut runs release-local.sh with — LOCAL-only ENFORCED
  *  (PAPERCUSP_PUBLISH_GITHUB=0, never publish to GitHub) plus the requested optional
  *  platform legs. Exported for unit testing. */
-export function buildCutEnv(legs: CutLegs): Record<string, string> {
-  const env: Record<string, string> = { PAPERCUSP_PUBLISH_GITHUB: '0' };
+export function buildCutEnv(legs: CutLegs, expectedSourceSha: string): Record<string, string> {
+  const env: Record<string, string> = {
+    PAPERCUSP_PUBLISH_GITHUB: '0',
+    PAPERCUSP_EXPECTED_SOURCE_SHA: expectedSourceSha,
+  };
   if (legs.mac) env.WITH_MAC = '1';
   if (legs.windows) env.WITH_WINDOWS = '1';
   if (legs.arm64) env.WITH_ARM64 = '1';
@@ -124,10 +132,11 @@ export function buildCutArgv(
   version: string,
   channel: Channel,
   legs: CutLegs,
+  expectedSourceSha: string,
   pathEnv: string,
   platform?: Platform,
 ): string[] {
-  const env = buildCutEnv(legs);
+  const env = buildCutEnv(legs, expectedSourceSha);
   const envPrefix = Object.entries(env)
     .map(([k, v]) => `${k}='${v}'`)
     .join(' ');
@@ -152,6 +161,8 @@ export type SpawnLike = typeof spawn;
 export interface LaunchCutOpts {
   version: string;
   channel: Channel;
+  /** Exact 40-char superproject commit this cut is authorized to package. */
+  expectedSourceSha: string;
   legs?: CutLegs;
   /** papercusp-desktop root (default desktopRoot()). */
   root?: string;
@@ -185,7 +196,7 @@ export interface LaunchCutResult {
 export function launchDetachedCut(opts: LaunchCutOpts, spawnFn: SpawnLike = spawn): Promise<LaunchCutResult> {
   const root = opts.root ?? desktopRoot();
   const legs = opts.legs ?? {};
-  const argv = buildCutArgv(root, opts.version, opts.channel, legs, process.env.PATH ?? '', opts.platform);
+  const argv = buildCutArgv(root, opts.version, opts.channel, legs, opts.expectedSourceSha, process.env.PATH ?? '', opts.platform);
   return new Promise<LaunchCutResult>((resolve) => {
     const base: LaunchCutResult = {
       launched: false,

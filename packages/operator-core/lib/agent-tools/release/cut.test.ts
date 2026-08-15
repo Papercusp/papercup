@@ -168,7 +168,8 @@ describe('release:cut — handoff (LOCAL deliverable)', () => {
 });
 
 describe('release:cut — run (operator-gated write)', () => {
-  const runArgs = { op: 'run', version: '0.0.8', channel: 'alpha' };
+  const sourceSha = '1feac8dd867c6566af834445a58b5a2e43b14649';
+  const runArgs = { op: 'run', version: '0.0.8', channel: 'alpha', sourceSha };
 
   it('is role-gated: a cup cannot cut, and no build fires', async () => {
     const b = body(await tool.handler({ ...runArgs, confirm: true } as never, { role: 'cup' } as never));
@@ -181,6 +182,15 @@ describe('release:cut — run (operator-gated write)', () => {
     const b = body(await tool.handler({ op: 'run', version: 'bogus', channel: 'alpha', confirm: true } as never, { role: 'operator' } as never));
     expect(b.refused).toBe(true);
     expect(b.reason).toMatch(/bad_version/);
+    expect(launchM).not.toHaveBeenCalled();
+  });
+
+  it('rejects a missing or abbreviated source SHA before launching', async () => {
+    for (const bad of [undefined, '1feac8dd']) {
+      const b = body(await tool.handler({ ...runArgs, sourceSha: bad, confirm: true } as never, { role: 'operator' } as never));
+      expect(b.refused).toBe(true);
+      expect(b.reason).toMatch(/bad_source_sha/);
+    }
     expect(launchM).not.toHaveBeenCalled();
   });
 
@@ -199,6 +209,7 @@ describe('release:cut — run (operator-gated write)', () => {
     expect(b.wouldRun).toMatch(/systemd-run/);
     expect(b.wouldRun).toMatch(/release-local\.sh '0\.0\.8' 'alpha'/);
     expect(b.wouldRun).toContain("PAPERCUSP_PUBLISH_GITHUB='0'");
+    expect(b.wouldRun).toContain(`PAPERCUSP_EXPECTED_SOURCE_SHA='${sourceSha}'`);
     expect(b.wouldRun).not.toMatch(/gh release|push origin/);
     expect(launchM).not.toHaveBeenCalled();
   });
@@ -206,7 +217,7 @@ describe('release:cut — run (operator-gated write)', () => {
   it('confirm:true fires the detached LOCAL cut', async () => {
     const b = body(await tool.handler({ ...runArgs, confirm: true, mac: true } as never, { role: 'operator' } as never));
     expect(b).toMatchObject({ ok: true, op: 'run', launched: true, localOnly: true });
-    expect(launchM).toHaveBeenCalledWith({ version: '0.0.8', channel: 'alpha', legs: { mac: true, windows: undefined, arm64: undefined } });
+    expect(launchM).toHaveBeenCalledWith({ version: '0.0.8', channel: 'alpha', expectedSourceSha: sourceSha, legs: { mac: true, windows: undefined, arm64: undefined } });
   });
 });
 
@@ -279,7 +290,8 @@ describe('release:cut — abort-leg (operator-gated)', () => {
 });
 
 describe('release:cut — run-leg (fleet-split, operator-gated write)', () => {
-  const legArgs = { op: 'run-leg', platform: 'mac', version: '0.0.8', channel: 'alpha' };
+  const sourceSha = '1feac8dd867c6566af834445a58b5a2e43b14649';
+  const legArgs = { op: 'run-leg', platform: 'mac', version: '0.0.8', channel: 'alpha', sourceSha };
 
   it('is role-gated: a cup cannot fire a leg', async () => {
     const b = body(await tool.handler({ ...legArgs, confirm: true } as never, { role: 'cup' } as never));
@@ -323,7 +335,7 @@ describe('release:cut — run-leg (fleet-split, operator-gated write)', () => {
     });
     const b = body(await tool.handler({ ...legArgs, confirm: true } as never, { role: 'operator' } as never));
     expect(b).toMatchObject({ ok: true, op: 'run-leg', platform: 'mac', launched: true, localOnly: true, unit: 'papercup-release-cut-mac' });
-    expect(launchM).toHaveBeenCalledWith({ version: '0.0.8', channel: 'alpha', legs: { mac: true }, platform: 'mac' });
+    expect(launchM).toHaveBeenCalledWith({ version: '0.0.8', channel: 'alpha', expectedSourceSha: sourceSha, legs: { mac: true }, platform: 'mac' });
   });
   it('a linux leg needs no WITH_* flag at all', async () => {
     launchM.mockResolvedValue({
@@ -338,6 +350,6 @@ describe('release:cut — run-leg (fleet-split, operator-gated write)', () => {
     });
     const b = body(await tool.handler({ ...legArgs, platform: 'linux', confirm: true } as never, { role: 'operator' } as never));
     expect(b.legs).toEqual({});
-    expect(launchM).toHaveBeenCalledWith({ version: '0.0.8', channel: 'alpha', legs: {}, platform: 'linux' });
+    expect(launchM).toHaveBeenCalledWith({ version: '0.0.8', channel: 'alpha', expectedSourceSha: sourceSha, legs: {}, platform: 'linux' });
   });
 });
