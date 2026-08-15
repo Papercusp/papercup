@@ -102,8 +102,15 @@ if [ -e "$RELEASE_ROOT/.git" ]; then
   # UNTRACKED debris survives reset --hard and poisons every later run from
   # this tree (2026-06-06: a stray test file made the green-checkpoint red
   # forever). Clean it — node_modules excluded (the hardlink copies from step
-  # 3 are untracked by design); submodule SOURCE is re-extracted in step 2
-  # anyway, so losing it here is fine.
+  # 3 are untracked by design). Keep the currently-running operator's
+  # dist-host tree too: papercup-dev-api continues serving from that bundle
+  # until the later restart, and lazy runtime readers (notably locks:* loading
+  # dist-host/sql) must see a coherent old bundle+assets set throughout this
+  # potentially long checkout/submodule/node_modules/SPA preparation window.
+  # ExecStartPre rebuilds dist-host from the newly-swapped source immediately
+  # before the process restart, so retaining it here cannot make the next
+  # process serve stale code. Submodule SOURCE is re-extracted in step 2, so
+  # losing it here is fine.
   #
   # WI-5366: `-x` too — a plain `clean -fdq` (no `-x`) leaves every GITIGNORED
   # artifact untouched, not just node_modules. Verified live in this exact
@@ -124,7 +131,12 @@ if [ -e "$RELEASE_ROOT/.git" ]; then
   # clean transition with nothing interleaved). `-x` makes the clean total:
   # every ignored file/dir is removed too, `-e node_modules` still spares
   # the one directory this tree deliberately preserves + refreshes itself.
-  git -C "$RELEASE_ROOT" clean -fdqx -e node_modules || true
+  # EI-20509311930433301: the old `-x` clean also deleted the live process's
+  # entire ignored apps/operator/dist-host tree. The process kept serving from
+  # its already-open bundle, but a first locks:* call then failed ENOENT while
+  # lazily scanning dist-host/sql. Preserve the whole coherent runtime tree;
+  # bundle-host.sh replaces its bundle/assets during ExecStartPre.
+  git -C "$RELEASE_ROOT" clean -fdqx -e node_modules -e /apps/operator/dist-host/ || true
 else
   log "creating release worktree at $RELEASE_ROOT"
   git -C "$INTEGRATION_ROOT" worktree add --detach "$RELEASE_ROOT" "$TARGET_SHA"

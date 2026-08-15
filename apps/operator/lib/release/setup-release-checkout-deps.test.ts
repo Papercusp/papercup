@@ -871,8 +871,8 @@ describe('assert_checkout_landed (WI-5110)', () => {
  * while confirming node_modules itself is still spared (the one directory this
  * tree deliberately preserves + refreshes via its own hardlink-copy step).
  */
-describe('worktree clean step removes gitignored debris (WI-5366)', () => {
-  it('a gitignored file survives plain `clean -fdq` but is removed by `clean -fdqx`, and `-e node_modules` still spares node_modules', () => {
+describe('worktree clean step removes gitignored debris without deleting live runtime assets (WI-5366, EI-20509311930433301)', () => {
+  it('`-x` removes stale caches while preserving node_modules and the running operator dist-host tree', () => {
     const dir = realpathSync(mkdtempSync(join(tmpdir(), 'clean-x-')));
     try {
       const git = (...args: string[]) => {
@@ -883,7 +883,7 @@ describe('worktree clean step removes gitignored debris (WI-5366)', () => {
         return r.stdout.trim();
       };
       git('init', '-q');
-      writeFileSync(join(dir, '.gitignore'), '.vitest-tmp/\n');
+      writeFileSync(join(dir, '.gitignore'), '.vitest-tmp/\napps/operator/dist-host/\n');
       writeFileSync(join(dir, 'f.txt'), 'v1');
       git('add', '-A');
       git('commit', '-q', '-m', 'c1');
@@ -895,23 +895,35 @@ describe('worktree clean step removes gitignored debris (WI-5366)', () => {
       writeFileSync(join(dir, '.vitest-tmp', 'stale-cache-entry'), 'stale');
       mkdirSync(join(dir, 'node_modules'), { recursive: true });
       writeFileSync(join(dir, 'node_modules', 'marker'), 'keep-me');
+      mkdirSync(join(dir, 'apps/operator/dist-host/sql'), { recursive: true });
+      writeFileSync(join(dir, 'apps/operator/dist-host/hono-host.mjs'), 'running-bundle');
+      writeFileSync(join(dir, 'apps/operator/dist-host/sql/001-bootstrap.sql'), 'running-lock-ddl');
 
       // Old behavior (no -x): the gitignored dir survives.
       spawnSync('git', ['-C', dir, 'clean', '-fdq', '-e', 'node_modules']);
       expect(existsSync(join(dir, '.vitest-tmp', 'stale-cache-entry'))).toBe(true);
 
-      // Shipped behavior (-x): the gitignored dir is gone, node_modules is untouched.
-      spawnSync('git', ['-C', dir, 'clean', '-fdqx', '-e', 'node_modules']);
+      // Shipped behavior (-x): stale caches are gone, while the two runtime
+      // asset sets needed before restart remain coherent and available.
+      spawnSync('git', [
+        '-C', dir, 'clean', '-fdqx',
+        '-e', 'node_modules',
+        '-e', '/apps/operator/dist-host/',
+      ]);
       expect(existsSync(join(dir, '.vitest-tmp'))).toBe(false);
       expect(existsSync(join(dir, 'node_modules', 'marker'))).toBe(true);
+      expect(existsSync(join(dir, 'apps/operator/dist-host/hono-host.mjs'))).toBe(true);
+      expect(existsSync(join(dir, 'apps/operator/dist-host/sql/001-bootstrap.sql'))).toBe(true);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  it('the shipped script invokes `git clean` with `-x` (not just `-fdq`)', () => {
+  it('the shipped script invokes `git clean` with `-x` and both runtime exclusions', () => {
     const script = readFileSync(SCRIPT_PATH, 'utf8');
-    expect(script).toMatch(/git\s+-C\s+"\$RELEASE_ROOT"\s+clean\s+-fdqx\s+-e\s+node_modules/);
+    expect(script).toMatch(
+      /git\s+-C\s+"\$RELEASE_ROOT"\s+clean\s+-fdqx\s+-e\s+node_modules\s+-e\s+\/apps\/operator\/dist-host\//,
+    );
   });
 });
 
