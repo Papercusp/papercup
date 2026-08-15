@@ -17,6 +17,7 @@ const h = vi.hoisted(() => ({
   cancel: vi.fn(),
   heal: vi.fn(),
   release: vi.fn(),
+  releaseLocks: vi.fn(),
   resetWake: vi.fn(),
   /** In-memory stand-in for the marker's PG table (see the mock below). */
   marks: new Map<string, number>(),
@@ -30,6 +31,7 @@ vi.mock('../../events/await/inbox-wake-arm', () => ({
   ensureInboxWakeArmedForActiveSession: h.heal,
 }));
 vi.mock('../../work-item-lease-release', () => ({ releaseAllWorkItemLeasesForOwner: h.release }));
+vi.mock('../locks/release-all-owned', () => ({ releaseAllOwnedLocks: h.releaseLocks }));
 // WI-6756: this seam READS PG. Leaving it un-stubbed would not merely touch the DB —
 // the read never settles, so it hangs PAST the handler's try/catch (which only catches
 // throws) until the suite timeout. Stub it in every test in this file.
@@ -66,6 +68,12 @@ beforeEach(() => {
   h.cancel.mockReset().mockResolvedValue(1);
   h.heal.mockReset().mockResolvedValue(false);
   h.release.mockReset().mockResolvedValue({ releasedIds: [], claimsCleared: 0 });
+  h.releaseLocks.mockReset().mockResolvedValue({
+    released: [],
+    heldBefore: 0,
+    crossDomainReleased: [],
+    resourcesReleased: 0,
+  });
   // Default: no context-reset wake in the window ⇒ an ordinary death, release runs.
   h.resetWake.mockReset().mockResolvedValue(null);
   void __resetRespawnExpectedMarkers();
@@ -77,6 +85,8 @@ describe('activity:report SessionEnd → work-item lease release (P-002 fast pat
     await run({ owner: 'su-dead', kind: 'lifecycle', summary: '■ session ended' });
     expect(h.release).toHaveBeenCalledTimes(1);
     expect(h.release).toHaveBeenCalledWith('su-dead');
+    expect(h.releaseLocks).toHaveBeenCalledTimes(1);
+    expect(h.releaseLocks).toHaveBeenCalledWith(expect.objectContaining({ ownerId: 'su-dead' }));
     // The existing inbox-wake cancel still fires too — this is additive, not a replacement.
     expect(h.cancel).toHaveBeenCalledTimes(1);
   });
@@ -84,6 +94,7 @@ describe('activity:report SessionEnd → work-item lease release (P-002 fast pat
   it('SessionStart (▶ session started) does NOT trigger a release — only the end transition', async () => {
     await run({ owner: 'su-abc', kind: 'lifecycle', summary: '▶ session started' });
     expect(h.release).not.toHaveBeenCalled();
+    expect(h.releaseLocks).not.toHaveBeenCalled();
     expect(h.arm).toHaveBeenCalledTimes(1);
   });
 
@@ -107,6 +118,15 @@ describe('activity:report SessionEnd → work-item lease release (P-002 fast pat
     expect(warn).toHaveBeenCalled();
     warn.mockRestore();
   });
+
+  it('a lock-release failure is fail-open and does not skip the work-item release', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    h.releaseLocks.mockRejectedValueOnce(new Error('locks db down'));
+    await run({ owner: 'su-dead', kind: 'lifecycle', summary: '■ session ended' });
+    expect(h.release).toHaveBeenCalledWith('su-dead');
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
 });
 
 /**
@@ -123,6 +143,7 @@ describe('activity:report SessionEnd → carry-respawn marker suppresses the P-0
     await markRespawnExpected('su-resuming');
     const res = await run({ owner: 'su-resuming', kind: 'lifecycle', summary: '■ session ended' });
     expect(h.release).not.toHaveBeenCalled();
+    expect(h.releaseLocks).not.toHaveBeenCalled();
     // The marker short-circuits: no wake-ledger round-trip is spent when it already answers.
     expect(h.resetWake).not.toHaveBeenCalled();
     expect(h.cancel).toHaveBeenCalledTimes(1);
@@ -166,6 +187,7 @@ describe('activity:report SessionEnd → a recent context-reset wake suppresses 
     h.resetWake.mockResolvedValueOnce({ channel: 'psu-socket-reset', at: new Date(), ageMs: 412 });
     const res = await run({ owner: 'su-cold-loop', kind: 'lifecycle', summary: '■ session ended' });
     expect(h.release).not.toHaveBeenCalled();
+    expect(h.releaseLocks).not.toHaveBeenCalled();
     expect(h.cancel).toHaveBeenCalledTimes(1);
     expect(JSON.parse((res as { content: { text: string }[] }).content[0].text)).toMatchObject({ ok: true });
   });

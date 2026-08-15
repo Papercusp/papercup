@@ -13,9 +13,8 @@ import { readFileLockIdentity } from './identity';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { inWorkspaceTxn } from './in-workspace-txn';
 import { acquireWithContentionRetry } from './contention-retry';
-import { tryRelease, releaseAllResourcesForOwner } from './su-lock-store';
+import { tryRelease } from './su-lock-store';
 import { notifyPlanLockChange } from './notify-lock-change';
-import { broadcastResourceBackUp } from './resource-broadcast';
 import { routeFileLockOp } from '../../authority/file-lock-routing';
 import {
   FILE_LOCK_OP_KINDS,
@@ -27,6 +26,7 @@ import { noteShaTokenRelease } from '../../authority/sha-token-registry';
 import { bulkContent, mergeIds, runBulk } from '../_bulk';
 import { resolveExplicitFileLockDomain } from './coordination-domain';
 import { domainsHoldingLocks } from './owner-lock-domains';
+import { releaseAllOwnedLocks } from './release-all-owned';
 
 const lockIdSchema = z.string().uuid({
   error: (issue) => {
@@ -120,6 +120,32 @@ export default defineTool({
             text: JSON.stringify({
               ok: false,
               error: 'locks:release accepts either all_mine=true or selected lock_id(s), not both',
+            }),
+          },
+        ],
+      };
+    }
+
+    if (args.all_mine) {
+      const result = await releaseAllOwnedLocks({
+        ownerId,
+        primaryCoordinationDomain: coordinationDomain,
+        source: resolveAgentIdentity(ctx),
+      });
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({
+              ok: true,
+              released: result.released,
+              ...(result.crossDomainReleased.length > 0
+                ? { cross_domain_released: result.crossDomainReleased }
+                : {}),
+              held_before: result.heldBefore,
+              resources_released: result.resourcesReleased,
+              owner: ownerId,
+              owner_label: ownerLabel,
             }),
           },
         ],
@@ -317,60 +343,6 @@ export default defineTool({
       return bulkContent(env);
     }
 
-    // fed-reanchor-2026-06-06 P-060 (cutover 2): release through the SAME file-lock
-    // authority the matching acquire routed to, so a lock taken on a remote authority's
-    // store is actually freed there (else it lingers to TTL). N=1 → op.local() passthrough
-    // (no peers); a routing fault degrades to the raw local release.
-    //
-    // Reached ONLY when lockIds.length===0 AND args.all_mine===true — the two guards above
-    // enforce it (neither → error, both → error, any lock_id(s) → the bulk branch). Pass the
-    // arg explicitly rather than a hardcoded literal so the all_mine intent stays coupled to
-    // the caller (defense-in-depth if those guards ever change); tryRelease filters by
-    // owner=ownerId, so all_mine only ever frees the CALLER's own locks (no cross-agent reach).
-    const result = await releaseFileLocks(undefined, Boolean(args.all_mine));
-
-    // Session-end (all_mine) also clears this owner's NAMED-resource locks
-    // (P-019) — file locks and resource locks live in separate tables, so one
-    // call must sweep both. Broadcast "back up" for any exclusive we freed.
-    let resourcesReleased = 0;
-    if (args.all_mine) {
-      const rr = await inWorkspaceTxn(coordinationDomain, ownerId, (tx) =>
-        releaseAllResourcesForOwner(tx, coordinationDomain, ownerId),
-      );
-      resourcesReleased = rr.released;
-      if (rr.exclusiveResources.length > 0) {
-        const coordId = resolveAgentIdentity(ctx);
-        for (const res of rr.exclusiveResources) {
-          await broadcastResourceBackUp({ source: coordId, resource: res, waiters: rr.waiters[res] ?? [] }).catch(() => {});
-        }
-      }
-    }
-
-    return {
-      content: [
-        {
-          type: 'text' as const,
-          text: JSON.stringify({
-            ok: true,
-            released: result.released,
-            // EI-20405390083792304 (root fix): present ONLY when the caller's own
-            // domain freed nothing and the lock was found — and freed — in the
-            // domain that actually held it (a hook-acquired hive-tree lock). Its
-            // presence means the release would have been a silent no-op before.
-            ...(crossDomainReleases.length > 0 ? { cross_domain_released: crossDomainReleases } : {}),
-            // EI-20405390083792304: read this BEFORE concluding you are clear.
-            // released:[] + held_before:0 ⇒ you held nothing (correct no-op).
-            // released:[] + held_before:>0 ⇒ you still hold locks the selector
-            // did not match — you are NOT clear, and telling a blocked peer you
-            // released is wrong. null ⇒ not determined (routed to a peer
-            // authority that does not report it); treat as unknown, not as zero.
-            held_before: result.heldBefore,
-            resources_released: resourcesReleased,
-            owner: ownerId,
-            owner_label: ownerLabel,
-          }),
-        },
-      ],
-    };
+    throw new Error('locks:release invariant violated: validated request reached no release branch');
   },
 });

@@ -37,6 +37,9 @@ import { releaseAllWorkItemLeasesForOwner } from '../../work-item-lease-release'
 import { consumeRespawnExpected } from '../../carry-respawn-marker';
 import { recentContextResetWake } from '../../session-reset-continuation';
 import { NATIVE_SESSION_ID_RE, reanchorAdvSessionNativeIdByOwner } from '../../adv-sessions';
+import { resolveAgentIdentity } from '../coordination/identity';
+import { fileLockCoordinationDomain, lockDomainForProjectDir } from '../locks/coordination-domain';
+import { releaseAllOwnedLocks } from '../locks/release-all-owned';
 import { buildActivityHookBundle } from './hook-bundle';
 import { SESSION_START_MARKER, SESSION_END_MARKER } from './lifecycle-markers';
 
@@ -306,9 +309,39 @@ export default defineTool({
           // force-release every work-item lease + coordination claim it holds
           // NOW, in seconds, rather than waiting on the ~hourly reap schedule
           // (P-001, the backstop for the cases this event misses: a SIGKILL, a
-          // raw terminal close that skips the hook, a host crash). Own try/catch
-          // (releaseAllWorkItemLeasesForOwner never throws either) so a release
-          // hiccup can never fail this report or skip the inbox-wake cancel above.
+          // raw terminal close that skips the hook, a host crash). File/resource
+          // locks must follow the SAME death/continuation classification: a dead
+          // owner cannot edit again, while a carry/reset successor is the same
+          // logical owner and must retain deliberate holds. Each cleanup has its
+          // own try/catch so one store's fault cannot skip the other store.
+          try {
+            const primaryCoordinationDomain = args.cwd?.trim()
+              ? lockDomainForProjectDir(args.cwd.trim())
+              : fileLockCoordinationDomain();
+            let source;
+            try {
+              source = resolveAgentIdentity(ctx);
+            } catch {
+              // `activity:report` permits an explicit owner without a principal.
+              // Lock deletion remains authoritative; only the optional resource
+              // back-up notification lacks a source in that uncommon path.
+            }
+            const locks = await releaseAllOwnedLocks({
+              ownerId: owner,
+              primaryCoordinationDomain,
+              source,
+            });
+            if (locks.released.length || locks.resourcesReleased) {
+              console.log(
+                `[activity:report] session-end lock release for ${owner}: released ${locks.released.length} file path(s) ` +
+                  `across ${1 + locks.crossDomainReleased.length} domain(s), ${locks.resourcesReleased} resource lock(s)`,
+              );
+            }
+          } catch (e) {
+            console.warn(
+              `[activity:report] session-end lock release for ${owner} failed: ${e instanceof Error ? e.message : e}`,
+            );
+          }
           try {
             const rel = await releaseAllWorkItemLeasesForOwner(owner);
             if (rel.releasedIds.length || rel.claimsCleared) {

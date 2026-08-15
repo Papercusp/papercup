@@ -17,7 +17,10 @@ vi.mock('./identity', () => {
   const identity = vi.fn(() => ({ ownerId: 'me', ownerLabel: 'Me', coordinationDomain: 'dom' }));
   return { readIdentity: identity, readFileLockIdentity: identity };
 });
-vi.mock('./coordination-domain', () => ({ resolveExplicitFileLockDomain: vi.fn((requested: string | undefined, fallback: string) => requested ?? fallback) }));
+vi.mock('./coordination-domain', () => ({
+  resolveExplicitFileLockDomain: vi.fn((requested: string | undefined, fallback: string) => requested ?? fallback),
+  candidateResourceLockDomains: vi.fn(() => ['dom']),
+}));
 vi.mock('../coordination/identity', () => ({ resolveAgentIdentity: vi.fn(() => ({ ownerId: 'me' })) }));
 vi.mock('./in-workspace-txn', () => ({
   inWorkspaceTxn: vi.fn(async (_d: string, _o: string, fn: (tx: unknown) => unknown) => fn({})),
@@ -143,13 +146,14 @@ describe('locks:release cross-domain fallback (EI-20405390083792304)', () => {
   it('all_mine sweeps every domain the owner holds locks in', async () => {
     const OTHER = '/hives/other';
     routeByDomain((domain) => domain === 'dom'
-      ? { value: { released: [], heldBefore: 0 }, via: 'local-authority' }
+      ? { value: { released: ['dom/f.ts'], heldBefore: 1 }, via: 'local-authority' }
       : { value: { released: [`${domain}/f.ts`], heldBefore: 1 }, via: 'local-authority' });
     heldIn(activeLock('a', HIVE), activeLock('b', OTHER), activeLock('c', HIVE));
 
     const b = body(await call({ all_mine: true }));
-    expect(b.released).toEqual([`${HIVE}/f.ts`, `${OTHER}/f.ts`]);
-    // Each domain visited once, deduped.
+    expect(b.released).toEqual(['dom/f.ts', `${HIVE}/f.ts`, `${OTHER}/f.ts`]);
+    // Each domain is visited once even when the primary domain released rows.
+    // This pins the session-death case that originally stranded a second domain.
     expect(routeM.mock.calls.map((c) => c[0])).toEqual(['dom', HIVE, OTHER]);
   });
 
