@@ -20,6 +20,7 @@ import {
   transferLoopOwnership,
   loopRoutineName,
   autoArmFleetMemberLoop,
+  countAgentToolCallsInWindow,
   LOOP_WAKE_ACTION,
 } from './loop';
 
@@ -747,5 +748,76 @@ describe('autoArmFleetMemberLoop (kickoff-prompt-absorption-2026-07-17 P-001, re
     const retained = await rawRow(OTHER);
     expect(retained!.payload_template).toMatchObject({ kickoff: 'member reset retained goal', goal: expectedGoal });
     expect((await getLoopStatus(OTHER, { sql }))!.goal).toBe(expectedGoal);
+  });
+});
+
+/**
+ * EI-20543456503122446 — the cold-wake bounced-fire guard's evidence check, against REAL
+ * SQL. The mocked unit test (loop.test.ts) canNOT prove this: its fake `sql` returns a
+ * canned count without ever executing the predicate, which is exactly why every one of
+ * those tests stayed green for the whole time the guard was structurally dead.
+ *
+ * The bug: countAgentToolCallsInWindow's window opens at the carry note's `updated_at`,
+ * but a tool_invocations row is stamped at INSERT — after the handler's write commits — so
+ * the loop:checkpoint that WROTE the note lands inside the window and counted ITSELF. Any
+ * session that checkpointed and then died scored >= 1, so the `0` downgrade that suppresses
+ * a false "un-checkpointed work" alarm could never fire.
+ */
+describe('countAgentToolCallsInWindow — carry-note bookkeeping exclusion (EI-20543456503122446)', () => {
+  const EV_OWNER = 'su-evidence-window-test';
+  // The window under test, mirroring the real caller: (noteUpdatedAt, lastTurnAt].
+  const SINCE = Date.parse('2026-08-15T18:20:06.840Z');
+  const UNTIL = Date.parse('2026-08-15T18:35:00.000Z');
+
+  async function seedCall(
+    toolName: string,
+    atIso: string,
+    callOrigin: string | null = 'agent',
+  ) {
+    await sql`
+      INSERT INTO harness_shared.tool_invocations
+        (workspace_id, harness_slug, plugin_name, tool_name, role,
+         spawn_id, window_key, status, coord_owner_id, invoked_at, call_origin)
+      VALUES (${WS}, ${HARNESS}, 'papercusp-su', ${toolName}, 'su',
+              'spawn-ev', 'win-ev', 'ok', ${EV_OWNER}, ${atIso}::timestamptz, ${callOrigin})`;
+  }
+
+  beforeEach(async () => {
+    // The outer beforeEach truncates routines/carry_notes only; scope our own cleanup by
+    // owner so rows cannot survive into a later case (and so we touch no peer's fixtures).
+    await sql`DELETE FROM harness_shared.tool_invocations WHERE coord_owner_id = ${EV_OWNER}`;
+  });
+
+  it('counts 0 when the ONLY call in the window is the loop:checkpoint that wrote the note', async () => {
+    // The real measured shape: note updated_at 18:20:06.840Z, its own checkpoint row
+    // stamped 18:20:07.136Z — 296ms INSIDE the window that note opens.
+    await seedCall('loop:checkpoint', '2026-08-15T18:20:07.136Z');
+    expect(await countAgentToolCallsInWindow(EV_OWNER, SINCE, UNTIL, { sql })).toBe(0);
+  });
+
+  it('counts 0 for a work_items:checkpoint refresh — its content is checkpointed by definition', async () => {
+    await seedCall('work_items:checkpoint', '2026-08-15T18:21:00.000Z');
+    expect(await countAgentToolCallsInWindow(EV_OWNER, SINCE, UNTIL, { sql })).toBe(0);
+  });
+
+  it('still counts REAL agent work — the exclusion must not suppress a genuine alarm', async () => {
+    await seedCall('work_items:get', '2026-08-15T18:22:00.000Z');
+    expect(await countAgentToolCallsInWindow(EV_OWNER, SINCE, UNTIL, { sql })).toBe(1);
+  });
+
+  it('counts only the real work when a checkpoint accompanies it (1, not 2)', async () => {
+    await seedCall('work_items:get', '2026-08-15T18:22:00.000Z');
+    await seedCall('loop:checkpoint', '2026-08-15T18:23:00.000Z');
+    expect(await countAgentToolCallsInWindow(EV_OWNER, SINCE, UNTIL, { sql })).toBe(1);
+  });
+
+  it('preserves the pre-existing origin filter: hook traffic is still excluded', async () => {
+    await seedCall('coord:orient', '2026-08-15T18:22:00.000Z', 'hook');
+    expect(await countAgentToolCallsInWindow(EV_OWNER, SINCE, UNTIL, { sql })).toBe(0);
+  });
+
+  it('respects the window bounds: real work BEFORE the note opens the window is not counted', async () => {
+    await seedCall('work_items:get', '2026-08-15T18:00:00.000Z');
+    expect(await countAgentToolCallsInWindow(EV_OWNER, SINCE, UNTIL, { sql })).toBe(0);
   });
 });

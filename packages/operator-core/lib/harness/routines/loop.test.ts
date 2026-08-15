@@ -1072,6 +1072,30 @@ describe('countAgentToolCallsInWindow (EI-19984789589075138 — the cold-wake un
     expect(values).toEqual(expect.arrayContaining(['call_origin', 'tool_name', 'agent', 'unknown', 'activity:report', 'coord:glance', 'coord:inbox']));
   });
 
+  it('EI-20543456503122446: binds the carry-note bookkeeping exclusion so the note-writing call cannot count itself', async () => {
+    // A tool_invocations row is stamped at INSERT, after the handler's write commits, so
+    // the loop:checkpoint that WROTE the note lands inside the window this note opens.
+    // Without the exclusion the guard's `0` downgrade is unreachable for any session that
+    // checkpoints and then dies — i.e. exactly the bounced-fire case it exists for.
+    // NOTE: this asserts COMPOSITION only. The fake sql below never executes the
+    // predicate, which is why the semantic proof lives in loop.integration.test.ts.
+    const calls: { strings: readonly string[]; values: unknown[] }[] = [];
+    const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      calls.push({ strings: [...strings], values });
+      return Promise.resolve([{ n: 0 }]);
+    }) as any;
+    sql.unsafe = (identifier: string) => identifier;
+
+    await countAgentToolCallsInWindow('su-x', 0, 1000, { sql });
+
+    const rendered = calls.flatMap((call) => call.strings).join(' ');
+    const values = calls.flatMap((call) =>
+      call.values.flatMap((value: unknown) => (Array.isArray(value) ? value : [value])),
+    );
+    expect(rendered).toContain('tool_name <> ALL');
+    expect(values).toEqual(expect.arrayContaining(['loop:checkpoint', 'work_items:checkpoint']));
+  });
+
   it('returns null (never 0) when the query itself fails — "unavailable" must not read as "confirmed zero"', async () => {
     // The catch path deliberately console.warn's (best-effort logging) — expect it
     // explicitly (vitest-fail-on-console) rather than letting it fail the test.
