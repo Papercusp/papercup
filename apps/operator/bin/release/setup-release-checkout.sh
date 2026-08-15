@@ -560,6 +560,55 @@ if [ -n "$unresolved" ]; then
   exit 1
 fi
 
+# 3c-2. Pinned workspace RUNTIME BUILDS --------------------------------------
+# EI-20453835015280838: workspace symlinks resolve into the RELEASE tree, not
+# the integration tree (the isolation guarantee in this script's header). That
+# matters for submodule packages whose runtime entry points are generated and
+# gitignored. `libs/generic/sse`, for example, commits `src/` but intentionally
+# exposes CommonJS `require`/`default` entries from `dist/`. Step 2 clones the
+# exact pinned submodule SHA and step 1 correctly removes ignored output from a
+# prior pin, so a release checkout has NO `dist/` until it is rebuilt. Staging
+# masks the defect because its developer tree already has a locally-built dist;
+# tests/typechecks use the package's `import: ./src/index.ts` condition, while
+# the real operator boot reaches `require: ./dist/index.js` and fails only in
+# the pre-cutover preflight.
+#
+# Build from the PINNED release source. Never copy these outputs from the
+# integration tree: a submodule may already have moved past TARGET_SHA, and
+# copying its ignored dist would mix two source revisions in one deployment.
+# The registry is deliberately explicit and is policed repository-wide by
+# setup-release-checkout-workspace-builds.test.ts: any new workspace package
+# that exposes a gitignored `main`/`require`/`default` target must be registered
+# here or that detector fails before the same class can reach deploy again.
+RUNTIME_BUILD_WORKSPACES=(
+  "@papercusp/sse"
+)
+
+build_pinned_workspace_runtime_outputs() {
+  local workspace scope package manifest
+  for workspace in "${RUNTIME_BUILD_WORKSPACES[@]}"; do
+    scope="${workspace%%/*}"
+    package="${workspace#*/}"
+    manifest="$RELEASE_ROOT/node_modules/$scope/$package/package.json"
+
+    # Rollback refs may predate a registered workspace. The post-pin prune
+    # above already removes its dangling symlink; absence here is therefore an
+    # expected no-op, not a reason an old known-good pin should become
+    # undeployable.
+    if [ ! -e "$manifest" ]; then
+      log "pinned runtime workspace $workspace absent at ${TARGET_SHA:0:10} — skipping build"
+      continue
+    fi
+
+    log "building pinned runtime output for $workspace"
+    if ! (cd "$RELEASE_ROOT" && npm --workspace "$workspace" run build 1>/dev/null); then
+      echo "[setup-release] FATAL: pinned runtime build failed for $workspace at ${TARGET_SHA:0:10} — refusing a release tree whose declared runtime entry points may be absent" >&2
+      return 1
+    fi
+  done
+}
+build_pinned_workspace_runtime_outputs
+
 # 3d. Native-addon ABI guard (infra-fail-fast-build-integrity-2026-06-19 P-003) -
 # The hardlink-copied node_modules (step 3) carry whatever Node ABI the
 # INTEGRATION tree was built under. If that differs from the RUNTIME Node, the
