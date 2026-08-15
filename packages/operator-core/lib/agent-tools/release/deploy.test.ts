@@ -84,6 +84,12 @@ function mkStatus(over: Partial<DeployStatus> = {}): DeployStatus {
     deployInFlight: null,
     deployTerminal: null,
     checkpointRunInFlight: null,
+    releaseTrigger: {
+      active: true,
+      pause: null,
+      blocked: false,
+      blockReason: null,
+    },
     canTriggerGreen: false,
     nothingToDeploy: true,
     state: 'up-to-date',
@@ -209,6 +215,40 @@ describe('release:deploy — timeoutSec (EI-18761103623054929)', () => {
 });
 
 describe('release:deploy — trigger', () => {
+  it('refuses a deliberate release-trigger pause and preserves its provenance in the status brief', async () => {
+    statusM.mockResolvedValue(
+      mkStatus({
+        state: 'release-trigger-paused',
+        canTriggerGreen: false,
+        nothingToDeploy: false,
+        releaseTrigger: {
+          active: false,
+          pause: {
+            reason: 'hold until repaired checkout is green',
+            pausedBy: 'su-release-owner',
+            pausedAtMs: Date.parse('2026-08-15T09:07:00Z'),
+          },
+          blocked: true,
+          blockReason: 'release-trigger is deliberately paused: hold until repaired checkout is green',
+        },
+        recommendation: 'Do NOT resume until the repaired checkout is green.',
+      }),
+    );
+    const b = body(await tool.handler({ op: 'trigger', confirm: true } as never, { role: 'operator' } as never));
+    expect(b).toMatchObject({
+      refused: true,
+      status: {
+        releaseTrigger: {
+          active: false,
+          blocked: true,
+          pause: { pausedBy: 'su-release-owner' },
+        },
+      },
+    });
+    expect(b.reason).toMatch(/release-trigger-paused.*Do NOT resume/);
+    expect(launchM).not.toHaveBeenCalled();
+  });
+
   it('refuses when the gate is red (no green pin to ship)', async () => {
     statusM.mockResolvedValue(mkStatus({ state: 'gate-red', canTriggerGreen: false }));
     const b = body(await tool.handler({ op: 'trigger', confirm: true } as never, { role: 'operator' } as never));

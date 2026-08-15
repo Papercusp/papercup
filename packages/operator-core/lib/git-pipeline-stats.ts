@@ -49,6 +49,12 @@ export interface RoutineInfo {
   cron: string | null;
   lastFiredAtMs: number | null;
   nextFireAtMs: number | null;
+  /** Deliberate pause provenance written by routines:set. Null when no hold is active. */
+  pause: {
+    reason: string | null;
+    pausedBy: string | null;
+    pausedAtMs: number | null;
+  } | null;
 }
 
 export interface GitPipelineSnapshot {
@@ -439,13 +445,60 @@ interface RoutineRow {
 
 export function toRoutineInfo(r: RoutineRow | undefined): RoutineInfo | null {
   if (!r) return null;
+  const rawPause = r.metadata?.pause;
+  const pause = rawPause && typeof rawPause === 'object'
+    ? (() => {
+        const rec = rawPause as Record<string, unknown>;
+        return {
+          reason: typeof rec.reason === 'string' ? rec.reason : null,
+          pausedBy: typeof rec.pausedBy === 'string' ? rec.pausedBy : null,
+          pausedAtMs: typeof rec.pausedAtMs === 'number' && Number.isFinite(rec.pausedAtMs)
+            ? rec.pausedAtMs
+            : null,
+        };
+      })()
+    : null;
   return {
     name: r.name,
     active: Boolean(r.active),
     cron: typeof r.trigger_config?.cron === 'string' ? (r.trigger_config.cron as string) : null,
     lastFiredAtMs: dateMs(r.last_fired_at),
     nextFireAtMs: dateMs(r.next_fire_at),
+    pause,
   };
+}
+
+/**
+ * Narrow, execution-time reread of the release-trigger control row. Status uses the
+ * already-loaded snapshot; the deploy chokepoint calls this again immediately before its
+ * first mutation so a pause applied after detached launch still wins. Errors deliberately
+ * propagate: an unreadable safety control is UNKNOWN and must fail the ordinary deploy closed.
+ */
+export async function readReleaseTriggerControl(slug: string = DEFAULT_SLUG): Promise<RoutineInfo | null> {
+  const { sql } = getOrgPg();
+  const rows = await sql<RoutineRow[]>`
+    SELECT name, active, trigger_config, metadata, last_fired_at, next_fire_at
+      FROM harness_shared.routines
+     WHERE install_slug = ${slug}
+       AND name = 'release-trigger'
+     LIMIT 1
+  `;
+  return toRoutineInfo(rows[0]);
+}
+
+/**
+ * One fail-closed interpretation of the release-trigger control row, shared by
+ * the status surface and the execution-time deploy guard. `null` means the
+ * ordinary deploy path is enabled; any string is the exact refusal reason.
+ */
+export function releaseTriggerControlBlockReason(control: RoutineInfo | null): string | null {
+  if (control?.active === true) return null;
+  if (control?.pause?.reason) {
+    return `release-trigger is deliberately paused: ${control.pause.reason}`;
+  }
+  return control
+    ? 'release-trigger is inactive without deliberate-pause provenance'
+    : 'release-trigger control is unavailable';
 }
 
 export interface RawGateCounters {

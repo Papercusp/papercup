@@ -57,6 +57,29 @@ describe('toRoutineInfo', () => {
       cron: '0 */10 * * * *',
       lastFiredAtMs: fired.getTime(),
       nextFireAtMs: next.getTime(),
+      pause: null,
+    });
+  });
+
+  it('projects the deliberate pause record carried by routine metadata', () => {
+    const info = toRoutineInfo({
+      name: 'release-trigger',
+      active: false,
+      trigger_config: { cron: '0 */15 * * * *' },
+      metadata: {
+        pause: {
+          reason: 'hold until repaired checkout is green',
+          pausedBy: 'su-release-owner',
+          pausedAtMs: 1_786_780_000_000,
+        },
+      },
+      last_fired_at: null,
+      next_fire_at: null,
+    });
+    expect(info?.pause).toEqual({
+      reason: 'hold until repaired checkout is green',
+      pausedBy: 'su-release-owner',
+      pausedAtMs: 1_786_780_000_000,
     });
   });
 
@@ -69,7 +92,7 @@ describe('toRoutineInfo', () => {
       last_fired_at: null,
       next_fire_at: null,
     });
-    expect(info).toMatchObject({ name: 'release-trigger', active: false, cron: null, lastFiredAtMs: null, nextFireAtMs: null });
+    expect(info).toMatchObject({ name: 'release-trigger', active: false, cron: null, lastFiredAtMs: null, nextFireAtMs: null, pause: null });
   });
 });
 

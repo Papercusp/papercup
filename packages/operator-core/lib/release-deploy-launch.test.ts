@@ -39,6 +39,18 @@ function mkSnap(
   recent: PipelineEventRow[] = [],
 ): GitPipelineSnapshot {
   return {
+    routines: {
+      gitSync: null,
+      greenCheckpoint: null,
+      releaseTrigger: {
+        name: 'release-trigger',
+        active: true,
+        cron: '0 */15 * * * *',
+        lastFiredAtMs: null,
+        nextFireAtMs: null,
+        pause: null,
+      },
+    },
     gate: {
       consecutiveReds: 0,
       lastGreenAtMs: null,
@@ -106,6 +118,33 @@ describe('computeDeployStatus — decision tree', () => {
     expect(s.state).toBe('green-deployable');
     expect(s.canTriggerGreen).toBe(true);
     expect(s.recommendation).toMatch(/trigger/i);
+  });
+
+  it('a deliberate release-trigger pause blocks and explains an otherwise green deploy', () => {
+    const snap = mkSnap({}, { deployedBehindGreenPin: 3 });
+    snap.routines.releaseTrigger = {
+      ...snap.routines.releaseTrigger!,
+      active: false,
+      pause: {
+        reason: 'hold until checkout repair is included in a fresh green pin',
+        pausedBy: 'su-release-owner',
+        pausedAtMs: Date.parse('2026-08-15T09:07:00Z'),
+      },
+    };
+    const s = computeDeployStatus(snap);
+    expect(s.state).toBe('release-trigger-paused');
+    expect(s.releaseTrigger).toMatchObject({ active: false, blocked: true });
+    expect(s.canTriggerGreen).toBe(false);
+    expect(s.recommendation).toMatch(/checkout repair|Do NOT resume/);
+  });
+
+  it('fails an ordinary trigger closed when release-trigger control is unavailable', () => {
+    const snap = mkSnap({}, { deployedBehindGreenPin: 1 });
+    snap.routines.releaseTrigger = null;
+    const s = computeDeployStatus(snap);
+    expect(s.state).toBe('release-trigger-unavailable');
+    expect(s.releaseTrigger.blocked).toBe(true);
+    expect(s.canTriggerGreen).toBe(false);
   });
 
   it('gate-wedged: 0 reds but the checkpoint is not firing → surface to an operator', () => {

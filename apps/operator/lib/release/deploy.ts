@@ -22,6 +22,10 @@
 
 import { evaluateDataCondition, type DataCondition } from '@papercusp/rules';
 import {
+  releaseTriggerControlBlockReason,
+  type RoutineInfo,
+} from '@papercusp/operator-core/lib/git-pipeline-stats';
+import {
   git,
   revParse,
   refExists,
@@ -135,6 +139,13 @@ export interface DeployResult {
 export interface DeployDeps {
   /** Acquire exclusive(dev-server) with a drain, run fn, release (broadcast back-up). */
   withDrain<T>(fn: () => Promise<T>): Promise<T>;
+  /**
+   * Freshly read the release-trigger control row after the detached deploy has
+   * acquired its drain but before its first mutation. Ordinary deploys fail
+   * closed on a missing/inactive/unreadable row; `plan.forced` is the explicit
+   * audited bypass.
+   */
+  readReleaseTriggerControl(): Promise<RoutineInfo | null>;
   /** Snapshot before swapping (D-008). null when snapshotting is disabled. */
   snapshot(reason: string): Promise<SnapshotInfo | null>;
   /** Swap the release checkout to `targetSha` (setup-release-checkout.sh). node_modules
@@ -359,6 +370,32 @@ export async function executeDeploy(
     // changed ⇒ rollback just reverts the tree, zero downtime.
     let migrateRan = false;
     let liveCutover = false;
+
+    // EI-20512352412751871: the agent-facing status read happens BEFORE the
+    // detached deploy process launches. A safety pause can land in that gap, so
+    // status gating alone has a TOCTOU hole. Re-read the SAME canonical control
+    // row here, inside the drain and immediately before snapshot (the first
+    // deploy mutation). This guard intentionally sits OUTSIDE the rollback try:
+    // a pure control refusal changed nothing and must not run rollback, emit a
+    // deploy-failed event, or broadcast a false deploy failure. Force is the one
+    // explicit, audited bypass.
+    if (plan.forced) {
+      deps.log('forced deploy: explicitly bypassing release-trigger control guard');
+    } else {
+      try {
+        await step('release-trigger-control', async () => {
+          const control = await deps.readReleaseTriggerControl();
+          const refusal = releaseTriggerControlBlockReason(control);
+          if (refusal) throw new Error(refusal);
+        });
+      } catch (e) {
+        const detail = e instanceof Error ? e.message : String(e);
+        const error = `ordinary deploy refused before mutation: ${detail}`;
+        deps.log(`✖ ${error}`);
+        return { ok: false, plan, steps, snapshot, migrations, rolledBack: false, error };
+      }
+    }
+
     try {
       snapshot = await step('snapshot', () => deps.snapshot(`pre-deploy ${short(plan.targetSha)}`));
       // WI-5864: `restartOnly` means the checkout is ALREADY at target (a prior

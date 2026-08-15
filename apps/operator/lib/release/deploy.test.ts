@@ -47,6 +47,15 @@ function makeDeps(over: Partial<DeployDeps> & { fail?: string } = {}): { deps: D
         calls.push('drain:release');
       }
     },
+    readReleaseTriggerControl: () =>
+      rec('releaseTriggerControl', {
+        name: 'release-trigger',
+        active: true,
+        cron: '0 */15 * * * *',
+        lastFiredAtMs: null,
+        nextFireAtMs: null,
+        pause: null,
+      }),
     snapshot: () => rec('snapshot', { snapshotId: 1, kopiaSnapshotId: 'kopia-abc' } as SnapshotInfo),
     runSetup: (sha) => rec(`runSetup:${sha.slice(0, 4)}`, undefined).then(() => undefined),
     migrate: () => rec('migrate', { appliedCount: 1, totalKnown: 5, applied: ['200-x.sql'], sqlDir: '/x' }),
@@ -133,6 +142,7 @@ describe('executeDeploy — happy path', () => {
     expect(res.rolledBack).toBe(false);
     // drain wraps everything; snapshot precedes swap precedes migrate precedes restart
     expect(calls[0]).toBe('drain:acquire');
+    expect(calls.indexOf('releaseTriggerControl')).toBeLessThan(calls.indexOf('snapshot'));
     expect(calls.indexOf('snapshot')).toBeLessThan(calls.indexOf('runSetup:abcd'));
     // P-001: preflight runs AFTER the swap but strictly BEFORE migrate + the live restart.
     expect(calls.indexOf('runSetup:abcd')).toBeLessThan(calls.indexOf('preflight'));
@@ -142,6 +152,57 @@ describe('executeDeploy — happy path', () => {
     expect(calls).toContain('broadcast:ok');
     expect(calls).toContain('recordEvent:ok'); // the deploy reports its own outcome
     expect(calls[calls.length - 1]).toBe('drain:release');
+  });
+
+  it('re-reads a post-launch pause inside the drain and refuses before every mutation without rollback', async () => {
+    const { deps, calls } = makeDeps({
+      readReleaseTriggerControl: async () => ({
+        name: 'release-trigger',
+        active: false,
+        cron: '0 */15 * * * *',
+        lastFiredAtMs: null,
+        nextFireAtMs: null,
+        pause: {
+          reason: 'hold until repaired checkout is green',
+          pausedBy: 'su-release-owner',
+          pausedAtMs: Date.parse('2026-08-15T09:07:00Z'),
+        },
+      }),
+    });
+    const res = await executeDeploy(cfg, plan, deps);
+    expect(res).toMatchObject({ ok: false, rolledBack: false });
+    expect(res.error).toMatch(/ordinary deploy refused before mutation.*repaired checkout/);
+    expect(res.steps).toEqual([
+      expect.objectContaining({ name: 'release-trigger-control', ok: false }),
+    ]);
+    expect(calls).toEqual(['drain:acquire', 'drain:release']);
+    expect(calls.some((c) => c.startsWith('runSetup:'))).toBe(false);
+    expect(calls.some((c) => c.startsWith('broadcast:'))).toBe(false);
+    expect(calls.some((c) => c.startsWith('recordEvent:'))).toBe(false);
+  });
+
+  it('fails closed before mutation when the execution-time control read is unavailable', async () => {
+    const { deps, calls } = makeDeps({
+      readReleaseTriggerControl: async () => null,
+    });
+    const res = await executeDeploy(cfg, plan, deps);
+    expect(res).toMatchObject({ ok: false, rolledBack: false });
+    expect(res.error).toMatch(/release-trigger control is unavailable/);
+    expect(calls).toEqual(['drain:acquire', 'drain:release']);
+  });
+
+  it('lets the explicit forced plan bypass the live release-trigger guard', async () => {
+    let readAttempted = false;
+    const { deps, calls } = makeDeps({
+      readReleaseTriggerControl: async () => {
+        readAttempted = true;
+        throw new Error('force must not consult the ordinary-deploy guard');
+      },
+    });
+    const res = await executeDeploy(cfg, { ...plan, forced: true, green: false }, deps);
+    expect(res.ok).toBe(true);
+    expect(readAttempted).toBe(false);
+    expect(calls).toContain('snapshot');
   });
 
   it('EI-5993: awaits emitAwaitedEvent(release:deployed) before resolving', async () => {

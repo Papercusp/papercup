@@ -23,8 +23,8 @@ import { spawn } from 'node:child_process';
 import { createTextCollector } from './child-output.js';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import type { GitPipelineSnapshot } from './git-pipeline-stats';
-import { gitPipelineSnapshot } from './git-pipeline-stats';
+import type { GitPipelineSnapshot, RoutineInfo } from './git-pipeline-stats';
+import { gitPipelineSnapshot, releaseTriggerControlBlockReason } from './git-pipeline-stats';
 import {
   buildDeployTerminalShell,
   readDeployTerminalMarker,
@@ -218,6 +218,8 @@ export type DeployStateKind =
   | 'up-to-date' // live :3070 is at the green pin; nothing to deploy
   | 'deploy-in-flight' // EI-18724155280048738: a deploy is RUNNING right now — do not trigger another
   | 'green-deployable' // green code is ahead + deployable but not yet live (the trigger case)
+  | 'release-trigger-paused' // a deliberate release safety hold blocks ordinary deploys
+  | 'release-trigger-unavailable' // release-trigger is absent/inactive without usable pause provenance
   | 'gate-red' // the gate is RED — the green pin can't advance until the reds are fixed
   | 'gate-verdict-stale' // WI-4489: the blob says red, but the verdict is superseded/unverified — colour UNKNOWN, not red
   | 'gate-wedged' // the green-checkpoint isn't firing (0 reds but stale) — surface to an operator
@@ -290,6 +292,14 @@ export interface DeployStatus {
    *  snapshot was not probed (or the probe was unavailable); an object with `active:false` is
    *  preserved when the probe explicitly reports idle. */
   checkpointRunInFlight: GitPipelineSnapshot['activeRun'];
+  /** The SAME control row that gates the scheduled release-trigger. Ordinary manual triggers
+   *  must not route around it; force remains the explicit override. */
+  releaseTrigger: {
+    active: boolean | null;
+    pause: RoutineInfo['pause'];
+    blocked: boolean;
+    blockReason: string | null;
+  };
   /** True iff `trigger` would do something safe + useful: there is green code ahead of the
    *  live deploy AND the gate is not currently red/wedged. */
   canTriggerGreen: boolean;
@@ -357,6 +367,9 @@ export function computeDeployStatus(snap: GitPipelineSnapshot, inFlight: DeployI
   const gateGreen = g.consecutiveReds === 0 && !fireStale && !lastVerdictWasPartialRed;
   const deployedBehindGreenPin = d.deployedBehindGreenPin;
   const greenPinBehindStaging = d.greenPinBehindStaging;
+  const releaseTriggerRow = snap.routines.releaseTrigger;
+  const releaseTriggerBlockReason = releaseTriggerControlBlockReason(releaseTriggerRow);
+  const releaseTriggerBlocked = releaseTriggerBlockReason !== null;
 
   // Green code ahead of the live deploy that we could ship right now.
   const hasGreenAhead = typeof deployedBehindGreenPin === 'number' && deployedBehindGreenPin > 0;
@@ -372,7 +385,7 @@ export function computeDeployStatus(snap: GitPipelineSnapshot, inFlight: DeployI
   // a definite reason) is strictly better than letting the caller fire and rely on systemd-run
   // exiting 1 on the duplicate unit — that path reports the hedged "a deploy MAY already be in
   // flight", which is the same can't-tell-two-states-apart defect one layer down.
-  const canTriggerGreen = hasGreenAhead && !inFlight?.active;
+  const canTriggerGreen = hasGreenAhead && !inFlight?.active && !releaseTriggerBlocked;
 
   // WI-4489: a RED is only authoritative if its verdict is CURRENT. `gate_health` is a cache that a
   // starved writer freezes: a `skipped-locked` fire is a no-op that leaves the blob untouched while
@@ -407,6 +420,13 @@ export function computeDeployStatus(snap: GitPipelineSnapshot, inFlight: DeployI
       `To WAIT on it: \`release:deployed\`/\`deploy-failed\` fire only at the END of the deploy, after the restart and its health probe — so if this deploy is already past its restart the event has ALREADY fired, and an await armed now would wait for the NEXT deploy, not this one. ` +
       `Check first with dev:pipeline_position: \`serving.startedSinceCodeChange: true\` means the restart already happened (verify directly, do NOT arm an await). ` +
       `Re-check this status once it finishes to confirm the live sha moved.`;
+  } else if (hasGreenAhead && releaseTriggerBlocked) {
+    const pause = releaseTriggerRow?.pause;
+    state = pause ? 'release-trigger-paused' : 'release-trigger-unavailable';
+    recommendation = pause
+      ? `A deliberate release safety hold blocks ordinary deploys${pause.pausedBy ? ` (paused by ${pause.pausedBy}` : ''}${pause.pausedAtMs ? ` at ${new Date(pause.pausedAtMs).toISOString()}` : ''}${pause.pausedBy ? ')' : ''}: ${pause.reason ?? 'no reason recorded'}. ` +
+        'Do NOT resume the routine or run release:deploy trigger until the recorded hold condition is satisfied. Force remains the explicit audited override.'
+      : `${releaseTriggerBlockReason}. Refusing an ordinary deploy while its control state is unavailable; restore/verify the routine control before retrying. Force remains the explicit audited override.`;
   } else if (hasGreenAhead) {
     // There IS green, deployable code that hasn't reached :3070 — the expedite case.
     state = 'green-deployable';
@@ -477,6 +497,12 @@ export function computeDeployStatus(snap: GitPipelineSnapshot, inFlight: DeployI
     deployInFlight: inFlight,
     deployTerminal: inFlight?.terminal ?? null,
     checkpointRunInFlight,
+    releaseTrigger: {
+      active: releaseTriggerRow?.active ?? null,
+      pause: releaseTriggerRow?.pause ?? null,
+      blocked: releaseTriggerBlocked,
+      blockReason: releaseTriggerBlockReason,
+    },
     canTriggerGreen,
     nothingToDeploy,
     state,
