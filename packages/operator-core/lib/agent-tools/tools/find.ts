@@ -41,6 +41,7 @@ import { categoryOf } from '../../cupboard/tools-search';
 import { arrayItemConstraintText, schemaToText, type ToolDiscoveryEntry } from '../../cupboard/tools-discovery';
 import { findTools, type Embedder } from '../../cupboard/tool-find';
 import { buildQueryEmbedder, interactiveEmbedAcquireBudgetMs } from '../search/embedder';
+import { resolveConcreteHarnessSlug } from '../_harness-scope';
 
 /**
  * The result-door is a per-tool-result budget, not a per-field budget. A
@@ -312,11 +313,11 @@ type HiveHomeResolver = (workspaceId: string, harnessSlug: string) => Promise<st
  */
 export async function filterCorpusForConfirmedHiveScope(
   corpus: ToolDiscoveryEntry[],
-  ctx: DiscoveryScopeContext,
+  scope: DiscoveryScopeContext,
   resolveHiveHome: HiveHomeResolver,
 ): Promise<ToolDiscoveryEntry[]> {
-  const workspaceId = typeof ctx.workspaceId === 'string' ? ctx.workspaceId.trim() : '';
-  const harnessSlug = typeof ctx.harnessSlug === 'string' ? ctx.harnessSlug.trim() : '';
+  const workspaceId = typeof scope.workspaceId === 'string' ? scope.workspaceId.trim() : '';
+  const harnessSlug = typeof scope.harnessSlug === 'string' ? scope.harnessSlug.trim() : '';
   if (
     !workspaceId ||
     workspaceId === '*' ||
@@ -477,9 +478,10 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     const { corpus: fullCorpus, embedText, schemaByTool } = buildCorpus();
+    const concreteHarnessSlug = resolveConcreteHarnessSlug(undefined, ctx);
     const corpus = await filterCorpusForConfirmedHiveScope(
       fullCorpus,
-      ctx,
+      { workspaceId: ctx.workspaceId, harnessSlug: concreteHarnessSlug },
       async (workspaceId, harnessSlug) => {
         const { potHomeSlugForHarness } = await import('../../hive-federation');
         return potHomeSlugForHarness(workspaceId, harnessSlug);
