@@ -44,11 +44,15 @@ describe('launchAcceptanceGraderForGate (D-006)', () => {
     const result = await launchAcceptanceGraderForGate(
       'plan-a',
       { satisfied: false, code },
-      {} as never,
+      { workspaceId: 'ws-test', harnessSlug: 'papercusp' } as never,
+      'sidestage',
       launch as never,
     );
     expect(launch).toHaveBeenCalledTimes(1);
-    expect(launch).toHaveBeenCalledWith('plan-a', {});
+    expect(launch).toHaveBeenCalledWith('plan-a', {
+      workspaceId: 'ws-test',
+      harnessSlug: 'sidestage',
+    });
     expect(result?.state).toBe('launched');
   });
 
@@ -58,6 +62,7 @@ describe('launchAcceptanceGraderForGate (D-006)', () => {
       'plan-a',
       { satisfied: false, code: 'acceptance_unaudited' },
       {} as never,
+      undefined,
       launch as never,
     );
     expect(result).toBeUndefined();

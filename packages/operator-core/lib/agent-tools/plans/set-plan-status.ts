@@ -245,10 +245,14 @@ export async function launchAcceptanceGraderForGate(
   slug: string,
   gate: { satisfied: boolean; code?: string },
   ctx: Parameters<typeof launchAcceptanceGrader>[1],
+  harness: string | undefined,
   launch: typeof launchAcceptanceGrader = launchAcceptanceGrader,
 ): Promise<AcceptanceGraderLifecycle | undefined> {
   if (gate.satisfied || !gate.code || !ACCEPTANCE_GRADER_GATE_CODES.has(gate.code)) return undefined;
-  return launch(slug, ctx);
+  // The tool accepts a per-call harness override. Keep the scoping at this
+  // launch seam so the acceptance grader cannot accidentally resolve the plan
+  // against the caller's ambient harness (EI-20482865818772113).
+  return launch(slug, harnessScopedCtx(harness, ctx));
 }
 
 export default defineTool({
@@ -289,7 +293,7 @@ export default defineTool({
           const gate = await evaluatePlanAcceptanceGate(slug, args.force ? { force: args.force } : undefined);
           forcedPast = gate.forcedPast;
           if (!gate.satisfied) {
-            const acceptanceGrader = await launchAcceptanceGraderForGate(slug, gate, ctx);
+            const acceptanceGrader = await launchAcceptanceGraderForGate(slug, gate, ctx, args.harness);
             return {
               ok: false as const,
               slug,
