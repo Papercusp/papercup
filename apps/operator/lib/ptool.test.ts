@@ -1,5 +1,13 @@
+import { execFile } from 'node:child_process';
+import { once } from 'node:events';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { createServer } from 'node:net';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { promisify } from 'node:util';
 import { describe, it, expect, vi } from 'vitest';
 import { MCP_PROXY_RETRY_WINDOW_MS } from '../lib/mcp-proxy/budgets.mjs';
+import { createMcpProxy } from './mcp-proxy/proxy';
 import {
   parseArgs,
   serviceOf,
@@ -414,6 +422,58 @@ describe('ptool local operator connect retry (EI-20207246136942518)', () => {
     expect(sleep).not.toHaveBeenCalled();
     expect(wrapped.message).toContain('HTTP 503');
     expect(wrapped.message).toContain('mcp_proxy_upstream_unavailable');
+  });
+
+  it('returns the real proxy unavailable-upstream 503 as a bounded typed CLI error', async () => {
+    const portProbe = createServer();
+    portProbe.listen(0, '127.0.0.1');
+    await once(portProbe, 'listening');
+    const unavailablePort = (portProbe.address() as { port: number }).port;
+    await new Promise<void>((resolveClose) => portProbe.close(() => resolveClose()));
+
+    const proxy = createMcpProxy({
+      listenPort: 0,
+      targetHost: '127.0.0.1',
+      targetPort: unavailablePort,
+      retryWindowMs: 80,
+      retryBackoffMs: 10,
+      log: () => {},
+    });
+    proxy.listen(0, '127.0.0.1');
+    await once(proxy, 'listening');
+    const proxyPort = (proxy.address() as { port: number }).port;
+    const temp = await mkdtemp(join(tmpdir(), 'ptool-proxy-503-'));
+    const tokenFile = join(temp, 'superuser-token');
+    await writeFile(tokenFile, 'test-token\n');
+
+    const startedAt = Date.now();
+    let failure: any = null;
+    try {
+      await promisify(execFile)(
+        process.execPath,
+        [
+          resolve('apps/operator/scripts/ptool.mjs'),
+          '--list',
+          `--url=http://127.0.0.1:${proxyPort}`,
+          `--token-file=${tokenFile}`,
+        ],
+        {
+          env: { ...process.env, PAPERCUSP_PSU_TIMEOUT_MS: '1000' },
+          timeout: 2_000,
+        },
+      );
+    } catch (error) {
+      failure = error;
+    } finally {
+      await new Promise<void>((resolveClose) => proxy.close(() => resolveClose()));
+      await rm(temp, { recursive: true, force: true });
+    }
+
+    expect(failure).toBeTruthy();
+    expect(failure.killed).not.toBe(true);
+    expect(failure.stderr).toContain('HTTP 503');
+    expect(failure.stderr).toContain('mcp_proxy_upstream_unavailable');
+    expect(Date.now() - startedAt).toBeLessThan(2_000);
   });
 });
 
