@@ -68,6 +68,12 @@ const RUNTIME_ENTRIES = listIgnoredRuntimeEntryWorkspaces(REPO_ROOT);
 const PROVISIONED_ROOTS = extractProvisionedRoots(SCRIPT_SRC, RUNTIME_ENTRIES);
 const TEST_FILES = repoTestFiles();
 const ORACLE = makeGitIgnoreOracle(REPO_ROOT, listSubmodulePaths(REPO_ROOT));
+const REPO_SCAN = scanRequiredIgnoredAssets({
+  repoRoot: REPO_ROOT,
+  testFiles: TEST_FILES,
+  coveredRoots: PROVISIONED_ROOTS,
+  isIgnored: ORACLE,
+});
 
 /** Build a synthetic corpus: fake file contents + a fake ignore oracle. */
 function scanFixture(files: Record<string, string>, opts: {
@@ -106,12 +112,7 @@ describe('release setup coverage — no test may hard-require a gitignored path 
   });
 
   it('THE GUARD: every gitignored path a test hard-requires is provisioned by release setup', () => {
-    const result = scanRequiredIgnoredAssets({
-      repoRoot: REPO_ROOT,
-      testFiles: TEST_FILES,
-      coveredRoots: PROVISIONED_ROOTS,
-      isIgnored: ORACLE,
-    });
+    const result = REPO_SCAN;
 
     expect(
       result.undecidable,
@@ -268,16 +269,10 @@ describe('real-fidelity control — the red path, using the REAL oracle and REAL
 });
 
 describe('teeth — the scanner detects the real instances that motivated it', () => {
-  // With coverage removed, the two known real cases MUST surface. Both compose
-  // their paths dynamically across resolve() arguments, which is precisely what
-  // a literal-matching text scan misses.
-  const uncovered = scanRequiredIgnoredAssets({
-    repoRoot: REPO_ROOT,
-    testFiles: TEST_FILES,
-    coveredRoots: [],
-    isIgnored: ORACLE,
-  });
-  const hitPaths = uncovered.violations.map((v) => v.path);
+  // The required set is coverage-independent: with coverage removed every one
+  // of these sites becomes a violation. Reuse the authoritative repo scan so
+  // this suite does not repeat the expensive full-tree AST + git-ignore pass.
+  const hitPaths = REPO_SCAN.required.map((v) => v.path);
 
   it('detects the vditor case (path split across resolve() arguments)', () => {
     expect(
@@ -297,7 +292,7 @@ describe('teeth — the scanner detects the real instances that motivated it', (
   });
 
   it('attributes each detection to the file and line that makes the requirement', () => {
-    const vditor = uncovered.violations.find((v) => v.path.includes('vditor'));
+    const vditor = REPO_SCAN.required.find((v) => v.path.includes('vditor'));
     expect(vditor?.file).toMatch(/\.test\.ts$/);
     expect(vditor?.line).toBeGreaterThan(0);
   });
