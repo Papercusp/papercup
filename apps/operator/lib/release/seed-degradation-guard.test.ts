@@ -85,6 +85,38 @@ const SMALL_CORE = manifest([
   corestore({ coreKeys: [CORE_A], coreLengths: { [CORE_A]: 12 }, coreSparseFrom: { [CORE_A]: 0 } }, 4 * 1024),
 ]);
 
+/**
+ * The FILTERED current-state projection — the path that ACTUALLY SHIPS. `cut-seed-cli` passes
+ * `filtered: true` unconditionally, and seed-provider-corestore's `if (filtered)` branch returns
+ * before the sparse block, deliberately omitting `coreSparseFrom` ("a complete current-state
+ * projection, not a source-log suffix"). So it lands here labelled `full`.
+ *
+ * REAL values from the 2026-08-15 0.0.17-alpha cut, which this guard refused ~81 minutes in:
+ * 76 blocks — the head snapshot's exact chunk count — carrying 318,544,683 B, against a
+ * 1,788,251-block own-log. Oversized, but it CANNOT be history: no core is long enough to hold any.
+ */
+const PROJECTION_BLOCKS = 76;
+const PROJECTION_BYTES = 318_544_683;
+const FILTERED_PROJECTION = manifest([
+  gitEntry,
+  corestore({ coreKeys: [CORE_A], coreLengths: { [CORE_A]: PROJECTION_BLOCKS } }, PROJECTION_BYTES),
+]);
+
+/** CONTROL for that qualifier: the SAME oversized payload, but with history-sized blocks. Relaxing
+ *  the floor by BYTES alone would let this through; it must still be REFUSED. That is what proves
+ *  the block-count qualifier is load-bearing rather than a hole punched in the floor. */
+const OVERSIZED_WITH_HISTORY = manifest([
+  gitEntry,
+  corestore({ coreKeys: [CORE_A], coreLengths: { [CORE_A]: SHIPPED_DEGRADED_BLOCKS } }, PROJECTION_BYTES),
+]);
+
+/** CONTROL, fail-safe direction: oversized, and the manifest records NO length for its core. The
+ *  payload cannot be PROVEN harmless, so the floor must still fire. */
+const OVERSIZED_UNKNOWN_LENGTH = manifest([
+  gitEntry,
+  corestore({ coreKeys: [CORE_A] }, PROJECTION_BYTES),
+]);
+
 // ── deliberately-wrong controls, kept permanently ──────────────────────────────────────
 
 /** CONTROL 1 — the narrow rule: fail only when EVERY core starts at 0. Blind to a partial. */
@@ -136,11 +168,44 @@ describe('P-015 seed degradation guard', () => {
       expect(v.ok).toBe(false);
       expect(v.findings.map((f) => f.code)).toEqual(['sparse-label-unverifiable-length']);
     });
+
+    it('REFUSES an oversized payload whose blocks COULD hold history', () => {
+      // Same bytes as the legitimate projection below. Only the block count differs, so this is
+      // the case a bytes-only relaxation would wrongly admit.
+      const v = judgeSeedDegradation(OVERSIZED_WITH_HISTORY);
+      expect(v.ok).toBe(false);
+      expect(v.findings.map((f) => f.code)).toEqual(['corestore-exceeds-size-floor']);
+    });
+
+    it('REFUSES an oversized payload whose core lengths are unrecorded — fail safe', () => {
+      // Not provably harmless ⇒ still refused. The qualifier must never turn "unknown" into "fine".
+      const v = judgeSeedDegradation(OVERSIZED_UNKNOWN_LENGTH);
+      expect(v.ok).toBe(false);
+      expect(v.findings.map((f) => f.code)).toEqual(['corestore-exceeds-size-floor']);
+    });
   });
 
   describe('does not fire on healthy seeds', () => {
     it('passes a genuine sparse cut', () => {
       expect(judgeSeedDegradation(HEALTHY_SPARSE).ok).toBe(true);
+    });
+
+    it('PASSES the filtered current-state projection the shipping path produces', () => {
+      // THE 2026-08-15 REGRESSION. This exact manifest (76 blocks / 318,544,683 B) failed the
+      // 0.0.17-alpha cut ~81 minutes in, after the seed had already been built. It is oversized
+      // by bytes and honest by label; the guard must judge it on what actually separates a
+      // projection from a history dump.
+      const v = judgeSeedDegradation(FILTERED_PROJECTION);
+      expect(v.ok).toBe(true);
+      expect(v.label).toBe('full');
+      expect(v.sizeBytes).toBeGreaterThan(DEFAULT_CORESTORE_SIZE_FLOOR_BYTES);
+      expect(v.findings).toEqual([]);
+    });
+
+    it('keeps the block-count qualifier honest: same bytes, history-sized blocks ⇒ opposite verdict', () => {
+      // The pair differs ONLY in coreLengths, which is the whole claim of the qualifier.
+      expect(judgeSeedDegradation(FILTERED_PROJECTION).ok).toBe(true);
+      expect(judgeSeedDegradation(OVERSIZED_WITH_HISTORY).ok).toBe(false);
     });
 
     it('passes a small core that legitimately starts at 0', () => {
