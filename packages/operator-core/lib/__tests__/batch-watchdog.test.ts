@@ -6,9 +6,9 @@
  * that blocks its vitest worker's event loop SYNCHRONOUSLY makes vitest's own
  * `testTimeout` structurally unable to fire (it is a timer on the very loop the
  * spin never yields), so a single wedged worker held the green-checkpoint gate
- * for 74 minutes before being found and killed by hand. `spawnSync`'s `timeout`
- * option bounds this at the PARENT's native (libuv) wait loop instead, which is
- * immune to the child's event loop being blocked.
+ * for 74 minutes before being found and killed by hand. The async parent keeps
+ * its own timer runnable and group-kills the detached task tree on expiry, so
+ * descendants cannot keep the captured pipes open beyond the bound.
  *
  * Most tests are pure-function checks. The process-group regression owns one
  * short-lived detached Node tree so the exact descendant-leak class is covered.

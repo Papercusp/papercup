@@ -2244,13 +2244,14 @@ const FRESH_RETRY_MAX_FILES = 15; // a broader red is a real regression, not a f
 // to the parent's 120-minute GREEN_CHECKPOINT_SUITE_TIMEOUT_MS backstop able to tell
 // "wedged" from "legitimately slow" while it happened.
 //
-// The fix has to live in THIS process, not the child's: `spawnSync`'s `timeout` option is
-// enforced by the native wait loop around the child (libuv), NOT a JS timer on either
-// process's event loop — so it fires even while the child is synchronously spinning and
-// this parent is itself blocked waiting on it. Default well below the 120m gate ceiling
-// (generous for a legitimately slow full-workspace suite, but bounded), overridable for a
-// caller who knows a specific workspace runs long. See scripts/lib/batch-watchdog.mjs for
-// the (unit-tested) attribution logic itself.
+// The fix has to live in THIS process, not the child's. Each task is launched with async
+// `spawn`, so this parent's timer remains runnable even when the child's event loop is
+// synchronously spinning. The child leads a detached process group; on expiry the parent
+// kills that whole group so npm/shell/vitest descendants cannot retain the capture pipes
+// after the deadline. Default well below the 120m gate ceiling (generous for a legitimately
+// slow full-workspace suite, but bounded), overridable for a caller who knows a specific
+// workspace runs long. See scripts/lib/batch-watchdog.mjs for the unit-tested policy,
+// attribution fallback, and process-tree kill.
 // 45m, not 20m (EI-20268851913189733). The bound must exceed the LARGEST workspace's
 // honest duration with headroom, or it stops being a watchdog and becomes a coin flip
 // on load. Measured 2026-08-12: operator-core reported 3302 of its 4063 test files

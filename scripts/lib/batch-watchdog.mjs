@@ -10,15 +10,16 @@
 // held the green-checkpoint gate (and every fleet deploy behind it) for 74
 // minutes before being found and killed by hand.
 //
-// The fix has to live in the PARENT process, not the child's: `spawnSync`'s
-// `timeout` option is enforced by the native wait loop around the child (libuv),
-// NOT a JS timer on either process's event loop — so it fires even while the
-// child is synchronously spinning and the parent is itself blocked waiting on
-// it. This module is only the decision of whether a given `spawnSync` result
-// WAS that watchdog firing, extracted so it is unit-testable with real object
-// inputs instead of only a source-text regex assertion (which cannot catch a
-// runtime fault on a path that, by construction, only ever runs once the gate
-// is already red — see vitest-summary.mjs's own header for the same argument).
+// The fix has to live in the PARENT process, not the child's. `affected-tests`
+// uses async `spawn`, so a parent-owned timer remains runnable even when the
+// child's event loop is synchronously spinning. On expiry it kills the child's
+// detached process group, not just the shallow npm wrapper, so descendants
+// cannot keep the capture pipes open past the bound. This module extracts the
+// timeout policy, attribution, and process-tree kill so the behavior is
+// unit-testable with real objects instead of only a source-text regex assertion
+// (which cannot catch a runtime fault on a path that, by construction, only
+// ever runs once the gate is already red — see vitest-summary.mjs's own header
+// for the same argument).
 
 /**
  * Resolve the per-batch timeout in ms: an explicit positive override, or the
