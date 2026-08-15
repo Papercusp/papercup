@@ -354,10 +354,13 @@ export const TRIAGED_CHECKOUT_SCOPE_OUTS: readonly TriagedCheckoutScopeOut[] = [
       'diffs are all superseded by the papercusp/papercusp-desktop SUBMODULE (verified ' +
       'per-file: main.rs embedder refactor, native_terminal BLUE_FROST_TERMINAL_BG, ' +
       'build-desktop-sidecar.sh better-sqlite3/embedder — the submodule went further on each). ' +
-      'MUST NOT be onboarded (would auto-commit 2.2G of build artifacts) or deleted.',
+      'MUST NOT be onboarded (would auto-commit 2.2G of build artifacts) or deleted. ' +
+      'NB the count below is 18 = 17 modified TRACKED files + the untracked src-tauri/icons/' +
+      'the-hive/ directory, whose icons also exist in the submodule; `git status --porcelain` ' +
+      'counts that "??" line, so a 17 here (tracked diffs only) would re-arm this entry forever.',
     triagedAt: '2026-08-15',
     workItem: 'WI-38888',
-    dirtyFileCountAtTriage: 17,
+    dirtyFileCountAtTriage: 18,
   },
   {
     pattern: /\/papercup-improvement-runner$/,
