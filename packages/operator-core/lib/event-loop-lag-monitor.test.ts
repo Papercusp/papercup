@@ -9,6 +9,7 @@
  * fake it — we induce it).
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { readdirSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs/promises';
@@ -196,6 +197,34 @@ describe('F1 lag-triggered CPU profiler (infra round-3)', () => {
     // A V8 CPU profile has a node tree + samples.
     expect(parsed).toHaveProperty('nodes');
     expect(parsed).toHaveProperty('samples');
+  });
+
+  it('pre-prunes a slot before writing so the retention cap is never transiently exceeded', async () => {
+    const dir = tmp('pre-prune');
+    await fs.mkdir(dir, { recursive: true });
+    await Promise.all([
+      fs.writeFile(path.join(dir, 'loop-saturation-0001.cpuprofile'), '{}'),
+      fs.writeFile(path.join(dir, 'loop-saturation-0002.cpuprofile'), '{}'),
+    ]);
+
+    let countWhenWriteBecameObservable: number | null = null;
+    const file = await captureCpuProfile({
+      durationMs: 10,
+      dir,
+      maxProfiles: 2,
+      trigger: { p50Ms: 1, p95Ms: 700, p99Ms: 800, maxMs: 900 },
+      log: (line) => {
+        if (line.includes('captured CPU profile')) {
+          // captureCpuProfile logs immediately after write and before its
+          // defensive post-write prune, exposing the old overflow deterministically.
+          countWhenWriteBecameObservable = readdirSync(dir).filter((entry) => entry.endsWith('.cpuprofile')).length;
+        }
+      },
+    });
+
+    if (file === null) return; // env without a free inspector (e.g. coverage attached)
+    expect(countWhenWriteBecameObservable).toBe(2);
+    expect((await fs.readdir(dir)).filter((entry) => entry.endsWith('.cpuprofile'))).toHaveLength(2);
   });
 
   it('is INERT by default: no capture under saturation when profileOnSaturation is off', async () => {

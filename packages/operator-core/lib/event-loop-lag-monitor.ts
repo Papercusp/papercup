@@ -643,6 +643,20 @@ export async function captureCpuProfile(args: {
     const dir = args.dir ?? path.join(os.homedir(), '.papercusp', 'loop-profiles');
     await fs.mkdir(dir, { recursive: true });
 
+    const pruneCpuProfiles = async (retain: number): Promise<void> => {
+      try {
+        const entries = (await fs.readdir(dir))
+          .filter((f) => f.endsWith('.cpuprofile'))
+          .sort();
+        const excess = entries.length - Math.max(0, Math.floor(retain));
+        for (let i = 0; i < excess; i++) {
+          await fs.rm(path.join(dir, entries[i]), { force: true }).catch(() => {});
+        }
+      } catch {
+        /* prune is best-effort */
+      }
+    };
+
     const session = new inspector.Session();
     session.connect();
     try {
@@ -650,6 +664,10 @@ export async function captureCpuProfile(args: {
       await session.post('Profiler.start');
       await new Promise((r) => setTimeout(r, durationMs));
       const { profile } = (await session.post('Profiler.stop')) as { profile: unknown };
+      // Reserve one slot before the write. A post-write-only prune briefly made
+      // maxProfiles + 1 artifacts observable and allowed another capture/test to
+      // race through that overflow window.
+      await pruneCpuProfiles(maxProfiles - 1);
       // Timestamp without Date.now-in-name collisions: epoch ms + pid.
       const stamp = `${Date.now()}-pid${process.pid}-p95_${Math.round(trigger.p95Ms)}ms`;
       const file = path.join(dir, `loop-saturation-${stamp}.cpuprofile`);
@@ -661,18 +679,9 @@ export async function captureCpuProfile(args: {
         file,
       });
 
-      // Prune to the most-recent maxProfiles to bound disk use.
-      try {
-        const entries = (await fs.readdir(dir))
-          .filter((f) => f.endsWith('.cpuprofile'))
-          .sort();
-        const excess = entries.length - maxProfiles;
-        for (let i = 0; i < excess; i++) {
-          await fs.rm(path.join(dir, entries[i]), { force: true }).catch(() => {});
-        }
-      } catch {
-        /* prune is best-effort */
-      }
+      // Keep the post-write pass as a defensive bound for concurrent/external
+      // writers that may have added artifacts after the reserved-slot prune.
+      await pruneCpuProfiles(maxProfiles);
       return file;
     } finally {
       try {
