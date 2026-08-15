@@ -10,19 +10,43 @@
  * option bounds this at the PARENT's native (libuv) wait loop instead, which is
  * immune to the child's event loop being blocked.
  *
- * Pure-function tests only (no subprocess spawn) — see worker-cap.test.ts /
- * empty-suite-guard.test.ts for the sibling pattern this follows.
+ * Most tests are pure-function checks. The process-group regression owns one
+ * short-lived detached Node tree so the exact descendant-leak class is covered.
  */
+import { spawn } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { describe, it, expect } from 'vitest';
 import {
   resolveBatchTimeoutMs,
   resolveTaskTimeoutMs,
   isWatchdogTimeout,
+  killSpawnedProcessTree,
   parseBatchProgress,
   classifyBatchProgress,
   formatBatchProgress,
 // @ts-expect-error batch-watchdog.mjs is a standalone Node script without declarations.
 } from '../../../../scripts/lib/batch-watchdog.mjs';
+
+const AFFECTED_TESTS_SOURCE = readFileSync(
+  new URL('../../../../scripts/affected-tests.mjs', import.meta.url),
+  'utf8',
+);
+
+function processIsRunning(pid: number): boolean {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+    return !/\) Z /.test(stat);
+  } catch {
+    return false;
+  }
+}
+
+async function waitForProcessExit(pid: number, timeoutMs = 2_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (processIsRunning(pid) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}
 
 describe('resolveBatchTimeoutMs', () => {
   it('defaults when unset', () => {
@@ -104,6 +128,63 @@ describe('isWatchdogTimeout', () => {
     const tight = { ...OPTS, slackMs: 0 };
     expect(isWatchdogTimeout({ signal: 'SIGKILL', status: null, elapsedMs: 1_199_999 }, tight)).toBe(false);
     expect(isWatchdogTimeout({ signal: 'SIGKILL', status: null, elapsedMs: 1_200_000 }, tight)).toBe(true);
+  });
+});
+
+describe('killSpawnedProcessTree', () => {
+  it('wires affected-test tasks through a detached group kill and explicit watchdog terminal state', () => {
+    expect(AFFECTED_TESTS_SOURCE).toContain('detached: true');
+    expect(AFFECTED_TESTS_SOURCE).toContain('killSpawnedProcessTree(child, BATCH_KILL_SIGNAL)');
+    expect(AFFECTED_TESTS_SOURCE).toContain('__watchdogTimedOut: watchdogTimedOut');
+    expect(AFFECTED_TESTS_SOURCE).toContain('? "watchdog-killed"');
+  });
+
+  it('kills a grandchild that inherited the detached task group', { timeout: 10_000 }, async () => {
+    if (process.platform !== 'linux') return;
+
+    const child = spawn(
+      process.execPath,
+      [
+        '-e',
+        [
+          'const { spawn } = require("node:child_process");',
+          'const grandchild = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });',
+          'process.stdout.write(String(grandchild.pid) + "\\n");',
+          'setInterval(() => {}, 1000);',
+        ].join(''),
+      ],
+      { detached: true, stdio: ['ignore', 'pipe', 'ignore'] },
+    );
+    const closePromise = new Promise<void>((resolve) => child.once('close', () => resolve()));
+    let grandchildPid = 0;
+    try {
+      grandchildPid = await new Promise<number>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('grandchild pid was not emitted')), 2_000);
+        let buffered = '';
+        child.stdout!.on('data', (chunk) => {
+          buffered += chunk.toString();
+          const lineEnd = buffered.indexOf('\n');
+          if (lineEnd < 0) return;
+          clearTimeout(timer);
+          resolve(Number(buffered.slice(0, lineEnd)));
+        });
+        child.once('error', reject);
+      });
+      expect(Number.isInteger(grandchildPid) && grandchildPid > 0).toBe(true);
+      expect(processIsRunning(grandchildPid)).toBe(true);
+
+      expect(killSpawnedProcessTree(child, 'SIGKILL')).toBe('group');
+      await closePromise;
+      await waitForProcessExit(grandchildPid);
+      expect(processIsRunning(grandchildPid)).toBe(false);
+    } finally {
+      if (child.pid) {
+        try { process.kill(-child.pid, 'SIGKILL'); } catch { /* already gone */ }
+      }
+      if (grandchildPid > 0) {
+        try { process.kill(grandchildPid, 'SIGKILL'); } catch { /* already gone */ }
+      }
+    }
   });
 });
 

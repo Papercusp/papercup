@@ -43,6 +43,7 @@ import {
   resolveBatchTimeoutMs,
   resolveTaskTimeoutMs,
   isWatchdogTimeout,
+  killSpawnedProcessTree,
   parseBatchProgress,
   classifyBatchProgress,
   formatBatchProgress,
@@ -2669,15 +2670,18 @@ function runCapturedTask(
     let spawnError = null;
     let captureError = null;
     let settled = false;
+    let watchdogTimedOut = false;
     const child = spawn(cmd, argv, {
       cwd,
       env: childEnv,
       stdio: ["ignore", "pipe", "pipe"],
-      timeout: taskTimeoutMs,
-      killSignal: BATCH_KILL_SIGNAL,
+      // Own a process group so the watchdog can reap npm -> shell -> vitest ->
+      // worker descendants together. A direct-child kill leaves descendants
+      // holding these capture pipes and made a 45m timeout close at 49.8m.
+      detached: true,
     });
     const progressTask = JSON.stringify(taskKey(spawnTask));
-    const emitProgress = (state) => {
+    const emitProgress = (state, status = null, signal = null) => {
       // Deliberately bypass the ordered replay buffer: this tiny, self-identifying marker is
       // the live pulse consumed by green-checkpoint while the child output remains captured.
       // It contains no child bytes, so concurrent tasks cannot misattribute test output.
@@ -2685,9 +2689,17 @@ function runCapturedTask(
         `AFFECTED_TASK_PROGRESS state=${state} task=${progressTask} ` +
           `elapsedSec=${Math.floor((Date.now() - startedAt) / 1000)} capturedBytes=${capturedBytes} ` +
           `timeoutMs=${taskTimeoutMs} timeoutSource=${taskTimeoutSource} ` +
-          `durationEstimateMs=${taskDurationMs ?? "unknown"}`,
+          `durationEstimateMs=${taskDurationMs ?? "unknown"} ` +
+          `exitStatus=${status ?? "pending"} signal=${signal ?? "pending"}`,
       );
     };
+    const watchdogTimer = setTimeout(() => {
+      if (settled) return;
+      watchdogTimedOut = true;
+      emitProgress("watchdog-firing");
+      killSpawnedProcessTree(child, BATCH_KILL_SIGNAL);
+    }, taskTimeoutMs);
+    watchdogTimer.unref?.();
     let progressTimer = null;
     const scheduleProgress = () => {
       progressTimer = setTimeout(() => {
@@ -2710,7 +2722,7 @@ function runCapturedTask(
           ),
           { code: "ENOBUFS" },
         );
-        child.kill(BATCH_KILL_SIGNAL);
+        killSpawnedProcessTree(child, BATCH_KILL_SIGNAL);
       }
     };
     child.stdout.on("data", capture(stdout));
@@ -2721,8 +2733,19 @@ function runCapturedTask(
     child.once("close", (status, signal) => {
       if (settled) return;
       settled = true;
+      clearTimeout(watchdogTimer);
       if (progressTimer) clearTimeout(progressTimer);
-      emitProgress("finished");
+      emitProgress(
+        watchdogTimedOut
+          ? "watchdog-killed"
+          : captureError
+            ? "capture-killed"
+            : spawnError
+              ? "spawn-error"
+              : "finished",
+        status,
+        signal,
+      );
       resolveRun({
         status,
         signal,
@@ -2733,6 +2756,7 @@ function runCapturedTask(
         __timeoutMs: taskTimeoutMs,
         __timeoutSource: taskTimeoutSource,
         __durationEstimateMs: taskDurationMs,
+        __watchdogTimedOut: watchdogTimedOut,
         ...(cacheDecision
           ? {
               __cacheStatus: "miss",
@@ -2855,10 +2879,13 @@ for (const scheduled of initialPool.results) {
   let absorptionRan = false;
   let load1AtRerun = null;
   let residualFiles = [];
-  const watchdogTimedOut = isWatchdogTimeout(
-    { signal: r.signal, status: r.status, elapsedMs: r.__elapsedMs },
-    { killSignal: BATCH_KILL_SIGNAL, timeoutMs: r.__timeoutMs },
-  );
+  const watchdogTimedOut =
+    r.__watchdogTimedOut === true ||
+    (r.__watchdogTimedOut == null &&
+      isWatchdogTimeout(
+        { signal: r.signal, status: r.status, elapsedMs: r.__elapsedMs },
+        { killSignal: BATCH_KILL_SIGNAL, timeoutMs: r.__timeoutMs },
+      ));
   if (watchdogTimedOut) {
     // Not retried: a wedge that reproduces once burns the exact same window again, turning
     // one bounded stall back into an unbounded-feeling one. Report it plainly and move on —

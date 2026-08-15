@@ -92,6 +92,39 @@ export function isWatchdogTimeout(result, { killSignal, timeoutMs, slackMs = 200
   );
 }
 
+/**
+ * Kill a spawned task's whole process group, falling back to the direct child
+ * only when the group is unavailable. Callers must spawn the child with
+ * `detached: true` so its pid is also the process-group id.
+ *
+ * Killing only the npm/vitest wrapper is not enough: descendants retain the
+ * captured stdout/stderr pipes, so Node's `close` event can arrive minutes
+ * after the watchdog fired. The group kill makes the watchdog a real bound on
+ * the task tree rather than merely a signal sent to its shallowest process.
+ *
+ * @param {{ pid?: number, kill?: (signal: string) => unknown } | null | undefined} child
+ * @param {string} signal
+ * @returns {'group' | 'child' | 'gone'}
+ */
+export function killSpawnedProcessTree(child, signal) {
+  const pid = child?.pid;
+  if (process.platform !== 'win32' && Number.isInteger(pid) && pid > 0) {
+    try {
+      process.kill(-pid, signal);
+      return 'group';
+    } catch {
+      // The group may have exited between the timeout firing and this call.
+      // Fall through so a still-live direct child cannot escape the bound.
+    }
+  }
+  try {
+    child?.kill?.(signal);
+    return 'child';
+  } catch {
+    return 'gone';
+  }
+}
+
 // Vitest's per-file rollup rows are the only output that proves a file completed.
 // Do not count arbitrary `.test.ts` mentions: failure details, stack traces, and
 // reporter metadata mention paths too, but none of those establish forward progress.
