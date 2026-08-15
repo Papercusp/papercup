@@ -53,14 +53,14 @@
  * It also consults the index, so a TRACKED file is correctly reported as not
  * ignored — tracked content survives `git clean -fdqx` and is never at risk.
  */
-import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
-import ts from "typescript";
+import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+import ts from 'typescript';
 
 import {
   type IgnoredRuntimeEntryWorkspace,
   runtimeBuildProvisionedRoots,
-} from "./runtime-workspace-build-coverage";
+} from './runtime-workspace-build-coverage';
 
 /**
  * fs entry points whose failure mode when the path is absent IS the red we are
@@ -71,40 +71,24 @@ import {
  * cannot detect an instance you already know about certifies nothing.
  */
 const FS_REQUIRE_FNS = new Set([
-  "existsSync",
-  "readFileSync",
-  "statSync",
-  "lstatSync",
-  "readdirSync",
-  "openSync",
-  "accessSync",
-  "realpathSync",
-  "copyFileSync",
-  "createReadStream",
-  "readFile",
-  "stat",
-  "lstat",
-  "readdir",
-  "open",
-  "access",
-  "realpath",
-  "copyFile",
+  'existsSync', 'readFileSync', 'statSync', 'lstatSync', 'readdirSync',
+  'openSync', 'accessSync', 'realpathSync', 'copyFileSync', 'createReadStream',
+  'readFile', 'stat', 'lstat', 'readdir', 'open', 'access', 'realpath', 'copyFile',
 ]);
 
 /** Cheap source prefilter derived from the authoritative call set above. */
 const FS_REQUIRE_PREFILTER = new RegExp(
-  `\\b(?:${[...FS_REQUIRE_FNS].sort((a, b) => b.length - a.length).join("|")})\\b`,
+  `\\b(?:${[...FS_REQUIRE_FNS].sort((a, b) => b.length - a.length).join('|')})\\b`,
 );
 
 /** Path-composition helpers whose arguments are path FRAGMENTS. */
-const PATH_JOIN_FNS = new Set(["resolve", "join", "normalize", "relative"]);
+const PATH_JOIN_FNS = new Set(['resolve', 'join', 'normalize', 'relative']);
 
 /** Constructors that make a path private to a test fixture, not the checkout. */
-const TEMP_ROOT_FNS = new Set(["mkdtemp", "mkdtempSync", "tmpdir"]);
+const TEMP_ROOT_FNS = new Set(['mkdtemp', 'mkdtempSync', 'tmpdir']);
 
 /** A literal that looks like a repo-relative path into this monorepo. */
-const REPO_RELATIVE =
-  /^(apps|packages|libs|scripts|docs|bin|papercusp-desktop|e2e)\//;
+const REPO_RELATIVE = /^(apps|packages|libs|scripts|docs|bin|papercusp-desktop|e2e)\//;
 
 export interface RequiredAssetSite {
   /** repo-relative path of the test file making the requirement */
@@ -131,12 +115,7 @@ export interface AssetCoverageResult {
   /** paths git could not decide on; surfaced rather than silently passed */
   undecidable: UndecidablePath[];
   /** diagnostics so a green result can be shown to be non-vacuous */
-  stats: {
-    testFilesScanned: number;
-    parsed: number;
-    sites: number;
-    candidates: number;
-  };
+  stats: { testFilesScanned: number; parsed: number; sites: number; candidates: number };
 }
 
 /** Collect string literals reachable from a path expression, following local consts. */
@@ -148,8 +127,7 @@ function literalsOf(
 ): string[] {
   if (!node || depth > 8) return [];
 
-  if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node))
-    return [node.text];
+  if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) return [node.text];
 
   if (ts.isTemplateExpression(node)) {
     const out: string[] = node.head.text ? [node.head.text] : [];
@@ -160,10 +138,7 @@ function literalsOf(
     return out;
   }
 
-  if (
-    ts.isBinaryExpression(node) &&
-    node.operatorToken.kind === ts.SyntaxKind.PlusToken
-  ) {
+  if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusToken) {
     return [
       ...literalsOf(node.left, consts, depth + 1, seen),
       ...literalsOf(node.right, consts, depth + 1, seen),
@@ -188,17 +163,15 @@ function literalsOf(
     return init ? literalsOf(init, consts, depth + 1, next) : [];
   }
 
-  if (ts.isParenthesizedExpression(node))
-    return literalsOf(node.expression, consts, depth + 1, seen);
+  if (ts.isParenthesizedExpression(node)) return literalsOf(node.expression, consts, depth + 1, seen);
 
   return [];
 }
 
 function calleeName(node: ts.CallExpression): string {
   if (ts.isIdentifier(node.expression)) return node.expression.text;
-  if (ts.isPropertyAccessExpression(node.expression))
-    return node.expression.name.text;
-  return "";
+  if (ts.isPropertyAccessExpression(node.expression)) return node.expression.name.text;
+  return '';
 }
 
 /**
@@ -213,11 +186,7 @@ function toleratesAbsence(call: ts.CallExpression): boolean {
   let n: ts.Node | undefined = call.parent;
   for (let hops = 0; n && hops < 8; hops++, n = n.parent) {
     if (ts.isIfStatement(n) || ts.isConditionalExpression(n)) return true;
-    if (
-      ts.isPrefixUnaryExpression(n) &&
-      n.operator === ts.SyntaxKind.ExclamationToken
-    )
-      return true;
+    if (ts.isPrefixUnaryExpression(n) && n.operator === ts.SyntaxKind.ExclamationToken) return true;
     if (ts.isTryStatement(n)) return true;
     if (
       ts.isBinaryExpression(n) &&
@@ -227,8 +196,7 @@ function toleratesAbsence(call: ts.CallExpression): boolean {
     ) {
       return true;
     }
-    if (ts.isCallExpression(n) && /skipIf|runIf/.test(calleeName(n)))
-      return true;
+    if (ts.isCallExpression(n) && /skipIf|runIf/.test(calleeName(n))) return true;
   }
   return false;
 }
@@ -260,13 +228,11 @@ function derivesFromTemporaryFixture(
     return derivesFromTemporaryFixture(init, consts, depth + 1, next);
   }
 
-  if (ts.isCallExpression(node) && TEMP_ROOT_FNS.has(calleeName(node)))
-    return true;
+  if (ts.isCallExpression(node) && TEMP_ROOT_FNS.has(calleeName(node))) return true;
 
   let found = false;
   ts.forEachChild(node, (child) => {
-    if (!found && derivesFromTemporaryFixture(child, consts, depth + 1, seen))
-      found = true;
+    if (!found && derivesFromTemporaryFixture(child, consts, depth + 1, seen)) found = true;
   });
   return found;
 }
@@ -277,23 +243,15 @@ function candidatePathsFor(literals: string[]): string[] {
   for (let i = 0; i < literals.length; i++) {
     const base = literals[i];
     if (!REPO_RELATIVE.test(base)) continue;
-    const clean = (s: string) => s.replace(/^\/+|\/+$/g, "");
+    const clean = (s: string) => s.replace(/^\/+|\/+$/g, '');
     out.add(clean(base));
     // Join with the following literal fragments — the vditor shape splits the
     // path across several arguments of a single resolve().
     const tail = literals
       .slice(i + 1)
-      .filter(
-        (l) =>
-          l &&
-          !l.startsWith(".") &&
-          !l.startsWith("/") &&
-          !REPO_RELATIVE.test(l),
-      );
+      .filter((l) => l && !l.startsWith('.') && !l.startsWith('/') && !REPO_RELATIVE.test(l));
     for (let take = 1; take <= tail.length; take++) {
-      out.add(
-        clean([base, ...tail.slice(0, take)].join("/")).replace(/\/{2,}/g, "/"),
-      );
+      out.add(clean([base, ...tail.slice(0, take)].join('/')).replace(/\/{2,}/g, '/'));
     }
   }
   return [...out];
@@ -304,48 +262,33 @@ function candidatePathsFor(literals: string[]): string[] {
  * their owning submodule (the superproject answers `fatal: ... is in submodule`
  * for those, which must NOT be swallowed as "not ignored").
  */
-export function makeGitIgnoreOracle(
-  repoRoot: string,
-  submodulePaths: string[],
-) {
-  return function isIgnored(path: string): boolean | "unknown" {
+export function makeGitIgnoreOracle(repoRoot: string, submodulePaths: string[]) {
+  return function isIgnored(path: string): boolean | 'unknown' {
     const sub = submodulePaths
-      .filter((s) => path === s || path.startsWith(s + "/"))
+      .filter((s) => path === s || path.startsWith(s + '/'))
       .sort((a, b) => b.length - a.length)[0];
     const cwd = sub ? `${repoRoot}/${sub}` : repoRoot;
     const rel = sub ? path.slice(sub.length + 1) : path;
     if (!rel) return false;
     try {
-      execFileSync("git", ["check-ignore", "-q", "--", rel], {
-        cwd,
-        stdio: "pipe",
-      });
+      execFileSync('git', ['check-ignore', '-q', '--', rel], { cwd, stdio: 'pipe' });
       return true;
     } catch (err) {
       // exit 1 = "not ignored" (the normal answer). Any other status means git
       // could not decide, which is reported rather than treated as a pass.
       const status = (err as { status?: number }).status;
-      return status === 1 ? false : "unknown";
+      return status === 1 ? false : 'unknown';
     }
   };
 }
 
 export function listSubmodulePaths(repoRoot: string): string[] {
   try {
-    const out = execFileSync(
-      "git",
-      ["config", "--file", ".gitmodules", "--get-regexp", "path"],
-      {
-        cwd: repoRoot,
-        encoding: "utf8",
-      },
-    );
-    return out
-      .trim()
-      .split("\n")
-      .filter(Boolean)
-      .map((l) => l.split(/\s+/)[1])
-      .filter(Boolean);
+    const out = execFileSync('git', ['config', '--file', '.gitmodules', '--get-regexp', 'path'], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+    });
+    return out.trim().split('\n').filter(Boolean).map((l) => l.split(/\s+/)[1]).filter(Boolean);
   } catch {
     return [];
   }
@@ -365,13 +308,10 @@ export function extractProvisionedRoots(
   runtimeEntries: Iterable<IgnoredRuntimeEntryWorkspace> = [],
 ): string[] {
   const roots = new Set<string>();
-  for (const m of scriptSource.matchAll(
-    /^\s*[A-Z_]*ASSET_REL(?:\[\d*\])?=["']([^"']+)["']/gm,
-  )) {
-    roots.add(m[1].replace(/\/+$/, ""));
+  for (const m of scriptSource.matchAll(/^\s*[A-Z_]*ASSET_REL(?:\[\d*\])?=["']([^"']+)["']/gm)) {
+    roots.add(m[1].replace(/\/+$/, ''));
   }
-  for (const root of runtimeBuildProvisionedRoots(scriptSource, runtimeEntries))
-    roots.add(root);
+  for (const root of runtimeBuildProvisionedRoots(scriptSource, runtimeEntries)) roots.add(root);
   return [...roots];
 }
 
@@ -387,9 +327,7 @@ function dropNestedDuplicates(sites: RequiredAssetSite[]): RequiredAssetSite[] {
   const out: RequiredAssetSite[] = [];
   for (const list of bySite.values()) {
     for (const s of list) {
-      const hasMoreSpecific = list.some(
-        (o) => o !== s && o.path.startsWith(s.path + "/"),
-      );
+      const hasMoreSpecific = list.some((o) => o !== s && o.path.startsWith(s.path + '/'));
       if (!hasMoreSpecific) out.push(s);
     }
   }
@@ -402,10 +340,10 @@ export function scanRequiredIgnoredAssets(opts: {
   testFiles: string[];
   /** roots block 3b provisions, e.g. ['apps/operator/public'] */
   coveredRoots: string[];
-  isIgnored: (path: string) => boolean | "unknown";
+  isIgnored: (path: string) => boolean | 'unknown';
   readFile?: (absPath: string) => string;
 }): AssetCoverageResult {
-  const read = opts.readFile ?? ((p: string) => readFileSync(p, "utf8"));
+  const read = opts.readFile ?? ((p: string) => readFileSync(p, 'utf8'));
   const sites: RequiredAssetSite[] = [];
   let parsed = 0;
 
@@ -424,21 +362,11 @@ export function scanRequiredIgnoredAssets(opts: {
     }
     parsed++;
 
-    const sf = ts.createSourceFile(
-      rel,
-      src,
-      ts.ScriptTarget.Latest,
-      true,
-      ts.ScriptKind.TSX,
-    );
+    const sf = ts.createSourceFile(rel, src, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
 
     const consts = new Map<string, ts.Expression>();
     const collectConsts = (n: ts.Node): void => {
-      if (
-        ts.isVariableDeclaration(n) &&
-        ts.isIdentifier(n.name) &&
-        n.initializer
-      ) {
+      if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && n.initializer) {
         if (!consts.has(n.name.text)) consts.set(n.name.text, n.initializer);
       }
       ts.forEachChild(n, collectConsts);
@@ -454,8 +382,7 @@ export function scanRequiredIgnoredAssets(opts: {
             return;
           }
           const literals = literalsOf(n.arguments[0], consts);
-          const line =
-            sf.getLineAndCharacterOfPosition(n.getStart(sf)).line + 1;
+          const line = sf.getLineAndCharacterOfPosition(n.getStart(sf)).line + 1;
           for (const path of candidatePathsFor(literals)) {
             sites.push({ file: rel, line, fn, path });
           }
@@ -467,31 +394,23 @@ export function scanRequiredIgnoredAssets(opts: {
   }
 
   const candidates = [...new Set(sites.map((s) => s.path))];
-  const verdicts = new Map<string, boolean | "unknown">();
+  const verdicts = new Map<string, boolean | 'unknown'>();
   const undecidable: UndecidablePath[] = [];
   for (const c of candidates) {
     const v = opts.isIgnored(c);
     verdicts.set(c, v);
-    if (v === "unknown")
-      undecidable.push({
-        path: c,
-        reason: "git check-ignore could not decide",
-      });
+    if (v === 'unknown') undecidable.push({ path: c, reason: 'git check-ignore could not decide' });
   }
 
   const isCovered = (p: string) =>
-    opts.coveredRoots.some(
-      (r) => p === r || p.startsWith(r.replace(/\/+$/, "") + "/"),
-    );
+    opts.coveredRoots.some((r) => p === r || p.startsWith(r.replace(/\/+$/, '') + '/'));
 
   // One requirement can yield several nested candidates (`.../dist` and
   // `.../dist/index.js` both come from one resolve()). Report only the most
   // specific path per site: listing both says nothing extra and makes the
   // failure read like two problems, which is how a guard's output starts being
   // skimmed instead of read.
-  const required = dropNestedDuplicates(
-    sites.filter((s) => verdicts.get(s.path) === true),
-  );
+  const required = dropNestedDuplicates(sites.filter((s) => verdicts.get(s.path) === true));
   return {
     required,
     covered: required.filter((s) => isCovered(s.path)),
