@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
+import { MCP_PROXY_RETRY_WINDOW_MS } from '../lib/mcp-proxy/budgets.mjs';
 import {
   parseArgs,
   serviceOf,
@@ -19,6 +20,9 @@ import {
   isLoopPressureShed,
   callToolWithPressureRetry,
   connectWithLocalRetry,
+  formatOperatorConnectFailure,
+  isExplicitHttpConnectFailure,
+  PTOOL_CONNECT_TIMEOUT_MS,
   resolveWorkspaceScope,
   jsonSourceKind,
   scriptSourceKind,
@@ -384,6 +388,32 @@ describe('ptool local operator connect retry (EI-20207246136942518)', () => {
     expect(connectOnce).toHaveBeenCalledTimes(2);
     expect(connectOnce.mock.calls[0][2]).toEqual({ timeoutMs: 1 });
     expect(sleep).toHaveBeenCalledTimes(1);
+  });
+
+  it('waits long enough for the resilient proxy to return its bounded result', async () => {
+    expect(PTOOL_CONNECT_TIMEOUT_MS).toBeGreaterThanOrEqual(90_000);
+    expect(PTOOL_CONNECT_TIMEOUT_MS).toBeGreaterThanOrEqual(MCP_PROXY_RETRY_WINDOW_MS);
+  });
+
+  it('surfaces a proxy 503 once instead of starting another local retry loop', async () => {
+    const proxyError = Object.assign(
+      new Error('Streamable HTTP error: Error POSTing to endpoint: {"error":"mcp_proxy_upstream_unavailable","windowMs":90000}'),
+      { code: 503 },
+    );
+    const wrapped = new Error(formatOperatorConnectFailure('http://127.0.0.1:9071', proxyError), {
+      cause: proxyError,
+    });
+    const connectOnce = vi.fn().mockRejectedValue(wrapped);
+    const sleep = vi.fn(async () => {});
+
+    expect(isExplicitHttpConnectFailure(wrapped)).toBe(true);
+    await expect(
+      connectWithLocalRetry(connectOnce, 'http://127.0.0.1:9071', {}, { sleep }),
+    ).rejects.toBe(wrapped);
+    expect(connectOnce).toHaveBeenCalledTimes(1);
+    expect(sleep).not.toHaveBeenCalled();
+    expect(wrapped.message).toContain('HTTP 503');
+    expect(wrapped.message).toContain('mcp_proxy_upstream_unavailable');
   });
 });
 

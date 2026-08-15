@@ -62,6 +62,7 @@ import { readFileSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { PSU_REQUEST_TIMEOUT_MS } from '../lib/mcp-proxy/budgets.mjs';
 import { resolveOperatorBase } from './operator-discovery.mjs';
 
 /** @typedef {Record<string, string | undefined>} EnvironmentMap */
@@ -715,6 +716,14 @@ export function buildCallToolParams(toolName, callArgs, { outputSchema, idempote
 // output for a minute looks indistinguishable from a dead operator.
 export const PTOOL_LIST_TOOLS_TIMEOUT_MS = 10_000;
 
+// The default dev-box endpoint is the resilient MCP proxy. It deliberately
+// holds an initialize request through a :3070 restart for up to 90s, then
+// returns a typed 503 when that window is exhausted. A shorter client-side
+// handshake deadline abandons that response and turns the proxy's bounded
+// failure into an opaque retry loop. Reuse the same client/proxy budget psu
+// already owns instead of choosing another independent number here.
+export const PTOOL_CONNECT_TIMEOUT_MS = PSU_REQUEST_TIMEOUT_MS;
+
 // A named tools/call can otherwise inherit the MCP SDK's 60s timeout, and a
 // saturated default operator route can produce no output at all while that
 // request is outstanding. Keep the CLI liveness bound below the observed
@@ -867,6 +876,38 @@ export function isTransportFailure(error) {
   return /(?:fetch failed|econn(?:reset|refused|aborted)|etimedout|epipe|en[et]unreach|und_err_socket|socket (?:hang up|closed|reset|error)|(?:connection|transport|stream) (?:closed|reset|aborted|failed)|other side closed|network error)/i.test(detail);
 }
 
+/**
+ * An HTTP response proves that the local endpoint answered. Retrying it as a
+ * connection failure is both wasteful and misleading: in particular, the MCP
+ * proxy's 503 is the authoritative, typed result after it has already spent
+ * its full restart-absorption window. Walk `cause` because connect() adds
+ * operator guidance around the SDK's StreamableHTTPError.
+ */
+export function isExplicitHttpConnectFailure(error) {
+  const seen = new Set();
+  let current = error;
+  while (current && (typeof current === 'object' || typeof current === 'function')) {
+    if (seen.has(current)) break;
+    seen.add(current);
+    const status = Number(current.code);
+    if (Number.isInteger(status) && status >= 400 && status <= 599) return true;
+    current = current.cause;
+  }
+  return false;
+}
+
+/** Preserve the proxy's HTTP status and typed JSON body in ptool's stderr. */
+export function formatOperatorConnectFailure(operatorUrl, error) {
+  const status = Number(error?.code);
+  const statusPrefix = Number.isInteger(status) && status >= 400 && status <= 599
+    ? `HTTP ${status}: `
+    : '';
+  return (
+    `could not reach the operator at ${operatorUrl} (${statusPrefix}${errorDetail(error)}). ` +
+    'Is the desktop/operator running? Override with PAPERCUSP_OPERATOR_URL or --url=.'
+  );
+}
+
 /** Number of reconnects allowed after a connected tools/call fails. */
 export const PTOOL_POST_CONNECT_RETRIES = 1;
 
@@ -937,33 +978,51 @@ export async function connectWithLocalRetry(
   {
     maxAttempts = 30,
     retryDelayMs = 1_000,
-    attemptTimeoutMs = 5_000,
+    attemptTimeoutMs = PTOOL_CONNECT_TIMEOUT_MS,
+    totalTimeoutMs = PTOOL_CONNECT_TIMEOUT_MS,
     sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   } = {},
 ) {
   const hostname = new URL(operatorUrl).hostname;
   const local = hostname === '127.0.0.1' || hostname === 'localhost' || hostname === '::1';
+  const startedAt = Date.now();
   let lastError;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     let timeout;
     try {
+      const remainingTotalMs = totalTimeoutMs > 0
+        ? Math.max(1, totalTimeoutMs - (Date.now() - startedAt))
+        : null;
+      const effectiveAttemptTimeoutMs = attemptTimeoutMs > 0
+        ? Math.min(attemptTimeoutMs, remainingTotalMs ?? attemptTimeoutMs)
+        : remainingTotalMs;
       const connection = connectOnce(
         operatorUrl,
         scope,
-        local ? { timeoutMs: attemptTimeoutMs } : undefined,
+        local && effectiveAttemptTimeoutMs ? { timeoutMs: effectiveAttemptTimeoutMs } : undefined,
       );
-      if (!local || !(attemptTimeoutMs > 0)) return await connection;
+      if (!local || !effectiveAttemptTimeoutMs) return await connection;
       return await new Promise((resolve, reject) => {
         timeout = setTimeout(
-          () => reject(new Error(`local operator connection attempt timed out after ${attemptTimeoutMs}ms`)),
-          attemptTimeoutMs,
+          () => reject(new Error(`local operator connection attempt timed out after ${effectiveAttemptTimeoutMs}ms`)),
+          effectiveAttemptTimeoutMs,
         );
         Promise.resolve(connection).then(resolve, reject);
       });
     } catch (error) {
       lastError = error;
-      if (!local || attempt === maxAttempts) throw error;
-      await sleep(retryDelayMs);
+      const remainingTotalMs = totalTimeoutMs > 0
+        ? totalTimeoutMs - (Date.now() - startedAt)
+        : null;
+      if (
+        !local ||
+        isExplicitHttpConnectFailure(error) ||
+        attempt === maxAttempts ||
+        (remainingTotalMs !== null && remainingTotalMs <= 0)
+      ) {
+        throw error;
+      }
+      await sleep(Math.min(retryDelayMs, remainingTotalMs ?? retryDelayMs));
     } finally {
       if (timeout) clearTimeout(timeout);
     }
@@ -1022,10 +1081,7 @@ async function connect(operatorUrl, { workspace, harness, tokenFile } = {}, { ti
   try {
     await client.connect(transport, timeoutMs > 0 ? { timeout: timeoutMs } : undefined);
   } catch (e) {
-    throw new Error(
-      `could not reach the operator at ${operatorUrl} (${e?.message || e}). ` +
-        `Is the desktop/operator running? Override with PAPERCUSP_OPERATOR_URL or --url=.`,
-    );
+    throw new Error(formatOperatorConnectFailure(operatorUrl, e), { cause: e });
   }
   return client;
 }
