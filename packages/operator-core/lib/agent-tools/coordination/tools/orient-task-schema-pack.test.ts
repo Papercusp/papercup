@@ -88,4 +88,39 @@ describe('orient task tool-schema pack (P-006 / EI-11409)', () => {
     expect(pack.missing).toContain('rubrics:list');
     expect(pack.toolNames).not.toContain('rubrics:list');
   });
+
+  it('keeps a late terminal assumptions contract in the bounded quick schema', () => {
+    const verboseCompletion = {
+      type: 'object',
+      properties: Object.fromEntries(
+        Array.from({ length: 20 }, (_, i) => [`evidence${i}`, { type: 'string' }]),
+      ),
+      description: 'Structured completion evidence. '.repeat(20),
+    };
+    const completeSchema = {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'single-complete shorthand work-item id' },
+        state: { type: 'string', description: 'optional terminal state' },
+        completion: verboseCompletion,
+        assumptions: {
+          description: 'Required for a terminal close; omit for record-only completions. Pass "none" or fact keys.',
+        },
+      },
+    };
+    const completeCatalog = catalog.map((tool) =>
+      tool.expose.mcp.name === 'work_items:complete'
+        ? { ...tool, inputSchema: completeSchema }
+        : tool,
+    );
+
+    const pack = buildTaskToolSchemaPack({ intent: 'resume work', modes: [] }, completeCatalog);
+    const args = pack.tools.find((tool) => tool.name === 'work_items:complete')?.args ?? '';
+
+    expect(args.length).toBeLessThanOrEqual(180);
+    expect(args).toContain('assumptions?');
+    expect(args).toContain('terminal close');
+    expect(args).toContain('record-only');
+    expect(args).toContain('"none"');
+  });
 });

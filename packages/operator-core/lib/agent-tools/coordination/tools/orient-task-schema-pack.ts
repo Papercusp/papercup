@@ -143,7 +143,48 @@ const SIGNAL_GROUPS: Array<{ id: string; pattern: RegExp; tools: readonly string
 function compactSchema(schema: unknown): string | null {
   const rendered = schemaToText(schema);
   if (!rendered) return null;
-  return rendered.length > ARG_SCHEMA_CAP ? `${rendered.slice(0, ARG_SCHEMA_CAP - 1)}…` : rendered;
+  if (rendered.length <= ARG_SCHEMA_CAP) return rendered;
+
+  // EI-20485533379404314: a blind prefix clip can hide the one argument that
+  // determines whether a lifecycle write is valid. work_items:complete is the
+  // concrete failure: its verbose `completion` shape precedes `assumptions`, so
+  // the old 180-char preview advertised state but omitted that terminal closes
+  // require assumptions:"none"|fact keys. Preserve any explicitly documented
+  // terminal contract as a suffix instead of relying on property order. The
+  // full schema still arrives through tools/list_changed; this is the bounded
+  // recovery preview an agent must be able to act from before that round-trip.
+  const root = schema && typeof schema === 'object' && !Array.isArray(schema)
+    ? schema as Record<string, unknown>
+    : null;
+  const rawBranches = root && Array.isArray(root.anyOf)
+    ? root.anyOf
+    : root && Array.isArray(root.oneOf)
+      ? root.oneOf
+      : root
+        ? [root]
+        : [];
+  const terminalContracts = new Map<string, string>();
+  for (const rawBranch of rawBranches) {
+    if (!rawBranch || typeof rawBranch !== 'object' || Array.isArray(rawBranch)) continue;
+    const properties = (rawBranch as Record<string, unknown>).properties;
+    if (!properties || typeof properties !== 'object' || Array.isArray(properties)) continue;
+    for (const [name, rawProperty] of Object.entries(properties as Record<string, unknown>)) {
+      if (!rawProperty || typeof rawProperty !== 'object' || Array.isArray(rawProperty)) continue;
+      const description = (rawProperty as Record<string, unknown>).description;
+      if (typeof description !== 'string' || !/\bterminal(?:\s+close)?\b/i.test(description)) continue;
+      const fragment = schemaToText({ type: 'object', properties: { [name]: rawProperty } });
+      if (fragment) terminalContracts.set(name, fragment);
+    }
+  }
+
+  const suffix = [...terminalContracts.values()].join('; ');
+  const separator = '; …; ';
+  if (suffix && suffix.length + separator.length < ARG_SCHEMA_CAP) {
+    const prefixLength = ARG_SCHEMA_CAP - separator.length - suffix.length;
+    const prefix = rendered.slice(0, prefixLength).replace(/[;\s]+$/u, '');
+    return `${prefix}${separator}${suffix}`;
+  }
+  return `${rendered.slice(0, ARG_SCHEMA_CAP - 1)}…`;
 }
 
 function projectedCatalog(): ProjectedToolLike[] {
