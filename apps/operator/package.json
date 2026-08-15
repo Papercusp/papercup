@@ -11,7 +11,7 @@
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",
     "test": "vitest run --passWithNoTests",
-    "test:release-script-guards": "vitest run lib/release/tauri-signer-key-contract.test.ts lib/release/windows-rootfs-preflight.test.ts lib/release/android-versionname-preflight.test.ts",
+    "test:release-script-guards": "vitest run lib/release/tauri-signer-key-contract.test.ts lib/release/windows-rootfs-preflight.test.ts lib/release/android-versionname-preflight.test.ts lib/release/parallel-leg-supervisor.test.ts",
     "setup-wake-runtime": "bash scripts/setup-wake-runtime.sh",
     "setup-vad-runtime": "bash scripts/setup-vad-runtime.sh",
     "setup-vditor-runtime": "bash scripts/setup-vditor-runtime.sh",
