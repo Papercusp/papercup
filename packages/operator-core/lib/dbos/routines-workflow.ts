@@ -36,7 +36,7 @@ import {
 import { getOrgPg, listDueCronRoutines } from '@papercusp/db-org';
 import { runWithWorkspace } from '../workspace-als';
 import { loopbackFetch } from '../loopback-fetch';
-import { claimDueRoutine } from '../harness/routines/claim';
+import { claimDueRoutine, claimedRoutineDispatchAllowed } from '../harness/routines/claim';
 import { checkFireGate, recordFire } from '../autoloop';
 import { fireLoopWake } from '../harness/routines/loop-fire';
 import {
@@ -160,6 +160,33 @@ async function routineFireImpl(
       }),
       { name: 'routine-fire-start' },
     );
+
+    // EI-20509996472706488: claiming a recurring routine and executing its
+    // durable fire are separated by a DBOS queue. A pause in that gap used to
+    // update active=false but leave the already-enqueued workflow free to run
+    // its captured action; release-trigger consequently launched an auto-deploy
+    // seven minutes after it had been paused for a safety hold. Re-read the live
+    // writer-owned flag at execution time and fail closed before ANY loop,
+    // system-action, or role-spawn side effect. One-shots remain valid because
+    // their successful claim intentionally deactivates the row; the helper owns
+    // that distinction.
+    const dispatchAllowed = await DBOS.runStep(
+      async () => {
+        const { sql } = getOrgPg();
+        return claimedRoutineDispatchAllowed(sql, {
+          id: routineId,
+          triggerConfig,
+          rescheduleIntervalSec: rescheduleIntervalSec ?? null,
+        });
+      },
+      { name: 'routine-fire-active-fence' },
+    );
+    if (!dispatchAllowed) {
+      console.warn(
+        `[routines] ${routineId} fire CANCELLED — recurring routine was paused or removed after claim`,
+      );
+      return;
+    }
 
     // LOOP fire (B-LOOP-3 / P-004, D-005/D-006): a loop wakes its pinned session WARM instead
     // of spawning a role / running a system action. Identified by an interval + a bound owner;

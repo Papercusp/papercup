@@ -24,7 +24,7 @@ vi.mock('@papercusp/db-org', async () => {
   return { ...actual };
 });
 
-const { claimDueRoutine } = await import('./claim');
+const { claimDueRoutine, claimedRoutineDispatchAllowed } = await import('./claim');
 
 let rootSql: postgres.Sql;
 
@@ -105,6 +105,39 @@ describe('claimDueRoutine — recurring', () => {
   it('does NOT claim an inactive routine', async () => {
     const r = await insertRoutine({ id: 'r3', cfg: { cron: '0 0 * * *' }, active: false, nextFireAt: null });
     expect(await claimDueRoutine(rootSql, r)).toBe(false);
+  });
+});
+
+describe('claimedRoutineDispatchAllowed — queued-fire pause fence (EI-20509996472706488)', () => {
+  it('cancels a recurring fire that was claimed before the routine was paused', async () => {
+    const r = await insertRoutine({ id: 'fence-cron-paused', cfg: { cron: '0 */15 * * * *' }, nextFireAt: null });
+    expect(await claimDueRoutine(rootSql, r)).toBe(true);
+
+    // Reproduce the live incident: the durable fire is queued, then routines:set
+    // flips active=false before an executor starts it.
+    await rootSql`UPDATE harness_shared.routines SET active = FALSE, updated_at = now() WHERE id = 'fence-cron-paused'`;
+
+    expect(await claimedRoutineDispatchAllowed(rootSql, r)).toBe(false);
+  });
+
+  it('allows a claimed recurring fire while the routine remains active', async () => {
+    const r = await insertRoutine({ id: 'fence-cron-active', cfg: { cron: '0 */15 * * * *' }, nextFireAt: null });
+    expect(await claimDueRoutine(rootSql, r)).toBe(true);
+    expect(await claimedRoutineDispatchAllowed(rootSql, r)).toBe(true);
+  });
+
+  it('allows a claimed one-shot even though claiming intentionally deactivates its row', async () => {
+    const r = await insertRoutine({ id: 'fence-one-shot', cfg: {}, nextFireAt: null });
+    expect(await claimDueRoutine(rootSql, r)).toBe(true);
+    expect(await activeOf('fence-one-shot')).toBe(false);
+    expect(await claimedRoutineDispatchAllowed(rootSql, r)).toBe(true);
+  });
+
+  it('cancels a pure loop fire when loop:end pauses it after claim', async () => {
+    const r = await insertRoutine({ id: 'fence-loop-paused', cfg: {}, rescheduleIntervalSec: 60, nextFireAt: null });
+    expect(await claimDueRoutine(rootSql, r)).toBe(true);
+    await rootSql`UPDATE harness_shared.routines SET active = FALSE, updated_at = now() WHERE id = 'fence-loop-paused'`;
+    expect(await claimedRoutineDispatchAllowed(rootSql, r)).toBe(false);
   });
 });
 

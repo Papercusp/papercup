@@ -37,6 +37,7 @@ import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 const WS = 'ws-circuit';
 const SLUG = 'circuit';
 const RID = 'rt-circuit-0';
+const PAUSED_RID = 'rt-circuit-paused';
 const ROLE = 'director'; // the coding blueprint's decider — the role the fire gates on
 
 process.env.PAPERCUSP_WORKSPACE_ID = WS;
@@ -96,6 +97,13 @@ beforeAll(async () => {
     VALUES
       (${RID}, ${SLUG}, 'bp-schedule-0', 'cron', ${'{"cron":"*/30 * * * * *"}'}::text::jsonb,
        'system:blueprint-run', null, true, now() + interval '1 year', ${WS})`;
+  await db.adminSql`
+    INSERT INTO harness_shared.routines
+      (id, install_slug, name, trigger_kind, trigger_config, target_role,
+       payload_template, active, next_fire_at, workspace_id)
+    VALUES
+      (${PAUSED_RID}, ${SLUG}, 'paused-after-claim', 'cron', ${'{"cron":"*/30 * * * * *"}'}::text::jsonb,
+       ${ROLE}, null, false, now() + interval '1 year', ${WS})`;
 }, 300_000);
 
 afterAll(async () => {
@@ -138,6 +146,28 @@ async function backdate(seconds: number): Promise<void> {
 }
 
 describe('autoloop circuit-breaker lifecycle (P-003)', () => {
+  it('EI-20509996472706488: a queued recurring fire is cancelled when its live routine row is paused', async () => {
+    const hitsBefore = invokeHits.length;
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    let cancelled = false;
+    try {
+      await routineFireWorkflow(
+        PAUSED_RID,
+        WS,
+        SLUG,
+        ROLE,
+        { cron: '*/30 * * * * *' },
+        null,
+      );
+      cancelled = warnSpy.mock.calls.some((call) => String(call[0]).includes('fire CANCELLED'));
+    } finally {
+      warnSpy.mockRestore();
+    }
+
+    expect(invokeHits.length).toBe(hitsBefore);
+    expect(cancelled).toBe(true);
+  });
+
   it('8 failures open the circuit; probes degrade to ~one per cap window; one success closes it', async () => {
     // The WITHHELD console.warn is the gate's own observable signal — capture
     // it so Phase 2 can ASSERT on it (and keep vitest-fail-on-console quiet).

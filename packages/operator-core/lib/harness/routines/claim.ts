@@ -51,6 +51,44 @@ import { recordLoopTransition } from './loop-transition-log';
 const planSlugFor = (routine: RoutineRow): Promise<string> =>
   routineStorageSlug(routine.installSlug, routine.workspaceId);
 
+/**
+ * The minimum captured routine shape needed to fence a durable fire at dispatch
+ * time. A recurring fire is admitted by claimDueRoutine while the row is active,
+ * but it may wait in the DBOS queue long enough for an operator to pause the
+ * routine before the fire workflow starts. The queued workflow's captured
+ * RoutineRow is then stale: re-read the writer-owned `active` flag before any
+ * side effect.
+ *
+ * One-shots are deliberately different. claimDueRoutine atomically sets their
+ * row active=FALSE as part of a successful claim, so treating that state as a
+ * pause would suppress every valid one-shot. Pure loops carry an interval and
+ * therefore use the recurring fence even without cron/rrule configuration.
+ */
+export interface ClaimedRoutineDispatchRef {
+  id: string;
+  triggerConfig: Record<string, unknown>;
+  rescheduleIntervalSec: number | null;
+}
+
+export async function claimedRoutineDispatchAllowed(
+  sql: Sql,
+  routine: ClaimedRoutineDispatchRef,
+): Promise<boolean> {
+  const hasRecurrence = !!(routine.triggerConfig.cron || routine.triggerConfig.rrule);
+  const isLoop = routine.rescheduleIntervalSec != null;
+  if (!hasRecurrence && !isLoop) return true;
+
+  const rows = await sql<{ active: boolean }[]>`
+    SELECT active
+      FROM harness_shared.routines
+     WHERE id = ${routine.id}
+     LIMIT 1
+  `;
+  // Missing is fail-closed: a deleted recurring routine must not leave an
+  // already-enqueued workflow free to perform its captured side effect.
+  return rows[0]?.active === true;
+}
+
 export async function claimDueRoutine(sql: Sql, routine: RoutineRow): Promise<boolean> {
   const cfg = routine.triggerConfig;
   // Recurrence = a cron OR an rrule (scheduled-recurring-plans P-007).
