@@ -113,6 +113,73 @@ export function findUnsafeSignerCalls(script: string): { line: number; text: str
   return unsafe;
 }
 
+/**
+ * ── Second contract, same variable: NEVER CLOBBER A CALLER-SUPPLIED KEY.
+ *
+ * Filed with the bug above as its "latent sibling", and it is the reason that cut could
+ * not be rescued from the outside: release-local.sh hardcoded KEY_FILE from $HOME and
+ * then `export TAURI_SIGNING_PRIVATE_KEY="$KEY_FILE"` UNCONDITIONALLY, as did
+ * build-linux-local.sh — so an operator who supplied a working key in the environment had
+ * it silently overwritten by the conventional path, and the only way forward was to
+ * advance the pinned tree. build-and-archive-deb.sh:55-67 was already right and is the
+ * shape both now copy; its own FATAL even advises "provide TAURI_SIGNING_PRIVATE_KEY
+ * directly", advice that was inert on the one script that drives a real cut.
+ *
+ * An assignment is compliant three ways:
+ *   1. inside an `if [[ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]]` region,
+ *   2. self-defaulting — `"${TAURI_SIGNING_PRIVATE_KEY:-$KEY_FILE}"`, or
+ *   3. a per-command prefix whose value the script DERIVED from the ambient one (the
+ *      path->content deref that the first contract above requires).
+ *
+ * SCOPE (deliberate): lines carrying an escaped `\$` are skipped — those are the body of a
+ * script being GENERATED for another host (mac-vm-verify-build.sh:155 writes a remote
+ * build script over ssh), where pinning the remote's own key file is the intent, not a
+ * clobber of this process's environment.
+ */
+const CLOBBER_GUARD = /^if\b.*-z\s+"\$\{TAURI_SIGNING_PRIVATE_KEY:-\}"/;
+const KEY_ASSIGN = /(^|[^_A-Za-z0-9])TAURI_SIGNING_PRIVATE_KEY=("[^"]*"|\S+)/;
+
+export function findClobberingKeyAssignments(
+  script: string,
+): { line: number; text: string; why: string }[] {
+  const out: { line: number; text: string; why: string }[] = [];
+  const lines = script.split('\n');
+  let depth = 0;
+  const guardDepths: number[] = [];
+  for (let i = 0; i < lines.length; i += 1) {
+    const text = lines[i].trim();
+    if (text.startsWith('#') || text === '') continue;
+    if (/^if\b/.test(text)) {
+      depth += 1;
+      if (CLOBBER_GUARD.test(text)) guardDepths.push(depth);
+    }
+    const m = KEY_ASSIGN.exec(text);
+    if (m && !text.includes('\\$')) {
+      const rhs = m[2];
+      const guarded = guardDepths.length > 0;
+      const selfDefaulting = rhs.includes('${TAURI_SIGNING_PRIVATE_KEY');
+      const fromVar = /^"\$(\w+)"$/.exec(rhs);
+      const derefed =
+        fromVar !== null &&
+        new RegExp(
+          `\\[\\[?\\s*-f\\s+"\\$${fromVar[1]}"\\s*\\]\\]?\\s*&&\\s*${fromVar[1]}="\\$\\(cat\\s+"\\$${fromVar[1]}"\\)"`,
+        ).test(script);
+      if (!guarded && !selfDefaulting && !derefed) {
+        out.push({
+          line: i + 1,
+          text,
+          why: 'unconditionally overwrites a caller-supplied TAURI_SIGNING_PRIVATE_KEY',
+        });
+      }
+    }
+    if (/^fi\b/.test(text) || /;\s*fi$/.test(text)) {
+      if (guardDepths[guardDepths.length - 1] === depth) guardDepths.pop();
+      depth -= 1;
+    }
+  }
+  return out;
+}
+
 const root = repoRoot();
 // Overridable so falsifiability can also be proven against a MUTATED COPY outside the
 // tree (scripts/mutation-probe.sh, tier 2) rather than by mutating the shared checkout,
@@ -179,6 +246,77 @@ describe('tauri signer key contract', () => {
   it('accepts both compliant forms', () => {
     expect(findUnsafeSignerCalls(CONTROL_DEREF)).toEqual([]);
     expect(findUnsafeSignerCalls(CONTROL_KEY_PATH)).toEqual([]);
+  });
+
+  // ── Controls for the clobber scanner. CONTROL_CLOBBER_AFTER_FI is the one that
+  // matters most: without it, a tracker that opened the guard and never closed it would
+  // report every later assignment as safe and this whole contract would measure nothing.
+  const CONTROL_CLOBBER = `
+KEY_FILE="$HOME/.papercusp/signing/papercusp.key"
+export TAURI_SIGNING_PRIVATE_KEY="$KEY_FILE"
+`;
+  const CONTROL_GUARDED = `
+if [[ -z "\${TAURI_SIGNING_PRIVATE_KEY:-}" ]]; then
+  export TAURI_SIGNING_PRIVATE_KEY="$KEY_FILE"
+else
+  echo "==> updater signing key: supplied via TAURI_SIGNING_PRIVATE_KEY"
+fi
+`;
+  const CONTROL_DEFAULTED = `
+(cd "$ROOT" && TAURI_SIGNING_PRIVATE_KEY="\${TAURI_SIGNING_PRIVATE_KEY:-$KEY_FILE}" bash bin/build-appimage.sh)
+`;
+  const CONTROL_CLOBBER_AFTER_FI = `
+if [[ -z "\${TAURI_SIGNING_PRIVATE_KEY:-}" ]]; then
+  export TAURI_SIGNING_PRIVATE_KEY="$KEY_FILE"
+fi
+export TAURI_SIGNING_PRIVATE_KEY="$OTHER_KEY"
+`;
+
+  it('flags an unconditional export that overwrites a caller-supplied key', () => {
+    const found = findClobberingKeyAssignments(CONTROL_CLOBBER);
+    expect(found).toHaveLength(1);
+    expect(found[0].why).toMatch(/unconditionally/);
+  });
+
+  it('closes the guard region at `fi` (a later clobber is still caught)', () => {
+    const found = findClobberingKeyAssignments(CONTROL_CLOBBER_AFTER_FI);
+    expect(found).toHaveLength(1);
+    expect(found[0].text).toContain('$OTHER_KEY');
+  });
+
+  it('accepts the guarded, self-defaulting and derived forms', () => {
+    expect(findClobberingKeyAssignments(CONTROL_GUARDED)).toEqual([]);
+    expect(findClobberingKeyAssignments(CONTROL_DEFAULTED)).toEqual([]);
+    expect(findClobberingKeyAssignments(CONTROL_DEREF)).toEqual([]);
+  });
+
+  // CALIBRATION for the clobber scan, same reason as above: if the scanner stops seeing
+  // assignments at all (a rename, a move), "zero violations" is vacuous.
+  it('still finds the key assignments it is meant to police', () => {
+    const withAssignments = readdirSync(binDir)
+      .filter((f) => f.endsWith('.sh'))
+      .filter((f) => KEY_ASSIGN.test(readFileSync(join(binDir, f), 'utf8')));
+    expect(withAssignments.length).toBeGreaterThanOrEqual(4);
+    expect(withAssignments).toEqual(
+      expect.arrayContaining(['release-local.sh', 'build-linux-local.sh', 'build-and-archive-deb.sh']),
+    );
+  });
+
+  it('no script in papercusp-desktop/bin clobbers a caller-supplied signing key', () => {
+    const violations: string[] = [];
+    for (const file of readdirSync(binDir).filter((f) => f.endsWith('.sh'))) {
+      for (const v of findClobberingKeyAssignments(readFileSync(join(binDir, file), 'utf8'))) {
+        violations.push(`${file}:${v.line} — ${v.why}\n    ${v.text.slice(0, 160)}`);
+      }
+    }
+    expect(
+      violations,
+      `A caller-supplied TAURI_SIGNING_PRIVATE_KEY (key CONTENT or a path) must win.\n` +
+        `Guard the assignment instead:\n` +
+        `  if [[ -z "\${TAURI_SIGNING_PRIVATE_KEY:-}" ]]; then export TAURI_SIGNING_PRIVATE_KEY="$KEY_FILE"; fi\n` +
+        `or default from it: TAURI_SIGNING_PRIVATE_KEY="\${TAURI_SIGNING_PRIVATE_KEY:-$KEY_FILE}"\n\n` +
+        violations.join('\n'),
+    ).toEqual([]);
   });
 
   it('no script in papercusp-desktop/bin hands the signer a key path', () => {
