@@ -94,6 +94,15 @@ function numberRecord(value: unknown): Record<string, number> | undefined {
   return out;
 }
 
+/** Narrow an untyped `meta` bag to a string list. Same defensive posture as {@link numberRecord}:
+ *  manifests are read off disk from prior cuts, so nothing here may assume the provider's types. */
+function stringArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const out: string[] = [];
+  for (const v of value) if (typeof v === 'string') out.push(v);
+  return out;
+}
+
 function formatBytes(n: number): string {
   if (n >= 1024 ** 3) return `${(n / 1024 ** 3).toFixed(2)} GB`;
   if (n >= 1024 ** 2) return `${(n / 1024 ** 2).toFixed(1)} MB`;
@@ -174,7 +183,30 @@ export function judgeSeedDegradation(
     }
   }
 
-  if (entry.sizeBytes > sizeFloor) {
+  // A payload can only be HISTORY if some core is long enough to hold history. Bytes alone
+  // cannot tell a history dump from a big current-state projection; BLOCK COUNT can.
+  //
+  // WHY THIS QUALIFIER EXISTS (2026-08-15, the 0.0.17-alpha cut, ~81 min in). The shipping path
+  // is the FILTERED branch: cut-seed-cli.ts passes `filtered: true` unconditionally, and
+  // seed-provider-corestore.ts's `if (filtered)` branch returns BEFORE the sparse block. It mints
+  // a complete current-state projection and omits `coreSparseFrom` deliberately — its own comment
+  // says the result "must not trip the history-degradation guard as though a private prefix had
+  // been dropped". So it arrives here labelled `full`, the label findings correctly stay silent,
+  // and the SIZE floor fired anyway: 318,544,683 B over the 256 MB floor. That floor is calibrated
+  // for a DIFFERENT artifact class (a ~41 MB sparse head span vs the 1.9 GB / 461,475-block
+  // history dump). The projection is a third population: 76 blocks — the head snapshot's exact
+  // chunk count — against a 1,788,251-block own-log. It cannot be history by ~23,000x.
+  //
+  // Reuse DEFAULT_CORE_LENGTH_FLOOR_BLOCKS, which already encodes this idea for the sparse
+  // findings above ("below this many blocks, a core has no history to trim"), rather than raising
+  // the byte floor — raising it would blind the sparse path to the very regression it exists to
+  // catch. FAIL SAFE: if any core's length is unknown we cannot PROVE the payload is not history,
+  // so the floor still applies.
+  const coreKeys = stringArray(meta.coreKeys) ?? Object.keys(lengths);
+  const everyLengthKnown = coreKeys.length > 0 && coreKeys.every((k) => lengths[k] !== undefined);
+  const historyCapable = !everyLengthKnown || coreKeys.some((k) => lengths[k]! > lengthFloor);
+
+  if (entry.sizeBytes > sizeFloor && historyCapable) {
     findings.push({
       code: 'corestore-exceeds-size-floor',
       detail:
