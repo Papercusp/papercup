@@ -16,6 +16,46 @@ describe('parseResetHoldUntil (EI-1404)', () => {
     expect(r!.holdUntilMs).toBeGreaterThan(nowMs);
   });
 
+  // EI-20542327908037306 — the WEEKLY wall is date-qualified. Before this, RESET_TIME_RE needed a
+  // digit right after "resets", so "resets Aug 20, 7am" matched NOTHING and the dispatcher fell
+  // back to its generic ~1-2h retry against a window that stays shut for DAYS — EI-1404's exact
+  // symptom, which this module fixed only for the bare-clock (daily) shape.
+  it('parses the DATE-QUALIFIED weekly shape "resets Aug 20, 7am" to that date, not tomorrow', () => {
+    const nowMs = Date.parse('2026-08-15T17:47:00.000Z'); // Sat Aug 15, 1:47pm EDT
+    const r = parseResetHoldUntil(
+      "worker exit 1 … You've hit your weekly limit · resets Aug 20, 7am (America/New_York)",
+      nowMs,
+    );
+    expect(r).not.toBeNull();
+    expect(r!.tzid).toBe('America/New_York');
+    // 7am ET on Aug 20 (EDT, UTC-4) == 11:00 UTC — five days out, NOT 7am tomorrow.
+    expect(new Date(r!.holdUntilMs).toISOString()).toBe('2026-08-20T11:00:00.000Z');
+    expect(r!.holdUntilMs - nowMs).toBeGreaterThan(4 * 86_400_000);
+  });
+
+  it('accepts date-qualified variants (no comma, ordinal day) and keeps the zone', () => {
+    const nowMs = Date.parse('2026-08-15T17:47:00.000Z');
+    expect(new Date(parseResetHoldUntil('resets Aug 18 7:30pm (America/New_York)', nowMs)!.holdUntilMs).toISOString())
+      .toBe('2026-08-18T23:30:00.000Z');
+    expect(new Date(parseResetHoldUntil('resets Aug 21st, 7am (America/New_York)', nowMs)!.holdUntilMs).toISOString())
+      .toBe('2026-08-21T11:00:00.000Z');
+  });
+
+  it('refuses a hold months out rather than returning a wrong one', () => {
+    const nowMs = Date.parse('2026-08-15T17:47:00.000Z');
+    // A PAST month names no year, so it rolls forward ~10 months. Holding an item that long is
+    // far worse than not holding it, so the parse degrades to null and the caller keeps its
+    // ordinary retry cadence.
+    expect(parseResetHoldUntil('resets Jun 18, 7:30pm (America/New_York)', nowMs)).toBeNull();
+    // A word in the date slot that is NOT a month must not be read as one: the hold degrades to
+    // the plain next-occurrence-of-7am rather than resolving to some arbitrary day.
+    const bogus = parseResetHoldUntil('resets Foo 20, 7am (America/New_York)', nowMs);
+    expect(bogus).not.toBeNull();
+    expect(new Date(bogus!.holdUntilMs).toISOString()).toBe('2026-08-16T11:00:00.000Z');
+    // (Note: "resets soon 7am" — a non-month word with no day number — matches neither the old
+    // nor the new regex and is null in both. That is pre-existing behavior, not this change.)
+  });
+
   it('rolls to the NEXT day when the wall-clock time has already passed today', () => {
     // 2026-07-17 13:00 America/New_York == 17:00 UTC — well past 7am ET.
     const nowMs = Date.parse('2026-07-17T17:00:00.000Z');
