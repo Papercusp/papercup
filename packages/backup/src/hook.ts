@@ -165,8 +165,28 @@ function gzipArgs(): string[] {
 // Every workspace currently draws from the same harness_shared database.
 // Serialize dump pipelines process-wide so multiple due workspaces cannot each
 // drive pg_dump+gzip against the host at once. The tail always recovers, so one
-// degraded dump cannot poison future work.
+// degraded dump cannot poison future work. This queue is deliberately only the
+// load-shedding layer: desktop, staging API, and background-host processes can
+// all snapshot the same workspace concurrently, so dumpPg() must also isolate
+// its transaction file across processes.
 let dumpQueue: Promise<void> = Promise.resolve();
+let dumpAttemptSequence = 0;
+
+/**
+ * Allocate an attempt-scoped transaction path for the PG dump.
+ *
+ * `dumpQueue` cannot serialize separate Node processes. The old single
+ * `pg-embedded.sql.gz.tmp` pathname therefore let an interval snapshot and an
+ * explicit pre-destructive snapshot write the same inode. Whichever attempt
+ * renamed it first made every other attempt fail its final stat with ENOENT;
+ * worse, their streams could continue writing into the supposedly-complete
+ * destination inode. PID + a process-local sequence makes the path unique in
+ * both dimensions while retaining the `.tmp` suffix covered by Kopia policy.
+ */
+export function allocateDumpTempPath(outPath: string): string {
+  dumpAttemptSequence += 1;
+  return `${outPath}.${process.pid}-${dumpAttemptSequence}.tmp`;
+}
 
 export function runPreSnapshotHook(ctx: HookContext): Promise<PreSnapshotHookResult> {
   const run = dumpQueue.then(() => runPreSnapshotHookNow(ctx));
@@ -246,7 +266,7 @@ async function dumpPg(opts: {
   outPath: string;
   log: (msg: string) => Promise<void>;
 }): Promise<PreSnapshotHookResult> {
-  const tmp = `${opts.outPath}.tmp`;
+  const tmp = allocateDumpTempPath(opts.outPath);
   // A crash/timeout from an earlier attempt must not become the next
   // snapshot's input. This is paired with the `*.tmp` Kopia policy rule.
   await unlink(tmp).catch(() => {});
@@ -406,7 +426,9 @@ async function dumpPg(opts: {
 }
 
 async function renameAtomic(from: string, to: string): Promise<void> {
-  const { rename, unlink } = await import('node:fs/promises');
-  try { await unlink(to); } catch { /* fine */ }
+  const { rename } = await import('node:fs/promises');
+  // POSIX rename replaces an existing regular file atomically. Unlinking the
+  // destination first created a real missing-file window in which a concurrent
+  // Kopia scan could omit the DB dump altogether.
   await rename(from, to);
 }

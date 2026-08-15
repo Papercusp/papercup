@@ -21,6 +21,7 @@ const h = vi.hoisted(() => ({
   dumpSize: 16_384,
   closeCodes: { pg_dump: 0, gzip: 0 } as Record<string, number>,
   stdinWrites: [] as string[],
+  writeStreamPaths: [] as string[],
   renameCalls: [] as Array<{ from: string; to: string }>,
   unlinkCalls: [] as string[],
   logLines: [] as string[],
@@ -76,7 +77,10 @@ vi.mock('node:child_process', () => ({
 
 vi.mock('node:fs', () => ({
   // out stream: never errors, supports end()/destroyed.
-  createWriteStream: vi.fn(() => ({ on: vi.fn(), end: vi.fn(), destroyed: false })),
+  createWriteStream: vi.fn((path: string) => {
+    h.writeStreamPaths.push(String(path));
+    return { on: vi.fn(), end: vi.fn(), destroyed: false };
+  }),
 }));
 
 vi.mock('node:fs/promises', () => ({
@@ -106,7 +110,7 @@ vi.mock('./config', () => ({
   backupHost: () => ({ getHarnessAdminUrl: () => h.adminUrl }),
 }));
 
-import { requiredFreeBytes, runPreSnapshotHook } from './hook';
+import { allocateDumpTempPath, requiredFreeBytes, runPreSnapshotHook } from './hook';
 
 const ctx = { workspaceId: 'ws-1', workspaceRoot: '/work/ws-1' };
 
@@ -116,6 +120,7 @@ beforeEach(() => {
   h.dumpSize = 16_384;
   h.closeCodes = { pg_dump: 0, gzip: 0 };
   h.stdinWrites = [];
+  h.writeStreamPaths = [];
   h.renameCalls = [];
   h.unlinkCalls = [];
   h.logLines = [];
@@ -126,6 +131,29 @@ beforeEach(() => {
 afterEach(() => vi.clearAllMocks());
 
 const pgDumpCall = () => h.spawnCalls.find((c) => c.cmd === 'pg_dump');
+
+describe('cross-process dump transaction isolation', () => {
+  it('allocates a distinct Kopia-ignored temp path for every dump attempt', () => {
+    const out = '/work/ws-1/db-dumps/pg-embedded.sql.gz';
+    const first = allocateDumpTempPath(out);
+    const second = allocateDumpTempPath(out);
+
+    expect(first).not.toBe(second);
+    expect(first).toMatch(/pg-embedded\.sql\.gz\.\d+-\d+\.tmp$/);
+    expect(second).toMatch(/pg-embedded\.sql\.gz\.\d+-\d+\.tmp$/);
+    expect(first).not.toBe(`${out}.tmp`);
+    expect(second).not.toBe(`${out}.tmp`);
+  });
+
+  it('never reuses the transaction pathname across sequential hook runs', async () => {
+    await runPreSnapshotHook(ctx);
+    await runPreSnapshotHook(ctx);
+
+    expect(h.writeStreamPaths).toHaveLength(2);
+    expect(new Set(h.writeStreamPaths).size).toBe(2);
+    expect(h.writeStreamPaths.every((path) => path.endsWith('.tmp'))).toBe(true);
+  });
+});
 
 describe('runPreSnapshotHook admin-URL → spawn args', () => {
   it('derives host/port/user from the admin URL into the pg_dump argv', async () => {
@@ -221,6 +249,7 @@ describe('runPreSnapshotHook outcome logging', () => {
     await runPreSnapshotHook(ctx);
     expect(h.renameCalls).toHaveLength(1);
     expect(h.renameCalls[0].to).toContain('pg-embedded.sql.gz');
+    expect(h.unlinkCalls).not.toContain('/work/ws-1/db-dumps/pg-embedded.sql.gz');
     expect(h.logLines.join('')).toMatch(/ok \(16384 bytes\)/);
   });
 
