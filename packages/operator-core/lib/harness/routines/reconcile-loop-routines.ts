@@ -316,17 +316,11 @@ async function defaultEscalateDeadLoop(info: DeadLoopInfo): Promise<void> {
   });
 }
 
-/** Re-arm backoff is never longer than this — a SANITY ceiling on a bogus parse, NOT a normal
- *  bound (mirrors loop-turn-outcome.ts's identical cap for the resume-headless channel — kept as
- *  a local constant rather than importing across the fire/reconcile seam, since the two moved
- *  independently before EI-13818 unified their intent).
- *
- *  WI-6852: this was 1h, which BOUND in practice rather than acting as a sanity rail — measured
- *  2026-08-02, 13 of 15 lifecycle-death re-arms landed on EXACTLY 60m, i.e. `resetAt - now`
- *  exceeded the cap every time and each re-arm was clipped and therefore UNDER-waited. Provider
- *  walls here commonly run ~3-5h (observed: a "resets 9am" wall active from 10:17Z to 13:00Z).
- *  6h clears a real wall while still refusing to park a loop for a day on a mis-parse. */
-const LIFECYCLE_DEATH_REARM_CAP_MS = 6 * 3_600_000;
+/* The re-arm ceiling used to live here as a private 6h constant, duplicated in
+ * loop-turn-outcome.ts with a comment asking the two to be kept in step. EI-20544023385610622
+ * made the policy TWO-TIER (a NAMED reset instant earns a longer hold than an INFERRED one), and
+ * a two-tier policy duplicated twice is drift waiting to happen — so both now import the single
+ * `clampUsageRearmDelayMs` from the shared agent lib, beside the precision it consults. */
 
 /** Reasons a `classifySessionEnd` verdict on a LIFECYCLE-COMPLETED loop turn's own text means
  *  the 'ended' marker was a KILL, not a success (EI-13818 — see module header point 5). */
