@@ -57,6 +57,11 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import ts from 'typescript';
 
+import {
+  type IgnoredRuntimeEntryWorkspace,
+  runtimeBuildProvisionedRoots,
+} from './runtime-workspace-build-coverage';
+
 /**
  * fs entry points whose failure mode when the path is absent IS the red we are
  * guarding against. Both the sync and the promise-based spellings are listed
@@ -285,18 +290,23 @@ export function listSubmodulePaths(repoRoot: string): string[] {
 }
 
 /**
- * Extract the roots block 3b provisions, FROM THE SHIPPED SCRIPT.
+ * Extract every gitignored root the release setup provisions, FROM THE
+ * SHIPPED SCRIPT and the declared runtime entries of workspace packages.
  *
- * Deriving this (rather than hardcoding `apps/operator/public`) is what makes
- * the guard an inversion of 3b rather than a restatement of it: narrowing the
- * block's root shrinks the covered set, which turns previously-covered
- * requirements into violations.
+ * Block 3b copies registered asset roots. Block 3c-2 builds registered
+ * workspace outputs from pinned source. Treating either mechanism as the only
+ * one produces a false verdict, so this is the shared coverage derivation for
+ * both materialization paths.
  */
-export function extractProvisionedRoots(scriptSource: string): string[] {
+export function extractProvisionedRoots(
+  scriptSource: string,
+  runtimeEntries: Iterable<IgnoredRuntimeEntryWorkspace> = [],
+): string[] {
   const roots = new Set<string>();
   for (const m of scriptSource.matchAll(/^\s*[A-Z_]*ASSET_REL(?:\[\d*\])?=["']([^"']+)["']/gm)) {
     roots.add(m[1].replace(/\/+$/, ''));
   }
+  for (const root of runtimeBuildProvisionedRoots(scriptSource, runtimeEntries)) roots.add(root);
   return [...roots];
 }
 

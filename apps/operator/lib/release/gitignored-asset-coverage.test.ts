@@ -28,6 +28,7 @@ import {
   makeGitIgnoreOracle,
   scanRequiredIgnoredAssets,
 } from './gitignored-asset-coverage';
+import { listIgnoredRuntimeEntryWorkspaces } from './runtime-workspace-build-coverage';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '../../../..');
@@ -63,7 +64,8 @@ function repoTestFiles(): string[] {
 }
 
 const SCRIPT_SRC = readFileSync(SCRIPT, 'utf8');
-const PROVISIONED_ROOTS = extractProvisionedRoots(SCRIPT_SRC);
+const RUNTIME_ENTRIES = listIgnoredRuntimeEntryWorkspaces(REPO_ROOT);
+const PROVISIONED_ROOTS = extractProvisionedRoots(SCRIPT_SRC, RUNTIME_ENTRIES);
 const TEST_FILES = repoTestFiles();
 const ORACLE = makeGitIgnoreOracle(REPO_ROOT, listSubmodulePaths(REPO_ROOT));
 
@@ -85,8 +87,8 @@ function scanFixture(files: Record<string, string>, opts: {
   });
 }
 
-describe('block 3b coverage — no test may hard-require a gitignored path 3b does not provision', () => {
-  it('derives the provisioned roots from the shipped script, not from a hardcoded copy', () => {
+describe('release setup coverage — no test may hard-require a gitignored path setup does not provision', () => {
+  it('derives copied and pinned-build roots from the shipped script, not hardcoded copies', () => {
     // If this is empty the whole guard is vacuous: every path would count as
     // uncovered, or (worse) a narrowed block would go unnoticed.
     expect(
@@ -96,13 +98,14 @@ describe('block 3b coverage — no test may hard-require a gitignored path 3b do
         'update extractProvisionedRoots() to match the new shape.',
     ).not.toEqual([]);
     expect(PROVISIONED_ROOTS).toContain('apps/operator/public');
+    expect(PROVISIONED_ROOTS).toContain('libs/generic/sse/dist');
   });
 
   it('finds a non-trivial corpus to scan (a green result here must not be vacuous)', () => {
     expect(TEST_FILES.length).toBeGreaterThan(100);
   });
 
-  it('THE GUARD: every gitignored path a test hard-requires is provisioned by block 3b', () => {
+  it('THE GUARD: every gitignored path a test hard-requires is provisioned by release setup', () => {
     const result = scanRequiredIgnoredAssets({
       repoRoot: REPO_ROOT,
       testFiles: TEST_FILES,
@@ -127,7 +130,7 @@ describe('block 3b coverage — no test may hard-require a gitignored path 3b do
         ? ''
         : `A test hard-requires ${result.violations.length} GITIGNORED path(s) that block 3b does not provision:\n` +
           `${detail}\n\n` +
-          `Block 3b of apps/operator/bin/release/setup-release-checkout.sh provisions only: ` +
+          `apps/operator/bin/release/setup-release-checkout.sh provisions only: ` +
           `${PROVISIONED_ROOTS.join(', ')}.\n` +
           `Everything else gitignored is wiped by step 1's \`clean -fdqx\` and never restored, so this ` +
           `test can NEVER pass in the gate's checkout — it red-pins main for the whole fleet, ` +
@@ -142,6 +145,43 @@ describe('block 3b coverage — no test may hard-require a gitignored path 3b do
           `untracked files are scanned too, so a peer may be mid-edit. The finding is still real — ` +
           `tell them rather than ignoring it; once git-sync commits it, it red-pins everyone.`,
     ).toEqual([]);
+  });
+});
+
+describe('pinned runtime-build coverage — registration is the coverage authority', () => {
+  const CONTROL_PATH = 'libs/generic/sse/dist/index.js';
+  const CONTROL_FILE = 'apps/operator/lib/release/__runtime_build_control__.test.ts';
+  const CONTROL_SRC = `
+    import { readFileSync } from 'node:fs';
+    import { resolve } from 'node:path';
+    const ENTRY = resolve(REPO_ROOT, 'libs/generic/sse/dist', 'index.js');
+    it('requires the CommonJS boot entry', () => { readFileSync(ENTRY, 'utf8'); });
+  `;
+
+  function scanWith(coveredRoots: string[]) {
+    return scanRequiredIgnoredAssets({
+      repoRoot: REPO_ROOT,
+      testFiles: [CONTROL_FILE],
+      coveredRoots,
+      isIgnored: ORACLE,
+      readFile: (abs) => (abs.endsWith('__runtime_build_control__.test.ts')
+        ? CONTROL_SRC
+        : readFileSync(abs, 'utf8')),
+    });
+  }
+
+  it('covers an ignored boot entry because its workspace is built from pinned source', () => {
+    expect(ORACLE(CONTROL_PATH)).toBe(true);
+    const result = scanWith(PROVISIONED_ROOTS);
+    expect(result.violations).toEqual([]);
+    expect(result.covered.map((site) => site.path)).toContain(CONTROL_PATH);
+  });
+
+  it('reds on the same ignored boot entry when its workspace is not registered', () => {
+    const unregisteredScript = SCRIPT_SRC.replace('"@papercusp/sse"', '"@papercusp/not-sse"');
+    const roots = extractProvisionedRoots(unregisteredScript, RUNTIME_ENTRIES);
+    expect(roots).not.toContain('libs/generic/sse/dist');
+    expect(scanWith(roots).violations.map((site) => site.path)).toContain(CONTROL_PATH);
   });
 });
 
