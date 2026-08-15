@@ -33,6 +33,7 @@
     "libs/generic/papergrid/grid-core",
     "libs/generic/papergrid/grid",
     "libs/papercusp/libs/db",
+    "libs/generic/sse",
     "libs/papercusp/packages/harness",
     "libs/papercusp/packages/orchestrator",
     "libs/generic/model-pricing",
