@@ -19,11 +19,14 @@ import {
   readOpenAiKey,
   readPicovoiceKey,
 } from '../../voice-credentials';
+import { maskIntegrationKey, readIntegrationKey } from '../../integration-credentials';
+
+const INTEGRATION_KEY_NAME_RE = /^[A-Z][A-Z0-9_]*$/;
 
 export default defineTool({
   name: 'operator:credentials_status',
   profile: 'engineer',
-  description: 'Masked credential status for voice providers (set/not-set + tail). Read-only — never returns raw keys.',
+  description: 'Masked credential status for voice providers plus an optional encrypted integration credential lookup by name. Read-only — never returns raw keys. Integration lookup distinguishes missing from saved-not-injected.',
   capability: 'secrets:operator-credentials:read',
   guidance: {
     when: `Check which API credentials (EL, OpenAI, etc.) are configured + valid. Used in onboarding + diagnostics.`,
@@ -32,9 +35,15 @@ export default defineTool({
   },
   requirePrincipal: false,
   agentRoles: [...SU_ROLES],
-  args: z.object({}),
-  async handler() {
-    const [el, openai, cartesia, deepgram, picovoice] = await Promise.all([
+  args: z.object({
+    integration_name: z
+      .string()
+      .regex(INTEGRATION_KEY_NAME_RE, 'integration_name must be SCREAMING_SNAKE_CASE')
+      .optional()
+      .describe('Optional setup:save_integration_key name to inspect without returning its raw value.'),
+  }),
+  async handler(args) {
+    const [el, openai, cartesia, deepgram, picovoice, integration] = await Promise.all([
       // Status is the deliberate raw-reader exception: show a masked legacy
       // value so it can be replaced, while outbound reads stay fail-closed.
       readElevenLabsKey({ allowInvalid: true }),
@@ -42,6 +51,7 @@ export default defineTool({
       readCartesiaKey(),
       readDeepgramKey(),
       readPicovoiceKey(),
+      args.integration_name ? readIntegrationKey(args.integration_name) : Promise.resolve(undefined),
     ]);
     return {
       content: [
@@ -53,6 +63,16 @@ export default defineTool({
             cartesia: { set: !!cartesia, masked: maskKey(cartesia) },
             deepgram: { set: !!deepgram, masked: maskKey(deepgram) },
             picovoice: { set: !!picovoice, masked: maskKey(picovoice) },
+            ...(args.integration_name
+              ? {
+                  integration: {
+                    name: args.integration_name,
+                    saved: !!integration,
+                    masked: maskIntegrationKey(integration),
+                    status: integration ? 'saved_not_injected' : 'missing',
+                  },
+                }
+              : {}),
           }),
         },
       ],

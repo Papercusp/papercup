@@ -452,6 +452,10 @@ export interface RunOptions {
   cwd: string;
   stateDir: string | undefined;
   env?: Record<string, string>;
+  /** Exact secret values that must never reach streamed output, retained output,
+   *  or spill logs. Redaction happens before every one of those sinks and keeps
+   *  enough suffix state to catch a value split across child-process chunks. */
+  redactValues?: readonly string[];
   /** Per-event streamer (foreground only). */
   onChunk?: (chunk: string) => void;
   /** Resolved papercusp-capability-exec-sandbox flag (P-022/D-008). When true the
@@ -475,6 +479,70 @@ export interface ForegroundResult {
   durationMs: number;
 }
 
+export interface StreamingSecretRedactor {
+  /** Consume one raw child-process chunk and return only the safe prefix. */
+  push(chunk: string): string;
+  /** Drain the final safe tail when the child reaches a terminal state. */
+  flush(): string;
+}
+
+/**
+ * Build a chunk-boundary-safe exact-value redactor.
+ *
+ * A naive `chunk.replace(secret, ...)` leaks whenever stdout/stderr delivers the
+ * first half of a credential in one Buffer and the second half in the next. This
+ * scanner retains at most `longestSecret.length - 1` trailing characters, which
+ * is precisely the region where a not-yet-complete match can still begin. The
+ * retained suffix is emitted only after the next chunk proves it is not part of
+ * a secret, or from `flush()` once the process has ended.
+ *
+ * Values are sorted longest-first so overlapping credentials redact the most
+ * specific value in one marker. Empty values are ignored: matching an empty
+ * string would insert a marker between every character and provides no secrecy.
+ */
+export function createStreamingSecretRedactor(
+  values: readonly string[] | undefined,
+): StreamingSecretRedactor | null {
+  const secrets = [...new Set((values ?? []).filter((value) => value.length > 0))]
+    .sort((a, b) => b.length - a.length);
+  if (secrets.length === 0) return null;
+
+  const longest = secrets[0]!.length;
+  let pending = '';
+
+  const scan = (input: string, startLimit: number): { output: string; consumed: number } => {
+    let output = '';
+    let index = 0;
+    while (index < startLimit) {
+      const match = secrets.find((secret) => input.startsWith(secret, index));
+      if (match) {
+        output += '[REDACTED integration credential]';
+        index += match.length;
+      } else {
+        output += input[index];
+        index += 1;
+      }
+    }
+    return { output, consumed: index };
+  };
+
+  return {
+    push(chunk: string): string {
+      const input = pending + chunk;
+      pending = '';
+      const safeStartLimit = Math.max(0, input.length - (longest - 1));
+      const { output, consumed } = scan(input, safeStartLimit);
+      pending = input.slice(consumed);
+      return output;
+    },
+    flush(): string {
+      const input = pending;
+      pending = '';
+      return scan(input, input.length).output;
+    },
+  };
+}
+
 /**
  * Run a command to completion in the foreground. Streams chunks via `onChunk`,
  * spills the full combined output to a scratch log, enforces a wall-clock
@@ -494,14 +562,25 @@ export function runForeground(opts: RunOptions, signal: AbortSignal, timeoutMs: 
     let settled = false;
     let timedOut = false;
     let aborted = false;
+    const redactor = createStreamingSecretRedactor(opts.redactValues);
+    let redactorFlushed = false;
 
-    const onData = (b: Buffer): void => {
-      const s = b.toString('utf8');
+    const appendSafeOutput = (s: string): void => {
+      if (!s) return;
       totalBytes += Buffer.byteLength(s, 'utf8');
       if (buffer.length < MEM_BUFFER_CAP) buffer += s;
       try { logStream?.write(s); } catch { /* ignore spill fault */ }
       opts.onChunk?.(s);
     };
+    const appendRawOutput = (s: string): void => {
+      appendSafeOutput(redactor?.push(s) ?? s);
+    };
+    const flushRedactor = (): void => {
+      if (redactorFlushed) return;
+      redactorFlushed = true;
+      appendSafeOutput(redactor?.flush() ?? '');
+    };
+    const onData = (b: Buffer): void => appendRawOutput(b.toString('utf8'));
     child.stdout?.on('data', onData);
     child.stderr?.on('data', onData);
 
@@ -520,6 +599,9 @@ export function runForeground(opts: RunOptions, signal: AbortSignal, timeoutMs: 
     const finish = (status: BashStatus, exitCode: number | null): void => {
       if (settled) return;
       settled = true;
+      // The suffix held for chunk-boundary matching must reach every safe sink
+      // before output/truncation metadata is finalized.
+      flushRedactor();
       clearTimeout(timer);
       signal.removeEventListener('abort', onAbort);
       const truncated = buffer.length > INLINE_OUTPUT_CAP;
@@ -566,9 +648,7 @@ export function runForeground(opts: RunOptions, signal: AbortSignal, timeoutMs: 
 
     child.on('error', (err) => {
       const msg = `\n[spawn error] ${err instanceof Error ? err.message : String(err)}\n`;
-      totalBytes += msg.length;
-      if (buffer.length < MEM_BUFFER_CAP) buffer += msg;
-      try { logStream?.write(msg); } catch { /* ignore */ }
+      appendRawOutput(msg);
       finish('failed', null);
     });
     child.on('close', (code) => {
@@ -625,6 +705,16 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
   };
   JOBS.set(id, job);
 
+  const redactor = createStreamingSecretRedactor(opts.redactValues);
+  let redactorFlushed = false;
+  const appendRawOutput = (chunk: string): void => appendOutput(job, redactor?.push(chunk) ?? chunk);
+  const flushRedactor = (): void => {
+    if (redactorFlushed) return;
+    redactorFlushed = true;
+    const tail = redactor?.flush() ?? '';
+    if (tail) appendOutput(job, tail);
+  };
+
   completeSyncEnrolment(
     enrolment,
     {
@@ -644,7 +734,7 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
     child.pid ?? null,
   );
 
-  const onData = (b: Buffer): void => appendOutput(job, b.toString('utf8'));
+  const onData = (b: Buffer): void => appendRawOutput(b.toString('utf8'));
   child.stdout?.on('data', onData);
   child.stderr?.on('data', onData);
 
@@ -668,8 +758,7 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
         `semaphore (see PC_HEAVY_TIMEOUT_SEC / host load) and never began real work, rather ` +
         `than timing out mid-execution. (If this job does not use pc-heavy.sh, disregard.)`
       : '';
-    appendOutput(
-      job,
+    appendRawOutput(
       `\n[capability:bash] deadline reached: exceeded ${effectiveTimeoutMs}ms wall-clock.` +
         queuedHint +
         ` Sending SIGTERM (SIGKILL in ${TIMEOUT_SIGTERM_GRACE_MS}ms if it does not exit). ` +
@@ -692,14 +781,15 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
   }, effectiveTimeoutMs);
 
   child.on('error', (err) => {
-    appendOutput(job, `\n[spawn error] ${err instanceof Error ? err.message : String(err)}\n`);
+    appendRawOutput(`\n[spawn error] ${err instanceof Error ? err.message : String(err)}\n`);
     job.status = 'failed';
     job.endedAt = Date.now();
     clearTimeout(timer);
     // EI-18764990059061608: see formatJobLogEndMarker's doc — this is what lets a
     // raw `cat`/Read of `logPath` (bypassing bash_output's own `status` field)
     // tell "finished" from "nothing written yet" without a second call.
-    appendOutput(job, formatJobLogEndMarker(job.status, job.exitCode, job.endedAt));
+    appendRawOutput(formatJobLogEndMarker(job.status, job.exitCode, job.endedAt));
+    flushRedactor();
     try { job.logStream?.end(); } catch { /* ignore */ }
     job.logStream = null;
     finishSyncEnrolment(enrolment, {
@@ -714,7 +804,8 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
     job.endedAt = Date.now();
     clearTimeout(timer);
     // EI-18764990059061608: see formatJobLogEndMarker's doc.
-    appendOutput(job, formatJobLogEndMarker(job.status, job.exitCode, job.endedAt));
+    appendRawOutput(formatJobLogEndMarker(job.status, job.exitCode, job.endedAt));
+    flushRedactor();
     try { job.logStream?.end(); } catch { /* ignore */ }
     job.logStream = null;
     // `timed_out` is preserved distinctly rather than collapsed into a kill: the

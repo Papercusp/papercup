@@ -22,7 +22,7 @@
 
 import { isAbsolute, resolve } from 'node:path';
 import { z } from 'zod';
-import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
+import { defineTool, AGENT_ROLES, isOperatorConfigWriteRole } from '@papercusp/agent-mcp';
 import {
   DEFAULT_BACKGROUND_TIMEOUT_MS,
   DEFAULT_TIMEOUT_MS,
@@ -38,11 +38,36 @@ import { capabilityExecSandboxEnabled } from './exec-sandbox';
 import { displayForHive } from '../computer/desktop-lease';
 import { resolveConcreteHarnessSlug } from '../_harness-scope';
 import { resolveCapabilityBaseDir } from './base-dir';
+import { maskIntegrationKey, readIntegrationKey } from '../../integration-credentials';
+
+const ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const INTEGRATION_KEY_NAME_RE = /^[A-Z][A-Z0-9_]*$/;
+const RESERVED_INTEGRATION_ENV_NAMES = new Set([
+  'PATH',
+  'HOME',
+  'TMPDIR',
+  'TMP',
+  'TEMP',
+  'DISPLAY',
+  'XAUTHORITY',
+  'WAYLAND_DISPLAY',
+]);
+
+const integrationEnvSchema = z
+  .record(
+    z.string().regex(ENV_NAME_RE, 'destination must be a valid environment variable name'),
+    z.string().regex(INTEGRATION_KEY_NAME_RE, 'source must be a SCREAMING_SNAKE_CASE integration credential name'),
+  )
+  .refine((value) => Object.keys(value).length <= 16, 'integration_env accepts at most 16 entries')
+  .refine(
+    (value) => Object.keys(value).every((name) => !RESERVED_INTEGRATION_ENV_NAMES.has(name)),
+    `integration_env cannot replace reserved process variables: ${[...RESERVED_INTEGRATION_ENV_NAMES].join(', ')}`,
+  );
 
 export default defineTool({
   name: 'capability:bash',
   description:
-    'Run a shell command (bash -c) server-side in the project dir. Streams combined output; large output spills to a log file. Set run_in_background for long jobs (build/test/dev-server) and poll with capability:bash_output.',
+    'Run a shell command (bash -c) server-side in the project dir. Streams combined output; large output spills to a log file. Set run_in_background for long jobs (build/test/dev-server) and poll with capability:bash_output. Operator-authority callers may bind encrypted integration credentials into named child-only environment variables by reference; exact values are redacted from all returned/streamed/spilled output.',
   guidance: {
     when: 'Run any shell command — build, test, git status, file inspection, scripts. For literal backticks, dollar signs, or other shell metacharacters in search patterns, prefer fixed-string `rg -F` with a shell-safe single-quoted argument; an unmatched backtick inside a double-quoted pattern fails before `rg` runs. For a command that runs longer than ~1–2 min (build, test suite, dev server), pass run_in_background:true and poll capability:bash_output. A background job still has a wall-clock deadline (4h default, 12h max) and is SIGTERMed then SIGKILLed at it — the launch result names the deadline; raise `timeout` for a longer job.',
     notWhen:
@@ -94,6 +119,11 @@ export default defineTool({
       .string()
       .optional()
       .describe('Working dir (absolute, or relative to the project dir). Defaults to the project dir.'),
+    integration_env: integrationEnvSchema
+      .optional()
+      .describe(
+        'Operator-authority only. Map child environment variable names to encrypted setup:save_integration_key names, e.g. {"DEEPGRAM_API_KEY":"SIDESTAGE_DEEPGRAM_API_KEY"}. Raw values stay server-side, exist only in this child process, and are exact-value-redacted from events, results, background reads, and spill logs.',
+      ),
   }),
   async handler(args, ctx) {
     const baseDir = resolveCapabilityBaseDir(ctx);
@@ -114,6 +144,43 @@ export default defineTool({
     const hive = resolveConcreteHarnessSlug(undefined, ctx);
     const leasedDisplay = hive ? displayForHive(hive) : undefined;
     const desktopEnv = leasedDisplay ? { DISPLAY: leasedDisplay } : undefined;
+    const integrationEntries = Object.entries(args.integration_env ?? {}).sort(([a], [b]) => a.localeCompare(b));
+    if (integrationEntries.length > 0 && ctx.isSuperuser !== true && !isOperatorConfigWriteRole(ctx.role)) {
+      throw new Error('capability:bash integration_env requires superuser or operator, architect, or mug authority');
+    }
+
+    const resolvedIntegrationEntries = await Promise.all(
+      integrationEntries.map(async ([envName, sourceName]) => ({
+        envName,
+        sourceName,
+        value: await readIntegrationKey(sourceName),
+      })),
+    );
+    const missingIntegrationSources = [...new Set(
+      resolvedIntegrationEntries.filter((entry) => !entry.value).map((entry) => entry.sourceName),
+    )];
+    if (missingIntegrationSources.length > 0) {
+      throw new Error(
+        `capability:bash integration_env references missing saved integration credential(s): ${missingIntegrationSources.join(', ')}`,
+      );
+    }
+    const integrationEnv = Object.fromEntries(
+      resolvedIntegrationEntries.map((entry) => [entry.envName, entry.value!]),
+    );
+    const integrationEnvView = Object.fromEntries(
+      resolvedIntegrationEntries.map((entry) => [entry.envName, {
+        source: entry.sourceName,
+        masked: maskIntegrationKey(entry.value),
+      }]),
+    );
+    const childEnv = {
+      ...(desktopEnv ?? {}),
+      ...integrationEnv,
+    };
+    const redactValues = resolvedIntegrationEntries.map((entry) => entry.value!);
+    const integrationHeader = integrationEntries.length > 0
+      ? ` · integration_env ${JSON.stringify(integrationEnvView)}`
+      : '';
 
     if (args.run_in_background) {
       const job = startBackground(
@@ -122,7 +189,8 @@ export default defineTool({
           cwd,
           stateDir: ctx.stateDir,
           sandboxEnabled,
-          ...(desktopEnv ? { env: desktopEnv } : {}),
+          ...(Object.keys(childEnv).length > 0 ? { env: childEnv } : {}),
+          ...(redactValues.length > 0 ? { redactValues } : {}),
         },
         timeoutMs,
       );
@@ -156,6 +224,7 @@ export default defineTool({
               // unexplained death two hours in.
               timeout_ms: job.timeoutMs,
               deadline: job.deadlineAt ? new Date(job.deadlineAt).toISOString() : undefined,
+              ...(integrationEntries.length > 0 ? { integration_env: integrationEnvView } : {}),
               advice:
                 `Background shell started. Preserve durable task_id "${job.taskId}" across carry. ` +
                 `Read output: capability:bash_output { task_id: "${job.taskId}" } ` +
@@ -178,7 +247,8 @@ export default defineTool({
         stateDir: ctx.stateDir,
         onChunk: (chunk) => ctx.emit('output', chunk),
         sandboxEnabled,
-        ...(desktopEnv ? { env: desktopEnv } : {}),
+        ...(Object.keys(childEnv).length > 0 ? { env: childEnv } : {}),
+        ...(redactValues.length > 0 ? { redactValues } : {}),
       },
       ctx.signal,
       timeoutMs,
@@ -188,7 +258,8 @@ export default defineTool({
       `exit ${r.exitCode ?? 'null'}` +
       (r.status !== 'completed' ? ` (${r.status})` : '') +
       ` · ${(r.durationMs / 1000).toFixed(1)}s · cwd ${cwd}` +
-      (r.truncated ? ` · output spilled (${r.totalBytes} bytes) → ${r.logPath}` : '');
+      (r.truncated ? ` · output spilled (${r.totalBytes} bytes) → ${r.logPath}` : '') +
+      integrationHeader;
 
     const isError = r.status === 'failed' && r.exitCode === null;
 
@@ -226,6 +297,7 @@ export default defineTool({
               cwd,
               output: r.output,
               truncated: r.truncated,
+              ...(integrationEntries.length > 0 ? { integration_env: integrationEnvView } : {}),
               ...(r.truncated ? { total_bytes: r.totalBytes, log_path: r.logPath } : {}),
             },
           }

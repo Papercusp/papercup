@@ -18,6 +18,7 @@ import {
   MAX_TIMEOUT_MS,
   PC_HEAVY_SLOT_ACQUIRED_MARKER,
   __resetBashJobs,
+  createStreamingSecretRedactor,
   detectBufferingLastStage,
   formatBufferingPipelineAdvice,
   formatJobLogEndMarker,
@@ -117,6 +118,69 @@ describe('runForeground', () => {
     setTimeout(() => ac.abort(), 150);
     const r = await runForeground({ command: 'sleep 10', cwd: STATE, stateDir: STATE }, ac.signal, 30_000);
     expect(r.status).toBe('killed');
+  });
+});
+
+describe('integration credential output redaction (EI-20478240377353884)', () => {
+  const secret = 'integration-test-secret-0123456789';
+
+  it('redacts a secret split across arbitrary child-process chunks', () => {
+    const redactor = createStreamingSecretRedactor([secret])!;
+    const safe = [
+      redactor.push(`before:${secret.slice(0, 7)}`),
+      redactor.push(secret.slice(7, 21)),
+      redactor.push(`${secret.slice(21)}:after`),
+      redactor.flush(),
+    ].join('');
+
+    expect(safe).toBe('before:[REDACTED integration credential]:after');
+    expect(safe).not.toContain(secret);
+    expect(safe).not.toContain(secret.slice(0, 21));
+  });
+
+  it('redacts foreground result, stream events, and the spill log through one shared boundary', async () => {
+    const streamed: string[] = [];
+    const r = await runForeground(
+      {
+        command: 'printf "prefix:%s:suffix" "$EI_INTEGRATION_SECRET"',
+        cwd: STATE,
+        stateDir: STATE,
+        env: { EI_INTEGRATION_SECRET: secret },
+        redactValues: [secret],
+        onChunk: (chunk) => streamed.push(chunk),
+      },
+      never,
+      10_000,
+    );
+    const spill = readFileSync(r.logPath, 'utf8');
+
+    expect(r.output).toContain('prefix:[REDACTED integration credential]:suffix');
+    expect(streamed.join('')).toContain('prefix:[REDACTED integration credential]:suffix');
+    expect(spill).toContain('prefix:[REDACTED integration credential]:suffix');
+    for (const surface of [r.output, streamed.join(''), spill]) {
+      expect(surface).not.toContain(secret);
+    }
+  });
+
+  it('redacts background retained output and the durable spill log', async () => {
+    const job = startBackground(
+      {
+        command: 'printf "%s" "$EI_INTEGRATION_SECRET"',
+        cwd: STATE,
+        stateDir: STATE,
+        env: { EI_INTEGRATION_SECRET: secret },
+        redactValues: [secret],
+      },
+      10_000,
+    );
+    await waitForStatus(job.id);
+    const output = readJobOutput(getJob(job.id)!);
+    const spill = readFileSync(job.logPath, 'utf8');
+
+    expect(output).toContain('[REDACTED integration credential]');
+    expect(spill).toContain('[REDACTED integration credential]');
+    expect(output).not.toContain(secret);
+    expect(spill).not.toContain(secret);
   });
 });
 

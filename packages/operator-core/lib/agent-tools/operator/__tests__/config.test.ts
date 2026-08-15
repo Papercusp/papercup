@@ -32,6 +32,7 @@ afterEach(() => {
   vi.doUnmock('../../../operator-preferences');
   vi.doUnmock('../../../operator-multi-workspace');
   vi.doUnmock('../../../voice-credentials');
+  vi.doUnmock('../../../integration-credentials');
   vi.doUnmock('../../../workspace-registry');
 });
 
@@ -246,5 +247,65 @@ describe('operator:credentials_status', () => {
     const result = await tool.handler({}, MAKE_CTX());
     const text = (result as { content: Array<{ text: string }> }).content[0].text;
     expect(text).not.toContain('RAW_SECRET_DO_NOT_LEAK');
+  });
+
+  it('reports a named integration key as saved-not-injected with only its mask', async () => {
+    const raw = 'saved-integration-secret-0123456789';
+    vi.doMock('../../../voice-credentials', () => ({
+      maskKey: vi.fn(() => null),
+      readElevenLabsKey: vi.fn(async () => null),
+      readOpenAiKey: vi.fn(async () => null),
+      readCartesiaKey: vi.fn(async () => null),
+      readDeepgramKey: vi.fn(async () => null),
+      readPicovoiceKey: vi.fn(async () => null),
+    }));
+    vi.doMock('../../../integration-credentials', () => ({
+      readIntegrationKey: vi.fn(async (name: string) =>
+        name === 'SIDESTAGE_DEEPGRAM_API_KEY' ? raw : undefined),
+      maskIntegrationKey: vi.fn((value?: string | null) =>
+        value ? `${value.slice(0, 3)}...${value.slice(-4)}` : null),
+    }));
+    const { default: tool } = await import('../credentials_status');
+    const result = await tool.handler(
+      { integration_name: 'SIDESTAGE_DEEPGRAM_API_KEY' },
+      MAKE_CTX(),
+    );
+    const payload = parsePayload(result as never);
+
+    expect(payload.integration).toEqual({
+      name: 'SIDESTAGE_DEEPGRAM_API_KEY',
+      saved: true,
+      masked: 'sav...6789',
+      status: 'saved_not_injected',
+    });
+    expect(JSON.stringify(payload)).not.toContain(raw);
+  });
+
+  it('reports an unknown integration name as missing without changing the default provider shape', async () => {
+    vi.doMock('../../../voice-credentials', () => ({
+      maskKey: vi.fn(() => null),
+      readElevenLabsKey: vi.fn(async () => null),
+      readOpenAiKey: vi.fn(async () => null),
+      readCartesiaKey: vi.fn(async () => null),
+      readDeepgramKey: vi.fn(async () => null),
+      readPicovoiceKey: vi.fn(async () => null),
+    }));
+    vi.doMock('../../../integration-credentials', () => ({
+      readIntegrationKey: vi.fn(async () => undefined),
+      maskIntegrationKey: vi.fn(() => null),
+    }));
+    const { default: tool } = await import('../credentials_status');
+    const result = await tool.handler(
+      { integration_name: 'MISSING_API_KEY' },
+      MAKE_CTX(),
+    );
+    const payload = parsePayload(result as never);
+
+    expect(payload.integration).toEqual({
+      name: 'MISSING_API_KEY',
+      saved: false,
+      masked: null,
+      status: 'missing',
+    });
   });
 });
