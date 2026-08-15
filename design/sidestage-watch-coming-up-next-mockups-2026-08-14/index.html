@@ -107,6 +107,13 @@
 
       .view-toolbar p { margin: 0; color: var(--muted); font-size: 13px; }
 
+      .toolbar-copy { display: grid; gap: 4px; }
+
+      .view-toolbar .selection-summary {
+        color: var(--red-deep);
+        font-weight: 760;
+      }
+
       .segmented {
         display: inline-flex;
         flex: 0 0 auto;
@@ -155,6 +162,18 @@
         box-shadow: var(--shadow);
       }
 
+      .concept-card.is-selected {
+        border-color: var(--red);
+        background: color-mix(in srgb, var(--red) 3%, var(--surface));
+        box-shadow: 0 24px 64px rgb(143 28 24 / 18%);
+      }
+
+      .concept-card.is-selected .concept-head {
+        background:
+          linear-gradient(145deg, rgb(255 255 255 / 76%), transparent 58%),
+          color-mix(in srgb, var(--red) 7%, var(--surface-soft));
+      }
+
       .concept-head {
         min-height: 212px;
         padding: 22px 22px 20px;
@@ -176,6 +195,20 @@
       }
 
       .concept-index::before { width: 24px; height: 2px; background: currentColor; content: ""; }
+
+      .selection-pill {
+        display: inline-flex;
+        align-items: center;
+        margin-left: 8px;
+        border-radius: 999px;
+        padding: 5px 8px;
+        color: #fff;
+        background: var(--red);
+        font-size: 9px;
+        font-weight: 850;
+        letter-spacing: .05em;
+        text-transform: uppercase;
+      }
 
       .concept-head h2 {
         margin: 13px 0 8px;
@@ -459,6 +492,7 @@
       }
 
       .concept-foot strong { color: var(--ink); }
+      .concept-card.is-selected .concept-foot { color: var(--red-deep); background: color-mix(in srgb, var(--red) 8%, var(--surface-soft)); }
 
       .mobile-preview .concept-head { min-height: 248px; }
       .mobile-preview .mockup { min-height: 660px; padding: 11px; }
@@ -529,7 +563,10 @@
       </header>
 
       <section class="view-toolbar" aria-label="Mockup viewport controls">
-        <p>All three concepts use the same four products, prices, quantities, and sale order.</p>
+        <div class="toolbar-copy">
+          <p>All three concepts use the same four products, prices, quantities, and sale order.</p>
+          <p class="selection-summary">Selected direction: Concept 02 — Drop Runway · Avi</p>
+        </div>
         <div class="segmented" role="group" aria-label="Preview width">
           <button type="button" data-preview="desktop" aria-pressed="true">Desktop</button>
           <button type="button" data-preview="mobile" aria-pressed="false">Mobile frames</button>
@@ -592,9 +629,10 @@
             <footer class="concept-foot"><span><strong>Visual weight:</strong> next item first</span><span>Best default candidate</span></footer>
           </article>
 
-          <article class="concept-card">
+          <article class="concept-card is-selected" aria-label="Concept 02 — Drop Runway, selected direction">
             <header class="concept-head">
               <span class="concept-index">Concept 02</span>
+              <span class="selection-pill" aria-label="Selected direction by Avi">Selected direction · Avi</span>
               <h2>Drop Runway</h2>
               <p>A numbered, image-led sequence makes the sale order legible at a glance and encourages browsing farther ahead.</p>
               <div class="tradeoffs">
@@ -635,7 +673,7 @@
                 <div class="runway-footer"><p>+3 more upcoming · sale order locked</p><button class="outline-button" type="button">View all 8</button></div>
               </section>
             </div>
-            <footer class="concept-foot"><span><strong>Visual weight:</strong> sequence first</span><span>Strongest for long lineups</span></footer>
+            <footer class="concept-foot"><span><strong>Visual weight:</strong> sequence first</span><span>Selected direction · Avi</span></footer>
           </article>
 
           <article class="concept-card">
