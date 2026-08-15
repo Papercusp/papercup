@@ -173,7 +173,7 @@ export const UNTYPECHECKABLE = {
       'than hand-fixed because that one is a behaviour question, not a lint. Clear them and ' +
       'DELETE this entry — that is the whole exit path.',
     errors: 9,
-    filedAs: 'EI-20549967837064185',
+    filedAs: 'WI-39342',
   },
   // libs/papercusp-shared WAS here (4 errors, measured 2026-08-15) and is deliberately GONE:
   // its 2 TS7006 implicit-any params and 2 TS6133 unused bindings were fixed the same hour, so
@@ -187,7 +187,7 @@ export const UNTYPECHECKABLE = {
       'SnapshotStateTab. Nothing in the tree imports this package (0 import sites), which is ' +
       'why it drifted unnoticed.',
     errors: 6,
-    filedAs: 'EI-20549967837064185',
+    filedAs: 'WI-39342',
   },
 };
 
