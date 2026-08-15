@@ -47,12 +47,12 @@ harness: 'sidestage'
 
 The `sidestage/` prefix does not merely become redundant — it **misses**. `independentSiblingRepos()` realpath-dedupes the repo root out of its own sibling set, so from root `~/.papercusp/hives/sidestage` the segment `sidestage` names no admitted sibling; resolution falls through to the in-repo branch and looks for `<hive>/sidestage/apps/...`, which does not exist. (That scan also walks `~/.papercusp/hives`, not the workspace root — the admitted siblings of a hive are the OTHER hives.)
 
-Measured 2026-08-14 against the live resolver, root `/home/marsh-office/.papercusp/hives/sidestage`:
+Measured 2026-08-14 against the live resolver, root `~/.papercusp/hives/sidestage`:
 
 ```
 db/schema.sql            → ok
 sidestage/db/schema.sql  → citation_file_not_found
-                           "sidestage/db/schema.sql (searched /home/marsh-office/.papercusp/hives/sidestage)"
+                           "sidestage/db/schema.sql (searched ~/.papercusp/hives/sidestage)"
 ```
 
 **Read the refusal's root, not this doc's rule.** Since 2026-08-14 a `citation_file_not_found` detail names the roots the path was actually tried under (`describeRoots`), and that string tells you which branch you are in without guessing: **one root** ⇒ the first segment is not an admitted sibling, so drop the prefix and cite bare; **two roots** ⇒ workspace-relative resolution was attempted and the file is genuinely absent under the sibling.
