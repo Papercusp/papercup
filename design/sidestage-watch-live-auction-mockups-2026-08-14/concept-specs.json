@@ -1,14 +1,14 @@
 {
   "artifact": {
-    "title": "SideStage Watch — conditional current-offer module",
+    "title": "SideStage Watch — conditional current-offer and room-context modules",
     "date": "2026-08-14",
     "target": "React web Watch tab",
     "ecosystem": "react-tailwind",
-    "sourceDecision": "sidestage-watch-live-auction-mockups-2026-08-14#D-003",
+    "sourceDecision": "sidestage-watch-live-auction-mockups-2026-08-14#D-003 + #D-004",
     "validation": {
       "schema": "UI IR v0.1",
-      "validated": 1,
-      "linted": 1,
+      "validated": 2,
+      "linted": 2,
       "errors": 0,
       "warnings": 0
     },
@@ -17,9 +17,26 @@
       "queries": [
         "conditional product offer card live auction countdown current bid",
         "bid activity feed leader amount input primary action",
-        "auction settling sold state status banner"
+        "auction settling sold state status banner",
+        "tabbed content chat thread message composer",
+        "product details item condition shipping returns auction terms",
+        "seller profile reputation rating verified follow shop",
+        "tabs",
+        "avatar profile",
+        "form input",
+        "card"
       ],
-      "matches": []
+      "matches": [
+        "action.primary",
+        "action.secondary",
+        "feedback.banner"
+      ],
+      "missingComposites": [
+        "tabs",
+        "chat thread",
+        "product details",
+        "seller profile"
+      ]
     }
   },
   "module": {
@@ -374,6 +391,285 @@
           "copy": {
             "key": "offer.closed.state",
             "default": "Sold to Morgan for $142.00."
+          },
+          "a11y": {
+            "role": "status",
+            "ariaLive": "polite"
+          }
+        }
+      },
+      "a11y": {
+        "landmark": "region",
+        "headingLevel": 3
+      }
+    }
+  },
+  "roomTabs": {
+    "id": "watch-room-context-tabs",
+    "name": "Watch room context tabs",
+    "sourceDecision": "sidestage-watch-live-auction-mockups-2026-08-14#D-004",
+    "thesis": "Let viewers move between conversation, item context, and seller trust without moving or obscuring the current-offer module.",
+    "registryReuse": [
+      "action.primary",
+      "action.secondary",
+      "feedback.banner"
+    ],
+    "states": [
+      "Chat",
+      "Details",
+      "Seller"
+    ],
+    "implementationNotes": [
+      "The existing tabs become one ARIA tablist with one stable content panel directly below the video.",
+      "Chat is the default state and includes recent messages plus a composer preview.",
+      "Details carries condition, measurements, materials, fulfillment, story, and auction terms.",
+      "Seller carries identity, verification, reputation, fulfillment performance, follow, and shop actions.",
+      "The right-hand current-offer module remains visible and independent while tabs switch.",
+      "Arrow keys plus Home and End move and activate tabs; selected state is expressed with aria-selected."
+    ],
+    "ir": {
+      "irVersion": "0.1",
+      "surface": "sidestage-watch-room-context",
+      "ecosystem": "react-tailwind",
+      "layout": {
+        "kind": "stack",
+        "direction": "vertical",
+        "gap": {
+          "token": "--ss-gap"
+        },
+        "children": [
+          {
+            "kind": "header",
+            "title": {
+              "key": "room.tabs.title",
+              "default": "Room information"
+            },
+            "copy": {
+              "key": "room.tabs.subtitle",
+              "default": "Chat, item details, and seller trust stay below the live video while the current offer remains visible."
+            },
+            "a11y": {
+              "role": "banner"
+            }
+          },
+          {
+            "kind": "stack",
+            "direction": "horizontal",
+            "gap": {
+              "token": "--ss-gap"
+            },
+            "responsive": {
+              "viewport.narrow": {
+                "align": "stretch"
+              }
+            },
+            "children": [
+              {
+                "kind": "button",
+                "label": {
+                  "key": "room.tabs.chat",
+                  "default": "Chat · 126"
+                },
+                "interactions": [
+                  "showChat"
+                ],
+                "a11y": {
+                  "role": "tab",
+                  "ariaLabel": {
+                    "key": "room.tabs.chat_label",
+                    "default": "Chat, 126 messages"
+                  }
+                }
+              },
+              {
+                "kind": "button",
+                "label": {
+                  "key": "room.tabs.details",
+                  "default": "Details"
+                },
+                "interactions": [
+                  "showDetails"
+                ],
+                "a11y": {
+                  "role": "tab"
+                }
+              },
+              {
+                "kind": "button",
+                "label": {
+                  "key": "room.tabs.seller",
+                  "default": "Seller"
+                },
+                "interactions": [
+                  "showSeller"
+                ],
+                "a11y": {
+                  "role": "tab"
+                }
+              }
+            ]
+          },
+          {
+            "kind": "card",
+            "padding": {
+              "token": "--ss-pad"
+            },
+            "tokens": {
+              "uses": [
+                "--surface",
+                "--surface-soft",
+                "--border",
+                "--shadow-card"
+              ]
+            },
+            "children": [
+              {
+                "kind": "header",
+                "title": {
+                  "key": "room.panel.title",
+                  "default": "Live chat"
+                },
+                "copy": {
+                  "key": "room.panel.meta",
+                  "default": "84 watching"
+                }
+              },
+              {
+                "kind": "list",
+                "label": {
+                  "key": "room.chat.recent",
+                  "default": "Recent live chat messages"
+                },
+                "binding": {
+                  "slot": "recentMessages",
+                  "repeats": true,
+                  "shape": "RoomMessage"
+                },
+                "item": {
+                  "kind": "stack",
+                  "direction": "vertical",
+                  "children": [
+                    {
+                      "kind": "text",
+                      "binding": {
+                        "slot": "authorDisplayName",
+                        "shape": "Text"
+                      }
+                    },
+                    {
+                      "kind": "text",
+                      "binding": {
+                        "slot": "messageBody",
+                        "shape": "Text"
+                      }
+                    }
+                  ]
+                },
+                "emptyState": {
+                  "kind": "text",
+                  "copy": {
+                    "key": "room.chat.empty",
+                    "default": "Be the first to ask about this item."
+                  }
+                }
+              },
+              {
+                "kind": "form",
+                "direction": "horizontal",
+                "responsive": {
+                  "viewport.narrow": {
+                    "direction": "vertical"
+                  }
+                },
+                "children": [
+                  {
+                    "kind": "input",
+                    "label": {
+                      "key": "room.chat.message_label",
+                      "default": "Message the room"
+                    },
+                    "placeholder": {
+                      "key": "room.chat.message_placeholder",
+                      "default": "Ask about fit, condition, or styling…"
+                    },
+                    "binding": {
+                      "slot": "messageDraft",
+                      "shape": "TextInput"
+                    },
+                    "interactions": [
+                      "changeMessage"
+                    ],
+                    "a11y": {
+                      "role": "textbox",
+                      "ariaLabel": {
+                        "key": "room.chat.message_aria",
+                        "default": "Message the room"
+                      }
+                    }
+                  },
+                  {
+                    "kind": "button",
+                    "label": {
+                      "key": "room.chat.send",
+                      "default": "Send"
+                    },
+                    "interactions": [
+                      "sendMessage"
+                    ],
+                    "a11y": {
+                      "role": "button"
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "tokens": {
+        "uses": [
+          "--bg",
+          "--surface",
+          "--surface-soft",
+          "--text",
+          "--muted",
+          "--brand-red",
+          "--brand-yellow",
+          "--success",
+          "--border",
+          "--ss-gap",
+          "--ss-pad",
+          "--shadow-card"
+        ]
+      },
+      "states": {
+        "chat": {
+          "kind": "banner",
+          "copy": {
+            "key": "room.chat.state",
+            "default": "Live conversation and message composer are visible."
+          },
+          "a11y": {
+            "role": "status",
+            "ariaLive": "polite"
+          }
+        },
+        "details": {
+          "kind": "banner",
+          "copy": {
+            "key": "room.details.state",
+            "default": "Item condition, measurements, materials, fulfillment, story, and auction terms are visible."
+          },
+          "a11y": {
+            "role": "status",
+            "ariaLive": "polite"
+          }
+        },
+        "seller": {
+          "kind": "banner",
+          "copy": {
+            "key": "room.seller.state",
+            "default": "Seller identity, verification, reputation, fulfillment performance, and actions are visible."
           },
           "a11y": {
             "role": "status",

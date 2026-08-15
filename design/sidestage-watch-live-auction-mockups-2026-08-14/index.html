@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <meta name="description" content="A source-backed SideStage Watch mockup for one conditional current-offer module across Now Selling, live auction, settling, and sold states." />
-  <title>SideStage Watch — conditional current offer</title>
+  <meta name="description" content="A source-backed SideStage Watch mockup for one conditional current-offer module plus interactive Chat, Details, and Seller room tabs." />
+  <title>SideStage Watch — current offer and room tabs</title>
   <style>
     :root {
       color-scheme: light;
@@ -720,7 +720,7 @@
       .site-header-inner { min-height: 3.8rem; }
       .wordmark-copy span { display: none; }
       .validation-pill { font-size: 0; }
-      .validation-pill::after { font-size: 0.62rem; content: "1 / 1 valid"; }
+      .validation-pill::after { font-size: 0.62rem; content: "2 / 2 valid"; }
       h1 { font-size: clamp(3.2rem, 18vw, 4.8rem); }
       .state-switch { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .browser-chrome { padding-inline: 0.7rem; }
@@ -757,14 +757,14 @@
         <span class="wordmark-mark">SS</span>
         <span class="wordmark-copy"><strong>SideStage</strong><span>Watch current-offer study</span></span>
       </a>
-      <span class="validation-pill">1 / 1 React UI IR valid · 0 lint warnings</span>
+      <span class="validation-pill">2 / 2 React UI IR valid · 0 lint warnings</span>
     </div>
   </header>
 
   <main id="main">
     <section class="hero" id="top">
       <div>
-        <p class="eyebrow">Decision D-003 · conditional module</p>
+        <p class="eyebrow">Decisions D-003 + D-004 · stable modules</p>
         <h1>One slot. Four states.</h1>
         <p>The familiar <strong>Now Selling</strong> card stays put until an auction starts. Then that same right-hand slot becomes the complete current-offer surface—without adding a second auction block below the stream.</p>
       </div>
@@ -1022,8 +1022,8 @@
     </section>
 
     <footer>
-      <p>Source-backed design study for the running SideStage React Watch surface. The single UI IR in <a href="concept-specs.json">concept-specs.json</a> passed schema validation and anti-pattern lint with no issues.</p>
-      <span>2026-08-14 · D-003</span>
+      <p>Source-backed design study for the running SideStage React Watch surface. Both UI IR modules in <a href="concept-specs.json">concept-specs.json</a> passed schema validation and anti-pattern lint with no issues.</p>
+      <span>2026-08-14 · D-003 + D-004</span>
     </footer>
   </main>
 
