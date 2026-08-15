@@ -268,6 +268,16 @@ export function callToolWithPressureRetry(client: any, params: any, { maxAttempt
  */
 export function isTransportFailure(error: any): boolean;
 /**
+ * An HTTP response proves that the local endpoint answered. Retrying it as a
+ * connection failure is both wasteful and misleading: in particular, the MCP
+ * proxy's 503 is the authoritative, typed result after it has already spent
+ * its full restart-absorption window. Walk `cause` because connect() adds
+ * operator guidance around the SDK's StreamableHTTPError.
+ */
+export function isExplicitHttpConnectFailure(error: any): boolean;
+/** Preserve the proxy's HTTP status and typed JSON body in ptool's stderr. */
+export function formatOperatorConnectFailure(operatorUrl: any, error: any): string;
+/**
  * Recover one post-connect transport failure by opening a fresh MCP session and
  * replaying the exact same tools/call params. `params._meta.idempotencyKey` is
  * generated once by the caller, so the server returns the stored result when
@@ -295,10 +305,11 @@ export function callToolWithReplayRecovery(client: any, params: any, { reconnect
  * dispatched yet; never extend this to a tools/call transport failure, whose
  * mutation status is ambiguous.
  */
-export function connectWithLocalRetry(connectOnce: any, operatorUrl: any, scope: any, { maxAttempts, retryDelayMs, attemptTimeoutMs, sleep, }?: {
+export function connectWithLocalRetry(connectOnce: any, operatorUrl: any, scope: any, { maxAttempts, retryDelayMs, attemptTimeoutMs, totalTimeoutMs, sleep, }?: {
     maxAttempts?: number | undefined;
     retryDelayMs?: number | undefined;
     attemptTimeoutMs?: number | undefined;
+    totalTimeoutMs?: number | undefined;
     sleep?: ((ms: any) => Promise<any>) | undefined;
 }): Promise<any>;
 /** Build ptool's superuser MCP URL. Pure and exported so the identity and
@@ -329,6 +340,7 @@ export function printResult(result: any, { raw }: {
  */
 export const PTOOL_TRUNCATED_RESULT_MESSAGE: string;
 export const PTOOL_LIST_TOOLS_TIMEOUT_MS: 10000;
+export const PTOOL_CONNECT_TIMEOUT_MS: number;
 export const PTOOL_CALL_TOOL_TIMEOUT_MS: 30000;
 export const PTOOL_GIT_SYNC_RUN_TIMEOUT_MS: 60000;
 export const PTOOL_BACKUP_SNAPSHOT_CREATE_TIMEOUT_MS: 60000;
