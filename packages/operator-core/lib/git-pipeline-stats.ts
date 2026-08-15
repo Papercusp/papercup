@@ -21,6 +21,7 @@
 import { getOrgPg } from '@papercusp/db-org';
 import { cellUnknown, type CellUnknown } from './cell-contract';
 import { devDeployState, type DevDeployState } from './dev-deploy-state';
+import { loadHarnessRegistry } from './harness-registry';
 import {
   summarizePipelineWindow,
   recentPipelineEvents,
@@ -37,6 +38,7 @@ import {
 import { releaseFixerSpawnAlive } from './release/fixer-liveness';
 import { parseInFlightRetriage, type StoredInFlightRetriage } from './release/in-flight-retriage';
 import { parseInFlightCandidate, type StoredInFlightCandidate } from './release/in-flight-candidate';
+import { pipelineName } from './release/pipeline-name';
 
 /** The operator's own integration harness (its git-sync/release routines). */
 const DEFAULT_SLUG = process.env.RELEASE_ROUTINE_SLUG ?? operatorHomeHarnessSlug();
@@ -551,6 +553,27 @@ export function mapActiveRun(r: {
   };
 }
 
+/**
+ * Resolve the checkout whose checkpoint unit belongs to `pipeline`.
+ *
+ * A pipeline is the sanitized integration-root basename, not a harness slug. The
+ * registry is therefore the only safe cross-harness mapping available here. An
+ * ambiguous registry match is deliberately unprobeable: guessing would attach one
+ * harness's live candidate and progress clock to another harness's wait. The legacy
+ * deploy root remains a fallback only for the operator's own default pipeline.
+ */
+export function selectActiveCheckpointRoot(input: {
+  pipeline: string;
+  projectPaths: readonly string[];
+  defaultPipeline: string;
+  defaultRoot: string;
+}): string | null {
+  const matchingRoots = [...new Set(input.projectPaths.filter((root) => pipelineName(root) === input.pipeline))];
+  if (matchingRoots.length === 1) return matchingRoots[0] ?? null;
+  if (matchingRoots.length === 0 && input.pipeline === input.defaultPipeline) return input.defaultRoot;
+  return null;
+}
+
 /** Compute the full pipeline snapshot for `slug` (defaults to the operator's own). */
 export async function gitPipelineSnapshot(
   slug: string = DEFAULT_SLUG,
@@ -770,9 +793,18 @@ export async function gitPipelineSnapshot(
   let activeRun: GitPipelineSnapshot['activeRun'] = null;
   if (opts.includeActiveRun) {
     try {
-      const probe =
-        opts.probeActiveRun ?? (await import('./release-checkpoint-launch')).checkActiveCheckpointRun;
-      activeRun = mapActiveRun(probe(deploy.integrationRoot));
+      const registry = await loadHarnessRegistry();
+      const activeRunRoot = selectActiveCheckpointRoot({
+        pipeline: slug,
+        projectPaths: registry.projects.map((project) => project.path),
+        defaultPipeline: DEFAULT_SLUG,
+        defaultRoot: deploy.integrationRoot,
+      });
+      if (activeRunRoot) {
+        const probe =
+          opts.probeActiveRun ?? (await import('./release-checkpoint-launch')).checkActiveCheckpointRun;
+        activeRun = mapActiveRun(probe(activeRunRoot));
+      }
     } catch {
       activeRun = null;
     }

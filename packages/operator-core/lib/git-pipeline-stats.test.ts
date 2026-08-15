@@ -10,6 +10,7 @@ import {
   toRoutineInfo,
   pinProvenGateCorrection,
   mapActiveRun,
+  selectActiveCheckpointRoot,
   pickRetriageVerdict,
   projectGreenCheckpointFireFreshness,
   type RawGateCounters,
@@ -187,6 +188,26 @@ describe('mapActiveRun (overview-tab-expansion P-001)', () => {
     const m = mapActiveRun({ active: true, candidate: 'abc12345', elapsed_sec: 10 });
     expect(Object.prototype.hasOwnProperty.call(m, 'refireObserved')).toBe(false);
     expect(Object.prototype.hasOwnProperty.call(m, 'initialCandidate')).toBe(false);
+  });
+});
+
+describe('selectActiveCheckpointRoot', () => {
+  it('selects the requested harness root instead of the operator integration root', () => {
+    expect(
+      selectActiveCheckpointRoot({
+        pipeline: 'sidestage',
+        projectPaths: ['/srv/papercusp', '/srv/sidestage'],
+        defaultPipeline: 'papercusp',
+        defaultRoot: '/srv/papercusp',
+      }),
+    ).toBe('/srv/sidestage');
+  });
+
+  it('uses the deploy root only for the default pipeline and rejects unknown or ambiguous mappings', () => {
+    const base = { projectPaths: ['/srv/a/sidestage', '/srv/b/sidestage'], defaultPipeline: 'papercusp', defaultRoot: '/srv/papercusp' };
+    expect(selectActiveCheckpointRoot({ ...base, pipeline: 'papercusp', projectPaths: [] })).toBe('/srv/papercusp');
+    expect(selectActiveCheckpointRoot({ ...base, pipeline: 'unknown' })).toBeNull();
+    expect(selectActiveCheckpointRoot({ ...base, pipeline: 'sidestage' })).toBeNull();
   });
 });
 
