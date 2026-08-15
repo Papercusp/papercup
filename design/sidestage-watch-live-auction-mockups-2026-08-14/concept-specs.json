@@ -1,226 +1,390 @@
 {
   "artifact": {
-    "title": "SideStage Watch — live auction directions",
+    "title": "SideStage Watch — conditional current-offer module",
     "date": "2026-08-14",
     "target": "React web Watch tab",
     "ecosystem": "react-tailwind",
-    "sourceDecision": "sidestage-watch-live-auction-mockups-2026-08-14#D-002",
+    "sourceDecision": "sidestage-watch-live-auction-mockups-2026-08-14#D-003",
     "validation": {
       "schema": "UI IR v0.1",
-      "validated": 3,
-      "linted": 3,
+      "validated": 1,
+      "linted": 1,
       "errors": 0,
       "warnings": 0
     },
     "registrySearch": {
       "ecosystem": "react-tailwind",
       "queries": [
-        "live auction countdown timer progress status badge price card",
-        "bid amount input form primary action alert status",
-        "recent bids list activity feed leaderboard"
+        "conditional product offer card live auction countdown current bid",
+        "bid activity feed leader amount input primary action",
+        "auction settling sold state status banner"
       ],
       "matches": []
     }
   },
-  "concepts": [
-    {
-      "id": "momentum-card",
-      "name": "Momentum Card",
-      "thesis": "Make the next bid feel obvious by giving time, price, and bid momentum one dominant stage.",
-      "bestFor": "A familiar evolution of the current Watch auction that can ship incrementally.",
-      "tradeoff": "It asks the page to yield more vertical space to the auction while it is live.",
-      "ir": {
-        "irVersion": "0.1",
-        "surface": "sidestage-watch-auction-momentum-card",
-        "ecosystem": "react-tailwind",
-        "layout": {
-          "kind": "stack",
-          "direction": "vertical",
-          "gap": { "token": "--ss-gap" },
+  "module": {
+    "id": "conditional-current-offer",
+    "name": "Conditional current offer",
+    "thesis": "Keep one predictable right-hand offer slot and let its contents evolve with the sale instead of inserting a second auction surface below the stream.",
+    "states": [
+      "Now selling",
+      "Live auction",
+      "Settling",
+      "Sold"
+    ],
+    "implementationNotes": [
+      "The no-auction state preserves the existing Now Selling product card and Hold item action.",
+      "The live state transforms the same slot in place with the ring countdown, current bid, compact bid feed, leader, amount input, and Place bid action.",
+      "Settling disables bid controls while the server confirms the winner.",
+      "Sold keeps the final result and winner in the same slot.",
+      "No separate Live auction block appears below the video."
+    ],
+    "ir": {
+      "irVersion": "0.1",
+      "surface": "sidestage-watch-conditional-current-offer",
+      "ecosystem": "react-tailwind",
+      "layout": {
+        "kind": "stack",
+        "direction": "vertical",
+        "gap": {
+          "token": "--ss-gap"
+        },
+        "children": [
+          {
+            "kind": "header",
+            "title": {
+              "key": "offer.module.title",
+              "default": "Current offer"
+            },
+            "copy": {
+              "key": "offer.module.subtitle",
+              "default": "One right-hand slot that keeps the product offer stable as an auction starts, settles, and sells."
+            },
+            "a11y": {
+              "role": "banner"
+            }
+          },
+          {
+            "kind": "card",
+            "padding": {
+              "token": "--ss-pad"
+            },
+            "tokens": {
+              "uses": [
+                "--surface",
+                "--border",
+                "--shadow-card"
+              ]
+            },
+            "children": [
+              {
+                "kind": "stack",
+                "direction": "horizontal",
+                "align": "center",
+                "justify": "space-between",
+                "gap": {
+                  "token": "--ss-gap"
+                },
+                "responsive": {
+                  "viewport.narrow": {
+                    "direction": "vertical",
+                    "align": "stretch"
+                  }
+                },
+                "children": [
+                  {
+                    "kind": "progress",
+                    "label": {
+                      "key": "offer.live.timer",
+                      "default": "18 seconds left"
+                    },
+                    "binding": {
+                      "slot": "remainingFraction",
+                      "shape": "AuctionCountdown"
+                    },
+                    "a11y": {
+                      "role": "timer",
+                      "ariaLabel": {
+                        "key": "offer.live.timer_label",
+                        "default": "Auction time remaining"
+                      },
+                      "ariaLive": "off"
+                    }
+                  },
+                  {
+                    "kind": "stack",
+                    "direction": "vertical",
+                    "align": "start",
+                    "children": [
+                      {
+                        "kind": "text",
+                        "copy": {
+                          "key": "offer.live.current_bid",
+                          "default": "Current bid"
+                        }
+                      },
+                      {
+                        "kind": "heading",
+                        "copy": {
+                          "key": "offer.live.price",
+                          "default": "$142.00"
+                        },
+                        "binding": {
+                          "slot": "currentPrice",
+                          "shape": "Money"
+                        }
+                      },
+                      {
+                        "kind": "badge",
+                        "copy": {
+                          "key": "offer.live.call",
+                          "default": "Going twice"
+                        },
+                        "binding": {
+                          "slot": "closingCall",
+                          "shape": "AuctionClosingCall"
+                        },
+                        "a11y": {
+                          "role": "status",
+                          "ariaLive": "polite"
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "kind": "list",
+                    "label": {
+                      "key": "offer.live.recent_bids",
+                      "default": "Recent bids"
+                    },
+                    "binding": {
+                      "slot": "recentBids",
+                      "repeats": true,
+                      "shape": "AuctionBid"
+                    },
+                    "item": {
+                      "kind": "stack",
+                      "direction": "horizontal",
+                      "justify": "space-between",
+                      "children": [
+                        {
+                          "kind": "text",
+                          "binding": {
+                            "slot": "bidderDisplayName",
+                            "shape": "Text"
+                          }
+                        },
+                        {
+                          "kind": "text",
+                          "binding": {
+                            "slot": "bidAmount",
+                            "shape": "Money"
+                          }
+                        }
+                      ]
+                    },
+                    "emptyState": {
+                      "kind": "text",
+                      "copy": {
+                        "key": "offer.live.no_bids",
+                        "default": "No bids yet"
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "kind": "banner",
+                "copy": {
+                  "key": "offer.live.leader",
+                  "default": "You’re leading at $142.00."
+                },
+                "binding": {
+                  "slot": "leaderMessage",
+                  "shape": "AuctionLeaderMessage"
+                },
+                "a11y": {
+                  "role": "status",
+                  "ariaLive": "polite"
+                }
+              },
+              {
+                "kind": "form",
+                "direction": "horizontal",
+                "responsive": {
+                  "viewport.narrow": {
+                    "direction": "vertical"
+                  }
+                },
+                "children": [
+                  {
+                    "kind": "input",
+                    "label": {
+                      "key": "offer.live.bid_label",
+                      "default": "Your bid"
+                    },
+                    "placeholder": {
+                      "key": "offer.live.bid_placeholder",
+                      "default": "147.00"
+                    },
+                    "binding": {
+                      "slot": "bidDraft",
+                      "shape": "CurrencyInput"
+                    },
+                    "interactions": [
+                      "changeBid"
+                    ],
+                    "a11y": {
+                      "role": "textbox",
+                      "ariaLabel": {
+                        "key": "offer.live.bid_input_label",
+                        "default": "Bid amount in dollars"
+                      },
+                      "ariaDescribedBy": "current-offer-bid-help"
+                    }
+                  },
+                  {
+                    "kind": "button",
+                    "label": {
+                      "key": "offer.live.place_bid",
+                      "default": "Place bid"
+                    },
+                    "interactions": [
+                      "submitBid"
+                    ],
+                    "a11y": {
+                      "role": "button",
+                      "ariaLabel": {
+                        "key": "offer.live.place_bid_label",
+                        "default": "Place your bid"
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "tokens": {
+        "uses": [
+          "--bg",
+          "--surface",
+          "--surface-soft",
+          "--text",
+          "--muted",
+          "--brand-red",
+          "--brand-yellow",
+          "--success",
+          "--warning",
+          "--danger",
+          "--border",
+          "--ss-gap",
+          "--ss-pad",
+          "--shadow-card"
+        ]
+      },
+      "states": {
+        "empty": {
+          "kind": "card",
           "children": [
             {
               "kind": "header",
-              "title": { "key": "auction.momentum.title", "default": "Live auction" },
-              "copy": { "key": "auction.momentum.subtitle", "default": "One clear stage for price, time, and the next bid." },
-              "a11y": { "role": "banner" }
+              "title": {
+                "key": "offer.empty.title",
+                "default": "Now Selling"
+              },
+              "copy": {
+                "key": "offer.empty.product",
+                "default": "Stage Varsity Jacket"
+              }
             },
             {
-              "kind": "card",
-              "padding": { "token": "--ss-pad" },
-              "tokens": { "uses": ["--panel-grad", "--border", "--shadow-card"] },
-              "children": [
-                {
-                  "kind": "grid",
-                  "direction": "horizontal",
-                  "gap": { "token": "--ss-gap" },
-                  "align": "center",
-                  "responsive": { "viewport.narrow": { "direction": "vertical" } },
-                  "children": [
-                    {
-                      "kind": "progress",
-                      "label": { "key": "auction.momentum.timer", "default": "Time left" },
-                      "binding": { "slot": "remainingFraction", "shape": "AuctionCountdown" },
-                      "a11y": { "role": "timer", "ariaLabel": { "key": "auction.momentum.timer_label", "default": "Auction time remaining" }, "ariaLive": "off" }
-                    },
-                    {
-                      "kind": "stack",
-                      "direction": "vertical",
-                      "align": "start",
-                      "children": [
-                        { "kind": "text", "copy": { "key": "auction.momentum.current_bid", "default": "Current bid" } },
-                        { "kind": "heading", "copy": { "key": "auction.momentum.price", "default": "$142.00" }, "binding": { "slot": "currentPrice", "shape": "Money" } },
-                        { "kind": "badge", "copy": { "key": "auction.momentum.call", "default": "12 bids" }, "binding": { "slot": "closingCall", "shape": "AuctionClosingCall" }, "a11y": { "role": "status", "ariaLive": "polite" } }
-                      ]
-                    },
-                    {
-                      "kind": "list",
-                      "label": { "key": "auction.momentum.recent_bids", "default": "Recent bids" },
-                      "binding": { "slot": "recentBids", "repeats": true, "shape": "AuctionBid" },
-                      "item": {
-                        "kind": "stack",
-                        "direction": "horizontal",
-                        "justify": "space-between",
-                        "children": [
-                          { "kind": "text", "binding": { "slot": "bidderDisplayName", "shape": "Text" } },
-                          { "kind": "text", "binding": { "slot": "bidAmount", "shape": "Money" } }
-                        ]
-                      },
-                      "emptyState": { "kind": "text", "copy": { "key": "auction.momentum.no_bids", "default": "No bids yet" } }
-                    }
-                  ]
-                },
-                { "kind": "banner", "copy": { "key": "auction.momentum.leader", "default": "You’re leading at $142.00." }, "binding": { "slot": "leaderMessage", "shape": "AuctionLeaderMessage" }, "a11y": { "role": "status", "ariaLive": "polite" } },
-                {
-                  "kind": "form",
-                  "direction": "horizontal",
-                  "children": [
-                    { "kind": "input", "label": { "key": "auction.momentum.bid_label", "default": "Your bid" }, "placeholder": { "key": "auction.momentum.bid_placeholder", "default": "147.00" }, "binding": { "slot": "bidDraft", "shape": "CurrencyInput" }, "interactions": ["changeBid"], "a11y": { "role": "textbox", "ariaLabel": { "key": "auction.momentum.bid_input_label", "default": "Bid amount in dollars" }, "ariaDescribedBy": "auction-momentum-help" } },
-                    { "kind": "button", "label": { "key": "auction.momentum.place_bid", "default": "Place bid" }, "interactions": ["submitBid"], "a11y": { "role": "button", "ariaLabel": { "key": "auction.momentum.place_bid_label", "default": "Place your bid" } } }
-                  ]
-                }
-              ]
-            }
-          ]
-        },
-        "tokens": { "uses": ["--bg", "--surface", "--text", "--muted", "--brand-red", "--brand-yellow", "--on-brand-yellow", "--success", "--danger", "--border", "--panel-grad", "--ss-gap", "--ss-pad", "--shadow-card"] },
-        "states": {
-          "loading": { "kind": "spinner", "label": { "key": "auction.momentum.state.loading", "default": "Checking the auction stage…" }, "a11y": { "role": "status", "ariaLive": "polite" } },
-          "empty": { "kind": "empty-state", "copy": { "key": "auction.momentum.state.empty", "default": "No auction is live yet. Stay in the room—the panel updates when the seller starts one." }, "a11y": { "role": "status", "ariaLive": "polite" } },
-          "settling": { "kind": "banner", "copy": { "key": "auction.momentum.state.settling", "default": "Bidding closed. Confirming the winner from the server." }, "a11y": { "role": "status", "ariaLive": "polite" } },
-          "closed": { "kind": "banner", "copy": { "key": "auction.momentum.state.closed", "default": "Sold. The confirmed winner can continue to checkout." }, "a11y": { "role": "status", "ariaLive": "polite" } },
-          "error": { "kind": "banner", "a11y": { "role": "alert", "ariaLive": "assertive" }, "children": [{ "kind": "text", "copy": { "key": "auction.momentum.state.error", "default": "The auction could not be refreshed." } }, { "kind": "button", "label": { "key": "auction.momentum.action.retry", "default": "Try again" }, "interactions": ["retry"], "a11y": { "role": "button", "ariaLabel": { "key": "auction.momentum.action.retry_label", "default": "Retry loading the auction" } } }] }
-        },
-        "a11y": { "landmark": "region", "headingLevel": 3 }
-      }
-    },
-    {
-      "id": "watch-dock",
-      "name": "Watch Dock",
-      "thesis": "Keep the stream dominant while a compact bid tray stays reachable at the bottom of the stage.",
-      "bestFor": "High-energy rooms where viewers should never scroll away from the video to bid.",
-      "tradeoff": "A sticky control needs careful collision handling with mobile checkout and browser chrome.",
-      "ir": {
-        "irVersion": "0.1",
-        "surface": "sidestage-watch-auction-watch-dock",
-        "ecosystem": "react-tailwind",
-        "layout": {
-          "kind": "stack",
-          "direction": "vertical",
-          "gap": { "token": "--ss-gap" },
-          "children": [
-            { "kind": "header", "title": { "key": "auction.dock.title", "default": "Watch dock" }, "copy": { "key": "auction.dock.subtitle", "default": "Keep the stream dominant while active bid controls stay within reach." }, "a11y": { "role": "banner" } },
+              "kind": "badge",
+              "copy": {
+                "key": "offer.empty.stock",
+                "default": "6 available"
+              },
+              "binding": {
+                "slot": "availableQuantity",
+                "shape": "InventoryCount"
+              }
+            },
             {
-              "kind": "card",
-              "padding": { "token": "--ss-pad" },
-              "tokens": { "uses": ["--surface-raised", "--border-strong", "--shadow-float"] },
-              "responsive": { "viewport.narrow": { "direction": "vertical" } },
-              "children": [
-                {
-                  "kind": "stack",
-                  "direction": "horizontal",
-                  "align": "center",
-                  "justify": "space-between",
-                  "gap": { "token": "--ss-gap" },
-                  "responsive": { "viewport.narrow": { "direction": "vertical", "align": "stretch" } },
-                  "children": [
-                    { "kind": "heading", "copy": { "key": "auction.dock.item", "default": "Stage Varsity Jacket" }, "binding": { "slot": "productTitle", "shape": "Text" } },
-                    { "kind": "progress", "label": { "key": "auction.dock.time", "default": "0:18 left" }, "binding": { "slot": "remainingFraction", "shape": "AuctionCountdown" }, "a11y": { "role": "timer", "ariaLabel": { "key": "auction.dock.timer_label", "default": "Eighteen seconds left" }, "ariaLive": "off" } },
-                    { "kind": "heading", "copy": { "key": "auction.dock.price", "default": "$142.00" }, "binding": { "slot": "currentPrice", "shape": "Money" } },
-                    { "kind": "text", "copy": { "key": "auction.dock.leader", "default": "You’re leading" }, "binding": { "slot": "leaderMessage", "shape": "AuctionLeaderMessage" }, "a11y": { "role": "status", "ariaLive": "polite" } },
-                    { "kind": "input", "label": { "key": "auction.dock.bid_label", "default": "Your bid" }, "placeholder": { "key": "auction.dock.bid_placeholder", "default": "147.00" }, "binding": { "slot": "bidDraft", "shape": "CurrencyInput" }, "interactions": ["changeBid"], "a11y": { "role": "textbox", "ariaLabel": { "key": "auction.dock.bid_input_label", "default": "Bid amount in dollars" }, "ariaDescribedBy": "auction-dock-help" } },
-                    { "kind": "button", "label": { "key": "auction.dock.place_bid", "default": "Place bid" }, "interactions": ["submitBid"], "a11y": { "role": "button", "ariaLabel": { "key": "auction.dock.place_bid_label", "default": "Place your bid" } } }
-                  ]
-                },
-                { "kind": "link", "label": { "key": "auction.dock.show_activity", "default": "Show all bids" }, "interactions": ["openBidHistory"], "a11y": { "role": "link", "ariaLabel": { "key": "auction.dock.show_activity_label", "default": "Show full auction bid history" } } }
-              ]
-            }
-          ]
-        },
-        "tokens": { "uses": ["--bg", "--surface-raised", "--text", "--muted", "--brand-red", "--brand-yellow", "--success", "--border-strong", "--ss-gap", "--ss-pad", "--shadow-float"] },
-        "states": {
-          "loading": { "kind": "spinner", "label": { "key": "auction.dock.state.loading", "default": "Checking the auction stage…" }, "a11y": { "role": "status", "ariaLive": "polite" } },
-          "settling": { "kind": "banner", "copy": { "key": "auction.dock.state.settling", "default": "Bidding closed. Confirming the winner from the server." }, "a11y": { "role": "status", "ariaLive": "polite" } },
-          "closed": { "kind": "banner", "copy": { "key": "auction.dock.state.closed", "default": "Sold. The confirmed winner can continue to checkout." }, "a11y": { "role": "status", "ariaLive": "polite" } },
-          "error": { "kind": "banner", "a11y": { "role": "alert", "ariaLive": "assertive" }, "children": [{ "kind": "text", "copy": { "key": "auction.dock.state.error", "default": "The auction could not be refreshed." } }, { "kind": "button", "label": { "key": "auction.dock.action.retry", "default": "Try again" }, "interactions": ["retry"], "a11y": { "role": "button", "ariaLabel": { "key": "auction.dock.action.retry_label", "default": "Retry loading the auction" } } }] }
-        },
-        "a11y": { "landmark": "region", "headingLevel": 3 }
-      }
-    },
-    {
-      "id": "transparent-room",
-      "name": "Transparent Room",
-      "thesis": "Explain every state transition so trust grows with the bid: accepted price, leader, transport, and server-confirmed outcome.",
-      "bestFor": "Rooms where bidding confidence and post-close clarity matter more than maximal compactness.",
-      "tradeoff": "The ledger adds information density and needs progressive disclosure on narrow screens.",
-      "ir": {
-        "irVersion": "0.1",
-        "surface": "sidestage-watch-auction-transparent-room",
-        "ecosystem": "react-tailwind",
-        "layout": {
-          "kind": "stack",
-          "direction": "vertical",
-          "gap": { "token": "--ss-gap" },
-          "children": [
-            { "kind": "header", "title": { "key": "auction.room.title", "default": "Transparent room" }, "copy": { "key": "auction.room.subtitle", "default": "Make every state change legible: price, leader, transport, and server-confirmed outcome." }, "a11y": { "role": "banner" } },
+              "kind": "heading",
+              "copy": {
+                "key": "offer.empty.price",
+                "default": "$96.00"
+              },
+              "binding": {
+                "slot": "unitPrice",
+                "shape": "Money"
+              }
+            },
             {
-              "kind": "grid",
-              "direction": "horizontal",
-              "gap": { "token": "--ss-gap" },
-              "responsive": { "viewport.narrow": { "direction": "vertical" } },
-              "children": [
-                {
-                  "kind": "card",
-                  "padding": { "token": "--ss-pad" },
-                  "children": [
-                    { "kind": "heading", "copy": { "key": "auction.room.price", "default": "$142.00" }, "binding": { "slot": "currentPrice", "shape": "Money" } },
-                    { "kind": "progress", "label": { "key": "auction.room.time", "default": "0:18 left" }, "binding": { "slot": "remainingFraction", "shape": "AuctionCountdown" }, "a11y": { "role": "timer", "ariaLabel": { "key": "auction.room.timer_label", "default": "Auction time remaining" }, "ariaLive": "off" } },
-                    { "kind": "banner", "copy": { "key": "auction.room.leader", "default": "Morgan leads at $142.00." }, "binding": { "slot": "leaderMessage", "shape": "AuctionLeaderMessage" }, "a11y": { "role": "status", "ariaLive": "polite" } },
-                    { "kind": "input", "label": { "key": "auction.room.bid_label", "default": "Your bid" }, "placeholder": { "key": "auction.room.bid_placeholder", "default": "147.00" }, "binding": { "slot": "bidDraft", "shape": "CurrencyInput" }, "interactions": ["changeBid"], "a11y": { "role": "textbox", "ariaLabel": { "key": "auction.room.bid_input_label", "default": "Bid amount in dollars" }, "ariaDescribedBy": "auction-room-help" } },
-                    { "kind": "button", "label": { "key": "auction.room.place_bid", "default": "Place $147 bid" }, "interactions": ["submitBid"], "a11y": { "role": "button", "ariaLabel": { "key": "auction.room.place_bid_label", "default": "Place a one hundred forty-seven dollar bid" } } }
-                  ]
-                },
-                {
-                  "kind": "card",
-                  "padding": { "token": "--ss-pad" },
-                  "children": [
-                    { "kind": "header", "title": { "key": "auction.room.ledger", "default": "Room ledger" }, "copy": { "key": "auction.room.ledger_subtitle", "default": "Newest accepted bid first. Server confirmation decides the winner." } },
-                    { "kind": "list", "label": { "key": "auction.room.recent_bids", "default": "Recent accepted bids" }, "binding": { "slot": "recentBids", "repeats": true, "shape": "AuctionBid" }, "item": { "kind": "stack", "direction": "horizontal", "justify": "space-between", "children": [{ "kind": "text", "binding": { "slot": "bidderDisplayName", "shape": "Text" } }, { "kind": "text", "binding": { "slot": "bidAmount", "shape": "Money" } }] }, "emptyState": { "kind": "text", "copy": { "key": "auction.room.no_bids", "default": "No accepted bids yet" } } },
-                    { "kind": "badge", "copy": { "key": "auction.room.transport", "default": "Realtime" }, "binding": { "slot": "syncState", "shape": "AuctionSyncState" }, "a11y": { "role": "status", "ariaLabel": { "key": "auction.room.transport_aria", "default": "Auction room sync status" } } }
-                  ]
+              "kind": "button",
+              "label": {
+                "key": "offer.empty.hold",
+                "default": "Hold item"
+              },
+              "interactions": [
+                "holdItem"
+              ],
+              "a11y": {
+                "role": "button",
+                "ariaLabel": {
+                  "key": "offer.empty.hold_label",
+                  "default": "Hold the Stage Varsity Jacket"
                 }
-              ]
+              }
             }
-          ]
+          ],
+          "a11y": {
+            "role": "region",
+            "ariaLabel": {
+              "key": "offer.empty.region",
+              "default": "Now selling offer"
+            }
+          }
         },
-        "tokens": { "uses": ["--bg", "--surface", "--text", "--muted", "--brand-red", "--brand-yellow", "--success", "--warning", "--danger", "--border", "--ss-gap", "--ss-pad", "--shadow-card"] },
-        "states": {
-          "loading": { "kind": "spinner", "label": { "key": "auction.room.state.loading", "default": "Checking the auction stage…" }, "a11y": { "role": "status", "ariaLive": "polite" } },
-          "settling": { "kind": "banner", "copy": { "key": "auction.room.state.settling", "default": "Bidding closed. Confirming the winner from the server." }, "a11y": { "role": "status", "ariaLive": "polite" } },
-          "closed": { "kind": "banner", "copy": { "key": "auction.room.state.closed", "default": "Sold. The confirmed winner can continue to checkout." }, "a11y": { "role": "status", "ariaLive": "polite" } },
-          "error": { "kind": "banner", "a11y": { "role": "alert", "ariaLive": "assertive" }, "children": [{ "kind": "text", "copy": { "key": "auction.room.state.error", "default": "The auction could not be refreshed." } }, { "kind": "button", "label": { "key": "auction.room.action.retry", "default": "Try again" }, "interactions": ["retry"], "a11y": { "role": "button", "ariaLabel": { "key": "auction.room.action.retry_label", "default": "Retry loading the auction" } } }] }
+        "live": {
+          "kind": "banner",
+          "copy": {
+            "key": "offer.live.state",
+            "default": "Auction live. Bid controls are active."
+          },
+          "a11y": {
+            "role": "status",
+            "ariaLive": "polite"
+          }
         },
-        "a11y": { "landmark": "region", "headingLevel": 3 }
+        "settling": {
+          "kind": "banner",
+          "copy": {
+            "key": "offer.settling.state",
+            "default": "Bidding closed. Confirming the winner from the server."
+          },
+          "a11y": {
+            "role": "status",
+            "ariaLive": "polite"
+          }
+        },
+        "closed": {
+          "kind": "banner",
+          "copy": {
+            "key": "offer.closed.state",
+            "default": "Sold to Morgan for $142.00."
+          },
+          "a11y": {
+            "role": "status",
+            "ariaLive": "polite"
+          }
+        }
+      },
+      "a11y": {
+        "landmark": "region",
+        "headingLevel": 3
       }
     }
-  ]
+  }
 }
