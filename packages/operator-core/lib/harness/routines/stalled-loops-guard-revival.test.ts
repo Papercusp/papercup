@@ -46,6 +46,29 @@ function fakeSql(rows: Array<{ id: string; target_owner_id: string }>) {
   }) as never;
 }
 
+function strictArraySql(rows: Array<{ id: string; target_owner_id: string }>) {
+  const array = vi.fn((values: unknown[]) => ({ values }));
+  const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+    if (values.some(Array.isArray)) throw new Error('Received an instance of Array');
+    const statement = strings.join('?');
+    if (/FROM harness_shared\.routines/i.test(statement)) return Promise.resolve(rows);
+    if (/FROM unnest/i.test(statement) && /harness_shared\.tool_invocations/i.test(statement)) {
+      return Promise.resolve([
+        {
+          owner_id: 'su-live',
+          calls: 17,
+          distinct_tools: 15,
+          ok_calls: 17,
+          last_call_at: '2026-08-09T17:08:00.000Z',
+        },
+      ]);
+    }
+    return Promise.resolve([]);
+  }) as unknown as { (...args: unknown[]): Promise<unknown[]>; array: typeof array };
+  sql.array = array;
+  return { sql: sql as never, array };
+}
+
 function status(overrides: Partial<LoopStatus> & { turnsStalled: boolean }): LoopStatus {
   return {
     name: 'loop-x',
@@ -222,6 +245,27 @@ describe('sweepStalledLoops — liveness veto (WI-37546: 18 of 19 disarms on 202
       deps({ getStatuses, autoPause, readOwnerToolActivity }),
     );
 
+    expect(res.vetoedByToolActivity).toEqual(['su-live']);
+    expect(res.paused).toBe(0);
+    expect(autoPause).not.toHaveBeenCalled();
+  });
+
+  it('binds the default activity reader arrays through postgres-js, preserving the live-owner veto', async () => {
+    const { sql, array } = strictArraySql([{ id: 'rt1', target_owner_id: 'su-live' }]);
+    const getStatuses = vi.fn(async () => new Map([['su-live', status({ turnsStalled: true })]]));
+    const autoPause = vi.fn<AutoPauseFn>(async () => {});
+
+    const res = await sweepStalledLoops(
+      { sql, workspaceId: 'ws' },
+      deps({
+        getStatuses,
+        autoPause,
+        resolveOwnerWorkspaces: vi.fn(async () => new Map<string, string>()),
+      }),
+    );
+
+    expect(array).toHaveBeenNthCalledWith(1, ['su-live']);
+    expect(array).toHaveBeenNthCalledWith(2, ['2026-08-09T17:07:00.000Z']);
     expect(res.vetoedByToolActivity).toEqual(['su-live']);
     expect(res.paused).toBe(0);
     expect(autoPause).not.toHaveBeenCalled();

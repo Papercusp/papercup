@@ -536,6 +536,8 @@ export async function sweepStalledLoops(
     (async (probes: Array<{ ownerId: string; sinceIso: string }>, o: { sql: Sql }) => {
       const out = new Map<string, OwnerToolActivity>();
       if (probes.length === 0) return out;
+      const ownerIds = probes.map((p) => p.ownerId);
+      const sinceIsos = probes.map((p) => p.sinceIso);
       const rows = await o.sql<
         Array<{
           owner_id: string;
@@ -550,9 +552,8 @@ export async function sweepStalledLoops(
                count(DISTINCT t.tool_name)::int                   AS distinct_tools,
                count(*) FILTER (WHERE t.status = 'ok')::int        AS ok_calls,
                max(t.invoked_at)::text                            AS last_call_at
-          FROM unnest(${probes.map((p) => p.ownerId)}::text[], ${probes.map(
-            (p) => p.sinceIso,
-          )}::timestamptz[]) AS b(owner_id, since)
+          FROM unnest(${o.sql.array(ownerIds)}::text[], ${o.sql.array(sinceIsos)}::timestamptz[])
+               AS b(owner_id, since)
           JOIN harness_shared.tool_invocations t
             ON t.coord_owner_id = b.owner_id
            AND t.invoked_at > b.since
