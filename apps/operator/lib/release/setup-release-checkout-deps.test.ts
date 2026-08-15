@@ -107,6 +107,24 @@ describe('setup-release-checkout.sh need_node_modules() — deploy staleness heu
     expect(needsCopy(int, rel)).toBe(false);
   });
 
+  it('WI-39243: copies when an in-pin package-local node_modules is missing from release', () => {
+    const packagePath = 'libs/generic/sse';
+    mkdirSync(join(int, packagePath, 'node_modules/typescript'), { recursive: true });
+    writeFileSync(join(int, packagePath, 'package.json'), JSON.stringify({ name: '@papercusp/sse' }));
+    mkdirSync(join(rel, packagePath), { recursive: true });
+    writeFileSync(join(rel, packagePath, 'package.json'), JSON.stringify({ name: '@papercusp/sse' }));
+
+    expect(needsCopy(int, rel)).toBe(true);
+  });
+
+  it('does NOT copy a package-local node_modules for a workspace absent from an older release pin', () => {
+    const packagePath = 'libs/generic/sse';
+    mkdirSync(join(int, packagePath, 'node_modules/typescript'), { recursive: true });
+    writeFileSync(join(int, packagePath, 'package.json'), JSON.stringify({ name: '@papercusp/sse' }));
+
+    expect(needsCopy(int, rel)).toBe(false);
+  });
+
   it('copies when a new SCOPED workspace package appears in the integration tree', () => {
     addPkg(int, '@papercusp/new-package');
     expect(needsCopy(int, rel)).toBe(true);
