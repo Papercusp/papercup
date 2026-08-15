@@ -43,4 +43,25 @@ describe('raw wait producer-health adapter', () => {
     });
     expect(snapshot).toHaveBeenCalledWith('papercusp', { includeActiveRun: true });
   });
+
+  it('rejects an unknown pipeline instead of registering a cross-wired verified wait', async () => {
+    snapshot.mockResolvedValueOnce({
+      slug: 'not-a-pipeline',
+      generatedAtMs: 9_000,
+      routines: { gitSync: null, greenCheckpoint: null, releaseTrigger: null },
+      activeRun: null,
+      recent: [],
+    });
+
+    await expect(
+      resolveProducerHealthCertificate({
+        producerHealth: {
+          kind: 'green-checkpoint',
+          pipeline: 'not-a-pipeline',
+          expected_cadence_sec: 120,
+        },
+        subscriberId: 'su-waiter',
+      }),
+    ).rejects.toThrow('unknown green-checkpoint pipeline: not-a-pipeline');
+  });
 });

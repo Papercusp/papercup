@@ -30,6 +30,9 @@ export async function resolveProducerHealthCertificate(input: {
   const expectedCadenceMs = producer.expected_cadence_sec * 1_000;
   const verificationDeadlineMs = issuedAtMs + (input.timeoutSec == null ? expectedCadenceMs : input.timeoutSec * 1_000);
   const snapshot = await gitPipelineSnapshot(producer.pipeline, { includeActiveRun: true });
+  if (!snapshot.routines.greenCheckpoint && !snapshot.activeRun) {
+    throw new Error(`producer health — unknown green-checkpoint pipeline: ${producer.pipeline}`);
+  }
   return checkpointProducerCertificate({
     pipeline: producer.pipeline,
     candidateSha: producer.candidate_sha,
