@@ -317,7 +317,17 @@ export function kickoffPositionalArgs(res: any, args: any): any[];
  * quotes included). Pure — exported for tests.
  */
 export function resolveKickoffText(args: any, env?: NodeJS.ProcessEnv): any;
-/** Finish a fresh role argv with its tagged scripted first turn, when present. */
+/**
+ * Finish a fresh ROLE launch argv with the same scripted first-turn seam used by
+ * fresh SU launches. Role launches used to stop after flags/passthrough, so a
+ * headless acceptance judge could inherit PAPERCUSP_KICKOFF_PROMPT yet open at
+ * an empty prompt forever. Keep the positional prompt last (after every flag),
+ * tag it as machine-origin, and expose whether a turn was actually seeded so
+ * the caller can report the launch honestly. Pure except for the existing
+ * provenance-ledger write performed by tagKickoffProvenance.
+ *
+ * @param {any[]} launchArgs
+ */
 export function finalizeFreshRoleArgs(backend: any, launchArgs: any[], res: any, args: any, env?: NodeJS.ProcessEnv): {
     args: any[];
     kickoffSeeded: boolean;

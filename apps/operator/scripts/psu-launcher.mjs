@@ -1153,6 +1153,8 @@ export function resolveKickoffText(args, env = process.env) {
  * tag it as machine-origin, and expose whether a turn was actually seeded so
  * the caller can report the launch honestly. Pure except for the existing
  * provenance-ledger write performed by tagKickoffProvenance.
+ *
+ * @param {any[]} launchArgs
  */
 export function finalizeFreshRoleArgs(backend, launchArgs, res, args, env = process.env) {
   const baseArgs = [
