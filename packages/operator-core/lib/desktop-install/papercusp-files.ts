@@ -68,8 +68,8 @@ export interface InstallPaths {
   psuPath: string;
   /** ~/.papercusp/bin/ptool — defineTool CLI shim → the bundled ptool.mjs. */
   ptoolPath: string;
-  /** ~/.papercusp/bin/papercusp — `papercusp <setup|tutorial>` dispatcher (onboard = alias of setup) →
-   *  the bundled onboard.mjs concierge (agent-first-onboarding P-014). */
+  /** ~/.papercusp/bin/papercusp — installed CLI dispatcher for onboarding and
+   *  the standalone Project History generator. */
   papercuspCliPath: string;
   /** ~/.papercusp/bin/psu-sentinel — the 🛡 Sentinel dock pane launcher (EI-9935-adjacent
    *  WI-4244 fix): registers the pane for voice-transcript routing, applies a per-session
@@ -134,6 +134,8 @@ export interface InstallResult extends InstallPaths {
   ptoolLauncherSource: string;
   /** Resolved onboarding-concierge launcher the dispatcher points at. Empty when not found. */
   onboardLauncherSource: string;
+  /** Resolved standalone project-history launcher. Empty when not packaged. */
+  projectHistoryLauncherSource: string;
   /** Shell-profile files updated to put ~/.papercusp/bin on PATH (empty if none). */
   pathProfilesUpdated: string[];
   /** The CC hook scripts copied to ~/.papercusp/hooks/cc/ this call (empty when the
@@ -1430,13 +1432,21 @@ export async function writeShim(
  * Write the `papercusp` end-user dispatcher shim (agent-first-onboarding
  * P-014): `papercusp setup` (alias `onboard`) runs the terminal onboarding
  * concierge, `papercusp tutorial` re-opens the guided tutorial (concierge
- * --tutorial). Both reach the same unified shell (owner batch #4/#5).
+ * --tutorial), and `papercusp project-history` runs the standalone generator.
+ * The onboarding commands reach the same unified shell (owner batch #4/#5).
  * Same node-resolution rules as writeShim. The Linux .deb writes a system
  * twin at /usr/bin/papercusp (deb/postinstall.sh); this per-user copy covers
  * macOS + dev boxes, where installPapercuspFiles is the install path.
  */
-async function writeDispatcherShim(shimPath: string, launcherPath: string): Promise<boolean> {
+async function writeDispatcherShim(
+  shimPath: string,
+  launcherPath: string,
+  projectHistoryLauncherPath?: string,
+): Promise<boolean> {
   const nodeCmd = await resolveShimNode(launcherPath);
+  const projectHistoryCase = projectHistoryLauncherPath
+    ? `  project-history) shift; exec ${JSON.stringify(nodeCmd)} ${JSON.stringify(projectHistoryLauncherPath)} "$@" ;;\n`
+    : '';
   const body =
     '#!/usr/bin/env bash\n' +
     '# papercusp CLI dispatcher — managed by Papercusp.app (installPapercuspFiles).\n' +
@@ -1450,10 +1460,12 @@ async function writeDispatcherShim(shimPath: string, launcherPath: string): Prom
     `  setup)    shift; exec ${JSON.stringify(nodeCmd)} ${JSON.stringify(launcherPath)} --tab=setup "$@" ;;\n` +
     `  tutorial) shift; exec ${JSON.stringify(nodeCmd)} ${JSON.stringify(launcherPath)} --tutorial "$@" ;;\n` +
     `  onboard)  shift; exec ${JSON.stringify(nodeCmd)} ${JSON.stringify(launcherPath)} "$@" ;;\n` +
+    projectHistoryCase +
     '  *)\n' +
-    '    echo "usage: papercusp <setup|tutorial>"\n' +
+    '    echo "usage: papercusp <setup|tutorial|project-history>"\n' +
     '    echo "  setup     open the Tutorial & Setup shell on the Setup tab"\n' +
     '    echo "  tutorial  open the Tutorial & Setup shell on the Tutorial tab"\n' +
+    '    echo "  project-history  generate a versioned project History artifact"\n' +
     '    exit 2 ;;\n' +
     'esac\n';
   await fs.writeFile(shimPath, body, { mode: 0o755 });
@@ -2691,6 +2703,10 @@ export async function installPapercuspFiles(opts: InstallOpts = {}): Promise<Ins
     'onboard launcher',
     cliLauncherCandidates(operatorAppRoot, explicitRoot, ['onboard.mjs', 'onboard-launcher.mjs']),
   );
+  const projectHistoryLauncherSource = await resolveSource(
+    'project-history launcher',
+    cliLauncherCandidates(operatorAppRoot, explicitRoot, ['project-history.mjs']),
+  );
 
   const paths = resolveInstallPaths(home);
 
@@ -2794,7 +2810,11 @@ export async function installPapercuspFiles(opts: InstallOpts = {}): Promise<Ins
       )
     : false;
   const papercuspCliWritten = onboardLauncherSource
-    ? await writeDispatcherShim(paths.papercuspCliPath, onboardLauncherSource)
+    ? await writeDispatcherShim(
+        paths.papercuspCliPath,
+        onboardLauncherSource,
+        projectHistoryLauncherSource ?? undefined,
+      )
     : false;
   // WI-4244: the 🛡 Sentinel dock pane's launcher shim. Only when `psu` itself
   // landed this pass — sentinel execs the psu shim by its resolved path.
@@ -2886,6 +2906,8 @@ export async function installPapercuspFiles(opts: InstallOpts = {}): Promise<Ins
     psuLauncherSource: psuShimWritten && psuLauncherSource ? psuLauncherSource : '',
     ptoolLauncherSource: ptoolShimWritten && ptoolLauncherSource ? ptoolLauncherSource : '',
     onboardLauncherSource: papercuspCliWritten && onboardLauncherSource ? onboardLauncherSource : '',
+    projectHistoryLauncherSource:
+      papercuspCliWritten && projectHistoryLauncherSource ? projectHistoryLauncherSource : '',
     pathProfilesUpdated,
     claudeHooksInstalled: claudeHooks.installed,
     injectionHooksInstalled: injectionHooks,

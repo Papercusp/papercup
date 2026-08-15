@@ -280,12 +280,16 @@ describe('installPapercuspFiles', () => {
     expect(result.papercuspCliWritten).toBe(false);
     expect(result.onboardLauncherSource).toBe('');
 
-    // Bundled concierge present → dispatcher lands with onboard/tutorial subcommands.
+    // Bundled concierge + generator present → dispatcher lands with onboarding
+    // and the portable Project History subcommand.
     await fs.writeFile(path.join(tmpAppRoot, 'scripts', 'onboard.mjs'), '// bundled concierge\n');
+    await fs.writeFile(path.join(tmpAppRoot, 'scripts', 'project-history.mjs'), '// bundled generator\n');
     result = await installPapercuspFiles({ home: tmpHome, operatorAppRoot: tmpAppRoot });
     expect(result.papercuspCliWritten).toBe(true);
     const launcher = path.join(tmpAppRoot, 'scripts', 'onboard.mjs');
+    const projectHistoryLauncher = path.join(tmpAppRoot, 'scripts', 'project-history.mjs');
     expect(result.onboardLauncherSource).toBe(launcher);
+    expect(result.projectHistoryLauncherSource).toBe(projectHistoryLauncher);
     expect(result.papercuspCliPath).toBe(path.join(tmpHome, '.papercusp', 'bin', 'papercusp'));
     const cli = await fs.readFile(result.papercuspCliPath, 'utf8');
     expect(cli).toMatch(/^#!\/usr\/bin\/env bash\n/);
@@ -300,7 +304,10 @@ describe('installPapercuspFiles', () => {
     expect(cli).toContain(
       `onboard)  shift; exec ${JSON.stringify(process.execPath)} ${JSON.stringify(launcher)} "$@" ;;`,
     );
-    expect(cli).toContain('usage: papercusp <setup|tutorial>');
+    expect(cli).toContain(
+      `project-history) shift; exec ${JSON.stringify(process.execPath)} ${JSON.stringify(projectHistoryLauncher)} "$@" ;;`,
+    );
+    expect(cli).toContain('usage: papercusp <setup|tutorial|project-history>');
     expect((await fs.stat(result.papercuspCliPath)).mode & 0o777).toBe(0o755);
   });
 
