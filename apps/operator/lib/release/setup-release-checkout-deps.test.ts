@@ -251,6 +251,58 @@ describe('setup-release-checkout.sh sync_one_node_modules() — atomic node_modu
 });
 
 /**
+ * WI-39301: a co-hosted pnpm app's copied root package symlinks point through
+ * node_modules/.pnpm. The old unconditional "debris" cleanup removed that source-backed
+ * virtual store after the atomic copy, leaving present-by-name but dangling packages and
+ * failing the checkpoint before tests (TypeScript MODULE_NOT_FOUND). Exercise the shipped
+ * cleanup function directly so npm-only debris is still pruned without breaking pnpm apps.
+ */
+describe('setup-release-checkout.sh prune_stale_pnpm_store() — package-manager-aware cleanup', () => {
+  function prunePnpmStore(integrationRoot: string, releaseRoot: string): void {
+    const wrapper = [
+      'set -euo pipefail',
+      'log() { :; }',
+      'source <(sed -n "/^prune_stale_pnpm_store()/,/^}/p" "$SETUP_SCRIPT")',
+      'prune_stale_pnpm_store',
+    ].join('\n');
+    const r = spawnSync('bash', ['-c', wrapper], {
+      env: {
+        ...process.env,
+        SETUP_SCRIPT: SCRIPT_PATH,
+        INTEGRATION_ROOT: integrationRoot,
+        RELEASE_ROOT: releaseRoot,
+      },
+      encoding: 'utf8',
+    });
+    if (r.status !== 0) {
+      throw new Error(`prune_stale_pnpm_store failed (${r.status}): ${r.stderr || r.stdout}`);
+    }
+  }
+
+  it('preserves a copied .pnpm store when the integration source is pnpm-backed', () => {
+    const sourceTsc = join(int, 'node_modules/.pnpm/typescript@5.9.3/node_modules/typescript/bin/tsc');
+    const releaseTsc = join(rel, 'node_modules/.pnpm/typescript@5.9.3/node_modules/typescript/bin/tsc');
+    mkdirSync(join(sourceTsc, '..'), { recursive: true });
+    mkdirSync(join(releaseTsc, '..'), { recursive: true });
+    writeFileSync(sourceTsc, 'source');
+    writeFileSync(releaseTsc, 'release');
+
+    prunePnpmStore(int, rel);
+
+    expect(readFileSync(releaseTsc, 'utf8')).toBe('release');
+  });
+
+  it('removes a release-only .pnpm store when the integration source has none', () => {
+    const staleStore = join(rel, 'node_modules/.pnpm/orphan');
+    mkdirSync(staleStore, { recursive: true });
+
+    prunePnpmStore(int, rel);
+
+    expect(existsSync(join(rel, 'node_modules/.pnpm'))).toBe(false);
+  });
+});
+
+/**
  * rebuild_stale_native_addons() — native-addon ABI guard (infra-fail-fast P-003 / WI-349).
  *
  * The 2026-06-19 :3070 outage: papercup-release's better-sqlite3 was built for

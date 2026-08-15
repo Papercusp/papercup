@@ -454,18 +454,23 @@ else
 fi
 
 # 3a½. pnpm-debris self-heal ---------------------------------------------------
-# npm never creates node_modules/.pnpm — its presence is ALWAYS debris from a stray
-# pnpm install (banned; apps/operator/lib/no-pnpm-hijack.test.ts is the loud guard).
-# In THIS tree it is doubly wrong: a release/checkpoint tree never runs installs, and
-# the cp -al sync above adds/overwrites but never DELETES extraneous entries — so a
-# leftover store lingers forever. A 2026-05-13 orphaned .pnpm in papercup-checkpoint
-# red-pinned the green gate for ~7h on 2026-07-12 (no-pnpm-hijack failing in the gate
-# while the integration tree was clean). Self-heal it here so the class cannot recur:
-# a throwaway/deploy tree simply never carries a virtual store.
-if [ -d "$RELEASE_ROOT/node_modules/.pnpm" ]; then
-  log "removing stray node_modules/.pnpm (pnpm debris — this tree is npm-only; see no-pnpm-hijack.test.ts)"
-  rm -rf "$RELEASE_ROOT/node_modules/.pnpm"
-fi
+# A release/checkpoint tree never runs installs, so a .pnpm virtual store that is
+# absent from the integration source is stale debris and must not linger forever.
+# But co-hosted app harnesses may legitimately use pnpm: their top-level package
+# symlinks resolve THROUGH node_modules/.pnpm. Removing a store that was copied from
+# such an integration tree leaves every symlink present-by-name but dangling (the
+# SideStage TypeScript pre-test red, WI-39301). Preserve source-backed stores; prune
+# only release-only debris. Papercusp's no-pnpm-hijack test remains the policy guard
+# for its own npm-only integration tree.
+prune_stale_pnpm_store() {
+  if [ -d "$RELEASE_ROOT/node_modules/.pnpm" ] && [ ! -d "$INTEGRATION_ROOT/node_modules/.pnpm" ]; then
+    log "removing release-only node_modules/.pnpm (stale pnpm debris absent from integration source)"
+    rm -rf "$RELEASE_ROOT/node_modules/.pnpm"
+  elif [ -d "$RELEASE_ROOT/node_modules/.pnpm" ]; then
+    log "preserving source-backed node_modules/.pnpm virtual store"
+  fi
+}
+prune_stale_pnpm_store
 
 # 3b. Dependency patches (patch-package) -------------------------------------
 # patch-package patches apply at INSTALL time, but this tree never `npm install`s
