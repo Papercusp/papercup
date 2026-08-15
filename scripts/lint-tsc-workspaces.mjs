@@ -60,8 +60,41 @@ const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
  * The superproject roots. `libs/papercusp` is deliberately ABSENT: it is a git submodule with its
  * own leg (`lint:tsc:papercusp-libs`) and its own stale-pin semantics. Covering it twice would
  * double every compile and report one regression as two.
+ *
+ * ⚠ THE ROOT IS `libs`, NOT `libs/generic` (EI-20549967837064185). Naming the SUBDIRECTORY made
+ * the walk structurally blind to every OTHER libs/* workspace: nine of them — including
+ * `libs/flags`, the feature-flag SSOT, and `libs/papercusp-shared` (imported by 51 files) — were
+ * covered by no gate at all, and were not even reported as invisible, because a root that is
+ * never scanned cannot produce a finding. That is the failure mode this whole leg exists to
+ * prevent, reproduced one level up: a hole in the ROOT LIST is invisible in exactly the way a
+ * hole in a package roster is, and it is worse, because the invisible-set report — the mechanism
+ * that turns "no gate" into a finding — is itself scoped to the roots.
+ *
+ * Widening to `libs` keeps discovery total: a new `libs/<anything>` is walked the day it lands,
+ * with no list to remember to update. Disjointness from the sibling submodule gate is preserved
+ * by SIBLING_GATE_PREFIXES below, which is enforced against the SELECTION rather than against
+ * this array's spelling — a string check on this constant cannot see a root that reaches
+ * libs/papercusp by descent.
  */
-export const DEFAULT_ROOTS = ['apps', 'packages', 'libs/generic'];
+export const DEFAULT_ROOTS = ['apps', 'packages', 'libs'];
+
+/**
+ * Repo-relative prefixes this leg walks INTO but must never SELECT, because another gate already
+ * compiles them (EI-20549967837064185).
+ *
+ * `libs` contains `libs/papercusp`, a git submodule owned by `lint:tsc:papercusp-libs`. Excluding
+ * it HERE — on the selection, by prefix — rather than by keeping the root narrow is what lets the
+ * root stay wide enough to be total. The two mechanisms fail differently and that is the point:
+ * a narrow root silently drops whatever it does not name, while an explicit exclusion is printed
+ * on every run and is asserted by a test, so it cannot go quiet.
+ *
+ * @type {string[]}
+ */
+export const SIBLING_GATE_PREFIXES = ['libs/papercusp'];
+
+/** True when `rel` is owned by a sibling gate (see SIBLING_GATE_PREFIXES). */
+export const ownedBySiblingGate = (rel, prefixes = SIBLING_GATE_PREFIXES) =>
+  prefixes.some((p) => rel === p || rel.startsWith(`${p}/`));
 
 /**
  * Roots where a bare `tsconfig.json` is enough to be GATED, with no `typecheck` script
@@ -76,7 +109,25 @@ export const DEFAULT_ROOTS = ['apps', 'packages', 'libs/generic'];
  * file). Report-only is the correct state for an unmeasured root — it is visible, and it
  * is honest about what has been verified.
  */
-export const PROMOTE_ROOTS = ['libs/generic'];
+export const PROMOTE_ROOTS = ['libs'];
+
+/*
+ * WIDENED FROM 'libs/generic' TO 'libs' ON 2026-08-15 (EI-20549967837064185), and the promotion
+ * discipline above was honoured, not skipped: every libs/* workspace root outside libs/generic
+ * was RUN first, with `node_modules/.bin/tsc --noEmit -p tsconfig.json` in each package dir —
+ * the same command `promoted` issues — before this root was widened.
+ *
+ * MEASURED 2026-08-15, nine workspace roots:
+ *   libs/host-platform 0 · libs/test-config 0 · libs/testing-shell 0   (already clean)
+ *   libs/flags 46 -> 0            37 of the 46 were one missing `"node"` in tsconfig `types`;
+ *                                 the SSOT compiles clean, so it is gated rather than held back
+ *   libs/papercusp-db 0 · libs/papercusp-publish-auth 17 -> 0          (no tsconfig existed at
+ *   libs/papercusp-shared 4 · libs/agent-chat 9                         all; one was written for
+ *                                 each — a package with .ts sources and NO tsconfig is invisible
+ *                                 even to the invisible-set report, which keys on tsconfig.json)
+ *   libs/marketplace-public-ui 6
+ * The three that still fail are held BY NAME in UNTYPECHECKABLE below with those counts.
+ */
 
 /**
  * One deliberate exclusion from this leg.
@@ -112,7 +163,36 @@ export const PROMOTE_ROOTS = ['libs/generic'];
  *
  * @type {Record<string, { detail: string, errors: number, filedAs: string }>}
  */
-export const UNTYPECHECKABLE = {};
+export const UNTYPECHECKABLE = {
+  'libs/agent-chat': {
+    detail:
+      'measured 2026-08-15 the day this package first got a tsconfig at all: 5 TS6133 unused ' +
+      'imports, 2 TS2493 (indexing an empty tuple in a test), 1 TS2352 and 1 TS2322 — the last a ' +
+      'REAL defect at src/useHarnessChatRuntime.ts:174, a `() => void` assigned where ' +
+      '`() => Promise<void>` is required, so a caller awaiting it awaits nothing. Held rather ' +
+      'than hand-fixed because that one is a behaviour question, not a lint. Clear them and ' +
+      'DELETE this entry — that is the whole exit path.',
+    errors: 9,
+    filedAs: 'EI-20549967837064185',
+  },
+  'libs/papercusp-shared': {
+    detail:
+      'measured 2026-08-15, first tsconfig: 4 errors, all in *.test.ts — 2 TS7006 implicit-any ' +
+      'params in chat-stream-resolve.test.ts and 2 TS6133 unused bindings. Trivial, and this ' +
+      'package is imported by 51 files, so it is the highest-value entry here to clear.',
+    errors: 4,
+    filedAs: 'EI-20549967837064185',
+  },
+  'libs/marketplace-public-ui': {
+    detail:
+      'measured 2026-08-15: 6 errors — 2 TS2339/TS2604 pairs where a dynamic `Icon` element ' +
+      'resolves to an empty JSX.IntrinsicElements key, plus 2 TS2322 row-type mismatches in ' +
+      'SnapshotStateTab. Nothing in the tree imports this package (0 import sites), which is ' +
+      'why it drifted unnoticed.',
+    errors: 6,
+    filedAs: 'EI-20549967837064185',
+  },
+};
 
 /**
  * Packages that declare a `typecheck` script but are deliberately NOT run by THIS leg.
@@ -190,7 +270,7 @@ export function groupByRoot(entries) {
  * is what lets `GATE_COVERAGE` reuse it without emitting a word.
  *
  * @param {{repoRoot?: string, roots?: string[], exempt?: Record<string, Exemption>, untypecheckable?: Record<string, {detail: string, errors: number, filedAs: string}>}} [opts]
- * @returns {{presentRoots: string[], absentRoots: string[], packages: any[], promoted: any[], exempted: any[], heldBack: any[], stillInvisible: any[], unreadable: any[]}}
+ * @returns {{presentRoots: string[], absentRoots: string[], packages: any[], promoted: any[], exempted: any[], heldBack: any[], stillInvisible: any[], unreadable: any[], siblingOwned: any[]}}
  */
 export function selectGatedPackages({
   repoRoot = REPO_ROOT,
@@ -207,6 +287,17 @@ export function selectGatedPackages({
     const dir = join(repoRoot, r);
     discovered.push(...discover(dir, 0, repoRoot));
     invisible.push(...discoverInvisible(dir, 0, repoRoot));
+  }
+
+  // Drop what a SIBLING gate owns (EI-20549967837064185). The root is `libs`, which contains the
+  // `libs/papercusp` submodule that `lint:tsc:papercusp-libs` compiles; selecting it here would
+  // double every one of those compiles and report one regression as two. Applied to BOTH walks:
+  // leaving it in `invisible` would be just as wrong, since that population is what promotion
+  // draws from.
+  const ownedElsewhere = (p) => ownedBySiblingGate(p.rel);
+  const siblingOwned = [...discovered, ...invisible].filter(ownedElsewhere);
+  for (const list of [discovered, invisible]) {
+    for (let i = list.length - 1; i >= 0; i -= 1) if (ownedElsewhere(list[i])) list.splice(i, 1);
   }
 
   const unreadable = discovered.filter((p) => p.unreadable);
@@ -248,7 +339,17 @@ export function selectGatedPackages({
   const packages = [...all.filter((p) => !exempt[p.rel]), ...promoted].sort((a, b) => a.rel.localeCompare(b.rel));
   const exempted = all.filter((p) => exempt[p.rel]);
 
-  return { presentRoots, absentRoots, packages, promoted, exempted, heldBack, stillInvisible, unreadable };
+  return {
+    presentRoots,
+    absentRoots,
+    packages,
+    promoted,
+    exempted,
+    heldBack,
+    stillInvisible,
+    unreadable,
+    siblingOwned,
+  };
 }
 
 /**
