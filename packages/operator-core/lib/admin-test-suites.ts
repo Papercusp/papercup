@@ -1677,9 +1677,23 @@ async function measureWarmRoute(
 function warmRouteResult(
   key: string,
   routeLabel: string,
-  result: { ok: boolean; elapsedMs: number; page: RoutePage; stabilized: boolean },
+  result: RouteMeasurement,
 ): Omit<AdminTestCheckResult, 'suiteId' | 'id' | 'label' | 'durationMs'> {
   const expected = `${routeLabel} settles within ${DESKTOP_PERF_BUDGETS.warmRouteSettleMs}ms in the Tauri desktop shell.`;
+  // The measuring pass fell back to a full document load, so what was timed is a
+  // cold SPA boot, not a warm route transition. Refuse to grade it: emit NO
+  // measure, so a cold number cannot enter the warm-route trend series as
+  // either a breach or a pass (WI-39494).
+  if (result.ok && result.navKind === 'document-load') {
+    return skip(
+      expected,
+      `UNMEASURED as a WARM route — the measuring pass had to do a full document load (SPA cold boot), so the ${result.elapsedMs}ms observed is a COLD-load time and is not comparable to the ${DESKTOP_PERF_BUDGETS.warmRouteSettleMs}ms warm budget.`,
+      [
+        `Landed on ${result.page.href} — a different path root than the requested route, so measureRoute could never take the in-page branch.`,
+        'This check must target the POST-REDIRECT url (the one the app actually lands on) for its second pass to be warm. Cold-load timing belongs to the cold-vs-warm comparison, not here.',
+      ],
+    );
+  }
   if (!result.ok) {
     return skip(
       expected,
