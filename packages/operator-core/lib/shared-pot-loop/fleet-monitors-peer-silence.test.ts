@@ -21,7 +21,8 @@
  * discrimination property is demonstrably falsifiable — no tree mutation needed.
  */
 import { describe, expect, it } from 'vitest';
-import { judgePeerFederationSilence, type MergeCursorRow } from './fleet-monitors';
+import type postgres from 'postgres';
+import { judgePeerFederationSilence, scanPeerFederationSilence, type MergeCursorRow } from './fleet-monitors';
 
 const NOW = 1_700_000_000_000;
 const SLO = 6 * 60 * 60_000; // 6h
@@ -189,6 +190,32 @@ describe('judgePeerFederationSilence — EI-20579195481991931', () => {
     // different story from "it advanced, then stopped", so it must survive.
     expect(v.silent[0]!.position).toBe(0);
     expect(v.silent[1]!.position).toBe(7);
+  });
+
+  it('degrades to UNMEASURED — never throwing, never "healthy" — when the scan itself fails', async () => {
+    // This leg was added to a pass whose OTHER scans already worked, and the
+    // caller wraps the whole pass in one try/catch: a throw here would silently
+    // take outbox-health, double-completion and the orphan sweep down with it.
+    // Caught for real — the composition rig's sliced schema lacked
+    // substrate_merge_cursor and killed the entire pass with 42P01.
+    const boom = (() => {
+      throw new Error('relation "harness_shared.substrate_merge_cursor" does not exist');
+    }) as unknown as postgres.Sql;
+
+    const v = await scanPeerFederationSilence(boom, {
+      workspaceId: 'ws',
+      harness: 'h',
+      silentAfterMs: SLO,
+      nowMs: NOW,
+    });
+
+    expect(v.measured).toBe(false);
+    expect(v.unmeasuredReason).toBe('scan-failed');
+    expect(v.scanError).toContain('substrate_merge_cursor');
+    // Degrades to UNMEASURED, which is NOT the same as a clean scan — the whole
+    // point is that a broken instrument must never read as a healthy one.
+    expect(v.breaches).toEqual([]);
+    expect(v.allSilent).toBe(false);
   });
 
   it('never reports a negative age when a peer clock runs ahead of ours', () => {
