@@ -1172,7 +1172,7 @@ export async function trackGateStall(
     // A real verdict supersedes it, so clear it here — explicit rather than relying on the
     // whole-key replace, matching the `retriageStaleTip` / `failingTests` convention so a later
     // change to a merging write cannot silently resurrect a stale abort note.
-    next = { consecutiveReds: 0, lastGreenAt: Date.now(), firstRedAt: null, stallAlerted: false, lastFrom: fromPin ?? gh.lastFrom ?? null, watchdogAlerted: false, failingTests: [], observedAt: Date.now(), observedCandidate: candidate?.slice(0, 12) ?? null, retriageStaleTip: null, retriageDetail: null, retriageClassification: null, candidateCommittedAt: staleness.candidateCommittedAt, commitsBehindTip: staleness.commitsBehindTip, inconclusive: null };
+    next = { consecutiveReds: 0, lastGreenAt: Date.now(), firstRedAt: null, stallAlerted: false, lastFrom: fromPin ?? gh.lastFrom ?? null, lastFromFresh: fromPin != null, watchdogAlerted: false, failingTests: [], observedAt: Date.now(), observedCandidate: candidate?.slice(0, 12) ?? null, retriageStaleTip: null, retriageDetail: null, retriageClassification: null, candidateCommittedAt: staleness.candidateCommittedAt, commitsBehindTip: staleness.commitsBehindTip, inconclusive: null };
     // P-003: clear the durable stall escalation on the green transition (idempotent).
     // WI-2825: a 0-row match here (harness_slug/phase mismatch, or the row was already
     // cleared/removed some other way) previously succeeded silently — no error, no log —
@@ -1387,6 +1387,15 @@ export async function trackGateStall(
       firstRedAt,
       stallAlerted,
       lastFrom: fromPin ?? gh.lastFrom ?? null,
+      // EI-20571364274022293 — the PROVENANCE of the line above, and the only ordering evidence
+      // this blob carries about the pin. `fromPin ?? gh.lastFrom` silently carries the PREVIOUS
+      // pin forward whenever this run could not resolve the live one (a broken/orphaned release
+      // worktree does exactly that), after which `lastFrom` is no longer "the pin at verdict
+      // time" — it is "the pin the last time anyone could read one". A reader comparing it to the
+      // live pin then sees a difference that may predate the red by hours and concludes, wrongly,
+      // that the gate greened. Recording WHICH of the two branches produced the value is what
+      // lets `evaluateGateVerdictFreshness` tell hard proof from a coincidence of two shas.
+      lastFromFresh: fromPin != null,
       watchdogAlerted: gh.watchdogAlerted ?? false,
       failingTests: (failingTests ?? []).slice(0, 20),
       observedAt: Date.now(),
