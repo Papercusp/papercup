@@ -5980,7 +5980,7 @@ function RetainedLedgerCard({ enabled }: { enabled: boolean }) {
   // param (`rtf`), quick-search applied on top.
   const cf = useColumnFilters(columns, gridRows, { ns: RETAIN_FILTER_NS });
   const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
+    const q = (search ?? "").trim().toLowerCase();
     if (!q) return cf.rows;
     return cf.rows.filter((r) => {
       const hay =
