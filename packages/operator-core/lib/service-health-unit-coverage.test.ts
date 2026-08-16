@@ -100,6 +100,41 @@ describe('SupervisionEntry.episodic — what "down" means for a timer-driven uni
     expect(svc?.episodic, 'papercup-live-federation-gate is a Type=oneshot unit on an hourly timer').toBe(true);
     expect(timer?.episodic, 'an ARMED timer is continuously active — marking it episodic would mask a stopped timer').toBeFalsy();
   });
+
+  it('the host release-gate PRODUCER timer is supervised, non-episodic, and auto-restarting (WI-38449 / D-007 F1)', () => {
+    // The gap this closes: `papercup-perf-signals-capture.timer` latched `failed`
+    // for ~7h on 2026-08-15/16 and NOTHING detected it, so the host SLO/CLOSE_WAIT
+    // guard read a stale capture the whole time. perf-budgets.ts's `blindMs` branch
+    // notices the stale ARTEFACT; only this registry entry watches the UNIT.
+    const timer = SUPERVISED_PROCESSES.find((e) => e.name === 'perf-signals-capture-timer');
+    expect(timer, 'the perf-signals capture timer must be supervised — it produces the host gate input').toBeDefined();
+    expect(timer?.unit, 'a .timer needs its explicit suffix; the reconciler only strips .service').toBe(
+      'papercup-perf-signals-capture.timer',
+    );
+    expect(
+      timer?.episodic,
+      'an armed timer is continuously active — marking it episodic would mask the exact failed/stopped timer this entry exists to catch',
+    ).toBeFalsy();
+    expect(
+      timer?.autoRestart,
+      'restarting a TIMER only re-arms the schedule (it never touches an in-flight capture), so this heals itself',
+    ).toBe(true);
+  });
+
+  it('the perf-signals ONESHOT service is deliberately NOT supervised — liveness is the wrong question', () => {
+    // Calibration for the test above: it would also pass if someone "helpfully"
+    // registered both units. `papercup-perf-signals-capture.service` is Type=oneshot,
+    // so `inactive` is its healthy state between 2-min ticks — the same shape
+    // NON_PROBED_UNITS excludes as `episodic-oneshot` for papercusp-db-backup. Its
+    // last-run result is already served by perf-budgets.ts's blindMs branch.
+    const svc = SUPERVISED_PROCESSES.find(
+      (e) => e.unit === 'papercup-perf-signals-capture' || e.unit === 'papercup-perf-signals-capture.service',
+    );
+    expect(
+      svc,
+      'the oneshot capture service must NOT be registered — registering it adds a second, worse answer to a question blindMs already answers',
+    ).toBeUndefined();
+  });
 });
 
 describe('dev:service_health supervision overlay reports the honest state (WI-6149)', () => {
