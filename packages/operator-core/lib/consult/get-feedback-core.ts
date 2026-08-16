@@ -317,6 +317,13 @@ export async function getFeedbackCore(
       embeddingColumnOk = false;
     }
   }
+  // ⚠ jsonb params in this module go through sql.json(), never a hand
+  // JSON.stringify + ::jsonb: under prepare:true (postgres-js default; the
+  // integration fixture) PG describes $n::jsonb as a jsonb param and the
+  // driver's jsonb serializer stringifies AGAIN — the row lands as a jsonb
+  // STRING scalar whose ->>'key' is NULL, silently breaking the archive
+  // exclusion predicate. Prod (buildClient, prepare:false) sends text and
+  // single-encodes either way; sql.json() single-encodes under BOTH modes.
   if (archiveHit) {
     const opened = await deps.open({
       kind: 'consult',
@@ -343,8 +350,8 @@ export async function getFeedbackCore(
       VALUES
         (${req.workspaceId}, ${opened.conversation_id}, ${req.requesterId},
          ${archiveHit.responder_id}, 'closed_answered', ${req.question}, ${latency},
-         ${originRef}, ${JSON.stringify(route.snapshot)}::jsonb,
-         ${JSON.stringify(outcome)}::jsonb, ${now.toISOString()}::timestamptz, 0,
+         ${originRef}, ${sql.json(route.snapshot as never)},
+         ${sql.json(outcome as never)}, ${now.toISOString()}::timestamptz, 0,
          ${depth}, ${req.parentConsultId ?? null}, ${qVecStr}::vector)
     `;
     return {
@@ -450,7 +457,7 @@ export async function getFeedbackCore(
       VALUES
         (${req.workspaceId}, ${opened.conversation_id}, ${req.requesterId},
          ${chosen?.ownerId ?? null}, ${state}, ${req.question}, ${latency},
-         ${originRef}, ${JSON.stringify(route.snapshot)}::jsonb, ${expiresAt},
+         ${originRef}, ${sql.json(route.snapshot as never)}, ${expiresAt},
          ${willWake ? 1 : 0}, ${depth}, ${req.parentConsultId ?? null}, ${qVecStr}::vector)
     `;
   } else {
@@ -462,7 +469,7 @@ export async function getFeedbackCore(
       VALUES
         (${req.workspaceId}, ${opened.conversation_id}, ${req.requesterId},
          ${chosen?.ownerId ?? null}, ${state}, ${req.question}, ${latency},
-         ${originRef}, ${JSON.stringify(route.snapshot)}::jsonb, ${expiresAt},
+         ${originRef}, ${sql.json(route.snapshot as never)}, ${expiresAt},
          ${willWake ? 1 : 0}, ${depth}, ${req.parentConsultId ?? null})
     `;
   }

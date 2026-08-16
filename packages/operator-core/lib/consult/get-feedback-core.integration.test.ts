@@ -442,6 +442,10 @@ async function seedClosedConsult(opts: {
   responder?: string | null;
   outcome?: Record<string, unknown>;
 }): Promise<void> {
+  // sql.json, NOT JSON.stringify + ::jsonb: this fixture connection runs
+  // prepare:true, under which the hand-stringified idiom double-encodes into a
+  // jsonb STRING scalar (->>'key' = NULL) — the exact corruption the core's
+  // no-copy-of-copy predicate test would then falsely pass/fail on.
   await rootSql`
     INSERT INTO harness_shared.consult_state
       (workspace_id, conversation_id, requester_id, responder_id, state, question,
@@ -449,7 +453,7 @@ async function seedClosedConsult(opts: {
     VALUES
       (${opts.ws}, ${opts.conv}, 'req-past', ${opts.responder ?? 'resp-arch'},
        'closed_answered', 'an earlier, similar question',
-       '{}'::jsonb, ${JSON.stringify(opts.outcome ?? { answer: 'archived answer', confidence: 'high' })}::jsonb,
+       '{}'::jsonb, ${rootSql.json((opts.outcome ?? { answer: 'archived answer', confidence: 'high' }) as never)},
        ${NOW.toISOString()}::timestamptz, ${JSON.stringify(opts.vec)}::vector)
   `;
 }
@@ -520,13 +524,6 @@ describe('getFeedbackCore — archive-first retrieval (P-006)', () => {
     });
     const { deps, reached } = makeDeps(routeOf([cand('cand-live')], { queryVec: qv }));
     const r = asOk(await getFeedbackCore({ ...baseReq, workspaceId: ws }, deps));
-
-    // TEMP DEBUG: dump the workspace rows into the failure diff
-    const dbg = (await rootSql`
-      SELECT conversation_id, state, outcome->>'source' AS src, pg_typeof(outcome)::text AS t, outcome::text AS raw
-        FROM harness_shared.consult_state WHERE workspace_id = ${ws}
-    `) as unknown as unknown[];
-    expect(dbg).toEqual([]);
 
     expect(r.verdict).toBe('routed'); // NOT served_from_archive
     expect(r.archive).toBeUndefined();
