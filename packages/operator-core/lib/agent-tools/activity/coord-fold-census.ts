@@ -130,7 +130,12 @@ export interface CoordFoldCensus {
   foldMs: number;
   /** The generation + cursor read that DECIDES the gate. 0 is a real reading. */
   gateMs: number;
-  /** The inbox + glance hydration leg only; 0 on the quiet path. */
+  /**
+   * Everything the gate PROTECTS AGAINST — the watermark read, the inbox+glance
+   * hydration and the cursor stage — so `gateMs + hydrateMs` accounts for the
+   * whole fold with no silent remainder. Exactly 0 on the quiet path, which is
+   * the saving the optimization claims to deliver.
+   */
   hydrateMs: number;
   /** Generation the CLIENT sent. `null` = it held none. */
   reqGen: string | null;

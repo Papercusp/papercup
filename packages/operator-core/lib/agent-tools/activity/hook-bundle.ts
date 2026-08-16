@@ -11,6 +11,17 @@
  * The host epoch is part of the generation.  An operator restart therefore
  * cannot accidentally accept a pre-restart client cursor even when the latest
  * coord_event_log id is unchanged.
+ *
+ * ⚠ THAT CLAIM IS NOW MEASURED, NOT ASSUMED.  Whether the O(1) path is actually
+ * taken was unobservable until P-005 — the `changed` outcome was computed, acted
+ * on and discarded, so the optimization's own effectiveness could only be
+ * inferred.  Every fold now emits a `coordFold` census onto this call's existing
+ * `tool_invocations` row; see ./coord-fold-census.ts for the record shape, the
+ * read query, and the two readings that are easy to get confidently wrong.
+ * Per D-001 of observation-and-recall-surface-honesty-2026-08-16, this hook path
+ * is not to be "optimized" on an inferred ratio — it runs synchronously for
+ * every agent on every tool call, where a wrong change silently drops
+ * coordination delivery instead of failing loudly.
  */
 
 import { getOrgPg } from '@papercusp/db-org';
@@ -24,6 +35,11 @@ import {
   type CursorState,
 } from '../coordination/read-cursors';
 import { pickUnreadCursor, readWatermark as readCoordWatermark } from '../coordination/watermarks';
+import {
+  censusCoordFold,
+  coordFoldObserverFor,
+  type CoordFoldCensus,
+} from './coord-fold-census';
 
 export const ACTIVITY_HOOK_BUNDLE_SCHEMA = 'activity-hook-bundle-v1';
 export const INBOX_CURSOR_SURFACE = 'inbox';
@@ -73,6 +89,13 @@ export interface ActivityHookBundleDeps {
     messages_shown_ts?: string | null;
   }>;
   now: () => Date;
+  /**
+   * P-005 instrument sink. OPTIONAL on purpose: it defaults to the ctx-derived
+   * observer inside the fold (the ctx is not reachable from the static
+   * `defaultDeps`), and making it required would strand every existing
+   * caller/test that builds this object literally.
+   */
+  observe?: (census: CoordFoldCensus) => void;
 }
 
 function parseToolPayload(result: unknown): Record<string, unknown> | null {
@@ -166,6 +189,29 @@ function inboxNewestTimestamp(inbox: Record<string, unknown> | null): string | n
   return nonEmptyTimestamp((summary as Record<string, unknown>).newest_ts);
 }
 
+/** How much the hydrated inbox surface actually carried; null when unreadable. */
+function inboxTotalCount(inbox: Record<string, unknown> | null): number | null {
+  const summary = inbox?.summary;
+  if (!summary || typeof summary !== 'object' || Array.isArray(summary)) return null;
+  const total = (summary as Record<string, unknown>).total;
+  return typeof total === 'number' && Number.isFinite(total) ? total : null;
+}
+
+/**
+ * Did the inbox floor MOVE — i.e. did this hydration deliver mail this owner had
+ * not already received?
+ *
+ * ⚠ This is NOT "the fold was worth it". The fold also replaces `glance`, whose
+ * inputs move for reasons unrelated to this owner's mail. See the caveat in
+ * coord-fold-census.ts: `changed AND NOT inboxAdvanced` is an UPPER BOUND on
+ * what a per-owner inbox gate would have skipped, never a count of wasted work.
+ */
+function inboxDidAdvance(inbox: Record<string, unknown> | null, sinceTs: string | null): boolean {
+  const newest = inboxNewestTimestamp(inbox);
+  if (newest === null) return false;
+  return sinceTs === null || newest > sinceTs;
+}
+
 /**
  * Return a stamped bundle.  Matching generations intentionally return no
  * surfaces: the client keeps its last full snapshot.  On mismatch both
@@ -178,6 +224,14 @@ export async function buildActivityHookBundle(
   ctx: ToolContext,
   deps: ActivityHookBundleDeps = defaultDeps,
 ): Promise<ActivityHookBundle> {
+  // P-005 (D-001): census EVERY fold, quiet ones included — the ratio is the
+  // whole point, and a census that recorded only the expensive folds could not
+  // report the one thing it exists to report. The sink rides `ctx.metadata` onto
+  // the `tool_invocations` row this call already writes, so it costs no extra
+  // query and no extra latency on the path being measured.
+  const observe = deps.observe ?? coordFoldObserverFor(ctx);
+  const startedMs = deps.now().getTime();
+
   // ACK the previous delivery before deciding whether this heartbeat is quiet.
   // The call itself is the ACK; if the prior turn died, its pending floor is
   // promoted and the next changed heartbeat re-reads from that floor.
@@ -185,6 +239,7 @@ export async function buildActivityHookBundle(
     deps.generation(),
     deps.readInboxCursor(ownerId),
   ]);
+  const gateMs = deps.now().getTime() - startedMs;
   const changed = request.force_resync === true || request.generation !== generation;
   const base: Omit<ActivityHookBundle, 'complete' | 'surfaces'> = {
     schemaVersion: ACTIVITY_HOOK_BUNDLE_SCHEMA,
@@ -201,7 +256,25 @@ export async function buildActivityHookBundle(
       request: { generation: null, force_resync: true as const },
     },
   };
-  if (!changed) return { ...base, complete: true };
+  if (!changed) {
+    observe?.(
+      censusCoordFold({
+        changed,
+        complete: true,
+        forceResync: request.force_resync === true,
+        reqGen: request.generation,
+        gen: generation,
+        foldMs: deps.now().getTime() - startedMs,
+        gateMs,
+        // The saving the optimization exists to deliver, recorded as a hard 0
+        // rather than omitted — an absent field and a zero read identically.
+        hydrateMs: 0,
+        inboxAdvanced: false,
+        inboxTotal: null,
+      }),
+    );
+    return { ...base, complete: true };
+  }
 
   const legacyWatermark = await deps.readWatermark(ownerId).catch(() => null);
   const durableLegacyFloor = legacyWatermark
@@ -232,6 +305,24 @@ export async function buildActivityHookBundle(
       complete = false;
     }
   }
+  const endedMs = deps.now().getTime();
+  observe?.(
+    censusCoordFold({
+      changed,
+      complete,
+      forceResync: request.force_resync === true,
+      reqGen: request.generation,
+      gen: generation,
+      foldMs: endedMs - startedMs,
+      gateMs,
+      // Everything past the gate decision: the watermark read, both surface
+      // hydrations and the cursor stage. gateMs + hydrateMs therefore accounts
+      // for the whole fold, leaving no unattributed remainder to guess at.
+      hydrateMs: endedMs - startedMs - gateMs,
+      inboxAdvanced: inboxDidAdvance(inbox, sinceTs),
+      inboxTotal: inboxTotalCount(inbox),
+    }),
+  );
   return {
     ...base,
     complete,
