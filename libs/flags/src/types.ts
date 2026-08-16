@@ -1569,6 +1569,18 @@ export const FLAGS = {
   // drainless goal is only ever REPORTED after the kickoff grace — exactly the
   // pre-P-001 behavior.
   GOAL_DRAIN_FLEET_AUTOMINT: "papercusp-goal-drain-fleet-automint",
+  // goal-mode-design-intent-hardening-2026-08-16 P-002: gates the wind-down
+  // DISPOSITION demand — loop:end (and session:end for a loopless owner) by a
+  // GOAL-mode owner whose goal is still active refuses without a disposition
+  // (achieved | killed | handoff), then auto-generates the owner report from the
+  // loop carry-note + end reason and delivers it as an advisory escalation (the
+  // owner inbox). The graded run that motivated this had all the per-platform
+  // evidence sitting in its own loop:end text and sent NONE of it. DEFAULT ON.
+  // OFF = the kill-switch. Unlike GOAL_DRAIN_FLEET_AUTOMINT above (fail-OPEN:
+  // a provisioning gate should provide on infra errors), this gate fails
+  // CLOSED on flag/PG errors: it is a REFUSAL gate on the stop path, and you
+  // must always be able to stop a loop you armed.
+  GOAL_WINDDOWN_DISPOSITION_GATE: "papercusp-goal-winddown-disposition-gate",
   // system-notices-on-its-own-2026-08-16 P-002: gates the retrieval-degradation
   // watchdog — reads the trailing-window leg-health rate that observeLegs now
   // records for every hybrid search, and escalates when a sustained share of
