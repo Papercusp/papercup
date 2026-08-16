@@ -31,7 +31,9 @@ import {
   encodeRetainCursor,
   inRetainLegWindow,
   retainLegWindowFor,
+  RETAIN_DETAIL_BODY_MAX,
   RETAIN_KIND_FOR_TAB,
+  type RetainDetail,
   type RetainFeedCounts,
   type RetainFeedCursor,
   type RetainFeedFilter,
@@ -44,6 +46,7 @@ import {
 } from './learning-retain-types';
 
 export type {
+  RetainDetail,
   RetainFeedCounts,
   RetainFeedCursor,
   RetainFeedFilter,
@@ -53,7 +56,7 @@ export type {
   RetainFeedTab,
   RetainPlanChild,
 } from './learning-retain-types';
-export { decodeRetainCursor, encodeRetainCursor } from './learning-retain-types';
+export { decodeRetainCursor, encodeRetainCursor, RETAIN_DETAIL_BODY_MAX } from './learning-retain-types';
 
 export interface RetainBankedCounts {
   /** engineer_issues improvements filed in the trailing 7d (hive-scoped when scopes given). null = leg degraded. */
@@ -164,7 +167,41 @@ function toIsoMs(v: unknown): string | null {
   return null;
 }
 
+/** One shared-memory entry as the memory leg consumes it — structurally a
+ *  subset of the memory backend's MemoryEntry, so `backend.list()` results pass
+ *  straight through. Timestamps ride in `metadata` (mem0 stamps
+ *  updated_at/created_at into the payload); {@link retainMemoryTsOf} extracts
+ *  them. */
+export interface RetainMemorySource {
+  id: string;
+  text: string;
+  kind?: string;
+  metadata?: Record<string, unknown>;
+}
+
+/** Recency instant of a shared-memory entry: updated beats created; a row with
+ *  neither reads as epoch so it stays VISIBLE at the ledger's tail instead of
+ *  silently vanishing from an editable store. */
+export function retainMemoryTsOf(metadata: Record<string, unknown> | undefined): string {
+  for (const key of ['updated_at', 'updatedAt', 'created_at', 'createdAt'] as const) {
+    const iso = toIsoMs(metadata?.[key]);
+    if (iso) return iso;
+  }
+  return '1970-01-01T00:00:00.000Z';
+}
+
+/** Ledger row title for a memory: the fact itself, whitespace-collapsed and
+ *  clamped — the FULL text is the detail read's job (WI-39534). */
+export function retainMemoryTitle(text: string): string {
+  const normalized = text.replace(/\s+/g, ' ').trim();
+  return normalized.length > 200 ? `${normalized.slice(0, 199).trimEnd()}…` : normalized;
+}
+
 export interface RetainFeedDeps {
+  /** The hive's shared-memory pool (WI-39535), already scope-resolved by the
+   *  caller (`hive:<slug>` / every pot under the All-Pots lens). A throw
+   *  degrades the leg like any other. */
+  listMemories: () => Promise<RetainMemorySource[]>;
   listRubrics: () => Promise<Array<{ slug: string; title: string; status: string; updatedAt: string }>>;
   /** One keyset page of recipes by recent activity (code-recipes-store
    *  listRecipesActivityPage). `ts` = GREATEST(last_run_at, updated_at, created_at). */
@@ -233,7 +270,7 @@ export async function readRetainFeed(
   const cursor = typeof opts.cursor === 'string' ? decodeRetainCursor(opts.cursor) : (opts.cursor ?? null);
 
   const tabKinds: RetainFeedKind[] =
-    tab === 'all' ? ['plan', 'wi', 'rubric', 'runbook', 'recipe'] : [RETAIN_KIND_FOR_TAB[tab]];
+    tab === 'all' ? ['memory', 'plan', 'wi', 'rubric', 'runbook', 'recipe'] : [RETAIN_KIND_FOR_TAB[tab]];
   // "Filters apply where a type has statuses": a non-all filter narrows the
   // feed to the kinds that can be shipped/in flight at all.
   const kinds = filter === 'all' ? tabKinds : tabKinds.filter((k) => k === 'plan' || k === 'wi');
@@ -241,6 +278,36 @@ export async function readRetainFeed(
   const degraded: string[] = [];
   const shippedArr = [...ISSUE_SHIPPED_STATUSES];
   const abandonedArr = [...ISSUE_ABANDONED_STATUSES];
+
+  const legMemories = async (): Promise<RetainFeedRow[]> => {
+    const w = retainLegWindowFor('memory', cursor);
+    const all = await deps.listMemories();
+    return all
+      .flatMap((e) => {
+        if (!e.id || !e.text) return [];
+        const m = e.metadata ?? {};
+        const packId = typeof m.pack_id === 'string' && m.source === 'pack' ? m.pack_id : undefined;
+        const createdBy = typeof m.created_by === 'string' && m.created_by ? m.created_by : undefined;
+        return [
+          {
+            kind: 'memory' as const,
+            id: e.id,
+            title: retainMemoryTitle(e.text),
+            ts: retainMemoryTsOf(e.metadata),
+            status: null,
+            shipped: false,
+            meta: {
+              ...(e.kind ? { memKind: e.kind } : {}),
+              ...(createdBy ? { createdBy } : {}),
+              ...(packId ? { packId } : {}),
+            },
+          },
+        ];
+      })
+      .filter((row) => inRetainLegWindow(row.ts, row.id, w))
+      .sort(compareRetainRows)
+      .slice(0, limit);
+  };
 
   const legPlans = async (): Promise<RetainFeedRow[]> => {
     const w = retainLegWindowFor('plan', cursor);
@@ -424,6 +491,7 @@ export async function readRetainFeed(
   };
 
   const legFns: Record<RetainFeedKind, () => Promise<RetainFeedRow[]>> = {
+    memory: legMemories,
     plan: legPlans,
     wi: legWi,
     rubric: legRubrics,
@@ -454,7 +522,11 @@ export async function readRetainFeed(
 
   let counts: RetainFeedCounts | null = null;
   if (!cursor) {
-    const [plans, wi, rubrics, runbooks, recipes] = await Promise.all([
+    const [memories, plans, wi, rubrics, runbooks, recipes] = await Promise.all([
+      deps
+        .listMemories()
+        .then((r) => r.length)
+        .catch(() => null),
       (async () => {
         const r = (await sql`
           SELECT count(DISTINCT hp.plan_slug)::int AS n
@@ -496,7 +568,7 @@ export async function readRetainFeed(
       deps.countRunbooks().catch(() => null),
       deps.countRecipes().catch(() => null),
     ]);
-    counts = { plans, wi, rubrics, runbooks, recipes };
+    counts = { memories, plans, wi, rubrics, runbooks, recipes };
   }
 
   return { rows, nextCursor, counts, degraded, generatedAt };
