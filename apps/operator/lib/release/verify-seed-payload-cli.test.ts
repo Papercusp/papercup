@@ -225,7 +225,7 @@ describe('runVerifySeedPayload — the three-way exit contract', () => {
 
     it('still reports OK when those same literals are absent (no false red on a clean seed)', async () => {
       await writeManifest();
-      await writeLeakyFile('/home/somebody-else');
+      await writeLeakyFile('/fixture/somebody-else');
       const code = await runVerifySeedPayload(
         { seedDir: dir, origin: 'reuse' },
         silent,
