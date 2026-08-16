@@ -1,0 +1,264 @@
+/**
+ * relevance-router.integration.test.ts — routeConsult against a real Postgres
+ * (pgvector), P-002 of get-feedback-relevance-consults-2026-08-16.
+ *
+ * Fixture geometry (same trick as sources.integration.test.ts): 384-d unit
+ * vectors from a single direction angle, v(θ) = [cos θ, sin θ, 0, …], so the
+ * cosine similarity between the query v(q) and a turn v(θ) is exactly
+ * cos(q − θ) and the ranking is analytically checkable.
+ *
+ * What only a real-PG test can prove here:
+ *  - the turn leg's SQL (workspace OR 'default', requester exclusion,
+ *    machine-surface exclusion, vector ordering) against real pgvector;
+ *  - the verification leg (completion_authority='committed', 90d window) and
+ *    the authorship leg (payload->'paths' LATERAL match) against real jsonb;
+ *  - the D-003 honesty invariants end-to-end: no_qualified_responder is a
+ *    first-class verdict (far query), the HARD sim sub-floor blocks a
+ *    high-track-record candidate even when its BLENDED score clears the floor,
+ *    and a missing embedder degrades honestly instead of routing.
+ */
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import postgres, { type Sql } from 'postgres';
+import { randomBytes } from 'node:crypto';
+import { getTestPg } from '@papercusp/test-config/pg';
+import {
+  routeConsult,
+  extractPathTokens,
+  DEFAULT_SIM_FLOOR,
+  DEFAULT_FLOOR,
+  type ConsultRouteDeps,
+} from './relevance-router';
+
+const WS = 'ws-consult';
+const NOW = new Date('2026-08-16T00:00:00Z');
+const DAY = 86_400_000;
+
+/** 384-d unit vector at angle θ in the (0,1) plane. */
+const vecAt = (theta: number): number[] => {
+  const v = new Array<number>(384).fill(0);
+  v[0] = Math.cos(theta);
+  v[1] = Math.sin(theta);
+  return v;
+};
+
+let rootSql: Sql;
+
+const deps = (embedTheta: number | null, over: Partial<ConsultRouteDeps> = {}): ConsultRouteDeps => ({
+  getSql: () => rootSql,
+  embed: embedTheta === null ? null : async () => vecAt(embedTheta),
+  now: () => NOW,
+  ...over,
+});
+
+let turnSeq = 0;
+async function insertTurn(owner: string, theta: number, tsMsAgo: number, over: { verdict?: string } = {}) {
+  turnSeq += 1;
+  await rootSql`
+    INSERT INTO harness_shared.session_turns
+      (workspace_id, source_kind, session_id, turn_idx, ts, owner, speaker, text, text_embedding, turn_origin_verdict)
+    VALUES ('default', 'claude', ${'sess-' + owner}, ${turnSeq},
+            ${new Date(NOW.getTime() - tsMsAgo).toISOString()}::timestamptz,
+            ${owner}, 'assistant', ${'turn ' + turnSeq + ' of ' + owner},
+            ${JSON.stringify(vecAt(theta))}::vector,
+            ${over.verdict ?? null})`;
+}
+
+let wiSeq = 0;
+async function insertWorkItem(owner: string, authority: string, closedMsAgo: number, paths: string[] | null) {
+  wiSeq += 1;
+  await rootSql`
+    INSERT INTO harness_shared.work_items (feature_id, terminal_owner, completion_authority, closed_at, payload)
+    VALUES (${'WI-T' + wiSeq}, ${owner}, ${authority},
+            ${new Date(NOW.getTime() - closedMsAgo).toISOString()}::timestamptz,
+            ${paths ? rootSql.json({ paths }) : rootSql.json({})})`;
+}
+
+beforeAll(async () => {
+  const adminUri = await getTestPg();
+  const dbName = `consultr_${randomBytes(5).toString('hex')}`;
+  const admin = postgres(adminUri, { max: 1, onnotice: () => {} });
+  try {
+    await admin.unsafe(`CREATE DATABASE "${dbName}"`);
+  } finally {
+    await admin.end({ timeout: 5 });
+  }
+  const u = new URL(adminUri);
+  u.pathname = `/${dbName}`;
+  rootSql = postgres(u.toString(), { max: 1, onnotice: () => {} });
+  await rootSql.unsafe('CREATE EXTENSION IF NOT EXISTS vector');
+  await rootSql.unsafe('CREATE SCHEMA harness_shared');
+  // Only the columns the router reads (mirrors migration-owned tables).
+  await rootSql.unsafe(`
+    CREATE TABLE harness_shared.session_turns (
+      workspace_id text NOT NULL DEFAULT 'default',
+      source_kind text NOT NULL,
+      session_id text NOT NULL,
+      turn_idx integer NOT NULL,
+      ts timestamptz,
+      owner text,
+      speaker text NOT NULL,
+      text text NOT NULL,
+      ingested_at timestamptz NOT NULL DEFAULT now(),
+      text_embedding vector(384),
+      turn_origin_verdict text,
+      PRIMARY KEY (workspace_id, source_kind, session_id, turn_idx)
+    )`);
+  await rootSql.unsafe(`
+    CREATE TABLE harness_shared.work_items (
+      feature_id text PRIMARY KEY,
+      terminal_owner text,
+      completion_authority text,
+      closed_at timestamptz,
+      payload jsonb NOT NULL DEFAULT '{}'::jsonb
+    )`);
+
+  // ── The corpus ─────────────────────────────────────────────────────────
+  // alpha: highly similar (θ≈0.2), recent, verified, authored the named path.
+  await insertTurn('agent-alpha', 0.15, 1 * DAY);
+  await insertTurn('agent-alpha', 0.2, 2 * DAY);
+  await insertTurn('agent-alpha', 0.25, 3 * DAY);
+  for (let i = 0; i < 5; i++) {
+    await insertWorkItem('agent-alpha', 'committed', (i + 1) * DAY, [
+      'packages/operator-core/lib/consult/relevance-router.ts',
+    ]);
+  }
+  // beta: moderately similar (θ=0.85 → sim≈0.66 vs q=0), STALE (40d), unverified.
+  await insertTurn('agent-beta', 0.85, 40 * DAY);
+  await insertTurn('agent-beta', 0.9, 41 * DAY);
+  // self: the requester's own perfect-similarity turn — must be excluded.
+  await insertTurn('agent-self', 0, 1 * DAY);
+  // machineonly: near-perfect similarity but machine-surface — must be excluded.
+  await insertTurn('agent-machineonly', 0.05, 1 * DAY, { verdict: 'machine-surface' });
+  // subfloor: sim cos(1.2)≈0.362 < DEFAULT_SIM_FLOOR, but massive fresh track
+  // record — the D-003 hard-gate case.
+  await insertTurn('agent-subfloor', 1.2, 0.5 * DAY);
+  for (let i = 0; i < 50; i++) {
+    await insertWorkItem('agent-subfloor', 'committed', (i % 30) * DAY, null);
+  }
+  // proposed-only closes must NOT count as verification.
+  await insertWorkItem('agent-beta', 'proposed', 1 * DAY, null);
+}, 120_000);
+
+afterAll(async () => {
+  await rootSql?.end({ timeout: 5 });
+});
+
+const baseParams = { workspaceId: WS, requesterId: 'agent-self', question: 'how does the consult router work?' };
+
+describe('routeConsult — routing + blend', () => {
+  it('routes to the similar+recent+verified owner; snapshot carries the D-008 shape', async () => {
+    const r = await routeConsult(baseParams, deps(0));
+    expect(r.verdict).toBe('routed');
+    expect(r.qualified[0]?.ownerId).toBe('agent-alpha');
+    const alpha = r.qualified[0]!;
+    expect(alpha.signals.similarity).toBeGreaterThan(0.95); // cos(0.15) ≈ 0.989
+    expect(alpha.signals.recency).toBeGreaterThan(0.9); // 1d @ 14d half-life
+    expect(alpha.signals.verification).toBeCloseTo(5 / 9, 2); // 5 committed / (5+4)
+    expect(alpha.signals.authorship).toBe(0); // question names no path
+    expect(alpha.evidence.length).toBeGreaterThan(0);
+    expect(alpha.evidence[0]).toMatchObject({ session_id: 'sess-agent-alpha' });
+    expect(alpha.evidence[0]!.sim).toBeGreaterThan(0.95);
+    // Snapshot invariants (persisted verbatim into consult_state.routing).
+    expect(r.snapshot.query).toBe(baseParams.question);
+    expect(r.snapshot.floor).toBe(DEFAULT_FLOOR);
+    expect(r.snapshot.simFloor).toBe(DEFAULT_SIM_FLOOR);
+    expect(r.snapshot.candidates.map((c) => c.ownerId)).toContain('agent-beta');
+    expect(r.snapshot.degraded).toBeUndefined();
+  });
+
+  it('excludes the requester — a perfect-similarity own turn never self-routes', async () => {
+    const r = await routeConsult(baseParams, deps(0));
+    const ids = r.snapshot.candidates.map((c) => c.ownerId);
+    expect(ids).not.toContain('agent-self');
+  });
+
+  it('excludes machine-surface turns — injected boilerplate is not engagement', async () => {
+    const r = await routeConsult(baseParams, deps(0));
+    const ids = r.snapshot.candidates.map((c) => c.ownerId);
+    expect(ids).not.toContain('agent-machineonly');
+  });
+
+  it('stale + unverified similarity alone does not qualify (beta below the blended floor)', async () => {
+    const r = await routeConsult(baseParams, deps(0));
+    const beta = r.snapshot.candidates.find((c) => c.ownerId === 'agent-beta');
+    expect(beta).toBeDefined();
+    expect(beta!.signals.similarity).toBeGreaterThan(0.6);
+    expect(beta!.signals.verification).toBe(0); // its only close is 'proposed'
+    expect(beta!.score).toBeLessThan(DEFAULT_FLOOR);
+    expect(r.qualified.map((c) => c.ownerId)).not.toContain('agent-beta');
+  });
+
+  it('annotates liveness from the injected oracle, defaulting to unknown', async () => {
+    const r = await routeConsult(
+      baseParams,
+      deps(0, { getLiveness: async () => ({ 'agent-alpha': 'live' }) }),
+    );
+    const alpha = r.snapshot.candidates.find((c) => c.ownerId === 'agent-alpha');
+    const beta = r.snapshot.candidates.find((c) => c.ownerId === 'agent-beta');
+    expect(alpha!.liveness).toBe('live');
+    expect(beta!.liveness).toBe('unknown');
+  });
+
+  it('authorship: a question naming a path boosts the owner whose completed work touched it', async () => {
+    const r = await routeConsult(
+      { ...baseParams, question: 'who understands packages/operator-core/lib/consult/relevance-router.ts?' },
+      deps(0),
+    );
+    const alpha = r.snapshot.candidates.find((c) => c.ownerId === 'agent-alpha');
+    const beta = r.snapshot.candidates.find((c) => c.ownerId === 'agent-beta');
+    expect(alpha!.signals.authorship).toBeGreaterThan(0);
+    expect(beta!.signals.authorship).toBe(0);
+  });
+});
+
+describe('routeConsult — D-003 honesty invariants', () => {
+  it('far query → first-class no_qualified_responder with the audit-trail candidates kept', async () => {
+    const r = await routeConsult(baseParams, deps(-1.3)); // sim to best owner ≈ cos(1.45) ≈ 0.12
+    expect(r.verdict).toBe('no_qualified_responder');
+    expect(r.qualified).toEqual([]);
+    // The snapshot still records what WAS considered — the calibration feed.
+    expect(r.snapshot.candidates.length).toBeGreaterThan(0);
+    for (const c of r.snapshot.candidates) expect(c.signals.similarity).toBeLessThan(DEFAULT_SIM_FLOOR);
+  });
+
+  it('the HARD sim sub-floor blocks a high-track-record owner even when its blended score clears the floor', async () => {
+    // Weights tilted toward track record so agent-subfloor's blended score
+    // clears the floor: sim .362×.3 + rec ~1×.3 + ver ~.93×.3 ≈ 0.69 ≥ 0.5.
+    const r = await routeConsult(
+      { ...baseParams, weights: { similarity: 0.3, recency: 0.3, verification: 0.3, authorship: 0.1 } },
+      deps(0),
+    );
+    const sub = r.snapshot.candidates.find((c) => c.ownerId === 'agent-subfloor');
+    expect(sub).toBeDefined();
+    expect(sub!.score).toBeGreaterThanOrEqual(DEFAULT_FLOOR); // blended alone WOULD pass…
+    expect(sub!.signals.similarity).toBeLessThan(DEFAULT_SIM_FLOOR); // …but similarity is sub-floor…
+    expect(r.qualified.map((c) => c.ownerId)).not.toContain('agent-subfloor'); // …so it must not qualify.
+  });
+
+  it('no embedder → honest degrade, never a routed verdict', async () => {
+    const r = await routeConsult(baseParams, deps(null));
+    expect(r.verdict).toBe('no_qualified_responder');
+    expect(r.qualified).toEqual([]);
+    expect(r.snapshot.degraded).toBe('embed-unavailable');
+    expect(r.snapshot.candidates).toEqual([]);
+  });
+
+  it('an embedder that throws degrades the same way', async () => {
+    const r = await routeConsult(
+      baseParams,
+      deps(0, { embed: async () => { throw new Error('sidecar down'); } }),
+    );
+    expect(r.verdict).toBe('no_qualified_responder');
+    expect(r.snapshot.degraded).toBe('embed-unavailable');
+  });
+});
+
+describe('extractPathTokens', () => {
+  it('extracts slash paths, trims trailing punctuation, caps at 4, dedupes', () => {
+    expect(extractPathTokens('see packages/foo/bar.ts.')).toEqual(['packages/foo/bar.ts']);
+    expect(extractPathTokens('no paths here at all')).toEqual([]);
+    expect(
+      extractPathTokens('a/b.ts c/d.ts a/b.ts e/f.ts g/h.ts i/j.ts'),
+    ).toHaveLength(4);
+  });
+});
