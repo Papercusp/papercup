@@ -1558,6 +1558,17 @@ export const FLAGS = {
   // DEFAULT ON. OFF = the kill-switch: the timer still ticks but every sweep
   // no-ops before reading the goals table.
   GOAL_DRAIN_FLEET_WATCHDOG: "papercusp-goal-drain-fleet-watchdog",
+  // goal-mode-design-intent-hardening-2026-08-16 P-001 (D-005): gates the drain-fleet
+  // AUTO-MINT in goals:start — the PLATFORM, not the agent, stands up the standing
+  // drain fleet the GOAL contract requires: registry row + goal-scoped claim spec
+  // ({field:'goal',op:'=',value:<goalId>} — the POSITIVE form only; WI-37711: `goal`
+  // is nullable, so a not/!= leaf silently excludes every unstamped row) + one
+  // headless member + goals metadata.drainFleet, minted with the goal itself so the
+  // agent cannot forget what the platform did for it. The watchdog above demotes to
+  // backstop. DEFAULT ON. OFF = the kill-switch: goals:start skips the mint and a
+  // drainless goal is only ever REPORTED after the kickoff grace — exactly the
+  // pre-P-001 behavior.
+  GOAL_DRAIN_FLEET_AUTOMINT: "papercusp-goal-drain-fleet-automint",
   // system-notices-on-its-own-2026-08-16 P-002: gates the retrieval-degradation
   // watchdog — reads the trailing-window leg-health rate that observeLegs now
   // records for every hybrid search, and escalates when a sustained share of
