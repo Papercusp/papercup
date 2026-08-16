@@ -43,6 +43,14 @@ import { subscribeTopic } from '../coordination/topics';
 import { subscribeEventKey } from '../coordination/event-subscriptions';
 import { softText, clampText, LIMITS } from '../limits';
 import { producerHealthInputSchema, resolveProducerHealthCertificate } from './producer-health';
+import {
+  registerInterestWatch,
+  startInterestWatchSweeper,
+  INTEREST_DEFAULT_SIM_FLOOR,
+  INTEREST_MIN_SIM_FLOOR,
+  INTEREST_MAX_SIM_FLOOR,
+  INTEREST_DEFAULT_INTERVAL_SEC,
+} from '../../events/await/interest-watch';
 
 // The fallback timeout-wake window + hard cap — one shared source of truth
 // (await-timeout-fallback-defaults-2026-07-03): the one-shot wake default is now
@@ -123,10 +131,18 @@ export default defineTool({
       .optional()
       .describe('wake:false only — inject delivery tiering: full (default), digest (high-churn), mention (the quiet floor).'),
     targetKind: z
-      .enum(['topic', 'event'])
+      .enum(['topic', 'event', 'interest'])
       .optional()
       .describe(
-        'wake:false only. "topic" (DEFAULT) — pattern is a curated topic slug (topics:list). "event" (WI-4014 Part 2) — pattern is an EXACT event key (see events:catalog): a standing, no-token-cost subscription so every future events:emit on that key lands in your inbox, without ever waking you. Unsubscribe with events:unsubscribe (matching targetKind:"event").',
+        '"topic" (DEFAULT; wake:false only) — pattern is a curated topic slug (topics:list). "event" (wake:false only; WI-4014 Part 2) — pattern is an EXACT event key (see events:catalog): a standing, no-token-cost subscription so every future events:emit on that key lands in your inbox, without ever waking you. Unsubscribe with events:unsubscribe (matching targetKind:"event"). "interest" (EITHER wake mode; P-008 push-interjection) — pattern is FREE TEXT: a standing interest, embedded once at registration and matched against peers\' NEW transcript turns by similarity (>= min_similarity); fires coalesced matches with owner+excerpt+sim evidence on a synthetic interest:<id> key. Cancel via events:cancel (wake) / events:unsubscribe (inject) — the watch GCs itself.',
+      ),
+    min_similarity: z
+      .number()
+      .min(INTEREST_MIN_SIM_FLOOR)
+      .max(INTEREST_MAX_SIM_FLOOR)
+      .optional()
+      .describe(
+        `targetKind:"interest" only — cosine floor a peer turn must clear to fire (default ${INTEREST_DEFAULT_SIM_FLOOR}, precision-biased: an interjection channel prefers silence over spam). Lower it only if a too-quiet watch proves it.`,
       ),
     note: softText(LIMITS.ANNOTATION).optional().describe('Why you are watching — echoed into the wake turn (wake:true). Auto-truncated to 2000 chars if longer.'),
     payload_filter: dataConditionSchema
