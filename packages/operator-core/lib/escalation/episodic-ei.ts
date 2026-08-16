@@ -137,6 +137,39 @@ export async function unionPopulation<T extends { id: string }>(
   return [...tagged, ...byPrefix.filter((r) => !seen.has(r.id))];
 }
 
+/**
+ * WI-5762: the `listIssues` filter the standing-condition cooldown reads its
+ * history through — bounded by TIME, not by ROW COUNT.
+ *
+ * `listIssues` is `ORDER BY created_at DESC LIMIT n`, so a purely row-count
+ * lookback is a RECENCY WINDOW rather than a set, and it SHORTENS as filing
+ * volume rises — degrading precisely during the churn bursts the cooldown
+ * exists to suppress. Measured 2026-08-16 on `system:replication-liveness`: at
+ * ~13 filings/day the newest 100 rows span 58.6h (comfortably past a 24h
+ * cooldown), but on 08-03 at 399 filings/day the same 100 rows covered only
+ * ~6h, so any repeat older than that was structurally invisible to the gate.
+ * Over 14d, 417 of 899 repeat filings landed INSIDE the cooldown window and
+ * were filed anyway.
+ *
+ * Same defect class `ListIssuesFilter.watchdogKeyed` was added for, and the
+ * same remedy: filter in SQL so the read is a SET over the window instead of a
+ * window over the newest N rows. `createdSince` is INCLUSIVE (`created_at >=`),
+ * which matches the cooldown's own `now - lastFiledAt < cooldownMs` test at the
+ * boundary. The limit rises alongside it because the window can legitimately
+ * hold more than 100 rows at the observed peak — it is a backstop now, not the
+ * thing deciding correctness.
+ *
+ * With no cooldown configured the filter is byte-identical to the pre-WI-5762
+ * read, so an escalator that opted out is completely unaffected.
+ */
+export function cooldownLookbackFilter(
+  standingCooldownMs: number | undefined,
+  now: number = Date.now(),
+): { limit: number; createdSince?: string } {
+  if (standingCooldownMs == null) return { limit: 100 };
+  return { limit: 500, createdSince: new Date(now - standingCooldownMs).toISOString() };
+}
+
 export interface EpisodicEscalator<E, R, Sev extends IssueSeverity = IssueSeverity> {
   /** The primary triage topic (re-exported by wrappers as their `*_TOPIC`). */
   readonly topic: string;
@@ -364,8 +397,27 @@ export function createEpisodicEscalator<E, R, Sev extends IssueSeverity>(
         // WI-37499: same union as the open read. Widening here makes the cooldown
         // STRICTER (it can now see a recently-filed untagged row it used to miss),
         // which is the direction the gate exists to move in.
+        //
+        // WI-5762: the lookback is bounded by TIME, not by ROW COUNT. `listIssues`
+        // is `ORDER BY created_at DESC LIMIT n`, so a purely row-count lookback is a
+        // RECENCY WINDOW rather than a set — and it shortens as filing volume rises,
+        // i.e. it degrades precisely during the churn bursts this cooldown exists to
+        // suppress. Measured 2026-08-16 on `system:replication-liveness`: at ~13
+        // filings/day the newest 100 rows span 58.6h (comfortably past a 24h
+        // cooldown), but on 08-03 at 399 filings/day the same 100 rows covered only
+        // ~6h, so any repeat older than that was structurally invisible to the gate.
+        // Over 14d, 417 of 899 repeat filings landed INSIDE the cooldown window and
+        // were created anyway.
+        //
+        // This is the same defect class `ListIssuesFilter.watchdogKeyed` was added
+        // for, and the same remedy: filter in SQL so the read is a SET over the
+        // window instead of a window over the newest N rows. `createdSince` is
+        // INCLUSIVE (`created_at >= …`). The limit is raised in step because the
+        // window can legitimately hold more than 100 rows at the observed peak
+        // (399/day); it is a backstop now, not the thing deciding correctness.
+        const lookback = cooldownLookbackFilter(config.standingCooldownMs);
         const rows = await unionPopulation(
-          (f) => m.listIssues({ limit: 100, excludeObservationLane: true, ...f }),
+          (f) => m.listIssues({ ...lookback, excludeObservationLane: true, ...f }),
           topic,
           config.titlePrefix,
         );

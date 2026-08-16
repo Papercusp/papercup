@@ -11,6 +11,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   collapseDuplicateOpenEis,
+  cooldownLookbackFilter,
   createEpisodicEscalator,
   unionPopulation,
   type CollapsibleOpenEi,
@@ -383,5 +384,59 @@ describe('unionPopulation (WI-37499)', () => {
     );
     const rows = await unionPopulation(read, 'demo', '[demo] ');
     expect(rows.map((r) => r.id)).toEqual(['same', 'extra']);
+  });
+});
+
+describe('cooldownLookbackFilter (WI-5762) — the cooldown lookback is bounded by TIME, not row count', () => {
+  const NOW = Date.parse('2026-08-16T12:00:00.000Z');
+  const H = 60 * 60 * 1000;
+
+  // CONTROL: an escalator that never opted into the cooldown must be completely
+  // unaffected. This is what makes the change safe for the other bindings on
+  // this shared seam (precision-alert-ei, own-log-fork-ei, give-up-ei).
+  it('with NO cooldown configured, emits the pre-WI-5762 filter unchanged (no createdSince)', () => {
+    const f = cooldownLookbackFilter(undefined, NOW);
+    expect(f).toEqual({ limit: 100 });
+    expect(f.createdSince).toBeUndefined();
+  });
+
+  it('with a cooldown configured, bounds the read by created_at over the whole window', () => {
+    const f = cooldownLookbackFilter(24 * H, NOW);
+    expect(f.createdSince).toBe(new Date(NOW - 24 * H).toISOString());
+  });
+
+  // THE REGRESSION. The defect was that `limit: 100` — not the cooldown — decided
+  // how far back the gate could see, so the lookback silently shortened as filing
+  // volume rose. A time bound cannot shorten under load.
+  it('the lookback horizon is independent of filing volume (the actual defect)', () => {
+    const f = cooldownLookbackFilter(24 * H, NOW);
+    expect(Date.parse(f.createdSince!)).toBe(NOW - 24 * H);
+  });
+
+  // CONTROL: derived from config, not a hardcoded horizon. If someone re-tunes
+  // standingCooldownMs, the lookback must follow or the gate half-applies it.
+  it('tracks the configured cooldown rather than a fixed horizon', () => {
+    const day = cooldownLookbackFilter(24 * H, NOW);
+    const twoDay = cooldownLookbackFilter(48 * H, NOW);
+    expect(Date.parse(day.createdSince!)).toBe(NOW - 24 * H);
+    expect(Date.parse(twoDay.createdSince!)).toBe(NOW - 48 * H);
+    expect(twoDay.createdSince).not.toBe(day.createdSince);
+  });
+
+  // The boundary must line up with the gate's own comparison. The gate suppresses
+  // when `Date.now() - lastFiledAt < cooldownMs`; `createdSince` is INCLUSIVE
+  // (`created_at >= …`), so a row exactly on the edge is fetched and then
+  // correctly NOT suppressed by the strict `<`. Erring the other way would hide
+  // the edge row from the gate entirely.
+  it('the horizon is exactly now - cooldownMs, matching the gate strict-< comparison', () => {
+    const f = cooldownLookbackFilter(24 * H, NOW);
+    expect(NOW - Date.parse(f.createdSince!)).toBe(24 * H);
+    expect(NOW - Date.parse(f.createdSince!) < 24 * H).toBe(false);
+  });
+
+  it('raises the row cap alongside the time bound so the window is not re-truncated', () => {
+    // At the observed peak (399 filings/day) a 24h window holds well over 100
+    // rows, so leaving the cap at 100 would reintroduce truncation by the back door.
+    expect(cooldownLookbackFilter(24 * H, NOW).limit).toBeGreaterThan(100);
   });
 });
