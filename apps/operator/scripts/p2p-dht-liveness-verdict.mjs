@@ -125,6 +125,52 @@ export function looksTransmitBlocked(counters) {
   return requestsTotal > 0 && responses === 0 && routingTableSize === 0;
 }
 
+/**
+ * Turn "we sent queries and heard NOTHING back" into a diagnosis — but only as
+ * far as the evidence actually reaches.
+ *
+ * ⚠ THE WHOLE POINT: those counters are IDENTICAL for two completely different
+ * faults —
+ *   (a) this host's outbound datagrams are being dropped (macOS Local Network
+ *       privacy / a firewall) — the P-302 fault; and
+ *   (b) nothing is listening at that bootstrap address at all — a dead port, a
+ *       stale pin, a wedged unit.
+ *
+ * Nothing observable from ONE host separates them, so asserting either one from
+ * the counters alone is a guess dressed as a finding. (Pointing this probe at a
+ * dead port made it confidently blame a perfectly healthy host's transmit path.)
+ * The only honest discriminator is a SECOND vantage point: if another leg in
+ * this same run got responses from that same bootstrap, the bootstrap is alive
+ * and THIS host is the problem. Absent that, name both causes and hand over the
+ * probe that settles it.
+ */
+export function diagnoseSilence({ counters, inboundAnswered, bootstrapProvenReachable, side }) {
+  const seen = counters
+    ? `${counters.requestsTotal} requests sent, ${counters.responses} responses, routing table empty`
+    : 'queries sent, nothing received';
+
+  if (bootstrapProvenReachable === true) {
+    return {
+      code: 'tx-blocked',
+      message:
+        `FAIL — the ${side} host's outbound path is BLOCKED: ${seen}` +
+        `${inboundAnswered ? ', while still ANSWERING inbound traffic' : ''}. ` +
+        'Another peer in this same run reached that bootstrap, so the bootstrap is alive and this host is the fault. ' +
+        'TX dropped with RX intact is the macOS Local Network privacy signature (P-302) — check the OS privacy/firewall grant for the process.',
+    };
+  }
+
+  return {
+    code: 'bootstrap-silent',
+    message:
+      `FAIL — no response from the bootstrap: ${seen}. TWO causes produce exactly this and nothing here separates them: ` +
+      `(a) this ${side} host's outbound datagrams are being dropped (OS privacy/firewall — the P-302 fault), or ` +
+      '(b) nothing is listening at that address (dead port / stale pin / wedged unit). ' +
+      'DISCRIMINATOR: capture on the far side (tcpdump on the bootstrap host) WITH a positive control in the same window — ' +
+      'if the packets arrive, the bootstrap is at fault; if they never arrive while the control does, this host is.',
+  };
+}
+
 function verdict(level, code, exitCode, proved, message) {
   return { level, code, exitCode, proved, message };
 }
@@ -191,15 +237,13 @@ export function judgeLivenessProbe(obs) {
   // expensive: a real, actionable fault rendered as "I could not tell".
   if (obs.serverAnnounced === false) {
     if (looksTransmitBlocked(obs.serverCounters)) {
-      return verdict(
-        'fail',
-        'tx-blocked',
-        EXIT.FAIL,
-        PROVED.NOTHING,
-        `FAIL — the ANNOUNCING host's own DHT is TRANSMIT-BLOCKED: ${obs.serverCounters.requestsTotal} requests sent, ` +
-          `${obs.serverCounters.responses} responses, routing table empty. The fault is this host's outbound path ` +
-          '(OS privacy/firewall layer eating datagrams), NOT the bootstrap.',
-      );
+      const d = diagnoseSilence({
+        counters: obs.serverCounters,
+        inboundAnswered: false,
+        bootstrapProvenReachable: obs.bootstrapProvenReachable,
+        side: 'announcing',
+      });
+      return verdict('fail', d.code, EXIT.FAIL, PROVED.NOTHING, d.message);
     }
     return verdict(
       'fail',
