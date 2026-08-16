@@ -21,13 +21,38 @@
  * them cannot carry information, so we say so instead of manufacturing one.
  */
 
-import type { MetricSummary, PerfArtifact } from './artifact';
+import type { ConvergenceStats, MetricSummary, PerfArtifact } from './artifact';
 
 export interface BaselineEntry {
   scenario: string;
   params: Record<string, string | number | boolean>;
   metrics: Record<string, MetricSummary>;
   loopLagP95Ms: number | null;
+  /**
+   * The run's convergence verdict, RETAINED — null only when the scenario
+   * recorded none (it formed no mesh, or the artifact predates this field).
+   *
+   * WHY THIS IS HERE, AND WHY IT IS NOT OPTIONAL. Artifacts under
+   * `test-results/p2p-perf/` are gitignored (`.gitignore:42`), so a baseline
+   * under `baselines/` is the ONLY p2p-perf evidence that survives a sweep of
+   * local disk. Until this field existed the retained entry carried
+   * `loopLagP95Ms` — the SLO whose own docs (artifact.ts) warn it "must never
+   * be quoted alone as a scale or correctness verdict" — and DROPPED
+   * `convergence`, the second verdict added (EI-20576392705164447) precisely
+   * to stop that misreading. So the surface that outlived the artifacts kept
+   * the number nobody may cite and discarded the one they must.
+   *
+   * That is not hypothetical: on 2026-08-16 the whole 64→128 ladder backing
+   * row 14 of `shared-pot-release-testing/RELEASE-READINESS.md` was swept off
+   * disk, and because no convergence verdict had ever been promoted here, the
+   * signed document's central mesh claim became impossible to re-derive from
+   * anything but its own prose.
+   *
+   * Required-and-nullable on purpose: an OPTIONAL field is exactly what lets
+   * the next writer of a `BaselineEntry` omit it again without the typechecker
+   * ever objecting, which is how it went missing the first time.
+   */
+  convergence: ConvergenceStats | null;
 }
 
 export interface BaselineFile {
@@ -126,6 +151,7 @@ export function baselineFromArtifacts(
       params: a.params,
       metrics: a.metrics,
       loopLagP95Ms: a.loopLag?.p95Ms ?? null,
+      convergence: a.convergence ?? null,
     })),
   };
 }
@@ -181,7 +207,7 @@ export function baselineFromHistory(
   // key -> { scenario, params, metric -> observed p95 series }
   const byKey = new Map<
     string,
-    { scenario: string; params: Record<string, string | number | boolean>; series: Map<string, { unit: MetricSummary['unit']; vals: number[] }>; lags: number[] }
+    { scenario: string; params: Record<string, string | number | boolean>; series: Map<string, { unit: MetricSummary['unit']; vals: number[] }>; lags: number[]; latestConvergence: ConvergenceStats | null }
   >();
 
   for (const run of recent) {
@@ -189,10 +215,17 @@ export function baselineFromHistory(
       const key = entryKey(a.scenario, a.params);
       let e = byKey.get(key);
       if (!e) {
-        e = { scenario: a.scenario, params: a.params, series: new Map(), lags: [] };
+        e = { scenario: a.scenario, params: a.params, series: new Map(), lags: [], latestConvergence: null };
         byKey.set(key, e);
       }
       if (a.loopLag) e.lags.push(a.loopLag.p95Ms);
+      // `history` is chronological, so the last write wins: this ends as the
+      // NEWEST convergence observation for the key, not a windowed aggregate.
+      // Quantiling a pass/fail verdict would manufacture a number no run ever
+      // produced, so the alternatives here were "carry the latest, labelled"
+      // or "carry nothing" — and carrying nothing is the defect this field
+      // exists to close.
+      if (a.convergence) e.latestConvergence = a.convergence;
       for (const [name, m] of Object.entries(a.metrics)) {
         if (!m || m.count === 0) continue;
         let s = e.series.get(name);
@@ -235,6 +268,7 @@ export function baselineFromHistory(
       params: e.params,
       metrics,
       loopLagP95Ms: e.lags.length ? quantileOf(e.lags, quantile) : null,
+      convergence: e.latestConvergence,
     });
   }
 
