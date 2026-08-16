@@ -27,7 +27,7 @@
  * Docker-gated (`*.integration.test.ts`).
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import postgres from 'postgres';
@@ -36,7 +36,6 @@ import { createFreshTestDb, type MigratedTestDb } from '@papercusp/test-config/p
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, '../../../../../..');
 const SQL_DIR = resolve(REPO_ROOT, 'libs/papercusp/libs/db/sql');
-const MIGRATION_813 = resolve(SQL_DIR, '813-contention-free-hlc-sequence.sql');
 const MIGRATION_RUNNER = resolve(
   REPO_ROOT,
   'libs/papercusp/packages/embedded-postgres-server/src/migration-runner.js',
@@ -123,9 +122,30 @@ afterAll(async () => {
   await db?.drop();
 });
 
-/** Re-apply migration 813 verbatim — it is idempotent (IF NOT EXISTS / GREATEST / CREATE OR REPLACE). */
+/**
+ * Restore the SHIPPED clock after the control mutates it.
+ *
+ * Re-applies every migration that defines `hlc_now`, in numeric order, rather
+ * than naming one file: the definition has moved between migrations before
+ * (314 → 459 → 466 → 813 → …), and pinning this to a single file would silently
+ * restore a SUPERSEDED implementation the day another one lands. All of them are
+ * idempotent (IF NOT EXISTS / GREATEST / CREATE OR REPLACE).
+ */
+function hlcDefiningMigrations(): string[] {
+  const files = readdirSync(SQL_DIR)
+    .filter((f) => f.endsWith('.sql'))
+    .filter((f) => readFileSync(resolve(SQL_DIR, f), 'utf8').includes('FUNCTION harness_shared.hlc_now'))
+    .sort((a, b) => Number.parseInt(a, 10) - Number.parseInt(b, 10));
+  // An empty list would make the control's restore a silent no-op, leaving the
+  // legacy function installed and every later assertion answering about it.
+  if (files.length === 0) throw new Error(`no migration in ${SQL_DIR} defines harness_shared.hlc_now`);
+  return files;
+}
+
 async function restoreShippedHlcNow(): Promise<void> {
-  await sql.unsafe(readFileSync(MIGRATION_813, 'utf8'));
+  for (const f of hlcDefiningMigrations()) {
+    await sql.unsafe(readFileSync(resolve(SQL_DIR, f), 'utf8'));
+  }
 }
 
 /**
