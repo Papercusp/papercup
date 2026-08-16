@@ -139,6 +139,62 @@ print("MANIFEST:", open(p).read().replace("\\n", "|") if os.path.exists(p) else 
     }
   }, 120_000);
 
+  /**
+   * THE INTERPRETER MUST NOT BE LOAD-BEARING. Python 3.14 added a native zstd
+   * codec (`compression.zstd`), so on 3.14 `tarfile.is_tarfile()` returns True for
+   * a .tar.zst and the generic tar branch would route it memberwise even if the
+   * explicit .tar.zst branch were deleted. On 3.13 and earlier it returns False,
+   * the file falls through to the plain `.zst` branch, and that branch writes a
+   * single opaque `payload` blob with NO manifest — blind again, exactly as
+   * 0.0.17 shipped.
+   *
+   * A mutation probe on THIS box therefore SURVIVES deleting the .tar.zst branch
+   * (measured), which would have left the real regression unguarded on every
+   * build host running an older python — and the build scripts just call
+   * `python3`, whatever that resolves to. So this guard simulates the
+   * no-native-zstd interpreter and demands the manifest anyway.
+   */
+  it('produces the manifest even when tarfile has NO native zstd codec (py<=3.13)', () => {
+    if (!have('tar') || !have('zstd') || !have('python3')) {
+      console.warn('[identity-gate guard] SKIPPED: tar/zstd/python3 unavailable');
+      return;
+    }
+    const dir = mkdtempSync(path.join(tmpdir(), 'pc-gate-nozstd-'));
+    try {
+      const stage = path.join(dir, 'stage');
+      mkdirSync(stage, { recursive: true });
+      writeFileSync(path.join(stage, 'readme.txt'), 'clean\n');
+      symlinkSync('/marker-link-target/x', path.join(stage, 'link'));
+      const plain = path.join(dir, 'a.tar');
+      execFileSync('tar', ['-c', '-f', plain, '-C', stage, '.'], { stdio: 'ignore' });
+      execFileSync('zstd', ['-q', '-f', plain, '-o', path.join(dir, 'a.tar.zst')], {
+        stdio: 'ignore',
+      });
+      // Force the pre-3.14 world: no zstd codec, so is_tarfile says False and the
+      // generic tar branch cannot rescue a missing .tar.zst branch.
+      const probe = `
+import importlib.util, os, tarfile
+spec = importlib.util.spec_from_file_location("aud", ${JSON.stringify(GATE)})
+aud = importlib.util.module_from_spec(spec); spec.loader.exec_module(aud)
+aud.tarfile.is_tarfile = lambda *a, **k: False   # simulate py<=3.13
+d = os.path.join(${JSON.stringify(dir)}, "dest")
+aud._expand_archive(os.path.join(${JSON.stringify(dir)}, "a.tar.zst"), d)
+p = os.path.join(d, "__member_names__.txt")
+print("MANIFEST:", open(p).read().replace("\\n", "|") if os.path.exists(p) else "<NONE>")
+`;
+      const r = spawnSync('python3', ['-c', probe], { encoding: 'utf8', env: GATE_ENV });
+      expect(r.status, `probe failed: ${r.stderr}`).toBe(0);
+      expect(
+        r.stdout,
+        'without a native zstd codec the .tar.zst branch is the ONLY thing routing this ' +
+          'memberwise — no manifest means the 0.0.17 blind spot is back',
+      ).not.toMatch(/<NONE>/);
+      expect(r.stdout).toMatch(/marker-link-target/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
   it('writes a member manifest for .tar.zst identical in coverage to .tar', () => {
     if (!have('tar') || !have('zstd') || !have('python3')) {
       console.warn('[identity-gate guard] SKIPPED: tar/zstd/python3 unavailable');
