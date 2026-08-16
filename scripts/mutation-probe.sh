@@ -43,6 +43,38 @@
 #                             --test <command containing {}> \
 #                             [--expect caught|survived] [--in-tree]
 #                             [--sweep-lock-held | --accept-sweep-race]
+#                             [--fake-destructive]
+#                             [--i-know-this-deletes --sandbox-root <dir>]
+#
+# ⛔ DESTRUCTIVE SUBJECTS (EI-20566003853444873 — the 2026-08-15 incident)
+#   This script's original blast-radius model protected THE FILE UNDER TEST and
+#   nothing else. Executing a mutant of code that DELETES means running
+#   deliberately-corrupted deletion logic against the real filesystem with your
+#   full privileges: one probe of a reaper script did exactly that and destroyed
+#   ~370GB (~/windows-vm, ~/Downloads, ~/backups, most of papercupai-workspace).
+#   So the probe now REFUSES by default when the subject file or the --test
+#   command contains destructive primitives (rm/rmdir/unlink/shred/mkfs/
+#   dd of=/truncate/find -delete). Two ways forward, in order of preference:
+#
+#   --fake-destructive       TIER-0, use this one. Prepends shim executables
+#                            (rm, rmdir, unlink, shred, truncate, mkfs, dd) to
+#                            PATH for both guard runs; each shim LOGS its argv to
+#                            $SCRATCH/destructive-calls.log and deletes nothing.
+#                            Assert on what the code WOULD delete instead of
+#                            letting it delete. Limit: PATH-level interception
+#                            only — a subject calling /bin/rm by absolute path
+#                            bypasses the shims (use the sandbox for those).
+#
+#   --i-know-this-deletes    Explicit opt-in to REAL execution, and it ALSO
+#     --sandbox-root <dir>   requires --sandbox-root: both guard runs are then
+#                            wrapped in bwrap with / mounted READ-ONLY and only
+#                            <dir> + the probe scratch dir writable, so a mutant
+#                            that widens its delete target hits a wall instead
+#                            of the filesystem. Refused if bwrap cannot sandbox
+#                            on this host.
+#
+#   Either flag may also be passed proactively for a subject the heuristic does
+#   not flag — they only ever ADD protection.
 #
 #   {} in --test is replaced by the path of the MUTATED COPY (copy-out mode)
 #   or by the tracked path itself (--in-tree mode), so the same --test string
@@ -107,6 +139,11 @@ TEST_CMD=""
 EXPECT="caught"
 IN_TREE=0
 SWEEP_ACK=""
+DELETES_ACK=0
+FAKE_DESTRUCTIVE=0
+SANDBOX_ROOT=""
+FAKE_BIN=""
+DESTRUCTIVE_LOG=""
 
 # The resource git-sync's own tick holds for this checkout. Resolved from the
 # repo root rather than hardcoded, so a submodule (which git-sync sweeps under
@@ -124,6 +161,9 @@ while [ $# -gt 0 ]; do
     --in-tree) IN_TREE=1; shift ;;
     --sweep-lock-held)   SWEEP_ACK="lock-held";      shift ;;
     --accept-sweep-race) SWEEP_ACK="race-accepted";  shift ;;
+    --fake-destructive)    FAKE_DESTRUCTIVE=1; shift ;;
+    --i-know-this-deletes) DELETES_ACK=1;      shift ;;
+    --sandbox-root) SANDBOX_ROOT="${2:-}"; shift 2 || die "--sandbox-root needs a value" ;;
     # Print the whole header block, bounded by where it actually ends rather
     # than by a hardcoded line number — the previous '2,70p' silently truncated
     # mid-section every time the header grew, which is how --help ends up
@@ -208,6 +248,30 @@ if [ "$IN_TREE" -eq 0 ] && [ -n "$SWEEP_ACK" ]; then
       to hold open or accept. Drop the flag (or add --in-tree if you meant it)."
 fi
 
+# --- destructive-subject flag plumbing (EI-20566003853444873) ----------------
+if [ "$DELETES_ACK" -eq 1 ] && [ "$FAKE_DESTRUCTIVE" -eq 1 ]; then
+  die "pick ONE: --fake-destructive (shimmed, nothing really deletes) or
+      --i-know-this-deletes --sandbox-root <dir> (real execution, sandboxed).
+      Combining them would run REAL deletion logic while telling you it was shimmed."
+fi
+if [ "$DELETES_ACK" -eq 1 ] && [ -z "$SANDBOX_ROOT" ]; then
+  die "--i-know-this-deletes ALSO requires --sandbox-root <dir>.
+      Acknowledging the danger does not remove it: the 2026-08-15 incident ran a
+      mutant whose delete loop had been widened to 'for d in /*' — an
+      acknowledgement flag alone would not have saved a single byte. With
+      --sandbox-root, both guard runs execute under bwrap with / READ-ONLY and
+      only <dir> + the probe scratch dir writable, so a widened mutant hits a
+      wall. If your guard cannot run sandboxed, use --fake-destructive instead."
+fi
+if [ -z "$SANDBOX_ROOT" ] || [ "$DELETES_ACK" -eq 1 ]; then :; else
+  die "--sandbox-root only means something with --i-know-this-deletes.
+      (--fake-destructive needs no sandbox: nothing real executes deletion.)"
+fi
+if [ -n "$SANDBOX_ROOT" ]; then
+  [ -d "$SANDBOX_ROOT" ] || die "no such --sandbox-root directory: $SANDBOX_ROOT"
+  SANDBOX_ROOT="$(cd "$SANDBOX_ROOT" && pwd)" || die "could not resolve --sandbox-root"
+fi
+
 SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/mutation-probe.XXXXXX")" || die "could not create scratch dir"
 readonly SCRATCH
 BASE="$SCRATCH/$(basename "$FILE").orig"
@@ -285,6 +349,67 @@ finish() {
 }
 trap finish EXIT INT TERM
 
+# ---------------------------------------------------------------------------
+# Destructive-subject gate (EI-20566003853444873, the 2026-08-15 incident).
+# Everything above only READS the subject; the first EXECUTION of anything is
+# the baseline guard run below, so this gate must sit before it. The scan is
+# deliberately conservative — a false positive costs one flag; a false negative
+# already cost ~370GB.
+# ---------------------------------------------------------------------------
+DESTRUCTIVE_ERE='\b(rm|rmdir|unlink|shred|truncate)\b|\bmkfs(\.[[:alnum:]]+)?\b|\bdd\b[^|;&()]*\bof=|\bfind\b[^|;&()]*-delete'
+SUBJ_HITS="$(grep -Eo "$DESTRUCTIVE_ERE" "$FILE" 2>/dev/null | sort -u | head -6 | tr '\n' ' ' || true)"
+CMD_HITS="$(printf '%s' "$TEST_CMD" | grep -Eo "$DESTRUCTIVE_ERE" 2>/dev/null | sort -u | head -6 | tr '\n' ' ' || true)"
+if [ -n "$SUBJ_HITS$CMD_HITS" ] && [ "$DELETES_ACK" -eq 0 ] && [ "$FAKE_DESTRUCTIVE" -eq 0 ]; then
+  die "REFUSING: the probe would EXECUTE destructive code, and nothing sandboxes what a mutant DOES.
+      Matched destructive primitives — subject: ${SUBJ_HITS:-none}; --test command: ${CMD_HITS:-none}
+
+      This script's guarantees protect the FILE UNDER TEST, never the filesystem the
+      mutant runs against. Executing a mutant of deletion code means running
+      deliberately-corrupted deletion logic with your full privileges: on 2026-08-15
+      exactly that turned a reaper's loop into 'for d in /*' and destroyed ~370GB
+      (EI-20566003853444873). Pick one:
+
+      PREFERRED — add --fake-destructive
+          Shim executables (rm, rmdir, unlink, shred, truncate, mkfs, dd) are
+          prepended to PATH for both guard runs; each logs its argv to the scratch
+          dir's destructive-calls.log and deletes NOTHING. Assert on what the code
+          WOULD delete. (PATH-level only: an absolute /bin/rm call bypasses it.)
+
+      OR — add --i-know-this-deletes --sandbox-root <dir>
+          Real execution, but both guard runs are wrapped in bwrap with / mounted
+          READ-ONLY and only <dir> + the probe scratch dir writable.
+
+      If the match is a false positive (e.g. 'rm' inside a comment or a path),
+      either flag is safe — they only ever ADD protection."
+fi
+
+if [ "$FAKE_DESTRUCTIVE" -eq 1 ]; then
+  FAKE_BIN="$SCRATCH/fake-bin"
+  DESTRUCTIVE_LOG="$SCRATCH/destructive-calls.log"
+  mkdir -p "$FAKE_BIN" || die "could not create the fake-destructive shim dir"
+  : >"$DESTRUCTIVE_LOG"
+  for shim_tool in rm rmdir unlink shred truncate mkfs dd; do
+    cat >"$FAKE_BIN/$shim_tool" <<'SHIM'
+#!/usr/bin/env bash
+printf '%s %s\n' "${0##*/}" "$*" >> "${MUTATION_PROBE_DESTRUCTIVE_LOG:?}"
+exit 0
+SHIM
+    chmod +x "$FAKE_BIN/$shim_tool" || die "could not install shim: $shim_tool"
+  done
+  log "fake-destructive: shims installed ($FAKE_BIN); intercepted calls -> $DESTRUCTIVE_LOG"
+fi
+
+if [ "$DELETES_ACK" -eq 1 ]; then
+  command -v bwrap >/dev/null 2>&1 \
+    || die "--i-know-this-deletes needs bwrap (bubblewrap) for its read-only sandbox and this host has none. Use --fake-destructive instead."
+  if ! bwrap --ro-bind / / --dev /dev --proc /proc --die-with-parent -- true 2>"$SCRATCH/bwrap-preflight.err"; then
+    die "bwrap cannot create its sandbox on this host (user namespaces may be disabled here):
+      $(head -3 "$SCRATCH/bwrap-preflight.err" 2>/dev/null)
+      REFUSING to run destructive code unsandboxed. Use --fake-destructive instead."
+  fi
+  log "sandbox: guard runs will execute under bwrap — / read-only; writable: $SANDBOX_ROOT + $SCRATCH"
+fi
+
 # Run a guard in an interruptible child and preserve its output for the
 # machine-readable verdict below. The phase marker lets a guard's own test
 # fixture skip an intentionally slow baseline setup without weakening the
@@ -300,6 +425,22 @@ run_guard() {
     # supervised child so it reaches every test process without leaking into
     # the caller's environment.
     export PAPERCUSP_MUTATION_PROBE=1
+    if [ "$FAKE_DESTRUCTIVE" -eq 1 ]; then
+      # PATH-level interception, scoped to the supervised child only.
+      export PATH="$FAKE_BIN:$PATH"
+      export MUTATION_PROBE_DESTRUCTIVE_LOG="$DESTRUCTIVE_LOG"
+    fi
+    if [ "$DELETES_ACK" -eq 1 ]; then
+      # Real execution, walled in: / read-only, only the caller's declared
+      # sandbox root and the probe scratch dir writable. TMPDIR is pointed
+      # into scratch so well-behaved tools land their temp files inside the
+      # writable zone. Parent-held fds (the >"$output" redirect) pass through.
+      export TMPDIR="$SCRATCH"
+      printf '%s\n' "$cmd" >"$SCRATCH/guard-cmd.sh"
+      exec bwrap --ro-bind / / --dev /dev --proc /proc \
+        --bind "$SANDBOX_ROOT" "$SANDBOX_ROOT" --bind "$SCRATCH" "$SCRATCH" \
+        --die-with-parent -- bash "$SCRATCH/guard-cmd.sh"
+    fi
     eval "$cmd"
   ) >"$output" 2>&1 &
   CHILD=$!
@@ -348,6 +489,27 @@ else
   printf 'MUTATION_PROBE_RESULT verdict=harness-error expected=%s target=%s baseline_exit=%d guard_exit=-1\n' \
     "$EXPECT" "$TARGET_MODE" "$BASELINE_RC"
   exit 2
+fi
+
+# --- pre-flight the mutation under perl strict -------------------------------
+# On a THROWAWAY copy, deliberately BEFORE the dirty window below (this block
+# may use command substitution; the dirty window must not). perl s///
+# INTERPOLATES the REPLACEMENT half, and an UNDEFINED perl variable there is
+# silently empty — that silent-empty is how an escaped-match-side probe's
+# replacement became 'for d in ""/*' == 'for d in /*' and destroyed ~370GB on
+# 2026-08-15 (EI-20566003853444873). Under -Mstrict an undeclared $name is a
+# COMPILE error instead, so the trap fires loudly before anything is mutated.
+cp "$BASE" "$SCRATCH/strict-check" || die "could not stage the strict-check copy"
+if ! perl -Mstrict -pe "$MUTATE" "$SCRATCH/strict-check" >/dev/null 2>"$SCRATCH/strict-err"; then
+  die "the --mutate expression does not compile under 'use strict' — refusing before mutating anything.
+      perl said: $(head -3 "$SCRATCH/strict-err" 2>/dev/null)
+
+      MOST COMMON CAUSE: a bare \$name in the REPLACEMENT half. perl INTERPOLATES
+      the replacement, so \$name there is a PERL VARIABLE — and if it is undefined
+      it becomes silently EMPTY (that exact silent-empty widened a delete loop to
+      'for d in /*' on 2026-08-15). If you meant the literal text \$name — e.g. the
+      subject is a SHELL script and \$name is one of ITS variables — escape it on
+      the replacement side too: s/match/\\\$name/. Special vars (\$1, \$&) are fine."
 fi
 
 # --- apply the mutation -----------------------------------------------------

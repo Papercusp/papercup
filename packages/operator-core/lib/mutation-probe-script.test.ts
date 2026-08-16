@@ -352,3 +352,149 @@ exec "$MUTATION_PROBE_REAL_PS" "$@"
     }
   }, 40_000);
 });
+
+/**
+ * Recurrence guards for EI-20566003853444873 — the 2026-08-15 incident, in which
+ * a probe of a wine-prefix reaper EXECUTED a mutant whose delete loop had been
+ * widened (via silent perl replacement-half interpolation of an undefined
+ * $parent) to `for d in /*`, destroying ~370GB. Two independent defenses are
+ * pinned here, each from both sides (refusal fires; the sanctioned path works):
+ *
+ *   1. The DESTRUCTIVE-SUBJECT GATE — a subject file or --test command containing
+ *      destructive primitives is REFUSED before anything executes, unless the
+ *      caller picks --fake-destructive (PATH shims, nothing deletes) or
+ *      --i-know-this-deletes --sandbox-root <dir> (bwrap, / read-only).
+ *   2. The STRICT PRE-FLIGHT — a --mutate whose replacement references an
+ *      undeclared perl variable is a hard refusal, never a silent empty.
+ */
+describe('mutation-probe.sh — destructive subjects are never executed unprotected', () => {
+  const DESTRUCTIVE_SUBJECT = '#!/usr/bin/env bash\nrm -rf "$1"\necho cleaned\n';
+
+  it('REFUSES (exit 2) an rm-containing subject before ANY execution, naming both sanctioned paths', () => {
+    const ranMarker = join(dir, 'guard-ran');
+    writeFileSync(subject, DESTRUCTIVE_SUBJECT);
+    const { code, out } = runProbeIO([
+      '--file', subject,
+      '--mutate', 's/cleaned/CLEANED/',
+      '--test', `: > ${ranMarker}; bash {} /nonexistent-victim`,
+    ]);
+    expect(code).toBe(2);
+    // The refusal names both ways forward — the message is the interface.
+    expect(out).toMatch(/--fake-destructive/);
+    expect(out).toMatch(/--i-know-this-deletes/);
+    expect(out).toMatch(/--sandbox-root/);
+    // NOTHING executed: neither the baseline nor the mutant guard ever ran.
+    expect(spawnSync('test', ['-e', ranMarker]).status).not.toBe(0);
+    expect(read()).toBe(DESTRUCTIVE_SUBJECT);
+  });
+
+  it('REFUSES a destructive --test command even when the subject itself is clean', () => {
+    const { code, out } = runProbeIO([
+      '--file', subject, // alpha/beta/gamma — clean
+      '--mutate', 's/beta/BETA/',
+      '--test', `grep -q "^beta$" {} && rm -rf ${join(dir, 'x')}`,
+    ]);
+    expect(code).toBe(2);
+    expect(out).toMatch(/--fake-destructive/);
+  });
+
+  it('--fake-destructive runs the probe with shimmed deleters: the mutant is caught and the victim SURVIVES', () => {
+    writeFileSync(subject, DESTRUCTIVE_SUBJECT);
+    const victim = join(dir, 'victim');
+    writeFileSync(victim, 'precious\n');
+    // The guard asserts BOTH halves of the tier-0 contract: the subject's
+    // output is intact AND the victim it "deleted" still exists (the shim
+    // logged instead of deleting). On the mutant, the output changes => the
+    // guard fails => CAUGHT (exit 0).
+    const { code, out } = runProbeIO([
+      '--fake-destructive',
+      '--file', subject,
+      '--mutate', 's/cleaned/CLEANED/',
+      '--test', `[ "$(bash {} "${victim}" | tail -1)" = cleaned ] && [ -e "${victim}" ]`,
+    ]);
+    expect(out).toMatch(/fake-destructive: shims installed/);
+    expect(code).toBe(0);
+    // The real rm never ran, in either phase.
+    expect(readFileSync(victim, 'utf8')).toBe('precious\n');
+  });
+
+  it('--i-know-this-deletes WITHOUT --sandbox-root is refused — acknowledgement alone saves no bytes', () => {
+    writeFileSync(subject, DESTRUCTIVE_SUBJECT);
+    const { code, out } = runProbeIO([
+      '--i-know-this-deletes',
+      '--file', subject,
+      '--mutate', 's/cleaned/CLEANED/',
+      '--test', 'bash {} /nonexistent-victim',
+    ]);
+    expect(code).toBe(2);
+    expect(out).toMatch(/--sandbox-root/);
+  });
+
+  it('refuses to COMBINE --fake-destructive with --i-know-this-deletes', () => {
+    writeFileSync(subject, DESTRUCTIVE_SUBJECT);
+    const sb = join(dir, 'sb');
+    mkdirSync(sb);
+    const { code, out } = runProbeIO([
+      '--fake-destructive', '--i-know-this-deletes', '--sandbox-root', sb,
+      '--file', subject,
+      '--mutate', 's/cleaned/CLEANED/',
+      '--test', 'bash {} /nonexistent-victim',
+    ]);
+    expect(code).toBe(2);
+    expect(out).toMatch(/pick ONE/i);
+  });
+
+  const bwrapWorks =
+    spawnSync('bwrap', ['--ro-bind', '/', '/', '--dev', '/dev', '--proc', '/proc', '--', 'true'], {
+      timeout: 10_000,
+    }).status === 0;
+
+  it.skipIf(!bwrapWorks)(
+    '--i-know-this-deletes --sandbox-root really walls the filesystem: a delete OUTSIDE the root fails',
+    () => {
+      writeFileSync(subject, '#!/usr/bin/env bash\nrm -f "$1" 2>/dev/null\necho ok\n');
+      const sb = join(dir, 'sb');
+      mkdirSync(sb);
+      const outside = join(dir, 'outside-the-sandbox');
+      writeFileSync(outside, 'still here\n');
+      const { code, out } = runProbeIO([
+        '--i-know-this-deletes', '--sandbox-root', sb,
+        '--file', subject,
+        '--mutate', 's/ok/OK/',
+        '--test', `[ "$(bash {} "${outside}" | tail -1)" = ok ]`,
+      ]);
+      expect(out).toMatch(/sandbox: guard runs will execute under bwrap/);
+      expect(code).toBe(0); // the probe itself still works end-to-end
+      // The subject really ran `rm -f` on this path in BOTH phases — and the
+      // read-only bind meant it could not remove it. Without the sandbox this
+      // assertion is the one that fails.
+      expect(readFileSync(outside, 'utf8')).toBe('still here\n');
+    },
+  );
+
+  it('a replacement referencing an UNDECLARED perl variable is a hard refusal, never a silent empty', () => {
+    // The incident's exact trap shape: match side escaped (shell literal),
+    // replacement side bare => an undefined perl var => silently "" pre-fix.
+    const { code, out } = runProbeIO([
+      '--file', subject,
+      '--mutate', 's/beta/$undefined_thing/',
+      '--test', 'grep -q "^beta$" {}',
+    ]);
+    expect(code).toBe(2);
+    expect(out).toMatch(/use strict/i);
+    expect(out).toMatch(/INTERPOLATES/);
+    expect(read()).toBe(ORIGINAL);
+  });
+
+  it('calibration: an ESCAPED literal \\$name in the replacement still works — the strict gate blocks only the trap', () => {
+    const code = runProbe([
+      '--file', subject,
+      '--mutate', 's/beta/\\$literal/',
+      '--test', 'grep -q "^beta$" {}',
+    ]);
+    // The mutation applied (beta -> $literal), the guard failed on the mutant,
+    // the probe reports CAUGHT. Reaching exit 0 proves strict did not refuse it.
+    expect(code).toBe(0);
+    expect(read()).toBe(ORIGINAL);
+  });
+});
