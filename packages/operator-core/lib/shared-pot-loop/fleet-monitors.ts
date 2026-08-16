@@ -310,33 +310,41 @@ export function judgePeerFederationSilence(
   // evidence of a FAULT when we ourselves are still live in the scope.
   if (opts.localActivityAgeMs != null && opts.localActivityAgeMs > opts.silentAfterMs) {
     return {
-      totalLogs: rows.length,
+      totalLogs: judged.length,
       measured: false,
       unmeasuredReason: 'scope-dormant',
       silent: [],
       freshestAdvanceMs: null,
       allSilent: false,
       breaches: [],
+      strandedCursors,
+      liveApplyBinding,
     };
   }
-  const ages = rows.map((r) => Math.max(0, opts.nowMs - r.updatedAtMs));
+  const ages = judged.map((r) => Math.max(0, opts.nowMs - r.updatedAtMs));
   const freshestAdvanceMs = Math.min(...ages);
-  const silent = rows
+  const silent = judged
     .map((r, i) => ({ logKeyHex: r.logKeyHex, silentForMs: ages[i]!, position: r.position }))
     .filter((s) => s.silentForMs > opts.silentAfterMs)
     .sort((a, b) => b.silentForMs - a.silentForMs);
-  const allSilent = silent.length === rows.length;
+  const allSilent = silent.length === judged.length;
   const breaches: string[] = [];
+  // Only the live-binding population is described. `strandedCursors` rides on the
+  // result instead so residue stays visible without inflating a peer verdict.
+  const strandedNote =
+    strandedCursors > 0
+      ? ` (${strandedCursors} further cursor(s) ignored: stranded under a superseded apply_binding — schema residue, not peers)`
+      : '';
   if (allSilent) {
     // Withhold the per-peer reading: with no advancing log left as a control,
     // the evidence points at our own fold, and N peer alarms would be N false
     // positives dressed as corroboration.
     breaches.push(
-      `LOCAL FOLD SUSPECT: all ${rows.length} remote log(s) silent — freshest advance ${freshestAdvanceMs}ms ago > SLO ${opts.silentAfterMs}ms. Suspect this host's merge loop, NOT the peers.`,
+      `LOCAL FOLD SUSPECT: all ${judged.length} remote log(s) silent — freshest advance ${freshestAdvanceMs}ms ago > SLO ${opts.silentAfterMs}ms. Suspect this host's merge loop, NOT the peers.${strandedNote}`,
     );
   } else if (silent.length > 0) {
     breaches.push(
-      `${silent.length} of ${rows.length} remote log(s) have federated nothing for > SLO ${opts.silentAfterMs}ms (oldest ${silent[0]!.silentForMs}ms, log ${silent[0]!.logKeyHex.slice(0, 12)}…) while ${rows.length - silent.length} log(s) keep advancing.`,
+      `${silent.length} of ${judged.length} remote log(s) have federated nothing for > SLO ${opts.silentAfterMs}ms (oldest ${silent[0]!.silentForMs}ms, log ${silent[0]!.logKeyHex.slice(0, 12)}…) while ${judged.length - silent.length} log(s) keep advancing.${strandedNote}`,
     );
   }
   return {
