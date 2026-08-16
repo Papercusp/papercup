@@ -225,7 +225,9 @@ describe('gradeChaosSummary (unmeasured-INP guard)', () => {
   });
 
   it('reports the excluded arming cost rather than dropping it', () => {
-    const res = grade({ maxFrameMs: 40, setupMaxFrameMs: 412, setupFrameDrops: 2 });
+    // inpSamples>0 so the separate unmeasured-INP guard does not skip this and
+    // mask what is being asserted: that a big ARMING frame is not an app breach.
+    const res = grade({ inpSamples: 9, maxInp: 40, p95Inp: 32, maxFrameMs: 40, setupMaxFrameMs: 412, setupFrameDrops: 2 });
     expect(res.actual).toContain('setup maxFrame=412ms');
     expect(res.actual).toContain('drops=2');
     expect(res.actual).toContain('excluded from grade');
