@@ -51,7 +51,12 @@ describe('runEmbedSidecarServer graceful shutdown', () => {
   beforeEach(() => {
     process.env.PAPERCUSP_EMBED_SIDECAR_PORT = '0'; // ephemeral — never the real :3384
     signalListeners.clear();
-    exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
+    // Double-hop escape (NOT a bare `as never`/`as any`) — the same pattern
+    // typed-mock.ts's own mockImplementationTyped uses internally: real
+    // functions assignable to `(code?: ...) => never` must themselves never
+    // return, which a no-op fake deliberately isn't, so casting through a
+    // concrete real type (`typeof process.exit`) is the sanctioned escape.
+    exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as unknown as typeof process.exit);
     onSpy = vi.spyOn(process, 'on').mockImplementation((event: string | symbol, listener: (...a: unknown[]) => void) => {
       if (event === 'SIGTERM' || event === 'SIGINT') signalListeners.set(event, listener as () => void);
       return process;
