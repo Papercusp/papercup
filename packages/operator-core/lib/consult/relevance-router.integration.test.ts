@@ -253,6 +253,54 @@ describe('routeConsult — D-003 honesty invariants', () => {
   });
 });
 
+// P-007 FALSIFIABILITY CONTROLS — prove each honesty verdict above is caused by
+// the mechanism the test names, not vacuously true. A router whose candidate
+// discovery silently broke would ALSO answer no_qualified_responder to every
+// scenario above; these controls are what make that failure mode detectable.
+// (Same calibration-control idiom as the identity-scan gate's "a clean bundle
+// passes" test: without a control, fail-on-everything satisfies every assertion.)
+describe('routeConsult — P-007 falsifiability controls', () => {
+  it('CONTROL: the far-query no-route is FLOOR-driven — zeroed floors ROUTE the identical scenario', async () => {
+    // Identical far embedder to the honesty test (sim ≈ 0.12 for the best owner);
+    // only the floors change. If this routes, the far-query no_qualified_responder
+    // verdict above is attributable to the floors, not to a dead pipeline.
+    const r = await routeConsult({ ...baseParams, floor: 0, simFloor: 0 }, deps(-1.3));
+    expect(r.verdict).toBe('routed');
+    expect(r.qualified.length).toBeGreaterThan(0);
+    // The audit snapshot must echo the floors ACTUALLY applied (D-008: the
+    // persisted routing record is the calibration feed — a snapshot that echoes
+    // defaults while overrides governed would poison every later re-grade).
+    expect(r.snapshot.floor).toBe(0);
+    expect(r.snapshot.simFloor).toBe(0);
+  });
+
+  it('CONTROL: the routed verdict is floor-governed too — an unreachable floor no-routes the happy path', async () => {
+    // The blend is a convex combination in [0,1], so floor 1.01 is unreachable.
+    // If this still routed, the floor filter would be decorative and every
+    // no_qualified_responder assertion above would be testing nothing.
+    const r = await routeConsult({ ...baseParams, floor: 1.01 }, deps(0));
+    expect(r.verdict).toBe('no_qualified_responder');
+    expect(r.qualified).toEqual([]);
+    // Candidates are still recorded — the floor blocks QUALIFICATION, not audit.
+    expect(r.snapshot.candidates.length).toBeGreaterThan(0);
+  });
+
+  it('CONTROL: the sub-floor exclusion is the SIM sub-floor specifically — zeroing it admits agent-subfloor', async () => {
+    // Same tilted weights as the D-003 hard-gate test; only simFloor changes.
+    // Qualifying here proves that test excludes agent-subfloor via the sim
+    // sub-floor, not via some other filter that would mask a sub-floor regression.
+    const r = await routeConsult(
+      {
+        ...baseParams,
+        simFloor: 0,
+        weights: { similarity: 0.3, recency: 0.3, verification: 0.3, authorship: 0.1 },
+      },
+      deps(0),
+    );
+    expect(r.qualified.map((c) => c.ownerId)).toContain('agent-subfloor');
+  });
+});
+
 describe('extractPathTokens', () => {
   it('extracts slash paths, trims trailing punctuation, caps at 4, dedupes', () => {
     expect(extractPathTokens('see packages/foo/bar.ts.')).toEqual(['packages/foo/bar.ts']);
