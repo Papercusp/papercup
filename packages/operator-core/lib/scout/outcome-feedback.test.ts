@@ -68,6 +68,16 @@ describe('Scout outcome-feedback (P-013 / D-009)', () => {
         'wi:F-DEPRECATED',
         entry({ ref: 'wi:F-DEPRECATED', kind: 'completion', title: 'Deprecated: F-DEPRECATED', detail: 'Status: deprecated' }),
       ],
+      // P-013 / D-005 (goal rail): the ledger's goal leg emits only TERMINAL
+      // goals (stop-seam TERMINAL_STATUSES), tagged "Status: <status>".
+      [
+        'goal:g-achieved',
+        entry({ ref: 'goal:g-achieved', kind: 'completion', title: 'Goal achieved: g-achieved', detail: 'Status: achieved' }),
+      ],
+      [
+        'goal:g-killed',
+        entry({ ref: 'goal:g-killed', kind: 'completion', title: 'Goal killed: g-killed', detail: 'Status: killed' }),
+      ],
     ]);
 
     it('pending when the routed artifact is not yet in the feed', () => {
@@ -142,6 +152,19 @@ describe('Scout outcome-feedback (P-013 / D-009)', () => {
       // CONTROL: the exclusion is gym-rail-scoped — a wi ref is untouched.
       expect(classifyIdeaOutcome(prov({ lens: 'analogical', routedRef: 'wi:EI-1', rail: 'improvement' }), feed)).toBe(
         'won',
+      );
+    });
+
+    it('goal rail (P-013 / D-005): achieved = won, killed = lost, non-terminal (no entry) = pending', () => {
+      expect(classifyIdeaOutcome(prov({ lens: 'analogical', routedRef: 'goal:g-achieved', rail: 'goal' }), feed)).toBe(
+        'won',
+      );
+      expect(classifyIdeaOutcome(prov({ lens: 'analogical', routedRef: 'goal:g-killed', rail: 'goal' }), feed)).toBe(
+        'lost',
+      );
+      // An active/paused goal never reaches the ledger's terminal-only goal leg.
+      expect(classifyIdeaOutcome(prov({ lens: 'analogical', routedRef: 'goal:g-active', rail: 'goal' }), feed)).toBe(
+        'pending',
       );
     });
   });
