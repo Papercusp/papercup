@@ -278,6 +278,81 @@ describe('release identity gate: --scan-artifact fails closed (WI-39458)', () =>
   }, 180_000);
 });
 
+describe('--scan-artifact recurses into a WRAPPED installer (WI-39458)', () => {
+  /**
+   * The published Windows Server artifact is a `.zip` whose members are an Inno
+   * Setup STUB plus its DiskSpan `.bin` slices. Expanding the zip alone
+   * "succeeds" and passes the size-ratio check comfortably (~2.2GB out of a
+   * 2.2GB container) while leaving ~100% of the real payload in blobs the scan
+   * can only grep opaquely — the same false clean, one level down, on the exact
+   * artifact this item was filed on. So the wrapper must not be mistaken for the
+   * payload.
+   */
+  function wrappedFixture(dir: string, payload: string, name: string): string {
+    const stageDir = path.join(dir, `p-${name}`);
+    mkdirSync(stageDir, { recursive: true });
+    writeFileSync(path.join(stageDir, 'pgdata.conf'), payload);
+    // A zip-with-an-.exe-name stands in for the Inno stub: the point under test
+    // is that a WRAPPED installer gets expanded, not which packer made it.
+    const stub = path.join(dir, `${name}_x64-setup.exe`);
+    execFileSync('sh', ['-c',
+      `cd ${JSON.stringify(stageDir)} && zip -q ${JSON.stringify(stub)} pgdata.conf`]);
+    const wrapper = path.join(dir, `${name}.zip`);
+    execFileSync('sh', ['-c',
+      `cd ${JSON.stringify(dir)} && zip -q ${JSON.stringify(wrapper)} ${JSON.stringify(path.basename(stub))}`]);
+    return wrapper;
+  }
+
+  it('CATCHES a leak two levels down, and stays CLEAN when the payload is clean', () => {
+    if (!have('python3') || !have('zip') || !have('7z')) {
+      console.warn('[identity-gate guard] SKIPPED: python3/zip/7z unavailable on this host');
+      return;
+    }
+    const sentinel = sentinelFromDenylist();
+    const dir = mkdtempSync(path.join(tmpdir(), 'pc-gate-wrap-'));
+    try {
+      const leaky = runGate([
+        '--scan-artifact', wrappedFixture(dir, `owner=${sentinel}\n`, 'Leaky'),
+      ]);
+      expect(leaky.out).toMatch(/wraps/); // it recognised the wrapped installer
+      expect(leaky.out).toMatch(/CARRIES SENSITIVE IDENTITY/);
+      expect(leaky.status).toBe(1);
+
+      // The control that makes the above mean something.
+      const clean = runGate([
+        '--scan-artifact', wrappedFixture(dir, 'nothing to see here\n', 'Clean'),
+      ]);
+      expect(clean.out).toMatch(/wraps/);
+      expect(clean.out).toMatch(/✓ CLEAN/);
+      expect(clean.status).toBe(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 180_000);
+
+  it('treats only a SETUP STUB as a container — never every bundled .exe', () => {
+    // The narrowness is the whole reason this recursion is safe. The expanded
+    // payload legitimately ships node.exe / gh.exe; handing those to an expander
+    // that cannot open them would mark them uninspectable and red every cut —
+    // re-creating, inside this entrypoint, the exact regression that keeps
+    // `.exe` out of ARCHIVE_SUFFIXES.
+    const fn = gateSource().match(/def _looks_like_installer_stub[\s\S]*?\n(?=\n*(?:def |#|[A-Z_]+ ?=))/)?.[0];
+    expect(fn, '_looks_like_installer_stub not found — gate structure changed').toBeTruthy();
+    expect(fn).toMatch(/setup\.exe/);
+    // A bare ".exe" test here would mean "every executable is a container".
+    expect(fn).not.toMatch(/endswith\(["']\.exe["']\)/);
+  });
+
+  it('does NOT expand DiskSpan .bin slices independently of their stub', () => {
+    // innoextract needs the STUB to locate its slices; 7z pointed at a raw slice
+    // recovers a misdetected fragment. The stub predicate must therefore leave
+    // `-setup-1.bin` alone and let the stub pull it in.
+    const src = gateSource();
+    const fn = src.match(/def _looks_like_installer_stub[\s\S]*?\n(?=\n*(?:def |#|[A-Z_]+ ?=))/)?.[0] ?? '';
+    expect(fn).not.toMatch(/\.bin/);
+  });
+});
+
 describe('release producers do not stamp the build user into shipped tarballs (WI-39458)', () => {
   // The gate above is the BACKSTOP. These pin the fix at the SOURCE, so a leak
   // is not produced in the first place — the same convention stage-source-tree.sh
