@@ -1269,13 +1269,29 @@ export function isResourceLimitInvocation(cmd: string): boolean {
 /** The refusal text for a blocked OS-scheduler command, branched on actual intent. */
 export function osSchedulerDenyReason(cmd: string): string {
   if (isResourceLimitInvocation(cmd)) {
+    // EI-19485881710808774: describe the REFUSED OPERATION, not the caller's
+    // presumed goal — `--scope` alone (no resource property) is also how an
+    // agent asks for a plain transient cgroup for reasons that have nothing
+    // to do with resource limiting (e.g. probing cgroup lifetime/parenting),
+    // and "You are trying to LIMIT RESOURCES" was flatly wrong for that
+    // caller. Name the alternatives for the resource-limiting case without
+    // asserting that is what the caller wanted; a caller with a different,
+    // legitimate use of `--scope`/resource props is still refused (this gate
+    // cannot honor that request either way) but is not told a false story
+    // about its own intent. Mirrors _os_scheduler_deny_reason() in the CC/Codex
+    // hook (scripts/hooks/cc/pretooluse-bash-resource-gate.sh) — fix one, fix both.
     return (
       'native-scheduler lockout: agent sessions cannot create transient systemd ' +
-      'units, so cgroup resource control via `systemd-run` is unavailable here. ' +
-      'You are trying to LIMIT RESOURCES, not schedule a wake — use `taskset -c ' +
-      '<cores> <cmd>` to pin CPUs (no scheduler, no root, no daemon), or run heavy ' +
+      'units, so `systemd-run` cgroup/resource-control usage (`--scope`, `-p ' +
+      'CPUQuota=…`, `-p MemoryMax=…`, etc.) is refused here regardless of why it ' +
+      'was invoked. If your goal is limiting CPU/memory, use `taskset -c <cores> ' +
+      '<cmd>` to pin CPUs (no scheduler, no root, no daemon), or run heavy ' +
       'commands through `scripts/pc-heavy.sh` (nice + a concurrency semaphore) on ' +
-      'the shared box. (`pot:declare-wake` is for SCHEDULING and is not what you want.)'
+      'the shared box. If your goal is something else (e.g. cgroup lifetime or ' +
+      'parenting behavior), neither of those substitutes for `systemd-run` — this ' +
+      'guard has no alternative for that case, the operation is simply unavailable ' +
+      'in an agent session. (`pot:declare-wake` is for SCHEDULING, a different ' +
+      'refusal below, and is not an alternative for either case here.)'
     );
   }
   return (
