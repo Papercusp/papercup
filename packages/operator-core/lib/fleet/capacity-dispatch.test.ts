@@ -1074,6 +1074,95 @@ test('P-009 — a proxied account throttled alongside a default-egress one still
   assert.equal(sharedEgress, false, 'two throttled accounts on genuinely DIFFERENT egresses ⇒ not a shared-IP fault');
 });
 
+/**
+ * EI-20613616736215896 — the REAL 2026-08-16 pool, verbatim from `accounts:status`: every claude account
+ * is `egressPool`-routed (the singular `egress` is unset) across THREE distinct proxies, and two accounts
+ * legitimately share one. `egressPool` supersedes `egress`, so reading only the singular collapsed all of
+ * them onto DEFAULT_SHARED_EGRESS_IDENTITY — which P-009 (correctly, for its own case) treats as a KNOWN
+ * identity, turning "we cannot tell" into an affirmative shared-IP verdict and emitting the owner-gated
+ * "the egress path itself is broken" escalation for a pool that had no such fault.
+ */
+const POOL_ROUTED_ACCOUNTS = [
+  { id: 'aviynw', pool: [{ proxyUrl: 'http://199.182.115.224:3128' }, {}] },
+  { id: 'aviynw3', pool: [{ proxyUrl: 'http://199.182.115.224:3128' }, {}] },
+  { id: 'avistorewolf.com', pool: [{ proxyUrl: 'http://209.163.116.244:3128' }, {}] },
+  { id: 'aviynw10', pool: [{ proxyUrl: 'http://216.213.24.64:3128' }, {}] },
+] as const;
+
+test('EI-20613616736215896 FALSIFIABILITY CONTROL — reading only the singular `egress` manufactures sharedEgress TRUE on a 3-proxy pool', () => {
+  // The pre-fix call ignored egressPool entirely, so every pool-routed account fell to the same fallback.
+  const preFix = POOL_ROUTED_ACCOUNTS.map((a, i) => ({
+    id: a.id,
+    edgeThrottled: true,
+    penaltyCount: i + 1,
+    egressIdentity: egressIdentityOf(undefined),
+  }));
+  assert.equal(
+    new Set(preFix.map((s) => s.egressIdentity)).size,
+    1,
+    'pre-fix: three distinct proxies collapsed onto ONE synthetic identity',
+  );
+  assert.equal(
+    deriveEdgeThrottleEvidence(preFix, new Map()).sharedEgress,
+    true,
+    'pre-fix: the down-proxy signature was asserted for a pool that is provably NOT on a shared IP — ' +
+      'this is the false owner escalation, and it must fail once the pool is consulted',
+  );
+});
+
+test('EI-20613616736215896 — egressPool SUPERSEDES the singular egress, so distinct proxies disprove a shared-IP fault', () => {
+  const samples = POOL_ROUTED_ACCOUNTS.map((a, i) => ({
+    id: a.id,
+    edgeThrottled: true,
+    penaltyCount: i + 1,
+    egressIdentity: egressIdentityOf(undefined, a.pool),
+  }));
+  assert.equal(new Set(samples.map((s) => s.egressIdentity)).size, 3, 'three real egress identities, not one');
+  assert.equal(
+    deriveEdgeThrottleEvidence(samples, new Map()).sharedEgress,
+    false,
+    'the owner-gated escalation branch is now unreachable for this pool',
+  );
+});
+
+test('EI-20613616736215896 — egressPool identity is order-insensitive, deduped, and still names the box default', () => {
+  // Two accounts rotating over the SAME set of IPs genuinely share an egress and must compare equal
+  // regardless of the order the store returns them in — otherwise a real shared-IP fault reads as distinct.
+  assert.equal(
+    egressIdentityOf(undefined, [{ proxyUrl: 'http://b:3128' }, { proxyUrl: 'http://a:3128' }]),
+    egressIdentityOf(undefined, [{ proxyUrl: 'http://a:3128' }, { proxyUrl: 'http://b:3128' }]),
+    'same rotation set ⇒ same identity, whatever the order',
+  );
+  assert.equal(
+    egressIdentityOf(undefined, [{ proxyUrl: 'http://a:3128' }, { proxyUrl: 'http://a:3128' }]),
+    'http://a:3128',
+    'duplicate entries collapse',
+  );
+  assert.equal(
+    egressIdentityOf(undefined, [{ proxyUrl: 'http://a:3128' }, {}]),
+    `${DEFAULT_SHARED_EGRESS_IDENTITY}|http://a:3128`,
+    'an unbound pool entry is the box default, named so it participates in the comparison',
+  );
+  // A real shared pool must still be diagnosable — the P-009 case survives the change.
+  const shared = POOL_ROUTED_ACCOUNTS.map((a, i) => ({
+    id: a.id,
+    edgeThrottled: true,
+    penaltyCount: i + 1,
+    egressIdentity: egressIdentityOf(undefined, [{ proxyUrl: 'http://199.182.115.224:3128' }, {}]),
+  }));
+  assert.equal(
+    deriveEdgeThrottleEvidence(shared, new Map()).sharedEgress,
+    true,
+    'a genuinely shared pool still yields the shared-IP verdict',
+  );
+});
+
+test('EI-20613616736215896 — an EMPTY pool falls through to the singular binding (no silent behavior change)', () => {
+  assert.equal(egressIdentityOf({ proxyUrl: 'http://p:3128' }, []), 'http://p:3128', 'empty pool ⇒ singular wins');
+  assert.equal(egressIdentityOf({ proxyUrl: 'http://p:3128' }, undefined), 'http://p:3128', 'absent pool ⇒ singular');
+  assert.equal(egressIdentityOf(undefined, []), DEFAULT_SHARED_EGRESS_IDENTITY, 'empty pool, no binding ⇒ default');
+});
+
 test('P-009 — `undefined` still means GENUINELY UNKNOWN, so the unknown-identity contract is unchanged', () => {
   // The caller no longer manufactures undefined, but the pure function must keep honoring it: a sample
   // whose binding truly could not be read must not be silently folded into the shared-egress majority.
