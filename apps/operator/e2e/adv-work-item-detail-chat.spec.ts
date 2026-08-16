@@ -262,9 +262,14 @@ test.describe('/adv work-item Detail pane + chat launch', () => {
     page,
   }) => {
     const created: CreatedChat[] = [];
-    await stubApis(page, created);
+    const sync = await stubApis(page, created);
     const mounted = await dockMounts(page, 'WI-1');
     assertMounted(mounted, SKIP_MSG);
+
+    // Prove the stub is feeding the panes BEFORE the 20s content wait below: a
+    // bypassed stub then fails in seconds with a diagnostic instead of
+    // surfacing as an unexplained empty pane.
+    await sync.waitForServed(['workItems.byHarness']);
 
     // The seeded Detail pane resolves ?sel=WI-1 against workItems.byHarness and
     // renders WorkItemDetail — id + title in the header, the Chat action below.
@@ -292,13 +297,19 @@ test.describe('/adv work-item Detail pane + chat launch', () => {
     // The drain mounts a Chat panel — its tab falls back to `worker · WI-1`
     // (created chat title is null), proving the event reached the dock.
     await expect(page.getByText('worker · WI-1').first()).toBeVisible({ timeout: 15_000 });
+
+    // Falsifier for this spec's own hermeticity — a never-hit stub means every
+    // assertion above ran against real, unstubbed traffic.
+    sync.assertServed('workItems.byHarness');
   });
 
   test('clicking a grid row drives the Detail pane selection', async ({ page }) => {
     const created: CreatedChat[] = [];
-    await stubApis(page, created);
+    const sync = await stubApis(page, created);
     const mounted = await dockMounts(page); // no ?sel — pane starts on the empty state
     assertMounted(mounted, SKIP_MSG);
+
+    await sync.waitForServed(['workItems.byHarness']);
 
     // The Work-items grid renders both rows; the Detail pane shows its
     // pick-an-item empty state until a row is clicked.
@@ -313,5 +324,7 @@ test.describe('/adv work-item Detail pane + chat launch', () => {
     });
     await expect(detail.locator('.pc-adv-detail__id')).toHaveText('WI-2');
     await expect(detail.getByTestId('wi-detail-chat')).toBeVisible();
+
+    sync.assertServed('workItems.byHarness');
   });
 });
