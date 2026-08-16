@@ -834,10 +834,30 @@ export function buildScoutCycleDeps(
           err instanceof Error ? err.message : err,
         );
       }
+      // P-013 / D-005: the goal rail's gate — the BLENDER_GOAL_RAIL flag (default ON,
+      // the cuttable kill-switch). Fail-open to ON like the gym read above: a broken
+      // flag read must not silently divert routing off the default.
+      let goalEnabled = true;
+      try {
+        const { getFlag } = await import('@papercusp/flags/server');
+        const { FLAGS } = await import('@papercusp/flags');
+        goalEnabled = await getFlag(FLAGS.BLENDER_GOAL_RAIL, 'scout-goal-rail');
+      } catch (err) {
+        console.warn(
+          '[scout/cycle-deps] goal-rail flag read failed — goal rail stays enabled (fail-open):',
+          err instanceof Error ? err.message : err,
+        );
+      }
+      // Compose the two hint-bumping overrides: their domains are disjoint by
+      // construction (goal bumps 'plan'-hinted proposals, instance bumps 'gym'-hinted).
+      const goalOverride = makeGoalScaleOverride(scoutConfig.routing.goalScaleMarkers);
+      const instanceOverride = makeWholeSystemInstanceOverride(scoutConfig.routing.wholeSystemMarkers);
       const result = await routeProposals(proposals, routerPorts, {
-        override: makeWholeSystemInstanceOverride(scoutConfig.routing.wholeSystemMarkers),
+        override: (p) => goalOverride(p) ?? instanceOverride(p),
         defaultRail: scoutConfig.routing.defaultRail,
         gymEnabled,
+        goalEnabled,
+        goalBudgetCentsCap: scoutConfig.routing.goalBudgetCentsCap,
       });
       // Dark Scout→experiment rail (SCOUT_EXPERIMENT_RAIL, default OFF — #2 "close the
       // loop"): ADDITIVELY express each testable (gym-rail) proposal as a DRY-RUN
