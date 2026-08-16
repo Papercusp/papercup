@@ -302,6 +302,13 @@ export async function runOneAutoloopCycle(
   // alongside `scratch`.
   const substrateRoot = mkdtempSync(join(REPO_ROOT, '..', 'gym-substrate-'));
   const substrateDir = join(substrateRoot, 'substrate');
+  // The runner's clones (gymbaseline*/gymcand*) are themselves `--local`
+  // hardlinked clones OF THE SUBSTRATE, so they hit the same cross-device wall
+  // if placed under the /tmp `scratch` root (first live run 2026-08-16 failed
+  // EXDEV exactly there). They live beside the substrate instead — same device,
+  // torn down with `substrateRoot`.
+  const cloneScratch = join(substrateRoot, 'scratch');
+  mkdirSync(cloneScratch);
   const opLogPath = join(tmpdir(), `gym-loop-op-${HEX}.log`);
   let gymUri = '';
   let gymSql: postgres.Sql | undefined;

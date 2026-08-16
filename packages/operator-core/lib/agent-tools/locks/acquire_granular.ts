@@ -4,10 +4,19 @@
  * A NODE is a point in the harness path tree: a file, a directory/subtree, or
  * the harness root (""). A request locks its leaf in the requested mode + places
  * the matching intention lock (IS/IX) on every ancestor up to the root, so a
- * harness-level lock and a file-level lock finally SEE each other (Gray 1976).
- * All-or-nothing: you get the whole lock-set or a conflict list. This is the
- * coarse/cross-cutting complement to the file lock (locks:acquire), which
- * remains the default for a single-file edit.
+ * harness-level GRANULAR lock and a file-level GRANULAR lock see each other
+ * (Gray 1976). All-or-nothing: you get the whole lock-set or a conflict list.
+ *
+ * ⚠ SCOPE BOUND (EI-20471899135452182) — the Gray property holds WITHIN this
+ * domain only. `tryAcquireGranular` conflict-checks `agent_granular_locks` and
+ * nothing else; the classic file lock (`locks:acquire`, and every automatic
+ * PreToolUse edit-hook claim) conflict-checks `agent_file_locks` and nothing
+ * else. The two are mutually invisible, in BOTH directions. So a root X is NOT
+ * an exclusive snapshot of the working tree: peer edits land under it freely.
+ * That false expectation is what cost the WI-39007 release lane its snapshot.
+ * Bridging the domains is an open lock-authority decision — until it lands, do
+ * not describe this lock as excluding per-file edits.
+ * `doc-claims/granular-lock-cross-domain.ts` fails the day that changes.
  */
 
 import { z } from 'zod';
