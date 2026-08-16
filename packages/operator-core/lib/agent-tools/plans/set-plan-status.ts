@@ -32,7 +32,7 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { emitDeprecateLearnings, type DeprecateLearnings } from '../../harness/improvements/deprecate-learnings';
 import { ObservationEvidenceError } from '../../harness/improvements/observation-types';
 import { evaluatePlanAcceptanceGate } from '../../plan-acceptance-gate';
-import { launchAcceptanceGrader, type AcceptanceGraderLifecycle } from '../../acceptance-grader';
+import { launchAcceptanceGrader, resolveAcceptanceGrader, type AcceptanceGraderLifecycle } from '../../acceptance-grader';
 import { evaluateScoutRatificationGate } from '../../scout/ratification-gate';
 import { retireAcceptanceRubricForPlan } from '../../rubrics';
 import { bulkContent, mergeIds, runBulk } from '../_bulk';
@@ -238,15 +238,21 @@ function resolveRatifierOwnerId(ctx: unknown): string | null {
 
 const ACCEPTANCE_GRADER_GATE_CODES = new Set(['acceptance_ungraded', 'self_graded_only']);
 
-/** D-006: a grading refusal launches one fresh, dedicated judge. Keeping this
- * decision in a small exported seam makes the trigger independently testable and
- * prevents unrelated acceptance failures from spawning agents. */
+/** D-006: a grading refusal recruits one grader. Keeping this decision in a
+ * small exported seam makes the trigger independently testable and prevents
+ * unrelated acceptance failures from spawning agents.
+ *
+ * P-011 (get-feedback-relevance-consults D-009): the default recruit is now
+ * DISCOVERY-FIRST — resolveAcceptanceGrader routes the plan + rubric through
+ * the relevance router and ASSIGNS an existing above-floor, non-excluded,
+ * reachable agent; only when discovery says fresh (below floor / all excluded /
+ * all dead / degraded) does it fall through to the original fresh-judge launch. */
 export async function launchAcceptanceGraderForGate(
   slug: string,
   gate: { satisfied: boolean; code?: string },
   ctx: Parameters<typeof launchAcceptanceGrader>[1],
   harness: string | undefined,
-  launch: typeof launchAcceptanceGrader = launchAcceptanceGrader,
+  launch: typeof launchAcceptanceGrader = resolveAcceptanceGrader,
 ): Promise<AcceptanceGraderLifecycle | undefined> {
   if (gate.satisfied || !gate.code || !ACCEPTANCE_GRADER_GATE_CODES.has(gate.code)) return undefined;
   // The tool accepts a per-call harness override. Keep the scoping at this

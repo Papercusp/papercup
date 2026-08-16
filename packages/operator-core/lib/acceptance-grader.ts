@@ -9,11 +9,23 @@ import { listWorkItems } from './work-items';
 type LaunchCtx = Parameters<typeof launchAgentTool.handler>[1];
 
 export type AcceptanceGraderLifecycle = {
-  state: 'launched' | 'deduped' | 'failed';
+  /** 'assigned' (P-011/D-009): an existing above-floor, non-excluded, reachable
+   * agent was selected by the relevance router — no fresh judge was launched. */
+  state: 'launched' | 'deduped' | 'failed' | 'assigned';
   idempotencyKey: string;
   label: string;
   launch?: unknown;
   error?: string;
+  /** D-009 discovery outcome (state 'assigned'): the selected grader. */
+  grader?: { ownerId: string; score: number; liveness: string };
+  /** D-009 exclusion audit trail (implementers + heavy consult participants +
+   * rubric author + shipper) — set whenever discovery ran. */
+  excluded?: string[];
+  /** Why discovery fell through to the fresh launch (state launched/deduped). */
+  freshReason?: 'no_qualified_non_excluded' | 'all_qualified_dead' | 'degraded' | 'discovery_error';
+  /** Wake delivery for an assigned grader ({ woke: 0 } = parked; they read the
+   * grading request on their next turn — the subscribe is durable). */
+  notified?: { woke: number };
 };
 
 const trim = (value: unknown, max: number): string | null =>
@@ -90,6 +102,194 @@ function boundedSnapshotJson(snapshot: ReturnType<typeof compactSnapshot>): stri
     audit: { ...snapshot.audit, items: snapshot.audit.items.map(({ itemId, verdict }) => ({ itemId, verdict })) },
     terminalWork: snapshot.terminalWork.map(({ id, state, completionRef }) => ({ id, state, completionRef })),
   });
+}
+
+/**
+ * D-009 (get-feedback-relevance-consults-2026-08-16, P-011) — discovery-FIRST
+ * grader resolution: route the plan + acceptance rubric through the relevance
+ * router with the independence exclusion set (implementers + heavy consult
+ * participants + rubric author + shipper); the top non-excluded, reachable
+ * candidate above the floor becomes the ASSIGNED grader (woken with the grading
+ * request — no fresh judge spent). Below floor / all excluded / all dead /
+ * embedder degraded → the pre-existing fresh-session launch (the floor
+ * asymmetry: for grading, WRONG context disqualifies and a grader MUST exist,
+ * so below-floor mints fresh — "a fresh session agent is better than an agent
+ * with THE WRONG context"). Discovery is a service, never a new failure mode:
+ * any discovery fault falls through to the fresh launch.
+ *
+ * Same signature as launchAcceptanceGrader so the set-plan-status seam can use
+ * either interchangeably (its tests inject their own).
+ */
+type GraderDiscoveryResult = {
+  verdict: 'assigned' | 'fresh';
+  grader?: { ownerId: string; score: number; liveness: string };
+  excluded: string[];
+  freshReason?: 'no_qualified_non_excluded' | 'all_qualified_dead' | 'degraded';
+};
+
+/** Prod discovery wiring: the P-002 router + embedder + liveness oracle behind
+ * selectAcceptanceGrader. Injected as `deps.discover` in tests — this default
+ * reaches the org PG, which a unit test must never do. */
+async function prodDiscoverGrader(
+  plan: NonNullable<Awaited<ReturnType<typeof readPlanBySlug>>>,
+  rubric: NonNullable<Awaited<ReturnType<typeof getAcceptanceRubricForPlan>>>,
+  ctx: LaunchCtx,
+): Promise<GraderDiscoveryResult> {
+  const [
+    { getOrgPg },
+    { routeConsult },
+    { buildQueryEmbedder },
+    { resolveSessionStates },
+    { selectAcceptanceGrader },
+  ] = await Promise.all([
+    import('@papercusp/db-org'),
+    import('./consult/relevance-router'),
+    import('./agent-tools/search/embedder'),
+    import('./agent-tools/coordination/liveness-oracle'),
+    import('./consult/acceptance-grader-select'),
+  ]);
+  const embed = await buildQueryEmbedder();
+  const r = rubric as unknown as {
+    rubricId: string;
+    title?: string;
+    proposedBy?: string | null;
+    createdBy?: string | null;
+    criteria?: Array<{ key?: string; title?: string; model?: string }>;
+  };
+  const rubricText = [
+    r.title ?? r.rubricId,
+    ...(Array.isArray(r.criteria)
+      ? r.criteria.map((c) => `${c.key ?? ''}: ${c.title ?? ''} ${c.model ?? ''}`.trim())
+      : []),
+  ].join('\n');
+  let shipperId: string | null = null;
+  try {
+    const { resolveAgentIdentity } = await import('./agent-tools/coordination/identity');
+    shipperId = resolveAgentIdentity(ctx as never).ownerId;
+  } catch {
+    /* unattributable shipper — the computed set still excludes implementers */
+  }
+  const selection = await selectAcceptanceGrader(
+    {
+      workspaceId: plan.row.workspaceId,
+      planSlug: plan.row.planSlug,
+      planContent: plan.row.content,
+      rubricText,
+      extraExclusions: [r.proposedBy, r.createdBy, shipperId],
+    },
+    {
+      getSql: () => getOrgPg().sql,
+      route: (params) =>
+        routeConsult(params, {
+          getSql: () => getOrgPg().sql,
+          embed,
+          getLiveness: async (ownerIds) => {
+            const verdicts = await resolveSessionStates(
+              ownerIds.map((ownerId) => ({ ownerId })),
+              { hydratePerId: true },
+            );
+            return Object.fromEntries([...verdicts.values()].map((v) => [v.ownerId, v.sessionState]));
+          },
+        }),
+    },
+  );
+  return {
+    verdict: selection.verdict,
+    ...(selection.grader
+      ? {
+          grader: {
+            ownerId: selection.grader.ownerId,
+            score: selection.grader.score,
+            liveness: selection.grader.liveness,
+          },
+        }
+      : {}),
+    excluded: selection.excluded,
+    ...(selection.freshReason ? { freshReason: selection.freshReason } : {}),
+  };
+}
+
+/** Prod wake for an assigned grader (subscribe + ping + wake). Injected as
+ * `deps.notifyAssigned` in tests. */
+async function prodNotifyAssignedGrader(
+  planSlug: string,
+  harnessSlug: string | null,
+  rubricId: string,
+  graderOwnerId: string,
+  ctx: LaunchCtx,
+): Promise<{ woke: number }> {
+  const [{ notifyAgents }, { resolveAgentIdentity }] = await Promise.all([
+    import('./agent-tools/coordination/notify-agents'),
+    import('./agent-tools/coordination/identity'),
+  ]);
+  const identity = resolveAgentIdentity(ctx as never);
+  const res = await notifyAgents(identity, {
+    addressees: [graderOwnerId],
+    objectRef: { kind: 'plan', ref: planSlug },
+    summary: `You are the ASSIGNED acceptance grader for plan ${planSlug} (rubric ${rubricId})`,
+    body:
+      `The relevance router selected you to grade plan '${planSlug}' — your transcript history matched the ` +
+      `plan + rubric above the precision floor and you are outside its implementer/consult-participant ` +
+      `exclusion set (D-009 independence). Grade it: read the plan (plans:get { slug:'${planSlug}' }) + the ` +
+      `acceptance rubric '${rubricId}' + the completion evidence, then emit ONE complete scorecard: ` +
+      `scorecards:emit { rubricRef:'${rubricId}', ratings:{ <every criterion key> } } with concrete ` +
+      `evidence per rating. The verdict is YOURS — consult if you need to, but the grade is not delegable.`,
+    planSlug,
+    ...(harnessSlug ? { harnessSlug } : {}),
+    wake: true,
+  });
+  return { woke: res.woke };
+}
+
+export async function resolveAcceptanceGrader(
+  planSlug: string,
+  ctx: LaunchCtx,
+  deps: Parameters<typeof launchAcceptanceGrader>[2] & {
+    discover?: typeof prodDiscoverGrader;
+    notifyAssigned?: typeof prodNotifyAssignedGrader;
+  } = {},
+): Promise<AcceptanceGraderLifecycle> {
+  let discovery:
+    | { excluded: string[]; freshReason: NonNullable<AcceptanceGraderLifecycle['freshReason']> }
+    | undefined;
+  try {
+    const plan = await (deps.readPlan ?? readPlanBySlug)(planSlug, {
+      ...(ctx.harnessSlug && ctx.harnessSlug !== '*' ? { harnessSlug: ctx.harnessSlug } : {}),
+      ...(ctx.workspaceId && ctx.workspaceId !== '*' ? { workspaceId: ctx.workspaceId } : {}),
+    });
+    const rubric = plan ? await (deps.getRubric ?? getAcceptanceRubricForPlan)(planSlug) : null;
+    if (plan && rubric) {
+      const selection = await (deps.discover ?? prodDiscoverGrader)(plan, rubric, ctx);
+      if (selection.verdict === 'assigned' && selection.grader) {
+        const rubricId = String((rubric as unknown as { rubricId: string }).rubricId);
+        const notified = await (deps.notifyAssigned ?? prodNotifyAssignedGrader)(
+          planSlug,
+          plan.row.harnessSlug ?? null,
+          rubricId,
+          selection.grader.ownerId,
+          ctx,
+        ).catch(() => ({ woke: 0 }));
+        // { woke: 0 } is fine: the subscribe is durable — a parked grader reads
+        // the grading request on its next turn.
+        return {
+          state: 'assigned',
+          idempotencyKey: '',
+          label: '',
+          grader: selection.grader,
+          excluded: selection.excluded,
+          notified,
+        };
+      }
+      discovery = {
+        excluded: selection.excluded,
+        freshReason: selection.freshReason ?? 'no_qualified_non_excluded',
+      };
+    }
+  } catch {
+    discovery = { excluded: [], freshReason: 'discovery_error' };
+  }
+  const launched = await launchAcceptanceGrader(planSlug, ctx, deps);
+  return { ...launched, ...(discovery ?? {}) };
 }
 
 export async function launchAcceptanceGrader(
