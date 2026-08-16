@@ -5551,18 +5551,21 @@ function LearningsView({
                     return (
                       <li key={p.planSlug}>
                         <GitBranch size={11} aria-hidden />
-                        <button
-                          type="button"
-                          className="pc-learning__retainlink"
-                          title={`${p.planSlug} — open on the Plans board`}
-                          onClick={() => {
-                            void setPlanNav(p.planSlug);
-                            void setCreateViewNav("plans");
-                            void setTabNav("plans");
-                          }}
+                        <Tooltip
+                          label={`${p.planSlug} — open on the Plans board`}
                         >
-                          {p.title}
-                        </button>
+                          <button
+                            type="button"
+                            className="pc-learning__retainlink"
+                            onClick={() => {
+                              void setPlanNav(p.planSlug);
+                              void setCreateViewNav("plans");
+                              void setTabNav("plans");
+                            }}
+                          >
+                            {p.title}
+                          </button>
+                        </Tooltip>
                         {p.status ? (
                           <span
                             className="pc-learning__chip"
