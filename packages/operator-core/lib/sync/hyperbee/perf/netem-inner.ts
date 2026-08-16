@@ -131,11 +131,12 @@ async function main(): Promise<void> {
           tier: 2,
           params: { ...profileParams, peers, rate, count },
         });
+        meter.expectReaders(mesh.readers.length);
         mesh.writer.send('go');
         await mesh.writer.waitFor('writer-done', (count / Math.max(rate, 1)) * 1000 + budget);
         for (const r of mesh.readers) {
           const ok = await r.waitFor('caught-up', budget);
-          if (!ok) meter.note(`reader ${r.cfg.peerIndex} did not apply all ops in time`);
+          if (!ok) meter.readerDidNotConverge(r.cfg.peerIndex);
         }
         const results = [
           await mesh.writer.stopAndCollect(),
@@ -173,7 +174,13 @@ async function main(): Promise<void> {
           params: { ...profileParams, historySize: preSeed, winners },
         });
         const reader = mesh.readers[0];
-        await reader.waitFor('caught-up', budget);
+        meter.expectReaders(1);
+        // EI-20576392705164447: the outcome of this wait used to be discarded
+        // entirely (no `if`, not even a note) — a cold-join that never caught up
+        // under impairment produced an artifact indistinguishable from one that did.
+        if (!(await reader.waitFor('caught-up', budget))) {
+          meter.readerDidNotConverge(reader.cfg.peerIndex, 'never caught up under this netem profile');
+        }
         const results = [await mesh.writer.stopAndCollect(), await reader.stopAndCollect()];
         const r = results[1];
         const artifact = foldChildResults(
@@ -210,6 +217,7 @@ async function main(): Promise<void> {
           tier: 2,
           params: { ...profileParams, peers, count },
         });
+        meter.expectReaders(mesh.readers.length);
         const tGo = Date.now();
         mesh.writer.send('go');
         const ceiling = meter.metric('floodOpsPerSec', 'ops/sec');
@@ -221,7 +229,7 @@ async function main(): Promise<void> {
             catchUp.push(elapsed);
             ceiling.push(count / (elapsed / 1000));
           } else {
-            meter.note(`reader ${r.cfg.peerIndex} never caught up — transport stalled under loss`);
+            meter.readerDidNotConverge(r.cfg.peerIndex, 'never caught up — transport stalled under loss');
           }
         }
         const results = [

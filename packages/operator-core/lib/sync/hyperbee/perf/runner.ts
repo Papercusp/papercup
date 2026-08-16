@@ -248,6 +248,21 @@ export interface RunSummary {
   artifacts: number;
   scenarioFailures: string[];
   sloViolations: Array<{ scenario: string; paramsKey: string; p95Ms: number; limitMs: number }>;
+  /**
+   * Cells where the mesh did not converge (EI-20576392705164447). SEPARATE from
+   * `sloViolations` — that list is host responsiveness only, and on 2026-08-16 a
+   * 64-peer run had an empty `sloViolations` while most readers never caught up.
+   * Fails `--gate` and `--slo-only` exactly like an SLO violation does.
+   */
+  convergenceViolations: Array<{
+    scenario: string;
+    paramsKey: string;
+    expectedReaders: number;
+    convergedReaders: number;
+    laggingReaders: string[];
+    observedP95Ms: number | null;
+    p95LimitMs: number | null;
+  }>;
   regressions: Array<{ scenario: string; paramsKey: string; metric: string; baseline: number; current: number; relChange: number }>;
   improvements: number;
   baselineCompared: boolean;
@@ -326,7 +341,53 @@ function shortSummary(a: PerfArtifact): string {
     .join(' · ');
   const slo =
     a.sloPassed === null ? 'slo=n/a' : a.sloPassed ? `slo✓(${a.loopLag?.p95Ms}ms)` : `slo✖(${a.loopLag?.p95Ms}ms)`;
-  return `${a.scenario} [${Object.entries(a.params).map(([k, v]) => `${k}=${v}`).join(' ')}] ${keys} ${slo}`;
+  return `${a.scenario} [${Object.entries(a.params).map(([k, v]) => `${k}=${v}`).join(' ')}] ${keys} ${slo} ${convergenceCell(a)}`;
+}
+
+/** One-glance convergence readout, printed BESIDE the SLO so a green `slo✓`
+ *  can never be mistaken for "the mesh kept up" (EI-20576392705164447). */
+function convergenceCell(a: PerfArtifact): string {
+  const c = a.convergence;
+  if (!c) return 'conv=n/a';
+  const ratio = `${c.convergedReaders}/${c.expectedReaders}`;
+  return a.convergencePassed ? `conv✓(${ratio})` : `conv✖(${ratio})`;
+}
+
+/**
+ * Cells whose readers did not converge (or blew a set appendToVisible p95
+ * ceiling) — the gate input the harness was missing.
+ *
+ * Pure + exported so the recurrence guard can feed it the exact artifact shape
+ * that shipped green on 2026-08-16: healthy loop lag, readers ten minutes
+ * behind, `sloPassed: true`.
+ */
+export function collectConvergenceViolations(artifacts: PerfArtifact[]): Array<{
+  scenario: string;
+  paramsKey: string;
+  expectedReaders: number;
+  convergedReaders: number;
+  laggingReaders: string[];
+  observedP95Ms: number | null;
+  p95LimitMs: number | null;
+}> {
+  return artifacts
+    .filter((a) => a.convergencePassed === false)
+    .map((a) => ({
+      scenario: a.scenario,
+      paramsKey: paramsKeyOf(a),
+      expectedReaders: a.convergence?.expectedReaders ?? 0,
+      convergedReaders: a.convergence?.convergedReaders ?? 0,
+      laggingReaders: a.convergence?.laggingReaders ?? [],
+      observedP95Ms: a.convergence?.observedP95Ms ?? null,
+      p95LimitMs: a.convergence?.p95LimitMs ?? null,
+    }));
+}
+
+function paramsKeyOf(a: PerfArtifact): string {
+  return Object.entries(a.params)
+    .sort(([x], [y]) => (x < y ? -1 : 1))
+    .map(([k, v]) => `${k}=${v}`)
+    .join(',');
 }
 
 function renderReport(
@@ -368,8 +429,11 @@ function renderReport(
         ]
       : []),
     '',
-    '| scenario | params | key metric (p95) | loop-lag p95 | SLO | notes |',
-    '|---|---|---|---|---|---|',
+    // SLO and convergence are SEPARATE columns on purpose: the former is host
+    // responsiveness, the latter is whether replication kept up, and a run can
+    // be ✓ on one and ✖ on the other (EI-20576392705164447).
+    '| scenario | params | key metric (p95) | loop-lag p95 | SLO (host) | converged (readers) | notes |',
+    '|---|---|---|---|---|---|---|',
   ];
   for (const a of artifacts) {
     const params = Object.entries(a.params)
@@ -378,9 +442,15 @@ function renderReport(
     const main = Object.entries(a.metrics).find(([, m]) => m.count > 0);
     const metricCell = main ? `${main[0]}: ${main[1].p95} ${main[1].unit}` : '—';
     const slo = a.sloPassed === null ? 'n/a' : a.sloPassed ? '✓' : '**✖**';
+    const conv =
+      a.convergencePassed === null || a.convergencePassed === undefined
+        ? 'n/a'
+        : a.convergencePassed
+          ? `✓ ${a.convergence?.convergedReaders}/${a.convergence?.expectedReaders}`
+          : `**✖ ${a.convergence?.convergedReaders}/${a.convergence?.expectedReaders}**`;
     const notes = a.notes.length ? a.notes.join('; ').slice(0, 200) : '';
     lines.push(
-      `| ${a.scenario} | ${params} | ${metricCell} | ${a.loopLag?.p95Ms ?? '—'} ms | ${slo} | ${notes} |`,
+      `| ${a.scenario} | ${params} | ${metricCell} | ${a.loopLag?.p95Ms ?? '—'} ms | ${slo} | ${conv} | ${notes} |`,
     );
   }
   if (compareText) {
@@ -502,6 +572,22 @@ async function main(): Promise<void> {
         p95Ms: a.loopLag?.p95Ms ?? -1,
         limitMs: a.sloLimitMs,
       }));
+  const convergenceViolations = collectConvergenceViolations(artifacts);
+  if (convergenceViolations.length) {
+    console.warn(
+      `\n⚠ CONVERGENCE FAILURES (${convergenceViolations.length} cell(s)) — the mesh did not keep up. ` +
+        `This is SEPARATE from the host-responsiveness SLO above, which can be green in the same run ` +
+        `(EI-20576392705164447):`,
+    );
+    for (const v of convergenceViolations) {
+      console.warn(
+        `  ✖ ${v.scenario} [${v.paramsKey}] — ${v.convergedReaders}/${v.expectedReaders} readers converged` +
+          (v.laggingReaders.length ? `, lagging: ${v.laggingReaders.slice(0, 12).join(',')}${v.laggingReaders.length > 12 ? '…' : ''}` : '') +
+          (v.observedP95Ms !== null ? `, appendToVisible p95 ${v.observedP95Ms}ms` : '') +
+          (v.p95LimitMs !== null ? ` (limit ${v.p95LimitMs}ms)` : ''),
+      );
+    }
+  }
   const regressionCount = compareReport?.regressions.length ?? 0;
 
   // EI-8843: max(start, end) load sample — conservative call on whether the
@@ -569,6 +655,7 @@ async function main(): Promise<void> {
     artifacts: artifacts.length,
     scenarioFailures,
     sloViolations,
+    convergenceViolations,
     regressions: (compareReport?.regressions ?? []).map((d) => ({
       scenario: d.scenario,
       paramsKey: d.paramsKey,
@@ -588,8 +675,13 @@ async function main(): Promise<void> {
   }
 
   if (failed) process.exitCode = 1;
-  else if (args.gate && (regressionCount > 0 || sloViolations.length > 0)) process.exitCode = 1;
-  else if (args.sloOnly && sloViolations.length > 0) process.exitCode = 1;
+  // A non-converged mesh fails BOTH gated paths. `--slo-only` narrows the gate
+  // to "is this run acceptable", not "is the host responsive" — and a run whose
+  // readers are ten minutes behind is not acceptable under any reading of that
+  // (EI-20576392705164447: the 2026-08-16 64-peer run would have gone green here).
+  else if (args.gate && (regressionCount > 0 || sloViolations.length > 0 || convergenceViolations.length > 0))
+    process.exitCode = 1;
+  else if (args.sloOnly && (sloViolations.length > 0 || convergenceViolations.length > 0)) process.exitCode = 1;
 
   // Scenarios can leave hyperswarm/corestore internals (DHT sockets, gc
   // timers) open even after every peer/handle we own has been closed — the

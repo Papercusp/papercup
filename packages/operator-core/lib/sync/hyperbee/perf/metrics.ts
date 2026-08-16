@@ -19,6 +19,7 @@ import {
 } from '../../../event-loop-lag-monitor';
 import {
   currentHostInfo,
+  type ConvergenceStats,
   type LoopLagStats,
   type MetricSummary,
   type PerfArtifact,
@@ -26,6 +27,35 @@ import {
 
 /** Default D-003 SLO: host event-loop lag p95 must stay under this while sync runs. */
 export const DEFAULT_SLO_LIMIT_MS = 100;
+
+/**
+ * The convergence verdict, pure (EI-20576392705164447).
+ *
+ * A reader that never applied all ops is a FAILED cell, full stop — that is the
+ * case the harness used to record in `notes` and then discard. The p95 ceiling
+ * is only applied when one was explicitly set; an unset ceiling means "latency
+ * recorded, not judged", never "latency fine".
+ */
+export function convergenceVerdict(c: ConvergenceStats): boolean {
+  if (c.convergedReaders < c.expectedReaders) return false;
+  if (c.p95LimitMs !== null && c.observedP95Ms !== null && c.observedP95Ms > c.p95LimitMs) return false;
+  return true;
+}
+
+/**
+ * Re-evaluate the convergence verdict after post-`finish()` metrics land.
+ *
+ * `appendToVisibleMs` is attached by `foldChildResults`'s patch callback, i.e.
+ * AFTER the meter has produced the artifact — so the latency half of the
+ * verdict cannot be decided inside `finish()`. No-ops when the scenario
+ * declared no readers (`convergence === null`).
+ */
+export function recomputeConvergenceVerdict(a: PerfArtifact): void {
+  const c = a.convergence;
+  if (!c) return;
+  c.observedP95Ms = a.metrics['appendToVisibleMs']?.p95 ?? null;
+  a.convergencePassed = convergenceVerdict(c);
+}
 
 /** Nearest-rank percentile over a sorted copy. Empty input → all zeros. */
 export function summarize(samples: number[], unit: MetricSummary['unit'] = 'ms'): MetricSummary {
@@ -75,6 +105,14 @@ export interface ScenarioMeterOpts {
   /** D-003 SLO limit override (ms). Default 100. */
   sloLimitMs?: number;
   /**
+   * appendToVisible p95 ceiling (ms) for the convergence verdict. Deliberately
+   * has NO default: a defensible ceiling is a per-scenario product call, and
+   * inventing one here would just be a second unjustified verdict. Unset ⇒
+   * latency is recorded but not judged; the reader-caught-up half of the
+   * verdict applies either way.
+   */
+  convergenceP95LimitMs?: number;
+  /**
    * Lag-gauge sampling interval. The scenario window IS the histogram window
    * (we never reset mid-scenario), so this only controls the gauge's internal
    * warn cadence — keep it long to stay silent.
@@ -96,6 +134,8 @@ export class ScenarioMeter {
   private rssTimer: ReturnType<typeof setInterval>;
   readonly notes: string[] = [];
   opsDecoded = 0;
+  private expectedReaders: number | null = null;
+  private readonly laggingReaders: string[] = [];
 
   constructor(private readonly opts: ScenarioMeterOpts) {
     this.lag = startEventLoopLagMonitor({
@@ -123,6 +163,38 @@ export class ScenarioMeter {
     this.notes.push(line);
   }
 
+  /**
+   * Declare how many reader-convergence checks this scenario waits on. REQUIRED
+   * for a convergence verdict to exist at all — without it `artifact.convergence`
+   * stays null and `convergencePassed` is null ("not measured"), never a silent
+   * pass.
+   *
+   * ADDITIVE, so a multi-phase scenario calls it once per phase (churn's
+   * reconnect-storm waits on every reader twice: initial catch-up, then rejoin
+   * after the storm — that is 2N checks, and each failed one should count).
+   */
+  expectReaders(count: number): void {
+    this.expectedReaders = (this.expectedReaders ?? 0) + count;
+  }
+
+  /**
+   * Record that a reader never applied every op inside its catch-up budget.
+   *
+   * Use this INSTEAD of a bare `note()` for the did-not-converge case: the note
+   * text is unchanged (anything grepping artifacts still matches), but the
+   * observation now also reaches the verdict. Dropping it into `notes` alone is
+   * exactly how a 64-peer run whose readers never converged stamped itself
+   * PASSED (EI-20576392705164447).
+   *
+   * `why` replaces the default note text when the scenario has a more specific
+   * reading (a flood ceiling never reached, a transport stalled under loss).
+   */
+  readerDidNotConverge(label: string | number, why?: string): void {
+    const l = String(label);
+    if (!this.laggingReaders.includes(l)) this.laggingReaders.push(l);
+    this.note(why ? `reader ${l} ${why}` : `reader ${l} did not apply all ops in time`);
+  }
+
   /** Read the lag gauge without finishing (children report mid-run). */
   sampleLag(): LoopLagStats {
     const s = this.lag.sample();
@@ -139,6 +211,19 @@ export class ScenarioMeter {
     const sloLimitMs = this.opts.sloLimitMs ?? DEFAULT_SLO_LIMIT_MS;
     const metrics: Record<string, MetricSummary> = {};
     for (const [name, s] of this.series) metrics[name] = s.summarize();
+    // Convergence exists only when the scenario declared readers to wait on.
+    // `foldChildResults` re-judges the latency half once appendToVisibleMs is
+    // attached (recomputeConvergenceVerdict) — this is the readers half.
+    const convergence: ConvergenceStats | null =
+      this.expectedReaders === null
+        ? null
+        : {
+            expectedReaders: this.expectedReaders,
+            convergedReaders: Math.max(0, this.expectedReaders - this.laggingReaders.length),
+            laggingReaders: [...this.laggingReaders],
+            p95LimitMs: this.opts.convergenceP95LimitMs ?? null,
+            observedP95Ms: metrics['appendToVisibleMs']?.p95 ?? null,
+          };
     return {
       schema: 1,
       scenario: this.opts.scenario,
@@ -151,6 +236,8 @@ export class ScenarioMeter {
       loopLag: lag,
       sloPassed: lag.p95Ms < sloLimitMs,
       sloLimitMs,
+      convergence,
+      convergencePassed: convergence ? convergenceVerdict(convergence) : null,
       cpu: { userMs: cpu.user / 1000, systemMs: cpu.system / 1000 },
       rss: { peakBytes: this.peakRss },
       opsDecoded: this.opsDecoded || undefined,

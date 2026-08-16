@@ -16,7 +16,7 @@ import { join } from 'node:path';
 import createTestnet from 'hyperdht/testnet.js';
 import type { PeerChildConfig, PeerChildResult } from './peer-child';
 import type { PerfArtifact } from './artifact';
-import type { ScenarioMeter } from './metrics';
+import { recomputeConvergenceVerdict, type ScenarioMeter } from './metrics';
 import { MeshFormationError } from './mesh-outcome';
 
 const CHILD_PATH = fileURLToPath(new URL('./peer-child.ts', import.meta.url));
@@ -301,5 +301,8 @@ export function foldChildResults(
     artifact.sloPassed = worst.p95Ms < artifact.sloLimitMs;
   }
   artifactPatch(artifact);
+  // The patch is what attaches `appendToVisibleMs`, so the latency half of the
+  // convergence verdict can only be judged here, after it (EI-20576392705164447).
+  recomputeConvergenceVerdict(artifact);
   return artifact;
 }

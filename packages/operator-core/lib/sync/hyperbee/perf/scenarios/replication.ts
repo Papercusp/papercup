@@ -44,6 +44,7 @@ export const sustained: PerfScenario = {
             tier: 1,
             params: { peers, rate, count },
           });
+          meter.expectReaders(mesh.readers.length);
           ctx.log(`replication.sustained: peers=${peers} rate=${rate}/s count=${count} — go`);
           mesh.writer.send('go');
           const writerDone = await mesh.writer.waitFor(
@@ -54,7 +55,7 @@ export const sustained: PerfScenario = {
           // Wait for every reader to see all ops (bounded).
           for (const r of mesh.readers) {
             const ok = await r.waitFor('caught-up', 30_000);
-            if (!ok) meter.note(`reader ${r.cfg.peerIndex} did not apply all ops in time`);
+            if (!ok) meter.readerDidNotConverge(r.cfg.peerIndex);
           }
           const results = [
             await mesh.writer.stopAndCollect(),
@@ -101,6 +102,7 @@ export const ceiling: PerfScenario = {
           tier: 1,
           params: { peers, count },
         });
+        meter.expectReaders(mesh.readers.length);
         ctx.log(`replication.ceiling: peers=${peers} count=${count} — go`);
         const tGo = Date.now();
         mesh.writer.send('go');
@@ -113,7 +115,7 @@ export const ceiling: PerfScenario = {
             catchUp.push(elapsed);
             ceilingRate.push(count / (elapsed / 1000));
           } else {
-            meter.note(`reader ${r.cfg.peerIndex} never caught up — ceiling not reached`);
+            meter.readerDidNotConverge(r.cfg.peerIndex, 'never caught up — ceiling not reached');
           }
         }
         const results = [

@@ -79,7 +79,9 @@ export const coldJoin: PerfScenario = {
           );
         }
         const reader = mesh.readers[0];
+        meter.expectReaders(1);
         const caught = await reader.waitFor('caught-up', budget);
+        if (!caught) meter.readerDidNotConverge(reader.cfg.peerIndex, 'never caught up within the cold-join budget');
         const results = [
           await mesh.writer.stopAndCollect(),
           await reader.stopAndCollect(),
@@ -139,9 +141,11 @@ export const reconnectStorm: PerfScenario = {
         params: { readers: readersN, historySize: size, winners, seed: ctx.seed },
       });
 
+      // Two phases, so 2N convergence checks — expectReaders is additive.
+      meter.expectReaders(mesh.readers.length);
       for (const r of mesh.readers) {
         const ok = await r.waitFor('caught-up', budget);
-        if (!ok) meter.note(`phase 1: reader ${r.cfg.peerIndex} never caught up`);
+        if (!ok) meter.readerDidNotConverge(`phase1:${r.cfg.peerIndex}`, 'never caught up');
       }
 
       ctx.log('reconnect-storm: phase 2 — SIGKILL all readers, rejoin at once…');
@@ -162,9 +166,10 @@ export const reconnectStorm: PerfScenario = {
         );
       }
       const results: Array<PeerChildResult | null> = [];
+      meter.expectReaders(respawned.length);
       for (const r of respawned) {
         const caught = await r.waitFor('caught-up', budget);
-        if (!caught) meter.note(`storm rejoin: reader ${r.cfg.peerIndex} never caught up`);
+        if (!caught) meter.readerDidNotConverge(`rejoin:${r.cfg.peerIndex}`, 'never caught up after the storm');
       }
       for (const r of respawned) {
         const res = await r.stopAndCollect();

@@ -151,9 +151,10 @@ async function runReplicationCore(opts: Tier3ScenarioOpts, scenario: string): Pr
   writer.send('go');
   const writerDone = await writer.waitFor('writer-done', (opts.count / Math.max(opts.rate, 1)) * 1000 + 120_000);
   if (!writerDone) meter.note('writer never reported done — partial run');
+  meter.expectReaders(readers.length);
   for (const r of readers) {
     const ok = await r.handle.waitFor('caught-up', catchUpTimeoutMs);
-    if (!ok) meter.note(`reader ${r.label} did not apply all ops in time`);
+    if (!ok) meter.readerDidNotConverge(r.label);
   }
 
   // 5. Collect + fold.
