@@ -34,10 +34,10 @@
  * ── Cost discipline ─────────────────────────────────────────────────────────
  * This rides on EVERY orient, so it must stay near-free and never throw. Load
  * and memory come from `os` (in-process counters, no syscall fan-out); cores
- * come from the already-memoized `@papercusp/resource-profile`; the two file
- * reads (`/proc/pressure/memory`, `/proc/pressure/cpu`) are cached for
- * {@link PSI_CACHE_MS} and are fully optional — every leg fails soft to
- * `undefined` rather than degrading the orient around it.
+ * come from the already-memoized `@papercusp/resource-profile`; the one file
+ * read (`/proc/pressure/memory`) is cached for {@link PSI_CACHE_MS} and is
+ * fully optional — every leg fails soft to `undefined` rather than degrading
+ * the orient around it.
  */
 
 import { cpus, freemem, loadavg, totalmem } from 'node:os';
