@@ -348,9 +348,16 @@ test.describe('/adv dependency graph — selection interlock with the Detail pan
     await expect.poll(() => selParam(page), { timeout: 10_000 }).toBeNull();
 
     // Detail starts on its pick-an-item empty state — nothing is selected yet.
-    await expect(detail.getByText('Pick a work item from the list to inspect.')).toBeVisible({
-      timeout: 20_000,
-    });
+    //
+    // EI-19917451944474469: this must NOT be nested under `detail` (`.pc-adv-detail`) —
+    // that root only mounts once an item is actually selected (DetailPanel.tsx early-returns
+    // `<Empty>` before it), so `detail.getByText(...)` can never resolve here and would burn
+    // its timeout on every run. Assert on the page-scoped `.pc-adv-detail__empty` instead —
+    // the stable class the empty state renders under.
+    await expect(page.locator('.pc-adv-detail__empty')).toHaveText(
+      'Pick a work item from the list to inspect.',
+      { timeout: 20_000 },
+    );
     expect(selParam(page)).toBeNull();
 
     // ── 1. THE INTERLOCK. Clicking the SVG node must write `?sel` (nuqs) and
@@ -392,8 +399,11 @@ test.describe('/adv dependency graph — selection interlock with the Detail pan
     //       empty state — the interlock releases as well as it engages.
     await graph.getByRole('button', { name: 'Clear selection' }).click();
     await expect.poll(() => selParam(page), { timeout: 10_000 }).toBeNull();
-    await expect(detail.getByText('Pick a work item from the list to inspect.')).toBeVisible({
-      timeout: 15_000,
-    });
+    // Same fix as the initial empty-state check above (EI-19917451944474469): the placeholder
+    // is not a descendant of `.pc-adv-detail`, so assert page-scoped on `.pc-adv-detail__empty`.
+    await expect(page.locator('.pc-adv-detail__empty')).toHaveText(
+      'Pick a work item from the list to inspect.',
+      { timeout: 15_000 },
+    );
   });
 });
