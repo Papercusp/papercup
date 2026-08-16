@@ -508,6 +508,16 @@ export async function startDbos(): Promise<void> {
       '../system-health/retrieval-degradation-watchdog'
     );
     startRetrievalDegradationWatchdog();
+    // EI-20581099901890760 half 2: alarm on a live-HELD goal missing the standing
+    // drain fleet the GOAL contract requires. Sibling of the liveness watchdog
+    // above, deliberately separate (its author's ruling): that one fires when
+    // nobody is working a goal; this one fires only when somebody IS and the
+    // drain fleet — the mechanism that makes never-implement livable — is absent
+    // or dead. Runtime gate: FLAGS.GOAL_DRAIN_FLEET_WATCHDOG (default ON).
+    const { startGoalDrainFleetWatchdog } = await import(
+      '../system-health/goal-drain-fleet-watchdog'
+    );
+    startGoalDrainFleetWatchdog(getOrgPg().sql);
   } catch (e) {
     console.warn('[stall-watchdog] failed to start (non-fatal):', e instanceof Error ? e.message : e);
   }
