@@ -1493,14 +1493,22 @@ export async function composeOrient(
       // EI-19485000346355077: only on the FULL fold — a monitor tick's never-drop
       // fold is EI-8300 budget-constrained and this is a supplementary signal, not
       // a leg that fold already pays for. Reuses the SAME `selectors` this fold
-      // already built. Fail-soft (inside this same try/catch): an eviction-
-      // disclosure read error must never break orientation.
+      // already built. OWN fail-soft catch (WI-39420): the enclosing catch nulls
+      // result.facts, so a disclosure read error inside it would destroy the
+      // PRIMARY facts fold to protect a supplementary signal — exactly the wrong
+      // blast radius (this is how 9 orient tests went red: an unmocked live-PG
+      // attempt threw here and the catch nulled the whole fold). A disclosure
+      // failure now costs only the disclosures.
       if (factsFold === 'full') {
-        // NOT `foldOpts` — that carries `audiences`, which is foldFacts's shape.
-        // This reader takes { workspaceId?, windowSec? } and defaults both from
-        // the active workspace, so there is nothing to forward.
-        const factEvictionDisclosures = await listFactEvictionDisclosures(selectors);
-        if (factEvictionDisclosures.length > 0) result.factEvictionDisclosures = factEvictionDisclosures;
+        try {
+          // NOT `foldOpts` — that carries `audiences`, which is foldFacts's shape.
+          // This reader takes { workspaceId?, windowSec? } and defaults both from
+          // the active workspace, so there is nothing to forward.
+          const factEvictionDisclosures = await listFactEvictionDisclosures(selectors);
+          if (factEvictionDisclosures.length > 0) result.factEvictionDisclosures = factEvictionDisclosures;
+        } catch {
+          /* supplementary signal — never break the facts fold for it */
+        }
       }
     } catch {
       result.facts = null;

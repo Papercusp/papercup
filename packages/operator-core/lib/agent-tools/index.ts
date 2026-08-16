@@ -125,6 +125,10 @@ import './voice/delegate-deep';
 // Shared operator_conversations thread (sentinel-as-claude-tui Phase B):
 import './conversation/recent';
 import './conversation/append';
+
+// get-feedback-relevance-consults-2026-08-16 P-003: the requester-side consult
+// tool (relevance-routed "who knows more than me?" over transcript history).
+import './consult/get-feedback';
 import './roles/list';
 import './roles/get';
 import './roles/firing_on';
