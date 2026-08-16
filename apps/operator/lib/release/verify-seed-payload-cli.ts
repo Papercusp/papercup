@@ -91,6 +91,8 @@ export function parseVerifySeedPayloadArgs(argv: readonly string[]): VerifySeedP
 export async function runVerifySeedPayload(
   args: VerifySeedPayloadArgs,
   log: (msg: string) => void = console.error,
+  /** Injected in tests; production uses the guard's default (the real installer registry). */
+  verify?: SeedStoreVerifier,
 ): Promise<number> {
   let manifest: unknown;
   try {
