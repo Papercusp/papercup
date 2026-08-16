@@ -34,18 +34,24 @@ import { isMemoryPaused, setMemoryPaused } from '../../../memory/memory-pause';
 import { recallCanaryForEnvelope } from '../../../memory/recall-canary-envelope';
 import { detectPossibleSecrets, possibleSecretWarning } from '../../../memory/secret-detect';
 import { recordFeedback } from '../../../memory/feedback';
-import { notifySyncInvalidate } from '../../../sync-sse';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { loadHarnessRegistry } from '../../../harness-registry';
 import { defineTool } from '@papercusp/agent-mcp';
 
 /**
- * Mark every cached `userMemory.list` stale (args omitted = all users /
- * all instances — see SSEAdapter). Best-effort: a notify failure must
- * never fail the write that triggered it.
+ * Mark every cached view of the memory corpus stale — the row list AND the
+ * total the settings page shows beside it (args omitted = all users / all
+ * instances, see SSEAdapter). Best-effort: a notify failure must never fail
+ * the write that triggered it.
+ *
+ * Routed through `invalidateUserMemoryViews` rather than naming keys here, so
+ * a future sync query over the corpus cannot be left refreshing behind the
+ * rows (WI-39540).
  */
 const invalidateMemoryList = (): void => {
-  void notifySyncInvalidate('userMemory.list').catch(() => { /* best-effort */ });
+  void import('../../../memory/invalidate-user-memory-views')
+    .then(({ invalidateUserMemoryViews }) => invalidateUserMemoryViews())
+    .catch(() => { /* best-effort */ });
 };
 
 const list = defineTool({
