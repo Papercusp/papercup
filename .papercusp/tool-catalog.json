@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 734,
+  "count": 737,
   "tools": [
     {
       "name": "ablation:report",
@@ -3989,6 +3989,74 @@
       }
     },
     {
+      "name": "consult:close",
+      "http": {
+        "path": "/api/agent-tools/consult/close",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Close a consult with a structured outcome: 'answered' (requires answer; optional confidence 0..1 + evidence) or 'cant_help' (requires reason). Terminal — after the close no further consult posts are accepted. Either participant may close; at the exchange cap this is the only way forward.",
+      "capabilities": [
+        "coord:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "cup",
+        "mug",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "doc-steward"
+      ],
+      "guidance": {
+        "when": "The consult is settled (answered) — or engaged-but-stuck: you validated relevance yet cannot help (cant_help, with the reason).",
+        "notWhen": "Still exchanging → consult:reply. Never engaged / not your area → consult:decline (keeps the cascade menu alive for the requester)."
+      }
+    },
+    {
+      "name": "consult:decline",
+      "http": {
+        "path": "/api/agent-tools/consult/decline",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Decline a consult routed to you — your context does not cover the question. Honest and cheap by design: posts the reason, closes the consult as declined, wakes the requester, and returns the remaining route candidates so they can cascade (re-call get_feedback with exclude:[you]).",
+      "capabilities": [
+        "coord:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "cup",
+        "mug",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "doc-steward"
+      ],
+      "guidance": {
+        "when": "You validated the consult (read the cited evidence) and your context genuinely does not cover it. Declining fast is the helpful move — never answer from guesswork.",
+        "notWhen": "You can partially help → consult:reply (clarifying_question / new_fact). You engaged and it is settled → consult:close."
+      }
+    },
+    {
       "name": "consult:get_feedback",
       "http": {
         "path": "/api/agent-tools/consult/get_feedback",
@@ -4021,6 +4089,41 @@
         "when": "You face a question a PEER may have real context on — their transcripts, their code, a failure they already debugged — before burning hours re-deriving it. You do not know WHO: the router discovers the responder from evidence.",
         "notWhen": "Live state (query it: locks:queue / fleet:assignments / work_items:get). An owner decision (coord:ask-owner). A SPECIFIC known agent (coord:send / coord:message-agent — this tool is who-knows DISCOVERY). Assigning work (a consult is advice, never a handoff — requester owns the outcome).",
         "chaining": "get_feedback → latency_contract:'hard-blocked' ⇒ events:await { event: park_key } + end turn (reply wakes you) → conversations:get { id: conversation_id } for the thread → responder declined? re-call with exclude:[declinerId] (manual cascade; the wake budget binds)."
+      }
+    },
+    {
+      "name": "consult:reply",
+      "http": {
+        "path": "/api/agent-tools/consult/reply",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Post a TYPED reply into a consult thread. Responder kinds: answer (evidence REQUIRED — cite the transcript turns), clarifying_question, new_fact. Requester follow-up kinds: question, new_fact. Untyped posts into a consult are refused (conversations:post will not work); the exchange cap binds — at the cap, close instead.",
+      "capabilities": [
+        "coord:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "cup",
+        "mug",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "doc-steward"
+      ],
+      "guidance": {
+        "when": "You were routed a consult (a 🧭 wake naming a conversation) and are answering/clarifying from your own transcript — or you are the requester following up.",
+        "notWhen": "Your context does not cover the question → consult:decline (cheap, honest). The thread is settled → consult:close. A non-consult conversation → conversations:post.",
+        "chaining": "Validate relevance first (sessions:read the cited evidence) → consult:reply { kind } → when settled, consult:close { outcome }."
       }
     },
     {
