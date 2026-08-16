@@ -23,11 +23,16 @@ import {
   auditRecoveryDependencies,
   fateSharedComponents,
   findBrokenBackstops,
+  findCoverageGaps,
   renderRecoveryAuditTable,
   verdictFor,
   type RecoveryMechanism,
 } from './recovery-dependency-audit';
-import { extractManagedTimerCalls, scanWatchdogTimers } from './recovery-dependency-scan';
+import {
+  extractManagedTimerCalls,
+  scanWatchdogTimers,
+  stripCommentsAndStringBodies,
+} from './recovery-dependency-scan';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
 
@@ -198,35 +203,83 @@ describe('recovery-dependency-scan — call extraction', () => {
   });
 });
 
+describe('recovery-dependency-audit — the coverage gate itself is falsifiable', () => {
+  const declaredOnly: RecoveryMechanism[] = [
+    {
+      name: 'known-timer',
+      file: 'x.ts',
+      executor: 'operator-in-process-timer',
+      recovers: [],
+      note: '',
+    },
+  ];
+
+  it('reports a scanned timer that has no declaration', () => {
+    const gaps = findCoverageGaps(
+      [
+        { name: 'known-timer', file: 'x.ts' },
+        { name: 'brand-new-watchdog', file: 'y.ts' },
+      ],
+      declaredOnly,
+    );
+    expect(gaps.undeclared).toEqual([{ name: 'brand-new-watchdog', file: 'y.ts' }]);
+  });
+
+  it('reports an unreadable timer name rather than treating it as covered', () => {
+    const gaps = findCoverageGaps([{ name: null, file: 'z.ts' }], declaredOnly);
+    expect(gaps.unreadable).toEqual([{ file: 'z.ts' }]);
+    expect(gaps.undeclared).toEqual([]);
+  });
+
+  it('reports a declaration whose timer no longer exists in the tree', () => {
+    const gaps = findCoverageGaps([], declaredOnly);
+    expect(gaps.stale).toEqual(['known-timer']);
+  });
+
+  it('is clean when the scan and the declarations agree', () => {
+    expect(findCoverageGaps([{ name: 'known-timer', file: 'x.ts' }], declaredOnly)).toEqual({
+      undeclared: [],
+      unreadable: [],
+      stale: [],
+    });
+  });
+});
+
 describe('recovery-dependency-audit — coverage of the live tree (THE ANTI-ROT GATE)', () => {
   const scanned = scanWatchdogTimers(REPO_ROOT);
 
   it('finds the watchdog population (the scan itself is not silently broken)', () => {
     // A scan that returns nothing would make the coverage assertion below vacuously
-    // pass — the classic false-clean. Pin a floor well under the real count.
-    expect(scanned.length).toBeGreaterThan(20);
+    // pass — the classic false-clean. Pin a floor well under the real count (35 at
+    // the time of writing).
+    expect(scanned.length).toBeGreaterThan(25);
+  });
+
+  it('the scan does not match call-shaped text in prose (no phantom rows)', () => {
+    // This module's own header describes the call it looks for. Before comments and
+    // string bodies were stripped, that produced a 36th "timer" in a file that arms
+    // none — a phantom that inflates the population the gate claims to cover.
+    const selfMatches = scanned.filter((t) => t.file.includes('recovery-dependency-'));
+    expect(selfMatches).toEqual([]);
   });
 
   it('every category:\'watchdog\' timer in the tree is declared in RECOVERY_MECHANISMS', () => {
-    const declared = new Set(RECOVERY_MECHANISMS.map((m) => m.name));
-    const undeclared = scanned
-      .filter((t) => t.name !== null && !declared.has(t.name))
-      .map((t) => `${t.name}  (${t.file})`);
+    const gaps = findCoverageGaps(scanned);
 
     expect(
-      undeclared,
+      gaps.undeclared,
       'These timers register as category:\'watchdog\' — whose contract in @papercusp/scheduled-registry is "out-of-band sentinel, MUST SURVIVE WHAT IT WATCHES" — but are not declared in RECOVERY_MECHANISMS (packages/operator-core/lib/system-health/recovery-dependency-audit.ts).\n' +
         'Add a row naming its executor and, in `recovers`, which substrate components are INSIDE the failure it targets (empty is the common, correct answer). See the module header for the rule.',
     ).toEqual([]);
+    expect(gaps.unreadable, 'watchdog timers whose name is not a literal — undeclarable, so unverifiable').toEqual(
+      [],
+    );
   });
 
   it('no declared ephemeral-tier mechanism has gone missing from the tree', () => {
-    const scannedNames = new Set(scanned.map((t) => t.name));
-    const ephemeral = RECOVERY_MECHANISMS.filter((m) => m.executor === 'operator-in-process-timer');
-    // A declaration for a timer that no longer exists is stale bookkeeping that makes the
-    // table look more complete than it is.
-    const stale = ephemeral.filter((m) => !scannedNames.has(m.name)).map((m) => m.name);
-    expect(stale).toEqual([]);
+    // A declaration for a timer that no longer exists is stale bookkeeping that makes
+    // the table look more complete than it is.
+    expect(findCoverageGaps(scanned).stale).toEqual([]);
   });
 });
 
