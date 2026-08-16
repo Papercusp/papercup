@@ -191,6 +191,30 @@ describe('recovery-dependency-scan — call extraction', () => {
     expect(extractManagedTimerCalls(`wrapManagedSetInterval('x', 1, fn, { category: 'watchdog' });`)).toEqual([]);
   });
 
+  it('ignores a call written inside a comment', () => {
+    expect(
+      extractManagedTimerCalls(
+        `/** Describes managedSetInterval('ghost', 1, fn, { category: 'watchdog' }) in prose. */\n` +
+          `managedSetInterval('real', 1, fn, { category: 'watchdog' });`,
+      ),
+    ).toEqual([{ name: 'real', category: 'watchdog' }]);
+  });
+
+  it('ignores a call written inside a string literal', () => {
+    expect(
+      extractManagedTimerCalls(
+        `const msg = "use managedSetInterval('ghost', 1, fn, { category: 'watchdog' })";`,
+      ),
+    ).toEqual([]);
+  });
+
+  it('the stripper preserves offsets so literals stay readable at the same span', () => {
+    const src = `// managedSetInterval('ghost')\nmanagedSetInterval('real', 1, fn, {});`;
+    const stripped = stripCommentsAndStringBodies(src);
+    expect(stripped.length).toBe(src.length);
+    expect(stripped.split('\n').length).toBe(src.split('\n').length);
+  });
+
   it('finds every call in a file, not just the first', () => {
     expect(
       extractManagedTimerCalls(
