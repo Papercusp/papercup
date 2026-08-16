@@ -89,9 +89,26 @@ export async function runDesktopPerfScheduledRun(
     // Deliberately NO DISPLAY / TAURI_APP_PATH set here — wdio.conf.ts's own
     // resolvers already do this correctly (see the module doc above) and are
     // the single source of truth for it.
+    // PAPERCUSP_OPERATOR_URL is deliberately DROPPED rather than forwarded.
+    //
+    // This tick runs inside the operator host, so `process.env` is the HOST's
+    // environment — and the host sets this variable for its own purposes, at
+    // values that are not an operator origin (observed: `http://127.0.0.1:9071`,
+    // and `http://localhost:3070/api/mcp`). The suite's publisher treats it as a
+    // base and appends absolute `/api/...` paths to it, so inheriting it sent
+    // every measure to a doubled URL that 404'd. The suite kept running, the
+    // 404 was a console.warn, and this tick went on logging "measures already
+    // posted via onComplete regardless of exit code" — which was false for 13
+    // days while DESKTOP_PERF_GATE fail-soft passed every deploy (WI-38449).
+    //
+    // Unset (rather than set to a guess) so the suite falls back to its own
+    // documented default, :3070 — one owner for that literal, in the suite, per
+    // `operatorBaseUrl`'s "one literal, one place" note. An operator explicitly
+    // targeting staging still overrides it when invoking the suite directly.
+    const { PAPERCUSP_OPERATOR_URL: _hostOperatorUrl, ...childEnv } = process.env;
     const child = io.spawnFn('npm', ['test'], {
       cwd: WDIO_DIR,
-      env: process.env,
+      env: childEnv,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     // Chunk-boundary-safe accumulation (WI-6728) — a raw `stdout += d.toString()`

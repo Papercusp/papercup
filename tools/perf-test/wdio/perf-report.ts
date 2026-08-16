@@ -69,9 +69,49 @@ export { MEASURES_PATH };
  * egress spec's sensor control, and a control pointed at a DIFFERENT default than
  * the publisher would fail in a way that reads as a broken sensor rather than a
  * misconfigured runner. One literal, one place.
+ *
+ * NORMALISED TO THE ORIGIN, and that is load-bearing rather than tidiness
+ * (WI-38449). Callers append absolute paths like `/api/admin/testing/...`, so a
+ * base carrying ANY path silently produces a doubled URL that 404s. This is not
+ * hypothetical: `desktop-perf-scheduled-run.ts` spawns this suite with
+ * `env: process.env`, i.e. the OPERATOR HOST's own environment, and that process
+ * sets `PAPERCUSP_OPERATOR_URL` for its own unrelated purposes. On 2026-08-15 it
+ * held `http://localhost:3070/api/mcp`, so every publish went to
+ * `http://localhost:3070/api/mcp/api/admin/testing/desktop-perf-runs` and was
+ * REJECTED (404) — for 13 days, while the tick logged "measures already posted
+ * via onComplete regardless of exit code" and reported success. Result:
+ * `harness_shared.desktop_perf_runs` took no rows and `DESKTOP_PERF_GATE`
+ * fail-soft PASSED every deploy in that window while measuring nothing.
+ *
+ * Stripping the path is deliberately NOT silent. A value carrying a path means
+ * this runner inherited an env var meant for something else, and the quiet fix
+ * would leave that misconfiguration in place to surprise the next caller who
+ * uses it for a purpose normalisation cannot rescue.
  */
 export function operatorBaseUrl(): string {
-  return (process.env.PAPERCUSP_OPERATOR_URL ?? "http://127.0.0.1:3070").replace(/\/$/, "");
+  const raw = process.env.PAPERCUSP_OPERATOR_URL ?? "http://127.0.0.1:3070";
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[perf-report] PAPERCUSP_OPERATOR_URL is not a URL (${JSON.stringify(raw)}) — ` +
+        `falling back to http://127.0.0.1:3070`,
+    );
+    return "http://127.0.0.1:3070";
+  }
+  const extra = raw.slice(parsed.origin.length).replace(/\/$/, "");
+  if (extra) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[perf-report] PAPERCUSP_OPERATOR_URL carries a path (${JSON.stringify(extra)}); using the ` +
+        `ORIGIN ${parsed.origin} instead. Callers here append absolute /api/... paths, so the ` +
+        `un-normalised value would 404 every publish. Whoever launched this run is passing an ` +
+        `endpoint URL where an operator ORIGIN is expected — fix that too.`,
+    );
+  }
+  return parsed.origin;
 }
 
 /**
