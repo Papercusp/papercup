@@ -2302,10 +2302,32 @@ export const FLAGS = {
   // services would have left the gate inert while looking armed. A FLAGS entry is read
   // in-process at evaluation time and sidesteps both paths entirely.
   //
-  // Default ON, warn-only: block-mode stays hardwired false in perf-gate.ts, so an
-  // armed gate can flag a deploy but never hold one. OFF ⇒ reads nothing, passes
-  // (kill-switch). Same posture as its desktop sibling.
+  // Default ON. Block-mode is a SEPARATE switch — HOST_PERF_GATE_BLOCK below.
+  // OFF ⇒ reads nothing, passes (kill-switch). Same posture as its desktop sibling.
   HOST_PERF_GATE: "papercusp-host-perf-gate",
+  // WI-38449 / D-007 F3: block-mode for the HOST perf gate — the sibling of
+  // DESKTOP_PERF_GATE_BLOCK above, and the second half of P-004's "restore an
+  // EFFECTIVE blocking gate". Until now `block` was hardwired false here, so the
+  // host gate could flag a deploy but never hold one.
+  //
+  // What made arming unsafe, and what changed: measured 2026-08-16 on a live
+  // capture, the crit tier fired on the SINGLE reason `PSI memory full avg60 11.45
+  // ≥ 5` — ambient RAM pressure from ~100 peer agents on this shared box — and an
+  // armed gate returned `block`. Arming then would have held EVERY deploy for as
+  // long as the box was busy. perf-budgets.ts now splits crit reasons by
+  // ATTRIBUTION (PerfVerdict.critAttribution) at the point they are raised, and
+  // perf-gate.ts blocks ONLY on `operatorDefect` reasons (:3070 unreachable,
+  // wedge-active, event-loop lag p95 ≥ 1s, CLOSE_WAIT ≥ 500). Ambient host state
+  // is still crit and still alarmed — it just never holds a release. That is what
+  // makes this an EFFECTIVE gate rather than an inert or a false-red one.
+  //
+  // DEFAULT ON (not in DARK_FLAGS): finished work does not ship dark, and the
+  // attribution split is what makes arming safe. Kept as a FLAGS entry rather than
+  // a hardwired `true` for the same reason as its desktop sibling — the gate holds
+  // DEPLOYS, so if it ever starts holding them wrongly the green pipeline is
+  // precisely the thing that would be unavailable to ship a code fix. It must be
+  // disarmable at RUNTIME (/admin/features).
+  HOST_PERF_GATE_BLOCK: "papercusp-host-perf-gate-block",
   // WI-6538 (the remaining half of the same item): the SCHEDULED PRODUCER for
   // DESKTOP_PERF_GATE above. Runs the packaged-binary wdio suite
   // (tools/perf-test/wdio, system-health/desktop-perf-scheduled-run.ts) on a

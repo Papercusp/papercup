@@ -75,26 +75,32 @@ export function perfGatePolicyFromEnv(env: NodeJS.ProcessEnv = process.env): Per
   };
 }
 
-/** Read the gate policy from the FLAGS system (default ON, warn-only).
+/** Read the gate policy from the FLAGS system (both switches default ON).
  *
  *  Mirrors `desktopPerfGatePolicyFromFlags` deliberately — the two perf gates are
- *  siblings and should be armed, read and reasoned about the same way.
+ *  siblings and should be armed, read and reasoned about the same way, down to
+ *  block-mode tracking its own separate flag.
  *
- *  `block` is hardwired false, exactly as the desktop sibling does: a crit verdict
- *  flags the deploy but never holds it. Arming block-mode is a separate, owner-gated
- *  step and is intentionally NOT reachable by flipping this flag — the flag is the
- *  master switch only. The env override above still wins for a deliberate local run. */
+ *  WI-38449 / D-007 F3: `block` is no longer hardwired false. It reads
+ *  FLAGS.HOST_PERF_GATE_BLOCK, which is safe to arm now that a crit blocks only for
+ *  reasons attributed to the operator itself (see evaluatePerfGate). Before that
+ *  split, arming held every deploy whenever this shared box was busy. */
 export async function perfGatePolicyFromFlags(
   readFlag: () => Promise<boolean> = () => getFlag(FLAGS.HOST_PERF_GATE, 'system'),
   env: NodeJS.ProcessEnv = process.env,
+  readBlockFlag: () => Promise<boolean> = () => getFlag(FLAGS.HOST_PERF_GATE_BLOCK, 'system'),
 ): Promise<PerfGatePolicy> {
   // Fail-soft: a flag backend that throws must not take the release gate down with it.
   // Falling back to `false` keeps green-checkpoint's behaviour a no-op `pass` rather
   // than an unexplained gate error mid-deploy.
   const enabled = await readFlag().catch(() => false);
+  // An UNREADABLE block flag ⇒ warn-only, never armed. A flag-store hiccup must not
+  // invent a deploy-holding verdict — the same rule as the desktop sibling.
+  const block = await readBlockFlag().catch(() => false);
   return {
     enabled: enabled || env.PAPERCUSP_PERF_GATE === '1',
-    block: false,
+    // Block-mode is meaningless without the gate itself: never report armed-but-disabled.
+    block: (enabled && block) || env.PAPERCUSP_PERF_GATE_BLOCK === '1',
   };
 }
 
