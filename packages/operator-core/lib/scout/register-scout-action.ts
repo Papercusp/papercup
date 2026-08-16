@@ -44,6 +44,8 @@ import { admissionDenialFrom, isCapacityError, type CapacityFallbackEvent } from
 import { readScoutPoolSnapshot, scoutRoutableProviders } from './capacity-probe';
 import { runScoutCycle } from './cycle';
 import { buildScoutCycleDeps } from './cycle-deps';
+import { applyDedupBurnToConfig, readDedupBurnVerdict } from './dedup-burn-guard';
+import { DEFAULT_SCOUT_CONFIG } from './config';
 import { createScoutPlanDraft } from './scout-plan-draft';
 import { buildScoutArchivePort, type ScoutArchivePort } from './scout-archive-port';
 import { nicheKey, type ArchivePort } from './gym-bridge';
@@ -399,6 +401,19 @@ export const productionScoutRunner: ScoutCycleRunner = async ({ harnessSlug, wor
 
   onPhase?.('resolve-archive');
   const archive = await resolveArchive({ workspaceId, harnessSlug });
+  // P-007 dedup-burn guard (WI-39479): assess the recent ran-tick streak BEFORE
+  // building the cycle. Saturated ⇒ (1) widen the novelty band on the effective
+  // config so borderline ideas survive instead of burning again, and (2) stamp
+  // the digest so renderDigest steers the ideators off the saturated standing
+  // corpus. Fail-open: readDedupBurnVerdict never throws — an unsaturated
+  // verdict leaves everything byte-identical.
+  const dedupBurn = await readDedupBurnVerdict({ workspaceId, installSlug: harnessSlug });
+  const effectiveScoutConfig = dedupBurn.saturated
+    ? applyDedupBurnToConfig(scoutConfig ?? DEFAULT_SCOUT_CONFIG, dedupBurn)
+    : scoutConfig;
+  if (dedupBurn.saturated) {
+    console.warn(`[scout/dedup-burn-guard] ${dedupBurn.reason}`);
+  }
   onPhase?.('build-cycle-deps');
   const deps = buildScoutCycleDeps({
     harnessSlug,
@@ -442,7 +457,18 @@ export const productionScoutRunner: ScoutCycleRunner = async ({ harnessSlug, wor
     ...(deadlineMs !== undefined ? { deadlineMs } : {}),
     // P-009: per-blueprint Scout tuning (lenses/novelty/buckets/routing). Undefined ⇒
     // buildScoutCycleDeps falls back to DEFAULT_SCOUT_CONFIG (behavior-neutral).
-    ...(scoutConfig ? { scoutConfig } : {}),
+    // P-007: on a saturated verdict this is the WIDENED config (see dedupBurn above).
+    ...(effectiveScoutConfig ? { scoutConfig: effectiveScoutConfig } : {}),
+    // P-007: the digest stamp — readCorpus copies it onto the digest so renderDigest
+    // drops the standing patterns + leads with the saturation banner.
+    ...(dedupBurn.saturated
+      ? {
+          dedupSaturation: {
+            consecutiveSaturated: dedupBurn.consecutiveSaturated,
+            wideningSteps: dedupBurn.wideningSteps,
+          },
+        }
+      : {}),
   });
   try {
     onPhase?.('run-cycle');
@@ -453,6 +479,9 @@ export const productionScoutRunner: ScoutCycleRunner = async ({ harnessSlug, wor
       ...result,
       ...(deps.lastIdeation ? { ideators: deps.lastIdeation } : {}),
       ...(capacityFallbacks.length > 0 ? { capacityFallbacks } : {}),
+      // P-007: ride the saturation verdict on the result so the scheduler persists
+      // it in the ran-tick detail — the guard's activation is ledger-diagnosable.
+      ...(dedupBurn.saturated ? { dedupBurn } : {}),
     };
   } catch (err) {
     // A throwing cycle can't return its fallback trail — ride it on the error so the

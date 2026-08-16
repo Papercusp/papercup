@@ -129,6 +129,19 @@ export interface ScoutCycleLike {
    * attaches the same array to the thrown error instead (see capacityFallbacksFrom).
    */
   capacityFallbacks?: readonly CapacityFallbackEvent[];
+  /**
+   * P-007 dedup-burn guard (WI-39479): present when the runner's pre-cycle ledger
+   * read found consecutive saturated cycles and re-shaped this cycle (widened
+   * novelty band + fresh-signal-only digest). Persisted on the ran-tick detail so
+   * guard activations are ledger-diagnosable next to the ratios that caused them.
+   */
+  dedupBurn?: {
+    saturated: boolean;
+    consecutiveSaturated: number;
+    lastRatio: number;
+    wideningSteps: number;
+    reason: string;
+  };
 }
 
 /**
@@ -504,6 +517,8 @@ export async function runScoutTick(deps: ScoutTickDeps, opts: ScoutTickOptions =
         ...(cycle.capacityFallbacks && cycle.capacityFallbacks.length > 0
           ? { capacityFallbacks: cycle.capacityFallbacks }
           : {}),
+        // P-007 dedup-burn guard activation — see ScoutCycleLike.dedupBurn.
+        ...(cycle.dedupBurn ? { dedupBurn: cycle.dedupBurn } : {}),
         // WI-5436: the pool baseline for a SUCCESSFUL cycle — without it a gated tick's
         // healthyAccounts has nothing to be compared against.
         ...(poolSnapshotAtFire ? { poolSnapshotAtFire } : {}),

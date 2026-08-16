@@ -628,6 +628,12 @@ export function buildScoutCycleDeps(
       } catch {
         /* best-effort */
       }
+      // P-007 dedup-burn guard (WI-39479): stamp the runner's saturation verdict
+      // so renderDigest drops the standing patterns + leads with the banner.
+      // Stamped BEFORE the snapshot persist below, so the persisted row records
+      // that this cycle ran saturated (Learning-tab diagnosability). flattenDigest
+      // walks lanes only, so the stamp never feeds the next cycle's ref baseline.
+      if (opts.dedupSaturation) digest.dedupSaturation = opts.dedupSaturation;
       // DELTA-FIRST substrate (blender-self-learning-2026-07-12 P-003 /
       // WI-4319): diff this digest against the previous fired cycle's persisted
       // snapshot — read the previous refs, persist the CLEAN fresh digest as
