@@ -81,6 +81,27 @@ interface RoutePage {
   summary: string;
 }
 
+/**
+ * How `measureRoute` actually got to the route — NOT what the caller wanted.
+ *
+ * `in-page`: `history.pushState` + popstate, i.e. an SPA transition inside the
+ * already-booted app. This is the only thing a WARM-route budget describes.
+ *
+ * `document-load`: a real webview navigation — the whole SPA boots again. Never
+ * gradeable against a warm budget; it is a cold-load measurement wearing a warm
+ * label, which is exactly how WI-39494's 2912ms cold boot was reported as a
+ * 1.94x warm-route breach.
+ */
+type RouteNavKind = 'in-page' | 'document-load';
+
+interface RouteMeasurement {
+  ok: boolean;
+  elapsedMs: number;
+  page: RoutePage;
+  stabilized: boolean;
+  navKind: RouteNavKind;
+}
+
 interface MemoryRow {
   pid: number;
   name: string | null;
@@ -1627,7 +1648,7 @@ async function measureWarmRoute(
   ctx: SuiteContext,
   route: string,
   predicate: (page: RoutePage) => boolean,
-): Promise<{ ok: boolean; elapsedMs: number; page: RoutePage; stabilized: boolean }> {
+): Promise<RouteMeasurement> {
   // ⚠ The priming pass's FAILURE IS NOT DECISIVE — do not "optimise" this into
   // an early return. A cross-root hop (e.g. /adv → /admin/plans) is a full SPA
   // reload, which on a loaded box routinely exceeds this pass's whole 24-poll
