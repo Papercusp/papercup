@@ -811,6 +811,67 @@ export interface AutoAdoptDeps {
   list?: typeof listKnowledgePackCandidates;
   decide?: typeof decideKnowledgePackCandidate;
   review?: typeof reviewCandidateForAutoAdopt;
+  recordReviewError?: typeof recordCandidateReviewError;
+  clearReviewErrors?: typeof clearCandidateReviewErrors;
+}
+
+/** A candidate erroring this many CONSECUTIVE sweeps files a work-item alarm.
+ *  (P-001 blender-loop-repair-2026-08-16: the judge was dead 28 days and the
+ *  only trace was a journald warn line nobody read.) */
+export const REVIEW_ERROR_ALARM_THRESHOLD = 3;
+
+/**
+ * Bump the candidate's consecutive-review-error streak (migration 835) and,
+ * exactly when the streak crosses {@link REVIEW_ERROR_ALARM_THRESHOLD}, file a
+ * work-item so the dead judge is a claimable bug rather than a log line.
+ * Best-effort by contract: an alarm-path failure must never break the sweep.
+ */
+export async function recordCandidateReviewError(id: string, reason: string): Promise<void> {
+  try {
+    const { sql } = getOrgPg();
+    const rows = await sql<{ review_error_count: number }[]>`
+      UPDATE harness_shared.knowledge_pack_candidates
+      SET review_error_count = review_error_count + 1,
+          last_review_error = ${reason.slice(0, 2_000)},
+          last_review_error_at = now()
+      WHERE id = ${id}
+      RETURNING review_error_count`;
+    const streak = rows[0]?.review_error_count ?? 0;
+    if (streak === REVIEW_ERROR_ALARM_THRESHOLD) {
+      const { createWorkItem } = await import('../work-items');
+      await createWorkItem({
+        kind: 'bug',
+        severity: 'major',
+        title: `knowledge-pack candidate ${id} errored ${streak} consecutive auto-adopt sweeps — transferability judge is not deciding it`,
+        summary: [
+          `The automated review (candidates.ts autoAdoptPendingCandidates) returned verdict 'error' for the SAME candidate ${streak} sweeps in a row, so it stays pending indefinitely.`,
+          `Last error reason (carries the raw judge response when the failure is parse-null): ${reason.slice(0, 1_500)}`,
+          'A persistent error streak means the judge LLM wiring is broken (unkeyed distiller, gateway down, truncation) — retrying will not decide the candidate. Fix the wiring, then the next sweep decides it.',
+        ].join('\n\n'),
+        createdBy: AUTO_ADOPT_REVIEWER,
+      });
+    }
+  } catch (e) {
+    console.warn(
+      `[knowledge-packs] review-error streak recording failed for ${id} (best-effort): ${e instanceof Error ? e.message : e}`,
+    );
+  }
+}
+
+/** Reset the streak once the judge produces ANY usable verdict — the alarm is
+ *  about a judge that cannot decide, not about what it decides. Best-effort. */
+export async function clearCandidateReviewErrors(id: string): Promise<void> {
+  try {
+    const { sql } = getOrgPg();
+    await sql`
+      UPDATE harness_shared.knowledge_pack_candidates
+      SET review_error_count = 0, last_review_error = NULL, last_review_error_at = NULL
+      WHERE id = ${id} AND review_error_count > 0`;
+  } catch (e) {
+    console.warn(
+      `[knowledge-packs] review-error streak clear failed for ${id} (best-effort): ${e instanceof Error ? e.message : e}`,
+    );
+  }
 }
 
 /**
@@ -872,8 +933,13 @@ export async function autoAdoptPendingCandidates(
     if (verdict.verdict === 'error') {
       console.warn(`[knowledge-packs] auto-adopt review errored for ${candidate.id} (stays pending): ${verdict.reason}`);
       result.failed += 1;
+      // P-001: persist the streak + reason on the row (and alarm at the
+      // threshold) so a dead judge is visible in the DB, not only in journald.
+      await (deps.recordReviewError ?? recordCandidateReviewError)(candidate.id, verdict.reason);
       continue;
     }
+    // Any usable verdict proves the judge is alive — reset the error streak.
+    await (deps.clearReviewErrors ?? clearCandidateReviewErrors)(candidate.id);
     const note = `Automated review (${AUTO_ADOPT_REVIEWER}): ${verdict.reason}`;
     const res = await decide({
       id: candidate.id,

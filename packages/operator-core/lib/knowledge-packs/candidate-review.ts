@@ -19,8 +19,11 @@
  * STAYS PENDING for the next tick. Never adopt-by-default.
  *
  * The LLM port is {@link LessonDistillerLlm} (transfer/types) — the same
- * shape live-deps' anthropicDistillerLlm implements (gateway-routed haiku;
- * no API key ⇒ a no-op whose output parses to nothing ⇒ 'error' ⇒ pending).
+ * shape live-deps' anthropicDistillerLlm implements (gateway-routed; unkeyed
+ * processes ride the inference gateway's placeholder bearer since P-001
+ * blender-loop-repair-2026-08-16; only unkeyed AND gatewayless no-ops, and
+ * that no-op is now NAMED in the error reason instead of reading as a bare
+ * parse failure).
  * PURE apart from the injected port: prompts + parsing pin in unit tests.
  */
 import type { LessonDistillerLlm } from '../transfer/types';
@@ -29,7 +32,14 @@ import type { LessonDistillerLlm } from '../transfer/types';
 const TITLE_CAP = 120;
 const LESSON_TEXT_CAP = 1_200;
 const DRAFT_RENDER_CAP = 6_000;
-export const TRANSFERABILITY_MAX_TOKENS = 768;
+/** P-001 (blender-loop-repair-2026-08-16): 768 left ~zero headroom for a
+ *  worst-case pass response (LESSON_TEXT_CAP chars of lesson + title + JSON
+ *  scaffolding + any preamble the model emits despite "STRICT JSON") — a
+ *  response cut at the token cap loses its closing brace and parses to null,
+ *  which reads identically to a dead LLM. 1024 buys the full worst case. */
+export const TRANSFERABILITY_MAX_TOKENS = 1_024;
+/** How much of an unparseable judge response survives into the error reason. */
+const RAW_SNIPPET_CAP = 300;
 
 export interface DistilledCandidate {
   title: string;
@@ -137,7 +147,23 @@ export async function judgeCandidateTransferability(
   }
   const outcome = parseTransferabilityResponse(raw);
   if (!outcome) {
-    return { verdict: 'error', reason: 'transferability judge returned no usable verdict' };
+    // P-001: NEVER discard the raw response on parse-null — its shape is the
+    // diagnosis. The bare "no usable verdict" reason hid an unkeyed-distiller
+    // no-op ('[]') for 28 days (EI-20597533361555377).
+    const { DISTILLER_NOOP_SENTINEL } = await import('../transfer/live-deps');
+    if (raw.trim() === DISTILLER_NOOP_SENTINEL) {
+      return {
+        verdict: 'error',
+        reason:
+          'transferability judge got the distiller NO-OP sentinel — no ANTHROPIC_API_KEY in this process AND no inference-gateway route; the judge never ran. Fix the LLM wiring; retrying cannot help until it changes.',
+      };
+    }
+    const snippet = JSON.stringify(raw.slice(0, RAW_SNIPPET_CAP));
+    const truncated = raw.length > RAW_SNIPPET_CAP ? ` (first ${RAW_SNIPPET_CAP} of ${raw.length} chars)` : '';
+    return {
+      verdict: 'error',
+      reason: `transferability judge returned no usable verdict; raw response${truncated}: ${snippet}`,
+    };
   }
   return outcome;
 }

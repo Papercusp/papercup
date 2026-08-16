@@ -80,23 +80,32 @@ export function fsTranscriptRefLister(workspaceId?: string): TranscriptRefLister
   };
 }
 
-/** Anthropic-backed distiller. No API key ⇒ distills nothing at zero cost
- *  (the action's flag + governor gates are the real guards). */
+/** The unkeyed-and-gatewayless no-op sentinel. Exported so judge-side callers
+ *  (candidate-review) can NAME this condition in their error reason instead of
+ *  reporting a bare "no usable verdict" — that anonymity is how the
+ *  transferability judge sat dead for 28 days (EI-20597533361555377). */
+export const DISTILLER_NOOP_SENTINEL = '[]';
+
+/** Anthropic-backed distiller. Resolution order (P-001
+ *  blender-loop-repair-and-opus5-xhigh-2026-08-16 — the old order no-op'd
+ *  BEFORE considering the gateway, silently killing the transferability judge
+ *  in every process whose env carries no key, i.e. all of them here):
+ *    1. an explicit/env API key → real call (direct, or via gateway baseURL);
+ *    2. no key but the inference gateway is reachable (env URL or flag) →
+ *       real call THROUGH the gateway with the placeholder bearer — the
+ *       gateway strips + reinjects the routed account's real OAuth, same as
+ *       every claude-CLI spawn (spawn-env.ts GATEWAY_CLIENT_AUTH_TOKEN);
+ *    3. neither → distills nothing at zero cost (the action's flag + governor
+ *       gates are the real guards) — returns DISTILLER_NOOP_SENTINEL. */
 export function anthropicDistillerLlm(opts?: { apiKey?: string; model?: string }): LessonDistillerLlm {
   const apiKey = opts?.apiKey ?? process.env.ANTHROPIC_API_KEY ?? '';
   const model = opts?.model ?? DISTILL_MODEL;
-  if (!apiKey) return async () => ({ text: '[]', costUsd: 0 });
 
   return async ({ system, user, maxTokens }) => {
-    const mod = (await import('@anthropic-ai/sdk')) as unknown as {
-      default: new (o: { apiKey: string; timeout?: number; baseURL?: string }) => {
-        messages: { create: (...args: unknown[]) => Promise<unknown> };
-      };
-    };
     // Route through the inference gateway when it's pointing us at the localhost pacing
     // pool (gateway sets PAPERCUSP_ANTHROPIC_URL / ANTHROPIC_BASE_URL) so this in-process
     // distiller load-balances across the account pool instead of egressing direct to one
-    // account on its API key. Absent the env (gateway off) → unchanged direct egress.
+    // account on its API key. Absent the env (gateway off) → direct egress on the key.
     let baseURL = process.env.PAPERCUSP_ANTHROPIC_URL ?? process.env.ANTHROPIC_BASE_URL;
     // su-5e6cc (2026-06-30): SELF-ROUTE through the gateway when the INFERENCE_GATEWAY flag
     // is on, instead of only inheriting the env another in-process caller set — so the
@@ -113,7 +122,24 @@ export function anthropicDistillerLlm(opts?: { apiKey?: string; model?: string }
         /* best-effort — gateway resolution must never break the distiller */
       }
     }
-    const client = new mod.default({ apiKey, timeout: DISTILL_TIMEOUT_MS, ...(baseURL ? { baseURL } : {}) });
+    if (!apiKey && !baseURL) return { text: DISTILLER_NOOP_SENTINEL, costUsd: 0 };
+    const mod = (await import('@anthropic-ai/sdk')) as unknown as {
+      default: new (o: {
+        apiKey?: string;
+        authToken?: string;
+        timeout?: number;
+        baseURL?: string;
+      }) => {
+        messages: { create: (...args: unknown[]) => Promise<unknown> };
+      };
+    };
+    // Unkeyed-through-gateway: present the same placeholder bearer the claude CLI
+    // spawns use — the gateway replaces inbound auth with the routed account's real
+    // OAuth, so the placeholder's only job is to make the SDK send at all.
+    const auth = apiKey
+      ? { apiKey }
+      : { authToken: (await import('../inference-gateway/spawn-env')).GATEWAY_CLIENT_AUTH_TOKEN };
+    const client = new mod.default({ ...auth, timeout: DISTILL_TIMEOUT_MS, ...(baseURL ? { baseURL } : {}) });
     const response = (await client.messages.create({
       model,
       max_tokens: maxTokens,

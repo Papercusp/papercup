@@ -8,7 +8,7 @@
  * half of stage/decide pins in candidates.integration.test.ts).
  */
 
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { promises as fs } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -499,6 +499,15 @@ describe('materializeCandidateIntoPack is GATED (P-009)', () => {
 });
 
 describe('autoAdoptPendingCandidates (WI-5414 sweep, injected deps)', () => {
+  // P-001 (blender-loop-repair-2026-08-16): the sweep records/clears per-candidate
+  // review-error streaks. Injected in every test so the unit suite never touches PG.
+  const recordReviewError = vi.fn(async () => {});
+  const clearReviewErrors = vi.fn(async () => {});
+  beforeEach(() => {
+    recordReviewError.mockClear();
+    clearReviewErrors.mockClear();
+  });
+
   const pendingOf = (id: string): KnowledgePackCandidate => ({
     id,
     signature: `sig-${id}`,
@@ -532,7 +541,7 @@ describe('autoAdoptPendingCandidates (WI-5414 sweep, injected deps)', () => {
       ...(input.action === 'adopt' ? { packId: 'fleet-lessons', packItemId: input.id, packVersion: '0.0.1' } : {}),
     }));
 
-    const result = await autoAdoptPendingCandidates({}, { list, decide, review } as never);
+    const result = await autoAdoptPendingCandidates({}, { list, decide, review, recordReviewError, clearReviewErrors } as never);
     expect(result).toEqual({ reviewed: 2, adopted: 1, dismissed: 1, failed: 0 });
     expect(decide).toHaveBeenNthCalledWith(
       1,
@@ -569,11 +578,16 @@ describe('autoAdoptPendingCandidates (WI-5414 sweep, injected deps)', () => {
       packVersion: '0.0.1',
     }));
 
-    const result = await autoAdoptPendingCandidates({}, { list, decide, review } as never);
+    const result = await autoAdoptPendingCandidates({}, { list, decide, review, recordReviewError, clearReviewErrors } as never);
     expect(result).toEqual({ reviewed: 2, adopted: 1, dismissed: 0, failed: 1 });
     expect(decide).toHaveBeenCalledTimes(1);
     expect(decide).toHaveBeenCalledWith(expect.objectContaining({ id: 'e2', action: 'adopt' }));
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('stays pending'));
+    // P-001: the errored candidate's streak is recorded WITH the reason; the
+    // usable verdict resets its own streak.
+    expect(recordReviewError).toHaveBeenCalledTimes(1);
+    expect(recordReviewError).toHaveBeenCalledWith('e1', expect.stringContaining('no usable verdict'));
+    expect(clearReviewErrors).toHaveBeenCalledWith('e2');
     warn.mockRestore();
   });
 
@@ -585,9 +599,11 @@ describe('autoAdoptPendingCandidates (WI-5414 sweep, injected deps)', () => {
     });
     const decide = vi.fn();
 
-    const result = await autoAdoptPendingCandidates({}, { list, decide, review } as never);
+    const result = await autoAdoptPendingCandidates({}, { list, decide, review, recordReviewError, clearReviewErrors } as never);
     expect(result).toEqual({ reviewed: 1, adopted: 0, dismissed: 0, failed: 1 });
     expect(decide).not.toHaveBeenCalled();
+    // P-001: a THROWN review is an error verdict — the streak records it too.
+    expect(recordReviewError).toHaveBeenCalledWith('t', expect.stringContaining('pack fs I/O'));
     warn.mockRestore();
   });
 
@@ -596,7 +612,7 @@ describe('autoAdoptPendingCandidates (WI-5414 sweep, injected deps)', () => {
     const review = vi.fn(async () => ({ verdict: 'pass' as const, reason: 'clean' }));
     const decide = vi.fn(async () => ({ ok: false as const, reason: 'transfer_bar' as const }));
 
-    const result = await autoAdoptPendingCandidates({}, { list, decide, review } as never);
+    const result = await autoAdoptPendingCandidates({}, { list, decide, review, recordReviewError, clearReviewErrors } as never);
     expect(result).toEqual({ reviewed: 1, adopted: 0, dismissed: 0, failed: 1 });
   });
 
@@ -615,7 +631,7 @@ describe('autoAdoptPendingCandidates (WI-5414 sweep, injected deps)', () => {
         : { ok: true as const, action: 'dismiss' as const, id: input.id },
     );
 
-    const result = await autoAdoptPendingCandidates({}, { list, decide, review } as never);
+    const result = await autoAdoptPendingCandidates({}, { list, decide, review, recordReviewError, clearReviewErrors } as never);
     expect(result).toEqual({ reviewed: 1, adopted: 0, dismissed: 1, failed: 0 });
 
     // The dismissal records WHY on the row — not only in a log line that scrolls away.
@@ -638,7 +654,7 @@ describe('autoAdoptPendingCandidates (WI-5414 sweep, injected deps)', () => {
     const review = vi.fn(async () => ({ verdict: 'pass' as const, reason: 'clean' }));
     const decide = vi.fn(async () => ({ ok: false as const, reason: 'admission_gate' as const }));
 
-    const result = await autoAdoptPendingCandidates({}, { list, decide, review } as never);
+    const result = await autoAdoptPendingCandidates({}, { list, decide, review, recordReviewError, clearReviewErrors } as never);
     expect(result).toEqual({ reviewed: 1, adopted: 0, dismissed: 0, failed: 1 });
     warn.mockRestore();
   });

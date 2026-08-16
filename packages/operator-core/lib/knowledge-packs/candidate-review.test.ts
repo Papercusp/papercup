@@ -79,6 +79,28 @@ describe('judgeCandidateTransferability', () => {
     const out = await judgeCandidateTransferability(candidate, llm);
     expect(out.verdict).toBe('error');
   });
+
+  it("NAMES the unkeyed-distiller no-op sentinel ('[]') in the error reason — P-001, the 28-day silent-death diagnosis", async () => {
+    const llm = vi.fn(async () => ({ text: '[]', costUsd: 0 }));
+    const out = await judgeCandidateTransferability(candidate, llm);
+    expect(out.verdict).toBe('error');
+    expect(out.reason).toContain('NO-OP sentinel');
+    expect(out.reason).toContain('retrying cannot help');
+  });
+
+  it('carries a bounded RAW-RESPONSE snippet in the parse-null error reason (P-001: never discard the evidence)', async () => {
+    const llm = vi.fn(async () => ({
+      text: 'I think this lesson is transferable because'.padEnd(500, ' etc'),
+      costUsd: 0,
+    }));
+    const out = await judgeCandidateTransferability(candidate, llm);
+    expect(out.verdict).toBe('error');
+    expect(out.reason).toContain('raw response');
+    expect(out.reason).toContain('I think this lesson is transferable');
+    expect(out.reason).toContain('first 300 of 500 chars');
+    // bounded: the reason never carries the whole response
+    expect(out.reason.length).toBeLessThan(500);
+  });
 });
 
 describe('normalizeCandidateSignature (P-002)', () => {
