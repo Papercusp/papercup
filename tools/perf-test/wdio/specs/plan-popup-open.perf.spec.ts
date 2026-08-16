@@ -17,8 +17,18 @@
 import { browser } from "@wdio/globals";
 import { recordInteractionMs } from "../perf-report";
 import { waitForAppMount } from "../app-mount";
+// Imported by PATH for the same reason app-mount.ts imports it that way: this
+// runner sits outside the npm workspace set, so `@papercusp/gui-readiness` does
+// not resolve here. The module is a pure function with no dependencies.
+import {
+  classifyInteractionMeasure,
+  describeInteractionMeasureFailure,
+} from "../../../../libs/generic/gui-readiness/src/interaction-measure";
 
 const INTERACTION_NAME = "plan-popup-open";
+/** Mirrors perf-marks.ts STALE_START_MS — a start older than this is discarded. */
+const STALE_START_MS = 30_000;
+const MEASURE_WAIT_MS = 8_000;
 // Budget MIRRORS DESKTOP_PERF_BUDGETS.interactions['plan-popup-open']
 // (packages/operator-core/lib/system-health/desktop-perf-budgets.ts). This runner
 // is deliberately kept OUT of the npm workspace (README), so it cannot import the
