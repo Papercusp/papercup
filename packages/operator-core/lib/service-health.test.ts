@@ -307,6 +307,12 @@ describe('supervisedProcesses (critical-process-supervisor-2026-07-04 P-001 — 
         // WI-6149 (D-010 item 4) — probed on :46229, report-only like bg-host
         // because the unit is already Restart=always at the systemd level.
         'oddsmith-sidecar',
+        // WI-38449 / D-007 F1 — the host release-gate's producer. Its timer latched
+        // `failed` for ~7h on 2026-08-15/16 with nothing watching the unit, so the
+        // host SLO/CLOSE_WAIT guard read a stale capture the whole window. Only the
+        // `.timer` is registered; the Type=oneshot `.service` is deliberately out
+        // (see the registry comment + service-health-unit-coverage.test.ts).
+        'perf-signals-capture-timer',
       ].sort(),
     );
   });
