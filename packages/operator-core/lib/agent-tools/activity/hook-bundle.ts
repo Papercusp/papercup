@@ -189,6 +189,28 @@ function inboxNewestTimestamp(inbox: Record<string, unknown> | null): string | n
   return nonEmptyTimestamp((summary as Record<string, unknown>).newest_ts);
 }
 
+/**
+ * Make ANY census sink unable to fail the fold.
+ *
+ * `coordFoldObserverFor` already guards the sink it builds, but a caller that
+ * INJECTS `deps.observe` bypasses that guard entirely — and this runs
+ * synchronously in a hook on every tool call for every agent in the fleet. The
+ * protection therefore belongs at the use site, where it covers every sink
+ * regardless of origin, rather than only inside one constructor.
+ */
+function safeObserve(
+  sink: ((census: CoordFoldCensus) => void) | undefined,
+): ((census: CoordFoldCensus) => void) | undefined {
+  if (!sink) return undefined;
+  return (census: CoordFoldCensus) => {
+    try {
+      sink(census);
+    } catch {
+      /* an instrument that can break what it measures is worse than none */
+    }
+  };
+}
+
 /** How much the hydrated inbox surface actually carried; null when unreadable. */
 function inboxTotalCount(inbox: Record<string, unknown> | null): number | null {
   const summary = inbox?.summary;
@@ -229,7 +251,7 @@ export async function buildActivityHookBundle(
   // report the one thing it exists to report. The sink rides `ctx.metadata` onto
   // the `tool_invocations` row this call already writes, so it costs no extra
   // query and no extra latency on the path being measured.
-  const observe = deps.observe ?? coordFoldObserverFor(ctx);
+  const observe = safeObserve(deps.observe ?? coordFoldObserverFor(ctx));
   const startedMs = deps.now().getTime();
 
   // ACK the previous delivery before deciding whether this heartbeat is quiet.

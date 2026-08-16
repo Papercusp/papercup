@@ -176,3 +176,157 @@ describe('guardedLegacyInboxFloor — migration safety', () => {
     expect(guardedLegacyInboxFloor('2026-07-13T19:30:00.000Z', null)).toBeNull();
   });
 });
+
+/**
+ * P-005 (D-001): the fold's `changed` outcome was computed, acted on and
+ * discarded, so the optimization's own effectiveness was unobservable and both
+ * open filings had to reason from proxies. These cases pin the instrument that
+ * makes it measurable — see coord-fold-census.ts for how the numbers are read.
+ */
+describe('coord-fold census — instrument before changing the gate', () => {
+  /** A clock that advances a fixed step per read, so durations are deterministic. */
+  function advancingClock(stepMs: number, startIso = '2026-07-13T20:00:00.000Z') {
+    let t = new Date(startIso).getTime();
+    return () => {
+      const at = new Date(t);
+      t += stepMs;
+      return at;
+    };
+  }
+
+  function censusDeps(generation = 'host-a:42', stepMs = 10) {
+    const d = deps(generation);
+    const observe = vi.fn();
+    return { ...d, observe, value: { ...d.value, observe, now: advancingClock(stepMs) } };
+  }
+
+  it('censuses the QUIET fold too — the ratio is uncomputable from expensive folds alone', async () => {
+    const d = censusDeps();
+    const result = await buildActivityHookBundle(
+      'su-abc',
+      { generation: 'host-a:42' },
+      {} as never,
+      d.value,
+    );
+
+    expect(result).toMatchObject({ changed: false, complete: true });
+    expect(d.observe).toHaveBeenCalledTimes(1);
+    expect(d.observe.mock.calls[0]?.[0]).toMatchObject({
+      changed: false,
+      reason: 'quiet',
+      complete: true,
+      // The saving the optimization exists to deliver, recorded as a hard 0.
+      hydrateMs: 0,
+      reqGen: 'host-a:42',
+      gen: 'host-a:42',
+    });
+    // The quiet path must not have paid for hydration at all.
+    expect(d.inbox).not.toHaveBeenCalled();
+    expect(d.glance).not.toHaveBeenCalled();
+  });
+
+  it('censuses an expensive fold with the gate/hydration split P-007 needs', async () => {
+    const d = censusDeps();
+    await buildActivityHookBundle('su-abc', { generation: 'host-a:41' }, {} as never, d.value);
+
+    const census = d.observe.mock.calls[0]?.[0];
+    expect(census).toMatchObject({
+      changed: true,
+      reason: 'generation-mismatch',
+      complete: true,
+      reqGen: 'host-a:41',
+      gen: 'host-a:42',
+    });
+    // gateMs + hydrateMs accounts for the whole fold — no unattributed remainder.
+    expect(census.gateMs + census.hydrateMs).toBe(census.foldMs);
+    expect(census.hydrateMs).toBeGreaterThan(0);
+  });
+
+  it('records BOTH generations, which is what makes the P-007 discard rate a query rather than an inference', async () => {
+    const d = censusDeps();
+    await buildActivityHookBundle('su-abc', { generation: 'stale-gen' }, {} as never, d.value);
+    // A client that received this bundle sends back `gen`; one that timed out
+    // re-sends `reqGen` unchanged. Both must be on the row for the window
+    // function over consecutive folds to tell those apart.
+    expect(d.observe.mock.calls[0]?.[0]).toMatchObject({ reqGen: 'stale-gen', gen: 'host-a:42' });
+  });
+
+  it('separates a first call from a real mismatch — a null cursor is legitimately expensive', async () => {
+    const d = censusDeps();
+    await buildActivityHookBundle('su-abc', { generation: null }, {} as never, d.value);
+    expect(d.observe.mock.calls[0]?.[0]).toMatchObject({
+      changed: true,
+      reason: 'no-client-generation',
+      reqGen: null,
+    });
+  });
+
+  it('reports inboxAdvanced when the floor actually moved for THIS owner', async () => {
+    const d = censusDeps();
+    d.inbox.mockResolvedValueOnce({
+      entries: [{}],
+      summary: { newest_ts: '2026-07-13T19:45:00.000Z', total: 3 },
+    });
+    await buildActivityHookBundle(
+      'su-abc',
+      { generation: 'old', since_ts: '2026-07-13T19:00:00.000Z' },
+      {} as never,
+      d.value,
+    );
+    expect(d.observe.mock.calls[0]?.[0]).toMatchObject({ inboxAdvanced: true, inboxTotal: 3 });
+  });
+
+  it('reports inboxAdvanced=false when the expensive fold delivered this owner no new mail', async () => {
+    // This is the population a per-owner gate would have skipped (P-006) — an
+    // UPPER BOUND on the saving, never a count of wasted work, because the fold
+    // also replaces `glance`.
+    const d = censusDeps();
+    await buildActivityHookBundle('su-abc', { generation: 'old' }, {} as never, d.value);
+    expect(d.observe.mock.calls[0]?.[0]).toMatchObject({ changed: true, inboxAdvanced: false });
+  });
+
+  it('carries an incomplete fold through to the census instead of dropping the row', async () => {
+    const d = censusDeps();
+    d.stageInboxCursor.mockRejectedValueOnce(new Error('temporary'));
+    const result = await buildActivityHookBundle(
+      'su-abc',
+      { generation: 'old' },
+      {} as never,
+      d.value,
+    );
+    expect(result).toMatchObject({ complete: false });
+    expect(d.observe.mock.calls[0]?.[0]).toMatchObject({ changed: true, complete: false });
+  });
+
+  it.each([
+    ['quiet', 'host-a:42'],
+    ['expensive', 'stale-gen'],
+  ])(
+    'never lets a throwing instrument break the %s fold it measures',
+    async (_label, generation) => {
+      // Guarded at the USE site, not just inside coordFoldObserverFor — an
+      // injected sink bypasses that constructor's own try/catch, and this runs
+      // synchronously for every agent on every tool call.
+      const d = censusDeps();
+      d.observe.mockImplementation(() => {
+        throw new Error('sink exploded');
+      });
+      const result = await buildActivityHookBundle(
+        'su-abc',
+        { generation },
+        {} as never,
+        d.value,
+      );
+      expect(result).toMatchObject({ schemaVersion: ACTIVITY_HOOK_BUNDLE_SCHEMA });
+      expect(d.observe).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('stays silent when the ctx carries no metadata channel, rather than throwing', async () => {
+    const d = deps();
+    // No `observe` dep and a bare ctx: coordFoldObserverFor returns undefined.
+    await expect(
+      buildActivityHookBundle('su-abc', { generation: 'old' }, {} as never, d.value),
+    ).resolves.toMatchObject({ changed: true });
+  });
+});
