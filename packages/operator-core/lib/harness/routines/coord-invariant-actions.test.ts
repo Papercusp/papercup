@@ -791,22 +791,82 @@ describe('planSharedHiveCapture (shared-hive-loop P-012/P-013 leg)', () => {
     expect(planSharedHiveCapture({ kind: 'double-completion', title: 'noisy: F-123 by pk-abc…', detail }, 'h1')).toEqual({
       title: 'shared-hive invariant: cross-swarm double completion in h1',
       severity: 'major',
+      watchdogKey: 'shared-hive:double-completion:h1',
     });
     expect(planSharedHiveCapture({ kind: 'outbox-health', title: 'depth 12345 > 10000', detail }, 'h1')).toEqual({
-      title: 'shared-hive invariant: substrate outbox depth/age breach',
+      title: 'shared-hive invariant: substrate outbox depth/age breach in h1',
       severity: 'major',
+      watchdogKey: 'shared-hive:outbox-health:h1',
     });
     expect(planSharedHiveCapture({ kind: 'presence-ghost', title: 'ghost pk-xyz… holds 3', detail }, 'h1')).toEqual({
       title: 'shared-hive invariant: presence ghost anchoring live leases in h1',
       severity: 'minor',
+      watchdogKey: 'shared-hive:presence-ghost:h1',
     });
     expect(planSharedHiveCapture({ kind: 'orphaned-taken-by', title: '2 cleared', detail }, 'h1')).toEqual({
       title: 'shared-hive invariant: orphaned taken_by swept in h1',
       severity: 'minor',
+      watchdogKey: 'shared-hive:orphaned-taken-by:h1',
     });
     // The volatile per-incident text never leaks into the dedup title.
     expect(planSharedHiveCapture({ kind: 'double-completion', title: 'F-999 other noise', detail }, 'h1').title).toBe(
       planSharedHiveCapture({ kind: 'double-completion', title: 'F-123 different noise', detail }, 'h1').title,
     );
+  });
+
+  // ── EI-20579195481991931 regression guard ─────────────────────────────────
+  // The bug this pins is NOT hypothetical: on the 2026-08-16T11:40Z pass the
+  // `peer-federation-silence` incident for `papercusp` (20 of 21 remote logs
+  // silent) was declined as a hard-semantic DUPLICATE of the one filed 2s
+  // earlier for `hello-world-3-pot` (2 of 3 silent), because the two titles
+  // differ only by a harness name. The worse breach vanished; which scope won
+  // was decided by the unordered `GROUP BY harness_slug` scan order.
+  //
+  // A per-harness TITLE is not enough on its own — the semantic band collapsed
+  // exactly that. The identity that survives it is `watchdogKey`, so assert on
+  // the key, and assert BOTH directions: distinct across scopes (no collapse)
+  // and stable across ticks (cross-tick dedup still works).
+  it('gives each harness its OWN signal identity so one scope cannot swallow another', () => {
+    const detail = { whatever: true };
+    const kinds = [
+      'peer-federation-silence',
+      'double-completion',
+      'outbox-health',
+      'presence-ghost',
+      'orphaned-taken-by',
+    ] as const;
+
+    for (const kind of kinds) {
+      const a = planSharedHiveCapture({ kind, title: 'volatile text A', detail }, 'papercusp');
+      const b = planSharedHiveCapture({ kind, title: 'volatile text B', detail }, 'hello-world-3-pot');
+      // Two scopes breaching the same way are TWO signals, never one.
+      expect(a.watchdogKey).not.toBe(b.watchdogKey);
+      // …and the harness is what distinguishes them, not the volatile text.
+      expect(a.watchdogKey).toContain('papercusp');
+      expect(b.watchdogKey).toContain('hello-world-3-pot');
+      // The title must be harness-scoped too, so the two rows are legible to a
+      // human without opening the payload.
+      expect(a.title).not.toBe(b.title);
+      // Cross-TICK dedup is preserved: the same scope + kind is the same signal
+      // however much the per-incident text changed between passes.
+      expect(planSharedHiveCapture({ kind, title: 'a later, different reading', detail }, 'papercusp').watchdogKey).toBe(
+        a.watchdogKey,
+      );
+    }
+
+    // Different KINDS in one harness are also different signals — otherwise a
+    // noisy minor (orphan sweep) could swallow the major it shares a scope with.
+    const perKind = kinds.map((kind) => planSharedHiveCapture({ kind, title: 't', detail }, 'papercusp').watchdogKey);
+    expect(new Set(perKind).size).toBe(kinds.length);
+  });
+
+  it('scopes the pass-level "zero scopes" incident to the PASS, not a harness', () => {
+    const detail = { whatever: true };
+    // "the monitor resolved zero scopes" is a fact about the whole pass, so it
+    // must NOT be harness-keyed — otherwise it re-files once per harness.
+    const a = planSharedHiveCapture({ kind: 'monitor-scope-empty', title: 'x', detail }, 'papercusp');
+    const b = planSharedHiveCapture({ kind: 'monitor-scope-empty', title: 'x', detail }, 'hello-world-3-pot');
+    expect(a.watchdogKey).toBe(b.watchdogKey);
+    expect(a.title).toBe(b.title);
   });
 });

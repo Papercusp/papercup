@@ -139,6 +139,36 @@ export function isActiveStateDown(activeState: string | undefined, opts?: { epis
 }
 
 /**
+ * EI-20474047462811254: is an EPISODIC unit's run IN FLIGHT — i.e. carrying NO verdict yet?
+ *
+ * `isUnitDown`/`isActiveStateDown` answer "is this unit FAULTED?", and for an episodic entry
+ * `activating` is honestly not a fault (a run is simply underway). But `decideReconcile` used
+ * that same answer to mean RECOVERED, and those are not the same claim: for a timer-driven
+ * `Type=oneshot`, a run STARTING says nothing about whether the previous failure is over. The
+ * verdict only exists once the run COMPLETES (`inactive`/`active` = succeeded, `failed` =
+ * failed).
+ *
+ * Measured live on `papercup-live-federation-gate` (2026-08-15/16): 12 consecutive
+ * `✅ recovered` → `⚠ is down` broadcast PAIRS in 12 hours, one per hourly timer fire, none of
+ * them a real transition. The journal pins it exactly — `Starting` 22:43:08Z, `✅ recovered`
+ * 22:43:57Z, `Failed with result 'exit-code'` 22:44:15Z, `⚠ is down` 22:44:58Z. The unit is
+ * `Type=oneshot` with `RemainAfterExit=no`, so it sits in `activating` for the WHOLE run — 67s
+ * that time, but the unit budgets 15min–4h (`TimeoutStartSec=14400`), so a false "recovered"
+ * can stand for hours while the last known result is still a failure.
+ *
+ * `active` is deliberately NOT in-flight: for a oneshot with `RemainAfterExit=yes` it is the
+ * terminal SUCCESS state, so treating it as "no verdict" would suppress a real recovery.
+ * `deactivating`/`reloading` are transitional — the result is not latched yet — so they hold.
+ *
+ * Scoped to episodic entries by the caller. The registry INVARIANT `episodic ⇒
+ * autoRestart:false` (asserted in `service-health-unit-coverage.test.ts`) means this can never
+ * reach a restart decision: it only ever suppresses a false transition NOTIFICATION.
+ */
+export function isEpisodicRunInFlight(activeState: string | undefined): boolean {
+  return activeState === 'activating' || activeState === 'reloading' || activeState === 'deactivating';
+}
+
+/**
  * WI-5378: is this unit's persisted enablement an INTENTIONAL pause? `disabled` (`systemctl
  * --user disable`) and `masked` (`systemctl --user mask`) both mean "a human/agent explicitly
  * told systemd not to run this" — as opposed to `enabled`/`static`/`linked`/`generated`/etc,
