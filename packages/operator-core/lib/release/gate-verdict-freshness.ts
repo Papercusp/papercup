@@ -156,6 +156,24 @@ export interface GateVerdictFreshnessInput {
   commitsBehindTip?: number | null;
   /** Rule 5 threshold; defaults to {@link CANDIDATE_FOSSIL_AGE_MS}. */
   fossilAgeMs?: number;
+  /**
+   * EI-20571364274022293 — Rule 1's ORDERING input, and the field that makes rule 1 sound.
+   *
+   * TRUE ⇒ `observedFromPin` was FRESHLY READ by the run that wrote this verdict, so it really is
+   * "the pin at verdict time" and a difference now proves the pin moved AFTER this red.
+   * FALSE ⇒ that run could NOT resolve the live pin and the writer carried the previous value
+   * forward (`gate_health.lastFrom = fromPin ?? gh.lastFrom`), so `observedFromPin` may be
+   * arbitrarily old and a difference proves NOTHING about when the pin moved.
+   * Null/absent ⇒ a blob predating this field; treated exactly like FALSE, because an
+   * unprovenanced pin is not a timestamped one.
+   *
+   * ⚠ Why this and not a `lastGreenAt`/`firstRedAt` comparison: on a RED blob `lastGreenAt` is
+   * ALWAYS earlier than `firstRedAt` by construction (the writer sets `lastGreenAt = now` only on
+   * the green path, which simultaneously zeroes the streak), so ordering those two fields would
+   * decline rule 1 on 100% of inputs — silently deleting a rule that genuinely catches a stale
+   * blob. The pin's own provenance is the only ordering evidence the blob actually carries.
+   */
+  observedFromPinFresh?: boolean | null;
 }
 
 export interface GateVerdictFreshness {
@@ -166,8 +184,19 @@ export interface GateVerdictFreshness {
   /**
    * WHICH rule fired, when `stale` — callers that need to distinguish PROVEN-GREEN from
    * merely-UNVERIFIED must not just branch on `stale` (EI-13714):
-   *   - 'pin-advance'      — HARD PROOF a green happened (the pin only moves on green). A
-   *                          caller may safely treat the streak as reset to 0, not just "unknown".
+   *   - 'pin-advance'      — HARD PROOF a green happened AFTER this red (the pin only moves on
+   *                          green, AND the base pin it moved from was read live at verdict time,
+   *                          so the move is ordered after the verdict). A caller may safely treat
+   *                          the streak as reset to 0, not just "unknown".
+   *   - 'pin-advance-unordered' — the pin DIFFERS from this verdict's base, but that base was
+   *                          carried forward rather than observed (`observedFromPinFresh` false
+   *                          or absent), so the difference may predate the red entirely. Same
+   *                          contract as 'writer-starved': unverified, NOT proof of green — a
+   *                          caller must NOT reset the streak on it (EI-20571364274022293, where
+   *                          an order-blind rule 1 reported `consecutiveReds: 0` + "the gate has
+   *                          greened since" for a gate that could not START at all, because the
+   *                          pin had advanced ~2h BEFORE the first red and the writer — unable to
+   *                          resolve the pin — had frozen `lastFrom` at a pre-incident value).
    *   - 'writer-starved'   — no new evidence either way; the true colour is genuinely unknown.
    *   - 'retriage-proven'  — this verdict's own named failures are proven not to reproduce at a
    *                          newer tip, but that is not a full-suite green proof.
@@ -184,6 +213,7 @@ export interface GateVerdictFreshness {
    */
   reasonCode:
     | 'pin-advance'
+    | 'pin-advance-unordered'
     | 'writer-starved'
     | 'retriage-proven'
     | 'refire-in-flight'
@@ -215,6 +245,7 @@ export function evaluateGateVerdictFreshness(input: GateVerdictFreshnessInput): 
     inFlightRetriage,
     candidateCommittedAtMs,
     commitsBehindTip,
+    observedFromPinFresh,
   } = input;
   const intervalMs = input.intervalMs ?? GATE_FIRE_INTERVAL_MS;
   const fossilAgeMs = input.fossilAgeMs ?? CANDIDATE_FOSSIL_AGE_MS;
@@ -273,15 +304,48 @@ export function evaluateGateVerdictFreshness(input: GateVerdictFreshnessInput): 
     };
   }
 
-  // Rule 1 — PIN-ADVANCE. The pin only advances on a green checkpoint, so if it has moved past
-  // the pin this red was recorded against, a green provably happened AFTER this verdict.
+  // Rule 1 — PIN-ADVANCE. The pin only advances on a green checkpoint, so a pin that differs from
+  // the one this red was recorded against is evidence a green happened.
+  //
+  // ⚠ EI-20571364274022293 — "a green happened" is NOT "a green happened SINCE THIS RED". The pin
+  // comparison is order-BLIND: `observedFromPin` is the pin as the writer saw it, and nothing
+  // constrains WHEN it stopped matching the live pin. Measured 2026-08-16: the pin had advanced
+  // ~2h BEFORE the streak's first red, so the difference was a fossil of an OLD green — and this
+  // rule reported `stale: true, 'pin-advance'` for a gate that could not even START, which
+  // `pinProvenGateCorrection` then rendered as `consecutiveReds: 0`. A dead gate presented as a
+  // healthy one, and the false green survived a retraction to the owner because the rule's own
+  // documentation called it "hard proof". The ordering is what makes it proof; without the
+  // ordering it is a coincidence of two shas.
+  //
+  // So: fire the PROOF code only when the green is ordered strictly AFTER the streak began;
+  // DECLINE outright when it provably predates it (fall through — the later rules may still have
+  // something true to say about this verdict); and when the ordering is simply unavailable, say
+  // "unordered" rather than "proven".
   if (observedFromPin && currentGreenPinSha && short(currentGreenPinSha) !== short(observedFromPin)) {
+    const advance = `${short(observedFromPin)} → ${short(currentGreenPinSha)}`;
+
+    if (observedFromPinFresh === true) {
+      return {
+        stale: true,
+        reason:
+          `the release pin has advanced ${advance} since this red was recorded (the base pin was read ` +
+          `live by the run that wrote this verdict, so the move happened AFTER it) — ` +
+          `the pin only moves on a GREEN checkpoint, so the gate has provably greened since`,
+        reasonCode: 'pin-advance',
+        candidateAgeMs,
+      };
+    }
+
     return {
       stale: true,
       reason:
-        `the release pin has advanced ${short(observedFromPin)} → ${short(currentGreenPinSha)} since this red was recorded — ` +
-        `the pin only moves on a GREEN checkpoint, so the gate has greened since`,
-      reasonCode: 'pin-advance',
+        `the release pin differs from this verdict's base (${advance}), but that base pin was NOT read live ` +
+        `when the verdict was written — the writer carried a previous value forward because it could not ` +
+        `resolve the pin — so it is UNKNOWN whether the pin moved before or after this red. Treat this red as ` +
+        `UNVERIFIED, NOT as greened: do NOT reset the red streak on this evidence. Re-judge at tip ` +
+        `(release:checkpoint-run) to settle it, and check whether the gate can resolve the release pin at all — ` +
+        `a pin it cannot read is usually a gate that cannot run`,
+      reasonCode: 'pin-advance-unordered',
       candidateAgeMs,
     };
   }

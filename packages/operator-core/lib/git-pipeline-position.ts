@@ -916,9 +916,18 @@ export interface PipelinePosition {
     /** Human-readable reason `verdictStale` fired, or null when it did not. */
     verdictStaleReason: string | null;
     /** WHICH rule fired — see `GateVerdictFreshness.reasonCode` in gate-verdict-freshness.ts.
-     *  `'pin-advance'` is hard proof a green already happened; the others prove only that the
-     *  cached red is UNVERIFIED, not that the gate is green. Null when `verdictStale` is false. */
-    verdictStaleReasonCode: 'pin-advance' | 'writer-starved' | 'retriage-proven' | 'refire-in-flight' | 'candidate-fossil' | null;
+     *  ONLY `'pin-advance'` is hard proof a green already happened; the others — including
+     *  `'pin-advance-unordered'` (EI-20571364274022293: the pin moved, but possibly BEFORE this
+     *  red streak began) — prove only that the cached red is UNVERIFIED, not that the gate is
+     *  green. Null when `verdictStale` is false. */
+    verdictStaleReasonCode:
+      | 'pin-advance'
+      | 'pin-advance-unordered'
+      | 'writer-starved'
+      | 'retriage-proven'
+      | 'refire-in-flight'
+      | 'candidate-fossil'
+      | null;
     /** EI-19325520469216548: how stale the judged candidate was at verdict time, in ms — present
      *  even when it falls short of the 'candidate-fossil' threshold (the routine ~4min quiet-cut
      *  lag is normal). Null when unmeasured. */
