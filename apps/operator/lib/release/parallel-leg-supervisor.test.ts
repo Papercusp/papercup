@@ -113,8 +113,22 @@ if [[ "\${STORM:-0}" == "1" ]]; then
   HPID=$$
   trap 'true' USR1
   ( for _ in $(seq 1 200); do kill -USR1 "$HPID" 2>/dev/null || exit 0; sleep 0.02; done ) &
+  STORM_PID=$!
 fi
 supervise_legs
+# BOUND THE STORM TO ITS SUBJECT. The storm runs ~4s (200 x 0.02s) but the legs
+# finish in ~2s, so it used to OUTLIVE supervise_legs and keep signalling this
+# shell through its own teardown (trap report EXIT). Signals arriving after
+# supervise_legs has returned test NOTHING — the wait is over — they only race the
+# harness's shutdown, and that race made this test flake on the shared gate: on
+# the identical candidate 7eb6e188 it failed at 10:59 and 11:10 and passed twice
+# at 11:12, freezing main for the whole fleet. Reproduced locally at 2/6 under
+# load. Killing the storm here keeps ALL of the intended coverage (the storm still
+# spans the entire wait) and removes only the untested tail.
+if [[ -n "\${STORM_PID:-}" ]]; then
+  kill "$STORM_PID" 2>/dev/null || true
+  wait "$STORM_PID" 2>/dev/null || true
+fi
 echo "SUPERVISOR_RETURNED_OK"
 `;
 
