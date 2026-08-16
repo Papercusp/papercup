@@ -3110,6 +3110,24 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // userMemory.total — how many memories the Memory page COULD show, so its
+  // bounded window can render a denominator ("Showing 500 of 2,465") instead
+  // of a bare count (WI-39540). Without this the page's own row count was the
+  // only number on screen, and a saturated window reads as a measurement: the
+  // owner reasonably concluded a ~2,465-row corpus was 300 rows.
+  //
+  // Same invalidation key family as userMemory.list — every write that fires
+  // notifySyncInvalidate('userMemory.list') also fires this one, so the
+  // denominator moves with the rows rather than going stale beside them.
+  'userMemory.total': {
+    argsSchema: z.object({ userId: z.string().min(1) }),
+    resolve: async (args) => {
+      const { userId } = args as { userId: string };
+      const { countUserMemories } = await import('../memory/list-user-memories');
+      return [{ total: await countUserMemories(userId) }] as unknown[];
+    },
+  },
+
   // userMemory.journalStatus — the memory write-ahead journal's live status
   // for the settings Memory page (memory-write-journal-auto-recovery P-006):
   // pending badge count, failed_permanent count, and the last-24h drain
