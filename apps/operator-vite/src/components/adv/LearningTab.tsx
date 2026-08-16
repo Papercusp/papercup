@@ -5568,7 +5568,7 @@ function LearningsView({
             other things the loop has learned
           </span>
         </div>
-        <RetainedLedgerCard enabled={hiveReady} />
+        <RetainedLedgerCard hive={hive} enabled={hiveReady} />
         {retainLensEntries.length > 0 ? (
           <section
             className="pc-learning__lensstrip"
@@ -5877,7 +5877,13 @@ function buildRetainColumns(opts: {
  * quick-search, and the expanded plan are URL state; the accumulated pages and
  * their keyset cursor are render state — a shared link reloads from page 1.
  */
-function RetainedLedgerCard({ enabled }: { enabled: boolean }) {
+function RetainedLedgerCard({
+  hive,
+  enabled,
+}: {
+  hive: string;
+  enabled: boolean;
+}) {
   const [rtab, setRtab] = useQueryState(
     "rtab",
     parseAsStringEnum<RetainFeedTab>([...RETAIN_FEED_TABS]).withDefault("all"),
