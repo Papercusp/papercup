@@ -785,6 +785,22 @@ export async function captureImprovement(
     }
   }
 
+  // EI-20484430331973864: fold the exact-key hits into the candidate set so they ride the
+  // SAME possibleDuplicates → blockEligible → compatible rails as lexical/semantic hits,
+  // instead of being a side-lookup only the probation path could see. Origin-filtered like
+  // the lexical leg deliberately: the red-queen DRILL leg files this very title under
+  // origin='drill' in a sandbox scope, and a drill row must never suppress a real organic
+  // outage filing.
+  const exactKeyIds = new Set<string>();
+  if (exactKeyIssues.length > 0) {
+    const known = new Set(candidates.map((i) => i.id));
+    for (const issue of exactKeyIssues) {
+      if (effectiveOrigin(issue.signalOrigin) !== origin) continue;
+      exactKeyIds.add(issue.id);
+      if (!known.has(issue.id)) candidates.push(issue);
+    }
+  }
+
   const possibleDuplicates: PossibleDuplicate[] = candidates
     .map((i) => {
       const lexical = Math.round(titleSimilarity(input.title, i.title) * 100) / 100;
@@ -805,16 +821,20 @@ export async function captureImprovement(
         similarity: semanticOnly ? Math.round(sem.similarity * 100) / 100 : containmentOnly ? containment : lexical,
         ...(semanticOnly ? { semantic: sem.band } : {}),
         ...(containmentOnly ? { lexical: 'containment' as const } : {}),
+        ...(exactKeyIds.has(i.id) ? { exactKey: true as const } : {}),
       };
     })
-    .filter((d) => d.similarity >= DUP_THRESHOLD || d.semantic !== undefined || d.lexical !== undefined)
-    .sort((a, b) => b.similarity - a.similarity)
+    // An exact watchdogKey match survives regardless of how its TITLE scored — that is the
+    // entire point of carrying a key — and sorts FIRST so the top-5 slice can never drop a
+    // definitional duplicate in favour of five fuzzy ones.
+    .filter((d) => d.exactKey === true || d.similarity >= DUP_THRESHOLD || d.semantic !== undefined || d.lexical !== undefined)
+    .sort((a, b) => Number(b.exactKey === true) - Number(a.exactKey === true) || b.similarity - a.similarity)
     .slice(0, 5);
 
   const dedupCoverage: DedupCoverage = {
     lexical: lexicalLeg,
     semantic: semanticLeg,
-    degraded: lexicalLeg === 'unavailable' || semanticLeg === 'unavailable',
+    degraded: lexicalLeg === 'unavailable' || semanticLeg === 'unavailable' || exactKeyLookupFailed,
   };
 
   // "Already decided" recall (P-003): signature-match this capture against the
@@ -859,7 +879,11 @@ export async function captureImprovement(
   // similarity band and widening it would not be the same trade.
   const softMayBlock = input.semanticBlockBand === 'soft';
   const blockEligible = possibleDuplicates.filter(
-    (d) => (softMayBlock || d.semantic !== 'soft') && d.lexical !== 'containment',
+    // EI-20484430331973864: an exact watchdogKey match is block-eligible UNCONDITIONALLY.
+    // The soft-semantic and containment carve-outs exist because those nets GUESS at
+    // identity, and a wrong guess costs a lost filing. An exact key is not a guess, so
+    // neither carve-out applies to it.
+    (d) => d.exactKey === true || ((softMayBlock || d.semantic !== 'soft') && d.lexical !== 'containment'),
   );
   const compatible = input.watchdogKey
     ? blockEligible.filter((d) => {
