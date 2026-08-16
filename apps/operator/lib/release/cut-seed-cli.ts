@@ -109,6 +109,7 @@ import {
 } from '@papercusp/operator-core/lib/sync/hyperbee/seed-cutter';
 import { decodeManifest, encodeManifest, type SeedManifest, type SeedStoreEntry } from '@papercusp/seed-bundle';
 import { assertSeedNotDegraded } from './seed-degradation-guard.js';
+import { assertSeedPayloadMatchesManifest } from './seed-payload-integrity-guard.js';
 import { judgeHolderBootInvariant } from './seed-holder-boot-invariant.js';
 import { stampOpHlc } from '@papercusp/operator-core/lib/sync/hyperbee/hlc-stamp';
 import { backfillLocalState, type BackfillResult } from '@papercusp/operator-core/lib/sync/hyperbee/backfill-local-state';
@@ -1325,6 +1326,20 @@ async function main(): Promise<void> {
         if (f === 'LOG' || f.startsWith('LOG.old')) await rm(join(seedDbDir, f), { force: true });
       }
     }
+
+    // WI-39447. Judge the manifest AGAINST THE BYTES — after the graft and after the LOG
+    // sweep, i.e. exactly what the installer will hash. The two guards above judge the
+    // manifest's claims about ITSELF (an honest sparse label, a sane size); neither can see a
+    // manifest whose hash describes a payload that is not on disk. That is what the default
+    // --reuse-corestore path produces: the grafted entry's hash/sizeBytes are inherited from
+    // the PRIOR manifest and re-measured by nothing. The installer runs precisely this check
+    // (restoreSeed → provider.verify) and, on a mismatch, SKIPS the store and restores an
+    // empty hive without failing the install — so it has to be caught here or not at all.
+    await assertSeedPayloadMatchesManifest({
+      manifest: finalManifest,
+      dir: outDir,
+      origin: reuseCorestoreDir ? 'reuse' : 'fresh',
+    });
 
     // EI-20108164746219771 step 4. Judge the STAGED BYTES for the build box's identity —
     // after the graft and after the LOG sweep, i.e. exactly what the installer will carry.
