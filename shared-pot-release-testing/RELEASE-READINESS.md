@@ -44,8 +44,8 @@ waiting on a decision; every open row has a named owner and a concrete flip cond
 > so is the "non-monotonic ladder (✅32 ✅40 ❌48 ✅56 ❌64)" reading that replaced it. BOTH were
 > artifacts of a broken convergence instrument (D-014/D-015): the ladder on the FIXED instrument
 > is monotone and fully green to 64. What is honestly established: **the mesh converges at 64
-> peers within 120s (slowest reader ~60s); it does NOT converge within 30s; nothing above 64 has
-> been measured at all.**
+> peers within 120s (slowest reader ~60s); it does NOT converge within 30s; nothing above 64 is
+> measurable on this host — see consequence 4.**
 > I am not deleting the headline clause — the correctness rows behind it stand on their own
 > evidence — but quoting it as a statement about *scale* overstates what has been measured, and
 > that is precisely how "p2p is fine" gets into a release note.
