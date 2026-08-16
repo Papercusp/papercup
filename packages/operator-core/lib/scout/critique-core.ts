@@ -257,10 +257,26 @@ export interface BucketOptions {
   noveltyFloor?: number;
   /** At/above this feasibility an idea is buildable now (default 0.5). */
   feasibilityFloor?: number;
-  /** A leap must be at least this novel to earn a moonshot slot (default 0.66). */
+  /**
+   * The ABSOLUTE moonshot novelty floor (default 0.66) — in `bucketByCritique` it is the
+   * CAP of the batch-relative floor (WI-39492: a leap never needs MORE than this, but the
+   * effective floor adapts DOWN as the corpus densifies — see `effectiveMoonshotFloor`).
+   * `verdictFor` called directly (the pre-cap single-idea path) still uses it as-is.
+   */
   moonshotNoveltyFloor?: number;
   /** Max ideas kept in the moonshot bucket so leaps survive but don't flood (D-005, default 2). */
   maxMoonshots?: number;
+  /**
+   * WI-39492 — the quantile of the batch's novelty distribution the RELATIVE moonshot
+   * floor tracks (default 0.75 ≈ the 2nd-highest of an 8-idea batch, matching
+   * `maxMoonshots` 2). See `effectiveMoonshotFloor`.
+   */
+  moonshotFloorQuantile?: number;
+  /**
+   * WI-39492 — hard minimum of the relative moonshot floor (default 0.45): however
+   * compressed the batch, "a leap" never means less novelty than this.
+   */
+  moonshotFloorMin?: number;
 }
 
 /**
@@ -273,7 +289,43 @@ export const DEFAULT_BUCKET_OPTIONS: Required<BucketOptions> = {
   feasibilityFloor: 0.5,
   moonshotNoveltyFloor: 0.66,
   maxMoonshots: 2,
+  moonshotFloorQuantile: 0.75,
+  moonshotFloorMin: 0.45,
 };
+
+/**
+ * WI-39492 — below this many scored ideas the batch novelty distribution is too small to
+ * take a quantile of, so `effectiveMoonshotFloor` falls back to the absolute floor
+ * (same refuse-to-calibrate-off-noise discipline as MIN_SEMANTIC_SAMPLES_TO_CALIBRATE).
+ */
+const MIN_BATCH_FOR_RELATIVE_MOONSHOT_FLOOR = 4;
+
+/**
+ * WI-39492 — the batch-relative moonshot novelty floor.
+ *
+ * The fixed 0.66 floor drifted out of reach: search-first novelty is a CEILING
+ * (`1 − closest corpus similarity`, LLM may only lower it), and against a ~2200-entry
+ * corpus that ceiling compresses to ~0.5–0.65 — measured live: 0 moonshots in 96 ideas
+ * across 12 cycles, every low-feasibility leap rejected as "not strong enough". That
+ * quietly defeats D-005's leap preservation. So the floor tracks the batch instead:
+ *
+ *   effectiveFloor = min(moonshotNoveltyFloor,               // never demand MORE than the absolute
+ *                        max(moonshotFloorMin,               // a leap still means something
+ *                            quantile(batch novelties, q)))  // adapt to what's achievable now
+ *
+ * Batches below MIN_BATCH_FOR_RELATIVE_MOONSHOT_FLOOR use the absolute floor unchanged.
+ */
+export function effectiveMoonshotFloor(
+  novelties: readonly number[],
+  opts: BucketOptions = {},
+): number {
+  const absoluteFloor = opts.moonshotNoveltyFloor ?? DEFAULT_BUCKET_OPTIONS.moonshotNoveltyFloor;
+  if (novelties.length < MIN_BATCH_FOR_RELATIVE_MOONSHOT_FLOOR) return absoluteFloor;
+  const q = opts.moonshotFloorQuantile ?? DEFAULT_BUCKET_OPTIONS.moonshotFloorQuantile;
+  const floorMin = opts.moonshotFloorMin ?? DEFAULT_BUCKET_OPTIONS.moonshotFloorMin;
+  const sorted = [...novelties].sort((a, b) => a - b);
+  return round2(Math.min(absoluteFloor, Math.max(floorMin, quantile(sorted, q))));
+}
 
 export interface CritiqueBuckets<T extends CritiqueScores> {
   /** Novel AND feasible — proceed to debate/recombine. */
@@ -307,16 +359,18 @@ export function verdictFor(
   if (s.feasibility >= feasibilityFloor) {
     return { verdict: 'keep', reason: `novel (${s.novelty}) + feasible (${s.feasibility})` };
   }
-  // Novel but not currently feasible → a moonshot IF it's a genuine leap.
+  // Novel but not currently feasible → a moonshot IF it's a genuine leap. The reason
+  // names the floor in force (WI-39492): under bucketByCritique it is batch-relative,
+  // so the audit trail must show what "a leap" meant for THIS batch.
   if (s.novelty >= moonshotNoveltyFloor) {
     return {
       verdict: 'moonshot',
-      reason: `high novelty (${s.novelty}) / low feasibility (${s.feasibility}) — preserved leap`,
+      reason: `high novelty (${s.novelty} ≥ moonshot floor ${moonshotNoveltyFloor}) / low feasibility (${s.feasibility}) — preserved leap`,
     };
   }
   return {
     verdict: 'reject',
-    reason: `mid novelty (${s.novelty}) but low feasibility (${s.feasibility}) — not a strong enough leap`,
+    reason: `mid novelty (${s.novelty} < moonshot floor ${moonshotNoveltyFloor}) but low feasibility (${s.feasibility}) — not a strong enough leap`,
   };
 }
 
@@ -324,19 +378,27 @@ export function verdictFor(
  * Partition scored ideas into keep / moonshot / reject (D-005). The moonshot
  * bucket is capped (`maxMoonshots`) — the most-novel leaps win the slots, the
  * rest are demoted to rejected — so leaps survive without flooding the pipeline.
+ * The moonshot floor is BATCH-RELATIVE here (WI-39492, `effectiveMoonshotFloor`):
+ * clamped to [moonshotFloorMin, moonshotNoveltyFloor], tracking the batch's
+ * novelty quantile so leaps stay reachable as the corpus densifies.
  */
 export function bucketByCritique<T extends CritiqueScores>(
   items: readonly T[],
   opts: BucketOptions = {},
 ): CritiqueBuckets<T> {
   const maxMoonshots = opts.maxMoonshots ?? DEFAULT_BUCKET_OPTIONS.maxMoonshots;
+  const moonshotFloor = effectiveMoonshotFloor(
+    items.map((i) => i.novelty),
+    opts,
+  );
+  const verdictOpts: BucketOptions = { ...opts, moonshotNoveltyFloor: moonshotFloor };
   const kept: T[] = [];
   const moonshotCandidates: T[] = [];
   const rejected: T[] = [];
   const verdicts: Record<string, { verdict: CritiqueVerdict; reason: string }> = {};
 
   for (const it of items) {
-    const v = verdictFor(it, opts);
+    const v = verdictFor(it, verdictOpts);
     verdicts[it.id] = v;
     if (v.verdict === 'keep') kept.push(it);
     else if (v.verdict === 'moonshot') moonshotCandidates.push(it);
