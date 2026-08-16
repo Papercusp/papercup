@@ -17,9 +17,14 @@ import {
   decideRoutes,
   decisionsToProvenance,
   deriveSlugStem,
+  draftGoalRails,
+  DEFAULT_GOAL_BUDGET_CENTS,
+  isGoalScaleProposal,
+  makeGoalScaleOverride,
   proposalTitle,
   proposalToGymView,
   routeProposals,
+  type GoalDispatchRequest,
   type RouterPorts,
   type RoutingDecision,
 } from './router';
@@ -217,7 +222,7 @@ describe('routeProposals', () => {
     expect(byId['p-gym'].routedRef).toBe('gym:p-gym');
     expect(byId['p-imp'].routedRef).toBe('wi:EI-1');
 
-    expect(res.byRail).toEqual({ plan: 1, gym: 1, improvement: 1, instance: 0 });
+    expect(res.byRail).toEqual({ plan: 1, gym: 1, improvement: 1, instance: 0, goal: 0 });
     expect(res.failed).toEqual([]);
     // Exactly the injected ports were touched (no real writes).
     expect(calls.plansNew).toHaveLength(1);
@@ -274,6 +279,108 @@ describe('routeProposals', () => {
     expect(res.failed.sort()).toEqual(['g1', 'g2']);
     expect(res.decisions.find((d) => d.proposalId === 'imp')!.routedRef).toBe('wi:EI-1');
     expect(res.gymSeed).toBeUndefined();
+  });
+});
+
+/* ── the goal rail (blender-loop-repair-and-opus5-xhigh P-013 / D-005) ── */
+
+describe('goal rail', () => {
+  const goalHinted = (id: string) => fixtureProposal({ id, routeHint: 'goal' });
+
+  it('classifyProposal follows an explicit goal routeHint', () => {
+    const c = classifyProposal(fixtureProposal({ routeHint: 'goal' }));
+    expect(c.rail).toBe('goal');
+    expect(c.followedHint).toBe(true);
+  });
+
+  it('isGoalScaleProposal: explicit hint always counts; otherwise the conservative marker scan', () => {
+    expect(isGoalScaleProposal(fixtureProposal({ routeHint: 'goal' }))).toBe(true);
+    // The default fixture text carries no goal-scale vocabulary.
+    expect(isGoalScaleProposal(fixtureProposal())).toBe(false);
+    expect(isGoalScaleProposal(fixtureProposal({ bet: 'a multi-plan campaign over weeks' }))).toBe(true);
+    // Configurable vocabulary (the P-009 scout-config seam).
+    expect(isGoalScaleProposal(fixtureProposal({ framing: 'zebra initiative' }), ['zebra'])).toBe(true);
+  });
+
+  it('makeGoalScaleOverride bumps ONLY plan-hinted goal-scale proposals (plan → goal escalation path)', () => {
+    const override = makeGoalScaleOverride();
+    const goalScale = { framing: 'A weeks-long, multi-plan push to a measurable end-state' };
+    expect(override(fixtureProposal({ routeHint: 'plan', ...goalScale }))).toBe('goal');
+    // gym / improvement / unhinted are never bumped, however goal-scale the text.
+    expect(override(fixtureProposal({ routeHint: 'gym', ...goalScale }))).toBeUndefined();
+    expect(override(fixtureProposal({ routeHint: 'improvement', ...goalScale }))).toBeUndefined();
+    expect(override(fixtureProposal({ routeHint: undefined, ...goalScale }))).toBeUndefined();
+    // A plan-hinted proposal that is NOT goal-scale stays a plan.
+    expect(override(fixtureProposal({ routeHint: 'plan' }))).toBeUndefined();
+  });
+
+  it('goalEnabled:false reroutes goal-bound proposals to PLAN (never dropped)', () => {
+    const decisions = decideRoutes([goalHinted('g'), fixtureProposal({ id: 'p', routeHint: 'plan' })], {
+      goalEnabled: false,
+    });
+    expect(decisions[0].rail).toBe('plan');
+    expect(decisions[0].reason).toContain('goal rail gated OFF');
+    expect(decisions[0].followedHint).toBe(false);
+    expect(decisions[1].rail).toBe('plan');
+    // Default (unset) stays byte-identical: goal routes to goal.
+    expect(decideRoutes([goalHinted('g')])[0].rail).toBe('goal');
+    expect(decideRoutes([goalHinted('g')], { goalEnabled: true })[0].rail).toBe('goal');
+  });
+
+  it('caps goal dispatches per cycle (default 1) — overflow reroutes to plan in input order', () => {
+    const decisions = decideRoutes([goalHinted('g1'), goalHinted('g2'), goalHinted('g3')]);
+    expect(decisions.map((d) => d.rail)).toEqual(['goal', 'plan', 'plan']);
+    expect(decisions[1].reason).toContain('goal cap reached');
+    const widened = decideRoutes([goalHinted('g1'), goalHinted('g2')], { maxGoalsPerCycle: 2 });
+    expect(widened.map((d) => d.rail)).toEqual(['goal', 'goal']);
+  });
+
+  it('draftGoalRails: kill criterion from the cheap experiment falsifiable signal, budget from the cap', () => {
+    const rails = draftGoalRails(fixtureProposal());
+    expect(rails.killCriterion).toContain('spin count unchanged after the switch');
+    expect(rails.budgetCents).toBe(DEFAULT_GOAL_BUDGET_CENTS);
+    // No cheap experiment → the 30-day-no-progress fallback, framed on the title.
+    const fallback = draftGoalRails(fixtureProposal({ cheapExperiment: undefined }));
+    expect(fallback.killCriterion).toMatch(/30 days/);
+    expect(fallback.killCriterion).toContain('Reduce lock contention');
+    expect(draftGoalRails(fixtureProposal(), { budgetCentsCap: 5000 }).budgetCents).toBe(5000);
+  });
+
+  it('routeProposals dispatches a goal with BOTH drafted rails and fills routedRef goal:<goalId>', async () => {
+    const requests: GoalDispatchRequest[] = [];
+    const { ports } = makeFakePorts();
+    ports.goalDispatch = async (req) => {
+      requests.push(req);
+      return { goalId: `G-${requests.length}` };
+    };
+    const res = await routeProposals([goalHinted('g1')], ports, { goalBudgetCentsCap: 7500 });
+    expect(res.decisions[0].routedRef).toBe('goal:G-1');
+    expect(res.byRail.goal).toBe(1);
+    expect(res.failed).toEqual([]);
+    expect(requests[0].title.length).toBeGreaterThan(0);
+    expect(requests[0].killCriterion).toContain('spin count unchanged');
+    expect(requests[0].budgetCents).toBe(7500);
+  });
+
+  it('a goal-routed decision with NO goalDispatch port fails defensively, never aborting the batch', async () => {
+    const { ports } = makeFakePorts(); // no goalDispatch wired
+    const res = await routeProposals([goalHinted('g1'), fixtureProposal({ id: 'imp', routeHint: 'improvement' })], ports);
+    const goal = res.decisions.find((d) => d.proposalId === 'g1')!;
+    expect(goal.error).toMatch(/goalDispatch port missing/);
+    expect(goal.routedRef).toBeUndefined();
+    expect(res.failed).toEqual(['g1']);
+    expect(res.decisions.find((d) => d.proposalId === 'imp')!.routedRef).toBe('wi:EI-1');
+  });
+
+  it('a throwing goalDispatch fails only that decision', async () => {
+    const { ports } = makeFakePorts();
+    ports.goalDispatch = async () => {
+      throw new Error('goals table busy');
+    };
+    const res = await routeProposals([goalHinted('g1'), fixtureProposal({ id: 'imp', routeHint: 'improvement' })], ports);
+    expect(res.decisions.find((d) => d.proposalId === 'g1')!.error).toMatch(/busy/);
+    expect(res.decisions.find((d) => d.proposalId === 'imp')!.routedRef).toBe('wi:EI-1');
+    expect(res.failed).toEqual(['g1']);
   });
 });
 

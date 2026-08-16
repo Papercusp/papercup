@@ -26,7 +26,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
-import { deleteGoalRow, goalId, insertGoalRow } from '@papercusp/agent-mcp/goals';
+import { deleteGoalRow, goalId, insertGoalRow, type GoalSqlTag } from '@papercusp/agent-mcp/goals';
 import { killCriterionProblem } from './kill-criterion';
 import {
   drainFleetAutoMintEnabled,
@@ -94,7 +94,7 @@ export async function autoStartGoal(input: AutoStartGoalInput): Promise<AutoStar
     throw new Error('an auto-created goal must carry a non-negative budgetCents ceiling (D-005)');
   }
 
-  const { sql } = getOrgPg();
+  const sql = getOrgPg().sql as unknown as GoalSqlTag;
   const id = goalId(input.title);
   // PRE-PIN the agent's coord identity so the mode stamp can name it before it
   // exists (the same minting goals:start and /api/adv/launch-su do).
