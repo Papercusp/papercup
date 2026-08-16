@@ -360,7 +360,20 @@ export async function ensureEmbedSidecar(
           'This is expected for hosts with no sidecar story. If you meant to exercise the sidecar ' +
           'path (e.g. verifying production embedding behavior from a standalone driver), export ' +
           'PAPERCUSP_EMBED_SIDECAR_URL — the systemd units\' value: ' +
-          "`systemctl --user show papercup-bg-host.service -p Environment`.",
+          "`systemctl --user show papercup-bg-host.service -p Environment`. " +
+          // EI-19464316359123796: the in-process path loads @huggingface/transformers,
+          // whose onnxruntime-node native addon leaves a live InferenceSession behind —
+          // see the appended warning below for the process.exit() teardown hazard.
+          'If THIS process later calls process.exit() (common in a one-off tsx/node ' +
+          'driver script), Node may abort before the native embedder addon\'s own ' +
+          "teardown runs, printing a bare `terminate called after throwing an instance " +
+          "of 'Napi::Error'` and exiting via SIGABRT (exit code 134) — AFTER your " +
+          'results have already printed correctly (EI-19464316359123796). That crash ' +
+          'is a benign native teardown race, not a sign your results are wrong; do not ' +
+          'treat a nonzero exit code alone as failure in a wrapper script. Workaround: ' +
+          'let the script exit naturally instead of calling process.exit() after an ' +
+          'embed call, or export PAPERCUSP_EMBED_SIDECAR_URL so embedding routes ' +
+          'through the sidecar HTTP process instead of loading the native addon here.',
       );
     }
     return null;
