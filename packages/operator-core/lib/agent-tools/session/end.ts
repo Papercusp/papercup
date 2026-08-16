@@ -56,6 +56,17 @@ import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { findLiveHost, hostSupports, shutdownViaPty } from '../../events/await/psu-pty-discovery';
 import { getLoopStatus } from '../../harness/routines/loop';
+import { activeWorkspaceId } from '../../workspace-registry';
+import {
+  GOAL_DISPOSITIONS,
+  activeGoalForOwner,
+  applyGoalDisposition,
+  buildDispositionRefusal,
+  buildGoalWindDownReport,
+  deliverGoalWindDownReport,
+  windDownDispositionGateEnabled,
+} from '../../goals/wind-down-disposition';
+import { getLoopCarryNote } from '../../carry-note';
 
 /** The note recorded in the host event log + printed into the closing terminal. */
 const MAX_REASON_CHARS = 300;
@@ -117,6 +128,18 @@ export default defineTool({
       .describe(
         'Waive ONLY the mid-turn (agent-busy) refusal. It can never waive the agent-launched / no-human-input guards — the host evaluates those from its own process state.',
       ),
+    disposition: z
+      .enum(GOAL_DISPOSITIONS)
+      .optional()
+      .describe(
+        "GOAL-mode wind-down verdict, REQUIRED when this owner's goal is still active and no loop is armed (a looped owner hits the same gate at loop:end): 'achieved' | 'killed' | 'handoff'. Recorded on the goal; the owner report is auto-generated.",
+      ),
+    handoffTo: z
+      .string()
+      .min(1)
+      .max(120)
+      .optional()
+      .describe("With disposition:'handoff' — who continues the goal (owner id / label). The goal stays active."),
   }),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
@@ -128,6 +151,70 @@ export default defineTool({
     // --resume a session that did not need to die). Fail-OPEN on a read error: a
     // flaky loop read must not block a legitimate wind-down.
     const loop = await getLoopStatus(identity.ownerId).catch(() => null);
+    // P-002 (goal-mode-design-intent-hardening-2026-08-16): a LOOPLESS goal-mode
+    // owner whose goal is still active winds down WITH a disposition or not at
+    // all (a LOOPED one is already forced through loop:end by the loop-armed
+    // refusal below, and hits the same gate there). skipWorkspaceTx holds here:
+    // the helpers run on the org pool, never ctx.tx. Flag check fails CLOSED —
+    // a broken flag read disables the gate, never wedges the wind-down.
+    let dispositionWarning: string | null = null;
+    if (!loop?.active && (await windDownDispositionGateEnabled())) {
+      const workspaceId =
+        ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
+      const activeGoal = workspaceId
+        ? await activeGoalForOwner({ workspaceId, ownerId: identity.ownerId }).catch(() => null)
+        : null;
+      if (activeGoal && !args.disposition && !activeGoal.recordedDisposition) {
+        const refusal = buildDispositionRefusal({
+          action: 'session:end',
+          goalId: activeGoal.goalId,
+          goalTitle: activeGoal.title,
+        });
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify(refusal) }],
+          isError: true,
+        };
+      }
+      if (activeGoal && args.disposition) {
+        // Apply + report FAIL-SOFT: a report failure downgrades to a warning —
+        // it must never strand a session that is legitimately winding down.
+        try {
+          await applyGoalDisposition({
+            workspaceId,
+            goalId: activeGoal.goalId,
+            disposition: args.disposition,
+            dispositionBy: identity.ownerId,
+            handoffTo: args.handoffTo ?? null,
+          });
+          const carryNote = loop
+            ? await getLoopCarryNote({ harness: loop.harnessSlug, ownerId: identity.ownerId }).catch(
+                () => null,
+              )
+            : null;
+          const report = buildGoalWindDownReport({
+            goalId: activeGoal.goalId,
+            goalTitle: activeGoal.title,
+            disposition: args.disposition,
+            endedBy: identity.ownerId,
+            action: 'session:end',
+            reason: args.reason ?? null,
+            carryNote,
+            handoffTo: args.handoffTo ?? null,
+          });
+          await deliverGoalWindDownReport(identity, {
+            workspaceId,
+            goalId: activeGoal.goalId,
+            disposition: args.disposition,
+            summary: report.summary,
+            body: report.body,
+          });
+        } catch (e) {
+          dispositionWarning = `recording/reporting the goal disposition failed: ${
+            e instanceof Error ? e.message : String(e)
+          }. Record it via goals:update and report to the owner manually.`;
+        }
+      }
+    }
     const result = loop?.active
       ? 'loop-armed'
       : await shutdownViaPty(identity.ownerId, {
@@ -143,6 +230,7 @@ export default defineTool({
             ok,
             result,
             note: shutdownNote(result),
+            ...(dispositionWarning ? { dispositionWarning } : {}),
             // Surfaced so a refusal is self-explaining without a second call: these
             // are the two inputs to the host's own agent-vs-human verdict.
             agentLaunched: host ? !!String(host.launchedBy ?? '').trim() : null,

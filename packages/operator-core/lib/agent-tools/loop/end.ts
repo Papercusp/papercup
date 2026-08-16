@@ -4,22 +4,39 @@
  * 2026-06-20, B-LOOP-5 / P-008). The routine is DEACTIVATED (the row is kept for
  * fire-history + a quick re-arm). Deliberately NOT flag-gated — you must always be
  * able to stop a loop you armed, even if the loop feature flag was later turned off.
+ *
+ * P-002 (goal-mode-design-intent-hardening-2026-08-16): a GOAL-mode owner whose
+ * goal is still ACTIVE must pass `disposition` (achieved | killed | handoff) —
+ * the platform then records it on the goal and delivers the owner report built
+ * from the loop carry-note + `reason`. The gate itself is flag-gated
+ * (GOAL_WINDDOWN_DISPOSITION_GATE, fail-CLOSED) so the stop path can never be
+ * wedged by flag infra; the STOP itself stays unflagged.
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
 import { resolveAgentIdentity } from '../coordination/identity';
-import { deactivateLoop } from '../../harness/routines/loop';
+import { deactivateLoop, getLoopStatus } from '../../harness/routines/loop';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { refreshControlAnchorAfterMutation } from '../coordination/control-anchor';
+import {
+  GOAL_DISPOSITIONS,
+  activeGoalForOwner,
+  applyGoalDisposition,
+  buildDispositionRefusal,
+  buildGoalWindDownReport,
+  deliverGoalWindDownReport,
+  windDownDispositionGateEnabled,
+} from '../../goals/wind-down-disposition';
+import { getLoopCarryNote } from '../../carry-note';
 
 export default defineTool({
   name: 'loop:end',
   profile: 'engineer',
   description:
-    "End the owner-scoped loop on your own session (or another owner's, with `ownerId`) — stops the recurring warm wake. The routine is deactivated (history kept); an optional `reason` is recorded in the transition log. This tool intentionally has no `harness` argument; loops are keyed by owner. Re-arm anytime with loop:arm.",
+    "End the owner-scoped loop on your own session (or another owner's, with `ownerId`) — stops the recurring warm wake. The routine is deactivated (history kept); an optional `reason` is recorded in the transition log. A GOAL-mode owner with a still-active goal must also pass `disposition` (achieved | killed | handoff) — the wind-down report to the owner is generated from the loop carry-note + reason. This tool intentionally has no `harness` argument; loops are keyed by owner. Re-arm anytime with loop:arm.",
   guidance: {
-    when: 'Stop a loop you armed with loop:arm — the goal is done, you are blocked on something external, or the user says stop. Pass `reason` when a durable stop explanation matters. This owner-scoped tool intentionally does not take `harness`. Better to loop:end than burn empty wakes spinning.',
+    when: 'Stop a loop you armed with loop:arm — the goal is done, you are blocked on something external, or the user says stop. Pass `reason` when a durable stop explanation matters. In GOAL mode with the goal still active, also pass `disposition` (achieved | killed | handoff — handoff takes `handoffTo`). This owner-scoped tool intentionally does not take `harness`. Better to loop:end than burn empty wakes spinning.',
     notWhen:
       'Pause the WHOLE autoloop / routines engine — that is autoloop:control. End the autonomous hive loop — that is pot:pause.',
     chaining: 'loop:arm to start; loop:status to check; loop:end to stop.',
@@ -44,6 +61,18 @@ export default defineTool({
       .max(500)
       .optional()
       .describe('Optional durable reason for ending the loop; recorded in the loop transition log.'),
+    disposition: z
+      .enum(GOAL_DISPOSITIONS)
+      .optional()
+      .describe(
+        "GOAL-mode wind-down verdict, REQUIRED when the target owner's goal is still active: 'achieved' | 'killed' | 'handoff'. Recorded on the goal; the owner report is auto-generated from the loop carry-note + `reason`.",
+      ),
+    handoffTo: z
+      .string()
+      .min(1)
+      .max(120)
+      .optional()
+      .describe("With disposition:'handoff' — who continues the goal (owner id / label). The goal stays active."),
     acknowledgeOpenDirectives: z
       .boolean()
       .optional()
@@ -72,8 +101,70 @@ export default defineTool({
         };
       }
     }
-    const ended = await deactivateLoop(ownerId, { reason: args.reason });
     const workspaceId = ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
+    // P-002 gate: a goal-mode owner with a still-active goal winds down WITH a
+    // disposition or not at all. Positive-finding-only: every resolution miss
+    // (not goal mode, goal not active, flag infra down) passes the gate.
+    const activeGoal =
+      workspaceId && (await windDownDispositionGateEnabled())
+        ? await activeGoalForOwner({ workspaceId, ownerId }).catch(() => null)
+        : null;
+    if (activeGoal && !args.disposition && !activeGoal.recordedDisposition) {
+      const refusal = buildDispositionRefusal({
+        action: 'loop:end',
+        goalId: activeGoal.goalId,
+        goalTitle: activeGoal.title,
+      });
+      return {
+        content: [{ type: 'text' as const, text: JSON.stringify(refusal) }],
+        isError: true,
+      };
+    }
+    // The routine row names the harness the carry-note is scoped by — read it
+    // BEFORE deactivation so the report leg can still find the note.
+    const statusBefore =
+      activeGoal && args.disposition ? await getLoopStatus(ownerId).catch(() => null) : null;
+    const ended = await deactivateLoop(ownerId, { reason: args.reason });
+    // Disposition apply + owner report, FAIL-SOFT: the loop is already ended and
+    // stays ended — a report failure downgrades to a warning, never un-stops.
+    let dispositionApplied = false;
+    let dispositionWarning: string | null = null;
+    if (activeGoal && args.disposition) {
+      try {
+        await applyGoalDisposition({
+          workspaceId,
+          goalId: activeGoal.goalId,
+          disposition: args.disposition,
+          dispositionBy: identity.ownerId,
+          handoffTo: args.handoffTo ?? null,
+        });
+        const carryNote = statusBefore
+          ? await getLoopCarryNote({ harness: statusBefore.harnessSlug, ownerId }).catch(() => null)
+          : null;
+        const report = buildGoalWindDownReport({
+          goalId: activeGoal.goalId,
+          goalTitle: activeGoal.title,
+          disposition: args.disposition,
+          endedBy: identity.ownerId,
+          action: 'loop:end',
+          reason: args.reason ?? null,
+          carryNote,
+          handoffTo: args.handoffTo ?? null,
+        });
+        await deliverGoalWindDownReport(identity, {
+          workspaceId,
+          goalId: activeGoal.goalId,
+          disposition: args.disposition,
+          summary: report.summary,
+          body: report.body,
+        });
+        dispositionApplied = true;
+      } catch (e) {
+        dispositionWarning = `loop ended, but recording/reporting the goal disposition failed: ${
+          e instanceof Error ? e.message : String(e)
+        }. Record it via goals:update and report to the owner manually.`;
+      }
+    }
     const control = ended
       ? await refreshControlAnchorAfterMutation({
           ownerId,
@@ -92,6 +183,14 @@ export default defineTool({
             ownerId,
             ended,
             controlGeneration: control?.generation ?? null,
+            ...(activeGoal && args.disposition
+              ? {
+                  goalId: activeGoal.goalId,
+                  disposition: args.disposition,
+                  dispositionApplied,
+                  ...(dispositionWarning ? { warning: dispositionWarning } : {}),
+                }
+              : {}),
             note: ended
               ? 'Loop ended — no further wakes will fire.'
               : 'No active loop found for this owner (already ended or never armed).',
