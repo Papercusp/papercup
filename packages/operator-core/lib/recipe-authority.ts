@@ -569,6 +569,15 @@ function unresolvedReason(cause: RecipeUnresolvedCause | null | undefined): stri
         'stale lane facts. No authority proof can safely authorize this saved state mutation; do not reuse this ' +
         'recipe. Re-author the checkpoint from the current state only after inspecting the values.'
       );
+    case 'volatile-run-artifact-path':
+      return (
+        `the recipe script pins the run-scoped ephemeral artifact path \`${cause.path}\`, which belongs to ONE ` +
+        'past run — re-running it re-reads a DEAD artifact and reports that finished run\'s phase/verdict as if it ' +
+        'were the live one. No authority proof can revalidate a frozen temp path. Re-author the recipe to RESOLVE ' +
+        'the current path from the live authority (the active run-lock / systemd unit / the owning tool\'s own ' +
+        'status read) and assert that the run identity it returns matches that live authority, or run the script ' +
+        'directly via code:run against a path you resolved this turn.'
+      );
     case 'fixed-claim-assignee':
       return (
         `the recipe script calls \`${cause.tool}\` with a fixed work-item assignee, but the authority proof ` +

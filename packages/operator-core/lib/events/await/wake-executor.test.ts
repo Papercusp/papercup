@@ -15,6 +15,8 @@ import {
   ompResumePtyLooksReady,
   resumeCommandFor,
   wakeTurnText,
+  wakeSummaryHeadline,
+  degradeToInboxOrDrop,
   rehydrateLoopWakeText,
   applyInjectionDoor,
   type ExecuteWakeDeps,
