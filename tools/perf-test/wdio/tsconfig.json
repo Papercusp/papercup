@@ -10,7 +10,7 @@
     // these sources are extensionless CommonJS relative imports, which those
     // modes reject.
     "moduleResolution": "node10",
-    "ignoreDeprecations": "6.0",
+    "ignoreDeprecations": "5.0",
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,

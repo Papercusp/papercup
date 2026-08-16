@@ -69,7 +69,10 @@ describe("Packaged Papercusp desktop — plan popup open interaction", () => {
 
     // 5. Clear any stale measure, then click the first row to START the
     //    interaction (perf-marks beginInteraction fires on the click).
-    await browser.execute((name) => {
+    //    Report whether the row was actually FOUND: "no measure" on a click that
+    //    never had a target is a different defect from one that did, and without
+    //    this the two are indistinguishable downstream.
+    const triggerFound = await browser.execute((name) => {
       try {
         if (performance.clearMeasures) performance.clearMeasures(name);
       } catch {
@@ -78,23 +81,93 @@ describe("Packaged Papercusp desktop — plan popup open interaction", () => {
       const row = document.querySelector<HTMLElement>(
         '[data-testid^="plans-pane-row-"]',
       );
-      if (row) row.click();
+      if (!row) return false;
+      row.click();
+      return true;
     }, INTERACTION_NAME);
+    const clickedAt = Date.now();
 
     // 6. Wait for the measure to be emitted (endInteraction fires when the plan
     //    body renders in Vditor), then read it.
-    await browser.waitUntil(
-      async () =>
-        await browser.execute(
-          (name) =>
-            performance.getEntriesByName(name, "measure").length > 0,
+    //
+    //    ON TIMEOUT, NAME THE CAUSE — do not restate the symptom. "No measure in
+    //    8s" is emitted identically whether the click missed, the popup never
+    //    opened, the body never loaded, or the settle hook is simply absent from
+    //    this mount context; those are four different bugs in four different
+    //    components. The classifier decides which, from what the page shows at
+    //    the moment the wait expires. (Same fix shape as the web-vitals
+    //    instrument's injected-instrument classifier.)
+    try {
+      await browser.waitUntil(
+        async () =>
+          await browser.execute(
+            (name) => performance.getEntriesByName(name, "measure").length > 0,
+            INTERACTION_NAME,
+          ),
+        {
+          timeout: MEASURE_WAIT_MS,
+          timeoutMsg: `no "${INTERACTION_NAME}" measure emitted within ${MEASURE_WAIT_MS}ms of the click`,
+        },
+      );
+    } catch (waitError) {
+      const snapshot = await browser.execute((name) => {
+        const startName = `${name}:start`;
+        const marks = performance.getEntriesByName(startName, "mark");
+        const start = marks[marks.length - 1];
+        // The popup body PlanPopupModal renders; PlanDetail mounts inside it.
+        const surface = document.querySelector<HTMLElement>(
+          '[data-testid="plan-popup-body"]',
+        );
+        // PlanDetail shows a `.pc-plans__placeholder` while loading or on error,
+        // and Vditor's preview renders into `.vditor-reset` once the body parses.
+        const placeholder =
+          surface?.querySelector<HTMLElement>(".pc-plans__placeholder") ?? null;
+        const rendered = surface?.querySelector(".vditor-reset") ?? null;
+        return {
+          measureCount: performance.getEntriesByName(name, "measure").length,
+          startMarkPresent: Boolean(start),
+          startMarkAgeMs: start ? performance.now() - start.startTime : null,
+          surfacePresent: Boolean(surface),
+          contentPresent: Boolean(rendered) && !placeholder,
+          placeholderText: placeholder
+            ? (placeholder.textContent ?? "").trim().slice(0, 200)
+            : null,
+          modalPresent: Boolean(document.querySelector(".plan-popup")),
+        };
+      }, INTERACTION_NAME);
+
+      const diagnosis = classifyInteractionMeasure({
+        measureCount: snapshot.measureCount,
+        startMarkPresent: snapshot.startMarkPresent,
+        startMarkAgeMs: snapshot.startMarkAgeMs,
+        staleStartMs: STALE_START_MS,
+        triggerFound,
+        settleSurfacePresent: snapshot.surfacePresent,
+        settleContentPresent: snapshot.contentPresent,
+        elapsedMs: Date.now() - clickedAt,
+      });
+
+      const observed = [
+        `observed: trigger=${triggerFound}`,
+        `startMark=${snapshot.startMarkPresent}`,
+        `modal=${snapshot.modalPresent}`,
+        `body=${snapshot.surfacePresent}`,
+        `content=${snapshot.contentPresent}`,
+        snapshot.placeholderText
+          ? `placeholder=${JSON.stringify(snapshot.placeholderText)}`
+          : null,
+      ]
+        .filter(Boolean)
+        .join(" ");
+
+      throw new Error(
+        `${describeInteractionMeasureFailure(
           INTERACTION_NAME,
-        ),
-      {
-        timeout: 8_000,
-        timeoutMsg: `no "${INTERACTION_NAME}" measure emitted within 8s of the click`,
-      },
-    );
+          MEASURE_WAIT_MS,
+          diagnosis,
+        )}\n  ${observed}\n  (wait: ${(waitError as Error).message})`,
+      );
+    }
 
     const measuredMs = await browser.execute((name) => {
       const entries = performance.getEntriesByName(name, "measure");
