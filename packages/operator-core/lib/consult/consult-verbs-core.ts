@@ -212,11 +212,10 @@ export async function consultReplyCore(
   if ('error' in gated) return gated;
   const row = gated.row;
 
-  const role: 'requester' | 'responder' =
-    req.authorId === row.responder_id ? 'responder' : req.authorId === row.requester_id ? 'requester' : 'none' as never;
   if (req.authorId !== row.responder_id && req.authorId !== row.requester_id) {
     return { error: 'not_a_participant' };
   }
+  const role: 'requester' | 'responder' = req.authorId === row.responder_id ? 'responder' : 'requester';
 
   // Kind rules (D-001): the enum is the structural termination — untyped prose
   // ("ok thanks") has no valid kind and cannot enter the thread.
