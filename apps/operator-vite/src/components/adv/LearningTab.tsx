@@ -1820,17 +1820,23 @@ function ImprovementsView({
             {digest && scope === "loop" ? <strong>{digest.total}</strong> : null}
           </button>
         </Tooltip>
-        {sources.map((s) => (
-          <Tooltip key={s} label={`Filed by ${s}`}>
-            <button
-              type="button"
-              aria-pressed={src === s}
-              onClick={() => void setSrc(src === s ? null : s)}
-            >
-              {s}
-            </button>
-          </Tooltip>
-        ))}
+        {sources.map((s) => {
+          // Display-map ONLY (P-009): 'Queen' is retired display vocabulary but
+          // survives in stored payload sourceRole values — the FILTER must keep
+          // matching the raw stored value, so only the label maps.
+          const label = s === "Queen" ? t("brain") : s;
+          return (
+            <Tooltip key={s} label={`Filed by ${label}`}>
+              <button
+                type="button"
+                aria-pressed={src === s}
+                onClick={() => void setSrc(src === s ? null : s)}
+              >
+                {label}
+              </button>
+            </Tooltip>
+          );
+        })}
         <Tooltip label="Every capture in this workspace, including work that never came from the loop — the same population the Work tab lists.">
           <button
             type="button"
