@@ -714,10 +714,15 @@ function desktopPerformanceChecks(ctx: SuiteContext) {
         // redirects it to `/adv?tab=harnesses`, and `.h-root` belongs to the
         // retired harness surface, so BOTH halves of the old predicate
         // (`href.includes('/harness') && hasHarnessRoot`) became permanently
-        // false. Assert the post-redirect identity plus a rendered heading:
+        // false. Assert the post-redirect identity plus a node-count floor:
         // data-independent, so it still holds under the empty isolated DB this
-        // suite requires (where the tab renders its onboarding empty state).
-        const result = await measureWarmRoute(ctx, route, (page) => page.href.includes('tab=harnesses') && page.h1.length > 0);
+        // suite requires. NOT a heading test — this tab renders ~983 nodes with
+        // no h1/h2 whatsoever, so `h1.length > 0` false-negatives here.
+        const result = await measureWarmRoute(
+          ctx,
+          route,
+          (page) => page.href.includes('tab=harnesses') && page.domNodes >= ROUTE_MIN_RENDERED_NODES,
+        );
         return warmRouteResult('route:harness-warm', 'Warm harness route', result);
       },
     },
