@@ -278,6 +278,81 @@ describe('wakeTurnText', () => {
     const t = wakeTurnText(work({ payload: { timeout: true } }));
     expect(t).toContain('TIMEOUT');
     expect(t).toContain('did NOT fire');
+    // EI-20489286325396940: name the authoritative column so the reader never has
+    // to open events:status to learn WHY the wake fired.
+    expect(t).toContain('fired_reason: timeout');
+  });
+
+  /**
+   * EI-20489286325396940 — a timed-out await must never render as its source
+   * COMPLETING. Verified live 2026-08-15: `work-item:done:WI-39195 fired` was
+   * injected while WI-39195 stayed open and blocked; the authoritative row was
+   * `fired_reason='timeout'` at `expires_ts` and no completion was ever emitted.
+   * The wake BODY already carried `[TIMEOUT …]`; the coord-message SUMMARY — which
+   * is what the injected `[coord+N]` block actually renders — did not.
+   */
+  describe('wakeSummaryHeadline (EI-20489286325396940)', () => {
+    const DONE_KEY = 'work-item:done:WI-39195';
+
+    it('renders a timeout as TIMED OUT with fired_reason — never as "fired"', () => {
+      const s = wakeSummaryHeadline(DONE_KEY, { timeout: true });
+      expect(s).toContain('TIMED OUT');
+      expect(s).toContain('fired_reason: timeout');
+      // The whole defect: the completion inference. `<key> fired` must not appear.
+      expect(s).not.toContain(`${DONE_KEY} fired`);
+      expect(s).toContain('did NOT complete');
+    });
+
+    it('leaves a genuine event fire byte-identical', () => {
+      expect(wakeSummaryHeadline(DONE_KEY, { workItemId: 'WI-39195' })).toBe(
+        `[await-event] ${DONE_KEY} fired`,
+      );
+      expect(wakeSummaryHeadline(DONE_KEY, null)).toBe(`[await-event] ${DONE_KEY} fired`);
+    });
+
+    // A coalesced wake replaces the headline payload with {coalesced,…}, hiding the
+    // raw `timeout` flag behind `latest`/`events` — the marker must survive both.
+    it('sees through a coalesced payload', () => {
+      expect(wakeSummaryHeadline(DONE_KEY, { coalesced: true, latest: { payload: { timeout: true } } }))
+        .toContain('TIMED OUT');
+      expect(wakeSummaryHeadline(DONE_KEY, { coalesced: true, events: [{ payload: { timeout: true } }] }))
+        .toContain('TIMED OUT');
+    });
+
+    it('degradeToInboxOrDrop sends a timeout summary that cannot read as completion', async () => {
+      const sent: { summary?: string; body?: string }[] = [];
+      const send = (async (_identity: unknown, opts: { summary?: string; body?: string }) => {
+        sent.push(opts);
+        return {} as never;
+      }) as unknown as Parameters<typeof degradeToInboxOrDrop>[2];
+
+      const outcome = await degradeToInboxOrDrop(
+        work({ eventKey: DONE_KEY, payload: { timeout: true }, summary: null }),
+        'no live pty',
+        send,
+      );
+
+      expect(outcome).toEqual({ kind: 'delivered', channel: 'inbox' });
+      expect(sent).toHaveLength(1);
+      expect(sent[0].summary).toContain('TIMED OUT');
+      expect(sent[0].summary).toContain('fired_reason: timeout');
+      expect(sent[0].summary).not.toContain(`${DONE_KEY} fired`);
+      // The delivery-mechanism reason is still carried alongside it.
+      expect(sent[0].summary).toContain('no live pty');
+    });
+
+    it('degradeToInboxOrDrop still says "fired" for a real event', async () => {
+      const sent: { summary?: string }[] = [];
+      const send = (async (_identity: unknown, opts: { summary?: string }) => {
+        sent.push(opts);
+        return {} as never;
+      }) as unknown as Parameters<typeof degradeToInboxOrDrop>[2];
+
+      await degradeToInboxOrDrop(work({ eventKey: DONE_KEY, payload: null }), 'no live pty', send);
+      expect(sent[0].summary).toBe(
+        `[await-event] ${DONE_KEY} fired — delivered to your coord inbox (no live pty)`,
+      );
+    });
   });
 
   // ambient-semantic-push P-003 seam: a prepared ambient push block rides the wake

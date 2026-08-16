@@ -145,6 +145,45 @@ const VOLATILE_COORDINATION_ARG_KEYS = new Set([
   'beforets',
 ]);
 
+/**
+ * Filesystem roots whose contents belong to ONE process/run, never to a lane.
+ * A path here is an artifact, not an address.
+ */
+const EPHEMERAL_PATH_ROOTS = ['/tmp/', '/var/tmp/', '/var/folders/', '/run/', '/dev/shm/'];
+
+/**
+ * A path fragment that pins ONE run: a calendar/ISO stamp
+ * (`2026-08-13T13-14-14-693Z`) or a long digit run (epoch-ms / pid).
+ */
+const RUN_SCOPED_PATH_TOKEN = /\d{4}-\d{2}-\d{2}|\d{8,}/;
+
+/** Quoted literals, skipping any template that interpolates (`$` excluded): a
+ *  path BUILT at runtime is derived-from-live-state and therefore fine. */
+const SCRIPT_STRING_LITERAL = /'([^'\\\n]*)'|"([^"\\\n]*)"|`([^`\\$]*)`/g;
+
+/**
+ * The run-scoped ephemeral artifact path a script PINS, or null.
+ *
+ * EI-20480226881133232: a recipe titled "read the ACTIVE checkpoint log" froze the
+ * one run's `/tmp/…-2026-08-13T13-14-14-693Z.log` into a `const`, then reported that
+ * dead run's terminal red as the live gate's verdict — for 11 runs. The literal is not
+ * a tool ARGUMENT (it reaches `capability:read` through a variable), so no call-level
+ * inspection can see it; the binding is a property of the SCRIPT, which is what this
+ * module already claims to derive its identities from. Same family as the volatile
+ * coordination-cursor / session-carry causes: a momentary thing saved as a reusable one.
+ */
+export function findVolatileRunArtifactLiteral(script: string): string | null {
+  for (const match of script.matchAll(SCRIPT_STRING_LITERAL)) {
+    const value = match[1] ?? match[2] ?? match[3];
+    if (!value) continue;
+    const root = EPHEMERAL_PATH_ROOTS.find((r) => value.toLowerCase().startsWith(r));
+    if (!root) continue;
+    if (!RUN_SCOPED_PATH_TOKEN.test(value.slice(root.length))) continue;
+    return value;
+  }
+  return null;
+}
+
 /** Collect known authority keys from one statically projected argument object. */
 function collectArgs(
   tool: string,
@@ -294,6 +333,15 @@ export async function deriveRecipeAuthority(script: string): Promise<RecipeAutho
   for (const call of analysis.calls) {
     const cause = inspectCall(call, sets);
     if (cause && !unresolvedCause) unresolvedCause = cause;
+  }
+
+  // A pinned run-scoped artifact path is invisible to call inspection when it
+  // reaches the tool through a variable, so it is checked over the script source.
+  if (!unresolvedCause) {
+    const artifactPath = findVolatileRunArtifactLiteral(script);
+    if (artifactPath) {
+      unresolvedCause = { kind: 'volatile-run-artifact-path', tool: null, path: artifactPath };
+    }
   }
 
   // A script that statically referenced tools but yielded no inspectable calls
