@@ -2894,7 +2894,19 @@ export async function joinHarnessSwarm(
     // don't. Either way, returning before flush is fine because peers
     // can connect any time after the join call returns.
     if (discovery && typeof discovery.flushed === 'function') {
-      void discovery.flushed().catch(() => {});
+      // P-302: this used to be `.catch(() => {})`. The flush is the ONLY signal
+      // that the announce/lookup round actually reached the DHT, and discarding
+      // its rejection is one of the four stacked swallows that let a completely
+      // unreachable transport keep printing "joined topic" forever. Returning
+      // before the flush settles is still fine (peers may connect at any point
+      // after `join()` returns) — but a REJECTION is now reported.
+      void discovery.flushed().catch((e: unknown) => {
+        console.warn(
+          `[swarm] ⚠ topic ${topicHex.slice(0, 12)} join flush REJECTED — this topic's announce/` +
+            `lookup did not complete, so peers may never discover it: ` +
+            `${e instanceof Error ? e.message : String(e)}`,
+        );
+      });
     }
 
     // ── WI-752 / FED-2 self-heal re-peer loop ──
@@ -3954,6 +3966,10 @@ async function buildSharedSwarm(): Promise<HyperswarmLike> {
   // listener via swarm.off('connection', handler), and the listener-count test
   // (swarm-listener-count.test.ts) asserts bounded count after boot + close.
   (_sharedSwarm as { setMaxListeners?: (n: number) => void })?.setMaxListeners?.(0);
+  // P-302: the log lines above report what we CONFIGURED. This one reports what
+  // actually happened on the wire — the distinction that cost ~7h of packet
+  // archaeology when a correctly-configured DHT could not reach its bootstrap.
+  scheduleDhtReachabilityCheck(_sharedSwarm);
   return _sharedSwarm;
 }
 
