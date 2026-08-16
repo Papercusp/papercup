@@ -177,7 +177,12 @@ export function evaluatePerfGate(
     // crit, still reported here in full, but must never hold a release: no candidate
     // caused it and no release can fix it, so blocking on it would freeze every deploy
     // for as long as this shared box is busy.
-    const { operatorDefect, ambientHost } = verdict.critAttribution;
+    // Read DEFENSIVELY, not because the field is optional (it is required), but because
+    // `lint:tsc` only typechecks packages/operator-core — this file lives in
+    // apps/operator and vitest does not typecheck, so a caller passing a verdict built
+    // before this field existed would fault at runtime on the destructure. Absent ⇒
+    // unattributed ⇒ never blocks, which is the same fail-soft direction as below.
+    const { operatorDefect = [], ambientHost = [] } = verdict.critAttribution ?? {};
     // An UNATTRIBUTED crit (both lists empty — e.g. a verdict built by an older code
     // path) must not silently become a block. Fail toward not-blocking, and say so,
     // exactly as the desktop sibling refuses to invent a deploy-holding verdict from
