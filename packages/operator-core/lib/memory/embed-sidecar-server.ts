@@ -70,6 +70,7 @@ import {
   LOCAL_EMBEDDER_MODEL,
   SIDECAR_MAX_TEXT_CHARS,
   getWorkerState as getEmbedderWorkerState,
+  shutdownLocalEmbedder,
   type GemmaEmbedKind,
 } from '@papercusp/memory';
 import {
@@ -79,6 +80,7 @@ import {
   getRerankWorkerState,
   loadCrossEncoder,
   scoreCrossEncoder,
+  shutdownLocalReranker,
 } from '@papercusp/rerank';
 
 export const EMBED_SIDECAR_DEFAULT_PORT = 3384; // mnemonic: the 384-dim space it serves
@@ -817,7 +819,23 @@ export function runEmbedSidecarServer(): void {
   );
   const shutdown = (signal: string): void => {
     console.log(`[embed-sidecar] ${signal} received, shutting down gracefully`);
-    void handle.close().then(() => process.exit(0));
+    // EI-19464316359123796: this process IS the "in-process embedding" host the
+    // fallback-warning in embed-sidecar-spawn.ts tells OTHER callers to worry
+    // about — buildLocalEmbedder/buildGemmaEmbedder/buildHarrierEmbedder above
+    // all route through local-embedder-worker.ts's shared worker_thread, and
+    // the reranker through its sibling module. A bare `process.exit(0)` skips
+    // Node's `beforeExit` hook entirely (by design), so those workers' own
+    // graceful-teardown listeners never fire and the ONNX native addon inside
+    // them gets torn down mid-flight by the abrupt process exit — surfacing as
+    // an unlabelled `terminate called after throwing an instance of
+    // 'Napi::Error'` / SIGABRT (exit 134) on every restart of this systemd
+    // unit (Restart=always), even though the shutdown was entirely graceful.
+    // Await the SAME explicit teardown the module's own doc tells ad-hoc
+    // scripts to call before their `process.exit()` — best-effort: a stuck
+    // worker must never block a graceful shutdown indefinitely.
+    void Promise.allSettled([shutdownLocalEmbedder(), shutdownLocalReranker()])
+      .then(() => handle.close())
+      .then(() => process.exit(0));
   };
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   process.on('SIGINT', () => shutdown('SIGINT'));
