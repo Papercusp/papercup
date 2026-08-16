@@ -24,7 +24,7 @@ import { generateKeyPairSync, sign as nodeSign } from 'node:crypto';
 import createTestnet from 'hyperdht/testnet.js';
 import Hyperswarm from 'hyperswarm';
 import { bootHarnessSubstrate, type BootedHarnessHandle } from '../boot';
-import type { HyperswarmLike } from '../swarm';
+import { swarmConstructorOpts, type HyperswarmLike } from '../swarm';
 import type { AdmittedLog } from '../read-merge';
 import type { PeerLogOp, OwnLog } from '../peer-log';
 import { openOwnLog } from '../peer-log';
@@ -195,11 +195,23 @@ export async function bootPeerMesh(opts: BootPeerMeshOpts): Promise<PeerMesh> {
 
   const binding = { kind: 'local' as const, workspace_id: workspaceId, harness_slug: harnessSlug };
 
+  // Resolved ONCE: every peer in the mesh gets the same shipped peer budget.
+  const meshSwarmOpts = swarmConstructorOpts();
+
   const peers: MeshPeer[] = [];
   for (let i = 0; i < n; i++) {
     const identity = makePeerIdentity(`peer-${i}`, 1000 + i);
     const workspaceRoot = makeTmpDir(cleanups, `p2p-perf-mesh-${i}-`);
-    const swarm = new Hyperswarm({ bootstrap }) as unknown as HyperswarmLike & {
+    // ⚠ maxPeers/maxClientConnections MUST come from the product path — see the
+    // long note in peer-child.ts. A bare `new Hyperswarm({ bootstrap })` inherits
+    // hyperswarm's own `MAX_PEERS = 64` and then refuses further connections
+    // SILENTLY, so any mesh wider than 64 strands peers for a reason that has
+    // nothing to do with this substrate.
+    const swarm = new Hyperswarm({
+      bootstrap,
+      maxPeers: meshSwarmOpts.maxPeers,
+      maxClientConnections: meshSwarmOpts.maxClientConnections,
+    }) as unknown as HyperswarmLike & {
       destroy(): Promise<void>;
     };
     cleanups.push(async () => {

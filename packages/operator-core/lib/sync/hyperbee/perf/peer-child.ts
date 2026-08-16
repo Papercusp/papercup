@@ -32,7 +32,7 @@ import type { OpEnvelope } from '../op-envelope-types';
 import type { PeerLogOp } from '../peer-log';
 import type { SwarmBinding } from '../derive-swarm-topic';
 import Hyperswarm from 'hyperswarm';
-import type { HyperswarmLike } from '../swarm';
+import { swarmConstructorOpts, type HyperswarmLike } from '../swarm';
 import { makePeerIdentity } from './fixture';
 import { generateCorpus } from './corpus';
 import { ScenarioMeter } from './metrics';
@@ -146,9 +146,27 @@ async function main(): Promise<void> {
 
   const identity = makePeerIdentity(`peer-${cfg.peerIndex}`, 1000 + cfg.peerIndex);
   // No bootstrap (or empty) = the PUBLIC DHT — the Tier-3 real-WAN posture (D-007).
-  const swarm = new Hyperswarm(
-    cfg.bootstrap && cfg.bootstrap.length ? { bootstrap: cfg.bootstrap } : {},
-  ) as unknown as HyperswarmLike & {
+  //
+  // ⚠ The peer BUDGET must come from the product path, never from hyperswarm's
+  // own defaults. `new Hyperswarm({ bootstrap })` silently inherits the library
+  // constant `MAX_PEERS = 64` (hyperswarm/index.js:13), and hyperswarm stops
+  // accepting connections at that ceiling WITHOUT an error — so a flat N-peer
+  // mesh above 64 can never fully connect and a handful of readers simply never
+  // converge. That made the whole mesh ladder measure hyperswarm's default
+  // instead of this substrate: 64 peers (63 connections) passed with ONE slot to
+  // spare, and 80 peers failed with 7 readers stranded — a cap artifact read as
+  // a substrate ceiling. Same instrument-not-system class as D-014/D-015.
+  //
+  // swarmConstructorOpts() resolves the SHIPPED budget (PAPERCUSP_SWARM_MAX_PEERS
+  // > host-derived maxSwarmPeers, floor 256) plus the WI-6063 inbound reserve via
+  // maxClientConnections — so the rig now exercises the configuration production
+  // actually runs. The harness keeps its OWN bootstrap (isolated testnet).
+  const { maxPeers, maxClientConnections } = swarmConstructorOpts();
+  const swarm = new Hyperswarm({
+    ...(cfg.bootstrap && cfg.bootstrap.length ? { bootstrap: cfg.bootstrap } : {}),
+    maxPeers,
+    maxClientConnections,
+  }) as unknown as HyperswarmLike & {
     destroy(): Promise<void>;
     on(ev: 'connection', cb: (socket: unknown, peerInfo: unknown) => void): void;
     dht?: { stats?: { punches?: Record<string, number>; relaying?: Record<string, number> } };
