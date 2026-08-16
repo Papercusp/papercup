@@ -142,6 +142,45 @@ const NON_SHELL_ROUTES: ReadonlyArray<{ path: string; meaning: string }> = [
 ];
 
 /**
+ * Routes that ARE the operator app but never render `AdvShell`.
+ *
+ * The opposite failure from `NON_SHELL_ROUTES` above, and it must not be
+ * conflated with it. There, landing on the route means the app never reached the
+ * operator UI at all — a product or provisioning bug. Here the app is perfectly
+ * healthy and the SPEC is simply standing on the wrong route, so the shell
+ * marker can never appear however long the wait runs. Both are terminal (waiting
+ * cannot improve either), but they have opposite causes and opposite fixes, so
+ * they get opposite diagnoses.
+ *
+ * WHY THIS LIST EXISTS AT ALL (WI-38449): `broader-interactions.perf.spec.ts`
+ * SPA-navigates to `/workbench` in one test and does not navigate back. The next
+ * test opened with `waitForAppMount`, which then burned the FULL
+ * `APP_MOUNT_TIMEOUT_MS` and reported "the app RENDERED but the operator-shell
+ * marker never appeared — suspect the marker". That diagnosis is wrong in the
+ * most expensive possible way: the marker was fine, `AdvShell` still carries it,
+ * and the reader is sent to audit the app instead of the route. The suite fails
+ * as a unit, so the scheduled producer posted NOTHING to
+ * `harness_shared.desktop_perf_runs` from 2026-08-02 to 2026-08-16 and
+ * `DESKTOP_PERF_GATE` fail-soft PASSED every deploy in that window while
+ * measuring nothing at all.
+ */
+const NON_SHELL_OPERATOR_ROUTES: ReadonlyArray<{ path: string; meaning: string }> = [
+  {
+    path: "/workbench",
+    meaning:
+      "the top-level desktop workbench — it mounts <HarnessDock layoutName=\"workbench\"/> " +
+      "directly (apps/operator-vite/src/routes/workbench.tsx) and never renders AdvShell, " +
+      "so the operator-shell marker cannot appear on this route",
+  },
+];
+
+const matchRoute = (
+  list: ReadonlyArray<{ path: string; meaning: string }>,
+  pathname: string,
+): { path: string; meaning: string } | null =>
+  list.find((r) => pathname === r.path || pathname.startsWith(`${r.path}/`)) ?? null;
+
+/**
  * Everything the suite knows about the document at a point in time.
  *
  * Returned by `waitForAppMount` so a later probe can be compared AGAINST the
@@ -216,7 +255,11 @@ async function readDocument(browser: Browser): Promise<MountEvidence> {
  * only the I/O, the clock, and this app's routes.
  */
 const MOUNT_CLASSIFIER_CONFIG: MountClassifierConfig = {
-  isTerminalWrongScreen: isFirstRunLanding,
+  // BOTH terminal-wrong-screen families, not just first-run: a spec parked on a
+  // non-shell operator route is every bit as unrecoverable as one parked on the
+  // onboarding console, and treating it as "still waiting" is what turned a
+  // one-line route mistake into a 13-day silent gate outage (WI-38449).
+  isTerminalWrongScreen: isTerminalNonShellLanding,
   wrongScreenDwellMs: FIRST_RUN_DWELL_MS,
   documentDeathDwellMs: WEBVIEW_DEATH_DWELL_MS,
 };
@@ -281,14 +324,31 @@ async function readFirstRunGateway(browser: Browser): Promise<string> {
 }
 
 function describeLanding(pathname: string): string | null {
-  const hit = NON_SHELL_ROUTES.find(
-    (r) => pathname === r.path || pathname.startsWith(`${r.path}/`),
-  );
+  const hit =
+    matchRoute(NON_SHELL_ROUTES, pathname) ?? matchRoute(NON_SHELL_OPERATOR_ROUTES, pathname);
   return hit ? hit.meaning : null;
 }
 
 function isFirstRunLanding(pathname: string): boolean {
-  return describeLanding(pathname) !== null;
+  return matchRoute(NON_SHELL_ROUTES, pathname) !== null;
+}
+
+/**
+ * Is this an operator route that structurally cannot render the shell?
+ *
+ * Exported because a SPEC is the only thing that can fix this condition: it has
+ * to navigate back to the shell before it waits for it. `broader-interactions`
+ * uses it to restore the route between tests rather than blanket-navigating on
+ * every non-`/adv` path — a blanket restore would also paper over a genuine
+ * first-run landing, which is precisely the false green
+ * `waitForAppMount` exists to make impossible (EI-18889416741921988).
+ */
+export function isNonShellOperatorRoute(pathname: string): boolean {
+  return matchRoute(NON_SHELL_OPERATOR_ROUTES, pathname) !== null;
+}
+
+function isTerminalNonShellLanding(pathname: string): boolean {
+  return isFirstRunLanding(pathname) || isNonShellOperatorRoute(pathname);
 }
 
 /**
@@ -334,9 +394,47 @@ export async function waitForAppMount(browser: Browser): Promise<MountEvidence> 
     throw new Error(await mountTimeoutDiagnosis(browser, last));
   }
 
-  if (terminal === "wrongScreen") throw new Error(await firstRunDiagnosis(browser, last));
+  if (terminal === "wrongScreen") {
+    const seen = last as unknown as MountEvidence | null;
+    throw new Error(
+      seen && isNonShellOperatorRoute(seen.pathname)
+        ? wrongRouteDiagnosis(seen)
+        : await firstRunDiagnosis(browser, seen),
+    );
+  }
   if (terminal === "documentDestroyed") throw new Error(webviewDiedDiagnosis(last, progress));
   return last as unknown as MountEvidence;
+}
+
+/**
+ * The app is healthy; the SPEC is on a route that never renders the shell.
+ *
+ * Deliberately browser-free and blunt about WHOSE bug this is. The failure it
+ * replaces read "the app RENDERED but the operator-shell marker never appeared —
+ * suspect the marker", which points the reader at `AdvShell` and the app when
+ * the marker is present and correct and the caller is simply standing somewhere
+ * else. Naming the route, and naming the test that most likely left the caller
+ * there, is the whole value here.
+ */
+function wrongRouteDiagnosis(seen: MountEvidence): string {
+  return (
+    `this spec is on a route that NEVER renders the operator shell — the app is fine, the ` +
+    `ROUTE is wrong.\n\n` +
+    `  standing at: ${seen.url}\n` +
+    `  which is:    ${describeLanding(seen.pathname) ?? "not a shell route"}\n` +
+    `  #root kids:  ${seen.rootChildren}   (it DID render — this is not a slow boot or a dead webview)\n\n` +
+    `Waiting longer cannot fix this: no amount of time makes a route render a shell it does not\n` +
+    `mount. Fix the CALLER, one of:\n` +
+    `  • SPA-navigate back to the shell (\`/adv\`) before calling waitForAppMount; or\n` +
+    `  • drop the waitForAppMount call and use this route's OWN readiness check (e.g. waiting on\n` +
+    `    the performance measure the route records), which is what a non-shell route needs.\n\n` +
+    `Most common cause: an EARLIER test in the same file navigated away and did not navigate back,\n` +
+    `so this test inherited its route. Anything this test then derives from \`location.href\` is\n` +
+    `built on the wrong path too, which fails later and far less legibly.\n\n` +
+    `(WI-38449 — this exact inheritance wedged the whole packaged perf suite for 13 days. Because\n` +
+    `the suite fails as a unit, the scheduled producer wrote NO rows to desktop_perf_runs and\n` +
+    `DESKTOP_PERF_GATE fail-soft PASSED every deploy in that window while measuring nothing.)`
+  );
 }
 
 /** The app is parked on a first-run screen: say so, and say which kind. */

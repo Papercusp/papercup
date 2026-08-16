@@ -42,7 +42,16 @@
  */
 import { browser } from "@wdio/globals";
 import { recordInteractionMs } from "../perf-report";
-import { waitForAppMount } from "../app-mount";
+import { isNonShellOperatorRoute, waitForAppMount } from "../app-mount";
+
+/**
+ * The route that renders `AdvShell` — the shell every test in this file measures
+ * against, and the route the packaged app boots into. Bare `/adv` on purpose:
+ * each test appends the query it needs (`?palette=true`, `?tab=harnesses&...`),
+ * so restoring a bare path is deterministic where restoring a captured boot URL
+ * would carry one test's parameters into the next.
+ */
+const OPERATOR_SHELL_ROUTE = "/adv";
 
 const COMMAND_PALETTE_OPEN_BUDGET_MS = 400;
 const HARNESS_DOCK_OPEN_BUDGET_MS = 1500;
@@ -150,6 +159,37 @@ async function spaNavigate(path: string): Promise<void> {
 }
 
 describe("Packaged Papercusp desktop — broader real interactions (P-006)", () => {
+  /**
+   * Put every test back on the operator shell before it runs.
+   *
+   * Tests in this file SPA-navigate, and `harness-dock-open` deliberately ENDS on
+   * `/workbench` — a route that mounts `HarnessDock` directly and never renders
+   * `AdvShell` (apps/operator-vite/src/routes/workbench.tsx). Without this hook
+   * the next test inherits that route and does two silently wrong things: it
+   * waits for a shell marker that route cannot render, and it derives its target
+   * URL from a `location.href` built on the wrong path.
+   *
+   * This is not defensive housekeeping — it is the fix for WI-38449. That
+   * inheritance made `conversation-thread-load` time out on EVERY run from
+   * 2026-08-02 to 2026-08-16. wdio then exited non-zero, the suite published no
+   * measures, `harness_shared.desktop_perf_runs` went 13 days without a row, and
+   * `DESKTOP_PERF_GATE` — whose freshness window is 24h — fail-soft PASSED every
+   * deploy in that window while measuring nothing.
+   *
+   * Restored per-test (not at the end of the offending test) on purpose: a test
+   * that fails its assertions never reaches its own cleanup, and the damage
+   * would again be charged to the innocent test that runs next.
+   *
+   * Scoped to `isNonShellOperatorRoute` rather than "any path that is not /adv"
+   * on purpose too. A blanket restore would also navigate away from a genuine
+   * first-run/auth landing, hiding the exact false green `waitForAppMount` was
+   * built to make impossible (EI-18889416741921988).
+   */
+  beforeEach(async () => {
+    const pathname = await browser.execute(() => location.pathname);
+    if (isNonShellOperatorRoute(pathname)) await spaNavigate(OPERATOR_SHELL_ROUTE);
+  });
+
   it("opens the global command palette within budget", async () => {
     const NAME = "command-palette-open";
     await waitForAppMount(browser);
