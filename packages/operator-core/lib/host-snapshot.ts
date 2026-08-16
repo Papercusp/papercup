@@ -168,9 +168,36 @@ export interface HostSnapshot {
    *  lets an agent see the same number the alarm sees rather than inferring
    *  thrashing from a load average, which cannot distinguish the two. */
   psiMemSome60?: number;
+  /**
+   * Linux PSI "some" CPU-pressure avg60, when readable — the percentage of the
+   * last 60s in which at least one runnable task was waiting for a CPU.
+   *
+   * WHY THIS LEG EXISTS (EI-20495650388693372). {@link procsRunning} and
+   * {@link procsBlocked} say what KIND of load {@link load} is; this says whether
+   * anything is actually STARVED by it, which is the falsifier for "the box is
+   * overloaded". The two are complementary, not redundant: a run queue can be
+   * long while nothing waits meaningfully, and that is the common case here.
+   * Measured on this host while the incident's sibling reading was live —
+   * `load 56.04` against `cores 128` with CPU `some avg60=0.68` — load and real
+   * saturation are decoupled, so `load > cores` on its own can neither be
+   * confirmed nor dismissed. That unfalsifiability is what turned one ambient
+   * reading into a filed bug; carrying this number is the detector.
+   *
+   * Note the asymmetry with memory, which is deliberate: only the "some" line is
+   * carried, because system-wide `/proc/pressure/cpu` does not track "full" at
+   * all (measured on this host: cpu `full total=0` exactly, against memory
+   * `full total=6942659778`). A `psiCpuFull60` would therefore ship a hardcoded
+   * 0.00 — a fabricated "no pressure", the exact inversion this file avoids
+   * everywhere else.
+   */
+  psiCpuSome60?: number;
 }
 
-let psiCache: { at: number; value: number | undefined } | undefined;
+/** Cached `/proc/pressure/*` reads, keyed by file. ONE map rather than a
+ *  variable per pressure file so a newly-added leg cannot quietly forget its own
+ *  cache, and so {@link resetHostSnapshotCache} clears every leg by
+ *  construction rather than by remembering to. */
+const psiCaches = new Map<string, { at: number; value: number | undefined }>();
 
 /** The run-queue decomposition of {@link HostSnapshot.load}. Each leg is
  *  independently optional: a `/proc/stat` that yields one key but not the other
@@ -183,19 +210,25 @@ interface RunQueue {
 let runqCache: { at: number; value: RunQueue } | undefined;
 
 /**
- * Read PSI memory pressure avg60, cached and fail-soft.
+ * Read the "some" avg60 out of a `/proc/pressure/*` file, cached and fail-soft.
  *
- * `/proc/pressure/memory` is Linux-only and absent under some container
- * configurations; either way the correct result is `undefined` (the field is
- * omitted), never a fabricated 0 — a zero would read as "no pressure", which is
- * the opposite of "I could not tell".
+ * Parameterised over the file rather than forked per resource: `memory` and
+ * `cpu` have byte-identical formats, so a second copy of this parser would be
+ * two places for one regex to drift.
+ *
+ * `/proc/pressure/*` is Linux-only and absent under some container
+ * configurations (and when unprivileged, and when built without
+ * `CONFIG_PSI`); in every one of those cases the correct result is `undefined`
+ * (the field is omitted), never a fabricated 0 — a zero would read as "no
+ * pressure", which is the opposite of "I could not tell".
  */
-function readPsiMemSome60(now: number): number | undefined {
-  if (psiCache && now - psiCache.at < PSI_CACHE_MS) return psiCache.value;
+function readPsiSome60(file: string, now: number): number | undefined {
+  const cached = psiCaches.get(file);
+  if (cached && now - cached.at < PSI_CACHE_MS) return cached.value;
   let value: number | undefined;
   try {
     // Format: `some avg10=0.00 avg60=0.00 avg300=0.00 total=0`
-    const line = readFileSync('/proc/pressure/memory', 'utf8').split('\n')[0] ?? '';
+    const line = readFileSync(file, 'utf8').split('\n')[0] ?? '';
     const m = line.match(/\bavg60=([\d.]+)/);
     if (m) {
       const n = Number(m[1]);
@@ -204,7 +237,7 @@ function readPsiMemSome60(now: number): number | undefined {
   } catch {
     /* not Linux, or not permitted — the field is simply absent */
   }
-  psiCache = { at: now, value };
+  psiCaches.set(file, { at: now, value });
   return value;
 }
 
@@ -220,7 +253,7 @@ function readPsiMemSome60(now: number): number | undefined {
  * the reader can only report the ambient number, which is exactly the
  * "high load as weather" non-diagnosis the repo forbids.
  *
- * Matching {@link readPsiMemSome60}, an unreadable or unparseable file yields an
+ * Matching {@link readPsiSome60}, an unreadable or unparseable file yields an
  * ABSENT field, never a fabricated 0 — a zero `procsRunning` would read as "the
  * box is idle", which is the strongest possible claim to invent from a failed
  * read, and the exact inversion of "I could not tell".
