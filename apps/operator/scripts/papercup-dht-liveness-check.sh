@@ -36,6 +36,19 @@
 #   DHT_STALE_H             (default 6)     — no successful probe run for this
 #                                             long ⇒ file a LOUD staleness EI
 #                                             (silence must never look like green)
+#   DHT_REMOTE_HOST         (unset)         — ssh target for the DIALLING leg.
+#                                             UNSET ⇒ the run is LOCAL-ONLY and
+#                                             cannot detect a machine-boundary
+#                                             transport failure (P-302).
+#   DHT_REMOTE_CWD          (required with DHT_REMOTE_HOST) — dir on the remote
+#                                             host from which `hyperswarm` resolves
+#   DHT_REMOTE_NODE         (default node)  — node binary on the remote host
+#   DHT_REQUIRE_CROSS_HOST  (default 0)     — 1 ⇒ refuse to report health without
+#                                             a proven cross-host packet
+#
+# EXIT CODES (from the probe, propagated): 0 healthy · 1 FAIL (wedged /
+# unreachable / degenerate) · 2 usage · 3 INCONCLUSIVE (could not run the
+# experiment). 3 is NEVER filed as a wedge — see the handler below.
 set -uo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 PROBE="$REPO_ROOT/apps/operator/scripts/p2p-dht-liveness-probe.mjs"
