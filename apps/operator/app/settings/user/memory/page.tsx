@@ -324,9 +324,11 @@ export default function MemoryPage() {
     return () => io.disconnect();
   }, [hasMore, rowsLoading]);
 
-  // Leaving "Show all" returns to the opening window rather than whatever
-  // depth the reader had scrolled to before, so "Show recent only" actually
-  // shrinks the payload it promises to shrink.
+  // Reset the window depth while "Show all" is ON (where `loadedLimit` is
+  // unused, because the args omit `limit` entirely). Doing it on the way IN
+  // is what makes the way OUT correct: "Show recent only" then lands on the
+  // opening window instead of whatever depth the reader had scrolled to
+  // before, so the button actually shrinks the payload it promises to shrink.
   useEffect(() => {
     if (showAll) setLoadedLimit(DEFAULT_MEMORY_PAGE_LIMIT);
   }, [showAll]);
