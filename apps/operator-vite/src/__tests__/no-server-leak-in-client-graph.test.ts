@@ -12,14 +12,27 @@
 // browser). The typecheck can't catch it (aliases/graph aren't typed) and the unit
 // suite never links the SPA — so this test IS the detector.
 //
+// ⚠ AND IT RECURRED WHILE THIS TEST WAS GREEN (WI-39514) — a detector that
+// under-walks is worse than none, because its pass is read as an all-clear.
+// `resolveSpec` returned null for any specifier that was not operator-core / `@/`
+// / relative, so the walk stopped at the FIRST workspace-package hop and never saw:
+//   app/adv/hud/goal-launch-settings-model → operator-core/lib/goal-launch-settings
+//     → @papercusp/db-org → workspace-context → connection
+//     → operator-core/lib/resource-profile → embedded-pg-discovery → node:path
+// That threw at module-init inside a <Lazy>, was swallowed by CatchBoundaryImpl,
+// and white-screened the ENTIRE /adv route for weeks. Workspace packages are now
+// followed (`resolveWorkspacePkg`), vite's shim aliases are honored so the walk
+// cannot invent a false leak, and both directions are pinned by controls below.
+//
 // FIX PATTERN when this fails: the client only needs a type or a pure constant —
 // extract those into a client-safe `*-shared.ts` (types + pure values, ZERO
 // node/server imports; `import type` from server modules is fine, it's erased),
 // re-export them from the server module for existing callers, and point the
 // client import at the shared file. See knowledge-packs/candidates-shared.ts.
 import { describe, expect, it } from 'vitest';
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
+import { aliasMatches, parseShimAliases } from './browser-shims.test';
 
 const OPERATOR_VITE = resolve(__dirname, '../..'); // apps/operator-vite
 const REPO_ROOT = resolve(OPERATOR_VITE, '../..');
@@ -57,13 +70,97 @@ function fileFor(base: string): string | null {
   return null;
 }
 
+/** Shim aliases from vite.config — a specifier vite redirects at a browser shim. */
+const SHIM_ALIASES = parseShimAliases(readFileSync(VITE_CONFIG, 'utf8'));
+
+/**
+ * The shim file a specifier is aliased to, or null. Resolving to the SHIM (rather
+ * than the real module) is what keeps this walk honest in BOTH directions: the shim
+ * is what actually ships, so walking the real server barrel instead would report a
+ * leak the bundler never emits — the false-red class that has red-pinned this gate
+ * before.
+ */
+function shimFor(spec: string): string | null {
+  for (const a of SHIM_ALIASES) {
+    if (aliasMatches(a.find, spec)) return fileFor(join(OPERATOR_VITE, 'src/shims', a.shim));
+  }
+  return null;
+}
+
+/**
+ * Resolve a WORKSPACE package specifier (`@papercusp/db-org`,
+ * `@papercusp/coordination/event-log`) to its SOURCE entry, the way vite does via
+ * the npm-workspaces symlink in node_modules.
+ *
+ * ⚠ THIS IS THE EDGE THE WALK USED TO DROP (WI-39514). `resolveSpec` returned null
+ * for every specifier that was not operator-core / `@/` / relative, on the stated
+ * assumption that "other externals are browser-safe or explicitly shimmed". That is
+ * true of THIRD-PARTY deps and false of our own workspace packages, so the walk
+ * stopped dead at `@papercusp/db-org` and never saw the six hops behind it:
+ *   goal-launch-settings -> @papercusp/db-org -> workspace-context -> connection
+ *     -> operator-core/lib/resource-profile -> embedded-pg-discovery -> node:path
+ * The guard stayed GREEN while that chain white-screened the entire /adv route.
+ *
+ * Only packages whose symlink lands INSIDE the repo are followed — a real
+ * node_modules dependency stays unwalked, as before.
+ */
+function resolveWorkspacePkg(spec: string): string | null {
+  const m = spec.match(/^(@[^/]+\/[^/]+|[^@./][^/]*)(?:\/(.*))?$/);
+  if (!m) return null;
+  const [, name, subpath] = m;
+  let pkgDir: string;
+  try {
+    pkgDir = realpathSync(join(REPO_ROOT, 'node_modules', name));
+  } catch {
+    return null;
+  }
+  // A WORKSPACE package symlinks OUT of node_modules into the repo's own source
+  // tree. A third-party dep realpaths to somewhere under a node_modules/ directory
+  // (usually the hoisted repo-root one, which is itself inside REPO_ROOT — so the
+  // containment check alone is not enough to tell them apart).
+  if (!pkgDir.startsWith(REPO_ROOT + '/') || pkgDir.includes('/node_modules/')) return null;
+  let json: Record<string, unknown>;
+  try {
+    json = JSON.parse(readFileSync(join(pkgDir, 'package.json'), 'utf8'));
+  } catch {
+    return null;
+  }
+  const exports = json.exports as Record<string, unknown> | string | undefined;
+  const key = subpath ? `./${subpath}` : '.';
+  if (exports && typeof exports === 'object') {
+    const hit = exports[key];
+    if (typeof hit === 'string') return fileFor(join(pkgDir, hit));
+    if (hit && typeof hit === 'object') {
+      for (const v of Object.values(hit as Record<string, unknown>)) {
+        if (typeof v === 'string') {
+          const f = fileFor(join(pkgDir, v));
+          if (f) return f;
+        }
+      }
+    }
+  } else if (typeof exports === 'string' && !subpath) {
+    const f = fileFor(join(pkgDir, exports));
+    if (f) return f;
+  }
+  if (subpath) return fileFor(join(pkgDir, subpath)) ?? fileFor(join(pkgDir, 'src', subpath));
+  for (const c of [json.module, json.main, 'src/index.ts', 'index.ts']) {
+    if (typeof c !== 'string') continue;
+    const f = fileFor(join(pkgDir, c));
+    if (f) return f;
+  }
+  return null;
+}
+
 function resolveSpec(spec: string, fromFile: string): string | null {
   const s = spec.replace(/\?.*$/, '');
+  // Shims first: vite's alias table wins over the real module (first match wins there too).
+  const shim = shimFor(s);
+  if (shim) return shim;
   if (s.startsWith('@papercusp/operator-core/lib/')) return fileFor(join(OPERATOR_CORE_LIB, s.slice('@papercusp/operator-core/lib/'.length)));
   if (s === '@papercusp/operator-core') return fileFor(join(REPO_ROOT, 'packages/operator-core/index'));
   if (s.startsWith('@/')) return fileFor(join(OPERATOR_ROOT, s.slice(2)));
   if (s.startsWith('.')) return fileFor(resolve(dirname(fromFile), s));
-  return null; // other externals: browser-safe or explicitly shimmed elsewhere
+  return resolveWorkspacePkg(s); // our own packages; third-party deps still return null
 }
 
 // The clause between `import`/`export` and `from` may contain identifiers, braces,
@@ -241,6 +338,55 @@ describe('no process.env.NODE_ENV gates in the client-graph source trees', () =>
         `dev shell (WI-7002). Use \`import.meta.env.MODE !== 'production'\` instead.\n` +
         `Offenders:\n${offenders.map((f) => `  ${f}`).join('\n')}\n`,
     ).toBe(0);
+  });
+});
+
+// Guards the RESOLVER. A resolver that silently returns null does not fail — it
+// under-walks, and the leak test then reports a confident green about a graph it
+// never finished walking. That is exactly how WI-39514 stayed invisible: the walk
+// stopped at `@papercusp/db-org` and the six hops to `node:path` behind it were
+// never seen. These controls pin both directions so neither can regress quietly.
+describe('workspace-package resolution (the WI-39514 blind spot)', () => {
+  const from = join(OPERATOR_CORE_LIB, 'goal-launch-settings.ts');
+
+  it('follows a workspace package into its SOURCE entry', () => {
+    // The exact edge that used to resolve to null.
+    const r = resolveSpec('@papercusp/db-org', from);
+    expect(r, '@papercusp/db-org must resolve — a null here restores the blind spot').toBe(
+      join(REPO_ROOT, 'libs/papercusp/libs/db/src/index.ts'),
+    );
+  });
+
+  it('resolves a subpath export through the package exports map', () => {
+    expect(resolveSpec('@papercusp/coordination/presence', from)).toBe(
+      join(REPO_ROOT, 'packages/coordination/src/presence/index.ts'),
+    );
+  });
+
+  it('prefers the browser SHIM over the real module when vite aliases one', () => {
+    // The false-positive direction: walking the real event-log barrel would report
+    // its node:fs backend as a leak the bundler never emits.
+    expect(resolveSpec('@papercusp/coordination/event-log', from)).toBe(
+      join(OPERATOR_VITE, 'src/shims/coordination-event-log-browser.ts'),
+    );
+  });
+
+  it('does NOT walk into third-party node_modules dependencies', () => {
+    expect(resolveSpec('react', from)).toBeNull();
+    expect(resolveSpec('zod', from)).toBeNull();
+  });
+
+  it('detects an unshimmed node: builtin in a real server module (known-positive)', () => {
+    // Calibration: the scanner must actually flag the module at the end of the
+    // WI-39514 chain, or the leak test's zero means nothing.
+    const shimmed = shimmedNodeBuiltins();
+    const target = join(REPO_ROOT, 'libs/generic/embedded-pg-discovery/src/index.ts');
+    expect(unsafeNodeBuiltins(target, shimmed)).toContain('node:path');
+  });
+
+  it('reports a browser-safe module as clean (known-negative)', () => {
+    const shimmed = shimmedNodeBuiltins();
+    expect(unsafeNodeBuiltins(join(OPERATOR_CORE_LIB, 'goal-launch-settings-shared.ts'), shimmed)).toEqual([]);
   });
 });
 
