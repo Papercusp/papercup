@@ -765,6 +765,20 @@ async function setupCellSchema(sql: postgres.Sql, opts: { workspaceId: string; h
   // with the current drain writer.
   await sql.unsafe(`ALTER TABLE harness_shared.substrate_outbox ADD COLUMN IF NOT EXISTS drained_log_key TEXT`);
 
+  // EI-20579195481991931: `scanPeerFederationSilence` (fleet-monitors.ts) reads
+  // per-remote-log fold progress to detect a PEER that stopped federating — the
+  // failure `scanOutboxHealth` is host-local-blind to. This rig's sliced
+  // baseline predates migration 493, so the table was absent and the monitor
+  // pass died with 42P01 mid-scan. Loaded VERBATIM (like 375/379 above) rather
+  // than restated, so the fixture cannot drift from the real DDL again — the
+  // recurring inline-CREATE-TABLE drift class (EI-19359711978838614).
+  await sql.unsafe(
+    readFileSync(join(SQL_DIR, '493-substrate-merge-cursor.sql'), 'utf8')
+      .split('\n')
+      .filter((l) => !l.trimStart().startsWith('\\') && !/^(BEGIN|COMMIT);\s*$/i.test(l))
+      .join('\n'),
+  );
+
   // WI-1644 (part 3): SCHEDULER_MAINTAINED_READY reads live as ON in this test
   // environment (flags are NOT mocked here), so claimFloorsWhereSql's
   // useMaintainedReady branch queries harness_shared.work_item_blocked — the
