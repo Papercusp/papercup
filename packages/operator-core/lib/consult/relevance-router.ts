@@ -115,6 +115,9 @@ export interface ConsultRouteParams {
    * do" must be reachable, D-003). */
   requesterId: string;
   question: string;
+  /** Additional owners excluded from candidacy — D-007(7) manual cascade: a
+   * decliner is excluded on the requester's re-call, never auto-cascaded. */
+  excludeOwners?: string[];
   floor?: number;
   simFloor?: number;
   weights?: Partial<BlendWeights>;
