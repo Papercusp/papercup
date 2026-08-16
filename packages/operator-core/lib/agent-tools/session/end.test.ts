@@ -10,7 +10,50 @@
  * explaining outcome — a refusal is a correct answer about an owner-attended window,
  * and must never be indistinguishable from a transport miss the caller should retry.
  */
-import { describe, it, expect } from 'vitest';
+import { beforeEach, describe, it, expect, vi } from 'vitest';
+
+vi.mock('../coordination/identity', () => ({
+  resolveAgentIdentity: vi.fn(() => ({
+    ownerId: 'su-caller-own-id',
+    ownerLabel: 'su · caller',
+    source: 'omp-hook-session',
+    workspaceId: 'ws-1',
+    userId: null,
+  })),
+}));
+vi.mock('../../events/await/psu-pty-discovery', () => ({
+  findLiveHost: vi.fn(() => null),
+  hostSupports: vi.fn(() => true),
+  shutdownViaPty: vi.fn(async () => 'sent'),
+}));
+vi.mock('../../harness/routines/loop', () => ({ getLoopStatus: vi.fn(async () => null) }));
+vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: vi.fn(() => 'ws-1') }));
+vi.mock('../../carry-note', () => ({ getLoopCarryNote: vi.fn(async () => null) }));
+// Keep the module graph light: transitive imports of the REAL
+// wind-down-disposition module loaded via importOriginal below.
+vi.mock('../../modes/store', () => ({ getModeSubject: vi.fn() }));
+vi.mock('../coordination/escalations', () => ({ openEscalation: vi.fn(async () => ({})) }));
+vi.mock('@papercusp/db-org', () => ({ getOrgPg: vi.fn() }));
+vi.mock('../../goals/wind-down-disposition', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../../goals/wind-down-disposition')>();
+  return {
+    ...real,
+    activeGoalForOwner: vi.fn(async () => null),
+    applyGoalDisposition: vi.fn(async () => {}),
+    deliverGoalWindDownReport: vi.fn(async () => {}),
+    windDownDispositionGateEnabled: vi.fn(async () => true),
+  };
+});
+
+import { getLoopStatus } from '../../harness/routines/loop';
+import { shutdownViaPty } from '../../events/await/psu-pty-discovery';
+import {
+  GOAL_DISPOSITIONS,
+  activeGoalForOwner,
+  applyGoalDisposition,
+  deliverGoalWindDownReport,
+  windDownDispositionGateEnabled,
+} from '../../goals/wind-down-disposition';
 import endTool, { shutdownNote } from './end';
 
 it('opts out of the ambient workspace transaction for bounded shutdown', () => {
@@ -70,5 +113,115 @@ describe('shutdownNote (WI-6638)', () => {
     expect(note).toMatch(/did not reach the host/);
     // The reassurance that matters when the outcome is unknown: nothing was killed.
     expect(note).toMatch(/nothing was killed/);
+  });
+});
+
+/**
+ * P-002 (goal-mode-design-intent-hardening-2026-08-16): the wind-down
+ * disposition gate for LOOPLESS goal owners. A looped goal owner is already
+ * forced through loop:end by the loop-armed refusal (tested above via
+ * shutdownNote); this gate catches the owner with no armed loop, who would
+ * otherwise close the window with the goal still active and no report sent.
+ */
+describe('session:end — the P-002 disposition gate for loopless goal owners', () => {
+  const getLoopStatusMock = getLoopStatus as unknown as ReturnType<typeof vi.fn>;
+  const shutdownViaPtyMock = shutdownViaPty as unknown as ReturnType<typeof vi.fn>;
+  const activeGoalForOwnerMock = activeGoalForOwner as unknown as ReturnType<typeof vi.fn>;
+  const applyGoalDispositionMock = applyGoalDisposition as unknown as ReturnType<typeof vi.fn>;
+  const deliverReportMock = deliverGoalWindDownReport as unknown as ReturnType<typeof vi.fn>;
+  const gateEnabledMock = windDownDispositionGateEnabled as unknown as ReturnType<typeof vi.fn>;
+
+  const ACTIVE_GOAL = {
+    goalId: 'ship-paid-app-3f9a1c',
+    title: 'Ship the paid app',
+    installSlug: 'papercusp',
+    recordedDisposition: null,
+  };
+
+  const run = (args: Record<string, unknown> = {}) =>
+    (endTool as unknown as {
+      handler: (
+        a: unknown,
+        ctx: unknown,
+      ) => Promise<{ content: [{ type: 'text'; text: string }]; isError?: boolean }>;
+    })
+      .handler(args, {})
+      .then((r) => ({ ...JSON.parse(r.content[0].text), isError: r.isError === true }));
+
+  beforeEach(() => {
+    getLoopStatusMock.mockReset();
+    getLoopStatusMock.mockResolvedValue(null);
+    shutdownViaPtyMock.mockClear();
+    shutdownViaPtyMock.mockResolvedValue('sent');
+    activeGoalForOwnerMock.mockReset();
+    activeGoalForOwnerMock.mockResolvedValue(null);
+    applyGoalDispositionMock.mockReset();
+    applyGoalDispositionMock.mockResolvedValue(undefined);
+    deliverReportMock.mockReset();
+    deliverReportMock.mockResolvedValue(undefined);
+    gateEnabledMock.mockReset();
+    gateEnabledMock.mockResolvedValue(true);
+  });
+
+  it('REFUSES a loopless goal-mode wind-down without a disposition — naming the arg and all three values — and never reaches the host', async () => {
+    activeGoalForOwnerMock.mockResolvedValue(ACTIVE_GOAL);
+    const got = await run({});
+    expect(got.isError).toBe(true);
+    expect(got.ok).toBe(false);
+    expect(got.error).toMatch(/\bdisposition\b/);
+    for (const d of GOAL_DISPOSITIONS) expect(got.error).toContain(`'${d}'`);
+    expect(got.error).toContain('session:end');
+    expect(shutdownViaPtyMock).not.toHaveBeenCalled();
+  });
+
+  it('with a disposition: stamps the goal, delivers the owner report, then proceeds to shut down', async () => {
+    activeGoalForOwnerMock.mockResolvedValue(ACTIVE_GOAL);
+    const got = await run({ disposition: 'achieved', reason: 'goal complete' });
+    expect(got.ok).toBe(true);
+    expect(got.result).toBe('sent');
+    expect(applyGoalDispositionMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workspaceId: 'ws-1',
+        goalId: ACTIVE_GOAL.goalId,
+        disposition: 'achieved',
+        dispositionBy: 'su-caller-own-id',
+      }),
+    );
+    expect(deliverReportMock).toHaveBeenCalledTimes(1);
+    const [, delivered] = deliverReportMock.mock.calls[0] as [unknown, Record<string, unknown>];
+    expect(String(delivered.body)).toContain('goal complete');
+  });
+
+  it('an ARMED loop takes precedence: the loop-armed refusal answers and the goal is never consulted (the gate lives at loop:end)', async () => {
+    getLoopStatusMock.mockResolvedValue({ active: true, harnessSlug: 'papercusp' });
+    activeGoalForOwnerMock.mockResolvedValue(ACTIVE_GOAL);
+    const got = await run({});
+    expect(got.result).toBe('loop-armed');
+    expect(activeGoalForOwnerMock).not.toHaveBeenCalled();
+    expect(shutdownViaPtyMock).not.toHaveBeenCalled();
+  });
+
+  it('a non-goal owner is unaffected', async () => {
+    const got = await run({});
+    expect(got.ok).toBe(true);
+    expect(got.result).toBe('sent');
+    expect(applyGoalDispositionMock).not.toHaveBeenCalled();
+  });
+
+  it('flag OFF disables the gate: the goal is never consulted', async () => {
+    gateEnabledMock.mockResolvedValue(false);
+    activeGoalForOwnerMock.mockResolvedValue(ACTIVE_GOAL);
+    const got = await run({});
+    expect(got.result).toBe('sent');
+    expect(activeGoalForOwnerMock).not.toHaveBeenCalled();
+  });
+
+  it('FAIL-SOFT: a disposition-report failure downgrades to a warning and the wind-down proceeds', async () => {
+    activeGoalForOwnerMock.mockResolvedValue(ACTIVE_GOAL);
+    applyGoalDispositionMock.mockRejectedValue(new Error('goals table unreachable'));
+    const got = await run({ disposition: 'killed' });
+    expect(got.ok).toBe(true);
+    expect(got.result).toBe('sent');
+    expect(String(got.dispositionWarning)).toMatch(/goals:update/);
   });
 });
