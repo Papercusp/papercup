@@ -395,8 +395,19 @@ async function readAndJudgePeerSilence(
   opts: { workspaceId: string; harness: string; silentAfterMs: number },
   nowMs: number,
 ): Promise<PeerFederationHealth> {
-  const rows = await sql<Array<{ log_keyhex: string; position: string | number; updated_at_ms: string }>>`
-    SELECT log_keyhex, position,
+  // `apply_binding` is SELECTed, never filtered on here: the judge decides which
+  // binding is live from the data and reports the rest as stranded, so a scope
+  // whose binding changed is measured rather than silently half-read
+  // (EI-20617273180156712).
+  const rows = await sql<
+    Array<{
+      log_keyhex: string;
+      position: string | number;
+      updated_at_ms: string;
+      apply_binding: string | null;
+    }>
+  >`
+    SELECT log_keyhex, position, apply_binding,
            (extract(epoch FROM updated_at) * 1000)::bigint::text AS updated_at_ms
       FROM harness_shared.substrate_merge_cursor
      WHERE workspace_id = ${opts.workspaceId} AND harness_slug = ${opts.harness}`;
