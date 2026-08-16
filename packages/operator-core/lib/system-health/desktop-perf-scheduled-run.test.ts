@@ -25,10 +25,24 @@ function io(overrides: Partial<DesktopPerfScheduledRunIO> = {}): {
     io: {
       spawnFn: spawnFn as unknown as DesktopPerfScheduledRunIO['spawnFn'],
       readEnabled: overrides.readEnabled ?? (() => Promise.resolve(true)),
+      // Default: the watermark ADVANCES, i.e. the run persisted a row. Tests
+      // that care about the no-row guard override this explicitly.
+      readNewestRunTs: overrides.readNewestRunTs ?? advancingWatermark(),
     },
     child,
     spawnFn,
   };
+}
+
+/** A watermark that moves on every read — the healthy "a row landed" case. */
+function advancingWatermark(): () => Promise<number | null> {
+  let t = 1_000;
+  return () => Promise.resolve((t += 1_000));
+}
+
+/** A watermark frozen in place — the run persisted NOTHING. */
+function frozenWatermark(at: number | null = 1_000): () => Promise<number | null> {
+  return () => Promise.resolve(at);
 }
 
 describe('runDesktopPerfScheduledRun', () => {
@@ -85,6 +99,64 @@ describe('runDesktopPerfScheduledRun', () => {
       expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('wdio exited 1'));
     } finally {
       warnSpy.mockRestore();
+    }
+  });
+
+  // WI-38449. The tick used to assert "measures already posted via onComplete
+  // regardless of exit code" without ever checking, and that claim was false for
+  // 13 days across three independent causes (spec timeout, a 404'd publish, and
+  // absent node_modules → exit 127). The watermark is what makes the claim
+  // falsifiable, so these two tests are the guard's own falsifiability proof:
+  // the first fires it, the second confirms a healthy run does NOT.
+  it('reports producedRow:false and ERRORS when a completed run persisted no row', async () => {
+    const { io: fakeIo, child } = io({ readNewestRunTs: frozenWatermark() });
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const p = runDesktopPerfScheduledRun(fakeIo);
+      await flushReadEnabledTick();
+      // exit 127 is the real shape of the absent-node_modules case: the suite
+      // "completes" in milliseconds having run nothing at all.
+      child.emit('close', 127);
+      const r = await p;
+      expect(r.ran).toBe(true);
+      expect(r.producedRow).toBe(false);
+      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('RAN BUT PRODUCED NO ROW'));
+    } finally {
+      warnSpy.mockRestore();
+      errorSpy.mockRestore();
+    }
+  });
+
+  it('reports producedRow:true and stays quiet when the run did persist a row', async () => {
+    const { io: fakeIo, child } = io();
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const p = runDesktopPerfScheduledRun(fakeIo);
+      await flushReadEnabledTick();
+      child.emit('close', 0);
+      const r = await p;
+      expect(r.producedRow).toBe(true);
+      expect(errorSpy).not.toHaveBeenCalled();
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it('leaves producedRow UNDEFINED when the watermark cannot be read — never true', async () => {
+    // "Could not tell" must not read as success: that is the exact failure mode
+    // this guard exists to end.
+    const { io: fakeIo, child } = io({ readNewestRunTs: () => Promise.resolve(null) });
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const p = runDesktopPerfScheduledRun(fakeIo);
+      await flushReadEnabledTick();
+      child.emit('close', 0);
+      const r = await p;
+      expect(r.producedRow).toBeUndefined();
+      expect(errorSpy).not.toHaveBeenCalled();
+    } finally {
+      errorSpy.mockRestore();
     }
   });
 

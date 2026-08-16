@@ -58,17 +58,52 @@ export interface DesktopPerfScheduledRunResult {
   exitCode?: number | null;
   timedOut?: boolean;
   durationMs?: number;
+  /**
+   * Did this run actually PERSIST a row? `false` means the producer produced
+   * nothing, whatever the exit code said. `undefined` means the check could not
+   * be made (a read error) — never read that as success.
+   */
+  producedRow?: boolean;
 }
 
 /** IO seam for tests. */
 export interface DesktopPerfScheduledRunIO {
   spawnFn: (command: string, args: readonly string[], options: Record<string, unknown>) => ChildProcess;
   readEnabled: () => Promise<boolean>;
+  /**
+   * Newest persisted `created_ts` for this producer's workspace, or null when
+   * the table is empty. Used as a before/after watermark to prove the run wrote
+   * something. Returns null on a read error too — the caller treats "could not
+   * tell" as unknown, never as success.
+   */
+  readNewestRunTs: () => Promise<number | null>;
+}
+
+/**
+ * The workspace this producer writes into, resolved by the SAME chain as its two
+ * readers — `testing-desktop-perf-ingest.ts` (which writes the row) and
+ * `desktop-perf-gate.ts`'s `runDesktopPerfGate` (which reads it). Keeping one
+ * chain is what makes the watermark check below meaningful: a check that read a
+ * different workspace than the ingest writes would report "produced nothing" on
+ * every healthy run, and a guard that cries wolf gets muted, which is strictly
+ * worse than no guard.
+ */
+function producerWorkspaceId(): string {
+  return process.env.PAPERCUSP_WORKSPACE_ID ?? 'default';
 }
 
 const defaultIO: DesktopPerfScheduledRunIO = {
   spawnFn: (command, args, options) => spawn(command, args as string[], options),
   readEnabled: () => getFlag(FLAGS.DESKTOP_PERF_SCHEDULED_RUN, 'system').catch(() => true),
+  readNewestRunTs: async () => {
+    try {
+      const { readDesktopPerfRuns } = await import('./desktop-perf-runs.js');
+      const [newest] = await readDesktopPerfRuns(producerWorkspaceId(), 1);
+      return newest ? newest.createdTs : null;
+    } catch {
+      return null;
+    }
+  },
 };
 
 /**
@@ -85,7 +120,53 @@ export async function runDesktopPerfScheduledRun(
   }
 
   const startedAt = Date.now();
+  // Watermark BEFORE the run, so "did this produce anything" is answerable after
+  // it. See `settle` below for why this exists at all.
+  const beforeTs = await io.readNewestRunTs();
   return new Promise((resolve) => {
+    /**
+     * Resolve the tick, having first CHECKED that the run actually persisted a
+     * row — instead of asserting it did.
+     *
+     * This is the guard whose absence made WI-38449 cost 13 days. The producer
+     * has (at least) three independent ways to run to completion and persist
+     * NOTHING, and until now the tick reported success for all three:
+     *   1. a spec times out mid-suite, so measures are never collected;
+     *   2. the publish POSTs to a bad base URL and 404s (a console.warn in the
+     *      child, invisible here);
+     *   3. the suite's node_modules are absent — it is deliberately outside the
+     *      npm workspace with a MANUAL `npm install` bootstrap (see its README),
+     *      so `npm test` exits 127 in milliseconds having done nothing.
+     * All three are indistinguishable from a healthy run if you only look at the
+     * exit code, which is precisely what this tick used to do while logging
+     * "measures already posted via onComplete regardless of exit code".
+     *
+     * The row is the ONLY honest evidence: it is what `DESKTOP_PERF_GATE`
+     * actually reads, so checking for it tests the real contract rather than a
+     * proxy for it. A `false` here means the gate is going blind within its 24h
+     * freshness window and someone must look — hence console.error, not warn.
+     */
+    const settle = (result: DesktopPerfScheduledRunResult): void => {
+      void (async () => {
+        const afterTs = await io.readNewestRunTs();
+        const producedRow =
+          afterTs === null ? undefined : beforeTs === null ? true : afterTs > beforeTs;
+        if (producedRow === false) {
+          console.error(
+            `[desktop-perf-scheduled-run] RAN BUT PRODUCED NO ROW — the suite completed ` +
+              `(exit ${result.exitCode ?? 'n/a'}${result.timedOut ? ', timed out' : ''}) but ` +
+              `harness_shared.desktop_perf_runs gained nothing for workspace ` +
+              `'${producerWorkspaceId()}'. DESKTOP_PERF_GATE will fail-soft PASS every deploy ` +
+              `once the newest row falls outside its 24h freshness window. Check, in order: a ` +
+              `'[perf-report] publish REJECTED' line in the child output above; whether ` +
+              `${WDIO_DIR}/node_modules exists (the suite is outside the npm workspace and its ` +
+              `install is a manual bootstrap — see its README); and whether a spec timed out ` +
+              `before any measure was recorded.`,
+          );
+        }
+        resolve({ ...result, producedRow });
+      })();
+    };
     // Deliberately NO DISPLAY / TAURI_APP_PATH set here — wdio.conf.ts's own
     // resolvers already do this correctly (see the module doc above) and are
     // the single source of truth for it.
@@ -125,7 +206,7 @@ export async function runDesktopPerfScheduledRun(
         `[desktop-perf-scheduled-run] timed out after ${RUN_TIMEOUT_MS}ms — killed. ` +
           `stdout tail:\n${stdout.text().slice(-LOG_TAIL_CHARS)}\nstderr tail:\n${stderr.text().slice(-LOG_TAIL_CHARS)}`,
       );
-      resolve({ ran: true, timedOut: true, durationMs: Date.now() - startedAt });
+      settle({ ran: true, timedOut: true, durationMs: Date.now() - startedAt });
     }, RUN_TIMEOUT_MS);
     child.on('error', (err) => {
       if (settled) return;
@@ -150,7 +231,7 @@ export async function runDesktopPerfScheduledRun(
             `${stdout.text().slice(-LOG_TAIL_CHARS)}\n${stderr.text().slice(-LOG_TAIL_CHARS)}`,
         );
       }
-      resolve({ ran: true, exitCode: code, durationMs });
+      settle({ ran: true, exitCode: code, durationMs });
     });
   });
 }
