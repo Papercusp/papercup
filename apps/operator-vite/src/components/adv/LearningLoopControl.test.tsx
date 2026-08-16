@@ -31,7 +31,7 @@ vi.mock('nuqs', async () => {
   const { useState } = await import('react');
   return {
     useQueryState: (_key: string, parser?: { defaultValue?: unknown }) => {
-      const [v, setV] = useState(parser?.defaultValue ?? null);
+      const [v, setV] = useState<unknown>(parser?.defaultValue ?? null);
       return [v, (nv: unknown) => Promise.resolve(setV(nv))] as const;
     },
     parseAsBoolean: { withDefault: (d: boolean) => ({ defaultValue: d }) },

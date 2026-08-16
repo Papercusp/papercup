@@ -101,7 +101,8 @@ import {
   usePersistedColumnWidths,
   type ColumnDef,
 } from "@papercusp/grid-core";
-import { ColumnFilterBar, useColumnFilters } from "@/app/harness/filters";
+// (useColumnFilters/ColumnFilterBar are already imported below with the rest
+// of the @/app/harness surface.)
 import "@/app/adv/harnesses/adv-panel-chrome.css";
 import type { HiveThroughputSnapshot } from "@papercusp/operator-core/lib/sync-resolver/learning-hive-throughput-read";
 import type { PotSoakReportSnapshot } from "@papercusp/operator-core/lib/pot/soak-report";
@@ -6088,7 +6089,7 @@ function RetainedLedgerCard({ enabled }: { enabled: boolean }) {
       </div>
       {feed.error ? (
         <div className="pc-advpanel__empty pc-advpanel__empty--err">
-          Could not load the retained ledger: {feed.error}
+          Could not load the retained ledger: {String(feed.error)}
         </div>
       ) : rows.length === 0 && loading ? (
         <div className="pc-advpanel__empty">Loading retained items…</div>
