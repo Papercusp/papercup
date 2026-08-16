@@ -90,6 +90,7 @@ import { RedQueenPanel } from "./RedQueenPanel";
 import { FrontierPanel } from "./FrontierPanel";
 import { SignalsPanel } from "./SignalsPanel";
 import { AnalyzePanel } from "./AnalyzePanel";
+import LearningLoopControl from "./LearningLoopControl";
 import KnowledgePackCandidates from "./KnowledgePackCandidates";
 import { ExperimentsPanel } from "./ExperimentsPanel";
 import { Tooltip } from "@/app/harness/Tooltip";
