@@ -29,8 +29,9 @@ import { resolveCtxHarnessSlug } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { buildPlanContextBundle } from './context-bundle';
 import { checkPlanStartable } from './plan-start-gate';
-import { getRepoRoot } from './source';
+import { getRepoRoot, resolvePlanScope } from './source';
 import { insertPlanRun } from './runs';
+import { stampPlanGoalProvenance } from '../../modes/goal-context';
 import { executePlanAgentTurn } from './turn';
 import {
   resolveAgentIdentity,
@@ -221,6 +222,32 @@ async function launchHandler(input: LaunchArgs, ctx: LaunchCtx) {
     event: 'agent_launched',
     after: runId,
     detail: title,
+  });
+
+  // Migration 791 / goal-mode-design-intent-hardening P-003: attribute the plan
+  // to the goal its LAUNCHER works under, if any. plans:new stamps at create,
+  // but the plan a goal agent launches was often authored OUTSIDE the goal (a
+  // template, a peer's plan) — without this leg the goal page cannot see the
+  // very plan the goal's agent is actively driving. Same rule as create: the
+  // goal comes from the launcher's RESOLVED context (never an argument), and
+  // stampPlanGoalProvenance writes only WHERE goal_id IS NULL, so the first
+  // attribution wins and a launch can never re-parent an attributed plan.
+  // The RESOLVED scope (resolvePlanScope collapses a member harness to its pot
+  // home) is what the harness_plans row was written with — the caller's own
+  // harness slug would miss pot-scoped plans SILENTLY (zero-row UPDATE), the
+  // same trap new.ts documents. Best-effort + un-awaited: provenance must not
+  // fail or slow a launch that already succeeded.
+  void (async () => {
+    const scope = await resolvePlanScope(scopeOpts);
+    await stampPlanGoalProvenance({
+      workspaceId: scope.workspaceId,
+      harnessSlug: scope.harnessSlug,
+      planSlug: input.slug,
+      ownerId: launchedBy === 'unknown' ? undefined : launchedBy,
+    });
+  })().catch(() => {
+    /* resolvePlanScope can throw for an unregistered harness — the launch
+       itself already resolved the plan, so just skip the stamp. */
   });
 
   // 6. Run the agent's first turn — stream + persist turns + settle
