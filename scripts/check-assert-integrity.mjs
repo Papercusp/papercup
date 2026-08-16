@@ -186,14 +186,36 @@ function scan(file, text) {
       // authors pragma correct code is how a lint dies: the pragma stops meaning "reviewed
       // and genuinely safe" and starts meaning "this lint is noisy", and then a REAL hit
       // gets pragma'd by reflex too.
-      const statusVars = [...body.matchAll(/(?:^\s*|[;&|]\s*)([A-Za-z_][A-Za-z0-9_]*)=([1-9]\d*)\s*(?:;|$)/gm)]
-        .map((m) => m[1]);
-      // Propagation takes two shapes, and BOTH must be recognised or the rule punishes a
+      // A status var is set either to a LITERAL (`rc=1`, `FAIL=1`) or bumped as an
+      // accumulating COUNTER (`missing=$((missing + 1))`, `((n++))`). The counter is the
+      // shape a PREFLIGHT adopts when it wants to report every unmet precondition in one
+      // pass instead of dying at the first — it carries HOW MANY failed, not merely THAT
+      // one did. Recognising only the literal form made R4 fire on local-matrix.sh's
+      // (correct) gh-token check, whose empty branch increments `missing` and whose
+      // enclosing function then does `[ "$missing" != 0 ] && return 1`: the code failed
+      // exactly as this rule demands, and the rule reported it as a silent continue.
+      // Propagation stays MANDATORY for a counter, identically to a literal — a counter
+      // nothing ever returns is still the silent-continue this rule exists to catch.
+      const statusVars = [
+        ...[...body.matchAll(/(?:^\s*|[;&|]\s*)([A-Za-z_][A-Za-z0-9_]*)=([1-9]\d*)\s*(?:;|$)/gm)].map((m) => m[1]),
+        // `X=$((X + 1))` — self-referential so a plain `X=$((Y + 1))` recompute is not a status bump.
+        ...[...body.matchAll(/(?:^\s*|[;&|]\s*)([A-Za-z_][A-Za-z0-9_]*)=\$\(\(\s*\1\s*\+\s*[1-9]\d*\s*\)\)/gm)].map(
+          (m) => m[1],
+        ),
+        // `((X++))` / `((X += 1))`, and the `let` spelling of both.
+        ...[
+          ...body.matchAll(
+            /(?:^\s*|[;&|]\s*)(?:\(\(|let\s+"?)\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?:\+\+|\+=\s*[1-9]\d*)/gm,
+          ),
+        ].map((m) => m[1]),
+      ];
+      // Propagation takes three shapes, and ALL must be recognised or the rule punishes a
       // correct refactor: (a) the var is returned/exited directly (`exit "$FAIL"`), or
       // (b) the var is TESTED in a condition that guards a return/exit within a few lines
       // (`if [ "$FAIL" != 0 ]; then echo …; exit 1`). Shape (b) is what a script adopts the
       // moment it needs more than two outcomes — e.g. a distinct exit for "partial/skipped" —
       // and treating that as non-propagating re-reds code that just got MORE honest.
+      // (c) is (b) reached via a counter rather than a boolean — see statusVars above.
       const propagatesFailure = statusVars.some((v) => {
         const direct = new RegExp(`\\b(?:return|exit)\\s+"?\\$\\{?${v}\\}?"?`);
         const tested = new RegExp(`\\[\\s*"?\\$\\{?${v}\\}?"?\\s*(?:!=|=|-ne|-eq|-gt|-ge|-lt|-le)`);
