@@ -111,15 +111,29 @@ function shaLabel(candidateSha?: string): string {
  *   unknown (stale / no capture)  → warn   (D-007: never blocks, but never SILENT either —
  *                                           a dead producer is a producer failure, not a pass)
  *   warn (hot-but-not-fatal)      → warn   (surface, never block — even when armed)
- *   crit (definitive wedge)       → block IFF policy.block else warn
+ *   crit, operator-defect         → block IFF policy.block else warn
+ *   crit, ambient-host only       → warn ALWAYS (even armed — see below)
+ *   crit, unattributed            → warn ALWAYS (never block on an unclassified reason)
  *
- * ⚠ BEFORE ARMING `policy.block`, READ D-007. Measured 2026-08-16 against a live capture,
- * `crit` fired on `PSI memory full avg60 11.45 ≥ 5` — ambient RAM pressure from ~100 peer
- * agents on this shared box, which has nothing to do with any candidate. This gate's crit
- * tier currently MIXES that ambient host state with genuine operator wedges (:3070
- * unreachable, wedge-active, event-loop lag p95 ≥ 1s, CLOSE_WAIT ≥ 500, inotify ≥ 80%),
- * and until the two are separable, arming would hold every deploy whenever the box is
- * busy — the exact false-red D-003 refused for the desktop sibling.
+ * WI-38449 / D-007 F3 — WHY CRIT ALONE IS NOT ENOUGH TO BLOCK. Measured 2026-08-16
+ * against a live capture, `crit` fired on the SINGLE reason `PSI memory full avg60
+ * 11.45 ≥ 5` — ambient RAM pressure from ~100 peer agents on this shared box, with
+ * nothing wrong with any candidate; `evaluatePerfGate(verdict, { enabled:true,
+ * block:true })` returned `block`. So arming the undifferentiated crit tier would have
+ * held EVERY deploy for the whole busy period — the exact false-red D-003/D-005 refused
+ * for the desktop sibling.
+ *
+ * The fix is attribution, not a threshold: `PerfVerdict.critAttribution` splits crit
+ * reasons at the point they are RAISED (perf-budgets.ts) into
+ *   - operatorDefect — :3070 unreachable · wedge-active · event-loop lag p95 ≥ 1s ·
+ *     CLOSE_WAIT ≥ 500. Meltdown-class properties of OUR process. These block.
+ *   - ambientHost   — CPU/memory pressure, host-total inotify (per-uid, routinely a
+ *     third-party editor). These never block.
+ *
+ * ⚠ This gate does NOT weaken any alarm: an ambient crit is still `crit`, still carries
+ * every reason in `reasons`, and is still surfaced — it is merely not a reason to hold a
+ * release. And an armed gate that declines to block SAYS SO in its summary; a silent
+ * non-block would be the same invisible suppression that hid 13 days of fail-soft.
  */
 export function evaluatePerfGate(
   verdict: PerfVerdict,
@@ -158,12 +172,44 @@ export function evaluatePerfGate(
   }
 
   if (verdict.status === 'crit') {
-    const action: PerfGateAction = policy.block ? 'block' : 'warn';
-    const verb = action === 'block' ? 'BLOCKED (block-mode armed)' : 'flagged (warn — block-mode not armed)';
+    // WI-38449 / D-007 F3: a crit BLOCKS only for reasons attributable to the operator
+    // itself. Ambient host state (CPU/memory pressure, host-total inotify) is still a
+    // crit, still reported here in full, but must never hold a release: no candidate
+    // caused it and no release can fix it, so blocking on it would freeze every deploy
+    // for as long as this shared box is busy.
+    const { operatorDefect, ambientHost } = verdict.critAttribution;
+    // An UNATTRIBUTED crit (both lists empty — e.g. a verdict built by an older code
+    // path) must not silently become a block. Fail toward not-blocking, and say so,
+    // exactly as the desktop sibling refuses to invent a deploy-holding verdict from
+    // an unreadable signal.
+    const unattributed = operatorDefect.length === 0 && ambientHost.length === 0;
+    const blockworthy = operatorDefect.length > 0;
+    const action: PerfGateAction = policy.block && blockworthy ? 'block' : 'warn';
+
+    let verb: string;
+    if (action === 'block') {
+      verb = `BLOCKED (block-mode armed; ${operatorDefect.length} operator-defect crit)`;
+    } else if (!policy.block) {
+      verb = 'flagged (warn — block-mode not armed)';
+    } else if (unattributed) {
+      verb = 'flagged (warn — block-mode armed but this crit carries NO attribution; not blocking on an unclassified reason)';
+    } else {
+      // The case this whole change exists for. Name it explicitly: an armed gate that
+      // declines to block is otherwise indistinguishable from a gate that is not armed,
+      // and that ambiguity is what makes a suppression channel invisible.
+      verb = `flagged (warn — block-mode armed, but all ${ambientHost.length} crit reason(s) are AMBIENT HOST state, not this candidate)`;
+    }
+
+    // Attribute in the summary, so a reader can tell "the operator is wedged" from
+    // "the box is busy" without opening the capture.
+    const detail = blockworthy
+      ? `operator-defect: ${operatorDefect.join('; ')}${ambientHost.length ? ` | ambient (not blocking): ${ambientHost.join('; ')}` : ''}`
+      : verdict.reasons.join('; ');
+
     return {
       action,
       reasons: verdict.reasons,
-      summary: `🟥 perf-gate: operator DEGRADED — deploy of ${sha} ${verb}: ${verdict.reasons.join('; ')}`,
+      summary: `🟥 perf-gate: operator DEGRADED — deploy of ${sha} ${verb}: ${detail}`,
       verdictStatus: 'crit',
     };
   }
