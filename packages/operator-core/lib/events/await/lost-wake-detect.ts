@@ -97,6 +97,22 @@ export interface LostWakeWitness {
   check(sql: Sql, eventKey: string, sinceMs: number): Promise<{ occurred: boolean; evidence: string } | null>;
 }
 
+/** Clock-skew allowance when testing whether a verdict instant falls inside an await's parked
+ *  window. The pipeline_event and the emit are written by the same tick but different code
+ *  paths, so their timestamps can differ by a little. Biased toward CONVICTING (it widens the
+ *  window), because missing a real lost wake is the costlier error. Live-measured as
+ *  insensitive: 0s/30s/120s all yield the same verdict on the papercusp gate keys. */
+const OVERLAP_TOLERANCE_SEC = 30;
+
+/** Awaits that were actually parked across a verdict instant, below which the overlap rate is
+ *  not evidence of anything (the small-sample guard, mirroring `minSettled`). */
+const MIN_OVERLAPPED_AWAITS = 3;
+
+/** Of the awaits parked across a verdict instant, the percentage that must have MISSED it to
+ *  convict. EI-10800's real defect measured 100% (0 woke / 88 missed); a healthy gate key
+ *  measures 5.9% (16 woke / 1 missed), so 50 separates them with a wide margin. */
+const CONVICT_LOST_PCT = 50;
+
 /**
  * The green-checkpoint gate-verdict witness (EI-10800's own class): `release:green[:<pipeline>]`
  * and `green-checkpoint:red[:<pipeline>]` are backed by `harness_shared.pipeline_events`
@@ -105,6 +121,26 @@ export interface LostWakeWitness {
  * `appendPipelineEvent`, not `emitAwaitedEvent`). A green/red pipeline_events row in the window
  * with none of the corresponding awaits firing by 'event' is exactly EI-10800's shape: the
  * verdict was PRODUCED but the wake was LOST.
+ *
+ * ## Why this checks TEMPORAL OVERLAP and not mere occurrence (EI-20323150675466298)
+ *
+ * The sentence above is the correct inference, but until this fix the code did not implement
+ * it: `check` asked only "did ≥1 verdict row exist ANYWHERE in the window?" and convicted on
+ * `true`. That is a window-level EXISTENCE test, and it convicts every run, forever, for any
+ * gate key that greens at all while sitting under `degenerateRatePct` — because an awaiter only
+ * wakes if the gate resolves DURING its own parked window. Measured live on papercusp: the gate
+ * greened 33× in 7 days while awaiters parked a MEDIAN of 6.1 min, so 450 of 454 timeouts had
+ * no verdict in their window at all. Those are CORRECT timeouts, and the false conviction burned
+ * seven agent sessions and re-filed itself after each close.
+ *
+ * So the denominator is the fix: judge only the awaits actually parked ACROSS a verdict instant.
+ * Two exclusions matter — a `payload_filter` await is bound to a specific candidateSha and is
+ * SUPPOSED not to wake on a different candidate's green (WI-5685 / EI-12457), and a cancelled
+ * await was retired rather than missed. Counting either as a lost wake reintroduces the bug.
+ *
+ * ⚠ The instants MUST come from `pipeline_events`, never from the await log's own event-fired
+ * rows: in EI-10800's true-positive shape NOTHING fired by event, so an await-derived instant
+ * set is EMPTY and the overlap test would silently acquit the very defect this exists to catch.
  */
 export const GREEN_CHECKPOINT_WITNESS: LostWakeWitness = {
   name: 'green-checkpoint-pipeline-events',
@@ -128,19 +164,61 @@ export const GREEN_CHECKPOINT_WITNESS: LostWakeWitness = {
     try {
       const { operatorHomeHarnessSlug } = await import('../../harness/operator-home-harness');
       const installSlug = suffix ?? operatorHomeHarnessSlug();
-      const rows = (await sql`
-        SELECT count(*)::int AS n, max(created_at) AS latest
+      const windowSec = Math.round(sinceMs / 1000);
+      // Leg 1 — the INSTANTS the condition actually resolved at, not merely whether it did.
+      const instantRows = (await sql`
+        SELECT created_at
         FROM harness_shared.pipeline_events
         WHERE kind = 'green_checkpoint'
           AND install_slug = ${installSlug}
           AND status = ANY(${statuses}::text[])
-          AND created_at >= now() - ${`${Math.round(sinceMs / 1000)} seconds`}::interval
-      `) as unknown as { n: number; latest: string | null }[];
-      const n = rows[0]?.n ?? 0;
+          AND created_at >= now() - ${`${windowSec} seconds`}::interval
+        ORDER BY created_at
+      `) as unknown as { created_at: string | Date }[];
+      const instants = instantRows.map((r) => r.created_at);
+      const n = instants.length;
       if (n === 0) return { occurred: false, evidence: `no ${statuses.join('/')} pipeline_events row for install_slug=${installSlug} in the window` };
+
+      // Leg 2 — of the awaits parked ACROSS one of those instants, how many failed to wake?
+      // payload_filter (candidateSha-bound) and cancelled awaits are excluded: neither is a
+      // missed wake, and counting them is what made this a false-positive machine.
+      const overlapRows = (await sql`
+        SELECT count(*) FILTER (WHERE fired_reason = 'event')::int                        AS woke,
+               count(*) FILTER (WHERE fired_reason IS NOT NULL AND fired_reason <> 'event')::int AS missed
+        FROM harness_shared.event_awaits a
+        WHERE a.workspace_id = ${DEFAULT_COORD_WORKSPACE}
+          AND a.event_key = ${eventKey}
+          AND a.payload_filter IS NULL
+          AND a.cancelled_at IS NULL
+          AND a.created_at >= now() - ${`${windowSec} seconds`}::interval
+          AND coalesce(a.fired_at, a.expires_ts) IS NOT NULL
+          AND EXISTS (
+            SELECT 1 FROM unnest(${instants}::timestamptz[]) AS t(emit_at)
+            WHERE t.emit_at > a.created_at - ${`${OVERLAP_TOLERANCE_SEC} seconds`}::interval
+              AND t.emit_at < coalesce(a.fired_at, a.expires_ts) + ${`${OVERLAP_TOLERANCE_SEC} seconds`}::interval
+          )
+      `) as unknown as { woke: number; missed: number }[];
+      const woke = overlapRows[0]?.woke ?? 0;
+      const missed = overlapRows[0]?.missed ?? 0;
+      const overlapped = woke + missed;
+      const verdicts = `${n} ${statuses.join('/')} pipeline_events row(s) for install_slug=${installSlug}`;
+
+      if (overlapped < MIN_OVERLAPPED_AWAITS) {
+        return {
+          occurred: false,
+          evidence: `${verdicts}, but only ${overlapped} unfiltered await(s) were parked across one (<${MIN_OVERLAPPED_AWAITS}) — too few to judge. A timeout whose window contains NO verdict is a correct timeout, not a lost wake.`,
+        };
+      }
+      const pctLost = Math.round((missed / overlapped) * 1000) / 10;
+      if (pctLost < CONVICT_LOST_PCT) {
+        return {
+          occurred: false,
+          evidence: `${verdicts}, and of the ${overlapped} await(s) actually parked across one, ${woke} woke by event and ${missed} missed (${pctLost}% lost, under the ${CONVICT_LOST_PCT}% bar) — the wake path is working; the low overall rate is a rare condition, not a lost wake.`,
+        };
+      }
       return {
         occurred: true,
-        evidence: `${n} ${statuses.join('/')} pipeline_events row(s) for install_slug=${installSlug} in the window (latest ${rows[0]?.latest}) — the verdict was produced independently of the await log`,
+        evidence: `${verdicts} in the window — and of the ${overlapped} await(s) parked ACROSS one of those verdicts, ${missed} missed it and only ${woke} woke by event (${pctLost}% lost). The verdict was produced independently of the await log, so the wake was lost.`,
       };
     } catch {
       return null; // fail-soft: a missing table / query error is "no witness", never a false conviction.
