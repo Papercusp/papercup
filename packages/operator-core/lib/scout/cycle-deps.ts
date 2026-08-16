@@ -797,7 +797,7 @@ export function buildScoutCycleDeps(
       try {
         const { sql } = getOrgPg();
         const { listAutoloopsForWorkspace } = await import('../gym/control-plane');
-        const loops = await listAutoloopsForWorkspace(sql, activeWorkspaceId());
+        const loops = await listAutoloopsForWorkspace(sql, { workspaceId: activeWorkspaceId() });
         gymEnabled = loops.some((l) => l.enabled === true);
       } catch (err) {
         console.warn(

@@ -83,10 +83,31 @@ export interface RetainShippedIdea {
   completedAt: string | null;
 }
 
+/** A plan the Blender/scout GENERATED: a rail='plan' routed idea joined to the
+ *  plan row it produced (D-004, blender-loop-repair-and-opus5-xhigh-2026-08-16:
+ *  Retain lists the loop's generated plans the way its other generated
+ *  artifacts are surfaced — a read over the existing plan store, nothing new
+ *  written). Routed refs whose plan is MISSING from the store are a structural
+ *  gap tracked under that plan's P-005, deliberately absent here (inner join). */
+export interface RetainBlenderPlan {
+  planSlug: string;
+  /** harness_plans.title, falling back to the slug when unset. */
+  title: string;
+  /** harness_plans.status verbatim (draft/ready/active/shipped/superseded); '' when unset. */
+  status: string;
+  /** When the scout routed the idea into the plan store (timestamptz text). */
+  routedAt: string | null;
+  ideaId: string;
+  ideaTitle: string | null;
+  lens: string;
+}
+
 export interface RetainExtrasSnapshot {
   banked: RetainBankedCounts;
   /** Idea-derived artifacts that reached an outcome, newest first. */
   shippedFromIdeas: RetainShippedIdea[];
+  /** Blender-generated plans (rail='plan' routed refs resolved in the plan store), newest routed first. */
+  blenderPlans: RetainBlenderPlan[];
   /** null when none recorded yet (or the read degraded). */
   lensWeights: Record<string, number> | null;
   rubricChanges: RetainRubricChange[];
@@ -257,6 +278,46 @@ export async function readRetainExtras(
     console.warn('[learning.retain] shipped-from-ideas read failed:', err instanceof Error ? err.message : err);
   }
 
+  // Blender-generated plans (D-004 / P-012): plan-rail routed refs joined to
+  // the plan store — Retain lists what the ideation loop DRAFTED, not only what
+  // shipped. DISTINCT ON keeps the newest routing when an idea was re-routed to
+  // the same plan; refs whose plan is missing are excluded by the inner join
+  // (that structural gap is P-005's, not this view's).
+  let blenderPlans: RetainBlenderPlan[] = [];
+  try {
+    const rows = (await sql`
+      SELECT DISTINCT ON (hp.plan_slug)
+             hp.plan_slug,
+             COALESCE(hp.title, hp.plan_slug) AS title,
+             COALESCE(hp.status, '') AS status,
+             to_timestamp(r.routed_at / 1000.0)::text AS routed_at,
+             r.idea_id, r.title AS idea_title, r.lens
+        FROM harness_shared.scout_routed_ideas r
+        JOIN harness_shared.harness_plans hp
+          ON hp.workspace_id = r.workspace_id
+         AND hp.plan_slug = substring(r.routed_ref from 6)
+       WHERE r.workspace_id = ${workspaceId}
+         AND r.rail = 'plan'
+         AND r.routed_ref LIKE 'plan:%'
+       ORDER BY hp.plan_slug, r.routed_at DESC
+    `) as Array<Record<string, unknown>>;
+    blenderPlans = rows
+      .map((r) => ({
+        planSlug: String(r.plan_slug ?? ''),
+        title: String(r.title ?? ''),
+        status: String(r.status ?? ''),
+        routedAt: typeof r.routed_at === 'string' ? r.routed_at : null,
+        ideaId: String(r.idea_id ?? ''),
+        ideaTitle: typeof r.idea_title === 'string' && r.idea_title ? r.idea_title : null,
+        lens: String(r.lens ?? ''),
+      }))
+      .filter((p) => p.planSlug)
+      .sort((a, b) => (b.routedAt ?? '').localeCompare(a.routedAt ?? ''))
+      .slice(0, SECTION_CAP);
+  } catch (err) {
+    console.warn('[learning.retain] blender-plans read failed:', err instanceof Error ? err.message : err);
+  }
+
   let lensWeights: Record<string, number> | null = null;
   try {
     const weights = await deps.readLensWeights();
@@ -295,6 +356,7 @@ export async function readRetainExtras(
   return {
     banked: { improvementsFiled7d, plansDrafted7d },
     shippedFromIdeas,
+    blenderPlans,
     lensWeights,
     rubricChanges,
     insightDocs,

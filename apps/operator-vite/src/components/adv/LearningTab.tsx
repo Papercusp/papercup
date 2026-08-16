@@ -5084,6 +5084,7 @@ function LearningsView({
   const [, setLviewNav] = useQueryState("lview", parseAsString);
   const [, setTabNav] = useQueryState("tab", parseAsString);
   const [, setCreateViewNav] = useQueryState("view", parseAsString);
+  const [, setPlanNav] = useQueryState("plan", parseAsString);
 
   // WI-6384: gated on `hiveReady` ALONE, like every sibling read in this view.
   // It used to also require `hive.length > 0`, so selecting All Pots — the
@@ -5531,6 +5532,68 @@ function LearningsView({
                 </ul>
               </LearningDisclosure>
             ) : null}
+            {/* Blender-generated plans (D-004 / P-012): every plan the ideation
+                loop routed into the plan store — drafted included, not only the
+                shipped outcomes above. Rows deep-link to the Plans board via
+                the same nuqs params ImprovementsView's openPlan uses. */}
+            {(extrasSnap.blenderPlans?.length ?? 0) > 0 ? (
+              <LearningDisclosure
+                label="Plans from ideas"
+                subtitle="plans the ideation loop drafted into the plan store"
+                count={extrasSnap.blenderPlans.length}
+              >
+                <ul
+                  className="pc-learning__retainextras"
+                  aria-label="Blender-generated plans"
+                >
+                  {extrasSnap.blenderPlans.map((p) => {
+                    const routedMs = p.routedAt ? Date.parse(p.routedAt) : NaN;
+                    return (
+                      <li key={p.planSlug}>
+                        <GitBranch size={11} aria-hidden />
+                        <button
+                          type="button"
+                          className="pc-learning__retainlink"
+                          title={`${p.planSlug} — open on the Plans board`}
+                          onClick={() => {
+                            void setPlanNav(p.planSlug);
+                            void setCreateViewNav("plans");
+                            void setTabNav("plans");
+                          }}
+                        >
+                          {p.title}
+                        </button>
+                        {p.status ? (
+                          <span
+                            className="pc-learning__chip"
+                            title="Plan lifecycle status"
+                          >
+                            {p.status}
+                          </span>
+                        ) : null}
+                        {p.ideaTitle ? (
+                          <em
+                            className="pc-learning__retainidea"
+                            title={`Origin idea ${p.ideaId} (${p.lens} lens)`}
+                          >
+                            <Lightbulb size={10} aria-hidden />
+                            {p.ideaTitle}
+                          </em>
+                        ) : null}
+                        {!Number.isNaN(routedMs) ? (
+                          <span
+                            className="pc-learning__age"
+                            title="When the idea was routed into the plan store"
+                          >
+                            {whenLabel(routedMs)}
+                          </span>
+                        ) : null}
+                      </li>
+                    );
+                  })}
+                </ul>
+              </LearningDisclosure>
+            ) : null}
             {retainLensEntries.length > 0 ? (
               <LearningDisclosure
                 label="Lens weights"
@@ -5868,6 +5931,16 @@ export function LearningStyles() {
       }
       .pc-learning__retainextras li strong { font-weight: 620; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
       .pc-learning__retainextras li .pc-learning__age { margin-left: auto; flex-shrink: 0; }
+      .pc-learning__retainlink {
+        all: unset; cursor: pointer; font-weight: 620; min-width: 0; overflow: hidden;
+        text-overflow: ellipsis; white-space: nowrap; flex: 1; color: inherit;
+      }
+      .pc-learning__retainlink:hover, .pc-learning__retainlink:focus-visible { text-decoration: underline; color: var(--fg, #e7eef5); }
+      .pc-learning__retainidea {
+        display: inline-flex; align-items: center; gap: 3px; font-style: normal;
+        color: var(--fg-faint, #7d93a6); font-size: 10.5px; max-width: 34%;
+        overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex-shrink: 1;
+      }
       .pc-learning__flownet { display: inline-flex; align-items: center; gap: 1px; font-weight: 740; font-variant-numeric: tabular-nums; }
       .pc-learning__flownet--good { color: var(--good); }
       .pc-learning__flownet--warn { color: var(--warn); }

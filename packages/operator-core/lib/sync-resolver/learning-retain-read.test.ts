@@ -110,13 +110,15 @@ describe('parseInsightFrontmatter', () => {
  */
 describe('shipped-from-ideas outcome classification (EI-18792873324746237)', () => {
   /** A sql stub recording the values bound by the shipped-from-ideas query
-   *  ONLY — scoped deliberately, so the assertion below cannot be satisfied by
-   *  some other leg that happens to bind the same string. */
+   *  ONLY — scoped deliberately (the blender-plans leg also reads
+   *  scout_routed_ideas, but only this query joins engineer_issues), so the
+   *  assertion below cannot be satisfied by some other leg that happens to
+   *  bind the same string. */
   function recordingSqlStub(handler: (text: string) => unknown[]) {
     const bound: unknown[][] = [];
     const fn = (strings: TemplateStringsArray, ...values: unknown[]) => {
       const text = strings.join('?');
-      if (text.includes('scout_routed_ideas')) bound.push(values);
+      if (text.includes('scout_routed_ideas') && text.includes('engineer_issues')) bound.push(values);
       return Promise.resolve(handler(text));
     };
     return { sql: fn as never, bound };
@@ -124,7 +126,9 @@ describe('shipped-from-ideas outcome classification (EI-18792873324746237)', () 
 
   /** Route the shipped-from-ideas query to `rows`; every other leg returns []. */
   function stubReturning(rows: unknown[]) {
-    return recordingSqlStub((text) => (text.includes('scout_routed_ideas') ? rows : []));
+    return recordingSqlStub((text) =>
+      text.includes('scout_routed_ideas') && text.includes('engineer_issues') ? rows : [],
+    );
   }
 
   const idea = (ideaId: string, outcome: string, rail = 'improvement') => ({
@@ -175,6 +179,85 @@ describe('shipped-from-ideas outcome classification (EI-18792873324746237)', () 
     const byId = new Map(snap.shippedFromIdeas.map((s) => [s.ideaId, s.shipped]));
     expect(byId.get('5')).toBe(true);
     expect(byId.get('6')).toBe(false);
+  });
+});
+
+/**
+ * blender-plans leg (D-004 / P-012, blender-loop-repair-and-opus5-xhigh-2026-08-16):
+ * rail='plan' routed refs joined to the plan store — the Retain view lists what
+ * the ideation loop DRAFTED, not only its shipped outcomes.
+ */
+describe('blender-generated plans leg', () => {
+  /** Route ONLY the blender-plans query (reads harness_plans WITHOUT the
+   *  engineer_issues join) to `rows`; every other leg returns []. */
+  function stubBlenderReturning(rows: unknown[]) {
+    const fn = (strings: TemplateStringsArray, ..._values: unknown[]) => {
+      const text = strings.join('?');
+      const isBlender = text.includes('scout_routed_ideas') && !text.includes('engineer_issues');
+      return Promise.resolve(isBlender ? rows : []);
+    };
+    return fn as never;
+  }
+
+  const planRow = (slug: string, over: Record<string, unknown> = {}) => ({
+    plan_slug: slug,
+    title: `Plan ${slug}`,
+    status: 'draft',
+    routed_at: '2026-08-10 00:00:00+00',
+    idea_id: `idea-${slug}`,
+    idea_title: `idea for ${slug}`,
+    lens: 'reframing',
+    ...over,
+  });
+
+  it('maps the joined rows and orders newest-routed first', async () => {
+    const sql = stubBlenderReturning([
+      planRow('older'),
+      planRow('newer', { routed_at: '2026-08-15 00:00:00+00', status: 'ready' }),
+    ]);
+    const snap = await readRetainExtras(sql, 'ws-1', okDeps);
+    expect(snap.blenderPlans.map((p) => p.planSlug)).toEqual(['newer', 'older']);
+    expect(snap.blenderPlans[0]).toEqual({
+      planSlug: 'newer',
+      title: 'Plan newer',
+      status: 'ready',
+      routedAt: '2026-08-15 00:00:00+00',
+      ideaId: 'idea-newer',
+      ideaTitle: 'idea for newer',
+      lens: 'reframing',
+    });
+  });
+
+  it('drops a row without a plan slug and nulls a blank idea title', async () => {
+    const sql = stubBlenderReturning([
+      planRow('kept', { idea_title: '' }),
+      planRow('', {}),
+    ]);
+    const snap = await readRetainExtras(sql, 'ws-1', okDeps);
+    expect(snap.blenderPlans.map((p) => p.planSlug)).toEqual(['kept']);
+    expect(snap.blenderPlans[0]!.ideaTitle).toBeNull();
+  });
+
+  it('caps the section', async () => {
+    const sql = stubBlenderReturning(
+      Array.from({ length: 12 }, (_, i) => planRow(`p-${String(i).padStart(2, '0')}`)),
+    );
+    const snap = await readRetainExtras(sql, 'ws-1', okDeps);
+    expect(snap.blenderPlans).toHaveLength(8);
+  });
+
+  it('degrades to [] when the read throws — the leg fails independently', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const fn = (strings: TemplateStringsArray, ..._values: unknown[]) => {
+      const text = strings.join('?');
+      if (text.includes('scout_routed_ideas') && !text.includes('engineer_issues'))
+        return Promise.reject(new Error('pg down'));
+      return Promise.resolve([{ n: 1 }]);
+    };
+    const snap = await readRetainExtras(fn as never, 'ws-1', okDeps);
+    expect(snap.blenderPlans).toEqual([]);
+    expect(snap.banked.improvementsFiled7d).toBe(1);
+    warn.mockRestore();
   });
 });
 
