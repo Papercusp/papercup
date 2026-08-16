@@ -3,7 +3,7 @@
 
 import { Tooltip } from '@/app/harness/Tooltip';
 import * as Collapsible from '@radix-ui/react-collapsible';
-import { useEffect, useState, useCallback, useMemo, type ReactElement } from 'react';
+import { useEffect, useState, useCallback, useMemo, useRef, type ReactElement } from 'react';
 import { useQueryState, parseAsString, parseAsBoolean } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
 import { toast } from 'sonner';
