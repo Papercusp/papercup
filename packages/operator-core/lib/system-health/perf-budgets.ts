@@ -257,6 +257,34 @@ export interface PerfVerdict {
    *  signal). Always present (possibly empty) so a caller can surface "N false-
    *  positive(s) suppressed" instead of the suppression being silently invisible. */
   suppressedReasons: string[];
+  /**
+   * WI-38449 / D-007 finding 3: the `crit` reasons SPLIT BY ATTRIBUTION, so a deploy
+   * gate can hold a release for an operator wedge without holding it for ambient host
+   * load. Populated only on a `crit` verdict (both arrays empty otherwise).
+   *
+   * ⚠ This changes NOTHING about what is REPORTED. `status` is still `crit` and
+   * `reasons` still carries every reason, so every existing alarm/panel/state-cell
+   * reader is unaffected. It exists solely so `evaluatePerfGate` can decide what
+   * BLOCKS — separating "the operator is broken" from "the box is busy".
+   *
+   * Measured 2026-08-16 on this box: `crit` fired on the single reason `PSI memory
+   * full avg60 11.45 ≥ 5`, ambient RAM pressure from ~100 peer agents on a shared
+   * dev host, with nothing wrong with any candidate. Arming block-mode against the
+   * undifferentiated crit tier would have held EVERY deploy for the entire busy
+   * period — the same false-red D-003/D-005 refused for the desktop sibling.
+   */
+  critAttribution: {
+    /** Properties of OUR operator that a release is plausibly responsible for, and
+     *  that make deploying unsafe: :3070 unreachable, a captured wedge, event-loop
+     *  lag p95 ≥ 1s, CLOSE_WAIT ≥ 500. Meltdown-class by construction — these are
+     *  what block-mode exists to catch. */
+    operatorDefect: string[];
+    /** Multi-tenant host state no candidate caused and no release can fix: CPU/memory
+     *  pressure, and host-total inotify exhaustion (per-uid, so routinely a third-party
+     *  editor — WI-6538 measured VS Code at 38,937 watches, 3.9x budget). Still crit,
+     *  still alarmed, never a reason to hold a deploy. */
+    ambientHost: string[];
+  };
 }
 
 function lagP95(s: PerfSignalsV1['signals']): number | null {
@@ -456,6 +484,8 @@ export function evaluatePerfSignals(
     psiMemorySome60: null, psiMemoryFull60: null, memoryPressure,
     sessionDirs: null,
     ageMs: null, stale: false, suppressedReasons: [],
+    // Empty on every non-crit path; the crit branch below is the only writer.
+    critAttribution: { operatorDefect: [], ambientHost: [] },
   };
   if (!signals || signals.schemaVersion !== 'perf-signals-v1') return base;
   const s = signals.signals ?? ({} as PerfSignalsV1['signals']);
@@ -511,7 +541,20 @@ export function evaluatePerfSignals(
   }
 
   // ── CRIT: definitive per-thread wedge (NOT loadavg — see the file header) ──────
+  //
+  // WI-38449 / D-007 F3: each crit reason is attributed AS IT IS RAISED, at the only
+  // place that knows which signal produced it. Deriving attribution later by matching
+  // reason PROSE would be a string-matching guard over text these same lines format —
+  // it would silently mis-attribute the moment anyone reworded a message, and fail
+  // toward "operator-defect" (i.e. toward blocking deploys), the expensive direction.
   const crit: string[] = [];
+  const operatorDefect: string[] = [];
+  const ambientHost: string[] = [];
+  /** Raise a crit reason under exactly one attribution. */
+  const raise = (reason: string, attribution: 'operator-defect' | 'ambient-host'): void => {
+    crit.push(reason);
+    (attribution === 'operator-defect' ? operatorDefect : ambientHost).push(reason);
+  };
   const suppressed: string[] = [];
   if (reachable === false) {
     if (deployInProgress) {
@@ -520,18 +563,44 @@ export function evaluatePerfSignals(
       // briefly unreachable then. Downgrade this one reason instead of paging.
       suppressed.push('operator :3070 unreachable (deploy-in-progress, suppressed)');
     } else {
-      crit.push('operator :3070 unreachable');
+      // OUR process is not answering. Nothing ambient explains this, and deploying
+      // onto an unreachable operator is exactly what block-mode is for.
+      raise('operator :3070 unreachable', 'operator-defect');
     }
   }
-  if (signals.hostState === 'wedge-active') crit.push('hostState=wedge-active (live wedge captured)');
-  if (lag !== null && lag >= budgets.eventLoopLagP95CritMs) crit.push(`event-loop lag p95 ${lag}ms ≥ ${budgets.eventLoopLagP95CritMs}ms`);
-  if (closeWait !== null && closeWait >= budgets.closeWaitCrit) crit.push(`:3070 CLOSE_WAIT ${closeWait} ≥ ${budgets.closeWaitCrit} (event-loop peg)`);
+  if (signals.hostState === 'wedge-active') raise('hostState=wedge-active (live wedge captured)', 'operator-defect');
+  // A FULL second of event-loop lag at p95 is our main thread saturated, not the box
+  // being shared — ambient CPU contention shows up as PSI, which is classed below.
+  if (lag !== null && lag >= budgets.eventLoopLagP95CritMs) raise(`event-loop lag p95 ${lag}ms ≥ ${budgets.eventLoopLagP95CritMs}ms`, 'operator-defect');
+  if (closeWait !== null && closeWait >= budgets.closeWaitCrit) raise(`:3070 CLOSE_WAIT ${closeWait} ≥ ${budgets.closeWaitCrit} (event-loop peg)`, 'operator-defect');
   if (inotifyTotal !== null && inotifyLimit !== null && inotifyTotal >= inotifyLimit * budgets.inotifyLimitCritFrac) {
-    crit.push(`inotify watches ${inotifyTotal} ≥ ${Math.round(budgets.inotifyLimitCritFrac * 100)}% of max_user_watches ${inotifyLimit} — ENOSPC imminent, fs.watch boots will fail fleet-wide`);
+    // AMBIENT, deliberately — and this one is a judgement call worth stating, because
+    // the D-007 note that opened this work provisionally listed it as operator-defect.
+    // It is host-TOTAL and the kernel limit is per-UID, so this counts every process
+    // the user runs; WI-6538 measured VS Code alone holding 38,937 watches (3.9x the
+    // per-proc budget) and rewrote the WARN path for exactly that reason. Blocking a
+    // release because the owner's editor is watching files would be a red the
+    // candidate's author cannot fix — the "permanently amber for a reason nobody can
+    // fix" failure WI-6538 names. It stays crit and stays alarmed; it just never holds
+    // a deploy. (The per-process OWNED balloon — our own recursive watcher, the actual
+    // 2026-07-10 meltdown class — is budgeted on the warn path above, where ownership
+    // information exists to attribute it.)
+    raise(`inotify watches ${inotifyTotal} ≥ ${Math.round(budgets.inotifyLimitCritFrac * 100)}% of max_user_watches ${inotifyLimit} — ENOSPC imminent, fs.watch boots will fail fleet-wide`, 'ambient-host');
   }
-  if (psiCpu !== null && psiCpu >= budgets.psiCpuSomeCrit) crit.push(`PSI cpu some avg60 ${psiCpu} ≥ ${budgets.psiCpuSomeCrit} — tasks starved for CPU (host saturation)`);
-  if (memoryPressure.pressure === 'crit') crit.push(...memoryPressure.reasons);
-  if (crit.length) return { ...v, status: 'crit', degraded: true, reasons: crit, suppressedReasons: suppressed };
+  if (psiCpu !== null && psiCpu >= budgets.psiCpuSomeCrit) raise(`PSI cpu some avg60 ${psiCpu} ≥ ${budgets.psiCpuSomeCrit} — tasks starved for CPU (host saturation)`, 'ambient-host');
+  // Multi-tenant RAM pressure from ~100 peer agents. This is the exact reason D-007 F3
+  // exists: measured 2026-08-16 it was the SOLE crit reason on a live capture.
+  if (memoryPressure.pressure === 'crit') for (const r of memoryPressure.reasons) raise(r, 'ambient-host');
+  if (crit.length) {
+    return {
+      ...v,
+      status: 'crit',
+      degraded: true,
+      reasons: crit,
+      suppressedReasons: suppressed,
+      critAttribution: { operatorDefect, ambientHost },
+    };
+  }
 
   // ── WARN: hot-but-not-fatal ────────────────────────────────────────────────────
   const warn: string[] = [];
