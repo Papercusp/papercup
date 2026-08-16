@@ -1496,7 +1496,10 @@ export async function composeOrient(
       // already built. Fail-soft (inside this same try/catch): an eviction-
       // disclosure read error must never break orientation.
       if (factsFold === 'full') {
-        const factEvictionDisclosures = await listFactEvictionDisclosures(selectors, foldOpts);
+        // NOT `foldOpts` — that carries `audiences`, which is foldFacts's shape.
+        // This reader takes { workspaceId?, windowSec? } and defaults both from
+        // the active workspace, so there is nothing to forward.
+        const factEvictionDisclosures = await listFactEvictionDisclosures(selectors);
         if (factEvictionDisclosures.length > 0) result.factEvictionDisclosures = factEvictionDisclosures;
       }
     } catch {
