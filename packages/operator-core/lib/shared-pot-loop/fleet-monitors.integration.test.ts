@@ -186,6 +186,24 @@ describe('P-012 + P-013 — the live-fleet monitor family on real failure states
       expect(kinds).toContain('presence-ghost'); // the dead swarm anchors a live lease
       expect(kinds).not.toContain('outbox-health'); // unrelated harness debris is outside this pass
       expect(filed).toEqual(report.incidents); // every incident reached the sink
+
+      // ════ 6. The peer-federation leg RAN — it did not silently stop covering ════
+      // EI-20617273180156712. This leg catches its OWN scan errors and degrades to
+      // unmeasured (by design — a throw here would take the whole pass down with
+      // it). The cost of that design is that a fixture which drifts behind the
+      // reader stops measuring while this suite stays green: first as 42P01 when
+      // substrate_merge_cursor was absent entirely (why migration 493 is loaded
+      // into the rig), and now as 42703 if 685's `apply_binding` were missing,
+      // since the judge selects that column to separate live cursors from residue.
+      //
+      // So assert the INSTRUMENT worked, not the reading. `measured:false` is a
+      // legitimate outcome here (this rig federates no remote logs); 'scan-failed'
+      // never is — it means the query itself broke.
+      expect(report.peers.unmeasuredReason).not.toBe('scan-failed');
+      expect(report.peers.scanError).toBeUndefined();
+      // Pin the value actually observed, so the assertion above cannot pass
+      // vacuously against some future undefined/renamed field.
+      expect([null, 'no-remote-logs', 'scope-dormant']).toContain(report.peers.unmeasuredReason);
     },
     240_000,
   );
