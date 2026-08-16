@@ -1317,6 +1317,29 @@ export async function synchronizeFinishWork(
         item: stamp.item_id,
         status: reflected,
         note: `← ${opts.id} completed (${state})`,
+        // WI-38908 / EI-19972048649686949 — the SAME guard reflect-rules.ts:141 passes.
+        // It has to be HERE too, because this is the path that actually runs: the reflect
+        // rule stands down whenever this leg succeeded (reflect-rules.ts:162 skips when
+        // finishOf(e).planItem is already done/dropped). Guarding only the fallback left
+        // the PRIMARY reflection unguarded, and the fallback then deferred to the path
+        // carrying the bug — so the guard could essentially never fire on a successful
+        // complete().
+        //
+        // Without it, completing ONE of N work-items stamped with the same plan item marks
+        // that item terminal, and plan-item-reconcile then closes the siblings. Live:
+        // release-build-vm-dev-parity-audit-2026-08-13#P-004 — WI-39352 (an OFFLINE artifact
+        // sub-lane) completed 2026-08-16T02:19:54Z, flipped P-004 `done` 1.5s later, and the
+        // reconciler closed WI-38600 — the Windows clean-install + live-drive verdict — at
+        // 02:38:05Z with completionAuthority='proposed' and terminalCompletionRef=null, on a
+        // guest that had no OS installed yet. A verdict item was marked satisfied by a
+        // sub-lane that never claimed to satisfy it, and nothing failed loudly.
+        //
+        // When the LAST covering sibling goes terminal, coverage is empty and the flip
+        // proceeds — 1:1 behaviour is unchanged.
+        onlyIfNoOtherOpenCoverage: true,
+        // EI-20129670928216719, drop-only: stop a `done` → `dropped` DOWNGRADE of an item
+        // whose real completer is already terminal, and so invisible to the coverage scan.
+        ...(reflected === 'dropped' ? { onlyIfNotCompleted: true } : {}),
       },
       parentCtx: opts.ctx,
       cause: {
@@ -1326,6 +1349,12 @@ export async function synchronizeFinishWork(
         rootRunId: typeof opts.ctx.runId === 'string' ? opts.ctx.runId : null,
       },
     }).catch((error) => ({ ok: false as const, error: error instanceof Error ? error.message : String(error) }));
+    // Fidelity caveat: fire() returns FireReactionResult = { ok, error?, runId? } and
+    // carries NO tool payload, so a guard SKIP — which returns ok:true, with
+    // skipped:'coverage_guard' and a coveredBy list, and deliberately does NOT flip — is
+    // indistinguishable here from a flip that landed. `planItem` therefore means "the
+    // reflection was requested and not rejected", NOT "the plan item is now <reflected>".
+    // Do not read this field as proof of a flip; read the plan item.
     if (statusResult.ok) planItem = reflected;
     else {
       planItem = 'failed';
