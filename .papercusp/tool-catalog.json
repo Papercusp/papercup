@@ -17647,7 +17647,7 @@
           "POST"
         ]
       },
-      "description": "The launch history for a plan, newest-first — one row per agent launched from it: run id, title, status, who launched it and when, the launch note, the seeded content hash, the session id, and a transcript turn count. Empty list when the plan has never been launched.",
+      "description": "The launch history for a plan, newest-first — one row per agent launched from it: run id, title, status, who launched it and when, the launch note, the seeded content hash, the session id, and a transcript turn count. Empty list when the plan has never been launched. Also returns `sweep { ran, failed, archived }` — this read runs the run-status lifecycle sweep; on `ran:false` orphan reclamation did NOT happen, so a `running` row is not evidence of a live run.",
       "capabilities": [
         "plans:read"
       ],
