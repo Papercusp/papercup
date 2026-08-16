@@ -7,6 +7,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { setBlockedByInBody } from './set-item-blocked-by';
+import { flipStatusInBody } from './set-status';
 import { parsePlan } from './parser';
 
 const PLAN = [
@@ -24,6 +25,72 @@ const PLAN = [
   '- **P-002** `wip` Second item blocked-by: P-001 importance: high',
   '',
 ].join('\n');
+
+/**
+ * EI-20577635585381178 — a `blocked-by:` edge must SURVIVE a subsequent
+ * set-status-with-note write, and a note must survive a subsequent blocked-by write.
+ *
+ * The defect: NOTE_SUFFIX_RE is `/\s*—\s*note:.*$/` (matches to END OF LINE) and
+ * set-status strips an existing note with `rest.replace(NOTE_MARKER_RE, '')` before
+ * re-appending. So a keyword emitted AFTER the note was swallowed whole by the next
+ * status write — silently destroying the dependency edge with no error.
+ *
+ * Measured in the wild: plan release-build-vm-dev-parity-audit-2026-08-13 item P-006
+ * had `blocked-by: P-002, P-001` applied (revision seq 48) and eaten 0.4s later by a
+ * set-status note write (seq 50). The item re-derived as `todo` with zero blockers and
+ * was re-offered by the scheduler, stalling WI-38602 for 43+ consecutive cold wakes.
+ *
+ * These assert the ORDERING INVARIANT that prevents it: keywords precede the note.
+ */
+describe('blocked-by survives a set-status note write (EI-20577635585381178)', () => {
+  const WITH_NOTE = [
+    '## Phase 1 — Alpha',
+    '- **P-006** `wip` Run the dev baseline — note: an earlier injected note',
+    '',
+  ].join('\n');
+
+  it('emits the keyword BEFORE an existing note suffix', () => {
+    const { newBody, found } = setBlockedByInBody(WITH_NOTE, 'P-006', ['P-002', 'P-001']);
+    expect(found).toBe(true);
+    // the clause must sit before the em-dash note marker, not trail it
+    const line = newBody.split('\n').find((l) => l.includes('P-006')) ?? '';
+    expect(line.indexOf('blocked-by:')).toBeGreaterThan(-1);
+    expect(line.indexOf('blocked-by:')).toBeLessThan(line.indexOf('— note:'));
+    expect(parsePlan(newBody).items.find((i) => i.id === 'P-006')?.blockedBy).toEqual([
+      'P-002',
+      'P-001',
+    ]);
+  });
+
+  it('THE REGRESSION: the edge survives a following set-status that replaces the note', () => {
+    const withEdge = setBlockedByInBody(WITH_NOTE, 'P-006', ['P-002', 'P-001']).newBody;
+    // this is the exact call shape that destroyed the edge in the wild
+    const { newBody, found } = flipStatusInBody(withEdge, 'P-006', 'todo', '← WI-38602 released');
+    expect(found).toBe(true);
+
+    const item = parsePlan(newBody).items.find((i) => i.id === 'P-006');
+    expect(item?.blockedBy).toEqual(['P-002', 'P-001']); // was [] before the fix
+    expect(item?.storedStatus).toBe('todo');
+    expect(newBody).toContain('← WI-38602 released');
+  });
+
+  it('the note survives a following blocked-by write (the other direction)', () => {
+    const flipped = flipStatusInBody(WITH_NOTE, 'P-006', 'blocked', 'gated on P-001').newBody;
+    const { newBody } = setBlockedByInBody(flipped, 'P-006', ['P-001']);
+
+    expect(newBody).toContain('— note: gated on P-001');
+    expect(parsePlan(newBody).items.find((i) => i.id === 'P-006')?.blockedBy).toEqual(['P-001']);
+  });
+
+  it('clearing the edge leaves the note intact', () => {
+    const withEdge = setBlockedByInBody(WITH_NOTE, 'P-006', ['P-001']).newBody;
+    const { newBody } = setBlockedByInBody(withEdge, 'P-006', []);
+
+    expect(newBody).toContain('— note: an earlier injected note');
+    expect(newBody).not.toContain('blocked-by:');
+    expect(parsePlan(newBody).items.find((i) => i.id === 'P-006')?.blockedBy).toEqual([]);
+  });
+});
 
 describe('setBlockedByInBody', () => {
   it('adds a blocked-by keyword to a line that had none', () => {

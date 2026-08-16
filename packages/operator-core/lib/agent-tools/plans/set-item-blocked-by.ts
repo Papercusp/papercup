@@ -24,7 +24,7 @@ import { defineTool, AGENT_ROLES, type UnifiedToolContext } from '@papercusp/age
 import { resolveCtxHarnessSlug } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { withPlanLock, bumpUpdatedDate } from './with-plan-lock';
-import { maskFences } from './parser';
+import { maskFences, NOTE_SUFFIX_RE } from './parser';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 import { runBulk, bulkContent, type BulkItemResult } from '../_bulk';
 import { softText, clampText, LIMITS } from '../limits';
@@ -36,8 +36,10 @@ const PNN = /P-\d{3,}/g;
  * prior dependency list (empty when the line carried no keyword). Mirrors
  * setImportanceInBody: anchor on the id, match against the fence-masked body (the
  * item line is outside any fence, so captured groups equal the real text), splice by
- * index. The new keyword is appended at line end (parser is order-agnostic; matches
- * how set-importance re-emits its keyword). Exported for tests.
+ * index. The new keyword is emitted BEFORE any ` — note: …` suffix, never at line end:
+ * the parser is order-agnostic, but set-status's note replacement is NOT — its
+ * NOTE_SUFFIX_RE matches to end-of-line, so a keyword after the note is destroyed by
+ * the next status write (EI-20577635585381178). Exported for tests.
  */
 export function setBlockedByInBody(
   body: string,
@@ -69,8 +71,24 @@ export function setBlockedByInBody(
   // was mid-line, collapse the resulting double space).
   restClean = restClean.replace(/[ \t]{2,}/g, ' ').replace(/[ \t]+$/g, '');
 
-  const newRest =
-    blockedBy.length > 0 ? `${restClean} blocked-by: ${blockedBy.join(', ')}` : restClean;
+  // EI-20577635585381178: insert the keyword BEFORE any ` — note: …` suffix, never at
+  // line end. NOTE_SUFFIX_RE matches to END OF LINE, and set-status strips an existing
+  // note with `rest.replace(NOTE_MARKER_RE, '')` before re-appending the new one — so a
+  // keyword appended AFTER the note is swallowed whole by the next status write,
+  // silently destroying the dependency edge this tool exists to set. Measured: plan
+  // release-build-vm-dev-parity-audit-2026-08-13 item P-006 had `blocked-by: P-002,
+  // P-001` applied and eaten 0.4s later by a set-status note write, re-advertising the
+  // item as READY and stalling WI-38602 for 43+ consecutive wakes.
+  let newRest: string;
+  if (blockedBy.length === 0) {
+    newRest = restClean;
+  } else {
+    const clause = ` blocked-by: ${blockedBy.join(', ')}`;
+    const noteM = NOTE_SUFFIX_RE.exec(restClean);
+    newRest = noteM
+      ? `${restClean.slice(0, noteM.index).replace(/[ \t]+$/g, '')}${clause}${restClean.slice(noteM.index)}`
+      : `${restClean}${clause}`;
+  }
   const newLine = prefix + newRest;
   const newBody = body.slice(0, m.index) + newLine + body.slice(m.index + m[0].length);
   return { newBody, found: true, oldBlockedBy };
