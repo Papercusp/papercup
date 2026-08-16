@@ -330,26 +330,50 @@ describe('--scan-artifact recurses into a WRAPPED installer (WI-39458)', () => {
     }
   }, 180_000);
 
+  /**
+   * Exercised BEHAVIOURALLY, by calling the predicate, not by grepping its
+   * source. An earlier version of this test asserted the function text did not
+   * contain ".bin" and failed against a COMMENT explaining why .bin slices are
+   * excluded — i.e. it measured prose, and its verdict would have flipped on a
+   * reworded comment while the behaviour stayed identical.
+   */
+  function isStub(name: string): boolean {
+    const r = spawnSync(
+      'python3',
+      ['-c',
+       'import importlib.util,sys;' +
+       's=importlib.util.spec_from_file_location("g",sys.argv[1]);' +
+       'm=importlib.util.module_from_spec(s);s.loader.exec_module(m);' +
+       'print("YES" if m._looks_like_installer_stub(sys.argv[2]) else "NO")',
+       GATE, name],
+      { encoding: 'utf8', env: GATE_ENV },
+    );
+    if (r.status !== 0) throw new Error(`predicate call failed: ${r.stderr}`);
+    return r.stdout.trim() === 'YES';
+  }
+
   it('treats only a SETUP STUB as a container — never every bundled .exe', () => {
-    // The narrowness is the whole reason this recursion is safe. The expanded
-    // payload legitimately ships node.exe / gh.exe; handing those to an expander
-    // that cannot open them would mark them uninspectable and red every cut —
-    // re-creating, inside this entrypoint, the exact regression that keeps
-    // `.exe` out of ARCHIVE_SUFFIXES.
-    const fn = gateSource().match(/def _looks_like_installer_stub[\s\S]*?\n(?=\n*(?:def |#|[A-Z_]+ ?=))/)?.[0];
-    expect(fn, '_looks_like_installer_stub not found — gate structure changed').toBeTruthy();
-    expect(fn).toMatch(/setup\.exe/);
-    // A bare ".exe" test here would mean "every executable is a container".
-    expect(fn).not.toMatch(/endswith\(["']\.exe["']\)/);
+    if (!have('python3')) return;
+    // The narrowness is the whole reason this recursion is safe.
+    expect(isStub('Papercusp Server_0.0.17_x64-setup.exe')).toBe(true);
+    expect(isStub('Papercusp.dmg')).toBe(true);
+    expect(isStub('Papercusp.AppImage')).toBe(true);
+    // …and the executables we legitimately BUNDLE must stay ordinary files.
+    // Handing these to an expander that cannot open them would mark them
+    // uninspectable and red every cut — the exact regression that keeps `.exe`
+    // out of ARCHIVE_SUFFIXES, re-created one level in.
+    expect(isStub('node.exe')).toBe(false);
+    expect(isStub('gh.exe')).toBe(false);
+    expect(isStub('papercusp-desktop.exe')).toBe(false);
   });
 
   it('does NOT expand DiskSpan .bin slices independently of their stub', () => {
-    // innoextract needs the STUB to locate its slices; 7z pointed at a raw slice
-    // recovers a misdetected fragment. The stub predicate must therefore leave
-    // `-setup-1.bin` alone and let the stub pull it in.
-    const src = gateSource();
-    const fn = src.match(/def _looks_like_installer_stub[\s\S]*?\n(?=\n*(?:def |#|[A-Z_]+ ?=))/)?.[0] ?? '';
-    expect(fn).not.toMatch(/\.bin/);
+    if (!have('python3')) return;
+    // innoextract needs the STUB to locate its slices, and 7z pointed at a raw
+    // slice recovers a misdetected fragment — so a slice must be pulled in BY
+    // the stub, never treated as a container in its own right.
+    expect(isStub('Papercusp Server_0.0.17_x64-setup-1.bin')).toBe(false);
+    expect(isStub('Papercusp Server_0.0.17_x64-setup-2.bin')).toBe(false);
   });
 });
 
