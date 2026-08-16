@@ -237,9 +237,124 @@ describe('judgePeerFederationSilence — EI-20579195481991931', () => {
   });
 
   it('never reports a negative age when a peer clock runs ahead of ours', () => {
-    const future: MergeCursorRow = { logKeyHex: 'aaaa', position: 1, updatedAtMs: NOW + 60_000 };
+    const future: MergeCursorRow = {
+      logKeyHex: 'aaaa',
+      position: 1,
+      updatedAtMs: NOW + 60_000,
+      applyBinding: LIVE_BINDING,
+    };
     const v = judgePeerFederationSilence([future], { silentAfterMs: SLO, nowMs: NOW });
     expect(v.freshestAdvanceMs).toBe(0);
+    expect(v.silent).toEqual([]);
+  });
+});
+
+/**
+ * EI-20617273180156712 — the detector and the thing it watches must read the
+ * SAME population.
+ *
+ * `pg-merge-cursor-store.load` selects with `apply_binding IS NOT DISTINCT FROM
+ * <binding>`. This judge had no such predicate, so it judged rows the fold can
+ * never load, never advance, and never clear. Migration 685 (applied 2026-07-27)
+ * introduced the column; the 15 cursors written before it froze under NULL and
+ * became permanently unreachable residue.
+ *
+ * `wrongJudge` above is the exact pre-fix behaviour for this property too — it
+ * has no binding predicate — so it doubles as this block's permanent control.
+ */
+describe('judgePeerFederationSilence — EI-20617273180156712 (apply_binding residue)', () => {
+  /** 15 pre-685 cursors, all frozen ~21.4d, none reachable by the fold. */
+  const stranded = Array.from({ length: 15 }, (_, i) => log(`dead${i}`, 21.4 * 24, 5, null));
+  /** 6 live-binding cursors: 5 genuinely over SLO, 1 still advancing. */
+  const live = [
+    log('slow0', 48),
+    log('slow1', 50),
+    log('slow2', 52),
+    log('slow3', 54),
+    log('slow4', 56),
+    log('advancing', 0.1),
+  ];
+
+  it('judges ONLY the live-binding population — the measured 20-of-21 false major becomes 5 of 6', () => {
+    const v = judgePeerFederationSilence([...stranded, ...live], { silentAfterMs: SLO, nowMs: NOW });
+
+    // The denominator is the population the fold actually maintains.
+    expect(v.totalLogs).toBe(6);
+    expect(v.strandedCursors).toBe(15);
+    expect(v.liveApplyBinding).toBe(LIVE_BINDING);
+    expect(v.silent).toHaveLength(5);
+    expect(v.breaches[0]).toContain('5 of 6');
+    // The fabricated headline must be gone in BOTH its parts: the count, and
+    // the 21.4-day "oldest" that only ever came from a corpse.
+    expect(v.breaches[0]).not.toContain('20 of 21');
+    expect(v.silent.some((s) => s.logKeyHex.startsWith('dead'))).toBe(false);
+    expect(v.silent[0]!.silentForMs).toBe(56 * 60 * 60_000);
+  });
+
+  it('FALSIFIABILITY: the no-predicate control still reports all 20 — the subject must not agree', () => {
+    const rows = [...stranded, ...live];
+    const control = wrongJudge(rows, { silentAfterMs: SLO, nowMs: NOW });
+    const v = judgePeerFederationSilence(rows, { silentAfterMs: SLO, nowMs: NOW });
+
+    // The control IS the defect: 15 corpses + 5 slow live logs.
+    expect(control).toHaveLength(20);
+    expect(v.silent.length).not.toBe(control.length);
+    expect(v.silent).toHaveLength(5);
+  });
+
+  it('CALIBRATION: with no residue present the two agree, so the test above cannot pass vacuously', () => {
+    const v = judgePeerFederationSilence(live, { silentAfterMs: SLO, nowMs: NOW });
+    const control = wrongJudge(live, { silentAfterMs: SLO, nowMs: NOW });
+    expect(v.silent).toHaveLength(5);
+    expect(control).toHaveLength(5);
+    expect(v.strandedCursors).toBe(0);
+  });
+
+  it('treats a NULL binding as a LEGITIMATE live value, not as residue', () => {
+    // A non-hive harness folds with applyBinding=null for every row. Excluding
+    // on truthiness rather than on disagreement would blind the detector
+    // completely there — the opposite failure, and a silent one.
+    const rows = [log('a', 48, 1, null), log('b', 50, 2, null), log('c', 0.1, 3, null)];
+    const v = judgePeerFederationSilence(rows, { silentAfterMs: SLO, nowMs: NOW });
+
+    expect(v.liveApplyBinding).toBeNull();
+    expect(v.totalLogs).toBe(3);
+    expect(v.strandedCursors).toBe(0);
+    expect(v.measured).toBe(true);
+    expect(v.silent).toHaveLength(2);
+  });
+
+  it('reports residue rather than dropping it silently, and says what it is', () => {
+    const v = judgePeerFederationSilence([...stranded, ...live], { silentAfterMs: SLO, nowMs: NOW });
+    // Excluded-and-invisible would just move the bug: nobody would ever learn
+    // the rows need cleaning up.
+    expect(v.breaches[0]).toContain('15 further cursor(s) ignored');
+    expect(v.breaches[0]).toContain('schema residue, not peers');
+  });
+
+  it('computes allSilent over the JUDGED population, so residue cannot mask a real local-fold fault', () => {
+    // Every live log silent + 15 corpses. Judging the union would make
+    // allSilent false (21 rows, 20 silent) and emit peer alarms instead of the
+    // one verdict that matters: our own fold is wedged.
+    const allDead = live.map((r) => ({ ...r, updatedAtMs: NOW - 48 * 60 * 60_000 }));
+    const v = judgePeerFederationSilence([...stranded, ...allDead], { silentAfterMs: SLO, nowMs: NOW });
+
+    expect(v.allSilent).toBe(true);
+    expect(v.breaches).toHaveLength(1);
+    expect(v.breaches[0]).toContain('LOCAL FOLD SUSPECT');
+    expect(v.breaches[0]).toContain('all 6 remote log(s)');
+    expect(v.breaches[0]).toContain('15 further cursor(s) ignored');
+  });
+
+  it('picks the live binding from the freshest row, so a rebind needs no code change', () => {
+    // The binding is read from the data precisely so this judge cannot drift
+    // out of agreement with the fold. A future rebind must therefore just work.
+    const rows = [log('old0', 300, 1, 'papercusp'), log('old1', 320, 2, 'papercusp'), log('new', 0.1, 3, 'rebound')];
+    const v = judgePeerFederationSilence(rows, { silentAfterMs: SLO, nowMs: NOW });
+
+    expect(v.liveApplyBinding).toBe('rebound');
+    expect(v.totalLogs).toBe(1);
+    expect(v.strandedCursors).toBe(2);
     expect(v.silent).toEqual([]);
   });
 });
