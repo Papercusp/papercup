@@ -27,7 +27,7 @@ ssh mac-vm 'rm -rf ~/.papercusp-workspaces/.shared/dev-source ~/.papercusp-works
 The `dev-source.stale-*` glob had no matches. Output:
 
 ```
-zsh:11: no matches found: /Users/aviweiss/.papercusp-workspaces/.shared/dev-source.stale-*
+zsh:11: no matches found: /Users/<user>/.papercusp-workspaces/.shared/dev-source.stale-*
 ```
 
 `rm -rf` **never ran at all** — not even for the first, perfectly valid, non-glob `dev-source` path. The 5.3G tree was still there afterward.
@@ -61,5 +61,7 @@ ssh host 'setopt NULL_GLOB; rm -rf a b*'
 Prefer **(b)** as the default idiom for any agent-composed remote one-liner/heredoc when the remote host's login shell is unknown or known-zsh (mac-vm, any macOS host) — it makes the remote shell match the shell the command was actually written for.
 
 **Regardless of which form you use: always assert the postcondition** (`[ -e "$path" ] && echo STILL PRESENT`, or the positive-existence check for whatever the command was supposed to produce/remove). That check is what caught this in the original incident — nothing else did.
+
+> Note on the quoted output above: the remote account name is redacted to `<user>` deliberately. A literal home path naming one developer's machine is a `lint:no-box-identity` violation, and this doc red-pinned the fleet green-checkpoint on exactly that line (WI-39362, 2026-08-16). When you paste real terminal output into a doc, redact the account name — the transcript's meaning never depends on it.
 
 See also: [copying-artifacts-off-the-mac-vm](/internal/docs/agent-insights/copying-artifacts-off-the-mac-vm) for the sibling exit-code-lies-too trap on the same host.
