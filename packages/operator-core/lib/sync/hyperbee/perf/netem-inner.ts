@@ -19,7 +19,7 @@
 
 import { execFileSync } from 'node:child_process';
 import createTestnet from 'hyperdht/testnet.js';
-import { spawnProcMesh, foldChildResults } from './child-driver';
+import { spawnProcMesh, foldChildResults, awaitAllChildEvent } from './child-driver';
 import { resolveNetemFailure } from './mesh-outcome';
 import { ScenarioMeter, summarize } from './metrics';
 import { expectedWinnersFor } from './scenarios/churn';
@@ -134,9 +134,19 @@ async function main(): Promise<void> {
         meter.expectReaders(mesh.readers.length);
         mesh.writer.send('go');
         await mesh.writer.waitFor('writer-done', (count / Math.max(rate, 1)) * 1000 + budget);
-        for (const r of mesh.readers) {
-          const ok = await r.waitFor('caught-up', budget);
-          if (!ok) meter.readerDidNotConverge(r.cfg.peerIndex);
+        // EI-20581532536662596: one SHARED deadline for every reader. This was a
+        // serial loop handing each reader a fresh `budget` as it was reached, so
+        // the deadline depended on a reader's position in the array rather than on
+        // the run — the same defect fixed in replication.sustained, and just as
+        // able to turn host load into a false convergence failure.
+        meter.convergenceBudget(budget);
+        for (const { reader, event, elapsedMs } of await awaitAllChildEvent(
+          mesh.readers,
+          'caught-up',
+          budget,
+        )) {
+          if (event) meter.readerConverged(reader.cfg.peerIndex, elapsedMs);
+          else meter.readerDidNotConverge(reader.cfg.peerIndex);
         }
         const results = [
           await mesh.writer.stopAndCollect(),
@@ -222,14 +232,34 @@ async function main(): Promise<void> {
         mesh.writer.send('go');
         const ceiling = meter.metric('floodOpsPerSec', 'ops/sec');
         const catchUp = meter.metric('floodCatchUpMs', 'ms');
-        for (const r of mesh.readers) {
-          const e = await r.waitFor('caught-up', budget);
-          if (e) {
-            const elapsed = Date.now() - tGo;
+        // EI-20581532536662596: shared deadline, as above.
+        //
+        // ⚠ The per-reader elapsed MUST come from `elapsedMs`, not from a
+        // `Date.now() - tGo` read after the await. Under the old serial loop that
+        // read ran as each reader resolved, so it was genuinely per-reader; once
+        // the waits are concurrent every reader resolves before the loop body
+        // runs, and the same expression would stamp them all with the time the
+        // SLOWEST one finished — collapsing floodCatchUpMs/floodOpsPerSec into a
+        // single repeated value that still looks like a distribution.
+        meter.convergenceBudget(budget);
+        const tAwait = Date.now();
+        for (const { reader, event, elapsedMs } of await awaitAllChildEvent(
+          mesh.readers,
+          'caught-up',
+          budget,
+        )) {
+          if (event) {
+            // Time from `go`, preserving the pre-fix metric's meaning: the gap
+            // between the writer starting and THIS reader catching up.
+            const elapsed = tAwait - tGo + elapsedMs;
             catchUp.push(elapsed);
             ceiling.push(count / (elapsed / 1000));
+            meter.readerConverged(reader.cfg.peerIndex, elapsedMs);
           } else {
-            meter.readerDidNotConverge(r.cfg.peerIndex, 'never caught up — transport stalled under loss');
+            meter.readerDidNotConverge(
+              reader.cfg.peerIndex,
+              'never caught up — transport stalled under loss',
+            );
           }
         }
         const results = [

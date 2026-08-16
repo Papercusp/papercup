@@ -160,7 +160,15 @@ describe('collectConvergenceViolations (EI-20576392705164447)', () => {
     expect(
       collectConvergenceViolations([
         cell({
-          convergence: { expectedReaders: 15, convergedReaders: 15, laggingReaders: [], p95LimitMs: null, observedP95Ms: 996 },
+          convergence: {
+            expectedReaders: 15,
+            convergedReaders: 15,
+            laggingReaders: [],
+            p95LimitMs: null,
+            observedP95Ms: 996,
+            budgetMs: null,
+            convergedMs: null,
+          },
           convergencePassed: true,
         }),
       ]),
