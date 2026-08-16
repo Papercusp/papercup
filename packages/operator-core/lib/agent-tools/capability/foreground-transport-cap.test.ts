@@ -84,11 +84,20 @@ describe('foregroundTimeoutHint — actionable hint on a clamped timeout (EI-607
 });
 
 /**
- * The invariant that stops this recurring. `capability:bash` sat un-clamped for as long as the
- * clamp has existed — not because anyone decided it should be exempt, but because the helper
- * lived inside a SIBLING TOOL (`capability:inspect`), so "which tools honour the cap" was not a
- * question anything could answer. Enumerate them here: a new foreground-capable tool, or one that
- * quietly stops clamping, fails this instead of shipping a fresh dead window.
+ * EI-18776865728050036 / EI-20645849301780712 — the CLASS guard, not a per-tool patch.
+ *
+ * A tool dispatched FOREGROUND over the papercusp-su MCP transport gets ~55s (EI-6073). A tool
+ * that declares a longer budget cannot honour it: the transport kills the call first and the
+ * agent sees `MCP error -32603: write CONNECTION_CLOSED 127.0.0.1:6432` — an error naming the
+ * DATABASE, which sends them off debugging PG. Measured: build:typecheck on packages/operator-core
+ * (104.4s) failed 3/3 while libs/flags (2.1s) passed on the identical path.
+ *
+ * This guard EXISTED before capability:bash was fixed, and still did not catch it — because it
+ * lived in `build/typecheck.test.ts` and enumerated only `build/typecheck.ts` + `testing/run.ts`.
+ * A class guard whose list is incomplete reads exactly like a passing one. Two things changed
+ * here: it now lives beside the module it guards (so the list is findable from the thing being
+ * enumerated), and the list is complete. The lesson is the list, not the assertions — when you
+ * add a foreground-capable tool, ADD THE ROW; that is the entire point.
  */
 const FOREGROUND_CAPABLE_TOOLS = [
   'capability/bash.ts',
@@ -99,6 +108,13 @@ const FOREGROUND_CAPABLE_TOOLS = [
 ];
 
 describe('every foreground-capable tool applies the clamp (EI-20645849301780712)', () => {
+  it('clamping a budget far above the cap still lands below it', () => {
+    // 900_000 is MAX_TIMEOUT_MS on build:typecheck / testing:run — the worst case a caller can ask
+    // for; 600_000 was capability:bash's, and the one the transport could never actually deliver.
+    expect(clampForegroundTimeoutMs(900_000)).toBeLessThan(MCP_TRANSPORT_CAP_MS);
+    expect(clampForegroundTimeoutMs(600_000)).toBeLessThan(MCP_TRANSPORT_CAP_MS);
+  });
+
   it.each(FOREGROUND_CAPABLE_TOOLS)('%s imports the clamp from the shared module and calls it', (rel) => {
     const src = readFileSync(join(TOOLS_DIR, rel), 'utf8');
 
@@ -117,6 +133,15 @@ describe('every foreground-capable tool applies the clamp (EI-20645849301780712)
     expect(src, `${rel} must not redeclare the transport constants`).not.toMatch(
       /(const|let)\s+(MCP_TRANSPORT_CAP_MS|FOREGROUND_TIMEOUT_CEILING_MS)\s*=/,
     );
+    // The teeth: the UN-CLAMPED form is what shipped in each of these and what a revert would
+    // restore — the raw requested budget assigned straight to the value handed to the spawn.
+    // Covers both arg spellings in play (`args.timeout` in capability:bash, `args.timeoutMs`
+    // in build:typecheck / testing:run).
+    expect(src, `${rel} passes its raw default straight to the spawn — the transport will kill it`)
+      .not.toMatch(/const\s+timeoutMs\s*=\s*args\.timeout(Ms)?\s*\?\?/);
+    // A timeout that names no escape route is how an agent ends up hand-rolling `npx tsc -p .`
+    // — which checks ZERO files here and reads as clean.
+    expect(src, `${rel} timeout branch must point at the detached run`).toMatch(/run_in_background/);
   });
 
   // CALIBRATION (permanent control): the assertions above must be capable of FAILING. A guard
