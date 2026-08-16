@@ -4324,6 +4324,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         filter: z.enum(['all', 'shipped', 'inflight']).optional(),
         cursor: z.string().max(600).optional(),
         limit: z.number().int().min(1).max(100).optional(),
+        hive: z.string().max(120).optional(),
       })
       .optional(),
     resolve: async (args) => {
@@ -4332,6 +4333,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         filter?: 'all' | 'shipped' | 'inflight';
         cursor?: string;
         limit?: number;
+        hive?: string;
       };
       const { activeWorkspaceId } = await import('../workspace-registry');
       const { getOrgPg } = await import('@papercusp/db-org');
@@ -4340,6 +4342,19 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       const ws = activeWorkspaceId();
       const { sql } = getOrgPg();
       const insightsDir = `${DOCS_CONTENT_ROOT}/agent-insights`;
+      // Same P-040 hive lens as learning.retain above: scope the plan/wi legs
+      // (and their tab-badge counts) to the Hive's members; the rubric /
+      // runbook / recipe corpora are lens-invariant. Degrades workspace-wide.
+      let harnessScopes: string[] | undefined;
+      if (a.hive) {
+        try {
+          const { loadHarnessRegistry, hiveMemberHarnessScopes } = await import('../harness-registry');
+          const reg = await loadHarnessRegistry();
+          harnessScopes = hiveMemberHarnessScopes(reg.projects, a.hive);
+        } catch (err) {
+          console.warn('[learning.retainFeed] hive scope resolution failed:', err instanceof Error ? err.message : err);
+        }
+      }
       const page = await readRetainFeed(
         sql,
         ws,
@@ -4374,6 +4389,10 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
           filter: a.filter,
           cursor: a.cursor ?? null,
           ...(a.limit != null ? { limit: a.limit } : {}),
+          ...(harnessScopes ? { harnessScopes } : {}),
+          ...(harnessScopes
+            ? { memberSlugs: harnessScopes.map((s) => (s.startsWith('harness:') ? s.slice('harness:'.length) : s)) }
+            : {}),
         },
       );
       return [page];
@@ -4386,9 +4405,14 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // with engineer_issues.source_plan_slug = planSlug, shipped classified
   // server-side. Best-effort — degrades to [].
   'learning.retainPlanChildren': {
-    argsSchema: z.object({ planSlug: z.string().min(1).max(200) }),
+    // planSlug '' = no plan expanded → [] without a DB round-trip (the client
+    // keeps this read mounted under the view's ONE readiness gate — lens-guard).
+    // `hive` is accepted for lens consistency but is a no-op: one plan's
+    // children are the same under every lens.
+    argsSchema: z.object({ planSlug: z.string().max(200), hive: z.string().max(120).optional() }),
     resolve: async (args) => {
       const a = args as { planSlug: string };
+      if (!a.planSlug) return [];
       const { activeWorkspaceId } = await import('../workspace-registry');
       const { getOrgPg } = await import('@papercusp/db-org');
       const { readRetainPlanChildren } = await import('./learning-retain-read');

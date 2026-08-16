@@ -5920,7 +5920,12 @@ function RetainedLedgerCard({
 
   const feed = useSyncQuery<RetainFeedPage | undefined>({
     queryName: "learning.retainFeed",
-    args: { tab: rtab, filter: rship, ...(cursor ? { cursor } : {}) },
+    args: {
+      tab: rtab,
+      filter: rship,
+      ...(cursor ? { cursor } : {}),
+      ...(hive ? { hive } : {}),
+    },
     enabled,
     staleTime: 30_000,
   });
@@ -5941,10 +5946,15 @@ function RetainedLedgerCard({
     setDegraded(Array.isArray(page.degraded) ? page.degraded : []);
   }, [page, loading, cursor]);
 
+  // Gated on the SAME readiness gate as every sibling read (the lens-guard
+  // enforces one gate per view); an un-expanded ledger sends planSlug '' and
+  // the resolver short-circuits to [] without touching the DB. `hive` rides
+  // along for lens consistency — a plan's children are lens-invariant, but the
+  // read must carry the pot like its siblings.
   const children = useSyncQuery<RetainPlanChild>({
     queryName: "learning.retainPlanChildren",
-    args: { planSlug: rplanOpen ?? "" },
-    enabled: enabled && Boolean(rplanOpen),
+    args: { planSlug: rplanOpen ?? "", ...(hive ? { hive } : {}) },
+    enabled,
   });
   const childRows = useMemo(
     () => (rplanOpen ? (children.data ?? []) : []),

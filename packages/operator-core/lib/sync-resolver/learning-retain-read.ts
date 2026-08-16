@@ -187,6 +187,12 @@ export interface RetainFeedOpts {
   /** Opaque cursor from the previous page's `nextCursor`. */
   cursor?: string | null;
   limit?: number;
+  /** P-040 hive lens (same semantics as {@link RetainExtrasOpts}): scopes the
+   *  wi leg by `engineer_issues.scope`. Omit for workspace-wide. The rubric /
+   *  runbook / recipe corpora are lens-invariant and never scoped. */
+  harnessScopes?: readonly string[];
+  /** Hive-member harness slugs; scopes the plans leg by `hp.harness_slug`. */
+  memberSlugs?: readonly string[];
 }
 
 /** The SQL predicate mirroring {@link inRetainLegWindow}, over a subquery
@@ -268,6 +274,7 @@ export async function readRetainFeed(
          WHERE r.workspace_id = ${workspaceId}
            AND r.rail = 'plan'
            AND r.routed_ref LIKE 'plan:%'
+           AND ${opts.memberSlugs ? sql`hp.harness_slug = ANY(${opts.memberSlugs as string[]}::text[])` : sql`TRUE`}
          ORDER BY hp.plan_slug, r.routed_at DESC
       ) x
       WHERE ${filterPred} AND ${legWindowSql(sql, w)}
@@ -323,6 +330,7 @@ export async function readRetainFeed(
          WHERE r.workspace_id = ${workspaceId}
            AND r.routed_ref LIKE 'wi:%'
            AND ei.source_plan_slug IS NULL
+           AND ${opts.harnessScopes ? sql`ei.scope = ANY(${opts.harnessScopes as string[]}::text[])` : sql`TRUE`}
          ORDER BY ei.issue_id, r.routed_at DESC
       ) x
       WHERE ${filterPred} AND ${legWindowSql(sql, w)}
@@ -457,6 +465,7 @@ export async function readRetainFeed(
            WHERE r.workspace_id = ${workspaceId}
              AND r.rail = 'plan'
              AND r.routed_ref LIKE 'plan:%'
+             AND ${opts.memberSlugs ? sql`hp.harness_slug = ANY(${opts.memberSlugs as string[]}::text[])` : sql`TRUE`}
         `) as Array<{ n: number }>;
         return Number(r[0]?.n ?? 0);
       })().catch((err) => {
@@ -473,6 +482,7 @@ export async function readRetainFeed(
            WHERE r.workspace_id = ${workspaceId}
              AND r.routed_ref LIKE 'wi:%'
              AND ei.source_plan_slug IS NULL
+             AND ${opts.harnessScopes ? sql`ei.scope = ANY(${opts.harnessScopes as string[]}::text[])` : sql`TRUE`}
         `) as Array<{ n: number }>;
         return Number(r[0]?.n ?? 0);
       })().catch((err) => {
@@ -500,6 +510,10 @@ export async function readRetainPlanChildren(
   planSlug: string,
   limit = 100,
 ): Promise<RetainPlanChild[]> {
+  // '' = no plan expanded. The client keeps this read mounted under the view's
+  // shared readiness gate (one gate per view — lens-guard), so the un-expanded
+  // state must be a free no-op, not a DB round-trip.
+  if (!planSlug) return [];
   try {
     const shippedArr = [...ISSUE_SHIPPED_STATUSES];
     const rows = (await sql`
