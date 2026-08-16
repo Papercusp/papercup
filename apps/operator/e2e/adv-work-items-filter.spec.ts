@@ -28,11 +28,14 @@
  * type + interaction in sequence rather than re-mounting per case (a batch of
  * separate mounts was flaky when run together; each passed in isolation).
  *
- * Hermetic via route-stubbing (mirrors adv-contributors-panel.spec.ts): the
+ * Hermetic via route-stubbing (mirrors adv-dep-graph-interlock.spec.ts): the
  * shell's projects/lite is stubbed so the slug always mounts the dock, and the
- * sync layer's `POST /api/zero-harness/rest-query-batch` is stubbed so
- * `workItems.byHarness` returns a couple of rows (enough to make the State/Kind
- * enum option lists non-empty) without depending on a populated substrate.
+ * sync layer is stubbed through `_sync-stub.ts` so `workItems.byHarness` returns
+ * a couple of rows (enough to make the State/Kind enum option lists non-empty)
+ * without depending on a populated substrate. This spec used to stub
+ * `POST /api/zero-harness/rest-query-batch`, which the client has not spoken
+ * since 2026-07-26 — the stub was never hit and the panel rendered from real,
+ * unstubbed traffic (WI-39533).
  *
  * NB: like the sibling adv specs this drives the operator-vite SPA in the e2e
  * Chromium project. A stale HMR-disabled :3055 serves a blank #root — the shell
@@ -40,6 +43,7 @@
  * HMR-enabled Vite (the config's own webServer boots one) to actually exercise it.
  */
 import { test, expect, assertMounted, type Page } from './_egress';
+import { stubSyncQueries, type SyncQueryStub } from './_sync-stub';
 
 const baseURL =
   process.env.OPERATOR_E2E_BASE_URL ??
@@ -101,34 +105,40 @@ const SKIP_MSG =
   "stale HMR-disabled :3055 serves a blank #root ('/@vite/client' noop stub).";
 
 /**
+ * The harness registry row for the fictional slug. Served over BOTH paths that
+ * carry it — the REST bootstrap (`/api/harness/projects/lite`) and the sync query
+ * (`harnessProjects.lite`). Stubbing only one leaves the slug unresolvable on the
+ * other, and the dock then mounts no panels at all.
+ */
+const PROJECTS = [
+  {
+    slug: SLUG,
+    path: `/tmp/${SLUG}`,
+    name: SLUG,
+    hasState: true,
+    hasSpec: true,
+    parent_slug: null,
+    harness_kind: 'project',
+    is_shared: false,
+  },
+];
+
+/**
  * Stub the data the shell + panel need so this is hermetic:
  *   - projects/lite validates the URL slug (keeps the persisted-selection
  *     restore from flipping to all-mode and hiding the per-pot dock),
  *   - status/lanes/agents keep the top bar benign,
- *   - the sync batch endpoint returns rows per query NAME (workItems.byHarness
- *     → our two rows; everything else → []). The batch contract is
- *     `POST /api/zero-harness/rest-query-batch` with body
- *     `{ queries: [{ name, args }] }` → `{ results: [{ rows, version }] }`.
+ *   - the sync layer returns rows per query NAME over the LIVE contract, one
+ *     `GET /api/zero-harness/rest-query?name=&args=` per query (see
+ *     `_sync-stub.ts`). Queries this spec does not model return `undefined` and
+ *     FALL THROUGH — answering `[]` for everything starves the dock layout.
  */
-async function stubApis(page: Page) {
+async function stubApis(page: Page): Promise<SyncQueryStub> {
   await page.route('**/api/harness/projects/lite', async (route) => {
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
-      body: JSON.stringify({
-        projects: [
-          {
-            slug: SLUG,
-            path: `/tmp/${SLUG}`,
-            name: SLUG,
-            hasState: true,
-            hasSpec: true,
-            parent_slug: null,
-            harness_kind: 'project',
-            is_shared: false,
-          },
-        ],
-      }),
+      body: JSON.stringify({ projects: PROJECTS }),
     });
   });
   await page.route('**/api/harness/*/status**', async (route) => {
@@ -153,20 +163,10 @@ async function stubApis(page: Page) {
     });
   });
 
-  await page.route('**/api/zero-harness/rest-query-batch**', async (route) => {
-    const post = route.request().postDataJSON() as
-      | { queries?: Array<{ name?: string; args?: unknown }> }
-      | null;
-    const queries = post?.queries ?? [];
-    const results = queries.map((q) => {
-      const rows = q.name === 'workItems.byHarness' ? WORK_ITEMS : [];
-      return { rows, version: String(Date.now()) };
-    });
-    await route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({ results }),
-    });
+  return stubSyncQueries(page, (name) => {
+    if (name === 'harnessProjects.lite') return PROJECTS;
+    if (name === 'workItems.byHarness') return WORK_ITEMS;
+    return undefined;
   });
 }
 
@@ -215,11 +215,16 @@ test.describe('/adv Work items panel — column filter bar', () => {
   test('add (dismiss-race), chip-edit reopen, Clear all, and text/number Enter-to-close', async ({
     page,
   }) => {
-    await stubApis(page);
+    const sync = await stubApis(page);
     const mounted = await dockMounts(page);
     assertMounted(mounted, SKIP_MSG);
 
     const bar = await openWorkItemsPanel(page);
+
+    // Prove the stub is actually feeding the panel BEFORE the enum-option
+    // assertions below: a bypassed stub then fails in seconds with a diagnostic
+    // instead of surfacing as an empty option list at the locator's timeout.
+    await sync.waitForServed(['workItems.byHarness']);
     const addFilter = bar.getByRole('combobox', { name: 'Add a column filter' });
     await expect(addFilter).toBeVisible();
 
@@ -283,5 +288,9 @@ test.describe('/adv Work items panel — column filter bar', () => {
     await expect(prioEditor).toBeHidden({ timeout: 5_000 });
     await expect(bar.locator('.pc-advpanel__chip', { hasText: 'Prio: ≥2' })).toBeVisible();
     await expect.poll(() => wifParam(page), { timeout: 10_000 }).toContain('priority:');
+
+    // The falsifier for this spec's own hermeticity: if the sync stub was never
+    // reached, every assertion above ran against real, unstubbed traffic.
+    sync.assertServed('workItems.byHarness');
   });
 });

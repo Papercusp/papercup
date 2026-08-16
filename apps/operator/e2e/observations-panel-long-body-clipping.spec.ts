@@ -25,8 +25,13 @@
  * clip or a virtualizer slot that undershoots real content height — only a
  * real browser engine can. Mirrors adv-work-items-filter.spec.ts's hermetic
  * route-stubbing pattern.
+ *
+ * Sync stubbing goes through `_sync-stub.ts` (the live per-query GET). This spec
+ * used to stub `POST /api/zero-harness/rest-query-batch`, dead since 2026-07-26 —
+ * the stub was never hit and the pane rendered from real traffic (WI-39533).
  */
 import { test, expect, assertMounted, type Page } from './_egress';
+import { stubSyncQueries, type SyncQueryStub } from './_sync-stub';
 
 const baseURL =
   process.env.OPERATOR_E2E_BASE_URL ??
@@ -69,25 +74,34 @@ const SKIP_MSG =
   'operator-vite (the config webServer boots one with PAPERCUSP_ENABLE_HMR=1) — a ' +
   "stale HMR-disabled :3055 serves a blank #root ('/@vite/client' noop stub).";
 
-async function stubApis(page: Page) {
+/**
+ * The harness registry row for the fictional slug, served over BOTH paths that
+ * carry it — the REST bootstrap (`/api/harness/projects/lite`) and the sync query
+ * (`harnessProjects.lite`). Stubbing only one leaves the slug unresolvable on the
+ * other and the pane never mounts.
+ */
+const PROJECTS = [
+  {
+    slug: SLUG,
+    path: `/tmp/${SLUG}`,
+    name: SLUG,
+    hasState: true,
+    hasSpec: true,
+    parent_slug: null,
+    harness_kind: 'project',
+    is_shared: false,
+  },
+];
+
+// The pane reads the row count off `_meta.total` on the first row.
+const OBSERVATION_ROWS = [{ ...OBSERVATION_ROW, _meta: { total: 1 } }];
+
+async function stubApis(page: Page): Promise<SyncQueryStub> {
   await page.route('**/api/harness/projects/lite', async (route) => {
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
-      body: JSON.stringify({
-        projects: [
-          {
-            slug: SLUG,
-            path: `/tmp/${SLUG}`,
-            name: SLUG,
-            hasState: true,
-            hasSpec: true,
-            parent_slug: null,
-            harness_kind: 'project',
-            is_shared: false,
-          },
-        ],
-      }),
+      body: JSON.stringify({ projects: PROJECTS }),
     });
   });
   await page.route('**/api/harness/*/status**', async (route) => {
@@ -112,31 +126,15 @@ async function stubApis(page: Page) {
     });
   });
 
-  // The sync batch contract: POST /api/zero-harness/rest-query-batch with
-  // body { queries: [{ name, args }] } -> { results: [{ rows, version }] }.
-  // Only the two queries ObservationsPanel issues get real rows; everything
-  // else (other tabs' background queries) gets an empty, benign result.
-  await page.route('**/api/zero-harness/rest-query-batch**', async (route) => {
-    const post = route.request().postDataJSON() as
-      | { queries?: Array<{ name?: string; args?: unknown }> }
-      | null;
-    const queries = post?.queries ?? [];
-    const results = queries.map((q) => {
-      if (q.name === 'learning.observations') {
-        const rows = [OBSERVATION_ROW] as Array<Record<string, unknown>>;
-        (rows[0] as Record<string, unknown> & { _meta?: unknown })._meta = { total: 1 };
-        return { rows, version: String(Date.now()) };
-      }
-      if (q.name === 'learning.observations.counts') {
-        return { rows: [{ kind: 'reinforce', count: 1 }], version: String(Date.now()) };
-      }
-      return { rows: [], version: String(Date.now()) };
-    });
-    await route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({ results }),
-    });
+  // Sync — the LIVE contract, one GET /api/zero-harness/rest-query per query
+  // (see `_sync-stub.ts`). Only the queries this pane issues are modelled;
+  // everything else returns `undefined` and FALLS THROUGH untouched. Answering
+  // `[]` for unmodelled queries is the trap that starves the dock layout.
+  return stubSyncQueries(page, (name) => {
+    if (name === 'harnessProjects.lite') return PROJECTS;
+    if (name === 'learning.observations') return OBSERVATION_ROWS;
+    if (name === 'learning.observations.counts') return [{ kind: 'reinforce', count: 1 }];
+    return undefined;
   });
 }
 
@@ -144,13 +142,18 @@ test.describe('/adv Learning tab — Observations pane, real long-body row', () 
   test('an expanded row with a real long-token body shows the FULL text — no vertical or horizontal clip', async ({
     page,
   }) => {
-    await stubApis(page);
+    const sync = await stubApis(page);
 
     const res = await page.goto(
       `${baseURL}/adv?tab=learning&lview=observations&slug=${SLUG}&scope=self`,
       { waitUntil: 'domcontentloaded' },
     );
     expect([200, 304]).toContain(res?.status() ?? 0);
+
+    // Prove the stub is feeding the pane BEFORE the 30s mount wait below, so a
+    // bypassed stub fails in seconds with a diagnostic instead of masquerading
+    // as "the shell did not mount".
+    await sync.waitForServed(['learning.observations']);
 
     const expandBtn = page.getByRole('button', {
       name: `Expand observation ${OBSERVATION_TITLE}`,
@@ -211,5 +214,9 @@ test.describe('/adv Learning tab — Observations pane, real long-body row', () 
       path: 'test-results/wi-5419-observations-long-body-expanded.png',
       fullPage: false,
     });
+
+    // The falsifier for this spec's own hermeticity: a stub that was never
+    // reached means every measurement above was taken on real, unstubbed rows.
+    sync.assertServed('learning.observations');
   });
 });
