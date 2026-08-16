@@ -34,7 +34,10 @@ import { agentBinaryCandidates } from './agent-bin-detect';
 /** Only the given paths answer `--version` successfully; all others "fail". */
 function probeSucceedsFor(...paths: string[]) {
   const set = new Set(paths);
-  execFileImpl.mockImplementation((file: string, _a: unknown, _o: unknown, cb: (e: Error | null, r?: unknown) => void) => {
+  execFileImpl.mockImplementation((...args: unknown[]) => {
+    const file = args[0] as string;
+    const cb = args[args.length - 1] as (e: Error | null, r?: unknown) => void;
+    if (typeof cb !== 'function') return;
     if (set.has(file)) cb(null, { stdout: 'v1.2.3\n' });
     else cb(new Error('ENOENT'));
   });

@@ -14,6 +14,7 @@
  * rather than the start of the fallback.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { dirname, join } from 'node:path';
 
 const spawnSync = vi.fn();
 vi.mock('node:child_process', async (orig) => {
