@@ -44,8 +44,14 @@ import {
   type TransferReplayPort,
 } from './types';
 
-const DISTILL_MODEL = 'claude-haiku-4-5';
-const DISTILL_TIMEOUT_MS = 60_000;
+/** P-010 (blender-loop-repair-and-opus5-xhigh-2026-08-16): distiller + transferability
+ *  judge run on opus-5 at xhigh effort [owner 2026-08-16]. Thinking is ON by default
+ *  on opus-5 and shares max_tokens with the response text, so callers' maxTokens carry
+ *  thinking headroom (see TRANSFERABILITY_MAX_TOKENS / DISTILL_MAX_TOKENS) and the
+ *  timeout allows for xhigh-depth thinking. */
+const DISTILL_MODEL = 'claude-opus-5';
+const DISTILL_EFFORT = 'xhigh';
+const DISTILL_TIMEOUT_MS = 180_000;
 const STUDENT_MODEL = process.env.PAPERCUSP_TRANSFER_STUDENT_MODEL || 'claude-haiku-4-5';
 const STUDENT_MAX_TOKENS = 2_048;
 const STUDENT_TIMEOUT_MS = 120_000;
@@ -143,6 +149,7 @@ export function anthropicDistillerLlm(opts?: { apiKey?: string; model?: string }
     const response = (await client.messages.create({
       model,
       max_tokens: maxTokens,
+      output_config: { effort: DISTILL_EFFORT },
       system,
       messages: [{ role: 'user', content: user }],
     })) as {

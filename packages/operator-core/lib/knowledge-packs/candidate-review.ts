@@ -36,8 +36,11 @@ const DRAFT_RENDER_CAP = 6_000;
  *  worst-case pass response (LESSON_TEXT_CAP chars of lesson + title + JSON
  *  scaffolding + any preamble the model emits despite "STRICT JSON") — a
  *  response cut at the token cap loses its closing brace and parses to null,
- *  which reads identically to a dead LLM. 1024 buys the full worst case. */
-export const TRANSFERABILITY_MAX_TOKENS = 1_024;
+ *  which reads identically to a dead LLM. 1024 bought the full worst case on
+ *  haiku. P-010 (opus-5 flip): thinking is ON by default on opus-5 and SHARES
+ *  max_tokens with the response text, so the cap must also cover xhigh-depth
+ *  thinking — 16K keeps the same closing-brace guarantee under thinking. */
+export const TRANSFERABILITY_MAX_TOKENS = 16_000;
 /** How much of an unparseable judge response survives into the error reason. */
 const RAW_SNIPPET_CAP = 300;
 

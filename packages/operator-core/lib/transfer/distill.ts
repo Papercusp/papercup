@@ -22,7 +22,10 @@ export function lessonSignature(lessonText: string): string {
 const TRANSCRIPT_RENDER_CAP = 24_000;
 const LESSON_TEXT_CAP = 1_200;
 const TITLE_CAP = 120;
-const DISTILL_MAX_TOKENS = 1_024;
+/** P-010 (opus-5 flip): thinking is ON by default on opus-5 and shares max_tokens
+ *  with the response text, so this cap covers xhigh-depth thinking too — 1024 was
+ *  sized for haiku (no thinking) and would truncate the closing brace. */
+const DISTILL_MAX_TOKENS = 16_000;
 
 /**
  * Cut `s` to at most `maxLen` chars WITHOUT chopping the last word in half
