@@ -292,12 +292,17 @@ const key = (slug: string, feature: string, role: string, turn: number): string 
 
 async function featurePipelineImpl(input: PipelineInput): Promise<string> {
   const spine = input.spine ?? codingSpine();
-  // The decider role comes from the blueprint spine (coding → 'director';
-  // research → 'research-director'). Behavior-preserving for coding.
+  // The decider role comes from the blueprint spine (research → 'research-director').
+  // ⚠ NOT behavior-preserving for a spine-less input since the 2026-07-20 repoint above:
+  // `codingSpine()` is `coding-solo`, whose decider is 'worker', NOT 'director' (WI-39505).
   const orchestratorRole = input.orchestratorRole ?? spine.decider;
-  // The director's verbs are the spine's OWN vocabulary (the edge keys), so a
-  // non-coding harness (research) parses against its own verbs (D-002). For the
-  // coding spine this is the same 20 built-in verbs → behavior-preserving.
+  // The decider's verbs are the spine's OWN vocabulary (the edge keys), so a
+  // non-coding harness (research) parses against its own verbs (D-002). ⚠ The
+  // `codingSpine()` fallback is NO LONGER the 20 built-in coding verbs: `coding-solo`
+  // inherits `single-agent`'s DONE/ESCALATE/IDLE only, so every NEXT_* verb misses its
+  // edge and resolves through the `default: idle` branch below — the pipeline stops
+  // after one decide turn. A caller that needs the multi-role graph must pass
+  // `PipelineInput.spine` explicitly (which is how the DBOS tests pin it).
   // `edges` is optional since the coord-op program model landed (a program-mode
   // spine omits it). A program blueprint routes to `coordProgramWorkflow`, never
   // here, so `?? {}` is purely defensive (a misrouted program spine → no verbs →

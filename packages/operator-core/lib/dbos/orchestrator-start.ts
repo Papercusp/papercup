@@ -101,10 +101,16 @@ async function resolveHomeWorkspace(harnessSlug: string): Promise<string> {
 /**
  * Resolve the harness's declared blueprint spine from its git-canonical
  * `.papercusp/blueprint.yaml` (P-018). Returns null when the harness has no
- * blueprint file — the pipeline then defaults to the built-in `coding` spine
- * (every pre-blueprint harness), so this is behavior-preserving. The file is the
- * source of truth (D-006); the PG cache is populated lazily elsewhere. Fail-safe:
- * any error → null → coding default (never breaks a dispatch).
+ * blueprint file — the pipeline then falls back to `codingSpine()`
+ * (orchestrator-workflow.ts), which since 2026-07-20 (commit 33d1bac9f4,
+ * owner-directed) is the SINGLE-AGENT `coding-solo` spine: decider `worker`,
+ * edges DONE/ESCALATE/IDLE only. ⚠ This is NOT behavior-preserving and NOT the
+ * old built-in `coding`/`coding-factory` default — a blueprint-less harness now
+ * runs with orchestration OFF, silently (no error, no warning). See WI-39505 for
+ * the measured population and the two other callers of the same fallback.
+ * The file is the source of truth (D-006); the PG cache is populated lazily
+ * elsewhere. Fail-safe: any error → null → that single-agent fallback (never
+ * breaks a dispatch).
  */
 async function resolveHarnessSpine(
   harnessSlug: string,

@@ -43,9 +43,55 @@
  * durable-ownership carve-out (durableOwnedFeatureIdsPg) reads real state.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { teardownTestPg } from '@papercusp/test-config/pg';
 import type { DBOS as DBOSType } from '@dbos-inc/dbos-sdk';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
+import { writeOperatorState } from '../operator-state-pg';
+
+/**
+ * The multi-role spine this chain runs against, written to a real
+ * `.papercusp/blueprint.yaml` so BOTH resolution sites read it: `system:blueprint-run`'s
+ * effective-blueprint lookup (which decider role to fire — link 1→2) and the
+ * pipeline's `resolveHarnessSpine` (which verbs dispatch — link 3→4).
+ *
+ * This harness previously declared no blueprint, so the chain silently asserted
+ * whatever the engine's blueprint-LESS fallback happened to be. When that fallback
+ * was repointed to the single-agent `coding-solo` spine (decider `worker`, verbs
+ * DONE/ESCALATE/IDLE only) on 2026-07-20, the fired role became `worker` and every
+ * NEXT_* verb fell through to `default: idle` (EI-20631691687347174).
+ * `blueprint-run-action.ts` states the contract this now honours: a multi-role
+ * coding spine must declare its own `.papercusp/blueprint.yaml` rather than lean
+ * on the fallback.
+ */
+const TEST_BLUEPRINT_YAML = `
+id: hive-e2e-fixture
+version: 0.1.0
+description: Test-only multi-role coding spine for the hive-loop whole-chain E2E.
+workItem:
+  kind: feature
+  idPrefix: F
+spine:
+  decider: director
+  maxTurns: 200
+  edges:
+    NEXT_WORKER: { to: role, role: worker, extras: ['FEATURE_ID={feature}'] }
+    NEXT_VALIDATOR: { to: role, role: validator, extras: ['FEATURE_ID={feature}'] }
+    DONE: { to: done }
+    ESCALATE: { to: escalate, reasonFrom: arg }
+  default: { to: idle }
+roles:
+  - id: director
+    description: Decides the next step each turn.
+  - id: worker
+    description: Implements the feature.
+  - id: validator
+    description: Validates the worker's output.
+`;
+
+let harnessDir: string;
 
 const WS = 'ws-hive-e2e';
 const SLUG = 'hive-e2e';
@@ -89,11 +135,19 @@ const directorScript = (fid: string): string[] => [`NEXT_WORKER ${fid}`, `NEXT_V
 beforeAll(async () => {
   db = await createOrgTestDb();
 
+  // The harness's declared blueprint (see TEST_BLUEPRINT_YAML), registered so
+  // `resolveProjectDir` finds it from both resolution sites.
+  harnessDir = mkdtempSync(join(tmpdir(), 'hive-e2e-'));
+  mkdirSync(join(harnessDir, '.papercusp'), { recursive: true });
+  writeFileSync(join(harnessDir, '.papercusp', 'blueprint.yaml'), TEST_BLUEPRINT_YAML);
+
   // Route the REAL connection resolvers at the migrated throwaway DB. Both are
   // read lazily on first client build, which happens after this point.
   process.env.HARNESS_DATABASE_URL = db.appDsn;
   process.env.HARNESS_ADMIN_DATABASE_URL = db.adminDsn;
   process.env.DATABASE_URL = db.adminDsn;
+
+  await writeOperatorState('harness_registry', { projects: [{ slug: SLUG, path: harnessDir }] }, WS);
 
   ({ DBOS } = await import('@dbos-inc/dbos-sdk'));
   DBOS.setConfig({
@@ -175,6 +229,7 @@ afterAll(async () => {
     /* best-effort */
   }
   await db?.cleanup();
+  if (harnessDir) rmSync(harnessDir, { recursive: true, force: true });
   if (!process.env.KEEP_TEST_PG) await teardownTestPg();
 });
 

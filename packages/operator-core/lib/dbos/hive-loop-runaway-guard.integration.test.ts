@@ -24,9 +24,57 @@
  * frontier readiness + epoch progression are asserted on real PG state.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { teardownTestPg } from '@papercusp/test-config/pg';
 import type { DBOS as DBOSType } from '@dbos-inc/dbos-sdk';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
+import { writeOperatorState } from '../operator-state-pg';
+
+/**
+ * The multi-role spine these harnesses declare, written to a real
+ * `.papercusp/blueprint.yaml` so `resolveHarnessSpine` (orchestrator-start.ts)
+ * hands it to the pipeline — deliberately NOT inherited from the engine's
+ * blueprint-less fallback.
+ *
+ * What is under test is the runaway ceiling and the escalate finalization, which
+ * need a director that cycles worker→validator; which blueprint the ENGINE
+ * defaults to for a blueprint-LESS harness is an unrelated product choice. These
+ * harnesses used to have no blueprint at all, so they silently asserted that
+ * choice — when the fallback was repointed to the single-agent `coding-solo`
+ * spine (decider `worker`, verbs DONE/ESCALATE/IDLE only) on 2026-07-20, every
+ * NEXT_* verb stopped matching an edge, fell through to `default: idle`, and both
+ * tests read `last=IDLE` (EI-20631691687347174). Declaring the blueprint makes
+ * these assertions independent of that default.
+ */
+const TEST_BLUEPRINT_YAML = `
+id: runaway-guard-fixture
+version: 0.1.0
+description: Test-only multi-role coding spine for the runaway-guard integration test.
+workItem:
+  kind: feature
+  idPrefix: F
+spine:
+  decider: director
+  maxTurns: 200
+  edges:
+    NEXT_WORKER: { to: role, role: worker, extras: ['FEATURE_ID={feature}'] }
+    NEXT_VALIDATOR: { to: role, role: validator, extras: ['FEATURE_ID={feature}'] }
+    DONE: { to: done }
+    ESCALATE: { to: escalate, reasonFrom: arg }
+  default: { to: idle }
+roles:
+  - id: director
+    description: Decides the next step each turn.
+  - id: worker
+    description: Implements the feature.
+  - id: validator
+    description: Validates the worker's output.
+`;
+
+let harnessDir: string;
+
 
 const WS = 'ws-runaway';
 const SLUG_RUN = 'runaway';
@@ -56,6 +104,17 @@ beforeAll(async () => {
   process.env.HARNESS_DATABASE_URL = db.appDsn;
   process.env.HARNESS_ADMIN_DATABASE_URL = db.adminDsn;
   process.env.DATABASE_URL = db.adminDsn;
+
+  // Both harnesses point at one project dir carrying the blueprint above, and are
+  // registered so `resolveProjectDir` can find it (see TEST_BLUEPRINT_YAML).
+  harnessDir = mkdtempSync(join(tmpdir(), 'runaway-guard-'));
+  mkdirSync(join(harnessDir, '.papercusp'), { recursive: true });
+  writeFileSync(join(harnessDir, '.papercusp', 'blueprint.yaml'), TEST_BLUEPRINT_YAML);
+  await writeOperatorState(
+    'harness_registry',
+    { projects: [SLUG_RUN, SLUG_ESC].map((slug) => ({ slug, path: harnessDir })) },
+    WS,
+  );
 
   ({ DBOS } = await import('@dbos-inc/dbos-sdk'));
   DBOS.setConfig({
@@ -108,6 +167,7 @@ afterAll(async () => {
     /* best-effort */
   }
   await db?.cleanup();
+  if (harnessDir) rmSync(harnessDir, { recursive: true, force: true });
   if (!process.env.KEEP_TEST_PG) await teardownTestPg();
 });
 

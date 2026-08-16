@@ -23,7 +23,26 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
 import { getTestPg, teardownTestPg } from '@papercusp/test-config/pg';
+import { SpineSchema } from '@papercusp/orchestrator/blueprint';
 import type { DBOS as DBOSType } from '@dbos-inc/dbos-sdk';
+
+/**
+ * The spine these dedup tests run against, declared INLINE and passed on
+ * `PipelineInput.spine` rather than inherited from the engine's no-spine
+ * fallback. What is under test is workflow-id dedup (one lifetime per
+ * harness/feature/epoch), which needs only a decider that terminates; the
+ * engine's DEFAULT blueprint is an unrelated product choice. Inheriting it made
+ * these tests silently assert that choice — when the fallback was repointed to
+ * the single-agent `coding-solo` spine (decider `worker`) on 2026-07-20, the
+ * `role === 'director'` branch below stopped matching, the decision fell through
+ * to `default: idle`, and every assertion read `last=IDLE` (EI-20631691687347174).
+ */
+const DEDUP_SPINE = SpineSchema.parse({
+  decider: 'director',
+  maxTurns: 10,
+  edges: { DONE: { to: 'done' } },
+  default: { to: 'idle' },
+});
 
 let DBOS: typeof DBOSType;
 let startFeaturePipeline: typeof import('./orchestrator-workflow').startFeaturePipeline;
@@ -92,7 +111,7 @@ afterAll(async () => {
 
 describe('DBOS feature-pipeline dedup (P-008)', () => {
   it('two concurrent starts for the same (harness, feature, epoch) collapse to ONE pipeline', async () => {
-    const input = { harnessSlug: 'sheets', featureId: 'F-DEDUP', epoch: 0, workspaceId: 'ws-1' };
+    const input = { harnessSlug: 'sheets', featureId: 'F-DEDUP', epoch: 0, workspaceId: 'ws-1', spine: DEDUP_SPINE };
 
     // Two orchestrators race to start the same feature. The deterministic
     // workflow id + dedup 'reject' policy means one wins and the other's enqueue
@@ -112,7 +131,7 @@ describe('DBOS feature-pipeline dedup (P-008)', () => {
   }, 60_000);
 
   it('a different epoch is a fresh lifetime — distinct workflow id, runs again', async () => {
-    const base = { harnessSlug: 'sheets', featureId: 'F-EPOCH', workspaceId: 'ws-1' };
+    const base = { harnessSlug: 'sheets', featureId: 'F-EPOCH', workspaceId: 'ws-1', spine: DEDUP_SPINE };
 
     const id0 = await startFeaturePipeline({ ...base, epoch: 0 });
     expect(await DBOS.getResult<string>(id0, 30)).toBe('pipeline-complete (last=DONE)');
@@ -125,7 +144,7 @@ describe('DBOS feature-pipeline dedup (P-008)', () => {
   }, 60_000);
 
   it('re-starting an already-completed pipeline (same id) does not re-run it', async () => {
-    const input = { harnessSlug: 'sheets', featureId: 'F-REPLAY', epoch: 0, workspaceId: 'ws-1' };
+    const input = { harnessSlug: 'sheets', featureId: 'F-REPLAY', epoch: 0, workspaceId: 'ws-1', spine: DEDUP_SPINE };
 
     const id = await startFeaturePipeline(input);
     expect(await DBOS.getResult<string>(id, 30)).toBe('pipeline-complete (last=DONE)');

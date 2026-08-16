@@ -531,15 +531,25 @@ export async function handleBlueprintRun(ctx: SystemActionCtx): Promise<void | S
   const bp = resolved ?? codingFallback();
   // WI-5645 (no-retirement-launch-guard): LOUD WARNING, not a block, when this fire
   // is about to run against a retired blueprint (itself or via `extends` — e.g. the
-  // EI-18177667809538623 external-bench ⟶ coding-factory shape, or the no-blueprint
-  // `codingFallback()` default itself, which is `coding-factory`). Deliberately NOT
-  // refused here: `codingFallback()` is the documented behavior-preserving default
-  // for every blueprint-less harness (blueprint-run-action.test.ts pins that it still
-  // fires), so a hard block at this chokepoint risks silently halting dispatch for an
-  // unknown, possibly large, set of live harnesses that have no `.papercusp/blueprint.yaml`
-  // at all — a bigger, undiagnosed regression than the spend this guards against. The
-  // orchestrator-loop.ts dispatch gate + the gym autoloop tick (this WI's other two
-  // chokepoints) DO hard-block; this one only makes the fallback's retirement visible.
+  // EI-18177667809538623 external-bench ⟶ coding-factory shape). Deliberately NOT
+  // refused here: `codingFallback()` is the default for every blueprint-less harness
+  // (blueprint-run-action.test.ts pins that it still fires), so a hard block at this
+  // chokepoint risks silently halting their dispatch. The orchestrator-loop.ts dispatch
+  // gate + the gym autoloop tick (this WI's other two chokepoints) DO hard-block; this
+  // one only makes the fallback's retirement visible.
+  //
+  // ⚠ TWO CORRECTIONS, measured 2026-08-16 (WI-39505):
+  //  1. `codingFallback()` is NOT `coding-factory` and NOT behavior-preserving — it has
+  //     been the SINGLE-AGENT `coding-solo` (decider `worker`) since 2026-07-20
+  //     (33d1bac9f4, owner-directed; see its docstring at the definition above).
+  //  2. The affected set is no longer "unknown, possibly large". Measured across all 8
+  //     workspaces: 44 of 107 registered projects have a live path and no
+  //     `.papercusp/blueprint.yaml` (37 are papercusp monorepo sub-lib registrations;
+  //     the 7 real ones include `papercusp` itself). It is nonetheless INERT on every
+  //     scheduled path today: all 37 `system:blueprint-run` routines carry an explicit
+  //     `payload_template.blueprintId` and take the early return above, so this line is
+  //     unreached by them. Re-measure before citing — that early-return share is exactly
+  //     what makes this safe, and one routine registered without a `blueprintId` changes it.
   const retirement = blueprintRetirement(bp);
   if (retirement) {
     console.warn(

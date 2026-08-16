@@ -23,7 +23,29 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
 import { getTestPg } from '@papercusp/test-config/pg';
+import { SpineSchema } from '@papercusp/orchestrator/blueprint';
 import type { DBOS as DBOSType } from '@dbos-inc/dbos-sdk';
+
+/**
+ * The spine this replay-safety test runs against, declared INLINE and passed on
+ * `PipelineInput.spine` rather than inherited from the engine's no-spine
+ * fallback. What is under test is DBOS step-replay safety (a failed decide step
+ * retries without re-invoking the completed worker), which needs only a
+ * director→worker shape; the engine's DEFAULT blueprint is an unrelated product
+ * choice. Inheriting it made this test silently assert that choice — when the
+ * fallback was repointed to the single-agent `coding-solo` spine (decider
+ * `worker`) on 2026-07-20, the `role === 'director'` branch below stopped
+ * matching and the test went red (EI-20631691687347174).
+ */
+const REPLAY_SPINE = SpineSchema.parse({
+  decider: 'director',
+  maxTurns: 10,
+  edges: {
+    NEXT_WORKER: { to: 'role', role: 'worker', extras: ['FEATURE_ID={feature}'] },
+    DONE: { to: 'done' },
+  },
+  default: { to: 'idle' },
+});
 
 let DBOS: typeof DBOSType;
 let startFeaturePipeline: typeof import('@papercusp/operator-core/lib/dbos/orchestrator-workflow').startFeaturePipeline;
@@ -100,7 +122,13 @@ describe('DBOS pipeline crash-mid-replay safety (P-007)', () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
-      const id = await startFeaturePipeline({ harnessSlug: 'sheets', featureId: 'F-CRASH', epoch: 0, workspaceId: 'ws-1' });
+      const id = await startFeaturePipeline({
+        harnessSlug: 'sheets',
+        featureId: 'F-CRASH',
+        epoch: 0,
+        workspaceId: 'ws-1',
+        spine: REPLAY_SPINE,
+      });
 
       // The decide step is retriesAllowed (5s interval) → completion includes one retry.
       const result = await DBOS.getResult<string>(id, 45);
