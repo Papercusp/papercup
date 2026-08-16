@@ -98,7 +98,52 @@ export type DrainFleetLiveness = 'alive' | 'dead' | 'not-found' | 'unknown';
 export type GoalDrainReason =
   | 'no-drain-fleet-declared'
   | 'drain-fleet-not-found'
-  | 'drain-fleet-dead';
+  | 'drain-fleet-dead'
+  | 'drain-fleet-not-goal-scoped';
+
+/**
+ * D-005 (goal-mode-design-intent-hardening-2026-08-16): the declared fleet's
+ * claim-spec verdict. Before this leg landed, the watchdog verified only that
+ * the declared fleet EXISTS and LIVES — a pot-wide fleet satisfied it, and a
+ * pot-wide "drain lane" is exactly the shape the owner overruled: it drains
+ * everything, so it guarantees nothing about THIS goal's filed work.
+ * `unknown` exists for the same reason as everywhere else in this file: a
+ * degraded spec read suppresses rather than false-alarms.
+ */
+export type DrainFleetSpecScope = 'goal-scoped' | 'not-goal-scoped' | 'unknown';
+
+/**
+ * PURE: does this filter node constrain EVERY admitted row to the goal?
+ *
+ * The positive `{field:'goal', op:'='|'in'}` leaf is the only thing that
+ * counts, per the WI-37711 trap the claim-spec grammar documents: `goal` is a
+ * NULLABLE column, so a `not`/`!=` leaf silently excludes every unstamped row
+ * in the SQL compiler — a negated goal leaf is therefore NEVER goal-scoping.
+ * Combinators: an `all` is scoped when ANY branch is (AND narrows); an `any`
+ * only when EVERY branch is (OR widens past the goal otherwise).
+ */
+export function claimSpecFilterConstrainsGoal(filter: unknown, goalId: string): boolean {
+  if (!filter || typeof filter !== 'object') return false;
+  const node = filter as Record<string, unknown>;
+  if (Array.isArray(node.all)) {
+    return node.all.some((n) => claimSpecFilterConstrainsGoal(n, goalId));
+  }
+  if (Array.isArray(node.any)) {
+    return node.any.length > 0 && node.any.every((n) => claimSpecFilterConstrainsGoal(n, goalId));
+  }
+  if ('not' in node) return false;
+  if (node.field !== 'goal') return false;
+  if (node.op === '=') return node.value === goalId;
+  if (node.op === 'in') return Array.isArray(node.value) && node.value.includes(goalId);
+  return false;
+}
+
+/** PURE: `claimSpecFilterConstrainsGoal` lifted to a whole stored spec. */
+export function claimSpecIsGoalScoped(spec: unknown, goalId: string): boolean {
+  if (!spec || typeof spec !== 'object') return false;
+  const view = (spec as { view?: { filter?: unknown } }).view;
+  return claimSpecFilterConstrainsGoal(view?.filter, goalId);
+}
 
 export interface GoalDrainAlert {
   goalId: string;
@@ -125,6 +170,9 @@ export function classifyGoalDrainFleet(
   holders: readonly GoalHolderLike[],
   verdicts: ReadonlyMap<string, LivenessVerdict>,
   fleetLiveness: ReadonlyMap<string, DrainFleetLiveness>,
+  /** D-005: per-GOAL claim-spec scope verdicts (keyed by goalId — the pair being
+   *  judged is (goal, its declared fleet), and two goals may declare one fleet). */
+  specScopes: ReadonlyMap<string, DrainFleetSpecScope>,
   nowMs: number,
   graceMs: number = GOAL_DRAIN_FLEET_KICKOFF_GRACE_MS,
 ): GoalDrainAlert | null {
@@ -158,11 +206,20 @@ export function classifyGoalDrainFleet(
 
   const verdict =
     fleetLiveness.get(fleetKey(goal.workspaceId, goal.drainFleet)) ?? 'unknown';
-  if (verdict === 'alive' || verdict === 'unknown') return null;
-  return {
-    ...base,
-    reason: verdict === 'not-found' ? 'drain-fleet-not-found' : 'drain-fleet-dead',
-  };
+  if (verdict === 'unknown') return null;
+  if (verdict !== 'alive') {
+    return {
+      ...base,
+      reason: verdict === 'not-found' ? 'drain-fleet-not-found' : 'drain-fleet-dead',
+    };
+  }
+  // ALIVE — the pre-D-005 verdict stopped here, which let a pot-wide fleet
+  // pass. Held correctly now also means SCOPED correctly: the lane's claim
+  // spec must positively constrain admitted rows to THIS goal. Unknown (a
+  // degraded spec read) suppresses, same as every other leg.
+  const scope = specScopes.get(goal.goalId) ?? 'unknown';
+  if (scope === 'not-goal-scoped') return { ...base, reason: 'drain-fleet-not-goal-scoped' };
+  return null;
 }
 
 /** PURE: classify a whole batch. Exported for tests and future read-side surfaces. */
