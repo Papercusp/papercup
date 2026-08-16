@@ -378,14 +378,21 @@ describe('walkHarnessTree — integration against papercup`s real libs/', () => 
       // `_retired/snapshot-system/` (retire-snapshots-instance-spec, 2026-06-09)
       // → 6s+6p once `zero-harness` was de-materialized (retired; still in
       // .gitmodules but not checked out — see CLAUDE.md "Zero is retired")
-      // → 6s+7p once the plain `papercusp-publish-auth` package joined libs/.
+      // The plain `papercusp-publish-auth` package is one OF those 6 plain dirs —
+      // it has been in libs/ since well before the zero-harness retirement (it is
+      // present in libs/ at 6bb0354841 2026-06-05 and 6ea34af479 2026-06-09), so it
+      // is NOT an additional entry on top of them. A 2026-08-13 edit (0219651abc)
+      // raised this to 6s+7p/total 13 on the belief that it had newly joined, but
+      // `git ls-tree HEAD libs/` has returned exactly 12 direct children at every
+      // sha since zero-harness went away — so 13 was never reachable and the
+      // assertion red-pinned the gate. Corrected back to the measured 6s+6p.
       expect({ subs: summary.submodules, plain: summary.plain }).toEqual({
         subs: 6,
-        plain: 7,
+        plain: 6,
       });
       expect(summary.worktrees).toBe(0);
       expect(summary.standalone).toBe(0);
-      expect(summary.total).toBe(13);
+      expect(summary.total).toBe(12);
       expect(nodes.map((node) => node.relPath)).toContain('papercusp-publish-auth');
 
       // Sanity: each submodule has a qualified slug rooted at papercup.
