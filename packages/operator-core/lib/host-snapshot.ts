@@ -34,10 +34,10 @@
  * ── Cost discipline ─────────────────────────────────────────────────────────
  * This rides on EVERY orient, so it must stay near-free and never throw. Load
  * and memory come from `os` (in-process counters, no syscall fan-out); cores
- * come from the already-memoized `@papercusp/resource-profile`; the one file
- * read (`/proc/pressure/memory`) is cached for {@link PSI_CACHE_MS} and is
- * fully optional — every leg fails soft to `undefined` rather than degrading
- * the orient around it.
+ * come from the already-memoized `@papercusp/resource-profile`; the two file
+ * reads (`/proc/pressure/memory`, `/proc/pressure/cpu`) are cached for
+ * {@link PSI_CACHE_MS} and are fully optional — every leg fails soft to
+ * `undefined` rather than degrading the orient around it.
  */
 
 import { cpus, freemem, loadavg, totalmem } from 'node:os';
@@ -47,6 +47,26 @@ import { readFileSync } from 'node:fs';
  *  enough that re-reading per call is pointless; PSI avg10/avg60 cannot move
  *  meaningfully inside this window. */
 export const PSI_CACHE_MS = 5_000;
+
+/**
+ * How long a `/proc/stat` run-queue read is reused.
+ *
+ * Deliberately its OWN constant rather than sharing {@link PSI_CACHE_MS}, because
+ * the justification is different and the difference is the interesting part. PSI
+ * is cached because avg10/avg60 *cannot move* inside the window. `procs_running`
+ * very much can — it was measured swinging 39→76 inside five seconds on this box.
+ * It is cached anyway, for cost (a full `/proc/stat` read is 16.8 KB / 0.225 ms,
+ * ~8x the pressure read, on a path that runs on every orient), and the staleness
+ * is acceptable for a specific reason: the number this field exists to
+ * disambiguate is a 1-MINUTE EWMA, so even a 5-second-old instantaneous sample is
+ * an order of magnitude fresher than the figure it is explaining.
+ *
+ * That trade is only safe while this is read as a SNAPSHOT. Do not build a trend,
+ * a rate, or a saturation verdict out of repeated calls inside this window — they
+ * would return the same cached sample and manufacture a stability that was never
+ * measured.
+ */
+export const RUNQ_CACHE_MS = 5_000;
 
 /**
  * The scalars an agent would otherwise shell out for.
@@ -103,8 +123,41 @@ export interface HostSnapshot {
    */
   cores?: number;
   /** 1/5/15-minute load averages — the `uptime` / `cat /proc/loadavg` answer.
-   *  Read against {@link cores}: this is a RUN-QUEUE DEPTH, not a percentage. */
+   *  Read against {@link cores}: this is a RUN-QUEUE DEPTH, not a percentage.
+   *
+   *  ⚠ AND IT IS NOT A CPU MEASUREMENT. Linux loadavg counts tasks in
+   *  UNINTERRUPTIBLE sleep (D state — blocked on I/O) alongside runnable ones,
+   *  and it is a 1/5/15-minute EWMA, so it TRAILS. Both properties break the
+   *  reading this number invites, which is `load > cores ⇒ the box is CPU
+   *  oversubscribed`. Measured on this 128-core box 2026-08-16: `load1` sat
+   *  frozen at 85.69 across five consecutive seconds while the actual run queue
+   *  oscillated between 39 and 76 — i.e. the headline number was neither
+   *  instantaneous nor purely CPU.
+   *
+   *  So do NOT attribute a high load from this field alone. {@link procsRunning}
+   *  and {@link procsBlocked} are carried beside it precisely so the two
+   *  mechanisms it conflates can be told apart (EI-20495650388693372). */
   load?: [number, number, number];
+  /**
+   * Tasks RUNNING or runnable at the sampling instant — `/proc/stat`'s
+   * `procs_running`. This is the CPU-saturation numerator {@link load} is
+   * routinely mistaken for: compare THIS against {@link cores}, not `load`.
+   *
+   * Instantaneous, not smoothed — so it moves far faster than `load` and a
+   * single sample is a snapshot, not a trend (see {@link RUNQ_CACHE_MS}).
+   */
+  procsRunning?: number;
+  /**
+   * Tasks in UNINTERRUPTIBLE sleep — `/proc/stat`'s `procs_blocked`, the D-state
+   * count. These consume NO CPU yet are counted by {@link load}, which is the
+   * single largest reason a load average overshoots what the cores are doing.
+   *
+   * It is also the wedge signal: a persistently high `procsBlocked` is work stuck
+   * in the kernel (storage, NFS, a hung device), which is a different failure —
+   * and a different fix — from a transient parallel build burst, where
+   * {@link procsRunning} is high and this stays near zero.
+   */
+  procsBlocked?: number;
   /** Free RAM as a percentage of total, rounded — the `free -h` answer, in the
    *  form the question is actually asked in ("is this box out of memory?"). */
   memFreePct?: number;
@@ -118,6 +171,16 @@ export interface HostSnapshot {
 }
 
 let psiCache: { at: number; value: number | undefined } | undefined;
+
+/** The run-queue decomposition of {@link HostSnapshot.load}. Each leg is
+ *  independently optional: a `/proc/stat` that yields one key but not the other
+ *  reports the one it has rather than discarding both. */
+interface RunQueue {
+  running?: number;
+  blocked?: number;
+}
+
+let runqCache: { at: number; value: RunQueue } | undefined;
 
 /**
  * Read PSI memory pressure avg60, cached and fail-soft.
