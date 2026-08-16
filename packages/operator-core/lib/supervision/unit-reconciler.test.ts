@@ -30,6 +30,7 @@ import {
   stdoutFromExecError,
   type SystemctlUnitStatus,
   type ReconcilerDeps,
+  type ReconcileAction,
 } from './unit-reconciler';
 import type { SupervisionEntry } from '../service-health';
 

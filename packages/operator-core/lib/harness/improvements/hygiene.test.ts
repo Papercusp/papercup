@@ -162,6 +162,14 @@ describe('runHygieneSweep — persistence + dryRun', () => {
     expect(merged).toHaveLength(0);
   });
 
+  it('hands readItems the stale cutoff (nowMs - staleDays) so the read can select the tail as a set (WI-39455)', async () => {
+    const { deps } = mkDeps([]);
+    await runHygieneSweep({ nowMs: NOW, staleDays: 30, dryRun: true }, deps);
+    expect(deps.readItems).toHaveBeenCalledWith({
+      staleCutoffIso: new Date(NOW - 30 * 24 * 60 * 60 * 1000).toISOString(),
+    });
+  });
+
   it('executes: closes with decidedReason + reject-route lifecycle', async () => {
     const { deps, closed, merged, commented } = mkDeps([
       cand({ id: 'old', title: 'stale minor docs nit', createdAt: daysAgo(50) }),
