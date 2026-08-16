@@ -42,14 +42,14 @@ describe('store cap vs render budget — the drift guard', () => {
     // The end-to-end property the owner actually cares about: what the agent
     // wrote is what the pane shows.
     const body = 'y'.repeat(TRANSCRIPT_RENDER_TEXT_CAP - 1);
-    const rendered = capEntryText({ kind: 'assistant', text: cleanPartText(body, 'text') });
+    const rendered = capEntryText({ kind: 'text', text: cleanPartText(body, 'text') });
     expect(rendered.text).toBe(body);
   });
 
   it('covers the real-world case that exposed the bug (a 7,051-char report)', () => {
     const audit = 'z'.repeat(7051);
     expect(cleanPartText(audit, 'text')).toBe(audit);
-    expect(capEntryText({ kind: 'assistant', text: audit }).text).toBe(audit);
+    expect(capEntryText({ kind: 'text', text: audit }).text).toBe(audit);
   });
 
   it('keeps thinking parts at the prose cap too — they are prose a human reads', () => {

@@ -151,7 +151,8 @@ const FLEET_PRUNED_MCP_SERVERS = new Set(['playwright']);
  *   plan session-turn-storage-2026-07-28 D-003/D-007). Ingest already accepts
  *   populated thinking parts with no schema change. NOTE the storage consequence:
  *   thinking parts were free while empty; populated they compete with the same
- *   PART_TEXT_CAP budget as text — revisit that cap if the parts table grows.
+ *   PROSE cap as text (PART_TEXT_CAP_PROSE, derived from the pane's render
+ *   budget — see lib/transcript-text-caps.ts) — revisit if the table grows.
  *
  * `fileCheckpointingEnabled: false` (CC default on — 650 MB / 19,451 files
  *   observed in ~/.claude/file-history) — /rewind restores files in place, and
