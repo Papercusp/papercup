@@ -540,7 +540,7 @@ export function rewriteRequestModel(bodyBuf: Buffer, newModel: string): Buffer |
 
 /** Claude CLI's `[1m]` marker is a client-side window selector, not an Anthropic API model id. */
 const ONE_MILLION_MODEL_ALIASES: Record<string, string> = {
-  opus: 'claude-opus-4-8',
+  opus: 'claude-opus-5',
   sonnet: 'claude-sonnet-5',
   fable: 'claude-fable-5',
 };
