@@ -1052,26 +1052,79 @@ async function gatherSnapshot(t: InvariantThresholds): Promise<InvariantSnapshot
 // actually in use; zero rows ⇒ the leg is a no-op.)
 
 /** Stable dedup titles per incident kind (a persisting incident re-files into
- *  its open improvement instead of flooding). */
+ *  its open improvement instead of flooding).
+ *
+ * ⚠ EI-20579195481991931 — THE TITLE ALONE IS NOT A SIGNAL IDENTITY, AND RELYING
+ * ON IT SILENTLY LOSES EVERY SCOPE BUT THE FIRST. These titles differ only by a
+ * harness proper noun, and `captureImprovement`'s HARD-semantic dedup band scores
+ * that pair as the same signal — so the second scope to breach in a pass is
+ * declined as a duplicate of the first. MEASURED on the 2026-08-16T11:40Z pass:
+ * `…silence in hello-world-3-pot` was created 11:40:06.128Z (2 of 3 logs silent)
+ * and `…silence in papercusp` was swallowed as `duplicate` 11:40:08.172Z — the
+ * WORSE breach (20 of 21 logs silent, and the scope the original report was
+ * about) absorbed into the milder one, with the winner decided by nothing more
+ * than the unordered `GROUP BY harness_slug` scan order. Proof survives in
+ * `harness_shared.work_item_occurrences` (report_kind='duplicate').
+ *
+ * `watchdogKey` is the fix the capture rail already provides: a candidate
+ * carrying a DIFFERENT key is a different signal and can never decline this
+ * capture, while the SAME key stays an exact indexed match — so cross-TICK
+ * dedup (the behaviour these stable titles exist for) is preserved, and only
+ * the cross-SCOPE collapse is removed.
+ */
 export function planSharedHiveCapture(
   incident: MonitorIncident,
   harness: string,
-): { title: string; severity: 'critical' | 'major' | 'minor' | 'nit' } {
+): { title: string; severity: 'critical' | 'major' | 'minor' | 'nit'; watchdogKey: string } {
+  // Per-(kind, harness) so two scopes breaching the same way in one pass are two
+  // signals. Built here rather than at the call site so title and identity cannot
+  // drift apart — a per-harness title with a shared key is the same bug again.
+  const key = `shared-hive:${incident.kind}:${harness}`;
   switch (incident.kind) {
     case 'double-completion':
-      return { title: `shared-hive invariant: cross-swarm double completion in ${harness}`, severity: 'major' };
+      return {
+        title: `shared-hive invariant: cross-swarm double completion in ${harness}`,
+        severity: 'major',
+        watchdogKey: key,
+      };
     case 'outbox-health':
-      return { title: 'shared-hive invariant: substrate outbox depth/age breach', severity: 'major' };
+      // Harness-scoped like every sibling: `scanOutboxHealth` is already called
+      // per harness, so a single global title made harness A's depth breach mask
+      // harness B's — the same collapse as above, reached through the title
+      // instead of the semantic band.
+      return {
+        title: `shared-hive invariant: substrate outbox depth/age breach in ${harness}`,
+        severity: 'major',
+        watchdogKey: key,
+      };
     case 'presence-ghost':
-      return { title: `shared-hive invariant: presence ghost anchoring live leases in ${harness}`, severity: 'minor' };
+      return {
+        title: `shared-hive invariant: presence ghost anchoring live leases in ${harness}`,
+        severity: 'minor',
+        watchdogKey: key,
+      };
     case 'orphaned-taken-by':
-      return { title: `shared-hive invariant: orphaned taken_by swept in ${harness}`, severity: 'minor' };
+      return {
+        title: `shared-hive invariant: orphaned taken_by swept in ${harness}`,
+        severity: 'minor',
+        watchdogKey: key,
+      };
     // EI-20579195481991931 — a peer that stops federating is the failure a p2p
     // system must not miss, so it outranks the local-hygiene incidents above.
     case 'peer-federation-silence':
-      return { title: `shared-hive invariant: peer federation silence in ${harness}`, severity: 'major' };
+      return {
+        title: `shared-hive invariant: peer federation silence in ${harness}`,
+        severity: 'major',
+        watchdogKey: key,
+      };
     case 'monitor-scope-empty':
-      return { title: 'shared-hive invariant: monitor resolved ZERO scopes on a federating host', severity: 'major' };
+      // Deliberately NOT harness-scoped: "the pass resolved zero scopes" is a
+      // fact about the whole pass, so there is no harness to scope it to.
+      return {
+        title: 'shared-hive invariant: monitor resolved ZERO scopes on a federating host',
+        severity: 'major',
+        watchdogKey: `shared-hive:${incident.kind}`,
+      };
   }
 }
 
@@ -1179,6 +1232,10 @@ async function runSharedHiveLeg(ctx: SystemActionCtx): Promise<void> {
             kind: 'bug',
             severity: plan.severity,
             dedupScope: 'open',
+            // EI-20579195481991931: without this, the second scope to breach in a
+            // pass is declined as a hard-semantic duplicate of the first (see
+            // planSharedHiveCapture). Same key across ticks still dedups exactly.
+            watchdogKey: plan.watchdogKey,
             foundDuring: 'system:coord-invariant-monitor (shared-hive leg)',
             subTopic: 'shared-hive',
             body: `${incident.title}\n\nForensics: ${JSON.stringify(incident.detail)}\n(shared-hive-loop-e2e-testing-2026-06-10 P-012/P-013; check source: packages/operator-core/lib/shared-pot-loop/fleet-monitors.ts.)`,
