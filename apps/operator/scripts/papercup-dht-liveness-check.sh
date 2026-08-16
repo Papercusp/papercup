@@ -109,7 +109,20 @@ fi
 
 # ── run the real probe. ──
 run_probe() {
-  cd "$REPO_ROOT" && timeout $(( (DHT_PROBE_TIMEOUT_MS / 1000) + 20 )) node "$PROBE" --host "$DHT_HOST" --port "$DHT_PORT" --timeout-ms "$DHT_PROBE_TIMEOUT_MS" 2>&1
+  local -a remote_args=()
+  # P-302: with a remote peer configured the probe runs its DIALLING leg on the
+  # other machine, so the run actually crosses the network. Without one it is
+  # explicitly local-only and says so in its own verdict.
+  if [ -n "${DHT_REMOTE_HOST:-}" ]; then
+    remote_args=(--remote-host "$DHT_REMOTE_HOST" --remote-cwd "${DHT_REMOTE_CWD:?DHT_REMOTE_HOST requires DHT_REMOTE_CWD}")
+    [ -n "${DHT_REMOTE_NODE:-}" ] && remote_args+=(--remote-node "$DHT_REMOTE_NODE")
+    [ "${DHT_REQUIRE_CROSS_HOST:-0}" = 1 ] && remote_args+=(--require-cross-host)
+  elif [ "${DHT_REQUIRE_CROSS_HOST:-0}" = 1 ]; then
+    remote_args=(--require-cross-host)
+  fi
+  # The margin covers the probe's own budget plus ssh staging on the remote leg.
+  cd "$REPO_ROOT" && timeout $(( (DHT_PROBE_TIMEOUT_MS / 1000) + 45 )) node "$PROBE" \
+    --host "$DHT_HOST" --port "$DHT_PORT" --timeout-ms "$DHT_PROBE_TIMEOUT_MS" "${remote_args[@]}" 2>&1
 }
 
 log "probing bootstrap $DHT_HOST:$DHT_PORT (timeout ${DHT_PROBE_TIMEOUT_MS}ms) …"
