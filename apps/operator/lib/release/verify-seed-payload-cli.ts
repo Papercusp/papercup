@@ -38,7 +38,8 @@ import { readFile } from 'node:fs/promises';
 
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 
-import { judgeSeedPayloadIntegrity, type SeedStoreVerifier } from './seed-payload-integrity-guard.ts';
+import { judgeSeedPayloadIntegrity, type SeedStoreVerifier } from './seed-payload-integrity-guard.js';
+import { assertSeedNotDegraded } from './seed-degradation-guard.js';
 
 export const EXIT_OK = 0;
 export const EXIT_MISMATCH = 1;
@@ -113,7 +114,31 @@ export async function runVerifySeedPayload(
       ...(verify ? { verify } : {}),
     });
     log(result.message);
-    return result.ok ? EXIT_OK : EXIT_MISMATCH;
+    if (!result.ok) return EXIT_MISMATCH;
+
+    // The SIBLING gap, same shape and same seam (D-023). `assertSeedNotDegraded` already judges
+    // the FINAL manifest, so it covers both the fresh and the grafted cut — but its only
+    // production caller is cut-seed-cli, so it runs ONLY WHEN A CUT RUNS. The default build
+    // path skips the cut entirely, which means a committed seed that is labelled sparse while
+    // carrying full history ships without this guard ever firing. Running it here puts it on
+    // the path that actually ships. It respects PAPERCUSP_SEED_ACK_FULL_HISTORY, so a
+    // deliberate acknowledged ship still passes rather than being blocked twice.
+    //
+    // ⚠ ITS OWN try/catch, NOT the outer one. This guard signals refusal by THROWING, so
+    // letting the outer handler see it would report a degraded seed as EXIT_UNDETERMINED —
+    // "could not check" instead of "it is broken", which is the exact collapse the three-way
+    // contract exists to prevent. (It did precisely that until a test caught it.) A throw here
+    // fails CLOSED: on the ship path a guard that errors must not wave the seed through.
+    try {
+      assertSeedNotDegraded(manifest as Parameters<typeof assertSeedNotDegraded>[0], {
+        origin: args.origin,
+        env: process.env,
+      });
+    } catch (err) {
+      log(`[seed-verify] ${(err as Error).message}`);
+      return EXIT_MISMATCH;
+    }
+    return EXIT_OK;
   } catch (err) {
     // The verifier could not RUN (missing provider deps, not a full checkout, a VM leg).
     // Never report that as either verdict.

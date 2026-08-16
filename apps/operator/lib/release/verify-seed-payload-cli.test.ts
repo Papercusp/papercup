@@ -26,8 +26,8 @@ import {
   EXIT_UNDETERMINED,
   parseVerifySeedPayloadArgs,
   runVerifySeedPayload,
-} from './verify-seed-payload-cli.ts';
-import type { SeedStoreVerifier } from './seed-payload-integrity-guard.ts';
+} from './verify-seed-payload-cli.js';
+import type { SeedStoreVerifier } from './seed-payload-integrity-guard.js';
 
 /** Control: every store is intact. */
 const alwaysOk: SeedStoreVerifier = async () => ({ ok: true });
@@ -119,6 +119,46 @@ describe('runVerifySeedPayload — the three-way exit contract', () => {
 
   it('keeps all three verdicts mutually distinct', () => {
     expect(new Set([EXIT_OK, EXIT_MISMATCH, EXIT_UNDETERMINED]).size).toBe(3);
+  });
+
+  // The SIBLING gap (D-023): assertSeedNotDegraded judges the final manifest, so it covers both
+  // cut branches — but its only production caller is cut-seed-cli, so it never runs on a build
+  // that skips the cut. These pin it onto the ship path.
+  describe('degradation leg — the guard that previously only ran when a cut ran', () => {
+    const CORE = '5b00878b7df0637b4f758129d02bc797d6c1928e18bc3751cb27b9ca0d541bac';
+    /** State 2, the 2026-07-21 shipped lie: labelled sparse, starts at 0, ships every block. */
+    const DEGRADED = {
+      seedFormatVersion: 1,
+      stores: [
+        { kind: 'git', hash: 'g', sizeBytes: 131_296_503, source: { type: 'resource', path: 'git' } },
+        {
+          kind: 'corestore',
+          hash: 'h',
+          sizeBytes: 1_998_388_355,
+          source: { type: 'resource', path: 'corestore' },
+          meta: { coreKeys: [CORE], coreLengths: { [CORE]: 461_475 }, coreSparseFrom: { [CORE]: 0 } },
+        },
+      ],
+    };
+
+    it('reports MISMATCH for a degraded seed even when every payload hash matches', async () => {
+      await writeManifest(DEGRADED);
+      // alwaysOk => the payload leg passes; only the degradation leg can red this.
+      const code = await runVerifySeedPayload({ seedDir: dir, origin: 'reuse' }, silent, alwaysOk);
+      expect(code).toBe(EXIT_MISMATCH);
+    });
+
+    it('still reports OK for an honestly-labelled seed (no false red on a full cut)', async () => {
+      const honest = {
+        ...DEGRADED,
+        stores: [
+          DEGRADED.stores[0],
+          { ...DEGRADED.stores[1], sizeBytes: 318_544_683, meta: { coreKeys: [CORE], coreLengths: { [CORE]: 76 } } },
+        ],
+      };
+      await writeManifest(honest);
+      expect(await runVerifySeedPayload({ seedDir: dir, origin: 'reuse' }, silent, alwaysOk)).toBe(EXIT_OK);
+    });
   });
 
   it('surfaces the remedy for a grafted corestore in the reuse message', async () => {
