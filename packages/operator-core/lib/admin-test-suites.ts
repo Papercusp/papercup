@@ -92,9 +92,9 @@ interface RoutePage {
  * label, which is exactly how WI-39494's 2912ms cold boot was reported as a
  * 1.94x warm-route breach.
  */
-type RouteNavKind = 'in-page' | 'document-load';
+export type RouteNavKind = 'in-page' | 'document-load';
 
-interface RouteMeasurement {
+export interface RouteMeasurement {
   ok: boolean;
   elapsedMs: number;
   page: RoutePage;
@@ -115,9 +115,26 @@ interface MemoryTree {
   rows: MemoryRow[];
 }
 
-interface ChaosRecorderSummary {
+export interface ChaosRecorderSummary {
   clicks: number;
   durationMs: number;
+  /**
+   * How many Event Timing entries the recorder actually OBSERVED — NOT how many
+   * clicks it made.
+   *
+   * ⚠ These two diverge permanently, and the gap is why chaos INP has always
+   * read 0 (WI-39495). The chaos driver is gremlins.js, which SYNTHESISES its
+   * clicks — and Event Timing ignores untrusted events, so a synthetic click
+   * runs the handler and produces no entry. Measured 2026-08-16 in this exact
+   * WebKitGTK, one button / one observer / a 60ms-blocking handler: 2 synthetic
+   * clicks => 0 entries; 2 real xdotool clicks => 6 entries (click dur=64ms,
+   * interactionId=1285). The engine is fine; the DRIVER cannot produce INP.
+   *
+   * Without this field `maxInp`/`p95Inp` of 0 is ambiguous between "nothing was
+   * slow" (a real pass) and "nothing was ever observed" (no measurement at all),
+   * and the budget comparison silently accepted the second as the first.
+   */
+  inpSamples: number;
   maxInp: number;
   p95Inp: number;
   longTasks: number;
@@ -730,12 +747,27 @@ function desktopPerformanceChecks(ctx: SuiteContext) {
       run: async () => {
         await clearPerfRecorder(ctx);
         const state = await getDesktopState(ctx);
-        const route = `/harness?slug=${encodeURIComponent(state.activeSlug)}&ws=default`;
-        // `/harness` is not a rendered route — apps/operator/app/page.tsx
-        // redirects it to `/adv?tab=harnesses`, and `.h-root` belongs to the
-        // retired harness surface, so BOTH halves of the old predicate
-        // (`href.includes('/harness') && hasHarnessRoot`) became permanently
-        // false. Assert the post-redirect identity plus a node-count floor:
+        // ⚠ Target the POST-REDIRECT url, not `/harness`. `/harness` is not a
+        // rendered route — apps/operator-vite/src/routes/harness/index.tsx
+        // throws a `beforeLoad` redirect to `/adv?tab=harnesses` — and that
+        // redirect used to break this check TWICE over:
+        //   1. `.h-root` belongs to the retired harness surface, so BOTH halves
+        //      of the old predicate (`href.includes('/harness') &&
+        //      hasHarnessRoot`) were permanently false → a 10695ms poll-ceiling
+        //      artifact reported as a page latency.
+        //   2. measureRoute picks in-page-vs-document-load by comparing path
+        //      ROOTS, and the landing root (`adv`) can never equal the requested
+        //      root (`harness`) — so BOTH passes did a full webview reload and
+        //      the "warm" pass measured an SPA COLD BOOT. That is what produced
+        //      the 2912ms "1.94x warm-route breach" in WI-39494, against
+        //      siblings measuring 451-517ms warm. Requesting `/adv?tab=harnesses`
+        //      directly lets the second pass take the in-page branch, which is
+        //      what a warm-route budget actually describes.
+        // The legacy `/harness` → `/adv` redirect itself is covered by
+        // apps/operator-vite/src/routes/harness/index.test.tsx; it is a routing
+        // concern, not a perf one.
+        const route = `/adv?tab=harnesses&slug=${encodeURIComponent(state.activeSlug)}&ws=default`;
+        // Assert the post-redirect identity plus a node-count floor:
         // data-independent, so it still holds under the empty isolated DB this
         // suite requires. NOT a heading test — this tab renders ~983 nodes with
         // no h1/h2 whatsoever, so `h1.length > 0` false-negatives here.
@@ -898,23 +930,15 @@ function desktopPerformanceChecks(ctx: SuiteContext) {
       label: 'Chaos recorder usability',
       run: async () => {
         const summary = await runChaosRecorder(ctx, '/adv?slug=papercup&tab=testing&testsTab=test-runs', 5_000);
-        const pass = summary.clicks > 0 && summary.maxInp <= DESKTOP_PERF_BUDGETS.chaosInpMaxMs && summary.p95Inp <= DESKTOP_PERF_BUDGETS.chaosInpP95Ms && summary.errors === 0 && summary.reloads === 0 && summary.frameDrops <= DESKTOP_PERF_BUDGETS.chaosMaxFrameDrops && summary.maxFrameMs <= DESKTOP_PERF_BUDGETS.chaosMaxFrameMs;
-        return statusResult(
-          pass,
-          `Existing Chaos recorder can click around for 5s with p95 INP <=${DESKTOP_PERF_BUDGETS.chaosInpP95Ms}ms, max INP <=${DESKTOP_PERF_BUDGETS.chaosInpMaxMs}ms, no errors, no reloads, <=${DESKTOP_PERF_BUDGETS.chaosMaxFrameDrops} severe frame drops, and max frame <=${DESKTOP_PERF_BUDGETS.chaosMaxFrameMs}ms.`,
-          `${summary.clicks} clicks · p95=${summary.p95Inp}ms · max=${summary.maxInp}ms · errors=${summary.errors} · reloads=${summary.reloads} · frameDrops=${summary.frameDrops} · maxFrame=${summary.maxFrameMs}ms.`,
-          [
-            `routes: ${summary.routes.join(', ') || '(none)'}`,
-            `duration=${summary.durationMs}ms`,
-            `longTasks=${summary.longTasks}`,
-          ],
-          [
-            budgetMeasure('chaos:inp-p95', summary.p95Inp, 'ms', DESKTOP_PERF_BUDGETS.chaosInpP95Ms),
-            budgetMeasure('chaos:inp-max', summary.maxInp, 'ms', DESKTOP_PERF_BUDGETS.chaosInpMaxMs),
-            budgetMeasure('chaos:max-frame', summary.maxFrameMs, 'ms', DESKTOP_PERF_BUDGETS.chaosMaxFrameMs),
-            budgetMeasure('chaos:frame-drops', summary.frameDrops, 'count', DESKTOP_PERF_BUDGETS.chaosMaxFrameDrops),
-          ],
-        );
+        // Same grading seam as the per-surface chaos checks — in particular it
+        // will NOT grade the INP legs against zeroes the recorder never observed
+        // (WI-39495). The `chaos:*` measure keys are unprefixed here to keep this
+        // check's original trend series.
+        return gradeChaosSummary(summary, 'Existing Chaos recorder clicking around for 5s', 'chaos:', [
+          `routes: ${summary.routes.join(', ') || '(none)'}`,
+          `duration=${summary.durationMs}ms`,
+          `longTasks=${summary.longTasks}`,
+        ]);
       },
     },
     // P-009: broaden chaos coverage beyond the test-runs surface — chaos-click
@@ -1168,42 +1192,105 @@ async function chaosSurfaceCheck(
   route: string,
 ): Promise<Omit<AdminTestCheckResult, 'suiteId' | 'id' | 'label' | 'durationMs'>> {
   const summary = await runChaosRecorder(ctx, route, 5_000);
-  const pass =
-    summary.clicks > 0 &&
-    summary.maxInp <= DESKTOP_PERF_BUDGETS.chaosInpMaxMs &&
-    summary.p95Inp <= DESKTOP_PERF_BUDGETS.chaosInpP95Ms &&
-    summary.errors === 0 &&
-    summary.reloads === 0 &&
-    summary.frameDrops <= DESKTOP_PERF_BUDGETS.chaosMaxFrameDrops &&
-    summary.maxFrameMs <= DESKTOP_PERF_BUDGETS.chaosMaxFrameMs;
-  return statusResult(
-    pass,
-    `Chaos-clicking the ${label} surface for 5s stays within budgets (p95 INP <=${DESKTOP_PERF_BUDGETS.chaosInpP95Ms}ms, max INP <=${DESKTOP_PERF_BUDGETS.chaosInpMaxMs}ms, <=${DESKTOP_PERF_BUDGETS.chaosMaxFrameDrops} severe frame drops, max frame <=${DESKTOP_PERF_BUDGETS.chaosMaxFrameMs}ms), with no errors or reloads.`,
-    `${summary.clicks} clicks · p95=${summary.p95Inp}ms · max=${summary.maxInp}ms · errors=${summary.errors} · reloads=${summary.reloads} · frameDrops=${summary.frameDrops} · maxFrame=${summary.maxFrameMs}ms.`,
+  return gradeChaosSummary(
+    summary,
+    `Chaos-clicking the ${label} surface for 5s`,
+    `chaos:${surfaceKey}:`,
     [
       `route: ${route}`,
       `recorder routes: ${summary.routes.join(', ') || '(none)'}`,
       `duration=${summary.durationMs}ms · longTasks=${summary.longTasks}`,
     ],
-    [
-      budgetMeasure(`chaos:${surfaceKey}:inp-p95`, summary.p95Inp, 'ms', DESKTOP_PERF_BUDGETS.chaosInpP95Ms),
-      budgetMeasure(`chaos:${surfaceKey}:inp-max`, summary.maxInp, 'ms', DESKTOP_PERF_BUDGETS.chaosInpMaxMs),
-      budgetMeasure(`chaos:${surfaceKey}:max-frame`, summary.maxFrameMs, 'ms', DESKTOP_PERF_BUDGETS.chaosMaxFrameMs),
-      budgetMeasure(`chaos:${surfaceKey}:frame-drops`, summary.frameDrops, 'count', DESKTOP_PERF_BUDGETS.chaosMaxFrameDrops),
-    ],
   );
+}
+
+/**
+ * Grade a chaos run — and REFUSE to grade the INP legs when no interaction was
+ * ever observed (WI-39495).
+ *
+ * The chaos driver (gremlins.js) synthesises its clicks, and Event Timing
+ * ignores untrusted events, so `maxInp`/`p95Inp` are permanently 0 on every
+ * surface. The old verdict compared those zeroes against the budgets and they
+ * PASSED trivially — an INP assertion that has never once been evaluated, sitting
+ * inside a check whose other legs currently fail for unrelated (real) reasons.
+ * The moment those frame breaches are fixed the whole check goes green while INP
+ * remains unmeasured, which is the failure this guard exists to prevent.
+ *
+ * So: the frame/error/reload legs are graded normally — the synthetic driver
+ * measures those validly — and the INP legs are graded ONLY when
+ * `inpSamples > 0`. When they are not, the two INP measures are omitted entirely
+ * rather than emitted as zeroes, so an unmeasured budget cannot enter the trend
+ * series as a clean datum. A genuine failure elsewhere still reports FAIL: an
+ * unmeasurable INP must not launder a real breach into a skip.
+ */
+export function gradeChaosSummary(
+  summary: ChaosRecorderSummary,
+  subject: string,
+  measurePrefix: string,
+  details: string[],
+): Omit<AdminTestCheckResult, 'suiteId' | 'id' | 'label' | 'durationMs'> {
+  const inpMeasured = summary.inpSamples > 0;
+  const expected = `${subject} stays within budgets (p95 INP <=${DESKTOP_PERF_BUDGETS.chaosInpP95Ms}ms, max INP <=${DESKTOP_PERF_BUDGETS.chaosInpMaxMs}ms, <=${DESKTOP_PERF_BUDGETS.chaosMaxFrameDrops} severe frame drops, max frame <=${DESKTOP_PERF_BUDGETS.chaosMaxFrameMs}ms), with no errors or reloads.`;
+  const inpText = inpMeasured
+    ? `p95=${summary.p95Inp}ms · max=${summary.maxInp}ms (${summary.inpSamples} samples)`
+    : 'INP=UNMEASURED (0 Event Timing entries)';
+  const actual = `${summary.clicks} clicks · ${inpText} · errors=${summary.errors} · reloads=${summary.reloads} · frameDrops=${summary.frameDrops} · maxFrame=${summary.maxFrameMs}ms.`;
+
+  const measures = [
+    budgetMeasure(`${measurePrefix}max-frame`, summary.maxFrameMs, 'ms', DESKTOP_PERF_BUDGETS.chaosMaxFrameMs),
+    budgetMeasure(`${measurePrefix}frame-drops`, summary.frameDrops, 'count', DESKTOP_PERF_BUDGETS.chaosMaxFrameDrops),
+  ];
+  if (inpMeasured) {
+    measures.unshift(
+      budgetMeasure(`${measurePrefix}inp-p95`, summary.p95Inp, 'ms', DESKTOP_PERF_BUDGETS.chaosInpP95Ms),
+      budgetMeasure(`${measurePrefix}inp-max`, summary.maxInp, 'ms', DESKTOP_PERF_BUDGETS.chaosInpMaxMs),
+    );
+  }
+
+  // `clicks > 0` still guards a surface that never hydrated — nothing to click
+  // means the surface is broken, which is a real failure, not an unmeasured one.
+  const gradableLegsPass =
+    summary.clicks > 0 &&
+    summary.errors === 0 &&
+    summary.reloads === 0 &&
+    summary.frameDrops <= DESKTOP_PERF_BUDGETS.chaosMaxFrameDrops &&
+    summary.maxFrameMs <= DESKTOP_PERF_BUDGETS.chaosMaxFrameMs;
+
+  if (!gradableLegsPass) {
+    return statusResult(false, expected, actual, details, measures);
+  }
+  if (!inpMeasured) {
+    return skip(expected, `INP UNMEASURED — ${actual}`, [
+      `The recorder made ${summary.clicks} clicks but observed 0 Event Timing entries, so p95/max INP were never measured and are NOT reported as 0.`,
+      'Cause: the chaos driver (gremlins.js) synthesises its clicks, and Event Timing only records TRUSTED events — verified 2026-08-16 in this WebKitGTK (2 synthetic clicks on a 60ms-blocking handler => 0 entries; 2 real xdotool clicks => 6 entries). Measuring chaos INP requires a real input driver, not a recorder fix (WI-39495).',
+      'Every other budget on this surface (errors, reloads, frame drops, max frame) WAS measured and passed.',
+      ...details,
+    ], measures);
+  }
+  const inpPass =
+    summary.maxInp <= DESKTOP_PERF_BUDGETS.chaosInpMaxMs && summary.p95Inp <= DESKTOP_PERF_BUDGETS.chaosInpP95Ms;
+  return statusResult(inpPass, expected, actual, details, measures);
 }
 
 /** A not-exercised check: 'skip' collapses to 'pass' in the run rollup, so it
  *  never reds the suite. Used for interactions the long-lived admin shell can't
  *  re-trigger (dock mounts once; a conversation needs a specific chat) — the
  *  fresh-binary wdio harness drives those cold. */
+/**
+ * `measures` is optional and usually omitted — a skip normally has nothing it is
+ * entitled to report. Pass it only for a PARTIAL skip, where some legs were
+ * genuinely measured and only the graded one was not: a chaos run whose INP is
+ * unmeasurable still measured its frame timing, and dropping those samples would
+ * punch a hole in a real trend series to express a different leg's absence
+ * (WI-39495). Never pass a measure the run did not actually observe.
+ */
 function skip(
   expected: string,
   actual: string,
   details?: string[],
+  measures?: DesktopPerfMeasure[],
 ): Omit<AdminTestCheckResult, 'suiteId' | 'id' | 'label' | 'durationMs'> {
-  return { status: 'skip', expected, actual, details };
+  return { status: 'skip', expected, actual, details, measures };
 }
 
 function resolveRepoRoot(): string {
@@ -1407,7 +1494,7 @@ async function runChaosRecorder(ctx: SuiteContext, route: string, durationMs: nu
   chaosUrl.searchParams.set('dry', 'false');
   const ready = await measureRoute(ctx, chaosUrl.toString(), (page) => page.href.includes('testsTab=chaos-desktop'));
   if (!ready.ok) {
-    return { clicks: 0, durationMs, maxInp: 0, p95Inp: 0, longTasks: 0, errors: 1, reloads: 0, frameDrops: 0, maxFrameMs: 0, routes: ready.page.details.length > 0 ? ready.page.details : ['chaos tab did not load'] };
+    return { clicks: 0, durationMs, inpSamples: 0, maxInp: 0, p95Inp: 0, longTasks: 0, errors: 1, reloads: 0, frameDrops: 0, maxFrameMs: 0, routes: ready.page.details.length > 0 ? ready.page.details : ['chaos tab did not load'] };
   }
   let hydrated = false;
   for (let i = 0; i < 40; i += 1) {
@@ -1427,7 +1514,7 @@ async function runChaosRecorder(ctx: SuiteContext, route: string, durationMs: nu
     await sleep(250, ctx.signal);
   }
   if (!hydrated) {
-    return { clicks: 0, durationMs, maxInp: 0, p95Inp: 0, longTasks: 0, errors: 1, reloads: 0, frameDrops: 0, maxFrameMs: 0, routes: ['chaos tab controls did not hydrate'] };
+    return { clicks: 0, durationMs, inpSamples: 0, maxInp: 0, p95Inp: 0, longTasks: 0, errors: 1, reloads: 0, frameDrops: 0, maxFrameMs: 0, routes: ['chaos tab controls did not hydrate'] };
   }
   // Reset any stuck run state (e.g. a previous test run left the chaos store in
   // 'launching' or 'recording' state, so the button shows 'Stop' instead of
@@ -1474,7 +1561,7 @@ async function runChaosRecorder(ctx: SuiteContext, route: string, durationMs: nu
   );
   if (!launched.ok || !launched.value?.ok) {
     const reason = launched.value && 'reason' in launched.value ? launched.value.reason : describeCommandFailure(launched);
-    return { clicks: 0, durationMs, maxInp: 0, p95Inp: 0, longTasks: 0, errors: 1, reloads: 0, frameDrops: 0, maxFrameMs: 0, routes: [reason || 'chaos recorder launch failed'] };
+    return { clicks: 0, durationMs, inpSamples: 0, maxInp: 0, p95Inp: 0, longTasks: 0, errors: 1, reloads: 0, frameDrops: 0, maxFrameMs: 0, routes: [reason || 'chaos recorder launch failed'] };
   }
   const effectiveDurationMs = durationMs <= 10_000 ? 10_000 : 30_000;
   const deadline = Date.now() + effectiveDurationMs + 20_000;
@@ -1531,6 +1618,9 @@ async function runChaosRecorder(ctx: SuiteContext, route: string, durationMs: nu
       return {
         clicks: Number(summary.value.clicks || inps.length),
         durationMs: Number(summary.value.durationMs || durationMs),
+        // The count the budget legs need in order to tell "nothing was slow"
+        // apart from "nothing was observed" — see ChaosRecorderSummary.inpSamples.
+        inpSamples: inps.length,
         maxInp: inps.length ? inps[inps.length - 1] : 0,
         p95Inp: inps.length ? inps[Math.min(inps.length - 1, Math.floor(inps.length * 0.95))] : 0,
         longTasks,
@@ -1543,7 +1633,7 @@ async function runChaosRecorder(ctx: SuiteContext, route: string, durationMs: nu
     }
     await sleep(500, ctx.signal);
   }
-  return { clicks: 0, durationMs, maxInp: 0, p95Inp: 0, longTasks: 0, errors: 1, reloads: 0, frameDrops: 0, maxFrameMs: 0, routes: ['chaos recorder summary did not arrive before timeout'] };
+  return { clicks: 0, durationMs, inpSamples: 0, maxInp: 0, p95Inp: 0, longTasks: 0, errors: 1, reloads: 0, frameDrops: 0, maxFrameMs: 0, routes: ['chaos recorder summary did not arrive before timeout'] };
 }
 
 async function getDesktopState(ctx: SuiteContext): Promise<DesktopState> {
@@ -1674,7 +1764,7 @@ async function measureWarmRoute(
  * and emit NO measure, so an instrument ceiling cannot enter the trend series
  * as a latency datum.
  */
-function warmRouteResult(
+export function warmRouteResult(
   key: string,
   routeLabel: string,
   result: RouteMeasurement,
