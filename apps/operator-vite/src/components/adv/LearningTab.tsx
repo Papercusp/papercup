@@ -765,6 +765,10 @@ export default function LearningTab() {
 
   return (
     <div className="pc-learning">
+      {/* WI-39501: the stage row hosts the ONE header control every step shares —
+          pause/resume-all learning routines + the loop's spend (LearningLoopControl,
+          absolutely positioned at the row's right edge). */}
+      <div className="pc-learning__stagerow">
       <Tabs.Root
         className="pc-learning__stages"
         value={activeStage ?? ""}
@@ -819,6 +823,8 @@ export default function LearningTab() {
           })}
         </Tabs.List>
       </Tabs.Root>
+      <LearningLoopControl />
+      </div>
 
       <div className="pc-learning__controls">
         {/* The per-tab pot picker that lived here is GONE (owner directive
@@ -5801,6 +5807,13 @@ export function LearningStyles() {
         display: grid; grid-auto-flow: column; grid-auto-columns: minmax(90px, 1fr);
         align-items: start; width: 100%; max-width: 720px; margin: 0 auto; padding: 0 22px; box-sizing: border-box;
       }
+      /* WI-39501: the stage row anchors the header loop control at its right edge. */
+      .pc-learning__stagerow { position: relative; }
+      /* Paused learning loop = the header's EXISTING dormant vocabulary applied
+         loop-wide, keyed off the control's state class via :has() so the
+         LearningTab hotspot itself needs no extra sync hook. */
+      .pc-learning:has(.pc-lloop--paused) .pc-learning__stage-icon { border-style: dashed; box-shadow: none; opacity: .72; }
+      .pc-learning:has(.pc-lloop--paused) .pc-learning__stage-label { opacity: .72; }
       .pc-learning__stage {
         --stage-accent: var(--accent);
         position: relative; display: flex; flex-direction: column; align-items: center; gap: 4px;
