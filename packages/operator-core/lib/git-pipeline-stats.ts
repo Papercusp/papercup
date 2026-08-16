@@ -800,13 +800,15 @@ export async function gitPipelineSnapshot(
     // four contradictory conclusions, because `stale` came back false).
     candidateCommittedAtMs,
     commitsBehindTip: rawCommitsBehindTip,
-    // EI-20571364274022293 — Rule 1 ORDERING. Both were already being read off this same blob a
-    // few lines below (for `pinProvenGateCorrection`'s raw counters); handing them to the rule is
-    // what stops a pin advance that PREDATES the red streak from being reported as proof the
-    // streak ended. Without them rule 1 degrades to 'pin-advance-unordered', which deliberately
-    // does NOT reset the counters.
-    firstRedAtMs: num(gateHealth.firstRedAt),
-    lastGreenAtMs: num(gateHealth.lastGreenAt),
+    // EI-20571364274022293 — Rule 1 ORDERING. Whether `lastFrom` above was READ LIVE by the run
+    // that wrote this verdict, or merely carried forward because that run could not resolve the
+    // pin. Only the first makes a pin difference proof of a green SINCE this red. Absent on a
+    // blob predating the field ⇒ null ⇒ rule 1 degrades to 'pin-advance-unordered', which
+    // deliberately does NOT reset the counters below.
+    observedFromPinFresh:
+      typeof (gateHealth as { lastFromFresh?: unknown }).lastFromFresh === 'boolean'
+        ? ((gateHealth as { lastFromFresh?: boolean }).lastFromFresh as boolean)
+        : null,
   });
   const effectiveGate = pinProvenGateCorrection(gcVerdictStaleReasonCode, {
     consecutiveReds: rawConsecutiveReds,

@@ -13,6 +13,12 @@
  */
 import { describe, it, expect } from 'vitest';
 import { evaluateGateVerdictFreshness, GATE_FIRE_INTERVAL_MS } from './gate-verdict-freshness';
+// EI-20571364274022293: the reasonCode's whole contract is what this correction does with it, so
+// the two are asserted together rather than each against its own private idea of the other.
+import { pinProvenGateCorrection } from '../git-pipeline-stats';
+
+/** Raw cached counters as they stand on a genuinely red gate. */
+const RAW_RED = { consecutiveReds: 2, stalled: true, failingTests: ['a.test.ts'], firstRedAtMs: 1 };
 
 const H = 3_600_000;
 /** 2026-07-12 21:15 EDT — the last (skipped) fire. */
@@ -46,6 +52,10 @@ describe('evaluateGateVerdictFreshness', () => {
       ...LIVE_INCIDENT,
       lastFiredAtMs: LAST_VERDICT + 60_000, // writer NOT starved — rule 2 cannot fire
       currentGreenPinSha: '6d9aff3704c9c5937a0ffe13e139021d9101cff3', // but the pin MOVED
+      // EI-20571364274022293: the base pin was READ LIVE at verdict time, so the move is ordered
+      // AFTER the verdict. Without this the same input is only 'pin-advance-unordered' — see the
+      // two cases below.
+      observedFromPinFresh: true,
     });
     expect(v.stale).toBe(true);
     expect(v.reason).toMatch(/only moves on a GREEN checkpoint/);
@@ -53,6 +63,68 @@ describe('evaluateGateVerdictFreshness', () => {
     // treat as "reset the streak to 0", not merely "unknown" (git-pipeline-stats.ts's
     // pinProvenGateCorrection is the one place that acts on this).
     expect(v.reasonCode).toBe('pin-advance');
+  });
+
+  /**
+   * EI-20571364274022293 — the 2026-08-16 incident, and the reason rule 1 is no longer a bare sha
+   * comparison.
+   *
+   * The green-checkpoint could not START (its release worktree was orphaned), so every run failed
+   * before resolving the live pin. The writer's `lastFrom: fromPin ?? gh.lastFrom` then froze
+   * `lastFrom` at a PRE-INCIDENT value while the real pin had already advanced ~2h BEFORE the
+   * streak's first red. Rule 1 saw two different shas, called it "hard proof the gate has greened
+   * since", and `pinProvenGateCorrection` rendered a DEAD gate as `consecutiveReds: 0`.
+   *
+   * The discrimination pinned here: a pin difference is proof only when the base it is measured
+   * from was actually OBSERVED. An unprovenanced base must degrade to "unverified", never to
+   * "green" — a false green is strictly worse than an admitted unknown, because it retires the
+   * question instead of raising it.
+   */
+  describe('EI-20571364274022293 — a pin difference is proof only if its base was observed', () => {
+    const PIN_MOVED = {
+      ...LIVE_INCIDENT,
+      lastFiredAtMs: LAST_VERDICT + 60_000, // rule 2 cannot fire
+      currentGreenPinSha: '6d9aff3704c9c5937a0ffe13e139021d9101cff3',
+    };
+
+    it('⭐ does NOT claim green when the base pin was carried forward, not read', () => {
+      const v = evaluateGateVerdictFreshness({ ...PIN_MOVED, observedFromPinFresh: false });
+      expect(v.stale).toBe(true); // still "do not act on this red"...
+      expect(v.reasonCode).toBe('pin-advance-unordered'); // ...but NOT proof of a green
+      expect(v.reasonCode).not.toBe('pin-advance');
+      expect(v.reason).toMatch(/NOT read live/);
+      expect(v.reason).toMatch(/UNVERIFIED, NOT as greened/);
+    });
+
+    it('degrades the same way on a blob predating the provenance field (absent ⇒ not proof)', () => {
+      // The transition case: every pre-existing blob lacks `lastFromFresh`. Failing toward
+      // "unverified" is the whole point — an unprovenanced pin is not a timestamped one.
+      const v = evaluateGateVerdictFreshness(PIN_MOVED);
+      expect(v.stale).toBe(true);
+      expect(v.reasonCode).toBe('pin-advance-unordered');
+    });
+
+    it('⭐ the weaker code does NOT reset the streak — a dead gate keeps reading red', () => {
+      // The correction in git-pipeline-stats keys on 'pin-advance' ALONE; this is the property
+      // that failed in the incident, asserted here at the boundary that produces the code.
+      const v = evaluateGateVerdictFreshness({ ...PIN_MOVED, observedFromPinFresh: false });
+      expect(pinProvenGateCorrection(v.reasonCode, RAW_RED)).toEqual(RAW_RED);
+      // ...while a genuine, provenanced advance still clears it.
+      const proven = evaluateGateVerdictFreshness({ ...PIN_MOVED, observedFromPinFresh: true });
+      expect(pinProvenGateCorrection(proven.reasonCode, RAW_RED).consecutiveReds).toBe(0);
+    });
+
+    it('a fresh base pin that has NOT moved is not stale at all — the rule stays falsifiable', () => {
+      // Calibration (the EI-10609 lesson): if the healthy case also came back stale, the three
+      // assertions above would pass for the wrong reason.
+      const v = evaluateGateVerdictFreshness({
+        ...LIVE_INCIDENT,
+        lastFiredAtMs: LAST_VERDICT + 60_000,
+        observedFromPinFresh: true, // pin read live, and unchanged (LIVE_INCIDENT default)
+      });
+      expect(v.stale).toBe(false);
+      expect(v.reasonCode).toBeNull();
+    });
   });
 
   it('compares pins by short sha — a full sha and its 12-char prefix are the SAME pin, not a move', () => {
@@ -357,6 +429,7 @@ describe('evaluateGateVerdictFreshness', () => {
       const v = evaluateGateVerdictFreshness({
         ...UNTOUCHED_BY_OTHER_RULES,
         currentGreenPinSha: '1e0ddc586454', // pin moved ⇒ a green provably happened since
+        observedFromPinFresh: true, // EI-20571364274022293: ...and the base it moved from was real
         observedAtMs: FOSSIL_VERDICT_AT,
         candidateCommittedAtMs: FOSSIL_CANDIDATE_AT,
       });
