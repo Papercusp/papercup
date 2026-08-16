@@ -219,7 +219,15 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  max-width: calc(100% - 94px);
+  /* WI-39533: the group title is the group's IDENTITY, so it must ellipsize —
+     never vanish. `max-width: calc(100% - 94px)` computed to <= 0 whenever the
+     roster sat in a column narrower than 94px (measured: ~90px in the /adv
+     plans+sessions dock at a 1280px viewport), and because `overflow: hidden`
+     removes the automatic min-width floor a flex item otherwise gets, the title
+     shrank to exactly zero width and disappeared while the count/`n live` chips
+     beside it stayed. Shrink it instead, with a floor. */
+  flex: 0 1 auto;
+  min-width: 4ch;
 }
 .pc-roster__group-count {
   font-size: 11px;

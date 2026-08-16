@@ -1,0 +1,33 @@
+/**
+ * Invalidate every live view of a user's memory corpus in one call.
+ *
+ * WHY THIS EXISTS (WI-39540): the settings Memory page renders a bounded
+ * window over the corpus AND a total beside it ("Showing 500 of 2,465").
+ * Those are two sync queries reading the same underlying set, so a write that
+ * refreshed only the rows would leave the denominator stale — and a stale
+ * denominator is worse than none, because the pair invites arithmetic ("1,965
+ * more to load") that is then wrong.
+ *
+ * Six separate call sites fired `notifySyncInvalidate('userMemory.list')`
+ * before this module existed. Adding a second literal at each of them would
+ * have worked exactly until the seventh site was written — the drift shape
+ * this codebase keeps re-learning. One helper means a new write path gets
+ * both views right by default, and the key list has a single home.
+ *
+ * Add a key here when you add a sync query over the memory corpus.
+ */
+import { notifySyncInvalidate } from '../sync-sse';
+
+/** Every sync query whose result changes when a user's memories change. */
+export const USER_MEMORY_SYNC_KEYS = ['userMemory.list', 'userMemory.total'] as const;
+
+/**
+ * Best-effort — invalidation is a freshness optimisation, never a
+ * correctness requirement, and a write must not fail because an SSE fan-out
+ * did. Mirrors the `.catch(() => {})` every call site already applied.
+ */
+export async function invalidateUserMemoryViews(): Promise<void> {
+  await Promise.all(
+    USER_MEMORY_SYNC_KEYS.map((key) => notifySyncInvalidate(key).catch(() => { /* best-effort */ })),
+  );
+}
