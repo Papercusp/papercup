@@ -172,8 +172,31 @@ export const DEFAULT_SHARED_EGRESS_IDENTITY = 'default-egress';
  * IS known: `proxyUrl` if set, else `src <localAddress>` if bound, else the default shared egress. Callers
  * should therefore never pass `undefined` through to `egressIdentity` on the strength of "no binding";
  * reserve that for the case where no row could be read at all.
+ *
+ * EI-20613616736215896: `egressPool` SUPERSEDES the singular `egress` (account-pool.ts) — so an identity
+ * derived from the singular alone collapses EVERY pool-routed account onto the same
+ * {@link DEFAULT_SHARED_EGRESS_IDENTITY} fallback. `deriveEdgeThrottleEvidence` then reads those identical
+ * identities as the down-proxy signature and sets `sharedEgress: true`, which is what emits the
+ * "the egress path itself is broken → OWNER-GATED, escalate" advice. Measured live on a pool spread across
+ * THREE distinct proxies while 2/6 accounts were answering upstream 200s — i.e. the exact opposite of a
+ * shared-IP fault. Note the regression shape: P-009 made this function total to escape an all-`undefined`
+ * case that left the diagnosis unreachable; under pool routing that same fallback turns an honest
+ * UNDETERMINED into a confidently WRONG `true`. So the pool is consulted FIRST, and only a genuinely
+ * empty pool falls through to the singular binding.
  */
-export function egressIdentityOf(egress: { proxyUrl?: string; localAddress?: string } | undefined): string {
+export function egressIdentityOf(
+  egress: { proxyUrl?: string; localAddress?: string } | undefined,
+  egressPool?: readonly ({ proxyUrl?: string; localAddress?: string } | undefined)[],
+): string {
+  if (egressPool && egressPool.length > 0) {
+    // Order-insensitive and deduped: two accounts rotating over the SAME set of IPs genuinely share an
+    // egress and must compare equal, whatever order the store happens to hand the entries back in. An
+    // unbound entry is not unknown — it is the box default, named so it participates in the comparison.
+    const ids = egressPool.map((e) =>
+      e?.proxyUrl ? e.proxyUrl : e?.localAddress ? `src ${e.localAddress}` : DEFAULT_SHARED_EGRESS_IDENTITY,
+    );
+    return [...new Set(ids)].sort().join('|');
+  }
   if (egress?.proxyUrl) return egress.proxyUrl;
   if (egress?.localAddress) return `src ${egress.localAddress}`;
   return DEFAULT_SHARED_EGRESS_IDENTITY;
