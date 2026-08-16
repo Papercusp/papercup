@@ -72,6 +72,31 @@ describe('the policy it depends on', () => {
     // ALLOW_PREFIXES escape hatch must keep working through the same list.
     expect(isScannedPath('papercusp-desktop/src-tauri/env-sidecars/serve.mjs')).toBe(false);
   });
+
+  // WI-39392: this exclusion is why the fleet gate went red for a full ~55min suite.
+  // `git ls-files --recurse-submodules` walks INTO submodules, and several of them track
+  // their own node_modules — so minified dependency bundles (vitest's cli-api chunks) were
+  // scanned as if they were our source. They legitimately carry raw \x01-\x1f in string
+  // tables, and the remedy this lint prints ("write it as an escape") is impossible in a
+  // file npm reinstalls wholesale, so the red was unactionable by construction.
+  it('never scans vendored dependency trees, at ANY depth or submodule (WI-39392)', async () => {
+    const { isScannedPath } = await import(`file://${POLICY}`);
+    // A SEGMENT match, not a prefix — the real offenders were nested inside submodules.
+    expect(isScannedPath('libs/testing-shell/node_modules/vitest/dist/chunks/cli-api.BkDphVBG.js')).toBe(false);
+    expect(isScannedPath('libs/generic/resumable-download/node_modules/vitest/dist/chunks/cli-api.BK8pd4xc.js')).toBe(false);
+    expect(isScannedPath('node_modules/vitest/dist/chunks/cli-api.js')).toBe(false);
+    // ...while a path that merely CONTAINS the word stays in scope — the exclusion must be
+    // a path segment, never a substring, or it becomes an accidental escape hatch.
+    expect(isScannedPath('packages/operator-core/lib/node_modules_report.ts')).toBe(true);
+  });
+
+  // The docs build mirrors pagefind to BOTH locations; only one was ever allowed, so the
+  // second copy red-pinned the gate the moment a build produced it.
+  it('allows BOTH pagefind mirrors, not just the internal one (WI-39392)', async () => {
+    const { isScannedPath } = await import(`file://${POLICY}`);
+    expect(isScannedPath('apps/operator/public/internal/docs/pagefind/pagefind-highlight.js')).toBe(false);
+    expect(isScannedPath('apps/operator/public/docs/pagefind/pagefind-highlight.js')).toBe(false);
+  });
 });
 
 describe('it is worktree-portable (WI-10811)', () => {
