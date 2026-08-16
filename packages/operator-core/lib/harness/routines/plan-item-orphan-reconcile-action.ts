@@ -42,7 +42,12 @@ registerSystemAction('plan-item-orphan-reconcile', async (ctx: SystemActionCtx) 
     // EI-19460536530145188: a tick that DECLINED to close something is worth a
     // line even when it healed nothing else — that is the case an operator most
     // needs to see, and the one the old condition was silent about.
-    result.skippedUnprovenLink.length > 0
+    result.skippedUnprovenLink.length > 0 ||
+    // WI-39498: the plan-says-done contradiction census — a nonzero population of
+    // open rows whose DONE plan item names them completed must never tick silently
+    // (77 such rows burned agent after agent unreported). -1 = census read failed,
+    // logged too: an unmeasured population must not render as a quiet zero.
+    result.planSaysDoneOpen !== 0
   ) {
     console.log(
       `[plan-item-orphan-reconcile] ${ctx.installSlug}: ${result.candidatePlanItems} candidate plan-item(s), ` +
@@ -54,6 +59,11 @@ registerSystemAction('plan-item-orphan-reconcile', async (ctx: SystemActionCtx) 
         (result.ungated.length ? ` [restored: ${result.ungated.join(', ')}]` : '') +
         (result.skippedUnprovenLink.length
           ? ` [left OPEN — stamp-only link, no implements edge: ${result.skippedUnprovenLink.join(', ')}]`
+          : '') +
+        (result.planSaysDoneOpen !== 0
+          ? result.planSaysDoneOpen > 0
+            ? ` [WI-39498 census: ${result.planSaysDoneOpen} open row(s) whose DONE plan item names them completed — claim-time warning covers each]`
+            : ' [WI-39498 census: FAILED — population unmeasured this tick]'
           : ''),
     );
   }

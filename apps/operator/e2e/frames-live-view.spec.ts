@@ -169,10 +169,12 @@ test.describe('/adv Frames tab (Swarm live view)', () => {
   test('renders the tile grid from the roster + SSE thumbs; selection rides nuqs', async ({ page }) => {
     await stubApis(page);
     const mounted = await framesTabMounts(page);
-    test.skip(
-      !mounted,
-      'The /adv shell did not mount the Frames tab. Run against the prebuilt operator-vite ' +
-        'bundle (vite preview / a clean :3055) — a stale HMR dev server can fail to render the SPA.',
+    assertMounted(
+      mounted,
+      'The /adv shell did not mount the Frames tab. Check that OPERATOR_E2E_BASE_URL points ' +
+        'at a server carrying PAPERCUSP_ENABLE_HMR=1 + PAPERCUSP_FAKE_LLM=1 (the standing ' +
+        "dev:operator systemd service does NOT), and that stubApis() still matches the app's " +
+        'real request shapes.',
     );
 
     // status chip for the deployed frame

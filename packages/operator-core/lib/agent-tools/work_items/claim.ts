@@ -46,6 +46,10 @@ import {
   priorWorkWarning,
 } from '../../work-item-prior-work';
 import { planItemClaimCollision } from '../../scheduler/plan-item-claim-collision';
+import {
+  getClaimTimePlanItemContradiction,
+  planItemContradictionWarning,
+} from '../../work-item-plan-contradiction';
 import { detectBgJobCheckpointClaim } from '../../checkpoint-bg-job-claim';
 import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
 import { getClaimTimeRetractionAdvisory } from './retraction-advisory';
@@ -457,6 +461,7 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
       premises,
       planDecisionsResult,
       retractionAdvisory,
+      planContradiction,
     ] = await Promise.all([
       getClaimTimeCheckpointHint({
         harness: workItem.harness ?? it.harness ?? null,
@@ -512,6 +517,15 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
         })
         .catch(() => null),
       getClaimTimeRetractionAdvisory(workItem, workItem.harness ?? it.harness ?? undefined),
+      // WI-39498: the plan-says-done contradiction — the linked plan item is already
+      // terminal (often annotated "← <this id> completed") while THIS row is still open,
+      // so the work may already be finished. The one hint priorWorkWarning cannot carry
+      // (it keys on prior-holder history, not on the plan/work-item contradiction). Same
+      // fail-soft seam as every sibling hint above: saying nothing asserts nothing.
+      getClaimTimePlanItemContradiction({
+        workItemId: workItem.id ?? it.id,
+        payload: workItem.payload,
+      }).catch(() => null),
     ]);
     const blockedWarning = blockedClaimWarning(unresolvedBlockers);
     const concurrencyWarning = concurrencyClaimWarning(concurrency, it.id);
@@ -529,6 +543,7 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
     // above unconditionally (which would fire on every checkpointed claim, background job or
     // not). See detectBgJobCheckpointClaim for why this can't be a live PID check here.
     const bgJobWarning = hint ? detectBgJobCheckpointClaim(hint.checkpoint) : { detected: false };
+    const planContradictionWarn = planItemContradictionWarning(planContradiction, workItem.id ?? it.id);
     return hint
       ? {
           ok: true,
@@ -553,6 +568,9 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
               }
             : {}),
           ...(priorWorkWarn ? { priorWork, priorWorkWarning: priorWorkWarn } : {}),
+          ...(planContradictionWarn
+            ? { planItemContradiction: planContradiction, planItemContradictionWarning: planContradictionWarn }
+            : {}),
           ...(authorshipRevalidationWarn
             ? { authorshipRevalidation, authorshipRevalidationWarning: authorshipRevalidationWarn }
             : {}),
@@ -580,6 +598,9 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
               }
             : {}),
           ...(priorWorkWarn ? { priorWork, priorWorkWarning: priorWorkWarn } : {}),
+          ...(planContradictionWarn
+            ? { planItemContradiction: planContradiction, planItemContradictionWarning: planContradictionWarn }
+            : {}),
           ...(authorshipRevalidationWarn
             ? { authorshipRevalidation, authorshipRevalidationWarning: authorshipRevalidationWarn }
             : {}),

@@ -804,6 +804,19 @@ export interface OrphanReconcileSweepResult {
    * exists to end.
    */
   skippedUnprovenLink: string[];
+  /**
+   * WI-39498: the zombie-contradiction census — OPEN (non-settled) work-items whose
+   * linked plan item is already terminal AND whose plan-item text names the work-item
+   * id with a completion annotation ("← WI-NNN completed (done)"). These are exactly
+   * the rows the unproven-link guard above deliberately leaves open for a human/agent
+   * judgement — measured at 77 with one row burning 9 successive agents, because
+   * nothing surfaced the contradiction. The per-row surfacing is the claim-time
+   * planItemContradictionWarning (work-item-plan-contradiction.ts); THIS count is the
+   * aggregate detector, re-measured every sweep tick so the population's size — and
+   * any regrowth — is machine-readable instead of silent. -1 = the census read failed
+   * (never conflate an unmeasured population with an empty one).
+   */
+  planSaysDoneOpen: number;
 }
 
 /** Default per-tick candidate cap — a generous bound (orphan residue is bursty at
@@ -854,9 +867,34 @@ export async function reconcileOrphanedPlanItemWorkItems(
     skippedInFlight: [],
     skippedAlreadyTerminal: [],
     skippedUnprovenLink: [],
+    planSaysDoneOpen: -1,
   };
 
   const { sql } = getOrgPg();
+
+  // WI-39498 census (see the field's doc on OrphanReconcileSweepResult). One bounded
+  // COUNT per tick: the join keys match work_items_plan_item_stamp_idx's partial
+  // predicate, and the ILIKE legs only run on the already-joined (stamped, non-settled,
+  // terminal-plan-item) rows. Deliberately the SAME predicate the claim-time warning
+  // uses (planItemTextNamesCompleted), so detector and warning cannot drift. Fail-soft:
+  // a census failure leaves -1 (unmeasured), never 0, and never blocks the heal sweep.
+  try {
+    const census = await sql<{ n: string }[]>`
+      SELECT count(*) AS n
+        FROM harness_shared.work_items w
+        JOIN harness_shared.plan_items pi
+          ON pi.plan_slug = w.payload->'plan_item'->>'plan_slug'
+         AND pi.item_id   = w.payload->'plan_item'->>'item_id'
+       WHERE w.payload->'plan_item' IS NOT NULL
+         AND NOT (w.status = ANY(${SETTLED_WORK_ITEM_STATES}::text[]))
+         AND pi.status IN ('done', 'dropped')
+         AND pi.item_text ILIKE '%' || w.feature_id || '%'
+         AND (pi.item_text ILIKE '%completed%' OR pi.item_text ILIKE '%(done)%')`;
+    const n = Number(census[0]?.n);
+    if (Number.isFinite(n)) out.planSaysDoneOpen = n;
+  } catch {
+    // census is advisory — the heal sweep below must run regardless.
+  }
   // 1. Enumerate candidate plan-items from NON-terminal work-items carrying a
   //    plan_item stamp, in ONE query over the unified base table
   //    (harness_shared.work_items, mig 374) rather than the harness_features_-

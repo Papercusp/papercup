@@ -566,6 +566,8 @@ export function assembleSchedulerClaimResult(legs: {
   priorWorkWarning?: unknown;
   authorshipRevalidation?: unknown;
   authorshipRevalidationWarning?: unknown;
+  planItemContradiction?: unknown;
+  planItemContradictionWarning?: unknown;
   planDecisions?: readonly unknown[] | null;
   planDecisionsNote?: string | null;
   premises?: unknown;
@@ -623,6 +625,12 @@ export function assembleSchedulerClaimResult(legs: {
       ? {
           authorshipRevalidation: legs.authorshipRevalidation,
           authorshipRevalidationWarning: legs.authorshipRevalidationWarning,
+        }
+      : {}),
+    ...(legs.planItemContradiction
+      ? {
+          planItemContradiction: legs.planItemContradiction,
+          planItemContradictionWarning: legs.planItemContradictionWarning,
         }
       : {}),
     ...(legs.premises ? { premises: legs.premises, premisesNote: legs.premisesNote } : {}),
@@ -1261,6 +1269,15 @@ export default defineTool({
       authorshipRevalidation: unknown;
       authorshipRevalidationWarning: string;
     } | null = null;
+    // WI-39498: the plan-says-done contradiction — the linked plan item is already
+    // terminal (often annotated "← <this id> completed") while the claimed row is still
+    // open, so the work may already be finished. This is the primary self-pull surface,
+    // so it is exactly where the zombie class burned agents (9 successive claimants on
+    // WI-36047 alone). Fail-soft + omitted entirely when null, like every sibling hint.
+    let planContradictionHint: {
+      planItemContradiction: unknown;
+      planItemContradictionWarning: string;
+    } | null = null;
     if (res?.workItem) {
       const wi = res.workItem as {
         id?: string | null;
@@ -1269,8 +1286,8 @@ export default defineTool({
         title?: string | null;
         summary?: string | null;
       };
-      [[planDecisions, planDecisionsNote], premises, retractionWarning, authorshipRevalidationHint] = await Promise.all(
-        [
+      [[planDecisions, planDecisionsNote], premises, retractionWarning, authorshipRevalidationHint, planContradictionHint] =
+        await Promise.all([
           import('../../plan-decisions-claim-port')
             .then(async (m) => {
               const brief = await m.getClaimTimePlanDecisions({
@@ -1306,8 +1323,17 @@ export default defineTool({
                 : null;
             })
             .catch(() => null),
-        ],
-      );
+          import('../../work-item-plan-contradiction')
+            .then(async (m) => {
+              const hint = await m.getClaimTimePlanItemContradiction({
+                workItemId: wi.id ?? '',
+                payload: wi.payload,
+              });
+              const warning = m.planItemContradictionWarning(hint, wi.id ?? '');
+              return hint && warning ? { planItemContradiction: hint, planItemContradictionWarning: warning } : null;
+            })
+            .catch(() => null),
+        ]);
     }
     // EI-10541: a successful self-pull means this agent is transitioning idle -> working, so
     // cancel its standing `work-item:claimable` idle-park await(s) — holding a claim and waiting
@@ -1434,6 +1460,8 @@ export default defineTool({
           priorWorkWarning: priorWorkHint?.priorWorkWarning,
           authorshipRevalidation: authorshipRevalidationHint?.authorshipRevalidation,
           authorshipRevalidationWarning: authorshipRevalidationHint?.authorshipRevalidationWarning,
+          planItemContradiction: planContradictionHint?.planItemContradiction,
+          planItemContradictionWarning: planContradictionHint?.planItemContradictionWarning,
           // EI-19396519606401168: this note used to be built from the
           // POST-CAP length, so a capped brief announced itself as the
           // complete set. The shared helper still renders the true total

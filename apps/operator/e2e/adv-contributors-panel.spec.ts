@@ -135,11 +135,12 @@ test.describe('/adv Contributors panel (P-048)', () => {
   test('renders verified + zeroed-unverified rows with the viewer marker', async ({ page }) => {
     await stubApis(page);
     const mounted = await dockMounts(page);
-    test.skip(
-      !mounted,
-      'The /adv shell did not mount the dock. Run against the prebuilt operator-vite bundle ' +
-        '(vite preview), e.g. OPERATOR_E2E_BASE_URL=http://127.0.0.1:4173 — a stale HMR dev ' +
-        "server on :3055 can have a '/@vite/client' createHotContext mismatch.",
+    assertMounted(
+      mounted,
+      'The /adv shell did not mount the dock. Check that OPERATOR_E2E_BASE_URL points at a ' +
+        'server carrying PAPERCUSP_ENABLE_HMR=1 + PAPERCUSP_FAKE_LLM=1 (the standing ' +
+        'dev:operator systemd service does NOT), and that stubApis() still matches the ' +
+        "app's real request shapes.",
     );
     await openContributorsPanel(page);
 
