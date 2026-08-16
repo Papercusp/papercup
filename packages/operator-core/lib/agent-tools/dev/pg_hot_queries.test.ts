@@ -29,8 +29,18 @@ function row(
   };
 }
 
-function snapshot(at: number, rows: PgStatementSnapshotRow[]): PgStatementsSnapshot {
-  return { capturedAtMs: at, rows };
+function snapshot(
+  at: number,
+  rows: PgStatementSnapshotRow[],
+  capStats: Partial<Pick<PgStatementsSnapshot, 'dealloc' | 'entryCount' | 'capMax'>> = {},
+): PgStatementsSnapshot {
+  return {
+    capturedAtMs: at,
+    rows,
+    dealloc: capStats.dealloc ?? 0,
+    entryCount: capStats.entryCount ?? rows.length,
+    capMax: capStats.capMax ?? 10_000,
+  };
 }
 
 describe('dev:pg_hot_queries delta engine', () => {
@@ -94,6 +104,78 @@ describe('dev:pg_hot_queries delta engine', () => {
 
     expect(result.hot[0]).toMatchObject({ counterReset: true });
     expect(result.hot[0].inWindow).toMatchObject({ calls: '2', execMs: 20, rows: '4' });
+  });
+
+  it('EI-19447625969710283: reports no eviction pressure when dealloc did not move', () => {
+    const before = snapshot(T0, [row('q', 'SELECT stable()', { calls: 1n, totalExecMs: 1 })], {
+      dealloc: 331,
+      entryCount: 9571,
+      capMax: 10_000,
+    });
+    const after = snapshot(T0 + 5000, [row('q', 'SELECT stable()', { calls: 2n, totalExecMs: 2 })], {
+      dealloc: 331,
+      entryCount: 9575,
+      capMax: 10_000,
+    });
+
+    const result = diffPgStatements(before, after, { limit: 5 });
+
+    expect(result.sample.capPressure).toMatchObject({
+      entryCount: 9575,
+      capMax: 10_000,
+      occupancyPct: 95.8,
+      deallocBefore: 331,
+      deallocAfter: 331,
+      deallocDuringWindow: 0,
+      evictedDuringWindow: false,
+    });
+    expect(result.note).not.toContain('evictedDuringWindow');
+  });
+
+  it('EI-19447625969710283: flags cluster-wide eviction during the window and warns a counterReset row is a phantom spike', () => {
+    // The row itself was evicted-and-recreated mid-window (counterReset), AND the
+    // cluster-wide dealloc counter moved — the whole-cluster confirmation that this
+    // was genuinely a cap eviction, not e.g. a targeted per-dbid stats reset of just
+    // this one entry.
+    const before = snapshot(T0, [row('q', 'SELECT hot()', { calls: 500n, totalExecMs: 9000 })], {
+      dealloc: 331,
+      entryCount: 9999,
+      capMax: 10_000,
+    });
+    const after = snapshot(T0 + 5000, [row('q', 'SELECT hot()', { calls: 3n, totalExecMs: 12 })], {
+      dealloc: 334,
+      entryCount: 10_000,
+      capMax: 10_000,
+    });
+
+    const result = diffPgStatements(before, after, { limit: 5 });
+
+    expect(result.hot[0]).toMatchObject({ counterReset: true });
+    expect(result.sample.capPressure).toMatchObject({
+      entryCount: 10_000,
+      capMax: 10_000,
+      occupancyPct: 100,
+      deallocBefore: 331,
+      deallocAfter: 334,
+      deallocDuringWindow: 3,
+      evictedDuringWindow: true,
+    });
+    expect(result.note).toContain('evictedDuringWindow=true');
+    expect(result.note).toContain('3 entries evicted cluster-wide');
+  });
+
+  it('treats a dealloc counter that went backwards as a global reset, not a negative eviction count', () => {
+    // pg_stat_statements_reset(0,0,0,false) zeroes dealloc along with everything else.
+    // A naive after-before would report -331 evictions; the shared deltaNumber helper
+    // (same one used for calls/execMs/rows) must read this as "331" (a fresh start),
+    // matching how every other counter in this tool already handles a reset.
+    const before = snapshot(T0, [], { dealloc: 331, entryCount: 9571, capMax: 10_000 });
+    const after = snapshot(T0 + 5000, [], { dealloc: 0, entryCount: 3, capMax: 10_000 });
+
+    const result = diffPgStatements(before, after, { limit: 5 });
+
+    expect(result.sample.capPressure.deallocDuringWindow).toBe(0);
+    expect(result.sample.capPressure.evictedDuringWindow).toBe(false);
   });
 
   it('filters case-insensitively and excludes the sampler from its own answer', () => {

@@ -46,6 +46,21 @@ export type PgStatementSnapshotRow = {
 export type PgStatementsSnapshot = {
   capturedAtMs: number;
   rows: PgStatementSnapshotRow[];
+  /**
+   * `pg_stat_statements_info.dealloc` at snapshot time — CLUSTER-WIDE (not
+   * scoped to the current database), monotonic until an explicit reset. A
+   * change between two snapshots means the cap forced an eviction somewhere
+   * in the window: EI-19447625969710283 — an evicted-then-recreated entry's
+   * counters restart at zero, so its next delta is a phantom spike rather
+   * than real load. `diffPgStatements` surfaces the delta so a reader can
+   * tell a genuine spike from an eviction artifact instead of trusting the
+   * ranking blind.
+   */
+  dealloc: number;
+  /** `count(*) FROM pg_stat_statements` — CLUSTER-WIDE entry occupancy at snapshot time. */
+  entryCount: number;
+  /** `pg_stat_statements.max` (postmaster-context; needs a restart to raise). */
+  capMax: number;
 };
 
 export type PgHotQueriesInput = {
@@ -116,6 +131,13 @@ export async function readPgStatementsSnapshot(): Promise<PgStatementsSnapshot> 
       FROM public.pg_stat_statements
      WHERE dbid = (SELECT oid FROM pg_database WHERE datname = current_database())`;
 
+  // Cluster-wide (not per-database, unlike the rows above): the eviction cap and its
+  // pressure counters are global to the extension, not scoped to one database.
+  const [info] = await sql<{ dealloc: string | number | null; entry_count: string | number | null; cap_max: string | number | null }[]>`
+    SELECT (SELECT dealloc::text FROM pg_stat_statements_info) AS dealloc,
+           (SELECT count(*)::text FROM pg_stat_statements) AS entry_count,
+           (SELECT setting FROM pg_settings WHERE name = 'pg_stat_statements.max') AS cap_max`;
+
   return {
     capturedAtMs: Date.now(),
     rows: rows.map((row) => ({
@@ -130,6 +152,9 @@ export async function readPgStatementsSnapshot(): Promise<PgStatementsSnapshot> 
       rows: toBigInt(row.rows),
       statsSinceMs: timestampMs(row.stats_since),
     })),
+    dealloc: toNumber(info?.dealloc ?? null),
+    entryCount: toNumber(info?.entry_count ?? null),
+    capMax: toNumber(info?.cap_max ?? null),
   };
 }
 
@@ -276,6 +301,16 @@ export function diffPgStatements(
     .slice(0, Math.min(3, input.limit))
     .map((row) => resultRow(row.pair, actualWindowSec, after.capturedAtMs, true));
 
+  // EI-19447625969710283: dealloc is CLUSTER-WIDE, so it moving during the window means
+  // the cap forced an eviction — possibly of a statement not even in `matching` (a query
+  // outside this sample's filter, or one that never ran again to be re-observed). A
+  // per-row `counterReset` already flags the entries THIS sample can see corrupted; this
+  // is the whole-cluster confirmation that lets a reader trust the absence of
+  // counterReset instead of just hoping the window got lucky.
+  const deallocDuringWindow = deltaNumber(after.dealloc, before.dealloc);
+  const evictedDuringWindow = deallocDuringWindow > 0;
+  const occupancyPct = after.capMax > 0 ? round((after.entryCount / after.capMax) * 100, 1) : null;
+
   return {
     sample: {
       startedAt: new Date(before.capturedAtMs).toISOString(),
@@ -287,10 +322,23 @@ export function diffPgStatements(
       activeStatements: rows.filter((row) => row.active).length,
       zeroCallStatements: rows.filter((row) => !row.active).length,
       filter,
+      capPressure: {
+        entryCount: after.entryCount,
+        capMax: after.capMax,
+        occupancyPct,
+        deallocBefore: before.dealloc,
+        deallocAfter: after.dealloc,
+        deallocDuringWindow,
+        evictedDuringWindow,
+      },
     },
     hot,
     staleLifetimeLeaders,
-    note: 'stale:true means a large lifetime total had zero calls in this sample. zeroCallVerdict=dead is a >=95% Poisson result at the statement lifetime-average call rate; it is not proof that the query can never recur. too-rare-to-tell means this window had insufficient power.',
+    note:
+      'stale:true means a large lifetime total had zero calls in this sample. zeroCallVerdict=dead is a >=95% Poisson result at the statement lifetime-average call rate; it is not proof that the query can never recur. too-rare-to-tell means this window had insufficient power.' +
+      (evictedDuringWindow
+        ? ` ⚠ capPressure.evictedDuringWindow=true (${deallocDuringWindow} entr${deallocDuringWindow === 1 ? 'y' : 'ies'} evicted cluster-wide during this sample) — a row here with counterReset:true had its in-window delta corrupted by an evict-then-recreate (its "delta" is really its full re-accumulation since eviction, not a real per-window rate); pg_stat_statements.max is ${after.capMax} and occupancy is ${occupancyPct}%.`
+        : ''),
   };
 }
 
@@ -362,7 +410,7 @@ export default defineTool({
     chaining:
       'Start with the default 15s window. A zero is conclusive only when zeroCallVerdict is dead; too-rare-to-tell needs a longer window or a stored long-running baseline. Use filter for a case-insensitive query-text substring.',
     returns:
-      '{ requestedWindowSec, limit, sample, hot[], staleLifetimeLeaders[], note }. hot is ranked by in-window execMs, not cumulative totals. staleLifetimeLeaders reserves up to three zero-call lifetime leaders so stale historical cost cannot masquerade as live load.',
+      '{ requestedWindowSec, limit, sample, hot[], staleLifetimeLeaders[], note }. hot is ranked by in-window execMs, not cumulative totals. staleLifetimeLeaders reserves up to three zero-call lifetime leaders so stale historical cost cannot masquerade as live load. sample.capPressure reports pg_stat_statements cap occupancy and whether the CLUSTER-WIDE eviction counter (dealloc) moved during this sample — evictedDuringWindow:true means any hot/staleLifetimeLeaders row with counterReset:true is a phantom spike (its "delta" is a fresh re-accumulation since eviction, not real in-window load), and it is also possible for a statement outside this filter to have been evicted unseen.',
     seeAlso: [
       'dev:pg_active_queries (queries executing at one instant)',
       'dev:pg_query (one-off SQL / EXPLAIN)',
