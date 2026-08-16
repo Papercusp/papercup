@@ -1580,5 +1580,38 @@ registerSystemAction('coord-invariant-monitor', async (ctx: SystemActionCtx) => 
   }
   // The shared-hive-loop leg (P-012/P-013 of that plan) — isolated like every
   // other check: its failure degrades the leg, never the fire.
-  await runSharedHiveLeg(ctx).catch(() => {});
+  //
+  // ⚠ EI-20579195481991931 — DEGRADE THE FIRE, NEVER THE VISIBILITY. This used to
+  // be `.catch(() => {})`, which discarded the error at a SECOND layer: the scope
+  // loop already swallows per-scope failures, so a throw reaching here could only
+  // come from BEFORE the loop — scope discovery itself (a three-table UNION), or
+  // the pg handle. That is the worst case, not the mildest: it means the ENTIRE
+  // shared-hive family (outbox health, double completion, presence ghosts, orphan
+  // sweep, peer federation silence) examined NOTHING, and the pass then reported
+  // nothing — indistinguishable from health, which is the exact failure this leg's
+  // own zero-scopes guard exists to make loud. A silent catch is that guard's blind
+  // spot one level up.
+  await runSharedHiveLeg(ctx).catch(async (err: unknown) => {
+    await captureImprovement({
+      title: 'shared-hive invariant: monitor leg THREW before it could examine anything',
+      kind: 'bug',
+      severity: 'major',
+      dedupScope: 'open',
+      // Per-signal identity for the same reason every incident above carries one.
+      watchdogKey: 'shared-hive:leg-threw',
+      foundDuring: 'system:coord-invariant-monitor (shared-hive leg)',
+      subTopic: 'shared-hive',
+      body:
+        `runSharedHiveLeg threw, so every shared-hive scan (outbox health, double-completion, presence ghosts, ` +
+        `peer federation silence, orphan sweep) was SKIPPED for this pass. The per-scope loop already isolates ` +
+        `individual scope failures, so a throw that reaches here happened BEFORE any scope was examined — most ` +
+        `likely scope discovery or the PG handle. The pass reported nothing because it examined nothing, which ` +
+        `is not the same as healthy.\n\nError: ${err instanceof Error ? `${err.message}\n${err.stack ?? ''}` : String(err)}` +
+        `\n\n(EI-20579195481991931; check source: packages/operator-core/lib/harness/routines/coord-invariant-actions.ts.)`,
+    }).catch(() => {
+      /* the contradiction report must not abort the fire — but it is no longer
+         the ONLY record: the throw is re-thrown nowhere, so this capture is the
+         last line of defense and its own failure is the only thing we swallow. */
+    });
+  });
 });
