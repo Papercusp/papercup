@@ -101,6 +101,23 @@ const chatDetail = {
   ],
 };
 
+/** `conversations.agentChatList` — the rail row (AgentChatRow, snake_case). */
+const chatListRow = {
+  id: CHAT_ID,
+  harness_slug: CHAT_HARNESS,
+  role: 'worker',
+  feature_id: 'F-123',
+  title: 'live browser chat',
+  created_at: nowMs,
+  updated_at: nowMs,
+  archived_at: null,
+  total_input_tokens: 2,
+  total_output_tokens: 3,
+  total_cost_usd_cents: 4,
+  turns: 1,
+};
+
+/** `agentChats.detail` — the EMBEDDED ChatPanel's own row (camelCase). */
 const chatPanelRow = {
   harnessSlug: CHAT_HARNESS,
   id: CHAT_ID,
@@ -223,8 +240,20 @@ async function stubCommonApis(page: Page): Promise<SyncQueryStub> {
         return [{ email: null }];
       case 'advRoster.list':
         return [rosterResponse];
-      case 'agentChats.byHarness':
-        return args?.harnessSlug === CHAT_HARNESS ? [chatPanelRow] : [];
+      // The Conversations rail + detail header read the unified conversations
+      // queries (AdvConversationsTab.tsx:2048), NOT `agentChats.byHarness` —
+      // that name belongs to the retired PiTerminalsDock and nothing on this
+      // route ever asks for it (measured: 20 rest-query names observed, none of
+      // them that one).
+      case 'conversations.agentChatList':
+        return [chatListRow];
+      case 'conversations.agentChatDetail':
+        return [chatDetail];
+      // The EMBEDDED live ChatPanel has its own query (ChatPanel.tsx:106),
+      // keyed by chat id — this is the row that must carry the sync-backed
+      // transcript the test distinguishes from the read-only fallback.
+      case 'agentChats.detail':
+        return args?.id === CHAT_ID ? [chatPanelRow] : [];
       case 'agentDetail.byOwner':
         return [
           {
@@ -259,7 +288,7 @@ test.describe('/adv Conversations + Sessions e2e', () => {
 
     // Prove the stub is feeding the view before the 20s content wait — a
     // bypassed stub then fails in seconds with a diagnostic.
-    await sync.waitForServed(['agentChats.byHarness']);
+    await sync.waitForServed(['agentChats.detail']);
 
     const liveChat = page.getByTestId('advconv-live-chat');
     await expect(liveChat).toBeVisible({ timeout: 20_000 });
@@ -272,7 +301,7 @@ test.describe('/adv Conversations + Sessions e2e', () => {
     await expect(page.getByText('read-only comms transcript text')).toHaveCount(0);
 
     // Falsifier for this spec's own hermeticity.
-    sync.assertServed('agentChats.byHarness');
+    sync.assertServed('agentChats.detail');
   });
 
   test('Create Sessions view renders the current SessionsRosterView route and opens an agent dossier', async ({
