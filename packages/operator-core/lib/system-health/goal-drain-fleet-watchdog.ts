@@ -228,12 +228,13 @@ export function scanGoalDrainFleets(
   holders: readonly GoalHolderLike[],
   verdicts: ReadonlyMap<string, LivenessVerdict>,
   fleetLiveness: ReadonlyMap<string, DrainFleetLiveness>,
+  specScopes: ReadonlyMap<string, DrainFleetSpecScope>,
   nowMs: number,
   graceMs: number = GOAL_DRAIN_FLEET_KICKOFF_GRACE_MS,
 ): GoalDrainAlert[] {
   const out: GoalDrainAlert[] = [];
   for (const g of goals) {
-    const alert = classifyGoalDrainFleet(g, holders, verdicts, fleetLiveness, nowMs, graceMs);
+    const alert = classifyGoalDrainFleet(g, holders, verdicts, fleetLiveness, specScopes, nowMs, graceMs);
     if (alert) out.push(alert);
   }
   return out;
@@ -246,6 +247,11 @@ export interface GoalDrainFleetSweepDeps {
   resolveFleetLiveness: (
     fleets: { workspaceId: string; fleetSlug: string }[],
   ) => Promise<Map<string, DrainFleetLiveness>>;
+  /** D-005: resolve each (goal, declared fleet) pair to a claim-spec scope
+   *  verdict, keyed by goalId. Only consulted for ALIVE fleets. */
+  resolveFleetSpecScopes: (
+    pairs: { workspaceId: string; fleetSlug: string; goalId: string }[],
+  ) => Promise<Map<string, DrainFleetSpecScope>>;
   escalate: (alert: GoalDrainAlert) => Promise<void>;
   /** Emit goal:drain-dead:<goalId> for a DECLARED-but-gone fleet. Fail-soft. */
   emitDrainDead: (alert: GoalDrainAlert) => Promise<void>;
@@ -381,12 +387,60 @@ function makeResolveFleetLiveness(
   };
 }
 
+/**
+ * D-005: resolve each (goal, declared fleet) pair's claim-spec scope. The fleet
+ * lane lives on the `fleet:<slug>` sentinel row of cup_claim_specs; NO row means
+ * members inherit DEFAULT_CLAIM_SPEC (an empty view), which is truthfully a
+ * pot-wide lane — not-goal-scoped, not unknown. The row is looked up first under
+ * the goal's own workspace partition, then under ANY partition (WI-1564: legacy
+ * writers stored under 'default'; alarming on a partition mismatch would be a
+ * false positive about scope). A failed READ is 'unknown' and suppresses.
+ */
+function makeResolveFleetSpecScopes(sql: Sql): GoalDrainFleetSweepDeps['resolveFleetSpecScopes'] {
+  return async (pairs) => {
+    const out = new Map<string, DrainFleetSpecScope>();
+    if (pairs.length === 0) return out;
+    try {
+      const { fleetSpecBeeKey } = await import('../scheduler/claim-spec-store');
+      const keys = [...new Set(pairs.map((p) => fleetSpecBeeKey(p.fleetSlug)))];
+      const rows = await sql<{ workspace_id: string; bee_id: string; spec: unknown }[]>`
+        SELECT workspace_id, bee_id, spec
+          FROM harness_shared.cup_claim_specs
+         WHERE bee_id = ANY(${keys}::text[])`;
+      for (const p of pairs) {
+        const beeKey = fleetSpecBeeKey(p.fleetSlug);
+        const row =
+          rows.find((r) => r.bee_id === beeKey && r.workspace_id === p.workspaceId) ??
+          rows.find((r) => r.bee_id === beeKey);
+        out.set(
+          p.goalId,
+          claimSpecIsGoalScoped(row?.spec ?? null, p.goalId) ? 'goal-scoped' : 'not-goal-scoped',
+        );
+      }
+    } catch {
+      out.clear();
+      for (const p of pairs) out.set(p.goalId, 'unknown');
+    }
+    return out;
+  };
+}
+
 const REASON_PROSE: Record<GoalDrainReason, string> = {
   'no-drain-fleet-declared':
     'has NO standing drain fleet declared (goals metadata.drainFleet is unset)',
   'drain-fleet-not-found':
     'declares a drain fleet that does not exist in agent_fleets',
   'drain-fleet-dead': 'declares a drain fleet with no live member',
+  'drain-fleet-not-goal-scoped':
+    "declares a LIVE drain fleet whose claim-spec lane is NOT scoped to this goal — no positive " +
+    "{field:'goal',op:'='|'in'} filter constrains what its members pull, so it drains the whole pot " +
+    'and guarantees nothing about work filed under THIS goal (D-005)',
+};
+
+const SUMMARY_VERDICT: Record<Exclude<GoalDrainReason, 'no-drain-fleet-declared'>, string> = {
+  'drain-fleet-not-found': 'missing',
+  'drain-fleet-dead': 'dead',
+  'drain-fleet-not-goal-scoped': 'not scoped to the goal (D-005)',
 };
 
 async function defaultEscalate(alert: GoalDrainAlert): Promise<void> {
@@ -396,7 +450,7 @@ async function defaultEscalate(alert: GoalDrainAlert): Promise<void> {
       `Goal '${alert.goalId}' is live-held but ${
         alert.reason === 'no-drain-fleet-declared'
           ? 'has no standing drain fleet'
-          : `its drain fleet '${alert.drainFleet}' is ${alert.reason === 'drain-fleet-not-found' ? 'missing' : 'dead'}`
+          : `its drain fleet '${alert.drainFleet}' is ${SUMMARY_VERDICT[alert.reason]}`
       }`,
     body:
       `The goal "${alert.title}" (${alert.goalId}, workspace ${alert.workspaceId}) is ` +
@@ -409,6 +463,13 @@ async function defaultEscalate(alert: GoalDrainAlert): Promise<void> {
       `fleet was never established, and the agent's only editing window was also its ` +
       `lowest-supervision window.\n\n` +
       `Remedy — the goal holder should pick ONE now:\n` +
+      (alert.reason === 'drain-fleet-not-goal-scoped'
+        ? `  • Scope the lane: scheduler:set_claim_spec { fleet: '${alert.drainFleet}', spec } with a ` +
+          `POSITIVE { field:'goal', op:'=', value:'${alert.goalId}' } filter leaf. The positive form is ` +
+          `load-bearing (WI-37711): the goal column is NULLABLE, so a not/!= leaf silently excludes ` +
+          `every unstamped row — and a pot-wide lane drains everything, guaranteeing nothing about ` +
+          `THIS goal's filed work.\n`
+        : '') +
       `  • Stand the fleet up (fleet:create / fleet:launch-on-plan), then record it: ` +
       `goals:update { id: '${alert.goalId}', drainFleet: '<fleet-slug>' }.\n` +
       `  • Fleet exists under another slug? Fix the record: goals:update { id: '${alert.goalId}', drainFleet: '<actual-slug>' }.\n` +
@@ -430,8 +491,9 @@ async function defaultEscalate(alert: GoalDrainAlert): Promise<void> {
 
 async function defaultEmitDrainDead(alert: GoalDrainAlert): Promise<void> {
   // Only a DECLARED-but-gone fleet emits: the goal agent parked on this key is
-  // waiting to hear its fleet died, not to be nagged about paperwork.
-  if (alert.reason === 'no-drain-fleet-declared') return;
+  // waiting to hear its fleet died, not to be nagged about paperwork — and a
+  // mis-SCOPED fleet (D-005) is alive, so it escalates but never emits here.
+  if (alert.reason !== 'drain-fleet-not-found' && alert.reason !== 'drain-fleet-dead') return;
   const { emitAwaitedEvent } = await import('../events/await/engine');
   await emitAwaitedEvent({
     key: `goal:drain-dead:${alert.goalId}`,
@@ -454,6 +516,7 @@ function sweepDeps(
     readGoals: makeReadGoals(sql),
     resolveLiveness,
     resolveFleetLiveness: makeResolveFleetLiveness(sql, resolveLiveness),
+    resolveFleetSpecScopes: makeResolveFleetSpecScopes(sql),
     escalate: defaultEscalate,
     emitDrainDead: defaultEmitDrainDead,
     flagEnabled: defaultFlagEnabled,
@@ -481,16 +544,25 @@ export async function runGoalDrainFleetSweepOnce(
   const relevant = holders.filter((h) => activeKeys.has(fleetKey(h.workspaceId, h.goalId)));
   const verdicts = await deps.resolveLiveness([...new Set(relevant.map((h) => h.ownerId))]);
 
-  const declared = goals
-    .filter((g): g is GoalDrainRowLike & { drainFleet: string } => g.drainFleet !== null)
-    .map((g) => ({ workspaceId: g.workspaceId, fleetSlug: g.drainFleet }));
+  const declaredGoals = goals.filter(
+    (g): g is GoalDrainRowLike & { drainFleet: string } => g.drainFleet !== null,
+  );
+  const declared = declaredGoals.map((g) => ({ workspaceId: g.workspaceId, fleetSlug: g.drainFleet }));
   const fleetLiveness = await deps.resolveFleetLiveness(declared);
+
+  // D-005: scope is judged only where it can change the verdict — a fleet that
+  // is dead/missing/unknown already has its (more urgent, or suppressed) answer.
+  const alivePairs = declaredGoals
+    .filter((g) => fleetLiveness.get(fleetKey(g.workspaceId, g.drainFleet)) === 'alive')
+    .map((g) => ({ workspaceId: g.workspaceId, fleetSlug: g.drainFleet, goalId: g.goalId }));
+  const specScopes = await deps.resolveFleetSpecScopes(alivePairs);
 
   const alerts = scanGoalDrainFleets(
     goals,
     relevant,
     verdicts,
     fleetLiveness,
+    specScopes,
     deps.now(),
     deps.graceMs,
   );
