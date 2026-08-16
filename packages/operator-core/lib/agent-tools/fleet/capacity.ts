@@ -141,7 +141,10 @@ export async function readProviderAvailability(
         // is what lets deriveEdgeThrottleEvidence conclude sharedEgress at all. With the proxy entries
         // pulled (permanent per owner directive 2026-08-09) every account hit that branch, so every
         // identity was undefined and the shared-egress diagnosis was structurally unreachable.
-        egressIdentity: egressIdentityOf(r.egress),
+        // EI-20613616736215896: pass `egressPool` TOO — it supersedes the singular `egress`, and reading
+        // only the singular collapsed every pool-routed account onto one identity, flipping P-009's
+        // total-fallback into an affirmative (and wrong) sharedEgress:true → a false owner escalation.
+        egressIdentity: egressIdentityOf(r.egress, r.egressPool),
       })),
       prevSnapshot,
     );
