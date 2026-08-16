@@ -38,7 +38,7 @@
  */
 import type { Sql } from 'postgres';
 import type { PostResult } from '../agent-tools/coordination/conversations-core';
-import { DEAD_RESPONDER_STATES } from './get-feedback-core';
+import { DEAD_RESPONDER_STATES, consultParkKey as parkKey } from './get-feedback-core';
 
 export const RESPONDER_REPLY_KINDS = ['answer', 'clarifying_question', 'new_fact'] as const;
 export const REQUESTER_REPLY_KINDS = ['question', 'new_fact'] as const;
@@ -57,6 +57,7 @@ interface ConsultStateRow {
   requester_id: string;
   responder_id: string | null;
   state: string;
+  question: string;
   latency_contract: string;
   max_exchanges: number;
   exchanges_used: number;
@@ -101,6 +102,20 @@ export interface ConsultVerbDeps {
     summary: string;
     body: string;
   }) => Promise<{ woke: number }>;
+  /** P-005 graduation (D-004): mint the shared work item a 'graduate' close
+   * hands off to — bound in prod (consult:close) to createWorkItem +
+   * subscribe-both-participants + a rel:'relates' link to the conversation.
+   * Optional because only the close verb needs it; a graduate close without
+   * it is refused structurally (graduate_unavailable). */
+  mintGraduationWorkItem?: (input: {
+    workspaceId: string;
+    conversationId: string;
+    question: string;
+    requesterId: string;
+    responderId: string | null;
+    closedBy: string;
+    reason: string;
+  }) => Promise<{ id: string }>;
   now?: () => Date;
 }
 
@@ -114,13 +129,11 @@ export type ConsultVerbError =
   | { error: 'exchange_cap'; exchanges_used: number; max_exchanges: number; hint: string }
   | { error: 'answer_required' }
   | { error: 'reason_required' }
-  | { error: 'post_failed'; cause: string };
+  | { error: 'post_failed'; cause: string }
+  | { error: 'graduate_unavailable'; hint: string }
+  | { error: 'graduate_failed'; cause: string };
 
 const POSTABLE_STATES = new Set(['awaiting_responder', 'active']);
-
-function parkKey(conversationId: string): string {
-  return `consult:reply:${conversationId}`;
-}
 
 function oneLine(s: string, n = 96): string {
   const t = s.replace(/\s+/g, ' ').trim();
@@ -134,7 +147,7 @@ async function readState(
 ): Promise<ConsultStateRow | null> {
   const rows = (await sql`
     SELECT workspace_id, conversation_id, requester_id, responder_id, state,
-           latency_contract, max_exchanges, exchanges_used, wake_budget,
+           question, latency_contract, max_exchanges, exchanges_used, wake_budget,
            wakes_used, origin_task_ref, routing, outcome, closed_at
       FROM harness_shared.consult_state
      WHERE workspace_id = ${workspaceId} AND conversation_id = ${conversationId}
@@ -241,7 +254,7 @@ export async function consultReplyCore(
       error: 'exchange_cap',
       exchanges_used: row.exchanges_used,
       max_exchanges: row.max_exchanges,
-      hint: `Exchange cap reached (${row.exchanges_used}/${row.max_exchanges}) — close with what you have: consult:close { outcome: 'answered' | 'cant_help' }.`,
+      hint: `Exchange cap reached (${row.exchanges_used}/${row.max_exchanges}) — close with what you have (consult:close { outcome: 'answered' | 'cant_help' }), or if you are both still deliberating, graduate it: consult:close { outcome: 'graduate', reason } mints a shared work item that carries the question forward (D-004).`,
     };
   }
 
@@ -316,7 +329,7 @@ export async function consultReplyCore(
   const hint =
     role === 'responder'
       ? capNow
-        ? `Posted (exchange ${exchangesUsed}/${row.max_exchanges} — cap reached). Further replies are refused; settle with consult:close { outcome: 'answered' | 'cant_help' }.`
+        ? `Posted (exchange ${exchangesUsed}/${row.max_exchanges} — cap reached). Further replies are refused; settle with consult:close { outcome: 'answered' | 'cant_help' } — or still deliberating? consult:close { outcome: 'graduate', reason } mints a shared work item that carries it forward (D-004).`
         : req.kind === 'answer'
           ? `Answer posted (exchange ${exchangesUsed}/${row.max_exchanges}); the requester was signaled via ${parkKey(req.conversationId)}. When the thread is settled, close it: consult:close { outcome: 'answered' }.`
           : `Posted (exchange ${exchangesUsed}/${row.max_exchanges}); the requester was signaled via ${parkKey(req.conversationId)}.`
@@ -431,7 +444,11 @@ export interface ConsultCloseRequest {
   workspaceId: string;
   authorId: string;
   conversationId: string;
-  outcome: 'answered' | 'cant_help';
+  /** 'graduate' (P-005, D-004): the consult outgrew its bounds (canonically:
+   * cap hit while still deliberating) — closes as state='graduated' and mints
+   * a shared work item both participants follow. Requires `reason`. Either
+   * participant may graduate (close symmetry). */
+  outcome: 'answered' | 'cant_help' | 'graduate';
   answer?: string;
   /** Responder's confidence in the answer, 0..1 (outcome jsonb, D-001). */
   confidence?: number;
@@ -442,7 +459,9 @@ export interface ConsultCloseRequest {
 export interface ConsultCloseResult {
   ok: true;
   post_id: number;
-  state: 'closed_answered' | 'closed_cant_help';
+  state: 'closed_answered' | 'closed_cant_help' | 'graduated';
+  /** The minted shared work item (graduate closes only). */
+  work_item_id?: string;
   hint: string;
 }
 
@@ -462,14 +481,49 @@ export async function consultCloseCore(
   }
 
   // Structured outcome (D-001 — the outcome column comment is the authority):
-  // closed_answered carries the answer; closed_cant_help carries the reason.
+  // closed_answered carries the answer; closed_cant_help/graduated carry the reason.
   const answer = req.answer?.trim();
   const reason = req.reason?.trim();
   if (req.outcome === 'answered' && !answer) return { error: 'answer_required' };
-  if (req.outcome === 'cant_help' && !reason) return { error: 'reason_required' };
+  if ((req.outcome === 'cant_help' || req.outcome === 'graduate') && !reason) return { error: 'reason_required' };
 
-  const state: ConsultCloseResult['state'] = req.outcome === 'answered' ? 'closed_answered' : 'closed_cant_help';
-  const body = req.outcome === 'answered' ? `Closed (answered): ${answer}` : `Closed (can't help): ${reason}`;
+  // P-005 graduation (D-004): mint the shared work item FIRST — a mint failure
+  // is a clean refusal (nothing written), and the closing post can then name
+  // the minted id. The rare mint-then-post-fail crash window leaves a visible,
+  // conversation-linked work item and an OPEN consult (retryable), which is
+  // strictly more repairable than a closed consult with no work item.
+  let graduatedWorkItemId: string | null = null;
+  if (req.outcome === 'graduate') {
+    if (!deps.mintGraduationWorkItem) {
+      return {
+        error: 'graduate_unavailable',
+        hint: "This surface has no graduation work-item seam bound — close with outcome 'answered' | 'cant_help', or file the shared work item by hand and reference it in the close.",
+      };
+    }
+    try {
+      const minted = await deps.mintGraduationWorkItem({
+        workspaceId: req.workspaceId,
+        conversationId: req.conversationId,
+        question: row.question,
+        requesterId: row.requester_id,
+        responderId: row.responder_id,
+        closedBy: req.authorId,
+        reason: reason as string,
+      });
+      graduatedWorkItemId = minted.id;
+    } catch (e) {
+      return { error: 'graduate_failed', cause: e instanceof Error ? e.message : String(e) };
+    }
+  }
+
+  const state: ConsultCloseResult['state'] =
+    req.outcome === 'answered' ? 'closed_answered' : req.outcome === 'graduate' ? 'graduated' : 'closed_cant_help';
+  const body =
+    req.outcome === 'answered'
+      ? `Closed (answered): ${answer}`
+      : req.outcome === 'graduate'
+        ? `Graduated to shared work item ${graduatedWorkItemId}: ${reason}`
+        : `Closed (can't help): ${reason}`;
 
   const posted = await deps.post({ conversation_id: req.conversationId, body, via_consult_verb: true });
   if ('error' in posted) return { error: 'post_failed', cause: posted.error };
@@ -487,6 +541,7 @@ export async function consultCloseCore(
     ...(req.confidence != null ? { confidence: req.confidence } : {}),
     ...(req.evidence?.length ? { evidence: req.evidence } : {}),
     ...(reason ? { reason } : {}),
+    ...(graduatedWorkItemId ? { work_item_id: graduatedWorkItemId } : {}),
   };
   await sql`
     UPDATE harness_shared.consult_state
@@ -512,9 +567,12 @@ export async function consultCloseCore(
     ok: true,
     post_id: postId,
     state,
+    ...(graduatedWorkItemId ? { work_item_id: graduatedWorkItemId } : {}),
     hint:
       state === 'closed_answered'
         ? `Closed with a structured answer${req.confidence != null ? ` (confidence ${req.confidence})` : ''}. The outcome is on consult_state (the D-003 honesty-metric feed).`
-        : `Closed as can't-help — an honest terminal outcome (D-003), not a failure. The requester proceeds on their own judgment.`,
+        : state === 'graduated'
+          ? `Graduated (D-004): the consult outgrew its bounds — shared work item ${graduatedWorkItemId} carries it forward and both participants are subscribed. The consult takes no further posts.`
+          : `Closed as can't-help — an honest terminal outcome (D-003), not a failure. The requester proceeds on their own judgment.`,
   };
 }

@@ -158,13 +158,73 @@ function evidenceLine(c: RoutingCandidate): string {
     .join('; ');
 }
 
+/** Walk the parent_consult_id chain collecting every lineage participant —
+ * bounded: the depth CHECK caps a legal chain at MAX_CONSULT_DEPTH+1 rows.
+ * Null ⇒ the named parent does not exist in this workspace. */
+async function readConsultLineage(
+  sql: Sql,
+  workspaceId: string,
+  parentConsultId: string,
+): Promise<{ parentDepth: number; owners: Set<string> } | null> {
+  const owners = new Set<string>();
+  let parentDepth: number | null = null;
+  let cursor: string | null = parentConsultId;
+  for (let hop = 0; cursor && hop <= MAX_CONSULT_DEPTH; hop += 1) {
+    const rows = (await sql`
+      SELECT requester_id, responder_id, depth, parent_consult_id
+        FROM harness_shared.consult_state
+       WHERE workspace_id = ${workspaceId} AND conversation_id = ${cursor}
+    `) as unknown as Array<{
+      requester_id: string;
+      responder_id: string | null;
+      depth: number;
+      parent_consult_id: string | null;
+    }>;
+    const row = rows[0];
+    if (!row) break;
+    if (hop === 0) parentDepth = row.depth;
+    owners.add(row.requester_id);
+    if (row.responder_id) owners.add(row.responder_id);
+    cursor = row.parent_consult_id;
+  }
+  return parentDepth == null ? null : { parentDepth, owners };
+}
+
 export async function getFeedbackCore(
   req: GetFeedbackRequest,
   deps: GetFeedbackDeps,
-): Promise<GetFeedbackResult> {
+): Promise<GetFeedbackResult | GetFeedbackError> {
   const sql = deps.getSql();
   const now = deps.now ? deps.now() : new Date();
   const latency: LatencyContract = req.latencyContract ?? 'proceed';
+
+  // 0) Recursion lineage (P-005, D-005 / D-007 §7): a consult opened from
+  //    within a consult carries parent depth+1 (structural refusal past the
+  //    ceiling — never let the DB CHECK be the error surface), and its
+  //    lineage's participants are excluded from routing so a cycle cannot
+  //    form by construction.
+  let depth = 0;
+  let lineageOwners: string[] = [];
+  if (req.parentConsultId) {
+    const lineage = await readConsultLineage(sql, req.workspaceId, req.parentConsultId);
+    if (!lineage) {
+      return {
+        error: 'parent_consult_not_found',
+        parent_consult_id: req.parentConsultId,
+        hint: 'parent_consult_id must name an existing consult conversation in this workspace — pass the conversation_id of the consult you are answering.',
+      };
+    }
+    depth = lineage.parentDepth + 1;
+    if (depth > MAX_CONSULT_DEPTH) {
+      return {
+        error: 'consult_depth_exceeded',
+        depth,
+        max_depth: MAX_CONSULT_DEPTH,
+        hint: `Consult recursion is capped at depth ${MAX_CONSULT_DEPTH} (D-007 §7) — answer from your own context, or close/decline and let the requester cascade.`,
+      };
+    }
+    lineageOwners = [...lineage.owners];
+  }
 
   // 1) Origin task ref — explicit wins; undefined defaults to the requester's
   //    most recently progressed wip item (the D-005 budget aggregation key).
@@ -180,16 +240,30 @@ export async function getFeedbackCore(
   }
 
   // 2) Route (one embedding + bounded SQL; snapshot comes back for persisting).
+  //    The caller's manual-cascade exclusions and the recursion lineage fold
+  //    into ONE excludeOwners set (P-005 cycle refusal rides P-002's arg).
+  const excludeOwners = [...new Set([...(req.excludeOwners ?? []), ...lineageOwners])];
   const route = await deps.route({
     workspaceId: req.workspaceId,
     requesterId: req.requesterId,
     question: req.question,
-    ...(req.excludeOwners?.length ? { excludeOwners: req.excludeOwners } : {}),
+    ...(excludeOwners.length ? { excludeOwners } : {}),
   });
 
   // 3) Liveness gate (v1, D-008 §5): top qualified that is not dead.
   const liveQualified = route.qualified.filter((c) => !DEAD_RESPONDER_STATES.has(c.liveness));
   const chosen = route.verdict === 'routed' ? (liveQualified[0] ?? null) : null;
+
+  // Belt + braces for the cycle rule (D-005): the excludeOwners fold means the
+  // router can never hand back a lineage owner — but a future direct-responder
+  // path might. Refuse structurally rather than trusting every route impl.
+  if (chosen && lineageOwners.includes(chosen.ownerId)) {
+    return {
+      error: 'consult_cycle',
+      lineage: lineageOwners,
+      hint: "The resolved responder is already in this consult's lineage (A→B→A, D-005) — a cycle is refused. Re-call excluding them, or proceed on your own judgment.",
+    };
+  }
   const reason: GetFeedbackResult['reason'] = chosen
     ? undefined
     : route.snapshot.degraded === 'embed-unavailable'
@@ -230,12 +304,13 @@ export async function getFeedbackCore(
   await sql`
     INSERT INTO harness_shared.consult_state
       (workspace_id, conversation_id, requester_id, responder_id, state, question,
-       latency_contract, origin_task_ref, routing, expires_at, wakes_used)
+       latency_contract, origin_task_ref, routing, expires_at, wakes_used,
+       depth, parent_consult_id)
     VALUES
       (${req.workspaceId}, ${opened.conversation_id}, ${req.requesterId},
        ${chosen?.ownerId ?? null}, ${state}, ${req.question}, ${latency},
        ${originRef}, ${JSON.stringify(route.snapshot)}::jsonb, ${expiresAt},
-       ${willWake ? 1 : 0})
+       ${willWake ? 1 : 0}, ${depth}, ${req.parentConsultId ?? null})
   `;
 
   // 7) Wake the responder with why-you-were-chosen evidence (D-008 §5).
@@ -255,7 +330,7 @@ export async function getFeedbackCore(
     woke = r.woke;
   }
 
-  const parkKey = chosen && latency === 'hard-blocked' ? `consult:reply:${opened.conversation_id}` : null;
+  const parkKey = chosen && latency === 'hard-blocked' ? consultParkKey(opened.conversation_id) : null;
   const hint = chosen
     ? budgetExhausted
       ? `Routed to ${chosen.ownerId} but the wake budget for ${originRef} is exhausted (${usedForTask}/${WAKE_BUDGET_PER_TASK}) — delivered by subscription only; they see it on their next turn. Proceed meanwhile.`
