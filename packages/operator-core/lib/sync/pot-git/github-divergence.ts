@@ -372,6 +372,35 @@ async function readNeedsOwnerLatch(s: Sql, potHomeSlug: string): Promise<NeedsOw
 }
 
 /**
+ * EI-20562689651892687: retry a transient dynamic-import failure a few times
+ * before giving up. `deliverNeedsOwnerAlarm` runs from `papercup-bg-host`, a
+ * long-lived tsx process resolving a RELATIVE dynamic `import()` against a
+ * tree `git-sync` mutates concurrently (checkout/reset/rebase) — the module
+ * file can be transiently absent for the moment node's ESM loader stats it,
+ * surfacing as `Cannot find module …/attention-notify` even though the file
+ * is present a beat later (confirmed in the bg-host journal: papercusp hit
+ * this exact error exactly once, at the ONE tick its one-shot latch tried to
+ * fire, then never got a chance to try again — see the header note above on
+ * why a latch reading `alerted:true` is INTENT, not delivery). Three attempts
+ * with a short backoff turns that one unlucky stat into a non-event; it does
+ * NOT change one-shot semantics on a genuine (non-transient) failure — after
+ * the retries are exhausted this still swallows and logs, exactly as before,
+ * and the `bridge-needs-owner-unalerted` watchdog remains the backstop.
+ */
+export async function importWithRetry<T>(loader: () => Promise<T>, attempts = 3, delayMs = 300): Promise<T> {
+  let lastErr: unknown;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await loader();
+    } catch (e) {
+      lastErr = e;
+      if (i < attempts - 1) await new Promise((r) => setTimeout(r, delayMs));
+    }
+  }
+  throw lastErr;
+}
+
+/**
  * WI-38327: raise the owner-facing alarm for an owner-gated bridge block.
  *
  * The escalation row this module has always written is DURABLE but not
@@ -385,7 +414,10 @@ async function readNeedsOwnerLatch(s: Sql, potHomeSlug: string): Promise<NeedsOw
  * uses: notifyAttention (the owner rail) + broadcastSevereEvent (the coord
  * card, coalesced on a stable conditionKey) beside the row. Both are
  * best-effort and independently swallowed — paging is never allowed to break a
- * bridge tick.
+ * bridge tick. Each import is retried (`importWithRetry`) before either leg is
+ * counted as failed — see EI-20562689651892687: this alarm only ever gets ONE
+ * shot per episode, so a single transient module-resolution hiccup must not
+ * be allowed to spend it silently.
  */
 async function deliverNeedsOwnerAlarm(
   potHomeSlug: string,
@@ -401,7 +433,7 @@ async function deliverNeedsOwnerAlarm(
     `until it is resolved, so work is accumulating on this box with no off-box copy. ` +
     `Inspect: harness_shared.harness_escalations (harness_slug='${potHomeSlug}', phase='${GITHUB_BRIDGE_ESCALATION_PHASE}').`;
   try {
-    const { notifyAttention } = await import('../../attention-notify');
+    const { notifyAttention } = await importWithRetry(() => import('../../attention-notify'));
     await notifyAttention({
       kind: 'intervention',
       title,
@@ -415,7 +447,7 @@ async function deliverNeedsOwnerAlarm(
     console.warn(`[github-bridge] needs-owner notify failed (${potHomeSlug}): ${e instanceof Error ? e.message : e}`);
   }
   try {
-    const { broadcastSevereEvent } = await import('../../severe-event-broadcast');
+    const { broadcastSevereEvent } = await importWithRetry(() => import('../../severe-event-broadcast'));
     await broadcastSevereEvent({
       summary: title,
       body,
@@ -433,7 +465,7 @@ async function deliverNeedsOwnerAlarm(
 /** The all-clear for a previously-alarmed owner-gated block. */
 async function deliverNeedsOwnerRecovery(potHomeSlug: string): Promise<void> {
   try {
-    const { broadcastSevereEventResolved } = await import('../../severe-event-broadcast');
+    const { broadcastSevereEventResolved } = await importWithRetry(() => import('../../severe-event-broadcast'));
     await broadcastSevereEventResolved({
       conditionKey: githubBridgeNeedsOwnerConditionKey(potHomeSlug),
       summary: `GitHub bridge RECOVERED on ${potHomeSlug} — the owner-gated block is gone.`,

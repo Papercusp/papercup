@@ -21,6 +21,7 @@ import {
   githubBridgeNeedsOwnerConditionKey,
   needsOwnerCause,
   decideNeedsOwnerAlarm,
+  importWithRetry,
   EMPTY_NEEDS_OWNER_LATCH,
   type NeedsOwnerLatch,
 } from './github-divergence';
@@ -325,6 +326,41 @@ describe('WI-38327 — the needs-owner alarm latch (pure policy, no database)', 
   it('the condition key is stable per hive, so repeat sweeps coalesce instead of storming', () => {
     expect(githubBridgeNeedsOwnerConditionKey('papercusp')).toBe('github-bridge-needs-owner:papercusp');
     expect(githubBridgeNeedsOwnerConditionKey('oddsmith-hive')).not.toBe(githubBridgeNeedsOwnerConditionKey('papercusp'));
+  });
+
+  // EI-20562689651892687: the alarm's one-shot latch persists BEFORE delivery is
+  // attempted, so a single swallowed delivery failure silences the alarm for the
+  // rest of the episode with no retry until the cause changes. Root cause traced
+  // to the bg-host journal: `deliverNeedsOwnerAlarm`'s dynamic `import()` of
+  // attention-notify/severe-event-broadcast hit a transient "Cannot find module"
+  // (git-sync mutating the tree mid-tick) on the ONE tick the one-shot alarm
+  // fired for papercusp, and was never retried. `importWithRetry` is the fix.
+  describe('importWithRetry — EI-20562689651892687 (transient dynamic-import resilience)', () => {
+    it('returns the loader result immediately when it succeeds first try', async () => {
+      const loader = vi.fn().mockResolvedValue('ok');
+      await expect(importWithRetry(loader, 3, 0)).resolves.toBe('ok');
+      expect(loader).toHaveBeenCalledTimes(1);
+    });
+
+    it('retries past a transient failure and succeeds within the attempt budget', async () => {
+      const loader = vi
+        .fn()
+        .mockRejectedValueOnce(new Error("Cannot find module '../../attention-notify'"))
+        .mockRejectedValueOnce(new Error("Cannot find module '../../attention-notify'"))
+        .mockResolvedValueOnce('ok');
+      await expect(importWithRetry(loader, 3, 0)).resolves.toBe('ok');
+      expect(loader).toHaveBeenCalledTimes(3);
+    });
+
+    it('exhausts the attempt budget and rethrows the LAST error when every attempt fails', async () => {
+      const loader = vi
+        .fn()
+        .mockRejectedValueOnce(new Error('first'))
+        .mockRejectedValueOnce(new Error('second'))
+        .mockRejectedValueOnce(new Error('third'));
+      await expect(importWithRetry(loader, 3, 0)).rejects.toThrow('third');
+      expect(loader).toHaveBeenCalledTimes(3);
+    });
   });
 
   it('never throws — a store failure is swallowed with a warn (best-effort, bridge tick must not die)', async () => {
