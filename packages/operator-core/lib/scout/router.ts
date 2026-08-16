@@ -87,6 +87,16 @@ export interface ClassifyOptions {
    * proposal's own `routeHint`. This is the "the router may override" seam.
    */
   override?: (p: Proposal) => RoutedRail | undefined;
+  /**
+   * Liveness gate for the gym rail (D-003, blender-loop-repair-2026-08-16 P-002 /
+   * EI-20597534704604481): `false` reroutes every gym-bound proposal to the
+   * improvement rail. The gym kept receiving ~14 ideas/day for 20 days after its
+   * autoloop was disabled — outcomes froze, and 80.4% of all decided idea
+   * outcomes became copies of 4 dead verdicts. The production caller resolves
+   * this from `gym_autoloop_config.enabled`; default `true` (byte-identical
+   * routing for callers that do not resolve it).
+   */
+  gymEnabled?: boolean;
 }
 
 /**
@@ -132,7 +142,15 @@ export function decideRoutes(
   opts: ClassifyOptions = {},
 ): RoutingDecision[] {
   return proposals.map((p) => {
-    const { rail, reason, followedHint } = classifyProposal(p, opts);
+    let { rail, reason, followedHint } = classifyProposal(p, opts);
+    // D-003: never route onto a disabled gym — manufactured outcomes are worse
+    // than no outcomes. Rerouted (not dropped) so the idea still lands on a
+    // live rail and its outcome is real.
+    if (rail === 'gym' && opts.gymEnabled === false) {
+      rail = 'improvement';
+      reason = `${reason}; gym rail gated OFF (autoloop disabled, D-003) → improvement`;
+      followedHint = false;
+    }
     const title = proposalTitle(p);
     const refs = p.addressesPatternRefs ?? [];
     const seededByRefs = p.seededByRefs ?? [];
