@@ -186,12 +186,12 @@ describe('runRouteIdea — draft path', () => {
       expect.objectContaining({ addressesPatternRefs: ['wi:EI-10587'] }),
     );
 
-    recordRoutedIdea.mockClear();
+    vi.mocked(recordRoutedIdea).mockClear();
     await runRouteIdea({ draft: { title: 'ungrounded idea', framing: 'f', mechanism: 'm' }, rail: 'plan' }, {}, deps);
     // The key must be ABSENT (not an empty array): the ledger upsert distinguishes
     // "no refs declared" (COALESCE keeps any existing) from an explicit replacement.
     expect(recordRoutedIdea).toHaveBeenCalledTimes(1);
-    expect('addressesPatternRefs' in recordRoutedIdea.mock.calls[0]![0]!).toBe(false);
+    expect('addressesPatternRefs' in vi.mocked(recordRoutedIdea).mock.calls[0]![0]!).toBe(false);
   });
 });
 
