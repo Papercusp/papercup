@@ -75,10 +75,18 @@ describe('evaluateDesktopPerfGate (pure)', () => {
     expect(d.summary).toContain('disabled');
   });
 
-  it('no run / no measures → pass (fail-soft unknown)', () => {
-    expect(evaluateDesktopPerfGate(null, WARN_ONLY).action).toBe('pass');
-    expect(evaluateDesktopPerfGate(null, WARN_ONLY).verdictStatus).toBe('unknown');
-    expect(evaluateDesktopPerfGate(run([]), WARN_ONLY).action).toBe('pass');
+  // D-007: a DEAD PRODUCER warns instead of passing silently. It still never blocks (that
+  // is the fail-soft property, asserted below with block-mode ARMED) — what changed is that
+  // it is now audible, because green-checkpoint only broadcasts a non-`pass` action.
+  it('no run / no measures → warn (fail-soft unknown, never blocks)', () => {
+    for (const r of [null, run([])]) {
+      const d = evaluateDesktopPerfGate(r, ARMED, 'abc12345');
+      expect(d.action).toBe('warn');
+      expect(d.action).not.toBe('block');
+      expect(d.verdictStatus).toBe('unknown');
+      expect(d.reasons.join(' ')).toMatch(/nothing is producing/i);
+      expect(d.summary).toContain('UNMEASURED');
+    }
   });
 
   // Freshness window (WI-6538). Before this, `readLatestRun` returned the most
@@ -88,18 +96,21 @@ describe('evaluateDesktopPerfGate (pure)', () => {
     const NOW = 1_800_000_000_000;
     const hoursAgo = (h: number) => NOW - h * 3_600_000;
 
-    it('a run older than the window → fail-soft pass/unknown, never a breach', () => {
+    // D-007: stale is `warn` (audible) but still `unknown` — never a breach, never a block.
+    it('a run older than the window → warn/unknown, never a breach', () => {
       const d = evaluateDesktopPerfGate(run([breach], 'fail', hoursAgo(30)), WARN_ONLY, 'abc123', NOW);
-      expect(d.action).toBe('pass');
+      expect(d.action).toBe('warn');
       expect(d.verdictStatus).toBe('unknown');
       expect(d.summary).toContain('STALE');
       expect(d.summary).toContain('30h old');
-      expect(d.reasons).toEqual([]);
+      // The breach is NOT reported as a reason — stale data is not a verdict.
+      expect(d.reasons.join(' ')).not.toContain('plan-popup-open');
     });
 
     it('staleness outranks block-mode — an armed gate still will not block on old data', () => {
       const d = evaluateDesktopPerfGate(run([breach], 'fail', hoursAgo(72)), ARMED, 'abc123', NOW);
-      expect(d.action).toBe('pass');
+      expect(d.action).toBe('warn');
+      expect(d.action).not.toBe('block');
       expect(d.verdictStatus).toBe('unknown');
     });
 
@@ -227,11 +238,12 @@ describe('runDesktopPerfGate', () => {
     expect(d.verdictStatus).toBe('crit');
   });
 
-  it('a read error degrades to unknown → pass (fail-soft)', async () => {
-    const d = await runDesktopPerfGate(WARN_ONLY, {
+  it('a read error degrades to unknown → warn, never blocks (fail-soft)', async () => {
+    const d = await runDesktopPerfGate(ARMED, {
       io: { readLatestRun: async () => { throw new Error('pg down'); } },
     });
-    expect(d.action).toBe('pass');
+    expect(d.action).toBe('warn');
+    expect(d.action).not.toBe('block');
     expect(d.verdictStatus).toBe('unknown');
   });
 });
@@ -288,7 +300,10 @@ describe('invariant measures (P-003c)', () => {
   it('a STALE run does not block, even on a breached invariant', () => {
     const stale = run([egressBreach], 'fail', Date.now() - (DEFAULT_DESKTOP_PERF_MAX_AGE_MS + 60_000));
     const d = evaluateDesktopPerfGate(stale, WARN_ONLY, 'deadbeefcafef00d');
-    expect(d.action).toBe('pass');
+    // D-007: audible (warn) but still never a block, even for an invariant — a breach
+    // recorded against a tree that no longer exists must not hold today's candidate.
+    expect(d.action).toBe('warn');
+    expect(d.action).not.toBe('block');
     expect(d.verdictStatus).toBe('unknown');
     expect(d.summary).toContain('STALE');
   });
@@ -446,7 +461,8 @@ describe('D-005 quiet-window gating', () => {
     it('staleness still outranks the quiet window — an old quiet run is not a verdict', () => {
       const NOW = 1_800_000_000_000;
       const d = evaluateDesktopPerfGate(run([breach, ...quiet()], 'fail', NOW - 30 * 3_600_000), ARMED, 'abc123', NOW);
-      expect(d.action).toBe('pass');
+      expect(d.action).toBe('warn');
+      expect(d.action).not.toBe('block');
       expect(d.summary).toContain('STALE');
       expect(d.pressure).toBe('quiet');
     });

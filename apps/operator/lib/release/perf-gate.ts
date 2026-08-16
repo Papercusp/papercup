@@ -107,9 +107,19 @@ function shaLabel(candidateSha?: string): string {
  *
  * Decision table (action by verdict tier):
  *   disabled                      → pass   (no-op; the gate is opt-in)
- *   ok | unknown(stale/no-data)   → pass   (fail-soft: never block on missing/benign data)
+ *   ok                            → pass   (measured, and fine)
+ *   unknown (stale / no capture)  → warn   (D-007: never blocks, but never SILENT either —
+ *                                           a dead producer is a producer failure, not a pass)
  *   warn (hot-but-not-fatal)      → warn   (surface, never block — even when armed)
  *   crit (definitive wedge)       → block IFF policy.block else warn
+ *
+ * ⚠ BEFORE ARMING `policy.block`, READ D-007. Measured 2026-08-16 against a live capture,
+ * `crit` fired on `PSI memory full avg60 11.45 ≥ 5` — ambient RAM pressure from ~100 peer
+ * agents on this shared box, which has nothing to do with any candidate. This gate's crit
+ * tier currently MIXES that ambient host state with genuine operator wedges (:3070
+ * unreachable, wedge-active, event-loop lag p95 ≥ 1s, CLOSE_WAIT ≥ 500, inotify ≥ 80%),
+ * and until the two are separable, arming would hold every deploy whenever the box is
+ * busy — the exact false-red D-003 refused for the desktop sibling.
  */
 export function evaluatePerfGate(
   verdict: PerfVerdict,
@@ -127,6 +137,16 @@ export function evaluatePerfGate(
     };
   }
 
+  // `unknown` stays a quiet fail-soft pass HERE, and that is deliberate — do not "fix" it
+  // to warn (I tried; it is wrong for this gate). Unlike its desktop sibling, this gate
+  // already distinguishes a BRIEF gap from a DEAD producer upstream, in
+  // perf-budgets.ts's `blindMs` branch (WI-324): a capture 10–30min old is `unknown`
+  // (a skipped timer tick — quiet on purpose), while one past 30min is promoted to
+  // `warn` carrying the reason "host SLO monitor blind; check
+  // papercup-perf-signals-capture.timer". So a genuinely dead producer is ALREADY audible
+  // through the warn branch below, and warning on plain `unknown` would only add noise on
+  // every skipped tick. (The desktop gate had no such tier, which is why D-007's
+  // dead-producer ruling changes THAT file and not this one.)
   if (verdict.status === 'ok' || verdict.status === 'unknown') {
     const why = verdict.status === 'unknown' ? 'no fresh perf signal (fail-soft)' : 'operator perf ok';
     return {

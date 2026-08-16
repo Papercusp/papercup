@@ -324,8 +324,21 @@ export function evaluateDesktopPerfGate(
     return { action: 'pass', reasons: [], summary: `desktop-perf-gate disabled — ${sha} not perf-checked`, verdictStatus: 'unknown', pressure: null };
   }
 
+  // A DEAD PRODUCER WARNS — it does not silently pass (D-007). The action still advances
+  // the deploy (fail-soft is right: missing data must never block), but `warn` is what
+  // green-checkpoint LOGS AND BROADCASTS, and `pass` is what it says nothing about. That
+  // asymmetry is the root cause of this gate's 13 days of unnoticed fail-soft passes: the
+  // summary below has always named the problem, and nobody could ever have read it.
   if (!run || run.measures.length === 0) {
-    return { action: 'pass', reasons: [], summary: `desktop-perf-gate: no fresh desktop-perf run (fail-soft) — ${sha} clears`, verdictStatus: 'unknown', pressure: null };
+    return {
+      action: 'warn',
+      reasons: ['no desktop-perf run recorded — nothing is producing runs for this gate to read'],
+      summary:
+        `🟧 desktop-perf-gate: NO desktop-perf run recorded — ${sha} advances UNMEASURED. ` +
+        `This is not a clean result: the gate has no data, which is a producer failure, not a pass.`,
+      verdictStatus: 'unknown',
+      pressure: null,
+    };
   }
 
   const pressure = classifyRunPressure(run, policy.quiet);
@@ -338,12 +351,15 @@ export function evaluateDesktopPerfGate(
   if (Number.isFinite(policy.maxAgeMs) && policy.maxAgeMs > 0 && ageMs > policy.maxAgeMs) {
     const ageHrs = Math.floor(ageMs / 3_600_000);
     const maxHrs = Math.round(policy.maxAgeMs / 3_600_000);
+    // `warn`, not `pass` — same reason as the no-run branch above (D-007). Stale data is
+    // still NOT a verdict (this never blocks, and never reports a breach), but a producer
+    // that has lapsed must be audible.
     return {
-      action: 'pass',
-      reasons: [],
+      action: 'warn',
+      reasons: [`latest desktop-perf run is ${ageHrs}h old (> ${maxHrs}h window) — nothing is producing fresh runs`],
       summary:
-        `desktop-perf-gate: latest desktop-perf run is STALE (${ageHrs}h old > ${maxHrs}h window) — ` +
-        `${sha} clears fail-soft; nothing is producing fresh runs`,
+        `🟧 desktop-perf-gate: latest desktop-perf run is STALE (${ageHrs}h old > ${maxHrs}h window) — ` +
+        `${sha} advances UNMEASURED; nothing is producing fresh runs`,
       verdictStatus: 'unknown',
       pressure,
     };
