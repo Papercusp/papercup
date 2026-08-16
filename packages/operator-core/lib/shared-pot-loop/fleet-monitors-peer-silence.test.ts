@@ -375,3 +375,171 @@ describe('judgePeerFederationSilence — EI-20617273180156712 (apply_binding res
     expect(v.silent).toEqual([]);
   });
 });
+
+/**
+ * THE OWN LOG IS NOT A PEER.
+ *
+ * `substrate_merge_cursor` holds a row for our OWN log alongside the remote
+ * ones, and the module comment claimed "one row per REMOTE log" — so the judge
+ * counted it as a peer. Our own row is re-stamped by our own writes, making it
+ * an ETERNALLY-ADVANCING log: it permanently supplies the "positive control"
+ * that licenses the per-peer reading, so the all-silent branch — the entire
+ * point of the discrimination — could never fire on a host still writing.
+ *
+ * Measured 2026-08-16 on host A: ZERO remote logs admitted in all 95 booted
+ * scopes, yet `papercusp` reported "5 of 6 remote log(s) silent ... while 1
+ * log(s) keep advancing" (the 1 was us) instead of LOCAL FOLD SUSPECT, while
+ * `hive-canary` — where our own log was ALSO stale, because we stopped writing
+ * there — did reach the local verdict. One condition, two verdicts, neither
+ * naming the cause.
+ */
+describe('judgePeerFederationSilence — own log is not a peer', () => {
+  const OWN = 'own5b00878b7df0';
+
+  /** The measured host-A `papercusp` shape: our own log + 5 silent remote logs. */
+  const hostA = () => [
+    log(OWN, 0), // us, advancing right now
+    log('peer1e847ce7104b', 13.18),
+    log('peerda0f8e3e99b0', 52.82),
+    log('peeref7a81605440', 69.82),
+    log('peerc47f6610fb0a', 82.61),
+    log('peer3229ad4b3b99', 82.61),
+  ];
+
+  it('REPRODUCTION: the measured 5-of-6 false peer reading becomes LOCAL FOLD SUSPECT', () => {
+    const v = judgePeerFederationSilence(hostA(), {
+      silentAfterMs: SLO,
+      nowMs: NOW,
+      ownLogKeyHex: OWN,
+    });
+
+    // Five REMOTE logs — our own is not one of them.
+    expect(v.totalLogs).toBe(5);
+    expect(v.silent).toHaveLength(5);
+    expect(v.silent.map((s) => s.logKeyHex)).not.toContain(OWN);
+    expect(v.allSilent).toBe(true);
+    expect(v.breaches).toHaveLength(1);
+    expect(v.breaches[0]).toContain('LOCAL FOLD SUSPECT');
+    // The exact false clauses that shipped, in the operator-facing text.
+    expect(v.breaches[0]).not.toContain('5 of 6');
+    expect(v.breaches[0]).not.toContain('keep advancing');
+    // Our own liveness is still REPORTED — excluded from the peer verdict, not lost.
+    expect(v.ownLogSilentForMs).toBe(0);
+  });
+
+  it('FALSIFIABILITY: counting the own log is what produced the old reading', () => {
+    // Same rows, own log NOT identified: the judge must refuse rather than
+    // reproduce the false 5-of-6. And the naive control — which ignores
+    // ownLogKeyHex, i.e. IS the pre-fix behaviour — still alarms on 5 logs.
+    const blind = judgePeerFederationSilence(hostA(), { silentAfterMs: SLO, nowMs: NOW });
+    expect(blind.measured).toBe(false);
+    expect(blind.unmeasuredReason).toBe('own-log-unknown');
+    expect(blind.breaches).toEqual([]);
+
+    const control = wrongJudge(hostA(), { silentAfterMs: SLO, nowMs: NOW, ownLogKeyHex: OWN });
+    expect(control).toHaveLength(5);
+
+    // The subject must NOT agree with the control's shape.
+    const v = judgePeerFederationSilence(hostA(), {
+      silentAfterMs: SLO,
+      nowMs: NOW,
+      ownLogKeyHex: OWN,
+    });
+    expect(v.breaches.length).not.toBe(control.length);
+  });
+
+  it('CALIBRATION: a genuinely advancing PEER still licenses the per-peer reading', () => {
+    // Without this the test above could pass because the subject reports
+    // LOCAL FOLD SUSPECT for everything. Add one live peer and the verdict must
+    // swing back to the per-peer reading — with the own log out of BOTH counts.
+    const rows = [...hostA(), log('peerLIVE', 0.1)];
+    const v = judgePeerFederationSilence(rows, {
+      silentAfterMs: SLO,
+      nowMs: NOW,
+      ownLogKeyHex: OWN,
+    });
+    expect(v.allSilent).toBe(false);
+    expect(v.totalLogs).toBe(6); // 6 REMOTE logs, not 7 rows
+    expect(v.breaches[0]).toContain('5 of 6');
+    expect(v.breaches[0]).toContain('1 log(s) keep advancing');
+    expect(v.breaches[0]).not.toContain('LOCAL FOLD SUSPECT');
+  });
+
+  it('reports OWN-LOG-ONLY as unmeasured — not healthy, and not a peer breach', () => {
+    // The honest shape of "we have admitted no peers in this scope", which is
+    // what host A actually was in every one of its 95 scopes. It must not read
+    // as a clean bill of health, and must not manufacture a peer alarm.
+    const v = judgePeerFederationSilence([log(OWN, 0)], {
+      silentAfterMs: SLO,
+      nowMs: NOW,
+      ownLogKeyHex: OWN,
+    });
+    expect(v.measured).toBe(false);
+    expect(v.unmeasuredReason).toBe('own-log-only');
+    expect(v.totalLogs).toBe(0);
+    expect(v.breaches).toEqual([]);
+    expect(v.allSilent).toBe(false);
+    expect(v.ownLogSilentForMs).toBe(0);
+  });
+
+  it('still reports our own STALE log when the scope holds nothing else', () => {
+    // hive-canary's shape once the peers are excluded: we stopped writing there,
+    // so our own cursor is stale too. That is a LOCAL reading, and dropping it
+    // would hide the one fact distinguishing this from an active scope.
+    const v = judgePeerFederationSilence([log(OWN, 13.41)], {
+      silentAfterMs: SLO,
+      nowMs: NOW,
+      ownLogKeyHex: OWN,
+    });
+    expect(v.unmeasuredReason).toBe('own-log-only');
+    expect(v.ownLogSilentForMs).toBe(13.41 * 60 * 60_000);
+  });
+
+  it('distinguishes "no own log here" (null) from "could not determine it" (undefined)', () => {
+    // null is a determination — judge all rows as peers. undefined is ignorance —
+    // refuse. Collapsing the two is how a failed lookup silently reinstates the
+    // phantom peer this whole property exists to remove.
+    const rows = [log('aaaa', 48), log('bbbb', 0.1)];
+    const determined = judgePeerFederationSilence(rows, {
+      silentAfterMs: SLO,
+      nowMs: NOW,
+      ownLogKeyHex: null,
+    });
+    expect(determined.measured).toBe(true);
+    expect(determined.totalLogs).toBe(2);
+
+    const ignorant = judgePeerFederationSilence(rows, { silentAfterMs: SLO, nowMs: NOW });
+    expect(ignorant.measured).toBe(false);
+    expect(ignorant.unmeasuredReason).toBe('own-log-unknown');
+  });
+
+  it('excludes the own log BEFORE the dormancy check, so a dormant scope is peer-only', () => {
+    // Ordering matters: if the own log were still in the population here, a
+    // dormant scope would report totalLogs one too high forever.
+    const v = judgePeerFederationSilence(hostA(), {
+      silentAfterMs: SLO,
+      nowMs: NOW,
+      ownLogKeyHex: OWN,
+      localActivityAgeMs: 44 * 60 * 60_000,
+    });
+    expect(v.unmeasuredReason).toBe('scope-dormant');
+    expect(v.totalLogs).toBe(5);
+    expect(v.breaches).toEqual([]);
+  });
+
+  it('does not mistake a SUPERSEDED-binding own-log row for the live own log', () => {
+    // Residue and own-log exclusion compose: the own log's stranded row is not
+    // under the live binding, so it is residue — and the live population is
+    // still peers-only.
+    const rows = [log(OWN, 0), log('peerAAAA', 48), log(OWN, 500, 42, 'superseded-binding')];
+    const v = judgePeerFederationSilence(rows, {
+      silentAfterMs: SLO,
+      nowMs: NOW,
+      ownLogKeyHex: OWN,
+    });
+    expect(v.strandedCursors).toBe(1);
+    expect(v.totalLogs).toBe(1);
+    expect(v.silent.map((s) => s.logKeyHex)).toEqual(['peerAAAA']);
+    expect(v.ownLogSilentForMs).toBe(0);
+  });
+});

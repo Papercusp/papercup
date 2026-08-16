@@ -202,8 +202,18 @@ describe('P-012 + P-013 — the live-fleet monitor family on real failure states
       expect(report.peers.unmeasuredReason).not.toBe('scan-failed');
       expect(report.peers.scanError).toBeUndefined();
       // Pin the value actually observed, so the assertion above cannot pass
-      // vacuously against some future undefined/renamed field.
-      expect([null, 'no-remote-logs', 'scope-dormant']).toContain(report.peers.unmeasuredReason);
+      // vacuously against some future undefined/renamed field. 'own-log-only'
+      // and 'own-log-unknown' joined the set when the judge stopped counting our
+      // OWN log as a peer: this rig boots no remote logs, so own-log-only is its
+      // honest steady state, and own-log-unknown is what it reports when no
+      // substrate_booted_handles_status row exists to identify the own log.
+      expect([
+        null,
+        'no-remote-logs',
+        'scope-dormant',
+        'own-log-only',
+        'own-log-unknown',
+      ]).toContain(report.peers.unmeasuredReason);
     },
     240_000,
   );
