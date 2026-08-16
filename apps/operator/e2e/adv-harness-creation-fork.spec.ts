@@ -38,7 +38,12 @@ const NEW_MEMBER = 'e2e-hive-new';
  *  member (so the rail can render it focused once the create lands). */
 const PROJECTS_LITE = {
   projects: [
-    { slug: HIVE, path: `/tmp/${HIVE}`, hasState: true, hasSpec: true, parent_slug: null, harness_kind: 'project', is_shared: false },
+    // WI-39533: `harness_kind` MUST be 'hive' here. AdvShell derives
+    // `activeIsHive = activeProject?.harness_kind === 'hive'` (AdvShell.tsx:523)
+    // and passes `hiveScope={activeIsHive ? activeSlug : null}`; ForkToggle
+    // returns null on a null hiveScope — so with the old 'project' value the
+    // creation fork this spec exists to test never rendered at all.
+    { slug: HIVE, path: `/tmp/${HIVE}`, hasState: true, hasSpec: true, parent_slug: null, harness_kind: 'hive', is_shared: false },
     { slug: MEMBER_RD, path: `/tmp/${MEMBER_RD}`, hasState: true, hasSpec: false, parent_slug: HIVE, harness_kind: 'coding', is_shared: false },
     { slug: NEW_MEMBER, path: `/tmp/${NEW_MEMBER}`, hasState: true, hasSpec: false, parent_slug: HIVE, harness_kind: 'coding', is_shared: false },
   ],
@@ -148,10 +153,14 @@ test.describe('/adv Harnesses tab — creation fork (P-010/P-011)', () => {
     await sync.waitForServed(['harnessProjects.lite']);
 
     const fork = await openPicker(page);
-    // All three modes present on the LIVE default path (not injected props).
+    // BOTH modes present on the LIVE default path (not injected props).
+    // WI-39533: the fork is TWO tabs, not three — ForkToggle
+    // (CreateHarnessPicker.tsx:888-899) renders `Add to <hive>` (into-hive) and
+    // `New <lexicon-label>` (standalone). There is no tab literally named
+    // "Standalone", and the standalone label is lexicon-driven, so it is matched
+    // by shape rather than by a hardcoded vocabulary word.
     await expect(fork.getByRole('tab', { name: `Add to ${HIVE}` })).toBeVisible();
-    await expect(fork.getByRole('tab', { name: 'Standalone' })).toBeVisible();
-    await expect(fork.getByRole('tab', { name: /New/ })).toBeVisible(); // 👑 New <hive/pot>
+    await expect(fork.getByRole('tab', { name: /^New / })).toBeVisible();
     // Default when a hive scope is selected: into-hive (D-005 — the common case).
     await expect(fork.getByRole('tab', { name: `Add to ${HIVE}` })).toHaveAttribute('aria-selected', 'true');
   });
@@ -164,8 +173,10 @@ test.describe('/adv Harnesses tab — creation fork (P-010/P-011)', () => {
     await sync.waitForServed(['harnessProjects.lite']);
 
     const fork = await openPicker(page);
-    await fork.getByRole('tab', { name: 'Standalone' }).click();
-    await expect(fork.getByRole('tab', { name: 'Standalone' })).toHaveAttribute('aria-selected', 'true');
+    // The standalone tab (WI-39533: labelled `New <lexicon-label>`, not "Standalone").
+    const standalone = fork.getByRole('tab', { name: /^New / });
+    await standalone.click();
+    await expect(standalone).toHaveAttribute('aria-selected', 'true');
     await expect(fork.getByRole('tab', { name: `Add to ${HIVE}` })).toHaveAttribute('aria-selected', 'false');
   });
 
