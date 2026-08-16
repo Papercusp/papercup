@@ -27,9 +27,17 @@ import { judgePeerFederationSilence, scanPeerFederationSilence, type MergeCursor
 const NOW = 1_700_000_000_000;
 const SLO = 6 * 60 * 60_000; // 6h
 
-/** A log last advanced `hoursAgo` hours before NOW. */
-function log(keyHex: string, hoursAgo: number, position = 42): MergeCursorRow {
-  return { logKeyHex: keyHex, position, updatedAtMs: NOW - hoursAgo * 60 * 60_000 };
+/** The binding the fold is currently running with, for rows meant to be judged. */
+const LIVE_BINDING = 'papercusp';
+
+/** A log last advanced `hoursAgo` hours before NOW, under the LIVE binding. */
+function log(
+  keyHex: string,
+  hoursAgo: number,
+  position = 42,
+  applyBinding: string | null = LIVE_BINDING,
+): MergeCursorRow {
+  return { logKeyHex: keyHex, position, updatedAtMs: NOW - hoursAgo * 60 * 60_000, applyBinding };
 }
 
 /**
@@ -176,8 +184,18 @@ describe('judgePeerFederationSilence — EI-20579195481991931', () => {
   });
 
   it('is strict at the SLO boundary — exactly-at-SLO is not yet silent', () => {
-    const exact: MergeCursorRow = { logKeyHex: 'aaaa', position: 1, updatedAtMs: NOW - SLO };
-    const over: MergeCursorRow = { logKeyHex: 'bbbb', position: 1, updatedAtMs: NOW - SLO - 1 };
+    const exact: MergeCursorRow = {
+      logKeyHex: 'aaaa',
+      position: 1,
+      updatedAtMs: NOW - SLO,
+      applyBinding: LIVE_BINDING,
+    };
+    const over: MergeCursorRow = {
+      logKeyHex: 'bbbb',
+      position: 1,
+      updatedAtMs: NOW - SLO - 1,
+      applyBinding: LIVE_BINDING,
+    };
     expect(judgePeerFederationSilence([exact], { silentAfterMs: SLO, nowMs: NOW }).silent).toEqual([]);
     expect(judgePeerFederationSilence([over], { silentAfterMs: SLO, nowMs: NOW }).silent).toHaveLength(1);
   });
