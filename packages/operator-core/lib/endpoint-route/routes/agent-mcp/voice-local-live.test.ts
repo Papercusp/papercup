@@ -91,7 +91,37 @@ async function liveSynthesize(...args: Parameters<typeof synthesize>) {
   return r;
 }
 
-const kokoroUp = await reachable(`${KOKORO_URL}/health`);
+/**
+ * AVAILABILITY IS A CAPABILITY QUESTION, NOT A LIVENESS ONE (WI-39362).
+ *
+ * kokoro's `/health` answers `{"status":"healthy"}` off a process that can synthesize
+ * NOTHING: measured 2026-08-16, `/health` = 200 while `/v1/audio/voices` = `{"voices":[]}`
+ * because the service's model+voice files had been deleted out from under a uvicorn that
+ * started two days earlier and was still holding the deleted inodes open. Every synthesis
+ * 400s with "Voice 'af_sky' not found. Available voices: ".
+ *
+ * Keying the skip on `/health` alone therefore RAN the live suite against a server with no
+ * voices and reported three hard assertion failures — which reads as "our integration
+ * regressed" when the truth is "this box is not provisioned". That is precisely the
+ * not-provisioned case the reachable-or-skip contract exists to skip ("CI stays green
+ * without a GPU"), so the probe asks whether kokoro can actually DO the thing.
+ *
+ * This does NOT soften the suite: a provisioned kokoro (>=1 voice) that then drifts, errors
+ * or returns bad audio still fails hard, and PAPERCUSP_VOICE_LIVE=1 still forces the run so
+ * an unprovisioned box fails loudly on demand rather than silently skipping.
+ */
+async function kokoroHasVoices(): Promise<boolean> {
+  try {
+    const r = await fetch(`${KOKORO_URL}/v1/audio/voices`, { signal: AbortSignal.timeout(5000) });
+    if (!r.ok) return false;
+    const body = (await r.json()) as { voices?: unknown };
+    return Array.isArray(body.voices) && body.voices.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+const kokoroUp = (await reachable(`${KOKORO_URL}/health`)) && (await kokoroHasVoices());
 const whisperUp = await reachable(`${VOICEMODE_URL}/health`);
 const RUN = FORCE || (kokoroUp && whisperUp);
 
