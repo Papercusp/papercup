@@ -222,23 +222,20 @@ async function stubApis(page: Page, created: CreatedChat[]): Promise<SyncQuerySt
     });
   });
 
-  // Sync batch — rows per query NAME. workItems.byHarness → our two rows;
-  // everything else (features/issues/agent-runs consolidated overlays,
-  // agentChats.byHarness, …) → [].
-  await page.route('**/api/zero-harness/rest-query-batch**', async (route) => {
-    const post = route.request().postDataJSON() as
-      | { queries?: Array<{ name?: string; args?: unknown }> }
-      | null;
-    const queries = post?.queries ?? [];
-    const results = queries.map((q) => {
-      const rows = q.name === 'workItems.byHarness' ? WORK_ITEMS : [];
-      return { rows, version: String(Date.now()) };
-    });
-    await route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({ results }),
-    });
+  // Sync — rows per query NAME over the LIVE contract: one
+  // `GET /api/zero-harness/rest-query?name=&args=` per query (see
+  // `_sync-stub.ts`). The grid + Detail pane read byHarness; the pane also
+  // issues its own 1-row `workItems.detail`. Everything this spec does not
+  // model returns `undefined` and FALLS THROUGH — answering `[]` for every
+  // query starves the dock layout (dockLayouts.byName → "layout not found").
+  return stubSyncQueries(page, (name, args) => {
+    if (name === 'harnessProjects.lite') return PROJECTS;
+    if (name === 'workItems.byHarness') return WORK_ITEMS;
+    if (name === 'workItems.detail') {
+      const id = typeof args.id === 'string' ? args.id : '';
+      return WORK_ITEMS.filter((w) => w.id === id);
+    }
+    return undefined;
   });
 }
 
