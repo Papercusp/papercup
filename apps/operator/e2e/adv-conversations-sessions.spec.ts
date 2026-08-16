@@ -10,12 +10,17 @@
  *      through the current Create dock route (not the legacy /adv/sessions
  *      client).
  *
- * The test is hermetic: sync reads are fulfilled by the
- * /api/zero-harness/rest-query-batch stub, Conversations' comms reads are
- * fulfilled by /api/admin/comms stubs, and ChatPanel's per-harness fallback REST
- * route is stubbed so no live substrate or model call is needed.
+ * The test is hermetic: sync reads are fulfilled through `_sync-stub.ts` (the
+ * live per-query `GET /api/zero-harness/rest-query`), Conversations' comms reads
+ * are fulfilled by /api/admin/comms stubs, and ChatPanel's per-harness fallback
+ * REST route is stubbed so no live substrate or model call is needed.
+ *
+ * This spec used to stub `POST /api/zero-harness/rest-query-batch`, dead since
+ * 2026-07-26 — the stub was never hit and both views rendered from real,
+ * unstubbed traffic (WI-39533).
  */
 import { test, expect, type Page, type Route } from './_egress';
+import { stubSyncQueries, type SyncQueryStub } from './_sync-stub';
 
 const baseURL =
   process.env.OPERATOR_E2E_BASE_URL ??
@@ -117,7 +122,7 @@ const chatPanelRow = {
   archivedAt: null,
 };
 
-async function stubCommonApis(page: Page) {
+async function stubCommonApis(page: Page): Promise<SyncQueryStub> {
   await page.route('**/api/harness/projects/lite', async (route) => {
     await route.fulfill({
       status: 200,
@@ -192,62 +197,54 @@ async function stubCommonApis(page: Page) {
     });
   });
 
-  await page.route('**/api/zero-harness/rest-query-batch**', async (route) => {
-    const post = route.request().postDataJSON() as
-      | { queries?: Array<{ name?: string; args?: Record<string, unknown> }> }
-      | null;
-    const queries = post?.queries ?? [];
-    const results = queries.map((q) => {
-      switch (q.name) {
-        case 'harnessProjects.lite':
-          return {
-            rows: [
-              {
-                slug: SLUG,
-                path: `/tmp/${SLUG}`,
-                name: SLUG,
-                parent_slug: null,
-                harness_kind: 'project',
-                is_shared: false,
-              },
-            ],
-            version: String(nowMs),
-          };
-        case 'plans.list':
-        case 'plans.items':
-        case 'plans.attention':
-          return { rows: [], version: String(nowMs) };
-        case 'plans.viewer':
-          return { rows: [{ email: null }], version: String(nowMs) };
-        case 'advRoster.list':
-          return { rows: [rosterResponse], version: String(nowMs) };
-        case 'agentChats.byHarness':
-          return {
-            rows: q.args?.harnessSlug === CHAT_HARNESS ? [chatPanelRow] : [],
-            version: String(nowMs),
-          };
-        case 'agentDetail.byOwner':
-          return {
-            rows: [
-              {
-                ownerId: AGENT_ID,
-                locks: { held: [], waiting: [], error: null },
-                coord: { lastMessage: null, unreadCount: 0, unread: [], openHandoffs: [], openEscalations: [], error: null },
-                nativeSession: null,
-                codex: null,
-              },
-            ],
-            version: String(nowMs),
-          };
-        default:
-          return { rows: [], version: String(nowMs) };
-      }
-    });
-    await route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({ results }),
-    });
+  // Sync — the LIVE contract, one `GET /api/zero-harness/rest-query?name=&args=`
+  // per query (see `_sync-stub.ts`). The empty `plans.*` answers below are
+  // DELIBERATE models (these views must render with no plans); every query this
+  // spec does not model returns `undefined` and FALLS THROUGH untouched, because
+  // blanket-answering `[]` starves the dock layout.
+  return stubSyncQueries(page, (name, args) => {
+    switch (name) {
+      case 'harnessProjects.lite':
+        return [
+          {
+            slug: SLUG,
+            path: `/tmp/${SLUG}`,
+            name: SLUG,
+            parent_slug: null,
+            harness_kind: 'project',
+            is_shared: false,
+          },
+        ];
+      case 'plans.list':
+      case 'plans.items':
+      case 'plans.attention':
+        return [];
+      case 'plans.viewer':
+        return [{ email: null }];
+      case 'advRoster.list':
+        return [rosterResponse];
+      case 'agentChats.byHarness':
+        return args?.harnessSlug === CHAT_HARNESS ? [chatPanelRow] : [];
+      case 'agentDetail.byOwner':
+        return [
+          {
+            ownerId: AGENT_ID,
+            locks: { held: [], waiting: [], error: null },
+            coord: {
+              lastMessage: null,
+              unreadCount: 0,
+              unread: [],
+              openHandoffs: [],
+              openEscalations: [],
+              error: null,
+            },
+            nativeSession: null,
+            codex: null,
+          },
+        ];
+      default:
+        return undefined;
+    }
   });
 }
 
@@ -255,10 +252,14 @@ test.describe('/adv Conversations + Sessions e2e', () => {
   test('Conversations agent-chat detail embeds the interactive ChatPanel for a live chat', async ({
     page,
   }) => {
-    await stubCommonApis(page);
+    const sync = await stubCommonApis(page);
     await page.goto(`${baseURL}/adv?tab=conversations&conv=agentchats&chat=${CHAT_ID}`, {
       waitUntil: 'domcontentloaded',
     });
+
+    // Prove the stub is feeding the view before the 20s content wait — a
+    // bypassed stub then fails in seconds with a diagnostic.
+    await sync.waitForServed(['agentChats.byHarness']);
 
     const liveChat = page.getByTestId('advconv-live-chat');
     await expect(liveChat).toBeVisible({ timeout: 20_000 });
