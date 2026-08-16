@@ -43,7 +43,13 @@ type PayloadFlagArgs = { needsTwoMachineRig?: boolean; needsHuman?: boolean };
 type PlanItemArg = { slug: string; item: string };
 
 /** Convert the public plan_item shape into the durable payload stamp read by claim specs. */
-function planItemPayloadPatch(planItem: PlanItemArg | undefined, harness: string | undefined): Record<string, unknown> {
+function planItemPayloadPatch(
+  planItem: PlanItemArg | null | undefined,
+  harness: string | undefined,
+): Record<string, unknown> {
+  // `null` is the CLEAR sentinel and emits no patch — the unset is applied by the
+  // caller via mergeWorkItemPayload's `unset`, because a null-merge leaves the key
+  // PRESENT (`payload ? 'plan_item'` stays true) and would not clear anything.
   if (!planItem || !harness) return {};
   return {
     plan_item: {
@@ -56,8 +62,12 @@ function planItemPayloadPatch(planItem: PlanItemArg | undefined, harness: string
 
 /** The stamp currently on the row, so a clear knows which coverage edge to retract.
  * Shaped like the DURABLE payload (plan_slug/item_id), not the public arg. */
-function readExistingStamp(item: { payload?: Record<string, unknown> | null } | null): PlanItemArg | undefined {
-  const stamp = item?.payload?.plan_item;
+function readExistingStamp(item: { payload?: unknown } | null | undefined): PlanItemArg | undefined {
+  // `payload` is declared `unknown` on WorkItem (work-items.ts:265), so narrow it
+  // here rather than asking every caller to pre-shape a row it read verbatim.
+  const payload = item?.payload;
+  if (!payload || typeof payload !== 'object') return undefined;
+  const stamp = (payload as { plan_item?: unknown }).plan_item;
   if (!stamp || typeof stamp !== 'object') return undefined;
   const { plan_slug: slug, item_id: id } = stamp as { plan_slug?: unknown; item_id?: unknown };
   if (typeof slug !== 'string' || !slug || typeof id !== 'string' || !id) return undefined;
@@ -67,10 +77,12 @@ function readExistingStamp(item: { payload?: Record<string, unknown> | null } | 
 /** Keep an update's plan-item coverage semantics aligned with work_items:create. */
 async function linkPlanItemCoverage(
   id: string,
-  planItem: PlanItemArg | undefined,
+  planItem: PlanItemArg | null | undefined,
   harness: string | undefined,
   by: string,
 ): Promise<void> {
+  // Accepts the CLEAR sentinel and no-ops on it: the call sites branch on a boolean
+  // (`clearingStamp`), which does not narrow `it.plan_item` for the type checker.
   if (!planItem) return;
   try {
     await linkWorkItem(
