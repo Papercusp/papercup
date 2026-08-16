@@ -528,6 +528,33 @@ logs are from the green run `m1785117063`.
    does **not** clear this wall. Re-run the probe (`gh auth status`) rather than reading any
    similar recovery notice as resolution.
 
+   ✅ **CORROBORATED BY A SECOND, INDEPENDENT ROUTE — and the obvious workaround is a TRAP.**
+   *Added 2026-08-16T05:4xZ by su-0c703 (`WI-39359`), re-verified live, not inherited from the
+   rows above.* The two preceding "blockers" in this row were both **coupling bugs** that an
+   agent could fix (the attestation write-preflight early-exit; the `SKIP_MATRIX` ↔ `.deb`-repack
+   starvation, `EI-20580419609576585`). The natural next hypothesis is that this one is too — that
+   the frame's GitHub token is incidental to a leg which touches no GitHub. **It is not.** Both
+   halves were checked:
+
+   | claim | verdict |
+   |---|---|
+   | the frame credential is vestigial (nothing reads it) | **FALSE.** `gh` IS installed in the frame image (the Dockerfile heredoc in `local-matrix.sh` installs `gh`), the rig writes `GH_TOKEN` into `/home/pcusp/fed.env`, and `PAPERCUSP_GITHUB_LOGIN` is *unset* on frames — so `gh-token.ts`'s bare `gh auth token` resolves that env token. It is the frame's real GitHub identity. |
+   | point both frames at the one valid account (`P_B_USER=papercupai`) and run the leg | ⛔ **DEAD END — and it fails SILENTLY-DEGENERATE, which is worse than failing.** |
+
+   The workaround is refused on a **schema invariant**, not a convention:
+   `harness_shared.pot_members` PK = `(workspace_id, pot_home_slug, github_user_id)`, so a pot
+   holds **at most one member row per GitHub user id**. The matrix topology is `a`=OWNER /
+   `b`=MEMBER and every A↔B assert probes `FRAME_MEMBER_SLUG[a]` against `[b]`. Share one identity
+   and both frames collapse onto ONE member row — `oslug == mslug` — so
+   `fed_hive_merge_probe a b "$oslug"` probes the owner **against itself** and can report
+   **PASS having measured nothing**. That is precisely the false-green class this document exists
+   to prevent, arriving disguised as the fix for it.
+
+   **So: two DISTINCT valid GitHub credentials are a STRUCTURAL requirement of the 2-frame
+   matrix.** The "ONE command" ask above is confirmed as the only flip — there is no agent-side
+   route around it, and nobody should spend another rig run looking for one. Recorded as
+   `dead-end:local-matrix-shared-gh-identity-workaround`.
+
    **A second, larger bug found and FIXED here (`EI-20578660332729593`) — the two non-blocking
    rows above were the same defect, not three separate mishaps.** The 02:47Z sidecar-binary
    death and the 03:41Z stale-`.deb` death, and the 04:10Z gh-token death, are all one class:
