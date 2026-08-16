@@ -1237,7 +1237,7 @@ describe('captureImprovement — observation coalescing by conditionKey (EI-1544
     expect(d.created).toHaveLength(2);
   });
 
-  it('watchdogKey is IGNORED outside the observation lane (non-observation dedup/coalesce is unaffected)', async () => {
+  it('watchdogKey never COALESCES outside the observation lane — it declines as a duplicate instead', async () => {
     const d = coalesceDeps();
     const first = await captureImprovement(
       { title: 'a real bug', kind: 'bug', watchdogKey: 'overwatch:not-an-observation' },
@@ -1248,10 +1248,20 @@ describe('captureImprovement — observation coalescing by conditionKey (EI-1544
       d,
     );
     expect(first.created).toBe(true);
-    // non-observation capture path: the ordinary search-first dedup applies (searchIssues
-    // stubbed to [] here), NOT the watchdogKey coalesce — so this re-files, not "coalesced".
-    expect(second.created).toBe(true);
+    // The invariant this test exists to protect, unchanged: the observation-lane COALESCE
+    // path (merge into the prior row, bump repeatCount) must never run for a
+    // non-observation capture.
     expect(second.reason).not.toBe('coalesced');
+    // CONTRACT CHANGED by EI-20484430331973864. This used to assert `second.created ===
+    // true` — an identical bug on an identical key re-filed whenever the fuzzy title
+    // search could not see the prior row, and `searchIssues` is stubbed to [] here, which
+    // IS the search-unavailable case. That expectation pinned the duplicate-storm defect
+    // in place (459 open copies of one red-queen sentinel title, ~25% of the bug backlog
+    // duplicated). An exact watchdogKey is now a blocking dedup source in its own right,
+    // so the re-file is DECLINED — neither coalesced nor created.
+    expect(second.created).toBe(false);
+    expect(second.reason).toBe('likely-duplicate');
+    expect(d.created).toHaveLength(1);
   });
 
   it('a CLOSED/resolved row carrying the same key does not coalesce (only an OPEN prior does)', async () => {
@@ -1527,5 +1537,108 @@ describe('WI-38403 — stable identity + fail-closed DRAIN admission', () => {
     );
     expect(res.created).toBe(true);
     expect(payloadOf(d)?.dedupCoverage).toEqual({ lexical: 'ok', semantic: 'ok', degraded: false });
+  });
+});
+
+describe('exact watchdogKey is a first-class blocking dedup source (EI-20484430331973864)', () => {
+  const noSemantic = async () => ({ hard: [], soft: [], thresholds: { hard: 0.93, soft: 0.9 } });
+  const KEY = 'routine-engine-death:engine:live';
+  const DEAD_ENGINE = 'The routines engine is dead — every active routine is overdue';
+
+  it('declines a re-file when the lexical search is UNAVAILABLE but an open exact-key item exists', async () => {
+    // The 459-copy regression: the red-queen sentinel re-files a standing outage on a
+    // stable key every 5 min. Blocking dedup used to rest entirely on the fuzzy title
+    // search, which fails OPEN — so every pass where search was down minted a fresh
+    // critical row. The exact key was fetched all along and then thrown away.
+    const d = deps();
+    const prior = existing({ id: 'EI-900', title: DEAD_ENGINE, payload: { watchdogKey: KEY } });
+    const res = await captureImprovement(
+      { title: DEAD_ENGINE, kind: 'bug', severity: 'critical', watchdogKey: KEY, dedupScope: 'open' },
+      {
+        ...d,
+        searchIssues: async () => {
+          throw new Error('search unavailable');
+        },
+        findSemanticDupes: noSemantic,
+        findIssuesByWatchdogKeys: async () => [prior],
+      },
+    );
+    expect(res.created).toBe(false);
+    expect(res.reason).toBe('likely-duplicate');
+    expect(d.created).toHaveLength(0);
+    expect(res.possibleDuplicates?.[0]).toMatchObject({ id: 'EI-900', exactKey: true });
+    // UNKNOWN must not read as a clean verdict: the lexical leg genuinely failed.
+    expect(res.dedupCoverage?.degraded).toBe(true);
+  });
+
+  it('declines on the KEY even when the title is completely different', async () => {
+    const d = deps();
+    const prior = existing({ id: 'EI-901', title: 'totally unrelated wording', payload: { watchdogKey: KEY } });
+    const res = await captureImprovement(
+      { title: DEAD_ENGINE, kind: 'bug', watchdogKey: KEY, dedupScope: 'open' },
+      { ...d, findSemanticDupes: noSemantic, findIssuesByWatchdogKeys: async () => [prior] },
+    );
+    expect(res.created).toBe(false);
+    expect(d.created).toHaveLength(0);
+  });
+
+  it('CONTROL — a DIFFERENT watchdogKey still creates (the key net must not become a blanket block)', async () => {
+    const d = deps();
+    const other = existing({
+      id: 'EI-902',
+      title: 'some other standing condition',
+      payload: { watchdogKey: 'a-different-key' },
+    });
+    const res = await captureImprovement(
+      { title: DEAD_ENGINE, kind: 'bug', watchdogKey: KEY, dedupScope: 'open' },
+      { ...d, findSemanticDupes: noSemantic, findIssuesByWatchdogKeys: async () => [other] },
+    );
+    expect(res.created).toBe(true);
+    expect(d.created).toHaveLength(1);
+  });
+
+  it('CONTROL — a DRILL-origin exact-key row never suppresses a real organic outage filing', async () => {
+    const d = deps();
+    const drill = existing({
+      id: 'EI-903',
+      title: DEAD_ENGINE,
+      payload: { watchdogKey: KEY },
+      signalOrigin: 'drill',
+    });
+    const res = await captureImprovement(
+      { title: DEAD_ENGINE, kind: 'bug', watchdogKey: KEY, dedupScope: 'open' },
+      { ...d, findSemanticDupes: noSemantic, findIssuesByWatchdogKeys: async () => [drill] },
+    );
+    expect(res.created).toBe(true);
+  });
+
+  it('CONTROL — a RESOLVED exact-key item does not block under dedupScope:open', async () => {
+    const d = deps();
+    const resolved = existing({
+      id: 'EI-904',
+      title: DEAD_ENGINE,
+      payload: { watchdogKey: KEY },
+      state: 'resolved',
+    });
+    const res = await captureImprovement(
+      { title: DEAD_ENGINE, kind: 'bug', watchdogKey: KEY, dedupScope: 'open' },
+      { ...d, findSemanticDupes: noSemantic, findIssuesByWatchdogKeys: async () => [resolved] },
+    );
+    expect(res.created).toBe(true);
+  });
+
+  it('a failed exact-key lookup marks coverage degraded instead of a false all-clear', async () => {
+    const d = deps();
+    const res = await captureImprovement(
+      { title: 'novel condition with a key', kind: 'bug', watchdogKey: KEY, dedupScope: 'open' },
+      {
+        ...d,
+        findSemanticDupes: noSemantic,
+        findIssuesByWatchdogKeys: async () => {
+          throw new Error('key lookup unavailable');
+        },
+      },
+    );
+    expect(res.dedupCoverage?.degraded).toBe(true);
   });
 });
