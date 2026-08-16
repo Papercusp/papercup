@@ -261,6 +261,23 @@
   .fr .idea { color: #8fa9bf; font-size: 10px; font-style: italic; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 180px; }
   .fr .idea::before { content: "↳ "; color: #a78bfa; }
 
+  /* variant D — unified ledger extras */
+  .fr .kindtag {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 9px; color: #56718a; letter-spacing: 0.05em; white-space: nowrap;
+  }
+  .fr .lensstrip { display: flex; flex-wrap: wrap; gap: 12px 22px; padding: 11px 14px 13px; }
+  .fr .lensstrip .lw { display: inline-flex; align-items: center; gap: 7px; font-size: 10.5px; color: #b9d4e8; }
+  .fr .lensstrip .lw i {
+    width: 54px; height: 4px; border-radius: 2px; background: rgba(255,255,255,0.08);
+    overflow: hidden; font-style: normal;
+  }
+  .fr .lensstrip .lw i b { display: block; height: 100%; background: #38bdf8; border-radius: 2px; }
+  .fr .lensstrip .lw strong {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 9.5px; color: #7dd3fc; font-weight: 650;
+  }
+
   .caption { font-size: 12px; color: var(--pg-mute); margin: 6px 2px 0; }
 
   /* recommendation + notes */
@@ -283,9 +300,10 @@
   <div class="prose">
     <p class="eyebrow">Learning tab · Retain view · design options</p>
     <h1>Retain Section Redesign</h1>
-    <p class="lede">Three ways to rebuild the “Also retained” sections as real cards — each visually
+    <p class="lede">Four treatments for rebuilding the “Also retained” sections as real cards — each visually
     separate from the page, each with its own scrollbar and infinite scroll — with “Shipped from ideas”
-    removed, its statuses folded into the rows, and a new <b>Work items from ideas</b> section.</p>
+    removed, its statuses folded into the rows, and a new <b>Work items from ideas</b> section.
+    <b>Variant D</b> (added after review) is the chosen direction: one pane for every type, lens weights separate.</p>
   </div>
 
   <!-- ─────────── Q1: automatic goal creation ─────────── -->
@@ -634,18 +652,112 @@
     </div>
   </div>
 
+  <!-- ═══════════════ VARIANT D ═══════════════ -->
+  <div class="variant">
+    <p class="eyebrow">Variant D · owner’s pick</p>
+    <h2>One retained ledger — every type, one pane</h2>
+    <p>C taken to its conclusion: plans, work items, rubric changes, insight runbooks, and recipes are
+    <b>all tabs of one card</b> — and the default <b>All</b> tab interleaves them newest-first, so
+    “what has the loop banked lately?” is one glance and one scrollbar. Type glyphs carry identity,
+    status chips carry outcomes, and plan rows still expand to show their plan-born work items.
+    <b>Lens weights stays separate</b>: it is a distribution the loop steers by, not a feed, so it
+    gets its own quiet strip below.</p>
+
+    <div class="frame">
+      <div class="bar"><i></i><i></i><i></i><span>Learning · Retain — “Also retained”, variant D</span></div>
+      <div class="fr">
+        <div class="viewhead"><h4>Also retained</h4><em>other things the loop has learned</em></div>
+        <div class="stack">
+
+          <div class="card">
+            <header>
+              <span class="t">Retained</span>
+              <span class="seg" style="margin-left:10px">
+                <b class="on">All</b>
+                <b>⑂ Plans <em>21</em></b>
+                <b>◇ Work items <em>991</em></b>
+                <b>☑ Rubrics <em>8</em></b>
+                <b>✎ Runbooks <em>500+</em></b>
+                <b>⌘ Recipes <em>13.5k</em></b>
+              </span>
+              <span class="filters" style="margin-left:auto"><b class="on">All</b><b>Shipped</b><b>In flight</b></span>
+            </header>
+            <div class="scroll" style="max-height:300px">
+              <ul class="rows">
+                <li><span class="glyph">◇</span><span class="title link">Crashed watchdog collector reads as zero signals — silence treated as health</span><span class="chip good">done</span><span class="lens">constraint-removal</span><span class="when">Aug 16</span></li>
+                <li><span class="glyph">☑</span><span class="title link">blender-loop-health</span><span class="kindtag">rubric</span><span class="chip run">active</span><span class="when">Aug 16</span></li>
+                <li><span class="glyph">◇</span><span class="title link">Goal-mode write-denial blocks Edit/Write, but Bash cat&gt;/sed −i bypass it entirely</span><span class="chip">open</span><span class="lens">constraint-removal</span><span class="when">Aug 16</span></li>
+                <li><span class="glyph">◇</span><span class="title link">Silence is semantically overloaded across the monitoring stack</span><span class="chip good">done</span><span class="lens">reframing</span><span class="when">Aug 16</span></li>
+                <li><span class="glyph">⑂</span><span class="title link">Typed external-prerequisite attestations for release gates</span><span class="chip run">ready</span><span class="lens">constraint-removal</span><span class="when">Aug 15</span></li>
+                <li><span class="glyph">✎</span><span class="title link">cold-loop-wake-kills-native-background-bash-tasks</span><span class="kindtag">runbook</span><span class="when">Aug 15</span></li>
+                <li><span class="glyph">⌘</span><span class="title link">register-auto-mode-find-remaining-actionable-plan-work</span><span class="kindtag">recipe</span><span class="roll">×1</span><span class="when">Aug 15</span></li>
+                <li style="background:rgba(255,255,255,0.035); border-radius:6px 6px 0 0"><span class="chev">▾</span><span class="glyph">⑂</span><span class="title link">Evidence-complete work-item completion preflight</span><span class="chip run">ready</span><span class="roll"><b>2</b>/3 done</span><span class="when">Aug 14</span></li>
+              </ul>
+              <div class="children">
+                <div class="crow"><span class="title">Wire completion-evidence preflight into work_items:complete</span><span class="chip good">done</span><span class="tag">from this plan</span></div>
+                <div class="crow"><span class="title">Backfill completionAuthority on under-evidenced closes</span><span class="chip good">done</span><span class="tag">from this plan</span></div>
+                <div class="crow"><span class="title">Preflight refusal telemetry + weekly audit query</span><span class="chip run">wip</span><span class="tag">from this plan</span></div>
+              </div>
+              <ul class="rows">
+                <li><span class="glyph">✎</span><span class="title link">presence-vs-history-who-is-on-what</span><span class="kindtag">runbook</span><span class="when">Aug 14</span></li>
+                <li><span class="glyph">⑂</span><span class="title link">Named result views — schema-stable recovery capsules with projection receipts</span><span class="chip good">shipped</span><span class="roll"><b>4</b>/4 done</span><span class="when">Aug 14</span></li>
+                <li><span class="glyph">☑</span><span class="title link">su-completion-integrity</span><span class="kindtag">rubric</span><span class="chip">amended</span><span class="when">Aug 12</span></li>
+                <li><span class="glyph">⌘</span><span class="title link">inspect-portfolio-and-owner-report-partials</span><span class="kindtag">recipe</span><span class="roll">×1</span><span class="when">Aug 12</span></li>
+              </ul>
+              <div class="sentinel"><span class="spin"></span>loading 24 more</div>
+            </div>
+          </div>
+
+          <div class="card">
+            <header>
+              <span class="glyph">✦</span><span class="t">Lens weights</span>
+              <span class="sub">the sampling distribution the ideator draws lenses from — separate on purpose</span>
+            </header>
+            <div class="lensstrip">
+              <span class="lw">analogical <i><b style="width:22%"></b></i><strong>22%</strong></span>
+              <span class="lw">constraint-removal <i><b style="width:19%"></b></i><strong>19%</strong></span>
+              <span class="lw">reframing <i><b style="width:17%"></b></i><strong>17%</strong></span>
+              <span class="lw">first-principles <i><b style="width:15%"></b></i><strong>15%</strong></span>
+              <span class="lw">risk-first <i><b style="width:12%"></b></i><strong>12%</strong></span>
+              <span class="lw">cost-leverage <i><b style="width:9%"></b></i><strong>9%</strong></span>
+              <span class="lw">su-ideate <i><b style="width:6%"></b></i><strong>6%</strong></span>
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </div>
+    <p class="caption">Per-type tab counts are the real corpus sizes (recipes: 13,561 auto-captured — which is exactly why
+    the All feed interleaves by <i>recent activity</i> (last run / last update / routed-at), not raw corpus order, and why
+    the per-type tabs matter). Filters apply where a type has statuses; runbook/recipe rows show their kind tag instead of a chip.</p>
+
+    <div class="verdictrow">
+      <div class="pro"><b>For</b><ul>
+        <li>One scrollbar answers “what has the loop learned lately” across every store</li>
+        <li>Halves the visual weight of the view: two cards total, one of them slim</li>
+        <li>Same machinery everywhere: one unified feed with a <code>kind</code> filter — tabs are free after the first one</li>
+        <li>Lens weights, as the one non-feed, reads clearly as the loop’s steering wheel</li>
+      </ul></div>
+      <div class="con"><b>Against</b><ul>
+        <li>Cross-type interleaving needs a recency rule per type (last-run vs updated vs routed-at) — pick once, document it</li>
+        <li>13.5k recipes would swamp a naive All feed — the recency interleave is load-bearing, not cosmetic</li>
+        <li>Section names (“Plans from ideas”…) become tab labels; the page loses its scannable section headers</li>
+      </ul></div>
+    </div>
+  </div>
+
   <!-- ─────────── recommendation ─────────── -->
   <div class="prose" style="margin-top:56px">
     <h2>Recommendation</h2>
   </div>
   <div class="rec prose">
-    <p style="margin:0"><b>Variant A</b> is the safe, fast win — same IA, real cards, ships in one pass.
-    <b>Variant C</b> is the best <i>end state</i>: it is the only one that structurally encodes the
-    plan-born-items rule instead of merely filtering them out, and it halves the section count.
-    My suggested path: <b>ship A now</b> (cards + infinite scroll + statuses folded in + the new
-    work-items ledger), then <b>fold the two idea cards into C’s tabbed ledger</b> as a follow-up
-    once the Blender’s drafts start decomposing into real child items. B I’d skip — six scroll
-    regions and hard truncation buy density Retain doesn’t need.</p>
+    <p style="margin:0 0 8px"><b>Direction chosen (owner, 2026-08-16): Variant D</b> — one unified pane
+    for all five types, with <b>Lens weights</b> as the only separate section (a distribution, not a
+    feed — it never belonged in a chronological ledger).</p>
+    <p style="margin:0">Earlier framing, for the record: A was the safe one-pass ship; C introduced the
+    tabbed ledger and plan-born nesting that D generalizes; B is dropped. D ships on the C skeleton —
+    same card, same scroll + keyset-pagination machinery; the tabs are a <code>kind</code> filter over
+    one unified feed, so each additional type is nearly free.</p>
   </div>
 
   <!-- ─────────── implementation notes ─────────── -->
