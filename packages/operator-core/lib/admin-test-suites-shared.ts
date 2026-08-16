@@ -14,14 +14,21 @@ export type AdminTestRunStatus = 'running' | 'done' | 'error' | 'cancelled';
 /**
  * Unit for a structured desktop-perf measure (desktop-performance-suite P-010).
  *
- * `pct` carries a PERCENTAGE — added for the host-pressure stamp
- * (resource-efficiency-closeout-2026-08-13 D-005). A timing measured while the
- * host was contended is not comparable to one measured on a quiet box, so each
- * run records the PSI CPU pressure it was taken under. It is a genuine
- * percentage and is recorded as one: encoding it as a `count` would put a
- * unitless number into a trend that renders counts and percentages the same way.
+ * ⚠ ADDING A UNIT IS A CROSS-DEPLOY BREAKING CHANGE — do not widen this without
+ * reading why (resource-efficiency-closeout-2026-08-13, WI-38449). The packaged
+ * wdio runner POSTs its measures to a RUNNING operator, which on this box is
+ * `:3070` — the GREEN release checkout, not your working tree. The ingest route
+ * rejects the ENTIRE batch when any one measure fails validation, so emitting a
+ * unit the DEPLOYED validator does not know yet does not degrade to "that one
+ * measure is dropped": it 400s the whole run and the desktop-perf gate goes back
+ * to being starved, which is the exact failure this suite exists to fix.
+ * (Measured: a `pct` stamp 400'd a run whose four other measures were valid.)
+ *
+ * So a new unit may only land AFTER the reader is deployed everywhere the runner
+ * can post to. Until then, carry the unit in the metric KEY (e.g.
+ * `host:psi-cpu-some-avg10-pct`) and use an existing unit.
  */
-export type DesktopPerfMetricUnit = 'ms' | 'kb' | 'count' | 'pct';
+export type DesktopPerfMetricUnit = 'ms' | 'kb' | 'count';
 
 /**
  * One structured, cross-run-trendable metric a desktop-performance check emits

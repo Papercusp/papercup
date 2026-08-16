@@ -32,8 +32,17 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import path from "node:path";
 
-/** Mirrors `DesktopPerfMetricUnit` in packages/operator-core/lib/admin-test-suites-shared.ts. */
-export type PerfMeasureUnit = "ms" | "kb" | "count" | "pct";
+/**
+ * Mirrors `DesktopPerfMetricUnit` in packages/operator-core/lib/admin-test-suites-shared.ts.
+ *
+ * ⚠ Do NOT add a unit here to "make a measure fit". This runner posts to a
+ * RUNNING operator (`:3070` = the deployed release checkout, NOT your working
+ * tree), whose ingest route rejects the WHOLE batch on one unrecognised unit —
+ * so a unit that exists only in your tree starves the gate rather than degrading
+ * gracefully. Carry the unit in the metric KEY instead. See the long note on
+ * DesktopPerfMetricUnit.
+ */
+export type PerfMeasureUnit = "ms" | "kb" | "count";
 
 /** Mirrors `DesktopPerfMeasure` — the exact shape the ingest route validates. */
 export interface PerfMeasure {
@@ -243,9 +252,10 @@ export function recordHostPressure(phase: "start" | "end"): void {
       const value = read(cls);
       if (value === null || !Number.isFinite(value)) continue;
       recordMeasure({
-        key: `host:psi-cpu-${cls}-avg10:${phase}`,
+        // Unit lives in the KEY, not the `unit` field — see PerfMeasureUnit.
+        key: `host:psi-cpu-${cls}-avg10-pct:${phase}`,
         value,
-        unit: "pct",
+        unit: "count",
         budget: null,
         ok: true,
       });
