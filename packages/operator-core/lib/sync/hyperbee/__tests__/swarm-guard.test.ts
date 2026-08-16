@@ -119,7 +119,7 @@ describe('recordConnection (P-004/P-005)', () => {
     expect(await g.recordConnection(KEY, IP)).toEqual({ allow: false, reason: 'banned' });
   });
 
-  it('over the connection-rate ceiling → bans the key + IP and denies', async () => {
+  it('over the per-KEY connection-rate ceiling → bans that key only, NOT its IP', async () => {
     const g = createSwarmGuard();
     for (let i = 0; i < CONN_RATE.capacity; i++) {
       expect((await g.recordConnection(KEY, IP)).allow).toBe(true);
@@ -127,8 +127,13 @@ describe('recordConnection (P-004/P-005)', () => {
     // The (capacity+1)th connection trips the soft bucket.
     expect(await g.recordConnection(KEY, IP)).toEqual({ allow: false, reason: 'rate_limited' });
     expect(g.isBannedKey(KEY)).toBe(true);
-    expect(g.isBannedIp(IP)).toBe(true);
-    // …and the firewall now rejects that key pre-handshake.
+    // CHANGED 2026-08-16 (EI-20578573707248054): this used to assert the IP was
+    // banned too. That is precisely the defect — banning the address on ONE
+    // peer's storm evicts every co-located peer for ten minutes, and a flat mesh
+    // makes co-location the normal case. The penalty now lands on the offending
+    // key; the IP is banned only when the far wider per-IP ceiling is breached.
+    expect(g.isBannedIp(IP)).toBe(false);
+    // …and the firewall still rejects that key pre-handshake.
     expect(g.firewall(Buffer.from(KEY, 'hex'))).toBe(true);
   });
 

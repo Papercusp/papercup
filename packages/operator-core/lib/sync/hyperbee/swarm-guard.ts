@@ -8,10 +8,13 @@
  *     Hyperswarm only exposes the remote Noise key here, so the firewall is
  *     key-only.
  *   - `recordConnection(keyHex, ip)` — per-connection accounting run by the
- *     connection handler: a per-`(ip | key)` connection-rate limit (the shared
- *     `@papercusp/rate-limit` soft bucket over an IN-MEMORY store — D-004: conn
- *     gating is high-frequency + ephemeral, must cause zero PG writes). Tripping
- *     the limit bans the key + IP for a cooldown.
+ *     connection handler: a tight per-KEY connection-rate limit plus a much
+ *     wider per-IP ceiling (the shared `@papercusp/rate-limit` soft bucket over
+ *     an IN-MEMORY store — D-004: conn gating is high-frequency + ephemeral,
+ *     must cause zero PG writes). A per-key trip bans that KEY only; the IP is
+ *     banned only when the wide per-IP ceiling is itself breached. The two are
+ *     separate on purpose — one shared bucket keyed by IP let co-located peers
+ *     spend each other's budget and ban each other (EI-20578573707248054).
  *   - Enforcement: the firewall blocks future *key* connects pre-handshake; the
  *     handler's sync `isBanned*` drops an in-flight connection and one from a
  *     banned IP (the key-only firewall can't see IPs). Hyperswarm's own `ban()`
@@ -113,10 +116,13 @@ export function createSwarmGuard(opts: SwarmGuardOpts = {}): SwarmGuard {
   const now = opts.now ?? Date.now;
   const bannedKeys = new Map<string, number>(); // → expiry ms
   const bannedIps = new Map<string, number>();
-  const limiter = createRateLimiter({
-    store: opts.store ?? createInMemoryBucketStore(),
-    soft: CONN_RATE,
-  });
+  const store = opts.store ?? createInMemoryBucketStore();
+  // Two buckets, deliberately separate (EI-20578573707248054): a tight per-KEY
+  // limit that catches a single peer's reconnect storm, and a wide per-IP
+  // ceiling that only a genuine flood from one address can reach. Sharing one
+  // bucket keyed by IP is what let co-located peers ban each other.
+  const keyLimiter = createRateLimiter({ store, soft: CONN_RATE });
+  const ipLimiter = createRateLimiter({ store, soft: CONN_RATE_IP });
 
   const banned = (m: Map<string, number>, k: string): boolean => {
     const exp = m.get(k);
@@ -148,11 +154,35 @@ export function createSwarmGuard(opts: SwarmGuardOpts = {}): SwarmGuard {
       if ((keyHex && isBannedKey(keyHex)) || (ip && isBannedIp(ip))) {
         return { allow: false, reason: 'banned' };
       }
-      const res = await limiter.checkSoft(`conn:${ip ?? keyHex ?? 'unknown'}`);
-      if (!res.ok) {
-        if (keyHex) banKey(keyHex);
-        if (ip) banIp(ip);
-        return { allow: false, reason: 'rate_limited' };
+      // Charge the PEER first. The penalty lands on whoever actually burst, so
+      // a noisy peer can never cost its co-located neighbours their connection
+      // (or get them banned for ten minutes).
+      if (keyHex) {
+        const perKey = await keyLimiter.checkSoft(`conn:key:${keyHex}`);
+        if (!perKey.ok) {
+          banKey(keyHex);
+          return { allow: false, reason: 'rate_limited' };
+        }
+      }
+      // Then the much wider per-IP ceiling — a genuine flood from one address,
+      // well above any legitimate mesh-formation burst. Only THIS bans the IP.
+      // An unidentifiable peer (no key) is charged here alone, which is why the
+      // IP bucket must still exist.
+      if (ip) {
+        const perIp = await ipLimiter.checkSoft(`conn:ip:${ip}`);
+        if (!perIp.ok) {
+          if (keyHex) banKey(keyHex);
+          banIp(ip);
+          return { allow: false, reason: 'rate_limited' };
+        }
+      }
+      // A peer with NEITHER key nor IP is still accounted — against a shared
+      // 'unknown' bucket, banning nothing (there is nothing to ban). Without
+      // this branch an unidentifiable peer would be charged nowhere at all and
+      // could connect without limit.
+      if (!keyHex && !ip) {
+        const perUnknown = await keyLimiter.checkSoft('conn:unknown');
+        if (!perUnknown.ok) return { allow: false, reason: 'rate_limited' };
       }
       return { allow: true };
     },

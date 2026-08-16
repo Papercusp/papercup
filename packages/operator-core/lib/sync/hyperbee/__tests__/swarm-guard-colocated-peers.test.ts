@@ -14,7 +14,13 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { createSwarmGuard, CONN_RATE, DEFAULT_BAN_TTL_MS } from './swarm-guard';
+import {
+  createSwarmGuard,
+  CONN_RATE,
+  CONN_RATE_IP,
+  DEFAULT_BAN_TTL_MS,
+  SUPPORTED_MESH_PEERS,
+} from '../swarm-guard';
 
 /** Distinct peer identities, as hex keys. */
 const peerKey = (i: number) => `${i.toString(16).padStart(2, '0')}`.repeat(32);
@@ -83,18 +89,52 @@ describe('swarm guard — co-located peers must not spend each other budget', ()
     expect(guard.isBannedKey(attacker)).toBe(false);
   });
 
-  it('the connection budget is large enough for the supported mesh fan-out', () => {
+  it('the per-IP budget is large enough for the supported mesh fan-out', () => {
     // A flat mesh of N peers produces ~N-1 inbound connections per peer during
-    // formation, so `capacity` is a hard ceiling on supported peers no matter
-    // what the sync substrate can do. harden-shared-hive-to-256-peers targets
-    // 256; a capacity of 30 silently capped it at ~31 (D-008's measured knee:
-    // fine at 16, marginal at 32, collapsed at 64 with a p95 of 601s against a
-    // 600s ban TTL).
-    const SUPPORTED_MESH_PEERS = 256;
+    // formation, all from co-located addresses — so the per-IP capacity is a hard
+    // ceiling on supported peers no matter what the sync substrate can do.
+    // harden-shared-hive-to-256-peers targets 256; the old single bucket of 30
+    // silently capped it at ~31 (D-008's measured knee: fine at 16, marginal at
+    // 32, collapsed at 64 with a p95 of 601s against a 600s ban TTL).
     expect(
-      CONN_RATE.capacity,
-      `capacity ${CONN_RATE.capacity} is below the ${SUPPORTED_MESH_PEERS}-peer mesh fan-out — ` +
-        `formation alone will trip the guard and ban peers for ${DEFAULT_BAN_TTL_MS / 60000} minutes`,
+      CONN_RATE_IP.capacity,
+      `per-IP capacity ${CONN_RATE_IP.capacity} is below the ${SUPPORTED_MESH_PEERS}-peer mesh fan-out — ` +
+        `formation alone will trip the guard and ban the whole address for ${DEFAULT_BAN_TTL_MS / 60000} minutes`,
     ).toBeGreaterThanOrEqual(SUPPORTED_MESH_PEERS);
+  });
+
+  it('a genuine flood from ONE address still bans that address', () => {
+    // CALIBRATION for the widened per-IP ceiling: raising it must not amount to
+    // deleting it. Distinct keys each connecting once — i.e. exactly the shape
+    // the co-location fix admits — but far past the per-IP ceiling.
+    return (async () => {
+      const guard = createSwarmGuard();
+      let refused = false;
+      for (let i = 0; i < CONN_RATE_IP.capacity + 50 && !refused; i++) {
+        const r = await guard.recordConnection(peerKey(i % 200) + i.toString(16), '198.51.100.4');
+        if (!r.allow) refused = true;
+      }
+      expect(refused, 'an address far past the per-IP ceiling was never refused').toBe(true);
+      expect(guard.isBannedIp('198.51.100.4')).toBe(true);
+    })();
+  });
+
+  it('an unidentifiable peer (no key) is still charged against the IP ceiling', async () => {
+    // The IP bucket cannot be dropped: a peer with no resolvable key would
+    // otherwise be accounted nowhere at all.
+    const guard = createSwarmGuard();
+    let refused = false;
+    for (let i = 0; i < CONN_RATE_IP.capacity + 50 && !refused; i++) {
+      const r = await guard.recordConnection(undefined, '198.51.100.9');
+      if (!r.allow) refused = true;
+    }
+    expect(refused, 'a keyless peer flooding one address was never refused').toBe(true);
+  });
+
+  it('the two budgets are independent — per-key stays tight while per-IP is wide', () => {
+    // The fix is only meaningful if the per-key limit did NOT get widened along
+    // with the IP one; otherwise a single peer regains an enormous budget.
+    expect(CONN_RATE.capacity).toBeLessThan(CONN_RATE_IP.capacity);
+    expect(CONN_RATE.capacity).toBeLessThanOrEqual(30);
   });
 });
