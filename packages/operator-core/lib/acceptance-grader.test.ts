@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { acceptanceGraderLabelPrefix, launchAcceptanceGrader } from './acceptance-grader';
+import { acceptanceGraderLabelPrefix, launchAcceptanceGrader, resolveAcceptanceGrader } from './acceptance-grader';
 
 const plan = {
   row: {
@@ -99,5 +99,86 @@ describe('launchAcceptanceGrader', () => {
 
   it('uses the same label prefix algebra that cleanup matches', () => {
     expect(acceptanceGraderLabelPrefix('Acceptance / Weird Name')).toBe('acceptance-grader:acceptance-weird-name:');
+  });
+});
+
+describe('resolveAcceptanceGrader (P-011 / D-009 discovery-first)', () => {
+  const freshLaunch = () =>
+    vi.fn(async () => ({
+      content: [{ type: 'text', text: 'launched' }],
+      data: { deduped: false, launch: { tasks: [{ taskId: 'task-x' }] } },
+    }));
+
+  it('ASSIGNS the discovered grader, notifies them, and never launches a fresh judge', async () => {
+    const launch = freshLaunch();
+    const notifyAssigned = vi.fn(async () => ({ woke: 1 }));
+    const result = await resolveAcceptanceGrader('ship-the-thing', ctx, {
+      ...deps(launch),
+      discover: vi.fn(async () => ({
+        verdict: 'assigned' as const,
+        grader: { ownerId: 'su-independent', score: 0.71, liveness: 'live' },
+        excluded: ['su-implementer'],
+      })),
+      notifyAssigned: notifyAssigned as never,
+    });
+    expect(result.state).toBe('assigned');
+    expect(result.grader?.ownerId).toBe('su-independent');
+    expect(result.excluded).toEqual(['su-implementer']);
+    expect(result.notified).toEqual({ woke: 1 });
+    expect(launch).not.toHaveBeenCalled();
+    expect(notifyAssigned).toHaveBeenCalledWith(
+      'ship-the-thing',
+      'papercusp',
+      'acceptance-ship-the-thing',
+      'su-independent',
+      ctx,
+    );
+  });
+
+  it('discovery says fresh → falls through to the frozen judge launch, carrying the reason', async () => {
+    const launch = freshLaunch();
+    const result = await resolveAcceptanceGrader('ship-the-thing', ctx, {
+      ...deps(launch),
+      discover: vi.fn(async () => ({
+        verdict: 'fresh' as const,
+        excluded: ['su-implementer'],
+        freshReason: 'all_qualified_dead' as const,
+      })),
+    });
+    expect(result.state).toBe('launched');
+    expect(result.freshReason).toBe('all_qualified_dead');
+    expect(result.excluded).toEqual(['su-implementer']);
+    expect(launch).toHaveBeenCalledTimes(1);
+  });
+
+  it('discovery FAULT → still launches (discovery is a service, never a new failure mode)', async () => {
+    const launch = freshLaunch();
+    const result = await resolveAcceptanceGrader('ship-the-thing', ctx, {
+      ...deps(launch),
+      discover: vi.fn(async () => {
+        throw new Error('router down');
+      }),
+    });
+    expect(result.state).toBe('launched');
+    expect(result.freshReason).toBe('discovery_error');
+    expect(launch).toHaveBeenCalledTimes(1);
+  });
+
+  it('a notify failure does not demote the assignment (durable subscribe carries it)', async () => {
+    const launch = freshLaunch();
+    const result = await resolveAcceptanceGrader('ship-the-thing', ctx, {
+      ...deps(launch),
+      discover: vi.fn(async () => ({
+        verdict: 'assigned' as const,
+        grader: { ownerId: 'su-independent', score: 0.7, liveness: 'parked' },
+        excluded: [],
+      })),
+      notifyAssigned: vi.fn(async () => {
+        throw new Error('coord down');
+      }) as never,
+    });
+    expect(result.state).toBe('assigned');
+    expect(result.notified).toEqual({ woke: 0 });
+    expect(launch).not.toHaveBeenCalled();
   });
 });
