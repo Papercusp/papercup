@@ -3,6 +3,7 @@ import { execSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { findIncompleteSubmoduleInstalls, formatProblems } from './lib/submodule-installs.mjs';
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -78,6 +79,22 @@ if (!submodulesOnly) {
   });
 }
 check('submodule worktrees sane', assertSubmoduleWorktreesSane);
+
+// A submodule that carries its own package-lock.json is NOT covered by the root
+// `npm install` unless it is also a root workspace — and papercusp-desktop is not one.
+// That gap is invisible until someone runs a tool from inside the submodule and gets a
+// bare "command not found" (WI-39358: `exec: tauri: not found` after the tree was
+// re-cloned and only the ROOT install was re-run). Assert the install here so the failure
+// names its own cause and fix instead of surfacing as a broken toolchain.
+check('submodule installs complete (submodules with their own lockfile)', () => {
+  const problems = findIncompleteSubmoduleInstalls({
+    repoRoot: REPO_ROOT,
+    submodulePaths: submodulePaths(),
+  });
+  if (problems.length > 0) {
+    throw new Error(`submodule dependencies not installed:\n    ${formatProblems(problems)}`);
+  }
+});
 
 // ── AGENT-ENV operating-contract invariants (EI-10941) ───────────────────────
 // The same facts AGENT-ENV.md documents, asserted as runnable checks so a drift
