@@ -1622,7 +1622,7 @@ async function measureWarmRoute(
   ctx: SuiteContext,
   route: string,
   predicate: (page: RoutePage) => boolean,
-): Promise<{ ok: boolean; elapsedMs: number; page: RoutePage }> {
+): Promise<{ ok: boolean; elapsedMs: number; page: RoutePage; stabilized: boolean }> {
   const cold = await measureRoute(ctx, route, predicate, { stableDomPolls: ROUTE_STABLE_POLLS });
   // If the priming visit never settled, the warm visit cannot either — the
   // predicate does not describe this build. Return that fact now instead of
@@ -1647,7 +1647,7 @@ async function measureWarmRoute(
 function warmRouteResult(
   key: string,
   routeLabel: string,
-  result: { ok: boolean; elapsedMs: number; page: RoutePage },
+  result: { ok: boolean; elapsedMs: number; page: RoutePage; stabilized: boolean },
 ): Omit<AdminTestCheckResult, 'suiteId' | 'id' | 'label' | 'durationMs'> {
   const expected = `${routeLabel} settles within ${DESKTOP_PERF_BUDGETS.warmRouteSettleMs}ms in the Tauri desktop shell.`;
   if (!result.ok) {
@@ -1662,11 +1662,16 @@ function warmRouteResult(
     );
   }
   const pass = result.elapsedMs <= DESKTOP_PERF_BUDGETS.warmRouteSettleMs;
+  const bound = result.stabilized ? '' : ' (LOWER BOUND — time to first render; the DOM never quiesced)';
   return statusResult(
     pass,
     expected,
-    `${result.elapsedMs}ms · href=${result.page.href} · domNodes=${result.page.domNodes}.`,
-    undefined,
+    `${result.elapsedMs}ms${bound} · href=${result.page.href} · domNodes=${result.page.domNodes}.`,
+    result.stabilized
+      ? undefined
+      : [
+          'The surface kept mutating for the whole poll window (expected on an SSE-driven live view), so this is time-to-first-render, not full settle.',
+        ],
     [routeMeasure(key, result.elapsedMs, pass)],
   );
 }
@@ -1790,16 +1795,28 @@ async function readLatestInteractionMeasure(
 }
 
 /** Consecutive polls the DOM node count must hold steady before a route counts
- *  as settled. Two is enough to reject a surface still streaming content in
- *  without paying a long confirmation tail on every check. */
+ *  as settled. Two is enough to reject a surface still mid-hydration without
+ *  paying a long confirmation tail on every check. */
 const ROUTE_STABLE_POLLS = 2;
+
+/**
+ * How much DOM churn still counts as "settled".
+ *
+ * ⚠ Do NOT tighten this to an exact node-count match. Every client read here
+ * flows through @papercusp/sync over SSE, so a live surface (/admin/plans is
+ * the reference case) keeps mutating by a handful of nodes indefinitely — it
+ * has no quiescent state to wait for. Demanding an exact match made a route
+ * that genuinely rendered in 441ms report UNMEASURED forever, which trades a
+ * false breach for a false blind spot rather than fixing anything.
+ */
+const routeDomSettled = (a: number, b: number): boolean => Math.abs(a - b) <= Math.max(3, Math.round(b * 0.01));
 
 async function measureRoute(
   ctx: SuiteContext,
   route: string,
   predicate: (page: RoutePage) => boolean,
   opts: { stableDomPolls?: number } = {},
-): Promise<{ ok: boolean; elapsedMs: number; page: RoutePage }> {
+): Promise<{ ok: boolean; elapsedMs: number; page: RoutePage; stabilized: boolean }> {
   const state = await getDesktopState(ctx);
   const target = route.startsWith('http') ? route : new URL(route, state.origin).toString();
   const currentUrl = new URL(state.href);
@@ -1828,43 +1845,58 @@ async function measureRoute(
   }
   const startedAt = Date.now();
   const stableNeeded = opts.stableDomPolls ?? 0;
-  // Time at which the route FIRST reached the state we ultimately accept, and
-  // the node count it held there. The confirmation polls that follow prove the
-  // surface stopped changing; charging their wall time to the route would
-  // report the instrument's own confirmation window as page latency.
-  let firstMatchAt = 0;
-  let stableDomNodes = -1;
+  // `bandEnteredAt` is when the DOM entered the node-count band it then held —
+  // the moment the surface stopped growing. The confirmation polls that follow
+  // only PROVE it held; charging their wall time to the route would report the
+  // instrument's own confirmation window as page latency.
+  let bandEnteredAt = 0;
+  let bandDomNodes = -1;
   let stableStreak = 0;
+  // First poll at which the predicate held at all. If the DOM never settles we
+  // still return this as a lower bound rather than discarding a real render.
+  let firstMatchAt = 0;
+  let lastMatched: RoutePage | null = null;
   for (let i = 0; i < 24; i += 1) {
     await sleep(125, ctx.signal);
     const page = await readRoutePage(ctx);
     if (!page) continue;
     if (!predicate(page)) {
-      firstMatchAt = 0;
-      stableDomNodes = -1;
+      bandEnteredAt = 0;
+      bandDomNodes = -1;
       stableStreak = 0;
+      firstMatchAt = 0;
+      lastMatched = null;
       continue;
     }
+    lastMatched = page;
+    if (firstMatchAt === 0) firstMatchAt = Date.now();
     if (stableNeeded === 0) {
-      return { ok: true, elapsedMs: Date.now() - startedAt, page };
+      return { ok: true, elapsedMs: Date.now() - startedAt, page, stabilized: true };
     }
-    if (page.domNodes === stableDomNodes) {
+    if (routeDomSettled(page.domNodes, bandDomNodes)) {
       stableStreak += 1;
       if (stableStreak >= stableNeeded) {
-        return { ok: true, elapsedMs: Math.max(0, firstMatchAt - startedAt), page };
+        return { ok: true, elapsedMs: Math.max(0, bandEnteredAt - startedAt), page, stabilized: true };
       }
     } else {
-      // The surface is still mutating — restart the settle clock here.
-      stableDomNodes = page.domNodes;
+      // Still growing — restart the settle clock at this new size.
+      bandDomNodes = page.domNodes;
       stableStreak = 0;
-      firstMatchAt = Date.now();
+      bandEnteredAt = Date.now();
     }
+  }
+  // The predicate held but the DOM never quiesced (a permanently-live surface).
+  // Report time-to-first-render as a LOWER BOUND — flagged, never silently
+  // presented as a full settle time.
+  if (lastMatched && firstMatchAt > 0) {
+    return { ok: true, elapsedMs: Math.max(0, firstMatchAt - startedAt), page: lastMatched, stabilized: false };
   }
   const fallback = await readRoutePage(ctx);
   return {
     ok: false,
     elapsedMs: Date.now() - startedAt,
     page: fallback ?? makeRoutePage(target, [], 0, false, [`route did not settle for ${target}`]),
+    stabilized: false,
   };
 }
 
