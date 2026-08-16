@@ -131,7 +131,7 @@ afterAll(async () => {
  * restore a SUPERSEDED implementation the day another one lands. All of them are
  * idempotent (IF NOT EXISTS / GREATEST / CREATE OR REPLACE).
  */
-function hlcDefiningMigrations(): string[] {
+function latestHlcNowMigration(): string {
   const files = readdirSync(SQL_DIR)
     .filter((f) => f.endsWith('.sql'))
     .filter((f) => readFileSync(resolve(SQL_DIR, f), 'utf8').includes('FUNCTION harness_shared.hlc_now'))
@@ -139,12 +139,25 @@ function hlcDefiningMigrations(): string[] {
   // An empty list would make the control's restore a silent no-op, leaving the
   // legacy function installed and every later assertion answering about it.
   if (files.length === 0) throw new Error(`no migration in ${SQL_DIR} defines harness_shared.hlc_now`);
-  return files;
+  // ONLY the newest: each such migration is a full CREATE OR REPLACE, and
+  // replaying the older ones re-runs their unrelated DDL against a schema that
+  // has since moved on (mig 314's ADD COLUMN now targets a VIEW, and fails).
+  return files[files.length - 1];
 }
 
 async function restoreShippedHlcNow(): Promise<void> {
-  for (const f of hlcDefiningMigrations()) {
-    await sql.unsafe(readFileSync(resolve(SQL_DIR, f), 'utf8'));
+  await sql.unsafe(readFileSync(resolve(SQL_DIR, latestHlcNowMigration()), 'utf8'));
+  // Self-verify: a restore that silently failed would leave the legacy function
+  // installed, and every assertion after it would answer about the CONTROL while
+  // reading as though it had tested the shipped code.
+  const src = (
+    await sql<{ s: string }[]>`
+      SELECT p.prosrc AS s FROM pg_proc p
+      JOIN pg_namespace n ON n.oid = p.pronamespace
+      WHERE n.nspname = 'harness_shared' AND p.proname = 'hlc_now'`
+  )[0].s;
+  if (src.includes('FOR UPDATE')) {
+    throw new Error('restoreShippedHlcNow did not take — the legacy control is still installed');
   }
 }
 
