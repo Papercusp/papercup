@@ -29,6 +29,8 @@ const INTERACTION_NAME = "plan-popup-open";
 /** Mirrors perf-marks.ts STALE_START_MS — a start older than this is discarded. */
 const STALE_START_MS = 30_000;
 const MEASURE_WAIT_MS = 8_000;
+/** How many sidebar rows to try before declaring the environment unmeasurable. */
+const MAX_ROWS_TO_TRY = 5;
 // Budget MIRRORS DESKTOP_PERF_BUDGETS.interactions['plan-popup-open']
 // (packages/operator-core/lib/system-health/desktop-perf-budgets.ts). This runner
 // is deliberately kept OUT of the npm workspace (README), so it cannot import the
@@ -193,6 +195,25 @@ describe("Packaged Papercusp desktop — plan popup open interaction", () => {
     //    components. The classifier decides which, from what the page shows at
     //    the moment the wait expires. (Same fix shape as the web-vitals
     //    instrument's injected-instrument classifier.)
+    //
+    //    UNMEASURABLE ≠ SLOW. If no row opened at all, this run never exercised
+    //    the interaction, so it has NOTHING to say about its speed. Fail loudly
+    //    on the precondition and publish no number — a void sample must never be
+    //    recorded as a timing, and must never read as a perf regression.
+    if (!opened) {
+      throw new Error(
+        [
+          `UNMEASURABLE: no openable plan among the first ${candidates.length} sidebar row(s) — ` +
+            `this run never exercised "${INTERACTION_NAME}", so it is NOT a perf verdict`,
+          `last outcome: ${lastFailure ?? "(no rows to try)"}`,
+          ...attempts.map((a) => `  tried ${a}`),
+          `a row whose plan answers not_found renders PlanDetail's "Plan not found." empty state,`,
+          `so Vditor never parses and endInteraction never fires. Check that the sidebar's plan`,
+          `LIST and plans:get agree on workspace scope for these slugs.`,
+        ].join("\n  "),
+      );
+    }
+
     try {
       await browser.waitUntil(
         async () =>
