@@ -29,14 +29,16 @@ const ok = (payload: Record<string, unknown>) => ({ data: payload });
 export default defineTool({
   name: 'consult:get_feedback',
   description:
-    'Ask "who knows more than me about THIS?" — routes your question over real cross-agent transcript history (embedding + recency/verification/authorship blend), opens a bounded consult thread with the top qualified responder, and wakes them with why-they-were-chosen evidence. Honest by design: below the relevance floor the answer is a first-class no_qualified_responder ("no one knows more than you do — proceed on your own judgment"), never a costumed expert. Returns { verdict, conversation_id, responder, remaining_candidates, park_key, hint }.',
+    'Ask "who knows more than me about THIS?" — routes your question over real cross-agent transcript history (embedding + recency/verification/authorship blend), opens a bounded consult thread with the top qualified responder, and wakes them with why-they-were-chosen evidence. ARCHIVE-FIRST: a question a closed consult already answered is served instantly from the archive (no wake, no budget). Honest by design: below the relevance floor the answer is a first-class no_qualified_responder ("no one knows more than you do — proceed on your own judgment"), never a costumed expert.',
   guidance: {
     when:
       'You face a question a PEER may have real context on — their transcripts, their code, a failure they already debugged — before burning hours re-deriving it. You do not know WHO: the router discovers the responder from evidence.',
     notWhen:
       'Live state (query it: locks:queue / fleet:assignments / work_items:get). An owner decision (coord:ask-owner). A SPECIFIC known agent (coord:send / coord:message-agent — this tool is who-knows DISCOVERY). Assigning work (a consult is advice, never a handoff — requester owns the outcome).',
     chaining:
-      "get_feedback → latency_contract:'hard-blocked' ⇒ events:await { event: park_key } + end turn (reply wakes you) → conversations:get { id: conversation_id } for the thread → responder declined? re-call with exclude:[declinerId] (manual cascade; the wake budget binds).",
+      "get_feedback → 'served_from_archive'? use the cited answer in `archive`, or re-call with archive_floor: 2 if it does not fit → latency_contract:'hard-blocked' ⇒ events:await { event: park_key } + end turn (reply wakes you) → conversations:get { id: conversation_id } for the thread → responder declined? re-call with exclude:[declinerId] (manual cascade; the wake budget binds).",
+    returns:
+      '{ verdict: routed | no_qualified_responder | served_from_archive, conversation_id, thread_id, responder, remaining_candidates, origin_task_ref, latency_contract, expires_at, wake, park_key, archive? (source consult + responder + sim + structured answer — served_from_archive only), hint }',
   },
   capability: 'coord:write',
   requirePrincipal: false,
@@ -73,6 +75,14 @@ export default defineTool({
       .max(1, 'survey mode not yet enabled — v1 routes a single candidate (D-007(7)); omit max_agents or pass 1')
       .optional()
       .describe('RESERVED (v1: must be 1/omitted). Survey-mode fan-out lands later; the arg exists so the surface is stable.'),
+    archive_floor: z
+      .number()
+      .min(0)
+      .max(2)
+      .optional()
+      .describe(
+        'Similarity floor for the archive-first serve (default ~0.8, precision-biased). Pass 2 to bypass the archive entirely (force fresh routing — e.g. when an archived answer did not fit your context); lower it only when a stale-but-close answer beats waking anyone.',
+      ),
     topics: z.array(z.string().min(1)).max(8).optional().describe('Area topics to tag the consult with (ambient discoverability).'),
     harness: z.string().optional().describe('Tag the conversation harness-scoped.'),
   }),
@@ -117,6 +127,7 @@ export default defineTool({
         ...(args.origin_task_ref !== undefined ? { originTaskRef: args.origin_task_ref } : {}),
         ...(args.parent_consult_id !== undefined ? { parentConsultId: args.parent_consult_id } : {}),
         excludeOwners: args.exclude,
+        ...(args.archive_floor !== undefined ? { archiveFloor: args.archive_floor } : {}),
         topics: args.topics,
         harnessSlug: args.harness,
       },
