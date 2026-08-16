@@ -267,6 +267,60 @@ describe('getInProcessSubstrateStatus', () => {
       expect(r.bootedCount).toBe(1);
       expect(r.harnesses[0]).toMatchObject({ workspaceId: 'ws-1', harnessSlug: 'remote-a' });
     });
+
+    // EI-20575137548097507 — THE RECURRENCE GUARD.
+    //
+    // The test directly above is the exact shape of the live defect: it asserts
+    // the remote handles are adopted and `reachedSubstrateOwner:true`, and never
+    // looks at the verdict. On this box that path reported "97/97 healthy, no
+    // issues detected" while the replication-liveness detector was concurrently
+    // filing a MAJOR connected_never_replicated stall for one of those very
+    // harnesses (EI-20562138012694244).
+    //
+    // The cause is structural, not a missing branch: `booted` comes from the
+    // REMOTE snapshot while replication-liveness / own-log-fork / log-stats are
+    // module-scope state in the substrate OWNER process. On a non-owner the
+    // per-harness join therefore misses BY CONSTRUCTION, every health input
+    // arrives as `undefined`, and "not measured" rendered as "nothing wrong".
+    //
+    // This has now recurred five times (EI-18735338283879820,
+    // EI-19328421457282435, EI-19327550671915579, WI-5307, and this one) because
+    // each fix widened the BOOTED-HANDLE leg (local map → cluster IPC → PG
+    // fallback) and left the health-input legs process-local — so the surface
+    // kept reporting MORE harnesses it was NO better able to assess. Assert the
+    // invariant itself, so instance six fails here instead of in production.
+    it('a non-owner process must NEVER report healthy for a harness it could not measure', () => {
+      const r = getInProcessSubstrateStatus({
+        isSubstrateOwnerProcessForTest: false,
+        resolveRemoteBootedHandles: () => ({
+          handles: [{ workspaceId: 'ws-1', harnessSlug: 'remote-a' }],
+          receivedAt: Date.now(),
+        }),
+      });
+
+      // It still reports the harnesses (that leg is genuinely fixed) ...
+      expect(r.bootedCount).toBe(1);
+      // ... but must not claim to have assessed them.
+      expect(r.healthInputsObserved).toBe(false);
+      expect(r.harnesses[0]!.verdict).not.toBe('healthy');
+      expect(r.harnesses[0]!.reasons).not.toContain('no issues detected');
+      expect(r.harnesses[0]!.reasons.join(' ')).toMatch(/UNOBSERVABLE from this process/);
+      expect(r.summary.worstVerdict).not.toBe('healthy');
+
+      // `reachedSubstrateOwner` must NOT be reused as the observability marker:
+      // it is true on BOTH the owner path and this cached path, which is exactly
+      // why it could never have caught this. The two must stay distinguishable.
+      expect(r.reachedSubstrateOwner).toBe(true);
+      expect(r.healthInputsObserved).not.toBe(r.reachedSubstrateOwner);
+    });
+
+    it('the substrate OWNER still reports healthy — the guard must not blanket-degrade', () => {
+      _setHandleForTests('ws-1', 'owned-a', fakeHandle('ws-1', 'owned-a'));
+      const r = getInProcessSubstrateStatus({ isSubstrateOwnerProcessForTest: true });
+      expect(r.healthInputsObserved).toBe(true);
+      expect(r.harnesses[0]!.verdict).toBe('healthy');
+      expect(r.harnesses[0]!.reasons).toContain('no issues detected');
+    });
   });
 
   // WI-5307: a request-only secondary host (dedicated-bg-host topology's :3070/:3270)

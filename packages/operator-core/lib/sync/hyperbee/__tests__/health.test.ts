@@ -358,4 +358,52 @@ describe('assessHarnessSubstrateHealth', () => {
       expect(r.verdict).toBe('degraded');
     });
   });
+
+  // EI-20575137548097507 — the fifth instance of this diagnostic rendering
+  // ABSENCE OF INFORMATION as reassurance. A process that cannot observe a
+  // harness's process-local health inputs passes them all as `undefined`, which
+  // every check above correctly skips as "not measured" — and the verdict then
+  // fell through to a confident `healthy` / "no issues detected".
+  describe('unobservable health inputs must never read as healthy', () => {
+    it('healthInputsObservable:false ⇒ degraded, and says it is absence of measurement', () => {
+      const r = assessHarnessSubstrateHealth({
+        flagEnabled: true,
+        handlePresent: true,
+        healthInputsObservable: false,
+      });
+      expect(r.verdict).toBe('degraded');
+      expect(r.reasons.join(' ')).toMatch(/UNOBSERVABLE from this process/);
+      // The distinction the whole defect turns on must be stated, not implied.
+      expect(r.reasons.join(' ')).toMatch(/ABSENCE of measurement, not evidence of health/);
+      expect(r.reasons).not.toContain('no issues detected');
+    });
+
+    it('omitted (the default) is unchanged — an ordinary owner read still reads healthy', () => {
+      const r = assessHarnessSubstrateHealth({ flagEnabled: true, handlePresent: true });
+      expect(r.verdict).toBe('healthy');
+      expect(r.reasons).toEqual(['no issues detected']);
+    });
+
+    it('explicit true is unchanged (measured, nothing to report)', () => {
+      const r = assessHarnessSubstrateHealth({
+        flagEnabled: true,
+        handlePresent: true,
+        healthInputsObservable: true,
+      });
+      expect(r.verdict).toBe('healthy');
+    });
+
+    // Worst-wins: unobservable is not proof of a fault, so it must never
+    // DOWNGRADE a genuine unhealthy verdict into a milder-looking 'degraded'.
+    it('does not downgrade a genuine unhealthy verdict', () => {
+      const r = assessHarnessSubstrateHealth({
+        flagEnabled: true,
+        handlePresent: true,
+        healthInputsObservable: false,
+        sidecarLive: false,
+      });
+      expect(r.verdict).toBe('unhealthy');
+      expect(r.reasons.join(' ')).toMatch(/UNOBSERVABLE from this process/);
+    });
+  });
 });

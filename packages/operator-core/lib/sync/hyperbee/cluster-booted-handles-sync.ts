@@ -36,6 +36,10 @@
 import { managedSetInterval } from '@papercusp/scheduled-registry';
 import { isSubstrateOwnerProcess } from '../../background-workers';
 import { listBootedHandles, type BootedHandleSummary } from './boot-all';
+import {
+  getReplicationLiveness,
+  type HarnessReplicationLiveness,
+} from './replication-liveness';
 
 /** IPC message type the primary broadcasts to every worker each interval. */
 export const BOOTED_HANDLES_SNAPSHOT_TYPE = 'papercusp:booted-handles-snapshot' as const;
@@ -44,6 +48,14 @@ export interface BootedHandlesSnapshotMessage {
   type: typeof BOOTED_HANDLES_SNAPSHOT_TYPE;
   handles: BootedHandleSummary[];
   sentAt: number;
+  /**
+   * EI-20575137548097507: the owner's replication-liveness registry, broadcast
+   * with the handle list so a worker can ASSESS these harnesses instead of only
+   * listing them. Optional so a worker running newer code against an older
+   * primary mid-rolling-deploy degrades to health-unobserved (honest) rather
+   * than healthy (a lie).
+   */
+  replicationLiveness?: HarnessReplicationLiveness[];
   /**
    * EI-18735338283879820: the sender's assertion that it genuinely OWNS the substrate
    * (booted it, holds the handle map) — not merely that it is a cluster primary.
@@ -97,6 +109,9 @@ export function startBootedHandlesBroadcaster(opts: {
       opts.broadcast({
         type: BOOTED_HANDLES_SNAPSHOT_TYPE,
         handles: listBootedHandles(),
+        // EI-20575137548097507: broadcast the means to ASSESS these handles,
+        // not just the handles.
+        replicationLiveness: getReplicationLiveness(),
         sentAt: now(),
         ownsSubstrate: true,
       });
@@ -118,6 +133,17 @@ export function startBootedHandlesBroadcaster(opts: {
 export interface RemoteBootedHandlesSnapshot {
   handles: BootedHandleSummary[];
   receivedAt: number;
+  /**
+   * EI-20575137548097507: the owner's replication-liveness registry, carried
+   * with the handle list so a non-owner reader can ASSESS these harnesses
+   * rather than merely enumerate them.
+   *
+   * `undefined` means the snapshot's producer did not supply it (an older
+   * publisher, or a leg that does not carry it yet) — which the reader MUST
+   * render as health-unobserved, never as healthy. That conflation is the
+   * defect this field closes.
+   */
+  replicationLiveness?: HarnessReplicationLiveness[];
 }
 
 /** Process-local cache of the latest snapshot received from the primary. Only ever
@@ -153,7 +179,17 @@ export function startWorkerBootedHandlesCache(
     // is treated as untrusted, so a rolling deploy degrades to an honest
     // `reachedSubstrateOwner:false` blind spot rather than a confident false zero.
     if (m.ownsSubstrate !== true) return;
-    cachedRemote = { handles: m.handles as BootedHandleSummary[], receivedAt: now() };
+    cachedRemote = {
+      handles: m.handles as BootedHandleSummary[],
+      receivedAt: now(),
+      // EI-20575137548097507: carried through only when the primary actually
+      // sent it. An older primary omits it, and the reader must then report
+      // health as UNOBSERVED — same conservative stance as the `ownsSubstrate`
+      // provenance check above: unknown is treated as untrusted, never as green.
+      ...(Array.isArray(m.replicationLiveness)
+        ? { replicationLiveness: m.replicationLiveness as HarnessReplicationLiveness[] }
+        : {}),
+    };
   };
   on('message', listener);
   return {

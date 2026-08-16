@@ -44,6 +44,10 @@ import {
 } from './boot-all';
 import { readOperatorState, writeOperatorState } from '../../operator-state-pg';
 import type { RemoteBootedHandlesSnapshot } from './cluster-booted-handles-sync';
+import {
+  getReplicationLiveness,
+  type HarnessReplicationLiveness,
+} from './replication-liveness';
 import { resolveSubstrateSocketPath } from './substrate-socket-path';
 import { isAbsolute } from 'node:path';
 
@@ -57,6 +61,25 @@ interface PgRelocatedSidecarAdvertisement {
 interface PgBootedHandlesPayload {
   handles: BootedHandleSummary[];
   sentAt: number;
+  /**
+   * EI-20575137548097507: the owner's replication-liveness registry, published
+   * ALONGSIDE the handle list so a non-owner reader can actually ASSESS the
+   * harnesses this row tells it about.
+   *
+   * Before this, every leg of the fallback chain (local map → cluster IPC → this
+   * PG row) carried only the handle LIST, while the liveness/fork detectors
+   * stayed module-scope state in the owner process. A non-owner therefore
+   * reported ever more harnesses it was no better able to assess, and the
+   * unmeasured verdict rendered as `healthy` / "no issues detected" — five
+   * filed instances of one defect. Publishing it here rather than adding a
+   * second registry follows the same reasoning as the `sidecar` field above,
+   * and covers BOTH non-owner topologies (cluster worker and cross-service
+   * request-only host) with one mechanism.
+   *
+   * Optional for backward compatibility with rows written by an older owner: a
+   * reader that finds it absent must treat health as UNOBSERVED, never healthy.
+   */
+  replicationLiveness?: HarnessReplicationLiveness[];
   /**
    * Optional for backward compatibility with pre-EI-20438405483051865 rows and
    * absent for an in-process substrate owner.  This extends the existing
@@ -101,6 +124,9 @@ export function startBootedHandlesPgPublisher(opts: {
     const payload: PgBootedHandlesPayload = {
       handles,
       sentAt: now(),
+      // EI-20575137548097507: publish what a reader needs to ASSESS these
+      // handles, not just enumerate them.
+      replicationLiveness: getReplicationLiveness(),
       ...(relocated.length > 0
         ? {
             sidecar: {
@@ -175,7 +201,16 @@ export async function getPgBootedHandlesSnapshotFallback(opts?: {
 }): Promise<RemoteBootedHandlesSnapshot | null> {
   const row = await readFreshPgBootedHandlesPayload(opts);
   if (!row) return null;
-  return { handles: row.handles, receivedAt: row.sentAt };
+  return {
+    handles: row.handles,
+    receivedAt: row.sentAt,
+    // EI-20575137548097507: absent on rows written by a pre-fix owner — passed
+    // through as `undefined` so the reader reports health UNOBSERVED rather
+    // than manufacturing a healthy verdict from a missing field.
+    ...(Array.isArray(row.replicationLiveness)
+      ? { replicationLiveness: row.replicationLiveness }
+      : {}),
+  };
 }
 
 /**

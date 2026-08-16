@@ -267,9 +267,17 @@ export function getInProcessSubstrateStatus(
   // a confident false zero. Both sides now read the same function.
   const isSubstrateOwner =
     opts.isSubstrateOwnerProcessForTest ?? isSubstrateOwnerProcess();
+  // EI-20575137548097507: resolve the remote snapshot EXACTLY ONCE and hand the
+  // same object to `resolveEffectiveBootedHandles`, so the handle list and the
+  // health inputs below provably come from ONE snapshot. Calling the resolver a
+  // second time would risk `booted` and the liveness describing different
+  // moments — the same class of quiet incoherence this fix exists to remove.
+  const remoteSnapshot = isSubstrateOwner
+    ? null
+    : (opts.resolveRemoteBootedHandles?.() ?? null);
   const { booted, reachedSubstrateOwner } = resolveEffectiveBootedHandles(listBootedHandles(), {
     isSubstrateOwnerProcess: isSubstrateOwner,
-    resolveRemote: opts.resolveRemoteBootedHandles,
+    resolveRemote: () => remoteSnapshot,
   });
   const progress = listBootstrapProgress();
   const progressByKey = new Map<
@@ -289,7 +297,28 @@ export function getInProcessSubstrateStatus(
   const dhtBootstrapProbeStaleMs = resolveDhtBootstrapProbeStaleMs();
   // P-004 (WI-1840): read-time replication-liveness snapshot, resolved once and
   // joined per-harness below (feeds the health verdict + the status payload).
-  const replicationLiveness = getReplicationLiveness();
+  // EI-20575137548097507: the OWNER reads its own registry; a non-owner uses
+  // the liveness the owner published alongside the handle list it is already
+  // trusting for `booted`. Reading the local registry on a non-owner is what
+  // produced the false green: those maps are empty by construction there, so
+  // the per-harness join missed for every harness and each health input reached
+  // the assessor as `undefined` — "not measured" rendered as "nothing wrong".
+  // Only a snapshot that was actually USED may supply health inputs. On the
+  // non-owner path `reachedSubstrateOwner` is true exactly when the freshness
+  // check above accepted `remoteSnapshot`, so this reuses that one verdict
+  // rather than re-deriving (and possibly disagreeing with) it: a snapshot too
+  // stale to be trusted for `booted` is equally untrustworthy for health.
+  const remoteLiveness =
+    !isSubstrateOwner && reachedSubstrateOwner
+      ? remoteSnapshot?.replicationLiveness
+      : undefined;
+  const replicationLiveness = isSubstrateOwner
+    ? getReplicationLiveness()
+    : (remoteLiveness ?? []);
+  // Observable iff we measured it ourselves, or the snapshot's producer supplied
+  // it. An older publisher omits the field entirely — that is UNOBSERVED, and
+  // must never be read as an empty-because-nothing-is-wrong registry.
+  const healthInputsObserved = isSubstrateOwner || remoteLiveness !== undefined;
   const livenessByKey = new Map<string, HarnessReplicationLiveness>();
   for (const l of replicationLiveness) {
     livenessByKey.set(`${l.workspaceId}::${l.harnessSlug}`, l);
@@ -334,7 +363,7 @@ export function getInProcessSubstrateStatus(
       // empty BY CONSTRUCTION, so the joins above miss for every harness and
       // each input arrives at the assessor as `undefined` — indistinguishable
       // from "measured, nothing to report". Say which it is.
-      healthInputsObservable: isSubstrateOwner,
+      healthInputsObservable: healthInputsObserved,
       // WI-899 (A): a confirmed-dead sidecar overrides everything above.
       sidecarLive,
       // WI-5777: a stale isolated-DHT liveness probe degrades this harness's
@@ -367,6 +396,6 @@ export function getInProcessSubstrateStatus(
     // EI-20575137548097507: the SECOND blind-spot marker, and deliberately NOT
     // derived from `reachedSubstrateOwner` — that one goes true on the cached
     // path too, which is precisely how an unmeasured worker read as healthy.
-    healthInputsObserved: isSubstrateOwner,
+    healthInputsObserved,
   };
 }
