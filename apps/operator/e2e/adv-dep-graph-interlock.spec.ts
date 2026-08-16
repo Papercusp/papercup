@@ -209,25 +209,32 @@ const MOUNT_FAIL_MSG =
   'Fix the import chain that pulls embedded-pg-discovery into client code; do NOT re-derive ' +
   'this from the HMR or FAKE_LLM hypotheses — both were checked and neither is the cause.';
 
+/**
+ * The harness registry row for the fictional slug. Served over BOTH paths that
+ * carry it — the REST bootstrap (`/api/harness/projects/lite`) and the sync query
+ * (`harnessProjects.lite`, whose resolver returns this same `projects` array).
+ * Stubbing only one leaves the slug unresolvable on the other, and the dock then
+ * mounts no panels at all.
+ */
+const PROJECTS = [
+  {
+    slug: SLUG,
+    path: `/tmp/${SLUG}`,
+    name: SLUG,
+    hasState: true,
+    hasSpec: true,
+    parent_slug: null,
+    harness_kind: 'project',
+    is_shared: false,
+  },
+];
+
 async function stubApis(page: Page): Promise<SyncQueryStub> {
   await page.route('**/api/harness/projects/lite', async (route) => {
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
-      body: JSON.stringify({
-        projects: [
-          {
-            slug: SLUG,
-            path: `/tmp/${SLUG}`,
-            name: SLUG,
-            hasState: true,
-            hasSpec: true,
-            parent_slug: null,
-            harness_kind: 'project',
-            is_shared: false,
-          },
-        ],
-      }),
+      body: JSON.stringify({ projects: PROJECTS }),
     });
   });
 
@@ -271,6 +278,7 @@ async function stubApis(page: Page): Promise<SyncQueryStub> {
   // Detail pane re-reads byHarness (same key, deduped) plus its own 1-row
   // `workItems.detail`. Everything else → [].
   return stubSyncQueries(page, (name, args) => {
+    if (name === 'harnessProjects.lite') return PROJECTS;
     if (name === 'workItems.byHarness') return WORK_ITEMS;
     if (name === 'workItems.depEdges') return DEP_EDGES;
     if (name === 'workItems.detail') {
