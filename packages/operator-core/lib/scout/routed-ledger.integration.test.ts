@@ -143,6 +143,22 @@ describe('scout routed-ledger (real PG, migration 194)', () => {
     expect(rows.find((r) => r.ideaId === 'i1')!.title).toBe('win idea (re-routed)');
   });
 
+  // P-006/EI-10607: a re-record that OMITS addressesPatternRefs must not wipe the
+  // grounding a prior record established (blender:route-idea's re-route path omits
+  // them by design — a bare EXCLUDED.addresses_pattern_refs nulled the column).
+  it('a refs-less re-record preserves existing addresses_pattern_refs; declared refs still replace', async () => {
+    await recordRoutedIdea({ ideaId: 'i-ground', lens: 'analogical', rail: 'improvement', routedRef: 'wi:EI-1', harnessSlug: HARNESS, title: 'grounded', workspaceId: WS, addressesPatternRefs: ['wi:EI-10587'] });
+    // The rail hop: same idea re-recorded with NO refs declared.
+    await recordRoutedIdea({ ideaId: 'i-ground', lens: 'analogical', rail: 'plan', routedRef: 'plan:g-1', harnessSlug: HARNESS, title: 'grounded', workspaceId: WS });
+    let row = (await readRoutedIdeas({ workspaceId: WS })).find((r) => r.ideaId === 'i-ground')!;
+    expect(row.rail).toBe('plan'); // the hop itself landed
+    expect(row.addressesPatternRefs).toEqual(['wi:EI-10587']); // grounding survived it
+    // An explicit new declaration still replaces (COALESCE, not immutability).
+    await recordRoutedIdea({ ideaId: 'i-ground', lens: 'analogical', rail: 'plan', routedRef: 'plan:g-1', harnessSlug: HARNESS, title: 'grounded', workspaceId: WS, addressesPatternRefs: ['wi:EI-999'] });
+    row = (await readRoutedIdeas({ workspaceId: WS })).find((r) => r.ideaId === 'i-ground')!;
+    expect(row.addressesPatternRefs).toEqual(['wi:EI-999']);
+  });
+
   it('derives per-lens outcomes by joining routedRef to the Change Feed', async () => {
     const report = await getScoutLensOutcomes({ workspaceId: WS, harnessSlug: HARNESS });
     // analogical: one accepted gym (won) + one rejected gym (lost) → winRate 0.5
