@@ -542,6 +542,14 @@ export const FLAGS = {
   // Scout unchanged. D-001 dark-ship rule; double-gated — experiment:run also rides
   // papercusp-replay-harness + the governor before anything could spend.
   SCOUT_EXPERIMENT_RAIL: "papercusp-scout-experiment-rail",
+  // blender-loop-repair-and-opus5-xhigh-2026-08-16 P-013 (D-005, owner: "I want goal
+  // mode to be full auto too"): the Blender's GOAL rail — a goal-scale routed idea
+  // (multi-plan scope, weeks-long measurable end-state) CREATES AND STARTS a real goal
+  // (headless GOAL-mode agent, drafted killCriterion + budgetCents riding inside the
+  // record per D-005 — the confirm card's replacement). Default ON (derived
+  // FLAG_DEFAULTS — not in DARK_FLAGS). KILL SWITCH: OFF reroutes goal-bound ideas to
+  // the plan rail (draft plans) — never dropped; routing is otherwise byte-identical.
+  BLENDER_GOAL_RAIL: "papercusp-blender-goal-rail",
   // plan-templates-and-rubric-v2-2026-06-20 (P-009, Phase 4 auto-crystallization):
   // the Scout `rubric` rail. ON ⇒ on a detected RUBRIC GAP (corpus-digest rubricGaps,
   // P-008) Scout AUTHORS a `template: rubric` DRAFT plan → the existing queen↔scout
