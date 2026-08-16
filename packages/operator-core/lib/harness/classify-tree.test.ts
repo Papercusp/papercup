@@ -347,7 +347,7 @@ describe('walkHarnessTree — integration against papercup`s real libs/', () => 
   const isPapercupCheckout = evaluateIsPapercupCheckout();
 
   it.skipIf(!isPapercupCheckout)(
-    'matches the libs/ layout: 6 submodules + 7 plain (including papercusp-publish-auth)',
+    'matches the libs/ layout: 6 submodules + 6 plain (including papercusp-publish-auth)',
     (ctx) => {
       // The skipIf above sampled the environment at COLLECTION time. Re-sample it
       // HERE, at execution time, so a tree that de-materialized in between skips
