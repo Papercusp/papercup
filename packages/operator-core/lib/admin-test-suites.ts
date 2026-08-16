@@ -710,15 +710,15 @@ function desktopPerformanceChecks(ctx: SuiteContext) {
         await clearPerfRecorder(ctx);
         const state = await getDesktopState(ctx);
         const route = `/harness?slug=${encodeURIComponent(state.activeSlug)}&ws=default`;
-        const result = await measureWarmRoute(ctx, route, (page) => page.href.includes('/harness') && page.hasHarnessRoot);
-        const pass = result.ok && result.elapsedMs <= DESKTOP_PERF_BUDGETS.warmRouteSettleMs;
-        return statusResult(
-          pass,
-          `Warm harness route settles within ${DESKTOP_PERF_BUDGETS.warmRouteSettleMs}ms in the Tauri desktop shell.`,
-          `${result.elapsedMs}ms · href=${result.page.href} · domNodes=${result.page.domNodes}.`,
-          result.ok ? undefined : result.page.details,
-          [routeMeasure('route:harness-warm', result.elapsedMs, pass)],
-        );
+        // `/harness` is not a rendered route — apps/operator/app/page.tsx
+        // redirects it to `/adv?tab=harnesses`, and `.h-root` belongs to the
+        // retired harness surface, so BOTH halves of the old predicate
+        // (`href.includes('/harness') && hasHarnessRoot`) became permanently
+        // false. Assert the post-redirect identity plus a rendered heading:
+        // data-independent, so it still holds under the empty isolated DB this
+        // suite requires (where the tab renders its onboarding empty state).
+        const result = await measureWarmRoute(ctx, route, (page) => page.href.includes('tab=harnesses') && page.h1.length > 0);
+        return warmRouteResult('route:harness-warm', 'Warm harness route', result);
       },
     },
     {
@@ -727,15 +727,16 @@ function desktopPerformanceChecks(ctx: SuiteContext) {
       run: async () => {
         // The testing console lives on the harness Tests tab (/adv) — the
         // /admin/testing route was removed once the Tests tab covered it.
-        const result = await measureWarmRoute(ctx, '/adv?slug=papercup&tab=testing&testsTab=vitals', (page) => page.href.includes('testsTab=vitals') && page.h1.includes('Live metrics'));
-        const pass = result.ok && result.elapsedMs <= DESKTOP_PERF_BUDGETS.warmRouteSettleMs;
-        return statusResult(
-          pass,
-          `Warm Tests tab (Live metrics) settles within ${DESKTOP_PERF_BUDGETS.warmRouteSettleMs}ms in the Tauri desktop shell.`,
-          `${result.elapsedMs}ms · href=${result.page.href} · domNodes=${result.page.domNodes}.`,
-          result.ok ? undefined : result.page.details,
-          [routeMeasure('route:testing-live-warm', result.elapsedMs, pass)],
-        );
+        // ⚠ `testsTab=vitals` is NOT selectable here. TestingShell's tab list is
+        // built by `tabsFromRegistry(domains)` (+ the universal panels), and
+        // `vitals` is only an entry in the custom-PANEL map — no registry
+        // domain declares it — so the shell silently falls back to its
+        // `defaultTabId="test-runs"` and the `Live metrics` h1 never renders.
+        // The old predicate therefore never held (WI-39486). Measure the Tests
+        // surface this build actually reaches; the vitals panel being
+        // unreachable is tracked separately, not asserted here.
+        const result = await measureWarmRoute(ctx, '/adv?slug=papercup&tab=testing', (page) => page.href.includes('tab=testing') && page.h1.includes('Tests'));
+        return warmRouteResult('route:testing-live-warm', 'Warm Tests tab', result);
       },
     },
     {
@@ -743,14 +744,7 @@ function desktopPerformanceChecks(ctx: SuiteContext) {
       label: 'Plans warm route',
       run: async () => {
         const result = await measureWarmRoute(ctx, '/admin/plans', (page) => page.href.includes('/admin/plans') && page.h1.includes('Plans'));
-        const pass = result.ok && result.elapsedMs <= DESKTOP_PERF_BUDGETS.warmRouteSettleMs;
-        return statusResult(
-          pass,
-          `Warm /admin/plans settles within ${DESKTOP_PERF_BUDGETS.warmRouteSettleMs}ms in the Tauri desktop shell.`,
-          `${result.elapsedMs}ms · href=${result.page.href} · domNodes=${result.page.domNodes}.`,
-          result.ok ? undefined : result.page.details,
-          [routeMeasure('route:plans-warm', result.elapsedMs, pass)],
-        );
+        return warmRouteResult('route:plans-warm', 'Warm /admin/plans', result);
       },
     },
     {
@@ -1629,9 +1623,52 @@ async function measureWarmRoute(
   route: string,
   predicate: (page: RoutePage) => boolean,
 ): Promise<{ ok: boolean; elapsedMs: number; page: RoutePage }> {
-  await measureRoute(ctx, route, predicate);
+  const cold = await measureRoute(ctx, route, predicate, { stableDomPolls: ROUTE_STABLE_POLLS });
+  // If the priming visit never settled, the warm visit cannot either — the
+  // predicate does not describe this build. Return that fact now instead of
+  // burning a second full 24-poll ceiling to rediscover it.
+  if (!cold.ok) return cold;
   await sleep(250, ctx.signal);
-  return measureRoute(ctx, route, predicate);
+  return measureRoute(ctx, route, predicate, { stableDomPolls: ROUTE_STABLE_POLLS });
+}
+
+/**
+ * A warm-route check result.
+ *
+ * ⚠ A route that never satisfies its predicate is UNMEASURED, not slow. The
+ * poll loop above is bounded at 24 iterations, so a stale predicate makes
+ * `elapsedMs` converge on the loop's own ceiling (~10.5s here) — a number that
+ * reads exactly like a genuine 10.5s page load and was in fact filed as one
+ * (P-021, 2026-08-16: `/harness` silently redirects to `/adv?tab=harnesses`,
+ * after which `href.includes('/harness')` can never hold). Report it as a skip
+ * and emit NO measure, so an instrument ceiling cannot enter the trend series
+ * as a latency datum.
+ */
+function warmRouteResult(
+  key: string,
+  routeLabel: string,
+  result: { ok: boolean; elapsedMs: number; page: RoutePage },
+): Omit<AdminTestCheckResult, 'suiteId' | 'id' | 'label' | 'durationMs'> {
+  const expected = `${routeLabel} settles within ${DESKTOP_PERF_BUDGETS.warmRouteSettleMs}ms in the Tauri desktop shell.`;
+  if (!result.ok) {
+    return skip(
+      expected,
+      `UNMEASURED — the route never reached a settled state within ${24 * 125}ms of polling, so no settle time was measured (the elapsed ${result.elapsedMs}ms is the poll loop's own ceiling, NOT a page latency).`,
+      [
+        `Last observed page: ${result.page.summary}`,
+        'Either the surface genuinely never settles, or this check\'s route predicate no longer describes the app. Confirm the predicate before reading this as a regression.',
+        ...result.page.details,
+      ],
+    );
+  }
+  const pass = result.elapsedMs <= DESKTOP_PERF_BUDGETS.warmRouteSettleMs;
+  return statusResult(
+    pass,
+    expected,
+    `${result.elapsedMs}ms · href=${result.page.href} · domNodes=${result.page.domNodes}.`,
+    undefined,
+    [routeMeasure(key, result.elapsedMs, pass)],
+  );
 }
 
 interface InteractionMeasureSpec {
@@ -1752,10 +1789,16 @@ async function readLatestInteractionMeasure(
   return { ok: false, measuredMs: 0, detail: 'no measure on the performance timeline' };
 }
 
+/** Consecutive polls the DOM node count must hold steady before a route counts
+ *  as settled. Two is enough to reject a surface still streaming content in
+ *  without paying a long confirmation tail on every check. */
+const ROUTE_STABLE_POLLS = 2;
+
 async function measureRoute(
   ctx: SuiteContext,
   route: string,
   predicate: (page: RoutePage) => boolean,
+  opts: { stableDomPolls?: number } = {},
 ): Promise<{ ok: boolean; elapsedMs: number; page: RoutePage }> {
   const state = await getDesktopState(ctx);
   const target = route.startsWith('http') ? route : new URL(route, state.origin).toString();
@@ -1784,12 +1827,37 @@ async function measureRoute(
     }
   }
   const startedAt = Date.now();
+  const stableNeeded = opts.stableDomPolls ?? 0;
+  // Time at which the route FIRST reached the state we ultimately accept, and
+  // the node count it held there. The confirmation polls that follow prove the
+  // surface stopped changing; charging their wall time to the route would
+  // report the instrument's own confirmation window as page latency.
+  let firstMatchAt = 0;
+  let stableDomNodes = -1;
+  let stableStreak = 0;
   for (let i = 0; i < 24; i += 1) {
     await sleep(125, ctx.signal);
     const page = await readRoutePage(ctx);
     if (!page) continue;
-    if (predicate(page)) {
+    if (!predicate(page)) {
+      firstMatchAt = 0;
+      stableDomNodes = -1;
+      stableStreak = 0;
+      continue;
+    }
+    if (stableNeeded === 0) {
       return { ok: true, elapsedMs: Date.now() - startedAt, page };
+    }
+    if (page.domNodes === stableDomNodes) {
+      stableStreak += 1;
+      if (stableStreak >= stableNeeded) {
+        return { ok: true, elapsedMs: Math.max(0, firstMatchAt - startedAt), page };
+      }
+    } else {
+      // The surface is still mutating — restart the settle clock here.
+      stableDomNodes = page.domNodes;
+      stableStreak = 0;
+      firstMatchAt = Date.now();
     }
   }
   const fallback = await readRoutePage(ctx);
