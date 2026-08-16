@@ -51,6 +51,12 @@ export type RecipeUnresolvedCause =
   | { kind: 'volatile-coordination-args'; tool: string; keys: string[] }
   /** A loop call writes caller-scoped session state whose values cannot be proved reusable. */
   | { kind: 'volatile-session-state'; tool: string }
+  /**
+   * The script PINS a run-scoped ephemeral artifact path (one run's `/tmp` log,
+   * stamped with its own timestamp/pid), so re-running it can only ever re-read a
+   * DEAD run — while its title still promises the *active* one.
+   */
+  | { kind: 'volatile-run-artifact-path'; tool: null; path: string }
   /** A work-item claim names a fixed assignee that this authority model cannot validate. */
   | { kind: 'fixed-claim-assignee'; tool: string }
   /** Tools were referenced but NO call could be statically resolved (dynamic/unsupported access form). */
