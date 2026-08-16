@@ -511,7 +511,7 @@ export async function runOneAutoloopCycle(
       harnessCommit,
       // The per-run gym harness provisioning happens inside the EPHEMERAL operator.
       workspaceId: EPHEMERAL_WS,
-      scratchRoot: scratch,
+      scratchRoot: cloneScratch,
       timeoutMs: FAKE ? 240_000 : 1_200_000,
       pollIntervalMs: 3000,
       maxDistillChars: 60_000,
