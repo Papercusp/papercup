@@ -20,6 +20,7 @@
     "lint:chunk-safe": "vitest run lib/child-output-guard.test.ts",
     "lint:attributor-runner-coverage": "vitest run lib/__tests__/attributor-runner-coverage.test.ts",
     "lint:guard-reachability": "node ../../scripts/check-lint-guard-reachability.mjs",
+    "lint:di-seam-arity-strands:fail": "node ../../scripts/check-di-seam-arity-strands.mjs --fail",
     "lint:sidecar-fallback-reported": "node ../../scripts/check-sidecar-fallback-reported.mjs",
     "lint:no-unhosted-remote-core": "node ../../scripts/check-no-unhosted-remote-core.mjs",
     "lint:partial-index-alignment": "node ../../scripts/check-partial-index-alignment.mjs",

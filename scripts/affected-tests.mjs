@@ -877,6 +877,27 @@ function declarationMjsInputs() {
 
 const REPO_WIDE_INVARIANT_GUARDS = [
   {
+    // WI-39420 (2026-08-16) — lint:di-seam-arity-strands wire-up. The guard scans EVERY
+    // tracked .ts/.tsx source in the repo (defaultCandidateFiles in
+    // scripts/check-di-seam-arity-strands.mjs), but its enforcing test lives in
+    // @papercusp/operator-core — so a DI-seam arity-strand introduced in any OTHER
+    // workspace would only be judged when operator-core happened to be independently
+    // affected: the partial-enforcement hole check-lint-guard-reachability names.
+    // Registering here routes the guard with every changed path it actually covers.
+    // --fail blocks on NEW findings only; pre-wiring debt lives in the script's
+    // shrink-only FAIL_BASELINE. Cheap: one tsc parse pass over candidate files, no DB.
+    workspace: "@papercusp/operator-core",
+    script: "lint:di-seam-arity-strands:fail",
+    // Mirror of the script's own candidate filter: judge the changed path only if the
+    // guard would actually scan it.
+    appliesTo: (f) =>
+      /\.tsx?$/.test(f) &&
+      !/\.(test|spec|integration\.test)\.tsx?$/.test(f) &&
+      !/(^|\/)(dist|build|node_modules|\.papercusp)\//.test(f) &&
+      !f.startsWith("papercup-release/") &&
+      !f.startsWith("papercup-checkpoint/"),
+  },
+  {
     // EI-20551144708194616 — three guards that police papercusp-desktop/bin/*.sh live in
     // apps/operator (@papercusp/web), and the router's path->workspace map sends those two
     // to DISJOINT workspaces. Measured:
