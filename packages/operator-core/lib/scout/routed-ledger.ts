@@ -747,7 +747,7 @@ async function readScoutRefScopedTerminalEntries(
        ${opts.harnessSlug ? sql`AND harness_slug = ${opts.harnessSlug}` : sql``}
        ${opts.cycleId ? sql`AND cycle_id = ${opts.cycleId}` : sql``}`;
 
-  const [wiRows, wiLossRows, gymRows, gymArchiveWonRows, gymArchiveLostRows, planRows, planShippedRows, droppedPlanRows, planSupersededRows] =
+  const [wiRows, wiLossRows, gymRows, gymArchiveWonRows, gymArchiveLostRows, planRows, planShippedRows, droppedPlanRows, planSupersededRows, goalRows] =
     await Promise.all([
     sql<
       { feature_id: string; harness_slug: string | null; title: string | null; status: string | null; updated_ts: string | null }[]
@@ -888,6 +888,19 @@ async function readScoutRefScopedTerminalEntries(
         FROM harness_shared.harness_plans hp
        WHERE hp.status = 'superseded'
          AND ('plan:' || hp.plan_slug) IN (${scoutRefsFor('plan:')})`,
+    // P-013 / D-005 — the GOAL rail's terminal read, wired the day the rail ships
+    // (the outcome-feedback gap D-003 found on the gym rail is the failure this
+    // avoids). Only the TERMINAL statuses (stop-seam.ts TERMINAL_STATUSES) emit an
+    // entry: 'achieved' → won, 'killed' → lost (classifyIdeaOutcome's goal arm);
+    // an active/paused goal has no entry and stays honestly pending.
+    sql<
+      { id: string; title: string | null; status: string; install_slug: string | null; updated_at: Date | null }[]
+    >`
+      SELECT g.id, g.title, g.status, g.install_slug, g.updated_at
+        FROM harness_shared.goals g
+       WHERE g.status IN ('achieved', 'killed')
+         AND g.workspace_id = ${ws}
+         AND ('goal:' || g.id) IN (${scoutRefsFor('goal:')})`,
   ]);
 
   const wi: ChangeFeedEntry[] = wiRows.map((r) => ({
@@ -972,10 +985,19 @@ async function readScoutRefScopedTerminalEntries(
     ref: `plan:${r.plan_slug}`,
     ts: tsToIso(r.updated_at) ?? new Date(0).toISOString(),
   }));
+  const goal: ChangeFeedEntry[] = goalRows.map((r) => ({
+    id: `goal:${r.id}`,
+    kind: 'completion' as const,
+    title: `Goal ${r.status}: ${r.title || r.id}`,
+    detail: `Status: ${r.status}`,
+    harness: r.install_slug ?? undefined,
+    ref: `goal:${r.id}`,
+    ts: tsToIso(r.updated_at) ?? new Date(0).toISOString(),
+  }));
   // Decided-proposal / op_status entries are listed before their archive- and
   // frontmatter-status-derived siblings so a higher-fidelity explicit decision
   // wins the first-wins-by-ref dedup (computeLensOutcomes) on the rare overlap.
-  return [...wi, ...wiLoss, ...gym, ...gymArchiveWon, ...gymArchiveLost, ...plan, ...planShipped, ...droppedPlan, ...planSuperseded];
+  return [...wi, ...wiLoss, ...gym, ...gymArchiveWon, ...gymArchiveLost, ...plan, ...planShipped, ...droppedPlan, ...planSuperseded, ...goal];
 }
 
 /**
