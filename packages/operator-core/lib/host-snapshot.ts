@@ -287,7 +287,7 @@ function readRunQueue(now: number): RunQueue {
  *  read sees. Clears EVERY cached leg — a seam that reset only some of them would
  *  leak one test's fixture into the next. */
 export function resetHostSnapshotCache(): void {
-  psiCache = undefined;
+  psiCaches.clear();
   runqCache = undefined;
 }
 
@@ -330,7 +330,7 @@ export function getHostSnapshot(): HostSnapshot {
     /* absent */
   }
 
-  const psi = readPsiMemSome60(nowMs);
+  const psi = readPsiSome60('/proc/pressure/memory', nowMs);
   if (psi !== undefined) snap.psiMemSome60 = psi;
 
   const runq = readRunQueue(nowMs);
