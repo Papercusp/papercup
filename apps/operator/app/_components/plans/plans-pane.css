@@ -117,21 +117,43 @@
   border-color: color-mix(in srgb, var(--warn, #fbbf24) 45%, transparent);
   background: color-mix(in srgb, var(--warn, #fbbf24) 12%, transparent);
 }
-/* Blender provenance (WI-39439) — an ICON-ONLY badge, so it overrides the
-   text-shaped padding above with a square box; the shared 1px 6px would render
-   a lopsided pill around an 11px glyph. Accent-tinted rather than a semantic
-   status colour: provenance is neutral information, not good/warn/bad, and
-   reusing --good/--warn here would read as a health signal on the row. */
+/* Blender provenance (WI-39439) — deliberately the LOUDEST thing in the badge
+   strip (owner: "highlighted more so it's hard to miss"). Every sibling badge
+   above is a translucent tint on the row background; this one is a SOLID fill
+   with a light ring, which is what makes it read at a glance down a long list
+   rather than blending into the tint family.
+   Violet, not --good/--warn/--bad: provenance is not a health signal, and
+   borrowing a status colour would make these rows look like they need
+   attention. Violet is unused by the other badges, so it cannot be confused
+   with one. */
 .plans-pane__badge--blender {
-  padding: 2px; color: var(--accent-soft, #c4b5fd);
-  border-color: color-mix(in srgb, var(--accent, #8b5cf6) 48%, transparent);
-  background: color-mix(in srgb, var(--accent, #8b5cf6) 14%, transparent);
+  gap: 4px; padding: 2px 7px 2px 5px;
+  /* Case + size + weight carry the distinction — NOT letter-spacing, which is a
+     banned design primitive here and reds the shared green-checkpoint gate for
+     the whole fleet (hud.css has red-pinned it three times on this exact rule). */
+  font-size: 9.5px; font-weight: 800; text-transform: uppercase;
+  color: #fff;
+  background: linear-gradient(180deg, #a855f7, #7c3aed);
+  border-color: #c084fc;
+  box-shadow: 0 1px 6px color-mix(in srgb, #7c3aed 55%, transparent);
 }
-/* Local, not a borrowed global: this pane imports only its own stylesheet, so a
-   utility defined elsewhere (hud.css) is not guaranteed to be loaded here. */
-.plans-pane__sr-only {
-  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
-  overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0;
+/* The glyph must never be squeezed by the flex row when a title is long — it is
+   the half of this badge that carries the meaning. */
+.plans-pane__badge--blender svg { flex: 0 0 auto; }
+
+/* Second, quieter half of "hard to miss": mark the ROW, not just the badge, so a
+   Blender plan is identifiable from the left edge while scanning — the badges sit
+   right-aligned at the far end of a wide row. Uses :has(), already relied on
+   elsewhere in this codebase (plans.css read-mode rules) and supported by the
+   desktop's WebKitGTK webview. Purely additive: a browser without :has() simply
+   shows the badge alone, which is still correct. */
+.plans-pane__row:has(.plans-pane__badge--blender) {
+  border-left: 2px solid #a855f7;
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, #7c3aed 13%, transparent),
+    transparent 42%
+  );
 }
 /* One-click archive on a STALE row (P-008 / EI-15304). Sits over the row's
    right edge as a SIBLING of the row button (never nested — invalid HTML).

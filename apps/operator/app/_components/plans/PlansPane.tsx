@@ -29,7 +29,7 @@
  * `?ppv` popup tab (see PlanPopupModal).
  */
 import { useCallback, useEffect, useMemo, useRef } from 'react';
-import { Archive, ClipboardList, Sparkles } from 'lucide-react';
+import { Archive, ClipboardList } from 'lucide-react';
 import { parseAsBoolean, parseAsString, useQueryState } from 'nuqs';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { toast } from 'sonner';
@@ -58,6 +58,39 @@ const ACTIVE_BUCKETS: ReadonlySet<PlanBucket> = new Set(['draft', 'ready', 'runn
 /** An active plan with no real activity for this long reads as "stale" — a
  *  visibility nudge against plan sprawl (owner-plans-single-pane P-008). */
 export const STALE_MS = 14 * 24 * 60 * 60 * 1000;
+
+/**
+ * A literal kitchen-blender glyph (owner: "should be an icon of a blender").
+ * Hand-drawn because lucide-react has NO blender — checked, not assumed: 5,849
+ * exports, and its `Blend` is the blend-MODE overlapping-circles glyph, an
+ * unrelated meaning that would have read as wrong rather than merely plain.
+ *
+ * Drawn to lucide's own contract (24×24, fill:none, stroke:currentColor,
+ * width 2, round cap/join) so it inherits sizing + colour exactly like the
+ * `Archive`/`ClipboardList` icons beside it and needs no special-casing.
+ * Deliberately only four strokes — lid, tapered jar, motor base, feet: the
+ * silhouette has to survive at ~13px, where a blade//button detail turns to mud.
+ */
+function BlenderIcon({ size = 13 }: { size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M6 3h12" />
+      <path d="M7.5 3 9 13h6l1.5-10" />
+      <path d="M9 13v4.5a2 2 0 0 0 2 2h2a2 2 0 0 0 2-2V13" />
+      <path d="M10.5 19.5V21h3v-1.5" />
+    </svg>
+  );
+}
 
 /** True when an active plan hasn't been touched in ≥ STALE_MS. Pure. */
 export function isStale(updated: string | null | undefined, now = Date.now()): boolean {
@@ -369,8 +402,12 @@ export default function PlansPane() {
                         title="Blender-made — routed by the Blender/Scout ideation loop"
                         data-testid="plans-pane-blender-badge"
                       >
-                        <Sparkles size={11} aria-hidden="true" />
-                        <span className="plans-pane__sr-only">Blender-made plan</span>
+                        <BlenderIcon />
+                        {/* The word ships too (owner: "hard to miss"). It is a REAL
+                            label, not sr-only: a lone glyph in a badge strip is
+                            exactly what the eye skips, and a blender drawn at 13px
+                            is not self-evident on first encounter. */}
+                        Blender
                       </span>
                     ) : null}
                     {needsYou > 0 ? (

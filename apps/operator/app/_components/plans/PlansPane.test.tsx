@@ -142,6 +142,12 @@ describe('PlansPane', () => {
     render(<PlansPane />);
     const badges = screen.getAllByTestId('plans-pane-blender-badge');
     expect(badges).toHaveLength(1);
+    // The owner asked for a BLENDER glyph specifically and for it to be hard to
+    // miss, so both halves are pinned: an inline svg (lucide ships no blender, so
+    // this is hand-drawn and a refactor could silently drop it) and the visible
+    // word. Asserting only the testid would let either regress unnoticed.
+    expect(badges[0].querySelector('svg')).toBeTruthy();
+    expect(badges[0].textContent).toContain('Blender');
     // Assert WHICH row carries it — a single badge on the wrong row would also
     // satisfy a bare length check.
     expect(screen.getByTestId('plans-pane-row-p-blender').contains(badges[0])).toBe(true);
