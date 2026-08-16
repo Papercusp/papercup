@@ -19,8 +19,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const execFileImpl = vi.fn();
 vi.mock('node:child_process', () => ({
-  execFile: (file: string, args: string[], opts: unknown, cb: (e: Error | null, r?: unknown) => void) =>
-    execFileImpl(file, args, opts, cb),
+  // Forward VARIADICALLY. `promisify` appends the callback to whatever the
+  // caller passed, so arity varies by call site (execFile(file, args, cb) is
+  // 3, execFile(file, args, opts, cb) is 4). A fixed 4-param forwarder binds
+  // the callback to `opts` on the 3-arg shape and drops it — which surfaces
+  // as "cb is not a function" from inside the mock, i.e. as a fault in the
+  // test double rather than in the code under test.
+  execFile: (...args: unknown[]) => (execFileImpl as (...a: unknown[]) => unknown)(...args),
 }));
 
 import { detectClaude, detectCodex, detectOmp } from './preflight-binaries';
