@@ -121,49 +121,6 @@ interface TestResult {
   error: string | null;
 }
 
-const ROLE_ROUTING_ROWS = [
-  {
-    label: 'Mug',
-    role: 'mug',
-    description: 'Places work, prioritizes the fleet, and decides which agents to launch next.',
-  },
-  {
-    label: 'Kettle',
-    role: 'kettle',
-    description: 'Supervises live system health, nudges running agents, and records observations.',
-  },
-  {
-    label: 'Blender',
-    role: 'scanner',
-    description: 'Runs negative-space scans for missing work, latent issues, and improvement opportunities.',
-  },
-  {
-    label: 'doc-steward',
-    role: 'doc-steward',
-    description: 'Repairs drifted docs after code changes so documentation matches the current implementation.',
-  },
-  {
-    label: 'merge-resolution',
-    role: 'merge-resolver',
-    description: 'Resolves git-sync merge conflicts, commits the clean resolution, and leaves push to git-sync.',
-  },
-  {
-    label: 'content-fix',
-    role: 'content-fixer',
-    description: 'Fixes quarantined files that fail content guards, such as broken MDX or smart quotes in code.',
-  },
-  {
-    label: 'release-fix',
-    role: 'release-fixer',
-    description: 'Diagnoses red green-checkpoint gates, reproduces failures, and fixes regressions or proven flakes.',
-  },
-  {
-    label: 'deploy',
-    role: 'release-manager',
-    description: 'Reviews deploy plans, makes the go/no-go call, runs deploy mechanics, and verifies rollback health.',
-  },
-] as const;
-
 const ROLE_ROUTING_ROLES = ROLE_ROUTING_ROWS.map((row) => row.role);
 
 function filteredRoleModels(models: Record<string, string> | undefined): Record<string, string> {
@@ -186,11 +143,10 @@ function initialRoleBackends(): Record<string, SurfaceChoice> {
 
 export default function AgentSettingsPage() {
   const t = useLexicon();
-  // ROLE_ROUTING_ROWS is a module-level const, so the role's DISPLAY label routes
-  // here at render to the active cast (classic/Pot: Mug / Kettle / Blender). The
-  // `role` id (row.role) stays raw (D-001). Note the scanner row IS the Scout/
-  // Blender role (its role id is 'scanner'); doc-steward/merge/etc have no cast
-  // key so their label is unchanged.
+  // ROLE_ROUTING_ROWS is a static data module, so the role's DISPLAY label routes
+  // here at render to the active cast. The `role` id (row.role) stays raw (D-001).
+  // Note the scanner row IS the Scout/Blender role (its role id is 'scanner');
+  // doc-steward/merge/etc have no cast key so their label is unchanged.
   const displayLabel = (row: { role: string; label: string }): string =>
     agentTermKey(row.role) ? agentRoleLabel(row.role, t) : row.label;
   const [snapshot, setSnapshot] = useState<ConfigSnapshot | null>(null);
