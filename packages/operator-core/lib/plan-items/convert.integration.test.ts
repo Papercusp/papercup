@@ -275,4 +275,40 @@ describe('findConvertedWorkItemByStamp (PG, jsonb object-only payload)', () => {
   it('returns null when no stamp matches', async () => {
     expect(await findConvertedWorkItemByStamp('ghost', 'I-0', 'web')).toBeNull();
   });
+
+  /**
+   * EI-19443762267304247 regression: "plans:set-status{wip} auto-claim creates a
+   * SECOND work-item for a plan item that already has one".
+   *
+   * Repro sequence (measured 2026-08-03): (1) `work_items:create { plan_item:
+   * {slug,item} }` mints a work-item and writes a `relates` coverage edge — NOT an
+   * `implements` edge (that rel is reserved for convert-at-pickup). (2) A later
+   * `plans:set-status { item, status:'wip' }` auto-claims the plan item and (when
+   * PLAN_ITEM_CLAIM_AUTO_CONVERT is on, the default) calls convertPlanItem, whose
+   * idempotency check at the time was `findImplementingWorkItem` alone — which
+   * only matches `implements`, so the `relates`-linked item from step 1 was
+   * invisible and a duplicate work-item got minted.
+   *
+   * EI-19390496242545842 closed the gap from the OTHER end: work_items:create's
+   * `plan_item` arg now ALSO stamps `payload.plan_item` (previously it wrote only
+   * the `relates` edge) — the same stamp convert-at-pickup itself writes. That
+   * means convertPlanItem's step-2 STAMP FALLBACK (findConvertedWorkItemByStamp,
+   * used precisely when the `implements` edge is absent — see convert.ts's
+   * "resume an existing non-terminal execution record" comment) now finds the
+   * step-1 item and RESUMES it instead of minting a sibling.
+   *
+   * This pins that the two fixes actually compose: a work-item carrying ONLY the
+   * `relates` edge (no `implements`) plus the stamp is found by the fallback that
+   * convertPlanItem falls through to when the primary edge lookup misses.
+   */
+  it('EI-19443762267304247: a work_items:create{plan_item} item (relates edge + stamp, NO implements edge) is found by the stamp fallback', async () => {
+    await edge({ plan: 'p6', item: 'I-6', srcKind: 'issue', srcRef: 'EI-relates-only', rel: 'relates' });
+    await rootSql`INSERT INTO harness_shared.work_items (harness_slug, feature_id, item_kind, workspace_id, payload)
+                  VALUES ('web', 'EI-relates-only', 'bug', ${WS}, ${rootSql.json(stamp('p6', 'I-6'))})`;
+
+    // The PRIMARY lookup (implements edge) must miss — only `relates` was written.
+    expect(await findImplementingWorkItem('p6', 'I-6')).toBeNull();
+    // The FALLBACK (stamp match) must find the same item convertPlanItem would then resume.
+    expect(await findConvertedWorkItemByStamp('p6', 'I-6', 'web')).toMatchObject({ id: 'EI-relates-only' });
+  });
 });
