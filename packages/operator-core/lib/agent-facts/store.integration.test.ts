@@ -38,6 +38,7 @@ import {
   listLapsedWallFacts,
   listConventionFacts,
   factCitationRef,
+  listFactEvictionDisclosures,
   type FactDependency,
 } from './store';
 import { isAgentFactWireRow } from '../sync/hyperbee/projections/agent-facts';
@@ -818,6 +819,63 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
     // …and only the machine-chosen one is stamped evicted.
     expect(byKey.get('ordinary-0')?.evicted).toBe(true);
     expect(byKey.get('deliberate')?.evicted).toBe(false);
+  });
+
+  it('EI-19485000346355077: listFactEvictionDisclosures reports a recent cap eviction to an ORDINARY reader (not just the writer)', async () => {
+    const scopeRef = 'su-eviction-disclosure';
+    const base = { scope: 'owner' as const, scopeRef, createdBy: 'su-int', workspaceId: WS };
+
+    // Saturate the scope so the cap starts evicting incumbents.
+    for (let i = 0; i < FACTS_PER_SCOPE_CAP + 3; i++) {
+      await assertFact({ ...base, key: `sat-${i}`, body: `n ${i}` }, db.sql);
+    }
+
+    const disclosures = await listFactEvictionDisclosures(
+      [{ scope: 'owner', scopeRef }],
+      { workspaceId: WS },
+      db.sql,
+    );
+
+    expect(disclosures).toHaveLength(1);
+    expect(disclosures[0].scope).toBe('owner');
+    expect(disclosures[0].scopeRef).toBe(scopeRef);
+    expect(disclosures[0].recentEvictedCount).toBeGreaterThanOrEqual(3);
+    expect(disclosures[0].latestEvictedAt).toEqual(expect.any(String));
+    expect(disclosures[0].meaning).toContain('cap-evicted');
+  });
+
+  it('EI-19485000346355077: listFactEvictionDisclosures is silent for a scope with no cap evictions', async () => {
+    const scopeRef = 'su-eviction-disclosure-quiet';
+    await assertFact(
+      { scope: 'owner', scopeRef, key: 'only-one', body: 'x', createdBy: 'su-int', workspaceId: WS },
+      db.sql,
+    );
+
+    const disclosures = await listFactEvictionDisclosures(
+      [{ scope: 'owner', scopeRef }],
+      { workspaceId: WS },
+      db.sql,
+    );
+
+    expect(disclosures).toHaveLength(0);
+  });
+
+  it('EI-19485000346355077: an OUT-OF-WINDOW cap eviction is not disclosed — the read is bounded, not a permanent scar', async () => {
+    const scopeRef = 'su-eviction-disclosure-stale';
+    const base = { scope: 'owner' as const, scopeRef, createdBy: 'su-int', workspaceId: WS };
+    for (let i = 0; i < FACTS_PER_SCOPE_CAP + 2; i++) {
+      await assertFact({ ...base, key: `stale-${i}`, body: `n ${i}` }, db.sql);
+    }
+
+    // A window of 0s means "nothing counts as recent" — proves the read is bounded
+    // by windowSec rather than returning every eviction the scope has ever had.
+    const disclosures = await listFactEvictionDisclosures(
+      [{ scope: 'owner', scopeRef }],
+      { workspaceId: WS, windowSec: 0 },
+      db.sql,
+    );
+
+    expect(disclosures).toHaveLength(0);
   });
 });
 
