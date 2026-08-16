@@ -487,6 +487,9 @@ export function startGoalDrainFleetWatchdog(
           sweeping = false;
         });
     },
-    { category: 'watchdog' },
+    // D-004: 'timeout-reaper'. The alarm condition is a goal held for a WINDOW without
+    // the fleet its contract requires — the absence of a fleet emits no event, so the
+    // passage of time in that state is the only trigger available.
+    { category: 'watchdog', classification: 'timeout-reaper' },
   );
 }

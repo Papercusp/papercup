@@ -404,6 +404,8 @@ export function startGoalLivenessWatchdog(sql: Sql, opts: { intervalMs?: number 
           sweeping = false;
         });
     },
-    { category: 'watchdog' },
+    // D-004: 'timeout-reaper'. The trigger is ELAPSED TIME with no holder — a goal going
+    // quiet emits nothing, and absence-over-a-deadline has no publisher to subscribe to.
+    { category: 'watchdog', classification: 'timeout-reaper' },
   );
 }

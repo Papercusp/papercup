@@ -215,6 +215,9 @@ export function startRetrievalDegradationWatchdog(opts: { intervalMs?: number } 
           sweeping = false;
         });
     },
-    { category: 'watchdog' },
+    // D-004: 'must-sample'. The leg-health ring buffer is plain in-process state written
+    // by the search path and emits no change events, so there is nothing to subscribe to
+    // for "the degradation rate crossed" — it has to be read.
+    { category: 'watchdog', classification: 'must-sample' },
   );
 }
