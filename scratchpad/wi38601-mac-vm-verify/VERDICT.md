@@ -8,11 +8,15 @@ Run keys: **r017-macos-\*** (0.0.17)
 
 ## VERDICT
 
-**r017-macos-\* = PASS** with matrix-waivered `blocked` on U-001 (WKWebView paint on no-GPU QEMU).
+**r017-macos-\* = PASS** with matrix-waivered `blocked` on U-001 (WKWebView paint on no-GPU QEMU). **This is the COMPLETE P-005 mac VM verdict.**
 
-**r016-macos-\* = BLOCKED** — upstream P-001 (freeze exact public 0.0.16 artifacts) is unclaimed + `blocked`; the 0.0.16-alpha attempt failed its release cut (per migration `libs/papercusp/libs/db/sql/819-backfill-migration-reservation-815.sql` comment "the 0.0.16-alpha attempt that first hit it") and no public 0.0.16 macOS DMG/URL/hash exists in this repo's release surface. tauri.conf.json version is `0.0.17`; `plugins.updater.endpoints` is unset in the local staging tree; no `release-manifest*.json` or artifact registry file names a 0.0.16 URL. Without P-001-frozen inputs (D-001 requires public 0.0.16 signed artifacts), a 0.0.16 mac leg cannot be started; this row cannot be run on this VM without a plan-owner decision to either supply the artifacts or waive the 0.0.16 leg for macOS.
+**r016-macos-\* = RETIRED** — the owner retired the 0.0.16 leg entirely (2026-08-16T01:47Z, relayed by goal manager su-b9e0ec11 msg `msv59g8p`). The prior draft of this file said BLOCKED-on-P-001 with a gh-token-invalid caveat; that framing is superseded. No 0.0.16-baseline dependency remains for the mac verdict.
 
-**Kill-criterion satisfied**: per-VM verdict recorded on WI-38601; mac fleet may stand down.
+Historical context (unchanged, non-blocking now that r016 is retired): the 0.0.16-alpha attempt failed its release cut (per migration `libs/papercusp/libs/db/sql/819-backfill-migration-reservation-815.sql` comment "the 0.0.16-alpha attempt that first hit it"); no public 0.0.16 macOS DMG/URL/hash exists in this repo's release surface; tauri.conf.json version is `0.0.17`; `plugins.updater.endpoints` is unset in the local staging tree; no `release-manifest*.json` or artifact registry file names a 0.0.16 URL.
+
+**Standing bug awareness** (recorded, tracked separately from WI-38601): **EI-20560284451178740** — macOS .app fails `codesign --verify --strict` due to `com.apple.FinderInfo` xattrs on bundled files ("detritus not allowed"). This is a STANDING bug that also affects 0.0.16 identically. Not re-verified this session (probe timed out on the large bundle); acknowledged as a pre-existing class-of-bug not new to 0.0.17.
+
+**Kill-criterion satisfied**: per-VM verdict recorded on WI-38601; mac fleet stood down.
 
 ## Artifact identity (G-004, L-004)
 
