@@ -44,14 +44,22 @@ export function detectLostWakes(findings: readonly LostWakeFinding[]): LostWakeS
         `Watchdog signal (lost-wake, EI-10869's detector): '${f.eventKey}' settled ${f.settled} awaits in the ` +
         `window (${f.fired} by event, ${f.timedOut} by timeout — ${f.pctRealFire}% real-fire rate).\n\n` +
         `Independent witness (${f.witness.name}, owner ${f.witness.owner}): ${f.witness.evidence}\n\n` +
-        `This is EI-10800's class: the underlying condition PRODUCED a verdict, but the emit that should ` +
-        `have woken parked awaiters did not fire by 'event'. Check the emit call site for '${f.eventKey}' — ` +
-        `the usual cause is a fire-and-forget \`void emitAwaitedEvent(...)\` (or a detached dynamic import) ` +
-        `that races process teardown; the fix is to AWAIT the emit before the caller returns.`,
+        `This is EI-10800's class: the condition PRODUCED a verdict AND the awaits parked ACROSS that ` +
+        `verdict failed to wake — see the witness evidence above for the overlap counts, which are what ` +
+        `convict. (A low overall real-fire rate on its own is NOT this and never convicts: an awaiter only ` +
+        `wakes if the condition resolves during its own parked window, so a rare event is timeout-heavy ` +
+        `while perfectly healthy — EI-20323150675466298.)\n\n` +
+        `Start at the emit call site for '${f.eventKey}' in ${f.witness.owner}. ⚠ Do NOT assume the classic ` +
+        `fire-and-forget \`void emitAwaitedEvent(...)\` teardown race: it was already remediated for the ` +
+        `gate-verdict keys under EI-10800, so VERIFY the emit is un-awaited before "fixing" it. If it is ` +
+        `already awaited, the defect is downstream — the delivery/registration path, not the emit.`,
       severity: 'major' as const,
       kind: 'bug' as const,
       scope: 'operator' as const,
-      paths: ['packages/operator-core/lib/events/await/lost-wake-detect.ts'],
+      // The path that OWNS the emit, per the witness that convicted — not this detector. Hardcoding
+      // the detector path here sent seven successive sessions to the measuring code instead of the
+      // suspect code (EI-20323150675466298); the owning path was already in hand and thrown away.
+      paths: [f.witness.owner],
     }));
 }
 

@@ -3659,6 +3659,159 @@ export function swarmConstructorOpts(args?: {
 }
 
 /**
+ * P-302 (EI-20584279536840151): how long a freshly-constructed swarm's DHT gets
+ * to reach its OWN bootstrap before we declare the transport broken. The
+ * isolated rig populates a routing table in <50ms and the public DHT in a
+ * second or two, so this is a "something is structurally wrong" threshold, not
+ * a latency budget.
+ */
+export const DHT_BOOTSTRAP_GRACE_MS = 15_000;
+
+/**
+ * The handful of LIVE dht-rpc fields that decide whether this process can talk
+ * to its bootstrap at all. Split out from the reading so the VERDICT is a pure
+ * function and can be tested without a network — see
+ * {@link classifyDhtReachability}.
+ */
+export interface DhtReachabilitySample {
+  /** Bootstrap nodes the LIVE node actually holds — NOT what we passed in.
+   *  These differ exactly in the failure modes worth catching. */
+  bootstrapNodeCount: number;
+  /** Routing-table size. Still zero after the grace window ⇒ nobody ever answered. */
+  routingTableSize: number;
+  /** dht-rpc `io.stats.requests` counters. */
+  requestsTotal: number;
+  responses: number;
+  timeouts: number;
+}
+
+export type DhtReachabilityVerdict =
+  | { level: 'ok'; code: 'reachable'; message: null }
+  | {
+      level: 'warn';
+      code: 'no-bootstrap-nodes' | 'never-queried' | 'bootstrap-unreachable' | 'degraded';
+      message: string;
+    };
+
+/**
+ * Decide what a DHT sample MEANS, loudly.
+ *
+ * This exists because the P-302 failure was invisible at every layer above the
+ * socket: dht-rpc sends via udx's fire-and-forget `trySend`, which reports no
+ * error, so a hard `EHOSTUNREACH` on EVERY packet looked identical to a healthy
+ * idle swarm. The counters below are the only place the truth survives —
+ * `requestsTotal` climbing while `responses` stays 0 is a transport that cannot
+ * reach anyone, and it is not otherwise distinguishable from silence.
+ */
+export function classifyDhtReachability(s: DhtReachabilitySample): DhtReachabilityVerdict {
+  if (s.bootstrapNodeCount === 0) {
+    return {
+      level: 'warn',
+      code: 'no-bootstrap-nodes',
+      message:
+        'the DHT holds ZERO bootstrap nodes, so it will never issue a query and can never ' +
+        'discover a peer — check PAPERCUSP_DHT_BOOTSTRAP and parseDhtBootstrap',
+    };
+  }
+  // A populated routing table is proof that packets flow BOTH ways.
+  if (s.routingTableSize > 0) return { level: 'ok', code: 'reachable', message: null };
+  if (s.requestsTotal === 0) {
+    return {
+      level: 'warn',
+      code: 'never-queried',
+      message:
+        'the DHT has bootstrap nodes but has not sent a single request — its bootstrap query ' +
+        'never ran (a swallowed rejection in the join/bootstrap path)',
+    };
+  }
+  if (s.responses === 0) {
+    return {
+      level: 'warn',
+      code: 'bootstrap-unreachable',
+      message:
+        `sent ${s.requestsTotal} request(s) to its bootstrap and got ZERO responses ` +
+        `(${s.timeouts} timeouts). The bootstrap is UNREACHABLE FROM THIS PROCESS. Because ` +
+        'dht-rpc sends via udx `trySend` (fire-and-forget), a hard socket error is reported ' +
+        'NOWHERE — verify with a `dgram.send` callback to the same host:port from inside this ' +
+        'process. A per-process EHOSTUNREACH to a LOCAL-SUBNET peer while loopback and the ' +
+        'public internet still work is macOS Local Network privacy (grant the app Local ' +
+        'Network permission; the bundle needs NSLocalNetworkUsageDescription)',
+    };
+  }
+  return {
+    level: 'warn',
+    code: 'degraded',
+    message:
+      `got ${s.responses} response(s) but the routing table is still empty — peers are ` +
+      'answering yet none is being retained',
+  };
+}
+
+/**
+ * Read the live sample off a Hyperswarm. Every hop is defensive: `dht`, `table`
+ * and `io.stats` are dht-rpc internals, so a version bump may move them — and a
+ * diagnostic that THROWS while diagnosing is worse than one that abstains.
+ * Returns null when the shape is unrecognisable, which callers report as
+ * "could not determine" rather than as health.
+ */
+export function sampleDhtReachability(swarm: unknown): DhtReachabilitySample | null {
+  try {
+    const dht = (swarm as { dht?: Record<string, unknown> })?.dht;
+    if (!dht) return null;
+    const bootstrapNodes = dht.bootstrapNodes as unknown[] | undefined;
+    const table = dht.table as { size?: number } | undefined;
+    const stats = (dht.io as { stats?: { requests?: Record<string, number> } } | undefined)?.stats
+      ?.requests;
+    if (!Array.isArray(bootstrapNodes) || !table || !stats) return null;
+    return {
+      bootstrapNodeCount: bootstrapNodes.length,
+      routingTableSize: typeof table.size === 'number' ? table.size : 0,
+      requestsTotal: stats.total ?? 0,
+      responses: stats.responses ?? 0,
+      timeouts: stats.timeouts ?? 0,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * After the grace window, say out loud whether this process's DHT can actually
+ * reach its bootstrap. One-shot and `unref`'d, so it never holds the process
+ * open and never becomes a recurring timer (no `managedSetInterval` needed).
+ */
+export function scheduleDhtReachabilityCheck(
+  swarm: unknown,
+  graceMs: number = DHT_BOOTSTRAP_GRACE_MS,
+): void {
+  const timer = setTimeout(() => {
+    const sample = sampleDhtReachability(swarm);
+    if (!sample) {
+      console.info(
+        '[swarm] DHT reachability: could not read the live DHT counters (unrecognised ' +
+          'hyperdht/dht-rpc shape) — reachability UNKNOWN, not confirmed',
+      );
+      return;
+    }
+    const verdict = classifyDhtReachability(sample);
+    if (verdict.level === 'ok') {
+      console.info(
+        `[swarm] DHT reachable: routing table ${sample.routingTableSize} node(s), ` +
+          `${sample.responses}/${sample.requestsTotal} request(s) answered`,
+      );
+      return;
+    }
+    console.warn(
+      `[swarm] ⚠ DHT TRANSPORT BROKEN (${verdict.code}) — ${verdict.message}. ` +
+        `[bootstrapNodes=${sample.bootstrapNodeCount} routingTable=${sample.routingTableSize} ` +
+        `requests=${sample.requestsTotal} responses=${sample.responses} timeouts=${sample.timeouts}]`,
+    );
+  }, graceMs);
+  // Never keep the event loop alive for a diagnostic.
+  (timer as { unref?: () => void }).unref?.();
+}
+
+/**
  * Lazy-construct ONE Hyperswarm for the entire process. Hyperswarm
  * is heavy (~50ms cold start + a UDP socket + DHT bootstrapping);
  * sharing it across harnesses cuts that cost to once per process.
