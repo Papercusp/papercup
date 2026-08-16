@@ -67,7 +67,7 @@ function standingWakeFloorSec(): number {
 export default defineTool({
   name: 'watch:create',
   description:
-    'The unified subscription primitive — watch(pattern, {wake, once, min_sleep_sec, urgency, timeout_sec, mode, targetKind}): register an interest, receive a delivery. DELIVERY — wake:false (DEFAULT, cheap) injects into your inbox (no token cost); wake:true (opt-in, tokens) re-invokes you. CARDINALITY — once:true one-shot; once:false standing. TARGET (wake:false only): targetKind "topic" (default) or "event" (exact event key — see arg). Sugar: events:await = watch(key,{wake:true,once:true}). Ambient topic interest is this tool with targetKind:"topic", wake:false. PREDICATE (wake:true): predicate:{tool,args,path,op,value}+interval_sec polls a read-only tool under YOUR role, wakes on false→true.',
+    'The unified subscription primitive — watch(pattern, {wake, once, min_sleep_sec, urgency, timeout_sec, mode, targetKind}): register an interest, receive a delivery. DELIVERY — wake:false (DEFAULT, cheap) injects into your inbox (no token cost); wake:true (opt-in, tokens) re-invokes you. CARDINALITY — once:true one-shot; once:false standing. TARGET: targetKind "topic" (default) / "event" (exact key) — wake:false — or "interest" (free text; fires on matching peer work; either wake mode — see arg). Sugar: events:await = watch(key,{wake:true,once:true}). Ambient topic interest is this tool with targetKind:"topic", wake:false. PREDICATE (wake:true): predicate:{tool,args,path,op,value}+interval_sec polls a read-only tool under YOUR role, wakes on false→true.',
   guidance: {
     when: 'Prefer wake:false (inject) for continuous awareness of a churning area — no cost. Use wake:true ONLY for specific readiness ("wake me when THIS grant/lock/deadline is ready"); for a standing wake watch set min_sleep_sec to bound the re-wake rate. once:true for a one-shot grant; once:false to keep following.',
     notWhen:
@@ -190,8 +190,129 @@ export default defineTool({
       throw new Error('watch:create — producer_health requires on_timeout:"wake" so a stalled/absent diagnosis is actionable');
     }
 
-    if (args.interval_sec != null && !args.predicate) {
-      throw new Error('watch:create — interval_sec applies only to a predicate watch (for a wake floor, use min_sleep_sec).');
+    const isInterest = args.targetKind === 'interest';
+    if (args.interval_sec != null && !args.predicate && !isInterest) {
+      throw new Error(
+        'watch:create — interval_sec applies only to a predicate or interest watch (for a wake floor, use min_sleep_sec).',
+      );
+    }
+    if (args.min_similarity != null && !isInterest) {
+      // Fail loud rather than silently ignore — a caller believing a topic/event
+      // watch is similarity-filtered when it isn't is the trap this kills.
+      throw new Error('watch:create — min_similarity applies only to targetKind:"interest".');
+    }
+
+    if (isInterest) {
+      // ── P-008 interest watch (get-feedback-relevance-consults-2026-08-16): a
+      // standing free-text interest, embedded ONCE here, matched by the sweep
+      // (interest-watch.ts) against peers' NEW transcript turns — the push half
+      // of the consult system. One emitted key serves both delivery modes.
+      if (args.predicate) {
+        throw new Error('watch:create — targetKind:"interest" and predicate are mutually exclusive (one watch, one matcher).');
+      }
+      if (args.producer_health) {
+        throw new Error('watch:create — producer_health applies to a one-shot event watch, not an interest watch.');
+      }
+      if (!wake && args.payload_filter) {
+        throw new Error(
+          'watch:create — payload_filter is only supported with wake:true today (it filters wake-await fires; a wake:false inject subscription has no per-emit matching step to apply it to).',
+        );
+      }
+      // An interest is STANDING by nature in both delivery modes (unlike a bare
+      // wake watch, whose default cardinality is one-shot).
+      const interestOnce = args.once ?? false;
+      // Embed ONCE — dynamically imported because the embedder's transitive
+      // graph opens PG at import time (same reason get-feedback.ts lazy-loads it).
+      const { buildQueryEmbedder } = await import('../search/embedder');
+      const embed = await buildQueryEmbedder();
+      if (!embed) {
+        throw new Error(
+          'watch:create — no embedder is available on this host, so this interest could never be matched. Refusing to register (honest degrade) rather than registering a watch that silently never fires.',
+        );
+      }
+      const vec = await embed(args.pattern).catch(() => null);
+      if (!vec || vec.length === 0) {
+        throw new Error('watch:create — embedding the interest text failed; retry, or check the embedding sidecar.');
+      }
+      const id = globalThis.crypto.randomUUID();
+      const eventKey = `interest:${id}`;
+      const workspaceId = ctx.workspaceId ?? activeWorkspaceId();
+      const simFloor = args.min_similarity ?? INTEREST_DEFAULT_SIM_FLOOR;
+      startInterestWatchSweeper();
+
+      let wakeHandleNote: string | undefined;
+      let awaitRowId: string | number | undefined;
+      if (wake) {
+        // Delivery target registers FIRST (GC safety: the sweep deactivates an
+        // interest row with no live await/subscription on its key).
+        startAwaitSweeper();
+        const minSleepSec = args.min_sleep_sec ?? (interestOnce ? 0 : standingWakeFloorSec());
+        const { handle, note: handleNote } = await captureWakeHandleForOwner(identity.ownerId, {
+          planRunId: args.plan_run_id,
+        });
+        const row = await registerAwait({
+          subscriberId: identity.ownerId,
+          eventKey,
+          policy: 'wake',
+          note: clampText(args.note ?? `interest: ${args.pattern}`, LIMITS.ANNOTATION) ?? null,
+          wakeHandle: handle,
+          timeoutBehavior: args.on_timeout ?? 'wake',
+          timeoutSec: args.timeout_sec ?? (interestOnce ? DEFAULT_TIMEOUT_SEC : null),
+          once: interestOnce,
+          minSleepSec,
+          urgency: args.urgency,
+          payloadFilter: args.payload_filter ?? null,
+        });
+        wakeHandleNote = handleNote;
+        awaitRowId = row.id;
+      } else {
+        await subscribeEventKey(identity, eventKey, { mode: args.mode, ttl_sec: args.timeout_sec });
+      }
+
+      const { getOrgPg } = await import('@papercusp/db-org');
+      const watchRow = await registerInterestWatch(getOrgPg().sql, {
+        id,
+        workspaceId,
+        ownerId: identity.ownerId,
+        harnessSlug: ctx.harnessSlug ?? null,
+        eventKey,
+        interest: args.pattern,
+        embedding: vec,
+        simFloor,
+        ...(args.interval_sec != null ? { intervalSec: args.interval_sec } : {}),
+        once: interestOnce,
+      });
+
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({
+              ok: true,
+              watch: {
+                id: awaitRowId ?? watchRow.id,
+                pattern: eventKey,
+                label: args.pattern,
+                targetKind: 'interest',
+                wake,
+                once: interestOnce,
+                min_similarity: simFloor,
+                interval_sec: watchRow.intervalSec,
+              },
+              interest: {
+                watch_id: watchRow.id,
+                sim_floor: simFloor,
+                swept_every_sec: watchRow.intervalSec,
+                matches_from: watchRow.watermark,
+              },
+              ...(wakeHandleNote !== undefined ? { wake_handle: wakeHandleNote } : {}),
+              advice: wake
+                ? `Interest registered (standing, swept every ${watchRow.intervalSec}s). End your turn — you will be woken (floored, coalesced) when a peer's new work matches above ${simFloor}. Only turns from now on are candidates. events:cancel to stop.`
+                : `Interest registered (inject, swept every ${watchRow.intervalSec}s). Matches above ${simFloor} land in your coord inbox with owner + excerpt + sim evidence — no token cost. Only turns from now on are candidates. events:unsubscribe (targetKind:"event", pattern "${eventKey}") to stop.`,
+            }),
+          },
+        ],
+      };
     }
 
     if (!wake) {

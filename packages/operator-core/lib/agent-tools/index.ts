@@ -1542,6 +1542,18 @@ try {
   /* never block boot */
 }
 
+// get-feedback-relevance-consults-2026-08-16 P-008 — the interest-watch sweeper
+// (push-interjection: peer in-flight work matched against standing embedded
+// interests). Boot-started so rows registered before a host restart keep
+// sweeping; same fail-soft contract (missing table pre-migration-839 must
+// never block boot — the tick catches its own errors).
+import { startInterestWatchSweeper } from '../events/await/interest-watch';
+try {
+  startInterestWatchSweeper();
+} catch {
+  /* never block boot */
+}
+
 // EI-10966 — prompt-weight budget self-check. LAST import: every tool above has
 // registered, so this sees the full projected catalog. Warns (operator logs only,
 // never under vitest) when a tool is over budget, so an over-budget guidance EDIT
