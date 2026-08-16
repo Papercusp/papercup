@@ -72,6 +72,33 @@ export interface ConvergenceStats {
   p95LimitMs: number | null;
   /** Observed appendToVisible p95 (ms), when the scenario measured it. */
   observedP95Ms: number | null;
+  /**
+   * The catch-up budget (ms) every reader was judged against, or null when the
+   * scenario did not declare one.
+   *
+   * WHY THIS IS RECORDED (EI-20581532536662596): `convergedReaders` alone is a
+   * BINARY, and a binary cannot say whether a run passed with 110s of headroom
+   * or with 200ms of it. That makes a pass/fail flip UNATTRIBUTABLE — when the
+   * budget and the instrument change in the same edit, a suddenly-green ladder
+   * reads identically whether the substrate got faster or the deadline got
+   * looser. Recording the budget ALONGSIDE the observed times is what separates
+   * those two, so a later reader never has to take on trust that nobody moved
+   * the goalpost between runs.
+   */
+  budgetMs: number | null;
+  /**
+   * Observed time-to-converge (ms) over the readers that DID converge, measured
+   * from the start of the shared deadline — so `max` is directly comparable to
+   * `budgetMs`, and `budgetMs - max` is the run's headroom.
+   *
+   * Null when the scenario recorded no per-reader timings (pre-existing
+   * artifacts, or a scenario reporting only the binary). Readers that never
+   * converged are absent by construction — they have no elapsed time, only a
+   * `laggingReaders` entry — so a `count` falling behind `expectedReaders` is
+   * itself the signal, and the surviving percentiles are never diluted by a
+   * censored sample stamped at the budget.
+   */
+  convergedMs: MetricSummary | null;
 }
 
 export interface PerfArtifact {

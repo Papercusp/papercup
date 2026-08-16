@@ -262,6 +262,12 @@ export interface RunSummary {
     laggingReaders: string[];
     observedP95Ms: number | null;
     p95LimitMs: number | null;
+    /** Catch-up budget the readers were judged against, when declared. */
+    budgetMs: number | null;
+    /** Slowest SUCCESSFUL convergence (ms). Read WITH `budgetMs`: close to it
+     *  means the cell was budget-bound (the deadline is the finding), far below
+     *  it means a specific reader was genuinely stuck (the substrate is). */
+    slowestConvergedMs: number | null;
   }>;
   regressions: Array<{ scenario: string; paramsKey: string; metric: string; baseline: number; current: number; relChange: number }>;
   improvements: number;

@@ -47,14 +47,24 @@ export interface CaughtUpWaitable {
  * running an agent fleet is the difference between a release blocker and noise.
  *
  * Returns one entry per reader, in the SAME ORDER as `readers`; `event` is null on timeout.
+ * `elapsedMs` is measured from the ONE shared start instant below — not from when this
+ * reader's promise happened to be created — so the times are mutually comparable and
+ * `budgetMs - max(elapsedMs)` is the run's true headroom (EI-20581532536662596).
  */
 export async function awaitAllChildEvent<T extends CaughtUpWaitable>(
   readers: readonly T[],
   evt: string,
   budgetMs: number,
-): Promise<Array<{ reader: T; event: ChildEvent | null }>> {
+): Promise<Array<{ reader: T; event: ChildEvent | null; elapsedMs: number }>> {
+  const startedAt = Date.now();
   return Promise.all(
-    readers.map((reader) => reader.waitFor(evt, budgetMs).then((event) => ({ reader, event }))),
+    readers.map((reader) =>
+      reader.waitFor(evt, budgetMs).then((event) => ({
+        reader,
+        event,
+        elapsedMs: Date.now() - startedAt,
+      })),
+    ),
   );
 }
 

@@ -136,6 +136,8 @@ export class ScenarioMeter {
   opsDecoded = 0;
   private expectedReaders: number | null = null;
   private readonly laggingReaders: string[] = [];
+  private readonly convergedMsSamples: number[] = [];
+  private budgetMs: number | null = null;
 
   constructor(private readonly opts: ScenarioMeterOpts) {
     this.lag = startEventLoopLagMonitor({
@@ -195,6 +197,33 @@ export class ScenarioMeter {
     this.note(why ? `reader ${l} ${why}` : `reader ${l} did not apply all ops in time`);
   }
 
+  /**
+   * Declare the catch-up budget every reader is judged against, so the artifact
+   * records the GOALPOST next to the observed times (EI-20581532536662596).
+   *
+   * Without it a pass/fail flip cannot be attributed: a ladder that goes green
+   * looks the same whether the substrate got faster or the budget got looser.
+   * Idempotent, and last write wins — a multi-phase scenario judging phases
+   * against different budgets should record the one its verdict turns on.
+   */
+  convergenceBudget(ms: number): void {
+    this.budgetMs = ms;
+  }
+
+  /**
+   * Record that a reader converged, and HOW LONG it took (ms from the start of
+   * the shared deadline).
+   *
+   * The counterpart to `readerDidNotConverge`. Convergence used to be recorded
+   * only as an absence — a reader that converged simply never called anything,
+   * so the artifact carried a bare count and could not say whether the run
+   * cleared its budget by 110s or by 200ms. Call this for every reader that DID
+   * converge; the elapsed samples become `convergence.convergedMs`.
+   */
+  readerConverged(_label: string | number, elapsedMs: number): void {
+    this.convergedMsSamples.push(elapsedMs);
+  }
+
   /** Read the lag gauge without finishing (children report mid-run). */
   sampleLag(): LoopLagStats {
     const s = this.lag.sample();
@@ -223,6 +252,12 @@ export class ScenarioMeter {
             laggingReaders: [...this.laggingReaders],
             p95LimitMs: this.opts.convergenceP95LimitMs ?? null,
             observedP95Ms: metrics['appendToVisibleMs']?.p95 ?? null,
+            budgetMs: this.budgetMs,
+            // Only the readers that converged have a time; a censored sample
+            // stamped at the budget would drag the percentiles toward it and
+            // make a degrading run look like a slow-but-fine one.
+            convergedMs:
+              this.convergedMsSamples.length > 0 ? summarize(this.convergedMsSamples, 'ms') : null,
           };
     return {
       schema: 1,

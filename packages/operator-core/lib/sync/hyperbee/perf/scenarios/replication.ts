@@ -76,8 +76,14 @@ export const sustained: PerfScenario = {
           // runs). Do not reintroduce a per-reader budget measured from when the loop
           // happens to reach that reader.
           const settled = await awaitAllChildEvent(mesh.readers, 'caught-up', catchUpBudgetMs);
-          for (const { reader, event } of settled) {
-            if (!event) meter.readerDidNotConverge(reader.cfg.peerIndex);
+          // Record the GOALPOST and the observed times, not just the verdict —
+          // a bare converged/not binary cannot distinguish "cleared the budget
+          // with 110s to spare" from "cleared it by 200ms", which is exactly
+          // what makes a green ladder unattributable after a budget change.
+          meter.convergenceBudget(catchUpBudgetMs);
+          for (const { reader, event, elapsedMs } of settled) {
+            if (event) meter.readerConverged(reader.cfg.peerIndex, elapsedMs);
+            else meter.readerDidNotConverge(reader.cfg.peerIndex);
           }
           const results = [
             await mesh.writer.stopAndCollect(),
