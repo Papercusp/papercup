@@ -222,15 +222,15 @@ export function openConversation(identity: AgentIdentity, input: OpenConversatio
 
 export function postReply(
   identity: AgentIdentity,
-  input: { conversation_id: string; body: string; mentions?: string[] },
-): Promise<PostResult | { error: 'not_found' } | { error: 'resolved' } | { error: 'closed' } | { error: 'superseded' }> {
+  input: { conversation_id: string; body: string; mentions?: string[]; via_consult_verb?: boolean },
+): Promise<PostResult | AppendPostError> {
   return withConversationsIdentityScope(identity, undefined, () => postReplyCore(deps, identity, input));
 }
 
 export function answerQuestion(
   identity: AgentIdentity,
-  input: { conversation_id: string; body: string; mentions?: string[] },
-): Promise<PostResult | { error: 'not_found' } | { error: 'resolved' } | { error: 'closed' } | { error: 'superseded' }> {
+  input: { conversation_id: string; body: string; mentions?: string[]; via_consult_verb?: boolean },
+): Promise<PostResult | AppendPostError> {
   return withConversationsIdentityScope(identity, undefined, () => answerQuestionCore(deps, identity, input));
 }
 
