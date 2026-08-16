@@ -113,6 +113,7 @@ function extensionOf(file) {
 // the guard blocks an edit the gate would have accepted; too narrow and it waves through
 // the very byte that red-pins the fleet gate an hour later.
 export function isScannedPath(file) {
+  if (isVendoredDependencyPath(file)) return false;
   return SOURCE_EXTENSIONS.has(extensionOf(file)) && !ALLOW_PREFIXES.some((prefix) => file.startsWith(prefix));
 }
 
