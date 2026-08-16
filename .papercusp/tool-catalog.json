@@ -14360,7 +14360,7 @@
           "POST"
         ]
       },
-      "description": "End the owner-scoped loop on your own session (or another owner's, with `ownerId`) — stops the recurring warm wake. The routine is deactivated (history kept); an optional `reason` is recorded in the transition log. This tool intentionally has no `harness` argument; loops are keyed by owner. Re-arm anytime with loop:arm.",
+      "description": "End the owner-scoped loop on your own session (or another owner's, with `ownerId`) — stops the recurring warm wake. The routine is deactivated (history kept); an optional `reason` is recorded in the transition log. A GOAL-mode owner with a still-active goal must also pass `disposition` (achieved | killed | handoff) — the wind-down report to the owner is generated from the loop carry-note + reason. This tool intentionally has no `harness` argument; loops are keyed by owner. Re-arm anytime with loop:arm.",
       "capabilities": [
         "routines:write"
       ],
@@ -14383,7 +14383,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "Stop a loop you armed with loop:arm — the goal is done, you are blocked on something external, or the user says stop. Pass `reason` when a durable stop explanation matters. This owner-scoped tool intentionally does not take `harness`. Better to loop:end than burn empty wakes spinning.",
+        "when": "Stop a loop you armed with loop:arm — the goal is done, you are blocked on something external, or the user says stop. Pass `reason` when a durable stop explanation matters. In GOAL mode with the goal still active, also pass `disposition` (achieved | killed | handoff — handoff takes `handoffTo`). This owner-scoped tool intentionally does not take `harness`. Better to loop:end than burn empty wakes spinning.",
         "notWhen": "Pause the WHOLE autoloop / routines engine — that is autoloop:control. End the autonomous hive loop — that is pot:pause.",
         "chaining": "loop:arm to start; loop:status to check; loop:end to stop."
       }
@@ -19134,7 +19134,7 @@
           "POST"
         ]
       },
-      "description": "Approve a plan and start its item-promotion path. Starting IS the approval signal — a draft plan is auto-advanced to 'ready'. Re-starting is a no-op. The retired op_status axis is never written (P-068 deleted the flag).",
+      "description": "Approve a plan and start its item-promotion path. Starting IS the approval signal — a draft plan is auto-advanced to 'ready'. Re-starting is a no-op. The retired op_status axis is never written (P-068 deleted the flag). Runs the plan-start CHECKPOINT consult (P-010): the plan body is routed through the relevance router; an above-floor live peer nudge-refuses once with `consult_available` + candidates (override: consulted + consult_reason).",
       "capabilities": [
         "plans:write"
       ],
@@ -22054,7 +22054,7 @@
           "POST"
         ]
       },
-      "description": "Bulk pause/resume every routine in a group (active:false/true), and/or patch the group's metadata (description, steward, reviewCadence) and/or mark it reviewed now (markReviewed:true — clears review-due). WI-5018 routines grouping — metadata + a bulk convenience over routines:set, never a new execution mechanism. Audited + one-call-revertible.",
+      "description": "Bulk pause/resume every routine in a group (active:false/true), and/or patch the group's metadata (description, steward, reviewCadence) and/or mark it reviewed now (markReviewed:true — clears review-due). Pause stamps each member it deactivates (metadata.pause + groupPause marker); resume restores EXACTLY those — members paused deliberately beforehand stay paused (activateAll:true forces every member on). WI-5018 routines grouping — metadata + a bulk convenience over routines:set, never a new execution mechanism. Audited + one-call-revertible.",
       "capabilities": [
         "operator:write"
       ],
