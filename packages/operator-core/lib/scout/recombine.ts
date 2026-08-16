@@ -296,10 +296,17 @@ export async function recombineProposals(
 
   const proposals: Proposal[] = [];
   const dropped: { sourceIdeaIds: string[]; errors: string[] }[] = [];
+  // P-002 (blender-loop-repair-2026-08-16, EI-20597534704604481): the id is the
+  // JOIN KEY for outcome attribution — routedRef `gym:<id>` matches change-feed
+  // completions BY THIS STRING. A per-batch counter (`SP-001`…) recurs every
+  // cycle, so every cycle's proposal #1 inherited the FIRST cycle's outcome:
+  // 600 of 746 decided outcomes were copies of 4 frozen July verdicts. The
+  // batch stamp makes the id unique across cycles while staying readable.
+  const batchStamp = Date.now().toString(36);
   let n = 0;
   for (const r of results) {
     if (r.ok) {
-      proposals.push({ id: `SP-${String(++n).padStart(3, '0')}`, ...r.base } as Proposal);
+      proposals.push({ id: `SP-${batchStamp}-${String(++n).padStart(3, '0')}`, ...r.base } as Proposal);
     } else {
       dropped.push({ sourceIdeaIds: r.sourceIdeaIds, errors: r.errors });
     }
