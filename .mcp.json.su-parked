@@ -1,10 +1,8 @@
 {
   "mcpServers": {
     "papercusp": {
-      "url": "http://127.0.0.1:9071/api/mcp?superuser=1&workspace=papercusp-workspace",
-      "headers": {
-        "Authorization": "Bearer PCVq10BsEBwSna9UrBPdgZaqSKfcJKK"
-      }
+      "type": "http",
+      "url": "http://127.0.0.1:9071/api/mcp?harness=papercusp&workspace=papercusp-workspace&role=judge&run=1786917409-judge&spawn=abaaf136-6f94-47e9-8ed1-91a8f48605d0&client=role-2a0e90ab-bc90-4094-9b59-c29f327efe61&exp=0&sig=AL3-gGGtKLy1hqM9nBgFq5mFsSKyID6nwsFiHxCJvtg"
     }
   }
 }
