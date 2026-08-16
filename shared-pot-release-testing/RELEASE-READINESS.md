@@ -437,7 +437,7 @@ logs are from the green run `m1785117063`.
    | | |
    |---|---|
    | gate runs since 2026-07-27 | **53, all RED** |
-   | runs where `local_matrix` ACTUALLY EXECUTED | **1** (2026-08-16T02:47:29Z → FAIL) |
+   | runs where `local_matrix` was REACHED | **3** (2026-08-16 02:47Z, 03:41Z, 04:10Z) — and **0 of them executed a single scenario** |
    | runs where it was never reached (`leg='?'`) | **51** |
    | `SKIPPED-CONTENT-RED` | 1 |
    | `last-matrix-green` | **2026-07-27T02:00Z — 481h stale** against a 144h `MATRIX_TTL_H` |
@@ -454,28 +454,70 @@ logs are from the green run `m1785117063`.
    leg anyway and reports GitHub-dependent legs as `SKIPPED-ATTESTATION-WALL`. That fix is what
    let `local_matrix` be reached at all today.
 
-   **Why the one execution still failed — a RACE, not a defect.** The build leg waited on a
-   sidecar reader lock held by a live `bin/tauri-guarded dev` (pid 1332180), so
-   `src-tauri/sidecar/bin/node` was still absent when `local_matrix` ran →
-   `FATAL: sidecar node binary missing`. The rig itself was **healthy** on that run (network up,
-   3 frames provisioned, `frames ssh-ready`) — it died on the missing binary alone. The sidecar
-   finished building 02:58:16Z and `check-sidecar-freshness.js` now reports it fresh
-   (`gitHead e179e487`). **Before reading any repeat of this as a regression, check sidecar
-   freshness and whether a `tauri-guarded dev` process holds the lock.**
+   **Why all three attempts failed — three DIFFERENT unmet preconditions, none of them
+   federation.** Updated 2026-08-16T04:3xZ (su-c531b) after driving each one to ground. In no
+   run did the rig ever get as far as a federation assertion, so **none of these reds carries
+   any information about federation correctness, in either direction.**
 
-   **Flip condition:** one gate run in which `local_matrix` reports `OK`. No forcing is required
-   or wanted — `local_matrix_due()` keys its cadence off `last-matrix-**green**`, not the last
-   run, so a failed attempt does **not** reset the window and the leg stays DUE. The next
-   unforced attempt is the 03:39Z timer. (Forcing it evicts 24 exclusive cores, 104–127, from
-   peers on a shared box for zero schedule gain.)
+   | run | died on | nature |
+   |---|---|---|
+   | 02:47Z | `FATAL: sidecar node binary missing` — build leg lost a sidecar reader lock to a live `bin/tauri-guarded dev` (pid 1332180, the owner's desktop window) | transient race, now clear |
+   | 03:41Z | stale-`.deb` guard (`common.sh` `_warn_if_deb_stale`) | **caused by the attestation wall** — see below |
+   | 04:10Z | `FATAL: need a gh token for 'aviynw' (frame b)` | the real, standing blocker |
 
-   **⚠ The attestation wall is UNCHANGED and OWNER-GATED — and a `SKIPPED` leg is NOT it
-   clearing.** Re-probed read-only 2026-08-16T03:0xZ: `papercupai` holds a valid token *with*
-   `gist` scope but the account is **`email_unverified`** (GitHub 422 on `POST /gists`:
-   "user must have a verified email"); `aviynw` has **no `oauth_token` key at all** in
-   `hosts.yml` ("the token in default is invalid"). Both fixes are owner-only. Proof the wall is
-   cleared = `attestation-write-preflight` reporting **OK with a minted gist** — *never* a SKIP.
-   See fact `wall:p2p-release-gate-github-attestation-accounts`.
+   **A coupling bug found and FIXED here (`EI-20580419609576585`).** The 03:41Z stale-`.deb`
+   death was not bad luck. The gate's §2 `.deb` REPACK — which produces `$GATE_DEB`, which
+   `:1520` passes to `local-matrix.sh` as `--deb=` — was gated on `SKIP_MATRIX`, the *same* flag
+   the attestation wall sets to skip the two GitHub legs. So the wall **also** starved the
+   attestation-INDEPENDENT leg of its artifact, leaving it to fall back to an implicit stale
+   bundle and die — silently defeating the very intent of the WI-39359 wall fix credited above.
+   Now repacks whenever a consumer leg is due, reusing the gate's own `local_matrix_due()`
+   predicate, with a falsifiable recurrence guard in `federation-asserts.selftest.sh`.
+
+   **⚠ CORRECTION to how this document has described the wall.** The two GitHub failures are
+   **distinct, on different accounts, and block different legs** — conflating them made the
+   blocker look larger and far less actionable than it is:
+
+   | leg | needs | blocked by |
+   |---|---|---|
+   | attestation legs | a **mintable gist** + D-030 distinct accounts | `papercupai` `email_unverified` (422 on `POST /gists`) |
+   | **`local_matrix` (core federation)** | only `gh auth token` | **`aviynw` alone** — `papercupai`'s token is valid and sufficient |
+
+   Measured 2026-08-16T04:2xZ: `gh auth token --user papercupai` → 40 chars, valid;
+   `--user aviynw` → **length 0**, "the token in default is invalid". `rig_set_identity`
+   (`bin/lib/deb-hetzner-rig.sh:683`) hard-FATALs on an empty token, and frame identities are
+   `P_A_USER=papercupai` / `P_B_USER=aviynw` (`deb-hetzner-matrix.sh:141-142`).
+
+   **So the owner ask is ONE command — `gh auth login -h github.com` for `aviynw` — and it is
+   sufficient to restore core-federation measurability**, independently of the
+   email-verification issue. Standing fact: `wall:p2p-core-federation-blocked-on-aviynw-gh-token`.
+
+   **The same-account workaround is CLOSED — do not retry it (`EI-20582230987234448`).** Running
+   both frames on the working `papercupai` identity via `P_B_USER` clears the credential FATAL
+   and gets as far as a successful owner publish, then dies at `join-pot` with
+   `no_member_joined` because a joiner sharing the owner's identity is not a supported topology.
+   There is no same-account route to a verdict; the re-auth is not the cheapest path but the
+   only one.
+
+   **Flip condition:** one gate run in which `local_matrix` reports `OK`. **Its blocking
+   precondition is now known and singular: `aviynw` must hold a valid `gh` token.** Until then
+   further attempts are pure cost — each evicts 24 exclusive cores (104–127) from peers on a
+   shared box and cannot reach a scenario. Do NOT force the gate to "try again" in that state.
+   Cadence itself is not the problem: `local_matrix_due()` keys off `last-matrix-**green**`, not
+   the last run, so a failed attempt does not reset the window and the leg stays DUE — it will
+   take the next unforced timer automatically once the credential is restored.
+
+   **⚠ The ATTESTATION wall (distinct from the row-0 blocker above) is UNCHANGED and
+   OWNER-GATED — and a `SKIPPED` leg is NOT it clearing.** Re-probed read-only
+   2026-08-16T03:0xZ: `papercupai` holds a valid token *with* `gist` scope but the account is
+   **`email_unverified`** (GitHub 422 on `POST /gists`: "user must have a verified email");
+   `aviynw` has **no `oauth_token` key at all** in `hosts.yml` ("the token in default is
+   invalid"). Both fixes are owner-only. Proof the wall is cleared =
+   `attestation-write-preflight` reporting **OK with a minted gist** — *never* a SKIP.
+   ⚠ Do not read this paragraph as the core-federation blocker: clearing `aviynw` alone restores
+   `local_matrix` (row 0) but does **not** clear this attestation wall, which additionally needs
+   `papercupai`'s email verified. Standing fact:
+   `wall:p2p-core-federation-blocked-on-aviynw-gh-token`.
 
 **A. C-001 — consent withdrawal does not cut on the from-repo path (`WI-37195`).** The single
    hardest blocker on this document. `from-repo-witness` reds with `epoch advanced 0→0`; a removed
