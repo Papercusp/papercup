@@ -45,7 +45,24 @@ vi.mock('node:fs', async (importOriginal) => ({
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const importOriginalSync = () => require('node:fs');
 
-const { getHostSnapshot, resetHostSnapshotCache, PSI_CACHE_MS } = await import('./host-snapshot');
+const { getHostSnapshot, resetHostSnapshotCache, PSI_CACHE_MS, RUNQ_CACHE_MS } =
+  await import('./host-snapshot');
+
+/** A realistic `/proc/stat` — the two keys we parse sit AFTER the per-core and
+ *  `intr` lines, which is the shape the regexes must survive. */
+function procStat({ running, blocked }: { running?: number; blocked?: number }): string {
+  return [
+    'cpu  1 2 3 4 5 6 7 8 9 10',
+    'cpu0 1 2 3 4 5 6 7 8 9 10',
+    'intr 12345 0 0 0 0 0 0',
+    'ctxt 987654321',
+    'btime 1700000000',
+    'processes 4242',
+    ...(running === undefined ? [] : [`procs_running ${running}`]),
+    ...(blocked === undefined ? [] : [`procs_blocked ${blocked}`]),
+    '',
+  ].join('\n');
+}
 
 describe('getHostSnapshot', () => {
   beforeEach(() => {
@@ -201,5 +218,151 @@ describe('getHostSnapshot().nowLocal', () => {
     // so it is required rather than optional — unlike the measurement legs, it
     // is a rendering of `now` and has nothing to be unavailable about.
     expect(getHostSnapshot().nowLocal).toBeTruthy();
+  });
+});
+
+/**
+ * The run-queue decomposition (EI-20495650388693372).
+ *
+ * THE BUG THIS PINS. A raw reading was filed as a defect — "128 cores, load
+ * averages [217.72, 137.62, 122.82]" — and the ticket had to concede in its own
+ * body that "no claim is made that ... any specific agent generated the
+ * pressure". That concession was FORCED BY THIS FILE: it handed the reader `load`
+ * and `cores` and nothing else, and `load > cores` is equally consistent with a
+ * genuine CPU oversubscription and with a pile of D-state tasks using no CPU at
+ * all. An unattributable number is the "high load as ambient weather"
+ * non-diagnosis, and no amount of care downstream can recover a mechanism the
+ * measurement never carried.
+ *
+ * Per this file's D-028 doctrine the tests below pin the properties that would
+ * make the fold WRONG rather than merely absent — above all that the two
+ * mechanisms are actually DISTINGUISHABLE at one identical load average, which is
+ * the whole claim. A test that only asserted "the fields exist" would stay green
+ * through a reader that returned the same number for both.
+ */
+describe('getHostSnapshot() run-queue decomposition', () => {
+  beforeEach(() => {
+    resetHostSnapshotCache();
+    statReadCount = 0;
+    statRead = () => procStat({ running: 61, blocked: 0 });
+    psiRead = () => 'some avg10=0.00 avg60=0.00 avg300=0.00 total=0';
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    statRead = null;
+    resetHostSnapshotCache();
+  });
+
+  it('carries procs_running / procs_blocked beside the load average', () => {
+    const snap = getHostSnapshot();
+    expect(snap.procsRunning).toBe(61);
+    expect(snap.procsBlocked).toBe(0);
+    // The pair is only useful next to the denominator that makes it readable.
+    expect(snap.cores).toBeGreaterThan(0);
+    expect(snap.load).toHaveLength(3);
+  });
+
+  it('DISTINGUISHES a CPU-saturated box from an I/O-wedged one — the filed incident', () => {
+    // Both of these are worlds in which an agent sees `load [217.72, …]` against
+    // `cores: 128` and, reading load alone, files the same "load exceeded core
+    // count" observation. They demand OPPOSITE responses: the first has a
+    // runnable generator to go find, the second is work stuck in the kernel and
+    // is not a CPU problem at all. If this assertion can ever be satisfied by
+    // both worlds reporting the same thing, the fix is worthless.
+    statRead = () => procStat({ running: 219, blocked: 2 });
+    resetHostSnapshotCache();
+    const cpuBound = getHostSnapshot();
+
+    statRead = () => procStat({ running: 12, blocked: 205 });
+    resetHostSnapshotCache();
+    const ioBound = getHostSnapshot();
+
+    expect(cpuBound.procsRunning).toBe(219);
+    expect(cpuBound.procsBlocked).toBe(2);
+    expect(ioBound.procsRunning).toBe(12);
+    expect(ioBound.procsBlocked).toBe(205);
+
+    // The property, stated as the discrimination it has to support rather than as
+    // two literals: the runnable count is what separates them, and it does so in
+    // the direction that matters.
+    expect(cpuBound.procsRunning!).toBeGreaterThan(ioBound.procsRunning!);
+    expect(ioBound.procsBlocked!).toBeGreaterThan(cpuBound.procsBlocked!);
+  });
+
+  it('OMITS both legs rather than reporting 0 when /proc/stat cannot be read', () => {
+    // The inversion this guards is the sharpest one in the file: a fabricated
+    // `procsRunning: 0` reads as "nothing is running, the box is idle" — the
+    // strongest possible claim to invent out of a FAILED read, and the exact
+    // opposite of "I could not tell".
+    statRead = () => {
+      throw new Error('ENOENT');
+    };
+    resetHostSnapshotCache();
+    const snap = getHostSnapshot();
+    expect(snap).not.toHaveProperty('procsRunning');
+    expect(snap).not.toHaveProperty('procsBlocked');
+    // ...and one dead leg must not degrade the others — this rides every orient.
+    expect(snap.now).toBeTruthy();
+    expect(snap.cores).toBeGreaterThan(0);
+    expect(snap.load).toHaveLength(3);
+  });
+
+  it('OMITS rather than guessing when the keys are absent from the file', () => {
+    statRead = () => procStat({});
+    resetHostSnapshotCache();
+    const snap = getHostSnapshot();
+    expect(snap).not.toHaveProperty('procsRunning');
+    expect(snap).not.toHaveProperty('procsBlocked');
+  });
+
+  it('reports the leg it HAS when only one of the two keys is present', () => {
+    // Independent legs: a kernel/container that exposes one key must not cost us
+    // the other. Discarding both would be a self-inflicted blind spot.
+    statRead = () => procStat({ running: 7 });
+    resetHostSnapshotCache();
+    const snap = getHostSnapshot();
+    expect(snap.procsRunning).toBe(7);
+    expect(snap).not.toHaveProperty('procsBlocked');
+  });
+
+  it('caches /proc/stat instead of re-reading it per orient', () => {
+    // 16.8 KB / 0.225 ms measured on this box — ~8x the pressure read, on a path
+    // that runs on every orient.
+    const a = getHostSnapshot();
+    const b = getHostSnapshot();
+    expect(a.procsRunning).toBe(61);
+    expect(b.procsRunning).toBe(61);
+    expect(statReadCount).toBe(1);
+  });
+
+  it('re-reads once the cache window has elapsed', () => {
+    vi.useFakeTimers();
+    resetHostSnapshotCache();
+    getHostSnapshot();
+    vi.advanceTimersByTime(RUNQ_CACHE_MS + 1);
+    getHostSnapshot();
+    expect(statReadCount).toBe(2);
+  });
+
+  it('resetHostSnapshotCache() clears the run-queue cache, not just PSI', () => {
+    // A seam that reset only SOME cached legs would leak one test's fixture into
+    // the next, which is a defect in the test seam that looks like a defect in
+    // the subject. Pin it: after a reset the next call must re-read.
+    getHostSnapshot();
+    expect(statReadCount).toBe(1);
+    resetHostSnapshotCache();
+    statRead = () => procStat({ running: 99, blocked: 1 });
+    const after = getHostSnapshot();
+    expect(statReadCount).toBe(2);
+    expect(after.procsRunning).toBe(99);
+  });
+
+  it('never throws when the run-queue leg fails', () => {
+    statRead = () => {
+      throw new Error('boom');
+    };
+    resetHostSnapshotCache();
+    expect(() => getHostSnapshot()).not.toThrow();
+    expect(getHostSnapshot().now).toBeTruthy();
   });
 });
