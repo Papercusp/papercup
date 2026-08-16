@@ -206,7 +206,34 @@ async function runServer({ host, port, topic, timeoutMs }) {
   let exitCode = EXIT.HEALTHY;
   try {
     const disc = swarm.join(Buffer.from(topic, 'hex'), { server: true, client: false });
-    await disc.flushed();
+    // WI-4077 again, on the announcing side: `discovery.flushed()` has NO
+    // timeout of its own. Against a bootstrap wedged badly enough not to ack the
+    // announce it hangs indefinitely, and a server that hangs here NEVER REPORTS
+    // — which downgrades a real, actionable wedge into "the probe told us
+    // nothing". Race it so the failure is always reported, WITH the counters
+    // that say whether the fault is the bootstrap or this host's own TX path.
+    const flushed = disc.flushed().then(
+      () => 'announced',
+      (err) => {
+        log(`announce rejected: ${err instanceof Error ? err.message : String(err)}`);
+        return 'announce-failed';
+      },
+    );
+    const announceTimeout = new Promise((resolve) => {
+      const t = setTimeout(() => resolve('announce-failed'), timeoutMs);
+      t.unref?.();
+    });
+    if ((await Promise.race([flushed, announceTimeout])) !== 'announced') {
+      emit({
+        role: 'server',
+        event: 'announce-failed',
+        publicKey,
+        hostname: hostname(),
+        counters: sampleCounters(swarm),
+      });
+      await withHardExit(swarm.destroy(), 5_000, EXIT.FAIL);
+      process.exit(EXIT.FAIL);
+    }
     emit({ role: 'server', event: 'announced', publicKey, hostname: hostname() });
 
     // Stay up for the orchestrator's whole budget; it kills us when the client
@@ -432,10 +459,16 @@ async function orchestrate(cfg) {
 
   let serverKey = null;
   let serverHostname = null;
+  let serverCounters = null;
   let clientObs = null;
 
+  // The orchestrator waits LONGER than the server's own announce budget on
+  // purpose: the server races its own flush at `timeoutMs` and then reports
+  // `announce-failed` WITH counters. If this timer fired first we would discard
+  // that report and lose the discriminator between "bootstrap wedged" and "this
+  // host's TX is blocked" — the exact distinction the run is worth making.
   const announced = new Promise((resolve) => {
-    const t = setTimeout(() => resolve(false), timeoutMs);
+    const t = setTimeout(() => resolve('orchestrator-timeout'), timeoutMs + 5_000);
     t.unref?.();
     onServerPayload.resolve = resolve;
   });
@@ -443,7 +476,9 @@ async function orchestrate(cfg) {
     if (p?.role !== 'server') return;
     if (p.publicKey) serverKey = p.publicKey;
     if (p.hostname) serverHostname = p.hostname;
-    if (p.event === 'announced') onServerPayload.resolve?.(true);
+    if (p.counters) serverCounters = p.counters;
+    if (p.event === 'announced') onServerPayload.resolve?.('announced');
+    if (p.event === 'announce-failed') onServerPayload.resolve?.('announce-failed');
   }
 
   const server = spawnLeg(

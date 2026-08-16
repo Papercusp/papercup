@@ -165,6 +165,48 @@ export function judgeLivenessProbe(obs) {
     );
   }
 
+  // A harness fault (the announcing process never started) is genuinely
+  // unknowable. It is NOT the same as that process running and finding the
+  // bootstrap dead — see the next gate.
+  if (obs.serverLegLaunched === false) {
+    return verdict(
+      'unknown',
+      'server-leg-unavailable',
+      EXIT.INCONCLUSIVE,
+      PROVED.NOTHING,
+      `INCONCLUSIVE — the announcing peer process never started, so no experiment ran${
+        obs.serverLegError ? `: ${obs.serverLegError}` : '.'
+      } This is a probe-harness fault, not a DHT verdict.`,
+    );
+  }
+
+  // THE ORIGINAL CLASS THIS PROBE EXISTS FOR (EI-8892): the announcing peer ran
+  // and its announce never flushed. That is a POSITIVE FINDING about the path —
+  // the bootstrap is not acking join/lookup — and it must be reported as FAIL.
+  // Filing it as "inconclusive" would be the same misdiagnosis that made P-302
+  // expensive: a real, actionable fault rendered as "I could not tell".
+  if (obs.serverAnnounced === false) {
+    if (looksTransmitBlocked(obs.serverCounters)) {
+      return verdict(
+        'fail',
+        'tx-blocked',
+        EXIT.FAIL,
+        PROVED.NOTHING,
+        `FAIL — the ANNOUNCING host's own DHT is TRANSMIT-BLOCKED: ${obs.serverCounters.requestsTotal} requests sent, ` +
+          `${obs.serverCounters.responses} responses, routing table empty. The fault is this host's outbound path ` +
+          '(OS privacy/firewall layer eating datagrams), NOT the bootstrap.',
+      );
+    }
+    return verdict(
+      'fail',
+      'announce-timeout',
+      EXIT.FAIL,
+      PROVED.NOTHING,
+      'FAIL — the announcing peer could not complete its announce: the bootstrap is not acking join/lookup. ' +
+        'This is the silent-wedge class (EI-8892) — the unit can still report ActiveState=active while routing nothing.',
+    );
+  }
+
   if (wantCrossHost && obs.remoteLegLaunched === false) {
     return verdict(
       'unknown',
