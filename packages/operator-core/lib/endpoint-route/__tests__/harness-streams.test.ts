@@ -9,6 +9,7 @@ import {
   positionalScanLimit,
   POSITIONAL_SCAN_CEILING,
   preferHigherFidelityBackfill,
+  shouldServeDbBackfill,
   splitUtf8Chunks,
   batchRawLogLines,
   slimFeatureForStream,
@@ -345,6 +346,60 @@ describe('DB-primary history backfill (session-turn-storage-2026-07-28 P-008/P-0
       const parts = { entries: [{ kind: 'text' as const, text: 'x' }], anchorIndex: null };
       const turns = bf(['2026-07-27T09:00:00Z']);
       expect(preferHigherFidelityBackfill(parts, turns)).toBe(turns);
+    });
+  });
+
+  describe('shouldServeDbBackfill (store-integrity guard, EI-20637908167729753)', () => {
+    const at = (iso: string) => ({ kind: 'text' as const, text: 'x', ts: iso });
+    const bf = (isos: string[], storeTruncated?: boolean) => ({
+      entries: isos.map(at),
+      anchorIndex: null,
+      ...(storeTruncated === undefined ? {} : { storeTruncated }),
+    });
+
+    it('DECLINES a truncated parts win while the file is available', () => {
+      // THE BUG. Ingest had already shortened these rows below what the pane
+      // can render, so serving them shows a body that is quietly missing text
+      // with no signal to the reader — while the JSONL on disk has all of it.
+      // This is the exact shape that rendered a 7,051-char report as 2,000.
+      const parts = bf(['2026-07-28T05:00:00Z'], true);
+      expect(shouldServeDbBackfill(parts, { fileAvailable: true, fromParts: parts })).toBe(false);
+    });
+
+    it('SERVES an intact parts win while the file is available', () => {
+      // The other half: declining unconditionally would abandon the DB path
+      // (and its bounded windowed read) for every session, which is the cost
+      // P-008 existed to remove. Only a LOSSY row is worth the file read.
+      const parts = bf(['2026-07-28T05:00:00Z'], false);
+      expect(shouldServeDbBackfill(parts, { fileAvailable: true, fromParts: parts })).toBe(true);
+    });
+
+    it('still SERVES a truncated parts win when the file is GONE', () => {
+      // An ended+archived session has no file to fall back to. A truncated
+      // body beats a dead pane, so the guard must not fire here — this is the
+      // difference between degrading and breaking.
+      const parts = bf(['2026-07-28T05:00:00Z'], true);
+      expect(shouldServeDbBackfill(parts, { fileAvailable: false, fromParts: parts })).toBe(true);
+    });
+
+    it('keeps the original P-008 store guard: a turns win with a file present is declined', () => {
+      const parts = bf(['2026-07-28T05:00:00Z']);
+      const turns = bf(['2026-07-27T09:00:00Z']);
+      expect(shouldServeDbBackfill(turns, { fileAvailable: true, fromParts: parts })).toBe(false);
+      expect(shouldServeDbBackfill(turns, { fileAvailable: false, fromParts: parts })).toBe(true);
+    });
+
+    it('declines an absent or empty backfill regardless of file availability', () => {
+      expect(shouldServeDbBackfill(null, { fileAvailable: false, fromParts: null })).toBe(false);
+      const empty = { entries: [], anchorIndex: null };
+      expect(shouldServeDbBackfill(empty, { fileAvailable: false, fromParts: empty })).toBe(false);
+    });
+
+    it('treats a missing storeTruncated flag as intact (turns carry no marker)', () => {
+      // session_turns never sets the flag; absence must not be read as lossy or
+      // every pre-parts session would pointlessly abandon the DB path.
+      const turns = bf(['2026-07-28T05:00:00Z']);
+      expect(shouldServeDbBackfill(turns, { fileAvailable: true, fromParts: turns })).toBe(true);
     });
   });
 
