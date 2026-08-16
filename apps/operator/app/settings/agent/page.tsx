@@ -30,6 +30,7 @@ import { DraftInput, FormField } from '@/lib/forms';
 import { useLexicon } from '@/lib/useLexicon';
 import { Select } from '../../harness/Select';
 import { agentRoleLabel, agentTermKey } from '../../harness/agent-display';
+import { ROLE_ROUTING_ROWS } from './role-routing-rows';
 import {
   AGENT_BACKENDS,
   DEFAULT_MODEL_TIERS,
