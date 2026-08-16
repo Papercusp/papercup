@@ -606,6 +606,122 @@ describe('teaser source — the match fragment beats the body lead', () => {
   });
 });
 
+/**
+ * observation-and-recall-surface-honesty-2026-08-16 P-003 (honest label) and
+ * P-004 (the boost is restricted to the curated lane).
+ *
+ * WHY THIS IS NOT A COSMETIC TEST: `harness_shared.engineer_issues` holds BOTH
+ * populations under one `source: 'work_item'` — measured 2026-08-16, 37,089
+ * observation rows against 28,335 work-items, i.e. 56.7% of everything this
+ * source can return. So before P-003 the majority of the boosted, work-item-
+ * labelled population was one agent's unreviewed turn-end reflection.
+ */
+const obs = (over: Partial<CorpusHit> = {}): CorpusHit =>
+  wi({
+    sourceId: 'EI-20587312505064997',
+    lane: 'observation',
+    excerpt: '[change/open/major] http2 transport regression on the sse endpoint',
+    ...over,
+  });
+
+describe('observation-lane hits are labelled and ranked honestly', () => {
+  it('labels an observation as an observation, not as a work-item (P-003)', () => {
+    const { lines } = selectCorpusLines({ hits: [obs()], queryText: QUERY });
+    expect(lines[0].line).toContain('observation EI-20587312505064997');
+    expect(lines[0].line).not.toContain('work-item EI-');
+    expect(lines[0].handle.kind).toBe('observation');
+  });
+
+  it('says what an observation IS, so a sample cannot read as a filed item', () => {
+    const { lines } = selectCorpusLines({ hits: [obs()], queryText: QUERY });
+    expect(lines[0].line).toMatch(/turn-end reflection, not a filed work-item/);
+  });
+
+  it('still resolves through work_items:get — same relation, same id space', () => {
+    const { lines } = selectCorpusLines({ hits: [obs()], queryText: QUERY });
+    expect(lines[0].handle.resolve).toBe("work_items:get { id: 'EI-20587312505064997' }");
+  });
+
+  it('does NOT claim an observation is a "different work-item from" the current one', () => {
+    // That context clause presumes the ref is a work-item; on an observation it
+    // asserted a comparison between two things that were never the same kind.
+    const { lines } = selectCorpusLines({
+      hits: [obs()],
+      queryText: QUERY,
+      declaredWorkItemId: 'WI-39407',
+    });
+    expect(lines[0].line).not.toContain('different work-item');
+  });
+
+  it('CONTROL: a real work-item keeps its label, its context clause and its boost', () => {
+    const { lines } = selectCorpusLines({
+      hits: [wi()],
+      queryText: QUERY,
+      declaredWorkItemId: 'WI-39407',
+    });
+    expect(lines[0].line).toContain('work-item WI-6512');
+    expect(lines[0].line).toContain('different work-item from current WI-39407');
+    expect(lines[0].handle.kind).toBe('work-item');
+  });
+
+  it('a curated work-item still outranks a session at equal agreement (D-069 intact)', () => {
+    // The pre-existing behaviour this change must NOT have broken: the session is
+    // fed first, so only the kind tiebreak can move the work-item ahead of it.
+    const { lines } = selectCorpusLines({
+      hits: [turn(), wi()],
+      queryText: QUERY,
+    });
+    expect(lines.map((l) => l.handle.kind)).toEqual(['work-item', 'session']);
+  });
+
+  it('an observation does NOT outrank a session — the boost premise is false for it (P-004)', () => {
+    // Same shape as the control above, with the ONLY difference being the lane.
+    // Fed session-first, so an observation that still carried the boost would sort
+    // ahead of it exactly as the work-item does.
+    const { lines } = selectCorpusLines({
+      hits: [turn(), obs()],
+      queryText: QUERY,
+    });
+    expect(lines.map((l) => l.handle.kind)).toEqual(['session', 'observation']);
+  });
+
+  it('does not EXCLUDE or penalise observations below sessions (plan D-003)', () => {
+    // D-003: a relevant past observation is often genuinely useful context. The
+    // defect was the unearned boost and the label, never the row's presence — so
+    // fed observation-first, it stays first.
+    const { lines } = selectCorpusLines({
+      hits: [obs(), turn()],
+      queryText: QUERY,
+    });
+    expect(lines).toHaveLength(2);
+    expect(lines.map((l) => l.handle.kind)).toEqual(['observation', 'session']);
+  });
+
+  it('FAILS TOWARD work-item when the lane never projected (absent, null, unknown)', () => {
+    // A lane column that stops projecting must degrade to the pre-P-003 behaviour,
+    // never relabel + demote all 28,335 genuine work-items at once.
+    for (const lane of [undefined, null, '', 'improvement'] as const) {
+      const { lines } = selectCorpusLines({
+        hits: [wi(lane === undefined ? {} : { lane })],
+        queryText: QUERY,
+      });
+      expect(lines[0].handle.kind, `lane=${String(lane)}`).toBe('work-item');
+    }
+  });
+
+  it('reads the lane case/whitespace-insensitively, but only that exact lane', () => {
+    expect(
+      selectCorpusLines({ hits: [wi({ lane: '  Observation ' })], queryText: QUERY }).lines[0].handle
+        .kind,
+    ).toBe('observation');
+    // A session_turn can never be an observation however its lane is stamped.
+    expect(
+      selectCorpusLines({ hits: [turn({ lane: 'observation' })], queryText: QUERY }).lines[0].handle
+        .kind,
+    ).toBe('session');
+  });
+});
+
 describe('renderCorpusBlock', () => {
   it('returns null when nothing was admitted', () => {
     expect(renderCorpusBlock([])).toBeNull();

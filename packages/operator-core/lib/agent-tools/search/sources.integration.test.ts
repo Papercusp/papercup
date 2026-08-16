@@ -174,6 +174,13 @@ async function setupSchema(s: postgres.Sql): Promise<void> {
   // `ts` so the corpus leg's recency re-rank can see a work-item at all — omit it
   // here and those legs fail on an undefined column, which is the standing
   // inline-CREATE-TABLE drift trap, not a bug in the source.
+  //
+  // observation-and-recall-surface-honesty P-003/P-004: `lane` likewise, and it is
+  // the same trap for the same reason. Both legs project it into the hit's `meta`
+  // bag so corpus recall can tell a curated work-item from an observation-lane row
+  // (56.7% of this relation in production). NULLABLE with no default on purpose:
+  // null IS the ordinary work/triage lane in production, so the fixture's default
+  // row must be a work-item, and an observation must say so explicitly.
   await s.unsafe(`
     CREATE TABLE harness_shared.engineer_issues (
       workspace_id TEXT NOT NULL DEFAULT 'default',
@@ -189,6 +196,7 @@ async function setupSchema(s: postgres.Sql): Promise<void> {
       -- rather than a NOT NULL shape the real relation does not have.
       updated_at TIMESTAMPTZ DEFAULT now(),
       created_at TIMESTAMPTZ DEFAULT now(),
+      lane TEXT,
       embedding public.vector(384),
       embedding_mode TEXT,
       _search tsvector GENERATED ALWAYS AS (

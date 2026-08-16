@@ -510,6 +510,33 @@ const decisions: SearchSource = {
  * gracefully — it would be ranked as the oldest document in the corpus. A row with
  * neither timestamp still lands there, which is the engine's documented behaviour
  * and the honest floor once there is genuinely no time to read.
+ *
+ * ─── WORK_ITEM_LANE_NOTE (observation-and-recall-surface-honesty P-003/P-004) ──
+ *
+ * Both legs project `lane` into the engine-opaque `meta` bag. THIS SOURCE RETURNS
+ * TWO DIFFERENT POPULATIONS THAT SHARE A RELATION, AN ID SPACE AND — until this
+ * projection existed — A LABEL. `harness_shared.engineer_issues` holds both the
+ * curated work/triage lane and the `lane='observation'` reflection lane, and
+ * downstream `source: 'work_item'` was the only thing either could be identified by.
+ *
+ * Measured 2026-08-16 (workspace papercusp-workspace): 37,089 rows are
+ * lane='observation' against 28,335 work-items — **56.7% of everything this source
+ * can return is an observation**, and 37,088 of those 37,089 carry an embedding, so
+ * they are fully reachable by the semantic leg rather than a lexical long tail.
+ *
+ * Two things downstream were wrong without this column, both silently:
+ *   • corpus recall LABELLED an observation `[work-item EI-…]`, so a single agent's
+ *     unreviewed turn-end reflection read as a filed, triaged artifact; and
+ *   • `corpusHitKindRank` gave every `work_item` hit a tiebreak BOOST justified by
+ *     work-items being "the durable, curated artifact this leg exists to surface" —
+ *     a premise that is simply false for the 56.7%.
+ * Neither is a ranking bug the engine could have caught: both are the host reading
+ * a population distinction the source never projected.
+ *
+ * `lane` is NULLABLE and null means the ordinary work/triage lane, so downstream
+ * must treat absent-or-null as "work-item" and only the explicit 'observation'
+ * value as the sample lane — never the reverse, or a lane column that fails to
+ * project would silently reclassify the whole corpus.
  */
 const workItem: SearchSource = {
   name: 'work_item',
@@ -519,7 +546,7 @@ const workItem: SearchSource = {
     const lex = lexicalSql(p, sql`_search`, sql`harness_shared.engineer_issues`);
     const rows = (await sql`
       ${lex.with}
-      SELECT issue_id, scope, title, body, kind, state, severity,
+      SELECT issue_id, scope, title, body, kind, state, severity, lane,
              coalesce(updated_at, created_at) AS updated_at,
              ${lex.coverage} AS coverage,
              ${lex.rank} AS rank,
@@ -541,6 +568,7 @@ const workItem: SearchSource = {
       kind: string;
       state: string;
       severity: string;
+      lane: string | null;
       updated_at: string | Date | null;
       rank: number;
       highlight: string;
@@ -562,6 +590,8 @@ const workItem: SearchSource = {
           // not as "unknown".
           ts: r.updated_at,
           rankers: ['lexical'],
+          // See WORK_ITEM_LANE_NOTE.
+          meta: { lane: r.lane },
         },
       };
     });
@@ -580,7 +610,7 @@ const workItem: SearchSource = {
    */
   async embedding({ sql, query, workspaceId, scopeFilter, limit, qVec }): Promise<Listing> {
     const rows = (await withIterativeScan(sql, (sql) => sql`
-      SELECT issue_id, scope, title, body, kind, state, severity,
+      SELECT issue_id, scope, title, body, kind, state, severity, lane,
              coalesce(updated_at, created_at) AS updated_at,
              1 - (embedding <=> ${qVec}::vector) AS sim,
              ts_headline('english', coalesce(title, '') || E'\n' || coalesce(body, ''),
@@ -602,6 +632,7 @@ const workItem: SearchSource = {
       kind: string;
       state: string;
       severity: string;
+      lane: string | null;
       updated_at: string | Date | null;
       sim: number;
       highlight: string;
@@ -621,6 +652,8 @@ const workItem: SearchSource = {
           // Mirrors the lexical leg — see WORK_ITEM_RECENCY_NOTE.
           ts: r.updated_at,
           rankers: ['embeddings'],
+          // Mirrors the lexical leg — see WORK_ITEM_LANE_NOTE.
+          meta: { lane: r.lane },
         },
       };
     });

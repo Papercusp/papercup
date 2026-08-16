@@ -71,12 +71,29 @@ export interface CorpusHit {
   ts?: string | number | Date | null;
   /** Which rankers contributed ('bm25' / 'embeddings'). Agreement breaks ties. */
   rankers?: readonly string[];
+  /**
+   * work_item only: the `lane` column off `harness_shared.engineer_issues` —
+   * null/absent = the ordinary work/triage lane, `'observation'` = the pre-idea
+   * reflection lane. See WORK_ITEM_LANE_NOTE in agent-tools/search/sources.ts.
+   *
+   * Absent for a hit built without it (an older caller, a test fixture, the
+   * session_turn source), and `isObservationHit` treats absence as "not an
+   * observation" deliberately: a lane that fails to project must degrade to
+   * today's behaviour, never silently reclassify the whole corpus.
+   */
+  lane?: string | null;
 }
 
 /** The resolvable pointer — same concept as ambient-push's QueryHandle. Never
  *  carries content; `resolve` is the literal tool call that fetches it. */
 export interface CorpusHandle {
-  kind: 'work-item' | 'session';
+  /**
+   * `observation` is a work_item row on the `lane='observation'` reflection lane
+   * — same relation, same id space, same `resolve` call as `work-item`, but NOT
+   * a curated artifact. It is a distinct kind rather than a flag because every
+   * consumer that renders or ranks a handle has to tell them apart (P-003/P-004).
+   */
+  kind: 'work-item' | 'observation' | 'session';
   /** The id to resolve: a WI-/EI- id, or `<source_kind>:<session_id>`. */
   ref: string;
   /** The matched query terms — the "why", and the re-pull query. */
@@ -495,7 +512,10 @@ export function hitText(hit: CorpusHit): string {
 /** Render the resolving tool call for a handle. This is the whole point of a
  *  handle: the agent does not have to know HOW to fetch it. PURE. */
 function resolveCall(kind: CorpusHandle['kind'], ref: string, terms: string[]): string {
-  if (kind === 'work-item') return `work_items:get { id: '${ref}' }`;
+  // An observation resolves through the SAME call — it is a row of the same
+  // relation with the same id space. Only what it IS differs, which is the label's
+  // job, not the resolver's.
+  if (kind === 'work-item' || kind === 'observation') return `work_items:get { id: '${ref}' }`;
   const sid = ref.includes(':') ? ref.slice(ref.indexOf(':') + 1) : ref;
   const q = terms.slice(0, 4).join(' ');
   return `sessions:search { session: '${sid}', query: '${q}' }`;
@@ -604,9 +624,42 @@ function retrievalAgreement(hit: CorpusHit): number {
  * topic than the terse work-item record, while sharing fewer exact terms).
  * So at equal retrieval agreement, a work-item outranks a session — never
  * touching the score/fusion, only the final within-tier order. PURE.
+ *
+ * ─── P-004: THE BOOST IS RESTRICTED TO THE CURATED LANE ───────────────────────
+ *
+ * Read the justification above literally: the boost is earned by "the durable,
+ * curated artifact this leg exists to surface". That premise is FALSE for the
+ * observation lane, which shares this source's relation and id space. Measured
+ * 2026-08-16: 56.7% of `harness_shared.engineer_issues` (37,089 of 65,426 rows in
+ * papercusp-workspace) is `lane='observation'` — so the majority of what this
+ * function was boosting is exactly the thing the rationale contrasts a work-item
+ * AGAINST: one agent's unreviewed restatement, not a curated artifact.
+ *
+ * An observation therefore ranks WITH sessions (tier 1), not above them. It is not
+ * excluded and not penalised below a session — plan D-003: a relevant past
+ * observation is often genuinely useful context, and the defect was only ever the
+ * unearned boost and the misleading label, never the presence of the row.
+ *
+ * `isObservationHit` fails toward tier 0 when the lane is absent, so a hit built
+ * without the column keeps today's behaviour rather than silently demoting the
+ * whole work-item population.
  */
 function corpusHitKindRank(hit: CorpusHit): number {
-  return hit.source === 'work_item' ? 0 : 1;
+  if (hit.source !== 'work_item') return 1;
+  return isObservationHit(hit) ? 1 : 0;
+}
+
+/**
+ * Is this hit an observation-lane row rather than a curated work-item? PURE.
+ *
+ * Deliberately asymmetric: ONLY the explicit `'observation'` lane counts. Absent,
+ * null, or any other lane reads as a work-item, so a projection that silently
+ * stops delivering `lane` degrades to the pre-P-003 behaviour (mislabelled
+ * observations) instead of the far worse inverse — relabelling and demoting all
+ * 28,335 genuine work-items at once.
+ */
+export function isObservationHit(hit: CorpusHit): boolean {
+  return hit.source === 'work_item' && (hit.lane ?? '').trim().toLowerCase() === 'observation';
 }
 
 /**
@@ -622,8 +675,10 @@ function corpusHitKindRank(hit: CorpusHit): number {
  * Every drop is recorded with its reason. Input order is treated as relevance
  * order (the engine already fused + sorted); ties break first toward
  * multi-ranker agreement (the one scale-free quality signal available), then
- * toward kind — a work-item outranks a session at equal agreement, per
- * `corpusHitKindRank`'s D-069/WI-9592 rationale — then toward fused rank. PURE.
+ * toward kind — a CURATED work-item outranks a session at equal agreement, per
+ * `corpusHitKindRank`'s D-069/WI-9592 rationale, while an observation-lane row
+ * ranks WITH sessions because that rationale does not hold for it (P-004) —
+ * then toward fused rank. PURE.
  */
 export function selectCorpusLines(input: SelectCorpusInput): SelectCorpusResult {
   const maxItems = input.maxItems ?? CORPUS_MAX_ITEMS;
@@ -687,18 +742,25 @@ export function selectCorpusLines(input: SelectCorpusInput): SelectCorpusResult 
       dropped.push({ ref, reason: 'cap-exhausted' });
       continue;
     }
-    const kind: CorpusHandle['kind'] = hit.source === 'work_item' ? 'work-item' : 'session';
+    const kind: CorpusHandle['kind'] =
+      hit.source !== 'work_item' ? 'session' : isObservationHit(hit) ? 'observation' : 'work-item';
     const handle: CorpusHandle = {
       kind,
       ref,
       query: terms.slice(0, 6),
       resolve: resolveCall(kind, ref, terms),
     };
-    const context =
-      kind === 'work-item' ? workItemContextLabel(ref, declaredWorkItemId) : '';
-    const label = kind === 'work-item'
-      ? `work-item ${ref}${context}`
-      : `session ${ref}`;
+    // P-003: an observation is a SAMPLE, not a filed+triaged artifact, and the two
+    // are indistinguishable by id (both EI-/WI- rows of the same relation). The
+    // "different work-item from current X" context line is deliberately NOT applied
+    // to one: it presumes the ref is a work-item, so on an observation it asserted a
+    // comparison between two things that were never the same kind.
+    const label =
+      kind === 'work-item'
+        ? `work-item ${ref}${workItemContextLabel(ref, declaredWorkItemId)}`
+        : kind === 'observation'
+        ? `observation ${ref} · one agent's turn-end reflection, not a filed work-item`
+        : `session ${ref}`;
     const teaser = oneLine(hitText(hit)).slice(0, CORPUS_TEASER_MAX_CHARS);
     const line = `- [${label}${dateLabel(hit.ts, renderNow)}] ${teaser}`;
     // WI-6870: no first-entry exemption — the teaser already caps hitText, but the

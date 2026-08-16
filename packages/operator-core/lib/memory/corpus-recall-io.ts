@@ -447,6 +447,11 @@ function toCorpusHits(fused: { results: readonly SearchHit[] }): CorpusHit[] {
     score: r.score,
     ts: r.ts ?? null,
     rankers: r.rankers,
+    // P-003/P-004: the work_item source stamps the engine-opaque `meta` bag with
+    // the row's lane, because `source: 'work_item'` covers BOTH the curated lane
+    // and the observation lane (56.7% of that relation). Absent ⇒ null ⇒ read as a
+    // work-item downstream. See WORK_ITEM_LANE_NOTE in agent-tools/search/sources.ts.
+    lane: r.meta?.lane ?? null,
   }));
 }
 
