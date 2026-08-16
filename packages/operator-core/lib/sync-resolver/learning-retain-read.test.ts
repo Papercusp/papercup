@@ -279,7 +279,7 @@ describe('readRetainFeed', () => {
       countRecipes: async () => 13561,
     };
     const page1 = await readRetainFeed(sql, 'ws-1', deps);
-    expect(page1.counts).toEqual({ plans: 21, wi: 991, rubrics: 1, runbooks: 512, recipes: 13561 });
+    expect(page1.counts).toEqual({ memories: 0, plans: 21, wi: 991, rubrics: 1, runbooks: 512, recipes: 13561 });
     const page2 = await readRetainFeed(sql, 'ws-1', deps, {
       cursor: encodeRetainCursor({ ts: '2026-08-01T00:00:00.000Z', kind: 'rubric', id: 'r1' }),
     });
@@ -294,7 +294,7 @@ describe('readRetainFeed', () => {
       return [];
     });
     const page = await readRetainFeed(sql, 'ws-1', emptyFeedDeps());
-    expect(page.counts).toEqual({ plans: null, wi: 5, rubrics: 0, runbooks: 0, recipes: 0 });
+    expect(page.counts).toEqual({ memories: 0, plans: null, wi: 5, rubrics: 0, runbooks: 0, recipes: 0 });
     warn.mockRestore();
   });
 
@@ -437,6 +437,91 @@ describe('readRetainFeed', () => {
       childDone: 2,
     });
   });
+
+  // ─── The memory leg (WI-39535: shared-memory pool folded in as a kind) ────
+  describe('memory leg', () => {
+    const mem = (id: string, text: string, metadata: Record<string, unknown> = {}, kind?: string) => ({
+      id,
+      text,
+      ...(kind ? { kind } : {}),
+      metadata,
+    });
+
+    it('interleaves memory rows by metadata recency, with provenance in meta', async () => {
+      const sql = sqlStub((t) =>
+        isWiLeg(t) ? [wiRow('EI-1', '2026-08-15T00:00:00.000Z')] : [{ n: 0 }],
+      );
+      const deps: RetainFeedDeps = {
+        ...emptyFeedDeps(),
+        listMemories: async () => [
+          mem('m-new', 'Fresh fact', { updated_at: '2026-08-16T00:00:00.000Z', created_by: 'owner' }, 'feedback'),
+          mem('m-pack', 'Pack fact', {
+            created_at: '2026-08-14T00:00:00.000Z',
+            source: 'pack',
+            pack_id: 'coding',
+          }),
+        ],
+      };
+      const page = await readRetainFeed(sql, 'ws-1', deps);
+      expect(page.rows.map((r) => `${r.kind}:${r.id}`)).toEqual(['memory:m-new', 'wi:EI-1', 'memory:m-pack']);
+      expect(page.rows[0]!.meta).toEqual({ memKind: 'feedback', createdBy: 'owner' });
+      expect(page.rows[0]!.status).toBeNull();
+      expect(page.rows[2]!.meta).toEqual({ packId: 'coding' });
+      expect(page.counts?.memories).toBe(2);
+    });
+
+    it('a memory with no timestamp reads as epoch — visible at the tail, never dropped', async () => {
+      const sql = sqlStub(() => [{ n: 0 }]);
+      const deps: RetainFeedDeps = { ...emptyFeedDeps(), listMemories: async () => [mem('m-old', 'Undated fact')] };
+      const page = await readRetainFeed(sql, 'ws-1', deps, { tab: 'memories' });
+      expect(page.rows.map((r) => r.id)).toEqual(['m-old']);
+      expect(page.rows[0]!.ts).toBe('1970-01-01T00:00:00.000Z');
+    });
+
+    it('the memories tab narrows to the memory leg — no SQL legs touched past page 1', async () => {
+      const sqlCalls: string[] = [];
+      const sql = sqlStub((t) => {
+        sqlCalls.push(t);
+        return [];
+      });
+      const cursor = encodeRetainCursor({ ts: '2026-08-15T00:00:00.000Z', kind: 'memory', id: 'm-mid' });
+      const deps: RetainFeedDeps = {
+        ...emptyFeedDeps(),
+        listMemories: async () => [
+          mem('m-a', 'after cursor', { updated_at: '2026-08-14T00:00:00.000Z' }),
+          mem('m-z', 'before cursor', { updated_at: '2026-08-16T00:00:00.000Z' }),
+        ],
+      };
+      const page = await readRetainFeed(sql, 'ws-1', deps, { tab: 'memories', cursor });
+      expect(page.rows.map((r) => r.id)).toEqual(['m-a']); // keyset window applied
+      expect(sqlCalls).toEqual([]);
+    });
+
+    it('an UNWIRED listMemories dep degrades VISIBLY, never silently', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const { listMemories: _omit, ...rest } = emptyFeedDeps();
+      const page = await readRetainFeed(sqlStub(() => [{ n: 0 }]), 'ws-1', rest as RetainFeedDeps);
+      expect(page.degraded).toEqual(['memory']);
+      expect(page.counts?.memories).toBeNull();
+      warn.mockRestore();
+    });
+
+    it('retainMemoryTitle collapses whitespace and clamps long facts', () => {
+      expect(retainMemoryTitle('a\n b\t c')).toBe('a b c');
+      const long = 'x'.repeat(300);
+      const title = retainMemoryTitle(long);
+      expect(title.length).toBeLessThanOrEqual(200);
+      expect(title.endsWith('…')).toBe(true);
+    });
+
+    it('retainMemoryTsOf prefers updated over created and tolerates both spellings', () => {
+      expect(retainMemoryTsOf({ updated_at: '2026-08-16T00:00:00.000Z', created_at: '2026-08-10T00:00:00.000Z' })).toBe(
+        '2026-08-16T00:00:00.000Z',
+      );
+      expect(retainMemoryTsOf({ createdAt: '2026-08-10T00:00:00.000Z' })).toBe('2026-08-10T00:00:00.000Z');
+      expect(retainMemoryTsOf(undefined)).toBe('1970-01-01T00:00:00.000Z');
+    });
+  });
 });
 
 describe('readRetainPlanChildren', () => {
@@ -459,6 +544,203 @@ describe('readRetainPlanChildren', () => {
     });
     expect(await readRetainPlanChildren(sql, 'ws-1', 'plan-x')).toEqual([]);
     warn.mockRestore();
+  });
+});
+
+// ─── Row detail (WI-39534) ───────────────────────────────────────────────────
+
+const isPlanDetail = (t: string) => t.includes('hp.content');
+const isWiDetail = (t: string) => t.includes('ei.body');
+
+const emptyDetailDeps = (): RetainDetailDeps => ({
+  getRubric: async () => null,
+  getRecipe: async () => null,
+  readRunbook: async () => null,
+  getMemory: async () => null,
+});
+
+describe('readRetainDetail', () => {
+  it('plan: body from content, provenance fields from the routed idea', async () => {
+    const sql = sqlStub((t) =>
+      isPlanDetail(t)
+        ? [
+            {
+              title: 'Plan one',
+              status: 'active',
+              content: '  # Plan body  ',
+              harness_slug: 'h-1',
+              now_state: 'building',
+              ts: '2026-08-15T00:00:00.000Z',
+              idea_id: 'idea-1',
+              idea_title: 'the idea',
+              lens: 'reframing',
+              routed_ts: '2026-08-10T00:00:00.000Z',
+            },
+          ]
+        : [],
+    );
+    const d = await readRetainDetail(sql, 'ws-1', 'plan', 'p-1', emptyDetailDeps());
+    expect(d).toMatchObject({
+      kind: 'plan',
+      id: 'p-1',
+      title: 'Plan one',
+      status: 'active',
+      body: '# Plan body',
+      bodyTruncated: false,
+    });
+    expect(d!.fields).toEqual([
+      { label: 'Harness', value: 'h-1' },
+      { label: 'Now', value: 'building' },
+      { label: 'From idea', value: 'the idea' },
+      { label: 'Lens', value: 'reframing' },
+      { label: 'Routed', value: '2026-08-10T00:00:00.000Z' },
+    ]);
+  });
+
+  it('wi: body + severity/scope fields; unknown id resolves null', async () => {
+    const sql = sqlStub((t) =>
+      isWiDetail(t)
+        ? [
+            {
+              title: 'The issue',
+              state: 'done',
+              body: 'repro steps',
+              severity: 'major',
+              created_by: 'scout',
+              scope: 'harness:h-1',
+              ts: '2026-08-15T00:00:00.000Z',
+              created_ts: '2026-08-01T00:00:00.000Z',
+              idea_id: null,
+              idea_title: null,
+              lens: null,
+            },
+          ]
+        : [],
+    );
+    const d = await readRetainDetail(sql, 'ws-1', 'wi', 'EI-1', emptyDetailDeps());
+    expect(d).toMatchObject({ kind: 'wi', title: 'The issue', status: 'done', body: 'repro steps' });
+    expect(d!.fields.map((f) => f.label)).toEqual(['Severity', 'Scope', 'Created by', 'Created']);
+    expect(await readRetainDetail(sqlStub(() => []), 'ws-1', 'wi', 'EI-none', emptyDetailDeps())).toBeNull();
+  });
+
+  it('rubric: criteria as listItems', async () => {
+    const deps: RetainDetailDeps = {
+      ...emptyDetailDeps(),
+      getRubric: async () => ({
+        title: 'Rubric R',
+        description: 'what good looks like',
+        status: 'active',
+        characteristic: 'hive-coordination',
+        criteria: [{ label: 'C1' }, { title: 'C2' }, { id: 'c3' }],
+        updatedAt: '2026-08-15T00:00:00.000Z',
+      }),
+    };
+    const d = await readRetainDetail(sqlStub(() => []), 'ws-1', 'rubric', 'r-1', deps);
+    expect(d).toMatchObject({ kind: 'rubric', title: 'Rubric R', body: 'what good looks like' });
+    expect(d!.listItems).toEqual(['C1', 'C2', 'c3']);
+    expect(d!.fields).toEqual([{ label: 'Characteristic', value: 'hive-coordination' }]);
+  });
+
+  it('runbook: frontmatter stripped from the body, title/discovered parsed from it', async () => {
+    const deps: RetainDetailDeps = {
+      ...emptyDetailDeps(),
+      readRunbook: async () => ({
+        text: '---\ntitle: The doc\ndiscovered: 2026-07-01\n---\nThe method itself.',
+        ts: '2026-08-01T00:00:00.000Z',
+      }),
+    };
+    const d = await readRetainDetail(sqlStub(() => []), 'ws-1', 'runbook', 'doc-1', deps);
+    expect(d).toMatchObject({ title: 'The doc', body: 'The method itself.', ts: '2026-08-01T00:00:00.000Z' });
+    expect(d!.fields).toEqual([{ label: 'Discovered', value: '2026-07-01' }]);
+  });
+
+  it('recipe: description as body, script as code, run stats as fields', async () => {
+    const deps: RetainDetailDeps = {
+      ...emptyDetailDeps(),
+      getRecipe: async () => ({
+        title: 'Recipe R',
+        description: 'what it automates',
+        script: 'console.log(1)',
+        potSlug: 'pot-a',
+        toolsUsed: ['dev:pg_query'],
+        runCount: 5,
+        successCount: 4,
+        lastRunAt: '2026-08-15T00:00:00.000Z',
+        status: 'active',
+        createdBy: 'agent-x',
+        updatedAt: '2026-08-10T00:00:00.000Z',
+      }),
+    };
+    const d = await readRetainDetail(sqlStub(() => []), 'ws-1', 'recipe', 'rec-1', deps);
+    expect(d).toMatchObject({ kind: 'recipe', body: 'what it automates', code: 'console.log(1)' });
+    expect(d!.ts).toBe('2026-08-15T00:00:00.000Z');
+    expect(d!.fields).toEqual([
+      { label: 'Runs', value: '4/5 ok' },
+      { label: 'Last run', value: '2026-08-15T00:00:00.000Z' },
+      { label: 'Pot', value: 'pot-a' },
+      { label: 'Author', value: 'agent-x' },
+      { label: 'Tools', value: 'dev:pg_query' },
+    ]);
+  });
+
+  it('memory: full text, editable, pack + pool provenance', async () => {
+    const deps: RetainDetailDeps = {
+      ...emptyDetailDeps(),
+      getMemory: async () => ({
+        id: 'm-1',
+        text: 'The retained fact, in full.',
+        kind: 'feedback',
+        scope: 'hive:pot-a',
+        metadata: {
+          created_by: 'owner',
+          source: 'pack',
+          pack_id: 'coding',
+          pack_version: '1.2.0',
+          applies_to: ['engineer'],
+          updated_at: '2026-08-16T00:00:00.000Z',
+        },
+      }),
+    };
+    const d = await readRetainDetail(sqlStub(() => []), 'ws-1', 'memory', 'm-1', deps);
+    expect(d).toMatchObject({
+      kind: 'memory',
+      body: 'The retained fact, in full.',
+      editable: true,
+      ts: '2026-08-16T00:00:00.000Z',
+    });
+    expect(d!.fields).toEqual([
+      { label: 'Kind', value: 'feedback' },
+      { label: 'Created by', value: 'owner' },
+      { label: 'Pack', value: 'coding @1.2.0' },
+      { label: 'Applies to', value: 'engineer' },
+      { label: 'Pool', value: 'hive:pot-a' },
+    ]);
+  });
+
+  it('a long body clamps with bodyTruncated', async () => {
+    const sql = sqlStub((t) => (isPlanDetail(t) ? [{ title: 'P', status: null, content: 'x'.repeat(9000) }] : []));
+    const d = await readRetainDetail(sql, 'ws-1', 'plan', 'p-big', emptyDetailDeps());
+    expect(d!.bodyTruncated).toBe(true);
+    expect(d!.body!.length).toBe(4000);
+  });
+
+  it('an empty id, an unknown id, and a throwing store all resolve null — never a 500', async () => {
+    expect(await readRetainDetail(sqlStub(() => []), 'ws-1', 'plan', '', emptyDetailDeps())).toBeNull();
+    expect(await readRetainDetail(sqlStub(() => []), 'ws-1', 'memory', 'm-none', emptyDetailDeps())).toBeNull();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const deps: RetainDetailDeps = {
+      ...emptyDetailDeps(),
+      getRubric: async () => {
+        throw new Error('store down');
+      },
+    };
+    expect(await readRetainDetail(sqlStub(() => []), 'ws-1', 'rubric', 'r-1', deps)).toBeNull();
+    warn.mockRestore();
+  });
+
+  it('stripFrontmatter leaves a doc without frontmatter intact', () => {
+    expect(stripFrontmatter('no frontmatter here')).toBe('no frontmatter here');
+    expect(stripFrontmatter('---\na: 1\n---\nbody')).toBe('body');
   });
 });
 
