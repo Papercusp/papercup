@@ -127,8 +127,33 @@ log "$PROBE_OUT"
 
 if [ "$PROBE_EXIT" -eq 0 ]; then
   echo "$(now_s)" >"$STATE_DIR/last-ok"; rm -f "$STATE_DIR/red-ei-filed"
-  log "HEALTHY — bootstrap $DHT_HOST:$DHT_PORT connected within ${DHT_PROBE_TIMEOUT_MS}ms."
+  # SCOPE (P-302): without DHT_REMOTE_HOST this is a LOCAL-ONLY result — two
+  # processes on THIS host. It proves the bootstrap is routing; it proves
+  # nothing about any other machine, and nothing about the app process's own
+  # ability to reach the DHT. Say so, every time: the previous version logged a
+  # bare "HEALTHY" that was read as federation health for days.
+  if [ -n "${DHT_REMOTE_HOST:-}" ]; then
+    log "HEALTHY (CROSS-HOST) — bootstrap $DHT_HOST:$DHT_PORT carried a verified packet to/from $DHT_REMOTE_HOST. NOTE: measured with a standalone probe process; a per-process denial on the app itself is NOT covered."
+  else
+    log "HEALTHY (LOCAL-ONLY) — bootstrap $DHT_HOST:$DHT_PORT routed between two processes on this host. This does NOT prove any other machine can reach the DHT (set DHT_REMOTE_HOST to test that)."
+  fi
   exit 0
+fi
+
+# ── INCONCLUSIVE (exit 3) is NOT a wedge — never file it as one. ──
+# The probe distinguishes "the DHT is broken" (1) from "I could not run the
+# experiment" (3). Filing an inconclusive run under the alarming
+# "unreachable/wedged" title sends the next responder hunting a fault that never
+# existed — the same false-alarm class as the WI-5804 crash below.
+if [ "$PROBE_EXIT" -eq 3 ]; then
+  log "INCONCLUSIVE — the probe could not carry out its experiment (NOT evidence of a wedge, NOT evidence of health): $PROBE_OUT"
+  inconclusive_age_h="$(age_h "$STATE_DIR/inconclusive-ei-filed")"
+  if [ "$inconclusive_age_h" -ge "$DHT_STALE_H" ]; then
+    file_ei "papercup-isolated-dht liveness probe INCONCLUSIVE — the liveness signal itself is not running" \
+      "The EI-8892/P-302 probe exited 3 (INCONCLUSIVE): it could not carry out its experiment, so there is NO liveness signal right now — neither healthy nor wedged. Silence must never read as green. Probe output:\n$PROBE_OUT"
+    echo "$(now_s)" >"$STATE_DIR/inconclusive-ei-filed"
+  fi
+  exit 3
 fi
 
 # WI-5804 root cause: a FAIL is not always evidence the DHT is wedged — the
