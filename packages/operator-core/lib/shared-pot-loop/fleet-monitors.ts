@@ -271,6 +271,8 @@ export function judgePeerFederationSilence(
       silent: [],
       freshestAdvanceMs: null,
       allSilent: false,
+      strandedCursors: 0,
+      liveApplyBinding: null,
       // Deliberately NOT a breach: "no remote logs" is the honest shape of a
       // host that has never federated. It is reported as UNMEASURED so a caller
       // that knows federation IS in use (outbox rows exist) can escalate it,
@@ -278,6 +280,28 @@ export function judgePeerFederationSilence(
       breaches: [],
     };
   }
+  // EI-20617273180156712: a cursor only means anything under the `apply_binding`
+  // the fold is CURRENTLY running with. `pg-merge-cursor-store.load` selects with
+  // `apply_binding IS NOT DISTINCT FROM <binding>`, so a row written under a
+  // SUPERSEDED binding is never loaded, never advanced, and never can be — dead
+  // schema residue, not a silent peer. Counting those rows fabricated a
+  // "20 of 21 logs silent, oldest 21.4 days" major on host A entirely out of 15
+  // cursors stranded by migration 685, an alert no peer could ever clear.
+  //
+  // The live binding is read from the DATA (whichever binding owns the freshest
+  // row), deliberately NOT re-derived: boot.ts resolves it through
+  // `hiveHomeProjectionSlug ?? ownPotHomeSlug ?? memberHomeRebindSlug`, and a
+  // second copy of that chain here would be free to drift out of agreement with
+  // the fold — which is this very defect, one level up. Reading it from the data
+  // cannot drift, because the fold is what writes the data.
+  //
+  // ⚠ A null binding is a LEGITIMATE live value (a non-hive harness folds with
+  // applyBinding=null), so this must compare bindings, never truthiness.
+  const freshestRow = rows.reduce((a, b) => (b.updatedAtMs > a.updatedAtMs ? b : a));
+  const liveApplyBinding = freshestRow.applyBinding;
+  const judged = rows.filter((r) => r.applyBinding === liveApplyBinding);
+  const strandedCursors = rows.length - judged.length;
+
   // A scope WE stopped writing to is one we are no longer federating. Every
   // remote log there is silent for the mundane reason that the whole scope is
   // retired — measured on host A, harness `sheets` held 75/75 logs silent while
