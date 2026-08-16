@@ -685,6 +685,12 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
     // naming the missing path instead of downstream on the rig.
     expect(physicalProbe).toContain('staged submodule tree contains NO FILES on the VM');
     expect(physicalProbe).toContain('required submodule is not initialised on the tower');
+    // WI-39361 — the overlay must scan `libs` ITSELF, not only `libs/generic`.
+    // libs/papercusp-shared, libs/papercusp-db, libs/agent-chat, libs/testing-shell
+    // and libs/test-config live at that top level and are direct operator-core
+    // dependencies; without this base they can never win over the installed
+    // bundle's stale symlink, however fresh the staged copy is.
+    expect(physicalProbe).toContain("path.join(runRoot, 'libs'),");
     expect(physicalProbe).toContain("path.join(runRoot, 'libs', 'generic')");
     expect(physicalProbe).toContain("path.join(runRoot, 'libs', 'papercusp', 'libs')");
     expect(physicalProbe).toContain("path.join(runRoot, 'libs', 'papercusp', 'packages')");
