@@ -29,9 +29,16 @@
  */
 import type { Sql } from 'postgres';
 import type { RouteResult, RoutingCandidate } from './relevance-router';
+import { DEFAULT_SIM_FLOOR } from './relevance-router';
 
 /** Mirrors consult_state.wake_budget DEFAULT (migration 834) — D-005. */
 export const WAKE_BUDGET_PER_TASK = 4;
+/** P-006 archive-first retrieval floor: a closed_answered consult whose
+ * question similarity clears this is served from the archive (create +
+ * instant-close, no wake, no budget). Deliberately precision-biased — a
+ * silently-wrong cached answer is worse than a wake — and never below the
+ * router's own similarity sub-floor. */
+export const DEFAULT_ARCHIVE_FLOOR = Math.max(DEFAULT_SIM_FLOOR, 0.8);
 /** Latency-contract expiry defaults (D-005 'proceed-after-N'; the N is a
  * policy default here, not owner-pinned — P-005 lifecycle owns the expiry
  * sweep and may recalibrate). */
@@ -71,6 +78,10 @@ export interface GetFeedbackRequest {
   parentConsultId?: string | null;
   topics?: string[];
   harnessSlug?: string;
+  /** P-006 archive floor override (default DEFAULT_ARCHIVE_FLOOR). Raise past
+   * 1 (e.g. 2) to force fresh routing when an archived answer did not fit;
+   * tests use 0 / unreachable as falsifiability controls. */
+  archiveFloor?: number;
 }
 
 /** P-005 creation-side refusals — structural, BEFORE any conversation/row is
@@ -110,13 +121,16 @@ export interface GetFeedbackDeps {
 
 export interface GetFeedbackResult {
   ok: true;
-  verdict: 'routed' | 'no_qualified_responder';
+  verdict: 'routed' | 'no_qualified_responder' | 'served_from_archive';
   /** Only on no_qualified_responder — WHY, honestly (D-003: distinct causes
    * must stay distinguishable). */
   reason?: 'below_floor' | 'no_live_responder' | 'embed_unavailable';
   conversation_id: string;
   thread_id: string;
-  state: 'awaiting_responder' | 'no_qualified_responder';
+  /** 'served_from_archive' is a TS-surface state only — the DB row reuses
+   * state='closed_answered' with outcome.source='archive' (P-006; no enum
+   * widening in migration 834's CHECK). */
+  state: 'awaiting_responder' | 'no_qualified_responder' | 'served_from_archive';
   responder: RoutingCandidate | null;
   /** Qualified-but-not-chosen, best first — the D-007(7) manual-cascade menu. */
   remaining_candidates: Array<{ ownerId: string; score: number; liveness: string }>;
@@ -132,8 +146,27 @@ export interface GetFeedbackResult {
   };
   /** Latched park key for a hard-blocked requester (P-004 reply verbs emit). */
   park_key: string | null;
+  /** P-006 archive-serve provenance — present only on served_from_archive. */
+  archive?: {
+    source_conversation_id: string;
+    responder_id: string | null;
+    closed_at: string | null;
+    sim: number;
+    /** The source consult's structured outcome VERBATIM (D-001 shape:
+     * { answer?, confidence?, evidence?, reason? }). */
+    answer: unknown;
+  };
   degraded?: 'embed-unavailable';
   hint: string;
+}
+
+/** One archive-candidate row from the P-006 retrieval lookup. */
+interface ConsultArchiveRow {
+  conversation_id: string;
+  responder_id: string | null;
+  outcome: unknown;
+  closed_at: string | Date | null;
+  sim: number;
 }
 
 function consultTitle(question: string): string {
@@ -250,6 +283,110 @@ export async function getFeedbackCore(
     ...(excludeOwners.length ? { excludeOwners } : {}),
   });
 
+  // 2b) Archive-first retrieval (P-006, D-005/D-006 "retrieval, not consult"):
+  //     BEFORE any wake or insert, check whether a CLOSED consult already
+  //     answered a highly similar question. A hit is served as a create +
+  //     instant-close: the consult row is written state='closed_answered' with
+  //     outcome.source='archive' and the source's outcome verbatim — no wake,
+  //     no budget debit. Archive-served rows are excluded from candidacy
+  //     (outcome->>'source' predicate) so no copy-of-copy chains can form.
+  //     The SELECT doubles as the capability probe: pgvector absent / column
+  //     not migrated throws, and the leg degrades to normal routing (the
+  //     per-source degrade contract) — the INSERT then also skips the column.
+  const archiveFloor = req.archiveFloor ?? DEFAULT_ARCHIVE_FLOOR;
+  const qVecStr = route.queryVec && route.queryVec.length > 0 ? JSON.stringify(route.queryVec) : null;
+  let embeddingColumnOk = false;
+  let archiveHit: ConsultArchiveRow | null = null;
+  if (qVecStr) {
+    try {
+      const rows = (await sql`
+        SELECT conversation_id, responder_id, outcome, closed_at,
+               1 - (query_embedding <=> ${qVecStr}::vector) AS sim
+          FROM harness_shared.consult_state
+         WHERE workspace_id = ${req.workspaceId}
+           AND state = 'closed_answered'
+           AND query_embedding IS NOT NULL
+           AND (outcome->>'source' IS DISTINCT FROM 'archive')
+      ORDER BY query_embedding <=> ${qVecStr}::vector
+         LIMIT 3
+      `) as unknown as ConsultArchiveRow[];
+      embeddingColumnOk = true;
+      const top = rows[0];
+      if (top && Number(top.sim) >= archiveFloor) archiveHit = { ...top, sim: Number(top.sim) };
+    } catch {
+      embeddingColumnOk = false;
+    }
+  }
+  if (archiveHit) {
+    const opened = await deps.open({
+      kind: 'consult',
+      title: consultTitle(req.question),
+      body: consultBody(req),
+      ...(req.topics?.length ? { topics: req.topics } : {}),
+      ...(req.harnessSlug ? { harness_slug: req.harnessSlug } : {}),
+      direct_to: [],
+    });
+    const closedAtIso = archiveHit.closed_at ? new Date(archiveHit.closed_at as string).toISOString() : null;
+    const outcome = {
+      source: 'archive',
+      source_conversation_id: archiveHit.conversation_id,
+      source_responder_id: archiveHit.responder_id,
+      source_closed_at: closedAtIso,
+      sim: archiveHit.sim,
+      answer: archiveHit.outcome,
+    };
+    await sql`
+      INSERT INTO harness_shared.consult_state
+        (workspace_id, conversation_id, requester_id, responder_id, state, question,
+         latency_contract, origin_task_ref, routing, outcome, closed_at, wakes_used,
+         depth, parent_consult_id, query_embedding)
+      VALUES
+        (${req.workspaceId}, ${opened.conversation_id}, ${req.requesterId},
+         ${archiveHit.responder_id}, 'closed_answered', ${req.question}, ${latency},
+         ${originRef}, ${JSON.stringify(route.snapshot)}::jsonb,
+         ${JSON.stringify(outcome)}::jsonb, ${now.toISOString()}::timestamptz, 0,
+         ${depth}, ${req.parentConsultId ?? null}, ${qVecStr}::vector)
+    `;
+    return {
+      ok: true,
+      verdict: 'served_from_archive',
+      conversation_id: opened.conversation_id,
+      thread_id: opened.thread_id,
+      state: 'served_from_archive',
+      responder: null,
+      remaining_candidates: route.qualified.map((c) => ({
+        ownerId: c.ownerId,
+        score: c.score,
+        liveness: c.liveness,
+      })),
+      origin_task_ref: originRef,
+      latency_contract: latency,
+      expires_at: null,
+      wake: {
+        attempted: false,
+        woke: 0,
+        budget_exhausted: false,
+        wakes_used_for_task: 0,
+        wake_budget: WAKE_BUDGET_PER_TASK,
+      },
+      park_key: null,
+      archive: {
+        source_conversation_id: archiveHit.conversation_id,
+        responder_id: archiveHit.responder_id,
+        closed_at: closedAtIso,
+        sim: archiveHit.sim,
+        answer: archiveHit.outcome,
+      },
+      hint:
+        `Served from the archive: consult ${archiveHit.conversation_id}` +
+        `${archiveHit.responder_id ? ` (answered by ${archiveHit.responder_id}` : ' (closed'}${closedAtIso ? ` ${closedAtIso}` : ''})` +
+        ` settled a highly similar question (sim ${archiveHit.sim.toFixed(2)} ≥ floor ${archiveFloor}). ` +
+        'The structured answer + provenance are in `archive` — no one was woken and no wake budget was spent. ' +
+        'RECONCILE if your context differs: the archived answer predates your current state; ' +
+        'if it does not fit, re-call with archiveFloor: 2 to force fresh routing.',
+    };
+  }
+
   // 3) Liveness gate (v1, D-008 §5): top qualified that is not dead.
   const liveQualified = route.qualified.filter((c) => !DEAD_RESPONDER_STATES.has(c.liveness));
   const chosen = route.verdict === 'routed' ? (liveQualified[0] ?? null) : null;
@@ -301,17 +438,34 @@ export async function getFeedbackCore(
   const expiresAt = chosen
     ? new Date(now.getTime() + (latency === 'hard-blocked' ? HARD_BLOCKED_EXPIRY_MS : PROCEED_EXPIRY_MS)).toISOString()
     : null;
-  await sql`
-    INSERT INTO harness_shared.consult_state
-      (workspace_id, conversation_id, requester_id, responder_id, state, question,
-       latency_contract, origin_task_ref, routing, expires_at, wakes_used,
-       depth, parent_consult_id)
-    VALUES
-      (${req.workspaceId}, ${opened.conversation_id}, ${req.requesterId},
-       ${chosen?.ownerId ?? null}, ${state}, ${req.question}, ${latency},
-       ${originRef}, ${JSON.stringify(route.snapshot)}::jsonb, ${expiresAt},
-       ${willWake ? 1 : 0}, ${depth}, ${req.parentConsultId ?? null})
-  `;
+  // query_embedding is stored whenever the column exists (embeddingColumnOk —
+  // proven by the archive probe) and this route produced a vector: every
+  // consult forward-fills the P-006 retrieval cache, hit or miss.
+  if (embeddingColumnOk && qVecStr) {
+    await sql`
+      INSERT INTO harness_shared.consult_state
+        (workspace_id, conversation_id, requester_id, responder_id, state, question,
+         latency_contract, origin_task_ref, routing, expires_at, wakes_used,
+         depth, parent_consult_id, query_embedding)
+      VALUES
+        (${req.workspaceId}, ${opened.conversation_id}, ${req.requesterId},
+         ${chosen?.ownerId ?? null}, ${state}, ${req.question}, ${latency},
+         ${originRef}, ${JSON.stringify(route.snapshot)}::jsonb, ${expiresAt},
+         ${willWake ? 1 : 0}, ${depth}, ${req.parentConsultId ?? null}, ${qVecStr}::vector)
+    `;
+  } else {
+    await sql`
+      INSERT INTO harness_shared.consult_state
+        (workspace_id, conversation_id, requester_id, responder_id, state, question,
+         latency_contract, origin_task_ref, routing, expires_at, wakes_used,
+         depth, parent_consult_id)
+      VALUES
+        (${req.workspaceId}, ${opened.conversation_id}, ${req.requesterId},
+         ${chosen?.ownerId ?? null}, ${state}, ${req.question}, ${latency},
+         ${originRef}, ${JSON.stringify(route.snapshot)}::jsonb, ${expiresAt},
+         ${willWake ? 1 : 0}, ${depth}, ${req.parentConsultId ?? null})
+    `;
+  }
 
   // 7) Wake the responder with why-you-were-chosen evidence (D-008 §5).
   let woke = 0;

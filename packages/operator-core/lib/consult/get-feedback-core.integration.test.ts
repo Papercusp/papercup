@@ -107,10 +107,13 @@ const snapshotOf = (candidates: RoutingCandidate[], degraded?: 'embed-unavailabl
   ...(degraded ? { degraded } : {}),
 });
 
-const routeOf = (qualified: RoutingCandidate[], opts: { degraded?: 'embed-unavailable'; all?: RoutingCandidate[] } = {}): RouteResult => ({
+const routeOf = (qualified: RoutingCandidate[], opts: { degraded?: 'embed-unavailable'; all?: RoutingCandidate[]; queryVec?: number[] | null } = {}): RouteResult => ({
   verdict: qualified.length > 0 ? 'routed' : 'no_qualified_responder',
   qualified,
   snapshot: snapshotOf(opts.all ?? qualified, opts.degraded),
+  // Default null: existing scenarios exercise the pre-P-006 paths (no archive
+  // leg); archive tests pass an explicit vector.
+  queryVec: opts.queryVec ?? null,
 });
 
 let convSeq = 0;

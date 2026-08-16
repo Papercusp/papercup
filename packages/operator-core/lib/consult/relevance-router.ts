@@ -107,6 +107,11 @@ export interface RouteResult {
   /** Candidates clearing BOTH floors, best first (≤ maxQualified). */
   qualified: RoutingCandidate[];
   snapshot: RoutingSnapshot;
+  /** The question embedding this route was computed from (null on
+   * embed-unavailable degrade). P-006: the consult layer stores it on the
+   * consult_state row (retrieval-cache forward-fill) and runs the
+   * archive-first lookup with it — computed ONCE here, never re-embedded. */
+  queryVec: number[] | null;
 }
 
 export interface ConsultRouteParams {
@@ -188,6 +193,7 @@ export async function routeConsult(
       verdict: 'no_qualified_responder',
       qualified: [],
       snapshot: { ...base, candidates: [], degraded: 'embed-unavailable' },
+      queryVec: null,
     };
   }
 
@@ -225,7 +231,12 @@ export async function routeConsult(
   }>;
 
   if (turnRows.length === 0) {
-    return { verdict: 'no_qualified_responder', qualified: [], snapshot: { ...base, candidates: [] } };
+    return {
+      verdict: 'no_qualified_responder',
+      qualified: [],
+      snapshot: { ...base, candidates: [] },
+      queryVec: vec,
+    };
   }
 
   // 2) Aggregate per owner: max similarity, newest evidence turn, top evidence.
@@ -323,5 +334,6 @@ export async function routeConsult(
     verdict: qualified.length > 0 ? 'routed' : 'no_qualified_responder',
     qualified,
     snapshot: { ...base, candidates: snapshotCandidates },
+    queryVec: vec,
   };
 }
