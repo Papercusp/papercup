@@ -7,18 +7,36 @@
  * green pin), or `block` (hold the deploy).
  *
  * Two load-bearing rules, mirrored from perf-gate.ts:
- *   - DEFAULT-WARN until the desktop budgets are trusted. A regressed run only
- *     `block`s when block-mode is armed; otherwise the worst it does is `warn`
- *     (log + broadcast) and let the green commit advance.
+ *   - THE SAMPLE IS GATED, NOT THE VERDICT. A budgeted breach `block`s only when
+ *     the gate can prove the run was measured inside a QUIET WINDOW; a breach
+ *     measured under host contention is `unmeasurable` and only `warn`s. See
+ *     "quiet-gated blocking" below.
  *   - FLAG-GATED + FAIL-SOFT. This is the P-011 improvement over perf-gate.ts's
  *     env gate: the enable switch is a FLAGS entry (FLAGS.DESKTOP_PERF_GATE, a
  *     server getFlag read), NOT a process.env boolean. Disabled ⇒ a no-op `pass`
  *     that reads nothing; a missing / empty run (verdict `unknown`) never blocks.
  *
- * Block-mode is deliberately NOT shipped in V1 ("warn-not-block until trusted"):
- * `desktopPerfGatePolicyFromFlags` returns block:false. `evaluateDesktopPerfGate`
- * still honors a block:true policy (parity with perf-gate + a clean seam for the
- * future owner-armed step), but nothing sets it yet.
+ * QUIET-GATED BLOCKING (resource-efficiency-closeout-2026-08-13 D-005; read D-003
+ * and D-004 for the history). V1 shipped "warn-not-block until trusted" with
+ * `block` hardwired false, and by 2026-08-16 that had produced 13 days of silent
+ * fail-soft passes — an inert gate. The obvious repair, flipping block to an
+ * unconditional true, was refused twice for a measured reason: desktop LCP spanned
+ * 2143–5742ms on IDENTICAL code with the 4000ms budget inside that band, so an
+ * unconditional block would have swapped a silent gate for a loud FALSE-RED one
+ * that freezes the fleet whenever the box is busy.
+ *
+ * What broke the deadlock was finding the missing variable rather than retuning the
+ * budget. Under a PSI-quiet window the same measurement is tight and reproducible
+ * (2527–2803ms, ~10% spread): it was never inherently noisy, contention simply was
+ * never controlled. So the gate now reads the `host:psi-cpu-*` stamps every run
+ * records and treats a run taken outside that window as UNMEASURABLE — neither
+ * pass nor fail — arming `block` only for a breach it can attribute to a quiet
+ * host. That is what makes this an EFFECTIVE gate rather than an inert or a
+ * false-red one, and it is the same void-sample principle applied twice already in
+ * this lane (the egress spec records -1 rather than a meaningless 0;
+ * plan-popup-open throws `UNMEASURABLE:` rather than publishing a timing for a
+ * plan that never opened). A gate that cannot tell "measured and fine" from "never
+ * measured" is the whole defect class here.
  *
  * ONE EXCEPTION, added by no-http-anywhere-2026-07-28 P-003c: a measure flagged
  * `invariant: true` BLOCKS regardless of block-mode. Warn-until-trusted is the
@@ -45,14 +63,162 @@ import {
 export type DesktopPerfGateAction = 'pass' | 'warn' | 'block';
 export type DesktopPerfVerdictStatus = 'ok' | 'warn' | 'crit' | 'unknown';
 
+/**
+ * How the host was loaded while the run was measured — the D-005 sample gate.
+ *
+ *   `quiet`      both stamps sit inside the quiet window ⇒ a load-controlled
+ *                measurement, and the only kind a breach may block on.
+ *   `contended`  at least one stamp is above the window ⇒ UNMEASURABLE. A timing
+ *                taken under contention is not comparable to the budget, which
+ *                was calibrated on a quiet box.
+ *   `unstamped`  the run carries no PSI stamp at all — an old row (every run
+ *                before 2026-08-16), a non-Linux producer, or a kernel built
+ *                without PSI. Treated exactly like `contended`: the gate cannot
+ *                SHOW the window was quiet, and "no evidence of quiet" must not
+ *                be read as "quiet". This is the same absence-vs-zero distinction
+ *                that made 13 days of fail-soft passes look like green ones.
+ */
+export type DesktopPerfPressureClass = 'quiet' | 'contended' | 'unstamped';
+
+export interface QuietWindowThresholds {
+  /** Max `/proc/pressure/cpu` `some avg10` (percent of the last 10s in which at
+   *  least one task was stalled waiting for CPU). */
+  someAvg10Max: number;
+  /** Max `full avg10` — time when EVERY task was stalled. Separate because a
+   *  non-zero `full` is a categorically worse condition than a non-zero `some`. */
+  fullAvg10Max: number;
+}
+
+/** The PSI stamp keys `recordHostPressure` writes (tools/perf-test/wdio/perf-report.ts).
+ *  The unit lives in the KEY deliberately: adding a value to the `unit` enum is a
+ *  cross-deploy breaking change, because the ingest route rejects the WHOLE batch on
+ *  one unknown unit and the runner posts to the release checkout, not the working tree. */
+export const PSI_SOME_KEY_PREFIX = 'host:psi-cpu-some-avg10-pct:';
+export const PSI_FULL_KEY_PREFIX = 'host:psi-cpu-full-avg10-pct:';
+
+/**
+ * The quiet window: `some avg10 ≤ 1.0` (percent), `full avg10 = 0`.
+ *
+ * DERIVED FROM MEASUREMENT, not picked. D-005 required the threshold to come from
+ * a larger PSI-stamped sample than the 3 runs that justified the design, so 14
+ * further smoke runs were taken back-to-back on this box (2026-08-16T02:08–02:15Z)
+ * while ambient fleet load varied on its own. n=15, each stamped at start AND end;
+ * the run's pressure is taken as the WORSE of the two. Binning by candidate
+ * threshold:
+ *
+ *   T      quiet n   LCP range (ms)   spread        headroom to the 4000ms budget
+ *   0.1        6     2206–2721        515 (20%)     1279ms (47% above worst quiet)
+ *   0.5        8     2206–2765        559 (21%)     1235ms (45%)
+ *   1.0        9     2206–2817        611 (23%)     1183ms (42%)
+ *   1.5       10     2206–2916        710 (27%)     1084ms (37%)
+ *   2.0       13     2206–3085        879 (33%)      915ms (30%)
+ *
+ * 1.0 is the knee: it admits 9 of 15 runs while holding the band at 611ms, and
+ * every reading above 2817ms in the whole sample falls OUTSIDE it. Loosening to
+ * 1.5 and 2.0 buys one and four more runs for a spread that grows faster than the
+ * sample does. D-005's independent 3-run band (2527–2803ms at PSI 0.00–0.08) lands
+ * inside this one, which is corroboration from a separate session rather than a
+ * restatement.
+ *
+ * WHY THIS MAKES BLOCKING SAFE, which is the whole point: inside the window the
+ * worst observed LCP is 2817ms against a 4000ms budget — 42% of headroom. A breach
+ * measured inside the window is therefore a ~40%+ move, far outside the 611ms the
+ * measurement itself varies by. That is the gap D-003 correctly refused to arm
+ * across when it did not exist (the budget then sat INSIDE a 2143–5742ms band).
+ *
+ * WHY NOT LOADAVG (D-004): it read 56.92 here while PSI reported `some avg10=0.05`
+ * — no stall pressure at all. loadavg is a trailing EWMA of runnable tasks, so it
+ * describes a decaying past rather than the interval the run occupied. It is still
+ * stamped, for contrast only, under `host:loadavg1-not-authoritative:*`.
+ *
+ * WHY `full` MUST BE 0: a non-zero `full` means every task on the box was stalled
+ * at once, which cannot coexist with a trustworthy interaction timing. It was 0.00
+ * on all 15 samples, so this bound is not yet exercised by data — it is a floor
+ * against a condition that would obviously invalidate a measurement, not a fitted
+ * parameter.
+ *
+ * ERRING DIRECTION. Too TIGHT a window makes nearly every run `unmeasurable`,
+ * which silently re-creates the inert gate P-004 exists to fix; too loose admits a
+ * contended sample whose reading is untrustworthy in EITHER direction (see the
+ * pass branch of {@link evaluateDesktopPerfGate}). Both errors are real, so the
+ * threshold is set where the data separates rather than at whichever end feels
+ * safer.
+ */
+export const DEFAULT_QUIET_WINDOW: QuietWindowThresholds = { someAvg10Max: 1.0, fullAvg10Max: 0 };
+
+/** The PSI stamps a run carries, or null for whichever phase is missing. */
+export interface DesktopPerfHostPressure {
+  someStart: number | null;
+  someEnd: number | null;
+  fullStart: number | null;
+  fullEnd: number | null;
+}
+
+function stampValue(run: DesktopPerfRun, key: string): number | null {
+  const hit = run.measures.find((m) => m.key === key);
+  return hit && Number.isFinite(hit.value) ? hit.value : null;
+}
+
+/** PURE: read the `host:psi-cpu-*` stamps off a run. */
+export function readHostPressure(run: DesktopPerfRun): DesktopPerfHostPressure {
+  return {
+    someStart: stampValue(run, `${PSI_SOME_KEY_PREFIX}start`),
+    someEnd: stampValue(run, `${PSI_SOME_KEY_PREFIX}end`),
+    fullStart: stampValue(run, `${PSI_FULL_KEY_PREFIX}start`),
+    fullEnd: stampValue(run, `${PSI_FULL_KEY_PREFIX}end`),
+  };
+}
+
+/**
+ * PURE: classify the host conditions a run was measured under (D-005 step 2).
+ *
+ * BOTH phases must be inside the window. A run that STARTED quiet and ended
+ * contended (or the reverse) spans a change in conditions, so nothing it measured
+ * can be attributed to a quiet box — which is precisely why the stamp is taken
+ * twice rather than once. Requiring both is also what makes the check falsifiable
+ * by a fleet that gets busy mid-run, the common case on this host.
+ *
+ * A run missing EITHER `some` phase is `unstamped`, not partially trusted: a
+ * half-stamped run is an absence of evidence about the other half.
+ */
+export function classifyRunPressure(
+  run: DesktopPerfRun,
+  quiet: QuietWindowThresholds = DEFAULT_QUIET_WINDOW,
+): DesktopPerfPressureClass {
+  const p = readHostPressure(run);
+  if (p.someStart === null || p.someEnd === null) return 'unstamped';
+  if (p.someStart > quiet.someAvg10Max || p.someEnd > quiet.someAvg10Max) return 'contended';
+  // `full` is absent on some kernels even when `some` is present; only a PRESENT
+  // reading above the bound is evidence of contention.
+  if ((p.fullStart ?? 0) > quiet.fullAvg10Max || (p.fullEnd ?? 0) > quiet.fullAvg10Max) return 'contended';
+  return 'quiet';
+}
+
+function fmtPressure(p: DesktopPerfHostPressure): string {
+  const n = (v: number | null) => (v === null ? '?' : String(v));
+  return `PSI some avg10 ${n(p.someStart)}→${n(p.someEnd)}, full ${n(p.fullStart)}→${n(p.fullEnd)}`;
+}
+
 export interface DesktopPerfGatePolicy {
   /** Master switch. When false the gate is a no-op (`pass`) and reads no run.
    *  Sourced from FLAGS.DESKTOP_PERF_GATE (default ON — warn-only is safe). */
   enabled: boolean;
-  /** Owner-armed block-mode. When false a definitive regression (crit) only
-   *  `warn`s and the deploy still advances; when true it `block`s. Default-OFF
-   *  per "warn-not-block until trusted" — not armed by any shipped switch in V1. */
+  /**
+   * Block-mode: hold the deploy on a budgeted breach that was measured inside a
+   * QUIET WINDOW (see {@link classifyRunPressure}). Sourced from
+   * FLAGS.DESKTOP_PERF_GATE_BLOCK (default ON).
+   *
+   * It is ONLY ever consulted for a quiet-window breach. A breach measured under
+   * host contention is `unmeasurable` and warns whether or not this is armed —
+   * so arming this can never produce the false red D-003/D-004 refused.
+   */
   block: boolean;
+  /**
+   * The quiet-window admission thresholds, in /proc/pressure/cpu `avgN` percent.
+   * A run is only a load-controlled measurement if BOTH its start and end stamps
+   * sit at or below these. See {@link DEFAULT_QUIET_WINDOW} for the derivation.
+   */
+  quiet: QuietWindowThresholds;
   /**
    * How old the latest run may be and still be treated as a verdict on the
    * candidate, in ms.
@@ -85,6 +251,12 @@ export interface DesktopPerfGateDecision {
   /** One-line, deploy-context summary. */
   summary: string;
   verdictStatus: DesktopPerfVerdictStatus;
+  /**
+   * The host conditions the run was measured under (D-005). `null` only when no
+   * run was read at all (disabled / no data) — never when a run exists, so a
+   * reader can always tell "measured on a quiet box" from "we cannot say".
+   */
+  pressure: DesktopPerfPressureClass | null;
 }
 
 function shaLabel(candidateSha?: string): string {
@@ -149,12 +321,14 @@ export function evaluateDesktopPerfGate(
   const sha = shaLabel(candidateSha);
 
   if (!policy.enabled) {
-    return { action: 'pass', reasons: [], summary: `desktop-perf-gate disabled — ${sha} not perf-checked`, verdictStatus: 'unknown' };
+    return { action: 'pass', reasons: [], summary: `desktop-perf-gate disabled — ${sha} not perf-checked`, verdictStatus: 'unknown', pressure: null };
   }
 
   if (!run || run.measures.length === 0) {
-    return { action: 'pass', reasons: [], summary: `desktop-perf-gate: no fresh desktop-perf run (fail-soft) — ${sha} clears`, verdictStatus: 'unknown' };
+    return { action: 'pass', reasons: [], summary: `desktop-perf-gate: no fresh desktop-perf run (fail-soft) — ${sha} clears`, verdictStatus: 'unknown', pressure: null };
   }
+
+  const pressure = classifyRunPressure(run, policy.quiet);
 
   // Stale data is NOT a verdict — see DesktopPerfGatePolicy.maxAgeMs. Reported as
   // `unknown` (never a breach) so a lapsed producer degrades to the same fail-soft
@@ -171,6 +345,7 @@ export function evaluateDesktopPerfGate(
         `desktop-perf-gate: latest desktop-perf run is STALE (${ageHrs}h old > ${maxHrs}h window) — ` +
         `${sha} clears fail-soft; nothing is producing fresh runs`,
       verdictStatus: 'unknown',
+      pressure,
     };
   }
 
@@ -185,6 +360,12 @@ export function evaluateDesktopPerfGate(
   // must not hold today's candidate hostage — the honest reading of an old run is
   // "nothing is measuring this", which is the fail-soft `unknown` the gate already
   // reports, not "the invariant is broken now".
+  // NOTE the deliberate absence of any quiet-window condition on this branch. An
+  // invariant is a BINARY CORRECTNESS property, and host contention cannot make one
+  // false: no amount of CPU pressure causes the webview to issue an HTTP request it
+  // would not otherwise have issued. Gating invariants on the quiet window would
+  // hand every busy hour a way to suppress a real correctness failure — the exact
+  // fail-open shape D-005 exists to remove, pointed the other way.
   const breached = breachedInvariants(run);
   if (breached.length > 0) {
     const reasons = breached.map(fmtInvariant);
@@ -193,21 +374,57 @@ export function evaluateDesktopPerfGate(
       reasons,
       summary:
         `🟥 desktop-perf-gate: INVARIANT BREACHED — deploy of ${sha} BLOCKED: ${reasons.join('; ')}. ` +
-        `An invariant is not a tunable budget: it blocks regardless of block-mode arming.`,
+        `An invariant is not a tunable budget: it blocks regardless of block-mode arming or host load.`,
       verdictStatus: 'crit',
+      pressure,
     };
   }
 
   const failing = failingMeasures(run);
   if (failing.length > 0) {
+    const reasons = failing.map(fmtMeasure);
+    const p = readHostPressure(run);
+
+    // D-005 STEP 2: a breach the gate cannot prove was measured on a quiet box is
+    // UNMEASURABLE — neither pass nor fail. It warns (loudly, every time) and the
+    // deploy advances, and the verdict is `unknown` rather than `crit` because we do
+    // not know whether this candidate regressed. Reporting it as a regression is the
+    // specific error D-003 was written to stop: LCP spanned 2143–5742ms on identical
+    // code, so one contended sample can convict any candidate at all.
+    //
+    // Suppression is a WARN and not a `pass` on purpose. Persistent unmeasurability
+    // would otherwise be indistinguishable from a healthy green gate — the same
+    // silence that let this gate fail soft for 13 days — so every suppression is
+    // surfaced and broadcast, and a gate that can never measure anything says so out
+    // loud without needing any N-run bookkeeping to notice.
+    if (pressure !== 'quiet') {
+      const why =
+        pressure === 'unstamped'
+          ? `the run carries no /proc/pressure/cpu stamp, so the gate cannot show it was measured on a quiet box`
+          : `it was measured under host contention (${fmtPressure(p)}; quiet window is some avg10 ≤ ${policy.quiet.someAvg10Max}, full ≤ ${policy.quiet.fullAvg10Max})`;
+      return {
+        action: 'warn',
+        reasons: [`UNMEASURABLE (${pressure}): ${why}`, ...reasons],
+        summary:
+          `🟧 desktop-perf-gate: desktop-perf budget missed but the sample is UNMEASURABLE — ${why}. ` +
+          `Deploy of ${sha} advances; this is NOT reported as a regression: ${reasons.join('; ')}`,
+        verdictStatus: 'unknown',
+        pressure,
+      };
+    }
+
+    // Measured inside a quiet window ⇒ a real verdict, and the only case block-mode
+    // is ever consulted for.
     const action: DesktopPerfGateAction = policy.block ? 'block' : 'warn';
     const verb = action === 'block' ? 'BLOCKED (block-mode armed)' : 'flagged (warn — block-mode not armed)';
-    const reasons = failing.map(fmtMeasure);
     return {
       action,
       reasons,
-      summary: `🟥 desktop-perf-gate: desktop interaction REGRESSED — deploy of ${sha} ${verb}: ${reasons.join('; ')}`,
+      summary:
+        `🟥 desktop-perf-gate: desktop interaction REGRESSED on a QUIET host (${fmtPressure(p)}) — ` +
+        `deploy of ${sha} ${verb}: ${reasons.join('; ')}`,
       verdictStatus: 'crit',
+      pressure,
     };
   }
 
@@ -217,21 +434,62 @@ export function evaluateDesktopPerfGate(
       reasons: ['desktop-perf suite reported a warning (no budgeted breach)'],
       summary: `🟧 desktop-perf-gate: desktop-perf run warned — deploy of ${sha} flagged`,
       verdictStatus: 'warn',
+      pressure,
     };
   }
 
-  return { action: 'pass', reasons: [], summary: `desktop-perf-gate: desktop-perf ok — ${sha} clears`, verdictStatus: 'ok' };
+  // A PASS is honoured whatever the host pressure was, and the asymmetry with the
+  // breach branch above is deliberate — but NOT for the tempting reason. "Contention
+  // can only slow an interaction down, so an under-budget reading on a busy box is a
+  // pass a fortiori" is FALSE here, and the sample behind DEFAULT_QUIET_WINDOW
+  // falsifies it: across n=15, PSI correlates strongly with FCP (Spearman +0.78,
+  // quiet mean 716ms → contended 850ms) but only weakly with LCP (+0.32), and the
+  // single most contended run reported LCP=1311ms — 895ms FASTER than any quiet
+  // reading in the sample, with its FCP simultaneously the second-worst at 996ms.
+  // LCP is a largest-element-SO-FAR metric, so contention that stops the big element
+  // painting inside the observation window leaves a smaller earlier element holding
+  // the title. Contention does not shift LCP's centre (contended mean 2581ms vs quiet
+  // 2629ms); it destroys its precision (range 1311–3246ms vs 2206–2817ms). A contended
+  // sample is therefore untrustworthy in BOTH directions.
+  //
+  // The real reason this branch passes: an unmeasurable sample never blocks either way,
+  // so a contended pass and a contended breach produce the SAME action (advance) — the
+  // only difference is what gets reported, and reporting is where honesty is available.
+  // Hence the summary names the pressure class instead of calling this a clear.
+  //
+  // NOT CLAIMED: that this is a load-controlled clear. It is an advance on a sample the
+  // gate cannot vouch for, which is the correct fail-soft posture and not evidence.
+  return {
+    action: 'pass',
+    reasons: [],
+    summary:
+      pressure === 'quiet'
+        ? `desktop-perf-gate: desktop-perf ok on a quiet host — ${sha} clears`
+        : `desktop-perf-gate: desktop-perf ok (${pressure} sample — under budget despite it) — ${sha} clears`,
+    verdictStatus: 'ok',
+    pressure,
+  };
 }
 
-/** Read the gate policy from the FLAGS system (default ON, warn-only). */
+/**
+ * Read the gate policy from the FLAGS system: enabled (default ON) + quiet-gated
+ * block-mode (default ON, D-005).
+ *
+ * Both reads fail CLOSED-TO-SAFE rather than closed: an unreadable enable flag
+ * disables the gate, and an unreadable block flag leaves it warn-only. A flag
+ * store hiccup must never invent a deploy-holding verdict.
+ */
 export async function desktopPerfGatePolicyFromFlags(
   readFlag: () => Promise<boolean> = () => getFlag(FLAGS.DESKTOP_PERF_GATE, 'system'),
+  readBlockFlag: () => Promise<boolean> = () => getFlag(FLAGS.DESKTOP_PERF_GATE_BLOCK, 'system'),
 ): Promise<DesktopPerfGatePolicy> {
   return {
     enabled: await readFlag().catch(() => false),
-    // V1: warn-not-block until trusted. Arming block-mode is a future owner-gated step.
-    block: false,
+    // D-005: block-mode is armed, but it only ever applies to a breach measured
+    // INSIDE the quiet window below — see DesktopPerfGatePolicy.block.
+    block: await readBlockFlag().catch(() => false),
     maxAgeMs: DEFAULT_DESKTOP_PERF_MAX_AGE_MS,
+    quiet: DEFAULT_QUIET_WINDOW,
   };
 }
 

@@ -2266,6 +2266,26 @@ export const FLAGS = {
   // step. Fail-soft: no persisted run / no measures ⇒ a no-op `pass`. OFF ⇒ the
   // gate reads nothing and passes (kill-switch).
   DESKTOP_PERF_GATE: "papercusp-desktop-perf-gate",
+  // resource-efficiency-closeout-2026-08-13 D-005: BLOCK-MODE for the gate above.
+  // When ON, a budgeted desktop-perf breach measured INSIDE a quiet window HOLDS
+  // the deploy instead of only warning. Read the D-005 decision before touching
+  // this: block-mode was refused twice (D-003, restated in D-004) for a specific
+  // reason — desktop LCP spanned 2143–5742ms on IDENTICAL code with the 4000ms
+  // budget sitting inside that band, so an unconditional block would have traded
+  // a silent fail-soft gate for a loud FALSE-RED one that freezes the fleet on
+  // ambient load. What changed is not the numbers' trustworthiness but that the
+  // SAMPLE is now gated: every run stamps /proc/pressure/cpu at start and end,
+  // and desktop-perf-gate.ts treats a breach measured under contention as
+  // UNMEASURABLE (warn, verdict `unknown`) rather than as a regression. Blocking
+  // therefore arms only for a breach the gate can prove was measured on a quiet
+  // box — which is what makes it an EFFECTIVE gate rather than either an inert
+  // one or a false-red one.
+  // DEFAULT ON (not in DARK_FLAGS): finished work does not ship dark, and the
+  // quiet-window guard is what makes arming safe. Kept as a FLAGS entry rather
+  // than a hardwired `true` purely so a gate that starts holding deploys wrongly
+  // can be disarmed at RUNTIME (/admin/features) without a code deploy — the
+  // green pipeline is exactly the thing that would be unavailable to fix it.
+  DESKTOP_PERF_GATE_BLOCK: "papercusp-desktop-perf-gate-block",
   // WI-6538: the HOST-perf release gate — the sibling of DESKTOP_PERF_GATE above.
   // It reads the latest perf-signals-v1 capture and evaluates it against the
   // per-thread budgets in system-health/perf-budgets.ts.

@@ -342,8 +342,9 @@ export interface CheckpointDeps {
   /** desktop-performance-suite-2026-07-20 P-011: the desktop-UI perf gate. Runs
    *  post-runGreen / pre-advance on a GREEN candidate: if the latest persisted
    *  desktop-perf run (desktop_perf_runs, P-010) shows a budgeted interaction /
-   *  route / RSS regression, WARN (default — still advance) or BLOCK (only when
-   *  block-mode is armed, which V1 never does — warn-not-block until trusted).
+   *  route / RSS regression, WARN (a contended, i.e. UNMEASURABLE, sample — still
+   *  advance) or BLOCK (a breach measured inside a PSI-quiet window, block-mode
+   *  armed by default since D-005).
    *  Optional + FLAG-gated (FLAGS.DESKTOP_PERF_GATE, default ON; a no-op `pass`
    *  when off or when no run is recorded) so existing stubs need not provide it. */
   desktopPerfGate?(
@@ -6186,9 +6187,12 @@ export async function runGreenCheckpoint(
   // desktop-performance-suite-2026-07-20 P-011: the desktop-UI perf gate. The
   // candidate is GREEN — but if the latest recorded desktop-perf run shows a
   // budgeted interaction/route/RSS regression, don't silently advance the green
-  // pin into a slower desktop UX. Default-WARN for BUDGETS (surface + still
-  // advance); a budget breach BLOCKs only when block-mode is armed (V1 never arms
-  // it — warn-not-block until trusted).
+  // pin into a slower desktop UX. A budget breach BLOCKs when block-mode is armed
+  // (default ON since resource-efficiency-closeout-2026-08-13 D-005) AND the run
+  // was measured inside a PSI-quiet window; a breach measured under host
+  // contention is UNMEASURABLE and only warns, which is what lets block-mode be
+  // armed at all without freezing the fleet on ambient load. See
+  // desktop-perf-gate.ts's header for D-003 → D-004 → D-005.
   //
   // EXCEPT invariants (no-http-anywhere-2026-07-28 P-003c): a measure flagged
   // `invariant: true` — e.g. `invariant:webview-http-egress` — blocks regardless of

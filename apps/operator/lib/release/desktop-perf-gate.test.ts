@@ -6,6 +6,11 @@ import {
   failingMeasures,
   breachedInvariants,
   DEFAULT_DESKTOP_PERF_MAX_AGE_MS,
+  DEFAULT_QUIET_WINDOW,
+  PSI_SOME_KEY_PREFIX,
+  PSI_FULL_KEY_PREFIX,
+  classifyRunPressure,
+  readHostPressure,
   type DesktopPerfGatePolicy,
 } from './desktop-perf-gate';
 import type { DesktopPerfRun, DesktopPerfMeasure } from '@papercusp/operator-core/lib/system-health/desktop-perf-runs';
@@ -30,14 +35,39 @@ const egressBreach: DesktopPerfMeasure = { key: 'invariant:webview-http-egress',
 const egressUnknown: DesktopPerfMeasure = { key: 'invariant:webview-http-egress', value: -1, unit: 'count', budget: 0, ok: false, invariant: true };
 /** An invariant carrying NO budget — breachedInvariants must still catch it. */
 const unbudgetedInvariant: DesktopPerfMeasure = { key: 'invariant:console-errors', value: 3, unit: 'count', budget: null, ok: false, invariant: true };
-const WARN_ONLY: DesktopPerfGatePolicy = { enabled: true, block: false, maxAgeMs: DEFAULT_DESKTOP_PERF_MAX_AGE_MS };
-const ARMED: DesktopPerfGatePolicy = { enabled: true, block: true, maxAgeMs: DEFAULT_DESKTOP_PERF_MAX_AGE_MS };
+/**
+ * D-005 PSI stamps. `quiet()` is spread into a measure list to make a run a
+ * LOAD-CONTROLLED sample; `contended()` makes it unmeasurable.
+ *
+ * Every pre-existing fixture in this file predates the stamp, so without a default
+ * they would all be `unstamped` — which now routes a breach into the unmeasurable
+ * branch. That would silently convert the block-mode cases below into warn-mode
+ * cases and the suite would still pass while asserting nothing about arming, the
+ * same shape as the createdTs/staleness trap noted above. So the cases that are
+ * ABOUT a breach verdict stamp themselves quiet explicitly, and the `unstamped`
+ * behaviour gets its own named tests rather than being the silent default.
+ */
+function quiet(some = 0.07, full = 0): DesktopPerfMeasure[] {
+  return [
+    { key: `${PSI_SOME_KEY_PREFIX}start`, value: some, unit: 'count', budget: null, ok: true },
+    { key: `${PSI_SOME_KEY_PREFIX}end`, value: some, unit: 'count', budget: null, ok: true },
+    { key: `${PSI_FULL_KEY_PREFIX}start`, value: full, unit: 'count', budget: null, ok: true },
+    { key: `${PSI_FULL_KEY_PREFIX}end`, value: full, unit: 'count', budget: null, ok: true },
+  ];
+}
+/** 2.15 is a REAL contended reading from the derivation sample (LCP 3246ms). */
+function contended(some = 2.15): DesktopPerfMeasure[] {
+  return quiet(some, 0);
+}
+
+const WARN_ONLY: DesktopPerfGatePolicy = { enabled: true, block: false, maxAgeMs: DEFAULT_DESKTOP_PERF_MAX_AGE_MS, quiet: DEFAULT_QUIET_WINDOW };
+const ARMED: DesktopPerfGatePolicy = { enabled: true, block: true, maxAgeMs: DEFAULT_DESKTOP_PERF_MAX_AGE_MS, quiet: DEFAULT_QUIET_WINDOW };
 
 describe('evaluateDesktopPerfGate (pure)', () => {
   it('disabled → pass, reads nothing', () => {
     const d = evaluateDesktopPerfGate(
       run([breach]),
-      { enabled: false, block: false, maxAgeMs: DEFAULT_DESKTOP_PERF_MAX_AGE_MS },
+      { enabled: false, block: false, maxAgeMs: DEFAULT_DESKTOP_PERF_MAX_AGE_MS, quiet: DEFAULT_QUIET_WINDOW },
       'deadbeefcafef00d',
     );
     expect(d.action).toBe('pass');
@@ -73,8 +103,11 @@ describe('evaluateDesktopPerfGate (pure)', () => {
       expect(d.verdictStatus).toBe('unknown');
     });
 
+    // Stamped quiet so this isolates FRESHNESS: unstamped, the run would be judged
+    // `unknown` by the D-005 pressure branch and this case would assert nothing about
+    // the freshness window at all.
     it('a run INSIDE the window is still judged normally', () => {
-      const d = evaluateDesktopPerfGate(run([breach], 'fail', hoursAgo(2)), WARN_ONLY, 'abc123', NOW);
+      const d = evaluateDesktopPerfGate(run([breach, ...quiet()], 'fail', hoursAgo(2)), WARN_ONLY, 'abc123', NOW);
       expect(d.action).toBe('warn');
       expect(d.verdictStatus).toBe('crit');
     });
@@ -89,8 +122,8 @@ describe('evaluateDesktopPerfGate (pure)', () => {
     });
 
     it('maxAgeMs of 0 disables the window rather than staling everything', () => {
-      const policy: DesktopPerfGatePolicy = { enabled: true, block: false, maxAgeMs: 0 };
-      const d = evaluateDesktopPerfGate(run([breach], 'fail', hoursAgo(9000)), policy, 'abc123', NOW);
+      const policy: DesktopPerfGatePolicy = { enabled: true, block: false, maxAgeMs: 0, quiet: DEFAULT_QUIET_WINDOW };
+      const d = evaluateDesktopPerfGate(run([breach, ...quiet()], 'fail', hoursAgo(9000)), policy, 'abc123', NOW);
       expect(d.verdictStatus).toBe('crit');
     });
   });
@@ -101,8 +134,8 @@ describe('evaluateDesktopPerfGate (pure)', () => {
     expect(d.verdictStatus).toBe('ok');
   });
 
-  it('a budgeted breach → warn when block-mode not armed (default), crit verdict + reasons', () => {
-    const d = evaluateDesktopPerfGate(run([ok, breach]), WARN_ONLY, 'deadbeefcafef00d');
+  it('a QUIET-WINDOW budgeted breach → warn when block-mode not armed, crit verdict + reasons', () => {
+    const d = evaluateDesktopPerfGate(run([ok, breach, ...quiet()]), WARN_ONLY, 'deadbeefcafef00d');
     expect(d.action).toBe('warn');
     expect(d.verdictStatus).toBe('crit');
     expect(d.reasons).toEqual(['interaction:plan-popup-open 1800ms > budget 1500ms']);
@@ -110,11 +143,15 @@ describe('evaluateDesktopPerfGate (pure)', () => {
     expect(d.summary).toContain('block-mode not armed');
   });
 
-  it('a budgeted breach → block when block-mode is armed', () => {
-    const d = evaluateDesktopPerfGate(run([breach]), ARMED);
+  it('a QUIET-WINDOW budgeted breach → block when block-mode is armed', () => {
+    const d = evaluateDesktopPerfGate(run([breach, ...quiet()]), ARMED);
     expect(d.action).toBe('block');
     expect(d.verdictStatus).toBe('crit');
+    expect(d.pressure).toBe('quiet');
     expect(d.summary).toContain('BLOCKED');
+    // The summary must SAY the host was quiet: an armed block that cannot name its
+    // own measurement conditions is the false-red D-003 refused, just louder.
+    expect(d.summary).toContain('QUIET host');
   });
 
   it('an UNBUDGETED failing measure is not a regression → pass', () => {
@@ -132,23 +169,40 @@ describe('evaluateDesktopPerfGate (pure)', () => {
   it('formats kb (RSS) and count budgets in the reason', () => {
     const rss: DesktopPerfMeasure = { key: 'memory:rss-kb', value: 4_194_304, unit: 'kb', budget: 3_670_016, ok: false };
     const drops: DesktopPerfMeasure = { key: 'chaos:frame-drops', value: 12, unit: 'count', budget: 8, ok: false };
-    const d = evaluateDesktopPerfGate(run([rss, drops]), WARN_ONLY);
+    const d = evaluateDesktopPerfGate(run([rss, drops, ...quiet()]), WARN_ONLY);
     expect(d.reasons).toEqual(['memory:rss-kb 4096MB > budget 3584MB', 'chaos:frame-drops 12 > budget 8']);
   });
 });
 
 describe('desktopPerfGatePolicyFromFlags', () => {
-  const V1 = { block: false, maxAgeMs: DEFAULT_DESKTOP_PERF_MAX_AGE_MS };
-  it('enabled tracks the flag; block is always false in V1', async () => {
-    expect(await desktopPerfGatePolicyFromFlags(async () => true)).toEqual({ enabled: true, ...V1 });
-    expect(await desktopPerfGatePolicyFromFlags(async () => false)).toEqual({ enabled: false, ...V1 });
+  const REST = { maxAgeMs: DEFAULT_DESKTOP_PERF_MAX_AGE_MS, quiet: DEFAULT_QUIET_WINDOW };
+  const on = async () => true;
+  const off = async () => false;
+
+  it('enabled and block each track their OWN flag (D-005 armed block-mode)', async () => {
+    expect(await desktopPerfGatePolicyFromFlags(on, on)).toEqual({ enabled: true, block: true, ...REST });
+    expect(await desktopPerfGatePolicyFromFlags(on, off)).toEqual({ enabled: true, block: false, ...REST });
+    expect(await desktopPerfGatePolicyFromFlags(off, on)).toEqual({ enabled: false, block: true, ...REST });
   });
-  it('a flag-read error fails safe to disabled', async () => {
-    expect(await desktopPerfGatePolicyFromFlags(async () => { throw new Error('boom'); })).toEqual({ enabled: false, ...V1 });
+
+  it('either flag-read error fails safe — never invents a deploy-holding verdict', async () => {
+    const boom = async () => { throw new Error('boom'); };
+    expect(await desktopPerfGatePolicyFromFlags(boom, on)).toMatchObject({ enabled: false });
+    // The important direction: an unreadable BLOCK flag must leave the gate warn-only
+    // rather than defaulting to armed, or a flag-store hiccup starts holding deploys.
+    expect(await desktopPerfGatePolicyFromFlags(on, boom)).toMatchObject({ enabled: true, block: false });
   });
+
   it('ships a freshness window by default — an unbounded gate re-asserts old runs forever', async () => {
-    const policy = await desktopPerfGatePolicyFromFlags(async () => true);
+    const policy = await desktopPerfGatePolicyFromFlags(on, on);
     expect(policy.maxAgeMs).toBeGreaterThan(0);
+  });
+
+  it('ships the derived quiet window, not an unbounded one', async () => {
+    const policy = await desktopPerfGatePolicyFromFlags(on, on);
+    expect(policy.quiet.someAvg10Max).toBeGreaterThan(0);
+    expect(Number.isFinite(policy.quiet.someAvg10Max)).toBe(true);
+    expect(policy.quiet.fullAvg10Max).toBe(0);
   });
 });
 
@@ -157,17 +211,17 @@ describe('runDesktopPerfGate', () => {
     let read = 0;
     // maxAgeMs is required since the freshness window landed; this call site was
     // missed then and had been a standing TS2345 in the apps/operator baseline.
-    const d = await runDesktopPerfGate({ enabled: false, block: false, maxAgeMs: DEFAULT_DESKTOP_PERF_MAX_AGE_MS }, {
+    const d = await runDesktopPerfGate({ enabled: false, block: false, maxAgeMs: DEFAULT_DESKTOP_PERF_MAX_AGE_MS, quiet: DEFAULT_QUIET_WINDOW }, {
       io: { readLatestRun: async () => { read += 1; return run([breach]); } },
     });
     expect(d.action).toBe('pass');
     expect(read).toBe(0);
   });
 
-  it('enabled + a regressed latest run → warn', async () => {
+  it('enabled + a regressed latest run measured quiet → warn', async () => {
     const d = await runDesktopPerfGate(WARN_ONLY, {
       workspaceId: 'default', candidateSha: 'feedface0000',
-      io: { readLatestRun: async () => run([breach]) },
+      io: { readLatestRun: async () => run([breach, ...quiet()]) },
     });
     expect(d.action).toBe('warn');
     expect(d.verdictStatus).toBe('crit');
@@ -240,7 +294,7 @@ describe('invariant measures (P-003c)', () => {
   });
 
   it('a disabled gate does not block on an invariant', () => {
-    const d = evaluateDesktopPerfGate(run([egressBreach]), { enabled: false, block: false, maxAgeMs: DEFAULT_DESKTOP_PERF_MAX_AGE_MS });
+    const d = evaluateDesktopPerfGate(run([egressBreach]), { enabled: false, block: false, maxAgeMs: DEFAULT_DESKTOP_PERF_MAX_AGE_MS, quiet: DEFAULT_QUIET_WINDOW });
     expect(d.action).toBe('pass');
   });
 
@@ -248,5 +302,199 @@ describe('invariant measures (P-003c)', () => {
     // Same failing shape, no `invariant` — must take the warn path, not block.
     const lookalike: DesktopPerfMeasure = { key: 'invariant:webview-http-egress', value: 9, unit: 'count', budget: 0, ok: false };
     expect(evaluateDesktopPerfGate(run([lookalike]), WARN_ONLY).action).toBe('warn');
+  });
+});
+
+/**
+ * resource-efficiency-closeout-2026-08-13 D-005 — QUIET-GATED BLOCKING.
+ *
+ * The property under test is that the SAMPLE is gated, not the verdict: block-mode
+ * may hold a deploy only for a breach the gate can attribute to an uncontended host.
+ * Anything else is `unmeasurable` — warn + `unknown`, never `crit`.
+ *
+ * CALIBRATION FIRST. Every negative case here asserts "does not block", which is
+ * also what a gate with block-mode accidentally disabled would produce — so the
+ * whole block would pass vacuously if arming were broken. The calibration case
+ * pins the positive direction with the SAME policy the negatives use, and the
+ * DISCRIMINATION pairs then vary exactly one field from it.
+ */
+describe('D-005 quiet-window gating', () => {
+  describe('classifyRunPressure (pure)', () => {
+    it('reads the stamps a run carries', () => {
+      const p = readHostPressure(run([...quiet(0.42), ok]));
+      expect(p).toEqual({ someStart: 0.42, someEnd: 0.42, fullStart: 0, fullEnd: 0 });
+    });
+
+    it('quiet / contended / unstamped are three distinct answers', () => {
+      expect(classifyRunPressure(run([...quiet(0.07), ok]))).toBe('quiet');
+      expect(classifyRunPressure(run([...contended(2.15), ok]))).toBe('contended');
+      expect(classifyRunPressure(run([ok]))).toBe('unstamped');
+    });
+
+    it('the threshold is a boundary, and it INCLUDES its own value', () => {
+      const T = DEFAULT_QUIET_WINDOW.someAvg10Max;
+      expect(classifyRunPressure(run(quiet(T)))).toBe('quiet');
+      expect(classifyRunPressure(run(quiet(T + 0.01)))).toBe('contended');
+    });
+
+    it('EITHER phase above the window is enough — a run that got busy mid-flight is not quiet', () => {
+      const start = quiet(0.01);
+      // Overwrite only the END stamp: the box got busy while the run was measuring.
+      const gotBusy = start.map((m) => (m.key === `${PSI_SOME_KEY_PREFIX}end` ? { ...m, value: 2.0 } : m));
+      expect(classifyRunPressure(run(gotBusy))).toBe('contended');
+      // ...and the mirror image, so this is not passing on start alone.
+      const wasBusy = start.map((m) => (m.key === `${PSI_SOME_KEY_PREFIX}start` ? { ...m, value: 2.0 } : m));
+      expect(classifyRunPressure(run(wasBusy))).toBe('contended');
+    });
+
+    it('a HALF-stamped run is unstamped, not half-trusted', () => {
+      const onlyStart = quiet().filter((m) => !m.key.endsWith(':end'));
+      expect(classifyRunPressure(run(onlyStart))).toBe('unstamped');
+    });
+
+    it('non-zero `full` pressure alone disqualifies a run whose `some` is quiet', () => {
+      expect(classifyRunPressure(run(quiet(0.01, 0.5)))).toBe('contended');
+    });
+
+    it('absent `full` stamps do not disqualify a quiet run (kernels vary)', () => {
+      const noFull = quiet(0.01).filter((m) => !m.key.startsWith(PSI_FULL_KEY_PREFIX));
+      expect(classifyRunPressure(run(noFull))).toBe('quiet');
+    });
+  });
+
+  describe('the gate decision', () => {
+    // ── CALIBRATION: arming demonstrably WORKS under this exact policy ──
+    it('CALIBRATION — an armed gate DOES block a quiet-window breach', () => {
+      const d = evaluateDesktopPerfGate(run([breach, ...quiet()], 'fail'), ARMED, 'abc12345');
+      expect(d.action).toBe('block');
+      expect(d.verdictStatus).toBe('crit');
+      expect(d.pressure).toBe('quiet');
+    });
+
+    // ── DISCRIMINATION: one field changes, the verdict changes ──
+    it('the SAME breach measured under contention is UNMEASURABLE — warn, and NOT a regression', () => {
+      const d = evaluateDesktopPerfGate(run([breach, ...contended()], 'fail'), ARMED, 'abc12345');
+      expect(d.action).toBe('warn');
+      // `unknown`, not `crit`: we do not know whether this candidate regressed.
+      expect(d.verdictStatus).toBe('unknown');
+      expect(d.pressure).toBe('contended');
+      expect(d.summary).toContain('UNMEASURABLE');
+      expect(d.summary).toContain('NOT reported as a regression');
+      // The breach itself is still reported — suppressed as a verdict, not hidden.
+      expect(d.reasons.join(' ')).toContain('interaction:plan-popup-open');
+      expect(d.reasons[0]).toContain('UNMEASURABLE');
+      // The actual numbers must be in the summary; "it was busy" without them is
+      // unfalsifiable by whoever reads the broadcast.
+      expect(d.summary).toContain('2.15');
+    });
+
+    it('an UNSTAMPED breach is unmeasurable too — no evidence of quiet is not evidence of quiet', () => {
+      const d = evaluateDesktopPerfGate(run([breach], 'fail'), ARMED, 'abc12345');
+      expect(d.action).toBe('warn');
+      expect(d.verdictStatus).toBe('unknown');
+      expect(d.pressure).toBe('unstamped');
+      expect(d.summary).toContain('no /proc/pressure/cpu stamp');
+    });
+
+    it('suppression is a WARN, never a silent pass — the inert-gate failure mode', () => {
+      // This is the whole reason the unmeasurable branch does not `pass`: 13 days of
+      // fail-soft passes were indistinguishable from a healthy gate.
+      for (const measures of [[breach, ...contended()], [breach]]) {
+        const d = evaluateDesktopPerfGate(run(measures, 'fail'), ARMED);
+        expect(d.action).not.toBe('pass');
+        expect(d.action).toBe('warn');
+      }
+    });
+
+    it('an INVARIANT breach still blocks under contention — load cannot make one false', () => {
+      const d = evaluateDesktopPerfGate(run([egressBreach, ...contended()], 'fail'), WARN_ONLY, 'abc12345');
+      expect(d.action).toBe('block');
+      expect(d.verdictStatus).toBe('crit');
+      expect(d.pressure).toBe('contended');
+      expect(d.summary).toContain('INVARIANT BREACHED');
+    });
+
+    it('a PASS is honoured under contention, but is not reported as a load-controlled clear', () => {
+      const contendedPass = evaluateDesktopPerfGate(run([ok, ...contended()]), ARMED);
+      expect(contendedPass.action).toBe('pass');
+      expect(contendedPass.verdictStatus).toBe('ok');
+      expect(contendedPass.pressure).toBe('contended');
+      expect(contendedPass.summary).toContain('contended sample');
+      const quietPass = evaluateDesktopPerfGate(run([ok, ...quiet()]), ARMED);
+      expect(quietPass.summary).toContain('quiet host');
+      // Same action, DIFFERENT report — that difference is the only honesty available
+      // when the sample cannot be vouched for in either direction.
+      expect(quietPass.action).toBe(contendedPass.action);
+      expect(quietPass.summary).not.toBe(contendedPass.summary);
+    });
+
+    it('a widened quiet window admits a formerly-contended run — the threshold is policy, not a constant', () => {
+      const loose: DesktopPerfGatePolicy = { ...ARMED, quiet: { someAvg10Max: 5, fullAvg10Max: 0 } };
+      const d = evaluateDesktopPerfGate(run([breach, ...contended(2.15)], 'fail'), loose);
+      expect(d.pressure).toBe('quiet');
+      expect(d.action).toBe('block');
+    });
+
+    it('pressure is reported on every decision that read a run, and null when none was read', () => {
+      expect(evaluateDesktopPerfGate(null, ARMED).pressure).toBeNull();
+      expect(evaluateDesktopPerfGate(run([ok]), { ...ARMED, enabled: false }).pressure).toBeNull();
+      // A run existed ⇒ never null, so "quiet" is always distinguishable from "cannot say".
+      expect(evaluateDesktopPerfGate(run([ok, ...quiet()]), ARMED).pressure).toBe('quiet');
+      expect(evaluateDesktopPerfGate(run([ok], 'warn'), ARMED).pressure).toBe('unstamped');
+    });
+
+    it('staleness still outranks the quiet window — an old quiet run is not a verdict', () => {
+      const NOW = 1_800_000_000_000;
+      const d = evaluateDesktopPerfGate(run([breach, ...quiet()], 'fail', NOW - 30 * 3_600_000), ARMED, 'abc123', NOW);
+      expect(d.action).toBe('pass');
+      expect(d.summary).toContain('STALE');
+      expect(d.pressure).toBe('quiet');
+    });
+  });
+
+  /**
+   * The threshold is DERIVED (see DEFAULT_QUIET_WINDOW), so it is pinned here against
+   * the sample it came from. If someone retunes it, these fail and force them to
+   * re-derive rather than nudge a number that a release gate now depends on.
+   */
+  describe('the derived threshold vs its own sample', () => {
+    // n=15, 2026-08-16T02:08–02:15Z, [max(PSI some avg10 start,end), LCP ms].
+    const SAMPLE: Array<[number, number]> = [
+      [0.0, 2583], [0.0, 2585], [0.0, 2640], [0.01, 2206], [0.07, 2721], [0.07, 2665],
+      [0.18, 2765], [0.27, 2675], [0.63, 2817], [1.27, 2916], [1.82, 2695], [1.88, 2233],
+      [2.0, 3085], [2.15, 3246], [3.26, 1311],
+    ];
+    const T = DEFAULT_QUIET_WINDOW.someAvg10Max;
+    const LCP_BUDGET = 4000;
+
+    it('admits a usable share of real runs — a window nothing passes is an inert gate', () => {
+      const admitted = SAMPLE.filter(([psi]) => psi <= T);
+      expect(admitted.length).toBeGreaterThanOrEqual(SAMPLE.length / 2);
+    });
+
+    it('the admitted band leaves real headroom to the budget, which is what makes blocking safe', () => {
+      const admitted = SAMPLE.filter(([psi]) => psi <= T).map(([, lcp]) => lcp);
+      const worst = Math.max(...admitted);
+      const spread = worst - Math.min(...admitted);
+      // A breach inside the window must be a move far larger than the measurement's
+      // own variation, or an armed block is just noise with consequences.
+      expect(LCP_BUDGET - worst).toBeGreaterThan(spread);
+    });
+
+    it('every reading worse than the admitted band falls OUTSIDE the window', () => {
+      const worstAdmitted = Math.max(...SAMPLE.filter(([psi]) => psi <= T).map(([, lcp]) => lcp));
+      for (const [psi, lcp] of SAMPLE) if (lcp > worstAdmitted) expect(psi).toBeGreaterThan(T);
+    });
+
+    it('a contended sample can read FALSELY FAST — why a contended pass is not a clear', () => {
+      // The most contended run in the sample reported the FASTEST LCP of all 15.
+      // LCP is a largest-element-so-far metric, so contention that stops the big
+      // element painting leaves a smaller earlier one holding the title. This is the
+      // measured refutation of "contention can only slow things down".
+      const [worstPsi, itsLcp] = SAMPLE.reduce((a, b) => (b[0] > a[0] ? b : a));
+      const quietBest = Math.min(...SAMPLE.filter(([psi]) => psi <= T).map(([, lcp]) => lcp));
+      expect(worstPsi).toBeGreaterThan(T);
+      expect(itsLcp).toBeLessThan(quietBest);
+    });
   });
 });
