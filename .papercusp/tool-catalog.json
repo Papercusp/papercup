@@ -25109,7 +25109,7 @@
           "POST"
         ]
       },
-      "description": "The unified subscription primitive — watch(pattern, {wake, once, min_sleep_sec, urgency, timeout_sec, mode, targetKind}): register an interest, receive a delivery. DELIVERY — wake:false (DEFAULT, cheap) injects into your inbox (no token cost); wake:true (opt-in, tokens) re-invokes you. CARDINALITY — once:true one-shot; once:false standing. TARGET (wake:false only): targetKind \"topic\" (default) or \"event\" (exact event key — see arg). Sugar: events:await = watch(key,{wake:true,once:true}). Ambient topic interest is this tool with targetKind:\"topic\", wake:false. PREDICATE (wake:true): predicate:{tool,args,path,op,value}+interval_sec polls a read-only tool under YOUR role, wakes on false→true.",
+      "description": "The unified subscription primitive — watch(pattern, {wake, once, min_sleep_sec, urgency, timeout_sec, mode, targetKind}): register an interest, receive a delivery. DELIVERY — wake:false (DEFAULT, cheap) injects into your inbox (no token cost); wake:true (opt-in, tokens) re-invokes you. CARDINALITY — once:true one-shot; once:false standing. TARGET: targetKind \"topic\" (default) / \"event\" (exact key) — wake:false — or \"interest\" (free text; fires on matching peer work; either wake mode — see arg). Sugar: events:await = watch(key,{wake:true,once:true}). Ambient topic interest is this tool with targetKind:\"topic\", wake:false. PREDICATE (wake:true): predicate:{tool,args,path,op,value}+interval_sec polls a read-only tool under YOUR role, wakes on false→true.",
       "capabilities": [
         "coord:write"
       ],
