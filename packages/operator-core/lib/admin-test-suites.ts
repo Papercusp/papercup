@@ -142,6 +142,21 @@ export interface ChaosRecorderSummary {
   reloads: number;
   frameDrops: number;
   maxFrameMs: number;
+  /**
+   * Offset of `maxFrameMs` within the measured window, and the recorder's own
+   * arming cost, split out so a frame breach can be attributed instead of
+   * re-litigated. Arming dynamically imports the ~226KB gremlins-runtime chunk
+   * and walks the document tagging blocked elements; before the split, that
+   * blocked frame landed in `maxFrameMs` and the chaos suite failed a 200ms APP
+   * budget on the INSTRUMENT's startup.
+   *
+   * `undefined` means THIS RECORDER BUILD DOES NOT REPORT IT — deliberately not
+   * 0, because a stale SPA bundle would otherwise read as "arming was free",
+   * which is the absent-vs-zero conflation this suite keeps rediscovering.
+   */
+  maxFrameAtMs?: number;
+  setupMaxFrameMs?: number;
+  setupFrameDrops?: number;
   routes: string[];
 }
 
@@ -1234,7 +1249,16 @@ export function gradeChaosSummary(
   const inpText = inpMeasured
     ? `p95=${summary.p95Inp}ms · max=${summary.maxInp}ms (${summary.inpSamples} samples)`
     : 'INP=UNMEASURED (0 Event Timing entries)';
-  const actual = `${summary.clicks} clicks · ${inpText} · errors=${summary.errors} · reloads=${summary.reloads} · frameDrops=${summary.frameDrops} · maxFrame=${summary.maxFrameMs}ms.`;
+  // Attribute the worst frame instead of just naming it. `maxFrameAt` says WHERE
+  // in the measured window it landed, and `setup` reports the recorder's own
+  // arming cost that is excluded from the grade — reported precisely so the
+  // exclusion is auditable. `undefined` prints as "unreported" rather than 0, so
+  // a stale SPA bundle cannot masquerade as free arming.
+  const frameWhere = summary.maxFrameAtMs === undefined ? '' : ` @${summary.maxFrameAtMs}ms into window`;
+  const setupText = summary.setupMaxFrameMs === undefined
+    ? ' · setup=unreported (recorder predates the split)'
+    : ` · setup maxFrame=${summary.setupMaxFrameMs}ms/drops=${summary.setupFrameDrops ?? 0} (excluded from grade)`;
+  const actual = `${summary.clicks} clicks · ${inpText} · errors=${summary.errors} · reloads=${summary.reloads} · frameDrops=${summary.frameDrops} · maxFrame=${summary.maxFrameMs}ms${frameWhere}${setupText}.`;
 
   const measures = [
     budgetMeasure(`${measurePrefix}max-frame`, summary.maxFrameMs, 'ms', DESKTOP_PERF_BUDGETS.chaosMaxFrameMs),
@@ -1576,6 +1600,9 @@ async function runChaosRecorder(ctx: SuiteContext, route: string, durationMs: nu
       reloads?: number;
       frameDrops?: number;
       maxFrameMs?: number;
+      maxFrameAtMs?: number;
+      setupMaxFrameMs?: number;
+      setupFrameDrops?: number;
     } | null>(
       ctx,
       `(() => {
@@ -1628,6 +1655,11 @@ async function runChaosRecorder(ctx: SuiteContext, route: string, durationMs: nu
         reloads: Number(summary.value.reloads || 0),
         frameDrops: Number(summary.value.frameDrops || 0),
         maxFrameMs: Number(summary.value.maxFrameMs || 0),
+        // Left undefined when the recorder build does not send them, so a stale
+        // SPA bundle reads as "not reported" rather than "arming cost zero".
+        maxFrameAtMs: typeof summary.value.maxFrameAtMs === 'number' ? summary.value.maxFrameAtMs : undefined,
+        setupMaxFrameMs: typeof summary.value.setupMaxFrameMs === 'number' ? summary.value.setupMaxFrameMs : undefined,
+        setupFrameDrops: typeof summary.value.setupFrameDrops === 'number' ? summary.value.setupFrameDrops : undefined,
         routes,
       };
     }

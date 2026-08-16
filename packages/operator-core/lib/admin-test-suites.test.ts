@@ -214,6 +214,46 @@ describe('gradeChaosSummary (unmeasured-INP guard)', () => {
     expect(dead.status).toBe('fail');
   });
 
+  // ---- frame attribution: setup cost is EXCLUDED but never INVISIBLE ----
+  // The chaos suite failed a 200ms APP budget on the recorder's own arming
+  // (a ~226KB dynamic import + a full-document tagging pass). Arming frames now
+  // go in a separate bucket, and these pin that the exclusion stays auditable.
+
+  it('reports WHERE the worst graded frame landed, so a breach can be attributed', () => {
+    const res = grade({ maxFrameMs: 180, maxFrameAtMs: 2400 });
+    expect(res.actual).toContain('@2400ms into window');
+  });
+
+  it('reports the excluded arming cost rather than dropping it', () => {
+    const res = grade({ maxFrameMs: 40, setupMaxFrameMs: 412, setupFrameDrops: 2 });
+    expect(res.actual).toContain('setup maxFrame=412ms');
+    expect(res.actual).toContain('drops=2');
+    expect(res.actual).toContain('excluded from grade');
+    // Excluded means excluded: a large ARMING frame must not fail the app budget.
+    expect(res.status).toBe('pass');
+    // …and must not enter the trend series as if it were an app frame.
+    const frameMeasure = (res.measures ?? []).find((m) => m.key === 'chaos:x:max-frame');
+    expect(frameMeasure?.value).toBe(40);
+  });
+
+  it('distinguishes a recorder that does not report arming cost from one reporting ZERO', () => {
+    // undefined => the SPA bundle predates the split. Printing this as 0 would
+    // assert "arming was free" on no evidence, which is the absent-vs-zero
+    // conflation the whole guard exists to prevent.
+    expect(grade({ setupMaxFrameMs: undefined }).actual).toContain('setup=unreported');
+    expect(grade({ setupMaxFrameMs: 0, setupFrameDrops: 0 }).actual).toContain('setup maxFrame=0ms');
+    expect(grade({ setupMaxFrameMs: 0 }).actual).not.toContain('unreported');
+  });
+
+  // Calibration: without this, an implementation that always excluded frames, or
+  // always printed 'unreported', would satisfy every frame assertion above.
+  it('still FAILS on a genuine in-window frame breach even when arming was clean', () => {
+    const res = grade({ maxFrameMs: 512, maxFrameAtMs: 3100, setupMaxFrameMs: 12 });
+    expect(res.status).toBe('fail');
+    expect(res.actual).toContain('@3100ms into window');
+    expect(res.actual).toContain('setup maxFrame=12ms');
+  });
+
   // Calibration: without this, a gradeChaosSummary that skipped or failed
   // unconditionally would satisfy every assertion above.
   it('GRADES the INP legs normally once interactions ARE observed', () => {
