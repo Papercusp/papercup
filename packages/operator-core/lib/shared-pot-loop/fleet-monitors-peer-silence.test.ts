@@ -543,3 +543,166 @@ describe('judgePeerFederationSilence — own log is not a peer', () => {
     expect(v.ownLogSilentForMs).toBe(0);
   });
 });
+
+/**
+ * WI-39489 — a merge cursor OUTLIVES admission.
+ *
+ * The cursor table is durable PG state; `handle.admitted` is rebuilt in memory on
+ * each boot and only re-populated when a peer RE-ANNOUNCES. So a host whose peers
+ * went away keeps their cursors forever, and from the cursor table ALONE "our fold
+ * is wedged" and "there is nothing left to fold" are indistinguishable — yet the
+ * all-silent branch asserted the first one by name.
+ *
+ * Measured 2026-08-16 on this host: 0 admitted peer logs in all 95 booted scopes;
+ * no peer had announced into ANY papercusp scope since 2026-08-15T22:36:39Z; ZERO
+ * announce rejections/errors in two days; and the same admission path on the same
+ * box kept admitting for 12 OTHER workspaces. The fold was fine.
+ */
+describe('judgePeerFederationSilence — a cursor outlives admission (WI-39489)', () => {
+  const OWN = 'own5b00878b7df0';
+  const PEERS = ['peer1e847ce7104b', 'peerda0f8e3e99b0', 'peeref7a81605440'];
+  /** The measured host-A shape: us advancing, three long-silent peer cursors. */
+  const hostA = () => [log(OWN, 0), ...PEERS.map((k, i) => log(k, 13 + i * 20))];
+
+  it('REPRODUCTION: all silent with NOTHING admitted names the peers, not our merge loop', () => {
+    const v = judgePeerFederationSilence(hostA(), {
+      silentAfterMs: SLO,
+      nowMs: NOW,
+      ownLogKeyHex: OWN,
+      admittedLogKeysHex: [OWN], // own log only — the measured live condition
+    });
+
+    expect(v.allSilent).toBe(true);
+    expect(v.admittedRemoteLogs).toBe(0);
+    expect(v.breaches).toHaveLength(1);
+    expect(v.breaches[0]).toContain('NO PEER ADMITTED');
+    expect(v.breaches[0]).toContain('ABSENT, not slow');
+    // The wrong subject must be gone from the operator-facing text.
+    expect(v.breaches[0]).not.toContain('LOCAL FOLD SUSPECT');
+    expect(v.breaches[0]).not.toContain("Suspect this host's merge loop");
+    // Still measured, still a breach — "we are not federating" must not go quiet.
+    expect(v.measured).toBe(true);
+    expect(v.totalLogs).toBe(3);
+  });
+
+  it('FALSIFIABILITY: the pre-fix reading is exactly what you get without the admitted set', () => {
+    // Same rows, admitted set NOT supplied — this IS the pre-WI-39489 behaviour.
+    const blind = judgePeerFederationSilence(hostA(), {
+      silentAfterMs: SLO,
+      nowMs: NOW,
+      ownLogKeyHex: OWN,
+    });
+    expect(blind.admittedRemoteLogs).toBeNull();
+    expect(blind.breaches[0]).toContain('LOCAL FOLD SUSPECT');
+
+    // The subject must NOT agree with it once the admitted set is known.
+    const v = judgePeerFederationSilence(hostA(), {
+      silentAfterMs: SLO,
+      nowMs: NOW,
+      ownLogKeyHex: OWN,
+      admittedLogKeysHex: [OWN],
+    });
+    expect(v.breaches[0]).not.toBe(blind.breaches[0]);
+  });
+
+  it('CALIBRATION: an ADMITTED-but-silent peer still blames the local fold', () => {
+    // The carve-out must be narrow. With peers genuinely admitted and nothing
+    // advancing, LOCAL FOLD SUSPECT is the correct verdict and must survive —
+    // otherwise this change would have deleted the signal instead of aiming it.
+    const v = judgePeerFederationSilence(hostA(), {
+      silentAfterMs: SLO,
+      nowMs: NOW,
+      ownLogKeyHex: OWN,
+      admittedLogKeysHex: [OWN, ...PEERS],
+    });
+    expect(v.admittedRemoteLogs).toBe(3);
+    expect(v.allSilent).toBe(true);
+    expect(v.breaches[0]).toContain('LOCAL FOLD SUSPECT');
+    expect(v.breaches[0]).not.toContain('NO PEER ADMITTED');
+  });
+
+  it('a PARTIALLY admitted population is a local-fold fault, not an absent-peer one', () => {
+    // One peer admitted and silent ⇒ something IS admitted that we are not
+    // folding. The threshold is "none admitted", never "some missing".
+    const v = judgePeerFederationSilence(hostA(), {
+      silentAfterMs: SLO,
+      nowMs: NOW,
+      ownLogKeyHex: OWN,
+      admittedLogKeysHex: [OWN, PEERS[0]!],
+    });
+    expect(v.admittedRemoteLogs).toBe(1);
+    expect(v.breaches[0]).toContain('LOCAL FOLD SUSPECT');
+  });
+
+  it('UNKNOWN admission never upgrades to the confident absent-peer reading', () => {
+    // `undefined` is ignorance, `[]` is a determined empty set. Only the second
+    // may change a verdict — spelling them the same is the error this guards.
+    const unknown = judgePeerFederationSilence(hostA(), {
+      silentAfterMs: SLO,
+      nowMs: NOW,
+      ownLogKeyHex: OWN,
+    });
+    const determined = judgePeerFederationSilence(hostA(), {
+      silentAfterMs: SLO,
+      nowMs: NOW,
+      ownLogKeyHex: OWN,
+      admittedLogKeysHex: [],
+    });
+    expect(unknown.admittedRemoteLogs).toBeNull();
+    expect(unknown.breaches[0]).toContain('LOCAL FOLD SUSPECT');
+    expect(determined.admittedRemoteLogs).toBe(0);
+    expect(determined.breaches[0]).toContain('NO PEER ADMITTED');
+  });
+
+  it('does not fire the absent-peer verdict while a peer is still ADVANCING', () => {
+    // Not all silent ⇒ the per-peer reading is licensed and unchanged, whatever
+    // the admitted set says. The new branch is gated on allSilent, not on
+    // admission alone.
+    const rows = [log(OWN, 0), log(PEERS[0]!, 48), log(PEERS[1]!, 0.1)];
+    const v = judgePeerFederationSilence(rows, {
+      silentAfterMs: SLO,
+      nowMs: NOW,
+      ownLogKeyHex: OWN,
+      admittedLogKeysHex: [OWN],
+    });
+    expect(v.allSilent).toBe(false);
+    expect(v.admittedRemoteLogs).toBe(0);
+    expect(v.breaches[0]).toContain('1 of 2');
+    expect(v.breaches[0]).not.toContain('NO PEER ADMITTED');
+  });
+
+  it('counts admission over the JUDGED population, so residue cannot fake an admitted peer', () => {
+    // A stranded-binding cursor whose key IS admitted must not count: it is not
+    // in the judged population, so it cannot license a local-fold verdict.
+    const rows = [
+      log(OWN, 0),
+      log(PEERS[0]!, 48),
+      log(PEERS[1]!, 500, 42, 'superseded-binding'),
+    ];
+    const v = judgePeerFederationSilence(rows, {
+      silentAfterMs: SLO,
+      nowMs: NOW,
+      ownLogKeyHex: OWN,
+      admittedLogKeysHex: [OWN, PEERS[1]!],
+    });
+    expect(v.strandedCursors).toBe(1);
+    expect(v.totalLogs).toBe(1);
+    expect(v.admittedRemoteLogs).toBe(0);
+    expect(v.breaches[0]).toContain('NO PEER ADMITTED');
+  });
+
+  it('reports admittedRemoteLogs on the unmeasured branches too, so it is never a silent gap', () => {
+    const ownOnly = judgePeerFederationSilence([log(OWN, 0)], {
+      silentAfterMs: SLO,
+      nowMs: NOW,
+      ownLogKeyHex: OWN,
+      admittedLogKeysHex: [OWN],
+    });
+    expect(ownOnly.unmeasuredReason).toBe('own-log-only');
+    expect(ownOnly.admittedRemoteLogs).toBe(0);
+
+    const empty = judgePeerFederationSilence([], { silentAfterMs: SLO, nowMs: NOW });
+    expect(empty.unmeasuredReason).toBe('no-remote-logs');
+    expect(empty.admittedRemoteLogs).toBeNull();
+  });
+});
