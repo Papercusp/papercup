@@ -36,6 +36,8 @@
 
 import { readFile } from 'node:fs/promises';
 
+import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
+
 import { judgeSeedPayloadIntegrity } from './seed-payload-integrity-guard.ts';
 
 export const EXIT_OK = 0;
@@ -117,14 +119,25 @@ export async function runVerifySeedPayload(
   }
 }
 
-const isMain = import.meta.url === `file://${process.argv[1]}`;
-if (isMain) {
-  let code: number;
-  try {
-    code = await runVerifySeedPayload(parseVerifySeedPayloadArgs(process.argv.slice(2)));
-  } catch (err) {
-    console.error(`[seed-verify] ${(err as Error).message}`);
-    code = EXIT_UNDETERMINED;
-  }
-  process.exit(code);
+// Run as the CLI only — `isCliEntry` is the repo's bundle-safe `require.main === module`
+// (EI-650), and importing this module (the test, a future caller) stays side-effect-free.
+// NOTE: no top-level await here on purpose — tsx transforms this file through its CJS
+// preflight, where top-level await is a hard TransformError, and a crash-on-load would make
+// EVERY exit code 1: the mismatch verdict and the "could not check" verdict would become
+// indistinguishable, which is precisely the collapse the three-way contract above exists to
+// prevent. It failed exactly that way once before this comment was written.
+if (isCliEntry(import.meta.url)) {
+  (async () => {
+    try {
+      return await runVerifySeedPayload(parseVerifySeedPayloadArgs(process.argv.slice(2)));
+    } catch (err) {
+      console.error(`[seed-verify] ${(err as Error).message}`);
+      return EXIT_UNDETERMINED;
+    }
+  })()
+    .then((code) => process.exit(code))
+    .catch((e) => {
+      console.error('[seed-verify] FATAL:', e instanceof Error ? e.stack : e);
+      process.exit(EXIT_UNDETERMINED);
+    });
 }
