@@ -129,22 +129,96 @@ describe('GREEN_CHECKPOINT_WITNESS.matches', () => {
   });
 });
 
+/** `check` runs TWO legs — verdict instants from `pipeline_events`, then overlap counts from
+ *  `event_awaits` — so the stub routes by the relation each query names. */
+const sqlStub = (legs: { instants?: unknown[]; overlap?: unknown[] }) => {
+  const calls: { text: string; values: unknown[] }[] = [];
+  const tag = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+    const text = [...strings].join(' ');
+    calls.push({ text, values });
+    return text.includes('pipeline_events') ? (legs.instants ?? []) : (legs.overlap ?? []);
+  }) as unknown as Parameters<typeof GREEN_CHECKPOINT_WITNESS.check>[0];
+  return { tag, calls };
+};
+
+const VERDICT = (iso: string) => ({ created_at: iso });
+
 describe('GREEN_CHECKPOINT_WITNESS.check', () => {
   it('queries only checkpoint statuses that emit a release:green event', async () => {
-    const calls: { strings: readonly string[]; values: unknown[] }[] = [];
-    const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
-      calls.push({ strings: [...strings], values });
-      return [{ n: 1, latest: '2026-08-12T12:00:00.000Z' }];
-    }) as unknown as Parameters<typeof GREEN_CHECKPOINT_WITNESS.check>[0];
+    const { tag, calls } = sqlStub({
+      instants: [VERDICT('2026-08-12T12:00:00.000Z')],
+      overlap: [{ woke: 0, missed: 9 }],
+    });
 
     const result = await GREEN_CHECKPOINT_WITNESS.check(
-      sql,
+      tag,
       'release:green:papercusp',
       24 * 60 * 60 * 1000,
     );
 
     expect(result?.occurred).toBe(true);
     expect(calls[0]?.values).toContainEqual(['advanced', 'advanced-prefix']);
+  });
+
+  // EI-20323150675466298 — THE FALSIFIER for the temporal-overlap fix. EI-10800's real defect
+  // was 0 real fires / 88 timeouts while green verdicts were landing. If tightening the witness
+  // ever stops convicting THIS shape, the fix has destroyed the detector and must not ship.
+  it('still convicts EI-10800s shape: verdicts landed and the awaits parked across them all missed', async () => {
+    const { tag } = sqlStub({
+      instants: ['2026-08-12T12:00:00.000Z', '2026-08-12T18:00:00.000Z'].map(VERDICT),
+      overlap: [{ woke: 0, missed: 88 }],
+    });
+
+    const result = await GREEN_CHECKPOINT_WITNESS.check(tag, 'release:green:papercusp', 24 * 60 * 60 * 1000);
+
+    expect(result?.occurred).toBe(true);
+    expect(result?.evidence).toContain('88 missed it');
+    expect(result?.evidence).toContain('100% lost');
+  });
+
+  // The false-positive that burned seven agent sessions: the gate greens often, but the awaits
+  // that were actually parked across a verdict overwhelmingly WOKE. Measured live: 16 woke / 1 missed.
+  it('does NOT convict when the awaits parked across a verdict mostly woke', async () => {
+    const { tag } = sqlStub({
+      instants: Array.from({ length: 33 }, (_, i) => VERDICT(`2026-08-1${i % 5}T04:00:00.000Z`)),
+      overlap: [{ woke: 16, missed: 1 }],
+    });
+
+    const result = await GREEN_CHECKPOINT_WITNESS.check(tag, 'release:green:papercusp', 7 * 24 * 60 * 60 * 1000);
+
+    expect(result?.occurred).toBe(false);
+    expect(result?.evidence).toContain('5.9% lost');
+    expect(result?.evidence).toContain('the wake path is working');
+  });
+
+  // A verdict existing somewhere in the window is NOT evidence a wake was lost — that window-level
+  // existence test is precisely the bug. With nobody parked across one, there is nothing to convict.
+  it('does NOT convict on verdicts alone when no await was parked across one', async () => {
+    const { tag } = sqlStub({
+      instants: [VERDICT('2026-08-12T12:00:00.000Z')],
+      overlap: [{ woke: 0, missed: 0 }],
+    });
+
+    const result = await GREEN_CHECKPOINT_WITNESS.check(tag, 'release:green:papercusp', 24 * 60 * 60 * 1000);
+
+    expect(result?.occurred).toBe(false);
+    expect(result?.evidence).toContain('too few to judge');
+  });
+
+  // WI-5685 / EI-12457: a candidateSha-bound await is SUPPOSED not to wake on another
+  // candidate's green, and a cancelled await was retired rather than missed. Counting either
+  // as a lost wake is what reintroduces the false-positive machine.
+  it('excludes candidateSha-bound and cancelled awaits from the overlap population', async () => {
+    const { tag, calls } = sqlStub({
+      instants: [VERDICT('2026-08-12T12:00:00.000Z')],
+      overlap: [{ woke: 4, missed: 0 }],
+    });
+
+    await GREEN_CHECKPOINT_WITNESS.check(tag, 'release:green:papercusp', 24 * 60 * 60 * 1000);
+
+    const overlapQuery = calls.find((c) => c.text.includes('event_awaits'))?.text ?? '';
+    expect(overlapQuery).toContain('payload_filter IS NULL');
+    expect(overlapQuery).toContain('cancelled_at IS NULL');
   });
 
   it('does not count an up-to-date verdict as evidence', async () => {
