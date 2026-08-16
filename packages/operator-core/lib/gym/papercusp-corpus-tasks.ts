@@ -179,7 +179,14 @@ async function commitHarnessConfig(destDir: string, pinCommit: string): Promise<
     },
   });
 
-  await execGitCommand(git('add', '-f', ...GYM_HARNESS_FILES.map((f) => f.path)));
+  // `--sparse` is as load-bearing as `-f`, and for a different wall: the substrate
+  // is a CONE-MODE SPARSE CHECKOUT (buildPinnedSubstratePlan) and `.papercusp/` is
+  // deliberately not in the cone, so without it the add fails with "paths ... exist
+  // outside of your sparse-checkout definition" — `-f` only overrides gitignore,
+  // never the sparse cone. First observed on the 2026-08-16 gym revive: this path
+  // shipped 2026-08-02, after the loop was disabled, so its first live run was the
+  // first time the two flags' walls were both standing.
+  await execGitCommand(git('add', '--sparse', '-f', ...GYM_HARNESS_FILES.map((f) => f.path)));
   await execGitCommand(git('commit', '-q', '-m', 'gym: harness config (blueprint pin + L1 gate)'));
   const baseCommit = await execGitCommand(git('rev-parse', 'HEAD'));
 
