@@ -31,6 +31,83 @@ const sig = (
   ...top,
 });
 
+describe('critAttribution — WI-38449 / D-007 F3: which crits may hold a deploy', () => {
+  // Attribution is assigned where each reason is RAISED. These cases pin the classes
+  // apart at the producer, so the gate never has to infer intent from reason prose.
+  const critOf = (over: Partial<PerfSignalsV1['signals']> = {}, top: Partial<PerfSignalsV1> = {}) =>
+    evaluatePerfSignals(sig(over, top), NOW);
+
+  it('operator :3070 unreachable is an OPERATOR DEFECT — this is what block-mode is for', () => {
+    const v = critOf({ operator_3070_reachable: false });
+    expect(v.status).toBe('crit');
+    expect(v.critAttribution.operatorDefect).toEqual(['operator :3070 unreachable']);
+    expect(v.critAttribution.ambientHost).toEqual([]);
+  });
+
+  it('a live wedge and a 1s+ event-loop lag are OPERATOR DEFECTS', () => {
+    expect(critOf({}, { hostState: 'wedge-active' }).critAttribution.operatorDefect).toHaveLength(1);
+    const lag = critOf({ eventLoopLag: { lag_p95_ms: 1746 } });
+    expect(lag.critAttribution.operatorDefect).toHaveLength(1);
+    expect(lag.critAttribution.ambientHost).toEqual([]);
+  });
+
+  it('CLOSE_WAIT saturation is an OPERATOR DEFECT', () => {
+    const v = critOf({ closeWait_3070: 935 });
+    expect(v.critAttribution.operatorDefect).toHaveLength(1);
+    expect(v.critAttribution.ambientHost).toEqual([]);
+  });
+
+  it('PSI cpu starvation is AMBIENT HOST — a shared box, not a candidate defect', () => {
+    const v = critOf({ psi: { cpu: { some: { avg60: 97 } } } } as Partial<PerfSignalsV1['signals']>);
+    expect(v.status).toBe('crit');
+    expect(v.critAttribution.ambientHost).toHaveLength(1);
+    expect(v.critAttribution.operatorDefect).toEqual([]);
+  });
+
+  it('THE MEASURED INCIDENT: memory-pressure crit is AMBIENT, so an armed gate must not block on it', () => {
+    // 2026-08-16, live capture: `PSI memory full avg60 11.45 ≥ 5` was the SOLE crit
+    // reason while ~100 peer agents shared the box. Before D-007 F3 this returned
+    // `block` from an armed gate and would have frozen every deploy.
+    const v = critOf({ psi: { memory: { full: { avg60: 11.45 }, some: { avg60: 40 } } } } as Partial<
+      PerfSignalsV1['signals']
+    >);
+    expect(v.status).toBe('crit');
+    expect(v.critAttribution.operatorDefect).toEqual([]);
+    expect(v.critAttribution.ambientHost.length).toBeGreaterThan(0);
+  });
+
+  it('INVARIANT: every crit reason is attributed exactly once, and the two classes reconstruct `reasons`', () => {
+    // Guards the raise() helper against a reason that is pushed to `crit` but to
+    // neither bucket (silently unblockable) or to both (double-counted).
+    const mixed = critOf({
+      operator_3070_reachable: false,
+      psi: { memory: { full: { avg60: 11.45 } } },
+    } as Partial<PerfSignalsV1['signals']>);
+    expect(mixed.status).toBe('crit');
+    const { operatorDefect, ambientHost } = mixed.critAttribution;
+    expect([...operatorDefect, ...ambientHost].sort()).toEqual([...mixed.reasons].sort());
+    expect(operatorDefect.filter((r) => ambientHost.includes(r))).toEqual([]);
+    expect(operatorDefect.length).toBeGreaterThan(0);
+    expect(ambientHost.length).toBeGreaterThan(0);
+  });
+
+  it('CALIBRATION: a non-crit verdict carries EMPTY attribution, not a stale or defaulted one', () => {
+    // Without this, "operatorDefect is empty" would be trivially true everywhere and
+    // the invariant above could pass on a verdict that never populated anything.
+    for (const v of [evaluatePerfSignals(sig(), NOW), evaluatePerfSignals(null, NOW)]) {
+      expect(v.critAttribution).toEqual({ operatorDefect: [], ambientHost: [] });
+    }
+    expect(critOf({ closeWait_3070: 300 }).status).toBe('warn'); // warn tier
+    expect(critOf({ closeWait_3070: 300 }).critAttribution.ambientHost).toEqual([]);
+  });
+
+  it('a deploy-suppressed unreachable is NOT attributed as a defect — it never became a crit', () => {
+    const v = evaluatePerfSignals(sig({ operator_3070_reachable: false }), NOW, undefined, true);
+    expect(v.critAttribution.operatorDefect).toEqual([]);
+    expect(v.suppressedReasons.length).toBeGreaterThan(0);
+  });
+});
+
 describe('evaluatePerfSignals (per-thread SLO budgets)', () => {
   it('ok on a clean stable capture', () => {
     expect(evaluatePerfSignals(sig(), NOW).status).toBe('ok');
