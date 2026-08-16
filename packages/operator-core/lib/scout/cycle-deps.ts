@@ -31,9 +31,17 @@ import { SHADOW_VARIANT_ORIGIN } from './shadow-variant-origin';
 import { runIdeators, ScoutIdeatorsTransportError } from './ideators';
 import { critiqueIdeas } from './critics';
 import { recombineProposals } from './recombine';
-import { routeProposals, makeWholeSystemInstanceOverride, type CapturePort, type RouterPorts } from './router';
+import {
+  routeProposals,
+  makeGoalScaleOverride,
+  makeWholeSystemInstanceOverride,
+  type CapturePort,
+  type GoalDispatchPort,
+  type RouterPorts,
+} from './router';
 import {
   buildCapturePort,
+  buildGoalDispatchPort,
   buildGymDispatchPort,
   buildInstanceDispatchPort,
   buildPlansNewPort,
@@ -95,6 +103,9 @@ export interface BuildScoutCycleDepsOptions {
   /** Override the dark experiment-rail dispatch port (tests). Default: the dry-run-only
    *  buildExperimentDispatchPort. Only consulted when SCOUT_EXPERIMENT_RAIL is ON. */
   experimentDispatch?: ExperimentDispatchPort;
+  /** Override the goal rail's create+start dispatch (tests / drills — a live goal spawn
+   *  is a real agent). Default: the production `buildGoalDispatchPort` (P-013 / D-005). */
+  goalDispatch?: GoalDispatchPort;
   /** Called when a deterministic Scout side rail authors a new draft plan that needs Queen review. */
   onScoutDraftCreated?: (draft: { slug: string; title: string }) => Promise<void>;
   /**
@@ -352,6 +363,9 @@ export function buildScoutCycleDeps(
     // apiary's intake queue is built — the routed-idea ledger (rail='instance') is the
     // pending-candidate record the apiary reads.
     instanceDispatch: buildInstanceDispatchPort(),
+    // goal-scale → goals create+start (P-013 / D-005): the full-auto goal rail. The
+    // BLENDER_GOAL_RAIL flag gates it at route time (goalEnabled below), not here.
+    goalDispatch: opts.goalDispatch ?? buildGoalDispatchPort({ harnessSlug: opts.harnessSlug }),
   };
 
   const baseReaders = opts.stateOfHiveReaders ?? buildStateOfHiveReaders();
