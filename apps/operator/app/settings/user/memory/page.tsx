@@ -47,6 +47,7 @@ import { useLexicon } from '@/lib/useLexicon';
 import { originOf, agentSourceDetailOf, type MemoryOrigin } from './origin';
 import { possibleSecretClasses, possibleSecretTitle } from './possible-secret';
 import { recallHealthLine, type RecallCanaryLatest } from './recall-health';
+import { memoryWindowState } from './window';
 
 interface BrokenAnchor {
   kind: string;
@@ -291,14 +292,15 @@ export default function MemoryPage() {
   // unknown rather than as an emptiness claim.
   const totalMemories = totalRows?.[0]?.total ?? null;
 
-  // More to fetch only if the window came back FULL (a short page means the
-  // server ran out, whatever the total says) and the total agrees. Requiring
-  // both makes the scroll self-limiting: it cannot spin past the end even if
-  // the total is momentarily stale.
-  const hasMore =
-    !showAll
-    && rows.length >= loadedLimit
-    && (totalMemories === null || rows.length < totalMemories);
+  // Window arithmetic lives in ./window so it can be asserted directly —
+  // see window.test.ts for the boundary cases (short page, unknown total,
+  // total lagging a delete).
+  const { hasMore, remaining, showDenominator } = memoryWindowState({
+    loadedRows: rows.length,
+    loadedLimit,
+    total: totalMemories,
+    showAll,
+  });
   const possiblyMoreThanShown = hasMore;
   const loading = !metaLoaded || (!!userId && rowsLoading);
 
@@ -1288,7 +1290,7 @@ export default function MemoryPage() {
       {/* The denominator (WI-39540). Rendered whenever the corpus is larger
           than the loaded window, so the row count on screen can never be
           mistaken for the size of the corpus. */}
-      {totalMemories !== null && rows.length < totalMemories && (
+      {showDenominator && (
         <div style={{ fontSize: 12, color: 'var(--fg-mute)' }}>
           Showing <strong>{rows.length}</strong> of <strong>{totalMemories}</strong> memories
           {' — '}scroll for more{showAll ? '' : ', or load them all at once with “Show all”'}.
@@ -1349,6 +1351,21 @@ export default function MemoryPage() {
           </div>
         );
       })()}
+
+      {/* Infinite-scroll sentinel (WI-39540). Rendered only while more rows
+          exist, so the observer in the effect above has nothing to watch once
+          the corpus is fully loaded. */}
+      {hasMore && (
+        <div
+          ref={loadMoreRef}
+          data-testid="memory-load-more-sentinel"
+          style={{ padding: '12px 0', textAlign: 'center', fontSize: 12, color: 'var(--fg-mute)' }}
+        >
+          {rowsLoading
+            ? 'Loading more memories…'
+            : `Scroll for more — ${remaining === null ? 'more' : remaining} remaining`}
+        </div>
+      )}
     </div>
   );
 }
