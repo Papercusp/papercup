@@ -270,15 +270,20 @@ test.describe('/adv Conversations + Sessions e2e', () => {
     // The comms detail transcript is present only in the read-only fallback.
     // The live path should replace it with ChatPanel's sync-backed transcript.
     await expect(page.getByText('read-only comms transcript text')).toHaveCount(0);
+
+    // Falsifier for this spec's own hermeticity.
+    sync.assertServed('agentChats.byHarness');
   });
 
   test('Create Sessions view renders the current SessionsRosterView route and opens an agent dossier', async ({
     page,
   }) => {
-    await stubCommonApis(page);
+    const sync = await stubCommonApis(page);
     await page.goto(`${baseURL}/adv?tab=plans&view=sessions&slug=${SLUG}&scope=self`, {
       waitUntil: 'domcontentloaded',
     });
+
+    await sync.waitForServed(['advRoster.list'], 30_000);
 
     const roster = page.locator('.pc-roster').first();
     await expect(roster.getByText('Active agents')).toBeVisible({ timeout: 30_000 });
@@ -294,5 +299,7 @@ test.describe('/adv Conversations + Sessions e2e', () => {
     await expect(detail.getByText('su · e2e worker')).toBeVisible();
     await expect(detail.getByText('Cover the sessions roster with a real browser test')).toBeVisible();
     await expect(detail.getByText('WI-3238')).toBeVisible();
+
+    sync.assertServed('advRoster.list', 'agentDetail.byOwner');
   });
 });
