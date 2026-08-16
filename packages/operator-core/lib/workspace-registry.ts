@@ -6,6 +6,7 @@
  * consumer of companyId was removed — audit P-047.)
  */
 
+import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -126,11 +127,24 @@ export function readRegistry(): WorkspaceRegistry {
  * the guard above — silently resolve to the retired `'default'` partition. `rename`
  * is atomic on POSIX, so a reader sees either the whole old file or the whole new
  * one, never a torn one.
+ *
+ * ⚠ The temp path must be UNIQUE PER WRITE, not just per process. `rename` being
+ * atomic only guarantees the reader sees a whole *file* — it says nothing about
+ * that file's CONTENT. Two concurrent `writeRegistry()` calls in one process
+ * sharing a `<path>.<pid>.tmp` name interleave truncate-then-write on the SAME
+ * temp file, and whichever renames first publishes whatever bytes happened to be
+ * there — including zero of them, which a reader then sees as
+ * "Unexpected end of JSON input" on a file that looks fine by the time anyone
+ * inspects it. The Rust shell hit this and fixed it the same way (a pid +
+ * REGISTRY_WRITE_SEQUENCE temp name, `workspaces.rs`); a UUID is used here
+ * instead of a module-scoped counter because module-scoped state in this package
+ * can split across duplicate module records and hand two writers the same
+ * sequence, reintroducing exactly the collision this removes.
  */
 export function writeRegistry(reg: WorkspaceRegistry): void {
   const p = registryPath();
   mkdirSync(workspacesRoot(), { recursive: true });
-  const tmp = `${p}.${process.pid}.tmp`;
+  const tmp = `${p}.${process.pid}.${randomUUID()}.tmp`;
   writeFileSync(tmp, JSON.stringify(reg, null, 2));
   renameSync(tmp, p);
 }
