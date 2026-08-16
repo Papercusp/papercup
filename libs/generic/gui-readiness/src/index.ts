@@ -60,3 +60,9 @@ export type {
   MountVerdict,
 } from './document-mount.js';
 export { classifyMountObservation, INITIAL_MOUNT_PROGRESS } from './document-mount.js';
+export type {
+  InjectedInstrumentState,
+  InjectedInstrumentObservation,
+  InjectedInstrumentVerdict,
+} from './injected-instrument.js';
+export { classifyInjectedInstrument, isInstrumentUnusable } from './injected-instrument.js';

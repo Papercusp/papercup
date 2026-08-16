@@ -80,12 +80,17 @@ describe("Packaged Papercusp desktop binary", () => {
     // regressions (failingMeasures picks up any budgeted measure that missed), so
     // they warn today and block when the gate is armed, like every other budget.
     // The loud signal is the spec's own asserts below, which fail the run outright.
+    // ANY non-`ready` state is unusable, so the gate-facing rollup stays a single
+    // 0/1 budgeted measure. The four causes are deliberately NOT flattened away
+    // upstream — `describeReading` puts the specific one in the log, and the
+    // assert below reports it — but the gate's question is only "can these
+    // numbers be trusted", and for that all four answer no.
     recordMeasure({
       key: "web-vitals-instrument-broken",
-      value: reading.instrument === "broken" ? 1 : 0,
+      value: reading.instrument === "ready" ? 0 : 1,
       unit: "count",
       budget: 0,
-      ok: reading.instrument !== "broken",
+      ok: reading.instrument === "ready",
     });
     recordMeasure({
       key: "web-vitals-expected-metrics-missing",
@@ -110,7 +115,17 @@ describe("Packaged Papercusp desktop binary", () => {
 
     // 1. The apparatus came up. `{}` with a live sentinel is honest idleness; `{}`
     //    without one is a dead instrument, and that is what used to pass.
-    expect(reading.instrument).toBe("ready");
+    //
+    //    Asserted THROUGH the reason so the failure names WHICH of the four
+    //    non-ready causes occurred. A bare `toBe("ready")` prints only the state
+    //    word, and the remedies differ completely — `replaced` means fix whatever
+    //    reloads the webview, `threw` means fix the payload, and confusing the two
+    //    is what this whole change exists to stop.
+    if (reading.instrument !== "ready") {
+      throw new Error(
+        `web-vitals instrument is "${reading.instrument}", not "ready": ${reading.brokenReason ?? "no reason recorded"}`,
+      );
+    }
 
     // 2. The apparatus is SEEING something. FCP and LCP are measured-available in
     //    this environment, so their absence means observers registered against an

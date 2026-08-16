@@ -59,6 +59,13 @@
  */
 import path from "node:path";
 import type { Browser } from "webdriverio";
+// Relative, not `@papercusp/gui-readiness`, for the same reason app-mount.ts is:
+// this runner is deliberately outside the npm workspace, so a bare specifier is
+// hostage to a peer's install landing mid-run.
+import {
+  classifyInjectedInstrument,
+  type InjectedInstrumentState,
+} from "../../../libs/generic/gui-readiness/src/injected-instrument";
 
 /** The five metrics this probe registers. */
 export type WebVitalName = "FCP" | "LCP" | "CLS" | "INP" | "TTFB";
@@ -111,11 +118,25 @@ export const METRIC_ENVIRONMENT: Record<WebVitalName, MetricEnvironmentEntry> = 
 
 export interface WebVitalsReading {
   /**
-   * `ready`    — the apparatus loaded and its observers registered.
-   * `broken`   — it did not. THIS is the state the old `{}` could not express.
+   * `ready` means the apparatus loaded and its observers registered. Every other
+   * value is a DIFFERENT way of not working, with a different remedy —
+   * classified by `@papercusp/gui-readiness`, see {@link InjectedInstrumentState}:
+   *
+   *   `replaced`       — the document died under the probe. Says nothing about
+   *                      the instrument; fix whatever reloads the webview.
+   *   `threw`          — the payload threw. `brokenReason` names the error.
+   *   `never-executed` — the script element never ran. Fix the injection.
+   *   `incomplete`     — it ran, did not throw, never finished registering.
+   *
+   * WHY THIS IS NOT JUST `broken` (WI-38449): all four of those produced the
+   * identical `{ready:false, metrics:null, errors:[]}` and were reported as
+   * "the bundle did not execute or its observers failed to register" — a message
+   * that names two of the four and is silent about the other two. Collapsing
+   * distinct causes into one value is the very defect this module's header
+   * describes; it had simply moved up a level.
    */
-  instrument: "ready" | "broken";
-  /** Populated only when `instrument === 'broken'`. */
+  instrument: InjectedInstrumentState;
+  /** Populated for every non-`ready` instrument state; the actionable why. */
   brokenReason: string | null;
   /** Metrics that actually reported. */
   metrics: Partial<Record<WebVitalName, number>>;
@@ -221,6 +242,33 @@ export async function collectWebVitals(
 ): Promise<WebVitalsReading> {
   const bundle = buildWebVitalsBundle();
 
+  // Identity of the document we are about to inject into. Minted here if absent,
+  // using the SAME key app-mount.ts uses, so mount and probe agree on what "this
+  // document" means rather than each keeping a private notion of it.
+  const docTokenAtInjection = (await browser.execute(() => {
+    const w = window as unknown as { __papercusp_perf_doc__?: string };
+    if (!w.__papercusp_perf_doc__) {
+      w.__papercusp_perf_doc__ =
+        "doc-" + String(Date.now()) + "-" + Math.random().toString(36).slice(2, 10);
+    }
+    return w.__papercusp_perf_doc__;
+  })) as string | null;
+
+  // Two sentinels around the payload (see injected-instrument.ts):
+  //  - __wv_injected FIRST and OUTSIDE the try, so "the script ran" survives a
+  //    throw. It cannot be inferred from the payload's own state: esbuild hoists
+  //    the library above the payload's first line (measured: web-vitals 5.3.0 →
+  //    9,875 bytes, first payload assignment at offset 9,412), so a throw during
+  //    library init leaves every payload-owned global unset.
+  //  - __wv_fatal captures the throw. An uncaught error inside an injected
+  //    inline <script> goes to the page's error handler, NOT to browser.execute,
+  //    so without this the single most diagnostic fact is silently discarded.
+  const instrumented =
+    `window.__wv_injected = true;\n` +
+    `try {\n${bundle}\n} catch (e) {\n` +
+    `  window.__wv_fatal = String((e && (e.stack || e.message)) || e);\n` +
+    `}`;
+
   // Inline <script> rather than a module or a CDN fetch: this is the mechanism
   // measured working under papercusp:// (probe 4 test A).
   await browser.execute((src: string) => {
@@ -228,29 +276,65 @@ export async function collectWebVitals(
     el.textContent = src;
     document.head.appendChild(el);
     el.remove();
-  }, bundle);
+  }, instrumented);
 
   await browser.pause(settleMs);
 
+  // Read the token WITHOUT minting: absence must remain observable here, because
+  // a fresh document is exactly the evidence of replacement. Minting on read (as
+  // the mount probe does) would manufacture a token and disguise the reload.
   const raw = (await browser.execute(() => {
     const w = window as unknown as {
       __wv?: Record<string, number>;
       __wv_ready?: boolean;
       __wv_errors?: string[];
+      __wv_injected?: boolean;
+      __wv_fatal?: string;
+      __papercusp_perf_doc__?: string;
     };
     return {
       ready: w.__wv_ready === true,
       metrics: w.__wv ?? null,
       errors: w.__wv_errors ?? [],
+      injected: w.__wv_injected === true,
+      fatal: w.__wv_fatal ?? null,
+      docToken: w.__papercusp_perf_doc__ ?? null,
+      // WHERE the document went. Knowing it was replaced identifies the failure;
+      // knowing what replaced it identifies the CULPRIT, and that is the next
+      // question every single time — without it the finding is "something
+      // navigated", which no one can act on.
+      url: String(window.location ? window.location.href : "(no location)"),
+      readyState: String(document.readyState),
     };
-  })) as { ready: boolean; metrics: Record<string, number> | null; errors: string[] };
+  })) as {
+    ready: boolean;
+    metrics: Record<string, number> | null;
+    errors: string[];
+    injected: boolean;
+    fatal: string | null;
+    docToken: string | null;
+    url: string;
+    readyState: string;
+  };
 
-  if (!raw.ready) {
+  const verdict = classifyInjectedInstrument({
+    docTokenAtInjection,
+    docTokenAfterSettle: raw.docToken,
+    injectedSentinel: raw.injected,
+    fatal: raw.fatal,
+    readySentinel: raw.ready,
+  });
+
+  if (verdict.state !== "ready") {
     return {
-      instrument: "broken",
+      instrument: verdict.state,
       brokenReason:
-        "window.__wv_ready was not set — the bundle did not execute or its observers failed to register. " +
-        "This is NOT an idle page: an idle page reports ready with no metrics.",
+        verdict.reason +
+        `\n  now at: ${raw.url} (readyState: ${raw.readyState})` +
+        (verdict.replacementChecked
+          ? ""
+          : " (NOTE: no injection-time document token was readable, so replacement " +
+            "could not be ruled out — this verdict assumes the document survived.)"),
       metrics: {},
       missingExpected: [],
       absentByEnvironment: [],
@@ -281,8 +365,11 @@ export async function collectWebVitals(
 
 /** Human-readable one-liner for the run log. */
 export function describeReading(reading: WebVitalsReading): string {
-  if (reading.instrument === "broken") {
-    return `web-vitals: INSTRUMENT BROKEN — ${reading.brokenReason ?? "unknown"}`;
+  if (reading.instrument !== "ready") {
+    // The STATE is in the headline, not just the prose: a reader scanning a
+    // 15,000-line run log sees which of the four causes this was without
+    // parsing the sentence after it.
+    return `web-vitals: INSTRUMENT ${reading.instrument.toUpperCase()} — ${reading.brokenReason ?? "unknown"}`;
   }
   const got = (Object.keys(reading.metrics) as WebVitalName[])
     .map((k) => `${k}=${reading.metrics[k]}`)

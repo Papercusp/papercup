@@ -209,10 +209,46 @@ describe("Packaged Papercusp desktop — webview HTTP egress", () => {
     //    measures, leaving the gate with no data at all and fail-softing to a pass.
     //    A missing detector would then read as a clean deploy. -1 is impossible for
     //    a real request count, so it reads unambiguously as "detector absent".
+    //    ── WHY VALIDITY IS DECIDED HERE AND NOT BY THE ASSERTS BELOW (WI-38449) ──
+    //    The rule above was implemented for ONE void case (an absent detector) and
+    //    missed the others, which is how a run that threw "the sample is void, NOT
+    //    clean" still published `invariant:webview-http-egress = 0, ok: true`.
+    //    Nothing malfunctioned: the document had been REPLACED, and the fresh
+    //    document's fresh monitor truthfully reported 0 requests seen — over the
+    //    handful of milliseconds it had existed. The 36s window the invariant
+    //    asserts over was never sampled at all.
+    //
+    //    That is worse than an ordinary wrong number, because this is the ONE
+    //    measure class that blocks unconditionally: `breachedInvariants()` matches
+    //    `invariant === true && !ok`, so an unmeasurable invariant reporting `ok`
+    //    is indistinguishable from a verified-clean one, and the gate's strongest
+    //    signal silently degrades to a fail-open. The asserts below cannot save it
+    //    — they throw AFTER the record, which is exactly why the record is first.
+    //
+    //    So the sample is judged before it is published, in the same narrowing
+    //    order the asserts use. `-1` for every void case, not just the absent
+    //    detector: "we could not tell" must never reach the gate wearing the same
+    //    face as "it was zero".
+    const sampleVoidReason: string | null =
+      probe.docToken !== mount.docToken
+        ? "document replaced during the sample"
+        : !probe.appMounted || !probe.shellPresent
+          ? "operator shell gone at probe time"
+          : !probe.report
+            ? "egress detector absent"
+            : null;
+
     recordInvariant(
       "webview-http-egress",
-      probe.report ? probe.report.total : -1,
+      sampleVoidReason === null && probe.report ? probe.report.total : -1,
     );
+    if (sampleVoidReason !== null) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[perf] invariant webview-http-egress recorded as -1 (UNMEASURABLE: ${sampleVoidReason}) — ` +
+          `not as a clean 0. The run below fails with the full diagnosis.`,
+      );
+    }
 
     // 4. POSITIVE CONTROL FIRST — assert the SAMPLE before anything about the
     //    detector, and assert it in the order that NARROWS: same document? → app
