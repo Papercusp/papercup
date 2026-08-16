@@ -139,12 +139,35 @@ function loadedBuiltins(source: string): string[] {
 }
 
 /**
- * A comment line is ABOUT the blueprint-less fallback when it mentions the fallback by
- * name or describes the no-blueprint condition. Keeps property 3 from over-firing on
- * unrelated true uses of "behavior-preserving".
+ * A comment BLOCK is ABOUT the blueprint-less fallback when any of its lines mentions the
+ * fallback by name or describes the no-blueprint condition. Keeps property 3 from
+ * over-firing on unrelated true uses of "behavior-preserving".
+ *
+ * ⚠ Scoped per BLOCK, not per LINE: the claim and its subject routinely sit on different
+ * lines of the same docstring — the exact shape that was live here until 2026-08-16 said
+ * "has no blueprint file" three lines above "so this is behavior-preserving". A per-line
+ * detector misses it, which is what the fixture controls caught.
  */
 const ABOUT_FALLBACK =
   /codingSpine|codingFallback|blueprint-less|blueprintless|no-blueprint|no blueprint|pre-blueprint|has no blueprint|fallback/i;
+
+/** Maximal runs of consecutive lines carrying comment text. 1-based `line` per entry. */
+function commentBlocks(source: string): { line: number; text: string }[][] {
+  const blocks: { line: number; text: string }[][] = [];
+  let current: { line: number; text: string }[] = [];
+  commentsOnly(source)
+    .split('\n')
+    .forEach((text, i) => {
+      if (text.trim() === '') {
+        if (current.length) blocks.push(current);
+        current = [];
+        return;
+      }
+      current.push({ line: i + 1, text });
+    });
+  if (current.length) blocks.push(current);
+  return blocks;
+}
 
 export function judgeBlueprintlessFallback(input: {
   loaders: FallbackLoaderSite[];
@@ -195,16 +218,20 @@ export function judgeBlueprintlessFallback(input: {
 
   // Property 3 — NOT CLAIMED BEHAVIOR-PRESERVING.
   const behaviorPreservingClaims: { file: string; line: number; text: string }[] = [];
+  const seen = new Set<string>();
   for (const d of [...input.docs, ...input.loaders]) {
-    commentsOnly(d.source)
-      .split('\n')
-      .forEach((text, i) => {
-        if (!/behavio(u)?r-preserving/i.test(text)) return;
-        if (!ABOUT_FALLBACK.test(text)) return;
+    for (const block of commentBlocks(d.source)) {
+      if (!block.some((l) => ABOUT_FALLBACK.test(l.text))) continue;
+      for (const l of block) {
+        if (!/behavio(u)?r-preserving/i.test(l.text)) continue;
         // A line that DENIES the claim ("NOT behavior-preserving") is the correction, not the defect.
-        if (/\bnot\b|\bno longer\b|⚠/i.test(text)) return;
-        behaviorPreservingClaims.push({ file: d.file, line: i + 1, text: text.trim() });
-      });
+        if (/\bnot\b|\bno longer\b|⚠/i.test(l.text)) continue;
+        const key = `${d.file}:${l.line}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        behaviorPreservingClaims.push({ file: d.file, line: l.line, text: l.text.trim() });
+      }
+    }
   }
   for (const c of behaviorPreservingClaims) {
     violations.push(
