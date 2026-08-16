@@ -60,6 +60,7 @@
  * PAPERCUSP_ENABLE_HMR=1) to actually exercise it.
  */
 import { test, expect, assertMounted, type Page } from './_egress';
+import { stubSyncQueries, type SyncQueryStub } from './_sync-stub';
 
 const baseURL =
   process.env.OPERATOR_E2E_BASE_URL ??
@@ -208,7 +209,7 @@ const MOUNT_FAIL_MSG =
   'Fix the import chain that pulls embedded-pg-discovery into client code; do NOT re-derive ' +
   'this from the HMR or FAKE_LLM hypotheses — both were checked and neither is the cause.';
 
-async function stubApis(page: Page) {
+async function stubApis(page: Page): Promise<SyncQueryStub> {
   await page.route('**/api/harness/projects/lite', async (route) => {
     await route.fulfill({
       status: 200,
@@ -262,29 +263,21 @@ async function stubApis(page: Page) {
     });
   });
 
-  // Sync batch — rows per query NAME. The graph reads byHarness + depEdges; the
+  // Sync — rows per query NAME, over the LIVE contract: one
+  // `GET /api/zero-harness/rest-query?name=&args=` per query. (This spec used to
+  // stub `POST /rest-query-batch`, which the client has not spoken since
+  // 2026-07-26 — the stub was never hit and the graph rendered from real traffic,
+  // i.e. 0 nodes. See _sync-stub.ts.) The graph reads byHarness + depEdges; the
   // Detail pane re-reads byHarness (same key, deduped) plus its own 1-row
   // `workItems.detail`. Everything else → [].
-  await page.route('**/api/zero-harness/rest-query-batch**', async (route) => {
-    const post = route.request().postDataJSON() as
-      | { queries?: Array<{ name?: string; args?: Record<string, unknown> }> }
-      | null;
-    const queries = post?.queries ?? [];
-    const results = queries.map((q) => {
-      let rows: unknown[] = [];
-      if (q.name === 'workItems.byHarness') rows = WORK_ITEMS;
-      else if (q.name === 'workItems.depEdges') rows = DEP_EDGES;
-      else if (q.name === 'workItems.detail') {
-        const id = typeof q.args?.id === 'string' ? q.args.id : '';
-        rows = WORK_ITEMS.filter((w) => w.id === id);
-      }
-      return { rows, version: String(Date.now()) };
-    });
-    await route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({ results }),
-    });
+  return stubSyncQueries(page, (name, args) => {
+    if (name === 'workItems.byHarness') return WORK_ITEMS;
+    if (name === 'workItems.depEdges') return DEP_EDGES;
+    if (name === 'workItems.detail') {
+      const id = typeof args.id === 'string' ? args.id : '';
+      return WORK_ITEMS.filter((w) => w.id === id);
+    }
+    return undefined;
   });
 }
 
@@ -311,7 +304,7 @@ function selParam(page: Page): string | null {
 
 test.describe('/adv dependency graph — selection interlock with the Detail pane', () => {
   test('a graph node click writes ?sel and the Detail pane follows it', async ({ page }) => {
-    await stubApis(page);
+    const sync = await stubApis(page);
     const mounted = await dockMounts(page);
     assertMounted(mounted, MOUNT_FAIL_MSG);
 
@@ -334,6 +327,11 @@ test.describe('/adv dependency graph — selection interlock with the Detail pan
     // edge (correctly excluded), the other is merely outside the window (must be included).
     await expect(graph.locator('g.pc-depgraph__node', { hasText: 'WI-3' })).toHaveCount(0);
     await expect(graph.getByText('3 nodes · 2 edges')).toBeVisible();
+
+    // The rows above can ONLY have come from the stub. Assert that explicitly:
+    // a stub silently bypassed (the dead `rest-query-batch` route this spec used
+    // to intercept) must fail here, not surface as an empty graph 45s later.
+    sync.assertServed('workItems.byHarness', 'workItems.depEdges');
 
     // ── 0b. THE HYDRATED NODE IS REAL, LAID OUT, AND LABELLED FROM ITS EDGE ROW.
     //        This is the assertion that would have caught the shipped bug: it can only pass if
