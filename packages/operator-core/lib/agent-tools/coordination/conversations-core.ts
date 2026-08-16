@@ -459,20 +459,36 @@ async function appendPost(
   return { post, delivered };
 }
 
+/** The post/answer error union (P-004 widened it with the consult kind-gate refusal). */
+export type AppendPostError =
+  | { error: 'not_found' }
+  | { error: 'resolved' }
+  | { error: 'closed' }
+  | { error: 'superseded' }
+  | { error: 'consult_requires_typed_verb' };
+
 export function postReplyCore(
   deps: ConversationDeps,
   identity: AgentIdentity,
-  input: { conversation_id: string; body: string; mentions?: string[] },
-): Promise<PostResult | { error: 'not_found' } | { error: 'resolved' } | { error: 'closed' } | { error: 'superseded' }> {
-  return appendPost(deps, identity, input.conversation_id, input.body, { isAnswer: false, mentions: input.mentions });
+  input: { conversation_id: string; body: string; mentions?: string[]; via_consult_verb?: boolean },
+): Promise<PostResult | AppendPostError> {
+  return appendPost(deps, identity, input.conversation_id, input.body, {
+    isAnswer: false,
+    mentions: input.mentions,
+    viaConsultVerb: input.via_consult_verb,
+  });
 }
 
 export function answerQuestionCore(
   deps: ConversationDeps,
   identity: AgentIdentity,
-  input: { conversation_id: string; body: string; mentions?: string[] },
-): Promise<PostResult | { error: 'not_found' } | { error: 'resolved' } | { error: 'closed' } | { error: 'superseded' }> {
-  return appendPost(deps, identity, input.conversation_id, input.body, { isAnswer: true, mentions: input.mentions });
+  input: { conversation_id: string; body: string; mentions?: string[]; via_consult_verb?: boolean },
+): Promise<PostResult | AppendPostError> {
+  return appendPost(deps, identity, input.conversation_id, input.body, {
+    isAnswer: true,
+    mentions: input.mentions,
+    viaConsultVerb: input.via_consult_verb,
+  });
 }
 
 // ── Resolve ──────────────────────────────────────────────────────────────────
