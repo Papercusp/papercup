@@ -418,3 +418,140 @@ describe('getFeedbackCore — recursion lineage (P-005)', () => {
     expect(routeCalls[0].excludeOwners).toBeUndefined();
   });
 });
+
+// ── P-006: archive-first retrieval ───────────────────────────────────────
+// Each test uses its OWN workspace: the archive lookup matches any
+// closed_answered row in the workspace, so shared-workspace seeds would
+// couple the tests to execution order.
+
+/** 384-d unit vector at angle θ in the (0,1) plane — cosine sim between two
+ * vecAt angles is exactly cos(θ₁−θ₂), so archive similarity is controllable
+ * (same idiom as relevance-router.integration.test.ts). */
+function vecAt(theta: number): number[] {
+  const v: number[] = new Array(384).fill(0);
+  v[0] = Math.cos(theta);
+  v[1] = Math.sin(theta);
+  return v;
+}
+
+/** Seed a CLOSED consult directly (the archive population). */
+async function seedClosedConsult(opts: {
+  ws: string;
+  conv: string;
+  vec: number[];
+  responder?: string | null;
+  outcome?: Record<string, unknown>;
+}): Promise<void> {
+  await rootSql`
+    INSERT INTO harness_shared.consult_state
+      (workspace_id, conversation_id, requester_id, responder_id, state, question,
+       routing, outcome, closed_at, query_embedding)
+    VALUES
+      (${opts.ws}, ${opts.conv}, 'req-past', ${opts.responder ?? 'resp-arch'},
+       'closed_answered', 'an earlier, similar question',
+       '{}'::jsonb, ${JSON.stringify(opts.outcome ?? { answer: 'archived answer', confidence: 'high' })}::jsonb,
+       ${NOW.toISOString()}::timestamptz, ${JSON.stringify(opts.vec)}::vector)
+  `;
+}
+
+describe('getFeedbackCore — archive-first retrieval (P-006)', () => {
+  const qv = vecAt(0);
+
+  it('a closed_answered consult with a highly similar question serves from the archive: instant close, no wake, provenance cited', async () => {
+    const ws = 'ws-arch-serve';
+    await seedClosedConsult({
+      ws,
+      conv: 'arch-src-1',
+      vec: vecAt(0), // sim 1.0 vs qv
+      responder: 'resp-arch',
+      outcome: { answer: 'bump hnsw.ef_search', confidence: 'high' },
+    });
+    const { deps, opened, reached } = makeDeps(routeOf([cand('cand-live')], { queryVec: qv }));
+    const r = asOk(await getFeedbackCore({ ...baseReq, workspaceId: ws }, deps));
+
+    expect(r.verdict).toBe('served_from_archive');
+    expect(r.state).toBe('served_from_archive');
+    expect(r.archive).toMatchObject({
+      source_conversation_id: 'arch-src-1',
+      responder_id: 'resp-arch',
+      answer: { answer: 'bump hnsw.ef_search', confidence: 'high' },
+    });
+    expect(r.archive!.sim).toBeGreaterThanOrEqual(0.99);
+    expect(r.hint).toContain('arch-src-1');
+    // No wake, no budget: served, not consulted (D-006).
+    expect(reached).toHaveLength(0);
+    expect(r.wake).toMatchObject({ attempted: false, woke: 0 });
+    // The conversation row still exists (D-008 §1 PK) but is delivered to no one.
+    expect(opened).toHaveLength(1);
+    expect(opened[0].direct_to).toEqual([]);
+    // DB row REUSES closed_answered (no enum widening) + outcome.source='archive'.
+    const row = await stateRow(r.conversation_id, ws);
+    expect(row.state).toBe('closed_answered');
+    expect(row.closed_at).not.toBeNull();
+    expect(row.wakes_used).toBe(0);
+    expect(row.outcome).toMatchObject({ source: 'archive', source_conversation_id: 'arch-src-1' });
+    expect(row.has_query_embedding).toBe(true);
+  });
+
+  it('a dissimilar archive row does not serve — normal routing proceeds, and the new consult forward-fills query_embedding', async () => {
+    const ws = 'ws-arch-dissimilar';
+    await seedClosedConsult({ ws, conv: 'arch-orth', vec: vecAt(Math.PI / 2) }); // sim 0 vs qv
+    const { deps, reached } = makeDeps(routeOf([cand('cand-live')], { queryVec: qv }));
+    const r = asOk(await getFeedbackCore({ ...baseReq, workspaceId: ws }, deps));
+
+    expect(r.verdict).toBe('routed');
+    expect(r.archive).toBeUndefined();
+    expect(reached).toHaveLength(1); // woken as usual
+    // Forward-fill: the routed consult still stores its embedding, growing the archive.
+    const row = await stateRow(r.conversation_id, ws);
+    expect(row.state).toBe('awaiting_responder');
+    expect(row.has_query_embedding).toBe(true);
+  });
+
+  it('archive-served copies are never re-served — only ORGANIC closes are sources (no copy-of-copy chains)', async () => {
+    const ws = 'ws-arch-no-chain';
+    // The ONLY archive row is itself archive-served (outcome.source='archive'),
+    // at sim 1.0 — it must be excluded from candidacy.
+    await seedClosedConsult({
+      ws,
+      conv: 'arch-copy',
+      vec: vecAt(0),
+      outcome: { source: 'archive', source_conversation_id: 'arch-src-0', answer: { answer: 'copied' } },
+    });
+    const { deps, reached } = makeDeps(routeOf([cand('cand-live')], { queryVec: qv }));
+    const r = asOk(await getFeedbackCore({ ...baseReq, workspaceId: ws }, deps));
+
+    expect(r.verdict).toBe('routed'); // NOT served_from_archive
+    expect(r.archive).toBeUndefined();
+    expect(reached).toHaveLength(1);
+  });
+
+  it('falsifiability: archiveFloor 0 serves even a maximally-dissimilar archive row (the floor comparison is live)', async () => {
+    const ws = 'ws-arch-floor-zero';
+    await seedClosedConsult({ ws, conv: 'arch-far', vec: vecAt(Math.PI / 2) }); // sim 0
+    const { deps } = makeDeps(routeOf([cand('cand-live')], { queryVec: qv }));
+    const r = asOk(await getFeedbackCore({ ...baseReq, workspaceId: ws, archiveFloor: 0 }, deps));
+    expect(r.verdict).toBe('served_from_archive');
+    expect(r.archive?.source_conversation_id).toBe('arch-far');
+  });
+
+  it('falsifiability: an unreachable archiveFloor never serves even an identical question', async () => {
+    const ws = 'ws-arch-floor-unreachable';
+    await seedClosedConsult({ ws, conv: 'arch-same', vec: vecAt(0) }); // sim 1.0
+    const { deps, reached } = makeDeps(routeOf([cand('cand-live')], { queryVec: qv }));
+    const r = asOk(await getFeedbackCore({ ...baseReq, workspaceId: ws, archiveFloor: 2 }, deps));
+    expect(r.verdict).toBe('routed');
+    expect(r.archive).toBeUndefined();
+    expect(reached).toHaveLength(1);
+  });
+
+  it('no queryVec (embed degrade): the archive leg is skipped and the insert stores no embedding', async () => {
+    const ws = 'ws-arch-no-vec';
+    await seedClosedConsult({ ws, conv: 'arch-unreachable', vec: vecAt(0) });
+    const { deps } = makeDeps(routeOf([cand('cand-live')])); // queryVec: null (default)
+    const r = asOk(await getFeedbackCore({ ...baseReq, workspaceId: ws }, deps));
+    expect(r.verdict).toBe('routed');
+    const row = await stateRow(r.conversation_id, ws);
+    expect(row.has_query_embedding).toBe(false);
+  });
+});
