@@ -29,11 +29,13 @@ import type { Proposal } from './types';
 import {
   proposalTitle,
   type CapturePort,
+  type GoalDispatchPort,
   type GymDispatchPort,
   type InstanceDispatchPort,
   type InstanceVariantView,
   type PlansNewPort,
 } from './router';
+import { improvementBody as goalBodyFromProposal } from './router-deps-goal-body';
 
 /* ────────────────────────────────────────────────────────────────────────
  * concrete → improvements:capture

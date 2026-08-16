@@ -1,0 +1,276 @@
+/**
+ * goal-auto-start.ts — the Blender goal rail's create+start core
+ * (blender-loop-repair-and-opus5-xhigh-2026-08-16 P-013, D-005: "goal mode is
+ * full auto too").
+ *
+ * The machine-caller sibling of the `goals:start` tool
+ * (`../agent-tools/goals/start.ts`): same load-bearing order — row, then mode
+ * stamp, then drain-fleet mint, then the (irreversible) spawn — same rollback
+ * discipline, but callable from the autonomous Scout/Blender cycle where there
+ * is no tool ctx, no owner at the composer, and no window to open (always
+ * headless). It reuses the SAME primitives as the tool (insertGoalRow /
+ * setMode / mintDrainFleetForGoal / buildConsoleEnvelope / spawnHeadless /
+ * buildGoalKickoffBrief), so the two paths share every definition that can
+ * drift — what they do NOT share is the tool-shaped handler around them
+ * (ctx.tx, err() replies, console-vs-headless choice, HUD advisories).
+ *
+ * WHY BOTH RAILS ARE REQUIRED HERE when goals:start made them optional
+ * (owner-directed, 2026-08-09): that overrule was about not blocking the OWNER
+ * at creation time. D-005's full-auto mandate replaces the confirm card with
+ * rails that ride INSIDE the goal record — an AUTONOMOUSLY created goal with no
+ * stopping condition and no ceiling is exactly what GOAL mode's contract
+ * exists to prevent, and there is no owner in the loop to accept that risk.
+ * The router drafts both (`draftGoalRails`) and this door refuses to start
+ * without them.
+ */
+
+import { randomUUID } from 'node:crypto';
+import { join } from 'node:path';
+import { deleteGoalRow, goalId, insertGoalRow } from '@papercusp/agent-mcp/goals';
+import { killCriterionProblem } from './kill-criterion';
+import {
+  drainFleetAutoMintEnabled,
+  mintDrainFleetForGoal,
+  teardownDrainFleetMint,
+} from './drain-fleet-mint';
+import { buildGoalKickoffBrief } from '../agent-tools/goals/start';
+import { buildConsoleEnvelope } from '../console-launcher';
+import { spawnHeadless } from '../console-spawn';
+import { resolveSpawnHostOperatorBaseUrl } from '../mcp-base-url';
+import { buildAgentLaunchCommand, injectFleetArg, injectLaunchedByArg } from '../agent-launch-core';
+import { papercuspPathForWorkspace } from '../papercusp-root';
+import { resolveGoalLaunchForGoal } from '../goal-launch-settings';
+import { activeWorkspaceId } from '../workspace-registry';
+import { setMode } from '../modes/store';
+import { getOrgPg } from '@papercusp/db-org';
+
+export interface AutoStartGoalInput {
+  /** Workspace to file the goal under (default: the active workspace). */
+  workspaceId?: string;
+  /** Harness/install slug the goal is filed against and the agent boots in. */
+  harnessSlug: string;
+  /** The outcome, stated so its achievement is checkable. */
+  title: string;
+  /** The full statement (what winning looks like, scope, constraints). */
+  body?: string | null;
+  /** REQUIRED (D-005): the drafted abandonment condition. */
+  killCriterion: string;
+  /** REQUIRED (D-005): the drafted spend ceiling in cents. */
+  budgetCents: number;
+  /** The routed proposal this goal came from — stamped as provenance metadata. */
+  proposalId?: string;
+  /** Who caused this start (an ownerId, or the rail's own stamp). */
+  launchedBy?: string | null;
+}
+
+export interface AutoStartGoalResult {
+  goalId: string;
+  /** The pre-pinned coord identity of the spawned GOAL-mode agent. */
+  agentOwnerId: string;
+  /** The auto-minted standing drain fleet, when the mint is enabled and succeeded. */
+  drainFleet: string | null;
+  /** Fail-soft legs that degraded without stopping the start (drain fleet / member). */
+  warnings: string[];
+}
+
+/**
+ * Create a goal AND start its GOAL-mode agent, autonomously. Throws on any
+ * failure that would leave a goal without an agent — with every compensable
+ * side effect rolled back first — so a routing dispatch that catches the throw
+ * records a clean per-decision error and nothing is left on the board that
+ * nobody is pursuing (the exact failure `goals:start`'s header documents).
+ */
+export async function autoStartGoal(input: AutoStartGoalInput): Promise<AutoStartGoalResult> {
+  const workspaceId = input.workspaceId ?? activeWorkspaceId();
+  if (!workspaceId) throw new Error('no concrete workspace in scope — a goal cannot be filed workspace-less');
+  const installSlug = input.harnessSlug?.trim();
+  if (!installSlug) throw new Error('no harness in scope — goals are filed against an install_slug');
+
+  const criterion = input.killCriterion?.trim();
+  if (!criterion) throw new Error('an auto-created goal must carry a kill criterion (D-005)');
+  const problem = killCriterionProblem(criterion);
+  if (problem) throw new Error(problem);
+  if (!Number.isFinite(input.budgetCents) || input.budgetCents < 0) {
+    throw new Error('an auto-created goal must carry a non-negative budgetCents ceiling (D-005)');
+  }
+
+  const { sql } = getOrgPg();
+  const id = goalId(input.title);
+  // PRE-PIN the agent's coord identity so the mode stamp can name it before it
+  // exists (the same minting goals:start and /api/adv/launch-su do).
+  const ownerId = `su-${randomUUID()}`;
+  const launchedBy = input.launchedBy ?? 'scout-goal-rail';
+
+  // ── 1. the goal row ─────────────────────────────────────────────────────
+  await insertGoalRow(sql, {
+    id,
+    installSlug,
+    workspaceId,
+    title: input.title,
+    body: input.body ?? null,
+    budgetCents: input.budgetCents,
+    status: 'active',
+    killCriterion: criterion,
+    metadata: {
+      startedBy: launchedBy,
+      agentOwnerId: ownerId,
+      ...(input.proposalId ? { routedProposalId: input.proposalId } : {}),
+    },
+  });
+
+  // ── 2. the join: the pre-pinned agent, in GOAL mode, on THIS goal ───────
+  const modeRes = await setMode({
+    workspaceId,
+    ownerId,
+    modeId: 'goal',
+    enabled: true,
+    reason: `owns goal ${id} — ${input.title.slice(0, 120)}`,
+    setBy: launchedBy,
+    subject: id,
+  });
+  if (!modeRes.ok) {
+    await deleteGoalRow(sql, { id, workspaceId }).catch(() => {});
+    throw new Error(
+      `could not put the goal's agent in GOAL mode (${modeRes.error ?? 'unknown error'}) — goal rolled back`,
+    );
+  }
+
+  // ── 2.5 the standing drain fleet (GOAL contract clause 3) — fail-soft ───
+  let drainFleet: { slug: string } | null = null;
+  const warnings: string[] = [];
+  if (await drainFleetAutoMintEnabled()) {
+    try {
+      const minted = await mintDrainFleetForGoal({
+        workspaceId,
+        goalId: id,
+        goalTitle: input.title,
+        agentOwnerId: ownerId,
+        goalTx: sql,
+      });
+      drainFleet = { slug: minted.fleetSlug };
+    } catch (e) {
+      warnings.push(
+        `drain-fleet auto-mint failed (goal started anyway; the goal-drain-fleet watchdog keeps reporting until a fleet exists): ${(e as Error)?.message ?? e}`,
+      );
+    }
+  }
+
+  // ── 3. the agent (headless, the only irreversible step — last) ──────────
+  const rollback = async () => {
+    if (drainFleet) {
+      await teardownDrainFleetMint({ workspaceId, fleetSlug: drainFleet.slug }).catch(() => {});
+    }
+    for (const modeId of [
+      'goal',
+      ...(modeRes.implied ?? []).filter((i) => i.status === 'set').map((i) => i.mode),
+    ]) {
+      await setMode({
+        workspaceId,
+        ownerId,
+        modeId,
+        enabled: false,
+        reason: 'auto-start failed — rolling back',
+        setBy: launchedBy,
+      }).catch(() => {});
+    }
+    await deleteGoalRow(sql, { id, workspaceId }).catch(() => {});
+  };
+
+  let base;
+  try {
+    base = await buildConsoleEnvelope({
+      workspaceId,
+      slug: installSlug,
+      operatorBaseUrl: resolveSpawnHostOperatorBaseUrl(),
+      skipMcpJson: false,
+    });
+  } catch (e) {
+    await rollback();
+    throw new Error(`could not prepare the launch (goal rolled back): ${(e as Error)?.message ?? e}`);
+  }
+
+  const goalLaunch = await resolveGoalLaunchForGoal({
+    workspaceId,
+    goalId: id,
+    goalRole: 'goal',
+    requested: {},
+  });
+  if (goalLaunch.refusal) {
+    await rollback();
+    throw new Error(goalLaunch.refusal.message);
+  }
+
+  let command: string;
+  try {
+    command = buildAgentLaunchCommand({
+      mode: 'fresh',
+      agent: goalLaunch.effective.agent ?? 'claude',
+      harness: installSlug,
+      ownerId,
+      account: goalLaunch.effective.account ?? null,
+      model: goalLaunch.effective.model ?? null,
+      effort: goalLaunch.effective.effort ?? null,
+      contextSize: goalLaunch.effective.contextSize ?? null,
+      headless: true,
+    });
+  } catch (e) {
+    await rollback();
+    throw new Error(`could not build the launch command (goal rolled back): ${(e as Error)?.message ?? e}`);
+  }
+  command = injectLaunchedByArg(command, launchedBy).command;
+
+  const env = {
+    ...base.env,
+    PAPERCUSP_KICKOFF_PROMPT: buildGoalKickoffBrief({
+      goalId: id,
+      title: input.title,
+      killCriterion: criterion,
+      budgetCents: input.budgetCents,
+      body: input.body ?? null,
+    }),
+  };
+  const logDir = join(papercuspPathForWorkspace(workspaceId), 'fleet-logs');
+  const spawned = await spawnHeadless({
+    envelope: { ...base, env, greetingCmd: command, cwd: base.cwd },
+    label: `goal · ${input.title.slice(0, 40)} (auto)`,
+    logDir,
+  });
+  if (spawned.status !== 'ok') {
+    await rollback();
+    const detail = 'error' in spawned && spawned.error ? spawned.error : 'the spawn reported no detail';
+    throw new Error(`the goal's agent failed to launch (${detail}) — goal rolled back, retrying is safe`);
+  }
+
+  // ── 3.5 the drain lane's puller — fail-soft, spawned last on purpose ────
+  if (drainFleet) {
+    try {
+      let memberCmd = buildAgentLaunchCommand({
+        mode: 'fresh',
+        agent: goalLaunch.effective.agent ?? 'claude',
+        harness: installSlug,
+        account: goalLaunch.effective.account ?? null,
+        headless: true,
+      });
+      memberCmd = injectFleetArg(memberCmd, drainFleet.slug).command;
+      memberCmd = injectLaunchedByArg(memberCmd, launchedBy).command;
+      // Deliberately `base.env` (no kickoff brief): the brief names ONE owner
+      // of the goal, and a drain bee that received it would believe itself that
+      // owner — same rule as goals:start.
+      const member = await spawnHeadless({
+        envelope: { ...base, greetingCmd: memberCmd, cwd: base.cwd },
+        label: `goal-drain · ${input.title.slice(0, 40)} (auto)`,
+        logDir,
+      });
+      if (member.status !== 'ok') {
+        const detail = 'error' in member && member.error ? member.error : 'no detail';
+        warnings.push(
+          `drain-fleet member failed to launch (${detail}) — the fleet exists; the watchdog reports it dead until a member joins`,
+        );
+      }
+    } catch (e) {
+      warnings.push(`drain-fleet member launch threw: ${(e as Error)?.message ?? e}`);
+    }
+  }
+
+  return { goalId: id, agentOwnerId: ownerId, drainFleet: drainFleet?.slug ?? null, warnings };
+}
