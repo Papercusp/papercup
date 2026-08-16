@@ -456,6 +456,79 @@ function buildTestRunsAdvisory(stripped: string, tables: string[]): string | nul
   );
 }
 
+/**
+ * `harness_shared.scout_routed_ideas` (system-notices-on-its-own-2026-08-16 P-003).
+ *
+ * The SEMANTIC sibling of the tenancy advisories above. Everything else in this
+ * file guards WHICH ROWS BELONG TO YOU; this one guards WHAT A COLUMN MEANS.
+ *
+ * `human_grade IS NULL` looks like the complete definition of "ungraded" and is
+ * not. `packages/operator-core/lib/scout/ungraded-scope.ts` is the sole authority
+ * and documents three axes a count must fix before the word means anything:
+ * ORIGIN (su-ideate and scout have different producers, graders and deadlines),
+ * TERMINALITY (a filing whose artifact already landed cannot be usefully graded),
+ * and the PER-ORIGIN EPOCH FLOOR (grading is forward-only; D-014 gives scout and
+ * su-ideate different floors). Leaving them implicit is not a rounding error:
+ * three surfaces once published 15, 1,103 and 1,082 for the same workspace on
+ * the same day, each arithmetically right about a different population, and the
+ * D-074 report that said "1,082 su filings" was the SCOUT population wearing the
+ * su label — off by ~70x, which made a fifteen-row backlog look like an
+ * emergency.
+ *
+ * WHY THIS BELONGS HERE AND NOT ONLY IN THE BUILD. `ungraded-scope.test.ts`
+ * already fails the build if a raw `human_grade IS NULL` predicate appears in
+ * COMMITTED code outside that module. That guard is good and it cannot see the
+ * failure that actually keeps happening: an agent hand-writing the predicate
+ * into an ad-hoc `dev:pg_query` at runtime, which is committed nowhere. Measured
+ * again on 2026-08-16: a hand-written query answered 143 where `classifyUngraded`
+ * answers 83.
+ *
+ * THE ANTI-ROT RULE, and the reason this registry stays one entry long. A
+ * hand-authored corpus of semantic rules rots, and a stale guard naming a
+ * renamed accessor is worse than no guard. So an entry is admissible here ONLY
+ * when the same predicate ALREADY carries a build-time guard — then a rename
+ * breaks the build, which forces this text to be updated with it, instead of
+ * silently stranding a runtime rule that keeps confidently citing a symbol that
+ * no longer exists. `ungraded-scope-advisory.test.ts` pins the two together by
+ * asserting the symbols named below are real exports. Do not add an entry whose
+ * authority has no build-time guard of its own.
+ */
+const SCOUT_ROUTED_IDEAS_TABLE = 'scout_routed_ideas';
+
+/**
+ * The three axes `classifyUngraded` fixes. A query naming all three is doing the
+ * work deliberately and is left alone; anything less gets the advisory.
+ */
+const UNGRADED_SCOPE_AXES = ['origin', 'outcome', 'routed_at'] as const;
+
+/**
+ * Independent advisory for {@link SCOUT_ROUTED_IDEAS_TABLE} — fires when a query
+ * reaches for `human_grade` without fixing all three population axes.
+ *
+ * Clears once the query names origin, outcome AND routed_at: at that point the
+ * caller has demonstrably chosen a population rather than inherited one by
+ * accident, which is the only thing this advisory is trying to force.
+ */
+export function buildUngradedScopeAdvisory(stripped: string, tables: string[]): string | null {
+  if (!tables.some((t) => bareTableName(t) === SCOUT_ROUTED_IDEAS_TABLE)) return null;
+  const mentions = (col: string): boolean => new RegExp(`\\b${col}\\b`, 'i').test(stripped);
+  if (!mentions('human_grade')) return null;
+  const missing = UNGRADED_SCOPE_AXES.filter((axis) => !mentions(axis));
+  if (missing.length === 0) return null;
+  return (
+    `⚠ harness_shared.scout_routed_ideas: "ungraded" is NOT \`human_grade IS NULL\` — that leaves ` +
+    `${missing.length === 1 ? 'one axis' : `${missing.length} axes`} implicit (${missing.join(', ')}) and silently picks a population ` +
+    `nobody chose. The authority is classifyUngraded() / readUngradedBreakdown() in ` +
+    `packages/operator-core/lib/scout/ungraded-scope.ts, which fixes ORIGIN (scout vs su-ideate — ` +
+    `different producers, graders and deadlines; summing them answers no question), TERMINALITY ` +
+    `(outcome set and not 'pending' ⇒ ungradeable), and the PER-ORIGIN EPOCH FLOOR (grading is ` +
+    `forward-only, and D-014 gives scout and su-ideate DIFFERENT floors). Three surfaces once ` +
+    `published 15, 1,103 and 1,082 for the same workspace on the same day this way, and a report ` +
+    `of "1,082 su filings" was really the scout population — off by ~70x. Prefer the accessor; if ` +
+    `you must query raw, name origin, outcome and routed_at explicitly so the population is chosen.`
+  );
+}
+
 /** The bare (unqualified) table name — `schema.table` → `table`. */
 export function bareTableName(ref: string): string {
   const i = ref.lastIndexOf('.');
@@ -1711,6 +1784,10 @@ export async function buildTenantScopeAdvisory(
   const resolvedOpts = { ...opts, workspaceId: realScopeValue(opts.workspaceId), harnessSlug: realScopeValue(opts.harnessSlug) };
 
   const testRunsAdvisory = buildTestRunsAdvisory(stripped, tables);
+  // P-003: the SEMANTIC advisory — guards what a column MEANS, not which rows
+  // belong to you. Independent of the tenancy checks below (a scout_routed_ideas
+  // query can be perfectly tenant-scoped and still count the wrong population).
+  const ungradedAdvisory = buildUngradedScopeAdvisory(stripped, tables);
 
   const mentions = (col: string): boolean => new RegExp(`\\b${col}\\b`, 'i').test(stripped);
   const genericMentioned = mentions('workspace_id') || mentions('harness_slug');
@@ -1747,11 +1824,13 @@ export async function buildTenantScopeAdvisory(
     }
   }
 
-  if (!overrideOffenders.length && !genericOffenders.length && !testRunsAdvisory) return null;
+  if (!overrideOffenders.length && !genericOffenders.length && !testRunsAdvisory && !ungradedAdvisory)
+    return null;
 
   const parts: string[] = [];
 
   if (testRunsAdvisory) parts.push(testRunsAdvisory);
+  if (ungradedAdvisory) parts.push(ungradedAdvisory);
 
   for (const { table, override } of overrideOffenders.slice(0, 3)) {
     parts.push(
