@@ -1532,6 +1532,20 @@ export const FLAGS = {
   // DEFAULT ON. OFF = the kill-switch: the timer still ticks but every sweep
   // no-ops before reading the goals table.
   GOAL_LIVENESS_WATCHDOG: "papercusp-goal-liveness-watchdog",
+  // system-notices-on-its-own-2026-08-16 P-002: gates the retrieval-degradation
+  // watchdog — reads the trailing-window leg-health rate that observeLegs now
+  // records for every hybrid search, and escalates when a sustained share of
+  // searches did not run at full strength. summariseLegs has always computed a
+  // precise per-search verdict ("semantic leg blocked: query embed exceeded
+  // 1200ms budget"), but it was rendered as one line of prose and then thrown
+  // away, so nothing could answer "is retrieval degrading, and since when?".
+  // Observed 2026-08-16: three semantic-leg blocks plus one zero-candidate
+  // lexical leg inside a single agent session, all silent. Retrieval is how
+  // stored knowledge reaches the moment of need, so half-strength retrieval is
+  // the mechanism behind "the knowledge existed and it didn't reach me".
+  // DEFAULT ON. OFF = the kill-switch: the timer still ticks but every sweep
+  // no-ops before reading the counter.
+  RETRIEVAL_DEGRADATION_WATCHDOG: "papercusp-retrieval-degradation-watchdog",
   // deterministic-context-carry P-019 (D-010 live leg 2): gates the residual
   // carry SAMPLER — at each REAL compaction boundary the gateway's deterministic
   // maintenance-carry branch serves, fire-and-forget one reserved-lane residual

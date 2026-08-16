@@ -498,6 +498,16 @@ export async function startDbos(): Promise<void> {
       '../system-health/goal-liveness-watchdog'
     );
     startGoalLivenessWatchdog(getOrgPg().sql);
+    // system-notices-on-its-own-2026-08-16 P-002: alarm when a sustained share of
+    // hybrid searches did not run at full strength. summariseLegs already judged
+    // every search; observeLegs now retains those verdicts in a trailing window,
+    // and this reads the rate. Armed HERE because the counter is in-process and
+    // this is the process the agent-facing search paths run in. Runtime gate:
+    // FLAGS.RETRIEVAL_DEGRADATION_WATCHDOG (default ON), checked per tick.
+    const { startRetrievalDegradationWatchdog } = await import(
+      '../system-health/retrieval-degradation-watchdog'
+    );
+    startRetrievalDegradationWatchdog();
   } catch (e) {
     console.warn('[stall-watchdog] failed to start (non-fatal):', e instanceof Error ? e.message : e);
   }
