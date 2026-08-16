@@ -1,0 +1,15 @@
+[Unit]
+Description=Kopia DAILY snapshot of the curated full home directory
+# Plan: kopia-curated-home-coverage-2026-08-16
+# (not Documentation= — systemd only accepts URIs there and warns on a bare slug)
+After=network-online.target
+
+[Service]
+Type=oneshot
+# Deliberately heavier de-prioritisation than kopia-snapshots.service (Nice=10,
+# best-effort/7). That unit runs for ~3 min every 15 min; this one walks the WHOLE
+# home tree once a day and must yield to everything else while it does. The script
+# also re-applies renice/ionice to itself so the settings reach kopia's children.
+Nice=19
+IOSchedulingClass=idle
+ExecStart=%h/.config/kopia/home-snapshot.sh

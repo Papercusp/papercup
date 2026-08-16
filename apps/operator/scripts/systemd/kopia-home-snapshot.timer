@@ -1,0 +1,26 @@
+[Unit]
+Description=Run the curated full-home kopia snapshot daily
+
+[Timer]
+# 04:00 local — outside the ~19:45 db-dump window and away from working hours, so a
+# long tree walk lands when the box is quietest.
+OnCalendar=*-*-* 04:00:00
+
+# OnCalendar + Persistent, NOT OnUnitInactiveSec — same reasoning as
+# kopia-snapshots.timer: OnUnitInactiveSec measures from the service's last
+# DEACTIVATION, and that reference is NOT persisted across a systemd USER-MANAGER
+# restart. On 2026-07-14 that silently stopped offsite snapshots for ~19h. Persistent=
+# true is a NO-OP for OnUnitInactiveSec and only functions with OnCalendar; here it
+# also catches up a run missed while the machine was off, which matters far more for
+# a daily unit than for a 15-minute one.
+Persistent=true
+
+# The walk is long and low-priority; jitter keeps it from starting in lockstep with
+# whatever else fires on the hour.
+RandomizedDelaySec=30m
+AccuracySec=1m
+
+Unit=kopia-home-snapshot.service
+
+[Install]
+WantedBy=timers.target
