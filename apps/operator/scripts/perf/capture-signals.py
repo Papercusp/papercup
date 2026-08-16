@@ -15,6 +15,7 @@ Usage:  python3 capture-signals.py [--label round4] [--out DIR]
 Prints the written path on stdout. No shell=True (no injection surface).
 """
 import json, os, re, socket, subprocess, sys, time
+import urllib.request
 from datetime import datetime, timezone
 
 OUT_DIR = os.path.expanduser("~/.papercusp/perf-baselines")
@@ -98,6 +99,40 @@ def tcp_reachable(port, host="127.0.0.1", timeout=2.0):
             return True
     except Exception:
         return False
+
+
+def event_loop_lag(port=OPERATOR_PORT, host="127.0.0.1", timeout=3.0):
+    """Event-loop lag p95/p99/max (ms) + pressure band, from the operator's own
+    deep-health probe.
+
+    THE per-thread saturation signal. perf-budgets.ts warns at p95 >= 250ms and
+    raises a deploy-BLOCKING `operator-defect` at >= 1000ms — but it reads this key,
+    which was hardcoded None, so BOTH branches were unreachable and every snapshot
+    reported the metric as simply absent (P-010, perf-testing-sweep-2026-07-27).
+
+    Host-local unauthenticated GET against 127.0.0.1 — the endpoint needs no token
+    and this is the same blast radius as tcp_reachable() above.
+
+    Returns None on ANY failure. That is deliberate: an unreadable signal must stay
+    UNMEASURED rather than collapse to a 0 that a budget evaluator would score as a
+    perfect pass.
+    """
+    try:
+        with urllib.request.urlopen(f"http://{host}:{port}/api/health/deep", timeout=timeout) as resp:
+            if resp.status != 200:
+                return None
+            lag = json.loads(resp.read().decode("utf-8")).get("loopLag")
+    except Exception:
+        return None
+    if not isinstance(lag, dict) or not isinstance(lag.get("p95Ms"), (int, float)):
+        return None
+    return {
+        "lag_p95_ms": lag.get("p95Ms"),
+        "lag_p99_ms": lag.get("p99Ms"),
+        "lag_max_ms": lag.get("maxMs"),
+        "pressure": lag.get("pressure"),
+        "source": f"http://{host}:{port}/api/health/deep",
+    }
 
 
 def kopia():
@@ -451,6 +486,7 @@ def main():
             "maxWorkerCpuPct": max_worker_cpu,
             "workersOver100Pct": workers_over_100,
             "closeWait_3070": close_wait(OPERATOR_PORT),
+            "eventLoopLag": event_loop_lag(OPERATOR_PORT),
             "gateway_8788_reachable": tcp_reachable(GATEWAY_PORT),
             "operator_3070_reachable": tcp_reachable(OPERATOR_PORT),
             "kopia": kopia(),
