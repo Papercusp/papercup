@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildRecipeAuthorityRecommendation,
   deriveRecipeAuthority,
+  findVolatileRunArtifactLiteral,
   recipeRevision,
   recipeAuthorityMatches,
   recipeAuthorityMatchesLiveRefs,
