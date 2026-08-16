@@ -11,9 +11,14 @@ import {
   countInsightDocs,
   parseInsightFrontmatter,
   readInsightDocsPage,
+  readRetainDetail,
   readRetainExtras,
   readRetainFeed,
   readRetainPlanChildren,
+  retainMemoryTitle,
+  retainMemoryTsOf,
+  stripFrontmatter,
+  type RetainDetailDeps,
   type RetainExtrasDeps,
   type RetainFeedDeps,
 } from './learning-retain-read';
@@ -157,6 +162,7 @@ describe('retain cursor + leg windows', () => {
 // ─── The unified feed ────────────────────────────────────────────────────────
 
 const emptyFeedDeps = (): RetainFeedDeps => ({
+  listMemories: async () => [],
   listRubrics: async () => [],
   listRecipesPage: async () => [],
   countRecipes: async () => 0,
