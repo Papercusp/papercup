@@ -39,6 +39,14 @@ export const PROCEED_EXPIRY_MS = 4 * 3_600_000; // 4h
 export const HARD_BLOCKED_EXPIRY_MS = 30 * 60_000; // 30m
 /** sessionStates a v1 consult never wakes (D-008 §5 liveness gate). */
 export const DEAD_RESPONDER_STATES: ReadonlySet<string> = new Set(['ended', 'recorded']);
+/** Recursion ceiling (D-007 §7) — mirrors the consult_state.depth CHECK (0–2). */
+export const MAX_CONSULT_DEPTH = 2;
+
+/** The latched park/reply key for a consult conversation — the ONE format every
+ * emitter (P-004 reply verbs, P-005 expiry sweep) and awaiter shares. */
+export function consultParkKey(conversationId: string): string {
+  return `consult:reply:${conversationId}`;
+}
 
 export type LatencyContract = 'proceed' | 'hard-blocked';
 
@@ -55,9 +63,23 @@ export interface GetFeedbackRequest {
   originTaskRef?: string | null;
   /** D-007(7) manual cascade: exclude prior decliners on a re-call. */
   excludeOwners?: string[];
+  /** P-005 recursion lineage: set when this consult is opened from WITHIN a
+   * consult turn (the responder consulting onward) — the parent consult's
+   * conversation_id. depth = parent.depth+1, refused past MAX_CONSULT_DEPTH;
+   * the lineage's participants are folded into the router's excludeOwners so
+   * a cycle (A→B→A, D-005) can never form by construction. */
+  parentConsultId?: string | null;
   topics?: string[];
   harnessSlug?: string;
 }
+
+/** P-005 creation-side refusals — structural, BEFORE any conversation/row is
+ * written (a depth/cycle refusal is a pre-flight arg problem, not a routing
+ * verdict, so it does not enter the D-003 honesty feed). */
+export type GetFeedbackError =
+  | { error: 'parent_consult_not_found'; parent_consult_id: string; hint: string }
+  | { error: 'consult_depth_exceeded'; depth: number; max_depth: number; hint: string }
+  | { error: 'consult_cycle'; lineage: string[]; hint: string };
 
 export interface GetFeedbackDeps {
   getSql: () => Sql;
