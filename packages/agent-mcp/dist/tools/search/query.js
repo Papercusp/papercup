@@ -10,7 +10,7 @@
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/tooldef';
-const KINDS = ['tasks', 'goals', 'projects', 'audit', 'messages'];
+const KINDS = ['tasks', 'goals', 'projects', 'audit'];
 /**
  * Run one kind's search: FTS first, ILIKE fallback on failure — and if
  * the fallback ALSO fails, record `<kind>_unavailable` instead of
@@ -39,7 +39,7 @@ export default defineTool({
     name: 'search:query',
     capability: 'search:read',
     guidance: {
-        when: 'User asks an open-ended question that could match anything in the workspace ("anything about auth?", "find references to budget guard"). Cross-resource full-text search over tasks, goals, projects, audit, messages.',
+        when: 'User asks an open-ended question that could match anything in the workspace ("anything about auth?", "find references to budget guard"). Cross-resource full-text search over tasks, goals, projects, audit.',
         notWhen: 'For a SPECIFIC resource type, use the dedicated list/get tool — search is broader but ranked less precisely. For code-graph queries, use `gitnexus:query`.',
     },
     args: z.object({
@@ -145,45 +145,9 @@ export default defineTool({
                 return rows.map((r) => ({ kind: 'audit', id: r.id, snippet: `${r.action}: ${r.subject}`, score: 0.5 }));
             });
         }
-        if (wantKind('messages')) {
-            await searchKind('messages', hits, degradedReasons, async () => {
-                // messages_consolidated has no stored `_search` column (013 covers
-                // the other kinds) — an inline tsvector still ranks correctly and
-                // the corpus is small (hundreds of rows); revisit with a generated
-                // column + GIN if it ever grows hot (EI-282).
-                const rows = await ctx.tx `
-            SELECT harness_slug, id, subject, body,
-                   ts_rank_cd(
-                     to_tsvector('english', coalesce(subject, '') || ' ' || coalesce(body, '')),
-                     plainto_tsquery('english', ${args.query})
-                   ) AS rank
-              FROM harness_shared.messages_consolidated
-             WHERE to_tsvector('english', coalesce(subject, '') || ' ' || coalesce(body, ''))
-                   @@ plainto_tsquery('english', ${args.query})
-             ORDER BY rank DESC
-             LIMIT ${args.limit}
-          `;
-                return rows.map((r) => ({
-                    kind: 'messages',
-                    id: `${r.harness_slug}/${r.id}`,
-                    snippet: r.subject || (r.body ?? '').slice(0, 100),
-                    score: Number(r.rank),
-                }));
-            }, async () => {
-                const rows = await ctx.tx `
-            SELECT harness_slug, id, subject, body
-              FROM harness_shared.messages_consolidated
-             WHERE subject ILIKE ${q} OR body ILIKE ${q}
-             LIMIT ${args.limit}
-          `;
-                return rows.map((r) => ({
-                    kind: 'messages',
-                    id: `${r.harness_slug}/${r.id}`,
-                    snippet: r.subject || (r.body ?? '').slice(0, 100),
-                    score: 1,
-                }));
-            });
-        }
+        // 'messages' kind (over harness_shared.messages_consolidated) retired
+        // here — see retire-work-item-mail-surface-2026-07-26 P-004 /
+        // _retired/work-item-mail/RESTORE.md.
         // Sort across kinds by score descending so highest-confidence hits land first.
         hits.sort((a, b) => b.score - a.score);
         return {

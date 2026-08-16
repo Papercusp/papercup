@@ -2,15 +2,19 @@
  * Get a single task by (harnessSlug, id). Summary returns id+title+status;
  * full returns the row.
  *
- * Typed via `schemaOf(harness_features_consolidated).select`.
+ * Typed via `createSelectSchema(harness_features_consolidated)` — NOT
+ * `schemaOf`: that relation is a VIEW, and `schemaOf` is constrained to
+ * `Table` (insert/update are meaningless for a view). drizzle-zod's
+ * `createSelectSchema` carries the View overload; `schemaOf(view)` was a
+ * TS2345 no gate counted. See WI-38031.
  */
 import { drizzle } from 'drizzle-orm/postgres-js';
 import { and, eq } from 'drizzle-orm';
 import { z } from 'zod';
-import { generated, schemaOf } from '@papercusp/db-org';
+import { generated, createSelectSchema } from '@papercusp/db-org';
 import { defineTool } from '@papercusp/tooldef';
 const features = generated.harnessFeaturesConsolidatedInHarnessShared;
-const FeatureSelect = schemaOf(features).select;
+const FeatureSelect = createSelectSchema(features);
 export default defineTool({
     name: 'tasks:get',
     capability: 'tasks:read',

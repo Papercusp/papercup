@@ -68,6 +68,12 @@ const EXACT = {
     // Rebind a fleet's color scheme — persists agent_fleets.color_scheme + live-recolors
     // every active session in the fleet (a write on both, so 'medium' like the others).
     'fleet:recolor': 'medium',
+    // Per-member declarative launch specs (per-member-declarative-launch-specs P-007/P-008):
+    // a leader reconfigures ONE member's runtime settings (compaction limit / claim spec /
+    // brief) or RESPAWNS it with new boot-baked settings — writes to another session, 'medium'
+    // like the other fleet mutations.
+    'fleet:reconfigure-member': 'medium',
+    'fleet:respawn-member': 'medium',
     'storage:plugin-private': 'low',
     // Storage settings page (storage-settings-page-2026-06-15). Read is a usage
     // introspection; write is a destructive prune-by-age (+ VACUUM FULL) → high.
@@ -108,6 +114,15 @@ const EXACT = {
     // operator's superuser-token. Defense-in-depth: handler enforces a
     // kind allowlist + writes audit_log on every call.
     'processes:kill': 'high',
+    // task-manager-no-escape-2026-07-27 P-014: the NON-destructive task-manager
+    // verbs (processes:freeze / processes:limit). High-tier like its kill sibling
+    // because pausing or capping a peer's in-flight work is disruptive — but a
+    // DISTINCT capability, deliberately kept OUT of PROTECTED_CAPABILITY_GLOBS:
+    // both are reversible, and protecting them would block exactly the
+    // memory-pressure relief they exist for (freeze the fattest runs instead of
+    // killing them). Splitting reversible control from irreversible kill is the
+    // whole point of not reusing 'processes:kill' here.
+    'processes:control': 'high',
     // Fleet capability surface (agent-capability-confinement-2026-06-13, B-05):
     // the gated defineTool re-exposure of native capabilities. High for anything
     // that executes code, mutates the tree, or reaches the network; low for the

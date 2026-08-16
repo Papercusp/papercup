@@ -33,8 +33,18 @@ export default defineTool({
         sinceMs: z.number().int().optional(),
         /** Optional cap. Default 200; max 2000. */
         limit: z.number().int().positive().max(2000).default(200),
-        /** Optional status filter. */
-        status: z.enum(['ok', 'error', 'timeout', 'quota-exceeded', 'role-not-allowed']).optional(),
+        /** Optional status filter. Mirrors the writer's status vocabulary; 'replayed' = served from the idempotency replay store, the tool never ran. */
+        status: z
+            .enum([
+            'ok',
+            'error',
+            'timeout',
+            'quota-exceeded',
+            'role-not-allowed',
+            'invalid-input',
+            'replayed',
+        ])
+            .optional(),
     }),
     async handler(args, ctx) {
         const sinceMs = args.sinceMs ?? Date.now() - 24 * 60 * 60 * 1000;

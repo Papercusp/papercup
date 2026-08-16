@@ -16,15 +16,51 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, GetPromptRequestSchema, ListPromptsRequestSchema, ListResourcesRequestSchema, ListToolsRequestSchema, ReadResourceRequestSchema, } from '@modelcontextprotocol/sdk/types.js';
-import { z } from 'zod';
 import { withWorkspace } from '@papercusp/db-org';
 import { advertisedArgsSchema } from '@papercusp/result-encoding';
 import { resolveBearer } from './auth';
 import { sanitizeToolSchema } from './tool-schema-sanitize';
-import { getCatalog, lookup, lookupByMcpName, standardValidate, serializeToolResponse, formatOptsFromCtx, } from '@papercusp/tooldef';
+import { getCatalog, lookup, lookupByMcpName, standardValidate, serializeToolResponse, formatOptsFromCtx, toArgsJsonSchema, applyEntityRefEnums, } from '@papercusp/tooldef';
 import { applyToolManifest } from './tool-manifest';
 import { getResourceCatalog, matchResource, } from '@papercusp/tooldef';
 import { getPromptCatalog, lookupPrompt } from '@papercusp/tooldef';
+/**
+ * EI-18889347809692710 — recover the ACTIONABLE issues hiding inside an
+ * `invalid_union`.
+ *
+ * Zod reports a failed union as ONE issue at the union's OWN path, with the
+ * uninformative message `Invalid input`; every branch's real diagnosis is nested
+ * in `issue.errors`. For a union-typed arg that is how an agent gets told
+ * `body: Invalid input` — naming neither the offending section index nor the key
+ * — which is exactly the report that cost three round-trips on a message that was
+ * already written, and pushed the caller to DROP the structured field and restate
+ * it as prose (losing the machine-readable disposition the field exists to carry).
+ *
+ * Which branch to believe: the one that got FURTHEST into the structure. A caller
+ * who passed an array to `z.union([z.string(), z.array(section)])` produces a
+ * shallow "expected string, received array" from the string branch and a deep
+ * `[1, 'couldNotDetermine']` from the array branch — the deep one is the branch
+ * they meant, so its path is the one worth printing. Requiring depth > 0 keeps the
+ * union's own message when NO branch located a specific field (e.g. a plain scalar
+ * mismatch), where the branch messages are no more useful than the union's.
+ */
+function bestUnionBranch(issue) {
+    const branches = issue.errors;
+    if (!Array.isArray(branches) || branches.length === 0)
+        return null;
+    let best = null;
+    let bestDepth = 0;
+    for (const branch of branches) {
+        if (!Array.isArray(branch) || branch.length === 0)
+            continue;
+        const depth = Math.max(...branch.map((i) => (i.path ?? []).length));
+        if (depth > bestDepth) {
+            bestDepth = depth;
+            best = branch;
+        }
+    }
+    return best;
+}
 /** Walk a dotted path into the raw input to recover the offending value. */
 function valueAtPath(input, segs) {
     let cur = input;
@@ -46,9 +82,19 @@ function valueAtPath(input, segs) {
  * Generic over any field; non-too_big issues keep their original `path: message`.
  */
 function formatInvalidArgs(issues, input) {
-    return issues
-        .map((issue) => {
-        const segs = (issue.path ?? []).map((seg) => typeof seg === 'object' && seg !== null ? seg.key : seg);
+    const render = (issue, prefix, depth) => {
+        const segs = [
+            ...prefix,
+            ...(issue.path ?? []).map((seg) => typeof seg === 'object' && seg !== null ? seg.key : seg),
+        ];
+        // An `invalid_union` carries its real diagnosis in nested per-branch issues;
+        // surface the branch that located an actual field instead of "Invalid input".
+        // Bounded recursion so a union of unions cannot spin.
+        if (depth < 4) {
+            const branch = bestUnionBranch(issue);
+            if (branch)
+                return branch.flatMap((sub) => render(sub, segs, depth + 1));
+        }
         const path = segs.map((s) => String(s)).join('.');
         if (issue.code === 'too_big' && issue.origin === 'string' && typeof issue.maximum === 'number') {
             const max = issue.maximum;
@@ -57,11 +103,11 @@ function formatInvalidArgs(issues, input) {
             const detail = over !== null && over > 0
                 ? `too long — ${over} chars over the ${max}-char limit; trim to ${max}.`
                 : `too long — over the ${max}-char limit; trim to ${max}.`;
-            return path ? `${path}: ${detail}` : detail;
+            return [path ? `${path}: ${detail}` : detail];
         }
-        return path ? `${path}: ${issue.message}` : issue.message;
-    })
-        .join('; ');
+        return [path ? `${path}: ${issue.message}` : issue.message];
+    };
+    return issues.flatMap((issue) => render(issue, [], 0)).join('; ');
 }
 /**
  * EI-7068: some MCP clients double-encode tool arguments — instead of sending
@@ -333,18 +379,27 @@ export async function startServer(opts = {}) {
         const bearer = process.env[bearerEnv] ?? '';
         const principal = bearer ? await resolveBearer(bearer) : null;
         const catalog = getCatalog();
-        const tools = catalog
+        const tools = await Promise.all(catalog
             .filter((t) => !principal || principal.capabilities.has(t.capability))
-            .map((t) => {
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            const inputSchema = z.toJSONSchema(t.args);
+            .map(async (t) => {
+            // GUARDED conversion, never a raw z.toJSONSchema (EI-10996 / WI-4596).
+            // This runs inside the tools/list map, so an unrepresentable args schema
+            // (almost always a trailing `.transform()`) throws for the WHOLE catalog,
+            // not just its own tool — killing tool discovery for every client. Raw, that
+            // surfaces as a bare adapter message naming no tool and no file, which reads
+            // like an unrelated infra/zod break and was mis-triaged as one.
+            const inputSchema = toArgsJsonSchema(t.name, t.args);
             delete inputSchema.$schema;
             // Registry write-positional tools advertise a single `row` string (P-008).
             const advertised = advertisedArgsSchema(t.name, inputSchema);
+            // Publish small entity vocabularies as enums so the model cannot EMIT an
+            // invalid pot/role, rather than being corrected at dispatch (P-004b).
+            // Capped + fail-open: over-cap or unavailable kinds change nothing here.
+            await applyEntityRefEnums(t.args, advertised);
             // Objectify boolean sub-schemas (z.unknown() → `true`) so strict
             // consumers (Ollama) can parse the tool surface. See tool-schema-sanitize.ts.
             return { name: t.name, description: t.description, inputSchema: sanitizeToolSchema(advertised) };
-        });
+        }));
         // Pin to the tool manifest (if configured) for cache-stable parity with
         // the HTTP transport. No-op when no manifest is present. See tool-manifest.ts.
         return { tools: applyToolManifest(tools) };

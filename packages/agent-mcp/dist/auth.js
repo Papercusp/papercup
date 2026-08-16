@@ -17,7 +17,7 @@
  * staleness if the LISTEN is unavailable.
  */
 import { createHash } from 'node:crypto';
-import { getOrgPg, withWorkspace } from '@papercusp/db-org';
+import { getOrgPg, withWorkspace, withDbCallDeadline } from '@papercusp/db-org';
 import { BRAIN_PRINCIPAL_ROLE } from './role-config';
 /**
  * The RBAC `roles` a resolved principal carries (the fail-closed `requireRoles`
@@ -150,12 +150,21 @@ async function resolveTokenIdentity(bearer, bearerHashHex) {
     // token_index column is named `harness_slug` per the original 008 migration.
     // It holds slugs for harnesses; for system: and pi: principals (added in
     // 009) the same column stores the prefixed slug (e.g. "system:operator").
-    const rows = await sql `
+    //
+    // WI-7097: this is the FIRST admin-pool query on essentially every
+    // uncached MCP tool dispatch (bearer resolution runs before any tool
+    // handler executes). If the admin pool has never yet connected — a
+    // not-yet-up embedded PG, a genuinely dead endpoint — postgres.js silently
+    // retries the INITIAL connect forever without ever rejecting this query
+    // (see withDbCallDeadline's doc comment), so wrap it: a stuck resolve now
+    // fails fast with a clear cause instead of hanging every dispatched tool
+    // call until the transport's own generic ~300s idle-timeout.
+    const rows = await withDbCallDeadline(sql `
     SELECT token, kind, harness_slug, workspace_id
       FROM harness_shared.token_index
      WHERE token = ${bearer}
      LIMIT 1
-  `;
+  `, { label: 'resolveTokenIdentity: token_index lookup (admin pool)' });
     const row = rows[0];
     if (!row || (row.kind !== 'system' && row.kind !== 'pi')) {
         // Missing row, or a harness bearer (out of scope for v1) — cache negatively.
@@ -246,6 +255,35 @@ function setOf(raw) {
     if (Array.isArray(raw))
         return new Set(raw.filter((x) => typeof x === 'string'));
     return new Set();
+}
+/**
+ * EI-... (WI-6154): look up a `kind='system'` principal's capabilities BY ROLE
+ * NAME, with NO bearer-hash check — this is for INTROSPECTION/SIMULATION only
+ * (e.g. `agent_tools:list { asRole }` answering "what would this role see?"),
+ * never for real auth. `resolveBearer`/`loadCapabilities` above require a
+ * verified bearer hash and MUST stay the only path a real dispatch trusts.
+ *
+ * Returns `null` when no system_principals row exists for that role name
+ * (the role has no restricted principal — a caller simulating it should NOT
+ * synthesize a capability gate that wouldn't exist in reality) — distinct
+ * from an EMPTY set (a row exists but grants zero capabilities, e.g. the
+ * intentionally-capability-less `worker` row). Callers must not conflate the
+ * two: `null` ⇒ skip the capability gate (matches "no principal" dispatch
+ * behavior); an empty set ⇒ enforce the gate with zero grants (matches a real
+ * worker's dispatch-time denial).
+ */
+export async function lookupSystemPrincipalCapabilitiesByRole(workspaceId, role) {
+    return withWorkspace(workspaceId, async (tx) => {
+        const rows = await tx `
+      SELECT capabilities
+        FROM harness_shared.system_principals
+       WHERE workspace_id = ${workspaceId} AND name = ${role}
+       LIMIT 1
+    `;
+        if (!rows.length)
+            return null;
+        return setOf(rows[0].capabilities);
+    });
 }
 /** Invalidate cache entry. Called by the LISTEN handler when capabilities change. */
 export function invalidate(workspaceId, slug) {

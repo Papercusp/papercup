@@ -19,10 +19,14 @@ import './tools/features/list_related';
 import './tools/features/tag_vocabulary';
 import './tools/goals/list';
 import './tools/goals/get';
+import './tools/goals/create';
+import './tools/goals/propose';
+import './tools/goals/update';
+import './tools/goals/pots';
 // issues:* fully RETIRED onto the unified work_items:* surface (coordination-unification-
 // 2026-06-23 P-015 / D-011). The engineer-issues STORE persists; work_items:* dispatches to it.
-import './tools/messages/inbox';
-import './tools/messages/outbox';
+// messages:inbox / messages:outbox RETIRED — work-item-mail-surface-retirement-2026-07-26
+// (see _retired/work-item-mail/RESTORE.md). Disuse: 0 calls/90d, superseded by coord:*.
 import './tools/audit/list';
 import './tools/intel/spawn_tree';
 import './tools/intel/artifacts';

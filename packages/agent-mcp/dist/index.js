@@ -16,11 +16,33 @@
 // registration. Must stay above `import './bootstrap'` (and is reached first
 // by operator tools, which import `defineTool` from this index).
 import './capability-tiers-papercusp';
+// Entity resolvers (tool-arg-referential-integrity-2026-07-19 P-004): registers the
+// existence checks the `entity-check` dispatch step consults for `entityRef` args.
+// Same load-time-side-effect contract as the tier resolver above. Inert until an arg
+// is actually declared `entityRef(kind)` — registering a resolver is what ACTIVATES
+// enforcement for that kind, which is what makes the rollout stageable.
+import './entity-resolvers-papercusp';
 export { defineTool } from '@papercusp/tooldef';
+// tool-arg-referential-integrity P-001: re-exported beside `defineTool` so an arg
+// naming a durable entity is declared `entityRef('pot')` right where the tool is
+// written, with no extra import path to discover.
+export { entityRef } from '@papercusp/tooldef';
+// P-004b: the tools/list overlay that publishes small entity vocabularies as
+// enums, plus the revision fingerprint a transport polls to decide whether a
+// `notifications/tools/list_changed` is warranted. Re-exported here because the
+// HTTP MCP transport imports its whole tooldef surface through this package.
+export { applyEntityRefEnums, entityEnumRevision } from '@papercusp/tooldef';
 // Payload tiers (context-trimming-tiers-2026-07-01 D-004): the trimmed/standard/full
 // axis over WHAT a tool returns. Hosts parse the session tier (parsePayloadTier) into
 // ctx.contextTier; tools declare per-tier `shape` projections on defineTool.
-export { applyPayloadTier, extractPayloadTier, parsePayloadTier, resolvePayloadTier, resetPayloadTierRatchet, PAYLOAD_TIERS, } from '@papercusp/tooldef';
+export { applyPayloadTier, extractPayloadTier, parsePayloadTier, resolvePayloadTier, resetPayloadTierRatchet, PAYLOAD_TIERS, 
+// EI-19447969329510166: a shaper that does not know the transport ceiling has
+// to GUESS its caps, and a guess that is fine for one row blows the ceiling at
+// a hundred — which force-re-applies that same shaper and, on failing to
+// shrink, falls back to the generic projection the shaper existed to avoid.
+// The tier surface was already re-exported here; the one number a shaper must
+// respect to stay on its own path was not.
+PAYLOAD_TIER_HARD_CEILING_CHARS, } from '@papercusp/tooldef';
 // code-execution-tool-orchestration (B-CX-2A): the code-mode runtime, re-exported so the
 // operator-core `code:run` agent tool can compose it.
 export { runToolOrchestration } from '@papercusp/tooldef';
@@ -49,13 +71,13 @@ export { defineUITool } from './define-ui-tool';
 export { defineResource } from '@papercusp/tooldef';
 export { definePrompt } from '@papercusp/tooldef';
 export { dispatch, getPrompt, listPrompts, listResources, readResource, startServer, } from './server';
-export { getCatalog, lookup } from '@papercusp/tooldef';
+export { getCatalog, lookup, toArgsJsonSchema } from '@papercusp/tooldef';
 export { serializeToolResponse, formatOptsFromCtx, } from '@papercusp/tooldef';
 export { applyToolManifest, reloadToolManifest, hasToolManifest, } from './tool-manifest';
 export { getResourceCatalog, lookupResource, matchResource, } from '@papercusp/tooldef';
 export { getPromptCatalog, lookupPrompt } from '@papercusp/tooldef';
 export { SLASH_PROMPT_PREFIX, resolveSlashExposure, slashPromptNameFor, isSlashPromptName, slashPromptToolName, deriveSlashPromptArguments, slashPromptListingFor, renderSlashPrompt, } from '@papercusp/tooldef';
-export { resolveBearer } from './auth';
+export { resolveBearer, lookupSystemPrincipalCapabilitiesByRole } from './auth';
 export { sanitizeToolSchema } from './tool-schema-sanitize';
 export { fuzzyEnum, nearestByLevenshtein } from './fuzzy-enum';
 export { onWorkspaceSwitch, dispatchWorkspaceSwitch, } from '@papercusp/tooldef';
@@ -69,6 +91,11 @@ export { applySeeAlso, resolveSeeAlso, renderSeeAlsoText, readJsonResult } from 
 // Host ambient result-annotator seam (agent-managed-compaction P-013) — the operator
 // wires its banded context gauge via context-gauge-wiring.ts, same as delta-flag-wiring.
 export { setResultAnnotator, resetResultAnnotator, applyResultAnnotator } from '@papercusp/tooldef';
+// Host "server vintage" seam (EI-19953470656367880) — appends a build-id + boot-age
+// hint to an `Unrecognized key` invalid_args error. The operator wires it to
+// build-info.ts + process.uptime() via server-vintage-wiring.ts, same shape as
+// context-gauge-wiring.ts.
+export { setServerVintageResolver, resetServerVintageResolver, readServerVintage, formatVintageAge, } from '@papercusp/tooldef';
 // Tool-result SEMANTIC-delta flag seam (agent-tool-delta-protocol-2026-06-22, the
 // flag-bite): tooldef gates the `mode:'delta'` upgrade behind this resolver, the
 // host wires it to FLAGS.TOOL_DELTA_PROTOCOL (see operator-core's
@@ -81,6 +108,10 @@ export { tierFor, setCapabilityTierResolver } from '@papercusp/tooldef';
 // Papercusp's capability→tier policy (plan P-012) — the host impl registered
 // as tooldef's tier resolver (see capability-tiers-papercusp.ts).
 export { papercuspTierFor, setCapabilityTierOverride } from './capability-tiers-papercusp';
+// The goal TRANSITION seam (EI-20013729460455061 stop, WI-37615 resume). operator-core
+// installs the executor at module load; without it `goals:update { status:'paused' }` is a
+// pure record write — and `status:'active'` leaves placement gated behind an "active" label.
+export { setGoalTransitionExecutor, getGoalTransitionExecutor, isStoppingStatus, STOPPING_STATUSES, isTerminalStatus, TERMINAL_STATUSES, isResumingStatus, isTransitioningStatus, isStopReport, } from './tools/goals/stop-seam';
 // Per-spawn URL-param parser — used by both projected-tool transports
 // to extract harness/workspace/role/feature/chunk/run/spawn from the
 // orchestrator-baked URL.
