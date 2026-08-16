@@ -386,6 +386,8 @@ export async function scanPeerFederationSilence(
       freshestAdvanceMs: null,
       allSilent: false,
       breaches: [],
+      strandedCursors: 0,
+      liveApplyBinding: null,
     };
   }
 }
@@ -435,6 +437,7 @@ async function readAndJudgePeerSilence(
       logKeyHex: r.log_keyhex,
       position: Number(r.position),
       updatedAtMs: Number(r.updated_at_ms),
+      applyBinding: r.apply_binding,
     })),
     {
       silentAfterMs: opts.silentAfterMs,
