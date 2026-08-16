@@ -3531,22 +3531,37 @@ export async function mergeWorkItemOutputPayload(
 
 /** Additively merge a top-level payload patch across BOTH work-item families.
  * Unlike the completion-specific wrapper above this is strict: callers need to
- * know whether the typed state was persisted. */
+ * know whether the typed state was persisted.
+ *
+ * `opts.unset` REMOVES top-level keys, and it is the only correct way to clear
+ * one. Merging `{ key: null }` does NOT clear a key — jsonb `||` stores a JSON
+ * null, so the key REMAINS PRESENT and every existence-shaped reader still sees
+ * a stamp (measured: `'{"plan_item":{…}}'::jsonb || '{"plan_item":null}'::jsonb`
+ * leaves `? 'plan_item'` TRUE *and* `-> 'plan_item' IS NOT NULL` TRUE, because
+ * `->` yields `'null'::jsonb`, which is not SQL NULL). Both idioms are live in
+ * this repo — `? 'plan_item'` in the claim floors and `IS NOT NULL` in
+ * plan-item-coverage — so a null-merge produces a stamp that still admits/holds
+ * the row while its `->>'plan_slug'` reads NULL: a corrupt half-stamp that is
+ * strictly worse than the wrong stamp it meant to remove. (EI-20578964155166663)
+ *
+ * Unset is applied AFTER the merge in the same statement, so a key named in both
+ * ends up removed, and merge+unset stay atomic (no read-modify-write race). */
 export async function mergeWorkItemPayload(
   id: string,
   patchValue: Record<string, unknown>,
-  opts: { harness?: string } = {},
+  opts: { harness?: string; unset?: readonly string[] } = {},
 ): Promise<WorkItem | null> {
   const wi = await getWorkItem(id, opts.harness);
   if (!wi) return null;
+  const unset = [...new Set(opts.unset ?? [])];
   if (wi.family === 'issue') {
-    await mergeIssuePayload(id, patchValue);
+    await mergeIssuePayload(id, patchValue, { unset });
   } else {
     const { sql } = getOrgPg();
     const patch = JSON.stringify(patchValue);
     await sql`
       UPDATE harness_shared.harness_features_consolidated
-         SET payload = COALESCE(payload, '{}'::jsonb) || ${patch}::text::jsonb,
+         SET payload = (COALESCE(payload, '{}'::jsonb) || ${patch}::text::jsonb) - ${unset}::text[],
              updated_ts = ${Date.now()}
        WHERE workspace_id = ${activeWorkspaceId()}
          AND harness_slug = ${wi.harness}

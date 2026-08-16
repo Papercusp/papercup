@@ -21,7 +21,7 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { resolveConcreteHarnessSlug } from '../_harness-scope';
 import { COORD_ROLES } from '../coordination/roles';
 import { planItemRef, PLAN_ITEM_KIND } from '../../issue-blocks-merge';
-import { updateWorkItem, mergeWorkItemPayload, explainIssueClaimFloors, linkWorkItem } from '../../work-items';
+import { updateWorkItem, mergeWorkItemPayload, explainIssueClaimFloors, linkWorkItem, unlinkWorkItem } from '../../work-items';
 import { runBulk, bulkContent } from '../_bulk';
 import { rejectBodySummaryConflict, resolveBodyAlias } from './_body-alias';
 import { unresolvedRefsInBody, unresolvedRefsWarning } from './unresolved-refs';
@@ -54,6 +54,16 @@ function planItemPayloadPatch(planItem: PlanItemArg | undefined, harness: string
   };
 }
 
+/** The stamp currently on the row, so a clear knows which coverage edge to retract.
+ * Shaped like the DURABLE payload (plan_slug/item_id), not the public arg. */
+function readExistingStamp(item: { payload?: Record<string, unknown> | null } | null): PlanItemArg | undefined {
+  const stamp = item?.payload?.plan_item;
+  if (!stamp || typeof stamp !== 'object') return undefined;
+  const { plan_slug: slug, item_id: id } = stamp as { plan_slug?: unknown; item_id?: unknown };
+  if (typeof slug !== 'string' || !slug || typeof id !== 'string' || !id) return undefined;
+  return { slug, item: id };
+}
+
 /** Keep an update's plan-item coverage semantics aligned with work_items:create. */
 async function linkPlanItemCoverage(
   id: string,
@@ -71,6 +81,24 @@ async function linkPlanItemCoverage(
     );
   } catch {
     // The payload stamp is the claim-admission source of truth; coverage is best-effort.
+  }
+}
+
+/** Retract the coverage edge a cleared stamp had asserted, so `plan_item: null`
+ * leaves no half-removed linkage behind (the payload stamp and the coverage edge
+ * are written together by both create and update — they must clear together too). */
+async function unlinkPlanItemCoverage(
+  id: string,
+  planItem: PlanItemArg | undefined,
+  harness: string | undefined,
+): Promise<void> {
+  if (!planItem) return;
+  try {
+    await unlinkWorkItem(id, { kind: PLAN_ITEM_KIND, ref: planItemRef(planItem.slug, planItem.item) }, 'relates', {
+      harness,
+    });
+  } catch {
+    // Mirror the link path: the payload stamp is authoritative, coverage is best-effort.
   }
 }
 
@@ -134,11 +162,18 @@ const FIELDS = {
     .nullable()
     .optional()
     .describe('goal id to adopt this work-item into, or null to clear its goal attribution'),
+  // EI-20578964155166663: `null` CLEARS the stamp, matching `parent`/`goal`. Without
+  // it a stamp could be set and re-pointed but never removed, so a mis-stamped item
+  // was wired into the plan's terminal machinery (lane-sync holds it at the plan
+  // item's lane; completing it flips the PLAN item; reconcile then closes siblings
+  // sharing the stamp) with no escape but a force-close or raw SQL. The clear is an
+  // UNSET, never a null-merge — see mergeWorkItemPayload's note.
   plan_item: z
     .object({ slug: z.string().min(1), item: z.string().min(1) })
+    .nullable()
     .optional()
     .describe(
-      'plan item this existing work-item implements (for example { slug:"my-plan", item:"P-003" }); stamps payload.plan_item so plan-scoped fleet lanes can admit it and writes the same coverage edge as work_items:create',
+      'plan item this existing work-item implements (for example { slug:"my-plan", item:"P-003" }); stamps payload.plan_item so plan-scoped fleet lanes can admit it and writes the same coverage edge as work_items:create. Pass null to CLEAR the stamp when it asserts something untrue (the item does not implement that plan item) — this removes the payload key and retracts the coverage edge, releasing the item from the plan-item lane-sync hold and the sibling-close machinery.',
     ),
   confirmShrink: z
     .boolean()
@@ -365,12 +400,21 @@ export default defineTool({
           // a plan-scoped fleet claim spec can admit it. Keep the public update shape aligned
           // with work_items:create { plan_item } and preserve the coverage edge as well.
           const planHarness = resolveConcreteHarnessSlug(item.harness ?? it.harness, ctx) ?? undefined;
-          const planPatch = planItemPayloadPatch(it.plan_item, planHarness);
-          if (Object.keys(planPatch).length > 0) {
-            const merged = await mergeWorkItemPayload(it.id, planPatch, { harness: it.harness });
+          if (it.plan_item === null) {
+            // Clear: capture the outgoing stamp BEFORE the unset, so the coverage
+            // edge it asserted can be retracted too (the payload key is gone after).
+            const outgoing = readExistingStamp(item);
+            const merged = await mergeWorkItemPayload(it.id, {}, { harness: it.harness, unset: ['plan_item'] });
             if (merged) item = merged;
+            await unlinkPlanItemCoverage(it.id, outgoing, planHarness);
+          } else {
+            const planPatch = planItemPayloadPatch(it.plan_item, planHarness);
+            if (Object.keys(planPatch).length > 0) {
+              const merged = await mergeWorkItemPayload(it.id, planPatch, { harness: it.harness });
+              if (merged) item = merged;
+            }
+            await linkPlanItemCoverage(it.id, it.plan_item, planHarness, ident.ownerId);
           }
-          await linkPlanItemCoverage(it.id, it.plan_item, planHarness, ident.ownerId);
           // EI-19919820196426791: raising severity to critical/major is a silent no-op on
           // claimability when the item sits in a lane the claim path structurally never
           // serves (payload.lane='observation') or is routed to a human
@@ -459,10 +503,33 @@ export default defineTool({
             ...payloadFlagPatch(it),
             ...planItemPayloadPatch(it.plan_item, planHarness),
           };
-          if (Object.keys(flagPatch).length > 0) {
-            const merged = await mergeWorkItemPayload(it.id, flagPatch, { harness: it.harness });
+          // EI-20578964155166663: a clear is an UNSET, and planItemPayloadPatch emits
+          // nothing for it — so without this the feature-family path would silently
+          // no-op `plan_item: null` while reporting ok, the exact shape of miss this
+          // fix exists to remove. Read the outgoing stamp before the unset lands.
+          const clearingStamp = it.plan_item === null;
+          // Dynamic import, not a new static one: several suites here vi.mock
+          // '../../work-items' wholesale and a partial factory makes a newly-imported
+          // name undefined at call time (EI-19395547021329946, per the note below).
+          // Best-effort by design — the UNSET is the load-bearing half; retracting the
+          // coverage edge is advisory, exactly as linkPlanItemCoverage already treats it.
+          let outgoing: PlanItemArg | undefined;
+          if (clearingStamp) {
+            try {
+              const { getWorkItem } = await import('../../work-items');
+              outgoing = readExistingStamp(await getWorkItem(it.id, it.harness));
+            } catch {
+              /* leave the coverage edge; the stamp itself still clears below */
+            }
+          }
+          if (Object.keys(flagPatch).length > 0 || clearingStamp) {
+            const merged = await mergeWorkItemPayload(it.id, flagPatch, {
+              harness: it.harness,
+              ...(clearingStamp ? { unset: ['plan_item'] } : {}),
+            });
             if (merged) {
-              await linkPlanItemCoverage(
+              if (clearingStamp) await unlinkPlanItemCoverage(it.id, outgoing, planHarness);
+              else await linkPlanItemCoverage(
                 it.id,
                 it.plan_item,
                 planHarness,

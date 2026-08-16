@@ -2433,12 +2433,21 @@ export async function markLeaderTriage(
  * self-improvement `implementAttempts` / `needsHuman` / `paths` keys, not a
  * subscriber-visible mutation). Set a key to null to store an explicit null.
  */
-export async function mergeIssuePayload(id: string, patch: Record<string, unknown>): Promise<EngineerIssue | null> {
+/** `opts.unset` REMOVES top-level payload keys and is the only correct way to
+ * clear one — merging `{ key: null }` leaves the key PRESENT as a JSON null, so
+ * existence-shaped readers (`? 'key'`, and `-> 'key' IS NOT NULL`) still match.
+ * See mergeWorkItemPayload's note. (EI-20578964155166663) */
+export async function mergeIssuePayload(
+  id: string,
+  patch: Record<string, unknown>,
+  opts: { unset?: readonly string[] } = {},
+): Promise<EngineerIssue | null> {
   const { sql } = getOrgPg();
   const ws = await resolveIssueWorkspace(id);
+  const unset = [...new Set(opts.unset ?? [])];
   const rows = await sql<IssueRowDb[]>`
     UPDATE harness_shared.engineer_issues
-       SET payload = COALESCE(payload, '{}'::jsonb) || ${JSON.stringify(patch)}::text::jsonb,
+       SET payload = (COALESCE(payload, '{}'::jsonb) || ${JSON.stringify(patch)}::text::jsonb) - ${unset}::text[],
            origin = 'local',
            updated_at = now()
      WHERE workspace_id = ${ws} AND issue_id = ${id}
