@@ -223,6 +223,15 @@ export function classifyIdeaOutcome(
   prov: RoutedIdeaProvenance,
   completionByRef: ReadonlyMap<string, ChangeFeedEntry>,
 ): IdeaOutcome {
+  // D-003 / P-002 (blender-loop-repair-2026-08-16, EI-20597534704604481): a
+  // LEGACY shared gym ref (`gym:SP-NNN` — the pre-batch-stamp per-cycle counter
+  // ids) joined MANY ideas onto ONE frozen niche verdict: 600 of 746 decided
+  // outcomes were copies of 4 dead July verdicts, flattening lens weights to
+  // near-uniform. Their true per-idea outcomes are unknowable, so they classify
+  // 'pending' permanently — which also makes the next refreshScoutOutcomes
+  // batch-UPDATE repair the 600 poisoned cached rows in place. Batch-stamped
+  // ids (`gym:SP-<stamp>-NNN`, recombine.ts) do not match.
+  if (prov.rail === 'gym' && /^gym:SP-\d+$/.test(prov.routedRef)) return 'pending';
   const entry = completionByRef.get(prov.routedRef);
   if (!entry) return 'pending';
   // instance (InstanceSubject / apiary) eval — reconciliation P-006: a genome variant
