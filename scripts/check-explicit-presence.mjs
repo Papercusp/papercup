@@ -46,7 +46,8 @@
  *
  * Informational by default (like lint:generic-first) — a heuristic, so it advises
  * rather than blocks. A field that is genuinely always-present, or whose zero value IS
- * the correct default, is a false positive: add its `path:line` to ALLOW below.
+ * the correct default, is a false positive: add an `{ at: 'path:line', code: '<the line>' }`
+ * entry to ALLOW below.
  *
  * WHY `--ratchet` EXISTS, AND WHY IT IS THE MODE THAT GETS WIRED (WI-5977, 2026-08-13).
  * WI-5977's own thesis is that "a convention nobody enforces decays into advice", and
@@ -154,73 +155,181 @@ export function decideRatchet({ count, baselineCount, updateFlag = false }) {
 }
 
 /**
- * `path:line` pairs that are false positives — the zero value IS the correct default
- * here (a genuine config default, not a parse/deserialize boundary reading absence as
- * zero), or the field is structurally guaranteed present. Curate as real ones surface.
+ * False positives — the zero value IS the correct default here (a genuine config default,
+ * not a parse/deserialize boundary reading absence as zero), or the field is structurally
+ * guaranteed present. Curate as real ones surface.
+ *
+ * Each entry is `{ at: 'path:line', code: '<the source line, trimmed>' }`. BOTH halves are
+ * load-bearing, and which one is authoritative is the point:
+ *
+ *   * `code` is the IDENTITY. An entry is matched to a candidate by content, so an edit
+ *     ANYWHERE ABOVE it — which re-points `at` at a different line without touching the code
+ *     — no longer un-suppresses the violation it was hiding. That un-suppression is what used
+ *     to raise the candidate count and RED THE GATE on drift, contradicting this guard's own
+ *     stated intent that a drifted entry must stay advisory (EI-20609643000161171: observed
+ *     twice in one morning on coord-invariant-actions.ts, 1410 → 1470 → 1527, each a
+ *     fleet-wide red landing on whoever ran the gate next rather than on the editor).
+ *   * `at` is the ANCHOR: it is what a human reads to find the line, and it disambiguates
+ *     when several identical lines share one file (the nearest unclaimed one wins). It is
+ *     allowed to go stale — a drifted `at` is reported, never fatal.
+ *
+ * Matching is strictly ONE-TO-ONE per file (see `applyAllowlist`), which is what makes
+ * content-keying safe: N identical lines with M entries suppress exactly min(N, M), so
+ * adding a genuinely new copy of an already-allowed line still raises the count and still
+ * reds the ratchet. An entry can never suppress more than the one violation it was written
+ * for, however unremarkable its `code` looks.
  */
-const ALLOW = new Set([
+const ALLOW = [
   // ── postgres.js RESULT-ARRAY `.count`, not a row column ────────────────────────────────
   // Every one of these is `<result>.count` on the object postgres.js returns from a
   // DELETE/UPDATE — the driver's affected-row count, which it populates on every command.
   // The analyzer sees `x.count ?? 0` on a variable assigned from a sql`` template and cannot
   // tell that apart from `rows[0].count` (a real, NULLable column read). The `?? 0` here is
   // a no-op, and the zero it would produce is the honest "nothing matched".
-  'packages/operator-core/lib/blueprint/commit-reproject-real.ts:110',
-  'packages/operator-core/lib/harness/routines/coord-invariant-actions.ts:1470',
-  'packages/operator-core/lib/search/session-ingest.ts:1969',
-  'packages/operator-core/lib/search/session-ingest.ts:1970',
-  'packages/operator-core/lib/search/session-ingest.ts:2001',
-  'packages/operator-core/lib/search/session-ingest.ts:2002',
-  'packages/operator-core/lib/steering-churn.ts:316',
-  'packages/operator-core/lib/sync/hyperbee/coord-quarantine-store.ts:139',
+  { at: 'packages/operator-core/lib/blueprint/commit-reproject-real.ts:110', code: 'return { ...res, proposalMarked: (updated.count ?? 0) > 0 };' },
+  { at: 'packages/operator-core/lib/harness/routines/coord-invariant-actions.ts:1527', code: 'const n = del.count ?? 0;' },
+  { at: 'packages/operator-core/lib/search/session-ingest.ts:1969', code: 'deleted += r.count ?? 0;' },
+  { at: 'packages/operator-core/lib/search/session-ingest.ts:1970', code: 'if ((r.count ?? 0) < 5000) break;' },
+  { at: 'packages/operator-core/lib/search/session-ingest.ts:2001', code: 'partsDeleted += r.count ?? 0;' },
+  { at: 'packages/operator-core/lib/search/session-ingest.ts:2002', code: 'if ((r.count ?? 0) < 5000) break;' },
+  { at: 'packages/operator-core/lib/steering-churn.ts:316', code: 'return deleted.count ?? 0;' },
+  { at: 'packages/operator-core/lib/sync/hyperbee/coord-quarantine-store.ts:139', code: 'return { cleared: rows.count ?? 0 };' },
 
   // ── absence IS the encoder's representation of empty ───────────────────────────────────
   // encodeSessionCursor (same file, ~line 90) OMITS `bounds` when it is empty:
   // `...(bounds && Object.keys(bounds).length > 0 ? { bounds } : {})`. So an absent `bounds`
   // does not mean "unknown" here — it is how this codec spells "no bounds".
-  'packages/operator-core/lib/agent-tools/sessions/cursor.ts:103',
+  { at: 'packages/operator-core/lib/agent-tools/sessions/cursor.ts:103', code: 'const bounds = payload.bounds ?? {};' },
   // `!Number.isInteger(payload.offset)` earlier in the SAME `||` disjunction already rejects
   // an absent offset, so this arm is unreachable for absence. (Its sibling on the preceding
   // line uses the correct `?? -1` sentinel; only the reachability argument saves this one.)
-  'packages/operator-core/lib/agent-tools/sessions/cursor.ts:119',
+  { at: 'packages/operator-core/lib/agent-tools/sessions/cursor.ts:119', code: '(payload.offset ?? 0) > MAX_CURSOR_OFFSET' },
 
   // ── schema-verified: the column cannot be absent, or NULL and {} are indistinguishable ──
   // harness_shared.routines.trigger_config is NOT NULL (information_schema, 2026-08-13).
-  'packages/operator-core/lib/plugin-host.ts:246',
+  { at: 'packages/operator-core/lib/plugin-host.ts:246', code: 'triggerConfig: rows[0].trigger_config ?? {},' },
   // payload_template IS nullable, but it is immediately spread into a merge — `{...null}` and
   // `{...{}}` produce the identical object, so no reader can distinguish the two outcomes.
-  'packages/operator-core/lib/plugin-host.ts:248',
+  { at: 'packages/operator-core/lib/plugin-host.ts:248', code: 'payloadTemplate: { ...(rows[0].payload_template ?? {}), ...(payload ?? {}) },' },
 
   // ── the zero is a declared sentinel the no-data branch already uses ────────────────────
   // A high-water mark: the surrounding expression is `hwmRows.length ? Number(...) : 0`, so 0
   // is this function's stated "no HWM yet" value; a NULL mtime_ms means the same thing and
   // errs toward re-ingesting, never toward skipping.
-  'packages/operator-core/lib/search/session-ingest.ts:1864',
+  { at: 'packages/operator-core/lib/search/session-ingest.ts:1864', code: 'const hwm = hwmRows.length ? Number(hwmRows[0].mtime_ms ?? 0) : 0;' },
 
   // ── the file-absent branch above already yields exactly this empty value ───────────────
   // Each of these reads an optional list/map out of a config or state file whose enclosing
   // function ALREADY returns the same empty value when the file does not exist. An absent key
   // and an empty collection therefore reach every caller identically; there is no reader that
   // could act on the distinction even if it were preserved.
-  'packages/operator-core/lib/plugin-grants.ts:45',
-  'packages/operator-core/lib/endpoint-route/routes/harness/testing.ts:67',
-  'packages/operator-core/lib/endpoint-route/routes/harness/tests.ts:67',
-  'packages/operator-core/lib/endpoint-route/routes/harness/runs.ts:106',
-  'packages/operator-core/lib/sync-resolver/index.ts:1671',
-  'libs/papercusp/packages/cli/src/snapshot-cli.ts:663',
+  { at: 'packages/operator-core/lib/plugin-grants.ts:45', code: 'const grants = parsed.grants ?? {};' },
+  { at: 'packages/operator-core/lib/endpoint-route/routes/harness/testing.ts:67', code: 'return (JSON.parse(raw).tests ?? []) as HarnessTestRow[];' },
+  { at: 'packages/operator-core/lib/endpoint-route/routes/harness/tests.ts:67', code: 'return parsed.tests ?? [];' },
+  { at: 'packages/operator-core/lib/endpoint-route/routes/harness/runs.ts:106', code: 'const lanes = (manifest.lanes ?? []).map((lane: any) => {' },
+  { at: 'packages/operator-core/lib/sync-resolver/index.ts:1671', code: 'for (const l of raw.lanes ?? []) {' },
+  { at: 'libs/papercusp/packages/cli/src/snapshot-cli.ts:663', code: 'const fields = Object.entries(shape.fields ?? {});' },
 
   // ── absence resolves in the CONSERVATIVE direction ─────────────────────────────────────
   // An ollama manifest with no `layers` finds no model layer, so the loop `continue`s to the
   // next root and ultimately reports needsDownload — the same outcome the adjacent catch gives
   // a malformed manifest. Absence can only cause a redundant download, never a false hit.
-  'packages/operator-core/lib/provisioner/weights.ts:96',
+  { at: 'packages/operator-core/lib/provisioner/weights.ts:96', code: "const layer = (manifest.layers ?? []).find((l) => l.mediaType === 'application/vnd.ollama.image.model');" },
 
   // ── free-text field where empty and absent carry the same meaning ──────────────────────
   // The auditor's `reasons` is prose shown to a human; the VERDICT it explains is validated
   // separately on the line above and a missing verdict returns null. "No reason given" is
   // what both an absent and an empty `reasons` mean.
-  'libs/papercusp/packages/orchestrator/src/auditor-dispatch.ts:233',
-]);
+  { at: 'libs/papercusp/packages/orchestrator/src/auditor-dispatch.ts:233', code: "const reasons = typeof obj.reasons === 'string' ? obj.reasons : String(obj.reasons ?? '');" },
+];
+
+/**
+ * Whitespace-insensitive content key. Indentation and inter-token spacing move under an
+ * entry for reasons that have nothing to do with the suppression's validity (a reformat, a
+ * block re-indented by an enclosing `if`), and treating those as a different line would
+ * reintroduce the same false un-suppression by a slower route.
+ */
+function codeKey(s) {
+  return String(s).trim().replace(/\s+/g, ' ');
+}
+
+/**
+ * Resolve ALLOW entries against measured candidates, per file, ONE-TO-ONE.
+ *
+ * Pure and exported so the properties below are testable without a tree scan.
+ *
+ *   1. EXACT: an entry whose `at` line still holds a candidate consumes it. Unchanged from
+ *      the original line-keyed behavior; the overwhelmingly common case.
+ *   2. DRIFTED: a leftover entry consumes the nearest remaining candidate IN THE SAME FILE
+ *      whose content matches its `code`. Reported, never fatal.
+ *   3. UNMATCHED: nothing matched — the code was fixed or deleted. Reported, never fatal;
+ *      the count simply falls below baseline, which the ratchet already handles.
+ *
+ * A candidate is consumed at most once and an entry consumes at most one candidate, so the
+ * suppressed TOTAL is min(entries, matching candidates) regardless of which of several
+ * identical lines pass 2 happens to pick. That is what closes the over-suppression hole a
+ * content-keyed allowlist would otherwise open: a newly-added duplicate of an already-allowed
+ * line is still counted, still raises the ratchet, and is still reported.
+ *
+ * Residual, stated rather than hidden: if the one allowed line is DELETED and a genuinely new
+ * violation with byte-identical content appears in the SAME file, the entry suppresses the new
+ * one. That window existed before this change too (the new line had only to land on the
+ * allowed line number), it is narrower now, and every re-point is printed.
+ */
+export function applyAllowlist({ allow, hitsByFile }) {
+  const candidates = [];
+  const drifted = [];
+  const unmatched = [];
+
+  const entriesByFile = new Map();
+  for (const entry of allow) {
+    const i = entry.at.lastIndexOf(':');
+    const path = entry.at.slice(0, i);
+    const line = Number(entry.at.slice(i + 1));
+    if (!entriesByFile.has(path)) entriesByFile.set(path, []);
+    entriesByFile.get(path).push({ ...entry, path, line });
+  }
+
+  for (const [path, hits] of hitsByFile) {
+    const entries = entriesByFile.get(path) ?? [];
+    const claimed = new Set();
+    const leftover = [];
+
+    for (const entry of entries) {
+      const exact = hits.findIndex((h, idx) => !claimed.has(idx) && h.line === entry.line);
+      if (exact >= 0) claimed.add(exact);
+      else leftover.push(entry);
+    }
+
+    for (const entry of leftover) {
+      const want = codeKey(entry.code ?? '');
+      let best = -1;
+      if (want) {
+        for (let idx = 0; idx < hits.length; idx++) {
+          if (claimed.has(idx) || codeKey(hits[idx].snippet) !== want) continue;
+          if (best < 0 || Math.abs(hits[idx].line - entry.line) < Math.abs(hits[best].line - entry.line)) best = idx;
+        }
+      }
+      if (best >= 0) {
+        claimed.add(best);
+        drifted.push({ at: entry.at, resolvedLine: hits[best].line, code: entry.code });
+      } else {
+        unmatched.push(entry.at);
+      }
+    }
+
+    hits.forEach((h, idx) => { if (!claimed.has(idx)) candidates.push({ f: path, ...h }); });
+  }
+
+  // Entries naming a file the scan never opened are NOT stale — a diff-scoped run legitimately
+  // touches almost none of them. Only `--all` callers pass every file an entry could name.
+  const scannedFiles = new Set(hitsByFile.keys());
+  for (const [path, entries] of entriesByFile) {
+    if (!scannedFiles.has(path)) for (const e of entries) unmatched.push(e.at);
+  }
+
+  return { candidates, drifted, unmatched };
+}
 
 // v1 (whole-file "does this file mention JSON.parse anywhere" gate) was tried first and
 // measured 1264 hits on this tree — cry-wolf, the exact failure check-generic-first.mjs's
@@ -582,7 +691,8 @@ function reportRatchet({ candidates, unscanned, updateFlag }) {
     console.error('  never the type\'s zero value, because a NULL/missing field and a genuine 0/false/empty');
     console.error('  then read identically. Fix the NEW read (an `in` check, an explicit `present:` field, or');
     console.error('  erroring when the two cannot be told apart), or — if the zero value is genuinely the');
-    console.error('  correct default there — add its `path:line` to ALLOW in this script with that reason.\n');
+    console.error("  correct default there — add an `{ at: 'path:line', code: '<the line>' }` entry to ALLOW");
+  console.error('  in this script with that reason. `code` is the identity; `at` may later drift harmlessly.\n');
     for (const c of candidates) console.error(`    ${c.f}:${c.line}\n        ${c.snippet}\n        ${c.reason}`);
     console.error(`\n  Raising the baseline is a deliberate hand-edit with a justification, never a silent bump.`);
     process.exit(1);
@@ -637,34 +747,38 @@ function main() {
   }
   files = files.filter((f) => SCAN_ROOTS.some((r) => f.startsWith(r)) && f.endsWith('.ts'));
 
-  const candidates = [];
-  const allowUsed = new Set();
+  const hitsByFile = new Map();
   for (const f of files) {
     let text;
     try { text = readFileSync(join(ROOT, f), 'utf8'); } catch { continue; }
-    for (const hit of analyzeForExplicitPresence({ path: f, text })) {
-      const key = `${f}:${hit.line}`;
-      if (ALLOW.has(key)) { allowUsed.add(key); continue; }
-      candidates.push({ f, ...hit });
-    }
+    hitsByFile.set(f, analyzeForExplicitPresence({ path: f, text }));
+  }
+  const { candidates, drifted, unmatched } = applyAllowlist({ allow: ALLOW, hitsByFile });
+
+  // Both reports below are ADVISORY BY CONSTRUCTION, and that is the whole contract: a drifted
+  // or dead ALLOW entry names bookkeeping to tidy, never a NEW boundary read, so neither may
+  // reach the exit code. Before content-keying (EI-20609643000161171) that promise was made in
+  // a comment and broken by the ratchet leg, because drift un-suppressed the violation and the
+  // count rose. Now drift changes nothing the ratchet can see.
+  if (all && drifted.length > 0) {
+    console.error(
+      `⚠ explicit-presence: ${drifted.length} ALLOW entr(ies) DRIFTED — matched by content at a new line.\n` +
+        '  Suppression held (the reason is still true); re-point `at` when convenient:',
+    );
+    for (const d of drifted) console.error(`    ${d.at}  →  :${d.resolvedLine}`);
+    console.error('');
   }
 
-  // ALLOW is keyed on `path:line`, so ANY edit above an entry silently re-points it at a
-  // different line. An entry that suppresses nothing is this guard's own subject one level
-  // up: a suppression believed to be doing work while it measures nothing. Only meaningful
-  // under `--all`, which scans every file an entry could name (a diff-scoped run legitimately
-  // touches almost none of them). Advisory — a drifted entry must not red the gate leg,
-  // because the correct response is re-triaging the moved line, not deleting the reason.
-  if (all) {
-    const stale = [...ALLOW].filter((k) => !allowUsed.has(k));
-    if (stale.length > 0) {
-      console.error(
-        `⚠ explicit-presence: ${stale.length} ALLOW entr(ies) matched NO candidate — the line moved, or the\n` +
-          '  code was fixed. Re-point or delete them; a suppression that suppresses nothing hides the next hit:',
-      );
-      for (const k of stale) console.error(`    ${k}`);
-      console.error('');
-    }
+  // An entry that suppresses nothing is this guard's own subject one level up: a suppression
+  // believed to be doing work while it measures nothing. Only meaningful under `--all`, which
+  // scans every file an entry could name (a diff-scoped run legitimately touches almost none).
+  if (all && unmatched.length > 0) {
+    console.error(
+      `⚠ explicit-presence: ${unmatched.length} ALLOW entr(ies) matched NO candidate by line OR content —\n` +
+        '  the code was fixed or deleted. Delete them; a suppression that suppresses nothing hides the next hit:',
+    );
+    for (const k of unmatched) console.error(`    ${k}`);
+    console.error('');
   }
 
   if (ratchet) return reportRatchet({ candidates, unscanned, updateFlag });
@@ -684,7 +798,7 @@ function main() {
   console.error('  never the type\'s zero value (absent != false, != 0). A reader that cannot tell the two apart');
   console.error('  must error, not silently choose. These are *candidates*, not certainties: for a field that is');
   console.error('  genuinely always-present, or whose zero value is a deliberate default (not "unknown"), add its');
-  console.error('  `path:line` to ALLOW in scripts/check-explicit-presence.mjs.\n');
+  console.error("  `{ at: 'path:line', code: '<the line>' }` entry to ALLOW in scripts/check-explicit-presence.mjs.\n");
   for (const c of candidates) console.error(`    ${c.f}:${c.line}\n        ${c.snippet}\n        ${c.reason}`);
   process.exit(strict ? 1 : 0);
 }
