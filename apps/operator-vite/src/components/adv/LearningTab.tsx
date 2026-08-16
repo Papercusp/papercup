@@ -5735,18 +5735,20 @@ function buildRetainColumns(opts: {
                   <ChevronRight size={11} aria-hidden />
                 )}
               </button>
-              <button
-                type="button"
-                className="pc-learning__retainlink"
-                style={RETAIN_CELL_TRUNCATE}
-                title={`${row.id} — open on the Plans board`}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onOpenPlan(row.id);
-                }}
-              >
-                {row.title}
-              </button>
+              <Tooltip label={`${row.id} — open on the Plans board`}>
+                <button
+                  type="button"
+                  className="pc-learning__retainlink"
+                  style={RETAIN_CELL_TRUNCATE}
+                  aria-label={`${row.id} — open on the Plans board`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onOpenPlan(row.id);
+                  }}
+                >
+                  {row.title}
+                </button>
+              </Tooltip>
             </span>
           );
         }
