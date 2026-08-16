@@ -4064,7 +4064,7 @@
           "POST"
         ]
       },
-      "description": "Ask \"who knows more than me about THIS?\" — routes your question over real cross-agent transcript history (embedding + recency/verification/authorship blend), opens a bounded consult thread with the top qualified responder, and wakes them with why-they-were-chosen evidence. Honest by design: below the relevance floor the answer is a first-class no_qualified_responder (\"no one knows more than you do — proceed on your own judgment\"), never a costumed expert. Returns { verdict, conversation_id, responder, remaining_candidates, park_key, hint }.",
+      "description": "Ask \"who knows more than me about THIS?\" — routes your question over real cross-agent transcript history (embedding + recency/verification/authorship blend), opens a bounded consult thread with the top qualified responder, and wakes them with why-they-were-chosen evidence. ARCHIVE-FIRST: a question a closed consult already answered is served instantly from the archive (no wake, no budget). Honest by design: below the relevance floor the answer is a first-class no_qualified_responder (\"no one knows more than you do — proceed on your own judgment\"), never a costumed expert.",
       "capabilities": [
         "coord:write"
       ],
@@ -4088,7 +4088,7 @@
       "guidance": {
         "when": "You face a question a PEER may have real context on — their transcripts, their code, a failure they already debugged — before burning hours re-deriving it. You do not know WHO: the router discovers the responder from evidence.",
         "notWhen": "Live state (query it: locks:queue / fleet:assignments / work_items:get). An owner decision (coord:ask-owner). A SPECIFIC known agent (coord:send / coord:message-agent — this tool is who-knows DISCOVERY). Assigning work (a consult is advice, never a handoff — requester owns the outcome).",
-        "chaining": "get_feedback → latency_contract:'hard-blocked' ⇒ events:await { event: park_key } + end turn (reply wakes you) → conversations:get { id: conversation_id } for the thread → responder declined? re-call with exclude:[declinerId] (manual cascade; the wake budget binds)."
+        "chaining": "get_feedback → 'served_from_archive'? use the cited answer in `archive`, or re-call with archive_floor: 2 if it does not fit → latency_contract:'hard-blocked' ⇒ events:await { event: park_key } + end turn (reply wakes you) → conversations:get { id: conversation_id } for the thread → responder declined? re-call with exclude:[declinerId] (manual cascade; the wake budget binds)."
       }
     },
     {
