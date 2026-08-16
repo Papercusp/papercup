@@ -144,6 +144,22 @@ describe('decideRoutes', () => {
     // No routedRef before dispatch.
     expect(decisions.every((d) => d.routedRef === undefined)).toBe(true);
   });
+
+  it('gymEnabled:false reroutes gym-bound proposals to improvement (D-003 — never route onto a disabled gym)', () => {
+    const proposals = [
+      fixtureProposal({ id: 'a', routeHint: 'gym' }),
+      fixtureProposal({ id: 'b', routeHint: 'plan' }),
+    ];
+    const decisions = decideRoutes(proposals, { gymEnabled: false });
+    expect(decisions[0].rail).toBe('improvement');
+    expect(decisions[0].reason).toContain('gym rail gated OFF');
+    expect(decisions[0].followedHint).toBe(false);
+    // Non-gym rails untouched.
+    expect(decisions[1].rail).toBe('plan');
+    // Default (unset) stays byte-identical: gym routes to gym.
+    expect(decideRoutes(proposals)[0].rail).toBe('gym');
+    expect(decideRoutes(proposals, { gymEnabled: true })[0].rail).toBe('gym');
+  });
 });
 
 /* ── adapters ─────────────────────────────────────────────────────────── */
