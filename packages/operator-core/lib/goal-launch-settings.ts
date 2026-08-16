@@ -51,6 +51,9 @@
 import { z } from 'zod';
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
+// Re-exported below for the public surface; imported here because this module
+// uses both internally (the schema's role enum + the resolver signatures).
+import { GOAL_LAUNCH_ROLES, type GoalLaunchRole } from './goal-launch-settings-shared';
 import { resolveGoalContext } from './modes/goal-context';
 
 function pg(sql?: Sql): Sql {
@@ -165,42 +168,23 @@ export function resolveCeiling(stored: GoalCeiling | null | undefined, fallback:
 }
 
 /**
- * The CLOSED set of launch SLOTS a goal can pin a profile for (D-016, WI-38048).
+ * The launch-slot vocabulary now lives in `goal-launch-settings-shared.ts` and is
+ * re-exported here so every existing caller keeps working unchanged.
  *
- * A slot is a FUNCTION, not a persona. That distinction is the whole fix: a
- * plan-fleet leader and a drain-fleet member both run persona `su`, so keying
- * these profiles on psu `--role` (which is `su` for 121 of 124 live sessions)
- * could never express the contract — every profile the owner configured bound
- * nothing. `role` now means only "which persona prompt to load"; `goalRole`
- * means "which launch slot", and the two never share a spelling again.
- *
- * Keeping this closed is what makes a wrong key a WRITE-time refusal instead of
- * a stored setting that reads as configured and is silently ignored — the same
- * intent as this schema's `.strict()`, one level up.
- *
- * The list is taken from the GOAL contract's own enumeration in
- * `modes/registry.ts` ("plan-fleet leader + member, drain-fleet leader +
- * member, grading, test, misc") PLUS `goal`, which `goals:start` already passes
- * for the goal's own agent. Note that is EIGHT: WI-38048's prose says "six",
- * and building to that number refuses two slots that are already in use.
+ * WHY IT MOVED (WI-39514): this module value-imports `getOrgPg` from
+ * `@papercusp/db-org`, whose chain reaches `embedded-pg-discovery` ->
+ * `node:path`. With no tree-shaking on the SPA's Vite dev graph, a client
+ * component importing just `GOAL_LAUNCH_ROLES` from here dragged all of that
+ * into the browser, where `node:path` is a stub that throws on property access —
+ * white-screening the whole /adv route via its error boundary. Client code must
+ * import these three from the shared file; see that file's docblock and
+ * `apps/operator-vite/src/__tests__/no-server-leak-in-client-graph.test.ts`.
  */
-export const GOAL_LAUNCH_ROLES = [
-  'goal',
-  'plan-fleet-leader',
-  'plan-fleet-member',
-  'drain-fleet-leader',
-  'drain-fleet-member',
-  'grading',
-  'test',
-  'misc',
-] as const;
-
-export type GoalLaunchRole = (typeof GOAL_LAUNCH_ROLES)[number];
-
-/** True for a string that is a real, bindable launch slot. */
-export function isGoalLaunchRole(value: unknown): value is GoalLaunchRole {
-  return typeof value === 'string' && (GOAL_LAUNCH_ROLES as readonly string[]).includes(value);
-}
+export {
+  GOAL_LAUNCH_ROLES,
+  isGoalLaunchRole,
+  type GoalLaunchRole,
+} from './goal-launch-settings-shared';
 
 /** The launch knobs a goal can pin, per slot or as its across-the-board default. */
 export const launchProfileSchema = z
