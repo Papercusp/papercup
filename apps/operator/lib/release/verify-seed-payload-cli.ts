@@ -154,12 +154,60 @@ export async function runVerifySeedPayload(
     try {
       assertSeedNotDegraded(manifest as Parameters<typeof assertSeedNotDegraded>[0], {
         origin: args.origin,
-        env: process.env,
+        env,
       });
     } catch (err) {
       log(`[seed-verify] ${(err as Error).message}`);
       return EXIT_MISMATCH;
     }
+
+    // The THIRD and last member of the same class (MEASURED: `assertStagedSeedCarriesNoIdentity`'s
+    // only production caller is cut-seed-cli.ts:1350, so like the two legs above it runs ONLY WHEN
+    // A CUT RUNS — and the default build path skips the cut). A committed seed carrying the build
+    // box's username, home path, hostname or git email therefore ships inside every installer with
+    // no guard ever firing. Costs 1,835ms on the real ~475MB seed (54 files, 5 literals), the same
+    // order as the payload leg's ~1.1s, so like it this runs unconditionally rather than behind a
+    // flag nobody sets. Runs LAST because it is the expensive leg: a seed already failing above
+    // gets its verdict without paying for the scan.
+    //
+    // ⛔ DELIBERATELY NOT `assertStagedSeedCarriesNoIdentity` — the throwing form is WRONG HERE.
+    // It throws for two unrelated reasons and this file's whole contract is that those two must
+    // not collapse: an identity HIT is a broken seed (1), while "cannot prove clean" — running
+    // inside the UTS namespace with no PAPERCUSP_SEED_REAL_HOSTNAME handed down — is the
+    // undetermined verdict (2). In the guard's own words, reporting clean there "would be a
+    // statement about the sandbox, not about the seed". Collapsing that into 1 would red every
+    // sandboxed build. So we take the same judgement as DATA, via the judge form, and map each
+    // reason to its own exit code.
+    const neutralHostname = env.PAPERCUSP_SEED_BUILD_HOSTNAME || DEFAULT_NEUTRAL_BUILD_HOSTNAME;
+    const { literals, unknownHostname } = resolveIdentityLiterals({
+      env,
+      neutralHostname,
+      ...(deps.probe ? { probe: deps.probe } : {}),
+    });
+    if (unknownHostname) {
+      log(
+        `[seed-verify] cannot prove the committed seed carries no build-box identity: gethostname() ` +
+          `reports the neutral label '${neutralHostname}' and ${SEED_REAL_HOSTNAME_ENV} was not handed ` +
+          `down, so the real build hostname is unknowable from here. Reporting clean would describe ` +
+          `the sandbox, not the seed.`,
+      );
+      return EXIT_UNDETERMINED;
+    }
+
+    let identity;
+    try {
+      identity = await judgeSeedIdentity({ dir: args.seedDir, literals });
+    } catch (err) {
+      // The SCAN could not run (unreadable file, vanished dir). Unlike the degradation guard
+      // above — where a throw IS the refusal signal and so means "broken" — throwing is never
+      // how this judge reports a finding; it reports one as `ok:false`. So a throw here really
+      // is "could not check", and must not be dressed up as either verdict.
+      log(`[seed-verify] could not scan the committed seed for build-box identity — ${(err as Error).message}`);
+      return EXIT_UNDETERMINED;
+    }
+    log(identity.message);
+    if (!identity.ok) return EXIT_MISMATCH;
+
     return EXIT_OK;
   } catch (err) {
     // The verifier could not RUN (missing provider deps, not a full checkout, a VM leg).
