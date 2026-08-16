@@ -139,6 +139,8 @@ describe('collectConvergenceViolations (EI-20576392705164447)', () => {
           laggingReaders: ['1', '2', '22', '29', '3'],
           p95LimitMs: null,
           observedP95Ms: 601_075,
+          budgetMs: null,
+          convergedMs: null,
         },
         convergencePassed: false,
         notes: ['reader 1 did not apply all ops in time'],

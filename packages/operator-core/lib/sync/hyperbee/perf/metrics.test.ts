@@ -142,6 +142,86 @@ describe('convergence verdict (EI-20576392705164447)', () => {
     expect(a.convergencePassed).toBe(false); // ← the fix, on identical input
   });
 
+  /**
+   * The headroom half of EI-20581532536662596 — see ConvergenceStats.budgetMs.
+   *
+   * A verdict says whether the run passed; these say BY HOW MUCH, which is what
+   * makes a pass/fail flip attributable to the substrate rather than to someone
+   * moving the goalpost.
+   */
+  describe('convergence headroom is recorded, not just the verdict', () => {
+    it('records the budget and the observed times so headroom is computable', () => {
+      const meter = new ScenarioMeter({ scenario: 'replication.sustained', tier: 1, params: { peers: 4 } });
+      meter.expectReaders(3);
+      meter.convergenceBudget(120_000);
+      meter.readerConverged(0, 4_000);
+      meter.readerConverged(1, 9_000);
+      meter.readerConverged(2, 6_000);
+
+      const a = meter.finish();
+      expect(a.convergencePassed).toBe(true);
+      expect(a.convergence?.budgetMs).toBe(120_000);
+      expect(a.convergence?.convergedMs?.count).toBe(3);
+      expect(a.convergence?.convergedMs?.max).toBe(9_000);
+      // The claim a green run is entitled to make, now checkable from the artifact.
+      expect(a.convergence!.budgetMs! - a.convergence!.convergedMs!.max).toBe(111_000);
+    });
+
+    it('DISCRIMINATION: two runs with the SAME verdict are distinguishable by headroom', () => {
+      // The whole point. Both pass 3/3; one cleared a 120s budget with 111s to
+      // spare, the other scraped it by 200ms and is one bad tick from red. A bare
+      // `convergencePassed: true` renders these two identically — which is how a
+      // budget change and a substrate change become impossible to tell apart.
+      const roomy = new ScenarioMeter({ scenario: 's', tier: 1, params: {} });
+      roomy.expectReaders(3);
+      roomy.convergenceBudget(120_000);
+      for (const ms of [4_000, 9_000, 6_000]) roomy.readerConverged('r', ms);
+
+      const marginal = new ScenarioMeter({ scenario: 's', tier: 1, params: {} });
+      marginal.expectReaders(3);
+      marginal.convergenceBudget(120_000);
+      for (const ms of [110_000, 119_800, 118_000]) marginal.readerConverged('r', ms);
+
+      const a = roomy.finish();
+      const b = marginal.finish();
+
+      expect(a.convergencePassed).toBe(b.convergencePassed); // identical verdicts…
+      expect(a.convergence!.convergedMs!.max).toBeLessThan(b.convergence!.convergedMs!.max);
+      const headroom = (art: typeof a) =>
+        art.convergence!.budgetMs! - art.convergence!.convergedMs!.max;
+      expect(headroom(a)).toBeGreaterThan(100_000);
+      expect(headroom(b)).toBeLessThan(1_000); // …wildly different margins
+    });
+
+    it('a reader that never converged contributes NO sample, so percentiles are not diluted', () => {
+      // Censoring matters: stamping a non-converged reader at the budget would
+      // drag `max` toward it and make a genuinely-degrading run read as merely
+      // slow. The count falling short of expectedReaders is the signal instead.
+      const meter = new ScenarioMeter({ scenario: 's', tier: 1, params: {} });
+      meter.expectReaders(3);
+      meter.convergenceBudget(120_000);
+      meter.readerConverged(0, 4_000);
+      meter.readerConverged(1, 6_000);
+      meter.readerDidNotConverge(2);
+
+      const a = meter.finish();
+      expect(a.convergencePassed).toBe(false);
+      expect(a.convergence?.convergedMs?.count).toBe(2);
+      expect(a.convergence?.convergedMs?.max).toBe(6_000); // NOT 120_000
+      expect(a.convergence?.convergedReaders).toBe(2);
+    });
+
+    it('stays null when the scenario declared no budget or timings — never a fabricated zero', () => {
+      // An un-instrumented scenario must read as "not measured", not as "converged
+      // instantly", which is the same false-zero class the verdict fix removed.
+      const meter = new ScenarioMeter({ scenario: 's', tier: 1, params: {} });
+      meter.expectReaders(2);
+      const a = meter.finish();
+      expect(a.convergence?.budgetMs).toBeNull();
+      expect(a.convergence?.convergedMs).toBeNull();
+    });
+  });
+
   it('every reader caught up ⇒ convergence passes', () => {
     const meter = new ScenarioMeter({ scenario: 's', tier: 1, params: {} });
     meter.expectReaders(4);
@@ -184,6 +264,8 @@ describe('convergence verdict (EI-20576392705164447)', () => {
           laggingReaders: [],
           p95LimitMs: null,
           observedP95Ms: 601_075,
+          budgetMs: null,
+          convergedMs: null,
         }),
       ).toBe(true);
     });
@@ -196,6 +278,8 @@ describe('convergence verdict (EI-20576392705164447)', () => {
           laggingReaders: [],
           p95LimitMs: 5_000,
           observedP95Ms: 32_900,
+          budgetMs: null,
+          convergedMs: null,
         }),
       ).toBe(false);
     });
@@ -208,6 +292,8 @@ describe('convergence verdict (EI-20576392705164447)', () => {
           laggingReaders: [],
           p95LimitMs: 5_000,
           observedP95Ms: 996,
+          budgetMs: null,
+          convergedMs: null,
         }),
       ).toBe(true);
     });

@@ -167,4 +167,71 @@ describe('awaitAllChildEvent — shared deadline (EI-20581532536662596)', () => 
     expect(settled.map((s) => s.reader)).toEqual(readers);
     expect(settled.map((s) => s.event !== null)).toEqual([false, true, false]);
   });
+
+  /**
+   * `elapsedMs` — the headroom half of EI-20581532536662596.
+   *
+   * The order fix above makes the VERDICT trustworthy; these make it
+   * ATTRIBUTABLE. A bare converged/not binary cannot say whether a run cleared
+   * its budget by 110s or by 200ms, so when the budget and the instrument change
+   * in one edit, a suddenly-green ladder reads identically whether the substrate
+   * got faster or the deadline got looser. That ambiguity is exactly what these
+   * timings remove — `elapsedMs` is only comparable to `budgetMs` because both
+   * are measured from the SAME shared origin.
+   */
+  describe('elapsedMs — measured from the shared origin, so it is comparable to the budget', () => {
+    it('reports each reader’s time from the ONE shared start, not from its own call', async () => {
+      const origin = Date.now();
+      const readers = [fakeReader(origin, 60), fakeReader(origin, 260)];
+      const settled = await awaitAllChildEvent(readers, 'caught-up', 600);
+
+      expect(settled.map((s) => s.event !== null)).toEqual([true, true]);
+      // ~60ms and ~260ms from the SHARED origin. Generous slack: this asserts the
+      // reference point, not timer precision on a loaded box.
+      expect(settled[0].elapsedMs).toBeLessThan(200);
+      expect(settled[1].elapsedMs).toBeGreaterThanOrEqual(200);
+      expect(settled[1].elapsedMs).toBeLessThan(500);
+    });
+
+    it('makes headroom computable: the slowest converged reader is under the budget', async () => {
+      // The claim a green run is entitled to make — "converged with N ms to
+      // spare" — is only checkable because both numbers share an origin.
+      const origin = Date.now();
+      const BUDGET_MS = 600;
+      const readers = [fakeReader(origin, 40), fakeReader(origin, 120), fakeReader(origin, 80)];
+      const settled = await awaitAllChildEvent(readers, 'caught-up', BUDGET_MS);
+
+      expect(settled.every((s) => s.event !== null)).toBe(true);
+      const slowest = Math.max(...settled.map((s) => s.elapsedMs));
+      expect(slowest).toBeLessThan(BUDGET_MS);
+      expect(BUDGET_MS - slowest).toBeGreaterThan(0); // headroom is a real number
+    });
+
+    it('CONTROL: the pre-fix serial loop cannot produce a comparable elapsed time', async () => {
+      // Not a style point — under the serial loop each reader's clock starts when
+      // the loop reaches it, so "elapsed" is measured from a DIFFERENT origin per
+      // reader and comparing it to one budget is meaningless. Reader 1 fires 260ms
+      // after the run starts but only ~200ms after ITS OWN await began, which is
+      // how a late reader books an innocent-looking time.
+      const origin = Date.now();
+      const readers = [fakeReader(origin, 60), fakeReader(origin, 260)];
+
+      const perCallElapsed: number[] = [];
+      for (const reader of readers) {
+        const t0 = Date.now();
+        await reader.waitFor('caught-up', 600);
+        perCallElapsed.push(Date.now() - t0);
+      }
+
+      const shared = await awaitAllChildEvent(
+        [fakeReader(Date.now(), 60), fakeReader(Date.now(), 260)],
+        'caught-up',
+        600,
+      );
+
+      // The serial per-call time UNDER-REPORTS the second reader: measured from
+      // the shared origin it is ~260ms, from its own call only ~200ms.
+      expect(perCallElapsed[1]).toBeLessThan(shared[1].elapsedMs);
+    });
+  });
 });
