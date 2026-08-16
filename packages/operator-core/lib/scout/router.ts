@@ -97,6 +97,22 @@ export interface ClassifyOptions {
    * routing for callers that do not resolve it).
    */
   gymEnabled?: boolean;
+  /**
+   * Gate for the goal rail (P-013 / D-005): `false` reroutes every goal-bound
+   * proposal to the PLAN rail — never dropped, so the idea still lands live on a
+   * design surface (a goal-scale idea is multi-plan scope, so a draft plan is
+   * its natural fallback). The production caller resolves this from the
+   * `papercusp-blender-goal-rail` flag; default `true` (mirrors `gymEnabled`).
+   */
+  goalEnabled?: boolean;
+  /**
+   * Cap on goal dispatches per routing batch (default {@link DEFAULT_MAX_GOALS_PER_CYCLE}).
+   * A goal dispatch CREATES AND STARTS a real goal — a headless GOAL-mode agent plus its
+   * drain-fleet member — so a marker-vocabulary burst must not spawn five of them in one
+   * cycle. Overflow decisions reroute to the plan rail (same never-drop principle as
+   * `goalEnabled: false`), in input order.
+   */
+  maxGoalsPerCycle?: number;
 }
 
 /**

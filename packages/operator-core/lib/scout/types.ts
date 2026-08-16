@@ -403,9 +403,12 @@ export interface Proposal {
    *   broad-scope → 'plan'; concrete → 'improvement';
    *   testable COMPONENT idea → 'gym' (the eval-battery HarnessSubject);
    *   testable WHOLE-SYSTEM idea → 'instance' (the eval-battery InstanceSubject — a genome
-   *   delta over the interacting wholes; the missing rail this plan adds).
+   *   delta over the interacting wholes; the missing rail this plan adds);
+   *   GOAL-SCALE idea (multi-plan scope, weeks-long measurable end-state) → 'goal'
+   *   (blender-loop-repair-and-opus5-xhigh-2026-08-16 P-013 / D-005 — the Blender
+   *   creates+starts the goal autonomously; rails ride inside the goal record).
    */
-  routeHint?: 'plan' | 'gym' | 'improvement' | 'instance';
+  routeHint?: 'plan' | 'gym' | 'improvement' | 'instance' | 'goal';
   /** Corpus pattern refs carried from the source ideas — grounding (⊆ digest refs) + P-013 lens attribution. */
   addressesPatternRefs: string[];
   /** Federated mutation seeds preserved from the source ideas. */

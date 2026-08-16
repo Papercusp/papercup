@@ -42,8 +42,12 @@ import { CREATIVE_LENSES, type CreativeLens } from './types';
  * `instance`). The two eval rails are the eval-battery's two SUBJECTS: `gym` = the
  * HarnessSubject (component eval), `instance` = the InstanceSubject (whole-instance
  * eval, a genome delta). Both feed lens meta-learning (reconciliation P-006).
+ * `goal` (blender-loop-repair-and-opus5-xhigh-2026-08-16 P-013 / D-005): a GOAL-SCALE
+ * idea the Blender turns into an auto-created-and-started `harness_shared.goals` row —
+ * wired into outcome feedback from day one (achieved → won, killed → lost), unlike the
+ * gym rail's D-003 gap.
  */
-export type RoutedRail = 'plan' | 'gym' | 'improvement' | 'instance';
+export type RoutedRail = 'plan' | 'gym' | 'improvement' | 'instance' | 'goal';
 
 /** Outcome of one routed idea, derived from the change feed. */
 export type IdeaOutcome =
@@ -241,6 +245,14 @@ export function classifyIdeaOutcome(
   if (prov.rail === 'instance') {
     const status = gymStatusOf(entry);
     return status === 'promoted' || status === 'accepted' || status === 'won' ? 'won' : 'lost';
+  }
+  // goal (P-013 / D-005): the ledger's goal leg only emits TERMINAL goals
+  // (stop-seam.ts TERMINAL_STATUSES — 'achieved' | 'killed'), tagged
+  // "Status: <status>". Achieved = the weeks-long outcome landed → won; killed
+  // (the kill criterion tripped, or any other decided non-achieve) → lost.
+  // 'active'/'paused' goals produce no entry and stay pending here.
+  if (prov.rail === 'goal') {
+    return gymStatusOf(entry) === 'achieved' ? 'won' : 'lost';
   }
   if (entry.kind === 'proposal') {
     const status = gymStatusOf(entry);
