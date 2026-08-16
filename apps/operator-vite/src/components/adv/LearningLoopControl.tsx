@@ -128,7 +128,11 @@ export default function LearningLoopControl() {
     [snap, busy, sync],
   );
 
-  if (!enabled || !snap) return null;
+  // Shape-guard, not just presence: a row without `spend` (a stale cache, a
+  // generic test mock, a server predating the learning.loopControl resolver)
+  // must read as "no snapshot yet", never crash the whole Learning tab
+  // (WI-39530 — 11 LearningTab.test.tsx reds from `snap.spend.todayUsd`).
+  if (!enabled || !snap || !snap.spend) return null;
 
   const spendToday = usd(snap.spend.todayUsd);
   const holdNote = paused

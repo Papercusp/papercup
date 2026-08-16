@@ -243,6 +243,10 @@ const WORKSPACE_GLOBAL_READS: Record<string, string> = {
 const TAB_CHROME_READS: Record<string, string> = {
   "learning.health": "header infra-health chip — pipeline health, not per-pot",
   "learning.releaseReadiness": "Verify-stage GO/NO-GO strip — workspace governance state",
+  "learning.loopControl":
+    "header pause/resume chip + loop spend (WI-39501) — renders in the stage row " +
+    "beside every view; the self-improvement routine GROUP and its spend rollup are " +
+    "workspace-wide facts, not per-pot",
 };
 
 const scenarios = {
