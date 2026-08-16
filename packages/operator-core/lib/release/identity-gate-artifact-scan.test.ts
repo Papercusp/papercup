@@ -291,7 +291,12 @@ describe('--scan-artifact recurses into a WRAPPED installer (WI-39458)', () => {
   function wrappedFixture(dir: string, payload: string, name: string): string {
     const stageDir = path.join(dir, `p-${name}`);
     mkdirSync(stageDir, { recursive: true });
-    writeFileSync(path.join(stageDir, 'pgdata.conf'), payload);
+    // PADDED so zip DEFLATES rather than STORES it. Without this the payload is
+    // small enough to be stored verbatim, the raw byte grep finds the sentinel
+    // through both container layers, and the test would pass even with the
+    // recursion disabled — measuring nothing. The padding is what makes the
+    // leak reachable ONLY by expanding the wrapped installer.
+    writeFileSync(path.join(stageDir, 'pgdata.conf'), `${'filler line\n'.repeat(4000)}${payload}`);
     // A zip-with-an-.exe-name stands in for the Inno stub: the point under test
     // is that a WRAPPED installer gets expanded, not which packer made it.
     const stub = path.join(dir, `${name}_x64-setup.exe`);
@@ -311,9 +316,14 @@ describe('--scan-artifact recurses into a WRAPPED installer (WI-39458)', () => {
     const sentinel = sentinelFromDenylist();
     const dir = mkdtempSync(path.join(tmpdir(), 'pc-gate-wrap-'));
     try {
-      const leaky = runGate([
-        '--scan-artifact', wrappedFixture(dir, `owner=${sentinel}\n`, 'Leaky'),
-      ]);
+      const leakyArtifact = wrappedFixture(dir, `owner=${sentinel}\n`, 'Leaky');
+      // PRECONDITION: the sentinel really is unreachable from the container's
+      // raw bytes, so only expanding the WRAPPED installer can find it. Without
+      // this the test could pass with the recursion disabled.
+      const raw = spawnSync('grep', ['-acF', sentinel, leakyArtifact], { encoding: 'utf8' });
+      expect(raw.stdout.trim(), 'payload was not actually compressed').toBe('0');
+
+      const leaky = runGate(['--scan-artifact', leakyArtifact]);
       expect(leaky.out).toMatch(/wraps/); // it recognised the wrapped installer
       expect(leaky.out).toMatch(/CARRIES SENSITIVE IDENTITY/);
       expect(leaky.status).toBe(1);
