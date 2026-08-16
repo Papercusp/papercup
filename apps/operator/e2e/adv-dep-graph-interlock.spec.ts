@@ -318,6 +318,10 @@ test.describe('/adv dependency graph — selection interlock with the Detail pan
     // THREE nodes: WI-1, WI-2 (both in the list payload) and WI-OUTSIDE, which is NOT — it is
     // hydrated from its edge row (WI-36045). Before the fix this was 2, because the edge
     // pointing at the out-of-window endpoint was discarded.
+    // Prove the stub is actually feeding the panel BEFORE waiting 45s on content:
+    // a bypassed stub then fails here in seconds, naming what was served.
+    await sync.waitForServed(['workItems.byHarness', 'workItems.depEdges']);
+
     const nodes = graph.locator('g.pc-depgraph__node');
     await expect(nodes).toHaveCount(3, { timeout: 45_000 });
 

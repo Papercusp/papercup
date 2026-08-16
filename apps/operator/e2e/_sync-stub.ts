@@ -56,6 +56,13 @@ export interface SyncQueryStub {
    * mystery empty panel 45s later.
    */
   assertServed(...expectedNames: string[]): void;
+  /**
+   * Wait until the named queries have actually been requested, then return. Use
+   * this BEFORE a long content assertion: a bypassed stub then fails in seconds
+   * with a diagnostic, instead of surfacing as an unexplained empty panel after
+   * the content locator's full timeout.
+   */
+  waitForServed(expectedNames: string[], timeoutMs?: number): Promise<void>;
 }
 
 export async function stubSyncQueries(
@@ -90,6 +97,22 @@ export async function stubSyncQueries(
     },
     get names() {
       return names;
+    },
+    async waitForServed(expectedNames: string[], timeoutMs = 20_000) {
+      const deadline = Date.now() + timeoutMs;
+      for (;;) {
+        if (expectedNames.every((n) => names.includes(n))) return;
+        if (Date.now() > deadline) {
+          throw new Error(
+            `sync stub did not serve [${expectedNames.join(', ')}] within ${timeoutMs}ms. ` +
+              `Served ${names.length} request(s); names seen: ` +
+              `${[...new Set(names)].join(', ') || '(NONE — the stub was never hit at all)'}. ` +
+              'If nothing was hit, the app is not speaking this contract (see _sync-stub.ts); ' +
+              'if other names were served, the panel subscribes to a query this spec does not model.',
+          );
+        }
+        await new Promise((r) => setTimeout(r, 100));
+      }
     },
     assertServed(...expectedNames: string[]) {
       if (names.length === 0) {
