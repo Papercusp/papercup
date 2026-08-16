@@ -205,6 +205,13 @@ export interface ReadImprovementOpts {
   state?: 'open' | 'resolved' | 'closed';
   limit?: number;
   /**
+   * ISO timestamp — rows created STRICTLY before it (WI-39455, the stale-tail
+   * selector). The underlying read is newest-first + capped, so an age-out consumer
+   * without this filter only ever sees a recency window and old rows are structurally
+   * invisible (the WI-4532 class). See {@link ListIssuesFilter.createdBefore}.
+   */
+  createdBefore?: string;
+  /**
    * Read the newest `limit` rows independently for every represented scope.
    * The default global recency window can hide older scopes before recurrence
    * grouping runs; this mode is for cross-scope consumers such as recurrence
@@ -497,6 +504,7 @@ async function readBySelector(
     ...(requestedScope ? { scope: requestedScope } : {}),
     ...(opts.includeBody === false ? { includeBody: false } : {}),
     ...(issueIds ? { issueIds } : {}),
+    ...(opts.createdBefore ? { createdBefore: opts.createdBefore } : {}),
   });
 
   // Origin gate (frontier P-002/D-002): enforced HERE as well as in the SQL

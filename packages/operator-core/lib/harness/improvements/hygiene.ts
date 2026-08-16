@@ -186,7 +186,15 @@ export interface HygieneSweepResult {
 
 /** Injectable dependency seam (unit tests run without PG). */
 export interface HygieneSweepDeps {
-  readItems: () => Promise<ImprovementCandidate[]>;
+  /**
+   * `staleCutoffIso` (WI-39455): the age-out cutoff (`now - staleDays`), so the read
+   * can select the stale tail as a SQL SET instead of hoping it falls inside the
+   * newest-first recency window — it never does once the open backlog outgrows the
+   * read cap (measured: 423 age-eligible rows, every one below the newest-2000
+   * window of a 5,345-row backlog, so the sweep planned zero actions forever).
+   * An injected fake may ignore the argument.
+   */
+  readItems: (opts?: { staleCutoffIso?: string }) => Promise<ImprovementCandidate[]>;
   setIssueState: (
     id: string,
     state: 'open' | 'resolved' | 'closed',
@@ -202,7 +210,25 @@ const defaultDeps: HygieneSweepDeps = {
   // P-008: same as the decay sweep — hygiene reads lifecycle fields only, never
   // `candidate.body` (the `body` above is commentIssue's WRITE param), so it takes
   // the body-less projection. See ListIssuesFilter.includeBody for the measurements.
-  readItems: () => readImprovementItems({ includeBody: false }),
+  //
+  // Two slices (WI-39455). The recency window alone CANNOT reach the age-out
+  // population: it is newest-first + capped, and the stale tail by definition sits at
+  // the old end. The second read selects `createdBefore: staleCutoffIso` open rows as
+  // a SQL set. Recurrence semantics survive the split: a recurring signature has
+  // RECENT siblings by definition, so the newest window carries exactly the history
+  // `signatureRecurrence` needs to protect a recurring old row from aging out.
+  readItems: async (opts) => {
+    const recent = await readImprovementItems({ includeBody: false });
+    if (!opts?.staleCutoffIso) return recent;
+    const stale = await readImprovementItems({
+      includeBody: false,
+      state: 'open',
+      createdBefore: opts.staleCutoffIso,
+      limit: 2000,
+    });
+    const seen = new Set(recent.map((c) => c.id));
+    return recent.concat(stale.filter((c) => !seen.has(c.id)));
+  },
   setIssueState,
   commentIssue,
   mergeIssuePayload,
@@ -212,7 +238,10 @@ export async function runHygieneSweep(
   opts: PlanHygieneOpts & { dryRun?: boolean } = {},
   deps: HygieneSweepDeps = defaultDeps,
 ): Promise<HygieneSweepResult> {
-  const all = await deps.readItems();
+  const staleCutoffIso = new Date(
+    (opts.nowMs ?? Date.now()) - (opts.staleDays ?? DEFAULT_STALE_DAYS) * DAY_MS,
+  ).toISOString();
+  const all = await deps.readItems({ staleCutoffIso });
   const byId = new Map(all.map((c) => [c.id, c]));
   const planned = planHygieneSweep(all, opts);
   const result: HygieneSweepResult = {

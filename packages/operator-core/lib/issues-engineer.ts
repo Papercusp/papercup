@@ -975,6 +975,18 @@ export interface ListIssuesFilter {
   /** ISO timestamp — rows created STRICTLY after it. Pairs with {@link createdBy}. */
   createdAfter?: string;
   /**
+   * ISO timestamp — rows created STRICTLY before it (the {@link createdAfter} mirror).
+   * WI-39455: the stale-tail selector. This read is `ORDER BY created_at DESC LIMIT n`,
+   * so a consumer that wants "rows older than N days" (the hygiene age-out sweep) and
+   * post-filters in JS gets a recency WINDOW, not a set — the WI-4532 class: every row
+   * older than the newest-`limit` window is structurally invisible to it FOREVER
+   * (measured 2026-08-16: 423 age-eligible rows, all below a 5,345-row open backlog's
+   * newest-2000 window, so the sweep planned zero actions while the backlog grew).
+   * Filtering in SQL turns the window back into a set. Applied identically in
+   * listIssues + the count companions (the WI-5512 parity rule).
+   */
+  createdBefore?: string;
+  /**
    * WI-38339 — `state` as a SET, for the question a single-valued `state` cannot ask.
    * Measured over 7d of real agent SQL on this box: 46 hand-written statements filtered
    * `state`/`status` with IN / NOT IN, and the dominant one is "everything not terminal"
@@ -1465,6 +1477,7 @@ export async function listIssues(filter: ListIssuesFilter = {}): Promise<Enginee
        AND ${filter.signalOrigins ? sql`signal_origin = ANY(${filter.signalOrigins as string[]}::text[])` : sql`TRUE`}
        AND ${filter.createdBy ? sql`created_by = ${filter.createdBy}` : sql`TRUE`}
        AND ${filter.createdAfter ? sql`created_at > ${filter.createdAfter}::timestamptz` : sql`TRUE`}
+       AND ${filter.createdBefore ? sql`created_at < ${filter.createdBefore}::timestamptz` : sql`TRUE`}
        AND ${issueShapeWhereSql(sql, false, filter)}
        AND ${filter.issueIds ? issueIdsWhereSql(sql, false, filter.issueIds) : sql`TRUE`}
        AND ${filter.topic ? sql`issue_id IN (SELECT src_ref FROM tagged)` : sql`TRUE`}
@@ -1542,6 +1555,7 @@ export async function countIssues(filter: ListIssuesFilter = {}): Promise<number
          AND ${filter.signalOrigins ? sql`ei.signal_origin = ANY(${filter.signalOrigins as string[]}::text[])` : sql`TRUE`}
          AND ${filter.createdBy ? sql`ei.created_by = ${filter.createdBy}` : sql`TRUE`}
          AND ${filter.createdAfter ? sql`ei.created_at > ${filter.createdAfter}::timestamptz` : sql`TRUE`}
+         AND ${filter.createdBefore ? sql`ei.created_at < ${filter.createdBefore}::timestamptz` : sql`TRUE`}
          AND ${issueShapeWhereSql(sql, true, filter)}
          AND ${filter.issueIds ? issueIdsWhereSql(sql, true, filter.issueIds) : sql`TRUE`}
          AND ${filter.admissibleOnly ? issueAdmissibleWhereSql(sql, true) : sql`TRUE`}
@@ -1581,6 +1595,7 @@ export async function countIssues(filter: ListIssuesFilter = {}): Promise<number
        AND ${filter.signalOrigins ? sql`signal_origin = ANY(${filter.signalOrigins as string[]}::text[])` : sql`TRUE`}
        AND ${filter.createdBy ? sql`created_by = ${filter.createdBy}` : sql`TRUE`}
        AND ${filter.createdAfter ? sql`created_at > ${filter.createdAfter}::timestamptz` : sql`TRUE`}
+       AND ${filter.createdBefore ? sql`created_at < ${filter.createdBefore}::timestamptz` : sql`TRUE`}
        AND ${issueShapeWhereSql(sql, false, filter)}
        AND ${filter.issueIds ? issueIdsWhereSql(sql, false, filter.issueIds) : sql`TRUE`}
        AND ${filter.admissibleOnly ? issueAdmissibleWhereSql(sql, false) : sql`TRUE`}
@@ -1653,6 +1668,7 @@ export async function countIssuesByState(filter: ListIssuesFilter = {}): Promise
          AND ${filter.signalOrigins ? sql`ei.signal_origin = ANY(${filter.signalOrigins as string[]}::text[])` : sql`TRUE`}
          AND ${filter.createdBy ? sql`ei.created_by = ${filter.createdBy}` : sql`TRUE`}
          AND ${filter.createdAfter ? sql`ei.created_at > ${filter.createdAfter}::timestamptz` : sql`TRUE`}
+         AND ${filter.createdBefore ? sql`ei.created_at < ${filter.createdBefore}::timestamptz` : sql`TRUE`}
          AND ${issueShapeWhereSql(sql, true, filter)}
          AND ${filter.issueIds ? issueIdsWhereSql(sql, true, filter.issueIds) : sql`TRUE`}
          AND ${filter.admissibleOnly ? issueAdmissibleWhereSql(sql, true) : sql`TRUE`}
@@ -1691,6 +1707,7 @@ export async function countIssuesByState(filter: ListIssuesFilter = {}): Promise
          AND ${filter.signalOrigins ? sql`signal_origin = ANY(${filter.signalOrigins as string[]}::text[])` : sql`TRUE`}
          AND ${filter.createdBy ? sql`created_by = ${filter.createdBy}` : sql`TRUE`}
          AND ${filter.createdAfter ? sql`created_at > ${filter.createdAfter}::timestamptz` : sql`TRUE`}
+       AND ${filter.createdBefore ? sql`created_at < ${filter.createdBefore}::timestamptz` : sql`TRUE`}
          AND ${issueShapeWhereSql(sql, false, filter)}
          AND ${filter.issueIds ? issueIdsWhereSql(sql, false, filter.issueIds) : sql`TRUE`}
          AND ${filter.admissibleOnly ? issueAdmissibleWhereSql(sql, false) : sql`TRUE`}
@@ -1756,6 +1773,7 @@ export async function countObservationsByKind(filter: ListIssuesFilter = {}): Pr
          AND ${filter.signalOrigins ? sql`ei.signal_origin = ANY(${filter.signalOrigins as string[]}::text[])` : sql`TRUE`}
          AND ${filter.createdBy ? sql`ei.created_by = ${filter.createdBy}` : sql`TRUE`}
          AND ${filter.createdAfter ? sql`ei.created_at > ${filter.createdAfter}::timestamptz` : sql`TRUE`}
+         AND ${filter.createdBefore ? sql`ei.created_at < ${filter.createdBefore}::timestamptz` : sql`TRUE`}
          AND ${issueShapeWhereSql(sql, true, filter)}
          AND ${filter.issueIds ? issueIdsWhereSql(sql, true, filter.issueIds) : sql`TRUE`}
          AND ${filter.admissibleOnly ? issueAdmissibleWhereSql(sql, true) : sql`TRUE`}
@@ -1805,6 +1823,7 @@ export async function countObservationsByKind(filter: ListIssuesFilter = {}): Pr
        AND ${filter.signalOrigins ? sql`signal_origin = ANY(${filter.signalOrigins as string[]}::text[])` : sql`TRUE`}
        AND ${filter.createdBy ? sql`created_by = ${filter.createdBy}` : sql`TRUE`}
        AND ${filter.createdAfter ? sql`created_at > ${filter.createdAfter}::timestamptz` : sql`TRUE`}
+       AND ${filter.createdBefore ? sql`created_at < ${filter.createdBefore}::timestamptz` : sql`TRUE`}
        AND ${issueShapeWhereSql(sql, false, filter)}
        AND ${filter.issueIds ? issueIdsWhereSql(sql, false, filter.issueIds) : sql`TRUE`}
        AND ${filter.admissibleOnly ? issueAdmissibleWhereSql(sql, false) : sql`TRUE`}
