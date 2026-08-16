@@ -172,6 +172,186 @@ export async function scanOutboxHealth(
   return { undrainedDepth: depth, oldestUndrainedAgeMs: age, breaches };
 }
 
+// ── EI-20579195481991931: per-peer federation silence ────────────────────────
+//
+// `scanOutboxHealth` above is HOST-LOCAL BY CONSTRUCTION: `substrate_outbox`
+// holds only THIS host's undrained writes, so the one failure a p2p system must
+// never miss — a PEER that stops federating — is exactly the failure it cannot
+// see. Measured 2026-08-16: peer machine B sat 100% undrained (5,832 rows,
+// oldest 48h) while host A read 0 undrained and filed nothing.
+//
+// The locally-observable proxy is `substrate_merge_cursor`: one row per REMOTE
+// log (`log_keyhex`) recording how far we have folded it, re-stamped on every
+// ADVANCE (pg-merge-cursor-store.ts `save`). A peer that stops producing — or
+// that we can no longer reach — stops advancing ITS cursor while other peers'
+// keep moving. Verified discriminating on host A: harness `papercusp` held 21
+// logs spanning 0.00h to 509.71h since last advance.
+//
+// ⚠ THE ALL-SILENT CASE IS A DIFFERENT VERDICT, AND CONFLATING THE TWO IS THE
+// WHOLE POINT. One silent log among live ones ⇒ that PEER went quiet. EVERY log
+// silent ⇒ our own fold is wedged and we must not blame peers for it. That is a
+// positive control expressed in code: the still-advancing logs are what license
+// the per-peer reading, so when they vanish the reading is withdrawn rather than
+// amplified into N false peer alarms.
+//
+// ⚠ WHAT THIS CANNOT DISTINGUISH, stated rather than hidden: from this host, a
+// peer that is DOWN, a peer that is UNREACHABLE, and a peer that is merely IDLE
+// all present identically as "no new ops from that log". The scan reports the
+// observable (no inbound progress for N ms) and leaves the cause open; a
+// retired/departed peer's log therefore goes silent forever, which is why the
+// SLO wants to be generous and why `position` rides along in the forensics.
+
+/** One remote log's fold progress, as `substrate_merge_cursor` records it. */
+export interface MergeCursorRow {
+  logKeyHex: string;
+  position: number;
+  updatedAtMs: number;
+}
+
+export interface PeerSilence {
+  logKeyHex: string;
+  /** How long since we last folded anything new from this log. */
+  silentForMs: number;
+  /** Fold position reached before it went quiet (0 ⇒ we never folded it at all). */
+  position: number;
+}
+
+export interface PeerFederationHealth {
+  /** Remote logs considered. 0 ⇒ UNMEASURED — never read it as healthy. */
+  totalLogs: number;
+  /** False when there is nothing to judge; the caller must not infer health. */
+  measured: boolean;
+  /** Why we could not judge — so `measured:false` is never a bare shrug. */
+  unmeasuredReason: 'no-remote-logs' | 'scope-dormant' | null;
+  silent: PeerSilence[];
+  /** Age of the MOST RECENTLY advanced log — the liveness of our own fold. */
+  freshestAdvanceMs: number | null;
+  /** Every known log is silent ⇒ suspect the LOCAL fold, not the peers. */
+  allSilent: boolean;
+  breaches: string[];
+}
+
+/**
+ * Pure verdict over merge-cursor rows (the SQL lives in
+ * `scanPeerFederationSilence`). Split out so the judgement — which is where the
+ * all-silent/some-silent distinction lives — is unit-testable without PG.
+ */
+export function judgePeerFederationSilence(
+  rows: readonly MergeCursorRow[],
+  opts: {
+    silentAfterMs: number;
+    nowMs: number;
+    /** Age of OUR OWN newest write in this scope; null = unknown, so judge anyway. */
+    localActivityAgeMs?: number | null;
+  },
+): PeerFederationHealth {
+  if (rows.length === 0) {
+    return {
+      totalLogs: 0,
+      measured: false,
+      unmeasuredReason: 'no-remote-logs',
+      silent: [],
+      freshestAdvanceMs: null,
+      allSilent: false,
+      // Deliberately NOT a breach: "no remote logs" is the honest shape of a
+      // host that has never federated. It is reported as UNMEASURED so a caller
+      // that knows federation IS in use (outbox rows exist) can escalate it,
+      // and one that does not cannot mistake it for a clean bill of health.
+      breaches: [],
+    };
+  }
+  // A scope WE stopped writing to is one we are no longer federating. Every
+  // remote log there is silent for the mundane reason that the whole scope is
+  // retired — measured on host A, harness `sheets` held 75/75 logs silent while
+  // our own newest write was ~44h old. Judging it would report a dead harness as
+  // a wedged fold, forever, in a dedup bucket that never closes. Silence is only
+  // evidence of a FAULT when we ourselves are still live in the scope.
+  if (opts.localActivityAgeMs != null && opts.localActivityAgeMs > opts.silentAfterMs) {
+    return {
+      totalLogs: rows.length,
+      measured: false,
+      unmeasuredReason: 'scope-dormant',
+      silent: [],
+      freshestAdvanceMs: null,
+      allSilent: false,
+      breaches: [],
+    };
+  }
+  const ages = rows.map((r) => Math.max(0, opts.nowMs - r.updatedAtMs));
+  const freshestAdvanceMs = Math.min(...ages);
+  const silent = rows
+    .map((r, i) => ({ logKeyHex: r.logKeyHex, silentForMs: ages[i]!, position: r.position }))
+    .filter((s) => s.silentForMs > opts.silentAfterMs)
+    .sort((a, b) => b.silentForMs - a.silentForMs);
+  const allSilent = silent.length === rows.length;
+  const breaches: string[] = [];
+  if (allSilent) {
+    // Withhold the per-peer reading: with no advancing log left as a control,
+    // the evidence points at our own fold, and N peer alarms would be N false
+    // positives dressed as corroboration.
+    breaches.push(
+      `LOCAL FOLD SUSPECT: all ${rows.length} remote log(s) silent — freshest advance ${freshestAdvanceMs}ms ago > SLO ${opts.silentAfterMs}ms. Suspect this host's merge loop, NOT the peers.`,
+    );
+  } else if (silent.length > 0) {
+    breaches.push(
+      `${silent.length} of ${rows.length} remote log(s) have federated nothing for > SLO ${opts.silentAfterMs}ms (oldest ${silent[0]!.silentForMs}ms, log ${silent[0]!.logKeyHex.slice(0, 12)}…) while ${rows.length - silent.length} log(s) keep advancing.`,
+    );
+  }
+  return {
+    totalLogs: rows.length,
+    measured: true,
+    unmeasuredReason: null,
+    silent,
+    freshestAdvanceMs,
+    allSilent,
+    breaches,
+  };
+}
+
+/** Read one scope's remote-log fold progress and judge it. */
+export async function scanPeerFederationSilence(
+  sql: postgres.Sql,
+  opts: { workspaceId: string; harness: string; silentAfterMs: number; nowMs?: number },
+): Promise<PeerFederationHealth> {
+  const nowMs = opts.nowMs ?? Date.now();
+  const rows = await sql<Array<{ log_keyhex: string; position: string | number; updated_at_ms: string }>>`
+    SELECT log_keyhex, position,
+           (extract(epoch FROM updated_at) * 1000)::bigint::text AS updated_at_ms
+      FROM harness_shared.substrate_merge_cursor
+     WHERE workspace_id = ${opts.workspaceId} AND harness_slug = ${opts.harness}`;
+  // OUR OWN newest write in this scope — the dormancy control (see the judge).
+  // `substrate_outbox.ts` is this host's write clock regardless of drain state,
+  // so it answers "are WE still live here?" without depending on the peers we
+  // are about to judge.
+  const [local] = await sql<Array<{ newest_ts: string | null }>>`
+    SELECT MAX(ts)::text AS newest_ts FROM harness_shared.substrate_outbox
+     WHERE workspace_id = ${opts.workspaceId} AND harness_slug = ${opts.harness}`;
+  // NO local rows at all is the STRONGEST dormancy evidence, not "unknown": we
+  // have never written in this scope, so we are not a participant in it. Passing
+  // null here would mean "no evidence, judge anyway" and — measured on host A —
+  // filed ~10 false `local-fold-suspect` majors for scopes we never joined
+  // (`sheets` 75/75 silent, `papercup` last advance 984h). Infinity says exactly
+  // what is true: our last local write was infinitely long ago.
+  // ⚠ LIMITATION, stated rather than hidden: a scope we only ever READ from
+  // (consume without writing) is indistinguishable from one we never joined, so
+  // a genuine stall there reads as dormant. Every scope we actively federate
+  // does write, so this trades an unreachable case for ~10 standing false majors.
+  const newestLocal =
+    local?.newest_ts == null ? Number.POSITIVE_INFINITY : Number(local.newest_ts);
+  return judgePeerFederationSilence(
+    rows.map((r) => ({
+      logKeyHex: r.log_keyhex,
+      position: Number(r.position),
+      updatedAtMs: Number(r.updated_at_ms),
+    })),
+    {
+      silentAfterMs: opts.silentAfterMs,
+      nowMs,
+      localActivityAgeMs: newestLocal == null ? null : Math.max(0, nowMs - newestLocal),
+    },
+  );
+}
+
 // ── P-013: presence ghosts (pure) ────────────────────────────────────────────
 
 export interface PresenceRow {
@@ -250,7 +430,19 @@ export async function measureConvergenceLag(opts: {
 // ── The monitor pass (the routine body) ──────────────────────────────────────
 
 export interface MonitorIncident {
-  kind: 'double-completion' | 'outbox-health' | 'presence-ghost' | 'orphaned-taken-by';
+  kind:
+    | 'double-completion'
+    | 'outbox-health'
+    | 'presence-ghost'
+    | 'orphaned-taken-by'
+    // EI-20579195481991931: a PEER stopped federating to us (or our own fold
+    // wedged — the report says which).
+    | 'peer-federation-silence'
+    // EI-20579195481991931: the monitor resolved ZERO scopes on a host that is
+    // demonstrably federating — i.e. it did not actually run. Filed LOUDLY,
+    // because the failure mode being closed is a monitor whose silence was
+    // indistinguishable from health.
+    | 'monitor-scope-empty';
   title: string;
   detail: unknown;
 }
@@ -259,6 +451,8 @@ export interface MonitorPassReport {
   incidents: MonitorIncident[];
   sweptOrphans: number;
   outbox: OutboxHealth;
+  /** EI-20579195481991931 — `measured:false` means UNMEASURED, not healthy. */
+  peers: PeerFederationHealth;
 }
 
 /**
@@ -274,7 +468,16 @@ export async function runSharedHiveMonitorPass(opts: {
   isAuthority: boolean;
   presence?: readonly PresenceRow[];
   liveLeases?: readonly LeaseHolderRow[];
-  slo?: { outboxMaxDepth?: number; outboxMaxAgeMs?: number; presenceStaleMs?: number; orphanGraceMs?: number };
+  slo?: {
+    outboxMaxDepth?: number;
+    outboxMaxAgeMs?: number;
+    presenceStaleMs?: number;
+    orphanGraceMs?: number;
+    /** EI-20579195481991931: inbound silence from ONE remote log before we call
+     *  it a stall. Generous by design — an idle peer is indistinguishable from a
+     *  stalled one from here, so a tight SLO buys false alarms, not sensitivity. */
+    peerSilentAfterMs?: number;
+  };
   nowMs?: number;
   fileIncident?: (incident: MonitorIncident) => Promise<void>;
 }): Promise<MonitorPassReport> {
@@ -302,6 +505,20 @@ export async function runSharedHiveMonitorPass(opts: {
   });
   for (const b of outbox.breaches) {
     incidents.push({ kind: 'outbox-health', title: b, detail: outbox });
+  }
+
+  // EI-20579195481991931 — the leg `scanOutboxHealth` structurally cannot cover:
+  // a PEER that stopped federating to us. See the block above this function's
+  // `judgePeerFederationSilence` for why the all-silent case is a different
+  // verdict rather than N peer alarms.
+  const peers = await scanPeerFederationSilence(opts.sql, {
+    workspaceId: opts.workspaceId,
+    harness: opts.harness,
+    silentAfterMs: opts.slo?.peerSilentAfterMs ?? 6 * 60 * 60_000,
+    nowMs,
+  });
+  for (const b of peers.breaches) {
+    incidents.push({ kind: 'peer-federation-silence', title: b, detail: peers });
   }
 
   if (opts.presence && opts.liveLeases) {
@@ -338,5 +555,5 @@ export async function runSharedHiveMonitorPass(opts: {
   if (opts.fileIncident) {
     for (const i of incidents) await opts.fileIncident(i);
   }
-  return { incidents, sweptOrphans, outbox };
+  return { incidents, sweptOrphans, outbox, peers };
 }

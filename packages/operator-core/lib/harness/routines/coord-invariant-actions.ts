@@ -1066,14 +1066,74 @@ export function planSharedHiveCapture(
       return { title: `shared-hive invariant: presence ghost anchoring live leases in ${harness}`, severity: 'minor' };
     case 'orphaned-taken-by':
       return { title: `shared-hive invariant: orphaned taken_by swept in ${harness}`, severity: 'minor' };
+    // EI-20579195481991931 — a peer that stops federating is the failure a p2p
+    // system must not miss, so it outranks the local-hygiene incidents above.
+    case 'peer-federation-silence':
+      return { title: `shared-hive invariant: peer federation silence in ${harness}`, severity: 'major' };
+    case 'monitor-scope-empty':
+      return { title: 'shared-hive invariant: monitor resolved ZERO scopes on a federating host', severity: 'major' };
   }
 }
 
 async function runSharedHiveLeg(ctx: SystemActionCtx): Promise<void> {
   const { sql } = getOrgPg();
+  // EI-20579195481991931 — SCOPE DISCOVERY USED TO READ `work_item_claims` ALONE,
+  // and that table is EMPTY GLOBALLY on this deployment (0 rows; the live claim
+  // layer is `plan_item_claims`, and `work_item_claims` has no production
+  // writers left — only tests, migrations and one identity-rebind UPDATE). Zero
+  // scopes ⇒ the loop below never executed ⇒ the ENTIRE shared-hive monitor
+  // family (outbox health, double-completion, presence ghosts, orphan sweep) was
+  // a silent no-op on a host carrying 245,717 outbox rows across 10 harnesses.
+  // The old comment called that intended ("zero rows ⇒ the leg is a no-op") on
+  // the premise that claims exist wherever the lease layer is in use; the
+  // premise is false, and its failure was indistinguishable from health.
+  //
+  // Discovery now unions the LEASE layers with `substrate_outbox` itself. That
+  // last source is the load-bearing one: the outbox is the very thing
+  // `scanOutboxHealth` measures, so including it makes it IMPOSSIBLE for a
+  // harness with outbox rows to fall outside the scan's scope — the coverage
+  // gap is closed by construction rather than by remembering to add sources.
   const scopes = await sql<{ harness_slug: string; pot_slug: string | null }[]>`
-    SELECT DISTINCT harness_slug, pot_slug FROM harness_shared.work_item_claims
-     WHERE workspace_id = ${ctx.workspaceId}`;
+    SELECT harness_slug, MIN(pot_slug) AS pot_slug FROM (
+      SELECT harness_slug, pot_slug FROM harness_shared.work_item_claims
+       WHERE workspace_id = ${ctx.workspaceId}
+      UNION
+      SELECT harness_slug, NULL::text AS pot_slug FROM harness_shared.plan_item_claims
+       WHERE workspace_id = ${ctx.workspaceId}
+      UNION
+      SELECT harness_slug, NULL::text AS pot_slug FROM harness_shared.substrate_outbox
+       WHERE workspace_id = ${ctx.workspaceId}
+    ) s
+     GROUP BY harness_slug`;
+
+  // THE CLASS FIX: a monitor that resolved nothing to monitor must never return
+  // quietly. If we federate (outbox rows exist) yet resolved zero scopes, the
+  // pass did not run — a fact that is otherwise reported as, and acted on as,
+  // health. File it as loudly as any invariant breach.
+  if (scopes.length === 0) {
+    const [{ n: outboxRows } = { n: 0 }] = await sql<{ n: number }[]>`
+      SELECT COUNT(*)::int AS n FROM harness_shared.substrate_outbox
+       WHERE workspace_id = ${ctx.workspaceId}`;
+    if (outboxRows > 0) {
+      await captureImprovement({
+        title: 'shared-hive invariant: monitor resolved ZERO scopes on a federating host',
+        kind: 'bug',
+        severity: 'major',
+        dedupScope: 'open',
+        foundDuring: 'system:coord-invariant-monitor (shared-hive leg)',
+        subTopic: 'shared-hive',
+        body:
+          `The shared-hive monitor leg resolved 0 scopes while harness_shared.substrate_outbox holds ${outboxRows} row(s) ` +
+          `for this workspace. Every downstream scan (outbox health, double-completion, presence ghosts, peer federation ` +
+          `silence, orphan sweep) was therefore SKIPPED — the pass reported nothing because it examined nothing, which is ` +
+          `not the same as healthy.\n\n(EI-20579195481991931; check source: ` +
+          `packages/operator-core/lib/harness/routines/coord-invariant-actions.ts runSharedHiveLeg.)`,
+      }).catch(() => {
+        /* the contradiction report must not abort the pass */
+      });
+    }
+  }
+
   for (const scope of scopes) {
     try {
       // The orphan sweep runs only on the elected authority for the scope
