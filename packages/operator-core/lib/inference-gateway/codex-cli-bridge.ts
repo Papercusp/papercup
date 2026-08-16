@@ -27,6 +27,7 @@
  * `stream:true` (scout sends `stream:false`).
  */
 import { spawn as nodeSpawn } from 'node:child_process';
+import { resolveAgentBinarySync } from '../agent-bin-detect';
 import * as os from 'node:os';
 import type { AccountEgress } from '../deployment/account-pool';
 
@@ -150,7 +151,14 @@ export function parseCodexCliEvents(stdout: string): CodexCliRunResult {
  */
 export function runCodexCliCompletion(opts: CodexCliRunOpts): Promise<CodexCliRunResult> {
   const spawnFn = opts.spawnFn ?? nodeSpawn;
-  const bin = opts.codexBin ?? 'codex';
+  // Resolve to an ABSOLUTE path rather than handing `spawn` the bare name
+  // (WI-39538). `env` below inherits the operator's PATH verbatim, and the
+  // operator runs under systemd with a fixed PATH — not the owner's
+  // login-shell PATH — so a bare `codex` ENOENTs on a box where codex is
+  // installed and every agent session is driving it fine. The explicit
+  // `codexBin` seam still wins; the bare name stays the last resort so an
+  // unresolvable codex fails exactly as it did before.
+  const bin = opts.codexBin ?? resolveAgentBinarySync('codex') ?? 'codex';
   const argv = [
     'exec',
     '--json',
