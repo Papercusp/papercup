@@ -36,10 +36,69 @@
 import { managedSetInterval } from '@papercusp/scheduled-registry';
 import { isSubstrateOwnerProcess } from '../../background-workers';
 import { listBootedHandles, type BootedHandleSummary } from './boot-all';
+import { collectSubstrateLogStats, type HarnessLogStats } from './log-stats';
+import { getOwnLogForkState } from './own-log-fork-guard';
 import {
   getReplicationLiveness,
   type HarnessReplicationLiveness,
 } from './replication-liveness';
+
+/** One harness whose own log the OWNER has latched as forked (local writes blocked). */
+export interface OwnLogForkSummary {
+  workspaceId: string;
+  harnessSlug: string;
+  detail?: string;
+}
+
+/**
+ * EI-20575137548097507 (second pass): the three health inputs the assessor
+ * consumes, as ONE bundle.
+ *
+ * They travel together on purpose. The first pass published only
+ * `replicationLiveness` and flipped a single "health inputs observed" marker on
+ * its arrival — but `ownLogFork` and `logStats` stayed process-local, so a
+ * non-owner still could not see a forked own log while now ASSERTING it had
+ * observed the health inputs. That is the very defect this item exists to close
+ * (a partial-coverage marker read as whole-coverage attestation), one level
+ * down: `reachedSubstrateOwner` attested only to `booted`, and the first-pass
+ * marker attested only to liveness. Bundling makes the marker's claim and its
+ * evidence the same set by construction, so the two cannot drift apart again.
+ */
+export interface SubstrateHealthInputsBundle {
+  replicationLiveness: HarnessReplicationLiveness[];
+  /** Only FORKED harnesses. Present-and-empty = "measured, none forked". */
+  ownLogForks: OwnLogForkSummary[];
+  logStats: HarnessLogStats[];
+}
+
+/**
+ * Read the owner's three health-input registries as one bundle.
+ *
+ * Shared by BOTH publishing legs (cluster IPC and the PG fallback) so the rule
+ * is expressed exactly once. The last time one rule here lived in two places,
+ * the halves drifted and produced a confident false zero (EI-18735338283879820)
+ * — the send-side gate was correct in one copy and missing in the other.
+ *
+ * Only forked own-logs are carried: absence in the registry means healthy, so
+ * an empty list is the full truth and costs nothing to send.
+ */
+export function collectSubstrateHealthInputs(): SubstrateHealthInputsBundle {
+  const ownLogForks: OwnLogForkSummary[] = [];
+  for (const { workspaceId, harnessSlug } of listBootedHandles()) {
+    const st = getOwnLogForkState(workspaceId, harnessSlug);
+    if (!st.forked) continue;
+    ownLogForks.push({
+      workspaceId,
+      harnessSlug,
+      ...(st.detail ? { detail: st.detail } : {}),
+    });
+  }
+  return {
+    replicationLiveness: getReplicationLiveness(),
+    ownLogForks,
+    logStats: collectSubstrateLogStats(),
+  };
+}
 
 /** IPC message type the primary broadcasts to every worker each interval. */
 export const BOOTED_HANDLES_SNAPSHOT_TYPE = 'papercusp:booted-handles-snapshot' as const;
@@ -49,13 +108,17 @@ export interface BootedHandlesSnapshotMessage {
   handles: BootedHandleSummary[];
   sentAt: number;
   /**
-   * EI-20575137548097507: the owner's replication-liveness registry, broadcast
-   * with the handle list so a worker can ASSESS these harnesses instead of only
+   * EI-20575137548097507: the owner's health-input registries, broadcast with
+   * the handle list so a worker can ASSESS these harnesses instead of only
    * listing them. Optional so a worker running newer code against an older
    * primary mid-rolling-deploy degrades to health-unobserved (honest) rather
    * than healthy (a lie).
+   *
+   * Sent as ONE bundle rather than three sibling fields: a reader must be able
+   * to decide "did I observe the health inputs?" with a single test that cannot
+   * be true for only part of what it claims — see SubstrateHealthInputsBundle.
    */
-  replicationLiveness?: HarnessReplicationLiveness[];
+  healthInputs?: SubstrateHealthInputsBundle;
   /**
    * EI-18735338283879820: the sender's assertion that it genuinely OWNS the substrate
    * (booted it, holds the handle map) — not merely that it is a cluster primary.
@@ -68,6 +131,27 @@ export interface BootedHandlesSnapshotMessage {
    * of single-point rule that already drifted once.
    */
   ownsSubstrate: boolean;
+}
+
+/**
+ * Accept a health-input bundle only if EVERY member arrived.
+ *
+ * Shared by both receiving legs (worker IPC cache, PG fallback reader) for the
+ * same reason the collector is shared. A partial bundle is rejected outright
+ * rather than passed through with holes: the reader turns bundle-presence into
+ * "I observed the health inputs", so tolerating a missing member here would
+ * re-create the exact over-claim this item exists to remove.
+ */
+export function isCompleteHealthInputs(
+  value: unknown,
+): value is SubstrateHealthInputsBundle {
+  const b = value as Partial<SubstrateHealthInputsBundle> | null | undefined;
+  return (
+    !!b &&
+    Array.isArray(b.replicationLiveness) &&
+    Array.isArray(b.ownLogForks) &&
+    Array.isArray(b.logStats)
+  );
 }
 
 export interface BootedHandlesBroadcasterHandle {
@@ -111,7 +195,7 @@ export function startBootedHandlesBroadcaster(opts: {
         handles: listBootedHandles(),
         // EI-20575137548097507: broadcast the means to ASSESS these handles,
         // not just the handles.
-        replicationLiveness: getReplicationLiveness(),
+        healthInputs: collectSubstrateHealthInputs(),
         sentAt: now(),
         ownsSubstrate: true,
       });
@@ -134,16 +218,18 @@ export interface RemoteBootedHandlesSnapshot {
   handles: BootedHandleSummary[];
   receivedAt: number;
   /**
-   * EI-20575137548097507: the owner's replication-liveness registry, carried
-   * with the handle list so a non-owner reader can ASSESS these harnesses
-   * rather than merely enumerate them.
+   * EI-20575137548097507: the owner's health-input registries, carried with the
+   * handle list so a non-owner reader can ASSESS these harnesses rather than
+   * merely enumerate them.
    *
-   * `undefined` means the snapshot's producer did not supply it (an older
-   * publisher, or a leg that does not carry it yet) — which the reader MUST
+   * `undefined` means the snapshot's producer did not supply them (an older
+   * publisher, or a leg that does not carry them yet) — which the reader MUST
    * render as health-unobserved, never as healthy. That conflation is the
-   * defect this field closes.
+   * defect this field closes. A PARTIAL bundle is impossible by construction,
+   * which is the point: the marker derived from this field would otherwise be
+   * able to claim more coverage than it has.
    */
-  replicationLiveness?: HarnessReplicationLiveness[];
+  healthInputs?: SubstrateHealthInputsBundle;
 }
 
 /** Process-local cache of the latest snapshot received from the primary. Only ever
@@ -186,8 +272,10 @@ export function startWorkerBootedHandlesCache(
       // sent it. An older primary omits it, and the reader must then report
       // health as UNOBSERVED — same conservative stance as the `ownsSubstrate`
       // provenance check above: unknown is treated as untrusted, never as green.
-      ...(Array.isArray(m.replicationLiveness)
-        ? { replicationLiveness: m.replicationLiveness as HarnessReplicationLiveness[] }
+      // Every member must be present: a half-populated bundle would let the
+      // observability marker over-claim, which is the defect itself.
+      ...(isCompleteHealthInputs(m.healthInputs)
+        ? { healthInputs: m.healthInputs }
         : {}),
     };
   };

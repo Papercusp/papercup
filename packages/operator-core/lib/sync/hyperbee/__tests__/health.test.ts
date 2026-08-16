@@ -3,7 +3,11 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { assessHarnessSubstrateHealth } from '../health';
+import {
+  assessHarnessSubstrateHealth,
+  type SubstrateHealthInputs,
+  type SubstrateHealthVerdictResult,
+} from '../health';
 
 describe('assessHarnessSubstrateHealth', () => {
   it('flag off → disabled', () => {
@@ -404,6 +408,50 @@ describe('assessHarnessSubstrateHealth', () => {
       });
       expect(r.verdict).toBe('unhealthy');
       expect(r.reasons.join(' ')).toMatch(/UNOBSERVABLE from this process/);
+    });
+
+    // ---- FALSIFIABILITY CONTROL (EI-20575137548097507) --------------------
+    //
+    // A guard that has never failed is a guard nobody has tested. The usual way
+    // to prove one CAN fail — mutate the real file, run, restore — is unsafe in
+    // this shared checkout: git-sync sweeps the whole tree on a timer and can
+    // COMMIT the mutant during the run, and no trap can close that race. So the
+    // control is kept here permanently instead (repo-conventions, tier 1: "a
+    // MODULE / logic you import"). It re-proves the property discriminates on
+    // every single run, rather than once in a probe nobody can see afterwards.
+    //
+    // `preFixAssess` is the assessor as it behaved BEFORE this fix: it is a
+    // faithful stand-in for the live defect, because the defect was never a
+    // wrong branch — it was the ABSENCE of any branch for unobservable inputs,
+    // so every check simply skipped and the verdict fell through to healthy.
+    const preFixAssess = (
+      inputs: SubstrateHealthInputs,
+    ): SubstrateHealthVerdictResult => {
+      const { healthInputsObservable: _ignored, ...rest } = inputs;
+      return assessHarnessSubstrateHealth(rest);
+    };
+
+    /** The invariant this item exists to enforce, as a reusable predicate. */
+    const violatesUnobservableInvariant = (
+      assess: (i: SubstrateHealthInputs) => SubstrateHealthVerdictResult,
+    ): boolean => {
+      const r = assess({
+        flagEnabled: true,
+        handlePresent: true,
+        healthInputsObservable: false,
+      });
+      return r.verdict === 'healthy' || r.reasons.includes('no issues detected');
+    };
+
+    it('the REAL assessor satisfies the invariant', () => {
+      expect(violatesUnobservableInvariant(assessHarnessSubstrateHealth)).toBe(false);
+    });
+
+    // If this ever goes green, the guard above has stopped being able to fail
+    // and is no longer protecting anything — the property, not the assertion,
+    // is what must keep working.
+    it('the pre-fix assessor VIOLATES it — so the invariant really discriminates', () => {
+      expect(violatesUnobservableInvariant(preFixAssess)).toBe(true);
     });
   });
 });

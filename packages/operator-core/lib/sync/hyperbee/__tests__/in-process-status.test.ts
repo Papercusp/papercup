@@ -318,18 +318,89 @@ describe('getInProcessSubstrateStatus', () => {
     // worker-served read permanently 'degraded', which is true but useless. The
     // owner now PUBLISHES its liveness registry alongside the handle list, so a
     // non-owner can actually assess what it reports.
-    it('a non-owner GIVEN the owner-published liveness reports real verdicts again', () => {
+    it('a non-owner GIVEN the owner-published health inputs reports real verdicts again', () => {
       const r = getInProcessSubstrateStatus({
         isSubstrateOwnerProcessForTest: false,
         resolveRemoteBootedHandles: () => ({
           handles: [{ workspaceId: 'ws-1', harnessSlug: 'remote-a' }],
           receivedAt: Date.now(),
-          replicationLiveness: [],
+          healthInputs: { replicationLiveness: [], ownLogForks: [], logStats: [] },
         }),
       });
       expect(r.healthInputsObserved).toBe(true);
       expect(r.harnesses[0]!.verdict).toBe('healthy');
       expect(r.harnesses[0]!.reasons.join(' ')).not.toMatch(/UNOBSERVABLE/);
+    });
+
+    // EI-20575137548097507, SECOND PASS — the recurrence guard for the FIX's own
+    // blind spot, which is instance six of this same class.
+    //
+    // The first pass published only `replicationLiveness` and set the
+    // observability marker from ITS arrival alone, while `ownLogFork` and
+    // `logStats` were still read from this process's empty-by-construction
+    // module state. So the marker asserted "I observed the health inputs" while
+    // two of the three were never measured — a partial-coverage marker read as
+    // whole-coverage attestation, which is precisely what `reachedSubstrateOwner`
+    // (true on the cached path, attesting only to `booted`) had already done.
+    //
+    // The invariant: the marker's coverage must equal the set of inputs it
+    // gates. A snapshot carrying only PART of the bundle must not license it.
+    it('a PARTIAL health-input bundle must not count as observed', () => {
+      const r = getInProcessSubstrateStatus({
+        isSubstrateOwnerProcessForTest: false,
+        resolveRemoteBootedHandles: () => ({
+          handles: [{ workspaceId: 'ws-1', harnessSlug: 'remote-a' }],
+          receivedAt: Date.now(),
+          // Exactly what a first-pass publisher sends: liveness, nothing else.
+          healthInputs: { replicationLiveness: [] } as never,
+        }),
+      });
+      expect(r.healthInputsObserved).toBe(false);
+      expect(r.harnesses[0]!.verdict).not.toBe('healthy');
+      expect(r.harnesses[0]!.reasons.join(' ')).toMatch(/UNOBSERVABLE from this process/);
+    });
+
+    // The capability half of the same gap: a FORKED own log means local writes
+    // are blocked. Read from the local registry on a non-owner it is always
+    // `forked:false` — "not forked" indistinguishable from "never looked".
+    it('a forked own-log published by the owner reaches a non-owner verdict', () => {
+      const r = getInProcessSubstrateStatus({
+        isSubstrateOwnerProcessForTest: false,
+        resolveRemoteBootedHandles: () => ({
+          handles: [{ workspaceId: 'ws-1', harnessSlug: 'remote-a' }],
+          receivedAt: Date.now(),
+          healthInputs: {
+            replicationLiveness: [],
+            ownLogForks: [
+              { workspaceId: 'ws-1', harnessSlug: 'remote-a', detail: 'conflict at seq 12' },
+            ],
+            logStats: [],
+          },
+        }),
+      });
+      expect(r.healthInputsObserved).toBe(true);
+      expect(r.harnesses[0]!.verdict).toBe('unhealthy');
+      expect(r.harnesses[0]!.ownLogFork.forked).toBe(true);
+    });
+
+    // logStats is the third input. On a non-owner the collector walks the LOCAL
+    // booted map — empty by construction — so it rendered `[]` beside a
+    // bootedCount of 97: an unmeasured zero presented as a measurement.
+    it('logStats on a non-owner come from the owner, not the empty local map', () => {
+      const stat = { workspaceId: 'ws-1', harnessSlug: 'remote-a', ownLogOps: 42 };
+      const r = getInProcessSubstrateStatus({
+        isSubstrateOwnerProcessForTest: false,
+        resolveRemoteBootedHandles: () => ({
+          handles: [{ workspaceId: 'ws-1', harnessSlug: 'remote-a' }],
+          receivedAt: Date.now(),
+          healthInputs: {
+            replicationLiveness: [],
+            ownLogForks: [],
+            logStats: [stat as never],
+          },
+        }),
+      });
+      expect(r.logStats).toEqual([stat]);
     });
 
     // Present-but-empty ("measured, nothing stalled") and absent ("could not
@@ -340,13 +411,17 @@ describe('getInProcessSubstrateStatus', () => {
         resolveRemoteBootedHandles: () => ({
           handles: [{ workspaceId: 'ws-1', harnessSlug: 'remote-a' }],
           receivedAt: Date.now(),
-          replicationLiveness: [
-            {
-              workspaceId: 'ws-1',
-              harnessSlug: 'remote-a',
-              counts: { noReplicator: 1, frozen: 0, samplingStale: 0, dhtUniverseMismatch: 0 },
-            } as never,
-          ],
+          healthInputs: {
+            replicationLiveness: [
+              {
+                workspaceId: 'ws-1',
+                harnessSlug: 'remote-a',
+                counts: { noReplicator: 1, frozen: 0, samplingStale: 0, dhtUniverseMismatch: 0 },
+              } as never,
+            ],
+            ownLogForks: [],
+            logStats: [],
+          },
         }),
       });
       expect(r.healthInputsObserved).toBe(true);
@@ -362,7 +437,7 @@ describe('getInProcessSubstrateStatus', () => {
         resolveRemoteBootedHandles: () => ({
           handles: [{ workspaceId: 'ws-1', harnessSlug: 'remote-a' }],
           receivedAt: Date.now() - 60 * 60 * 1_000,
-          replicationLiveness: [],
+          healthInputs: { replicationLiveness: [], ownLogForks: [], logStats: [] },
         }),
       });
       expect(r.reachedSubstrateOwner).toBe(false);

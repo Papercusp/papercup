@@ -22,7 +22,10 @@
 
 import { isSubstrateOwnerProcess } from '../../background-workers';
 import { listBootedHandles, type BootedHandleSummary } from './boot-all';
-import type { RemoteBootedHandlesSnapshot } from './cluster-booted-handles-sync';
+import {
+  isCompleteHealthInputs,
+  type RemoteBootedHandlesSnapshot,
+} from './cluster-booted-handles-sync';
 import { listBootstrapProgress } from './bootstrap-progress';
 import {
   assessHarnessSubstrateHealth,
@@ -308,17 +311,43 @@ export function getInProcessSubstrateStatus(
   // check above accepted `remoteSnapshot`, so this reuses that one verdict
   // rather than re-deriving (and possibly disagreeing with) it: a snapshot too
   // stale to be trusted for `booted` is equally untrustworthy for health.
-  const remoteLiveness =
-    !isSubstrateOwner && reachedSubstrateOwner
-      ? remoteSnapshot?.replicationLiveness
+  // The completeness test is applied HERE, at the point the attestation is
+  // made — not only at the two receiving legs that populate the caches. A leg
+  // filters what it stores; this decides what we CLAIM. Enforcing it only on
+  // the way in would leave the marker able to over-claim for any snapshot that
+  // arrives by some other route (a third leg, a direct caller, a future
+  // transport) — the same "one rule expressed in two places" drift that
+  // produced EI-18735338283879820's confident false zero.
+  const remoteHealthInputs =
+    !isSubstrateOwner && reachedSubstrateOwner && isCompleteHealthInputs(remoteSnapshot?.healthInputs)
+      ? remoteSnapshot.healthInputs
       : undefined;
+  // Observable iff we measured it ourselves, or the snapshot's producer supplied
+  // the WHOLE bundle. An older publisher omits it entirely — that is UNOBSERVED,
+  // and must never be read as an empty-because-nothing-is-wrong registry.
+  //
+  // ⚠ This marker's coverage must equal the set of inputs it gates, or it is the
+  // very defect it was added to fix. The first pass derived it from the presence
+  // of `replicationLiveness` ALONE while `ownLogFork` and `logStats` were still
+  // read from this process's (empty-by-construction) module state — so a forked
+  // own log on the owner stayed invisible while the marker asserted the health
+  // inputs had been observed. Exactly the shape of `reachedSubstrateOwner`,
+  // which attested only to `booted` and read as a whole-payload trust marker.
+  // The inputs now travel as ONE bundle so the claim and its evidence cannot
+  // drift apart again; keep any future health input INSIDE that bundle.
+  const healthInputsObserved = isSubstrateOwner || remoteHealthInputs !== undefined;
   const replicationLiveness = isSubstrateOwner
     ? getReplicationLiveness()
-    : (remoteLiveness ?? []);
-  // Observable iff we measured it ourselves, or the snapshot's producer supplied
-  // it. An older publisher omits the field entirely — that is UNOBSERVED, and
-  // must never be read as an empty-because-nothing-is-wrong registry.
-  const healthInputsObserved = isSubstrateOwner || remoteLiveness !== undefined;
+    : (remoteHealthInputs?.replicationLiveness ?? []);
+  // Non-owner: the owner publishes only FORKED harnesses, so a miss here means
+  // "measured, not forked" — but ONLY because the bundle's presence is what
+  // licenses that reading. Absent bundle ⇒ the map is empty AND
+  // `healthInputsObserved` is false, so the verdict degrades rather than
+  // silently reporting every own log as intact.
+  const remoteForkByKey = new Map<string, { detail?: string }>();
+  for (const f of remoteHealthInputs?.ownLogForks ?? []) {
+    remoteForkByKey.set(`${f.workspaceId}::${f.harnessSlug}`, f);
+  }
   const livenessByKey = new Map<string, HarnessReplicationLiveness>();
   for (const l of replicationLiveness) {
     livenessByKey.set(`${l.workspaceId}::${l.harnessSlug}`, l);
@@ -328,7 +357,17 @@ export function getInProcessSubstrateStatus(
     const stats = resolveStats(h.workspaceId, h.harnessSlug);
     const drain = resolveDrain(h.workspaceId, h.harnessSlug);
     const bp = progressByKey.get(`${h.workspaceId}::${h.harnessSlug}`);
-    const ownLogFork = getOwnLogForkState(h.workspaceId, h.harnessSlug);
+    // EI-20575137548097507: same owner/non-owner split as the liveness above —
+    // reading the local registry on a non-owner always answers "not forked",
+    // which is indistinguishable from never having looked.
+    const ownLogFork = isSubstrateOwner
+      ? getOwnLogForkState(h.workspaceId, h.harnessSlug)
+      : ((): OwnLogForkState => {
+          const f = remoteForkByKey.get(`${h.workspaceId}::${h.harnessSlug}`);
+          return f
+            ? { forked: true, keyHex: null, detectedAtMs: null, detail: f.detail ?? null }
+            : { forked: false, keyHex: null, detectedAtMs: null, detail: null };
+        })();
     const { verdict, reasons } = assessHarnessSubstrateHealth({
       // health.ts's `flagEnabled` is its real "is the substrate active" input
       // (drives the 'disabled' verdict); feed it `substrateActive`.
@@ -388,7 +427,14 @@ export function getInProcessSubstrateStatus(
     summary,
     harnesses,
     // P-001/P-002: read-only per-harness log-growth + replay-cost snapshot.
-    logStats: collectSubstrateLogStats(),
+    // EI-20575137548097507: on a non-owner this collector walks the LOCAL
+    // booted-handle map, which is empty by construction — it would render an
+    // unmeasured `[]` beside a `bootedCount` of 97. Use what the owner
+    // published instead; when nothing was published this stays empty AND
+    // `healthInputsObserved` is false, which is what says so.
+    logStats: isSubstrateOwner
+      ? collectSubstrateLogStats()
+      : (remoteHealthInputs?.logStats ?? []),
     // P-004 (WI-1840): per-log replication-liveness verdicts.
     replicationLiveness,
     // EI-8816: explicit blind-spot marker — see resolveEffectiveBootedHandles above.

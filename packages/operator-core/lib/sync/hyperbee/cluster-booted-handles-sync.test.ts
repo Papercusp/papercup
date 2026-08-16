@@ -12,7 +12,14 @@ const H = vi.hoisted(() => {
   const state: { booted: Array<{ workspaceId: string; harnessSlug: string }> } = { booted: [] };
   return { state, listBootedHandles: () => state.booted };
 });
-vi.mock('./boot-all', () => ({ listBootedHandles: H.listBootedHandles }));
+vi.mock('./boot-all', () => ({
+  listBootedHandles: H.listBootedHandles,
+  // EI-20575137548097507: collectSubstrateHealthInputs() also walks the handles
+  // to build log stats, so the mock must expose this too. Without it the
+  // collector throws INSIDE the broadcaster's best-effort catch and the beat
+  // silently sends nothing at all.
+  getBootedHarness: () => null,
+}));
 
 import {
   BOOTED_HANDLES_SNAPSHOT_TYPE,
@@ -45,11 +52,12 @@ describe('startBootedHandlesBroadcaster (PRIMARY side)', () => {
           sentAt: expect.any(Number),
           ownsSubstrate: true,
           // EI-20575137548097507: the broadcast now carries the means to ASSESS
-          // these handles, not just enumerate them. Asserted as a present array
-          // (empty here — this fixture registers no liveness) rather than
-          // omitted, because a receiver reads an ABSENT field as "health
+          // these handles, not just enumerate them. Asserted as a present but
+          // EMPTY bundle (this fixture registers no liveness/forks/logs) rather
+          // than omitted, because a receiver reads an ABSENT bundle as "health
           // unobservable" and an empty one as "measured, nothing stalled".
-          replicationLiveness: [],
+          // Every member must be present or the receiver rejects the bundle.
+          healthInputs: { replicationLiveness: [], ownLogForks: [], logStats: [] },
         },
       ]);
       H.state.booted = [{ workspaceId: 'ws1', harnessSlug: 'a' }, { workspaceId: 'ws1', harnessSlug: 'b' }];

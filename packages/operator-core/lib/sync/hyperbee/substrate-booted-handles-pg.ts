@@ -43,11 +43,12 @@ import {
   type BootedHandleSummary,
 } from './boot-all';
 import { readOperatorState, writeOperatorState } from '../../operator-state-pg';
-import type { RemoteBootedHandlesSnapshot } from './cluster-booted-handles-sync';
 import {
-  getReplicationLiveness,
-  type HarnessReplicationLiveness,
-} from './replication-liveness';
+  collectSubstrateHealthInputs,
+  isCompleteHealthInputs,
+  type RemoteBootedHandlesSnapshot,
+  type SubstrateHealthInputsBundle,
+} from './cluster-booted-handles-sync';
 import { resolveSubstrateSocketPath } from './substrate-socket-path';
 import { isAbsolute } from 'node:path';
 
@@ -62,7 +63,7 @@ interface PgBootedHandlesPayload {
   handles: BootedHandleSummary[];
   sentAt: number;
   /**
-   * EI-20575137548097507: the owner's replication-liveness registry, published
+   * EI-20575137548097507: the owner's health-input registries, published
    * ALONGSIDE the handle list so a non-owner reader can actually ASSESS the
    * harnesses this row tells it about.
    *
@@ -78,8 +79,12 @@ interface PgBootedHandlesPayload {
    *
    * Optional for backward compatibility with rows written by an older owner: a
    * reader that finds it absent must treat health as UNOBSERVED, never healthy.
+   * The same applies to a row written by the FIRST pass of this fix, which
+   * carried a bare `replicationLiveness` and no fork/log-stat state — that row
+   * is deliberately not upgraded in place, because a reader cannot honestly
+   * claim to have observed inputs the row never carried.
    */
-  replicationLiveness?: HarnessReplicationLiveness[];
+  healthInputs?: SubstrateHealthInputsBundle;
   /**
    * Optional for backward compatibility with pre-EI-20438405483051865 rows and
    * absent for an in-process substrate owner.  This extends the existing
@@ -126,7 +131,7 @@ export function startBootedHandlesPgPublisher(opts: {
       sentAt: now(),
       // EI-20575137548097507: publish what a reader needs to ASSESS these
       // handles, not just enumerate them.
-      replicationLiveness: getReplicationLiveness(),
+      healthInputs: collectSubstrateHealthInputs(),
       ...(relocated.length > 0
         ? {
             sidecar: {
@@ -206,9 +211,10 @@ export async function getPgBootedHandlesSnapshotFallback(opts?: {
     receivedAt: row.sentAt,
     // EI-20575137548097507: absent on rows written by a pre-fix owner — passed
     // through as `undefined` so the reader reports health UNOBSERVED rather
-    // than manufacturing a healthy verdict from a missing field.
-    ...(Array.isArray(row.replicationLiveness)
-      ? { replicationLiveness: row.replicationLiveness }
+    // than manufacturing a healthy verdict from a missing field. A partial
+    // bundle is rejected for the same reason (isCompleteHealthInputs).
+    ...(isCompleteHealthInputs(row.healthInputs)
+      ? { healthInputs: row.healthInputs }
       : {}),
   };
 }
