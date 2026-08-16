@@ -52,6 +52,18 @@ def svc_props(name):
 
 
 def operator_workers():
+    # WI-38449 / perf-testing-sweep P-012: the sample MUST cover the worst worker on
+    # EACH budgeted axis, because perf-budgets.ts evaluates two independent budgets over
+    # this one array (workerCpuPctWarn AND workerRssKbWarn). Ranking by CPU alone made
+    # the RSS budget structurally blind: measured 2026-08-16T11:17Z on a 16-worker
+    # SO_REUSEPORT cluster, the true worst-RSS worker (pid 3013854, 3,255,500 KB) was not
+    # in the CPU top-8, so the capture reported worst RSS 2,806,996 KB — BELOW the
+    # 3,000,000 KB warn threshold while the real value was 448,504 KB ABOVE it. A
+    # false-OK, not merely an under-report.
+    #
+    # Fix: rank on both axes and union. Kept bounded (<=8 per axis, so <=16 rows) and
+    # deduped by pid. `maxWorkerCpuPct` / `workersOver100Pct` are maxima/counts over this
+    # array, and a superset can only make them more correct, never less.
     out = run(["ps", "-eo", "pid,pcpu,rss,etimes,args", "--sort=-pcpu"])
     rows = []
     for line in out.splitlines():
@@ -60,7 +72,14 @@ def operator_workers():
             if m:
                 rows.append({"pid": int(m.group(1)), "cpuPct": float(m.group(2)),
                              "rssKb": int(m.group(3)), "etimeSec": int(m.group(4))})
-    return rows[:8]
+    top_by_cpu = sorted(rows, key=lambda r: r["cpuPct"], reverse=True)[:8]
+    top_by_rss = sorted(rows, key=lambda r: r["rssKb"], reverse=True)[:8]
+    merged, seen = [], set()
+    for r in top_by_cpu + top_by_rss:
+        if r["pid"] not in seen:
+            seen.add(r["pid"])
+            merged.append(r)
+    return merged
 
 
 def close_wait(port):

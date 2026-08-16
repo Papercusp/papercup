@@ -166,7 +166,7 @@ const ALLOW = new Set([
   // tell that apart from `rows[0].count` (a real, NULLable column read). The `?? 0` here is
   // a no-op, and the zero it would produce is the honest "nothing matched".
   'packages/operator-core/lib/blueprint/commit-reproject-real.ts:110',
-  'packages/operator-core/lib/harness/routines/coord-invariant-actions.ts:1410',
+  'packages/operator-core/lib/harness/routines/coord-invariant-actions.ts:1470',
   'packages/operator-core/lib/search/session-ingest.ts:1969',
   'packages/operator-core/lib/search/session-ingest.ts:1970',
   'packages/operator-core/lib/search/session-ingest.ts:2001',
