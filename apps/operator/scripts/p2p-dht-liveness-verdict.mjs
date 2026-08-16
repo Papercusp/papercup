@@ -87,6 +87,10 @@ export const PROVED = Object.freeze({
  * @property {boolean} [serverHostIsRemote]      Did the server run on a different host.
  * @property {DhtCounters|null} [clientCounters] The client's own dht-rpc counters.
  * @property {boolean} [inboundAnswered]         Did the client answer an inbound ping.
+ * @property {boolean} [bootstrapProvenReachable] Did some OTHER leg in this run
+ *   demonstrably get responses from the bootstrap. This is the discriminator
+ *   between "this host's transmit path is blocked" and "the bootstrap is dead" —
+ *   see `diagnoseSilence`.
  */
 
 /**
