@@ -1093,6 +1093,44 @@ describe('improvements:capture — lens attribution is report-only (WI-38065)', 
     expect(mockCapture).toHaveBeenCalledTimes(1);
     expect(mockRecordRoutedIdea).toHaveBeenCalledTimes(1);
   });
+
+  // ── P-005 (system-notices-on-its-own-2026-08-16): the note states a MECHANISM, never a rate ──
+  //
+  // The note used to assert "Two thirds of su filings currently land this way". That number was
+  // measured once (41/62 on 2026-08-12) and then hardcoded into a user-facing string, where it
+  // could not be re-measured — so it kept asserting the PRE-FIX rate at every filer for exactly
+  // as long as this advisory succeeded at lowering it. Re-measured 2026-08-16 the real rate was
+  // 42.6% and falling (weekly 100 → 81 → 72 → 67 → 43), i.e. the sentence was simply false, and
+  // false in the direction that overstates the problem the advisory is arguing about.
+  //
+  // A corpus statistic belongs in the module comment, dated and beside its query. These pin that
+  // it stays out of the string a filer reads.
+  it('the note carries no hardcoded population statistic — those decay silently', async () => {
+    const body = await bodyOf({ title: 'an unlensed idea', kind: 'feature' });
+    const note = (body.lensAttribution as { note: string }).note;
+    expect(note).not.toMatch(/\b\d{1,3}(\.\d+)?\s*%/); // "43%", "42.6 %"
+    expect(note).not.toMatch(/\b(two[- ]thirds|a third|half|most|majority)\s+of\s+(su\s+)?filings/i);
+    expect(note).not.toMatch(/\b\d+\s+of\s+\d+\b/); // "41 of 62"
+  });
+
+  it('CALIBRATION — the matchers above really do catch the sentence that was there', () => {
+    // Without this, the assertions could pass because the patterns match nothing at all.
+    const removed =
+      'it cannot be kept alive by the diversity floor. Two thirds of su filings currently land ' +
+      'this way, which means that learning runs on a minority of the corpus.';
+    expect(removed).toMatch(/\b(two[- ]thirds|a third|half|most|majority)\s+of\s+(su\s+)?filings/i);
+    expect('the sentinel was 41 of 62 (66%)').toMatch(/\b\d{1,3}(\.\d+)?\s*%/);
+    expect('the sentinel was 41 of 62').toMatch(/\b\d+\s+of\s+\d+\b/);
+  });
+
+  it('still tells the filer the CONSEQUENCE and the repair — trimming the stat kept the substance', async () => {
+    const note = ((await bodyOf({ title: 'an unlensed idea', kind: 'feature' })).lensAttribution as { note: string })
+      .note;
+    expect(note).toContain('su-ideate');
+    expect(note).toMatch(/excluded from every per-lens statistic/i);
+    expect(note).toMatch(/diversity floor/i);
+    expect(note).toMatch(/ideation\.lens/);
+  });
 });
 
 describe('improvements:capture — gradedGeneration stamp (EI-12147)', () => {
