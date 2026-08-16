@@ -25,6 +25,4 @@ export function findIncompleteSubmoduleInstalls(args: {
   rootWorkspaces?: string[];
 }): SubmoduleInstallProblem[];
 
-export function submodulePathsFromGitmodules(repoRoot: string): string[];
-
 export function formatProblems(problems: SubmoduleInstallProblem[]): string;

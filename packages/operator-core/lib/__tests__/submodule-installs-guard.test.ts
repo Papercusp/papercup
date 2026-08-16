@@ -24,7 +24,6 @@ import {
   findIncompleteSubmoduleInstalls,
   isRootWorkspace,
   repairCommand,
-  submodulePathsFromGitmodules,
 } from '../../../../scripts/lib/submodule-installs.mjs';
 
 let root: string;
@@ -225,30 +224,6 @@ describe('binShimNames', () => {
 
   it('returns nothing for a library with no bin', () => {
     expect(binShimNames('lodash', undefined)).toEqual([]);
-  });
-});
-
-describe('submodulePathsFromGitmodules', () => {
-  it('parses paths without shelling out to git', () => {
-    writeFileSync(
-      join(root, '.gitmodules'),
-      [
-        '[submodule "papercusp-desktop"]',
-        '\tpath = papercusp-desktop',
-        '\turl = git@github.com:Papercusp/papercusp-desktop.git',
-        '[submodule "libs/generic/dock-workbench"]',
-        '\tpath = libs/generic/dock-workbench',
-        '\turl = git@github.com:Papercusp/dock-workbench.git',
-      ].join('\n'),
-    );
-    expect(submodulePathsFromGitmodules(root)).toEqual([
-      'papercusp-desktop',
-      'libs/generic/dock-workbench',
-    ]);
-  });
-
-  it('returns empty when there are no submodules', () => {
-    expect(submodulePathsFromGitmodules(root)).toEqual([]);
   });
 });
 

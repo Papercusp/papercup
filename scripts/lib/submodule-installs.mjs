@@ -189,21 +189,6 @@ export function findIncompleteSubmoduleInstalls({ repoRoot, submodulePaths, root
   return problems;
 }
 
-/**
- * Submodule paths declared in .gitmodules, read without shelling out to git so this stays
- * usable from a test fixture that is not itself a git repository.
- */
-export function submodulePathsFromGitmodules(repoRoot) {
-  const gitmodules = join(repoRoot, '.gitmodules');
-  if (!existsSync(gitmodules)) return [];
-  const paths = [];
-  for (const line of readFileSync(gitmodules, 'utf8').split('\n')) {
-    const match = line.match(/^\s*path\s*=\s*(.+?)\s*$/);
-    if (match) paths.push(match[1]);
-  }
-  return paths;
-}
-
 /** Formats problems for a human staring at a failing check. Exported for the test. */
 export function formatProblems(problems) {
   return problems
