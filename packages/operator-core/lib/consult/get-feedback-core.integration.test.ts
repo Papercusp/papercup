@@ -26,11 +26,20 @@ import type { RouteResult, RoutingCandidate, RoutingSnapshot } from './relevance
 import {
   getFeedbackCore,
   HARD_BLOCKED_EXPIRY_MS,
+  MAX_CONSULT_DEPTH,
   PROCEED_EXPIRY_MS,
   WAKE_BUDGET_PER_TASK,
   type GetFeedbackDeps,
+  type GetFeedbackError,
   type GetFeedbackRequest,
+  type GetFeedbackResult,
 } from './get-feedback-core';
+
+/** Narrow the P-005 result union for the tests that expect success. */
+function asOk(r: GetFeedbackResult | GetFeedbackError): GetFeedbackResult {
+  if ('error' in r) throw new Error(`unexpected getFeedbackCore error: ${r.error}`);
+  return r;
+}
 
 const WS = 'ws-consult-core';
 const NOW = new Date('2026-08-16T00:00:00Z');
@@ -108,9 +117,13 @@ let convSeq = 0;
 function makeDeps(route: RouteResult) {
   const opened: Array<Parameters<GetFeedbackDeps['open']>[0]> = [];
   const reached: Array<Parameters<GetFeedbackDeps['reach']>[0]> = [];
+  const routeCalls: Array<Parameters<GetFeedbackDeps['route']>[0]> = [];
   const deps: GetFeedbackDeps = {
     getSql: () => rootSql,
-    route: async () => route,
+    route: async (params) => {
+      routeCalls.push(params);
+      return route;
+    },
     open: async (input) => {
       opened.push(input);
       convSeq += 1;
@@ -123,7 +136,7 @@ function makeDeps(route: RouteResult) {
     },
     now: () => NOW,
   };
-  return { deps, opened, reached };
+  return { deps, opened, reached, routeCalls };
 }
 
 const baseReq: GetFeedbackRequest = {
@@ -154,7 +167,7 @@ describe('getFeedbackCore — routed', () => {
     const route = routeOf([top, second]);
     const { deps, opened, reached } = makeDeps(route);
 
-    const r = await getFeedbackCore({ ...baseReq, tried: 'restarted the provider', observed: 'events stop after ~40 queries' }, deps);
+    const r = asOk(await getFeedbackCore({ ...baseReq, tried: 'restarted the provider', observed: 'events stop after ~40 queries' }, deps));
 
     expect(r.verdict).toBe('routed');
     expect(r.state).toBe('awaiting_responder');
@@ -186,7 +199,7 @@ describe('getFeedbackCore — routed', () => {
 
   it('hard-blocked contract: park_key + the shorter expiry', async () => {
     const { deps } = makeDeps(routeOf([cand('agent-a')]));
-    const r = await getFeedbackCore({ ...baseReq, latencyContract: 'hard-blocked' }, deps);
+    const r = asOk(await getFeedbackCore({ ...baseReq, latencyContract: 'hard-blocked' }, deps));
     expect(r.park_key).toBe(`consult:reply:${r.conversation_id}`);
     expect(r.hint).toContain('events:await');
     const row = await stateRow(r.conversation_id);
@@ -198,7 +211,7 @@ describe('getFeedbackCore — routed', () => {
     const deadTop = cand('agent-dead', { score: 0.9, liveness: 'ended' });
     const liveSecond = cand('agent-live', { score: 0.6, liveness: 'parked' });
     const { deps, opened } = makeDeps(routeOf([deadTop, liveSecond]));
-    const r = await getFeedbackCore(baseReq, deps);
+    const r = asOk(await getFeedbackCore(baseReq, deps));
     expect(r.responder?.ownerId).toBe('agent-live');
     expect(opened[0].direct_to).toEqual(['agent-live']);
     // The skipped dead candidate stays visible for the manual cascade.
@@ -209,7 +222,7 @@ describe('getFeedbackCore — routed', () => {
 describe('getFeedbackCore — honest no_qualified_responder', () => {
   it('below_floor: still opens + persists the verdict (D-003 honesty feed), no wake', async () => {
     const { deps, opened, reached } = makeDeps(routeOf([], { all: [cand('agent-sub', { score: 0.3 })] }));
-    const r = await getFeedbackCore(baseReq, deps);
+    const r = asOk(await getFeedbackCore(baseReq, deps));
     expect(r.verdict).toBe('no_qualified_responder');
     expect(r.reason).toBe('below_floor');
     expect(r.hint).toContain('no one knows more than you do');
@@ -226,7 +239,7 @@ describe('getFeedbackCore — honest no_qualified_responder', () => {
     const { deps, reached } = makeDeps(
       routeOf([cand('agent-d1', { liveness: 'ended' }), cand('agent-d2', { liveness: 'recorded' })]),
     );
-    const r = await getFeedbackCore(baseReq, deps);
+    const r = asOk(await getFeedbackCore(baseReq, deps));
     expect(r.verdict).toBe('no_qualified_responder');
     expect(r.reason).toBe('no_live_responder');
     expect(r.hint).toContain('sessions:read');
@@ -238,7 +251,7 @@ describe('getFeedbackCore — honest no_qualified_responder', () => {
 
   it('embed_unavailable: cannot-measure ≠ measured-nothing, and the snapshot says so', async () => {
     const { deps } = makeDeps(routeOf([], { degraded: 'embed-unavailable' }));
-    const r = await getFeedbackCore(baseReq, deps);
+    const r = asOk(await getFeedbackCore(baseReq, deps));
     expect(r.reason).toBe('embed_unavailable');
     expect(r.degraded).toBe('embed-unavailable');
     const row = await stateRow(r.conversation_id);
@@ -257,7 +270,7 @@ describe('getFeedbackCore — wake budget (D-005)', () => {
         VALUES (${WS}, ${`conv-seed-${ref}-${i}`}, 'req-1', 'awaiting_responder', 'q', ${ref}, 1)`;
     }
     const { deps, reached } = makeDeps(routeOf([cand('agent-a')]));
-    const r = await getFeedbackCore({ ...baseReq, originTaskRef: ref }, deps);
+    const r = asOk(await getFeedbackCore({ ...baseReq, originTaskRef: ref }, deps));
     expect(r.verdict).toBe('routed'); // still routed + delivered by subscription
     expect(r.state).toBe('awaiting_responder');
     expect(r.wake).toMatchObject({
@@ -279,7 +292,7 @@ describe('getFeedbackCore — wake budget (D-005)', () => {
         (workspace_id, conversation_id, requester_id, state, question, origin_task_ref, wakes_used)
       VALUES (${WS}, ${`conv-seed-${ref}`}, 'req-1', 'awaiting_responder', 'q', ${ref}, 2)`;
     const { deps, reached } = makeDeps(routeOf([cand('agent-a')]));
-    const r = await getFeedbackCore({ ...baseReq, originTaskRef: ref }, deps);
+    const r = asOk(await getFeedbackCore({ ...baseReq, originTaskRef: ref }, deps));
     expect(r.wake).toMatchObject({ attempted: true, woke: 1, wakes_used_for_task: 3 });
     expect(reached).toHaveLength(1);
   });
@@ -296,7 +309,7 @@ describe('getFeedbackCore — origin_task_ref default', () => {
         ('WI-PEER', 'peer',  'wip',  ${NOW.toISOString()}::timestamptz, ${NOW.toISOString()}::timestamptz)`;
     const { deps } = makeDeps(routeOf([cand('agent-a')]));
     const { originTaskRef: _omit, ...reqNoRef } = baseReq;
-    const r = await getFeedbackCore(reqNoRef, deps);
+    const r = asOk(await getFeedbackCore(reqNoRef, deps));
     expect(r.origin_task_ref).toBe('WI-HOT');
     const row = await stateRow(r.conversation_id);
     expect(row.origin_task_ref).toBe('WI-HOT');
@@ -304,7 +317,91 @@ describe('getFeedbackCore — origin_task_ref default', () => {
 
   it('explicit null stays null (no lookup, no aggregation)', async () => {
     const { deps } = makeDeps(routeOf([cand('agent-a')]));
-    const r = await getFeedbackCore(baseReq, deps);
+    const r = asOk(await getFeedbackCore(baseReq, deps));
     expect(r.origin_task_ref).toBeNull();
+  });
+});
+
+// ── P-005: recursion lineage — depth + cycle refusal (D-005 / D-007 §7) ──
+describe('getFeedbackCore — recursion lineage (P-005)', () => {
+  /** Seed a consult_state row that acts as a lineage parent. */
+  async function seedParent(opts: {
+    id: string;
+    requesterId: string;
+    responderId: string | null;
+    depth?: number;
+    parentConsultId?: string | null;
+  }): Promise<string> {
+    await rootSql`
+      INSERT INTO harness_shared.consult_state
+        (workspace_id, conversation_id, requester_id, responder_id, state, question,
+         depth, parent_consult_id)
+      VALUES (${WS}, ${opts.id}, ${opts.requesterId}, ${opts.responderId},
+              'active', 'parent q', ${opts.depth ?? 0}, ${opts.parentConsultId ?? null})`;
+    return opts.id;
+  }
+
+  it('a consult opened from within a consult carries parent depth+1 and persists the lineage', async () => {
+    const parent = await seedParent({ id: 'lin-d0', requesterId: 'req-1', responderId: 'resp-b' });
+    const { deps, routeCalls } = makeDeps(routeOf([cand('agent-c')]));
+    const r = asOk(
+      await getFeedbackCore({ ...baseReq, requesterId: 'resp-b', parentConsultId: parent }, deps),
+    );
+    expect(r.verdict).toBe('routed');
+    const row = await stateRow(r.conversation_id);
+    expect(row.depth).toBe(1);
+    expect(row.parent_consult_id).toBe(parent);
+    // The lineage's participants were excluded from routing (cycle refusal by construction).
+    expect(routeCalls[0].excludeOwners).toEqual(expect.arrayContaining(['req-1', 'resp-b']));
+  });
+
+  it(`depth past ${MAX_CONSULT_DEPTH} is refused structurally — before any row/conversation is written`, async () => {
+    await seedParent({ id: 'lin-deep-0', requesterId: 'a', responderId: 'b' });
+    await seedParent({ id: 'lin-deep-1', requesterId: 'b', responderId: 'c', depth: 1, parentConsultId: 'lin-deep-0' });
+    await seedParent({ id: 'lin-deep-2', requesterId: 'c', responderId: 'd', depth: 2, parentConsultId: 'lin-deep-1' });
+    const { deps, opened } = makeDeps(routeOf([cand('agent-e')]));
+    const r = await getFeedbackCore({ ...baseReq, requesterId: 'd', parentConsultId: 'lin-deep-2' }, deps);
+    expect(r).toMatchObject({ error: 'consult_depth_exceeded', depth: 3, max_depth: MAX_CONSULT_DEPTH });
+    expect(opened).toHaveLength(0); // no conversation, no consult_state row
+  });
+
+  it('the whole lineage chain (not just the direct parent) is excluded from routing', async () => {
+    await seedParent({ id: 'lin-chain-0', requesterId: 'root-req', responderId: 'mid-resp' });
+    await seedParent({ id: 'lin-chain-1', requesterId: 'mid-resp', responderId: 'leaf-resp', depth: 1, parentConsultId: 'lin-chain-0' });
+    const { deps, routeCalls } = makeDeps(routeOf([cand('agent-fresh')]));
+    const r = asOk(
+      await getFeedbackCore({ ...baseReq, requesterId: 'leaf-resp', parentConsultId: 'lin-chain-1' }, deps),
+    );
+    expect(r.verdict).toBe('routed');
+    expect(routeCalls[0].excludeOwners).toEqual(
+      expect.arrayContaining(['root-req', 'mid-resp', 'leaf-resp']),
+    );
+    expect((await stateRow(r.conversation_id)).depth).toBe(2);
+  });
+
+  it('belt+braces: a route that hands back a lineage owner anyway is refused as consult_cycle', async () => {
+    const parent = await seedParent({ id: 'lin-cycle', requesterId: 'cyc-req', responderId: 'cyc-resp' });
+    // A (hypothetical, non-excluding) route impl returning the original requester.
+    const { deps, opened } = makeDeps(routeOf([cand('cyc-req')]));
+    const r = await getFeedbackCore({ ...baseReq, requesterId: 'cyc-resp', parentConsultId: parent }, deps);
+    expect(r).toMatchObject({ error: 'consult_cycle' });
+    if ('error' in r && r.error === 'consult_cycle') {
+      expect(r.lineage).toEqual(expect.arrayContaining(['cyc-req', 'cyc-resp']));
+    }
+    expect(opened).toHaveLength(0);
+  });
+
+  it('an unknown parent_consult_id is refused (parent_consult_not_found)', async () => {
+    const { deps, opened } = makeDeps(routeOf([cand('agent-a')]));
+    const r = await getFeedbackCore({ ...baseReq, parentConsultId: 'no-such-consult' }, deps);
+    expect(r).toMatchObject({ error: 'parent_consult_not_found', parent_consult_id: 'no-such-consult' });
+    expect(opened).toHaveLength(0);
+  });
+
+  it('a requester-initiated consult (no parent) stays depth 0 with no lineage exclusions', async () => {
+    const { deps, routeCalls } = makeDeps(routeOf([cand('agent-a')]));
+    const r = asOk(await getFeedbackCore(baseReq, deps));
+    expect((await stateRow(r.conversation_id)).depth).toBe(0);
+    expect(routeCalls[0].excludeOwners).toBeUndefined();
   });
 });
