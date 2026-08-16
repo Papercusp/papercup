@@ -107,7 +107,7 @@ describe('blender:grade-idea by bare work-item id (EI-15389, real PG)', () => {
     const row = await humanGradeOf('scout-1784334639774:scout-idea-reframing-1-1');
     expect(row).toBeDefined();
     expect(Number(row!.human_grade)).toBe(4);
-    expect(row!.graded_by).toBe('Queen');
+    expect(row!.graded_by).toBe('auto-grader');
   });
 
   it('a bare gym id (SP-002) resolves via the gym: routed_ref prefix', async () => {

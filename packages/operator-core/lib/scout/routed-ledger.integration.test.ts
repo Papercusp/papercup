@@ -247,22 +247,22 @@ describe('scout routed-ledger (real PG, migration 194)', () => {
          WHERE idea_id = ${ideaId}`
       )[0];
 
-    it('Queen grades an ungraded idea; readRoutedIdeas maps C-1 → C-1b', async () => {
+    it('auto-grader grades an ungraded idea; readRoutedIdeas maps C-1 → C-1b', async () => {
       invalidate.mockClear();
-      const res = await gradeRoutedIdea({ ideaId: 'i2', grade: 2, feedback: 'derivative', gradedBy: 'Queen' });
+      const res = await gradeRoutedIdea({ ideaId: 'i2', grade: 2, feedback: 'derivative', gradedBy: 'auto-grader' });
       expect(res).toEqual({ applied: true });
       await vi.waitFor(() => expect(invalidate).toHaveBeenCalledWith('learning.scout'));
 
       const row = await gradeRow('i2');
       expect(row.human_grade).toBe(2);
       expect(row.human_feedback).toBe('derivative');
-      expect(row.graded_by).toBe('Queen');
+      expect(row.graded_by).toBe('auto-grader');
       expect(row.graded_at).toBeTruthy();
 
       const i2 = (await readRoutedIdeas({ workspaceId: WS })).find((r) => r.ideaId === 'i2')!;
       expect(i2.humanGrade).toBe(2);
       expect(i2.humanFeedback).toBe('derivative');
-      expect(i2.gradedBy).toBe('Queen');
+      expect(i2.gradedBy).toBe('auto-grader');
       expect(typeof i2.gradedAt).toBe('string');
       // ungraded rows stay bare — the optional C-1b fields are absent
       const i3 = (await readRoutedIdeas({ workspaceId: WS })).find((r) => r.ideaId === 'i3')!;
@@ -271,14 +271,14 @@ describe('scout routed-ledger (real PG, migration 194)', () => {
     });
 
     it('regrade is idempotent and reflects the LATEST call in full (omitted feedback clears)', async () => {
-      const res = await gradeRoutedIdea({ ideaId: 'i2', grade: 3, gradedBy: 'Queen' });
+      const res = await gradeRoutedIdea({ ideaId: 'i2', grade: 3, gradedBy: 'auto-grader' });
       expect(res).toEqual({ applied: true });
       const row = await gradeRow('i2');
       expect(row.human_grade).toBe(3);
       expect(row.human_feedback).toBeNull();
     });
 
-    it('owner overwrites a Queen grade (the owner overwrites anything, D-004)', async () => {
+    it('owner overwrites an auto-grader grade (the owner overwrites anything, D-004)', async () => {
       const res = await gradeRoutedIdea({ ideaId: 'i2', grade: 5, feedback: 'actually great', gradedBy: 'owner' });
       expect(res).toEqual({ applied: true });
       const row = await gradeRow('i2');
@@ -286,9 +286,9 @@ describe('scout routed-ledger (real PG, migration 194)', () => {
       expect(row.graded_by).toBe('owner');
     });
 
-    it('Queen on an owner-graded row is a NO-OP: owner-grade-sovereign, row untouched, no invalidate', async () => {
+    it('auto-grader on an owner-graded row is a NO-OP: owner-grade-sovereign, row untouched, no invalidate', async () => {
       invalidate.mockClear();
-      const res = await gradeRoutedIdea({ ideaId: 'i2', grade: 1, feedback: 'overruled?', gradedBy: 'Queen' });
+      const res = await gradeRoutedIdea({ ideaId: 'i2', grade: 1, feedback: 'overruled?', gradedBy: 'auto-grader' });
       expect(res).toEqual({ applied: false, reason: 'owner-grade-sovereign' });
       const row = await gradeRow('i2');
       expect(row.human_grade).toBe(5); // the owner's verdict stands

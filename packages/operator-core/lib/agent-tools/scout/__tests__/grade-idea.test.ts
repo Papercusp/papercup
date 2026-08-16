@@ -58,8 +58,8 @@ function fakeDeps(over: Partial<GradeIdeaDeps> = {}): GradeIdeaDeps {
 }
 
 describe('deriveGradedBy (C-3: attribution from caller, never args)', () => {
-  it("maps the Queen's spawn ctx to 'Queen'", () => {
-    expect(deriveGradedBy({ role: 'mug' })).toBe('Queen');
+  it("maps the Mug's spawn ctx to 'auto-grader'", () => {
+    expect(deriveGradedBy({ role: 'mug' })).toBe('auto-grader');
   });
 
   it('preserves an identified agent caller ownerId for attribution', () => {
@@ -104,9 +104,9 @@ describe('gradeIdeaArgs validation', () => {
 });
 
 describe('runGradeIdea', () => {
-  it("writes through C-2 with gradedBy 'Queen' for a queen ctx and returns the read-back summary", async () => {
+  it("writes through C-2 with gradedBy 'auto-grader' for a mug ctx and returns the read-back summary", async () => {
     const deps = fakeDeps({
-      readIdeaSummary: vi.fn(async () => summary({ humanGrade: 5, gradedBy: 'Queen', humanFeedback: 'love it' })),
+      readIdeaSummary: vi.fn(async () => summary({ humanGrade: 5, gradedBy: 'auto-grader', humanFeedback: 'love it' })),
     });
     const out = await runGradeIdea({ ideaId: 'idea-1', grade: 5, feedback: 'love it' }, { role: 'mug' }, deps);
 
@@ -114,10 +114,10 @@ describe('runGradeIdea', () => {
       ideaId: 'idea-1',
       grade: 5,
       feedback: 'love it',
-      gradedBy: 'Queen',
+      gradedBy: 'auto-grader',
     });
     expect(out.applied).toBe(true);
-    expect(out.gradedBy).toBe('Queen');
+    expect(out.gradedBy).toBe('auto-grader');
     expect(out.ideaId).toBe('idea-1');
     expect(out.idea?.humanGrade).toBe(5);
     // the resolver is never consulted on the ideaId path
@@ -188,7 +188,7 @@ describe('runGradeIdea', () => {
     const out = await runGradeIdea({ ideaId: 'idea-1', grade: 5 }, { role: 'mug' }, deps);
     expect(out.applied).toBe(false);
     expect(out.reason).toBe('owner-grade-sovereign');
-    expect(out.gradedBy).toBe('Queen'); // what THIS call graded as
+    expect(out.gradedBy).toBe('auto-grader'); // what THIS call graded as
     expect(out.idea?.gradedBy).toBe('owner'); // ...and the grade that stood
     expect(out.idea?.humanGrade).toBe(2);
   });
@@ -234,7 +234,7 @@ describe('EI-15389: bare work-item id keyed as ideaId resolves to the ledger PK'
       ideaId: 'scout-1784334639774:scout-idea-reframing-1-1',
       grade: 4,
       feedback: 'sharp',
-      gradedBy: 'Queen',
+      gradedBy: 'auto-grader',
     });
     expect(out.applied).toBe(true);
     expect(out.ideaId).toBe('scout-1784334639774:scout-idea-reframing-1-1');
@@ -247,7 +247,7 @@ describe('EI-15389: bare work-item id keyed as ideaId resolves to the ledger PK'
     const deps = fakeDeps({ resolveIdeaIdFromKey: vi.fn(async () => null) });
     const out = await runGradeIdea({ ideaId: 'EI-does-not-exist', grade: 3, feedback: 'x' }, { role: 'mug' }, deps);
 
-    expect(out).toEqual({ applied: false, reason: 'not-found', gradedBy: 'Queen', ideaId: null, idea: null });
+    expect(out).toEqual({ applied: false, reason: 'not-found', gradedBy: 'auto-grader', ideaId: null, idea: null });
     expect(deps.gradeRoutedIdea).not.toHaveBeenCalled();
     expect(toToolResult(out).isError).toBe(true); // surfaced loudly to the grader
   });
@@ -284,13 +284,13 @@ describe('D-012 no-self-grade guard (su-ideate-learning-substrate-2026-07-10 WI-
   it('a CROSS-author grade is unaffected — the write proceeds and role-derived attribution is preserved', async () => {
     const deps = fakeDeps({
       readCreatedBy: vi.fn(async () => 'someone-else'),
-      readIdeaSummary: vi.fn(async () => summary({ gradedBy: 'Queen' })),
+      readIdeaSummary: vi.fn(async () => summary({ gradedBy: 'auto-grader' })),
     });
     const out = await runGradeIdea({ ideaId: 'idea-1', grade: 4, feedback: 'sharp' }, { role: 'mug', ownerId: SELF }, deps);
     expect(deps.readCreatedBy).toHaveBeenCalledWith('idea-1');
-    expect(deps.gradeRoutedIdea).toHaveBeenCalledWith({ ideaId: 'idea-1', grade: 4, feedback: 'sharp', gradedBy: 'Queen' });
+    expect(deps.gradeRoutedIdea).toHaveBeenCalledWith({ ideaId: 'idea-1', grade: 4, feedback: 'sharp', gradedBy: 'auto-grader' });
     expect(out.applied).toBe(true);
-    expect(out.gradedBy).toBe('Queen'); // C-3 attribution intact for a non-author
+    expect(out.gradedBy).toBe('auto-grader'); // C-3 attribution intact for a non-author
   });
 
   it('fails OPEN on an unattributable ctx (no ownerId): the guard never fires and never even reads created_by', async () => {
@@ -440,7 +440,7 @@ describe('tool registration (C-3 surface)', () => {
     expect(projected, 'blender:grade-idea registered').toBeTruthy();
   });
 
-  it('registers as blender:grade-idea with the SU+Queen allowlist and derived-attribution args', () => {
+  it('registers as blender:grade-idea with the SU+Mug allowlist and derived-attribution args', () => {
     const tool = gradeIdeaTool as unknown as {
       name: string;
       agentRoles?: string[];

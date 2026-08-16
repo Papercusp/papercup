@@ -390,10 +390,10 @@ const scoutSnapshot = {
       title: "Tighter scoper prompt",
       routedAt: new Date(Date.now() - 60 * 60_000).toISOString(),
       outcome: "won",
-      // Queen auto-graded (C-1c) — the row shows the attribution chip; owner regrade stays open.
+      // Auto-graded (C-1c) — the row shows the attribution chip; owner regrade stays open.
       humanGrade: 4,
       humanFeedback: "Sharp framing — ship it",
-      gradedBy: "Queen",
+      gradedBy: "auto-grader",
       origin: "scout",
       cycleId: "scout-99",
       addressesPatternRefs: [],
@@ -1724,7 +1724,7 @@ describe("LearningTab — grading, the only row control the merge kept (P-005: c
   // Both fixtures come from scoutSnapshot.recent and are routed to NON-`wi:`
   // refs, so they survive the merge as standalone idea rows in the Improve list:
   //   idea-1 — ungraded            (rail plan)
-  //   idea-2 — graded ★4 by "Queen" (rail gym)
+  //   idea-2 — graded ★4 by "auto-grader" (rail gym)
   const GRADE_URL = "/api/agent-tools/scout/grade-idea";
 
   const stubFetch = (impl: { ok: boolean; status?: number; body?: unknown }) => {
@@ -1849,7 +1849,7 @@ describe("LearningTab — grading, the only row control the merge kept (P-005: c
   it("10. renders attribution on an already-graded row, with the regrade affordance still live", () => {
     render(<LearningTab />);
 
-    // idea-2 was graded ★4 by the Queen; `graderLabel` maps "Queen" to the
+    // idea-2 was auto-graded ★4; `graderLabel` maps "auto-grader" to the
     // brain word (the lexicon is mocked identity, so it renders as "brain").
     const chip = document.querySelector(".pc-learning__gradechip");
     expect(chip?.textContent?.replace(/\s+/g, " ")).toContain("★4 · brain");

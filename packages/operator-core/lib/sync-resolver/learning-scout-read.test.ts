@@ -112,7 +112,7 @@ describe('readScoutSnapshot', () => {
           outcome: 'won',
           human_grade: 4,
           human_feedback: 'sharp framing, do more of these',
-          graded_by: 'Queen',
+          graded_by: 'auto-grader',
           origin: 'scout',
           cycle_id: 'scout-42',
           addresses_pattern_refs: ['wi:EI-100', 'fact:workspace:some-standing-fact', 42], // non-strings filtered
@@ -147,7 +147,7 @@ describe('readScoutSnapshot', () => {
         outcome: 'won',
         humanGrade: 4,
         humanFeedback: 'sharp framing, do more of these',
-        gradedBy: 'Queen',
+        gradedBy: 'auto-grader',
         origin: 'scout',
         cycleId: 'scout-42',
         addressesPatternRefs: ['wi:EI-100', 'fact:workspace:some-standing-fact'],
