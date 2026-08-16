@@ -72,7 +72,7 @@ async function stubAndCapture(page: Page): Promise<CreateCapture> {
   // The into-hive / standalone create — capture the body (asserts `hive`), succeed.
   await page.route('**/api/harness/projects', async (route) => {
     if (route.request().method() === 'POST') {
-      cap.bodies.push(JSON.parse(route.request().postData() ?? '{}'));
+      bodies.push(JSON.parse(route.request().postData() ?? '{}'));
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -85,7 +85,7 @@ async function stubAndCapture(page: Page): Promise<CreateCapture> {
   // The new-hive create (separate endpoint) — capture + succeed.
   await page.route('**/api/harness/pots', async (route) => {
     if (route.request().method() === 'POST') {
-      cap.bodies.push({ __hivesEndpoint: true, ...JSON.parse(route.request().postData() ?? '{}') });
+      bodies.push({ __hivesEndpoint: true, ...JSON.parse(route.request().postData() ?? '{}') });
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, project: { slug: 'e2e-new-hive' } }) });
       return;
     }
@@ -100,7 +100,7 @@ async function stubAndCapture(page: Page): Promise<CreateCapture> {
   await page.route('**/api/harness/*/agents**', async (route) => {
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ agents: [] }) });
   });
-  return cap;
+  return { bodies, sync };
 }
 
 const DOCK_MOUNT = { role: 'button', name: 'Add panel' } as const;
@@ -135,9 +135,12 @@ async function openPicker(page: Page) {
 
 test.describe('/adv Harnesses tab — creation fork (P-010/P-011)', () => {
   test('P-010 New on a hive scope opens the fork with all three modes, into-hive default-selected', async ({ page }) => {
-    await stubAndCapture(page);
+    const { sync } = await stubAndCapture(page);
     const mounted = await gotoHarnessesTab(page, `slug=${HIVE}`);
     assertMounted(mounted, SKIP_MSG);
+
+    // A never-hit stub means every assertion below ran against real traffic.
+    await sync.waitForServed(['harnessProjects.lite']);
 
     const fork = await openPicker(page);
     // All three modes present on the LIVE default path (not injected props).
@@ -149,9 +152,11 @@ test.describe('/adv Harnesses tab — creation fork (P-010/P-011)', () => {
   });
 
   test('P-010 toggling to Standalone flips the selected mode', async ({ page }) => {
-    await stubAndCapture(page);
+    const { sync } = await stubAndCapture(page);
     const mounted = await gotoHarnessesTab(page, `slug=${HIVE}`);
     assertMounted(mounted, SKIP_MSG);
+
+    await sync.waitForServed(['harnessProjects.lite']);
 
     const fork = await openPicker(page);
     await fork.getByRole('tab', { name: 'Standalone' }).click();
@@ -163,6 +168,8 @@ test.describe('/adv Harnesses tab — creation fork (P-010/P-011)', () => {
     const cap = await stubAndCapture(page);
     const mounted = await gotoHarnessesTab(page, `slug=${HIVE}`);
     assertMounted(mounted, SKIP_MSG);
+
+    await cap.sync.waitForServed(['harnessProjects.lite']);
 
     await openPicker(page); // into-hive default (hive scope selected)
     // Pick the "New local directory" entry → NewLocalForm.
@@ -178,5 +185,7 @@ test.describe('/adv Harnesses tab — creation fork (P-010/P-011)', () => {
     // with ?slug= still the hive (handleCreated: into-hive → setHarness(new)).
     await expect.poll(() => new URL(page.url()).searchParams.get('harness'), { timeout: 10_000 }).toBe(NEW_MEMBER);
     await expect(page.getByTestId(`hive-member-${NEW_MEMBER}`)).toHaveAttribute('aria-current', 'true', { timeout: 15_000 });
+
+    cap.sync.assertServed('harnessProjects.lite');
   });
 });
