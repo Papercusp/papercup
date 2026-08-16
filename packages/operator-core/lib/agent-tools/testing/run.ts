@@ -60,7 +60,7 @@ import { resolveAgentWorkspaceRoot } from '../capability/base-dir';
 import {
   FOREGROUND_TIMEOUT_CEILING_MS,
   clampForegroundTimeoutMs,
-} from '../capability/inspect';
+} from '../capability/foreground-transport-cap';
 
 /** Hard ceiling on a single run, so a wedged suite can never hold a turn open
  *  indefinitely. 21% of corpus commands already hand-wrapped a `timeout`; this

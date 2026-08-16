@@ -76,7 +76,7 @@ import { tscHeapEnv } from '../tsc-heap';
 import {
   FOREGROUND_TIMEOUT_CEILING_MS,
   clampForegroundTimeoutMs,
-} from '../capability/inspect';
+} from '../capability/foreground-transport-cap';
 
 /** A cold full-repo typecheck runs minutes, not seconds; a wedged one must still end. */
 const DEFAULT_TIMEOUT_MS = 300_000;

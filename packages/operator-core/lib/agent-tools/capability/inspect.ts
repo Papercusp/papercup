@@ -40,6 +40,11 @@ import { capabilityExecSandboxEnabled } from './exec-sandbox';
 import { resolveCapabilityBaseDir } from './base-dir';
 import { TSC_HEAP_MB, tscHeapEnv } from '../tsc-heap';
 import {
+  FOREGROUND_TIMEOUT_CEILING_MS,
+  clampForegroundTimeoutMs,
+  foregroundTimeoutHint,
+} from './foreground-transport-cap';
+import {
   discoverSiblingTypecheckGates,
   gateCoveringFile,
 } from '../../../../../scripts/lib/tsc-baseline-gate.mjs';
@@ -365,40 +370,10 @@ export function filterTscOutputToPaths(
   return { matchedErrors: matchedLines.length, totalErrors, matchedLines };
 }
 
-// EI-6073: the papercusp-su MCP transport hard-caps a tool call at ~55s. A FOREGROUND
-// typecheck/test on a large package (operator-core's tsc runs 60-90s) is killed by the
-// transport with an opaque `request_timeout` BEFORE this handler can respond — so the agent
-// never learns the durable fix is a detached run, and the very capability that exists to
-// remove the "shell out + poll" friction pushes them back to it. Clamp the FOREGROUND command
-// timeout safely below the cap so the tool ALWAYS self-times-out first (status:'timed_out')
-// and returns an actionable "re-run with run_in_background" hint. A background run is not bound
-// by the TRANSPORT cap (it returns a bash_id immediately), so this clamp never applies to it.
-//
-// ⚠ WI-6677: "not bound by the transport cap" is NOT "uncapped", which this comment used to
-// claim. A background job still has its own wall-clock deadline and is terminated at it. It
-// simply must not be the FOREGROUND default — see DEFAULT_BACKGROUND_TIMEOUT_MS in bash-jobs.ts.
-export const MCP_TRANSPORT_CAP_MS = 55_000;
-/** Foreground ceiling — below the transport cap, with ~5s headroom to serialize the response. */
-export const FOREGROUND_TIMEOUT_CEILING_MS = 50_000;
-
-/** Clamp a FOREGROUND command timeout below the MCP transport cap (EI-6073).
- *  Background runs skip this clamp — they carry their own (much longer) deadline instead. */
-export function clampForegroundTimeoutMs(requestedMs: number): number {
-  return Math.min(requestedMs, FOREGROUND_TIMEOUT_CEILING_MS);
-}
-
-/**
- * The actionable hint appended when a FOREGROUND run hit the clamped ceiling (EI-6073) — turns an
- * opaque timeout into "this is too large to verify inline; re-run detached and poll". Empty for a
- * completed/failed run. Pure + exported for unit testing.
- */
-export function foregroundTimeoutHint(status: string, timeoutMs: number): string {
-  if (status !== 'timed_out') return '';
-  return (
-    `\n⏱ hit the ${(timeoutMs / 1000).toFixed(0)}s foreground cap (kept below the ~55s MCP transport limit so this returns a hint instead of an opaque request_timeout). ` +
-    `This target is too large to verify inline — re-run detached: capability:inspect { …same args…, run_in_background: true }, then poll capability:bash_output.`
-  );
-}
+// EI-6073's foreground clamp + hint now live in ./foreground-transport-cap, because
+// `testing:run`, `build:typecheck` and `capability:bash` all need them and were reaching
+// into THIS tool to get them (EI-20645849301780712). See that module's header for why the
+// ceiling must never be raised toward the cap.
 
 export default defineTool({
   name: 'capability:inspect',
@@ -580,7 +555,7 @@ export default defineTool({
       content: [
         {
           type: 'text' as const,
-          text: `${cwdCorrectionNote}${header}${deadBanner}${foregroundTimeoutHint(r.status, timeoutMs)}\n${r.output || '(no output)'}`,
+          text: `${cwdCorrectionNote}${header}${deadBanner}${foregroundTimeoutHint(r.status, timeoutMs, 'capability:inspect { …same args…, run_in_background: true }')}\n${r.output || '(no output)'}`,
         },
       ],
       // A crash that produced no diagnostics is an ERROR, not a quiet pass. This used to

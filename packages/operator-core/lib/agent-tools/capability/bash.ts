@@ -33,6 +33,11 @@ import {
   runForeground,
   startBackground,
 } from './bash-jobs';
+import {
+  FOREGROUND_TIMEOUT_CEILING_MS,
+  clampForegroundTimeoutMs,
+  foregroundTimeoutHint,
+} from './foreground-transport-cap';
 import { typecheckHeapLaunchWarning } from './background-typecheck-verdict';
 import { capabilityExecSandboxEnabled } from './exec-sandbox';
 import { displayForHive } from '../computer/desktop-lease';
@@ -107,9 +112,12 @@ export default defineTool({
       .max(MAX_BACKGROUND_TIMEOUT_MS)
       .optional()
       .describe(
-        `Wall-clock timeout in ms. FOREGROUND: default ${DEFAULT_TIMEOUT_MS}, clamped to ${MAX_TIMEOUT_MS}. ` +
+        `Wall-clock timeout in ms. FOREGROUND: default ${DEFAULT_TIMEOUT_MS}, CLAMPED to ${FOREGROUND_TIMEOUT_CEILING_MS} — ` +
+          `below the ~55s MCP transport cap, so a slow command returns an actionable timeout instead of an opaque ` +
+          `transport failure. Raising it past the clamp does nothing: run anything longer with run_in_background. ` +
           `BACKGROUND (run_in_background): default ${DEFAULT_BACKGROUND_TIMEOUT_MS}, max ${MAX_BACKGROUND_TIMEOUT_MS} — ` +
-          `the job IS terminated at its deadline (SIGTERM, then SIGKILL), so raise this for a job that legitimately runs longer.`,
+          `not bound by the transport cap, but the job IS terminated at its own deadline (SIGTERM, then SIGKILL), ` +
+          `so raise this for a job that legitimately runs longer.`,
       ),
     run_in_background: z
       .boolean()
@@ -131,7 +139,18 @@ export default defineTool({
     // WI-6677: the default depends on the MODE. A background job is contractually
     // meant to outlive this call, so it must not inherit the short foreground
     // default — that made the tool SIGKILL exactly the long jobs it exists for.
-    const timeoutMs = args.timeout ?? (args.run_in_background ? DEFAULT_BACKGROUND_TIMEOUT_MS : DEFAULT_TIMEOUT_MS);
+    const requestedTimeoutMs =
+      args.timeout ?? (args.run_in_background ? DEFAULT_BACKGROUND_TIMEOUT_MS : DEFAULT_TIMEOUT_MS);
+    // EI-20645849301780712: clamp the FOREGROUND timeout below the ~55s MCP transport cap,
+    // exactly as capability:inspect / testing:run / build:typecheck already do. Without it this
+    // tool advertised a foreground window (default 120s, arg max 600s) that the transport can
+    // never deliver: past ~55s the CLIENT abandons the call and reports a generic failure — the
+    // same token a real non-zero exit produces — so the agent cannot tell "my command failed"
+    // from "the transport gave up", and (because no abort reaches the child) the command may
+    // still have run to completion invisibly. Clamped, the TOOL self-times-out first and returns
+    // `status: 'timed_out'` plus the log path and a re-run-detached hint.
+    // A BACKGROUND job returns a handle immediately, so the cap does not apply to it.
+    const timeoutMs = args.run_in_background ? requestedTimeoutMs : clampForegroundTimeoutMs(requestedTimeoutMs);
     // P-022/D-008: re-apply the OS sandbox to this operator-side shell when the
     // papercusp-capability-exec-sandbox flag is armed (default-OFF, fail-open).
     const sandboxEnabled = await capabilityExecSandboxEnabled();
@@ -262,9 +281,19 @@ export default defineTool({
       integrationHeader;
 
     const isError = r.status === 'failed' && r.exitCode === null;
+    // EI-20645849301780712: on a clamped timeout, say so — and name the spill log, which is
+    // where the partial output lives and is otherwise only surfaced when output OVERFLOWED.
+    const timeoutHint = foregroundTimeoutHint(
+      r.status,
+      timeoutMs,
+      'capability:bash { …same command…, run_in_background: true }',
+    );
+    const timeoutLogNote = r.status === 'timed_out' && !r.truncated ? ` Partial output: ${r.logPath}.` : '';
 
     return {
-      content: [{ type: 'text' as const, text: `${header}\n${r.output || '(no output)'}` }],
+      content: [
+        { type: 'text' as const, text: `${header}\n${r.output || '(no output)'}${timeoutHint}${timeoutLogNote}` },
+      ],
       isError,
       // EI-20066912585022608: the text above is the right answer for a MODEL reading
       // this result and the wrong one for a `code:run` script, which gets handed the
@@ -299,6 +328,9 @@ export default defineTool({
               truncated: r.truncated,
               ...(integrationEntries.length > 0 ? { integration_env: integrationEnvView } : {}),
               ...(r.truncated ? { total_bytes: r.totalBytes, log_path: r.logPath } : {}),
+              // A timed_out run's partial output is ONLY on disk unless it also overflowed —
+              // a script reading this result needs the path in both cases (EI-20645849301780712).
+              ...(r.status === 'timed_out' && !r.truncated ? { log_path: r.logPath } : {}),
             },
           }
         : {}),

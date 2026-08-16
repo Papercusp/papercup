@@ -14,7 +14,7 @@ import {
   type WrapDispatch,
 } from '@papercusp/agent-mcp';
 import { PROJECTED_DEPS } from '../../projected-tool-deps';
-import { FOREGROUND_TIMEOUT_CEILING_MS, clampForegroundTimeoutMs } from '../capability/inspect';
+import { FOREGROUND_TIMEOUT_CEILING_MS, clampForegroundTimeoutMs } from '../capability/foreground-transport-cap';
 import { captureRecipe } from './capture-recipe';
 import type { SimilarRecipe } from '../../code-recipes-search';
 import { runWithWorkspaceIfConcrete } from '../../workspace-als';
