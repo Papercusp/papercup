@@ -80,8 +80,16 @@ function runGate(args: string[]) {
 describe('release identity gate: tar OWNERSHIP fields are scanned (WI-39458)', () => {
   it('records uname/gname in the member manifest, not just paths', () => {
     const src = gateSource();
-    const fn = src.match(/def _expand_tar_memberwise[\s\S]*?\n(?=def )/)?.[0];
-    expect(fn, '_expand_tar_memberwise not found — gate structure changed').toBeTruthy();
+    // The memberwise READER is `_expand_tar_memberwise` + the `_expand_tar_stream`
+    // core it delegates to (split in WI-39462 so a zstd pipe gets byte-identical
+    // treatment). Match the pair rather than one name: this assertion previously
+    // pinned a single function and broke on a refactor that changed NOTHING about
+    // the behaviour it guards — a structural test failing for a structural reason
+    // is noise, and the real guard is the behavioural one below.
+    const fn = src
+      .match(/def _expand_tar_(?:memberwise|stream)[\s\S]*?\n(?=def )/g)
+      ?.join('\n');
+    expect(fn, 'memberwise tar reader not found — gate structure changed').toBeTruthy();
     // The regression this pins: a manifest of paths alone cannot see the build
     // user that tar writes into every member header.
     expect(fn).toMatch(/member\.uname/);
