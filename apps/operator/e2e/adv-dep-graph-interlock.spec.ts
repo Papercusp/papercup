@@ -415,7 +415,14 @@ test.describe('/adv dependency graph — selection interlock with the Detail pan
     //       accessible treatment, so the depth-ordered list drives the SAME
     //       selection). If it ever degrades to a read-only mirror, this fails.
     const a11yList = graph.locator('ul.pc-depgraph__a11y');
-    await a11yList.getByRole('button', { name: /^WI-2 —/ }).click();
+    // The list is visually-hidden (1px + clip) until `:focus-within` expands it —
+    // adv-panel-chrome.css:515. A bare .click() therefore never becomes actionable.
+    // Focus then activate by KEYBOARD, which is both the way past the clip and the
+    // control surface this assertion exists to prove: a sighted-mouse-only path
+    // would not exercise the a11y contract at all.
+    const a11yWi2 = a11yList.getByRole('button', { name: /^WI-2 —/ });
+    await a11yWi2.focus();
+    await a11yWi2.press('Enter');
     await expect.poll(() => selParam(page), { timeout: 10_000 }).toBe('WI-2');
     await expect(detail.locator('.pc-adv-detail__id')).toHaveText('WI-2', { timeout: 15_000 });
     await expect(a11yList.getByRole('button', { name: /^WI-2 —/ })).toHaveAttribute(
