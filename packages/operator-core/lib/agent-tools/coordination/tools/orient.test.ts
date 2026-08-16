@@ -42,6 +42,12 @@ const foldFactsMock = vi.hoisted(() => vi.fn(async (): Promise<unknown[]> => [])
 // module-scope call the foldFacts mock above cannot intercept) and would attempt a
 // live PG connect from a unit test.
 const foldNeverDropFactsMock = vi.hoisted(() => vi.fn(async (): Promise<unknown[]> => []));
+// WI-39420: the eviction-disclosure leg (EI-19485000346355077) is an IO read too —
+// unmocked, the real one attempts a live PG query from this unit test, throws, and
+// (before orient.ts grew the leg's own fail-soft catch) the enclosing catch nulled
+// the WHOLE facts fold: 9 cases here red with `facts: null` while the fold itself
+// was correct. Same rule as the two folds above: only the IO reads are mocked.
+const listFactEvictionDisclosuresMock = vi.hoisted(() => vi.fn(async (): Promise<unknown[]> => []));
 
 // P-007: keep the PURE exports real (renderFactSrc renders the provenance-
 // hydrated src the fold projection is asserted on) — only the IO reads are mocked.
@@ -49,6 +55,7 @@ vi.mock('../../../agent-facts/store', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../../agent-facts/store')>()),
   foldFacts: foldFactsMock,
   foldNeverDropFacts: foldNeverDropFactsMock,
+  listFactEvictionDisclosures: listFactEvictionDisclosuresMock,
 }));
 
 // EI-18725816532600240: the facts fold is the ONLY consumer of '../watermarks' in
@@ -95,8 +102,10 @@ beforeEach(() => {
   // needs the log cleared per test, or it reads a predecessor's calls.
   foldFactsMock.mockClear();
   foldNeverDropFactsMock.mockClear();
+  listFactEvictionDisclosuresMock.mockClear();
   foldFactsMock.mockResolvedValue([]);
   foldNeverDropFactsMock.mockResolvedValue([]);
+  listFactEvictionDisclosuresMock.mockResolvedValue([]);
   readWatermarkMock.mockResolvedValue({ cursors: {} });
   writeWatermarkMock.mockClear();
   listActiveAnnouncementsMock.mockResolvedValue([]);
