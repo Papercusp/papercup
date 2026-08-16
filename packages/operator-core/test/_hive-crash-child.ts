@@ -20,11 +20,38 @@
  */
 import postgres from 'postgres';
 import { DBOS } from '@dbos-inc/dbos-sdk';
+import { SpineSchema } from '@papercusp/orchestrator/blueprint';
 
 const DSN = process.env.CRASH_DB_DSN!;
 const MODE = process.env.CRASH_MODE!; // 'crash' | 'recover'
 const SLUG = 'crash';
 const FID = 'F-CRASH';
+
+/**
+ * The spine this durability test runs against, declared INLINE and passed on
+ * `PipelineInput.spine` — deliberately NOT the runtime's no-spine fallback.
+ *
+ * What this test proves is DBOS crash-resume durability (the interrupted step
+ * re-runs; the completed decide step replays from its checkpoint; the spawn is
+ * reused), which needs only a two-role decider→worker shape. Which blueprint the
+ * ENGINE happens to default to is an unrelated product choice, and letting it
+ * leak in here made this test silently assert that choice: when the no-spine
+ * fallback was repointed from `coding-factory` (decider `director`) to
+ * `coding-solo` (decider `worker`, a single-agent benchmark ablation) on
+ * 2026-07-20, `orchestratorRole` became `worker`, so the runner below SIGKILLed
+ * the child during turn-0 DECIDE — one invocation row, role `worker`, and a red
+ * that read like a lost INSERT rather than a changed default (EI-20631691687347174).
+ * Pinning the spine makes the durability contract independent of that default.
+ */
+const CRASH_SPINE = SpineSchema.parse({
+  decider: 'director',
+  maxTurns: 10,
+  edges: {
+    NEXT_WORKER: { to: 'role', role: 'worker', extras: ['FEATURE_ID={feature}'] },
+    DONE: { to: 'done' },
+  },
+  default: { to: 'idle' },
+});
 
 async function main(): Promise<void> {
   const sql = postgres(DSN, { max: 2, onnotice: () => {} });
@@ -63,7 +90,13 @@ async function main(): Promise<void> {
   await DBOS.launch();
 
   if (MODE === 'crash') {
-    await wf.startFeaturePipeline({ harnessSlug: SLUG, featureId: FID, epoch: 0, workspaceId: 'ws-crash' });
+    await wf.startFeaturePipeline({
+      harnessSlug: SLUG,
+      featureId: FID,
+      epoch: 0,
+      workspaceId: 'ws-crash',
+      spine: CRASH_SPINE,
+    });
     // The worker step SIGKILLs us. Still alive after 60s = the pipeline never
     // reached the worker — bail loudly so the parent fails with a clear signal.
     await new Promise((r) => setTimeout(r, 60_000));
