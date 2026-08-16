@@ -66,3 +66,12 @@ export type {
   InjectedInstrumentVerdict,
 } from './injected-instrument.js';
 export { classifyInjectedInstrument, isInstrumentUnusable } from './injected-instrument.js';
+export type {
+  InteractionMeasureObservation,
+  InteractionMeasureVerdict,
+  InteractionMeasureDiagnosis,
+} from './interaction-measure.js';
+export {
+  classifyInteractionMeasure,
+  describeInteractionMeasureFailure,
+} from './interaction-measure.js';
