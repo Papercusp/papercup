@@ -48,7 +48,19 @@ export default defineTool({
     if (args.conversation_id) {
       const res = await postReply(identity, { conversation_id: args.conversation_id, body: args.body });
       if ('error' in res) {
-        return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, reason: res.error }) }] };
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({
+              ok: false,
+              reason: res.error,
+              // P-004 kind gate: point the refused caller at the typed verbs.
+              ...(res.error === 'consult_requires_typed_verb'
+                ? { hint: 'This is a consult thread — every post is typed. Use consult:reply { kind } / consult:decline { reason } / consult:close { outcome }.' }
+                : {}),
+            }),
+          }],
+        };
       }
       return {
         content: [{

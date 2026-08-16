@@ -114,7 +114,9 @@ export function buildCoordOpCaps(base: CoordOpEnvBase): CoordOpCaps {
 
     async postThread(input) {
       const r = await postReply(identity, { conversation_id: input.conversation_id, body: input.body });
-      if ('error' in r) throw new Error(`coord-op postThread: conversation ${input.conversation_id} not found`);
+      // The error is no longer only not_found — the P-004 consult kind gate
+      // refuses untyped posts here too (consult_requires_typed_verb); name it.
+      if ('error' in r) throw new Error(`coord-op postThread: ${r.error} (conversation ${input.conversation_id})`);
       return { post_id: r.post.id };
     },
 

@@ -129,6 +129,11 @@ import './conversation/append';
 // get-feedback-relevance-consults-2026-08-16 P-003: the requester-side consult
 // tool (relevance-routed "who knows more than me?" over transcript history).
 import './consult/get-feedback';
+// P-004: the responder-side consult verbs (typed replies + honest exits; the
+// conversations-core kind gate refuses every untyped route into a consult).
+import './consult/reply';
+import './consult/decline';
+import './consult/close';
 import './roles/list';
 import './roles/get';
 import './roles/firing_on';
