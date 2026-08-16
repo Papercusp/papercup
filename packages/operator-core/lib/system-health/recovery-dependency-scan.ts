@@ -71,10 +71,61 @@ function* walkTs(dir: string): Generator<string> {
 const CALL = 'managedSetInterval';
 
 /**
+ * PURE: blank out comments and string/template BODIES, preserving length and newlines so
+ * every offset in the result still addresses the same character of the input.
+ *
+ * String bodies are blanked, not just comments: the file that describes this scanner in a
+ * test fixture or an error message would otherwise register as a call site. Quotes
+ * themselves are kept, so the argument reader below still sees `''` where a literal was —
+ * which reads as "unreadable", the honest answer for text we deliberately erased.
+ */
+export function stripCommentsAndStringBodies(src: string): string {
+  const out = src.split('');
+  let i = 0;
+  const blank = (from: number, to: number) => {
+    for (let k = from; k < to && k < out.length; k++) if (out[k] !== '\n') out[k] = ' ';
+  };
+  while (i < src.length) {
+    const c = src[i];
+    const next = src[i + 1];
+    if (c === '/' && next === '/') {
+      const end = src.indexOf('\n', i);
+      blank(i, end === -1 ? src.length : end);
+      i = end === -1 ? src.length : end;
+    } else if (c === '/' && next === '*') {
+      const end = src.indexOf('*/', i + 2);
+      const stop = end === -1 ? src.length : end + 2;
+      blank(i, stop);
+      i = stop;
+    } else if (c === "'" || c === '"' || c === '`') {
+      const quote = c;
+      let j = i + 1;
+      while (j < src.length) {
+        if (src[j] === '\\') {
+          j += 2;
+          continue;
+        }
+        if (src[j] === quote) break;
+        j += 1;
+      }
+      blank(i + 1, Math.min(j, src.length));
+      i = Math.min(j + 1, src.length);
+    } else {
+      i += 1;
+    }
+  }
+  return out.join('');
+}
+
+/**
  * PURE over a file's text: every `managedSetInterval(...)` call with its literal name and
  * category. Exported so a test can drive it on a fixture string without touching disk.
+ *
+ * Names and categories are read from the ORIGINAL text at offsets found in the stripped
+ * copy — the stripped copy locates real code, the original still carries the literals.
  */
-export function extractManagedTimerCalls(src: string): { name: string | null; category: string | null }[] {
+export function extractManagedTimerCalls(source: string): { name: string | null; category: string | null }[] {
+  const src = stripCommentsAndStringBodies(source);
   const out: { name: string | null; category: string | null }[] = [];
   let i = 0;
   while ((i = src.indexOf(`${CALL}(`, i)) !== -1) {
@@ -95,9 +146,11 @@ export function extractManagedTimerCalls(src: string): { name: string | null; ca
         if (depth === 0) break;
       }
     }
-    const args = src.slice(open + 1, j);
-    const name = /^\s*'([^']*)'/.exec(args)?.[1] ?? null;
-    const category = /category:\s*'([^']*)'/.exec(args)?.[1] ?? null;
+    // Offsets are preserved by the blanking above, so the ORIGINAL text at this span
+    // still carries the literals the stripped copy erased.
+    const args = source.slice(open + 1, j);
+    const name = /^\s*'([^']*)'/.exec(args)?.[1] || null;
+    const category = /category:\s*'([^']*)'/.exec(args)?.[1] || null;
     out.push({ name, category });
     i = j > i ? j : i + CALL.length;
   }

@@ -684,6 +684,42 @@ export function findBrokenBackstops(
   return broken;
 }
 
+/**
+ * PURE: the coverage gate's decision, split out from the tree scan so it can be driven
+ * with synthetic input.
+ *
+ * A gate whose whole logic lives inside the assertion that consumes a real scan is
+ * untestable in the direction that matters — you cannot show it would FAIL — and a scan
+ * that silently returned nothing would make it pass vacuously. Both halves are checked
+ * separately in the test: this function against controls, and the scan against a floor.
+ *
+ * A scanned timer whose NAME is not a literal is reported as unreadable rather than
+ * skipped: it is a watchdog nobody can prove is declared, which is a finding, not a pass.
+ */
+export interface CoverageGap {
+  undeclared: { name: string; file: string }[];
+  unreadable: { file: string }[];
+  /** Declared in-process rows with no matching timer in the tree — stale bookkeeping. */
+  stale: string[];
+}
+
+export function findCoverageGaps(
+  scanned: readonly { name: string | null; file: string }[],
+  mechanisms: readonly RecoveryMechanism[] = RECOVERY_MECHANISMS,
+): CoverageGap {
+  const declared = new Set(mechanisms.map((m) => m.name));
+  const scannedNames = new Set(scanned.map((t) => t.name).filter((n): n is string => n !== null));
+  return {
+    undeclared: scanned
+      .filter((t) => t.name !== null && !declared.has(t.name))
+      .map((t) => ({ name: t.name as string, file: t.file })),
+    unreadable: scanned.filter((t) => t.name === null).map((t) => ({ file: t.file })),
+    stale: mechanisms
+      .filter((m) => m.executor === 'operator-in-process-timer' && !scannedNames.has(m.name))
+      .map((m) => m.name),
+  };
+}
+
 /** Render the audit as a markdown table — what P-004 asks to be produced and filed. */
 export function renderRecoveryAuditTable(result: RecoveryAuditResult = auditRecoveryDependencies()): string {
   const order: Record<RecoveryVerdict, number> = { 'fate-shared': 0, 'fate-shared-mitigated': 1, sound: 2 };
