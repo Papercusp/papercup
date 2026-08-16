@@ -30,7 +30,9 @@ import { test, expect, assertMounted, type Page } from './_egress';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 
-const baseURL = process.env.OPERATOR_E2E_BASE_URL ?? 'http://127.0.0.1:3055';
+const baseURL =
+  process.env.OPERATOR_E2E_BASE_URL ??
+  `http://127.0.0.1:${Number(process.env.OPERATOR_E2E_PORT ?? process.env.PORT) || 3055}`;
 // papercup lives in papercusp-workspace (the /adv shell's active workspace).
 // The contributors API is stubbed, so the slug only needs to mount the dock.
 const SLUG = process.env.ADV_CONTRIB_E2E_SLUG ?? 'papercup';
