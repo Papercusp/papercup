@@ -136,3 +136,73 @@ describe('gateSite — the holding page contact-email allowance is narrow', () =
     expect(kinds).toContain('unix-home');
   });
 });
+
+/**
+ * EI-20583328178472869 — the gate certified a page it could not inspect.
+ *
+ * `git config user.name` became the git-sync bot, so the owner-name literal stopped
+ * resolving to a person. The scrub then redacted the name 0 times AND the gate printed
+ * "[gate] CLEAN, exit 0". The failure was not that the check broke — it was that breaking
+ * it produced the SAME VERDICT as passing it. So these assert the EXIT CODE, not the text.
+ */
+describe('main — a gate that cannot see the owner must REFUSE, not certify', () => {
+  const clean = () =>
+    site({ 'index.html': '<h1>Papercusp releases</h1><p>Download the installer.</p>' });
+
+  it('exits 2 (cannot check) when NO owner-name literal resolves', () => {
+    // The exact shape of the bug: machine literals resolve fine, the NAME does not.
+    const blind: IdentityLiteral[] = [
+      { kind: 'home', value: '/home/jdoe' },
+      { kind: 'user', value: 'jdoe' },
+    ];
+    expect(main([clean()], blind)).toBe(2);
+  });
+
+  it('exits 2 when a name literal is present but EMPTY — blank is not a name', () => {
+    expect(main([clean()], [{ kind: 'git-name', value: '   ' }])).toBe(2);
+  });
+
+  it('still exits 0 on a clean site once an owner name IS known', () => {
+    // CALIBRATION. Without this, both refusals above would also pass if `main` simply
+    // always returned 2 — a gate that refuses everything is as useless as one that
+    // certifies everything, and it looks far more rigorous.
+    expect(main([clean()], LITS)).toBe(0);
+  });
+
+  it('keeps 1 (found leaks) DISTINCT from 2 (could not check)', () => {
+    // A caller's `|| exit` cannot tell a blind gate from a clean one if these collide.
+    const leaky = site({ 'index.html': '<p>built by Jane on /home/jdoe</p>' });
+    expect(main([leaky], LITS)).toBe(1);
+  });
+});
+
+describe('looksLikeAutomationIdentity — a bot name is not an owner name', () => {
+  it.each(['papercusp-agent', 'github-actions[bot]', 'ci', 'build-bot', 'renovate[bot]'])(
+    'treats %s as automation',
+    (name) => expect(looksLikeAutomationIdentity(name)).toBe(true),
+  );
+
+  // The false-positive direction matters just as much: misclassifying a PERSON as a bot
+  // would drop their name from the literals and fail the publish closed forever.
+  it.each(['Jane', 'Jane Doe', 'Ada Lovelace', 'jdoe'])(
+    'does NOT misclassify the person %s as automation',
+    (name) => expect(looksLikeAutomationIdentity(name)).toBe(false),
+  );
+});
+
+describe('identityLiterals — an explicit owner name overrides the box', () => {
+  const saved = process.env[OWNER_NAME_ENV];
+  afterAll(() => {
+    if (saved === undefined) delete process.env[OWNER_NAME_ENV];
+    else process.env[OWNER_NAME_ENV] = saved;
+  });
+
+  it('takes the env name as the owner-name literal, and that satisfies the gate', () => {
+    // Also the answer to "would failing closed block a legitimate CI/container publish?"
+    // No — automation sets this and proceeds. The gate demands an answer, not a human.
+    process.env[OWNER_NAME_ENV] = 'Jane';
+    const lits = identityLiterals();
+    expect(lits.filter((l) => l.kind === 'git-name').map((l) => l.value)).toEqual(['Jane']);
+    expect(hasOwnerNameLiteral(lits)).toBe(true);
+  });
+});
