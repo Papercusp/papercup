@@ -355,7 +355,9 @@ export function judgeLivenessProbe(obs) {
       'cross-host-verified',
       EXIT.HEALTHY,
       PROVED.CROSS_HOST,
-      `OK — a process on another host connected to the expected peer key ${obs.expectedRemoteKey.slice(0, 16)}…. Packets demonstrably crossed the machine boundary.`,
+      `OK — a process on another host connected to the expected peer key ${obs.expectedRemoteKey.slice(0, 16)}…. Packets demonstrably crossed the machine boundary. ` +
+        'SCOPE: this proves the two HOSTS can carry DHT traffic, as measured by a STANDALONE probe process. It does NOT prove the Papercusp app process on either host can — ' +
+        'a per-process denial (macOS Local Network privacy, sandbox, per-binary firewall) is invisible here and is exactly the P-302 fault. For that, read the app\'s own reachability sample (swarm.ts).',
     );
   }
 

@@ -65,6 +65,16 @@ describe('judgeLivenessProbe — calibration (the real subject must pass these)'
     expect(v.proved).toBe(PROVED.CROSS_HOST);
   });
 
+  it('a cross-host green still states its blind spot: the APP process is not covered', () => {
+    // Verified live on the two-machine rig 2026-08-16: this probe goes GREEN
+    // cross-host while the Mac's own app sidecar cannot send a datagram, because
+    // the denial is per-PROCESS. A green that reads as "federation is fine"
+    // would recreate the exact misreading this rewrite exists to prevent.
+    const v = judgeLivenessProbe(crossHostOk);
+    expect(v.message).toMatch(/does NOT prove the Papercusp app process/i);
+    expect(v.message).toMatch(/per-process denial/i);
+  });
+
   it('reports ok for an explicitly local-only run, but never claims more than it proved', () => {
     const v = judgeLivenessProbe({ ...crossHostOk, scope: 'local-only', serverHostIsRemote: false });
     expect(v.level).toBe('ok');
