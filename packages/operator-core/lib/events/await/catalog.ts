@@ -386,6 +386,17 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
     exists: true,
     replacesPoll: 'polling fleet:leader-brief for burn-down delta',
   },
+  {
+    family: 'goal-drain-dead',
+    keyTemplate: 'goal:drain-dead:<goalId>',
+    params: [{ name: 'goalId', required: true, describe: 'the goal whose drain fleet you hold' }],
+    describe:
+      "The drain fleet DECLARED for this goal is gone — it was declared but has no live holders, so nothing is draining the goal any more. ⚠ Fires ONLY for a fleet that was actually declared and then died: a goal that never declared one (reason `no-drain-fleet-declared`) is reported but deliberately does NOT emit, because a waiter parked here is asking to hear its fleet died, not to be nagged about paperwork. The watchdog never auto-relaunches — standing a fleet back up is the goal holder's authority.",
+    emitter:
+      'goal-drain-fleet-watchdog (packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts, defaultEmitDrainDead)',
+    exists: true,
+    replacesPoll: 'polling goals:get / fleet:status to notice the drain fleet vanished',
+  },
   // ── Spawn admission (D-004: over-ceiling queue + await, never silent-drop) ──
   {
     family: 'spawn-slot',

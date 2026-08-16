@@ -46,6 +46,26 @@ function gateSource(): string {
   return readFileSync(GATE, 'utf8');
 }
 
+/**
+ * A SYNTHETIC owner name, asserted to the gate for every invocation below.
+ *
+ * `--scan-dir` refuses to certify unless an owner-name literal is ASSERTED
+ * (`has_owner_name_literal` → `explicit_owner_values(OWNER_NAME_ENV)`), and it
+ * deliberately ignores whatever git supplies, because a build box's git identity
+ * names the COMMITTER — on an automated box, by construction not the owner. That
+ * refusal is correct and is the whole point of the gate; it is simply a
+ * PRECONDITION of the certify path, unrelated to what this file measures
+ * (archive expansion of a cross-box denylist value).
+ *
+ * So the value is supplied here rather than inherited. This is what the env seam
+ * exists for, and it makes these assertions independent of whichever identity the
+ * build box happens to carry — the coupling that silently turned this file red
+ * when the box's `user.name` moved to automation. It must stay SYNTHETIC: a real
+ * identity in tracked source is the exact leak the gate is written to prevent.
+ */
+const SYNTHETIC_OWNER = 'Zzsynthetic Gateowner';
+const GATE_ENV = { ...process.env, PAPERCUSP_RELEASE_OWNER_NAME: SYNTHETIC_OWNER };
+
 /** A value the gate hunts unconditionally, read from its own denylist. */
 function sentinelFromDenylist(): string {
   const block = gateSource().match(/KNOWN_SENSITIVE_IDENTITIES\s*=\s*\{([\s\S]*?)\}/)?.[1];
@@ -113,7 +133,10 @@ describe('release identity gate: archive expansion (EI-20108164746219771)', () =
       const raw = spawnSync('grep', ['-acF', sentinel, deb], { encoding: 'utf8' });
       expect(raw.stdout.trim(), 'payload was not actually compressed').toBe('0');
 
-      const run = spawnSync('python3', [GATE, '--scan-dir', dir], { encoding: 'utf8' });
+      const run = spawnSync('python3', [GATE, '--scan-dir', dir], {
+        encoding: 'utf8',
+        env: GATE_ENV,
+      });
       const out = `${run.stdout}${run.stderr}`;
       expect(out).toMatch(/expanding 1 archive\(s\)/);
       expect(out).toMatch(/CARRIES SENSITIVE IDENTITY/);

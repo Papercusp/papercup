@@ -61,6 +61,46 @@ function have(bin: string): boolean {
   return spawnSync('sh', ['-c', `command -v ${bin}`], { encoding: 'utf8' }).status === 0;
 }
 
+/**
+ * A SYNTHETIC owner name, asserted to the gate for EVERY invocation below.
+ *
+ * `--scan-dir` refuses to certify unless an owner-name literal is ASSERTED
+ * (`has_owner_name_literal` → `explicit_owner_values(OWNER_NAME_ENV)`), and it
+ * deliberately ignores whatever git supplies, because a build box's git identity
+ * names the COMMITTER — on an automated box, by construction not the owner. That
+ * refusal is correct; it is a PRECONDITION of the certify path, unrelated to the
+ * acceptance rule this file measures.
+ *
+ * ⚠ IT MUST BE APPLIED TO `--identity-literals` TOO, NOT ONLY TO `--scan-dir`.
+ * An explicit owner value REPLACES the whole `build-git-name` class rather than
+ * adding to it, so a bare `--identity-literals` run and an asserted `--scan-dir`
+ * run would enumerate DIFFERENT literal sets. The fixtures here are built from
+ * the former and hunted by the latter, so any divergence silently decouples them:
+ * the pair below would be chosen from a literal the scan is no longer hunting,
+ * and the acceptance assertions would pass or fail for reasons unrelated to the
+ * rule. One env, one literal set, both invocations.
+ *
+ * It must stay SYNTHETIC: a real identity in tracked source is the exact leak the
+ * gate is written to prevent.
+ *
+ * TWO values, because the env var takes a LIST and the two arms of the matcher are
+ * reached by different SHAPES. `needs_word_boundary` selects on the literal itself
+ * (len < 6 and alphanumeric), so a long name only ever exercises the plain-substring
+ * arm. The short one is what arms the WORD-BOUNDARY case below — historically that
+ * came from the owner's bare git `user.name` being a three-letter first name, which
+ * is why the arm silently went unarmed the moment this box's identity became
+ * automation: the guard did not fail, it just stopped running, and a skip reads as a
+ * pass at a glance. Supplying it here is what makes that arm reachable on ANY box,
+ * including CI, rather than only on one whose owner happens to have a short name.
+ */
+const SYNTHETIC_OWNER_LONG = 'Zzsynthetic Gateowner';
+/** Short + alphanumeric ⇒ `needs_word_boundary` is true, arming the word-boundary arm. */
+const SYNTHETIC_OWNER_SHORT = 'Zqx';
+const GATE_ENV = {
+  ...process.env,
+  PAPERCUSP_RELEASE_OWNER_NAME: `${SYNTHETIC_OWNER_LONG},${SYNTHETIC_OWNER_SHORT}`,
+};
+
 /** The authorised product strings, read from the gate itself (values, at runtime). */
 function authorisedStrings(): string[] {
   const block = gateSource().match(/AUTHORISED_PRODUCT_STRINGS\s*=\s*\(([\s\S]*?)\n\)/)?.[1];
@@ -74,7 +114,10 @@ function authorisedStrings(): string[] {
  * the values it will hunt on THIS box.
  */
 function identityRows(): { literal: string; low: boolean }[] {
-  const run = spawnSync('python3', [GATE, '--identity-literals'], { encoding: 'utf8' });
+  const run = spawnSync('python3', [GATE, '--identity-literals'], {
+    encoding: 'utf8',
+    env: GATE_ENV,
+  });
   if (run.status !== 0) throw new Error(`--identity-literals failed: ${run.stderr}`);
   return run.stdout
     .split('\n')
@@ -99,7 +142,10 @@ function scan(files: Record<string, string>): { status: number; out: string } {
     for (const [name, body] of Object.entries(files)) {
       writeFileSync(path.join(dir, name), body);
     }
-    const run = spawnSync('python3', [GATE, '--scan-dir', dir], { encoding: 'utf8' });
+    const run = spawnSync('python3', [GATE, '--scan-dir', dir], {
+      encoding: 'utf8',
+      env: GATE_ENV,
+    });
     return { status: run.status ?? -1, out: `${run.stdout}${run.stderr}` };
   } finally {
     rmSync(dir, { recursive: true, force: true });
