@@ -133,14 +133,23 @@ describe('scout routed-ledger ORIGIN dimension (real PG, migration 470)', () => 
   // below carries a REAL lens for the same reason the fixture above does: the exclusion must
   // be by ORIGIN, not by an accident of a sentinel lens.
   it('readScoutPlanRefs returns ONLY genuinely-scout plan refs — never a su-ideate one (WI-39439)', async () => {
+    // Deliberately a DIFFERENT workspace from the shared fixture. Two reasons, both
+    // real: (1) the sibling getScoutLensOutcomes guard below asserts an exact count
+    // over WS ("exactly ONE scout-origin 'analogical' idea"), so adding rows to WS
+    // makes THAT test fail — a fixture-coupling bug this test hit for real before
+    // being isolated; (2) readScoutPlanRefs is deliberately workspace-FREE (its
+    // docblock: a workspace clause silently empties the join under the 'default' ALS
+    // of in-process dispatch), so reading these rows back from another workspace
+    // PROVES that documented property instead of merely not contradicting it.
+    const PLAN_WS = 'ws-scout-planrefs-test';
     await recordRoutedIdea({
       ideaId: 'scout-plan-1', lens: 'analogical', rail: 'plan', routedRef: 'plan:a-blender-plan',
-      harnessSlug: HARNESS, title: 'a Blender-routed plan', workspaceId: WS, routedAt: T + 3000,
+      harnessSlug: HARNESS, title: 'a Blender-routed plan', workspaceId: PLAN_WS, routedAt: T + 3000,
     });
     await recordRoutedIdea({
       origin: 'su-ideate', ideaId: 'su-plan-1', lens: 'analogical', rail: 'plan',
       routedRef: 'plan:an-su-ideated-plan', harnessSlug: HARNESS,
-      title: 'a plan an su agent ideated', workspaceId: WS, routedAt: T + 4000,
+      title: 'a plan an su agent ideated', workspaceId: PLAN_WS, routedAt: T + 4000,
       createdBy: 'su-test-owner-1',
     });
 
