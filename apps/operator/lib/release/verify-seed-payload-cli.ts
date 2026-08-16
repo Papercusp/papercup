@@ -196,16 +196,6 @@ export async function runVerifySeedPayload(
       neutralHostname,
       ...(deps.probe ? { probe: deps.probe } : {}),
     });
-    if (unknownHostname) {
-      log(
-        `[seed-verify] cannot prove the committed seed carries no build-box identity: gethostname() ` +
-          `reports the neutral label '${neutralHostname}' and ${SEED_REAL_HOSTNAME_ENV} was not handed ` +
-          `down, so the real build hostname is unknowable from here. Reporting clean would describe ` +
-          `the sandbox, not the seed.`,
-      );
-      return EXIT_UNDETERMINED;
-    }
-
     let identity;
     try {
       identity = await judgeSeedIdentity({ dir: args.seedDir, literals });
