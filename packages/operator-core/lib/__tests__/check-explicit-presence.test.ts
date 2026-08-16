@@ -29,7 +29,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, it, expect } from 'vitest';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — pure JS guard script, no .d.ts; imported for its analyzer only.
-import { analyzeForExplicitPresence, decideRatchet, readBaseline } from '../../../../scripts/check-explicit-presence.mjs';
+import { analyzeForExplicitPresence, applyAllowlist, decideRatchet, readBaseline } from '../../../../scripts/check-explicit-presence.mjs';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — pure JS meta-guard, no .d.ts; imported for its registration parser + allowlist. Kept on ONE line: @ts-ignore suppresses only the line that follows it, so a multi-line import leaves the module specifier unguarded and TS7016 reds the build.
 import { ACKNOWLEDGED_UNREACHABLE, parseRepoWideRegistrationPairs } from '../../../../scripts/check-lint-guard-reachability.mjs';
