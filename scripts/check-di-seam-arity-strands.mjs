@@ -196,8 +196,24 @@ function main() {
     }
   }
 
+  // Split against the shrink-only baseline: only NEW findings block in --fail
+  // mode; baselined ones stay visible as advisory debt. A baseline row whose
+  // finding no longer exists is STALE — the seam was fixed (or the code moved):
+  // prune the row. Stale rows are loud-advisory, never a failure, so a genuine
+  // fix can land without a lockstep baseline edit.
+  const newFindings = allFindings.filter((f) => !FAIL_BASELINE.has(findingKey(f)));
+  const baselined = allFindings.filter((f) => FAIL_BASELINE.has(findingKey(f)));
+  const liveKeys = new Set(allFindings.map(findingKey));
+  const staleBaseline = [...FAIL_BASELINE.keys()].filter((k) => !liveKeys.has(k));
+
   if (opts.json) {
-    console.log(JSON.stringify({ ok: true, examined: files.length, findings: allFindings }, null, 2));
+    console.log(
+      JSON.stringify(
+        { ok: true, examined: files.length, findings: allFindings, newFindings, baselinedCount: baselined.length, staleBaseline },
+        null,
+        2,
+      ),
+    );
   } else if (allFindings.length === 0) {
     console.log(`check-di-seam-arity-strands: ✓ examined ${files.length} files, no arity-narrower DI seams found.`);
   } else {
@@ -206,19 +222,27 @@ function main() {
         `(examined ${files.length} files):\n`,
     );
     for (const f of allFindings) {
-      console.log(`  ${f.file}:${f.line}  seam \`${f.seam}\``);
+      const mark = FAIL_BASELINE.has(findingKey(f)) ? '  [baselined — pre-wiring debt]' : '';
+      console.log(`  ${f.file}:${f.line}  seam \`${f.seam}\`${mark}`);
       console.log(`    called:  ${f.whenTrueText}`);
       console.log(`    default: ${f.whenFalseText}`);
       console.log(`    dropped from the seam call: ${f.missing.join(', ')}\n`);
     }
     console.log(
-      'This is advisory: a dropped identifier here does not prove a real bug, only that the\n' +
-        'seam cannot vary by it — check whether that argument is load-bearing for what the\n' +
-        'seam is meant to let a caller substitute (EI-19448665215423873).',
+      'A finding here does not prove a real bug, only that the seam cannot vary by the\n' +
+        'dropped identifier — check whether that argument is load-bearing for what the\n' +
+        'seam is meant to let a caller substitute (EI-19448665215423873).\n' +
+        `--fail blocks on NEW findings only (${newFindings.length} new, ${baselined.length} baselined).`,
+    );
+  }
+  if (staleBaseline.length > 0) {
+    console.log(
+      `\n⚠ ${staleBaseline.length} STALE baseline row(s) — the finding no longer exists; prune from FAIL_BASELINE:\n` +
+        staleBaseline.map((k) => `    ${k}`).join('\n'),
     );
   }
 
-  if (opts.fail && allFindings.length > 0) process.exit(1);
+  if (opts.fail && newFindings.length > 0) process.exit(1);
   process.exit(0);
 }
 
