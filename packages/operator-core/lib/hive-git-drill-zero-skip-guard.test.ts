@@ -666,8 +666,25 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
     expect(physicalProbe).toContain(
       'packages/operator-core libs/generic scripts package.json tsconfig.base.json',
     );
-    expect(physicalProbe).toContain('git -C "$REPO_ROOT/libs/papercusp" archive');
-    expect(physicalProbe).toContain('--prefix=libs/papercusp/ HEAD');
+    // WI-39361 — SUBMODULE CONTENTS MUST BE STAGED FROM EACH SUBMODULE'S OWN REPO.
+    // `git archive` never includes a submodule's files; it emits the bare mount-point
+    // directory, silently. So the superproject archive asserted above stages ZERO
+    // files for all 37 libs/ submodules, and the previous hand-rolled single archive
+    // covered libs/papercusp ONLY — leaving libs/papercusp-shared (a declared
+    // workspace + direct operator-core dependency) resolving on the rig to the
+    // installed bundle's stale copy. That surfaced as an unresolvable import naming a
+    // SYMBOL, which reads as a broken export rather than an unstaged file.
+    //
+    // Pin the .gitmodules-DERIVED loop specifically: a hand-list is what re-arms the
+    // trap the next time a submodule is added, so "it stages libs/papercusp" is not a
+    // strong enough assertion to keep.
+    expect(physicalProbe).toContain('--get-regexp');
+    expect(physicalProbe).toContain('archive --format=tar --prefix="$sm_path/" HEAD');
+    expect(physicalProbe).toContain('staged_submodules+=("$sm_path")');
+    // ...and pin the recurrence guard, so a staging regression fails at the probe
+    // naming the missing path instead of downstream on the rig.
+    expect(physicalProbe).toContain('staged submodule tree contains NO FILES on the VM');
+    expect(physicalProbe).toContain('required submodule is not initialised on the tower');
     expect(physicalProbe).toContain("path.join(runRoot, 'libs', 'generic')");
     expect(physicalProbe).toContain("path.join(runRoot, 'libs', 'papercusp', 'libs')");
     expect(physicalProbe).toContain("path.join(runRoot, 'libs', 'papercusp', 'packages')");
