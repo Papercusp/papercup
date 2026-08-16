@@ -64,15 +64,16 @@ it is *behavioral/config* drift. The recurring sub-recipes (all seen
 
 ## Triage
 
-1. **Scan windowless** — latest row per file, NO time filter, file-exists, drop
-   `papercupai-workspace/*` mirror paths:
-   ```sql
-   SELECT file_path,status FROM (
-     SELECT DISTINCT ON (file_path) file_path,status,finished_at
-     FROM harness_shared.test_runs
-     ORDER BY file_path, finished_at DESC NULLS LAST, id DESC
-   ) z WHERE status IN ('fail','error');
+1. **Scan windowless** — latest row per file, NO time filter:
    ```
+   testing:runs { status: ["fail","error"] }
+   ```
+   `latestPerFile` defaults ON when you do not name a `filePath`, and is the
+   same `DISTINCT ON (file_path) … finished_at DESC NULLS LAST, id DESC`
+   collapse this step used to hand-write; omitting `since`/`sinceHours` is what
+   keeps it WINDOWLESS, which is the whole point here. Then apply on the rows
+   the two filters the verb does not express: drop files that no longer exist on
+   disk, and drop `papercupai-workspace/*` mirror paths.
    A 60-min window is a steady-state watchdog only; it is BLIND to this class.
 2. **Re-run isolated** to prove determinism (a fixture/contract bug fails the
    same way alone at low load; a load flake greens):

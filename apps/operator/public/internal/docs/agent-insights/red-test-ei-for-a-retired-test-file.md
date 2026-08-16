@@ -23,13 +23,14 @@ For any `red-test:<path>` EI, run these first:
 1. **Does the file still exist at that exact path?** `test -f <path>` — if GONE, it was moved or
    deleted. Check `_retired/` (`find . -path ./node_modules -prune -o -iname '<Base>*' -print`).
    `_retired/**` is suite-excluded, so a retired copy is never executed.
-2. **What does the run history actually say?** Query `harness_shared.test_runs` for that
-   `file_path` — the watchdog summary's "latest run is still red" is a snapshot from EI-creation
-   time and goes **stale**:
-   ```sql
-   SELECT status, commit_sha, created_at FROM harness_shared.test_runs
-   WHERE file_path = '<path>' ORDER BY created_at DESC LIMIT 15;
+2. **What does the run history actually say?** The watchdog summary's "latest run is still red" is a
+   snapshot from EI-creation time and goes **stale**, so ask for the history:
    ```
+   testing:runs { filePath: "<fragment of the path>", limit: 15 }
+   ```
+   `filePath` matches as a SUBSTRING, so a memorable fragment is enough. Naming it also turns the
+   latest-per-file collapse OFF — which is exactly what you want here: you get the run HISTORY
+   (each row carrying `status`, `commitSha` and `finishedAt`) rather than one current verdict.
    All-recent-`pass` (or zero runs since a removal) ⇒ not currently failing.
 
 If the file is gone/retired **or** the latest runs are green, this is a **verified non-failure**:

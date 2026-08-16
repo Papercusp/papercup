@@ -1,7 +1,7 @@
 # Codex functions.exec is a V8 isolate: use session-preserving recovery paths
 URL: /internal/docs/agent-insights/codex-functions-exec-runtime-boundary
 
-Codex functions.exec runs in a V8 isolate without Node's process global, so process.env cannot supply PAPERCUSP_SUPERUSER_TOKEN; use direct capability:fetch or the session-preserving ptool CLI for authenticated recovery.
+Codex functions.exec has no Node process environment; capability:fetch deliberately does not forward MCP credentials, so use the tracked-session ptool CLI for authenticated local agent-tools staging verification.
 
 # The boundary
 
@@ -9,21 +9,19 @@ Codex `functions.exec` is a V8 execution isolate, not a Node.js child process. I
 
 # Supported recovery paths
 
-Use one of the session-aware routes instead:
+Use a session-aware route:
 
-* Call `capability:fetch` directly through the Papercusp MCP surface (for example, with `tools:invoke`) when that tool is available to the session.
-* Use the tracked-session `ptool` CLI. It carries the current `PAPERCUSP_SID`, resolves the workspace scope, and reads the managed superuser bearer without requiring a token in the V8 script. For payloads containing normal prose or apostrophes, send JSON through stdin rather than shell single-quoted `--json`:
+* Call `capability:fetch` directly through the Papercusp MCP surface when the target endpoint is public or the caller supplies the target service's own safe headers. `capability:fetch` is a generic outbound request and deliberately does **not** forward the calling MCP/superuser bearer to arbitrary URLs.
+* For authenticated local Papercusp HTTP projections, use the tracked-session `ptool` CLI. It carries the current `PAPERCUSP_SID`, resolves workspace scope, and reads the managed superuser bearer inside its transport process. This is the supported way to verify staging `/api/agent-tools/*` routes such as `release:trace`; do not paste the bearer into a replay script or prompt. For payloads containing normal prose or apostrophes, send JSON through stdin:
 
 ```bash
-ptool capability:fetch --url=http://127.0.0.1:3170 --json - --raw <<'EOF'
-{"url":"http://127.0.0.1:3170/health","method":"GET","max_bytes":200}
+ptool release:trace --url=http://127.0.0.1:3170 --json - <<'EOF'
+{"path":"packages/operator-core/lib/agent-tools/release/trace.ts"}
 EOF
 ```
 
-Do not paste the bearer into a repository file, a replay script, or a prompt. Do not infer a failed request from the inability to read `process.env`; inspect the authenticated tool result and its HTTP status.
-
 # Verification and port caveat
 
-On 2026-08-12, the boundary was reproduced with `typeof process`, then both direct `capability:fetch` through `tools:invoke` and session-preserving `ptool capability:fetch` returned HTTP 200 from staging `:3170`. No repository source owns the V8 runtime, so no source patch or unit test was warranted for that boundary.
+On 2026-08-12, a direct `capability:fetch` POST to staging `/api/agent-tools/release/trace` returned HTTP 500 `handler_error` because the nested request had no verified power-user, principal, or signed-spawn identity. `ptool release:trace --url=http://127.0.0.1:3170` succeeded with the same target, proving the transport/authentication distinction. A direct `capability:fetch` health request can still return HTTP 200; that does not prove an authenticated agent-tools projection will accept the nested request.
 
-A successful staging probe proves only the staging operator accepted the request. `:3070` serves green `main`; use the pipeline position and a fresh deployment check before claiming that a recovery-related repository change is live there.
+`:3070` serves green `main`; use pipeline position and a fresh deployment check before claiming that a recovery-related repository change is live there.

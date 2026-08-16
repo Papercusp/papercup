@@ -163,17 +163,20 @@ namespace heads into one `staging` ref:
 * **Epoch fencing (G-5d) IS wired**: every staging-advance announcement
   carries `{epoch, seq}`, monotonically increasing, so a stale/duplicate
   advance is fenced by strict `(epoch, seq)` order at the receiving end.
-* **Epoch GRANTING (the lease handoff itself) is NOT wired yet** — this is a
-  **known simplification** flagged directly in `runIntegratorLeg`'s doc
-  comment: today's `epoch` is persisted once per `(hive, repo)` for the life
-  of the routine's own metadata row and only `seq` advances within it. That is
-  correct and safe for a **single-authority dev-box run** (only one epoch is
-  ever in play), but a genuine multi-machine lock-authority HANDOFF (via the
-  G-0 handoff-token library) must be wired in **before** the Phase 3 live
-  2-machine drill (P-301+) — otherwise two machines can each believe they hold
-  epoch 1 and both integrate independently with no fence between them.
-  **Do not treat today's epoch as proof of single-writer safety across
-  machines** — it only fences a single machine's own re-announcements.
+* **Epoch GRANTING (G-0/P-505) IS wired, but physical failover is not yet
+  release-proven.** `runIntegratorLeg` calls `deriveIntegratorGrant` before it
+  may publish. A standing authority keeps its epoch; a successor adopts the
+  best verified handoff token and publishes at `token.epoch + 1`; a tokenless
+  crash successor uses its last accepted foreign bridge watermark and seeds a
+  descendant base from the ancestry-maximal observed staging. A blocked base
+  reconciliation stops the tick without minting an epoch. The receiver derives
+  `maxGrantedEpoch` from verified handoff tokens, and retryable
+  `unknown-sha`/`ungranted-epoch` results hold the fed-event cursor rather than
+  being dropped. These paths are covered by the P-505 unit/integration suite.
+  **Do not treat that in-process coverage as proof of cross-machine
+  single-writer safety.** Plan decision D-002 still requires the genuine
+  two-machine kill/takeover/stale-writer drill with zero skips; until it passes,
+  the implementation is wired but the operational failover claim is open.
 * **Storage note:** the integrator publishes to
   `refs/namespaces/<integratorDeviceHex>/refs/heads/staging` — its OWN
   namespace, not a shared top-level ref. Now that the lease-holder gate is
@@ -184,8 +187,8 @@ namespace heads into one `staging` ref:
   fed-event, which names the emitting device's namespace explicitly, so a
   stale-authority's namespace is never mistakenly fetched from once a newer
   advance has fired. This becomes a real correctness question only in a
-  genuine multi-machine authority HANDOFF mid-flight — see the epoch-granting
-  gap immediately below.
+  genuine multi-machine authority HANDOFF mid-flight — see the physical failover
+  acceptance gap above.
 
 ## Divergence triage (github-bridge mode only)
 

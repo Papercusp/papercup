@@ -1,11 +1,11 @@
 # A Tests-tab red under high box load is usually a flake, not a defect — how to triage
 URL: /internal/docs/agent-insights/tests-tab-reds-under-load-flake-vs-defect
 
-When you're asked to 'get the Tests tab green', most reds you see under a loaded box (load avg 30–90, fleet + benchmarks running) are load-induced flakes that self-green, NOT product/test defects. Two flake classes dominate operator-core/operator-vite: (1) TIMEOUT-under-load — a heavy module-import-graph transform (or real PG/FS I/O) counted against a per-test timeout tips over 60s/15s under CPU starvation (a 43-line test can take 50s purely from transforming its `await import(...)` graph); (2) MODULE-REGISTRY-RACE — 'sql is not a function' / 'Cannot read properties of undefined' from a parallel mock-bleed between vi.mock-heavy files. A GENUINE red is deterministic (fails the same way in an isolated re-run) and PERSISTS as the file's latest row. Triage with the latest-per-file query + an isolated re-run before touching anything. Also covers: the breadth-test-with-real-I/O anti-pattern, the green-checkpoint code-143 gate-stall, and why a manual `--reporter=dot` run never records a green row.
+When you're asked to 'get the Tests tab green', most reds you see under a loaded box (load avg 30–90, fleet + benchmarks running) are load-induced flakes that self-green, NOT product/test defects. Two flake classes dominate operator-core/operator-vite: (1) TIMEOUT-under-load — a heavy module-import-graph transform (or real PG/FS I/O) counted against a per-test timeout tips over 60s/15s under CPU starvation (a 43-line test can take 50s purely from transforming its `await import(...)` graph); (2) MODULE-REGISTRY-RACE — 'sql is not a function' / 'Cannot read properties of undefined' from a parallel mock-bleed between vi.mock-heavy files. A GENUINE red is deterministic (fails the same way in an isolated re-run) and PERSISTS as the file's latest row. Triage with testing:runs (latest-per-file) + an isolated re-run before touching anything. Also covers: the breadth-test-with-real-I/O anti-pattern, the green-checkpoint code-143 gate-stall, and why a manual `--reporter=dot` run never records a green row.
 
 ## The mistake this prevents
 
-You're told "test the app / get the Tests tab green." You query `harness_shared.test_runs`,
+You're told "test the app / get the Tests tab green." You pull the run history,
 see a pile of `fail` rows, and start "fixing" tests — bumping timeouts, loosening
 assertions, or rewriting passing tests. Under a loaded box, **most of those reds are
 flakes that have already self-greened**, and mutating them is both wasted work and exactly
@@ -20,39 +20,41 @@ matching row** of `fail`/`error`. See
 
 ## Step 1 — get the REAL red set (not raw fail rows)
 
-Latest-row-per-file, existing-on-disk, excluding the checkpoint tree:
-
-```sql
-SELECT file_path, status, branch, finished_at FROM (
-  SELECT DISTINCT ON (file_path) file_path, status, branch, finished_at
-  FROM harness_shared.test_runs
-  WHERE finished_at > now() - interval '24 h'
-  ORDER BY file_path, finished_at DESC NULLS LAST, id DESC
-) z WHERE status IN ('fail','error') ORDER BY finished_at DESC;
+```
+testing:runs { status: ["fail","error"], sinceHours: 24 }
 ```
 
-Then drop any `papercupai-workspace/%` path and any path that no longer exists (`test -f`).
-What's left is what the tab actually shows red. Read each one's `output_tail` — it carries
-the failing test name + assertion (or the timeout message).
+`latestPerFile` defaults ON when you do not name a `filePath`, and is exactly the
+`DISTINCT ON (file_path) … finished_at DESC NULLS LAST, id DESC` collapse this step used to
+hand-write — without it a file that failed an hour ago and has passed since still lists as
+failing. Rows carry `branch` and `outputTail`. ⚠ One difference worth knowing if you are
+comparing against an older hand-written query: `sinceHours` windows on run START, not on
+`finished_at`.
+
+Then drop any `papercupai-workspace/%` path and any path that no longer exists (`test -f`) —
+neither filter is expressible in the verb. What's left is what the tab actually shows red.
+Read each one's `outputTail` — it carries the failing test name + assertion (or the timeout
+message).
 
 ## Step 2 — classify each red: flake vs genuine
 
 **Genuine defect** — fix it (the code, or a bad test, legitimately):
 
-* `output_tail` is a concrete assertion (`expected 6 to be 5`, `expected 404 to be 400`).
+* `outputTail` is a concrete assertion (`expected 6 to be 5`, `expected 404 to be 400`).
 * It's **deterministic**: re-run the file *in isolation* and it fails the same way.
 * It **persists** as the file's latest row across the fleet's re-runs.
 
 **Load-induced flake** — leave it, note it, do NOT mutate:
 
-* **Timeout class:** `output_tail` is `Test timed out in 60000ms` (or 15000ms). Check the
-  file's run history — if it alternates pass/fail with passes near the timeout ceiling
-  (e.g. passes 47–59s against a 60s timeout), it's tipping over under load. A trivial
-  43-line test (e.g. `pot/guard.test.ts`) can take 50s purely transforming the
-  `await import('./create')` module graph under CPU starvation — the cost is vitest
-  transform, not the test body. Bumping the timeout is a losing treadmill (proven on
-  `sync-resolver/index.test.ts`: 10s→30s→120s, still timed out at load 90).
-* **Module-registry-race class:** `output_tail` is `sql is not a function` /
+* **Timeout class:** `outputTail` is `Test timed out in 60000ms` (or 15000ms). Check the
+  file's run history — `testing:runs { filePath: "<fragment>" }`, which turns the
+  latest-per-file collapse OFF and gives you the history — and if it alternates pass/fail
+  with passes near the timeout ceiling (e.g. passes 47–59s against a 60s timeout), it's
+  tipping over under load. A trivial 43-line test (e.g. `pot/guard.test.ts`) can take 50s
+  purely transforming the `await import('./create')` module graph under CPU starvation — the
+  cost is vitest transform, not the test body. Bumping the timeout is a losing treadmill
+  (proven on `sync-resolver/index.test.ts`: 10s→30s→120s, still timed out at load 90).
+* **Module-registry-race class:** `outputTail` is `sql is not a function` /
   `Cannot read properties of undefined` from a `vi.mock`/`vi.doMock` bleed across
   parallel files. The failing test is often correctly written (e.g.
   `overwatch/liveness.test.ts` passes a fake `sql` directly and clears mocks in
@@ -93,7 +95,7 @@ load before it could finish `test:affected`** — the gate can't *certify* green
 tests ARE green. This self-heals when load drops (a checkpoint completes, sees green,
 fast-forwards `main`, deploys). `failingTests` is reported at the **workspace** level
 (`@papercusp/operator-core`); the actual failing FILES are recorded under the
-`papercup-checkpoint/` mirror paths around that run's timestamp — read those `output_tail`s,
+`papercup-checkpoint/` mirror paths around that run's timestamp — read those `outputTail`s,
 then confirm the **canonical** versions' latest rows are green (they usually already are).
 
 ## The breadth-test-with-real-I/O anti-pattern (and its fix)

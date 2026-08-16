@@ -322,8 +322,17 @@ or killing it:
 
 ```sh
 PID=<pid-from-tauri-agent-tools-probe>
-pstree -ap "$PID" | rg 'ghostty|zellij|pui|psu|claude|codex|omp'
+if tree=$(timeout --signal=TERM --kill-after=1s 3s pstree -ap "$PID" 2>/dev/null); then
+  printf '%s\n' "$tree" | rg 'ghostty|zellij|pui|psu|claude|codex|omp'
+else
+  echo "pstree timed out; using a bounded direct-child fallback" >&2
+  ps -o pid,ppid,stat,etime,args --forest -p "$PID" --ppid "$PID"
+fi
 ```
+
+`pstree` can block while reading a live checkpoint process tree. Keep the timeout
+and fallback intact: a diagnostic that wedges is not evidence that the desktop is
+safe to restart.
 
 If that tree contains the Papercup/Mug dock or agent TUIs, do **not**
 kill or restart the shell for routine verification. Use an isolated,

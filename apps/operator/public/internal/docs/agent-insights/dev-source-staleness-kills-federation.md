@@ -1,7 +1,7 @@
 # A stale dev-source tree runs old code against a newer-migrated DB — and silently kills federation
 URL: /internal/docs/agent-insights/dev-source-staleness-kills-federation
 
-Why the packaged desktop app can boot week-old operator code against a shared Postgres the newer bundle already migrated (hives→pots, mig-557), producing nothing but scattered "relation does not exist" errors and a dead p2p/federation plane — how to detect it, and the two guards that now prevent it.
+Why the packaged desktop app can boot week-old operator code against a shared Postgres the newer bundle already migrated (hives→pots, mig-557), producing nothing but scattered \"relation does not exist\" errors and a dead p2p/federation plane — how to detect it, and the two guards that now prevent it.
 
 ## TL;DR
 
@@ -61,7 +61,8 @@ stale against the schema**.
 2. **Compare the code's migration cap to the DB's.**
    * Code (dev-source tree): `ls .../dev-source/... db-sql | tail` **or** the
      bundle's `sidecar/db-sql/ | sort -n | tail`.
-   * DB: `SELECT max(filename) FROM harness_shared.schema_migrations`.
+   * DB: `db:migrations { limit: 1 }` — it sorts by migration number DESC by
+     default, so the single row it returns IS the DB cap.
    * Code cap **\<** DB cap ⇒ this operator is stale.
 3. **Check the extracted tree's age** vs the installed bundle. A `dev-source`
    whose `packages/operator-core/lib/sync/` still contains `hive-git/` (renamed

@@ -95,6 +95,11 @@ Two readings, and you must pick deliberately:
 suspect it:
 
 ```sql
+-- sql-snippet-justified: this is a STORE-IDENTITY probe, not a migrations read. Two of its
+-- three columns (pg_control_system().system_identifier, current_database()) have no tool
+-- form, and the point is that ONE query against a connection you chose settles
+-- wrong-store-vs-data-loss. db:migrations answers from whichever store the operator is
+-- talking to — the very thing under suspicion — so it cannot replace this.
 SELECT (SELECT system_identifier::text FROM pg_control_system()) AS sysid,
        current_database(), (SELECT count(*) FROM harness_shared.schema_migrations);
 ```

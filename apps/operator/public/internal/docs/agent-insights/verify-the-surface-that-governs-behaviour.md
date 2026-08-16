@@ -84,30 +84,40 @@ reasonably and still collides. Check both before claiming *or* closing. Filed as
 A migration can be written, committed, tested, and **never applied**. Every artifact check
 passes; the feature throws `relation does not exist` the first time it runs.
 
+Two effect checks settle it, and they are different questions — run both:
+
 ```sql
 -- Does the thing the code needs actually EXIST?
 SELECT to_regclass('harness_shared.<table>');
-
--- And is it LEDGERED? Without this row every deploy re-runs the DDL
--- and a lock-contending re-run can trip the deploy's lock_timeout.
-SELECT filename, applied_at FROM harness_shared.schema_migrations
- WHERE filename LIKE '%<nnn>%';
 ```
 
+```
+db:migrations { like: "<nnn>" }
+```
+
+The second asks whether the migration is **ledgered**. Without that row every deploy
+re-runs the DDL, and a lock-contending re-run can trip the deploy's `lock_timeout`.
+
+Ask it with the verb rather than a hand-written `schema_migrations` query, because the
+answer you are chasing here is an *absence*, and a bare zero rows is the one result you
+cannot interpret: `db:migrations` returns a verdict instead — applied, pending,
+draft-not-armed, or no-such-migration. A `.DRAFT`-suffixed file is invisible to the runner
+by design, so "the file is there and nothing applied it" is a state you will actually hit.
+
 Grepping for the symbols and `ls`-ing the migration *file* is an artifact check and it
-passes on a dead feature. Both queries above are effect checks.
+passes on a dead feature. Both checks above are effect checks.
 
 ## The habit
 
 **For anything with a runtime effect, name what would BREAK if the change were incomplete,
 then check THAT.**
 
-| Artifact check (weak)         | Effect check (what to run)                                   |
-| ----------------------------- | ------------------------------------------------------------ |
-| the migration file exists     | `to_regclass(...)` **and** the `schema_migrations` row       |
-| my write returned ok          | can the work actually be **claimed** now?                    |
-| the symbols are in the file   | does the wired timer/handler actually fire without throwing? |
-| the leaf row says no deadline | what does the **root node** say?                             |
+| Artifact check (weak)         | Effect check (what to run)                                    |
+| ----------------------------- | ------------------------------------------------------------- |
+| the migration file exists     | `to_regclass(...)` **and** the `db:migrations` ledger verdict |
+| my write returned ok          | can the work actually be **claimed** now?                     |
+| the symbols are in the file   | does the wired timer/handler actually fire without throwing?  |
+| the leaf row says no deadline | what does the **root node** say?                              |
 
 Two corollaries earned the same afternoon:
 

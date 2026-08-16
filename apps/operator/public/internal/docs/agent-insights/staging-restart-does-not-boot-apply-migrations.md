@@ -60,8 +60,14 @@ Afterwards regenerate the pulled schema:
 Don't trust the restart, and don't trust `db:check_drift` alone — it resolves
 the **serving** operator's sql dir, which for `:3070` is the *release* checkout
 (your staging-tree migration isn't even on that disk yet, so it can't show as
-`missing`). Query the DB:
+`missing`). Ask the ledger directly:
 
-```sql
-SELECT filename FROM harness_shared.schema_migrations WHERE filename LIKE '241%';
 ```
+db:migrations { like: "241" }
+```
+
+A bare number is a PREFIX match. Prefer it over a hand-written `filename LIKE
+'241%'` query against the ledger table: when nothing matches, the verb returns a
+VERDICT — pending, draft-not-armed, or no-such-migration — where the raw query
+returns zero rows, and zero rows cannot tell you which of those three you are
+looking at. That distinction is the whole question this section asks.

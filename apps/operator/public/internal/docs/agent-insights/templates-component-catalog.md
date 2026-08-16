@@ -1,74 +1,34 @@
 # The component catalog — what templates are allowed to compose
 URL: /internal/docs/agent-insights/templates-component-catalog
 
-The curated COMPONENT_CATALOG in @papercusp/template-kit: what an entry means (tier, package vs pattern, provides/composesWith/source), how templates pin against it, and why this page is a projection of the code.
+The curated COMPONENT_CATALOG in @papercusp/template-kit: package and pattern entries, exact pins, validation, and private-package supply-chain rules.
 
-The **component catalog** is the machine-readable source of truth for what an app template may
-compose. It is a curated array in code — `COMPONENT_CATALOG` in
-`@papercusp/template-kit` (`src/catalog.ts`).
+The component catalog is the machine-readable source of truth for what an app template may compose. It is the curated COMPONENT\_CATALOG array in @papercusp/template-kit. Edit catalog.ts first; this page is its human projection.
 
-> 🚨 **This page is a PROJECTION of that array.** `catalog.ts` says so in its own header: *edit
-> HERE, then mirror the docs table.* Never add a component by editing this page — the code is
-> canonical, `catalog.test.ts` validates it, and a docs-only entry composes nothing.
+## Entry contract
 
-## What an entry is
+Each entry has a kebab id, exact semver version, tier, package-or-pattern kind, provides tags, compatible component ids, source coordinates, test evidence, and a consumption summary. A template pin must resolve and exactly match the current catalog version. Catalog tests enforce valid entries, unique ids, and resolvable composesWith edges.
 
-`ComponentManifest` (`src/component-manifest.ts`):
+`package` means extracted consumable code with a source.package such as @papercusp/plan-parser. `pattern` means a documented shape whose canonical form lives in reference apps; it is not an npm package. Treating a pattern as installable is a category error.
 
-| field          | meaning                                                               |
-| -------------- | --------------------------------------------------------------------- |
-| `id`           | kebab id a template pins in `components: [{ id, version }]`           |
-| `version`      | semver; a template pinning a stale version FAILS the Cupboard install |
-| `tier`         | `A` \| `B` \| `C` — how load-bearing the component is                 |
-| `kind`         | `package` \| `pattern` — **the field people misread; see below**      |
-| `provides`     | capability tags this component contributes                            |
-| `composesWith` | other component ids it is designed to sit beside                      |
-| `source`       | `{ repo?, path?, package? }` — where the real code lives              |
-| `tests`        | prose: what test evidence backs this entry                            |
-| `summary`      | what it is and how to consume it                                      |
-| `guide?`       | optional extra build guidance                                         |
+## Current members (22)
 
-## `package` vs `pattern` — the distinction that matters
+Project model: `plan-parser` — pure plan-document algebra plus the schema-v1 Project History contract and assembler.
 
-* **`package`** — extracted, directly consumable code. There is something to install/`file:`-link
-  (`source.package`, e.g. `@papercusp/sync`).
-* **`pattern`** — a *documented shape*, whose canonical form lives in the reference apps. There is
-  **no package to depend on**; you build the shape.
+Seam and chassis: `pot-app-seam`, `tauri-shell`, `embedded-postgres-server`, `tauri-release-kit`, `typed-contracts`, `hono-host`, `next-standalone-host`, `embedded-pg-discovery`.
 
-Treating a `pattern` as installable is the classic mistake: you go looking for an npm package that
-was never meant to exist.
+Data and sync: `sync`, `sse`, `projection-index`, `debounce-coalesce`, `resumable-download`.
 
-## Membership is curated in code, on purpose
+Search: `search`, `search-core`, `rerank`, `rrf`.
 
-Entries are hand-curated rather than derived from the repo — the same precedent as `BORROWABLE.md`
-— so tagging a component never requires a submodule commit. `catalog.test.ts` enforces format,
-unique ids, and that every `composesWith` resolves; the anti-rot gym re-checks entries against the
-living repos.
+UI: `ui-primitives`, `papergrid`, `dock-workbench`, `lexicon`.
 
-## Current members (21)
+Read catalog.ts for authoritative tier, provides, source, and summary fields.
 
-Seam + chassis: `pot-app-seam` · `tauri-shell` · `embedded-postgres-server` · `tauri-release-kit` ·
-`typed-contracts` · `hono-host` · `next-standalone-host` · `embedded-pg-discovery`
+## Supply chain
 
-Data + sync: `sync` · `sse` · `projection-index` · `debounce-coalesce` · `resumable-download`
+A source.package does not imply public npm availability; first-party packages are private. Materialized apps consume vendored template assets or file-link packages from the install's reported supplyChain root. Never hardcode a developer checkout. `templates:get-guide` and `templates:new-app` report the usable supply chain; a null root is a real inability to provide those packages, not permission to guess.
 
-Search: `search` · `search-core` · `rerank` · `rrf`
+## Adding a component
 
-UI: `ui-primitives` · `papergrid` · `dock-workbench` · `lexicon`
-
-Read `catalog.ts` for each entry's tier, provides and summary — that list is the authority and this
-one is a convenience index.
-
-## Getting the code into a materialized app
-
-A catalog entry naming `source.package` does **not** mean `npm install` works: every first-party
-component package is `private: true` and 404s on npm. Two real routes:
-
-* `pot-app-seam` (and `template-kit`) are **vendored into the template dir**, so they reach every
-  platform and link as `file:./pot-app-seam`.
-* Everything else is `file:`-linked from the install's `libs/generic` tree — whose path is
-  per-install and reported as `supplyChain` by `templates:get-guide` / `templates:new-app`. Do not
-  hardcode it, and treat `supplyChain.root: null` as a real answer meaning *this install cannot
-  provide these*.
-
-See `agent-insights/templates-system-design` § Supply chain.
+Add the catalog entry, update its composing template's exact pin, add or update tests, and mirror the human member list here through docs:author. A package entry needs a real importable package and its own tests; a pattern entry needs a canonical reference implementation and an acceptance check in the template that builds it.
