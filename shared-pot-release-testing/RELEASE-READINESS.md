@@ -433,6 +433,66 @@ Signed: su-e3b21216 (leader, fleet `p2p-release`), plan
 > document's summary of a run. A leg the gate SKIPPED is recorded as ⏭, never as 🟢
 > (`p2p-public-release-remaining-lanes-2026-07-16` **D-015**).
 
+> ## 🛑 RE-SIGNED A THIRD TIME 2026-08-16T17:5xZ (su-0c703, `WI-39359`, owner-directed AUTO) — VERDICT UNCHANGED (**NO-GO**). Row 14's ENTIRE EVIDENCE BASE HAS BEEN DELETED FROM DISK, and the rule of record immediately above is what it violates.
+>
+> **Every artifact path cited in row 14 no longer exists.** All of
+> `test-results/p2p-perf/2026-08-16T{02-32-24-570Z, 03-38-08-035Z, 03-50-04-804Z, 03-57-26-753Z,
+> 04-55-00-703Z, 06-20-39-454Z/001…008, 09-40-17-138Z}` — the pre/post swarm-guard pair, the six
+> fixed-48 repeats, the 64-peer run that settled the convergence question, and the full
+> re-measured ladder on the fixed harness — are gone. `test-results/p2p-perf/` now contains
+> exactly one subdirectory, `projection-write/`, unrelated to the ladder.
+>
+> **The absence is measured, not inferred.** Positive control: the same glob
+> (`find / -name '*replication.sustained.json'`) still returns June/July artifacts under
+> `/mnt/data/offload/reclaim-quarantine-2026-08-11/…`, so the instrument works — it simply finds
+> no August run anywhere on this filesystem. `find / -type d -name '2026-08-16T06-20-39-454Z'`
+> returns nothing. The offload quarantine's newest p2p-perf run is `2026-08-03`, and it is from a
+> different tree.
+>
+> **This was structural, not bad luck.** `test-results/` is gitignored (`.gitignore:42`
+> `**/test-results/`), so these artifacts were never committable and never committed. The only
+> retained p2p-perf surface is `packages/operator-core/lib/sync/hyperbee/perf/baselines/tier1.json`
+> — and that file was captured **2026-07-26**, before `convergencePassed` existed, and contains
+> **zero** occurrences of `convergence`, `convergencePassed` or `budgetMs`. So the surface designed
+> to outlive the artifacts retained `loopLagP95Ms` — the SLO this very document's reading rule
+> (row "—", below row 14) says "must never be quoted alone as a scale or correctness verdict" —
+> and dropped the convergence verdict, which was added expressly to stop that misreading. The
+> retained surface kept the number nobody may cite and discarded the one they must.
+>
+> **What this does and does NOT change.**
+> - ⛔ It does **not** retract any measurement. The runs happened and were recorded
+>   contemporaneously, in this document, by the agent that ran them.
+> - 🛑 It **does** demote every row-14 figure from *re-derivable* to *recorded-only*. Under this
+>   document's own rule of record — "never prose" — row 14's ✅ claim ("the mesh converges at 64
+>   peers, both writer rates, every reader inside 22.1s against a 120,000ms budget") **no longer
+>   cites a live artifact. It cites this paragraph.** Nobody can now re-open those files to check a
+>   quoted figure, re-examine the bimodal 96@100 split (22 readers at p50 595ms, 73 never), or
+>   diff a future run against them.
+> - 🛑 It **removes the baseline for the one measurement row 14 leaves open.** Separating host
+>   contention from a genuine >64-peer mesh defect was to be done by re-running 96@100 and 80@10
+>   and comparing against the 06-20-39-454Z ladder. That comparison is no longer possible; a
+>   re-run can now only be compared against fresh runs of its own.
+> - ✅ The **verdict is unchanged: NO-GO**, and neither standing NO-GO reason is weakened. This
+>   makes the evidentiary basis of the row's *bounded green* weaker, never the case for shipping
+>   stronger.
+>
+> **Class fix landed with this re-sign** (so the next ladder is not lost the same way):
+> `BaselineEntry` in `packages/operator-core/lib/sync/hyperbee/perf/compare.ts` now carries a
+> **required-and-nullable** `convergence: ConvergenceStats | null`, populated by both construction
+> paths (`baselineFromArtifacts`, and `baselineFromHistory` — which carries the newest observation,
+> explicitly labelled, because quantiling a pass/fail verdict would manufacture a number no run
+> produced). Required rather than optional on purpose: an optional field is exactly what let it be
+> omitted silently the first time. Guarded by
+> `perf/baseline-retains-convergence.test.ts` (5 tests), which keeps a **permanent pre-fix control**
+> — a deliberately-wrong builder that drops the field — so the retention assertions are provably
+> able to fail; plus a calibration case pinning "no mesh formed" to `null` rather than a fabricated
+> verdict. 25/25 green with the existing comparator suite; `lint:tsc` `scope=all exit=0 status=clean`;
+> required-field strand check clean.
+>
+> ⚠ **The fix does NOT recover the lost data** — nothing can. It only ensures the NEXT ladder's
+> convergence verdict survives on a committed path. Recovering row 14's evidence requires re-running
+> the ladder, which needs a quiet host (see the row's own open question).
+
 ---
 
 ## 1. What changed, and the one fact that governs this document
