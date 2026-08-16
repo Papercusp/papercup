@@ -4279,12 +4279,13 @@ const GRADE_MEANING: Record<number, string> = {
   5: "excellent — counts as a full win for this lens",
 };
 
-/** Attribution label per C-1's graded_by values ('owner' | 'Queen'). The raw
-    auto-grader value is 'Queen'; it's routed to the active lexicon's brain word
-    for display so the public (Pot) build never surfaces the swarm noun
-    (restore-pot-lexicon P-006). */
+/** Attribution label per C-1's graded_by values ('owner' | 'auto-grader').
+    The raw auto-grader machine id is routed to the active lexicon's brain word
+    for display so the public (Pot) build never surfaces internal vocabulary
+    (restore-pot-lexicon P-006; the retired 'Queen' value was migrated —
+    WI-39481). */
 const graderLabel = (gradedBy: string, brainWord: string): string =>
-  gradedBy === "owner" ? "Owner" : gradedBy === "Queen" ? brainWord : gradedBy;
+  gradedBy === "owner" ? "Owner" : gradedBy === "auto-grader" ? brainWord : gradedBy;
 
 /** The tool-proxy response envelope varies (the parsed result | {result} | MCP
     content text) — unwrap whichever the dispatcher returns. */
