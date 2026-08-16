@@ -130,6 +130,7 @@ describe('startBootedHandlesPgPublisher (SUBSTRATE-OWNER side)', () => {
     expect(H.writeOperatorState).toHaveBeenLastCalledWith('substrate_booted_handles_status', {
       handles: H.state.booted,
       sentAt: 5_000,
+      replicationLiveness: [],
       sidecar: {
         socketPath: '/tmp/substrate-owner.sock',
         handles: [{ workspaceId: 'ws1', harnessSlug: 'relocated' }],

@@ -314,6 +314,62 @@ describe('getInProcessSubstrateStatus', () => {
       expect(r.healthInputsObserved).not.toBe(r.reachedSubstrateOwner);
     });
 
+    // The other half of EI-20575137548097507: honesty alone would leave EVERY
+    // worker-served read permanently 'degraded', which is true but useless. The
+    // owner now PUBLISHES its liveness registry alongside the handle list, so a
+    // non-owner can actually assess what it reports.
+    it('a non-owner GIVEN the owner-published liveness reports real verdicts again', () => {
+      const r = getInProcessSubstrateStatus({
+        isSubstrateOwnerProcessForTest: false,
+        resolveRemoteBootedHandles: () => ({
+          handles: [{ workspaceId: 'ws-1', harnessSlug: 'remote-a' }],
+          receivedAt: Date.now(),
+          replicationLiveness: [],
+        }),
+      });
+      expect(r.healthInputsObserved).toBe(true);
+      expect(r.harnesses[0]!.verdict).toBe('healthy');
+      expect(r.harnesses[0]!.reasons.join(' ')).not.toMatch(/UNOBSERVABLE/);
+    });
+
+    // Present-but-empty ("measured, nothing stalled") and absent ("could not
+    // measure") must never collapse into each other — that collapse IS the bug.
+    it('a stall in the published liveness reaches the verdict from a non-owner', () => {
+      const r = getInProcessSubstrateStatus({
+        isSubstrateOwnerProcessForTest: false,
+        resolveRemoteBootedHandles: () => ({
+          handles: [{ workspaceId: 'ws-1', harnessSlug: 'remote-a' }],
+          receivedAt: Date.now(),
+          replicationLiveness: [
+            {
+              workspaceId: 'ws-1',
+              harnessSlug: 'remote-a',
+              counts: { noReplicator: 1, frozen: 0, samplingStale: 0, dhtUniverseMismatch: 0 },
+            } as never,
+          ],
+        }),
+      });
+      expect(r.healthInputsObserved).toBe(true);
+      expect(r.harnesses[0]!.verdict).toBe('unhealthy');
+      expect(r.harnesses[0]!.reasons.join(' ')).toMatch(/replication stalled/);
+    });
+
+    // A snapshot too stale to trust for `booted` must not be trusted for health
+    // either — the two must never disagree about which snapshot they used.
+    it('a STALE snapshot yields no handles AND no fabricated health', () => {
+      const r = getInProcessSubstrateStatus({
+        isSubstrateOwnerProcessForTest: false,
+        resolveRemoteBootedHandles: () => ({
+          handles: [{ workspaceId: 'ws-1', harnessSlug: 'remote-a' }],
+          receivedAt: Date.now() - 60 * 60 * 1_000,
+          replicationLiveness: [],
+        }),
+      });
+      expect(r.reachedSubstrateOwner).toBe(false);
+      expect(r.bootedCount).toBe(0);
+      expect(r.healthInputsObserved).toBe(false);
+    });
+
     it('the substrate OWNER still reports healthy — the guard must not blanket-degrade', () => {
       _setHandleForTests('ws-1', 'owned-a', fakeHandle('ws-1', 'owned-a'));
       const r = getInProcessSubstrateStatus({ isSubstrateOwnerProcessForTest: true });

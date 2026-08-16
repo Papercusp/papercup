@@ -24,6 +24,12 @@ function fakeGetStatus(booted: Array<[string, string]>) {
       logStats: [],
       replicationLiveness: [],
       reachedSubstrateOwner: true,
+      // EI-20575137548097507: this fixture models the SUBSTRATE OWNER (it
+      // reports harnesses from its own boot map), so its health inputs are
+      // genuinely observed — `replicationLiveness: []` here means "measured,
+      // nothing stalled", not "could not measure". A non-owner fixture would
+      // set this false and its harnesses would read 'degraded'.
+      healthInputsObserved: true,
       harnesses: booted.map(([ws, slug]) => ({
         workspaceId: ws,
         harnessSlug: slug,
