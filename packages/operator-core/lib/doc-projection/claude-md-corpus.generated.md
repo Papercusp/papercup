@@ -1752,7 +1752,25 @@ case "$out" in *PAT*) echo yes ;; *) echo no ;; esac
 
 If a pipeline is necessary, consume to EOF (for example with `grep -c`) rather
 than using an early-exit predicate. A false absence from this pattern is not
-evidence that the guarded string, process, or flag is missing.The natural next action is to conclude a job died and re-run it. Use
+evidence that the guarded string, process, or flag is missing.
+
+⚠ **A search of a path that DOES NOT EXIST looks exactly like one that found
+nothing** — empty output, and the exit code that separates them (grep: 1 = ran
+and found nothing, 2 = could not read the path) is thrown away by a pipe,
+`2>/dev/null`, `|| true`, or simply not being read. A plan sat BLOCKED THREE
+WEEKS on such a premise, and the agent verifying it hit the same trap the same
+day (`work-items/` typed for the real `work_items/`). The PreToolUse gate now
+REFUSES a `grep`/`rg`/piped-`ls` whose path operand it can measure as missing —
+but it judges only a LITERAL path (never a variable, glob, subshell, or a
+relative path when the host states no cwd), and the same shape recurs wherever a
+query can miss its target: a `git log` for a submodule path run from the
+superproject, a roster lookup by a name that is not the label. So the general
+rule is yours: **AN ABSENCE CLAIM NEEDS A POSITIVE CONTROL.** Before writing "X
+does not exist", run the same query for something you KNOW is there — if the
+control also comes back empty, the instrument is broken, not the subject — and
+state the scope you actually searched. For "where is this symbol defined" use
+`gitnexus.context { name }` (no path argument to get wrong); for "does this TOOL
+exist", `tools:find`.The natural next action is to conclude a job died and re-run it. Use
 `proc-guard` above, `pgrep -cf` (count), `pgrep -x <name>` (matches the process
 NAME, so argv cannot fool it at all), or `kill -0 <pid>`
 (EI-19446554284039165).
