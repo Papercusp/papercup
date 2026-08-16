@@ -594,8 +594,8 @@ export default defineTool({
 
     // Live-refresh the settings memory page (userMemory.list sync query) —
     // fire-and-forget, never load-bearing (memory-settings-page-refresh P-008).
-    void import('../../sync-sse')
-      .then(({ notifySyncInvalidate }) => notifySyncInvalidate('userMemory.list'))
+    void import('../../memory/invalidate-user-memory-views')
+      .then(({ invalidateUserMemoryViews }) => invalidateUserMemoryViews())
       .catch(() => { /* best-effort */ });
 
     // Phase 4 P-015: persist anchors to harness_shared.memory_anchors so

@@ -24,6 +24,7 @@
  * Xvfb), recorded as plan evidence.
  */
 import { test, expect, assertMounted, type Page } from './_egress';
+import { stubSyncQueries, type SyncQueryStub } from './_sync-stub';
 
 const baseURL =
   process.env.OPERATOR_E2E_BASE_URL ??
@@ -45,6 +46,7 @@ const PROJECTS_LITE = {
 
 interface CreateCapture {
   bodies: Array<Record<string, unknown>>;
+  sync: SyncQueryStub;
 }
 
 /**
@@ -53,26 +55,20 @@ interface CreateCapture {
  * with NEW_MEMBER, so onCreated fires without touching disk.
  */
 async function stubAndCapture(page: Page): Promise<CreateCapture> {
-  const cap: CreateCapture = { bodies: [] };
+  const bodies: Array<Record<string, unknown>> = [];
   await page.route('**/api/harness/projects/lite', async (route) => {
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(PROJECTS_LITE) });
   });
   // HarnessesWorkspace reads the projects list via useSyncQuery('harnessProjects.lite')
-  // (REST→sync migration 2026-06-11), NOT the legacy REST route above — its rows
-  // come through the sync batch fetcher (POST /api/zero-harness/rest-query-batch →
-  // {results:[{rows,version}]}, one result per {name,args} query, in order). Stub
-  // it or the member rail renders empty and the P-011 hive-member-* testid assertion
-  // is absent (EI-319 residual). SSE carries only invalidation; rows come from here.
-  await page.route('**/api/zero-harness/rest-query-batch**', async (route) => {
-    let queries: Array<{ name?: string }> = [];
-    try { queries = (JSON.parse(route.request().postData() ?? '{}').queries ?? []) as Array<{ name?: string }>; } catch { /* empty batch */ }
-    const results = queries.map((q) =>
-      q?.name === 'harnessProjects.lite'
-        ? { rows: PROJECTS_LITE.projects, version: '1' }
-        : { rows: [], version: '1' },
-    );
-    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ results }) });
-  });
+  // (REST→sync migration 2026-06-11), NOT the legacy REST route above. Its rows come
+  // over the LIVE sync contract — one `GET /api/zero-harness/rest-query?name=&args=`
+  // per query (see `_sync-stub.ts`). Stub it or the member rail renders empty and the
+  // P-011 hive-member-* testid assertion is absent (EI-319 residual). SSE carries only
+  // invalidation; rows come from here. (This spec used to stub POST
+  // /rest-query-batch, dead since 2026-07-26 — never hit at all: WI-39533.)
+  const sync = await stubSyncQueries(page, (name) =>
+    name === 'harnessProjects.lite' ? PROJECTS_LITE.projects : undefined,
+  );
   // The into-hive / standalone create — capture the body (asserts `hive`), succeed.
   await page.route('**/api/harness/projects', async (route) => {
     if (route.request().method() === 'POST') {

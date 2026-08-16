@@ -78,8 +78,8 @@ export default defineTool({
     }
     // Audit flips canonical state/anchor rows the userMemory.list sync
     // query projects — refresh any open settings page (P-008).
-    void import('../../../sync-sse')
-      .then(({ notifySyncInvalidate }) => notifySyncInvalidate('userMemory.list'))
+    void import('../../../memory/invalidate-user-memory-views')
+      .then(({ invalidateUserMemoryViews }) => invalidateUserMemoryViews())
       .catch(() => { /* best-effort */ });
     return Response.json({
       ok: true,

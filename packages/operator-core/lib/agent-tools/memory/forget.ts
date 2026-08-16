@@ -132,8 +132,8 @@ export default defineTool({
     // fire-and-forget, never load-bearing (memory-settings-page-refresh P-008).
     // One invalidate covers the whole batch.
     if (env.counts.ok > 0) {
-      void import('../../sync-sse')
-        .then(({ notifySyncInvalidate }) => notifySyncInvalidate('userMemory.list'))
+      void import('../../memory/invalidate-user-memory-views')
+        .then(({ invalidateUserMemoryViews }) => invalidateUserMemoryViews())
         .catch(() => { /* best-effort */ });
     }
     return bulkContent(env);

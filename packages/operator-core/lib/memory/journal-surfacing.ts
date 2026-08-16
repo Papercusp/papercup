@@ -62,7 +62,8 @@ export async function journalStatusSnapshot(): Promise<JournalStatusSnapshot> {
 export async function notifyJournalRecovery(r: DrainResult): Promise<void> {
   try {
     const { notifySyncInvalidate } = await import('../sync-sse');
-    notifySyncInvalidate('userMemory.list');
+    const { invalidateUserMemoryViews } = await import('./invalidate-user-memory-views');
+    void invalidateUserMemoryViews();
     notifySyncInvalidate('userMemory.journalStatus');
     if (r.recovered > 0 && r.recoveredWindow) {
       console.log(

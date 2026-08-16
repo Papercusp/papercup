@@ -18,13 +18,28 @@ import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
 export const META_FETCH_TIMEOUT_MS = 20_000;
 
 /**
- * Default row window for the Memory settings page (EI-12937). Measured live:
- * the full corpus was 1,140 rows / 2.02MB — 300 rows keeps the common "browse
- * recent memories" load bounded and small while still showing enough history
- * to be useful. The `full=true` URL param (the "Show all" toggle) bypasses
- * this and reproduces the exact pre-fix unbounded fetch.
+ * Opening row window for the Memory settings page (EI-12937). Measured live:
+ * the corpus was 1,140 rows / 2.02MB when the bound was introduced, and 2,465
+ * by 2026-08-16 — so the bound is load-bearing and stays. The `full=true` URL
+ * param (the "Show all" toggle) bypasses it and reproduces the exact pre-fix
+ * unbounded fetch.
+ *
+ * ⚠ THIS IS A WINDOW, NOT A TOTAL — and the page MUST render it beside a
+ * denominator (WI-39540). Shown alone, a saturated window is indistinguishable
+ * from a measurement: the owner read "300 memories" off a 2,465-row corpus and
+ * reasonably concluded most of their history had gone missing. A cap without
+ * its denominator is a number that lies by omission, so `userMemory.total`
+ * exists purely to keep this honest. If you change this value, keep the pair.
  */
-export const DEFAULT_MEMORY_PAGE_LIMIT = 300;
+export const DEFAULT_MEMORY_PAGE_LIMIT = 500;
+
+/**
+ * How much more to load each time the reader reaches the bottom. Infinite
+ * scroll replaced the single "Show all" cliff — that button remains as an
+ * explicit "load everything now" escape, but reaching the end of the list no
+ * longer requires noticing a button to continue.
+ */
+export const MEMORY_PAGE_STEP = 500;
 import { Select } from '@/app/harness/Select';
 import { FleetKnowledgePacksSection } from './FleetKnowledgePacksSection';
 import { MEMORY_KIND_COLOR, MEMORY_KIND_FALLBACK } from '@/app/harness/theme';
@@ -249,17 +264,70 @@ export default function MemoryPage() {
   // The row set — server writes (REST routes AND the memory:* MCP verbs)
   // fire notifySyncInvalidate('userMemory.list'), so agent-side edits
   // appear here live without manual refresh (P-008).
+  // How many rows the window currently asks for. Grows as the reader scrolls
+  // (WI-39540). Deliberately useState, not nuqs: this is a transient LOAD
+  // depth, not a user-meaningful selection — putting it in the URL would make
+  // a shared/reloaded link re-download however deep the last reader happened
+  // to scroll, which is the cost the window exists to avoid.
+  const [loadedLimit, setLoadedLimit] = useState(DEFAULT_MEMORY_PAGE_LIMIT);
   const { data: rows, loading: rowsLoading } = useSyncQuery<MemoryRow>({
     queryName: 'userMemory.list',
     // EI-12937: bounded by default; `showAll` (the "Show all" toggle, ?full=true)
     // omits `limit` entirely, reproducing the exact pre-fix unbounded fetch.
-    args: { userId: userId ?? '', ...(showAll ? {} : { limit: DEFAULT_MEMORY_PAGE_LIMIT }) },
+    args: { userId: userId ?? '', ...(showAll ? {} : { limit: loadedLimit }) },
     enabled: !!userId,
   });
-  // Row-count context for the "Show all" affordance — only meaningful while limited
-  // (rows.length hitting the limit exactly is the signal there may be more).
-  const possiblyMoreThanShown = !showAll && rows.length >= DEFAULT_MEMORY_PAGE_LIMIT;
+
+  // The DENOMINATOR (WI-39540) — how many memories exist across the same
+  // scopes the list reads. Same invalidation family as userMemory.list (see
+  // invalidate-user-memory-views.ts), so it moves with the rows.
+  const { data: totalRows } = useSyncQuery<{ total: number }>({
+    queryName: 'userMemory.total',
+    args: { userId: userId ?? '' },
+    enabled: !!userId,
+  });
+  // null = not known YET. Never coerce to 0 — "Showing 500 of 0" is worse
+  // than showing no denominator at all, and an unknown total must read as
+  // unknown rather than as an emptiness claim.
+  const totalMemories = totalRows?.[0]?.total ?? null;
+
+  // More to fetch only if the window came back FULL (a short page means the
+  // server ran out, whatever the total says) and the total agrees. Requiring
+  // both makes the scroll self-limiting: it cannot spin past the end even if
+  // the total is momentarily stale.
+  const hasMore =
+    !showAll
+    && rows.length >= loadedLimit
+    && (totalMemories === null || rows.length < totalMemories);
+  const possiblyMoreThanShown = hasMore;
   const loading = !metaLoaded || (!!userId && rowsLoading);
+
+  // Infinite scroll: grow the window when the sentinel below the list comes
+  // into view. `rootMargin` starts the next page slightly before the reader
+  // actually hits bottom so the list rarely visibly stalls.
+  const loadMoreRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const el = loadMoreRef.current;
+    if (!el || !hasMore || rowsLoading) return;
+    if (typeof IntersectionObserver === 'undefined') return; // jsdom / SSR safety
+    const io = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting)) {
+          setLoadedLimit((n) => n + MEMORY_PAGE_STEP);
+        }
+      },
+      { rootMargin: '400px' },
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, [hasMore, rowsLoading]);
+
+  // Leaving "Show all" returns to the opening window rather than whatever
+  // depth the reader had scrolled to before, so "Show recent only" actually
+  // shrinks the payload it promises to shrink.
+  useEffect(() => {
+    if (showAll) setLoadedLimit(DEFAULT_MEMORY_PAGE_LIMIT);
+  }, [showAll]);
 
   // Write-ahead journal status (memory-write-journal-auto-recovery P-006):
   // "N pending" badge + "Memory recovered" banner. The journal drain fires
@@ -965,7 +1033,11 @@ export default function MemoryPage() {
           // window (rows.length), not the whole corpus — "Search 300 memories…"
           // reads very differently from "Search all memories…" and a user typing
           // a query expecting full-history coverage deserves to know which they get.
-          placeholder={possiblyMoreThanShown ? `Search your ${rows.length} most recent memories…` : `Search ${rows.length} memories…`}
+          placeholder={
+            possiblyMoreThanShown
+              ? `Search your ${rows.length} most recent of ${totalMemories ?? '…'} memories…`
+              : `Search ${rows.length} memories…`
+          }
           aria-label="Search memories"
           style={{
             padding: '8px 12px', borderRadius: 6,
@@ -1210,6 +1282,16 @@ export default function MemoryPage() {
         <div style={{ fontSize: 12, color: 'var(--warn)' }}>
           ⚠ <strong>{secretCount}</strong> {secretCount === 1 ? 'memory looks like it contains' : 'memories look like they contain'} a
           credential — stored unchanged, flagged at write time. If real, rotate the secret, then edit or delete the row.
+        </div>
+      )}
+
+      {/* The denominator (WI-39540). Rendered whenever the corpus is larger
+          than the loaded window, so the row count on screen can never be
+          mistaken for the size of the corpus. */}
+      {totalMemories !== null && rows.length < totalMemories && (
+        <div style={{ fontSize: 12, color: 'var(--fg-mute)' }}>
+          Showing <strong>{rows.length}</strong> of <strong>{totalMemories}</strong> memories
+          {' — '}scroll for more{showAll ? '' : ', or load them all at once with “Show all”'}.
         </div>
       )}
 
