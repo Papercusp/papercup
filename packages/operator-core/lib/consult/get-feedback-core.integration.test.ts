@@ -46,6 +46,9 @@ const NOW = new Date('2026-08-16T00:00:00Z');
 const MIGRATION_834 = fileURLToPath(
   new URL('../../../../libs/papercusp/libs/db/sql/834-consult-threads.sql', import.meta.url),
 );
+const MIGRATION_837 = fileURLToPath(
+  new URL('../../../../libs/papercusp/libs/db/sql/837-consult-query-embedding.sql', import.meta.url),
+);
 
 let rootSql: Sql;
 
@@ -71,6 +74,11 @@ beforeAll(async () => {
     )`);
   // The REAL migration — consult_state + consult_post_meta cannot drift.
   await rootSql.unsafe(readFileSync(MIGRATION_834, 'utf8'));
+  // P-006 archive-retrieval leg: pgvector (the test image ships it — same
+  // idiom as relevance-router.integration.test.ts) + the REAL 837 migration
+  // (query_embedding column + hnsw index behind its extension guard).
+  await rootSql.unsafe('CREATE EXTENSION IF NOT EXISTS vector');
+  await rootSql.unsafe(readFileSync(MIGRATION_837, 'utf8'));
   // Only the columns the core's origin-ref default reads (work_items is
   // migration-owned; the core touches taken_by/status/timestamps/feature_id).
   await rootSql.unsafe(`
@@ -149,16 +157,18 @@ const baseReq: GetFeedbackRequest = {
   originTaskRef: null, // explicit null: no default lookup, no budget aggregation
 };
 
-async function stateRow(conversationId: string) {
+async function stateRow(conversationId: string, ws: string = WS) {
   const rows = (await rootSql`
-    SELECT * FROM harness_shared.consult_state
-     WHERE workspace_id = ${WS} AND conversation_id = ${conversationId}
+    SELECT *, query_embedding IS NOT NULL AS has_query_embedding
+      FROM harness_shared.consult_state
+     WHERE workspace_id = ${ws} AND conversation_id = ${conversationId}
   `) as unknown as Array<Record<string, unknown>>;
   expect(rows).toHaveLength(1);
   const row = rows[0];
   // This fixture connection returns jsonb unparsed — normalize so assertions
   // compare structure, not driver serialization.
   if (typeof row.routing === 'string') row.routing = JSON.parse(row.routing);
+  if (typeof row.outcome === 'string') row.outcome = JSON.parse(row.outcome);
   return row;
 }
 
