@@ -33,7 +33,7 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { decodeManifest } from '@papercusp/seed-bundle';
-import { resolveSeedDir, SEED_MANIFEST_FILE } from './restore-hive-seed';
+import { resolveSeedDir, SEED_MANIFEST_FILE, defaultSeedRegistry } from './restore-hive-seed';
 import { createBundledEpochKeyProvider } from './bundled-epoch-key-provider';
 import { resolveSeedDecryptionKey } from './deferred-git-restore';
 // The SAME predicate the cutter's walk uses, imported rather than re-spelled so the
@@ -149,6 +149,41 @@ describe.skipIf(!seedPresent)('shipped seed artifact (integrity of the real bund
       // promising bytes the payload no longer has, and boot only discovers it
       // mid-restore.
       expect(actual.bytes, `${store.kind}: payload size drifted from the manifest`).toBe(store.sizeBytes);
+    }
+  });
+
+  /**
+   * WI-39447 — the SIZE check above is the weak half of the entry, and on its own it let the
+   * defect ship. `sizeBytes` cannot see a same-size mutation, and more importantly it is NOT
+   * what boot gates on: `restoreSeed` calls `provider.verify()`, which is a `hashDir` against
+   * `entry.hash` (libs/generic/seed-bundle/src/restore.ts). A store that fails there is not a
+   * crash and not a warning — it is pushed as a failed outcome and `continue`d past, so the
+   * install SUCCEEDS while that store never restores. For the corestore that means an empty
+   * hive on a fresh install, with nothing in the UI to say so.
+   *
+   * So assert the hash, through the REAL registry rather than a local re-implementation — the
+   * same mistake this file already made once with `measure()` (see its note). Running boot's
+   * own providers means "the artifact passes this test" and "the installer will restore it"
+   * cannot drift apart.
+   *
+   * MEASURED on the shipped 2026-08-15 seed: corestore declared 13b280d7…/318,544,683 B but
+   * hashed fa4fddc2…/268,378,998 B — 50,165,685 short, 64 of 76 blocks. The git store verified
+   * clean, which is what localises the defect to the grafted corestore (`--reuse-corestore`
+   * inherits the prior manifest's entry and re-measures nothing — see
+   * apps/operator/lib/release/seed-payload-integrity-guard.ts, which now refuses that at cut
+   * time so this artifact-side red stops being the first place anyone finds out).
+   */
+  it('every declared payload HASHES to its manifest entry — the exact gate boot applies', async () => {
+    const registry = defaultSeedRegistry();
+    for (const store of manifest!.stores) {
+      if (store.source.type !== 'resource') continue;
+      const provider = registry.get(store.kind);
+      expect(provider, `${store.kind}: no provider registered — boot could not restore it`).toBeDefined();
+      const verdict = await provider!.verify(store, { path: join(SEED_DIR, store.source.path) });
+      expect(
+        verdict.ok,
+        `${store.kind}: ${verdict.reason ?? 'unknown'} — boot SKIPS this store and restores without it`,
+      ).toBe(true);
     }
   });
 
