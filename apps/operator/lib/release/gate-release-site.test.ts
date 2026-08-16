@@ -1,11 +1,15 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { afterAll, describe, expect, it } from 'vitest';
-import { gateSite } from './gate-release-site';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { gateSite, main } from './gate-release-site';
 import {
   HOLDING_PAGE_MARKER,
+  OWNER_NAME_ENV,
   PUBLISHED_CONTACT_EMAIL,
+  hasOwnerNameLiteral,
+  identityLiterals,
+  looksLikeAutomationIdentity,
   type IdentityLiteral,
 } from './release-content-scrub';
 
@@ -149,6 +153,18 @@ describe('main — a gate that cannot see the owner must REFUSE, not certify', (
   const clean = () =>
     site({ 'index.html': '<h1>Papercusp releases</h1><p>Download the installer.</p>' });
 
+  // The refusal path writes to stderr on purpose (an operator has to SEE why publishing
+  // stopped), and this suite fails any test that touches console.error — so capture it
+  // and assert on it rather than merely silencing it.
+  let errs: string[];
+  beforeEach(() => {
+    errs = [];
+    vi.spyOn(console, 'error').mockImplementation((...a: unknown[]) => {
+      errs.push(a.join(' '));
+    });
+  });
+  afterEach(() => vi.restoreAllMocks());
+
   it('exits 2 (cannot check) when NO owner-name literal resolves', () => {
     // The exact shape of the bug: machine literals resolve fine, the NAME does not.
     const blind: IdentityLiteral[] = [
@@ -156,6 +172,11 @@ describe('main — a gate that cannot see the owner must REFUSE, not certify', (
       { kind: 'user', value: 'jdoe' },
     ];
     expect(main([clean()], blind)).toBe(2);
+  });
+
+  it('tells the operator HOW to proceed, naming the env var — a refusal with no exit is a wall', () => {
+    main([clean()], [{ kind: 'user', value: 'jdoe' }]);
+    expect(errs.join('\n')).toContain(OWNER_NAME_ENV);
   });
 
   it('exits 2 when a name literal is present but EMPTY — blank is not a name', () => {
@@ -177,7 +198,12 @@ describe('main — a gate that cannot see the owner must REFUSE, not certify', (
 });
 
 describe('looksLikeAutomationIdentity — a bot name is not an owner name', () => {
-  it.each(['papercusp-agent', 'github-actions[bot]', 'ci', 'build-bot', 'renovate[bot]'])(
+  // NOTE: deliberately NOT this box's real bot name, even though it is the one that caused
+  // the bug. The identity lint derives its literals from `git config user.name` — which IS
+  // that bot right now — so writing it here would red the green-checkpoint identity leg and
+  // freeze `main` for the whole fleet. `<product>-agent` exercises the identical regex
+  // branch (the `-agent` suffix) without embedding the box's identity in shipped source.
+  it.each(['acme-agent', 'github-actions[bot]', 'ci', 'build-bot', 'renovate[bot]'])(
     'treats %s as automation',
     (name) => expect(looksLikeAutomationIdentity(name)).toBe(true),
   );
