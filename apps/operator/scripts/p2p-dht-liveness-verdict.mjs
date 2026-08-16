@@ -59,7 +59,23 @@ export const PROVED = Object.freeze({
   NOTHING: 'nothing',
   /** Two separate PROCESSES on THIS host connected via the bootstrap. */
   LOCAL_ONLY: 'local-process-to-process',
-  /** A process on ANOTHER host connected to us, identity-verified. */
+  /**
+   * A process on ANOTHER host connected to us, identity-verified.
+   *
+   * ⚠ READ THE BOUNDARY: this is proof the two HOSTS can carry DHT traffic,
+   * measured with a standalone probe process. It is NOT proof that the
+   * Papercusp APP on either host can — a per-process denial (macOS Local
+   * Network privacy / TCC, a sandbox profile, a per-binary firewall rule) sits
+   * entirely inside this result's blind spot, and that is precisely the P-302
+   * fault: the Mac's standalone node reached the tower in 35ms while the app's
+   * own sidecar could not send a single datagram.
+   *
+   * The complementary instrument is `classifyDhtReachability` /
+   * `scheduleDhtReachabilityCheck` in
+   * packages/operator-core/lib/sync/hyperbee/swarm.ts, which samples the LIVE
+   * app process's own dht-rpc counters. Infrastructure health and app-process
+   * health are two different questions; you need both answers.
+   */
   CROSS_HOST: 'cross-host-packet-flow',
 });
 
