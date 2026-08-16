@@ -125,9 +125,9 @@ describe('release identity gate: authorised product strings (WI-38233)', () => {
     }
   });
 
-  it('ACCEPTS a file whose only identity hits are authorised strings', () => {
+  it('ACCEPTS a file whose only identity hits are authorised strings', (ctx) => {
     if (!have('python3')) {
-      console.warn('[authorised-strings guard] SKIPPED: python3 unavailable');
+      ctx.skip('python3 unavailable');
       return;
     }
     const { authorised } = authorisedPair();
@@ -137,11 +137,11 @@ describe('release identity gate: authorised product strings (WI-38233)', () => {
     expect(status).toBe(0);
   });
 
-  it('STILL FAILS when one bare occurrence sits beside an authorised string', () => {
+  it('STILL FAILS when one bare occurrence sits beside an authorised string', (ctx) => {
     // ⚠ THE LOAD-BEARING ASSERTION. If this flips, an authorised string becomes a
     // whitewash token — paste it into any file and that file's real leaks go quiet.
     if (!have('python3')) {
-      console.warn('[authorised-strings guard] SKIPPED: python3 unavailable');
+      ctx.skip('python3 unavailable');
       return;
     }
     const { authorised, literal } = authorisedPair();
