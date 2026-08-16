@@ -227,7 +227,8 @@ export async function getFeedbackCore(
         `Routed to you by transcript relevance (score ${chosen.score.toFixed(2)}, sim ${chosen.signals.similarity.toFixed(2)}).\n` +
         `Why you: ${evidenceLine(chosen)} — sessions:read resolves the refs.\n` +
         `Validate relevance FIRST; decline cheaply if your context doesn't cover it. Answer FROM your transcript, citing evidence. ` +
-        `Reply in conversation ${opened.conversation_id} (conversations:post; typed consult verbs land with P-004).`,
+        `Reply in conversation ${opened.conversation_id} with consult:reply { kind } (answer requires evidence); ` +
+        `consult:decline { reason } if it's not your area; consult:close { outcome } when settled. Untyped conversations:post is refused.`,
     });
     woke = r.woke;
   }
