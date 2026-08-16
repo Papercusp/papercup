@@ -56,9 +56,36 @@ export function createInMemoryBucketStore(): BucketStore {
 
 /** Default ban cooldown (auto-unban after this; a forgotten ban self-heals). */
 export const DEFAULT_BAN_TTL_MS = 10 * 60_000;
-/** Connection-rate ceiling per `(ip | key)`: a burst above this is a clear
- *  reconnect storm (legitimate reconnects are rare). */
+/**
+ * Connection-rate ceiling PER PEER KEY: one peer reconnecting more than this in
+ * the window is a clear reconnect storm (legitimate reconnects are rare).
+ *
+ * ⚠ PER KEY, NOT PER IP — that distinction is the whole point (EI-20578573707248054).
+ * This bucket was keyed `ip ?? keyHex`, so every peer behind one egress IP shared
+ * a single 30-per-10s budget and a trip banned the IP, kicking every innocent
+ * neighbour off for ten minutes. Forming a flat N-peer mesh produces ~N-1 inbound
+ * connections by construction, so the guard was spent by the mesh itself: fine at
+ * 16 peers, marginal at 32, collapsed at 64 — which is exactly the knee D-008
+ * measured, with a p95 of 601s against this file's 600s ban TTL. Co-located peers
+ * are the NORMAL case, not an attack: every Tier-1/Tier-2 perf peer is on
+ * loopback, and in production an office NAT, a k8s cluster egress or a cloud NAT
+ * gateway all put many legitimate peers on one address.
+ */
 export const CONN_RATE = { windowMs: 10_000, capacity: 30 };
+/**
+ * The number of peers a single flat mesh is supported at
+ * (harden-shared-hive-to-256-peers). The per-IP ceiling below is sized from it:
+ * a capacity beneath this silently caps mesh size no matter what the sync
+ * substrate can do.
+ */
+export const SUPPORTED_MESH_PEERS = 256;
+/**
+ * Secondary, much wider ceiling PER IP — still stops a genuine flood from one
+ * address, but sized so a legitimate mesh formation burst from co-located peers
+ * (~SUPPORTED_MESH_PEERS connections, plus headroom for retries and churn)
+ * cannot trip it. Only a trip of THIS bucket bans the IP.
+ */
+export const CONN_RATE_IP = { windowMs: 10_000, capacity: SUPPORTED_MESH_PEERS * 4 };
 
 export interface SwarmGuard {
   /** SYNC predicate for `new Hyperswarm({ firewall })`. `true` = reject. */
