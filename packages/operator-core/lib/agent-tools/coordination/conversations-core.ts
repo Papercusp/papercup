@@ -229,7 +229,7 @@ async function materializeOpenedConversation(
   const ev: InjectEvent = {
     from: identity.ownerId,
     subject: `conversation:${id}`,
-    summary: `${input.kind === 'question' ? '❓ question' : '💬 discussion'}: ${input.title ?? truncate(input.body)}`,
+    summary: `${input.kind === 'question' ? '❓ question' : input.kind === 'consult' ? '🧭 consult' : '💬 discussion'}: ${input.title ?? truncate(input.body)}`,
     body: input.body,
     notify_kind: input.kind === 'question' ? 'question_opened' : 'discussion_opened',
     isResolution: false,

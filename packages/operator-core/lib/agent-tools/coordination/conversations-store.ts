@@ -19,7 +19,7 @@ import type { Sql } from 'postgres';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import type { LifecycleState } from '@papercusp/coordination/capabilities';
 
-export type ConversationKind = 'question' | 'discussion';
+export type ConversationKind = 'question' | 'discussion' | 'consult';
 export type ConversationScope = 'operator' | 'harness';
 // Canonical lifecycle vocabulary (P-007) plus the conversation-specific terminal
 // state used when an ask is retracted in favor of a replacement. The substrate's
@@ -28,7 +28,7 @@ export type ConversationScope = 'operator' | 'harness';
 // than looking like an unresolved gate.
 export type ConversationState = LifecycleState | 'superseded';
 
-export const CONVERSATION_KINDS: readonly ConversationKind[] = ['question', 'discussion'];
+export const CONVERSATION_KINDS: readonly ConversationKind[] = ['question', 'discussion', 'consult'];
 
 export interface ConversationRow {
   id: string;
@@ -417,7 +417,7 @@ export async function ensureConversationsTable(sql: Sql): Promise<void> {
       resolved_at      timestamptz,
       superseded_at    timestamptz,
       PRIMARY KEY (workspace_id, id),
-      CONSTRAINT coord_conversations_kind_check  CHECK (kind  = ANY (ARRAY['question','discussion'])),
+      CONSTRAINT coord_conversations_kind_check  CHECK (kind  = ANY (ARRAY['question','discussion','consult'])),
       CONSTRAINT coord_conversations_scope_check CHECK (scope = ANY (ARRAY['operator','harness'])),
       CONSTRAINT coord_conversations_state_check CHECK (state = ANY (ARRAY['open','resolved','closed','superseded'])),
       CONSTRAINT coord_conversations_scope_slug_check CHECK (
