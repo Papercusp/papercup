@@ -18,6 +18,12 @@ import type { PeerChildConfig, PeerChildResult } from './peer-child';
 import type { PerfArtifact } from './artifact';
 import { recomputeConvergenceVerdict, type ScenarioMeter } from './metrics';
 import { MeshFormationError } from './mesh-outcome';
+import {
+  capacityOverridesFromEnv,
+  decideMeshCapacity,
+  HostCapacityError,
+  readMemAvailableBytes,
+} from './host-capacity';
 
 const CHILD_PATH = fileURLToPath(new URL('./peer-child.ts', import.meta.url));
 
@@ -219,8 +225,25 @@ export async function spawnProcMesh(opts: {
    *  unit test drive mesh-formation OUTCOMES — and assert the typed
    *  `MeshFormationError` (EI-115) — without spawning real OS processes. */
   spawnChild?: typeof spawnPeerChild;
+  /** Test seam: override the host's reported MemAvailable for the capacity
+   *  preflight. `null` = host does not report it (guard abstains). */
+  availableBytes?: number | null;
 }): Promise<ProcMesh> {
   const mkChild = opts.spawnChild ?? spawnPeerChild;
+
+  // Capacity preflight — BEFORE any testnet, tmpdir or child exists, so a mesh
+  // that cannot fit costs nothing and leaves nothing to clean up. See
+  // host-capacity.ts for the measurement this is anchored on.
+  const capacity = decideMeshCapacity({
+    peers: opts.readers + 1, // + the writer
+    availableBytes: opts.availableBytes !== undefined ? opts.availableBytes : readMemAvailableBytes(),
+    ...capacityOverridesFromEnv(),
+  });
+  if (!capacity.ok) {
+    opts.log(`[mesh] REFUSED: ${capacity.reason}`);
+    throw new HostCapacityError(capacity.reason ?? 'host capacity exceeded', capacity);
+  }
+
   let ownedTestnet: { destroy(): Promise<void> } | null = null;
   let bootstrap = opts.bootstrap;
   if (!bootstrap) {
