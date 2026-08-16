@@ -337,6 +337,19 @@ export interface OrientResult {
    *  none stand. Absent ⇒ the fold was full. A monitor tick passing
    *  afterCompaction:true gets the full fold and no marker. */
   factsNarrowed?: { fold: 'never-drop'; prefixes: string[]; reason: string };
+  /** EI-19485000346355077: present iff one of this fold's selectors (workspace /
+   *  owner / harness) had facts CAP-EVICTED recently — so a fact you expect but
+   *  don't see in `facts` above may have been evicted, not never-asserted. Never
+   *  computed on a narrowed (mode:'monitor', non-afterCompaction) fold — see
+   *  `factsNarrowed`. Absent ⇒ either the full fold ran and found nothing to
+   *  disclose, or the fold was narrowed. */
+  factEvictionDisclosures?: Array<{
+    scope: string;
+    scopeRef: string | null;
+    recentEvictedCount: number;
+    latestEvictedAt: string;
+    meaning: string;
+  }>;
   /** The four scalars agents otherwise shell out for — current UTC instant, core
    *  count, load average, free memory (bash-to-tool-substitution-2026-07-26,
    *  P-026 + P-027). Measured over the 7d corpus: 852 `date` atoms across 50 of
@@ -1353,7 +1366,7 @@ export async function composeOrient(
   const factsFold: 'full' | 'never-drop' = !monitor || args.afterCompaction === true ? 'full' : 'never-drop';
   {
     try {
-      const { foldFacts, foldNeverDropFacts, NEVER_DROP_KEY_PREFIXES } = await import('../../../agent-facts/store');
+      const { foldFacts, foldNeverDropFacts, NEVER_DROP_KEY_PREFIXES, listFactEvictionDisclosures } = await import('../../../agent-facts/store');
       const selectors = [
         { scope: 'workspace' as const },
         ...(ownerId ? [{ scope: 'owner' as const, scopeRef: ownerId }] : []),
@@ -1476,6 +1489,15 @@ export async function composeOrient(
       }
       if (withheld.length > 0) {
         result.factsWithheld = { count: withheld.length, reason: QUEEN_LOOP_WITHHELD_REASON };
+      }
+      // EI-19485000346355077: only on the FULL fold — a monitor tick's never-drop
+      // fold is EI-8300 budget-constrained and this is a supplementary signal, not
+      // a leg that fold already pays for. Reuses the SAME `selectors` this fold
+      // already built. Fail-soft (inside this same try/catch): an eviction-
+      // disclosure read error must never break orientation.
+      if (factsFold === 'full') {
+        const factEvictionDisclosures = await listFactEvictionDisclosures(selectors, foldOpts);
+        if (factEvictionDisclosures.length > 0) result.factEvictionDisclosures = factEvictionDisclosures;
       }
     } catch {
       result.facts = null;

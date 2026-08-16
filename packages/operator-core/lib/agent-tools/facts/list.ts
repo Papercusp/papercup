@@ -9,6 +9,7 @@ import {
   listFacts,
   countLiveFacts,
   factVersions,
+  listFactEvictionDisclosures,
   FACT_SCOPES,
   isPermanentFactExpiry,
   type AgentFact,
@@ -351,6 +352,17 @@ export default defineTool({
     } catch {
       census = { totalUnknown: 'census_query_failed' };
     }
+    // EI-19485000346355077: this scope's absence of a key you expect is ambiguous
+    // between "cap-evicted" and "never asserted" — ordinary readers had no path to
+    // that distinction (see listFactEvictionDisclosures' doc). Fail-soft: a
+    // disclosure-read error must never break the list it annotates.
+    let evictionDisclosures: Record<string, unknown> = {};
+    try {
+      const disclosures = await listFactEvictionDisclosures([{ scope: args.scope, scopeRef: scopeRef ?? null }]);
+      if (disclosures.length > 0) evictionDisclosures = { evictionDisclosure: disclosures[0] };
+    } catch {
+      // silent — this is a supplementary signal, not a hard dependency of the list read
+    }
     const truncatedByLimit = census.total !== undefined && census.total > rows.length;
     return {
       data: {
@@ -371,6 +383,7 @@ export default defineTool({
           : {}),
         ...(limitDisclosure ?? {}),
         ...(args.full !== true ? { excerpted: true, note: FACTS_LIST_EXCERPT_NOTE } : {}),
+        ...evictionDisclosures,
         facts: rows,
       },
     };

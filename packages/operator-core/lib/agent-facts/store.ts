@@ -1936,6 +1936,105 @@ export async function listFacts(
   );
 }
 
+/** Default lookback window for {@link listFactEvictionDisclosures}. Bounded so the
+ *  read stays a cheap grouped COUNT rather than an unbounded scan, and so a scope's
+ *  eviction disclosure retires once the churn that produced it has aged out — old
+ *  eviction noise must not accumulate forever in a permanently-saturated scope. */
+export const FACT_EVICTION_DISCLOSURE_WINDOW_SEC = 24 * 3600;
+
+/**
+ * EI-19485000346355077: reader-visible disclosure that a scope has RECENTLY had
+ * facts cap-evicted (`evicted_at IS NOT NULL`, {@link FactEviction}) — so an
+ * ordinary reader whose expected standing fact is silently absent from a
+ * {@link foldFacts} / {@link listFacts} result can tell "the cap took it" apart
+ * from "nobody ever asserted it", without needing raw SQL access to `evicted_at`.
+ *
+ * ── WHY THIS EXISTS SEPARATELY FROM THE EXISTING SIGNALS ──────────────────────
+ * WI-6935 (b) already made a cap eviction distinguishable AFTER the fact
+ * (`evicted_at IS NOT NULL` on the row itself), and WI-7298 ({@link
+ * AssertFactResult.evicted}) + `notify-evicted.ts` report it to the WRITER whose
+ * assert caused it. Both are writer-facing. An ORDINARY reader — everyone folding
+ * `coord:orient` or calling `facts:list` who is not the agent who happened to
+ * evict something — has no path to that information at all: {@link
+ * liveFactPredicate} filters `retracted_at IS NULL`, so a cap-evicted row is
+ * simply gone from every existing read, identically to a key nobody ever wrote.
+ *
+ * ── SCOPE (deliberate) ─────────────────────────────────────────────────────────
+ * Per-SELECTOR count + latest timestamp, not a per-key list of what was evicted.
+ * A busy scope can evict a fact every few seconds (WI-7292's measured case: 11
+ * evictions in 25 minutes), so a per-key list only relocates the unbounded-growth
+ * problem the cap itself exists to solve into this response instead. The bounded
+ * count is enough to answer the question this exists for ("is my missing fact
+ * cap-evicted or never-asserted?") — a reader missing one specific key already
+ * has the exact tool to resolve it (`facts:list { key }`, `key_required` mode).
+ *
+ * Deliberately ADDITIVE: {@link AgentFact}, {@link foldFacts} and {@link
+ * listFacts} are UNCHANGED — every existing caller/fixture keeps compiling and
+ * reading exactly what it read before. This is a second, opt-in, bounded read
+ * threaded into `facts:list` and `coord:orient` by their own callers.
+ */
+export interface FactEvictionDisclosure {
+  scope: FactScope;
+  scopeRef: string | null;
+  /** Facts cap-evicted from this selector within the lookback window. Always > 0 —
+   *  callers omit the disclosure entirely for a selector with nothing to report,
+   *  the same "silence in the common case" convention {@link AssertFactResult.evicted}
+   *  already uses. */
+  recentEvictedCount: number;
+  /** The most recent in-window eviction timestamp. */
+  latestEvictedAt: string;
+  /** What this means, and how to recover — rendered so it stands alone next to a fold. */
+  meaning: string;
+}
+
+/**
+ * Grouped read behind {@link FactEvictionDisclosure} — one bounded COUNT query
+ * per selector (mirrors {@link foldFacts}'s per-selector loop shape), scoped to
+ * cap evictions inside {@link FACT_EVICTION_DISCLOSURE_WINDOW_SEC}. Returns only
+ * selectors with a non-zero count (see the field doc above) — the common case is
+ * an empty array, and callers should treat that as "nothing to disclose", not
+ * "the read failed" (a caller wanting fail-soft behavior on a DB error should
+ * catch around this call, same as every other facts read here).
+ */
+export async function listFactEvictionDisclosures(
+  selectors: readonly FactSelector[],
+  opts: { workspaceId?: string; windowSec?: number } = {},
+  inject?: Sql,
+): Promise<FactEvictionDisclosure[]> {
+  if (selectors.length === 0) return [];
+  const sql = sqlOf(inject);
+  const ws = opts.workspaceId ?? activeWorkspaceId();
+  const windowSec = opts.windowSec ?? FACT_EVICTION_DISCLOSURE_WINDOW_SEC;
+  const windowHoursLabel = Math.max(1, Math.round(windowSec / 3600));
+  const out: FactEvictionDisclosure[] = [];
+  for (const sel of selectors) {
+    const ref = sel.scope === 'workspace' ? '' : (sel.scopeRef ?? '').trim();
+    if (sel.scope !== 'workspace' && !ref) continue; // same guard foldFacts applies
+    const rows = await sql<{ n: string; latest: string | null }[]>`
+      SELECT count(*)::text AS n, max(evicted_at)::text AS latest
+        FROM harness_shared.agent_facts
+       WHERE workspace_id = ${ws} AND scope = ${sel.scope}
+         AND coalesce(scope_ref,'') = ${ref}
+         AND evicted_at IS NOT NULL
+         AND evicted_at > now() - make_interval(secs => ${windowSec})`;
+    const n = Number(rows[0]?.n ?? 0);
+    const latest = rows[0]?.latest ?? null;
+    if (n === 0 || !latest) continue; // silence in the common case, per the field doc above
+    out.push({
+      scope: sel.scope,
+      scopeRef: sel.scopeRef ?? null,
+      recentEvictedCount: n,
+      latestEvictedAt: latest,
+      meaning:
+        `${n} fact(s) were cap-evicted (FACTS_PER_SCOPE_CAP=${FACTS_PER_SCOPE_CAP}) from this scope in the ` +
+        `last ${windowHoursLabel}h. A standing fact you expect but don't see here may have been evicted, not ` +
+        `never-asserted — facts:list only shows LIVE rows. Check with the scope's recent writers, or ` +
+        `re-assert it yourself if the conclusion still holds.`,
+    });
+  }
+  return out;
+}
+
 /**
  * P-018: every live DECLARED CONVENTION (`kind='convention'`) in the workspace,
  * across scopes — the fact half of the conventions read model.
