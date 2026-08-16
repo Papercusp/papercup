@@ -159,6 +159,46 @@ describe('fileFindings watchdogKey stability (EI-3909/EI-5846/EI-5829/EI-6585)',
     );
   });
 
+  it('AUTO-FILES a convergence failure — a run where the mesh never caught up must not pass silently (EI-20576392705164447)', async () => {
+    const { fileFindings } = (await import('./p2p-perf-actions'))._testing;
+
+    // The 2026-08-16 shape: ZERO SLO violations (loop lag was a healthy 21ms)
+    // while most readers never converged. Before this, the nightly filed nothing.
+    await fileFindings(
+      summaryWith({
+        sloViolations: [],
+        convergenceViolations: [
+          {
+            scenario: 'replication.sustained',
+            paramsKey: 'count=200,peers=64,rate=10',
+            expectedReaders: 63,
+            convergedReaders: 58,
+            laggingReaders: ['1', '2', '22', '29', '3'],
+            observedP95Ms: 601075,
+            p95LimitMs: null,
+          },
+        ],
+      }),
+      'nightly Tier-1',
+    );
+
+    expect(captureImprovementMock).toHaveBeenCalledTimes(1);
+    const filed = captureImprovementMock.mock.calls[0]![0];
+    expect(filed.watchdogKey).toBe('p2p-perf-convergence:replication.sustained:count=200,peers=64,rate=10');
+    expect(filed.kind).toBe('bug');
+    // Numbers stay out of the title so cross-run dedup keeps working.
+    expect(filed.title).not.toMatch(/601075|58\/63/);
+    expect(filed.body).toContain('58/63');
+  });
+
+  it('CONTROL: the same run with the convergence list absent (a pre-fix summary.json) files nothing and does not throw', async () => {
+    const { fileFindings } = (await import('./p2p-perf-actions'))._testing;
+    // summary.json is parsed off disk with a cast, so a legacy file genuinely
+    // arrives without the field — it must read as "not measured", not crash.
+    await fileFindings(summaryWith({ convergenceViolations: undefined as never }), 'nightly Tier-1');
+    expect(captureImprovementMock).not.toHaveBeenCalled();
+  });
+
   it('gives a DIFFERENT watchdogKey to a different metric on the SAME scenario/params (they must not dedup against each other)', async () => {
     const { fileFindings } = (
       await import('./p2p-perf-actions')

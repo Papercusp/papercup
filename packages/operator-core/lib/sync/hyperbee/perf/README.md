@@ -11,6 +11,18 @@ artifact carries `loopLag` + `sloPassed`. Throughput numbers are secondary to
 "the operator never becomes unusable because of sync" (EI-79 was exactly that
 failure).
 
+**Every artifact carries a SECOND, separate verdict: `convergencePassed`.**
+`sloPassed` answers *did the host stay responsive*; `convergencePassed` answers
+*did replication keep up* — every reader applied all ops inside its catch-up
+budget (and, when a scenario sets `convergenceP95LimitMs`, appendToVisible p95
+stayed under it). They are deliberately NOT merged, because they diverge: on
+2026-08-16 a 64-peer run reported `sloPassed: true` off a healthy 21ms loop lag
+while most readers never converged and appendToVisible p95 was 601 SECONDS —
+`--gate` and `--slo-only` would both have gone green (EI-20576392705164447).
+Never read a green `sloPassed` as evidence the mesh kept up. `null` on either
+verdict means NOT MEASURED (no readers declared, no mesh formed, or a
+pre-2026-08-16 artifact) — never a pass. Both fail the gated exit paths.
+
 ## Running
 
 ```bash

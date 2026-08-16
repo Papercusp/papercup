@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { parseSwapPages, computeHostHealth, parsePsiSome } from './runner';
+import { parseSwapPages, computeHostHealth, parsePsiSome, collectConvergenceViolations } from './runner';
+import type { PerfArtifact } from './artifact';
 
 describe('parseSwapPages (EI-9145)', () => {
   it('parses pswpin/pswpout out of a real /proc/vmstat shape', () => {
@@ -95,5 +96,79 @@ describe('parsePsiSome (EI-19301664378023382)', () => {
     // deliberately NOT re-wired into computeHostHealth (see runner.ts's rationale).
     const text = 'some avg10=0.00 avg60=5.07 avg300=8.22 total=47076542478';
     expect(parsePsiSome(text)).toEqual({ avg10: 0, avg60: 5.07 });
+  });
+});
+
+/**
+ * The GATE half of the EI-20576392705164447 guard.
+ *
+ * `metrics.test.ts` proves the artifact stops claiming a pass; this proves the
+ * runner's gated exit paths (`--gate`, `--slo-only`) actually SEE it. Both
+ * halves are needed: the 2026-08-16 run failed because a correctly-detected
+ * problem never reached the verdict, and a verdict nothing reads is the same
+ * bug one layer out.
+ */
+describe('collectConvergenceViolations (EI-20576392705164447)', () => {
+  const cell = (over: Partial<PerfArtifact>): PerfArtifact =>
+    ({
+      schema: 1,
+      scenario: 'replication.sustained',
+      tier: 1,
+      params: { peers: 64, rate: 10 },
+      startedAt: '2026-08-16T02:32:24.570Z',
+      durationMs: 1_023_652,
+      host: { hostname: 'host-abc', platform: 'linux', arch: 'x64', cpus: 128, node: 'v22' },
+      metrics: {},
+      loopLag: { p50Ms: 5, p95Ms: 21.1, p99Ms: 30, maxMs: 40 },
+      sloPassed: true,
+      sloLimitMs: 100,
+      convergence: null,
+      convergencePassed: null,
+      cpu: { userMs: 1, systemMs: 1 },
+      rss: { peakBytes: 1 },
+      notes: [],
+      ...over,
+    }) as PerfArtifact;
+
+  it('flags the exact artifact that shipped green: sloPassed true, readers behind', () => {
+    const v = collectConvergenceViolations([
+      cell({
+        convergence: {
+          expectedReaders: 63,
+          convergedReaders: 58,
+          laggingReaders: ['1', '2', '22', '29', '3'],
+          p95LimitMs: null,
+          observedP95Ms: 601_075,
+        },
+        convergencePassed: false,
+        notes: ['reader 1 did not apply all ops in time'],
+      }),
+    ]);
+    expect(v).toHaveLength(1);
+    expect(v[0]).toMatchObject({
+      scenario: 'replication.sustained',
+      paramsKey: 'peers=64,rate=10',
+      expectedReaders: 63,
+      convergedReaders: 58,
+      observedP95Ms: 601_075,
+    });
+  });
+
+  it('a converged cell is not a violation', () => {
+    expect(
+      collectConvergenceViolations([
+        cell({
+          convergence: { expectedReaders: 15, convergedReaders: 15, laggingReaders: [], p95LimitMs: null, observedP95Ms: 996 },
+          convergencePassed: true,
+        }),
+      ]),
+    ).toHaveLength(0);
+  });
+
+  it('an unmeasured cell (no readers declared, or a legacy artifact) is not a violation', () => {
+    // null must read as "not measured", never as a failure — otherwise every
+    // reader-less scenario (merge.idle-tick) and every pre-fix baseline artifact
+    // would red the gate for a property they never claimed.
+    expect(collectConvergenceViolations([cell({}), cell({ convergencePassed: undefined as never })])).toHaveLength(0);
   });
 });

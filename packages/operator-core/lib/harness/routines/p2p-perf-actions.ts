@@ -277,10 +277,49 @@ async function fileFindings(summary: RunSummary, tierLabel: string): Promise<voi
     return;
   }
   const sloKeys = summary.sloViolations.map((v) => `p2p-perf-slo:${v.scenario}:${v.paramsKey}`);
+  // EI-20576392705164447: the nightly used to file ONLY loop-lag SLO violations
+  // and regressions, so a run where the mesh never converged auto-filed nothing
+  // at all — the same false-green one layer out from the artifact verdict.
+  const convergenceViolations = summary.convergenceViolations ?? [];
+  const convergenceKeys = convergenceViolations.map(
+    (v) => `p2p-perf-convergence:${v.scenario}:${v.paramsKey}`,
+  );
   const regressionKeys = summary.regressions.map(
     (r) => `p2p-perf-regression:${r.scenario}:${r.paramsKey}:${r.metric}`,
   );
-  const alreadyOpen = await openIssueExistsForKeys([...sloKeys, ...regressionKeys]);
+  const alreadyOpen = await openIssueExistsForKeys([...sloKeys, ...convergenceKeys, ...regressionKeys]);
+
+  for (let idx = 0; idx < convergenceViolations.length; idx++) {
+    const v = convergenceViolations[idx]!;
+    const watchdogKey = convergenceKeys[idx]!;
+    if (alreadyOpen.has(watchdogKey)) continue;
+    await captureImprovement({
+      kind: 'bug',
+      severity: 'major',
+      // Numbers stay OUT of the title (EI-3909 et al above): they differ every
+      // run, which is what broke cross-run dedup for the SLO findings.
+      title: `p2p-perf convergence failure: ${v.scenario} readers did not catch up [${v.paramsKey}]`,
+      body:
+        `${tierLabel} run ${summary.runId} (profile ${summary.profile}): the mesh did not converge.\n` +
+        `scenario: ${v.scenario} [${v.paramsKey}]\n` +
+        `converged readers: ${v.convergedReaders}/${v.expectedReaders}` +
+        (v.laggingReaders.length ? `\nlagging: ${v.laggingReaders.slice(0, 24).join(', ')}` : '') +
+        (v.observedP95Ms !== null ? `\nappendToVisible p95: ${v.observedP95Ms}ms` : '') +
+        (v.p95LimitMs !== null ? ` (ceiling ${v.p95LimitMs}ms)` : '') +
+        `\n\nNOTE: this is SEPARATE from the D-003 host-responsiveness SLO, which can be GREEN in the ` +
+        `same run — it was on 2026-08-16, at 21ms loop-lag p95, while appendToVisible p95 was 601 seconds ` +
+        `(EI-20576392705164447). Do not close this against a green sloPassed.\n` +
+        `artifacts: ${summary.outDir}\nreport: ${summary.reportPath}\n` +
+        `(auto-filed by system:p2p-perf — p2p-performance-suite-2026-06-07 P-014)`,
+      source: 'su',
+      sourceRole: 'system',
+      dedupScope: 'open',
+      createdBy: 'system:p2p-perf',
+      watchdogKey,
+    }).catch(() => {
+      /* duplicates declined by capture-core; other failures must not break the routine */
+    });
+  }
 
   for (let idx = 0; idx < summary.sloViolations.length; idx++) {
     const v = summary.sloViolations[idx]!;

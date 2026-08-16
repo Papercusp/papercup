@@ -42,6 +42,12 @@ export class MeshFormationError extends Error {
  * impaired link. No sync ran, so there are no metrics and the host-event-loop
  * SLO is not meaningful (sloPassed = null); the artifact exists to RECORD the
  * cell (`params.meshFormed = false` + a note) rather than crash the sweep.
+ *
+ * Convergence is likewise left UNMEASURED (`convergence: null` — the meter is
+ * never told to expect readers), for the same reason the SLO is: no reader ever
+ * got the chance to catch up, so there is no convergence observation to report.
+ * `null` reads as "not measured", never as a pass — `collectConvergenceViolations`
+ * only ever fires on an explicit `false` (EI-20576392705164447).
  */
 export function meshDidNotFormArtifact(opts: {
   scenario: string;

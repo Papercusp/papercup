@@ -35,6 +35,8 @@ function artifact(
     loopLag: { p50Ms: lagP95 / 2, p95Ms: lagP95, p99Ms: lagP95 * 1.5, maxMs: lagP95 * 2 },
     sloPassed: lagP95 < 100,
     sloLimitMs: 100,
+    convergence: null,
+    convergencePassed: null,
     cpu: { userMs: 1, systemMs: 1 },
     rss: { peakBytes: 1 },
     notes: [],

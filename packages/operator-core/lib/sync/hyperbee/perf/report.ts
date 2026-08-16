@@ -46,8 +46,10 @@ export function renderPerfReport(opts: RenderReportOpts): string {
       : '- host: (none)',
     `- artifacts: ${artifacts.length}`,
     '',
-    '| scenario | tier | params | key metric (p95) | loop-lag p95 | SLO | notes |',
-    '|---|---|---|---|---|---|---|',
+    // Two SEPARATE verdict columns: host responsiveness vs whether replication
+    // kept up. They diverge, and merging them hid a collapse (EI-20576392705164447).
+    '| scenario | tier | params | key metric (p95) | loop-lag p95 | SLO (host) | converged (readers) | notes |',
+    '|---|---|---|---|---|---|---|---|',
   ];
   for (const a of artifacts) {
     const params = Object.entries(a.params)
@@ -56,9 +58,13 @@ export function renderPerfReport(opts: RenderReportOpts): string {
     const main = headlineMetric(a);
     const metricCell = main ? `${main.name}: ${main.p95} ${main.unit}` : '—';
     const slo = a.sloPassed === null ? 'n/a' : a.sloPassed ? '✓' : '**✖**';
+    const conv =
+      a.convergencePassed === null || a.convergencePassed === undefined
+        ? 'n/a'
+        : `${a.convergencePassed ? '✓' : '**✖'} ${a.convergence?.convergedReaders}/${a.convergence?.expectedReaders}${a.convergencePassed ? '' : '**'}`;
     const notes = a.notes.length ? a.notes.join('; ').slice(0, 200) : '';
     lines.push(
-      `| ${a.scenario} | ${a.tier} | ${params} | ${metricCell} | ${a.loopLag?.p95Ms ?? '—'} ms | ${slo} | ${notes} |`,
+      `| ${a.scenario} | ${a.tier} | ${params} | ${metricCell} | ${a.loopLag?.p95Ms ?? '—'} ms | ${slo} | ${conv} | ${notes} |`,
     );
   }
   if (compareText) {

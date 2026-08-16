@@ -3,7 +3,14 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { ScenarioMeter, Series, startTimer, summarize } from './metrics';
+import {
+  convergenceVerdict,
+  recomputeConvergenceVerdict,
+  ScenarioMeter,
+  Series,
+  startTimer,
+  summarize,
+} from './metrics';
 
 describe('summarize', () => {
   it('computes nearest-rank percentiles on a known series', () => {
@@ -79,5 +86,148 @@ describe('ScenarioMeter', () => {
     const a = meter.finish();
     // An idle test process should never show 100ms p95 loop lag.
     expect(a.sloPassed).toBe(true);
+  });
+});
+
+/**
+ * The recurrence guard for EI-20576392705164447.
+ *
+ * On 2026-08-16 a 64-peer `replication.sustained` run wrote an artifact that
+ * simultaneously recorded (a) `sloPassed: true` with a healthy 21ms loop-lag
+ * p95, (b) `notes` listing readers that never applied all ops, and (c) an
+ * appendToVisible p95 of 601 SECONDS. The verdict read only (a), so `--gate`
+ * and `--slo-only` would both have gone green on a mesh ten minutes behind.
+ *
+ * The invariant locked down here: a healthy host SLO must never be able to
+ * carry a non-converged run to a pass. The two verdicts stay separate, and the
+ * convergence one is not derivable from the responsiveness one.
+ */
+describe('convergence verdict (EI-20576392705164447)', () => {
+  it('THE 2026-08-16 CASE: healthy loop lag + readers that never caught up ⇒ SLO passes, convergence FAILS', () => {
+    const meter = new ScenarioMeter({
+      scenario: 'replication.sustained',
+      tier: 1,
+      params: { peers: 64, rate: 10, count: 200 },
+    });
+    meter.expectReaders(63);
+    meter.readerDidNotConverge(1);
+    meter.readerDidNotConverge(22);
+    const a = meter.finish();
+
+    // The host really was responsive — that reading is preserved, not "fixed".
+    expect(a.sloPassed).toBe(true);
+    // …and it no longer speaks for the mesh.
+    expect(a.convergencePassed).toBe(false);
+    expect(a.convergence).toMatchObject({
+      expectedReaders: 63,
+      convergedReaders: 61,
+      laggingReaders: ['1', '22'],
+    });
+    // The human-readable note is unchanged, so anything grepping artifacts still matches.
+    expect(a.notes).toContain('reader 1 did not apply all ops in time');
+  });
+
+  it('CONTROL: the PRE-FIX verdict passes this very data — so the guard above is discriminating, not vacuous', () => {
+    const meter = new ScenarioMeter({ scenario: 'replication.sustained', tier: 1, params: { peers: 64 } });
+    meter.expectReaders(63);
+    meter.readerDidNotConverge(1);
+    const a = meter.finish();
+    // What shipped before this fix: the whole verdict was `sloPassed`, and
+    // nothing consulted `notes`. Kept here as a permanent control so a future
+    // regression that quietly reverts the verdict to host-responsiveness-only
+    // cannot leave these tests green (repo rule: prove the guard is falsifiable
+    // WITHOUT mutating the shared tree).
+    const preFixVerdict = (art: typeof a) => art.sloPassed;
+    expect(preFixVerdict(a)).toBe(true); // ← the bug, reproduced
+    expect(a.convergencePassed).toBe(false); // ← the fix, on identical input
+  });
+
+  it('every reader caught up ⇒ convergence passes', () => {
+    const meter = new ScenarioMeter({ scenario: 's', tier: 1, params: {} });
+    meter.expectReaders(4);
+    const a = meter.finish();
+    expect(a.convergencePassed).toBe(true);
+    expect(a.convergence).toMatchObject({ expectedReaders: 4, convergedReaders: 4, laggingReaders: [] });
+  });
+
+  it('a scenario that declares no readers reports NOT-MEASURED, never a silent pass', () => {
+    const meter = new ScenarioMeter({ scenario: 'merge.idle-tick', tier: 1, params: {} });
+    const a = meter.finish();
+    expect(a.convergence).toBeNull();
+    expect(a.convergencePassed).toBeNull();
+  });
+
+  it('expectReaders is additive so a multi-phase scenario counts every check', () => {
+    const meter = new ScenarioMeter({ scenario: 'churn.reconnect-storm', tier: 1, params: {} });
+    meter.expectReaders(3); // phase 1
+    meter.expectReaders(3); // rejoin after the storm
+    meter.readerDidNotConverge('rejoin:2');
+    const a = meter.finish();
+    expect(a.convergence).toMatchObject({ expectedReaders: 6, convergedReaders: 5 });
+    expect(a.convergencePassed).toBe(false);
+  });
+
+  it('the same reader reported twice is counted once', () => {
+    const meter = new ScenarioMeter({ scenario: 's', tier: 1, params: {} });
+    meter.expectReaders(2);
+    meter.readerDidNotConverge(1);
+    meter.readerDidNotConverge(1);
+    expect(meter.finish().convergence?.convergedReaders).toBe(1);
+  });
+
+  describe('the appendToVisible p95 ceiling', () => {
+    it('is NOT judged when unset — recorded latency alone never fails a run', () => {
+      expect(
+        convergenceVerdict({
+          expectedReaders: 2,
+          convergedReaders: 2,
+          laggingReaders: [],
+          p95LimitMs: null,
+          observedP95Ms: 601_075,
+        }),
+      ).toBe(true);
+    });
+
+    it('fails a run that blows an explicitly set ceiling even with every reader caught up', () => {
+      expect(
+        convergenceVerdict({
+          expectedReaders: 2,
+          convergedReaders: 2,
+          laggingReaders: [],
+          p95LimitMs: 5_000,
+          observedP95Ms: 32_900,
+        }),
+      ).toBe(false);
+    });
+
+    it('passes under the ceiling', () => {
+      expect(
+        convergenceVerdict({
+          expectedReaders: 2,
+          convergedReaders: 2,
+          laggingReaders: [],
+          p95LimitMs: 5_000,
+          observedP95Ms: 996,
+        }),
+      ).toBe(true);
+    });
+  });
+
+  it('recomputeConvergenceVerdict picks up appendToVisibleMs attached AFTER finish()', () => {
+    // foldChildResults patches the metric in post-finish, which is why the
+    // latency half of the verdict cannot be decided inside finish().
+    const meter = new ScenarioMeter({
+      scenario: 'replication.sustained',
+      tier: 1,
+      params: {},
+      convergenceP95LimitMs: 5_000,
+    });
+    meter.expectReaders(1);
+    const a = meter.finish();
+    expect(a.convergencePassed).toBe(true); // nothing measured yet
+    a.metrics['appendToVisibleMs'] = summarize([601_075], 'ms');
+    recomputeConvergenceVerdict(a);
+    expect(a.convergencePassed).toBe(false);
+    expect(a.convergence?.observedP95Ms).toBe(601_075);
   });
 });

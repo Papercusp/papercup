@@ -94,7 +94,16 @@ export async function runTier3Suite(opts: Tier3SuiteOpts): Promise<Tier3SuiteRes
     const n = artifacts.length;
     const file = join(outDir, `${String(n).padStart(3, '0')}-${artifact.scenario.replace(/[^a-z0-9.-]/gi, '_')}.json`);
     writeFileSync(file, JSON.stringify(artifact, null, 2));
-    log(`  ✔ ${artifact.scenario} slo=${artifact.sloPassed === null ? 'n/a' : artifact.sloPassed ? '✓' : '✖'}`);
+    // `slo` alone is host responsiveness; `conv` is whether replication kept up
+    // — a green slo beside a red conv is a real, observed combination (EI-20576392705164447).
+    log(
+      `  ✔ ${artifact.scenario} slo=${artifact.sloPassed === null ? 'n/a' : artifact.sloPassed ? '✓' : '✖'}` +
+        ` conv=${
+          artifact.convergencePassed === null || artifact.convergencePassed === undefined
+            ? 'n/a'
+            : `${artifact.convergencePassed ? '✓' : '✖'}(${artifact.convergence?.convergedReaders}/${artifact.convergence?.expectedReaders})`
+        }`,
+    );
   }
 
   const reportPath = join(outDir, 'report.md');
