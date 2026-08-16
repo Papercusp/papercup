@@ -86,7 +86,7 @@ describe('resolveImplementationPaths', () => {
 });
 
 describe('classifyGuard — a mention is not enforcement', () => {
-  const scripts = { 'lint:x': 'node scripts/check-x.mjs' };
+  const scripts = { 'lint:x': 'node scripts/check-x.mjs', 'gen:foo': 'node scripts/gen-foo.mjs' };
 
   it('credits a guard the release gate runs', () => {
     const r = classifyGuard({ name: 'lint:x', command: scripts['lint:x'], corpora: corpora({ gate: "'lint:x'" }) });
@@ -142,6 +142,42 @@ describe('classifyGuard — a mention is not enforcement', () => {
       corpora: corpora({}),
       repoWideRegistered: new Set(['lint:x-strict']),
     });
+    expect(r.blocking).toBe(false);
+  });
+
+  /* A guard's BLOCKING mode usually lives in a companion alias (`lint:x` reports and
+   * exits 0; `lint:x:fail` exits 1), so the correct registration names the `:fail`
+   * half — registering the base would buy full coverage of a script that can never
+   * red anything. An exact-Set lookup reported that correct registration as absent
+   * (measured 2026-08-16 on `lint:di-seam-arity-strands`, which was wired properly and
+   * still failed the coverage axis). Enforcement is a property of the IMPLEMENTATION,
+   * not of which alias points at it.
+   */
+  it('CREDITS the base guard when its `:fail` companion alias is what is registered', () => {
+    const r = classifyGuard({
+      name: 'lint:x',
+      command: scripts['lint:x'],
+      corpora: corpora({}),
+      repoWideRegistered: new Set(['lint:x:fail']),
+    });
+    expect(r.tiers).toContain('repo-wide');
+    expect(r.blocking).toBe(true);
+  });
+
+  /* FAIL-CLOSED CONTROL for the alias hop. The `gen:*:check` family is the one place the
+   * collapse must NOT happen: `gen:foo` WRITES the artifact and `gen:foo:check` is the only
+   * half that asserts drift, so crediting the writer would certify a script whose job is to
+   * overwrite the very thing it would have to fail on. If this goes quiet, the alias hop has
+   * been widened into the hole GEN_CHECK_RE exists to keep shut.
+   */
+  it('does NOT credit a `gen:` WRITER off its `:check` guard registration', () => {
+    const r = classifyGuard({
+      name: 'gen:foo',
+      command: scripts['gen:foo'],
+      corpora: corpora({}),
+      repoWideRegistered: new Set(['gen:foo:check']),
+    });
+    expect(r.tiers).not.toContain('repo-wide');
     expect(r.blocking).toBe(false);
   });
 

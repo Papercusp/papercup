@@ -424,6 +424,41 @@ const COMPANION_SUFFIX_RE = /:(fix|report|census|strict|all|fail|update|check|ty
 const GEN_CHECK_RE = /^gen:.+:check$/;
 
 /**
+ * Is THIS guard registered in `REPO_WIDE_INVARIANT_GUARDS` — directly, or through one of
+ * its companion aliases?
+ *
+ * ⚠ WHY THE ALIAS HOP IS REQUIRED, not a convenience (measured 2026-08-16, WI-39420).
+ * A guard's blocking mode usually lives in a companion alias: `lint:x` prints findings and
+ * exits 0, `lint:x:fail` exits 1. Registering the BASE is therefore the wrong half — it
+ * would run the guard on every changed path it covers and never fail, i.e. buy full
+ * coverage of a script that cannot red anything. So the correct registration names the
+ * `:fail` alias — and an exact-Set lookup for the base guard then reported that correct
+ * registration as NOT REGISTERED. `lint:di-seam-arity-strands` was wired properly and
+ * still failed this check's coverage axis, which reads as "the wiring did not work" and
+ * invites exactly the false-green re-registration described above.
+ *
+ * Enforcement is a property of the IMPLEMENTATION, not of how many npm aliases point at
+ * it — the same premise `COMPANION_SUFFIX_RE` already encodes for the census.
+ *
+ * Two properties this must NOT break, both load-bearing:
+ *  • NESTED NAMES. The match is exact-after-stripping, never a substring/prefix test, so
+ *    `lint:no-retired-resurrection` still does not credit `lint:no-retired` (see the note
+ *    on the exact-Set lookup in `classifyGuard`).
+ *  • THE `gen:*:check` CARVE-OUT. There the `:check` half is a guard in its OWN right and
+ *    its writer base must never inherit its coverage — collapsing them would credit a
+ *    script whose job is to overwrite drift (see `GEN_CHECK_RE` above). Those registrations
+ *    are skipped for the alias hop and only ever match exactly.
+ */
+export function hasRepoWideRegistration(repoWideRegistered, name) {
+  if (repoWideRegistered.has(name)) return true;
+  for (const registered of repoWideRegistered) {
+    if (GEN_CHECK_RE.test(registered)) continue;
+    if (registered !== name && registered.replace(COMPANION_SUFFIX_RE, '') === name) return true;
+  }
+  return false;
+}
+
+/**
  * Blank out COMMENTS before matching. A runner file that merely *discusses* a guard in
  * prose must not count as running it.
  *
@@ -520,7 +555,7 @@ export function classifyGuard({ name, command, corpora, repoWideRegistered = new
   // longer one's registration. The caller passes the EFFECTIVE set — registrations whose named
   // workspace actually declares the script — so an INERT registration confers nothing here
   // either, and still falls through to be reported as the unwired guard it really is.
-  if (repoWideRegistered.has(name)) tiers.push('repo-wide');
+  if (hasRepoWideRegistration(repoWideRegistered, name)) tiers.push('repo-wide');
   const blocking = tiers.filter((t) => BLOCKING_TIERS.has(t));
   return {
     name,
@@ -669,7 +704,7 @@ export function computeCoverage({
   if (row.tier === 'chained') {
     return { verdict: 'undetermined', reason: "inherits an unmeasured runner's coverage" };
   }
-  if (repoWideRegistered.has(row.name)) {
+  if (hasRepoWideRegistration(repoWideRegistered, row.name)) {
     return { verdict: 'full', reason: 'registered in REPO_WIDE_INVARIANT_GUARDS — runs on its own predicate' };
   }
 
