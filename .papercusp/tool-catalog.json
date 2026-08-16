@@ -3996,7 +3996,7 @@
           "POST"
         ]
       },
-      "description": "Close a consult with a structured outcome: 'answered' (requires answer; optional confidence 0..1 + evidence) or 'cant_help' (requires reason). Terminal — after the close no further consult posts are accepted. Either participant may close; at the exchange cap this is the only way forward.",
+      "description": "Close a consult with a structured outcome: 'answered' (requires answer; optional confidence 0..1 + evidence), 'cant_help' (requires reason), or 'graduate' (requires reason — the consult outgrew its bounds: mints a shared work item both participants follow, D-004). Terminal — after the close no further consult posts are accepted. Either participant may close; at the exchange cap this is the only way forward.",
       "capabilities": [
         "coord:write"
       ],
@@ -4018,7 +4018,7 @@
         "doc-steward"
       ],
       "guidance": {
-        "when": "The consult is settled (answered) — or engaged-but-stuck: you validated relevance yet cannot help (cant_help, with the reason).",
+        "when": "The consult is settled (answered) — or engaged-but-stuck: you validated relevance yet cannot help (cant_help, with the reason) — or cap-hit while STILL deliberating: graduate it into shared live work.",
         "notWhen": "Still exchanging → consult:reply. Never engaged / not your area → consult:decline (keeps the cascade menu alive for the requester)."
       }
     },
@@ -13450,7 +13450,7 @@
           "POST"
         ]
       },
-      "description": "Acquire a multi-granularity intention lock on a path NODE (a file, a directory/subtree, or the harness root \"\"). mode \"X\" = own the subtree exclusively (a directory lock for a refactor, or a file write); \"S\" = read the whole subtree; \"SIX\" = read the subtree while writing one node; IS/IX are the intention modes (usually derived for you). The lock places the matching intention on every ancestor incl. the harness root, so a harness-exclusive (X on \"\") now conflicts with any descendant file lock. All-or-nothing — you get the whole lock-set or a conflict list. Release with locks:release_granular.",
+      "description": "Acquire a multi-granularity intention lock on a path NODE (a file, a directory/subtree, or the harness root \"\"). mode \"X\" = own the subtree exclusively (a directory lock for a refactor, or a file write); \"S\" = read the whole subtree; \"SIX\" = read the subtree while writing one node; IS/IX are the intention modes (usually derived for you). The lock places the matching intention on every ancestor incl. the harness root, so a harness-exclusive (X on \"\") conflicts with any descendant GRANULAR lock. ⚠ It does NOT exclude classic file locks (locks:acquire, and every automatic per-edit hook claim) — a separate domain the granular conflict check never reads — so a root X is NOT an exclusive snapshot of the tree and peer edits still land under it. All-or-nothing — you get the whole lock-set or a conflict list. Release with locks:release_granular.",
       "capabilities": [
         "locks:write"
       ],
