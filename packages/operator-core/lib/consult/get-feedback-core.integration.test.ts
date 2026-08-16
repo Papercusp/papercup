@@ -521,6 +521,13 @@ describe('getFeedbackCore — archive-first retrieval (P-006)', () => {
     const { deps, reached } = makeDeps(routeOf([cand('cand-live')], { queryVec: qv }));
     const r = asOk(await getFeedbackCore({ ...baseReq, workspaceId: ws }, deps));
 
+    // TEMP DEBUG: dump the workspace rows into the failure diff
+    const dbg = (await rootSql`
+      SELECT conversation_id, state, outcome->>'source' AS src, pg_typeof(outcome)::text AS t, outcome::text AS raw
+        FROM harness_shared.consult_state WHERE workspace_id = ${ws}
+    `) as unknown as unknown[];
+    expect(dbg).toEqual([]);
+
     expect(r.verdict).toBe('routed'); // NOT served_from_archive
     expect(r.archive).toBeUndefined();
     expect(reached).toHaveLength(1);
