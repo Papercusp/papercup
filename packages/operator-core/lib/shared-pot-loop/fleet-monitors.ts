@@ -265,6 +265,18 @@ export interface PeerFederationHealth {
    * still folding our own writes while no remote log was admitted.
    */
   ownLogSilentForMs: number | null;
+  /**
+   * How many of the JUDGED (remote) logs are actually in this scope's live
+   * ADMITTED set. `null` ⇒ we could not read the admitted set — deliberately
+   * distinct from `0`, which is a determined "no peer is admitted here".
+   *
+   * WI-39489: a merge cursor OUTLIVES admission. The cursor table is durable PG
+   * state; `handle.admitted` is rebuilt in memory each boot and only re-populated
+   * when a peer RE-ANNOUNCES. So a host whose peers went away keeps their cursors
+   * forever, and judging cursors alone cannot tell "the fold is wedged" from
+   * "there is nothing to fold". This is the number that separates them.
+   */
+  admittedRemoteLogs: number | null;
 }
 
 /**
@@ -286,8 +298,16 @@ export function judgePeerFederationSilence(
      * anyway" — judging anyway is exactly the false-peer-alarm this prevents.
      */
     ownLogKeyHex?: string | null;
+    /**
+     * Every log key in this scope's LIVE ADMITTED set (own log included — the
+     * judge already knows which one that is). `undefined` ⇒ we could not read it,
+     * which is reported as `admittedRemoteLogs: null` and changes no verdict:
+     * ignorance must not be spelled the same as a determined zero (WI-39489).
+     */
+    admittedLogKeysHex?: readonly string[];
   },
 ): PeerFederationHealth {
+  const admittedSet = opts.admittedLogKeysHex ? new Set(opts.admittedLogKeysHex) : null;
   if (rows.length === 0) {
     return {
       totalLogs: 0,
@@ -299,6 +319,7 @@ export function judgePeerFederationSilence(
       strandedCursors: 0,
       liveApplyBinding: null,
       ownLogSilentForMs: null,
+      admittedRemoteLogs: admittedSet ? 0 : null,
       // Deliberately NOT a breach: "no remote logs" is the honest shape of a
       // host that has never federated. It is reported as UNMEASURED so a caller
       // that knows federation IS in use (outbox rows exist) can escalate it,
@@ -356,11 +377,20 @@ export function judgePeerFederationSilence(
       strandedCursors,
       liveApplyBinding,
       ownLogSilentForMs: null,
+      admittedRemoteLogs: null,
     };
   }
   const ownRow = underLiveBinding.find((r) => r.logKeyHex === opts.ownLogKeyHex);
   const ownLogSilentForMs = ownRow ? Math.max(0, opts.nowMs - ownRow.updatedAtMs) : null;
   const judged = underLiveBinding.filter((r) => r.logKeyHex !== opts.ownLogKeyHex);
+  // WI-39489: how many of the judged logs the fold could ACTUALLY advance. A
+  // cursor is durable PG state and outlives admission, so a peer that went away
+  // leaves a row that can never move again — indistinguishable, from the cursor
+  // table alone, from a peer we are failing to fold. `null` (unknown) is kept
+  // distinct from `0` (determined): only a determined zero may change a verdict.
+  const admittedRemoteLogs = admittedSet
+    ? judged.filter((r) => admittedSet.has(r.logKeyHex)).length
+    : null;
 
   // No REMOTE log at all under the live binding. This is the honest shape of "we
   // have admitted no peers here" and it is the reading that was missing today —
@@ -378,6 +408,7 @@ export function judgePeerFederationSilence(
       strandedCursors,
       liveApplyBinding,
       ownLogSilentForMs,
+      admittedRemoteLogs,
     };
   }
 
