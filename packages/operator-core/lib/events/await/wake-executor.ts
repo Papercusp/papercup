@@ -462,7 +462,8 @@ export function wakeTurnText(d: DeliveryWork): string {
   const payload =
     d.payload != null ? ` payload: ${JSON.stringify(d.payload).slice(0, 400)}` : '';
   const timeout = payloadIsTimeout(d.payload)
-    ? ' [TIMEOUT — the event did NOT fire before your deadline]'
+    ? ' [TIMEOUT (fired_reason: timeout) — the event did NOT fire before your deadline;' +
+      ' the awaited source did NOT complete]'
     : '';
   // EI-16648: an always-armed inbox-wake (`coord:inbox-wake:<owner>`) can be
   // CONSUMED late. A continuously-busy recipient's OWN periodic coord:inbox
@@ -767,7 +768,7 @@ export async function degradeToInboxOrDrop(
   try {
     await send(inboxNotifierIdentity(d.workspaceId), {
       to: [d.subscriberId],
-      summary: `[await-event] ${d.eventKey} fired — delivered to your coord inbox (${reason})`,
+      summary: `${wakeSummaryHeadline(d.eventKey, d.payload)} — delivered to your coord inbox (${reason})`,
       body: wakeTurnText(d),
       category: 'event',
       extra: { auto: true, event_key: d.eventKey, wake_delivery_id: d.id },

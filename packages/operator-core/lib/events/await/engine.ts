@@ -61,7 +61,7 @@ import {
   voidTreeDescendants,
 } from './compose-store';
 import { composedWakeSummary } from './compose-spec';
-import { executeWake, degradeToInboxOrDrop, type ExecuteWakeDeps } from './wake-executor';
+import { executeWake, degradeToInboxOrDrop, wakeSummaryHeadline, type ExecuteWakeDeps } from './wake-executor';
 import { classifyResumeTurnExit, type ResumeTurnExitRaw } from './resume-turn-outcome';
 import { lastInboxReadAtBatch } from '../../agent-tools/coordination/inbox-read-freshness';
 import { repliedMsgIdsBatch } from '../../agent-tools/coordination/messages';
@@ -976,7 +976,7 @@ export async function pumpWakeDeliveries(workspaceId?: string, deps: ExecuteWake
           try {
             await sendMessage(emitterIdentity('await-event', headline.workspaceId), {
               to: [subscriberId],
-              summary: `[await-event] ${headline.eventKey} fired — wake parked (${outcome.reason})`,
+              summary: `${wakeSummaryHeadline(headline.eventKey, headline.payload)} — wake parked (${outcome.reason})`,
               body: `${headline.summary ?? ''}\nIf you act on this now, ack it with events:cancel { delivery_id: ${headline.id} } so you are not also resumed for it later. If events:cancel is not in your loaded tool set, do not skip the ack — reach it via tools:find("events:cancel") or tools:invoke { name: "events:cancel", args: { delivery_id: ${headline.id} } }, both of which always resolve the tool regardless of what a generic tool-search surfaces.`.trim(),
               category: 'event',
               extra: { auto: true, event_key: headline.eventKey, wake_delivery_id: headline.id },
