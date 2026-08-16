@@ -1014,6 +1014,10 @@ describe('computeLoopCadence (EI-20217869515819188 — configured vs observed ca
 });
 
 describe('computeCadenceDrift (EI-20247200923975596 — advisory sustained drift)', () => {
+  // The clock is PINNED (nowMs + a fixed nextFireAt) rather than left to Date.now(): overdue-ness
+  // is now part of the verdict, so a fixture that lets real time drift under it would decide the
+  // assertion by how long the suite took to reach this line.
+  const NOW_MS = Date.parse('2026-08-16T00:10:00.000Z');
   const base = {
     active: true,
     intervalSec: 60,
@@ -1021,6 +1025,10 @@ describe('computeCadenceDrift (EI-20247200923975596 — advisory sustained drift
     expectedFiresSinceArm: 62,
     cadenceRatio: 12.13396,
     longestObservedGapSec: 1207.28,
+    parked: false,
+    // 600s late against a 60s interval — well past the 4-interval (240s) overdue floor.
+    nextFireAt: '2026-08-16T00:00:00.000Z',
+    nowMs: NOW_MS,
   };
 
   it('flags multiple fires with missed opportunities, a slow ratio, and a corroborating gap', () => {
@@ -1032,6 +1040,32 @@ describe('computeCadenceDrift (EI-20247200923975596 — advisory sustained drift
     expect(computeCadenceDrift({ ...base, expectedFiresSinceArm: 7, cadenceRatio: 1.4 })).toBe(false);
     expect(computeCadenceDrift({ ...base, longestObservedGapSec: null })).toBe(false);
     expect(computeCadenceDrift({ ...base, active: false })).toBe(false);
+  });
+
+  // The settling gate (loop.ts) — every statistical precondition above is already satisfied by
+  // `base`, so each case here isolates the gate itself. Without these, the gate could be deleted
+  // and the suite would stay green.
+  describe('the settling gate — drift needs a demonstrably LATE fire, not just a slow ratio', () => {
+    it('never flags a PARKED loop: a mid-turn loop is settling, and settling is not drift', () => {
+      expect(computeCadenceDrift({ ...base, parked: true })).toBe(false);
+    });
+
+    it('stays quiet when nextFireAt is absent or unparseable — overdue-ness is unestablished, not proven', () => {
+      expect(computeCadenceDrift({ ...base, nextFireAt: null })).toBe(false);
+      expect(computeCadenceDrift({ ...base, nextFireAt: undefined })).toBe(false);
+      expect(computeCadenceDrift({ ...base, nextFireAt: 'not-a-timestamp' })).toBe(false);
+    });
+
+    it('stays quiet when the next fire is still in the FUTURE — nothing is late yet', () => {
+      expect(computeCadenceDrift({ ...base, nextFireAt: '2026-08-16T00:15:00.000Z' })).toBe(false);
+    });
+
+    it('holds the 4-interval overdue floor from both sides', () => {
+      // 239s late — one second short of the floor.
+      expect(computeCadenceDrift({ ...base, nextFireAt: '2026-08-16T00:06:01.000Z' })).toBe(false);
+      // Exactly 240s late — the floor is inclusive (`>=`).
+      expect(computeCadenceDrift({ ...base, nextFireAt: '2026-08-16T00:06:00.000Z' })).toBe(true);
+    });
   });
 });
 
