@@ -23,7 +23,7 @@ import { resolveAgentIdentity, type ResolveIdentityCtx } from '../coordination/i
  * unattributable ctx, and an attribution miss must degrade to the role string,
  * never block the pause).
  */
-function pausedByFrom(ctx: unknown, role: string | undefined): string {
+export function pausedByFrom(ctx: unknown, role: string | undefined): string {
   const explicit = (ctx as { ownerId?: unknown } | undefined)?.ownerId;
   if (typeof explicit === 'string' && explicit.length > 0) return explicit;
   try {

@@ -18,11 +18,14 @@ import { defineTool, SU_ROLES, isOperatorConfigWriteRole } from '@papercusp/agen
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { runControlMutation } from '../../gateway-control/control-harness';
+import { pausedByFrom } from './set';
 
 interface MemberSnap {
   installSlug: string;
   name: string;
   active: boolean;
+  /** metadata->'pause' — the durable pause-attribution record (null when absent). */
+  pause: Record<string, unknown> | null;
 }
 
 interface GroupSnap {
@@ -40,7 +43,7 @@ export default defineTool({
   name: 'routines:group-set',
   profile: 'engineer',
   description:
-    "Bulk pause/resume every routine in a group (active:false/true), and/or patch the group's metadata (description, steward, reviewCadence) and/or mark it reviewed now (markReviewed:true — clears review-due). WI-5018 routines grouping — metadata + a bulk convenience over routines:set, never a new execution mechanism. Audited + one-call-revertible.",
+    "Bulk pause/resume every routine in a group (active:false/true), and/or patch the group's metadata (description, steward, reviewCadence) and/or mark it reviewed now (markReviewed:true — clears review-due). Pause stamps each member it deactivates (metadata.pause + groupPause marker); resume restores EXACTLY those — members paused deliberately beforehand stay paused (activateAll:true forces every member on). WI-5018 routines grouping — metadata + a bulk convenience over routines:set, never a new execution mechanism. Audited + one-call-revertible.",
   capability: 'operator:write',
   guidance: {
     when: 'Pause/resume EVERY routine in a group at once (e.g. pause the whole "release" group during a delicate manual deploy) instead of calling routines:set once per routine, or update a group\'s steward/description/review cadence, or clear its review-due flag after auditing it.',
@@ -56,7 +59,9 @@ export default defineTool({
   rolesQuota: { operator: { perRun: 15 } },
   args: z.object({
     group: z.string().min(1).max(120).describe('The routine group slug (must already exist — routines:set { group } auto-creates one on first assignment).'),
-    active: z.boolean().optional().describe('Bulk-set EVERY routine in this group active:false (pause all) or active:true (resume all).'),
+    active: z.boolean().optional().describe('active:false pauses every currently-active member (stamping each with the group-pause marker). active:true resumes ONLY the members this group-pause held (snapshot restore); pass activateAll:true to instead force every member on.'),
+    reason: z.string().min(1).max(500).optional().describe('REQUIRED when pausing (active:false) — why. Persisted on each stamped member as metadata.pause { reason, pausedBy, pausedAtMs, groupPause } (same discipline as routines:set).'),
+    activateAll: z.boolean().optional().describe('With active:true — resume EVERY member, including ones paused deliberately outside this group-pause. Default resumes only the group-pause snapshot.'),
     description: z.string().max(2000).optional().describe('Patch the group description.'),
     steward: z.string().max(200).optional().describe('Patch the group steward (who owns reviewing it).'),
     reviewCadence: z.string().max(40).optional().describe('Patch the review cadence, e.g. "90d". Used with lastReviewedAt to compute review-due in routines:list rollup.'),
@@ -75,6 +80,11 @@ export default defineTool({
       !args.markReviewed
     ) {
       throw new Error('group-set requires active, description, steward, reviewCadence, and/or markReviewed');
+    }
+    if (args.active === false && !args.reason) {
+      throw new Error(
+        'routines:group-set { active: false } (bulk pause) requires a `reason` — an unattributed pause has twice left routines silently off for days (same rule as routines:set). Pass a short reason, e.g. "pausing learning loops from the Learning tab".',
+      );
     }
 
     const { sql } = getOrgPg();
@@ -95,8 +105,10 @@ export default defineTool({
         );
       }
       const g = groupRows[0];
-      const memberRows = await sql<Array<{ install_slug: string; name: string; active: boolean }>>`
-        SELECT install_slug, name, active
+      const memberRows = await sql<
+        Array<{ install_slug: string; name: string; active: boolean; pause: Record<string, unknown> | null }>
+      >`
+        SELECT install_slug, name, active, metadata -> 'pause' AS pause
           FROM harness_shared.routines
          WHERE workspace_id = ${ws} AND group_slug = ${group}
          LIMIT ${MAX_MEMBERS_FOR_REVERT_CAPTURE}`;
@@ -106,9 +118,18 @@ export default defineTool({
         steward: g.steward,
         reviewCadence: g.review_cadence,
         lastReviewedAtIso: g.last_reviewed_at ? new Date(g.last_reviewed_at).toISOString() : null,
-        members: memberRows.map((r) => ({ installSlug: r.install_slug, name: r.name, active: r.active })),
+        members: memberRows.map((r) => ({
+          installSlug: r.install_slug,
+          name: r.name,
+          active: r.active,
+          pause: r.pause ?? null,
+        })),
       };
     };
+
+    /** Does this member's pause record carry THIS group's group-pause marker? */
+    const heldByGroupPause = (m: MemberSnap): boolean =>
+      m.pause !== null && (m.pause as { groupPause?: unknown }).groupPause === group;
 
     const writeGroupMeta = async (snap: GroupSnap): Promise<void> => {
       await sql`
@@ -138,24 +159,74 @@ export default defineTool({
             members: prev.members,
           };
           await writeGroupMeta(next);
-          if (args.active !== undefined) {
+          if (args.active === false) {
+            // Bulk PAUSE: deactivate only the currently-ACTIVE members, stamping each with
+            // the same durable pause-attribution record routines:set writes — plus the
+            // groupPause marker that makes the held set a derivable snapshot. Members that
+            // were already inactive (their own deliberate pauses included) are untouched.
+            const stamp = {
+              reason: args.reason,
+              pausedBy: pausedByFrom(ctx, ctx.role),
+              pausedAtMs: Date.now(),
+              groupPause: group,
+            };
             await sql`
               UPDATE harness_shared.routines
-                 SET active = ${args.active}, updated_at = now()
-               WHERE workspace_id = ${ws} AND group_slug = ${group}`;
-            next.members = prev.members.map((m) => ({ ...m, active: args.active! }));
+                 SET active = false,
+                     -- jsonb bound as explicit stringify + cast: sql.json() THROWS on the
+                     -- getOrgPg client (EI-607) and a bare object does not bind.
+                     metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{pause}', ${JSON.stringify(stamp)}::jsonb),
+                     updated_at = now()
+               WHERE workspace_id = ${ws} AND group_slug = ${group} AND active = true`;
+            next.members = prev.members.map((m) => (m.active ? { ...m, active: false, pause: stamp } : m));
+          } else if (args.active === true) {
+            // RESUME: by default restore ONLY the members this group-pause held (the
+            // groupPause-stamped ones) — clearing pause → lastPause exactly as
+            // routines:set does. activateAll:true forces every member on instead.
+            const resumedAt = Date.now();
+            if (args.activateAll) {
+              await sql`
+                UPDATE harness_shared.routines
+                   SET active = true,
+                       metadata = CASE
+                         WHEN metadata ? 'pause'
+                           THEN (metadata - 'pause')
+                                || jsonb_build_object('lastPause', (metadata -> 'pause') || jsonb_build_object('resumedAtMs', ${resumedAt}::bigint))
+                         ELSE COALESCE(metadata, '{}'::jsonb)
+                       END,
+                       updated_at = now()
+                 WHERE workspace_id = ${ws} AND group_slug = ${group}`;
+              next.members = prev.members.map((m) => ({ ...m, active: true, pause: null }));
+            } else {
+              await sql`
+                UPDATE harness_shared.routines
+                   SET active = true,
+                       metadata = (metadata - 'pause')
+                                || jsonb_build_object('lastPause', (metadata -> 'pause') || jsonb_build_object('resumedAtMs', ${resumedAt}::bigint)),
+                       updated_at = now()
+                 WHERE workspace_id = ${ws} AND group_slug = ${group}
+                   AND metadata -> 'pause' ->> 'groupPause' = ${group}`;
+              next.members = prev.members.map((m) => (heldByGroupPause(m) ? { ...m, active: true, pause: null } : m));
+            }
           }
           return next;
         },
         revertTo: async (prev) => {
           await writeGroupMeta(prev);
           if (args.active !== undefined && prev.members.length > 0) {
-            // Restore each member's ORIGINAL active flag (not just flip back) — a bulk
-            // pause must not silently resume a routine that was already paused before it.
+            // Restore each member's ORIGINAL active flag AND pause record (not just flip
+            // back) — a bulk pause must not silently resume a routine that was already
+            // paused before it, and a reverted pause must not leave its stamp behind.
             for (const m of prev.members) {
               await sql`
                 UPDATE harness_shared.routines
-                   SET active = ${m.active}, updated_at = now()
+                   SET active = ${m.active},
+                       metadata = CASE
+                         WHEN ${m.pause === null}
+                           THEN COALESCE(metadata, '{}'::jsonb) - 'pause'
+                         ELSE jsonb_set(COALESCE(metadata, '{}'::jsonb), '{pause}', ${JSON.stringify(m.pause ?? {})}::jsonb)
+                       END,
+                       updated_at = now()
                  WHERE workspace_id = ${ws} AND install_slug = ${m.installSlug} AND name = ${m.name}`;
             }
           }
@@ -164,7 +235,11 @@ export default defineTool({
           const cur = await readSnap();
           let activeOk = true;
           if (args.active !== undefined) {
-            activeOk = cur.members.every((m) => m.active === args.active);
+            // Member-by-member against the computed next state — a snapshot resume leaves
+            // deliberately-paused members OFF, so a blanket every(active===args.active)
+            // would wrongly fail exactly when the tool did its job.
+            const byKey = new Map(cur.members.map((m) => [`${m.installSlug}/${m.name}`, m.active]));
+            activeOk = next.members.every((m) => byKey.get(`${m.installSlug}/${m.name}`) === m.active);
           }
           const metaOk =
             cur.description === next.description &&
@@ -174,22 +249,30 @@ export default defineTool({
           const ok = activeOk && metaOk;
           return { ok, detail: ok ? undefined : 'group row / member active flags did not reflect the change' };
         },
-        describe: (prev) => ({
-          current: {
-            description: prev.description,
-            steward: prev.steward,
-            reviewCadence: prev.reviewCadence,
-            memberCount: prev.members.length,
-            activeCount: prev.members.filter((m) => m.active).length,
-          },
-          proposed: {
-            description: args.description !== undefined ? args.description : prev.description,
-            steward: args.steward !== undefined ? args.steward : prev.steward,
-            reviewCadence: args.reviewCadence !== undefined ? args.reviewCadence : prev.reviewCadence,
-            memberCount: prev.members.length,
-            activeCount: args.active !== undefined ? (args.active ? prev.members.length : 0) : prev.members.filter((m) => m.active).length,
-          },
-        }),
+        describe: (prev) => {
+          const prevActive = prev.members.filter((m) => m.active).length;
+          const held = prev.members.filter((m) => !m.active && heldByGroupPause(m)).length;
+          let proposedActive = prevActive;
+          if (args.active === false) proposedActive = 0;
+          else if (args.active === true) proposedActive = args.activateAll ? prev.members.length : prevActive + held;
+          return {
+            current: {
+              description: prev.description,
+              steward: prev.steward,
+              reviewCadence: prev.reviewCadence,
+              memberCount: prev.members.length,
+              activeCount: prevActive,
+              heldByGroupPause: held,
+            },
+            proposed: {
+              description: args.description !== undefined ? args.description : prev.description,
+              steward: args.steward !== undefined ? args.steward : prev.steward,
+              reviewCadence: args.reviewCadence !== undefined ? args.reviewCadence : prev.reviewCadence,
+              memberCount: prev.members.length,
+              activeCount: proposedActive,
+            },
+          };
+        },
       },
       { dryRun: args.dryRun },
     );
@@ -200,6 +283,9 @@ export default defineTool({
       try {
         const { notifySyncInvalidate } = await import('../../sync-sse');
         notifySyncInvalidate('automation.catalog');
+        // The Learning tab's header pause/resume + spend chip reads the same group
+        // state through learning.loopControl — keep it live on every bulk flip.
+        notifySyncInvalidate('learning.loopControl');
       } catch {
         /* SSE hub unavailable — the pane still refreshes on its next poll */
       }
