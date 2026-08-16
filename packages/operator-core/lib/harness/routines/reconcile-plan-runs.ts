@@ -19,6 +19,9 @@ import { getOrgPg } from '@papercusp/db-org';
 import { disarmPlanSchedule } from './arm-plan-schedule';
 import { autoPauseOnCostBreach } from './plan-run-cost';
 import { routineStorageSlug } from '../../pot-membership';
+// The orphan threshold has ONE definition; this module drives the same reclaim on the
+// tick rather than re-deciding what "orphaned" means (see sweepOrphanedPlanRuns below).
+import { PLAN_RUN_ORPHAN_FAIL_MS } from '../../agent-tools/plans/runs';
 
 /** Work-item states that count as a finished execution. */
 const TERMINAL = ['passed', 'done', 'resolved', 'closed', 'deprecated', 'dropped', 'failed'];
@@ -105,6 +108,53 @@ export async function reconcileScheduledPlanRuns(
   return { reconciled: settled.length, settled };
 }
 
+/**
+ * Reclaim ORPHANED scheduled runs on the tick — a run left `running` by a process that
+ * died before it could settle.
+ *
+ * `sweepPlanRuns` (agent-tools/plans/runs.ts) already implements this transition, but its
+ * ONLY caller is the `plans:runs` read — "that read *is* the v1 poll, so no background
+ * timer is needed". That assumption fails in exactly the case the sweep exists for: when a
+ * run is orphaned because nobody is around, nobody is calling `plans:runs` either, so the
+ * row stays `running` indefinitely. That is not merely a stale row, because
+ * `runScheduledPlanFire` (plan-run-action.ts, concurrency='skip') refuses to mint a new run
+ * while ANY run of the same template is `running` — so ONE unreclaimed orphan silently
+ * disables the whole schedule, and the routine keeps ticking and minting nothing.
+ *
+ * Measured instance (2026-08-16): `blender-steward-heartbeat-2026-08-11` is the recovery
+ * heartbeat whose entire job is to relaunch a dead Blender GOAL steward. The steward died;
+ * run 958 was therefore never executed and stayed `running` from 2026-08-15T06:01; every
+ * later fire skipped (routines.last_fired_at advanced to 2026-08-16T00:02:07Z with zero runs
+ * minted) — so the recovery mechanism was disabled precisely while the thing it recovers was
+ * down, and stayed down ~21h. The failure is also SELF-CONCEALING: reading the Runs tab is
+ * what repairs it, so it cannot be observed without being fixed by the act of observing.
+ *
+ * This is the same wiring defect the tick call site already documents one layer down
+ * ("reconcile-plan-runs.ts was implemented + tested but never wired"), recurring on the
+ * function that reconcile itself cannot cover: reconcile settles runs whose work_items all
+ * TERMINATED, and an orphan's work_item never terminates.
+ *
+ * Ordering: callers reconcile FIRST and sweep the residue, so a genuinely-finished run is
+ * settled with a real `outcome` and only the true orphans are force-failed (status only —
+ * the same shape `sweepPlanRuns` writes).
+ */
+export async function sweepOrphanedPlanRuns(
+  opts: { sql?: Sql; harnessSlug?: string; now?: number } = {},
+): Promise<{ failed: number }> {
+  const db = opts.sql ?? getOrgPg().sql;
+  const now = opts.now ?? Date.now();
+  const harnessFilter = opts.harnessSlug ? db`AND harness_slug = ${opts.harnessSlug}` : db``;
+  const rows = await db<Array<{ id: number }>>`
+    UPDATE harness_shared.plan_runs
+       SET status = 'failed', updated_at = ${now}
+     WHERE run_type = 'scheduled'
+       AND status = 'running'
+       AND updated_at < ${now - PLAN_RUN_ORPHAN_FAIL_MS} ${harnessFilter}
+    RETURNING id
+  `;
+  return { failed: rows.length };
+}
+
 /** Default consecutive-failure threshold before a schedule auto-pauses (D-011). */
 export const DEFAULT_FAILURE_STREAK = 3;
 
@@ -168,7 +218,7 @@ export async function autoPauseOnFailureStreak(opts: {
  */
 export async function reconcileAndGovern(
   opts: { sql?: Sql; harnessSlug?: string; failureStreakK?: number } = {},
-): Promise<{ reconciled: number; paused: string[] }> {
+): Promise<{ reconciled: number; paused: string[]; orphaned: number }> {
   const db = opts.sql ?? getOrgPg().sql;
   const { settled } = await reconcileScheduledPlanRuns({ sql: db, harnessSlug: opts.harnessSlug });
   const paused: string[] = [];
@@ -195,5 +245,12 @@ export async function reconcileAndGovern(
     if (r.paused) paused.push(s.planSlug);
   }
 
-  return { reconciled: settled.length, paused };
+  // Orphan reclamation rides the SAME tick — see sweepOrphanedPlanRuns. Deliberately last:
+  // reconcile above settles every run whose work_items terminated (recording a real
+  // `outcome`), so what remains `running` past the threshold is a true orphan. Without this
+  // the reclaim only ever happens when a human opens the Runs tab, and one orphan wedges the
+  // template's whole schedule via concurrency='skip'.
+  const orphaned = await sweepOrphanedPlanRuns({ sql: db, harnessSlug: opts.harnessSlug });
+
+  return { reconciled: settled.length, paused, orphaned: orphaned.failed };
 }

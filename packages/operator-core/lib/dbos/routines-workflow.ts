@@ -1294,10 +1294,11 @@ async function routinesTickImpl(): Promise<void> {
     async () => {
       try {
         const { reconcileAndGovern } = await import('../harness/routines/reconcile-plan-runs');
-        const { reconciled, paused } = await reconcileAndGovern();
-        if (reconciled > 0 || paused.length > 0) {
+        const { reconciled, paused, orphaned } = await reconcileAndGovern();
+        if (reconciled > 0 || paused.length > 0 || orphaned > 0) {
           console.warn(
             `[plan-run-reconcile] tick settled ${reconciled} scheduled run(s)` +
+              (orphaned > 0 ? `, reclaimed ${orphaned} orphaned run(s)` : '') +
               (paused.length ? `, auto-paused ${paused.length} schedule(s): ${paused.join(', ')}` : ''),
           );
         }

@@ -10,7 +10,12 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
 import { createOrgTestDb, type OrgTestDb } from '../../../test/_org-test-db';
-import { reconcileScheduledPlanRuns, autoPauseOnFailureStreak } from './reconcile-plan-runs';
+import {
+  reconcileScheduledPlanRuns,
+  autoPauseOnFailureStreak,
+  reconcileAndGovern,
+} from './reconcile-plan-runs';
+import { PLAN_RUN_ORPHAN_FAIL_MS } from '../../agent-tools/plans/runs';
 
 let org: OrgTestDb;
 let sql: Sql;
@@ -197,5 +202,81 @@ describe('autoPauseOnFailureStreak (P-012, D-011)', () => {
     // no seedArmedTemplate → schedule_active defaults false (and no row)
     const r = await autoPauseOnFailureStreak({ sql, harnessSlug: HARNESS, planSlug: 'p-absent', k: 3 });
     expect(r.paused).toBe(false);
+  });
+});
+
+/**
+ * RECURRENCE GUARD — orphan reclamation must ride the TICK, not only the `plans:runs` read.
+ *
+ * The damage this prevents (measured 2026-08-16): `sweepPlanRuns` implements running→failed
+ * for an orphaned run, but its only caller was the `plans:runs` UI read. An orphan therefore
+ * survived until a human opened the Runs tab — and because `runScheduledPlanFire` refuses to
+ * mint while ANY run of the template is `running` (concurrency='skip'), that one row silently
+ * disabled the whole schedule. It happened to `blender-steward-heartbeat-2026-08-11`, the
+ * recovery heartbeat for a dead Blender GOAL steward: nobody was around to execute the run,
+ * so nobody was around to read the tab either, and the recovery stayed dead ~21h while the
+ * routine kept ticking and minting nothing.
+ *
+ * These tests drive ONLY reconcileAndGovern (the tick path). If someone unwires the sweep
+ * again, the first test fails instead of a schedule going quietly dark.
+ */
+describe('reconcileAndGovern — orphaned-run reclamation on the tick', () => {
+  /** Age a run's updated_at so it is past the orphan threshold. */
+  async function ageRun(id: number, byMs: number): Promise<void> {
+    await sql`UPDATE harness_shared.plan_runs
+                 SET updated_at = ${Date.now() - byMs}
+               WHERE id = ${id}`;
+  }
+
+  it('reclaims a run stuck running past the threshold WITHOUT any plans:runs read', async () => {
+    const id = await seedRun('p-orphan');
+    // Non-terminal work_item: reconcile alone can never settle this run, which is exactly
+    // the state an abandoned run is left in.
+    await seedWi(id, 'todo');
+    await ageRun(id, PLAN_RUN_ORPHAN_FAIL_MS + 60_000);
+
+    const res = await reconcileAndGovern({ sql, harnessSlug: HARNESS });
+
+    expect(res.orphaned).toBe(1);
+    expect((await runRow(id)).status).toBe('failed');
+  });
+
+  it('clears the concurrency=skip precondition, so the template can fire again', async () => {
+    const id = await seedRun('p-wedged');
+    await seedWi(id, 'todo');
+    await ageRun(id, PLAN_RUN_ORPHAN_FAIL_MS + 60_000);
+
+    await reconcileAndGovern({ sql, harnessSlug: HARNESS });
+
+    // This is the query runScheduledPlanFire uses to decide whether to skip the fire.
+    const stillRunning = await sql<{ id: number }[]>`
+      SELECT id FROM harness_shared.plan_runs
+       WHERE harness_slug = ${HARNESS} AND plan_slug = 'p-wedged' AND status = 'running'`;
+    expect(stillRunning).toHaveLength(0);
+  });
+
+  it('does NOT reclaim a fresh running run — a live run must survive the tick', async () => {
+    const id = await seedRun('p-live');
+    await seedWi(id, 'todo');
+    // updated_at = now (seedRun), i.e. well inside the threshold.
+
+    const res = await reconcileAndGovern({ sql, harnessSlug: HARNESS });
+
+    expect(res.orphaned).toBe(0);
+    expect((await runRow(id)).status).toBe('running');
+  });
+
+  it('prefers a real reconcile outcome over force-failing: terminal items settle as success', async () => {
+    const id = await seedRun('p-finished');
+    await seedWi(id, 'done');
+    // Old enough that a sweep-first ordering would have force-failed it with a NULL outcome.
+    await ageRun(id, PLAN_RUN_ORPHAN_FAIL_MS + 60_000);
+
+    const res = await reconcileAndGovern({ sql, harnessSlug: HARNESS });
+
+    const row = await runRow(id);
+    expect(row.status).toBe('done');
+    expect(row.outcome).toBe('success');
+    expect(res.orphaned).toBe(0);
   });
 });
