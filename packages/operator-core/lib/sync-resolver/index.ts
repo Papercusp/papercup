@@ -4234,12 +4234,12 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
-  // ── learning.retain — the Retain view's "everything else the colony keeps" ──
+  // ── learning.retain — the Retain view's always-on strip data ──
   //
-  // (WI-5412, owner ask 2026-07-18): the banked-this-week strip counts + the
-  // retained learning the memory pool doesn't hold — ideator lens weights,
-  // recently-updated rubrics, newest agent-insight runbooks, and code recipes.
-  // One slim snapshot; every leg degrades independently (learning-retain-read).
+  // (WI-5412 → slimmed by WI-39493 Variant D): the banked-this-week counts +
+  // the ideator lens weights. Everything ELSE the colony keeps now flows
+  // through learning.retainFeed below as one recency-interleaved ledger.
+  // Every leg degrades independently (learning-retain-read).
   // NOT table-backed — refreshes on mount + the panel's manual invalidate().
   'learning.retain': {
     argsSchema: z.object({ hive: z.string().max(120).optional() }).optional(),
@@ -4247,8 +4247,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       const a = (args ?? {}) as { hive?: string };
       const { activeWorkspaceId } = await import('../workspace-registry');
       const { getOrgPg } = await import('@papercusp/db-org');
-      const { readRetainExtras, readRecentInsightDocs } = await import('./learning-retain-read');
-      const { DOCS_CONTENT_ROOT } = await import('../agent-tools/docs/_repo-paths');
+      const { readRetainExtras } = await import('./learning-retain-read');
       const ws = activeWorkspaceId();
       const { sql } = getOrgPg();
       // P-040-style hive lens: resolve the Hive → member-harness scopes for the
@@ -4267,29 +4266,10 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         sql,
         ws,
         {
-          listRubrics: async () => {
-            const { listRubrics } = await import('../rubrics');
-            return (await listRubrics()).map((r) => ({
-              slug: r.rubricId,
-              title: r.title,
-              status: r.status,
-              updatedAt: r.updatedAt,
-            }));
-          },
-          listRecipes: async () => {
-            const { listRecipes } = await import('../code-recipes-store');
-            return (await listRecipes(sql, { limit: 8 })).map((r) => ({
-              id: r.id,
-              title: r.title,
-              runCount: r.runCount,
-              lastRunAt: r.lastRunAt,
-            }));
-          },
           readLensWeights: async () => {
             const { readScoutLensWeights } = await import('../scout/routed-ledger');
             return (await readScoutLensWeights({ workspaceId: ws, sql })) as Record<string, number>;
           },
-          readInsightDocs: () => readRecentInsightDocs(`${DOCS_CONTENT_ROOT}/agent-insights`),
         },
         {
           ...(harnessScopes ? { harnessScopes } : {}),
@@ -4299,6 +4279,93 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         },
       );
       return [snapshot];
+    },
+  },
+
+  // ── learning.retainFeed — the unified "Retained" ledger (WI-39493, Variant D) ──
+  //
+  // One recency-interleaved keyset-paged feed over five retained stores: plans
+  // the Blender routed, idea-routed work items (plan-born excluded — those roll
+  // up under their plan), rubrics, agent-insight runbooks, and code recipes.
+  // Tab/shipped filters + the cursor compose SERVER-side; counts (tab badges)
+  // ride the first page only. Every leg degrades independently.
+  'learning.retainFeed': {
+    argsSchema: z
+      .object({
+        tab: z.enum(['all', 'plans', 'wi', 'rubrics', 'runbooks', 'recipes']).optional(),
+        filter: z.enum(['all', 'shipped', 'inflight']).optional(),
+        cursor: z.string().max(600).optional(),
+        limit: z.number().int().min(1).max(100).optional(),
+      })
+      .optional(),
+    resolve: async (args) => {
+      const a = (args ?? {}) as {
+        tab?: 'all' | 'plans' | 'wi' | 'rubrics' | 'runbooks' | 'recipes';
+        filter?: 'all' | 'shipped' | 'inflight';
+        cursor?: string;
+        limit?: number;
+      };
+      const { activeWorkspaceId } = await import('../workspace-registry');
+      const { getOrgPg } = await import('@papercusp/db-org');
+      const { readRetainFeed, readInsightDocsPage, countInsightDocs } = await import('./learning-retain-read');
+      const { DOCS_CONTENT_ROOT } = await import('../agent-tools/docs/_repo-paths');
+      const ws = activeWorkspaceId();
+      const { sql } = getOrgPg();
+      const insightsDir = `${DOCS_CONTENT_ROOT}/agent-insights`;
+      const page = await readRetainFeed(
+        sql,
+        ws,
+        {
+          listRubrics: async () => {
+            const { listRubrics } = await import('../rubrics');
+            return (await listRubrics()).map((r) => ({
+              slug: r.rubricId,
+              title: r.title,
+              status: r.status,
+              updatedAt: r.updatedAt,
+            }));
+          },
+          listRecipesPage: async ({ window, limit }) => {
+            const { listRecipesActivityPage } = await import('../code-recipes-store');
+            return listRecipesActivityPage(sql, {
+              limit,
+              before: window
+                ? { ts: window.beforeTs, includeTies: window.includeTies, idAfter: window.tieIdAfter }
+                : null,
+            });
+          },
+          countRecipes: async () => {
+            const { countRecipes } = await import('../code-recipes-store');
+            return countRecipes(sql, { includeTrivial: false });
+          },
+          listRunbooksPage: ({ window, limit }) => readInsightDocsPage(insightsDir, { window, limit }),
+          countRunbooks: () => countInsightDocs(insightsDir),
+        },
+        {
+          tab: a.tab,
+          filter: a.filter,
+          cursor: a.cursor ?? null,
+          ...(a.limit != null ? { limit: a.limit } : {}),
+        },
+      );
+      return [page];
+    },
+  },
+
+  // ── learning.retainPlanChildren — one plan row's plan-born work items ──
+  //
+  // The expand chevron on a Retained-ledger plan row (WI-39493): work items
+  // with engineer_issues.source_plan_slug = planSlug, shipped classified
+  // server-side. Best-effort — degrades to [].
+  'learning.retainPlanChildren': {
+    argsSchema: z.object({ planSlug: z.string().min(1).max(200) }),
+    resolve: async (args) => {
+      const a = args as { planSlug: string };
+      const { activeWorkspaceId } = await import('../workspace-registry');
+      const { getOrgPg } = await import('@papercusp/db-org');
+      const { readRetainPlanChildren } = await import('./learning-retain-read');
+      const { sql } = getOrgPg();
+      return readRetainPlanChildren(sql, activeWorkspaceId(), a.planSlug);
     },
   },
 

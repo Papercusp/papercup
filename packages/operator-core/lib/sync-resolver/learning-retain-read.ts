@@ -1,30 +1,59 @@
 /**
- * learning-retain-read.ts — the read behind the Retain view's "everything else
- * the colony keeps" sections (WI-5412, owner ask 2026-07-18: the view showed
- * only the memory pool + pack candidates while lens weights, rubric changes,
- * agent-insight docs, and recipes — all retained learning — were invisible).
+ * learning-retain-read.ts — the reads behind the Retain view.
  *
- * One snapshot, five best-effort legs (each degrades independently — the
- * Retain view must never 500 because one store hiccuped):
+ * Two surfaces (Variant D, WI-39493 — owner pick 2026-08-16, replacing the
+ * WI-5412-era per-store disclosure sections):
  *
- *   1. **banked** — the "what stuck this week" strip counts: improvements
- *      filed + plans drafted in the trailing 7 days (the retained-learnings
- *      count itself comes from the `learning.hive` rows the view already has).
- *   2. **lensWeights** — the ideator's persisted per-lens sampling weights
- *      (the loop learns which creative lenses win and biases future cycles).
- *   3. **rubricChanges** — most-recently-updated rubrics (amendments patch the
- *      stored rubric in place, so recency of update IS the amendment signal).
- *   4. **insightDocs** — newest agent-insight runbooks by their `discovered`
- *      frontmatter date (fs read over the Starlight content tree).
- *   5. **recipes** — the most-recently-run code recipes.
+ *   1. **readRetainExtras** — the slim always-on strip data: the banked-this-week
+ *      counts + the ideator's lens weights (the one retained artifact that is a
+ *      DISTRIBUTION, not a feed — it gets its own strip card, never a ledger row).
+ *   2. **readRetainFeed** — the unified "Retained" ledger: plans, idea-routed
+ *      work items, rubrics, insight runbooks, and code recipes as ONE
+ *      recency-interleaved feed with a composite keyset cursor
+ *      (ts DESC, kind ASC, id ASC) and per-kind tab/shipped filters. The
+ *      interleave is load-bearing, not cosmetic: code_recipes holds ~13.5k rows,
+ *      so corpus order would bury every other kind.
+ *   3. **readRetainPlanChildren** — the plan-born work items behind one plan
+ *      row's expand chevron (engineer_issues.source_plan_slug).
  *
+ * Every leg degrades independently (the view must never 500 because one store
+ *  hiccuped); a failed leg lands in `degraded` instead of throwing.
  * Pure over injected deps (mirrors learning-hive-read) so the resolver test
  * stubs every seam.
  */
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import type { Sql } from 'postgres';
-import { ISSUE_SHIPPED_STATUSES } from '../work-item-blocking';
+import { ISSUE_ABANDONED_STATUSES, ISSUE_SHIPPED_STATUSES } from '../work-item-blocking';
+import {
+  compareRetainRows,
+  decodeRetainCursor,
+  encodeRetainCursor,
+  inRetainLegWindow,
+  retainLegWindowFor,
+  RETAIN_KIND_FOR_TAB,
+  type RetainFeedCounts,
+  type RetainFeedCursor,
+  type RetainFeedFilter,
+  type RetainFeedKind,
+  type RetainFeedPage,
+  type RetainFeedRow,
+  type RetainFeedTab,
+  type RetainLegWindow,
+  type RetainPlanChild,
+} from './learning-retain-types';
+
+export type {
+  RetainFeedCounts,
+  RetainFeedCursor,
+  RetainFeedFilter,
+  RetainFeedKind,
+  RetainFeedPage,
+  RetainFeedRow,
+  RetainFeedTab,
+  RetainPlanChild,
+} from './learning-retain-types';
+export { decodeRetainCursor, encodeRetainCursor } from './learning-retain-types';
 
 export interface RetainBankedCounts {
   /** engineer_issues improvements filed in the trailing 7d (hive-scoped when scopes given). null = leg degraded. */
@@ -33,86 +62,10 @@ export interface RetainBankedCounts {
   plansDrafted7d: number | null;
 }
 
-export interface RetainRubricChange {
-  slug: string;
-  title: string;
-  status: string;
-  updatedAt: string;
-}
-
-export interface RetainInsightDoc {
-  slug: string;
-  title: string;
-  /** The doc's `discovered:` frontmatter date (YYYY-MM-DD), when present. */
-  discovered: string | null;
-}
-
-export interface RetainRecipe {
-  id: string;
-  title: string;
-  runCount: number;
-  lastRunAt: string | null;
-}
-
-/** An idea whose routed artifact REACHED an outcome — a resolved/closed work
- *  item or an adopted (non-draft) plan. The idea→work→done chain, banked
- *  (owner ask 2026-07-19: idea-derived shipped outcomes must be visible in
- *  Retain, not just implied by lens weights). */
-export interface RetainShippedIdea {
-  ideaId: string;
-  title: string | null;
-  rail: string;
-  routedRef: string;
-  /** The raw end state: engineer_issues.state (the unified work-item enum) or
-   *  the routed plan's lifecycle status. Shown verbatim as the outcome chip. */
-  outcome: string;
-  /**
-   * Did it LAND, as opposed to merely reaching an end state? Classified HERE,
-   * on the server, against the shared ISSUE_SHIPPED_STATUSES — deliberately not
-   * left to the client.
-   *
-   * The client cannot value-import the shared set (work-item-blocking pulls the
-   * pg layer, which must not enter the browser bundle), so it previously
-   * re-typed the member list by hand — and drifted: its list still named the
-   * pre-unify `resolved`/`closed`, so a `done` item rendered as NOT-good while
-   * an abandoned `closed`/`dropped` one rendered as a win. Stamping the verdict
-   * server-side removes the second copy rather than fixing it twice
-   * (EI-18792873324746237).
-   */
-  shipped: boolean;
-  completedAt: string | null;
-}
-
-/** A plan the Blender/scout GENERATED: a rail='plan' routed idea joined to the
- *  plan row it produced (D-004, blender-loop-repair-and-opus5-xhigh-2026-08-16:
- *  Retain lists the loop's generated plans the way its other generated
- *  artifacts are surfaced — a read over the existing plan store, nothing new
- *  written). Routed refs whose plan is MISSING from the store are a structural
- *  gap tracked under that plan's P-005, deliberately absent here (inner join). */
-export interface RetainBlenderPlan {
-  planSlug: string;
-  /** harness_plans.title, falling back to the slug when unset. */
-  title: string;
-  /** harness_plans.status verbatim (draft/ready/active/shipped/superseded); '' when unset. */
-  status: string;
-  /** When the scout routed the idea into the plan store (timestamptz text). */
-  routedAt: string | null;
-  ideaId: string;
-  ideaTitle: string | null;
-  lens: string;
-}
-
 export interface RetainExtrasSnapshot {
   banked: RetainBankedCounts;
-  /** Idea-derived artifacts that reached an outcome, newest first. */
-  shippedFromIdeas: RetainShippedIdea[];
-  /** Blender-generated plans (rail='plan' routed refs resolved in the plan store), newest routed first. */
-  blenderPlans: RetainBlenderPlan[];
   /** null when none recorded yet (or the read degraded). */
   lensWeights: Record<string, number> | null;
-  rubricChanges: RetainRubricChange[];
-  insightDocs: RetainInsightDoc[];
-  recipes: RetainRecipe[];
   generatedAt: string;
 }
 
@@ -126,58 +79,16 @@ export interface RetainExtrasOpts {
 }
 
 export interface RetainExtrasDeps {
-  listRubrics: () => Promise<Array<{ slug: string; title: string; status: string; updatedAt: string }>>;
-  listRecipes: () => Promise<Array<{ id: string; title: string; runCount: number; lastRunAt: string | null }>>;
   readLensWeights: () => Promise<Record<string, number>>;
-  readInsightDocs: () => Promise<RetainInsightDoc[]>;
 }
-
-const SECTION_CAP = 8;
 
 /** Parse `title:` + `discovered:` out of an .mdx frontmatter block (regex — the
  *  files are our own generated runbooks, never arbitrary input). */
-export function parseInsightFrontmatter(slug: string, text: string): RetainInsightDoc {
+export function parseInsightFrontmatter(slug: string, text: string): { slug: string; title: string; discovered: string | null } {
   const head = text.slice(0, 2000);
   const title = /^title:\s*(?:["']?)(.+?)(?:["']?)\s*$/m.exec(head)?.[1]?.trim();
   const discovered = /^discovered:\s*(\d{4}-\d{2}-\d{2})\s*$/m.exec(head)?.[1] ?? null;
   return { slug, title: title || slug, discovered };
-}
-
-/**
- * Newest agent-insight docs from the Starlight content tree. mtime prefilters
- * (one readdir + parallel stats), then only the newest few files are opened for
- * their frontmatter — never a serial read over the whole 500+ doc corpus (A1).
- */
-export async function readRecentInsightDocs(contentDir: string, cap = SECTION_CAP): Promise<RetainInsightDoc[]> {
-  const names = (await fs.readdir(contentDir)).filter((n) => /\.(md|mdx)$/.test(n));
-  const stats = await Promise.all(
-    names.map(async (n) => {
-      try {
-        const st = await fs.stat(path.join(contentDir, n));
-        return { name: n, mtimeMs: st.mtimeMs };
-      } catch {
-        return null;
-      }
-    }),
-  );
-  const newest = stats
-    .filter((s): s is { name: string; mtimeMs: number } => s !== null)
-    .sort((a, b) => b.mtimeMs - a.mtimeMs)
-    .slice(0, cap * 3);
-  const docs = await Promise.all(
-    newest.map(async ({ name }) => {
-      try {
-        const text = await fs.readFile(path.join(contentDir, name), 'utf8');
-        return parseInsightFrontmatter(name.replace(/\.(md|mdx)$/, ''), text);
-      } catch {
-        return null;
-      }
-    }),
-  );
-  return docs
-    .filter((d): d is RetainInsightDoc => d !== null)
-    .sort((a, b) => (b.discovered ?? '').localeCompare(a.discovered ?? ''))
-    .slice(0, cap);
 }
 
 export async function readRetainExtras(
@@ -224,100 +135,6 @@ export async function readRetainExtras(
     console.warn('[learning.retain] plans-count read failed:', err instanceof Error ? err.message : err);
   }
 
-  // Idea-derived outcomes (owner ask 2026-07-19): routed ideas whose artifact
-  // REACHED an end state — wi: refs resolved/closed, plan: refs past draft.
-  // Workspace-scoped joins (multi-tenant tables); newest outcome first.
-  let shippedFromIdeas: RetainShippedIdea[] = [];
-  try {
-    const rows = (await sql`
-      SELECT DISTINCT ON (r.idea_id)
-             r.idea_id, r.title, r.rail, r.routed_ref,
-             COALESCE(ei.state, hp.status) AS outcome,
-             COALESCE(ei.updated_at, hp.updated_at)::text AS completed_at
-        FROM harness_shared.scout_routed_ideas r
-        LEFT JOIN harness_shared.engineer_issues ei
-          ON ei.workspace_id = r.workspace_id
-         AND r.routed_ref LIKE 'wi:%'
-         AND ei.issue_id = substring(r.routed_ref from 4)
-        LEFT JOIN harness_shared.harness_plans hp
-          ON hp.workspace_id = r.workspace_id
-         AND r.routed_ref LIKE 'plan:%'
-         AND hp.plan_slug = substring(r.routed_ref from 6)
-       WHERE r.workspace_id = ${workspaceId}
-         AND (
-           -- EI-18792873324746237: this filtered the pre-unify spellings only,
-           -- so after the writer-flip NO work-item-routed idea could ever reach
-           -- this list — all 137 shipped ones were silently excluded and only
-           -- the plan-routed branch below produced rows. Bind the shared set.
-           ei.state = ANY(${[...ISSUE_SHIPPED_STATUSES]}::text[])
-           OR (hp.status IS NOT NULL AND hp.status NOT IN ('draft', 'superseded'))
-         )
-       ORDER BY r.idea_id, COALESCE(ei.updated_at, hp.updated_at) DESC NULLS LAST
-    `) as Array<Record<string, unknown>>;
-    shippedFromIdeas = rows
-      .map((r) => {
-        const outcome = String(r.outcome ?? '');
-        return {
-          ideaId: String(r.idea_id ?? ''),
-          title: typeof r.title === 'string' && r.title ? r.title : null,
-          rail: String(r.rail ?? ''),
-          routedRef: String(r.routed_ref ?? ''),
-          outcome,
-          // The two rails end in DIFFERENT vocabularies, so classify per rail:
-          // a work item lands at done|resolved; a plan lands only at 'shipped'
-          // ('ready'/'active' also survive the WHERE clause above, but they are
-          // in-progress, not delivered, and must not read as wins).
-          shipped: ISSUE_SHIPPED_STATUSES.has(outcome) || outcome === 'shipped',
-          completedAt: typeof r.completed_at === 'string' ? r.completed_at : null,
-        };
-      })
-      .filter((r) => r.ideaId)
-      .sort((a, b) => (b.completedAt ?? '').localeCompare(a.completedAt ?? ''))
-      .slice(0, SECTION_CAP);
-  } catch (err) {
-    console.warn('[learning.retain] shipped-from-ideas read failed:', err instanceof Error ? err.message : err);
-  }
-
-  // Blender-generated plans (D-004 / P-012): plan-rail routed refs joined to
-  // the plan store — Retain lists what the ideation loop DRAFTED, not only what
-  // shipped. DISTINCT ON keeps the newest routing when an idea was re-routed to
-  // the same plan; refs whose plan is missing are excluded by the inner join
-  // (that structural gap is P-005's, not this view's).
-  let blenderPlans: RetainBlenderPlan[] = [];
-  try {
-    const rows = (await sql`
-      SELECT DISTINCT ON (hp.plan_slug)
-             hp.plan_slug,
-             COALESCE(hp.title, hp.plan_slug) AS title,
-             COALESCE(hp.status, '') AS status,
-             to_timestamp(r.routed_at / 1000.0)::text AS routed_at,
-             r.idea_id, r.title AS idea_title, r.lens
-        FROM harness_shared.scout_routed_ideas r
-        JOIN harness_shared.harness_plans hp
-          ON hp.workspace_id = r.workspace_id
-         AND hp.plan_slug = substring(r.routed_ref from 6)
-       WHERE r.workspace_id = ${workspaceId}
-         AND r.rail = 'plan'
-         AND r.routed_ref LIKE 'plan:%'
-       ORDER BY hp.plan_slug, r.routed_at DESC
-    `) as Array<Record<string, unknown>>;
-    blenderPlans = rows
-      .map((r) => ({
-        planSlug: String(r.plan_slug ?? ''),
-        title: String(r.title ?? ''),
-        status: String(r.status ?? ''),
-        routedAt: typeof r.routed_at === 'string' ? r.routed_at : null,
-        ideaId: String(r.idea_id ?? ''),
-        ideaTitle: typeof r.idea_title === 'string' && r.idea_title ? r.idea_title : null,
-        lens: String(r.lens ?? ''),
-      }))
-      .filter((p) => p.planSlug)
-      .sort((a, b) => (b.routedAt ?? '').localeCompare(a.routedAt ?? ''))
-      .slice(0, SECTION_CAP);
-  } catch (err) {
-    console.warn('[learning.retain] blender-plans read failed:', err instanceof Error ? err.message : err);
-  }
-
   let lensWeights: Record<string, number> | null = null;
   try {
     const weights = await deps.readLensWeights();
@@ -326,41 +143,437 @@ export async function readRetainExtras(
     console.warn('[learning.retain] lens-weight read failed:', err instanceof Error ? err.message : err);
   }
 
-  let rubricChanges: RetainRubricChange[] = [];
-  try {
-    rubricChanges = (await deps.listRubrics())
-      .slice()
-      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
-      .slice(0, SECTION_CAP)
-      .map((r) => ({ slug: r.slug, title: r.title, status: r.status, updatedAt: r.updatedAt }));
-  } catch (err) {
-    console.warn('[learning.retain] rubric read failed:', err instanceof Error ? err.message : err);
-  }
+  return { banked: { improvementsFiled7d, plansDrafted7d }, lensWeights, generatedAt };
+}
 
-  let insightDocs: RetainInsightDoc[] = [];
-  try {
-    insightDocs = await deps.readInsightDocs();
-  } catch (err) {
-    console.warn('[learning.retain] insight-doc read failed:', err instanceof Error ? err.message : err);
-  }
+// ─── The unified Retained feed ───────────────────────────────────────────────
 
-  let recipes: RetainRecipe[] = [];
-  try {
-    recipes = (await deps.listRecipes())
-      .slice(0, SECTION_CAP)
-      .map((r) => ({ id: r.id, title: r.title, runCount: r.runCount, lastRunAt: r.lastRunAt }));
-  } catch (err) {
-    console.warn('[learning.retain] recipes read failed:', err instanceof Error ? err.message : err);
-  }
+export const RETAIN_FEED_PAGE_SIZE = 24;
+const RETAIN_FEED_MAX_PAGE = 100;
 
-  return {
-    banked: { improvementsFiled7d, plansDrafted7d },
-    shippedFromIdeas,
-    blenderPlans,
-    lensWeights,
-    rubricChanges,
-    insightDocs,
-    recipes,
-    generatedAt,
+/** ISO-normalize a driver value (Date from a raw timestamptz select, string
+ *  from a ::text cast or a test stub). Feed timestamps are ms precision on both
+ *  the SQL side (date_trunc('milliseconds', …)) and here, so cursor equality
+ *  compares like with like. */
+function toIsoMs(v: unknown): string | null {
+  if (v instanceof Date) return Number.isNaN(v.getTime()) ? null : v.toISOString();
+  if (typeof v === 'string') {
+    const ms = Date.parse(v);
+    return Number.isNaN(ms) ? null : new Date(ms).toISOString();
+  }
+  return null;
+}
+
+export interface RetainFeedDeps {
+  listRubrics: () => Promise<Array<{ slug: string; title: string; status: string; updatedAt: string }>>;
+  /** One keyset page of recipes by recent activity (code-recipes-store
+   *  listRecipesActivityPage). `ts` = GREATEST(last_run_at, updated_at, created_at). */
+  listRecipesPage: (opts: {
+    window: RetainLegWindow | null;
+    limit: number;
+  }) => Promise<Array<{ id: string; title: string; runCount: number; ts: string }>>;
+  countRecipes: () => Promise<number>;
+  /** One keyset page of agent-insight runbooks by file mtime (readInsightDocsPage). */
+  listRunbooksPage: (opts: {
+    window: RetainLegWindow | null;
+    limit: number;
+  }) => Promise<Array<{ slug: string; title: string; discovered: string | null; ts: string }>>;
+  countRunbooks: () => Promise<number>;
+}
+
+export interface RetainFeedOpts {
+  tab?: RetainFeedTab;
+  filter?: RetainFeedFilter;
+  /** Opaque cursor from the previous page's `nextCursor`. */
+  cursor?: string | null;
+  limit?: number;
+}
+
+/** The SQL predicate mirroring {@link inRetainLegWindow}, over a subquery
+ *  aliased `x` exposing ms-truncated `x.ts` + text `x.id`. COLLATE "C" pins the
+ *  id tiebreak to byte order so SQL and JS agree regardless of DB collation. */
+function legWindowSql(sql: Sql, w: RetainLegWindow | null) {
+  if (!w) return sql`TRUE`;
+  if (w.includeTies) return sql`x.ts <= ${w.beforeTs}::timestamptz`;
+  if (w.tieIdAfter != null)
+    return sql`(x.ts < ${w.beforeTs}::timestamptz OR (x.ts = ${w.beforeTs}::timestamptz AND x.id COLLATE "C" > ${w.tieIdAfter}))`;
+  return sql`x.ts < ${w.beforeTs}::timestamptz`;
+}
+
+/** A plan is "in flight" while it can still ship; superseded is abandoned. */
+const PLAN_INFLIGHT_EXCLUDED = ['shipped', 'superseded'];
+
+/**
+ * One page of the unified Retained ledger. Five legs fetch up to `limit` rows
+ * each strictly after the cursor, then a k-way merge emits the top `limit` in
+ * (ts DESC, kind ASC, id ASC) order. If the merged candidate set is smaller
+ * than `limit`, every active leg is exhausted and `nextCursor` is null.
+ *
+ * The Shipped ∕ In-flight filter is applied SERVER-side per leg (it must
+ * compose with the cursor — a client-side filter over a paged feed drops rows
+ * unpredictably), and only statusful kinds (plan, wi) participate in a filtered
+ * feed. Counts are corpus sizes, filter-independent, first page only.
+ */
+export async function readRetainFeed(
+  sql: Sql,
+  workspaceId: string,
+  deps: RetainFeedDeps,
+  opts: RetainFeedOpts = {},
+): Promise<RetainFeedPage> {
+  const generatedAt = new Date().toISOString();
+  const tab: RetainFeedTab = opts.tab ?? 'all';
+  const filter: RetainFeedFilter = opts.filter ?? 'all';
+  const limit = Math.max(1, Math.min(RETAIN_FEED_MAX_PAGE, Math.floor(opts.limit ?? RETAIN_FEED_PAGE_SIZE)));
+  const cursor = typeof opts.cursor === 'string' ? decodeRetainCursor(opts.cursor) : (opts.cursor ?? null);
+
+  const tabKinds: RetainFeedKind[] =
+    tab === 'all' ? ['plan', 'wi', 'rubric', 'runbook', 'recipe'] : [RETAIN_KIND_FOR_TAB[tab]];
+  // "Filters apply where a type has statuses": a non-all filter narrows the
+  // feed to the kinds that can be shipped/in flight at all.
+  const kinds = filter === 'all' ? tabKinds : tabKinds.filter((k) => k === 'plan' || k === 'wi');
+
+  const degraded: string[] = [];
+  const shippedArr = [...ISSUE_SHIPPED_STATUSES];
+  const abandonedArr = [...ISSUE_ABANDONED_STATUSES];
+
+  const legPlans = async (): Promise<RetainFeedRow[]> => {
+    const w = retainLegWindowFor('plan', cursor);
+    const filterPred =
+      filter === 'shipped'
+        ? sql`x.status = 'shipped'`
+        : filter === 'inflight'
+          ? sql`x.status <> ALL(${PLAN_INFLIGHT_EXCLUDED}::text[])`
+          : sql`TRUE`;
+    const rows = (await sql`
+      SELECT * FROM (
+        SELECT DISTINCT ON (hp.plan_slug)
+               hp.plan_slug AS id,
+               COALESCE(NULLIF(hp.title, ''), hp.plan_slug) AS title,
+               COALESCE(hp.status, '') AS status,
+               date_trunc('milliseconds',
+                 GREATEST(hp.updated_at, to_timestamp(r.routed_at / 1000.0))) AS ts,
+               r.idea_id, r.title AS idea_title, r.lens,
+               c.child_total, c.child_done
+          FROM harness_shared.scout_routed_ideas r
+          JOIN harness_shared.harness_plans hp
+            ON hp.workspace_id = r.workspace_id
+           AND hp.plan_slug = substring(r.routed_ref from 6)
+          LEFT JOIN LATERAL (
+            SELECT count(*)::int AS child_total,
+                   count(*) FILTER (WHERE ei.state = ANY(${shippedArr}::text[]))::int AS child_done
+              FROM harness_shared.engineer_issues ei
+             WHERE ei.workspace_id = r.workspace_id
+               AND ei.source_plan_slug = hp.plan_slug
+          ) c ON TRUE
+         WHERE r.workspace_id = ${workspaceId}
+           AND r.rail = 'plan'
+           AND r.routed_ref LIKE 'plan:%'
+         ORDER BY hp.plan_slug, r.routed_at DESC
+      ) x
+      WHERE ${filterPred} AND ${legWindowSql(sql, w)}
+      ORDER BY x.ts DESC, x.id COLLATE "C" ASC
+      LIMIT ${limit}
+    `) as Array<Record<string, unknown>>;
+    return rows.flatMap((r) => {
+      const ts = toIsoMs(r.ts);
+      const id = String(r.id ?? '');
+      if (!ts || !id) return [];
+      const status = String(r.status ?? '');
+      return [
+        {
+          kind: 'plan' as const,
+          id,
+          title: String(r.title ?? id),
+          ts,
+          status,
+          shipped: status === 'shipped',
+          meta: {
+            ideaId: String(r.idea_id ?? ''),
+            ideaTitle: typeof r.idea_title === 'string' && r.idea_title ? r.idea_title : null,
+            lens: String(r.lens ?? ''),
+            childTotal: Number(r.child_total ?? 0),
+            childDone: Number(r.child_done ?? 0),
+          },
+        },
+      ];
+    });
   };
+
+  const legWi = async (): Promise<RetainFeedRow[]> => {
+    const w = retainLegWindowFor('wi', cursor);
+    const filterPred =
+      filter === 'shipped'
+        ? sql`x.shipped`
+        : filter === 'inflight'
+          ? sql`NOT x.shipped AND x.status <> ALL(${abandonedArr}::text[])`
+          : sql`TRUE`;
+    const rows = (await sql`
+      SELECT * FROM (
+        SELECT DISTINCT ON (ei.issue_id)
+               ei.issue_id AS id,
+               COALESCE(NULLIF(ei.title, ''), r.title, ei.issue_id) AS title,
+               COALESCE(ei.state, '') AS status,
+               (ei.state = ANY(${shippedArr}::text[])) AS shipped,
+               date_trunc('milliseconds', ei.updated_at) AS ts,
+               r.idea_id, r.title AS idea_title, r.lens
+          FROM harness_shared.scout_routed_ideas r
+          JOIN harness_shared.engineer_issues ei
+            ON ei.workspace_id = r.workspace_id
+           AND ei.issue_id = substring(r.routed_ref from 4)
+         WHERE r.workspace_id = ${workspaceId}
+           AND r.routed_ref LIKE 'wi:%'
+           AND ei.source_plan_slug IS NULL
+         ORDER BY ei.issue_id, r.routed_at DESC
+      ) x
+      WHERE ${filterPred} AND ${legWindowSql(sql, w)}
+      ORDER BY x.ts DESC, x.id COLLATE "C" ASC
+      LIMIT ${limit}
+    `) as Array<Record<string, unknown>>;
+    return rows.flatMap((r) => {
+      const ts = toIsoMs(r.ts);
+      const id = String(r.id ?? '');
+      if (!ts || !id) return [];
+      return [
+        {
+          kind: 'wi' as const,
+          id,
+          title: String(r.title ?? id),
+          ts,
+          status: String(r.status ?? ''),
+          shipped: Boolean(r.shipped),
+          meta: {
+            ideaId: String(r.idea_id ?? ''),
+            ideaTitle: typeof r.idea_title === 'string' && r.idea_title ? r.idea_title : null,
+            lens: String(r.lens ?? ''),
+          },
+        },
+      ];
+    });
+  };
+
+  const legRubrics = async (): Promise<RetainFeedRow[]> => {
+    const w = retainLegWindowFor('rubric', cursor);
+    const all = await deps.listRubrics();
+    return all
+      .flatMap((r) => {
+        const ts = toIsoMs(r.updatedAt);
+        if (!ts || !r.slug) return [];
+        return [
+          {
+            kind: 'rubric' as const,
+            id: r.slug,
+            title: r.title || r.slug,
+            ts,
+            status: r.status || null,
+            shipped: false,
+            meta: {},
+          },
+        ];
+      })
+      .filter((row) => inRetainLegWindow(row.ts, row.id, w))
+      .sort(compareRetainRows)
+      .slice(0, limit);
+  };
+
+  const legRunbooks = async (): Promise<RetainFeedRow[]> => {
+    const w = retainLegWindowFor('runbook', cursor);
+    const docs = await deps.listRunbooksPage({ window: w, limit });
+    return docs.flatMap((d) => {
+      const ts = toIsoMs(d.ts);
+      if (!ts || !d.slug) return [];
+      return [
+        {
+          kind: 'runbook' as const,
+          id: d.slug,
+          title: d.title || d.slug,
+          ts,
+          status: null,
+          shipped: false,
+          meta: { discovered: d.discovered },
+        },
+      ];
+    });
+  };
+
+  const legRecipes = async (): Promise<RetainFeedRow[]> => {
+    const w = retainLegWindowFor('recipe', cursor);
+    const page = await deps.listRecipesPage({ window: w, limit });
+    return page.flatMap((r) => {
+      const ts = toIsoMs(r.ts);
+      if (!ts || !r.id) return [];
+      return [
+        {
+          kind: 'recipe' as const,
+          id: r.id,
+          title: r.title || r.id,
+          ts,
+          status: null,
+          shipped: false,
+          meta: { runCount: r.runCount },
+        },
+      ];
+    });
+  };
+
+  const legFns: Record<RetainFeedKind, () => Promise<RetainFeedRow[]>> = {
+    plan: legPlans,
+    wi: legWi,
+    rubric: legRubrics,
+    runbook: legRunbooks,
+    recipe: legRecipes,
+  };
+
+  const legRows = await Promise.all(
+    kinds.map(async (k) => {
+      try {
+        return await legFns[k]();
+      } catch (err) {
+        degraded.push(k);
+        console.warn(`[learning.retainFeed] ${k} leg failed:`, err instanceof Error ? err.message : err);
+        return [] as RetainFeedRow[];
+      }
+    }),
+  );
+
+  const merged = legRows.flat().sort(compareRetainRows);
+  const rows = merged.slice(0, limit);
+  // Fewer candidates than a full page means every leg returned everything it
+  // had after the cursor — the feed is exhausted. (A degraded leg reads as
+  // exhausted too; `degraded` discloses it.)
+  const last = rows[rows.length - 1];
+  const nextCursor =
+    last && merged.length >= limit ? encodeRetainCursor({ ts: last.ts, kind: last.kind, id: last.id }) : null;
+
+  let counts: RetainFeedCounts | null = null;
+  if (!cursor) {
+    const [plans, wi, rubrics, runbooks, recipes] = await Promise.all([
+      (async () => {
+        const r = (await sql`
+          SELECT count(DISTINCT hp.plan_slug)::int AS n
+            FROM harness_shared.scout_routed_ideas r
+            JOIN harness_shared.harness_plans hp
+              ON hp.workspace_id = r.workspace_id
+             AND hp.plan_slug = substring(r.routed_ref from 6)
+           WHERE r.workspace_id = ${workspaceId}
+             AND r.rail = 'plan'
+             AND r.routed_ref LIKE 'plan:%'
+        `) as Array<{ n: number }>;
+        return Number(r[0]?.n ?? 0);
+      })().catch((err) => {
+        console.warn('[learning.retainFeed] plans count failed:', err instanceof Error ? err.message : err);
+        return null;
+      }),
+      (async () => {
+        const r = (await sql`
+          SELECT count(DISTINCT ei.issue_id)::int AS n
+            FROM harness_shared.scout_routed_ideas r
+            JOIN harness_shared.engineer_issues ei
+              ON ei.workspace_id = r.workspace_id
+             AND ei.issue_id = substring(r.routed_ref from 4)
+           WHERE r.workspace_id = ${workspaceId}
+             AND r.routed_ref LIKE 'wi:%'
+             AND ei.source_plan_slug IS NULL
+        `) as Array<{ n: number }>;
+        return Number(r[0]?.n ?? 0);
+      })().catch((err) => {
+        console.warn('[learning.retainFeed] wi count failed:', err instanceof Error ? err.message : err);
+        return null;
+      }),
+      deps
+        .listRubrics()
+        .then((r) => r.length)
+        .catch(() => null),
+      deps.countRunbooks().catch(() => null),
+      deps.countRecipes().catch(() => null),
+    ]);
+    counts = { plans, wi, rubrics, runbooks, recipes };
+  }
+
+  return { rows, nextCursor, counts, degraded, generatedAt };
+}
+
+/** The plan-born work items behind one expanded plan row, newest activity
+ *  first. Best-effort: a read failure degrades to []. */
+export async function readRetainPlanChildren(
+  sql: Sql,
+  workspaceId: string,
+  planSlug: string,
+  limit = 100,
+): Promise<RetainPlanChild[]> {
+  try {
+    const shippedArr = [...ISSUE_SHIPPED_STATUSES];
+    const rows = (await sql`
+      SELECT ei.issue_id AS id,
+             COALESCE(NULLIF(ei.title, ''), ei.issue_id) AS title,
+             COALESCE(ei.state, '') AS status,
+             (ei.state = ANY(${shippedArr}::text[])) AS shipped,
+             date_trunc('milliseconds', ei.updated_at) AS ts
+        FROM harness_shared.engineer_issues ei
+       WHERE ei.workspace_id = ${workspaceId}
+         AND ei.source_plan_slug = ${planSlug}
+       ORDER BY ts DESC NULLS LAST
+       LIMIT ${Math.max(1, Math.min(500, limit))}
+    `) as Array<Record<string, unknown>>;
+    return rows.flatMap((r) => {
+      const id = String(r.id ?? '');
+      if (!id) return [];
+      return [
+        {
+          id,
+          title: String(r.title ?? id),
+          status: String(r.status ?? ''),
+          shipped: Boolean(r.shipped),
+          ts: toIsoMs(r.ts) ?? '',
+        },
+      ];
+    });
+  } catch (err) {
+    console.warn('[learning.retainPlanChildren] read failed:', err instanceof Error ? err.message : err);
+    return [];
+  }
+}
+
+// ─── Insight-runbook fs legs ─────────────────────────────────────────────────
+
+/**
+ * One keyset page of agent-insight docs by file mtime. mtime prefilters (one
+ * readdir + parallel stats), then only the selected page's files are opened for
+ * their frontmatter — never a serial read over the whole 500+ doc corpus (A1).
+ */
+export async function readInsightDocsPage(
+  contentDir: string,
+  opts: { window: RetainLegWindow | null; limit: number },
+): Promise<Array<{ slug: string; title: string; discovered: string | null; ts: string }>> {
+  const names = (await fs.readdir(contentDir)).filter((n) => /\.(md|mdx)$/.test(n));
+  const stats = await Promise.all(
+    names.map(async (n) => {
+      try {
+        const st = await fs.stat(path.join(contentDir, n));
+        return { name: n, slug: n.replace(/\.(md|mdx)$/, ''), ts: new Date(Math.floor(st.mtimeMs)).toISOString() };
+      } catch {
+        return null;
+      }
+    }),
+  );
+  const page = stats
+    .filter((s): s is { name: string; slug: string; ts: string } => s !== null)
+    .filter((s) => inRetainLegWindow(s.ts, s.slug, opts.window))
+    .sort((a, b) => (a.ts !== b.ts ? (a.ts < b.ts ? 1 : -1) : a.slug < b.slug ? -1 : 1))
+    .slice(0, Math.max(1, opts.limit));
+  const docs = await Promise.all(
+    page.map(async ({ name, slug, ts }) => {
+      try {
+        const text = await fs.readFile(path.join(contentDir, name), 'utf8');
+        return { ...parseInsightFrontmatter(slug, text), ts };
+      } catch {
+        return null;
+      }
+    }),
+  );
+  return docs.filter((d): d is { slug: string; title: string; discovered: string | null; ts: string } => d !== null);
+}
+
+/** Corpus size of the insight-doc tree (the Runbooks tab badge). */
+export async function countInsightDocs(contentDir: string): Promise<number> {
+  return (await fs.readdir(contentDir)).filter((n) => /\.(md|mdx)$/.test(n)).length;
 }

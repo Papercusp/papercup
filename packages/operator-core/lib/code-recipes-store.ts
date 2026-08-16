@@ -452,10 +452,67 @@ export async function listRecipes(
 /**
  * Count all recipes (the true total, independent of any list LIMIT). Cheap
  * `COUNT(*)` — pair with listRecipes + attachListMeta so the UI shows "N of
- * TOTAL".
+ * TOTAL". `includeTrivial: false` counts only the signal-dense subset the
+ * default listRecipes / listRecipesActivityPage serve (same SQL filter).
  */
-export async function countRecipes(sql: postgres.Sql): Promise<number> {
+export async function countRecipes(sql: postgres.Sql, opts: { includeTrivial?: boolean } = {}): Promise<number> {
+  const whereTrivial =
+    (opts.includeTrivial ?? true)
+      ? sql`TRUE`
+      : sql`array_length(tools_used, 1) >= 2 AND title NOT ILIKE 'recipe: %'`;
   const rows = await sql<{ n: number }[]>`
-    SELECT count(*)::int AS n FROM harness_shared.code_recipes`;
+    SELECT count(*)::int AS n FROM harness_shared.code_recipes WHERE ${whereTrivial}`;
   return rows[0]?.n ?? 0;
+}
+
+/**
+ * One keyset page of recipes by RECENT ACTIVITY — `ts` =
+ * GREATEST(last_run_at, updated_at, created_at), ms-truncated — for the Retain
+ * view's unified ledger (WI-39493). Excludes low-value recipes like the default
+ * listRecipes (the 13.5k auto-captured corpus would otherwise be mostly ≤1-tool
+ * wrappers); pass `includeTrivial: true` for everything.
+ *
+ * `before` is the exclusive keyset bound: rows with ts < before.ts, plus — when
+ * `includeTies` — rows AT before.ts, or — when `idAfter` is set — rows at
+ * before.ts whose id sorts after it in byte order. Matches the feed's
+ * (ts DESC, id ASC) order; keep in lockstep with learning-retain-read's
+ * inRetainLegWindow.
+ */
+export async function listRecipesActivityPage(
+  sql: postgres.Sql,
+  opts: {
+    limit: number;
+    before?: { ts: string; includeTies?: boolean; idAfter?: string | null } | null;
+    includeTrivial?: boolean;
+  },
+): Promise<Array<{ id: string; title: string; runCount: number; ts: string }>> {
+  const lim = clampLimit(opts.limit);
+  const whereTrivial = opts.includeTrivial
+    ? sql`TRUE`
+    : sql`array_length(tools_used, 1) >= 2 AND title NOT ILIKE 'recipe: %'`;
+  const b = opts.before ?? null;
+  const windowPred = !b
+    ? sql`TRUE`
+    : b.includeTies
+      ? sql`x.ts <= ${b.ts}::timestamptz`
+      : b.idAfter != null
+        ? sql`(x.ts < ${b.ts}::timestamptz OR (x.ts = ${b.ts}::timestamptz AND x.id COLLATE "C" > ${b.idAfter}))`
+        : sql`x.ts < ${b.ts}::timestamptz`;
+  const rows = await sql<Array<{ id: string; title: string; run_count: number | string; ts: Date | string }>>`
+    SELECT * FROM (
+      SELECT id, title, run_count,
+             date_trunc('milliseconds',
+               GREATEST(COALESCE(last_run_at, 'epoch'::timestamptz), updated_at, created_at)) AS ts
+        FROM harness_shared.code_recipes
+       WHERE ${whereTrivial}
+    ) x
+    WHERE ${windowPred}
+    ORDER BY x.ts DESC, x.id COLLATE "C" ASC
+    LIMIT ${lim}`;
+  return rows.map((r) => ({
+    id: r.id,
+    title: r.title,
+    runCount: asInt(r.run_count),
+    ts: asIso(r.ts),
+  }));
 }
