@@ -11,16 +11,18 @@
 
 /** One row-kind per retained store. Tie-order at equal ts is the PLAIN STRING
  *  order of these tokens (kind ASC) — the cursor predicate on both the SQL and
- *  JS legs relies on that, so never reorder semantically. */
-export type RetainFeedKind = 'plan' | 'wi' | 'rubric' | 'runbook' | 'recipe';
+ *  JS legs relies on that, so never reorder semantically. 'memory' = the hive's
+ *  shared-memory pool, folded in as its own kind (WI-39535). */
+export type RetainFeedKind = 'memory' | 'plan' | 'wi' | 'rubric' | 'runbook' | 'recipe';
 
-export const RETAIN_FEED_TABS = ['all', 'plans', 'wi', 'rubrics', 'runbooks', 'recipes'] as const;
+export const RETAIN_FEED_TABS = ['all', 'memories', 'plans', 'wi', 'rubrics', 'runbooks', 'recipes'] as const;
 export type RetainFeedTab = (typeof RETAIN_FEED_TABS)[number];
 
 export const RETAIN_FEED_FILTERS = ['all', 'shipped', 'inflight'] as const;
 export type RetainFeedFilter = (typeof RETAIN_FEED_FILTERS)[number];
 
 export const RETAIN_KIND_FOR_TAB: Record<Exclude<RetainFeedTab, 'all'>, RetainFeedKind> = {
+  memories: 'memory',
   plans: 'plan',
   wi: 'wi',
   rubrics: 'rubric',
@@ -46,6 +48,12 @@ export interface RetainFeedRowMeta {
   runCount?: number;
   /** Runbook rows: the doc's `discovered:` frontmatter date. */
   discovered?: string | null;
+  /** Memory rows (WI-39535): the memory's own kind tag + provenance — what the
+   *  standalone pool's provenance badges rendered from. `memKind` (not `kind`)
+   *  so it can never shadow the ROW kind. */
+  memKind?: string;
+  createdBy?: string;
+  packId?: string;
 }
 
 export interface RetainFeedRow {
@@ -69,6 +77,7 @@ export interface RetainFeedRow {
 /** Corpus size per kind (filter-INDEPENDENT — the tab badges). null = that
  *  count's read degraded, render as unknown, never as 0. */
 export interface RetainFeedCounts {
+  memories: number | null;
   plans: number | null;
   wi: number | null;
   rubrics: number | null;
