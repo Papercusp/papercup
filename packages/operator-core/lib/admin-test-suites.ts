@@ -1919,7 +1919,7 @@ async function measureRoute(
   // Report time-to-first-render as a LOWER BOUND — flagged, never silently
   // presented as a full settle time.
   if (lastMatched && firstMatchAt > 0) {
-    return { ok: true, elapsedMs: Math.max(0, firstMatchAt - startedAt), page: lastMatched, stabilized: false };
+    return { ok: true, elapsedMs: Math.max(0, firstMatchAt - startedAt), page: lastMatched, stabilized: false, navKind };
   }
   const fallback = await readRoutePage(ctx);
   return {
@@ -1927,6 +1927,7 @@ async function measureRoute(
     elapsedMs: Date.now() - startedAt,
     page: fallback ?? makeRoutePage(target, [], 0, false, [`route did not settle for ${target}`]),
     stabilized: false,
+    navKind,
   };
 }
 
@@ -1954,12 +1955,14 @@ function routeFailure(
   target: string,
   elapsedMs: number,
   detail: string,
-): { ok: false; elapsedMs: number; page: RoutePage; stabilized: boolean } {
+  navKind: RouteNavKind,
+): RouteMeasurement & { ok: false } {
   return {
     ok: false,
     elapsedMs,
     page: makeRoutePage(target, [], 0, false, [detail]),
     stabilized: false,
+    navKind,
   };
 }
 
