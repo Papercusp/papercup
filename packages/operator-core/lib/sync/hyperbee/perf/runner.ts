@@ -356,7 +356,14 @@ function convergenceCell(a: PerfArtifact): string {
   const c = a.convergence;
   if (!c) return 'conv=n/a';
   const ratio = `${c.convergedReaders}/${c.expectedReaders}`;
-  return a.convergencePassed ? `conv✓(${ratio})` : `conv✖(${ratio})`;
+  // Headroom, not just the verdict: a green cell that cleared its budget by 200ms
+  // is a different report from one that cleared it by 110s, and the bare ratio
+  // renders them identically (EI-20581532536662596).
+  const headroom =
+    c.budgetMs !== null && c.convergedMs !== null
+      ? ` ${Math.round(c.convergedMs.max / 1000)}s/${Math.round(c.budgetMs / 1000)}s`
+      : '';
+  return a.convergencePassed ? `conv✓(${ratio}${headroom})` : `conv✖(${ratio}${headroom})`;
 }
 
 /**
@@ -375,6 +382,8 @@ export function collectConvergenceViolations(artifacts: PerfArtifact[]): Array<{
   laggingReaders: string[];
   observedP95Ms: number | null;
   p95LimitMs: number | null;
+  budgetMs: number | null;
+  slowestConvergedMs: number | null;
 }> {
   return artifacts
     .filter((a) => a.convergencePassed === false)
@@ -386,6 +395,8 @@ export function collectConvergenceViolations(artifacts: PerfArtifact[]): Array<{
       laggingReaders: a.convergence?.laggingReaders ?? [],
       observedP95Ms: a.convergence?.observedP95Ms ?? null,
       p95LimitMs: a.convergence?.p95LimitMs ?? null,
+      budgetMs: a.convergence?.budgetMs ?? null,
+      slowestConvergedMs: a.convergence?.convergedMs?.max ?? null,
     }));
 }
 
@@ -590,7 +601,12 @@ async function main(): Promise<void> {
         `  ✖ ${v.scenario} [${v.paramsKey}] — ${v.convergedReaders}/${v.expectedReaders} readers converged` +
           (v.laggingReaders.length ? `, lagging: ${v.laggingReaders.slice(0, 12).join(',')}${v.laggingReaders.length > 12 ? '…' : ''}` : '') +
           (v.observedP95Ms !== null ? `, appendToVisible p95 ${v.observedP95Ms}ms` : '') +
-          (v.p95LimitMs !== null ? ` (limit ${v.p95LimitMs}ms)` : ''),
+          (v.p95LimitMs !== null ? ` (limit ${v.p95LimitMs}ms)` : '') +
+          // Says WHICH KIND of failure this is: slowest-converged near the budget
+          // means the deadline is the finding; far below it means a stuck reader.
+          (v.budgetMs !== null
+            ? `, budget ${v.budgetMs}ms${v.slowestConvergedMs !== null ? ` (slowest converged ${v.slowestConvergedMs}ms)` : ''}`
+            : ''),
       );
     }
   }
