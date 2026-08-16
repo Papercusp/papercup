@@ -35,7 +35,6 @@ import {
   type InstanceVariantView,
   type PlansNewPort,
 } from './router';
-import { improvementBody as goalBodyFromProposal } from './router-deps-goal-body';
 
 /* ────────────────────────────────────────────────────────────────────────
  * concrete → improvements:capture
@@ -201,4 +200,46 @@ export function buildInstanceDispatchPort(
   record: InstanceCandidateRecorder = echoInstanceCandidates,
 ): InstanceDispatchPort {
   return async (views) => ({ registered: await record(views) });
+}
+
+/* ────────────────────────────────────────────────────────────────────────
+ * goal-scale → goals create+start (P-013 / D-005 — full-auto goal rail)
+ * ──────────────────────────────────────────────────────────────────────── */
+
+export interface GoalDispatchPortOptions {
+  /** Harness/install slug the goal is filed against and its agent boots in. */
+  harnessSlug: string;
+  /** Workspace override (default: the active workspace at dispatch time). */
+  workspaceId?: string;
+  /** Who caused the start (stamped as goal metadata.startedBy). Default 'scout-goal-rail'. */
+  launchedBy?: string;
+}
+
+/**
+ * Production `goalDispatch` port — creates the `harness_shared.goals` row AND starts
+ * its headless GOAL-mode agent via {@link autoStartGoal} (the machine-caller sibling
+ * of `goals:start`, same row→mode→spawn order and rollback). The router has already
+ * drafted the two D-005 rails (kill criterion + spend ceiling) and the port's request
+ * type requires both, so no auto-created goal can start without them. Loaded lazily:
+ * the start core pulls the console-launcher machinery, which most router-deps
+ * consumers (tests, drills) never need.
+ */
+export function buildGoalDispatchPort(opts: GoalDispatchPortOptions): GoalDispatchPort {
+  return async ({ proposal, title, killCriterion, budgetCents }) => {
+    const { autoStartGoal } = await import('../goals/goal-auto-start');
+    const res = await autoStartGoal({
+      harnessSlug: opts.harnessSlug,
+      ...(opts.workspaceId ? { workspaceId: opts.workspaceId } : {}),
+      ...(opts.launchedBy ? { launchedBy: opts.launchedBy } : {}),
+      title,
+      body: improvementBody(proposal),
+      killCriterion,
+      budgetCents,
+      proposalId: proposal.id,
+    });
+    for (const w of res.warnings) {
+      console.warn(`[scout/goal-rail] goal ${res.goalId}: ${w}`);
+    }
+    return { goalId: res.goalId };
+  };
 }
