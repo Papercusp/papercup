@@ -315,9 +315,13 @@ type Pipeable = { pipe<T extends Pipeable>(dest: T): T; destroy(): void };
 /** `store.get()` is typed loosely upstream (`unknown`); narrow at the boundary. */
 interface ReadableCore {
   readonly length: number;
+  /** Blocks [0, contiguousLength) are local. Absent on older cores — treat as unknown, not 0. */
+  readonly contiguousLength?: number;
   ready(): Promise<void>;
   update(opts?: { wait?: boolean }): Promise<void>;
   get(i: number, opts?: { wait?: boolean }): Promise<unknown>;
+  /** Bitfield membership test — O(1) per block where available. */
+  has?(i: number): Promise<boolean> | boolean;
 }
 
 /** Context for {@link createCorestoreSeedProvider}.cut (build/release time). */
@@ -438,6 +442,74 @@ async function downloadCoreRange(store: Corestore, keyHex: string, from = 0): Pr
   const len: number = core.length;
   for (let i = Math.max(0, from); i < len; i++) await core.get(i, { wait: true });
   return len;
+}
+
+/**
+ * Refuse to DECLARE a range the staging replica does not actually hold
+ * (EI-20592896313306826; recurrence of EI-20199738329864737).
+ *
+ * ── WHY `downloadCoreRange` RETURNING IS NOT PROOF THE BLOCKS SHIPPED ──
+ * `downloadCoreRange` awaits `core.get(i, { wait: true })` for every index and then
+ * returns `core.length`, and that length is what lands in `meta.coreLengths`. But a
+ * `get()` resolves as soon as the block is available to THAT SESSION — it is not a
+ * statement that the block was durably written into the staging store. So a cut whose
+ * replication finishes short still returns a full `length`, still hashes, and still
+ * emits a manifest promising blocks the payload does not contain. Nothing throws.
+ *
+ * Measured on the shipped 2026-08-15 seed: `meta.coreLengths` declared 76 while the
+ * payload held 64 readable blocks (contiguousLength 63) — 50,165,685 bytes short of the
+ * manifest's own `sizeBytes`, and a `hashDir` mismatch that the provider's `verify()`
+ * would have rejected at boot. The earlier occurrence (65 KB short) was closed by
+ * refreshing the artifact, which left this hole open and let it recur two orders of
+ * magnitude larger.
+ *
+ * So: assert the property on the REPLICA, before the entry is built, exactly like
+ * {@link assertShippedRangeCarriesNoExcludedTables} — the artifact that ships is the
+ * thing worth measuring, not the intent that produced it.
+ *
+ * THROWS rather than warns, for the same reason as its sibling: a refused cut costs
+ * minutes, a published installer that silently restores an incomplete hive does not
+ * announce itself at all.
+ */
+async function assertStagedRangeIsLocal(inp: {
+  store: Corestore;
+  keyHex: string;
+  from: number;
+  len: number;
+}): Promise<void> {
+  const { store, keyHex, from, len } = inp;
+  const core = store.get({
+    key: Buffer.from(keyHex, 'hex'),
+    valueEncoding: 'json',
+  }) as unknown as ReadableCore;
+  await core.ready();
+
+  const missing: number[] = [];
+  for (let i = Math.max(0, from); i < len; i++) {
+    // Prefer the O(1) bitfield test; fall back to a local-only read (`wait:false`),
+    // which is precisely what a consumer of the shipped seed experiences offline.
+    const present =
+      typeof core.has === 'function'
+        ? await core.has(i)
+        : (await core.get(i, { wait: false })) != null;
+    if (!present) {
+      missing.push(i);
+      // Enough to identify the failure without walking a 100k-block core to build a list.
+      if (missing.length >= 8) break;
+    }
+  }
+
+  if (missing.length > 0) {
+    const shown = missing.join(', ');
+    throw new Error(
+      `seed cut REFUSED: staging replica is missing block(s) it would declare as shipped — ` +
+        `core ${keyHex.slice(0, 16)}… range [${from}, ${len}), missing index(es) ${shown}` +
+        `${missing.length >= 8 ? ' (truncated — more follow)' : ''}. ` +
+        `contiguousLength=${String(core.contiguousLength ?? 'unknown')}. ` +
+        `Declaring this range would ship a manifest promising blocks the payload does not hold ` +
+        `(EI-20592896313306826).`,
+    );
+  }
 }
 
 /**
@@ -619,6 +691,15 @@ export function createCorestoreSeedProvider(): SeedProvider {
             });
             filteredCoreKeys.push(minted.keyHex);
             coreLengths[minted.keyHex] = minted.length;
+            // EI-20592896313306826 — same guard as the sparse branch: never declare a
+            // length the staging replica cannot actually serve. This is the branch that
+            // produced the truncated 2026-08-15 seed (76 declared, 64 present).
+            await assertStagedRangeIsLocal({
+              store: replica,
+              keyHex: minted.keyHex,
+              from: 0,
+              len: minted.length,
+            });
             await assertShippedRangeCarriesNoExcludedTables({
               store: replica,
               keyHex: minted.keyHex,
@@ -669,6 +750,9 @@ export function createCorestoreSeedProvider(): SeedProvider {
           const from = coreSparseFrom[keyHex] ?? 0;
           const len = await downloadCoreRange(replica, keyHex, from);
           coreLengths[keyHex] = len;
+          // EI-20592896313306826 — the range about to be DECLARED must actually be present
+          // in the replica. `downloadCoreRange` returning `len` does not establish that.
+          await assertStagedRangeIsLocal({ store: replica, keyHex, from, len });
           // EI-20108164746219771 — verify the bytes that actually landed, before they are
           // hashed into a seed entry. Filtering the head snapshot is necessary but not
           // sufficient (see this function's note: a presence keep-alive can land a raw op
