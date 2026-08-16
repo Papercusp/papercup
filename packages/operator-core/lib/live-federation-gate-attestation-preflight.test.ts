@@ -28,7 +28,13 @@ function repoRoot(): string {
 }
 
 const ROOT = repoRoot();
-const GATE_PATH = join(ROOT, 'papercusp-desktop', 'bin', 'live-federation-gate.sh');
+// PROBE_SCRIPT makes the subject path overridable so falsifiability can be proven with a
+// tier-2 copy-out mutation (scripts/mutation-probe.sh) instead of mutating the shared tree.
+// An in-tree probe here is unsafe for a reason no `trap` can fix: git-sync sweeps the whole
+// working tree on a schedule, so a mutant held for the duration of a run can be COMMITTED
+// even when nothing goes wrong. Defaults to the real shipping script.
+const GATE_PATH =
+  process.env.PROBE_SCRIPT ?? join(ROOT, 'papercusp-desktop', 'bin', 'live-federation-gate.sh');
 const MATRIX_PATH = join(
   ROOT,
   'papercusp-desktop',
@@ -168,5 +174,110 @@ describe('live-federation gate attestation write preflight', () => {
     );
     expect(gate).toContain('find_open_duplicate "$wall_prefix" active');
     expect(gate).toContain("[ \"$scope\" = active ] && item_filter='\"notTerminal\":true'");
+  });
+});
+
+/**
+ * WI-39359 — the credential wall must not blind the attestation-INDEPENDENT leg.
+ *
+ * Measured 2026-08-16: local-matrix.sh has zero functional attestation dependency (its only
+ * three gist/attest matches are comments), while the content-matrix smoke has 37 and the
+ * from-repo smoke 45. Between 2026-08-14 and 2026-08-16 the preflight's unconditional early
+ * exit voided ~50 consecutive runs of p2p coverage over a credential fault none of the local
+ * matrix scenarios touch: every leg reported '?' — UNMEASURED, which reads exactly like a red.
+ *
+ * The rule these pin: run what CAN be run, name what CANNOT, and never call the result green.
+ */
+function runDuePredicate(opts: {
+  runLocalMatrix?: string;
+  wrapperPresent?: boolean;
+  matrixGreenAgeH?: number;
+  ttlH?: string;
+}): number {
+  const dir = mkdtempSync(join(tmpdir(), 'fed-local-matrix-due-'));
+  const stateDir = join(dir, 'state');
+  const desktopDir = join(dir, 'papercusp-desktop');
+  const binDir = join(desktopDir, 'bin');
+  spawnSync('mkdir', ['-p', stateDir, binDir]);
+  if (opts.wrapperPresent !== false) writeFileSync(join(binDir, 'local-matrix.sh'), '#!/bin/bash\n');
+  // age_h() reads an epoch-seconds stamp; a MISSING file is 999999h (never green => due).
+  if (opts.matrixGreenAgeH !== undefined) {
+    const stamp = Math.floor(Date.now() / 1000) - opts.matrixGreenAgeH * 3600;
+    writeFileSync(join(stateDir, 'last-matrix-green'), `${stamp}\n`);
+  }
+  const script = [
+    'set -uo pipefail',
+    'now_s() { date +%s; }',
+    extractFn('age_h'),
+    `STATE_DIR=${JSON.stringify(stateDir)}`,
+    `DESKTOP_DIR=${JSON.stringify(desktopDir)}`,
+    extractFn('local_matrix_due'),
+    'local_matrix_due',
+  ].join('\n');
+  const result = spawnSync('bash', ['-c', script], {
+    encoding: 'utf8',
+    timeout: 30_000,
+    env: {
+      ...process.env,
+      RUN_LOCAL_MATRIX: opts.runLocalMatrix ?? '1',
+      ...(opts.ttlH ? { MATRIX_TTL_H: opts.ttlH } : {}),
+    },
+  });
+  return result.status ?? -1;
+}
+
+describe('live-federation gate: a credential wall must not void attestation-independent coverage', () => {
+  it('reports the local-matrix leg DUE when it has never gone green', () => {
+    // The real state on 2026-08-16: last-matrix-green predated the TTL by weeks.
+    expect(runDuePredicate({})).toBe(0);
+  });
+
+  it('reports NOT due inside the cadence window, preserving the cheap early exit', () => {
+    // This is the cost control: the preflight exists to avoid a multi-GB build, and every
+    // window where the independent leg would not have run anyway must still exit early.
+    expect(runDuePredicate({ matrixGreenAgeH: 1, ttlH: '144' })).toBe(1);
+  });
+
+  it('reports NOT due when the leg is disabled or its wrapper is absent', () => {
+    expect(runDuePredicate({ runLocalMatrix: '0' })).toBe(1);
+    expect(runDuePredicate({ wrapperPresent: false })).toBe(1);
+  });
+
+  it('only exits early when the independent leg would not have run', () => {
+    // The defect being pinned is an UNCONDITIONAL `exit 1` here, which is what voided the runs.
+    expect(gate).toContain('if [ "$ATTESTATION_BLOCKED" != 1 ]; then');
+    const guard = gate.indexOf('if [ "$ATTESTATION_BLOCKED" != 1 ]; then');
+    const build = gate.indexOf('# ── 2. fresh artifact:');
+    expect(guard).toBeGreaterThan(-1);
+    expect(build).toBeGreaterThan(guard);
+  });
+
+  it('names the blocked legs with a token that can never read as a pass', () => {
+    // is_skip_result() matches SKIPPED* — so the wall token is counted as "nothing proven",
+    // never folded into a green. A token not starting with SKIPPED would silently break that.
+    expect(gate).toContain('ATTESTATION_WALL_TOKEN="SKIPPED-ATTESTATION-WALL"');
+    expect('SKIPPED-ATTESTATION-WALL'.startsWith('SKIPPED')).toBe(true);
+    expect(gate).toContain('MATRIX_RES="${ATTESTATION_WALL_TOKEN:-SKIPPED}"');
+    expect(gate).toContain('FROMREPO_RES="${ATTESTATION_WALL_TOKEN:-SKIPPED}"');
+    expect(gate).toContain('WITNESS_RES="${ATTESTATION_WALL_TOKEN:-SKIPPED}"');
+  });
+
+  it('lets the independent leg past the content-matrix coupling ONLY on the credential wall', () => {
+    // Must be a guard on the existing condition, not its own elif branch: a branch that merely
+    // logged would match and fall out of the chain WITHOUT running the matrix — the silent
+    // no-coverage outcome this change exists to end. A genuine content RED still declines.
+    expect(gate).toContain(
+      'elif [ "${ATTESTATION_BLOCKED:-0}" != 1 ] && ! { [ "$MATRIX_RES" = PASS ] || [ "$MATRIX_RES" = PASS-971 ]; }; then',
+    );
+  });
+
+  it('can NEVER stamp a green while attestation-dependent legs went unexercised (D-018)', () => {
+    // The single most important invariant here. A green in this state asserts coverage nobody
+    // produced. The guard must precede the last-green write, not merely exist somewhere.
+    const guard = gate.indexOf('if [ "${ATTESTATION_BLOCKED:-0}" = 1 ]; then\n    check_matrix_staleness');
+    const green = gate.indexOf('echo "$(now_s)" >"$STATE_DIR/last-green"');
+    expect(guard).toBeGreaterThan(-1);
+    expect(green).toBeGreaterThan(guard);
+    expect(gate).toContain('GATE: PARTIAL (attestation-blocked)');
   });
 });
