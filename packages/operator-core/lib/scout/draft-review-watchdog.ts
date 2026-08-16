@@ -16,8 +16,8 @@
  *
  * THE STARVATION (the root cause this closes): the Scout produces draft plans on a
  * friction-OR-idle cadence (the bp-singleton-scout-0 blueprint, every 30m) and pings
- * the Queen via a DURABLE coord message with NO forced wake (queen-notify.ts:
- * notifyQueenDraftRouted → `send`, never `wakeRecipients` — "review is idle-gated per
+ * the Queen via a DURABLE coord message with NO forced wake (mug-notify.ts:
+ * notifyMugDraftRouted → `send`, never `wakeRecipients` — "review is idle-gated per
  * D-003 #2; placement always wins"). So the Queen only REVIEWS scout-routed drafts on
  * an IDLE wake (the `plan-review` idle activity). When the hive's bee slots are
  * chronically full ("fleet saturated"), the Queen is NEVER idle → review never runs →

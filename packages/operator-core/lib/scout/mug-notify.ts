@@ -1,59 +1,60 @@
 /**
- * queen-notify.ts — the Scout→Queen coord pings of the feedback loop
- * (queen-scout-feedback-loop-2026-06-20, D-003 #1 + D-001 step 3).
+ * mug-notify.ts — the Scout→Mug coord pings of the feedback loop
+ * (queen-scout-feedback-loop-2026-06-20, D-003 #1 + D-001 step 3; "Queen" was
+ * the Mug role's retired name — the plan slug is historical).
  *
- * Two pings, both Scout→Queen, both DURABLE INBOX (no forced wake — review is
- * idle-gated per D-003 #2; placement always wins, the Queen sees these on her next
+ * Two pings, both Scout→Mug, both DURABLE INBOX (no forced wake — review is
+ * idle-gated per D-003 #2; placement always wins, the Mug sees these on its next
  * idle wake):
  *
- *   1. {@link notifyQueenDraftRouted} — STARTS the loop: when Scout routes a NEW
- *      draft plan, ping the Queen so she reviews it (closes the "what prompts the
- *      Queen to review?" gap — D-003 #1).
+ *   1. {@link notifyMugDraftRouted} — STARTS the loop: when Scout routes a NEW
+ *      draft plan, ping the Mug so it reviews it (closes the "what prompts the
+ *      Mug to review?" gap — D-003 #1).
  *
- *   2. {@link notifyQueenRevised} — CONTINUES the loop: after a targeted revision
- *      (revise.ts), ping the Queen back per draft so she re-reviews (promote=ready
+ *   2. {@link notifyMugRevised} — CONTINUES the loop: after a targeted revision
+ *      (revise.ts), ping the Mug back per draft so it re-reviews (promote=ready
  *      or another round).
  *
  * WI-963 fix (2026-07-02): BOTH pings address the durable `@role:mug` SLOT
  * (in addition to a best-effort concrete resolved/threaded-back owner id) — never
- * the concrete owner ALONE. The Queen is fresh-per-wake (a brand-new coord owner
- * id every session — queen-brief-launch.ts's `gatherInbox` / WI-682), so a
- * concrete-owner-only address is a session that has almost always already ended
- * by the time anyone reads it; `@role:mug` parks durably (slot-parked-store)
- * and `gatherInbox` already drains it into every future Queen wake regardless of
- * her current owner id. This is what actually closes the loop; the concrete
+ * the concrete owner ALONE. The Mug is fresh-per-wake (a brand-new coord owner
+ * id every session — the retired mug-brief-launch.ts's `gatherInbox` / WI-682),
+ * so a concrete-owner-only address is a session that has almost always already
+ * ended by the time anyone reads it; `@role:mug` parks durably (slot-parked-store)
+ * and `gatherInbox` already drains it into every future Mug wake regardless of
+ * its current owner id. This is what actually closes the loop; the concrete
  * owner is just a best-effort immediate-delivery bonus.
  *
- * Pure over an injected {@link QueenNotifyPorts} (the gym:judge / router-deps
+ * Pure over an injected {@link MugNotifyPorts} (the gym:judge / router-deps
  * pattern) so it unit-tests with fakes — no coord, no PG. register-scout-action.ts
- * binds the real send (`sendMessage` in the workspace ALS) + `resolveQueenOwner`.
+ * binds the real send (`sendMessage` in the workspace ALS) + `resolveMugOwner`.
  * Best-effort by contract: a notify failure must NEVER fail the Scout cycle (the
  * caller wraps these so a dead coord layer can't break ideation/revision).
  */
 
 import type { RevisionOutcome } from './revise';
 
-/** A coord message the Scout sends the Queen (the runner maps this onto sendMessage). */
-export interface QueenNotifyMessage {
+/** A coord message the Scout sends the Mug (the runner maps this onto sendMessage). */
+export interface MugNotifyMessage {
   to: string[];
   summary: string;
   body: string;
   planSlug: string;
 }
 
-export interface QueenNotifyPorts {
-  /** Resolve the hive's current Queen coord owner (newest session), or null if none. */
-  resolveQueenOwner: () => Promise<string | null>;
-  /** Deliver one coord message Scout→Queen (sendMessage as `scout:<hive>`). */
-  send: (msg: QueenNotifyMessage) => Promise<void>;
+export interface MugNotifyPorts {
+  /** Resolve the hive's current Mug coord owner (newest session), or null if none. */
+  resolveMugOwner: () => Promise<string | null>;
+  /** Deliver one coord message Scout→Mug (sendMessage as `scout:<hive>`). */
+  send: (msg: MugNotifyMessage) => Promise<void>;
   /**
    * WI-37625 — resolve the DURABLE co-address that used to be a hardcoded `@role:mug`.
    *
-   * Both pings below address a concrete owner PLUS a durable slot, because the Queen is
+   * Both pings below address a concrete owner PLUS a durable slot, because the Mug is
    * fresh-per-wake and the concrete id is usually already dead (WI-963). That reasoning
    * still holds; what changed is that `@role:mug` is drained by exactly one consumer
    * (`pot/mug-brief-launch.ts`, at Mug spawn), so with the spawn gate closed (D-018) the
-   * durable half addressed a slot with no reader — and for `notifyQueenDraftRouted` with
+   * durable half addressed a slot with no reader — and for `notifyMugDraftRouted` with
    * no resolvable owner it was the ONLY address, so the notice vanished entirely.
    *
    * This is a PORT rather than a direct `deliverScoutNudge` call because this module is
@@ -70,48 +71,48 @@ export interface QueenNotifyPorts {
 export interface DraftRoutedNotice {
   slug: string;
   title: string;
-  /** The Scout's coord owner (`scout:<hive>`) — the address the Queen sends feedback to. */
+  /** The Scout's coord owner (`scout:<hive>`) — the address the Mug sends feedback to. */
   scoutOwner: string;
 }
 
 export interface DraftRoutedResult {
   notified: boolean;
-  /** The resolved concrete Queen owner id, when one was found — best-effort direct
+  /** The resolved concrete Mug owner id, when one was found — best-effort direct
    *  address only; delivery no longer depends on this (see WI-963: the durable
    *  `@role:mug` slot is always addressed too, so `null` here does NOT mean
-   *  the Queen won't see it). */
+   *  the Mug won't see it). */
   recipient: string | null;
 }
 
 /**
- * Ping the Queen that Scout routed a NEW draft for review (D-003 #1).
+ * Ping the Mug that Scout routed a NEW draft for review (D-003 #1).
  *
- * WI-963 (closing the queen-scout-feedback-loop's broken last link): the Queen
- * is fresh-per-wake — a BRAND-NEW coord owner id every session (see
- * queen-brief-launch.ts's `gatherInbox` comment / WI-682) — so addressing ONLY
- * the resolved `owner` almost always targets a session that has ALREADY ENDED
- * by the time she next wakes under a different owner id: the durable send
- * lands in an inbox no future Queen session ever reads again. Confirmed live:
+ * WI-963 (closing the queen-scout-feedback-loop's broken last link): the Mug
+ * is fresh-per-wake — a BRAND-NEW coord owner id every session (see the
+ * retired mug-brief-launch.ts's `gatherInbox` comment / WI-682) — so addressing
+ * ONLY the resolved `owner` almost always targets a session that has ALREADY
+ * ENDED by the time it next wakes under a different owner id: the durable send
+ * lands in an inbox no future Mug session ever reads again. Confirmed live:
  * draft `scout-rubric-pot-coordination-health-scorecard-2026-06-26` sat
  * unreviewed 3+ days despite this notify firing on route (WI-963 root cause).
  *
  * The fix: ALWAYS ALSO address the durable `@role:mug` slot selector.
  * `sendMessage` parks a `@role:...` addressee (slot-parked-store) and
- * `gatherInbox` already drains it into EVERY future Queen wake's brief
- * regardless of her current owner id — the exact reliable channel WI-682
+ * `gatherInbox` already drains it into EVERY future Mug wake's brief
+ * regardless of its current owner id — the exact reliable channel WI-682
  * proved for other senders. The resolved `owner`, when available, still rides
  * along as a best-effort direct address (in case that exact session is
  * somehow still live), but the durable slot is what actually closes the loop.
  * Never throws (resolve/send errors degrade to not-notified) so it can't
  * break the routing path that called it.
  */
-export async function notifyQueenDraftRouted(
-  ports: QueenNotifyPorts,
+export async function notifyMugDraftRouted(
+  ports: MugNotifyPorts,
   notice: DraftRoutedNotice,
 ): Promise<DraftRoutedResult> {
   let owner: string | null = null;
   try {
-    owner = await ports.resolveQueenOwner();
+    owner = await ports.resolveMugOwner();
   } catch {
     owner = null;
   }
@@ -146,7 +147,7 @@ export async function notifyQueenDraftRouted(
 }
 
 /**
- * Ping the Queen back after a revision tick (D-001 step 3) — one message per draft,
+ * Ping the Mug back after a revision tick (D-001 step 3) — one message per draft,
  * threaded back to the owner that sent the feedback. Skips items with no recipient
  * (a `fromOwnerId` is required to know WHICH draft's feedback this replies to; the
  * `@role:mug` slot is addressed alongside it — WI-963 — never instead of it, since
@@ -154,8 +155,8 @@ export async function notifyQueenDraftRouted(
  * errors are swallowed) so it can't fail the revision cycle. Returns the count
  * actually delivered.
  */
-export async function notifyQueenRevised(
-  ports: Pick<QueenNotifyPorts, 'send' | 'resolveDurableCoAddress'>,
+export async function notifyMugRevised(
+  ports: Pick<MugNotifyPorts, 'send' | 'resolveDurableCoAddress'>,
   outcomes: readonly RevisionOutcome[],
 ): Promise<{ delivered: number }> {
   let delivered = 0;
@@ -163,10 +164,10 @@ export async function notifyQueenRevised(
     if (!o.fromOwnerId) continue;
     const { summary, body } = revisedMessage(o);
     try {
-      // WI-963: by the time a revision cycle completes, the Queen session that
+      // WI-963: by the time a revision cycle completes, the Mug session that
       // sent the original feedback (`o.fromOwnerId`) has almost always already
       // ended (fresh-per-wake) — also address the durable `@role:mug` slot so
-      // the ping-back reliably reaches her next wake even when the concrete
+      // the ping-back reliably reaches its next wake even when the concrete
       // owner is already dead.
       // WI-37625: durable half resolved, not a hardcoded `@role:mug`. Unlike the
       // draft-routed ping there is always a concrete `fromOwnerId` here (the loop

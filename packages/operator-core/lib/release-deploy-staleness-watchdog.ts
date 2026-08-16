@@ -2,7 +2,7 @@
  * release-deploy-staleness-watchdog.ts — the release-pipeline stall/staleness
  * RECURRENCE GUARD (WI-1623).
  *
- * WI-1623 root cause (documented in full on the work-item + queen-notify.ts's
+ * WI-1623 root cause (documented in full on the work-item + mug-notify.ts's
  * sibling fix WI-963): the deploy pipeline itself was found to be healthy — the
  * green-checkpoint/release-trigger routines were correctly advancing the green
  * pin and re-deploying `papercup-release` — but the `deployedAtMs` field

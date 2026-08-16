@@ -7,8 +7,8 @@
  * Scout cycle reads its inbox AS (`readInbox(scoutCoordOwnerId(hive))` at cycle-start,
  * scheduler.ts P-001).
  *
- * Why STATIC (not a session-resolved id like the Queen's {@link
- * ../hive/placement-watchdog.resolveQueenOwner}): the Queen is an interactive
+ * Why STATIC (not a session-resolved id like the Mug's {@link
+ * ../pot/placement-watchdog.resolveMugOwner}): the Mug (formerly Queen) is an interactive
  * brain that re-spawns per wake, so her coord owner is the NEWEST `hive ·
  * <slug>/queen` adv_session's `coord_owner_id` — dynamic. Scout has NO per-session
  * identity: it IS the cron-fired `blender:cycle` op (register-scout-action.ts), with
