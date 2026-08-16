@@ -76,6 +76,19 @@ export function decideHandshakeAction(
   upstreamKind: ProbeKind | string,
 ): HandshakeAction;
 
+/** WI-39378 — verdict of the final re-confirmation before an in-flight-call-killing restart. */
+export type RestartRecheckDecision = 'stand-down-recovered' | 'stand-down-recheck-ok' | 'restart';
+
+/**
+ * WI-39378 — the last gate before restarting the proxy. `failingSince` is the epoch ms the
+ * session plane started failing (0 = a concurrent poll already saw it recover);
+ * `recheckKind` is a FRESH probe verdict, or null when only the first check applies.
+ */
+export function decideRestartAfterRecheck(
+  failingSince: number,
+  recheckKind: ProbeKind | string | null,
+): RestartRecheckDecision;
+
 /**
  * The JSON-RPC `coord:escalate` call body a CRITICAL verdict sends (EI-19415174699106397).
  * Pure — builds the request shape only; the network POST + credential read stay unexported and

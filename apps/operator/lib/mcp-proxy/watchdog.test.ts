@@ -16,6 +16,7 @@ let LIVENESS_PROBE_PATH: Watchdog['LIVENESS_PROBE_PATH'];
 let livenessProbeUrl: Watchdog['livenessProbeUrl'];
 let evaluateStallRate: Watchdog['evaluateStallRate'];
 let buildEscalationCall: Watchdog['buildEscalationCall'];
+let decideRestartAfterRecheck: Watchdog['decideRestartAfterRecheck'];
 beforeAll(async () => {
   ({
     shouldRestart,
@@ -27,6 +28,7 @@ beforeAll(async () => {
     livenessProbeUrl,
     evaluateStallRate,
     buildEscalationCall,
+    decideRestartAfterRecheck,
   } = await import('./watchdog.mjs'));
 });
 
@@ -427,5 +429,110 @@ describe('mcp-proxy watchdog — buildEscalationCall (human escalation, EI-19415
   it('body is optional', () => {
     const call = buildEscalationCall('k', 's', undefined);
     expect(call.params.arguments.body).toBeUndefined();
+  });
+});
+
+/**
+ * WI-39378 — a restart must never fire on a verdict that went stale mid-decision.
+ *
+ * Restarting the proxy is destructive to THIRD PARTIES: it kills every agent's
+ * in-flight MCP call ("transport dropped mid-call; response was lost"). pollHandshake
+ * decides "dead", then awaits an upstream probe that can burn a full
+ * HANDSHAKE_TIMEOUT_MS, and only then acts — and the plane can recover inside that
+ * window. It did, live, on 2026-08-16T03:54:37Z, verbatim from the watchdog's own log:
+ *
+ *     03:54:37.232Z session plane recovered (was failing 156s)
+ *     03:54:37.826Z WEDGED -> restarting papercup-mcp-proxy: session plane dead 150s
+ *
+ * i.e. it restarted the proxy 594ms AFTER observing the plane was healthy, killing two
+ * of this author's calls and everyone else's. A recovery must cancel a pending restart,
+ * never race it.
+ */
+describe('mcp-proxy watchdog — no restart on a stale verdict (WI-39378)', () => {
+  it('THE BUG: stands down when a concurrent poll already observed recovery (failingSince cleared)', () => {
+    expect(decideRestartAfterRecheck(0, 'dead')).toBe('stand-down-recovered');
+  });
+
+  it('THE BUG: stands down when the plane answers on the fresh re-check, however dead it looked before', () => {
+    expect(decideRestartAfterRecheck(Date.now() - 200_000, 'ok')).toBe('stand-down-recheck-ok');
+  });
+
+  it('CONTROL: still restarts when the plane is genuinely still dead — the guard is not a blanket veto', () => {
+    expect(decideRestartAfterRecheck(Date.now() - 200_000, 'dead')).toBe('restart');
+  });
+
+  it('CONTROL: a non-ok, non-dead re-check verdict is not treated as recovery', () => {
+    // Only an explicit 'ok' proves the plane answered. 'empty'/'auth' are ambiguous and
+    // must not silently cancel a legitimate restart.
+    expect(decideRestartAfterRecheck(Date.now() - 200_000, 'empty')).toBe('restart');
+  });
+
+  it('the pre-probe call form (recheckKind null) checks ONLY the concurrent-recovery case', () => {
+    expect(decideRestartAfterRecheck(0, null)).toBe('stand-down-recovered');
+    expect(decideRestartAfterRecheck(Date.now() - 200_000, null)).toBe('restart');
+  });
+});
+
+/**
+ * WI-39378 — `secs` was referenced inside pollDataPlane but declared only inside
+ * pollHandshake, a different function scope. pollDataPlane is awaited FROM
+ * pollHandshake, so the ReferenceError unwound into that caller's `.catch` and showed
+ * up as one line: `handshake poll error: secs is not defined`.
+ *
+ * The expensive part was not the log line. The throw happened BEFORE
+ * escalateToHuman('mcp-data-plane-dead', ...) on the next statement, so the WI-6739
+ * data-plane escalation could never fire — the detector was silently dead in exactly
+ * the scenario it was built for, and stayed that way undetected.
+ *
+ * watchdog.mjs is plain unchecked .mjs (lint:tsc covers only packages/operator-core),
+ * which is why a free identifier survived review. These pin the fix at the source
+ * level, since neither poll function is exported.
+ */
+describe('mcp-proxy watchdog — data-plane escalation is reachable (WI-39378)', () => {
+  let src: string;
+  beforeAll(async () => {
+    const { readFile } = await import('node:fs/promises');
+    // Subject path is overridable so falsifiability can be proven against a COPY
+    // outside the tree (scripts/mutation-probe.sh), never by mutating the shared
+    // checkout — git-sync sweeps the whole tree on a timer and would commit the
+    // mutant even if nothing went wrong. See CLAUDE.md "Proving a guard is falsifiable".
+    const subject = process.env.PROBE_WATCHDOG ?? new URL('./watchdog.mjs', import.meta.url);
+    src = await readFile(subject, 'utf8');
+  });
+
+  /** The body of a top-level `async function <name>(...)`, by brace matching. */
+  function functionBody(source: string, name: string): string {
+    const start = source.indexOf(`async function ${name}(`);
+    expect(start, `function ${name} not found`).toBeGreaterThan(-1);
+    const open = source.indexOf('{', start);
+    let depth = 0;
+    for (let i = open; i < source.length; i++) {
+      if (source[i] === '{') depth++;
+      else if (source[i] === '}' && --depth === 0) return source.slice(open, i + 1);
+    }
+    throw new Error(`unbalanced braces in ${name}`);
+  }
+
+  it('THE BUG: pollDataPlane declares every identifier it uses — `secs` is not borrowed from pollHandshake', () => {
+    const body = functionBody(src, 'pollDataPlane');
+    // It may still USE secs (the message wants a duration) but must DECLARE it locally.
+    if (/\bsecs\b/.test(body)) {
+      expect(body, 'pollDataPlane references `secs` without declaring it in its own scope').toMatch(
+        /(const|let)\s+secs\s*=/,
+      );
+    }
+  });
+
+  it('THE CONSEQUENCE: escalateToHuman for the data-plane condition is still wired in pollDataPlane', () => {
+    const body = functionBody(src, 'pollDataPlane');
+    expect(body).toContain("escalateToHuman('mcp-data-plane-dead'");
+  });
+
+  it('CONTROL: the brace matcher really extracts a bounded body, not the whole file', () => {
+    const body = functionBody(src, 'pollDataPlane');
+    expect(body.length).toBeLessThan(src.length);
+    // pollHandshake's own `const secs` must be OUTSIDE the extracted body, or the
+    // assertion above would pass for the very bug it is meant to catch.
+    expect(body).not.toContain('async function pollHandshake');
   });
 });

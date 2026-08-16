@@ -41,6 +41,7 @@ import { projectDirForSlug } from '../../operator-notes';
 import { gitSidecarEnabled, noteSidecarFallback, runGitViaSpawnerSidecar } from '../../fleet/git-via-sidecar';
 import { detectContentOffenders, type ContentOffender } from './content-guard';
 import { detectUnsafeDeletions } from './deletion-import-guard';
+import { detectWholesaleDeletion } from './wholesale-deletion-guard';
 import { detectQuarantineImporters } from './quarantine-import-guard';
 import { DEFAULT_CONTENT_DETECTORS, type ContentDetector } from '../../content-lint/registry';
 import {
@@ -1711,6 +1712,15 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
     // deletion-import-guard.ts for why this can't be folded into the per-file
     // content-detector registry above (it's a cross-file check on the deletion
     // SET, not a single file's own text).
+    // WI-39377: BEFORE the per-deletion import check, ask whether the deletion SET is a
+    // wipe at all. detectUnsafeDeletions looks for a SURVIVING importer, so it is
+    // structurally blind to a total wipe (no survivors => no finding) — which is exactly
+    // how four SideStage submodules were committed down to zero-file trees and pushed.
+    // Shares the deletionGuard flag: both are "should this deletion be committed?".
+    if (o.deletionGuard) {
+      const wipeErrors = await detectWholesaleDeletion({ runGit, repoPath, log: o.log });
+      if (wipeErrors.length > 0) contentErrors = [...contentErrors, ...wipeErrors];
+    }
     if (o.deletionGuard) {
       const deletionErrors = await detectUnsafeDeletions({
         runGit,

@@ -380,6 +380,31 @@ export function dataPlaneProbeArgs(tool, rawArgs, defaultTool = DEFAULT_DB_PROBE
   return { args: tool === defaultTool ? { ...DEFAULT_DB_PROBE_ARGS } : {}, invalid: false };
 }
 
+/**
+ * WI-39378 — the LAST gate before an irreversible, third-party-destructive action.
+ *
+ * Restarting the proxy kills every agent's in-flight MCP call, so the verdict must be
+ * true at the MOMENT of restarting, not merely when it was computed. `pollHandshake`
+ * decides "dead", then awaits an upstream probe that can burn a full
+ * HANDSHAKE_TIMEOUT_MS, and only then acts — a window the plane can recover inside.
+ * It did, live, on 2026-08-16T03:54:37Z: "session plane recovered (was failing 156s)"
+ * at .232, "WEDGED -> restarting" at .826, 594ms later.
+ *
+ * Two independent ways the verdict can be stale, and both must stand the restart down:
+ *   - `failingSince === 0`  — a concurrent poll observed recovery and cleared it.
+ *   - `recheckKind === 'ok'` — the plane answers right now, whatever we believed before.
+ * Pass `recheckKind: null` to test only the first (i.e. before spending a probe).
+ *
+ * @param {number} failingSince    epoch ms the plane started failing; 0 = not failing
+ * @param {string|null} recheckKind  a fresh probe verdict, or null if not probed yet
+ * @returns {'stand-down-recovered'|'stand-down-recheck-ok'|'restart'}
+ */
+export function decideRestartAfterRecheck(failingSince, recheckKind) {
+  if (!failingSince) return 'stand-down-recovered';
+  if (recheckKind === 'ok') return 'stand-down-recheck-ok';
+  return 'restart';
+}
+
 export function decideHandshakeAction(proxyKind, upstreamKind) {
   if (proxyKind === 'ok') return 'none';
   if (proxyKind === 'auth') return 'none'; // our own credential; never a service verdict
@@ -586,6 +611,15 @@ async function pollDataPlane() {
 
   if (now - lastDataLog > LOG_THROTTLE_MS) {
     lastDataLog = now;
+    // WI-39378: this used to read `${secs}`, which is declared only inside pollHandshake —
+    // a different function scope. pollDataPlane is awaited FROM pollHandshake, so the
+    // ReferenceError unwound into that caller's `.catch`, surfacing as a single line
+    // `handshake poll error: secs is not defined` and, far worse, aborting this block
+    // BEFORE escalateToHuman below. The WI-6739 data-plane-dead escalation had therefore
+    // never been able to fire — the detector was silently dead in exactly the case it
+    // exists for. Measured live 2026-08-16T03:54:37Z. Keep this derived from
+    // dataFailingSince, which is THIS function's own state.
+    const secs = Math.round((now - dataFailingSince) / 1000);
     const summary = `MCP DATA plane dead ${secs}s while the session plane and /api/health stay GREEN (${detail}) — the WI-6739 signature`;
     const remediation = `check :${UPSTREAM_PORT}'s journal for repeated "connect ECONNREFUSED" to its DB port, then restart the operator host. Restarting ${UNIT} would NOT fix this.`;
     log(
@@ -653,7 +687,33 @@ async function pollHandshake() {
   const action = decideHandshakeAction(kind, upstream.kind);
 
   if (action === 'restart-proxy') {
-    restart(`session plane dead ${secs}s through :${PORT} while upstream :${UPSTREAM_PORT} serves tools — proxy is the culprit (${detail})`);
+    // WI-39378 — RE-CONFIRM BEFORE RESTARTING. Everything above was decided from a probe
+    // taken before the `await probeMcp(UPSTREAM_PORT)` on the line above, which is a real
+    // network round-trip and can burn a full HANDSHAKE_TIMEOUT_MS when upstream is the
+    // thing that is sick. Restarting the proxy is destructive to third parties: it kills
+    // every agent's in-flight MCP call ("transport dropped mid-call; response was lost").
+    // Acting on a stale verdict is therefore not a cosmetic race. Observed live
+    // 2026-08-16T03:54:37Z, verbatim from this log, 0.6s apart:
+    //     03:54:37.232Z session plane recovered (was failing 156s)
+    //     03:54:37.826Z WEDGED -> restarting papercup-mcp-proxy: session plane dead 150s
+    // i.e. it restarted the proxy immediately after observing that the plane was healthy.
+    // A recovery must CANCEL a pending restart, never race it.
+    if (decideRestartAfterRecheck(handshakeFailingSince, null) === 'stand-down-recovered') {
+      log(`STAND DOWN: session plane recovered while we were probing upstream :${UPSTREAM_PORT} — not restarting ${UNIT}`);
+      return;
+    }
+    const recheck = await probeMcp(PORT);
+    if (decideRestartAfterRecheck(handshakeFailingSince, recheck.kind) !== 'restart') {
+      log(
+        `STAND DOWN: session plane answered on re-check (${recheck.detail}) after ${secs}s failing — not restarting ${UNIT}. ` +
+          `A restart here would have killed every in-flight MCP call for a plane that had already recovered (WI-39378).`,
+      );
+      handshakeFailingSince = 0;
+      return;
+    }
+    restart(
+      `session plane dead ${secs}s through :${PORT} (re-confirmed: ${recheck.detail}) while upstream :${UPSTREAM_PORT} serves tools — proxy is the culprit (${detail})`,
+    );
     handshakeFailingSince = 0;
     return;
   }
@@ -700,7 +760,25 @@ function start() {
     );
   }
   setInterval(() => void poll().catch((e) => log(`poll error: ${e.message}`)), POLL_MS);
-  setInterval(() => void pollHandshake().catch((e) => log(`handshake poll error: ${e.message}`)), POLL_MS);
+  // WI-39378 — pollHandshake must not overlap itself. One pass can spend up to three
+  // HANDSHAKE_TIMEOUT_MS probes (session, confirm-full, upstream) against a POLL_MS of
+  // 15s, so overlapping runs were routine, not exotic. Overlap is how one run observed
+  // recovery and zeroed handshakeFailingSince while another was already past its own
+  // decision point and went on to restart the proxy anyway. Every probe is bounded by an
+  // AbortController, so a plain in-flight flag cannot wedge this poller permanently.
+  let handshakePollInFlight = false;
+  setInterval(() => {
+    if (handshakePollInFlight) {
+      log(`skip: previous session-plane poll still in flight after ${POLL_MS}ms`);
+      return;
+    }
+    handshakePollInFlight = true;
+    void pollHandshake()
+      .catch((e) => log(`handshake poll error: ${e.message}`))
+      .finally(() => {
+        handshakePollInFlight = false;
+      });
+  }, POLL_MS);
 }
 
 // Auto-start when run as the systemd unit (`node watchdog.mjs`). Tests set
