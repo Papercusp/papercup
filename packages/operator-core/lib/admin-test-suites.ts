@@ -1623,11 +1623,15 @@ async function measureWarmRoute(
   route: string,
   predicate: (page: RoutePage) => boolean,
 ): Promise<{ ok: boolean; elapsedMs: number; page: RoutePage; stabilized: boolean }> {
-  const cold = await measureRoute(ctx, route, predicate, { stableDomPolls: ROUTE_STABLE_POLLS });
-  // If the priming visit never settled, the warm visit cannot either — the
-  // predicate does not describe this build. Return that fact now instead of
-  // burning a second full 24-poll ceiling to rediscover it.
-  if (!cold.ok) return cold;
+  // ⚠ The priming pass's FAILURE IS NOT DECISIVE — do not "optimise" this into
+  // an early return. A cross-root hop (e.g. /adv → /admin/plans) is a full SPA
+  // reload, which on a loaded box routinely exceeds this pass's whole 24-poll
+  // window; the priming pass is what ABSORBS that, so the warm pass can measure
+  // an already-loaded route. Bailing here made /admin/plans — a route that
+  // genuinely renders in ~440ms — report UNMEASURED forever (measured
+  // 2026-08-16: a lone navigate had still not landed after 6.9s/25 polls).
+  // Only when BOTH passes fail is the predicate actually wrong.
+  await measureRoute(ctx, route, predicate, { stableDomPolls: ROUTE_STABLE_POLLS });
   await sleep(250, ctx.signal);
   return measureRoute(ctx, route, predicate, { stableDomPolls: ROUTE_STABLE_POLLS });
 }
@@ -1810,6 +1814,17 @@ const ROUTE_STABLE_POLLS = 2;
  * false breach for a false blind spot rather than fixing anything.
  */
 const routeDomSettled = (a: number, b: number): boolean => Math.abs(a - b) <= Math.max(3, Math.round(b * 0.01));
+
+/**
+ * Node count below which a surface has not meaningfully rendered.
+ *
+ * This is the data-independent stand-in for "the page came up". Do NOT replace
+ * it with a heading or a CSS-class probe: `.h-root` and an exact `Live metrics`
+ * h1 are precisely the content-coupled assertions that rotted (WI-39486), and
+ * the harnesses tab legitimately renders ~983 nodes with NO h1/h2 at all, so
+ * even a generic "has a heading" test gives a false negative there.
+ */
+const ROUTE_MIN_RENDERED_NODES = 200;
 
 async function measureRoute(
   ctx: SuiteContext,
