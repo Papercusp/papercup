@@ -579,6 +579,10 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
     // (goal-mode-2026-08-07 P-017), so a usage write is exactly when they are wrong.
     'goals.list',
     'goals.detail',
+    // The Learning tab's header spend chip (scout/gym/llm-testing cost, WI-39501)
+    // rides the same synthesized sweep tick; its pause/resume half is invalidated
+    // explicitly by routines:group-set.
+    'learning.loopControl',
   ],
   'harness_shared.bench_runs': ['evals.benchRuns', 'evals.benchRun', 'evals.benchRunLive'],
   'harness_shared.bench_run_tasks': ['evals.benchRun', 'evals.benchRunLive'],

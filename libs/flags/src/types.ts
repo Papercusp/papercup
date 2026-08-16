@@ -86,6 +86,10 @@ export const FLAGS = {
   // spawn path + gym circuit → ONE Learning-tab chip + an owner notification on
   // the transition to offline. Infra failures escalate; they don't queue.
   LEARNING_INFRA_HEALTH: "papercusp-learning-infra-health",
+  // Learning tab header: the pause/resume-all-learning-routines + spend chip
+  // (WI-39501, owner ask 2026-08-16). Default ON (derived FLAG_DEFAULTS — not in
+  // DARK_FLAGS); OFF removes the control, nothing else changes.
+  LEARNING_LOOP_CONTROL: "papercusp-learning-loop-control",
   // holepunch-video-shared-harnesses-2026-06-05: gates the desktop P2P video
   // channel (the participant-grid VideoGrid). Runtime default ON (derived
   // FLAG_DEFAULTS — not in DARK_FLAGS), made DELIBERATE by
