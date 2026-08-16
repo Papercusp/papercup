@@ -33,7 +33,6 @@ vi.mock('../../carry-note', () => ({ getLoopCarryNote: vi.fn(async () => null) }
 // wind-down-disposition module loaded via importOriginal below.
 vi.mock('../../modes/store', () => ({ getModeSubject: vi.fn() }));
 vi.mock('../coordination/escalations', () => ({ openEscalation: vi.fn(async () => ({})) }));
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: vi.fn() }));
 vi.mock('../../goals/wind-down-disposition', async (importOriginal) => {
   const real = await importOriginal<typeof import('../../goals/wind-down-disposition')>();
   return {
