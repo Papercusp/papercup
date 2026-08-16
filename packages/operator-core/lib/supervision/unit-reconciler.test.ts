@@ -1626,7 +1626,9 @@ describe('EI-20474047462811254: an episodic run IN FLIGHT carries no verdict', (
   it('END-TO-END: a full tick sequence over the live journal broadcasts nothing after the first down', async () => {
     _resetReconcilerState();
     let active = 'failed';
-    const notify = vi.fn(async () => {});
+    // Typed with `notify`'s real signature so `calls[0].summary` is a checked `string` rather
+    // than an index into a zero-length tuple.
+    const notify = vi.fn(async (_opts: { summary: string; kind?: 'message' | 'escalation'; category?: string }) => {});
     const deps: ReconcilerDeps = {
       execUser: async (args: string[]) =>
         args[0] === 'list-units'
@@ -1645,7 +1647,7 @@ describe('EI-20474047462811254: an episodic run IN FLIGHT carries no verdict', (
     active = 'failed';
     await reconcileTick(deps); // run fails   -> pre-fix: "⚠ is down" again
 
-    const said = notify.mock.calls.map((c) => String((c[0] as { summary?: string })?.summary ?? ''));
+    const said = notify.mock.calls.map((c) => c[0].summary);
     expect(said.filter((s) => s.includes('is down'))).toHaveLength(1);
     expect(said.some((s) => s.includes('recovered'))).toBe(false);
   });
