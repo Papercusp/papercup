@@ -310,3 +310,55 @@ describe('extractPathTokens', () => {
     ).toHaveLength(4);
   });
 });
+
+describe('fetchTurnExcerpts (P-010 dead-context retrieval — the SQL seam)', () => {
+  // Dedicated rows: exact (session_id, turn_idx) match means the router corpus
+  // above cannot interfere, and vice versa.
+  const SESS = 'sess-excerpt-fixture';
+  beforeAll(async () => {
+    await rootSql`
+      INSERT INTO harness_shared.session_turns
+        (workspace_id, source_kind, session_id, turn_idx, ts, owner, speaker, text, text_embedding)
+      VALUES
+        ('default', 'claude', ${SESS}, 9001, ${NOW.toISOString()}::timestamptz,
+         'agent-exc', 'assistant', ${'long turn: ' + 'y'.repeat(1000)}, ${JSON.stringify(vecAt(0))}::vector),
+        ('default', 'claude', ${SESS}, 9002, ${NOW.toISOString()}::timestamptz,
+         'agent-exc', 'assistant', 'short turn body', ${JSON.stringify(vecAt(0.1))}::vector)
+    `;
+  });
+
+  it('round-trips evidence refs to capped excerpt text, best-sim first, skipping misses', async () => {
+    const { fetchTurnExcerpts, PLAN_START_EXCERPT_CHARS } = await import('./plan-start-consult');
+    const out = await fetchTurnExcerpts(rootSql, WS, [
+      {
+        ownerId: 'agent-exc',
+        evidence: [
+          { session_id: SESS, turn_idx: 9002, ts: NOW.toISOString(), sim: 0.9 },
+          { session_id: SESS, turn_idx: 9001, ts: NOW.toISOString(), sim: 0.6 },
+          // A miss (no such turn) must be skipped, never an error/empty-out.
+          { session_id: 'sess-no-such', turn_idx: 1, ts: null, sim: 0.99 },
+        ],
+      },
+    ]);
+    // The miss had the top sim but resolves to nothing; the two hits come back
+    // ordered by sim desc.
+    expect(out.map((e) => e.turn_idx)).toEqual([9002, 9001]);
+    expect(out[0].excerpt).toBe('short turn body');
+    expect(out[1].excerpt.length).toBe(PLAN_START_EXCERPT_CHARS);
+    expect(out[1].excerpt.startsWith('long turn: yyy')).toBe(true);
+    expect(out.every((e) => e.ownerId === 'agent-exc')).toBe(true);
+  });
+
+  it('caps the injected set at PLAN_START_EXCERPTS_MAX across candidates', async () => {
+    const { fetchTurnExcerpts, PLAN_START_EXCERPTS_MAX } = await import('./plan-start-consult');
+    const evidence = Array.from({ length: 10 }, (_, i) => ({
+      session_id: SESS,
+      turn_idx: i % 2 === 0 ? 9001 : 9002,
+      ts: null,
+      sim: 0.5 + i / 100,
+    }));
+    const out = await fetchTurnExcerpts(rootSql, WS, [{ ownerId: 'agent-exc', evidence }]);
+    expect(out.length).toBeLessThanOrEqual(PLAN_START_EXCERPTS_MAX);
+    expect(out.length).toBeGreaterThan(0);
+  });
+});
