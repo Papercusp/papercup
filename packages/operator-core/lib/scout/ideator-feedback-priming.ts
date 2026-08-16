@@ -48,11 +48,11 @@ export interface GradedIdeaView {
   lens: string;
   ideaId?: string;
   title?: string;
-  /** 1–5 owner/Queen grade (C-1b); absent/non-finite = ungraded. */
+  /** 1–5 owner/auto-grader grade (C-1b); absent/non-finite = ungraded. */
   humanGrade?: number;
   /** Free-text critique (C-1b); optional — a grade-only entry has no `: <feedback>` tail. */
   humanFeedback?: string;
-  /** 'owner' | 'Queen' (C-1b attribution, D-004). */
+  /** 'owner' | 'auto-grader' (C-1b attribution, D-004). */
   gradedBy?: string;
   /** ISO timestamp of the grade (C-1b) — the newest-first ordering key. */
   gradedAt?: string;
@@ -97,7 +97,7 @@ function truncate(s: string, max: number): string {
   return s.length <= max ? s : `${s.slice(0, Math.max(0, max - 1)).trimEnd()}…`;
 }
 
-/** 'owner' → 'Owner', 'Queen' → 'Queen'; anything else gets first-letter capitalization. */
+/** 'owner' → 'Owner', 'auto-grader' → 'Auto-grader'; anything else gets first-letter capitalization. */
 function graderLabel(gradedBy: string | undefined): string {
   const g = (gradedBy ?? '').trim();
   if (!g) return 'Owner';

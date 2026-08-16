@@ -21,6 +21,12 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
  *  existing idiom — see release/origin-freshness-watchdog.test.ts). */
 let psiRead: () => string;
 let psiReadCount = 0;
+/** `/proc/stat` fixture. Deliberately NULL by default so the interception is
+ *  OPT-IN: the pre-existing tests above must keep reading the real file and stay
+ *  byte-identical in behaviour, rather than being silently re-pointed at a
+ *  fixture by a mock added for a later leg. */
+let statRead: (() => string) | null = null;
+let statReadCount = 0;
 vi.mock('node:fs', async (importOriginal) => ({
   ...(await importOriginal<typeof import('node:fs')>()),
   readFileSync: (...args: unknown[]) => {
@@ -28,6 +34,10 @@ vi.mock('node:fs', async (importOriginal) => ({
     if (p === '/proc/pressure/memory') {
       psiReadCount += 1;
       return psiRead();
+    }
+    if (p === '/proc/stat' && statRead) {
+      statReadCount += 1;
+      return statRead();
     }
     return (importOriginalSync() as typeof import('node:fs')).readFileSync(...(args as [never]));
   },
