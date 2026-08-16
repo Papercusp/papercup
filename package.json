@@ -253,6 +253,8 @@
     "lint:vimock-export-strands": "node scripts/check-vimock-export-strands.mjs",
     "lint:optional-seam-strands": "node scripts/check-optional-seam-strands.mjs",
     "lint:optional-seam-strands:fail": "node scripts/check-optional-seam-strands.mjs --fail",
+    "lint:di-seam-arity-strands": "node scripts/check-di-seam-arity-strands.mjs",
+    "lint:di-seam-arity-strands:fail": "node scripts/check-di-seam-arity-strands.mjs --fail",
     "lint:migration-fixture-drift": "node scripts/check-migration-fixture-drift.mjs --base HEAD",
     "lint:migration-fixture-drift:check": "node scripts/check-migration-fixture-drift.mjs --check --base HEAD",
     "lint:no-box-identity": "node scripts/check-no-box-identity.mjs",
