@@ -8,6 +8,7 @@ import {
   parseSystemctlListUnits,
   parseSystemctlShowProperties,
   isUnitDown,
+  isEpisodicRunInFlight,
   isAdministrativelyPaused,
   decideReconcile,
   initialFlapState,
@@ -1511,5 +1512,140 @@ describe('reconcileTick — a build-step give-up is absorbed and retried, not la
     expect(said.some((s) => s.includes('this is a code fault not a transient'))).toBe(true);
     expect(said.some((s) => s.includes('BUILD STEP failed'))).toBe(false);
     expect(callsFor(execUser, 'reset-failed')).toHaveLength(0);
+  });
+});
+
+/**
+ * EI-20474047462811254 — an EPISODIC unit's run STARTING is not a RECOVERY.
+ *
+ * Measured live on `papercup-live-federation-gate` (2026-08-15/16): 12 consecutive
+ * `✅ recovered` → `⚠ is down (report-only: entry.autoRestart:false)` broadcast PAIRS in 12
+ * hours, one per hourly timer fire, not one of them a real transition. The journal pins the
+ * mechanism to the second:
+ *
+ *   22:43:08Z  systemd: Starting papercup-live-federation-gate  (ActiveState=activating)
+ *   22:43:57Z  reconciler: ✅ recovered          ← FALSE. A run merely started.
+ *   22:44:15Z  systemd: Failed with result 'exit-code'
+ *   22:44:58Z  reconciler: ⚠ is down
+ *
+ * The unit is `Type=oneshot` / `RemainAfterExit=no`, so it sits in `activating` for the WHOLE
+ * run — and it budgets up to 4h (`TimeoutStartSec=14400`), so the false "recovered" can stand
+ * for hours while the unit's last known result is a failure.
+ *
+ * WI-6149's `episodic` flag fixed the other half of this (idle `inactive` is not down); the
+ * gap it left is that `decideReconcile` read "not faulted" as "recovered", which for a
+ * timer-driven oneshot are different claims.
+ */
+describe('EI-20474047462811254: an episodic run IN FLIGHT carries no verdict', () => {
+  const EPISODIC_ENTRY: SupervisionEntry = {
+    name: 'live-federation-gate',
+    layer: 'systemd-user',
+    unit: 'papercup-live-federation-gate',
+    criticality: 'important',
+    autoRestart: false,
+    episodic: true,
+  };
+  const st = (active: string): SystemctlUnitStatus => ({
+    unit: 'papercup-live-federation-gate.service',
+    load: 'loaded',
+    active,
+    sub: 'x',
+    description: '',
+  });
+  /** Feed a sequence of ActiveStates through decideReconcile, threading flap state. */
+  const run = (entry: SupervisionEntry, states: string[]) => {
+    let state = initialFlapState(entry.unit!);
+    const actions: ReconcileAction[] = [];
+    let now = 1_000_000;
+    for (const active of states) {
+      const r = decideReconcile({ entry, status: st(active), show: undefined, state, autoRestartFlagOn: true, now });
+      actions.push(r.action);
+      state = r.nextState;
+      now += 60_000; // the reconciler's real 60s cadence
+    }
+    return { actions, state };
+  };
+
+  it('isEpisodicRunInFlight covers the TRANSITIONAL states only — never a terminal verdict', () => {
+    for (const s of ['activating', 'reloading', 'deactivating']) {
+      expect(isEpisodicRunInFlight(s), `state=${s}`).toBe(true);
+    }
+    // `active` is deliberately excluded: for a oneshot with RemainAfterExit=yes it is the
+    // terminal SUCCESS state, so calling it in-flight would suppress a REAL recovery.
+    for (const s of ['active', 'inactive', 'failed']) {
+      expect(isEpisodicRunInFlight(s), `state=${s}`).toBe(false);
+    }
+    expect(isEpisodicRunInFlight(undefined)).toBe(false);
+  });
+
+  it('THE FLAP: failed -> activating -> failed emits no recovery and no duplicate down', () => {
+    const { actions } = run(EPISODIC_ENTRY, ['failed', 'activating', 'failed']);
+
+    // Tick 1 — the genuine failure. Notified once.
+    expect(actions[0]).toEqual({ kind: 'report-only', unit: 'live-federation-gate', reason: 'down-report-only', notify: true });
+    // Tick 2 — the run restarts. Pre-fix this was `{ kind: 'recovered' }` and broadcast
+    // "✅ recovered" for a gate that was about to fail 18 seconds later.
+    expect(actions[1]).toEqual({ kind: 'run-in-flight', unit: 'live-federation-gate' });
+    // Tick 3 — the run failed. The unit never left the down state, so re-announcing it would be
+    // the second half of the flap: `notify` must stay false.
+    expect(actions[2]).toEqual({ kind: 'report-only', unit: 'live-federation-gate', reason: 'down-report-only', notify: false });
+  });
+
+  it('holds the previous DOWN state across the run rather than resetting it', () => {
+    const { state } = run(EPISODIC_ENTRY, ['failed', 'activating']);
+    // The hold is what makes both halves work: `wasDown` surviving the run is why the failure
+    // above does not re-notify, and why the success below still reads as a transition.
+    expect(state.wasDown).toBe(true);
+    expect(state.healthySince).toBeNull();
+    expect(state.consecutiveDownTicks).toBe(1); // held, not incremented by the in-flight tick
+  });
+
+  it('CALIBRATION: a run that actually SUCCEEDS still emits exactly one "recovered"', () => {
+    // The failure direction that would make this fix worse than the bug — suppressing real
+    // recoveries. `inactive` is a completed successful oneshot (RemainAfterExit=no).
+    const { actions } = run(EPISODIC_ENTRY, ['failed', 'activating', 'inactive', 'inactive']);
+    expect(actions[2]).toEqual({ kind: 'recovered', unit: 'live-federation-gate' });
+    expect(actions.filter((a) => a.kind === 'recovered')).toHaveLength(1);
+    expect(actions[3]).toEqual({ kind: 'healthy', unit: 'live-federation-gate' });
+  });
+
+  it('CALIBRATION: `active` (RemainAfterExit=yes) is a completed success, not an in-flight run', () => {
+    const { actions } = run(EPISODIC_ENTRY, ['failed', 'active']);
+    expect(actions[1]).toEqual({ kind: 'recovered', unit: 'live-federation-gate' });
+  });
+
+  it('CALIBRATION: a PERSISTENT unit is untouched — activating is still a healthy mid-restart', () => {
+    // Guards the over-application direction: for a continuously-running service `activating` is
+    // a restart blip, and the pre-existing semantics are correct there. REPORT_ONLY_ENTRY is the
+    // same unit WITHOUT `episodic`.
+    const { actions } = run(REPORT_ONLY_ENTRY, ['failed', 'activating']);
+    expect(actions[1]).toEqual({ kind: 'recovered', unit: 'live-federation-gate' });
+  });
+
+  it('END-TO-END: a full tick sequence over the live journal broadcasts nothing after the first down', async () => {
+    _resetReconcilerState();
+    let active = 'failed';
+    const notify = vi.fn(async () => {});
+    const deps: ReconcilerDeps = {
+      execUser: async (args: string[]) =>
+        args[0] === 'list-units'
+          ? `papercup-live-federation-gate.service loaded ${active} x Live 2-peer federation gate\n`
+          : '',
+      now: () => 1_000_000,
+      notify,
+      autoRestartFlagOn: async () => true,
+      registry: () => [EPISODIC_ENTRY],
+      log: () => {},
+    };
+
+    await reconcileTick(deps); // failed      -> one honest "is down"
+    active = 'activating';
+    await reconcileTick(deps); // run starts  -> pre-fix: "✅ recovered"
+    active = 'failed';
+    await reconcileTick(deps); // run fails   -> pre-fix: "⚠ is down" again
+
+    const said = notify.mock.calls.map((c) => String((c[0] as { summary?: string })?.summary ?? ''));
+    expect(said.filter((s) => s.includes('is down'))).toHaveLength(1);
+    expect(said.some((s) => s.includes('recovered'))).toBe(false);
   });
 });

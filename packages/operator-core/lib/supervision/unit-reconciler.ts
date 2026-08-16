@@ -356,6 +356,10 @@ export type ReconcileAction =
       firstObservation?: boolean;
     }
   | { kind: 'recovered'; unit: string } // transition down -> healthy, damping reset
+  /** EI-20474047462811254: an EPISODIC unit's run is in flight — no verdict this tick, so the
+   *  previous up/down state is HELD unchanged and nothing is notified. Distinct from 'healthy'
+   *  precisely so it can never be read as evidence the unit is fine. */
+  | { kind: 'run-in-flight'; unit: string }
   | {
       kind: 'report-only';
       unit: string;
@@ -387,6 +391,25 @@ export interface DecideInput {
 export function decideReconcile(input: DecideInput): { action: ReconcileAction; nextState: UnitFlapState } {
   const { entry, status, show, autoRestartFlagOn, now } = input;
   const state = { ...input.state };
+
+  // EI-20474047462811254: an EPISODIC unit whose run is IN FLIGHT has produced no verdict yet.
+  // Hold the previous state and emit nothing — a run STARTING is not a recovery, and a run
+  // underway is not a fault. Without this, every fire of a red hourly gate emitted a
+  // `✅ recovered` (on the first tick that saw `activating`) immediately followed by a
+  // `⚠ is down` when the run failed: 24 false broadcasts/day for ONE unit, and — because the
+  // gate budgets up to 4h per run — a "recovered" that can stand for hours while the last
+  // known result is a failure.
+  //
+  // Holding is what makes the notification honest at BOTH ends: `wasDown` survives the run, so
+  // a run that FAILS re-confirms the existing down state silently (no duplicate page), and a
+  // run that SUCCEEDS emits exactly one `recovered` — at the moment the evidence exists.
+  //
+  // Gated on `episodic` on purpose: for a PERSISTENT unit `activating` is a mid-restart blip on
+  // a continuously-running service, where the existing not-down semantics are already correct.
+  if (entry.episodic && isEpisodicRunInFlight(status?.active)) {
+    return { action: { kind: 'run-in-flight', unit: entry.name }, nextState: state };
+  }
+
   const down = isUnitDown(status, { episodic: entry.episodic });
 
   if (!down) {
@@ -885,7 +908,16 @@ export async function reconcileTick(deps: ReconcilerDeps): Promise<ReconcileTick
     // `show` probe returned a `UnitFileState` (so disabled/masked is knowable), or the unit is up
     // — an up unit is not dark, whatever its unit-file state says. A failed probe is neither, and
     // must not be mistaken for "resumed".
-    if (show?.unitFileState !== undefined || action.kind === 'healthy' || action.kind === 'recovered') {
+    // EI-20474047462811254: 'run-in-flight' counts as observed for the same reason 'healthy'
+    // does — a unit systemd is actively RUNNING is demonstrably not dark, whatever its
+    // unit-file state says. Keeping it here preserves the pre-fix pause-clock behaviour exactly
+    // (an episodic unit mid-run used to report 'healthy' and land in this set).
+    if (
+      show?.unitFileState !== undefined ||
+      action.kind === 'healthy' ||
+      action.kind === 'recovered' ||
+      action.kind === 'run-in-flight'
+    ) {
       observedThisTick.push(entry.unit);
     }
 
