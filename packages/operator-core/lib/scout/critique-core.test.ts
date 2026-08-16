@@ -159,7 +159,15 @@ describe('effectiveMoonshotFloor (WI-39492)', () => {
   });
 
   it('honors custom knobs (quantile + min)', () => {
-    expect(effectiveMoonshotFloor(COMPRESSED_BATCH, { moonshotFloorQuantile: 0.5 })).toBe(0.42);
+    // A lower quantile tracks further down the batch — floorMin dropped out of the
+    // way so this observes the QUANTILE, not the clamp.
+    expect(
+      effectiveMoonshotFloor(COMPRESSED_BATCH, { moonshotFloorQuantile: 0.5, moonshotFloorMin: 0.1 }),
+    ).toBe(0.42);
+    // …and with the default floorMin (0.45) that same quantile is clamped back up.
+    expect(effectiveMoonshotFloor(COMPRESSED_BATCH, { moonshotFloorQuantile: 0.5 })).toBe(
+      DEFAULT_BUCKET_OPTIONS.moonshotFloorMin,
+    );
     expect(effectiveMoonshotFloor(COMPRESSED_BATCH, { moonshotFloorMin: 0.62 })).toBe(0.62);
   });
 });
