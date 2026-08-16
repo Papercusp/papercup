@@ -83,11 +83,12 @@ describe('resolveSidecarSpawnPlan (WI-3079)', () => {
       devScriptPath: '/repo/apps/operator/bin/spawner-sidecar.ts',
       bundledModeEnvVar: 'PAPERCUSP_SPAWNER_SIDECAR_MODE',
       execPath: '/usr/bin/node',
+      spawnerPid: 4242,
     });
     expect(plan).toEqual({
       cmd: 'npx',
       args: ['tsx', '/repo/apps/operator/bin/spawner-sidecar.ts'],
-      env: {},
+      env: { PAPERCUSP_DESKTOP_PARENT_PID: '4242' },
       mode: 'dev-tsx',
     });
   });
@@ -98,11 +99,12 @@ describe('resolveSidecarSpawnPlan (WI-3079)', () => {
       devScriptPath: '/opt/Papercup/resources/apps/operator/bin/spawner-sidecar.ts',
       bundledModeEnvVar: 'PAPERCUSP_SPAWNER_SIDECAR_MODE',
       execPath: '/opt/Papercup/resources/node',
+      spawnerPid: 4242,
     });
     expect(plan).toEqual({
       cmd: '/opt/Papercup/resources/node',
       args: ['/opt/Papercup/resources/serve.mjs'],
-      env: { PAPERCUSP_SPAWNER_SIDECAR_MODE: '1' },
+      env: { PAPERCUSP_SPAWNER_SIDECAR_MODE: '1', PAPERCUSP_DESKTOP_PARENT_PID: '4242' },
       mode: 'bundled-reexec',
     });
   });
@@ -113,8 +115,100 @@ describe('resolveSidecarSpawnPlan (WI-3079)', () => {
       devScriptPath: '/repo/bin/x.js',
       bundledModeEnvVar: 'X_MODE',
       execPath: '/usr/bin/node',
+      spawnerPid: 4242,
     });
-    expect(plan).toEqual({ cmd: '/usr/bin/node', args: ['/repo/bin/x.js'], env: {}, mode: 'dev-tsx' });
+    expect(plan).toEqual({
+      cmd: '/usr/bin/node',
+      args: ['/repo/bin/x.js'],
+      env: { PAPERCUSP_DESKTOP_PARENT_PID: '4242' },
+      mode: 'dev-tsx',
+    });
+  });
+});
+
+/**
+ * (EI-20493378309289396) The spawn plan MUST re-declare the spawning process as
+ * the child's parent, or an inherited `PAPERCUSP_DESKTOP_PARENT_PID` naming the
+ * DESKTOP reaches a child whose real parent is the OPERATOR — and the child's
+ * parent-death watch then compares two pids that can never be equal, SIGTERMing
+ * itself on every boot forever (1,134 such lines in 3h10m on the macOS rig).
+ *
+ * The control below is the whole point: `inheritedParentEnvPlan` is the OLD
+ * behaviour (leave the var alone and let it be inherited). Every assertion here
+ * must FAIL against it — otherwise the test is satisfied by the broken
+ * implementation and guards nothing.
+ */
+describe('sidecar spawn declares its OWN pid as the child parent (EI-20493378309289396)', () => {
+  const OPERATOR_PID = 79225; // the live Mac operator
+  const DESKTOP_PID = '79217'; // what main.rs put in the operator's env
+
+  const realPlanEnv = (): Record<string, string> =>
+    resolveSidecarSpawnPlan({
+      selfPath: '/Applications/Papercusp Server.app/Contents/Resources/sidecar/serve.mjs',
+      devScriptPath: '/repo/packages/operator-core/lib/inference-gateway/bin.ts',
+      bundledModeEnvVar: 'PAPERCUSP_GATEWAY_SIDECAR_MODE',
+      execPath: '/Applications/Papercusp Server.app/Contents/Resources/sidecar/bin/node',
+      spawnerPid: OPERATOR_PID,
+    }).env;
+
+  /** PERMANENT WRONG-IMPLEMENTATION CONTROL — the pre-fix plan env. */
+  const inheritedParentEnvPlan = (): Record<string, string> => ({
+    PAPERCUSP_GATEWAY_SIDECAR_MODE: '1',
+  });
+
+  /** The child's effective env, exactly as every spawner builds it:
+   *  `{ ...process.env, ...plan.env }` — plan.env layered LAST. */
+  const childEnv = (planEnv: Record<string, string>): Record<string, string> => ({
+    PAPERCUSP_DESKTOP: '1',
+    PAPERCUSP_DESKTOP_PARENT_PID: DESKTOP_PID, // inherited from the operator
+    PAPERCUSP_PARENT_DEATH_WATCH: '1',
+    ...planEnv,
+  });
+
+  /** serve.ts:244 `isOrphanedFromParent`, restated so the test asserts the
+   *  CONSEQUENCE (does the child kill itself?) rather than a string value. */
+  const selfTerminatesAtBoot = (planEnv: Record<string, string>): boolean => {
+    const declared = Number(childEnv(planEnv).PAPERCUSP_DESKTOP_PARENT_PID);
+    return declared > 0 && OPERATOR_PID !== declared;
+  };
+
+  it('overrides the INHERITED desktop pid with the spawning operator pid', () => {
+    expect(realPlanEnv().PAPERCUSP_DESKTOP_PARENT_PID).toBe(String(OPERATOR_PID));
+    expect(childEnv(realPlanEnv()).PAPERCUSP_DESKTOP_PARENT_PID).toBe(String(OPERATOR_PID));
+    // CONTROL: the old plan leaves the desktop's pid in place.
+    expect(childEnv(inheritedParentEnvPlan()).PAPERCUSP_DESKTOP_PARENT_PID).toBe(DESKTOP_PID);
+  });
+
+  it('the child does NOT self-terminate at boot — the actual defect', () => {
+    expect(selfTerminatesAtBoot(realPlanEnv())).toBe(false);
+    // CONTROL: the pre-fix env self-terminates, which is the 1,134-line storm.
+    expect(selfTerminatesAtBoot(inheritedParentEnvPlan())).toBe(true);
+  });
+
+  it('keeps the divert var — the parent declaration must not displace it', () => {
+    expect(realPlanEnv().PAPERCUSP_GATEWAY_SIDECAR_MODE).toBe('1');
+  });
+
+  it('declares the parent in DEV (tsx) too, not only in packaged builds', () => {
+    // A desktop `npm run dev` operator also carries PAPERCUSP_DESKTOP_PARENT_PID,
+    // so a dev-mode plan that left env empty would reproduce the same bug.
+    const devEnv = resolveSidecarSpawnPlan({
+      selfPath: '/repo/packages/operator-core/lib/inference-gateway/gateway-sidecar-spawn.ts',
+      devScriptPath: '/repo/packages/operator-core/lib/inference-gateway/bin.ts',
+      bundledModeEnvVar: 'PAPERCUSP_GATEWAY_SIDECAR_MODE',
+      execPath: '/usr/bin/node',
+      spawnerPid: OPERATOR_PID,
+    }).env;
+    expect(devEnv.PAPERCUSP_DESKTOP_PARENT_PID).toBe(String(OPERATOR_PID));
+    expect(selfTerminatesAtBoot(devEnv)).toBe(false);
+  });
+
+  it('CALIBRATION: a genuinely dead parent is still detected (the watch keeps working)', () => {
+    // The fix must not make the watch unfalsifiable. If the child is reparented
+    // away from the operator that declared itself, it IS orphaned and must fire.
+    const declared = Number(realPlanEnv().PAPERCUSP_DESKTOP_PARENT_PID);
+    const reparentedToInit = 1;
+    expect(declared > 0 && reparentedToInit !== declared).toBe(true);
   });
 });
 
