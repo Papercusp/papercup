@@ -307,6 +307,14 @@ test.describe('/adv Conversations + Sessions e2e', () => {
   test('Create Sessions view renders the current SessionsRosterView route and opens an agent dossier', async ({
     page,
   }) => {
+    // The sessions dock is a DENSE multi-panel view: at the default 1280×720
+    // Desktop-Chrome viewport the left chat rail + steering sidebar leave the
+    // dockview ~540px, its panels pinch to near-zero width and their sashes /
+    // the neighbouring plan quick-filter column paint OVER the roster rows, so
+    // a row click is intercepted before it lands. Give the dock real estate —
+    // the subject here is the roster→dossier interaction, not the pinch layout.
+    await page.setViewportSize({ width: 1600, height: 1000 });
+
     const sync = await stubCommonApis(page);
     await page.goto(`${baseURL}/adv?tab=plans&view=sessions&slug=${SLUG}&scope=self`, {
       waitUntil: 'domcontentloaded',
