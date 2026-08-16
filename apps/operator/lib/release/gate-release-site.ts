@@ -28,7 +28,10 @@ import {
   HOLDING_PAGE_MARKER,
   PUBLISHED_CONTACT_EMAIL,
   findIdentityLeaks,
+  hasOwnerNameLiteral,
   identityLiterals,
+  OWNER_NAME_ENV,
+  type IdentityLiteral,
 } from './release-content-scrub';
 
 export interface SiteLeak {
@@ -98,7 +101,14 @@ export function gateSite(dir: string, literals = identityLiterals()): SiteLeak[]
   return leaks;
 }
 
-export function main(argv: string[] = process.argv.slice(2)): number {
+// `literals` is injectable for the same reason `gateSite`'s is: the fail-closed path below
+// is the one branch that MUST be provable, and resolving identity from the real box would
+// make its test pass or fail according to whatever `git config user.name` happens to be —
+// including, on this box today, the very bot identity that caused the bug.
+export function main(
+  argv: string[] = process.argv.slice(2),
+  literals: IdentityLiteral[] = identityLiterals(),
+): number {
   const dir = argv[0];
   if (!dir) {
     console.error('usage: gate-release-site <dir>');
@@ -109,7 +119,35 @@ export function main(argv: string[] = process.argv.slice(2)): number {
     return 2;
   }
 
-  const literals = identityLiterals();
+  /**
+   * FAIL CLOSED when no owner-name literal resolves.
+   *
+   * This gate's entire value is that a CLEAN verdict is EVIDENCE. Without a name literal
+   * it cannot inspect the one identity class that has no shape to fall back on, so its
+   * "CLEAN" degrades to "I looked for nothing" while still reading, to every human and
+   * every script downstream, as proof. That is strictly worse than no gate: it converts an
+   * unverified publish into an apparently-verified one.
+   *
+   * Measured when this was caught (EI-20583328178472869): git `user.name` had become the
+   * git-sync bot, so the scrub redacted the owner's real name 0 times, a fresh regen of the
+   * live page carried 38 raw names across 444 files — and this gate printed CLEAN, exit 0.
+   *
+   * Exit 2 (configuration), not 1 (leaks found). "I cannot check" and "I checked and found
+   * nothing" must never share an exit code, or a caller's `|| exit` cannot tell a blind gate
+   * from a clean one — the same conflation, one layer up.
+   */
+  if (!hasOwnerNameLiteral(literals)) {
+    console.error(
+      '[gate] 🔴 REFUSING TO CERTIFY — no owner-name literal resolved, so the owner\'s name ' +
+        'cannot be detected on this page and a CLEAN verdict here would be meaningless.\n' +
+        `  Cause: \`git config user.name\` is unset or belongs to an automation (a bot/CI identity).\n` +
+        `  Fix:   set ${OWNER_NAME_ENV}='<the owner's name>' for this publish — it is read at run\n` +
+        '         time and never stored, because writing the name into a source file to search\n' +
+        '         for it would itself be the leak, committed to git forever.',
+    );
+    return 2;
+  }
+
   const leaks = gateSite(dir, literals);
   const pages = walk(dir).length;
 

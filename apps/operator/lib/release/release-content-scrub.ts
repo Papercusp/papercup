@@ -259,6 +259,26 @@ export function identityLiterals(): IdentityLiteral[] {
   const host = os.hostname();
   if (host && !/^(runner|ci-|localhost)/.test(host)) lits.push({ kind: 'hostname', value: host });
 
+  /**
+   * The owner's NAME resolves in precedence order:
+   *   1. OWNER_NAME_ENV — an explicit run-time answer, for a box whose git identity is
+   *      not the owner's: CI, a container, or (the case that caused this) a box whose
+   *      `user.name` an unrelated automation has taken over.
+   *   2. `git config user.name` — but ONLY when it is a person's.
+   *
+   * An automation name is DROPPED rather than recorded, and that asymmetry is the whole
+   * fix. Recording it looks harmless — you redact a bot's name, which merely accomplishes
+   * nothing — but it also leaves `hasOwnerNameLiteral()` TRUE, so the gate keeps certifying
+   * pages whose highest-cost leak class it can no longer see. Dropping it converts a silent
+   * blindness into a VISIBLE one that the gate fails closed on. Prefer the loud gap.
+   *
+   * `git-email` is deliberately left alone: an address is still caught by shape via
+   * IDENTITY_PATTERNS even when no literal knows it, so a bot email cannot go blind the way
+   * a bare first name can. Narrow fix, narrow blast radius.
+   */
+  const explicitOwner = (process.env[OWNER_NAME_ENV] ?? '').trim();
+  if (explicitOwner) lits.push({ kind: 'git-name', value: explicitOwner });
+
   for (const [kind, key] of [
     ['git-name', 'user.name'],
     ['git-email', 'user.email'],
@@ -269,7 +289,12 @@ export function identityLiterals(): IdentityLiteral[] {
         timeout: 5000,
         stdio: ['ignore', 'pipe', 'ignore'],
       }).trim();
-      if (v) lits.push({ kind, value: v });
+      if (!v) continue;
+      if (kind === 'git-name') {
+        if (explicitOwner) continue; // an explicit answer outranks the box's guess
+        if (looksLikeAutomationIdentity(v)) continue; // a bot's name is not the owner's
+      }
+      lits.push({ kind, value: v });
     } catch {
       /* no git identity configured */
     }
