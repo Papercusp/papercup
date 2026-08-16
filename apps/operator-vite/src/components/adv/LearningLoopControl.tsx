@@ -282,7 +282,7 @@ export default function LearningLoopControl() {
           display: flex; justify-content: space-between; align-items: center;
           font-weight: 700; color: var(--fg); margin-bottom: 6px;
         }
-        .pc-lloop__state { font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+        .pc-lloop__state { font-size: 10px; font-weight: 700; text-transform: uppercase; }
         .pc-lloop__state--running { color: var(--good); }
         .pc-lloop__state--paused { color: var(--warn); }
         .pc-lloop__swrow { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 2px 0 8px; cursor: pointer; }
