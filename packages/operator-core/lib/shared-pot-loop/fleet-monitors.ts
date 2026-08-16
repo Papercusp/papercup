@@ -229,7 +229,13 @@ export interface PeerFederationHealth {
   /** False when there is nothing to judge; the caller must not infer health. */
   measured: boolean;
   /** Why we could not judge — so `measured:false` is never a bare shrug. */
-  unmeasuredReason: 'no-remote-logs' | 'scope-dormant' | 'scan-failed' | null;
+  unmeasuredReason:
+    | 'no-remote-logs'
+    | 'scope-dormant'
+    | 'scan-failed'
+    | 'own-log-only'
+    | 'own-log-unknown'
+    | null;
   /** Set with `scan-failed`: the error, kept so a broken scan is diagnosable. */
   scanError?: string;
   silent: PeerSilence[];
@@ -247,6 +253,13 @@ export interface PeerFederationHealth {
   strandedCursors: number;
   /** The binding the judged population shares — null is a legitimate value. */
   liveApplyBinding: string | null;
+  /**
+   * Our OWN log's cursor, excluded from the peer population (see the judge).
+   * Reported because it is a genuine LOCAL-liveness reading — just not a peer
+   * one — and because a reader who sees `own-log-only` needs to know we were
+   * still folding our own writes while no remote log was admitted.
+   */
+  ownLogSilentForMs: number | null;
 }
 
 /**
@@ -261,6 +274,13 @@ export function judgePeerFederationSilence(
     nowMs: number;
     /** Age of OUR OWN newest write in this scope; null = unknown, so judge anyway. */
     localActivityAgeMs?: number | null;
+    /**
+     * OUR OWN log's key in this scope. REQUIRED to judge: `substrate_merge_cursor`
+     * holds a row for the own log too, and it is not a peer (see the judge).
+     * `undefined` ⇒ we could not identify it, which is UNMEASURED, never "judge
+     * anyway" — judging anyway is exactly the false-peer-alarm this prevents.
+     */
+    ownLogKeyHex?: string | null;
   },
 ): PeerFederationHealth {
   if (rows.length === 0) {
@@ -273,6 +293,7 @@ export function judgePeerFederationSilence(
       allSilent: false,
       strandedCursors: 0,
       liveApplyBinding: null,
+      ownLogSilentForMs: null,
       // Deliberately NOT a breach: "no remote logs" is the honest shape of a
       // host that has never federated. It is reported as UNMEASURED so a caller
       // that knows federation IS in use (outbox rows exist) can escalate it,
@@ -299,8 +320,61 @@ export function judgePeerFederationSilence(
   // applyBinding=null), so this must compare bindings, never truthiness.
   const freshestRow = rows.reduce((a, b) => (b.updatedAtMs > a.updatedAtMs ? b : a));
   const liveApplyBinding = freshestRow.applyBinding;
-  const judged = rows.filter((r) => r.applyBinding === liveApplyBinding);
-  const strandedCursors = rows.length - judged.length;
+  const underLiveBinding = rows.filter((r) => r.applyBinding === liveApplyBinding);
+  const strandedCursors = rows.length - underLiveBinding.length;
+
+  // OUR OWN LOG IS NOT A PEER. `substrate_merge_cursor` holds a row for it too,
+  // and it is re-stamped by our own writes — so while this host is active it is
+  // an ETERNALLY-ADVANCING row. The comment at the top of this section says the
+  // still-advancing logs are the positive control that "licenses the per-peer
+  // reading"; our own log licenses that reading unconditionally, which means the
+  // all-silent branch — the whole point of the discrimination — can never fire on
+  // a host that is still writing. Measured 2026-08-16: this host had admitted ZERO
+  // remote logs in all 95 booted scopes, yet `papercusp` reported "5 of 6 remote
+  // logs silent while 1 keeps advancing" (the 1 was us) instead of LOCAL FOLD
+  // SUSPECT, while `hive-canary` — where our own log was ALSO stale because we
+  // stopped writing there — did reach the local verdict. Same condition, two
+  // different verdicts, neither naming the cause.
+  //
+  // ⚠ An UNKNOWN own-log key is UNMEASURED, never "judge anyway": judging anyway
+  // is precisely the false-peer-alarm above, and this module's rule is to degrade
+  // to unmeasured rather than to a confident wrong reading.
+  if (opts.ownLogKeyHex === undefined) {
+    return {
+      totalLogs: underLiveBinding.length,
+      measured: false,
+      unmeasuredReason: 'own-log-unknown',
+      silent: [],
+      freshestAdvanceMs: null,
+      allSilent: false,
+      breaches: [],
+      strandedCursors,
+      liveApplyBinding,
+      ownLogSilentForMs: null,
+    };
+  }
+  const ownRow = underLiveBinding.find((r) => r.logKeyHex === opts.ownLogKeyHex);
+  const ownLogSilentForMs = ownRow ? Math.max(0, opts.nowMs - ownRow.updatedAtMs) : null;
+  const judged = underLiveBinding.filter((r) => r.logKeyHex !== opts.ownLogKeyHex);
+
+  // No REMOTE log at all under the live binding. This is the honest shape of "we
+  // have admitted no peers here" and it is the reading that was missing today —
+  // it is deliberately NOT a peer breach (there are no peers to breach) and
+  // deliberately NOT healthy. A caller that knows peers are expected escalates it.
+  if (judged.length === 0) {
+    return {
+      totalLogs: 0,
+      measured: false,
+      unmeasuredReason: 'own-log-only',
+      silent: [],
+      freshestAdvanceMs: null,
+      allSilent: false,
+      breaches: [],
+      strandedCursors,
+      liveApplyBinding,
+      ownLogSilentForMs,
+    };
+  }
 
   // A scope WE stopped writing to is one we are no longer federating. Every
   // remote log there is silent for the mundane reason that the whole scope is
@@ -319,6 +393,7 @@ export function judgePeerFederationSilence(
       breaches: [],
       strandedCursors,
       liveApplyBinding,
+      ownLogSilentForMs,
     };
   }
   const ages = judged.map((r) => Math.max(0, opts.nowMs - r.updatedAtMs));
@@ -357,6 +432,7 @@ export function judgePeerFederationSilence(
     breaches,
     strandedCursors,
     liveApplyBinding,
+    ownLogSilentForMs,
   };
 }
 
@@ -388,6 +464,7 @@ export async function scanPeerFederationSilence(
       breaches: [],
       strandedCursors: 0,
       liveApplyBinding: null,
+      ownLogSilentForMs: null,
     };
   }
 }
@@ -432,6 +509,26 @@ async function readAndJudgePeerSilence(
   // does write, so this trades an unreachable case for ~10 standing false majors.
   const newestLocal =
     local?.newest_ts == null ? Number.POSITIVE_INFINITY : Number(local.newest_ts);
+  // OUR OWN log's key in this scope, so the judge can take it out of the peer
+  // population. `substrate_booted_handles_status` is this host publishing its own
+  // boot registry (`log-stats.ts` walks `handle.admitted`, stamping `isOwn`
+  // against `handle.ownLog.keyHex`), so this reads the SAME authority the fold
+  // boots from rather than re-deriving the identity here and being free to drift
+  // from it — the failure mode that produced EI-20617273180156712.
+  //
+  // `undefined` when we cannot find it: the judge treats that as UNMEASURED, so a
+  // missing/never-written status row can never silently reinstate the own log as
+  // a phantom peer.
+  const [ownLog] = await sql<Array<{ own_key: string }>>`
+    SELECT pl->>'keyHex' AS own_key
+      FROM harness_shared.substrate_booted_handles_status s,
+           LATERAL jsonb_array_elements(s.payload->'healthInputs'->'logStats') ls,
+           LATERAL jsonb_array_elements(ls->'perLog') pl
+     WHERE s.workspace_id = ${opts.workspaceId}
+       AND ls->>'workspaceId' = ${opts.workspaceId}
+       AND ls->>'harnessSlug' = ${opts.harness}
+       AND (pl->>'isOwn')::boolean IS TRUE
+     LIMIT 1`;
   return judgePeerFederationSilence(
     rows.map((r) => ({
       logKeyHex: r.log_keyhex,
