@@ -1836,14 +1836,24 @@ async function measureRoute(
   route: string,
   predicate: (page: RoutePage) => boolean,
   opts: { stableDomPolls?: number } = {},
-): Promise<{ ok: boolean; elapsedMs: number; page: RoutePage; stabilized: boolean }> {
+): Promise<RouteMeasurement> {
   const state = await getDesktopState(ctx);
   const target = route.startsWith('http') ? route : new URL(route, state.origin).toString();
   const currentUrl = new URL(state.href);
   const targetUrl = new URL(target);
   const currentRoot = currentUrl.pathname.split('/')[1] ?? '';
   const targetRoot = targetUrl.pathname.split('/')[1] ?? '';
-  if (currentRoot === targetRoot) {
+  // ⚠ This root comparison is a HEURISTIC for "can I stay in the SPA?", and a
+  // REDIRECTING target defeats it permanently: `/harness` throws a beforeLoad
+  // redirect to `/adv`, so the location root is `adv` while the target root
+  // stays `harness` and the two can never converge. Every pass then takes the
+  // document-load branch — a full webview reload + SPA cold boot. That is a
+  // legitimate measurement of a different thing, which is why the branch we
+  // took is REPORTED (`navKind`) rather than assumed: a warm budget must not be
+  // applied to a cold boot (WI-39494 — a 2912ms cold load graded as a 1.94x
+  // warm-route breach).
+  const navKind: RouteNavKind = currentRoot === targetRoot ? 'in-page' : 'document-load';
+  if (navKind === 'in-page') {
     const nav = await runTauriEvalJson<{ ok: boolean; href: string }>(
       ctx,
       `(() => {
@@ -1855,12 +1865,12 @@ async function measureRoute(
       })()`,
     );
     if (!nav.ok || !nav.value) {
-      return routeFailure(target, nav.exec.durationMs, describeCommandFailure(nav));
+      return routeFailure(target, nav.exec.durationMs, describeCommandFailure(nav), navKind);
     }
   } else {
     const nav = await runTauri(ctx, ['navigate', target]);
     if (nav.error || nav.code !== 0) {
-      return routeFailure(target, nav.durationMs, describeExecFailure(nav));
+      return routeFailure(target, nav.durationMs, describeExecFailure(nav), navKind);
     }
   }
   const startedAt = Date.now();
@@ -1891,12 +1901,12 @@ async function measureRoute(
     lastMatched = page;
     if (firstMatchAt === 0) firstMatchAt = Date.now();
     if (stableNeeded === 0) {
-      return { ok: true, elapsedMs: Date.now() - startedAt, page, stabilized: true };
+      return { ok: true, elapsedMs: Date.now() - startedAt, page, stabilized: true, navKind };
     }
     if (routeDomSettled(page.domNodes, bandDomNodes)) {
       stableStreak += 1;
       if (stableStreak >= stableNeeded) {
-        return { ok: true, elapsedMs: Math.max(0, bandEnteredAt - startedAt), page, stabilized: true };
+        return { ok: true, elapsedMs: Math.max(0, bandEnteredAt - startedAt), page, stabilized: true, navKind };
       }
     } else {
       // Still growing — restart the settle clock at this new size.
