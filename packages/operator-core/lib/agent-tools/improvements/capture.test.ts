@@ -917,17 +917,19 @@ describe('IDEATE-pass novelty pre-check (P-008 priorArt)', () => {
   it('a pre-check failure NEVER fails the capture — the field is simply absent (report-only, D-005)', async () => {
     mockPriorArt.mockRejectedValue(new Error('corpus read exploded'));
     const body = await bodyOf({ title: 'a fresh su idea', kind: 'feature' });
-    // P-007/D-010 added `experimentGap` to this same response, and WI-38065 added
-    // `lensAttribution` (this su filing declares neither a cheapExperiment nor an
-    // ideation.lens, so both are reported). Kept as a STRICT whole-body equality so a
-    // future field addition still has to come through this assertion deliberately —
-    // which is exactly how WI-38065 was caught here rather than silently widening it.
+    // P-007/D-010 added `experimentGap` to this same response, WI-38065 added
+    // `lensAttribution`, and P-006/EI-10607 added `groundingGap` (this su filing declares
+    // no cheapExperiment, no ideation.lens, and no addressesPatternRefs, so all three are
+    // reported). Kept as a STRICT whole-body equality so a future field addition still has
+    // to come through this assertion deliberately — which is exactly how WI-38065 and
+    // P-006 were each caught here rather than silently widening it.
     expect(body).toEqual({
       ok: true,
       id: 'EI-1',
       created: true,
       experimentGap: { missing: ['hypothesis', 'method', 'falsifiableSignal'], note: expect.any(String) },
       lensAttribution: { sentinel: true, lenses: expect.any(Array), note: expect.any(String) },
+      groundingGap: { note: expect.any(String) },
     });
     expect('priorArt' in body).toBe(false);
   });
@@ -1130,6 +1132,55 @@ describe('improvements:capture — lens attribution is report-only (WI-38065)', 
     expect(note).toMatch(/excluded from every per-lens statistic/i);
     expect(note).toMatch(/diversity floor/i);
     expect(note).toMatch(/ideation\.lens/);
+  });
+
+  // ── P-006 (blender-loop-repair-and-opus5-xhigh-2026-08-16) / EI-10607: groundingGap ──
+  // Same report-only shape as lensAttribution, for the OTHER ideation field nobody passed:
+  // addressesPatternRefs. Shares this block's su-source setup deliberately — the advisory's
+  // eligibility must track the ledger row's exactly.
+  describe('groundingGap (addressesPatternRefs advisory)', () => {
+    it('reports when an su feature filing declares no pattern refs — and still files it', async () => {
+      const body = await bodyOf({ title: 'an ungrounded idea', kind: 'feature' });
+      expect(body.ok).toBe(true);
+      expect(mockCapture).toHaveBeenCalledTimes(1);
+      expect((body.groundingGap as { note: string }).note).toContain('not a rejection');
+      // The nudge must name the exact repair — field AND where the refs come from.
+      expect((body.groundingGap as { note: string }).note).toMatch(/ideation\.addressesPatternRefs/);
+      expect((body.groundingGap as { note: string }).note).toMatch(/observationsImpact\.patterns\[\]\.ref/);
+    });
+
+    it('DECLARED refs report nothing (absent, not empty) and land on the ledger row', async () => {
+      const body = await bodyOf({
+        title: 'a grounded idea',
+        kind: 'feature',
+        ideation: { addressesPatternRefs: ['wi:EI-10587'] },
+      });
+      expect('groundingGap' in body).toBe(false);
+      expect(mockRecordRoutedIdea).toHaveBeenCalledWith(
+        expect.objectContaining({ addressesPatternRefs: ['wi:EI-10587'] }),
+      );
+    });
+
+    it('is scoped exactly to the filings that GET a ledger row', async () => {
+      expect('groundingGap' in (await bodyOf({ title: 'x', kind: 'change' }))).toBe(false);
+      expect('groundingGap' in (await bodyOf({ title: 'x', kind: 'bug' }))).toBe(false);
+      expect('groundingGap' in (await bodyOf({ title: 'x', kind: 'feature', lane: 'observation' }))).toBe(false);
+    });
+
+    it('carries no hardcoded population statistic — those decay silently (house rule above)', async () => {
+      const note = ((await bodyOf({ title: 'an ungrounded idea', kind: 'feature' })).groundingGap as { note: string })
+        .note;
+      expect(note).not.toMatch(/\b\d{1,3}(\.\d+)?\s*%/);
+      expect(note).not.toMatch(/\b\d+\s+of\s+\d+\b/);
+    });
+
+    it('CONTROL — omitted refs are never a failure reason (falsifies "gate crept in")', async () => {
+      const body = await bodyOf({ title: 'no refs here', kind: 'feature' });
+      expect(body.ok).toBe(true);
+      expect(body.error).toBeUndefined();
+      expect(mockCapture).toHaveBeenCalledTimes(1);
+      expect(mockRecordRoutedIdea).toHaveBeenCalledTimes(1);
+    });
   });
 });
 
