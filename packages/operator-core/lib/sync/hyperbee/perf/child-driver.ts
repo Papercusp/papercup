@@ -26,6 +26,38 @@ export interface ChildEvent {
   [k: string]: unknown;
 }
 
+/** Minimal structural shape of something awaitable for a child event (lets tests drive fakes). */
+export interface CaughtUpWaitable {
+  waitFor(pred: string, timeoutMs: number): Promise<ChildEvent | null>;
+}
+
+/**
+ * Await `evt` on EVERY reader CONCURRENTLY, against a SHARED deadline: all timers
+ * start at the same instant, so a reader is judged on the run's wall clock and never
+ * on its position in the iteration order.
+ *
+ * EI-20581532536662596 — the scenarios previously did this SERIALLY, giving each reader
+ * a FRESH budget as the loop reached it. Because `waitFor` resolves immediately for an
+ * already-fired event, the reader polled FIRST got the full budget measured from loop
+ * start while the Nth effectively got the budget PLUS all the time already spent waiting
+ * on readers 0..N-1. The first slow reader was penalised hardest and, by burning its
+ * budget, widened everyone else's — producing the giveaway signature that every failing
+ * run missed by EXACTLY ONE reader. That made a red convergence verdict unable to
+ * separate "the substrate failed" from "the box was loaded", which on a shared host
+ * running an agent fleet is the difference between a release blocker and noise.
+ *
+ * Returns one entry per reader, in the SAME ORDER as `readers`; `event` is null on timeout.
+ */
+export async function awaitAllChildEvent<T extends CaughtUpWaitable>(
+  readers: readonly T[],
+  evt: string,
+  budgetMs: number,
+): Promise<Array<{ reader: T; event: ChildEvent | null }>> {
+  return Promise.all(
+    readers.map((reader) => reader.waitFor(evt, budgetMs).then((event) => ({ reader, event }))),
+  );
+}
+
 export class PeerChildHandle {
   readonly events: ChildEvent[] = [];
   private waiters: Array<{
