@@ -124,12 +124,13 @@ describe('classifyGoalDrainFleet', () => {
     expect(alert).toBeNull();
   });
 
-  it('declared + fleet alive is healthy', () => {
+  it('declared + fleet alive + goal-scoped lane is healthy', () => {
     const alert = classifyGoalDrainFleet(
       makeGoal({ drainFleet: 'drain-1' }),
       [makeHolder()],
       verdicts(makeVerdict('su-a', 'live')),
       fleets({ [fleetKey('ws', 'drain-1')]: 'alive' }),
+      scopes({ 'g-1': 'goal-scoped' }),
       NOW,
     );
     expect(alert).toBeNull();
@@ -141,6 +142,7 @@ describe('classifyGoalDrainFleet', () => {
       [makeHolder()],
       verdicts(makeVerdict('su-a', 'live')),
       fleets({ [fleetKey('ws', 'drain-1')]: 'dead' }),
+      scopes(),
       NOW,
     );
     expect(alert).toMatchObject({ reason: 'drain-fleet-dead', drainFleet: 'drain-1' });
@@ -152,6 +154,7 @@ describe('classifyGoalDrainFleet', () => {
       [makeHolder()],
       verdicts(makeVerdict('su-a', 'live')),
       fleets({ [fleetKey('ws', 'gone')]: 'not-found' }),
+      scopes(),
       NOW,
     );
     expect(alert).toMatchObject({ reason: 'drain-fleet-not-found' });
@@ -164,10 +167,86 @@ describe('classifyGoalDrainFleet', () => {
         [makeHolder()],
         verdicts(makeVerdict('su-a', 'live')),
         missing,
+        scopes(),
         NOW,
       );
       expect(alert).toBeNull();
     }
+  });
+
+  // ── D-005: held correctly also means SCOPED correctly ────────────────────
+  it('an ALIVE fleet with a pot-wide lane alerts drain-fleet-not-goal-scoped', () => {
+    const alert = classifyGoalDrainFleet(
+      makeGoal({ drainFleet: 'drain-1' }),
+      [makeHolder()],
+      verdicts(makeVerdict('su-a', 'live')),
+      fleets({ [fleetKey('ws', 'drain-1')]: 'alive' }),
+      scopes({ 'g-1': 'not-goal-scoped' }),
+      NOW,
+    );
+    expect(alert).toMatchObject({ reason: 'drain-fleet-not-goal-scoped', drainFleet: 'drain-1' });
+  });
+
+  it('an ALIVE fleet whose spec could not be read suppresses — unknown never alarms', () => {
+    const alert = classifyGoalDrainFleet(
+      makeGoal({ drainFleet: 'drain-1' }),
+      [makeHolder()],
+      verdicts(makeVerdict('su-a', 'live')),
+      fleets({ [fleetKey('ws', 'drain-1')]: 'alive' }),
+      scopes({ 'g-1': 'unknown' }),
+      NOW,
+    );
+    expect(alert).toBeNull();
+  });
+
+  it('a DEAD fleet wins over a bad scope — one classifier verdict per goal', () => {
+    const alert = classifyGoalDrainFleet(
+      makeGoal({ drainFleet: 'drain-1' }),
+      [makeHolder()],
+      verdicts(makeVerdict('su-a', 'live')),
+      fleets({ [fleetKey('ws', 'drain-1')]: 'dead' }),
+      scopes({ 'g-1': 'not-goal-scoped' }),
+      NOW,
+    );
+    expect(alert).toMatchObject({ reason: 'drain-fleet-dead' });
+  });
+});
+
+describe('claimSpecFilterConstrainsGoal — the D-005 scope predicate', () => {
+  const leaf = { field: 'goal', op: '=', value: 'g-1' };
+
+  it('accepts the positive = leaf and the in form containing the goal', () => {
+    expect(claimSpecFilterConstrainsGoal(leaf, 'g-1')).toBe(true);
+    expect(claimSpecFilterConstrainsGoal({ field: 'goal', op: 'in', value: ['g-0', 'g-1'] }, 'g-1')).toBe(true);
+  });
+
+  it('rejects a leaf for a DIFFERENT goal', () => {
+    expect(claimSpecFilterConstrainsGoal(leaf, 'g-2')).toBe(false);
+    expect(claimSpecFilterConstrainsGoal({ field: 'goal', op: 'in', value: ['g-0'] }, 'g-1')).toBe(false);
+  });
+
+  it('accepts the leaf nested under all (AND narrows)', () => {
+    const filter = { all: [{ field: 'kind', op: 'in', value: ['bug'] }, leaf] };
+    expect(claimSpecFilterConstrainsGoal(filter, 'g-1')).toBe(true);
+  });
+
+  it('an any is scoped only when EVERY branch is (OR widens)', () => {
+    expect(claimSpecFilterConstrainsGoal({ any: [leaf, leaf] }, 'g-1')).toBe(true);
+    expect(
+      claimSpecFilterConstrainsGoal({ any: [leaf, { field: 'kind', op: '=', value: 'bug' }] }, 'g-1'),
+    ).toBe(false);
+  });
+
+  it('the WI-37711 trap: a negated or != goal leaf NEVER counts as scoping', () => {
+    // `goal` is NULLABLE — the negative form silently excludes every unstamped
+    // row in the SQL compiler, which is why only the positive form scopes.
+    expect(claimSpecFilterConstrainsGoal({ not: leaf }, 'g-1')).toBe(false);
+    expect(claimSpecFilterConstrainsGoal({ field: 'goal', op: '!=', value: 'g-2' }, 'g-1')).toBe(false);
+  });
+
+  it('an empty / absent filter (the pot-wide default) never counts', () => {
+    expect(claimSpecFilterConstrainsGoal(undefined, 'g-1')).toBe(false);
+    expect(claimSpecFilterConstrainsGoal({}, 'g-1')).toBe(false);
   });
 });
 
@@ -183,6 +262,7 @@ describe('scanGoalDrainFleets', () => {
       holders,
       verdicts(makeVerdict('su-a', 'live')),
       fleets({ [fleetKey('ws', 'drain-ok')]: 'alive' }),
+      scopes({ 'g-ok': 'goal-scoped' }),
       NOW,
     );
     expect(out.map((a) => a.goalId)).toEqual(['g-bad']);
@@ -201,6 +281,7 @@ describe('runGoalDrainFleetSweepOnce', () => {
     resolveFleetLiveness: vi.fn(
       async () => fleets({ [fleetKey('ws', 'drain-1')]: 'dead' as const }),
     ),
+    resolveFleetSpecScopes: vi.fn(async () => scopes()),
     escalate: vi.fn(async () => {}),
     emitDrainDead: vi.fn(async () => {}),
     flagEnabled: vi.fn(async () => true),
@@ -281,9 +362,35 @@ describe('runGoalDrainFleetSweepOnce', () => {
     deps.resolveFleetLiveness = vi.fn(
       async () => fleets({ [fleetKey('ws', 'drain-1')]: 'alive' as const }),
     );
+    deps.resolveFleetSpecScopes = vi.fn(async () => scopes({ 'g-1': 'goal-scoped' as const }));
     const res = await runGoalDrainFleetSweepOnce(sql, deps);
     expect(res).toEqual({ scanned: 1, escalated: 0, skipped: false });
     expect(deps.escalate).not.toHaveBeenCalled();
     expect(deps.emitDrainDead).not.toHaveBeenCalled();
+    // D-005: scope was actually consulted for the alive pair — an implementation
+    // that skips the check entirely would also produce zero escalations here.
+    expect(deps.resolveFleetSpecScopes).toHaveBeenCalledWith([
+      { workspaceId: 'ws', fleetSlug: 'drain-1', goalId: 'g-1' },
+    ]);
+  });
+
+  // ── D-005 ────────────────────────────────────────────────────────────────
+  it('escalates drain-fleet-not-goal-scoped for an ALIVE fleet on a pot-wide lane', async () => {
+    const deps = baseDeps();
+    deps.resolveFleetLiveness = vi.fn(
+      async () => fleets({ [fleetKey('ws', 'drain-1')]: 'alive' as const }),
+    );
+    deps.resolveFleetSpecScopes = vi.fn(async () => scopes({ 'g-1': 'not-goal-scoped' as const }));
+    const res = await runGoalDrainFleetSweepOnce(sql, deps);
+    expect(res).toEqual({ scanned: 1, escalated: 1, skipped: false });
+    expect(deps.escalate).toHaveBeenCalledWith(
+      expect.objectContaining({ reason: 'drain-fleet-not-goal-scoped' }),
+    );
+  });
+
+  it('spec scopes are resolved ONLY for alive fleets — dead ones already have their verdict', async () => {
+    const deps = baseDeps(); // baseDeps liveness: dead
+    await runGoalDrainFleetSweepOnce(sql, deps);
+    expect(deps.resolveFleetSpecScopes).toHaveBeenCalledWith([]);
   });
 });

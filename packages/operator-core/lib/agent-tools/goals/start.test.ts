@@ -83,6 +83,25 @@ const setModeMock = vi.fn(async (opts: SetModeCall) => {
 });
 vi.mock('../../modes/store', () => ({ setMode: (o: SetModeCall) => setModeMock(o) }));
 
+// P-001 (goal-mode-design-intent-hardening-2026-08-16): the drain-fleet mint is
+// mocked as a seam — its OWN row-level behavior is pinned in
+// lib/goals/drain-fleet-mint.test.ts; what THIS file pins is the wiring: when it
+// runs, what happens to it on rollback, and that a mint failure never fails the
+// goal start.
+let automintEnabled = true;
+const mintMock = vi.fn(async (_a: unknown) => {
+  order.push('drain-mint');
+  return { fleetSlug: 'goal-drain-test', created: true, specRevision: 1 };
+});
+const teardownMock = vi.fn(async (_a: unknown) => {
+  order.push('drain-teardown');
+});
+vi.mock('../../goals/drain-fleet-mint', () => ({
+  drainFleetAutoMintEnabled: async () => automintEnabled,
+  mintDrainFleetForGoal: (a: unknown) => mintMock(a),
+  teardownDrainFleetMint: (a: unknown) => teardownMock(a),
+}));
+
 const goalsStart = (await import('./start')).default;
 const { buildGoalKickoffBrief } = await import('./start');
 const { buildAgentLaunchCommand } = await import('../../agent-launch-core');
@@ -121,9 +140,18 @@ beforeEach(() => {
   order.length = 0;
   sql.length = 0;
   setModeCalls.length = 0;
+  automintEnabled = true;
+  mintMock.mockImplementation(async () => {
+    order.push('drain-mint');
+    return { fleetSlug: 'goal-drain-test', created: true, specRevision: 1 };
+  });
   spawnConsoleMock.mockImplementation(async () => {
     order.push('spawn');
     return okSpawn();
+  });
+  spawnHeadlessMock.mockImplementation(async () => {
+    order.push('spawn');
+    return { ...okSpawn(), terminal: 'headless', pid: 777, display: null, desktopEnvResolvedVia: null };
   });
   setModeMock.mockImplementation(async (opts: SetModeCall) => {
     setModeCalls.push(opts);
@@ -214,8 +242,91 @@ describe('goals:start — the happy path', () => {
 
   it('routes a headless launch through spawnHeadless', async () => {
     await call({ headless: true });
-    expect(spawnHeadlessMock).toHaveBeenCalledTimes(1);
+    // TWO headless spawns since P-001: the goal agent AND the drain-fleet
+    // member. The agent is the first, identified by its pre-pinned identity.
     expect(spawnConsoleMock).not.toHaveBeenCalled();
+    expect(spawnHeadlessMock).toHaveBeenCalledTimes(2);
+    const agentCmd = (spawnHeadlessMock.mock.calls[0][0] as { envelope: { greetingCmd: string } })
+      .envelope.greetingCmd;
+    expect(agentCmd).toContain('--owner-id=');
+  });
+});
+
+describe('goals:start — the standing drain fleet (P-001)', () => {
+  it('mints AFTER the mode stamp and BEFORE the spawn, and reports the fleet', async () => {
+    const res = await call();
+    const mint = order.indexOf('drain-mint');
+    expect(mint).toBeGreaterThan(order.indexOf('mode-set'));
+    expect(mint).toBeLessThan(order.indexOf('spawn'));
+    expect(dataOf(res).drain_fleet).toBe('goal-drain-test');
+    // The mint is FOR the goal and OWNED by the agent being spawned.
+    const args = mintMock.mock.calls[0][0] as Record<string, unknown>;
+    expect(args.goalId).toBe(dataOf(res).id);
+    expect(args.agentOwnerId).toBe(dataOf(res).agent_owner_id);
+  });
+
+  it('spawns ONE headless drain member bound to the fleet, without the goal kickoff brief', async () => {
+    await call(); // goal agent itself is NOT headless here
+    expect(spawnHeadlessMock).toHaveBeenCalledTimes(1);
+    const member = spawnHeadlessMock.mock.calls[0][0] as {
+      envelope: { greetingCmd: string; env: Record<string, string> };
+    };
+    // --fleet is the membership fact: it makes bootstrap-su stamp what
+    // getClaimSpec's fleet-inheritance resolves through, so the member pulls
+    // the goal-scoped lane instead of the pot-wide default.
+    expect(member.envelope.greetingCmd).toContain('--fleet=goal-drain-test');
+    expect(member.envelope.greetingCmd).toContain('--headless');
+    // The kickoff brief names ONE owner of the goal — a drain bee must not get it.
+    expect(member.envelope.env.PAPERCUSP_KICKOFF_PROMPT).toBeUndefined();
+  });
+
+  it('tears the mint down when the agent spawn fails', async () => {
+    spawnConsoleMock.mockImplementation(async () => {
+      order.push('spawn');
+      return { status: 'error', error: 'no display' } as unknown as SpawnConsoleResult;
+    });
+    const res = await call();
+    expect(isError(res)).toBe(true);
+    expect(teardownMock).toHaveBeenCalledWith({ workspaceId: 'ws-test', fleetSlug: 'goal-drain-test' });
+    // ...and no drain member is left behind either: the member spawns only
+    // after the goal has definitely kept its agent.
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
+  });
+
+  it('a mint FAILURE never fails the goal start — fail-soft with a warning', async () => {
+    mintMock.mockImplementation(async () => {
+      order.push('drain-mint');
+      throw new Error('fleet registry down');
+    });
+    const res = await call();
+    expect(isError(res)).toBe(false);
+    expect(dataOf(res).drain_fleet).toBeNull();
+    expect(String(dataOf(res).warning)).toContain('auto-mint failed');
+    // No fleet ⇒ no member spawn, and nothing to tear down on the happy path.
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
+    expect(teardownMock).not.toHaveBeenCalled();
+  });
+
+  it('a member-spawn failure keeps the goal AND the fleet, with a warning', async () => {
+    spawnHeadlessMock.mockImplementation(async () => {
+      order.push('spawn');
+      return { status: 'error', error: 'no slots' } as unknown as SpawnConsoleResult;
+    });
+    const res = await call(); // agent via spawnConsole (ok); member via spawnHeadless (fails)
+    expect(isError(res)).toBe(false);
+    expect(dataOf(res).drain_fleet).toBe('goal-drain-test');
+    expect(dataOf(res).drain_member_pid).toBeNull();
+    expect(String(dataOf(res).warning)).toContain('member failed to launch');
+    expect(teardownMock).not.toHaveBeenCalled();
+  });
+
+  it('the flag OFF skips the mint entirely — the watchdog remains the only guard', async () => {
+    automintEnabled = false;
+    const res = await call();
+    expect(isError(res)).toBe(false);
+    expect(mintMock).not.toHaveBeenCalled();
+    expect(dataOf(res).drain_fleet).toBeNull();
+    expect(dataOf(res).warning).toBeUndefined();
   });
 });
 
