@@ -35,9 +35,16 @@ const REST_QUERY_ROUTE = /\/api\/zero-harness\/rest-query\?/;
 
 /**
  * Rows for one sync query. Return `undefined` for a query this spec does not
- * model — the stub answers `[]`, which is exactly what the real resolver returns
- * for an empty window, so an unmodelled query stays hermetic instead of falling
- * through to a live backend.
+ * model — that request FALLS THROUGH to the normal handler chain rather than
+ * being answered `[]`.
+ *
+ * ⚠ Answering `[]` instead is a trap worth naming, because it looks strictly
+ * safer and is not. `/adv` resolves its dockview layout through the
+ * `dockLayouts.byName` sync query, and an EMPTY result is not "no data" there —
+ * it renders "layout <name> not found" and instantiates ZERO panels. A spec that
+ * blanket-stubs every query therefore starves the very panel it is testing, and
+ * the failure surfaces as an empty graph rather than as a missing layout. Only
+ * the queries a spec actually models should be overridden.
  */
 export type SyncRowsResolver = (
   name: string,
@@ -70,6 +77,7 @@ export async function stubSyncQueries(
   resolve: SyncRowsResolver,
 ): Promise<SyncQueryStub> {
   const names: string[] = [];
+  const observed: string[] = [];
 
   await page.route(REST_QUERY_ROUTE, async (route) => {
     const url = new URL(route.request().url());
@@ -80,8 +88,14 @@ export async function stubSyncQueries(
     } catch {
       args = {};
     }
+    observed.push(name);
+    const rows = resolve(name, args);
+    if (rows === undefined) {
+      // Not modelled by this spec — let it through untouched (see SyncRowsResolver).
+      await route.fallback();
+      return;
+    }
     names.push(name);
-    const rows = resolve(name, args) ?? [];
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -105,10 +119,14 @@ export async function stubSyncQueries(
         if (Date.now() > deadline) {
           throw new Error(
             `sync stub did not serve [${expectedNames.join(', ')}] within ${timeoutMs}ms. ` +
-              `Served ${names.length} request(s); names seen: ` +
-              `${[...new Set(names)].join(', ') || '(NONE — the stub was never hit at all)'}. ` +
-              'If nothing was hit, the app is not speaking this contract (see _sync-stub.ts); ' +
-              'if other names were served, the panel subscribes to a query this spec does not model.',
+              `Served ${names.length} request(s): ` +
+              `${[...new Set(names)].join(', ') || '(NONE — nothing this spec models was requested)'}. ` +
+              `Observed ${observed.length} rest-query request(s) in total: ` +
+              `${[...new Set(observed)].join(', ') || '(NONE — the stub was never hit at all)'}. ` +
+              'If NOTHING was observed, the app is not speaking this contract (see _sync-stub.ts). ' +
+              'If the query was observed but the panel that issues it never appeared, suspect the ' +
+              'dock layout: /adv renders "layout <name> not found" and mounts NO panels when ' +
+              'dockLayouts.byName comes back empty.',
           );
         }
         await new Promise((r) => setTimeout(r, 100));

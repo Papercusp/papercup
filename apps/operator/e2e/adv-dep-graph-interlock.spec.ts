@@ -72,6 +72,16 @@ const baseURL =
 const SLUG = process.env.ADV_DEPGRAPH_E2E_SLUG ?? 'e2e-depgraph-pot';
 
 /**
+ * CANVAS nodes only. The legend ("Key", on by default) renders its swatches with
+ * the SAME `pc-depgraph__node` class on purpose — DepGraphPanel.tsx ~L196 explains
+ * why (the node styles are descendant selectors, so the swatch must match the
+ * canvas structure or it renders unstyled). An unscoped `g.pc-depgraph__node`
+ * therefore counts 2 legend marks on top of the real nodes; scoping to the
+ * `pc-depgraph__nodes` group is what makes a COUNT assertion mean what it says.
+ */
+const NODE_SEL = 'g.pc-depgraph__nodes g.pc-depgraph__node';
+
+/**
  * Three rows, shaped to make the graph's own scoping observable:
  *   WI-2  blocks  WI-1   → both PARTICIPATE in an edge, so both are nodes
  *   WI-3  isolated        → no edge, so it is deliberately NOT in the graph
@@ -330,14 +340,14 @@ test.describe('/adv dependency graph — selection interlock with the Detail pan
     // a bypassed stub then fails here in seconds, naming what was served.
     await sync.waitForServed(['workItems.byHarness', 'workItems.depEdges']);
 
-    const nodes = graph.locator('g.pc-depgraph__node');
+    const nodes = graph.locator(NODE_SEL);
     await expect(nodes).toHaveCount(3, { timeout: 45_000 });
 
     // Only edge PARTICIPANTS are nodes — WI-3 has no dependency story, so the default scoping
     // excludes it. Pins that the graph is showing the subgraph, not the raw corpus. Note this
     // is a DIFFERENT reason from WI-OUTSIDE's absence from the payload: one participates in no
     // edge (correctly excluded), the other is merely outside the window (must be included).
-    await expect(graph.locator('g.pc-depgraph__node', { hasText: 'WI-3' })).toHaveCount(0);
+    await expect(graph.locator(NODE_SEL, { hasText: 'WI-3' })).toHaveCount(0);
     await expect(graph.getByText('3 nodes · 2 edges')).toBeVisible();
 
     // The rows above can ONLY have come from the stub. Assert that explicitly:
@@ -348,7 +358,7 @@ test.describe('/adv dependency graph — selection interlock with the Detail pan
     // ── 0b. THE HYDRATED NODE IS REAL, LAID OUT, AND LABELLED FROM ITS EDGE ROW.
     //        This is the assertion that would have caught the shipped bug: it can only pass if
     //        the endpoint fields survived the sync boundary AND elkjs positioned the node.
-    const hydratedNode = graph.locator('g.pc-depgraph__node', { hasText: 'WI-OUTSIDE' });
+    const hydratedNode = graph.locator(NODE_SEL, { hasText: 'WI-OUTSIDE' });
     await expect(hydratedNode).toHaveCount(1);
     // Its title came off the edge, not from any byHarness row.
     await expect(graph.getByText('Outside the list window').first()).toBeVisible();
@@ -381,7 +391,7 @@ test.describe('/adv dependency graph — selection interlock with the Detail pan
     // ── 1. THE INTERLOCK. Clicking the SVG node must write `?sel` (nuqs) and
     //       the Detail pane — a different dock panel, coupled only through that
     //       URL param — must follow to the same item.
-    const blockerNode = graph.locator('g.pc-depgraph__node', { hasText: 'WI-2' });
+    const blockerNode = graph.locator(NODE_SEL, { hasText: 'WI-2' });
     await blockerNode.click();
 
     await expect.poll(() => selParam(page), { timeout: 10_000 }).toBe('WI-2');
@@ -394,7 +404,7 @@ test.describe('/adv dependency graph — selection interlock with the Detail pan
 
     // ── 2. A SECOND node re-drives it — the first result was not a one-shot or
     //       a coincidence of initial state.
-    const blockedNode = graph.locator('g.pc-depgraph__node', { hasText: 'WI-1' });
+    const blockedNode = graph.locator(NODE_SEL, { hasText: 'WI-1' });
     await blockedNode.click();
     await expect.poll(() => selParam(page), { timeout: 10_000 }).toBe('WI-1');
     await expect(detail.locator('.pc-adv-detail__id')).toHaveText('WI-1', { timeout: 15_000 });
