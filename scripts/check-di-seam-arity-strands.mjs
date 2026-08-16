@@ -137,6 +137,42 @@ function parseArgs(argv) {
   return opts;
 }
 
+/**
+ * SHRINK-ONLY baseline — the findings that already existed when this guard was
+ * WIRED onto a blocking path (2026-08-16, WI-39420 gate-green work; the
+ * check-lint-guard-reachability meta-guard demanded wire-or-retire, and wiring
+ * `--fail` unbaselined would have red-pinned the fleet on defects that accrued
+ * while the guard ran nowhere — its documented rot mode).
+ *
+ * Keyed by `file::seam::sorted-missing` — deliberately LINE-INDEPENDENT so
+ * unrelated edits above a finding don't churn the baseline, while any CHANGE in
+ * which identifiers the seam drops re-surfaces as a NEW finding.
+ *
+ * Rules: entries may only be REMOVED (fix the seam, or judge it fine and widen
+ * the seam signature — then delete the row). Never append; a new arity-strand
+ * fails the gate, which is the whole point of wiring. Each entry carries the
+ * pending judgment it awaits.
+ */
+const FAIL_BASELINE = new Map([
+  [
+    'packages/operator-core/lib/agent-plane-measurement-sweep.ts::deps.lastMeasuredAtMs::harnessSlug,workspaceId',
+    'pre-wiring finding (2026-08-16): seam cannot vary by workspace/harness — judge whether per-scope measurement is load-bearing',
+  ],
+  [
+    'packages/operator-core/lib/scout/ideator-feedback-priming.ts::opts.readRows::opts',
+    'pre-wiring finding (2026-08-16): seam drops the whole opts bag — likely deliberate (reader replaces the read), judge and remove',
+  ],
+  [
+    'packages/operator-core/lib/search/self-session.ts::opts.codexHomeForSession::home',
+    'pre-wiring finding (2026-08-16): seam cannot vary by home dir — judge whether a non-default HOME matters for injected resolvers',
+  ],
+]);
+
+/** The line-independent identity a baseline row matches on (see FAIL_BASELINE). */
+function findingKey(f) {
+  return `${f.file}::${f.seam}::${[...f.missing].sort().join(',')}`;
+}
+
 function main() {
   const opts = parseArgs(process.argv.slice(2));
   const files = opts.files ?? defaultCandidateFiles();
