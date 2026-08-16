@@ -208,7 +208,25 @@ export async function runVerifySeedPayload(
       return EXIT_UNDETERMINED;
     }
     log(identity.message);
+    // A HIT OUTRANKS "CANNOT PROVE", so this is judged BEFORE unknownHostname — the one place
+    // this leg deliberately departs from `assertStagedSeedCarriesNoIdentity`'s order. That form
+    // refuses on the unknown hostname first, which costs nothing there because both outcomes are
+    // the same exception. Here they are different exit codes, and the literals we CAN resolve
+    // inside the namespace (username, home path, git email) are conclusive on their own: finding
+    // one is a definite breakage whether or not the hostname question is answerable. Reporting
+    // that as "undetermined" would understate evidence we actually have.
     if (!identity.ok) return EXIT_MISMATCH;
+
+    if (unknownHostname) {
+      log(
+        `[seed-verify] the resolvable identity literals are absent, but this seed cannot be called ` +
+          `clean: gethostname() reports the neutral label '${neutralHostname}' and ` +
+          `${SEED_REAL_HOSTNAME_ENV} was not handed down, so the REAL build hostname is unknowable ` +
+          `from here and was never scanned for. Reporting clean would describe the sandbox, not the ` +
+          `seed. Fix the re-exec to export ${SEED_REAL_HOSTNAME_ENV} (seed-hostname-neutralization.ts).`,
+      );
+      return EXIT_UNDETERMINED;
+    }
 
     return EXIT_OK;
   } catch (err) {

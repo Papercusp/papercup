@@ -11,7 +11,11 @@
  * Falsifiability without mutating the shared tree: the DELIBERATELY-WRONG verifiers below are
  * permanent in-file controls (an always-ok one and an always-fail one). The calibration case is
  * `mismatch is not reported as OK` — if the CLI ever stopped consulting the verifier at all, the
- * always-fail control would go green and that test would fail.
+ * always-fail control would go green and that test would fail. The identity leg has its own
+ * calibration case for the same reason.
+ *
+ * Every case injects `env` and `probe`, so no test depends on who is running it or on what
+ * `git config user.name` says on this box.
  */
 
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
@@ -26,8 +30,11 @@ import {
   EXIT_UNDETERMINED,
   parseVerifySeedPayloadArgs,
   runVerifySeedPayload,
+  type VerifySeedPayloadDeps,
 } from './verify-seed-payload-cli.js';
 import type { SeedStoreVerifier } from './seed-payload-integrity-guard.js';
+import { SEED_REAL_HOSTNAME_ENV } from './seed-identity-guard.js';
+import { DEFAULT_NEUTRAL_BUILD_HOSTNAME } from './seed-hostname-neutralization.js';
 
 /** Control: every store is intact. */
 const alwaysOk: SeedStoreVerifier = async () => ({ ok: true });
@@ -40,6 +47,30 @@ const alwaysFails: SeedStoreVerifier = async () => ({
 const throwsOnRun: SeedStoreVerifier = async () => {
   throw new Error('Cannot find module @papercusp/operator-core/...');
 };
+
+type Probe = NonNullable<VerifySeedPayloadDeps['probe']>;
+
+/**
+ * Deterministic machine-identity probes. Anything omitted resolves to NO literal, so a test that
+ * names nothing exercises the other legs with the identity leg present but vacuous.
+ */
+const probing = (over: Partial<Record<keyof Probe, string>> = {}): Probe => ({
+  user: () => over.user,
+  home: () => over.home,
+  hostname: () => over.hostname,
+  gitName: () => over.gitName,
+  gitEmail: () => over.gitEmail,
+});
+
+/** No resolvable identity: the identity leg runs, finds nothing to hunt, and passes. */
+const NO_IDENTITY = probing();
+
+const deps = (verify: SeedStoreVerifier, over: Partial<VerifySeedPayloadDeps> = {}): VerifySeedPayloadDeps => ({
+  verify,
+  env: {},
+  probe: NO_IDENTITY,
+  ...over,
+});
 
 const MANIFEST = {
   seedFormatVersion: 1,
@@ -84,33 +115,33 @@ describe('runVerifySeedPayload — the three-way exit contract', () => {
 
   it('reports OK when every store matches', async () => {
     await writeManifest();
-    expect(await runVerifySeedPayload({ seedDir: dir, origin: 'reuse' }, silent, alwaysOk)).toBe(EXIT_OK);
+    expect(await runVerifySeedPayload({ seedDir: dir, origin: 'reuse' }, silent, deps(alwaysOk))).toBe(EXIT_OK);
   });
 
   // CALIBRATION: if the CLI ever stopped consulting the verifier, this is the test that fails.
   it('reports MISMATCH — never OK — when a store fails, so a broken seed cannot read as usable', async () => {
     await writeManifest();
-    const code = await runVerifySeedPayload({ seedDir: dir, origin: 'reuse' }, silent, alwaysFails);
+    const code = await runVerifySeedPayload({ seedDir: dir, origin: 'reuse' }, silent, deps(alwaysFails));
     expect(code).toBe(EXIT_MISMATCH);
     expect(code).not.toBe(EXIT_OK);
   });
 
   it('reports UNDETERMINED — never OK — when the manifest is absent', async () => {
-    const code = await runVerifySeedPayload({ seedDir: dir, origin: 'reuse' }, silent, alwaysOk);
+    const code = await runVerifySeedPayload({ seedDir: dir, origin: 'reuse' }, silent, deps(alwaysOk));
     expect(code).toBe(EXIT_UNDETERMINED);
     expect(code).not.toBe(EXIT_OK);
   });
 
   it('reports UNDETERMINED when the manifest is unparseable JSON', async () => {
     await writeFile(join(dir, 'manifest.json'), '{ not json', 'utf8');
-    expect(await runVerifySeedPayload({ seedDir: dir, origin: 'reuse' }, silent, alwaysOk)).toBe(
+    expect(await runVerifySeedPayload({ seedDir: dir, origin: 'reuse' }, silent, deps(alwaysOk))).toBe(
       EXIT_UNDETERMINED,
     );
   });
 
   it('reports UNDETERMINED — not MISMATCH — when the verifier itself cannot run', async () => {
     await writeManifest();
-    const code = await runVerifySeedPayload({ seedDir: dir, origin: 'reuse' }, silent, throwsOnRun);
+    const code = await runVerifySeedPayload({ seedDir: dir, origin: 'reuse' }, silent, deps(throwsOnRun));
     expect(code).toBe(EXIT_UNDETERMINED);
     // The distinction that matters: a broken TOOL must not be reported as a broken SEED, or a
     // VM leg / partial checkout would fail every build with a bogus corruption claim.
@@ -144,7 +175,7 @@ describe('runVerifySeedPayload — the three-way exit contract', () => {
     it('reports MISMATCH for a degraded seed even when every payload hash matches', async () => {
       await writeManifest(DEGRADED);
       // alwaysOk => the payload leg passes; only the degradation leg can red this.
-      const code = await runVerifySeedPayload({ seedDir: dir, origin: 'reuse' }, silent, alwaysOk);
+      const code = await runVerifySeedPayload({ seedDir: dir, origin: 'reuse' }, silent, deps(alwaysOk));
       expect(code).toBe(EXIT_MISMATCH);
     });
 
@@ -157,14 +188,109 @@ describe('runVerifySeedPayload — the three-way exit contract', () => {
         ],
       };
       await writeManifest(honest);
-      expect(await runVerifySeedPayload({ seedDir: dir, origin: 'reuse' }, silent, alwaysOk)).toBe(EXIT_OK);
+      expect(await runVerifySeedPayload({ seedDir: dir, origin: 'reuse' }, silent, deps(alwaysOk))).toBe(EXIT_OK);
+    });
+  });
+
+  /**
+   * The THIRD leg of the same class, and the last one: `assertStagedSeedCarriesNoIdentity`'s only
+   * production caller is cut-seed-cli.ts:1350, so it too ran only when a cut ran.
+   *
+   * The property here is the one the throwing assert form CANNOT express. It throws for two
+   * unrelated reasons — "identity found" and "cannot prove clean inside the UTS sandbox" — and on
+   * this path those must land on DIFFERENT exit codes, or every sandboxed build reds.
+   */
+  describe('identity leg — and why it must not use the throwing assert form', () => {
+    const BUILDER_HOME = '/home/some-builder';
+
+    /** A staged file carrying the build box's home path — the leak this guard exists to catch. */
+    const writeLeakyFile = async (literal: string = BUILDER_HOME) =>
+      writeFile(join(dir, 'presence.json'), JSON.stringify({ path: `${literal}/papercupai-workspace` }), 'utf8');
+
+    // CALIBRATION for this leg: if the identity scan were dropped, this goes green and fails.
+    it('reports BROKEN — never OK — when the staged bytes carry the build box home path', async () => {
+      await writeManifest();
+      await writeLeakyFile();
+      const code = await runVerifySeedPayload(
+        { seedDir: dir, origin: 'reuse' },
+        silent,
+        deps(alwaysOk, { probe: probing({ home: BUILDER_HOME }) }),
+      );
+      expect(code).toBe(EXIT_MISMATCH);
+      expect(code).not.toBe(EXIT_OK);
+    });
+
+    it('still reports OK when those same literals are absent (no false red on a clean seed)', async () => {
+      await writeManifest();
+      await writeLeakyFile('/home/somebody-else');
+      const code = await runVerifySeedPayload(
+        { seedDir: dir, origin: 'reuse' },
+        silent,
+        deps(alwaysOk, { probe: probing({ home: BUILDER_HOME }) }),
+      );
+      expect(code).toBe(EXIT_OK);
+    });
+
+    it('scans for the REAL hostname when the sandbox handed it down', async () => {
+      await writeManifest();
+      await writeLeakyFile('buildbox-42');
+      const code = await runVerifySeedPayload(
+        { seedDir: dir, origin: 'reuse' },
+        silent,
+        deps(alwaysOk, {
+          env: { [SEED_REAL_HOSTNAME_ENV]: 'buildbox-42' },
+          probe: probing({ hostname: DEFAULT_NEUTRAL_BUILD_HOSTNAME }),
+        }),
+      );
+      expect(code).toBe(EXIT_MISMATCH);
+    });
+
+    // THE REASON THE ASSERT FORM IS WRONG HERE. Inside `bwrap --unshare-uts` with no
+    // PAPERCUSP_SEED_REAL_HOSTNAME, the real hostname is unknowable — the assert throws, and a
+    // caller mapping its throw to 1 would red every sandboxed build.
+    it('reports UNDETERMINED — never BROKEN — when it cannot prove the hostname is absent', async () => {
+      await writeManifest();
+      const code = await runVerifySeedPayload(
+        { seedDir: dir, origin: 'reuse' },
+        silent,
+        deps(alwaysOk, { probe: probing({ hostname: DEFAULT_NEUTRAL_BUILD_HOSTNAME }) }),
+      );
+      expect(code).toBe(EXIT_UNDETERMINED);
+      expect(code).not.toBe(EXIT_MISMATCH);
+      // ...and equally never a silent pass: "clean" there would describe the sandbox, not the seed.
+      expect(code).not.toBe(EXIT_OK);
+    });
+
+    it('says so out loud rather than reporting an unmeasured clean', async () => {
+      await writeManifest();
+      const lines: string[] = [];
+      await runVerifySeedPayload(
+        { seedDir: dir, origin: 'reuse' },
+        (m) => lines.push(m),
+        deps(alwaysOk, { probe: probing({ hostname: DEFAULT_NEUTRAL_BUILD_HOSTNAME }) }),
+      );
+      expect(lines.join('\n')).toMatch(new RegExp(SEED_REAL_HOSTNAME_ENV));
+    });
+
+    // A resolvable literal is conclusive on its own, so a HIT outranks "cannot prove". This pins
+    // the one place the leg deliberately departs from the assert form's ordering.
+    it('reports BROKEN for a definite hit even while the hostname is unprovable', async () => {
+      await writeManifest();
+      await writeLeakyFile();
+      const code = await runVerifySeedPayload(
+        { seedDir: dir, origin: 'reuse' },
+        silent,
+        deps(alwaysOk, { probe: probing({ home: BUILDER_HOME, hostname: DEFAULT_NEUTRAL_BUILD_HOSTNAME }) }),
+      );
+      expect(code).toBe(EXIT_MISMATCH);
+      expect(code).not.toBe(EXIT_UNDETERMINED);
     });
   });
 
   it('surfaces the remedy for a grafted corestore in the reuse message', async () => {
     await writeManifest();
     const lines: string[] = [];
-    await runVerifySeedPayload({ seedDir: dir, origin: 'reuse' }, (m) => lines.push(m), alwaysFails);
+    await runVerifySeedPayload({ seedDir: dir, origin: 'reuse' }, (m) => lines.push(m), deps(alwaysFails));
     const out = lines.join('\n');
     expect(out).toMatch(/PAPERCUSP_SEED_REUSE_CORESTORE=0/);
     // Never let a reader "fix" a short payload by recomputing the entry over it.
