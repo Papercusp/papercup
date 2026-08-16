@@ -208,9 +208,54 @@ function readPsiMemSome60(now: number): number | undefined {
   return value;
 }
 
-/** Test seam: drop the PSI cache so a test can control what the next read sees. */
+/**
+ * Read the run-queue decomposition from `/proc/stat`, cached and fail-soft.
+ *
+ * WHY THIS LEG EXISTS (EI-20495650388693372). A raw observation was filed as a
+ * bug — "128 cores, load averages [217.72, 137.62, 122.82]" — and could not be
+ * attributed to anything, because the snapshot that produced it carried no way to
+ * tell the two mechanisms apart. `load > cores` is consistent with BOTH a genuine
+ * CPU oversubscription (a generator worth hunting) and a pile of D-state tasks
+ * consuming no CPU at all (a wedge, or merely slow storage). Without this pair
+ * the reader can only report the ambient number, which is exactly the
+ * "high load as weather" non-diagnosis the repo forbids.
+ *
+ * Matching {@link readPsiMemSome60}, an unreadable or unparseable file yields an
+ * ABSENT field, never a fabricated 0 — a zero `procsRunning` would read as "the
+ * box is idle", which is the strongest possible claim to invent from a failed
+ * read, and the exact inversion of "I could not tell".
+ */
+function readRunQueue(now: number): RunQueue {
+  if (runqCache && now - runqCache.at < RUNQ_CACHE_MS) return runqCache.value;
+  const value: RunQueue = {};
+  try {
+    // Format (near the end, after the per-core and `intr` lines):
+    //   procs_running 61
+    //   procs_blocked 0
+    const text = readFileSync('/proc/stat', 'utf8');
+    const running = text.match(/^procs_running (\d+)$/m);
+    const blocked = text.match(/^procs_blocked (\d+)$/m);
+    if (running) {
+      const n = Number(running[1]);
+      if (Number.isFinite(n)) value.running = n;
+    }
+    if (blocked) {
+      const n = Number(blocked[1]);
+      if (Number.isFinite(n)) value.blocked = n;
+    }
+  } catch {
+    /* not Linux, or not permitted — both fields are simply absent */
+  }
+  runqCache = { at: now, value };
+  return value;
+}
+
+/** Test seam: drop the cached `/proc` reads so a test can control what the next
+ *  read sees. Clears EVERY cached leg — a seam that reset only some of them would
+ *  leak one test's fixture into the next. */
 export function resetHostSnapshotCache(): void {
   psiCache = undefined;
+  runqCache = undefined;
 }
 
 /**
@@ -254,6 +299,10 @@ export function getHostSnapshot(): HostSnapshot {
 
   const psi = readPsiMemSome60(nowMs);
   if (psi !== undefined) snap.psiMemSome60 = psi;
+
+  const runq = readRunQueue(nowMs);
+  if (runq.running !== undefined) snap.procsRunning = runq.running;
+  if (runq.blocked !== undefined) snap.procsBlocked = runq.blocked;
 
   return snap;
 }
