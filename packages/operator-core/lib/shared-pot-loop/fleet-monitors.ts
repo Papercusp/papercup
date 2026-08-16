@@ -180,9 +180,14 @@ export async function scanOutboxHealth(
 // see. Measured 2026-08-16: peer machine B sat 100% undrained (5,832 rows,
 // oldest 48h) while host A read 0 undrained and filed nothing.
 //
-// The locally-observable proxy is `substrate_merge_cursor`: one row per REMOTE
-// log (`log_keyhex`) recording how far we have folded it, re-stamped on every
-// ADVANCE (pg-merge-cursor-store.ts `save`). A peer that stops producing — or
+// The locally-observable proxy is `substrate_merge_cursor`: one row per log
+// (`log_keyhex`) recording how far we have folded it, re-stamped on every
+// ADVANCE (pg-merge-cursor-store.ts `save`). ⚠ It holds a row for OUR OWN log
+// as well as for remote ones — this comment claimed "one row per REMOTE log" for
+// three weeks and the judge believed it, which is the whole of the false
+// "N of M peers silent" reading described at the own-log split below. The judge
+// therefore resolves the own key and excludes it rather than trusting the shape.
+// A peer that stops producing — or
 // that we can no longer reach — stops advancing ITS cursor while other peers'
 // keep moving. Verified discriminating on host A: harness `papercusp` held 21
 // logs spanning 0.00h to 509.71h since last advance.
@@ -540,6 +545,7 @@ async function readAndJudgePeerSilence(
       silentAfterMs: opts.silentAfterMs,
       nowMs,
       localActivityAgeMs: newestLocal == null ? null : Math.max(0, nowMs - newestLocal),
+      ownLogKeyHex: ownLog?.own_key,
     },
   );
 }
