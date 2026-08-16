@@ -123,6 +123,27 @@ describe('Scout outcome-feedback (P-013 / D-009)', () => {
         'won',
       );
     });
+
+    it("a LEGACY shared gym ref (gym:SP-NNN) classifies 'pending' even with a feed entry — D-003, the 80%-poisoned-outcomes exclusion", () => {
+      const poisoned = new Map([
+        ['gym:SP-001', entry({ ref: 'gym:SP-001', kind: 'proposal', detail: 'Status: accepted' })],
+      ]);
+      // The frozen verdict is RIGHT THERE in the feed — and must not join.
+      expect(
+        classifyIdeaOutcome(prov({ lens: 'analogical', routedRef: 'gym:SP-001', rail: 'gym' }), poisoned),
+      ).toBe('pending');
+      // CONTROL: a batch-stamped id (the post-fix recombine format) still joins.
+      const stamped = new Map([
+        ['gym:SP-mekkv1x2-001', entry({ ref: 'gym:SP-mekkv1x2-001', kind: 'proposal', detail: 'Status: accepted' })],
+      ]);
+      expect(
+        classifyIdeaOutcome(prov({ lens: 'analogical', routedRef: 'gym:SP-mekkv1x2-001', rail: 'gym' }), stamped),
+      ).toBe('won');
+      // CONTROL: the exclusion is gym-rail-scoped — a wi ref is untouched.
+      expect(classifyIdeaOutcome(prov({ lens: 'analogical', routedRef: 'wi:EI-1', rail: 'improvement' }), feed)).toBe(
+        'won',
+      );
+    });
   });
 
   describe('computeLensOutcomes', () => {
