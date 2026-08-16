@@ -1054,6 +1054,39 @@ export function preferHigherFidelityBackfill(
   return oldest(parts) <= oldest(turns) ? parts : turns;
 }
 
+/**
+ * Should the DB backfill be SERVED, or should we decline and let the caller
+ * read the session file?
+ *
+ * Two guards, both of which only bite when the file is actually available —
+ * with no file the DB is the only story and anything beats a dead pane:
+ *
+ *  1. STORE choice (P-008). session_turns is TEXT-ONLY while the JSONL has the
+ *     tool calls, so serving turns over an existing file is a downgrade on the
+ *     very axis the DB-primary work existed to improve. The first cut of P-008
+ *     shipped exactly that and called it "DB-primary". Fidelity order with a
+ *     file present is parts > FILE > turns.
+ *
+ *  2. STORE INTEGRITY (EI-20637908167729753). Guard 1 asks which store won;
+ *     this asks whether the winner is intact. Ingest caps tool payloads below
+ *     the render budget, so a parts row can be the highest-fidelity store
+ *     available and STILL be short of what the pane had room to show — while
+ *     the file on disk has all of it. Serving the DB copy there renders a body
+ *     that is quietly truncated with no way for the reader to tell, which is
+ *     the failure mode that made a 7,051-char report display as 2,000.
+ *
+ * Pure — exported for tests.
+ */
+export function shouldServeDbBackfill(
+  backfill: Backfill | null,
+  opts: { fileAvailable: boolean; fromParts: Backfill | null },
+): backfill is Backfill {
+  if (!backfill || backfill.entries.length === 0) return false;
+  if (!opts.fileAvailable) return true;
+  if (backfill !== opts.fromParts) return false;
+  return !backfill.storeTruncated;
+}
+
 export async function backfillFromSessionTurns(
   key: { sourceKind: 'claude' | 'omp' | 'codex'; sessionId: string },
   opts: { anchorTs?: string | null; cap?: number } = {},
@@ -1412,29 +1445,9 @@ const sessionThinkingStream = defineTool({
               backfillFromSessionTurns(corpusKey, { anchorTs }),
             ]);
             const backfill = preferHigherFidelityBackfill(fromParts, fromTurns);
-            if (!backfill || backfill.entries.length === 0) return false;
-            // REGRESSION GUARD. session_turns is TEXT-ONLY; the JSONL has the
-            // tool calls. So when the file is still on disk, serving turns is a
-            // DOWNGRADE on the very axis this plan exists to improve — and for
-            // every session predating the parts store (no parts, plenty of
-            // turns) that is exactly the branch that fires. The first cut of
-            // P-008 shipped that: it replaced a full file-based timeline with
-            // text-only turns and called it "DB-primary".
-            //
-            // Fidelity order when the file exists is therefore parts > FILE >
-            // turns, not parts > turns. Decline here and let the caller read
-            // the file; turns keep their original WI-4194 job — the fallback
-            // for a session whose file is GONE.
-            if (opts.fileAvailable && backfill !== fromParts) return false;
-            // SECOND fidelity guard, same principle one level down. The check
-            // above compares STORES; this one asks whether the store that won
-            // is actually intact. Ingest caps tool payloads well below the
-            // render budget, so a parts row can be the highest-fidelity store
-            // available and STILL be missing text the pane had room for — and
-            // the file sitting on disk has all of it. Serving the DB copy there
-            // renders a body that is quietly short with no way for the reader
-            // to tell, which is strictly worse than the extra file read.
-            if (opts.fileAvailable && backfill.storeTruncated) return false;
+            if (!shouldServeDbBackfill(backfill, { fileAvailable: opts.fileAvailable, fromParts })) {
+              return false;
+            }
             sink.event('backfill', backfill.entries);
             if (find) {
               sink.event('anchor', backfill.anchorIndex !== null
