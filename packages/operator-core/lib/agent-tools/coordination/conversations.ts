@@ -135,6 +135,7 @@ import {
   resolveConversationCore,
   supersedeConversationCore,
   promoteConversationCore,
+  type AppendPostError,
   type ConversationDeps,
   type ConversationDetail,
   type ConversationWithTopics,
