@@ -288,10 +288,44 @@ export interface DedupCoverage {
   degraded: boolean;
 }
 
+/**
+ * What a COALESCE actually did to the caller's content (P-006, D-004).
+ *
+ * A coalesce returns `ok:true, created:false, reason:'coalesced'` whether the
+ * caller's title/body replaced the row's text or was silently dropped — the
+ * refresh is a `.catch(() => null)` and the prior text is kept on failure. So
+ * `ok:true` meant "did not throw", not "your reading was persisted", and a
+ * caller had no way to tell the two apart. This reports the difference.
+ *
+ * Mirrors the same disclosure `coordination/escalations.ts` already makes for
+ * the identical coalesce-and-drop-the-text shape (`bodyDiscarded`).
+ */
+export interface CoalesceEffect {
+  /** The still-open row this capture merged onto. */
+  id: string;
+  /** `repeatCount` after this call's bump. */
+  repeatCount: number;
+  /** Did THIS call's title/body actually replace the row's text? */
+  bodyPersisted: boolean;
+  /** Only when `bodyPersisted` is false — the caller's prose was DISCARDED. */
+  bodyDiscarded?: true;
+  /** `createdBy` of the row merged onto (null on rows predating the column). */
+  priorAuthor: string | null;
+  /** True when `priorAuthor` is a DIFFERENT agent than this caller — i.e. this
+   *  write landed on a peer's row. Undecidable (false) when either side is null. */
+  crossAuthor: boolean;
+  /** Plain-language statement of what happened, for a reader who will not
+   *  interpret the booleans. */
+  note: string;
+}
+
 export interface CaptureImprovementResult {
   ok: true;
   created: boolean;
   reason?: 'likely-duplicate' | 'check-only' | 'stale-evidence' | 'coalesced' | 'promoted';
+  /** P-006/D-004: present ONLY on a coalesce. What this write did to the row it
+   *  merged onto, and whether the caller's own text survived. */
+  coalescedOnto?: CoalesceEffect;
   /** Native engineer_issues storage kind. Always agrees with issue.kind. */
   kind?: 'bug' | 'change';
   /** Caller-facing capture classification; `feature` is stored as kind=`change`. */
@@ -1055,10 +1089,43 @@ export async function captureImprovement(
         dedupCoverage,
         harnessFromScope(finalIssue.scope),
       );
+      // P-006/D-004: report what this write actually DID, not merely that it ran.
+      // `refreshed` is null exactly when the title/body update above failed (its
+      // `.catch`), which is the case where the caller's prose was dropped while
+      // the call still returned ok — the silent write-loss this item exists for.
+      const bodyPersisted = refreshed !== null && 'id' in (refreshed as object);
+      const priorAuthor = prior.createdBy ?? null;
+      // Undecidable when either side is unknown: an unattributed row must not be
+      // reported as a peer's (it would manufacture a cross-author claim), nor as
+      // your own. False = "not established", never "verified same author".
+      const crossAuthor = Boolean(priorAuthor && input.createdBy && priorAuthor !== input.createdBy);
+      const coalescedOnto: CoalesceEffect = {
+        id: finalIssue.id,
+        repeatCount,
+        bodyPersisted,
+        ...(bodyPersisted ? {} : { bodyDiscarded: true as const }),
+        priorAuthor,
+        crossAuthor,
+        note:
+          `No new row was created: this reading COALESCED onto still-open ${finalIssue.id} ` +
+          `(conditionKey \`${input.watchdogKey}\`), now at repeatCount ${repeatCount}. ` +
+          (bodyPersisted
+            ? `Your title/body REPLACED the text that row previously carried`
+            : `⚠ YOUR TITLE/BODY WAS DISCARDED — the refresh failed, so the row still shows the ` +
+              `PREVIOUS reading. The repeatCount bump landed, your prose did not; re-read ` +
+              `${finalIssue.id} before asserting anywhere that it reflects what you just wrote`) +
+          (crossAuthor
+            ? `. That row was authored by ${priorAuthor}, not you — you have written onto a PEER's ` +
+              `row. This is intended (the shared conditionKey is what stops a flood of near-identical ` +
+              `rows), and every occurrence is retained, but the row's visible text is now the latest ` +
+              `writer's, so do not read it as that author's own account.`
+            : `.`),
+      };
       return {
         ok: true,
         created: false,
         reason: 'coalesced',
+        coalescedOnto,
         kind: finalIssue.kind as 'bug' | 'change',
         improvementKind: input.kind,
         issue: finalIssue,

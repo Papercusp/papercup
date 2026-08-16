@@ -234,6 +234,7 @@ export default defineTool({
       'improvements:capture { kind, title, paths? } → improvements:digest triages it → an agent claims + fixes it, or the auto-implement loop picks up bugs and improvements:resolve closes them.',
     returns:
       'CREATE: { ok, created, issue, topics, possibleDuplicates, dedupCoverage, alreadyDecided? }. CHECK (checkDuplicatesOnly): { ok, created:false, reason:"check-only", possibleDuplicates, dedupCoverage, alreadyDecided? }.\n\n' +
+      'COALESCE (reason:"coalesced" — an observation matching an open conditionKey): also `coalescedOnto { id, repeatCount, bodyPersisted, bodyDiscarded?, priorAuthor, crossAuthor }`. Read `bodyPersisted` BEFORE asserting the row says what you wrote: on false your title/body was DISCARDED and the row still shows the previous reading. `crossAuthor:true` means you wrote onto a PEER\'s row (expected for a shared conditionKey; occurrences are all retained).\n\n' +
       'An su kind=feature filing also returns `priorArt[]` — a REPORT-ONLY novelty pre-check (including already-tried-and-failed priors) that NEVER blocks the filing. Absent field = not checked; [] = checked and nothing similar found.\n\n' +
       'possibleDuplicates[] carries THREE kinds of hit, and they do NOT mean the same thing:\n' +
       '  • no flag        — token-overlap (Jaccard) above threshold. May DECLINE your capture.\n' +

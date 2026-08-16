@@ -1053,6 +1053,10 @@ describe('captureImprovement — observation coalescing by conditionKey (EI-1544
           title: input.title,
           kind: (input.kind as 'bug' | 'change') ?? 'change',
           payload: input.payload ?? null,
+          // Faithful to the real writer (capture-core passes `createdBy: input.createdBy`
+          // into createIssue) — without this the stored row is always unattributed, and
+          // the cross-author coalesce below could never be exercised.
+          createdBy: input.createdBy ?? null,
         });
         store.push(issue);
         return issue;
@@ -1104,6 +1108,91 @@ describe('captureImprovement — observation coalescing by conditionKey (EI-1544
       canonicalId: first.issue?.id,
       sourceTool: 'improvements:capture',
       reportedTitle: 'escalation-aging holding flat at 318',
+    });
+  });
+
+  // P-006/D-004: a coalesce used to return ok:true / created:false / reason:'coalesced'
+  // and nothing more — identical whether the caller's text replaced the row's or was
+  // silently dropped by the refresh's `.catch(() => null)`, and identical whether the
+  // row was the caller's own or a peer's. `coalescedOnto` reports what actually happened.
+  describe('coalescedOnto — what the write actually did (P-006/D-004)', () => {
+    it('reports the row, the bumped count, and that the body PERSISTED', async () => {
+      const d = coalesceDeps();
+      const first = await captureImprovement(
+        { title: 'reading 312', kind: 'change', lane: 'observation', watchdogKey: 'k', createdBy: 'agent-a' },
+        d,
+      );
+      const second = await captureImprovement(
+        { title: 'reading 318', kind: 'change', lane: 'observation', watchdogKey: 'k', createdBy: 'agent-a' },
+        d,
+      );
+      expect(second.coalescedOnto).toMatchObject({
+        id: first.issue?.id,
+        repeatCount: 2,
+        bodyPersisted: true,
+        priorAuthor: 'agent-a',
+        crossAuthor: false,
+      });
+      expect(second.coalescedOnto?.bodyDiscarded).toBeUndefined();
+      expect(d.store[0].title).toBe('reading 318');
+    });
+
+    // The load-bearing case: the refresh fails, the row keeps the PREVIOUS text, and
+    // the call still returns ok. Before this the caller had no way to know.
+    it('reports bodyDiscarded when the title/body refresh FAILED — the silent write-loss', async () => {
+      const d = coalesceDeps();
+      await captureImprovement(
+        { title: 'reading 312', kind: 'change', lane: 'observation', watchdogKey: 'k', createdBy: 'agent-a' },
+        d,
+      );
+      d.updateIssuePatch = async () => {
+        throw new Error('shrink guard tripped');
+      };
+      const second = await captureImprovement(
+        { title: 'reading 318', kind: 'change', lane: 'observation', watchdogKey: 'k', createdBy: 'agent-a' },
+        d,
+      );
+      expect(second.ok).toBe(true); // still not an error — the coalesce itself succeeded
+      expect(second.coalescedOnto).toMatchObject({ bodyPersisted: false, bodyDiscarded: true, repeatCount: 2 });
+      expect(String(second.coalescedOnto?.note)).toMatch(/DISCARDED/);
+      expect(d.store[0].title).toBe('reading 312'); // the row really does still show the OLD reading
+    });
+
+    it("flags crossAuthor when the coalesce lands on ANOTHER agent's row", async () => {
+      const d = coalesceDeps();
+      await captureImprovement(
+        { title: 'grade A', kind: 'change', lane: 'observation', watchdogKey: 'scorecard:r:h', createdBy: 'agent-a' },
+        d,
+      );
+      const second = await captureImprovement(
+        { title: 'grade B', kind: 'change', lane: 'observation', watchdogKey: 'scorecard:r:h', createdBy: 'agent-b' },
+        d,
+      );
+      expect(second.coalescedOnto).toMatchObject({ crossAuthor: true, priorAuthor: 'agent-a' });
+      expect(String(second.coalescedOnto?.note)).toMatch(/PEER'?’?s row/);
+    });
+
+    // crossAuthor must never be ASSERTED from missing data: an unattributed row is
+    // "not established", not "a peer's" and not "your own".
+    it('does NOT claim crossAuthor when either side is unattributed', async () => {
+      const d = coalesceDeps();
+      await captureImprovement({ title: 'a', kind: 'change', lane: 'observation', watchdogKey: 'k' }, d);
+      const second = await captureImprovement(
+        { title: 'b', kind: 'change', lane: 'observation', watchdogKey: 'k', createdBy: 'agent-b' },
+        d,
+      );
+      expect(second.coalescedOnto?.priorAuthor).toBeNull();
+      expect(second.coalescedOnto?.crossAuthor).toBe(false);
+    });
+
+    it('is absent entirely on a normal CREATE — it is a property of coalescing only', async () => {
+      const d = coalesceDeps();
+      const first = await captureImprovement(
+        { title: 'fresh', kind: 'change', lane: 'observation', watchdogKey: 'k', createdBy: 'agent-a' },
+        d,
+      );
+      expect(first.created).toBe(true);
+      expect(first.coalescedOnto).toBeUndefined();
     });
   });
 
