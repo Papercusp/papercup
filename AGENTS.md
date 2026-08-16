@@ -280,12 +280,16 @@ auto-deploys it to `:3070`. Pipeline view: `/admin/git`. Long form + symptoms:
 > subject describes the sweeping agent's INTENT, not the diff. Both are false-positive
 > generators, not dead ends.
 >
-> **Which commit carries your change → `git log -1 -- <path>`. NOT `git rev-parse HEAD`:
-> the tip is routinely a DIFFERENT commit from the same sweep, so quoting it attributes
-> your work to a stranger's diff. Whether a sha someone cites really carries a change →
-> `git show --stat <sha>`, or grep the file.** For authorship, use the commissioning
-> work-item/plan-item or a timestamp-correlated `sessions:search`; if neither resolves,
-> say "not attributable" — never name a person.
+> **Which commit carries your change → `TZ=UTC git log -1 --format='%cI %H %s' -- <path>`.
+> NOT `git rev-parse HEAD`:** the tip is routinely a DIFFERENT commit from the same
+> sweep, so quoting it attributes your work to a stranger's diff. Git otherwise renders
+> `%ad`/`%cd` in the machine's local timezone (`-0400` here), while Papercusp timestamps
+> are UTC; use the explicit offset in `%cI` or keep `TZ=UTC` for `--since`/`--until` too.
+> Whether a sha someone cites really carries a change → `git show --stat <sha>`, or grep
+> the file. For live/deployed status, use `dev:pipeline_position { path }`, whose
+> timestamps are UTC. For authorship, use the commissioning work-item/plan-item or a
+> timestamp-correlated `sessions:search`; if neither resolves, say "not attributable" —
+> never name a person.
 
 > 🚨 **NEVER run a tree-wide destructive git op on the shared checkout** — not
 > `git reset --hard`, not `git checkout .` / `git checkout -- :/`, not
@@ -523,7 +527,15 @@ row says so and bash remains correct.
 | how many CPU cores this machine has | `host.cores` — already in your coord:orient payload. Call nothing | `nproc` / `nproc --all` |
 | free memory / whether the box is out of RAM | `host.memFreePct` + `host.psiMemSome60` — already in your coord:orient payload. Call nothing | `free -h` / `free -g` |
 | to find where a symbol is DEFINED (and who calls it) | `gitnexus.context { name: "managedSetInterval", kind: "Function" }` | `grep -rn "export function managedSetInterval" --include=*.ts libs packages` (grep gives one matching line; the graph gives the definition plus callers/callees). ⚠ the index is refreshed by hand (`npx gitnexus analyze`) so it can lag new code; exhaustive exact-text search is still grep's job |
-| to install dependencies in this shared tree | `npm run install:safe` (or `npm run install:safe -- ci` / `-- install --legacy-peer-deps`) — serializes concurrent agents behind an fs-mutex, then verifies every declared dep actually landed on disk | a bare `npm install` / `npm ci` — it rewrites `node_modules/.bin` under every other agent's in-flight test run, and two overlapping installs corrupt a package durably. ⚠ NOT claimed: an install naming a package operand (it may target a scratch tree `install:safe` cannot reach) or `--dry-run` |
+| to install dependencies in this shared tree | `npm run install:safe` (or `npm run install:safe -- ci` / `-- install --legacy-peer-deps`) — serializes concurrent agents behind an fs-mutex, then verifies every declared dep actually landed on disk | a bare `npm install` / `npm ci` — including a named-package add — because it rewrites `node_modules/.bin` under every other agent's in-flight test run. ⚠ NOT claimed: explicit `--prefix` scratch installs or `--dry-run` |
+| one relation's columns and their types | `dev:pg_query { describe: "schema.table" }` (same tool — also returns indexes, constraints and column comments) | a hand-written `SELECT column_name, data_type FROM information_schema.columns WHERE table_schema='…' AND table_name='…'`. ⚠ A column SEARCH across relations (`column_name ILIKE '%x%'`) has no describe form — keep querying the catalog for that |
+| to FIND a relation whose name you half-remember | `dev:pg_query { describe: "*fragment*" }` — glob matched case-insensitively against `schema.name`; `{ describe: "schema.*" }` lists one schema | a hand-written `SELECT table_name FROM information_schema.tables WHERE table_name ILIKE '%fragment%'`. ⚠ Names only, one glob per call — an explicit `table_name IN (…)` list, a `table_type` filter, or anything else the catalog holds still wants information_schema |
+| whether migration NNN applied, or the most recent migrations | `db:migrations { like: "795" }` — a bare number is a prefix match; an empty match returns a verdict (pending / draft-not-armed / no-such-migration) rather than an ambiguous zero rows | a hand-written `SELECT filename, applied_at FROM harness_shared.schema_migrations WHERE filename LIKE '795%'`. ⚠ One pattern per call — a `filename IN (…)` list, a POSIX-regex range (`~ '^(79[4-9])'`), `LIKE ANY (ARRAY[…])` or a `>= '750' AND < '760'` number range still wants SQL |
+| a test file's run history, or which tests are failing | `testing:runs { filePath, status: ["fail","error"], sinceHours }` — typed status enum, and `outputTail` comes back on the red rows | `SELECT … FROM test_runs WHERE file_path LIKE '%x%' AND status='failed'` — ⚠ that literal can NEVER match (pass\|fail\|skip\|cancelled\|error\|running), so it reads as a clean "no failures". Aggregates, `DISTINCT ON`, an `output_tail` hunt, a `finished_at` window or `workspace_id IS NULL` still want SQL |
+| to find filed issues by text, state, assignee or scope | `issues:list { q: "fragment", state, assignee, limit }` — `q` matches title + body, `rollup:"state"` gives counts over the whole filtered set | `SELECT … FROM engineer_issues WHERE title ILIKE '%x%'`. ⚠ NO id filter — a single-item read (`WHERE issue_id='WI-123'`) is `work_items:get { id }` — and no time-window arg, so a `created_at` slice, an OR of several fragments, a regex match, and `payload->`/terminal-column forensics stay SQL |
+| the green-checkpoint gate's health (consecutive reds, observed candidate, whether a re-triage is in flight) | `routines:list { name: 'green-checkpoint' }` — read `health.gate_health`, plus `nextFireAt` / `lastFiredAt` on the same row | a hand-written `SELECT metadata->'gate_health'->… FROM harness_shared.routines`. ⚠ Unprojected columns (`tier`, `concurrency`), cross-routine aggregates and JOINs still want SQL. "Is my change live" is dev:pipeline_position; the judged sha is state:read { cell:'gate.greenCheckpoint.candidate' } |
+| one work-item (or up to 100) by id, including its terminal/authority columns | `work_items:get { id }` / `{ ids: [...] }` — whole row incl. terminalOwner, completionAuthority, plus holder + checkpoint; add payloadTier:"full" for payload/summary | a hand-written `SELECT … FROM work_items WHERE feature_id='EI-…'`. ⚠ `payload->` PREDICATES, `source_plan_slug` slices, aggregates and JOINs stay SQL |
+| a filtered work-item / issue slice — text, state set, kind, assignee, plan of origin, or a created/updated window | `work_items:list { q, state, states, notTerminal, kind, assignee, sourcePlanSlug, createdSince, updatedSince, limit }` — add includeObservations:true to match a raw SELECT, and completionAuthority to list under-evidenced closes | `SELECT … WHERE title ILIKE '%x%'`, or a hand-copied `status NOT IN ('done',…)` — that IS `notTerminal`. ⚠ `q` spans title+summary (a superset). No id filter; an exclusive `>`/`now()` window, a non-union exclusion set, a source_plan_slug PROJECTION, aggregates and JOINs stay SQL |
 
 <!-- END GENERATED gen:tool-routing -->
 
@@ -587,6 +599,23 @@ help. `pgrep -qf X && echo ALIVE || echo gone` prints **`gone`** on the usage
 error — a well-formed answer to the question you asked, while the process is
 very much alive (measured: it printed `gone` while `pgrep -cf` returned **13**).
 
+
+⚠ **With `pipefail`, do not use an early-exiting pipeline consumer as a
+predicate.** `grep -q`, `grep -m1`, and `head -1` can exit as soon as they
+find a match, sending `SIGPIPE` to the producer. The producer may then return
+141, so `producer | grep -q PAT && echo yes || echo no` reports `no` even
+though `grep` matched. This is a race: the same command can appear to work
+until the producer is fast enough to hit the closed pipe. Capture the producer
+output and match it afterward instead:
+
+```bash
+out=$(producer)
+case "$out" in *PAT*) echo yes ;; *) echo no ;; esac
+```
+
+If a pipeline is necessary, consume to EOF (for example with `grep -c`) rather
+than using an early-exit predicate. A false absence from this pattern is not
+evidence that the guarded string, process, or flag is missing.
 
 > ⚠ `pgrep -x` matches `/proc/<pid>/comm`, which the kernel truncates to **15
 > chars**, so a longer binary name never matches. 
@@ -787,6 +816,8 @@ Repeat heartbeat_resource for each further interval; then release the lock when 
 ```
 locks:release_resource { lock_id: '<returned lock_id>' }
 ```
+
+Holding it, pass `--sweep-lock-held` so the probe records which choice you made; `--accept-sweep-race` is the escape when the checkout is not swept.
 
 ## Browser checks — use `verdict`
 

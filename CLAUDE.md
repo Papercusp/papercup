@@ -599,6 +599,7 @@ help. `pgrep -qf X && echo ALIVE || echo gone` prints **`gone`** on the usage
 error — a well-formed answer to the question you asked, while the process is
 very much alive (measured: it printed `gone` while `pgrep -cf` returned **13**).
 
+
 ⚠ **With `pipefail`, do not use an early-exiting pipeline consumer as a
 predicate.** `grep -q`, `grep -m1`, and `head -1` can exit as soon as they
 find a match, sending `SIGPIPE` to the producer. The producer may then return
@@ -806,6 +807,17 @@ same lock and **skips when a peer holds it**:
 locks:acquire_resource { resource: 'git-sync:papercusp', mode: 'exclusive',
                          ttl_sec: 600, reason: 'mutation probe' }
 ```
+
+Keep the returned lock_id for the entire probe. Before half the TTL, and again every half-TTL while the probe runs:
+```
+locks:heartbeat_resource { lock_id: '<returned lock_id>', ttl_sec: 600 }
+```
+Repeat heartbeat_resource for each further interval; then release the lock when done:
+```
+locks:release_resource { lock_id: '<returned lock_id>' }
+```
+
+Holding it, pass `--sweep-lock-held` so the probe records which choice you made; `--accept-sweep-race` is the escape when the checkout is not swept.
 
 ## Browser checks — use `verdict`
 
