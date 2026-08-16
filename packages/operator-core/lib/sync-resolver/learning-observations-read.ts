@@ -69,6 +69,12 @@ export async function computeLearningObservations(a: LearningObservationsArgs): 
   const { OBSERVATION_LANE } = await import('../harness/improvements/read-items');
   const filter = {
     lane: OBSERVATION_LANE,
+    // D-003/P-004 (observation-lane-scorecard-classification-2026-08-16): the pane is
+    // a RAW-observation browse feed — rubric-graded scorecards are completed verdicts
+    // with their own surfaces (scorecards:list / rubrics:trend / plan acceptance) and
+    // rendering them here as untriaged observations is the misread that opened the
+    // 01a0031d investigation. Same predicate in the list and the count (parity).
+    excludeRubricGraded: true,
     ...(a.state ? { state: a.state } : {}),
   };
   const [issues, total] = await Promise.all([listIssues({ ...filter, limit: a.limit ?? 200 }), countIssues(filter)]);

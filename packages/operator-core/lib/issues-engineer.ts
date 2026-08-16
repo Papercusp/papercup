@@ -739,6 +739,15 @@ export interface CreateIssueInput {
    * which allocates the next EI-<n>.
    */
   id?: string;
+  /**
+   * Initial state (observation-lane-scorecard-classification-2026-08-16 D-002/D-005).
+   * Default 'open'. 'done' files the row ALREADY-TERMINAL — for records that are
+   * completed at creation by construction (a rubric scorecard emitted through
+   * scorecards:emit is a finished verdict, not pending work). Note migration 698's
+   * insert rule: a row arriving terminal carries an honest NULL closed_ts (its
+   * created_at ≈ close time); only an UPDATE crossing the terminal boundary stamps one.
+   */
+  state?: 'open' | 'done';
 }
 
 /** Create an issue: insert, tag topics, auto-subscribe the author, fan out. */
@@ -797,7 +806,7 @@ export async function createIssue(input: CreateIssueInput): Promise<EngineerIssu
          assigned_by, assigned_at, payload, found_during, created_by, signal_origin, created_at, updated_at,
          parent_id)
       VALUES (${issuesScopeWorkspace()}, ${id}, ${input.kind ?? 'bug'}, ${scope}, ${safeTitle}, ${safeBody ?? ''},
-              ${input.severity ?? 'minor'}, ${input.source ?? 'engineer'}, 'open', ${input.assignee ?? null},
+              ${input.severity ?? 'minor'}, ${input.source ?? 'engineer'}, ${input.state ?? 'open'}, ${input.assignee ?? null},
               ${input.assignedBy ?? null}, ${input.assignedBy ? created : null},
               ${Object.keys(inputPayload).length > 0 ? JSON.stringify(inputPayload) : null}::text::jsonb, ${input.foundDuring ?? null},
               ${input.createdBy ?? null}, ${input.signalOrigin ?? DEFAULT_SIGNAL_ORIGIN}, ${created}, ${created},
@@ -898,6 +907,18 @@ export interface ListIssuesFilter {
    * The tag is still WRITTEN on capture, but it is a label — not an identity.
    */
   lane?: string;
+  /**
+   * Exclude RUBRIC-GRADED rows — scorecards — in SQL
+   * (observation-lane-scorecard-classification-2026-08-16 D-003/P-004). The predicate
+   * is the CANONICAL scorecard discriminator (`payload->'observation'->>'rubricRef'
+   * IS NOT NULL`) — the same key scorecards:list selects on — so INCLUDE (scorecards
+   * surfaces) and EXCLUDE (raw-observation projections like the Observations pane)
+   * can never disagree about what a scorecard is. Applied identically in listIssues,
+   * countIssues, countIssuesByState and countObservationsByKind so the list, the
+   * total, the state histogram and the kind histogram stay consistent (the WI-6934
+   * parity contract).
+   */
+  excludeRubricGraded?: boolean;
   /**
    * WI-4532: restrict to WATCHDOG-KEYED rows (`payload.watchdogKey` present) in SQL.
    *
@@ -1474,6 +1495,7 @@ export async function listIssues(filter: ListIssuesFilter = {}): Promise<Enginee
        -- read. Same stored generated column the exclusion above keys on, so INCLUDE and
        -- EXCLUDE can never disagree about what "the observation lane" is.
        AND ${filter.lane ? sql`lane = ${filter.lane}` : sql`TRUE`}
+       AND ${filter.excludeRubricGraded ? sql`(payload -> 'observation' ->> 'rubricRef') IS NULL` : sql`TRUE`}
        -- WI-4532: watchdog-keyed restriction (see ListIssuesFilter.watchdogKeyed). Must be
        -- applied HERE, not in JS after the read: the ORDER BY/LIMIT below makes a JS
        -- post-filter a recency window rather than a set.
@@ -1536,7 +1558,8 @@ export async function countIssues(filter: ListIssuesFilter = {}): Promise<number
          }
          AND ${filter.excludeObservationLane ? sql`ei.lane IS DISTINCT FROM 'observation'` : sql`TRUE`}
          AND ${filter.titlePrefix ? sql`ei.title LIKE ${likePrefixPattern(filter.titlePrefix)} ESCAPE '\\'` : sql`TRUE`}
-         AND ${filter.lane ? sql`ei.lane = ${filter.lane}` : sql`TRUE`}`;
+         AND ${filter.lane ? sql`ei.lane = ${filter.lane}` : sql`TRUE`}
+         AND ${filter.excludeRubricGraded ? sql`(ei.payload -> 'observation' ->> 'rubricRef') IS NULL` : sql`TRUE`}`;
     return rows[0]?.n ?? 0;
   }
   const rows = await sql<{ n: number }[]>`
@@ -1575,7 +1598,8 @@ export async function countIssues(filter: ListIssuesFilter = {}): Promise<number
        }
        AND ${filter.excludeObservationLane ? sql`lane IS DISTINCT FROM 'observation'` : sql`TRUE`}
        AND ${filter.titlePrefix ? sql`title LIKE ${likePrefixPattern(filter.titlePrefix)} ESCAPE '\\'` : sql`TRUE`}
-       AND ${filter.lane ? sql`lane = ${filter.lane}` : sql`TRUE`}`;
+       AND ${filter.lane ? sql`lane = ${filter.lane}` : sql`TRUE`}
+       AND ${filter.excludeRubricGraded ? sql`(payload -> 'observation' ->> 'rubricRef') IS NULL` : sql`TRUE`}`;
   return rows[0]?.n ?? 0;
 }
 
@@ -1646,6 +1670,7 @@ export async function countIssuesByState(filter: ListIssuesFilter = {}): Promise
          AND ${filter.excludeObservationLane ? sql`ei.lane IS DISTINCT FROM 'observation'` : sql`TRUE`}
          AND ${filter.titlePrefix ? sql`ei.title LIKE ${likePrefixPattern(filter.titlePrefix)} ESCAPE '\\'` : sql`TRUE`}
          AND ${filter.lane ? sql`ei.lane = ${filter.lane}` : sql`TRUE`}
+         AND ${filter.excludeRubricGraded ? sql`(ei.payload -> 'observation' ->> 'rubricRef') IS NULL` : sql`TRUE`}
        GROUP BY ei.state`
     : await sql<{ state: string | null; n: number }[]>`
       SELECT state, count(*)::int AS n
@@ -1684,6 +1709,7 @@ export async function countIssuesByState(filter: ListIssuesFilter = {}): Promise
          AND ${filter.excludeObservationLane ? sql`lane IS DISTINCT FROM 'observation'` : sql`TRUE`}
          AND ${filter.titlePrefix ? sql`title LIKE ${likePrefixPattern(filter.titlePrefix)} ESCAPE '\\'` : sql`TRUE`}
          AND ${filter.lane ? sql`lane = ${filter.lane}` : sql`TRUE`}
+         AND ${filter.excludeRubricGraded ? sql`(payload -> 'observation' ->> 'rubricRef') IS NULL` : sql`TRUE`}
        GROUP BY state`;
   const out: Record<string, number> = {};
   for (const row of rows) {
@@ -1745,6 +1771,7 @@ export async function countObservationsByKind(filter: ListIssuesFilter = {}): Pr
              : sql`TRUE`
          }
          AND ${filter.lane ? sql`ei.lane = ${filter.lane}` : sql`TRUE`}
+         AND ${filter.excludeRubricGraded ? sql`(ei.payload -> 'observation' ->> 'rubricRef') IS NULL` : sql`TRUE`}
       -- GROUP BY 1 (the ORDINAL), never 'GROUP BY kind'. 'kind' is BOTH a real
       -- column on engineer_issues AND this SELECT's output alias, and Postgres
       -- resolves a bare name in GROUP BY to the COLUMN, not the alias. So
@@ -1797,6 +1824,7 @@ export async function countObservationsByKind(filter: ListIssuesFilter = {}): Pr
        -- observation kind. The selector must bind in BOTH branches, or moving a
        -- caller from the topic filter to the lane filter silently widens it.
        AND ${filter.lane ? sql`lane = ${filter.lane}` : sql`TRUE`}
+       AND ${filter.excludeRubricGraded ? sql`(payload -> 'observation' ->> 'rubricRef') IS NULL` : sql`TRUE`}
     -- GROUP BY 1 (the ORDINAL) — same reason as the topic-joined branch above:
     -- 'kind' is both a real column and this SELECT's alias, and the bare name
     -- binds to the column, which leaves 'payload' ungrouped and 500s.

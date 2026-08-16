@@ -67,12 +67,51 @@ export function observationConsumptionCap(): number {
   return Number.isFinite(n) ? n : 2000;
 }
 
+/**
+ * Max rows stamped by the oldest-first BACKFILL sweep in one cycle (D-001,
+ * observation-lane-scorecard-classification-2026-08-16 / EI-20580287040635676).
+ *
+ * WHY THE SWEEP EXISTS: the head stamp covers only what the digest READ, and the
+ * digest reads the NEWEST ~500 rows per scope — so the standing backlog at the
+ * stamper's deploy (15,557 rows on 2026-08-08; measured 15,809 still unstamped
+ * on 2026-08-16) could never drain: those rows sit below the head window forever.
+ * The sweep stamps them oldest-first with `backfill: true` so the unconsumed
+ * count converges while "read" and "archived unread" stay distinct facts.
+ *
+ * env `PAPERCUSP_OBS_CONSUMPTION_BACKFILL_CAP`; `<= 0` disables the sweep alone.
+ * The head cap's kill switch (`PAPERCUSP_OBS_CONSUMPTION_CAP <= 0`) disables the
+ * whole recording pass, sweep included.
+ */
+export function observationConsumptionBackfillCap(): number {
+  const n = Number(process.env.PAPERCUSP_OBS_CONSUMPTION_BACKFILL_CAP ?? 2000);
+  return Number.isFinite(n) ? n : 2000;
+}
+
+/**
+ * Only rows at least this old are eligible for the backfill sweep — the head
+ * window owns the recent stream (measured: only 69 of 15,878 unstamped rows were
+ * <7d old, i.e. head coverage is ~98% there), so the sweep starting behind it can
+ * never race a legitimate first read out of its "when did the blender FIRST see
+ * this" answer.
+ */
+export const OBSERVATION_BACKFILL_MIN_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
 /** The stamp written under `payload.consumption`. */
 export interface ConsumptionStamp {
   /** ISO instant the blender read this observation. */
   at: string;
   /** The Scout cycle that read it (e.g. `scout-1786240815085`). */
   cycleId: string;
+  /**
+   * TRUE when this stamp came from the oldest-first BACKFILL sweep, not a real
+   * blender read (D-001, observation-lane-scorecard-classification-2026-08-16 /
+   * EI-20580287040635676). The head stamp means "the blender READ this"; a
+   * backfill stamp means "archived unread — the row predates the head window and
+   * was never going to be read". Collapsing the two would reintroduce exactly
+   * the read-vs-never-looked-at ambiguity this module exists to remove, so a
+   * consumer that wants "actually mined" rows must filter `backfill` out.
+   */
+  backfill?: true;
   /**
    * Pattern refs this observation was FOLDED INTO, when it fed one. Absent for a
    * row that was read and not folded — which is the common case and is recorded
@@ -182,6 +221,8 @@ export function planConsumptionStamps(opts: {
 /** Injectable write seam (tests stub it; prod uses the org pool). */
 export interface ObservationConsumptionDeps {
   stamp: (workspaceId: string, planned: readonly PlannedStamp[]) => Promise<number>;
+  /** The oldest-first backfill sweep (D-001). Optional so existing stubs keep working — absent means "no sweep". */
+  backfill?: (workspaceId: string, opts: { cycleId: string; nowIso: string; cap: number }) => Promise<number>;
 }
 
 /**
@@ -214,11 +255,55 @@ export async function stampObservationConsumptionPg(
   return rows.length;
 }
 
-const defaultDeps: ObservationConsumptionDeps = { stamp: stampObservationConsumptionPg };
+/**
+ * The BACKFILL PG write (D-001): stamp the OLDEST never-stamped rows with
+ * `{ at, cycleId, backfill: true }`. Same idempotency-by-construction as the head
+ * write — `payload -> 'consumption' IS NULL` on both the candidate SELECT and the
+ * UPDATE predicate, so a concurrent head stamp (a real read) always wins and a
+ * re-run can never overwrite anything. Bounded oldest-first so the historical
+ * backlog drains deterministically over successive cycles.
+ */
+export async function backfillObservationConsumptionPg(
+  workspaceId: string,
+  opts: { cycleId: string; nowIso: string; cap: number },
+): Promise<number> {
+  if (opts.cap <= 0) return 0;
+  const { getOrgPg } = await import('@papercusp/db-org');
+  const sql = getOrgPg().sql;
+  const stamp: ConsumptionStamp = { at: opts.nowIso, cycleId: opts.cycleId, backfill: true };
+  const maxCreatedTs = Date.parse(opts.nowIso) - OBSERVATION_BACKFILL_MIN_AGE_MS;
+  const rows = await sql<Array<{ feature_id: string }>>`
+    UPDATE harness_shared.work_items w
+       SET payload = COALESCE(w.payload, '{}'::jsonb)
+                     || jsonb_build_object('consumption', ${JSON.stringify(stamp)}::jsonb)
+      FROM (
+        SELECT feature_id
+          FROM harness_shared.work_items
+         WHERE workspace_id = ${workspaceId}
+           AND lane = 'observation'
+           AND payload -> 'consumption' IS NULL
+           AND created_ts < ${maxCreatedTs}
+         ORDER BY created_ts ASC
+         LIMIT ${opts.cap}
+      ) old
+     WHERE w.workspace_id = ${workspaceId}
+       AND w.feature_id = old.feature_id
+       AND w.lane = 'observation'
+       AND w.payload -> 'consumption' IS NULL
+   RETURNING w.feature_id`;
+  return rows.length;
+}
+
+const defaultDeps: ObservationConsumptionDeps = {
+  stamp: stampObservationConsumptionPg,
+  backfill: backfillObservationConsumptionPg,
+};
 
 export interface RecordConsumptionResult {
   planned: number;
   stamped: number;
+  /** Rows stamped by the oldest-first backfill sweep this cycle (D-001); absent when the sweep is disabled or unavailable. */
+  backfilled?: number;
   /** Set when stamping failed — the cycle continues regardless. */
   error?: string;
 }
@@ -244,18 +329,49 @@ export async function recordObservationConsumption(
   },
   deps: ObservationConsumptionDeps = defaultDeps,
 ): Promise<RecordConsumptionResult> {
+  const nowIso = opts.nowIso ?? new Date().toISOString();
+  const headCap = opts.cap ?? observationConsumptionCap();
+  let planned: PlannedStamp[] = [];
+  let stamped = 0;
+  let error: string | undefined;
   try {
-    const planned = planConsumptionStamps({
+    planned = planConsumptionStamps({
       readIds: opts.readIds,
       digest: opts.digest,
       cycleId: opts.cycleId,
-      nowIso: opts.nowIso ?? new Date().toISOString(),
+      nowIso,
       ...(opts.cap !== undefined ? { cap: opts.cap } : {}),
     });
-    if (planned.length === 0) return { planned: 0, stamped: 0 };
-    const stamped = await deps.stamp(opts.workspaceId, planned);
-    return { planned: planned.length, stamped };
+    if (planned.length > 0) stamped = await deps.stamp(opts.workspaceId, planned);
   } catch (err) {
-    return { planned: 0, stamped: 0, error: err instanceof Error ? err.message : String(err) };
+    error = err instanceof Error ? err.message : String(err);
   }
+
+  // The backfill sweep (D-001, EI-20580287040635676) rides the same recording
+  // pass, AFTER the head stamps so a genuine read this cycle always lands first.
+  // Fail-soft independently of the head leg — a sweep fault must neither cost
+  // the cycle nor mask a successful head stamp count. Gated behind BOTH kill
+  // switches: the whole-pass one (headCap <= 0) and its own cap.
+  let backfilled: number | undefined;
+  if (deps.backfill && headCap > 0) {
+    const backfillCap = observationConsumptionBackfillCap();
+    if (backfillCap > 0) {
+      try {
+        backfilled = await deps.backfill(opts.workspaceId, {
+          cycleId: opts.cycleId,
+          nowIso,
+          cap: backfillCap,
+        });
+      } catch (err) {
+        error = error ?? (err instanceof Error ? err.message : String(err));
+      }
+    }
+  }
+
+  return {
+    planned: planned.length,
+    stamped,
+    ...(backfilled !== undefined ? { backfilled } : {}),
+    ...(error !== undefined ? { error } : {}),
+  };
 }

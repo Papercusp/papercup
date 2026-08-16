@@ -78,6 +78,26 @@ describe('storageKindOf — the native column mapping (close-loop D-002)', () =>
   });
 });
 
+describe('captureImprovement — initialState seam (observation-lane-scorecard-classification-2026-08-16 D-002/D-005)', () => {
+  it("passes initialState:'done' through to createIssue.state — the scorecards:emit verdict path", async () => {
+    const d = deps();
+    await captureImprovement(
+      { title: 'Scorecard: Test Rubric', kind: 'change', lane: 'observation', initialState: 'done' },
+      d,
+    );
+    expect(d.created[0].state).toBe('done');
+  });
+
+  it('CONTROL: an ordinary capture passes NO state — createIssue defaults to open downstream', async () => {
+    const d = deps();
+    await captureImprovement({ title: 'plain observation', kind: 'change', lane: 'observation' }, d);
+    // Absence, not 'open': the default lives in ONE place (createIssue's INSERT),
+    // so this seam must not restate it. The conditionKey collapse
+    // (EI-19325151590626958) depends on capture-route rows staying open.
+    expect(d.created[0].state).toBeUndefined();
+  });
+});
+
 describe('captureImprovement — filer-role attribution (close-observation-attribution-gap 2026-06-21)', () => {
   it('stamps payload.filedByRole on an observation when given (fixes the ~100% unknown bucket)', async () => {
     const d = deps();

@@ -30,7 +30,7 @@ import { buildChangeFeedReaders } from '../curation/change-feed-deps';
 import { readImprovementItems, readObservationItems } from '../harness/improvements/read-items';
 import type { SignalOrigin } from '../harness/improvements/provenance';
 import type { ImprovementCandidate } from '../harness/improvements/policy';
-import { listRubrics } from '../rubrics';
+import { getRubric, listRubrics } from '../rubrics';
 import {
   revertWeight,
   type DeferralRecord,
@@ -287,10 +287,29 @@ export function buildStateOfHiveReaders(opts: BuildStateOfHiveReadersOptions = {
       const observations = await readObservationItems(
         opts.observationOrigins ? { origins: opts.observationOrigins } : {},
       );
+      // D-004 (observation-lane-scorecard-classification-2026-08-16): drop ONE-SHOT
+      // ACCEPTANCE scorecards from the recurring-scorecard corpus. An acceptance
+      // scorecard is a plan's definition-of-done verdict, graded once and retired
+      // with its plan — folding it into rubric TRENDS pollutes a series meant for
+      // recurring health measurements. Kind is resolved per distinct rubricRef via
+      // getRubric (an explicit id resolves ANY kind, plan D-010) and cached for the
+      // call; a rubricRef that no longer resolves is RETAINED (status quo — not
+      // proven acceptance), and a resolver fault fails open for the same reason.
+      const rubricKindCache = new Map<string, string | null>();
       const out: StructuredObservationRecord[] = [];
       for (const c of observations) {
         const record = toStructuredObservation(c);
-        if (record) out.push(record);
+        if (!record) continue;
+        const ref = record.rubricRef;
+        if (typeof ref === 'string' && ref) {
+          let kind = rubricKindCache.get(ref);
+          if (kind === undefined) {
+            kind = (await getRubric(ref).catch(() => null))?.kind ?? null;
+            rubricKindCache.set(ref, kind);
+          }
+          if (kind === 'acceptance') continue;
+        }
+        out.push(record);
       }
       return out;
     },

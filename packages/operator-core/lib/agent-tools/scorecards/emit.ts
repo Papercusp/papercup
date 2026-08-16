@@ -164,6 +164,12 @@ export async function emitScorecard(
       kind: 'change',
       body: args.body,
       lane: 'observation',
+      // D-002 (observation-lane-scorecard-classification-2026-08-16): an emitted
+      // scorecard is a COMPLETED verdict — file it terminal so it never renders as
+      // an untriaged open observation. Reads are state-agnostic (scorecards:list
+      // selects on payload.observation.rubricRef only), so history/trends/gates
+      // are unaffected.
+      initialState: 'done',
       createdBy: input.createdBy,
       filedByRole: 'su',
       payloadExtra: {

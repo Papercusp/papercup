@@ -103,6 +103,15 @@ describe('emitScorecard', () => {
     });
   });
 
+  it('files the scorecard ALREADY-TERMINAL (initialState done) — a verdict, not pending work (D-002, observation-lane-scorecard-classification-2026-08-16)', async () => {
+    await emitScorecard({ rubricRef: 'test-rubric', ratings: RATINGS }, { createdBy: 'su-1' });
+    expect(captureM).toHaveBeenCalledTimes(1);
+    // The load-bearing byte: without initialState the row files state 'open' and
+    // renders forever as an untriaged observation — the exact misread that opened
+    // the 01a0031d investigation ("EI-… remains open only as evidence").
+    expect(captureM.mock.calls[0][0]).toMatchObject({ initialState: 'done' });
+  });
+
   it('DEDUPLICATION: identical evidence to the latest scorecard is declined (unchanged-evidence), never re-files', async () => {
     const firstFingerprint = (
       await emitScorecard({ rubricRef: 'test-rubric', ratings: RATINGS }, { createdBy: 'su-1' })

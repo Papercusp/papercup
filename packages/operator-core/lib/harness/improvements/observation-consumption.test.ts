@@ -22,6 +22,7 @@ import {
   planConsumptionStamps,
   recordObservationConsumption,
   observationConsumptionCap,
+  observationConsumptionBackfillCap,
   type PlannedStamp,
 } from './observation-consumption';
 import type { CorpusDigest } from '../../scout/types';
@@ -187,5 +188,118 @@ describe('recordObservationConsumption', () => {
     );
     expect(stamp).not.toHaveBeenCalled();
     expect(res).toEqual({ planned: 0, stamped: 0 });
+  });
+});
+
+describe('the backfill sweep (D-001, EI-20580287040635676)', () => {
+  const opts = { workspaceId: 'ws', readIds: ['EI-1'], digest: digest(), cycleId: 'scout-1' } as const;
+
+  it('runs AFTER the head stamps and reports its count separately', async () => {
+    const order: string[] = [];
+    const res = await recordObservationConsumption(opts, {
+      stamp: async (_ws, planned) => {
+        order.push('head');
+        return planned.length;
+      },
+      backfill: async (_ws, o) => {
+        order.push('backfill');
+        expect(o.cycleId).toBe('scout-1');
+        expect(o.cap).toBeGreaterThan(0);
+        return 7;
+      },
+    });
+    // Head-first ordering is load-bearing: a genuine read this cycle must win the
+    // `consumption IS NULL` race so its stamp (not a backfill marker) is what lands.
+    expect(order).toEqual(['head', 'backfill']);
+    expect(res).toEqual({ planned: 1, stamped: 1, backfilled: 7 });
+  });
+
+  it('sweeps EVEN when the cycle read nothing — a quiet cycle still drains the backlog', async () => {
+    const backfill = vi.fn(async () => 3);
+    const res = await recordObservationConsumption(
+      { ...opts, readIds: [] },
+      { stamp: vi.fn(async () => 0), backfill },
+    );
+    expect(backfill).toHaveBeenCalledTimes(1);
+    expect(res).toEqual({ planned: 0, stamped: 0, backfilled: 3 });
+  });
+
+  it('a deps stub WITHOUT a backfill seam gets the pre-sweep behavior, byte-identical', async () => {
+    const res = await recordObservationConsumption(opts, {
+      stamp: async (_ws, planned) => planned.length,
+    });
+    // No `backfilled` key at all — absence, not 0, so older consumers see no change.
+    expect(res).toEqual({ planned: 1, stamped: 1 });
+  });
+
+  it('the WHOLE-PASS kill switch (head cap <= 0) disables the sweep too', async () => {
+    const backfill = vi.fn(async () => 99);
+    const res = await recordObservationConsumption(
+      { ...opts, cap: 0 },
+      { stamp: vi.fn(async () => 0), backfill },
+    );
+    expect(backfill).not.toHaveBeenCalled();
+    expect(res).toEqual({ planned: 0, stamped: 0 });
+  });
+
+  it('its OWN kill switch (PAPERCUSP_OBS_CONSUMPTION_BACKFILL_CAP <= 0) disables the sweep alone', async () => {
+    const prior = process.env.PAPERCUSP_OBS_CONSUMPTION_BACKFILL_CAP;
+    try {
+      process.env.PAPERCUSP_OBS_CONSUMPTION_BACKFILL_CAP = '0';
+      const backfill = vi.fn(async () => 99);
+      const res = await recordObservationConsumption(opts, {
+        stamp: async (_ws, planned) => planned.length,
+        backfill,
+      });
+      expect(backfill).not.toHaveBeenCalled();
+      // Head stamping is unaffected by the sweep's own switch.
+      expect(res).toEqual({ planned: 1, stamped: 1 });
+    } finally {
+      if (prior === undefined) delete process.env.PAPERCUSP_OBS_CONSUMPTION_BACKFILL_CAP;
+      else process.env.PAPERCUSP_OBS_CONSUMPTION_BACKFILL_CAP = prior;
+    }
+  });
+
+  it('a sweep fault is fail-soft and never masks the head result', async () => {
+    const res = await recordObservationConsumption(opts, {
+      stamp: async (_ws, planned) => planned.length,
+      backfill: async () => {
+        throw new Error('backfill exploded');
+      },
+    });
+    expect(res.planned).toBe(1);
+    expect(res.stamped).toBe(1);
+    expect(res.backfilled).toBeUndefined();
+    expect(res.error).toBe('backfill exploded');
+  });
+
+  it('a HEAD fault still lets the sweep run (independent fail-soft), and the head error wins the slot', async () => {
+    const backfill = vi.fn(async () => 2);
+    const res = await recordObservationConsumption(opts, {
+      stamp: async () => {
+        throw new Error('pg exploded');
+      },
+      backfill,
+    });
+    expect(backfill).toHaveBeenCalledTimes(1);
+    expect(res.error).toBe('pg exploded');
+    expect(res.backfilled).toBe(2);
+  });
+});
+
+describe('observationConsumptionBackfillCap', () => {
+  it('defaults to 2000 and honours the env override', () => {
+    const prior = process.env.PAPERCUSP_OBS_CONSUMPTION_BACKFILL_CAP;
+    try {
+      delete process.env.PAPERCUSP_OBS_CONSUMPTION_BACKFILL_CAP;
+      expect(observationConsumptionBackfillCap()).toBe(2000);
+      process.env.PAPERCUSP_OBS_CONSUMPTION_BACKFILL_CAP = '250';
+      expect(observationConsumptionBackfillCap()).toBe(250);
+      process.env.PAPERCUSP_OBS_CONSUMPTION_BACKFILL_CAP = 'nonsense';
+      expect(observationConsumptionBackfillCap()).toBe(2000);
+    } finally {
+      if (prior === undefined) delete process.env.PAPERCUSP_OBS_CONSUMPTION_BACKFILL_CAP;
+      else process.env.PAPERCUSP_OBS_CONSUMPTION_BACKFILL_CAP = prior;
+    }
   });
 });

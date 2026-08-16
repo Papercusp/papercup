@@ -50,8 +50,11 @@ describe('learning.observations — Work Queue pagination contract', () => {
   it('carries the authoritative store total on the flat row list, newest-first', async () => {
     const rows = await computeLearningObservations({ limit: 200 });
 
-    expect(listIssues).toHaveBeenCalledWith({ lane: 'observation', limit: 200 });
-    expect(countIssues).toHaveBeenCalledWith({ lane: 'observation' });
+    // D-003/P-004 (observation-lane-scorecard-classification-2026-08-16): the pane is a
+    // RAW-observation feed — rubric-graded scorecards are excluded in SQL, and the
+    // count carries the SAME predicate so the total can never disagree with the list.
+    expect(listIssues).toHaveBeenCalledWith({ lane: 'observation', excludeRubricGraded: true, limit: 200 });
+    expect(countIssues).toHaveBeenCalledWith({ lane: 'observation', excludeRubricGraded: true });
     expect(readListTotal(rows as unknown as Array<Record<string, unknown>>)).toBe(725);
     expect((rows as Array<{ id: string }>).map((row) => row.id)).toEqual(['EI-2', 'EI-1']);
   });
@@ -147,10 +150,11 @@ describe('learning.observations — Work Queue pagination contract', () => {
     await resolveNamedQueryV2('learning.observations', { state: 'open', limit: 50_000 });
     expect(listIssues).toHaveBeenCalledWith({
       lane: 'observation',
+      excludeRubricGraded: true,
       state: 'open',
       limit: 2000,
     });
-    expect(countIssues).toHaveBeenCalledWith({ lane: 'observation', state: 'open' });
+    expect(countIssues).toHaveBeenCalledWith({ lane: 'observation', excludeRubricGraded: true, state: 'open' });
   });
 
   // ── WI-7289 shape guard ──────────────────────────────────────────────────

@@ -237,6 +237,16 @@ export interface CaptureImprovementInput {
    * capture-core stays agnostic to the observation shape.
    */
   payloadExtra?: Record<string, unknown>;
+  /**
+   * File the row ALREADY-TERMINAL (observation-lane-scorecard-classification-2026-08-16
+   * D-002/D-005). Used ONLY by scorecards:emit: an emitted scorecard is a completed
+   * verdict, not a pending sensor reading, so leaving it 'open' forever misrepresents
+   * it as untriaged work (the misread that started the 01a0031d investigation).
+   * ⚠ NOT for capture-route rubric-graded observations — their conditionKey collapse
+   * (EI-19325151590626958) matches state='open' rows in place, and a terminal filing
+   * would re-mint a row per wake (D-005 of this plan records the split).
+   */
+  initialState?: 'done';
 }
 
 export interface PossibleDuplicate {
@@ -1132,6 +1142,9 @@ export async function captureImprovement(
     source: input.source,
     signalOrigin: origin,
     payload: Object.keys(payload).length > 0 ? payload : undefined,
+    // D-002/D-005 (observation-lane-scorecard-classification-2026-08-16): a
+    // scorecards:emit verdict files already-terminal; everything else stays 'open'.
+    ...(input.initialState ? { state: input.initialState } : {}),
   });
   await appendCaptureOccurrence(
     deps,
