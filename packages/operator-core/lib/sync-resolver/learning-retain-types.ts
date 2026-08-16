@@ -114,7 +114,7 @@ export interface RetainFeedCursor {
   id: string;
 }
 
-const RETAIN_FEED_KINDS: readonly string[] = ['plan', 'wi', 'rubric', 'runbook', 'recipe'];
+const RETAIN_FEED_KINDS: readonly string[] = ['memory', 'plan', 'wi', 'rubric', 'runbook', 'recipe'];
 
 export function encodeRetainCursor(c: RetainFeedCursor): string {
   return JSON.stringify(c);
@@ -184,4 +184,38 @@ export function inRetainLegWindow(ts: string, id: string, w: RetainLegWindow | n
   if (w.includeTies) return true;
   if (w.tieIdAfter != null) return id > w.tieIdAfter;
   return false;
+}
+
+// ─── Row detail (WI-39534) ───────────────────────────────────────────────────
+
+/** Server-side clamp on a detail body/code excerpt. The full artifact stays one
+ *  click away on its own board; the detail aside is a preview, not a mirror. */
+export const RETAIN_DETAIL_BODY_MAX = 4000;
+
+/**
+ * One ledger row's expanded detail (learning.retainDetail, WI-39534) — ONE
+ * neutral shape for every kind so the client renders a single aside: prose in
+ * `body`, code in `code`, bullet lists (rubric criteria) in `listItems`, and
+ * provenance as label/value `fields` rows. `editable` marks the memory kind,
+ * whose body keeps the standalone pool's inline edit (WI-39535).
+ */
+export interface RetainDetail {
+  kind: RetainFeedKind;
+  id: string;
+  title: string;
+  status: string | null;
+  /** Last-activity instant (ISO) when the store carries one. */
+  ts: string | null;
+  /** Main prose (plan content, wi body, rubric/recipe description, runbook
+   *  excerpt, memory text). Clamped to RETAIN_DETAIL_BODY_MAX. */
+  body: string | null;
+  bodyTruncated: boolean;
+  /** Recipe rows: the script, clamped like `body`. */
+  code?: string;
+  /** Rubric rows: criterion labels. */
+  listItems?: string[];
+  /** Provenance / metadata rows, render-ready. */
+  fields: Array<{ label: string; value: string }>;
+  /** Memory rows: the body is editable in place (PATCH /api/user/memory). */
+  editable?: boolean;
 }
