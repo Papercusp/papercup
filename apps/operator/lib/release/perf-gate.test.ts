@@ -17,8 +17,19 @@ import type { PerfVerdict, PerfSignalsV1 } from '@papercusp/operator-core/lib/sy
 
 const NOW = Date.parse('2026-06-19T16:35:00Z');
 
-/** A PerfVerdict at `status` with `reasons`; other fields are irrelevant to the gate. */
-const verdict = (status: PerfVerdict['status'], reasons: string[] = []): PerfVerdict => ({
+/**
+ * A PerfVerdict at `status` with `reasons`; other fields are irrelevant to the gate.
+ *
+ * WI-38449 / D-007 F3: a `crit` defaults to ALL-OPERATOR-DEFECT attribution, so every
+ * pre-existing case in this file keeps asserting exactly what it always did (a crit
+ * that blocks when armed). Cases that care about attribution pass `attribution`
+ * explicitly — see the D-007 F3 describe block below.
+ */
+const verdict = (
+  status: PerfVerdict['status'],
+  reasons: string[] = [],
+  attribution?: PerfVerdict['critAttribution'],
+): PerfVerdict => ({
   status,
   degraded: status === 'crit',
   reasons,
@@ -30,6 +41,8 @@ const verdict = (status: PerfVerdict['status'], reasons: string[] = []): PerfVer
   operatorReachable: null,
   ageMs: null,
   stale: status === 'unknown',
+  critAttribution:
+    attribution ?? (status === 'crit' ? { operatorDefect: reasons, ambientHost: [] } : { operatorDefect: [], ambientHost: [] }),
 });
 
 const OFF: PerfGatePolicy = { enabled: false, block: false };
@@ -74,6 +87,104 @@ describe('evaluatePerfGate — pure decision', () => {
     expect(d.action).toBe('block');
     expect(d.summary).toContain('BLOCKED');
     expect(d.reasons).toEqual(['event-loop lag p95 1746ms ≥ 1000ms']);
+  });
+
+  describe('D-007 F3: a crit blocks only for reasons attributable to the OPERATOR', () => {
+    // The measured incident this exists for (2026-08-16): the live capture's ONLY crit
+    // reason was ambient RAM pressure from ~100 peer agents, and an armed gate returned
+    // `block` — holding every deploy for a condition no candidate caused and no release
+    // could fix.
+    const AMBIENT_REASON = 'PSI memory full avg60 11.45 ≥ 5 — all tasks stalled on memory reclaim/swap';
+    const DEFECT_REASON = 'operator :3070 unreachable';
+
+    const ambientOnly = () =>
+      verdict('crit', [AMBIENT_REASON], { operatorDefect: [], ambientHost: [AMBIENT_REASON] });
+
+    it('ARMED + ambient-only crit → warn, NOT block (the false-red this prevents)', () => {
+      const d = evaluatePerfGate(ambientOnly(), ARMED, 'cafebabe00');
+      expect(d.action).toBe('warn');
+      // Still a crit, still fully reported — this changes what BLOCKS, not what is SEEN.
+      expect(d.verdictStatus).toBe('crit');
+      expect(d.reasons).toEqual([AMBIENT_REASON]);
+    });
+
+    it('an armed gate that declines to block SAYS SO — silence here would be an invisible suppression channel', () => {
+      const d = evaluatePerfGate(ambientOnly(), ARMED);
+      expect(d.summary).toContain('AMBIENT HOST');
+      // It must NOT read as "not armed" — that is a different, misleading claim.
+      expect(d.summary).not.toContain('block-mode not armed');
+    });
+
+    it('ARMED + operator-defect crit → block (arming is now actually useful)', () => {
+      const d = evaluatePerfGate(
+        verdict('crit', [DEFECT_REASON], { operatorDefect: [DEFECT_REASON], ambientHost: [] }),
+        ARMED,
+      );
+      expect(d.action).toBe('block');
+      expect(d.summary).toContain('BLOCKED');
+      expect(d.summary).toContain('operator-defect');
+    });
+
+    it('DISCRIMINATION: identical reasons, only the attribution differs ⇒ opposite actions', () => {
+      // The single-field pair that proves the decision turns on attribution and not on
+      // reason text, count, or verdict tier — all of which are held constant here.
+      const reasons = ['some crit reason'];
+      const asDefect = evaluatePerfGate(
+        verdict('crit', reasons, { operatorDefect: reasons, ambientHost: [] }),
+        ARMED,
+      );
+      const asAmbient = evaluatePerfGate(
+        verdict('crit', reasons, { operatorDefect: [], ambientHost: reasons }),
+        ARMED,
+      );
+      expect(asDefect.action).toBe('block');
+      expect(asAmbient.action).toBe('warn');
+    });
+
+    it('a MIXED crit blocks on the operator-defect reason, and names the ambient one as non-blocking', () => {
+      const d = evaluatePerfGate(
+        verdict('crit', [DEFECT_REASON, AMBIENT_REASON], {
+          operatorDefect: [DEFECT_REASON],
+          ambientHost: [AMBIENT_REASON],
+        }),
+        ARMED,
+      );
+      expect(d.action).toBe('block');
+      expect(d.summary).toContain(DEFECT_REASON);
+      expect(d.summary).toContain('ambient (not blocking)');
+    });
+
+    it('an UNATTRIBUTED crit never blocks — an unclassified reason must not invent a deploy hold', () => {
+      const d = evaluatePerfGate(
+        verdict('crit', ['from some older code path'], { operatorDefect: [], ambientHost: [] }),
+        ARMED,
+      );
+      expect(d.action).toBe('warn');
+      expect(d.summary).toContain('NO attribution');
+    });
+
+    it('survives a verdict built before critAttribution existed (runtime, not just types)', () => {
+      // apps/operator is outside lint:tsc's scope and vitest does not typecheck, so a
+      // stale caller reaches this code as a RUNTIME shape, not a compile error. It must
+      // fail soft rather than throw on the destructure.
+      const stale = verdict('crit', ['event-loop lag p95 1746ms ≥ 1000ms']) as PerfVerdict;
+      delete (stale as Partial<PerfVerdict>).critAttribution;
+      const d = evaluatePerfGate(stale, ARMED);
+      expect(d.action).toBe('warn');
+      expect(d.verdictStatus).toBe('crit');
+    });
+
+    it('CALIBRATION: ambient-only still blocks NOTHING when the gate is merely disabled or unarmed', () => {
+      // Guards against a "passes for the wrong reason" reading of the cases above: if
+      // arming were broken outright, every negative here would also pass.
+      expect(evaluatePerfGate(ambientOnly(), OFF).action).toBe('pass');
+      expect(evaluatePerfGate(ambientOnly(), WARN_ONLY).action).toBe('warn');
+      // ...while a defect crit DOES flip to block the moment arming is turned on,
+      // proving arming itself works.
+      const defect = verdict('crit', [DEFECT_REASON], { operatorDefect: [DEFECT_REASON], ambientHost: [] });
+      expect(evaluatePerfGate(defect, WARN_ONLY).action).toBe('warn');
+      expect(evaluatePerfGate(defect, ARMED).action).toBe('block');
+    });
   });
 });
 
