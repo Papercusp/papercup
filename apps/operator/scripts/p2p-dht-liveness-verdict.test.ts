@@ -188,7 +188,11 @@ describe('judgeLivenessProbe — a wedged bootstrap is a FINDING, not an inconcl
     expect(v.message).toMatch(/EI-8892/);
   });
 
-  it('diagnoses a transmit-blocked ANNOUNCING host rather than blaming the bootstrap', () => {
+  it('does NOT accuse the announcing host when nothing corroborates the bootstrap', () => {
+    // Regression guard, caught live: pointing the probe at a DEAD PORT produced
+    // identical counters and it confidently blamed a perfectly healthy host's
+    // transmit path. One vantage point cannot separate those two causes, so the
+    // verdict must name both and hand over the probe that settles it.
     const v = judgeLivenessProbe({
       scope: 'local-only',
       serverLegLaunched: true,
@@ -196,10 +200,24 @@ describe('judgeLivenessProbe — a wedged bootstrap is a FINDING, not an inconcl
       serverCounters: p302Counters,
     });
     expect(v.level).toBe('fail');
+    expect(v.code).toBe('bootstrap-silent');
+    expect(v.code).not.toBe('tx-blocked');
+    expect(v.message).toMatch(/nothing is listening at that address/);
+    expect(v.message).toMatch(/DISCRIMINATOR/);
+    expect(v.message).toMatch(/positive control/);
+  });
+
+  it('DOES accuse the announcing host once a second vantage point proves the bootstrap alive', () => {
+    const v = judgeLivenessProbe({
+      scope: 'local-only',
+      serverLegLaunched: true,
+      serverAnnounced: false,
+      serverCounters: p302Counters,
+      bootstrapProvenReachable: true,
+    });
     expect(v.code).toBe('tx-blocked');
-    // Whichever side is broken, the diagnosis must name that side.
-    expect(v.message).toMatch(/ANNOUNCING host/);
-    expect(v.message).toMatch(/NOT the bootstrap/);
+    expect(v.message).toMatch(/announcing host's outbound path is BLOCKED/);
+    expect(v.message).toMatch(/bootstrap is alive and this host is the fault/);
   });
 
   it('a server leg that never STARTED stays inconclusive — a harness fault is not a DHT verdict', () => {
@@ -230,7 +248,9 @@ describe('judgeLivenessProbe — a wedged bootstrap is a FINDING, not an inconcl
 });
 
 describe('judgeLivenessProbe — TX/RX asymmetry is diagnosed, not lumped into a timeout', () => {
-  it('names the transmit-blocked signature instead of blaming the bootstrap', () => {
+  it('names the transmit-blocked signature on the DIALLING host (the live P-302 shape)', () => {
+    // This is the real rig: the tower announced fine (so the bootstrap answers),
+    // while the Mac sent 918 requests, got 0 back, and still answered inbound.
     const v = judgeLivenessProbe({
       ...crossHostOk,
       connectedPeerKeys: [],
@@ -240,9 +260,10 @@ describe('judgeLivenessProbe — TX/RX asymmetry is diagnosed, not lumped into a
     expect(v.level).toBe('fail');
     expect(v.code).toBe('tx-blocked');
     // The diagnosis must travel with the verdict — no other layer reports it.
+    expect(v.message).toMatch(/dialling host/);
     expect(v.message).toMatch(/ANSWERING inbound/);
     expect(v.message).toMatch(/Local Network/);
-    expect(v.message).toMatch(/NOT a wedged bootstrap/);
+    expect(v.message).toMatch(/bootstrap is alive/);
   });
 
   it('a plain no-connection is reported as such, not as tx-blocked', () => {
