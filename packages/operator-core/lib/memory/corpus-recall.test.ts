@@ -308,10 +308,15 @@ describe('selectCorpusLines', () => {
       queryText: QUERY,
       excludeSessionIds: new Set<string>(),
     });
+    // Order is WI-6512-first (not fused-input order) because of the WI-9592 kind
+    // tiebreak below — all three tie on agreement (one 'bm25' ranker each), and a
+    // work-item now outranks a session at equal agreement. What this CONTROL
+    // actually calibrates — that an empty exclusion set admits every hit and
+    // drops none as self-session — is unaffected by which order they admit in.
     expect(lines.map((l) => l.handle.ref)).toEqual([
+      'WI-6512',
       'claude:sess-live',
       'claude:sess-prior',
-      'WI-6512',
     ]);
     expect(dropped.filter((d) => d.reason === 'self-session')).toEqual([]);
   });
@@ -428,6 +433,37 @@ describe('selectCorpusLines', () => {
       maxItems: 2,
     });
     expect(lines.map((l) => l.handle.ref)).toEqual(['WI-202', 'WI-201']);
+  });
+
+  // WI-9592 direction 2 (built now that WI-9273 — the reach redesign D-069
+  // deferred to — is done): at EQUAL retrieval agreement, a work-item outranks
+  // a session, so peer restatements crowding the fused order ahead of it (the
+  // turn-63 shape D-069 measured live) don't shut it out of the cap.
+  it('prefers a work-item over a session at equal agreement, even when it was fused BEHIND them', () => {
+    const { lines } = selectCorpusLines({
+      hits: [
+        turn({ sourceId: 'claude:sess-a:1' }),
+        turn({ sourceId: 'claude:sess-b:1' }),
+        turn({ sourceId: 'claude:sess-c:1' }),
+        wi({ sourceId: 'WI-6512' }),
+      ],
+      queryText: QUERY,
+      maxItems: 3,
+    });
+    expect(lines.map((l) => l.handle.ref)).toEqual([
+      'WI-6512',
+      'claude:sess-a',
+      'claude:sess-b',
+    ]);
+  });
+
+  it('still breaks a same-kind tie by fused rank, kind tiebreak aside', () => {
+    const { lines } = selectCorpusLines({
+      hits: [wi({ sourceId: 'WI-301' }), wi({ sourceId: 'WI-302' })],
+      queryText: QUERY,
+      maxItems: 1,
+    });
+    expect(lines.map((l) => l.handle.ref)).toEqual(['WI-301']);
   });
 
   // P-009. `applyRecencyRerank` appends 'recency' to the rankers of every hit that

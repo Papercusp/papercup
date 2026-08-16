@@ -587,6 +587,29 @@ function retrievalAgreement(hit: CorpusHit): number {
 }
 
 /**
+ * Kind-aware tiebreak (WI-9592 direction 2, built now that WI-9273 — the
+ * upstream reach redesign this item's own D-069 measurement deferred to —
+ * is done).
+ *
+ * D-069 measured the ceiling of this exact layer (filter → order → cut-at-six)
+ * at 2/7 known-item batches: 5 of 7 are unreachable by ANY selection policy
+ * (3 absent from the corpus at any depth, 2 sitting past the ~24-candidate
+ * over-fetch pool), so a ranking change here can only ever move the 2
+ * order-blocked batches — never the other 5. Within that narrow, bounded
+ * scope it is a genuine, cheap win: a `work-item` is the durable, curated
+ * artifact this leg exists to surface, while a `session` line is one agent's
+ * restatement of it — on a fleet this size, restatements vastly outnumber
+ * artifacts and, per D-069's own measurement, the SEMANTIC ranker actively
+ * prefers them (a turn *discussing* a topic sits nearer a query about that
+ * topic than the terse work-item record, while sharing fewer exact terms).
+ * So at equal retrieval agreement, a work-item outranks a session — never
+ * touching the score/fusion, only the final within-tier order. PURE.
+ */
+function corpusHitKindRank(hit: CorpusHit): number {
+  return hit.source === 'work_item' ? 0 : 1;
+}
+
+/**
  * Select which corpus hits reach the turn, in order:
  *   1. SELF-SESSION — drop the caller's OWN turns, across its whole owner
  *                     chain (see SelectCorpusInput.excludeSessionIds);
@@ -597,8 +620,10 @@ function retrievalAgreement(hit: CorpusHit): number {
  *   5. NOVELTY      — drop refs the agent already carries;
  *   6. CAP + BUDGET — best-ranked first, up to maxItems and budgetChars.
  * Every drop is recorded with its reason. Input order is treated as relevance
- * order (the engine already fused + sorted); ties break toward multi-ranker
- * agreement, which is the one scale-free quality signal available. PURE.
+ * order (the engine already fused + sorted); ties break first toward
+ * multi-ranker agreement (the one scale-free quality signal available), then
+ * toward kind — a work-item outranks a session at equal agreement, per
+ * `corpusHitKindRank`'s D-069/WI-9592 rationale — then toward fused rank. PURE.
  */
 export function selectCorpusLines(input: SelectCorpusInput): SelectCorpusResult {
   const maxItems = input.maxItems ?? CORPUS_MAX_ITEMS;
@@ -649,6 +674,8 @@ export function selectCorpusLines(input: SelectCorpusInput): SelectCorpusResult 
   const ordered = [...byRef.entries()].sort((a, b) => {
     const agree = retrievalAgreement(b[1].hit) - retrievalAgreement(a[1].hit);
     if (agree !== 0) return agree;
+    const kind = corpusHitKindRank(a[1].hit) - corpusHitKindRank(b[1].hit);
+    if (kind !== 0) return kind;
     return a[1].rank - b[1].rank;
   });
 
