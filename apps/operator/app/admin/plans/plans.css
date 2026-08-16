@@ -3932,8 +3932,25 @@
 .pc-plans__main .pc-plan-editor:has(.pc-md-preview) {
   flex: 0 0 auto;
 }
+/* The rule above releases the HEIGHT, and it does so on the two COLUMN flex
+   containers — which is the only axis `flex` controls there. This element is
+   different, and the difference is the whole bug (WI-39422): the preview's
+   parent is `.pc-plan-document__body`, a ROW flex container (it lays the
+   outline panel beside the preview), so `flex` HERE sizes WIDTH. `flex: 0 0
+   auto` therefore pinned the preview to its max-content width — measured live
+   in PlanPopupModal at 26,057px inside a 1,036px column — and plan text ran
+   past the popup's right edge. Only `flex-basis`/`shrink` are corrected below;
+   `overflow: visible` stays, because THAT is what hands vertical scrolling to
+   the `.pc-plans__main` ancestor per D-007 above.
+   `min-width: 0` defeats the flex item's automatic minimum size, without which
+   one long unbreakable token (an absolute path, an EI- id, a sha) re-inflates
+   the column and the bug returns in a subtler form.
+   Net effect: restores exactly what PlanDocumentView declares for
+   `.pc-plan-document__preview` (`flex: 1 1 auto; min-width: 0`), which this
+   higher-specificity selector had been overriding by accident. */
 .pc-plans__main .pc-plan-editor .pc-md-preview {
-  flex: 0 0 auto;
+  flex: 1 1 auto;
+  min-width: 0;
   overflow: visible;
 }
 
