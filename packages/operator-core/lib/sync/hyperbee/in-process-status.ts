@@ -98,6 +98,24 @@ export interface InProcessSubstrateStatus {
    * the sidecar (read it via the `getReplicationLiveness` RPC method there).
    */
   replicationLiveness: HarnessReplicationLiveness[];
+  /**
+   * EI-20575137548097507: did THIS process actually measure the process-local
+   * health inputs (`replicationLiveness`, `logStats`, own-log-fork) for the
+   * harnesses reported above?
+   *
+   * `reachedSubstrateOwner` does NOT answer this and must not be read as if it
+   * did: it is `true` on the owner path AND on the cached-snapshot path (see
+   * `resolveEffectiveBootedHandles`), because it attests only that the BOOTED
+   * HANDLE LIST was obtained — never that anything here could be assessed.
+   * Conflating the two is what let a worker report "97/97 healthy, no issues
+   * detected" while the replication-liveness detector was concurrently filing a
+   * major stall EI for one of those very harnesses.
+   *
+   * `false` ⇒ `replicationLiveness` and `logStats` below are empty because they
+   * were UNMEASURABLE here, not because there was nothing to report, and every
+   * per-harness verdict carries a matching 'degraded' + reason.
+   */
+  healthInputsObserved: boolean;
 }
 
 export interface GetInProcessStatusOpts {
@@ -309,6 +327,14 @@ export function getInProcessSubstrateStatus(
       })(),
       // P-003 (WI-3535): a forked own-log flips to 'unhealthy' — local writes blocked.
       ownLogFork: ownLogFork.forked ? { forked: true, detail: ownLogFork.detail ?? undefined } : undefined,
+      // EI-20575137548097507: `replicationLiveness`, `ownLogFork` and the log
+      // stats above are all read from THIS process's module-scope state, while
+      // `booted` may have come from a node:cluster IPC snapshot or the PG
+      // fallback. When we are not the substrate owner those local maps are
+      // empty BY CONSTRUCTION, so the joins above miss for every harness and
+      // each input arrives at the assessor as `undefined` — indistinguishable
+      // from "measured, nothing to report". Say which it is.
+      healthInputsObservable: isSubstrateOwner,
       // WI-899 (A): a confirmed-dead sidecar overrides everything above.
       sidecarLive,
       // WI-5777: a stale isolated-DHT liveness probe degrades this harness's
@@ -338,5 +364,9 @@ export function getInProcessSubstrateStatus(
     replicationLiveness,
     // EI-8816: explicit blind-spot marker — see resolveEffectiveBootedHandles above.
     reachedSubstrateOwner,
+    // EI-20575137548097507: the SECOND blind-spot marker, and deliberately NOT
+    // derived from `reachedSubstrateOwner` — that one goes true on the cached
+    // path too, which is precisely how an unmeasured worker read as healthy.
+    healthInputsObserved: isSubstrateOwner,
   };
 }
