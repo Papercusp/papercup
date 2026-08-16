@@ -833,8 +833,9 @@ export function runEmbedSidecarServer(): void {
     // Await the SAME explicit teardown the module's own doc tells ad-hoc
     // scripts to call before their `process.exit()` — best-effort: a stuck
     // worker must never block a graceful shutdown indefinitely.
-    void Promise.allSettled([shutdownLocalEmbedder(), shutdownLocalReranker()])
-      .then(() => handle.close())
+    void handle
+      .close()
+      .then(() => Promise.allSettled([shutdownLocalEmbedder(), shutdownLocalReranker()]))
       .then(() => process.exit(0));
   };
   process.on('SIGTERM', () => shutdown('SIGTERM'));
