@@ -1516,6 +1516,22 @@ export const FLAGS = {
   // DEFAULT ON. OFF = the kill-switch: the timer still ticks but every sweep
   // no-ops before reading the journal.
   SERVICE_RESTART_RATE_WATCHDOG: "papercusp-service-restart-rate-watchdog",
+  // system-notices-on-its-own-2026-08-16 P-001: gates the GOAL-liveness watchdog
+  // — a system-health sweep that joins active harness_shared.goals against their
+  // agent_modes goal-mode holders and the shared liveness oracle, opening ONE
+  // deduped escalation per goal that is `active` with nobody actually working it.
+  // Every layer BELOW goal was already watched (engine loops, cadence drift, idle
+  // sessions, MCP-dark, supervision units, cgroups, green-stall, git-sync-stall);
+  // GOAL — the layer the product is organized around since mug/kettle/cup was
+  // retired in its favor — had nothing, and `routines:list { q:'goal' }` returned
+  // zero rows. Measured on 2026-08-16 the moment the sweep was written: 4 of 6
+  // active goals in papercusp-workspace had a stale goal-mode row and NO live
+  // holder, two of them real product goals dark since 08-11 and 08-14. An
+  // agent_modes row is a plain DB row that OUTLIVES the session that wrote it, so
+  // "holders: 1" reads as healthy for a goal nobody has touched in five days.
+  // DEFAULT ON. OFF = the kill-switch: the timer still ticks but every sweep
+  // no-ops before reading the goals table.
+  GOAL_LIVENESS_WATCHDOG: "papercusp-goal-liveness-watchdog",
   // deterministic-context-carry P-019 (D-010 live leg 2): gates the residual
   // carry SAMPLER — at each REAL compaction boundary the gateway's deterministic
   // maintenance-carry branch serves, fire-and-forget one reserved-lane residual

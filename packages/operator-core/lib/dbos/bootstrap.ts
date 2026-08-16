@@ -484,6 +484,20 @@ export async function startDbos(): Promise<void> {
     // recovery logic. Kill-switch: PAPERCUSP_DBOS_HANG_WATCHDOG='0'.
     const { startDbosHangWatchdog } = await import('./dbos-hang-watchdog');
     startDbosHangWatchdog(getOrgPg().sql);
+    // system-notices-on-its-own-2026-08-16 P-001: alarm on a status='active' goal
+    // that nobody is working. The GOAL layer had NO detector at all — every layer
+    // below it was watched — and on 2026-08-16, 4 of 6 active goals had a stale
+    // agent_modes holder row and no live session behind it (two of them real
+    // product goals, dark 2-5 days). Deliberately a process-level timer rather
+    // than anything an agent must claim: the sibling failure it answers
+    // (blender-steward-heartbeat D-005) is a recovery mechanism that could not run
+    // during the outage it targeted, because its runs execute by claiming a
+    // work-item and nobody was alive to claim one. Runtime gate:
+    // FLAGS.GOAL_LIVENESS_WATCHDOG (default ON), checked per tick.
+    const { startGoalLivenessWatchdog } = await import(
+      '../system-health/goal-liveness-watchdog'
+    );
+    startGoalLivenessWatchdog(getOrgPg().sql);
   } catch (e) {
     console.warn('[stall-watchdog] failed to start (non-fatal):', e instanceof Error ? e.message : e);
   }
