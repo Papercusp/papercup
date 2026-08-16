@@ -169,6 +169,63 @@ describe('judgeLivenessProbe — fail closed', () => {
   });
 });
 
+describe('judgeLivenessProbe — a wedged bootstrap is a FINDING, not an inconclusive', () => {
+  it('an announce that never flushed is FAIL (the EI-8892 silent-wedge class)', () => {
+    const v = judgeLivenessProbe({
+      scope: 'local-only',
+      serverLegLaunched: true,
+      serverAnnounced: false,
+      serverCounters: { routingTableSize: 2, requestsTotal: 30, responses: 25, timeouts: 5 },
+    });
+    // Reporting a real, actionable wedge as "I could not tell" is the same
+    // misdiagnosis class that made P-302 expensive — it must be FAIL.
+    expect(v.level).toBe('fail');
+    expect(v.code).toBe('announce-timeout');
+    expect(v.exitCode).toBe(EXIT.FAIL);
+    expect(v.message).toMatch(/EI-8892/);
+  });
+
+  it('diagnoses a transmit-blocked ANNOUNCING host rather than blaming the bootstrap', () => {
+    const v = judgeLivenessProbe({
+      scope: 'local-only',
+      serverLegLaunched: true,
+      serverAnnounced: false,
+      serverCounters: p302Counters,
+    });
+    expect(v.level).toBe('fail');
+    expect(v.code).toBe('tx-blocked');
+    // Whichever side is broken, the diagnosis must name that side.
+    expect(v.message).toMatch(/ANNOUNCING host/);
+    expect(v.message).toMatch(/NOT the bootstrap/);
+  });
+
+  it('a server leg that never STARTED stays inconclusive — a harness fault is not a DHT verdict', () => {
+    const v = judgeLivenessProbe({
+      scope: 'local-only',
+      serverLegLaunched: false,
+      serverLegError: 'Cannot find module hyperswarm',
+    });
+    expect(v.level).toBe('unknown');
+    expect(v.code).toBe('server-leg-unavailable');
+    expect(v.exitCode).toBe(EXIT.INCONCLUSIVE);
+    expect(v.message).toMatch(/not a DHT verdict/);
+  });
+
+  it('a bootstrap failure outranks an unrunnable remote leg — report the finding, not the gap', () => {
+    const v = judgeLivenessProbe({
+      scope: 'cross-host',
+      remoteConfigured: true,
+      remoteLegLaunched: false,
+      remoteLegError: 'ssh died',
+      serverLegLaunched: true,
+      serverAnnounced: false,
+      serverCounters: { routingTableSize: 1, requestsTotal: 9, responses: 8, timeouts: 1 },
+    });
+    expect(v.code).toBe('announce-timeout');
+    expect(v.level).toBe('fail');
+  });
+});
+
 describe('judgeLivenessProbe — TX/RX asymmetry is diagnosed, not lumped into a timeout', () => {
   it('names the transmit-blocked signature instead of blaming the bootstrap', () => {
     const v = judgeLivenessProbe({

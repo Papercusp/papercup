@@ -488,18 +488,39 @@ async function orchestrate(cfg) {
   );
 
   try {
-    const ok = await announced;
-    if (!ok || !serverKey) {
-      // The LOCAL server could not even announce. That is a real bootstrap
-      // signal, not an inconclusive one — but it is judged as "never announced"
-      // so nobody reads it as a peer-reachability result.
+    // Race the announce against the server process DYING: a leg that crashed on
+    // startup (missing native module, bad runtime) is a harness fault, while a
+    // leg that ran and could not announce is a real finding about the DHT path.
+    // Collapsing those two into one "no key" branch is what produced a wedged
+    // bootstrap being reported as INCONCLUSIVE.
+    const outcome = await Promise.race([
+      announced,
+      server.done.then((r) => ({ died: r })),
+    ]);
+
+    if (typeof outcome === 'object' && outcome?.died) {
+      const r = outcome.died;
       const v = judgeLivenessProbe({
         scope: wantCrossHost ? 'cross-host' : 'local-only',
         remoteConfigured: Boolean(remoteHost),
-        remoteLegLaunched: true,
-        expectedRemoteKey: null,
+        serverLegLaunched: false,
+        serverLegError: r.spawnError
+          ? `server leg could not start: ${r.spawnError}`
+          : `server leg exited ${r.code} before announcing: ${(r.errTail || '').trim().slice(-300) || 'no stderr'}`,
       });
-      report(cfg, v, { serverKey, note: 'the local server leg never completed its announce — bootstrap is not acking join/lookup' });
+      report(cfg, v, { serverKey });
+      process.exit(v.exitCode);
+    }
+
+    if (outcome !== 'announced' || !serverKey) {
+      const v = judgeLivenessProbe({
+        scope: wantCrossHost ? 'cross-host' : 'local-only',
+        remoteConfigured: Boolean(remoteHost),
+        serverLegLaunched: true,
+        serverAnnounced: false,
+        serverCounters,
+      });
+      report(cfg, v, { serverKey, serverHostname, counters: serverCounters });
       process.exit(v.exitCode);
     }
 
