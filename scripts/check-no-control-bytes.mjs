@@ -55,7 +55,29 @@ export const ALLOW_PREFIXES = [
   // tables are the bulk of it). It is regenerated wholesale by the desktop build, so
   // editing it is pointless and it is not hand-authored source.
   'papercusp-desktop/src-tauri/env-sidecars/',
+  // WI-39392: the docs build also mirrors pagefind to `public/docs/pagefind/`, not only to
+  // `public/internal/docs/pagefind/` above. Both copies are the SAME wholesale-regenerated
+  // upstream artifact with the same raw \x01/\x02 highlight sentinels; only one path was
+  // ever allowed, so the second copy red-pinned the fleet gate the moment a docs build
+  // produced it. Keep the two prefixes adjacent — if the mirror target moves again, this
+  // is the list that has to move with it.
+  'apps/operator/public/docs/pagefind/',
 ];
+
+/**
+ * Vendored dependency trees are never hand-authored source.
+ *
+ * `git ls-files --recurse-submodules` walks INTO submodules, and several of them track
+ * their own `node_modules/` (measured: 762 tracked files under a `node_modules/` segment).
+ * Minified dependency bundles legitimately carry raw \x01-\x1f inside string tables — so
+ * scanning them turns a guard about OUR source into a guard about our dependencies'
+ * build output, which nobody can act on: the remedy this script prints ("write the
+ * character as an escape") is impossible in a file that is reinstalled wholesale by npm.
+ * Excluded as a SEGMENT rather than a prefix so it holds at any depth, in any submodule.
+ */
+function isVendoredDependencyPath(file) {
+  return file === 'node_modules' || file.startsWith('node_modules/') || file.includes('/node_modules/');
+}
 
 export function isForbiddenControlByte(byte) {
   return byte === 0 || (byte >= 1 && byte <= 8) || byte === 0x0b || byte === 0x0c || (byte >= 0x0e && byte <= 0x1f);
