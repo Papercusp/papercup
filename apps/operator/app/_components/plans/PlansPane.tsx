@@ -68,10 +68,20 @@ export const STALE_MS = 14 * 24 * 60 * 60 * 1000;
  * Drawn to lucide's own contract (24×24, fill:none, stroke:currentColor,
  * width 2, round cap/join) so it inherits sizing + colour exactly like the
  * `Archive`/`ClipboardList` icons beside it and needs no special-casing.
- * Deliberately only four strokes — lid, tapered jar, motor base, feet: the
- * silhouette has to survive at ~13px, where a blade//button detail turns to mud.
+ *
+ * The four strokes are lid / tapered jar / HANDLE / flared motor base, and each
+ * earned its place by being rendered and looked at rather than reasoned about:
+ *   - an earlier draft tapered straight into a narrow base and read as a FUNNEL,
+ *     because the silhouette ran wide→narrow→narrower. A blender's profile is
+ *     wide jar → waist → WIDER squat base, so the flare is what says "appliance";
+ *   - without the handle the flared version still read as a cocktail shaker or a
+ *     trophy. The handle is the single cue that makes it a jug, and a jug on a
+ *     motor base is unambiguously a blender.
+ * Size defaults to 16, not the 13 of the first cut: rasterised at 13 the handle
+ * collapsed into a two-pixel blob. 16 is the smallest size at which all three
+ * cues survive, and it serves the "hard to miss" ask at the same time.
  */
-function BlenderIcon({ size = 13 }: { size?: number }) {
+function BlenderIcon({ size = 16 }: { size?: number }) {
   return (
     <svg
       width={size}
@@ -84,10 +94,10 @@ function BlenderIcon({ size = 13 }: { size?: number }) {
       strokeLinejoin="round"
       aria-hidden="true"
     >
-      <path d="M6 3h12" />
-      <path d="M7.5 3 9 13h6l1.5-10" />
-      <path d="M9 13v4.5a2 2 0 0 0 2 2h2a2 2 0 0 0 2-2V13" />
-      <path d="M10.5 19.5V21h3v-1.5" />
+      <path d="M4.5 3h12" />
+      <path d="M6 3 7.5 13h6L15 3" />
+      <path d="M15.5 4.5a3 3 0 0 1 0 6" />
+      <path d="M6.5 13h8v3.5a2.5 2.5 0 0 1-2.5 2.5H9a2.5 2.5 0 0 1-2.5-2.5z" />
     </svg>
   );
 }
