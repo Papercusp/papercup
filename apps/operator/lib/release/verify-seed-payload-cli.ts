@@ -22,11 +22,23 @@
  * of hiding behind an opt-in flag — a Tauri build takes minutes, and a correctness check
  * nobody enables is not a check.
  *
+ * IT NOW CARRIES THREE LEGS, all of the same class: each was a guard whose ONLY production
+ * caller was `cut-seed-cli`, so each ran only when a cut ran — on a build path that skips the
+ * cut by design. Putting them here puts them on the path that actually ships.
+ *   1. payload integrity  — does the manifest describe the bytes? (judgeSeedPayloadIntegrity)
+ *   2. degradation        — is a sparse label honest?            (assertSeedNotDegraded)
+ *   3. build-box identity — do the bytes carry the builder's username / home / hostname /
+ *                           git email?                            (judgeSeedIdentity)
+ * Measured on the real ~475MB seed: ~1.1s + ~1.8s. Cheap enough that all three run
+ * unconditionally — a correctness check nobody enables is not a check.
+ *
  * EXIT CODES — three-way ON PURPOSE, and the third is the point:
- *   0  payload matches the manifest — safe to treat the committed seed as usable.
- *   1  MISMATCH — the manifest does not describe these bytes. NOT usable.
- *   2  COULD NOT DETERMINE — no manifest, unreadable manifest, or the verifier itself
- *      failed to run (missing deps, not a full checkout, a VM leg).
+ *   0  every leg passed — safe to treat the committed seed as usable.
+ *   1  BROKEN — a leg returned a verdict of NOT SHIPPABLE (payload does not match the
+ *      manifest, a dishonest sparse label, or the bytes carry the build box's identity).
+ *   2  COULD NOT DETERMINE — no manifest, unreadable manifest, the verifier itself failed to
+ *      run (missing deps, not a full checkout, a VM leg), or the identity leg cannot prove
+ *      cleanliness because it is inside the neutralized UTS namespace with no real hostname.
  *
  * Exit 2 exists so a caller can never read "I could not check" as "it is fine" — the exact
  * false-absence trap that lets a broken artifact through. A caller that collapses 2 into 0
