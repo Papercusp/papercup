@@ -50,18 +50,38 @@ import { checkPlanStartable } from './plan-start-gate';
 import { mugKettleSystemEnabled } from '../../pot/started';
 import { bulkContent, mergeIds, runBulk } from '../_bulk';
 
+/** Boolean that also accepts the exact wire strings 'true'/'false' — same
+ * EI-302 manifest-pinned-schema tolerance as plans:new's `force`. */
+const stringTolerantBool = z.preprocess(
+  (v) => (v === 'true' ? true : v === 'false' ? false : v),
+  z.boolean(),
+);
+
 const argsSchema = z.object({
   slug: z.string().min(1).optional().describe('Plan slug to start (filename without .md).'),
   slugs: z.array(z.string().min(1)).min(1).max(200).optional().describe('Plan slugs to start in one call.'),
+  consulted: stringTolerantBool
+    .optional()
+    .describe(
+      'Answer to a `consult_available` refusal (P-010 checkpoint consult). Pass true after actually consulting a listed candidate (name the consult in consult_reason), or false + consult_reason to proceed WITHOUT consulting (the reason is recorded). Omit on a first call — the checkpoint routing runs then. Applies to every slug in a bulk call. Accepts the wire strings "true"/"false" too.',
+    ),
+  consult_reason: z
+    .string()
+    .min(1)
+    .max(2000)
+    .optional()
+    .describe('Why you are overriding (consulted: false) or what the consult concluded (consulted: true). Recorded.'),
   harness: harnessArg,
 }).refine((a) => Boolean(a.slug) || (a.slugs?.length ?? 0) > 0, {
   message: 'pass `slug` or `slugs`',
+}).refine((a) => a.consulted !== false || Boolean(a.consult_reason), {
+  message: 'consulted: false requires consult_reason — state why you are proceeding without consulting (it is recorded)',
 });
 
 export default defineTool({
   name: 'plans:start',
   description:
-    "Approve a plan and start its item-promotion path. Starting IS the approval signal — a draft plan is auto-advanced to 'ready'. Re-starting is a no-op. The retired op_status axis is never written (P-068 deleted the flag).",
+    "Approve a plan and start its item-promotion path. Starting IS the approval signal — a draft plan is auto-advanced to 'ready'. Re-starting is a no-op. The retired op_status axis is never written (P-068 deleted the flag). Runs the plan-start CHECKPOINT consult (P-010): the plan body is routed through the relevance router; an above-floor live peer nudge-refuses once with `consult_available` + candidates (override: consulted + consult_reason).",
   guidance: {
     when: 'An agent is asked to begin work on a specific plan — this starts its item-promotion path into work-items.',
     notWhen:
@@ -149,6 +169,105 @@ export default defineTool({
           ctxAny.metadata?.({ slug, harnessSlug, refused: gate.refusal.code });
           // The refusal already carries `slug`; only harnessSlug is additive here.
           return { ok: false as const, harnessSlug, ...gate.refusal };
+        }
+
+        // P-010 (get-feedback-relevance-consults-2026-08-16 / D-006): the
+        // plan-start CHECKPOINT consult. The ROUTING is mandatory (the plan
+        // body is the system-authored query); a wake is not. Below the floor
+        // the start proceeds silently; above it, a live/parked candidate
+        // nudge-refuses ONCE (override: consulted:false + consult_reason —
+        // the similar_exists/force shape), and an all-dead candidate set
+        // injects transcript excerpts instead (retrieval, not consult).
+        // NUDGE, never a hard block: any router/infra fault proceeds.
+        let checkpointConsult: Record<string, unknown> | undefined;
+        if (args.consulted !== undefined) {
+          // Override / acknowledgement path: routing already ran on the
+          // refused call — record the caller's disposition durably (the
+          // tool_invocations ledger via ctx.metadata + the result) and start.
+          checkpointConsult = {
+            overridden: true,
+            consulted: args.consulted,
+            ...(args.consult_reason ? { reason: args.consult_reason } : {}),
+          };
+          ctxAny.metadata?.({
+            slug,
+            harnessSlug,
+            consultOverride: args.consulted,
+            ...(args.consult_reason ? { consultReason: args.consult_reason } : {}),
+          });
+        } else if (read?.row.content) {
+          try {
+            const [
+              { getOrgPg },
+              { routeConsult },
+              { buildQueryEmbedder },
+              { resolveSessionStates },
+              consult,
+              { resolveAgentIdentity },
+            ] = await Promise.all([
+              import('@papercusp/db-org'),
+              import('../../consult/relevance-router'),
+              import('../search/embedder'),
+              import('../coordination/liveness-oracle'),
+              import('../../consult/plan-start-consult'),
+              import('../coordination/identity'),
+            ]);
+            const embed = await buildQueryEmbedder();
+            const outcome = await consult.planStartConsult(
+              {
+                workspaceId: startWorkspaceId,
+                requesterId: resolveAgentIdentity(ctx).ownerId,
+                planSlug: slug,
+                planContent: read.row.content,
+              },
+              {
+                route: (params) =>
+                  routeConsult(params, {
+                    getSql: () => getOrgPg().sql,
+                    embed,
+                    getLiveness: async (ownerIds) => {
+                      const verdicts = await resolveSessionStates(
+                        ownerIds.map((ownerId) => ({ ownerId })),
+                        { hydratePerId: true },
+                      );
+                      return Object.fromEntries(
+                        [...verdicts.values()].map((v) => [v.ownerId, v.sessionState]),
+                      );
+                    },
+                  }),
+                getExcerpts: (refs) => consult.fetchTurnExcerpts(getOrgPg().sql, startWorkspaceId, refs),
+              },
+            );
+            ctxAny.metadata?.({ slug, harnessSlug, checkpointConsult: outcome.outcome });
+            if (outcome.outcome === 'nudge') {
+              return {
+                ok: false as const,
+                slug,
+                harnessSlug,
+                error: 'consult_available' as const,
+                candidates: outcome.candidates,
+                hint:
+                  'Qualified peers have relevant transcript history for this plan — the relevance router routed the PLAN BODY above its precision floor (a wrong plan assumption multiplies across every promoted item, so this is the cheapest moment to check it). ' +
+                  'Review the candidates + their evidence turns; a live/parked candidate is reachable via get_feedback { question } (bounded consult thread). ' +
+                  'Then re-call plans:start with consulted: true (+ consult_reason naming what the consult concluded), or consulted: false + consult_reason to proceed without consulting — the override always works; this is a nudge, never a gate.',
+              };
+            }
+            if (outcome.outcome === 'proceed_with_excerpts') {
+              checkpointConsult = {
+                verdict: 'routed_dead_context',
+                note:
+                  'The router found above-floor peer history for this plan, but every candidate context is dead — no wake is possible, so their matched transcript excerpts are injected here instead (retrieval, not consult). Read them before fanning out.',
+                candidates: outcome.candidates.map((c) => ({
+                  ownerId: c.ownerId,
+                  score: c.score,
+                  liveness: c.liveness,
+                })),
+                excerpts: outcome.excerpts,
+              };
+            }
+          } catch {
+            /* nudge, never block — a router/infra fault must not stop a start */
+          }
         }
 
         // P-047 / D-010: the op_status axis retires with the Mug/Kettle tier.
@@ -282,6 +401,7 @@ export default defineTool({
           autoApproved,
           transitioned,
           previousOpStatus: row?.prev_op_status ?? null,
+          ...(checkpointConsult ? { checkpointConsult } : {}),
           ...(axisLive
             ? {}
             : {
