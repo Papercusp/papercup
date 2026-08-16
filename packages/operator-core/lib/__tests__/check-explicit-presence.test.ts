@@ -222,3 +222,152 @@ describe('explicit-presence is ENFORCED, not merely available (WI-5977)', () => 
     });
   });
 });
+
+/**
+ * EI-20609643000161171. The ALLOW set used to be keyed on `path:line` alone, and the two legs
+ * of this script contradicted each other about what drift meant. The stale-entry detector was
+ * advisory and said so in a comment ("a drifted entry must not red the gate leg, because the
+ * correct response is re-triaging the moved line") — but drift does not merely orphan an entry,
+ * it UN-SUPPRESSES the violation the entry was hiding, which raised `candidates.length`, which
+ * is exactly what the ratchet compares against the baseline. So the one condition the author
+ * said must stay advisory was the one that reliably went red, fleet-wide (the guard is in
+ * REPO_WIDE_INVARIANT_GUARDS, so it attaches to every affected-tests run), and it landed on
+ * whoever ran the gate next rather than on the editor who moved the line. Observed twice in one
+ * morning on the same entry: coord-invariant-actions.ts 1410 → 1470 → 1527.
+ *
+ * The fix keys suppression on CONTENT. These lock both halves of it: that drift no longer moves
+ * the count, and — the control that matters — that content-keying did not open the
+ * over-suppression hole it obviously could have, where an unremarkable line like `del.count ?? 0`
+ * silently absorbs a genuinely NEW violation elsewhere in the same file.
+ */
+describe('applyAllowlist: drift is advisory, and content-keying does not over-suppress', () => {
+  const FILE = 'packages/operator-core/lib/a.ts';
+  const OTHER = 'packages/operator-core/lib/b.ts';
+  const DEL = 'const n = del.count ?? 0;';
+  const hit = (line: number, snippet: string) => ({ line, snippet, reason: 'boundary read' });
+
+  it('CALIBRATION: an un-allowed candidate is counted (so the suppressions below are load-bearing)', () => {
+    const r = applyAllowlist({ allow: [], hitsByFile: new Map([[FILE, [hit(10, DEL)]]]) });
+    expect(r.candidates).toHaveLength(1);
+    expect(r.candidates[0]).toMatchObject({ f: FILE, line: 10 });
+  });
+
+  it('suppresses on an exact line match — the unchanged common case', () => {
+    const r = applyAllowlist({
+      allow: [{ at: `${FILE}:10`, code: DEL }],
+      hitsByFile: new Map([[FILE, [hit(10, DEL)]]]),
+    });
+    expect(r.candidates).toHaveLength(0);
+    expect(r.drifted).toHaveLength(0);
+    expect(r.unmatched).toHaveLength(0);
+  });
+
+  it('THE REGRESSION: an edit above an entry moves the line, and the candidate count does NOT change', () => {
+    const r = applyAllowlist({
+      allow: [{ at: `${FILE}:1470`, code: DEL }],
+      hitsByFile: new Map([[FILE, [hit(1527, DEL)]]]),
+    });
+    expect(r.candidates).toHaveLength(0); // ← was 1 before the fix, which is what reddened the gate
+    expect(r.unmatched).toHaveLength(0); // ← and it is not reported as dead, because it is not
+    expect(r.drifted).toEqual([{ at: `${FILE}:1470`, resolvedLine: 1527, code: DEL }]);
+
+    // FALSIFIABILITY CONTROL, on the shipped code rather than a mutant of it: an entry carrying
+    // no content key is exactly the old `path:line`-only entry, and the SAME fixture then
+    // reproduces the defect — 1 candidate, count risen, ratchet red. So the assertions above
+    // are load-bearing on the content key specifically, not on some incidental leniency.
+    const preFix = applyAllowlist({
+      allow: [{ at: `${FILE}:1470`, code: '' }],
+      hitsByFile: new Map([[FILE, [hit(1527, DEL)]]]),
+    });
+    expect(preFix.candidates).toHaveLength(1);
+    expect(preFix.unmatched).toEqual([`${FILE}:1470`]);
+  });
+
+  it('CONTROL: one entry can never suppress two identical lines — a newly-added duplicate still counts', () => {
+    // The precise hazard content-keying introduces. `del.count ?? 0` is not distinctive, so a
+    // second one in the same file is plausible; if the entry absorbed both, this guard would be
+    // hiding a real new boundary read, which is its own subject one level up.
+    const r = applyAllowlist({
+      allow: [{ at: `${FILE}:1470`, code: DEL }],
+      hitsByFile: new Map([[FILE, [hit(200, DEL), hit(1527, DEL)]]]),
+    });
+    expect(r.candidates).toHaveLength(1);
+    expect(r.drifted).toHaveLength(1);
+  });
+
+  it('the suppressed TOTAL is min(entries, matches), so which duplicate is picked cannot change the verdict', () => {
+    const twoHits = () => new Map([[FILE, [hit(200, DEL), hit(1527, DEL)]]]);
+    expect(applyAllowlist({ allow: [{ at: `${FILE}:1470`, code: DEL }], hitsByFile: twoHits() }).candidates).toHaveLength(1);
+    expect(
+      applyAllowlist({
+        allow: [
+          { at: `${FILE}:1470`, code: DEL },
+          { at: `${FILE}:190`, code: DEL },
+        ],
+        hitsByFile: twoHits(),
+      }).candidates,
+    ).toHaveLength(0);
+  });
+
+  it('resolves a drifted entry to the NEAREST matching line, so the reported re-point is the plausible one', () => {
+    const r = applyAllowlist({
+      allow: [{ at: `${FILE}:1470`, code: DEL }],
+      hitsByFile: new Map([[FILE, [hit(12, DEL), hit(1527, DEL)]]]),
+    });
+    expect(r.drifted[0].resolvedLine).toBe(1527);
+  });
+
+  it('does NOT reach across files — an identical line in another file is not consumed', () => {
+    const r = applyAllowlist({
+      allow: [{ at: `${FILE}:10`, code: DEL }],
+      hitsByFile: new Map([
+        [FILE, []],
+        [OTHER, [hit(10, DEL)]],
+      ]),
+    });
+    expect(r.candidates).toEqual([expect.objectContaining({ f: OTHER, line: 10 })]);
+    expect(r.unmatched).toEqual([`${FILE}:10`]);
+  });
+
+  it('reports an entry whose code is gone as unmatched, and it suppresses nothing else in the file', () => {
+    const r = applyAllowlist({
+      allow: [{ at: `${FILE}:10`, code: DEL }],
+      hitsByFile: new Map([[FILE, [hit(44, 'const other = row.thing ?? 0;')]]]),
+    });
+    expect(r.unmatched).toEqual([`${FILE}:10`]);
+    expect(r.candidates).toHaveLength(1);
+  });
+
+  it('is whitespace-insensitive: a re-indent under a new enclosing block is not a false un-suppression', () => {
+    const r = applyAllowlist({
+      allow: [{ at: `${FILE}:10`, code: 'const n = del.count ?? 0;' }],
+      hitsByFile: new Map([[FILE, [hit(12, 'const   n =  del.count ?? 0;')]]]),
+    });
+    expect(r.candidates).toHaveLength(0);
+  });
+
+  it('an entry naming a file this run never scanned is inert, not a suppression and not a candidate', () => {
+    // The diff-scoped mode legitimately opens almost none of the allowlisted files; only `--all`
+    // reports these, which is why the report leg is gated on `all` in main().
+    const r = applyAllowlist({
+      allow: [{ at: `${FILE}:10`, code: DEL }],
+      hitsByFile: new Map([[OTHER, []]]),
+    });
+    expect(r.candidates).toHaveLength(0);
+    expect(r.unmatched).toEqual([`${FILE}:10`]);
+  });
+
+  it('every shipped ALLOW entry carries both halves — an entry with no `code` cannot survive drift', () => {
+    const src = readFileSync(join(REPO_ROOT, 'scripts/check-explicit-presence.mjs'), 'utf8');
+    const block = src.slice(src.indexOf('const ALLOW = ['), src.indexOf('\n];', src.indexOf('const ALLOW = [')));
+    const entries = [...block.matchAll(/\{\s*at:\s*'([^']+)',\s*code:\s*(['"])((?:(?!\2).)*)\2\s*\}/g)];
+    expect(entries.length).toBeGreaterThanOrEqual(20);
+    // Count the `at:` keys independently: a hand-added entry that omits `code` (or spells it
+    // differently) is invisible to the pair regex above, and this is what catches that.
+    expect(entries.length).toBe([...block.matchAll(/\bat:\s*'/g)].length);
+    for (const [, at, , code] of entries) {
+      expect(at).toMatch(/^[\w./-]+\.ts:\d+$/);
+      expect(code.trim().length).toBeGreaterThan(0);
+    }
+  });
+});
