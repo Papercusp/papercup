@@ -200,6 +200,11 @@ describe('sweepStalledLoops (WI-6639 — act on turnsStalled instead of leaving 
             effectiveIntervalSec: 728.0376,
             cadenceRatio: 12.13396,
             longestObservedGapSec: 1207.28,
+            // The sweep calls computeCadenceDrift without a pinned clock, so overdue-ness is
+            // judged against real Date.now(). A far-past nextFireAt is overdue on any clock
+            // ahead of it — the same idiom the fixture's lastFiredAt already uses. The
+            // fixture DEFAULT stays null so no other case in this file starts drifting.
+            nextFireAt: '2026-08-01T00:00:00.000Z',
           }),
         ],
       ]),
@@ -224,6 +229,44 @@ describe('sweepStalledLoops (WI-6639 — act on turnsStalled instead of leaving 
       }),
     );
     expect(broadcast.mock.calls[0]?.[0].summary).toContain('advisory only');
+  });
+
+  // Companion to the case above: identical drift statistics, but the fire is NOT late. This pins
+  // that the sweep hands the settling-gate inputs (parked / nextFireAt) through to
+  // computeCadenceDrift. If it ever passed a projection that dropped them, loop.test.ts would
+  // stay green while the advisory silently fired on every mid-turn loop.
+  it('does NOT report cadence drift for a parked loop with the same drift statistics', async () => {
+    const sql = fakeSql([{ id: 'rt-parked', target_owner_id: 'su-parked' }]);
+    const getStatuses = vi.fn(async () =>
+      new Map([
+        [
+          'su-parked',
+          status({
+            ownerId: 'su-parked',
+            turnsStalled: false,
+            firesSinceArm: 5,
+            expectedFiresSinceArm: 62,
+            effectiveIntervalSec: 728.0376,
+            cadenceRatio: 12.13396,
+            longestObservedGapSec: 1207.28,
+            parked: true,
+            nextFireAt: '2026-08-01T00:00:00.000Z',
+          }),
+        ],
+      ]),
+    );
+    const autoPause = vi.fn(async () => {});
+    const broadcast = vi.fn<BroadcastFn>(async () => true);
+
+    const res = await sweepStalledLoops(
+      { sql, workspaceId: 'ws' },
+      { getStatuses, autoPause, broadcast, probeReachability: reach(false) },
+    );
+
+    expect(res.cadenceDrift).toEqual([]);
+    expect(res.paused).toBe(0);
+    expect(autoPause).not.toHaveBeenCalled();
+    expect(broadcast).not.toHaveBeenCalled();
   });
 
   it('no stalled owners → no auto-pause and no broadcast at all', async () => {

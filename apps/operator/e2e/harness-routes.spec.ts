@@ -6,7 +6,9 @@
  */
 import { test, expect } from './_egress';
 
-const baseURL = process.env.OPERATOR_E2E_BASE_URL ?? 'http://127.0.0.1:3055';
+const baseURL =
+  process.env.OPERATOR_E2E_BASE_URL ??
+  `http://127.0.0.1:${Number(process.env.OPERATOR_E2E_PORT ?? process.env.PORT) || 3055}`;
 
 test.describe('harness route surface', () => {
   test('GET /api/harness/all/kpis returns KPI shape', async ({ request }) => {

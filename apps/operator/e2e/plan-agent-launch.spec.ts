@@ -28,7 +28,9 @@
  */
 import { test, expect, type APIRequestContext } from './_egress';
 
-const baseURL = process.env.OPERATOR_E2E_BASE_URL ?? 'http://127.0.0.1:3055';
+const baseURL =
+  process.env.OPERATOR_E2E_BASE_URL ??
+  `http://127.0.0.1:${Number(process.env.OPERATOR_E2E_PORT ?? process.env.PORT) || 3055}`;
 
 async function fakeLlmActive(request: APIRequestContext): Promise<boolean> {
   try {

@@ -14,7 +14,9 @@
 import { test } from './_egress';
 import { expectNoA11yViolations } from './_axe';
 
-const baseURL = process.env.OPERATOR_E2E_BASE_URL ?? 'http://127.0.0.1:3055';
+const baseURL =
+  process.env.OPERATOR_E2E_BASE_URL ??
+  `http://127.0.0.1:${Number(process.env.OPERATOR_E2E_PORT ?? process.env.PORT) || 3055}`;
 
 test.describe('a11y on key pages', () => {
   test('/login has no serious or critical a11y violations', async ({ page }) => {

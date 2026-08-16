@@ -36,7 +36,9 @@
  */
 import { test, expect, assertMounted, type Page } from './_egress';
 
-const baseURL = process.env.OPERATOR_E2E_BASE_URL ?? 'http://127.0.0.1:3055';
+const baseURL =
+  process.env.OPERATOR_E2E_BASE_URL ??
+  `http://127.0.0.1:${Number(process.env.OPERATOR_E2E_PORT ?? process.env.PORT) || 3055}`;
 
 const SLUG = 'e2e-shortcuts-pot';
 

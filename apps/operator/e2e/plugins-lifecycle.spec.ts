@@ -8,7 +8,9 @@
  */
 import { test, expect } from './_egress';
 
-const baseURL = process.env.OPERATOR_E2E_BASE_URL ?? 'http://127.0.0.1:3055';
+const baseURL =
+  process.env.OPERATOR_E2E_BASE_URL ??
+  `http://127.0.0.1:${Number(process.env.OPERATOR_E2E_PORT ?? process.env.PORT) || 3055}`;
 
 test.describe('plugin enable route', () => {
   test('POST with empty body returns 400 with invalid-slug message', async ({ request }) => {

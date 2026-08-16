@@ -1,6 +1,8 @@
 import { test, expect, type Page } from './_egress';
 
-const baseURL = process.env.OPERATOR_E2E_BASE_URL ?? 'http://127.0.0.1:3055';
+const baseURL =
+  process.env.OPERATOR_E2E_BASE_URL ??
+  `http://127.0.0.1:${Number(process.env.OPERATOR_E2E_PORT ?? process.env.PORT) || 3055}`;
 const SLUG = 'e2e-wi-filter-pot';
 const WORK_ITEMS = [
   { id: 'WI-1', kind: 'bug', family: 'issue', title: 'First stubbed item', summary: null, state: 'open', assignee: 'alice', assignedBy: null, severity: 'high', priority: 1, rank: 1, planSlug: null, spineRole: null, spineStatus: null, updatedAt: '2026-06-14T00:00:00.000Z', origin: null, auditVerdict: null, verifiedAuthorGithubUserId: null },
