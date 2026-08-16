@@ -118,6 +118,37 @@ export interface SubstrateHealthInputs {
    */
   ownLogFork?: { forked: boolean; detail?: string };
   /**
+   * EI-20575137548097507: whether the REPORTING PROCESS was able to observe this
+   * harness's process-local health inputs at all (`replicationLiveness`,
+   * `ownLogFork`, log stats). Default/undefined = observable (preserves every
+   * pre-existing caller's behaviour).
+   *
+   * Pass `false` when the process is reporting a harness it learned about from
+   * SOMEWHERE ELSE — a node:cluster IPC snapshot or the cross-service PG
+   * fallback — because those legs carry only the BOOTED-HANDLE list. The
+   * liveness/fork detectors are module-scope state living in the substrate
+   * OWNER process, so a non-owner reader's local maps are empty *by
+   * construction*, and the per-harness join in in-process-status.ts can never
+   * match. Every one of those inputs then arrives here as `undefined`, which
+   * this module correctly treats as "not measured" and skips — and the verdict
+   * falls through to `healthy` / "no issues detected".
+   *
+   * That fall-through is the bug this input closes, and it is the FIFTH
+   * instance of one root defect (EI-18735338283879820, EI-19328421457282435,
+   * EI-19327550671915579, WI-5307, EI-20575137548097507): this diagnostic
+   * renders absence-of-information as reassurance. Each prior fix widened the
+   * BOOTED-HANDLE leg (local map → cluster IPC → PG snapshot) and left the
+   * health-input legs process-local, so the surface kept reporting *more*
+   * harnesses it was *no better* able to assess.
+   *
+   * `false` therefore degrades the verdict (never better than 'degraded') and
+   * names itself in `reasons`. It deliberately does NOT force 'unhealthy':
+   * unobservable is not proof of a fault. This mirrors the existing
+   * `samplingStale` treatment — "the detector itself is blind, which is a real
+   * signal but not proof of divergence".
+   */
+  healthInputsObservable?: boolean;
+  /**
    * WI-5777 (substrate observability gap found while re-verifying WI-5719):
    * age (ms) since the EI-8892 isolated-DHT-bootstrap liveness probe
    * (`papercup-dht-liveness-check.sh`, 5-min cadence) last SUCCEEDED, for a
@@ -313,6 +344,27 @@ export function assessHarnessSubstrateHealth(
   if (inputs.sidecarLive === false) {
     verdict = 'unhealthy';
     reasons.push('substrate sidecar is DOWN (healthz unreachable) — boot-time handle is stale');
+  }
+
+  // EI-20575137548097507: the reporting process could not observe this
+  // harness's process-local health inputs at all, so every such input above
+  // arrived as `undefined` and was skipped as "not measured". Without this
+  // block the verdict falls through to a confident `healthy` / "no issues
+  // detected" for a harness nothing actually assessed — the fifth instance of
+  // this diagnostic rendering absence-of-information as reassurance.
+  //
+  // Degrade, never worse: unobservable is not proof of a fault. Worst-wins, so
+  // a genuine 'unhealthy' established above is never downgraded to 'degraded'
+  // by a reporting-process limitation.
+  if (inputs.healthInputsObservable === false) {
+    if (verdict === 'healthy') verdict = 'degraded';
+    reasons.push(
+      'health inputs UNOBSERVABLE from this process — replication-liveness, own-log-fork ' +
+        'and log stats live in the substrate OWNER process, and this harness was reported ' +
+        'from a booted-handle snapshot (cluster IPC or PG fallback) that carries none of them. ' +
+        'This is ABSENCE of measurement, not evidence of health: a stalled or forked log here ' +
+        'would look identical. Read the owner process directly for an authoritative verdict.',
+    );
   }
 
   if (verdict === 'healthy' && reasons.length === 0) {
