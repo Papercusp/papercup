@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 733,
+  "count": 734,
   "tools": [
     {
       "name": "ablation:report",
@@ -3986,6 +3986,41 @@
         "when": "Editing the tier menu — adding a tier, changing a spec, or setting a per-tier compaction limit the fleet seeds sessions with.",
         "notWhen": "To change YOUR OWN session’s limit — config:set-compaction-limit. To read the menu — config:tiers-get.",
         "chaining": "config:tiers-get first to see the current menu; edit; write back the full array."
+      }
+    },
+    {
+      "name": "consult:get_feedback",
+      "http": {
+        "path": "/api/agent-tools/consult/get_feedback",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Ask \"who knows more than me about THIS?\" — routes your question over real cross-agent transcript history (embedding + recency/verification/authorship blend), opens a bounded consult thread with the top qualified responder, and wakes them with why-they-were-chosen evidence. Honest by design: below the relevance floor the answer is a first-class no_qualified_responder (\"no one knows more than you do — proceed on your own judgment\"), never a costumed expert. Returns { verdict, conversation_id, responder, remaining_candidates, park_key, hint }.",
+      "capabilities": [
+        "coord:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "cup",
+        "mug",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "doc-steward"
+      ],
+      "guidance": {
+        "when": "You face a question a PEER may have real context on — their transcripts, their code, a failure they already debugged — before burning hours re-deriving it. You do not know WHO: the router discovers the responder from evidence.",
+        "notWhen": "Live state (query it: locks:queue / fleet:assignments / work_items:get). An owner decision (coord:ask-owner). A SPECIFIC known agent (coord:send / coord:message-agent — this tool is who-knows DISCOVERY). Assigning work (a consult is advice, never a handoff — requester owns the outcome).",
+        "chaining": "get_feedback → latency_contract:'hard-blocked' ⇒ events:await { event: park_key } + end turn (reply wakes you) → conversations:get { id: conversation_id } for the thread → responder declined? re-call with exclude:[declinerId] (manual cascade; the wake budget binds)."
       }
     },
     {
