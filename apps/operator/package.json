@@ -113,6 +113,7 @@
     "@papercusp/locks": "file:../../libs/papercusp/packages/locks",
     "@papercusp/memory": "file:../../libs/generic/memory",
     "@papercusp/model-pricing": "file:../../libs/generic/model-pricing",
+    "@papercusp/module-singleton": "file:../../libs/generic/module-singleton",
     "@papercusp/operator-core": "file:../../packages/operator-core",
     "@papercusp/orchestrator": "file:../../libs/papercusp/packages/orchestrator",
     "@papercusp/p2p-voice": "file:../../libs/generic/p2p-voice",
