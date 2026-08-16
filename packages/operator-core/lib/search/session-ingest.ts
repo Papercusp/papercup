@@ -97,14 +97,20 @@ const TEXT_CAP = 8000;
 /** Skip micro-turns ("ok", "y") — noise for recall. */
 const MIN_TEXT_LEN = 3;
 /**
- * Per-PART text cap (chars) — session_turn_parts, the faithful-render
- * companion (session-turn-storage-2026-07-28 D-002). Deliberately TIGHTER
- * than TEXT_CAP: measured over 7 real days of claude JSONL (443,595 lines),
- * tool_result alone is 218 MB raw against text's 21 MB, and capping at 2k
- * recovers 61% of it. The render pane caps at THINKING_ENTRY_TEXT_CAP anyway,
- * so a wider store would buy nothing a reader can see.
+ * Per-PART text caps (chars) — session_turn_parts, the faithful-render
+ * companion (session-turn-storage-2026-07-28 D-002). These are now DERIVED
+ * from the render budget rather than hardcoded here; see
+ * `../transcript-text-caps` for why (this file used to carry a flat 2,000
+ * justified by a comment claiming the pane capped there too — it caps at
+ * 8,000, so the store was 4x tighter than the surface reading it and 16.9% of
+ * all stored parts were truncated below what the pane would have shown).
+ *
+ * Prose (`text`/`thinking`) is stored to the full render budget. Tool payloads
+ * keep the tighter volume cap — tool_result alone is 218 MB raw against text's
+ * 21 MB over 7 days — and stay recoverable from the session file, which the
+ * stream route prefers whenever a stored part was truncated.
  */
-export const PART_TEXT_CAP = 2000;
+export { PART_TEXT_CAP_PROSE, PART_TEXT_CAP_TOOL, partTextCapFor } from '../transcript-text-caps';
 /** Retention for faithful parts — SHORTER than RETENTION_DAYS by design
  * (D-002): recent sessions render faithfully, older ones degrade to the text
  * turns in session_turns, older still to session_archives. */
@@ -226,12 +232,15 @@ export function cleanTurnText(raw: string): string | null {
  *
  * Redact BEFORE capping so a secret straddling the cap boundary cannot be
  * half-preserved, and cap after so the stored bytes stay bounded.
+ *
+ * The cap is PER KIND (`partTextCapFor`): prose keeps everything the pane can
+ * render, tool payloads keep the tighter volume cap. `kind` defaults to prose
+ * because that is the safe direction to be wrong in — an over-wide store costs
+ * bytes, an over-narrow one destroys a reader's content irrecoverably.
  */
-export function cleanPartText(raw: string): string {
+export function cleanPartText(raw: string, kind: PartKind = 'text'): string {
   const redacted = redactKeyDirectedSecrets(redactSelfIdentifyingSecrets(raw));
-  return redacted.length > PART_TEXT_CAP
-    ? `${redacted.slice(0, PART_TEXT_CAP)}… [truncated ${redacted.length - PART_TEXT_CAP} chars]`
-    : redacted;
+  return capWithMarker(redacted, partTextCapFor(kind));
 }
 
 /** Join the text parts of a message content (string or parts array). */
