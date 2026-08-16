@@ -992,6 +992,7 @@ export default defineTool({
               ...(priorArt ? { priorArt } : {}),
               ...(experimentGap ? { experimentGap } : {}),
               ...(lensAttribution ? { lensAttribution } : {}),
+              ...(groundingGap ? { groundingGap } : {}),
               ...(notified ? { notified: notified.notified } : {}),
               ...(linked ? { linked } : {}),
               ...(warnings.length > 0 ? { warnings } : {}),

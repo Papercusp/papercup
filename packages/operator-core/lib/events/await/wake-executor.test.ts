@@ -15,12 +15,15 @@ import {
   ompResumePtyLooksReady,
   resumeCommandFor,
   wakeTurnText,
-  wakeSummaryHeadline,
   degradeToInboxOrDrop,
   rehydrateLoopWakeText,
   applyInjectionDoor,
   type ExecuteWakeDeps,
 } from './wake-executor';
+// EI-20489286325396940: `wakeSummaryHeadline` (with `payloadIsTimeout`) lives in
+// timeout-fallback.ts, not wake-executor.ts — it is imported BY wake-executor and
+// by engine.ts, so hosting it here would close a wake-executor↔engine import cycle.
+import { wakeSummaryHeadline } from './timeout-fallback';
 import { PtyError } from '../../pty-bridge';
 import type { CarryBrief } from '../../carry-brief';
 import { renderColdWakeInjection } from '../../su-cold-loop';

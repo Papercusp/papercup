@@ -61,7 +61,7 @@ import {
   voidTreeDescendants,
 } from './compose-store';
 import { composedWakeSummary } from './compose-spec';
-import { executeWake, degradeToInboxOrDrop, wakeSummaryHeadline, type ExecuteWakeDeps } from './wake-executor';
+import { executeWake, degradeToInboxOrDrop, type ExecuteWakeDeps } from './wake-executor';
 import { classifyResumeTurnExit, type ResumeTurnExitRaw } from './resume-turn-outcome';
 import { lastInboxReadAtBatch } from '../../agent-tools/coordination/inbox-read-freshness';
 import { repliedMsgIdsBatch } from '../../agent-tools/coordination/messages';
@@ -69,6 +69,7 @@ import type { AwaitRow, DeliveryWork } from './types';
 import {
   recordTimeoutFires,
   summarizeTimeoutFires,
+  wakeSummaryHeadline,
   TIMEOUT_WAKE_GUIDANCE,
   TIMEOUT_WAKE_SUMMARY,
 } from './timeout-fallback';

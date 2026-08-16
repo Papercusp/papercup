@@ -29,6 +29,56 @@ export const TIMEOUT_WAKE_SUMMARY =
 export const TIMEOUT_WAKE_GUIDANCE =
   'Your await timed out — the event never fired within the window. This is a FALLBACK wake, not the event. Re-orient with coord:orient, reconcile whether the awaited state already changed (a missed / never-emitted event, a dead emitter, or a mistyped key), and if your work is still blocked on it, RE-ARM the await (or take another path). Do not give up silently.';
 
+/** Whether a (possibly coalesced) delivery payload carries a timeout fire.
+ *  A plain timeout fire is `{ timeout: true }` (the engine sweeper). A COALESCED
+ *  wake replaces that headline with `{ coalesced, count, events, latest }`
+ *  (engine.ts coalesceDeliveries), so the raw `payload.timeout` is gone — look
+ *  inside the union (the latest fire AND any folded event) or the marker would be
+ *  silently dropped and the agent told the event FIRED when it actually TIMED OUT. */
+export function payloadIsTimeout(payload: unknown): boolean {
+  if (payload == null || typeof payload !== 'object') return false;
+  const p = payload as {
+    timeout?: boolean;
+    latest?: { payload?: { timeout?: boolean } };
+    events?: { payload?: { timeout?: boolean } }[];
+  };
+  if (p.timeout === true) return true;
+  if (p.latest?.payload?.timeout === true) return true;
+  if (Array.isArray(p.events) && p.events.some((e) => e?.payload?.timeout === true)) return true;
+  return false;
+}
+
+/**
+ * EI-20489286325396940: the one-line coord-message SUMMARY for a delivery.
+ *
+ * The wake BODY (`wakeTurnText`) has carried a loud `[TIMEOUT …]` marker for a
+ * while, but the two summary renderers that degrade a wake into coord mail — the
+ * inbox fallback (wake-executor `degradeToInboxOrDrop`) and the park nudge
+ * (engine `pumpWakeDeliveries`) — hardcoded `<key> fired`. The summary is what the
+ * injected `[coord+N]` block renders, so a timed-out `work-item:done:<id>` await
+ * read to the woken agent as the SOURCE ITEM COMPLETING (verified live 2026-08-15:
+ * WI-39195 and EI-20488444691160764 both showed `work-item:done:… fired` while the
+ * items stayed open and blocked — the authoritative rows were
+ * `fired_reason='timeout'` at `expires_ts`, and no completion was ever emitted).
+ * Telling the two apart needed a second events:status read, so the DEFAULT reading
+ * was an unsafe completion inference.
+ *
+ * So a timeout summary says TIMED OUT and names `fired_reason` outright. An
+ * ordinary event fire is byte-identical to before.
+ *
+ * Lives HERE, beside the other timeout wording, rather than in wake-executor:
+ * engine.test.ts mocks `./wake-executor` wholesale with a two-key factory, so an
+ * import of this helper from there resolved to `undefined` and threw inside the
+ * park nudge's best-effort `catch` — silently deleting the nudge. A pure
+ * presentation helper must not sit behind a heavyweight mocked module.
+ */
+export function wakeSummaryHeadline(eventKey: string, payload: unknown): string {
+  return payloadIsTimeout(payload)
+    ? `[await-event] ${eventKey} TIMED OUT (fired_reason: timeout — your deadline elapsed; ` +
+      'the event did NOT fire and the awaited source did NOT complete)'
+    : `[await-event] ${eventKey} fired`;
+}
+
 /**
  * Normalize an event key to its FAMILY for detector grouping: collapse any
  * segment that carries an id (a digit anywhere, or a long hex/uuid run) to `*`,

@@ -74,6 +74,12 @@ import {
 } from './wake-executor-fresh-context';
 import { getPresence } from '../../agent-tools/coordination/presence';
 import { sendMessage } from '../../agent-tools/coordination/messages';
+// EI-20489286325396940: `payloadIsTimeout` + `wakeSummaryHeadline` live in
+// timeout-fallback.ts (PG-free, beside the other timeout wording) so engine.ts can
+// import the summary renderer WITHOUT going through this module — engine.test.ts
+// mocks './wake-executor' wholesale, which silently undefined-ed it and deleted the
+// park nudge inside a best-effort catch.
+import { payloadIsTimeout, wakeSummaryHeadline } from './timeout-fallback';
 import type { AgentIdentity } from '../../agent-tools/coordination/identity';
 import {
   findLiveHost,
@@ -394,45 +400,6 @@ export function withWakeTimeout<T>(p: Promise<T>, label: string, ms: number): Pr
   });
 }
 
-function payloadIsTimeout(payload: unknown): boolean {
-  if (payload == null || typeof payload !== 'object') return false;
-  const p = payload as {
-    timeout?: boolean;
-    latest?: { payload?: { timeout?: boolean } };
-    events?: { payload?: { timeout?: boolean } }[];
-  };
-  if (p.timeout === true) return true;
-  if (p.latest?.payload?.timeout === true) return true;
-  if (Array.isArray(p.events) && p.events.some((e) => e?.payload?.timeout === true)) return true;
-  return false;
-}
-
-/**
- * EI-20489286325396940: the one-line coord-message SUMMARY for a delivery.
- *
- * The wake BODY ({@link wakeTurnText}) has carried a loud `[TIMEOUT …]` marker for a
- * while, but the two summary renderers that degrade a wake into coord mail — the
- * inbox fallback below and the park nudge in engine.ts — hardcoded `<key> fired`.
- * The summary is what the injected `[coord+N]` block renders, so a timed-out
- * `work-item:done:<id>` await read to the woken agent as the SOURCE ITEM COMPLETING
- * (verified live 2026-08-15: WI-39195 and EI-20488444691160764 both showed
- * `work-item:done:… fired` while the items stayed open and blocked — the
- * authoritative rows were `fired_reason='timeout'` at `expires_ts`, and no
- * completion was ever emitted). The reader could only tell the two apart with a
- * second events:status read, so the default reading was an unsafe completion
- * inference.
- *
- * So a timeout summary says TIMED OUT and names `fired_reason` outright. Same
- * coalesced-payload unwrapping as the body marker (see {@link payloadIsTimeout}) —
- * a coalesced wake hides the raw `payload.timeout` behind `latest`/`events`.
- * An ordinary event fire is byte-identical to before.
- */
-export function wakeSummaryHeadline(eventKey: string, payload: unknown): string {
-  return payloadIsTimeout(payload)
-    ? `[await-event] ${eventKey} TIMED OUT (fired_reason: timeout — your deadline elapsed; ` +
-      'the event did NOT fire and the awaited source did NOT complete)'
-    : `[await-event] ${eventKey} fired`;
-}
 
 /** The per-agent inbox-wake key prefix (`coord:inbox-wake:<owner>`). Kept in
  *  lockstep with the canonical export in agent-tools/coordination/inbox-wake.ts —
