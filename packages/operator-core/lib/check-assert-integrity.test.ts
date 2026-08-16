@@ -157,6 +157,77 @@ describe('check-assert-integrity: R4 empty-read branch', () => {
     ].join('\n');
     expect(rules(src)).toContain('R4-empty-read-continues');
   });
+
+  // ── COUNTER / ACCUMULATOR PROPAGATION (the third shape) ────────────────────────────
+  // A preflight that wants to report EVERY unmet precondition in one pass counts them
+  // instead of dying at the first, so its status var is bumped (`missing=$((missing + 1))`)
+  // rather than set to a literal. That is the same failure disposition, reached by a
+  // different spelling — recognising only the literal form made R4 fire on
+  // papercusp-desktop/bin/local-matrix.sh's CORRECT gh-token preflight.
+  it('does NOT flag a COUNTER bumped in the empty branch and guarded by a nonzero return', () => {
+    const src = [
+      'preflight() {',
+      '  local missing=0',
+      '  tok="$(gh auth token --user "$u" 2>/dev/null || true)"',
+      '  if [ -z "$tok" ]; then',
+      '    echo "FATAL: no gh token"',
+      '    missing=$((missing + 1))',
+      '  fi',
+      '  if [ "$missing" != 0 ]; then',
+      '    echo "FATAL: $missing precondition(s) unmet"',
+      '    return 1',
+      '  fi',
+      '}',
+    ].join('\n');
+    expect(rules(src)).not.toContain('R4-empty-read-continues');
+  });
+
+  it('does NOT flag the `((n++))` spelling of the same guarded counter', () => {
+    const src = [
+      'v="$(probe)"',
+      'if [ -z "$v" ]; then',
+      '  echo "unmeasured"',
+      '  ((missing++))',
+      'fi',
+      'if [ "$missing" != 0 ]; then',
+      '  echo "unmet"',
+      '  return 1',
+      'fi',
+    ].join('\n');
+    expect(rules(src)).not.toContain('R4-empty-read-continues');
+  });
+
+  // ── FAIL-CLOSED CONTROLS for the counter shape ─────────────────────────────────────
+  it('STILL flags a counter that is bumped but never propagated', () => {
+    // The counter exemption is worth exactly as much as its propagation proof. A preflight
+    // that counts failures and then returns success anyway is the silent-continue wearing
+    // an accumulator — if this goes quiet, shape (c) has been widened into a hole.
+    const src = [
+      'v="$(probe)"',
+      'if [ -z "$v" ]; then',
+      '  echo "unmeasured"',
+      '  missing=$((missing + 1))',
+      'fi',
+      'echo "carrying on regardless"',
+    ].join('\n');
+    expect(rules(src)).toContain('R4-empty-read-continues');
+  });
+
+  it('STILL flags a bump that is NOT self-referential (`missing=$((other + 1))`)', () => {
+    // `X=$((Y + 1))` recomputes X from something else — it does not accumulate X's own
+    // failure count, so it is not a status bump and must not inherit the exemption.
+    const src = [
+      'v="$(probe)"',
+      'if [ -z "$v" ]; then',
+      '  echo "unmeasured"',
+      '  missing=$((other + 1))',
+      'fi',
+      'if [ "$missing" != 0 ]; then',
+      '  return 1',
+      'fi',
+    ].join('\n');
+    expect(rules(src)).toContain('R4-empty-read-continues');
+  });
 });
 
 describe('check-assert-integrity: pragma suppression', () => {
