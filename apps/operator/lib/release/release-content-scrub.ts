@@ -291,8 +291,22 @@ export function identityLiterals(): IdentityLiteral[] {
       }).trim();
       if (!v) continue;
       if (kind === 'git-name') {
-        if (explicitOwner) continue; // an explicit answer outranks the box's guess
-        if (looksLikeAutomationIdentity(v)) continue; // a bot's name is not the owner's
+        // NEVER take the owner's NAME from git. This is not the automation heuristic
+        // being cautious — it is that the heuristic CANNOT BE TRUSTED as a gate input.
+        //
+        // Measured (EI-20583328178472869): this box's user.name changed mid-session from
+        // one automation spelling to another ("…-agent" → "…-buildbox"). The second was
+        // absent from AUTOMATION_NAME_RE, so the bot read as a PERSON, hasOwnerNameLiteral
+        // went true, and the site gate resumed certifying CLEAN while hunting a machine's
+        // name — the original defect, with the fix in place. A denylist of bot-name shapes
+        // fails OPEN for every spelling nobody enumerated, and its incompleteness is silent.
+        //
+        // git config names the COMMITTER. On an automated box that is by construction not
+        // the owner. So the name comes from OWNER_NAME_ENV or it does not come at all, and
+        // hasOwnerNameLiteral() goes false, and callers that publish fail closed on it.
+        // The Python sibling (audit-release-bundle.py) already works this way; this keeps
+        // the two gates from disagreeing about who the owner is.
+        continue;
       }
       lits.push({ kind, value: v });
     } catch {
