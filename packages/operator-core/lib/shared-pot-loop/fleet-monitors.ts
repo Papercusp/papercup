@@ -222,7 +222,9 @@ export interface PeerFederationHealth {
   /** False when there is nothing to judge; the caller must not infer health. */
   measured: boolean;
   /** Why we could not judge — so `measured:false` is never a bare shrug. */
-  unmeasuredReason: 'no-remote-logs' | 'scope-dormant' | null;
+  unmeasuredReason: 'no-remote-logs' | 'scope-dormant' | 'scan-failed' | null;
+  /** Set with `scan-failed`: the error, kept so a broken scan is diagnosable. */
+  scanError?: string;
   silent: PeerSilence[];
   /** Age of the MOST RECENTLY advanced log — the liveness of our own fold. */
   freshestAdvanceMs: number | null;
@@ -314,6 +316,35 @@ export async function scanPeerFederationSilence(
   opts: { workspaceId: string; harness: string; silentAfterMs: number; nowMs?: number },
 ): Promise<PeerFederationHealth> {
   const nowMs = opts.nowMs ?? Date.now();
+  try {
+    return await readAndJudgePeerSilence(sql, opts, nowMs);
+  } catch (err) {
+    // FAIL SOFT, NEVER SILENT. This leg was ADDED to a pass whose other scans
+    // (outbox health, double-completion, orphan sweep) already worked, and
+    // `runSharedHiveLeg` wraps the whole pass in one try/catch — so a throw here
+    // would take those working scans down with it and the scope would report
+    // nothing at all. That is the very failure mode this work exists to remove,
+    // so the new leg degrades to UNMEASURED (never to "healthy") and the rest of
+    // the pass proceeds. Found the hard way: the composition rig's sliced schema
+    // lacked substrate_merge_cursor and killed the entire pass with 42P01.
+    return {
+      totalLogs: 0,
+      measured: false,
+      unmeasuredReason: 'scan-failed',
+      scanError: err instanceof Error ? err.message : String(err),
+      silent: [],
+      freshestAdvanceMs: null,
+      allSilent: false,
+      breaches: [],
+    };
+  }
+}
+
+async function readAndJudgePeerSilence(
+  sql: postgres.Sql,
+  opts: { workspaceId: string; harness: string; silentAfterMs: number },
+  nowMs: number,
+): Promise<PeerFederationHealth> {
   const rows = await sql<Array<{ log_keyhex: string; position: string | number; updated_at_ms: string }>>`
     SELECT log_keyhex, position,
            (extract(epoch FROM updated_at) * 1000)::bigint::text AS updated_at_ms
