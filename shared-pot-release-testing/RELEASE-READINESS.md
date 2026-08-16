@@ -8,6 +8,27 @@ is **no longer the three rows the 08-01 verdict named** — a security regressio
 2026-08-09 and the standing gate that would have caught it is switched off. Nothing below is
 waiting on a decision; every open row has a named owner and a concrete flip condition.
 
+> ⚠ **VERDICT REASON UPDATED 2026-08-16T03:0xZ (su-c531b, WI-37110). The verdict is UNCHANGED —
+> still NO-GO — but BOTH clauses of the sentence above are now stale, and the governing reason
+> has moved.**
+>
+> - *"a security regression was confirmed on 2026-08-09"* — that is C-001 / `WI-37195`, now
+>   **`done`** (verified in PG).
+> - *"the standing gate that would have caught it is switched off"* — **FALSE as of today.**
+>   `WI-37144` is **`dropped`**; the timer is armed and firing (53 runs since 2026-07-27, last
+>   02:47:29Z, next 03:39Z).
+>
+> **The reason it is still NO-GO is now §3 row 0: the core p2p leg has never been measured.**
+> `local_matrix` — the 18-scenario leg carrying `membership_churn`, `content_bidir`,
+> `replication_soak`, `restart_durability` — executed exactly **once in the last 20 days**
+> (2026-08-16T02:47:29Z, which failed on an incidental sidecar race); 51 of 53 runs never
+> reached it, and `last-matrix-green` is **481h** stale against a 144h TTL.
+>
+> This is a **NO-GO on absent evidence, not on a known defect** — a materially different claim
+> from the 08-09 verdict, and it must not be paraphrased as either "p2p is broken" or "p2p is
+> fine, pending paperwork". The single flip condition is one gate run reporting
+> `local_matrix=OK`; the next unforced attempt is the 03:39Z timer.
+
 > ### ⚠ Two rows added 2026-08-09 — read these before quoting any 🟢 in this document
 >
 > **C-001 — consent withdrawal does not cut on the from-repo path (WI-37195). RELEASE BLOCKER.**
@@ -256,6 +277,61 @@ logs are from the green run `m1785117063`.
 
 > **ADDED 2026-08-09 — these two outrank everything numbered below.** They are listed ahead of the
 > original list rather than renumbered into it, so the pre-existing numbering stays quotable.
+
+> ⚠ **SUPERSEDED 2026-08-16T03:0xZ (su-c531b, WI-37110) — BOTH of the two rows below are now
+> TERMINAL, and a NEW row 0 outranks them.** Verified in PG, not inferred: `WI-37195` = **done**,
+> `WI-37144` = **dropped**. Row B's premise ("the gate is DARK, timer stopped") is additionally
+> FALSE as of today — the timer is armed and firing (53 runs since 2026-07-27; last 02:47:29Z;
+> next 03:39Z). Read row 0 first; A and B are kept verbatim below for quotability only.
+
+**0. THE CORE P2P LEG HAS NEVER BEEN MEASURED — this is the governing GO/NO-GO fact.**
+   *Filed 2026-08-16 by su-c531b (WI-37110). This is an ABSENCE of evidence, not evidence of a
+   defect — do not quote it as either "p2p is broken" or "p2p is unverified-but-probably-fine".*
+
+   Measured directly from `~/.papercusp/live-fed-gate/verdicts.jsonl` (53 runs since 2026-07-27):
+
+   | | |
+   |---|---|
+   | gate runs since 2026-07-27 | **53, all RED** |
+   | runs where `local_matrix` ACTUALLY EXECUTED | **1** (2026-08-16T02:47:29Z → FAIL) |
+   | runs where it was never reached (`leg='?'`) | **51** |
+   | `SKIPPED-CONTENT-RED` | 1 |
+   | `last-matrix-green` | **2026-07-27T02:00Z — 481h stale** against a 144h `MATRIX_TTL_H` |
+
+   `local_matrix` is the 18-scenario leg carrying the core federation behaviour this release is
+   about — `membership_churn`, `content_bidir`, `replication_soak`, `restart_durability`. It has
+   run **once in 20 days**. So the honest GO/NO-GO position is that we hold **no current
+   measurement** of core p2p behaviour, in either direction.
+
+   **Why 51 runs never reached it (now FIXED, not by me):** the attestation write-preflight
+   early-exited the *entire* gate on a credential wall that none of the 18 scenarios touch.
+   Fixed by **su-0c703449 under `WI-39359`** at 2026-08-15 22:13 EDT (`live-federation-gate.sh`
+   :1005–1044, commits `616a8328` + `210e7bc1`): the gate now runs the attestation-INDEPENDENT
+   leg anyway and reports GitHub-dependent legs as `SKIPPED-ATTESTATION-WALL`. That fix is what
+   let `local_matrix` be reached at all today.
+
+   **Why the one execution still failed — a RACE, not a defect.** The build leg waited on a
+   sidecar reader lock held by a live `bin/tauri-guarded dev` (pid 1332180), so
+   `src-tauri/sidecar/bin/node` was still absent when `local_matrix` ran →
+   `FATAL: sidecar node binary missing`. The rig itself was **healthy** on that run (network up,
+   3 frames provisioned, `frames ssh-ready`) — it died on the missing binary alone. The sidecar
+   finished building 02:58:16Z and `check-sidecar-freshness.js` now reports it fresh
+   (`gitHead e179e487`). **Before reading any repeat of this as a regression, check sidecar
+   freshness and whether a `tauri-guarded dev` process holds the lock.**
+
+   **Flip condition:** one gate run in which `local_matrix` reports `OK`. No forcing is required
+   or wanted — `local_matrix_due()` keys its cadence off `last-matrix-**green**`, not the last
+   run, so a failed attempt does **not** reset the window and the leg stays DUE. The next
+   unforced attempt is the 03:39Z timer. (Forcing it evicts 24 exclusive cores, 104–127, from
+   peers on a shared box for zero schedule gain.)
+
+   **⚠ The attestation wall is UNCHANGED and OWNER-GATED — and a `SKIPPED` leg is NOT it
+   clearing.** Re-probed read-only 2026-08-16T03:0xZ: `papercupai` holds a valid token *with*
+   `gist` scope but the account is **`email_unverified`** (GitHub 422 on `POST /gists`:
+   "user must have a verified email"); `aviynw` has **no `oauth_token` key at all** in
+   `hosts.yml` ("the token in default is invalid"). Both fixes are owner-only. Proof the wall is
+   cleared = `attestation-write-preflight` reporting **OK with a minted gist** — *never* a SKIP.
+   See fact `wall:p2p-release-gate-github-attestation-accounts`.
 
 **A. C-001 — consent withdrawal does not cut on the from-repo path (`WI-37195`).** The single
    hardest blocker on this document. `from-repo-witness` reds with `epoch advanced 0→0`; a removed
