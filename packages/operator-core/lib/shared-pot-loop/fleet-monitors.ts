@@ -430,6 +430,7 @@ export function judgePeerFederationSilence(
       strandedCursors,
       liveApplyBinding,
       ownLogSilentForMs,
+      admittedRemoteLogs,
     };
   }
   const ages = judged.map((r) => Math.max(0, opts.nowMs - r.updatedAtMs));
@@ -446,10 +447,26 @@ export function judgePeerFederationSilence(
     strandedCursors > 0
       ? ` (${strandedCursors} further cursor(s) ignored: stranded under a superseded apply_binding — schema residue, not peers)`
       : '';
-  if (allSilent) {
-    // Withhold the per-peer reading: with no advancing log left as a control,
-    // the evidence points at our own fold, and N peer alarms would be N false
-    // positives dressed as corroboration.
+  if (allSilent && admittedRemoteLogs === 0) {
+    // WI-39489: all silent AND not one of them is admitted. "Suspect this host's
+    // merge loop" is the WRONG SUBJECT here — the fold is fine, there is simply
+    // nothing to fold. Measured 2026-08-16: this host held 0 admitted peer logs
+    // in all 95 booted scopes and no peer had announced into ANY papercusp scope
+    // since 2026-08-15T22:36:39Z (73,420 `announce_admitted` across 41 scopes,
+    // all stopping at that instant), with ZERO rejections/errors/skew in two days
+    // — while the same admission code path on the same box kept admitting for 12
+    // OTHER workspaces. Cursors persist; admission does not. Reported as a breach
+    // rather than swallowed, because "we are not federating at all" is precisely
+    // what an operator needs told — just told about the right subject.
+    breaches.push(
+      `NO PEER ADMITTED: ${judged.length} remote log(s) have merge cursors here but NONE is in this scope's admitted set (freshest advance ${freshestAdvanceMs}ms ago > SLO ${opts.silentAfterMs}ms). The peers are ABSENT, not slow — nothing is being folded because nothing is announced. Suspect the announce/admission path or peer liveness, NOT this host's merge loop.${strandedNote}`,
+    );
+  } else if (allSilent) {
+    // Every log silent while at least one IS admitted (or admission is unknown —
+    // ignorance never upgrades to the confident reading above). Withhold the
+    // per-peer reading: with no advancing log left as a control, the evidence
+    // points at our own fold, and N peer alarms would be N false positives
+    // dressed as corroboration.
     breaches.push(
       `LOCAL FOLD SUSPECT: all ${judged.length} remote log(s) silent — freshest advance ${freshestAdvanceMs}ms ago > SLO ${opts.silentAfterMs}ms. Suspect this host's merge loop, NOT the peers.${strandedNote}`,
     );
@@ -469,6 +486,7 @@ export function judgePeerFederationSilence(
     strandedCursors,
     liveApplyBinding,
     ownLogSilentForMs,
+    admittedRemoteLogs,
   };
 }
 
@@ -501,6 +519,7 @@ export async function scanPeerFederationSilence(
       strandedCursors: 0,
       liveApplyBinding: null,
       ownLogSilentForMs: null,
+      admittedRemoteLogs: null,
     };
   }
 }
@@ -555,16 +574,31 @@ async function readAndJudgePeerSilence(
   // `undefined` when we cannot find it: the judge treats that as UNMEASURED, so a
   // missing/never-written status row can never silently reinstate the own log as
   // a phantom peer.
-  const [ownLog] = await sql<Array<{ own_key: string }>>`
-    SELECT pl->>'keyHex' AS own_key
+  //
+  // WI-39489: the SAME row also carries the whole ADMITTED set for the scope
+  // (`log-stats.ts` emits one `perLog` entry per member of `handle.admitted`), so
+  // the admitted keys are read here rather than from a second source that would
+  // be free to disagree with the own key. Selecting every entry and picking the
+  // own one out in JS — instead of two queries, or one query with an `isOwn`
+  // predicate plus another without — keeps both readings from the SAME snapshot;
+  // two reads could straddle a boot and report an own log that is not in the
+  // admitted set they are compared against.
+  const admittedRows = await sql<Array<{ key_hex: string; is_own: boolean | null }>>`
+    SELECT pl->>'keyHex' AS key_hex, (pl->>'isOwn')::boolean AS is_own
       FROM harness_shared.substrate_booted_handles_status s,
            LATERAL jsonb_array_elements(s.payload->'healthInputs'->'logStats') ls,
            LATERAL jsonb_array_elements(ls->'perLog') pl
      WHERE s.workspace_id = ${opts.workspaceId}
        AND ls->>'workspaceId' = ${opts.workspaceId}
-       AND ls->>'harnessSlug' = ${opts.harness}
-       AND (pl->>'isOwn')::boolean IS TRUE
-     LIMIT 1`;
+       AND ls->>'harnessSlug' = ${opts.harness}`;
+  const ownLog = admittedRows.find((r) => r.is_own === true);
+  // NO rows at all ⇒ this scope has no published boot status, so the admitted set
+  // is UNKNOWN, not empty. Passing [] here would assert a determined "no peer is
+  // admitted" from an absent measurement — the exact ignorance-as-fact error the
+  // `null` reading exists to prevent. (The own-key branch of the judge already
+  // returns `own-log-unknown` in this case; this keeps the two consistent if that
+  // ever changes.)
+  const admittedLogKeysHex = admittedRows.length > 0 ? admittedRows.map((r) => r.key_hex) : undefined;
   return judgePeerFederationSilence(
     rows.map((r) => ({
       logKeyHex: r.log_keyhex,
@@ -576,7 +610,8 @@ async function readAndJudgePeerSilence(
       silentAfterMs: opts.silentAfterMs,
       nowMs,
       localActivityAgeMs: newestLocal == null ? null : Math.max(0, nowMs - newestLocal),
-      ownLogKeyHex: ownLog?.own_key,
+      ownLogKeyHex: ownLog?.key_hex,
+      admittedLogKeysHex,
     },
   );
 }
