@@ -400,10 +400,21 @@ async function appendPost(
   identity: AgentIdentity,
   conversationId: string,
   body: string,
-  opts: { isAnswer: boolean; mentions?: string[] },
-): Promise<PostResult | { error: 'not_found' } | { error: 'resolved' } | { error: 'closed' } | { error: 'superseded' }> {
+  opts: { isAnswer: boolean; mentions?: string[]; viaConsultVerb?: boolean },
+): Promise<PostResult | { error: 'not_found' } | { error: 'resolved' } | { error: 'closed' } | { error: 'superseded' } | { error: 'consult_requires_typed_verb' }> {
   const conv = await deps.conversations.get(conversationId);
   if (!conv) return { error: 'not_found' };
+  // THE CONSULT KIND GATE (get-feedback-relevance-consults-2026-08-16 P-004,
+  // D-008 §2): a kind='consult' conversation takes only TYPED posts — every
+  // post carries a consult_post_meta row (kind + evidence; migration 834), and
+  // a post that is neither a question nor a new fact is refused by the verbs
+  // (termination is structural, D-001). This is the LOWEST shared chokepoint:
+  // conversations:post, conversations:answer AND the coord-op postThread cap
+  // all route through here, so none can land an untyped post. The consult
+  // verbs (consult:reply / consult:decline / consult:close) set the INTERNAL
+  // viaConsultVerb flag after validating {kind, caps, budget} — no public tool
+  // schema exposes it.
+  if (conv.kind === 'consult' && !opts.viaConsultVerb) return { error: 'consult_requires_typed_verb' };
   // A terminal conversation no longer takes posts (P1-17): a resolved question
   // is answered, and a promoted one continues on its issue thread — appending
   // here would silently land a post nobody is watching the conversation for.
