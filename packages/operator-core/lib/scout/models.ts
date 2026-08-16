@@ -20,19 +20,19 @@
  *  hard-fails. These defaults must stay ANTHROPIC models until the codex
  *  credential supports the P-020 target — re-verify with the probe above before
  *  re-migrating. */
-export const DEFAULT_SCOUT_IDEATOR_MODEL = 'claude-sonnet-5';
+export const DEFAULT_SCOUT_IDEATOR_MODEL = 'claude-opus-5';
 
-/** Cheap screening tier — high volume, low stakes. */
-export const DEFAULT_SCOUT_CRITIC_MODEL = 'claude-haiku-4-5';
+/** Owner mandate 2026-08-16 (P-010 blender-loop-repair-and-opus5-xhigh): every scout
+ *  role runs claude-opus-5 — Opus 5 has its own rate-limit bucket separate from
+ *  Opus 4.x, and effort rides output_config.effort on the calling path, never a
+ *  model-string suffix (see RAW-id warning above). */
+export const DEFAULT_SCOUT_CRITIC_MODEL = 'claude-opus-5';
 
-/** Synthesis-tier default. */
-export const DEFAULT_SCOUT_RECOMBINE_MODEL = 'claude-sonnet-4-6';
+export const DEFAULT_SCOUT_RECOMBINE_MODEL = 'claude-opus-5';
 
-/** Synthesis-tier default. */
-export const DEFAULT_SCOUT_REVISION_MODEL = 'claude-sonnet-4-6';
+export const DEFAULT_SCOUT_REVISION_MODEL = 'claude-opus-5';
 
-/** Synthesis-tier default. */
-export const DEFAULT_SCOUT_EXPERIMENT_MODEL = 'claude-sonnet-4-6';
+export const DEFAULT_SCOUT_EXPERIMENT_MODEL = 'claude-opus-5';
 
 export interface ScoutModelConfig {
   ideator: string;
