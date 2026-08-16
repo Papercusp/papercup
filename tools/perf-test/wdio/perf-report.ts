@@ -33,7 +33,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync } from "nod
 import path from "node:path";
 
 /** Mirrors `DesktopPerfMetricUnit` in packages/operator-core/lib/admin-test-suites-shared.ts. */
-export type PerfMeasureUnit = "ms" | "kb" | "count";
+export type PerfMeasureUnit = "ms" | "kb" | "count" | "pct";
 
 /** Mirrors `DesktopPerfMeasure` — the exact shape the ingest route validates. */
 export interface PerfMeasure {
