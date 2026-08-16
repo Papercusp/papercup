@@ -42,11 +42,24 @@ function log(
 
 /**
  * THE CONTROL — deliberately wrong on purpose, permanently. It is the naive
- * reading: any stale log is a peer alarm, with no all-silent carve-out. The
- * property tests below assert the real subject differs from it exactly where it
- * matters; if the subject ever regresses to this behaviour, those tests fail.
+ * reading: any stale log is a peer alarm, with no all-silent carve-out.
+ *
+ * It accepts the full option bag and IGNORES `ownLogKeyHex` / `applyBinding` /
+ * `localActivityAgeMs` on purpose. That is not laziness — ignoring them IS the
+ * pre-fix behaviour for all three properties this file guards (naive staleness,
+ * apply_binding residue, and own-log-as-phantom-peer), so one control falsifies
+ * every one of them. The property tests assert the real subject differs from it
+ * exactly where it matters; if the subject ever regresses, those tests fail.
  */
-function wrongJudge(rows: readonly MergeCursorRow[], opts: { silentAfterMs: number; nowMs: number }): string[] {
+function wrongJudge(
+  rows: readonly MergeCursorRow[],
+  opts: {
+    silentAfterMs: number;
+    nowMs: number;
+    ownLogKeyHex?: string | null;
+    localActivityAgeMs?: number | null;
+  },
+): string[] {
   return rows
     .filter((r) => opts.nowMs - r.updatedAtMs > opts.silentAfterMs)
     .map((r) => `peer ${r.logKeyHex} silent`);
@@ -55,7 +68,7 @@ function wrongJudge(rows: readonly MergeCursorRow[], opts: { silentAfterMs: numb
 describe('judgePeerFederationSilence — EI-20579195481991931', () => {
   it('reports a quiet peer while other logs keep advancing, and names it', () => {
     const rows = [log('aaaa111122223333', 48), log('bbbb', 0.1), log('cccc', 0.2)];
-    const v = judgePeerFederationSilence(rows, { silentAfterMs: SLO, nowMs: NOW });
+    const v = judgePeerFederationSilence(rows, { silentAfterMs: SLO, nowMs: NOW, ownLogKeyHex: null });
 
     expect(v.measured).toBe(true);
     expect(v.totalLogs).toBe(3);
@@ -73,7 +86,7 @@ describe('judgePeerFederationSilence — EI-20579195481991931', () => {
 
   it('WITHDRAWS the per-peer reading when EVERY log is silent and blames the local fold instead', () => {
     const rows = [log('aaaa', 48), log('bbbb', 50), log('cccc', 72)];
-    const v = judgePeerFederationSilence(rows, { silentAfterMs: SLO, nowMs: NOW });
+    const v = judgePeerFederationSilence(rows, { silentAfterMs: SLO, nowMs: NOW, ownLogKeyHex: null });
 
     expect(v.allSilent).toBe(true);
     expect(v.silent).toHaveLength(3);
@@ -85,7 +98,7 @@ describe('judgePeerFederationSilence — EI-20579195481991931', () => {
 
     // FALSIFIABILITY: the naive control emits one alarm per stale log here. The
     // subject must NOT — if these two ever agree, the discrimination is gone.
-    const control = wrongJudge(rows, { silentAfterMs: SLO, nowMs: NOW });
+    const control = wrongJudge(rows, { silentAfterMs: SLO, nowMs: NOW, ownLogKeyHex: null });
     expect(control).toHaveLength(3);
     expect(v.breaches.length).not.toBe(control.length);
   });
@@ -94,8 +107,8 @@ describe('judgePeerFederationSilence — EI-20579195481991931', () => {
     // Without this, the test above could pass simply because the subject never
     // reports anything — the controls must coincide where they should.
     const rows = [log('aaaa', 48), log('bbbb', 0.1)];
-    const v = judgePeerFederationSilence(rows, { silentAfterMs: SLO, nowMs: NOW });
-    const control = wrongJudge(rows, { silentAfterMs: SLO, nowMs: NOW });
+    const v = judgePeerFederationSilence(rows, { silentAfterMs: SLO, nowMs: NOW, ownLogKeyHex: null });
+    const control = wrongJudge(rows, { silentAfterMs: SLO, nowMs: NOW, ownLogKeyHex: null });
     expect(v.silent.map((s) => s.logKeyHex)).toEqual(['aaaa']);
     expect(control).toHaveLength(1);
   });
@@ -109,6 +122,7 @@ describe('judgePeerFederationSilence — EI-20579195481991931', () => {
     const dormant = judgePeerFederationSilence(rows, {
       silentAfterMs: SLO,
       nowMs: NOW,
+      ownLogKeyHex: null,
       localActivityAgeMs: 44 * 60 * 60_000,
     });
     expect(dormant.measured).toBe(false);
@@ -122,6 +136,7 @@ describe('judgePeerFederationSilence — EI-20579195481991931', () => {
     const live = judgePeerFederationSilence(rows, {
       silentAfterMs: SLO,
       nowMs: NOW,
+      ownLogKeyHex: null,
       localActivityAgeMs: 60_000,
     });
     expect(live.measured).toBe(true);
@@ -137,6 +152,7 @@ describe('judgePeerFederationSilence — EI-20579195481991931', () => {
     const v = judgePeerFederationSilence(rows, {
       silentAfterMs: SLO,
       nowMs: NOW,
+      ownLogKeyHex: null,
       localActivityAgeMs: Number.POSITIVE_INFINITY,
     });
     expect(v.measured).toBe(false);
@@ -151,6 +167,7 @@ describe('judgePeerFederationSilence — EI-20579195481991931', () => {
     const unknown = judgePeerFederationSilence(rows, {
       silentAfterMs: SLO,
       nowMs: NOW,
+      ownLogKeyHex: null,
       localActivityAgeMs: null,
     });
     expect(unknown.measured).toBe(true);
@@ -159,7 +176,7 @@ describe('judgePeerFederationSilence — EI-20579195481991931', () => {
   });
 
   it('treats NO remote logs as UNMEASURED, never as healthy', () => {
-    const v = judgePeerFederationSilence([], { silentAfterMs: SLO, nowMs: NOW });
+    const v = judgePeerFederationSilence([], { silentAfterMs: SLO, nowMs: NOW, ownLogKeyHex: null });
     expect(v.measured).toBe(false);
     expect(v.unmeasuredReason).toBe('no-remote-logs');
     expect(v.totalLogs).toBe(0);
@@ -167,7 +184,7 @@ describe('judgePeerFederationSilence — EI-20579195481991931', () => {
     expect(v.freshestAdvanceMs).toBeNull();
     // The distinction that matters: a caller must be able to tell this apart
     // from a genuinely clean scan, which also has zero breaches.
-    const clean = judgePeerFederationSilence([log('aaaa', 0.1)], { silentAfterMs: SLO, nowMs: NOW });
+    const clean = judgePeerFederationSilence([log('aaaa', 0.1)], { silentAfterMs: SLO, nowMs: NOW, ownLogKeyHex: null });
     expect(clean.breaches).toEqual([]);
     expect(clean.measured).toBe(true);
     expect(clean.unmeasuredReason).toBeNull();
@@ -176,7 +193,7 @@ describe('judgePeerFederationSilence — EI-20579195481991931', () => {
 
   it('stays quiet when every log is advancing', () => {
     const rows = [log('aaaa', 0.1), log('bbbb', 1), log('cccc', 5.9)];
-    const v = judgePeerFederationSilence(rows, { silentAfterMs: SLO, nowMs: NOW });
+    const v = judgePeerFederationSilence(rows, { silentAfterMs: SLO, nowMs: NOW, ownLogKeyHex: null });
     expect(v.silent).toEqual([]);
     expect(v.allSilent).toBe(false);
     expect(v.breaches).toEqual([]);
@@ -196,13 +213,13 @@ describe('judgePeerFederationSilence — EI-20579195481991931', () => {
       updatedAtMs: NOW - SLO - 1,
       applyBinding: LIVE_BINDING,
     };
-    expect(judgePeerFederationSilence([exact], { silentAfterMs: SLO, nowMs: NOW }).silent).toEqual([]);
-    expect(judgePeerFederationSilence([over], { silentAfterMs: SLO, nowMs: NOW }).silent).toHaveLength(1);
+    expect(judgePeerFederationSilence([exact], { silentAfterMs: SLO, nowMs: NOW, ownLogKeyHex: null }).silent).toEqual([]);
+    expect(judgePeerFederationSilence([over], { silentAfterMs: SLO, nowMs: NOW, ownLogKeyHex: null }).silent).toHaveLength(1);
   });
 
   it('orders silent logs worst-first and carries the fold position as forensics', () => {
     const rows = [log('mid', 20, 7), log('worst', 90, 0), log('fresh', 0.1, 900)];
-    const v = judgePeerFederationSilence(rows, { silentAfterMs: SLO, nowMs: NOW });
+    const v = judgePeerFederationSilence(rows, { silentAfterMs: SLO, nowMs: NOW, ownLogKeyHex: null });
     expect(v.silent.map((s) => s.logKeyHex)).toEqual(['worst', 'mid']);
     // position 0 = we never folded anything from that log at all — a materially
     // different story from "it advanced, then stopped", so it must survive.
@@ -243,7 +260,7 @@ describe('judgePeerFederationSilence — EI-20579195481991931', () => {
       updatedAtMs: NOW + 60_000,
       applyBinding: LIVE_BINDING,
     };
-    const v = judgePeerFederationSilence([future], { silentAfterMs: SLO, nowMs: NOW });
+    const v = judgePeerFederationSilence([future], { silentAfterMs: SLO, nowMs: NOW, ownLogKeyHex: null });
     expect(v.freshestAdvanceMs).toBe(0);
     expect(v.silent).toEqual([]);
   });
@@ -276,7 +293,7 @@ describe('judgePeerFederationSilence — EI-20617273180156712 (apply_binding res
   ];
 
   it('judges ONLY the live-binding population — the measured 20-of-21 false major becomes 5 of 6', () => {
-    const v = judgePeerFederationSilence([...stranded, ...live], { silentAfterMs: SLO, nowMs: NOW });
+    const v = judgePeerFederationSilence([...stranded, ...live], { silentAfterMs: SLO, nowMs: NOW, ownLogKeyHex: null });
 
     // The denominator is the population the fold actually maintains.
     expect(v.totalLogs).toBe(6);
@@ -293,8 +310,8 @@ describe('judgePeerFederationSilence — EI-20617273180156712 (apply_binding res
 
   it('FALSIFIABILITY: the no-predicate control still reports all 20 — the subject must not agree', () => {
     const rows = [...stranded, ...live];
-    const control = wrongJudge(rows, { silentAfterMs: SLO, nowMs: NOW });
-    const v = judgePeerFederationSilence(rows, { silentAfterMs: SLO, nowMs: NOW });
+    const control = wrongJudge(rows, { silentAfterMs: SLO, nowMs: NOW, ownLogKeyHex: null });
+    const v = judgePeerFederationSilence(rows, { silentAfterMs: SLO, nowMs: NOW, ownLogKeyHex: null });
 
     // The control IS the defect: 15 corpses + 5 slow live logs.
     expect(control).toHaveLength(20);
@@ -303,8 +320,8 @@ describe('judgePeerFederationSilence — EI-20617273180156712 (apply_binding res
   });
 
   it('CALIBRATION: with no residue present the two agree, so the test above cannot pass vacuously', () => {
-    const v = judgePeerFederationSilence(live, { silentAfterMs: SLO, nowMs: NOW });
-    const control = wrongJudge(live, { silentAfterMs: SLO, nowMs: NOW });
+    const v = judgePeerFederationSilence(live, { silentAfterMs: SLO, nowMs: NOW, ownLogKeyHex: null });
+    const control = wrongJudge(live, { silentAfterMs: SLO, nowMs: NOW, ownLogKeyHex: null });
     expect(v.silent).toHaveLength(5);
     expect(control).toHaveLength(5);
     expect(v.strandedCursors).toBe(0);
@@ -315,7 +332,7 @@ describe('judgePeerFederationSilence — EI-20617273180156712 (apply_binding res
     // on truthiness rather than on disagreement would blind the detector
     // completely there — the opposite failure, and a silent one.
     const rows = [log('a', 48, 1, null), log('b', 50, 2, null), log('c', 0.1, 3, null)];
-    const v = judgePeerFederationSilence(rows, { silentAfterMs: SLO, nowMs: NOW });
+    const v = judgePeerFederationSilence(rows, { silentAfterMs: SLO, nowMs: NOW, ownLogKeyHex: null });
 
     expect(v.liveApplyBinding).toBeNull();
     expect(v.totalLogs).toBe(3);
@@ -325,7 +342,7 @@ describe('judgePeerFederationSilence — EI-20617273180156712 (apply_binding res
   });
 
   it('reports residue rather than dropping it silently, and says what it is', () => {
-    const v = judgePeerFederationSilence([...stranded, ...live], { silentAfterMs: SLO, nowMs: NOW });
+    const v = judgePeerFederationSilence([...stranded, ...live], { silentAfterMs: SLO, nowMs: NOW, ownLogKeyHex: null });
     // Excluded-and-invisible would just move the bug: nobody would ever learn
     // the rows need cleaning up.
     expect(v.breaches[0]).toContain('15 further cursor(s) ignored');
@@ -337,7 +354,7 @@ describe('judgePeerFederationSilence — EI-20617273180156712 (apply_binding res
     // allSilent false (21 rows, 20 silent) and emit peer alarms instead of the
     // one verdict that matters: our own fold is wedged.
     const allDead = live.map((r) => ({ ...r, updatedAtMs: NOW - 48 * 60 * 60_000 }));
-    const v = judgePeerFederationSilence([...stranded, ...allDead], { silentAfterMs: SLO, nowMs: NOW });
+    const v = judgePeerFederationSilence([...stranded, ...allDead], { silentAfterMs: SLO, nowMs: NOW, ownLogKeyHex: null });
 
     expect(v.allSilent).toBe(true);
     expect(v.breaches).toHaveLength(1);
@@ -350,7 +367,7 @@ describe('judgePeerFederationSilence — EI-20617273180156712 (apply_binding res
     // The binding is read from the data precisely so this judge cannot drift
     // out of agreement with the fold. A future rebind must therefore just work.
     const rows = [log('old0', 300, 1, 'papercusp'), log('old1', 320, 2, 'papercusp'), log('new', 0.1, 3, 'rebound')];
-    const v = judgePeerFederationSilence(rows, { silentAfterMs: SLO, nowMs: NOW });
+    const v = judgePeerFederationSilence(rows, { silentAfterMs: SLO, nowMs: NOW, ownLogKeyHex: null });
 
     expect(v.liveApplyBinding).toBe('rebound');
     expect(v.totalLogs).toBe(1);
