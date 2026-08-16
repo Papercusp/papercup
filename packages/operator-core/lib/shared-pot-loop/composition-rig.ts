@@ -779,6 +779,22 @@ async function setupCellSchema(sql: postgres.Sql, opts: { workspaceId: string; h
       .join('\n'),
   );
 
+  // EI-20617273180156712: 493 creates the table WITHOUT `apply_binding`; migration
+  // 685 adds it, and the judge now SELECTs it (a cursor under a superseded binding
+  // is unreachable residue, not a silent peer). Loading only 493 leaves the fixture
+  // exactly one column behind the reader — and because `scanPeerFederationSilence`
+  // deliberately CATCHES its own scan errors, the 42703 would not fail the pass
+  // loudly: it degrades to `unmeasuredReason:'scan-failed'` and the peer-silence
+  // leg silently measures nothing while the suite stays green. That is the same
+  // fixture-drift class the comment above records, one column deeper, so the
+  // migration that moved the reader is loaded here beside the one that made it.
+  await sql.unsafe(
+    readFileSync(join(SQL_DIR, '685-substrate-merge-cursor-apply-binding.sql'), 'utf8')
+      .split('\n')
+      .filter((l) => !l.trimStart().startsWith('\\') && !/^(BEGIN|COMMIT);\s*$/i.test(l))
+      .join('\n'),
+  );
+
   // WI-1644 (part 3): SCHEDULER_MAINTAINED_READY reads live as ON in this test
   // environment (flags are NOT mocked here), so claimFloorsWhereSql's
   // useMaintainedReady branch queries harness_shared.work_item_blocked — the
