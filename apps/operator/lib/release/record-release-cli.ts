@@ -67,6 +67,7 @@ export {
   type MissingArtifactSlot,
 };
 import { generateChangelog } from './changelog-generate';
+import { OWNER_NAME_ENV, hasOwnerNameLiteral, identityLiterals } from './release-content-scrub';
 import {
   planPagePath,
   renderHistoryJson,
@@ -1147,6 +1148,45 @@ function arg(argv: string[], flag: string): string | null {
  * A rendering fix must never be able to change history.
  */
 export async function regenerateOnly(scope: Scope, outDir: string): Promise<number> {
+  /**
+   * FAIL CLOSED BEFORE RENDERING — the generator must refuse on the same input its
+   * gate refuses on (EI-20594446930640654).
+   *
+   * Both this renderer and gate-release-site depend on OWNER_NAME_ENV, and they used
+   * to handle its ABSENCE in OPPOSITE directions: the gate exited 2 with "REFUSING TO
+   * CERTIFY", while this path exited 0, printed "regenerated N page(s)", and wrote HTML
+   * with the owner's name embedded in it. So the component that CREATES the leak was
+   * silent and only the component that CHECKS for it failed closed — even though this
+   * one has strictly MORE information (it knows it is about to render owner-tagged
+   * work-item descriptions with an empty redaction set) and did strictly less with it.
+   *
+   * Measured: a regenerate with no owner env exited 0 after 235s and looked completely
+   * successful; the leak surfaced only at a publish gate three steps later, and only
+   * because the env happened to be set for THAT step and not this one. Pass it to both
+   * and you never learn the trap exists.
+   *
+   * The check is here rather than inside generateSite so it costs nothing and, more
+   * importantly, so no unscrubbed byte reaches the disk: an unscrubbed site is
+   * indistinguishable from a good one on inspection.
+   *
+   * This covers --hold-page and --restore-page too, which route through here and
+   * re-render every page (main() folds them into `regenerate`). That is deliberate:
+   * they render the same owner-tagged corpus, so they need the same literal. It does
+   * mean a caller of hold-release-page.sh must now export OWNER_NAME_ENV — the same
+   * requirement publish-release-history.sh already documents.
+   */
+  if (!hasOwnerNameLiteral(identityLiterals())) {
+    console.error(
+      "[record-release] 🔴 REFUSING TO RENDER — no owner-name literal resolved, so the owner's " +
+        'name cannot be redacted from these pages and the site would ship unscrubbed.\n' +
+        '  Cause: `git config user.name` is unset or belongs to an automation (a bot/CI identity).\n' +
+        `  Fix:   set ${OWNER_NAME_ENV}='<the owner's name>' for this run — it is read at run\n` +
+        '         time and never stored, because writing the name into a source file to search\n' +
+        '         for it would itself be the leak, committed to git forever.',
+    );
+    return 1;
+  }
+
   const sql = postgres(getHarnessAdminUrl(), { max: 1 });
   try {
     const { pages } = await generateSite(sql, scope, outDir);
