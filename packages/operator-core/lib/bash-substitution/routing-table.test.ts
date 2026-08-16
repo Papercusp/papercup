@@ -421,3 +421,22 @@ describe('the committed CLAUDE.md table matches the pairs', () => {
     }
   });
 });
+
+describe('the projected routing block is identical on every surface it lands in', () => {
+  // EI-20429916097018614: gen:tool-routing writes CLAUDE.md directly while AGENTS.md is
+  // emitted by the doc-parts projector from the corpus copy of the same block. The two
+  // drifted apart for 9 days (codex agents read a routing table missing rows claude
+  // agents had) and nothing observed it. Neither copy may drift from the other.
+  const extractBlock = (path: string): string => {
+    const text = readFileSync(path, 'utf8');
+    const si = text.indexOf(BEGIN_MARKER);
+    expect(si, `${path} is missing the BEGIN marker`).toBeGreaterThanOrEqual(0);
+    const ei = text.indexOf(END_MARKER, si);
+    expect(ei, `${path} is missing the END marker`).toBeGreaterThan(si);
+    return text.slice(si, ei + END_MARKER.length);
+  };
+
+  it('AGENTS.md carries the same generated block as CLAUDE.md, byte for byte', () => {
+    expect(extractBlock(join(REPO_ROOT, 'AGENTS.md'))).toBe(extractBlock(CLAUDE_MD));
+  });
+});
