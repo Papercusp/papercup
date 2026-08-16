@@ -127,7 +127,12 @@ async function gotoHarnessesTab(page: Page, search: string): Promise<boolean> {
  * opener adv-hive-from-github-url.spec.ts drives. Returns the fork tablist.
  */
 async function openPicker(page: Page) {
-  await page.getByTitle('Create or add a new harness').click();
+  // WI-39533: this used to be `getByTitle('Create or add a new harness')`. That
+  // string is LEXICON-DRIVEN — AdvPotBar.tsx:174 renders
+  // `Create or add a new ${t('pot')}`, and the active pack says "Pot", not
+  // "harness" — so the title locator could never match again regardless of the
+  // sync stub. The class on the opener is the stable handle (AdvPotBar:177).
+  await page.locator('button.pc-advshell__action--new').first().click();
   const fork = page.getByRole('tablist', { name: 'Creation mode' });
   await expect(fork).toBeVisible({ timeout: 10_000 });
   return fork;
