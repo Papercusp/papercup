@@ -1173,6 +1173,13 @@ function IssueDetail({
 function Empty({ children, tone }: { children: React.ReactNode; tone?: 'error' }) {
   return (
     <div
+      // Stable, addressable class for the empty/placeholder state — deliberately NOT
+      // `.pc-adv-detail` (that root only mounts once an item is actually selected; see
+      // EI-19917451944474469 comment: `.pc-adv-detail` presence/absence is itself a
+      // measured, intentional signal of "something is selected", so this state must not
+      // fake that root). Without a class here the placeholder is anonymous and only
+      // reachable by fragile page-wide text search.
+      className={`pc-adv-detail__empty${tone === 'error' ? ' pc-adv-detail__empty--error' : ''}`}
       style={{
         height: '100%',
         display: 'grid',
