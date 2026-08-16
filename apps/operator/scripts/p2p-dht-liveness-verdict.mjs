@@ -77,6 +77,10 @@ export const PROVED = Object.freeze({
  * @property {boolean} [remoteConfigured]        Was a remote peer actually specified.
  * @property {boolean} [remoteLegLaunched]       Did the remote peer process start at all.
  * @property {string|null} [remoteLegError]      Why it did not.
+ * @property {boolean} [serverLegLaunched]       Did the announcing peer process start at all.
+ * @property {string|null} [serverLegError]      Why it did not.
+ * @property {boolean} [serverAnnounced]         Did the server's announce actually flush.
+ * @property {DhtCounters|null} [serverCounters] The server's own dht-rpc counters.
  * @property {string|null} [expectedRemoteKey]   Public key the server announced (hex).
  * @property {string[]} [connectedPeerKeys]      remotePublicKey of every connection seen.
  * @property {string|null} [clientLocalKey]      The client's OWN public key.
