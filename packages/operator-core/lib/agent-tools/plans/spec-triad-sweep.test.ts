@@ -3,6 +3,7 @@ import {
   selectSpecTriadFilings,
   planRef,
   SPEC_TRIAD_MAX_FILINGS_PER_RUN,
+  LIVE_PLAN_STATUSES,
   type PlanContentRow,
 } from './spec-triad-sweep';
 
@@ -139,5 +140,53 @@ describe('selectSpecTriadFilings', () => {
   it('is a no-op on an empty input rather than throwing', () => {
     const s = select([]);
     expect(s).toMatchObject({ inScope: 0, owing: [], batch: [], deferred: 0, alreadyFiled: 0 });
+  });
+});
+
+describe('LIVE_PLAN_STATUSES — the sweep never files against an UNAPPROVED plan', () => {
+  // EI-20607174902714110. The triad is an INTERLOCK, not paperwork: `plans:items`
+  // holds a plan's items out of `actionable` while a leg is missing, and does so
+  // WITHOUT marking anything blocked — so for an unapproved draft that absence is
+  // the only thing keeping its work unclaimable. A filing that says "write the
+  // missing triad" is therefore, for a draft, an instruction to make un-ruled work
+  // pickable, and it is indistinguishable from a legitimate filing. Six were open
+  // at once on 2026-08-16, one against a plan gated on the owner for auth/security.
+  //
+  // These assertions are deliberately opposed, because the failure has two
+  // directions and fixing one by hand can silently cause the other.
+
+  /** Statuses that mean "exists, but nobody has cleared it to be worked". */
+  const NOT_YET_APPROVED = ['draft', 'proposed', 'needs-human', 'superseded', 'shipped'];
+
+  it('EXCLUDES draft — a plan nobody has approved must not get a filing', () => {
+    expect(LIVE_PLAN_STATUSES).not.toContain('draft');
+  });
+
+  it('still INCLUDES the approved statuses — narrowing must not disable the sweep', () => {
+    // The opposite failure: emptying or over-narrowing this list turns the daily
+    // backstop into a silent no-op, which looks identical to "nothing owes a triad".
+    expect(LIVE_PLAN_STATUSES).toContain('ready');
+    expect(LIVE_PLAN_STATUSES).toContain('active');
+    expect(LIVE_PLAN_STATUSES.length).toBeGreaterThan(0);
+  });
+
+  it('contains only statuses that mean APPROVED-TO-BE-WORKED', () => {
+    // Guards the general rule rather than the two literals above, so a future
+    // status meaning "proposed but not ruled on" cannot be added without failing.
+    for (const s of LIVE_PLAN_STATUSES) expect(NOT_YET_APPROVED).not.toContain(s);
+  });
+
+  it('CONTROL: the rule above actually fires on a regressed list', () => {
+    // A guard that has never failed is a guard nobody has tested. This is the
+    // permanent in-file control (repo rule: never mutate the shared tree to prove
+    // falsifiability — git-sync sweeps the whole tree and can commit the mutant).
+    // It runs the SAME predicate against a deliberately-regressed list, so if the
+    // predicate is ever weakened into a tautology, THIS test fails first.
+    const regressed = ['draft', 'ready', 'active']; // the pre-fix value
+    const offenders = regressed.filter((s) => NOT_YET_APPROVED.includes(s));
+    expect(offenders).toEqual(['draft']);
+
+    // ...and the calibration case: the real value must pass the same predicate.
+    expect(LIVE_PLAN_STATUSES.filter((s) => NOT_YET_APPROVED.includes(s))).toEqual([]);
   });
 });

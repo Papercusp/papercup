@@ -44,8 +44,31 @@ import { ensureSpecTriadFiling, SPEC_TRIAD_NON_TERMINAL_STATUSES } from './spec-
 /** Upper bound on work items filed in a single run. See the rails note above. */
 export const SPEC_TRIAD_MAX_FILINGS_PER_RUN = 25;
 
-/** Plan statuses that still have work ahead of them. */
-const LIVE_PLAN_STATUSES = ['draft', 'ready', 'active'];
+/**
+ * Plan statuses the SWEEP will file against.
+ *
+ * `draft` is deliberately EXCLUDED (EI-20607174902714110). It used to be here on
+ * the reading that a draft "still has work ahead of it" — true, but that conflates
+ * HAS WORK AHEAD with IS APPROVED TO BE WORKED, and for the backstop only the
+ * second one licenses a filing.
+ *
+ * The triad is not paperwork; it is the interlock. `plans:items` holds a plan's
+ * items out of `actionable` while a leg is missing, and does so WITHOUT marking
+ * anything blocked — so for an unapproved draft that absence is the ONLY thing
+ * keeping its work unclaimable. Filing "write the missing triad" against such a
+ * plan therefore reads as ordinary work while actually being "make this un-ruled
+ * plan's items pickable": an agent doing exactly what the item says, in good
+ * faith, walks a steward's revision-hold or an owner's needs-human gate straight
+ * open. Measured 2026-08-16: six such filings were open at once, one of them
+ * against a plan gated on the owner for auth/security reasons.
+ *
+ * Excluding drafts costs at most one sweep interval of latency: the moment a plan
+ * is approved (draft→ready) the next run files for it, and `promotePlanItems`
+ * still files IMMEDIATELY on the promotion path, where the act of promoting is
+ * itself the intent that a draft lacks. So "the gate always has an exit" survives
+ * for every plan actually cleared to be worked.
+ */
+export const LIVE_PLAN_STATUSES = ['ready', 'active'];
 
 export interface SpecTriadSweepResult {
   skipped: boolean;
