@@ -266,6 +266,13 @@ export interface PossibleDuplicate {
    *  is then the containment coefficient, not titleSimilarity. ALWAYS advisory-only: a
    *  containment hit is surfaced and never declines a capture. */
   lexical?: 'containment';
+  /** EI-20484430331973864: the candidate carries the SAME `watchdogKey` as this capture —
+   *  a DEFINITIONAL duplicate, independent of any title or embedding similarity. Present
+   *  only for non-observation captures that passed a `watchdogKey`. Always block-eligible
+   *  and never dropped by the top-5 slice: the fuzzy nets exist to GUESS at identity, and
+   *  an exact key already knows it. `similarity` is titleSimilarity as usual (it can be
+   *  anything, including 1.0 for a re-file of the identical title). */
+  exactKey?: true;
 }
 
 /**
@@ -673,11 +680,26 @@ export async function captureImprovement(
   // P-013: the invocation-ledger watchdog (or a caller with deterministic
   // reproduction evidence) corroborates an exact-key probation observation.
   // Promote THAT row in place before fuzzy dedup can decline it against itself.
+  // EI-20484430331973864: fetched ONCE and used TWICE — to promote a probation
+  // observation (immediately below), and as a first-class BLOCKING dedup source further
+  // down. Previously an exact-key hit that matched no probation row was simply DISCARDED,
+  // which left blocking dedup resting entirely on the fuzzy `searchIssues` title net.
+  // That net fails OPEN (search unavailable ⇒ empty candidate set ⇒ capture admitted), so
+  // a sentinel re-filing a standing condition on a stable key created a fresh critical row
+  // on every pass the search happened to be down: measured 459 open copies of one
+  // red-queen title, ~25% of the whole bug backlog duplicated this way.
+  let exactKeyIssues: EngineerIssue[] = [];
+  let exactKeyLookupFailed = false;
   if (!isObservation && input.watchdogKey) {
-    const exact = await (deps.findIssuesByWatchdogKeys ?? findIssuesByWatchdogKeys)([input.watchdogKey]).catch(
-      () => [] as EngineerIssue[],
+    exactKeyIssues = await (deps.findIssuesByWatchdogKeys ?? findIssuesByWatchdogKeys)([input.watchdogKey]).catch(
+      () => {
+        // UNKNOWN must never read as "no duplicate exists" — surfaced via
+        // dedupCoverage.degraded below, exactly like an unavailable lexical leg.
+        exactKeyLookupFailed = true;
+        return [] as EngineerIssue[];
+      },
     );
-    const probation = exact.find((i) => {
+    const probation = exactKeyIssues.find((i) => {
       const payload = (i.payload as Record<string, unknown> | null) ?? {};
       return i.state === 'open' && payload.lane === 'observation' && toolFailureProbationOf(payload)?.state === 'probation';
     });
