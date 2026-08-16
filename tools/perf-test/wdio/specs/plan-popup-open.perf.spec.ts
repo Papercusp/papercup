@@ -67,24 +67,120 @@ describe("Packaged Papercusp desktop — plan popup open interaction", () => {
     //    the warm open, not the cold one-time WASM init.
     await browser.pause(1500);
 
-    // 5. Clear any stale measure, then click the first row to START the
-    //    interaction (perf-marks beginInteraction fires on the click).
-    //    Report whether the row was actually FOUND: "no measure" on a click that
-    //    never had a target is a different defect from one that did, and without
-    //    this the two are indistinguishable downstream.
-    const triggerFound = await browser.execute((name) => {
-      try {
-        if (performance.clearMeasures) performance.clearMeasures(name);
-      } catch {
-        /* ignore */
-      }
-      const row = document.querySelector<HTMLElement>(
-        '[data-testid^="plans-pane-row-"]',
+    // 5. Pick a row we can actually OPEN, and measure THAT open.
+    //
+    //    WHY THIS IS NOT "click the first row" (WI-38449). The sidebar lists
+    //    plans the popup cannot load: a row whose plan resolves to `not_found`
+    //    renders PlanDetail's benign "Plan not found." empty state, so Vditor
+    //    never parses, `endInteraction` never fires, and no measure is ever
+    //    emitted. Measured here: 4 papercusp plans exist ONLY under
+    //    workspace_id='default' and every one of them answers not_found, while
+    //    8/8 control plans load — so which row lands first is a property of the
+    //    ENVIRONMENT, not of render performance.
+    //
+    //    That made this spec fail as if the interaction had regressed. An
+    //    unopenable plan is a VOID SAMPLE, not a slow one: the same distinction
+    //    the egress spec draws when it records -1 for a sample it declared void
+    //    rather than a truthful-but-meaningless 0. So try rows in order until
+    //    one genuinely opens, and measure that one; only report a perf verdict
+    //    for a sample that actually measured the interaction.
+    const candidates = await browser.execute((maxRows) => {
+      return Array.from(
+        document.querySelectorAll<HTMLElement>('[data-testid^="plans-pane-row-"]'),
+      )
+        .slice(0, maxRows)
+        .map((el) => ({
+          slug: (el.getAttribute("data-testid") ?? "").replace(
+            "plans-pane-row-",
+            "",
+          ),
+          harness:
+            el.querySelector(".plans-pane__row-harness")?.textContent?.trim() ??
+            null,
+        }));
+    }, MAX_ROWS_TO_TRY);
+
+    const attempts: string[] = [];
+    let opened: { slug: string; harness: string | null } | null = null;
+    let lastFailure: string | null = null;
+
+    for (const candidate of candidates) {
+      // Clear the previous attempt's measure + any dangling start, so a later
+      // row can never be credited with an earlier row's timing.
+      const clicked = await browser.execute(
+        (name, slug) => {
+          try {
+            performance.clearMeasures?.(name);
+            performance.clearMarks?.(`${name}:start`);
+          } catch {
+            /* ignore */
+          }
+          const row = document.querySelector<HTMLElement>(
+            `[data-testid="plans-pane-row-${slug}"]`,
+          );
+          if (!row) return false;
+          row.click();
+          return true;
+        },
+        INTERACTION_NAME,
+        candidate.slug,
       );
-      if (!row) return false;
-      row.click();
-      return true;
-    }, INTERACTION_NAME);
+      if (!clicked) {
+        attempts.push(`${candidate.slug}: row vanished before the click`);
+        continue;
+      }
+
+      // Settle to one of three terminal states rather than only "measure
+      // appeared": a plan that cannot load reaches its empty state fast, and
+      // waiting the full budget for it would turn an environment fact into an
+      // 8s stall per row.
+      const outcome = await browser.waitUntil(
+        async () =>
+          await browser.execute((name) => {
+            if (performance.getEntriesByName(name, "measure").length > 0)
+              return "measured";
+            const surface = document.querySelector<HTMLElement>(
+              '[data-testid="plan-popup-body"]',
+            );
+            const placeholder =
+              surface?.querySelector<HTMLElement>(".pc-plans__placeholder") ??
+              null;
+            const text = (placeholder?.textContent ?? "").trim();
+            // "Loading …" is in-flight; any OTHER placeholder is terminal
+            // (not-found / server error / no data) and this sample is void.
+            if (placeholder && text && !/^Loading\b/i.test(text))
+              return `void:${text.slice(0, 120)}`;
+            return false as const;
+          }, INTERACTION_NAME),
+        {
+          timeout: MEASURE_WAIT_MS,
+          timeoutMsg: "pending",
+        },
+      ).catch(() => "timeout" as const);
+
+      if (outcome === "measured") {
+        opened = candidate;
+        break;
+      }
+
+      lastFailure = String(outcome);
+      attempts.push(
+        `${candidate.slug} [${candidate.harness ?? "?"}]: ${String(outcome)}`,
+      );
+      // Close the popup so the next row starts from the same clean state.
+      await browser
+        .execute(() => {
+          document
+            .querySelector<HTMLElement>('[data-testid="plan-popup-close"]')
+            ?.click();
+        })
+        .catch(() => undefined);
+      await browser.pause(250);
+    }
+
+    const triggerFound = candidates.length > 0;
+    const trigger = opened ??
+      candidates[0] ?? { slug: null as string | null, harness: null };
     const clickedAt = Date.now();
 
     // 6. Wait for the measure to be emitted (endInteraction fires when the plan
@@ -149,6 +245,8 @@ describe("Packaged Papercusp desktop — plan popup open interaction", () => {
 
       const observed = [
         `observed: trigger=${triggerFound}`,
+        `clickedPlan=${trigger.slug ?? "(none)"}`,
+        `rowHarness=${trigger.harness ?? "(none)"}`,
         `startMark=${snapshot.startMarkPresent}`,
         `modal=${snapshot.modalPresent}`,
         `body=${snapshot.surfacePresent}`,
