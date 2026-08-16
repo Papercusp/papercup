@@ -19,11 +19,15 @@
  * blank input emits NO KEY, and a profile with no keys emits no profile.
  */
 
+// WI-39514: import from the CLIENT-SAFE shared module, never from
+// `goal-launch-settings` itself — that one value-imports `@papercusp/db-org`,
+// whose chain reaches `embedded-pg-discovery` -> `node:path`, which is a
+// throwing stub in the browser and white-screened this whole route.
 import {
   GOAL_LAUNCH_ROLES,
   isGoalLaunchRole,
   type GoalLaunchRole,
-} from '@papercusp/operator-core/lib/goal-launch-settings';
+} from '@papercusp/operator-core/lib/goal-launch-settings-shared';
 
 import type {
   GoalDetailLaunchDefaults,
