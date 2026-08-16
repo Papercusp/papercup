@@ -24,20 +24,35 @@ const SYMBOLIC_REF = /^ref:\s+\S+/;
 export type GitStoreFileKind = 'ref' | 'log';
 
 /**
- * Classify one file's content. `contentHead` may be a prefix of the file — only
- * the first line of a ref, and the first few lines of a log, are ever inspected.
+ * Classify one file's content. `contentHead` may be a PREFIX of the file, in
+ * which case pass `truncated: true`.
+ *
+ * ⚠ `truncated` is load-bearing, not a nicety: a byte-bounded read cuts the last
+ * line mid-sha, and validating that stump reports healthy reflogs as corrupt.
+ * Caught pre-landing on `logs/HEAD` files just over the read cap — a false
+ * positive here reds the release gate for the whole fleet.
  */
-export function isValidGitStoreFile(kind: GitStoreFileKind, contentHead: string): boolean {
+export function isValidGitStoreFile(
+  kind: GitStoreFileKind,
+  contentHead: string,
+  opts: { truncated?: boolean } = {},
+): boolean {
   if (kind === 'ref') {
+    // A ref is a single short line, so a truncated head can only be over-long
+    // junk — which is correctly invalid either way.
     const trimmed = contentHead.trim();
     // An EMPTY ref file is precisely the "null OID" corruption, never a valid ref.
     if (!trimmed) return false;
     return OBJECT_ID.test(trimmed) || SYMBOLIC_REF.test(trimmed);
   }
   // A reflog may legitimately be empty; every line it DOES have starts with the
-  // old object id: `<old> <new> <who> <when>\t<msg>`.
-  const lines = contentHead.split('\n').filter((line) => line.trim());
-  return lines.every((line) => OBJECT_ID.test(line.split(' ')[0] ?? ''));
+  // old object id: `<old> <new> <who> <when>\t<msg>`. That old id is all-zeroes
+  // for the entry that creates a ref, which is valid hex and valid here.
+  const lines = contentHead.split('\n');
+  if (opts.truncated) lines.pop(); // the final line is a fragment, not evidence
+  return lines
+    .filter((line) => line.trim())
+    .every((line) => OBJECT_ID.test(line.split(' ')[0] ?? ''));
 }
 
 /**
