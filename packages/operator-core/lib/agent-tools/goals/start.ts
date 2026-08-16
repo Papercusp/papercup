@@ -41,7 +41,12 @@ import { spawnConsole, spawnHeadless } from '../../console-spawn';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { papercuspPathForWorkspace } from '../../papercusp-root';
 import { resolveSpawnHostOperatorBaseUrl } from '../../mcp-base-url';
-import { buildAgentLaunchCommand, injectLaunchedByArg } from '../../agent-launch-core';
+import { buildAgentLaunchCommand, injectFleetArg, injectLaunchedByArg } from '../../agent-launch-core';
+import {
+  drainFleetAutoMintEnabled,
+  mintDrainFleetForGoal,
+  teardownDrainFleetMint,
+} from '../../goals/drain-fleet-mint';
 import { resolveGoalLaunchForGoal } from '../../goal-launch-settings';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { setMode } from '../../modes/store';
@@ -309,8 +314,41 @@ export default defineTool({
       );
     }
 
+    // ── 2.5 the standing drain fleet (P-001, goal-mode-design-intent-hardening D-005) ──
+    // The GOAL contract requires ONE STANDING DRAIN FLEET PER GOAL. Minting it
+    // HERE — with the goal, before the agent exists — makes "the agent cannot
+    // forget it" structural instead of prose; the goal-drain-fleet watchdog
+    // demotes to backstop. Fail-SOFT: a goal start must not die on fleet
+    // plumbing, and a drainless goal is exactly what the watchdog reports.
+    // (Rows only at this point — the lane's headless member is spawned after
+    // the goal agent below, so the rollback never has to unwind a process.)
+    let drainFleet: { slug: string; specRevision: number | null } | null = null;
+    const drainWarnings: string[] = [];
+    if (await drainFleetAutoMintEnabled()) {
+      try {
+        const minted = await mintDrainFleetForGoal({
+          workspaceId,
+          goalId: id,
+          goalTitle: args.title,
+          agentOwnerId: ownerId,
+          goalTx: ctx.tx,
+        });
+        drainFleet = { slug: minted.fleetSlug, specRevision: minted.specRevision };
+      } catch (e) {
+        drainWarnings.push(
+          `drain-fleet auto-mint failed (goal started anyway; the goal-drain-fleet watchdog keeps reporting until a fleet exists): ${(e as Error)?.message ?? e}`,
+        );
+      }
+    }
+
     // ── 3. the agent ──────────────────────────────────────────────────────
     const rollback = async () => {
+      // P-001: the drain-fleet mint is compensable rows (registry + claim spec) —
+      // tear them down with the goal, or the fleet strands as a registry row whose
+      // goal no longer exists. The metadata.drainFleet stamp dies with the goal row.
+      if (drainFleet) {
+        await teardownDrainFleetMint({ workspaceId, fleetSlug: drainFleet.slug }).catch(() => {});
+      }
       /* D-003: entering GOAL also wrote the modes it IMPLIES (auto, ideate), so
          a rollback that only clears 'goal' strands them on an ownerId that was
          never spawned. Clear exactly what the cascade SET — never a mode it
@@ -422,6 +460,49 @@ export default defineTool({
       );
     }
 
+    // ── 3.5 the drain lane's puller (P-001) ───────────────────────────────
+    // A lane needs a MEMBER, not just a spec. Spawned LAST on purpose: every
+    // earlier side effect is compensable, a process is not — so it starts only
+    // once the goal is definitely keeping its agent. `--fleet` is what makes
+    // bootstrap-su stamp the membership fact getClaimSpec's fleet-inheritance
+    // resolves through (and what triggers the launcher's fleet auto-kickoff, so
+    // the member pulls instead of parking). Fail-soft: a memberless fleet reads
+    // as 'drain-fleet-dead' to the watchdog, which is the designed backstop —
+    // never a reason to unwind a successfully-started goal.
+    let drainMember: { pid: number | null; terminal: string } | null = null;
+    if (drainFleet) {
+      try {
+        let memberCmd = buildAgentLaunchCommand({
+          mode: 'fresh',
+          agent: goalLaunch.effective.agent ?? args.agent ?? 'claude',
+          harness: installSlug,
+          account: goalLaunch.effective.account ?? args.account ?? null,
+          headless: true,
+        });
+        memberCmd = injectFleetArg(memberCmd, drainFleet.slug).command;
+        memberCmd = injectLaunchedByArg(memberCmd, callerOwnerId).command;
+        // Deliberately `base.env`, never the goal agent's `env`: the kickoff
+        // brief names ONE owner of the goal, and a drain bee that also received
+        // it would believe itself that owner.
+        const member = await spawnHeadless({
+          envelope: { ...base, greetingCmd: memberCmd, cwd: base.cwd },
+          label: `goal-drain · ${args.title.slice(0, 40)}`,
+          logDir: join(papercuspPathForWorkspace(workspaceId), 'fleet-logs'),
+        });
+        if (member.status === 'ok') {
+          drainMember = { pid: member.pid ?? null, terminal: member.terminal };
+        } else {
+          const detail = 'error' in member && member.error ? member.error : 'no detail';
+          drainWarnings.push(
+            `drain-fleet member failed to launch (${detail}) — the fleet and its goal-scoped lane exist; ` +
+              'the watchdog reports it dead until a member joins (fleet:join / capability:terminal with --fleet).',
+          );
+        }
+      } catch (e) {
+        drainWarnings.push(`drain-fleet member launch threw: ${(e as Error)?.message ?? e}`);
+      }
+    }
+
     return {
       data: {
         id,
@@ -440,6 +521,12 @@ export default defineTool({
         agent_terminal: spawned.terminal,
         agent_pid: spawned.pid ?? null,
         headless: !!args.headless,
+        // P-001: the auto-minted standing drain fleet (also declared on the goal
+        // row as metadata.drainFleet — the watchdog's surface). Null means the
+        // mint was skipped (flag off) or failed; see `warning`.
+        drain_fleet: drainFleet?.slug ?? null,
+        drain_member_pid: drainMember?.pid ?? null,
+        ...(drainWarnings.length ? { warning: drainWarnings.join('\n') } : {}),
       },
     };
   },
