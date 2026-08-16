@@ -44,6 +44,12 @@ describe('startBootedHandlesBroadcaster (PRIMARY side)', () => {
           handles: [{ workspaceId: 'ws1', harnessSlug: 'a' }],
           sentAt: expect.any(Number),
           ownsSubstrate: true,
+          // EI-20575137548097507: the broadcast now carries the means to ASSESS
+          // these handles, not just enumerate them. Asserted as a present array
+          // (empty here — this fixture registers no liveness) rather than
+          // omitted, because a receiver reads an ABSENT field as "health
+          // unobservable" and an empty one as "measured, nothing stalled".
+          replicationLiveness: [],
         },
       ]);
       H.state.booted = [{ workspaceId: 'ws1', harnessSlug: 'a' }, { workspaceId: 'ws1', harnessSlug: 'b' }];

@@ -63,6 +63,11 @@ describe('startBootedHandlesPgPublisher (SUBSTRATE-OWNER side)', () => {
       expect(H.writeOperatorState).toHaveBeenLastCalledWith('substrate_booted_handles_status', {
         handles: [{ workspaceId: 'ws1', harnessSlug: 'a' }],
         sentAt: 1_000,
+        // EI-20575137548097507: published alongside the handles so a non-owner
+        // reader can ASSESS them. Present-but-empty here (no liveness
+        // registered in this fixture) is meaningfully different from absent:
+        // absent means the reader must report health UNOBSERVED.
+        replicationLiveness: [],
       });
       H.state.booted = [
         { workspaceId: 'ws1', harnessSlug: 'a' },
