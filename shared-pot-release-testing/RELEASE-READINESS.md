@@ -29,6 +29,107 @@ waiting on a decision; every open row has a named owner and a concrete flip cond
 > fine, pending paperwork". The single flip condition is one gate run reporting
 > `local_matrix=OK`; the next unforced attempt is the 03:39Z timer.
 
+> ## ⚠ RE-SIGNED 2026-08-16T03:5xZ (su-0c703, `WI-39359`, owner-directed AUTO) — VERDICT UNCHANGED (**NO-GO**), but the reason above is no longer the ONLY one, and the "single flip condition" clause is now INCOMPLETE
+>
+> The block immediately above is correct on its own terms and I have not altered its rows. What
+> has changed is that a **second, INDEPENDENT** reason now stands beside it — and unlike §3 row 0,
+> **this one is a known defect, measured, not absent evidence.** Both must clear before any GO.
+>
+> ⚠ **FIRST, A CLAUSE IN THE HEADLINE VERDICT (line 6) NOW NEEDS A BOUND: *"The substrate is
+> release-grade"*.** That sentence is the single most quotable line in this document and it was
+> written when **no scale criterion existed on the signed table at all** (see new §2.1 row 14).
+> It should now be read as: *the substrate's CORRECTNESS rows are release-grade; its behaviour
+> UNDER MESH LOAD is not established at any peer count.* ⚠ An earlier revision of this same
+> paragraph said "release-grade at ≤32 peers" — **withdrawn**, see the ladder below: the ladder is
+> non-monotonic (✅32 ✅40 ❌48 ✅56 ❌64), so "≤32" was me reading a threshold into two samples.
+> I am not deleting the headline clause — the correctness rows behind it stand on their own
+> evidence — but quoting it as a statement about *scale* overstates what has been measured, and
+> that is precisely how "p2p is fine" gets into a release note.
+>
+> **NEW: §2.1 row 14 — mesh scale was never on this table at all.** That absence was the finding.
+> The 256-peer target was unreachable **by configuration**: `swarm-guard.ts` keyed its
+> connection-rate bucket `ip ?? keyHex` (IP first) and banned the **IP** on a trip, so co-located
+> peers shared one 30-conns/10s budget and a single burst evicted every neighbour for 600,000ms.
+> A flat N-peer mesh makes ~N−1 inbound connections by construction — 2× over budget at 64.
+>
+> Three consequences, in the order they matter:
+>
+> 1. ⚠⚠ **Every measurement above ~32 peers, ever taken, is VOID as a capacity statement** — all of
+>    them ran through a guard that was banning the mesh. The substrate's true ceiling has **never
+>    been measured**. Do not quote any historical peer-count number from this repo, including ones
+>    in earlier revisions of this document.
+> 2. **The guard is fixed and the fix is verified — and 64 peers STILL fails.** Controlled
+>    before/after: converged readers 30/63 → 61/63, p95 601,075ms → 152,020ms, 5.9× faster. But
+>    `convergencePassed: false` persists (readers 16 and 38, convergence p95 152s). **64-peer
+>    operation is not release-ready on measured evidence**; 256 is far beyond the last honest
+>    measurement. Residual: `WI-39374`.
+> 3. **A third input arrived from the coordination lane and I am not signing past it:** peer machine
+>    B has federated **nothing for 48h** with **zero alerts**, because stall detection is host-local
+>    by construction (`EI-20579195481991931`, su-c531b). That is a data-plane observability gap.
+>    ✅ **RESOLVED SAME-TURN, and recorded here so nobody re-opens it as a guess:** I asked whether it
+>    shared a mechanism with row 14's two non-converging readers; su-c531b answered **NO — B's stall
+>    is a boot-time storage guard (the substrate fails to BOOT), not replication lag.** They are two
+>    distinct defects and must be tracked and cleared separately. The observability half stands on
+>    its own regardless of mechanism: a total 48h federation outage on a peer that **no monitor on
+>    the other machine can see** is a release blocker in its own right, because it means we cannot
+>    detect this class in the field at all.
+>
+> **The flip condition is therefore no longer single.** It is now at least: (a) one gate run
+> reporting `local_matrix=OK` (§3 row 0, unchanged, su-c531b's row); **(b)** a post-fix
+> re-baseline establishing where convergence actually breaks, with `convergencePassed: true` at
+> the peer count we intend to claim; **(c)** peer-B federation stall explained and detectable.
+>
+> ### ✅ (b) HAS NOW BEEN RUN — 2026-08-16T03:5xZ. The answer is NOT a capacity number, and that is the finding.
+>
+> Full post-fix ladder, same host, `replication.sustained` / `rate:10 count:200`
+> (`test-results/p2p-perf/2026-08-16T03-50-04-804Z/` and `.../2026-08-16T03-57-26-753Z/`):
+>
+> | peers | `convergencePassed` | converged readers | convergence p95 | duration |
+> |---|---|---|---|---|
+> | 32 | ✅ true | 31 / 31 | 39,469 ms | 57 s |
+> | 40 | ✅ true | 39 / 39 | **1,538 ms** | 22 s |
+> | **48** | ❌ **false** | 46 / 47 | 104,870 ms | 124 s |
+> | **56** | ✅ **true** | 55 / 55 | 18,992 ms | 31 s |
+> | 64 | ❌ false | 59 / 63 | 165,811 ms | 185 s |
+> | 64 (repeat) | ❌ false | 61 / 63 | 152,020 ms | 172 s |
+>
+> ⚠⚠ **READ THE 48 AND 56 ROWS TOGETHER: 56 PASSES WHILE 48 FAILS. THE LADDER IS NON-MONOTONIC,
+> SO THERE IS NO CAPACITY CEILING HERE TO FIND.** I had expected a threshold and went looking for
+> it; the data refuses one. Two independent signals say the same thing:
+>
+> 1. **Pass/fail is not ordered by peer count** — ✅32 ✅40 ❌48 ✅56 ❌64.
+> 2. **Run-to-run variance dominates the peer-count signal outright.** Convergence p95 swings
+>    **25×** between *adjacent* configurations (1,538ms at 40 peers vs 39,469ms at 32 peers).
+>    A quantity that moves 25× on a variable that is supposed to be the independent one is noise
+>    with a trend buried in it, not a capacity curve.
+>
+> **⚠ THIS RETRACTS A CLAIM I MYSELF WROTE INTO THIS DOCUMENT ~15 MINUTES EARLIER.** On the 32/64
+> pair alone I wrote *"on measured evidence this system supports 32 peers, not 256"* and
+> *"the break lies between 32 and 64"*. **Both are withdrawn.** Two points looked like a threshold;
+> five points show they were two samples from a noisy distribution. I also worried in that same
+> text that the 32-peer p95 of 39.5s was an uncomfortable product bar — that concern is likewise
+> void, since 40 peers came in at 1.5s. **No supported-mesh-size number is derivable from this
+> data, and nobody should quote one — including the "32" I published.**
+>
+> **What the evidence DOES support, and this is still substantial:**
+> - Convergence failures at this scale are **real and reproducible in aggregate** (48 failed; 64
+>   failed on both of two independent runs). This is not measurement error.
+> - They are **intermittent/probabilistic, not a hard ceiling** — consistent with the other thing
+>   the runs show: the set of lagging readers, and its size, **varies between runs** (2 then 4).
+>   There is no specific broken peer; my earlier naming of "readers 16 and 38" is also falsified.
+> - Therefore the defect is a **flaky convergence failure whose incidence appears to RISE with
+>   peer count**, which is a materially different — and harder — defect than a capacity limit.
+>
+> **What it would take to get a real number (none of it done):** N repeated runs per configuration
+> to separate signal from noise, reported as a convergence RATE with a confidence interval rather
+> than one boolean per config. Every row above is n=1 except 64 (n=2). **128 was deliberately NOT
+> run** — ~450MB RSS/peer ⇒ ~58GB against ~65GB free on a shared box with live peers; and on
+> this evidence a single 128 sample would not have meant anything anyway.
+>
+> ⚠ **How to read a p2p-perf artifact when checking any of this:** cite `convergencePassed`, never
+> `sloPassed`. `sloPassed` measures host event-loop responsiveness and read `true` on the pre-fix
+> run in which 33 of 63 readers never converged. See the reading-rule row under §2.1.
+
 > ### ⚠ Two rows added 2026-08-09 — read these before quoting any 🟢 in this document
 >
 > **C-001 — consent withdrawal does not cut on the from-repo path (WI-37195). RELEASE BLOCKER.**
@@ -228,6 +329,8 @@ logs are from the green run `m1785117063`.
 | 11 | Moderation witness — takedown + report federation, live | 🟢 | P-102/WI-5129 — 3 legs PASS on a current build: MOD-LEG1 takedown A→B (`origin=remote`, v1→v2), reportable-authored, MOD-LEG2 report B→A into the owner's queue |
 | 12 | Fresh-join cold-restart replication (the ~13.0s death) | 🟢 | Root-caused and fixed: a phantom SocketPool `bind(0)` port in the punch-derived remote address (host correct, port stale/unbound) — **not** host contention (that conclusion is formally OVERTURNED by D-009) and not a generic retransmission bug. Fix landed in `connect.js:354` (`samePrivateIPv4Subnet24` LAN shortcut, WI-5980); proven by row 8's 5-cycle soak |
 | 13 | Boot-window item-assignment federation hole (WI-5441) | 🟡 | **Consciously WAIVED for public release, not closed** (P-410/WI-5764). Mechanism narrowed to a re-apply through the projection's `writeToPg` with provenance resolved to 'local' on already-federated content; exact call site needs a dedicated live-rig instrumentation session. Waiver + durable-fix direction: `agent-insights/federation-public-release-known-limitations.mdx` §11. WI-5441 left `blocked`/claim-held |
+| 14 | **Mesh scale — replication capacity at peer count (the 256-peer target)** | 🔴 | **ADDED 2026-08-16T03:5xZ (su-0c703, WI-39359). This criterion had NO ROW in this document until now, which is itself the finding: the scale claim was never on the signed table.** ⚠⚠ **Every measurement of this system above ~32 peers, ever taken, is VOID as a statement about replication capacity** — all of them ran through a DoS guard that was banning the mesh. Root cause (fixed, `EI-20578573707248054`, authority `committed`): `swarm-guard.ts` keyed its connection-rate bucket `ip ?? keyHex` — **IP first** — and a trip banned the **IP**, so peers behind one egress IP shared ONE 30-conns/10s budget and a single burst evicted every co-located neighbour for `DEFAULT_BAN_TTL_MS` = 600,000ms. A flat N-peer mesh makes ~N−1 inbound connections *by construction*: fine at 16, marginal at 32, **2× over budget at 64**. So the 256-peer target was unreachable **by configuration**, independent of substrate quality. Fix = separate per-KEY and per-IP buckets; recurrence guard `packages/operator-core/lib/sync/hyperbee/__tests__/swarm-guard-colocated-peers.test.ts` (carries a permanent control reproducing the pre-fix behaviour); 97 tests green / 5 swarm suites; `lint:tsc` clean. **THE ROW IS 🔴 ANYWAY, AND THAT IS THE POINT.** Controlled before/after, identical params (`peers:64 rate:10 count:200`), same host, ~1h apart: duration 1,023,652ms → 172,122ms (5.9×), `appendToVisible` p95 601,075ms → 152,020ms, converged readers 30/63 → **61/63**. But the post-fix run is `sloPassed: true` **and `convergencePassed: false`** — readers 16 and 38 never applied all ops, convergence p95 still **152s**. 64-peer operation is therefore **not release-ready on measured evidence**, and 256 is far beyond the last honestly-measured point. Residual filed as `WI-39374` (different mechanism — it matches no guard constant). Artifacts, both on disk: `test-results/p2p-perf/2026-08-16T02-32-24-570Z/005-replication.sustained.json` (pre) and `test-results/p2p-perf/2026-08-16T03-38-08-035Z/001-replication.sustained.json` (post). Decisions `harden-shared-hive-to-256-peers-2026-06-29#D-010` (correcting that plan's own D-008), `#D-011` and `#D-012` — ⚠ note those are that plan's decision ids, **not** this document's D-008 in §6. ✅ **FULL LADDER RUN 2026-08-16T03:5xZ — and it refuses to yield a capacity number, which IS the finding: ✅32 ✅40 ❌48 ✅56 ❌64. NON-MONOTONIC — 56 passes while 48 fails.** Convergence p95 swings 25× between adjacent configs (1,538ms at 40 peers vs 39,469ms at 32), so run-to-run variance dominates the peer-count signal and no supported-mesh-size figure is derivable. ⚠ **This RETRACTS my own earlier text in this row and in the verdict block asserting "supports 32 peers, not 256" and "the break lies between 32 and 64" — both withdrawn; they were two samples from a noisy distribution read as a threshold.** What DOES stand: the failures are real and reproducible in aggregate (48 failed; 64 failed on both of 2 independent runs), the lagging reader set and its size VARY between runs (so my "readers 16 and 38" naming is also falsified — there is no specific broken peer), and the defect is therefore an **intermittent/probabilistic convergence failure whose incidence appears to rise with peer count** — harder than a capacity limit, not easier. Every config is n=1 except 64 (n=2); a real number needs N repeated runs per config reported as a convergence RATE with a confidence interval. 128 deliberately not run (≈58GB RSS vs ≈65GB free on a shared box; a single sample would not have meant anything regardless). Artifacts: `test-results/p2p-perf/2026-08-16T03-50-04-804Z/` + `.../2026-08-16T03-57-26-753Z/`. **Release-blocker #4** |
+| — | ⚠ **Reading rule for rows 1–14, earned on row 14** | — | **`sloPassed` measures HOST RESPONSIVENESS (event-loop lag), never convergence — it must never be quoted alone as a scale or correctness verdict.** The pre-fix 64-peer run reported `sloPassed: true` while 33 of 63 readers never converged. A second, deliberately separate verdict `convergencePassed` now ships in every p2p-perf artifact for exactly this reason (`EI-20576392705164447`, `harden-shared-hive-to-256-peers-2026-06-29#D-009`) and **caught this on its first live run**. Any future green on this table sourced from a p2p-perf artifact must cite `convergencePassed`, not `sloPassed`. |
 
 ### 2.2 Work distribution (offers → pull → spawn → receipts → revocation)
 
