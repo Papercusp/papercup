@@ -277,6 +277,46 @@ test('EI-19932168784507536: the full fleet:capacity report surfaces overrideExcl
   headroomSpy.mockRestore();
 });
 
+test('EI-20613616736215896: the CALLER threads egressPool into the shared-egress evidence, so ' +
+  'distinct proxies disprove a down-proxy fault instead of manufacturing an owner escalation', async () => {
+  const { readBeeProviderAvailability } = await import('./capacity');
+  // The measured 2026-08-16 pool: every account is egressPool-routed and the singular `egress` is UNSET.
+  // `egressPool` supersedes `egress`, so a caller reading only the singular collapses all of these onto
+  // one synthetic identity, which deriveEdgeThrottleEvidence reads as the shared-IP signature — emitting
+  // "the egress path itself is broken → an OWNER-GATED infra issue → escalate" for a pool with no fault.
+  // This test lives at the CALLER because that is where the defect was: the pure function was always able
+  // to tell these apart, it was simply never handed the pool.
+  const throttled = { edgeThrottled: true, available: false, edgeThrottleBare429Streak: 9 };
+  mockAccountStatus.mockResolvedValueOnce([
+    acctRow('aviynw', { ...throttled, egressPool: [{ proxyUrl: 'http://199.182.115.224:3128' }, {}] }),
+    acctRow('avistorewolf.com', { ...throttled, egressPool: [{ proxyUrl: 'http://209.163.116.244:3128' }, {}] }),
+    acctRow('aviynw10', { ...throttled, egressPool: [{ proxyUrl: 'http://216.213.24.64:3128' }, {}] }),
+  ]);
+  mockGetAccountOverride.mockResolvedValueOnce({ forcedAccounts: [], excludeAccounts: [] });
+  const distinct = await readBeeProviderAvailability();
+  assert.equal(
+    distinct!.edgeThrottledSharedEgress,
+    false,
+    'three DISTINCT egress proxies are the opposite of a down-proxy signature — the owner-gated ' +
+      'escalation branch must be unreachable for this pool',
+  );
+
+  // POSITIVE CONTROL — without it the assertion above could pass simply because the evidence was never
+  // computed at all (undefined !== true reads the same as a correct verdict to a careless assertion).
+  // A genuinely shared pool must still produce the shared-IP diagnosis through the same code path.
+  mockAccountStatus.mockResolvedValueOnce([
+    acctRow('aviynw', { ...throttled, egressPool: [{ proxyUrl: 'http://199.182.115.224:3128' }, {}] }),
+    acctRow('aviynw3', { ...throttled, egressPool: [{ proxyUrl: 'http://199.182.115.224:3128' }, {}] }),
+  ]);
+  mockGetAccountOverride.mockResolvedValueOnce({ forcedAccounts: [], excludeAccounts: [] });
+  const shared = await readBeeProviderAvailability();
+  assert.equal(
+    shared!.edgeThrottledSharedEgress,
+    true,
+    'control: two accounts on the SAME pool is a real shared-IP fault and must stay diagnosable',
+  );
+});
+
 test('EI-20183190844096359: Codex capacity ignores stale Claude walls and reports the requested scope', async () => {
   const capacityMod = await import('./capacity');
   const observability = await import('../../inference-gateway/observability');
