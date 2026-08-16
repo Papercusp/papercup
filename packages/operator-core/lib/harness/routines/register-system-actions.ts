@@ -465,6 +465,13 @@ import './sql-read-census-action';
 // entry when FLAGS.SUPERVISOR_AUTO_RESTART (default ON) && entry.autoRestart, with uniform
 // flap-damping; report-only otherwise. Seeded ACTIVE by seed-supervision-reconcile-routine.ts.
 import './supervision-reconcile-action';
+// get-feedback-relevance-consults-2026-08-16 P-005 (D-005): `system:consult-expiry-sweep`
+// — flips past-due open consult_state rows to 'expired' (bounded, partial-index scan) and
+// emits the latched consult:reply:<conv> park key for hard-blocked rows so a parked
+// requester whose responder never answered is woken instead of sleeping to their await
+// timeout. A bespoke ephemeral (tier:'ephemeral', 300s) operator-HOME cadence (one sweep
+// serves every workspace's rows). Seeded ACTIVE by seed-consult-expiry-routine.ts.
+import './consult-expiry-action';
 // WI-37700 (follow-on to WI-37696): `system:worker-breaker-watch` — announces a tripped
 // persistent-worker crash-breaker on the embed SIDECAR (`workers.{embedder,reranker}` on
 // its /healthz), a bespoke ephemeral (tier:'ephemeral', 5min) operator-HOME cadence (same

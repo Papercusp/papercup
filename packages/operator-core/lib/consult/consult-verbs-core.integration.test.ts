@@ -103,10 +103,11 @@ async function seedConsult(opts: SeedOpts = {}): Promise<string> {
   return id;
 }
 
-function makeDeps(opts: { postError?: string; withReach?: boolean } = {}) {
+function makeDeps(opts: { postError?: string; withReach?: boolean; withMint?: boolean; mintError?: string } = {}) {
   const posts: Array<{ conversation_id: string; body: string; via_consult_verb: true }> = [];
   const emits: Array<{ key: string; summary: string; payload: Record<string, unknown>; to: string[] }> = [];
   const reached: Array<{ responder: string; conversationId: string }> = [];
+  const minted: Array<Parameters<NonNullable<ConsultVerbDeps['mintGraduationWorkItem']>>[0]> = [];
   const deps: ConsultVerbDeps = {
     getSql: () => rootSql,
     post: async (input) => {
@@ -133,9 +134,18 @@ function makeDeps(opts: { postError?: string; withReach?: boolean } = {}) {
             return { woke: 1 };
           },
         }),
+    ...(opts.withMint || opts.mintError
+      ? {
+          mintGraduationWorkItem: async (input) => {
+            if (opts.mintError) throw new Error(opts.mintError);
+            minted.push(input);
+            return { id: `WI-GRAD-${minted.length}` };
+          },
+        }
+      : {}),
     now: () => NOW,
   };
-  return { deps, posts, emits, reached };
+  return { deps, posts, emits, reached, minted };
 }
 
 async function stateRow(conversationId: string) {
@@ -453,5 +463,111 @@ describe('consultCloseCore', () => {
     expect(
       await consultCloseCore({ workspaceId: WS, authorId: RESPONDER, conversationId: id, outcome: 'answered', answer: 'a' }, deps),
     ).toMatchObject({ error: 'consult_not_open', state: 'closed_cant_help' });
+  });
+});
+
+// ── consult:close outcome 'graduate' (P-005, D-004) ──────────────────────
+describe('consultCloseCore — graduate', () => {
+  it('responder graduate: mints the shared work item, state=graduated, outcome {reason, work_item_id}, park-key emit', async () => {
+    const id = await seedConsult({ state: 'active' });
+    const { deps, emits, minted, posts } = makeDeps({ withMint: true });
+    const r = await consultCloseCore(
+      { workspaceId: WS, authorId: RESPONDER, conversationId: id, outcome: 'graduate', reason: 'cap hit while still deliberating' },
+      deps,
+    );
+    if ('error' in r) throw new Error(r.error);
+    expect(r.state).toBe('graduated');
+    expect(r.work_item_id).toBe('WI-GRAD-1');
+    expect(r.hint).toContain('WI-GRAD-1');
+
+    // The mint saw the consult's question + both participants + the closer.
+    expect(minted).toEqual([
+      {
+        workspaceId: WS,
+        conversationId: id,
+        question: 'q',
+        requesterId: REQUESTER,
+        responderId: RESPONDER,
+        closedBy: RESPONDER,
+        reason: 'cap hit while still deliberating',
+      },
+    ]);
+
+    // The closing post names the minted work item; its meta stays kind='close'
+    // ('graduate' is a close OUTCOME, not a post kind — the enum is untouched).
+    expect(posts[0].body).toContain('WI-GRAD-1');
+    const meta = await metaRows(id);
+    expect(meta[0].kind).toBe('close');
+
+    // State row: 'graduated' under the migration's state CHECK, outcome carries the id.
+    const row = await stateRow(id);
+    expect(row.state).toBe('graduated');
+    expect(row.outcome).toEqual({ reason: 'cap hit while still deliberating', work_item_id: 'WI-GRAD-1' });
+    expect(row.closed_at).not.toBeNull();
+
+    // A responder graduate is the terminal reply — the parked requester is woken.
+    expect(emits).toHaveLength(1);
+    expect(emits[0].key).toBe(`consult:reply:${id}`);
+  });
+
+  it('the requester may graduate too (close symmetry) — no park-key emit for their own close', async () => {
+    const id = await seedConsult({ state: 'active' });
+    const { deps, emits, minted } = makeDeps({ withMint: true });
+    const r = await consultCloseCore(
+      { workspaceId: WS, authorId: REQUESTER, conversationId: id, outcome: 'graduate', reason: 'outgrew the consult' },
+      deps,
+    );
+    if ('error' in r) throw new Error(r.error);
+    expect(r.state).toBe('graduated');
+    expect(minted[0].closedBy).toBe(REQUESTER);
+    expect(emits).toHaveLength(0);
+  });
+
+  it('graduate requires the reason — refused with nothing written', async () => {
+    const id = await seedConsult({ state: 'active' });
+    const { deps, posts, minted } = makeDeps({ withMint: true });
+    expect(
+      await consultCloseCore({ workspaceId: WS, authorId: RESPONDER, conversationId: id, outcome: 'graduate' }, deps),
+    ).toEqual({ error: 'reason_required' });
+    expect(posts).toHaveLength(0);
+    expect(minted).toHaveLength(0);
+    expect((await stateRow(id)).state).toBe('active');
+  });
+
+  it('graduate without a bound mint seam is refused structurally (graduate_unavailable), nothing written', async () => {
+    const id = await seedConsult({ state: 'active' });
+    const { deps, posts } = makeDeps(); // no withMint
+    const r = await consultCloseCore(
+      { workspaceId: WS, authorId: RESPONDER, conversationId: id, outcome: 'graduate', reason: 'r' },
+      deps,
+    );
+    expect(r).toMatchObject({ error: 'graduate_unavailable' });
+    expect(posts).toHaveLength(0);
+    expect((await stateRow(id)).state).toBe('active');
+  });
+
+  it('a mint failure is a clean refusal (graduate_failed) — consult stays open, no post', async () => {
+    const id = await seedConsult({ state: 'active' });
+    const { deps, posts } = makeDeps({ mintError: 'work-items store down' });
+    const r = await consultCloseCore(
+      { workspaceId: WS, authorId: RESPONDER, conversationId: id, outcome: 'graduate', reason: 'r' },
+      deps,
+    );
+    expect(r).toEqual({ error: 'graduate_failed', cause: 'work-items store down' });
+    expect(posts).toHaveLength(0);
+    expect((await stateRow(id)).state).toBe('active');
+  });
+
+  it('the cap-hit reply refusal names the graduate option (D-004 canonical trigger)', async () => {
+    const id = await seedConsult({ state: 'active', exchangesUsed: 4, maxExchanges: 4 });
+    const { deps } = makeDeps();
+    const refused = await consultReplyCore(
+      { workspaceId: WS, authorId: RESPONDER, conversationId: id, kind: 'new_fact', body: 'one more thing' },
+      deps,
+    );
+    expect(refused).toMatchObject({ error: 'exchange_cap' });
+    if ('error' in refused && refused.error === 'exchange_cap') {
+      expect(refused.hint).toContain("outcome: 'graduate'");
+    }
   });
 });

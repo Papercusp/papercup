@@ -61,6 +61,11 @@ export default defineTool({
       .max(16)
       .optional()
       .describe('Owners to exclude from candidacy — pass prior decliners on a re-call (manual cascade).'),
+    parent_consult_id: z
+      .string()
+      .min(1)
+      .optional()
+      .describe("Consulting onward from WITHIN a consult you are answering? Pass THAT consult's conversation_id: depth = parent+1 (capped at 2), and the lineage's participants are excluded from routing (cycle refusal, D-005)."),
     max_agents: z
       .number()
       .int()
@@ -110,6 +115,7 @@ export default defineTool({
         decisionAtStake: args.decision_at_stake,
         latencyContract: args.latency_contract,
         ...(args.origin_task_ref !== undefined ? { originTaskRef: args.origin_task_ref } : {}),
+        ...(args.parent_consult_id !== undefined ? { parentConsultId: args.parent_consult_id } : {}),
         excludeOwners: args.exclude,
         topics: args.topics,
         harnessSlug: args.harness,

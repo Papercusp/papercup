@@ -377,6 +377,10 @@ export const TARGET_ROLE_SPEND: Readonly<Record<string, SpendEntry>> = {
     why: 'SQL sweep + plans:set-status flips — the reflect-direction mirror of plan-item-orphan-reconcile; no spawn/dispatch/wake',
   },
   'system:supervision-reconcile': { spend: 'none', why: 'Reconciles supervision rows' },
+  'system:consult-expiry-sweep': {
+    spend: 'llm',
+    why: 'Expiry emit wakes a hard-blocked parked requester (latched consult:reply key), and a wake bills a turn',
+  },
   'system:worker-breaker-watch': {
     spend: 'none',
     why: 'HTTP GET of the embed sidecar /healthz + a coord broadcast on a tripped breaker — no spawn/dispatch/wake',
