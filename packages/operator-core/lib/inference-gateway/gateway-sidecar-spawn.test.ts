@@ -96,7 +96,13 @@ describe('buildGatewaySpawnPlan', () => {
     expect(plan.mode).toBe('dev-tsx');
     expect(plan.cmd).toBe('npx');
     expect(plan.args).toEqual(['tsx', '/repo/packages/operator-core/lib/inference-gateway/bin.ts']);
-    expect(plan.env).toEqual({}); // divert var must NOT leak into the dev child
+    // The divert var must NOT leak into the dev child...
+    expect(plan.env).not.toHaveProperty('PAPERCUSP_GATEWAY_SIDECAR_MODE');
+    // ...but parent identity MUST be re-declared to OUR pid (EI-20493378309289396):
+    // every sidecar spawn layers plan.env over ...process.env, so without this the
+    // child inherits the DESKTOP pid, its parent-death watch compares two pids that
+    // can never match, and it SIGTERMs itself ~40ms into every boot, forever.
+    expect(plan.env).toEqual({ PAPERCUSP_DESKTOP_PARENT_PID: String(process.pid) });
   });
 
   it('packaged (bundled serve.mjs) → re-exec self under the bundled node with the divert env', () => {
@@ -108,7 +114,11 @@ describe('buildGatewaySpawnPlan', () => {
     expect(plan.mode).toBe('bundled-reexec');
     expect(plan.cmd).toBe('/opt/Papercup/resources/node');
     expect(plan.args).toEqual(['/opt/Papercup/resources/serve.mjs']);
-    expect(plan.env).toEqual({ PAPERCUSP_GATEWAY_SIDECAR_MODE: '1' });
+    expect(plan.env).toEqual({
+      PAPERCUSP_GATEWAY_SIDECAR_MODE: '1',
+      // See the dev case above — parent identity travels on BOTH spawn modes.
+      PAPERCUSP_DESKTOP_PARENT_PID: String(process.pid),
+    });
   });
 });
 
