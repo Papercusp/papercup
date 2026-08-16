@@ -19,6 +19,7 @@ import { mkdir, open, readFile, rename, unlink, type FileHandle } from 'node:fs/
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { forgetStore, registerStoreMachine } from './remote-core-host';
+import { healRelocatedDeviceFileAndLog } from './device-file-heal';
 
 const stores = new Map<string, Promise<Corestore>>();
 const storeLocks = new Map<string, HarnessStoreLock>();
@@ -210,6 +211,11 @@ export async function getHarnessStore(opts: HarnessStoreOpts): Promise<Corestore
     const lock = await acquireHarnessStoreLock(opts);
     storeLocks.set(key, lock);
     try {
+      // A store directory relocated with its metadata intact keeps its
+      // device-file xattr but changes inode, which bricks every later open with
+      // "Invalid device file, was modified". No-op unless that exact fault is
+      // present. Must run while we hold the lock and before the open.
+      await healRelocatedDeviceFileAndLog(path, cacheKey(opts));
       const store = new Corestore(path, { cache: resolveCacheBlocks() });
       await store.ready();
       // WI-5673: declare which MACHINE this store belongs to so remote peer
@@ -227,6 +233,17 @@ export async function getHarnessStore(opts: HarnessStoreOpts): Promise<Corestore
     }
   })();
   stores.set(key, pending);
+  // EI-20584279536840151: evict a REJECTED open so the next caller genuinely
+  // retries. Without this the rejected promise stays cached and every later
+  // `getHarnessStore` re-returns the SAME rejection, so the substrate can never
+  // recover from a transient or since-repaired fault without a process restart —
+  // observed on the macOS rig as a boot_fail repeating byte-identically every
+  // ~10min for hours AFTER the on-disk cause had been fixed. Attached after the
+  // `set` so a concurrent caller still shares this in-flight attempt, and it
+  // deletes only its own entry so a later successful open is never evicted.
+  void pending.catch(() => {
+    if (stores.get(key) === pending) stores.delete(key);
+  });
   return pending;
 }
 
@@ -264,11 +281,18 @@ export async function getHarnessScopedStore(opts: HarnessStoreOpts): Promise<Cor
   const path = scopedStoragePath(opts);
   const pending = (async () => {
     await mkdir(path, { recursive: true });
+    // Same relocation fault as getHarnessStore — the scoped store sits in a
+    // sibling directory and was found equally bricked on the macOS rig.
+    await healRelocatedDeviceFileAndLog(path, `${cacheKey(opts)} (scoped)`);
     const store = new Corestore(path, { cache: resolveCacheBlocks() });
     await store.ready();
     return store;
   })();
   scopedStores.set(key, pending);
+  // Same poisoned-cache eviction as getHarnessStore — see the note there.
+  void pending.catch(() => {
+    if (scopedStores.get(key) === pending) scopedStores.delete(key);
+  });
   return pending;
 }
 
