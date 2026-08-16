@@ -90,6 +90,31 @@ waiting on a decision; every open row has a named owner and a concrete flip cond
 >    its own regardless of mechanism: a total 48h federation outage on a peer that **no monitor on
 >    the other machine can see** is a release blocker in its own right, because it means we cannot
 >    detect this class in the field at all.
+> 4. ⚠⚠ **>64 PEERS IS NOT MEASURABLE ON THIS HOST, AND THE ">64 LADDER" NUMBERS ARE VOID**
+>    (measured 2026-08-16T09:40Z, `/tmp/attrib-above64.log`,
+>    `test-results/p2p-perf/2026-08-16T09-40-17-138Z/`). The >64 non-monotonicity is **the
+>    measurement exhausting host memory**, not a substrate mesh-formation defect and not
+>    pre-existing host load. Each perf peer child holds **~430–550MB RSS** (`childRssPeak` p50,
+>    4 configs), so 80 peers needs ~38–42GB and 96 peers ~41–53GB of anonymous memory. The run
+>    **self-oversubscribes**: a pass beginning at loadavg 52 / PSI cpu some avg60 0.96% ended at
+>    **loadavg 265 (2.07× cpus)** having moved **470,555 swap pages**, and the runner's own
+>    EI-8843/EI-9145 guard fired *"host oversubscribed during this run AND host swapping"*.
+>    **The decisive evidence is non-reproducibility, not the load number:** across two runs of the
+>    same four configs, **96@100 went 22/95 → 95/95 while 96@10 went 95/95 → 51/95.** A capacity
+>    ceiling cannot invert. Failing readers cluster at 115–116s against the 120s budget — deadline
+>    clipping of an across-the-board-slow distribution, i.e. swap stalls.
+>    **Consequences:** quote **no** >64-peer convergence verdict as a substrate property, including
+>    the 80/96/128 rows of the 06:20Z ladder. 64 peers (~31GB) remains the largest config that fits.
+>    **256 peers would need ~128GB of child RSS and is therefore not measurable on this box with a
+>    process-per-peer harness at any load** — that is a HARNESS-ARCHITECTURE wall (a lower-footprint
+>    peer, or multiple machines), not a substrate verdict and not an owner-credential wall.
+>    ⚠ This does **not** say the substrate is fine above 64 — it says **we still do not know**, and
+>    this host cannot tell us. **Guard added so this cannot recur silently:** `perf/host-capacity.ts`
+>    refuses a proc-mesh that provably does not fit, at the `spawnProcMesh` chokepoint, before any
+>    child is spawned (`HostCapacityError`; override via `PERF_MESH_AVAILABLE_FRACTION` /
+>    `PERF_MESH_PER_PEER_BYTES`). This is the **fourth** time in this lane the instrument, not the
+>    substrate, was the defect (serial per-reader deadline; budget drift; hyperswarm's default
+>    `MAX_PEERS=64`; now per-peer RSS vs host memory).
 >
 > **The flip condition is therefore no longer single.** It is now at least: (a) one gate run
 > reporting `local_matrix=OK` (§3 row 0, unchanged, su-c531b's row); **(b)** a post-fix
