@@ -280,16 +280,15 @@ export function judgeLivenessProbe(obs) {
   // ── Did anything connect at all? ───────────────────────────────────────────
   if (connectedPeerKeys.length === 0) {
     if (looksTransmitBlocked(counters)) {
-      return verdict(
-        'fail',
-        'tx-blocked',
-        EXIT.FAIL,
-        PROVED.NOTHING,
-        `FAIL — this host's own DHT is TRANSMIT-BLOCKED: ${counters.requestsTotal} requests sent, ${counters.responses} responses, routing table empty` +
-          `${obs.inboundAnswered ? ', while still ANSWERING inbound traffic' : ''}. ` +
-          'TX dropped with RX intact is the macOS Local Network privacy signature (P-302); it is NOT a wedged bootstrap. ' +
-          'Check the OS privacy/firewall grant for the process, not the DHT.',
-      );
+      const d = diagnoseSilence({
+        counters,
+        inboundAnswered: obs.inboundAnswered,
+        // The announcing peer having flushed IS proof the bootstrap answers —
+        // that is what makes a client-side silence attributable to the client.
+        bootstrapProvenReachable: obs.bootstrapProvenReachable ?? obs.serverAnnounced === true,
+        side: 'dialling',
+      });
+      return verdict('fail', d.code, EXIT.FAIL, PROVED.NOTHING, d.message);
     }
     return verdict(
       'fail',

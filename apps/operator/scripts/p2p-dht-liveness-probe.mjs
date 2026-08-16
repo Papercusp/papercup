@@ -567,6 +567,13 @@ async function orchestrate(cfg) {
       remoteConfigured: Boolean(remoteHost),
       remoteLegLaunched: launched,
       remoteLegError: launchError,
+      serverLegLaunched: true,
+      // Reaching here means the server's announce FLUSHED, which is a positive
+      // observation that the bootstrap answers. That second vantage point is
+      // what lets a silent client be attributed to the client rather than
+      // guessed at — see `diagnoseSilence`.
+      serverAnnounced: true,
+      bootstrapProvenReachable: true,
       expectedRemoteKey: serverKey,
       connectedPeerKeys: clientObs?.connectedPeerKeys ?? [],
       clientLocalKey: clientObs?.publicKey ?? null,
