@@ -115,6 +115,7 @@ export function buildGatewaySpawnPlan(opts?: {
     devScriptPath: path.join(dir, 'bin.ts'),
     bundledModeEnvVar: 'PAPERCUSP_GATEWAY_SIDECAR_MODE',
     execPath,
+    spawnerPid: process.pid,
   });
 }
 

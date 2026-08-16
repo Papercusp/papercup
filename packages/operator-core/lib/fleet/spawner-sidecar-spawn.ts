@@ -258,6 +258,7 @@ async function spawnSpawnerSidecarInner(socketPath?: string): Promise<void> {
     devScriptPath: sidecarScript,
     bundledModeEnvVar: 'PAPERCUSP_SPAWNER_SIDECAR_MODE',
     execPath: process.execPath,
+    spawnerPid: process.pid,
   });
 
   const env: NodeJS.ProcessEnv = {

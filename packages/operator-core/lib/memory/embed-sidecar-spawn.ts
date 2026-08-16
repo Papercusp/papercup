@@ -222,6 +222,7 @@ export async function spawnEmbedSidecar(): Promise<void> {
     devScriptPath: sidecarScript,
     bundledModeEnvVar: 'PAPERCUSP_EMBED_SIDECAR_MODE',
     execPath: process.execPath,
+    spawnerPid: process.pid,
   });
 
   return new Promise<void>((resolve, reject) => {

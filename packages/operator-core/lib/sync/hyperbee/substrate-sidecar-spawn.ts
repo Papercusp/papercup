@@ -259,6 +259,7 @@ export async function spawnSubstrateSidecar(
     devScriptPath: sidecarScript,
     bundledModeEnvVar: 'PAPERCUSP_SUBSTRATE_SIDECAR_MODE',
     execPath: process.execPath,
+    spawnerPid: process.pid,
   });
 
   return new Promise<void>((resolve, reject) => {
