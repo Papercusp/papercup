@@ -26,6 +26,7 @@ import {
   AlertTriangle,
   ChevronDown,
   ChevronRight,
+  CircleDot,
   RefreshCw,
   ShieldCheck,
   UserRound,
@@ -79,6 +80,29 @@ import type {
 } from "@papercusp/operator-core/lib/sync-resolver/learning-scout-read";
 import type { HiveLearningsSnapshot } from "@papercusp/operator-core/lib/sync-resolver/learning-hive-read";
 import type { RetainExtrasSnapshot } from "@papercusp/operator-core/lib/sync-resolver/learning-retain-read";
+// VALUE import — deliberately from the pure types module, never from
+// learning-retain-read (node:fs would enter the browser bundle).
+import {
+  RETAIN_FEED_FILTERS,
+  RETAIN_FEED_TABS,
+  type RetainFeedCounts,
+  type RetainFeedFilter,
+  type RetainFeedKind,
+  type RetainFeedPage,
+  type RetainFeedRow,
+  type RetainFeedTab,
+  type RetainPlanChild,
+} from "@papercusp/operator-core/lib/sync-resolver/learning-retain-types";
+// WI-39493 owner ask 2026-08-16: the Retained ledger renders through the SAME
+// grid + column-filter components as the Work tab's work-item queue
+// (WorkItemsPanel.tsx — VirtualGrid + useColumnFilters/ColumnFilterBar).
+import {
+  VirtualGrid,
+  usePersistedColumnWidths,
+  type ColumnDef,
+} from "@papercusp/grid-core";
+import { ColumnFilterBar, useColumnFilters } from "@/app/harness/filters";
+import "@/app/adv/harnesses/adv-panel-chrome.css";
 import type { HiveThroughputSnapshot } from "@papercusp/operator-core/lib/sync-resolver/learning-hive-throughput-read";
 import type { PotSoakReportSnapshot } from "@papercusp/operator-core/lib/pot/soak-report";
 import type { ReleaseReadinessSnapshot } from "@papercusp/operator-core/lib/sync-resolver/learning-release-readiness-read";
@@ -5527,248 +5551,581 @@ function LearningsView({
           </div>
         )}
 
-        {/* Everything ELSE the colony keeps (WI-5412, owner: "add these there
-            too") — lens weights, rubric changes, insight runbooks, recipes.
-            Compact disclosures: Retain answers "what does the system know?",
-            it never duplicates the stores' own management surfaces. */}
-        {extrasSnap ? (
-          <>
-            <div className="pc-learning__sectionhead">
-              <h2>Also retained</h2>
+        {/* WI-39493 Variant D (owner pick 2026-08-16): everything ELSE the
+            colony keeps — plans, idea-routed work items, rubric changes,
+            insight runbooks, code recipes — as ONE recency-interleaved,
+            keyset-paged "Retained" ledger, rendered through the same grid +
+            column-filter components as the Work tab's work-item queue (owner
+            ask 2026-08-16). Lens weights stays separate below: it is the
+            distribution the loop steers by, not a feed. */}
+        <div className="pc-learning__sectionhead">
+          <h2>Also retained</h2>
+          <span
+            className="pc-learning__muted"
+            title="Learning the loop keeps outside the shared memory pool: routed plans and work items, rubric changes, agent-insight runbooks, and code recipes — one ledger, newest activity first."
+          >
+            other things the loop has learned
+          </span>
+        </div>
+        <RetainedLedgerCard enabled={hiveReady} />
+        {retainLensEntries.length > 0 ? (
+          <section
+            className="pc-learning__lensstrip"
+            aria-label="Lens sampling weights"
+          >
+            <header>
+              <Sparkles size={11} aria-hidden />
+              <span>Lens weights</span>
               <span
                 className="pc-learning__muted"
-                title="Learning the loop keeps outside the shared memory pool: lens steering, rubric changes, agent-insight runbooks, and code recipes."
+                title={`${t("scout")} picks its creative lenses with these sampling weights — learned from routed-idea outcomes and grades.`}
               >
-                other things the loop has learned
+                the sampling distribution the ideator draws lenses from
               </span>
-            </div>
-            {/* Idea-derived outcomes (owner ask 2026-07-19): the idea → plan/
-                work-item → DONE chain, visibly banked here — the loop's wins
-                are retained knowledge, not just lens-weight nudges. */}
-            {(extrasSnap.shippedFromIdeas?.length ?? 0) > 0 ? (
-              <LearningDisclosure
-                label="Shipped from ideas"
-                subtitle="ideas whose routed plan / work item reached an outcome"
-                count={extrasSnap.shippedFromIdeas.length}
-              >
-                <ul
-                  className="pc-learning__draftlist"
-                  aria-label="Idea-derived shipped outcomes"
+            </header>
+            <div className="pc-learning__flow">
+              {retainLensEntries.map(([lens, share]) => (
+                <span
+                  key={lens}
+                  className="pc-learning__lens"
+                  title={`${lens}: ${share}% of next cycle's lens sampling.`}
                 >
-                  {extrasSnap.shippedFromIdeas.map((d) => {
-                    const doneMs = d.completedAt ? Date.parse(d.completedAt) : NaN;
-                    // Server-stamped (RetainShippedIdea.shipped). This used to
-                    // be a hand-typed state list here, which drifted from the
-                    // unified enum and scored a `done` item as not-a-win while
-                    // scoring an abandoned one as a win (EI-18792873324746237).
-                    const good = d.shipped;
-                    return (
-                      <li key={d.ideaId} className="pc-learning__draftrow">
-                        <CheckCircle2 size={11} aria-hidden />
-                        <strong title={d.routedRef}>{d.title ?? d.routedRef}</strong>
-                        <em>{d.rail}</em>
-                        <span
-                          className={`pc-learning__flowchip${good ? " pc-learning__flowchip--wd-good" : ""}`}
-                          title={`The routed artifact's end state (${d.routedRef}).`}
-                        >
-                          {d.outcome}
-                        </span>
-                        {!Number.isNaN(doneMs) ? (
-                          <span className="pc-learning__draftwhen">
-                            {whenLabel(doneMs)}
-                          </span>
-                        ) : null}
-                      </li>
-                    );
-                  })}
-                </ul>
-              </LearningDisclosure>
-            ) : null}
-            {/* Blender-generated plans (D-004 / P-012): every plan the ideation
-                loop routed into the plan store — drafted included, not only the
-                shipped outcomes above. Rows deep-link to the Plans board via
-                the same nuqs params ImprovementsView's openPlan uses. */}
-            {(extrasSnap.blenderPlans?.length ?? 0) > 0 ? (
-              <LearningDisclosure
-                label="Plans from ideas"
-                subtitle="plans the ideation loop drafted into the plan store"
-                count={extrasSnap.blenderPlans.length}
-              >
-                <ul
-                  className="pc-learning__retainextras"
-                  aria-label="Blender-generated plans"
-                >
-                  {extrasSnap.blenderPlans.map((p) => {
-                    const routedMs = p.routedAt ? Date.parse(p.routedAt) : NaN;
-                    return (
-                      <li key={p.planSlug}>
-                        <GitBranch size={11} aria-hidden />
-                        <Tooltip
-                          label={`${p.planSlug} — open on the Plans board`}
-                        >
-                          <button
-                            type="button"
-                            className="pc-learning__retainlink"
-                            onClick={() => {
-                              void setPlanNav(p.planSlug);
-                              void setCreateViewNav("plans");
-                              void setTabNav("plans");
-                            }}
-                          >
-                            {p.title}
-                          </button>
-                        </Tooltip>
-                        {p.status ? (
-                          <span
-                            className="pc-learning__chip"
-                            title="Plan lifecycle status"
-                          >
-                            {p.status}
-                          </span>
-                        ) : null}
-                        {p.ideaTitle ? (
-                          <em
-                            className="pc-learning__retainidea"
-                            title={`Origin idea ${p.ideaId} (${p.lens} lens)`}
-                          >
-                            <Lightbulb size={10} aria-hidden />
-                            {p.ideaTitle}
-                          </em>
-                        ) : null}
-                        {!Number.isNaN(routedMs) ? (
-                          <span
-                            className="pc-learning__age"
-                            title="When the idea was routed into the plan store"
-                          >
-                            {whenLabel(routedMs)}
-                          </span>
-                        ) : null}
-                      </li>
-                    );
-                  })}
-                </ul>
-              </LearningDisclosure>
-            ) : null}
-            {retainLensEntries.length > 0 ? (
-              <LearningDisclosure
-                label="Lens weights"
-                count={retainLensEntries.length}
-              >
-                <div
-                  className="pc-learning__flow"
-                  aria-label="Lens sampling weights"
-                >
-                  <span
-                    className="pc-learning__flowchip"
-                    title={`${t("scout")} picks its creative lenses with these sampling weights — learned from routed-idea outcomes and grades.`}
-                  >
-                    <Sparkles size={11} aria-hidden />
-                    the loop learns which lenses win
+                  <em>{lens}</em>
+                  <span className="pc-learning__lensbar" aria-hidden>
+                    <span style={{ width: `${share}%` }} />
                   </span>
-                  {retainLensEntries.map(([lens, share]) => (
-                    <span
-                      key={lens}
-                      className="pc-learning__lens"
-                      title={`${lens}: ${share}% of next cycle's lens sampling.`}
-                    >
-                      <em>{lens}</em>
-                      <span className="pc-learning__lensbar" aria-hidden>
-                        <span style={{ width: `${share}%` }} />
-                      </span>
-                      <strong>{share}%</strong>
-                    </span>
-                  ))}
-                </div>
-              </LearningDisclosure>
-            ) : null}
-            {extrasSnap.rubricChanges.length > 0 ? (
-              <LearningDisclosure
-                label="Rubric changes"
-                count={extrasSnap.rubricChanges.length}
-              >
-                <ul
-                  className="pc-learning__retainextras"
-                  aria-label="Recently updated rubrics"
-                >
-                  {extrasSnap.rubricChanges.map((r) => (
-                    <li key={r.slug}>
-                      <Gauge size={11} aria-hidden />
-                      <strong title={r.slug}>{r.title}</strong>
-                      <span
-                        className="pc-learning__chip"
-                        title="Rubric lifecycle status"
-                      >
-                        {r.status}
-                      </span>
-                      <span className="pc-learning__age">
-                        {whenLabel(Date.parse(r.updatedAt))}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-              </LearningDisclosure>
-            ) : null}
-            {extrasSnap.insightDocs.length > 0 ? (
-              <LearningDisclosure
-                label="Agent insights"
-                count={extrasSnap.insightDocs.length}
-              >
-                <ul
-                  className="pc-learning__retainextras"
-                  aria-label="Newest agent-insight runbooks"
-                >
-                  {extrasSnap.insightDocs.map((d) => (
-                    <li key={d.slug}>
-                      <BookOpen size={11} aria-hidden />
-                      <strong title={`/internal/docs/agent-insights/${d.slug}`}>
-                        {d.title}
-                      </strong>
-                      {d.discovered ? (
-                        <span
-                          className="pc-learning__age"
-                          title="Discovered date from the runbook's frontmatter"
-                        >
-                          {d.discovered}
-                        </span>
-                      ) : null}
-                    </li>
-                  ))}
-                </ul>
-              </LearningDisclosure>
-            ) : null}
-            {extrasSnap.recipes.length > 0 ? (
-              <LearningDisclosure
-                label="Recipes"
-                count={extrasSnap.recipes.length}
-              >
-                <ul
-                  className="pc-learning__retainextras"
-                  aria-label="Most-recently-run code recipes"
-                >
-                  {extrasSnap.recipes.map((r) => (
-                    <li key={r.id}>
-                      <FlaskConical size={11} aria-hidden />
-                      <strong title={r.id}>{r.title}</strong>
-                      <span
-                        className="pc-learning__chip"
-                        title="Total recorded runs"
-                      >
-                        ×{r.runCount}
-                      </span>
-                      {r.lastRunAt ? (
-                        <span className="pc-learning__age">
-                          {whenLabel(Date.parse(r.lastRunAt))}
-                        </span>
-                      ) : null}
-                    </li>
-                  ))}
-                </ul>
-              </LearningDisclosure>
-            ) : null}
-          </>
+                  <strong>{share}%</strong>
+                </span>
+              ))}
+            </div>
+          </section>
         ) : null}
       </section>
     </>
+  );
+}
+
+// ─── Retained ledger (WI-39493, Variant D) ───────────────────────────────────
+
+const RETAIN_TAB_LABELS: Record<RetainFeedTab, string> = {
+  all: "All",
+  plans: "Plans",
+  wi: "Work items",
+  rubrics: "Rubrics",
+  runbooks: "Runbooks",
+  recipes: "Recipes",
+};
+
+const RETAIN_FILTER_LABELS: Record<RetainFeedFilter, string> = {
+  all: "All",
+  shipped: "Shipped",
+  inflight: "In flight",
+};
+
+const RETAIN_KIND_ICON: Record<RetainFeedKind, typeof GitBranch> = {
+  plan: GitBranch,
+  wi: CircleDot,
+  rubric: Gauge,
+  runbook: BookOpen,
+  recipe: FlaskConical,
+};
+
+/** Column-filter URL namespace — the hook owns ONE param, `rtf`. */
+const RETAIN_FILTER_NS = "rt";
+
+/** Grid-cell truncation, same recipe as the work queue's CELL_TRUNCATE. */
+const RETAIN_CELL_TRUNCATE: CSSProperties = {
+  display: "block",
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap",
+};
+
+/** A grid row: a ledger row, or a plan-born child spliced in under its
+ *  expanded plan — the grid stays flat + virtualized; expansion is a splice. */
+type RetainGridRow =
+  | { rowType: "item"; row: RetainFeedRow }
+  | { rowType: "child"; parentId: string; child: RetainPlanChild };
+
+function retainGridRowId(r: RetainGridRow): string {
+  return r.rowType === "item"
+    ? `${r.row.kind}:${r.row.id}`
+    : `child:${r.parentId}:${r.child.id}`;
+}
+
+/** 13561 → "13.6k" — tab badges carry the real corpus sizes; a null count is a
+ *  degraded read and renders as absence, never 0. */
+function fmtRetainCount(n: number | null | undefined): string | null {
+  if (n == null || !Number.isFinite(n)) return null;
+  if (n < 1000) return String(n);
+  return `${Math.round(n / 100) / 10}k`;
+}
+
+function buildRetainColumns(opts: {
+  rplanOpen: string | null;
+  onTogglePlan: (slug: string) => void;
+  onOpenPlan: (slug: string) => void;
+}): ColumnDef<RetainGridRow>[] {
+  const { rplanOpen, onTogglePlan, onOpenPlan } = opts;
+  return [
+    {
+      key: "kind",
+      header: "Kind",
+      width: 1,
+      toCopyText: (r) => (r.rowType === "item" ? r.row.kind : "wi"),
+      filter: {
+        type: "enum",
+        accessor: (r) => (r.rowType === "item" ? r.row.kind : "wi"),
+      },
+      render: ({ row: r }) => {
+        if (r.rowType === "child") return null;
+        const Icon = RETAIN_KIND_ICON[r.row.kind];
+        return (
+          <span className="pc-learning__retainedkindcell">
+            <Icon size={11} aria-hidden />
+            {r.row.kind}
+          </span>
+        );
+      },
+    },
+    {
+      key: "title",
+      header: "Title",
+      width: 4,
+      toCopyText: (r) => (r.rowType === "item" ? r.row.title : r.child.title),
+      filter: {
+        type: "text",
+        accessor: (r) => (r.rowType === "item" ? r.row.title : r.child.title),
+      },
+      render: ({ row: r }) => {
+        if (r.rowType === "child") {
+          return (
+            <span
+              className="pc-learning__retainedchildcell"
+              style={RETAIN_CELL_TRUNCATE}
+              title={`${r.child.id} — born from plan ${r.parentId}`}
+            >
+              ↳ {r.child.title}
+            </span>
+          );
+        }
+        const { row } = r;
+        if (row.kind === "plan") {
+          const open = rplanOpen === row.id;
+          return (
+            <span className="pc-learning__retainedplancell">
+              <button
+                type="button"
+                className="pc-learning__retainedchev"
+                aria-expanded={open}
+                aria-label={
+                  open
+                    ? "Collapse plan-born work items"
+                    : "Expand plan-born work items"
+                }
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onTogglePlan(row.id);
+                }}
+              >
+                {open ? (
+                  <ChevronDown size={11} aria-hidden />
+                ) : (
+                  <ChevronRight size={11} aria-hidden />
+                )}
+              </button>
+              <button
+                type="button"
+                className="pc-learning__retainlink"
+                style={RETAIN_CELL_TRUNCATE}
+                title={`${row.id} — open on the Plans board`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onOpenPlan(row.id);
+                }}
+              >
+                {row.title}
+              </button>
+            </span>
+          );
+        }
+        const origin = row.meta.ideaTitle
+          ? ` · from idea: ${row.meta.ideaTitle}`
+          : "";
+        return (
+          <span style={RETAIN_CELL_TRUNCATE} title={`${row.id}${origin}`}>
+            {row.title}
+          </span>
+        );
+      },
+    },
+    {
+      key: "status",
+      header: "Status",
+      width: 1.1,
+      toCopyText: (r) =>
+        r.rowType === "item" ? (r.row.status ?? "") : r.child.status,
+      filter: {
+        type: "enum",
+        accessor: (r) =>
+          r.rowType === "item" ? (r.row.status ?? "") : r.child.status,
+      },
+      render: ({ row: r }) => {
+        const status = r.rowType === "item" ? r.row.status : r.child.status;
+        const shipped = r.rowType === "item" ? r.row.shipped : r.child.shipped;
+        if (!status) return null;
+        return (
+          <span
+            className={`pc-learning__chip${shipped ? " pc-learning__chip--stage-shipped" : ""}`}
+            title="Server-classified outcome (EI-18792873324746237: never re-typed client-side)"
+          >
+            {status}
+          </span>
+        );
+      },
+    },
+    {
+      key: "lens",
+      header: "Lens",
+      width: 1.2,
+      toCopyText: (r) => (r.rowType === "item" ? (r.row.meta.lens ?? "") : ""),
+      filter: {
+        type: "enum",
+        accessor: (r) => (r.rowType === "item" ? (r.row.meta.lens ?? "") : ""),
+      },
+      render: ({ row: r }) =>
+        r.rowType === "item" && r.row.meta.lens ? (
+          <span
+            style={RETAIN_CELL_TRUNCATE}
+            title={`Origin idea lens${r.row.meta.ideaId ? ` — ${r.row.meta.ideaId}` : ""}`}
+          >
+            {r.row.meta.lens}
+          </span>
+        ) : null,
+    },
+    {
+      key: "detail",
+      header: "Detail",
+      width: 1,
+      toCopyText: () => "",
+      render: ({ row: r }) => {
+        if (r.rowType === "child") {
+          return <em className="pc-learning__retainedroll">from this plan</em>;
+        }
+        const { row } = r;
+        if (
+          row.kind === "plan" &&
+          row.meta.childTotal != null &&
+          row.meta.childTotal > 0
+        ) {
+          return (
+            <span
+              className="pc-learning__retainedroll"
+              title="Plan-born work items: done / total"
+            >
+              {row.meta.childDone ?? 0}/{row.meta.childTotal} done
+            </span>
+          );
+        }
+        if (row.kind === "recipe" && row.meta.runCount != null) {
+          return (
+            <span
+              className="pc-learning__retainedroll"
+              title="Total recorded runs"
+            >
+              ×{row.meta.runCount}
+            </span>
+          );
+        }
+        if (row.kind === "runbook" && row.meta.discovered) {
+          return (
+            <span
+              className="pc-learning__retainedroll"
+              title="Discovered date from the runbook's frontmatter"
+            >
+              {row.meta.discovered}
+            </span>
+          );
+        }
+        return null;
+      },
+    },
+    {
+      key: "when",
+      header: "When",
+      width: 0.8,
+      toCopyText: (r) => (r.rowType === "item" ? r.row.ts : r.child.ts),
+      render: ({ row: r }) => {
+        const ms = Date.parse(r.rowType === "item" ? r.row.ts : r.child.ts);
+        return Number.isNaN(ms) ? null : (
+          <span className="pc-learning__age">{whenLabel(ms)}</span>
+        );
+      },
+    },
+  ];
+}
+
+/**
+ * The unified "Retained" ledger (WI-39493 Variant D): plans, idea-routed work
+ * items, rubrics, insight runbooks, and code recipes as ONE recency-interleaved
+ * keyset-paged feed, rendered through the SAME components as the Work tab's
+ * work-item queue — VirtualGrid + useColumnFilters/ColumnFilterBar (owner ask
+ * 2026-08-16). The type tabs + Shipped∕In-flight narrowing stay SERVER-side
+ * args: with 13.5k recipes a filtered page must be filtered at the source, and
+ * shipped classification is server-stamped (EI-18792873324746237). Tab, filter,
+ * quick-search, and the expanded plan are URL state; the accumulated pages and
+ * their keyset cursor are render state — a shared link reloads from page 1.
+ */
+function RetainedLedgerCard({ enabled }: { enabled: boolean }) {
+  const [rtab, setRtab] = useQueryState(
+    "rtab",
+    parseAsStringEnum<RetainFeedTab>([...RETAIN_FEED_TABS]).withDefault("all"),
+  );
+  const [rship, setRship] = useQueryState(
+    "rship",
+    parseAsStringEnum<RetainFeedFilter>([...RETAIN_FEED_FILTERS]).withDefault(
+      "all",
+    ),
+  );
+  const [rplanOpen, setRplanOpen] = useQueryState("rplan", parseAsString);
+  const [search, setSearch] = useQueryState(
+    "rq",
+    parseAsString.withDefault(""),
+  );
+  // Deep-link params the Plans board already reads — the same trio the old
+  // "Plans from ideas" rows set.
+  const [, setTabNav] = useQueryState("tab", parseAsString);
+  const [, setCreateViewNav] = useQueryState("view", parseAsString);
+  const [, setPlanNav] = useQueryState("plan", parseAsString);
+
+  const [cursor, setCursor] = useState<string | null>(null);
+  const [rows, setRows] = useState<RetainFeedRow[]>([]);
+  const [counts, setCounts] = useState<RetainFeedCounts | null>(null);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [degraded, setDegraded] = useState<string[]>([]);
+
+  // A tab/filter switch restarts the ledger from page 1.
+  useEffect(() => {
+    setCursor(null);
+    setNextCursor(null);
+    setRows([]);
+  }, [rtab, rship]);
+
+  const feed = useSyncQuery<RetainFeedPage | undefined>({
+    queryName: "learning.retainFeed",
+    args: { tab: rtab, filter: rship, ...(cursor ? { cursor } : {}) },
+    enabled,
+    staleTime: 30_000,
+  });
+  const page = feed.data?.[0];
+  const loading = feed.loading;
+  useEffect(() => {
+    if (loading || !page || !Array.isArray(page.rows)) return;
+    setRows((prev) => {
+      // Page 1 replaces, a cursored page appends; the kind:id dedupe makes a
+      // re-delivered page (SSE invalidate, effect re-run) idempotent.
+      const base = cursor ? prev : [];
+      const seen = new Set(base.map((x) => `${x.kind}:${x.id}`));
+      const fresh = page.rows.filter((x) => !seen.has(`${x.kind}:${x.id}`));
+      return cursor && fresh.length === 0 ? prev : [...base, ...fresh];
+    });
+    if (page.counts) setCounts(page.counts);
+    setNextCursor(page.nextCursor ?? null);
+    setDegraded(Array.isArray(page.degraded) ? page.degraded : []);
+  }, [page, loading, cursor]);
+
+  const children = useSyncQuery<RetainPlanChild>({
+    queryName: "learning.retainPlanChildren",
+    args: { planSlug: rplanOpen ?? "" },
+    enabled: enabled && Boolean(rplanOpen),
+  });
+  const childRows = useMemo(
+    () => (rplanOpen ? (children.data ?? []) : []),
+    [rplanOpen, children.data],
+  );
+
+  const onTogglePlan = useCallback(
+    (slug: string) =>
+      void setRplanOpen((cur) => (cur === slug ? null : slug)),
+    [setRplanOpen],
+  );
+  const onOpenPlan = useCallback(
+    (slug: string) => {
+      void setPlanNav(slug);
+      void setCreateViewNav("plans");
+      void setTabNav("plans");
+    },
+    [setPlanNav, setCreateViewNav, setTabNav],
+  );
+
+  const gridRows = useMemo<RetainGridRow[]>(() => {
+    const out: RetainGridRow[] = [];
+    for (const row of rows) {
+      out.push({ rowType: "item", row });
+      if (row.kind === "plan" && rplanOpen === row.id) {
+        for (const child of childRows) {
+          out.push({ rowType: "child", parentId: row.id, child });
+        }
+      }
+    }
+    return out;
+  }, [rows, rplanOpen, childRows]);
+
+  const columns = useMemo(
+    () => buildRetainColumns({ rplanOpen, onTogglePlan, onOpenPlan }),
+    [rplanOpen, onTogglePlan, onOpenPlan],
+  );
+  // SAME filtering machinery as the work queue: per-column filters in ONE nuqs
+  // param (`rtf`), quick-search applied on top.
+  const cf = useColumnFilters(columns, gridRows, { ns: RETAIN_FILTER_NS });
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return cf.rows;
+    return cf.rows.filter((r) => {
+      const hay =
+        r.rowType === "item"
+          ? `${r.row.id} ${r.row.title} ${r.row.status ?? ""}`
+          : `${r.child.id} ${r.child.title} ${r.child.status}`;
+      return hay.toLowerCase().includes(q);
+    });
+  }, [cf.rows, search]);
+  const [colWidths, setColWidths] = usePersistedColumnWidths(
+    "pc-colw:learning:retained",
+  );
+
+  const corpusTotal = rtab === "all" ? null : (counts?.[rtab] ?? null);
+  const shownItems = filtered.filter((r) => r.rowType === "item").length;
+
+  return (
+    <section className="pc-learning__retained" aria-label="Retained ledger">
+      <div className="pc-learning__retainedhead">
+        <div
+          className="pc-learning__retainedseg"
+          role="tablist"
+          aria-label="Retained type"
+        >
+          {RETAIN_FEED_TABS.map((tab) => {
+            const badge =
+              tab === "all" ? null : fmtRetainCount(counts?.[tab] ?? null);
+            return (
+              <button
+                key={tab}
+                type="button"
+                role="tab"
+                aria-selected={rtab === tab}
+                className={`pc-learning__retainedtab${rtab === tab ? " is-on" : ""}`}
+                onClick={() => void setRtab(tab)}
+              >
+                {RETAIN_TAB_LABELS[tab]}
+                {badge ? <em>{badge}</em> : null}
+              </button>
+            );
+          })}
+        </div>
+        <div
+          className="pc-learning__retainedseg pc-learning__retainedseg--filters"
+          role="group"
+          aria-label="Outcome filter"
+          title="Shipped ∕ in-flight applies where a type has statuses (plans, work items); other kinds drop out of a filtered feed."
+        >
+          {RETAIN_FEED_FILTERS.map((f) => (
+            <button
+              key={f}
+              type="button"
+              aria-pressed={rship === f}
+              className={`pc-learning__retainedtab${rship === f ? " is-on" : ""}`}
+              onClick={() => void setRship(f)}
+            >
+              {RETAIN_FILTER_LABELS[f]}
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="pc-advpanel__bar">
+        <input
+          type="text"
+          className="pc-advpanel__input"
+          value={search}
+          onChange={(e) => void setSearch(e.target.value)}
+          placeholder="Filter retained…"
+          aria-label="Filter retained items"
+        />
+        <ColumnFilterBar
+          controller={cf.controller}
+          activeChips={cf.activeChips}
+          hasActive={cf.hasActive}
+          clearAll={cf.clearAll}
+        />
+        <span
+          className="pc-advpanel__count"
+          aria-live="polite"
+          style={{
+            marginLeft: "auto",
+            fontSize: 11,
+            color: "var(--fg-mute)",
+            whiteSpace: "nowrap",
+            fontVariantNumeric: "tabular-nums",
+          }}
+        >
+          {shownItems} shown · {rows.length} loaded
+          {corpusTotal != null ? ` · ${corpusTotal} total` : ""}
+        </span>
+        <Tooltip label="Refresh the retained ledger">
+          <button
+            type="button"
+            className="pc-advpanel__iconbtn"
+            onClick={() => feed.invalidate()}
+            disabled={loading}
+            aria-label="Refresh retained ledger"
+          >
+            <RefreshCw
+              size={13}
+              aria-hidden
+              className={loading ? "pc-advpanel__spin" : undefined}
+            />
+          </button>
+        </Tooltip>
+      </div>
+      {feed.error ? (
+        <div className="pc-advpanel__empty pc-advpanel__empty--err">
+          Could not load the retained ledger: {feed.error}
+        </div>
+      ) : rows.length === 0 && loading ? (
+        <div className="pc-advpanel__empty">Loading retained items…</div>
+      ) : filtered.length === 0 ? (
+        <div className="pc-advpanel__empty">
+          {rows.length === 0
+            ? "Nothing retained yet under this view."
+            : "No retained items match the filter."}
+        </div>
+      ) : (
+        <VirtualGrid<RetainGridRow>
+          columns={columns}
+          rows={filtered}
+          resizableColumns
+          columnWidths={colWidths}
+          onColumnWidthsChange={setColWidths}
+          getRowId={retainGridRowId}
+          onRowClick={(r) => {
+            if (r.rowType === "item" && r.row.kind === "plan") {
+              onTogglePlan(r.row.id);
+            }
+          }}
+          rowMinHeight={30}
+          headerHeight={30}
+          scrollStyle={{ maxHeight: 340 }}
+          onEndReached={nextCursor ? () => setCursor(nextCursor) : undefined}
+        />
+      )}
+      {degraded.length > 0 ? (
+        <p
+          className="pc-learning__retaineddegraded"
+          title="These legs failed to read; the rest of the ledger is live."
+        >
+          degraded: {degraded.join(", ")}
+        </p>
+      ) : null}
+    </section>
   );
 }
 
@@ -6010,6 +6367,48 @@ export function LearningStyles() {
       .pc-learning__flowchip--wd-good { border-color: rgba(52, 211, 153, 0.4); }
       .pc-learning__flowchip--wd-warn { border-color: rgba(252, 211, 77, 0.45); }
       .pc-learning__flowchip--wd-bad { border-color: rgba(248, 113, 113, 0.5); }
+
+      /* WI-39493 Variant D: the unified Retained ledger card + lens strip. */
+      .pc-learning__retained {
+        display: flex; flex-direction: column; min-height: 0;
+        border: 1px solid var(--border, rgba(125, 211, 252, 0.16));
+        border-radius: 10px; background: var(--bg-2, rgba(255, 255, 255, 0.04));
+      }
+      .pc-learning__retainedhead {
+        display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+        padding: 7px 10px; border-bottom: 1px solid var(--border, rgba(125, 211, 252, 0.12));
+      }
+      .pc-learning__retainedseg {
+        display: inline-flex; align-items: center; gap: 2px; padding: 2px;
+        border: 1px solid var(--border, rgba(125, 211, 252, 0.16));
+        border-radius: 8px; background: rgba(255, 255, 255, 0.02);
+      }
+      .pc-learning__retainedseg--filters { margin-left: auto; }
+      .pc-learning__retainedtab {
+        display: inline-flex; align-items: center; gap: 5px; border: 0;
+        background: transparent; color: var(--fg-mute, #7f9bb4);
+        font-size: 11px; font-weight: 620; padding: 3px 9px; border-radius: 6px; cursor: pointer;
+      }
+      .pc-learning__retainedtab:hover { color: var(--fg-dim, #b9d4e8); }
+      .pc-learning__retainedtab.is-on { background: rgba(125, 211, 252, 0.14); color: var(--fg, #e7eef5); }
+      .pc-learning__retainedtab em { font-style: normal; font-size: 9.5px; color: var(--fg-mute, #7f9bb4); font-variant-numeric: tabular-nums; }
+      .pc-learning__retainedkindcell { display: inline-flex; align-items: center; gap: 5px; font-size: 10.5px; color: var(--fg-mute, #7f9bb4); }
+      .pc-learning__retainedkindcell svg { flex-shrink: 0; }
+      .pc-learning__retainedplancell { display: inline-flex; align-items: center; gap: 5px; min-width: 0; width: 100%; }
+      .pc-learning__retainedplancell .pc-learning__retainlink { min-width: 0; flex: 1; text-align: left; }
+      .pc-learning__retainedchev { border: 0; background: transparent; color: var(--fg-mute, #7f9bb4); cursor: pointer; padding: 0; display: inline-flex; flex-shrink: 0; }
+      .pc-learning__retainedchev:hover { color: var(--fg, #e7eef5); }
+      .pc-learning__retainedchildcell { padding-left: 22px; color: var(--fg-dim, #b9d4e8); }
+      .pc-learning__retainedroll { font-size: 10px; color: var(--fg-mute, #7f9bb4); font-variant-numeric: tabular-nums; white-space: nowrap; font-style: normal; }
+      .pc-learning__retaineddegraded { margin: 0; padding: 4px 10px 7px; font-size: 10px; color: var(--fg-mute, #7f9bb4); }
+      .pc-learning__lensstrip {
+        display: flex; flex-direction: column; gap: 7px;
+        border: 1px solid var(--border, rgba(125, 211, 252, 0.16));
+        border-radius: 10px; background: var(--bg-2, rgba(255, 255, 255, 0.04));
+        padding: 9px 12px;
+      }
+      .pc-learning__lensstrip header { display: flex; align-items: baseline; gap: 7px; font-size: 11.5px; font-weight: 700; color: var(--fg-dim, #b9d4e8); }
+      .pc-learning__lensstrip header svg { align-self: center; flex-shrink: 0; }
       .pc-learning__flowdot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
       .pc-learning__flowdot--good { background: var(--good); box-shadow: 0 0 5px rgba(52, 211, 153, 0.7); }
       .pc-learning__flowdot--warn { background: var(--warn); box-shadow: 0 0 5px rgba(251, 191, 36, 0.6); }
