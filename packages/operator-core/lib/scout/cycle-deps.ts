@@ -789,9 +789,26 @@ export function buildScoutCycleDeps(
     // (genome's interacting wholes) routes to the InstanceSubject; a component idea stays on
     // the gym (HarnessSubject). plan/improvement/unhinted ideas are untouched.
     route: async (proposals) => {
+      // D-003 (blender-loop-repair-2026-08-16 P-002): resolve gym liveness and
+      // gate the rail — a disabled autoloop must not receive routed ideas (its
+      // frozen archive verdicts poisoned 80.4% of decided outcomes). Fail-open
+      // to enabled: a broken liveness read must not silently divert routing.
+      let gymEnabled = true;
+      try {
+        const { sql } = getOrgPg();
+        const { listAutoloopsForWorkspace } = await import('../gym/control-plane');
+        const loops = await listAutoloopsForWorkspace(sql, activeWorkspaceId());
+        gymEnabled = loops.some((l) => l.enabled === true);
+      } catch (err) {
+        console.warn(
+          '[scout/cycle-deps] gym-liveness read failed — gym rail stays enabled (fail-open):',
+          err instanceof Error ? err.message : err,
+        );
+      }
       const result = await routeProposals(proposals, routerPorts, {
         override: makeWholeSystemInstanceOverride(scoutConfig.routing.wholeSystemMarkers),
         defaultRail: scoutConfig.routing.defaultRail,
+        gymEnabled,
       });
       // Dark Scout→experiment rail (SCOUT_EXPERIMENT_RAIL, default OFF — #2 "close the
       // loop"): ADDITIVELY express each testable (gym-rail) proposal as a DRY-RUN
