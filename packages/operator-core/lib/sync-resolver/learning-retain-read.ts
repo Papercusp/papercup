@@ -200,8 +200,11 @@ export function retainMemoryTitle(text: string): string {
 export interface RetainFeedDeps {
   /** The hive's shared-memory pool (WI-39535), already scope-resolved by the
    *  caller (`hive:<slug>` / every pot under the All-Pots lens). A throw
-   *  degrades the leg like any other. */
-  listMemories: () => Promise<RetainMemorySource[]>;
+   *  degrades the leg like any other. TRANSITIONALLY optional (the resolver
+   *  entry in index.ts is lock-held by a peer as this lands); an unwired dep
+   *  degrades the leg VISIBLY (degraded: ['memory']), never silently. Make it
+   *  required once the index.ts wiring is in. */
+  listMemories?: () => Promise<RetainMemorySource[]>;
   listRubrics: () => Promise<Array<{ slug: string; title: string; status: string; updatedAt: string }>>;
   /** One keyset page of recipes by recent activity (code-recipes-store
    *  listRecipesActivityPage). `ts` = GREATEST(last_run_at, updated_at, created_at). */
@@ -281,6 +284,7 @@ export async function readRetainFeed(
 
   const legMemories = async (): Promise<RetainFeedRow[]> => {
     const w = retainLegWindowFor('memory', cursor);
+    if (!deps.listMemories) throw new Error('listMemories dep not wired');
     const all = await deps.listMemories();
     return all
       .flatMap((e) => {
@@ -523,10 +527,12 @@ export async function readRetainFeed(
   let counts: RetainFeedCounts | null = null;
   if (!cursor) {
     const [memories, plans, wi, rubrics, runbooks, recipes] = await Promise.all([
-      deps
-        .listMemories()
-        .then((r) => r.length)
-        .catch(() => null),
+      deps.listMemories
+        ? deps
+            .listMemories()
+            .then((r) => r.length)
+            .catch(() => null)
+        : Promise.resolve(null),
       (async () => {
         const r = (await sql`
           SELECT count(DISTINCT hp.plan_slug)::int AS n
