@@ -30,7 +30,7 @@
  *   - tests SKIP rather than fail when the SPA serves a blank #root
  *     (stale HMR-disabled :3055) or when the workspace has no projects.
  */
-import { test, expect, type Page } from './_egress';
+import { test, expect, assertMounted, type Page } from './_egress';
 
 // Mirror playwright.config.ts's BASE_URL derivation — honoring
 // OPERATOR_E2E_PORT keeps this spec on the SAME server the config's
@@ -129,7 +129,7 @@ test.describe('harness settings surface (/adv?tab=settings)', () => {
     skipWithoutSlug();
     const consoleErrors = collectConsoleErrors(page);
     const mounted = await gotoSettings(page);
-    test.skip(!mounted, SKIP_MSG_BLANK);
+    assertMounted(mounted, SKIP_MSG_BLANK);
 
     // Landed on the tab: the selected trigger says so. (The shell's `<h1>` title
     // was the other half of this assertion until 2026-07-27, when the owner had
@@ -155,7 +155,7 @@ test.describe('harness settings surface (/adv?tab=settings)', () => {
   test('panel sections render with form fields present (read-only)', async ({ page }) => {
     skipWithoutSlug();
     const mounted = await gotoSettings(page);
-    test.skip(!mounted, SKIP_MSG_BLANK);
+    assertMounted(mounted, SKIP_MSG_BLANK);
 
     const panel = settingsPanel(page);
     await expect(settingsHeading(page)).toBeVisible({ timeout: 20_000 });
@@ -194,7 +194,7 @@ test.describe('harness settings surface (/adv?tab=settings)', () => {
   test('?tab=settings&slug= nuqs state round-trips a reload', async ({ page }) => {
     skipWithoutSlug();
     const mounted = await gotoSettings(page);
-    test.skip(!mounted, SKIP_MSG_BLANK);
+    assertMounted(mounted, SKIP_MSG_BLANK);
     await expect(settingsHeading(page)).toBeVisible({ timeout: 20_000 });
 
     await page.reload({ waitUntil: 'domcontentloaded' });

@@ -26,7 +26,7 @@
  * real browser engine can. Mirrors adv-work-items-filter.spec.ts's hermetic
  * route-stubbing pattern.
  */
-import { test, expect, type Page } from './_egress';
+import { test, expect, assertMounted, type Page } from './_egress';
 
 const baseURL = process.env.OPERATOR_E2E_BASE_URL ?? 'http://127.0.0.1:3055';
 
@@ -157,7 +157,7 @@ test.describe('/adv Learning tab — Observations pane, real long-body row', () 
       .waitFor({ state: 'visible', timeout: 30_000 })
       .then(() => true)
       .catch(() => false);
-    test.skip(!mounted, SKIP_MSG);
+    assertMounted(mounted, SKIP_MSG);
 
     await expandBtn.click();
 

@@ -24,7 +24,7 @@
  * stamp the SAME header or the fixture reads/writes a different workspace's
  * config than the page (the dock.spec.ts workspace-resolution lesson).
  */
-import { test, expect, type APIRequestContext, type Page } from './_egress';
+import { test, expect, assertMounted, type APIRequestContext, type Page } from './_egress';
 
 const baseURL =
   process.env.OPERATOR_E2E_BASE_URL ??
@@ -92,7 +92,7 @@ test.describe('/settings/agent auto-save validation', () => {
   });
 
   test('mid-typing never persists (commit is blur-gated)', async ({ page, request }) => {
-    test.skip(!(await openPage(page)), SKIP_MSG_BLANK);
+    assertMounted(await openPage(page), SKIP_MSG_BLANK);
     const input = page.locator(SPEC_INPUT);
     await input.waitFor({ state: 'visible', timeout: 10_000 });
     await expect(input).toHaveValue('opus:xhigh'); // default-menu baseline
@@ -106,7 +106,7 @@ test.describe('/settings/agent auto-save validation', () => {
   });
 
   test('an invalid spec is flagged inline and never persisted', async ({ page, request }) => {
-    test.skip(!(await openPage(page)), SKIP_MSG_BLANK);
+    assertMounted(await openPage(page), SKIP_MSG_BLANK);
     await editSpecAndBlur(page, 'opush'); // bare unknown alias — the typo class
     await expect(page.getByRole('alert').filter({ hasText: 'not a known model alias' })).toBeVisible();
     await page.waitForTimeout(SAVE_WINDOW_MS);
@@ -115,7 +115,7 @@ test.describe('/settings/agent auto-save validation', () => {
   });
 
   test('a valid edit commits on blur and survives reload', async ({ page, request }) => {
-    test.skip(!(await openPage(page)), SKIP_MSG_BLANK);
+    assertMounted(await openPage(page), SKIP_MSG_BLANK);
     const saved = page.waitForResponse(
       (r) => r.url().includes('/api/agent-config') && r.request().method() === 'POST' && r.status() === 200,
       { timeout: 15_000 },
@@ -131,7 +131,7 @@ test.describe('/settings/agent auto-save validation', () => {
   });
 
   test('WIPE REGRESSION: an invalid edit holds the stored value across reload', async ({ page, request }) => {
-    test.skip(!(await openPage(page)), SKIP_MSG_BLANK);
+    assertMounted(await openPage(page), SKIP_MSG_BLANK);
     await expect(page.locator(SPEC_INPUT)).toHaveValue('fable:max', { timeout: 15_000 });
     await editSpecAndBlur(page, 'opus:'); // mid-typed effort suffix — invalid
     await expect(page.getByRole('alert').filter({ hasText: 'invalid spec' })).toBeVisible();

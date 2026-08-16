@@ -29,7 +29,7 @@
  * NB: drives the operator-vite SPA — a stale HMR-disabled :3055 serves a
  * blank #root, so tests skip rather than fail when the shell never mounts.
  */
-import { test, expect, type Page } from './_egress';
+import { test, expect, assertMounted, type Page } from './_egress';
 
 // Mirror playwright.config.ts's BASE_URL derivation — honoring
 // OPERATOR_E2E_PORT keeps this spec on the SAME server the config's
@@ -146,7 +146,7 @@ test.describe('/admin/plans — plan detail flow', () => {
   test('plans browser shell renders 500-free with rail + view switcher', async ({ page }) => {
     const consoleErrors = collectConsoleErrors(page);
     const mounted = await gotoPlans(page);
-    test.skip(!mounted, SKIP_MSG_BLANK);
+    assertMounted(mounted, SKIP_MSG_BLANK);
 
     await expect(page.locator('[aria-label="Plans with matching items"]')).toBeVisible();
     await expect(page.getByRole('button', { name: /New plan/ })).toBeVisible();
@@ -165,7 +165,7 @@ test.describe('/admin/plans — plan detail flow', () => {
     skipWithoutPlans();
     const plan = pickPlan()!;
     const mounted = await gotoPlans(page);
-    test.skip(!mounted, SKIP_MSG_BLANK);
+    assertMounted(mounted, SKIP_MSG_BLANK);
 
     // Rows arrive async (usePlanList) — at least one renders, each carrying
     // a status pill (StatusPill in PlanRail.tsx).
@@ -191,7 +191,7 @@ test.describe('/admin/plans — plan detail flow', () => {
     const plan = pickPlan()!;
     const consoleErrors = collectConsoleErrors(page);
     const mounted = await gotoPlans(page, `?plan=${encodeURIComponent(plan.slug)}`);
-    test.skip(!mounted, SKIP_MSG_BLANK);
+    assertMounted(mounted, SKIP_MSG_BLANK);
 
     // PlanDetail mounted for OUR slug (DetailShell aria-label) and the
     // tab strip rendered once the full plan body loaded.
@@ -227,7 +227,7 @@ test.describe('/admin/plans — plan detail flow', () => {
     test.skip(!plan, 'no non-legacy plan with items exists — item rendering has no fixture');
 
     const mounted = await gotoPlans(page, `?plan=${encodeURIComponent(plan!.slug)}`);
-    test.skip(!mounted, SKIP_MSG_BLANK);
+    assertMounted(mounted, SKIP_MSG_BLANK);
 
     const detail = page.locator(`section[aria-label="Plan ${plan!.slug}"]`);
     await expect(detail).toBeVisible({ timeout: 20_000 });

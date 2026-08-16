@@ -49,7 +49,7 @@
  * is the shell header's "New" button (title 'Create or add a new harness'),
  * which is what this spec drives.
  */
-import { test, expect, type Page, type Locator } from './_egress';
+import { test, expect, assertMounted, type Page, type Locator } from './_egress';
 
 const baseURL = process.env.OPERATOR_E2E_BASE_URL ?? 'http://127.0.0.1:3055';
 
@@ -226,7 +226,7 @@ test.describe('/adv Harnesses tab — Hive from GitHub repo (P-018)', () => {
   test('P-018a picker shows the hive-native Create / Join layout (flag-on default)', async ({ page }) => {
     await stubBase(page);
     const mounted = await gotoHarnessesTab(page, `slug=${HIVE}`);
-    test.skip(!mounted, SKIP_MSG);
+    assertMounted(mounted, SKIP_MSG);
 
     const dialog = await openPicker(page);
     // Create group — the Search GitHub entry with its create-or-join explainer.
@@ -247,7 +247,7 @@ test.describe('/adv Harnesses tab — Hive from GitHub repo (P-018)', () => {
   test('P-018b entry renders EntryGithubUrlForm: new-hive default, visibility Public, slug auto-derive', async ({ page }) => {
     await stubBase(page);
     const mounted = await gotoHarnessesTab(page, `slug=${HIVE}`);
-    test.skip(!mounted, SKIP_MSG);
+    assertMounted(mounted, SKIP_MSG);
 
     const dialog = await openGithubUrlForm(page);
     // The selected entry rides the nuqs `?picker=` axis (the live URL state).
@@ -275,7 +275,7 @@ test.describe('/adv Harnesses tab — Hive from GitHub repo (P-018)', () => {
     await stubBase(page);
     const cap = await stubFromRepo(page, [CREATED_RESPONSE]);
     const mounted = await gotoHarnessesTab(page, `slug=${HIVE}`);
-    test.skip(!mounted, SKIP_MSG);
+    assertMounted(mounted, SKIP_MSG);
 
     const dialog = await openGithubUrlForm(page);
     await dialog.getByPlaceholder('https://github.com/owner/repo').fill('https://gitlab.com/acme/rocket');
@@ -293,7 +293,7 @@ test.describe('/adv Harnesses tab — Hive from GitHub repo (P-018)', () => {
     await stubBase(page);
     const cap = await stubFromRepo(page, [CREATED_RESPONSE]);
     const mounted = await gotoHarnessesTab(page, `slug=${HIVE}`);
-    test.skip(!mounted, SKIP_MSG);
+    assertMounted(mounted, SKIP_MSG);
 
     const dialog = await openGithubUrlForm(page);
     await dialog.getByPlaceholder('https://github.com/owner/repo').fill(REPO_URL);
@@ -321,7 +321,7 @@ test.describe('/adv Harnesses tab — Hive from GitHub repo (P-018)', () => {
     await stubBase(page);
     const cap = await stubFromRepo(page, [EXISTING_JOINABLE_RESPONSE]);
     const mounted = await gotoHarnessesTab(page, `slug=${HIVE}`);
-    test.skip(!mounted, SKIP_MSG);
+    assertMounted(mounted, SKIP_MSG);
 
     const dialog = await openGithubUrlForm(page);
     await dialog.getByPlaceholder('https://github.com/owner/repo').fill(REPO_URL);
@@ -343,7 +343,7 @@ test.describe('/adv Harnesses tab — Hive from GitHub repo (P-018)', () => {
     await stubBase(page);
     const cap = await stubFromRepo(page, [EXISTING_UNJOINABLE_RESPONSE, FORCED_CREATED_RESPONSE]);
     const mounted = await gotoHarnessesTab(page, `slug=${HIVE}`);
-    test.skip(!mounted, SKIP_MSG);
+    assertMounted(mounted, SKIP_MSG);
 
     const dialog = await openGithubUrlForm(page);
     await dialog.getByPlaceholder('https://github.com/owner/repo').fill(REPO_URL);

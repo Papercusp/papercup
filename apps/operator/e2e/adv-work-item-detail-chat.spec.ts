@@ -28,7 +28,7 @@
  * never mounts and the spec SKIPS (it does not falsely fail). Run against an
  * HMR-enabled Vite (the config's own webServer boots one) to actually exercise it.
  */
-import { test, expect, type Page, type Route } from './_egress';
+import { test, expect, assertMounted, type Page, type Route } from './_egress';
 
 const baseURL = process.env.OPERATOR_E2E_BASE_URL ?? 'http://127.0.0.1:3055';
 
@@ -258,7 +258,7 @@ test.describe('/adv work-item Detail pane + chat launch', () => {
     const created: CreatedChat[] = [];
     await stubApis(page, created);
     const mounted = await dockMounts(page, 'WI-1');
-    test.skip(!mounted, SKIP_MSG);
+    assertMounted(mounted, SKIP_MSG);
 
     // The seeded Detail pane resolves ?sel=WI-1 against workItems.byHarness and
     // renders WorkItemDetail — id + title in the header, the Chat action below.
@@ -292,7 +292,7 @@ test.describe('/adv work-item Detail pane + chat launch', () => {
     const created: CreatedChat[] = [];
     await stubApis(page, created);
     const mounted = await dockMounts(page); // no ?sel — pane starts on the empty state
-    test.skip(!mounted, SKIP_MSG);
+    assertMounted(mounted, SKIP_MSG);
 
     // The Work-items grid renders both rows; the Detail pane shows its
     // pick-an-item empty state until a row is clicked.

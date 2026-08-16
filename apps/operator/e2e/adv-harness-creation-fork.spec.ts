@@ -23,7 +23,7 @@
  * Tauri-shell confirmation per D-007 is a separate agent-driven run (isolated
  * Xvfb), recorded as plan evidence.
  */
-import { test, expect, type Page } from './_egress';
+import { test, expect, assertMounted, type Page } from './_egress';
 
 const baseURL = process.env.OPERATOR_E2E_BASE_URL ?? 'http://127.0.0.1:3055';
 
@@ -139,7 +139,7 @@ test.describe('/adv Harnesses tab — creation fork (P-010/P-011)', () => {
   test('P-010 New on a hive scope opens the fork with all three modes, into-hive default-selected', async ({ page }) => {
     await stubAndCapture(page);
     const mounted = await gotoHarnessesTab(page, `slug=${HIVE}`);
-    test.skip(!mounted, SKIP_MSG);
+    assertMounted(mounted, SKIP_MSG);
 
     const fork = await openPicker(page);
     // All three modes present on the LIVE default path (not injected props).
@@ -153,7 +153,7 @@ test.describe('/adv Harnesses tab — creation fork (P-010/P-011)', () => {
   test('P-010 toggling to Standalone flips the selected mode', async ({ page }) => {
     await stubAndCapture(page);
     const mounted = await gotoHarnessesTab(page, `slug=${HIVE}`);
-    test.skip(!mounted, SKIP_MSG);
+    assertMounted(mounted, SKIP_MSG);
 
     const fork = await openPicker(page);
     await fork.getByRole('tab', { name: 'Standalone' }).click();
@@ -164,7 +164,7 @@ test.describe('/adv Harnesses tab — creation fork (P-010/P-011)', () => {
   test('P-011 add-into-hive threads the membership edge and lands the new member focused', async ({ page }) => {
     const cap = await stubAndCapture(page);
     const mounted = await gotoHarnessesTab(page, `slug=${HIVE}`);
-    test.skip(!mounted, SKIP_MSG);
+    assertMounted(mounted, SKIP_MSG);
 
     await openPicker(page); // into-hive default (hive scope selected)
     // Pick the "New local directory" entry → NewLocalForm.

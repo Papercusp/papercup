@@ -34,7 +34,7 @@
  * adv-shell-nav.spec.ts (a stale HMR-disabled :3055 serves a blank #root —
  * skip, don't fail; the config's own webServer boots an HMR-enabled Vite).
  */
-import { test, expect, type Page } from './_egress';
+import { test, expect, assertMounted, type Page } from './_egress';
 
 const baseURL = process.env.OPERATOR_E2E_BASE_URL ?? 'http://127.0.0.1:3055';
 
@@ -104,7 +104,7 @@ test.describe('global keyboard shortcuts (dispatcher → router/nuqs effects)', 
   test('Mod+/ toggles the cheat sheet and round-trips ?shortcuts= through nuqs', async ({ page }) => {
     await stubShellApis(page);
     const mounted = await gotoAdv(page, `?slug=${SLUG}&scope=expanded`);
-    test.skip(!mounted, SKIP_MSG);
+    assertMounted(mounted, SKIP_MSG);
 
     await expect(cheatSheet(page)).toBeHidden();
 
@@ -123,7 +123,7 @@ test.describe('global keyboard shortcuts (dispatcher → router/nuqs effects)', 
   test("the classic '?' (shift+slash) alternate opens the sheet", async ({ page }) => {
     await stubShellApis(page);
     const mounted = await gotoAdv(page, `?slug=${SLUG}&scope=expanded`);
-    test.skip(!mounted, SKIP_MSG);
+    assertMounted(mounted, SKIP_MSG);
 
     await page.keyboard.press('Shift+/');
     await expect(cheatSheet(page)).toBeVisible();
@@ -147,7 +147,10 @@ test.describe('global keyboard shortcuts (dispatcher → router/nuqs effects)', 
     .waitFor({ state: 'visible', timeout: 60_000 })
       .then(() => true)
       .catch(() => false);
-    test.skip(!sheetMounted && !(await page.locator('#root *').first().isVisible().catch(() => false)), SKIP_MSG);
+    assertMounted(
+      sheetMounted || (await page.locator("#root *").first().isVisible().catch(() => false)),
+      SKIP_MSG,
+    );
 
     await expect(cheatSheet(page)).toBeVisible();
   });
@@ -155,7 +158,7 @@ test.describe('global keyboard shortcuts (dispatcher → router/nuqs effects)', 
   test("a literal '?' typed into a text input is neither swallowed nor a shortcut", async ({ page }) => {
     await stubShellApis(page);
     const mounted = await gotoAdv(page, `?slug=${SLUG}&scope=expanded`);
-    test.skip(!mounted, SKIP_MSG);
+    assertMounted(mounted, SKIP_MSG);
 
     // A bare probe input in the live DOM: what's under test is the mounted
     // dispatcher's form-tag gating, not any particular form.
@@ -180,7 +183,7 @@ test.describe('global keyboard shortcuts (dispatcher → router/nuqs effects)', 
   test('Mod+, opens /settings; Alt+Arrows traverse history (the dead-key binding)', async ({ page }) => {
     await stubShellApis(page);
     const mounted = await gotoAdv(page, `?slug=${SLUG}&scope=expanded`);
-    test.skip(!mounted, SKIP_MSG);
+    assertMounted(mounted, SKIP_MSG);
 
     await page.keyboard.press('Control+,');
     await expect.poll(() => new URL(page.url()).pathname).toBe('/settings');
@@ -197,7 +200,7 @@ test.describe('global keyboard shortcuts (dispatcher → router/nuqs effects)', 
   test('Mod+I lands on the Conversations tab (in-place AdvShell handler wins on /adv)', async ({ page }) => {
     await stubShellApis(page);
     const mounted = await gotoAdv(page, `?slug=${SLUG}&scope=expanded`);
-    test.skip(!mounted, SKIP_MSG);
+    assertMounted(mounted, SKIP_MSG);
 
     await page.keyboard.press('Control+i');
     await expect.poll(() => new URL(page.url()).searchParams.get('tab')).toBe('conversations');

@@ -34,7 +34,7 @@
  * shell confirmation per D-007 is a separate agent-driven run (tauri-agent-
  * tools, isolated Xvfb), recorded as plan evidence.
  */
-import { test, expect, type Page } from './_egress';
+import { test, expect, assertMounted, type Page } from './_egress';
 
 const baseURL = process.env.OPERATOR_E2E_BASE_URL ?? 'http://127.0.0.1:3055';
 
@@ -125,7 +125,7 @@ test.describe('/adv Harnesses tab — hive member model (P-001/P-002/P-003)', ()
   test('P-001 deep link ?slug=hive&harness=member focuses the MEMBER, not the hive root', async ({ page }) => {
     const lanesSlugs = await stubAndRecord(page);
     const mounted = await gotoHarnessesTab(page, `slug=${HIVE}&harness=${MEMBER_RD}`, DOCK_MOUNT);
-    test.skip(!mounted, SKIP_MSG);
+    assertMounted(mounted, SKIP_MSG);
 
     // The deep link is restored exactly, the rail marks the member focused
     // (not the root), and the dock actually fetched for the member.
@@ -137,7 +137,7 @@ test.describe('/adv Harnesses tab — hive member model (P-001/P-002/P-003)', ()
   test('P-001 default (no ?harness=) focuses the hive root (D-001)', async ({ page }) => {
     const lanesSlugs = await stubAndRecord(page);
     const mounted = await gotoHarnessesTab(page, `slug=${HIVE}`, DOCK_MOUNT);
-    test.skip(!mounted, SKIP_MSG);
+    assertMounted(mounted, SKIP_MSG);
 
     // Root is a real harness → it is the default focused member.
     await expectRailActive(page, HIVE, MEMBER_RD);
@@ -147,7 +147,7 @@ test.describe('/adv Harnesses tab — hive member model (P-001/P-002/P-003)', ()
   test('P-001 a stale ?harness= (names no member) falls back to the root and is cleared from the URL', async ({ page }) => {
     await stubAndRecord(page);
     const mounted = await gotoHarnessesTab(page, `slug=${HIVE}&harness=from-a-different-hive`, DOCK_MOUNT);
-    test.skip(!mounted, SKIP_MSG);
+    assertMounted(mounted, SKIP_MSG);
 
     // Ignored → root default, and the stale value is dropped from the URL
     // (isHarnessParamStale → setHarness(null)).
@@ -158,7 +158,7 @@ test.describe('/adv Harnesses tab — hive member model (P-001/P-002/P-003)', ()
   test('P-001 a solo harness has no rail and keys the dock to its own slug (zero regression)', async ({ page }) => {
     const lanesSlugs = await stubAndRecord(page);
     const mounted = await gotoHarnessesTab(page, `slug=${SOLO}`, DOCK_MOUNT);
-    test.skip(!mounted, SKIP_MSG);
+    assertMounted(mounted, SKIP_MSG);
 
     // A single-member hive renders no rail (nothing to pick) — the dock is
     // byte-identical to the pre-plan single-harness view.
@@ -169,7 +169,7 @@ test.describe('/adv Harnesses tab — hive member model (P-001/P-002/P-003)', ()
   test('P-002 clicking a member in the rail sets ?harness= and re-keys the dock', async ({ page }) => {
     const lanesSlugs = await stubAndRecord(page);
     const mounted = await gotoHarnessesTab(page, `slug=${HIVE}`, DOCK_MOUNT);
-    test.skip(!mounted, SKIP_MSG);
+    assertMounted(mounted, SKIP_MSG);
 
     // Starts on the root (default); click the marketing member in the rail.
     await expectRailActive(page, HIVE, MEMBER_MKT);
@@ -185,7 +185,7 @@ test.describe('/adv Harnesses tab — hive member model (P-001/P-002/P-003)', ()
     // All-mode renders the flat, sortable pot LIST (RichGrid, WI-3345) — no
     // dock / no "Add panel" — so the mount oracle is the list container.
     const mounted = await gotoHarnessesTab(page, `slug=${HIVE}&scope=all`, { testId: 'pot-workspace-cards' });
-    test.skip(!mounted, SKIP_MSG);
+    assertMounted(mounted, SKIP_MSG);
 
     // Drill into the R&D member. The list is flat: each pot (hive root + member
     // harnesses) is its own row, so the member row is a sibling of the hive

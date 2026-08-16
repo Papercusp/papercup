@@ -47,7 +47,7 @@
  * tests skip rather than fail (the config's own webServer boots an
  * HMR-enabled Vite, where everything renders).
  */
-import { test, expect, type Page } from './_egress';
+import { test, expect, assertMounted, type Page } from './_egress';
 
 const baseURL = process.env.OPERATOR_E2E_BASE_URL ?? 'http://127.0.0.1:3055';
 
@@ -248,7 +248,7 @@ test.describe('/adv shell tab navigation (P-011)', () => {
   test('the strip renders exactly the primary tab set, in order (D-001)', async ({ page }) => {
     await stubShellApis(page);
     const mounted = await gotoAdv(page, `?slug=${SLUG}&scope=expanded`);
-    test.skip(!mounted, SKIP_MSG);
+    assertMounted(mounted, SKIP_MSG);
 
     // toHaveText with an array asserts count AND order — drift between this
     // spec's PRIMARY_TABS and the real PRIMARY_ADV_TAB_IDS fails here, not via
@@ -268,7 +268,7 @@ test.describe('/adv shell tab navigation (P-011)', () => {
       const consoleErrors = collectConsoleErrors(page);
       await stubShellApis(page);
       const mounted = await gotoAdv(page, `?tab=${tab.id}&slug=${SLUG}&scope=expanded`);
-      test.skip(!mounted, SKIP_MSG);
+      assertMounted(mounted, SKIP_MSG);
 
       // Landed on the tab regardless of whether it has its own strip entry —
       // content is driven by `activeTab`, not strip membership (AdvShell.tsx:
@@ -302,7 +302,7 @@ test.describe('/adv shell tab navigation (P-011)', () => {
   test('clicking a primary tab writes ?tab= (nuqs) and the state survives reload', async ({ page }) => {
     await stubShellApis(page);
     const mounted = await gotoAdv(page, `?slug=${SLUG}&scope=expanded`);
-    test.skip(!mounted, SKIP_MSG);
+    assertMounted(mounted, SKIP_MSG);
 
     // No ?tab= → the default landing surface (Overview).
     await expectActiveSection(page, 'overview');
@@ -329,7 +329,7 @@ test.describe('/adv shell tab navigation (P-011)', () => {
   test('selecting a secondary tab from the "More" menu writes ?tab=, closes the menu, and survives reload', async ({ page }) => {
     await stubShellApis(page);
     const mounted = await gotoAdv(page, `?slug=${SLUG}&scope=expanded`);
-    test.skip(!mounted, SKIP_MSG);
+    assertMounted(mounted, SKIP_MSG);
 
     await moreTrigger(page).click();
     // cmdk renders each secondary tab as a role=option item (cmdk's own
@@ -356,7 +356,7 @@ test.describe('/adv shell tab navigation (P-011)', () => {
     // (D-001), so it surfaces via the "More" trigger's active state, never as
     // its own strip tab.
     const mounted = await gotoAdv(page, `?tab=git&slug=${SLUG}&scope=all`);
-    test.skip(!mounted, SKIP_MSG);
+    assertMounted(mounted, SKIP_MSG);
 
     await expectActiveSection(page, 'git');
 

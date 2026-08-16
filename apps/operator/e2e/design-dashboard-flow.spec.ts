@@ -34,7 +34,7 @@
  * than fail when the shell never mounts (playwright.config.ts boots an
  * HMR-enabled Vite where everything renders).
  */
-import { test, expect, type Page } from './_egress';
+import { test, expect, assertMounted, type Page } from './_egress';
 
 // Mirror playwright.config.ts's BASE_URL derivation — honoring
 // OPERATOR_E2E_PORT keeps this spec on the SAME server the config's
@@ -187,7 +187,7 @@ test.describe('/design/$slug — design dashboard flow', () => {
     await stubFlags(page);
     const state = await gotoDesign(page);
     expect(state, 'flag stub should keep the DESIGN gate open — 404 means requireFlag tripped').not.toBe('notfound');
-    test.skip(state === 'blank', SKIP_MSG);
+    assertMounted(state !== "blank", SKIP_MSG);
 
     // Key panels mount.
     await expect(page.locator('.d-title')).toContainText('Design');
@@ -215,7 +215,7 @@ test.describe('/design/$slug — design dashboard flow', () => {
       await stubFlags(page);
       const state = await gotoDesign(page, `?pane=${pane}`);
       expect(state).not.toBe('notfound');
-      test.skip(state === 'blank', SKIP_MSG);
+      assertMounted(state !== "blank", SKIP_MSG);
 
       await expect(paneTab(page, pane)).toHaveAttribute('aria-pressed', 'true');
 
@@ -237,7 +237,7 @@ test.describe('/design/$slug — design dashboard flow', () => {
     await stubFlags(page);
     const state = await gotoDesign(page);
     expect(state).not.toBe('notfound');
-    test.skip(state === 'blank', SKIP_MSG);
+    assertMounted(state !== "blank", SKIP_MSG);
 
     // Click a pane → URL reflects the selection (agent/deep-link contract).
     await paneTab(page, 'tokens').click();
@@ -273,7 +273,7 @@ test.describe('/design/$slug — design dashboard flow', () => {
     await stubFlags(page);
     const state = await gotoDesign(page);
     expect(state).not.toBe('notfound');
-    test.skip(state === 'blank', SKIP_MSG);
+    assertMounted(state !== "blank", SKIP_MSG);
 
     // Wait for the queue to settle out of its loading row, then bail
     // gracefully when this workspace has no needs_design features — the
