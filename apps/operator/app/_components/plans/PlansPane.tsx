@@ -29,7 +29,7 @@
  * `?ppv` popup tab (see PlanPopupModal).
  */
 import { useCallback, useEffect, useMemo, useRef } from 'react';
-import { Archive, ClipboardList } from 'lucide-react';
+import { Archive, ClipboardList, Sparkles } from 'lucide-react';
 import { parseAsBoolean, parseAsString, useQueryState } from 'nuqs';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { toast } from 'sonner';

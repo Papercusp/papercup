@@ -378,11 +378,25 @@ export async function gradeRoutedIdea(input: GradeRoutedIdeaInput): Promise<Grad
  * (read-dispatch's synthesized superuser ctx) runs under the 'default' ALS
  * workspace even though the ledger rows carry the active one — a workspace
  * clause here silently empties the join (live miss, 2026-06-11).
+ *
+ * ⚠ THE `origin = 'scout'` PREDICATE IS LOAD-BEARING — do not drop it as a
+ * no-op "every row here is Scout's" simplification. `scout_routed_ideas` is the
+ * shared ideation ledger, NOT a Scout-only table: it also carries `su-ideate`
+ * (an su agent's own IDEATE pass — a standard agent, not Blender) and `drill`
+ * (frontier synthetic). This function omitted the predicate until WI-39439, so
+ * the `origin:'scout'` flag it feeds meant "routed by ANYTHING" — measured
+ * workspace-wide over live plans: 6 genuinely scout vs 18 su-ideate, i.e. the
+ * flag was wrong on 75% of the rows it lit. Both consumers read it as
+ * Blender-made (the PlansPane provenance icon and the Create tab's `scout`
+ * filter facet), so an unfiltered read mislabels three plans out of four.
+ * Every other read in this module already defaults to `origin='scout'` via
+ * {@link originClause}; this one was the outlier, against its own name.
  */
 export async function readScoutPlanRefs(): Promise<Set<string>> {
   const { sql } = getOrgPg();
   const rows = await sql<{ routed_ref: string }[]>`
-    SELECT DISTINCT routed_ref FROM harness_shared.scout_routed_ideas WHERE rail = 'plan'`;
+    SELECT DISTINCT routed_ref FROM harness_shared.scout_routed_ideas
+     WHERE rail = 'plan' ${originClause(sql, 'scout')}`;
   return new Set(rows.map((r) => r.routed_ref));
 }
 
