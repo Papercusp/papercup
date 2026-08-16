@@ -59,6 +59,13 @@ export const routeIdeaArgs = z
           .enum([...SU_IDEATION_LENSES] as [SuIdeationLens, ...SuIdeationLens[]])
           .optional()
           .describe("the generative stance that produced the idea — recorded on the ledger row (origin-partitioned OUT of Scout's lens-weight learning); omitted ⇒ the 'su-ideate' sentinel"),
+        addressesPatternRefs: z
+          .array(z.string().min(1).max(200))
+          .max(10)
+          .optional()
+          .describe(
+            "the digest meta-pattern refs this idea GROUNDS ON (observationsImpact.patterns[].ref, e.g. 'wi:EI-10587') — without them the routed idea can never count as grounded in anyone's observationsImpact (P-006/EI-10607)",
+          ),
       })
       .strict()
       .optional(),
@@ -227,6 +234,9 @@ export async function runRouteIdea(
     harnessSlug,
     title: d.title,
     createdBy: identity.ownerId,
+    // P-006/EI-10607: the grounding leg — a draft routed without refs can never
+    // read as grounded in observationsImpact.
+    ...(d.addressesPatternRefs?.length ? { addressesPatternRefs: [...d.addressesPatternRefs] } : {}),
   });
   return { ok: true, rail: 'plan', slug, planRef, created, ideaId: planRef, wiStaysOpen: false };
 }

@@ -245,7 +245,9 @@ export async function recordRoutedIdea(input: RecordRoutedIdeaInput): Promise<vo
       rail = EXCLUDED.rail,
       routed_ref = EXCLUDED.routed_ref,
       title = EXCLUDED.title,
-      addresses_pattern_refs = EXCLUDED.addresses_pattern_refs,
+      -- P-006/EI-10607: grounding survives a re-record that omits refs (e.g. a
+      -- blender:route-idea rail hop) — a bare EXCLUDED here wiped them to null.
+      addresses_pattern_refs = COALESCE(EXCLUDED.addresses_pattern_refs, scout_routed_ideas.addresses_pattern_refs),
       routed_at = EXCLUDED.routed_at,
       origin = EXCLUDED.origin,
       created_by = COALESCE(EXCLUDED.created_by, scout_routed_ideas.created_by)`;

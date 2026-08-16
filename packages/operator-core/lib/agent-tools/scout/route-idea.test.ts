@@ -170,6 +170,29 @@ describe('runRouteIdea — draft path', () => {
     await runRouteIdea({ draft: { title: 'x idea', framing: 'f', mechanism: 'm' }, rail: 'plan' }, {}, deps);
     expect(recordRoutedIdea).toHaveBeenCalledWith(expect.objectContaining({ lens: 'su-ideate' }));
   });
+
+  // P-006/EI-10607: the grounding leg on the draft path.
+  it('passes declared addressesPatternRefs onto the ledger row — and omits the key when undeclared', async () => {
+    const { deps, recordRoutedIdea } = makeDeps();
+    await runRouteIdea(
+      {
+        draft: { title: 'grounded idea', framing: 'f', mechanism: 'm', addressesPatternRefs: ['wi:EI-10587'] },
+        rail: 'plan',
+      },
+      {},
+      deps,
+    );
+    expect(recordRoutedIdea).toHaveBeenCalledWith(
+      expect.objectContaining({ addressesPatternRefs: ['wi:EI-10587'] }),
+    );
+
+    recordRoutedIdea.mockClear();
+    await runRouteIdea({ draft: { title: 'ungrounded idea', framing: 'f', mechanism: 'm' }, rail: 'plan' }, {}, deps);
+    // The key must be ABSENT (not an empty array): the ledger upsert distinguishes
+    // "no refs declared" (COALESCE keeps any existing) from an explicit replacement.
+    expect(recordRoutedIdea).toHaveBeenCalledTimes(1);
+    expect('addressesPatternRefs' in recordRoutedIdea.mock.calls[0]![0]!).toBe(false);
+  });
 });
 
 describe('runRouteIdea — re-route (featureId) path', () => {
