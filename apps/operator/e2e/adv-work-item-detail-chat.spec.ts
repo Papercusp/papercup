@@ -29,6 +29,7 @@
  * HMR-enabled Vite (the config's own webServer boots one) to actually exercise it.
  */
 import { test, expect, assertMounted, type Page, type Route } from './_egress';
+import { stubSyncQueries, type SyncQueryStub } from './_sync-stub';
 
 const baseURL =
   process.env.OPERATOR_E2E_BASE_URL ??
@@ -98,25 +99,31 @@ interface CreatedChat {
   title?: string | null;
 }
 
-async function stubApis(page: Page, created: CreatedChat[]) {
+/**
+ * The harness registry row for the fictional slug, served over BOTH paths that
+ * carry it — the REST bootstrap (`/api/harness/projects/lite`) and the sync
+ * query (`harnessProjects.lite`). Stubbing only one leaves the slug
+ * unresolvable on the other and the dock mounts no panels.
+ */
+const PROJECTS = [
+  {
+    slug: SLUG,
+    path: `/tmp/${SLUG}`,
+    name: SLUG,
+    hasState: true,
+    hasSpec: true,
+    parent_slug: null,
+    harness_kind: 'project',
+    is_shared: false,
+  },
+];
+
+async function stubApis(page: Page, created: CreatedChat[]): Promise<SyncQueryStub> {
   await page.route('**/api/harness/projects/lite', async (route) => {
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
-      body: JSON.stringify({
-        projects: [
-          {
-            slug: SLUG,
-            path: `/tmp/${SLUG}`,
-            name: SLUG,
-            hasState: true,
-            hasSpec: true,
-            parent_slug: null,
-            harness_kind: 'project',
-            is_shared: false,
-          },
-        ],
-      }),
+      body: JSON.stringify({ projects: PROJECTS }),
     });
   });
 
