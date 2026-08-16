@@ -23,6 +23,7 @@ import {
   DedupCoverageUnavailableError,
 } from '../../harness/improvements/capture-core';
 import { ObservationEvidenceError } from '../../harness/improvements/observation-types';
+import { CONDITION_KEY_RULE, OBSERVATION_TITLE_RULE } from '../../harness/improvements/observation-title-guidance';
 import { setWorkItemCheckpoint } from '../../work-item-checkpoint';
 import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import { noveltyPriorArt } from '../../scout/novelty-precheck';
@@ -163,6 +164,30 @@ export function describeExperimentGap(args: {
  * cold or losing lens alive — were being computed over a THIRD of the corpus. A floor cannot
  * protect a lens it cannot see.
  *
+ * ── RE-MEASURED 2026-08-16 (plan system-notices-on-its-own-2026-08-16, P-005) ──────────
+ *
+ * THIS ADVISORY WORKED, and the 66% above is now a HISTORICAL reading — do not quote it as
+ * current. Weekly sentinel rate since: 100 → 81 → 72 → 67 → 43. Over the trailing 30 days
+ * (papercusp-workspace, n=74) the residual has a shape that changes what a fix should be:
+ *
+ *   by the caller's Nth filing   1st: 75.7% (n=37) · 2nd: 57.1% (n=14) · 3rd+: 26.1% (n=23)
+ *   by caller cohort             ≤2 filings: 74.4% (31 callers) · 3+ filings: 37.1% (6 callers)
+ *
+ * The rate falls monotonically with EXPOSURE, which is this advisory teaching. But it teaches
+ * AFTER the filing, and first filings are half the corpus (37 of 74) and carry two thirds of
+ * the residual — a population of short-lived su sessions that file once and never see the
+ * lesson. So making this note louder, or promoting it to a gate, structurally cannot move the
+ * dominant cohort; the remaining lever is compose-time or retroactive attribution, which is a
+ * design call and is filed rather than guessed at here.
+ *
+ * ⚠ AND NOTE WHAT WENT WRONG: the user-facing `note` below used to assert "Two thirds of su
+ * filings currently land this way" — a measured number hardcoded into prose, which kept
+ * asserting the PRE-FIX rate at every filer for as long as the advisory succeeded. A statistic
+ * in a user-facing string cannot be re-measured, so it can only decay. The note now states the
+ * MECHANISM (which does not go stale), and `capture.test.ts` fails if a hardcoded population
+ * rate reappears there. Corpus-level numbers belong in this comment, dated, next to the query
+ * that produced them.
+ *
  * WHY A RESULT-SIDE ADVISORY RATHER THAN BETTER GUIDANCE: both filing doors ALREADY spell the
  * cost out in their arg guidance (here, and scout/route-idea.ts), and that guidance was losing
  * 2:1. An explanation is read while COMPOSING the call; the omission happens precisely when the
@@ -191,9 +216,8 @@ export function describeLensAttribution(
       "Filed — this is a report, not a rejection. You declared no `ideation.lens`, so this filing was " +
       "recorded under the 'su-ideate' sentinel and earns NO per-lens learning: sentinel rows are excluded " +
       'from every per-lens statistic, so this idea will not inform the win-rates that steer which stance ' +
-      'future passes sample, and it cannot be kept alive by the diversity floor. Two thirds of su filings ' +
-      'currently land this way, which means that learning runs on a minority of the corpus. To attribute ' +
-      'it, re-file or amend with `ideation.lens` — you already know which stance produced it.',
+      'future passes sample, and it cannot be kept alive by the diversity floor. To attribute it, re-file ' +
+      'or amend with `ideation.lens` — you already know which stance produced it.',
   };
 }
 
@@ -250,8 +274,13 @@ export default defineTool({
     coerceCaptureArgs,
     z
       .object({
+        // observation-and-recall-surface-honesty-2026-08-16 P-001: the title is what
+        // `dedupSignature()` matches on, so its SHAPE decides whether recurrence is
+        // detectable at all — 99.3% of stored observation titles are singletons because
+        // this field used to ask only for "a summary". The rule text is shared (never
+        // re-worded per surface) so the guard test can assert every surface still names it.
         title: hardText(LIMITS.SHORT_TITLE).describe(
-          'one-line summary (do NOT include a [kind] prefix — pass kind separately)',
+          `one-line summary. ${OBSERVATION_TITLE_RULE} Do NOT include a [kind] prefix — pass kind separately.`,
         ),
         kind: z
           .enum(['bug', 'change', 'feature'])
@@ -343,7 +372,7 @@ export default defineTool({
           .max(160)
           .optional()
           .describe(
-            "EI-15448, lane:'observation' ONLY: a STABLE identity for a RECURRING condition (e.g. an OverwatchBrief anomaly line's `[conditionKey: overwatch:escalation-aging]` — copy it verbatim). A still-OPEN prior observation carrying the SAME conditionKey is updated in place (repeatCount bumped, title/body refreshed to this call's latest reading) instead of minting a fresh row every call — fixes the wake-over-wake status-note flood (7k+ open items from one unresolved condition). Omit for a genuinely novel/one-off reading, which always re-files as before. A rubric-graded scorecard (observation.rubricRef) DEFAULTS to `scorecard:<rubricRef>:<sourceHive>` when you omit this (EI-19325151590626958) — pass it explicitly to override. Ignored outside lane:'observation'.",
+            `EI-15448, lane:'observation' ONLY. ${CONDITION_KEY_RULE} Concretely: a still-OPEN prior observation carrying the SAME conditionKey has its repeatCount bumped and its title/body refreshed to this call's latest reading, instead of a fresh row every call — this is what fixed the wake-over-wake status-note flood (7k+ open items from one unresolved condition). Where a key is ALREADY published — an OverwatchBrief anomaly line's \`[conditionKey: overwatch:escalation-aging]\` — copy that one verbatim rather than minting a variant that cannot join it. Omit for a genuinely novel/one-off reading, which always re-files as before. A rubric-graded scorecard (observation.rubricRef) DEFAULTS to \`scorecard:<rubricRef>:<sourceHive>\` when you omit this (EI-19325151590626958) — pass it explicitly to override. Ignored outside lane:'observation'.`,
           ),
         toolFailure: z
           .object({
@@ -504,7 +533,7 @@ export default defineTool({
           .strict()
           .optional()
           .describe(
-            'structured fields for a lane:observation record (the one-line "what" is the title, the optional "why" is the body). Pass rubricRef+ratings (each {rating,evidence}) to file a RUBRIC-GRADED observation — check rubrics:list first to see if a rubric fits.',
+            'structured fields for a lane:observation record. The IDENTIFYING "what" is the title (see its rule — an observation is found again only by its title) and the whole narrative "why" is the body, which is unbounded free prose and the right home for the story. Pass rubricRef+ratings (each {rating,evidence}) to file a RUBRIC-GRADED observation — check rubrics:list first to see if a rubric fits.',
           ),
         // ── IDEATE-pass provenance (su-ideate-learning-substrate-2026-07-10 P-002 / D-004:
         // the ONE schema bump — the full shape is declared here so the tool contract never

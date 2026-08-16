@@ -31,6 +31,7 @@ import { z } from 'zod';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import * as nodePath from 'node:path';
 import { detectPapercupRoot } from '../../harness/register-papercusp';
+import { HARVESTED_COORD_NOTES_RULE } from '../../harness/improvements/observation-title-guidance';
 import { loadHarnessRegistry, resolveHarnessContentPath, type HarnessRegistry } from '../../harness-registry';
 import {
   assumptionsArg,
@@ -126,7 +127,13 @@ const completionSpec = z
     // but coerces to { summary: <string> } ONLY: testsRun/testResult/verifiedHow/addedTests/
     // filesChanged/whatLanded/deferred/migrations all come back EMPTY, silently. Pass an
     // object when you have any of those to report.
-    "Structured completion record: { summary, verification?: { filesChanged?: string[], testsRun?: string, testResult?: string, verifiedHow?: string, addedTests?: boolean, coverage?: { population: string[], checked?: string[], notChecked?: string[], notApplicable?: string[], residue?: string[] } }, testsRun?, testResult?, verifiedHow?, addedTests?, filesChanged?: string[], whatLanded?: string[], deferred?: string[], migrations?: string[], coordNotes?, coverage? }. `verifiedHow` accepts a concise free-text label; prefer 'unit'|'integration'|'live-drove-ui'|'manual'|'already-passing' for coarse queryable modes. Put structured evidence under `completion.verification`; the top-level evidence fields are legacy aliases. Keep `deferred` and `coordNotes` at the completion level, not inside `verification`. A bare STRING is also accepted but is coerced to { summary: <string> } ONLY — every other field above comes back empty, not just unset. Pass the object form whenever you have tests/files/verification to report.",
+    "Structured completion record: { summary, verification?: { filesChanged?: string[], testsRun?: string, testResult?: string, verifiedHow?: string, addedTests?: boolean, coverage?: { population: string[], checked?: string[], notChecked?: string[], notApplicable?: string[], residue?: string[] } }, testsRun?, testResult?, verifiedHow?, addedTests?, filesChanged?: string[], whatLanded?: string[], deferred?: string[], migrations?: string[], coordNotes?, coverage? }. `verifiedHow` accepts a concise free-text label; prefer 'unit'|'integration'|'live-drove-ui'|'manual'|'already-passing' for coarse queryable modes. Put structured evidence under `completion.verification`; the top-level evidence fields are legacy aliases. Keep `deferred` and `coordNotes` at the completion level, not inside `verification`. " +
+      // observation-and-recall-surface-honesty-2026-08-16 P-001: coordNotes is the second
+      // input to checkpoint-harvest, so it carries the same first-line-is-the-title rule as
+      // loop:checkpoint { insight }. Shared constant, never re-worded here — the guard test
+      // asserts every harvest-fed surface still names it.
+      `${HARVESTED_COORD_NOTES_RULE} ` +
+      "A bare STRING is also accepted but is coerced to { summary: <string> } ONLY — every other field above comes back empty, not just unset. Pass the object form whenever you have tests/files/verification to report.",
   );
 
 /**

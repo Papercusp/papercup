@@ -301,6 +301,22 @@ export function truncateOnWordBoundary(s: string, max: number): string {
  * insight bounded to MAX_INSIGHT_CHARS, and is dropped when it carries nothing
  * beyond the title (a short single-line insight lives entirely in the title).
  * Returns null for a blank insight (nothing to harvest).
+ *
+ * THE FIRST LINE IS AN IDENTIFIER, AND ONLY THE WRITER CAN MAKE IT ONE
+ * (observation-and-recall-surface-honesty-2026-08-16 P-001). This function is
+ * where a free-text reflection becomes a titled row, and that title is the whole
+ * index into the row: `dedupSignature(title)` is what `recurrence-escalation.ts`
+ * matches on, so a first line phrased as a reflection rather than as a subject
+ * mints a signature that can never collide with a peer's filing of the same
+ * friction (measured: 99.3% of stored observation titles are singletons).
+ *
+ * ⛔ The fix is NOT to rewrite or score the line here. Nothing at this seam knows
+ * the stable subject the writer had in mind — inferring one would fabricate an
+ * identity, and rejecting a "weak" line would be the write-time quality filter
+ * plan D-002 forbids (unfiltered volume is the denominator recurrence divides
+ * by). The lever is upstream guidance on the fields that feed this:
+ * `HARVESTED_FIRST_LINE_RULE` in ./observation-title-guidance, stated on
+ * `loop:checkpoint { insight }` and `work_items:complete { completion.coordNotes }`.
  */
 export function boundInsight(raw: string): { title: string; body?: string } | null {
   const full = (raw ?? '').trim();

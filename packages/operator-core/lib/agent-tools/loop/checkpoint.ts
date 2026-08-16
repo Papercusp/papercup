@@ -47,6 +47,7 @@ import {
 } from '../../carry-note';
 import { getOrgPg } from '@papercusp/db-org';
 import { getLoopStatus } from '../../harness/routines/loop';
+import { HARVESTED_FIRST_LINE_RULE } from '../../harness/improvements/observation-title-guidance';
 import { modeImpliesAutonomy } from '../../modes/registry';
 import { getPresence } from '../coordination/presence';
 import { readInbox } from '../coordination/messages';
@@ -199,7 +200,12 @@ export default defineTool({
         .string()
         .max(CARRY_TEXT_SOFT_CAP * CARRY_CAP_HARD_MULTIPLE)
         .optional()
-        .describe('The non-obvious thing a cold successor would waste time re-deriving.'),
+        // observation-and-recall-surface-honesty-2026-08-16 P-001: this field is the
+        // turn-end reflection path — checkpoint-harvest's boundInsight() takes its FIRST
+        // LINE verbatim as the filed observation's title, which is the only thing
+        // recurrence matching ever sees. Saying "titles should be identifiers" is
+        // unactionable here unless it also says which line becomes the title.
+        .describe(`The non-obvious thing a cold successor would waste time re-deriving. ${HARVESTED_FIRST_LINE_RULE}`),
       next: z
         .string()
         .max(CARRY_TEXT_SOFT_CAP * CARRY_CAP_HARD_MULTIPLE)
