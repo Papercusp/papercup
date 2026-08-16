@@ -28,6 +28,10 @@ import { ChevronDown, Pause, Play } from "lucide-react";
 import { useSyncQuery } from "@papercusp/sync";
 import { useFlag } from "@papercusp/flags/client";
 import { FLAGS } from "@papercusp/flags";
+// Native `title=` on a button is blocked by lint:design-primitives — Tooltip is
+// the shared primitive. It renders via Radix `Trigger asChild`, so it clones the
+// button rather than wrapping it: the .pc-lloop flex row is unaffected.
+import { Tooltip } from "@/app/harness/Tooltip";
 import type { LearningLoopControl as LoopSnapshot } from "@papercusp/operator-core/lib/harness/improvements/loop-control";
 
 /** Human labels for the loop's spend roles. */
@@ -143,46 +147,50 @@ export default function LearningLoopControl() {
 
   return (
     <div ref={rootRef} className={`pc-lloop${paused ? " pc-lloop--paused" : ""}`}>
-      <button
-        type="button"
-        className="pc-lloop__chip"
-        aria-haspopup="dialog"
-        aria-expanded={open}
-        title={error ?? "Learning loops — spend & pause"}
-        onClick={() => void setOpen(!open)}
-      >
-        <span className="pc-lloop__dot" aria-hidden />
-        {paused ? (
-          <span className="pc-lloop__word">paused</span>
-        ) : (
-          <span className="pc-lloop__word">
-            learning
-            <span className="pc-lloop__ell" aria-hidden>
-              <i>.</i>
-              <i>.</i>
-              <i>.</i>
+      <Tooltip label={error ?? "Learning loops — spend & pause"}>
+        <button
+          type="button"
+          className="pc-lloop__chip"
+          aria-haspopup="dialog"
+          aria-expanded={open}
+          onClick={() => void setOpen(!open)}
+        >
+          <span className="pc-lloop__dot" aria-hidden />
+          {paused ? (
+            <span className="pc-lloop__word">paused</span>
+          ) : (
+            <span className="pc-lloop__word">
+              learning
+              <span className="pc-lloop__ell" aria-hidden>
+                <i>.</i>
+                <i>.</i>
+                <i>.</i>
+              </span>
             </span>
-          </span>
-        )}
-        <span className="pc-lloop__amt">{spendToday}</span>
-        <ChevronDown size={10} aria-hidden />
-      </button>
-      <button
-        type="button"
-        className="pc-lloop__pp"
-        disabled={busy}
-        aria-busy={busy || undefined}
-        aria-label={paused ? "Resume all learning loops" : "Pause all learning loops"}
-        title={
+          )}
+          <span className="pc-lloop__amt">{spendToday}</span>
+          <ChevronDown size={10} aria-hidden />
+        </button>
+      </Tooltip>
+      <Tooltip
+        label={
           error ??
           (paused
             ? `Resume the ${snap.heldCount} held learning loop${snap.heldCount === 1 ? "" : "s"}`
             : `Pause all ${snap.activeCount} learning loop${snap.activeCount === 1 ? "" : "s"}`)
         }
-        onClick={() => void setActive(paused)}
       >
-        {paused ? <Play size={12} aria-hidden /> : <Pause size={12} aria-hidden />}
-      </button>
+        <button
+          type="button"
+          className="pc-lloop__pp"
+          disabled={busy}
+          aria-busy={busy || undefined}
+          aria-label={paused ? "Resume all learning loops" : "Pause all learning loops"}
+          onClick={() => void setActive(paused)}
+        >
+          {paused ? <Play size={12} aria-hidden /> : <Pause size={12} aria-hidden />}
+        </button>
+      </Tooltip>
 
       {open ? (
         <div className="pc-lloop__pop" role="dialog" aria-label="Learning loops">
@@ -193,8 +201,13 @@ export default function LearningLoopControl() {
           <label className="pc-lloop__swrow">
             <span>Run the loop</span>
             <span className="pc-lloop__sw">
+              {/* role="switch" is the accurate semantic — this is a two-state
+                  on/off toggle with a track + thumb, not a checkbox in a set —
+                  and it is what lint:design-primitives keys on to tell the two
+                  apart (design-primitives.test.ts:290). Keep it. */}
               <input
                 type="checkbox"
+                role="switch"
                 checked={!paused}
                 disabled={busy}
                 onChange={(e) => void setActive(e.target.checked)}
