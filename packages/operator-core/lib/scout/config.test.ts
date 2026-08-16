@@ -43,6 +43,9 @@ describe('DEFAULT_SCOUT_CONFIG — anti-drift binding to the engine constants', 
     expect(DEFAULT_SCOUT_CONFIG.buckets.feasibilityFloor).toBe(0.5);
     expect(DEFAULT_SCOUT_CONFIG.buckets.moonshotNoveltyFloor).toBe(0.66);
     expect(DEFAULT_SCOUT_CONFIG.buckets.maxMoonshots).toBe(2);
+    // WI-39492 — the batch-relative moonshot floor's knobs.
+    expect(DEFAULT_SCOUT_CONFIG.buckets.moonshotFloorQuantile).toBe(0.75);
+    expect(DEFAULT_SCOUT_CONFIG.buckets.moonshotFloorMin).toBe(0.45);
     expect(DEFAULT_SCOUT_CONFIG.novelty.matchFloor).toBe(0.5);
     expect(DEFAULT_SCOUT_CONFIG.novelty.decidedPenalty).toBe(0.15);
     expect(DEFAULT_SCOUT_CONFIG.routing.defaultRail).toBe('improvement');
@@ -160,6 +163,16 @@ describe('parseScoutConfigBlock — defensive', () => {
       buckets: { noveltyFloor: 'high', maxMoonshots: 3, feasibilityFloor: NaN },
     });
     expect(override.buckets).toEqual({ maxMoonshots: 3 });
+  });
+
+  it('parses the relative moonshot-floor knobs (WI-39492) — pinned so they cannot be silently dropped', () => {
+    expect(
+      parseScoutConfigBlock({ buckets: { moonshotFloorQuantile: 0.6, moonshotFloorMin: 0.5 } })
+        .buckets,
+    ).toEqual({ moonshotFloorQuantile: 0.6, moonshotFloorMin: 0.5 });
+    const cfg = resolveScoutConfig(parseScoutConfigBlock({ buckets: { moonshotFloorMin: 0.5 } }));
+    expect(cfg.buckets.moonshotFloorMin).toBe(0.5);
+    expect(cfg.buckets.moonshotFloorQuantile).toBe(DEFAULT_BUCKET_OPTIONS.moonshotFloorQuantile);
   });
 
   it('parses federated priming numerics only', () => {

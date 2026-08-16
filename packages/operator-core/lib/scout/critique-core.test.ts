@@ -125,6 +125,115 @@ describe('bucketByCritique (D-005 moonshot preservation + cap)', () => {
   });
 });
 
+// ── WI-39492: the batch-RELATIVE moonshot floor ──────────────────────────────
+// The fixed 0.66 floor drifted out of reach as the corpus densified — measured
+// live: 0 moonshots across 96 scored ideas / 12 cycles, per-cycle max novelty
+// 0.48–0.68, every low-feasibility leap rejected as "not strong enough". These
+// pin the fix AND its guardrails (the floor must not manufacture leaps either).
+describe('effectiveMoonshotFloor (WI-39492)', () => {
+  /** A real cycle's novelty distribution, from the live scout_cycle_stage_artifacts. */
+  const COMPRESSED_BATCH = [0.2, 0.28, 0.31, 0.35, 0.42, 0.48, 0.58, 0.65];
+
+  it('tracks the batch quantile when the corpus has compressed novelty below the absolute floor', () => {
+    // 8 ideas, q=0.75 → the 2nd-highest (0.58) — reachable, unlike the fixed 0.66.
+    expect(effectiveMoonshotFloor(COMPRESSED_BATCH)).toBe(0.58);
+  });
+
+  it('never demands MORE than the absolute floor — an all-novel batch stays at 0.66', () => {
+    // The empty-corpus case: search-first novelty is 1 for everything.
+    expect(effectiveMoonshotFloor([1, 1, 1, 1, 1, 1])).toBe(
+      DEFAULT_BUCKET_OPTIONS.moonshotNoveltyFloor,
+    );
+  });
+
+  it('never drops below moonshotFloorMin — a uniformly unoriginal batch gets no free leaps', () => {
+    expect(effectiveMoonshotFloor([0.1, 0.15, 0.2, 0.22, 0.25])).toBe(
+      DEFAULT_BUCKET_OPTIONS.moonshotFloorMin,
+    );
+  });
+
+  it('falls back to the absolute floor for a batch too small to take a quantile of', () => {
+    expect(effectiveMoonshotFloor([0.5, 0.55, 0.6])).toBe(
+      DEFAULT_BUCKET_OPTIONS.moonshotNoveltyFloor,
+    );
+  });
+
+  it('honors custom knobs (quantile + min)', () => {
+    expect(effectiveMoonshotFloor(COMPRESSED_BATCH, { moonshotFloorQuantile: 0.5 })).toBe(0.42);
+    expect(effectiveMoonshotFloor(COMPRESSED_BATCH, { moonshotFloorMin: 0.62 })).toBe(0.62);
+  });
+});
+
+describe('bucketByCritique — relative floor restores D-005 leap preservation (WI-39492)', () => {
+  /** The measured regression shape: a full 8-idea cycle whose two most-novel
+   *  ideas are low-feasibility leaps, none of them clearing the fixed 0.66. */
+  const CYCLE: CritiqueScores[] = [
+    { id: 'leap-top', novelty: 0.65, feasibility: 0.3 },
+    { id: 'leap-2nd', novelty: 0.58, feasibility: 0.25 },
+    { id: 'buildable', novelty: 0.48, feasibility: 0.8 },
+    { id: 'buildable-2', novelty: 0.42, feasibility: 0.7 },
+    { id: 'midling', novelty: 0.35, feasibility: 0.4 },
+    { id: 'obvious-a', novelty: 0.31, feasibility: 0.9 },
+    { id: 'obvious-b', novelty: 0.28, feasibility: 0.6 },
+    { id: 'obvious-c', novelty: 0.2, feasibility: 0.5 },
+  ];
+
+  it('preserves the cycle’s genuine leaps instead of rejecting all of them', () => {
+    const b = bucketByCritique(CYCLE);
+    expect(b.moonshot.map((i) => i.id)).toEqual(['leap-top', 'leap-2nd']);
+    expect(b.verdicts['leap-top'].verdict).toBe('moonshot');
+  });
+
+  it('CONTROL: the same batch under the OLD absolute floor preserves NOTHING — the bug', () => {
+    // Pinning floorMin at the absolute floor degenerates the relative floor back
+    // to the pre-fix behaviour, so this test FAILS if the mechanism stops mattering.
+    const b = bucketByCritique(CYCLE, { moonshotFloorMin: 0.66 });
+    expect(b.moonshot).toEqual([]);
+    expect(b.rejected.map((i) => i.id)).toContain('leap-top');
+  });
+
+  it('does NOT manufacture leaps: a feasible top-novelty idea is still a keep', () => {
+    const feasibleTop = CYCLE.map((i) =>
+      i.id === 'leap-top' ? { ...i, feasibility: 0.9 } : i,
+    );
+    const b = bucketByCritique(feasibleTop);
+    expect(b.kept.map((i) => i.id)).toContain('leap-top');
+    expect(b.moonshot.map((i) => i.id)).not.toContain('leap-top');
+  });
+
+  it('does NOT manufacture leaps: an unoriginal batch yields no moonshots (floorMin holds)', () => {
+    const dull: CritiqueScores[] = [
+      { id: 'a', novelty: 0.36, feasibility: 0.2 },
+      { id: 'b', novelty: 0.38, feasibility: 0.2 },
+      { id: 'c', novelty: 0.4, feasibility: 0.2 },
+      { id: 'd', novelty: 0.42, feasibility: 0.2 },
+      { id: 'e', novelty: 0.44, feasibility: 0.2 },
+    ];
+    // Every novelty is above the reject floor (0.34) but below moonshotFloorMin (0.45).
+    expect(bucketByCritique(dull).moonshot).toEqual([]);
+  });
+
+  it('still caps the moonshot bucket under the relative floor (D-005 cap survives)', () => {
+    const manyLeaps: CritiqueScores[] = [
+      { id: 'm1', novelty: 0.65, feasibility: 0.2 },
+      { id: 'm2', novelty: 0.63, feasibility: 0.2 },
+      { id: 'm3', novelty: 0.61, feasibility: 0.2 },
+      { id: 'm4', novelty: 0.6, feasibility: 0.2 },
+      { id: 'm5', novelty: 0.58, feasibility: 0.2 },
+    ];
+    const b = bucketByCritique(manyLeaps);
+    expect(b.moonshot).toHaveLength(DEFAULT_BUCKET_OPTIONS.maxMoonshots);
+    expect(b.moonshot.map((i) => i.id)).toEqual(['m1', 'm2']);
+  });
+
+  it('names the EFFECTIVE floor in the verdict reason (the audit trail)', () => {
+    const b = bucketByCritique(CYCLE);
+    // 0.58, not the absolute 0.66 — a reader must see what "a leap" meant here.
+    expect(b.verdicts['leap-top'].reason).toContain('0.58');
+    expect(b.verdicts['midling'].reason).toContain('0.58');
+  });
+});
+
 // ── Threshold boundaries + custom options (depth pass, su-7f3e0376) ──────────
 describe('verdictFor — exact threshold boundaries (the <,>= edges)', () => {
   it('novelty exactly AT the noveltyFloor (0.34) is NOT rejected; just below IS', () => {
