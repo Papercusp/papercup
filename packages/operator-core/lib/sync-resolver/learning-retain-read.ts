@@ -619,6 +619,233 @@ export async function readRetainPlanChildren(
   }
 }
 
+// ─── Row detail (WI-39534) ───────────────────────────────────────────────────
+
+export interface RetainDetailDeps {
+  getRubric: (id: string) => Promise<{
+    title: string;
+    description: string;
+    status: string;
+    characteristic: string;
+    criteria: Array<{ label?: string; title?: string; id?: string }>;
+    updatedAt: string;
+  } | null>;
+  getRecipe: (id: string) => Promise<{
+    title: string;
+    description: string;
+    script: string;
+    potSlug: string | null;
+    toolsUsed: string[];
+    runCount: number;
+    successCount: number;
+    lastRunAt: string | null;
+    status: string;
+    createdBy: string | null;
+    updatedAt: string;
+  } | null>;
+  /** Raw runbook doc text by slug (frontmatter included); null = not found. */
+  readRunbook: (slug: string) => Promise<{ text: string; ts: string | null } | null>;
+  /** One shared-memory entry by id, with its pool scope when known. */
+  getMemory: (id: string) => Promise<(RetainMemorySource & { scope?: string }) | null>;
+}
+
+function clampDetailBody(text: string | null | undefined): { body: string | null; bodyTruncated: boolean } {
+  if (!text) return { body: null, bodyTruncated: false };
+  const trimmed = text.trim();
+  if (!trimmed) return { body: null, bodyTruncated: false };
+  if (trimmed.length <= RETAIN_DETAIL_BODY_MAX) return { body: trimmed, bodyTruncated: false };
+  return { body: trimmed.slice(0, RETAIN_DETAIL_BODY_MAX), bodyTruncated: true };
+}
+
+function detailField(label: string, value: unknown): Array<{ label: string; value: string }> {
+  if (value == null) return [];
+  const s = typeof value === 'string' ? value : String(value);
+  return s ? [{ label, value: s }] : [];
+}
+
+/** Strip a leading `--- … ---` frontmatter block off a runbook doc. */
+export function stripFrontmatter(text: string): string {
+  const m = /^---\r?\n[\s\S]*?\r?\n---\r?\n/.exec(text);
+  return m ? text.slice(m[0].length) : text;
+}
+
+/**
+ * One ledger row's expanded detail (WI-39534): body/provenance beyond the
+ * row's title+status, per kind, in ONE neutral shape. Best-effort like every
+ * retain read — a store failure or unknown id resolves to null (the client
+ * renders "detail unavailable"), never a 500.
+ */
+export async function readRetainDetail(
+  sql: Sql,
+  workspaceId: string,
+  kind: RetainFeedKind,
+  id: string,
+  deps: RetainDetailDeps,
+): Promise<RetainDetail | null> {
+  if (!id) return null;
+  try {
+    switch (kind) {
+      case 'plan': {
+        const rows = (await sql`
+          SELECT hp.title, hp.status, hp.content, hp.harness_slug, hp.now_state,
+                 date_trunc('milliseconds', hp.updated_at) AS ts,
+                 r.idea_id, r.title AS idea_title, r.lens,
+                 to_timestamp(r.routed_at / 1000.0) AS routed_ts
+            FROM harness_shared.harness_plans hp
+            LEFT JOIN LATERAL (
+              SELECT ri.idea_id, ri.title, ri.lens, ri.routed_at
+                FROM harness_shared.scout_routed_ideas ri
+               WHERE ri.workspace_id = hp.workspace_id
+                 AND ri.rail = 'plan'
+                 AND ri.routed_ref = 'plan:' || hp.plan_slug
+               ORDER BY ri.routed_at DESC
+               LIMIT 1
+            ) r ON TRUE
+           WHERE hp.workspace_id = ${workspaceId}
+             AND hp.plan_slug = ${id}
+           LIMIT 1
+        `) as Array<Record<string, unknown>>;
+        const r = rows[0];
+        if (!r) return null;
+        return {
+          kind,
+          id,
+          title: String(r.title ?? id),
+          status: typeof r.status === 'string' && r.status ? r.status : null,
+          ts: toIsoMs(r.ts),
+          ...clampDetailBody(typeof r.content === 'string' ? r.content : null),
+          fields: [
+            ...detailField('Harness', r.harness_slug),
+            ...detailField('Now', r.now_state),
+            ...detailField('From idea', r.idea_title ?? r.idea_id),
+            ...detailField('Lens', r.lens),
+            ...detailField('Routed', toIsoMs(r.routed_ts)),
+          ],
+        };
+      }
+      case 'wi': {
+        const rows = (await sql`
+          SELECT ei.title, ei.state, ei.body, ei.severity, ei.created_by, ei.scope,
+                 date_trunc('milliseconds', ei.updated_at) AS ts,
+                 date_trunc('milliseconds', ei.created_at) AS created_ts,
+                 r.idea_id, r.title AS idea_title, r.lens
+            FROM harness_shared.engineer_issues ei
+            LEFT JOIN LATERAL (
+              SELECT ri.idea_id, ri.title, ri.lens
+                FROM harness_shared.scout_routed_ideas ri
+               WHERE ri.workspace_id = ei.workspace_id
+                 AND ri.routed_ref = 'wi:' || ei.issue_id
+               ORDER BY ri.routed_at DESC
+               LIMIT 1
+            ) r ON TRUE
+           WHERE ei.workspace_id = ${workspaceId}
+             AND ei.issue_id = ${id}
+           LIMIT 1
+        `) as Array<Record<string, unknown>>;
+        const r = rows[0];
+        if (!r) return null;
+        return {
+          kind,
+          id,
+          title: String(r.title ?? id),
+          status: typeof r.state === 'string' && r.state ? r.state : null,
+          ts: toIsoMs(r.ts),
+          ...clampDetailBody(typeof r.body === 'string' ? r.body : null),
+          fields: [
+            ...detailField('Severity', r.severity),
+            ...detailField('Scope', r.scope),
+            ...detailField('Created by', r.created_by),
+            ...detailField('Created', toIsoMs(r.created_ts)),
+            ...detailField('From idea', r.idea_title ?? r.idea_id),
+            ...detailField('Lens', r.lens),
+          ],
+        };
+      }
+      case 'rubric': {
+        const rubric = await deps.getRubric(id);
+        if (!rubric) return null;
+        return {
+          kind,
+          id,
+          title: rubric.title || id,
+          status: rubric.status || null,
+          ts: toIsoMs(rubric.updatedAt),
+          ...clampDetailBody(rubric.description),
+          listItems: rubric.criteria
+            .map((c) => c.label ?? c.title ?? c.id ?? '')
+            .filter((s): s is string => Boolean(s)),
+          fields: [...detailField('Characteristic', rubric.characteristic)],
+        };
+      }
+      case 'runbook': {
+        const doc = await deps.readRunbook(id);
+        if (!doc) return null;
+        const parsed = parseInsightFrontmatter(id, doc.text);
+        return {
+          kind,
+          id,
+          title: parsed.title,
+          status: null,
+          ts: doc.ts,
+          ...clampDetailBody(stripFrontmatter(doc.text)),
+          fields: [...detailField('Discovered', parsed.discovered)],
+        };
+      }
+      case 'recipe': {
+        const recipe = await deps.getRecipe(id);
+        if (!recipe) return null;
+        const { body, bodyTruncated } = clampDetailBody(recipe.description);
+        const script = recipe.script?.trim() ?? '';
+        return {
+          kind,
+          id,
+          title: recipe.title || id,
+          status: recipe.status || null,
+          ts: toIsoMs(recipe.lastRunAt) ?? toIsoMs(recipe.updatedAt),
+          body,
+          bodyTruncated: bodyTruncated || script.length > RETAIN_DETAIL_BODY_MAX,
+          ...(script ? { code: script.slice(0, RETAIN_DETAIL_BODY_MAX) } : {}),
+          fields: [
+            ...detailField('Runs', recipe.runCount ? `${recipe.successCount}/${recipe.runCount} ok` : null),
+            ...detailField('Last run', toIsoMs(recipe.lastRunAt)),
+            ...detailField('Pot', recipe.potSlug),
+            ...detailField('Author', recipe.createdBy),
+            ...detailField('Tools', recipe.toolsUsed.length ? recipe.toolsUsed.join(', ') : null),
+          ],
+        };
+      }
+      case 'memory': {
+        const entry = await deps.getMemory(id);
+        if (!entry) return null;
+        const m = entry.metadata ?? {};
+        const isPack = m.source === 'pack' && typeof m.pack_id === 'string';
+        return {
+          kind,
+          id,
+          title: retainMemoryTitle(entry.text),
+          status: null,
+          ts: retainMemoryTsOf(entry.metadata),
+          ...clampDetailBody(entry.text),
+          editable: true,
+          fields: [
+            ...detailField('Kind', entry.kind),
+            ...detailField('Created by', typeof m.created_by === 'string' ? m.created_by : null),
+            ...detailField('Pack', isPack ? `${String(m.pack_id)}${m.pack_version ? ` @${String(m.pack_version)}` : ''}` : null),
+            ...detailField(
+              'Applies to',
+              Array.isArray(m.applies_to) && m.applies_to.length ? (m.applies_to as string[]).join(', ') : null,
+            ),
+            ...detailField('Pool', entry.scope),
+          ],
+        };
+      }
+    }
+  } catch (err) {
+    console.warn(`[learning.retainDetail] ${kind} read failed:`, err instanceof Error ? err.message : err);
+    return null;
+  }
+}
+
 // ─── Insight-runbook fs legs ─────────────────────────────────────────────────
 
 /**
