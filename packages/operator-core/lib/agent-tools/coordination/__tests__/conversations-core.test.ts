@@ -469,6 +469,39 @@ describe('postReplyCore', () => {
   });
 });
 
+describe('the consult kind gate (get-feedback-relevance-consults P-004, D-008 §2)', () => {
+  it('refuses an untyped reply into a kind=consult conversation — every route lands here', async () => {
+    const opened = await openConversationCore(deps, ident('requester'), { kind: 'consult', body: 'q' });
+    expect(await postReplyCore(deps, ident('responder'), { conversation_id: opened.conversation.id, body: 'untyped' })).toEqual({
+      error: 'consult_requires_typed_verb',
+    });
+    // conversations:answer routes through the same chokepoint.
+    expect(await answerQuestionCore(deps, ident('responder'), { conversation_id: opened.conversation.id, body: 'untyped answer' })).toEqual({
+      error: 'consult_requires_typed_verb',
+    });
+    // Nothing entered the thread.
+    expect((await threads.listPosts(`thr-${opened.conversation.id}`))).toEqual([]);
+  });
+
+  it('the internal via_consult_verb opt-in (set only by the consult verbs) passes the gate', async () => {
+    const opened = await openConversationCore(deps, ident('requester'), { kind: 'consult', body: 'q' });
+    const res = await postReplyCore(deps, ident('responder'), {
+      conversation_id: opened.conversation.id,
+      body: 'typed via verb',
+      via_consult_verb: true,
+    });
+    if ('error' in res) throw new Error(res.error);
+    expect(res.post.body).toBe('typed via verb');
+  });
+
+  it('non-consult conversations are untouched by the gate', async () => {
+    const opened = await openConversationCore(deps, ident('asker'), { kind: 'discussion', body: 'b' });
+    const res = await postReplyCore(deps, ident('replier'), { conversation_id: opened.conversation.id, body: 'plain' });
+    if ('error' in res) throw new Error(res.error);
+    expect(res.post.body).toBe('plain');
+  });
+});
+
 describe('resolveConversationCore', () => {
   it('a whitespace-only accepted_answer is no_answer: no capture, no state flip', async () => {
     const opened = await openConversationCore(deps, ident('asker'), { kind: 'question', body: 'q', topics: ['area'] });
