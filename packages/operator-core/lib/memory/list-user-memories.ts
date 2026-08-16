@@ -149,25 +149,54 @@ function displayScope(e: MemoryEntry, userId: string): {
  * user-authored long text — a per-row cap is not appropriate" per EI-12937) —
  * pagination is the lever, not truncation.
  */
-export async function listUserMemories(
-  userId: string,
-  opts: { limit?: number } = {},
-): Promise<UserMemoryRow[]> {
-  const backend = getMemoryBackend();
+/**
+ * The scope set one user's Memory page reads: their personal pool + one pool
+ * per harness in the active workspace. The deprecated workspace-shared pool
+ * was drained (docs-and-memory-as-projections D-005).
+ *
+ * Shared by `listUserMemories` and `countUserMemories` so the denominator the
+ * page shows and the rows it lists can never describe different corpora — a
+ * total computed over a different scope set than the list is worse than no
+ * total, because "300 of 2,465" invites arithmetic that would be wrong.
+ */
+async function userMemoryScopes(userId: string): Promise<string[]> {
   const ws = activeWorkspaceId();
-
-  // User pool + one pool per harness. The per-pool fan-out is the
-  // backend's concern; the deprecated workspace-shared pool was
-  // drained (docs-and-memory-as-projections D-005).
   let harnessSlugs: string[] = [];
   try {
     const reg = await loadHarnessRegistry(ws);
     harnessSlugs = reg.projects.map((p) => p.slug);
   } catch { /* leave empty — section will just be empty */ }
+  return [userId, ...harnessSlugs.map((slug) => `harness:${slug}`)];
+}
 
-  const entries = await backend.list({
-    scope: [userId, ...harnessSlugs.map((slug) => `harness:${slug}`)],
-  });
+/**
+ * How many memories the page COULD show for `userId` — the denominator beside
+ * its bounded window (WI-39540).
+ *
+ * Skips the audit enrichment (two PG round-trips over every id) and the sort,
+ * because a count needs neither. Deliberately counts the same entries
+ * `listUserMemories` would return before its limit slice, via the shared
+ * scope helper above.
+ *
+ * ⚠ Do NOT reimplement this as a `SELECT count(*) FROM memory_canonical`.
+ * That table also holds ~50k `row_kind='entity'` graph nodes, and the
+ * canonical store is an ENRICHMENT of whatever backend is active, not the
+ * backend itself — a raw table count answers a different question and
+ * overstates the total by an order of magnitude.
+ */
+export async function countUserMemories(userId: string): Promise<number> {
+  const backend = getMemoryBackend();
+  const entries = await backend.list({ scope: await userMemoryScopes(userId) });
+  return entries.length;
+}
+
+export async function listUserMemories(
+  userId: string,
+  opts: { limit?: number } = {},
+): Promise<UserMemoryRow[]> {
+  const backend = getMemoryBackend();
+
+  const entries = await backend.list({ scope: await userMemoryScopes(userId) });
 
   const combined = entries.map((e) => ({
     id: e.id,
