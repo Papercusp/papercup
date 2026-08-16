@@ -70,6 +70,7 @@ import type { SubstitutionRow } from '../bash-substitution/match';
 import { activeWorkspaceId } from '../workspace-registry';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { redactKeyDirectedSecrets, redactSelfIdentifyingSecrets } from '../sensitive-text';
+import { capWithMarker, partTextCapFor } from '../transcript-text-caps';
 
 // Backward-compatible export for the session-part security tests and archive readers.
 export { redactKeyDirectedSecrets as redactPartSecrets } from '../sensitive-text';
@@ -340,7 +341,7 @@ export function parseClaudeParts(line: string): ParsedPart[] {
   const sessionId = typeof obj.sessionId === 'string' ? obj.sessionId : null;
   const out: ParsedPart[] = [];
   const push = (partKind: PartKind, raw: string, toolName?: string | null) => {
-    const text = cleanPartText(raw);
+    const text = cleanPartText(raw, partKind);
     // A tool_use is worth a row on its NAME alone (an argument-less call is
     // still a real event in the transcript); every other kind needs content.
     if (!text.trim() && partKind !== 'tool_use') return;

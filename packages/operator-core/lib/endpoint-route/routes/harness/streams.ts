@@ -23,6 +23,11 @@ import {
   type StreamToken,
 } from '../../../harness-active-streams';
 import { defineTool } from '@papercusp/agent-mcp';
+import {
+  TRANSCRIPT_RENDER_TEXT_CAP,
+  TRUNCATION_MARKER_POSIX_RE,
+  capWithMarker,
+} from '../../../transcript-text-caps';
 
 function remoteIpFrom(req: Request): string {
   return (
@@ -55,14 +60,17 @@ export type AgentTimelineEntry = {
 /** Per-entry text cap for UI-bound thinking entries. A single tool_result can
  *  carry a whole file (hundreds of KB); the pane renders it in a ~120px scroll
  *  box, so ship a bounded excerpt — this also keeps the one-shot `backfill`
- *  lean over the desktop IPC hop. Pure — exported for tests. */
-export const THINKING_ENTRY_TEXT_CAP = 8_000;
+ *  lean over the desktop IPC hop. Pure — exported for tests.
+ *
+ *  This is the RENDER budget, and it is now THE canonical cap: the ingest
+ *  store derives its prose cap from it (see ../../../transcript-text-caps), so
+ *  raising it here widens what gets stored rather than leaving the store 4x
+ *  tighter than the pane, which is the drift this alias exists to prevent. */
+export const THINKING_ENTRY_TEXT_CAP = TRANSCRIPT_RENDER_TEXT_CAP;
 export function capEntryText(e: AgentTimelineEntry): AgentTimelineEntry {
-  if (typeof e.text !== 'string' || e.text.length <= THINKING_ENTRY_TEXT_CAP) return e;
-  return {
-    ...e,
-    text: `${e.text.slice(0, THINKING_ENTRY_TEXT_CAP)}… [truncated ${e.text.length - THINKING_ENTRY_TEXT_CAP} chars]`,
-  };
+  if (typeof e.text !== 'string') return e;
+  const capped = capWithMarker(e.text, THINKING_ENTRY_TEXT_CAP);
+  return capped === e.text ? e : { ...e, text: capped };
 }
 
 /**
