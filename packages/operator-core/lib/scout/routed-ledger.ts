@@ -275,7 +275,8 @@ export interface GradeRoutedIdeaInput {
    * Grader attribution (D-004). The tool layer (C-3) DERIVES this from the
    * caller identity — it is never caller-supplied input. 'owner' is reserved
    * for an unidentifiable human-surface grade; identified agents write their
-   * resolved ownerId, while the Mug writes the legacy 'Queen' label.
+   * resolved ownerId, while the Mug writes the neutral 'auto-grader' machine id
+   * (legacy 'Queen' rows were migrated — WI-39481).
    */
   gradedBy: string;
 }
@@ -540,7 +541,8 @@ export async function readRoutedIdeas(opts: ScoutLedgerOpts = {}): Promise<Route
   return rows.map((r) => {
     // C-1 → C-1b: the grade fields are optional on the provenance — absent =
     // ungraded. Preserve every non-empty graded_by value: identified SU callers
-    // write their ownerId, while legacy rows may contain 'owner' or 'Queen'.
+    // write their ownerId; the Mug writes 'auto-grader'; 'owner' is the
+    // human-surface fallback.
     const gradedAt = r.graded_at ? tsToIso(r.graded_at) : undefined;
     const originalIssueRef = r.routed_ref.startsWith('wi:') ? r.routed_ref.slice(3) : null;
     const feedbackRevisions = originalIssueRef ? revisionsByOriginal.get(originalIssueRef) ?? [] : [];

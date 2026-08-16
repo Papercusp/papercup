@@ -39,13 +39,15 @@ import { resolveAgentIdentity, type ResolveIdentityCtx } from '../coordination/i
 export type GradedBy = GradeRoutedIdeaInput['gradedBy'];
 
 /**
- * C-3: derive grader attribution from the caller — never from args. The Queen's
- * spawn ctx carries role 'mug'. Identified agent callers retain their resolved
- * ownerId so autonomous grades cannot consume the human owner's sovereign slot;
- * an unidentifiable human-surface call is the only literal 'owner' fallback.
+ * C-3: derive grader attribution from the caller — never from args. The Mug's
+ * spawn ctx carries role 'mug' and grades under the neutral machine id
+ * 'auto-grader' (the retired 'Queen' label was migrated — WI-39481). Identified
+ * agent callers retain their resolved ownerId so autonomous grades cannot
+ * consume the human owner's sovereign slot; an unidentifiable human-surface
+ * call is the only literal 'owner' fallback.
  */
 export function deriveGradedBy(ctx: { role?: string; ownerId?: string | null } | undefined): GradedBy {
-  if (ctx?.role === 'mug') return 'Queen';
+  if (ctx?.role === 'mug') return 'auto-grader';
   const ownerId = ctx?.ownerId?.trim();
   return ownerId || 'owner';
 }

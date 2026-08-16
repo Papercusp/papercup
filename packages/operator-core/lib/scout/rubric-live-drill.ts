@@ -337,7 +337,7 @@ export async function runBlenderRubricDrill(args: {
       ideaId: row.ideaId,
       grade: 5,
       feedback: `Automated ${drillId}: deployed rubric-seeding route reached the grading surface.`,
-      gradedBy: 'Queen',
+      gradedBy: 'auto-grader',
     });
   }
   const graded = await readRoutedIdeas({
