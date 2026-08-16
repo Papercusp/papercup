@@ -795,6 +795,22 @@ async function setupCellSchema(sql: postgres.Sql, opts: { workspaceId: string; h
       .join('\n'),
   );
 
+  // The SAME fixture-drift class again, one table wider: the judge now also reads
+  // `substrate_booted_handles_status` to learn which log is OUR OWN, so it can
+  // take it out of the peer population (the own log is re-stamped by our own
+  // writes, so counting it as a peer supplies an eternally-advancing false
+  // "positive control" and the all-silent branch can never fire). Without 739 the
+  // new SELECT raises 42P01 and — because the scan catches its own errors — the
+  // leg degrades to `scan-failed` and measures NOTHING while the suite stays
+  // green. Two independent recurrences (493, then 685) say a comment does not
+  // prevent this; the assertion in fleet-monitors.integration.test.ts does.
+  await sql.unsafe(
+    readFileSync(join(SQL_DIR, '739-substrate-booted-handles-status.sql'), 'utf8')
+      .split('\n')
+      .filter((l) => !l.trimStart().startsWith('\\') && !/^(BEGIN|COMMIT);\s*$/i.test(l))
+      .join('\n'),
+  );
+
   // WI-1644 (part 3): SCHEDULER_MAINTAINED_READY reads live as ON in this test
   // environment (flags are NOT mocked here), so claimFloorsWhereSql's
   // useMaintainedReady branch queries harness_shared.work_item_blocked — the
