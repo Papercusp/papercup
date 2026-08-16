@@ -18,7 +18,14 @@ const SERVER_HEAVY_OPERATOR_CORE_IMPORTS = [
   /@papercusp\/operator-core\/lib\/plugin-loader(?:\/|$)/,
   /@papercusp\/operator-core\/lib\/storage(?:\/|$)/,
   /@papercusp\/operator-core\/lib\/sync\/hyperbee(?:\/|$)/,
-  /@papercusp\/operator-core\/lib\/sync-resolver(?:$|\/(?!list-meta$))/,
+  // sync-resolver/* is server-heavy by default. Exempt ONLY submodules proven to
+  // pull nothing into the browser bundle — verify with `grep -cE '^import' <file>`
+  // before adding one:
+  //   list-meta             — pure pagination-label helpers, zero imports
+  //   learning-retain-types — pure types + `as const` tables, zero imports. It exists
+  //                           precisely so LearningTab can avoid learning-retain-read,
+  //                           whose node:fs would enter the bundle.
+  /@papercusp\/operator-core\/lib\/sync-resolver(?:$|\/(?!list-meta$|learning-retain-types$))/,
   /@papercusp\/operator-core\/lib\/text-artifacts(?:\/|$)/,
   /@papercusp\/operator-core\/lib\/work-items(?:\/|$)/,
 ];
