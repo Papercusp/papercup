@@ -3012,13 +3012,23 @@ function GymView({
         />
       ) : null}
 
-      {activeAutoloops.length > 0 && (
+      {/* ALL configured autoloops, parked ones included (P-009): a disabled
+          loop used to vanish from this strip entirely, so a parked gym was
+          indistinguishable from a never-armed one. The `off` chip + the banner
+          below both derive from the live gym_autoloop_config rows in the
+          snapshot — never a hardcoded dormant state (D-006 revived the loop;
+          this must read "running" again the moment it is re-armed). */}
+      {autoloops.length > 0 && (
         <div className="pc-learning__loops" aria-label="Gym autoloops">
-          {activeAutoloops.map((a) => (
+          {autoloops.map((a) => (
             <span
               key={a.harnessSlug}
-              className={`pc-learning__loop pc-learning__loop--${a.status}`}
-              title={`This gym runs experiment cycles on its own${a.budgetUsd != null ? ` — $${a.spentUsd.toFixed(2)} spent of a $${a.budgetUsd.toFixed(0)} budget` : ""}`}
+              className={`pc-learning__loop pc-learning__loop--${a.enabled ? a.status : "off"}`}
+              title={
+                a.enabled
+                  ? `This gym runs experiment cycles on its own${a.budgetUsd != null ? ` — $${a.spentUsd.toFixed(2)} spent of a $${a.budgetUsd.toFixed(0)} budget` : ""}`
+                  : `This autoloop is parked — no new cycles until it is re-armed${a.budgetUsd != null ? ` ($${a.spentUsd.toFixed(2)} of its $${a.budgetUsd.toFixed(0)} budget spent)` : ""}`
+              }
             >
               <Dumbbell size={11} aria-hidden />
               {a.harnessSlug}
@@ -3032,6 +3042,34 @@ function GymView({
           ))}
         </div>
       )}
+
+      {/* Dormant banner: nothing enabled AND nothing mid-cycle, while history
+          exists below — without this the ledger reads as live activity. The
+          all-empty case further down already carries its own "Arm the Gym"
+          action, so it is excluded here. */}
+      {snap &&
+      !sync.error &&
+      activeAutoloops.length === 0 &&
+      (proposals.length > 0 ||
+        archiveSeeds.length > 0 ||
+        cycles.length > 0 ||
+        runs.length > 0) ? (
+        <div className="pc-learning__dormant" role="status">
+          <Hourglass size={13} aria-hidden />
+          <span>
+            The gym is parked — no {t("pot", { lower: true })} autoloop is
+            enabled, so no new challenger cycles will run. Everything below is
+            history, not live activity.
+          </span>
+          <button
+            type="button"
+            className="pc-learning__orientaction"
+            onClick={openArming}
+          >
+            Open Arming
+          </button>
+        </div>
+      ) : null}
 
       {/* The empty state must require a RESOLVED-empty snapshot — never a
           not-yet-fetched one. Until the gym query has actually returned (`snap`
@@ -6181,7 +6219,17 @@ export function LearningStyles() {
       .pc-learning__loop em { font-style: normal; text-transform: uppercase; font-size: 9.5px; letter-spacing: 0; color: var(--fg-mute, #7f9bb4); }
       .pc-learning__loop--running { border-color: rgba(52, 211, 153, 0.5); }
       .pc-learning__loop--running em { color: #86efac; }
+      .pc-learning__loop--off { border-style: dashed; opacity: 0.8; }
       .pc-learning__loopspend { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px; color: var(--fg-mute, #7f9bb4); }
+      .pc-learning__dormant {
+        display: flex; align-items: center; gap: 8px; margin-top: 8px; padding: 8px 12px;
+        border: 1px dashed color-mix(in srgb, var(--warn, #f59e0b) 40%, var(--border, rgba(125, 211, 252, 0.2)));
+        border-radius: 10px; background: color-mix(in srgb, var(--warn, #f59e0b) 6%, transparent);
+        color: var(--fg-mute, #7f9bb4); font-size: 11.5px; line-height: 1.45;
+      }
+      .pc-learning__dormant > svg { flex: none; color: var(--warn, #f59e0b); }
+      .pc-learning__dormant span { max-width: 68ch; }
+      .pc-learning__dormant .pc-learning__orientaction { margin: 0 0 0 auto; align-self: center; flex: none; }
 
       .pc-learning__scopenote {
         margin: 0 0 8px; padding: 6px 10px; border-radius: 8px; font-size: 11px;
