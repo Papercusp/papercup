@@ -348,13 +348,15 @@ export function judgePeerFederationSilence(
     );
   }
   return {
-    totalLogs: rows.length,
+    totalLogs: judged.length,
     measured: true,
     unmeasuredReason: null,
     silent,
     freshestAdvanceMs,
     allSilent,
     breaches,
+    strandedCursors,
+    liveApplyBinding,
   };
 }
 
