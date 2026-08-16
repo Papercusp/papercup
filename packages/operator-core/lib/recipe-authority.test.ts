@@ -78,6 +78,63 @@ describe('recipe recommendation authority (P-008)', () => {
     });
   });
 
+  // EI-20480226881133232 — the recurrence guard. The real `distill-exact-active-checkpoint-log`
+  // recipe froze ONE gate run's /tmp log into a `const`, then reported that dead run's terminal
+  // red as the LIVE gate's verdict (11 runs, misclassifying an in-flight candidate). The literal
+  // never reaches `capability:read` as a static ARG, so call inspection cannot see it.
+  it('fails closed for a pinned run-scoped ephemeral artifact path', async () => {
+    const frozenLogScript = `const path = '/tmp/papercup-green-checkpoint-manual-1fxzuva-2026-08-13T13-14-14-693Z.log';
+      const r = await tools.capability.read({ file_path: path, tail: 500 });
+      return { path, finalLine: r };`;
+    await expect(deriveRecipeAuthority(frozenLogScript)).resolves.toMatchObject({
+      unresolved: true,
+      unresolvedCause: {
+        kind: 'volatile-run-artifact-path',
+        path: '/tmp/papercup-green-checkpoint-manual-1fxzuva-2026-08-13T13-14-14-693Z.log',
+      },
+    });
+    // …so it is neither recommended for reuse…
+    await expect(buildRecipeAuthorityRecommendation({
+      script: frozenLogScript,
+      updatedAt: '2026-08-15T00:00:00.000Z',
+      context: { harness: 'papercusp' },
+    })).resolves.toBeNull();
+    // …nor runnable through recipes:run, and the refusal says how to re-author it.
+    const verdict = await validateRecipeAuthorityProof({
+      script: frozenLogScript,
+      updatedAt: '2026-08-15T00:00:00.000Z',
+    });
+    expect(verdict).toMatchObject({ ok: false, error: 'authority_unresolved' });
+    expect((verdict as { reason: string }).reason).toContain('live authority');
+  });
+
+  it('flags the pinned-artifact literal in either quoting style, and only when run-scoped', () => {
+    // epoch-ms / pid stamp, and the inline-argument form
+    expect(
+      findVolatileRunArtifactLiteral(`await tools.capability.read({ file_path: "/tmp/run-1786896331.log" });`),
+    ).toBe('/tmp/run-1786896331.log');
+    // a stable temp path is NOT run-scoped — reusable, must stay recommendable
+    expect(findVolatileRunArtifactLiteral(`const p = '/tmp/papercup-green-checkpoint.log';`)).toBeNull();
+    // a path DERIVED at runtime is the correct shape and must not be flagged
+    expect(findVolatileRunArtifactLiteral('const p = `/tmp/gate-${runId}-${stamp}.log`;')).toBeNull();
+    // non-ephemeral roots are addresses, not artifacts
+    expect(findVolatileRunArtifactLiteral(`const p = 'docs/plans/my-plan-2026-08-13.md';`)).toBeNull();
+  });
+
+  it('keeps a live-resolved checkpoint-log recipe recommendable (the calibration case)', async () => {
+    // The corrected shape the refusal asks for: resolve the path from live authority,
+    // never pin it. This MUST stay recommendable or the guard is over-broad.
+    const liveScript = `const pos = await tools.dev.pipelinePosition({ path: 'packages/operator-core/lib/x.ts' });
+      const logPath = pos.gate?.logPath;
+      return await tools.capability.read({ file_path: logPath, tail: 200 });`;
+    await expect(deriveRecipeAuthority(liveScript)).resolves.toMatchObject({ unresolved: false });
+    await expect(buildRecipeAuthorityRecommendation({
+      script: liveScript,
+      updatedAt: '2026-08-15T00:00:00.000Z',
+      context: { harness: 'papercusp' },
+    })).resolves.not.toBeNull();
+  });
+
   it('fails closed for caller-scoped loop checkpoint state', async () => {
     const checkpointScript = `return await tools.loop.checkpoint({
       did: 'historical fleet work',
