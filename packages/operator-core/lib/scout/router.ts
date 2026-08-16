@@ -157,6 +157,8 @@ export function decideRoutes(
   proposals: readonly Proposal[],
   opts: ClassifyOptions = {},
 ): RoutingDecision[] {
+  const maxGoals = opts.maxGoalsPerCycle ?? DEFAULT_MAX_GOALS_PER_CYCLE;
+  let goalsDecided = 0;
   return proposals.map((p) => {
     let { rail, reason, followedHint } = classifyProposal(p, opts);
     // D-003: never route onto a disabled gym — manufactured outcomes are worse
@@ -166,6 +168,20 @@ export function decideRoutes(
       rail = 'improvement';
       reason = `${reason}; gym rail gated OFF (autoloop disabled, D-003) → improvement`;
       followedHint = false;
+    }
+    // P-013 / D-005: the goal rail's gate + per-cycle cap. Both reroute to the
+    // PLAN rail — a goal-scale idea is multi-plan scope, so a draft plan is its
+    // live fallback surface; dropping it would lose the idea entirely.
+    if (rail === 'goal' && opts.goalEnabled === false) {
+      rail = 'plan';
+      reason = `${reason}; goal rail gated OFF → plan`;
+      followedHint = false;
+    } else if (rail === 'goal' && goalsDecided >= maxGoals) {
+      rail = 'plan';
+      reason = `${reason}; goal cap reached (${maxGoals}/cycle) → plan`;
+      followedHint = false;
+    } else if (rail === 'goal') {
+      goalsDecided += 1;
     }
     const title = proposalTitle(p);
     const refs = p.addressesPatternRefs ?? [];
@@ -228,6 +244,24 @@ export interface InstanceSeedResult {
  *  batch-shaped like the gym rail. */
 export type InstanceDispatchPort = (variants: InstanceVariantView[]) => Promise<InstanceSeedResult>;
 
+/** One goal creation+start request (P-013 / D-005). The rails are DRAFTED by the router
+ *  ({@link draftGoalRails}) and REQUIRED here by type — an auto-created goal never starts
+ *  without both, which is what replaces the confirm card. */
+export interface GoalDispatchRequest {
+  proposal: Proposal;
+  /** The goal's outcome statement ({@link proposalTitle} of the proposal). */
+  title: string;
+  /** The drafted abandonment condition — rides inside the goal record. */
+  killCriterion: string;
+  /** The drafted spend ceiling in cents — rides inside the goal record. */
+  budgetCents: number;
+}
+
+/** goal-scale → goals create+start. Returns the created goal's id (the `goal:<id>`
+ *  provenance ref P-013's outcome feedback joins on). Production wiring creates the
+ *  `harness_shared.goals` row AND starts its GOAL-mode agent (router-deps.ts). */
+export type GoalDispatchPort = (req: GoalDispatchRequest) => Promise<{ goalId: string }>;
+
 /**
  * The injected effect port. Every rail's side-effect goes through here so
  * {@link routeProposals} is testable with fakes (invariant #5: assert routing
@@ -244,6 +278,12 @@ export interface RouterPorts {
    * `error`/`failed`, never aborting the batch).
    */
   instanceDispatch?: InstanceDispatchPort;
+  /**
+   * goal-scale → goals create+start (P-013 / D-005). OPTIONAL, same contract as
+   * `instanceDispatch`: a goal-routed decision with no port wired fails defensively
+   * per-decision, never aborting the batch.
+   */
+  goalDispatch?: GoalDispatchPort;
 }
 
 /* ────────────────────────────────────────────────────────────────────────
@@ -358,6 +398,106 @@ export function makeWholeSystemInstanceOverride(
   return (p) => (p.routeHint === 'gym' && isWholeSystemProposal(p, markers) ? 'instance' : undefined);
 }
 
+/* ────────────────────────────────────────────────────────────────────────
+ * The goal rail (blender-loop-repair-and-opus5-xhigh-2026-08-16 P-013 / D-005)
+ * ──────────────────────────────────────────────────────────────────────── */
+
+/**
+ * The vocabulary of a GOAL-SCALE idea — one whose scope is MULTIPLE plans and whose
+ * end-state is a weeks-long measurable outcome, vs a single plan's design surface.
+ * Deliberately CONSERVATIVE (the instance-rail marker discipline): a goal dispatch
+ * creates and starts a real goal with an agent behind it, so a false positive costs
+ * far more than a false negative (which still lands as a draft plan).
+ */
+export const GOAL_SCALE_MARKERS = [
+  'goal-scale',
+  'goal mode',
+  'multi-plan',
+  'multiple plans',
+  'several plans',
+  'spans plans',
+  'weeks-long',
+  'weeks long',
+  'over weeks',
+  'multi-week',
+  'long-horizon',
+  'long horizon',
+  'measurable end-state',
+  'measurable end state',
+  'north star',
+  'kill criterion',
+  'spend ceiling',
+  'standing outcome',
+  'campaign',
+] as const;
+
+/**
+ * Is this proposal GOAL-SCALE (multi-plan scope, weeks-long measurable end-state)
+ * rather than plan-scale? An explicit `routeHint: 'goal'` always counts; otherwise
+ * the proposal text is scanned for the goal-scale vocabulary — the same conservative
+ * text heuristic as {@link isWholeSystemProposal}, and like it, a stronger signal is
+ * for the hint producer to set `routeHint` directly.
+ */
+export function isGoalScaleProposal(
+  p: Proposal,
+  markers: readonly string[] = GOAL_SCALE_MARKERS,
+): boolean {
+  if (p.routeHint === 'goal') return true;
+  const hay = [p.framing, p.mechanism, p.bet, p.whyNew].map((s) => (s ?? '').toLowerCase()).join(' \n ');
+  return markers.some((m) => hay.includes(m));
+}
+
+/**
+ * Build a {@link ClassifyOptions.override} that bumps a BROAD proposal (hint 'plan')
+ * to the `goal` rail when it is goal-scale ({@link isGoalScaleProposal}), with a
+ * configurable marker vocabulary (the P-009 scout-config seam, mirroring
+ * {@link makeWholeSystemInstanceOverride}). Only 'plan'-hinted proposals are bumped:
+ * a goal subsumes plans, so the escalation path is plan → goal, and gym/improvement
+ * ideas are never goal-scale by construction. Compose with the instance override in
+ * the cycle wiring — their hint domains ('plan' vs 'gym') are disjoint.
+ */
+export function makeGoalScaleOverride(
+  markers: readonly string[] = GOAL_SCALE_MARKERS,
+): (p: Proposal) => RoutedRail | undefined {
+  return (p) => (p.routeHint === 'plan' && isGoalScaleProposal(p, markers) ? 'goal' : undefined);
+}
+
+/**
+ * Default spend ceiling drafted onto an auto-created goal (cents). Deliberately small
+ * for an autonomous creation — the ceiling is one of the two rails D-005 requires to
+ * ride INSIDE the goal record in place of a confirm card; the goal's own agent can
+ * argue it up with the owner later. Configurable per-blueprint via
+ * `scout.routing.goalBudgetCentsCap`.
+ */
+export const DEFAULT_GOAL_BUDGET_CENTS = 20000;
+
+/** Default {@link ClassifyOptions.maxGoalsPerCycle} — one auto-started goal per routing
+ *  batch. A goal is a weeks-long commitment with an agent behind it; one per cycle is
+ *  already an aggressive autonomous pace, and overflow lands as draft plans, not on the
+ *  floor. */
+export const DEFAULT_MAX_GOALS_PER_CYCLE = 1;
+
+/**
+ * Draft the two D-005 rails from the idea itself — PURE. An auto-created goal must
+ * carry BOTH a written kill criterion and a spend ceiling before it starts (the
+ * confirm card's replacement), so this never returns an empty criterion: the
+ * cheap experiment's falsifiable signal (D-006 — every proposal has one) is the
+ * natural abandonment condition, with the framing as fallback context.
+ */
+export function draftGoalRails(
+  p: Proposal,
+  opts: { budgetCentsCap?: number } = {},
+): { killCriterion: string; budgetCents: number } {
+  const signal = (p.cheapExperiment?.falsifiableSignal ?? '').trim();
+  const framing = proposalTitle(p);
+  const killCriterion = (
+    signal
+      ? `Kill this goal if its cheap experiment falsifies: ${signal}`
+      : `Kill this goal if no measurable progress toward "${framing}" lands within 30 days`
+  ).slice(0, 2000);
+  return { killCriterion, budgetCents: opts.budgetCentsCap ?? DEFAULT_GOAL_BUDGET_CENTS };
+}
+
 /**
  * Derive a valid `plans:new` slug stem from the proposal framing — lowercased,
  * non-alnum collapsed to single hyphens, trimmed, capped, and `scout-`-prefixed
@@ -394,6 +534,9 @@ export interface RouteResult {
 export interface RouteOptions extends ClassifyOptions {
   /** Custom proposal→gym-view mapper (default {@link proposalToGymView}). */
   gymView?: (p: Proposal) => ScoutIdeaView;
+  /** Spend ceiling drafted onto auto-created goals (default {@link DEFAULT_GOAL_BUDGET_CENTS});
+   *  the P-009 scout-config seam carries it as `routing.goalBudgetCentsCap`. */
+  goalBudgetCentsCap?: number;
 }
 
 /**
@@ -445,7 +588,7 @@ export async function routeProposals(
     }
   }
 
-  // ── plan + improvement rails (per-proposal) ───────────────────────────────
+  // ── plan + improvement + goal rails (per-proposal) ────────────────────────
   for (const d of decisions) {
     if (d.rail === 'gym' || d.rail === 'instance') continue; // handled above (batched)
     const p = byProposal.get(d.proposalId)!;
@@ -453,6 +596,22 @@ export async function routeProposals(
       if (d.rail === 'plan') {
         const { slug } = await ports.plansNew({ proposal: p, slugStem: deriveSlugStem(p.framing) });
         d.routedRef = `plan:${slug}`;
+      } else if (d.rail === 'goal') {
+        // P-013 / D-005: draft the two rails HERE so no goal can reach the port
+        // without them — the port's own types then require both.
+        if (!ports.goalDispatch) {
+          d.error = 'no goal dispatch wired (goalDispatch port missing)';
+        } else {
+          const rails = draftGoalRails(p, {
+            ...(opts.goalBudgetCentsCap !== undefined ? { budgetCentsCap: opts.goalBudgetCentsCap } : {}),
+          });
+          const { goalId } = await ports.goalDispatch({
+            proposal: p,
+            title: proposalTitle(p) || `Scout goal ${p.id}`,
+            ...rails,
+          });
+          d.routedRef = `goal:${goalId}`;
+        }
       } else {
         const { id } = await ports.capture({ proposal: p });
         d.routedRef = `wi:${id}`;
@@ -462,7 +621,7 @@ export async function routeProposals(
     }
   }
 
-  const byRail: Record<RoutedRail, number> = { plan: 0, gym: 0, improvement: 0, instance: 0 };
+  const byRail: Record<RoutedRail, number> = { plan: 0, gym: 0, improvement: 0, instance: 0, goal: 0 };
   for (const d of decisions) byRail[d.rail] += 1;
   const failed = decisions.filter((d) => d.error).map((d) => d.proposalId);
 

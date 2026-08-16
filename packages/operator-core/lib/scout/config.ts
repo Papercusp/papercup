@@ -26,7 +26,12 @@ import {
   type BucketOptions,
   type CorpusNoveltyTuning,
 } from './critique-core';
-import { DEFAULT_ROUTING_RAIL, WHOLE_SYSTEM_MARKERS } from './router';
+import {
+  DEFAULT_GOAL_BUDGET_CENTS,
+  DEFAULT_ROUTING_RAIL,
+  GOAL_SCALE_MARKERS,
+  WHOLE_SYSTEM_MARKERS,
+} from './router';
 import { DEFAULT_IDEATOR_MISSION } from './lenses';
 import { DEFAULT_CRITIC_MISSION } from './critics';
 import { DEFAULT_SCOUT_MODELS, type ScoutModelConfig } from './models';
@@ -47,6 +52,14 @@ export interface ScoutRoutingConfig {
    * supplies its own or `[]` (never bump to instance).
    */
   wholeSystemMarkers: readonly string[];
+  /**
+   * The goal-scale vocabulary that bumps a broad ('plan'-hinted) proposal to the `goal`
+   * rail (`isGoalScaleProposal`, P-013 / D-005). Same seam shape as `wholeSystemMarkers`:
+   * a hive supplies its own or `[]` (never auto-create goals from text).
+   */
+  goalScaleMarkers: readonly string[];
+  /** Spend ceiling (cents) drafted onto auto-created goals (`draftGoalRails`). */
+  goalBudgetCentsCap: number;
 }
 
 /**
@@ -120,6 +133,8 @@ export const DEFAULT_SCOUT_CONFIG: ScoutConfig = {
   routing: {
     defaultRail: DEFAULT_ROUTING_RAIL,
     wholeSystemMarkers: WHOLE_SYSTEM_MARKERS,
+    goalScaleMarkers: GOAL_SCALE_MARKERS,
+    goalBudgetCentsCap: DEFAULT_GOAL_BUDGET_CENTS,
   },
   framing: DEFAULT_SCOUT_FRAMING,
   federatedPriming: DEFAULT_FEDERATED_PRIMING,
@@ -182,7 +197,7 @@ function nonBlank(s: unknown): string | undefined {
   return typeof s === 'string' && s.trim().length > 0 ? s : undefined;
 }
 
-const ROUTED_RAILS: readonly RoutedRail[] = ['plan', 'gym', 'improvement', 'instance'];
+const ROUTED_RAILS: readonly RoutedRail[] = ['plan', 'gym', 'improvement', 'instance', 'goal'];
 
 function isFiniteNumber(v: unknown): v is number {
   return typeof v === 'number' && Number.isFinite(v);
@@ -242,6 +257,11 @@ export function parseScoutConfigBlock(raw: unknown): ScoutConfigOverride {
     }
     const markers = asStringArray(rt.wholeSystemMarkers);
     if (markers) routing.wholeSystemMarkers = markers.map((m) => m.toLowerCase());
+    const goalMarkers = asStringArray(rt.goalScaleMarkers);
+    if (goalMarkers) routing.goalScaleMarkers = goalMarkers.map((m) => m.toLowerCase());
+    if (isFiniteNumber(rt.goalBudgetCentsCap) && rt.goalBudgetCentsCap >= 0) {
+      routing.goalBudgetCentsCap = Math.round(rt.goalBudgetCentsCap);
+    }
     if (Object.keys(routing).length > 0) out.routing = routing;
   }
 
