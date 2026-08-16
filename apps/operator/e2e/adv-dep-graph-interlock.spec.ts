@@ -189,18 +189,24 @@ const DEP_EDGES = [
   },
 ];
 
-// EI-19917451944474469: this used to assert a SPECIFIC cause ("stale HMR-disabled
-// :3055 serves a blank #root") — that claim was measured WRONG (a live check found
-// HMR genuinely on: a real ~210KB '/@vite/client' module, not the noop stub, while
-// the dock still failed to mount). Don't restate a diagnosis nobody has re-verified;
-// name only what is actually known.
+// EI-19917451944474469: the cause here has now been MEASURED, twice replacing a guess.
+//   1. It first asserted "stale HMR-disabled :3055 serves a blank #root" — WRONG: a live
+//      check found HMR genuinely on (a real ~210KB '/@vite/client', not the noop stub).
+//   2. It then listed what-to-check hypotheses. Those are superseded by the real cause
+//      below, found once the spec finally ran against its OWN server: every spec in this
+//      directory hardcoded 'http://127.0.0.1:3055', so an isolated run booted a dedicated
+//      webServer on OPERATOR_E2E_PORT and then navigated to the SHARED :3055 anyway.
+// With that fixed, the isolated run surfaces the actual mount failure — a browser/node
+// boundary violation, not an environment problem.
 const MOUNT_FAIL_MSG =
   `The /adv shell did not mount the harnesses dock at ${baseURL}/adv?tab=harnesses&slug=${SLUG}. ` +
-  'Check: is OPERATOR_E2E_REUSE_SERVER pointed at a server that actually carries ' +
-  'PAPERCUSP_ENABLE_HMR=1 + PAPERCUSP_FAKE_LLM=1 (the standing dev:operator systemd ' +
-  'service does NOT)? Did the route stubs in stubApis() match the app\'s real ' +
-  'request shapes? Re-run with --headed or inspect the trace/screenshot attached to ' +
-  'this failure before assuming the old HMR hypothesis — it has already been wrong once.';
+  'MEASURED CAUSE (2026-08-16, isolated run): the /adv route crashes into its error ' +
+  'boundary because packages/operator-core/lib/embedded-pg-discovery.ts reaches the CLIENT ' +
+  'bundle and dereferences `node:path`, which Vite externalizes for the browser — ' +
+  '"Module \\"node:path\\" has been externalized ... Cannot access \\"node:path.join\\" in ' +
+  'client code", thrown inside a <Lazy> component and caught by CatchBoundaryImpl. ' +
+  'Fix the import chain that pulls embedded-pg-discovery into client code; do NOT re-derive ' +
+  'this from the HMR or FAKE_LLM hypotheses — both were checked and neither is the cause.';
 
 async function stubApis(page: Page) {
   await page.route('**/api/harness/projects/lite', async (route) => {
