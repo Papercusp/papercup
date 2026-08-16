@@ -221,6 +221,32 @@ export function describeLensAttribution(
   };
 }
 
+/**
+ * P-006 (blender-loop-repair-and-opus5-xhigh-2026-08-16) / EI-10607: report-only GROUNDING
+ * advisory for an su IDEATE-pass feature filing that declared no `ideation.addressesPatternRefs`.
+ * The writer (the ledger bridge below) and the readers (observationsImpact) have been wired since
+ * EI-10607, yet 0 of 217 su-ideate rows carried refs (measured live 2026-08-16) — because nothing
+ * told the filer at the moment they forgot. Same never-a-gate stance and caller-args basis as
+ * describeLensAttribution above, so a dedup-decline response carries it too.
+ */
+export function describeGroundingGap(
+  args: { kind?: string; lane?: string; ideation?: { addressesPatternRefs?: string[] } },
+  source?: string,
+): { note: string } | undefined {
+  // Same eligibility as the su-ideate ledger row below — no row, nothing to ground.
+  if (source !== 'su' || args.kind !== 'feature' || args.lane === 'observation') return undefined;
+  if (args.ideation?.addressesPatternRefs?.length) return undefined;
+  return {
+    note:
+      'Filed — this is a report, not a rejection. You declared no `ideation.addressesPatternRefs`, so ' +
+      'this idea is UNGROUNDED: it can never appear as grounded/shipped in any observationsImpact ' +
+      "(the observation→pattern→idea→shipped arc joins on that field), and it won't feed the grounding " +
+      'metrics that show which observations earn ideas. The refs come back from blender:ideation-feedback ' +
+      "as observationsImpact.patterns[].ref (e.g. 'wi:EI-10587') — pass the pattern(s) the idea actually " +
+      'builds on next time, or amend this one.',
+  };
+}
+
 export default defineTool({
   name: 'improvements:capture',
   profile: 'engineer',
@@ -946,6 +972,8 @@ export default defineTool({
       // WI-38065: report-only lens-attribution advisory (see describeLensAttribution above).
       // Same caller-args basis as experimentGap, so a dedup-decline carries it too.
       const lensAttribution = describeLensAttribution(args, source);
+      // P-006/EI-10607: report-only grounding advisory (see describeGroundingGap above).
+      const groundingGap = describeGroundingGap(args, source);
       const warnings = [
         ...(foundDuringTruncated
           ? [
