@@ -152,7 +152,7 @@ function mergeDefined<T extends object>(base: T, src?: Partial<T>): T {
  * Resolve a blueprint override over {@link DEFAULT_SCOUT_CONFIG}. A null/empty override
  * yields the defaults; an empty `lenses` array is ignored (the D-004 floor — never
  * silence the ideators). Missing nested keys fall back per-field, so a blueprint can
- * tune just `buckets.moonshotNoveltyFloor` without restating everything.
+ * tune just `buckets.moonshotFloorQuantile` without restating everything.
  */
 export function resolveScoutConfig(override?: ScoutConfigOverride | null): ScoutConfig {
   if (!override) return DEFAULT_SCOUT_CONFIG;
@@ -228,6 +228,9 @@ export function parseScoutConfigBlock(raw: unknown): ScoutConfigOverride {
     if (isFiniteNumber(b.feasibilityFloor)) bk.feasibilityFloor = b.feasibilityFloor;
     if (isFiniteNumber(b.moonshotNoveltyFloor)) bk.moonshotNoveltyFloor = b.moonshotNoveltyFloor;
     if (isFiniteNumber(b.maxMoonshots)) bk.maxMoonshots = b.maxMoonshots;
+    // WI-39492 — the batch-relative moonshot floor's two knobs.
+    if (isFiniteNumber(b.moonshotFloorQuantile)) bk.moonshotFloorQuantile = b.moonshotFloorQuantile;
+    if (isFiniteNumber(b.moonshotFloorMin)) bk.moonshotFloorMin = b.moonshotFloorMin;
     if (Object.keys(bk).length > 0) out.buckets = bk;
   }
 

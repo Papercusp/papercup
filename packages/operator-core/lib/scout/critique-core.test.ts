@@ -10,6 +10,8 @@ import {
   corpusNovelty,
   verdictFor,
   bucketByCritique,
+  effectiveMoonshotFloor,
+  DEFAULT_BUCKET_OPTIONS,
   type CorpusEntry,
   type CritiqueScores,
 } from './critique-core';
