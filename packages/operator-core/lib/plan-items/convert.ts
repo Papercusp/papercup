@@ -52,6 +52,8 @@ import {
 import { claimPlanItem, type PriorHolderWarning } from './liveness';
 import type { LivenessMode, PlanItemClaim } from './claims';
 import { compilePlanItemBrief, decisionsForItem } from './compile-brief';
+import { resolveGoalContext } from '../modes/goal-context';
+import type { Sql } from 'postgres';
 
 /** The link rel from a work_item to the plan item it executes. */
 export const IMPLEMENTS_REL = 'implements';
@@ -461,6 +463,68 @@ export function planItemTitle(text: string, max = 140): string {
 }
 
 /**
+ * Stamp a promoted work-item with FIRST-CLASS plan + goal provenance
+ * (goal-mode-design-intent-hardening-2026-08-16 P-003, D-005 obligation 3).
+ *
+ * Promotion used to land the plan linkage only in `payload.plan_item`, leaving
+ * `source_plan_slug` / `source_plan_item_ids` / `goal_id` all NULL — measured
+ * live on WI-39506, minted from that very plan's own P-001 wip-flip. A NULL
+ * `goal_id` is not a cosmetic gap: a goal-scoped drain lane matches the `goal`
+ * claim-spec field POSITIVELY ('='/'in' per WI-37711 — a NULL row is excluded,
+ * never wildcarded), so every promoted item was structurally invisible to the
+ * standing drain fleet even after plans themselves carried goal_id.
+ *
+ * Same rules as every other goal-provenance writer (migrations 785/791):
+ *   - the goal comes from the PROMOTER's resolved context (resolveGoalContext),
+ *     never from an argument — a plan item cannot self-report onto a goal;
+ *   - first attribution wins: COALESCE keeps an existing goal_id and
+ *     source_plan_slug, and the item-ids array only gains ids it lacks;
+ *   - fail-soft: a conversion that succeeded must never be failed retroactively
+ *     because its provenance could not be written.
+ *
+ * Runs on MINT and on RESUME. Resume is what heals rows promoted before this
+ * stamp existed the next time anyone picks them up — without it those rows
+ * would stay invisible to the goal drain lane forever.
+ */
+export async function stampPromotedWorkItemProvenance(args: {
+  workItemId: string;
+  harnessSlug: string;
+  workspaceId: string;
+  planSlug: string;
+  itemId: string;
+  ownerId: string;
+  sql?: Sql;
+}): Promise<string | null> {
+  const { workItemId, harnessSlug, workspaceId, planSlug, itemId, ownerId } = args;
+  if (!workItemId || !harnessSlug || !workspaceId || workspaceId === '*' || !planSlug || !itemId) {
+    return null;
+  }
+  try {
+    const sql = args.sql ?? getOrgPg().sql;
+    const goalId = ownerId ? await resolveGoalContext(workspaceId, ownerId, sql) : null;
+    // Keyed on (harness_slug, feature_id) — the table's own identity, the same
+    // pair _create-core's stampGoalProvenance and createWorkItem's ON CONFLICT
+    // use. COALESCE(goal_id, NULL) is a no-op for a goal-less promoter, so the
+    // plan columns still land in that (common) case.
+    await sql`
+      UPDATE harness_shared.work_items
+         SET goal_id          = COALESCE(goal_id, ${goalId}),
+             source_plan_slug = COALESCE(source_plan_slug, ${planSlug}),
+             source_plan_item_ids = CASE
+               WHEN source_plan_item_ids IS NULL THEN ARRAY[${itemId}]::text[]
+               WHEN NOT (${itemId} = ANY(source_plan_item_ids)) THEN source_plan_item_ids || ${itemId}::text
+               ELSE source_plan_item_ids
+             END
+       WHERE feature_id = ${workItemId}
+         AND harness_slug = ${harnessSlug}
+    `;
+    return goalId;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Convert a plan item to a work_item at pickup (D-015): policy-checked lease →
  * mint-or-resume the work_item → claim it → link it back. See module header.
  */
@@ -538,9 +602,20 @@ export async function convertPlanItem(opts: ConvertPlanItemOpts): Promise<Conver
         { harness: wiForLink.harness ?? undefined, by: opts.owner },
       );
     }
+    const resumedWi = resumed ?? existing;
+    // D-005 obligation 3: heal first-class provenance on resume too — rows
+    // promoted before the stamp existed stay drain-lane-invisible otherwise.
+    await stampPromotedWorkItemProvenance({
+      workItemId: resumedWi.id,
+      harnessSlug: resumedWi.harness ?? opts.harnessSlug,
+      workspaceId: opts.workspaceId,
+      planSlug: opts.planRun?.templateSlug ?? opts.planSlug,
+      itemId: opts.itemId,
+      ownerId: opts.owner,
+    });
     return {
       status: 'resumed',
-      workItem: resumed ?? existing,
+      workItem: resumedWi,
       claim: claimRes.claim,
       mode: claimRes.mode,
       viaAssignment: claimRes.viaAssignment,
@@ -597,6 +672,18 @@ export async function convertPlanItem(opts: ConvertPlanItemOpts): Promise<Conver
     IMPLEMENTS_REL,
     { harness: created.harness ?? undefined, by: opts.owner },
   );
+  // D-005 obligation 3: the payload stamp above is only the back-pointer — land
+  // the FIRST-CLASS source_plan_slug/source_plan_item_ids columns (issue-family
+  // createIssue ignores sourcePlanSlug) and the promoter's resolved goal, so the
+  // minted item is visible to a goal-scoped drain lane. Fail-soft inside.
+  await stampPromotedWorkItemProvenance({
+    workItemId: created.id,
+    harnessSlug: created.harness ?? opts.harnessSlug,
+    workspaceId: opts.workspaceId,
+    planSlug: opts.planRun?.templateSlug ?? opts.planSlug,
+    itemId: opts.itemId,
+    ownerId: opts.owner,
+  });
   return {
     status: 'converted',
     workItem: claimed ?? created,
