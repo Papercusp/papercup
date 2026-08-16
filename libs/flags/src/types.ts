@@ -1532,6 +1532,28 @@ export const FLAGS = {
   // DEFAULT ON. OFF = the kill-switch: the timer still ticks but every sweep
   // no-ops before reading the goals table.
   GOAL_LIVENESS_WATCHDOG: "papercusp-goal-liveness-watchdog",
+  // EI-20581099901890760 (1): gates the GOAL-mode edit-deny guard wired into
+  // agent-tools/locks/acquire.ts — a session whose REGISTERED mode is 'goal'
+  // (an agent_modes row; the contract binds at mode:set) is denied PreToolUse
+  // Edit/Write lock acquisition, with the correct route named in the deny
+  // ("file it — your drain fleet picks it up"). The GOAL contract's
+  // never-implement clause was prose-only; in the measured run (WI-39348,
+  // 2026-08-16) the subject edited production source in three escalating
+  // windows, and each editing window was also a low-supervision window —
+  // the exact failure the contract predicts. DEFAULT ON. OFF = the
+  // kill-switch: acquire.ts skips the mode check entirely (the guard is
+  // also fail-open on flag/PG errors).
+  GOAL_MODE_EDIT_DENY: "papercusp-goal-mode-edit-deny",
+  // EI-20581099901890760 (2): gates the goal-drain-fleet watchdog — sibling of
+  // GOAL_LIVENESS_WATCHDOG above, deliberately on its own kill-switch. That
+  // sweep fires when NOBODY is working an active goal; this one fires only
+  // when somebody IS and the standing drain fleet the GOAL contract requires
+  // (goals metadata.drainFleet, recorded via goals:update) is undeclared past
+  // the kickoff grace, missing from agent_fleets, or has no live member.
+  // Escalates (deduped) + emits goal:drain-dead:<goalId> for parked awaits.
+  // DEFAULT ON. OFF = the kill-switch: the timer still ticks but every sweep
+  // no-ops before reading the goals table.
+  GOAL_DRAIN_FLEET_WATCHDOG: "papercusp-goal-drain-fleet-watchdog",
   // system-notices-on-its-own-2026-08-16 P-002: gates the retrieval-degradation
   // watchdog — reads the trailing-window leg-health rate that observeLegs now
   // records for every hybrid search, and escalates when a sustained share of
