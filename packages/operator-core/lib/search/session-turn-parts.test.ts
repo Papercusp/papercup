@@ -27,7 +27,8 @@ import {
   cleanPartText,
   redactPartSecrets,
   partRowsFrom,
-  PART_TEXT_CAP,
+  PART_TEXT_CAP_PROSE,
+  PART_TEXT_CAP_TOOL,
   type ParsedPart,
 } from './session-ingest';
 
@@ -111,13 +112,22 @@ describe('parseClaudeParts — fidelity', () => {
 
 describe('cleanPartText — cap', () => {
   it('marks truncation rather than silently cutting', () => {
-    const out = cleanPartText('x'.repeat(PART_TEXT_CAP + 500));
-    expect(out.length).toBeLessThan(PART_TEXT_CAP + 200);
+    const out = cleanPartText('x'.repeat(PART_TEXT_CAP_TOOL + 500), 'tool_result');
+    expect(out.length).toBeLessThan(PART_TEXT_CAP_TOOL + 200);
     expect(out).toContain('[truncated 500 chars]');
   });
 
   it('leaves in-cap text untouched', () => {
     expect(cleanPartText('  hello  ')).toBe('  hello  ');
+  });
+
+  it('caps PROSE at the render budget, not the tool cap (EI-20637908167729753)', () => {
+    // The regression: prose used to share the tool cap, so an agent's own
+    // report was cut to 2,000 chars even though the pane could render 8,000.
+    const body = 'x'.repeat(PART_TEXT_CAP_TOOL + 500);
+    expect(cleanPartText(body, 'text')).toBe(body);
+    expect(cleanPartText(body, 'thinking')).toBe(body);
+    expect(PART_TEXT_CAP_PROSE).toBeGreaterThan(PART_TEXT_CAP_TOOL);
   });
 });
 

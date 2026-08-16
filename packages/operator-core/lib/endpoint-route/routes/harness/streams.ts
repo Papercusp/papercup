@@ -926,7 +926,7 @@ export function sessionPartEntryKind(
 export async function backfillFromSessionParts(
   key: { sourceKind: 'claude' | 'omp' | 'codex'; sessionId: string },
   opts: { anchorTs?: string | null; cap?: number } = {},
-): Promise<{ entries: AgentTimelineEntry[]; anchorIndex: number | null } | null> {
+): Promise<Backfill | null> {
   const cap = Math.max(1, opts.cap ?? 200);
   const { getOrgPg } = await import('@papercusp/db-org');
   const { sql } = getOrgPg();
@@ -946,17 +946,26 @@ export async function backfillFromSessionParts(
   const end = Math.min(idxRows.length, start + cap);
   const startIdx = idxRows[start].part_idx;
   const textCap = THINKING_ENTRY_TEXT_CAP + 200;
+  // `store_truncated` asks a question the projected `text` column CANNOT answer:
+  // was this row already short when it was STORED? It is evaluated against the
+  // full stored value (never the `left(...)` projection) and requires BOTH the
+  // ingest marker AND a length below the render budget — a row at/above the
+  // budget is one the pane would clip anyway, so re-reading the file would buy
+  // the reader nothing and is not worth abandoning the DB path for.
   const rows = await sql<Array<{
     ts: string | null; speaker: string | null; part_kind: string | null;
-    tool_name: string | null; text: string | null;
+    tool_name: string | null; text: string | null; store_truncated: boolean | null;
   }>>`
-    SELECT ts::text AS ts, speaker, part_kind, tool_name, left(text, ${textCap}) AS text
+    SELECT ts::text AS ts, speaker, part_kind, tool_name, left(text, ${textCap}) AS text,
+           (text ~ ${TRUNCATION_MARKER_POSIX_RE} AND length(text) < ${TRANSCRIPT_RENDER_TEXT_CAP})
+             AS store_truncated
       FROM harness_shared.session_turn_parts
      WHERE source_kind = ${key.sourceKind} AND session_id = ${key.sessionId}
        AND part_idx >= ${startIdx}
      ORDER BY part_idx ASC
      LIMIT ${cap}
   `;
+  const storeTruncated = rows.some((r) => r.store_truncated === true);
   // Shape each entry EXACTLY as the JSONL timeline parsers do, so a DB-served
   // pane is indistinguishable from a file-served one: a tool_use carries
   // toolName + toolInput (never prose), a tool_result carries text, and a
@@ -973,7 +982,7 @@ export async function backfillFromSessionParts(
     return capEntryText({ kind, text: body, ts });
   });
   const anchorIndex = anchorPos !== null && anchorPos >= start && anchorPos < end ? anchorPos - start : null;
-  return { entries, anchorIndex };
+  return { entries, anchorIndex, storeTruncated };
 }
 
 /**
@@ -998,7 +1007,14 @@ export function positionalScanLimit(cap: number, anchored: boolean): number {
   return anchored ? POSITIONAL_SCAN_CEILING : Math.max(1, cap);
 }
 
-type Backfill = { entries: AgentTimelineEntry[]; anchorIndex: number | null };
+type Backfill = {
+  entries: AgentTimelineEntry[];
+  anchorIndex: number | null;
+  /** At least one entry came from a row the INGEST had already shortened below
+   *  what this pane can render — so the DB copy is lossy in a way the source
+   *  file is not. Only the parts backfill can set it; turns carry no marker. */
+  storeTruncated?: boolean;
+};
 
 /**
  * Choose between the FAITHFUL parts backfill and the text-turns backfill.
@@ -1410,6 +1426,15 @@ const sessionThinkingStream = defineTool({
             // the file; turns keep their original WI-4194 job — the fallback
             // for a session whose file is GONE.
             if (opts.fileAvailable && backfill !== fromParts) return false;
+            // SECOND fidelity guard, same principle one level down. The check
+            // above compares STORES; this one asks whether the store that won
+            // is actually intact. Ingest caps tool payloads well below the
+            // render budget, so a parts row can be the highest-fidelity store
+            // available and STILL be missing text the pane had room for — and
+            // the file sitting on disk has all of it. Serving the DB copy there
+            // renders a body that is quietly short with no way for the reader
+            // to tell, which is strictly worse than the extra file read.
+            if (opts.fileAvailable && backfill.storeTruncated) return false;
             sink.event('backfill', backfill.entries);
             if (find) {
               sink.event('anchor', backfill.anchorIndex !== null
