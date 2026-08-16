@@ -6,11 +6,13 @@ import type { LivenessVerdict } from '../agent-tools/coordination/liveness-oracl
 import type { GoalHolderLike } from './goal-liveness-watchdog';
 import {
   GOAL_DRAIN_FLEET_KICKOFF_GRACE_MS,
+  claimSpecFilterConstrainsGoal,
   classifyGoalDrainFleet,
   fleetKey,
   runGoalDrainFleetSweepOnce,
   scanGoalDrainFleets,
   type DrainFleetLiveness,
+  type DrainFleetSpecScope,
   type GoalDrainRowLike,
 } from './goal-drain-fleet-watchdog';
 
@@ -50,6 +52,7 @@ function makeVerdict(
 
 const verdicts = (...vs: LivenessVerdict[]) => new Map(vs.map((v) => [v.ownerId, v]));
 const fleets = (entries: Record<string, DrainFleetLiveness>) => new Map(Object.entries(entries));
+const scopes = (entries: Record<string, DrainFleetSpecScope> = {}) => new Map(Object.entries(entries));
 
 describe('classifyGoalDrainFleet', () => {
   it('alerts no-drain-fleet-declared on a live-held goal past the kickoff grace', () => {
@@ -58,6 +61,7 @@ describe('classifyGoalDrainFleet', () => {
       [makeHolder()],
       verdicts(makeVerdict('su-a', 'live')),
       fleets({}),
+      scopes(),
       NOW,
     );
     expect(alert).toMatchObject({
@@ -73,13 +77,14 @@ describe('classifyGoalDrainFleet', () => {
       [makeHolder()],
       verdicts(makeVerdict('su-a', 'live')),
       fleets({}),
+      scopes(),
       NOW,
     );
     expect(alert).toBeNull();
   });
 
   it('stays silent on an UNHELD goal — the liveness sibling owns that alarm', () => {
-    const alert = classifyGoalDrainFleet(makeGoal(), [], verdicts(), fleets({}), NOW);
+    const alert = classifyGoalDrainFleet(makeGoal(), [], verdicts(), fleets({}), scopes(), NOW);
     expect(alert).toBeNull();
   });
 
@@ -89,6 +94,7 @@ describe('classifyGoalDrainFleet', () => {
       [makeHolder({ ownerId: 'su-dead' })],
       verdicts(makeVerdict('su-dead', 'ended')),
       fleets({}),
+      scopes(),
       NOW,
     );
     expect(alert).toBeNull();
@@ -100,6 +106,7 @@ describe('classifyGoalDrainFleet', () => {
       [makeHolder({ ownerId: 'su-mystery' })],
       verdicts(), // oracle degraded — no entry
       fleets({}),
+      scopes(),
       NOW,
     );
     expect(alert).toBeNull();
@@ -111,6 +118,7 @@ describe('classifyGoalDrainFleet', () => {
       [makeHolder({ ownerId: 'su-costume' })],
       verdicts(makeVerdict('su-costume', 'parked', 'none')),
       fleets({}),
+      scopes(),
       NOW,
     );
     expect(alert).toBeNull();
