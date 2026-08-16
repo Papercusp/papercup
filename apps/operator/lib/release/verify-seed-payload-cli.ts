@@ -112,9 +112,11 @@ export function parseVerifySeedPayloadArgs(argv: readonly string[]): VerifySeedP
 export async function runVerifySeedPayload(
   args: VerifySeedPayloadArgs,
   log: (msg: string) => void = console.error,
-  /** Injected in tests; production uses the guard's default (the real installer registry). */
-  verify?: SeedStoreVerifier,
+  deps: VerifySeedPayloadDeps = {},
 ): Promise<number> {
+  const { verify } = deps;
+  const env = deps.env ?? process.env;
+
   let manifest: unknown;
   try {
     manifest = JSON.parse(await readFile(`${args.seedDir}/manifest.json`, 'utf8'));
