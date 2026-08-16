@@ -23,6 +23,12 @@ export interface AdminTestEventSink {
   log: (payload: { suiteId: AdminTestSuiteId; level: 'info' | 'warn' | 'error'; line: string }) => void;
 }
 
+/**
+ * Origin used only when the pinned window cannot tell us its own — the shared
+ * dev server. Never navigate to this literal directly; go through `ctx.origin`.
+ */
+const FALLBACK_DESKTOP_ORIGIN = 'http://127.0.0.1:3055';
+
 interface SuiteContext {
   signal: AbortSignal;
   sink: AdminTestEventSink;
@@ -31,6 +37,20 @@ interface SuiteContext {
   desktopRoot: string;
   /** Tauri instance every tauri-agent-tools call is pinned to (null = no live bridge found). */
   bridgePid: number | null;
+  /**
+   * The origin the PINNED instance is actually serving from, read from the window
+   * itself before any navigation.
+   *
+   * Do NOT hardcode :3055 in a navigation. An isolated verifier shell
+   * (`VERIFY_TAURI_ISOLATED_DB=1 scripts/verify-tauri-headless.sh`) runs its own
+   * sidecar on its own port against a THROWAWAY database; sending its window to
+   * :3055 walks it off that isolated origin and onto the shared, live-DB dev
+   * server — silently defeating the isolation the caller asked for. Measured
+   * 2026-08-16: this suite drove a VERIFY_TAURI_ISOLATED_DB window (own sidecar
+   * :33700, own postgres :35789) onto :3055, and only the chaos surfaces failing
+   * to hydrate kept it from clicking on shared state.
+   */
+  origin: string;
 }
 
 interface ExecResult {
@@ -198,9 +218,22 @@ export async function runAdminTestSuites(
   const suiteIds = expandAdminTestSuiteSelection(selection);
   const firstSpec = SUITE_MAP.get(suiteIds[0] ?? 'desktop-health') ?? ADMIN_TEST_SUITES[0];
   const bridgePid = await resolveBridgePid(opts.tauriPid ?? null);
-  const ctxBase = { signal, sink, repoRoot, desktopRoot, bridgePid };
+  // Read the window's own origin/href ONCE, before anything navigates it, so every
+  // later navigation stays on the pinned instance's origin (see SuiteContext.origin).
+  const bootstrapCtx: SuiteContext = {
+    signal,
+    sink,
+    repoRoot,
+    desktopRoot,
+    bridgePid,
+    spec: firstSpec,
+    origin: FALLBACK_DESKTOP_ORIGIN,
+  };
+  const initialState = await getDesktopState(bootstrapCtx).catch(() => null);
+  const origin = initialState?.origin ?? FALLBACK_DESKTOP_ORIGIN;
+  const ctxBase = { signal, sink, repoRoot, desktopRoot, bridgePid, origin };
   const restoreCtx: SuiteContext = { ...ctxBase, spec: firstSpec };
-  const returnHref = opts.returnHref ?? (await getDesktopState(restoreCtx).catch(() => null))?.href ?? null;
+  const returnHref = opts.returnHref ?? initialState?.href ?? null;
   try {
     for (const suiteId of suiteIds) {
       signal.throwIfAborted();
@@ -480,13 +513,13 @@ function aiExplorePromptChecks(ctx: SuiteContext) {
       id: 'testing-tab-overview',
       label: 'Testing tab overview prompt',
       goal: 'Open the Testing page and summarize which testing tools are available. Do not change settings or run destructive actions.',
-      startUrl: 'http://127.0.0.1:3055/admin/testing?tab=test-runs',
+      startUrl: `${ctx.origin}/admin/testing?tab=test-runs`,
     },
     {
       id: 'plans-page-overview',
       label: 'Plans page overview prompt',
       goal: 'Open the Plans page and identify whether the page renders a plans list or an empty state. Do not edit plans.',
-      startUrl: 'http://127.0.0.1:3055/admin/plans',
+      startUrl: `${ctx.origin}/admin/plans`,
     },
   ];
   return prompts.map((prompt) => ({
@@ -820,7 +853,7 @@ function desktopPerformanceChecks(ctx: SuiteContext) {
         // hydration). The dock mounts once per session, so we navigate to the dock
         // route (in case it isn't mounted) and read the latest recorded measure —
         // the fresh-binary wdio harness drives it cold on boot (P-006).
-        await runTauri(ctx, ['navigate', 'http://localhost:3055/adv?slug=papercup&ws=default'], 12_000).catch(() => undefined);
+        await runTauri(ctx, ['navigate', `${ctx.origin}/adv?slug=papercup&ws=default`], 12_000).catch(() => undefined);
         await sleep(1200, ctx.signal);
         const result = await readLatestInteractionMeasure(ctx, 'harness-dock-open');
         const budgetMs = DESKTOP_PERF_BUDGETS.interactions['harness-dock-open'];
@@ -905,11 +938,27 @@ function desktopPerformanceChecks(ctx: SuiteContext) {
         );
         if (!summary.ok || !summary.value) return fail(`The desktop interaction recorder reports max interaction <= ${DESKTOP_PERF_BUDGETS.interactionMaxMs}ms.`, describeCommandFailure(summary));
         const top = summary.value.top.map((row) => `${row.duration}ms ${row.route} ${row.target}`).slice(0, 5);
+        // ABSENT SIGNAL IS NOT A PASS. With no recorded interactions the eval above
+        // yields maxDuration=0, which used to render as a green "max interaction=0ms"
+        // row (measure ok:true) — a budget satisfied by having measured NOTHING. That
+        // is indistinguishable from a genuinely fast shell and is exactly how a dead
+        // recorder reads as healthy, so report it as UNMEASURED instead. Emitting no
+        // measure also keeps the false 0 out of the perf trend series.
+        if (summary.value.top.length === 0) {
+          return skip(
+            `The desktop interaction recorder reports max interaction <= ${DESKTOP_PERF_BUDGETS.interactionMaxMs}ms.`,
+            'UNMEASURED — the recorder captured zero interactions in this run, so the budget was not exercised (0ms here means "nothing measured", not "fast").',
+            [
+              'window.__papercuspPerfRecorder held no interaction events at or after this run started.',
+              'Check the recorder is installed in this shell and that the driven surfaces actually hydrated.',
+            ],
+          );
+        }
         return statusResult(
           summary.value.maxDuration <= DESKTOP_PERF_BUDGETS.interactionMaxMs,
           `The desktop interaction recorder reports max interaction <= ${DESKTOP_PERF_BUDGETS.interactionMaxMs}ms.`,
           `max interaction=${summary.value.maxDuration}ms.`,
-          top.length > 0 ? top : ['No recorded interactions present in the current buffer.'],
+          top,
           [budgetMeasure('interaction:recorder-max', summary.value.maxDuration, 'ms', DESKTOP_PERF_BUDGETS.interactionMaxMs)],
         );
       },
@@ -918,7 +967,7 @@ function desktopPerformanceChecks(ctx: SuiteContext) {
       id: 'desktop-memory-budget',
       label: 'Desktop RSS budget',
       run: async () => {
-        await runTauri(ctx, ['navigate', 'http://localhost:3055/admin/testing?tab=test-runs&suite=desktop-performance'], 12_000).catch(() => undefined);
+        await runTauri(ctx, ['navigate', `${ctx.origin}/admin/testing?tab=test-runs&suite=desktop-performance`], 12_000).catch(() => undefined);
         await sleep(750, ctx.signal);
         // Close any stray recorder windows left by a previous chaos run (or a prior
         // failed run from this session) before reading RSS. A lingering
@@ -1480,14 +1529,24 @@ async function runChaosRecorder(ctx: SuiteContext, route: string, durationMs: nu
 async function getDesktopState(ctx: SuiteContext): Promise<DesktopState> {
   const state = await runTauriEvalJson<DesktopState>(
     ctx,
+    // NOTE: this string is evaluated INSIDE THE WEBVIEW. Nothing imported into this
+    // module exists there — interpolating a Node-side helper produces a
+    // ReferenceError at runtime, not a compile error. `wsLocalKey` was referenced
+    // here from 2026-06-05 until 2026-08-16 and threw "Can't find variable:
+    // wsLocalKey" on every call, silently failing every check that reads desktop
+    // state (webview-http-egress + all three warm routes). Keep the workspace-key
+    // rule inline, mirroring wsLocalKey/getBrowserWorkspaceId in ./browser-workspace.
     `(() => {
       const url = new URL(location.href);
+      const wsId = (window.__PAPERCUSP_WS__ && String(window.__PAPERCUSP_WS__).trim())
+        || url.searchParams.get('ws')
+        || 'default';
       return {
         origin: location.origin,
         href: location.href,
         title: document.title,
         hasTauri: Boolean(window.__TAURI_INTERNALS__),
-        activeSlug: url.searchParams.get('slug') || localStorage.getItem(wsLocalKey('harness.activeProject')) || 'sheets',
+        activeSlug: url.searchParams.get('slug') || localStorage.getItem('pc:ws:' + wsId + ':harness.activeProject') || 'sheets',
       };
     })()`,
   );
