@@ -152,6 +152,59 @@ const GENERIC_USERS = new Set(['root', 'runner', 'build', 'ubuntu', 'user', 'adm
 const GENERIC_HOMES = new Set(['/root', '/', '/home']);
 
 /**
+ * Git identities belonging to AUTOMATION rather than to a human owner.
+ *
+ * The owner-name literal is resolved from `git config user.name` — a setting an
+ * unrelated automation is free to change. When git-sync began committing under a
+ * stable bot identity, `user.name` stopped being the owner's name; and because the
+ * GATE derives from these same literals, the scrub and its proof went blind to the
+ * highest-cost leak class *at the same instant*, with nothing failing loudly.
+ *
+ * Measured when it was caught (EI-20583328178472869): the live published page
+ * carried 707 `[owner]` redactions and 0 raw names, while a fresh regen of the same
+ * content carried 2 and 38 — 444 files across the site holding the owner's bare
+ * first name — and `gate-release-site` still printed CLEAN, exit 0.
+ *
+ * Redacting a bot's name accomplishes nothing, so these are excluded. Excluding
+ * them is also what lets `hasOwnerNameLiteral()` below distinguish "there is
+ * nothing to hide here" from "I no longer know who the owner is" — two states this
+ * module previously could not tell apart, and which must not share a verdict.
+ * Same shape as GENERIC_USERS above.
+ */
+const AUTOMATION_NAME_RE =
+  /(^|[-_ ])(agent|bot|ci|runner|automation|service|actions|daemon|noreply)([-_ ]|$)|\[bot\]/i;
+
+/** True when a git identity is a machine's, not a person's. */
+export function looksLikeAutomationIdentity(value: string): boolean {
+  return AUTOMATION_NAME_RE.test(value.trim());
+}
+
+/**
+ * An explicit owner name for this publish, for when the box's git identity is not
+ * the owner's (a bot identity, a CI runner, a container).
+ *
+ * Read from the environment AT RUN TIME and never stored — the same rule that
+ * governs everything else here: writing the owner's actual name into a source file
+ * to search for it would BE the leak, committed to git forever.
+ */
+export const OWNER_NAME_ENV = 'PAPERCUSP_RELEASE_OWNER_NAME';
+
+/**
+ * Can this literal set actually detect the owner's NAME?
+ *
+ * The name is the one identity class with no shape to fall back on. An email or a
+ * home path is still caught by IDENTITY_PATTERNS even when no literal knows it — a
+ * bare first name is only ever a literal. So when no owner-name literal resolves,
+ * the scrub cannot redact the name and the gate cannot see it, and a "CLEAN"
+ * verdict degrades to "I looked for nothing" while still reading as proof.
+ *
+ * Callers that publish MUST fail closed on `false`.
+ */
+export function hasOwnerNameLiteral(literals: IdentityLiteral[]): boolean {
+  return literals.some((l) => l.kind === 'git-name' && l.value.trim() !== '');
+}
+
+/**
  * A SHORT literal must match as a whole word or it matches half the page.
  *
  * The owner's git user.name on this box is a 3-letter first name — the exact thing
