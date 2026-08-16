@@ -38,7 +38,7 @@ import { readFile } from 'node:fs/promises';
 
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 
-import { judgeSeedPayloadIntegrity } from './seed-payload-integrity-guard.ts';
+import { judgeSeedPayloadIntegrity, type SeedStoreVerifier } from './seed-payload-integrity-guard.ts';
 
 export const EXIT_OK = 0;
 export const EXIT_MISMATCH = 1;
@@ -110,6 +110,7 @@ export async function runVerifySeedPayload(
       manifest: manifest as Parameters<typeof judgeSeedPayloadIntegrity>[0]['manifest'],
       dir: args.seedDir,
       origin: args.origin,
+      ...(verify ? { verify } : {}),
     });
     log(result.message);
     return result.ok ? EXIT_OK : EXIT_MISMATCH;
