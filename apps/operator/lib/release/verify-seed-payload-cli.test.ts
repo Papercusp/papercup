@@ -201,7 +201,10 @@ describe('runVerifySeedPayload — the three-way exit contract', () => {
    * this path those must land on DIFFERENT exit codes, or every sandboxed build reds.
    */
   describe('identity leg — and why it must not use the throwing assert form', () => {
-    const BUILDER_HOME = '/home/some-builder';
+    // `/fixture/...`, never `/home/...` — the same idiom seed-identity-guard.test.ts uses. A
+    // hardcoded home path in shipped source reds the green-checkpoint identity-lint leg and
+    // freezes `main` for the whole fleet, whether or not the path names a real person.
+    const BUILDER_HOME = '/fixture/some-builder';
 
     /** A staged file carrying the build box's home path — the leak this guard exists to catch. */
     const writeLeakyFile = async (literal: string = BUILDER_HOME) =>
