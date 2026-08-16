@@ -208,24 +208,57 @@ describe('perfGatePolicyFromFlags (WI-6538 — the production path)', () => {
     // The whole point of the migration: green-checkpoint runs detached (systemd-run)
     // and as a periodic spawn, so an env var could not reliably arm it. A flag read
     // in-process at evaluation time can.
-    await expect(perfGatePolicyFromFlags(async () => true, {})).resolves.toEqual({
+    await expect(perfGatePolicyFromFlags(async () => true, {}, async () => false)).resolves.toEqual({
       enabled: true,
       block: false,
     });
   });
 
   it('is a no-op when the flag is off — the kill-switch', async () => {
-    await expect(perfGatePolicyFromFlags(async () => false, {})).resolves.toEqual({
+    await expect(perfGatePolicyFromFlags(async () => false, {}, async () => false)).resolves.toEqual({
       enabled: false,
       block: false,
     });
   });
 
-  it('NEVER arms block-mode, even with the flag on and the block env set', async () => {
-    // Load-bearing: flipping the master flag must not be able to start holding
-    // deploys. Block-mode is a separate owner-gated step by design.
-    const p = await perfGatePolicyFromFlags(async () => true, { PAPERCUSP_PERF_GATE_BLOCK: '1' });
-    expect(p.block).toBe(false);
+  // WI-38449 / D-007 F3 — this REPLACES the old "NEVER arms block-mode" contract.
+  // Block-mode was hardwired false while the crit tier mixed ambient host load with
+  // real operator wedges; now that critAttribution separates them, block tracks its
+  // own flag. P-004's mandate is an EFFECTIVE gate, and a gate that can never hold a
+  // deploy is not one.
+  it('ARMS block-mode when its own flag is on (the master flag alone does not)', async () => {
+    await expect(perfGatePolicyFromFlags(async () => true, {}, async () => true)).resolves.toEqual({
+      enabled: true,
+      block: true,
+    });
+  });
+
+  it('block-mode is DISARMABLE at runtime without touching the master flag', async () => {
+    // The reason this is a flag and not a hardwired `true`: if the gate ever starts
+    // holding deploys wrongly, the green pipeline is exactly what would be unavailable
+    // to ship a code fix.
+    const p = await perfGatePolicyFromFlags(async () => true, {}, async () => false);
+    expect(p).toEqual({ enabled: true, block: false });
+  });
+
+  it('never reports armed-but-disabled — block requires the gate itself', async () => {
+    // An { enabled:false, block:true } policy would read as "this can hold a deploy"
+    // while evaluating nothing at all.
+    const viaFlag = await perfGatePolicyFromFlags(async () => false, {}, async () => true);
+    expect(viaFlag).toEqual({ enabled: false, block: false });
+    const viaEnv = await perfGatePolicyFromFlags(async () => false, { PAPERCUSP_PERF_GATE_BLOCK: '1' }, async () => false);
+    expect(viaEnv).toEqual({ enabled: false, block: false });
+  });
+
+  it('an UNREADABLE block flag fails soft to warn-only — a store hiccup must not invent a deploy hold', async () => {
+    const p = await perfGatePolicyFromFlags(
+      async () => true,
+      {},
+      async () => {
+        throw new Error('flag store down');
+      },
+    );
+    expect(p).toEqual({ enabled: true, block: false });
   });
 
   it('fails SOFT to disabled when the flag backend throws', async () => {
@@ -239,8 +272,12 @@ describe('perfGatePolicyFromFlags (WI-6538 — the production path)', () => {
   });
 
   it('still honours the env override for a deliberate local run', async () => {
+    // Pass the block reader EXPLICITLY. Omitting it makes this assertion depend on the
+    // live flag store's value for HOST_PERF_GATE_BLOCK (default ON), which is a real
+    // dependency on production config inside a pure unit test — it flipped this case
+    // red the moment that flag was added.
     await expect(
-      perfGatePolicyFromFlags(async () => false, { PAPERCUSP_PERF_GATE: '1' }),
+      perfGatePolicyFromFlags(async () => false, { PAPERCUSP_PERF_GATE: '1' }, async () => false),
     ).resolves.toEqual({ enabled: true, block: false });
   });
 });

@@ -93,14 +93,15 @@ export async function perfGatePolicyFromFlags(
   // Fail-soft: a flag backend that throws must not take the release gate down with it.
   // Falling back to `false` keeps green-checkpoint's behaviour a no-op `pass` rather
   // than an unexplained gate error mid-deploy.
-  const enabled = await readFlag().catch(() => false);
+  const enabled = (await readFlag().catch(() => false)) || env.PAPERCUSP_PERF_GATE === '1';
   // An UNREADABLE block flag ⇒ warn-only, never armed. A flag-store hiccup must not
   // invent a deploy-holding verdict — the same rule as the desktop sibling.
-  const block = await readBlockFlag().catch(() => false);
+  const blockRequested = (await readBlockFlag().catch(() => false)) || env.PAPERCUSP_PERF_GATE_BLOCK === '1';
   return {
-    enabled: enabled || env.PAPERCUSP_PERF_GATE === '1',
-    // Block-mode is meaningless without the gate itself: never report armed-but-disabled.
-    block: (enabled && block) || env.PAPERCUSP_PERF_GATE_BLOCK === '1',
+    enabled,
+    // Block-mode is meaningless without the gate itself — never report armed-but-disabled,
+    // which would read as "this gate can hold a deploy" when it evaluates nothing at all.
+    block: enabled && blockRequested,
   };
 }
 
