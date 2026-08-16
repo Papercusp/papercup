@@ -1920,11 +1920,16 @@ async function readRoutePage(ctx: SuiteContext): Promise<RoutePage | null> {
   return makeRoutePage(page.value.href, page.value.h1, page.value.domNodes, page.value.hasHarnessRoot);
 }
 
-function routeFailure(target: string, elapsedMs: number, detail: string): { ok: false; elapsedMs: number; page: RoutePage } {
+function routeFailure(
+  target: string,
+  elapsedMs: number,
+  detail: string,
+): { ok: false; elapsedMs: number; page: RoutePage; stabilized: boolean } {
   return {
     ok: false,
     elapsedMs,
     page: makeRoutePage(target, [], 0, false, [detail]),
+    stabilized: false,
   };
 }
 
