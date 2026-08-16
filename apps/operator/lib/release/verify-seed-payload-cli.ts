@@ -40,6 +40,13 @@ import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 
 import { judgeSeedPayloadIntegrity, type SeedStoreVerifier } from './seed-payload-integrity-guard.js';
 import { assertSeedNotDegraded } from './seed-degradation-guard.js';
+import {
+  judgeSeedIdentity,
+  resolveIdentityLiterals,
+  SEED_REAL_HOSTNAME_ENV,
+  type ResolveIdentityInput,
+} from './seed-identity-guard.js';
+import { DEFAULT_NEUTRAL_BUILD_HOSTNAME } from './seed-hostname-neutralization.js';
 
 export const EXIT_OK = 0;
 export const EXIT_MISMATCH = 1;
@@ -48,6 +55,19 @@ export const EXIT_UNDETERMINED = 2;
 export interface VerifySeedPayloadArgs {
   readonly seedDir: string;
   readonly origin: 'fresh' | 'reuse';
+}
+
+/**
+ * Seams the tests drive. All three are production-default in the CLI entry: the real installer
+ * registry, the real process env, and the real machine probes.
+ */
+export interface VerifySeedPayloadDeps {
+  /** Injected in tests; production uses the guard's default (the real installer registry). */
+  readonly verify?: SeedStoreVerifier;
+  /** Defaults to `process.env`. Supplies the neutral-hostname override and the UTS marker. */
+  readonly env?: Record<string, string | undefined>;
+  /** Machine-identity probes. Never passed from the release path — see seed-identity-guard.ts. */
+  readonly probe?: ResolveIdentityInput['probe'];
 }
 
 /** Parse argv. Throws on a malformed invocation so a typo cannot silently verify nothing. */
