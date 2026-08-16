@@ -1242,12 +1242,40 @@ export const CADENCE_DRIFT_MIN_FIRES = 3;
 export const CADENCE_DRIFT_RATIO_THRESHOLD = 4;
 
 /**
+ * EI-20479187852053440 — how overdue the NEXT scheduled fire must be before slow observed
+ * cadence counts as unexplained. Expressed in intervals so it scales with the loop's own
+ * configuration; reuses the ratio threshold so "sustained" means the same thing in both gates.
+ * Below this, an overdue fire is scheduling granularity (the completion-rebase observes the
+ * turn settle on the 30s reconcile tick), not a wedged fire path.
+ */
+export const CADENCE_DRIFT_OVERDUE_INTERVALS = CADENCE_DRIFT_RATIO_THRESHOLD;
+
+/**
  * Pure advisory verdict for a loop whose observed cadence is persistently slower than configured.
  *
  * This deliberately requires independent arm-relative opportunity, fire, and gap evidence. The
  * cadence ratio alone is observational and can be high during a legitimate long turn. The result
  * is consumed by the stalled-loop sweep only as an advisory signal: it must never disarm or re-arm
  * a loop, and it intentionally remains separate from `computeTurnsStalled`.
+ *
+ * ⚠ EI-20479187852053440 — THE RATIO ALONE CANNOT DECIDE THIS, AND NO THRESHOLD ON IT CAN.
+ * `intervalSec` is a POST-SETTLE DELAY, not a period: the next fire is scheduled `intervalSec`
+ * after the turn settles, so the true period is `turnDuration + intervalSec + up-to-30s` (see
+ * LOOP_INTERVAL_FLOOR_SEC). `cadenceRatio` divides the observed period by `intervalSec` alone,
+ * so it is > 1 by construction for every loop that does any work at all, and its magnitude is
+ * dominated by turn duration — which the loop's design deliberately excludes from the interval.
+ * Turn duration is unbounded by design, so no ratio threshold can separate "long turns" from
+ * "wakes not going out". Filed live: an ACTIVE 60s cold monitor loop with a reachable wake
+ * socket, `turnsStalled:false`, `consecutiveErrors:0` and current wake delivery read
+ * `cadenceRatio:9.90` — and 21 workspace loops tripped the same advisory at once, which is a
+ * mis-specified metric, not 21 independent outages.
+ *
+ * THE FIX: require positive evidence that the FIRE PATH is late, rather than inferring it from a
+ * long period. The loop parks at `next_fire_at='infinity'` for the whole time a turn is in
+ * flight, so `parked` marks time that is settling BY CONSTRUCTION, and once re-armed a healthy
+ * scheduler keeps `nextFireAt` at or near the future. A fire that is due and has stayed
+ * undelivered for several intervals is the wedged-fire-path case this advisory exists for.
+ * Missing evidence FAILS QUIET — an advisory must never assert drift it cannot establish.
  */
 export function computeCadenceDrift(input: {
   active: boolean;
@@ -1256,6 +1284,11 @@ export function computeCadenceDrift(input: {
   expectedFiresSinceArm: number | null;
   cadenceRatio: number | null;
   longestObservedGapSec: number | null;
+  /** True while the turn is in flight — that elapsed time is settling, not lost cadence. */
+  parked?: boolean;
+  /** ISO of the next scheduled fire (null when parked/unset). Overdue-ness is the drift evidence. */
+  nextFireAt?: string | null;
+  nowMs?: number;
 }): boolean {
   const intervalSec = input.intervalSec;
   if (!input.active || intervalSec == null || !Number.isFinite(intervalSec) || intervalSec <= 0) return false;
@@ -1281,7 +1314,20 @@ export function computeCadenceDrift(input: {
     return false;
   }
 
-  return true;
+  // The settling gate. A parked loop is mid-turn: every second of that elapsed span is the
+  // deliberate settling the interval is defined relative to, so it can never be drift.
+  if (input.parked === true) return false;
+
+  // Not parked ⇒ the loop is armed and its fire is scheduled. Drift requires that fire to be
+  // demonstrably late. An unreadable/absent nextFireAt leaves that unestablished — stay quiet.
+  const nextFireAtMs = input.nextFireAt == null ? NaN : new Date(input.nextFireAt).getTime();
+  if (!Number.isFinite(nextFireAtMs)) return false;
+
+  const nowMs = input.nowMs ?? Date.now();
+  if (!Number.isFinite(nowMs)) return false;
+
+  const overdueSec = (nowMs - nextFireAtMs) / 1000;
+  return overdueSec >= intervalSec * CADENCE_DRIFT_OVERDUE_INTERVALS;
 }
 
 /**
