@@ -212,7 +212,7 @@ export async function routeConsult(
      WHERE (workspace_id = ${params.workspaceId} OR workspace_id = 'default')
        AND text_embedding IS NOT NULL
        AND owner IS NOT NULL
-       AND owner <> ${params.requesterId}
+       AND owner <> ALL(${[params.requesterId, ...(params.excludeOwners ?? [])]}::text[])
        AND (turn_origin_verdict IS NULL OR turn_origin_verdict <> 'machine-surface')
   ORDER BY text_embedding <=> ${qVec}::vector
      LIMIT ${turnLimit}
