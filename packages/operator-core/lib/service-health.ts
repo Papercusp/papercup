@@ -943,6 +943,47 @@ export const SUPERVISED_PROCESSES: SupervisionEntry[] = [
   // papercusp fleet's own critical path depends on it — it is a hosted workload
   // (its own embedded PG on :5544, its own DBOS engine).
   { name: 'oddsmith-sidecar', layer: 'systemd-user', unit: 'papercup-oddsmith-sidecar', criticality: 'important', autoRestart: false },
+  // WI-38449 / D-007 finding 1: the host release-gate's PRODUCER was dead ~7h and
+  // nothing detected it. Measured 2026-08-16: `papercup-perf-signals-capture.timer`
+  // sat `failed (Result: resources)` from 2026-08-15T23:57:59Z — systemd could not
+  // open the unit file ("Unit to trigger vanished") because these units are symlinked
+  // into ~/.config/systemd/user through the repo tree and a peer tree op transiently
+  // removed the target. systemd LATCHED failed; nothing re-armed it. Last capture
+  // 2026-08-15T23:56:38Z against `PERF_BUDGETS.staleMs` 10min — ~42x over — so the
+  // host SLO/CLOSE_WAIT guard was blind for the whole window.
+  //
+  // Why the existing `blindMs` branch was not enough: it detects the ARTEFACT going
+  // stale (>30min ⇒ `warn` naming this timer, perf-budgets.ts), which is the EFFECT,
+  // reached only when something evaluates the verdict AND surfaces a non-`pass`
+  // action. It says nothing about the unit, and it cannot re-arm anything. This entry
+  // watches the CAUSE, and heals it.
+  //
+  // Deliberately the `.timer` ONLY, not `papercup-perf-signals-capture.service`. That
+  // service is `Type=oneshot` (verified: `systemctl --user show -p Type`), so it is the
+  // `papercusp-db-backup` shape NON_PROBED_UNITS rules out as `episodic-oneshot`:
+  // liveness is the wrong question when `inactive` is the healthy state between ticks,
+  // and its last-run RESULT is already served — here by perf-budgets.ts's `blindMs`
+  // branch, which names this timer explicitly. Registering the oneshot would add a
+  // second, worse answer to a question already answered.
+  //
+  // An ARMED timer, by contrast, is continuously `active`/`waiting`, so the persistent
+  // oracle is correct for it and `episodic` must stay unset — marking it episodic would
+  // mask exactly the stopped/failed timer this entry exists to catch (the same
+  // reasoning as `live-federation-gate-timer` above, whose WI-5376 incident was a timer
+  // externally stopped with nothing watching). `autoRestart: true` for the same reason
+  // it is safe there: restarting a *timer* only re-arms the schedule, it never touches
+  // an in-flight capture, and the capture is a stateless 2-min snapshot.
+  //
+  // Verified this will not be inert: `UnitFileState=enabled` (same as the
+  // live-federation-gate timer), so WI-5378's `isAdministrativelyPaused` does NOT treat
+  // it as a deliberate pause. To pause it deliberately, `systemctl --user disable --now
+  // papercup-perf-signals-capture.timer` — a bare `stop` will be re-armed.
+  //
+  // ⚠ Scope, honestly: auto-restart re-arms a STOPPED or FAILED timer. It does not fix
+  // the root symlink breakage — while the unit file is genuinely absent the restart
+  // fails too (recovery there needs `systemctl --user daemon-reload` once the target is
+  // back). What this converts is the silent-forever case into a visible, escalating one.
+  { name: 'perf-signals-capture-timer', layer: 'systemd-user', unit: 'papercup-perf-signals-capture.timer', criticality: 'important', autoRestart: true },
 ];
 
 /**
