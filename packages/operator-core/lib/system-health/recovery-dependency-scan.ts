@@ -13,10 +13,18 @@
  *
  * DETECTION IS TEXTUAL, not an AST parse — the same technique, and the same tradeoff, as
  * `scripts/check-timer-classification.mjs` and `scripts/check-no-raw-setinterval.mjs`:
- * find each `managedSetInterval(` call, take its balanced-paren argument text, and read
- * the name + category out of it. A textual scan cannot see a category threaded through a
- * variable; those surface as `category: null` and are reported rather than dropped, so
- * an unreadable site can never be mistaken for an absent one.
+ * find each registration call, take its balanced-paren argument text, and read the name +
+ * category out of it. A textual scan cannot see a category threaded through a variable;
+ * those surface as `category: null` and are reported rather than dropped, so an unreadable
+ * site can never be mistaken for an absent one.
+ *
+ * ⚠ COMMENTS AND STRING BODIES ARE STRIPPED FIRST, and that is not tidiness — a textual
+ * scanner that skips this step matches call-shaped text in PROSE. This module's own header
+ * proved it: describing the call in a doc comment made the scanner report a 36th watchdog
+ * timer that does not exist (the same defect already filed against
+ * `check-timer-classification.mjs`, which strips comments but not string literals). A
+ * phantom row is worse than a missed one here, because it inflates the population the
+ * coverage gate claims to cover.
  */
 import { readdirSync, readFileSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
