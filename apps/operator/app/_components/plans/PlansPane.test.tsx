@@ -97,6 +97,10 @@ function plan(over: Partial<PlanListRow> & { slug: string }): PlanListRow {
     updated: over.updated ?? '2026-07-17T00:00:00Z',
     archived: false, isLegacy: false, itemCounts: over.itemCounts,
     harness: 'papercusp', startStatus: over.startStatus,
+    // Explicit pass-through: this factory BUILDS the row rather than spreading
+    // `over`, so a field omitted here is silently dropped and a test that sets it
+    // asserts against undefined while looking correct.
+    origin: over.origin,
   } as PlanListRow;
 }
 
@@ -120,6 +124,31 @@ function daysAgo(days: number): string {
 }
 
 describe('PlansPane', () => {
+  // WI-39439. The owner's split is Blender vs everything-else, so ABSENCE of this
+  // badge is load-bearing: it is what says "human or standard agent". The row that
+  // must stay bare is the su-ideate one — a plan an su AGENT ideated. It reaches the
+  // client as `origin: undefined` (the server derivation filters to origin='scout'),
+  // so a regression that re-widens that derivation to "any ledger row" shows up here
+  // as a badge on p-agent, not as a type error.
+  it('marks ONLY Blender-routed plans with the provenance icon (WI-39439)', () => {
+    planListData.value = {
+      plans: [
+        plan({ slug: 'p-blender', title: 'Blender plan', origin: 'scout' }),
+        plan({ slug: 'p-agent', title: 'Agent-ideated plan' }),
+        plan({ slug: 'p-human', title: 'Human plan' }),
+      ],
+    };
+
+    render(<PlansPane />);
+    const badges = screen.getAllByTestId('plans-pane-blender-badge');
+    expect(badges).toHaveLength(1);
+    // Assert WHICH row carries it — a single badge on the wrong row would also
+    // satisfy a bare length check.
+    expect(screen.getByTestId('plans-pane-row-p-blender').contains(badges[0])).toBe(true);
+    expect(screen.getByTestId('plans-pane-row-p-agent').querySelector('[data-testid="plans-pane-blender-badge"]')).toBeNull();
+    expect(screen.getByTestId('plans-pane-row-p-human').querySelector('[data-testid="plans-pane-blender-badge"]')).toBeNull();
+  });
+
   it('renders active plans with needs-you, live, and progress badges', () => {
     planListData.value = {
       plans: [

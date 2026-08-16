@@ -123,8 +123,18 @@ export interface PlanListRow {
    *  absent when no items are open. Items without an `importance:` keyword
    *  count as 'normal'. */
   maxImportance?: Importance;
-  /** 'scout' when the Scout loop routed this plan (ledger-derived server-side).
-   *  Absent otherwise, or from a server predating the field. */
+  /** 'scout' when the Blender/Scout ideation loop routed this plan
+   *  (ledger-derived server-side). Absent otherwise, or from a server predating
+   *  the field.
+   *
+   *  ⚠ ABSENT IS NOT "human-authored" — it is "not Blender". The ideation ledger
+   *  also carries `su-ideate` (an su agent's own IDEATE pass) and `drill`, and
+   *  neither stamps this field: the server derivation filters to origin='scout'
+   *  (scout/routed-ledger.ts). Before WI-39439 it did not, so this field meant
+   *  "routed by anything" and was wrong on 75% of the rows it set — if you are
+   *  reading a value from a server older than that fix, do not trust it as
+   *  Blender provenance. Consumers: the PlansPane provenance icon and the
+   *  Create tab's `scout` filter facet (plan-filtering.ts). */
   origin?: 'scout';
   /** P-021 schedule glance — true when the plan has a recurrence set OR a one-shot
    *  fire time (scheduled-recurring-plans-2026-06-16). Undefined from a server

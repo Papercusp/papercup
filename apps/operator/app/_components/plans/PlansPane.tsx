@@ -354,6 +354,25 @@ export default function PlansPane() {
                     </span>
                   </span>
                   <span className="plans-pane__row-badges">
+                    {/* Provenance (WI-39439): marks ONLY plans the Blender/Scout
+                        ideation loop routed. Absence means human- or
+                        standard-agent-authored — including an su agent's own
+                        IDEATE pass (`su-ideate`), which is deliberately NOT
+                        marked: the owner's split is Blender vs everything else.
+                        `origin` is only ever 'scout' because the server-side
+                        derivation filters on it (scout/routed-ledger.ts); do not
+                        re-widen this test to "any ledger row" — that was the bug
+                        this shipped with, wrong on 75% of the rows it lit. */}
+                    {plan.origin === 'scout' ? (
+                      <span
+                        className="plans-pane__badge plans-pane__badge--blender"
+                        title="Blender-made — routed by the Blender/Scout ideation loop"
+                        data-testid="plans-pane-blender-badge"
+                      >
+                        <Sparkles size={11} aria-hidden="true" />
+                        <span className="plans-pane__sr-only">Blender-made plan</span>
+                      </span>
+                    ) : null}
                     {needsYou > 0 ? (
                       <span
                         className="plans-pane__badge plans-pane__badge--needs"

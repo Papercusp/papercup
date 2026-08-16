@@ -29,7 +29,8 @@ vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: h.sql }) }));
 // import — mock the SSE seam so it is a no-op under test.
 vi.mock('../sync-sse', () => ({ notifySyncInvalidate: vi.fn(async () => {}) }));
 
-const { recordRoutedIdea, readRoutedIdeas, gradeRoutedIdea, getScoutLensOutcomes } = await import('./routed-ledger');
+const { recordRoutedIdea, readRoutedIdeas, gradeRoutedIdea, getScoutLensOutcomes, readScoutPlanRefs } =
+  await import('./routed-ledger');
 const { createOrgTestDb } = await import('../../test/_org-test-db');
 
 const WS = 'ws-scout-origin-test';
@@ -122,6 +123,34 @@ describe('scout routed-ledger ORIGIN dimension (real PG, migration 470)', () => 
     const rows = await db.adminSql<{ created_by: string | null }[]>`
       SELECT created_by FROM harness_shared.scout_routed_ideas WHERE idea_id = 'EI-su-1'`;
     expect(rows[0]?.created_by).toBe('su-test-owner-1');
+  });
+
+  // WI-39439. readScoutPlanRefs feeds the plans:list `origin:'scout'` flag, which two
+  // surfaces read as "Blender-made": the PlansPane provenance icon and the Create tab's
+  // scout filter facet. It shipped WITHOUT the origin predicate every other read in this
+  // module applies, so it answered "routed by ANYTHING" — measured on live data, 6 genuinely
+  // scout plans against 18 su-ideate, i.e. wrong on 75% of the rows it lit. The su-ideate row
+  // below carries a REAL lens for the same reason the fixture above does: the exclusion must
+  // be by ORIGIN, not by an accident of a sentinel lens.
+  it('readScoutPlanRefs returns ONLY genuinely-scout plan refs — never a su-ideate one (WI-39439)', async () => {
+    await recordRoutedIdea({
+      ideaId: 'scout-plan-1', lens: 'analogical', rail: 'plan', routedRef: 'plan:a-blender-plan',
+      harnessSlug: HARNESS, title: 'a Blender-routed plan', workspaceId: WS, routedAt: T + 3000,
+    });
+    await recordRoutedIdea({
+      origin: 'su-ideate', ideaId: 'su-plan-1', lens: 'analogical', rail: 'plan',
+      routedRef: 'plan:an-su-ideated-plan', harnessSlug: HARNESS,
+      title: 'a plan an su agent ideated', workspaceId: WS, routedAt: T + 4000,
+      createdBy: 'su-test-owner-1',
+    });
+
+    const refs = await readScoutPlanRefs();
+    expect(refs.has('plan:a-blender-plan')).toBe(true);
+    expect(refs.has('plan:an-su-ideated-plan')).toBe(false);
+    // Positive control on the instrument itself: a set that came back EMPTY would also
+    // satisfy the not-contains assertion above, so an unfiltered-read regression could hide
+    // behind a broken query. Pin the exact population instead.
+    expect([...refs].sort()).toEqual(['plan:a-blender-plan']);
   });
 
   it("getScoutLensOutcomes' DEFAULT report never counts a REAL-lens su-ideate row (P-002 / D-002 guard)", async () => {
