@@ -860,6 +860,41 @@ describe('planSharedHiveCapture (shared-hive-loop P-012/P-013 leg)', () => {
     expect(new Set(perKind).size).toBe(kinds.length);
   });
 
+  // FALSIFIABILITY CONTROL (tier 1 — a deliberately-wrong implementation kept in
+  // the test file, so proving this guard CAN fail never mutates the shared tree).
+  // `legacyPlan` is the pre-fix shape: harness-scoped titles for most kinds, ONE
+  // global title for outbox-health, and no signal identity at all. The property
+  // below must REJECT it and ACCEPT the real function; if it accepts both, the
+  // property is vacuous and the guard above is worthless.
+  it('the cross-scope property actually rejects the pre-fix implementation', () => {
+    const detail = { whatever: true };
+    type Plan = { title: string; watchdogKey?: string };
+    const legacyPlan = (kind: string, harness: string): Plan =>
+      kind === 'outbox-health'
+        ? { title: 'shared-hive invariant: substrate outbox depth/age breach' }
+        : { title: `shared-hive invariant: ${kind} in ${harness}` };
+
+    /** Two scopes breaching the same way must be distinguishable as two signals. */
+    const scopesAreDistinguishable = (plan: (k: string, h: string) => Plan, kind: string): boolean => {
+      const a = plan(kind, 'papercusp');
+      const b = plan(kind, 'hello-world-3-pot');
+      return a.watchdogKey !== undefined && a.watchdogKey !== b.watchdogKey && a.title !== b.title;
+    };
+
+    const real = (k: string, h: string): Plan =>
+      planSharedHiveCapture({ kind: k as 'outbox-health', title: 'volatile', detail }, h);
+
+    // The control FAILS the property — on the peer-silence kind (no key to tell
+    // the scopes apart, which is exactly how papercusp got swallowed)…
+    expect(scopesAreDistinguishable(legacyPlan, 'peer-federation-silence')).toBe(false);
+    // …and on outbox-health, where even the TITLE was shared across harnesses.
+    expect(scopesAreDistinguishable(legacyPlan, 'outbox-health')).toBe(false);
+    // The real implementation PASSES it (calibration: the property is not
+    // trivially false for everything).
+    expect(scopesAreDistinguishable(real, 'peer-federation-silence')).toBe(true);
+    expect(scopesAreDistinguishable(real, 'outbox-health')).toBe(true);
+  });
+
   it('scopes the pass-level "zero scopes" incident to the PASS, not a harness', () => {
     const detail = { whatever: true };
     // "the monitor resolved zero scopes" is a fact about the whole pass, so it
