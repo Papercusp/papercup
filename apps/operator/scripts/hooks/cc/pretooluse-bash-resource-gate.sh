@@ -2287,6 +2287,247 @@ for _lp in re.finditer(
     if _psg and '[' not in _psg.group(2):
         deny(_PGREP_LOOP_DENY.format(op=('ps | grep … in: ' + _cond.strip())[:160]))
 
+# ── false-absence search-path guard (EI-20580705812821502) ──────────────────
+# `grep -rn 'X' some/wrong/path/` prints NOTHING. That is visually IDENTICAL
+# to a search that ran correctly and found no matches, so the natural reading
+# is "X DOES NOT EXIST" — a confident negative that then gets written into a
+# durable surface (a plan's `## Now`, a work-item body) where the next reader
+# inherits it as established fact. The exit code that distinguishes the two
+# (grep: 1 = ran and found nothing, 2 = could not read the path) is discarded
+# by the usual idioms — a pipe, `2>/dev/null`, `|| true`, or simply not being
+# looked at.
+#
+# Measured TWICE in this repo, both surfacing 2026-08-16: plan
+# `p2p-federation-work-item-classification-2026-07-26` sat BLOCKED FOR THREE
+# WEEKS on the premise "no post-creation topic write-path was discoverable"
+# (it is `work_items:tag`, implemented with its own test) — and the agent
+# verifying that premise hit the identical trap the same day, running
+# `ls .../agent-tools/work-items/ | grep -i tag` against the real directory
+# `work_items/` (UNDERSCORE). It read the empty output as "the tool does not
+# exist", which would have CONFIRMED the false premise it was falsifying.
+#
+# Same family as the pgrep guard above: the whole message is carried by a
+# signal's ABSENCE, and the wrong reading is self-confirming.
+#
+# DETERMINISTIC, not heuristic — the verdict is an os.path stat of a LITERAL
+# path operand, which is why this denies rather than advises. Every construct
+# that makes the operand non-literal FAILS OPEN and is never checked: a
+# variable or command substitution, a glob, a subshell, a `cd` whose target
+# cannot be resolved, an unparseable quoting. It also refuses to judge
+# anything but the FIRST real command (only `cd` may precede it), so a path
+# a preceding `mkdir`/`git clone` was about to create is never mistaken for a
+# missing one. The guard can therefore only fire on a path it actually
+# measured as absent at the moment the command was issued.
+_FA_DENY = (
+    'false-absence search-path guard (EI-20580705812821502): `{cmd}` names a '
+    'path that DOES NOT EXIST — `{path}`{resolved}. It would print NOTHING, '
+    'which is visually IDENTICAL to a search that ran correctly and found no '
+    'matches; the natural reading is "it does not exist", and that confident '
+    'negative then gets written somewhere durable where the next reader '
+    'inherits it as fact. Measured: a plan sat BLOCKED THREE WEEKS on exactly '
+    'this, and the agent verifying it hit the same trap the same day '
+    '(`work-items/` typed for the real `work_items/`). Fixes, best first: '
+    '(1) prove the haystack exists first — `ls -d {path}`; (2) search from '
+    'the repo root with no path filter; (3) for "where is this symbol '
+    'defined", use `gitnexus.context {{ name }}`, which has no path argument '
+    'to get wrong, and for "does this TOOL exist", `tools:find`. AND THE '
+    'GENERAL RULE: AN ABSENCE CLAIM NEEDS A POSITIVE CONTROL — before '
+    'reporting "X does not exist", run the same search for something you KNOW '
+    'is in that haystack. If the control also comes back empty, the '
+    'instrument is broken, not the subject.'
+)
+
+_FA_SEARCH_CMDS = frozenset(('grep', 'egrep', 'fgrep', 'rg', 'ls'))
+# Flags that CONSUME the following token, so it is neither the pattern nor a
+# path. Getting this wrong is the only way the guard can misread an operand.
+_FA_ARGFLAGS_GREP = frozenset((
+    '-e', '-f', '-m', '-A', '-B', '-C', '-D', '-d', '--regexp', '--file',
+    '--max-count', '--after-context', '--before-context', '--context',
+    '--label', '--include', '--exclude', '--exclude-dir', '--exclude-from',
+    '--binary-files', '--devices', '--directories', '--color', '--colour',
+    '--group-separator', '--gnu-color',
+))
+_FA_ARGFLAGS_RG = _FA_ARGFLAGS_GREP | frozenset((
+    '-g', '-t', '-T', '-M', '-E', '-j', '-r', '--glob', '--iglob',
+    '--type', '--type-not', '--type-add', '--replace', '--max-depth',
+    '--max-filesize', '--max-columns', '--sort', '--sortr', '--colors',
+    '--pre', '--engine', '--encoding', '--threads', '--ignore-file',
+    '--field-context-separator', '--context-separator', '--path-separator',
+    '--dfa-size-limit', '--regex-size-limit', '--hostname-bin',
+))
+# `ls` needs its OWN table, not grep's. The overlap is not benign: `-d`, `-f`,
+# `-m`, `-A`, `-B`, `-C` and `-D` all take an argument in grep and take NONE in
+# ls, so borrowing grep's table makes `ls -A missing | grep x` parse the path
+# as `-A`'s argument and the guard silently sees no path at all. Found by
+# mutation probe — the `ls -d` exemption below LOOKED load-bearing while it
+# was really this bug swallowing the operand.
+_FA_ARGFLAGS_LS = frozenset((
+    '-w', '-T', '-I', '--width', '--tabsize', '--ignore', '--hide',
+    '--block-size', '--format', '--time-style', '--time', '--sort',
+    '--indicator-style', '--quoting-style',
+))
+# `-e`/`-f` (and their long forms) supply the PATTERN out-of-band, so every
+# positional operand after them is a PATH rather than the first being the
+# pattern.
+_FA_PATTERN_FLAGS = frozenset(('-e', '-f', '--regexp', '--file'))
+_FA_SEPARATORS = frozenset(('&&', '||', ';', '|', '&'))
+_FA_UNRESOLVABLE = '$`*?[]{}~'
+
+
+def _fa_operands(argv, argflags):
+    """Positional operands of a grep/rg/ls argv, and whether -e/-f consumed the
+    pattern. Returns None when a construct makes the parse untrustworthy."""
+    operands, pattern_consumed, j = [], False, 1
+    while j < len(argv):
+        a = argv[j]
+        if a == '--':
+            operands.extend(argv[j + 1:])
+            break
+        # A redirect ends the operand list; a bare fd digit belongs to it
+        # (`grep -rn foo . 2>/dev/null` tokenizes the `2` as a word).
+        if a and all(c in '<>&' for c in a):
+            if operands and operands[-1].isdigit():
+                operands.pop()
+            break
+        if a.startswith('--'):
+            flag = a.split('=', 1)[0]
+            if flag in _FA_PATTERN_FLAGS:
+                pattern_consumed = True
+            j += 2 if ('=' not in a and flag in argflags) else 1
+            continue
+        if a.startswith('-') and len(a) > 1:
+            consumed_next = False
+            letters = a[1:]
+            for k, ch in enumerate(letters):
+                sf = '-' + ch
+                if sf in _FA_PATTERN_FLAGS:
+                    pattern_consumed = True
+                if sf in argflags:
+                    # `-m5` carries its argument in the cluster; `-m 5` takes
+                    # the next token.
+                    consumed_next = (k + 1 == len(letters))
+                    break
+            j += 2 if consumed_next else 1
+            continue
+        operands.append(a)
+        j += 1
+    return operands, pattern_consumed
+
+
+try:
+    if re.search(r'(?:^|[\s;&|(])(?:[\w./-]*/)?(?:grep|egrep|fgrep|rg|ls)\b',
+                 command):
+        import shlex
+        _fa_lex = shlex.shlex(command, posix=True, punctuation_chars=True)
+        _fa_lex.whitespace_split = True
+        _fa_tokens = list(_fa_lex)
+        # A subshell reorders what `cd` applies to; refuse to guess.
+        if '(' in _fa_tokens or ')' in _fa_tokens:
+            _fa_tokens = []
+        _fa_segments, _fa_cur = [], []
+        for _t in _fa_tokens:
+            if _t in _FA_SEPARATORS:
+                _fa_segments.append((_fa_cur, _t))
+                _fa_cur = []
+            else:
+                _fa_cur.append(_t)
+        _fa_segments.append((_fa_cur, ''))
+
+        # NOT `or os.getcwd()` — the usual idiom elsewhere in this file is
+        # wrong HERE. os.getcwd() is the HOOK process's directory, which is
+        # not the shell's: resolving `apps/operator` against it produced
+        # `apps/operator/apps/operator` and denied nine everyday commands in
+        # the suite. A relative operand is only resolvable when the host
+        # states the cwd, so without one this guard checks ABSOLUTE paths
+        # only and lets every relative one through (a host that omits `cwd`
+        # degrades to silence, never to a false deny).
+        # A cwd that does not EXIST is no better than an absent one: every
+        # relative path under it resolves to a fictional location, so every
+        # operand would read as missing. Drop to absolute-only rather than
+        # deny a command whose base directory we could not confirm.
+        _fa_cwd = payload.get('cwd')
+        _fa_cwd = os.path.realpath(_fa_cwd) if _fa_cwd else None
+        if _fa_cwd is not None and not os.path.isdir(_fa_cwd):
+            _fa_cwd = None
+        for _fa_toks, _fa_sep in _fa_segments:
+            _fa_i = 0
+            while (_fa_i < len(_fa_toks)
+                   and re.match(r'^[A-Za-z_][A-Za-z0-9_]*=', _fa_toks[_fa_i])):
+                _fa_i += 1
+            _fa_argv = _fa_toks[_fa_i:]
+            if not _fa_argv:
+                continue
+            _fa_name = _fa_argv[0].rsplit('/', 1)[-1]
+            if _fa_name == 'cd':
+                # Track the cwd the search will actually run in. Anything we
+                # cannot resolve — including a `cd` that would itself fail —
+                # ends the scan rather than being guessed at.
+                if len(_fa_argv) < 2:
+                    break
+                _fa_tgt = _fa_argv[1]
+                if any(c in _fa_tgt for c in _FA_UNRESOLVABLE):
+                    break
+                _fa_tgt = os.path.expanduser(_fa_tgt)
+                if not os.path.isabs(_fa_tgt) and _fa_cwd is None:
+                    break  # nothing to resolve it against
+                _fa_next = (_fa_tgt if os.path.isabs(_fa_tgt)
+                            else os.path.join(_fa_cwd, _fa_tgt))
+                _fa_next = os.path.realpath(_fa_next)
+                if not os.path.isdir(_fa_next):
+                    break
+                _fa_cwd = _fa_next
+                continue
+            if _fa_name not in _FA_SEARCH_CMDS:
+                # Only `cd` may precede the search — otherwise an earlier
+                # `mkdir`/`git clone` could be creating the very path we are
+                # about to call missing.
+                break
+            _fa_ops, _fa_pat_consumed = _fa_operands(
+                _fa_argv,
+                _FA_ARGFLAGS_LS if _fa_name == 'ls'
+                else _FA_ARGFLAGS_RG if _fa_name == 'rg'
+                else _FA_ARGFLAGS_GREP)
+            if _fa_name == 'ls':
+                # A bare `ls missing` prints a loud stderr error and is often a
+                # deliberate existence probe. It is the PIPED form whose empty
+                # stdout reads as a real absence — that is the measured trap.
+                # `ls -d` is exempt in either form: it IS the existence probe
+                # this guard's own remedy tells you to run, and denying the
+                # recommended fix would be perverse.
+                if _fa_sep != '|' or any(
+                        a == '--directory'
+                        or (a.startswith('-') and not a.startswith('--')
+                            and 'd' in a[1:])
+                        for a in _fa_argv[1:]):
+                    break
+                _fa_paths = _fa_ops
+            else:
+                if not _fa_ops:
+                    break
+                _fa_paths = _fa_ops if _fa_pat_consumed else _fa_ops[1:]
+            for _fa_p in _fa_paths:
+                if (not _fa_p or _fa_p in ('-', '.', '..')
+                        or len(_fa_p) > 400
+                        or any(c in _fa_p for c in _FA_UNRESOLVABLE)
+                        or (not os.path.isabs(_fa_p) and _fa_cwd is None)):
+                    continue
+                _fa_full = (_fa_p if os.path.isabs(_fa_p)
+                            else os.path.join(_fa_cwd, _fa_p))
+                if os.path.exists(_fa_full):
+                    continue
+                _fa_shown = os.path.normpath(_fa_full)
+                deny(_FA_DENY.format(
+                    cmd=' '.join(_fa_argv)[:160],
+                    path=_fa_p,
+                    resolved=('' if _fa_shown == _fa_p
+                              else ' (resolved to `%s`)' % _fa_shown[:200]),
+                ))
+            break
+except SystemExit:
+    raise  # deny() exits through here — never swallow the verdict
+except Exception:
+    pass  # a parse fault must never wedge a Bash call (fail-open)
+
 # ── tauri-agent-tools target guard (EI-10939) ────────────────────────────────
 # SAFETY. `tauri-agent-tools` picks its target by scanning /tmp for
 # `tauri-dev-bridge-<pid>.token` files and taking THE FIRST LIVE ONE IT HAPPENS

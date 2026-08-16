@@ -2079,6 +2079,197 @@ describe('ripgrep `-r`-consumes-cluster advisory (EI-19962592202828420)', () => 
 });
 
 /**
+ * false-absence search-path guard (EI-20580705812821502).
+ *
+ * `grep -rn X some/wrong/path/` prints NOTHING — visually identical to a
+ * search that ran correctly and found no matches. The natural reading is "X
+ * does not exist", and that confident negative gets written somewhere durable
+ * where the next reader inherits it as fact. Measured twice in this repo: a
+ * plan sat blocked THREE WEEKS on such a premise, and the agent verifying it
+ * hit the identical trap the same day (`work-items/` typed for the real
+ * `work_items/`).
+ *
+ * The guard denies rather than advises because its verdict is a stat of a
+ * LITERAL path, not a heuristic. That only holds while every non-literal
+ * construct FAILS OPEN, so the allow cases below are the load-bearing half of
+ * this suite — each one names a construct whose operand the guard must refuse
+ * to judge. Deleting one does not weaken a warning; it converts the guard into
+ * a false-deny on an everyday command.
+ */
+describe('false-absence search-path guard (EI-20580705812821502)', () => {
+  let haystack: string;
+
+  beforeAll(() => {
+    haystack = mkdtempSync(join(tmpdir(), 'fa-guard-'));
+    mkdirSync(join(haystack, 'work_items'), { recursive: true });
+    writeFileSync(join(haystack, 'work_items', 'tag.ts'), 'export const tag = 1;\n');
+  });
+
+  afterAll(() => {
+    rmSync(haystack, { recursive: true, force: true });
+  });
+
+  const at = (command: string, cwd = haystack) => ({
+    tool_name: 'Bash',
+    tool_input: { command },
+    session_id: 's-test',
+    cwd,
+  });
+
+  const expectFalseAbsenceDeny = (out: { stdout: string; stderr?: string; status: number | null }) => {
+    expect(out.status).toBe(0);
+    const reason = parseDecision(out).hookSpecificOutput.permissionDecisionReason as string;
+    expect(parseDecision(out).hookSpecificOutput.permissionDecision).toBe('deny');
+    expect(reason).toContain('false-absence search-path guard');
+    // The remedy is the whole point of the deny — a bare refusal would leave
+    // the agent to guess, which is how the measured 3-week instance happened.
+    expect(reason).toContain('AN ABSENCE CLAIM NEEDS A POSITIVE CONTROL');
+  };
+
+  it('denies a grep whose path operand does not exist', () => {
+    expectFalseAbsenceDeny(runGate(at("grep -rn 'foo' no-such-dir/")));
+  });
+
+  it('denies the MEASURED typo — piped `ls` on `work-items/` when the real dir is `work_items/`', () => {
+    expectFalseAbsenceDeny(runGate(at('ls work-items/ | grep -i tag')));
+  });
+
+  it('denies an `rg` whose path operand does not exist', () => {
+    expectFalseAbsenceDeny(runGate(at("rg -n 'foo' no-such-dir/")));
+  });
+
+  it('denies the `-e` form, where EVERY positional operand is a path', () => {
+    expectFalseAbsenceDeny(runGate(at('grep -rn -e foo no-such-dir/')));
+  });
+
+  it('denies through a `cd`, resolving the path relative to the new cwd', () => {
+    expectFalseAbsenceDeny(runGate(at('cd work_items && grep -rn foo no-such-dir/')));
+  });
+
+  it('names the missing path AND its resolved form in the refusal', () => {
+    const reason = parseDecision(runGate(at("grep -rn 'foo' no-such-dir/")))
+      .hookSpecificOutput.permissionDecisionReason as string;
+    expect(reason).toContain('no-such-dir/');
+    expect(reason).toContain(haystack); // where it actually looked
+  });
+
+  it('silent when the path EXISTS (the guard measures, it does not pattern-match)', () => {
+    expectAllow(runGate(at("grep -rn 'foo' work_items/")));
+  });
+
+  it('silent when a `cd` is what makes the relative path valid', () => {
+    expectAllow(runGate(at('cd work_items && grep -rn foo tag.ts')));
+  });
+
+  it('silent for a glob operand — the shell, not the guard, decides what it names', () => {
+    expectAllow(runGate(at("grep -rn foo work_*/")));
+  });
+
+  it('silent for a variable operand — unresolvable, so never judged', () => {
+    expectAllow(runGate(at('grep -rn foo $DIR/')));
+  });
+
+  it('silent for a command substitution in the path', () => {
+    expectAllow(runGate(at('grep -rn foo "$(pwd)/no-such-dir"')));
+  });
+
+  // UNQUOTED is the case that bites: `$(pwd)/x` tokenizes to the five words
+  // `$` `(` `pwd` `)` `/x`, so a bare `(` arrives looking exactly like a
+  // positional path operand. Without the subshell abort the guard stats `(`,
+  // finds no such file, and denies an entirely ordinary command.
+  it('silent for an UNQUOTED command substitution, whose `(` is not a path', () => {
+    expectAllow(runGate(at('grep -rn foo $(pwd)/no-such-dir')));
+  });
+
+  it("does not read a redirect's fd digit as a path (`2>/dev/null`)", () => {
+    expectAllow(runGate(at('grep -rn foo work_items 2>/dev/null')));
+  });
+
+  it('silent when the search appears only as PROSE inside quotes', () => {
+    expectAllow(runGate(at('echo "grep -rn foo no-such-dir/"')));
+  });
+
+  it('silent when a non-`cd` command precedes it — it may be CREATING that path', () => {
+    expectAllow(runGate(at('mkdir -p made-here && ls made-here | grep x')));
+  });
+
+  it('silent inside a subshell, where the guard cannot tell what the `cd` applies to', () => {
+    expectAllow(runGate(at('( cd work_items && grep -rn foo no-such-dir/ )')));
+  });
+
+  it('silent for `ls -d missing` — that IS the existence probe the deny recommends', () => {
+    expectAllow(runGate(at('ls -d no-such-dir | grep x')));
+  });
+
+  /**
+   * `ls` is parsed with ITS OWN flag table, not grep's. `-A`, `-C`, `-B`,
+   * `-D`, `-m` and `-f` all take an argument in grep and take none in ls, so
+   * borrowing grep's table makes the path parse as the flag's argument and
+   * the guard sees no path at all — a silent miss on the exact command shape
+   * that produced the measured instance. Found by mutation probe: it is what
+   * made the `ls -d` exemption above look load-bearing while the operand was
+   * really just being swallowed.
+   */
+  it.each(['-A', '-C', '-m', '-f', '-B'])(
+    'still denies `ls %s missing | grep` — an ls flag that takes NO argument',
+    (flag) => {
+      expectFalseAbsenceDeny(runGate(at(`ls ${flag} no-such-dir | grep x`)));
+    },
+  );
+
+  it('silent for an UNPIPED `ls missing` — its stderr error is loud, not absent', () => {
+    expectAllow(runGate(at('ls no-such-dir/')));
+  });
+
+  it('silent when grep reads stdin and its only operand is the PATTERN', () => {
+    expectAllow(runGate(at('cat work_items/tag.ts | grep no-such-dir/foo')));
+  });
+
+  /**
+   * The cwd leg is load-bearing, and getting it wrong is not a near-miss —
+   * it is a false deny on everyday commands. Resolving a relative operand
+   * against the HOOK process's `os.getcwd()` (the idiom used elsewhere in
+   * this script) turned `rg -n pkill apps/operator` into a lookup of
+   * `apps/operator/apps/operator` and denied nine commands in this suite.
+   * A relative path is only resolvable when the host states the cwd.
+   */
+  describe('a relative operand is only judged when the host states a cwd', () => {
+    const noCwd = (command: string) => ({
+      tool_name: 'Bash',
+      tool_input: { command },
+      session_id: 's-test',
+    });
+
+    it('silent for a relative path when the payload carries no cwd', () => {
+      expectAllow(runGate(noCwd('grep -rn foo no-such-dir/')));
+    });
+
+    it('still denies an ABSOLUTE missing path with no cwd — nothing to resolve', () => {
+      expectFalseAbsenceDeny(runGate(noCwd(`grep -rn foo ${join(haystack, 'no-such-dir')}`)));
+    });
+
+    it('silent for a relative `cd` target when the payload carries no cwd', () => {
+      expectAllow(runGate(noCwd('cd work_items && grep -rn foo no-such-dir/')));
+    });
+
+    // A cwd that does not exist is worse than none: EVERY relative operand
+    // under it resolves to a fictional location and would read as missing.
+    // Caught by the `#`-comment shell-write suite, whose payloads state a
+    // canonical-tree cwd that is not a real directory on this box.
+    it('silent for a relative path when the stated cwd does not exist', () => {
+      expectAllow(
+        runGate({
+          tool_name: 'Bash',
+          tool_input: { command: 'grep -n foo bar.ts' },
+          session_id: 's-test',
+          cwd: '/no/such/cwd/anywhere',
+        }),
+      );
+    });
+  });
+});
+
+/**
  * WI-6944 — the `;`-chain half of the same exit-code trap. The advisory above
  * only matches a PIPE; a `;`-chain masks identically but through a separate
  * TRAILING command:
