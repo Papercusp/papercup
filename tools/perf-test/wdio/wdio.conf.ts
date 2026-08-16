@@ -18,7 +18,12 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { createServer } from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { operatorBaseUrl, readMeasures, resetMeasures } from "./perf-report";
+import {
+  operatorBaseUrl,
+  readMeasures,
+  recordHostPressure,
+  resetMeasures,
+} from "./perf-report";
 import { SPEC_TIMEOUT_MS } from "./app-mount";
 
 /**
@@ -578,6 +583,9 @@ export const config: WebdriverIO.Config = {
     // onComplete consumed them) so stale timings are never published against this
     // commit — reporting none beats reporting someone else's numbers.
     resetMeasures();
+    // Stamp the host pressure this run STARTS under (D-005). Must come AFTER
+    // resetMeasures, or the reset would wipe the stamp it just wrote.
+    recordHostPressure("start");
     const driverPort = process.env.TAURI_DRIVER_PORT
       ? Number(process.env.TAURI_DRIVER_PORT)
       : await getFreePort();
@@ -608,6 +616,10 @@ export const config: WebdriverIO.Config = {
   // orphaned; the kill is in a finally for the same reason.
   async onComplete() {
     try {
+      // Stamp the END pressure before publishing, so the published run carries
+      // both ends of the window it was measured in — a run that STARTED quiet
+      // and ended contended is not a quiet sample.
+      recordHostPressure("end");
       await publishMeasures();
     } finally {
       reapDriverTree();

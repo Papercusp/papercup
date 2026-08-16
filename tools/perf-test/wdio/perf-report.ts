@@ -204,6 +204,73 @@ export function recordInvariant(
 }
 
 /**
+ * Record the HOST CPU PRESSURE this run is being taken under
+ * (resource-efficiency-closeout-2026-08-13 D-005, step 1).
+ *
+ * WHY (D-003 → D-004 → D-005). A desktop timing measured while the host was
+ * contended is not comparable to one measured on a quiet box, and for weeks this
+ * suite published timings with NO record of which it was. That is how a 4466ms
+ * LCP got written up as a regression: re-measured under a quiet window the same
+ * code reads 2527–2803ms.
+ *
+ * WHY PSI AND NOT LOADAVG. /proc/loadavg is a trailing EWMA of runnable tasks,
+ * not current contention — measured here at 56.92 while /proc/pressure/cpu
+ * reported `some avg10=0.05` (i.e. no stall pressure at all). Worse than
+ * useless: across six samples LCP was ANTI-correlated with loadavg (2143ms at
+ * loadavg 99, 2803ms at loadavg 57). PSI `some avg10` is the live reading, so it
+ * is the one recorded; loadavg is recorded ALONGSIDE it purely so a future
+ * reader can see the two disagree rather than rediscovering it.
+ *
+ * These are stamps, not budgets: `budget: null` and `ok: true` unconditionally,
+ * which the ingest route documents as "recorded, never a failure". A run taken
+ * under load must NOT be reported as a budget breach — per D-005 an
+ * uncontrolled sample is UNMEASURABLE, which is a different verdict from failing,
+ * and conflating them is the defect this whole plan item exists to remove.
+ *
+ * Never throws: /proc/pressure/cpu is absent on non-Linux and on kernels built
+ * without PSI, and a missing stamp must not fail a healthy perf run.
+ */
+export function recordHostPressure(phase: "start" | "end"): void {
+  try {
+    const psi = readFileSync("/proc/pressure/cpu", "utf8");
+    // "some avg10=0.05 avg60=0.17 avg300=0.87 total=..." — one line per class.
+    const read = (cls: "some" | "full"): number | null => {
+      const line = psi.split("\n").find((l) => l.startsWith(cls));
+      const m = line?.match(/avg10=([\d.]+)/);
+      return m ? Number(m[1]) : null;
+    };
+    for (const cls of ["some", "full"] as const) {
+      const value = read(cls);
+      if (value === null || !Number.isFinite(value)) continue;
+      recordMeasure({
+        key: `host:psi-cpu-${cls}-avg10:${phase}`,
+        value,
+        unit: "pct",
+        budget: null,
+        ok: true,
+      });
+    }
+  } catch {
+    /* no PSI on this kernel — a missing stamp is not a failure */
+  }
+  try {
+    // Recorded for CONTRAST only. Do not gate on this: see the note above.
+    const load1 = Number(readFileSync("/proc/loadavg", "utf8").split(/\s+/)[0]);
+    if (Number.isFinite(load1)) {
+      recordMeasure({
+        key: `host:loadavg1-not-authoritative:${phase}`,
+        value: load1,
+        unit: "count",
+        budget: null,
+        ok: true,
+      });
+    }
+  } catch {
+    /* not Linux — skip */
+  }
+}
+
+/**
  * Discard any measures on disk. Called from `onPrepare` so a file left behind by a
  * previously CRASHED run (one that died before `onComplete` could consume and clear
  * it) is never posted as if it were this run's data — that would report stale
