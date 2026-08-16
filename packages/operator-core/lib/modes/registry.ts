@@ -152,7 +152,10 @@ Close each su pass as a LOOP, not a blank page: GROUND on blender:ideation-feedb
 { scope: 'mine', intent: '<your pass focus>' } — prior grades + realized outcomes +
 per-lens win-rates + the federated frontier read + observationsImpact (which of YOUR
 observations became patterns → ideas → shipped; intent re-ranks the priming by relevance) → run
-the pass under one lens → FILE lens-tagged, adding a bet/cheapExperiment when the idea is a
+the pass under one lens → FILE lens-tagged AND GROUNDED: pass
+ideation.addressesPatternRefs (the observationsImpact.patterns[].ref values the idea
+builds on — an idea filed without them can NEVER count as grounded/shipped in anyone's
+observationsImpact, EI-10607), adding a bet/cheapExperiment when the idea is a
 real bet → ROUTE the broad ones onward via blender:route-idea → CLOSE with
 blender:ideate-pass-record (a measurable su-ideate tick). Grading an su idea wakes its
 originator to revise (see GRADE).
