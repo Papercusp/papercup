@@ -707,7 +707,13 @@ describe('Android release producer/consumer source contract (D-004)', () => {
   it('release-local passes the requested version and treats an enabled Android leg as fatal', () => {
     const script = fs.readFileSync(path.join(desktopDir, 'bin/release-local.sh'), 'utf8');
     expect(script).toContain('PAPERCUP_RELEASE_VERSION="$VERSION"');
-    expect(script).toContain('join_leg "$ANDROID_PID" android "$ANDROID_LEG_LOG"');
+    // The leg-joining mechanism was refactored 2026-08-15 from a per-leg `join_leg` call to
+    // register_leg + a single supervise_legs reaper. The CONTRACT is unchanged — an enabled
+    // Android leg is supervised FATALLY — so both halves are pinned: registering the leg is
+    // inert unless something actually supervises it, and supervising is vacuous if the
+    // Android leg was never registered.
+    expect(script).toContain('register_leg android "$ANDROID_PID" "$ANDROID_LEG_LOG"');
+    expect(script).toMatch(/^supervise_legs$/m);
     expect(script).toContain('exactly one provenanced APK and one AAB');
     expect(script).not.toContain('android leg did not produce a usable APK');
   });

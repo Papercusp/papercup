@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import {
   diffProvenanceSnapshots,
   fileFingerprint,
@@ -211,6 +211,12 @@ describe('fingerprint + snapshot against the real filesystem', () => {
   it('never reports a gitignored file as clean', () => {
     const ignored = resolve(REPO_ROOT, '.papercusp/scratch/provenance-ignored-fixture.test.ts');
     try {
+      // A FRESH checkout (the green-checkpoint tree) has no .papercusp/scratch/ yet, so the
+      // write ENOENT'd there while passing in every long-lived working tree — a red that
+      // looked like a provenance regression but was only an unprovisioned fixture dir.
+      // The pattern `**/.papercusp/scratch/` ignores this path by name, so creating it here
+      // keeps the ignored-ness the assertion depends on (WI-39362).
+      mkdirSync(dirname(ignored), { recursive: true });
       writeFileSync(ignored, 'export const fixture = true;\n');
       expect(snapshotProvenance([ignored]).entries[0].state).toBe('untracked');
     } finally {

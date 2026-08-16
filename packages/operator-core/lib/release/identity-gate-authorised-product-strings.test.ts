@@ -163,7 +163,7 @@ describe('release identity gate: authorised product strings (WI-38233)', () => {
     expect(status).toBe(1);
   });
 
-  it('counts the low-entropy literal on a WORD BOUNDARY, as the scan matches it', () => {
+  it('counts the low-entropy literal on a WORD BOUNDARY, as the scan matches it', (ctx) => {
     // Pins the substring-vs-word-boundary bug described in the header: the literal
     // embedded inside a longer alphanumeric token is NOT a hit, so a file carrying
     // only that plus an authorised string must still be ACCEPTED. Counting it as a
@@ -171,7 +171,13 @@ describe('release identity gate: authorised product strings (WI-38233)', () => {
     if (!have('python3')) return;
     const low = identityRows().find((r) => r.low);
     if (!low) {
-      console.warn('[authorised-strings guard] SKIPPED: no low-entropy literal on this box');
+      // NOT a neutral skip — it means this box contributes no short alnum literal
+      // (historically the owner's bare git user.name), so the word-boundary arm of
+      // the gate is UNARMED here and this case cannot be exercised. Recorded as a
+      // real Vitest skip with its reason: a console.warn here reds the whole suite
+      // under the global vitest-fail-on-console rule, which turned an unarmed guard
+      // into a gate outage instead of a visible skip (WI-39362).
+      ctx.skip('no low-entropy literal on this box — word-boundary arm unarmed');
       return;
     }
     const { authorised } = authorisedPair();
