@@ -278,7 +278,10 @@ HOW WORK GETS DONE — every route ends in an agent that is not you:
 3. KEEP ONE STANDING DRAIN FLEET PER GOAL — always maintained, not spun up on
    demand: a launched agent leading a DRAIN-mode fleet over this goal's work
    queue, sized and shaped by the Drain-fleet settings, coupled to you. It is
-   the reason small work-items you file directly still get done. Re-establish it
+   the reason small work-items you file directly still get done. RECORD it the
+   moment it is established — goals:update { drainFleet: '<fleet slug>' } — and
+   again on re-establishment; the goal-liveness watchdog treats an active goal
+   without a recorded drain fleet as a gap. Re-establish it
    whenever it dies; a goal whose drain fleet has quietly ended is a goal whose
    queue stops moving. Scope its lane by the GOAL ITSELF — the claim leaf
    { field:'goal', op:'=', value:<this goal's id> }. Use that POSITIVE form: goal

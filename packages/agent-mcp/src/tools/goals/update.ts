@@ -38,8 +38,8 @@ import {
 export default defineTool({
   name: 'goals:update',
   description:
-    'Move a GOAL record\'s standing state (harness_shared.goals): { id, status?, title?, body?, killCriterion?, budgetCents?, spentCents?, parentId?, launchSettings? }. ' +
-    'Partial — an omitted field is left untouched. Use status:"killed" when the written kill criterion trips and "achieved" when the outcome is met. ' +
+    'Move a GOAL record\'s standing state (harness_shared.goals): { id, status?, title?, body?, killCriterion?, budgetCents?, spentCents?, parentId?, launchSettings?, drainFleet? }. ' +
+    'Partial — omitted fields stay untouched. status:"killed" when the kill criterion trips, "achieved" when the outcome is met. ' +
     'status FANS OUT, in both directions: "paused"|"killed"|"achieved" gates placement on the projects this goal OWNS and disarms the engine loops of sessions attributed to it; ' +
     '"active" re-opens placement on those same projects (nothing else can — the pause is marked deliberate so no watchdog undoes it). Read `stop` and `degraded` either way.',
   capability: 'goals:write',
@@ -85,6 +85,15 @@ export default defineTool({
         'cents from the all-time measured child-fleet goals:pots rollup; the handler rejects missing, partial, or mismatched measurements and never derives interactive-session cost',
       ),
     parentId: z.string().min(1).nullable().optional().describe('re-parent, or null to detach'),
+    drainFleet: z
+      .string()
+      .min(1)
+      .max(120)
+      .nullable()
+      .optional()
+      .describe(
+        'the STANDING drain fleet slug for this goal (GOAL contract clause 3 — one per goal, always maintained). Record it the moment the fleet is established; null clears it (e.g. re-establishing under a new slug). The goal-liveness watchdog treats an active goal without one as a gap.',
+      ),
     launchSettings: goalLaunchSettingsSchema
       .nullable()
       .optional()
@@ -199,6 +208,12 @@ export default defineTool({
     if (measuredSpendCents !== undefined) {
       metadata.spentCents = measuredSpendCents;
       metadata.spentCentsSource = GOAL_SPEND_SNAPSHOT_SOURCE;
+    }
+    // Standing drain fleet (EI-20581099901890760): omitted leaves it alone;
+    // null clears it (re-establishment under a new slug passes the new one).
+    if (args.drainFleet !== undefined) {
+      if (args.drainFleet === null) delete metadata.drainFleet;
+      else metadata.drainFleet = args.drainFleet;
     }
     const legacyCriterion =
       typeof metadata.killCriterion === 'string' ? (metadata.killCriterion as string) : null;

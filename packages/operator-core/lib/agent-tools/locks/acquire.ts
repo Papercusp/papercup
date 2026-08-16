@@ -51,6 +51,7 @@ import { captureWakeHandleForOwner } from '../../events/await/handle';
 import { registerAwait } from '../../events/await/store';
 import { startAwaitSweeper } from '../../events/await/engine';
 import { resolveAgentIdentity } from '../coordination/identity';
+import { checkGoalModeEditGuard } from './goal-mode-edit-guard';
 import { recordEditAttribution } from '../../edit-attribution';
 import { readAgentStateStamp } from '../../agent-state-stamp';
 import { routeFileLockOp } from '../../authority/file-lock-routing';
@@ -208,6 +209,28 @@ export default defineTool({
     // hold several work-items and change its active goal while a waiter is blocked; the
     // queue-time pointer is the only honest attribution for the eventual edit.
     const goalRef = readAgentStateStamp(ownerId).goalRef ?? undefined;
+
+    // ── GOAL-mode never-implement gate (EI-20581099901890760) ────────────
+    // An automatic per-edit hook claim (intent 'PreToolUse:*') by a session
+    // whose REGISTERED mode is 'goal' is refused with a teaching reason; the
+    // edit hook feeds `reason` back to the model verbatim. Flag-gated
+    // (GOAL_MODE_EDIT_DENY, default ON), fail-open, and scoped so fleet
+    // members that merely INHERIT goal context are never touched — see
+    // goal-mode-edit-guard.ts for the full rationale.
+    {
+      const denyReason = await checkGoalModeEditGuard({
+        workspaceId: resolveAgentIdentity(ctx).workspaceId,
+        ownerId,
+        intent: args.intent,
+      });
+      if (denyReason) {
+        return {
+          content: [
+            { type: 'text' as const, text: JSON.stringify({ ok: false, reason: denyReason, busy: [] }) },
+          ],
+        };
+      }
+    }
 
     // ── pending_edit guardrails (EI-9033) ───────────────────────────
     // Apply-on-grant is single-file + wake-only by construction. Validate the
