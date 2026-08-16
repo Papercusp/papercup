@@ -321,6 +321,15 @@ export const DigestSchema = z.object({
    *  OPTIONAL: stamped by the cycle seam (cycle-deps readCorpus), like
    *  standingFacts; absent ⇒ the legacy whole-digest rendering. */
   previousCycleRefs: z.array(z.string()).optional(),
+  /** DEDUP-BURN saturation stamp (blender-loop-repair-and-opus5-xhigh-2026-08-16
+   *  P-007 / WI-39479): the dedup-burn guard found consecutive ran-cycles burning
+   *  ≥ threshold of their ideas as duplicates. renderDigest drops the standing
+   *  patterns (fresh-signal-only when fresh signal exists) + leads with a
+   *  saturation banner. OPTIONAL: stamped by the cycle seam (cycle-deps
+   *  readCorpus); absent ⇒ unchanged rendering. */
+  dedupSaturation: z
+    .object({ consecutiveSaturated: z.number(), wideningSteps: z.number() })
+    .optional(),
   /** One-line summary for a coord broadcast / the Scout trigger. */
   headline: z.string(),
 });

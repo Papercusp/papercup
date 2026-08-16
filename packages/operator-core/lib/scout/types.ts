@@ -237,6 +237,14 @@ export interface CorpusDigest {
    *  churn. OPTIONAL: stamped by the cycle seam (cycle-deps readCorpus);
    *  absent ⇒ the legacy whole-digest rendering, byte-identical. */
   previousCycleRefs?: string[];
+  /** DEDUP-BURN saturation stamp (blender-loop-repair-and-opus5-xhigh-2026-08-16
+   *  P-007 / WI-39479): present when the dedup-burn guard found consecutive
+   *  ran-cycles burning ≥ threshold of their ideas as duplicates (the 08-06/07
+   *  428-burned→0-routed incident class). {@link renderDigest} then drops the
+   *  standing patterns from the ideator prompt (fresh-signal-only when fresh
+   *  signal exists) and leads with a saturation banner. OPTIONAL: stamped by
+   *  the cycle seam (cycle-deps readCorpus); absent ⇒ unchanged rendering. */
+  dedupSaturation?: { consecutiveSaturated: number; wideningSteps: number };
   /** Optional one-line "state of the Hive" headline. */
   headline?: string;
   /** ISO timestamp the digest was synthesized. */

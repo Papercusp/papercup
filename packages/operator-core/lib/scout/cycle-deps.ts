@@ -104,6 +104,15 @@ export interface BuildScoutCycleDepsOptions {
    * to the previous hardcoded constants); the runner resolves it from the blueprint `scout` block.
    */
   scoutConfig?: ScoutConfig;
+  /**
+   * P-007 dedup-burn guard (WI-39479): present when the runner's pre-cycle ledger
+   * read found consecutive saturated cycles. `readCorpus` stamps it onto the digest
+   * ({@link CorpusDigest.dedupSaturation}) so renderDigest drops the standing
+   * patterns + leads with the saturation banner. The runner ALSO widens the
+   * novelty band (applyDedupBurnToConfig) before passing `scoutConfig` — the two
+   * levers travel together.
+   */
+  dedupSaturation?: { consecutiveSaturated: number; wideningSteps: number };
 }
 
 /**

@@ -268,6 +268,17 @@ function patternLine(p: MetaPattern): string {
 export function renderDigest(digest: CorpusDigest): string {
   const lines: string[] = [];
   if (digest.headline) lines.push(`State of the Hive: ${digest.headline}`, '');
+  // DEDUP-BURN saturation banner (P-007 / WI-39479): the guard measured the last
+  // N cycles burning ≥ threshold of their ideas as dedup declines — tell the
+  // ideators plainly, before any patterns, that the obvious pitches are spent.
+  const saturation = digest.dedupSaturation;
+  if (saturation) {
+    lines.push(
+      `⚠ CORPUS SATURATED — your last ${saturation.consecutiveSaturated} cycle(s) were burned almost entirely as duplicates of already-tried ideas.`,
+      'The obvious ideas from the standing corpus are SPENT. Pitch ONLY angles you have not seen tried: cross-domain transfers, inversions of a standing pattern, or ideas grounded in the freshest signal below.',
+      '',
+    );
+  }
   const flat = flattenDigest(digest);
   if (flat.length === 0) {
     lines.push('(no meta-patterns surfaced this cycle)');
@@ -284,7 +295,11 @@ export function renderDigest(digest: CorpusDigest): string {
         ? fresh.map(patternLine).join('\n')
         : '(no new patterns since your last cycle — lean on the standing ones only where you see a genuinely untried angle)',
     );
-    if (standing.length > 0) {
+    // Saturation REFRESH (P-007): with fresh signal available, DROP the standing
+    // patterns entirely — a saturated corpus re-shown is a saturated corpus
+    // re-pitched. With no fresh signal, the standing render stays (an empty
+    // prompt grounds nothing), carrying the banner's warning instead.
+    if (standing.length > 0 && !(saturation && fresh.length > 0)) {
       lines.push(
         '',
         '## Standing patterns (already seen last cycle — the obvious ideas were likely already pitched; leap from these only with a NEW angle)',
