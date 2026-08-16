@@ -61,6 +61,11 @@ export interface ResolveSidecarSpawnPlanOpts {
   bundledModeEnvVar: string;
   /** `process.execPath` (the running node binary) — injectable for tests. */
   execPath: string;
+  /** THIS process's own pid (`process.pid`) — declared to the child as its
+   *  parent identity. Required, not optional: a spawner that forgets to declare
+   *  itself silently reintroduces EI-20493378309289396 (see below), and a type
+   *  error at every call site is the only thing that reliably prevents that. */
+  spawnerPid: number;
 }
 
 /** Pure: decide HOW to spawn a sidecar child (bundled re-exec-self vs dev
@@ -72,7 +77,7 @@ export function resolveSidecarSpawnPlan(opts: ResolveSidecarSpawnPlanOpts): Side
     return {
       cmd: opts.execPath, // the bundled node (e.g. ./bin/node), re-exec'ing selfPath
       args: [opts.selfPath],
-      env: { [opts.bundledModeEnvVar]: '1' },
+      env: { [opts.bundledModeEnvVar]: '1', ...parentIdentityEnv(opts.spawnerPid) },
       mode: 'bundled-reexec',
     };
   }
@@ -80,9 +85,44 @@ export function resolveSidecarSpawnPlan(opts: ResolveSidecarSpawnPlanOpts): Side
   return {
     cmd: isTs ? 'npx' : opts.execPath,
     args: isTs ? ['tsx', opts.devScriptPath] : [opts.devScriptPath],
-    env: {},
+    env: { ...parentIdentityEnv(opts.spawnerPid) },
     mode: 'dev-tsx',
   };
+}
+
+/**
+ * (EI-20493378309289396) Re-declare THIS process as the child's parent, so the
+ * child's parent-death watch checks the process that actually spawned it.
+ *
+ * `PAPERCUSP_DESKTOP_PARENT_PID` is set by main.rs's `spawn_serve` to the DESKTOP
+ * pid, and every sidecar spawn layers `plan.env` over `...process.env` — so
+ * without this the value is INHERITED and names our GRANDparent. The child then
+ * arms `startSidecarParentDeathWatch()` (serve.ts:1363-1368, before the mode
+ * divert), and `isOrphanedFromParent(desktopPid, ourPid)` compares two pids that
+ * can NEVER be equal for a grandchild. It fires on the pre-arm immediate check
+ * and SIGTERMs itself within ~40ms of every boot, forever:
+ *
+ *   `desktop parent pid 79217 is gone (now reparented to 79225, detected before
+ *    the watch armed) — self-terminating instead of running orphaned`
+ *
+ * Measured on the macOS rig 2026-08-16: 1,134 identical lines over 3h10m while
+ * pid 79217 was demonstrably alive, `:8788` refused the whole time, and the
+ * respawn budget re-armed every 60s to burn 5 more attempts. Independently filed
+ * from a fresh Ubuntu 24.04 0.0.16 deb, so it is not platform-specific.
+ *
+ * This is the same CLASS as WI-37736 (a Windows pid compared against a WSL2 Linux
+ * ppid) and takes the same shape of fix: stop a pid that means something else from
+ * crossing a spawn boundary. Declaring OUR pid is the semantically correct
+ * contract — the child's parent is us, and if WE die it SHOULD self-terminate —
+ * and it keeps `declaredByLauncher` true, so the child retains the stronger
+ * "is that parent still alive?" check rather than degrading to reparent-only.
+ *
+ * ⚠ Do NOT "fix" this by deleting the var instead: that silently downgrades the
+ * child to `PROCESS_START_PPID` fallback semantics, which cannot detect a parent
+ * that dies while the child is still booting (the EI-19486216732882752 race).
+ */
+function parentIdentityEnv(spawnerPid: number): Record<string, string> {
+  return { PAPERCUSP_DESKTOP_PARENT_PID: String(spawnerPid) };
 }
 
 // ── per-host sidecar enable-check (WI-3793) ─────────────────────────────────
