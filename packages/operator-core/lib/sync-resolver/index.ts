@@ -3942,6 +3942,34 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // ── learning.loopControl — the Learnings-tab header pause/resume-all control ──
+  //
+  // (WI-39501). ONE snapshot of the self-improvement routine GROUP — member /
+  // active / group-pause-held counts, the newest groupPause stamp, and the
+  // loop-role spend rollup (scout/gym/llm-testing over
+  // harness_shared.agent_usage_samples) — feeding the header chip + pause/resume
+  // button rendered on EVERY Learnings step. Workspace-scoped via
+  // routeWithWorkspace (RLS GUC) with an explicit workspace predicate; the
+  // loader degrades a missing column/table to the empty snapshot (never a 500).
+  // Writes go through routines:group-set, which fires
+  // notifySyncInvalidate('learning.loopControl') after the flip commits — plus
+  // the view's own invalidate() after a mutate. Always a 1-element array.
+  'learning.loopControl': {
+    argsSchema: z.object({}).optional(),
+    resolve: async () => {
+      const { activeWorkspaceId } = await import('../workspace-registry');
+      const { routeWithWorkspace } = await import('../route-workspace');
+      const { loadLearningLoopControl } = await import('../harness/improvements/loop-control');
+      const ws = activeWorkspaceId();
+      return await routeWithWorkspace(async (tx) => {
+        const runQuery = async <T>(query: string, params: unknown[]): Promise<T[]> =>
+          (await tx.unsafe(query, params as never)) as unknown as T[];
+        const snapshot = await loadLearningLoopControl({ workspaceId: ws, runQuery });
+        return [snapshot];
+      });
+    },
+  },
+
   // ── learning.releaseReadiness — the Verify stage's GO/NO-GO strip ──
   //
   // (learning-tab-alignment-2026-07-13 P-001, D-001). blender:success-metrics'
