@@ -206,6 +206,13 @@ export interface MergeCursorRow {
   logKeyHex: string;
   position: number;
   updatedAtMs: number;
+  /**
+   * The pot-home projection scope this row was folded under (migration 685).
+   * REQUIRED because it decides whether the row is live at all: the fold only
+   * ever loads cursors matching the binding it is currently running with, so a
+   * row under any other binding is unreachable by construction.
+   */
+  applyBinding: string | null;
 }
 
 export interface PeerSilence {
@@ -231,6 +238,15 @@ export interface PeerFederationHealth {
   /** Every known log is silent ⇒ suspect the LOCAL fold, not the peers. */
   allSilent: boolean;
   breaches: string[];
+  /**
+   * Cursors EXCLUDED from the judgement because they sit under a superseded
+   * `apply_binding` (see the judge). Reported rather than silently dropped: they
+   * are unreachable by the fold and will never advance, so a non-zero count is
+   * schema residue to clean up, not peers to chase.
+   */
+  strandedCursors: number;
+  /** The binding the judged population shares — null is a legitimate value. */
+  liveApplyBinding: string | null;
 }
 
 /**
