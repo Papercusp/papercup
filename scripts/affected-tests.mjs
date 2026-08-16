@@ -887,7 +887,15 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     // --fail blocks on NEW findings only; pre-wiring debt lives in the script's
     // shrink-only FAIL_BASELINE. Cheap: one tsc parse pass over candidate files, no DB.
     workspace: "@papercusp/operator-core",
-    script: "lint:di-seam-arity-strands:fail",
+    // The BASE guard name — the reachability census's coverage credit is an exact-name
+    // lookup (`repoWideRegistered.has(row.name)`), and companion spellings like `:fail`
+    // are collapsed into the base. operator-core's declaration of this name runs the
+    // script in --fail mode (root's stays advisory for hand-runs): enforcement
+    // strictness is a property of the enforcement declaration, not of the name.
+    script: "lint:di-seam-arity-strands",
+    // Exit 2 = EXIT_NOT_CHECKED (zero candidate files). A gate checkout's working diff
+    // is empty by construction, so "examined nothing" must not red the gate.
+    notCheckedIsNonGating: true,
     // Mirror of the script's own candidate filter: judge the changed path only if the
     // guard would actually scan it.
     appliesTo: (f) =>
