@@ -11,8 +11,17 @@ export type AdminTestSuiteId =
 export type AdminTestStatus = 'pass' | 'warn' | 'fail' | 'skip';
 export type AdminTestRunStatus = 'running' | 'done' | 'error' | 'cancelled';
 
-/** Unit for a structured desktop-perf measure (desktop-performance-suite P-010). */
-export type DesktopPerfMetricUnit = 'ms' | 'kb' | 'count';
+/**
+ * Unit for a structured desktop-perf measure (desktop-performance-suite P-010).
+ *
+ * `pct` carries a PERCENTAGE — added for the host-pressure stamp
+ * (resource-efficiency-closeout-2026-08-13 D-005). A timing measured while the
+ * host was contended is not comparable to one measured on a quiet box, so each
+ * run records the PSI CPU pressure it was taken under. It is a genuine
+ * percentage and is recorded as one: encoding it as a `count` would put a
+ * unitless number into a trend that renders counts and percentages the same way.
+ */
+export type DesktopPerfMetricUnit = 'ms' | 'kb' | 'count' | 'pct';
 
 /**
  * One structured, cross-run-trendable metric a desktop-performance check emits

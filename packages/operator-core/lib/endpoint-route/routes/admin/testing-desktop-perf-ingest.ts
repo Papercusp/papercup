@@ -34,7 +34,7 @@ import type {
 } from '../../../admin-test-suites-shared';
 import { recordDesktopPerfRun } from '../../../system-health/desktop-perf-runs';
 
-const UNITS: readonly DesktopPerfMetricUnit[] = ['ms', 'kb', 'count'];
+const UNITS: readonly DesktopPerfMetricUnit[] = ['ms', 'kb', 'count', 'pct'];
 const STATUSES: readonly DesktopPerfRunStatus[] = ['pass', 'warn', 'fail'];
 
 /** Parse one wire measure, or null when it does not satisfy DesktopPerfMeasure.
