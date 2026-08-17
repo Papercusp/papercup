@@ -33,9 +33,12 @@ import {
 import {
   CHECKPOINT_LOCK_STALE_MS,
   DEFAULT_REFIRE_RUN_BUDGET_MS,
+  ISOLATION_PHASE_RESERVE_MS,
+  ISOLATION_RUN_TIMEOUT_MS,
   MANUAL_SELF_WATCHDOG_ENV,
   MIN_MANUAL_SELF_WATCHDOG_MS,
   SELF_WATCHDOG_MS,
+  SUITE_KILL_BUDGET_MIRROR_MS,
 } from "./green-checkpoint";
 
 const MIN = 60_000;
@@ -182,6 +185,34 @@ describe("green-gate timing chain (WI-6112)", () => {
   it("does not let a peer kill a run that is still inside its own suite budget (WI-38026)", () => {
     expect(REPLACE_STALE_MIN_AGE_SEC * 1000).toBeGreaterThanOrEqual(
       GREEN_CHECKPOINT_SUITE_TIMEOUT_MS,
+    );
+  });
+
+  /**
+   * EI-20669541349219660 — the isolation phase must be able to PLAN around the kill.
+   *
+   * The gate had a positive feedback loop between how red it was and whether it could
+   * produce a verdict at all: first isolation attempts were unbounded (only retries had a
+   * budget), so a wide-but-<=cap red made the serial isolation phase outlast the 120m suite
+   * budget; the kill landed mid-isolation and the verdict was status:'error' with NO
+   * failing-test list — the next run learned nothing and re-derived the same red, forever.
+   * The fix bounds the phase against a deadline derived from the ACTUAL killer, which for a
+   * scheduled run is release-actions' parent group-kill — mirrored into green-checkpoint.ts
+   * because operator-core registers routines as a module-load side effect. These two pins
+   * keep that mirror true and the reserve large enough for the one in-flight child the
+   * deadline semantics allow ("stop STARTING work", not "abort work in flight").
+   */
+  it("the isolation phase deadline mirror tracks the scheduled parent's kill budget (EI-20669541349219660)", () => {
+    expect(SUITE_KILL_BUDGET_MIRROR_MS).toBe(GREEN_CHECKPOINT_SUITE_TIMEOUT_MS);
+  });
+
+  it("the phase reserve covers one in-flight isolation attempt plus verdict-write margin (EI-20669541349219660)", () => {
+    expect(ISOLATION_PHASE_RESERVE_MS).toBeGreaterThanOrEqual(
+      ISOLATION_RUN_TIMEOUT_MS + MIN,
+    );
+    // sanity: the reserve must not eat the budget itself
+    expect(ISOLATION_PHASE_RESERVE_MS).toBeLessThan(
+      SUITE_KILL_BUDGET_MIRROR_MS / 4,
     );
   });
 

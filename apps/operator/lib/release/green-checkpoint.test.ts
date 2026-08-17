@@ -5900,28 +5900,25 @@ describe("EI-20669541349219660: isolation phase budget — a wide red yields a v
     expect(out.retriedTests).toEqual([]);
   });
 
-  it("blocks the confirming co-execution pass too: files passed alone but the deadline hit before confirm ⇒ undetermined, gate stays red", async () => {
+  it("CONTROL: a deadline that never binds preserves the absorb path end-to-end (falsifies an inverted comparison)", async () => {
     let t = 0;
     const concurrentCalls: string[] = [];
     const out = await attemptFlakeAbsorption(
       INCIDENT_OUTPUT,
       async ({ workspace, file }) => {
-        t += 10; // both isolation attempts fit (t reaches 20)…
+        t += 10; // both isolation attempts fit (t reaches 20, always under 1000)
         return { workspace, file, passed: true };
       },
       undefined,
       {
         now: () => t,
-        phaseDeadlineMs: 25, // …but the confirm phase must not start at t=20? it may — cut at 25 via the attempts below
+        phaseDeadlineMs: 1_000,
         concurrentRun: async ({ workspace }) => {
           concurrentCalls.push(workspace);
           return { workspace, passed: true };
         },
       },
     );
-    // both files re-ran (t: 10, 20 — always < 25 at the START checks), then the confirm
-    // loop's own deadline check sees t=20 < 25… so tighten: this variant absorbs. Assert
-    // the CONTROL first: a generous deadline preserves today's absorb behavior end-to-end.
     expect(out.absorbedToGreen).toBe(true);
     expect(concurrentCalls).toEqual(["@papercusp/operator-core"]);
   });
