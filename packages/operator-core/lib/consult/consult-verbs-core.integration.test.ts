@@ -30,6 +30,7 @@ import {
   consultReplyCore,
   type ConsultVerbDeps,
 } from './consult-verbs-core';
+import { advanceCascade, makeDigestEntry } from './cascade-core';
 
 const WS = 'ws-consult-verbs';
 const NOW = new Date('2026-08-16T00:00:00Z');
