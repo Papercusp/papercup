@@ -107,7 +107,7 @@ beforeEach(async () => {
                 harness_shared.agent_modes, harness_shared.session_briefs`;
 });
 
-async function seedGoal(over: { id?: string; status?: string; metadata?: object } = {}) {
+async function seedGoal(over: { id?: string; status?: string; metadata?: postgres.JSONValue } = {}) {
   await rootSql`INSERT INTO harness_shared.goals (id, workspace_id, status, metadata, created_at)
     VALUES (${over.id ?? GOAL}, ${WS}, ${over.status ?? 'active'},
             ${over.metadata ? rootSql.json(over.metadata) : null}, ${GOAL_CREATED})`;
