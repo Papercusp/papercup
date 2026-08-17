@@ -172,7 +172,7 @@ export async function resolveHiveReleaseEnv(slug: string, workspaceId: string): 
   // Operator-home (papercusp): EMPTY overlay → the subprocess uses the existing systemd-unit
   // env + releaseConfig defaults, i.e. EXACT current behavior (D-007, regression-safe).
   if (slug === operatorHomeHarnessSlug()) {
-    return { enabled: true, env: {}, hasDeploy: !!gate.deploy, isOperatorHome: true };
+    return { enabled: true, env: {}, clearEnv: [], hasDeploy: !!gate.deploy, isOperatorHome: true };
   }
 
   const parent = dirname(entry.path);
