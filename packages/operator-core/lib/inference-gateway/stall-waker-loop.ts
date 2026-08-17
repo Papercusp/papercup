@@ -20,6 +20,10 @@ const POLL_MS = Number(process.env.PAPERCUSP_STALL_WAKER_POLL_MS) || 20_000;
 /** A bee stream-silent this long is idle/sleeping (turn ended, waiting on its wake key) — NOT actively
  *  retrying. We only wake a CONFIRMED-idle bee, so we never interrupt one mid-recovery. */
 const IDLE_SILENCE_MS = Number(process.env.PAPERCUSP_STALL_WAKER_IDLE_MS) || 30_000;
+/** A turn is declared DEAD (fast-ESC-able) only after the owner's stall stream AND activity have both
+ *  been quiet this long past its LATEST stall — rides out CLI 429 retry-backoff gaps, which routinely
+ *  exceed IDLE_SILENCE_MS (2026-08-17 mass-interrupt root cause; see StallWakerOptions.deadQuietMs). */
+const DEAD_QUIET_MS = Number(process.env.PAPERCUSP_STALL_WAKER_DEAD_QUIET_MS) || 2 * 60_000;
 /** Settle window between the ESC and the wake (coord-end-turn D-003): let the bee's CLI finish ending its
  *  dead turn + re-arm its inbox-wake watch before the wake fires. */
 const ENDTURN_SETTLE_MS = Number(process.env.PAPERCUSP_ENDTURN_SETTLE_MS) || 1500;
@@ -119,14 +123,15 @@ export function createStallWakerDeps(workspaceId: string): StallWakerDeps {
       const merged = [...httpStalls, ...pgStalls.filter((s) => !seen.has(`${s.ownerId}:${s.at}`))];
       return { now, stalls: merged };
     },
-    ownerIsIdle: async (ownerId) => {
-      // ROLE-AGNOSTIC idle check (2026-06-22): the auto-wake must behave the SAME for ANY caller that holds a
-      // coord wake-key — a harness bee, an su/psu engineer session, anything — not just bee spawns. Take the
-      // most-recent activity from EITHER source: (a) the bee nursery's stream output (only a bee has a
-      // spawned_agents row) and (b) coord presence's last_active_at (EVERY coord agent has one, any role).
-      // Silent past the threshold from BOTH = the turn ended and the owner is sleeping on its wake-key
-      // (wake-able), not mid-retry. (Before this it read ONLY spawned_agents, so an su/psu agent was never
-      // recognized as idle → never auto-woken — the role-specific gap su-b813f hit.)
+    ownerLastActivityAt: async (ownerId) => {
+      // ROLE-AGNOSTIC activity read (2026-06-22, timestamp-ified 2026-08-17): the max across every liveness
+      // source, so the waker can compare activity AGAINST THE STALL rather than against bare wall-clock
+      // silence (the 2026-08-17 mass-interrupt root cause — see StallWakerDeps.ownerLastActivityAt):
+      //   (a) the bee nursery's stream output (only a bee has a spawned_agents row);
+      //   (b) coord presence's last_active_at (EVERY coord agent has one, any role);
+      //   (c) the gateway's per-owner ledger lastAt (/admin/owner-report) — bumped by EVERY request through
+      //       the gateway, retries included, so a CLI in 429 retry-backoff reads as ALIVE here even while
+      //       (a)+(b) are silent. Best-effort: a down gateway degrades to (a)+(b), never fails the read.
       const sql = getOrgPg().sql;
       const node = await getSpawnPg(sql, workspaceId, ownerId).catch(() => null);
       const beeOut = node?.lastOutputAt ? new Date(node.lastOutputAt).getTime() : 0;
@@ -135,9 +140,19 @@ export function createStallWakerDeps(workspaceId: string): StallWakerDeps {
         () => [] as { last_active_at: string | null }[],
       );
       const coordAct = presence[0]?.last_active_at ? new Date(presence[0].last_active_at).getTime() : 0;
-      const lastActivity = Math.max(beeOut, coordAct);
-      if (lastActivity === 0) return false; // truly unknown owner (no bee row + no coord presence) → not wake-able
-      return Date.now() - lastActivity > IDLE_SILENCE_MS;
+      let gatewayAct = 0;
+      try {
+        const r = await fetch(`${base()}/admin/owner-report?owner=${encodeURIComponent(ownerId)}`, {
+          signal: AbortSignal.timeout(3000),
+        });
+        if (r.ok) {
+          const body = (await r.json()) as { ledger?: { lastAt?: number } | null };
+          gatewayAct = body.ledger?.lastAt ?? 0;
+        }
+      } catch {
+        // gateway unreachable — (a)+(b) still serve
+      }
+      return Math.max(beeOut, coordAct, gatewayAct);
     },
     capacityBack: async (accountId, soonestResetAt) => {
       // H5 (inference-gateway-audit-2026-06-23): don't wake a stalled bee back onto a still-throttled pool.
@@ -250,7 +265,7 @@ let unwedgedTotal = 0;
 /** Start the poll loop if not already running (idempotent — safe to call on every spawn). */
 export function ensureStallWakerLoop(workspaceId: string): void {
   if (timer) return;
-  waker = new StallWaker(createStallWakerDeps(workspaceId));
+  waker = new StallWaker(createStallWakerDeps(workspaceId), { idleSilenceMs: IDLE_SILENCE_MS, deadQuietMs: DEAD_QUIET_MS });
   startedAt = Date.now();
   boundWorkspaceId = workspaceId;
   timer = managedSetInterval(
