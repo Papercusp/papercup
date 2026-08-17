@@ -216,6 +216,28 @@ function evidenceLine(c: RoutingCandidate): string {
     .join('; ');
 }
 
+/**
+ * Does a consult_state row exist for this conversation in this workspace?
+ * (consult-min-max-and-rubric-vetting-2026-08-17 P-004): scorecards:emit validates a
+ * `vettingConsult` linkage against the real consult ledger BEFORE stamping it — a
+ * dangling consult id on a vetting scorecard would be a booby trap for the
+ * acceptance gate, which trusts the stamp rather than re-querying. Deps-injected
+ * `sql` like everything else in this module, so callers bind their own seam.
+ */
+export async function consultStateExists(
+  sql: Sql,
+  workspaceId: string,
+  conversationId: string,
+): Promise<boolean> {
+  const rows = (await sql`
+    SELECT 1 AS one
+      FROM harness_shared.consult_state
+     WHERE workspace_id = ${workspaceId} AND conversation_id = ${conversationId}
+     LIMIT 1
+  `) as unknown as unknown[];
+  return rows.length > 0;
+}
+
 /** Walk the parent_consult_id chain collecting every lineage participant —
  * bounded: the depth CHECK caps a legal chain at MAX_CONSULT_DEPTH+1 rows.
  * Null ⇒ the named parent does not exist in this workspace. */

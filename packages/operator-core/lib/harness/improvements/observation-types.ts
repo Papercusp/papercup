@@ -146,6 +146,14 @@ export interface StructuredObservation {
    * card) is what makes the grading final. Never caller-supplied.
    */
   provisional?: ScorecardProvisional;
+  /**
+   * The vetting linkage (consult-min-max-and-rubric-vetting-2026-08-17 P-004) —
+   * present only on a vetting scorecard (meta-rubric grading of an acceptance
+   * rubric; `subject` then names the vetted rubric). Stamped server-side by
+   * scorecards:emit after validating the consult + subject rubric exist; never
+   * caller-supplied directly. See {@link ScorecardVetting}.
+   */
+  vetting?: ScorecardVetting;
 }
 
 /** The provisional stamp — see {@link StructuredObservation.provisional}. */
@@ -461,6 +469,21 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
           ? { windowStart: s.windowStart }
           : {}),
         ...(typeof s.windowEnd === 'string' && s.windowEnd.trim() ? { windowEnd: s.windowEnd } : {}),
+      };
+    }
+  }
+  // P-004 (consult-min-max-and-rubric-vetting-2026-08-17): the vetting stamp.
+  // `consultId` is load-bearing (a vetting block that cannot name its consult is
+  // exactly the unlinked attestation the gate refuses), so a malformed block is
+  // discarded rather than half-kept — same posture as `provisional` above.
+  if (o.vetting && typeof o.vetting === 'object' && !Array.isArray(o.vetting)) {
+    const vet = o.vetting as Record<string, unknown>;
+    if (typeof vet.consultId === 'string' && vet.consultId.trim()) {
+      out.vetting = {
+        consultId: vet.consultId,
+        ...(typeof vet.rubricRevision === 'number' && Number.isFinite(vet.rubricRevision)
+          ? { rubricRevision: vet.rubricRevision }
+          : {}),
       };
     }
   }

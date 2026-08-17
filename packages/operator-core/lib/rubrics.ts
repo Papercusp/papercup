@@ -571,6 +571,44 @@ export async function listRubrics(filter: ListRubricsFilter = {}): Promise<Rubri
   return sortRubrics(rubrics).slice(0, Math.min(filter.limit ?? 100, 500));
 }
 
+/**
+ * The rubric-rubric (consult-min-max-and-rubric-vetting-2026-08-17 P-003): the
+ * standard-kind rubric an acceptance rubric is vetted AGAINST before the work it
+ * gates is graded. The acceptance gate's vetting check (P-004) keys off this id;
+ * the rubric itself is registered via rubrics:propose and owner-ratified.
+ */
+export const META_ACCEPTANCE_RUBRIC_ID = 'meta-acceptance-rubric';
+
+/**
+ * The rubric plan row's `version` — the revision spine the vetting attestation pins
+ * (consult-min-max-and-rubric-vetting-2026-08-17 P-004). Bumps on EVERY propose
+ * (typo and rewrite alike — deliberately strict: any content change after vetting
+ * voids the attestation, because only re-reading the rubric can say whether the
+ * change was material). Null when the row is missing or the read fails — reads
+ * never throw, matching every other read in this module.
+ */
+export async function getRubricPlanRevision(rubricId: string): Promise<number | null> {
+  try {
+    const { sql } = getOrgPg();
+    const rows = await sql<{ plan_slug: string; version: string | number | null }[]>`
+      SELECT plan_slug, version
+        FROM harness_shared.harness_plans
+       WHERE workspace_id = ${rubricsScopeWorkspace()}
+         AND template = ${RUBRIC_TEMPLATE_NAME}
+         AND template_slug IS NULL
+         AND plan_slug = ${rubricId}
+       LIMIT 1`;
+    // Client-side slug guard, mirroring getRubric: identical behavior under
+    // mocked-sql fixtures that return the full row set for any query.
+    const row = rows.find((r) => r.plan_slug === rubricId);
+    if (!row || row.version == null) return null;
+    const version = Number(row.version); // bigint arrives as a string
+    return Number.isFinite(version) ? version : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Fetch one rubric in full by its slug id — ANY kind: an explicit id is an explicit
  *  opt-in, so the shared grading path resolves acceptance rubrics through the same seam
  *  standards use (plan D-010). Returns null when no rubric carries that id. */

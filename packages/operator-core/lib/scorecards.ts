@@ -30,6 +30,7 @@ import {
   type ScorecardRetraction,
   type ScorecardRatingRubric,
   type ScorecardProvisional,
+  type ScorecardVetting,
 } from './harness/improvements/observation-types';
 import {
   getIssue,
@@ -275,6 +276,14 @@ export interface ScorecardRow {
    * (D-004), excluded from the trend until a terminal re-emit supersedes it.
    */
   provisional?: ScorecardProvisional;
+  /**
+   * The vetting linkage (consult-min-max-and-rubric-vetting-2026-08-17 P-004) —
+   * present only on a vetting scorecard (a meta-rubric grading of an acceptance
+   * rubric; `subject` then names the vetted rubric). The acceptance gate's
+   * `acceptance_rubric_unvetted` check reads `consultId` (the linked get_feedback
+   * consult) and `rubricRevision` (the vetted rubric's plan-row version at emit).
+   */
+  vetting?: ScorecardVetting;
   /** The newest payload superseder that points at this scorecard, when known. */
   supersededBy?: string;
   /**
@@ -758,6 +767,7 @@ export async function listScorecards(filter: ListScorecardsFilter = {}): Promise
       ...(observation.supersedes ? { supersedes: observation.supersedes } : {}),
       ...(observation.retracted ? { retracted: observation.retracted } : {}),
       ...(observation.provisional ? { provisional: observation.provisional } : {}),
+      ...(observation.vetting ? { vetting: observation.vetting } : {}),
       ...(row.superseded_by ? { supersededBy: row.superseded_by } : {}),
       synthesized,
       score10: scorecardScore10(projectionRatings, meta.overrides),
