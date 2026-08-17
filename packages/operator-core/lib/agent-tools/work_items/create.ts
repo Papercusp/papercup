@@ -194,6 +194,7 @@ const itemSpec = z.object({
     .optional()
     .describe('Plan item this work-item IMPLEMENTS (e.g. { slug:"my-plan", item:"P-003" }) — writes a forward work→plan_item coverage edge so the item rolls up into that plan item and plans:items stops showing it unworked. ONLY for work that implements the item: completing that plan item can auto-resolve its linked work-items as residue. A bug merely DISCOVERED while working an item is NOT implementing it — file it unlinked (EI-19460536530145188).'),
   links: z.array(linkSpec).max(20).optional().describe('inline typed links (WI-3956) written from the new item to targets on create — e.g. [{ rel:"investigates", target_id:"EI-9250" }]. Best-effort: a bad target is skipped, never fails the create.'),
+  conditionKey: hardText(200).optional().describe('recurring-detector filing identity (WI-39604): an OPEN item already holding this key is refreshed and returned (see conditionUpsert on the result) instead of a sibling being filed — single-host system filers only.'),
 })
   // WI-4492: strict — an unknown field name is a LOUD error naming it, never a silent drop
   // (the defect that filed WI-4491/WI-4492 as empty shells: a `body` arg was stripped).
@@ -272,6 +273,7 @@ export default defineTool({
         .optional()
         .describe('Plan item this work-item IMPLEMENTS (e.g. { slug:"my-plan", item:"P-003" }) — writes a forward work→plan_item coverage edge so the item rolls up into that plan item and plans:items stops showing it unworked. ONLY for work that implements the item: completing that plan item can auto-resolve its linked work-items as residue. A bug merely DISCOVERED while working an item is NOT implementing it — file it unlinked (EI-19460536530145188).'),
       links: z.array(linkSpec).max(20).optional().describe('inline typed links (WI-3956) written from the new item to targets on create — e.g. [{ rel:"investigates", target_id:"EI-9250" }]. Best-effort: a bad target is skipped, never fails the create.'),
+      conditionKey: hardText(200).optional().describe('recurring-detector filing identity (WI-39604): an OPEN item already holding this key is refreshed and returned (see conditionUpsert on the result) instead of a sibling being filed — single-host system filers only.'),
       // ── bulk-create (n≥1) ──
       items: z.array(itemSpec).min(1).max(100).optional().describe('create many work-items at once — each is a full create spec.'),
       assign_all_to_self: z.boolean().optional().describe('Claim every created item for YOU (your ownerId) — unless an item carries its own assign_to.'),
