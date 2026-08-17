@@ -145,7 +145,7 @@ export interface HiveReleaseEnv {
 }
 
 function disabled(reason: HiveReleaseEnv['reason']): HiveReleaseEnv {
-  return { enabled: false, reason, env: {}, hasDeploy: false, isOperatorHome: false };
+  return { enabled: false, reason, env: {}, clearEnv: [], hasDeploy: false, isOperatorHome: false };
 }
 
 /**
