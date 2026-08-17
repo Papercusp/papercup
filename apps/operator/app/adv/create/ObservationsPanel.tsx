@@ -483,9 +483,7 @@ export default function ObservationsPanel({
               fontVariantNumeric: "tabular-nums",
             }}
           >
-            {isFiltered
-              ? `${rows.length.toLocaleString()} of ${total.toLocaleString()}`
-              : `${allRows.length.toLocaleString()} / ${total.toLocaleString()}`}
+            {counts.title}
           </span>
         ) : null}
         <div
@@ -524,8 +522,36 @@ export default function ObservationsPanel({
         </button>
       </div>
       {query.loading && rows.length === 0 ? (
+        // D-004: never claim a bare "loading" once an attempt has actually
+        // FAILED. `loading` is TanStack's isLoading (isPending && isFetching),
+        // which stays TRUE for the whole retry sequence while `error` stays
+        // NULL until the retries are exhausted — so a read whose every attempt
+        // times out shows a motionless spinner here and the error branch below
+        // never gets a turn. failureCount/failureReason are the only signals
+        // that separate "still working" from "failing and retrying", and a
+        // manual retry beats waiting out the backoff.
         <div style={{ color: "var(--fg-mute)", padding: 12 }}>
-          Loading observations…
+          {query.failureCount > 0 ? (
+            <>
+              Still loading observations — {query.failureCount} attempt
+              {query.failureCount === 1 ? "" : "s"} failed, retrying…
+              <button
+                type="button"
+                className="pc-observations__retry"
+                onClick={() => query.invalidate()}
+              >
+                Retry now
+              </button>
+              {query.failureReason ? (
+                <div style={{ marginTop: 4, fontSize: 11 }}>
+                  Last attempt:{" "}
+                  {String(query.failureReason.message ?? query.failureReason)}
+                </div>
+              ) : null}
+            </>
+          ) : (
+            "Loading observations…"
+          )}
         </div>
       ) : query.error ? (
         <div style={{ color: "var(--bad)", padding: 12 }}>
@@ -558,6 +584,8 @@ export default function ObservationsPanel({
         .pc-observations__search:focus-within { border-color: color-mix(in srgb, var(--accent) 48%, var(--border)); color: var(--fg); }
         .pc-observations__search input { border: 0; background: none; outline: none; color: var(--fg); font: inherit; font-size: 11px; width: 150px; }
         .pc-observations__search input::placeholder { color: var(--fg-mute); }
+        .pc-observations__retry { margin-left: 8px; padding: 2px 9px; border: 1px solid var(--border); border-radius: 999px; background: var(--bg-2); color: var(--fg); font: inherit; font-size: 11px; cursor: pointer; }
+        .pc-observations__retry:hover { border-color: color-mix(in srgb, var(--accent) 48%, var(--border)); }
         .pc-observations__viewtoggle { display: inline-flex; gap: 2px; padding: 2px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-2); }
         .pc-observations__viewtoggle button { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 22px; border: 0; border-radius: 6px; background: none; color: var(--fg-mute); cursor: pointer; }
         .pc-observations__viewtoggle button:hover { color: var(--fg); }
