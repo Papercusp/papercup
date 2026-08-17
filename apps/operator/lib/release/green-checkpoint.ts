@@ -326,11 +326,13 @@ export interface CheckpointDeps {
    *  red. Optional so existing test stubs need not provide it. */
   escalate?(summary: string, body: string): Promise<void>;
   /** Resolve any open `release-not-green` escalation — the gate recovered.
-   *  ⚠ WI-39685: the implementation sweeps by escalation SOURCE
-   *  (`source === 'green-checkpoint'`), NOT by kind or title, so it resolves
-   *  EVERY row the gate opened — not just the `release-not-green` one this
-   *  sentence names. Scoping that sweep to its documented promise is WI-39686.
-   *  This is why the detector pair below needs its own distinct source. */
+   *  WI-39686 (was WI-39685's doc-trap): the implementation now matches
+   *  `isReleaseNotGreenEscalation` — the gate's source AND the release-not-green
+   *  CLASS — so it resolves only the row this sentence names, as it always
+   *  claimed to. It previously matched on source alone and would have swept
+   *  every row the gate opened. The detector pair below keeps its own distinct
+   *  source regardless: that separation also buys it its own dedup + recovery
+   *  lifecycle, which class-scoping this sweep does not replace. */
   clearEscalation?(): Promise<void>;
   /** WI-39685 (cutover-plan D-013): open the DETECTOR alert — "the desktop-perf
    *  invariant has gone UNMEASURED", which is a different fact from "the gate is
@@ -9727,7 +9729,11 @@ export function realCheckpointDeps(
         await import("@papercusp/operator-core/lib/agent-tools/coordination/escalations");
       const open = await listEscalations({ status: "open" });
       for (const e of open) {
-        if ((e as Record<string, unknown>).source === "green-checkpoint") {
+        // WI-39686: was `source === 'green-checkpoint'`, which swept EVERY row
+        // this gate opened rather than the `release-not-green` one this dep is
+        // documented to resolve. See `isReleaseNotGreenEscalation` for why an
+        // unmarked legacy row must still match.
+        if (isReleaseNotGreenEscalation(e)) {
           await resolveEscalation({
             msg_id: e.msg_id,
             choice: "gate green",
