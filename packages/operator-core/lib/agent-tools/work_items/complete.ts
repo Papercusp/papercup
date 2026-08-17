@@ -1889,6 +1889,67 @@ async function completeOne(
         }
       }
     }
+  } else if (TERMINAL_WORK_ITEM_STATES.has((existing.state ?? '').toLowerCase())) {
+    // EI-19362441037986499 — THE RECORD-ONLY COMPLETION OF AN ALREADY-CLOSED ITEM. Reaching
+    // here means no state was passed and none could be inferred (`completion.status:'done'`
+    // is the schema default, so it deliberately never infers a close), and the row is
+    // already terminal. Before this arm existed, that combination took NO persistence
+    // branch: the arm above is the only writer, so the caller's evidence was echoed back
+    // and dropped, `ok:true`, with `stateWarning` suppressed because the final state IS
+    // terminal. That is the whole defect — a watchdog auto-resolve landing first turned a
+    // fully-evidenced agent close into a row reading as an unevidenced one.
+    //
+    // Routed through a writer that performs NO state write and emits NO events, because a
+    // terminal→same-terminal re-assert would re-fire `work-item:done:<id>` (that emit has no
+    // state-changed guard) on every record-only completion. Deliberately NOT routed through
+    // `closeIntentRequested` either: that would newly demand `assumptions` from a caller who
+    // is closing nothing, converting a silent no-op into a hard refusal. And it never
+    // hard-rejects — this file's contract is that a finished completion is normalised, never
+    // rejected-and-lost.
+    try {
+      const attached = await attachCompletionEvidenceToSettledItem(it.id, {
+        harness: it.harness ?? existing.harness ?? undefined,
+        by: ident.ownerId,
+        // Same asymmetry as the state write above: no `completionRef`. The narrative rides
+        // in `completionEvidenceToPersist`, which carries the caller's free-text summary
+        // alongside whatever structured fields exist.
+        completionEvidence: completionEvidenceToPersist,
+        assumptions: resolvedAssumptions,
+        completionAuthority,
+        // Reuse the one result field, so an attested/upgraded outcome surfaces through the
+        // same loud warning the state-write path already produces.
+        onTerminalConflict: (info) => {
+          terminalConflict = info;
+        },
+      });
+      workItem = attached.workItem ?? existing;
+      if (attached.outcome === 'recorded' || attached.outcome === 'upgraded') {
+        evidenceAttachWarning =
+          `${it.id} was ALREADY terminal ('${existing.state}') and this completion requested no state change, ` +
+          `so no transition was applied — your completion record was ` +
+          `${attached.outcome === 'upgraded' ? 'installed as the AUTHORITATIVE record (the weaker stored record was archived as an attestation)' : 'STORED as the item’s completion record'}. ` +
+          'Nothing further is needed; the item stays closed.';
+      } else if (attached.outcome === 'attested') {
+        // terminalConflict already carries the full explanation; keep this short so the two
+        // do not restate each other at the caller.
+        evidenceAttachWarning =
+          `${it.id} was ALREADY terminal ('${existing.state}') and completed by someone else, so your record was ` +
+          'filed as a second attestation rather than replacing theirs — see the terminal-completion conflict note.';
+      } else if (attached.outcome === 'nothing-to-record') {
+        evidenceAttachWarning =
+          `${it.id} is ALREADY terminal ('${existing.state}') and this completion carried no evidence to store ` +
+          '(no verifiedHow/testsRun/testResult and no authority judgement), so nothing was written to the row. ' +
+          'Re-send with structured evidence if you meant to record how it was verified.';
+      }
+    } catch (e) {
+      // Mirrors the state-write catch: the completion record + emit still happen, and the
+      // failure is reported rather than swallowed.
+      stateError = e instanceof Error ? e.message : String(e);
+      evidenceAttachWarning =
+        `${it.id} is ALREADY terminal ('${existing.state}') and your completion evidence could NOT be attached ` +
+        `to the row: ${stateError}. The completion was recorded in this call's result only — re-check the row ` +
+        'before treating its stored completion record as yours.';
+    }
   }
 
   // EI-5269: `completion.status` (defaults to 'done') is NOT the state transition — only the
@@ -1912,14 +1973,21 @@ async function completeOne(
     ? `it is durably parked out of scheduler:get_next until the linked plan-item gate is cleared`
     : nonTerminalHint;
   const terminalVocab = `(feature: 'passed'|'deprecated'; issue: 'resolved'|'closed')`;
+  //
+  // EI-19362441037986499: the terminal arm of that first condition is what made the
+  // record-only-on-a-closed-item discard SILENT — "the item is closed" was read as "there is
+  // nothing to warn about", when the thing worth saying is what became of the evidence. The
+  // evidence-attach outcome therefore takes precedence: it is the only case where a TERMINAL
+  // final state still has something the caller must be told.
   const stateWarning =
-    !finalState || TERMINAL_WORK_ITEM_STATES.has(finalState)
+    evidenceAttachWarning ??
+    (!finalState || TERMINAL_WORK_ITEM_STATES.has(finalState)
       ? undefined
       : stateError
         ? `recorded a completion for ${it.id} but it is NOT closed — still '${workItem?.state ?? existing.state}', ${claimabilityHint}. Your state '${effectiveState}' was REJECTED by the state write: ${stateError}. Re-sending the same state will fail the same way — fix the cause, or pass a valid TERMINAL state ${terminalVocab}.`
         : effectiveState
           ? `recorded a completion for ${it.id} but it is NOT closed — still '${workItem?.state ?? existing.state}', ${nonTerminalHint}. Your state '${requestedState ?? effectiveState}' WAS received and applied as '${appliedState ?? workItem?.state ?? existing.state}', which is NOT terminal${aliasNote ? ` (${aliasNote})` : ''}. Do NOT re-send the same value — pass a TERMINAL state ${terminalVocab}.`
-          : `recorded a completion for ${it.id} but it is NOT closed — still '${workItem?.state ?? existing.state}', ${nonTerminalHint}. No top-level \`state\` was passed. Pass top-level \`state\` ${terminalVocab} to close it.`;
+          : `recorded a completion for ${it.id} but it is NOT closed — still '${workItem?.state ?? existing.state}', ${nonTerminalHint}. No top-level \`state\` was passed. Pass top-level \`state\` ${terminalVocab} to close it.`);
 
   // flush-to-proceed-stretch-discipline-2026-07-04 P-006: verification linting. A settled
   // unit is either VERIFIED (`tests`) or CONSCIOUSLY DEFERRED (`deferred`) — never silent. A
