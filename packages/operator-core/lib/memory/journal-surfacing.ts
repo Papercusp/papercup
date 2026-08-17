@@ -63,8 +63,16 @@ export async function notifyJournalRecovery(r: DrainResult): Promise<void> {
   try {
     const { notifySyncInvalidate } = await import('../sync-sse');
     const { invalidateUserMemoryViews } = await import('./invalidate-user-memory-views');
-    void invalidateUserMemoryViews();
-    notifySyncInvalidate('userMemory.journalStatus');
+    // Both are deliberately FIRE-AND-FORGET (surfacing must not block the drain), which is
+    // exactly why each needs its OWN `.catch`: a detached promise's rejection never reaches
+    // the enclosing try/catch below — it surfaces as an unhandled rejection instead, which
+    // fails the whole test lane while every assertion in this file still passes.
+    void invalidateUserMemoryViews().catch(() => { /* best-effort */ });
+    // Kept a SYNCHRONOUS call (the caller's contract, and what the tests assert has happened
+    // by the time this resolves) — only the rejection handling is added. `?.` because a
+    // stubbed/uninitialised bus can hand back a non-promise; a SYNC throw stays absorbed by
+    // the try/catch below, which is the pre-existing, tested behaviour.
+    void notifySyncInvalidate('userMemory.journalStatus')?.catch(() => { /* best-effort */ });
     if (r.recovered > 0 && r.recoveredWindow) {
       console.log(
         `[memory-journal] Memory recovered: ${r.recovered} fact(s) from ` +
