@@ -3,9 +3,11 @@
  * get-feedback-relevance-consults-2026-08-16, P-004; D-007(7)).
  *
  * PROD BINDING ONLY — verb logic in lib/consult/consult-verbs-core.ts. A
- * decline posts the reason, closes consult_state as 'declined', emits the
- * latched park key (a parked requester wakes on a decline too), and returns
- * the routing snapshot's remaining candidates for the manual cascade.
+ * decline posts the reason and ADVANCES the cascade (D-005 always-advance,
+ * consult-min-max-and-rubric-vetting-2026-08-17): the next selectee is woken
+ * with the feedback so far (reach → notifyAgents). Only when the menu is
+ * exhausted does it close consult_state as 'declined' and emit the latched
+ * park key (nothing more is coming for a parked requester).
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
