@@ -37,6 +37,18 @@
  * is the routine body; issue-filing is injected.
  */
 import type postgres from 'postgres';
+// EI-20723522274831539: the holder-liveness rule is IMPORTED, never restated. The sibling
+// reaper's module header states the rule is "deliberately identical ... so the reapers can
+// never disagree" — this sweep was the one reaper that never took it, which is exactly how
+// it drifted into freeing live holders' claims. Importing the fragments makes a future
+// change to the rule reach BOTH reapers or NEITHER.
+import {
+  knownHolderFragment,
+  liveHolderFragment,
+  parkedHolderFragment,
+  STALE_CLAIM_GRACE_MS,
+  STALE_CLAIM_PARKED_GRACE_MS,
+} from '../work-items-stale-claims';
 
 /** Feature-family terminal states (work-items.ts settled list). */
 export const TERMINAL_STATUSES = ['passed', 'deprecated'] as const;
@@ -96,10 +108,36 @@ export interface OrphanSweepResult {
 }
 
 /**
- * Return to the backlog every NON-terminal item marked taken whose lease row
- * is absent/lapsed and whose last write is older than `graceMs`. Run on the
- * AUTHORITY swarm (see module header). The grace window keeps a just-claimed
- * item (lease write in flight) out of the sweep.
+ * Return to the backlog every NON-terminal item marked taken whose HOLDER IS
+ * DEAD, whose lease row is absent/lapsed, and whose last write is older than
+ * `graceMs`. Run on the AUTHORITY swarm (see module header). The grace window
+ * keeps a just-claimed item (lease write in flight) out of the sweep.
+ *
+ * EI-20723522274831539 — WHY THE HOLDER-LIVENESS GUARD EXISTS. Until this fix
+ * the ONLY protection a live holder had here was the `work_item_claims` lease
+ * row. That table is EMPTY on this deployment (0 rows, ever — the lease is
+ * flag-gated behind workItemClaimLeaseEnabled and is not populated), so the
+ * `NOT EXISTS` guard was unconditionally TRUE and this sweep freed EVERY claim
+ * whose `updated_ts` was older than 5 minutes — no matter that the holder was
+ * alive and actively working. `updated_ts` is bumped only by a WRITE to the
+ * row, so an agent doing real work (edits, tool calls, tests) without
+ * checkpointing crosses that threshold in normal operation: the sweep's
+ * predicate selected working agents PREFERENTIALLY.
+ *
+ * Observed end-to-end 2026-08-17: the hourly `coord-invariant-monitor` fired at
+ * 17:37:05.079Z and 9.7s later freed WI-39259 (held by a live agent since
+ * 17:18:34Z) and WI-39264 (held by another live agent since 17:29:27Z) in ONE
+ * bulk statement, 6ms apart. `scheduler:get_next` then handed both items to a
+ * THIRD agent while the original two were still mid-flight on them — a genuine
+ * double-placement. Neither holder released; both had to re-claim their own work.
+ *
+ * The fix is to take the SAME dead-holder rule the sibling reaper already
+ * applies (`work-items-stale-claims.ts`, DEAD leg): a claim is reclaimable only
+ * if its holder is NOT live, NOT briefly-parked, and is a holder this node has
+ * actually SEEN (never presume a locally-unknown, possibly-remote holder dead —
+ * the WI-1999/WI-1964 shredder). The lease check is retained as an ADDITIONAL
+ * guard rather than the only one, so it starts protecting again the day the
+ * lease table is populated instead of silently doing nothing.
  */
 export async function sweepOrphanedTakenBy(
   sql: postgres.Sql,
@@ -115,15 +153,28 @@ export async function sweepOrphanedTakenBy(
   const graceMs = opts.graceMs ?? 5 * 60_000;
   const nowMs = opts.nowMs ?? Date.now();
   const cutoff = nowMs - graceMs;
+  // Liveness windows are the SIBLING REAPER's, not this sweep's `graceMs`. The two
+  // are different axes and must not be conflated: `graceMs` bounds how stale the
+  // ROW's last write is, while these bound how stale the HOLDER's heartbeat is.
+  const liveGraceSec = Math.max(1, Math.round(STALE_CLAIM_GRACE_MS / 1000));
+  const parkedGraceSec = Math.max(liveGraceSec, Math.round(STALE_CLAIM_PARKED_GRACE_MS / 1000));
   // CTE captures the OLD taken_by (RETURNING alone reflects the NEW row).
   const rows = await sql<Array<{ feature_id: string; taken_by: string; updated_ts: number }>>`
-    WITH victims AS (
+    WITH live_holder AS (${liveHolderFragment(sql, liveGraceSec)}),
+    known_holder AS (${knownHolderFragment(sql)}),
+    parked_holder AS (${parkedHolderFragment(sql, parkedGraceSec)}),
+    victims AS (
       SELECT f.harness_slug, f.feature_id, f.taken_by, f.updated_ts
         FROM harness_shared.harness_features_consolidated f
        WHERE f.workspace_id = ${opts.workspaceId} AND f.harness_slug = ${opts.harness}
          AND f.taken_by IS NOT NULL AND f.taken_by <> ''
          AND NOT (f.status = ANY(${terminal}::text[]))
          AND f.updated_ts < ${cutoff}
+         -- EI-20723522274831539: the holder must actually be DEAD. Identical rule to
+         -- work-items-stale-claims.ts's DEAD leg, via the same imported fragments.
+         AND NOT EXISTS (SELECT 1 FROM live_holder h WHERE h.alias = f.taken_by)
+         AND NOT EXISTS (SELECT 1 FROM parked_holder p WHERE p.alias = f.taken_by)
+         AND EXISTS (SELECT 1 FROM known_holder k WHERE k.alias = f.taken_by)
          AND NOT EXISTS (
                SELECT 1 FROM harness_shared.work_item_claims c
                 WHERE c.workspace_id = ${opts.workspaceId}
@@ -137,7 +188,17 @@ export async function sweepOrphanedTakenBy(
        -- not leave a stale progress stamp that later reads as genuinely in-flight
        -- work (see work-items-stale-claims.ts's identical WI-6303 fix for the
        -- live-verified root-cause writeup).
-       SET taken_by = NULL, taken_at = NULL, last_progress_at = NULL, updated_ts = ${nowMs}
+       SET taken_by = NULL, taken_at = NULL, last_progress_at = NULL, updated_ts = ${nowMs},
+           -- EI-20723522274831539 (the EI-18838076935151132 attribution fix, which
+           -- landed on the sibling reaper but never reached THIS one): an INVOLUNTARY
+           -- release must name the reaper, never stay blank. Left blank, this sweep's
+           -- release was indistinguishable from "never released" to every reader — the
+           -- reason the incident took a multi-hour hunt and was first misdiagnosed as
+           -- "the peers worked without ever claiming". A reaper-prefixed marker can
+           -- never equal a real ownerId, so the scheduler's release-cooldown floor
+           -- (get-next.ts's last_released_by <> candidate) cannot misfire against it.
+           last_released_by = 'reaper:orphan-sweep',
+           last_released_at = now()
       FROM victims v
      WHERE f.harness_slug = v.harness_slug AND f.feature_id = v.feature_id
     RETURNING v.feature_id, v.taken_by, v.updated_ts`;
