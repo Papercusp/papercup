@@ -433,7 +433,12 @@ registerSystemAction('hive-canary', async (ctx: SystemActionCtx) => {
         `(hive-loop-e2e-testing-2026-06-10 P-009).\n\nForensics:\n${forensics}`,
       foundDuring: 'hive-canary routine',
       dedupScope: 'open',
-      watchdogKey: `hive-canary:${installSlug}:${fid}`,
+      // WI-39594: keyed per INSTALL, not per canary fid — each day mints a fresh
+      // fid, so a per-fid key never repeats and the detector filed one open item
+      // per day per install (the gate-canary dupe family the 2026-08-17 queue
+      // audit dropped). A re-breach now COALESCES onto the standing item, whose
+      // title/body refresh to the newest fid; per-fid history rides occurrences.
+      watchdogKey: `hive-canary:${installSlug}`,
     });
     // Mark reported regardless of created/deduped — one report per canary.
     // Merge canary_reported: true into the payload JSONB object (or create the object if payload is null).
@@ -496,7 +501,8 @@ registerSystemAction('hive-canary', async (ctx: SystemActionCtx) => {
         `structurally un-self-selectable while keeping them cup-placeable (EI-19441925633833456).`,
       foundDuring: 'hive-canary routine (void-measurement check)',
       dedupScope: 'open',
-      watchdogKey: `hive-canary-void:${installSlug}:${fid}`,
+      // WI-39594: per-install key — see the deadline-miss site above.
+      watchdogKey: `hive-canary-void:${installSlug}`,
     });
     // Stamp ONLY. Status and terminal_owner are left exactly as they are: the row IS
     // the evidence, and rewriting it would destroy the record of what happened.
@@ -658,7 +664,10 @@ registerSystemAction('hive-canary-sla', async (ctx: SystemActionCtx) => {
         `un-terminal at its deadline.\n\nForensics:\n${forensics}`,
       foundDuring: 'hive-canary-sla routine',
       dedupScope: 'open',
-      watchdogKey: `hive-canary-sla:${installSlug}:${fid}`,
+      // WI-39594: per-install key — see the deadline-miss site above. Still a
+      // distinct prefix from the daily detector, so the two never dedup into
+      // each other.
+      watchdogKey: `hive-canary-sla:${installSlug}`,
     });
     // Stamp canary_sla_reported (distinct from canary_reported) — one SLA report
     // per canary, idempotent across replays. Do NOT change status: deprecation

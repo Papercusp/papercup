@@ -62,12 +62,20 @@ function fmtDelta(n: number | null | undefined): string {
  *    Queen's ordinary backlog, not a Scout-only observation feed).
  *  - `kind: 'change'` (human-gated: "should this generalize elsewhere?" is a
  *    judgment call, never auto-implement-eligible like a `bug`).
- *  - `force: true` — a champion promotion must NEVER be silently dropped as a
- *    near-duplicate of an earlier champion escalation for the same role (the
- *    same belt-and-braces discipline deprecate-learnings.ts applies to salvage).
+ *  - `watchdogKey: 'gym-champion:<harnessSlug>:<role>'` (WI-39594) — the stable
+ *    per-(harness, role) identity. A re-promotion of the same role COALESCES onto
+ *    the still-open escalation (repeatCount bump, title/body refreshed to the
+ *    newest cycle) instead of filing a sibling: the queue audit of 2026-08-17
+ *    dropped ~25 near-identical open "champion promoted" items that force:true
+ *    had filed one-per-cycle. The signal is still never dropped — every
+ *    occurrence is retained on the row — there is just ONE open item per
+ *    role@harness for the Queen to judge.
+ *  - `force: true` — when NO open escalation exists for this key, the filing must
+ *    never be silently declined by the fuzzy near-duplicate nets (the original
+ *    NOV-4 guarantee, now scoped to the case where it is correct).
  *  - `scope: 'harness:<harnessSlug>'` — the per-Hive lens the digest/triage read.
- *  - the proposal id + role + cycle ride the title/body, so distinct champions
- *    stay individually identifiable even though dedup is bypassed.
+ *  - the proposal id + role + cycle ride the title/body, so the newest champion
+ *    stays identifiable; prior cycles live in the row's occurrence history.
  */
 export function buildChampionEscalationInput(input: ChampionEscalationInput): CaptureImprovementInput {
   const cyclePart = input.cycle != null ? ` cycle ${input.cycle}` : '';
@@ -98,6 +106,7 @@ export function buildChampionEscalationInput(input: ChampionEscalationInput): Ca
     lane: 'improvement',
     sourceRole: 'system',
     force: true,
+    watchdogKey: `gym-champion:${input.harnessSlug}:${input.role}`,
     ...(input.createdBy ? { createdBy: input.createdBy } : {}),
     payloadExtra: {
       championEscalation: {

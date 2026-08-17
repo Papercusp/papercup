@@ -1237,7 +1237,7 @@ describe('captureImprovement — observation coalescing by conditionKey (EI-1544
     expect(d.created).toHaveLength(2);
   });
 
-  it('watchdogKey never COALESCES outside the observation lane — it declines as a duplicate instead', async () => {
+  it('a NON-observation keyed re-fire coalesces onto ITS OWN lane row, never into an observation row', async () => {
     const d = coalesceDeps();
     const first = await captureImprovement(
       { title: 'a real bug', kind: 'bug', watchdogKey: 'overwatch:not-an-observation' },
@@ -1248,19 +1248,17 @@ describe('captureImprovement — observation coalescing by conditionKey (EI-1544
       d,
     );
     expect(first.created).toBe(true);
-    // The invariant this test exists to protect, unchanged: the observation-lane COALESCE
-    // path (merge into the prior row, bump repeatCount) must never run for a
-    // non-observation capture.
-    expect(second.reason).not.toBe('coalesced');
-    // CONTRACT CHANGED by EI-20484430331973864. This used to assert `second.created ===
-    // true` — an identical bug on an identical key re-filed whenever the fuzzy title
-    // search could not see the prior row, and `searchIssues` is stubbed to [] here, which
-    // IS the search-unavailable case. That expectation pinned the duplicate-storm defect
-    // in place (459 open copies of one red-queen sentinel title, ~25% of the bug backlog
-    // duplicated). An exact watchdogKey is now a blocking dedup source in its own right,
-    // so the re-file is DECLINED — neither coalesced nor created.
+    // CONTRACT CHANGED TWICE. EI-20484430331973864 turned the re-file from a fresh
+    // row (the 459-copy duplicate storm) into a DECLINE; WI-39594 turned the decline
+    // into a COALESCE — same zero-new-rows guarantee, but the standing row now
+    // carries repeatCount + the newest reading instead of the occurrence being
+    // dropped on the floor. The invariant that SURVIVES both changes: the merge
+    // target is the same-lane prior — a non-observation capture never merges into
+    // an observation-lane row (see the WI-39594 cross-lane CONTROL below).
     expect(second.created).toBe(false);
-    expect(second.reason).toBe('likely-duplicate');
+    expect(second.reason).toBe('coalesced');
+    expect(second.issue?.id).toBe(first.issue?.id);
+    expect((d.store[0].payload as Record<string, unknown>).repeatCount).toBe(2);
     expect(d.created).toHaveLength(1);
   });
 
