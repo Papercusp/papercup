@@ -14,8 +14,30 @@
  */
 export function isUnenrolledDetachedSpawn(relPath: string, source: string): boolean;
 /**
+ * Which triggers a file fires, before any exemption is applied. Exported so `main()`
+ * can say WHICH rule caught an offender — "detached" and "handle parked on a property"
+ * want different fixes, and a guard that only says FAIL makes the reader re-derive that.
+ *
+ * @param {string} relPath - Repo-relative path.
+ * @param {string} source - The file's full source text.
+ * @returns {{ detachedNotFalse: boolean, storedOnProperty: boolean }}
+ */
+export function spawnTriggers(relPath: string, source: string): {
+    detachedNotFalse: boolean;
+    storedOnProperty: boolean;
+};
+/**
  * Sites that legitimately spawn a detached process WITHOUT task-manager enrolment.
  * Every entry needs a reason. Shrinking this list is the point; growing it needs a
  * justification in review.
  */
 export const ALLOWLIST: Map<string, string>;
+/**
+ * Sites the WIDENED trigger newly finds that are real defects rather than legitimate
+ * exemptions. Kept OUT of ALLOWLIST on purpose: that list means "this lifetime is not
+ * ours to own", and diluting it with "we know, we haven't fixed it yet" is how an
+ * allowlist becomes a rubber stamp (the D-012 lesson quoted above). Every entry needs
+ * a tracking ref, and `main()` prints this list LOUDLY on every run — including a
+ * clean one — so a parked defect cannot go quiet the way the old blind spot did.
+ */
+export const KNOWN_DEFECTS: Map<string, string>;
