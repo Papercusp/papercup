@@ -5597,23 +5597,137 @@ function buildRetainColumns(opts: {
   ];
 }
 
+/** WI-39534: one ledger row's expanded detail, ONE aside for every kind —
+ *  prose body, recipe code, rubric criteria, provenance fields; memory rows
+ *  keep the standalone pool's edit/remove (WI-39535). */
+function RetainDetailAside({
+  sel,
+  detail,
+  loading,
+  error,
+  onClose,
+  onEdit,
+  onRemove,
+}: {
+  sel: { kind: RetainFeedKind; id: string };
+  detail: RetainDetail | null;
+  loading: boolean;
+  error: string | null;
+  onClose: () => void;
+  onEdit: () => void;
+  onRemove: () => void;
+}) {
+  const SelIcon = RETAIN_KIND_ICON[sel.kind];
+  const tsMs = detail?.ts ? Date.parse(detail.ts) : Number.NaN;
+  return (
+    <aside
+      className="pc-learning__retaindetail"
+      aria-label="Retained item detail"
+    >
+      <header>
+        <span
+          className="pc-learning__retainedkindcell"
+          title={`${sel.kind} ${sel.id}`}
+        >
+          <SelIcon size={11} aria-hidden />
+          {sel.kind}
+        </span>
+        <button
+          type="button"
+          aria-label="Close detail"
+          onClick={onClose}
+        >
+          <XCircle size={14} aria-hidden />
+        </button>
+      </header>
+      {detail ? (
+        <>
+          <strong className="pc-learning__retaindetailtitle">
+            {detail.title}
+          </strong>
+          <div className="pc-learning__retaindetailmeta">
+            {detail.status ? (
+              <span className="pc-learning__chip">{detail.status}</span>
+            ) : null}
+            {!Number.isNaN(tsMs) ? (
+              <span className="pc-learning__age">{whenLabel(tsMs)}</span>
+            ) : null}
+            {detail.bodyTruncated ? (
+              <span
+                className="pc-learning__muted"
+                title="Long body clamped server-side — open the item on its own board for the full text."
+              >
+                excerpt
+              </span>
+            ) : null}
+          </div>
+          {detail.body ? <p>{detail.body}</p> : null}
+          {detail.code ? (
+            <pre className="pc-learning__retaindetailcode">{detail.code}</pre>
+          ) : null}
+          {detail.listItems?.length ? (
+            <ul className="pc-learning__retaindetaillist">
+              {detail.listItems.map((item) => (
+                <li key={item}>{item}</li>
+              ))}
+            </ul>
+          ) : null}
+          {detail.fields.length > 0 ? (
+            <div className="pc-learning__retaindetailfields">
+              {detail.fields.map((f) => (
+                <div key={f.label}>
+                  <span>{f.label}</span>
+                  <span>{f.value}</span>
+                </div>
+              ))}
+            </div>
+          ) : null}
+          {detail.editable ? (
+            <footer>
+              <button type="button" onClick={onEdit}>
+                edit
+              </button>
+              <button type="button" onClick={onRemove}>
+                remove
+              </button>
+            </footer>
+          ) : null}
+        </>
+      ) : loading ? (
+        <p>Loading detail…</p>
+      ) : (
+        // Name the cause when we have one — an unexplained dead end is the
+        // documented failure mode of the old "unavailable" states.
+        <p>Detail unavailable{error ? ` — ${error}` : ""}.</p>
+      )}
+    </aside>
+  );
+}
+
 /**
- * The unified "Retained" ledger (WI-39493 Variant D): plans, idea-routed work
- * items, rubrics, insight runbooks, and code recipes as ONE recency-interleaved
+ * The unified "Retained" ledger (WI-39493 Variant D): shared-memory rows
+ * (WI-39535), plans, idea-routed work items, rubrics, insight runbooks, and
+ * code recipes as ONE recency-interleaved
  * keyset-paged feed, rendered through the SAME components as the Work tab's
  * work-item queue — VirtualGrid + useColumnFilters/ColumnFilterBar (owner ask
  * 2026-08-16). The type tabs + Shipped∕In-flight narrowing stay SERVER-side
  * args: with 13.5k recipes a filtered page must be filtered at the source, and
  * shipped classification is server-stamped (EI-18792873324746237). Tab, filter,
- * quick-search, and the expanded plan are URL state; the accumulated pages and
+ * quick-search, the expanded plan, and the selected row (WI-39534) are URL
+ * state; the accumulated pages and
  * their keyset cursor are render state — a shared link reloads from page 1.
  */
 function RetainedLedgerCard({
   hive,
   enabled,
+  onState,
 }: {
   hive: string;
   enabled: boolean;
+  /** WI-39535: LearningsView derives its status dot, perf settle, and the
+   *  memories chip from the feed through this — one data path, no sibling
+   *  learning.hive read. */
+  onState?: (state: RetainLedgerCardState) => void;
 }) {
   const [rtab, setRtab] = useQueryState(
     "rtab",
@@ -5626,6 +5740,9 @@ function RetainedLedgerCard({
     ),
   );
   const [rplanOpen, setRplanOpen] = useQueryState("rplan", parseAsString);
+  // WI-39534: the selected row (`<kind>:<id>`) — nuqs so agents and shared
+  // links see the same selection (CLAUDE.md: user-meaningful state → URL).
+  const [rsel, setRsel] = useQueryState("rsel", parseAsString);
   const [search, setSearch] = useQueryState(
     "rq",
     parseAsString.withDefault(""),
@@ -5692,6 +5809,65 @@ function RetainedLedgerCard({
     [rplanOpen, children.data],
   );
 
+  // WI-39534: the selected row's detail — mounted under the view's ONE
+  // readiness gate like every sibling read (lens-guard); an empty id
+  // short-circuits server-side to [] without touching a store.
+  const sel = parseRetainSel(rsel);
+  const detailQ = useSyncQuery<RetainDetail | undefined>({
+    queryName: "learning.retainDetail",
+    args: { kind: sel?.kind ?? "plan", id: sel?.id ?? "" },
+    enabled,
+    staleTime: 30_000,
+  });
+  const detail = sel ? (detailQ.data?.[0] ?? null) : null;
+
+  const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
+  const { prompt: askPrompt, element: promptEl } = usePromptDialog();
+  // The standalone pool's inline edit/remove, preserved on memory rows
+  // (WI-39535): same /api/user/memory routes, now invalidating the feed +
+  // detail reads instead of learning.hive.
+  const editMemory = useCallback(async () => {
+    if (!sel || !detail || detail.kind !== "memory") return;
+    const next = await askPrompt({
+      title: "Edit learning",
+      label: "Learning text",
+      body: "Agents recall the exact text.",
+      defaultValue: detail.body ?? "",
+      submitLabel: "Save",
+      validate: (value) => (value.trim() ? null : "Learning text is required."),
+    });
+    if (next == null || !next.trim() || next === detail.body) return;
+    try {
+      await fetch("/api/user/memory", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: sel.id, text: next.trim() }),
+      });
+    } finally {
+      detailQ.invalidate();
+      feed.invalidate();
+    }
+  }, [sel, detail, askPrompt, detailQ, feed]);
+  const removeMemory = useCallback(async () => {
+    if (!sel || !detail || detail.kind !== "memory") return;
+    const ok = await askConfirm({
+      title: "Remove this learning?",
+      body: (detail.body ?? "").slice(0, 160),
+      confirmLabel: "Remove",
+      destructive: true,
+    });
+    if (!ok) return;
+    try {
+      await fetch(`/api/user/memory?id=${encodeURIComponent(sel.id)}`, {
+        method: "DELETE",
+      });
+    } finally {
+      void setRsel(null);
+      detailQ.invalidate();
+      feed.invalidate();
+    }
+  }, [sel, detail, askConfirm, setRsel, detailQ, feed]);
+
   const onTogglePlan = useCallback(
     (slug: string) =>
       void setRplanOpen((cur) => (cur === slug ? null : slug)),
@@ -5743,6 +5919,19 @@ function RetainedLedgerCard({
 
   const corpusTotal = rtab === "all" ? null : (counts?.[rtab] ?? null);
   const shownItems = filtered.filter((r) => r.rowType === "item").length;
+
+  // Report the feed's state up to LearningsView (status dot, perf settle,
+  // memories chip) — see RetainLedgerCardState.
+  const settled = !loading && (page !== undefined || Boolean(feed.error));
+  const memoriesCount = counts?.memories ?? null;
+  useEffect(() => {
+    onState?.({
+      settled,
+      error: Boolean(feed.error),
+      rowCount: rows.length,
+      memoriesCount,
+    });
+  }, [onState, settled, feed.error, rows.length, memoriesCount]);
 
   return (
     <section className="pc-learning__retained" aria-label="Retained ledger">
@@ -5847,24 +6036,59 @@ function RetainedLedgerCard({
             : "No retained items match the filter."}
         </div>
       ) : (
-        <VirtualGrid<RetainGridRow>
-          columns={columns}
-          rows={filtered}
-          resizableColumns
-          columnWidths={colWidths}
-          onColumnWidthsChange={setColWidths}
-          getRowId={retainGridRowId}
-          onRowClick={(r) => {
-            if (r.rowType === "item" && r.row.kind === "plan") {
-              onTogglePlan(r.row.id);
-            }
-          }}
-          rowMinHeight={30}
-          headerHeight={30}
-          scrollStyle={{ maxHeight: 340 }}
-          onEndReached={nextCursor ? () => setCursor(nextCursor) : undefined}
-        />
+        <div
+          className={`pc-learning__retainlayout${sel ? " has-detail" : ""}`}
+        >
+          <div className="pc-learning__retainindex">
+            <VirtualGrid<RetainGridRow>
+              columns={columns}
+              rows={filtered}
+              resizableColumns
+              columnWidths={colWidths}
+              onColumnWidthsChange={setColWidths}
+              getRowId={retainGridRowId}
+              onRowClick={(r) => {
+                // WI-39534: every row opens its detail; a plan's CHILD row is
+                // itself a work item, so it selects as one. The plan chevron
+                // (expand) and title (Plans board) keep their own buttons.
+                const next =
+                  r.rowType === "item"
+                    ? `${r.row.kind}:${r.row.id}`
+                    : `wi:${r.child.id}`;
+                void setRsel((cur) => (cur === next ? null : next));
+              }}
+              getRowBg={(r) => {
+                const key =
+                  r.rowType === "item"
+                    ? `${r.row.kind}:${r.row.id}`
+                    : `wi:${r.child.id}`;
+                return key === rsel
+                  ? "color-mix(in oklab, var(--accent), transparent 80%)"
+                  : undefined;
+              }}
+              rowMinHeight={30}
+              headerHeight={30}
+              scrollStyle={{ maxHeight: 340 }}
+              onEndReached={
+                nextCursor ? () => setCursor(nextCursor) : undefined
+              }
+            />
+          </div>
+          {sel ? (
+            <RetainDetailAside
+              sel={sel}
+              detail={detail}
+              loading={detailQ.loading}
+              error={detailQ.error ? String(detailQ.error) : null}
+              onClose={() => void setRsel(null)}
+              onEdit={editMemory}
+              onRemove={removeMemory}
+            />
+          ) : null}
+        </div>
       )}
+      {confirmEl}
+      {promptEl}
       {degraded.length > 0 ? (
         <p
           className="pc-learning__retaineddegraded"
@@ -6686,7 +6910,18 @@ export function LearningStyles() {
       .pc-learning__retaindetail > header { display: flex; align-items: center; justify-content: space-between; min-height: 24px; }
       .pc-learning__retaindetail > header button { display: grid; place-items: center; width: 24px; height: 24px; padding: 0; border: 0; background: transparent; color: var(--fg-mute); cursor: pointer; }
       .pc-learning__retaindetail > p { margin: 7px 0 10px; color: var(--fg); font-size: 12px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
-      .pc-learning__retaindetail > footer { display: flex; justify-content: flex-end; gap: 5px; }
+      .pc-learning__retaindetail > footer { display: flex; justify-content: flex-end; gap: 5px; margin-top: 10px; }
+      .pc-learning__retaindetail > footer button { background: none; border: 1px solid var(--border); border-radius: 4px; color: var(--fg-dim); cursor: pointer; font-size: 11px; padding: 1px 7px; }
+      /* WI-39534 detail aside internals — scrolls beside the 340px grid. */
+      .pc-learning__retaindetail { max-height: 340px; overflow-y: auto; }
+      .pc-learning__retaindetailtitle { display: block; margin-top: 7px; color: var(--fg-dim, #b9d4e8); font-size: 12px; line-height: 1.4; }
+      .pc-learning__retaindetailmeta { display: flex; align-items: center; gap: 6px; margin-top: 5px; }
+      .pc-learning__retaindetailcode { margin: 7px 0 0; padding: 8px; border: 1px solid var(--border); border-radius: 7px; background: var(--bg-1); font-size: 10.5px; line-height: 1.45; overflow: auto; max-height: 180px; white-space: pre-wrap; overflow-wrap: anywhere; }
+      .pc-learning__retaindetaillist { margin: 7px 0 0; padding-left: 16px; color: var(--fg); font-size: 11.5px; line-height: 1.5; }
+      .pc-learning__retaindetailfields { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 3px 10px; margin-top: 9px; font-size: 11px; }
+      .pc-learning__retaindetailfields > div { display: contents; }
+      .pc-learning__retaindetailfields span:first-child { color: var(--fg-mute); }
+      .pc-learning__retaindetailfields span:last-child { color: var(--fg-dim); overflow-wrap: anywhere; }
       .pc-learning__retaincontrols { display: flex; align-items: center; gap: 4px; }
       .pc-learning__retaincontrols input { width: min(220px, 28vw); height: 26px; padding: 3px 8px; font-size: 10.5px; }
       @container learning (max-width: 820px) { .pc-learning__retainlayout.has-detail { grid-template-columns: 1fr; } .pc-learning__retaindetail { grid-row: 1; } }
