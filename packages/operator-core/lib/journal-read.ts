@@ -177,8 +177,47 @@ export interface JournalReadResult {
    * case pays nothing) rather than left for the caller to notice.
    */
   unitsUnknown: string[];
+  /**
+   * Non-null ⇒ the read returned nothing because THE WINDOW IS IN THE FUTURE
+   * relative to the newest record in the journal — a fifth distinct meaning of
+   * an empty `entries`, and the only one the caller cannot discover by reading
+   * any other field here.
+   *
+   * WI-7133: journalctl parses `--since`/`--until` in the host's LOCAL time,
+   * while every papercusp surface reports UTC. On this box (UTC-4) pasting a UTC
+   * stamp into `since` therefore queries a window ~4h AHEAD of now, which
+   * journalctl answers with a perfectly clean exit and zero lines. That empty
+   * result is indistinguishable from "no such event was ever logged" — and was
+   * read exactly that way during a live fleet-death investigation, confirming a
+   * wrong cause that had already been reported to the owner. The real window
+   * held the whole story.
+   *
+   * Null when the window is fine, when the read failed, or WHENEVER THE CHECK
+   * COULD NOT BE MADE (no `systemd-analyze`, an unparseable window, an empty
+   * journal). Never guessed: a false "your timezone is wrong" would send the
+   * next reader off exactly as badly as the silence it replaces — the same rule
+   * `unitIsUnknownTo` follows when it reports nothing rather than risk a false
+   * "that unit does not exist".
+   */
+  windowOutsideJournal: JournalWindowDiagnosis | null;
   /** The exact argv used, so a result is reproducible by hand. */
   command: string;
+}
+
+/** Why a time-bounded read came back empty: the window sits past the journal's end. */
+export interface JournalWindowDiagnosis {
+  /** The `since` string exactly as the caller passed it. */
+  requestedSince: string;
+  /** What journalctl's own grammar resolved it to (ISO-8601 UTC). */
+  resolvedSinceUtc: string;
+  /** The newest record in the journal for this scope (ISO-8601 UTC). */
+  newestEntryUtc: string;
+  /** How far past the newest record the window starts. */
+  aheadByMs: number;
+  /** Host offset from UTC in minutes (-240 on an EDT box) — the usual culprit. */
+  hostUtcOffsetMinutes: number;
+  /** A ready-to-read sentence naming the likely cause and the fix. */
+  hint: string;
 }
 
 export interface JournalReadOptions {
@@ -457,6 +496,63 @@ export const defaultUnitLoadProbe: UnitLoadProbe = async (units, scope) => {
   );
   return unknown;
 };
+
+/**
+ * Resolve a journalctl window string to epoch ms, using journalctl's OWN grammar.
+ * Returns null when it cannot be resolved — never a guess.
+ */
+export type WindowResolver = (spec: string) => Promise<number | null>;
+
+/**
+ * `systemd-analyze timestamp` parses the SAME time grammar journalctl does and
+ * prints `UNIX seconds: @<epoch>`. Deferring to it is the whole point: a
+ * hand-rolled parser for '-30 min' | '09:40:00' | '2 hours ago' would eventually
+ * disagree with the thing it is trying to explain, and a diagnosis that is itself
+ * wrong about the window is worse than no diagnosis.
+ *
+ * `--` guards a leading-dash spec ('-30 min'), which systemd-analyze would
+ * otherwise read as its own option.
+ */
+export const defaultWindowResolver: WindowResolver = async (spec) => {
+  try {
+    const { stdout } = await execFileAsync('systemd-analyze', ['timestamp', '--', spec], {
+      timeout: 3000,
+    });
+    const m = /^\s*UNIX seconds:\s*@?(-?\d+(?:\.\d+)?)/m.exec(stdout);
+    if (!m) return null;
+    const seconds = Number(m[1]);
+    return Number.isFinite(seconds) ? Math.round(seconds * 1000) : null;
+  } catch {
+    return null;
+  }
+};
+
+/** Newest record epoch-ms in this scope, ignoring every filter. Null ⇒ cannot tell. */
+async function newestJournalEntryMs(
+  scope: JournalScope,
+  exec: JournalExec,
+): Promise<number | null> {
+  try {
+    // Deliberately UNFILTERED except for scope: the question is "does the journal
+    // hold anything newer than the requested window", which a unit/grep filter
+    // would confound with its own emptiness.
+    const { stdout } = await exec([
+      ...journalScopeArgs(scope),
+      '-n',
+      '1',
+      '-o',
+      'json',
+      '--output-fields=__REALTIME_TIMESTAMP',
+    ]);
+    const [record] = parseJournalJson(stdout);
+    const raw = record?.__REALTIME_TIMESTAMP;
+    if (typeof raw !== 'string') return null;
+    const micros = Number(raw);
+    return Number.isFinite(micros) ? Math.round(micros / 1000) : null;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Read the journal and return distilled entries.
