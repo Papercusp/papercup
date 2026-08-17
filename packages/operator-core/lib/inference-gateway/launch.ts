@@ -46,20 +46,23 @@ export const DEFAULT_T1_RESERVE_FRAC = 0.15;
  * (P-008/D-006/D-009). `ensureLocalBackendRunning` deliberately has NO default for this, so the
  * caller that starts backends has to state a figure — this is that statement.
  *
- * ⚠ PROVISIONAL, and the reason is itself a finding: the measurement D-006 asks for could NOT be
- * taken on 2026-08-17 because `llama-ornith.service` cannot start at all — its ExecStart binary
- * (a hand-built `~/llama.cpp/build/bin/llama-server`) does not exist, and the unit had
- * crash-looped 182 times with status=203/EXEC. So this value is bounded by REASONING, not by a
- * stopwatch on the real load:
- *   - the model is a 15.5GB IQ3_M blob faulted off disk into a 24GB card;
- *   - this box is routinely under heavy load (load avg ~70-80, PSI memory pressure), which is
- *     exactly when a cold start is slowest and a too-tight timeout would fail a request that was
- *     about to succeed;
- *   - overshooting costs only a slow FIRST request on an already-idle backend, while undershooting
- *     abandons a load that is still progressing (the seam leaves the unit RUNNING on timeout, so
- *     the next request usually finds it warm — the failure is soft in one direction only).
- * 300s is chosen to sit well clear of a plausible worst case under load. REPLACE IT WITH THE
- * MEASURED FIGURE once ornith can start; D-006 is not discharged until then.
+ * ✅ MEASURED 2026-08-17 (D-006 discharged; see D-011/D-012 for how the measurement was unblocked).
+ * `llama-ornith.service` — 15.5GB IQ3_M blob, 2 slots x 90112 ctx, RTX 3090 — cold-started to a
+ * 200 on `/health` in **67.5s**, with GPU memory moving 4448 -> 21754 MiB (+17.3GB) and the
+ * process RSS settling at 1.2GB. The value below is therefore ~4.4x the measured figure.
+ *
+ * ⚠ READ WHAT THE 67.5s ACTUALLY MEASURES BEFORE TIGHTENING IT. That run had the weights already
+ * in the PAGE CACHE (an accidental CPU-only start minutes earlier had just read all 15.5GB into
+ * RAM), so it is a warm-page-cache figure and a genuinely disk-cold start is strictly slower —
+ * bounded below by the time to read 15.5GB off this box's storage. It was not measured with caches
+ * dropped, because that needs root and would evict every other agent's working set. So 67.5s is a
+ * FLOOR on the cold path, not the worst case, and the headroom below is not slack to reclaim.
+ *
+ * The asymmetry that sets the margin is unchanged: overshooting costs only a slow FIRST request on
+ * an already-idle backend, while undershooting abandons a load that is still progressing (the seam
+ * leaves the unit RUNNING on timeout, so the next request usually finds it warm). The failure is
+ * soft in one direction only, and this box routinely sits at load avg ~70-80 under memory
+ * pressure — exactly when a cold start is slowest.
  */
 export const LOCAL_BACKEND_COLD_START_TIMEOUT_MS =
   Number(process.env.PAPERCUSP_GATEWAY_LOCAL_BACKEND_COLD_START_TIMEOUT_MS) || 300_000;
