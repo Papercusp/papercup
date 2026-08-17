@@ -82,7 +82,12 @@ vi.mock("nuqs", () => ({
   ...nuqsParsers,
   useQueryState: (key: string) => {
     const setter = (nuqsSetters[key] ??= vi.fn((v: unknown) => {
-      nuqsState[key] = v;
+      // Functional-updater form too (`setRsel((cur) => …)`) — the Retained
+      // ledger's row click toggles selection through it (WI-39534).
+      nuqsState[key] =
+        typeof v === "function"
+          ? (v as (cur: unknown) => unknown)(nuqsState[key] ?? null)
+          : v;
     }));
     return [nuqsState[key], setter];
   },
@@ -102,6 +107,39 @@ vi.mock("nuqs", () => ({
   parseAsStringEnum: () => ({ withDefault: () => ({}) }),
   parseAsString: { withDefault: () => ({}) },
   parseAsBoolean: { withDefault: () => ({}) },
+}));
+
+// @tanstack/react-virtual: the Retained ledger renders through a REAL
+// VirtualGrid (@papercusp/grid-core). jsdom has no layout engine, so the real
+// virtualizer sees a zero-height scroll container and yields no virtual items —
+// the ledger would render nothing and row text could never be found. Mock
+// useVirtualizer to yield one VirtualItem per row so the full window mounts
+// under test (mirrors grid-core's own RichGrid.virtual.test.tsx and
+// AdvConversationsTab.test.tsx).
+vi.mock("@tanstack/react-virtual", () => ({
+  useVirtualizer: ({
+    count,
+    getItemKey,
+  }: {
+    count: number;
+    getItemKey?: (index: number) => string | number;
+  }) => {
+    const ROW = 30;
+    const items = Array.from({ length: count }, (_, index) => ({
+      index,
+      key: getItemKey?.(index) ?? `vrow-${index}`,
+      start: index * ROW,
+      end: index * ROW + ROW,
+      size: ROW,
+      lane: 0,
+    }));
+    return {
+      getVirtualItems: () => items,
+      getTotalSize: () => count * ROW,
+      measureElement: () => {},
+      measure: () => {},
+    };
+  },
 }));
 
 // The pot lens is INHERITED from the top-bar selector via useAdvScope (owner
@@ -489,8 +527,28 @@ let hiveListResult: Record<string, unknown> = {
   error: null,
   invalidate: vi.fn(),
 };
-let hiveResult: Record<string, unknown> = {
-  data: [{ hive: "alpha-hive", rows: [], packs: [], organicCount: 0 }],
+// WI-39535: the unified Retained ledger feed — the shared-memory pool rides it
+// as kind 'memory'. Tests override `retainFeedResult` to model rows / counts /
+// degraded legs, and `retainDetailResult` for the selected row's detail aside
+// (WI-39534). (The standalone learning.hive pool read this file used to mock is
+// gone with the standalone section.)
+let retainFeedResult: Record<string, unknown> = {
+  data: [
+    {
+      rows: [],
+      counts: null,
+      nextCursor: null,
+      degraded: [],
+      generatedAt: "2026-08-16T00:00:00.000Z",
+    },
+  ],
+  loading: false,
+  fetching: false,
+  error: null,
+  invalidate: vi.fn(),
+};
+let retainDetailResult: Record<string, unknown> = {
+  data: [],
   loading: false,
   fetching: false,
   error: null,
@@ -527,6 +585,17 @@ vi.mock("@papercusp/sync", async () => ({
     if (opts.queryName === "learning.hiveThroughput" && throughputResult) {
       return throughputResult;
     }
+    if (opts.queryName === "learning.retainFeed") return retainFeedResult;
+    if (opts.queryName === "learning.retainDetail") return retainDetailResult;
+    if (opts.queryName === "learning.retainPlanChildren") {
+      return {
+        data: [],
+        loading: false,
+        fetching: false,
+        error: null,
+        invalidate: vi.fn(),
+      };
+    }
     if (opts.queryName === "learning.scoutDrafts") {
       // The Improvements view's thin drafts read — empty by default.
       // WI-6395: enveloped, so the empty is `[{ items: [] }]` (an observed
@@ -549,9 +618,7 @@ vi.mock("@papercusp/sync", async () => ({
               ? scoutResult
               : opts.queryName === "learning.hiveList"
                 ? hiveListResult
-                : opts.queryName === "learning.hive"
-                  ? hiveResult
-                  : opts.queryName === "learning.retain"
+                : opts.queryName === "learning.retain"
                     ? {
                         data: [
                           {
@@ -685,13 +752,34 @@ beforeEach(() => {
     error: null,
     invalidate: vi.fn(),
   };
-  hiveResult = {
-    data: [{ hive: "alpha-hive", rows: [], packs: [], organicCount: 0 }],
+  retainFeedResult = {
+    data: [
+      {
+        rows: [],
+        counts: null,
+        nextCursor: null,
+        degraded: [],
+        generatedAt: "2026-08-16T00:00:00.000Z",
+      },
+    ],
     loading: false,
     fetching: false,
     error: null,
     invalidate: vi.fn(),
   };
+  retainDetailResult = {
+    data: [],
+    loading: false,
+    fetching: false,
+    error: null,
+    invalidate: vi.fn(),
+  };
+  // Retained-ledger URL state (WI-39493/WI-39534) — reset like every other key.
+  nuqsState.rtab = "all";
+  nuqsState.rship = "all";
+  nuqsState.rq = "";
+  nuqsState.rplan = null;
+  nuqsState.rsel = null;
   throughputResult = null;
 });
 afterEach(() => cleanup());
