@@ -120,6 +120,72 @@ describe('buildCheckpointSystemdArgv', () => {
     expect(inner).not.toContain('PAPERCUSP_PARTIAL_GREEN_GATE');
   });
 
+  describe('WI-39472: capacity mode reaches the detached run', () => {
+    // A detached unit does not inherit the launcher's env, so setting
+    // PAPERCUSP_GREEN_CHECKPOINT_CAPACITY_MODE on papercup-dev-api.service changed every
+    // SCHEDULED run (the routine spawns with { ...process.env }) and NO manual run. That
+    // divergence is silent: `systemctl show` and /proc/<operator>/environ both report the new
+    // value while the run logs `mode=shared maxForks=2`. Observed 2026-08-17 with the gate 10
+    // reds deep. These pin the forwarding so the two paths cannot drift apart again.
+    it.each(['shared', 'reserved'] as const)(
+      'forwards capacity mode %s into the inner command',
+      (mode) => {
+        const inner = buildCheckpointSystemdArgv(
+          '/tree',
+          '/tmp/cp.log',
+          '/usr/bin:/bin',
+          false,
+          undefined,
+          null,
+          mode,
+        ).at(-1)!;
+        expect(inner).toContain(`PAPERCUSP_GREEN_CHECKPOINT_CAPACITY_MODE='${mode}'`);
+      },
+    );
+
+    it('omits the var entirely when unset, so the run keeps its own default', () => {
+      const inner = buildCheckpointSystemdArgv('/tree', '/tmp/cp.log', '/usr/bin:/bin').at(-1)!;
+      expect(inner).not.toContain('PAPERCUSP_GREEN_CHECKPOINT_CAPACITY_MODE');
+    });
+
+    // The value lands in a `bash -c` string. release-config.ts accepts exactly two literals, so
+    // anything else is DROPPED rather than quoted-and-passed — an unvalidated passthrough here
+    // would be a shell-injection seam reachable from an env var.
+    it.each([
+      ["reserved'; touch /tmp/pwned; '", 'shell metacharacters'],
+      ['RESERVED', 'wrong case'],
+      ['', 'empty string'],
+      ['8', 'a fork count rather than a mode'],
+    ])('drops an unrecognised capacity mode (%s: %s)', (bad) => {
+      const inner = buildCheckpointSystemdArgv(
+        '/tree',
+        '/tmp/cp.log',
+        '/usr/bin:/bin',
+        false,
+        undefined,
+        null,
+        bad,
+      ).at(-1)!;
+      expect(inner).not.toContain('PAPERCUSP_GREEN_CHECKPOINT_CAPACITY_MODE');
+      expect(inner).not.toContain('touch /tmp/pwned');
+    });
+
+    it('still forwards the partial-green flag alongside capacity mode (neither clobbers the other)', () => {
+      const inner = buildCheckpointSystemdArgv(
+        '/tree',
+        '/tmp/cp.log',
+        '/usr/bin:/bin',
+        true,
+        undefined,
+        null,
+        'reserved',
+      ).at(-1)!;
+      expect(inner).toContain("PAPERCUSP_PARTIAL_GREEN_GATE='1'");
+      expect(inner).toContain("PAPERCUSP_GREEN_CHECKPOINT_CAPACITY_MODE='reserved'");
+      expect(inner).toContain('apps/operator/lib/release/green-checkpoint.ts');
+    });
+  });
+
   it('forwards PAPERCUSP_PARTIAL_GREEN_GATE when armed — a manual checkpoint then uses the same longest-green-prefix FF as the periodic gate', () => {
     const inner = buildCheckpointSystemdArgv('/tree', '/tmp/cp.log', '/usr/bin:/bin', true).at(-1)!;
     expect(inner).toContain("PAPERCUSP_PARTIAL_GREEN_GATE='1'");
