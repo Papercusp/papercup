@@ -104,10 +104,19 @@
 #   EXIT CODE 2) — the refusal repeats this note, so you cannot silently probe
 #   a guard with a mutation that never applied.
 #
-# EXAMPLE (the real probe this script was extracted from)
+# EXAMPLE (the real probe this script was extracted from) — VERIFIED RUNNABLE, and
+# pinned that way by doc-claims/mutation-probe-example-is-runnable.test.ts, because
+# all three of the things that make it work are easy to get silently wrong (WI-39608):
+#   • the --test target must READ PROBE_SCRIPT, or {} points nowhere and the probe
+#     measures the UNMUTATED tracked file and reports a false "mutant SURVIVED";
+#   • the --mutate pattern must still MATCH the subject — this example's original
+#     pattern stopped matching when the call site became `if <fn>; then ...; fi`;
+#   • the subject trips the destructive-primitive gate (it contains rm/unlink), so
+#     --fake-destructive is required to run it at all.
 #   scripts/mutation-probe.sh \
 #     --file scripts/verify-tauri-headless.sh \
-#     --mutate 's/^\s*port_lost_to_squatter .*$//' \
+#     --fake-destructive \
+#     --mutate 's/^\s*if port_lost_to_squatter; then PORT_LOST=1; break; fi$//' \
 #     --test 'PROBE_SCRIPT={} npm run test:file -- apps/operator/lib/verify-tauri-headless-bind-retry.test.ts'
 #
 # EXIT CODES
