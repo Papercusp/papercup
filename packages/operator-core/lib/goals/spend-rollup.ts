@@ -196,9 +196,14 @@ export async function writeGoalSpendSnapshot(
       measured: rollup.measured,
     },
   };
+  // sql.json, NOT a pre-stringified text param: postgres-js JSON-serializes a
+  // parameter bound to jsonb, so passing JSON.stringify(patch) double-encodes it
+  // into a jsonb SCALAR STRING — and `object || scalar` concatenates into an
+  // ARRAY instead of merging, silently destroying the metadata shape (measured
+  // live: metadata became [{}, "{…}"] while the UPDATE reported count=1).
   const res = await sql`
     UPDATE harness_shared.goals
-       SET metadata = COALESCE(metadata, '{}'::jsonb) || ${JSON.stringify(patch)}::jsonb
+       SET metadata = COALESCE(metadata, '{}'::jsonb) || ${sql.json(patch)}
      WHERE id = ${opts.goalId}
        AND workspace_id = ${opts.workspaceId}
   `;

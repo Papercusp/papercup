@@ -110,7 +110,7 @@ beforeEach(async () => {
 async function seedGoal(over: { id?: string; status?: string; metadata?: object } = {}) {
   await rootSql`INSERT INTO harness_shared.goals (id, workspace_id, status, metadata, created_at)
     VALUES (${over.id ?? GOAL}, ${WS}, ${over.status ?? 'active'},
-            ${over.metadata ? JSON.stringify(over.metadata) : null}::jsonb, ${GOAL_CREATED})`;
+            ${over.metadata ? rootSql.json(over.metadata) : null}, ${GOAL_CREATED})`;
 }
 async function pot(harness: string, goalId = GOAL) {
   await rootSql`INSERT INTO harness_shared.goal_pots (workspace_id, goal_id, harness_slug)
@@ -155,16 +155,6 @@ async function seedPartitionFixture() {
 }
 
 describe('goal spend rollup (P-005 / D-003) — real PG', () => {
-  it('DIAG jsonb merge write', async () => {
-    await seedGoal();
-    const r = await rootSql`UPDATE harness_shared.goals
-      SET metadata = COALESCE(metadata, '{}'::jsonb) || ${'{"x":1}'}::jsonb
-      WHERE id = ${GOAL} AND workspace_id = ${WS}`;
-    console.log('DIAG count', r.count);
-    const rows = await rootSql<Array<{ metadata: unknown; tname: string }>>`
-      SELECT metadata, pg_typeof(metadata)::text AS tname FROM harness_shared.goals WHERE id = ${GOAL}`;
-    console.log('DIAG row', JSON.stringify(rows[0]), 'typeof md', typeof rows[0]?.metadata);
-  });
 
   it('partitions the ledger exactly: pot leg + session leg, the shared sample counted ONCE', async () => {
     await seedPartitionFixture();
