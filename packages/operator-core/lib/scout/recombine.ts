@@ -324,9 +324,13 @@ export async function recombineProposals(
             }
           : { sourceIdeaIds, addressesPatternRefs, ...(seededByRefs.length ? { seededByRefs } : {}) };
 
+        // WI-39721: carry the dropped hint out on BOTH branches — a group can
+        // ask for an unaccepted rail and still fail the D-006 gate, and that ask
+        // is exactly as much evidence of a starved rail as a passing one.
+        const hint = parsed?.droppedRouteHint ? { droppedRouteHint: parsed.droppedRouteHint } : {};
         const v = validateProposal(base);
-        if (v.ok) return { ok: true, base };
-        return { ok: false, sourceIdeaIds, errors: v.errors };
+        if (v.ok) return { ok: true, base, ...hint };
+        return { ok: false, sourceIdeaIds, errors: v.errors, ...hint };
       },
     ),
   );
@@ -340,13 +344,38 @@ export async function recombineProposals(
   // 600 of 746 decided outcomes were copies of 4 frozen July verdicts. The
   // batch stamp makes the id unique across cycles while staying readable.
   const batchStamp = Date.now().toString(36);
+  const hintTally = new Map<string, number>();
   let n = 0;
   for (const r of results) {
+    if (r.droppedRouteHint) {
+      hintTally.set(r.droppedRouteHint, (hintTally.get(r.droppedRouteHint) ?? 0) + 1);
+    }
     if (r.ok) {
       proposals.push({ id: `SP-${batchStamp}-${String(++n).padStart(3, '0')}`, ...r.base } as Proposal);
     } else {
       dropped.push({ sourceIdeaIds: r.sourceIdeaIds, errors: r.errors });
     }
   }
-  return { proposals, dropped };
+
+  // WI-39721: make the coercion LOUD. Routing is untouched — every hint below
+  // already became `undefined` in parseProposal and will take
+  // DEFAULT_ROUTING_RAIL — but until now it left NO trace anywhere, so a rail
+  // the model keeps asking for and never reaching was indistinguishable from a
+  // rail it never asks for (D-008: every persisted surface is post-coercion).
+  // Emitted per batch rather than per group so a starved rail reads as a rate.
+  const droppedRouteHints = [...hintTally.entries()]
+    .map(([value, count]) => ({ value, count }))
+    .sort((a, b) => b.count - a.count || a.value.localeCompare(b.value));
+  if (droppedRouteHints.length > 0) {
+    const total = droppedRouteHints.reduce((sum, d) => sum + d.count, 0);
+    console.warn(
+      `[scout/recombine] routeHint DROPPED in ${total}/${results.length} group(s): ` +
+        `${droppedRouteHints.map((d) => `${d.value}×${d.count}`).join(', ')} — ` +
+        `parseProposal accepts only ${ACCEPTED_ROUTE_HINTS.join('|')}, so each coerced to ` +
+        `undefined and takes DEFAULT_ROUTING_RAIL instead. A rail named here is being ` +
+        `ASKED FOR and never reached (WI-39721); widening intake is owner-reserved (D-006).`,
+    );
+  }
+
+  return { proposals, dropped, droppedRouteHints };
 }

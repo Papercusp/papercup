@@ -4,7 +4,7 @@
  * carries a complete cheap falsifiable experiment — a group whose LLM output
  * fails the D-006 gate is DROPPED, never smuggled through.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import type { Idea, ScoredIdea, ScoutLlmCall } from './types';
 import {
   planRecombinations,
@@ -190,5 +190,72 @@ describe('recombineProposals', () => {
     expect(seenSignal?.aborted).toBe(true);
     expect(r.proposals).toHaveLength(0);
     expect(r.dropped[0]?.errors.join(' ')).toContain('recombine timed out after 10ms');
+  });
+});
+
+/**
+ * WI-39721 — the routeHint coercion must be LOUD, and ROUTING-NEUTRAL while it is.
+ * `parseProposal` accepts 3 of the 5 members declared by `Proposal['routeHint']`;
+ * 'goal'/'instance' coerce to undefined and take DEFAULT_ROUTING_RAIL. Admitting
+ * them is owner-reserved (D-006), so what is pinned here is the SIGNAL — and, just
+ * as load-bearing, that emitting it changed no routing.
+ */
+describe('recombineProposals — dropped routeHint signal', () => {
+  it('records an unaccepted hint WITHOUT routing it (still coerces to undefined)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const r = await recombineProposals([scored({ idea: idea({ id: 'g' }) })], {
+        llmCall: fakeProposer({ ...COMPLETE_PROPOSAL, route: 'goal' }),
+      });
+      // Routing is UNCHANGED: the hint is still dropped, exactly as before.
+      expect(r.proposals).toHaveLength(1);
+      expect(r.proposals[0].routeHint).toBeUndefined();
+      // ...but the ask is no longer invisible.
+      expect(r.droppedRouteHints).toEqual([{ value: 'goal', count: 1 }]);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0]?.[0])).toContain('goal×1');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('counts the ask even when the group fails the D-006 gate', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const r = await recombineProposals([scored({ idea: idea({ id: 'x' }) })], {
+        llmCall: fakeProposer({
+          ...COMPLETE_PROPOSAL,
+          route: 'instance',
+          experiment: { hypothesis: 'h', method: '', falsifiableSignal: '' },
+        }),
+      });
+      expect(r.proposals).toHaveLength(0);
+      expect(r.dropped).toHaveLength(1);
+      expect(r.droppedRouteHints).toEqual([{ value: 'instance', count: 1 }]);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('stays silent for an accepted hint, and for no hint at all', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const accepted = await recombineProposals([scored({ idea: idea({ id: 'a' }) })], {
+        llmCall: fakeProposer(COMPLETE_PROPOSAL),
+      });
+      expect(accepted.proposals[0].routeHint).toBe('plan');
+      expect(accepted.droppedRouteHints).toEqual([]);
+
+      const { route: _omitted, ...noHint } = COMPLETE_PROPOSAL;
+      const absent = await recombineProposals([scored({ idea: idea({ id: 'b' }) })], {
+        llmCall: fakeProposer(noHint),
+      });
+      expect(absent.proposals[0].routeHint).toBeUndefined();
+      expect(absent.droppedRouteHints).toEqual([]);
+
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
