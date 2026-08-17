@@ -1106,17 +1106,25 @@ export function shouldWarnOnStallClearMiss(stallAlerted: boolean, clearedCount: 
  */
 /**
  * WI-39450: the log line for a `'record-only'` tick. Its own function because the operator
- * response differs from BOTH noop conditions: no peer run holds a lock (the successor is this
- * run's OWN in-process refire), and unlike `migrations-pending` a full suite really did run —
- * it just judged a tree that has already moved. Saying so is the point: that failing-file list
- * is exactly what sends agents at already-fixed tests.
+ * response differs from BOTH noop conditions: no peer run holds a lock, and unlike
+ * `migrations-pending` a full suite really did run — it just judged a tree that has already
+ * moved. Saying so is the point: that failing-file list is exactly what sends agents at
+ * already-fixed tests.
+ *
+ * ⚠ Do NOT reintroduce "handed off to an auto-refire, which will record the real verdict" here.
+ * That was the original wording and it is false in the case that actually dominates: a refire
+ * blocked by `deadline` records nothing, and `main` simply stays where it is until the next cron.
+ * Promising a successor that never arrives is worse than promising nothing — a reader who
+ * believes it waits instead of looking at the gate.
  */
 export function gateStallRecordOnlyLogMessage(status: string): string {
   return (
-    `${orchestratorStdoutTag()} '${status}' — this pass proved its OWN candidate STALE and handed ` +
-    `off to an auto-refire, which will record the real verdict. Diagnostics written, streak NOT ` +
-    `advanced (this pass judged an already-superseded tree, so any failing files it named are ` +
-    `stale — re-verify at tip before fixing anything. See classifyGateStallStatus)`
+    `${orchestratorStdoutTag()} '${status}' — this pass proved its OWN candidate STALE (its ` +
+    `re-triage re-ran the failing files at tip and they PASSED). Diagnostics written, streak NOT ` +
+    `advanced: this pass judged an already-superseded tree, so any failing files it named are ` +
+    `stale — re-verify at tip before fixing anything. NOTE this run did NOT promote and may not ` +
+    `have refired, so \`main\` can stay put with the streak flat; a frozen \`main\` is escalated by ` +
+    `checkMainBehindStaging / evaluateGreenStall, not by this counter. See classifyGateStallStatus`
   );
 }
 
@@ -1436,11 +1444,15 @@ export async function trackGateStall(
     }
   } else {
     // WI-39450: a 'record-only' tick carries the streak FORWARD instead of advancing it. It is
-    // not a green (nothing was promoted, so it must not reset either) — it is a pass that judged
-    // an already-superseded tree and handed off to a refire that will record the real verdict.
-    // Advancing here double-counts one logical run: the superseded pass AND its successor each
-    // land a verdict. Measured 2026-08-17: consecutiveReds 10 -> 11 off a pass whose own
-    // classifier said `stale-candidate`, naming 7 files that passed 52/0 at tip.
+    // not a green (nothing was promoted, so it must not reset either) — it is a pass whose own
+    // re-triage re-ran the named failing files at tip and watched them PASS, i.e. it produced no
+    // evidence about the current code at all. Measured 2026-08-17: consecutiveReds 10 -> 11 off a
+    // pass whose own classifier said `stale-candidate`, naming 7 files that passed 52/0 at tip;
+    // and 13 -> 14 off candidate 67c66f70, whose 4 named files passed 156/0 at tip.
+    // When such a pass DOES refire, advancing would additionally double-count one logical run
+    // (the superseded pass AND its successor each land a verdict) — but that is a second reason,
+    // not the reason: `isProvenStaleCandidate` deliberately does not require a refire, because
+    // `autoRefire` was false in 18 of 18 re-triaging runs sampled over 2026-08-15..17.
     // `firstRedAt` is left alone for the same reason — a non-verdict must not START a streak,
     // or a `stalledByAge` escalation could be dated from a tick that judged nothing current.
     const recordOnly = gateClass === 'record-only';
