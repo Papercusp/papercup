@@ -73,6 +73,30 @@ Environment=PAPERCUSP_EMBED_SIDECAR_PORT=3384
 Environment=PAPERCUSP_EMBED_SIDECAR_WARM=gemma,harrier,rerank
 # Anti-recursion belt: a sidecar process must never spawn sidecars.
 Environment=PAPERCUSP_EMBED_SIDECAR_MODE=1
+# GPU cross-encoder reranking (plan on-demand-local-inference-lifecycle-2026-08-17, P-004).
+#
+# OPT-IN by design — the engine never auto-selects a GPU, because a GPU that is
+# PRESENT is not a GPU that is USABLE: this box had an RTX 3090, the CUDA 12
+# runtime and ORT's CUDA provider, and still could not execute on it for months
+# because cuDNN 9 was absent (EI-19320976824112874). Anything that keyed off
+# `nvidia-smi finding a card` would have selected the GPU here and silently
+# turned every search into unreranked retrieval order.
+#
+# SAFE to leave set even when the GPU is busy, absent, or broken. A CUDA session
+# that will not construct is demoted to the cpu/q8 PAIR (both fields together —
+# never fp16-on-CPU, which is worse than either whole) and reranking continues.
+# So this is opportunistic acceleration, never a hard dependency.
+#
+# Measured 2026-08-17 on the 3090: quality model gte-reranker-modernbert-base at
+# 1.47 ms/pair cuda/fp16 vs 40.07 ms/pair cpu/q8 — 27x. Top-6 SET identical
+# between the two arms; only ranks 5/6 transpose (a q8-vs-fp16 quantisation
+# signature, cf. D-006). P@10 is a set metric, so the adopted surfaces'
+# measured gains are expected to carry over unchanged.
+#
+# ⚠ DO NOT read this line as proof the GPU is in use. It records what was
+# REQUESTED. Verify what is ACTUALLY running:
+#     curl -s localhost:3384/healthz | jq .rerankExecution
+Environment=PAPERCUSP_RERANK_DEVICE=cuda
 ExecStartPre=/usr/bin/bash -c 'exec bin/bundle-host.sh bin/embed-sidecar.ts dist-sidecar/embed-sidecar.mjs'
 ExecStart=/usr/bin/bash -c 'exec node dist-sidecar/embed-sidecar.mjs'
 Restart=always

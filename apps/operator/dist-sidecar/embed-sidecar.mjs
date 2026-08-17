@@ -5431,7 +5431,7 @@ var CanonicalVectorStore = class {
   // memory writes, the bench's concurrent seeding) interleave queries,
   // which a lone pg.Client only tolerates via a deprecated internal
   // queue (removed in pg@9). Connection errors surface per query and
-  // retry naturally — no poison-cache to manage.
+  // retry naturally \u2014 no poison-cache to manage.
   pool = null;
   constructor(config) {
     this.cfg = config;
@@ -5456,7 +5456,7 @@ var CanonicalVectorStore = class {
    * Whether this server understands `hnsw.iterative_scan` (pgvector >= 0.8).
    * Probed ONCE per store and cached. An older build rejects the GUC with
    * `unrecognized configuration parameter`, so we must never assume it
-   * exists — failing open (a narrower result) beats failing search entirely.
+   * exists \u2014 failing open (a narrower result) beats failing search entirely.
    */
   iterativeScanSupport = null;
   probeIterativeScan(pool) {
@@ -5488,7 +5488,7 @@ var CanonicalVectorStore = class {
    * Postgres can only apply it AFTER the approximate index scan has already
    * chosen its candidate set. Without iterative scanning that scan stops at
    * `hnsw.ef_search` (default 40) candidates, and any scope whose rows are
-   * not among those 40 silently yields FEWER rows than LIMIT — with no error
+   * not among those 40 silently yields FEWER rows than LIMIT \u2014 with no error
    * and no signal to the caller. Measured on the live store 2026-08-02
    * (EI-19386910150607131): a `LIMIT 12` scoped pull returned **0 rows**
    * against **18,510 eligible** ones. Iterative scanning keeps scanning
@@ -5524,7 +5524,7 @@ var CanonicalVectorStore = class {
    * Close the cached PG pool. The mem0 client is torn down + rebuilt on a
    * TTL (1h) and on `invalidateMemoryClient()`; each rebuild constructs a fresh
    * store via the patched VectorStoreFactory. Without this, the prior store's
-   * pool is orphaned — a slow connection leak against embedded PG over a
+   * pool is orphaned \u2014 a slow connection leak against embedded PG over a
    * long-running operator. Idempotent and tolerant of a never-connected store.
    */
   async dispose() {
@@ -5614,17 +5614,17 @@ var CanonicalVectorStore = class {
     return null;
   }
   /**
-   * EMBED-FREE lexical search — originally the degraded-path fallback behind
+   * EMBED-FREE lexical search \u2014 originally the degraded-path fallback behind
    * `MemoryBackend.searchLexical` (WI-4214); since P-002 of
    * memory-pg-lexical-own-injection-2026-07-13 also the FIRST-CLASS lexical
    * leg of the `hybrid-pg` backend, brought to scoring parity with the
    * claude-file leg that benched best on exact-identifier recall. Pulls
    * candidates matching ANY query token (ILIKE) across the payload's `name`,
-   * `description`, and `data` fields, then field-weight scores in JS — per
+   * `description`, and `data` fields, then field-weight scores in JS \u2014 per
    * token: name hit ×3, else description hit ×2, else data hit ×1,
    * normalized 0..1 by tokens×3. NOT on the cosine scale; ordering only.
    * Reuses the store-kind + archived guards and the post-filter semantics of
-   * search()/list(). Bounded: ≤ LEXICAL_MAX_TOKENS tokens, candidates
+   * search()/list(). Bounded: \u2264 LEXICAL_MAX_TOKENS tokens, candidates
    * capped, no vec-table join.
    */
   async lexicalSearch(query, topK = 5, filters) {
@@ -5698,16 +5698,16 @@ var CanonicalVectorStore = class {
     await this.insert([vector], [id], [payload]);
   }
   /**
-   * Patch a memory row's metadata WITHOUT re-embedding — a shallow merge of
+   * Patch a memory row's metadata WITHOUT re-embedding \u2014 a shallow merge of
    * `patch` into the existing `payload` jsonb (`payload || patch`, so patch keys
    * override and unspecified keys are preserved). This is the store half of the
    * neutral `MemoryBackend.update({ metadata })` path (mem0's OSS text-only
    * update can't touch metadata). VEC-SAFE: the embedding lives in the separate
-   * `memory_vec_*` tables keyed by `memory_id`, untouched here — scope (`user_id`),
+   * `memory_vec_*` tables keyed by `memory_id`, untouched here \u2014 scope (`user_id`),
    * `workspace_id`, `kind`, anchors etc. are filter/display fields, not embedded,
    * so a metadata fix needs no re-embed. Guarded to MEMORY rows (never an mem0
    * entity-linking row, which carries `entityType`). Returns whether a row matched
-   * (false = unknown id → the not-found contract the backend surfaces).
+   * (false = unknown id \u2192 the not-found contract the backend surfaces).
    */
   async updatePayload(id, patch) {
     if (!patch || typeof patch !== "object" || Object.keys(patch).length === 0) return false;
@@ -5722,12 +5722,12 @@ var CanonicalVectorStore = class {
     return (res.rowCount ?? 0) > 0;
   }
   /**
-   * Close a memory row's validity window — the store half of soft-forget and
+   * Close a memory row's validity window \u2014 the store half of soft-forget and
    * supersession (temporal P-002/P-004). VEC-SAFE: a column-only UPDATE, the
    * embedding is never touched (validity is not embedded), so invalidation
    * costs no re-embed. First-wins idempotence: only an OPEN row
    * (`invalid_at IS NULL`) matches, so a repeat call or a racing peer is a
-   * no-op returning false — the first closer's window (and superseded_by)
+   * no-op returning false \u2014 the first closer's window (and superseded_by)
    * stands. Entity rows are exempt (mem0's lifecycle). Returns whether an
    * open memory row was closed.
    */
@@ -5751,7 +5751,7 @@ var CanonicalVectorStore = class {
    * mem0 calls this for collection-wide reset (deleteAll, reset). The
    * canonical table is SHARED across every user + harness (scope lives in
    * `payload.user_id`), so an unscoped `DELETE` here would wipe EVERYONE's
-   * memories — a multi-tenant data-loss footgun. We scope the reset to the
+   * memories \u2014 a multi-tenant data-loss footgun. We scope the reset to the
    * store's current `userId` instead: cascade clears that user's vec rows in
    * both model tables, and other scopes are untouched. With no active scope we
    * refuse rather than nuke the shared table.
@@ -5771,7 +5771,7 @@ var CanonicalVectorStore = class {
   }
   /**
    * List canonical rows matching the filter. Crucially this does NOT
-   * gate on vec-table presence — entries written under another
+   * gate on vec-table presence \u2014 entries written under another
    * embedder mode are real memories the user expects to see and
    * edit/delete. (Semantic SEARCH naturally requires a vector in the
    * active model; LIST does not.)
@@ -6206,7 +6206,7 @@ async function buildClient() {
           vecTable,
           embeddingModelDims: resolved.dims,
           // mem0 `_autoInitialize` reads `vectorStore.config.dimension` to skip its
-          // live-embed detection probe (see embedderConfig note) — EI-4027.
+          // live-embed detection probe (see embedderConfig note) \u2014 EI-4027.
           dimension: resolved.dims
         }
       };
@@ -6578,17 +6578,17 @@ function mergeById(entries) {
 }
 var Mem0Backend = class {
   name = "mem0";
-  /** pgvector similarity — an absolute, cross-call-comparable measure. */
+  /** pgvector similarity \u2014 an absolute, cross-call-comparable measure. */
   scoreScale = "cosine";
   /** The embed-free fallback scores token-overlap fractions, NOT cosine
-   *  (see `searchLexical` below) — a different scale from the same backend. */
+   *  (see `searchLexical` below) \u2014 a different scale from the same backend. */
   lexicalScoreScale = "lexical";
   getClient;
   updatePayload;
   lexicalSearch;
   invalidateEntryStore;
   reembedVector;
-  /** PUBLIC (EI-12992): satisfies MemoryBackend.embedQuery? — a caller issuing
+  /** PUBLIC (EI-12992): satisfies MemoryBackend.embedQuery? \u2014 a caller issuing
    *  several search() calls against the same query text embeds once here and
    *  passes the result as SearchOptions.vector on each call. */
   embedQuery;
@@ -6693,10 +6693,10 @@ var Mem0Backend = class {
   /**
    * EMBED-FREE lexical fallback (WI-4214, the `MemoryBackend.searchLexical`
    * capability): same per-scope fan-out + merge semantics as search(), but
-   * served by a plain token-ILIKE query over `memory_canonical` — no
+   * served by a plain token-ILIKE query over `memory_canonical` \u2014 no
    * embedder anywhere on the path, so it works while the semantic leg is
    * saturated or down. Scores are token-overlap fractions (0..1, ordering
-   * only — NOT cosine), so the relevance floor and decay deliberately do
+   * only \u2014 NOT cosine), so the relevance floor and decay deliberately do
    * not apply.
    */
   async searchLexical(query, opts) {
@@ -6757,7 +6757,7 @@ var Mem0Backend = class {
   /**
    * Temporal-lite validity close (the `MemoryBackend.invalidateEntry`
    * capability): soft-forget / supersession as a vec-safe column update on
-   * the canonical store — never a delete, never a re-embed. Returns false
+   * the canonical store \u2014 never a delete, never a re-embed. Returns false
    * when no OPEN memory row matched (unknown id or already closed).
    */
   async invalidateEntry(id, opts = {}) {
@@ -6822,6 +6822,7 @@ init_config();
 
 // ../../libs/generic/memory/src/local-embedder-worker.ts
 import { Worker } from "node:worker_threads";
+import { availableParallelism } from "node:os";
 import { fileURLToPath } from "node:url";
 import { resolve, dirname } from "node:path";
 var _worker = null;
@@ -6849,7 +6850,7 @@ function ensureWorker() {
   _workerReady = new Promise((resolveReady, rejectReady) => {
     try {
       _worker = new Worker(workerPath(), {
-        // execArgv passthrough is fine — the script is plain JS,
+        // execArgv passthrough is fine \u2014 the script is plain JS,
         // no ts-node loader needed.
       });
     } catch (err) {
@@ -6937,6 +6938,7 @@ async function _resetWorker() {
   _refd = false;
   _nextId = 0;
 }
+var shutdownLocalEmbedder = _resetWorker;
 function installBeforeExitHook() {
   if (_beforeExitHookInstalled) return;
   _beforeExitHookInstalled = true;
@@ -6968,7 +6970,26 @@ function warnEmbedFallback(model, err) {
 }
 var LOCAL_EMBEDDER_MODEL = "Xenova/bge-small-en-v1.5";
 var TRANSFORMERS_PACKAGE = "@huggingface/transformers";
-var ORT_SESSION_OPTIONS = { intraOpNumThreads: 4, interOpNumThreads: 1 };
+var MAX_INTRA_OP_THREADS = 4;
+var BACKGROUND_HOST_SHARE_DIVISOR = 4;
+function resolveIntraOpNumThreads(hostCores) {
+  if (!Number.isFinite(hostCores) || hostCores < 1) return 1;
+  return Math.max(
+    1,
+    Math.min(MAX_INTRA_OP_THREADS, Math.floor(hostCores / BACKGROUND_HOST_SHARE_DIVISOR))
+  );
+}
+function hostParallelism() {
+  try {
+    return availableParallelism();
+  } catch {
+    return 1;
+  }
+}
+var ORT_SESSION_OPTIONS = {
+  intraOpNumThreads: resolveIntraOpNumThreads(hostParallelism()),
+  interOpNumThreads: 1
+};
 async function buildLocalEmbedder() {
   let pipelinePromise = null;
   return async (text) => {
@@ -6994,7 +7015,7 @@ async function buildLocalEmbedder() {
 // ../../libs/generic/memory/src/embedder-dims.ts
 var EMBEDDER_DIM_SPECS = {
   /**
-   * BGE-small is natively 384 — no truncation happens at all, which is why
+   * BGE-small is natively 384 \u2014 no truncation happens at all, which is why
    * this mode never had the bug.
    */
   local: {
@@ -7008,14 +7029,14 @@ var EMBEDDER_DIM_SPECS = {
    * OpenAI text-embedding-3-small. Reduction is first-class here: the
    * `dimensions` API parameter applies the trained MRL and renormalizes
    * server-side, so any width is SUPPORTED, not a hand-rolled prefix.
-   * This is the contrast case that keeps the guard honest — it must not
+   * This is the contrast case that keeps the guard honest \u2014 it must not
    * flag every non-native width, only untrained ones.
    *
    * 768 (was 384) tracks the prose column width so this mode stays
-   * PROSE-ELIGIBLE alongside gemma — see `PROSE_ELIGIBLE_MODES` in
+   * PROSE-ELIGIBLE alongside gemma \u2014 see `PROSE_ELIGIBLE_MODES` in
    * operator-core's `search/prose-vector-dims.ts`. It costs nothing to move:
    * OpenAI bills per TOKEN, not per dimension, and `dimensions` is applied
-   * server-side. Keeping a second eligible mode matters — it is the working
+   * server-side. Keeping a second eligible mode matters \u2014 it is the working
    * prose fallback when gemma is unavailable, and it keeps the storage
    * contract from silently becoming gemma-specific.
    */
@@ -7027,7 +7048,7 @@ var EMBEDDER_DIM_SPECS = {
     targetDims: 768
   },
   /**
-   * EmbeddingGemma-300m at its NATIVE 768 — the case this guard was built for,
+   * EmbeddingGemma-300m at its NATIVE 768 \u2014 the case this guard was built for,
    * resolved by REMOVING the truncation rather than relocating it to a
    * different trained point (P-005 / D-005).
    *
@@ -7038,7 +7059,7 @@ var EMBEDDER_DIM_SPECS = {
    * (@512 +.0546 CI [.0165,.0935]; @768 +.0603 CI [.0210,.1022]).
    *
    * WHY NATIVE 768 AND NOT THE TRAINED 512 (D-005). @768 is better on both the
-   * point estimate and the CI lower bound, and — the decisive part — costs the
+   * point estimate and the CI lower bound, and \u2014 the decisive part \u2014 costs the
    * SAME compute: the model always runs a native-768 forward pass, so an MRL
    * "truncation" is only a slice afterwards. 512 would buy ~400MB of disk at
    * the price of keeping the truncation machinery, and therefore keeping this
@@ -7046,7 +7067,7 @@ var EMBEDDER_DIM_SPECS = {
    * nativeDims`, so `isTrainedDim` is trivially true and no acknowledgement can
    * ever be needed here again.
    *
-   * ⚠ Do NOT "optimize" this back down to a narrower prefix without re-reading
+   * \u26a0 Do NOT "optimize" this back down to a narrower prefix without re-reading
    * D-005: the re-embed corpus is ~395k vectors, so a width change is a
    * multi-hour, all-at-once migration (pgvector cannot cast between widths).
    * That cost is why the width chosen here is the model's terminal one.
@@ -7062,7 +7083,7 @@ var EMBEDDER_DIM_SPECS = {
    * harrier-oss-v1-0.6b at its NATIVE 1024 (its own vector(1024) table), so
    * the configured target needs no acknowledgement. Harrier publishes no MRL
    * at all, which is why the exploratory `dims: 384` variant is an untrained
-   * cut — see `isTrainedDim`, which reports it as such, and the P-001 gate it
+   * cut \u2014 see `isTrainedDim`, which reports it as such, and the P-001 gate it
    * must win before any prose-surface use.
    */
   harrier: {
@@ -7075,7 +7096,7 @@ var EMBEDDER_DIM_SPECS = {
 };
 var CANDIDATE_DIM_SPECS = {
   /**
-   * Granite-Embedding-97M-Multilingual-R2 — natively 384. The cheapest
+   * Granite-Embedding-97M-Multilingual-R2 \u2014 natively 384. The cheapest
    * possible resolution of the untrained-cut bug: at the width the prose
    * columns already store, there is no truncation happening at all, so the
    * question "is this cut trained?" does not arise.
@@ -7088,12 +7109,12 @@ var CANDIDATE_DIM_SPECS = {
     targetDims: 384
   },
   /**
-   * Granite-Embedding-311M-Multilingual-R2 — 768 native, with card-published
+   * Granite-Embedding-311M-Multilingual-R2 \u2014 768 native, with card-published
    * Matryoshka nesting at 768/512/384/256/128. 384 is among them, so
    * `targetDims: 384` needs no `untrainedCut` acknowledgement (and if someone
    * later adds one anyway, the validator's stale-ack rule rejects it).
    *
-   * That is a statement about DECLARABILITY, not quality — see the warning on
+   * That is a statement about DECLARABILITY, not quality \u2014 see the warning on
    * this table. Whether 311m@384 actually beats gemma@512 is P-003's
    * measurement to make.
    */
@@ -7105,11 +7126,11 @@ var CANDIDATE_DIM_SPECS = {
     targetDims: 384
   },
   /**
-   * Qwen3-Embedding-0.6B — 1024 native, card-documented MRL across
+   * Qwen3-Embedding-0.6B \u2014 1024 native, card-documented MRL across
    * user-defined widths from 32 to 1024, so reduction is first-class the way
    * OpenAI's `dimensions` parameter is (hence `continuous`).
    *
-   * ⚠ `continuous` here means "trained at any width in the published range",
+   * \u26a0 `continuous` here means "trained at any width in the published range",
    * and that range has a FLOOR of 32 which this model shares with no other
    * entry. `isTrainedDim` cannot express a floor, so it would call dims 1..31
    * trained. Our target of 384 sits far inside the range; a future caller
@@ -7938,7 +7959,7 @@ function createEmbedSidecarServer(opts = {}) {
         // capabilities against this before adopting the process.
         capabilities,
         models: { ...warm },
-        // The (device, dtype) pair reranking is ACTUALLY running on — not the
+        // The (device, dtype) pair reranking is ACTUALLY running on \u2014 not the
         // one requested. A GPU host whose CUDA provider failed to load is
         // demoted to cpu/q8 silently as far as search is concerned (the engine
         // is fail-safe by design), so this is where that shows up. Before the
@@ -7949,7 +7970,7 @@ function createEmbedSidecarServer(opts = {}) {
         // Both the embedder (@papercusp/memory) and the cross-encoder
         // (@papercusp/rerank) run their model in a persistent worker thread and
         // fall back to INLINE main-thread work when it is unavailable. Each has
-        // a `disabled` latch that, once tripped, is permanent for the process —
+        // a `disabled` latch that, once tripped, is permanent for the process \u2014
         // and because the fallback returns identical values, tripping it emits
         // no error, no log line and no exit code. The sidecar keeps answering
         // 200 while the one thing it exists for (a warm model OFF the request
@@ -7962,7 +7983,7 @@ function createEmbedSidecarServer(opts = {}) {
         // rerankers above use, so this reads the live module record rather than
         // a second, pristine copy. `disabled: true` is the field to alert on.
         //
-        // Report-only — `ok` stays true. A fallen-back sidecar is degraded, not
+        // Report-only \u2014 `ok` stays true. A fallen-back sidecar is degraded, not
         // down; it still returns correct vectors and scores, so failing the
         // health check would tell a supervisor to restart a process that is
         // serving every request correctly.
@@ -8029,7 +8050,7 @@ function runEmbedSidecarServer() {
   );
   const shutdown = (signal) => {
     console.log(`[embed-sidecar] ${signal} received, shutting down gracefully`);
-    void handle.close().then(() => process.exit(0));
+    void handle.close().then(() => Promise.allSettled([shutdownLocalEmbedder(), shutdownLocalReranker()])).then(() => process.exit(0));
   };
   process.on("SIGTERM", () => shutdown("SIGTERM"));
   process.on("SIGINT", () => shutdown("SIGINT"));
