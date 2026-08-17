@@ -212,6 +212,7 @@ export async function setLocalBackendEnabled(
        SET enabled = ${enabled}, updated_at = now()
      WHERE id = ${id.trim()} AND workspace_id = ${ws}
     RETURNING id, kind, base_url, models, max_concurrent, enabled,
+              lifecycle, idle_ttl_sec, unit_name,
               created_at::text, updated_at::text`;
   return rows[0] ? rowToRecord(rows[0]) : null;
 }
@@ -223,6 +224,9 @@ interface LocalBackendRow {
   models: unknown;
   max_concurrent: number;
   enabled: boolean;
+  lifecycle: string;
+  idle_ttl_sec: number | null;
+  unit_name: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -236,6 +240,14 @@ function rowToRecord(r: LocalBackendRow): LocalBackendRecord {
     models,
     maxConcurrent: r.max_concurrent,
     enabled: r.enabled,
+    // Narrow defensively rather than casting: the CHECK constraint makes an out-of-domain value
+    // unreachable through this store, but a hand-run UPDATE or a future migration could still
+    // widen it, and 'always-on' is the safe reading — it makes a backend NOT reapable.
+    lifecycle: (LOCAL_BACKEND_LIFECYCLES as readonly string[]).includes(r.lifecycle)
+      ? (r.lifecycle as LocalBackendLifecycle)
+      : 'always-on',
+    idleTtlSec: r.idle_ttl_sec ?? null,
+    unitName: r.unit_name ?? null,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   };

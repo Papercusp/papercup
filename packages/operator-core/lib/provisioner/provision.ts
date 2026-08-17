@@ -169,6 +169,16 @@ export async function planProvision(opts: PlanProvisionOptions = {}): Promise<Pr
           baseUrl: `http://${entry.serve.host}:${entry.serve.portDefault}`,
           models: [entry.model.ollamaRef],
           maxConcurrent: entry.serve.parallelSlots,
+          // Carry the catalog's RECOMMENDED lifecycle into the registry, which is the operative
+          // truth the reaper and the gateway read (D-005). Unset in the catalog ⇒ 'always-on',
+          // so this can only ever preserve today's behaviour for an entry that says nothing.
+          lifecycle: entry.serve.lifecycle ?? 'always-on',
+          idleTtlSec: entry.serve.idleTtlSec ?? null,
+          // This function is the only place that knows BOTH the catalog entry and the unit file
+          // it is about to write, which is exactly why the unit name is captured here rather than
+          // inferred later from baseUrl — for a backend fronted by a proxy those differ, and
+          // guessing stops the wrong process (D-005).
+          unitName: `${backendId}.service`,
         }
       : null;
 
