@@ -22,6 +22,7 @@ import {
   releaseConfig,
   describeIntegrationRoot,
   integrationRootEvidence,
+  databaseEvidence,
   assertGateableIntegrationRoot,
   isNonGateableCheckout,
 } from './release-config';

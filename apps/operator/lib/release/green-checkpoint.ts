@@ -10206,6 +10206,7 @@ if (require.main === module) {
   const {
     releaseConfig,
     integrationRootEvidence,
+    databaseEvidence,
     assertGateableIntegrationRoot,
   } = require("./release-config") as typeof import("./release-config");
   // WI-38241 — state the judged tree BEFORE any verdict exists, then refuse to gate a
@@ -10213,6 +10214,11 @@ if (require.main === module) {
   // releaseConfig(), because ~37 callers (rollback, deploy-cli) share that constructor and
   // must not be taken down to protect the gate.
   console.log(`${orchestratorStdoutTag()} ${integrationRootEvidence()}`);
+  // EI-20709645463022690 — state the DATABASE too, for the same reason and in the same breath:
+  // this process INHERITS the spawning operator's env, so "which database is the suite dialing"
+  // is exactly as unanswerable from the log as "which tree" was, and fails the same way — a
+  // well-formed schema-drift verdict about a database that was never the subject.
+  console.log(`${orchestratorStdoutTag()} ${databaseEvidence()}`);
   assertGateableIntegrationRoot();
   const cfg = releaseConfig();
   const arg = (f: string) => {
