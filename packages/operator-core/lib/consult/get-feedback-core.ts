@@ -281,7 +281,8 @@ export async function getFeedbackCore(
   }
 
   // 1) Origin task ref — explicit wins; undefined defaults to the requester's
-  //    most recently progressed wip item (the D-005 budget aggregation key).
+  //    most recently progressed wip item (task-attribution stat; the D-005
+  //    budget that once aggregated on it is removed).
   let originRef: string | null = req.originTaskRef !== undefined ? req.originTaskRef : null;
   if (req.originTaskRef === undefined) {
     const rows = (await sql`
@@ -308,8 +309,8 @@ export async function getFeedbackCore(
   //     BEFORE any wake or insert, check whether a CLOSED consult already
   //     answered a highly similar question. A hit is served as a create +
   //     instant-close: the consult row is written state='closed_answered' with
-  //     outcome.source='archive' and the source's outcome verbatim — no wake,
-  //     no budget debit. Archive-served rows are excluded from candidacy
+  //     outcome.source='archive' and the source's outcome verbatim — no wake.
+  //     Archive-served rows are excluded from candidacy
   //     (outcome->>'source' predicate) so no copy-of-copy chains can form.
   //     The SELECT doubles as the capability probe: pgvector absent / column
   //     not migrated throws, and the leg degrades to normal routing (the
@@ -408,7 +409,7 @@ export async function getFeedbackCore(
         `Served from the archive: consult ${archiveHit.conversation_id}` +
         `${archiveHit.responder_id ? ` (answered by ${archiveHit.responder_id}` : ' (closed'}${closedAtIso ? ` ${closedAtIso}` : ''})` +
         ` settled a highly similar question (sim ${archiveHit.sim.toFixed(2)} ≥ floor ${archiveFloor}). ` +
-        'The structured answer + provenance are in `archive` — no one was woken and no wake budget was spent. ' +
+        'The structured answer + provenance are in `archive` — no one was woken. ' +
         'RECONCILE if your context differs: the archived answer predates your current state; ' +
         'if it does not fit, re-call with archiveFloor: 2 to force fresh routing.',
     };
@@ -447,13 +448,16 @@ export async function getFeedbackCore(
   }
   // With a minimum in play (D-003 default 1), an empty selection means the
   // minimum was UNFILLABLE — the distinct causes stay distinguishable (D-003):
-  // instrument down ⇒ embed_unavailable; candidates existed but none live ⇒
-  // no_live_responder; no matching transcript at all ⇒ below_floor.
+  // instrument down ⇒ embed_unavailable; a pool that only LIVENESS kept out
+  // (qualified-but-dead, or a min>0 fill pool that was all dead) ⇒
+  // no_live_responder; nothing selectable in the first place (no match at
+  // all, or pure-floor min:0 with nothing above the floor) ⇒ below_floor —
+  // a live below-floor pool under min:0 is a FLOOR verdict, not a liveness one.
   const reason: GetFeedbackResult['reason'] = chosen
     ? undefined
     : route.snapshot.degraded === 'embed-unavailable'
       ? 'embed_unavailable'
-      : route.snapshot.candidates.length > 0
+      : route.qualified.length > 0 || (minResponders > 0 && route.snapshot.candidates.length > 0)
         ? 'no_live_responder'
         : 'below_floor';
 
@@ -546,7 +550,7 @@ export async function getFeedbackCore(
       ? 'The embedder is unavailable on this host — similarity could NOT be measured, so there is no ranking to fill a minimum from (cannot-measure ≠ measured-nothing). Proceed on your own judgment; retry later if the answer matters.'
       : reason === 'no_live_responder'
         ? 'Matching candidates exist but none is LIVE — no wake is possible and the minimum could not be filled with a reachable reviewer. remaining_candidates lists them; read their transcripts via sessions:read / sessions:search (retrieval fallback) and proceed.'
-        : 'No transcript in the workspace matched this question at all — there is no best-available reviewer to fill the minimum with. Proceed on your own judgment (first-class honest verdict, not an error).';
+        : "No transcript cleared this question's relevance floor (and no minimum-fill applied — either min 0 was requested or nothing matched at all): there is no best-available reviewer to route to. Proceed on your own judgment (first-class honest verdict, not an error).";
 
   return {
     ok: true,

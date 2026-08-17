@@ -7,8 +7,8 @@
  * without the prod singletons; the consult:reply / consult:decline /
  * consult:close tools (agent-tools/consult/*.ts) bind the prod seams.
  *
- * The enforcement chokepoint (D-008 §2): each verb VALIDATES {kind, caps,
- * budget} against consult_state, then WRITES THROUGH into the existing
+ * The enforcement chokepoint (D-008 §2): each verb VALIDATES {kind, caps}
+ * against consult_state, then WRITES THROUGH into the existing
  * conversation thread via deps.post (bound to conversations.postReply with
  * the internal via_consult_verb flag — the appendPost kind gate refuses every
  * untyped route), stamping consult_post_meta with the post's typed overlay.

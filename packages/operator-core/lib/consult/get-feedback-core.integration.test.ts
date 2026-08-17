@@ -28,7 +28,6 @@ import {
   HARD_BLOCKED_EXPIRY_MS,
   MAX_CONSULT_DEPTH,
   PROCEED_EXPIRY_MS,
-  WAKE_BUDGET_PER_TASK,
   type GetFeedbackDeps,
   type GetFeedbackError,
   type GetFeedbackRequest,
@@ -185,9 +184,9 @@ describe('getFeedbackCore — routed', () => {
     expect(r.verdict).toBe('routed');
     expect(r.state).toBe('awaiting_responder');
     expect(r.responder?.ownerId).toBe('agent-a');
-    expect(r.remaining_candidates).toEqual([{ ownerId: 'agent-b', score: 0.6, liveness: 'live' }]);
+    expect(r.remaining_candidates).toEqual([{ ownerId: 'agent-b', score: 0.6, liveness: 'live', via: 'floor' }]);
     expect(r.park_key).toBeNull(); // proceed contract
-    expect(r.wake).toMatchObject({ attempted: true, woke: 1, budget_exhausted: false });
+    expect(r.wake).toEqual({ attempted: true, woke: 1 });
 
     // Conversation: kind consult, addressed to the chosen responder, body carries the sections.
     expect(opened).toHaveLength(1);
@@ -228,7 +227,7 @@ describe('getFeedbackCore — routed', () => {
     expect(r.responder?.ownerId).toBe('agent-live');
     expect(opened[0].direct_to).toEqual(['agent-live']);
     // The skipped dead candidate stays visible for the manual cascade.
-    expect(r.remaining_candidates).toEqual([{ ownerId: 'agent-dead', score: 0.9, liveness: 'ended' }]);
+    expect(r.remaining_candidates).toEqual([{ ownerId: 'agent-dead', score: 0.9, liveness: 'ended', via: 'floor' }]);
   });
 });
 
@@ -272,11 +271,12 @@ describe('getFeedbackCore — honest no_qualified_responder', () => {
   });
 });
 
-describe('getFeedbackCore — wake budget (D-005)', () => {
-  it('aggregates wakes_used across consults sharing origin_task_ref; exhausted ⇒ deliver without wake', async () => {
+describe('getFeedbackCore — wake budget REMOVED (consult-min-max-and-rubric-vetting D-005)', () => {
+  it('routes + wakes regardless of how many wakes sibling consults on the same origin ref already spent', async () => {
     const ref = 'WI-BUDGET-1';
-    // Seed: prior consults for the same originating task have spent the budget.
-    for (let i = 0; i < WAKE_BUDGET_PER_TASK; i++) {
+    // Seed well past the OLD budget of 4 — under the removed gate this consult
+    // would have been delivered by subscription only; now it must still wake.
+    for (let i = 0; i < 6; i++) {
       await rootSql`
         INSERT INTO harness_shared.consult_state
           (workspace_id, conversation_id, requester_id, state, question, origin_task_ref, wakes_used)
@@ -284,30 +284,73 @@ describe('getFeedbackCore — wake budget (D-005)', () => {
     }
     const { deps, reached } = makeDeps(routeOf([cand('agent-a')]));
     const r = asOk(await getFeedbackCore({ ...baseReq, originTaskRef: ref }, deps));
-    expect(r.verdict).toBe('routed'); // still routed + delivered by subscription
+    expect(r.verdict).toBe('routed');
     expect(r.state).toBe('awaiting_responder');
-    expect(r.wake).toMatchObject({
-      attempted: false,
-      woke: 0,
-      budget_exhausted: true,
-      wakes_used_for_task: WAKE_BUDGET_PER_TASK,
-      wake_budget: WAKE_BUDGET_PER_TASK,
-    });
-    expect(reached).toHaveLength(0);
+    expect(r.wake).toEqual({ attempted: true, woke: 1 }); // no budget surfaces at all
+    expect(r.hint).not.toContain('budget');
+    expect(reached).toHaveLength(1);
     const row = await stateRow(r.conversation_id);
-    expect(row.wakes_used).toBe(0); // no debit without an attempt
+    expect(row.wakes_used).toBe(1); // still WRITTEN as a plain stat (D-005)
+  });
+});
+
+describe('getFeedbackCore — min/max selection (consult-min-max-and-rubric-vetting D-001/D-002/D-003)', () => {
+  /** The persisted selection block of a consult_state.routing snapshot. */
+  const selectionOf = (routing: unknown) =>
+    (routing as { selection?: { min: number; max: number; selected: Array<{ ownerId: string; via: string }> } })
+      .selection;
+
+  it('below-floor minimum-fill: routes best-available LIVE, labeled everywhere + honest wake body', async () => {
+    const below = cand('agent-min', {
+      score: 0.31,
+      signals: { similarity: 0.22, recency: 0.5, verification: 0.3, authorship: 0 },
+    });
+    const { deps, reached } = makeDeps(routeOf([], { all: [below] }));
+    const r = asOk(await getFeedbackCore(baseReq, deps));
+    expect(r.verdict).toBe('routed'); // D-003: min 1 fills even below the floor
+    expect(r.responder?.ownerId).toBe('agent-min');
+    expect(r.responder_via).toBe('minimum');
+    expect(r.hint).toContain('minimum-fill'); // the viaNote warning rides the hint
+    // D-002 honest wake body: first-principles request, no costumed expertise.
+    expect(reached).toHaveLength(1);
+    expect(reached[0].body).toContain('BEST-AVAILABLE');
+    expect(reached[0].body).toContain('FIRST-PRINCIPLES');
+    expect(reached[0].body).toContain('do NOT decline solely for lack of context');
+    // Persisted provenance: the snapshot's selection block survives verbatim.
+    const sel = selectionOf((await stateRow(r.conversation_id)).routing);
+    expect(sel?.min).toBe(1);
+    expect(sel?.selected).toEqual([expect.objectContaining({ ownerId: 'agent-min', via: 'minimum' })]);
   });
 
-  it('under budget: debits the attempt and reports the running total', async () => {
-    const ref = 'WI-BUDGET-2';
-    await rootSql`
-      INSERT INTO harness_shared.consult_state
-        (workspace_id, conversation_id, requester_id, state, question, origin_task_ref, wakes_used)
-      VALUES (${WS}, ${`conv-seed-${ref}`}, 'req-1', 'awaiting_responder', 'q', ${ref}, 2)`;
-    const { deps, reached } = makeDeps(routeOf([cand('agent-a')]));
-    const r = asOk(await getFeedbackCore({ ...baseReq, originTaskRef: ref }, deps));
-    expect(r.wake).toMatchObject({ attempted: true, woke: 1, wakes_used_for_task: 3 });
-    expect(reached).toHaveLength(1);
+  it('maxResponders caps the menu; delivery stays single-wake; provenance persisted', async () => {
+    const qs = [cand('agent-1', { score: 0.9 }), cand('agent-2', { score: 0.8 }), cand('agent-3', { score: 0.7 })];
+    const { deps, reached } = makeDeps(routeOf(qs));
+    const r = asOk(await getFeedbackCore({ ...baseReq, maxResponders: 2 }, deps));
+    expect(r.responder?.ownerId).toBe('agent-1');
+    expect(r.responder_via).toBe('floor');
+    expect(r.remaining_candidates).toEqual([{ ownerId: 'agent-2', score: 0.8, liveness: 'live', via: 'floor' }]);
+    expect(reached).toHaveLength(1); // cascade, never a parallel-wake set
+    const sel = selectionOf((await stateRow(r.conversation_id)).routing);
+    expect(sel?.max).toBe(2);
+    expect(sel?.selected.map((s) => s.ownerId)).toEqual(['agent-1', 'agent-2']);
+  });
+
+  it('minResponders 0 restores pure-floor selection: a live below-floor pool is an honest below_floor', async () => {
+    const below = cand('agent-min', { score: 0.31 });
+    const { deps, reached } = makeDeps(routeOf([], { all: [below] }));
+    const r = asOk(await getFeedbackCore({ ...baseReq, minResponders: 0 }, deps));
+    expect(r.verdict).toBe('no_qualified_responder');
+    expect(r.reason).toBe('below_floor'); // NOT no_live_responder — the pool was live, just below the floor
+    expect(reached).toHaveLength(0);
+  });
+
+  it('a minimum only fillable by the dead stays unfilled: no_live_responder', async () => {
+    const dead = cand('agent-dead', { liveness: 'ended' });
+    const { deps, reached } = makeDeps(routeOf([], { all: [dead] }));
+    const r = asOk(await getFeedbackCore(baseReq, deps));
+    expect(r.verdict).toBe('no_qualified_responder');
+    expect(r.reason).toBe('no_live_responder');
+    expect(reached).toHaveLength(0);
   });
 });
 

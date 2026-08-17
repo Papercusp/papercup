@@ -60,7 +60,7 @@ export default defineTool({
       .min(1)
       .max(120)
       .optional()
-      .describe('Work-item/task the wake budget debits against (default: your most recently progressed wip work-item).'),
+      .describe('Work-item/task this consult is attributed to (default: your most recently progressed wip work-item).'),
     exclude: z
       .array(z.string().min(1))
       .max(16)

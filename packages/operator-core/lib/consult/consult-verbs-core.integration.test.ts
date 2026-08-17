@@ -296,8 +296,8 @@ describe('consultReplyCore — kind rules + transitions', () => {
   });
 });
 
-describe('consultReplyCore — requester follow-up wake budget (D-005)', () => {
-  it('under budget: wakes the responder, debits wakes_used, reports the running total', async () => {
+describe('consultReplyCore — requester follow-up wake (budget REMOVED, consult-min-max-and-rubric-vetting D-005)', () => {
+  it('wakes the responder and debits the wakes_used stat', async () => {
     const ref = 'WI-V-BUDGET-1';
     const id = await seedConsult({ state: 'active', originTaskRef: ref, wakesUsed: 1 });
     const { deps, reached, emits } = makeDeps();
@@ -307,7 +307,7 @@ describe('consultReplyCore — requester follow-up wake budget (D-005)', () => {
     );
     if ('error' in r) throw new Error(r.error);
     expect(r.role).toBe('requester');
-    expect(r.wake).toMatchObject({ attempted: true, woke: 1, budget_exhausted: false, wakes_used_for_task: 2 });
+    expect(r.wake).toEqual({ attempted: true, woke: 1 }); // no budget surfaces at all
     expect(reached).toEqual([{ responder: RESPONDER, conversationId: id }]);
     expect(emits).toHaveLength(0); // requester posts never fire the park key
     expect((await stateRow(id)).wakes_used).toBe(2);
@@ -315,9 +315,12 @@ describe('consultReplyCore — requester follow-up wake budget (D-005)', () => {
     expect(meta[0].kind).toBe('question');
   });
 
-  it('exhausted budget (aggregated over origin_task_ref): posts + delivers, but does NOT wake', async () => {
+  it('wakes even when sibling consults on the same origin ref spent what was once the budget', async () => {
     const ref = 'WI-V-BUDGET-2';
-    // Sibling consults on the same origin ref have spent the budget (4).
+    // Sibling consults on the same origin ref carry 4 wakes — the OLD budget
+    // ceiling. Under the removed gate this follow-up would have been
+    // subscription-only; now it must still wake (D-005: max_exchanges is the
+    // remaining per-consult bound).
     for (let i = 0; i < 4; i++) await seedConsult({ originTaskRef: ref, wakesUsed: 1 });
     const id = await seedConsult({ state: 'active', originTaskRef: ref, wakesUsed: 0 });
     const { deps, reached } = makeDeps();
@@ -326,11 +329,11 @@ describe('consultReplyCore — requester follow-up wake budget (D-005)', () => {
       deps,
     );
     if ('error' in r) throw new Error(r.error);
-    expect(r.wake).toMatchObject({ attempted: false, woke: 0, budget_exhausted: true, wakes_used_for_task: 4 });
-    expect(r.hint).toContain('exhausted');
-    expect(reached).toHaveLength(0);
-    expect((await stateRow(id)).wakes_used).toBe(0); // no debit without an attempt
-    expect((await stateRow(id)).exchanges_used).toBe(1); // the post itself landed
+    expect(r.wake).toEqual({ attempted: true, woke: 1 });
+    expect(r.hint).not.toContain('exhausted');
+    expect(reached).toHaveLength(1);
+    expect((await stateRow(id)).wakes_used).toBe(1); // debit on the attempt — a plain stat
+    expect((await stateRow(id)).exchanges_used).toBe(1);
   });
 });
 

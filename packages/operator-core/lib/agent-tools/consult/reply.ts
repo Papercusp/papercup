@@ -6,7 +6,8 @@
  * (core/binding split, mirrors get-feedback.ts). This file wires the prod
  * seams: post → conversations.postReply (with the internal via_consult_verb
  * kind-gate opt-in), emitReplyEvent → emitAwaitedEvent (latched park key),
- * reach → notifyAgents (requester-follow-up wake, budget-gated in the core).
+ * reach → notifyAgents (requester-follow-up wake; unconditional — the wake
+ * budget is removed, consult-min-max-and-rubric-vetting-2026-08-17 D-005).
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
