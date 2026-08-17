@@ -2744,6 +2744,61 @@ describe("runGreenCheckpoint", () => {
         calls.indexOf("commitsInRange"),
       );
     });
+
+    // WI-39450: the salvage is a SECOND full affected suite, and it consulted no deadline —
+    // so on a real red it routinely started with minutes left of the 120m
+    // GREEN_CHECKPOINT_SUITE_TIMEOUT_MS budget and was SIGTERM'd mid-confirm. On this
+    // (non-refire) path the verdict is persisted only when runGreenCheckpoint RESOLVES, via
+    // the CLI's recordOwnVerdict `.then()` — so the kill discarded a fully-computed verdict
+    // and the routine wrote status:'error'/candidate:null/failingTests:[] instead. Measured
+    // 2026-08-17: 10 of 13 recent checkpoint logs ended on the salvage's "confirming longest
+    // clean prefix" line, and gate_health came back observedCandidate=null.
+    it("WI-39450: a REAL red past the run budget SKIPS the salvage and still returns its verdict", async () => {
+      const c1 = await commit("a", "1", "c1");
+      await git(repo, ["branch", "ready", c1]);
+      const c2 = await commit("a", "2", "c2");
+      await commit("unrelated.ts", "x", "c3");
+      const { deps, calls } = bothPathsWired({ passesAtTip: false });
+
+      const r = await runGreenCheckpoint(cfg(), deps, {
+        candidate: c2,
+        noPush: true,
+        // Already past the deadline when the salvage is reached.
+        salvageDeadlineMs: Date.now() - 1,
+      });
+
+      // Triage still runs (it is cheap and precedes the deadline check)...
+      expect(calls).toContain("runTestsAtRef");
+      // ...but the expensive salvage never STARTS — commitsInRange is its first call, so it
+      // cannot run without leaving a mark.
+      expect(calls).not.toContain("commitsInRange");
+
+      // The whole point: the verdict still lands, intact, naming the candidate and the
+      // failing tests. This is what the SIGTERM used to destroy.
+      expect(r.green).toBe(false);
+      expect(r.candidate).toBe(c2);
+      expect(r.failingTests).toContain("@papercusp/web");
+    });
+
+    // CONTROL for the test above: the deadline must be the ONLY thing suppressing the
+    // salvage. Same fixture, same real red, deadline far in the future ⇒ it must still
+    // salvage. Without this, a bug that disabled the salvage outright would pass the
+    // skip-test and look like a fix.
+    it("WI-39450 control: the same REAL red WITH budget remaining still salvages", async () => {
+      const c1 = await commit("a", "1", "c1");
+      await git(repo, ["branch", "ready", c1]);
+      const c2 = await commit("a", "2", "c2");
+      await commit("unrelated.ts", "x", "c3");
+      const { deps, calls } = bothPathsWired({ passesAtTip: false });
+
+      await runGreenCheckpoint(cfg(), deps, {
+        candidate: c2,
+        noPush: true,
+        salvageDeadlineMs: Date.now() + 60 * 60_000,
+      });
+
+      expect(calls).toContain("commitsInRange");
+    });
   });
 
   // EI-18759362119598634: a LINT/TYPECHECK red never populates `failingFiles` (that list

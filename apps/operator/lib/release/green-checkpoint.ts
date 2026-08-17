@@ -4791,6 +4791,12 @@ export interface CheckpointOpts {
   /** Wall-clock start of the FIRST pass of this run, threaded across refires so the deadline bound
    *  measures the whole run rather than restarting at each recursion (internal). */
   runStartedAtMs?: number;
+  /** WI-39450 test seam — absolute wall-clock deadline after which the longest-green-prefix
+   *  salvage must not START (it is a second full affected suite). Defaults to the real
+   *  {@link isolationPhaseDeadlineMs}, which is anchored at PROCESS start, so a test process
+   *  is never organically out of time and the skip branch would otherwise be unreachable.
+   *  Mirrors the isolation phase's own injectable `phaseDeadlineMs`. */
+  salvageDeadlineMs?: number;
 }
 
 /**
@@ -6416,29 +6422,41 @@ export async function runGreenCheckpoint(
         "partial-green-gate: skipped — disabled by PAPERCUSP_PARTIAL_GREEN_GATE=0",
       );
     }
-    // WI-39450: persist THIS pass's verdict BEFORE the salvage, for the same reason WI-37490
-    // does it before an auto-refire recursion — except this path is the COMMON one (a
-    // confirmed real red, autoRefire=false), and until now it had no in-process persistence
-    // at all: on the non-refire path the verdict reaches gate_health ONLY via the result
-    // MARKER the routine parses on clean exit. tryLongestGreenPrefix consults NO deadline
-    // (unlike the isolation phase, which honours isolationPhaseDeadlineMs), so when the 120m
-    // GREEN_CHECKPOINT_SUITE_TIMEOUT_MS SIGTERM lands mid-confirm there is no marker and the
-    // routine records status:'error' / candidate:null / failingTests:[] — discarding a
-    // verdict this run had ALREADY fully computed, so the next run re-derives the same
-    // failures from scratch. That is precisely the positive feedback loop
-    // EI-20669541349219660 bounded for the isolation phase ("a verdict ALWAYS lands");
-    // it survived one phase later, here. Observed 2026-08-17: pid 3749262 ran exactly its
-    // 120m cap, logged "candidate 9d19fdc6 is NOT green" + a real-red re-triage naming
-    // win-leg-default-roles.test.ts, then died mid "confirming longest clean prefix" — and
-    // gate_health came back observedCandidate=null, failingTests=[]. 10 of 13 recent
-    // checkpoint logs end on that same salvage line.
+    // WI-39450: do not START the prefix salvage without time to FINISH it. The salvage is a
+    // SECOND full affected suite ("tens of minutes" — see the ordering note above) and, unlike
+    // the isolation phase, it consulted NO deadline. On the NON-refire path (a confirmed real
+    // red — the common case) this run's verdict is persisted only when runGreenCheckpoint
+    // RESOLVES, via the CLI's recordOwnVerdict `.then()`; the refire path's own
+    // deps.recordVerdict (WI-37490) never fires here because autoRefire=false. So when the
+    // 120m GREEN_CHECKPOINT_SUITE_TIMEOUT_MS SIGTERM landed mid-confirm, the promise never
+    // resolved, no result MARKER was emitted, and the ROUTINE recorded status:'error' /
+    // candidate:null / failingTests:[] — discarding a verdict this run had ALREADY fully
+    // computed, so the next run re-derived the same failures from scratch. That is exactly
+    // the positive feedback loop EI-20669541349219660 bounded for the isolation phase ("a
+    // verdict ALWAYS lands"); it survived one phase later, here.
     //
-    // Recording early is safe: recordVerdict is an upsert, and a salvage that DOES advance
-    // falls through to the terminal result which records over this one. The only state this
-    // can leave behind is an accurate not-green verdict for a run that was killed — strictly
-    // better than the empty error verdict it replaces.
-    await deps.recordVerdict?.(buildNotGreenResult(retriage)).catch(() => {});
-    if (lastReady && !staleRed && partialGreenEnabled) {
+    // Observed 2026-08-17: pid 3749262 ran exactly its 120m cap, logged "candidate 9d19fdc6
+    // is NOT green" plus a real-red re-triage naming win-leg-default-roles.test.ts, then died
+    // mid "confirming longest clean prefix ee18c161"; gate_health came back
+    // observedCandidate=null, failingTests=[]. 10 of 13 recent checkpoint logs end on that
+    // same salvage line.
+    //
+    // Skipping is the SAFE direction: the salvage only ever ADDS a partial advance of `main`
+    // to a green prefix. Declining it costs one deferred partial advance; attempting it
+    // without headroom costs the whole verdict. Deliberately NOT fixed by recording the
+    // verdict early instead — trackGateStall increments `consecutiveReds` unconditionally per
+    // call (release-actions.ts, `(gh.consecutiveReds ?? 0) + 1`, no per-candidate dedup), so
+    // an early record plus the terminal recordOwnVerdict would count ONE red twice and
+    // inflate the very streak this work is meant to clear.
+    const salvageDeadlineMs = opts.salvageDeadlineMs ?? isolationPhaseDeadlineMs();
+    const salvageOutOfTime = Date.now() >= salvageDeadlineMs;
+    if (salvageOutOfTime && lastReady && !staleRed && partialGreenEnabled) {
+      logPartialGreenGate(
+        "partial-green-gate: skipped — out of run budget before the salvage's confirm suite " +
+          "(a verdict that lands beats a partial advance that does not)",
+      );
+    }
+    if (lastReady && !staleRed && partialGreenEnabled && !salvageOutOfTime) {
       logPartialGreenGate(
         `partial-green-gate: attempting longest-green-prefix salvage between ${lastReady.slice(0, 8)} and candidate ${candidate.slice(0, 8)}`,
       );
