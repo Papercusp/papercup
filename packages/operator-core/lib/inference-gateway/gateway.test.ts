@@ -170,8 +170,12 @@ test('estimateTokens — uses max_tokens for output, ~chars/4 for input', () => 
   assert.ok(e.inTok > 0);
 });
 
+// The alias TARGETS below track ONE_MILLION_MODEL_ALIASES in gateway.ts — update them
+// together when a model flip repoints an alias. The `claude-opus-4-8` ids further down are
+// deliberately NOT alias targets: they prove a dated id is forwarded verbatim, which is a
+// property an alias target cannot test (it would be indistinguishable from expansion).
 test('resolveGatewayModel — strips the CLI 1M marker and resolves bare aliases to upstream ids', () => {
-  assert.deepEqual(resolveGatewayModel('opus[1m]'), { model: 'claude-opus-4-8', context1m: true });
+  assert.deepEqual(resolveGatewayModel('opus[1m]'), { model: 'claude-opus-5', context1m: true });
   assert.deepEqual(resolveGatewayModel('sonnet[1m]:high'), { model: 'claude-sonnet-5', context1m: true });
   assert.deepEqual(resolveGatewayModel('claude-opus-4-8[1m]'), { model: 'claude-opus-4-8', context1m: true });
   assert.deepEqual(resolveGatewayModel('claude-opus-4-8'), { model: 'claude-opus-4-8', context1m: false });
@@ -179,9 +183,9 @@ test('resolveGatewayModel — strips the CLI 1M marker and resolves bare aliases
 
 test('normalizeGatewayRequestBody — rewrites only marked requests and preserves ordinary bytes', () => {
   const marked = normalizeGatewayRequestBody(Buffer.from(JSON.stringify({ model: 'opus[1m]', messages: [] })));
-  assert.equal(marked.model, 'claude-opus-4-8');
+  assert.equal(marked.model, 'claude-opus-5');
   assert.equal(marked.context1m, true);
-  assert.equal(JSON.parse(marked.body.toString()).model, 'claude-opus-4-8');
+  assert.equal(JSON.parse(marked.body.toString()).model, 'claude-opus-5');
   const ordinary = Buffer.from(JSON.stringify({ model: 'claude-opus-4-8', messages: [] }));
   const unchanged = normalizeGatewayRequestBody(ordinary);
   assert.equal(unchanged.context1m, false);
@@ -419,7 +423,7 @@ test('transparent proxy — resolves a CLI [1m] model and forwards the context-1
   });
   const res = await post({ model: 'opus[1m]', max_tokens: 1, messages: [{ role: 'user', content: 'ping' }] });
   assert.equal(res.status, 200);
-  assert.equal(JSON.parse(upstream.last.body).model, 'claude-opus-4-8');
+  assert.equal(JSON.parse(upstream.last.body).model, 'claude-opus-5');
   const betas = String(upstream.last.headers['anthropic-beta']);
   assert.ok(betas.includes('oauth-2025-04-20'));
   assert.ok(betas.includes('context-1m-2025-08-07'));
