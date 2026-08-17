@@ -1615,6 +1615,17 @@ export const FLAGS = {
   // only 3 of 17 goals ever carried one. DEFAULT ON. OFF = the kill-switch: the
   // timer still ticks but every sweep no-ops before reading the goals table.
   GOAL_SPEND_ROLLUP_TICK: "papercusp-goal-spend-rollup-tick",
+  // goal-mode-design-intent-hardening-2026-08-16 P-006 (D-001 structural beats
+  // prose, D-003 spend truth): makes goals.budget_cents a BINDING launch
+  // ceiling. The one launch resolver (goal-launch-settings.ts
+  // resolveGoalLaunchForGoal) refuses further fleet/agent launches once the
+  // PLATFORM spend snapshot (goals.metadata.spentCents, written only by the
+  // goal-spend-rollup tick — never an agent-supplied figure) has reached
+  // budget_cents, and opens a per-goal-deduped owner escalation naming the goal
+  // and the levers. DEFAULT ON. OFF = the kill-switch: budget truth still
+  // resolves and rides the resolution for display, but no launch is refused
+  // over it.
+  GOAL_BUDGET_LAUNCH_GATE: "papercusp-goal-budget-launch-gate",
   // system-notices-on-its-own-2026-08-16 P-002: gates the retrieval-degradation
   // watchdog — reads the trailing-window leg-health rate that observeLegs now
   // records for every hybrid search, and escalates when a sustained share of

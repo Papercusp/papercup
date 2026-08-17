@@ -47,6 +47,16 @@
  * whatever broke the read. The degraded reason is returned rather than swallowed
  * so a caller surfaces "the ceiling was not enforced" instead of quietly
  * reporting success. A ceiling that IS read and IS exceeded refuses, hard.
+ *
+ * THE BUDGET IS A THIRD CEILING (goal-mode-design-intent-hardening-2026-08-16
+ * P-006, flag GOAL_BUDGET_LAUNCH_GATE). `goals.budget_cents` binds against the
+ * PLATFORM spend snapshot (`goals.metadata.spentCents`, written only by the
+ * goal-spend-rollup tick — D-003) and refuses further launches once spent ≥
+ * budget, with a per-goal-deduped owner escalation. It lives in this resolver
+ * for the same D-001 reason the agent ceilings do: every launch door already
+ * honors `refusal`, so the budget binds everywhere with no per-door obligation.
+ * It follows the same fail-open rule — a budget that cannot be read, or that
+ * has no platform snapshot yet, is reported degraded, never guessed at.
  */
 import { z } from 'zod';
 import type { Sql } from 'postgres';
@@ -239,11 +249,27 @@ export interface GoalHeadcount {
 }
 
 export interface GoalLaunchRefusal {
-  reason: 'goal_max_agents' | 'fleet_max_agents';
+  reason: 'goal_max_agents' | 'fleet_max_agents' | 'goal_budget_exceeded';
   limit: number;
   current: number;
   requested: number;
   message: string;
+}
+
+/**
+ * P-006 (goal-mode-design-intent-hardening-2026-08-16): the budget truth read
+ * beside the settings. `budgetCents` is the owner's declared ceiling
+ * (`goals.budget_cents`, NULL = no budget declared = nothing enforced);
+ * `spentCents` is the PLATFORM snapshot (`goals.metadata.spentCents`, written
+ * only by the goal-spend-rollup tick — D-003: agents never hand-write it, and
+ * this gate never trusts any other figure). A declared budget with no snapshot
+ * is reported degraded rather than guessed at: a null from a careful platform
+ * outranks an invented number.
+ */
+export interface GoalBudgetTruth {
+  budgetCents: number | null;
+  spentCents: number | null;
+  spentCentsAt: string | null;
 }
 
 export interface GoalLaunchResolution {
@@ -254,6 +280,8 @@ export interface GoalLaunchResolution {
   effective: LaunchProfile;
   ceilings: { maxAgents: number | null; maxPerFleet: number | null };
   headcount: GoalHeadcount;
+  /** P-006: the goal's budget ceiling + platform spend snapshot. Null = no goal in scope. */
+  budget: GoalBudgetTruth | null;
   /** Non-null when this launch would breach a ceiling. The caller MUST NOT launch. */
   refusal: GoalLaunchRefusal | null;
   /** True when a ceiling could not be read or counted, so it was NOT enforced. */
@@ -289,28 +317,57 @@ export function parseGoalLaunchSettings(
 }
 
 /**
- * Read + validate one goal's launch settings. Returns null for "none declared"
- * (the common case, and the correct default), and reports invalid stored JSON as
- * an error rather than silently treating a malformed document as absent — a
- * settings blob that fails to parse means the owner's ceiling is NOT in force,
- * which they must hear about.
+ * Read + validate one goal's launch settings, plus its budget truth (P-006) —
+ * one row read for both, because every launch resolution needs both and a
+ * second round-trip per launch would be pure overhead. Returns null settings
+ * for "none declared" (the common case, and the correct default), and reports
+ * invalid stored JSON as an error rather than silently treating a malformed
+ * document as absent — a settings blob that fails to parse means the owner's
+ * ceiling is NOT in force, which they must hear about.
  */
 export async function readGoalLaunchSettings(
   goalId: string,
   sql?: Sql,
-): Promise<{ settings: GoalLaunchSettings | null; error: string | null }> {
-  if (!goalId) return { settings: null, error: null };
+): Promise<{ settings: GoalLaunchSettings | null; budget: GoalBudgetTruth | null; error: string | null }> {
+  if (!goalId) return { settings: null, budget: null, error: null };
   try {
     const rows = await pg(sql)`
-      SELECT launch_settings FROM harness_shared.goals WHERE id = ${goalId} LIMIT 1`;
-    if (!rows.length) return { settings: null, error: null };
-    return parseGoalLaunchSettings(
-      (rows[0] as { launch_settings?: unknown }).launch_settings,
-      `goal ${goalId} launch_settings`,
-    );
+      SELECT launch_settings, budget_cents,
+             metadata->'spentCents' AS spent_cents,
+             metadata->>'spentCentsAt' AS spent_cents_at
+        FROM harness_shared.goals WHERE id = ${goalId} LIMIT 1`;
+    if (!rows.length) return { settings: null, budget: null, error: null };
+    const row = rows[0] as {
+      launch_settings?: unknown;
+      budget_cents?: unknown;
+      spent_cents?: unknown;
+      spent_cents_at?: unknown;
+    };
+    const parsed = parseGoalLaunchSettings(row.launch_settings, `goal ${goalId} launch_settings`);
+    return {
+      settings: parsed.settings,
+      budget: {
+        budgetCents: asFiniteCents(row.budget_cents),
+        spentCents: asFiniteCents(row.spent_cents),
+        spentCentsAt: typeof row.spent_cents_at === 'string' ? row.spent_cents_at : null,
+      },
+      error: parsed.error,
+    };
   } catch (e) {
-    return { settings: null, error: e instanceof Error ? e.message : String(e) };
+    return { settings: null, budget: null, error: e instanceof Error ? e.message : String(e) };
   }
+}
+
+/**
+ * `budget_cents` is a bigint (postgres-js hands it over as a string);
+ * `metadata->'spentCents'` is a jsonb scalar (a number when the rollup wrote
+ * it, but historically agent-written values could be anything). Anything not a
+ * finite number is null — "unknown", never 0, because 0 would read as "nothing
+ * spent" and admit a launch on garbage.
+ */
+function asFiniteCents(v: unknown): number | null {
+  const n = typeof v === 'string' ? Number(v) : typeof v === 'number' ? v : NaN;
+  return Number.isFinite(n) ? n : null;
 }
 
 /**
@@ -392,6 +449,79 @@ export async function goalHeadcount(args: {
   } catch (e) {
     return { headcount: empty, error: e instanceof Error ? e.message : String(e) };
   }
+}
+
+/**
+ * P-006: is the budget launch gate on? Tri-state on purpose: `infraError`
+ * distinguishes "the owner turned it off" (deliberate config — silent) from
+ * "the flag could not be read" (a declared budget silently unenforced — which
+ * the resolution must report as degraded, same principle as an uncountable
+ * ceiling). Fail OPEN on error, per the module header: a broken flag read must
+ * not brick every launch in the workspace.
+ *
+ * Dynamic imports keep the flags dependency out of this module's static graph —
+ * the same reasoning as the presence-window copy above (this module rides in
+ * every launch path), and the same shape as windDownDispositionGateEnabled.
+ */
+async function budgetLaunchGateEnabled(): Promise<{ enabled: boolean; infraError: string | null }> {
+  try {
+    const [{ getFlag }, { FLAGS }] = await Promise.all([
+      import('@papercusp/flags/server'),
+      import('@papercusp/flags'),
+    ]);
+    return { enabled: await getFlag(FLAGS.GOAL_BUDGET_LAUNCH_GATE, 'system'), infraError: null };
+  } catch (e) {
+    return { enabled: false, infraError: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+/**
+ * P-006: tell the owner their goal's budget is exhausted and launches are being
+ * refused. Fire-and-forget: an escalation write must never delay or fail the
+ * launch path (the refusal itself is already returned synchronously). Deduped
+ * per goal ({dedupKind, subjectSignature}) so every subsequently refused launch
+ * bumps the one card instead of stacking a new one — the
+ * deliverGoalWindDownReport pattern.
+ */
+function escalateBudgetRefusal(args: {
+  workspaceId: string;
+  goalId: string;
+  launcherOwnerId?: string | null;
+  refusal: GoalLaunchRefusal;
+}): void {
+  void (async () => {
+    const { openEscalation } = await import('./agent-tools/coordination/escalations');
+    await openEscalation(
+      {
+        // Attributed to the refused launcher when known; otherwise the gate
+        // itself. 'principal' = in-process caller, the closest source for a
+        // platform gate speaking for itself.
+        ownerId: args.launcherOwnerId || `goal-budget-gate:${args.goalId}`,
+        ownerLabel: 'goal budget launch gate',
+        source: 'principal',
+        workspaceId: args.workspaceId,
+        userId: null,
+      },
+      {
+        // 'blocker': launches are actively being refused until the owner raises
+        // the budget or winds the goal down (EscalationSeverity has no 'major').
+        severity: 'blocker',
+        summary: `goal ${args.goalId}: budget exhausted — further launches refused`,
+        body: args.refusal.message,
+        meta: {
+          dedupKind: 'goal-budget-exceeded',
+          subjectSignature: `${args.workspaceId}:${args.goalId}`,
+          goalId: args.goalId,
+          budgetCents: args.refusal.limit,
+          spentCents: args.refusal.current,
+        },
+      },
+    );
+  })().catch((e: unknown) => {
+    console.warn(
+      `[goal-budget-gate] owner escalation failed (non-fatal): ${e instanceof Error ? e.message : String(e)}`,
+    );
+  });
 }
 
 /**
@@ -491,6 +621,12 @@ export async function resolveGoalLaunchForGoal(args: {
   sql?: Sql;
   /** Degraded reasons accumulated by a caller before delegating here. */
   priorDegraded?: string[];
+  /**
+   * P-006: the owner id of the agent DOING the launching, when known — flows in
+   * from {@link resolveGoalLaunch}'s spread. Used ONLY to attribute the budget
+   * escalation; never consulted for the decision itself.
+   */
+  launcherOwnerId?: string | null;
 }): Promise<GoalLaunchResolution> {
   const count = Math.max(1, Math.floor(args.count ?? 1));
   const degradedReasons: string[] = [...(args.priorDegraded ?? [])];
@@ -502,14 +638,59 @@ export async function resolveGoalLaunchForGoal(args: {
       effective: foldLaunchProfile(null, args.goalRole, args.requested),
       ceilings: { maxAgents: null, maxPerFleet: null },
       headcount: { total: 0, fleet: args.fleetSlug ? 0 : null },
+      budget: null,
       refusal: null,
       degraded: degradedReasons.length > 0,
       degradedReasons,
     };
   }
 
-  const { settings, error: settingsError } = await readGoalLaunchSettings(goalId, args.sql);
+  const { settings, budget, error: settingsError } = await readGoalLaunchSettings(goalId, args.sql);
   if (settingsError) degradedReasons.push(`launch settings not applied: ${settingsError}`);
+
+  // P-006 (D-001/D-003): goals.budget_cents is a BINDING ceiling over the
+  // platform spend snapshot, checked FIRST — an exhausted budget refuses the
+  // launch regardless of agent headroom, and a formed refusal skips the
+  // headcount read entirely. Same fail-open stance as the agent ceilings (see
+  // the module header): a truth this gate cannot read is reported degraded,
+  // never silently enforced and never silently skipped. `>=` and not `>`: the
+  // budget is a ceiling, so a goal that has REACHED it is out of budget — an
+  // off-by-one here admits one launch past every budget in the workspace.
+  let refusal: GoalLaunchRefusal | null = null;
+  if (budget?.budgetCents != null) {
+    const gate = await budgetLaunchGateEnabled();
+    if (gate.infraError) {
+      degradedReasons.push(
+        `budget ceiling not enforced — flag read failed: ${gate.infraError}`,
+      );
+    } else if (gate.enabled) {
+      if (budget.spentCents == null) {
+        degradedReasons.push(
+          `budget ceiling not enforced — goal ${goalId} declares budget_cents=${budget.budgetCents} but has no ` +
+            `platform spend snapshot yet (metadata.spentCents is written by the goal-spend-rollup tick; D-003 ` +
+            `forbids inventing one)`,
+        );
+      } else if (budget.spentCents >= budget.budgetCents) {
+        refusal = {
+          reason: 'goal_budget_exceeded',
+          limit: budget.budgetCents,
+          current: budget.spentCents,
+          requested: count,
+          message:
+            `goal ${goalId} has spent ${budget.spentCents} of its ${budget.budgetCents} cent budget` +
+            `${budget.spentCentsAt ? ` (platform snapshot at ${budget.spentCentsAt})` : ''}; further agent/fleet ` +
+            `launches are refused. Review spend and raise budget_cents on the goal, or wind the goal down. ` +
+            `The owner has an open escalation for this (deduped per goal).`,
+        };
+        escalateBudgetRefusal({
+          workspaceId: args.workspaceId,
+          goalId,
+          launcherOwnerId: args.launcherOwnerId,
+          refusal,
+        });
+      }
+    }
+  }
 
   const effective = foldLaunchProfile(settings, args.goalRole, args.requested);
   // D-015: an unpinned ceiling resolves to the SYSTEM DEFAULT, not to null.
@@ -519,10 +700,11 @@ export async function resolveGoalLaunchForGoal(args: {
     maxPerFleet: resolveCeiling(settings?.maxPerFleet, GOAL_LAUNCH_DEFAULTS.maxPerFleet),
   };
 
-  // Only pay for the count when a ceiling actually exists to check it against.
-  // Since D-015 that is the normal case — it goes false only for a goal that has
-  // explicitly declared BOTH ceilings unlimited.
-  const needsCount = ceilings.maxAgents != null || ceilings.maxPerFleet != null;
+  // Only pay for the count when a ceiling actually exists to check it against
+  // AND no budget refusal already formed (a refused launch needs no headcount).
+  // Since D-015 the ceiling half is the normal case — it goes false only for a
+  // goal that has explicitly declared BOTH ceilings unlimited.
+  const needsCount = !refusal && (ceilings.maxAgents != null || ceilings.maxPerFleet != null);
   let headcount: GoalHeadcount = { total: 0, fleet: args.fleetSlug ? 0 : null };
   if (needsCount) {
     const counted = await goalHeadcount({
@@ -544,7 +726,6 @@ export async function resolveGoalLaunchForGoal(args: {
   // maxAgents" sends them looking for a value that is not in the panel.
   const provenance = (pinned: unknown): string =>
     pinned == null ? ' (the system default — this goal has not pinned one)' : '';
-  let refusal: GoalLaunchRefusal | null = null;
   if (enforceable) {
     if (ceilings.maxAgents != null && headcount.total + count > ceilings.maxAgents) {
       refusal = {
@@ -582,6 +763,7 @@ export async function resolveGoalLaunchForGoal(args: {
     effective,
     ceilings,
     headcount,
+    budget,
     refusal,
     degraded: degradedReasons.length > 0,
     degradedReasons,
