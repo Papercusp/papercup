@@ -988,10 +988,56 @@ export type GateStallClass = 'reset' | 'noop' | 'red';
  *   - 'red': every other non-green verdict (not-green / error / create-failed /
  *     not-fast-forward / …) still counts toward the stall streak.
  */
-export function classifyGateStallStatus(status: string, pinMoved: boolean): GateStallClass {
+/** The re-triage fields this module reads. Structural + narrow on purpose: `trackGateStall`'s
+ *  own `retriage` param (and the CLI's CheckpointVerdict.retriage) satisfy it without either
+ *  side importing the other's shape. */
+export type GateStallRetriage = {
+  classification?: 'real-red' | 'stale-candidate' | 'unknown' | null;
+  autoRefire?: boolean;
+  refireBlockedBy?: 'cap-disabled' | 'charged-budget' | 'absolute-ceiling' | 'deadline' | null;
+};
+
+/**
+ * WI-39450: is this not-green verdict a SUPERSEDED PASS — one that proved its OWN candidate
+ * stale and handed off to an auto-refire which will produce the real verdict?
+ *
+ * This is the third instance of the EI-2615 / EI-18757975681519069 bug, and the most expensive:
+ * a pass that judged an already-superseded tree is not a statement about the code, but
+ * `trackGateStall` counted it anyway. Measured 2026-08-17: a run classified its own candidate
+ * `stale-candidate`, stamped `superseded-by-refire`, and still drove consecutiveReds 10 -> 11 —
+ * naming 7 `operator-core/lib/agent-tools/memory/*.test.ts` files that had ALL been modified in
+ * the 23 commits since that candidate and passed 52/0 at tip. That red sends agents at
+ * already-fixed files, which is precisely the harm EI-19405864032365760 documents.
+ *
+ * The rationale is `skipped-locked`'s exactly: a successor IS coming and it writes the real
+ * verdict. So the guard is on the SUCCESSOR EXISTING, not on staleness alone —
+ * `autoRefire === true` and nothing blocking the refire. When the refire is blocked
+ * (`refireBlockedBy`: budget/ceiling/deadline/cap-disabled) NO successor is coming, this pass IS
+ * the final word, and it must still count as a red.
+ *
+ * ⚠ Deliberately NOT keyed on the string `superseded-by-refire`: that is only a LOG trailer
+ * (`green-checkpoint.ts` `stampPromotion`) and never reaches this function — the recorded
+ * reason is a plain `not-green`.
+ */
+export function isSupersededByRefire(retriage?: GateStallRetriage | null): boolean {
+  return (
+    retriage?.classification === 'stale-candidate' &&
+    retriage.autoRefire === true &&
+    !retriage.refireBlockedBy
+  );
+}
+
+export function classifyGateStallStatus(
+  status: string,
+  pinMoved: boolean,
+  retriage?: GateStallRetriage | null,
+): GateStallClass {
   const isGreen = status === 'advanced' || status === 'up-to-date' || status === 'advanced-prefix';
   if (isGreen || pinMoved) return 'reset';
   if (status === 'skipped-locked' || status === 'migrations-pending') return 'noop';
+  // WI-39450: a pass that superseded itself produced no verdict about the code — see
+  // isSupersededByRefire. The refire it spawned records the real one.
+  if (isSupersededByRefire(retriage)) return 'noop';
   return 'red';
 }
 
