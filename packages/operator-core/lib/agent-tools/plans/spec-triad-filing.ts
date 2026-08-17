@@ -20,7 +20,7 @@
  */
 
 import { getOrgPg } from '@papercusp/db-org';
-import { createWorkItem } from '../../work-items';
+import { upsertConditionWorkItem } from '../../coord/condition-upsert';
 
 /** Work-item statuses that mean an existing filing is still outstanding. */
 export const SPEC_TRIAD_NON_TERMINAL_STATUSES = [
