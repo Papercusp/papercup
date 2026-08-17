@@ -325,8 +325,27 @@ export interface CheckpointDeps {
    *  already open) so the hourly tick doesn't re-open it while the gate stays
    *  red. Optional so existing test stubs need not provide it. */
   escalate?(summary: string, body: string): Promise<void>;
-  /** Resolve any open `release-not-green` escalation — the gate recovered. */
+  /** Resolve any open `release-not-green` escalation — the gate recovered.
+   *  ⚠ WI-39685: the implementation sweeps by escalation SOURCE
+   *  (`source === 'green-checkpoint'`), NOT by kind or title, so it resolves
+   *  EVERY row the gate opened — not just the `release-not-green` one this
+   *  sentence names. Scoping that sweep to its documented promise is WI-39686.
+   *  This is why the detector pair below needs its own distinct source. */
   clearEscalation?(): Promise<void>;
+  /** WI-39685 (cutover-plan D-013): open the DETECTOR alert — "the desktop-perf
+   *  invariant has gone UNMEASURED", which is a different fact from "the gate is
+   *  red". Distinct from `escalate` because the two must not share a lifecycle:
+   *  an unmeasured leg no longer HOLDS promotion (D-008), so the run always
+   *  reaches the advance path where `clearEscalation` sweeps — a detector alert
+   *  raised through `escalate` would self-resolve ~120 lines later in the SAME
+   *  run, which is the silent-failure bug restated, not fixed. Optional so
+   *  existing test stubs need not provide it. */
+  escalateDetector?(summary: string, body: string): Promise<void>;
+  /** WI-39685 (D-013 rev 54): resolve an open detector alert once the invariant
+   *  is being MEASURED again. The detector's own recovery path — it is never
+   *  cleared by `clearEscalation`, by construction. Without this the alert would
+   *  be immortal (it also opts out of the attention TTL sweep). */
+  clearDetectorEscalation?(): Promise<void>;
   /** docs-audit #2: how long has the gate been held red (ms), or null if it isn't
    *  currently escalated (first red of a fresh hold). Drives the rising-urgency
    *  re-broadcast so a long-held gate gets LOUDER instead of going silent. */
