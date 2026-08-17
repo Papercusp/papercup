@@ -71,6 +71,26 @@ ops/sec). **Advisory only** — like knip. `--gate` exists for a future owner
 decision; do not wire it into CI without that decision. Refresh after an
 intentional perf change: `--tier1 --profile ci --update-baseline`.
 
+⚠ **`--update-baseline` REWRITES the file from the current run only — it does
+not merge.** The committed baseline is the bar every future run is judged
+against, so two ordinary mistakes used to destroy it silently: a partial run
+(`--scenario x --profile smoke`) collapsed all 17 entries to the one cell it
+measured, and a run on a contended box baked shared-box contention in as the
+threshold — moving the bar in the direction that HIDES regressions. Both are
+now refused (`checkBaselinePromotion`, guarded by
+`baseline-promotion-guard.test.ts`), each with its own override so accepting
+one risk never silently accepts the other:
+
+- `--allow-baseline-shrink` — accept a promotion that drops covered cells.
+- `--allow-contended-baseline` — accept one captured on an oversubscribed host.
+
+A refused promotion exits non-zero and records `baselinePromotion.written:
+false` in `summary.json`; the baseline is left untouched. The documented
+refresh above trips neither guard — entry keys are seed-deterministic
+(`expectedWinnersFor` is pure over `(seed, count)`), so a full `ci` re-run
+reproduces the same 17 keys. **A rebaseline should be a full-profile run on a
+quiet host**; point anything smaller at a temp `--baseline` path.
+
 ## Scheduling (P-014)
 
 `system:p2p-perf-tier1` (nightly 02:30) + `system:p2p-perf-tier2` (weekly Sun
