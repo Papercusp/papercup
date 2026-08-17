@@ -96,6 +96,15 @@ const ALLOWLIST: Record<string, Classification> = {
   // fires the retention trigger and writes one more ghost-keyed row).
   'cup_claim_spec_revisions.bee_id': { status: 'covered', surface: 'claim-spec' },
   'event_awaits.subscriber_id': { status: 'covered', surface: 'awaits' },
+  // Migration 839. The PARENT registry row of 'event_awaits.subscriber_id' directly
+  // above: one watch:create row fans out to a paired event_awaits row (wake:true)
+  // and/or a coord_entity_subscriptions inject row (wake:false). Delivery selects
+  // those CHILDREN, so an unmoved parent does not stop wakes — it breaks the UPSERT
+  // IDENTITY instead: interest-watch.ts re-finds an existing watch by
+  // (owner_id, event_key), so a rebound agent stops matching its own row, inserts a
+  // duplicate, and the original lingers under the dead sid, swept forever and
+  // cancellable by nobody. COVERED, active rows only (an inactive watch is spent).
+  'interest_watches.owner_id': { status: 'covered', surface: 'interest-watches' },
   'plan_item_claims.owner': { status: 'covered', surface: 'plan-claims' },
   'work_item_claims.owner': { status: 'covered', surface: 'work-claims' },
   'coord_watermarks.owner_id': { status: 'covered', surface: 'watermarks' },
