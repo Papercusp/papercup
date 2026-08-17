@@ -74,6 +74,50 @@ export async function awaitAllChildEvent<T extends CaughtUpWaitable>(
   );
 }
 
+/**
+ * Per-reader time from the parent's `go` instant to the instant THAT reader
+ * actually caught up — the number `floodCatchUpMs` / `ceilingOpsPerSec` are
+ * supposed to report.
+ *
+ * EI-20582417177742601: the scenarios used to compute this as `Date.now() - tGo`
+ * read inside the await loop, which measures WHEN THE PARENT GOT AROUND TO
+ * OBSERVING the event rather than when it fired. Under the old SERIAL loop that
+ * inflated every reader queued behind a slow one; the distortion grew with peer
+ * count and with host load, so a metric that exists to answer "what is our max
+ * replication throughput" partly measured the parent's own event-loop scheduling.
+ * Several p2p-perf regression reports cite floodCatchUpMs deltas, so the confound
+ * landed directly in the regression signal.
+ *
+ * ⚠ Converting such a loop to `awaitAllChildEvent` does NOT by itself fix it, and
+ * the naive conversion is strictly worse: with concurrent waits every reader has
+ * already resolved before the loop body runs, so a `Date.now() - tGo` in the body
+ * stamps them ALL with the time the SLOWEST finished — collapsing the metric into
+ * one repeated value that still looks like a distribution. Route every site
+ * through here instead of open-coding the arithmetic.
+ *
+ * Preference order:
+ *  1. the child's OWN `wallMs` (its catch-up instant on the shared host clock) —
+ *     exact, contains zero parent lag;
+ *  2. `tAwait - tGo + elapsedMs` — the concurrent parent-side measurement, used
+ *     when `wallMs` is absent (a child predating the field, or a fake in a test).
+ *
+ * Both branches stay in the PARENT's wall-clock epoch. The child also emits `t`,
+ * which is bootT0-relative and therefore NOT comparable to `tGo` — mixing those
+ * two epochs is the specific error this helper exists to make unavailable.
+ *
+ * Returns null when `event` is null (the reader never caught up), so a
+ * non-convergence can never be silently scored as a fast catch-up.
+ */
+export function catchUpElapsedMs(
+  event: ChildEvent | null,
+  opts: { tGo: number; tAwait: number; elapsedMs: number },
+): number | null {
+  if (!event) return null;
+  const wallMs = event['wallMs'];
+  if (typeof wallMs === 'number' && Number.isFinite(wallMs)) return wallMs - opts.tGo;
+  return opts.tAwait - opts.tGo + opts.elapsedMs;
+}
+
 export class PeerChildHandle {
   readonly events: ChildEvent[] = [];
   private waiters: Array<{

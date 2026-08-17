@@ -16,7 +16,9 @@
  * Wire protocol (ndjson, child stdout → parent):
  *   {evt:'ready', keyHex}                — substrate booted, swarm joined
  *   {evt:'progress', appliedKeys, t}     — reader catch-up progress (1Hz)
- *   {evt:'caught-up', t, appliedKeys}    — reader reached expectedWinners
+ *   {evt:'caught-up', t, wallMs, appliedKeys} — reader reached expectedWinners
+ *                                          (`t` is bootT0-relative; `wallMs` is
+ *                                          the absolute host-clock instant)
  *   {evt:'result', …}                    — final per-process measurements
  *   {evt:'error', message}               — fatal; child exits 1
  *   {evt:'snapshot-ready', index, ownLength} — answer to `wait-snapshot`
@@ -232,7 +234,17 @@ async function main(): Promise<void> {
       appliedKeys.size >= cfg.expectedWinners
     ) {
       caughtUpAt = Date.now();
-      out({ evt: 'caught-up', t: caughtUpAt - bootT0, appliedKeys: appliedKeys.size });
+      // `wallMs` is the child's OWN catch-up instant on the shared host wall
+      // clock — the parent subtracts its `tGo` from it to get a per-reader time
+      // that contains no parent-scheduling lag. `t` stays bootT0-relative for
+      // the result payload; the two are DIFFERENT epochs and must never be
+      // mixed (EI-20582417177742601).
+      out({
+        evt: 'caught-up',
+        t: caughtUpAt - bootT0,
+        wallMs: caughtUpAt,
+        appliedKeys: appliedKeys.size,
+      });
     }
     return true;
   };
