@@ -90,8 +90,92 @@ function tryParseJsonObject(s: string): Record<string, unknown> | undefined {
 }
 
 /**
+ * Keys that identify a parsed object as a genuine completion record rather than
+ * arbitrary JSON. A repaired parse (below) is only ACCEPTED when it yields at
+ * least one of these — that is what keeps the repair from capturing prose or an
+ * unrelated JSON fragment that merely happens to be closeable.
+ */
+const COMPLETION_SHAPE_KEYS = new Set([
+  'summary',
+  'verification',
+  'status',
+  'tests',
+  'testsRun',
+  'testResult',
+  'verifiedHow',
+  'addedTests',
+  'filesChanged',
+  'whatLanded',
+  'deferred',
+  'migrations',
+  'coverage',
+  'coordNotes',
+]);
+
+/**
+ * EI-20724228359175431: a JSON-stringified completion that arrives with its TAIL
+ * CUT OFF. Measured on two independent real calls (tool_invocations 17274515 and
+ * 17276253, both 4.7–5.4KB): each fails `JSON.parse` at end-of-input with a
+ * structure still open — 17274515 was missing exactly ONE `}`, and appending it
+ * recovered the whole object with `summary` + `verification` intact. Because the
+ * truncated text still starts `{` and (coincidentally) ends `}`, it slips past
+ * `tryParseJsonObject` and lands in the bare-string branch, where the ENTIRE 4.7KB
+ * of broken JSON is stuffed into `summary` and every structured field — the
+ * verification evidence the close is judged on — is destroyed. The completion is
+ * then RECORDED that way, and the call also CLOSES the item, so the loss is
+ * silent and durable.
+ *
+ * Rebuild the closers the input is missing by scanning it once (string- and
+ * escape-aware, so braces inside string values are not miscounted), then accept
+ * the result ONLY if it parses to a plain object carrying a recognised completion
+ * key. Anything else — genuine prose in braces, a JSON array, a fragment too
+ * mangled to close — falls through to the unchanged bare-string path.
+ *
+ * This RECOVERS what arrived; it cannot recover what was never delivered. The
+ * caller is told loudly (complete.ts) precisely because the record may be short a
+ * field that was cut mid-flight.
+ */
+function repairTruncatedJsonObject(s: string): Record<string, unknown> | undefined {
+  const t = s.trim();
+  if (!t.startsWith('{')) return undefined;
+
+  const stack: string[] = [];
+  let inString = false;
+  let escaped = false;
+  for (const c of t) {
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (c === '\\') escaped = true;
+      else if (c === '"') inString = false;
+      continue;
+    }
+    if (c === '"') inString = true;
+    else if (c === '{' || c === '[') stack.push(c);
+    else if (c === '}' || c === ']') stack.pop();
+  }
+  // Nothing left open ⇒ this is a plain malformed-JSON failure, not a truncation.
+  // Leave it to the bare-string path rather than guessing at a repair.
+  if (!inString && stack.length === 0) return undefined;
+
+  let candidate = t;
+  if (inString) candidate += '"';
+  else candidate = candidate.replace(/,\s*$/, ''); // a cut right after a separator
+  for (let i = stack.length - 1; i >= 0; i -= 1) candidate += stack[i] === '{' ? '}' : ']';
+
+  try {
+    const parsed: unknown = JSON.parse(candidate);
+    if (!isPlainObject(parsed)) return undefined;
+    return Object.keys(parsed).some((k) => COMPLETION_SHAPE_KEYS.has(k)) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Normalise ONE `completion` value to the CompletionRecord shape. Handles:
  *  - a JSON-stringified object → parsed + coerced as an object (EI-7311)
+ *  - a TRUNCATED JSON-stringified object → closers rebuilt, then coerced as an
+ *    object, so surviving evidence is kept instead of destroyed (EI-20724228359175431)
  *  - a bare string        → { summary: <string> }
  *  - array-typed field given a scalar → wrapped in a 1-element array (lossless)
  *  - string-typed field given an array → joined with '; '
@@ -104,6 +188,17 @@ export function coerceCompletionShape(raw: unknown): unknown {
   if (typeof raw === 'string') {
     const parsedObject = tryParseJsonObject(raw);
     if (parsedObject) return coerceCompletionShape(parsedObject);
+    // EI-20724228359175431: a TRUNCATED JSON completion — recover the fields that
+    // did arrive rather than swallowing the whole broken blob as `summary`. Marked
+    // distinctly from 'bare-string' so the caller-facing warning can say the record
+    // may be INCOMPLETE (fields survived, so the bare-string warning would not fire).
+    const repaired = repairTruncatedJsonObject(raw);
+    if (repaired) {
+      const coerced = coerceCompletionShape(repaired);
+      return isPlainObject(coerced)
+        ? { ...coerced, __shapeCoercedFrom: 'truncated-json' as const }
+        : coerced;
+    }
     const s = raw.trim();
     // EI-13687: a bare (non-JSON) string can ONLY ever populate `summary` — every
     // other CompletionRecord field (testsRun/testResult/verifiedHow/addedTests/
