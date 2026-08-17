@@ -173,6 +173,22 @@ export async function recordInvoluntaryClaimReleases(
   for (const [holder, rows] of byHolder) {
     const ids = rows.map((r) => r.workItemId);
     const idList = ids.join(', ');
+    // D-011 (agent-state-plane-verification-2026-07-27): `CoordEnvelope.body` is a STRING on the
+    // wire — a `Section[]` body is not representable there at all, and
+    // `message-sender-completeness.test.ts` pins that as a refutation so widening the type reds
+    // instead of silently shipping an unreadable envelope. Structure rides BESIDE the text as
+    // `sections`, which `tools/send.ts` derives via `toSections` + `sectionsToText`. That
+    // conversion belongs to the TOOL layer; this module writes the RAW `sendMessage` seam
+    // (deliberately, so a reaper never depends on the tool stack), so it does the flattening
+    // itself: `body` carries the text, `extra.sections` carries the `forYouBecause` routing.
+    // With one section, `sectionsToText` is the section's own text — no projection to drift.
+    const text =
+      `${opts.actor} released ${ids.length === 1 ? 'a work-item claim' : `${ids.length} work-item claims`} you were holding: ${idList}.\n\n` +
+      `Reason: ${opts.reason}\n\n` +
+      'This was an INVOLUNTARY release — you did not give it up. If you are still ' +
+      'working on it, RE-CLAIM IT NOW (work_items:claim): until you do, the item ' +
+      'reads as unstaffed and the scheduler can hand it to another agent while you ' +
+      'are still mid-flight on it. If you have genuinely stopped, no action is needed.';
     try {
       await sendMessageFn(identity, {
         to: [holder],
@@ -180,18 +196,8 @@ export async function recordInvoluntaryClaimReleases(
         summary:
           `YOUR CLAIM WAS RELEASED by ${opts.actor}: ${idList}` +
           ` — re-claim if you are still working ${ids.length === 1 ? 'it' : 'them'}.`,
-        body: [
-          {
-            text:
-              `${opts.actor} released ${ids.length === 1 ? 'a work-item claim' : `${ids.length} work-item claims`} you were holding: ${idList}.\n\n` +
-              `Reason: ${opts.reason}\n\n` +
-              'This was an INVOLUNTARY release — you did not give it up. If you are still ' +
-              'working on it, RE-CLAIM IT NOW (work_items:claim): until you do, the item ' +
-              'reads as unstaffed and the scheduler can hand it to another agent while you ' +
-              'are still mid-flight on it. If you have genuinely stopped, no action is needed.',
-            forYouBecause: { relation: 'owns', ref: ids[0] },
-          },
-        ],
+        body: text,
+        extra: { sections: [{ text, forYouBecause: { relation: 'owns', ref: ids[0] } }] },
       });
       result.notified += 1;
     } catch (err) {
