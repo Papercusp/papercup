@@ -42,6 +42,29 @@ export const DEFAULT_GATEWAY_PORT = 8788;
 export const DEFAULT_T1_RESERVE_FRAC = 0.15;
 
 /**
+ * How long the gateway waits for a cold-started on-demand backend to answer `/health`
+ * (P-008/D-006/D-009). `ensureLocalBackendRunning` deliberately has NO default for this, so the
+ * caller that starts backends has to state a figure — this is that statement.
+ *
+ * ⚠ PROVISIONAL, and the reason is itself a finding: the measurement D-006 asks for could NOT be
+ * taken on 2026-08-17 because `llama-ornith.service` cannot start at all — its ExecStart binary
+ * (a hand-built `~/llama.cpp/build/bin/llama-server`) does not exist, and the unit had
+ * crash-looped 182 times with status=203/EXEC. So this value is bounded by REASONING, not by a
+ * stopwatch on the real load:
+ *   - the model is a 15.5GB IQ3_M blob faulted off disk into a 24GB card;
+ *   - this box is routinely under heavy load (load avg ~70-80, PSI memory pressure), which is
+ *     exactly when a cold start is slowest and a too-tight timeout would fail a request that was
+ *     about to succeed;
+ *   - overshooting costs only a slow FIRST request on an already-idle backend, while undershooting
+ *     abandons a load that is still progressing (the seam leaves the unit RUNNING on timeout, so
+ *     the next request usually finds it warm — the failure is soft in one direction only).
+ * 300s is chosen to sit well clear of a plausible worst case under load. REPLACE IT WITH THE
+ * MEASURED FIGURE once ornith can start; D-006 is not discharged until then.
+ */
+export const LOCAL_BACKEND_COLD_START_TIMEOUT_MS =
+  Number(process.env.PAPERCUSP_GATEWAY_LOCAL_BACKEND_COLD_START_TIMEOUT_MS) || 300_000;
+
+/**
  * Resolve the priority-TIER admission config (gateway-priority-tiers-2026-06-22), flag-gated by
  * `GATEWAY_PRIORITY_TIERS`. Returns `null` when the flag is OFF (the gateway then runs its flat
  * priority+aging queue, byte-identical to today). When ON, builds the role→tier map (defaults merged
