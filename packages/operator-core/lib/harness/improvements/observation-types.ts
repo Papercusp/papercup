@@ -154,6 +154,8 @@ export interface StructuredObservation {
    * caller-supplied directly. See {@link ScorecardVetting}.
    */
   vetting?: ScorecardVetting;
+  /** P-013: the grade-the-grader audit stamp — see {@link ScorecardGradingAudit}. */
+  gradingAudit?: ScorecardGradingAudit;
   /**
    * P-011 (owner-ratified D-006): grading-time DETERMINISTIC check runs, keyed by
    * criterion key — stamped server-side by scorecards:emit for every rated criterion
@@ -199,7 +201,16 @@ export interface ScorecardProvisional {
  *  gap applies to grading a work-item, a plan, or a pot. 'rubric' = a vetting
  *  scorecard grading a rubric itself against the meta-rubric
  *  (consult-min-max-and-rubric-vetting-2026-08-17 P-004). */
-export type ObservationSubjectKind = 'agent-run' | 'session' | 'work-item' | 'plan' | 'pot' | 'rubric';
+export type ObservationSubjectKind =
+  | 'agent-run'
+  | 'session'
+  | 'work-item'
+  | 'plan'
+  | 'pot'
+  | 'rubric'
+  // P-013 (goal-mode-design-intent-hardening-2026-08-16): a grading-integrity AUDIT
+  // scorecard grades another SCORECARD (`ref` = the graded card's issue id).
+  | 'scorecard';
 
 /**
  * The vetting linkage stamped by scorecards:emit on a VETTING scorecard — a
@@ -210,6 +221,26 @@ export type ObservationSubjectKind = 'agent-run' | 'session' | 'work-item' | 'pl
  * to exist (a dangling consult or subject rubric is refused at emit, mirroring the
  * acceptance-kind link guards — a dangling link is a booby trap).
  */
+/**
+ * P-013 (goal-mode-design-intent-hardening-2026-08-16, D-004): the grade-the-grader
+ * audit stamp on a TERMINAL standard-rubric scorecard. 'pending' = the grading is
+ * final but UNAUDITED — excluded from the trend like a provisional card until a
+ * NON-AUTHOR auditor grades it against the grading-integrity meta-rubric (mirror of
+ * the acceptance grader ≠ author rule). ONE level deep by construction: the audit
+ * card itself (rubricRef = grading-integrity) is never stamped pending.
+ */
+export interface ScorecardGradingAudit {
+  state: 'pending' | 'passed' | 'failed';
+  /** The meta-rubric the audit grades against (grading-integrity). */
+  metaRubricRef: string;
+  stampedAt: string;
+  /** The audit scorecard's issue id, once audited. */
+  auditIssueId?: string;
+  /** The auditor's ownerId (verified ≠ the graded card's author at emit). */
+  auditor?: string;
+  auditedAt?: string;
+}
+
 export interface ScorecardVetting {
   /** conversation_id of the get_feedback consult that critiqued the vetted rubric. */
   consultId: string;
@@ -480,6 +511,27 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
       : [];
     if (keys.length > 0 && typeof p.stampedAt === 'string' && p.stampedAt.trim()) {
       out.provisional = { violatableKeys: keys, stampedAt: p.stampedAt };
+    }
+  }
+  // P-013: the grade-the-grader audit stamp. state + metaRubricRef + stampedAt are
+  // load-bearing (a stamp that cannot say WHAT state or AGAINST WHICH meta-rubric is
+  // meaningless), so a malformed block is discarded rather than half-kept — same
+  // discipline as `provisional` above.
+  if (o.gradingAudit && typeof o.gradingAudit === 'object' && !Array.isArray(o.gradingAudit)) {
+    const g = o.gradingAudit as Record<string, unknown>;
+    if (
+      (g.state === 'pending' || g.state === 'passed' || g.state === 'failed') &&
+      typeof g.metaRubricRef === 'string' && g.metaRubricRef.trim() &&
+      typeof g.stampedAt === 'string' && g.stampedAt.trim()
+    ) {
+      out.gradingAudit = {
+        state: g.state,
+        metaRubricRef: g.metaRubricRef,
+        stampedAt: g.stampedAt,
+        ...(typeof g.auditIssueId === 'string' && g.auditIssueId.trim() ? { auditIssueId: g.auditIssueId } : {}),
+        ...(typeof g.auditor === 'string' && g.auditor.trim() ? { auditor: g.auditor } : {}),
+        ...(typeof g.auditedAt === 'string' && g.auditedAt.trim() ? { auditedAt: g.auditedAt } : {}),
+      };
     }
   }
   // P-009: the graded subject. This parse is an explicit ALLOWLIST — a key absent
