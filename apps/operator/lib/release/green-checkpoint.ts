@@ -6469,8 +6469,10 @@ export async function runGreenCheckpoint(
       Date.now() + salvageCostEstimateMs > salvageDeadlineMs;
     if (salvageOutOfTime && lastReady && !staleRed && partialGreenEnabled) {
       logPartialGreenGate(
-        "partial-green-gate: skipped — out of run budget before the salvage's confirm suite " +
-          "(a verdict that lands beats a partial advance that does not)",
+        `partial-green-gate: skipped — not enough run budget left for the confirm suite ` +
+          `(~${Math.round(salvageCostEstimateMs / 60_000)}m estimated, ` +
+          `~${Math.round((salvageDeadlineMs - Date.now()) / 60_000)}m remaining). ` +
+          `A verdict that LANDS beats a partial advance that does not.`,
       );
     }
     if (lastReady && !staleRed && partialGreenEnabled && !salvageOutOfTime) {
