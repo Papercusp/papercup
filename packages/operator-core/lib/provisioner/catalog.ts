@@ -128,19 +128,19 @@ export const CERTIFIED_CATALOG: readonly CatalogEntry[] = [
       // above any plausible gap inside one working session.
       idleTtlSec: 1800,
     },
-    status: 'certified',
-    certification: {
-      verdict: 'certified',
-      ranAt: '2026-07-02T20:21:49.813Z',
-      manglingRate: 0,
-      criticalProbes: '3/3',
-      summary:
-        '[certified] maxwell1500/ornith-35b:IQ3_M IQ3_M @ llama-server (2×90112 ctx): 3/3 critical probes pass, mangling 0.0%',
-      method:
-        'cert-battery (behavior · trimmed-shape · comms · mangling-rate) run live via the D-011 sanitizer at :11435',
-    },
+    // DEMOTED 2026-08-17 from 'certified' — on-demand-local-inference-lifecycle-2026-08-17 D-011.
+    // The 2026-07-02 certification was earned on a HAND-BUILT ~/llama.cpp/build/bin/llama-server
+    // that has since been deleted (EI-20721621940954812). The unit now runs ollama's PACKAGED
+    // engine, which is a different llama.cpp build and — per D-012 — also required two new
+    // Environment= vars and an explicit `-ngl 999` before it would use the GPU at all. Same
+    // inference PARAMS, different engine: per D-007 an uncertified config must not inherit a
+    // 'certified' stamp, so the stamp comes off until lib/inference-gateway/cert-battery is re-run
+    // against THIS engine. The prior evidence is preserved in `sourceRef` rather than in
+    // `certification`, because that field is defined as the stamp of the run that certified the
+    // CURRENT config and leaving it populated would keep asserting exactly what is no longer true.
+    status: 'provisional',
     sourceRef:
-      'local-concurrent-inference-2026-07-02 D-005/D-006 — config verified against the live llama-ornith.service unit; certified 2026-07-02 by the P-006 cert battery (lib/inference-gateway/cert-battery)',
+      'local-concurrent-inference-2026-07-02 D-005/D-006 — config verified against the live llama-ornith.service unit. HISTORICAL: certified 2026-07-02T20:21:49.813Z by the P-006 cert battery (3/3 critical probes, mangling 0.0%, via the D-011 sanitizer at :11435) — but that run was against the now-deleted hand-built llama-server binary, so it does NOT certify the current packaged-ollama engine. Re-run the battery to restore certified status (on-demand-local-inference-lifecycle-2026-08-17 D-011/D-012).',
   },
   {
     id: 'qwen3-8b-q4km-llama-server',
