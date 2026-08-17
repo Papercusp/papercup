@@ -14,7 +14,35 @@ Type=oneshot
 Nice=10
 IOSchedulingClass=best-effort
 IOSchedulingPriority=7
-# The probe itself has its own ~15s connect timeout + a 5s teardown budget;
-# 60s gives headroom for node startup + a slow box without masking a genuine hang.
-TimeoutStartSec=60
+# The probe itself has its own ~15s connect timeout + a 5s teardown budget, and
+# the wrapper's outer backstop is already (timeout/1000)+45 = 60s. The cross-host
+# leg adds an ssh preflight (<=8s) plus staging on the far side, so 60s here would
+# kill the unit MID-PROBE and render as a hang rather than a verdict.
+TimeoutStartSec=150
+# ── cross-host leg (P-302) ────────────────────────────────────────────────────
+# Local-only cannot see a MACHINE-BOUNDARY transport failure: it connects two
+# processes on this host, which stays green while no other machine can reach the
+# DHT at all. That blind spot is exactly the P-302 class, so point the dialling
+# leg at the Mac rig.
+#
+# BEST-EFFORT ON PURPOSE (DHT_REMOTE_OPTIONAL=1, the default): the remote is a
+# LAPTOP. In cross-host mode the dialling leg runs THERE, so an unreachable
+# remote makes the whole run INCONCLUSIVE — which would silently cost us the
+# local bootstrap-wedge detection this timer exists for (EI-8892, the 3-day
+# silent outage) every time a lid closes, and file an INCONCLUSIVE EI every
+# DHT_STALE_H forever. The wrapper therefore ssh-preflights the remote and falls
+# back to a LOCAL-ONLY run (logged, never filed) when it does not answer.
+# Cross-host SUBSUMES the local check, so nothing is lost when the Mac IS up.
+# A REACHABLE-but-failing remote is NOT skipped — that is the real P-302 signal.
+#
+# Set DHT_REQUIRE_CROSS_HOST=1 to make an unreachable remote INCONCLUSIVE
+# instead of falling back (use that only while actively gating on P-302).
+Environment=DHT_REMOTE_HOST=aviweiss@172.31.44.2
+# A DURABLE staging dir, deliberately not /tmp: macOS purges /tmp by access age,
+# which would rot this into a permanent INCONCLUSIVE with no obvious cause.
+# It needs hyperswarm/hyperdht resolvable from it; the probe stages ITSELF there.
+Environment=DHT_REMOTE_CWD=/Users/aviweiss/dht-probe
+# The app's OWN bundled node — the only interpreter on that host with the
+# matching native deps (sodium-native / udx-native) for this module tree.
+Environment=DHT_REMOTE_NODE=/Applications/Papercusp Server.app/Contents/Resources/sidecar/bin/node
 ExecStart=%h/papercupai-workspace/papercusp/apps/operator/scripts/papercup-dht-liveness-check.sh
