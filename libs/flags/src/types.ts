@@ -1577,6 +1577,17 @@ export const FLAGS = {
   // drainless goal is only ever REPORTED after the kickoff grace — exactly the
   // pre-P-001 behavior.
   GOAL_DRAIN_FLEET_AUTOMINT: "papercusp-goal-drain-fleet-automint",
+  // goal-mode-design-intent-hardening-2026-08-16 P-008 (EI-20581177540737568 half 2):
+  // gates the goal-edit-claim watchdog — a ~90s pkey-range sweep of
+  // edit_attribution_ledger joined to goal-mode agent_modes rows on ACTIVE goals.
+  // The FIRST edit-claim by a goal-mode owner escalates (deduped per owner+goal),
+  // emits goal:edit-claim:<goalId> for parked graders, and wakes the subject + every
+  // grade-mode session in the workspace — never-implements is monotonic-downward, and
+  // the measured alternative (a grader SAMPLING the run) went stale 28 minutes after
+  // an honest interim 'exemplary' (WI-39348). Reports + injects, never blocks (hard
+  // enforcement is EI-20581099901890760's lane). DEFAULT ON. OFF = the kill-switch:
+  // the timer still ticks but every sweep no-ops before reading the ledger.
+  GOAL_EDIT_CLAIM_WATCHDOG: "papercusp-goal-edit-claim-watchdog",
   // goal-mode-design-intent-hardening-2026-08-16 P-002: gates the wind-down
   // DISPOSITION demand — loop:end (and session:end for a loopless owner) by a
   // GOAL-mode owner whose goal is still active refuses without a disposition

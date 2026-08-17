@@ -397,6 +397,17 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
     exists: true,
     replacesPoll: 'polling goals:get / fleet:status to notice the drain fleet vanished',
   },
+  {
+    family: 'goal-edit-claim',
+    keyTemplate: 'goal:edit-claim:<goalId>',
+    params: [{ name: 'goalId', required: true, describe: 'the goal whose run you are grading or holding' }],
+    describe:
+      "A goal-mode owner of this goal CLAIMED AN EDIT (an edit_attribution_ledger row — the deterministic never-implements instrument). Monotonic-downward: one edit falsifies the criterion permanently, so a grader parked here re-evaluates at the moment of violation instead of discovering it a sample late (the measured gap was 28 minutes). Payload carries agentId + the claimed files. The watchdog also wakes the subject and every grade-mode session in the workspace directly — park here when you want the event in YOUR await chain (e.g. a GRADE loop).",
+    emitter:
+      'goal-edit-claim-watchdog (packages/operator-core/lib/system-health/goal-edit-claim-watchdog.ts, defaultEmitEditClaim)',
+    exists: true,
+    replacesPoll: 'periodically re-querying edit_attribution_ledger / re-grading never-implements on a timer',
+  },
   // ── Spawn admission (D-004: over-ceiling queue + await, never silent-drop) ──
   {
     family: 'spawn-slot',

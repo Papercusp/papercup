@@ -518,6 +518,17 @@ export async function startDbos(): Promise<void> {
       '../system-health/goal-drain-fleet-watchdog'
     );
     startGoalDrainFleetWatchdog(getOrgPg().sql);
+    // P-008 (EI-20581177540737568 half 2): near-real-time alarm on the FIRST
+    // edit-claim by a goal-mode owner — the deterministic never-implements
+    // instrument (edit_attribution_ledger x goal-mode agent_modes). A grader
+    // sampling a run always loses to a violation between samples (28-min gap
+    // measured, WI-39348); this sweep closes it to ≤~2 min and injects both the
+    // subject and its graders. Runtime gate: FLAGS.GOAL_EDIT_CLAIM_WATCHDOG
+    // (default ON), checked per tick.
+    const { startGoalEditClaimWatchdog } = await import(
+      '../system-health/goal-edit-claim-watchdog'
+    );
+    startGoalEditClaimWatchdog(getOrgPg().sql);
     // goal-mode-design-intent-hardening-2026-08-16 P-005 (D-003): the goal spend
     // rollup tick — writes goals.metadata.spentCents platform-side from the cost
     // ledger (pot leg + subject/descendant session leg) so "actual spend
