@@ -35,7 +35,7 @@
  */
 
 import type { UnifiedPresenceRecord } from './federated-presence';
-import { formatIdleAge, type PresenceTier1Joins } from './presence-tier1';
+import { formatIdleAge, type LastActiveSource, type PresenceTier1Joins } from './presence-tier1';
 import type { SessionState } from './presence-wakeability';
 import type { ContextPressureBucket } from './context-pressure';
 
@@ -86,6 +86,11 @@ export type RosterRow = UnifiedPresenceRecord &
   Partial<
     {
       lastActiveSecAgo: number | null;
+      /** P-011: which activity source produced lastActiveSecAgo — 'presence'
+       *  (coord_presence.last_active_at, the tool-dispatch path) or 'turn-parts'
+       *  (freshest assistant transcript part, which sees the native-tool/streaming
+       *  work the presence path misses). null = no reading at all. */
+      lastActiveSource: LastActiveSource | null;
       /** Derived from lastActiveSecAgo: the declared intent is stale (the agent
        *  is process-alive but genuinely idle past the threshold). null = unknown. */
       intentStale: boolean | null;
@@ -186,6 +191,8 @@ export const PRESENCE_STATE_FIELDS = [
  *  snapshot (coord:presence), which is their use case. */
 export const PRESENCE_LIVENESS_FIELDS = [
   'lastActiveSecAgo',
+  // P-011: provenance of the reading above — moves with it, same lane, never a delta.
+  'lastActiveSource',
   'intentStale',
   // EI-8988: both derived from a churning "seconds since" clock, same lane as
   // lastActiveSecAgo/intentStale — never delta-eligible.
@@ -226,6 +233,11 @@ export const PRESENCE_DROPPED_FIELDS = [
   'lastActiveAt',
   'capabilityTags',
   'tty',
+  // P-011: derivation input only (the raw transcript-part timestamp behind
+  // lastActiveSecAgo/lastActiveSource). mergeTier1 strips it before the join spread
+  // for exactly the reason lastActiveAt is dropped: raw churning timestamps do not
+  // belong on the emitted row — the derived scalar + provenance carry the signal.
+  'turnPartLastAt',
 ] as const satisfies readonly (keyof RosterRow)[];
 
 /** The delta-eligible field set (D-005 lane 1) = IDENTITY ∪ STATE. A change in
@@ -296,6 +308,9 @@ export function toStableRosterRow(row: RosterRow): Record<string, unknown> {
     ...identity,
     ...state,
     lastActiveSecAgo: (liveness.lastActiveSecAgo as number | null | undefined) ?? null,
+    // P-011: provenance of lastActiveSecAgo — 'turn-parts' means the transcript leg
+    // improved on the presence record's reading. Always present for a reader.
+    lastActiveSource: (liveness.lastActiveSource as LastActiveSource | null | undefined) ?? null,
     // Stale-ownership signal: TRUE ⇒ this agent's declared intent/lane is NOT being
     // actively progressed (idle past the threshold though its process still beats),
     // so a reader must not treat its work as "handled". Always present for a reader.

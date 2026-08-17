@@ -2175,6 +2175,18 @@ export const FLAGS = {
   // long-dead rows in the live roster). OFF ⇒ the reaper tick no-ops (today's behavior:
   // rows accumulate until the opportunistic 24h sweepStalePresence catches them).
   COORD_PRESENCE_REAPER: "papercusp-coord-presence-reaper",
+  // goal-mode-design-intent-hardening-2026-08-16 P-011: presence freshness from the
+  // transcript corpus. coord_presence.last_active_at bumps only on the papercusp
+  // tool-dispatch activity path, so a session mid-turn on NATIVE tools (Bash/Edit) or
+  // streaming a long reply reads idle — measured ~4min staler than session_turn_parts
+  // live, which nearly fired a terminal grading pass one wake early. ON ⇒
+  // fetchPresenceTier1 also reads the freshest assistant-authored turn part per owner
+  // (bounded on the ingested_at index) and lastActiveSecAgo takes the fresher of the
+  // two sources, with provenance emitted as lastActiveSource. DEFAULT ON (alpha
+  // flags-default-on: additive derivation correction, no schema change). OFF = the
+  // kill-switch: the extra query is skipped and derivation is byte-identical to the
+  // presence-only behavior.
+  PRESENCE_TURN_PARTS_FRESHNESS: "papercusp-presence-turn-parts-freshness",
   // db-performance-remediation-2026-07-26 P-004: the INDEX-BLOAT REINDEX sweep — a daily
   // scheduled DBOS workflow that REINDEX INDEX CONCURRENTLY's btree indexes which the
   // continuous retention churn has inflated into mostly-empty pages. VACUUM marks those
