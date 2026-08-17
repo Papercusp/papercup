@@ -244,6 +244,89 @@ describe('judge cache — grades survive as durable state', () => {
   });
 });
 
+/**
+ * FALSIFIABILITY CONTROLS.
+ *
+ * The suite above passes. That alone does not show it would CATCH the defect it
+ * exists to prevent, so the two ways of getting this wrong are kept here
+ * permanently and the guard is pointed at them. No tree mutation: the subject
+ * is an importable module, so a wrong implementation is just another object
+ * (CLAUDE.md's tier-1 row — a copy-out or in-tree probe would be the wrong
+ * instrument, and the in-tree one races the git-sync sweep).
+ */
+describe('falsifiability — the guard catches both regressions', () => {
+  /** Regression A: rank back in the key, as the bench's own pairId has it. */
+  function rankKeyedCache() {
+    const store = new Map<string, JudgeVerdict>();
+    let calls = 0;
+    return {
+      calls: () => calls,
+      judge: async (input: { pairId: string; query: string; docId: string; docText: string }) => {
+        const key = `${input.pairId}|${input.query}`; // pairId embeds rank + tool
+        const hit = store.get(key);
+        if (hit) return { ...hit, judgeCostUsd: 0 };
+        calls += 1;
+        const v = verdict(5);
+        store.set(key, v);
+        return v;
+      },
+    };
+  }
+
+  /** Regression B: a hit re-bills the original cost, inflating reported spend. */
+  function rebillingCache() {
+    const store = new Map<string, JudgeVerdict>();
+    return {
+      judge: async (input: { query: string; docId: string; docText: string }) => {
+        const key = `${input.query}|${input.docId}|${sha256(input.docText)}`;
+        const hit = store.get(key);
+        if (hit) return hit; // ← forgets to zero judgeCostUsd
+        const v = verdict(5);
+        store.set(key, v);
+        return v;
+      },
+    };
+  }
+
+  it('CONTROL A: a rank-keyed cache FAILS the cross-arm reuse assertion', async () => {
+    const broken = rankKeyedCache();
+    await broken.judge({ pairId: 'v1:search:fulltext:doc-9:0', query: 'q', docId: 'doc-9', docText: 'body' });
+    await broken.judge({ pairId: 'v1:docs:search:doc-9:7', query: 'q', docId: 'doc-9', docText: 'body' });
+    // The real cache judges ONCE here. This one pays twice — which is exactly
+    // the control arm re-buying the rerank arm's labels.
+    expect(broken.calls()).toBe(2);
+  });
+
+  it('CONTROL B: a re-billing cache FAILS the zero-cost-on-hit assertion', async () => {
+    const broken = rebillingCache();
+    const input = { query: 'q', docId: 'd', docText: 't' };
+    await broken.judge(input);
+    const second = await broken.judge(input);
+    // The real cache returns 0 here; this returns the original price, so a
+    // run's reported cost would exceed what it actually spent.
+    expect(second.judgeCostUsd).toBe(0.01);
+  });
+
+  it('CALIBRATION: the real cache passes both assertions the controls fail', async () => {
+    // Without this, the controls could pass because the property itself is
+    // broken rather than because the subject is sound.
+    const sql = fakeSql();
+    let calls = 0;
+    const cache = createCachedJudge({
+      ...BASE,
+      sql,
+      inner: async () => {
+        calls += 1;
+        return verdict(5);
+      },
+    });
+    await cache.judge({ pairId: 'v1:search:fulltext:doc-9:0', query: 'q', docId: 'doc-9', docText: 'body' });
+    const second = await cache.judge({ pairId: 'v1:docs:search:doc-9:7', query: 'q', docId: 'doc-9', docText: 'body' });
+    expect(calls).toBe(1);
+    expect(second.judgeCostUsd).toBe(0);
+  });
+});
+
 describe('reapable-path detection', () => {
   it('flags the temp paths every lost artifact actually lived under', () => {
     // These are the real paths from the incident, not invented examples.
