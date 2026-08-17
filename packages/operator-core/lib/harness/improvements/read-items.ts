@@ -323,9 +323,20 @@ export async function readImprovementItems(
  */
 export interface CountImprovementDeps {
   countIssues: (filter: ListIssuesFilter) => Promise<number>;
+  /**
+   * Resolves the learning loop's own output ids, so a `loopOutputOnly` count is
+   * taken over the SAME population the matching read returns. OPTIONAL for the
+   * same reason as {@link ReadImprovementDeps.readLoopOutputIds} — a required
+   * member would instantly stale every fixture constructing this type across the
+   * tree, in files neither `test:affected` nor the per-file tsc baseline selects.
+   */
+  readLoopOutputIds?: () => Promise<readonly string[]>;
 }
 
-const defaultCountImprovementDeps: CountImprovementDeps = { countIssues };
+const defaultCountImprovementDeps: CountImprovementDeps = {
+  countIssues,
+  readLoopOutputIds: async () => (await (await import('./loop-output')).readLoopOutputIds()).ids,
+};
 
 /**
  * The TRUE corpus total for the SAME filter {@link readImprovementItems} applies —
