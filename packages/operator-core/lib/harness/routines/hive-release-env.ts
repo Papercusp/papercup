@@ -260,6 +260,9 @@ export interface CheckpointRouting {
   root: string;
   /** Env overlay for the subprocess (EMPTY for operator-home / default). */
   extraEnv: Record<string, string>;
+  /** Env keys to DELETE from the inherited env before `extraEnv` is applied (EMPTY for
+   *  operator-home / default — its behavior stays byte-identical, D-007). */
+  clearEnv: string[];
   /** Present when this installSlug should NOT run a suite (not a gated coding hive). */
   skip?: { reason: string };
 }
@@ -277,14 +280,15 @@ export async function resolveCheckpointRouting(
   defaultRoot: string,
 ): Promise<CheckpointRouting> {
   if (!ctx.installSlug || ctx.installSlug === operatorHomeHarnessSlug()) {
-    return { root: defaultRoot, extraEnv: {} };
+    return { root: defaultRoot, extraEnv: {}, clearEnv: [] };
   }
   const hive = await resolveHiveReleaseEnv(ctx.installSlug, ctx.workspaceId);
-  if (!hive.enabled) return { root: defaultRoot, extraEnv: {}, skip: { reason: hive.reason ?? 'not-gated' } };
+  if (!hive.enabled)
+    return { root: defaultRoot, extraEnv: {}, clearEnv: [], skip: { reason: hive.reason ?? 'not-gated' } };
   // CRUCIAL (P-019): `root` is the TOOLING root — where green-checkpoint.ts + setup-release-
   // checkout.sh + tsx physically live (the papercusp operator tree, `defaultRoot`). It is NOT
   // the hive's repo: the hive's checkout has no release scripts. The hive is the SUBJECT,
   // carried ONLY in extraEnv (PAPERCUSP_INTEGRATION_ROOT) so the script runs FROM papercusp
   // and OPERATES ON the hive. (Earlier this returned the hive root → script-not-found.)
-  return { root: defaultRoot, extraEnv: hive.env };
+  return { root: defaultRoot, extraEnv: hive.env, clearEnv: hive.clearEnv };
 }
