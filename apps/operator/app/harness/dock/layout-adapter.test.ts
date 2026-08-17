@@ -99,9 +99,22 @@ describe('layout-adapter', () => {
         orientation: 'HORIZONTAL' as const,
         height: 0,
         width: 0,
+        // WI-39692: the root must be a BRANCH. Dockview's persisted grid contract always
+        // puts a branch at the root even when the logical layout is a single tab strip —
+        // that is exactly why toDockviewJson wraps a lone leaf (see its root-wrap comment)
+        // — so a bare `leaf` root is not a shape dockview can hand us, and DockviewLayout
+        // rightly refuses it. This fixture only ever needed "a layout referencing `lost`";
+        // the leaf-at-root was incidental. Wrapping it keeps the intent and makes the
+        // fixture a real dockview shape, and toLayoutDoc's sole-leaf unwrap still yields
+        // the compact `tabs` root the assertion below inspects.
         root: {
-          type: 'leaf' as const,
-          data: { views: ['lost'], activeView: 'lost', id: 'r' },
+          type: 'branch' as const,
+          data: [
+            {
+              type: 'leaf' as const,
+              data: { views: ['lost'], activeView: 'lost', id: 'r' },
+            },
+          ],
         },
       },
       panels: {},
@@ -192,7 +205,14 @@ describe('layout-adapter', () => {
     expect(dv.grid.root.type).toBe('branch');
     // All panels referenced in leaves must exist in dv.panels
     const referenced: string[] = [];
-    function collectLeafIds(n: typeof dv.grid.root): void {
+    // WI-39692: the parameter must be the NODE UNION (leaf | branch), not the root's own
+    // type. `dv.grid.root` is specifically a BRANCH, so `typeof dv.grid.root` made the
+    // `n.type === 'leaf'` test a no-overlap comparison — i.e. the walker's leaf case, the
+    // only branch that collects anything, was statically unreachable while still being the
+    // path that runs. Derived by indexed access off the branch's own children so this needs
+    // no newly-exported type from @papercusp/dock-workbench.
+    type DvNode = (typeof dv.grid.root)['data'][number];
+    function collectLeafIds(n: DvNode): void {
       if (n.type === 'leaf') {
         referenced.push(...n.data.views);
       } else {
