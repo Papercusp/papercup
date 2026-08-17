@@ -8611,4 +8611,62 @@ describe("EI-20014356905761236: the verdict log records whether its verdict prom
     expect(trailer(logPath)).toContain("reason=not-green");
     expect(trailer(logPath)).not.toContain("decision-pending");
   });
+
+  /**
+   * The ADVANCE leg — the last window that could throw without stamping a disposition, because
+   * the success trailer is written only after BOTH the push and the local fast-forward. A throw
+   * here left `decision-pending` standing, which reads as "died in an OPTIONAL post-verdict leg"
+   * and is precisely wrong: the gate decided green and died publishing it.
+   *
+   * Measured on oddsmith, where this is not an edge case but every run — it has no push
+   * credential (`fatal: could not read Username`, 461 unpushed commits, WI-39549), so 4
+   * consecutive greens (2026-08-17 09:19Z→12:19Z) stamped no promotion trailer at all while
+   * `main` sat frozen and the gate's own log could not name the cause.
+   *
+   * Both assert the throw still PROPAGATES: it is load-bearing (it is what stops a failed push
+   * being reported as a green advance), so this adds a record, it does not swallow.
+   */
+  it("⭐ stamps push-failed when publishing the green candidate throws (oddsmith's window)", async () => {
+    const c1 = await commit("a", "1", "c1");
+    await git(repo, ["branch", "ready", c1]);
+    await commit("a", "2", "c2");
+    const logPath = join(repo, "push-failed.log");
+    const deps = withLog(stubDeps(true).deps, true, logPath);
+    deps.push = async () => {
+      throw new Error("fatal: could not read Username for 'https://github.com'");
+    };
+
+    await expect(runGreenCheckpoint(cfg(), deps)).rejects.toThrow(
+      /could not read Username/,
+    );
+
+    // The gate's own log now names the real disposition instead of leaving the early
+    // `decision-pending` line to be misread as a death in an optional leg.
+    const t = trailer(logPath);
+    expect(t).toContain("reason=push-failed");
+    expect(t).toContain("green=true");
+    expect(t).toContain("promoted=false");
+    expect(t).not.toContain("decision-pending");
+  });
+
+  it("⭐ stamps advance-failed when the local fast-forward throws", async () => {
+    const c1 = await commit("a", "1", "c1");
+    await git(repo, ["branch", "ready", c1]);
+    await commit("a", "2", "c2");
+    const logPath = join(repo, "advance-failed.log");
+    const deps = withLog(stubDeps(true).deps, true, logPath);
+    deps.advance = async () => {
+      throw new Error("fast-forward refused");
+    };
+
+    await expect(
+      runGreenCheckpoint(cfg(), deps, { noPush: true }),
+    ).rejects.toThrow(/fast-forward refused/);
+
+    const t = trailer(logPath);
+    expect(t).toContain("reason=advance-failed");
+    expect(t).toContain("green=true");
+    expect(t).toContain("promoted=false");
+    expect(t).not.toContain("decision-pending");
+  });
 });
