@@ -101,6 +101,19 @@ describe("guard-operator-desktop — loopback deception (EI-20732462499061834)",
     expect(r.stderr).toContain("resolves to LOOPBACK");
   });
 
+  // Every navigation tool the hook's matcher claims to cover — a partition of
+  // the interception surface, not a sample of it.
+  it.each([
+    "mcp__playwright__browser_navigate",
+    "mcp__claude-in-chrome__navigate",
+    "mcp__claude-in-chrome__tabs_create_mcp",
+  ])("BLOCKS via %s", (tool_name) => {
+    const r = run(
+      JSON.stringify({ tool_name, tool_input: { url: `https://${PINNED}/` } }),
+    );
+    expect(r.status).toBe(2);
+  });
+
   it("tells the agent how to confirm the pin themselves", () => {
     const r = run(navigate(`https://${PINNED}/`));
     expect(r.stderr).toContain(`getent hosts ${PINNED}`);
