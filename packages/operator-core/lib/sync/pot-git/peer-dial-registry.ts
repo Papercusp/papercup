@@ -875,6 +875,10 @@ export const _testing = {
   DEFAULT_REGISTRATION_WAIT_MS,
   // WI-5210 one-sided-hello healing — exposed so a unit test can drive the
   // lost-hello / re-send sequence without standing up protomux or a second box.
+  // `REDIAL_DELAYS_MS` is exposed so the redial-tail suite's control can be
+  // pinned to the REAL ladder instead of a hardcoded length that could drift
+  // away from it.
+  REDIAL_DELAYS_MS,
   statesFor,
   dialConfigByMuxer,
   maybeSendHello,
