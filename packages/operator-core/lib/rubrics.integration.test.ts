@@ -112,8 +112,10 @@ afterAll(async () => {
 
 beforeEach(async () => {
   // Wipe the migration-seeded rubric plan (mig 338) + any prior test rows so each
-  // case asserts against a clean rubric set.
-  await db.adminSql`TRUNCATE harness_shared.harness_plans`;
+  // case asserts against a clean rubric set. CASCADE: plan_items/plan_decisions
+  // (and any future table) hold FKs into harness_plans, and a bare TRUNCATE of a
+  // referenced table is refused by Postgres (WI-39618).
+  await db.adminSql`TRUNCATE harness_shared.harness_plans CASCADE`;
 });
 
 describe('reads — a rubric-template plan resolves as a Rubric', () => {
