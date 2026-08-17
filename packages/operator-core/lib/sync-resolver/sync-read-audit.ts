@@ -125,6 +125,15 @@ export const SYNC_QUERY_FIXTURES: Record<string, QueryFixture> = {
   'plans.runHistory': { planSlug: 'precompute-sync-reads-phase2-compute-latency-2026-07-19' },
   'plans.scheduledOccurrences': { rangeStartMs: 0, rangeEndMs: 9_999_999_999_999 },
   'p2p.grants': { potSlug: 'papercusp' },
+  // learning.retainPlanChildren requires a planSlug — '' short-circuits to []
+  // with no DB round-trip, a shape that would under-measure. Same stable plan
+  // slug as planSessions.list; rows are the work_items born from that plan.
+  'learning.retainPlanChildren': { planSlug: 'precompute-sync-reads-phase2-compute-latency-2026-07-19' },
+  // learning.retainDetail is a ONE-entity read keyed by {kind,id}. kind:'plan'
+  // with the stable audit plan slug is the deterministic leg (the other kinds'
+  // ids — memory/rubric/recipe — are per-entity with no stable fixture). The
+  // payload has no cardinality axis: one entity per request by construction.
+  'learning.retainDetail': { kind: 'plan', id: 'precompute-sync-reads-phase2-compute-latency-2026-07-19' },
 
   // ── needs a per-run id → skipped by the live audit (null) ──
   'workItems.detail': null, // a specific work-item id
