@@ -30,9 +30,20 @@ describe('recommendCombo', () => {
     const rec = recommendCombo(hw({ gpu: { vendor: 'nvidia', model: 'NVIDIA GeForce RTX 3090', vramGB: 24 } }));
     expect(rec.entry?.id).toBe('ornith-35b-iq3m-llama-server');
     expect(rec.tier).toBe('nvidia-24gb-plus');
-    // ornith entry #1 is now CERTIFIED by the P-006 cert battery (was provisional).
-    expect(rec.reason).toMatch(/CERTIFIED by the P-006 battery/);
-    expect(rec.reason).not.toMatch(/PROVISIONAL/);
+    // The ornith entry was DEMOTED back to provisional on 2026-08-17
+    // (on-demand-local-inference-lifecycle-2026-08-17 D-011, EI-20721621940954812): its 2026-07-02
+    // certification was earned on a hand-built llama-server binary that has since been deleted, and
+    // the unit now runs ollama's packaged engine — a different build, which per D-012 also needed
+    // new CUDA env vars and an explicit -ngl before it would touch the GPU at all. Per D-007 an
+    // uncertified config must not inherit a certified stamp.
+    //
+    // This assertion is deliberately the STRICT direction: the wizard must SAY it is unvetted. The
+    // tempting edit when this test broke was to relax it to "matches something"; that would let a
+    // silent re-promotion (or a formatting change that drops the caveat) pass unnoticed, which is
+    // the whole failure class this catalog's status field exists to prevent. Flip it back only
+    // together with a real cert-battery run against the packaged engine.
+    expect(rec.reason).toMatch(/PROVISIONAL, not yet through the certification battery/);
+    expect(rec.reason).not.toMatch(/CERTIFIED by the P-006 battery/);
   });
 
   it('returns no entry + a cloud-fallback reason for cpu-only hardware', () => {
