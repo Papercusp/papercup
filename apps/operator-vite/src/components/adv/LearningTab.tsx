@@ -3,7 +3,6 @@
  * Each stage composes the existing sync-backed panels; `?lview=` remains the
  * canonical deep-link state and `?lhive=` scopes the hive-aware views.
  */
-import { useWindowVirtualizer } from "@tanstack/react-virtual";
 import {
   useCallback,
   useEffect,
@@ -2070,7 +2069,12 @@ function ImprovementsView({
           ))}
         </ul>
       ) : (
-        <WindowedImprovementList rows={visibleRows} lsel={lsel} ctx={rowCtx} />
+        <ImproveGrid
+          rows={visibleRows}
+          lsel={lsel}
+          traceOpen={traceOpen}
+          ctx={rowCtx}
+        />
       )}
 
       {/* Drafts in iteration (learning-tab-visibility P-005; moved here from
@@ -2165,51 +2169,297 @@ interface LoopRowContext {
   onDismissSelect: () => void;
 }
 
-function WindowedImprovementList({
+/** WI-39536: the merged Improve list rendered through the same grid engine as
+ *  the Work-tab work queue, the Observations table, and the Retained ledger
+ *  (VirtualGrid — the shared filter engine + `impq` quick-search already sit
+ *  above it). The card's affordances survive as grid semantics: an idea-bearing
+ *  row's title (or a click anywhere on the row) toggles its pipeline trace,
+ *  which renders as the grid's expanded row; a `?lsel`-selected row highlights
+ *  and dismisses on click; and the grade popover — THE one control on a row
+ *  (owner ruling 2026-07-27) — is its own column, stopPropagation-guarded so
+ *  grading never toggles the trace underneath it. The read arrives whole (the
+ *  digest is one snapshot, not a paged feed), so there is no `onEndReached`:
+ *  virtualization is what caps the DOM cost, not the fetch. */
+function ImproveGrid({
   rows,
   lsel,
+  traceOpen,
   ctx,
 }: {
   rows: LoopRow[];
   lsel: string | null;
+  traceOpen: string | null;
   ctx: LoopRowContext;
 }) {
-  const virtualizer = useWindowVirtualizer({
-    count: rows.length,
-    estimateSize: () => 140,
-    overscan: 5,
-  });
+  // Rebuilt per render on purpose: the defs close over `ctx`, itself a
+  // per-render object (see the rowCtx note above) — memoizing on it would
+  // change nothing.
+  const columns: ColumnDef<LoopRow>[] = [
+    {
+      key: "item",
+      header: "Item",
+      width: 1.1,
+      toCopyText: (r) =>
+        r.item?.id ??
+        (r.idea ? (ctx.railMetaMap[r.idea.rail]?.label ?? r.idea.rail) : ""),
+      render: ({ row: r }) => {
+        if (r.item) return <span className="pc-learning__id">{r.item.id}</span>;
+        const meta = r.idea ? ctx.railMetaMap[r.idea.rail] : null;
+        // The rail LEADS an idea-only row — where the idea went, since there
+        // is no work-item id to act on yet.
+        return (
+          <span className="pc-learning__id" style={{ color: meta?.color }}>
+            {meta?.label ?? r.idea?.rail ?? "idea"}
+          </span>
+        );
+      },
+    },
+    {
+      key: "title",
+      header: "Title",
+      width: 4,
+      toCopyText: (r) =>
+        r.item?.title ?? r.idea?.title ?? r.idea?.routedRef ?? "",
+      render: ({ row: r }) => {
+        const title = r.item?.title ?? r.idea?.title ?? r.idea?.routedRef ?? "";
+        if (!r.idea) {
+          return (
+            <span className="pc-learning__title" title={title}>
+              {title}
+            </span>
+          );
+        }
+        // Only an idea-bearing row is expandable — the trace IS the idea's
+        // record. A real button keeps the affordance keyboard-reachable (the
+        // row-level click is mouse-only); stopPropagation so the row click
+        // underneath doesn't immediately toggle it back.
+        const open = traceOpen === r.idea.ideaId;
+        const ideaId = r.idea.ideaId;
+        return (
+          <button
+            type="button"
+            className="pc-learning__gridtitlebtn"
+            aria-expanded={open}
+            aria-label={
+              open
+                ? `Hide the trace for ${title}`
+                : `Show where “${title}” came from — grounding, lens, route, grade, outcome`
+            }
+            onClick={(e) => {
+              e.stopPropagation();
+              ctx.onToggleTrace(open ? null : ideaId);
+            }}
+          >
+            <span className="pc-learning__title" title={title}>
+              {title}
+            </span>
+          </button>
+        );
+      },
+    },
+    {
+      key: "lens",
+      header: "Lens",
+      width: 1.1,
+      toCopyText: (r) => r.idea?.lens ?? "",
+      render: ({ row: r }) =>
+        r.idea ? (
+          <span
+            className="pc-learning__chip pc-learning__chip--idea"
+            style={{
+              color: lensColor(r.idea.lens),
+              borderColor: lensColor(r.idea.lens),
+            }}
+            title="The creative lens that produced this idea"
+          >
+            {r.idea.lens}
+          </span>
+        ) : null,
+    },
+    {
+      key: "severity",
+      header: "Severity",
+      width: 0.9,
+      toCopyText: (r) => r.item?.severity ?? "",
+      render: ({ row: r }) => {
+        if (!r.item) return null;
+        const solid = SEVERITY[r.item.severity ?? "minor"].solid;
+        return (
+          <span
+            className="pc-learning__chip"
+            style={{ color: solid, borderColor: solid }}
+          >
+            {r.item.severity ?? "—"}
+          </span>
+        );
+      },
+    },
+    {
+      key: "stage",
+      header: "Stage",
+      width: 1.1,
+      toCopyText: (r) => PIPELINE_STATES[pipelineState(r)].label,
+      render: ({ row: r }) => {
+        const stage = pipelineState(r);
+        return (
+          <span
+            className={`pc-learning__chip pc-learning__chip--stage-${stage}`}
+            title={PIPELINE_STATES[stage].desc}
+          >
+            {PIPELINE_STATES[stage].label}
+          </span>
+        );
+      },
+    },
+    {
+      key: "age",
+      header: "Age",
+      width: 0.7,
+      toCopyText: (r) =>
+        r.item
+          ? ageLabel(r.item.ageDays)
+          : r.idea?.routedAt
+            ? whenLabel(Date.parse(r.idea.routedAt))
+            : "",
+      render: ({ row: r }) => (
+        <span className="pc-learning__age" title="How long ago this was filed">
+          {r.item
+            ? ageLabel(r.item.ageDays)
+            : r.idea?.routedAt
+              ? whenLabel(Date.parse(r.idea.routedAt))
+              : ""}
+        </span>
+      ),
+    },
+    {
+      key: "score",
+      header: "Score",
+      width: 0.6,
+      align: "right",
+      toCopyText: (r) => (r.item ? String(r.item.score) : ""),
+      render: ({ row: r }) =>
+        r.item ? (
+          <span
+            className="pc-learning__score"
+            title="Triage priority (severity + age) — higher means more urgent"
+          >
+            {r.item.score}
+          </span>
+        ) : null,
+    },
+    {
+      key: "grade",
+      header: "Grade",
+      width: 1.6,
+      toCopyText: (r) => {
+        const eff = r.idea ? ctx.effectiveGrade(r.idea) : null;
+        return eff
+          ? `★${eff.grade} · ${graderLabel(eff.gradedBy, ctx.brainWord)}`
+          : "";
+      },
+      render: ({ row: r }) => {
+        const idea = r.idea;
+        if (!idea) return null;
+        const eff = ctx.effectiveGrade(idea);
+        const isGradeOpen = ctx.gradeOpen === idea.ideaId;
+        const saving = ctx.savingId === idea.ideaId;
+        const title = r.item?.title ?? idea.title ?? idea.routedRef;
+        return (
+          <span
+            className="pc-learning__grade"
+            onClick={(event) => event.stopPropagation()}
+            onKeyDown={(event) => event.stopPropagation()}
+          >
+            {eff ? (
+              <span
+                className="pc-learning__gradechip"
+                title={
+                  eff.feedback
+                    ? `Graded by ${graderLabel(eff.gradedBy, ctx.brainWord)}: “${eff.feedback}”`
+                    : `Graded by ${graderLabel(eff.gradedBy, ctx.brainWord)}`
+                }
+              >
+                ★{eff.grade} · {graderLabel(eff.gradedBy, ctx.brainWord)}
+              </span>
+            ) : null}
+            <Popover
+              open={isGradeOpen}
+              onOpenChange={(open) =>
+                ctx.onGradeOpenChange(open ? idea.ideaId : null)
+              }
+              trigger={
+                <button
+                  type="button"
+                  className="pc-learning__notebtn"
+                  aria-label={eff ? "Review idea grade" : "Grade this idea"}
+                  aria-expanded={isGradeOpen}
+                >
+                  {eff ? (
+                    <Star size={12} fill="currentColor" aria-hidden />
+                  ) : (
+                    <MessageSquarePlus size={12} aria-hidden />
+                  )}
+                </button>
+              }
+              tooltipLabel={eff ? "Review this grade" : "Grade this idea"}
+              ariaLabel={`Grade ${title}`}
+              contentClassName="pc-learning__gradepopover"
+            >
+              <GradePanel
+                current={eff}
+                busy={saving}
+                onSave={(grade, feedback) => {
+                  void ctx
+                    .onGrade(idea, grade, feedback)
+                    .then(() => ctx.onGradeOpenChange(null));
+                }}
+                onClose={() => ctx.onGradeOpenChange(null)}
+              />
+            </Popover>
+          </span>
+        );
+      },
+    },
+  ];
+
+  // `?itrace=` holds an ideaId; the grid keys rows by `key` (the work-item id
+  // when filed, else the ideaId), so resolve the open trace to its row key.
+  const expandedRowKey = traceOpen
+    ? (rows.find((r) => r.idea?.ideaId === traceOpen)?.key ?? null)
+    : null;
 
   return (
-    <ul 
-      className="pc-learning__list" 
-      style={{
-        position: 'relative',
-        height: `${virtualizer.getTotalSize()}px`,
-        width: '100%',
+    <VirtualGrid<LoopRow>
+      columns={columns}
+      rows={rows}
+      getRowId={(r) => r.key}
+      rowMinHeight={34}
+      headerHeight={30}
+      scrollStyle={{ maxHeight: "min(58vh, 640px)" }}
+      onRowClick={(r) => {
+        // Parity with the card: a selected (?lsel) row dismisses on click; an
+        // idea-bearing row toggles its trace.
+        if (isSelectedRow(r, lsel)) {
+          ctx.onDismissSelect();
+          return;
+        }
+        if (r.idea)
+          ctx.onToggleTrace(traceOpen === r.idea.ideaId ? null : r.idea.ideaId);
       }}
-    >
-      {virtualizer.getVirtualItems().map((virtualItem) => {
-        const row = rows[virtualItem.index];
-        return (
-          <LoopRowView
-            key={row.key}
-            row={row}
-            ctx={ctx}
-            selected={isSelectedRow(row, lsel)}
-            index={virtualItem.index}
-            measureRef={virtualizer.measureElement}
-            style={{
-              position: 'absolute',
-              top: 0,
-              left: 0,
-              width: '100%',
-              transform: `translateY(${virtualItem.start}px)`,
-            }}
-          />
-        );
-      })}
-    </ul>
+      getRowBg={(r) =>
+        isSelectedRow(r, lsel)
+          ? "color-mix(in oklab, var(--accent), transparent 80%)"
+          : undefined
+      }
+      expandedRowKey={expandedRowKey}
+      renderExpandedRow={(r) =>
+        r.idea ? (
+          <div className="pc-learning__gridtrace">
+            <IdeaTrace idea={r.idea} ctx={ctx} />
+          </div>
+        ) : null
+      }
+    />
   );
 }
 
@@ -2377,20 +2627,11 @@ function LoopRowView({
   row,
   ctx,
   selected = false,
-  index,
-  measureRef,
-  style,
 }: {
   row: LoopRow;
   ctx: LoopRowContext;
   /** Deep-link target (?lsel) — highlighted + scrolled into view; click dismisses. */
   selected?: boolean;
-  /** Virtualized row index required by TanStack's measurement callback. */
-  index?: number;
-  /** Optional TanStack callback used by the windowed list to measure this row. */
-  measureRef?: (element: HTMLLIElement | null) => void;
-  /** Absolute-positioning style supplied by the windowed list. */
-  style?: CSSProperties;
 }) {
   const { item, idea } = row;
   const meta = idea
@@ -2412,11 +2653,6 @@ function LoopRowView({
       ref.current?.scrollIntoView({ block: "center", behavior: "smooth" });
   }, [selected]);
 
-  const combinedRef = useCallback((el: HTMLLIElement | null) => {
-    ref.current = el;
-    measureRef?.(el);
-  }, [measureRef]);
-
   // The leading id: the work item when there is one (it is the thing you act
   // on), otherwise the rail the idea went to.
   const leadLabel = item ? item.id : (meta?.label ?? "idea");
@@ -2425,9 +2661,7 @@ function LoopRowView({
 
   return (
     <li
-      ref={combinedRef}
-      data-index={index}
-      style={style}
+      ref={ref}
       className={`pc-learning__row${selected ? " pc-learning__row--selected" : ""}`}
       // No row-level `title`: it used to carry `tierReason` ("… → human
       // review"), which now contradicts the stage chip's own tooltip. The chip
@@ -6466,6 +6700,11 @@ export function LearningStyles() {
         margin-top: 9px; padding: 10px 12px; border-radius: 9px;
         background: color-mix(in srgb, var(--bg-1, #0d151d) 60%, transparent);
       }
+      /* WI-39536: the Improve grid's expanded-row trace + in-cell trace toggle. */
+      .pc-learning__gridtrace { padding: 0 10px 10px; }
+      .pc-learning__gridtrace .pc-learning__trace { margin-top: 0; }
+      .pc-learning__gridtitlebtn { all: unset; cursor: pointer; display: inline-flex; min-width: 0; max-width: 100%; }
+      .pc-learning__gridtitlebtn:focus-visible { outline: 2px solid var(--accent, #7dd3fc); outline-offset: 2px; border-radius: 4px; }
       .pc-learning__tracerow { display: contents; }
       .pc-learning__tracerow > em {
         font-style: normal; font-size: 8.5px; font-weight: 720; text-transform: uppercase;
