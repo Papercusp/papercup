@@ -25,9 +25,16 @@ const mergeWorkItemOutputPayload = vi.fn();
 const resolveWorkItemRef = vi.fn();
 const linkWorkItem = vi.fn();
 const subscribeWorkItem = vi.fn();
+// EI-19362441037986499: the record-only-completion-of-an-already-terminal-item writer. It
+// MUST be in this wholesale mock — omitting it leaves the import `undefined`, and every
+// existing record-only completion of a resolved/passed item then throws inside the arm that
+// calls it, which complete.ts catches and reports as a stateError. That failure mode looks
+// like a product bug, not a stale mock (the trap this file has hit before).
+const attachCompletionEvidenceToSettledItem = vi.fn();
 vi.mock('../../work-items', () => ({
   getWorkItem: (...a: unknown[]) => getWorkItem(...a),
   setWorkItemStateWithAliasInfo: (...a: unknown[]) => setWorkItemStateWithAliasInfo(...a),
+  attachCompletionEvidenceToSettledItem: (...a: unknown[]) => attachCompletionEvidenceToSettledItem(...a),
   setWorkItemClaimHold: (...a: unknown[]) => setWorkItemClaimHold(...a),
   workItemObjectRef: (x: { id: string }) => `wi:${x.id}`,
   mergeWorkItemOutputPayload: (...a: unknown[]) => mergeWorkItemOutputPayload(...a),
@@ -161,6 +168,10 @@ beforeEach(() => {
   setWorkItemCheckpoint.mockResolvedValue(null);
   fireReactionInProcess.mockReset();
   fireReactionInProcess.mockResolvedValue({ ok: true });
+  attachCompletionEvidenceToSettledItem.mockReset();
+  // Default: the row had no competing completion record, so the evidence was stored. Note
+  // this is only REACHED when the item is already terminal AND no state was passed.
+  attachCompletionEvidenceToSettledItem.mockResolvedValue({ outcome: 'recorded', workItem: null });
 });
 
 // ── EI-11507: idempotent-completion opt-in (false-timeout fix) ───────────────────────────
