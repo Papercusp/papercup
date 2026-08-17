@@ -18,6 +18,8 @@
  */
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
+import { DISPATCH_WRAPPER_METADATA_KEY } from '../sessions/automatic-tool-names';
+import { dispatchWrapperMarkEnabled } from '../../telemetry-dispatch-wrapper';
 
 type NestedOutcome = { effectiveStatus: 'ok' | 'partial' | 'error'; childFailureCount: number };
 
@@ -170,9 +172,18 @@ export default defineTool({
     }
     const result = await ctx.dispatchTool(name, args.args ?? {});
     const outcome = summarizeNestedToolOutcome(result);
+    // P-012 (census double-count): the inner dispatch above wrote its OWN telemetry
+    // row, so this row is the wrapper overhead — mark it so tool_name censuses
+    // exclude it by default. Set only after dispatchTool settled: a throw before
+    // dispatch (unknown tool) leaves this row unmarked, erring toward counting.
+    // ctx.metadata is overwrite-not-merge, so the mark rides the one existing call.
+    const wrapperMark = (await dispatchWrapperMarkEnabled())
+      ? { [DISPATCH_WRAPPER_METADATA_KEY]: true, dispatchedTool: name }
+      : {};
     ctx.metadata?.({
       ...outcome,
       ...(outcome.childFailureCount > 0 ? { childFailureRefs: [name] } : {}),
+      ...wrapperMark,
     });
     // dispatchTool returns an MCP-shaped result already ({ content, isError?, _meta?, structuredContent? }).
     return result as unknown as { content: Array<{ type: 'text'; text: string }>; isError?: boolean };

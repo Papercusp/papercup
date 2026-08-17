@@ -2187,6 +2187,18 @@ export const FLAGS = {
   // kill-switch: the extra query is skipped and derivation is byte-identical to the
   // presence-only behavior.
   PRESENCE_TURN_PARTS_FRESHNESS: "papercusp-presence-turn-parts-freshness",
+  // goal-mode-design-intent-hardening-2026-08-16 P-012: census double-count fix.
+  // tools:invoke / a tool-dispatching code:run / recipes:run produce TWO
+  // tool_invocations rows per logical call (wrapper + inner), so a raw tool_name
+  // census overstates ~2x on the dispatch path. ON ⇒ the wrapper handlers stamp
+  // metadata_json.dispatchWrapper=true on their own row (only when an inner
+  // dispatch actually happened) and census surfaces (dev:telemetry, co-occurrence,
+  // failure rates) exclude marked rows by default. DEFAULT ON (alpha
+  // flags-default-on: instrument-accuracy fix, additive metadata). OFF = the
+  // kill-switch: nothing new is marked, and unmarked rows are excluded by nothing,
+  // so counts return to pre-P-012 behavior (rows marked while ON stay excluded —
+  // acceptable residue for a diagnostic census).
+  TELEMETRY_DISPATCH_WRAPPER_MARK: "papercusp-telemetry-dispatch-wrapper-mark",
   // db-performance-remediation-2026-07-26 P-004: the INDEX-BLOAT REINDEX sweep — a daily
   // scheduled DBOS workflow that REINDEX INDEX CONCURRENTLY's btree indexes which the
   // continuous retention churn has inflated into mostly-empty pages. VACUUM marks those

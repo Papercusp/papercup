@@ -85,6 +85,43 @@ export function classifyToolInvocationBehavior(
 }
 
 /**
+ * P-012 (goal-mode-design-intent-hardening-2026-08-16): the metadata_json key a
+ * DISPATCH WRAPPER stamps on its own telemetry row. tools:invoke and a
+ * tool-dispatching code:run / recipes:run produce TWO rows per logical call — the
+ * wrapper's own row plus the inner tool's row from its own dispatch — so a raw
+ * tool_name census overstates ~2x on that path. The wrapper row is the overhead
+ * row (the inner name is the real subject), so census surfaces exclude marked
+ * rows by default via the predicates below. Write side: the handlers stamp it
+ * through ctx.metadata, gated by TELEMETRY_DISPATCH_WRAPPER_MARK (see
+ * telemetry-dispatch-wrapper.ts) — flag OFF stops marking, and unmarked rows are
+ * excluded by nothing, restoring pre-P-012 counts end-to-end with one lever.
+ */
+export const DISPATCH_WRAPPER_METADATA_KEY = 'dispatchWrapper';
+
+/** Plain-string census predicate (true = KEEP the row) for raw SQL constants that
+ *  are not built through a `sql` tag. NULL/absent metadata keeps the row. */
+export const DISPATCH_WRAPPER_EXCLUSION_SQL =
+  `NOT coalesce((metadata_json->>'${DISPATCH_WRAPPER_METADATA_KEY}')::boolean, false)`;
+
+/** `sql`-tag form of {@link DISPATCH_WRAPPER_EXCLUSION_SQL}, alias-aware like the
+ *  behavior predicates below (alias is an internal identifier from the reader,
+ *  never caller input — postgres cannot parameterize column names). */
+export function dispatchWrapperExclusionPredicate(sql: Sql, alias?: string) {
+  const prefix = alias ? `${alias}.` : '';
+  const metadata = sql.unsafe(`${prefix}metadata_json`);
+  return sql`NOT coalesce((${metadata}->>${DISPATCH_WRAPPER_METADATA_KEY})::boolean, false)`;
+}
+
+/** Pure row-side classifier for TS readers that already hold the parsed metadata. */
+export function isDispatchWrapperMetadata(metadataJson: unknown): boolean {
+  return (
+    typeof metadataJson === 'object' &&
+    metadataJson !== null &&
+    (metadataJson as Record<string, unknown>)[DISPATCH_WRAPPER_METADATA_KEY] === true
+  );
+}
+
+/**
  * SQL fragment for automatic traffic. The optional alias is restricted to an
  * internal identifier supplied by these two readers, then passed through
  * `sql.unsafe` because postgres cannot parameterize column names.
