@@ -12,11 +12,20 @@
  *        --repo-root /path/to/hive --output apps/api/src/history.ts \
  *        --project-id other --project-name Other --export-name HISTORY
  *
- * CADENCE: every 6 hours at :50 (02:50, 08:50, 14:50, 20:50). Offset from the
- * :15 green-checkpoint, :35 gitnexus-reindex and :45 cargo-test so a multi-minute
- * generation never starts in the same tick minute as the release gate. Six hours
- * is a freshness choice, not a cost one — regeneration that yields identical bytes
- * is a git no-op, so the only real cost of the cadence is the generation itself.
+ * CADENCE: every 2 hours at :50. Offset from the :15 green-checkpoint, :35
+ * gitnexus-reindex and :45 cargo-test so a generation never starts in the same tick
+ * minute as the release gate.
+ *
+ * Two hours is a MEASURED choice, not a guess (2026-08-17):
+ *   - COST: a full SideStage generation ran in 30s (51 plans, ~2.2MB artifact). That
+ *     is cheap enough that the cadence is bounded by taste, not by budget.
+ *   - DRIFT: `--check` (which normalises `generatedAt` before comparing, so it is a
+ *     genuine CONTENT test) reported the artifact ALREADY STALE ~3.5h after a fresh
+ *     generation. Plans and work-items move continuously on this fleet, so a 6h
+ *     cadence would leave the History tab visibly behind for most of every window.
+ * A regeneration that yields identical bytes is a git no-op, so the cost of running
+ * more often than strictly needed is 30s of subprocess, while the cost of running
+ * less often is the stale archive this routine exists to prevent.
  *
  * ⚠ REPO ROOT: the canonical SideStage tree is the HIVE tree
  * (`~/.papercusp/hives/sidestage`), which is what the running API serves from
@@ -44,14 +53,36 @@ function flag(name: string, fallback: string): string {
   return fallback;
 }
 
-/** Where the hive trees live. PAPERCUSP_HOME wins so a non-default install seeds correctly. */
-function hiveRoot(slug: string): string {
-  const home = process.env.PAPERCUSP_HOME?.trim() || path.join(os.homedir(), '.papercusp');
-  return path.join(home, 'hives', slug);
+/**
+ * Where the hive trees live.
+ *
+ * ⚠ PAPERCUSP_HOME IS NOT RELIABLE HERE and is deliberately tried SECOND. On this box
+ * it is workspace-scoped (`~/.papercusp-workspaces/<ws>/.papercusp`), so preferring it
+ * resolved the SideStage root to
+ * `~/.papercusp-workspaces/papercusp-workspace/.papercusp/hives/sidestage` — a path
+ * that does not exist. That seeded a live routine whose every tick would have skipped
+ * on "repo_root does not exist", i.e. a refresher that reports healthy while
+ * refreshing nothing: precisely the silent decay this work-item exists to end
+ * (caught 2026-08-17 by seeding it for real and reading the path back).
+ *
+ * So: return the first CANDIDATE THAT ACTUALLY EXISTS, and let main() refuse loudly if
+ * none does, rather than emitting a plausible-looking path nobody checked.
+ */
+function hiveRootCandidates(slug: string): string[] {
+  const home = process.env.PAPERCUSP_HOME?.trim();
+  return [
+    path.join(os.homedir(), '.papercusp', 'hives', slug),
+    ...(home ? [path.join(home, 'hives', slug)] : []),
+  ];
 }
 
-/** Every 6h at :50 — clear of green-checkpoint (:15), gitnexus-reindex (:35), cargo-test (:45). */
-const CRON = '0 50 2,8,14,20 * * *';
+function defaultHiveRoot(slug: string): string {
+  const candidates = hiveRootCandidates(slug);
+  return candidates.find((c) => existsSync(c)) ?? candidates[0];
+}
+
+/** Every 2h at :50 — clear of green-checkpoint (:15), gitnexus-reindex (:35), cargo-test (:45). */
+const CRON = '0 50 */2 * * *';
 
 async function main(): Promise<void> {
   const active = !process.argv.includes('--inactive');
