@@ -416,10 +416,23 @@ async function main(): Promise<void> {
       `no-scope default — the sampled queries were issued to six different search tools.`,
   );
 
+  report.caveats.push(`Judge-grade reuse — ${cached.summary()}. Grades persist in harness_shared.search_judge_grades.`);
+
   rowStream.end();
   fs.writeFileSync(out, JSON.stringify(report, null, 2));
   console.log('\n' + formatLabelledReport(report) + '\n');
+  console.log(`[labelled] ${cached.summary()}`);
   console.log(`wrote full report: ${out}\nwrote per-query rows as they landed: ${rowsPath}`);
+  // The grades themselves are safe in Postgres now; this only concerns the
+  // human-readable artifact. Say so, so a reaped file is never again mistaken
+  // for lost evidence (EI-20653219342536753).
+  if (isReapablePath(out)) {
+    console.warn(
+      `\n⚠ ${out} is under a reapable temp path and WILL eventually be deleted.\n` +
+        `  The judgements are durable regardless (harness_shared.search_judge_grades, run_id=${runId}),\n` +
+        `  but copy this report somewhere durable if you intend to cite it later.`,
+    );
+  }
 }
 
 await main();
