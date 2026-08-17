@@ -70,10 +70,105 @@ const BLOCK_MSG = [
 ].join('\n');
 
 const allow = () => process.exit(0);
-const block = () => {
-  process.stderr.write(BLOCK_MSG + '\n');
+const block = (msg = BLOCK_MSG) => {
+  process.stderr.write(msg + '\n');
   process.exit(2);
 };
+
+/* ── Loopback-deception guard (EI-20732462499061834) ───────────────────────
+ * A REMOTE-looking hostname that resolves to LOOPBACK is the dangerous case,
+ * and it is the opposite failure from the one above: there, a browser view of
+ * an operator port is visibly broken. Here the check SUCCEEDS — whatever is
+ * listening locally answers 200 with a well-formed body and there is no tell
+ * in the response, so a "prod" verification silently reports on localhost.
+ *
+ * Measured on this box: `/etc/hosts` pins `sidestage.papercusp.com` to
+ * 127.0.0.1, so `https://sidestage.papercusp.com/` returned 200 from
+ * ip=127.0.0.1 in 0.3s while the real origin was unreachable. The filer had
+ * already cited a sha read that way as prod evidence in two work-items.
+ *
+ * We block only the DECEPTIVE case — a name that looks remote but resolves
+ * loopback. Navigating to `localhost` / `127.0.0.1` / `*.local` is a
+ * deliberate local check and stays allowed. Every failure path here allows:
+ * a guard that blocks on its own resolver error is worse than the bug.
+ */
+const LOOPBACK_ADDR = /^(?:127\.\d{1,3}\.\d{1,3}\.\d{1,3}|::1|0:0:0:0:0:0:0:1)$/;
+
+/** Names that are SUPPOSED to resolve locally — pointing at them is intentional. */
+function isExplicitlyLocal(host) {
+  return (
+    !host ||
+    /^localhost$/i.test(host) ||
+    /\.localhost$/i.test(host) ||
+    /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host) ||
+    host === '::1' ||
+    host === '0.0.0.0' ||
+    /\.local$/i.test(host)
+  );
+}
+
+/** Resolve via the SAME path the tools use (nsswitch → /etc/hosts, then DNS). */
+function resolvesToLoopback(host) {
+  let out;
+  try {
+    out = execFileSync('getent', ['hosts', host], {
+      encoding: 'utf8',
+      timeout: 2000,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+  } catch {
+    return false; // no such host, getent missing, or timeout → fail OPEN
+  }
+  const addrs = out
+    .split('\n')
+    .map((l) => l.trim().split(/\s+/)[0])
+    .filter(Boolean);
+  // ALL addresses loopback ⇒ every connection to this name lands locally.
+  return addrs.length > 0 && addrs.every((a) => LOOPBACK_ADDR.test(a));
+}
+
+const loopbackMsg = (host, url) =>
+  [
+    '',
+    `⛔ BLOCKED — "${host}" resolves to LOOPBACK on this box.`,
+    '',
+    `  ${url}`,
+    '',
+    '  This looks like a remote/prod check but it would hit whatever is',
+    '  listening on THIS machine. The local server answers 200 with a',
+    '  well-formed body and there is NO tell in the response — so the run',
+    '  would pass and you would report localhost as prod.',
+    '',
+    `  Confirm the pin:   getent hosts ${host}`,
+    '  (/etc/hosts on this box deliberately pins some *.papercusp.com names;',
+    '   see the comment on the flags.papercuspai.com line before changing any.)',
+    '',
+    '  To verify a REMOTE host, run the probe ON that host (ssh/docker exec)',
+    '  rather than from here — the office LAN also drops TLS handshakes whose',
+    '  SNI is *.papercusp.com, so --resolve to the origin IP times out too.',
+    '  If you meant to check LOCAL behaviour, say so and target localhost',
+    '  explicitly — then the evidence reads "localhost", which is honest.',
+    '',
+  ].join('\n');
+
+/** Pull candidate URLs out of a raw string (a verdict args blob, etc.). */
+function urlsIn(text) {
+  return String(text).match(/https?:\/\/[^\s"'<>\\)]+/gi) ?? [];
+}
+
+/** Block if any URL in `text` names a remote host that resolves to loopback. */
+function checkLoopbackDeception(text) {
+  for (const url of urlsIn(text)) {
+    let host;
+    try {
+      host = new URL(url).hostname.replace(/^\[|\]$/g, '');
+    } catch {
+      continue;
+    }
+    if (isExplicitlyLocal(host)) continue;
+    if (resolvesToLoopback(host)) block(loopbackMsg(host, url));
+  }
+}
 
 let payload;
 try {
@@ -94,6 +189,7 @@ const URL_PORTS = /(?:localhost|127\.0\.0\.1|0\.0\.0\.0):(?:3055|3070|3170)\b/i;
 if (/^mcp__/.test(tool) && /(browser_navigate|navigate|tabs_create_mcp)/i.test(tool)) {
   const url = String(input.url || input.URL || input.uri || '');
   if (URL_PORTS.test(url)) block();
+  checkLoopbackDeception(url);
   allow();
 }
 
@@ -108,6 +204,7 @@ if (tool === 'Skill') {
   if (/verdict/i.test(skill)) {
     const args = JSON.stringify(input.args ?? input.arguments ?? input ?? '');
     if (URL_PORTS.test(args)) block();
+    checkLoopbackDeception(args);
   }
   allow();
 }
