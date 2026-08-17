@@ -2443,12 +2443,15 @@ describe("LearningTab — inherited pot lens (owner directive 2026-07-26; was P-
     expect(seenArgs["learning.gym"]).toEqual({ hive: "beta-hive" });
   });
 
-  it("threads the inherited pot into the Learnings (learning.hive) query args", () => {
+  it("threads the inherited pot into the Learnings (retained ledger) query args", () => {
     nuqsState.lview = "learnings";
     advScopeState.slug = "beta-hive";
     advScopeState.hive = "beta-hive";
     render(<LearningTab />);
-    expect(seenArgs["learning.hive"]).toEqual({ hive: "beta-hive" });
+    // The ledger feed + the always-on strip both carry the lens (WI-39535 —
+    // the standalone learning.hive pool read is gone; memories ride the feed).
+    expect(seenArgs["learning.retainFeed"]).toMatchObject({ hive: "beta-hive" });
+    expect(seenArgs["learning.retain"]).toEqual({ hive: "beta-hive" });
   });
 
   it("All Pots (hive '') scopes every hive-aware query workspace-wide", () => {
