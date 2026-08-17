@@ -66,6 +66,11 @@ vi.mock('@papercusp/agent-mcp', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
   return { ...actual, runToolOrchestration: runOrchestrationMock };
 });
+// P-012: flag ON (the shipped default) — existing tests pass no ctx.metadata, so the
+// mark is invisible to them; the dispatch-wrapper describe asserts it explicitly.
+vi.mock('../../telemetry-dispatch-wrapper', () => ({
+  dispatchWrapperMarkEnabled: vi.fn(async () => true),
+}));
 
 // Side-effect: register the recipes:* tools AFTER the mocks are hoisted.
 import './list';
@@ -410,5 +415,58 @@ describe('recipes:get HANDLER (bulk keyed-array)', () => {
     const b = await getBody({ ids: ['r1', 'x', 'r2'] });
     expect(b.counts).toEqual({ ok: 2, failed: 1 });
     expect(b.results[1]).toMatchObject({ ok: false, id: 'x', error: 'not_found' });
+  });
+});
+
+/**
+ * P-012 (census double-count): recipes:run marks its OWN telemetry row as a dispatch
+ * wrapper when (and only when) the batch's scripts actually dispatched inner tools,
+ * aggregating the count across items. The zero-dispatch case is the control: a
+ * mark-by-tool-name implementation fails it.
+ */
+describe('recipes:run dispatch-wrapper mark (P-012)', () => {
+  const RECIPE = {
+    id: 'r1', workspaceId: 'ws-test', potSlug: 'alpha', title: 't', description: 'd',
+    script: 'return 1;', authorRole: 'operator', toolsUsed: [], runCount: 0,
+    successCount: 0, lastRunAt: null, status: 'active', tags: [],
+  };
+  const orchestration = (dispatchCount: number) => ({
+    ok: true, summary: { done: true }, logs: [], dryRun: false,
+    plannedMutations: [], dispatchCount,
+  });
+  const mkCtx = (metadata: ReturnType<typeof vi.fn>) =>
+    ({
+      log: () => {},
+      metadata,
+      workspaceId: 'ws-test',
+      harnessSlug: 'alpha',
+      role: 'worker',
+      isSuperuser: false,
+      uiClientId: 'reuser-test',
+    }) as never;
+
+  it('aggregates inner dispatches across the batch and stamps one mark', async () => {
+    getRecipeMock.mockImplementation(async (_sql: unknown, id: string) => ({ ...RECIPE, id }));
+    runOrchestrationMock
+      .mockResolvedValueOnce(orchestration(2))
+      .mockResolvedValueOnce(orchestration(3));
+    const metadata = vi.fn();
+    await findTool('recipes:run').fn({ ids: ['r1', 'r2'] }, mkCtx(metadata));
+    expect(metadata).toHaveBeenCalledWith(
+      expect.objectContaining({ dispatchWrapper: true, dispatchedToolCalls: 5 }),
+    );
+  });
+
+  it('control: a zero-dispatch batch (and a legacy result with no dispatchCount) stamps nothing', async () => {
+    getRecipeMock.mockImplementation(async (_sql: unknown, id: string) => ({ ...RECIPE, id }));
+    runOrchestrationMock
+      .mockResolvedValueOnce(orchestration(0))
+      // legacy shape: dispatchCount absent entirely — must be read as 0, never guessed
+      .mockResolvedValueOnce({
+        ok: true, summary: {}, logs: [], dryRun: false, plannedMutations: [],
+      });
+    const metadata = vi.fn();
+    await findTool('recipes:run').fn({ ids: ['r1', 'r2'] }, mkCtx(metadata));
+    expect(metadata).not.toHaveBeenCalled();
   });
 });
