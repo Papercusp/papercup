@@ -1421,9 +1421,14 @@ async function completeOne(
   // every other field is necessarily empty (not merely "unset"). Pull the marker
   // off BEFORE anything downstream sees it (rendering, evidence extraction, the
   // broadcast record) — it is purely an internal signal for the warning below.
-  const shapeCoercedFromBareString =
-    (it.completion as { __shapeCoercedFrom?: string }).__shapeCoercedFrom === 'bare-string';
-  if (shapeCoercedFromBareString) delete (it.completion as { __shapeCoercedFrom?: string }).__shapeCoercedFrom;
+  const shapeCoercedFrom = (it.completion as { __shapeCoercedFrom?: string }).__shapeCoercedFrom;
+  const shapeCoercedFromBareString = shapeCoercedFrom === 'bare-string';
+  // EI-20724228359175431: the tail-truncated JSON case. Unlike the bare-string one,
+  // structured fields DID survive, so the verification warning below stays silent —
+  // which is exactly why this needs its own signal: the caller must learn their
+  // input was cut off, because whatever was cut is simply MISSING from the record.
+  const shapeCoercedFromTruncatedJson = shapeCoercedFrom === 'truncated-json';
+  if (shapeCoercedFrom) delete (it.completion as { __shapeCoercedFrom?: string }).__shapeCoercedFrom;
 
   // EI-18764241942332131: Postgres' jsonb text-input parser rejects a literal NUL
   // byte with the opaque "unsupported Unicode escape sequence" — a caller who quotes
