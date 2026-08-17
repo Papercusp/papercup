@@ -28,7 +28,10 @@ vi.mock('@papercusp/db-org', () => ({
 }));
 vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn() }));
 vi.mock('@papercusp/flags', () => ({
-  FLAGS: { GOAL_WINDDOWN_DISPOSITION_GATE: 'papercusp-goal-winddown-disposition-gate' },
+  FLAGS: {
+    GOAL_WINDDOWN_DISPOSITION_GATE: 'papercusp-goal-winddown-disposition-gate',
+    GOAL_ACHIEVED_ACCEPTANCE_GATE: 'papercusp-goal-achieved-acceptance-gate',
+  },
 }));
 
 import type { GoalSqlTag } from '@papercusp/agent-mcp/goals';
@@ -42,8 +45,12 @@ import {
   buildDispositionRefusal,
   buildGoalWindDownReport,
   deliverGoalWindDownReport,
+  evaluateGoalAcceptanceGate,
+  goalAchievedAcceptanceGateEnabled,
   isGoalDisposition,
   windDownDispositionGateEnabled,
+  type GoalAcceptanceCard,
+  type GoalAcceptanceGateDeps,
 } from './wind-down-disposition';
 
 const getModeSubjectMock = getModeSubject as unknown as ReturnType<typeof vi.fn>;
