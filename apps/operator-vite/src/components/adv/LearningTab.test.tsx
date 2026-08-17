@@ -2570,6 +2570,58 @@ describe("LearningTab — inherited pot lens (owner directive 2026-07-26; was P-
     expect(document.body.textContent).toContain("degraded: memory");
   });
 
+  // WI-39675 — the same WI-6382 class one level deeper, and the defect the owner
+  // actually reported ("in the retain tab, it just says 'loading retained
+  // items...' forever", 2026-08-17).
+  //
+  // A RETRYING load is not a loading load. `loading` is TanStack's isLoading
+  // (isPending && isFetching), which stays TRUE for the entire retry sequence
+  // while `error` stays NULL until the last retry is exhausted — so a feed whose
+  // every attempt times out is, to a bare `loading` branch, indistinguishable
+  // from a healthy first paint, for ~47s (3 retries, 1s/2s/4s backoff, 10s
+  // server timeout). The user reads that as "forever".
+  //
+  // This pins BOTH directions, because a guard that only checks the failing case
+  // would pass just as happily on a branch that always cries "retrying".
+  it("a retrying retain load says so and offers a retry — a healthy one does not", () => {
+    nuqsState.lview = "learnings";
+    const loadingPage = (failureCount: number) => ({
+      data: [],
+      loading: true,
+      fetching: true,
+      error: null,
+      failureCount,
+      failureReason: failureCount
+        ? new Error('sync query "learning.retainFeed" timed out after 10000ms')
+        : null,
+      invalidate: vi.fn(),
+    });
+
+    // Scoped to the Retain section, not document.body: other panels on this tab
+    // legitimately use the word "retrying", and a body-wide negative assertion
+    // would fail on their copy rather than on this branch's.
+    const ledger = () =>
+      within(screen.getByRole("region", { name: "Retained ledger" }));
+
+    // Healthy first paint: the plain spinner copy, and NO alarm.
+    retainFeedResult = loadingPage(0);
+    render(<LearningTab />);
+    expect(ledger().getByText(/Loading retained items…/)).toBeTruthy();
+    expect(ledger().queryByText(/retrying/)).toBeNull();
+    expect(ledger().queryByRole("button", { name: /retry now/i })).toBeNull();
+    cleanup();
+
+    // Two attempts have already failed: say so, name the reason, offer the retry.
+    retainFeedResult = loadingPage(2);
+    render(<LearningTab />);
+    expect(ledger().getByText(/2 attempts failed, retrying…/)).toBeTruthy();
+    expect(ledger().getByText(/timed out after 10000ms/)).toBeTruthy();
+
+    // The retry affordance must actually refetch, not just decorate.
+    fireEvent.click(ledger().getByRole("button", { name: /retry now/i }));
+    expect(retainFeedResult.invalidate).toHaveBeenCalled();
+  });
+
   // WI-39534: a memory row's detail aside — click selects (rsel), the aside
   // renders the FULL body (the row title is the 200-char clamp), and an
   // editable memory exposes edit/remove. Close clears the selection.
