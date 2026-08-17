@@ -144,7 +144,7 @@ async function openPicker(page: Page) {
 }
 
 test.describe('/adv Harnesses tab — creation fork (P-010/P-011)', () => {
-  test('P-010 New on a hive scope opens the fork with all three modes, into-hive default-selected', async ({ page }) => {
+  test('P-010 New on a hive scope opens the fork with both modes, into-hive default-selected', async ({ page }) => {
     const { sync } = await stubAndCapture(page);
     const mounted = await gotoHarnessesTab(page, `slug=${HIVE}`);
     assertMounted(mounted, SKIP_MSG);
@@ -192,11 +192,15 @@ test.describe('/adv Harnesses tab — creation fork (P-010/P-011)', () => {
     await page.getByRole('button', { name: /New local directory/i }).click();
     // WI-39533: the form is now TWO fields, not three — the separate folderName
     // input is gone (the slug IS "the folder name created inside the parent
-    // directory", per its own hint text), and the submit button is
-    // lexicon-labelled (`Create Pot`), so it is matched by shape.
+    // directory", per its own hint text). The submit label is BOTH lexicon-driven
+    // AND mode-driven ("Add Pot" into a hive, "Create Pot" standalone), so match
+    // it by shape, scoped to the picker dialog.
     await page.getByPlaceholder('my-project').first().fill(NEW_MEMBER); // slug
     await page.getByPlaceholder('/home/user/projects').fill('/tmp');     // parentDir
-    await page.getByRole('button', { name: /^Create / }).click();
+    await page
+      .getByRole('dialog')
+      .getByRole('button', { name: /^(Add|Create) / })
+      .click();
 
     // P-011a: the create carried the membership edge to the selected hive.
     await expect.poll(() => cap.bodies.find((b) => !b.__hivesEndpoint)?.hive, { timeout: 10_000 }).toBe(HIVE);
