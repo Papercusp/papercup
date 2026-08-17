@@ -26,6 +26,7 @@ import { isAbsolute, resolve } from 'node:path';
 import { resolveAgentWorkspaceRoot } from './agent-tools/capability/base-dir';
 import { normalizeTestFilePaths, runTestFilesCore, type TestFilesCoreResult } from './agent-tools/testing/run';
 import type { RubricCriterionCheck } from './agent-tools/plans/rubric-template';
+import type { ScorecardCheckRun } from './harness/improvements/observation-types';
 
 /** The minimal criterion shape this module reads — key + the optional check. */
 export interface CheckedCriterion {
@@ -125,23 +126,11 @@ export function assertCriterionCheckPathsResolve(
   );
 }
 
-/** One criterion's grading-time check run — stamped onto the scorecard observation as
+/** One criterion's grading-time check run — the persisted shape is the ledger's
+ *  {@link ScorecardCheckRun} (observation-types.ts), stamped onto the scorecard as
  *  `checkRuns[criterionKey]` so a rating the run contradicts is machine-detectable
  *  from the record itself (D-006). */
-export interface CriterionCheckRun {
-  kind: 'tests';
-  files: string[];
-  verdict: 'pass' | 'fail';
-  /** Test counts from the run (complete, never truncated). */
-  passed: number;
-  failed: number;
-  /** The run correlation id (PAPERCUSP_TEST_RUN_GROUP) — ledger rows are findable by it. */
-  runId: string | null;
-  /** ISO instant the run finished (emit time — this is a LIVE run, never a ledger read). */
-  measuredAt: string;
-  /** Bounded failing-test names (file: test), only on a 'fail' verdict. */
-  failures?: string[];
-}
+export type CriterionCheckRun = ScorecardCheckRun;
 
 export type CriterionCheckRefusal =
   | {

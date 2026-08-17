@@ -30,6 +30,9 @@ import { scorecardInstrumentSnapshotSchema, scorecardRatingEntrySchema } from '.
 import { acceptanceGraderLabelPrefix } from '../../acceptance-grader';
 import { killTask } from '../../task-manager/control';
 import { listTasks } from '../../task-manager/store';
+import { evaluateCriterionTestChecks } from '../../rubrics-criterion-checks';
+import { resolveAgentWorkspaceRoot } from '../capability/base-dir';
+import { clampForegroundTimeoutMs } from '../capability/foreground-transport-cap';
 
 export const scorecardEmitArgs = z
   .object({
@@ -110,7 +113,19 @@ export async function cleanupAcceptanceGraderTasks(
 
 export async function emitScorecard(
   args: z.infer<typeof scorecardEmitArgs>,
-  input: { createdBy: string; ctxHarness?: string; role?: string; workspaceId?: string },
+  input: {
+    createdBy: string;
+    ctxHarness?: string;
+    role?: string;
+    workspaceId?: string;
+    /** P-011 (D-006): the tree tests-check files resolve + run against — the handler
+     *  passes its ctx-resolved root; omitted ⇒ the resolver's ctx-less fallback. */
+    checkRoot?: string;
+  },
+  deps: {
+    /** Injectable seam for tests — production runs the real router via the testing:run core. */
+    evaluateChecks?: typeof evaluateCriterionTestChecks;
+  } = {},
 ) {
   const rubric = await getRubric(args.rubricRef);
   if (!rubric) return { ok: false as const, error: `rubric '${args.rubricRef}' not found` };
@@ -259,6 +274,37 @@ export async function emitScorecard(
       };
     }
 
+    // ── P-011 (owner-ratified D-006): deterministic criterion checks ──
+    // Every RATED criterion whose rubric check is kind:'tests' has its files actually
+    // RUN here, at grading time (never a stale ledger read): a path that no longer
+    // resolves refuses the emit, an unjudgeable run refuses the emit, and a
+    // pass-claiming rating the run contradicts refuses the emit. Placed AFTER the
+    // unchanged-evidence decline above so a deduped re-emit never burns a test run,
+    // and BEFORE the write so a card is only ever filed with its live check verdicts
+    // stamped (observation.checkRuns). Criteria without a tests-check are untouched.
+    let checkRuns: Record<string, import('../../rubrics-criterion-checks').CriterionCheckRun> | undefined;
+    const testCheckedCriteria = rubric.criteria.filter((c) => c.check?.kind === 'tests');
+    if (testCheckedCriteria.length > 0) {
+      const evaluateChecks = deps.evaluateChecks ?? evaluateCriterionTestChecks;
+      const checkEvaluation = await evaluateChecks({
+        criteria: rubric.criteria,
+        ratings,
+        ...(input.checkRoot ? { root: input.checkRoot } : {}),
+        // Same foreground ceiling as testing:run, shared across ALL checks — the emit
+        // call rides the same ~55s MCP transport, so an over-budget suite must surface
+        // as an actionable refusal, not an opaque CONNECTION_CLOSED.
+        timeoutMs: clampForegroundTimeoutMs(300_000),
+      });
+      if (!checkEvaluation.ok) {
+        return {
+          ok: false as const,
+          error: checkEvaluation.detail,
+          checkRefusal: checkEvaluation,
+        };
+      }
+      checkRuns = Object.keys(checkEvaluation.checkRuns).length > 0 ? checkEvaluation.checkRuns : undefined;
+    }
+
     const gradedGeneration = await readRunningGeneration().catch(() => null);
     const result = await captureImprovement({
       title: args.title ?? `Scorecard: ${rubric.title}${sourceHive ? ` — ${sourceHive}` : ''}`,
@@ -286,6 +332,7 @@ export async function emitScorecard(
           ...(provisional ? { provisional } : {}),
           ...(args.subject ? { subject: args.subject } : {}),
           ...(vetting ? { vetting } : {}),
+          ...(checkRuns ? { checkRuns } : {}),
         },
       },
     });
@@ -313,6 +360,8 @@ export async function emitScorecard(
       // P-008: surfaced loudly so the emitter knows this card is a working note — a
       // terminal re-emit (terminal:true, supersedes this issueId) finalizes it.
       ...(provisional ? { provisional } : {}),
+      // P-011: the live deterministic check verdicts this card was filed with.
+      ...(checkRuns ? { checkRuns } : {}),
       ...(acceptanceGraderCleanup ? { acceptanceGraderCleanup } : {}),
     };
   } catch (error) {
@@ -336,6 +385,12 @@ export default defineTool({
   },
   capability: 'coord:write',
   requirePrincipal: false,
+  // P-011 (D-006): grading a rubric with tests-checks shells a real Vitest run and can
+  // block for tens of seconds without ever reading `ctx.tx` — holding the ambient
+  // workspace transaction across that wait would trip idle_in_transaction_session_timeout
+  // (60s), surfacing as a bare `write CONNECTION_CLOSED`. Same declaration as
+  // testing:run, for the same reason; every DB access here manages its own connection.
+  skipWorkspaceTx: true,
   agentRoles: [...COORD_ROLES, 'judge'],
   args: scorecardEmitArgs,
   async handler(args, ctx) {
@@ -350,6 +405,8 @@ export default defineTool({
         ctxHarness,
         role: ctx.role,
         workspaceId: identity.workspaceId ?? undefined,
+        // P-011: tests-checks resolve + run against the tree the AGENT edits.
+        checkRoot: resolveAgentWorkspaceRoot(ctx),
       }),
     };
   },

@@ -517,5 +517,43 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
       };
     }
   }
+  // P-011 (D-006): the deterministic check-run stamps. This parse is the same explicit
+  // ALLOWLIST as `subject` above — a key absent here is silently dropped on READ even
+  // though it persisted fine on write. verdict + files are load-bearing (a run record
+  // that cannot say what it judged or how it came out detects nothing), so a malformed
+  // entry is discarded rather than half-kept.
+  if (o.checkRuns && typeof o.checkRuns === 'object' && !Array.isArray(o.checkRuns)) {
+    const runs: Record<string, ScorecardCheckRun> = {};
+    for (const [key, raw] of Object.entries(o.checkRuns as Record<string, unknown>)) {
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
+      const r = raw as Record<string, unknown>;
+      const files = Array.isArray(r.files)
+        ? r.files.filter((x): x is string => typeof x === 'string' && x.trim() !== '')
+        : [];
+      if (
+        r.kind === 'tests' &&
+        files.length > 0 &&
+        (r.verdict === 'pass' || r.verdict === 'fail') &&
+        typeof r.passed === 'number' &&
+        typeof r.failed === 'number' &&
+        typeof r.measuredAt === 'string' &&
+        r.measuredAt.trim() !== ''
+      ) {
+        runs[key] = {
+          kind: 'tests',
+          files,
+          verdict: r.verdict,
+          passed: r.passed,
+          failed: r.failed,
+          runId: typeof r.runId === 'string' && r.runId.trim() ? r.runId : null,
+          measuredAt: r.measuredAt,
+          ...(Array.isArray(r.failures)
+            ? { failures: r.failures.filter((x): x is string => typeof x === 'string') }
+            : {}),
+        };
+      }
+    }
+    if (Object.keys(runs).length > 0) out.checkRuns = runs;
+  }
   return Object.keys(out).length > 0 ? out : undefined;
 }
