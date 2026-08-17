@@ -37,6 +37,16 @@ export interface LocalBackend {
   models: readonly string[];
   maxConcurrent: number;
   enabled: boolean;
+  /** How this backend's PROCESS is managed (registry fact, migration 843). Carried into the live
+   *  pool because the ROUTING path needs it: a dead end for a model is startable only when the
+   *  backend serving it is 'on-demand' (P-008/D-009). Optional so every pre-P-008 construction
+   *  site (tests, fixtures) stays valid; absent reads as 'always-on' — the safe default, since it
+   *  makes a backend NOT startable, mirroring the store's defensive narrowing. */
+  lifecycle?: 'always-on' | 'on-demand';
+  /** The systemd --user unit owning this backend's process, e.g. `llama-ornith.service`.
+   *  ⚠ NOT derivable from baseUrl (D-005) — ornith's baseUrl is a cheap always-on proxy, not the
+   *  GPU-resident process. Absent ⇒ nothing to start, so the backend is treated as not startable. */
+  unitName?: string | null;
 }
 
 export interface LocalBackendHealth {
