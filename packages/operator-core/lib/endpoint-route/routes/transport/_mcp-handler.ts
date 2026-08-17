@@ -1408,6 +1408,7 @@ async function buildMcpToolContext(
               `projection_invalid: ${parsed.error}\n` +
               `The \`projection\` argument reduces ANY tool result: ` +
               `{ pick?: ["results[].id"], pipe?: [{ op:"grep", pattern:"..." }, { op:"head", n:20 }] }. ` +
+              `An ARRAY-root body (a bare list result) is selected with "[].field", not "field". ` +
               `Operators: grep (fixed/ignoreCase/invert/before/after/context), head, tail, sort, uniq, cut, count.`,
           }],
         };
@@ -1495,6 +1496,13 @@ async function buildMcpToolContext(
     profile: spawn.profile === 'generic' ? 'engineer' : (spawn.profile ?? 'engineer'),
     // Payload tier (context-trimming-tiers D-004) — absent ⇒ 'full' at resolution.
     contextTier: spawn.contextTier,
+    // EI-20720054720826414: the executable spelling of a raw-args re-call on
+    // THIS host, rendered into every bounded payload's recovery `next` in place
+    // of the abstract "route through your host's raw-args dispatch path". This
+    // is the platform-wide truth (su + roles both dispatch via tools:invoke),
+    // stated ONCE here rather than hand-rolled per tool (work_items:get's
+    // bespoke _shapeNote was the drift this replaces).
+    rawDispatchTemplate: "tools:invoke { name:'{tool}', args:{ …original args, payloadTier:'full' } }",
     requestedFormat,
     requestedStructured,
     requestedDelta,
