@@ -1419,6 +1419,38 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     appliesTo: (f) => /\.[cm]?tsx?$/.test(f),
   },
   {
+    // WI-39630 — the D-034 shape, but the violation is INDEX-shaped rather than
+    // source-shaped, which is why it went unseen across SEVENTEEN submodules at once.
+    //
+    // A path both tracked in the index AND matched by .gitignore is a contradiction git
+    // settles as "tracked wins", so the ignore rule silently goes inert. Nothing errors
+    // and no source file looks wrong — every affected submodule already had
+    // `node_modules/` in its .gitignore, which is precisely why reading .gitignore files
+    // could never have found it. Once peer npm churn deletes those files, they surface as
+    // ` D` rows, git-sync hands git an explicit pathspec for an ignored path, git refuses
+    // ("use -f"), and that repo's ENTIRE sync leg dies every tick — measured 2026-08-17 at
+    // ~6,500 tracked paths and 16 consecutive failing ticks on dock-workbench.
+    //
+    // That cost profile is the registry's whole reason for existing: the offending repo's
+    // own suite passes perfectly while EVERYONE's commits stop reaching :3070.
+    workspace: "@papercusp/operator-core",
+    // The standalone script (0.61s measured, 3 runs — between lint:partial-index-alignment's
+    // 0.57-0.60s and lint:drop-database-force's ~1.0s, both already accepted here).
+    script: "lint:no-tracked-node-modules",
+    // Deliberately NO hostSuiteRatchet. tracked-node-modules-guard.test.ts exercises the
+    // PREDICATE against injected listers — it never execs the guard against the real tree,
+    // so it cannot re-run this invariant in-suite. Declaring a ratchet here would assert
+    // exactly the kind of unverified premise EI-20026978310669562 was filed for. Absent a
+    // ratchet the guard attaches unconditionally, which is the fail-safe direction and
+    // affordable at 0.61s.
+    // Deliberately EVERY changed path. Unlike its siblings there is no source pattern that
+    // predicts this violation — it is armed by a `git add -f`, or by vendoring in a
+    // submodule whose upstream committed its node_modules, neither of which need touch a
+    // file this run would otherwise select. Narrowing by extension would reproduce the
+    // exact blind spot that let 17 repos arrive here undetected.
+    appliesTo: () => true,
+  },
+  {
     // EI-7667 — the D-034 shape again, and the reason this guard exists at all.
     // lint:no-unthreaded-apply SCANS packages/ libs/ apps/ for production call sites of
     // the hyperbee op-apply seam that fail to thread `ownLogKeyHex`, but its enforcement
