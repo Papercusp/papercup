@@ -2381,6 +2381,185 @@ async function appendCompletionAttestation(
 }
 
 /**
+ * What {@link attachCompletionEvidenceToSettledItem} did.
+ *
+ * `recorded`   — the row carried no competing completion record (or the caller IS the
+ *                credited closer), so this record was installed as the authoritative one.
+ * `upgraded`   — a peer's record was stored but this one is strictly richer: installed,
+ *                and theirs ARCHIVED as an attestation.
+ * `attested`   — a peer's record stands; this one was filed beside it.
+ * `not-terminal` / `not-found` / `nothing-to-record` — nothing was written.
+ */
+export interface AttachedCompletionEvidence {
+  outcome: 'recorded' | 'upgraded' | 'attested' | 'not-terminal' | 'not-found' | 'nothing-to-record';
+  /** The re-read row after a write; the pre-call row when nothing was written. */
+  workItem: WorkItem | null;
+}
+
+/**
+ * EI-19362441037986499 — attach a completion record to an ALREADY-TERMINAL item without
+ * writing state and without firing the settled-event fan-out.
+ *
+ * THE GAP THIS FILLS. `work_items:complete` persists evidence ONLY inside its
+ * `else if (effectiveState)` arm, and `completion.status:'done'` can never infer a close
+ * state (it IS the schema default, so inferring from it would auto-close every bare
+ * completion). So a record-only completion arriving for a row some watchdog already
+ * auto-resolved took no persistence branch at all: `ok:true`, the completion echoed back,
+ * ZERO rows written, and — because that tool's `stateWarning` is suppressed whenever the
+ * final state IS terminal — zero warning. Measured on EI-20692923474318761: a full
+ * structured close left `updated_ts` unchanged and both `authority` and the completion ref
+ * untouched. The evidence an agent had actually verified was discarded success-shaped.
+ *
+ * WHY THIS IS ITS OWN WRITER, and not a terminal→same-terminal re-assert through
+ * {@link setWorkItemState}: the settled-event emit on that path gates only on
+ * `isSettledWorkItemState(result.state)` with NO state-changed guard — contrast the status
+ * transition emit one block above it, which checks `result.state !== wi.state`. A re-assert
+ * would therefore re-fire `work-item:done:<id>`, the derived-blocker-subscription cleanup and
+ * the sentinel handoff report on EVERY record-only completion of an already-closed item,
+ * waking whatever is parked on it. The `attested` branch of the second-terminal-close reshape
+ * dodges that only by returning early. The re-assert is not a cheaper version of this
+ * function; it is a different and wrong behaviour.
+ *
+ * WHAT IT DELIBERATELY DOES NOT DECIDE. The upgrade-vs-attest evaluation is the EXISTING
+ * one — `isSufficientEvidence` on both sides, richer supersedes, and a TIE leaves the FIRST
+ * record standing because the property being defended is "a second write must not destroy
+ * the first", not "the newest wins". It is read off the same helper the state-write path
+ * uses and is deliberately neither restated nor re-tuned here (the bar has moved once
+ * already; a copy would have become a false description of the check it describes). Whether
+ * a human-verified test record ought to outrank a watchdog's "N consecutive green runs" is a
+ * separate judgement, and is not quietly made inside this fix.
+ *
+ * Nor does it invent a policy for the case where the row holds NO completion record at all
+ * (`terminal_completion_ref` and `authority` both unset — the shape every `watchdog-auto-close`
+ * row has). It mirrors what the state-write path already does there: nothing is being
+ * protected, so the incoming record is installed. That keeps the two paths' behaviour
+ * identical rather than making this one stricter for no stated reason.
+ *
+ * TWO DELIBERATE DIVERGENCES from the terminal UPDATE in {@link setWorkItemState}:
+ *  1. No `jsonb_strip_nulls` over the merged payload. That write applies it to the payload
+ *     as a WHOLE, which would reach inside the attestation this function may have just
+ *     archived (its entries carry meaningful explicit nulls) and flatten "explicitly none"
+ *     into "absent" in the very record being preserved.
+ *  2. `terminal_completion_ref`/`authority` are written from the caller's values, exactly as
+ *     that path does — but this function only ever reaches the write when the stored record
+ *     is absent, is the caller's own, or has just been archived. So replacing them cannot
+ *     erase an unarchived peer record, which is the harm the second-terminal-close reshape
+ *     exists to prevent.
+ */
+export async function attachCompletionEvidenceToSettledItem(
+  id: string,
+  opts: {
+    harness?: string;
+    by: string;
+    completionRef?: string;
+    completionEvidence?: CompletionVerificationEvidence;
+    assumptions?: StoredAssumptionDeclaration;
+    completionAuthority?: WorkItemCompletionAuthority | null;
+    /** Same callback shape the state-write path uses, so callers reuse one result field. */
+    onTerminalConflict?: (info: TerminalCompletionConflict) => void;
+  },
+): Promise<AttachedCompletionEvidence> {
+  const wi = await getWorkItem(id, opts.harness);
+  if (!wi) return { outcome: 'not-found', workItem: null };
+  // The caller decides WHEN this applies; this is the backstop that keeps a non-terminal
+  // row from being stamped with a terminal record by a path that writes no state.
+  if (!isSettledWorkItemState(wi.state)) return { outcome: 'not-terminal', workItem: wi };
+
+  const evidencePayloadJson = terminalPayloadMergeJson(opts.completionEvidence, opts.assumptions);
+  // Nothing to record ⇒ nothing to write. Without this, a bare call would reassign
+  // `terminal_owner` — taking CREDIT for someone's completion — while carrying no evidence.
+  if (!evidencePayloadJson && !opts.completionRef?.trim() && !opts.completionAuthority) {
+    return { outcome: 'nothing-to-record', workItem: wi };
+  }
+
+  // The same two signals `isSecondTerminalClose` keys on: a credited owner, plus a
+  // ref-or-authority meaning "someone recorded a real completion here". Both must hold, and
+  // the closer must be someone else, before there is a record worth defending.
+  const hasStoredRecord = Boolean(wi.terminalCompletionRef || wi.completionAuthority);
+  const foreignRecord = hasStoredRecord && Boolean(wi.terminalOwner) && opts.by !== wi.terminalOwner;
+
+  const install = async (): Promise<WorkItem | null> => {
+    const { sql } = getOrgPg();
+    await sql`
+      UPDATE harness_shared.work_items
+         SET terminal_owner = ${opts.by},
+             terminal_completion_ref = ${opts.completionRef ?? null},
+             authority = ${opts.completionAuthority ?? null},
+             payload = CASE WHEN ${evidencePayloadJson}::text::jsonb IS NULL
+                            THEN payload
+                            ELSE COALESCE(payload, '{}'::jsonb) || ${evidencePayloadJson}::text::jsonb
+                       END,
+             updated_ts = ${Date.now()}
+       WHERE feature_id = ${id}
+         AND workspace_id IN (${issuesScopeWorkspace()}, ${activeWorkspaceId()})`;
+    return (await getWorkItem(id, opts.harness)) ?? wi;
+  };
+
+  if (!foreignRecord) {
+    return { outcome: 'recorded', workItem: await install() };
+  }
+
+  const existingSufficient = isSufficientEvidence(wi.terminalCompletionEvidence);
+  const incomingSufficient = isSufficientEvidence(opts.completionEvidence);
+  const upgrade = incomingSufficient && !existingSufficient;
+  const attestation: CompletionAttestation = {
+    at: new Date().toISOString(),
+    by: upgrade ? wi.terminalOwner : opts.by,
+    // No state was requested on this path, so both sides of the archive carry the state
+    // that stands — unlike the state-write path, where they can legitimately differ.
+    state: wi.state,
+    completionRef: upgrade ? wi.terminalCompletionRef : (opts.completionRef ?? null),
+    completionAuthority: upgrade ? wi.completionAuthority : (opts.completionAuthority ?? null),
+    evidence: upgrade ? wi.terminalCompletionEvidence : (opts.completionEvidence ?? null),
+    assumptions: upgrade ? readStoredAssumptions(wi.payload) : (opts.assumptions ?? null),
+    outcome: upgrade ? 'superseded' : 'attested',
+  };
+  // ARCHIVE BEFORE INSTALL, and best-effort on the attested path — the same order and the
+  // same tolerance as the state-write reshape. The order is what matters: if the install
+  // failed after a successful archive the loser is merely stored twice, whereas installing
+  // first and failing to archive would destroy the record this function exists to keep.
+  await appendCompletionAttestation(id, wi.payload, attestation).catch(() => {});
+  if (!upgrade) {
+    opts.onTerminalConflict?.({
+      outcome: 'attested',
+      existingOwner: wi.terminalOwner,
+      existingAuthority: wi.completionAuthority,
+      existingEvidenceSufficient: existingSufficient,
+      incomingEvidenceSufficient: incomingSufficient,
+      note:
+        `work_item '${id}' was ALREADY completed by ${wi.terminalOwner}` +
+        `${wi.completionAuthority ? ` (authority:${wi.completionAuthority})` : ''}, and this completion ` +
+        `requested no state change. Your record was FILED AS A SECOND ATTESTATION ` +
+        `(payload.${COMPLETION_ATTESTATIONS_KEY}) and did NOT replace theirs — ` +
+        `${
+          incomingSufficient
+            ? 'both records meet the evidence bar, and a tie leaves the first standing'
+            : 'it does not meet the bar to supersede a stored record (`committed` needs verifiedHow plus one of testsRun/testResult)'
+        }. ` +
+        `The item's authoritative completion record and terminal state are unchanged. If ${wi.terminalOwner}'s ` +
+        `completion is WRONG, correct it deliberately with work_items:set_state { id: '${id}', state: '${wi.state}', force: true } ` +
+        `(work_items:complete has no \`force\` arg — WI-4530), or coordinate with them via coord:send.`,
+    });
+    // The stored record stands, so there is nothing further to write. Re-read so the caller
+    // sees the attestation that was just filed rather than the pre-call snapshot.
+    return { outcome: 'attested', workItem: (await getWorkItem(id, opts.harness)) ?? wi };
+  }
+  opts.onTerminalConflict?.({
+    outcome: 'upgraded',
+    existingOwner: wi.terminalOwner,
+    existingAuthority: wi.completionAuthority,
+    existingEvidenceSufficient: existingSufficient,
+    incomingEvidenceSufficient: incomingSufficient,
+    note:
+      `work_item '${id}' was already completed by ${wi.terminalOwner}, but your record carries strictly richer ` +
+      `evidence (verifiedHow plus test results, which theirs lacked) — it is now the AUTHORITATIVE completion ` +
+      `record. Their record was ARCHIVED to payload.${COMPLETION_ATTESTATIONS_KEY} rather than discarded, and ` +
+      `the item's terminal state is unchanged.`,
+  });
+  return { outcome: 'upgraded', workItem: await install() };
+}
+
+/**
  * EI-19313515375179600 (WI-6822 follow-up) — self-heal a locally-authored issue-family row
  * whose `origin` incorrectly flipped to 'remote' after creation (root cause not yet found;
  * candidates include a federation/replay-provenance defect around the substrate's own

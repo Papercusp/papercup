@@ -59,6 +59,7 @@ import {
   linkWorkItem,
   subscribeWorkItem,
   SETTLED_WORK_ITEM_STATES,
+  attachCompletionEvidenceToSettledItem,
   type TerminalCompletionConflict,
 } from '../../work-items';
 import {
@@ -1606,6 +1607,11 @@ async function completeOne(
   // warning below — the caller being told `ok:true` while their evidence was destroyed IS
   // the bug this closes.
   let terminalConflict: TerminalCompletionConflict | undefined;
+  // EI-19362441037986499: set when this completion arrived for a row that was ALREADY
+  // terminal and therefore took the evidence-attach path instead of a state write. The
+  // `stateWarning` below is suppressed for any terminal final state — which is exactly why
+  // that discard was silent — so this carries the outcome into it.
+  let evidenceAttachWarning: string | undefined;
   // EI-7712: same shared discriminator as work_items:set_state — compares the
   // ACTUALLY-persisted state against what the caller asked for, not just whether the
   // normalize-layer onAlias fired. Only meaningful when a terminal `state` was passed;
