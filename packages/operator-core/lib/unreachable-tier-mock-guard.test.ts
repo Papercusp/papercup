@@ -148,9 +148,10 @@ describe('the guard over the REAL tree', () => {
     // so the status assertion covers both. It is the whole-tree run, not a fixture:
     // the fixtures above prove the analyzer fires, this proves the tree is clean.
     //
-    // Not execFileSync: its throw on a non-zero exit discards stdout, which is where the
-    // guard prints WHICH mock offends — so the red would name the command instead of the
-    // violation (EI-20692923474318761, measured on a sibling ratchet guard).
+    // Not execFileSync: on a non-zero exit its Error renders only "Command failed: <cmd>",
+    // leaving the guard's printout of WHICH mock offends as an unrendered `.stdout`
+    // property — so the red names the command, not the violation
+    // (EI-20692923474318761, measured on a sibling ratchet guard).
     const guard = runGuardScript('node', ['scripts/check-unreachable-tier-mock.mjs'], {
       cwd: REPO_ROOT,
       maxBuffer: 16 * 1024 * 1024,

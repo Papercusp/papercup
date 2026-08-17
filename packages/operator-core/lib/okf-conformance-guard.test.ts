@@ -40,9 +40,10 @@ const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '
 describe('OKF conformance ratchet', () => {
   it('both corpora are conformant, and a NON-ZERO population of each was judged', () => {
     // The exit status is half the assertion, so it is asserted explicitly below rather
-    // than left to a throw. It used to be an execFileSync, whose throw on a non-zero
-    // exit DISCARDS stdout — the lint's own list of non-conformant files went with it,
-    // leaving only "Command failed: npx tsx scripts/check-okf-conformance.mjs" (the cost
+    // than left to a throw. It used to be an execFileSync, whose thrown Error renders
+    // only "Command failed: npx tsx scripts/check-okf-conformance.mjs" as its message —
+    // the lint's own list of non-conformant files survives merely as an unrendered
+    // `.stdout` property, so in practice the red named the command, not the files (the cost
     // of that shape, measured on a sibling guard: EI-20692923474318761). ONE run, both
     // checks: this executes on every operator-core-affecting change, and every agent
     // pays for it.

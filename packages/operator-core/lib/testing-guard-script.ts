@@ -5,10 +5,12 @@
  * ── THE DEFECT THIS EXISTS TO PREVENT ───────────────────────────────────────
  * A ratchet guard test execs its script over the real tree and asserts the tree is
  * clean. Written with `execFileSync`, that is one line and looks complete — but
- * `execFileSync` THROWS on a non-zero exit, and the throw discards `stdout`. Our
- * guard scripts print their findings to stdout and only THEN set `process.exitCode`,
- * so the single artifact naming the offending `file:line` is thrown away at exactly
- * the moment it is needed. What vitest reports instead is:
+ * `execFileSync` THROWS on a non-zero exit, and its Error carries the output only as an
+ * unrendered `.stdout` PROPERTY: the `message`, which is the one string a test runner
+ * shows, names just the command. Our guard scripts print their findings to stdout and
+ * only THEN set `process.exitCode`, so on a red the report exists and is even attached
+ * to the thrown error — yet nothing surfaces it unless every caller remembers to catch
+ * and re-render it. None did. What vitest reports instead is:
  *
  *     Command failed: node scripts/check-undrained-stdout-exit.mjs --json
  *

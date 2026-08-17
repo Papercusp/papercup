@@ -221,8 +221,10 @@ describe('the tree is currently clean (ratchet)', () => {
     //
     // ⚠ Read the report BEFORE judging the status, and never re-introduce execFileSync
     // here. The guard prints its findings to stdout and only THEN sets exitCode=1, so on
-    // a red the report exists — but execFileSync THROWS on a non-zero exit and discards
-    // stdout with it. This assertion used to do exactly that: 8 reds over 6h across 4
+    // a red the report exists — but execFileSync THROWS on a non-zero exit, and its
+    // Error surfaces only "Command failed: <cmd>" as the message (the output survives as
+    // an unrendered `.stdout` property nobody reads). This assertion used to do exactly
+    // that, and paid for it: 8 reds over 6h across 4
     // commits all reported the same "Command failed: node scripts/check-undrained-
     // stdout-exit.mjs --json", naming no file, and the offender (ONE line, in a script a
     // peer had just added) was recoverable only by hand-running the guard — which three
