@@ -518,6 +518,14 @@ export async function startDbos(): Promise<void> {
       '../system-health/goal-drain-fleet-watchdog'
     );
     startGoalDrainFleetWatchdog(getOrgPg().sql);
+    // goal-mode-design-intent-hardening-2026-08-16 P-005 (D-003): the goal spend
+    // rollup tick — writes goals.metadata.spentCents platform-side from the cost
+    // ledger (pot leg + subject/descendant session leg) so "actual spend
+    // reported" is satisfiable without agent self-report. Same process-level
+    // mechanism as the goal watchdogs above, same reason (EI-1622 workflow_status
+    // bloat). Runtime gate: FLAGS.GOAL_SPEND_ROLLUP_TICK (default ON), per tick.
+    const { startGoalSpendRollupTick } = await import('../goals/spend-rollup');
+    startGoalSpendRollupTick(getOrgPg().sql);
   } catch (e) {
     console.warn('[stall-watchdog] failed to start (non-fatal):', e instanceof Error ? e.message : e);
   }

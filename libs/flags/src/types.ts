@@ -1603,6 +1603,18 @@ export const FLAGS = {
   // goal-mode creates degrade to the fail-open advisory behavior every other
   // creator gets.
   GOAL_CREATE_DEDUP_GATE: "papercusp-goal-create-dedup-gate",
+  // goal-mode-design-intent-hardening-2026-08-16 P-005 (D-003): gates the goal
+  // spend-rollup tick — a recurring platform sweep (operator-core
+  // lib/goals/spend-rollup.ts, managedSetInterval like the goal watchdog family)
+  // that aggregates the cost ledger (agent_usage_samples) per ACTIVE goal — the
+  // pot leg (goalSpend over goal_pots) PLUS the subject/descendant session leg
+  // (agent_modes/session_briefs → adv_sessions → session_id, pot-harness rows
+  // excluded so the union never double-counts) — and writes
+  // goals.metadata.spentCents (+Source 'goal-spend-tick' +At +Breakdown)
+  // platform-side. D-003: agents never hand-write spentCents; before this tick
+  // only 3 of 17 goals ever carried one. DEFAULT ON. OFF = the kill-switch: the
+  // timer still ticks but every sweep no-ops before reading the goals table.
+  GOAL_SPEND_ROLLUP_TICK: "papercusp-goal-spend-rollup-tick",
   // system-notices-on-its-own-2026-08-16 P-002: gates the retrieval-degradation
   // watchdog — reads the trailing-window leg-health rate that observeLegs now
   // records for every hybrid search, and escalates when a sustained share of

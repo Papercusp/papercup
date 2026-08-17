@@ -37,7 +37,7 @@
 // the annotation fails to typecheck outright. Every other `sql.begin` in this
 // package leaves it inferred for the same reason.
 
-import { GOAL_SPEND_SNAPSHOT_SOURCE } from '@papercusp/db-org';
+import { GOAL_SPEND_SNAPSHOT_SOURCE, GOAL_SPEND_TICK_SOURCE } from '@papercusp/db-org';
 
 export interface GoalTripwire {
   metric: string;
@@ -239,7 +239,11 @@ function iso(v: string | Date | null): string | null {
 function toSummary(r: RawGoal): GoalSummaryRow {
   const metadata = r.metadata ?? {};
   const spentCents =
-    metadata.spentCentsSource === GOAL_SPEND_SNAPSHOT_SOURCE &&
+    // Either measured source: the agent-verified pots rollup (goals:update) or
+    // the P-005 platform tick (spend-rollup.ts) — a legacy hand-entered value
+    // carries neither marker and still reads null.
+    (metadata.spentCentsSource === GOAL_SPEND_SNAPSHOT_SOURCE ||
+      metadata.spentCentsSource === GOAL_SPEND_TICK_SOURCE) &&
     typeof metadata.spentCents === 'number'
       ? (metadata.spentCents as number)
       : null;
