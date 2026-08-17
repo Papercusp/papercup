@@ -7,10 +7,33 @@
  * same discipline `no-raw-spawn-guard.test.ts` applies to its own predicate.
  */
 import { describe, it, expect } from 'vitest';
-import { isUnenrolledDetachedSpawn, ALLOWLIST } from '../../../../scripts/check-no-unenrolled-detached-spawn.mjs';
+import {
+  isUnenrolledDetachedSpawn,
+  spawnTriggers,
+  ALLOWLIST,
+  KNOWN_DEFECTS,
+} from '../../../../scripts/check-no-unenrolled-detached-spawn.mjs';
 
 const check = isUnenrolledDetachedSpawn;
 const allow = ALLOWLIST;
+
+/** A path in no map, so only the PREDICATE decides the verdict. */
+const NEW = 'packages/operator-core/lib/brand-new-thing.ts';
+
+/**
+ * THE PERMANENTLY-WRONG CONTROL (falsifiability, kept in the test file rather than
+ * mutating the shared tree — a mutation probe here would be committed by the git-sync
+ * sweep while it ran).
+ *
+ * This is the guard's OWN previous implementation: a literal-text match on
+ * `detached: true`. It is not a strawman — it shipped, and EI-19483245448673321 is the
+ * record of what it could not see. Keeping it here means the blind-spot cases below
+ * are proven DISCRIMINATING: each one asserts the real predicate catches what this
+ * control misses. Without it, those cases would pass identically against a predicate
+ * that simply returned `true` for everything.
+ */
+const LITERAL_TEXT_PREDICATE = (source: string): boolean =>
+  /detached:\s*true/.test(source) && /\b(spawn|childSpawn|spawnFn)\s*\(/.test(source);
 
 const RAW = `
 import { spawn } from 'node:child_process';
