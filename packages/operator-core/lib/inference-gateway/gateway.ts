@@ -884,6 +884,18 @@ export interface GatewayDeps {
    *  `/admin/reload` simply omits the `localBackends` field (no error — this is an independent axis from
    *  the account pool's hot-reload). */
   onAdminReloadLocalBackends?: () => Promise<{ changed: boolean; count: number }>;
+  /** START a stopped on-demand local backend and wait for it to answer (P-008/D-009).
+   *
+   *  Called ONLY on a genuine routing dead end — no healthy backend serves the model AND the pool
+   *  is not merely saturated — and only for a backend whose registry row says `lifecycle:'on-demand'`
+   *  with a `unitName`. Absent ⇒ a stopped backend stays a 502 exactly as before (this whole axis is
+   *  opt-in, matching `localBackends` itself).
+   *
+   *  INJECTED rather than imported so the gateway keeps its systemd-free and PG-free posture: the
+   *  implementation (launch.ts) closes over provision.ts's `ensureLocalBackendRunning` with the
+   *  MEASURED readyTimeoutMs, plus the `last_busy_at` watermark stamp. The gateway owns the
+   *  ELIGIBILITY judgement; the mechanism stays outside it. */
+  ensureLocalBackendRunning?: (backend: LocalBackend) => Promise<{ ok: boolean; error?: string }>;
 }
 
 export interface GatewayStats {
