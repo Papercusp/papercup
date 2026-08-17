@@ -57,6 +57,7 @@ const launcherIdentity = vi.hoisted(
       ownerLabel: 'launcher',
       source: 'omp-hook-session',
       workspaceId: null,
+      userId: null,
     }),
 );
 vi.mock('../coordination/identity', () => ({
