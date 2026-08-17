@@ -35,6 +35,7 @@
  * tools, isolated Xvfb), recorded as plan evidence.
  */
 import { test, expect, assertMounted, type Page } from './_egress';
+import { stubSyncQueries, type SyncQueryStub } from './_sync-stub';
 
 const baseURL =
   process.env.OPERATOR_E2E_BASE_URL ??
@@ -61,27 +62,21 @@ const PROJECTS_LITE = {
  * the dock fetches `/api/harness/<slug>/lanes` for (the dock-keying oracle).
  * Status + agents are stubbed benign so the shell header + dock are hermetic.
  */
-async function stubAndRecord(page: Page): Promise<Set<string>> {
+async function stubAndRecord(page: Page): Promise<{ lanesSlugs: Set<string>; sync: SyncQueryStub }> {
   const lanesSlugs = new Set<string>();
   await page.route('**/api/harness/projects/lite', async (route) => {
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(PROJECTS_LITE) });
   });
   // HarnessesWorkspace reads the projects list via useSyncQuery('harnessProjects.lite')
-  // (REST→sync migration 2026-06-11), NOT the legacy REST route above — its rows
-  // come through the sync batch fetcher (POST /api/zero-harness/rest-query-batch →
-  // {results:[{rows,version}]}, one result per {name,args} query, in order). Stub
-  // it or the member rail renders empty and every hive-member-* testid is absent
-  // (EI-319 residual). SSE carries only invalidation; rows come from this endpoint.
-  await page.route('**/api/zero-harness/rest-query-batch**', async (route) => {
-    let queries: Array<{ name?: string }> = [];
-    try { queries = (JSON.parse(route.request().postData() ?? '{}').queries ?? []) as Array<{ name?: string }>; } catch { /* empty batch */ }
-    const results = queries.map((q) =>
-      q?.name === 'harnessProjects.lite'
-        ? { rows: PROJECTS_LITE.projects, version: '1' }
-        : { rows: [], version: '1' },
-    );
-    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ results }) });
-  });
+  // (REST→sync migration 2026-06-11), NOT the legacy REST route above. Its rows come
+  // over the LIVE sync contract — one `GET /api/zero-harness/rest-query?name=&args=`
+  // per query (see `_sync-stub.ts`). Stub it or the member rail renders empty and
+  // every hive-member-* testid is absent (EI-319 residual). SSE carries only
+  // invalidation; rows come from that GET. (This spec used to stub POST
+  // /rest-query-batch, dead since 2026-07-26 — never hit at all: WI-39533.)
+  const sync = await stubSyncQueries(page, (name) =>
+    name === 'harnessProjects.lite' ? PROJECTS_LITE.projects : undefined,
+  );
   await page.route('**/api/harness/*/lanes**', async (route) => {
     const m = /\/api\/harness\/([^/]+)\/lanes/.exec(route.request().url());
     if (m) lanesSlugs.add(decodeURIComponent(m[1]));
@@ -93,7 +88,7 @@ async function stubAndRecord(page: Page): Promise<Set<string>> {
   await page.route('**/api/harness/*/agents**', async (route) => {
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ agents: [] }) });
   });
-  return lanesSlugs;
+  return { lanesSlugs, sync };
 }
 
 /**
@@ -125,7 +120,7 @@ async function expectRailActive(page: Page, slug: string, notSlug: string) {
 
 test.describe('/adv Harnesses tab — hive member model (P-001/P-002/P-003)', () => {
   test('P-001 deep link ?slug=hive&harness=member focuses the MEMBER, not the hive root', async ({ page }) => {
-    const lanesSlugs = await stubAndRecord(page);
+    const { lanesSlugs, sync } = await stubAndRecord(page);
     const mounted = await gotoHarnessesTab(page, `slug=${HIVE}&harness=${MEMBER_RD}`, DOCK_MOUNT);
     assertMounted(mounted, SKIP_MSG);
 
@@ -137,7 +132,7 @@ test.describe('/adv Harnesses tab — hive member model (P-001/P-002/P-003)', ()
   });
 
   test('P-001 default (no ?harness=) focuses the hive root (D-001)', async ({ page }) => {
-    const lanesSlugs = await stubAndRecord(page);
+    const { lanesSlugs, sync } = await stubAndRecord(page);
     const mounted = await gotoHarnessesTab(page, `slug=${HIVE}`, DOCK_MOUNT);
     assertMounted(mounted, SKIP_MSG);
 
@@ -147,7 +142,7 @@ test.describe('/adv Harnesses tab — hive member model (P-001/P-002/P-003)', ()
   });
 
   test('P-001 a stale ?harness= (names no member) falls back to the root and is cleared from the URL', async ({ page }) => {
-    await stubAndRecord(page);
+    const { sync } = await stubAndRecord(page);
     const mounted = await gotoHarnessesTab(page, `slug=${HIVE}&harness=from-a-different-hive`, DOCK_MOUNT);
     assertMounted(mounted, SKIP_MSG);
 
@@ -158,7 +153,7 @@ test.describe('/adv Harnesses tab — hive member model (P-001/P-002/P-003)', ()
   });
 
   test('P-001 a solo harness has no rail and keys the dock to its own slug (zero regression)', async ({ page }) => {
-    const lanesSlugs = await stubAndRecord(page);
+    const { lanesSlugs, sync } = await stubAndRecord(page);
     const mounted = await gotoHarnessesTab(page, `slug=${SOLO}`, DOCK_MOUNT);
     assertMounted(mounted, SKIP_MSG);
 
@@ -169,7 +164,7 @@ test.describe('/adv Harnesses tab — hive member model (P-001/P-002/P-003)', ()
   });
 
   test('P-002 clicking a member in the rail sets ?harness= and re-keys the dock', async ({ page }) => {
-    const lanesSlugs = await stubAndRecord(page);
+    const { lanesSlugs, sync } = await stubAndRecord(page);
     const mounted = await gotoHarnessesTab(page, `slug=${HIVE}`, DOCK_MOUNT);
     assertMounted(mounted, SKIP_MSG);
 
@@ -183,7 +178,7 @@ test.describe('/adv Harnesses tab — hive member model (P-001/P-002/P-003)', ()
   });
 
   test('P-003 all-mode: clicking a member row drills in, setting both ?slug= and ?harness= and exiting all-mode', async ({ page }) => {
-    await stubAndRecord(page);
+    const { sync } = await stubAndRecord(page);
     // All-mode renders the flat, sortable pot LIST (RichGrid, WI-3345) — no
     // dock / no "Add panel" — so the mount oracle is the list container.
     const mounted = await gotoHarnessesTab(page, `slug=${HIVE}&scope=all`, { testId: 'pot-workspace-cards' });
