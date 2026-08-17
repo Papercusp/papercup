@@ -425,6 +425,12 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
     // or a new goal-stamped item moves both the rail glance and the detail page.
     'goals.list',
     'goals.detail',
+    // learning.retainFeed / retainPlanChildren / retainDetail (WI-39493/34/35):
+    // the Retained ledger's wi leg, a plan row's expanded children, and an open
+    // wi detail aside. Full-bust: cursor-/`{kind,id}`-keyed, no scope can match.
+    'learning.retainFeed',
+    'learning.retainPlanChildren',
+    'learning.retainDetail',
     // WI-6961: agentOrders.byOwner renders the agent's HELD work-items via
     // buildCarryBrief, so a state/claim write is exactly when the Orders panel
     // is wrong. Coarse (any work_items write invalidates it), but the query is
