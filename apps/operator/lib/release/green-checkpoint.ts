@@ -5242,6 +5242,17 @@ export type GatePromotionReason =
    *  re-stamps, and readers take the LAST trailer. Its survival as the last line is the signal:
    *  it means the run died between the suite and the promotion decision. */
   | "decision-pending"
+  /** The ADVANCE leg threw. `decision-pending` covers the run dying in an optional leg; these
+   *  two cover the only remaining window — the run reached a real green decision and then died
+   *  PUBLISHING it. Both are stamped from the caller (the throw is re-raised unchanged), because
+   *  the success trailer is written only AFTER both of these succeed, so a throw here used to
+   *  leave `decision-pending` standing and read as "died in an optional leg" when in fact the
+   *  gate had decided green and failed to ship it. On a harness with no push credential that is
+   *  every single run: oddsmith stamped no promotion trailer for 4 consecutive greens
+   *  (2026-08-17 09:19Z→12:19Z) while `main` sat frozen and the cause — 461 unpushed commits, no
+   *  credential (WI-39549) — was invisible from the gate's own log. */
+  | "push-failed"
+  | "advance-failed"
   | "superseded-by-refire";
 
 /** Render the trailer. Uppercase-token line, the same shape as GATE_HELD_BY /
@@ -6808,10 +6819,25 @@ export async function runGreenCheckpoint(
   // Publish the exact tested candidate before moving the local green pin. The old order
   // advanced local `main`, swallowed a rejected push, and then emitted a false deployable
   // verdict; every later tick saw local `main` as up-to-date and never retried origin.
+  // Both legs below re-throw UNCHANGED — the throw is load-bearing (it is what stops a failed
+  // push being reported as a green advance, per the comment above), so these add a record, they
+  // do not swallow. Until now the advance leg was the last window in the run that could throw
+  // without stamping a disposition: the success trailer is written at the END (`reason=advanced`,
+  // below), after BOTH of these, so any throw here left the early `decision-pending` line
+  // standing — which reads as "died in an optional post-verdict leg" and is exactly wrong. The
+  // gate had decided green; it died publishing it.
   if (!opts.noPush) {
-    await pushGreenCandidateOrThrow(cfg, deps, candidate, lastReady);
+    await pushGreenCandidateOrThrow(cfg, deps, candidate, lastReady).catch(
+      (error: unknown) => {
+        stampPromotion(false, "push-failed");
+        throw error;
+      },
+    );
   }
-  const adv = await deps.advance(candidate);
+  const adv = await deps.advance(candidate).catch((error: unknown) => {
+    stampPromotion(false, "advance-failed");
+    throw error;
+  });
   deps.log(
     `✅ ${cfg.releaseRef} advanced ${adv.from?.slice(0, 8) ?? "none"} → ${candidate.slice(0, 8)} (green)`,
   );
