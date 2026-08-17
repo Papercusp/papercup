@@ -22,10 +22,21 @@ function spec(raw: unknown) {
   return r.spec;
 }
 
+/**
+ * The verdict block (stats + notes) is identified by its `[projection:` stats
+ * marker, NOT by position: a DEGRADED verdict renders as a HEADER (first item,
+ * so head-keeping truncation downstream cannot silence it) while a clean one
+ * stays a tail footer — EI-20720054720826414. Position-blind helpers are what
+ * let these tests assert content without hard-coding either placement; the
+ * placement itself is asserted explicitly in its own describe block below.
+ */
+const textsOf = (r: { content: ReadonlyArray<{ type?: string; text?: string }> }) =>
+  r.content.filter((c) => c.type === 'text').map((c) => c.text ?? '');
+const isVerdictText = (t: string) => t.includes('[projection:');
 const bodyText = (r: { content: ReadonlyArray<{ type?: string; text?: string }> }) =>
-  (r.content.find((c) => c.type === 'text')?.text ?? '');
+  textsOf(r).find((t) => !isVerdictText(t)) ?? '';
 const footerOf = (r: { content: ReadonlyArray<{ type?: string; text?: string }> }) =>
-  (r.content[r.content.length - 1]?.text ?? '');
+  textsOf(r).find(isVerdictText) ?? '';
 const reportOf = (r: { content?: unknown; _meta?: Record<string, unknown> }) =>
   r._meta?.resultProjection as {
     applied: boolean;
@@ -590,5 +601,101 @@ describe('applyResultProjection — degraded results lead with the caveat (P-015
     expect(notes.every((n) => typeof n === 'string')).toBe(true);
     expect(notes.some((n) => n.includes('matched nothing'))).toBe(true);
     expect(notes.some((n) => n.includes('structuredContent dropped'))).toBe(true);
+  });
+});
+
+/**
+ * EI-20720054720826414 — the array-root miss, and its two teeth.
+ *
+ * The single most common pick failure is a bare `key` path against an ARRAY-root
+ * body (the playbook's own examples were object-root only). Before this fix the
+ * all-miss fail-open left the FULL promoted body in place — LARGER than the
+ * un-projected default — which then overflowed the door and spilled, and the
+ * miss warning lived in a tail footer that the door's head-keeping truncation
+ * deleted. So: (1) a provably-matching `[].key` respelling is applied instead of
+ * failing, and (2) a degraded verdict leads the content where truncation cannot
+ * reach it. The CONTROLS pin the negative space: object-root picks are never
+ * reinterpreted, and a clean reduction keeps its tail footer.
+ */
+describe('applyResultProjection — array-root pick repair (EI-20720054720826414)', () => {
+  const ARRAY_BODY = JSON.stringify([
+    { id: 'WI-1', title: 't1', noise: 'x'.repeat(100) },
+    { id: 'WI-2', title: 't2', noise: 'y'.repeat(100) },
+  ]);
+
+  it('auto-adjusts a bare key to [].key when the body is an array — and says so', () => {
+    const out = applyResultProjection(textResult(ARRAY_BODY), spec({ pick: ['id', 'title'] }));
+    expect(JSON.parse(bodyText(out))).toEqual([
+      { id: 'WI-1', title: 't1' },
+      { id: 'WI-2', title: 't2' },
+    ]);
+    const footer = footerOf(out);
+    expect(footer).toContain('auto-adjusted');
+    expect(footer).toContain('id → [].id');
+    // The selection succeeded — a courtesy note, not a trust warning.
+    expect(footer).toContain('saved)');
+  });
+
+  it('a repaired selection is NOT degraded: the verdict stays a tail footer', () => {
+    const out = applyResultProjection(textResult(ARRAY_BODY), spec({ pick: ['id'] }));
+    const texts = textsOf(out);
+    expect(isVerdictText(texts[texts.length - 1])).toBe(true);
+    expect(isVerdictText(texts[0])).toBe(false);
+  });
+
+  it('does NOT repair a path that would still miss — the miss stays loud, and names the shape', () => {
+    const out = applyResultProjection(textResult(ARRAY_BODY), spec({ pick: ['zzz'] }));
+    expect(JSON.parse(bodyText(out))).toHaveLength(2); // body left unprojected
+    const footer = footerOf(out);
+    expect(footer).toContain('matched NOTHING');
+    expect(footer).toContain('an ARRAY of 2 element(s)');
+    expect(footer).toContain('[].key');
+  });
+
+  it('CONTROL: never reinterprets a working path — an object-root pick is untouched by repair', () => {
+    const objBody = JSON.stringify({ id: 'top', rows: [{ id: 'r1' }] });
+    const out = applyResultProjection(textResult(objBody), spec({ pick: ['id'] }));
+    expect(JSON.parse(bodyText(out))).toEqual({ id: 'top' });
+    expect(footerOf(out)).not.toContain('auto-adjusted');
+  });
+
+  it('mixed: repairs the missed spelling and keeps the already-correct one, correlated', () => {
+    const out = applyResultProjection(textResult(ARRAY_BODY), spec({ pick: ['[].id', 'title'] }));
+    expect(JSON.parse(bodyText(out))).toEqual([
+      { id: 'WI-1', title: 't1' },
+      { id: 'WI-2', title: 't2' },
+    ]);
+    expect(footerOf(out)).toContain('title → [].title');
+  });
+
+  it('an all-miss on an OBJECT root names the object keys — the corrective hint, no repair', () => {
+    const out = applyResultProjection(
+      textResult(JSON.stringify({ results: [{ id: 'a' }], counts: { total: 1 } })),
+      spec({ pick: ['nope.missing'] }),
+    );
+    const footer = footerOf(out);
+    expect(footer).toContain('an OBJECT with key(s): results, counts');
+  });
+});
+
+describe('applyResultProjection — a degraded verdict LEADS the content (EI-20720054720826414)', () => {
+  it('degraded ⇒ the verdict is the FIRST content item, ahead of the body it warns about', () => {
+    // The delivery guarantee this fix exists for: downstream doors keep the HEAD
+    // of an oversized serialized result, so a warning behind the body is deleted
+    // exactly when the body is oversized — the all-miss fail-open case.
+    const out = applyResultProjection(textResult(JSON.stringify({ a: 1 })), spec({ pick: ['nope'] }));
+    const texts = textsOf(out);
+    expect(texts[0]).toContain('matched NOTHING');
+    expect(isVerdictText(texts[0])).toBe(true);
+  });
+
+  it('CONTROL: a clean reduction keeps the verdict as the LAST item', () => {
+    const out = applyResultProjection(
+      textResult(JSON.stringify({ rows: [{ id: 'x' }] })),
+      spec({ pick: ['rows[].id'] }),
+    );
+    const texts = textsOf(out);
+    expect(isVerdictText(texts[0])).toBe(false);
+    expect(isVerdictText(texts[texts.length - 1])).toBe(true);
   });
 });
