@@ -22,7 +22,8 @@ const h = vi.hoisted(() => ({
   emits: [] as Array<{ key: string; payload: any; summary?: string }>,
 }));
 
-vi.mock('@papercusp/db-org', () => ({
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({ sql: h.sql }),
   withWorkspace: async (_ws: string, fn: (tx: unknown) => Promise<unknown>) => fn(h.sql),
 }));
@@ -34,7 +35,8 @@ vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
   dispatchProjectedTool: async () => ({ ok: false, error: { code: 'test', message: 'not wired in tests' } }),
 }));
 vi.mock('../../projected-tool-deps', () => ({ PROJECTED_DEPS: {} }));
-vi.mock('@papercusp/scheduled-registry', () => ({ managedSetInterval: () => ({ unref: () => {} }) }));
+vi.mock('@papercusp/scheduled-registry', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/scheduled-registry')>()), managedSetInterval: () => ({ unref: () => {} }) }));
 vi.mock('./engine', () => ({
   emitAwaitedEvent: async (opts: { key: string; payload?: unknown; summary?: string }) => {
     h.emits.push({ key: opts.key, payload: opts.payload, summary: opts.summary });
