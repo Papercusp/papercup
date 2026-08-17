@@ -15,6 +15,7 @@ import {
   readRetainExtras,
   readRetainFeed,
   readRetainPlanChildren,
+  RETAIN_FEED_PAGE_SIZE,
   retainMemoryTitle,
   retainMemoryTsOf,
   stripFrontmatter,
@@ -334,7 +335,10 @@ describe('readRetainFeed', () => {
     );
     expect(listRecipesPage).toHaveBeenCalledWith({
       window: { beforeTs: cursor.ts, includeTies: false, tieIdAfter: 'rec-mid' },
-      limit: 24,
+      // Pin the CONSTANT, not its value: the page size is a measured product decision
+      // (24→75 in WI-39675) and this assertion is about the cursor window plumbing,
+      // not the size itself. A literal here strands this test on every size change.
+      limit: RETAIN_FEED_PAGE_SIZE,
     });
   });
 
