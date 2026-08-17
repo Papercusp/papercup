@@ -4345,15 +4345,28 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
 
   // ── learning.retainFeed — the unified "Retained" ledger (WI-39493, Variant D) ──
   //
-  // One recency-interleaved keyset-paged feed over five retained stores: plans
-  // the Blender routed, idea-routed work items (plan-born excluded — those roll
-  // up under their plan), rubrics, agent-insight runbooks, and code recipes.
-  // Tab/shipped filters + the cursor compose SERVER-side; counts (tab badges)
-  // ride the first page only. Every leg degrades independently.
+  // One recency-interleaved keyset-paged feed over six retained stores: the
+  // hive's shared-memory pool (WI-39535), plans the Blender routed, idea-routed
+  // work items (plan-born excluded — those roll up under their plan), rubrics,
+  // agent-insight runbooks, and code recipes. Tab/shipped filters + the cursor
+  // compose SERVER-side; counts (tab badges) ride the first page only. Every
+  // leg degrades independently.
+  //
+  // backingTables: plans + work_items move the statusful legs (bridged in
+  // table-to-query-names.ts); code_recipes has no trigger (recipes are
+  // poll-only today) and the memory pool rides the pluggable backend seam —
+  // both PUSH_EXEMPT with reasons in resolver-backing-table-coverage.test.ts.
+  // Memory WRITES push through memory/invalidate-user-memory-views.ts instead.
   'learning.retainFeed': {
+    backingTables: [
+      'harness_shared.harness_plans',
+      'harness_shared.work_items',
+      'harness_shared.code_recipes',
+      'harness_shared.memory_canonical',
+    ],
     argsSchema: z
       .object({
-        tab: z.enum(['all', 'plans', 'wi', 'rubrics', 'runbooks', 'recipes']).optional(),
+        tab: z.enum(['all', 'memories', 'plans', 'wi', 'rubrics', 'runbooks', 'recipes']).optional(),
         filter: z.enum(['all', 'shipped', 'inflight']).optional(),
         cursor: z.string().max(600).optional(),
         limit: z.number().int().min(1).max(100).optional(),
@@ -4362,7 +4375,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       .optional(),
     resolve: async (args) => {
       const a = (args ?? {}) as {
-        tab?: 'all' | 'plans' | 'wi' | 'rubrics' | 'runbooks' | 'recipes';
+        tab?: 'all' | 'memories' | 'plans' | 'wi' | 'rubrics' | 'runbooks' | 'recipes';
         filter?: 'all' | 'shipped' | 'inflight';
         cursor?: string;
         limit?: number;
@@ -4392,6 +4405,23 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         sql,
         ws,
         {
+          // WI-39535: the hive's shared-memory pool as a ledger kind. Scope
+          // resolution mirrors learning.hive (learning-hive-read):
+          // `hive:<slug>` for a selected pot, every pot's pool under the
+          // All-Pots lens (ListOptions.scope takes the array in one call). An
+          // unavailable backend throws → the leg degrades VISIBLY
+          // (degraded: ['memory']), never silently.
+          listMemories: async () => {
+            const { getMemoryBackend } = await import('../memory/backend');
+            const backend = getMemoryBackend();
+            const avail = await backend.available();
+            if (!avail.ok) throw new Error(avail.reason);
+            if (a.hive) return backend.list({ scope: `hive:${a.hive}` });
+            const { listPots } = await import('../agent-tools/pot/_resolve');
+            const slugs = (await listPots(ws)).map((p) => p.slug);
+            if (slugs.length === 0) return [];
+            return backend.list({ scope: slugs.map((s) => `hive:${s}`) });
+          },
           listRubrics: async () => {
             const { listRubrics } = await import('../rubrics');
             return (await listRubrics()).map((r) => ({
@@ -4438,6 +4468,9 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // with engineer_issues.source_plan_slug = planSlug, shipped classified
   // server-side. Best-effort — degrades to [].
   'learning.retainPlanChildren': {
+    // Children are work_items rows (engineer_issues is the compat VIEW; the
+    // base table carries the trigger) — bridged in table-to-query-names.ts.
+    backingTables: ['harness_shared.work_items'],
     // planSlug '' = no plan expanded → [] without a DB round-trip (the client
     // keeps this read mounted under the view's ONE readiness gate — lens-guard).
     // `hive` is accepted for lens consistency but is a no-op: one plan's
@@ -4451,6 +4484,101 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       const { readRetainPlanChildren } = await import('./learning-retain-read');
       const { sql } = getOrgPg();
       return readRetainPlanChildren(sql, activeWorkspaceId(), a.planSlug);
+    },
+  },
+
+  // ── learning.retainDetail — one Retained-ledger row's expanded detail (WI-39534) ──
+  //
+  // The detail aside beside the ledger: body/provenance beyond the row's
+  // title+status, per kind, in ONE neutral shape (readRetainDetail). Empty id
+  // short-circuits to [] without touching a store (the client keeps the read
+  // mounted under the view's ONE readiness gate — lens-guard); an unknown id or
+  // a store fault resolves to [] and the client renders "detail unavailable".
+  // `hive` is accepted for lens consistency but is a no-op: one row's detail is
+  // the same under every lens. backingTables mirror retainFeed's (same stores,
+  // same exemptions) minus the corpora a detail read never lists.
+  'learning.retainDetail': {
+    backingTables: [
+      'harness_shared.harness_plans',
+      'harness_shared.work_items',
+      'harness_shared.code_recipes',
+      'harness_shared.memory_canonical',
+    ],
+    argsSchema: z.object({
+      kind: z.enum(['memory', 'plan', 'wi', 'rubric', 'runbook', 'recipe']),
+      id: z.string().max(400),
+      hive: z.string().max(120).optional(),
+    }),
+    resolve: async (args) => {
+      const a = args as { kind: 'memory' | 'plan' | 'wi' | 'rubric' | 'runbook' | 'recipe'; id: string };
+      if (!a.id) return [];
+      const { activeWorkspaceId } = await import('../workspace-registry');
+      const { getOrgPg } = await import('@papercusp/db-org');
+      const { readRetainDetail } = await import('./learning-retain-read');
+      const { DOCS_CONTENT_ROOT } = await import('../agent-tools/docs/_repo-paths');
+      const { sql } = getOrgPg();
+      const insightsDir = `${DOCS_CONTENT_ROOT}/agent-insights`;
+      const detail = await readRetainDetail(sql, activeWorkspaceId(), a.kind, a.id, {
+        getRubric: async (id) => {
+          const { getRubric } = await import('../rubrics');
+          const r = await getRubric(id);
+          return r
+            ? {
+                title: r.title,
+                description: r.description ?? '',
+                status: r.status,
+                characteristic: r.characteristic ?? '',
+                criteria: r.criteria ?? [],
+                updatedAt: r.updatedAt,
+              }
+            : null;
+        },
+        getRecipe: async (id) => {
+          const { getRecipe } = await import('../code-recipes-store');
+          const r = await getRecipe(sql, id);
+          return r
+            ? {
+                title: r.title,
+                description: r.description ?? '',
+                script: r.script,
+                potSlug: r.potSlug ?? null,
+                toolsUsed: r.toolsUsed ?? [],
+                runCount: r.runCount,
+                successCount: r.successCount,
+                lastRunAt: r.lastRunAt ?? null,
+                status: r.status,
+                createdBy: r.createdBy ?? null,
+                updatedAt: r.updatedAt,
+              }
+            : null;
+        },
+        readRunbook: async (slug) => {
+          // Runbook docs exist as BOTH .md and .mdx in the insights tree —
+          // try both; ts = file mtime (the same instant the feed leg sorts by).
+          const { promises: fs } = await import('node:fs');
+          const path = await import('node:path');
+          const safe = path.basename(slug);
+          for (const ext of ['.md', '.mdx']) {
+            const p = path.join(insightsDir, `${safe}${ext}`);
+            try {
+              const [text, st] = await Promise.all([fs.readFile(p, 'utf8'), fs.stat(p)]);
+              return { text, ts: new Date(Math.floor(st.mtimeMs)).toISOString() };
+            } catch {
+              /* try the next extension */
+            }
+          }
+          return null;
+        },
+        getMemory: async (id) => {
+          const { getMemoryBackend } = await import('../memory/backend');
+          const backend = getMemoryBackend();
+          const avail = await backend.available();
+          if (!avail.ok) throw new Error(avail.reason);
+          const entry = await backend.get(id);
+          return entry ? (entry as typeof entry & { scope?: string }) : null;
+        },
+      });
+      return detail ? [detail] : [];
     },
   },
 
