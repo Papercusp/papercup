@@ -59,11 +59,12 @@ const PROJECTS_LITE = {
 
 /**
  * Stub projects/lite (the hive grouping source) + record which harness slugs
- * the dock fetches `/api/harness/<slug>/lanes` for (the dock-keying oracle).
+ * the dock keys its sync reads BY (the dock-keying oracle — WI-39533; the old
+ * `/api/harness/<slug>/lanes` signal is dead code the dock no longer emits).
  * Status + agents are stubbed benign so the shell header + dock are hermetic.
  */
-async function stubAndRecord(page: Page): Promise<{ lanesSlugs: Set<string>; sync: SyncQueryStub }> {
-  const lanesSlugs = new Set<string>();
+async function stubAndRecord(page: Page): Promise<{ keyedSlugs: Set<string>; sync: SyncQueryStub }> {
+  const keyedSlugs = new Set<string>();
   await page.route('**/api/harness/projects/lite', async (route) => {
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(PROJECTS_LITE) });
   });
@@ -75,23 +76,23 @@ async function stubAndRecord(page: Page): Promise<{ lanesSlugs: Set<string>; syn
   // invalidation; rows come from that GET. (This spec used to stub POST
   // /rest-query-batch, dead since 2026-07-26 — never hit at all: WI-39533.)
   const sync = await stubSyncQueries(page, (name, args) => {
+    // THE DOCK-KEYING ORACLE (WI-39533). It used to be the
+    // `/api/harness/<slug>/lanes` REST route — a read the dock NO LONGER MAKES
+    // at all, over any transport: the lane stat cards that issued it were
+    // removed on 2026-06-30 and even the sync replacement
+    // (`harnessLanes.snapshot`) has no consumer left (HarnessTopBar.tsx:29-32).
+    // So the recorder could only ever stay empty, and "the dock fetched for the
+    // member" was asserted against a signal nobody emits. The live signal is the
+    // `harnessSlug` the dock's panel queries are keyed BY — which is the thing
+    // this spec actually means by "the dock re-keyed to <slug>". Recorded on the
+    // way through; unmodelled queries still fall through untouched.
+    if (typeof args.harnessSlug === 'string') keyedSlugs.add(args.harnessSlug);
     if (name === 'harnessProjects.lite') return PROJECTS_LITE.projects;
-    // THE DOCK-KEYING ORACLE. It used to be the `/api/harness/<slug>/lanes`
-    // REST route recorded below — but that read is LEGACY: sync-resolver
-    // (index.ts:1637) states that `harnessLanes.snapshot` "replaces the legacy
-    // /api/harness/:slug/lanes read", so the dock has not spoken REST lanes for
-    // a long time and the recorder stayed permanently empty. Record the slug the
-    // dock actually asks lanes FOR; answer empty (benign chrome), matching what
-    // the REST stub returned.
-    if (name === 'harnessLanes.snapshot') {
-      if (typeof args.harnessSlug === 'string') lanesSlugs.add(args.harnessSlug);
-      return [];
-    }
     return undefined;
   });
+  // Kept only to keep the chrome benign if anything still calls it — it is NOT
+  // the keying oracle any more (see the resolver above).
   await page.route('**/api/harness/*/lanes**', async (route) => {
-    const m = /\/api\/harness\/([^/]+)\/lanes/.exec(route.request().url());
-    if (m) lanesSlugs.add(decodeURIComponent(m[1]));
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ lanes: [], max: 1 }) });
   });
   await page.route('**/api/harness/*/status**', async (route) => {
@@ -100,7 +101,7 @@ async function stubAndRecord(page: Page): Promise<{ lanesSlugs: Set<string>; syn
   await page.route('**/api/harness/*/agents**', async (route) => {
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ agents: [] }) });
   });
-  return { lanesSlugs, sync };
+  return { keyedSlugs, sync };
 }
 
 /**
@@ -132,7 +133,7 @@ async function expectRailActive(page: Page, slug: string, notSlug: string) {
 
 test.describe('/adv Harnesses tab — hive member model (P-001/P-002/P-003)', () => {
   test('P-001 deep link ?slug=hive&harness=member focuses the MEMBER, not the hive root', async ({ page }) => {
-    const { lanesSlugs, sync } = await stubAndRecord(page);
+    const { keyedSlugs, sync } = await stubAndRecord(page);
     const mounted = await gotoHarnessesTab(page, `slug=${HIVE}&harness=${MEMBER_RD}`, DOCK_MOUNT);
     assertMounted(mounted, SKIP_MSG);
     // A never-hit stub means the rail below rendered from real, unstubbed rows.
@@ -142,11 +143,11 @@ test.describe('/adv Harnesses tab — hive member model (P-001/P-002/P-003)', ()
     // (not the root), and the dock actually fetched for the member.
     expect(page.url()).toContain(`harness=${MEMBER_RD}`);
     await expectRailActive(page, MEMBER_RD, HIVE);
-    await expect.poll(() => lanesSlugs.has(MEMBER_RD), { timeout: 15_000 }).toBe(true);
+    await expect.poll(() => keyedSlugs.has(MEMBER_RD), { timeout: 15_000 }).toBe(true);
   });
 
   test('P-001 default (no ?harness=) focuses the hive root (D-001)', async ({ page }) => {
-    const { lanesSlugs, sync } = await stubAndRecord(page);
+    const { keyedSlugs, sync } = await stubAndRecord(page);
     const mounted = await gotoHarnessesTab(page, `slug=${HIVE}`, DOCK_MOUNT);
     assertMounted(mounted, SKIP_MSG);
     // A never-hit stub means the rail below rendered from real, unstubbed rows.
@@ -154,7 +155,7 @@ test.describe('/adv Harnesses tab — hive member model (P-001/P-002/P-003)', ()
 
     // Root is a real harness → it is the default focused member.
     await expectRailActive(page, HIVE, MEMBER_RD);
-    await expect.poll(() => lanesSlugs.has(HIVE), { timeout: 15_000 }).toBe(true);
+    await expect.poll(() => keyedSlugs.has(HIVE), { timeout: 15_000 }).toBe(true);
   });
 
   test('P-001 a stale ?harness= (names no member) falls back to the root and is cleared from the URL', async ({ page }) => {
@@ -171,7 +172,7 @@ test.describe('/adv Harnesses tab — hive member model (P-001/P-002/P-003)', ()
   });
 
   test('P-001 a solo harness has no rail and keys the dock to its own slug (zero regression)', async ({ page }) => {
-    const { lanesSlugs, sync } = await stubAndRecord(page);
+    const { keyedSlugs, sync } = await stubAndRecord(page);
     const mounted = await gotoHarnessesTab(page, `slug=${SOLO}`, DOCK_MOUNT);
     assertMounted(mounted, SKIP_MSG);
     // A never-hit stub means the rail below rendered from real, unstubbed rows.
@@ -180,11 +181,11 @@ test.describe('/adv Harnesses tab — hive member model (P-001/P-002/P-003)', ()
     // A single-member hive renders no rail (nothing to pick) — the dock is
     // byte-identical to the pre-plan single-harness view.
     await expect(page.getByTestId('pot-member-rail')).toHaveCount(0);
-    await expect.poll(() => lanesSlugs.has(SOLO), { timeout: 15_000 }).toBe(true);
+    await expect.poll(() => keyedSlugs.has(SOLO), { timeout: 15_000 }).toBe(true);
   });
 
   test('P-002 clicking a member in the rail sets ?harness= and re-keys the dock', async ({ page }) => {
-    const { lanesSlugs, sync } = await stubAndRecord(page);
+    const { keyedSlugs, sync } = await stubAndRecord(page);
     const mounted = await gotoHarnessesTab(page, `slug=${HIVE}`, DOCK_MOUNT);
     assertMounted(mounted, SKIP_MSG);
     // A never-hit stub means the rail below rendered from real, unstubbed rows.
@@ -196,7 +197,7 @@ test.describe('/adv Harnesses tab — hive member model (P-001/P-002/P-003)', ()
 
     await expect.poll(() => new URL(page.url()).searchParams.get('harness'), { timeout: 10_000 }).toBe(MEMBER_MKT);
     await expectRailActive(page, MEMBER_MKT, HIVE);
-    await expect.poll(() => lanesSlugs.has(MEMBER_MKT), { timeout: 15_000 }).toBe(true);
+    await expect.poll(() => keyedSlugs.has(MEMBER_MKT), { timeout: 15_000 }).toBe(true);
   });
 
   test('P-003 all-mode: clicking a member row drills in, setting both ?slug= and ?harness= and exiting all-mode', async ({ page }) => {
