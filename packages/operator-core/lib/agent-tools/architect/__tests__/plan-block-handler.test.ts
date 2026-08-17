@@ -199,10 +199,17 @@ SUMMARY: Test.
 // via vi.doMock after vi.resetModules() so each test gets a fresh
 // handleHttpToolRequest spy. defineTool is stubbed as a no-op so the
 // module-level registration call in plan-block-handler.ts doesn't fail.
+//
+// WI-39707: `actual` is the REAL module, spread first, so this stub cannot be
+// stranded by a newly-added export the way a hand-listed factory is. Every caller
+// passes `await importOriginal()`; keeping the spread here rather than at the four
+// call sites means the immunity is stated once.
 function makeMcpStub(
+  actual: Record<string, unknown>,
   handleHttpToolRequest: (req: { pathname: string; body: Record<string, unknown> }) => Promise<unknown>,
 ): Record<string, unknown> {
   return {
+    ...actual,
     defineTool: (cfg: unknown) => cfg,
     handleHttpToolRequest,
     SU_ROLES: ['scoper', 'architect', 'worker', 'validator', 'reviewer', 'debugger', 'operator', 'documenter', 'curator'],
@@ -217,8 +224,8 @@ describe('applyPlanBlock', () => {
   it('calls plans:new → set-now → add-item × N → add-decision × N in order', async () => {
     const calls: Array<{ verb: string; body: Record<string, unknown> }> = [];
 
-    vi.doMock('@papercusp/agent-mcp', () =>
-      makeMcpStub(async (req: { pathname: string; body: Record<string, unknown> }) => {
+    vi.doMock('@papercusp/agent-mcp', async (importOriginal) =>
+      makeMcpStub(await importOriginal<Record<string, unknown>>(), async (req: { pathname: string; body: Record<string, unknown> }) => {
         const verb = req.pathname.split('/').pop()!;
         calls.push({ verb, body: req.body });
         if (verb === 'new') {
@@ -260,8 +267,8 @@ describe('applyPlanBlock', () => {
   });
 
   it('throws when plans:new returns ok:false', async () => {
-    vi.doMock('@papercusp/agent-mcp', () =>
-      makeMcpStub(async () => ({
+    vi.doMock('@papercusp/agent-mcp', async (importOriginal) =>
+      makeMcpStub(await importOriginal<Record<string, unknown>>(), async () => ({
         status: 200,
         body: { content: [{ type: 'text', text: JSON.stringify({ ok: false, error: 'slug_conflict' }) }] },
       })),
@@ -273,8 +280,8 @@ describe('applyPlanBlock', () => {
   });
 
   it('throws when plans:new returns non-200', async () => {
-    vi.doMock('@papercusp/agent-mcp', () =>
-      makeMcpStub(async () => ({ status: 500, body: { error: 'internal error' } })),
+    vi.doMock('@papercusp/agent-mcp', async (importOriginal) =>
+      makeMcpStub(await importOriginal<Record<string, unknown>>(), async () => ({ status: 500, body: { error: 'internal error' } })),
     );
 
     const { parsePlanBlock: parse, applyPlanBlock } = await import('../plan-block-handler');
@@ -286,8 +293,8 @@ describe('applyPlanBlock', () => {
     // plans:new succeeds, set-now succeeds, add-item returns ok:false.
     // Before R21 this was silently swallowed; now must throw so the user
     // sees the partial-failure state instead of "plan created" success.
-    vi.doMock('@papercusp/agent-mcp', () =>
-      makeMcpStub(async (req) => {
+    vi.doMock('@papercusp/agent-mcp', async (importOriginal) =>
+      makeMcpStub(await importOriginal<Record<string, unknown>>(), async (req) => {
         const verb = req.pathname.split('/').pop()!;
         if (verb === 'new') {
           return {
