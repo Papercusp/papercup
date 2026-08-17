@@ -184,6 +184,43 @@ describe('WI-5210 leg (1) — the eviction the tail keys on, through real code',
   });
 });
 
+describe('WI-5210 leg (1) — control: the fast ladder alone could not have healed fence-25', () => {
+  /** The PRE-FIX world stated in-file: `maybeScheduleRedial`'s capped ladder and
+   *  nothing after it. Pinned to the real constant so a change to the ladder
+   *  cannot leave this control describing a world that no longer exists. */
+  const ladderOnlyWouldDial = (attempt: number): boolean =>
+    attempt < _testing.REDIAL_DELAYS_MS.length;
+
+  it('THE BUG, as a control: the ladder falls silent while the ~100s skew is unresolved', () => {
+    const spentMs = _testing.REDIAL_DELAYS_MS.reduce((a, b) => a + b, 0);
+    expect(spentMs).toBeLessThan(100_000); // ~85s of budget vs a MEASURED ~100s skew
+    expect(ladderOnlyWouldDial(_testing.REDIAL_DELAYS_MS.length)).toBe(false);
+  });
+
+  it('the LIVE code keeps dialling exactly where the ladder-only world is silent', () => {
+    const mux = makeMux();
+    wireTopicWithNoChannel(mux);
+
+    for (let tick = 0; tick < 5; tick += 1) {
+      _testing.healSweep();
+      mux.lastOnClose?.();
+    }
+
+    expect(ladderOnlyWouldDial(4)).toBe(false); // pre-fix: dead
+    expect(mux.dials).toHaveLength(5); // live: still healing
+  });
+
+  it('CALIBRATION: both worlds dial on the FIRST attempt — the control is not just "always differs"', () => {
+    const mux = makeMux();
+    wireTopicWithNoChannel(mux);
+
+    _testing.healSweep();
+
+    expect(ladderOnlyWouldDial(0)).toBe(true);
+    expect(mux.dials).toHaveLength(1);
+  });
+});
+
 describe('WI-5210 leg (1) — the tail never widens the topic gate', () => {
   it('never dials a topic THIS connection did not wire', () => {
     // A remote can open a channel with an arbitrary id; the sweep must only
