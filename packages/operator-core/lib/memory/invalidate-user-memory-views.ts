@@ -36,6 +36,19 @@ export const USER_MEMORY_SYNC_KEYS = [
  */
 export async function invalidateUserMemoryViews(): Promise<void> {
   await Promise.all(
-    USER_MEMORY_SYNC_KEYS.map((key) => notifySyncInvalidate(key).catch(() => { /* best-effort */ })),
+    // `await` inside the try — NOT `notifySyncInvalidate(key).catch(…)`. That form only
+    // handles a REJECTED promise, so it leaked the two failures this helper exists to
+    // absorb: a SYNCHRONOUS throw (the `.catch` is never reached, and the throw escapes
+    // `.map`) and a non-promise return (`.catch` of undefined -> TypeError). Both landed as
+    // UNHANDLED REJECTIONS rather than assertion failures, so every `expect` still passed
+    // while the whole stateful lane went red — the "a failure that fails no assertion"
+    // class. `await` normalises all three shapes (sync throw / rejection / plain value).
+    USER_MEMORY_SYNC_KEYS.map(async (key) => {
+      try {
+        await notifySyncInvalidate(key);
+      } catch {
+        /* best-effort — see the contract above: a fan-out must never fail the write */
+      }
+    }),
   );
 }
