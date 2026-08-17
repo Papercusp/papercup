@@ -1242,10 +1242,130 @@ async function runSharedHiveLeg(ctx: SystemActionCtx): Promise<void> {
           }).catch(() => {
             /* a capture failure must not abort the remaining incidents */
           });
+          // WI-39736 fix property 2 — an involuntary release must NOTIFY the holder,
+          // not only leave an audit trail. The filed improvement above is a backlog
+          // row nobody reads in time; the holder is the one party who is, right now,
+          // still working an item it no longer holds.
+          if (incident.kind === 'orphaned-taken-by') {
+            await notifySweptHolders(ctx.workspaceId, scope.harness_slug, incident.detail).catch(() => {
+              /* a notice-delivery failure must not abort the remaining incidents */
+            });
+          }
         },
       });
     } catch {
       /* one scope's failure never aborts the others */
+    }
+  }
+}
+
+// ── WI-39736: tell a swept holder its claim was taken ────────────────────────
+//
+// `sweepOrphanedTakenBy` clears a claim whose holder it judges DEAD (no live and
+// no briefly-parked presence row, EI-20723522274831539). That judgement has ONE
+// deliberate blind spot, documented on the sweep's victim predicate: it does NOT
+// copy the sibling reaper's WI-1999 known-holder clause, because requiring it
+// would defer the dead peer-SWARM reclaim this sweep exists for. So a holder that
+// is genuinely ALIVE on another machine, with no local coord_presence row, is
+// still swept — and until this notice it was swept SILENTLY. That is exactly the
+// shape of the WI-39736 incident: the agent keeps working an item the fleet has
+// already handed to someone else, and neither side is told.
+//
+// The notice is best-effort by design. A truly dead holder cannot be woken, and
+// the filed improvement above remains the durable record for that case; the wake
+// costs nothing when it misses and is the whole point when it lands.
+
+/** System identity for the orphan-sweep holder notice. */
+const ORPHAN_SWEEP_IDENTITY: AgentIdentity = {
+  ownerId: 'system:coord-invariant-monitor',
+  ownerLabel: 'system · coord-invariant-monitor',
+  source: 'principal',
+  workspaceId: null,
+  userId: null,
+};
+
+export interface OrphanSweepNotice {
+  /** Holder + its fleet leader (when resolvable), the wake/send targets. */
+  targets: string[];
+  holderOwnerId: string;
+  workItemIds: string[];
+  summary: string;
+}
+
+/**
+ * Pure: group one pass's swept rows by HOLDER (one notice per holder, never one
+ * per item — a swarm death frees many items in a single statement and N wakes to
+ * the same owner is a storm, not a signal) and address each notice to the holder
+ * plus its fleet leader. Exported for unit tests.
+ */
+export function planOrphanSweepNotices(
+  cleared: ReadonlyArray<{ workItemId: string; takenBy: string }>,
+  leaderByOwner: ReadonlyMap<string, string | null>,
+  harness: string,
+): OrphanSweepNotice[] {
+  const byHolder = new Map<string, string[]>();
+  for (const row of cleared) {
+    const holder = (row.takenBy ?? '').trim();
+    // A reaper marker can never be a real ownerId; a blank holder has nobody to tell.
+    if (!holder || holder.startsWith('reaper:') || holder.startsWith('system:')) continue;
+    const ids = byHolder.get(holder) ?? [];
+    if (row.workItemId) ids.push(row.workItemId);
+    byHolder.set(holder, ids);
+  }
+  const notices: OrphanSweepNotice[] = [];
+  for (const [holderOwnerId, workItemIds] of byHolder) {
+    const leader = leaderByOwner.get(holderOwnerId) ?? null;
+    const targets = leader && leader !== holderOwnerId ? [holderOwnerId, leader] : [holderOwnerId];
+    const shown = workItemIds.slice(0, 5).join(', ');
+    const more = workItemIds.length > 5 ? ` (+${workItemIds.length - 5} more)` : '';
+    notices.push({
+      targets,
+      holderOwnerId,
+      workItemIds,
+      summary:
+        `Your claim on ${workItemIds.length} item(s) was RELEASED by the orphan sweep (${harness}): ` +
+        `${shown}${more} — re-claim if you are still working them.`,
+    });
+  }
+  return notices;
+}
+
+async function notifySweptHolders(
+  workspaceId: string,
+  harness: string,
+  detail: MonitorIncident['detail'],
+): Promise<void> {
+  const cleared = Array.isArray(detail)
+    ? (detail as Array<{ workItemId?: unknown; takenBy?: unknown }>)
+        .filter((r) => r && typeof r.workItemId === 'string' && typeof r.takenBy === 'string')
+        .map((r) => ({ workItemId: r.workItemId as string, takenBy: r.takenBy as string }))
+    : [];
+  if (cleared.length === 0) return;
+  const leaderByOwner = await resolveLeadersForHolders(workspaceId, [
+    ...new Set(cleared.map((c) => c.takenBy)),
+  ]).catch(() => new Map<string, string | null>());
+  for (const notice of planOrphanSweepNotices(cleared, leaderByOwner, harness)) {
+    try {
+      await sendMessage(ORPHAN_SWEEP_IDENTITY, {
+        to: notice.targets,
+        summary: notice.summary,
+        body:
+          `The hourly coord-invariant-monitor orphan sweep judged you DEAD (no live and no briefly-parked ` +
+          `presence heartbeat) and returned these items to the backlog on harness ${harness}: ` +
+          `${notice.workItemIds.join(', ')}.\n\n` +
+          `Their taken_by/taken_at were cleared and last_released_by set to 'reaper:orphan-sweep'. If you ` +
+          `are in fact still working any of them, RE-CLAIM now (work_items:claim) — the scheduler can hand ` +
+          `them to another agent while you hold nothing, which is a genuine double-placement.\n\n` +
+          `(WI-39736 / EI-20723522274831539; check source: ` +
+          `packages/operator-core/lib/shared-pot-loop/fleet-monitors.ts sweepOrphanedTakenBy.)`,
+        category: 'orphan-sweep-release',
+      });
+      await wakeRecipients(notice.targets, {
+        summary: notice.summary,
+        source: ORPHAN_SWEEP_IDENTITY.ownerId,
+      });
+    } catch {
+      /* one holder's notice failing never suppresses the rest */
     }
   }
 }
