@@ -838,3 +838,159 @@ describe('trackGateStall survives an unresolvable integration root (gate running
     expect(written!.consecutiveReds).toBe(0);
   });
 });
+
+/**
+ * EI-20706962612084953: the `reset` class holds TWO populations, and only one of them is green.
+ * `classifyGateStallStatus(status, pinMoved)` sends a NOT-GREEN verdict here whenever the release
+ * pin moved — deliberately, because a moved pin proves `main` is advancing and the "main is
+ * frozen" stall streak is therefore not real. But the blob written for it was the FULL green
+ * signature: consecutiveReds 0, firstRedAt null, failingTests [], lastGreenAt = now, and no field
+ * marking it apart from a real green. Every surface that answers "is the gate green?" off
+ * gate_health therefore answered GREEN for a run that recorded not-green, and the stall detectors
+ * keyed on lastGreenAt / consecutiveReds were suppressed for exactly that run.
+ *
+ * These assert the SPLIT: the stall streak still resets (that is the branch's legitimate job),
+ * while nothing in the blob claims a green that did not happen.
+ */
+describe('EI-20706962612084953: a pin-moved NOT-GREEN tick must not write a GREEN signature', () => {
+  /** A last-green far enough in the past that "carried" vs "stamped now" cannot be confused. */
+  const OLD_GREEN = 1_600_000_000_000;
+  const MOVED_FROM = 'bbbbbbbbbbbb';
+  const LAST_MAIN = 'aaaaaaaaaaaa';
+
+  it('⭐ CARRIES lastGreenAt instead of stamping it — the gate did not green', async () => {
+    seededGh = { consecutiveReds: 2, lastGreenAt: OLD_GREEN, lastMainPin: LAST_MAIN, lastFrom: LAST_MAIN };
+
+    await trackGateStall(ctx, 'not-green', 'd6fee86480b0', ['apps/api/src/stats/stats.module.test.ts'], MOVED_FROM);
+
+    const w = lastGateHealthWrite();
+    expect(w).not.toBeNull();
+    // the branch's legitimate purpose is PRESERVED — main is advancing, so the stall streak resets
+    expect(w!.consecutiveReds).toBe(0);
+    expect(w!.firstRedAt).toBeNull();
+    // ...but the age of the last REAL green must keep running; that age is what `verdictStale` measures
+    expect(w!.lastGreenAt).toBe(OLD_GREEN);
+  });
+
+  it('⭐ marks the verdict explicitly, so a reader never has to infer it from lastGreenAt', async () => {
+    seededGh = { lastGreenAt: OLD_GREEN, lastMainPin: LAST_MAIN };
+
+    await trackGateStall(ctx, 'not-green', 'd6fee86480b0', ['x.test.ts'], MOVED_FROM);
+
+    expect(lastGateHealthWrite()!.lastVerdict).toBe('not-green');
+  });
+
+  it('⭐ keeps the run’s real failing tests rather than clearing them as a recovery', async () => {
+    seededGh = { lastGreenAt: OLD_GREEN, lastMainPin: LAST_MAIN };
+
+    await trackGateStall(ctx, 'not-green', 'd6fee86480b0', ['a.test.ts', 'b.test.ts'], MOVED_FROM);
+
+    expect(lastGateHealthWrite()!.failingTests).toEqual(['a.test.ts', 'b.test.ts']);
+  });
+
+  it('⭐ carries stallAlerted + watchdogAlerted — a not-green tick is not a recovery', async () => {
+    // Both flags are recovery-cleared on a real green. Clearing `stallAlerted` here would ALSO
+    // strand the open red-streak condition: the later genuine green reads it false, broadcasts no
+    // resolve, and leaks a permanently-open incident item (the D-011 leak).
+    seededGh = { stallAlerted: true, watchdogAlerted: true, lastGreenAt: OLD_GREEN, lastMainPin: LAST_MAIN };
+
+    await trackGateStall(ctx, 'not-green', 'd6fee86480b0', ['x.test.ts'], MOVED_FROM);
+
+    const w = lastGateHealthWrite();
+    expect(w!.stallAlerted).toBe(true);
+    expect(w!.watchdogAlerted).toBe(true);
+  });
+
+  it('⭐ broadcasts NO all-clear — a moved pin is not a green verdict', async () => {
+    seededGh = { stallAlerted: true, lastGreenAt: OLD_GREEN, lastMainPin: LAST_MAIN };
+
+    await trackGateStall(ctx, 'not-green', 'd6fee86480b0', ['x.test.ts'], MOVED_FROM);
+
+    // the broadcast SAYS "GREEN again … the earlier red-gate alarm is stale" and SETTLES the
+    // owning work-item, so firing it here is a false all-clear on a still-open red episode
+    expect(broadcastSevereEventResolved).not.toHaveBeenCalled();
+  });
+
+  it('CONTROL: a genuinely GREEN tick still writes the full green signature and DOES all-clear', async () => {
+    // Calibration — without this, every assertion above would pass just as happily against a
+    // build that had broken the green path outright.
+    seededGh = { consecutiveReds: 2, stallAlerted: true, watchdogAlerted: true, lastGreenAt: OLD_GREEN, lastMainPin: LAST_MAIN, failingTests: ['stale.test.ts'] };
+
+    await trackGateStall(ctx, 'advanced', 'cafebabe1234', [], MOVED_FROM);
+
+    const w = lastGateHealthWrite();
+    expect(w!.consecutiveReds).toBe(0);
+    expect(w!.lastVerdict).toBe('green');
+    expect(w!.lastGreenAt).not.toBe(OLD_GREEN);
+    expect(w!.failingTests).toEqual([]);
+    expect(w!.watchdogAlerted).toBe(false);
+    expect(w!.stallAlerted).toBe(false);
+    expect(broadcastSevereEventResolved).toHaveBeenCalled();
+  });
+});
+
+/**
+ * EI-20706962612084953 (the root cause of how OFTEN the above fired): `pinMoved` compared the
+ * live pin against `lastFrom` — the pin the previous run STARTED from, i.e. the pre-fast-forward
+ * value. After any 'advanced' run, `main` sits at the candidate while `lastFrom` holds the sha it
+ * advanced FROM, so the very next tick saw a difference and declared `pinMoved` for the routine's
+ * OWN advance. Consequence: the first red after a green was systematically classified 'reset' —
+ * the single most important red to surface was the one that could not be.
+ *
+ * `lastMainPin` records where main was LEFT, so only a genuinely EXTERNAL advance moves it.
+ * `lastFrom` is deliberately untouched: gate-verdict-freshness Rule 1 needs the pre-FF value.
+ */
+describe('EI-20706962612084953: lastMainPin stops the routine’s OWN advance reading as a moved pin', () => {
+  it('⭐ an advanced tick records where main ENDED (the candidate), not where it started', async () => {
+    seededGh = { lastMainPin: 'aaaaaaaaaaaa' };
+
+    await trackGateStall(ctx, 'advanced', 'cafebabe1234', [], 'aaaaaaaaaaaa');
+
+    const w = lastGateHealthWrite();
+    expect(w!.lastMainPin).toBe('cafebabe1234');
+    // `lastFrom` keeps its own contract — the pin as observed AT verdict time (pre-FF)
+    expect(w!.lastFrom).toBe('aaaaaaaaaaaa');
+  });
+
+  it('⭐ the red that FOLLOWS a green is COUNTED, not masked as a reset', async () => {
+    // main sits where the last green left it; this run judges a new candidate and fails.
+    seededGh = { consecutiveReds: 0, lastMainPin: 'cafebabe1234', lastFrom: 'aaaaaaaaaaaa' };
+
+    await trackGateStall(ctx, 'not-green', 'deadbeef5678', ['t.test.ts'], 'cafebabe1234');
+
+    const w = lastGateHealthWrite();
+    expect(w!.consecutiveReds).toBe(1);
+    expect(w!.lastVerdict).toBe('not-green');
+    expect(w!.failingTests).toEqual(['t.test.ts']);
+    // a red leaves main exactly where it found it
+    expect(w!.lastMainPin).toBe('cafebabe1234');
+  });
+
+  it('a genuinely EXTERNAL advance still resets the streak (the starvation case this branch exists for)', async () => {
+    // Only ROUTINE-invoked runs write gate_health, so a manual/other-lineage FF shows up here as
+    // a live pin that matches NEITHER recorded value. That is still hard evidence main is flowing.
+    seededGh = { consecutiveReds: 4, lastMainPin: 'aaaaaaaaaaaa', lastFrom: 'aaaaaaaaaaaa' };
+
+    await trackGateStall(ctx, 'not-green', 'deadbeef5678', ['t.test.ts'], 'zzzzzzzzzzzz');
+
+    expect(lastGateHealthWrite()!.consecutiveReds).toBe(0);
+  });
+
+  it('a legacy blob with no lastMainPin falls back to lastFrom (degrades to the previous behaviour)', async () => {
+    // Written before this field existed: a missing pin must not read as "main never moved".
+    seededGh = { consecutiveReds: 4, lastFrom: 'aaaaaaaaaaaa' };
+
+    await trackGateStall(ctx, 'not-green', 'deadbeef5678', ['t.test.ts'], 'bbbbbbbbbbbb');
+
+    expect(lastGateHealthWrite()!.consecutiveReds).toBe(0);
+  });
+
+  it('an advanced-prefix tick records a null pin rather than inventing one', async () => {
+    // main moved to the longest green PREFIX — a sha this function is never handed.
+    seededGh = { lastMainPin: 'aaaaaaaaaaaa' };
+
+    await trackGateStall(ctx, 'advanced-prefix', 'cafebabe1234', [], 'aaaaaaaaaaaa');
+
+    expect(lastGateHealthWrite()!.lastMainPin).toBeNull();
+  });
+});
