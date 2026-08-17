@@ -34,6 +34,7 @@ import { isMemoryPaused, setMemoryPaused } from '../../../memory/memory-pause';
 import { recallCanaryForEnvelope } from '../../../memory/recall-canary-envelope';
 import { detectPossibleSecrets, possibleSecretWarning } from '../../../memory/secret-detect';
 import { recordFeedback } from '../../../memory/feedback';
+import { invalidateUserMemoryViews } from '../../../memory/invalidate-user-memory-views';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { loadHarnessRegistry } from '../../../harness-registry';
 import { defineTool } from '@papercusp/agent-mcp';
@@ -47,11 +48,15 @@ import { defineTool } from '@papercusp/agent-mcp';
  * Routed through `invalidateUserMemoryViews` rather than naming keys here, so
  * a future sync query over the corpus cannot be left refreshing behind the
  * rows (WI-39540).
+ *
+ * STATICALLY imported on purpose. A `void import(...)` here would defer the
+ * notify CALL itself into a microtask, so a write's invalidation would no
+ * longer be observable at the point the write returns — both a behaviour
+ * change (a same-tick reader sees a stale view) and what silently broke the
+ * `POST /user/memory` invalidate assertion in user.test.ts.
  */
 const invalidateMemoryList = (): void => {
-  void import('../../../memory/invalidate-user-memory-views')
-    .then(({ invalidateUserMemoryViews }) => invalidateUserMemoryViews())
-    .catch(() => { /* best-effort */ });
+  void invalidateUserMemoryViews();
 };
 
 const list = defineTool({
