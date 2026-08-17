@@ -628,7 +628,11 @@ describe('projection — the caller-specified reduction stage at the dispatch la
       { projection: { pipe: [{ op: 'grep', pattern: 'definitely-not-present' }] } },
       scoped('ws-test'),
     );
-    expect(res.content[0]?.text).toBe('');
+    // EI-20720054720826414: an emptied body is a DEGRADED verdict, and degraded
+    // verdicts now LEAD the content (head-truncation-proof) — so content[0] is
+    // the REMOVED-EVERYTHING warning and the empty body follows it.
+    expect(res.content[0]?.text).toContain('REMOVED EVERYTHING');
+    expect(res.content[1]?.text).toBe('');
     expect(textOf(res)).not.toContain('gatingtest:scoped-ok');
   });
 

@@ -21,12 +21,17 @@
 #     broader match too easy to get wrong and would false-positive on
 #     legitimate cross-repo searches that merely happen to recurse through
 #     docs/plans along the way.
-#   - Bash (`cat`/`grep`/`find` targeting docs/plans/*.md by shell text) is
-#     NOT covered — matching arbitrary shell command TEXT safely (without
-#     false-positiving on an unrelated command that merely mentions the
-#     string "docs/plans") needs much more careful parsing than a single
-#     hook script can safely do; left as an explicit follow-up rather than a
-#     silent gap (recorded on the plan item's completion evidence).
+#   - Bash (`cat`/`head`/`sed`/`grep`/… targeting docs/plans/*.md by shell
+#     text) IS covered since 2026-08-17 (EI-20720054720826414 follow-through:
+#     an agent whose structured multi-plan read clipped fell back to `cat` on
+#     the on-disk files — the exact uncovered path this comment used to
+#     document as a follow-up). Because shell-text matching is heuristic, the
+#     POLARITY FLIPS vs Read/Grep: Bash is denied ONLY when the live identity
+#     check CONFIRMS the target is a real plan (plan_exists() is True);
+#     not-a-plan AND inconclusive both allow through. A false positive is
+#     therefore structurally impossible — the deny fires only on a verified
+#     live plan being read as stale bytes — at the cost of failing open when
+#     the operator is unreachable, which matches this hook's advisory posture.
 #
 # IDENTITY-BASED, not just path-based (EI-18645886273852502, 2026-07-25):
 # `docs/plans/` is also where outgoing leaders/agents drop hand-written
@@ -77,7 +82,7 @@ HARNESS="${PAPERCUSP_HARNESS_SLUG:-}"
 INPUT=$(cat)
 
 python3 - "$INPUT" "$OPERATOR_URL" "$TOKEN" "$HARNESS" "$AGENT_ID" <<'PYEOF' || exit 0
-import json, os, re, sys
+import json, os, re, shlex, sys
 import urllib.error, urllib.parse, urllib.request
 
 raw = sys.argv[1]
@@ -235,6 +240,36 @@ if tool_name == 'Grep':
             # No single slug to check identity against — keep the original
             # conservative path-only deny.
             deny(hint(p))
+    allow()
+
+# Reader commands whose appearance BEFORE a plan-file path marks the command as
+# a read of it. Writers (`echo … > docs/plans/x.md`), `ls`, and commands that
+# merely MENTION the string are deliberately not matched.
+BASH_READERS_RE = re.compile(r'\b(cat|head|tail|less|more|sed|awk|grep|rg|bat|batcat)\b')
+
+if tool_name == 'Bash':
+    cmd = tool_input.get('command')
+    if isinstance(cmd, str) and 'docs/plans' in cmd:
+        try:
+            tokens = shlex.split(cmd)
+        except ValueError:
+            allow()  # unparseable quoting — heuristic path fails open
+        for tok in tokens:
+            m = PLAN_FILE_RE.search(as_posix(tok))
+            if not m:
+                continue
+            # Only a READ: a reader command must appear before this path in the
+            # command text (a redirection target or bare mention passes).
+            at = cmd.find(tok)
+            if at <= 0 or not BASH_READERS_RE.search(cmd[:at]):
+                continue
+            # POLARITY FLIP (see header): shell-text matching is heuristic, so
+            # deny ONLY a CONFIRMED live plan — not-a-plan and inconclusive
+            # (operator down, no harness) both fall open. A false positive is
+            # structurally impossible; a missed deny costs only what the old
+            # fully-uncovered Bash path cost on every call.
+            if plan_exists(m.group(3)) is True:
+                deny(hint(tok))
     allow()
 
 allow()
