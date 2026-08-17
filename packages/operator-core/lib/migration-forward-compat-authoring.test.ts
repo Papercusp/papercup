@@ -204,21 +204,30 @@ describe('the parked-migration dependency guard (EI-20208711931756460)', () => {
 
   it('extracts the altered table without its schema qualifier', () => {
     expect(
-      alteredTablesFor('ALTER TABLE harness_shared.local_backends ADD COLUMN IF NOT EXISTS lifecycle text;'),
-    ).toEqual(['local_backends']);
-    expect(alteredTablesFor('ALTER TABLE IF EXISTS ONLY "adv_sessions" ADD COLUMN x text;')).toEqual(['adv_sessions']);
+      alteredTablesFor('ALTER TABLE harness_shared.fc_probe_backends ADD COLUMN IF NOT EXISTS fc_probe_mode text;'),
+    ).toEqual(['fc_probe_backends']);
+    expect(alteredTablesFor('ALTER TABLE IF EXISTS ONLY "fc_probe_sessions" ADD COLUMN x text;')).toEqual([
+      'fc_probe_sessions',
+    ]);
   });
 
+  // ⚠ The two fixtures below deliberately use FICTIONAL identifiers (`fc_probe_backends`,
+  // `fc_probe_mode`) rather than the real pair that motivated them. A test proving this detector
+  // must contain the exact shape the detector hunts for, so real names here make the test file
+  // itself a hit against any live draft that touches them — which is precisely what happened on
+  // the first cut of this test. Comments are masked before matching, so naming the real case in
+  // prose (migration 843, `harness_shared.local_backends.lifecycle`) costs nothing.
+
   it('does not flag a file that uses the column name but never names the table', () => {
-    // Regression: migration 843 added `local_backends.lifecycle`, and the column-name-only scan
+    // Regression: migration 843 added a column named `lifecycle`, and the column-name-only scan
     // matched 357 unrelated files (plugin lifecycle, release lifecycle, work-item lifecycle),
     // red-pinning green-checkpoint. A flood that large does not get read as a guard — it gets
     // silenced with the ACK marker, which is how a REAL forward-compat break gets waved through.
-    const sql = 'ALTER TABLE harness_shared.local_backends ADD COLUMN IF NOT EXISTS lifecycle text;';
+    const sql = 'ALTER TABLE harness_shared.fc_probe_backends ADD COLUMN IF NOT EXISTS fc_probe_mode text;';
     const result = findDraftColumnReferences(sql, [
       {
         file: 'packages/plugin-loader/src/daemon/supervisor.ts',
-        text: 'export type PluginLifecycle = "starting" | "ready";\nconst lifecycle: PluginLifecycle = "ready";\n',
+        text: 'export type ProbeMode = "starting" | "ready";\nconst fc_probe_mode: ProbeMode = "ready";\n',
       },
     ]);
 
@@ -227,18 +236,18 @@ describe('the parked-migration dependency guard (EI-20208711931756460)', () => {
 
   it('still flags a real read of the new column on the altered table', () => {
     // The falsifiability half of the pair above: narrowing by table must not defang the scan.
-    const sql = 'ALTER TABLE harness_shared.local_backends ADD COLUMN IF NOT EXISTS lifecycle text;';
+    const sql = 'ALTER TABLE harness_shared.fc_probe_backends ADD COLUMN IF NOT EXISTS fc_probe_mode text;';
     const result = findDraftColumnReferences(sql, [
       {
-        file: 'packages/operator-core/lib/inference-gateway/local-backend-store.ts',
-        text: 'const rows = await sql`SELECT id, lifecycle FROM harness_shared.local_backends`;\n',
+        file: 'packages/operator-core/lib/some-store.ts',
+        text: 'const rows = await sql`SELECT id, fc_probe_mode FROM harness_shared.fc_probe_backends`;\n',
       },
     ]);
 
     expect(result.references).toEqual([
       {
-        column: 'lifecycle',
-        file: 'packages/operator-core/lib/inference-gateway/local-backend-store.ts',
+        column: 'fc_probe_mode',
+        file: 'packages/operator-core/lib/some-store.ts',
         line: 1,
       },
     ]);
