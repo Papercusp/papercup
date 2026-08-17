@@ -3765,7 +3765,26 @@ export async function mergeWorkItemPayload(
 export async function claimWorkItem(
   id: string,
   assignee: string,
-  opts: { harness?: string } = {},
+  opts: {
+    harness?: string;
+    /**
+     * EI-20731607691070897 — ATOMIC SELF-HELD TRANSFER. The compare-and-claim below
+     * only matches an UNHELD row, so a holder handing their own item to a named peer
+     * (`work_items:claim { id, assignee: peer }`) was refused as `claim_conflict`
+     * against THEMSELVES. The only path left was release → peer-claims, and that
+     * release drops the item to UNASSIGNED and fleet-claimable: on a fleet with a
+     * scheduler actively handing out claimable work, the peer can lose it to a third
+     * agent in the gap. There is no other transfer primitive (`coord:handoff` records
+     * a transition note; `work_items:request_release` is the OPPOSITE direction;
+     * `work_items:update` has no assignee), so the gap could not be closed elsewhere.
+     *
+     * Passing the CALLER here widens the CAS by exactly one disjunct — the caller's
+     * OWN claim — so the handoff lands in the SAME UPDATE that would have claimed an
+     * unheld row: no release window, nothing observable in between. It can never move
+     * a THIRD party's claim: the row still has to match `= fromHolder`.
+     */
+    fromHolder?: string;
+  } = {},
 ): Promise<WorkItem | null> {
   // EI-1545: resolve the issue-scope workspace ONCE, up front, and reuse that SAME
   // value for both the existence/family check below AND the actual claimIssue()
@@ -3786,7 +3805,7 @@ export async function claimWorkItem(
   const issue = await getIssueInWorkspace(issueWs, id);
   let claimed: WorkItem | null;
   if (issue) {
-    const updated = await claimIssue(id, assignee, { workspaceId: issueWs });
+    const updated = await claimIssue(id, assignee, { workspaceId: issueWs, fromHolder: opts.fromHolder });
     claimed = updated ? issueToWorkItem(updated) : null;
   } else {
     const wi = await getFeatureWorkItemOnly(id, opts.harness);
@@ -3804,7 +3823,11 @@ export async function claimWorkItem(
              last_progress_at = CASE WHEN taken_by = ${assignee} THEN last_progress_at ELSE NULL END,
              updated_ts = ${Date.now()}
        WHERE harness_slug = ${wi.harness} AND feature_id = ${id}
-         AND (taken_by IS NULL OR taken_by = '' OR taken_by = ${assignee})
+         -- EI-20731607691070897: fromHolder (the CALLER) is the atomic self-held
+         -- transfer leg -- see the opts doc on claimWorkItem. When it is absent it
+         -- falls back to the assignee, making this disjunct a duplicate of the one
+         -- before it, so the predicate stays equivalent to its pre-change behavior.
+         AND (taken_by IS NULL OR taken_by = '' OR taken_by = ${assignee} OR taken_by = ${opts.fromHolder ?? assignee})
          -- G2 admission (shared-hive-trust-admission P-003): an explicit named claim
          -- can't bypass the auditor either — remote, un-admitted stays unclaimable
          -- (unless its verified author is trusted — P-010 trust leg, ws-scoped).

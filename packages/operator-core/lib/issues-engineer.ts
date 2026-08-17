@@ -2108,6 +2108,14 @@ export async function claimIssue(
      * See the workspaceId param on {@link claimWorkItem} for the full rationale.
      */
     workspaceId?: string;
+    /**
+     * EI-20731607691070897 — the CALLER, for an atomic self-held transfer. Widens the
+     * CAS below by exactly one disjunct (the caller's OWN claim) so a holder can hand
+     * the item to a named peer in the SAME UPDATE, instead of release → peer-claims
+     * with a fleet-claimable gap in between. Never moves a third party's claim.
+     * Full rationale on {@link claimWorkItem}'s opts.
+     */
+    fromHolder?: string;
   } = {},
 ): Promise<EngineerIssue | null> {
   const { sql } = getOrgPg();
@@ -2121,7 +2129,11 @@ export async function claimIssue(
        -- must be claimable, same as NULL/''; without this the row is PERMANENTLY stuck
        -- (this UPDATE never matches it, and classifyClaimFailure then misreports the
        -- resulting no-op as a live claim_conflict against holder:"unassigned").
-       AND (assignee IS NULL OR btrim(assignee) = '' OR lower(btrim(assignee)) = 'unassigned' OR assignee = ${assignee})
+       -- EI-20731607691070897: the last disjunct is the atomic self-held transfer leg
+       -- (fromHolder = the CALLER). Absent, it falls back to the assignee and is a
+       -- duplicate of the disjunct before it, leaving this predicate equivalent to
+       -- its pre-change behavior.
+       AND (assignee IS NULL OR btrim(assignee) = '' OR lower(btrim(assignee)) = 'unassigned' OR assignee = ${assignee} OR assignee = ${opts.fromHolder ?? assignee})
        -- WI-5826 NOTE — deliberately NO terminal-state floor here. Claiming an
        -- already-completed row BY ID is an INTENTIONAL, tested escape hatch (EI-8972:
        -- "a completed row is STILL directly claimable by id — the floor only gates

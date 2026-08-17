@@ -396,7 +396,11 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
   // on every claim, and it is what the batch test caught. Awaiting here costs nothing measurable
   // because the read has been in flight across admission + the pre-claim lookup already.
   const concurrency = await concurrencyBefore;
-  const workItem = await claimWorkItem(it.id, claimer, { harness: it.harness });
+  // EI-20731607691070897: `fromHolder` lets a caller hand an item THEY hold to a named
+  // `assignee` in this same compare-and-claim, instead of being refused and left with
+  // release → peer-claims (which exposes the item to the whole fleet in between). When
+  // no `assignee` was passed, `claimer` IS `claimerDefault`, so this is a no-op.
+  const workItem = await claimWorkItem(it.id, claimer, { harness: it.harness, fromHolder: claimerDefault });
   if (workItem && bypassedHold && bypassedHoldConvention) {
     // Forced past a claim-hold — leave the hold IN PLACE (this never clears it; a leader lifts
     // it explicitly via work_items:hold_open{clear:true}) but leave a forensic trail identical
@@ -635,6 +639,17 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
       reader,
       subjectRef: it.id,
     });
+    // EI-20731607691070897: the holder can be the CALLER. `claimer` is the ASSIGNEE
+    // when one was passed, so a caller handing off an item THEY hold classifies as a
+    // conflict against themselves. That transfer now lands atomically (the `fromHolder`
+    // leg above), so reaching here self-held means the write was refused for some OTHER
+    // reason (the feature-family admission gate, or the row moving under the re-read) —
+    // never "someone else took it". The generic hint below is written entirely for the
+    // someone-ELSE-holds-it case and every branch of it misfires here: it tells the
+    // caller to coord:send themselves, or to wait for their own death. Worst of all,
+    // the obvious next move it leaves is work_items:release — which clears the assignee
+    // and makes the item fleet-claimable, the exact race a deliberate handoff avoids.
+    const selfHeld = failure.holder === claimerDefault;
     return {
       ok: false,
       id: it.id,
@@ -642,7 +657,9 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
       holder: failure.holder,
       workItem: current,
       ...(holderContext ? { holderContext } : {}),
-      hint: `Already claimed by ${failure.holder} — the item exists (get/observe/comment/complete resolve it). Coordinate with the holder via coord:send, or pick another item; if that agent is dead, the stale-claim reclaim lane frees it. Do not blind-retry with a different harness.`,
+      hint: selfHeld
+        ? `You already hold ${it.id} — nobody else took it, so this is NOT a peer conflict. Handing it to ${claimer} is normally atomic; this write was refused by an admission/trust gate on the item, or the row changed under the re-read. ⚠ Do NOT work_items:release to hand it over: that clears the assignee and makes the item claimable by the WHOLE fleet, so a self-selecting peer can take it before ${claimer} does. Re-check with work_items:get, then have ${claimer} claim it by id once the gate is satisfied.`
+        : `Already claimed by ${failure.holder} — the item exists (get/observe/comment/complete resolve it). Coordinate with the holder via coord:send, or pick another item; if that agent is dead, the stale-claim reclaim lane frees it. Do not blind-retry with a different harness.`,
     };
   }
   return {
