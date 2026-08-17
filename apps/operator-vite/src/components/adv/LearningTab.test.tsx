@@ -189,16 +189,24 @@ vi.mock("@/app/adv/create/ObservationsPanel", () => ({
 // The shared column-filter layer (Work-Queue parity, owner ask 2026-07-19) is
 // covered by the filters lib's own suite; stub it to a pass-through so these
 // tests exercise the view's OWN quick-search / lane / source logic.
-vi.mock("@/app/harness/filters", () => ({
-  useColumnFilters: <T,>(_cols: unknown, rows: readonly T[]) => ({
-    rows,
-    controller: null,
-    activeChips: [],
-    hasActive: false,
-    clearAll: () => {},
-  }),
-  ColumnFilterBar: () => null,
-}));
+// The filter CONTROLS are stubbed (they need a real DOM controller), but
+// `filterCountLabel` is supplied REAL via importActual: it is a pure function
+// that produces the count copy several assertions below read, so stubbing it
+// would make those assertions test the stub instead of the shipped label.
+vi.mock("@/app/harness/filters", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/app/harness/filters")>();
+  return {
+    ...actual,
+    useColumnFilters: <T,>(_cols: unknown, rows: readonly T[]) => ({
+      rows,
+      controller: null,
+      activeChips: [],
+      hasActive: false,
+      clearAll: () => {},
+    }),
+    ColumnFilterBar: () => null,
+  };
+});
 
 vi.mock("@/app/harness/Select", () => ({
   Select: ({
