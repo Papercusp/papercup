@@ -82,6 +82,9 @@ export function workItemCountLabel(
   return { title: `${total}`, summary: `${total} item${total === 1 ? '' : 's'}` };
 }
 
+/** Stable empty-rows sentinel — see the `useColumnFilters` call below. */
+const NO_ROWS: WorkItemRow[] = [];
+
 export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
   const slug = (params.harnessSlug as string) || '';
   // The per-column filters (kind/state/severity/priority/…) live in ONE nuqs param
@@ -167,7 +170,14 @@ export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
   // The hook re-derives enum options from the live rows and AND-s every active
   // filter; `cf.rows` is the input ref when nothing is active (cheap fast-path).
   // The `ns` is shared with DepGraphPanel, so filtering EITHER pane filters both.
-  const cf = useColumnFilters(columns, items ?? [], { ns: WORK_ITEM_FILTER_NS });
+  //
+  // ⚠ `NO_ROWS`, not `items ?? []`: an inline `[]` is a FRESH array literal on every
+  // render, and useColumnFilters keys `filteredRows`/`optionsByKey` — and therefore
+  // `controller` — on its `rows` arg. A fresh literal breaks every one of those memos,
+  // which is precisely the "callers must hold up their end" contract ColumnFilterBar's
+  // memo() note spells out (P-BUG-WI-37386). The sibling DepGraphPanel shipped the same
+  // class of instability into an effect dep and ran a real render loop for it (WI-39552).
+  const cf = useColumnFilters(columns, items ?? NO_ROWS, { ns: WORK_ITEM_FILTER_NS });
 
   // Global quick-search (`wq`) is a separate affordance — apply it as a substring
   // match ON TOP of the column-filtered rows (id/title/state/assignee).

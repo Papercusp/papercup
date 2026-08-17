@@ -119,28 +119,10 @@ test.describe('/adv Work items panel — render loop', () => {
     const debug = Boolean(process.env.WI39552_DEBUG);
     const loops: string[] = [];
 
-    const dumps: Promise<string>[] = [];
     page.on('console', (msg) => {
       if (msg.type() !== 'error' || !LOOP_RE.test(msg.text())) return;
       const loc = msg.location();
       loops.push(`${loc.url}:${loc.lineNumber}:${loc.columnNumber}`);
-      if (debug && dumps.length < 2) {
-        dumps.push(
-          Promise.all(
-            msg
-              .args()
-              .map((a) =>
-                a
-                  .evaluate((v: unknown) =>
-                    v && typeof v === 'object' && 'stack' in (v as object)
-                      ? String((v as { stack?: unknown }).stack)
-                      : String(v),
-                  )
-                  .catch((e: unknown) => `<arg eval failed: ${String(e)}>`),
-              ),
-          ).then((parts) => parts.join('\n@@ARG@@\n')),
-        );
-      }
     });
     page.on('pageerror', (err) => {
       if (!LOOP_RE.test(err.message)) return;
@@ -196,7 +178,6 @@ test.describe('/adv Work items panel — render loop', () => {
     await page.waitForTimeout(5_000);
 
     if (debug && loops.length) {
-      for (const d of await Promise.all(dumps)) console.log(`[loop args]\n${d}\n=====`);
       const captured = await page.evaluate(
         () => (window as unknown as { __mud?: string[] }).__mud ?? [],
       );
