@@ -199,9 +199,17 @@ export default function DetailPanel({ params, api }: PanelComponentProps) {
   // list key), so the Description prose shows the full summary. Enabled only while
   // a feature is actually selected. Mirrors the workItems.byHarness/.detail split.
   const featureDetailWorkspaceId = useWorkspaceId();
+  // The id arg is kind-scoped (WI-39558): a non-feature selection must not
+  // ripple its id into this then-disabled query's args — each ripple forks a
+  // phantom react-query cache key and churns the observer for nothing. Same
+  // for the workItems.detail query below.
   const featureDetailQuery = useSyncQuery<{ featureId: string; summary?: string | null }>({
     queryName: 'featuresConsolidated.detail',
-    args: { harnessSlug: slug, featureId: selectedId, workspaceId: featureDetailWorkspaceId },
+    args: {
+      harnessSlug: slug,
+      featureId: kind === 'feature' ? selectedId : '',
+      workspaceId: featureDetailWorkspaceId,
+    },
     enabled: Boolean(slug) && kind === 'feature' && Boolean(selectedId),
   });
   const featureDetailSummary =
@@ -245,7 +253,7 @@ export default function DetailPanel({ params, api }: PanelComponentProps) {
   // WI is actually selected.
   const workItemDetailQuery = useSyncQuery<WorkItemRow>({
     queryName: 'workItems.detail',
-    args: { harnessSlug: slug, id: selectedId },
+    args: { harnessSlug: slug, id: kind === 'workItem' ? selectedId : '' },
     enabled: Boolean(slug) && kind === 'workItem' && Boolean(selectedId),
   });
   const workItemDetailRow = workItemDetailQuery.loading ? null : (workItemDetailQuery.data?.[0] ?? null);
