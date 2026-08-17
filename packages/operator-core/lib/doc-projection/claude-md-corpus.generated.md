@@ -2211,8 +2211,12 @@ hard refusal, not a silent empty-string expansion (the exact failure that once t
 probe's subject destructive).
 
 ```bash
-scripts/mutation-probe.sh --file scripts/verify-tauri-headless.sh \
-  --mutate 's/^\s*port_lost_to_squatter .*$//' \
+# --fake-destructive is REQUIRED here: the subject contains rm/unlink, so the
+# destructive-primitive gate refuses this probe outright without it.
+scripts/mutation-probe.sh \
+  --file scripts/verify-tauri-headless.sh \
+  --fake-destructive \
+  --mutate 's/^\s*if port_lost_to_squatter; then PORT_LOST=1; break; fi$//' \
   --test 'PROBE_SCRIPT={} npm run test:file -- apps/operator/lib/verify-tauri-headless-bind-retry.test.ts'
 ```
 
