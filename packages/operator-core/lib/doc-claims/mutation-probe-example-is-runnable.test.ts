@@ -56,6 +56,14 @@ const REPO_ROOT = resolve(__dirname, '../../../..');
  */
 const PROBE = process.env.PROBE_SCRIPT ?? resolve(REPO_ROOT, 'scripts/mutation-probe.sh');
 
+/**
+ * The PROJECTED copy's subject, overridable for the same reason as PROBE above — one env
+ * var is what makes the tier-2 copy-out available for this half of the guard too.
+ */
+const CORPUS =
+  process.env.PROBE_CORPUS ??
+  resolve(REPO_ROOT, 'packages/operator-core/lib/doc-projection/claude-md-corpus.generated.md');
+
 /** A parsed `scripts/mutation-probe.sh` invocation. */
 interface Example {
   /** `--file` — the subject whose mutation is being probed. */
@@ -85,14 +93,56 @@ export function parseExample(src: string): Example | null {
     .join('\n')
     .replace(/\\\n/g, ' ');
 
-  // Take the INVOCATION only, discarding the explanatory prose above it. This is not
-  // tidiness: the prose names the very flags being asserted on, so parsing the whole
-  // block let a `--fake-destructive` MENTIONED in a comment satisfy a check about the
-  // flag being PASSED. Measured — the copy-out probe that deleted the real flag reported
-  // MUTANT SURVIVED until this narrowing landed.
-  const start = uncommented.indexOf('scripts/mutation-probe.sh');
+  return parseInvocation(uncommented);
+}
+
+/**
+ * Pull the same EXAMPLE out of the PROJECTED copy (CLAUDE.md's composed corpus), where it
+ * lives in a ```bash fence instead of a `#` comment header.
+ *
+ * Only the EXTRACTION differs between the two copies; the field parsing below is shared,
+ * so the projected copy can never be judged by a laxer reader than the script's.
+ */
+export function parseFencedExample(src: string): Example | null {
+  // A line-walk that TOGGLES on every fence line, not a global regex pairing ``` with
+  // ```. Measured: the regex form silently returned null on the real 183KB corpus,
+  // because one earlier unbalanced/tagged fence offsets every subsequent pair and the
+  // block you want ends up read as the region BETWEEN two matches. A tokenizer cannot
+  // drift that way, and "found nothing" here is asserted against rather than trusted.
+  let open = false;
+  let buf: string[] = [];
+  for (const line of src.split('\n')) {
+    if (/^\s*```/.test(line)) {
+      if (open) {
+        const body = buf.join('\n');
+        if (body.includes('scripts/mutation-probe.sh')) {
+          const ex = parseInvocation(body.replace(/\\\n/g, ' '));
+          if (ex) return ex;
+        }
+      }
+      open = !open;
+      buf = [];
+      continue;
+    }
+    if (open) buf.push(line);
+  }
+  return null;
+}
+
+/**
+ * Parse one already-unwrapped invocation (continuations joined) into its fields.
+ *
+ * Takes the INVOCATION only, discarding the explanatory prose above it. This is not
+ * tidiness: the prose names the very flags being asserted on, so parsing the whole
+ * block let a `--fake-destructive` MENTIONED in a comment satisfy a check about the
+ * flag being PASSED. Measured — the copy-out probe that deleted the real flag reported
+ * MUTANT SURVIVED until this narrowing landed. The projected copy carries the same
+ * hazard: its fence opens with `# --fake-destructive is REQUIRED here`.
+ */
+export function parseInvocation(text: string): Example | null {
+  const start = text.indexOf('scripts/mutation-probe.sh');
   if (start < 0) return null;
-  const cmd = uncommented.slice(start);
+  const cmd = text.slice(start);
 
   const file = cmd.match(/--file\s+(\S+)/)?.[1];
   const mutate = cmd.match(/--mutate\s+'([^']*)'/)?.[1];
@@ -213,6 +263,78 @@ describe('WI-39608 — mutation-probe.sh EXAMPLE is a runnable invocation', () =
   });
 });
 
+const corpusSrc = readFileSync(CORPUS, 'utf8');
+
+describe('WI-39623 — the PROJECTED copy of the EXAMPLE is runnable too', () => {
+  it('is reading the right corpus (guards a vacuous suite)', () => {
+    // A renamed/emptied corpus must fail loudly here rather than make every assertion
+    // below vacuously true by parsing nothing.
+    expect(corpusSrc).toContain('Proving a guard is falsifiable');
+    expect(corpusSrc).toContain('scripts/mutation-probe.sh');
+  });
+
+  it('parses an EXAMPLE invocation out of a ```bash fence', () => {
+    const ex = parseFencedExample(corpusSrc);
+    expect(ex, 'no fenced mutation-probe invocation found in the projected corpus').not.toBeNull();
+    expect(ex!.file).toBeTruthy();
+    expect(ex!.mutatePattern).toBeTruthy();
+    expect(ex!.test).toBeTruthy();
+  });
+
+  it('is EQUIVALENT to the script\'s copy — the two cannot drift apart', () => {
+    // The check that would have caught this defect class: between WI-39608 and WI-39623
+    // the script's example was corrected while the projected copy kept the stale
+    // invocation, and nothing was red.
+    const script = parseExample(src)!;
+    const projected = parseFencedExample(corpusSrc)!;
+    expect(projected.file).toBe(script.file);
+    expect(projected.mutatePattern).toBe(script.mutatePattern);
+    expect(projected.test).toBe(script.test);
+    expect([...projected.flags].sort()).toEqual([...script.flags].sort());
+  });
+
+  it('substitutes {} in --test, as copy-out mode requires', () => {
+    expect(parseFencedExample(corpusSrc)!.test).toContain('{}');
+  });
+
+  it('names a --test target that actually READS PROBE_SCRIPT (defect 1)', () => {
+    const ex = parseFencedExample(corpusSrc)!;
+    expect(ex.test).toMatch(/PROBE_SCRIPT=\{\}/);
+    const named = ex.test.match(/(\S+\.test\.tsx?)\b/)?.[1];
+    expect(named, 'the --test command must name a .test.ts file').toBeTruthy();
+    const target = readFileSync(resolve(REPO_ROOT, named!), 'utf8');
+    expect(target, `${named} must read process.env.PROBE_SCRIPT`).toMatch(
+      /process\.env\.PROBE_SCRIPT/,
+    );
+  });
+
+  it('carries a --mutate pattern that still MATCHES the subject (defect 2)', () => {
+    const ex = parseFencedExample(corpusSrc)!;
+    const subject = readFileSync(resolve(REPO_ROOT, ex.file), 'utf8');
+    const re = new RegExp(ex.mutatePattern, 'm');
+    expect(
+      re.test(subject),
+      `--mutate ${re} matches nothing in ${ex.file} — a no-op mutation makes any guard look weak`,
+    ).toBe(true);
+  });
+
+  it('passes --fake-destructive when the subject trips the destructive gate (defect 3)', () => {
+    const ex = parseFencedExample(corpusSrc)!;
+    const ere = src.match(/^DESTRUCTIVE_ERE='([^']+)'/m)?.[1];
+    expect(ere, 'DESTRUCTIVE_ERE must be readable from the script').toBeTruthy();
+    const subject = readFileSync(resolve(REPO_ROOT, ex.file), 'utf8');
+    const trips = ereToRegExp(ere!).test(subject) || ereToRegExp(ere!).test(ex.test);
+    if (trips) {
+      expect(
+        ex.flags.some((f) => f === '--fake-destructive' || f === '--i-know-this-deletes'),
+        `${ex.file} matches the destructive-primitive gate, so the projected example must pass --fake-destructive or it is refused (exit 2)`,
+      ).toBe(true);
+    } else {
+      expect(subject.length).toBeGreaterThan(0);
+    }
+  });
+});
+
 /**
  * PERMANENT CONTROLS — deliberately-wrong examples kept in the test file so the
  * assertions above can never pass on dead code, and so falsifiability never requires
@@ -270,5 +392,35 @@ describe('WI-39608 — the checks above are falsifiable (permanent controls)', (
 
   it('ereToRegExp refuses a POSIX class it cannot translate', () => {
     expect(() => ereToRegExp('\\b[[:digit:]]+\\b')).toThrow(/untranslated POSIX class/);
+  });
+
+  it('the FENCED parser ignores a flag mentioned in the fence\'s own comment lines', () => {
+    // The projected copy opens its fence with `# --fake-destructive is REQUIRED here`, so
+    // it carries the exact false-pass that the comment-header parser already had to be
+    // narrowed against. Deleting the real flag must still be visible.
+    const ex = parseFencedExample(
+      "```bash\n# --fake-destructive is REQUIRED here: the subject contains rm/unlink.\nscripts/mutation-probe.sh \\\n  --file scripts/verify-tauri-headless.sh \\\n  --mutate 's/a/b/' \\\n  --test 'PROBE_SCRIPT={} true'\n```",
+    );
+    expect(ex).not.toBeNull();
+    expect(ex!.flags).not.toContain('--fake-destructive');
+  });
+
+  it('the FENCED parser returns null when no fence carries an invocation', () => {
+    // "Parsed nothing" must never read as "nothing wrong" — the corpus assertions assert
+    // non-null precisely because of this.
+    expect(parseFencedExample('```bash\necho hello\n```\n\nprose about mutation-probe.sh')).toBeNull();
+    expect(parseFencedExample('no fences at all')).toBeNull();
+  });
+
+  it('the equivalence check can actually fail (a drifted projected copy)', () => {
+    // The stale pre-WI-39623 projected copy, verbatim. If this ever parsed as equivalent
+    // to the script's example, the equivalence assertion would be decorative.
+    const stale = parseFencedExample(
+      "```bash\nscripts/mutation-probe.sh --file scripts/verify-tauri-headless.sh \\\n  --mutate 's/^\\s*port_lost_to_squatter .*$//' \\\n  --test 'PROBE_SCRIPT={} npm run test:file -- apps/operator/lib/verify-tauri-headless-bind-retry.test.ts'\n```",
+    );
+    expect(stale).not.toBeNull();
+    const current = parseExample(src)!;
+    expect(stale!.mutatePattern).not.toBe(current.mutatePattern);
+    expect(stale!.flags).not.toContain('--fake-destructive');
   });
 });

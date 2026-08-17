@@ -995,10 +995,17 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     // needs the guard (the named test) is selected by a DISJOINT change, and that
     // disjointness is the entire hole being closed. A ratchet would let that edit skip
     // the guard on the strength of a suite the edit never runs.
+    //
+    // WI-39623 added the 4th subject. The guard now judges the PROJECTED copy of the
+    // example too (in the composed corpus), and a projection lands as an ordinary edit to
+    // that generated file — so without this entry the one change that rots the projected
+    // copy would again be the change the guard does not run for. That is exactly the hole
+    // the three entries above exist to close, one file further along the pipeline.
     appliesTo: (f) =>
       f === "scripts/mutation-probe.sh" ||
       f === "scripts/verify-tauri-headless.sh" ||
-      f === "apps/operator/lib/verify-tauri-headless-bind-retry.test.ts",
+      f === "apps/operator/lib/verify-tauri-headless-bind-retry.test.ts" ||
+      f === "packages/operator-core/lib/doc-projection/claude-md-corpus.generated.md",
   },
   {
     // WI-38089. See declarationMjsInputs() above for the measurement and the derive-vs-mirror
