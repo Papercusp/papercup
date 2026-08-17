@@ -21,6 +21,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { parse as parseYaml } from 'yaml';
+import { getHarnessAdminUrl } from '../../embedded-pg-discovery';
 import { loadHarnessRegistry } from '../../harness-registry';
 import { operatorResolveExtends } from '../../blueprint/installed-blueprints';
 import { resolveAndValidate } from '../../agent-tools/blueprint/_resolve';
@@ -128,6 +129,10 @@ export interface HiveReleaseEnv {
   /** The env overlay to merge over process.env for the green-checkpoint/deploy subprocess.
    *  EMPTY for the operator-home slug (preserve exact current behavior). */
   env: Record<string, string>;
+  /** Env keys to DELETE from the inherited process.env before the overlay is applied.
+   *  `env` alone cannot express a deletion, and the thing that has to go is an INHERITED
+   *  value, not a missing one (EI-20709645463022690). EMPTY for the operator-home slug. */
+  clearEnv: string[];
   /** Whether a deploy target is configured (releaseGate.deploy) → release-trigger seeded. */
   hasDeploy: boolean;
   /** True for the operator-home (papercusp) slug — overlay is intentionally empty. */
