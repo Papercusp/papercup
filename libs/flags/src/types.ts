@@ -1750,6 +1750,25 @@ export const FLAGS = {
   // Rubric-template plans + scheduled template instances are exempt. Default ON (derived
   // FLAG_DEFAULTS — not in DARK_FLAGS); OFF restores ungated plan shipping byte-identically.
   ACCEPTANCE_RUBRIC_COMPLETION_GATE: "papercusp-acceptance-rubric-completion-gate",
+  // consult-min-max-and-rubric-vetting-2026-08-17 P-004: the VETTING half of the rubric
+  // family. Before a NON-implementer grades the WORK, the acceptance-rubric AUTHOR vets
+  // the RUBRIC against the meta-rubric ('meta-acceptance-rubric'): a get_feedback
+  // consult (min 1 / max 3 responders) critiques it, the author improves it, then
+  // attests via a meta-scorecard — scorecards:emit { rubricRef:'meta-acceptance-rubric',
+  // subject:{ kind:'rubric', ref:<the acceptance rubric> }, vettingConsult:<the
+  // consult's conversation_id> }. ON ⇒ evaluatePlanAcceptanceGate additionally refuses
+  // (acceptance_rubric_unvetted) unless the CURRENT rubric revision
+  // (harness_plans.version, pinned at emit) carries a complete non-synthesized
+  // meta-scorecard with a linked consult. Pass is the vetting agent's judgment per
+  // criterion — no mechanical score floor (plan D-001 §3). Exempt: criteria:[]
+  // investigation rubrics (D-009), the meta-rubric itself, rubric-template plans +
+  // template instances (exempt upstream), and a workspace with NO registered
+  // meta-rubric — the check disables rather than deadlocking every ship ('proposed'
+  // counts as registered: ratification governs content authority, not gate mechanics;
+  // plan D-009/D-010). Like the sibling rubric gate, NOT waivable by `force` (D-005).
+  // Default ON (derived FLAG_DEFAULTS — not in DARK_FLAGS); OFF restores the
+  // P-004-less gate byte-identically.
+  ACCEPTANCE_RUBRIC_VETTING_GATE: "papercusp-acceptance-rubric-vetting-gate",
   // plan-completion-audit-and-acceptance-verdict-2026-08-13 P-009 — the CODE-TRUTH half
   // of plan completion. The rubric gate above checks the ceremony (a rubric exists, every
   // criterion carries some rating, the grader is not the author); it reads neither what

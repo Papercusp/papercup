@@ -259,6 +259,11 @@ export function resolveFleetAgent(opts: {
  *  12 unwanted desktop windows). claimFleetLaunchSlot is one atomic SQL check-and-set shared by
  *  every worker, so exactly ONE call per fleet can win the window. */
 const RELAUNCH_SUPPRESS_MS = 300_000;
+/** EI-20437060078324174: window for the ONE post-wave re-probe of members whose
+ *  per-wave verification window expired unconfirmed. The measured false-negative
+ *  registered 5.5s past a 25s window; 30s more, measured from launch start by the
+ *  probe's `since`, covers that shape without materially slowing a real dud. */
+const LATE_VERIFY_RECHECK_TIMEOUT_MS = 30_000;
 
 /** EI-20361787885323735: how old a slot-holding launch must be before ZERO live members is
  *  read as "the wave it protects is DEAD" rather than "still booting". Presence registration
@@ -2817,6 +2822,10 @@ export default defineTool({
     }
 
     const waveIndices: number[][] = [];
+    // EI-20437060078324174: members whose verification window expired WITHOUT an
+    // observation either way. Not failures — no 502, no failed[] entry. They are
+    // re-probed once after the last wave and reported honestly as unverified.
+    const unconfirmed: Array<{ ownerId: string; note: string }> = [];
     if (openCount > 0) waveIndices.push([0]);
     for (let start = 1; start < openCount; start += 3) {
       waveIndices.push(Array.from({ length: Math.min(3, openCount - start) }, (_v, offset) => start + offset));
@@ -2883,6 +2892,17 @@ export default defineTool({
           if (waveVerified) {
             launchTransaction.verifiedMemberIds.push(...openedThisWave);
             wave.verifiedOwnerIds = openedThisWave.slice();
+          } else if (verdict.agentStarted === null) {
+            // EI-20437060078324174: an expired/unfinished window is NOT failure —
+            // the measured member registered 5.5s after the window and went
+            // straight on to claim work while this path stamped it a 502.
+            for (const memberOwnerId of openedThisWave) {
+              unconfirmed.push({ ownerId: memberOwnerId, note: verdict.note });
+            }
+            launchTransaction.unconfirmedMemberIds = [
+              ...(launchTransaction.unconfirmedMemberIds ?? []),
+              ...openedThisWave,
+            ];
           } else {
             const phase = verdict.note.includes('ATTESTATION MISMATCH') ? 'attestation' : 'verification';
             for (const memberOwnerId of openedThisWave) {
@@ -2891,11 +2911,21 @@ export default defineTool({
             }
           }
         } catch (e: any) {
+          // The instrument broke — say THAT. A probe fault is not an observation
+          // about the member, so it must not masquerade as a 502 launch failure
+          // (the rule capability:launch-agent already applies to this verifier).
           for (const memberOwnerId of openedThisWave) {
-            const reason = `launch verification instrument failed: ${e?.message ?? e}`;
-            launchTransaction.failed.push({ ownerId: memberOwnerId, phase: 'verification', reason });
-            failed.push({ ownerId: memberOwnerId, error: reason, code: 502 });
+            unconfirmed.push({
+              ownerId: memberOwnerId,
+              note:
+                `⏳ launch verification could not run (${e?.message ?? e}) — the member may be ` +
+                `fine; this says nothing either way. Verify with coord:presence { owner: '${memberOwnerId}' }.`,
+            });
           }
+          launchTransaction.unconfirmedMemberIds = [
+            ...(launchTransaction.unconfirmedMemberIds ?? []),
+            ...openedThisWave,
+          ];
         }
       }
 
@@ -2905,10 +2935,66 @@ export default defineTool({
         await persistLaunchTransaction();
         continue;
       }
+      // EI-20437060078324174 harm (b): a wave that merely went UNCONFIRMED (every
+      // member opened, none positively failed) must not abort the rest of the
+      // launch — one slow boot was silently halving whole waves. Only a POSITIVE
+      // failure (spawn error, observed silence, attestation mismatch) stops the
+      // transaction.
+      const wavePositivelyFailed =
+        spawnFailed || openedThisWave.some((id) => failed.some((f) => f.ownerId === id));
       wave.state = 'partial';
+      if (!wavePositivelyFailed && openedThisWave.length === ownerIds.length) {
+        await persistLaunchTransaction();
+        continue;
+      }
       launchTransaction.state = 'partial';
       await persistLaunchTransaction();
       break;
+    }
+    // EI-20437060078324174 late recheck: one bounded re-probe of every member whose
+    // window expired unconfirmed. By now the later waves' windows have also been
+    // elapsing, so the measured shape (registration 5.5s past the first window)
+    // verifies here instead of surfacing as a false "did not start". Session-level
+    // upgrade: a member whose session took a real turn is verified; one that
+    // registered but has no turn yet stays honestly unverified; the observed
+    // all-silent shape is a real failure, now with evidence.
+    if (unconfirmed.length > 0) {
+      const pendingIds = unconfirmed.map((u) => u.ownerId);
+      try {
+        const recheck = await verifyFreshLaunchStarted(
+          {
+            workspaceId,
+            launcherOwnerId: ownerId,
+            since: launchRequestedAt,
+            expected: pendingIds.length,
+            expectedOwnerIds: pendingIds,
+            expectedAttestations: expectedAttestations.filter((item) => pendingIds.includes(item.ownerId)),
+          },
+          { timeoutMs: LATE_VERIFY_RECHECK_TIMEOUT_MS },
+        );
+        if (recheck.agentStarted === false) {
+          for (const u of unconfirmed) {
+            launchTransaction.failed.push({ ownerId: u.ownerId, phase: 'verification', reason: recheck.note });
+            failed.push({ ownerId: u.ownerId, error: recheck.note, code: 502 });
+          }
+          unconfirmed.length = 0;
+        } else {
+          const verifiedNow = new Set(
+            recheck.sessions
+              .filter((s) => s.ownerId != null && s.successfulCalls > 0)
+              .map((s) => s.ownerId as string),
+          );
+          if (verifiedNow.size > 0) {
+            launchTransaction.verifiedMemberIds.push(...pendingIds.filter((id) => verifiedNow.has(id)));
+            const still = unconfirmed.filter((u) => !verifiedNow.has(u.ownerId));
+            unconfirmed.length = 0;
+            unconfirmed.push(...still);
+          }
+        }
+      } catch {
+        /* instrument fault — the members stay honestly unconfirmed */
+      }
+      launchTransaction.unconfirmedMemberIds = unconfirmed.map((u) => u.ownerId);
     }
     if (launchTransaction.verifiedMemberIds.length === requestedMemberIds.length) {
       launchTransaction.state = 'verified';
@@ -3015,6 +3101,20 @@ export default defineTool({
     if (failed.length) {
       lines.push(`${failed.length} failed:`);
       for (const f of failed) lines.push(`  • ${f.error}`);
+    }
+    if (unconfirmed.length) {
+      // EI-20437060078324174: unverified is a THIRD state — neither the success
+      // list nor the failure list may absorb it, or the caller double-launches.
+      lines.push(
+        `${unconfirmed.length} member${unconfirmed.length > 1 ? 's' : ''} UNVERIFIED (opened; ` +
+          `registration not confirmed inside the window — NOT a failure, do NOT relaunch on this alone):`,
+      );
+      for (const u of unconfirmed) {
+        lines.push(`  • ${u.ownerId} — verify: coord:presence { owner: '${u.ownerId}' }`);
+      }
+      lines.push(`  ↳ ${unconfirmed[0].note}`);
+    }
+    if (failed.length) {
       if (failed.some((f) => f.code === 501 || f.error.includes('desktop-bridge'))) {
         lines.push(
           '(On Windows member windows are relayed to the desktop shell via the sync-bus bridge (WI-3289) — the Papercusp desktop window must be OPEN for the relay to land. Linux + macOS spawn server-side directly.)',

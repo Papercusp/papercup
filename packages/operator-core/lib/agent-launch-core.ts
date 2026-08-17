@@ -1118,15 +1118,25 @@ export async function verifyFreshLaunchStarted(
   const secs = Math.round(waitedMs / 1000);
 
   if (sessions.length === 0) {
+    // EI-20437060078324174: zero sessions at window expiry is NOT observed death —
+    // it is the ABSENCE of observation, and the header's own measurement says
+    // absence is ambiguous both ways. The measured false-negative registered 5.5s
+    // after a 25s window and went straight on to claim work while this branch was
+    // asserting "psu died" with three invented causes, sending the reader to debug
+    // account/model config that was fine. Per this type's contract, `false` is
+    // reserved for OBSERVED silence; an expired window is `null`.
     return {
-      agentStarted: false,
+      agentStarted: null,
       waitedMs,
       sessions,
       note:
-        `✗ AGENT DID NOT START — no session registered within ${secs}s. The terminal spawned, but ` +
-        `nothing ever reported in: psu died before reaching the operator (a backend it could not ` +
-        `execute, a boot refusal, a bad account/model spec). Check the terminal window — it is left ` +
-        `open on the failure by design.`,
+        `⏳ launch UNCONFIRMED — no session registered within ${secs}s. That is the verification ` +
+        `window expiring, not an observed death: a member seeding a large launch context routinely ` +
+        `registers after this window (measured: 30.5s against a 25s window, then went on to claim ` +
+        `work — EI-20437060078324174), and a psu that died before reaching the operator looks ` +
+        `identical from here. Do NOT relaunch on this note alone. Verify in ~1 min with ` +
+        `coord:presence { owner } / work_items:observe; a real dud's terminal is left open on the ` +
+        `failure by design.`,
     };
   }
 

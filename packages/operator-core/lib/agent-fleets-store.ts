@@ -36,6 +36,11 @@ export interface FleetLaunchTransaction {
   requestedMemberIds: string[];
   openedMemberIds: string[];
   verifiedMemberIds: string[];
+  /** EI-20437060078324174: opened members whose verification window expired with
+   *  NO observation either way — not failures, not verified. The resume path
+   *  already excludes every opened id from retry, so these can never be
+   *  double-spawned. Optional: transactions persisted before this field exist. */
+  unconfirmedMemberIds?: string[];
   failed: Array<{
     ownerId: string;
     phase: FleetLaunchFailurePhase;
