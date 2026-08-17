@@ -579,16 +579,23 @@ auto-deploys it to `:3070`. Pipeline view: `/admin/git`. Long form + symptoms:
 > subject describes the sweeping agent's INTENT, not the diff. Both are false-positive
 > generators, not dead ends.
 >
-> **Which commit carries your change → `TZ=UTC git log -1 --format='%cI %H %s' -- <path>`.
+> **Which commit carries your change → `TZ=UTC git log -1 --date=iso-strict-local --format='%cd %H %s' -- <path>`.
 > NOT `git rev-parse HEAD`:** the tip is routinely a DIFFERENT commit from the same
-> sweep, so quoting it attributes your work to a stranger's diff. Git otherwise renders
-> `%ad`/`%cd` in the machine's local timezone (`-0400` here), while Papercusp timestamps
-> are UTC; use the explicit offset in `%cI` or keep `TZ=UTC` for `--since`/`--until` too.
-> Whether a sha someone cites really carries a change → `git show --stat <sha>`, or grep
-> the file. For live/deployed status, use `dev:pipeline_position { path }`, whose
-> timestamps are UTC. For authorship, use the commissioning work-item/plan-item or a
-> timestamp-correlated `sessions:search`; if neither resolves, say "not attributable" —
-> never name a person.THE BLAME CASE: a release-fixer sent a false blocker accusation to the OWNER
+> sweep, so quoting it attributes your work to a stranger's diff. ⚠ **`TZ=UTC` is INERT
+> on `%cI`/`%aI`/`%cd`/`%ad`**: git renders those in the COMMIT'S OWN recorded offset —
+> not yours, and not UTC (they all read `-0400` here only because the commits were made
+> on this box). Only a `--date=*-local` format honours `TZ`, which is what makes the
+> stamp above `+00:00` and directly comparable to Papercusp's UTC timestamps; keep
+> `TZ=UTC` for `--since`/`--until` too. Misreading a `-04:00` stamp as UTC is a silent
+> 4h skew, and it lands exactly where it hurts — gate triage, deciding whether a fix
+> predates a candidate. ⛔ `git log --full-history` is NOT a repair for any of this
+> (measured identical to the default here). Whether a sha really carries your change is
+> a CONTENT question, never a date one → `git rev-parse <sha>:<path>` vs
+> `git rev-parse staging:<path>` (equal blobs ⇒ it carries it), or `git show --stat <sha>`.
+> For live/deployed status, use `dev:pipeline_position { path }`, whose timestamps are
+> UTC. For authorship, use the commissioning work-item/plan-item or a timestamp-correlated
+> `sessions:search`; if neither resolves, say "not attributable" — never name a person.
+THE BLAME CASE: a release-fixer sent a false blocker accusation to the OWNER
 ("confirmed by git blame: YOUR migration") for an agent's own incomplete work (WI-5111).
 
 THE SUBJECT/SHA CASES, both 2026-08-10 (EI-20091120781966310):
