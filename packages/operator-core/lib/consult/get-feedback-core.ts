@@ -13,11 +13,12 @@
  *    All-qualified-dead is an honest no_qualified_responder with
  *    reason 'no_live_responder' + the evidence refs (retrieval fallback —
  *    the requester reads the cited turns via sessions:read).
- *  - the WAKE BUDGET (D-005): budget aggregates over every consult sharing
- *    origin_task_ref (recursion included — the column comment is the
- *    authority). Debited ON THE ATTEMPT (conservative for a spam guard);
- *    an exhausted budget still opens + persists + delivers via subscription,
- *    it just does not wake.
+ *  - SELECTION (consult-min-max-and-rubric-vetting-2026-08-17 D-001/D-005):
+ *    min/max responder selection over the router's ranked pool. The per-task
+ *    wake budget is REMOVED (D-005: maxResponders is the only per-consult
+ *    bound; residual spam guards = per-consult max, the depth cap, and
+ *    archive-first dedupe). consult_state.wakes_used keeps being WRITTEN as a
+ *    plain stat — it gates nothing.
  *  - PERSISTENCE (D-008 §1): every call — routed or not — opens the
  *    kind='consult' conversation and writes the consult_state row with the
  *    routing snapshot VERBATIM (the D-003 honesty-metric feed needs persisted
@@ -31,11 +32,9 @@ import type { Sql } from 'postgres';
 import type { RouteResult, RoutingCandidate, SelectionVia } from './relevance-router';
 import { DEFAULT_SIM_FLOOR, selectResponders, selectionSnapshot } from './relevance-router';
 
-/** Mirrors consult_state.wake_budget DEFAULT (migration 834) — D-005. */
-export const WAKE_BUDGET_PER_TASK = 4;
 /** P-006 archive-first retrieval floor: a closed_answered consult whose
  * question similarity clears this is served from the archive (create +
- * instant-close, no wake, no budget). Deliberately precision-biased — a
+ * instant-close, no wake). Deliberately precision-biased — a
  * silently-wrong cached answer is worse than a wake — and never below the
  * router's own similarity sub-floor. */
 export const DEFAULT_ARCHIVE_FLOOR = Math.max(DEFAULT_SIM_FLOOR, 0.8);
@@ -165,9 +164,6 @@ export interface GetFeedbackResult {
   wake: {
     attempted: boolean;
     woke: number;
-    budget_exhausted: boolean;
-    wakes_used_for_task: number;
-    wake_budget: number;
   };
   /** Latched park key for a hard-blocked requester (P-004 reply verbs emit). */
   park_key: string | null;
@@ -464,19 +460,10 @@ export async function getFeedbackCore(
         ? 'no_live_responder'
         : 'below_floor';
 
-  // 4) Wake budget (D-005): aggregate wakes_used across consults sharing the
-  //    origin ref. Only meaningful when there IS a ref to aggregate on.
-  let usedForTask = 0;
-  if (chosen && originRef) {
-    const rows = (await sql`
-      SELECT COALESCE(SUM(wakes_used), 0)::int AS used
-        FROM harness_shared.consult_state
-       WHERE workspace_id = ${req.workspaceId} AND origin_task_ref = ${originRef}
-    `) as unknown as Array<{ used: number }>;
-    usedForTask = rows[0]?.used ?? 0;
-  }
-  const budgetExhausted = Boolean(chosen && originRef && usedForTask >= WAKE_BUDGET_PER_TASK);
-  const willWake = Boolean(chosen && !budgetExhausted);
+  // 4) Wake gating is selection/liveness ONLY — the per-task wake budget is
+  //    REMOVED (D-005: maxResponders is the only per-consult bound; residual
+  //    spam guards = per-consult max, the depth cap, archive-first dedupe).
+  const willWake = Boolean(chosen);
 
   // 5) Open the conversation — ALWAYS (D-003 honesty feed + the PK row).
   const opened = await deps.open({
@@ -555,11 +542,9 @@ export async function getFeedbackCore(
       ? ' ⚠ Best-available pick BELOW the relevance floor (minimum-fill, D-001) — weigh the reply as a first-principles review, not grounded expertise.'
       : '';
   const hint = chosen
-    ? budgetExhausted
-      ? `Routed to ${chosen.ownerId} but the wake budget for ${originRef} is exhausted (${usedForTask}/${WAKE_BUDGET_PER_TASK}) — delivered by subscription only; they see it on their next turn. Proceed meanwhile.${viaNote}`
-      : latency === 'hard-blocked'
-        ? `Routed + woke ${chosen.ownerId}. Park on events:await { event: '${parkKey}' } and end your turn — the reply wakes you (latched). Expires ${expiresAt}.${viaNote}`
-        : `Routed + woke ${chosen.ownerId}; the reply lands in conversation ${opened.conversation_id}. PROCEED on your own judgment meanwhile and reconcile when it arrives. A decline returns the remaining candidates — re-call with exclude:['${chosen.ownerId}'].${viaNote}`
+    ? latency === 'hard-blocked'
+      ? `Routed + woke ${chosen.ownerId}. Park on events:await { event: '${parkKey}' } and end your turn — the reply wakes you (latched). Expires ${expiresAt}.${viaNote}`
+      : `Routed + woke ${chosen.ownerId}; the reply lands in conversation ${opened.conversation_id}. PROCEED on your own judgment meanwhile and reconcile when it arrives. A decline returns the remaining candidates — re-call with exclude:['${chosen.ownerId}'].${viaNote}`
     : reason === 'embed_unavailable'
       ? 'The embedder is unavailable on this host — similarity could NOT be measured, so there is no ranking to fill a minimum from (cannot-measure ≠ measured-nothing). Proceed on your own judgment; retry later if the answer matters.'
       : reason === 'no_live_responder'
@@ -590,9 +575,6 @@ export async function getFeedbackCore(
     wake: {
       attempted: willWake,
       woke,
-      budget_exhausted: budgetExhausted,
-      wakes_used_for_task: usedForTask + (willWake ? 1 : 0),
-      wake_budget: WAKE_BUDGET_PER_TASK,
     },
     park_key: parkKey,
     ...(route.snapshot.degraded ? { degraded: route.snapshot.degraded } : {}),

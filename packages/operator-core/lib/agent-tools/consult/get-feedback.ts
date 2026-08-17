@@ -14,9 +14,12 @@
  * embedder/search graph opens PG at import time, and registration must stay
  * cheap (the router module itself documents this constraint).
  *
- * D-007(7) v1 scope: SINGLE-candidate routing; `max_agents` is a reserved arg
- * (>1 refused at the schema — survey mode not yet enabled); a decline is a
- * MANUAL cascade (re-call with exclude:[declinerId]).
+ * Selection (consult-min-max-and-rubric-vetting-2026-08-17 D-001/D-003):
+ * min_agents/max_agents map to the core's minResponders/maxResponders — the
+ * selected set is every above-floor qualified candidate plus best-scoring
+ * minimum-fill to reach min (labeled via:'minimum'), capped at max. Delivery
+ * stays a cascade: the top selectee is woken, the rest are the menu
+ * (remaining_candidates). The per-task wake budget is REMOVED (D-005).
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
@@ -29,16 +32,16 @@ const ok = (payload: Record<string, unknown>) => ({ data: payload });
 export default defineTool({
   name: 'consult:get_feedback',
   description:
-    'Ask "who knows more than me about THIS?" — routes your question over real cross-agent transcript history (embedding + recency/verification/authorship blend), opens a bounded consult thread with the top qualified responder, and wakes them with why-they-were-chosen evidence. ARCHIVE-FIRST: a question a closed consult already answered is served instantly from the archive (no wake, no budget). Honest by design: below the relevance floor the answer is a first-class no_qualified_responder ("no one knows more than you do — proceed on your own judgment"), never a costumed expert.',
+    'Ask "who knows more than me about THIS?" — routes your question over real cross-agent transcript history (embedding + recency/verification/authorship blend), opens a bounded consult thread with the top qualified responder, and wakes them with why-they-were-chosen evidence. ARCHIVE-FIRST: a question a closed consult already answered is served instantly from the archive (no wake). Honest by design: below the relevance floor the answer is a first-class no_qualified_responder ("no one knows more than you do — proceed on your own judgment"), never a costumed expert.',
   guidance: {
     when:
       'You face a question a PEER may have real context on — their transcripts, their code, a failure they already debugged — before burning hours re-deriving it. You do not know WHO: the router discovers the responder from evidence.',
     notWhen:
       'Live state (query it: locks:queue / fleet:assignments / work_items:get). An owner decision (coord:ask-owner). A SPECIFIC known agent (coord:send / coord:message-agent — this tool is who-knows DISCOVERY). Assigning work (a consult is advice, never a handoff — requester owns the outcome).',
     chaining:
-      "get_feedback → 'served_from_archive'? use the cited answer in `archive`, or re-call with archive_floor: 2 if it does not fit → latency_contract:'hard-blocked' ⇒ events:await { event: park_key } + end turn (reply wakes you) → conversations:get { id: conversation_id } for the thread → responder declined? re-call with exclude:[declinerId] (manual cascade; the wake budget binds).",
+      "get_feedback → 'served_from_archive'? use the cited answer in `archive`, or re-call with archive_floor: 2 if it does not fit → latency_contract:'hard-blocked' ⇒ events:await { event: park_key } + end turn (reply wakes you) → conversations:get { id: conversation_id } for the thread → responder declined? re-call with exclude:[declinerId] (manual cascade).",
     returns:
-      '{ verdict: routed | no_qualified_responder | served_from_archive, conversation_id, thread_id, responder, remaining_candidates, origin_task_ref, latency_contract, expires_at, wake, park_key, archive? (source consult + responder + sim + structured answer — served_from_archive only), hint }',
+      '{ verdict: routed | no_qualified_responder | served_from_archive, conversation_id, thread_id, responder, responder_via (floor | minimum — minimum = best-available below the relevance floor, weigh as first-principles), remaining_candidates, origin_task_ref, latency_contract, expires_at, wake, park_key, archive? (source consult + responder + sim + structured answer — served_from_archive only), hint }',
   },
   capability: 'coord:write',
   requirePrincipal: false,
@@ -72,9 +75,16 @@ export default defineTool({
       .number()
       .int()
       .min(1)
-      .max(1, 'survey mode not yet enabled — v1 routes a single candidate (D-007(7)); omit max_agents or pass 1')
+      .max(8)
       .optional()
-      .describe('RESERVED (v1: must be 1/omitted). Survey-mode fan-out lands later; the arg exists so the surface is stable.'),
+      .describe('Cap on the selected cascade menu (default 3). Delivery stays single-wake: the top selectee is woken, the rest are the menu (remaining_candidates).'),
+    min_agents: z
+      .number()
+      .int()
+      .min(0)
+      .max(8)
+      .optional()
+      .describe("Select at least this many responders even below the relevance floor (best-available LIVE fill, labeled via:'minimum'; default 1). Pass 0 to restore pure-floor selection."),
     archive_floor: z
       .number()
       .min(0)
@@ -127,6 +137,8 @@ export default defineTool({
         ...(args.origin_task_ref !== undefined ? { originTaskRef: args.origin_task_ref } : {}),
         ...(args.parent_consult_id !== undefined ? { parentConsultId: args.parent_consult_id } : {}),
         excludeOwners: args.exclude,
+        ...(args.min_agents !== undefined ? { minResponders: args.min_agents } : {}),
+        ...(args.max_agents !== undefined ? { maxResponders: args.max_agents } : {}),
         ...(args.archive_floor !== undefined ? { archiveFloor: args.archive_floor } : {}),
         topics: args.topics,
         harnessSlug: args.harness,
