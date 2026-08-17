@@ -85,6 +85,7 @@ export const BESPOKE_ACTIVE_SEEDS: BespokeActiveSeed[] = [
   { name: 'gitnexus-reindex', seedScript: 'seed-gitnexus-reindex-routine.ts' },
   { name: 'hive-canary', seedScript: 'seed-hive-canary-routine.ts' },
   { name: 'hive-canary-sla', seedScript: 'seed-hive-canary-sla-routine.ts' },
+  { name: 'idle-backend-reaper', seedScript: 'seed-idle-backend-reaper-routine.ts' },
   { name: 'improvement-human-digest', seedScript: 'seed-human-digest-routine.ts' },
   { name: 'plan-item-orphan-reconcile', seedScript: 'seed-plan-item-orphan-reconcile-routine.ts' },
   {
