@@ -147,6 +147,29 @@ describe('assertNoSilentRubricLoss (WI-4287 propose loss-guard)', () => {
     expect(() => assertNoSilentRubricLoss(stored, gutted)).not.toThrow();
   });
 
+  it('P-011: dropping a stored structured check throws (deterministic enforcement must not silently revert to fuzzy)', () => {
+    const stored = rubric([
+      crit({ key: 'a', check: { kind: 'tests', files: ['packages/x/a.test.ts'] } }),
+    ]);
+    expect(() => assertNoSilentRubricLoss(stored, proposal([crit({ key: 'a' })]))).toThrowError(
+      /LOSES its structured tests check/,
+    );
+    // the ack path: a conscious, explained removal passes (same lever as a procedure shrink).
+    expect(() =>
+      assertNoSilentRubricLoss(
+        stored,
+        proposal([crit({ key: 'a' })], { allowMethodShrink: true, shrinkReason: 'check retired with the suite' }),
+      ),
+    ).not.toThrow();
+    // CONTROL: resubmitting the check unchanged (or changed — a visible edit) passes unguarded.
+    expect(() =>
+      assertNoSilentRubricLoss(
+        stored,
+        proposal([crit({ key: 'a', check: { kind: 'tests', files: ['packages/x/b.test.ts'] } })]),
+      ),
+    ).not.toThrow();
+  });
+
   it('MOVING the drill from .method into .replication passes — combined text is what is compared (D-002)', () => {
     const stored = rubric([crit({ key: 'a', method: LONG_DRILL })]);
     const moved = proposal([

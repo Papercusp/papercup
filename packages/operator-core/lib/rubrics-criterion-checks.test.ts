@@ -20,7 +20,7 @@ import {
   type CriterionCheckRunner,
 } from './rubrics-criterion-checks';
 import { rubricCriterionSchema, rubricTemplateDataSchema, rubricCriterionCheckSchema } from './agent-tools/plans/rubric-template';
-import { effectiveCriterionInstrumentKey } from './rubrics';
+import { effectiveCriterionInstrumentKey, planRowToRubric } from './rubrics';
 
 // ── scratch tree ──────────────────────────────────────────────────────────────
 const root = mkdtempSync(join(tmpdir(), 'rubric-checks-test-'));
@@ -60,6 +60,32 @@ describe('rubricCriterionCheckSchema (P-011 schema)', () => {
     expect(rubricTemplateDataSchema.safeParse(data({ kind: 'instrument', instrumentKey: 'a' }, 'a')).success).toBe(true);
     // tests-check beside an instrumentKey is two DIFFERENT bindings — legal.
     expect(rubricTemplateDataSchema.safeParse(data(testsCheck(['a.test.ts']), 'a')).success).toBe(true);
+  });
+
+  it('round-trips through planRowToRubric (the store read maps check 1:1, absent stays absent)', () => {
+    const row = {
+      plan_slug: 'r-check',
+      workspace_id: 'ws',
+      harness_slug: null,
+      title: 'R',
+      status: 'active',
+      created: '2026-08-17',
+      updated: '2026-08-17',
+      updated_at: '2026-08-17T00:00:00.000Z',
+      owner: 'su-1',
+      archived: false,
+      template_data: {
+        characteristic: 'c',
+        criteria: [
+          { key: 'det', title: 't', model: 'm', method: 'm', driftMarkers: 'd', check: testsCheck(['a.test.ts']) },
+          { key: 'fuzzy', title: 't', model: 'm', method: 'm', driftMarkers: 'd' },
+        ],
+        ratingScale: ['healthy', 'broken'],
+      },
+    };
+    const mapped = planRowToRubric(row as never);
+    expect(mapped?.criteria.find((c) => c.key === 'det')?.check).toEqual(testsCheck(['a.test.ts']));
+    expect(mapped?.criteria.find((c) => c.key === 'fuzzy')?.check).toBeUndefined();
   });
 
   it('effectiveCriterionInstrumentKey prefers the structured check over the legacy field and model token', () => {
