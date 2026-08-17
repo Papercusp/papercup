@@ -660,7 +660,16 @@ export function buildCrashCheckpointResult(opts: {
     advanced: false,
     candidate,
     from: null,
-    green: false,
+    // EI-20702428259478130: `null`, NOT `false`. `green: false` is the type's assertion that a
+    // verdict WAS rendered and the code is RED — the exact opposite of what this summary says
+    // one line down. A crash means no verdict exists, which is what `green: null` names, and
+    // `green === null` is the ONLY dispatch for `green-checkpoint:inconclusive` (see
+    // emitInconclusiveVerdict): as `false` this path told every agent parked on
+    // `checkpoint:await` that the CODE was broken, on the one run where the truth is "the gate
+    // is wedged". `reason` deliberately STAYS 'not-green' — release-actions derives `status`
+    // from `reason` (not from `green`), so the red streak and the held-gate alarm keep counting
+    // a persistent crash exactly as before; only the green/inconclusive discrimination changes.
+    green: null,
     reason: "not-green",
     crashed: true,
     runId,
@@ -10422,11 +10431,16 @@ if (require.main === module) {
       // it and hung to its own timeout — in the ONE situation (lost parent, abnormal exit) where
       // that wake matters most. armSelfWatchdog now BOUND-awaits this hook before the kill.
       onFire: async () => {
-        const red: CheckpointResult = {
+        // EI-20702428259478130: this verdict is INCONCLUSIVE, not red — see `green: null` below.
+        const inconclusive: CheckpointResult = {
           advanced: false,
           candidate: candidateArg ?? cfg.integrationBranch,
           from: null,
-          green: false,
+          // `null`, NOT `false` — same reasoning as buildCrashCheckpointResult. A watchdog kill
+          // means this run never rendered a verdict, so claiming the code is RED is a fabricated
+          // measurement; `green === null` is what routes it to `green-checkpoint:inconclusive`.
+          // `reason` stays 'not-green' so the red streak / held-gate alarm still count it.
+          green: null,
           reason: "not-green",
           summary:
             selfWatchdog.trigger === "manual-run-deadline"
