@@ -2742,6 +2742,20 @@ export function createInferenceGateway(deps: GatewayDeps) {
         return;
       }
 
+      // COLD-START PRE-FLIGHT (P-008/D-009). A STOPPED on-demand backend fails its health probe, so
+      // it is never SELECTED — the request would 502 before any forward, which is why ensure-running
+      // attaches here rather than at the forward below. Both reads are PURE: select() without an
+      // ownerId takes the no-affinity branch (no bookkeeping mutated), and saturatedFor() is pure by
+      // construction — so the warm path costs one in-memory scan and zero I/O.
+      //
+      // The `!saturatedFor` guard is load-bearing: a SATURATED pool must keep answering 429 +
+      // Retry-After. Starting more GPU processes is not the answer to backpressure, only to a model
+      // that nothing healthy serves.
+      let coldStartError: string | null = null;
+      if (!pool.select(model) && !pool.saturatedFor(model)) {
+        coldStartError = await ensureOnDemandBackendForModel(model);
+      }
+
       const tried = new Set<string>();
       let lastError: string | null = null;
       for (let attempt = 0; attempt < LOCAL_BACKEND_MAX_ATTEMPTS; attempt++) {
