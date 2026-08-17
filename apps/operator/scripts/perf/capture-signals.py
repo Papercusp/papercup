@@ -52,6 +52,32 @@ def svc_props(name):
             "sub": d.get("SubState"), "mainPid": d.get("MainPID")}
 
 
+CPU_SAMPLE_SEC = 1.0   # two-sample window for the true CPU rate; see operator_workers()
+
+
+def _proc_cpu_ticks(pid):
+    """utime+stime for `pid` in clock ticks, or None if it vanished/is unreadable.
+
+    /proc/<pid>/stat's `comm` field is parenthesised and MAY ITSELF CONTAIN SPACES AND
+    PARENS, so a naive .split() misaligns every field after it. Splitting after the LAST
+    ')' is the only correct parse. utime/stime are fields 14/15 (1-based); the slice
+    below starts at field 3, hence indices 11/12.
+    """
+    try:
+        with open("/proc/%d/stat" % pid, "r") as fh:
+            data = fh.read()
+    except (IOError, OSError):
+        return None
+    rp = data.rfind(")")
+    if rp < 0:
+        return None
+    fields = data[rp + 2:].split()
+    try:
+        return int(fields[11]) + int(fields[12])
+    except (IndexError, ValueError):
+        return None
+
+
 def operator_workers():
     # WI-38449 / perf-testing-sweep P-012: the sample MUST cover the worst worker on
     # EACH budgeted axis, because perf-budgets.ts evaluates two independent budgets over
@@ -65,6 +91,24 @@ def operator_workers():
     # Fix: rank on both axes and union. Kept bounded (<=8 per axis, so <=16 rows) and
     # deduped by pid. `maxWorkerCpuPct` / `workersOver100Pct` are maxima/counts over this
     # array, and a superset can only make them more correct, never less.
+    #
+    # P-041 (2026-08-17): the CPU axis carried the SAME class of defect as the RSS axis
+    # above — a budget graded by an instrument that cannot report the thing it budgets.
+    # `ps -eo pcpu` is a PROCESS-LIFETIME AVERAGE (total CPU / total elapsed), not a
+    # current rate, and CLAUDE.md names it explicitly as the probe that "fails toward a
+    # false idle". Measured here 2026-08-16T23:43Z: the workers had etimeSec=6934, so
+    # every reported cpuPct was an average over ~1h55m. A worker that idled for an hour
+    # and is NOW pegged at 400% still reports a low lifetime average, and
+    # `workerCpuPctWarn` (200) never fires — the hot-thread budget is structurally unable
+    # to see a hot thread. The reading agreed with truth that day (29.9 reported vs 31.0
+    # measured) only because this workload happened to be steady; agreement under a
+    # steady load is not evidence the instrument works, since that is exactly when a
+    # lifetime average and a current rate coincide.
+    #
+    # CPU usage IS a delta, so we take one: two samples of /proc/<pid>/stat utime+stime
+    # over a measured interval, divided by the MEASURED elapsed time (never the nominal
+    # sleep). Ranking happens AFTER this, so the top-8-by-CPU selection is itself now
+    # ranked on true rates rather than lifetime averages.
     out = run(["ps", "-eo", "pid,pcpu,rss,etimes,args", "--sort=-pcpu"])
     rows = []
     for line in out.splitlines():
@@ -73,6 +117,26 @@ def operator_workers():
             if m:
                 rows.append({"pid": int(m.group(1)), "cpuPct": float(m.group(2)),
                              "rssKb": int(m.group(3)), "etimeSec": int(m.group(4))})
+
+    # Two-sample CPU delta over every discovered worker (small /proc reads, so sampling
+    # all of them costs far less than the sleep that separates the samples).
+    clk = os.sysconf("SC_CLK_TCK") or 100
+    first = dict((r["pid"], _proc_cpu_ticks(r["pid"])) for r in rows)
+    t0 = time.monotonic()
+    time.sleep(CPU_SAMPLE_SEC)
+    elapsed = time.monotonic() - t0
+    for r in rows:
+        a, b = first.get(r["pid"]), _proc_cpu_ticks(r["pid"])
+        if a is None or b is None or elapsed <= 0 or b < a:
+            # Process vanished mid-sample, or the counter went backwards (pid reuse).
+            # Keep the ps lifetime average rather than substituting 0 — a fabricated
+            # zero is the false-idle this change exists to remove, and a stale-but-real
+            # number degrades honestly where an invented one does not.
+            r["cpuPctSource"] = "ps-lifetime-fallback"
+        else:
+            r["cpuPct"] = round((b - a) / clk / elapsed * 100.0, 1)
+            r["cpuPctSource"] = "proc-delta"
+
     top_by_cpu = sorted(rows, key=lambda r: r["cpuPct"], reverse=True)[:8]
     top_by_rss = sorted(rows, key=lambda r: r["rssKb"], reverse=True)[:8]
     merged, seen = [], set()
