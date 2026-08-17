@@ -35,7 +35,9 @@ import {
   RUBRIC_TEMPLATE_NAME,
   type RubricKind,
   type RubricCriterionWindow,
+  type RubricCriterionCheck,
 } from './agent-tools/plans/rubric-template';
+import { assertCriterionCheckPathsResolve } from './rubrics-criterion-checks';
 
 // Structured criterion grading-window (EI-12146): schema + the pure resolver live in
 // rubric-template.ts (dependency-free, so instruments can import them without this
@@ -102,6 +104,11 @@ export interface RubricCriterion {
   window?: RubricCriterionWindow;
   /** Grading class — see {@link CriterionClass}. Omitted = 'settle-once'. */
   criterionClass?: CriterionClass;
+  /** The criterion's STRUCTURED CHECK (P-011 / owner-ratified D-006): kind:'tests'
+   *  { files } = deterministic must-pass (paths validated at propose time, actually RUN
+   *  by scorecards:emit at grading time); kind:'instrument' = the generalized instrument
+   *  binding. Omitted = a fuzzy judgment criterion (unchanged default). */
+  check?: RubricCriterionCheck;
 }
 
 export interface Rubric {
@@ -308,6 +315,7 @@ export function planRowToRubric(row: RubricPlanRow): Rubric | null {
       ...(c.instrumentKey ? { instrumentKey: c.instrumentKey } : {}),
       ...(c.window ? { window: c.window } : {}),
       ...(c.criterionClass ? { criterionClass: c.criterionClass } : {}),
+      ...(c.check ? { check: c.check } : {}),
     })),
     ratingScale: d.ratingScale,
     methodRef: d.methodRef ?? null,

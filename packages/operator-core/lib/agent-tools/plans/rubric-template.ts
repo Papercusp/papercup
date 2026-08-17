@@ -157,6 +157,55 @@ export function resolveCriterionWindow(
 }
 
 /**
+ * A criterion's optional STRUCTURED CHECK (consult-min-max-and-rubric-vetting-2026-08-17
+ * P-011, owner-ratified D-006): the deterministic binding that replaces fuzzy judgment
+ * where the outcome is objectively checkable.
+ *
+ *  - kind:'tests'      → { files } names Vitest files that MUST PASS. Paths resolve
+ *    against the live tree at PROPOSE time or the propose is refused (mirroring
+ *    replicationSqlCheck's write-time validation + plan-audit citation resolution, but
+ *    REFUSING — a check that can never run is a booby trap, not advice). At GRADING
+ *    time scorecards:emit actually RUNS the files (never stale ledger rows) and refuses
+ *    a path that no longer resolves.
+ *  - kind:'instrument' → the existing instrumentKey binding, generalized into the same
+ *    structured slot. `effectiveCriterionInstrumentKey` prefers it over the legacy
+ *    top-level field.
+ *  - absent            → a fuzzy judgment criterion (today's behavior, still first-class).
+ *
+ * Fuzzy + deterministic criteria coexist in one rubric.
+ */
+export const rubricCriterionCheckSchema = z.discriminatedUnion('kind', [
+  z
+    .object({
+      kind: z.literal('tests'),
+      files: z
+        .array(z.string().min(1))
+        .min(1)
+        .max(20)
+        .describe(
+          'Vitest test files that must pass for this criterion (repo-root-relative preferred; ' +
+            'workspace-relative accepted when unambiguous). Validated to resolve against the live ' +
+            'tree at propose time; actually RUN at grading time.',
+        ),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('instrument'),
+      instrumentKey: z
+        .string()
+        .min(1)
+        .describe(
+          "stable machine-readable instrument binding (the generalized form of the criterion-level instrumentKey field); 'none' means explicitly manual",
+        ),
+    })
+    .strict(),
+]);
+
+/** The validated structured-check type — see {@link rubricCriterionCheckSchema}. */
+export type RubricCriterionCheck = z.infer<typeof rubricCriterionCheckSchema>;
+
+/**
  * One gradeable criterion of a rubric. Field-for-field the v1 `RubricCriterion`
  * (rubrics.ts) so the re-pointed store maps templateData → Rubric 1:1 with no drift
  * (a compile-time assignability check pins this in rubric-template.test.ts). A
@@ -210,6 +259,13 @@ export const rubricCriterionSchema = z
           'falsifies it permanently and no later virtue restores it, so a mid-run rating is ' +
           'PROVISIONAL until the graded subject terminates (scorecards:emit stamps this). ' +
           "'settle-once' (also the omitted default) = settled permanently once its phase ends",
+      ),
+    check: rubricCriterionCheckSchema
+      .optional()
+      .describe(
+        "the criterion's STRUCTURED CHECK (P-011 / D-006): kind:'tests' { files } = deterministic " +
+          "must-pass, validated at propose time and actually run at grading time; kind:'instrument' " +
+          '= the generalized instrument binding. Omitted = fuzzy judgment criterion',
       ),
   })
   .strict();
@@ -348,6 +404,29 @@ export const rubricTemplateDataSchema = z
   // Fail-loud teaching errors, per the D-004 theme: a wrong-kind field combination is a
   // caller mistake to explain, never to silently strip or tolerate.
   .superRefine((d, ctx) => {
+    // P-011 (D-006), kind-independent: a criterion carrying BOTH the structured
+    // instrument check and a CONFLICTING legacy top-level instrumentKey has two
+    // bindings that cannot both be true — fail-loud teaching error (D-004 theme),
+    // never a silent precedence pick. Equal values are tolerated (a transitional
+    // double-write is harmless); kind:'tests' beside an instrumentKey is two
+    // DIFFERENT bindings (a test suite and an instrument) and stays legal.
+    d.criteria.forEach((c, i) => {
+      if (
+        c.check?.kind === 'instrument' &&
+        c.instrumentKey !== undefined &&
+        c.instrumentKey.trim() !== c.check.instrumentKey.trim()
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['criteria', i, 'check'],
+          message:
+            `criterion '${c.key}' binds two different instruments: check.instrumentKey ` +
+            `'${c.check.instrumentKey}' vs the legacy instrumentKey field '${c.instrumentKey}' — `
+            + 'they cannot both be authoritative. Keep the structured check (preferred) and drop ' +
+            'the legacy field, or make them equal',
+        });
+      }
+    });
     const kind = rubricKindOf(d);
     if (kind === 'standard') {
       if (d.subjectPlan !== undefined) {
