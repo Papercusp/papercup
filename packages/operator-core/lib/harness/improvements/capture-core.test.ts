@@ -1545,11 +1545,15 @@ describe('exact watchdogKey is a first-class blocking dedup source (EI-204844303
   const KEY = 'routine-engine-death:engine:live';
   const DEAD_ENGINE = 'The routines engine is dead — every active routine is overdue';
 
-  it('declines a re-file when the lexical search is UNAVAILABLE but an open exact-key item exists', async () => {
+  it('a standing re-file lands on the exact-key row even when the lexical search is UNAVAILABLE', async () => {
     // The 459-copy regression: the red-queen sentinel re-files a standing outage on a
     // stable key every 5 min. Blocking dedup used to rest entirely on the fuzzy title
     // search, which fails OPEN — so every pass where search was down minted a fresh
     // critical row. The exact key was fetched all along and then thrown away.
+    // CONTRACT SHARPENED by WI-39594: the open exact-key row is now a COALESCE
+    // target (repeatCount bump + refresh) rather than a bare decline — same
+    // zero-new-rows guarantee, and the outcome no longer depends on the fuzzy
+    // search at all (the coalesce runs before it).
     const d = deps();
     const prior = existing({ id: 'EI-900', title: DEAD_ENGINE, payload: { watchdogKey: KEY } });
     const res = await captureImprovement(
@@ -1561,24 +1565,31 @@ describe('exact watchdogKey is a first-class blocking dedup source (EI-204844303
         },
         findSemanticDupes: noSemantic,
         findIssuesByWatchdogKeys: async () => [prior],
+        mergeIssuePayload: async (_id, patch) => existing({ ...prior, payload: { ...(prior.payload as object), ...patch } }),
+        updateIssuePatch: async (_id, patch) => existing({ ...prior, title: patch.title ?? prior.title }),
       },
     );
     expect(res.created).toBe(false);
-    expect(res.reason).toBe('likely-duplicate');
+    expect(res.reason).toBe('coalesced');
+    expect(res.issue?.id).toBe('EI-900');
     expect(d.created).toHaveLength(0);
-    expect(res.possibleDuplicates?.[0]).toMatchObject({ id: 'EI-900', exactKey: true });
-    // UNKNOWN must not read as a clean verdict: the lexical leg genuinely failed.
-    expect(res.dedupCoverage?.degraded).toBe(true);
   });
 
-  it('declines on the KEY even when the title is completely different', async () => {
+  it('lands on the KEY row even when the title is completely different', async () => {
     const d = deps();
     const prior = existing({ id: 'EI-901', title: 'totally unrelated wording', payload: { watchdogKey: KEY } });
     const res = await captureImprovement(
       { title: DEAD_ENGINE, kind: 'bug', watchdogKey: KEY, dedupScope: 'open' },
-      { ...d, findSemanticDupes: noSemantic, findIssuesByWatchdogKeys: async () => [prior] },
+      {
+        ...d,
+        findSemanticDupes: noSemantic,
+        findIssuesByWatchdogKeys: async () => [prior],
+        mergeIssuePayload: async (_id, patch) => existing({ ...prior, payload: { ...(prior.payload as object), ...patch } }),
+        updateIssuePatch: async (_id, patch) => existing({ ...prior, title: patch.title ?? prior.title }),
+      },
     );
     expect(res.created).toBe(false);
+    expect(res.reason).toBe('coalesced');
     expect(d.created).toHaveLength(0);
   });
 
@@ -1771,22 +1782,22 @@ describe('captureImprovement — NON-observation coalescing by watchdogKey (WI-3
     expect(d.created).toHaveLength(2);
   });
 
-  it('CONTROL: a RESOLVED prior with the same key does not swallow the capture — a recurrence re-files', async () => {
+  it('CONTROL: a RESOLVED prior with the same key never coalesces — under dedupScope:open a recurrence re-files fresh', async () => {
     const d = keyDeps();
     await captureImprovement(
-      { title: 'live-federation-gate RED: content-matrix failed (t1)', kind: 'bug', watchdogKey: 'live-federation-gate-red:papercusp' },
+      { title: 'live-federation-gate RED: content-matrix failed (t1)', kind: 'bug', dedupScope: 'open', watchdogKey: 'live-federation-gate-red:papercusp' },
       d,
     );
     d.store[0].state = 'resolved';
     const second = await captureImprovement(
-      { title: 'live-federation-gate RED: content-matrix failed (t2)', kind: 'bug', watchdogKey: 'live-federation-gate-red:papercusp' },
+      { title: 'live-federation-gate RED: content-matrix failed (t2)', kind: 'bug', dedupScope: 'open', watchdogKey: 'live-federation-gate-red:papercusp' },
       d,
     );
     expect(second.created).toBe(true);
     expect(d.created).toHaveLength(2);
   });
 
-  it('CONTROL: an open OBSERVATION-lane row with the same key does not capture a non-observation filing', async () => {
+  it('CONTROL: an open OBSERVATION-lane row with the same key is NOT a coalesce target for a non-observation filing (pre-existing exact-key block stands)', async () => {
     const d = keyDeps();
     await captureImprovement(
       { title: 'sensor reading', kind: 'change', lane: 'observation', watchdogKey: 'shared:key' },
@@ -1797,6 +1808,6 @@ describe('captureImprovement — NON-observation coalescing by watchdogKey (WI-3
       d,
     );
     expect(second.reason).not.toBe('coalesced');
-    expect(d.created).toHaveLength(2);
+    expect(d.created).toHaveLength(1); // blocked as likely-duplicate — never merged INTO the observation row
   });
 });

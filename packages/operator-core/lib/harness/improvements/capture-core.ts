@@ -622,6 +622,49 @@ async function promoteToolFailureProbation(
   return merged;
 }
 
+/**
+ * P-006/D-004: the coalesce report — what the write actually DID. Shared by the
+ * observation-lane coalesce (EI-15448) and the non-observation detector coalesce
+ * (WI-39594) so the two paths cannot drift in what they disclose: whether the
+ * caller's prose landed or was discarded, and whether it overwrote a peer's row.
+ */
+function buildCoalesceEffect(args: {
+  finalIssue: EngineerIssue;
+  prior: EngineerIssue;
+  input: CaptureImprovementInput;
+  repeatCount: number;
+  bodyPersisted: boolean;
+}): CoalesceEffect {
+  const { finalIssue, prior, input, repeatCount, bodyPersisted } = args;
+  const priorAuthor = prior.createdBy ?? null;
+  // Undecidable when either side is unknown: an unattributed row must not be
+  // reported as a peer's (it would manufacture a cross-author claim), nor as
+  // your own. False = "not established", never "verified same author".
+  const crossAuthor = Boolean(priorAuthor && input.createdBy && priorAuthor !== input.createdBy);
+  return {
+    id: finalIssue.id,
+    repeatCount,
+    bodyPersisted,
+    ...(bodyPersisted ? {} : { bodyDiscarded: true as const }),
+    priorAuthor,
+    crossAuthor,
+    note:
+      `No new row was created: this reading COALESCED onto still-open ${finalIssue.id} ` +
+      `(conditionKey \`${input.watchdogKey}\`), now at repeatCount ${repeatCount}. ` +
+      (bodyPersisted
+        ? `Your title/body REPLACED the text that row previously carried`
+        : `⚠ YOUR TITLE/BODY WAS DISCARDED — the refresh failed, so the row still shows the ` +
+          `PREVIOUS reading. The repeatCount bump landed, your prose did not; re-read ` +
+          `${finalIssue.id} before asserting anywhere that it reflects what you just wrote`) +
+      (crossAuthor
+        ? `. That row was authored by ${priorAuthor}, not you — you have written onto a PEER's ` +
+          `row. This is intended (the shared conditionKey is what stops a flood of near-identical ` +
+          `rows), and every occurrence is retained, but the row's visible text is now the latest ` +
+          `writer's, so do not read it as that author's own account.`
+        : `.`),
+  };
+}
+
 export async function captureImprovement(
   input: CaptureImprovementInput,
   deps: CaptureDeps = defaultDeps,
@@ -728,6 +771,84 @@ export async function captureImprovement(
           dedupCoverage: skippedDedupCoverage,
         };
       }
+    }
+    // WI-39594: an OPEN same-lane exact-key row COALESCES — a keyed detector
+    // re-fire refreshes the standing row (repeatCount bump, latest title/body)
+    // instead of forking a sibling. Runs BEFORE the fuzzy nets and BEFORE the
+    // `force` override, deliberately: `force` means "this is genuinely distinct
+    // from anything the nets GUESSED at" — an exact key match is not a guess, so
+    // force must not turn a re-fire of the SAME keyed condition into a fresh row
+    // (that force-through is exactly how the gym-champion escalations, filed
+    // force:true "so the signal is never dropped", piled up ~25 open near-identical
+    // items; a coalesce retains the signal — occurrence appended, repeatCount
+    // bumped, text refreshed to the newest reading — while keeping ONE open item
+    // per condition, the queue-audit-2026-08-17 ruling). An observation-lane
+    // prior is excluded: its lifecycle (probation promotion above, Scout
+    // clustering) owns that row, and merging an improvement INTO it would change
+    // its lane semantics — the pre-existing exact-key BLOCK still covers that case.
+    const openKeyPrior = exactKeyIssues.find((i) => {
+      const payload = (i.payload as Record<string, unknown> | null) ?? {};
+      return (
+        i.state === 'open' &&
+        payload.lane !== 'observation' &&
+        // Trust the row's own stored key, not the lookup that returned it — a
+        // sloppy/canned findIssuesByWatchdogKeys must not turn a different
+        // condition's row into a merge target.
+        payload.watchdogKey === input.watchdogKey &&
+        // Same origin gate as every other dedup net: a DRILL row must never
+        // capture (and thereby suppress) a real organic filing, nor vice versa.
+        effectiveOrigin(i.signalOrigin) === origin
+      );
+    });
+    if (openKeyPrior) {
+      const priorPayload = (openKeyPrior.payload as Record<string, unknown> | null) ?? {};
+      const repeatCount = (typeof priorPayload.repeatCount === 'number' ? priorPayload.repeatCount : 1) + 1;
+      const mergePatch: Record<string, unknown> = {
+        watchdogKey: input.watchdogKey,
+        repeatCount,
+        lastSeenAt: new Date().toISOString(),
+      };
+      if (input.payloadExtra) Object.assign(mergePatch, input.payloadExtra);
+      if (input.filedByRole) mergePatch.filedByRole = input.filedByRole;
+      if (sourceRole !== 'human') mergePatch.sourceRole = sourceRole;
+      const merged = await (deps.mergeIssuePayload ?? mergeIssuePayload)(openKeyPrior.id, mergePatch);
+      // Best-effort title/body refresh — never blocks the coalesce (the payload
+      // bump above is the load-bearing part). Silent: a detector re-fire must not
+      // fan out subscriber notifications every cadence tick.
+      const refreshed = await (deps.updateIssuePatch ?? updateIssue)(openKeyPrior.id, {
+        title: input.title,
+        body: input.body,
+        silent: true,
+        confirmShrink: true,
+      }).catch(() => null);
+      const finalIssue = (refreshed && 'id' in refreshed ? refreshed : merged) ?? openKeyPrior;
+      await appendCaptureOccurrence(
+        deps,
+        input,
+        identity,
+        'coalesced',
+        finalIssue.id,
+        [],
+        skippedDedupCoverage,
+        harnessFromScope(finalIssue.scope),
+      );
+      const bodyPersisted = refreshed !== null && 'id' in (refreshed as object);
+      return {
+        ok: true,
+        created: false,
+        reason: 'coalesced',
+        coalescedOnto: buildCoalesceEffect({ finalIssue, prior: openKeyPrior, input, repeatCount, bodyPersisted }),
+        kind: finalIssue.kind as 'bug' | 'change',
+        improvementKind: input.kind,
+        issue: finalIssue,
+        topics: [
+          IMPROVEMENT_TOPIC,
+          ...(input.subTopic ? [input.subTopic] : []),
+          ...(sourceRole !== 'human' ? [`improvement-source:${sourceRole}`] : []),
+        ],
+        possibleDuplicates: [],
+        dedupCoverage: skippedDedupCoverage,
+      };
     }
   }
   // Observations skip search-first dedup entirely (D-005): recurrence IS the signal
@@ -1140,33 +1261,7 @@ export async function captureImprovement(
       // `.catch`), which is the case where the caller's prose was dropped while
       // the call still returned ok — the silent write-loss this item exists for.
       const bodyPersisted = refreshed !== null && 'id' in (refreshed as object);
-      const priorAuthor = prior.createdBy ?? null;
-      // Undecidable when either side is unknown: an unattributed row must not be
-      // reported as a peer's (it would manufacture a cross-author claim), nor as
-      // your own. False = "not established", never "verified same author".
-      const crossAuthor = Boolean(priorAuthor && input.createdBy && priorAuthor !== input.createdBy);
-      const coalescedOnto: CoalesceEffect = {
-        id: finalIssue.id,
-        repeatCount,
-        bodyPersisted,
-        ...(bodyPersisted ? {} : { bodyDiscarded: true as const }),
-        priorAuthor,
-        crossAuthor,
-        note:
-          `No new row was created: this reading COALESCED onto still-open ${finalIssue.id} ` +
-          `(conditionKey \`${input.watchdogKey}\`), now at repeatCount ${repeatCount}. ` +
-          (bodyPersisted
-            ? `Your title/body REPLACED the text that row previously carried`
-            : `⚠ YOUR TITLE/BODY WAS DISCARDED — the refresh failed, so the row still shows the ` +
-              `PREVIOUS reading. The repeatCount bump landed, your prose did not; re-read ` +
-              `${finalIssue.id} before asserting anywhere that it reflects what you just wrote`) +
-          (crossAuthor
-            ? `. That row was authored by ${priorAuthor}, not you — you have written onto a PEER's ` +
-              `row. This is intended (the shared conditionKey is what stops a flood of near-identical ` +
-              `rows), and every occurrence is retained, but the row's visible text is now the latest ` +
-              `writer's, so do not read it as that author's own account.`
-            : `.`),
-      };
+      const coalescedOnto: CoalesceEffect = buildCoalesceEffect({ finalIssue, prior, input, repeatCount, bodyPersisted });
       return {
         ok: true,
         created: false,
