@@ -10246,6 +10246,12 @@ if (require.main === module) {
         reason: r.reason,
         summary: r.summary ?? null,
         runId: r.runId ?? null,
+        // EI-20702428259478130: CONDITIONALLY copied (absent stays absent, matching the
+        // lineage/cleanGreen convention) — the self-watchdog path rescues a failing-file list
+        // from the run-lock marker when the suite finished before the kill, and that used to
+        // reach consumers only on the `green-checkpoint:red` emit this path no longer makes.
+        // The other inconclusive reasons (skipped-locked, migrations-pending, …) carry none.
+        ...(r.failingTests ? { failingTests: r.failingTests } : {}),
       };
       const { emitAwaitedEvent } =
         await import("@papercusp/operator-core/lib/events/await/engine");
@@ -10462,57 +10468,40 @@ if (require.main === module) {
           ),
           runId,
         );
-        if (carried.note) red.summary = `${red.summary} ${carried.note}`;
-        await emitResult(red);
-        const pipeline = pipelineName(cfg.integrationRoot);
-        const payload = {
-          sha: red.candidate,
-          from: red.from,
-          pipeline,
-          summary: red.summary,
-          failingTests: carried.failingTests,
-          runId,
-        };
-        // EI-12457: symmetric with the normal red path — cancel any still-pending
-        // green await for this pipeline now that this candidate resolved red.
-        const cancelSiblingKeysFor = [
-          "release:green",
-          `release:green:${pipeline}`,
-        ];
-        try {
-          const { emitAwaitedEvent } =
-            await import("@papercusp/operator-core/lib/events/await/engine");
-          await emitAwaitedEvent({
-            key: "green-checkpoint:red",
-            summary:
-              "green-checkpoint self-watchdog fired — red verdict emitted",
-            payload,
-            source: "green-checkpoint",
-            cancelSiblingKeysFor,
-          });
-          await emitAwaitedEvent({
-            key: `green-checkpoint:red:${pipeline}`,
-            summary:
-              "green-checkpoint self-watchdog fired — red verdict emitted",
-            payload,
-            source: "green-checkpoint",
-            cancelSiblingKeysFor,
-          });
-        } catch (e) {
-          console.error(
-            `${orchestratorStdoutTag()} self-watchdog red-verdict emit FAILED (awaiters will fall back to their timeout): ${e instanceof Error ? e.message : e}`,
-          );
-        }
+        if (carried.note)
+          inconclusive.summary = `${inconclusive.summary} ${carried.note}`;
+        // EI-20702428259478130: carry the rescued failing-file list on the RESULT rather than
+        // only in an event payload. This used to ride on the hand-rolled `green-checkpoint:red`
+        // emit below, which is gone (see the block comment there); `failingTests` is a typed
+        // CheckpointResult field that release-actions' buildCheckpointDetail persists, so the
+        // EI-20669541349219660 signal now survives on the durable verdict too, not just a wake.
+        inconclusive.failingTests = carried.failingTests;
+        // Emits the result marker AND — because `green === null` — dispatches
+        // `green-checkpoint:inconclusive` (global + pipeline-scoped) via emitInconclusiveVerdict.
+        await emitResult(inconclusive);
+        // EI-20702428259478130: this path used to ALSO hand-roll `green-checkpoint:red` +
+        // `green-checkpoint:red:<pipeline>` here. That is deleted rather than converted, for two
+        // reasons: (1) emitResult above now fires the inconclusive pair for us, so keeping the red
+        // emit would have this one run assert BOTH "no verdict was rendered" and "the code is
+        // red"; (2) the red emit passed `cancelSiblingKeysFor: [release:green…]`, which retires
+        // any pending green await for this candidate — precisely what emitInconclusiveVerdict's
+        // doc comment forbids, since a watchdog kill says NOTHING about how this candidate will
+        // eventually resolve and the next cron may well green it. No wake is lost: `checkpoint:await`
+        // arms all three verdict keys (agent-tools/events/sugar.ts, release-checkpoint-launch.ts),
+        // and the normal red path still emits the red pair.
         try {
           const { notifyAttention } =
             await import("@papercusp/operator-core/lib/attention-notify");
           await notifyAttention({
             kind: "intervention",
             title:
-              "Release pipeline RED — green-checkpoint self-watchdog fired",
-            body: red.summary ?? "self-watchdog fired with no summary",
+              "Release pipeline WEDGED — green-checkpoint self-watchdog fired (no verdict)",
+            body: inconclusive.summary ?? "self-watchdog fired with no summary",
             importance: "urgent",
-            data: { candidate: red.candidate, reason: red.reason },
+            data: {
+              candidate: inconclusive.candidate,
+              reason: inconclusive.reason,
+            },
           });
         } catch {
           /* best-effort — the kill proceeds regardless */

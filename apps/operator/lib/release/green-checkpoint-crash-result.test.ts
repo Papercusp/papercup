@@ -16,15 +16,42 @@ import { buildCrashCheckpointResult } from './green-checkpoint';
  * since the `require.main === module` CLI block itself is not unit-testable in isolation.
  */
 describe('EI-18850448565330905: buildCrashCheckpointResult never leaves a crash unreported', () => {
-  it('produces a red, non-advancing verdict flagged as crashed', () => {
+  it('produces an INCONCLUSIVE, non-advancing verdict flagged as crashed', () => {
     const r = buildCrashCheckpointResult({ candidate: 'abc123', error: new Error('lint:plane-ratchet exited 1'), runId: 'run-1' });
-    expect(r.green).toBe(false);
+    expect(r.green).toBeNull();
     expect(r.advanced).toBe(false);
     expect(r.reason).toBe('not-green');
     expect(r.crashed).toBe(true);
     expect(r.from).toBeNull();
     expect(r.candidate).toBe('abc123');
     expect(r.runId).toBe('run-1');
+  });
+
+  /**
+   * EI-20702428259478130 — these two pin the DISCRIMINATION, which is the whole point of the
+   * field and the part a future edit is most likely to "simplify" away.
+   *
+   * `green: false` is the type's assertion that a verdict was rendered and the code is RED. A
+   * crash renders no verdict, so as `false` this result was indistinguishable in the ledger from
+   * a real test failure — and worse, `green === null` is the ONLY dispatch for
+   * `green-checkpoint:inconclusive` (green-checkpoint.ts's emitInconclusiveVerdict), so every
+   * agent parked on `checkpoint:await` was told the CODE was broken on the one class of run where
+   * the truth is "the gate is wedged".
+   */
+  it('is strictly null — not false — so the inconclusive-verdict dispatch fires', () => {
+    const r = buildCrashCheckpointResult({ candidate: 'abc123', error: new Error('boom'), runId: 'run-6' });
+    // The literal condition at the emitResult dispatch site. `=== null` does not admit `false`,
+    // which is exactly why the bug was invisible: both are falsy.
+    expect(r.green === null).toBe(true);
+    expect(r.green).not.toBe(false);
+  });
+
+  it("keeps reason 'not-green' so the red streak and held-gate alarm still count a persistent crash", () => {
+    // release-actions derives `status` from `reason`, NEVER from `green` (status: verdict.reason).
+    // So the tri-state above must NOT be paid for by softening the reason — a crash-looping gate
+    // has to keep incrementing consecutiveReds and firing the held-gate alarm.
+    const r = buildCrashCheckpointResult({ candidate: 'abc123', error: new Error('boom'), runId: 'run-7' });
+    expect(r.reason).toBe('not-green');
   });
 
   it('carries the thrown Error\'s stack (falling back to its message) in the summary', () => {
@@ -51,6 +78,9 @@ describe('EI-18850448565330905: buildCrashCheckpointResult never leaves a crash 
     expect(() => JSON.stringify(r)).not.toThrow();
     const parsed = JSON.parse(JSON.stringify(r));
     expect(parsed.crashed).toBe(true);
-    expect(parsed.green).toBe(false);
+    // Survives the round-trip as null (JSON has a null; the risk would be it becoming absent,
+    // which downstream `?? null` coercions would then read as an ordinary missing field).
+    expect(parsed.green).toBeNull();
+    expect('green' in parsed).toBe(true);
   });
 });
