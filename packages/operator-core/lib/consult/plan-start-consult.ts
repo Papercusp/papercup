@@ -215,6 +215,54 @@ export async function checkpointConsult(
 }
 
 /**
+ * Route the plan body and partition the verdict per P-002 (D-001 §2/D-002/
+ * D-003) — the plans:start wrapper over checkpointConsult.
+ */
+export async function planStartConsult(
+  params: PlanStartConsultParams,
+  deps: PlanStartConsultDeps,
+): Promise<PlanStartConsultOutcome> {
+  return checkpointConsult(
+    {
+      workspaceId: params.workspaceId,
+      requesterId: params.requesterId,
+      query: buildPlanStartQuery(params.planSlug, params.planContent),
+    },
+    deps,
+  );
+}
+
+export interface GoalKickoffConsultParams {
+  workspaceId: string;
+  /** The goal-mode agent committing the outline — excluded from candidacy. */
+  requesterId: string;
+  title: string;
+  body?: string | null;
+  killCriterion?: string | null;
+}
+
+/**
+ * The GOAL-mode kickoff consult (consult-min-max-and-rubric-vetting
+ * 2026-08-17 P-010 / D-004 §1): route the goal OUTLINE — outcome + kill
+ * criterion + intended approach — through the same checkpoint partition the
+ * plan-step consult uses. Inherits the global min:1 (D-003); same nudge-not-
+ * gate posture; same honest proceed verdicts where the minimum is unfillable.
+ */
+export async function goalKickoffConsult(
+  params: GoalKickoffConsultParams,
+  deps: PlanStartConsultDeps,
+): Promise<PlanStartConsultOutcome> {
+  return checkpointConsult(
+    {
+      workspaceId: params.workspaceId,
+      requesterId: params.requesterId,
+      query: buildGoalKickoffQuery(params),
+    },
+    deps,
+  );
+}
+
+/**
  * Prod excerpt reader: resolve the evidence turns' text from the same
  * transcript index the router matched over. Bounded — at most
  * PLAN_START_EXCERPTS_MAX rows, best-sim first, PLAN_START_EXCERPT_CHARS each.
