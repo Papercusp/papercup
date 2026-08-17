@@ -23,13 +23,24 @@ import { runGuardScript } from './testing-guard-script';
 
 const CWD = process.cwd();
 
+/** The offender name the fixture reports. Asserted for, and against, below. */
+const OFFENDER = 'scripts/only-ever-in-the-output.mjs';
+
 /**
  * The real shape of every guard script in this repo: print the findings, and only THEN
  * take a non-zero exit. The report therefore exists on a red exactly as on a green —
  * whether the caller still HAS it is the question.
+ *
+ * ⚠ The offender name is passed base64-ENCODED and decoded at runtime, so the literal
+ * appears ONLY in the script's output and never in its argv. That is load-bearing, not
+ * fastidiousness: execFileSync's failure message echoes the entire command line, so a
+ * fixture with the marker inline makes the control below assert against argv rather than
+ * against the rendered report — it fails (or worse, passes) for the wrong reason. First
+ * cut of this file did exactly that.
  */
 const REPORTING_GUARD =
-  "console.log(JSON.stringify({ unbaselined: [{ file: 'scripts/x.mjs', line: 60 }] })); process.exitCode = 1;";
+  `const f = Buffer.from('${Buffer.from(OFFENDER).toString('base64')}', 'base64').toString();` +
+  ' console.log(JSON.stringify({ unbaselined: [{ file: f, line: 60 }] })); process.exitCode = 1;';
 
 describe('a failing guard keeps its report (the regression this helper exists for)', () => {
   it('returns the report on stdout alongside the non-zero status', () => {
@@ -37,10 +48,10 @@ describe('a failing guard keeps its report (the regression this helper exists fo
 
     expect(run.status).toBe(1);
     const report = JSON.parse(run.stdout) as { unbaselined: { file: string; line: number }[] };
-    expect(report.unbaselined).toEqual([{ file: 'scripts/x.mjs', line: 60 }]);
+    expect(report.unbaselined).toEqual([{ file: OFFENDER, line: 60 }]);
     // …and `output` is directly usable as an assertion message, without the caller
     // having to know that the report went to stdout rather than stderr.
-    expect(run.output).toContain('scripts/x.mjs');
+    expect(run.output).toContain(OFFENDER);
   });
 
   it('CONTROL: execFileSync loses it — the thrown MESSAGE, which is all a runner shows, names only the command', () => {
