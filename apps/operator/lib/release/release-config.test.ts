@@ -358,3 +358,145 @@ describe('WI-38241: integration-root provenance + the gate-only refusal', () => 
     ).toBe(false);
   });
 });
+
+/**
+ * EI-20709645463022690 — the gate subprocess inherits the spawning operator's environment, so a
+ * pot's suite can dial the papercusp operator's database and report every one of the pot's tables
+ * as missing. That renders as "schema drift — 39 table(s) missing": a well-formed verdict about
+ * the WRONG database, indistinguishable in the log from real drift, because the checkpoint log
+ * never states the DSN at all.
+ *
+ * These pin the same two properties `integrationRootEvidence` above pins, for the same reason:
+ * the line must SAY the right thing, and it must actually be CALLED. A builder nobody calls is
+ * exactly the silent-but-well-formed failure this whole item is about.
+ */
+describe('databaseEvidence — which database is this gate run dialing', () => {
+  it('names the endpoint from DATABASE_URL, redacted to host:port/dbname', () => {
+    const line = databaseEvidence({
+      DATABASE_URL: 'postgres://test:test@localhost:32787/papercusp_gym_loop_ab12cd',
+    });
+    // the measured real-world shape: a transient gym-loop DB carrying 0 of the pot's tables
+    expect(line).toContain('localhost:32787/papercusp_gym_loop_ab12cd');
+    expect(line).toContain('source=DATABASE_URL');
+    expect(line).toContain('emitter=gate-cli');
+  });
+
+  /* THE LOAD-BEARING ONE. A run log is not a place to put a password, and this line is printed
+   * unconditionally on every gate run into an artifact many agents read. */
+  it('NEVER echoes the password, for any credential shape', () => {
+    for (const dsn of [
+      'postgres://user:hunter2@db.internal:5432/papercusp',
+      'postgresql://admin:p%40ss%2Fw0rd@10.0.0.4:5432/prod',
+      'postgres://:onlypass@host/db',
+    ]) {
+      const line = databaseEvidence({ DATABASE_URL: dsn });
+      expect(line, `leaked a credential from ${dsn}`).not.toMatch(/hunter2|p%40ss|onlypass/);
+      expect(line).not.toContain('@');
+    }
+  });
+
+  /* An unparseable value may itself BE the secret — so the fallback must be a coarse label, never
+   * an echo of the input. */
+  it('does not echo an unparseable DATABASE_URL', () => {
+    const line = databaseEvidence({ DATABASE_URL: 'not-a-url-but-maybe-a-secret' });
+    expect(line).toContain('<unparseable-url>');
+    expect(line).not.toContain('not-a-url-but-maybe-a-secret');
+  });
+
+  /* libpq reads these when no URL is set; they select a database just as effectively. An evidence
+   * line that ignored them would report "unset" about a run that is very much connected. */
+  it('falls back to the PG* variables when DATABASE_URL is unset', () => {
+    const line = databaseEvidence({
+      PGHOST: 'db.internal',
+      PGPORT: '5433',
+      PGDATABASE: 'sidestage',
+    });
+    expect(line).toContain('db.internal:5433/sidestage');
+    expect(line).toContain('source=PG*');
+  });
+
+  /* Not the boring case: the child then falls back to libpq's own defaults (local socket, $USER as
+   * the database name), which is its own class of dialing-the-wrong-database. */
+  it('reports <unset> when nothing selects a database', () => {
+    const line = databaseEvidence({});
+    expect(line).toContain('<unset>');
+    expect(line).toContain('source=none');
+  });
+
+  /* The pin is only a pin if the pre-fix behaviour fails it. Before this change the gate emitted
+   * NO database line whatsoever — a grep of the checkpoint log for the DSN returned zero hits. */
+  it('the evidence pin is FALSIFIABLE — emitting nothing, or a raw DSN, fails it', () => {
+    const dsn = 'postgres://test:test@localhost:32787/papercusp_gym_loop_ab12cd';
+    // (a) the pre-fix world: no line at all
+    expect('').not.toContain('database:');
+    // (b) the naive fix: echo the DSN straight into the log
+    expect(dsn).toContain('test:test@');
+    // calibration — the control is only a control if the REAL subject passes the same checks
+    const real = databaseEvidence({ DATABASE_URL: dsn });
+    expect(real).toContain('database:');
+    expect(real).not.toContain('test:test@');
+  });
+
+  /* Same construction as the integration-root wiring pin above, and for the same reason: the CLI
+   * block never runs under vitest, so every behavioural test here can pass while the builder is
+   * not wired at all. Match STATEMENTS, not bare substrings — a comment mentioning the call is
+   * not the call. */
+  const dbWiredIntoGateCli = (src: string): boolean => {
+    const cli = src.indexOf('if (require.main === module)');
+    if (cli === -1) return false;
+    const body = src.slice(cli);
+    const evidence = body.search(/console\.log\([^\n]*databaseEvidence\(\)/);
+    const cfg = body.search(/^[ \t]*const cfg = releaseConfig\(\);/m);
+    if (evidence === -1 || cfg === -1) return false;
+    // must precede the config the gate then runs on, or it reports after the fact
+    return evidence < cfg;
+  };
+
+  it('is WIRED into the green-checkpoint CLI, before the config it gates on', async () => {
+    const { readFile } = await import('node:fs/promises');
+    const src = await readFile(
+      fileURLToPath(new URL('./green-checkpoint.ts', import.meta.url)),
+      'utf8',
+    );
+    expect(dbWiredIntoGateCli(src), 'green-checkpoint CLI must log the database it will dial').toBe(
+      true,
+    );
+  });
+
+  it('...and that wiring pin is falsifiable', () => {
+    const wired = [
+      'if (require.main === module) {',
+      '  console.log(`x ${databaseEvidence()}`);',
+      '  const cfg = releaseConfig();',
+      '}',
+    ].join('\n');
+    // calibration first: the real shape must pass, or the refusals below prove nothing
+    expect(dbWiredIntoGateCli(wired)).toBe(true);
+    // never logged — the exact pre-fix state this item is about
+    expect(
+      dbWiredIntoGateCli('if (require.main === module) {\n  const cfg = releaseConfig();\n}'),
+    ).toBe(false);
+    // logged AFTER the config the gate runs on — too late to explain the run it describes
+    expect(
+      dbWiredIntoGateCli(
+        [
+          'if (require.main === module) {',
+          '  const cfg = releaseConfig();',
+          '  console.log(`x ${databaseEvidence()}`);',
+          '}',
+        ].join('\n'),
+      ),
+    ).toBe(false);
+    // A COMMENT MENTIONING THE CALL IS NOT WIRING — the case that bit the sibling pin.
+    expect(
+      dbWiredIntoGateCli(
+        [
+          'if (require.main === module) {',
+          '  // someday this will call databaseEvidence() properly',
+          '  const cfg = releaseConfig();',
+          '}',
+        ].join('\n'),
+      ),
+    ).toBe(false);
+  });
+});
