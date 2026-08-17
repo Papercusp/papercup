@@ -101,7 +101,12 @@ vi.mock("./use-create-data", () => ({
 // just VirtualGrid) and nuqs; stub it to a pass-through so these tests stay
 // focused on the panel's own list/filter logic (#4 wiring is covered by the
 // filters lib's own suite).
-vi.mock("@/app/harness/filters", () => ({
+// The hook + bar are stubbed (they need their own DOM contract), but
+// `filterCountLabel` is deliberately the REAL implementation via importActual:
+// it is a pure function and the count assertions below are only meaningful if
+// they exercise the shared label the Work Queue renders. Stubbing it would let
+// this pane's count drift from that contract while the suite stayed green.
+vi.mock("@/app/harness/filters", async () => ({
   useColumnFilters: <T,>(_cols: unknown, rows: readonly T[]) => ({
     rows,
     controller: null,
@@ -110,6 +115,11 @@ vi.mock("@/app/harness/filters", () => ({
     clearAll: () => {},
   }),
   ColumnFilterBar: () => null,
+  filterCountLabel: (
+    await vi.importActual<typeof import("@/app/harness/filters/filter-count-label")>(
+      "@/app/harness/filters/filter-count-label",
+    )
+  ).filterCountLabel,
 }));
 
 import ObservationsPanel from "./ObservationsPanel";
