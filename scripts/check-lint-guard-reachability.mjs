@@ -382,8 +382,18 @@ export const BLOCKING_TIERS = new Set(['gate', 'ci', 'test', 'chained', 'repo-wi
  * export is the REUSE-THE-DETECTOR pattern this repo mandates everywhere (a re-derived
  * copy drifts), so the old regex penalised precisely the tests written correctly. Prefer
  * adding the scanner name a guard actually exports over inventing speculative ones.
+ *
+ * `runGuardScript` was added 2026-08-17 (EI-20692923474318761) for the same reason, one
+ * layer up: it is this repo's helper for spawning a guard over the real tree (it wraps
+ * spawnSync so a RED carries the guard's own report instead of "Command failed: <cmd>").
+ * A test that adopts it is spawning the guard — the definition of the `test` tier — but
+ * the raw `spawnSync` marker now lives in the helper rather than the test. The three
+ * tests converted with it still matched only INCIDENTALLY, via `REPO_ROOT` or a comment
+ * that happened to mention execFileSync; a classification resting on a comment is one
+ * tidy-up away from silently demoting a blocking guard to advisory.
  */
-export const ENFORCING_TEST_RE = /execFileSync|spawnSync|execSync|listTrackedFiles|REPO_ROOT|repoRoot|process\.cwd\(\)|scanTree/;
+export const ENFORCING_TEST_RE =
+  /execFileSync|spawnSync|execSync|listTrackedFiles|REPO_ROOT|repoRoot|process\.cwd\(\)|scanTree|runGuardScript/;
 
 /**
  * Companion INVOCATIONS of a guard rather than guards in their own right: a different
