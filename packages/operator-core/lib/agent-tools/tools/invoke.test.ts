@@ -10,7 +10,16 @@
  */
 import { describe, it, expect, vi } from 'vitest';
 
+// P-012: default FALSE so the pre-existing exact-equality metadata assertions stay
+// byte-identical; the dispatch-wrapper describe flips it per-test.
+vi.mock('../../telemetry-dispatch-wrapper', () => ({
+  dispatchWrapperMarkEnabled: vi.fn(async () => false),
+}));
+import { dispatchWrapperMarkEnabled } from '../../telemetry-dispatch-wrapper';
+
 import toolInvoke, { summarizeNestedToolOutcome } from './invoke';
+
+const markEnabledMock = vi.mocked(dispatchWrapperMarkEnabled);
 
 type ToolDef = {
   name: string;
@@ -159,5 +168,48 @@ describe('summarizeNestedToolOutcome', () => {
     expect(summarizeNestedToolOutcome({
       content: [{ type: 'text', text: JSON.stringify({ ok: true, counts: { ok: 2, failed: 1 } }) }],
     })).toEqual({ effectiveStatus: 'partial', childFailureCount: 1 });
+  });
+});
+
+/**
+ * P-012 (census double-count): the inner dispatch writes its own telemetry row, so
+ * tools:invoke marks its OWN row as a dispatch wrapper for census exclusion. The
+ * flag-off case is the falsifiability control: an implementation that stamps
+ * unconditionally (or never) fails one of these two in each direction.
+ */
+describe('tools:invoke dispatch-wrapper mark (P-012)', () => {
+  it('marks its row with dispatchWrapper + the dispatched tool when the flag is on', async () => {
+    markEnabledMock.mockResolvedValueOnce(true);
+    const metadata = vi.fn();
+    const ctx = {
+      metadata,
+      dispatchTool: async () => ({ content: [{ type: 'text', text: 'ok' }] }),
+    };
+    await def.handler({ name: 'flags:get', args: {} }, ctx);
+    expect(metadata).toHaveBeenCalledWith(
+      expect.objectContaining({ dispatchWrapper: true, dispatchedTool: 'flags:get' }),
+    );
+  });
+
+  it('flag OFF (the kill-switch / control): metadata carries NO wrapper keys', async () => {
+    // The module mock defaults to false — no mockResolvedValueOnce here on purpose.
+    const metadata = vi.fn();
+    const ctx = {
+      metadata,
+      dispatchTool: async () => ({ content: [{ type: 'text', text: 'ok' }] }),
+    };
+    await def.handler({ name: 'flags:get', args: {} }, ctx);
+    const stamped = metadata.mock.calls[0][0] as Record<string, unknown>;
+    expect(stamped).not.toHaveProperty('dispatchWrapper');
+    expect(stamped).not.toHaveProperty('dispatchedTool');
+  });
+
+  it('a refusal that never dispatched stamps no metadata at all (no inner row exists)', async () => {
+    markEnabledMock.mockResolvedValueOnce(true);
+    const metadata = vi.fn();
+    const ctx = { metadata, dispatchTool: vi.fn() };
+    const res = await def.handler({ name: 'tools:invoke', args: {} }, ctx);
+    expect(res.isError).toBe(true);
+    expect(metadata).not.toHaveBeenCalled();
   });
 });

@@ -21,7 +21,13 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-vi.mock('@papercusp/agent-mcp', () => ({ defineTool: (def: unknown) => def }));
+// Spread the REAL module and override only defineTool: a hand-listed factory
+// strands every export the tool graph later starts importing — AGENT_ROLES did
+// exactly that (testing/run.ts), breaking collection across this directory.
+vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/agent-mcp')>()),
+  defineTool: (def: unknown) => def,
+}));
 vi.mock('../../auth', () => ({
   getSessionUserOrDefault: vi.fn(async () => ({ id: 'user-1', display_name: 'Test User' })),
 }));
