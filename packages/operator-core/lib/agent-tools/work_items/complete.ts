@@ -119,7 +119,11 @@ const completionSpec = z
       // `completion` as a bare (non-JSON) string — declared here so it survives the
       // schema's default field-stripping instead of vanishing before completeOne can
       // see it and warn loudly. Stripped from the record before it is used/returned.
-      __shapeCoercedFrom: z.literal('bare-string').optional(),
+      // EI-20724228359175431 widened this to a union: 'truncated-json' marks a
+      // JSON-stringified completion whose tail was cut off and whose closers were
+      // rebuilt, so the caller can be told the record may be missing a field that
+      // never arrived (the bare-string warning cannot fire — fields DID survive).
+      __shapeCoercedFrom: z.enum(['bare-string', 'truncated-json']).optional(),
     }),
   )
   .describe(
