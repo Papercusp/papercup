@@ -1008,6 +1008,35 @@ const REPO_WIDE_INVARIANT_GUARDS = [
       f === "packages/operator-core/lib/doc-projection/claude-md-corpus.generated.md",
   },
   {
+    // EI-20687080717457981 — the guard that keeps CLAUDE.md's "which commit carries your
+    // change" command actually printing UTC. Same disjointness hole as the entry above,
+    // one doc further along: the guard lives in operator-core, but its SUBJECT is the
+    // PROJECTED doc, and a projection lands as an edit to `CLAUDE.md` /
+    // `claude-md-corpus.generated.md` — neither of which is a `.tsx?` file, so the
+    // workspace-selection rule cannot attach operator-core for it. Without this entry the
+    // one change that can reintroduce the defect (re-editing the part, then projecting)
+    // is the change the guard would not run for.
+    //
+    // The defect is worth a machine because it is INVISIBLE to review: `TZ=UTC git log
+    // ... --format='%cI'` renders the COMMIT's own offset (`-04:00` here) and ignores TZ
+    // entirely, so the output looks exactly like a UTC ISO-8601 stamp and is silently 4h
+    // off. Every commit in this repo carries the box's own -04:00, so only a synthetic
+    // foreign-offset commit can tell the two hypotheses apart — which is why the guard
+    // builds one rather than asserting against real history.
+    workspace: "@papercusp/operator-core",
+    script: "lint:git-log-utc-claim",
+    // Cheap by construction: file reads + one throwaway `git init` in os.tmpdir(), no DB
+    // and no network. ~92ms measured. It shells out to `git`, which is a hard dependency
+    // of every other guard here already.
+    //
+    // NO hostSuiteRatchet, deliberately — same reasoning as the entry above. operator-core's
+    // own `test` task does re-run this file, but the subject that most needs the guard (the
+    // projected doc) is selected by a DISJOINT change, and that disjointness is the hole.
+    appliesTo: (f) =>
+      f === "CLAUDE.md" ||
+      f === "packages/operator-core/lib/doc-projection/claude-md-corpus.generated.md",
+  },
+  {
     // WI-38089. See declarationMjsInputs() above for the measurement and the derive-vs-mirror
     // rationale.
     workspace: "@papercusp/operator-core",

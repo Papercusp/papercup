@@ -30,8 +30,14 @@ import { judgeGitLogUtcClaim, extractGitLogCommands } from './git-log-utc-timest
 
 // lib/doc-claims → lib → operator-core → packages → <repo root>
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
-const CLAUDE_MD = join(ROOT, 'CLAUDE.md');
-const CORPUS = join(ROOT, 'packages/operator-core/lib/doc-projection/claude-md-corpus.generated.md');
+
+// The subject paths are ENV-OVERRIDABLE on purpose: that is what makes the copy-out
+// mutation tier (CLAUDE.md's tier 2) available for this guard, so proving it falsifiable
+// never requires mutating the shared tree and racing the git-sync sweep.
+const CLAUDE_MD = process.env.PROBE_CLAUDE_MD || join(ROOT, 'CLAUDE.md');
+const CORPUS =
+  process.env.PROBE_CORPUS ||
+  join(ROOT, 'packages/operator-core/lib/doc-projection/claude-md-corpus.generated.md');
 
 /** Pad a fixture past the min-length refusal so we test the RULE, not the guard. */
 const pad = (body: string): string => `${body}\n${'filler filler filler\n'.repeat(20)}`;
