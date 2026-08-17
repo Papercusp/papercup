@@ -125,17 +125,20 @@ function sampleSwapPages(): { pswpin: number; pswpout: number } | null {
  * A page-count threshold has no notion of RATE or of whether anything was
  * actually STALLED waiting on it; PSI does.
  *
- * Fix scope (deliberately narrow — see the item's own "Care" note against
- * over-correcting a guard whose underlying prior, real scale-test flakiness
- * under real load, is genuine): this does NOT change `computeHostHealth`'s
- * oversubscribed/swapping verdict or either threshold. It ONLY samples PSI
- * "some" (memory + cpu) the same way `sampleSwapPages` samples vmstat —
- * start/end, max of the two — and threads it through to `RunSummary.hostLoad`
- * and the rendered report/log line, so the verdict is now accompanied by the
- * kernel's own stall-time evidence instead of standing on the page-delta
- * alone. A human (or a future, better-calibrated automated re-tuning of the
- * threshold) can then see directly whether a given "oversubscribed" call was
- * corroborated by real stall time or not, rather than trusting an assertion.
+ * Fix scope, PHASE 1 (2026-08-02, deliberately narrow — see the item's own
+ * "Care" note against over-correcting a guard whose underlying prior, real
+ * scale-test flakiness under real load, is genuine): sample PSI "some"
+ * (memory + cpu) the same way `sampleSwapPages` samples vmstat — start/end,
+ * max of the two — and thread it through to `RunSummary.hostLoad` and the
+ * rendered report/log line, WITHOUT changing the verdict, so a human could see
+ * whether a given "oversubscribed" call was corroborated by real stall time.
+ *
+ * ⚠ SUPERSEDED — PHASE 2 (2026-08-17): the evidence phase 1 exposed showed the
+ * page-delta threshold is not merely noisy here but UNSATISFIABLE, and that a
+ * permanently-true confound silently SUPPRESSES regression findings. PSI is now
+ * the authoritative memory-contention input and the page delta is the fallback
+ * for hosts without PSI. See `computeHostHealth` and `HOST_PSI_MEM_STALL_PCT`
+ * below for the measurements and the threshold's corroboration.
  */
 function samplePsiSome(resource: 'memory' | 'cpu'): { avg10: number; avg60: number } | null {
   try {
@@ -499,7 +502,8 @@ function renderReport(
     ratio1m: number;
     oversubscribed: boolean;
     swapPagesDelta: number | null;
-    swapping: boolean;
+    memoryContended: boolean;
+    memoryContendedReason: 'psi-stall' | 'swap-pages-fallback' | null;
     psiMemSome60: number | null;
     psiCpuSome60: number | null;
   },
@@ -520,9 +524,16 @@ function renderReport(
               ? `, PSI some avg60: mem=${hostLoad.psiMemSome60 !== null ? `${hostLoad.psiMemSome60.toFixed(1)}%` : 'n/a'} cpu=${hostLoad.psiCpuSome60 !== null ? `${hostLoad.psiCpuSome60.toFixed(1)}%` : 'n/a'}`
               : '') +
             (hostLoad.oversubscribed
-              ? ` — **⚠ OVERSUBSCRIBED (${hostLoad.swapping ? 'swap thrashing, EI-9145' : 'CPU, EI-8843'}${
-                  hostLoad.swapping && hostLoad.ratio1m > 1.0 ? ' + CPU' : ''
-                }): baseline comparison below is UNCERTAIN, auto-filing skipped**`
+              ? ` — **⚠ OVERSUBSCRIBED (${[
+                  hostLoad.ratio1m > 1.0 ? 'CPU, EI-8843' : null,
+                  hostLoad.memoryContendedReason === 'psi-stall'
+                    ? 'memory stall per PSI, EI-19301664378023382'
+                    : hostLoad.memoryContendedReason === 'swap-pages-fallback'
+                      ? 'swap thrashing per page-delta fallback, EI-9145'
+                      : null,
+                ]
+                  .filter(Boolean)
+                  .join(' + ')}): baseline comparison below is UNCERTAIN, auto-filing skipped**`
               : ''),
         ]
       : []),

@@ -258,18 +258,23 @@ async function openIssueExistsForKeys(keys: readonly string[]): Promise<Set<stri
  * auto-implement/auto-review backlog noise is suppressed. */
 async function fileFindings(summary: RunSummary, tierLabel: string): Promise<void> {
   if (summary.hostLoad?.oversubscribed) {
-    // EI-19301664378023382: surface the PSI "some" evidence (recorded alongside the
-    // verdict, not fed into it — see runner.ts's samplePsiSome) right in the skip
-    // line, so this is no longer a bare assertion of contention: a human/auditor
-    // reading this line sees the kernel's own stall-time reading next to the
-    // page-delta/loadavg proxy that actually triggered the skip.
+    // EI-19301664378023382: surface the PSI "some" stall-time evidence in the skip
+    // line, and name WHICH branch produced the verdict. As of 2026-08-17 PSI is the
+    // authoritative memory signal (see runner.ts computeHostHealth); the swap-page
+    // delta only decides on hosts where PSI is unreadable, so a reader must be able
+    // to tell those two cases apart rather than inferring from the numbers.
     const psiMem = summary.hostLoad.psiMemSome60;
     const psiCpu = summary.hostLoad.psiCpuSome60;
+    const memReason =
+      summary.hostLoad.memoryContendedReason === 'psi-stall'
+        ? `, memory stall per PSI`
+        : summary.hostLoad.memoryContendedReason === 'swap-pages-fallback'
+          ? `, swap Δ${summary.hostLoad.swapPagesDelta} pages (PSI unavailable — page-delta fallback)`
+          : '';
     console.info(
       `[p2p-perf] ${tierLabel} run ${summary.runId}: host was oversubscribed (load ratio ` +
-        `${summary.hostLoad.ratio1m.toFixed(2)}× cpus${
-          summary.hostLoad.swapping ? `, swap Δ${summary.hostLoad.swapPagesDelta} pages` : ''
-        }; PSI some avg60 mem=${psiMem !== null && psiMem !== undefined ? `${psiMem.toFixed(1)}%` : 'n/a'} ` +
+        `${summary.hostLoad.ratio1m.toFixed(2)}× cpus${memReason}` +
+        `; PSI some avg60 mem=${psiMem !== null && psiMem !== undefined ? `${psiMem.toFixed(1)}%` : 'n/a'} ` +
         `cpu=${psiCpu !== null && psiCpu !== undefined ? `${psiCpu.toFixed(1)}%` : 'n/a'}) — skipping auto-filing of ` +
         `${summary.sloViolations.length} SLO violation(s) / ${summary.regressions.length} regression(s) ` +
         `as unreliable under contention (EI-8843); see ${summary.reportPath} for the raw numbers.`,

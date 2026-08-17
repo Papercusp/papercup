@@ -17,49 +17,136 @@ describe('parseSwapPages (EI-9145)', () => {
   });
 });
 
-describe('computeHostHealth (EI-9145 + EI-8843)', () => {
-  it('neither CPU nor swap confound ⇒ not oversubscribed', () => {
-    expect(computeHostHealth({ ratio1m: 0.4, swapPagesDelta: 10 })).toEqual({
+/**
+ * PERMANENT PRE-FIX CONTROL (EI-19301664378023382 part 2). This is the logic
+ * computeHostHealth had until 2026-08-17: the swap-page delta decided memory
+ * contention on its own, with no notion of rate and no notion of whether
+ * anything actually STALLED. It is kept here deliberately so the tests below
+ * can demonstrate the fix is FALSIFIABLE — a guard that has never been shown to
+ * fail is a guard nobody has tested. Never wire this into production code.
+ */
+function decideByPageDeltaAlone(input: { ratio1m: number; swapPagesDelta: number | null }): {
+  oversubscribed: boolean;
+  memoryContended: boolean;
+} {
+  const memoryContended = input.swapPagesDelta !== null && input.swapPagesDelta > 1000;
+  return { oversubscribed: input.ratio1m > 1.0 || memoryContended, memoryContended };
+}
+
+describe('computeHostHealth (EI-9145 + EI-8843 + EI-19301664378023382)', () => {
+  it('neither CPU nor memory confound ⇒ not oversubscribed', () => {
+    expect(computeHostHealth({ ratio1m: 0.4, swapPagesDelta: 10, psiMemSome60: 0.2 })).toEqual({
       oversubscribed: false,
-      swapping: false,
+      memoryContended: false,
+      memoryContendedReason: null,
     });
   });
 
-  it('CPU ratio over the limit alone ⇒ oversubscribed, not swapping', () => {
-    expect(computeHostHealth({ ratio1m: 1.5, swapPagesDelta: 0 })).toEqual({
+  it('CPU ratio over the limit alone ⇒ oversubscribed, not memory-contended', () => {
+    expect(computeHostHealth({ ratio1m: 1.5, swapPagesDelta: 0, psiMemSome60: 0.1 })).toEqual({
       oversubscribed: true,
-      swapping: false,
+      memoryContended: false,
+      memoryContendedReason: null,
     });
   });
 
-  it('swap delta over the threshold alone (low CPU ratio) ⇒ oversubscribed via swapping — the EI-9087 case', () => {
-    // Reproduces the observed 2026-07-10 pattern: CPU ratio back near 1x
-    // (1.13, just over the CPU-only limit is irrelevant here) but heavy
-    // swap I/O during the run window should still flag it.
-    expect(computeHostHealth({ ratio1m: 0.9, swapPagesDelta: 50_000 })).toEqual({
+  it('PSI memory stall over the threshold (low CPU ratio) ⇒ oversubscribed via psi-stall', () => {
+    expect(computeHostHealth({ ratio1m: 0.9, swapPagesDelta: 50_000, psiMemSome60: 22.4 })).toEqual({
       oversubscribed: true,
-      swapping: true,
+      memoryContended: true,
+      memoryContendedReason: 'psi-stall',
     });
   });
 
-  it('null swapPagesDelta (non-Linux / sample failure) never itself triggers swapping', () => {
-    expect(computeHostHealth({ ratio1m: 0.5, swapPagesDelta: null })).toEqual({
+  it('PSI exactly at the threshold is NOT contended (strictly greater-than)', () => {
+    expect(computeHostHealth({ ratio1m: 0.5, swapPagesDelta: 0, psiMemSome60: 5.0 })).toEqual({
       oversubscribed: false,
-      swapping: false,
+      memoryContended: false,
+      memoryContendedReason: null,
     });
   });
 
-  it('both confounds ⇒ oversubscribed AND swapping true', () => {
-    expect(computeHostHealth({ ratio1m: 1.6, swapPagesDelta: 100_000 })).toEqual({
+  it('both confounds ⇒ oversubscribed AND memory-contended', () => {
+    expect(computeHostHealth({ ratio1m: 1.6, swapPagesDelta: 100_000, psiMemSome60: 30 })).toEqual({
       oversubscribed: true,
-      swapping: true,
+      memoryContended: true,
+      memoryContendedReason: 'psi-stall',
     });
   });
 
-  it('delta exactly at the threshold is NOT swapping (strictly greater-than)', () => {
-    expect(computeHostHealth({ ratio1m: 0.5, swapPagesDelta: 1000 })).toEqual({
-      oversubscribed: false,
-      swapping: false,
+  describe('page-delta FALLBACK — only when PSI is unreadable', () => {
+    it('null PSI + delta over the threshold ⇒ contended via swap-pages-fallback', () => {
+      expect(computeHostHealth({ ratio1m: 0.9, swapPagesDelta: 50_000, psiMemSome60: null })).toEqual({
+        oversubscribed: true,
+        memoryContended: true,
+        memoryContendedReason: 'swap-pages-fallback',
+      });
+    });
+
+    it('null PSI + delta under the threshold ⇒ not contended', () => {
+      expect(computeHostHealth({ ratio1m: 0.5, swapPagesDelta: 10, psiMemSome60: null })).toEqual({
+        oversubscribed: false,
+        memoryContended: false,
+        memoryContendedReason: null,
+      });
+    });
+
+    it('null PSI + null delta (non-Linux / sample failure) never triggers contention', () => {
+      expect(computeHostHealth({ ratio1m: 0.5, swapPagesDelta: null, psiMemSome60: null })).toEqual({
+        oversubscribed: false,
+        memoryContended: false,
+        memoryContendedReason: null,
+      });
+    });
+
+    it('delta exactly at the threshold is NOT contended, even on the fallback path', () => {
+      expect(computeHostHealth({ ratio1m: 0.5, swapPagesDelta: 1000, psiMemSome60: null })).toEqual({
+        oversubscribed: false,
+        memoryContended: false,
+        memoryContendedReason: null,
+      });
+    });
+  });
+
+  describe('the measured 2026-08-17 miscalibration this fix exists for', () => {
+    // Both rows are REAL readings taken on this shared dev box within the same
+    // hour, via the runner's own probe and a /proc/vmstat sample.
+    const QUIET_MOMENT = { ratio1m: 0.518, swapPagesDelta: 3_364, psiMemSome60: 0.76 };
+
+    it('a quiet host (PSI 0.76% — no meaningful stall) is NOT called contended', () => {
+      expect(computeHostHealth(QUIET_MOMENT)).toEqual({
+        oversubscribed: false,
+        memoryContended: false,
+        memoryContendedReason: null,
+      });
+    });
+
+    it('PRE-FIX CONTROL: the old page-delta-only logic DID call that quiet host contended', () => {
+      // The falsifier. If this ever starts agreeing with computeHostHealth, the
+      // fix has been reverted or neutered and the assertion above is vacuous.
+      const old = decideByPageDeltaAlone(QUIET_MOMENT);
+      expect(old.memoryContended).toBe(true);
+      expect(old.oversubscribed).toBe(true);
+      expect(computeHostHealth(QUIET_MOMENT).memoryContended).toBe(false);
+    });
+
+    it('CALIBRATION: a real burst (909k pages, PSI 6.98%) IS still caught', () => {
+      // Guards the opposite failure — a fix that simply stops flagging anything
+      // would pass the two assertions above while destroying the guard.
+      expect(computeHostHealth({ ratio1m: 0.52, swapPagesDelta: 909_444, psiMemSome60: 6.98 })).toEqual({
+        oversubscribed: true,
+        memoryContended: true,
+        memoryContendedReason: 'psi-stall',
+      });
+    });
+
+    it('catches memory stall with NO swap I/O at all — reclaim/page-cache thrashing the old check missed', () => {
+      expect(computeHostHealth({ ratio1m: 0.3, swapPagesDelta: 0, psiMemSome60: 40 })).toEqual({
+        oversubscribed: true,
+        memoryContended: true,
+        memoryContendedReason: 'psi-stall',
+      });
+      expect(decideByPageDeltaAlone({ ratio1m: 0.3, swapPagesDelta: 0 }).memoryContended).toBe(false);
     });
   });
 });
@@ -91,9 +178,11 @@ describe('parsePsiSome (EI-19301664378023382)', () => {
     // "oversubscribed" (deltas of 2,394,052 and 259,671 pages, both ≫ the 1000-page
     // threshold) while a same-moment PSI memory check showed avg60 ~5%, avg10 ~0% —
     // i.e. the kernel's own stall-time accounting did not show sustained thrashing.
-    // This test just pins the PARSE of that exact measured line; the composite
-    // decision of whether to weigh it is left to the reader of the report/log,
-    // deliberately NOT re-wired into computeHostHealth (see runner.ts's rationale).
+    // This test pins the PARSE of that exact measured line. As of 2026-08-17 the
+    // composite decision IS wired to PSI (computeHostHealth phase 2 above); note
+    // avg60=5.07 sits just over HOST_PSI_MEM_STALL_PCT, so this historical sample
+    // would now be called contended — narrowly, and on stall time rather than on a
+    // page count 259x its threshold.
     const text = 'some avg10=0.00 avg60=5.07 avg300=8.22 total=47076542478';
     expect(parsePsiSome(text)).toEqual({ avg10: 0, avg60: 5.07 });
   });
