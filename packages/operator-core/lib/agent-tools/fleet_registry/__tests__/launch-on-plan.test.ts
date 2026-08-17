@@ -1527,6 +1527,27 @@ describe('fleet:launch-on-plan handler — verified canary-first transaction (P-
     expect(payload.launchTransaction.unconfirmedMemberIds).toEqual(payload.launchTransaction.openedMemberIds);
   });
 
+  it('a SLOW canary that verifies on the bounded re-probe opens the cohort (the measured EI-20437060078324174 shape)', async () => {
+    // The incident: the canary registered 5.5s past the 25s window and went on to
+    // claim work, while the launch reported ok:false + 502 "psu died" and never
+    // opened member 2. The fix: the unconfirmed first probe earns one bounded
+    // re-probe, the slow boot verifies there, and the launch proceeds normally.
+    launchTransaction.verify.mockResolvedValueOnce({
+      agentStarted: null, waitedMs: 25_000, sessions: [], note: 'UNVERIFIED',
+    });
+    const res = await tool.handler(
+      { name: 'Slow Canary Fleet', plan: 'my-plan', harness: 'papercusp', count: 5 } as never,
+      {} as never,
+    );
+    const payload = JSON.parse((res as any).content[0].text);
+    expect(payload.ok).toBe(true);
+    expect(payload.launchTransaction.state).toBe('verified');
+    expect(payload.launchTransaction.failed).toEqual([]);
+    expect(payload.unverifiedMembers).toBeNull();
+    expect(payload.launchTransaction.verifiedMemberIds).toHaveLength(5);
+    expect(spawnConsoleMock.mock.calls.length).toBeGreaterThan(1);
+  });
+
   it('rolls out one canary then bounded waves, with exact pre-pinned identities', async () => {
     const res = await tool.handler(
       { name: 'Bounded Wave Fleet', plan: 'my-plan', harness: 'papercusp', count: 8 } as never,
