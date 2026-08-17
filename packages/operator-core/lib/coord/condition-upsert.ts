@@ -73,14 +73,14 @@ async function refreshIncumbent(
   const rows = await sql<{ feature_id: string }[]>`
     UPDATE harness_shared.work_items
        SET title = ${input.title},
-           summary = COALESCE(${input.summary ?? null}, summary),
+           summary = COALESCE(${input.summary ?? null}::text, summary),
            updated_ts = (EXTRACT(EPOCH FROM now()) * 1000)::bigint,
            payload = jsonb_set(
              COALESCE(payload, '{}'::jsonb),
-             ARRAY[${marker}],
+             ARRAY[${marker}::text],
              jsonb_build_object(
-               'conditionKey', ${conditionKey},
-               'occurrences', COALESCE((payload -> ${marker} ->> 'occurrences')::int, 1) + 1,
+               'conditionKey', ${conditionKey}::text,
+               'occurrences', COALESCE((payload -> ${marker}::text ->> 'occurrences')::int, 1) + 1,
                'lastSeenAt', to_jsonb(now())
              ),
              true
