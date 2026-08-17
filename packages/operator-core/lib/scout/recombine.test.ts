@@ -5,11 +5,15 @@
  * fails the D-006 gate is DROPPED, never smuggled through.
  */
 import { describe, it, expect, vi } from 'vitest';
-import type { Idea, ScoredIdea, ScoutLlmCall } from './types';
+import type { Idea, Proposal, ScoredIdea, ScoutLlmCall } from './types';
 import {
   planRecombinations,
   validateProposal,
   recombineProposals,
+  ACCEPTED_ROUTE_HINTS,
+  ALL_ROUTE_HINTS,
+  DELIBERATELY_UNACCEPTED_ROUTE_HINTS,
+  type RouteHintsAreExhaustive,
 } from './recombine';
 
 function idea(over: Partial<Idea> = {}): Idea {
@@ -259,3 +263,146 @@ describe('recombineProposals — dropped routeHint signal', () => {
     }
   });
 });
+
+/**
+ * WI-39724 — the routeHint DRIFT GUARD.
+ *
+ * `Proposal['routeHint']` (types.ts) and the set `parseProposal` accepts drifted apart
+ * with NOTHING failing: the union grew to 5 members, the parser still accepted 3, and
+ * the goal rail's direct-hint path was dead code in production for a day while looking
+ * armed (D-006). What is pinned here is the WEAKER, DECISION-INDEPENDENT invariant:
+ *
+ *   every member of the union is EITHER accepted by recombine
+ *   OR listed in DELIBERATELY_UNACCEPTED_ROUTE_HINTS with a written reason
+ *
+ * so it passes today (documenting the two pending hints in code) and fails the moment
+ * a NEW hint is added without a decision. It deliberately does NOT assert the two sets
+ * are EQUAL — that assertion is false today and would force the owner's intake ruling
+ * by the back door, which D-006 reserves.
+ *
+ * FALSIFIABILITY (acceptance): proven by permanent in-file CONTROLS below — the audit
+ * is a pure function over its three inputs, so a deliberately-broken input set is fed
+ * to the REAL implementation with no mutation of the shared tree. That matters here
+ * beyond hygiene: git-sync sweeps this checkout on a schedule, so an in-place
+ * mutate/restore probe can be COMMITTED mid-probe even when nothing goes wrong.
+ */
+type CoverageViolation = { hint: string; problem: string };
+
+function auditRouteHintCoverage(
+  all: readonly string[],
+  accepted: readonly string[],
+  unaccepted: Record<string, string | undefined>,
+): CoverageViolation[] {
+  const violations: CoverageViolation[] = [];
+  for (const hint of all) {
+    const isAccepted = accepted.includes(hint);
+    const isListed = Object.prototype.hasOwnProperty.call(unaccepted, hint);
+    if (isAccepted && isListed) {
+      violations.push({ hint, problem: 'contradictory: both accepted and listed as deliberately unaccepted' });
+      continue;
+    }
+    if (isAccepted) continue;
+    if (!isListed) {
+      violations.push({ hint, problem: 'undecided: neither accepted nor listed as deliberately unaccepted' });
+      continue;
+    }
+    const reason = unaccepted[hint];
+    if (typeof reason !== 'string' || reason.trim() === '') {
+      violations.push({ hint, problem: 'listed as deliberately unaccepted with no written reason' });
+    }
+  }
+  for (const hint of Object.keys(unaccepted)) {
+    if (!all.includes(hint)) {
+      violations.push({ hint, problem: 'stale: listed as deliberately unaccepted but no longer in the union' });
+    }
+  }
+  return violations;
+}
+
+describe('routeHint drift guard (WI-39724)', () => {
+  it('every union member is accepted, or deliberately unaccepted WITH a reason', () => {
+    expect(
+      auditRouteHintCoverage(
+        ALL_ROUTE_HINTS,
+        ACCEPTED_ROUTE_HINTS,
+        DELIBERATELY_UNACCEPTED_ROUTE_HINTS,
+      ),
+    ).toEqual([]);
+  });
+
+  it("documents the pending hints rather than routing them — 'goal' and 'instance' are held, not accepted", () => {
+    // Pinned so the guard cannot be satisfied by quietly ADMITTING them: that is the
+    // owner-reserved intake decision (D-006), not a way to make this file go green.
+    for (const hint of ['goal', 'instance'] as const) {
+      expect(ALL_ROUTE_HINTS).toContain(hint);
+      expect(ACCEPTED_ROUTE_HINTS as readonly string[]).not.toContain(hint);
+      expect(DELIBERATELY_UNACCEPTED_ROUTE_HINTS[hint]?.trim()).toBeTruthy();
+    }
+  });
+
+  // ---- CONTROLS: the guard must FAIL on each way the invariant can break. ----
+  it('CONTROL — catches a union member nobody decided about', () => {
+    const v = auditRouteHintCoverage(
+      [...ALL_ROUTE_HINTS, 'archive'],
+      ACCEPTED_ROUTE_HINTS,
+      DELIBERATELY_UNACCEPTED_ROUTE_HINTS,
+    );
+    expect(v).toHaveLength(1);
+    expect(v[0].hint).toBe('archive');
+    expect(v[0].problem).toContain('undecided');
+  });
+
+  it('CONTROL — catches a deliberately-unaccepted hint with an empty reason', () => {
+    const v = auditRouteHintCoverage(ALL_ROUTE_HINTS, ACCEPTED_ROUTE_HINTS, {
+      ...DELIBERATELY_UNACCEPTED_ROUTE_HINTS,
+      goal: '   ',
+    });
+    expect(v).toEqual([{ hint: 'goal', problem: expect.stringContaining('no written reason') }]);
+  });
+
+  it('CONTROL — catches a hint that is both accepted and held back', () => {
+    const v = auditRouteHintCoverage(ALL_ROUTE_HINTS, [...ACCEPTED_ROUTE_HINTS, 'goal'], {
+      ...DELIBERATELY_UNACCEPTED_ROUTE_HINTS,
+    });
+    expect(v).toEqual([{ hint: 'goal', problem: expect.stringContaining('contradictory') }]);
+  });
+
+  it('CONTROL — catches a stale entry left behind after a hint leaves the union', () => {
+    const v = auditRouteHintCoverage(ALL_ROUTE_HINTS, ACCEPTED_ROUTE_HINTS, {
+      ...DELIBERATELY_UNACCEPTED_ROUTE_HINTS,
+      retired: 'removed from the union a release ago',
+    });
+    expect(v).toEqual([{ hint: 'retired', problem: expect.stringContaining('stale') }]);
+  });
+
+  /**
+   * The COMPILE-TIME half. `ALL_ROUTE_HINTS` must never become a hand-maintained copy
+   * of the union — an incomplete copy is the exact failure mode this whole item exists
+   * to prevent, and it reads as a PASSING guard (the runtime audit above would happily
+   * report [] while never having heard of the new member).
+   */
+  it('the exhaustiveness alias in recombine.ts resolves to never (list covers the union)', () => {
+    const exhaustive: RouteHintsAreExhaustive extends never ? true : false = true;
+    expect(exhaustive).toBe(true);
+    // ...and the runtime list agrees with the union it is generated against.
+    expect([...ALL_ROUTE_HINTS].sort()).toEqual(
+      ['plan', 'gym', 'improvement', 'instance', 'goal'].sort(),
+    );
+  });
+});
+
+/**
+ * CONTROL for the compile-time half — an INCOMPLETE list must be rejected by the same
+ * `AssertNever<Exclude<…>>` shape recombine.ts uses. `@ts-expect-error` inverts the
+ * check: if this ever stopped being an error (someone neutering the pattern into
+ * `type AssertNever<T> = T`), the directive becomes unused and `tsc` fails on it. It
+ * is exported so it is never an unused local, and has no runtime representation.
+ */
+type AssertNever<T extends never> = T;
+const INCOMPLETE_HINTS = ['plan'] as const;
+// @ts-expect-error — 'gym' | 'improvement' | 'instance' | 'goal' are missing, so Exclude
+// yields them instead of never and AssertNever must refuse to compile.
+export type IncompleteRouteHintListIsRejected = AssertNever<
+  Exclude<NonNullable<Proposal['routeHint']>, (typeof INCOMPLETE_HINTS)[number]>
+>;
+

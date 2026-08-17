@@ -200,7 +200,63 @@ export function buildRecombinePrompt(
  * makes the resulting drop LOUD (below); it deliberately does not change which
  * hints are accepted.
  */
-const ACCEPTED_ROUTE_HINTS = ['plan', 'gym', 'improvement'] as const;
+export const ACCEPTED_ROUTE_HINTS = ['plan', 'gym', 'improvement'] as const;
+
+/**
+ * WI-39724 — every member of the `Proposal['routeHint']` union, as a RUNTIME value.
+ *
+ * ⚠ This is NOT a hand-maintained copy, and must never become one: the type below
+ * makes a union member that is missing from this list a COMPILE ERROR. That matters
+ * because the failure this guard exists to prevent is silent — types.ts and this file
+ * drifted apart with nothing failing, and the goal rail's direct-hint path was dead
+ * code in production for a day while looking armed (D-006). A hand-copied list would
+ * reproduce exactly that: a guard that reads as passing because it never learned the
+ * union grew.
+ */
+export const ALL_ROUTE_HINTS = [
+  'plan',
+  'gym',
+  'improvement',
+  'instance',
+  'goal',
+] as const satisfies readonly NonNullable<Proposal['routeHint']>[];
+
+/** `AssertNever<T>` only compiles when T is `never`. */
+type AssertNever<T extends never> = T;
+
+/**
+ * The compile-time half of the WI-39724 guard: if someone adds a member to
+ * `Proposal['routeHint']` without adding it to `ALL_ROUTE_HINTS`, `Exclude` yields
+ * that member instead of `never` and this alias fails to compile. Exported only so
+ * it is never an unused local — it has no runtime representation.
+ */
+export type RouteHintsAreExhaustive = AssertNever<
+  Exclude<NonNullable<Proposal['routeHint']>, (typeof ALL_ROUTE_HINTS)[number]>
+>;
+
+/**
+ * WI-39724 — route hints that EXIST in the union but which `parseProposal`
+ * deliberately does not accept, each with the reason it is held back.
+ *
+ * This map is the escape valve that lets the drift guard pass TODAY without
+ * forcing the owner's hand: the invariant asserted in recombine.test.ts is the
+ * weaker, decision-independent one — every union member is either ACCEPTED or
+ * listed HERE with a written reason — so a NEW hint added without a decision
+ * fails, while the two currently-pending ones do not.
+ *
+ * ⚠ Removing an entry here is how the owner's ruling gets implemented: the guard
+ * then mechanically forces `ACCEPTED_ROUTE_HINTS` to be updated in the same change.
+ * Do NOT remove one to "fix" a failing guard — that IS the owner-reserved decision
+ * (D-006: a routed goal spends DEFAULT_GOAL_BUDGET_CENTS=20000 and launches an
+ * autonomous agent).
+ */
+export const DELIBERATELY_UNACCEPTED_ROUTE_HINTS: Partial<
+  Record<NonNullable<Proposal['routeHint']>, string>
+> = {
+  goal: 'awaiting owner intake decision, D-006 — routing a goal spends DEFAULT_GOAL_BUDGET_CENTS and launches an autonomous agent, so admitting it at intake is the owner’s call, not a maintenance fix.',
+  instance:
+    'awaiting owner intake decision, D-006 — same ruling as goal; the instance rail is an eval-battery InstanceSubject and has never been reachable via a direct model hint.',
+};
 
 type ParsedProposal = {
   framing: string;
