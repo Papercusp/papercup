@@ -193,6 +193,39 @@ describe('defaultForeignSignature', () => {
     expect(sig.test('/srv/a+b/c.d/x')).toBe(true);
     expect(sig.test('/srv/aab/cXd/x')).toBe(false);
   });
+
+  it('matches a SIBLING checkout of the same workspace (EI-20476751101455367)', () => {
+    // We run several checkouts side by side and REPO_ROOT names only the one the
+    // operator happens to be serving from. Anchoring on that single checkout made
+    // the other two structurally invisible to the foreign pass: measured on this
+    // box, three idle vitest processes from `papercusp-checkpoint` holding 3,121 MB
+    // while `processes:list { live:true }` reported `unaccounted: 0`.
+    const sig = defaultForeignSignature('/home/u/ws/papercup-release');
+    expect(sig.test('node /home/u/ws/papercusp-checkpoint/node_modules/vitest/x.mjs')).toBe(true);
+    expect(sig.test('node /home/u/ws/papercusp/bin/dev')).toBe(true);
+    // ...and the checkout it was handed still matches, which is the pre-existing
+    // behaviour this must not regress.
+    expect(sig.test('node /home/u/ws/papercup-release/apps/operator/host.mjs')).toBe(true);
+  });
+
+  it('still refuses a bare binary NAME and an unrelated workspace', () => {
+    // The property that mattered is untouched: this is a PATH anchor, so widening
+    // it to the workspace must not turn it into the `pkill -f` name match.
+    const sig = defaultForeignSignature('/home/u/ws/papercup-release');
+    expect(sig.test('/usr/bin/papercusp-desktop')).toBe(false);
+    expect(sig.test('node /home/u/other-ws/papercusp/bin/dev')).toBe(false);
+    // A prefix-sharing SIBLING OF THE WORKSPACE must not match either — the anchor
+    // ends in `/`, so `/home/u/ws-backup/...` is outside it.
+    expect(sig.test('node /home/u/ws-backup/papercusp/bin/dev')).toBe(false);
+  });
+
+  it('falls back to the checkout when there is no containing workspace', () => {
+    // Anchoring on "" or "/" would match every process on the box — the exact
+    // opposite of this function's job.
+    const sig = defaultForeignSignature('/papercusp');
+    expect(sig.test('node /papercusp/bin/dev')).toBe(true);
+    expect(sig.test('/usr/bin/node')).toBe(false);
+  });
 });
 
 describe('terminal window liveness, end to end through the scan', () => {

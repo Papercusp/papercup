@@ -324,8 +324,44 @@ export function scanProcesses(opts: ScanOptions = {}): ScanResult {
  * "node") is precisely the mistake behind the `pkill -f` incidents: it matches the
  * owner's live desktop window, every peer agent's test instance, and unrelated
  * processes that merely share a runtime.
+ *
+ * ── WHY THE ANCHOR IS THE WORKSPACE, NOT THE ONE CHECKOUT (EI-20476751101455367) ──
+ *
+ * It used to anchor on `repoRoot` itself, and that made our own release machinery
+ * structurally invisible. We run several checkouts of this product side by side —
+ * `papercusp` (dev), `papercusp-checkpoint` (what green-checkpoint runs its suites
+ * in), `papercup-release` (what :3070 serves). `REPO_ROOT` resolves from the cwd of
+ * whichever one the operator happens to be running out of, so the signature named
+ * exactly ONE of them and every process from the other two failed the `sig.test`
+ * at the top of the foreign pass — dropped before `classifyScope` ever ran.
+ *
+ * Measured on this box 2026-08-16: three vitest processes from `papercusp-checkpoint`,
+ * idle at 0.000 cores, aged 4.8h/14h/15h, holding 3,121 MB between them, each alone
+ * in its own `app.slice/run-u<N>.scope`. `processes:list { live:true }` scanned 547
+ * processes and reported `unaccounted: 0` — a FALSE CLEAN, the direction that hides
+ * residue. The operator was serving from `papercup-release`, so the leftovers of the
+ * gate's own dead runs could not match the signature.
+ *
+ * This is the same failure the foreign pass's `windowConfirmedDead` bypass above was
+ * added to fix ("gating on the signature FIRST made that residue structurally
+ * unreachable"), reached by a second route: there the residue was not OUR repo, here
+ * it is our repo under a sibling directory name.
+ *
+ * So the anchor is the DIRECTORY THAT CONTAINS the checkout — every sibling checkout
+ * of ours matches, and the property that mattered is untouched: it is still a path
+ * anchor, not a name match, so `/usr/bin/papercusp-desktop` still does not match.
+ *
+ * ⚠ Do NOT instead "fix" this by widening `SYSTEMD_RUN_SCOPE_RE` in `scope-class` to
+ * cover the `run-u<N>.scope` form these leftovers use. That regex grants the
+ * `systemd-unit` EXEMPTION, so widening it would classify this residue as accounted-for
+ * and hide it again — permanently, and with a rationale that reads correct.
  */
 export function defaultForeignSignature(repoRoot: string): RegExp {
-  const escaped = repoRoot.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return new RegExp(escaped);
+  const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const workspaceRoot = repoRoot.slice(0, repoRoot.lastIndexOf('/'));
+  // A checkout at the filesystem root (or a bare relative name) has no meaningful
+  // containing workspace — anchoring on "" or "/" would match every process on the
+  // box, which is the opposite of this function's job. Fall back to the checkout.
+  if (workspaceRoot.length <= 1) return new RegExp(escape(repoRoot));
+  return new RegExp(`${escape(workspaceRoot)}/`);
 }
