@@ -40,6 +40,11 @@ import {
   WORKSPACE_RERUN_TIMEOUT_MS,
   GREEN_CHECKPOINT_POST_SUITE_HEAP_MB,
   GREEN_CHECKPOINT_RESERVED_MAX_FORKS,
+  GATE_ESCALATION_SOURCE,
+  DETECTOR_ESCALATION_SOURCE,
+  ESCALATION_CLASS_META_KEY,
+  RELEASE_NOT_GREEN_ESCALATION_CLASS,
+  isReleaseNotGreenEscalation,
   type CheckpointExec,
 } from "./green-checkpoint";
 import { releaseConfig, type ReleaseConfig } from "./release-config";
@@ -1911,5 +1916,193 @@ describe("realCheckpointDeps.escalate — release-not-green survives the idle-TT
         ttlMs: TTL_MS,
       }),
     ).toHaveLength(1);
+  });
+});
+
+// WI-39686: the green-recovery sweep matched on escalation SOURCE alone, while
+// `clearEscalation`'s interface doc promised only the `release-not-green` row.
+//
+// ⚠ READ THIS BEFORE "FIXING" A FAILURE HERE: the defect these tests guard is
+// LATENT, not live. At the time of writing this file has exactly two
+// `openEscalation` call sites — the release-not-green row and the detector alert
+// — and the detector already carries its own DISTINCT source, so the old
+// source-only sweep resolved precisely the one row it should. Nothing was
+// misbehaving in production. What these tests protect is the NEXT author who
+// opens a row under the gate's own source: under the old sweep it would be
+// silently self-resolved on the advance path, in its own run. That is exactly
+// what D-008 nearly did to the detector alert, and the near-miss is why the
+// class marker exists. So a failure here is not "an alarm is being cleared
+// wrongly today" — it is "the trap has been re-armed".
+describe("clearEscalation — sweeps the release-not-green CLASS, not the whole source (WI-39686)", () => {
+  function row(extra: Record<string, unknown>): Record<string, unknown> {
+    return { msg_id: "esc-1", status: "open", ...extra };
+  }
+
+  describe("isReleaseNotGreenEscalation", () => {
+    it("matches the class the sweep owns", () => {
+      expect(
+        isReleaseNotGreenEscalation(
+          row({
+            source: GATE_ESCALATION_SOURCE,
+            [ESCALATION_CLASS_META_KEY]: RELEASE_NOT_GREEN_ESCALATION_CLASS,
+          }),
+        ),
+      ).toBe(true);
+    });
+
+    // The backward-compatibility arm, and it is load-bearing rather than lenient:
+    // rows opened BEFORE the class marker existed carry the source only, and one
+    // may be open on a genuinely red gate at deploy time. If the predicate
+    // demanded the marker, that row could never be resolved again — an immortal
+    // human-facing alarm. Deleting this case to "tighten" the predicate would
+    // reintroduce precisely that.
+    it("still matches a legacy row that predates the class marker", () => {
+      expect(
+        isReleaseNotGreenEscalation(row({ source: GATE_ESCALATION_SOURCE })),
+      ).toBe(true);
+    });
+
+    it("does NOT match another class opened under the gate's own source", () => {
+      expect(
+        isReleaseNotGreenEscalation(
+          row({
+            source: GATE_ESCALATION_SOURCE,
+            [ESCALATION_CLASS_META_KEY]: "some-future-gate-alert",
+          }),
+        ),
+      ).toBe(false);
+    });
+
+    it("does not match the detector alert, or a foreign row", () => {
+      expect(
+        isReleaseNotGreenEscalation(row({ source: DETECTOR_ESCALATION_SOURCE })),
+      ).toBe(false);
+      expect(isReleaseNotGreenEscalation(row({ source: "some-other-tool" }))).toBe(
+        false,
+      );
+      expect(isReleaseNotGreenEscalation(null)).toBe(false);
+      expect(isReleaseNotGreenEscalation(undefined)).toBe(false);
+    });
+  });
+
+  // COUPLING half — a predicate unit test alone would stay green if the sweep
+  // stopped calling it and went back to a bare source comparison. This drives
+  // the REAL `clearEscalation` dep against a mixed set of open rows.
+  describe("the real clearEscalation dep", () => {
+    it("resolves the release-not-green row and LEAVES a sibling gate-sourced row open", async () => {
+      resolveEscalationCalls.length = 0;
+      openEscalationRows = [
+        row({
+          msg_id: "esc-release-not-green",
+          source: GATE_ESCALATION_SOURCE,
+          [ESCALATION_CLASS_META_KEY]: RELEASE_NOT_GREEN_ESCALATION_CLASS,
+        }),
+        row({
+          msg_id: "esc-legacy-unmarked",
+          source: GATE_ESCALATION_SOURCE,
+        }),
+        row({
+          msg_id: "esc-future-gate-alert",
+          source: GATE_ESCALATION_SOURCE,
+          [ESCALATION_CLASS_META_KEY]: "some-future-gate-alert",
+        }),
+        row({ msg_id: "esc-detector", source: DETECTOR_ESCALATION_SOURCE }),
+        row({ msg_id: "esc-foreign", source: "some-other-tool" }),
+      ];
+
+      const { exec } = makeExec([]);
+      await realCheckpointDeps(cfg, exec).clearEscalation?.();
+
+      const resolved = resolveEscalationCalls.map((c) => c.msg_id).sort();
+      // Behaviour-PRESERVING for everything that exists today: the real row and
+      // the legacy unmarked row are still resolved on recovery.
+      expect(resolved).toEqual(["esc-legacy-unmarked", "esc-release-not-green"]);
+      // ...and the rows the old source-only sweep would have wrongly swept are
+      // untouched. `esc-future-gate-alert` is the whole point of the change.
+      expect(resolved).not.toContain("esc-future-gate-alert");
+      expect(resolved).not.toContain("esc-detector");
+      expect(resolved).not.toContain("esc-foreign");
+    });
+
+    // CALIBRATION, mirroring the WI-36238 test above: prove the assertion turns
+    // on the class scoping rather than on some unrelated property of the fixture
+    // (a missing field, the resolve mock never being called at all). The OLD
+    // predicate is inlined here as the control — against the same rows it sweeps
+    // three of them, so the test above genuinely discriminates.
+    it("CALIBRATION: the old source-only predicate would have swept the sibling rows", () => {
+      const oldPredicate = (e: Record<string, unknown>) =>
+        e.source === "green-checkpoint";
+      const rows = [
+        row({ msg_id: "esc-release-not-green", source: GATE_ESCALATION_SOURCE, [ESCALATION_CLASS_META_KEY]: RELEASE_NOT_GREEN_ESCALATION_CLASS }),
+        row({ msg_id: "esc-legacy-unmarked", source: GATE_ESCALATION_SOURCE }),
+        row({ msg_id: "esc-future-gate-alert", source: GATE_ESCALATION_SOURCE, [ESCALATION_CLASS_META_KEY]: "some-future-gate-alert" }),
+      ];
+      expect(rows.filter(oldPredicate)).toHaveLength(3);
+      expect(rows.filter(isReleaseNotGreenEscalation)).toHaveLength(2);
+    });
+  });
+
+  // The dedup guard in `escalate` had the SAME over-broad match, in the direction
+  // that loses a page: any gate-sourced row being open suppressed the red
+  // escalation from opening at all.
+  describe("the escalate dedup guard", () => {
+    it("still opens the red escalation when only a DIFFERENT gate-sourced class is open", async () => {
+      openEscalationCalls.length = 0;
+      openEscalationRows = [
+        row({
+          msg_id: "esc-future-gate-alert",
+          source: GATE_ESCALATION_SOURCE,
+          [ESCALATION_CLASS_META_KEY]: "some-future-gate-alert",
+        }),
+      ];
+
+      const { exec } = makeExec([]);
+      await realCheckpointDeps(cfg, exec).escalate?.(
+        "green-checkpoint held: 65e99488 not green",
+        "the gate is red",
+      );
+      expect(openEscalationCalls).toHaveLength(1);
+      expect(
+        (openEscalationCalls[0]!.input.meta as Record<string, unknown>)[
+          ESCALATION_CLASS_META_KEY
+        ],
+      ).toBe(RELEASE_NOT_GREEN_ESCALATION_CLASS);
+    });
+
+    it("still suppresses a duplicate while its OWN row is open (transition-only preserved)", async () => {
+      openEscalationCalls.length = 0;
+      openEscalationRows = [
+        row({
+          msg_id: "esc-release-not-green",
+          source: GATE_ESCALATION_SOURCE,
+          [ESCALATION_CLASS_META_KEY]: RELEASE_NOT_GREEN_ESCALATION_CLASS,
+        }),
+      ];
+
+      const { exec } = makeExec([]);
+      await realCheckpointDeps(cfg, exec).escalate?.(
+        "green-checkpoint held: 65e99488 not green",
+        "the gate is red",
+      );
+      expect(openEscalationCalls).toHaveLength(0);
+    });
+
+    it("still suppresses a duplicate while a LEGACY unmarked row is open", async () => {
+      openEscalationCalls.length = 0;
+      openEscalationRows = [
+        row({ msg_id: "esc-legacy-unmarked", source: GATE_ESCALATION_SOURCE }),
+      ];
+
+      const { exec } = makeExec([]);
+      await realCheckpointDeps(cfg, exec).escalate?.(
+        "green-checkpoint held: 65e99488 not green",
+        "the gate is red",
+      );
+      expect(openEscalationCalls).toHaveLength(0);
+    });
+  });
+
+  afterAll(() => {
+    openEscalationRows = [];
   });
 });
