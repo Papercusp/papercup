@@ -28,6 +28,13 @@ import {
 } from '../../scorecards';
 import { scorecardInstrumentSnapshotSchema, scorecardRatingEntrySchema } from './evaluate';
 import { acceptanceGraderLabelPrefix } from '../../acceptance-grader';
+import {
+  GRADING_INTEGRITY_RUBRIC_REF,
+  gradingAuditGateEnabled,
+  needsGradingAudit,
+} from '../../grading-integrity';
+import { auditVerdictFromRatings, recordGradingAudit } from '../../scorecards';
+import type { ScorecardGradingAudit } from '../../harness/improvements/observation-types';
 import { killTask } from '../../task-manager/control';
 import { listTasks } from '../../task-manager/store';
 import { evaluateCriterionTestChecks } from '../../rubrics-criterion-checks';
@@ -45,7 +52,7 @@ export const scorecardEmitArgs = z
     instrumentSnapshots: z.record(z.string().min(1), scorecardInstrumentSnapshotSchema).optional(),
     subject: z
       .object({
-        kind: z.enum(['agent-run', 'session', 'work-item', 'plan', 'pot', 'rubric']).optional(),
+        kind: z.enum(['agent-run', 'session', 'work-item', 'plan', 'pot', 'rubric', 'scorecard']).optional(),
         ref: z.string().min(1).max(200),
         windowStart: z.string().min(1).max(64).optional(),
         windowEnd: z.string().min(1).max(64).optional(),
