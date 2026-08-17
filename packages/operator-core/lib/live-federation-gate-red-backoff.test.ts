@@ -119,7 +119,9 @@ describe('live-federation gate: a RED backs off instead of re-running the full h
 
   it('stamps AFTER the filing block, so all three tracked branches reach it', () => {
     // fresh marker / existing open duplicate / freshly filed all converge on the same stamp.
-    const idxFileEi = gate.indexOf('if file_ei "$TITLE" "$BODY"; then');
+    // The RED filing call may carry trailing args (e.g. the condition-upsert key) — the
+    // guard is the block ORDERING, not the call's exact argv.
+    const idxFileEi = gate.search(/^\s*if file_ei "\$TITLE" "\$BODY".*; then$/m);
     const idxUntracked = gate.indexOf('red_tracked=0');
     const idxStamp = gate.indexOf('if [ "$red_tracked" = 1 ]; then');
     expect(idxFileEi).toBeGreaterThan(0);
