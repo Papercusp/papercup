@@ -123,6 +123,8 @@ test.describe('/adv Harnesses tab — hive member model (P-001/P-002/P-003)', ()
     const { lanesSlugs, sync } = await stubAndRecord(page);
     const mounted = await gotoHarnessesTab(page, `slug=${HIVE}&harness=${MEMBER_RD}`, DOCK_MOUNT);
     assertMounted(mounted, SKIP_MSG);
+    // A never-hit stub means the rail below rendered from real, unstubbed rows.
+    await sync.waitForServed(['harnessProjects.lite']);
 
     // The deep link is restored exactly, the rail marks the member focused
     // (not the root), and the dock actually fetched for the member.
@@ -135,6 +137,8 @@ test.describe('/adv Harnesses tab — hive member model (P-001/P-002/P-003)', ()
     const { lanesSlugs, sync } = await stubAndRecord(page);
     const mounted = await gotoHarnessesTab(page, `slug=${HIVE}`, DOCK_MOUNT);
     assertMounted(mounted, SKIP_MSG);
+    // A never-hit stub means the rail below rendered from real, unstubbed rows.
+    await sync.waitForServed(['harnessProjects.lite']);
 
     // Root is a real harness → it is the default focused member.
     await expectRailActive(page, HIVE, MEMBER_RD);
@@ -145,6 +149,8 @@ test.describe('/adv Harnesses tab — hive member model (P-001/P-002/P-003)', ()
     const { sync } = await stubAndRecord(page);
     const mounted = await gotoHarnessesTab(page, `slug=${HIVE}&harness=from-a-different-hive`, DOCK_MOUNT);
     assertMounted(mounted, SKIP_MSG);
+    // A never-hit stub means the rail below rendered from real, unstubbed rows.
+    await sync.waitForServed(['harnessProjects.lite']);
 
     // Ignored → root default, and the stale value is dropped from the URL
     // (isHarnessParamStale → setHarness(null)).
@@ -156,6 +162,8 @@ test.describe('/adv Harnesses tab — hive member model (P-001/P-002/P-003)', ()
     const { lanesSlugs, sync } = await stubAndRecord(page);
     const mounted = await gotoHarnessesTab(page, `slug=${SOLO}`, DOCK_MOUNT);
     assertMounted(mounted, SKIP_MSG);
+    // A never-hit stub means the rail below rendered from real, unstubbed rows.
+    await sync.waitForServed(['harnessProjects.lite']);
 
     // A single-member hive renders no rail (nothing to pick) — the dock is
     // byte-identical to the pre-plan single-harness view.
@@ -167,6 +175,8 @@ test.describe('/adv Harnesses tab — hive member model (P-001/P-002/P-003)', ()
     const { lanesSlugs, sync } = await stubAndRecord(page);
     const mounted = await gotoHarnessesTab(page, `slug=${HIVE}`, DOCK_MOUNT);
     assertMounted(mounted, SKIP_MSG);
+    // A never-hit stub means the rail below rendered from real, unstubbed rows.
+    await sync.waitForServed(['harnessProjects.lite']);
 
     // Starts on the root (default); click the marketing member in the rail.
     await expectRailActive(page, HIVE, MEMBER_MKT);
@@ -183,6 +193,8 @@ test.describe('/adv Harnesses tab — hive member model (P-001/P-002/P-003)', ()
     // dock / no "Add panel" — so the mount oracle is the list container.
     const mounted = await gotoHarnessesTab(page, `slug=${HIVE}&scope=all`, { testId: 'pot-workspace-cards' });
     assertMounted(mounted, SKIP_MSG);
+    // A never-hit stub means the rail below rendered from real, unstubbed rows.
+    await sync.waitForServed(['harnessProjects.lite']);
 
     // Drill into the R&D member. The list is flat: each pot (hive root + member
     // harnesses) is its own row, so the member row is a sibling of the hive
