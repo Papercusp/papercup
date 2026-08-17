@@ -29,6 +29,7 @@ import { installFlagOverrideStore } from '../flag-override-store';
 import { ensureFlagChangeListener } from '../flag-change-listener';
 import { startGatewayService, DEFAULT_GATEWAY_PORT } from './launch';
 import { reportRuntimeVintageOnBoot } from '../runtime-vintage';
+import { installStdioPeerGuard } from '../process-supervision/stdio-peer-guard';
 
 /** Hard ceiling on the SIGTERM drain before we force-exit — DEFENSE-IN-DEPTH behind gateway.close()'s
  *  own GRACEFUL_SHUTDOWN_MS (~5s) grace. MUST stay below the supervisor's stop budget (systemd
@@ -110,6 +111,23 @@ export function gatewayLogLine(m: string): void {
  * fatal policy (both entries exit(1) so the supervisor restarts us, fail-closed).
  */
 export async function runGatewaySidecarMain(): Promise<void> {
+  // (WI-39599) Break the broken-stdio amplification loop BEFORE anything can write.
+  // This process reports every fault — including the `uncaughtException` backstop
+  // below — through gatewayLogLine, whose `console.log` half is deliberately
+  // OUTSIDE its try/catch. Once our stdio peer dies (the operator that spawned us
+  // is SIGKILLed, so both pipe read ends close), that write fails, the stream
+  // emits an unhandled 'error', Node throws it as an uncaughtException, and the
+  // handler reports it by writing again — unbounded, ~1.00 core for as long as the
+  // orphan lives. A fault handler must not report through a channel that can raise
+  // the same fault class, so absorb the stream error rather than policing the
+  // reporter. The file half of gatewayLogLine is unaffected and stays readable.
+  //
+  // serve.ts installs this at module scope, which already covered the PACKAGED
+  // re-exec divert; installing it here covers the two entries that never load
+  // serve.ts (bin.ts and the `papercup-inference-gateway` systemd unit). The guard
+  // is idempotent, so the packaged path keeps the single install it already had.
+  installStdioPeerGuard();
+
   const HARD_STOP_MS = hardStopMs();
   // Runtime flag overrides (codex-gateway-chatgpt-live-2026-07-09): `getFlag()` consults the
   // PG override store ONLY in a process that installed it. That call used to live exclusively in
