@@ -853,6 +853,176 @@ export function resolveCheckpointProcessGroupId(pid: number): number | null {
   }
 }
 
+/** One row of the host process table, as `ps -eo pid=,ppid=,pgid=` reports it. */
+export interface CheckpointProcRow {
+  pid: number;
+  ppid: number;
+  pgid: number;
+}
+
+/** WI-39607: which survivors a NORMALLY-exiting run must sweep before `process.exit()`.
+ *
+ * ── WHY THIS EXISTS AT ALL ───────────────────────────────────────────────────
+ *
+ * armSelfWatchdog's blanket `kill(-pgid)` is the ONLY thing in this file that ever
+ * reaped a wedged `runCmd` worker, and it fires exclusively on ABNORMAL termination
+ * (watchdog fire, or the parent killing the detached child). A run that finishes and
+ * exits in good order swept nothing — so a vitest/tsx worker stuck in `ep_poll` simply
+ * outlived it, reparented to `systemd --user`, and held its full RSS forever. Measured
+ * on this box 2026-08-17: two survivors aged 8h17m and 17h33m — 2.8x and 5.8x
+ * SELF_WATCHDOG_MS — idle at 0.000/0.001 cores, holding 763 MB and 1,722 MB, each alone
+ * in its own `app.slice/run-u<N>.scope`, with no ledger row (so `processes:kill {taskId}`
+ * answers `task_not_found`) and no clearing path of any kind.
+ *
+ * ── WHY THE GROUP, NOT THE DESCENDANT TREE ───────────────────────────────────
+ *
+ * The obvious instrument — walk our ppid tree — would have MISSED both measured
+ * survivors, and missed them silently. Their direct parent died first, so the kernel
+ * had already reparented them to pid 1/`systemd --user`: by the time anyone looked they
+ * were no longer our descendants. Process-GROUP membership is not disturbed by
+ * reparenting, and both still carried the original pgid. So the group is the instrument
+ * that actually holds, which is the same reason armSelfWatchdog kills `-pgid`.
+ *
+ * The descendant set is UNION'd in rather than replaced: `runCmd` detaches (its own new
+ * pgid) whenever `killProcessGroupOnTimeout` is set, which deliberately removes those
+ * children from the group safety net. Neither set is a superset of the other.
+ *
+ * ── WHY SELF AND ANCESTORS ARE EXCLUDED ──────────────────────────────────────
+ *
+ * The watchdog can afford `kill(-pgid)` because it is tearing the run down; this path
+ * must still reach `process.exit(code)` afterwards. On the MANUAL path the group LEADER
+ * is the `bash -c` wrapper that owns our stdout (see resolveCheckpointProcessGroupId),
+ * so signalling the bare group would kill the wrapper — discarding the exit code and the
+ * `__GREEN_CHECKPOINT_RESULT__` marker that WI-38688 and EI-20513710295890636 both exist
+ * to protect. Walking up from `selfPid` and excluding that chain is what keeps this a
+ * survivor sweep rather than a second, subtly-different self-kill.
+ *
+ * Pure — no `ps`, no signals, no clock. The caller supplies the table.
+ */
+export function checkpointSweepTargets(
+  table: ReadonlyArray<CheckpointProcRow>,
+  selfPid: number,
+  selfPgid: number,
+): number[] {
+  const byPid = new Map<number, CheckpointProcRow>();
+  for (const row of table) byPid.set(row.pid, row);
+
+  // Our own ancestor chain. Bounded and cycle-guarded: a malformed table must degrade
+  // to "protect fewer ancestors", never to a hang inside an exit path.
+  const ancestors = new Set<number>();
+  let cursor = byPid.get(selfPid)?.ppid;
+  for (let hops = 0; cursor && cursor > 1 && !ancestors.has(cursor) && hops < 64; hops += 1) {
+    ancestors.add(cursor);
+    cursor = byPid.get(cursor)?.ppid;
+  }
+
+  const childrenOf = new Map<number, number[]>();
+  for (const row of table) {
+    if (row.pid === row.ppid) continue; // a self-parent row would loop the walk
+    const bucket = childrenOf.get(row.ppid);
+    if (bucket) bucket.push(row.pid);
+    else childrenOf.set(row.ppid, [row.pid]);
+  }
+  const descendants = new Set<number>();
+  const stack = [selfPid];
+  while (stack.length > 0) {
+    const parent = stack.pop()!;
+    for (const child of childrenOf.get(parent) ?? []) {
+      if (child === selfPid || descendants.has(child)) continue;
+      descendants.add(child);
+      stack.push(child);
+    }
+  }
+
+  const targets: number[] = [];
+  for (const row of table) {
+    if (row.pid <= 1 || row.pid === selfPid || ancestors.has(row.pid)) continue;
+    const sharesOurGroup = selfPgid > 0 && row.pgid === selfPgid;
+    if (sharesOurGroup || descendants.has(row.pid)) targets.push(row.pid);
+  }
+  return targets;
+}
+
+/** Read the host process table. `null` (not `[]`) on any failure — an unreadable table
+ *  must never be mistaken for "nothing survived", which is the direction that hides a leak. */
+export function readCheckpointProcTable(): CheckpointProcRow[] | null {
+  try {
+    const r = spawnSync("ps", ["-eo", "pid=,ppid=,pgid="], {
+      encoding: "utf8",
+      maxBuffer: 8 * 1024 * 1024,
+    });
+    if (r.error) return null;
+    const out = `${r.stdout ?? ""}`.trim();
+    if (!out) return null;
+    const rows: CheckpointProcRow[] = [];
+    for (const line of out.split("\n")) {
+      const [a, b, c] = line.trim().split(/\s+/);
+      const pid = Number(a);
+      const ppid = Number(b);
+      const pgid = Number(c);
+      if (!Number.isSafeInteger(pid) || pid <= 0) continue;
+      if (!Number.isSafeInteger(ppid) || !Number.isSafeInteger(pgid)) continue;
+      rows.push({ pid, ppid, pgid });
+    }
+    return rows.length > 0 ? rows : null;
+  } catch {
+    return null;
+  }
+}
+
+export interface SweepSurvivorsOptions {
+  pid?: number;
+  readProcTable?: () => ReadonlyArray<CheckpointProcRow> | null;
+  resolveProcessGroupId?: (pid: number) => number | null;
+  kill?: (pid: number, sig: NodeJS.Signals) => void;
+  log?: (m: string) => void;
+}
+
+/** WI-39607: SIGKILL every survivor of THIS run before a normal exit. Returns the pids signalled.
+ *
+ * Best-effort by construction and never throws: this runs between `lock.release()` and
+ * `process.exit(code)`, so a broken `ps`, a permission error, or a racing exit must all
+ * degrade to "swept less" rather than cost the caller its exit code or its verdict marker.
+ */
+export function sweepCheckpointSurvivors(
+  opts: SweepSurvivorsOptions = {},
+): number[] {
+  const selfPid = opts.pid ?? process.pid;
+  const readTable = opts.readProcTable ?? readCheckpointProcTable;
+  const resolvePgid = opts.resolveProcessGroupId ?? resolveCheckpointProcessGroupId;
+  const kill = opts.kill ?? ((p: number, sig: NodeJS.Signals) => process.kill(p, sig));
+  const log = opts.log ?? ((m: string) => console.error(m));
+  try {
+    const table = readTable();
+    if (!table) return [];
+    const targets = checkpointSweepTargets(
+      table,
+      selfPid,
+      resolvePgid(selfPid) ?? selfPid,
+    );
+    if (targets.length === 0) return [];
+    const killed: number[] = [];
+    for (const target of targets) {
+      try {
+        kill(target, "SIGKILL");
+        killed.push(target);
+      } catch {
+        /* already gone, or not ours to signal — never fail the exit path */
+      }
+    }
+    if (killed.length > 0) {
+      log(
+        `swept ${killed.length} surviving process(es) from this run before exit ` +
+          `(WI-39607 — they would otherwise reparent to systemd and hold their RSS ` +
+          `indefinitely): ${killed.join(", ")}`,
+      );
+    }
+    return killed;
+  } catch {
+    return [];
+  }
+}
+
 /** WI-4528 (EI-10800 class): how long the self-watchdog waits for an ASYNC `onFire` — the loud
  *  RED-verdict emit + the urgent attention-notify — to actually SETTLE before it delivers the
  *  guaranteed SIGKILL. Negligible against the 3h watchdog, and BOUNDED so a wedged/hanging emit
@@ -9684,6 +9854,12 @@ if (require.main === module) {
     const releaseAndExit = (code: number): never => {
       watchdog.cancel();
       lock.release();
+      // WI-39607: sweep survivors LAST — after the verdict has been emitted and the lock
+      // freed, and immediately before the exit. Ordering is the whole risk here: run it
+      // any earlier and it races the `__GREEN_CHECKPOINT_RESULT__` marker that every
+      // downstream reader depends on. It excludes this process and its ancestors, so the
+      // exit code below is still ours to return.
+      sweepCheckpointSurvivors();
       process.exit(code);
     };
     // EI-10680: this process previously had NO signal handler for SIGTERM/SIGINT, so an

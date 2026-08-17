@@ -78,6 +78,8 @@ import {
   checkpointRunLockDir,
   createTerminationSignalHandler,
   armSelfWatchdog,
+  checkpointSweepTargets,
+  sweepCheckpointSurvivors,
   isWorkerPoolCrash,
   parseCrashedWorkspaces,
   attemptWorkerCrashAbsorption,
@@ -676,6 +678,121 @@ describe("armSelfWatchdog (WI-1319 root fix (c) — orphaned OS process past DBO
     armSelfWatchdog({ release }, { ms: 1000, kill, pid: 999, log: () => {} });
     expect(() => vi.advanceTimersByTime(1000)).not.toThrow();
     expect(kill).toHaveBeenCalledWith(-999, "SIGKILL");
+  });
+});
+
+describe("WI-39607: a normally-exiting run sweeps its own survivors", () => {
+  // The shape MEASURED on this box 2026-08-17. The two orphans that motivated this had
+  // already been REPARENTED (ppid 4035 = `systemd --user`) because their direct parent
+  // died first — while still carrying the original pgid. Every row below preserves that.
+  const CHECKPOINT = 213050; // the run: group leader on the scheduled path
+  const SYSTEMD = 4035;
+  const measuredTable = [
+    { pid: 1, ppid: 0, pgid: 1 },
+    { pid: SYSTEMD, ppid: 1, pgid: SYSTEMD },
+    { pid: CHECKPOINT, ppid: SYSTEMD, pgid: CHECKPOINT },
+    // A live child still attached to the run.
+    { pid: 213099, ppid: CHECKPOINT, pgid: CHECKPOINT },
+    // THE ACTUAL LEAK: reparented away from us, but still in our group.
+    { pid: 253520, ppid: SYSTEMD, pgid: CHECKPOINT },
+    // An unrelated peer agent's process — different group, not our descendant.
+    { pid: 900001, ppid: SYSTEMD, pgid: 900001 },
+  ];
+
+  it("reaps a survivor that reparented away but kept our pgid", () => {
+    const targets = checkpointSweepTargets(measuredTable, CHECKPOINT, CHECKPOINT);
+    expect(targets).toContain(253520);
+    expect(targets).toContain(213099);
+  });
+
+  it("CONTROL: a descendant-only walk would MISS that survivor — which is why we key on the group", () => {
+    // Deliberately-wrong implementation kept in the test file as a control (never a
+    // mutation of the real source). If this ever starts finding 253520, the control has
+    // stopped being wrong and the assertion above proves nothing.
+    const descendantsOnly = (table: typeof measuredTable, root: number): number[] => {
+      const out: number[] = [];
+      const stack = [root];
+      while (stack.length > 0) {
+        const p = stack.pop()!;
+        for (const r of table) {
+          if (r.ppid === p && !out.includes(r.pid) && r.pid !== root) {
+            out.push(r.pid);
+            stack.push(r.pid);
+          }
+        }
+      }
+      return out;
+    };
+    expect(descendantsOnly(measuredTable, CHECKPOINT)).not.toContain(253520);
+    // ...and the real implementation does find it. Calibration: without this the control
+    // would also "pass" if checkpointSweepTargets returned nothing at all.
+    expect(checkpointSweepTargets(measuredTable, CHECKPOINT, CHECKPOINT)).toContain(253520);
+  });
+
+  it("never signals itself, its ancestors, or an unrelated group", () => {
+    const targets = checkpointSweepTargets(measuredTable, CHECKPOINT, CHECKPOINT);
+    expect(targets).not.toContain(CHECKPOINT); // self — process.exit() still has to run
+    expect(targets).not.toContain(SYSTEMD); // ancestor
+    expect(targets).not.toContain(1);
+    expect(targets).not.toContain(900001); // a peer agent's process
+  });
+
+  it("spares the `bash -c` wrapper that leads the group on the MANUAL path", () => {
+    // Manual runs live in a transient unit whose wrapper is the group leader and owns our
+    // stdout; killing it before process.exit() discards the exit code AND the
+    // __GREEN_CHECKPOINT_RESULT__ marker (the WI-38688 / EI-20513710295890636 hazard).
+    const WRAPPER = 2858004;
+    const NODE = 2858438;
+    const manualTable = [
+      { pid: 1, ppid: 0, pgid: 1 },
+      { pid: WRAPPER, ppid: 1, pgid: WRAPPER },
+      { pid: NODE, ppid: WRAPPER, pgid: WRAPPER },
+      { pid: 2858500, ppid: NODE, pgid: WRAPPER }, // a worker
+    ];
+    const targets = checkpointSweepTargets(manualTable, NODE, WRAPPER);
+    expect(targets).not.toContain(WRAPPER);
+    expect(targets).not.toContain(NODE);
+    expect(targets).toEqual([2858500]);
+  });
+
+  it("also reaps a DETACHED child, which left our group and so is invisible to a group-only sweep", () => {
+    // runCmd detaches whenever killProcessGroupOnTimeout is set, deliberately removing
+    // those children from the self-watchdog's `kill(-pgid)` net. The descendant leg covers them.
+    const detachedTable = [
+      { pid: CHECKPOINT, ppid: SYSTEMD, pgid: CHECKPOINT },
+      { pid: 700001, ppid: CHECKPOINT, pgid: 700001 }, // detached: its own group
+    ];
+    expect(checkpointSweepTargets(detachedTable, CHECKPOINT, CHECKPOINT)).toContain(700001);
+  });
+
+  it("an UNREADABLE process table sweeps nothing rather than reporting a clean run", () => {
+    const kill = vi.fn();
+    expect(
+      sweepCheckpointSurvivors({
+        pid: CHECKPOINT,
+        readProcTable: () => null,
+        resolveProcessGroupId: () => CHECKPOINT,
+        kill,
+        log: () => {},
+      }),
+    ).toEqual([]);
+    expect(kill).not.toHaveBeenCalled();
+  });
+
+  it("a kill that throws never fails the exit path, and the rest still get swept", () => {
+    const kill = vi.fn((pid: number) => {
+      if (pid === 213099) throw new Error("ESRCH — already gone");
+    });
+    const killed = sweepCheckpointSurvivors({
+      pid: CHECKPOINT,
+      readProcTable: () => measuredTable,
+      resolveProcessGroupId: () => CHECKPOINT,
+      kill,
+      log: () => {},
+    });
+    expect(killed).toContain(253520);
+    expect(killed).not.toContain(213099);
+    expect(kill).toHaveBeenCalledWith(253520, "SIGKILL");
   });
 });
 
