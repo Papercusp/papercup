@@ -115,6 +115,33 @@ waiting on a decision; every open row has a named owner and a concrete flip cond
 >    `PERF_MESH_PER_PEER_BYTES`). This is the **fourth** time in this lane the instrument, not the
 >    substrate, was the defect (serial per-reader deadline; budget drift; hyperswarm's default
 >    `MAX_PEERS=64`; now per-peer RSS vs host memory).
+> 5. ⚠⚠ **AND A FIFTH — THE HOST-CONTENTION GATE ITSELF COULD NEVER PASS, WHICH WAS SILENTLY
+>    SUPPRESSING REGRESSION FINDINGS** (fixed 2026-08-17, `perf/runner.ts computeHostHealth`).
+>    `hostLoad.oversubscribed` was set by a swap-page delta > **1,000 pages (~4MB) over a whole
+>    run**. Measured on this host: a genuinely quiet moment — PSI memory `some avg60` = **0.76%**,
+>    i.e. the kernel recorded essentially no stall — still moved **3,364** pages (3.4× the
+>    threshold), and a 40s idle sample with no perf run at all moved **909,444**. Ambient rate is
+>    ~**1.5M pages / 150s**. So the flag was pinned true and every run inherited it.
+>    **This is not a conservative failure.** `oversubscribed` makes `p2p-perf-actions.ts`
+>    `fileFindings` skip auto-filing regressions and SLO violations, so a permanently-true confound
+>    **hides real regressions** — while simultaneously blocking every `--update-baseline`
+>    promotion, so the baseline could not be refreshed either. It failed in both directions at once.
+>    **Fix:** PSI is now the AUTHORITATIVE memory-contention signal (`some avg60 > 5%`), and the
+>    page-delta is demoted to a fallback for hosts without PSI. The threshold is corroborated twice
+>    independently — the 2026-08-02 audit in that file called ~2-5% "low, not the sustained
+>    thrashing the verdict implies", and this host's own infra watchdog alerts at memory
+>    `full avg60 >= 5` (`some` >= `full` always, so 5-on-`some` is the stricter reading). PSI also
+>    catches reclaim/page-cache stall at *zero* swap I/O, which the page-count check missed entirely.
+>    `swapping` is renamed `memoryContended`, with a new `memoryContendedReason`
+>    (`psi-stall` | `swap-pages-fallback` | `null`) so no reader has to infer which branch fired.
+>    **Verified in both directions with the real CLI**, not only unit tests: `oversubscribed:false`
+>    at PSI 0.76% (the old logic refused this), and `memoryContendedReason:'psi-stall'` at PSI 6.03%
+>    and 8.7%. A permanent pre-fix control (`decideByPageDeltaAlone`) plus a calibration case live in
+>    `runner.test.ts` so a future "fix" that merely stops flagging cannot pass.
+>    **Consequence for this document:** every "host oversubscribed, findings suppressed" note in the
+>    runs above was produced by the *unsatisfiable* threshold, so it does NOT establish that those
+>    runs were actually contended — and any regression those runs would have filed was silently
+>    dropped. Re-read such verdicts with that in mind.
 >
 > **The flip condition is therefore no longer single.** It is now at least: (a) one gate run
 > reporting `local_matrix=OK` (§3 row 0, unchanged, su-c531b's row); **(b)** a post-fix
