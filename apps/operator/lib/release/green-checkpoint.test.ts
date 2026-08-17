@@ -819,6 +819,46 @@ describe("runGreenCheckpoint", () => {
     expect(evidence[0]).toContain("emitter=gate-run");
   });
 
+  /**
+   * EI-20709645463022690 — the DATABASE half of the same evidence, pinned BEHAVIOURALLY here
+   * rather than by a source regex, because the property that matters is "the line reaches the
+   * persisted transcript", not "the call appears in the file".
+   *
+   * Why this test and not the CLI one: the gate subprocess inherits the spawning operator's env,
+   * so a pot's suite can dial the papercusp operator's database and report every one of the pot's
+   * tables as missing — a well-formed "schema drift — 39 table(s) missing" verdict about a
+   * database that was never the subject (observed on sidestage, candidate d6fee86). The CLI
+   * entrypoint's console line is NOT captured by scheduler/routine invocations (WI-38250), and
+   * those are precisely the unattended runs that red-pin a pot, so the orchestrator logger is the
+   * only emission that actually helps a responder.
+   */
+  it("records gate-run DATABASE evidence through the orchestrator logger, credentials stripped", async () => {
+    const c1 = await commit("a", "1", "c1");
+    await git(repo, ["branch", "ready", c1]);
+    await commit("a", "2", "c2");
+    const logs: string[] = [];
+    const { deps } = stubDeps(true);
+    deps.log = (line) => logs.push(line);
+
+    const prior = process.env.DATABASE_URL;
+    // the measured real-world value: a transient gym-loop DB carrying 0 of the pot's tables
+    process.env.DATABASE_URL =
+      "postgres://test:secretpw@localhost:32787/papercusp_gym_loop_ab12cd";
+    try {
+      await runGreenCheckpoint(cfg(), deps, { noPush: true });
+    } finally {
+      if (prior === undefined) delete process.env.DATABASE_URL;
+      else process.env.DATABASE_URL = prior;
+    }
+
+    const evidence = logs.filter((line) => line.includes("database:"));
+    expect(evidence).toHaveLength(1);
+    expect(evidence[0]).toContain("localhost:32787/papercusp_gym_loop_ab12cd");
+    expect(evidence[0]).toContain("emitter=gate-run");
+    // a run log is not a place to put a password
+    expect(evidence[0]).not.toContain("secretpw");
+  });
+
   it("advances ready when the candidate is green", async () => {
     const c1 = await commit("a", "1", "c1");
     await git(repo, ["branch", "ready", c1]);
