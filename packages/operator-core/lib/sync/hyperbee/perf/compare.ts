@@ -119,6 +119,18 @@ export interface CompareReport {
    * is a fact the reader needs, not an absence.
    */
   notComparable: NotComparable[];
+  /**
+   * Metric pairs that actually reached the relative test — the DENOMINATOR of
+   * `regressions` (WI-39359). Read the two together: `regressions: 0` means
+   * "none of the `metricsCompared` metrics regressed", NOT "nothing regressed".
+   * Every metric in `notComparable` was never eligible to regress, so a run
+   * reporting a bare zero over a partially-blind metric set is indistinguishable
+   * from a run that genuinely cleared everything — the same trap as an aggregate
+   * computed over a capped fetch and rendered as a confident total.
+   *
+   * Measured 2026-08-17 on the tier1 `ci` baseline: 40 judged, 11 blind of 51.
+   */
+  metricsCompared: number;
 }
 
 export function paramsKey(params: Record<string, string | number | boolean>): string {
@@ -399,6 +411,7 @@ export function compareArtifacts(
     newEntries: [],
     missingEntries: [],
     notComparable: [],
+    metricsCompared: 0,
   };
 
   for (const a of artifacts) {
@@ -446,6 +459,11 @@ export function compareArtifacts(
         });
         continue;
       }
+      // Past the uninformative-floor gate, so this pair IS judged — count it
+      // before the below-floor `continue` below, which is itself a verdict
+      // ("unchanged"), not a skip. This is the denominator `regressions` is
+      // read against (WI-39359).
+      report.metricsCompared++;
       if (Math.abs(curVal - baseVal) < absFloor) continue;
       const relChange = lowerIsBetter
         ? (curVal - baseVal) / Math.max(baseVal, 0.001)
@@ -482,15 +500,23 @@ export function formatCompareReport(report: CompareReport): string {
   } else {
     lines.push('✓ loop-lag SLO held on every scenario');
   }
+  // The regression verdict ALWAYS carries its denominator (WI-39359). A bare
+  // "no metric regressed" over a partially-blind metric set reads as full
+  // coverage; `metricsCompared` is what makes 0-of-40 distinguishable from
+  // 0-of-51.
+  const blind = report.notComparable.length;
+  const coverage =
+    `${report.metricsCompared} metric(s) judged` +
+    (blind ? `, ${blind} NOT COMPARABLE — see below` : '');
   if (report.regressions.length) {
-    lines.push(`▲ regressions vs baseline — ${report.regressions.length} (advisory):`);
+    lines.push(`▲ regressions vs baseline — ${report.regressions.length} of ${coverage} (advisory):`);
     for (const d of report.regressions) {
       lines.push(
         `  ${d.scenario} [${d.paramsKey}] ${d.metric}: ${d.baseline} → ${d.current} ${d.unit} (${pct(d.relChange)} worse)`,
       );
     }
   } else {
-    lines.push('✓ no metric regressed past tolerance');
+    lines.push(`✓ no metric regressed past tolerance — ${coverage}`);
   }
   if (report.improvements.length) {
     lines.push(`▼ improvements — ${report.improvements.length}:`);

@@ -351,6 +351,35 @@ export interface RunSummary {
   };
   regressions: Array<{ scenario: string; paramsKey: string; metric: string; baseline: number; current: number; relChange: number }>;
   improvements: number;
+  /**
+   * Metrics that were never ELIGIBLE to regress — their baseline sits under the
+   * absolute floor, so a relative verdict on them carries no information
+   * (compare.ts `notComparable`). The comparator has always computed this; it
+   * used to die here, so every downstream consumer — the release-facing log
+   * line and p2p-perf-actions' auto-filed findings — reported a regression
+   * count as if coverage were complete (WI-39359).
+   *
+   * MUST be read beside `regressions`: measured 2026-08-17 on the tier1 `ci`
+   * baseline, 11 of 51 metrics (22%) are blind, including the whole hot path —
+   * idleTickMs, decodeMs, deltaTick1Ms, appendCallMs. A 10x regression on
+   * idleTickMs (0.01→0.1ms) cannot be seen by the fleet gate at all.
+   */
+  notComparable: Array<{
+    scenario: string;
+    paramsKey: string;
+    metric: string;
+    unit: string;
+    baseline: number;
+    current: number;
+    floor: number;
+  }>;
+  /**
+   * The denominator for `regressions` — `judged` metrics actually compared vs
+   * `blind` ones skipped as uninformative. `null` when no baseline comparison
+   * ran (there is no coverage to report, which is NOT the same as full
+   * coverage). Never render a regression count without it.
+   */
+  regressionCoverage: { judged: number; blind: number; total: number } | null;
   baselineCompared: boolean;
   /** EI-8843/EI-9145: host contention sampled around the run (max of a
    *  start/end os.loadavg() sample, /cpus; plus a start/end /proc/vmstat
