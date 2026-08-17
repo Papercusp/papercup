@@ -225,3 +225,199 @@ export async function windDownDispositionGateEnabled(): Promise<boolean> {
     return false;
   }
 }
+
+// ─── The 'achieved' acceptance gate (consult-min-max-…-2026-08-17 P-009 / D-004 §2) ──
+//
+// 'achieved' is a CLAIM, and the claim needs acceptance evidence: an acceptance
+// rubric (kind:'acceptance', subjectGoal = the goal) authored POST-pursuit by the
+// goal-mode agent, VETTED against the meta-rubric (a complete meta-scorecard with a
+// linked consult on the CURRENT rubric revision — the same attestation the plan ship
+// gate demands), and GRADED by a NON-owner of the goal. 'killed'/'handoff' are
+// exempt — you don't grade a goal you abandoned.
+//
+// Stop-path posture, same as the disposition gate above: the gate refuses only on a
+// POSITIVE finding. The flag check fails CLOSED (gate off), and every probe fault
+// inside the evaluation resolves toward satisfied — an infra error must never wedge
+// an agent that is trying to stop its own loop. The read path mirrors
+// plan-acceptance-gate.ts (the plan-side twin); deps are injectable so the verdict
+// partition is unit-testable without PG.
+
+export type GoalAcceptanceGateCode =
+  | 'goal_acceptance_rubric_missing'
+  | 'goal_acceptance_rubric_unvetted'
+  | 'goal_acceptance_ungraded'
+  | 'goal_self_graded_only';
+
+export interface GoalAcceptanceVerdict {
+  satisfied: boolean;
+  code?: GoalAcceptanceGateCode;
+  /** Teaching refusal — names the full repair flow, since the refused agent's only
+   *  way forward is this message. */
+  message?: string;
+  rubricId?: string;
+  gradedBy?: string | null;
+}
+
+/** Structural slice of a Rubric the gate reads (keeps the test seam import-free). */
+export interface GoalAcceptanceRubricRef {
+  rubricId: string;
+  criteria: unknown[];
+  proposedBy?: string | null;
+  createdBy?: string | null;
+}
+
+/** Structural slice of a scorecard row the gate reads. */
+export interface GoalAcceptanceCard {
+  createdBy?: string | null;
+  rubricResolved: boolean;
+  missingKeys: string[];
+  synthesized?: boolean;
+  vetting?: { consultId?: string | null; rubricRevision?: number | null } | null;
+}
+
+export interface GoalAcceptanceGateDeps {
+  gateEnabled: () => Promise<boolean>;
+  getRubricForGoal: (goalId: string) => Promise<GoalAcceptanceRubricRef | null>;
+  /** Null when no meta-rubric is registered — the vetting check then disables rather
+   *  than deadlocking every 'achieved' on a missing prerequisite (mirrors the plan
+   *  gate's recorded ruling). */
+  getMetaRubric: () => Promise<unknown | null>;
+  getRubricRevision: (rubricId: string) => Promise<number | null>;
+  listCards: (filter: { rubricRef: string; subjectRef?: string }) => Promise<GoalAcceptanceCard[]>;
+  metaRubricId: string;
+}
+
+/** FLAGS.GOAL_ACHIEVED_ACCEPTANCE_GATE, default ON. Fail-CLOSED on flag-infra errors —
+ *  identical posture to windDownDispositionGateEnabled above. */
+export async function goalAchievedAcceptanceGateEnabled(): Promise<boolean> {
+  try {
+    const [{ getFlag }, { FLAGS }] = await Promise.all([
+      import('@papercusp/flags/server'),
+      import('@papercusp/flags'),
+    ]);
+    return await getFlag(FLAGS.GOAL_ACHIEVED_ACCEPTANCE_GATE, 'system');
+  } catch {
+    return false;
+  }
+}
+
+/** Prod deps — dynamic-imported so a rubrics/scorecards module fault degrades to
+ *  satisfied (via evaluateGoalAcceptanceGate's catch) instead of breaking the
+ *  loop:end/session:end module graph. */
+async function defaultGoalAcceptanceGateDeps(): Promise<GoalAcceptanceGateDeps> {
+  const [rubrics, scorecards] = await Promise.all([import('../rubrics'), import('../scorecards')]);
+  return {
+    gateEnabled: goalAchievedAcceptanceGateEnabled,
+    getRubricForGoal: (goalId) => rubrics.getAcceptanceRubricForGoal(goalId),
+    getMetaRubric: () => rubrics.getRubric(rubrics.META_ACCEPTANCE_RUBRIC_ID),
+    getRubricRevision: (rubricId) => rubrics.getRubricPlanRevision(rubricId),
+    listCards: async (filter) => scorecards.listScorecards({ ...filter, limit: 50 }),
+    metaRubricId: rubrics.META_ACCEPTANCE_RUBRIC_ID,
+  };
+}
+
+/**
+ * Evaluate the 'achieved' acceptance gate. Never throws — any probe fault resolves
+ * toward `satisfied` (positive-finding-only, the stop-path invariant). Callers run
+ * this ONLY for disposition:'achieved'; killed/handoff never reach it.
+ */
+export async function evaluateGoalAcceptanceGate(
+  opts: { goalId: string; goalTitle: string; goalOwner: string },
+  depsOverride?: GoalAcceptanceGateDeps,
+): Promise<GoalAcceptanceVerdict> {
+  try {
+    const deps = depsOverride ?? (await defaultGoalAcceptanceGateDeps());
+    if (!(await deps.gateEnabled())) return { satisfied: true };
+
+    const rubric = await deps.getRubricForGoal(opts.goalId);
+    if (!rubric) {
+      return {
+        satisfied: false,
+        code: 'goal_acceptance_rubric_missing',
+        message:
+          `REFUSED — disposition 'achieved' is a claim, and goal ${opts.goalId} (“${opts.goalTitle}”) carries no ` +
+          `acceptance evidence: no acceptance rubric names it. Author it NOW, post-pursuit (it is better informed ` +
+          `against what was actually built): rubrics:propose { kind:'acceptance', subjectGoal:'${opts.goalId}', ` +
+          `criteria:[3–7 OUTCOMES tracing to the goal's stated outcome + kill criterion — never a restatement of ` +
+          `activity performed] }. Then (1) VET it against the meta-rubric (get_feedback critique, then ` +
+          `scorecards:emit { rubricRef:'meta-acceptance-rubric', subject:{ kind:'rubric', ref:'<rubric>' }, ` +
+          `vettingConsult:'<consult id>' }), (2) a NON-owner of the goal grades it (scorecards:emit), (3) retry ` +
+          `with disposition:'achieved'. Or, honestly: 'killed' / 'handoff' need no acceptance evidence.`,
+      };
+    }
+
+    // The VETTING attestation (D-001 §3-4): a complete meta-scorecard with a linked
+    // consult, on the CURRENT rubric revision. Skipped when no meta-rubric is
+    // registered (a workspace without one cannot run the flow — disable, don't
+    // deadlock) — the plan gate records the same ruling.
+    const meta = await deps.getMetaRubric();
+    if (meta && rubric.criteria.length > 0 && rubric.rubricId !== deps.metaRubricId) {
+      const revision = await deps.getRubricRevision(rubric.rubricId);
+      const metaCards = (await deps.listCards({ rubricRef: deps.metaRubricId, subjectRef: rubric.rubricId })).filter(
+        (s) => s.rubricResolved && s.missingKeys.length === 0 && !s.synthesized,
+      );
+      const vettedCards = metaCards.filter((s) => s.vetting?.consultId);
+      const current = vettedCards.find((s) => revision == null || s.vetting?.rubricRevision === revision);
+      if (!current) {
+        const stale = vettedCards.length > 0;
+        return {
+          satisfied: false,
+          code: 'goal_acceptance_rubric_unvetted',
+          rubricId: rubric.rubricId,
+          message: stale
+            ? `REFUSED — goal ${opts.goalId}'s acceptance rubric '${rubric.rubricId}' was vetted at an earlier ` +
+              `revision but has changed since — the attestation no longer covers what is being graded. Re-emit the ` +
+              `meta-scorecard against the current revision: scorecards:emit { rubricRef:'${deps.metaRubricId}', ` +
+              `subject:{ kind:'rubric', ref:'${rubric.rubricId}' }, vettingConsult:'<consult id>', ratings:{…} } ` +
+              `(citing the SAME consult is fine when the revision IS the improvement its critique asked for), then ` +
+              `retry disposition:'achieved'.`
+            : `REFUSED — goal ${opts.goalId}'s acceptance rubric '${rubric.rubricId}' has not been VETTED against ` +
+              `the meta-rubric. The rubric AUTHOR vets it before anyone grades the goal: (1) get_feedback critique ` +
+              `of the rubric (min 1 / max 3 responders — selection is automatic), (2) improve it from the critique ` +
+              `(rubrics:propose), (3) attest: scorecards:emit { rubricRef:'${deps.metaRubricId}', subject:{ ` +
+              `kind:'rubric', ref:'${rubric.rubricId}' }, vettingConsult:'<the consult conversation_id>', ` +
+              `ratings:{ <every meta criterion, with evidence> } }. Pass is your judgment per criterion — no ` +
+              `mechanical score floor. Then retry disposition:'achieved'.`,
+        };
+      }
+    }
+
+    // The GRADING: complete, agent-emitted, by a NON-owner of the goal (and not the
+    // rubric's own author — self-graded homework satisfies neither ruling).
+    const cards = (await deps.listCards({ rubricRef: rubric.rubricId })).filter(
+      (s) => s.rubricResolved && s.missingKeys.length === 0 && !s.synthesized,
+    );
+    if (cards.length === 0) {
+      return {
+        satisfied: false,
+        code: 'goal_acceptance_ungraded',
+        rubricId: rubric.rubricId,
+        message:
+          `REFUSED — goal ${opts.goalId}'s acceptance rubric '${rubric.rubricId}' has no complete grading. A ` +
+          `NON-owner of the goal (someone other than '${opts.goalOwner}') grades it — scorecards:emit ` +
+          `{ rubricRef:'${rubric.rubricId}', ratings:{ <every criterion key> } } with concrete evidence per ` +
+          `rating — then retry disposition:'achieved'.`,
+      };
+    }
+    const author = rubric.proposedBy ?? rubric.createdBy ?? null;
+    const disqualified = new Set([opts.goalOwner, ...(author ? [author] : [])]);
+    const independent = cards.find((s) => s.createdBy != null && !disqualified.has(s.createdBy));
+    if (!independent) {
+      return {
+        satisfied: false,
+        code: 'goal_self_graded_only',
+        rubricId: rubric.rubricId,
+        message:
+          `REFUSED — goal ${opts.goalId}'s acceptance rubric '${rubric.rubricId}' is graded only by the goal's ` +
+          `own owner${author && author !== opts.goalOwner ? ` or the rubric's author` : ''} — grader must be a ` +
+          `NON-owner of the goal (the self-graded-homework guard). Ask a peer or the owner to file the grading ` +
+          `scorecard, then retry disposition:'achieved'.`,
+      };
+    }
+    return { satisfied: true, rubricId: rubric.rubricId, gradedBy: independent.createdBy ?? null };
+  } catch {
+    // Positive-finding-only: an infrastructure fault is not a finding — never wedge
+    // an agent stopping its own loop.
+    return { satisfied: true };
+  }
+}
