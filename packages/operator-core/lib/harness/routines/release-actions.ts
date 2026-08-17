@@ -1071,7 +1071,19 @@ export function shouldWarnOnStallClearMiss(stallAlerted: boolean, clearedCount: 
  * Pure + exported so the distinction has a DB-free regression test, matching the
  * convention `shouldWarnOnStallClearMiss` / `classifyGateStallStatus` already set here.
  */
-export function gateStallNoopLogMessage(status: string): string {
+export function gateStallNoopLogMessage(status: string, retriage?: GateStallRetriage | null): string {
+  // WI-39450: a THIRD noop condition with its own correct operator response. Telling this
+  // reader "an active peer run holds the lock" is false (the successor is this run's OWN
+  // in-process refire), and the failing files it just named are stale — saying so here is the
+  // whole point, because that list is what sends agents at already-fixed tests.
+  if (isSupersededByRefire(retriage)) {
+    return (
+      `${orchestratorStdoutTag()} '${status}' — this pass proved its OWN candidate STALE and ` +
+      `handed off to an auto-refire, which will record the real verdict. Leaving gate_health ` +
+      `untouched (not a red: this pass judged an already-superseded tree, so any failing files ` +
+      `it named are stale — re-verify at tip before fixing anything. See classifyGateStallStatus)`
+    );
+  }
   if (status === 'migrations-pending') {
     return (
       `${orchestratorStdoutTag()} 'migrations-pending' — this run ABORTED at the migration preflight ` +
@@ -1170,7 +1182,7 @@ export async function trackGateStall(
   // "main never moved".
   const lastObservedMainPin = gh.lastMainPin ?? gh.lastFrom ?? null;
   const pinMoved = fromPin != null && lastObservedMainPin != null && fromPin !== lastObservedMainPin;
-  const gateClass = classifyGateStallStatus(status, pinMoved);
+  const gateClass = classifyGateStallStatus(status, pinMoved, retriage);
   if (gateClass === 'noop') {
     // EI-2615: a lock collision with an ACTIVE peer run proves nothing about the
     // gate's health — leave gate_health completely untouched (don't even seed
@@ -1178,7 +1190,7 @@ export async function trackGateStall(
     // can never be shadowed by this tick's false-red read-modify-write.
     // EI-19321275470651356: the two conditions in this class need opposite operator
     // advice, so the message is chosen by status (see gateStallNoopLogMessage).
-    console.log(gateStallNoopLogMessage(status));
+    console.log(gateStallNoopLogMessage(status, retriage));
     // EI-19405864032365760: 'noop' must not COUNT this tick as a red — that reasoning
     // (EI-2615 / EI-18757975681519069) is correct and unchanged above. But "don't count it"
     // silently became "don't record it AT ALL", and those are different claims. The counters
