@@ -249,6 +249,138 @@ describe('evaluateGreenStall', () => {
   });
 });
 
+describe('attributeVerdictStale — the alarm may not assert a cause it did not observe (WI-39704)', () => {
+  /** oddsmith 2026-08-17: suite PASSED, run died in the publish step, no credential. */
+  const ODDSMITH_CRASH = {
+    crashed: true,
+    green: null,
+    firstLine:
+      "green-checkpoint crashed before producing a normal verdict: Error: git -C /clones/oddsmith push origin 07220893:refs/heads/main exited 128: fatal: could not read Username for 'https://github.com': No such device or address",
+    candidate: 'ad976f129ccb',
+    observedAt: '2026-08-17T18:19:36.190Z',
+  };
+
+  it('THE REGRESSION: a crash with zero failing tests is never called a failing suite', () => {
+    const a = attributeVerdictStale({ failingTests: [], last: ODDSMITH_CRASH });
+    // The exact claim that cost WI-39671 a whole investigation, then re-minted as WI-39704.
+    // Assert the AFFIRMATIVE form is absent — "(a failing suite)" is how the entitled
+    // branch states it — while the explicit denial below is exactly what we DO want.
+    expect(a.summary).not.toContain('(a failing suite)');
+    expect(a.summary).toContain('NOT a failing suite');
+    expect(a.cause).toContain('CRASHED before rendering a verdict');
+    expect(a.cause).toContain('ZERO failing tests');
+  });
+
+  it('QUOTES the blocker verbatim rather than inferring from it', () => {
+    const a = attributeVerdictStale({ failingTests: [], last: ODDSMITH_CRASH });
+    expect(a.cause).toContain("could not read Username for 'https://github.com'");
+    expect(a.cause).toContain('ad976f129ccb');
+    expect(a.cause).toContain('2026-08-17T18:19:36.190Z');
+  });
+
+  it('the remedy does NOT tell the reader to re-fire the suite (~55min into the same wall)', () => {
+    const a = attributeVerdictStale({ failingTests: [], last: ODDSMITH_CRASH });
+    expect(a.remedy).toContain('Do NOT reflexively fire release:checkpoint-run');
+    expect(a.remedy).toContain('PUBLISH step is blocked');
+    // Points at the run's own promotion trailer, with the anchor WI-37636 requires
+    // (a bare `GATE_PROMOTION.*` grep also matches vitest test names in the same log).
+    expect(a.remedy).toContain("grep -o 'GATE_PROMOTION candidate=.*'");
+  });
+
+  it('named failing tests ARE a failing suite — the one branch entitled to say so', () => {
+    const a = attributeVerdictStale({
+      failingTests: ['a.test.ts', 'b.test.ts'],
+      last: { crashed: false, green: false, firstLine: null, candidate: 'deadbeef1234', observedAt: null },
+    });
+    expect(a.summary).toContain('a failing suite');
+    expect(a.cause).toContain('named 2 failing test(s)');
+    expect(a.remedy).toContain('release:checkpoint-run');
+  });
+
+  it('named failing tests WIN over a crash record — the strongest evidence is reported', () => {
+    const a = attributeVerdictStale({ failingTests: ['x.test.ts'], last: ODDSMITH_CRASH });
+    expect(a.summary).toContain('a failing suite');
+    expect(a.cause).not.toContain('CRASHED');
+  });
+
+  it('a RED verdict that named no test is reported as unattributable, not as a test list', () => {
+    const a = attributeVerdictStale({
+      failingTests: [],
+      last: { crashed: false, green: false, firstLine: null, candidate: null, observedAt: null },
+    });
+    expect(a.cause).toContain('unattributable red');
+    expect(a.remedy).toContain('AFFECTED_TESTS_FAILING_FILES');
+    expect(a.remedy).toContain('not attributable');
+  });
+
+  it('no run on record states the GAP instead of filling it with a guess', () => {
+    const a = attributeVerdictStale({ failingTests: [], last: null });
+    expect(a.cause).toContain('cannot be attributed from the ledger');
+    expect(a.summary).toContain('no run on record');
+    // Never invents a failing suite out of an absent ledger.
+    expect(a.cause).not.toContain('failing suite');
+  });
+
+  it('a green-but-uncounted verdict is named as such (held / superseded / not promoted)', () => {
+    const a = attributeVerdictStale({
+      failingTests: [],
+      last: { crashed: false, green: true, firstLine: null, candidate: 'abc123abc123', observedAt: null },
+    });
+    expect(a.cause).toContain('green=true');
+    expect(a.remedy).toContain('did not COUNT');
+  });
+});
+
+describe('readLastGateRunEvidence (WI-39704)', () => {
+  function makeFakeSql(rows: unknown[]) {
+    return ((_s: TemplateStringsArray, ..._v: unknown[]) =>
+      Promise.resolve(rows)) as unknown as import('postgres').Sql;
+  }
+
+  it('reads crashed + the FIRST line of the crash summary (the fault, not the stack)', async () => {
+    const sql = makeFakeSql([
+      {
+        detail: {
+          crashed: true,
+          green: null,
+          candidate: 'ad976f129ccb',
+          summary:
+            "green-checkpoint crashed before producing a normal verdict: Error: git push origin exited 128: fatal: could not read Username\n    at ChildProcess.<anonymous> (/x/green-checkpoint.ts:10206:11)\n    at ChildProcess.emit (node:events:509:20)",
+        },
+        created_at: '2026-08-17T18:19:36.190Z',
+      },
+    ]);
+    const ev = await readLastGateRunEvidence(sql, 'oddsmith');
+    expect(ev?.crashed).toBe(true);
+    expect(ev?.green).toBeNull();
+    expect(ev?.candidate).toBe('ad976f129ccb');
+    expect(ev?.firstLine).toContain('could not read Username');
+    expect(ev?.firstLine).not.toContain('at ChildProcess');
+    expect(ev?.observedAt).toBe('2026-08-17T18:19:36.190Z');
+  });
+
+  it('a non-crash red row reads green:false with no crash line', async () => {
+    const sql = makeFakeSql([{ detail: { green: false, candidate: '7c6e395f021b' }, created_at: null }]);
+    const ev = await readLastGateRunEvidence(sql, 'oddsmith');
+    expect(ev).toEqual({
+      crashed: false,
+      green: false,
+      firstLine: null,
+      candidate: '7c6e395f021b',
+      observedAt: null,
+    });
+  });
+
+  it('no rows ⇒ null (an absent ledger is not evidence of anything)', async () => {
+    expect(await readLastGateRunEvidence(makeFakeSql([]), 'oddsmith')).toBeNull();
+  });
+
+  it('fails soft (null, never throws) when the query rejects — it only ENRICHES a live alarm', async () => {
+    const sql = (() => Promise.reject(new Error('db blew up'))) as unknown as import('postgres').Sql;
+    await expect(readLastGateRunEvidence(sql, 'oddsmith')).resolves.toBeNull();
+  });
+});
+
 describe('greenStallEscalationBody', () => {
   it('serializes the watchdog escalation with the stall axes + iso timestamps', () => {
     const verdict = evaluateGreenStall(
