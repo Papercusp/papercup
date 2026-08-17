@@ -21,8 +21,10 @@ import {
 } from '../../harness/improvements/observation-types';
 import { readRunningGeneration } from '../../scout/generation-watermark';
 import {
+  auditVerdictFromRatings,
   listScorecards,
   evaluateScorecardInstrumentContract,
+  recordGradingAudit,
   scorecardEvidenceFingerprint,
   type ScorecardInstrumentSnapshot,
 } from '../../scorecards';
@@ -33,7 +35,6 @@ import {
   gradingAuditGateEnabled,
   needsGradingAudit,
 } from '../../grading-integrity';
-import { auditVerdictFromRatings, recordGradingAudit } from '../../scorecards';
 import type { ScorecardGradingAudit } from '../../harness/improvements/observation-types';
 import { killTask } from '../../task-manager/control';
 import { listTasks } from '../../task-manager/store';
@@ -217,6 +218,66 @@ export async function emitScorecard(
       !args.terminal && violatableRatedKeys.length > 0
         ? { violatableKeys: violatableRatedKeys, stampedAt: new Date().toISOString() }
         : undefined;
+    // ── P-013 (D-004): grade-the-grader ──
+    // AUDIT PATH — this emit IS a grading audit (rubricRef = the meta-rubric).
+    // Validated BEFORE filing: an audit card filed and then unable to settle its
+    // subject would strand both halves. Mirrors the acceptance grader ≠ author rule.
+    let auditContext: { subjectIssueId: string; auditor: string } | null = null;
+    if (args.rubricRef === GRADING_INTEGRITY_RUBRIC_REF) {
+      if (args.subject?.kind !== 'scorecard' || !args.subject.ref) {
+        return {
+          ok: false as const,
+          error:
+            "grading-integrity audits a SCORECARD — pass subject:{ kind:'scorecard', ref:'<the graded card's issue id>' } (D-004: terminal cards only, one level deep)",
+        };
+      }
+      const graded = await getIssue(args.subject.ref);
+      const gradedObservation =
+        graded?.payload && typeof graded.payload === 'object' && !Array.isArray(graded.payload)
+          ? asStructuredObservation((graded.payload as { observation?: unknown }).observation)
+          : undefined;
+      if (!gradedObservation?.rubricRef || !gradedObservation.ratings) {
+        return { ok: false as const, error: `audit subject '${args.subject.ref}' is not a scorecard` };
+      }
+      if (!gradedObservation.gradingAudit) {
+        return {
+          ok: false as const,
+          error: `audit subject '${args.subject.ref}' carries no gradingAudit stamp — only terminal standard-rubric cards emitted under the audit gate are auditable`,
+        };
+      }
+      if (gradedObservation.gradingAudit.state !== 'pending') {
+        return {
+          ok: false as const,
+          error: `audit subject '${args.subject.ref}' is already audited (${gradedObservation.gradingAudit.state}) — supersede the AUDIT card instead of re-auditing (D-004: one level, no regress)`,
+        };
+      }
+      const gradedAuthor = graded?.createdBy ?? null;
+      // Unattributable identity on EITHER side refuses — strict toward auditing again.
+      if (!gradedAuthor || !input.createdBy || gradedAuthor === input.createdBy) {
+        return {
+          ok: false as const,
+          error: `self_audit_refused: a grading audit must come from a NON-AUTHOR (graded card author: ${gradedAuthor ?? 'unknown'}, auditor: ${input.createdBy ?? 'unknown'}) — mirror of the acceptance grader ≠ author rule`,
+        };
+      }
+      auditContext = { subjectIssueId: args.subject.ref, auditor: input.createdBy };
+    }
+    // PENDING STAMP — a terminal standard-rubric card is final but UNAUDITED until a
+    // non-author audit settles it (never the audit card itself: one level).
+    let gradingAudit: ScorecardGradingAudit | undefined;
+    if (
+      needsGradingAudit({
+        rubricKind: rubric.kind,
+        rubricRef: args.rubricRef,
+        provisional: provisional !== undefined,
+      }) &&
+      (await gradingAuditGateEnabled())
+    ) {
+      gradingAudit = {
+        state: 'pending',
+        metaRubricRef: GRADING_INTEGRITY_RUBRIC_REF,
+        stampedAt: new Date().toISOString(),
+      };
+    }
     const sourceHive = args.sourceHive ?? input.ctxHarness;
     if (args.supersedes) {
       const superseded = await getIssue(args.supersedes);
@@ -337,6 +398,7 @@ export async function emitScorecard(
           ...(args.supersedes ? { supersedes: args.supersedes } : {}),
           ...(gradedGeneration ? { gradedGeneration } : {}),
           ...(provisional ? { provisional } : {}),
+          ...(gradingAudit ? { gradingAudit } : {}),
           ...(args.subject ? { subject: args.subject } : {}),
           ...(vetting ? { vetting } : {}),
           ...(checkRuns ? { checkRuns } : {}),
@@ -354,6 +416,17 @@ export async function emitScorecard(
         })
         .catch(() => {});
     }
+    // P-013: settle the audited card's stamp now that the audit card is filed. A
+    // settlement failure is surfaced loudly, never swallowed — the auditor must know
+    // the subject is still pending.
+    let auditSettlement: Awaited<ReturnType<typeof recordGradingAudit>> | undefined;
+    if (auditContext && result.created && result.issue?.id) {
+      auditSettlement = await recordGradingAudit(auditContext.subjectIssueId, {
+        auditIssueId: result.issue.id,
+        auditor: auditContext.auditor,
+        verdict: auditVerdictFromRatings(ratings),
+      });
+    }
     const acceptanceGraderCleanup = rubric.kind === 'acceptance' && input.role === 'judge'
       ? await cleanupAcceptanceGraderTasks(args.rubricRef, { workspaceId: input.workspaceId })
       : undefined;
@@ -362,6 +435,11 @@ export async function emitScorecard(
       created: result.created,
       issueId: result.issue?.id ?? null,
       evidenceFingerprint,
+      // P-013: surfaced loudly — this card does not enter the trend until audited.
+      ...(gradingAudit ? { gradingAuditPending: true } : {}),
+      ...(auditSettlement
+        ? { gradingAuditRecorded: auditSettlement.ok, ...(auditSettlement.gradingAudit ? { gradingAudit: auditSettlement.gradingAudit } : {}), ...(auditSettlement.error ? { gradingAuditError: auditSettlement.error } : {}) }
+        : {}),
       ...(args.supersedes ? { supersedes: args.supersedes } : {}),
       canonicalRatings: ratings,
       // P-008: surfaced loudly so the emitter knows this card is a working note — a
