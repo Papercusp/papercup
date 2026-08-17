@@ -1258,9 +1258,10 @@ export async function scorecardTrend(filter: ScorecardTrendFilter): Promise<Rubr
   return {
     rubricRef: filter.rubricRef,
     ...(filter.sourceHive ? { sourceHive: filter.sourceHive } : {}),
-    scorecardCount: live.length,
+    scorecardCount: finalCards.length,
     supersededExcluded: inGeneration.length - live.length,
     preContractResetExcluded,
+    provisionalExcluded,
     window: {
       ...(filter.since ? { since: filter.since } : {}),
       ...(chrono.length ? { from: chrono[0].createdAt, to: chrono[chrono.length - 1].createdAt } : {}),
