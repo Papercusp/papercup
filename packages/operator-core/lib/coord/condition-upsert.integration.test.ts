@@ -67,10 +67,35 @@ vi.mock('../pot-membership', async (importOriginal) => {
     },
   };
 });
+// WI-39604 tool-path leg: createOneWorkItem drags in the create-time dedup
+// screens and the mirror-guard flag. Each is fail-open and separately tested;
+// here they are pinned benign so THIS file's subject stays the condition-key
+// routing, not the screens' fixture appetites.
+vi.mock('@papercusp/flags/server', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return { ...actual, getFlag: async () => false };
+});
+vi.mock('../agent-tools/work_items/semantic-dupe-guard', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return { ...actual, findSemanticDupes: async () => null };
+});
+vi.mock('../agent-tools/work_items/recent-lexical-dupe-guard', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return { ...actual, findRecentLexicalDupes: async () => null };
+});
+vi.mock('../agent-tools/work_items/fulltext-lexical-dupe-guard', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return { ...actual, findFulltextLexicalDupes: async () => null };
+});
+vi.mock('../modes/goal-context', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return { ...actual, resolveGoalContext: async () => null };
+});
 
 // Imported AFTER the mocks are registered (vi.mock is hoisted).
 const { upsertConditionWorkItem, CONDITION_UPSERT_MARKER } = await import('./condition-upsert');
 const { setWorkItemState } = await import('../work-items');
+const { createOneWorkItem } = await import('../agent-tools/work_items/_create-core');
 
 let db: FreshPgDb;
 let savedWsEnv: string | undefined;
