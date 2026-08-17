@@ -102,6 +102,30 @@ export interface PipelineWindowSummary {
   sinceMs: number;
   gitSync: { total: number; synced: number; nothing: number; conflict: number; error: number };
   mergeResolver: { total: number; ok: number; failed: number; error: number };
+  /**
+   * EI-20702428259478130: these buckets must stay TOTAL over the produced status
+   * vocabulary — `total === advanced + upToDate + advancedPrefix + notGreen +
+   * notFastForward + createFailed + error + skipped + other`.
+   *
+   * They were NOT total, and the gap was not the harmless "unknown future status"
+   * tail the fold's fallthrough was designed for. Measured over 30d on
+   * `harness_shared.pipeline_events` (2026-08-17): green_checkpoint produced TEN
+   * distinct statuses and only FIVE had a bucket, so 1205 of 9783 events (12.3%)
+   * incremented `total` and no sub-counter — including every `error` (152: a
+   * green-checkpoint crash, the 25-min timeout, or unparseable JSON) and every
+   * `advanced-prefix` (13: a partial advance that DID move `main`, i.e. a green).
+   *
+   * That is this item's own bug one layer up. An infra death is not merely
+   * indistinguishable in the ledger — it was invisible in the readout built on
+   * it, and read as GREEN: the Git tab's "main-green rate" divides by
+   * `advanced + upToDate + notGreen`, so a gate that crashed on EVERY tick
+   * displayed 100%. Naming `error` is what makes a crash cost the rate something.
+   *
+   * `desktop-perf-held` / `migrations-pending` / `release-fixer-skipped-stale`
+   * land in `other` deliberately: they are real verdicts, but naming a bucket per
+   * status re-creates the drift. `other` being nonzero is the signal to come back
+   * and name the ones that earn it — silently dropping them was the defect.
+   */
   greenCheckpoint: {
     total: number;
     advanced: number;
@@ -109,6 +133,14 @@ export interface PipelineWindowSummary {
     notGreen: number;
     notFastForward: number;
     createFailed: number;
+    /** A partial advance (WI-38218) — GREEN: the longest clean prefix promoted `main`. */
+    advancedPrefix: number;
+    /** The infra-death class: script crash, the 25-min timeout, unparseable JSON. */
+    error: number;
+    /** `skipped-*` — the tick judged NO code (routine disabled, run-lock contention). */
+    skipped: number;
+    /** Every other produced status. Keeps the fold total; nonzero means "name me". */
+    other: number;
   };
   /** Auto-serve deploys (staging-branch-pipeline-2026-06-06): one row per attempt. */
   deploy: { total: number; ok: number; rolledBack: number; failed: number; refused: number };
