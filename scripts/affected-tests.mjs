@@ -318,6 +318,18 @@ const changedPathsOverride = (() => {
     .filter(Boolean);
 })();
 const printAffected = has("--print-affected");
+// --related — narrow each affected workspace's run to the TEST FILES that could
+// actually be reached by the changed files, instead of running its whole suite.
+// See scripts/lib/related-tests.mjs for the measured narrowing (median ~5.4x in
+// operator-core) and for why every rail widens back to the full suite on doubt.
+//
+// ⚠ DELIBERATELY OPT-IN, and NOT wired into `test:affected`. The green-checkpoint
+// gate's greenCmd IS `npm run test:affected`, and the gate is what certifies
+// `main`. Import-graph selection structurally cannot see cross-cutting breakage
+// (the classic: a required field added to a shared interface strands fixtures that
+// never import the changed file — which is why lint:required-field-strands and
+// lint:tsc exist). So selection is the developer inner loop; the gate stays broad.
+const relatedOnly = has("--related");
 const runElSuite = has("--el-suite");
 const excludeArg = arg("--exclude", "");
 const excludes = new Set(excludeArg.split(",").filter(Boolean));
@@ -346,6 +358,7 @@ const KNOWN_FLAGS = [
   "--range-to",
   "--changed-paths",
   "--print-affected",
+  "--related",
   "--el-suite",
   "--exclude",
 ];
