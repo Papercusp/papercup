@@ -53,7 +53,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await db.sql`TRUNCATE harness_shared.harness_plans, harness_shared.work_items RESTART IDENTITY`;
+  await db.sql`TRUNCATE harness_shared.harness_plans, harness_shared.work_items RESTART IDENTITY CASCADE`;
   h.flagOn = true;
 });
 

@@ -47,7 +47,7 @@ beforeAll(async () => {
 }, 180_000);
 
 beforeEach(async () => {
-  await db.sql`TRUNCATE harness_shared.harness_plans`;
+  await db.sql`TRUNCATE harness_shared.harness_plans CASCADE`;
 });
 
 afterAll(async () => {

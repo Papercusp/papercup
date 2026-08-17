@@ -86,7 +86,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await rootSql`TRUNCATE harness_shared.harness_plans, harness_shared.coord_links`;
+  await rootSql`TRUNCATE harness_shared.harness_plans, harness_shared.coord_links CASCADE`;
   h.topics = [];
 });
 

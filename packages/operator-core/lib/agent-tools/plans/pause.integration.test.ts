@@ -76,7 +76,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await rootSql`TRUNCATE harness_shared.harness_plans`;
+  await rootSql`TRUNCATE harness_shared.harness_plans CASCADE`;
   await rootSql`INSERT INTO harness_shared.harness_plans (workspace_id, harness_slug, plan_slug, op_status) VALUES
     (${SEED_WS}, 'web', 'started-plan', 'started'),
     (${SEED_WS}, 'web', 'never-started', NULL),

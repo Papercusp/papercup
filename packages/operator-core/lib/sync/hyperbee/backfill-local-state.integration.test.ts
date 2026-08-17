@@ -280,7 +280,7 @@ describe('backfillLocalState (Stage 4, real PG)', () => {
   beforeEach(async () => {
     await db.sql`TRUNCATE harness_shared.work_items `;
     await db.sql`TRUNCATE harness_shared.harness_issues_consolidated `;
-    await db.sql`TRUNCATE harness_shared.harness_plans `;
+    await db.sql`TRUNCATE harness_shared.harness_plans CASCADE`;
     await db.sql`TRUNCATE harness_shared.pot_settings `;
     await db.sql`TRUNCATE harness_shared.pot_members `;
     await db.sql`TRUNCATE harness_shared.plan_item_assignments `;

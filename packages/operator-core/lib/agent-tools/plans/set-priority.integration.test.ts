@@ -78,7 +78,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await rootSql`TRUNCATE harness_shared.harness_plans`;
+  await rootSql`TRUNCATE harness_shared.harness_plans CASCADE`;
   // Seed two plans in harness 'web' under the RESOLVED (non-'default') tenant.
   await rootSql`INSERT INTO harness_shared.harness_plans (workspace_id, harness_slug, plan_slug, op_priority) VALUES
     (${SEED_WS}, 'web', 'p1', NULL), (${SEED_WS}, 'web', 'p2', 99)`;
