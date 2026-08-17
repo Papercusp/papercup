@@ -116,8 +116,10 @@ import ObservationsPanel from "./ObservationsPanel";
 
 /** All renders go through the nuqs testing adapter — the panel reads `obsq`
  *  (search) + `obsview` (table/stacks) from the URL (#4/#7). */
-const renderPanel = () =>
-  render(<ObservationsPanel />, { wrapper: withNuqsTestingAdapter() });
+const renderPanel = (searchParams?: string) =>
+  render(<ObservationsPanel />, {
+    wrapper: withNuqsTestingAdapter(searchParams ? { searchParams } : {}),
+  });
 
 interface Row {
   id: string;
@@ -150,6 +152,8 @@ beforeEach(() => {
   sync.loading = false;
   sync.fetching = false;
   sync.error = null;
+  sync.failureCount = 0;
+  sync.failureReason = null;
   sync.args = null;
   sync.invalidate.mockReset();
   counts.data = [];
@@ -265,7 +269,7 @@ describe("<ObservationsPanel />", () => {
     expect(screen.getByText("Gap row")).toBeTruthy();
   });
 
-  it("puts semantic signals before Other and shows loaded versus total", () => {
+  it("puts semantic signals before Other and shows the authoritative store total", () => {
     sync.data = [
       { ...mkRow({ id: "o1", title: "Other row" }), _meta: { total: 2569 } },
       mkRow({ id: "f1", title: "Friction row", kind: "friction" }),
@@ -284,9 +288,13 @@ describe("<ObservationsPanel />", () => {
     expect(chips.querySelector("button:last-child")?.textContent).toContain(
       "other",
     );
-    expect(screen.getByTestId("observations-count").textContent).toBe(
-      "3 / 2,569",
-    );
+    // Unfiltered → the STORE total alone. The retired "3 / 2,569" form reported
+    // how many rows happened to be downloaded, which tracked scroll position
+    // rather than answering anything, and read as a shortfall on a healthy pane.
+    expect(screen.getByTestId("observations-count").textContent).toBe("2,569");
+    expect(
+      screen.getByTestId("observations-count").getAttribute("aria-label"),
+    ).toBe("2,569 observations");
   });
 
   it("reveals the full body and context only for the selected observation", () => {
@@ -364,11 +372,61 @@ describe("<ObservationsPanel />", () => {
     ];
     renderPanel();
     expect(sync.args).toEqual({ limit: 200 });
-    expect(screen.getByTestId("observations-count").textContent).toBe(
-      "2 / 450",
-    );
+    expect(screen.getByTestId("observations-count").textContent).toBe("450");
     fireEvent.click(screen.getByText("load-more"));
     await waitFor(() => expect(sync.args).toEqual({ limit: 400 }));
+  });
+
+  // The growing window is filterCountLabel's PRECONDITION, so the two are pinned
+  // together: a filtered count may only claim "of <store total>" on a pane whose
+  // scroll edge keeps enlarging the server window until it can reach that total.
+  // If a later change freezes the window at one page, this pane goes back to
+  // reporting a page-scoped numerator against a corpus denominator — the exact
+  // defect this work was filed for ("10 observations match, of 36,096 total"
+  // for a search whose real answer was 305).
+  it("reports the filtered count against the store total, not the loaded page", () => {
+    sync.data = [
+      { ...mkRow({ id: "a", title: "alpha match" }), _meta: { total: 36096 } },
+      mkRow({ id: "b", title: "beta" }),
+      mkRow({ id: "c", title: "gamma" }),
+    ];
+    renderPanel("?obsq=alpha");
+    expect(screen.getByTestId("observations-count").textContent).toBe(
+      "1 of 36,096",
+    );
+    expect(
+      screen.getByTestId("observations-count").getAttribute("aria-label"),
+    ).toBe("1 of 36,096 match");
+  });
+
+  // D-004 (owner 2026-08-17, on the sibling Retain pane: "it just says 'loading
+  // retained items...' forever"). `loading` is isPending && isFetching, which
+  // stays TRUE for the whole retry sequence while `error` stays NULL until the
+  // retries are exhausted — so a failing read must not render as a motionless
+  // spinner. These two tests are a PAIR: the first pins the honest branch, the
+  // second pins that a genuinely-first-load spinner is left alone.
+  it("says attempts are FAILING rather than showing a bare spinner, and offers a retry", () => {
+    sync.data = [];
+    sync.loading = true;
+    sync.failureCount = 2;
+    sync.failureReason = { message: "query timed out after 10000ms" };
+    renderPanel();
+    expect(screen.queryByText("Loading observations…")).toBeNull();
+    expect(
+      screen.getByText(/2 attempts failed, retrying/).textContent,
+    ).toContain("Still loading observations");
+    expect(screen.getByText(/query timed out after 10000ms/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Retry now" }));
+    expect(sync.invalidate).toHaveBeenCalled();
+  });
+
+  it("keeps the plain spinner while a first attempt is still in flight", () => {
+    sync.data = [];
+    sync.loading = true;
+    sync.failureCount = 0;
+    renderPanel();
+    expect(screen.getByText("Loading observations…")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Retry now" })).toBeNull();
   });
 
   it("keeps cached rows painted during a sync refresh", () => {
