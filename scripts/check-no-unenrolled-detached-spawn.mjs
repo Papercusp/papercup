@@ -177,7 +177,7 @@ export const ALLOWLIST = new Map([
 export const KNOWN_DEFECTS = new Map([
   [
     'packages/operator-core/lib/voice-node/local-whisper-service.ts',
-    'WI-39545 — spawns the whisper-server with detached:false and parks the handle in module-scope `state.child`, so it is a long-lived child inside the operator cgroup. Genuinely wants managedSpawn, not an exemption; the fix crosses a spawnFn DI seam and its own tests, so it is tracked separately rather than bundled into the guard landing.',
+    'WI-39563 — spawns the whisper-server with detached:false and parks the handle in module-scope `state.child`, so it is a long-lived child inside the operator cgroup. Genuinely wants managedSpawn, not an exemption; the fix crosses a spawnFn DI seam and its own tests, so it is tracked separately rather than bundled into the guard landing.',
   ],
 ]);
 

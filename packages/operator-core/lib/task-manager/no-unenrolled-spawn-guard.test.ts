@@ -83,6 +83,117 @@ export function go() { return spawn('ls', []); }`;
   });
 });
 
+describe('the widened trigger (EI-19483245448673321)', () => {
+  // CALIBRATION FIRST. If the control missed EVERYTHING it would "prove" every case
+  // below for free, so assert its teeth before relying on its blindness.
+  it('CALIBRATION: the literal-text control does catch a plain `detached: true`', () => {
+    expect(LITERAL_TEXT_PREDICATE(RAW)).toBe(true);
+  });
+
+  it('FAILS `detached: <computed>` — the blind spot the literal-text control cannot see', () => {
+    // green-checkpoint.ts:9289 in the real tree: `const detach = ...; { detached: detach }`.
+    const computed = `
+import { spawn } from 'node:child_process';
+export function go(opts: { killOnTimeout?: boolean }) {
+  const detach = opts.killOnTimeout === true;
+  return spawn('node', ['w.js'], { stdio: 'ignore', detached: detach });
+}`;
+    expect(LITERAL_TEXT_PREDICATE(computed)).toBe(false); // ← the control is blind here
+    expect(check(NEW, computed)).toBe(true); // ← the real predicate is not
+  });
+
+  it('FAILS a shorthand `{ detached }` — value unknown is not value-false', () => {
+    const shorthand = `
+import { spawn } from 'node:child_process';
+export function go(detached: boolean) { return spawn('node', ['w.js'], { detached }); }`;
+    expect(LITERAL_TEXT_PREDICATE(shorthand)).toBe(false);
+    expect(check(NEW, shorthand)).toBe(true);
+  });
+
+  it('FAILS a handle PARKED ON A PROPERTY even with `detached: false`', () => {
+    // local-whisper-service.ts in the real tree: a health-gated server kept in
+    // module-scope `state`. It outlives the call inside the parent cgroup, which is
+    // the hazard enrolment exists to prevent — and the old rule could not see it.
+    const parked = `
+import { spawn } from 'node:child_process';
+const state: { child: unknown } = { child: null };
+export function start() {
+  const child = spawn('whisper-server', ['--port', '9000'], { detached: false });
+  state.child = child;
+}`;
+    expect(LITERAL_TEXT_PREDICATE(parked)).toBe(false);
+    expect(check(NEW, parked)).toBe(true);
+  });
+
+  it('FAILS a spawn assigned straight onto a property', () => {
+    const direct = `
+import { spawn } from 'node:child_process';
+class Svc { proc: unknown = null; start() { this.proc = spawn('x', []); } }`;
+    expect(check(NEW, direct)).toBe(true);
+  });
+
+  it('does NOT fail a handle merely RETURNED to the caller', () => {
+    // A deliberate non-trigger: an awaited caller is the false-positive class the
+    // ALLOWLIST header calls category (2). 9 sites measured; flagging them would
+    // encode a rule the guard's own documentation says is wrong.
+    const returned = `
+import { spawn } from 'node:child_process';
+export function run() { const child = spawn('git', ['status']); return child; }`;
+    expect(check(NEW, returned)).toBe(false);
+  });
+
+  it('does NOT fail a `detached:` key on a DATA object in a file that also spawns', () => {
+    // harness/git-stats.ts:883 — `detached: live.branch === null && ...` on a repo-status
+    // object. Any WIDENED TEXT rule scores this an offender; the AST does not, because
+    // the key is not in a spawn call's options argument. This is why the guard parses.
+    const dataObject = `
+import { spawn } from 'node:child_process';
+export function status(live: { branch: string | null; head: string | null }) {
+  spawn('git', ['rev-parse']);
+  return { branch: live.branch, detached: live.branch === null && live.head !== null };
+}`;
+    expect(check(NEW, dataObject)).toBe(false);
+  });
+
+  it('self-excludes the enrolment primitives, so the fix is never read as the defect', () => {
+    // managed-spawn.ts spawns and hands the handle back — that IS enrolment from the
+    // inside. Without the exclusion a widened guard flags the remedy.
+    const primitive = 'packages/operator-core/lib/task-manager/managed-spawn.ts';
+    expect(check(primitive, RAW)).toBe(false);
+    expect(spawnTriggers(primitive, RAW)).toEqual({
+      detachedNotFalse: false,
+      storedOnProperty: false,
+    });
+  });
+
+  it('stays a strict SUPERSET: everything the literal-text control catches still fails', () => {
+    expect(LITERAL_TEXT_PREDICATE(RAW) && check(NEW, RAW)).toBe(true);
+  });
+});
+
+describe('KNOWN_DEFECTS hygiene', () => {
+  // This map suppresses a FAILURE, so it is the one place a real hazard can go quiet.
+  // It is deliberately governed harder than the allowlist rather than more softly.
+  it('gives every entry a tracking ref, not just prose', () => {
+    for (const [path, reason] of KNOWN_DEFECTS as Map<string, string>) {
+      expect(reason, `${path} needs a real reason`).toBeTruthy();
+      expect(reason.length, `${path}'s reason is too thin`).toBeGreaterThan(40);
+      expect(reason, `${path} needs a WI-/EI- tracking ref — a parked defect with no`
+        + ` owner is the blind spot this guard was widened to remove`).toMatch(/\b(WI|EI)-\d+/);
+    }
+  });
+
+  it('stays tiny — a parking lot is not an allowlist', () => {
+    expect(KNOWN_DEFECTS.size).toBeLessThanOrEqual(3);
+  });
+
+  it('never overlaps ALLOWLIST — an entry means one thing or the other', () => {
+    for (const path of (KNOWN_DEFECTS as Map<string, string>).keys()) {
+      expect(allow.has(path), `${path} is in BOTH maps`).toBe(false);
+    }
+  });
+});
+
 describe('ALLOWLIST hygiene', () => {
   it('gives every entry a non-trivial reason', () => {
     // An allowlist without reasons becomes a rubber stamp within a month.
