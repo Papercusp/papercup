@@ -62,6 +62,7 @@ import {
   activeGoalForOwner,
   applyGoalDisposition,
   buildDispositionRefusal,
+  evaluateGoalAcceptanceGate,
   buildGoalWindDownReport,
   deliverGoalWindDownReport,
   windDownDispositionGateEnabled,
@@ -174,6 +175,33 @@ export default defineTool({
           content: [{ type: 'text' as const, text: JSON.stringify(refusal) }],
           isError: true,
         };
+      }
+      // P-009 (consult-min-max-and-rubric-vetting-2026-08-17 D-004 §2): 'achieved'
+      // is a CLAIM — the acceptance gate demands the vetted, independently-graded
+      // rubric. Positive-finding-only (infra faults pass); killed/handoff exempt.
+      if (activeGoal && args.disposition === 'achieved') {
+        const acceptance = await evaluateGoalAcceptanceGate({
+          goalId: activeGoal.goalId,
+          goalTitle: activeGoal.title,
+          goalOwner: identity.ownerId,
+        });
+        if (!acceptance.satisfied) {
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: JSON.stringify({
+                  ok: false,
+                  error: acceptance.code,
+                  message: acceptance.message,
+                  goalId: activeGoal.goalId,
+                  ...(acceptance.rubricId ? { rubricId: acceptance.rubricId } : {}),
+                }),
+              },
+            ],
+            isError: true,
+          };
+        }
       }
       if (activeGoal && args.disposition) {
         // Apply + report FAIL-SOFT: a report failure downgrades to a warning —

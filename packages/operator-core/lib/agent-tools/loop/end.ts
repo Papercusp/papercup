@@ -24,6 +24,7 @@ import {
   activeGoalForOwner,
   applyGoalDisposition,
   buildDispositionRefusal,
+  evaluateGoalAcceptanceGate,
   buildGoalWindDownReport,
   deliverGoalWindDownReport,
   windDownDispositionGateEnabled,
@@ -119,6 +120,34 @@ export default defineTool({
         content: [{ type: 'text' as const, text: JSON.stringify(refusal) }],
         isError: true,
       };
+    }
+    // P-009 (consult-min-max-and-rubric-vetting-2026-08-17 D-004 §2): 'achieved' is a
+    // CLAIM — the acceptance gate demands the vetted, independently-graded rubric.
+    // Positive-finding-only (infra faults pass), and it runs BEFORE deactivateLoop so
+    // a refusal never strands an already-ended loop. killed/handoff never reach it.
+    if (activeGoal && args.disposition === 'achieved') {
+      const acceptance = await evaluateGoalAcceptanceGate({
+        goalId: activeGoal.goalId,
+        goalTitle: activeGoal.title,
+        goalOwner: ownerId,
+      });
+      if (!acceptance.satisfied) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({
+                ok: false,
+                error: acceptance.code,
+                message: acceptance.message,
+                goalId: activeGoal.goalId,
+                ...(acceptance.rubricId ? { rubricId: acceptance.rubricId } : {}),
+              }),
+            },
+          ],
+          isError: true,
+        };
+      }
     }
     // The routine row names the harness the carry-note is scoped by — read it
     // BEFORE deactivation so the report leg can still find the note.
