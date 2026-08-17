@@ -6170,8 +6170,39 @@ function RetainedLedgerCard({
     "pc-colw:learning:retained",
   );
 
-  const corpusTotal = rtab === "all" ? null : (counts?.[rtab] ?? null);
   const shownItems = filtered.filter((r) => r.rowType === "item").length;
+  const isFiltered = cf.hasActive || (search ?? "").trim().length > 0;
+
+  // WI-39675 / D-003: a corpus denominator may only be printed when the list can
+  // actually REACH it. Two independent things can make it unreachable here, and
+  // both were being ignored:
+  //
+  //  1. `rship` (shipped/in-flight) narrows the feed SERVER-side, but the counts
+  //     below are computed WITHOUT that filter (learning-retain-read.ts builds
+  //     them from the corpus, unconditioned by opts.filter). So under a shipped
+  //     filter the corpus number is one the filtered list can never reach.
+  //  2. Any leg can degrade to a null count; summing the rest would silently
+  //     understate the corpus and print a confident wrong total.
+  //
+  // When neither applies we have a true store total and the growing cursor
+  // window converges on it, which is exactly filterCountLabel's precondition.
+  // Otherwise we say "loaded" and claim nothing about the corpus.
+  const corpusTotal = useMemo(() => {
+    if (rship !== "all" || !counts) return null;
+    if (rtab !== "all") return counts[rtab] ?? null;
+    const parts = Object.values(counts);
+    return parts.some((n) => n == null)
+      ? null
+      : parts.reduce((a, n) => a + (n ?? 0), 0);
+  }, [counts, rtab, rship]);
+
+  const countLabel =
+    corpusTotal != null
+      ? filterCountLabel(shownItems, corpusTotal, isFiltered, "retained item")
+          .summary
+      : isFiltered
+        ? `${shownItems} of ${rows.length} loaded`
+        : `${rows.length} loaded${nextCursor ? ", more on scroll" : ""}`;
 
   // Report the feed's state up to LearningsView (status dot, perf settle,
   // memories chip) — see RetainLedgerCardState.
@@ -6257,8 +6288,7 @@ function RetainedLedgerCard({
             fontVariantNumeric: "tabular-nums",
           }}
         >
-          {shownItems} shown · {rows.length} loaded
-          {corpusTotal != null ? ` · ${corpusTotal} total` : ""}
+          {countLabel}
         </span>
         <Tooltip label="Refresh the retained ledger">
           <button
@@ -6281,7 +6311,50 @@ function RetainedLedgerCard({
           Could not load the retained ledger: {String(feed.error)}
         </div>
       ) : rows.length === 0 && loading ? (
-        <div className="pc-advpanel__empty">Loading retained items…</div>
+        // WI-39675 (owner 2026-08-17: "in the retain tab, it just says 'loading
+        // retained items...' forever"). It was not forever, but the difference
+        // was invisible: `loading` is TanStack's isLoading (isPending &&
+        // isFetching), which stays TRUE across the whole retry sequence while
+        // `error` stays NULL until the last retry is exhausted. With 3 default
+        // retries, 1s/2s/4s backoff and a 10s server-side timeout, a feed whose
+        // every attempt times out shows this branch for ~47s and the error
+        // branch above never gets a turn. Measured: this read is fast when warm
+        // (~0.5s) but its COLD path intermittently crosses that 10s timeout —
+        // on staging as well as on the desktop sidecar — so a first paint after
+        // a restart is exactly when a user meets it.
+        //
+        // So: never claim a bare "loading" once an attempt has actually failed.
+        // failureCount/failureReason are the only signals that separate the two
+        // (see SyncQueryResult), and a manual retry beats waiting out a backoff.
+        <div className="pc-advpanel__empty">
+          {feed.failureCount > 0 ? (
+            <>
+              Still loading retained items — {feed.failureCount} attempt
+              {feed.failureCount === 1 ? "" : "s"} failed, retrying…
+              <button
+                type="button"
+                className="pc-advpanel__linkbtn"
+                onClick={() => feed.invalidate()}
+                style={{ marginInlineStart: 8 }}
+              >
+                Retry now
+              </button>
+              {feed.failureReason ? (
+                <div
+                  style={{
+                    marginTop: 4,
+                    fontSize: 11,
+                    color: "var(--fg-mute)",
+                  }}
+                >
+                  Last attempt: {String(feed.failureReason.message ?? feed.failureReason)}
+                </div>
+              ) : null}
+            </>
+          ) : (
+            "Loading retained items…"
+          )}
+        </div>
       ) : filtered.length === 0 ? (
         <div className="pc-advpanel__empty">
           {rows.length === 0
