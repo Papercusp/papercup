@@ -120,6 +120,32 @@ if [ "$ACTIVE_S_AGO" -lt "$DHT_BOOT_GRACE_SEC" ] 2>/dev/null; then
   exit 0
 fi
 
+# ── cross-host preflight (P-302): the remote leg is BEST-EFFORT by default. ──
+# WHY THIS EXISTS: in cross-host mode the DIALLING leg runs on the remote host,
+# so an unreachable remote makes the WHOLE run INCONCLUSIVE (exit 3,
+# 'remote-leg-unavailable') — which would silently COST US the local
+# bootstrap-wedge detection this timer was built for (EI-8892, the 3-day silent
+# outage). The remote here is a LAPTOP: it is off most of the time, so wiring it
+# in unconditionally would trade a detector that works every tick for one that
+# goes dark whenever someone closes a lid, plus an INCONCLUSIVE EI every
+# DHT_STALE_H forever. Cross-host SUBSUMES the local check (the announce still
+# has to reach the bootstrap), so when the remote IS up we simply run the
+# stronger probe, and when it is not we fall back to local-only and say so.
+# A reachable-but-failing remote is NOT skipped — that is the real P-302 signal.
+DHT_REMOTE_OPTIONAL="${DHT_REMOTE_OPTIONAL:-1}"
+DHT_REMOTE_PREFLIGHT_SEC="${DHT_REMOTE_PREFLIGHT_SEC:-8}"
+CROSS_HOST_SKIP_REASON=""
+if [ -n "${DHT_REMOTE_HOST:-}" ] && [ "$DHT_REMOTE_OPTIONAL" = 1 ] && [ "${DHT_REQUIRE_CROSS_HOST:-0}" != 1 ]; then
+  # `true` over ssh: cheapest possible "is this host answering" check. BatchMode
+  # so a missing key fails fast instead of prompting and hanging the timer.
+  if ! ssh -o BatchMode=yes -o ConnectTimeout="$DHT_REMOTE_PREFLIGHT_SEC" \
+       -o StrictHostKeyChecking=accept-new "$DHT_REMOTE_HOST" true </dev/null >/dev/null 2>&1; then
+    CROSS_HOST_SKIP_REASON="$DHT_REMOTE_HOST did not answer ssh within ${DHT_REMOTE_PREFLIGHT_SEC}s (host off/asleep/unreachable)"
+    log "cross-host leg SKIPPED — $CROSS_HOST_SKIP_REASON. Falling back to a LOCAL-ONLY run so bootstrap-wedge detection is preserved; this is NOT filed (an off laptop is an expected condition, not a DHT signal). Set DHT_REQUIRE_CROSS_HOST=1 to make this INCONCLUSIVE instead."
+    DHT_REMOTE_HOST=""
+  fi
+fi
+
 # ── run the real probe. ──
 run_probe() {
   local -a remote_args=()
@@ -160,6 +186,10 @@ if [ "$PROBE_EXIT" -eq 0 ]; then
   # bare "HEALTHY" that was read as federation health for days.
   if [ -n "${DHT_REMOTE_HOST:-}" ]; then
     log "HEALTHY (CROSS-HOST) — bootstrap $DHT_HOST:$DHT_PORT carried a verified packet to/from $DHT_REMOTE_HOST. NOTE: measured with a standalone probe process; a per-process denial on the app itself is NOT covered."
+  elif [ -n "$CROSS_HOST_SKIP_REASON" ]; then
+    # Distinct from a deliberate local-only run: cross-host WAS configured and
+    # was skipped. Never let this read as "cross-host health confirmed".
+    log "HEALTHY (LOCAL-ONLY, cross-host SKIPPED) — bootstrap $DHT_HOST:$DHT_PORT routed between two processes on this host, but the configured cross-host leg did not run: $CROSS_HOST_SKIP_REASON. NOTHING is proven about machine-to-machine transport this tick."
   else
     log "HEALTHY (LOCAL-ONLY) — bootstrap $DHT_HOST:$DHT_PORT routed between two processes on this host. This does NOT prove any other machine can reach the DHT (set DHT_REMOTE_HOST to test that)."
   fi
