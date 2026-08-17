@@ -1067,10 +1067,10 @@ export function classifyGateStallStatus(
   const isGreen = status === 'advanced' || status === 'up-to-date' || status === 'advanced-prefix';
   if (isGreen || pinMoved) return 'reset';
   if (status === 'skipped-locked' || status === 'migrations-pending') return 'noop';
-  // WI-39450: a pass that superseded itself produced no verdict about the code — see
-  // isSupersededByRefire. The refire it spawned records the real one. Its diagnostics are still
-  // written (EI-13288); only the streak is left alone.
-  if (isSupersededByRefire(retriage)) return 'record-only';
+  // WI-39450: a pass whose own re-triage watched the failing files PASS at tip produced no
+  // verdict about the code — see isProvenStaleCandidate. Its diagnostics are still written
+  // (EI-13288); only the streak is left alone.
+  if (isProvenStaleCandidate(retriage)) return 'record-only';
   return 'red';
 }
 
