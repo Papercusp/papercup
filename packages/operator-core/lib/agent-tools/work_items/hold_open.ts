@@ -178,6 +178,14 @@ export default defineTool({
       harnessSlug: item.harness ?? undefined,
       extra: { auto: true, lifecycle: 'hold_open', work_item: args.id },
     }).catch(() => {});
+    // EI-20710656847511624: state the lease's EXPIRY at the moment of the call. Three agents in
+    // a row placed a hold_open intending a permanent fence and each got one the dead-owner sweep
+    // lifted when their session ended; each had verified the hold APPLIED (has_hold=true,
+    // still_claimable=false) and stopped there, because nothing in the response said the hold was
+    // liveness-bound. A caller who reads only `{ ok:true, held:true }` must not be able to
+    // conclude "fenced permanently". Emitted unconditionally — never inferred from reason prose,
+    // which is exactly the free-text guessing the policy-gate exemption already shows is fragile.
+    const policyExempt = looksLikePolicyGate(args.reason);
     return {
       content: [
         {
@@ -189,6 +197,15 @@ export default defineTool({
             heldBy: ident.ownerId,
             reason: args.reason,
             note: prior && prior.by !== ident.ownerId ? `re-stamped (was held by ${prior.by})` : undefined,
+            durability: policyExempt ? 'lease (policy-tier exempt from reaping)' : 'lease (expires when you do)',
+            leaseNote: policyExempt
+              ? 'This is a LEASE (held_open_*), but its reason names a policy-tier gate, so the dead-owner sweeps exempt ' +
+                'it from reaping. That exemption keys off reason WORDING, not intent — if this fence must outlive your ' +
+                'session, do not lean on it: release { claimHold:true } writes a durable park (claim_hold_*) instead.'
+              : 'This is a LEASE, NOT a permanent fence: the dead-owner sweeps lift it once you are dead past grace, and ' +
+                'the item then re-enters the self-select pool. If this fence must OUTLIVE your session (an owner-gated ' +
+                'item, a policy decision), use release { claimHold:true } — a durable park (claim_hold_*) no reaper ' +
+                'touches (EI-20710656847511624).',
           }),
         },
       ],
