@@ -95,6 +95,9 @@ export async function ensureSpecTriadFiling(
   const ref = specTriadPlanRef(input);
   try {
     const { sql } = getOrgPg();
+    // Legacy fast path: rows filed before the condition-key upsert existed carry
+    // only the payload marker. Keep honoring them so a pre-existing open filing
+    // is adopted instead of joined by a keyed sibling.
     const open = (await sql`
       SELECT 1
         FROM harness_shared.work_items
@@ -104,7 +107,14 @@ export async function ensureSpecTriadFiling(
     `) as unknown as unknown[];
     if (open.length > 0) return { outcome: 'already-open', id: null, ref };
 
-    const item = await createWorkItem({
+    // WI-39594: the payload check above is check-then-act and RACED — the two
+    // callers (promotion refusal + daily sweep) run on independent schedules and
+    // filed 11 exact-title pairs. The upsert claims migration 741's unique
+    // condition-key index, so a concurrent double-file resolves to ONE open item
+    // regardless of timing. The key embeds harness + plan (workspace-unique by
+    // construction) because ownership reads are workspace-scoped — see
+    // condition-upsert.ts on why a harness-scoped read is the wrong tool here.
+    const res = await upsertConditionWorkItem(`spec-triad:${input.harnessSlug}/${input.planSlug}`, {
       kind: 'task',
       harness: input.harnessSlug,
       workspaceId: input.workspaceId,
@@ -113,11 +123,9 @@ export async function ensureSpecTriadFiling(
       summary: specTriadFilingBody(input.planSlug, input.gap),
       payload: { specTriadPlan: ref, planSlug: input.planSlug, missing: input.missing },
     });
-    const id =
-      (item as { feature_id?: string; id?: string }).feature_id ??
-      (item as { id?: string }).id ??
-      null;
-    return { outcome: 'created', id, ref };
+    return res.created
+      ? { outcome: 'created', id: res.id, ref }
+      : { outcome: 'already-open', id: res.id, ref };
   } catch (err) {
     return { outcome: 'error', id: null, ref, error: (err as Error).message };
   }
