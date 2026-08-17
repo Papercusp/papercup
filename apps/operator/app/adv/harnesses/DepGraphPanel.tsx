@@ -440,7 +440,20 @@ export default function DepGraphPanel({ params }: PanelComponentProps) {
   // current page" chip off screen with it. That chip is how a reader learns why a node
   // they can see is not in the list beside it; deleting the disclosure that made the last
   // bug findable, in the course of fixing that same bug, is not a trade worth making.
-  const visibleItems = items == null ? null : cf.rows.filter((r) => listIds.has(r.id));
+  //
+  // ⚠ MEMOIZED, and that is load-bearing rather than a micro-optimisation (WI-39552).
+  // This feeds `graph`, `graph` feeds the ELK layout effect below, and that effect calls
+  // `setPositioned`. As a bare `cf.rows.filter(...)` this was a fresh array literal on
+  // EVERY render, so `graph` was a new object on every render, so the effect re-ran on
+  // every render and set state again — React's textbook "one of the dependencies changes
+  // on every render" runaway. It cost ~145 aborted update loops per dock mount
+  // ("Maximum update depth exceeded"), invisibly: the pane still renders, so no test
+  // verdict caught it. Guard: adv-work-items-render-loop.spec.ts, whose oracle is the
+  // console-error COUNT.
+  const visibleItems = useMemo(
+    () => (items == null ? null : cf.rows.filter((r) => listIds.has(r.id))),
+    [items, cf.rows, listIds],
+  );
 
   const graph = useMemo(() => {
     if (!visibleItems || !edgeRows) return null;
