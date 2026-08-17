@@ -304,6 +304,29 @@ describe('stopLocalBackend', () => {
     expect(JSON.stringify(runSystemctl.mock.calls)).not.toContain('disable');
   });
 
+  /** CONTROL — the plausible-but-wrong implementation D-005 exists to forbid, kept
+   *  permanently so the two assertions above are known to have teeth. A "stop whatever serves
+   *  baseUrl" stop is the natural thing to write and passes any fixture whose baseUrl port and
+   *  unit agree; it must FAIL here. If this test ever goes green, the assertions above have
+   *  stopped testing anything. */
+  async function stopByDerivedUnit(
+    target: BackendLifecycleTarget,
+    opts: { runSystemctl: (args: string[]) => Promise<{ stdout: string; stderr: string }> },
+  ) {
+    const port = new URL(target.baseUrl).port;
+    await opts.runSystemctl(['--user', 'stop', `llama-server-${port}.service`]);
+  }
+
+  it('control: a baseUrl-derived stop fails the assertions the real one passes', async () => {
+    const runSystemctl = vi.fn(async () => ({ stdout: '', stderr: '' }));
+    await stopByDerivedUnit(ORNITH, { runSystemctl });
+
+    expect(() =>
+      expect(runSystemctl).toHaveBeenCalledWith(['--user', 'stop', 'llama-ornith.service']),
+    ).toThrow();
+    expect(() => expect(JSON.stringify(runSystemctl.mock.calls)).not.toContain('11435')).toThrow();
+  });
+
   it('reports a systemctl failure instead of claiming the backend stopped', async () => {
     const result = await stopLocalBackend(ORNITH, {
       runSystemctl: async () => {
