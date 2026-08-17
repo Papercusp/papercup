@@ -57,8 +57,15 @@ vi.mock('../agent-tools/coordination/log', () => ({ coordScopeWorkspace: () => c
 vi.mock('./liveness', () => ({ claimPlanItem: vi.fn() }));
 vi.mock('./compile-brief', () => ({ compilePlanItemBrief: vi.fn(), decisionsForItem: vi.fn() }));
 
-const { findImplementingWorkItem, findCoverageWorkItems, findConvertedWorkItemByStamp, listConvertedPlanItemRefs, IMPLEMENTS_REL } =
-  await import('./convert');
+const {
+  findImplementingWorkItem,
+  findCoverageWorkItems,
+  findConvertedWorkItemByStamp,
+  listConvertedPlanItemRefs,
+  IMPLEMENTS_REL,
+  convertPlanItem,
+  stampPromotedWorkItemProvenance,
+} = await import('./convert');
 
 const WS = DEFAULT_COORD_WORKSPACE;
 let rootSql: postgres.Sql;
@@ -95,6 +102,23 @@ beforeAll(async () => {
     ALTER TABLE harness_shared.work_items
       ADD CONSTRAINT work_items_payload_is_object_ck
       CHECK (payload IS NULL OR jsonb_typeof(payload) = 'object')`);
+  // P-003 promotion-provenance stamp: resolveGoalContext reads BOTH goal legs —
+  // the promoter's own goal-mode row (agent_modes) and the launch-inherited one
+  // (session_briefs). Real tables so the stamp's composition with the resolver
+  // is proven against actual SQL, not a mock of it (the goal-provenance-stamp
+  // integration test exists because the unit-mocked halves had "never been
+  // proven to compose" — same lesson here).
+  await rootSql.unsafe(`
+    CREATE TABLE harness_shared.agent_modes (
+      workspace_id text NOT NULL, owner_id text NOT NULL,
+      axis_key text NOT NULL, mode text NOT NULL, subject text,
+      updated_at timestamptz DEFAULT now(), set_by text
+    )`);
+  await rootSql.unsafe(`
+    CREATE TABLE harness_shared.session_briefs (
+      owner_id text PRIMARY KEY, workspace_id text NOT NULL, goal_id text,
+      first_seen_at timestamptz DEFAULT now(), updated_at timestamptz DEFAULT now()
+    )`);
   h.sql = rootSql;
 }, 90_000);
 
@@ -103,7 +127,8 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await rootSql`TRUNCATE harness_shared.coord_links, harness_shared.work_items `;
+  await rootSql`TRUNCATE harness_shared.coord_links, harness_shared.work_items,
+                harness_shared.agent_modes, harness_shared.session_briefs`;
   cs.scope = 'default'; // collapse the union to WS unless a test widens it
 });
 
