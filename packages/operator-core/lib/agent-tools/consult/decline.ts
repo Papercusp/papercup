@@ -20,7 +20,7 @@ const ok = (payload: Record<string, unknown>) => ({ data: payload });
 export default defineTool({
   name: 'consult:decline',
   description:
-    'Decline a consult routed to you — your context does not cover the question. Honest and cheap by design: posts the reason, closes the consult as declined, wakes the requester, and returns the remaining route candidates so they can cascade (re-call get_feedback with exclude:[you]).',
+    'Decline a consult routed to you — your context does not cover the question. Honest and cheap by design: posts the reason and the cascade ADVANCES server-side (the next selected responder is woken with the feedback so far); only when the menu is exhausted does the consult close as declined and wake the requester.',
   guidance: {
     when:
       'You validated the consult (read the cited evidence) and your context genuinely does not cover it. Declining fast is the helpful move — never answer from guesswork.',
