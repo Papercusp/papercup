@@ -256,6 +256,23 @@ async function openIssueExistsForKeys(keys: readonly string[]): Promise<Set<stri
  * report.md are written regardless (a human auditing a noisy night still
  * sees the real numbers, flagged uncertain in the report), only the
  * auto-implement/auto-review backlog noise is suppressed. */
+/**
+ * The denominator that must travel with every rendered regression count
+ * (WI-39359). A metric whose baseline sits under the absolute floor is never
+ * ELIGIBLE to regress, so "0 regressions" over a partially-blind metric set is
+ * a bounded measurement wearing the costume of a clean sweep — indistinguishable
+ * from a run that genuinely cleared everything. Measured 2026-08-17 on the
+ * tier1 `ci` baseline: 11 of 51 metrics blind, the hot path among them.
+ *
+ * Returns '' only when coverage is genuinely complete or no comparison ran, so
+ * the common clean case stays quiet and a blind spot is always loud.
+ */
+function formatCoverage(summary: RunSummary): string {
+  const c = summary.regressionCoverage;
+  if (!c || c.blind === 0) return '';
+  return ` (⚠ over ${c.judged}/${c.total} metrics — ${c.blind} NOT COMPARABLE, never eligible to regress)`;
+}
+
 async function fileFindings(summary: RunSummary, tierLabel: string): Promise<void> {
   if (summary.hostLoad?.oversubscribed) {
     // EI-19301664378023382: surface the PSI "some" stall-time evidence in the skip
@@ -276,7 +293,8 @@ async function fileFindings(summary: RunSummary, tierLabel: string): Promise<voi
         `${summary.hostLoad.ratio1m.toFixed(2)}× cpus${memReason}` +
         `; PSI some avg60 mem=${psiMem !== null && psiMem !== undefined ? `${psiMem.toFixed(1)}%` : 'n/a'} ` +
         `cpu=${psiCpu !== null && psiCpu !== undefined ? `${psiCpu.toFixed(1)}%` : 'n/a'}) — skipping auto-filing of ` +
-        `${summary.sloViolations.length} SLO violation(s) / ${summary.regressions.length} regression(s) ` +
+        `${summary.sloViolations.length} SLO violation(s) / ` +
+        `${summary.regressions.length} regression(s)${formatCoverage(summary)} ` +
         `as unreliable under contention (EI-8843); see ${summary.reportPath} for the raw numbers.`,
     );
     return;
@@ -396,7 +414,7 @@ async function fileFindings(summary: RunSummary, tierLabel: string): Promise<voi
 }
 
 /** Exported for the watchdogKey-stability unit test (EI-3909). */
-export const _testing = { fileFindings };
+export const _testing = { fileFindings, formatCoverage };
 
 async function runTier(ctx: SystemActionCtx, tier: '--tier1' | '--tier2', timeoutMs: number): Promise<void> {
   const root = integrationRoot();
@@ -479,7 +497,8 @@ async function runTier(ctx: SystemActionCtx, tier: '--tier1' | '--tier2', timeou
      
     console.info(
       `[p2p-perf] ${label} run ${summary.runId}: ${summary.artifacts} artifacts, ` +
-        `${summary.sloViolations.length} SLO violations, ${summary.regressions.length} regressions, ` +
+        `${summary.sloViolations.length} SLO violations, ` +
+        `${summary.regressions.length} regressions${formatCoverage(summary)}, ` +
         `${summary.improvements} improvements (advisory — D-005). Report: ${summary.reportPath}`,
     );
     await fileFindings(summary, label);

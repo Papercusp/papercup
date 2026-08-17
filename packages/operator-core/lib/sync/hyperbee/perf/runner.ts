@@ -857,6 +857,22 @@ async function main(): Promise<void> {
       relChange: d.relChange,
     })),
     improvements: compareReport?.improvements.length ?? 0,
+    notComparable: (compareReport?.notComparable ?? []).map((n) => ({
+      scenario: n.scenario,
+      paramsKey: n.paramsKey,
+      metric: n.metric,
+      unit: n.unit,
+      baseline: n.baseline,
+      current: n.current,
+      floor: n.floor,
+    })),
+    regressionCoverage: compareReport
+      ? {
+          judged: compareReport.metricsCompared,
+          blind: compareReport.notComparable.length,
+          total: compareReport.metricsCompared + compareReport.notComparable.length,
+        }
+      : null,
     baselinePromotion,
     baselineCompared: compared,
     hostLoad,
