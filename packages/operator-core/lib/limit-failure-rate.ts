@@ -17,6 +17,8 @@
  * dev:pg_query.
  */
 
+import { DISPATCH_WRAPPER_EXCLUSION_SQL } from './agent-tools/sessions/automatic-tool-names';
+
 /** Injectable query runner (mirrors code-run-adoption.ts's RunQuery). */
 export type RunQuery = <T = unknown>(query: string, params: unknown[]) => Promise<T[]>;
 

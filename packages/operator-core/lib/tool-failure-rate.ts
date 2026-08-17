@@ -78,6 +78,8 @@
  */
 
 /** Injectable query runner (mirrors empty-result-rate.ts's RunQuery). */
+import { DISPATCH_WRAPPER_EXCLUSION_SQL } from './agent-tools/sessions/automatic-tool-names';
+
 export type RunQuery = <T = unknown>(query: string, params: unknown[]) => Promise<T[]>;
 
 /** One tool's failure counts inside the window (the SQL's per-tool row). */
@@ -154,8 +156,10 @@ export function rollupToolFailures(
  * workspace `$1`. Runnable as-is via dev:pg_query.
  *
  * Uses `tool_invocations_invoked_at_cov_idx` — btree (invoked_at DESC) INCLUDE
- * (tool_name, duration_ms, status) — so the window is an index-only range scan and
- * this stays cheap enough to run inline on every health tick.
+ * (tool_name, duration_ms, status) — for the window range scan. The P-012
+ * dispatch-wrapper predicate reads metadata_json (not in the INCLUDE), so rows in
+ * the window now cost a heap fetch; the window is minutes-scale, which keeps this
+ * cheap enough to run inline on every health tick.
  *
  * `invalid-input` / `role-not-allowed` are excluded from BOTH numerator and
  * denominator: they are caller errors, not tool health.
