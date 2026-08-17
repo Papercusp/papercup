@@ -6647,6 +6647,36 @@ export async function runGreenCheckpoint(
   const desktopPerf = await deps
     .desktopPerfGate?.(candidate)
     .catch(() => undefined);
+  // WI-39685 (cutover-plan D-013): the DETECTOR half. D-008 stopped an UNMEASURED
+  // desktop-perf invariant from holding promotion — correct, because an
+  // unmeasurable sample is not evidence of a regression — but that left the
+  // failure SILENT: a permanently-absent detector now looks exactly like a
+  // permanently-healthy one, and the gate advances forever on an invariant nobody
+  // is checking. This raises a durable, human-facing alert for that state, under
+  // its own source and its own lifecycle (see DETECTOR_ESCALATION_SOURCE).
+  //
+  // Deliberately placed BEFORE the block-branch below, which RETURNS: the
+  // detector must observe every outcome, including the one that holds promotion.
+  if (desktopPerfDetectorAbsent(desktopPerf)) {
+    await deps
+      .escalateDetector?.(
+        `desktop-perf detector ABSENT: ${candidate.slice(0, 8)} judged with the desktop-perf invariant UNMEASURED`,
+        `The desktop-perf gate ran but could not measure its invariant, and (since D-008) no longer holds promotion for it.\n` +
+          `That combination is silent by construction — this alert is the only signal it happened.\n\n` +
+          `Gate summary: ${desktopPerf?.summary ?? "(none)"}\n` +
+          `Candidate: ${candidate}\n\n` +
+          `This is NOT the no-desktop-app skip (WI-39672/D-007), which reports action=pass and is excluded by the D-013 discriminant.`,
+      )
+      .catch(() => {});
+  } else if (
+    desktopPerf?.verdictStatus !== undefined &&
+    desktopPerf.verdictStatus !== "unknown"
+  ) {
+    // Measured again ⇒ the detector recovered. Narrow on purpose: a stub that
+    // reports no verdictStatus tells us nothing, and "nothing" must not be read
+    // as recovery. Only a positively-measured verdict closes the alert.
+    await deps.clearDetectorEscalation?.().catch(() => {});
+  }
   if (desktopPerf && desktopPerf.action !== "pass") {
     deps.log(desktopPerf.summary);
     await deps.broadcast(desktopPerf.summary).catch(() => {});
@@ -7056,6 +7086,92 @@ export function hiveShipsDesktopApp(
     return exists(path.join(integrationRoot, "papercusp-desktop"));
   } catch {
     return true;
+  }
+}
+
+/** WI-39685 (cutover-plan D-013): the escalation `source` the gate stamps on its
+ *  OWN red/hold escalations — and, critically, the one `clearEscalation()` sweeps
+ *  on the advance path. The sweep matches on this SOURCE, not on kind or title. */
+export const GATE_ESCALATION_SOURCE = "green-checkpoint";
+
+/** WI-39685 (D-013 rev 53): the DETECTOR alert's source — deliberately DISTINCT
+ *  from `GATE_ESCALATION_SOURCE`.
+ *
+ *  "The gate is green again" and "we have not been measuring desktop perf for N
+ *  runs" are different facts, and giving them one lifecycle is precisely the
+ *  silent-failure bug: post-D-008 an unmeasured invariant no longer HOLDS
+ *  promotion, so every run reaches the advance path and `clearEscalation()`
+ *  resolves whatever the gate opened. An alert raised under the gate's own source
+ *  would therefore open and self-resolve inside the SAME run — a page that clears
+ *  itself is no page.
+ *
+ *  Ratified with evidence (leader grep 2026-08-17): every `source ===
+ *  'green-checkpoint'` filter in the tree lives inside THIS file; every other
+ *  escalation consumer lists by status only and is source-agnostic. So a new
+ *  source costs no reader a change. */
+export const DETECTOR_ESCALATION_SOURCE = "green-checkpoint-detector";
+
+/** WI-39685 (D-013): the ratified discriminant for "the desktop-perf invariant
+ *  went UNMEASURED".
+ *
+ *  It is a PAIR, and both halves are load-bearing — this is the whole reason
+ *  D-013 exists as a decision rather than a comment:
+ *    • `verdictStatus === 'unknown'` alone would fire on the D-007 no-desktop-app
+ *      SKIP, which reports `unknown` precisely because there is nothing to
+ *      measure. That is a correct, permanent, expected state — paging on it
+ *      trains the reader to ignore the alert.
+ *    • `action !== 'pass'` alone would fire on every ordinary measured warn/block,
+ *      which the gate already surfaces loudly through its own escalation.
+ *  Together they select exactly the dangerous case: the gate RAN, could not
+ *  measure, and no longer holds promotion for it.
+ *
+ *  Never "simplify" this to a single field or a summary substring (D-013). */
+export function desktopPerfDetectorAbsent(
+  decision?: { action: string; verdictStatus?: string } | undefined,
+): boolean {
+  return (
+    !!decision &&
+    decision.action !== "pass" &&
+    decision.verdictStatus === "unknown"
+  );
+}
+
+/** The escalation-store seam the detector's lifecycle needs — injected so the
+ *  guard tests run against a fake store instead of the coordination DB. */
+export interface DetectorEscalationIo {
+  list(): Promise<Array<{ msg_id: string; source?: unknown }>>;
+  open(summary: string, body: string): Promise<void>;
+  resolve(msg_id: string): Promise<void>;
+}
+
+/** WI-39685 (D-013 rev 54): open the detector alert, deduped on its OWN source.
+ *
+ *  The gate's `escalate()` dedups on `GATE_ESCALATION_SOURCE`; a detector row
+ *  carrying a different source is invisible to that guard, so without this the
+ *  alert would re-open on EVERY hourly tick while the condition persists — an
+ *  hourly page for a standing condition, which is spam, which is ignored. */
+export async function openDetectorEscalation(
+  io: DetectorEscalationIo,
+  summary: string,
+  body: string,
+): Promise<void> {
+  const open = await io.list();
+  if (open.some((e) => e.source === DETECTOR_ESCALATION_SOURCE)) return;
+  await io.open(summary, body);
+}
+
+/** WI-39685 (D-013 rev 54): the detector's recovery path.
+ *
+ *  `clearEscalation()` will never resolve this row (that is the point), and the
+ *  row opts OUT of the attention TTL sweep — so this is the ONLY thing that can
+ *  close it. Omit it and the alert is immortal: the operator learns to dismiss
+ *  it, and the next real absence is invisible. */
+export async function clearDetectorEscalation(
+  io: DetectorEscalationIo,
+): Promise<void> {
+  const open = await io.list();
+  for (const e of open) {
+    if (e.source === DETECTOR_ESCALATION_SOURCE) await io.resolve(e.msg_id);
   }
 }
 
@@ -9510,6 +9626,22 @@ export function realCheckpointDeps(
           }).catch(() => {});
         }
       }
+    },
+    // WI-39685 (cutover-plan D-013 rev 53/54): the DETECTOR pair. Same store as
+    // `escalate`/`clearEscalation` above, but stamped with a DISTINCT source, so
+    // the green-recovery sweep immediately above cannot resolve it — that
+    // separation is the entire mechanism. Dynamically imported for the same
+    // reason the two deps above are: this CLI's static module graph deliberately
+    // does not carry the escalations/attention DB modules.
+    async escalateDetector(summary, body) {
+      await openDetectorEscalation(
+        await realDetectorEscalationIo(),
+        summary,
+        body,
+      );
+    },
+    async clearDetectorEscalation() {
+      await clearDetectorEscalation(await realDetectorEscalationIo());
     },
     // docs-audit #2: how long the current `release-not-green` escalation has been
     // open (= how long the gate's been held red), or null if none is open. The
