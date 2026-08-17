@@ -613,6 +613,37 @@ test('P-008/D-009: a SATURATED pool still 429s and does NOT start another backen
   assert.equal(b1.requests.length, 0);
 });
 
+test('P-008/D-009 CONTROL: the saturation guard is CAUSAL — the SAME busy state reaches the cold-start seam once the pool reports "not saturated"', async () => {
+  // FALSIFIABILITY CONTROL for the 429 test above, and the reason this pair proves anything.
+  // Every other guard here is pinned by an exact differential pair (cold-start vs warm differ only
+  // in health; cold-start vs always-on differ only in `lifecycle`), but the 429 test differs from
+  // the cold-start test in BOTH health and saturation — so on its own, "ensure was not called"
+  // could equally be explained by a guard that had been deleted. This runs the identical busy
+  // state with ONE thing changed: the pool reports saturatedFor === false. ensure IS then called,
+  // so the `!saturatedFor` conjunct is demonstrably what suppresses it, not luck.
+  const b1 = await startFakeBackend('ornith', okJsonReply({ id: 'from-cold-started' }));
+  backends = [b1];
+  const ensured: string[] = [];
+  await boot(
+    [onDemand('ornith', b1.baseUrl, ['ornith-35b'], 1)],
+    {
+      ensureLocalBackendRunning: async (b) => {
+        ensured.push(b.id);
+        return { ok: true };
+      },
+    },
+    (p) => ({ ...p, saturatedFor: () => false }),
+  );
+  pool.recordStart('ornith');
+  assert.equal(pool.select('ornith-35b'), null, 'same dead-end select() as the 429 test');
+
+  // The response status is incidental here (the one slot is still busy, so nothing forwards) —
+  // the observation under test is purely whether the lifecycle seam was reached.
+  await chatCompletions({ model: 'ornith-35b', messages: [] });
+
+  assert.deepEqual(ensured, ['ornith'], 'with saturation reported false, the SAME state reaches the cold-start seam');
+});
+
 test('P-008/D-009: an ALWAYS-ON unhealthy backend is never started — the seam is scoped to on-demand units', async () => {
   const b1 = await startFakeBackend('always', okJsonReply({ id: 'never-reached' }));
   backends = [b1];
