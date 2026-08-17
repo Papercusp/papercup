@@ -5252,10 +5252,11 @@ function LearningsView({
         <div className="pc-learning__flow" aria-label="Banked this week">
           <span
             className="pc-learning__flowchip"
-            title={`Rows in this ${t("pot", { lower: true })}'s shared memory pool — every agent recalls these while working.`}
+            title={`Rows in this ${t("pot", { lower: true })}'s shared memory pool — every agent recalls these while working. The Memories tab below lists them.`}
           >
             <Brain size={11} aria-hidden />
-            <strong>{rows.length}</strong> learnings retained
+            <strong>{ledgerState.memoriesCount ?? "—"}</strong> learnings
+            retained
           </span>
           <Tooltip label="Improvements filed in the trailing 7 days — open the Improvements backlog.">
             <button
@@ -5286,115 +5287,18 @@ function LearningsView({
           </Tooltip>
         </div>
 
-        {/* WI-6384 (residual): there used to be a `hive === ""` short-circuit
-            HERE that printed "No pots" before anything looked at `snap`. The
-            resolver and the query gate above had already been fixed to serve
-            the workspace-wide rollup for '', so the rollup arrived and was
-            discarded one layer below the fix — the All-Pots lens still read as
-            empty. "No pots" is not a render-time fact either: when the
-            workspace genuinely has no pots the resolver says so as
-            `unavailable('no pots registered in this workspace')`, which the
-            branch below renders WITH its reason. Selecting the broadest lens
-            now shows the broadest result. */}
-        {sync.loading && !snap ? (
-          <p className="pc-learning__quietempty">
-            Loading the {t("pot", { lower: true })}&rsquo;s shared memory…
-          </p>
-        ) : snap?.unavailable ? (
-          // Name the CAUSE. "unavailable" with no reason is a dead end for the
-          // reader (owner report 2026-07-25 — the real cause was a corrupted
-          // mem0ai install, invisible from this screen).
-          <LearningVisualError
-            title={
-              snap.unavailableReason
-                ? `Shared memory unavailable — ${snap.unavailableReason}`
-                : "Shared memory unavailable"
-            }
-            onRetry={() => sync.invalidate()}
-          />
-        ) : filtered.length === 0 ? (
-          <div className="pc-learning__quietempty" role="status">
-            <Brain size={14} aria-hidden />
-            <span>No retained learnings</span>
-          </div>
-        ) : (
-          <div
-            className={`pc-learning__retainlayout${selectedRow ? " has-detail" : ""}`}
-          >
-            <div className="pc-learning__retainindex">
-              <ul className="pc-learning__list">
-                {primaryRows.map(renderLearning)}
-              </ul>
-              {earlierRows.length > 0 ? (
-                <LearningDisclosure
-                  label="Earlier retained learnings"
-                  count={earlierRows.length}
-                >
-                  <ul className="pc-learning__list">
-                    {earlierRows.map(renderLearning)}
-                  </ul>
-                </LearningDisclosure>
-              ) : null}
-            </div>
-            {selectedRow && selectedProvenance && SelectedProvenanceIcon ? (
-              <aside
-                className="pc-learning__retaindetail"
-                aria-label="Selected learning"
-              >
-                <header>
-                  <span
-                    className={`pc-learning__provenance is-${selectedProvenance.tone}`}
-                    title={selectedProvenance.label}
-                  >
-                    <SelectedProvenanceIcon size={11} aria-hidden />
-                  </span>
-                  <button
-                    type="button"
-                    aria-label="Close selected learning"
-                    onClick={() => void setSelectedLearning(null)}
-                  >
-                    <XCircle size={14} aria-hidden />
-                  </button>
-                </header>
-                <p>{selectedRow.text}</p>
-                <footer>
-                  <button
-                    type="button"
-                    style={actionBtn}
-                    onClick={() => void edit(selectedRow)}
-                  >
-                    edit
-                  </button>
-                  <button
-                    type="button"
-                    style={actionBtn}
-                    onClick={() => void forget(selectedRow)}
-                  >
-                    remove
-                  </button>
-                </footer>
-              </aside>
-            ) : null}
-          </div>
-        )}
-
-        {/* WI-39493 Variant D (owner pick 2026-08-16): everything ELSE the
-            colony keeps — plans, idea-routed work items, rubric changes,
+        {/* WI-39493 Variant D → WI-39535: EVERYTHING the colony keeps —
+            shared-memory rows, routed plans and work items, rubric changes,
             insight runbooks, code recipes — as ONE recency-interleaved,
             keyset-paged "Retained" ledger, rendered through the same grid +
             column-filter components as the Work tab's work-item queue (owner
             ask 2026-08-16). Lens weights stays separate below: it is the
             distribution the loop steers by, not a feed. */}
-        <div className="pc-learning__sectionhead">
-          <h2>Also retained</h2>
-          <span
-            className="pc-learning__muted"
-            title="Learning the loop keeps outside the shared memory pool: routed plans and work items, rubric changes, agent-insight runbooks, and code recipes — one ledger, newest activity first."
-          >
-            other things the loop has learned
-          </span>
-        </div>
-        <RetainedLedgerCard hive={hive} enabled={hiveReady} />
+        <RetainedLedgerCard
+          hive={hive}
+          enabled={hiveReady}
+          onState={setLedgerState}
+        />
         {retainLensEntries.length > 0 ? (
           <section
             className="pc-learning__lensstrip"
