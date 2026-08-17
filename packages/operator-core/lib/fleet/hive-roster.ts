@@ -14,15 +14,16 @@
  *
  * Composition only — NO edits to su-85dd2's in-flight coord:presence read
  * (P-003): this imports the EXPORTED reads (listPresence + the pure
- * fetchPresenceTier1/computeLastActiveSecAgo) and folds their output. The pure
+ * fetchPresenceTier1/deriveLastActive) and folds their output. The pure
  * halves (filterPresenceToHive / foldHiveRoster) unit-test without PG;
  * listHiveRoster is the thin IO wrapper, with a DI seam (readPresence) so
  * su-85dd2's Phase-2 hive-scoped read (incl. federated peers, P-004) drops in.
  */
 import { listPresence } from '../agent-tools/coordination/presence';
 import {
-  computeLastActiveSecAgo,
+  deriveLastActive,
   fetchPresenceTier1,
+  stripTurnPartLastAt,
   type PresenceTier1Joins,
 } from '../agent-tools/coordination/presence-tier1';
 import {

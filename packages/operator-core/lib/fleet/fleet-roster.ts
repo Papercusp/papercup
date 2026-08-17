@@ -19,8 +19,9 @@
 import { listPresence, PRESENCE_STALE_MS } from '../agent-tools/coordination/presence';
 import { fetchPresenceFleet } from '../agent-tools/coordination/presence-fleet';
 import {
-  computeLastActiveSecAgo,
+  deriveLastActive,
   fetchPresenceTier1,
+  stripTurnPartLastAt,
   type PresenceTier1Joins,
 } from '../agent-tools/coordination/presence-tier1';
 import {
