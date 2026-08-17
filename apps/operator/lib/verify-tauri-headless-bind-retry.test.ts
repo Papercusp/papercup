@@ -27,7 +27,14 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-const SCRIPT = resolve(__dirname, '../../../scripts/verify-tauri-headless.sh');
+// PROBE_SCRIPT lets scripts/mutation-probe.sh point this suite at a MUTATED COPY
+// outside the tree, so falsifiability can be proven without ever mutating the
+// shared checkout (where git-sync would happily commit the mutant mid-probe).
+// This seam is load-bearing: mutation-probe.sh's own EXAMPLE names THIS file, so
+// without it the documented invocation reads the unmutated tracked script and
+// reports a false "mutant SURVIVED" (WI-39608).
+const SCRIPT =
+  process.env.PROBE_SCRIPT ?? resolve(__dirname, '../../../scripts/verify-tauri-headless.sh');
 const src = readFileSync(SCRIPT, 'utf8');
 
 describe('EI-18734124566158657 — verify-tauri-headless retries once on a bind-time port race', () => {
