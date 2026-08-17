@@ -239,6 +239,169 @@ export function greenStallEscalationBody(opts: {
   });
 }
 
+// ── verdict-stale ATTRIBUTION (WI-39704) ──────────────────────────────────────
+
+/**
+ * WI-39704: what this alarm said about a verdict-staleness stall used to be a GUESS
+ * dressed as a finding. `verdictStale` measures exactly ONE thing — no green verdict in
+ * 12h — and the broadcast then asserted the cause: "verdict-staleness ⇒ a failing suite.
+ * release:checkpoint-run forces a fresh gate run." That inference is wrong for every
+ * stall whose gate never reached the tests, and wrong in the most expensive direction:
+ * it sends each reader hunting failing tests that do not exist, and its remedy costs a
+ * full ~55min suite that then dies exactly where the last one did.
+ *
+ * Measured on oddsmith 2026-08-17: the gate fired hourly on schedule, the suite PASSED,
+ * and every run died in the publish step — `git push origin <sha>:refs/heads/main exited
+ * 128: fatal: could not read Username for 'https://github.com'` (a missing push
+ * credential, WI-39549). gate_health recorded 359 consecutive "reds" with
+ * `failingTests: []`; the alarm said "no green verdicts … a failing suite"; WI-39671
+ * spent an entire investigation establishing that the tests were fine — and then the
+ * condition singleton re-minted the identical alarm (WI-39704) 34 seconds after that
+ * item closed, primed to cost the next reader the same investigation.
+ *
+ * The datum was never missing. The run's own pipeline_event already records
+ * `crashed: true` and the thrown error's text; it simply never reached the alarm. That
+ * is the same defect WI-38340 fixed two functions down in this very file — an alarm
+ * that misstates its own trigger sends the reader after a wedged gate that is running
+ * fine — so this extends that convention rather than inventing one.
+ *
+ * ⚠ This deliberately does NOT suppress the alarm. Deploys really are frozen; that half
+ * was always true. It changes only WHICH of the alarm's several possible causes it
+ * claims, and makes it QUOTE the evidence instead of inferring from it.
+ */
+export interface LastGateRunEvidence {
+  /** the run crashed before rendering a verdict (`CheckpointResult.crashed`). */
+  crashed: boolean;
+  /** the suite verdict the run rendered — or null when it never rendered one, which is
+   *  what `buildCrashCheckpointResult` writes (EI-20702428259478130: `null`, not `false`,
+   *  precisely so "no verdict exists" cannot be read as "the code is RED"). */
+  green: boolean | null;
+  /** FIRST line of the crash summary — the fault itself, QUOTED, never pattern-matched.
+   *  The later stack frames are noise to a responder; the first line is the blocker. */
+  firstLine: string | null;
+  candidate: string | null;
+  observedAt: string | null;
+}
+
+/**
+ * Read the newest green_checkpoint verdict this install recorded. Fail-soft by design
+ * (any error ⇒ null): this only ENRICHES an alarm that is already firing, so a read
+ * problem must degrade the alarm's wording, never suppress or break the alarm itself.
+ */
+export async function readLastGateRunEvidence(
+  sql: Sql,
+  installSlug: string,
+): Promise<LastGateRunEvidence | null> {
+  try {
+    const rows = await sql<
+      {
+        detail: {
+          crashed?: unknown;
+          green?: unknown;
+          summary?: unknown;
+          candidate?: unknown;
+        } | null;
+        created_at: Date | string | null;
+      }[]
+    >`
+      SELECT detail, created_at
+        FROM harness_shared.pipeline_events
+       WHERE install_slug = ${installSlug}
+         AND kind = 'green_checkpoint'
+       ORDER BY created_at DESC
+       LIMIT 1`;
+    const row = rows[0];
+    if (!row) return null;
+    const d = row.detail ?? {};
+    const summary = typeof d.summary === 'string' ? d.summary : null;
+    const firstLine = summary ? (summary.split('\n')[0] ?? '').trim().slice(0, 400) : null;
+    let observedAt: string | null = null;
+    if (row.created_at != null) {
+      const t = new Date(row.created_at as string | Date);
+      observedAt = Number.isNaN(t.getTime()) ? null : t.toISOString();
+    }
+    return {
+      crashed: d.crashed === true,
+      green: typeof d.green === 'boolean' ? d.green : null,
+      firstLine: firstLine || null,
+      candidate: typeof d.candidate === 'string' ? d.candidate.slice(0, 12) : null,
+      observedAt,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Pure: given what the ledger actually recorded, say which cause of "no green verdict"
+ * was OBSERVED — and give the remedy that matches THAT cause. Exported for unit testing,
+ * matching the `evaluateGreenStall` / `mainBehindRecoverySummary` convention in this file.
+ *
+ * The ordering is by strength of evidence, not by likelihood:
+ *   1. named failing tests  — the only branch entitled to say "a failing suite".
+ *   2. a crash              — the gate never reached a verdict; zero tests are implicated.
+ *   3. a red with no test   — a real red the gate could not attribute; say so rather than
+ *                             implying a test list exists to go fix.
+ *   4. anything else / no run on record — state the gap instead of filling it with a guess.
+ */
+export function attributeVerdictStale(opts: {
+  failingTests: string[];
+  last: LastGateRunEvidence | null;
+}): { summary: string; cause: string; remedy: string } {
+  const { failingTests, last } = opts;
+  const when = last?.observedAt ? ` at ${last.observedAt}` : '';
+  const cand = last?.candidate ? ` (candidate ${last.candidate})` : '';
+
+  if (failingTests.length > 0) {
+    return {
+      summary: 'no green verdicts; deploys frozen (a failing suite).',
+      cause: `The last verdict named ${failingTests.length} failing test(s), so this IS a failing suite.`,
+      remedy: 'Fix the named test(s), then release:checkpoint-run for a fresh verdict.',
+    };
+  }
+
+  if (last?.crashed) {
+    return {
+      summary:
+        'deploys frozen — the gate\'s last run CRASHED before rendering a verdict, naming NO failing test. This is NOT a failing suite.',
+      cause:
+        `⚠ NOT a failing suite — the gate's last run${cand}${when} CRASHED before rendering a verdict and named ZERO failing tests. ` +
+        `The crash: ${last.firstLine ?? '(no summary was recorded)'}`,
+      remedy:
+        'Fix THAT, not the tests. Do NOT reflexively fire release:checkpoint-run — a fresh run costs a full suite (~55min) and then dies at the same step. ' +
+        'A crash inside a `git push` to origin means the CODE IS FINE and the PUBLISH step is blocked (credential / remote), which no amount of test-fixing reaches. ' +
+        "Confirm from the run's own trailer: `grep -o 'GATE_PROMOTION candidate=.*' <run log> | tail -1` — `green=true promoted=false` names the step that blocked it.",
+    };
+  }
+
+  if (last && last.green === false) {
+    return {
+      summary: 'no green verdicts; deploys frozen (last verdict RED, but it named no failing test).',
+      cause: `The last run${cand}${when} rendered a RED verdict but named no failing test — an unattributable red.`,
+      remedy:
+        "Read that run's own record before re-firing: its AFFECTED_TESTS_FAILING_FILES line names the failing files (read `coverage` first — `files=[]` means \"not attributable\", NOT \"nothing failed\").",
+    };
+  }
+
+  if (last) {
+    return {
+      summary: 'no green verdicts; deploys frozen (the last run recorded no green, and named no failing test).',
+      cause:
+        `The last run${cand}${when} recorded green=${String(last.green)} and named no failing test, yet no green verdict has landed in the window.`,
+      remedy:
+        "Read that run's own record before re-firing — a verdict that did not COUNT (held, superseded, or green-but-not-promoted) reads here as \"no green\" while the tests are fine.",
+    };
+  }
+
+  return {
+    summary: 'no green verdicts; deploys frozen (no run on record to attribute it to).',
+    cause:
+      'No green-checkpoint run is on record for this install, so the cause of the missing green cannot be attributed from the ledger.',
+    remedy:
+      'Check whether the routine is firing at all (fire-staleness is reported separately above), then release:checkpoint-run for a fresh verdict.',
+  };
+}
+
 export interface GreenStallWatchdogResult {
   /** install slugs that crossed into a stall this pass (one-shot, deduped). */
   alarmed: string[];
@@ -311,15 +474,34 @@ export async function checkGreenStall(
              AND COALESCE((metadata->'gate_health'->>'watchdogAlerted')::boolean, false) = false`;
         if (flip.count !== 1) continue; // another process won the flip
 
+        // WI-39704: attribute a verdict-staleness stall from the LEDGER before saying
+        // anything about its cause. One query, only on the transition that actually
+        // alarms (we have already won the one-shot flip), so a healthy sweep pays
+        // nothing. Fail-soft: no evidence ⇒ `attributeVerdictStale` says so plainly
+        // rather than falling back to the old "⇒ a failing suite" guess.
+        const lastRun = verdict.verdictStale
+          ? await readLastGateRunEvidence(sql, row.install_slug)
+          : null;
+        const attribution = verdict.verdictStale
+          ? attributeVerdictStale({ failingTests, last: lastRun })
+          : null;
+        const reasonText = attribution
+          ? `${verdict.reason} — ${attribution.cause}`
+          : (verdict.reason ?? '');
+
         try {
           const { notifyAttention } = await import('../attention-notify');
           await notifyAttention({
             kind: 'intervention',
             title: 'Release pipeline STALLED — green-checkpoint not producing greens',
-            body: `green-checkpoint (${row.install_slug}) silent stall: ${verdict.reason}. \`main\` is frozen and the per-verdict detector can't see this. The dead-executor reaper should auto-recover a wedge; manual help may be needed if it persists.`,
+            body: `green-checkpoint (${row.install_slug}) silent stall: ${reasonText}. \`main\` is frozen and the per-verdict detector can't see this. ${attribution?.remedy ?? 'The dead-executor reaper should auto-recover a wedge; manual help may be needed if it persists.'}`,
             importance: 'urgent',
             workspaceId: row.workspace_id,
-            data: { fireStale: verdict.fireStale, verdictStale: verdict.verdictStale },
+            data: {
+              fireStale: verdict.fireStale,
+              verdictStale: verdict.verdictStale,
+              lastRunCrashed: lastRun?.crashed ?? null,
+            },
           });
         } catch (e) {
           console.warn(`[green-stall-watchdog] notify failed: ${e instanceof Error ? e.message : e}`);
