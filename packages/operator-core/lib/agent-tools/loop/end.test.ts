@@ -137,6 +137,41 @@ describe('the P-002 disposition gate (acceptance)', () => {
     expect(deactivateLoopMock).not.toHaveBeenCalled();
   });
 
+  // P-009 (consult-min-max-and-rubric-vetting-2026-08-17 D-004 §2). These pin the SEAM,
+  // not the gate's internals: that loop:end consults the acceptance gate for 'achieved'
+  // ONLY, honors a refusal BEFORE deactivation, and does not consult it for the
+  // dispositions that carry no acceptance claim.
+  it("P-009: an UNSATISFIED acceptance gate refuses 'achieved' — and refuses BEFORE deactivation, so the loop keeps firing", async () => {
+    activeGoalForOwnerMock.mockResolvedValue(ACTIVE_GOAL);
+    acceptanceGateMock.mockResolvedValue({
+      satisfied: false,
+      code: 'goal_acceptance_rubric_missing',
+      message: 'REFUSED — no acceptance rubric names this goal.',
+      rubricId: undefined,
+    });
+    const got = await run({ disposition: 'achieved', reason: 'I say it is done' });
+    expect(got.isError).toBe(true);
+    expect(got.ok).toBe(false);
+    expect(got.error).toBe('goal_acceptance_rubric_missing');
+    expect(got.goalId).toBe(ACTIVE_GOAL.goalId);
+    // The whole point of the ordering: a refused claim must not leave the loop stopped.
+    expect(deactivateLoopMock).not.toHaveBeenCalled();
+    expect(applyGoalDispositionMock).not.toHaveBeenCalled();
+    expect(deliverReportMock).not.toHaveBeenCalled();
+  });
+
+  it("P-009: 'killed' and 'handoff' never consult the acceptance gate — they carry no acceptance claim", async () => {
+    activeGoalForOwnerMock.mockResolvedValue(ACTIVE_GOAL);
+    // Armed to REFUSE: if either disposition consulted it, the wind-down would fail here.
+    acceptanceGateMock.mockResolvedValue({ satisfied: false, code: 'goal_acceptance_ungraded', message: 'x' });
+    const killed = await run({ disposition: 'killed', reason: 'not worth finishing' });
+    expect(killed.ok).toBe(true);
+    expect(killed.ended).toBe(true);
+    const handoff = await run({ disposition: 'handoff', handoffTo: 'su-peer', reason: 'passing it on' });
+    expect(handoff.ok).toBe(true);
+    expect(acceptanceGateMock).not.toHaveBeenCalled();
+  });
+
   it('with a disposition: ends the loop, stamps the goal, and delivers the owner report with reason + carry-note folded in', async () => {
     activeGoalForOwnerMock.mockResolvedValue(ACTIVE_GOAL);
     getLoopCarryNoteMock.mockResolvedValue('## Did\nplatform evidence lives here');

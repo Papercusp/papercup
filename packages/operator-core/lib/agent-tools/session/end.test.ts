@@ -41,6 +41,16 @@ vi.mock('../../goals/wind-down-disposition', async (importOriginal) => {
     applyGoalDisposition: vi.fn(async () => {}),
     deliverGoalWindDownReport: vi.fn(async () => {}),
     windDownDispositionGateEnabled: vi.fn(async () => true),
+    // P-009 acceptance gate (consult-min-max-and-rubric-vetting-2026-08-17 D-004 §2).
+    // MUST be mocked: the real one resolves its deps via `await import('../rubrics')` /
+    // `('../scorecards')` and queries Postgres. Left real, this unit test's verdict flips
+    // with PG REACHABILITY — the gate is positive-finding-only (`catch → satisfied:true`),
+    // so it PASSES on a box with no PG and REFUSES on one with PG, where the fake goal
+    // naturally has no acceptance rubric. That is what made this file "fail repeatedly"
+    // (EI-20714633008328432) while reading green wherever PG was down. The gate's own
+    // behavior is covered by its own tests; here we assert only that session:end CONSULTS
+    // it and honors BOTH verdicts.
+    evaluateGoalAcceptanceGate: vi.fn(async () => ({ satisfied: true })),
   };
 });
 
@@ -52,6 +62,7 @@ import {
   applyGoalDisposition,
   deliverGoalWindDownReport,
   windDownDispositionGateEnabled,
+  evaluateGoalAcceptanceGate,
 } from '../../goals/wind-down-disposition';
 import endTool, { shutdownNote } from './end';
 
@@ -129,6 +140,7 @@ describe('session:end — the P-002 disposition gate for loopless goal owners', 
   const applyGoalDispositionMock = applyGoalDisposition as unknown as ReturnType<typeof vi.fn>;
   const deliverReportMock = deliverGoalWindDownReport as unknown as ReturnType<typeof vi.fn>;
   const gateEnabledMock = windDownDispositionGateEnabled as unknown as ReturnType<typeof vi.fn>;
+  const acceptanceGateMock = evaluateGoalAcceptanceGate as unknown as ReturnType<typeof vi.fn>;
 
   const ACTIVE_GOAL = {
     goalId: 'ship-paid-app-3f9a1c',
@@ -160,6 +172,8 @@ describe('session:end — the P-002 disposition gate for loopless goal owners', 
     deliverReportMock.mockResolvedValue(undefined);
     gateEnabledMock.mockReset();
     gateEnabledMock.mockResolvedValue(true);
+    acceptanceGateMock.mockReset();
+    acceptanceGateMock.mockResolvedValue({ satisfied: true });
   });
 
   it('REFUSES a loopless goal-mode wind-down without a disposition — naming the arg and all three values — and never reaches the host', async () => {
@@ -189,6 +203,31 @@ describe('session:end — the P-002 disposition gate for loopless goal owners', 
     expect(deliverReportMock).toHaveBeenCalledTimes(1);
     const [, delivered] = deliverReportMock.mock.calls[0] as [unknown, Record<string, unknown>];
     expect(String(delivered.body)).toContain('goal complete');
+  });
+
+  it("P-009: an UNSATISFIED acceptance gate refuses 'achieved' — and refuses BEFORE the host shutdown", async () => {
+    activeGoalForOwnerMock.mockResolvedValue(ACTIVE_GOAL);
+    acceptanceGateMock.mockResolvedValue({
+      satisfied: false,
+      code: 'goal_acceptance_ungraded',
+      message: 'REFUSED — no complete grading by a non-owner.',
+    });
+    const got = await run({ disposition: 'achieved', reason: 'I say it is done' });
+    expect(got.isError).toBe(true);
+    expect(got.ok).toBe(false);
+    expect(got.error).toBe('goal_acceptance_ungraded');
+    // A refused acceptance claim must not still take the session down.
+    expect(shutdownViaPtyMock).not.toHaveBeenCalled();
+    expect(applyGoalDispositionMock).not.toHaveBeenCalled();
+  });
+
+  it("P-009: 'killed' never consults the acceptance gate — it carries no acceptance claim", async () => {
+    activeGoalForOwnerMock.mockResolvedValue(ACTIVE_GOAL);
+    // Armed to REFUSE: if 'killed' consulted the gate, this wind-down would fail.
+    acceptanceGateMock.mockResolvedValue({ satisfied: false, code: 'goal_acceptance_ungraded', message: 'x' });
+    const got = await run({ disposition: 'killed', reason: 'abandoning it' });
+    expect(got.ok).toBe(true);
+    expect(acceptanceGateMock).not.toHaveBeenCalled();
   });
 
   it('an ARMED loop takes precedence: the loop-armed refusal answers and the goal is never consulted (the gate lives at loop:end)', async () => {
