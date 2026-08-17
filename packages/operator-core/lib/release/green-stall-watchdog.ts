@@ -509,12 +509,17 @@ export async function checkGreenStall(
         // Fleet broadcast (owner-requested): inject-only (wake=false) so every running agent
         // sees it next turn and someone can claim greening the gate, without a wake storm.
         await broadcastSevereEvent({
-          summary: `green-checkpoint STALLED on ${row.install_slug} — no green verdicts; deploys frozen.`,
+          // WI-39704: the summary is the highest-leverage string in this whole path — it is
+          // what every agent sees in its inbox AND what the condition bridge titles the
+          // owning work-item. "no green verdicts" unqualified reads as "the suite is red",
+          // which is the misattribution itself, so it is now stated by the evidence.
+          summary: `green-checkpoint STALLED on ${row.install_slug} — ${attribution?.summary ?? 'no green verdicts; deploys frozen.'}`,
           body:
-            `${verdict.reason}\n\nThe release gate isn't producing greens, so nothing new can deploy. ` +
-            `Claim it: fire-staleness ⇒ the routine engine/DBOS is wedged (a reaper should recover; ` +
-            `manual help if it persists); verdict-staleness ⇒ a failing suite. release:checkpoint-run ` +
-            `forces a fresh gate run.`,
+            `${reasonText}\n\nThe release gate isn't producing greens, so nothing new can deploy. ` +
+            (verdict.fireStale
+              ? `fire-staleness ⇒ the routine engine/DBOS is wedged (a reaper should recover; manual help if it persists). `
+              : '') +
+            (attribution?.remedy ?? `release:checkpoint-run forces a fresh gate run.`),
           category: 'severe-event',
           // WI-1444 condition lifecycle: recovery below broadcasts the matching
           // resolution, so late inbox readers see this alarm annotated resolved.
@@ -528,7 +533,11 @@ export async function checkGreenStall(
             INSERT INTO harness_shared.harness_escalations (harness_slug, phase, escalation, mtime_ms, workspace_id)
             VALUES (${row.install_slug}, ${WATCHDOG_PHASE}, ${greenStallEscalationBody({
               installSlug: row.install_slug,
-              verdict,
+              // WI-39704: the DURABLE record carries the attributed reason too. An
+              // escalation row outlives the broadcast, so leaving the un-attributed text
+              // here would just relocate the misattribution to the surface a responder
+              // reaches for last (and trusts most).
+              verdict: { ...verdict, reason: reasonText },
               lastFiredMs,
               lastGreenAt,
               nowMs: now,
@@ -540,7 +549,7 @@ export async function checkGreenStall(
           console.warn(`[green-stall-watchdog] escalation write failed: ${e instanceof Error ? e.message : e}`);
         }
         out.alarmed.push(row.install_slug);
-        console.warn(`[green-stall-watchdog] ALARM ${row.install_slug}: ${verdict.reason}`);
+        console.warn(`[green-stall-watchdog] ALARM ${row.install_slug}: ${reasonText}`);
       } else if (verdict.suppressed) {
         // P-016: DECLINED TO JUDGE — not healthy. The root routine engine is stale,
         // so infra-liveness owns the root-cause alarm and this symptom-level one is
