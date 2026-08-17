@@ -266,9 +266,15 @@ export function foldFleetRoster(
       fleetRole: p?.fleetRole ?? base.fleetRole ?? null,
       userId: p?.userId ?? null,
       federated: Boolean(p?.federated),
-      lastActiveSecAgo: computeLastActiveSecAgo(p?.lastActiveAt ?? null, nowMs),
+      // P-011: same combined derivation as coord:presence (one oracle) — the
+      // transcript leg's raw timestamp is derivation input, stripped from the row.
+      lastActiveSecAgo: deriveLastActive(
+        p?.lastActiveAt ?? null,
+        tier1.get(id)?.turnPartLastAt ?? null,
+        nowMs,
+      ).lastActiveSecAgo,
       ...EMPTY_TIER1,
-      ...(tier1.get(id) ?? {}),
+      ...stripTurnPartLastAt(tier1.get(id)),
     });
   }
   return out.sort(
