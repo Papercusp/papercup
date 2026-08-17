@@ -388,9 +388,11 @@ export const BLOCKING_TIERS = new Set(['gate', 'ci', 'test', 'chained', 'repo-wi
  * spawnSync so a RED carries the guard's own report instead of "Command failed: <cmd>").
  * A test that adopts it is spawning the guard — the definition of the `test` tier — but
  * the raw `spawnSync` marker now lives in the helper rather than the test. The three
- * tests converted with it still matched only INCIDENTALLY, via `REPO_ROOT` or a comment
- * that happened to mention execFileSync; a classification resting on a comment is one
- * tidy-up away from silently demoting a blocking guard to advisory.
+ * tests converted with it did still match, and the census did not move — but only
+ * INCIDENTALLY, via the `REPO_ROOT` each passes as `cwd` (a comment mentioning the old
+ * call would NOT have counted: this corpus is stripComments'd first). Hoisting that cwd
+ * into a helper default is an ordinary tidy-up, and without this marker it would have
+ * silently demoted three blocking guards to advisory with every test still green.
  */
 export const ENFORCING_TEST_RE =
   /execFileSync|spawnSync|execSync|listTrackedFiles|REPO_ROOT|repoRoot|process\.cwd\(\)|scanTree|runGuardScript/;
