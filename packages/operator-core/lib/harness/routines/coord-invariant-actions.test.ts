@@ -18,6 +18,7 @@ import {
   planStaleHandoffAccepts,
   planSharedHiveCapture,
   planClaimIntegrityAlarms,
+  planOrphanSweepNotices,
   drainOperationalEscalationsBeforeMeasure,
   DEFAULT_THRESHOLDS,
   ESCALATION_RECONCILE_GRACE_MS,
