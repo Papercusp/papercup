@@ -79,6 +79,22 @@ export interface CatalogEntry {
     /** llama-server `--reasoning-budget N` (0 = disable thinking-mode preambles — part of
      *  the certified qwen3 config; WI-1596). Only meaningful when `backend === 'llama-server'`. */
     reasoningBudget?: number;
+    /** How this combo's backend should be MANAGED at runtime — the RECOMMENDED DEFAULT for the
+     *  combo, not the operative setting (on-demand-local-inference-lifecycle-2026-08-17 D-005:
+     *  the catalog recommends, `harness_shared.local_backends` is the truth the reaper and the
+     *  gateway actually read). `applyProvision` threads this into the registration.
+     *
+     *  - 'always-on'  — start it and leave it resident (today's only behaviour).
+     *  - 'on-demand'  — the idle-reaper may stop it once idle past `idleTtlSec`, and the gateway
+     *                   starts it again on a request routed to it.
+     *
+     *  UNSET MEANS 'always-on'. That default is load-bearing: every pre-existing entry — and any
+     *  catalog a third party supplies — keeps exactly today's behaviour, so adding this field can
+     *  never silently make a running backend reapable. */
+    lifecycle?: 'always-on' | 'on-demand';
+    /** Idle seconds before an `on-demand` backend becomes eligible for reaping. Only meaningful
+     *  with `lifecycle: 'on-demand'`; ignored otherwise. Unset ⇒ the reaper's own default. */
+    idleTtlSec?: number;
   };
   status: CatalogEntryStatus;
   /** Present iff `status === 'certified'` — the cert-battery run that certified this config. */
@@ -102,6 +118,15 @@ export const CERTIFIED_CATALOG: readonly CatalogEntry[] = [
       ctxTotal: 180224,
       kvCacheType: 'q8_0',
       flashAttn: true,
+      // A 35b IQ3_M at this context occupies the ENTIRE 24GB card (measured 2026-08-17: stopping
+      // it returned 19,836 MiB), which starves every other GPU consumer on the box — the reranker
+      // included. It is the archetypal on-demand backend: expensive to hold, cheap to miss.
+      lifecycle: 'on-demand',
+      // 30 min. Chosen against measured idleness, not taste: when this was stopped it had served
+      // 0 requests in 6h and logged 0 journal entries in 24h, so anything up to an hour would have
+      // freed the card equally well. 30 min keeps the worst-case waste bounded while staying far
+      // above any plausible gap inside one working session.
+      idleTtlSec: 1800,
     },
     status: 'certified',
     certification: {
