@@ -13,9 +13,11 @@ const h = vi.hoisted(() => ({
 }));
 
 vi.mock('@papercusp/flags/server', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@papercusp/flags/server')>()), getFlag: vi.fn(async () => false) }));
+  ...(await importOriginal<typeof import('@papercusp/flags/server')>()),
+  getFlag: vi.fn(async () => false) }));
 vi.mock('@papercusp/flags', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@papercusp/flags')>()), FLAGS: { PAPERCUP_PROACTIVE: 'sentinel-proactive' } }));
+  ...(await importOriginal<typeof import('@papercusp/flags')>()),
+  FLAGS: { PAPERCUP_PROACTIVE: 'sentinel-proactive' } }));
 vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/agent-mcp')>()),
   dispatchProjectedToolStream: vi.fn(),

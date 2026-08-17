@@ -10,7 +10,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@papercusp/agent-mcp')>()), defineTool: (def: unknown) => def }));
+  ...(await importOriginal<typeof import('@papercusp/agent-mcp')>()),
+  defineTool: (def: unknown) => def }));
 vi.mock('../../../auth', () => ({
   getSessionUserOrDefault: vi.fn(async () => ({ id: 'user-1', display_name: 'Test User' })),
 }));

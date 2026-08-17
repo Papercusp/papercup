@@ -521,7 +521,8 @@ describe('resolveNamedQueryV2 — p2p.* (p2p-work-distribution-2026-07-02 P-002)
     ];
     vi.doMock('../harness/usage-actor', () => ({ resolveUsageActor: vi.fn(async () => actor) }));
     vi.doMock('@papercusp/db-org', async (importOriginal) => ({
-      ...(await importOriginal<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: async () => members }) }));
+      ...(await importOriginal<typeof import('@papercusp/db-org')>()),
+      getOrgPg: () => ({ sql: async () => members }) }));
     vi.doMock('../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
     const { resolveNamedQueryV2: r } = await import('./index');
     const out = (await r('p2p.devices', {})) as Array<Record<string, unknown>>;
@@ -545,7 +546,8 @@ describe('resolveNamedQueryV2 — p2p.* (p2p-work-distribution-2026-07-02 P-002)
     ];
     vi.doMock('../harness/usage-actor', () => ({ resolveUsageActor: vi.fn(async () => actor) }));
     vi.doMock('@papercusp/db-org', async (importOriginal) => ({
-      ...(await importOriginal<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: async () => members }) }));
+      ...(await importOriginal<typeof import('@papercusp/db-org')>()),
+      getOrgPg: () => ({ sql: async () => members }) }));
     vi.doMock('../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
     const { resolveNamedQueryV2: r } = await import('./index');
     const out = (await r('p2p.devices', {})) as Array<Record<string, unknown>>;
@@ -1316,7 +1318,8 @@ describe('resolveNamedQueryV2 — plans.byHive (WI-259 P-006 cross-member plan r
     vi.doMock('../agent-tools/plans/read-dispatch', () => ({ callPlansRead }));
     // Skip attribution enrichment (flag off) so the rows pass through unchanged.
     vi.doMock('@papercusp/flags/server', async (importOriginal) => ({
-      ...(await importOriginal<typeof import('@papercusp/flags/server')>()), getFlag: vi.fn(async () => false) }));
+      ...(await importOriginal<typeof import('@papercusp/flags/server')>()),
+      getFlag: vi.fn(async () => false) }));
 
     const { resolveNamedQueryV2: r } = await import('./index');
     const out = (await r('plans.byHive', { potHomeSlug: 'hive-home' })) as unknown[];

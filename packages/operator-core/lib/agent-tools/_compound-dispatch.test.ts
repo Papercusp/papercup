@@ -48,7 +48,8 @@ vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
   dispatchProjectedTool: mocks.dispatchProjectedTool,
 }));
 vi.mock('@papercusp/db-org', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@papercusp/db-org')>()), getOrgPg: mocks.getOrgPg }));
+  ...(await importOriginal<typeof import('@papercusp/db-org')>()),
+  getOrgPg: mocks.getOrgPg }));
 vi.mock('../projected-tool-deps', () => ({ PROJECTED_DEPS: { __sentinel: 'projected-deps' } }));
 vi.mock('../workspace-als', () => ({ runWithWorkspaceIfConcrete: mocks.runWithWorkspaceIfConcrete }));
 vi.mock('../endpoint-route/routes/transport/role-principal-caps', () => ({

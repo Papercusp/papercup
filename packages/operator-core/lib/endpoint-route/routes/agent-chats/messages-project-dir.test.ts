@@ -23,7 +23,8 @@ const { projectDirForSlugMock, assembleRolePromptMock, prepareLog } = vi.hoisted
 // transport deps are irrelevant to the seam under test.
 vi.mock('../../../agent-tools/index', () => ({}));
 vi.mock('@papercusp/sse', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@papercusp/sse')>()), sseResponse: () => new Response('sse-started') }));
+  ...(await importOriginal<typeof import('@papercusp/sse')>()),
+  sseResponse: () => new Response('sse-started') }));
 vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/agent-mcp')>()),
   defineTool: (d: unknown) => d,
@@ -89,7 +90,8 @@ vi.mock('../../../harness-prompt-overrides', () => ({ getPromptOverride: async (
 vi.mock('../../../memory/injection', () => ({ buildMemoryContextBlock: async () => null }));
 vi.mock('../../../operator-notes', () => ({ projectDirForSlug: projectDirForSlugMock }));
 vi.mock('@papercusp/orchestrator/role-prompt', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@papercusp/orchestrator/role-prompt')>()), assembleRolePrompt: assembleRolePromptMock }));
+  ...(await importOriginal<typeof import('@papercusp/orchestrator/role-prompt')>()),
+  assembleRolePrompt: assembleRolePromptMock }));
 vi.mock('../../../agent-chats-data', async (importOriginal) => {
   const orig = await importOriginal<typeof import('../../../agent-chats-data')>();
   return { ...orig, readFeatureLockState: async () => null };

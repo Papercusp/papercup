@@ -112,7 +112,8 @@ vi.mock('../../../harness-prompt-overrides', () => ({ getPromptOverride: async (
 vi.mock('../../../memory/injection', () => ({ buildMemoryContextBlock: buildMemoryContextBlockMock }));
 vi.mock('../../../operator-notes', () => ({ projectDirForSlug: projectDirForSlugMock }));
 vi.mock('@papercusp/orchestrator/role-prompt', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@papercusp/orchestrator/role-prompt')>()), assembleRolePrompt: assembleRolePromptMock }));
+  ...(await importOriginal<typeof import('@papercusp/orchestrator/role-prompt')>()),
+  assembleRolePrompt: assembleRolePromptMock }));
 vi.mock('../../../agent-chats-data', async (importOriginal) => {
   const orig = await importOriginal<typeof import('../../../agent-chats-data')>();
   return { ...orig, readFeatureLockState: readFeatureLockStateMock };

@@ -16,7 +16,8 @@
 import { describe, it, expect, vi } from 'vitest';
 
 vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@papercusp/agent-mcp')>()), defineTool: (d: unknown) => d }));
+  ...(await importOriginal<typeof import('@papercusp/agent-mcp')>()),
+  defineTool: (d: unknown) => d }));
 vi.mock('../../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws' }));
 vi.mock('../../../cross-harness-data', () => ({ readRecentActivity: vi.fn() }));
 vi.mock('../../../operator-api-base', () => ({ operatorApiBase: () => 'http://127.0.0.1:0' }));

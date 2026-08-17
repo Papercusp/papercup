@@ -14,7 +14,8 @@ vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
   SU_ROLES: ['operator'],
 }));
 vi.mock('@papercusp/db-org', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@papercusp/db-org')>()), getOrgPg: vi.fn(() => ({ sql: vi.fn() })) }));
+  ...(await importOriginal<typeof import('@papercusp/db-org')>()),
+  getOrgPg: vi.fn(() => ({ sql: vi.fn() })) }));
 vi.mock('../../events', () => ({
   listReactionRules: vi.fn(),
   reactionGraph: vi.fn(() => []),
