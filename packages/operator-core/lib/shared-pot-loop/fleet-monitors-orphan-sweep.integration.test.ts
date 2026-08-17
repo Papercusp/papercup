@@ -169,29 +169,19 @@ describe('EI-20723522274831539 — sweepOrphanedTakenBy must not rob a live hold
     expect(await takenBy('F-PARKED')).toBe('su-parked');
   });
 
-  it('a NEVER-SEEN-HERE holder is not presumed dead before the fallback horizon', async () => {
-    // WI-1999/WI-1964: work_items federate but presence does not, so an unknown
-    // holder may be a LIVE agent on another node. Reaping those was the shredder.
-    await seedClaim('F-REMOTE', 'su-remote-unknown');
+  it('P-003 PRESERVED: a peer-swarm holder with NO local presence row is still swept', async () => {
+    // This sweep's reason to exist. Such a holder is invisible to coord_presence
+    // entirely, so it is neither live nor parked — and must still be reclaimed
+    // PROMPTLY, not deferred behind a 24h unknown-holder horizon. Requiring
+    // known_holder here (as the sibling reaper does, for its own good reasons)
+    // broke exactly this, in both fleet-monitors and revoked-swarm.
+    await seedClaim('F-PEER-SWARM', 'su-peer-swarm-never-seen');
 
-    expect((await sweep()).cleared).toEqual([]);
-    expect(await takenBy('F-REMOTE')).toBe('su-remote-unknown');
-  });
-
-  it('...but an unknown holder IS freed once that horizon lapses (P-003 still works)', async () => {
-    // The sweep's original purpose — reclaim after a peer SWARM dies without ever
-    // having a local presence row — is preserved, just deferred rather than denied.
-    await seedClaim('F-REMOTE-OLD', 'su-remote-unknown');
-
-    const swept = await sweepOrphanedTakenBy(sql, {
-      workspaceId: WS,
-      harness: H,
-      unknownHolderFallbackMs: 1_000,
-    });
+    const swept = await sweep();
 
     expect(swept.cleared).toHaveLength(1);
-    expect(swept.cleared[0]).toMatchObject({ workItemId: 'F-REMOTE-OLD' });
-    expect(await takenBy('F-REMOTE-OLD')).toBeNull();
+    expect(swept.cleared[0]).toMatchObject({ workItemId: 'F-PEER-SWARM' });
+    expect(await takenBy('F-PEER-SWARM')).toBeNull();
   });
 
   it('FALSIFIABILITY CONTROL: the PRE-FIX predicate does rob the live holder on these fixtures', async () => {
