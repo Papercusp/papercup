@@ -6333,9 +6333,8 @@ function RetainedLedgerCard({
               {feed.failureCount === 1 ? "" : "s"} failed, retrying…
               <button
                 type="button"
-                className="pc-advpanel__linkbtn"
+                className="pc-learning__retainretry"
                 onClick={() => feed.invalidate()}
-                style={{ marginInlineStart: 8 }}
               >
                 Retry now
               </button>
@@ -6694,6 +6693,13 @@ export function LearningStyles() {
       .pc-learning__retainedkindcell svg { flex-shrink: 0; }
       .pc-learning__retainedplancell { display: inline-flex; align-items: center; gap: 5px; min-width: 0; width: 100%; }
       .pc-learning__retainedplancell .pc-learning__retainlink { min-width: 0; flex: 1; text-align: left; }
+      /* WI-39675: the retry affordance on a stalled/retrying Retain load. */
+      .pc-learning__retainretry {
+        margin-inline-start: 8px; border: 1px solid var(--border, #29465e); border-radius: 6px;
+        background: transparent; color: var(--fg-dim, #b9d4e8); cursor: pointer;
+        padding: 1px 7px; font-size: 11px; font-weight: 600;
+      }
+      .pc-learning__retainretry:hover, .pc-learning__retainretry:focus-visible { color: var(--fg, #e7eef5); border-color: var(--accent, #4aa3df); }
       .pc-learning__retainedchev { border: 0; background: transparent; color: var(--fg-mute, #7f9bb4); cursor: pointer; padding: 0; display: inline-flex; flex-shrink: 0; }
       .pc-learning__retainedchev:hover { color: var(--fg, #e7eef5); }
       .pc-learning__retainedchildcell { padding-left: 22px; color: var(--fg-dim, #b9d4e8); }
