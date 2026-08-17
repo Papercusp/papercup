@@ -131,7 +131,10 @@ describe('routeProposals — instance rail', () => {
 
     expect(calls.instanceDispatch).toHaveLength(1); // batched
     expect(calls.instanceDispatch[0].map((v) => v.id)).toEqual(['i1', 'i2']);
-    expect(res.byRail).toEqual({ plan: 0, gym: 1, improvement: 0, instance: 2 });
+    // `goal` joined RoutedRail (outcome-feedback.ts:50) and router.ts:624 seeds all
+    // five rails, so an exhaustive toEqual must name it. Sibling fixture
+    // router.test.ts:225 already carries `goal: 0`; this one predated the rail.
+    expect(res.byRail).toEqual({ plan: 0, gym: 1, improvement: 0, instance: 2, goal: 0 });
     expect(res.instanceSeed?.registered).toEqual(['i1', 'i2']);
     const i1 = res.decisions.find((d) => d.proposalId === 'i1')!;
     expect(i1.routedRef).toBe('instance:i1');
