@@ -173,6 +173,59 @@ export function integrationRootEvidence(
   return `integration root: ${root} (source=${source}, emitter=gate-cli)`;
 }
 
+/** The endpoint of a connection URL with credentials stripped — `scheme//host:port/dbname`.
+ *
+ *  Deliberately a local six-liner rather than an import of `redactUrl` from `@papercusp/db`,
+ *  which is semantically the same function. This module imports NOTHING but node builtins (see
+ *  the header) and is loaded by ~37 callers including rollback.ts; `apps/operator` does not
+ *  even declare that package. Pulling a workspace dependency in for a pure string transform
+ *  would trade that property away for no behavioural gain. The semantics are kept IDENTICAL to
+ *  that function on purpose — including the fallback, which returns a coarse label rather than
+ *  echoing an unparseable string that may itself contain the secret. */
+function redactDsn(url: string): string {
+  try {
+    const u = new URL(url);
+    return `${u.protocol}//${u.hostname}${u.port ? `:${u.port}` : ''}${u.pathname}`;
+  } catch {
+    return '<unparseable-url>';
+  }
+}
+
+/** One line of run-scoped evidence naming the DATABASE this gate run will dial, and where that
+ *  value came from. Peer of `integrationRootEvidence()` above, and born of the same failure
+ *  shape one datum over (EI-20709645463022690).
+ *
+ *  The gate subprocess INHERITS the spawning operator's environment, so a pot's suite can
+ *  silently dial the papercusp operator's database instead of its own. It then reports every
+ *  one of the pot's tables as missing — a perfectly well-formed "schema drift — 39 table(s)
+ *  missing" verdict about the WRONG database, which no reader can distinguish from real drift.
+ *  Observed on sidestage 2026-08-17: candidate d6fee86 red on exactly that, while the identical
+ *  test on the identical candidate passed in the hive's own tree minutes before and after.
+ *
+ *  The checkpoint log currently never states the DSN at all, so the single datum that separates
+ *  those two readings is absent from the artifact responders actually read, and recovering it
+ *  costs a `/proc/<pid>/environ` dig on a process that has usually already exited. That is the
+ *  same absence-of-one-line cost `integrationRootEvidence` was added to end.
+ *
+ *  Credentials are stripped: `host:port/dbname` is the entire diagnostic payload, and a run log
+ *  is not a place to put a password. */
+export function databaseEvidence(env: Record<string, string | undefined> = process.env): string {
+  const url = env.DATABASE_URL;
+  if (url) return `database: ${redactDsn(url)} (source=DATABASE_URL, emitter=gate-cli)`;
+  // libpq's own variables are what the client library reads when no URL is set. They select a
+  // database just as effectively, so an evidence line that ignored them would report "unset"
+  // about a run that is very much connected somewhere.
+  const host = env.PGHOST;
+  const db = env.PGDATABASE;
+  if (host || db) {
+    const port = env.PGPORT ? `:${env.PGPORT}` : '';
+    return `database: ${host ?? '<default-host>'}${port}/${db ?? '<default-db>'} (source=PG*, emitter=gate-cli)`;
+  }
+  // NOT the boring case: it means the child falls back to libpq's own defaults (local socket,
+  // $USER as the database name), which is its own class of dialing-the-wrong-database.
+  return 'database: <unset> (source=none, emitter=gate-cli)';
+}
+
 /**
  * Refuse to GATE a release/checkpoint checkout.
  *
