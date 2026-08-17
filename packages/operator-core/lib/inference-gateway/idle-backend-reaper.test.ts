@@ -30,8 +30,11 @@ function backend(over: Partial<LocalBackendRecord> = {}): LocalBackendRecord {
 }
 
 function harness(opts: { backends?: LocalBackendRecord[]; observe?: BusyObservation | (() => Promise<BusyObservation>) } = {}) {
-  const stopBackend = vi.fn(async () => ({ ok: true }));
-  const markBusy = vi.fn(async () => true);
+  // Params are declared (rather than `async () => …`) so `stopBackend.mock.calls[0][0]` is typed:
+  // an argless mock gives calls the empty-tuple type, and indexing it is a compile error vitest
+  // itself would never surface.
+  const stopBackend = vi.fn(async (_backend: LocalBackendRecord) => ({ ok: true }));
+  const markBusy = vi.fn(async (_id: string) => true);
   const observe = opts.observe ?? ({ state: 'idle' } as BusyObservation);
   const deps: IdleBackendReaperDeps = {
     listOnDemand: async () => opts.backends ?? [backend()],
