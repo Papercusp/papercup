@@ -214,21 +214,33 @@ describe('determinism — P-012 depends on this, and so does git-sync not churni
       vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
       const t0 = new Date().toISOString();
       const a = projectClient(parts, { ...CLIENT, budget: 100_000 }).text;
+
       // A budget that forces a cut, so the spill block is exercised too — it is
       // generated at projection time and is the other place a clock could leak in.
       //
-      // DERIVED from the banner, never a magic constant (WI-39623). The projector
-      // legitimately REFUSES a budget it cannot fit the banner + spill pointer into, so a
-      // hardcoded number is silently tuned to whatever the banner happened to weigh the
-      // day it was written — and the next edit to the banner turns this determinism test
-      // red for a reason that has nothing to do with clocks. That is exactly what
-      // happened when the banner grew to name the doc-part write command.
-      const cutBudget = projectionBanner(CLIENT).length + 1_000;
-      // Controls for the control: the budget must actually be satisfiable AND still
-      // small enough to force a cut, or this case silently stops exercising the spill.
-      expect(cutBudget).toBeLessThan(a.length);
-      const aCut = projectClient(parts, { ...CLIENT, budget: cutBudget }).text;
+      // BOTH the fixture and the budget are deliberate here (WI-39623). This case used
+      // the tiny `parts` above at a hardcoded `budget: 900`, and MEASUREMENT showed that
+      // combination could never cut anything: the whole projection was 835 chars, so 900
+      // simply re-projected the FULL text and this "cut" case asserted the same bytes as
+      // the line above it. The spill pointer — the thing the comment says is being
+      // covered — was never reached. It went unnoticed because a vacuous case is green.
+      //
+      // Bulky parts put a real cut in range, and the budget is DERIVED from the banner
+      // rather than hardcoded: the projector legitimately refuses a budget it cannot fit
+      // banner + spill pointer into, so any constant is silently tuned to whatever the
+      // banner weighed the day it was written and goes stale the next time it changes.
+      const cut = [
+        bulky(1_500, { target_section: 'A', project_rank: 100 }),
+        bulky(1_500, { target_section: 'A', project_rank: 200 }),
+        bulky(1_500, { target_section: 'B', project_rank: 300 }),
+      ];
+      const cutBudget = projectionBanner(CLIENT).length + 2_000;
+      const aCut = projectClient(cut, { ...CLIENT, budget: cutBudget }).text;
+      // Controls for the control: a cut must actually have happened and the result must
+      // respect the budget, or this case silently stops covering the spill path again.
       expect(aCut).toContain(SPILL_SECTION);
+      expect(aCut.length).toBeLessThanOrEqual(cutBudget);
+      expect(aCut.length).toBeLessThan(projectClient(cut, { ...CLIENT, budget: 100_000 }).text.length);
 
       vi.setSystemTime(new Date('2027-06-15T12:34:56Z'));
       const t1 = new Date().toISOString();
@@ -237,7 +249,7 @@ describe('determinism — P-012 depends on this, and so does git-sync not churni
       expect(t1).not.toBe(t0);
 
       expect(projectClient(parts, { ...CLIENT, budget: 100_000 }).text).toBe(a);
-      expect(projectClient(parts, { ...CLIENT, budget: cutBudget }).text).toBe(aCut);
+      expect(projectClient(cut, { ...CLIENT, budget: cutBudget }).text).toBe(aCut);
     } finally {
       vi.useRealTimers();
     }
