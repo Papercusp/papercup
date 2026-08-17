@@ -69,8 +69,7 @@ type SpillCursor = {
   args: { file_path: string; byte_offset: number; byte_limit: number };
   uri?: string;
   encoding?: unknown;
-  responseDataEncoding?: string;
-  spillFileEncoding?: string;
+  dataEncoding?: string;
 };
 
 /** Drive a payload over the door and return its recovery cursor + prose. */
@@ -106,14 +105,31 @@ function spillBytes(): Buffer {
 }
 
 describe('EI-20685195115158619: spill cursor encoding contract', () => {
-  it('scopes each encoding to what it describes, with no unscoped `encoding` field', () => {
+  it('binds the encoding key to the field it describes, not to the file', () => {
     const { cursor } = doorOversizedResult();
 
-    expect(cursor.responseDataEncoding).toBe('base64');
-    expect(cursor.spillFileEncoding).toBe('utf-8');
+    expect(cursor.dataEncoding).toBe('base64');
     // The exact field that caused the misread: unscoped, and adjacent to
     // `file_path`, it reads as a property of the file. It must not come back.
     expect(cursor).not.toHaveProperty('encoding');
+  });
+
+  it('keeps the JSON recovery pointer no longer than the ambiguous one it replaced', () => {
+    // WI-5656's canary sits AT the budget ceiling — a +49-char version of this
+    // pointer evicted coord:orient's recovery block from the retained preview.
+    // The disambiguation is only affordable because it is paid for elsewhere in
+    // the string, so pin that: this is a length CEILING, not a style check.
+    const { cursor, next } = doorOversizedResult();
+    const AMBIGUOUS_BASELINE =
+      'Call capability:read with _projection.cursor.args, base64-decode data, then follow ' +
+      'next_cursor until eof to recover the exact spill bytes. The spill begins with a text ' +
+      'header and then contains the result as it reached this door.';
+
+    const pointerChars = next.indexOf(' ⓘ') === -1 ? next.length : next.indexOf(' ⓘ');
+    expect(pointerChars).toBeLessThanOrEqual(AMBIGUOUS_BASELINE.length);
+    expect(JSON.stringify(cursor).length).toBeLessThanOrEqual(
+      JSON.stringify({ ...cursor, dataEncoding: undefined, encoding: 'base64' }).length + 8,
+    );
   });
 
   it('names the field to decode by its OWNER, not as a bare `data`', () => {
@@ -177,7 +193,7 @@ describe('EI-20685195115158619: spill cursor encoding contract', () => {
 
     expect(page.ok).toBe(true);
     // The RESPONSE is where base64 is real — this is what the cursor declares.
-    expect(page.encoding).toBe(cursor.responseDataEncoding);
+    expect(page.encoding).toBe(cursor.dataEncoding);
     expect(page.encoding).toBe('base64');
 
     const decoded = Buffer.from(page.data, 'base64');
