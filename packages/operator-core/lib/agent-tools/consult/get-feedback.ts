@@ -39,7 +39,7 @@ export default defineTool({
     notWhen:
       'Live state (query it: locks:queue / fleet:assignments / work_items:get). An owner decision (coord:ask-owner). A SPECIFIC known agent (coord:send / coord:message-agent — this tool is who-knows DISCOVERY). Assigning work (a consult is advice, never a handoff — requester owns the outcome).',
     chaining:
-      "get_feedback → 'served_from_archive'? use the cited answer in `archive`, or re-call with archive_floor: 2 if it does not fit → latency_contract:'hard-blocked' ⇒ events:await { event: park_key } + end turn (reply wakes you) → conversations:get { id: conversation_id } for the thread → responder declined? re-call with exclude:[declinerId] (manual cascade).",
+      "get_feedback → 'served_from_archive'? use the cited answer in `archive`, or re-call with archive_floor: 2 if it does not fit → latency_contract:'hard-blocked' ⇒ events:await { event: park_key } + end turn (reply wakes you) → conversations:get { id: conversation_id } for the thread → declines/expiries advance the cascade server-side (D-005); re-call with exclude:[…] only after a terminal 'declined'/'expired'.",
     returns:
       '{ verdict: routed | no_qualified_responder | served_from_archive, conversation_id, thread_id, responder, responder_via (floor | minimum — minimum = best-available below the relevance floor, weigh as first-principles), remaining_candidates, origin_task_ref, latency_contract, expires_at, wake, park_key, archive? (source consult + responder + sim + structured answer — served_from_archive only), hint }',
   },
