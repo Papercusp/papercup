@@ -29,6 +29,7 @@ import {
   type ObservationSubject,
   type ScorecardRetraction,
   type ScorecardRatingRubric,
+  type ScorecardGradingAudit,
   type ScorecardProvisional,
   type ScorecardVetting,
 } from './harness/improvements/observation-types';
@@ -276,6 +277,12 @@ export interface ScorecardRow {
    * (D-004), excluded from the trend until a terminal re-emit supersedes it.
    */
   provisional?: ScorecardProvisional;
+  /**
+   * P-013: the grade-the-grader audit stamp. state:'pending' behaves like
+   * `provisional` in the trend (excluded, loudly counted) until a NON-AUTHOR audit
+   * against the grading-integrity meta-rubric settles it passed/failed.
+   */
+  gradingAudit?: ScorecardGradingAudit;
   /**
    * The vetting linkage (consult-min-max-and-rubric-vetting-2026-08-17 P-004) —
    * present only on a vetting scorecard (a meta-rubric grading of an acceptance
@@ -767,6 +774,7 @@ export async function listScorecards(filter: ListScorecardsFilter = {}): Promise
       ...(observation.supersedes ? { supersedes: observation.supersedes } : {}),
       ...(observation.retracted ? { retracted: observation.retracted } : {}),
       ...(observation.provisional ? { provisional: observation.provisional } : {}),
+      ...(observation.gradingAudit ? { gradingAudit: observation.gradingAudit } : {}),
       ...(observation.vetting ? { vetting: observation.vetting } : {}),
       ...(row.superseded_by ? { supersededBy: row.superseded_by } : {}),
       synthesized,
@@ -1120,6 +1128,14 @@ export interface RubricTrend {
    * above. 0 for every rubric with no violatable criteria.
    */
   provisionalExcluded: number;
+  /**
+   * P-013 (D-004 grade-the-grader): terminal cards EXCLUDED because their grading is
+   * final but UNAUDITED (gradingAudit.state 'pending') — a non-author audit against
+   * the grading-integrity meta-rubric settles them into the series. Reported, never
+   * silent, like the counts above. 0 wherever the audit gate is off or all cards
+   * predate it.
+   */
+  gradingAuditPendingExcluded: number;
 }
 
 export interface ScorecardTrendFilter {
@@ -1210,8 +1226,13 @@ export async function scorecardTrend(filter: ScorecardTrendFilter): Promise<Rubr
   // one is what enters the series. Applied after the superseded filter for the same
   // one-bucket arithmetic reason as above: a provisional card that was ALSO superseded
   // counts once, as superseded.
-  const finalCards = live.filter((r) => !r.provisional);
-  const provisionalExcluded = live.length - finalCards.length;
+  const settledCards = live.filter((r) => !r.provisional);
+  const provisionalExcluded = live.length - settledCards.length;
+  // P-013: drop AUDIT-PENDING terminal cards the same way — the grading is final but
+  // unverified until a non-author audit settles it (D-004). Same one-bucket
+  // arithmetic: a card both provisional and audit-pending counts once, as provisional.
+  const finalCards = settledCards.filter((r) => r.gradingAudit?.state !== 'pending');
+  const gradingAuditPendingExcluded = settledCards.length - finalCards.length;
   // listScorecards is newest-first; the series wants chronological (oldest→newest).
   const chrono = [...finalCards].reverse();
 
@@ -1272,6 +1293,7 @@ export async function scorecardTrend(filter: ScorecardTrendFilter): Promise<Rubr
     supersededExcluded: inGeneration.length - live.length,
     preContractResetExcluded,
     provisionalExcluded,
+    gradingAuditPendingExcluded,
     window: {
       ...(filter.since ? { since: filter.since } : {}),
       ...(chrono.length ? { from: chrono[0].createdAt, to: chrono[chrono.length - 1].createdAt } : {}),
