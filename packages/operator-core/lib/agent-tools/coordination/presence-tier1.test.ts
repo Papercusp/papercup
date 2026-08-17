@@ -3,10 +3,13 @@ import {
   computeIntentStale,
   computeIntentDivergent,
   computeLastActiveSecAgo,
+  deriveLastActive,
   formatIdleAge,
   INTENT_STALE_SEC,
   INTENT_DIVERGENCE_SEC,
   mergeTier1,
+  stripTurnPartLastAt,
+  TURN_PART_FRESHNESS_WINDOW_SEC,
   type PresenceTier1Joins,
 } from './presence-tier1';
 

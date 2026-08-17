@@ -64,6 +64,7 @@ const MAXIMAL_ROW: RosterRow = {
   revoked: false,
   // — liveness —
   lastActiveSecAgo: 42,
+  lastActiveSource: 'presence',
   intentStale: false,
   intentAgeSec: 600,
   intentDivergent: false,
@@ -78,6 +79,9 @@ const MAXIMAL_ROW: RosterRow = {
   heartbeatAt: '2026-06-14T01:00:00.000Z',
   lastActiveAt: '2026-06-14T00:59:00.000Z',
   capabilityTags: ['node', 'docker', 'pg'],
+  // P-011: derivation input behind lastActiveSecAgo/lastActiveSource — same dropped
+  // lane as lastActiveAt, and mergeTier1 strips it before rows are ever built.
+  turnPartLastAt: '2026-06-14T00:58:00.000Z',
 };
 
 /** A local PresenceRecord (pre-enrichment) for the byte-stability pipeline test. */
@@ -118,7 +122,7 @@ describe('partitionPresenceRow', () => {
     const { identity, state, liveness } = partitionPresenceRow(MAXIMAL_ROW);
     expect(identity).toMatchObject({ ownerId: 'su-x', model: 'opus', potSlug: 'papercup-hive' });
     expect(state).toMatchObject({ intent: 'doing things', claimedItems: ['P-001'], wakeMode: 'auto' });
-    expect(liveness).toEqual({ lastActiveSecAgo: 42, intentStale: false, intentAgeSec: 600, intentDivergent: false, stale: false, sessionState: 'live', wakeable: true, confirmLiveness: false, onDesktop: true, viewerAttached: true, contextPressure: 'ok' });
+    expect(liveness).toEqual({ lastActiveSecAgo: 42, lastActiveSource: 'presence', intentStale: false, intentAgeSec: 600, intentDivergent: false, stale: false, sessionState: 'live', wakeable: true, confirmLiveness: false, onDesktop: true, viewerAttached: true, contextPressure: 'ok' });
     // raw timestamps live in no lane
     expect(identity).not.toHaveProperty('heartbeatAt');
     expect(state).not.toHaveProperty('lastActiveAt');
@@ -190,6 +194,10 @@ describe('byte-stability (D-006)', () => {
     expect(emitted).toHaveProperty('ownerId', 'su-a');
     expect(emitted).toHaveProperty('startedAt'); // stable identity timestamp — kept
     expect(emitted).toHaveProperty('lastActiveSecAgo');
+    // P-011: provenance of the reading, always emitted — and the raw transcript-part
+    // timestamp behind it must NOT ride the row.
+    expect(emitted).toHaveProperty('lastActiveSource');
+    expect(emitted).not.toHaveProperty('turnPartLastAt');
     expect(emitted).toHaveProperty('intentStale'); // stale-ownership signal, always emitted
     expect(emitted).toHaveProperty('intentAgeSec'); // EI-8988: seconds since intent text last changed
     expect(emitted).toHaveProperty('intentDivergent'); // EI-8988: fresh activity + old intent text
