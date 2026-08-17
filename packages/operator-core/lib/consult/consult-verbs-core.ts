@@ -39,7 +39,7 @@
 import type { Sql } from 'postgres';
 import type { PostResult } from '../agent-tools/coordination/conversations-core';
 import { DEAD_RESPONDER_STATES, consultParkKey as parkKey } from './get-feedback-core';
-import { advanceCascade, makeDigestEntry, selectionFromRouting } from './cascade-core';
+import { advanceCascade, makeDigestEntry, selectionFromRouting, type CascadeEventKind } from './cascade-core';
 
 export const RESPONDER_REPLY_KINDS = ['answer', 'clarifying_question', 'new_fact'] as const;
 export const REQUESTER_REPLY_KINDS = ['question', 'new_fact'] as const;
@@ -352,7 +352,10 @@ export async function consultReplyCore(
         routing: row.routing,
         cascadeCursor: row.cascade_cursor,
         digest: row.cascade_digest,
-        event: makeDigestEntry(req.authorId, req.kind, now, req.body),
+        // Safe narrowing: isPerspective ⇒ role 'responder', and the kind gate
+        // above already restricted req.kind to RESPONDER_REPLY_KINDS — the
+        // requester-only 'question' cannot reach this branch.
+        event: makeDigestEntry(req.authorId, req.kind as CascadeEventKind, now, req.body),
         stateOnAdvance: 'active',
         nowIso: now,
       },
