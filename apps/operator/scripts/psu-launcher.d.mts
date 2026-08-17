@@ -1048,14 +1048,36 @@ export function defaultAccountEnv(): {
  * `ownerId` (WI-4402): same session-identity-header treatment as gatewayPinEnv above — carries
  * GATEWAY_OWNER_HEADER when provided (no-op if omitted, unchanged for existing callers/tests) so a
  * LIVE accounts:pin can dynamically move this auto-routed resumed session between pool accounts.
+ *
+ * WI-39692: the `@param` types below are LOAD-BEARING, not decoration. `psu-launcher.d.mts` is
+ * GENERATED from this JSDoc (`npm run gen:declarations`), and without them tsc infers each
+ * parameter's type from its DEFAULT VALUE alone — so `ownerId = undefined` was published as
+ * `ownerId?: undefined`, making the ownerId feature this very comment documents impossible to
+ * call from any TypeScript caller. Do not delete them to "simplify".
+ *
+ * @param {string} [provider]
+ * @param {string} [ownerId]
  */
-export function gatewayAutoEnv(provider?: string, ownerId?: undefined): {};
+export function gatewayAutoEnv(provider?: string, ownerId?: string): {};
 export function stripCodexGatewayConfig(configText: any): string;
-export function codexGatewayConfigPatch(configText: any, account?: null, { gatewayOn, ownerId, keepExistingWhenUnrouted }?: {
-    gatewayOn?: boolean | undefined;
-    ownerId?: null | undefined;
-    keepExistingWhenUnrouted?: boolean | undefined;
-}): any;
+/**
+ * Rewrite a codex `config.toml`'s papercusp gateway block for THIS launch's route.
+ *
+ * WI-39692: the `@param` types are LOAD-BEARING — see the note on gatewayAutoEnv above.
+ * `psu-launcher.d.mts` is GENERATED from this JSDoc, and inference-from-default published
+ * `ownerId?: null | undefined` (from `ownerId = null`), so passing a real owner id was a
+ * type error for every TS caller even though the runtime has always accepted one.
+ *
+ * @param {string} configText  the existing config.toml text ('' when absent)
+ * @param {string | null} [account]  the account id to PIN to, or null for the unpinned/default route
+ * @param {{ gatewayOn?: boolean, ownerId?: string | null, keepExistingWhenUnrouted?: boolean }} [opts]
+ * @returns {string}
+ */
+export function codexGatewayConfigPatch(configText: string, account?: string | null, { gatewayOn, ownerId, keepExistingWhenUnrouted }?: {
+    gatewayOn?: boolean;
+    ownerId?: string | null;
+    keepExistingWhenUnrouted?: boolean;
+}): string;
 /** The provider id a codex rollout is BOUND to (`session_meta.model_provider`
  *  on its first line), or null. Read at resume so the route patch below cannot
  *  remove a provider the thread needs. Pure-ish (one file read); exported for
