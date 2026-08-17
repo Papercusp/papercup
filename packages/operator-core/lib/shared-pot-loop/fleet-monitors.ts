@@ -130,13 +130,16 @@ export interface OrphanSweepResult {
  * THIRD agent while the original two were still mid-flight on them — a genuine
  * double-placement. Neither holder released; both had to re-claim their own work.
  *
- * The fix is to take the SAME dead-holder rule the sibling reaper already
- * applies (`work-items-stale-claims.ts`, DEAD leg): a claim is reclaimable only
- * if its holder is NOT live, NOT briefly-parked, and is a holder this node has
- * actually SEEN (never presume a locally-unknown, possibly-remote holder dead —
- * the WI-1999/WI-1964 shredder). The lease check is retained as an ADDITIONAL
- * guard rather than the only one, so it starts protecting again the day the
- * lease table is populated instead of silently doing nothing.
+ * The fix takes the LIVE/PARKED half of the dead-holder rule the sibling reaper
+ * already applies (`work-items-stale-claims.ts`, DEAD leg), via the same
+ * imported fragments: a claim is reclaimable only if its holder is NOT live and
+ * NOT briefly-parked. The sibling's THIRD clause — its WI-1999/WI-1964
+ * known-holder requirement — is deliberately NOT copied here; see the inline
+ * comment on the victim predicate for why (it defers this sweep's whole reason
+ * to exist, the dead peer SWARM that never had a local presence row). The lease
+ * check is retained as an ADDITIONAL guard rather than the only one, so it
+ * starts protecting again the day the lease table is populated instead of
+ * silently doing nothing.
  */
 export async function sweepOrphanedTakenBy(
   sql: postgres.Sql,
