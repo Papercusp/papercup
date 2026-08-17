@@ -187,7 +187,7 @@ describe('WorkItemsPanel', () => {
   });
 });
 
-describe('workItemCountLabel (pure — always the DB store total, never "loaded")', () => {
+describe('filterCountLabel (pure — always the DB store total, never "loaded")', () => {
   it('unfiltered → just the store total (loaded length is irrelevant; infinite scroll loads the rest)', () => {
     expect(filterCountLabel(12, 12, false)).toEqual({ title: '12', summary: '12 items' });
     // Even when far fewer rows are loaded than exist, the badge shows the TRUE total.
