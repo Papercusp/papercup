@@ -5146,9 +5146,12 @@ function LearningsView({
   // away (warmViews), so on a revisit the settled flag is already true and
   // never changes — an effect keyed on it alone would never re-run and the
   // switch would measure nothing (EI-19383745196363732).
+  // Named variable on purpose: LearningTab.perf-begin-order.test.tsx pins the
+  // settle point by scanning for `learningsSettled` in this source.
+  const learningsSettled = ledgerState.settled;
   useInteractionSettle(
     PERF_INTERACTIONS.learningViewSwitch,
-    ledgerState.settled,
+    learningsSettled,
     active,
   );
   // The rest of what the colony keeps (WI-5412, owner ask: lens weights,
