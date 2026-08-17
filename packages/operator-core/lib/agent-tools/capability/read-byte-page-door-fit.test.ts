@@ -29,7 +29,7 @@ vi.mock('../../context-doors-config', () => ({ getDoorConstantsSync: doorConstan
 
 import { applyResultDoor } from '../../result-door';
 import type { DoorableResult } from '../../result-door';
-import readTool, { MAX_BYTE_PAGE, doorSafePageBytes } from './read';
+import readTool, { MAX_BYTE_PAGE, MIN_PAGE_BYTES, doorSafePageBytes } from './read';
 
 let sandbox: string;
 let filePath: string;
