@@ -119,20 +119,47 @@ export function buildPlanStartQuery(planSlug: string, planContent: string): stri
   return text.length > PLAN_START_QUERY_MAX_CHARS ? text.slice(0, PLAN_START_QUERY_MAX_CHARS) : text;
 }
 
+/** The goal-kickoff query document (consult-min-max-and-rubric-vetting
+ * 2026-08-17 P-010 / D-004 §1): the goal OUTLINE — outcome + kill criterion +
+ * intended approach — capped by the same window as the plan query. */
+export function buildGoalKickoffQuery(outline: {
+  title: string;
+  body?: string | null;
+  killCriterion?: string | null;
+}): string {
+  const parts = [`goal ${outline.title}`];
+  if (outline.body?.trim()) parts.push(outline.body.trim());
+  if (outline.killCriterion?.trim()) parts.push(`Kill criterion: ${outline.killCriterion.trim()}`);
+  const text = parts.join('\n\n');
+  return text.length > PLAN_START_QUERY_MAX_CHARS ? text.slice(0, PLAN_START_QUERY_MAX_CHARS) : text;
+}
+
+/** Generic checkpoint-consult params: any door where a system-authored query
+ * document is committed (plan promotion, goal kickoff). The subject-specific
+ * wrappers below own the query building; this core owns the partition. */
+export interface CheckpointConsultParams {
+  workspaceId: string;
+  /** The committing agent — excluded from candidacy by the router. */
+  requesterId: string;
+  /** The system-authored query document, already built + capped by the wrapper. */
+  query: string;
+}
+
 /**
- * Route the plan body and partition the verdict per P-002 (D-001 §2/D-002/
- * D-003). Never throws for routing verdicts (an honest degrade IS a proceed);
- * infrastructure faults (SQL down) do propagate — the tool layer catches and
- * proceeds, because a checkpoint nudge must never block a start.
+ * Route a checkpoint query and partition the verdict per P-002 (D-001 §2/
+ * D-002/D-003). Never throws for routing verdicts (an honest degrade IS a
+ * proceed); infrastructure faults (SQL down) do propagate — the tool layer
+ * catches and proceeds, because a checkpoint nudge must never block the door
+ * it guards.
  */
-export async function planStartConsult(
-  params: PlanStartConsultParams,
+export async function checkpointConsult(
+  params: CheckpointConsultParams,
   deps: PlanStartConsultDeps,
 ): Promise<PlanStartConsultOutcome> {
   const route = await deps.route({
     workspaceId: params.workspaceId,
     requesterId: params.requesterId,
-    question: buildPlanStartQuery(params.planSlug, params.planContent),
+    question: params.query,
   });
 
   // D-001 §1 selection with the GLOBAL min/max defaults (D-003: min 1 —
