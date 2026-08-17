@@ -223,28 +223,129 @@ function ts() {
  * @returns {boolean}
  */
 export function isUnenrolledDetachedSpawn(relPath, source) {
-  // DETECTION is on CODE. `detached: true` and the spawn call are both program text, so the
-  // strings mask is unambiguously right — and it replaces a hand-rolled line filter that only
-  // recognised a comment OPENING a line, so a trailing `// ... detached: true` or any block-comment
-  // body not starting with `*` walked straight through it, as did a template literal quoting a
-  // spawn (WI-37717).
-  // Cheap RAW pre-filter before the mask: blanking is MONOTONIC (it can only remove a match,
-  // never create one), so a file without both tokens in raw text cannot have them masked either
-  // — and this guard scans every tracked .ts/.tsx in the repo, where an unconditional TS parse
-  // per file costs minutes.
-  if (!/detached:\s*true/.test(source)) return false;
-  if (!/\b(spawn|childSpawn|spawnFn)\s*\(/.test(source)) return false;
-  const code = stripCommentsAndStrings(source, relPath);
-  if (!/detached:\s*true/.test(code)) return false;
-  if (!/\b(spawn|childSpawn|spawnFn)\s*\(/.test(code)) return false;
-  // The EXEMPTION needs the OTHER mask: it reads a string VALUE — the enrolment module SPECIFIER
-  // — so `stripCommentsAndStrings` would blank the very evidence and score every file
-  // unenrolled (mass false POSITIVES). Masking nothing is the opposite failure and the worse
-  // one: a COMMENT that merely NAMES managed-spawn buys an exemption the file never earned, a
-  // false NEGATIVE, the direction that silently loses real findings.
+  const { detachedNotFalse, storedOnProperty } = spawnTriggers(relPath, source);
+  if (!detachedNotFalse && !storedOnProperty) return false;
+  // The EXEMPTION needs a mask that keeps STRINGS: it reads a string VALUE — the enrolment
+  // module SPECIFIER — so a strings-blanking mask would erase the very evidence and score
+  // every file unenrolled (mass false POSITIVES). Masking nothing is the opposite failure and
+  // the worse one: a COMMENT that merely NAMES managed-spawn buys an exemption the file never
+  // earned, a false NEGATIVE, the direction that silently loses real findings.
   const prose = stripCommentsOnly(source, relPath);
   if (ENROLMENT_IMPORTS.some((m) => prose.includes(m))) return false;
-  return !ALLOWLIST.has(relPath);
+  if (ALLOWLIST.has(relPath)) return false;
+  return !KNOWN_DEFECTS.has(relPath);
+}
+
+/**
+ * Which triggers a file fires, before any exemption is applied. Exported so `main()`
+ * can say WHICH rule caught an offender — "detached" and "handle parked on a property"
+ * want different fixes, and a guard that only says FAIL makes the reader re-derive that.
+ *
+ * @param {string} relPath - Repo-relative path.
+ * @param {string} source - The file's full source text.
+ * @returns {{ detachedNotFalse: boolean, storedOnProperty: boolean }}
+ */
+export function spawnTriggers(relPath, source) {
+  const none = { detachedNotFalse: false, storedOnProperty: false };
+  if (SELF_EXCLUDED.has(relPath)) return none;
+  // Cheap RAW pre-filter. Gating the TS parse on a raw token is what keeps this
+  // affordable: ~160 of 7,058 tracked files carry a spawn token, and an unconditional
+  // parse of all of them costs minutes. The filter is MONOTONIC — a file with no spawn
+  // token in its raw bytes cannot have a spawn CALL in its AST.
+  if (!SPAWN_TOKEN.test(source)) return none;
+
+  const t = ts();
+  const sf = t.createSourceFile(
+    relPath,
+    source,
+    t.ScriptTarget.Latest,
+    false,
+    relPath.endsWith('.tsx') ? t.ScriptKind.TSX : t.ScriptKind.TS,
+  );
+
+  let detachedNotFalse = false;
+  let storedOnProperty = false;
+  /** identifiers bound to a spawn result: `const child = spawn(...)` */
+  const spawnBound = new Set();
+  /** identifiers used as the RHS of a property assignment: `state.child = child` */
+  const parkedNames = new Set();
+
+  /** Strip await/parens/`as`/`!` so `await spawn(...)` still reads as a spawn call. */
+  const unwrap = (node) => {
+    let n = node;
+    while (
+      t.isAwaitExpression(n) ||
+      t.isParenthesizedExpression(n) ||
+      t.isAsExpression(n) ||
+      t.isNonNullExpression(n)
+    ) {
+      n = n.expression;
+    }
+    return n;
+  };
+
+  const isSpawnCall = (node) => {
+    if (!t.isCallExpression(node)) return false;
+    const e = node.expression;
+    if (t.isIdentifier(e)) return SPAWN_CALLEES.has(e.text);
+    if (t.isPropertyAccessExpression(e)) return SPAWN_CALLEES.has(e.name.text);
+    return false;
+  };
+
+  // TRIGGER (1): `detached` present in an options object and NOT the literal `false`.
+  // A computed value (`detached: detach`) and a shorthand (`{ detached }`) both count —
+  // being unable to prove it false is exactly the case the old text rule silently passed.
+  // A spread (`{ ...opts }`) is NOT counted: it is genuinely undecidable here, and
+  // guessing would manufacture false positives across the whole tree.
+  const detachedTrigger = (call) => {
+    for (const arg of call.arguments) {
+      if (!t.isObjectLiteralExpression(arg)) continue;
+      for (const p of arg.properties) {
+        const name = p.name;
+        const key = name && (t.isIdentifier(name) || t.isStringLiteral(name)) ? name.text : null;
+        if (key !== 'detached') continue;
+        if (t.isShorthandPropertyAssignment(p)) return true;
+        if (!t.isPropertyAssignment(p)) continue;
+        return p.initializer.kind !== t.SyntaxKind.FalseKeyword;
+      }
+    }
+    return false;
+  };
+
+  const visit = (node) => {
+    if (isSpawnCall(node) && detachedTrigger(node)) detachedNotFalse = true;
+
+    // TRIGGER (2), direct form: `state.child = spawn(...)`, `this.proc = spawn(...)`,
+    // or a class field initialised straight from a spawn.
+    if (t.isBinaryExpression(node) && node.operatorToken.kind === t.SyntaxKind.EqualsToken) {
+      const lhs = node.left;
+      const rhs = unwrap(node.right);
+      const lhsIsProperty = t.isPropertyAccessExpression(lhs) || t.isElementAccessExpression(lhs);
+      if (lhsIsProperty && isSpawnCall(rhs)) storedOnProperty = true;
+      if (lhsIsProperty && t.isIdentifier(rhs)) parkedNames.add(rhs.text);
+      if (t.isIdentifier(lhs) && isSpawnCall(rhs)) spawnBound.add(lhs.text);
+    }
+    if (t.isPropertyDeclaration(node) && node.initializer && isSpawnCall(unwrap(node.initializer))) {
+      storedOnProperty = true;
+    }
+    // TRIGGER (2), two-step form: `const child = spawn(...)` … `state.child = child`.
+    if (t.isVariableDeclaration(node) && node.initializer && t.isIdentifier(node.name)) {
+      if (isSpawnCall(unwrap(node.initializer))) spawnBound.add(node.name.text);
+    }
+
+    t.forEachChild(node, visit);
+  };
+  t.forEachChild(sf, visit);
+
+  if (!storedOnProperty) {
+    for (const n of spawnBound) {
+      if (parkedNames.has(n)) {
+        storedOnProperty = true;
+        break;
+      }
+    }
+  }
+  return { detachedNotFalse, storedOnProperty };
 }
 
 /**
@@ -276,22 +377,42 @@ function main() {
     } catch {
       continue;
     }
-    if (isUnenrolledDetachedSpawn(rel, source)) offenders.push(rel);
+    if (isUnenrolledDetachedSpawn(rel, source)) {
+      const { detachedNotFalse, storedOnProperty } = spawnTriggers(rel, source);
+      const why = [
+        detachedNotFalse ? '`detached` set to something other than false' : null,
+        storedOnProperty ? 'spawn handle parked on a property (outlives the call)' : null,
+      ]
+        .filter(Boolean)
+        .join(' + ');
+      offenders.push(`${rel}  — ${why}`);
+    }
   }
+
+  // Printed on EVERY run, clean or not. The blind spot this guard was widened to fix
+  // (EI-19483245448673321) was invisible precisely because nothing said it out loud;
+  // a parked defect that only appears in a source file nobody opens repeats that.
+  const parked = KNOWN_DEFECTS.size
+    ? `\n  ⚠ ${KNOWN_DEFECTS.size} KNOWN DEFECT(S) suppressed — real hazards, not exemptions:\n` +
+      [...KNOWN_DEFECTS].map(([p, r]) => `      ${p}\n        ${r}`).join('\n')
+    : '';
 
   if (offenders.length === 0) {
     console.log(
       `[no-unenrolled-detached-spawn] OK — ${ALLOWLIST.size} allowlisted site(s), no new ones.` +
-        describeUnscanned(unscanned),
+        describeUnscanned(unscanned) +
+        parked,
     );
     return;
   }
 
-  console.error('[no-unenrolled-detached-spawn] FAIL — detached spawn(s) with no task-manager enrolment:\n');
+  console.error('[no-unenrolled-detached-spawn] FAIL — spawn(s) that outlive their call with no task-manager enrolment:\n');
   for (const o of offenders) console.error(`  ${o}`);
+  console.error(parked);
   console.error(
-    '\nA `detached: true` spawn creates a process meant to OUTLIVE this call — the exact\n' +
-      'population the task manager exists to keep addressable. Either:\n\n' +
+    '\nA spawn that outlives the call that made it — because it is `detached`, or because\n' +
+      'its handle is parked on a property — is the exact population the task manager exists\n' +
+      'to keep addressable. Either:\n\n' +
       '  1. enrol it — `beginSyncEnrolment` + `completeSyncEnrolment` from\n' +
       '     packages/operator-core/lib/task-manager/enroll-sync.ts (sync seams), or\n' +
       '     `managedSpawn` from task-manager/managed-spawn.ts (async seams); or\n' +
