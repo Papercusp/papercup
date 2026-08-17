@@ -136,15 +136,33 @@ export const ceiling: PerfScenario = {
         mesh.writer.send('go');
         const ceilingRate = meter.metric('ceilingOpsPerSec', 'ops/sec');
         const catchUp = meter.metric('floodCatchUpMs', 'ms');
-        for (const r of mesh.readers) {
-          const e = await r.waitFor('caught-up', 300_000);
-          if (e) {
-            const elapsed = Date.now() - tGo;
-            catchUp.push(elapsed);
-            ceilingRate.push(count / (elapsed / 1000));
-          } else {
-            meter.readerDidNotConverge(r.cfg.peerIndex, 'never caught up — ceiling not reached');
+        // EI-20581532536662596 (shared deadline) + EI-20582417177742601 (the time
+        // reported must be the CHILD's catch-up instant, not when this loop got
+        // around to observing it). `catchUpElapsedMs` owns both concerns — do not
+        // open-code `Date.now() - tGo` here: with concurrent waits every reader has
+        // resolved before the body runs, so that expression would stamp them all
+        // with the SLOWEST reader's time.
+        meter.convergenceBudget(CEILING_CATCH_UP_BUDGET_MS);
+        const tAwait = Date.now();
+        for (const { reader, event, elapsedMs } of await awaitAllChildEvent(
+          mesh.readers,
+          'caught-up',
+          CEILING_CATCH_UP_BUDGET_MS,
+        )) {
+          const elapsed = catchUpElapsedMs(event, { tGo, tAwait, elapsedMs });
+          if (elapsed === null) {
+            meter.readerDidNotConverge(
+              reader.cfg.peerIndex,
+              'never caught up — ceiling not reached',
+            );
+            continue;
           }
+          catchUp.push(elapsed);
+          // A non-positive elapsed cannot yield a meaningful rate (it would push
+          // Infinity into the distribution and silently dominate every summary),
+          // so record the catch-up time but omit the derived rate.
+          if (elapsed > 0) ceilingRate.push(count / (elapsed / 1000));
+          meter.readerConverged(reader.cfg.peerIndex, elapsed);
         }
         const results = [
           await mesh.writer.stopAndCollect(),
