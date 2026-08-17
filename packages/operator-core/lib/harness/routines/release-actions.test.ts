@@ -293,21 +293,58 @@ describe('classifyGateStallStatus (EI-2615: skipped-locked must not fake a red s
     }
   });
 
-  describe('WI-39450: a SUPERSEDED PASS is a non-verdict, not a red', () => {
-    // Measured 2026-08-17: a run classified its own candidate `stale-candidate`, stamped
-    // `superseded-by-refire`, handed off to its in-process refire — and STILL drove
-    // consecutiveReds 10 -> 11, naming 7 operator-core memory/*.test.ts files that had all been
-    // modified in the 23 commits since that candidate and passed 52/0 at tip. Same shape as
+  describe('WI-39450: a PROVEN-STALE pass is a non-verdict, not a red', () => {
+    // Measured 2026-08-17, twice: a run classified its own candidate `stale-candidate` and STILL
+    // drove consecutiveReds 10 -> 11, naming 7 operator-core memory/*.test.ts files that had all
+    // been modified in the 23 commits since that candidate and passed 52/0 at tip; and again
+    // 13 -> 14 on candidate 67c66f70, whose 4 named files passed 156/0 at tip. Same shape as
     // EI-2615 / EI-18757975681519069: a pass that judged an already-superseded tree said nothing
-    // about the code, and the successor writes the real verdict.
+    // about the code.
+    //
+    // `stale-candidate` comes from exactly ONE branch of green-checkpoint's triageRed — the one
+    // whose detail reads "N failing file(s) PASS at tip". So it is an EVIDENCE claim, and the
+    // classification alone earns the non-verdict. `autoRefire`/`refireBlockedBy` are clock-and-
+    // budget facts about whether a rescue was SCHEDULED; keying the streak on them made this
+    // guard dead code (autoRefire was false in 18 of 18 re-triaging runs sampled 08-15..17), and
+    // the deadline-blocked shape it excluded is precisely the one that froze `main` for ~40h.
 
-    it('stale-candidate + autoRefire is record-only — the successor records the real verdict', () => {
+    it('stale-candidate is record-only on the CLASSIFICATION alone — no refire required', () => {
+      expect(
+        classifyGateStallStatus('not-green', false, { classification: 'stale-candidate' }),
+      ).toBe('record-only');
       expect(
         classifyGateStallStatus('not-green', false, {
           classification: 'stale-candidate',
           autoRefire: true,
         }),
       ).toBe('record-only');
+    });
+
+    it('the REGRESSION shape: stale-candidate blocked by deadline is record-only, not a red', () => {
+      // The live 12:36:47Z run (candidate 7a040c5c): the gate re-ran all 4 failing files at tip,
+      // watched them pass, then declined to refire because a second suite would outrun the run
+      // budget — and banked the red anyway. A clock is not evidence about the code.
+      expect(
+        classifyGateStallStatus('not-green', false, {
+          classification: 'stale-candidate',
+          autoRefire: false,
+          refireBlockedBy: 'deadline',
+        }),
+      ).toBe('record-only');
+    });
+
+    it('a non-evidentiary refire blocker never makes a proven-stale pass a red', () => {
+      // `cap-disabled` is a feature switch and `absolute-ceiling`'s own operator text says
+      // "every individual red WAS rescued ... NOT to debug the files named above".
+      for (const blockedBy of ['cap-disabled', 'absolute-ceiling', 'deadline'] as const) {
+        expect(
+          classifyGateStallStatus('not-green', false, {
+            classification: 'stale-candidate',
+            autoRefire: false,
+            refireBlockedBy: blockedBy,
+          }),
+        ).toBe('record-only');
+      }
     });
 
     it('is NOT classified noop — noop would delete the diagnostics EI-13288 persists', () => {
@@ -317,43 +354,32 @@ describe('classifyGateStallStatus (EI-2615: skipped-locked must not fake a red s
       expect(
         classifyGateStallStatus('not-green', false, {
           classification: 'stale-candidate',
-          autoRefire: true,
+          refireBlockedBy: 'deadline',
         }),
       ).not.toBe('noop');
     });
 
-    // The three guards below are the whole safety argument: the noop is earned by a SUCCESSOR
-    // EXISTING, never by staleness alone. Get any of them wrong and this silences a real red.
+    // The guards below are the whole safety argument. Get any wrong and this silences a real red.
 
-    it('a BLOCKED refire still counts as a red — no successor is coming, so this pass is final', () => {
-      for (const blockedBy of ['cap-disabled', 'charged-budget', 'absolute-ceiling', 'deadline'] as const) {
-        expect(
-          classifyGateStallStatus('not-green', false, {
-            classification: 'stale-candidate',
-            autoRefire: true,
-            refireBlockedBy: blockedBy,
-          }),
-        ).toBe('red');
-      }
-    });
-
-    it('stale-candidate WITHOUT autoRefire still counts as a red — nothing handed off', () => {
-      expect(
-        classifyGateStallStatus('not-green', false, { classification: 'stale-candidate' }),
-      ).toBe('red');
+    it('charged-budget is the ONE preserved red — the same breakage survived every rescue', () => {
+      // green-checkpoint.ts:2609-2611 calls this the loop guard "that must survive: it is what
+      // converges a genuinely-broken tip to a held gate and a human". Unlike the other three
+      // blockers, it is evidentiary — it reports that the rescue itself kept failing.
       expect(
         classifyGateStallStatus('not-green', false, {
           classification: 'stale-candidate',
           autoRefire: false,
+          refireBlockedBy: 'charged-budget',
         }),
       ).toBe('red');
     });
 
-    it('a REAL red that auto-refired still counts — only a STALE candidate is a non-verdict', () => {
+    it('a REAL red still counts, refire or not — only a STALE candidate is a non-verdict', () => {
       for (const classification of ['real-red', 'unknown'] as const) {
         expect(
           classifyGateStallStatus('not-green', false, { classification, autoRefire: true }),
         ).toBe('red');
+        expect(classifyGateStallStatus('not-green', false, { classification })).toBe('red');
       }
     });
 
