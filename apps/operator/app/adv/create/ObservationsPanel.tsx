@@ -28,7 +28,11 @@ import {
 } from "@papercusp/grid-core";
 import { readListTotal } from "@papercusp/operator-core/lib/sync-resolver/list-meta";
 import type { PanelComponentProps } from "@/app/harness/dock/panel-registry";
-import { useColumnFilters, ColumnFilterBar } from "@/app/harness/filters";
+import {
+  useColumnFilters,
+  ColumnFilterBar,
+  filterCountLabel,
+} from "@/app/harness/filters";
 import { CardStack } from "@papercusp/card-stack";
 import { useItemPlanFilter } from "./use-create-data";
 import { OBSERVATION_KIND_COLOR } from "@/app/harness/theme";
@@ -69,6 +73,14 @@ const KIND_LABEL: Record<string, string> = {
 // work bounded while the explicit limit makes each next page part of the same
 // sync-query stream. The resolver carries the true count on row[0]._meta.
 export const OBSERVATIONS_PAGE = 200;
+
+// Module-level EMPTY sentinel, not a `?? []` fresh literal at the use site.
+// `allRows` feeds a useMemo dependency array (and, through it, useColumnFilters),
+// so a new [] on every render makes every downstream memo miss its cache for as
+// long as the query has no data — the same defect WorkItemsPanel's NO_ROWS
+// comment names (WI-37386 / WI-39552). One frozen instance keeps the identity
+// stable across renders.
+const NO_ROWS: ObservationRow[] = [];
 
 /**
  * Render count with "500+" guard: when count >= 500, display "500+"
@@ -176,7 +188,7 @@ export default function ObservationsPanel({
   });
 
   // Keep cached rows painted while a larger window or push invalidation refetches.
-  const allRows = query.data ?? [];
+  const allRows = query.data ?? NO_ROWS;
   const scopedRows = useMemo(
     () =>
       itemPlans.length
@@ -222,6 +234,16 @@ export default function ObservationsPanel({
   const hasMore = allRows.length < total;
   const isFiltered =
     cf.hasActive || search.trim() !== "" || signalFilter !== null;
+  // The ONE shared count label (D-001: mimic the Work Queue). This pane may
+  // adopt it because it satisfies the helper's precondition — it grows its
+  // fetch window at the scroll edge (onEndReached → loadMore → limit +=
+  // OBSERVATIONS_PAGE), so a filter can actually reach `total`.
+  //
+  // This deliberately RETIRES the old "N loaded / total" unfiltered form. That
+  // form reported how many rows happened to be in memory, which is an artifact
+  // of scroll position, not an answer to any question a user has — and it read
+  // as a shortfall ("200 / 36,096") on a pane that was working correctly.
+  const counts = filterCountLabel(rows.length, total, isFiltered, "observation");
 
   // Build signal counts from the real database counts, not loaded rows
   const signalCounts = useMemo(() => {
@@ -449,15 +471,11 @@ export default function ObservationsPanel({
         {total > 0 ? (
           <span
             data-testid="observations-count"
-            aria-label={
-              isFiltered
-                ? `${rows.length} observations match, of ${total} total`
-                : `${allRows.length} observations loaded of ${total} total`
-            }
+            aria-label={counts.summary}
             title={
               isFiltered
                 ? "Observations matching the current filter / search, out of the total"
-                : "Loaded observations / total available"
+                : "Observations available"
             }
             style={{
               color: "var(--fg-mute)",
