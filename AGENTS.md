@@ -6,7 +6,9 @@
 > `harness_shared.harness_doc_parts`, with `harness_docs.content_mode='composed'`). A hand-edit
 > is overwritten by the next projection and is invisible to every other client.
 >
-> **To change a rule:** edit its PART, then re-project with
+> **To change a rule:** edit its PART, then re-project — both halves are commands:
+> `npm run set-doc-part -- --part-key <key> --body-file <path> --write`
+> (`--list <prefix>` to find the key; dry-run without `--write`), then
 > `node scripts/project-doc-parts.mjs --write`.
 >
 > Supporting evidence for these rules is deliberately NOT here — it lives in the corpus
