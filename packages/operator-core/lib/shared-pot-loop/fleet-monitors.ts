@@ -174,7 +174,16 @@ export async function sweepOrphanedTakenBy(
          -- work-items-stale-claims.ts's DEAD leg, via the same imported fragments.
          AND NOT EXISTS (SELECT 1 FROM live_holder h WHERE h.alias = f.taken_by)
          AND NOT EXISTS (SELECT 1 FROM parked_holder p WHERE p.alias = f.taken_by)
-         AND EXISTS (SELECT 1 FROM known_holder k WHERE k.alias = f.taken_by)
+         -- WI-1999 remote-holder guard, same composite as the sibling: only presume
+         -- DEAD a holder this node has EVER seen. work_items federate but presence
+         -- does not, so a never-seen-here holder may be a LIVE agent on another node
+         -- (the WI-1964 shredder). It is NOT stranded forever — a genuinely abandoned
+         -- claim still frees once the long-horizon fallback lapses, which also keeps
+         -- this sweep's original P-003 purpose (reclaim after a peer SWARM dies)
+         -- working for a holder that never had a local presence row.
+         AND ( EXISTS (SELECT 1 FROM known_holder k WHERE k.alias = f.taken_by)
+               OR (now() - COALESCE(f.taken_at, to_timestamp(f.updated_ts / 1000.0)))
+                    > make_interval(secs => ${unknownFallbackSec}) )
          AND NOT EXISTS (
                SELECT 1 FROM harness_shared.work_item_claims c
                 WHERE c.workspace_id = ${opts.workspaceId}
