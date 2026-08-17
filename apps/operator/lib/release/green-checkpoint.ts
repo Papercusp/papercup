@@ -61,6 +61,7 @@ import {
 } from "@papercusp/operator-core/lib/candidate-contains";
 import {
   describeIntegrationRoot,
+  databaseEvidence,
   toolingRoot,
   type GreenCheckpointCapacityMode,
   type ReleaseConfig,
