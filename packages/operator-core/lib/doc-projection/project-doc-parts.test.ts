@@ -216,7 +216,19 @@ describe('determinism — P-012 depends on this, and so does git-sync not churni
       const a = projectClient(parts, { ...CLIENT, budget: 100_000 }).text;
       // A budget that forces a cut, so the spill block is exercised too — it is
       // generated at projection time and is the other place a clock could leak in.
-      const aCut = projectClient(parts, { ...CLIENT, budget: 900 }).text;
+      //
+      // DERIVED from the banner, never a magic constant (WI-39623). The projector
+      // legitimately REFUSES a budget it cannot fit the banner + spill pointer into, so a
+      // hardcoded number is silently tuned to whatever the banner happened to weigh the
+      // day it was written — and the next edit to the banner turns this determinism test
+      // red for a reason that has nothing to do with clocks. That is exactly what
+      // happened when the banner grew to name the doc-part write command.
+      const cutBudget = projectionBanner(CLIENT).length + 1_000;
+      // Controls for the control: the budget must actually be satisfiable AND still
+      // small enough to force a cut, or this case silently stops exercising the spill.
+      expect(cutBudget).toBeLessThan(a.length);
+      const aCut = projectClient(parts, { ...CLIENT, budget: cutBudget }).text;
+      expect(aCut).toContain(SPILL_SECTION);
 
       vi.setSystemTime(new Date('2027-06-15T12:34:56Z'));
       const t1 = new Date().toISOString();
