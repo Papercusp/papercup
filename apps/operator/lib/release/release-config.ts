@@ -209,9 +209,16 @@ function redactDsn(url: string): string {
  *
  *  Credentials are stripped: `host:port/dbname` is the entire diagnostic payload, and a run log
  *  is not a place to put a password. */
-export function databaseEvidence(env: Record<string, string | undefined> = process.env): string {
+export function databaseEvidence(
+  env: Record<string, string | undefined> = process.env,
+  /** Which emission path produced this line. A real parameter rather than a caller-side string
+   *  rewrite of the default: the two call sites are NOT interchangeable — the CLI entrypoint's
+   *  console line is not captured by scheduler/routine invocations (WI-38250), which are exactly
+   *  the runs that red-pin a pot unattended, so a reader has to be able to tell which path spoke. */
+  emitter: 'gate-cli' | 'gate-run' = 'gate-cli',
+): string {
   const url = env.DATABASE_URL;
-  if (url) return `database: ${redactDsn(url)} (source=DATABASE_URL, emitter=gate-cli)`;
+  if (url) return `database: ${redactDsn(url)} (source=DATABASE_URL, emitter=${emitter})`;
   // libpq's own variables are what the client library reads when no URL is set. They select a
   // database just as effectively, so an evidence line that ignored them would report "unset"
   // about a run that is very much connected somewhere.
@@ -219,11 +226,11 @@ export function databaseEvidence(env: Record<string, string | undefined> = proce
   const db = env.PGDATABASE;
   if (host || db) {
     const port = env.PGPORT ? `:${env.PGPORT}` : '';
-    return `database: ${host ?? '<default-host>'}${port}/${db ?? '<default-db>'} (source=PG*, emitter=gate-cli)`;
+    return `database: ${host ?? '<default-host>'}${port}/${db ?? '<default-db>'} (source=PG*, emitter=${emitter})`;
   }
   // NOT the boring case: it means the child falls back to libpq's own defaults (local socket,
   // $USER as the database name), which is its own class of dialing-the-wrong-database.
-  return 'database: <unset> (source=none, emitter=gate-cli)';
+  return `database: <unset> (source=none, emitter=${emitter})`;
 }
 
 /**

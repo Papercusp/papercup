@@ -5429,6 +5429,15 @@ export async function runGreenCheckpoint(
     deps.log(
       `integration root: ${cfg.integrationRoot} (source=${source}, emitter=gate-run)`,
     );
+    // EI-20709645463022690 — the DATABASE, for exactly the reason stated directly above about
+    // the root: the CLI entrypoint's line is NOT captured by scheduler/routine invocations, and
+    // those are precisely the runs that red-pin a pot at 3am. This subprocess INHERITS the
+    // spawning operator's env, so a pot's suite can dial the papercusp operator's database and
+    // report every one of the pot's tables as missing — a well-formed "schema drift — 39
+    // table(s) missing" verdict about a database that was never the subject. Emitting it here
+    // puts the one datum that separates that from real drift into the persisted transcript
+    // responders actually read, instead of a /proc/<pid>/environ dig on an exited process.
+    deps.log(databaseEvidence(process.env, "gate-run"));
     const norm = (p: string) => p.replace(/\/+$/, "");
     if (norm(derivedRoot) !== norm(cfg.integrationRoot)) {
       deps.log(

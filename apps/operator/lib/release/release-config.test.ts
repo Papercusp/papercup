@@ -452,6 +452,15 @@ describe('databaseEvidence — which database is this gate run dialing', () => {
     return evidence < cfg;
   };
 
+  it('tags the emitter it was given, so the two call sites are distinguishable', () => {
+    const env = { DATABASE_URL: 'postgres://u:p@h:5432/d' };
+    expect(databaseEvidence(env)).toContain('emitter=gate-cli');
+    expect(databaseEvidence(env, 'gate-run')).toContain('emitter=gate-run');
+    // every branch must carry the tag, not just the DATABASE_URL one
+    expect(databaseEvidence({}, 'gate-run')).toContain('emitter=gate-run');
+    expect(databaseEvidence({ PGHOST: 'h' }, 'gate-run')).toContain('emitter=gate-run');
+  });
+
   it('is WIRED into the green-checkpoint CLI, before the config it gates on', async () => {
     const { readFile } = await import('node:fs/promises');
     const src = await readFile(
@@ -461,6 +470,44 @@ describe('databaseEvidence — which database is this gate run dialing', () => {
     expect(dbWiredIntoGateCli(src), 'green-checkpoint CLI must log the database it will dial').toBe(
       true,
     );
+  });
+
+  /* THE LOAD-BEARING WIRING PIN, and the one this item actually turns on.
+   *
+   * The CLI pin above is NOT sufficient, and believing it was is the mistake this test exists to
+   * prevent: green-checkpoint.ts's own comment at the gate-run emitter records that "the CLI
+   * entrypoint's console line is visible on manual runs but is not captured by scheduler/routine
+   * invocations" (WI-38250) — and scheduler runs are exactly the ones that red-pin a pot
+   * unattended. A database line wired ONLY into the CLI block would pass every other test in this
+   * file and still emit nothing into the persisted checkpoint transcript a responder reads.
+   * Verified against the real artifact: the 2026-08-17T13:16Z sidestage log carries exactly one
+   * "integration root:" line and it is emitter=gate-run, not gate-cli. */
+  const dbWiredIntoGateRun = (src: string): boolean => {
+    // the orchestrator-logger emission, tagged gate-run — deps.log, not console.log
+    return /deps\.log\(\s*databaseEvidence\([^)]*["']gate-run["']\s*\)/.test(src);
+  };
+
+  it('is WIRED into the ORCHESTRATOR transcript, which is what scheduled runs persist', async () => {
+    const { readFile } = await import('node:fs/promises');
+    const src = await readFile(
+      fileURLToPath(new URL('./green-checkpoint.ts', import.meta.url)),
+      'utf8',
+    );
+    expect(
+      dbWiredIntoGateRun(src),
+      'a CLI-only database line is invisible to scheduled gate runs (WI-38250)',
+    ).toBe(true);
+  });
+
+  it('...and the orchestrator wiring pin is falsifiable', () => {
+    // calibration first: the real shape must pass, or the refusals below prove nothing
+    expect(dbWiredIntoGateRun('deps.log(databaseEvidence(process.env, "gate-run"));')).toBe(true);
+    // the exact bug this pin guards: emitted, but only from the CLI block
+    expect(dbWiredIntoGateRun('console.log(`x ${databaseEvidence()}`);')).toBe(false);
+    // emitted through the orchestrator but MIS-TAGGED, so the transcript lies about its source
+    expect(dbWiredIntoGateRun('deps.log(databaseEvidence(process.env));')).toBe(false);
+    // absent entirely
+    expect(dbWiredIntoGateRun('deps.log(`integration root: x (emitter=gate-run)`);')).toBe(false);
   });
 
   it('...and that wiring pin is falsifiable', () => {
