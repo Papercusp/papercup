@@ -20,7 +20,12 @@ import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { activeWorkspaceId } from './workspace-registry';
 import { RUBRIC_TEMPLATE_NAME } from './agent-tools/plans/rubric-template';
-import { getAcceptanceRubricForPlan } from './rubrics';
+import {
+  getAcceptanceRubricForPlan,
+  getRubric,
+  getRubricPlanRevision,
+  META_ACCEPTANCE_RUBRIC_ID,
+} from './rubrics';
 import { listScorecards } from './scorecards';
 import {
   getLatestPlanAudit,
@@ -32,6 +37,8 @@ import {
 
 export type PlanAcceptanceGateCode =
   | 'acceptance_rubric_missing'
+  // consult-min-max-and-rubric-vetting-2026-08-17 P-004 — the vetting check.
+  | 'acceptance_rubric_unvetted'
   | 'acceptance_ungraded'
   | 'self_graded_only'
   // plan-completion-audit-and-acceptance-verdict-2026-08-13 — the code-truth family.
@@ -242,6 +249,65 @@ export async function evaluatePlanAcceptanceGate(
         `It activates immediately (no ratification); then a ` +
         `NON-implementer grades it (scorecards:emit) and the ship succeeds.`,
     };
+  }
+
+  // ── the VETTING check (consult-min-max-and-rubric-vetting-2026-08-17 P-004) ──
+  // Ordered BEFORE the grading checks because it is the earlier step of the flow: the
+  // rubric AUTHOR vets the RUBRIC (informed by a get_feedback consult, min 1 / max 3
+  // responders) before a non-implementer grades the WORK against it. The pass is the
+  // vetting agent's ATTESTATION — a complete meta-scorecard on the CURRENT rubric
+  // revision with a linked consult; deliberately NO mechanical score floor (D-001 §3),
+  // so the ratings' values are never inspected here. Independently flagged and, like
+  // the sibling rubric checks, NOT waivable by `force` (D-005).
+  const vettingGate = await getFlag(FLAGS.ACCEPTANCE_RUBRIC_VETTING_GATE, 'system').catch(() => true);
+  // Exempt: a criteria:[] investigation rubric (D-009 — nothing to vet) and the
+  // meta-rubric itself (kind:'standard' so it can never be a plan's acceptance rubric,
+  // but the guard is cheap and the regress would be infinite).
+  if (vettingGate && rubric.criteria.length > 0 && rubric.rubricId !== META_ACCEPTANCE_RUBRIC_ID) {
+    // Prerequisite: a REGISTERED meta-rubric, any status — 'proposed' counts, because
+    // ratification governs content authority, not gate mechanics; a workspace with no
+    // meta-rubric at all cannot run the flow, so the check disables rather than
+    // deadlocking every ship on a missing prerequisite (recorded as a plan Decision).
+    const metaRubric = await getRubric(META_ACCEPTANCE_RUBRIC_ID);
+    if (metaRubric) {
+      const currentRevision = await getRubricPlanRevision(rubric.rubricId);
+      const metaCards = (
+        await listScorecards({ rubricRef: META_ACCEPTANCE_RUBRIC_ID, subjectRef: rubric.rubricId, limit: 50 })
+      ).filter((s) => s.rubricResolved && s.missingKeys.length === 0 && !s.synthesized);
+      // The linked consult is what makes an attestation a VETTING (a plain meta-grade
+      // without one skipped the external critique the flow exists to inject).
+      const vettedCards = metaCards.filter((s) => s.vetting?.consultId);
+      const current = vettedCards.find(
+        (s) => currentRevision == null || s.vetting?.rubricRevision === currentRevision,
+      );
+      if (!current) {
+        const vettedRevisions = [
+          ...new Set(vettedCards.map((s) => s.vetting?.rubricRevision).filter((v) => v != null)),
+        ];
+        const stale = vettedCards.length > 0;
+        return {
+          satisfied: false,
+          code: 'acceptance_rubric_unvetted',
+          rubricId: rubric.rubricId,
+          message: stale
+            ? `plan '${planSlug}' cannot be marked shipped: acceptance rubric '${rubric.rubricId}' was vetted at ` +
+              `revision ${vettedRevisions.join('/') || '(unrecorded)'} but the rubric is now at revision ` +
+              `${currentRevision} — the content changed after vetting, so the attestation no longer covers what ` +
+              `ships. Re-emit the meta-scorecard against the current revision: scorecards:emit ` +
+              `{ rubricRef:'${META_ACCEPTANCE_RUBRIC_ID}', subject:{ kind:'rubric', ref:'${rubric.rubricId}' }, ` +
+              `vettingConsult:'<consult conversation_id>', ratings:{ <every meta criterion> } }. Citing the SAME ` +
+              `consult is fine when the revision IS the improvement its critique asked for.`
+            : `plan '${planSlug}' cannot be marked shipped: its acceptance rubric '${rubric.rubricId}' has not ` +
+              `been VETTED against the meta-rubric (consult-min-max-and-rubric-vetting-2026-08-17). The rubric ` +
+              `AUTHOR vets it BEFORE a non-implementer grades the work: (1) consult:get_feedback for external ` +
+              `critique of the rubric (selection is automatic, min 1 / max 3 responders), (2) improve the rubric ` +
+              `from the critique (rubrics:propose), (3) attest: scorecards:emit ` +
+              `{ rubricRef:'${META_ACCEPTANCE_RUBRIC_ID}', subject:{ kind:'rubric', ref:'${rubric.rubricId}' }, ` +
+              `vettingConsult:'<the consult conversation_id>', ratings:{ <every meta criterion, with evidence> } }. ` +
+              `Pass is your judgment per criterion — no mechanical score floor (D-001 §3).`,
+        };
+      }
+    }
   }
 
   // A qualifying grading: complete (every criterion rated), agent-emitted (synthesized
