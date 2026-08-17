@@ -117,6 +117,7 @@
     "gen:knowledge-packs:check": "node scripts/gen-knowledge-packs.mjs --check",
     "gen:claude-md-manifest": "node scripts/gen-claude-md-manifest.mjs",
     "gen:client-docs": "node scripts/project-doc-parts.mjs --write",
+    "set-doc-part": "tsx scripts/set-doc-part.ts",
     "gen:authored-docs": "tsx scripts/project-authored-docs.ts --write",
     "gen:authored-docs:check": "tsx scripts/project-authored-docs.ts --check",
     "gen:authored-docs:ingest": "tsx scripts/project-authored-docs.ts --ingest",
