@@ -1,6 +1,8 @@
 import { z } from 'zod';
 import { withWorkspace, getOrgPg } from '@papercusp/db-org';
 import { maybeEmptyMappingHint, EMPTY_MAPPING_METADATA_KEY } from '../../empty-mapping-hint';
+import { DISPATCH_WRAPPER_METADATA_KEY } from '../sessions/automatic-tool-names';
+import { dispatchWrapperMarkEnabled } from '../../telemetry-dispatch-wrapper';
 import {
   defineTool,
   listAllProjectedTools,
@@ -310,6 +312,15 @@ export default defineTool({
         : 'ok';
     invocationMetadata.childFailureCount = childFailureCount;
     if (childFailureRefs.length > 0) invocationMetadata.childFailureRefs = childFailureRefs;
+    // P-012 (census double-count): each inner dispatch wrote its OWN telemetry row, so
+    // when the script dispatched anything this row is wrapper overhead — mark it so
+    // tool_name censuses exclude it by default. A zero-dispatch run (pure compute) is
+    // NOT a wrapper occurrence and stays countable, which is why this keys off the
+    // orchestrator's dispatchCount rather than the tool name.
+    if ((result.dispatchCount ?? 0) > 0 && (await dispatchWrapperMarkEnabled())) {
+      invocationMetadata[DISPATCH_WRAPPER_METADATA_KEY] = true;
+      invocationMetadata.dispatchedToolCalls = result.dispatchCount;
+    }
     ctx.metadata?.(invocationMetadata);
 
     return { content: [{ type: 'text' as const, text: JSON.stringify(payload) }] };
