@@ -2193,19 +2193,22 @@ It fails in **two independent ways**, and the second is not fixable by being car
 
 A mutation probe that mutates the shared tree can be committed by the sweep even when nothing goes wrong and no handler fails. `git status` cannot warn you either: on a swept tree a clean status means the sweep ran, not that the file is unmodified.Both failure modes fired for real (EI-19450431506682666): `db6d7b02b1` committed a mutant of `scripts/verify-tauri-headless.sh` in which the fix's function was DEFINED but never CALLED — inert, `bash -n`-clean, and shaped exactly like a finished change. Had green-checkpoint cut a candidate from it, the recurrence guard written minutes earlier would have red-pinned the whole fleet on a mutation nobody meant to commit.
 
-**Pick the lowest tier that fits — the top two never dirty the tree at all:**
+**Pick the lowest tier that fits — only the last row's in-tree mutation dirties the tree:**
 
 | your subject | how to prove falsifiability |
 |---|---|
+| a subject (or `--test` cmd) containing DESTRUCTIVE primitives (rm/rmdir/unlink/shred/truncate/mkfs/`dd of=`/`find -delete`) | **TIER-0: `--fake-destructive`** — PATH shims log each destructive call's argv and delete NOTHING; assert on what the code WOULD delete. The probe REFUSES such a subject without it; REAL execution needs `--i-know-this-deletes --sandbox-root <dir>` (bwrap, `/` read-only). Limit: PATH interception only — an absolute-path `/bin/rm` call needs the sandbox. |
 | a MODULE / logic you `import` | Keep a deliberately-wrong implementation **permanently in the test file** as a control (plus a calibration case the REAL subject must pass, or the controls also pass when the property itself is broken). Never mutate production code. |
 | a FILE artifact the test reads by path (shell scripts, config, generated output) | Mutate a **COPY** outside the tree and point the test at it — zero window, no lock, no trap. Make the test's subject path overridable (an env var defaulting to the real path); that one line is what makes tier 2 available at all. |
 | genuinely unavoidable in-tree mutation | Last resort. Hold the sweep for the probe's duration AND restore from a trap (see below). |
 
-**`scripts/mutation-probe.sh` implements tiers 2 and 3** so nobody hand-rolls the unsafe
+**`scripts/mutation-probe.sh` implements tier 0 and tiers 2–3** so nobody hand-rolls the unsafe
 shape again. Copy-out is the default; it proves the tracked file is byte-identical
 before exiting, and it **refuses a mutation that changed nothing** — a no-op mutation
 makes any guard look weak, which is a false verdict from a probe that never mutated
-anything.
+anything. `--mutate` is strict-checked: an undefined perl `$var` in the replacement is a
+hard refusal, not a silent empty-string expansion (the exact failure that once turned a
+probe's subject destructive).
 
 ```bash
 scripts/mutation-probe.sh --file scripts/verify-tauri-headless.sh \
