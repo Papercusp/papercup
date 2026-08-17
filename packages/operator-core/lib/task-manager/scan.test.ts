@@ -219,6 +219,26 @@ describe('defaultForeignSignature', () => {
     expect(sig.test('node /home/u/ws-backup/papercusp/bin/dev')).toBe(false);
   });
 
+  it('CONTROL: the old repo-root anchor is what this test would catch', () => {
+    // A guard that has never failed is a guard nobody has tested. Rather than
+    // mutating the shared tree to prove it (a sweep can commit the mutant — see
+    // CLAUDE.md "Proving a guard is falsifiable"), the superseded implementation
+    // lives here permanently as a control: if `defaultForeignSignature` ever
+    // regresses to anchoring on the checkout, the sibling assertions above fail.
+    const oldRepoRootAnchor = (repoRoot: string) =>
+      new RegExp(repoRoot.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+
+    const old = oldRepoRootAnchor('/home/u/ws/papercup-release');
+    const sibling = 'node /home/u/ws/papercusp-checkpoint/node_modules/vitest/x.mjs';
+    // This FALSE is the whole bug: the gate's own leftovers could not match.
+    expect(old.test(sibling)).toBe(false);
+    expect(defaultForeignSignature('/home/u/ws/papercup-release').test(sibling)).toBe(true);
+
+    // Calibration — the control is not vacuous: it still matches its OWN checkout,
+    // so its `false` above is about the sibling, not a broken regex.
+    expect(old.test('node /home/u/ws/papercup-release/apps/operator/host.mjs')).toBe(true);
+  });
+
   it('falls back to the checkout when there is no containing workspace', () => {
     // Anchoring on "" or "/" would match every process on the box — the exact
     // opposite of this function's job.
