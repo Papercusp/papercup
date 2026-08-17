@@ -164,6 +164,7 @@
     "test": "PC_HEAVY_COALESCE=0 bash scripts/pc-heavy.sh node scripts/affected-tests.mjs",
     "test:file": "PC_HEAVY_COALESCE=0 bash scripts/pc-heavy.sh node scripts/test-files.mjs",
     "test:affected": "PC_HEAVY_COALESCE=0 bash scripts/pc-heavy.sh node scripts/affected-tests.mjs",
+    "test:related": "PC_HEAVY_COALESCE=0 bash scripts/pc-heavy.sh node scripts/affected-tests.mjs --related",
     "test:affected:integration": "PC_HEAVY_COALESCE=0 bash scripts/pc-heavy.sh node scripts/affected-tests.mjs --integration",
     "test:all": "PC_HEAVY_COALESCE=0 bash scripts/pc-heavy.sh node scripts/affected-tests.mjs --all",
     "test:all:integration": "PC_HEAVY_COALESCE=0 bash scripts/pc-heavy.sh node scripts/affected-tests.mjs --all --integration",
