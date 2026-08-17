@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ChildProcess } from 'node:child_process';
 import type { DetectedHardware } from '../provisioner/hardware-detect';
+import { probeScopeSupport, resetScopeProbe } from '../task-manager/managed-spawn';
 import {
   ensureLocalWhisper,
   stopLocalWhisper,
@@ -49,6 +50,27 @@ describe('local-whisper-service', () => {
   beforeEach(async () => {
     home = await mkdtemp(join(tmpdir(), 'local-whisper-test-'));
     __resetLocalWhisperStateForTests();
+    // WI-39563: the whisper-server is now launched through `managedSpawn`, which asks
+    // ONCE PER PROCESS whether this host can create transient user scopes — and it asks
+    // using the caller's `spawnFn`. Ours is a whisper-payload fake, so without this the
+    // probe calls it with `systemd-run`, clobbers the recorded `spawned` argv, and then
+    // SIGKILLs the shared FakeChild the fake hands back — which the health gate reads as
+    // "the server exited during startup". Two other suites hit the same seam and solve it
+    // the same way (spawner-sidecar-spawn.test.ts, spawner-sidecar-cgroup-confinement.test.ts).
+    //
+    // Pinning the probe UNSUPPORTED keeps these cases on the direct-launch branch, so they
+    // still assert the whisper spawn plan itself (argv, health-gate, respawn) rather than a
+    // systemd-run wrapper. The CONFINED branch is covered by the sidecar confinement suite;
+    // the point here is that enrolment did not change the whisper launch plan.
+    resetScopeProbe();
+    await probeScopeSupport((() => {
+      throw new Error('no systemd in test');
+    }) as never);
+    // Pinning it unsupported makes managedSpawn report itself UNCONFINED once per process,
+    // on console.log/warn. vitest-fail-on-console polices warn/error, so an ambient host
+    // condition must not red this file (same rationale as the sidecar suites).
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
   });
   afterEach(async () => {
     __resetLocalWhisperStateForTests();

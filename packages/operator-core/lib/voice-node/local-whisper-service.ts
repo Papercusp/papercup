@@ -34,6 +34,7 @@ import {
   WHISPER_SERVER_DEFAULT_PORT,
   type WhisperModelId,
 } from '../provisioner/whisper-binary';
+import { managedSpawn } from '../task-manager/managed-spawn';
 import { platformKeyFor } from '../provisioner/llama-binary';
 import { detectHardware, type DetectedHardware } from '../provisioner/hardware-detect';
 
@@ -331,7 +332,37 @@ async function spawnAndHealthGate(opts: {
   state.spawnTimes.push(now());
   let child: ChildProcess;
   try {
-    child = spawnFn(binPath, args, { stdio: 'ignore', detached: false });
+    // ENROLLED, not raw (WI-39563). This server is health-gated and then PARKED in
+    // module-scope `state.child` below — it is long-lived by design. A raw spawn puts
+    // it in the operator's own cgroup, so a bg-host restart (KillMode=control-group)
+    // takes it down and nothing in the ledger can address it; `processes:kill` has no
+    // row to reach, leaving kill-by-pid as the only lever. `managedSpawn` confines it
+    // to a SIBLING transient scope instead, so it survives its launcher and is
+    // addressable by taskId.
+    //
+    // `detached: false` is still correct and is NOT what made this unsafe — the scope,
+    // not the process group, is what decouples the lifetime. The old guard keyed on
+    // `detached: true` and so could not see this site at all (EI-19483245448673321);
+    // it is now caught by the "handle parked on a property" trigger.
+    //
+    // managedSpawn FAILS SOFT by contract: a PG blip degrades to an unledgered spawn
+    // and an unavailable systemd scope degrades to an unconfined one, both reported
+    // via confinementSkippedReason. Neither refuses the spawn, so the whisper path is
+    // no more fragile than the raw call it replaces. `spawnFn` is forwarded so the
+    // existing test injection seam still works.
+    const managed = await managedSpawn(
+      binPath,
+      args,
+      {
+        class: 'sidecar',
+        title: 'local whisper-server (STT)',
+        argv: [binPath, ...args],
+        launchedBy: 'system:local-whisper-service',
+        detail: { url },
+      },
+      { spawnOptions: { stdio: 'ignore', detached: false }, spawnFn },
+    );
+    child = managed.child;
   } catch (e) {
     return { ok: false, reason: 'spawn-failed', detail: e instanceof Error ? e.message : String(e) };
   }
