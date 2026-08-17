@@ -16,6 +16,9 @@ import { getOrgPg } from '@papercusp/db-org';
 
 vi.mock('./rubrics', () => ({
   getAcceptanceRubricForPlan: vi.fn(),
+  getRubric: vi.fn(),
+  getRubricPlanRevision: vi.fn(),
+  META_ACCEPTANCE_RUBRIC_ID: 'meta-acceptance-rubric',
 }));
 vi.mock('./scorecards', () => ({
   listScorecards: vi.fn(),
