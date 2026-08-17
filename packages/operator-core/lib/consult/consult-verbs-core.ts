@@ -39,6 +39,7 @@
 import type { Sql } from 'postgres';
 import type { PostResult } from '../agent-tools/coordination/conversations-core';
 import { DEAD_RESPONDER_STATES, consultParkKey as parkKey } from './get-feedback-core';
+import { advanceCascade, makeDigestEntry, selectionFromRouting } from './cascade-core';
 
 export const RESPONDER_REPLY_KINDS = ['answer', 'clarifying_question', 'new_fact'] as const;
 export const REQUESTER_REPLY_KINDS = ['question', 'new_fact'] as const;
@@ -62,6 +63,8 @@ interface ConsultStateRow {
   max_exchanges: number;
   exchanges_used: number;
   wakes_used: number;
+  cascade_cursor: number;
+  cascade_digest: unknown;
   origin_task_ref: string | null;
   routing: unknown;
   outcome: unknown;
@@ -147,7 +150,8 @@ async function readState(
   const rows = (await sql`
     SELECT workspace_id, conversation_id, requester_id, responder_id, state,
            question, latency_contract, max_exchanges, exchanges_used,
-           wakes_used, origin_task_ref, routing, outcome, closed_at
+           wakes_used, cascade_cursor, cascade_digest,
+           origin_task_ref, routing, outcome, closed_at
       FROM harness_shared.consult_state
      WHERE workspace_id = ${workspaceId} AND conversation_id = ${conversationId}
   `) as unknown as ConsultStateRow[];
@@ -177,7 +181,7 @@ function gateCommon(
       state: row.state,
       hint:
         row.state === 'declined'
-          ? 'This consult was declined — re-call consult:get_feedback with exclude:[the decliner] for the manual cascade.'
+          ? "This consult's cascade menu is exhausted (terminal decline) — re-call consult:get_feedback (optionally exclude the decliners) for a fresh route."
           : `This consult is '${row.state}' and takes no further posts.`,
     };
   }
@@ -209,6 +213,10 @@ export interface ConsultReplyResult {
     attempted: boolean;
     woke: number;
   };
+  /** Present on a cascade-advancing perspective reply (D-005): who was woken
+   * next with the feedback-so-far digest, or exhausted:true when this
+   * selectee was the menu's last. */
+  cascade?: { advanced_to: string | null; exhausted: boolean; woke: number };
   hint: string;
 }
 
@@ -223,10 +231,18 @@ export async function consultReplyCore(
   if ('error' in gated) return gated;
   const row = gated.row;
 
-  if (req.authorId !== row.responder_id && req.authorId !== row.requester_id) {
+  // Participants (D-005 cascade): the requester + every responder woken so
+  // far (the selection menu's [0..cascade_cursor] prefix). Earlier cascade
+  // selectees REMAIN participants after the chain advances past them — the
+  // one consult thread is the accumulator they keep deliberating in.
+  const wokenPrefix = selectionFromRouting(row.routing)
+    .slice(0, row.cascade_cursor + 1)
+    .map((s) => s.ownerId);
+  const isWokenResponder = req.authorId === row.responder_id || wokenPrefix.includes(req.authorId);
+  if (req.authorId !== row.requester_id && !isWokenResponder) {
     return { error: 'not_a_participant' };
   }
-  const role: 'requester' | 'responder' = req.authorId === row.responder_id ? 'responder' : 'requester';
+  const role: 'requester' | 'responder' = req.authorId === row.requester_id ? 'requester' : 'responder';
 
   // Kind rules (D-001): the enum is the structural termination — untyped prose
   // ("ok thanks") has no valid kind and cannot enter the thread.
@@ -246,8 +262,17 @@ export async function consultReplyCore(
       hint: 'kind=answer requires evidence: [{ session_id, turn_idx, note? }] — cite the transcript turns the answer rests on (sessions:read resolves them).',
     };
   }
+  // A cascade-advancing PERSPECTIVE reply is the CURRENT responder's post
+  // (any kind, D-005). It is exempt from the exchange cap and does not debit
+  // it: the cap bounds deliberation DEPTH, while the selection menu already
+  // bounded perspective BREADTH (a max-5 consult collects 5 perspectives —
+  // the default cap of 4 must not refuse the 5th). Later posts by the same
+  // selectee are ordinary exchanges: the advance moves responder_id, so a
+  // selectee can trigger at most one advance.
+  const isPerspective = role === 'responder' && req.authorId === row.responder_id;
+
   // The exchange cap (D-001): a reply past the cap is refused; close/decline stay open.
-  if (row.exchanges_used + 1 > row.max_exchanges) {
+  if (!isPerspective && row.exchanges_used + 1 > row.max_exchanges) {
     return {
       error: 'exchange_cap',
       exchanges_used: row.exchanges_used,
@@ -280,7 +305,7 @@ export async function consultReplyCore(
   `;
 
   const nextState = role === 'responder' && row.state === 'awaiting_responder' ? 'active' : row.state;
-  const exchangesUsed = row.exchanges_used + 1;
+  const exchangesUsed = row.exchanges_used + (isPerspective ? 0 : 1);
   await sql`
     UPDATE harness_shared.consult_state
        SET state = ${nextState},
@@ -311,6 +336,36 @@ export async function consultReplyCore(
     });
     woke = r.woke;
   }
+
+  // D-005 always-advance: the current responder's perspective advances the
+  // chain — the next selectee is woken with the question + the feedback so
+  // far. The park-key emit above already served a hard-blocked requester
+  // (parks on the FIRST reply); the chain continues behind it.
+  let cascade: ConsultReplyResult['cascade'];
+  if (isPerspective) {
+    const adv = await advanceCascade(
+      {
+        workspaceId: req.workspaceId,
+        conversationId: req.conversationId,
+        question: row.question,
+        latencyContract: row.latency_contract,
+        routing: row.routing,
+        cascadeCursor: row.cascade_cursor,
+        digest: row.cascade_digest,
+        event: makeDigestEntry(req.authorId, req.kind, now, req.body),
+        stateOnAdvance: 'active',
+        nowIso: now,
+      },
+      sql,
+      deps.reach,
+    );
+    cascade = { advanced_to: adv.next?.ownerId ?? null, exhausted: adv.exhausted, woke: adv.woke };
+  }
+  const cascadeNote = cascade
+    ? cascade.advanced_to
+      ? ` Cascade advanced (D-005): ${cascade.advanced_to} was woken next with the feedback so far.`
+      : ' Cascade menu exhausted — you were the last selectee.'
+    : '';
 
   const capNow = exchangesUsed >= row.max_exchanges;
   const hint =
@@ -353,9 +408,13 @@ export interface ConsultDeclineRequest {
 export interface ConsultDeclineResult {
   ok: true;
   post_id: number;
-  state: 'declined';
-  /** The D-007(7) manual-cascade menu — from the persisted routing snapshot,
-   * decliner excluded, route-time-dead filtered. */
+  /** 'awaiting_responder' when the cascade advanced to the next selectee
+   * (D-005 — the consult stays open); 'declined' only on menu exhaustion. */
+  state: 'awaiting_responder' | 'declined';
+  /** Cascade consequence of this decline (D-005). */
+  cascade: { advanced_to: string | null; exhausted: boolean; woke: number };
+  /** Route-time candidate refs — decliner excluded, route-time-dead filtered
+   * (retrieval fallback; the SERVER drains the selected menu itself). */
   remaining_candidates: Array<{ ownerId: string; score: number; liveness: string }>;
   hint: string;
 }
@@ -388,6 +447,40 @@ export async function consultDeclineCore(
       (workspace_id, post_id, conversation_id, author_id, kind, evidence)
     VALUES (${req.workspaceId}, ${postId}, ${req.conversationId}, ${req.authorId}, 'decline', NULL)
   `;
+  // D-005 always-advance: a decline ADVANCES the chain instead of closing the
+  // consult — the terminal 'declined' close happens only when the menu is
+  // exhausted. A hard-blocked requester parked on the latched key is NOT
+  // woken by a mid-chain decline (more feedback is still coming); the emit
+  // fires only on the terminal close.
+  const adv = await advanceCascade(
+    {
+      workspaceId: req.workspaceId,
+      conversationId: req.conversationId,
+      question: row.question,
+      latencyContract: row.latency_contract,
+      routing: row.routing,
+      cascadeCursor: row.cascade_cursor,
+      digest: row.cascade_digest,
+      event: makeDigestEntry(req.authorId, 'decline', now, reason),
+      stateOnAdvance: 'awaiting_responder',
+      nowIso: now,
+    },
+    sql,
+    deps.reach,
+  );
+  const remaining = remainingFromSnapshot(row.routing, req.authorId);
+
+  if (adv.advanced) {
+    return {
+      ok: true,
+      post_id: postId,
+      state: 'awaiting_responder',
+      cascade: { advanced_to: adv.next?.ownerId ?? null, exhausted: false, woke: adv.woke },
+      remaining_candidates: remaining,
+      hint: `Declined. Cascade advanced (D-005): ${adv.next?.ownerId ?? 'the next selectee'} was woken with the feedback so far — the consult stays open.`,
+    };
+  }
+
   await sql`
     UPDATE harness_shared.consult_state
        SET state = 'declined',
@@ -397,26 +490,22 @@ export async function consultDeclineCore(
      WHERE workspace_id = ${req.workspaceId} AND conversation_id = ${req.conversationId}
   `;
 
-  // A decline IS the reply a parked requester is waiting for — emit the key.
+  // Menu exhausted: this terminal decline IS the reply a parked requester is
+  // waiting for — emit the latched key.
   await deps.emitReplyEvent({
     key: parkKey(req.conversationId),
-    summary: `consult ${req.conversationId}: declined by ${req.authorId} — ${oneLine(reason)}`,
+    summary: `consult ${req.conversationId}: declined by ${req.authorId} (cascade menu exhausted) — ${oneLine(reason)}`,
     payload: { conversation_id: req.conversationId, responder: req.authorId, kind: 'decline', post_id: postId },
     to: [row.requester_id],
   });
 
-  const remaining = remainingFromSnapshot(row.routing, req.authorId);
   return {
     ok: true,
     post_id: postId,
     state: 'declined',
+    cascade: { advanced_to: null, exhausted: true, woke: 0 },
     remaining_candidates: remaining,
-    hint: remaining.length
-      ? `Declined. The requester can cascade manually: consult:get_feedback with exclude:['${req.authorId}'] — next candidates: ${remaining
-          .slice(0, 3)
-          .map((c) => c.ownerId)
-          .join(', ')}.`
-      : `Declined. No further route-time candidates remain — the requester proceeds on their own judgment.`,
+    hint: `Declined — the cascade menu is exhausted (you were the last selectee). The requester proceeds on their own judgment; a fresh consult:get_feedback re-routes.`,
   };
 }
 
