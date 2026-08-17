@@ -304,7 +304,46 @@ describe('countImprovementItems (EI-18790490225750395 D2 — the TRUE corpus tot
     expect(calls[0]?.scope).toBe('harness:my-hive');
   });
 
-  it('fails loudly on loopOutputOnly rather than silently counting the untagged whole corpus', async () => {
+  // ── loopOutputOnly counts (WI-39675) ────────────────────────────────────────
+  //
+  // The Learning tab's DEFAULT scope is 'loop', so without a loop-scoped COUNT the
+  // tab could only ever report its read WINDOW as the total. The requirement is
+  // narrow and easy to get wrong in the harmful direction: the count must be taken
+  // over the SAME population the matching read returns, never over the untagged
+  // corpus — a total LARGER than the truth is worse than the window bug, because it
+  // reads as a plausible corpus count instead of an obviously pinned one.
+
+  it('counts the loop-scoped population by resolving ids into the SAME issueIds predicate the read uses', async () => {
+    const calls: ListIssuesFilter[] = [];
+    const n = await countImprovementItems(
+      { loopOutputOnly: true },
+      {
+        countIssues: async (f) => (calls.push(f), 3),
+        readLoopOutputIds: async () => ['EI-1', 'EI-2', 'EI-3'],
+      },
+    );
+    expect(n).toBe(3);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.issueIds).toEqual(['EI-1', 'EI-2', 'EI-3']);
+    // The scope really did narrow the query: an unscoped count would carry no id
+    // predicate at all, which is the failure mode that silently counts everything.
+    expect(calls[0]?.issueIds).toBeDefined();
+  });
+
+  it('returns 0 for an EMPTY loop-output set instead of degrading to an unscoped count', async () => {
+    // Mirrors the harnessScopes empty-set rule: an empty id set matches nothing.
+    // Degrading here would report the whole untagged corpus under a name that
+    // promises the loop's output — reinstating the 8,202-row duplication.
+    let called = false;
+    const n = await countImprovementItems(
+      { loopOutputOnly: true },
+      { countIssues: async () => ((called = true), 8202), readLoopOutputIds: async () => [] },
+    );
+    expect(n).toBe(0);
+    expect(called).toBe(false);
+  });
+
+  it('fails loudly when loopOutputOnly is asked for without the id resolver, rather than silently counting the untagged whole corpus', async () => {
     await expect(
       countImprovementItems({ loopOutputOnly: true }, { countIssues: async () => 0 }),
     ).rejects.toThrow(/loopOutputOnly/);

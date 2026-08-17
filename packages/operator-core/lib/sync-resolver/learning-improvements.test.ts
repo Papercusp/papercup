@@ -20,8 +20,15 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
  */
 
 const readImprovementItems = vi.fn();
+// WI-39675: the compute now ALSO reads the true corpus total alongside the
+// (windowed) items, so this mock must export `countImprovementItems` too. It is
+// mocked as its own fn rather than passed through to the real one because the
+// point of the pairing is that BOTH calls take the SAME filter — asserting that
+// needs the count's arguments, not just its result.
+const countImprovementItems = vi.fn();
 vi.mock('../harness/improvements/read-items', () => ({
   readImprovementItems: (...a: unknown[]) => readImprovementItems(...a),
+  countImprovementItems: (...a: unknown[]) => countImprovementItems(...a),
   IMPROVEMENT_TOPIC: 'papercusp-improvement',
 }));
 
@@ -77,6 +84,12 @@ import { __clearDerivedReadRegistryForTest, listDerivedReadProducers } from '../
 
 beforeEach(() => {
   readImprovementItems.mockReset();
+  // Default to the DEGRADED reading (`undefined`) — the exact value the
+  // implementation's own `.catch(() => undefined)` produces when the count fails,
+  // which makes `digest.total` fall back to candidates.length. That keeps every
+  // pre-WI-39675 assertion in this file testing the contract it was written for;
+  // the tests that care about the corpus total set a number explicitly.
+  countImprovementItems.mockReset().mockResolvedValue(undefined);
   readWatchdogFlowTicks.mockReset();
   loadHarnessRegistry.mockReset();
   readOwnerFullAutonomyGrant.mockReset().mockResolvedValue(false);
@@ -305,6 +318,75 @@ describe('learning.improvements — digest + flow row (P-041)', () => {
         3: 'obj{autoEligible:arr<empty>,byKind:obj{bug:number},bySeverity:obj{},byState:obj{open:number},diagnosisClusters:obj{clusters:arr<empty>,considered:number,ritualExcluded:number,unshaped:number},flow:obj{captured7d:number,dispatch:obj{fireFailed:number,fired7d:number,firing:number,fixed7d:number,inProgress:number,lastDispatchAt:null,lastOutcomeAt:null,orphaned:number,overdue:number,resolved:obj{couldNotFix:number,fixed:number,needsHuman:number},total:number},medianOpenAgeDays:number,net7d:number,recurringSignatureCount:number,resolved7d:number,watchdog:obj{captured24h:number,lastTickAt:string,ticks24h:number}},generatedAt:string,headline:string,humanQueue:arr<obj{ageDays:number,id:string,ideaType:string,kind:string,scope:string,score:number,state:string,tierReason:string,title:string}>,likelyDuplicates:arr<empty>,likelyDuplicatesScope:obj{consideredCount:number,corpusTotal:number,nearDupConsidered:number,nearDupPass:string,windowed:boolean},open:number,recurringSignatures:arr<empty>,returned:number,total:number,windowed:boolean}',
       },
     });
+  });
+});
+
+/**
+ * WI-39675: `digest.total` is the TRUE corpus total, not the size of the window
+ * that was read.
+ *
+ * The defect this pins is a repeat, not a novelty: EI-18790490225750395 already
+ * fixed exactly this on the `improvements:digest` AGENT-TOOL path, and the fix was
+ * never propagated here — so the Learning tab's "From the loop N" silently
+ * saturated at the default 500-row read window while the agent-facing tool
+ * reported the truth. A windowed measurement rendered as a population total is
+ * indistinguishable from a real count at the read site, which is what makes it
+ * worth a guard rather than a comment.
+ */
+describe('learning.improvements — digest.total is the corpus, not the window (WI-39675)', () => {
+  const windowRow = (id: string) => ({
+    id,
+    kind: 'bug',
+    scope: 'operator',
+    title: `row ${id}`,
+    state: 'open',
+    createdAt: new Date().toISOString(),
+  });
+
+  it('reports the COUNTED corpus total while returning only the windowed rows', async () => {
+    // The shape of the real bug: the read is capped at a window (3 rows here,
+    // 500 in production) while the corpus behind it is far larger.
+    readImprovementItems.mockResolvedValue([windowRow('EI-1'), windowRow('EI-2'), windowRow('EI-3')]);
+    countImprovementItems.mockResolvedValue(8202);
+    readWatchdogFlowTicks.mockResolvedValue([]);
+
+    const row = (await computeLearningImprovementsSnapshot({}))[0];
+
+    expect(row.total).toBe(8202);
+    expect(row.returned).toBe(3);
+    // `windowed` is the flag the UI needs to say "3 of 8202" honestly rather than
+    // implying it is showing everything.
+    expect(row.windowed).toBe(true);
+    // The regression this file is guarding: total tracking the window size.
+    expect(row.total).not.toBe(3);
+  });
+
+  it('counts over the SAME filter the read used — a count over a different population is the same lie in a new place', async () => {
+    readImprovementItems.mockResolvedValue([windowRow('EI-1')]);
+    countImprovementItems.mockResolvedValue(42);
+    readWatchdogFlowTicks.mockResolvedValue([]);
+
+    await computeLearningImprovementsSnapshot({ state: 'open', limit: 500 });
+
+    // Both sides of the pairing must see one identical filter object; a count
+    // taken over a WIDER filter than the list (e.g. dropping the loop-provenance
+    // scope) would report a plausible-looking total for a different population.
+    expect(countImprovementItems).toHaveBeenCalledTimes(1);
+    expect(countImprovementItems.mock.calls[0][0]).toEqual(readImprovementItems.mock.calls[0][0]);
+    // And that shared filter really does carry the tab's default provenance scope.
+    expect(countImprovementItems.mock.calls[0][0]).toMatchObject({ state: 'open', loopOutputOnly: true });
+  });
+
+  it('degrades to the returned-row count when the corpus COUNT fails — never sinks the tab', async () => {
+    readImprovementItems.mockResolvedValue([windowRow('EI-1'), windowRow('EI-2')]);
+    countImprovementItems.mockRejectedValue(new Error('count query timed out'));
+    readWatchdogFlowTicks.mockResolvedValue([]);
+
+    const rows = await computeLearningImprovementsSnapshot({});
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0].total).toBe(2);
+    expect(rows[0].windowed).toBe(false);
   });
 });
 
