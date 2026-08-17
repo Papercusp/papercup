@@ -23,7 +23,11 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import { join } from "node:path";
 
-const HOOK = join(__dirname, "..", "guard-operator-desktop.mjs");
+// Overridable so a tier-2 mutation probe can point this suite at a mutated
+// COPY outside the tree (scripts/mutation-probe.sh --file … PROBE_HOOK={}),
+// instead of mutating the shared checkout — which git-sync would sweep and
+// commit mid-probe. Defaults to the real hook.
+const HOOK = process.env.PROBE_HOOK || join(__dirname, "..", "guard-operator-desktop.mjs");
 
 /** Hostnames the shimmed resolver knows about. */
 const PINNED = "pinned-prod.example.test"; // → loopback (the bug)
