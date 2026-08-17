@@ -158,8 +158,29 @@ export interface ScorecardProvisional {
 
 /** What kind of thing a scorecard's `subject` names. Open-ended by design: the
  *  grading substrate is per-run TODAY (agent-run/session), but the same identity
- *  gap applies to grading a work-item, a plan, or a pot. */
-export type ObservationSubjectKind = 'agent-run' | 'session' | 'work-item' | 'plan' | 'pot';
+ *  gap applies to grading a work-item, a plan, or a pot. 'rubric' = a vetting
+ *  scorecard grading a rubric itself against the meta-rubric
+ *  (consult-min-max-and-rubric-vetting-2026-08-17 P-004). */
+export type ObservationSubjectKind = 'agent-run' | 'session' | 'work-item' | 'plan' | 'pot' | 'rubric';
+
+/**
+ * The vetting linkage stamped by scorecards:emit on a VETTING scorecard — a
+ * meta-rubric grading of an acceptance rubric (consult-min-max-and-rubric-vetting-
+ * 2026-08-17 P-004). The acceptance gate's `acceptance_rubric_unvetted` check keys
+ * off this block: the CURRENT rubric revision must carry a complete meta-scorecard
+ * with a linked consult. Stamped server-side only after both halves are validated
+ * to exist (a dangling consult or subject rubric is refused at emit, mirroring the
+ * acceptance-kind link guards — a dangling link is a booby trap).
+ */
+export interface ScorecardVetting {
+  /** conversation_id of the get_feedback consult that critiqued the vetted rubric. */
+  consultId: string;
+  /** The vetted rubric's plan-row `version` (harness_plans.version) at emit time —
+   *  how the gate decides the attestation covers the CURRENT revision. Absent when
+   *  the version read failed at emit; the gate then treats the card as NOT current
+   *  whenever a current revision IS known (strict toward re-vetting). */
+  rubricRevision?: number;
+}
 
 /**
  * The graded subject + its measurement window — the binding a replication drill
