@@ -41,6 +41,7 @@
  * dark (CLAUDE.md). `--inactive` seeds it off for an explicit dark launch.
  */
 import * as os from 'node:os';
+import { existsSync } from 'node:fs';
 import * as path from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../workspace-registry';
@@ -87,12 +88,22 @@ const CRON = '0 50 */2 * * *';
 async function main(): Promise<void> {
   const active = !process.argv.includes('--inactive');
   const harness = flag('harness', 'sidestage');
-  const repoRoot = flag('repo-root', hiveRoot(harness));
+  const repoRoot = flag('repo-root', defaultHiveRoot(harness));
   const output = flag('output', 'apps/api/src/build-history/build-history.snapshot.ts');
   const projectId = flag('project-id', harness);
   const projectName = flag('project-name', harness === 'sidestage' ? 'SideStage' : harness);
   const exportName = flag('export-name', harness === 'sidestage' ? 'BUILD_HISTORY_SNAPSHOT' : 'PROJECT_HISTORY');
   const planPrefix = flag('plan-prefix', '');
+
+  if (!existsSync(repoRoot)) {
+    console.error(
+      `[seed-project-history-refresh-routine] REFUSING: repo_root does not exist: ${repoRoot}\n` +
+        '  A routine seeded against a missing tree ticks forever, skips every time, and reports healthy\n' +
+        '  while refreshing nothing. Pass --repo-root <absolute path to the hive repo> explicitly.\n' +
+        `  Tried: ${hiveRootCandidates(harness).join(', ')}`,
+    );
+    process.exit(1);
+  }
 
   const ws = activeWorkspaceId();
   const { sql } = getOrgPg();
@@ -126,7 +137,7 @@ async function main(): Promise<void> {
   `;
   console.log(
     `[seed-project-history-refresh-routine] seeded "${name}" for "${harness}" (ws=${ws}, active=${active}) — ` +
-      `every 6h at :50, regenerating ${path.join(repoRoot, output)}. ` +
+      `cron "${CRON}" (every 2h at :50), regenerating ${path.join(repoRoot, output)}. ` +
       (active ? 'Cadence LIVE.' : 'Inactive — enable with the routines admin.'),
   );
   await sql.end({ timeout: 5 });
