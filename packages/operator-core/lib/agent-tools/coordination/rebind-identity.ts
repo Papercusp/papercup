@@ -452,6 +452,28 @@ export async function rebindIdentity(
     }
   });
 
+  // 7b. Interest watches (migration 839) — the PARENT registry row of the
+  //     standing-await surface directly above. A watch:create row "serves both
+  //     delivery modes: a paired event_awaits row (wake:true) and/or a
+  //     coord_entity_subscriptions inject row (wake:false)" (839's own header),
+  //     and delivery selects those CHILDREN — so leaving the parent behind does
+  //     not silently stop wakes, which is exactly why this was easy to miss when
+  //     839 landed. What it DOES break is the upsert identity: interest-watch.ts
+  //     re-finds an agent's existing watch by (owner_id, event_key) before
+  //     inserting, so a rebound agent whose children moved but whose parent did
+  //     not no longer matches its own row — it inserts a DUPLICATE watch and the
+  //     original lingers under the dead sid, swept forever and cancellable by
+  //     nobody. Re-key ACTIVE rows only, mirroring the awaits rule above: an
+  //     inactive watch is spent, not live claim state. No dedup pass is needed —
+  //     the sole unique index is the uuid PK, so a re-key cannot collide.
+  await run('interest-watches', async (r) => {
+    const moved = await sql<Array<{ id: string }>>`
+      UPDATE harness_shared.interest_watches SET owner_id = ${t}
+       WHERE owner_id = ${f} AND active RETURNING id
+    `;
+    r.moved = moved.length;
+  });
+
   // 8-9. Plan-item + work-item claims — owner is not part of either PK, so a
   //      straight re-key; lease expiry is time-based and unaffected.
   await run('plan-claims', async (r) => {
