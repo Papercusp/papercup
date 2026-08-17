@@ -5226,53 +5226,19 @@ function LearningsView({
   return (
     <>
       <section className="pc-learning__section">
-        {/* WI-5412 item 5: ONE concept, one heading — the page was titled
-            "Shared learnings" over a list headed "Shared memory", two names
-            for the same store. */}
+        {/* WI-5412 item 5 kept its spirit through WI-39535: ONE concept, one
+            heading. The heading now names the whole unified ledger — the
+            shared-memory pool is a tab inside it, not a second surface. Search
+            and refresh live on the ledger's own bar. */}
         <LearningPageHeader
           icon={Brain}
-          title="Shared memory"
-          signal={snap ? `${rows.length} retained` : undefined}
-          tone={rows.length > 0 ? "good" : "neutral"}
-          action={
-            <div className="pc-learning__retaincontrols">
-              {searchOpen ? (
-                <input
-                  autoFocus
-                  type="search"
-                  aria-label="Search retained learnings"
-                  value={searchQuery}
-                  onChange={(event) => setSearchQuery(event.target.value)}
-                />
-              ) : null}
-              <button
-                type="button"
-                className="pc-learning__refresh"
-                aria-label={
-                  searchOpen ? "Close retained search" : "Search learnings"
-                }
-                onClick={() => {
-                  setSearchOpen((current) => !current);
-                  if (searchOpen) setSearchQuery("");
-                }}
-              >
-                {searchOpen ? (
-                  <XCircle size={13} aria-hidden />
-                ) : (
-                  <Search size={13} aria-hidden />
-                )}
-              </button>
-              <button
-                type="button"
-                className="pc-learning__refresh"
-                aria-label="Reload the learnings"
-                disabled={sync.fetching}
-                onClick={() => sync.invalidate()}
-              >
-                <RefreshCw size={13} aria-hidden />
-              </button>
-            </div>
+          title="Retained"
+          signal={
+            ledgerState.memoriesCount != null
+              ? `${ledgerState.memoriesCount} memories`
+              : undefined
           }
+          tone={ledgerState.rowCount > 0 ? "good" : "neutral"}
         />
 
         {/* Fleet-lessons candidate review (learning-tab-visibility P-002): the
