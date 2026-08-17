@@ -74,9 +74,21 @@ async function stubAndRecord(page: Page): Promise<{ lanesSlugs: Set<string>; syn
   // every hive-member-* testid is absent (EI-319 residual). SSE carries only
   // invalidation; rows come from that GET. (This spec used to stub POST
   // /rest-query-batch, dead since 2026-07-26 — never hit at all: WI-39533.)
-  const sync = await stubSyncQueries(page, (name) =>
-    name === 'harnessProjects.lite' ? PROJECTS_LITE.projects : undefined,
-  );
+  const sync = await stubSyncQueries(page, (name, args) => {
+    if (name === 'harnessProjects.lite') return PROJECTS_LITE.projects;
+    // THE DOCK-KEYING ORACLE. It used to be the `/api/harness/<slug>/lanes`
+    // REST route recorded below — but that read is LEGACY: sync-resolver
+    // (index.ts:1637) states that `harnessLanes.snapshot` "replaces the legacy
+    // /api/harness/:slug/lanes read", so the dock has not spoken REST lanes for
+    // a long time and the recorder stayed permanently empty. Record the slug the
+    // dock actually asks lanes FOR; answer empty (benign chrome), matching what
+    // the REST stub returned.
+    if (name === 'harnessLanes.snapshot') {
+      if (typeof args.harnessSlug === 'string') lanesSlugs.add(args.harnessSlug);
+      return [];
+    }
+    return undefined;
+  });
   await page.route('**/api/harness/*/lanes**', async (route) => {
     const m = /\/api\/harness\/([^/]+)\/lanes/.exec(route.request().url());
     if (m) lanesSlugs.add(decodeURIComponent(m[1]));
