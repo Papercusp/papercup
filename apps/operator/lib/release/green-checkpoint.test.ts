@@ -539,7 +539,7 @@ describe("armSelfWatchdog (WI-1319 root fix (c) — orphaned OS process past DBO
     expect(kill).toHaveBeenCalledWith(-777, "SIGKILL");
   });
 
-  it("runs a SYNC onFire hook before the process-group kill so the watchdog can emit a loud red verdict", () => {
+  it("runs a SYNC onFire hook before the process-group kill so the watchdog can emit a loud verdict", () => {
     const release = vi.fn();
     const kill = vi.fn();
     const onFire = vi.fn();
@@ -562,7 +562,7 @@ describe("armSelfWatchdog (WI-1319 root fix (c) — orphaned OS process past DBO
    *  which is TRUE of the broken code too: it fire-and-forgot the emit and then SIGKILLed its own
    *  process group on the very next sync line, so the emit never got an event-loop turn and the wake
    *  was lost with certainty. The contract that actually matters is COMPLETION-before-kill. */
-  it("WI-4528: AWAITS an async onFire to COMPLETION before the process-group kill (a fire-and-forget red emit is a lost wake)", async () => {
+  it("WI-4528: AWAITS an async onFire to COMPLETION before the process-group kill (a fire-and-forget verdict emit is a lost wake)", async () => {
     const order: string[] = [];
     const release = vi.fn();
     const kill = vi.fn((p: number, sig: NodeJS.Signals) =>
