@@ -65,7 +65,11 @@ vi.mock('../../harness/primitives', () => ({
 }));
 vi.mock('../../harness/TrustBadge', () => ({ TrustBadge: () => <span />, trustBadgeState: () => null }));
 
-import WorkItemsPanel, { workItemCountLabel } from './WorkItemsPanel';
+import WorkItemsPanel from './WorkItemsPanel';
+// The label moved to the shared filters module (owner ask 2026-08-17: the Learning
+// tab must "mimic how it works in the work queue"), so these cases now pin the
+// SHARED helper every filterable pane renders — not a work-items-only copy.
+import { filterCountLabel } from '../../harness/filters/filter-count-label';
 import type { WorkItemRow } from './WorkItemsPanel';
 
 function row(over: Partial<WorkItemRow> & { id: string }): WorkItemRow {
@@ -185,15 +189,15 @@ describe('WorkItemsPanel', () => {
 
 describe('workItemCountLabel (pure — always the DB store total, never "loaded")', () => {
   it('unfiltered → just the store total (loaded length is irrelevant; infinite scroll loads the rest)', () => {
-    expect(workItemCountLabel(12, 12, false)).toEqual({ title: '12', summary: '12 items' });
+    expect(filterCountLabel(12, 12, false)).toEqual({ title: '12', summary: '12 items' });
     // Even when far fewer rows are loaded than exist, the badge shows the TRUE total.
-    expect(workItemCountLabel(500, 1821, false)).toEqual({ title: '1821', summary: '1821 items' });
+    expect(filterCountLabel(500, 1821, false)).toEqual({ title: '1821', summary: '1821 items' });
   });
   it('filtered → shown of total match', () => {
-    expect(workItemCountLabel(42, 905, true)).toEqual({ title: '42 of 905', summary: '42 of 905 match' });
-    expect(workItemCountLabel(42, 1674, true)).toEqual({ title: '42 of 1674', summary: '42 of 1674 match' });
+    expect(filterCountLabel(42, 905, true)).toEqual({ title: '42 of 905', summary: '42 of 905 match' });
+    expect(filterCountLabel(42, 1674, true)).toEqual({ title: '42 of 1674', summary: '42 of 1674 match' });
   });
   it('singular item reads "1 item"', () => {
-    expect(workItemCountLabel(1, 1, false).summary).toBe('1 item');
+    expect(filterCountLabel(1, 1, false).summary).toBe('1 item');
   });
 });
