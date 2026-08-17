@@ -2880,28 +2880,53 @@ export default defineTool({
       let waveVerified = false;
       if (openedThisWave.length > 0) {
         try {
-          const verdict = await verifyFreshLaunchStarted({
+          const waveArgs = {
             workspaceId,
             launcherOwnerId: ownerId,
             since: launchRequestedAt,
             expected: openedThisWave.length,
             expectedOwnerIds: openedThisWave,
             expectedAttestations: expectedAttestations.filter((item) => openedThisWave.includes(item.ownerId)),
-          });
+          };
+          let verdict = await verifyFreshLaunchStarted(waveArgs);
+          if (verdict.agentStarted === null) {
+            // EI-20437060078324174: an expired window is the ABSENCE of an
+            // observation, not death — the measured false-negative registered
+            // 5.5s past the first window and went straight on to claim work.
+            // One bounded re-probe BEFORE any gate decision, so a slow boot
+            // verifies here and only a genuinely dark member stays unconfirmed.
+            verdict = await verifyFreshLaunchStarted(waveArgs, {
+              timeoutMs: LATE_VERIFY_RECHECK_TIMEOUT_MS,
+            });
+          }
           waveVerified = verdict.agentStarted === true;
           if (waveVerified) {
             launchTransaction.verifiedMemberIds.push(...openedThisWave);
             wave.verifiedOwnerIds = openedThisWave.slice();
           } else if (verdict.agentStarted === null) {
-            // EI-20437060078324174: an expired/unfinished window is NOT failure —
-            // the measured member registered 5.5s after the window and went
-            // straight on to claim work while this path stamped it a 502.
-            for (const memberOwnerId of openedThisWave) {
+            // Still unconfirmed after the re-probe. NOT a failure: no 502, no
+            // failed[] entry — the members are reported as unverified, and the
+            // EI-20497372063255974 resume path re-opens the unopened remainder
+            // once they prove live. Session-level split first: a member whose
+            // session already took a real turn IS verified even when the wave
+            // as a whole is not.
+            const verifiedNow = new Set(
+              verdict.sessions
+                .filter((s) => s.ownerId != null && s.successfulCalls > 0)
+                .map((s) => s.ownerId as string),
+            );
+            const confirmed = openedThisWave.filter((id) => verifiedNow.has(id));
+            const pending = openedThisWave.filter((id) => !verifiedNow.has(id));
+            if (confirmed.length > 0) {
+              launchTransaction.verifiedMemberIds.push(...confirmed);
+              wave.verifiedOwnerIds = confirmed.slice();
+            }
+            for (const memberOwnerId of pending) {
               unconfirmed.push({ ownerId: memberOwnerId, note: verdict.note });
             }
             launchTransaction.unconfirmedMemberIds = [
               ...(launchTransaction.unconfirmedMemberIds ?? []),
-              ...openedThisWave,
+              ...pending,
             ];
           } else {
             const phase = verdict.note.includes('ATTESTATION MISMATCH') ? 'attestation' : 'verification';
@@ -2935,66 +2960,16 @@ export default defineTool({
         await persistLaunchTransaction();
         continue;
       }
-      // EI-20437060078324174 harm (b): a wave that merely went UNCONFIRMED (every
-      // member opened, none positively failed) must not abort the rest of the
-      // launch — one slow boot was silently halving whole waves. Only a POSITIVE
-      // failure (spawn error, observed silence, attestation mismatch) stops the
-      // transaction.
-      const wavePositivelyFailed =
-        spawnFailed || openedThisWave.some((id) => failed.some((f) => f.ownerId === id));
+      // A wave that did not fully verify stops the transaction here. For an
+      // UNCONFIRMED wave that is the canary gate working as designed (do not
+      // multiply a launch nobody has confirmed) — but now WITHOUT the false 502
+      // (EI-20437060078324174): the unconfirmed members are reported as
+      // unverified, and the resume path re-opens the unopened remainder once
+      // they prove live (EI-20497372063255974).
       wave.state = 'partial';
-      if (!wavePositivelyFailed && openedThisWave.length === ownerIds.length) {
-        await persistLaunchTransaction();
-        continue;
-      }
       launchTransaction.state = 'partial';
       await persistLaunchTransaction();
       break;
-    }
-    // EI-20437060078324174 late recheck: one bounded re-probe of every member whose
-    // window expired unconfirmed. By now the later waves' windows have also been
-    // elapsing, so the measured shape (registration 5.5s past the first window)
-    // verifies here instead of surfacing as a false "did not start". Session-level
-    // upgrade: a member whose session took a real turn is verified; one that
-    // registered but has no turn yet stays honestly unverified; the observed
-    // all-silent shape is a real failure, now with evidence.
-    if (unconfirmed.length > 0) {
-      const pendingIds = unconfirmed.map((u) => u.ownerId);
-      try {
-        const recheck = await verifyFreshLaunchStarted(
-          {
-            workspaceId,
-            launcherOwnerId: ownerId,
-            since: launchRequestedAt,
-            expected: pendingIds.length,
-            expectedOwnerIds: pendingIds,
-            expectedAttestations: expectedAttestations.filter((item) => pendingIds.includes(item.ownerId)),
-          },
-          { timeoutMs: LATE_VERIFY_RECHECK_TIMEOUT_MS },
-        );
-        if (recheck.agentStarted === false) {
-          for (const u of unconfirmed) {
-            launchTransaction.failed.push({ ownerId: u.ownerId, phase: 'verification', reason: recheck.note });
-            failed.push({ ownerId: u.ownerId, error: recheck.note, code: 502 });
-          }
-          unconfirmed.length = 0;
-        } else {
-          const verifiedNow = new Set(
-            recheck.sessions
-              .filter((s) => s.ownerId != null && s.successfulCalls > 0)
-              .map((s) => s.ownerId as string),
-          );
-          if (verifiedNow.size > 0) {
-            launchTransaction.verifiedMemberIds.push(...pendingIds.filter((id) => verifiedNow.has(id)));
-            const still = unconfirmed.filter((u) => !verifiedNow.has(u.ownerId));
-            unconfirmed.length = 0;
-            unconfirmed.push(...still);
-          }
-        }
-      } catch {
-        /* instrument fault — the members stay honestly unconfirmed */
-      }
-      launchTransaction.unconfirmedMemberIds = unconfirmed.map((u) => u.ownerId);
     }
     if (launchTransaction.verifiedMemberIds.length === requestedMemberIds.length) {
       launchTransaction.state = 'verified';
