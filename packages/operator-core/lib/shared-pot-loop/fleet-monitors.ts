@@ -48,6 +48,7 @@ import {
   parkedHolderFragment,
   STALE_CLAIM_GRACE_MS,
   STALE_CLAIM_PARKED_GRACE_MS,
+  STALE_CLAIM_UNKNOWN_HOLDER_FALLBACK_MS,
 } from '../work-items-stale-claims';
 
 /** Feature-family terminal states (work-items.ts settled list). */
@@ -147,6 +148,9 @@ export async function sweepOrphanedTakenBy(
     graceMs?: number;
     nowMs?: number;
     terminalStatuses?: readonly string[];
+    /** EI-20723522274831539 (mirrors the sibling reaper's identically-named knob):
+     *  override the never-seen-here holder fallback horizon. Tests only. */
+    unknownHolderFallbackMs?: number;
   },
 ): Promise<OrphanSweepResult> {
   const terminal = [...(opts.terminalStatuses ?? TERMINAL_STATUSES)];
@@ -158,6 +162,10 @@ export async function sweepOrphanedTakenBy(
   // ROW's last write is, while these bound how stale the HOLDER's heartbeat is.
   const liveGraceSec = Math.max(1, Math.round(STALE_CLAIM_GRACE_MS / 1000));
   const parkedGraceSec = Math.max(liveGraceSec, Math.round(STALE_CLAIM_PARKED_GRACE_MS / 1000));
+  const unknownFallbackSec = Math.max(
+    1,
+    Math.round((opts.unknownHolderFallbackMs ?? STALE_CLAIM_UNKNOWN_HOLDER_FALLBACK_MS) / 1000),
+  );
   // CTE captures the OLD taken_by (RETURNING alone reflects the NEW row).
   const rows = await sql<Array<{ feature_id: string; taken_by: string; updated_ts: number }>>`
     WITH live_holder AS (${liveHolderFragment(sql, liveGraceSec)}),
