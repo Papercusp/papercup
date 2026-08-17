@@ -5811,11 +5811,17 @@ function RetainedLedgerCard({
 
   // WI-39534: the selected row's detail — mounted under the view's ONE
   // readiness gate like every sibling read (lens-guard); an empty id
-  // short-circuits server-side to [] without touching a store.
+  // short-circuits server-side to [] without touching a store. `hive` rides
+  // along for lens consistency exactly like retainPlanChildren above — one
+  // row's detail is lens-invariant, but every read in the view carries the pot.
   const sel = parseRetainSel(rsel);
   const detailQ = useSyncQuery<RetainDetail | undefined>({
     queryName: "learning.retainDetail",
-    args: { kind: sel?.kind ?? "plan", id: sel?.id ?? "" },
+    args: {
+      kind: sel?.kind ?? "plan",
+      id: sel?.id ?? "",
+      ...(hive ? { hive } : {}),
+    },
     enabled,
     staleTime: 30_000,
   });
