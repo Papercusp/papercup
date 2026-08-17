@@ -142,6 +142,33 @@ const PUSH_EXEMPT: Record<string, string> = {
   // if the memory backend seam is ever removed in favour of direct table reads.
   'userMemory.total :: harness_shared.memory_canonical':
     'read through the pluggable memory BACKEND seam (getMemoryBackend().list()), so under a remote backend (mem0) the rows never touch this table and a trigger would see nothing at all — it cannot be the whole invalidation story by construction. Every write path instead routes through memory/invalidate-user-memory-views.ts, which pushes this key together with userMemory.list so the count and the window can never refresh independently — the stale-denominator bug this query was added to fix.',
+
+  // WI-39535 — the Retained ledger's memory leg + an open memory detail aside.
+  // Same seam-not-table argument as userMemory.total directly above, and the
+  // same producer: both keys ride USER_MEMORY_SYNC_KEYS in
+  // memory/invalidate-user-memory-views.ts, so every memory write path (the
+  // /api/user/memory routes, the memory:* MCP verbs, the journal drain) pushes
+  // the ledger and the aside together with the settings page's views.
+  // RE-ARM (both): drop the entry and wire memory_canonical in
+  // table-to-query-names.ts if the backend seam is ever removed.
+  'learning.retainFeed :: harness_shared.memory_canonical':
+    'memory leg reads through the pluggable backend seam (getMemoryBackend().list()) — a remote backend never touches this table; writes push via invalidate-user-memory-views.ts (USER_MEMORY_SYNC_KEYS carries learning.retainFeed).',
+  'learning.retainDetail :: harness_shared.memory_canonical':
+    'memory detail reads through the pluggable backend seam (getMemoryBackend().get()) — same seam argument as the feed row above; writes push via invalidate-user-memory-views.ts (USER_MEMORY_SYNC_KEYS carries learning.retainDetail).',
+
+  // WI-39493/WI-39534 — the ledger's recipes leg + an open recipe detail.
+  // code_recipes has NO row trigger (its own list query, codeRecipes, is
+  // poll-only today — the table is absent from table-to-query-names.ts, and
+  // the trigger-coverage sibling asserts map ↔ trigger set-equality, so a map
+  // entry without a migration adding the trigger would red THAT gate).
+  // Recipes move rarely (recipes:merge / the sweep), and the ledger refreshes
+  // on mount + its manual refresh + every OTHER leg's invalidations.
+  // RE-ARM (both): drop the entry and bridge normally when code_recipes gains
+  // a trigger (or a producer-side push lands in code-recipes-store.ts).
+  'learning.retainFeed :: harness_shared.code_recipes':
+    'no trigger on code_recipes (codeRecipes list is likewise poll-only); recipe writes are rare agent-tool events, and the feed refreshes on mount/manual refresh.',
+  'learning.retainDetail :: harness_shared.code_recipes':
+    'no trigger on code_recipes — same as the feed leg above; an open recipe detail refreshes on remount/manual refresh.',
 };
 
 /**
