@@ -40,15 +40,21 @@ vi.mock('../../issues-engineer', async (importOriginal) => {
   const real = await importOriginal<typeof import('../../issues-engineer')>();
   return { ...real, getIssue: async () => null };
 });
-vi.mock('../../consult/get-feedback-core', () => ({
-  consultStateExists: (...a: unknown[]) => consultStateExists(...a),
-}));
-vi.mock('../../workspace-registry', () => ({
-  activeWorkspaceId: () => 'ws-test',
-}));
-vi.mock('@papercusp/db-org', () => ({
-  getOrgPg: () => ({ sql: {} }),
-}));
+vi.mock('../../consult/get-feedback-core', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../../consult/get-feedback-core')>();
+  return { ...real, consultStateExists: (...a: unknown[]) => consultStateExists(...a) };
+});
+vi.mock('../../workspace-registry', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../../workspace-registry')>();
+  return { ...real, activeWorkspaceId: () => 'ws-test' };
+});
+vi.mock('@papercusp/db-org', async (importOriginal) => {
+  const real = await importOriginal<typeof import('@papercusp/db-org')>();
+  return { ...real, getOrgPg: () => ({ sql: {} }) };
+});
+// emit's push-on-write dynamic-imports sync-sse after a created card; the stub sql
+// above cannot carry a real NOTIFY, so neutralize the bus rather than half-mock it.
+vi.mock('../../sync-sse', () => ({ notifySyncInvalidate: () => {} }));
 
 import { emitScorecard } from './emit';
 import { scorecardEvidenceFingerprint } from '../../scorecards';
