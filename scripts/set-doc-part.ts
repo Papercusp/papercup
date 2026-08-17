@@ -37,6 +37,7 @@ import {
   type SetDocPartInput,
 } from '../packages/operator-core/lib/harness/docs/doc-record';
 import { connectScriptPg } from './lib/pg-url.mjs';
+import { writeStderrSync } from './lib/write-stdout-sync.mjs';
 
 const WORKSPACE_ID = process.env.PAPERCUSP_WORKSPACE_ID ?? 'papercusp-workspace';
 const HARNESS_SLUG = process.env.PAPERCUSP_HARNESS_SLUG ?? 'papercusp';
@@ -57,7 +58,16 @@ interface PartRow {
 }
 
 function die(code: number, msg: string): never {
-  console.error(msg);
+  // SYNCHRONOUS write, deliberately not console.error. Writes to a PIPE are async in
+  // Node and process.exit() does not drain them, so `console.error(msg); process.exit()`
+  // silently truncates whenever this script is piped (measured ~8 KiB, not the 64 KiB
+  // pipe buffer — EI-20055889379250637). It survives a TTY and a `> file` redirect, so
+  // the bug is invisible until someone composes with the tool.
+  // `die` is typed `never`, which rules out the guard's preferred fix
+  // (`process.exitCode = code` + natural return), so this is its option 3.
+  // Enforced by scripts/check-undrained-stdout-exit.mjs, whose BASELINE is empty and
+  // SHRINK-ONLY — do not re-introduce a console.* write on this path.
+  writeStderrSync(msg);
   process.exit(code);
 }
 
