@@ -821,6 +821,8 @@ export async function createOneWorkItem(
       ...(goalStampError ? { goalStampError } : {}),
       ...(similarOpen ? { similarOpen } : {}),
       ...(issueAdmission ? { admissionIdentity: identity, dedupCoverage } : {}),
+      // P-004: a goal-gated feature-family create returns its coverage verdict too.
+      ...(!issueAdmission && args.goalDedupGate && dedupCoverage ? { dedupCoverage } : {}),
       ...(queueAdmission ? { queueAdmission } : {}),
       ...(stateError ? { stateError } : {}),
     };
