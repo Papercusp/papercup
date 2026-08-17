@@ -7094,6 +7094,54 @@ export function hiveShipsDesktopApp(
  *  on the advance path. The sweep matches on this SOURCE, not on kind or title. */
 export const GATE_ESCALATION_SOURCE = "green-checkpoint";
 
+/** WI-39686: the meta key carrying an escalation's CLASS. Flattened onto the
+ *  stored record by `buildOpenEscalationRecord`'s `Object.assign(env, input.meta)`
+ *  (escalations.ts:216), which is the same mechanism that makes `source` readable
+ *  on a listed row — so a class stamped here is queryable exactly like a source. */
+export const ESCALATION_CLASS_META_KEY = "escalationClass";
+
+/** WI-39686: the escalation CLASS that `clearEscalation()`'s green-recovery sweep
+ *  owns.
+ *
+ *  `GATE_ESCALATION_SOURCE` answers "who opened this row", which is a strictly
+ *  WIDER question than "is this the release-not-green row the gate resolves when
+ *  it recovers". The sweep matched on the source alone, so it resolved EVERY row
+ *  this gate opened under that source, while `clearEscalation`'s own interface doc
+ *  promised only the `release-not-green` one.
+ *
+ *  ⚠ Today that gap is LATENT, not live, and saying so precisely matters: this
+ *  file has exactly two `openEscalation` call sites, and the other is the detector,
+ *  which already carries its own distinct source. So the sweep currently resolves
+ *  precisely the one row it should. This is trap-removal, not a live-bug fix — the
+ *  trap being that the NEXT author to open a row under the gate's own source gets
+ *  it silently self-resolved on the advance path, which is exactly what D-008
+ *  nearly did to the detector alert. Stamping the class makes such a row protected
+ *  BY CONSTRUCTION instead of by that author noticing this sweep exists.
+ *
+ *  Deliberately NOT reusing `meta.dedupKind`: that is a COALESCING identity that
+ *  falls back to `severity` when no conditionKey is supplied (escalations.ts:146-151),
+ *  so it is not a stable class discriminator — keying the sweep on it would re-break
+ *  the moment a row's severity drifted. */
+export const RELEASE_NOT_GREEN_ESCALATION_CLASS = "release-not-green";
+
+/** WI-39686: does this open escalation belong to the class the green-recovery
+ *  sweep is documented to resolve?
+ *
+ *  ⚠ The unmarked arm is REQUIRED for correctness, not tolerance. Rows opened
+ *  BEFORE this change carry the source but no class marker, and at any moment one
+ *  such row may be open on a genuinely red gate. Demanding the marker would strand
+ *  it unresolvable forever — an immortal human-facing alarm, which is precisely the
+ *  failure `clearDetectorEscalation`'s doc warns about. An unmarked row is
+ *  release-not-green by construction, because that was the only class this source
+ *  ever opened. */
+export function isReleaseNotGreenEscalation(row: unknown): boolean {
+  if (typeof row !== "object" || row === null) return false;
+  const rec = row as Record<string, unknown>;
+  if (rec.source !== GATE_ESCALATION_SOURCE) return false;
+  const cls = rec[ESCALATION_CLASS_META_KEY];
+  return cls === undefined || cls === RELEASE_NOT_GREEN_ESCALATION_CLASS;
+}
+
 /** WI-39685 (D-013 rev 53): the DETECTOR alert's source — deliberately DISTINCT
  *  from `GATE_ESCALATION_SOURCE`.
  *
@@ -9614,12 +9662,12 @@ export function realCheckpointDeps(
       const { SELF_RECONCILING_META_KEY } =
         await import("@papercusp/operator-core/lib/attention/reconcile-escalations");
       const open = await listEscalations({ status: "open" });
-      if (
-        open.some(
-          (e) => (e as Record<string, unknown>).source === "green-checkpoint",
-        )
-      )
-        return;
+      // WI-39686: scope the transition-only guard to the class this dep OWNS.
+      // Matching the bare source was the SAME over-broad-match defect as the
+      // sweep in `clearEscalation` below, but in the direction that LOSES a page
+      // rather than clears one: any unrelated row the gate opened under its own
+      // source would suppress the red escalation from ever opening.
+      if (open.some(isReleaseNotGreenEscalation)) return;
       await openEscalation(
         {
           ownerId: "green-checkpoint",
@@ -9644,7 +9692,11 @@ export function realCheckpointDeps(
           // human-facing escalation for the same still-red gate on a newer
           // candidate ("held: 2aaed43d not green").
           meta: {
-            source: "green-checkpoint",
+            source: GATE_ESCALATION_SOURCE,
+            // WI-39686: stamp the CLASS explicitly, so the recovery sweep can
+            // resolve THIS row without also resolving every other row the gate
+            // may later open under the same source.
+            [ESCALATION_CLASS_META_KEY]: RELEASE_NOT_GREEN_ESCALATION_CLASS,
             [SELF_RECONCILING_META_KEY]: true,
           },
         },
