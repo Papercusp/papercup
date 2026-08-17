@@ -1,36 +1,58 @@
 /**
  * consult-expiry-core.ts — the consult LIFECYCLE expiry sweep (plan
- * get-feedback-relevance-consults-2026-08-16, P-005; D-005).
+ * get-feedback-relevance-consults-2026-08-16, P-005; D-005), cascade-aware
+ * since consult-min-max-and-rubric-vetting-2026-08-17 P-013.
  *
- * Flips past-due OPEN consult_state rows (expires_at < now, closed_at IS NULL)
- * to state='expired' + closed_at, bounded per tick, riding migration 834's
- * partial index (consult_state_expiry_idx: expires_at IS NOT NULL AND
- * closed_at IS NULL). For every expired row whose latency_contract is
- * 'hard-blocked' it EMITS the latched `consult:reply:<conversation_id>` park
- * key with an expired payload — the requester parked on that key (P-003
- * returns it; get-feedback-core parks hard-blocked callers on exactly it)
- * would otherwise sleep until their await's own timeout. 'proceed' rows get
- * no emit: the requester is already proceeding and reconciles by reading
- * state='expired'.
+ * A past-due OPEN consult_state row (expires_at < now, closed_at IS NULL) is a
+ * CHAIN EVENT, not automatically a terminal state (D-005 always-advance): when
+ * the routing selection menu still has a next selectee, the sweep ADVANCES the
+ * cascade — the silent responder's expiry is appended to the digest and the
+ * next selectee is woken (via `reach`) with the question + the feedback so far,
+ * under a fresh latency-contract window. Only when the menu is exhausted (or
+ * the row never selected anyone) does the row terminally flip to
+ * state='expired' + closed_at.
+ *
+ * The park-key emit mirrors decline semantics: a MID-CHAIN expiry does not
+ * wake a hard-blocked parked requester (more feedback is still coming); only
+ * the TERMINAL expiry emits the latched `consult:reply:<conversation_id>` key
+ * — the requester parked on it (P-003 returns it; get-feedback-core parks
+ * hard-blocked callers on exactly it) would otherwise sleep until their
+ * await's own timeout. Terminal 'proceed' rows get no emit: the requester is
+ * already proceeding and reconciles by reading state='expired'.
+ *
+ * Concurrency: no FOR UPDATE — advanceCascade's CAS guard (cursor unchanged +
+ * row still open) and the guarded terminal flip make a raced row a clean
+ * no-op here; the concurrent winner (a reply/decline verb, or another tick)
+ * already did the advance. A backlog deeper than the bound drains over
+ * successive ticks, riding migration 834's partial index
+ * (consult_state_expiry_idx: expires_at IS NOT NULL AND closed_at IS NULL).
  *
  * Core/binding split mirrors get-feedback-core.ts: pure logic behind injected
- * deps (sql, emitReplyEvent) so it integration-tests against the real 834
- * tables; the prod binding is the `system:consult-expiry-sweep` ephemeral
- * routine action (harness/routines/consult-expiry-action.ts).
+ * deps (sql, emitReplyEvent, reach) so it integration-tests against the real
+ * 834/844 tables; the prod binding is the `system:consult-expiry-sweep`
+ * ephemeral routine action (harness/routines/consult-expiry-action.ts), which
+ * MUST pass `reach` (notifyAgents under a per-row workspace system identity)
+ * or mid-chain advances silently stop waking anyone.
  */
 import type { Sql } from 'postgres';
 import { consultParkKey } from './get-feedback-core';
+import { advanceCascade, makeDigestEntry } from './cascade-core';
 
-/** Rows flipped per tick — bounds one sweep's write + emit fan-out. A backlog
+/** Rows processed per tick — bounds one sweep's write + wake fan-out. A backlog
  * deeper than this simply drains over successive ticks. */
 export const EXPIRY_SWEEP_LIMIT = 200;
 
-export interface ExpiredConsultRow {
+/** A due row with the cascade columns the advance decision needs (844). */
+export interface DueConsultRow {
   workspace_id: string;
   conversation_id: string;
   requester_id: string;
   responder_id: string | null;
   latency_contract: string;
+  question: string;
+  routing: unknown;
+  cascade_cursor: number;
+  cascade_digest: unknown;
 }
 
 export interface ExpirySweepDeps {
@@ -44,6 +66,19 @@ export interface ExpirySweepDeps {
     to: string[];
     workspaceId: string;
   }) => Promise<void>;
+  /** D-005 cascade advance: wake the next selectee (prod binds notifyAgents —
+   * subscribe + ping + wake — under a per-row workspace system identity;
+   * consult_state is workspace-partitioned and ONE sweep serves them all, so
+   * the workspace rides on each call rather than on the binding's scope).
+   * Absent ⇒ the advance still happens (cursor/responder/digest move) but
+   * nobody is woken — tests only; prod MUST bind it. */
+  reach?: (opts: {
+    responder: string;
+    conversationId: string;
+    summary: string;
+    body: string;
+    workspaceId: string;
+  }) => Promise<{ woke: number }>;
   now?: () => Date;
   /** Override the per-tick bound (tests). */
   limit?: number;
@@ -51,9 +86,13 @@ export interface ExpirySweepDeps {
 
 export interface ExpirySweepResult {
   ok: true;
-  /** Rows flipped to 'expired' this tick. */
+  /** Rows terminally flipped to 'expired' this tick (cascade menu exhausted,
+   * or the row never selected anyone). */
   expired: number;
-  /** Conversation ids whose hard-blocked park key was emitted. */
+  /** Rows ADVANCED to the next selectee instead of expiring (D-005). */
+  advanced: number;
+  /** Conversation ids whose hard-blocked park key was emitted (terminal only —
+   * a mid-chain advance never wakes the parked requester). */
   woke: string[];
   /** True when the tick hit the bound — more due rows likely remain. */
   saturated: boolean;
@@ -64,39 +103,80 @@ export async function sweepExpiredConsults(deps: ExpirySweepDeps): Promise<Expir
   const nowIso = (deps.now ? deps.now() : new Date()).toISOString();
   const limit = deps.limit ?? EXPIRY_SWEEP_LIMIT;
 
-  // Bounded flip: the `due` CTE scans the partial expiry index; SKIP LOCKED
-  // keeps concurrent ticks (or a verb closing the same consult mid-sweep)
-  // from serializing on each other — a skipped row is the next tick's work.
-  const expired = (await sql`
-    WITH due AS (
-      SELECT workspace_id, conversation_id
-        FROM harness_shared.consult_state
-       WHERE expires_at < ${nowIso}::timestamptz AND closed_at IS NULL
-       ORDER BY expires_at
-       LIMIT ${limit}
-         FOR UPDATE SKIP LOCKED
-    )
-    UPDATE harness_shared.consult_state c
-       SET state = 'expired',
-           closed_at = ${nowIso}::timestamptz,
-           updated_at = ${nowIso}::timestamptz
-      FROM due
-     WHERE c.workspace_id = due.workspace_id
-       AND c.conversation_id = due.conversation_id
-    RETURNING c.workspace_id, c.conversation_id, c.requester_id, c.responder_id,
-              c.latency_contract
-  `) as unknown as ExpiredConsultRow[];
+  // Read the due rows WITH their cascade columns — the advance-vs-expire
+  // branch is per row, so the bulk single-statement flip is gone. The CAS
+  // guards below stand in for row locks (see module doc).
+  const due = (await sql`
+    SELECT workspace_id, conversation_id, requester_id, responder_id,
+           latency_contract, question, routing, cascade_cursor, cascade_digest
+      FROM harness_shared.consult_state
+     WHERE expires_at < ${nowIso}::timestamptz AND closed_at IS NULL
+     ORDER BY expires_at
+     LIMIT ${limit}
+  `) as unknown as DueConsultRow[];
 
-  // Wake the hard-blocked parked requesters (the emit LATCHES, so a requester
-  // who re-registers after the fire is told immediately). Best-effort per row:
-  // one failed emit must not strand the rest of the batch's wakes.
+  let advanced = 0;
+  let expiredCount = 0;
   const woke: string[] = [];
-  for (const row of expired) {
+  for (const row of due) {
+    // Best-effort per row: one bad row (malformed routing jsonb, a wake seam
+    // throwing) must not strand the rest of the batch.
+    try {
+      const adv = await advanceCascade(
+        {
+          workspaceId: row.workspace_id,
+          conversationId: row.conversation_id,
+          question: row.question,
+          latencyContract: row.latency_contract,
+          routing: row.routing,
+          cascadeCursor: row.cascade_cursor,
+          digest: row.cascade_digest,
+          event: makeDigestEntry(
+            row.responder_id ?? '(unrouted)',
+            'expired',
+            nowIso,
+            `expired unanswered (${row.latency_contract} window elapsed)`,
+          ),
+          stateOnAdvance: 'awaiting_responder',
+          nowIso,
+        },
+        sql,
+        deps.reach
+          ? (opts) => deps.reach!({ ...opts, workspaceId: row.workspace_id })
+          : undefined,
+      );
+      if (adv.raced) continue; // a verb / concurrent tick won — nothing to do
+      if (adv.advanced) {
+        advanced += 1;
+        continue;
+      }
+    } catch {
+      continue;
+    }
+
+    // Menu exhausted → terminal expire. Guarded like the advance: a concurrent
+    // close between the digest write and this flip turns it into a no-op.
+    const flipped = (await sql`
+      UPDATE harness_shared.consult_state
+         SET state = 'expired',
+             closed_at = ${nowIso}::timestamptz,
+             updated_at = ${nowIso}::timestamptz
+       WHERE workspace_id = ${row.workspace_id}
+         AND conversation_id = ${row.conversation_id}
+         AND closed_at IS NULL
+      RETURNING conversation_id
+    `) as unknown as Array<{ conversation_id: string }>;
+    if (flipped.length === 0) continue;
+    expiredCount += 1;
+
+    // Wake the hard-blocked parked requester (the emit LATCHES, so a requester
+    // who re-registers after the fire is told immediately). Best-effort: the
+    // row is already flipped; the requester's own await timeout is the backstop.
     if (row.latency_contract !== 'hard-blocked') continue;
     try {
       await deps.emitReplyEvent({
         key: consultParkKey(row.conversation_id),
-        summary: `consult ${row.conversation_id}: EXPIRED unanswered (hard-blocked contract) — proceed on your own judgment`,
+        summary: `consult ${row.conversation_id}: EXPIRED unanswered (hard-blocked contract, cascade exhausted) — proceed on your own judgment`,
         payload: {
           conversation_id: row.conversation_id,
           responder: row.responder_id,
@@ -107,9 +187,9 @@ export async function sweepExpiredConsults(deps: ExpirySweepDeps): Promise<Expir
       });
       woke.push(row.conversation_id);
     } catch {
-      // Row already flipped; the requester's own await timeout is the backstop.
+      // See best-effort note above.
     }
   }
 
-  return { ok: true, expired: expired.length, woke, saturated: expired.length >= limit };
+  return { ok: true, expired: expiredCount, advanced, woke, saturated: due.length >= limit };
 }
