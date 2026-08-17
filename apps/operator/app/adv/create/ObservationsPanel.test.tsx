@@ -28,6 +28,12 @@ const { sync, counts, filters } = vi.hoisted(() => ({
     loading: false,
     fetching: false,
     error: null as { message: string } | null,
+    // D-004: the two signals that separate "still working" from "failing and
+    // retrying". A real SyncQueryResult always carries them (SSE included —
+    // SSEAdapter reuses usePollingQuery as its fetcher), so the mock must too,
+    // or the honest-loading branch is untestable here.
+    failureCount: 0,
+    failureReason: null as { message: string } | null,
     args: null as unknown,
     invalidate: vi.fn(),
   },
@@ -59,6 +65,8 @@ vi.mock("@papercusp/sync", () => ({
       loading: sync.loading,
       error: sync.error,
       fetching: sync.fetching,
+      failureCount: sync.failureCount,
+      failureReason: sync.failureReason,
       transport: "sse" as const,
       invalidate: sync.invalidate,
     };
