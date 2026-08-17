@@ -132,6 +132,11 @@ export interface AdvanceCascadeResult {
   /** True when the menu had no next entry — the caller owns the terminal
    * transition (decline-close / expire); this helper only records the event. */
   exhausted: boolean;
+  /** True when the CAS guard matched no row — a concurrent actor (the other
+   * verb, or the expiry sweep) advanced or closed the consult between the
+   * caller's read and this write. NOTHING was written (no digest append, no
+   * wake); the concurrent winner's advance stands and already did both. */
+  raced: boolean;
   next: { ownerId: string; via: 'floor' | 'minimum' } | null;
   woke: number;
 }
@@ -143,6 +148,12 @@ export interface AdvanceCascadeResult {
  * wakes, so a later selectee joins the conversation durably). On exhaustion:
  * appends the event to the digest and returns without touching
  * state/responder_id — terminal semantics stay with the caller.
+ *
+ * CAS-guarded: both writes require `cascade_cursor` to still equal the cursor
+ * the caller READ (params.cascadeCursor) and the row to still be open. Three
+ * concurrent triggers share these semantics (reply, decline, the expiry
+ * sweep); the guard makes the loser's advance a clean no-op (`raced`) instead
+ * of a duplicate cursor bump + duplicate wake.
  */
 export async function advanceCascade(
   params: AdvanceCascadeParams,
@@ -155,20 +166,23 @@ export async function advanceCascade(
   const next = nextIdx < selected.length ? selected[nextIdx] : null;
 
   if (!next) {
-    await sql`
+    const wrote = (await sql`
       UPDATE harness_shared.consult_state
          SET cascade_digest = ${JSON.stringify(digest)}::jsonb,
              updated_at = ${params.nowIso}::timestamptz
        WHERE workspace_id = ${params.workspaceId} AND conversation_id = ${params.conversationId}
-    `;
-    return { advanced: false, exhausted: true, next: null, woke: 0 };
+         AND cascade_cursor = ${params.cascadeCursor} AND closed_at IS NULL
+      RETURNING conversation_id
+    `) as unknown as Array<{ conversation_id: string }>;
+    if (wrote.length === 0) return { advanced: false, exhausted: false, raced: true, next: null, woke: 0 };
+    return { advanced: false, exhausted: true, raced: false, next: null, woke: 0 };
   }
 
   const expiresAt = new Date(
     Date.parse(params.nowIso) + (params.latencyContract === 'hard-blocked' ? HARD_BLOCKED_EXPIRY_MS : PROCEED_EXPIRY_MS),
   ).toISOString();
   const willAttempt = Boolean(reach);
-  await sql`
+  const wrote = (await sql`
     UPDATE harness_shared.consult_state
        SET cascade_cursor = ${nextIdx},
            responder_id = ${next.ownerId},
@@ -178,7 +192,10 @@ export async function advanceCascade(
            cascade_digest = ${JSON.stringify(digest)}::jsonb,
            updated_at = ${params.nowIso}::timestamptz
      WHERE workspace_id = ${params.workspaceId} AND conversation_id = ${params.conversationId}
-  `;
+       AND cascade_cursor = ${params.cascadeCursor} AND closed_at IS NULL
+    RETURNING conversation_id
+  `) as unknown as Array<{ conversation_id: string }>;
+  if (wrote.length === 0) return { advanced: false, exhausted: false, raced: true, next: null, woke: 0 };
 
   let woke = 0;
   if (reach) {
