@@ -35,6 +35,11 @@ import { matchRoutingGateHint, type RoutingGateIntent } from '../../routing-gate
 import { deriveRepoPathsFromText } from './_derive-paths';
 import { admissionIdentity, type AdmissionIdentity } from '../../harness/improvements/digest';
 import {
+  adoptConditionIncumbent,
+  settleConditionClaim,
+  CONDITION_UPSERT_MARKER,
+} from '../../coord/condition-upsert';
+import {
   decideIssueAdmissionCircuit,
   readIssueAdmissionPressure,
   recordIssueOccurrence,
@@ -103,6 +108,14 @@ export interface CreateOneWorkItemArgs {
    *  available to retry). The tool layer (work_items:create) pins `rel` to the LINK_RELS
    *  vocabulary; the core stays permissive (rel: string), mirroring linkWorkItem. */
   links?: Array<{ rel: string; target_id?: string; target_kind?: string; target_ref?: string; target_harness?: string }>;
+  /** WI-39604: recurring-detector filing identity. When set, the create routes
+   *  through the WI-39594 condition upsert: an OPEN item already holding this key
+   *  is refreshed (title/summary → this reading, occurrence bump) and returned
+   *  instead of a sibling being filed, and a fresh mint claims the key under
+   *  migration 741's unique index (lost race ⇒ adopt the winner, settle our row).
+   *  For single-host system filers (gates, routines, seeders) — NOT for producers
+   *  whose rows federate in from other machines (see condition-upsert.ts header). */
+  conditionKey?: string;
 }
 
 /** The acting agent identity the core needs (resolved by the caller from ctx). */
@@ -149,6 +162,10 @@ export type CreateOneWorkItemResult =
       /** P-005 exact rolling pressure observation when a soft canonical candidate
        *  made the queue-admission circuit relevant to this create. */
       queueAdmission?: IssueAdmissionPressure;
+      /** WI-39604: set when `conditionKey` resolved to an OPEN incumbent —
+       *  `workItem` is that incumbent (refreshed to this reading), NOT a new row.
+       *  `duplicateLeftOpen` reports a lost-race stand-down that failed. */
+      conditionUpsert?: { adopted: true; id: string; duplicateLeftOpen?: string };
     }
   | {
       ok: false;
@@ -294,6 +311,38 @@ export async function createOneWorkItem(
     const signalKey =
       args.payload && typeof args.payload.watchdogKey === 'string' ? args.payload.watchdogKey : undefined;
     const identity = admissionIdentity(args.title, signalKey);
+    // EI-728: route the write to the request's workspace. Precedence: explicit
+    // `workspace` arg → the request's concrete workspace (ctx.workspaceId) →
+    // undefined (keep the trigger-derived default). '*' (unscoped SU) ⇒ "no workspace".
+    // (Resolved up here — before the guards — because the WI-39604 condition-key
+    // adopt path below needs the workspace-scoped read; see condition-upsert.ts.)
+    const workspaceId =
+      (typeof args.workspace === 'string' && args.workspace.trim()) ? args.workspace.trim()
+        : (ctx.workspaceId && ctx.workspaceId !== '*') ? ctx.workspaceId
+          : undefined;
+    // WI-39604: a conditionKey routes this create through the WI-39594 condition
+    // upsert. Adoption is checked FIRST — it cannot create a row, so the dedup
+    // screens below have nothing to screen, and a recurring detector's steady-state
+    // re-fire stays one indexed read + one refresh write.
+    const conditionKey = args.conditionKey?.trim() || undefined;
+    if (conditionKey) {
+      const incumbent = await adoptConditionIncumbent(conditionKey, {
+        title: args.title,
+        summary: args.summary,
+        workspaceId,
+      });
+      if (incumbent) {
+        // The incumbent may live under a normalized (pot-home) harness — retry
+        // the read unscoped before treating the adoption as a miss.
+        const adopted = (await getWorkItem(incumbent, args.harness)) ?? (await getWorkItem(incumbent));
+        if (adopted) {
+          if (issueAdmission) {
+            await appendWorkItemOccurrence(args, ctx, identity, 'coalesced', adopted.id, adopted.harness);
+          }
+          return { ok: true, workItem: adopted, conditionUpsert: { adopted: true, id: incumbent } };
+        }
+      }
+    }
     // EI-316 mirror-duplicate guard: a title embedding an existing OPEN work-item id
     // ("WI-118: …") is almost always an accidental mirror — refuse with the live id
     // (override: force:true). Flag-gated so a misfire is instantly reversible.
@@ -558,13 +607,8 @@ export async function createOneWorkItem(
         }
       }
     }
-    // EI-728: route the write to the request's workspace. Precedence: explicit
-    // `workspace` arg → the request's concrete workspace (ctx.workspaceId) →
-    // undefined (keep the trigger-derived default). '*' (unscoped SU) ⇒ "no workspace".
-    const workspaceId =
-      (typeof args.workspace === 'string' && args.workspace.trim()) ? args.workspace.trim()
-        : (ctx.workspaceId && ctx.workspaceId !== '*') ? ctx.workspaceId
-          : undefined;
+    // (EI-728 workspace resolution now happens at the top of this function —
+    // the WI-39604 condition-key adopt path needs it before the guards.)
     // P-001 generic-kind gate (reflexive-platform-extensibility-datatypes-2026-06-24):
     // accept a BUILT-IN kind OR a workspace-registered generic-kind datatype. Built-ins
     // pass via the cheap in-memory check with NO DB query, so every existing caller is
@@ -687,6 +731,20 @@ export async function createOneWorkItem(
             } satisfies PlanItemStamp,
           }
         : payloadFinal;
+    // WI-39604: a condition-keyed mint carries the upsert marker from birth, so
+    // occurrence counting reads identically whether the row was minted here or
+    // by upsertConditionWorkItem (refreshIncumbent COALESCEs a missing marker,
+    // but a stamped one keeps the first occurrence visible).
+    const payloadForCreate = conditionKey
+      ? {
+          ...(payloadWithPlanStamp ?? {}),
+          [CONDITION_UPSERT_MARKER]: {
+            conditionKey,
+            occurrences: 1,
+            lastSeenAt: new Date().toISOString(),
+          },
+        }
+      : payloadWithPlanStamp;
     let workItem = await createWorkItem({
       kind: args.kind as WorkItemKind,
       title: args.title,
@@ -696,7 +754,7 @@ export async function createOneWorkItem(
       severity: args.severity,
       parent: args.parent,
       topics: args.topics,
-      payload: payloadWithPlanStamp,
+      payload: payloadForCreate,
       createdBy: ctx.ownerId,
       urgent: args.urgent,
       // B-LOOP-4 (loop-routines P-007 / D-008): atomic create+claim. `assign_to`
@@ -705,6 +763,46 @@ export async function createOneWorkItem(
       assignee: args.assign_to,
       assignedBy: args.assign_to ? ctx.ownerId : undefined,
     });
+    // WI-39604: claim the condition key for the fresh mint. A lost race means a
+    // concurrent filer's row is the incumbent: this reading is refreshed onto the
+    // WINNER, our row is settled, and the winner is returned — before any of the
+    // decorations below, which must only ever land on the row that is kept.
+    if (conditionKey) {
+      const settled = await settleConditionClaim(workItem.id, conditionKey, {
+        title: args.title,
+        summary: args.summary,
+        workspaceId,
+        harness: harnessForItem,
+      });
+      if (!settled.won) {
+        const winner = settled.winnerId
+          ? ((await getWorkItem(settled.winnerId, args.harness)) ?? (await getWorkItem(settled.winnerId)))
+          : null;
+        if (issueAdmission) {
+          await appendWorkItemOccurrence(
+            args,
+            ctx,
+            identity,
+            'coalesced',
+            settled.winnerId ?? workItem.id,
+            winner?.harness ?? harnessForItem,
+            similarOpen,
+            dedupCoverage,
+          );
+        }
+        return {
+          ok: true,
+          workItem: winner ?? workItem,
+          conditionUpsert: {
+            adopted: true,
+            id: settled.winnerId ?? workItem.id,
+            ...(settled.duplicateLeftOpen ? { duplicateLeftOpen: settled.duplicateLeftOpen } : {}),
+          },
+          ...(similarOpen ? { similarOpen } : {}),
+          ...(issueAdmission ? { admissionIdentity: identity, dedupCoverage } : {}),
+        };
+      }
+    }
     if (issueAdmission) {
       await appendWorkItemOccurrence(
         args,

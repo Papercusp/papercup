@@ -93,12 +93,73 @@ async function refreshIncumbent(
 }
 
 /**
+ * ADOPT half (exported for the WI-39604 tool-path leg): self-heal a wedged key,
+ * then refresh-and-return the open incumbent holding `conditionKey` — or null
+ * when no adoptable incumbent exists (including the row vanishing between the
+ * holder read and the refresh write, which a caller must treat as a miss and
+ * mint fresh rather than returning a dangling id).
+ */
+export async function adoptConditionIncumbent(
+  conditionKey: string,
+  input: Pick<CreateWorkItemInput, 'title' | 'summary' | 'workspaceId'>,
+): Promise<string | null> {
+  const key = conditionKey.trim();
+  if (!key) throw new Error('adoptConditionIncumbent: empty conditionKey');
+  // Self-heal a missed key release so a settled row can never wedge the key.
+  await releaseStaleConditionKeys(key, input.workspaceId);
+  // Adopt-and-refresh the incumbent. Workspace-scoped on purpose — see header.
+  const holder = await findConditionKeyHolder(key, { workspaceId: input.workspaceId });
+  if (!holder) return null;
+  const refreshed = await refreshIncumbent(holder, key, input);
+  return refreshed ? holder : null;
+}
+
+/** Outcome of claiming `conditionKey` for a freshly-minted row. */
+export type ConditionClaimSettlement =
+  | { won: true }
+  | { won: false; winnerId: string | null; duplicateLeftOpen?: string };
+
+/**
+ * CLAIM half (exported for the WI-39604 tool-path leg): claim `conditionKey`
+ * for the row this caller just minted. On a lost race the incumbent winner is
+ * refreshed with this reading and the caller's own row is settled (dropped);
+ * a failed stand-down is reported as `duplicateLeftOpen`, never swallowed.
+ */
+export async function settleConditionClaim(
+  itemId: string,
+  conditionKey: string,
+  input: Pick<CreateWorkItemInput, 'title' | 'summary' | 'workspaceId' | 'harness'>,
+): Promise<ConditionClaimSettlement> {
+  const key = conditionKey.trim();
+  const won = await claimConditionKey(itemId, key, input.workspaceId);
+  if (won) return { won: true };
+
+  // A peer won the race: refresh THEIR row with this reading, settle ours.
+  const winner = await findConditionKeyHolder(key, { workspaceId: input.workspaceId });
+  if (winner) await refreshIncumbent(winner, key, input);
+  let droppedOk = false;
+  try {
+    await setWorkItemState(itemId, 'dropped', {
+      harness: input.harness,
+      by: CONDITION_UPSERT_ACTOR,
+      completionRef: `superseded by ${winner ?? 'the concurrent owner'} — lost the condition-key claim race for '${key}'`,
+    });
+    droppedOk = true;
+  } catch {
+    // Reported, never swallowed silently — the caller can see the duplicate.
+  }
+  return { won: false, winnerId: winner ?? null, ...(droppedOk ? {} : { duplicateLeftOpen: itemId }) };
+}
+
+/**
  * File-or-refresh the work-item owning `conditionKey`.
  *
  * Idempotent under re-fire and race-proof under concurrent filers: create is
  * optimistic (mint, then claim the key); the 741 unique index serializes the
  * winner, and the loser settles its own row and adopts the incumbent — the same
  * shape `acquireConditionOwner` proves out, minus catalog and lifecycle.
+ * Composed from the two exported halves above so the tool path (`work_items:
+ * create { conditionKey }`, WI-39604) and this module-level filer cannot drift.
  */
 export async function upsertConditionWorkItem(
   conditionKey: string,
@@ -106,17 +167,9 @@ export async function upsertConditionWorkItem(
 ): Promise<ConditionUpsertResult> {
   const key = conditionKey.trim();
   if (!key) throw new Error('upsertConditionWorkItem: empty conditionKey');
-  const workspaceId = input.workspaceId;
 
-  // Self-heal a missed key release so a settled row can never wedge the key.
-  await releaseStaleConditionKeys(key, workspaceId);
-
-  // Adopt-and-refresh the incumbent. Workspace-scoped on purpose — see header.
-  const holder = await findConditionKeyHolder(key, { workspaceId });
-  if (holder) {
-    await refreshIncumbent(holder, key, input);
-    return { conditionKey: key, id: holder, created: false };
-  }
+  const incumbent = await adoptConditionIncumbent(key, input);
+  if (incumbent) return { conditionKey: key, id: incumbent, created: false };
 
   // Mint, then claim. Optimistic on purpose — a check-then-act "is there one
   // already?" is the exact shape that raced 40-of-88 rows into duplicates
@@ -133,27 +186,12 @@ export async function upsertConditionWorkItem(
     },
   });
 
-  const won = await claimConditionKey(item.id, key, workspaceId);
-  if (won) return { conditionKey: key, id: item.id, created: true };
-
-  // A peer won the race: refresh THEIR row with this reading, settle ours.
-  const winner = await findConditionKeyHolder(key, { workspaceId });
-  if (winner) await refreshIncumbent(winner, key, input);
-  let droppedOk = false;
-  try {
-    await setWorkItemState(item.id, 'dropped', {
-      harness: input.harness,
-      by: CONDITION_UPSERT_ACTOR,
-      completionRef: `superseded by ${winner ?? 'the concurrent owner'} — lost the condition-key claim race for '${key}'`,
-    });
-    droppedOk = true;
-  } catch {
-    // Reported, never swallowed silently — the caller can see the duplicate.
-  }
+  const settled = await settleConditionClaim(item.id, key, input);
+  if (settled.won) return { conditionKey: key, id: item.id, created: true };
   return {
     conditionKey: key,
-    id: winner ?? item.id,
+    id: settled.winnerId ?? item.id,
     created: false,
-    ...(droppedOk ? {} : { duplicateLeftOpen: item.id }),
+    ...(settled.duplicateLeftOpen ? { duplicateLeftOpen: settled.duplicateLeftOpen } : {}),
   };
 }

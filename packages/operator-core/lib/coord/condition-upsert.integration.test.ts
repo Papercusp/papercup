@@ -208,3 +208,64 @@ describe('upsertConditionWorkItem — the WI-39594 acceptance', () => {
     expect(open[0].feature_id).toBe(second.id);
   });
 });
+
+describe('createOneWorkItem { conditionKey } — the WI-39604 tool-path leg', () => {
+  const ctx = { ownerId: 'system:live-federation-gate', workspaceId: WS, harnessSlug: H };
+
+  it('re-firing through the TOOL CORE twice yields ONE open item, refreshed to the newest reading (the gate-script contract)', async () => {
+    const KEY = 'live-federation-gate-red:test-papercusp';
+    const first = await createOneWorkItem(
+      {
+        kind: 'bug',
+        title: 'live-federation-gate RED: content-matrix failed (t1)',
+        summary: 'legs: content-matrix',
+        harness: H,
+        severity: 'major',
+        conditionKey: KEY,
+      },
+      ctx,
+    );
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    expect(first.conditionUpsert).toBeUndefined(); // a fresh mint is an ordinary create
+    expect(await holdersOf(KEY)).toEqual([first.workItem.id]);
+
+    const second = await createOneWorkItem(
+      {
+        kind: 'bug',
+        title: 'live-federation-gate RED: from-repo failed (t2)',
+        summary: 'legs: from-repo',
+        harness: H,
+        severity: 'major',
+        conditionKey: KEY,
+      },
+      ctx,
+    );
+    expect(second.ok).toBe(true);
+    if (!second.ok) return;
+    expect(second.conditionUpsert?.adopted).toBe(true);
+    expect(second.workItem.id).toBe(first.workItem.id);
+
+    const open = await openItemsFor(KEY);
+    expect(open).toHaveLength(1); // dupes cannot leak across marker-expiry days: one row per condition
+    expect(open[0].feature_id).toBe(first.workItem.id);
+    expect(open[0].title).toBe('live-federation-gate RED: from-repo failed (t2)'); // newest legs+stamp win
+    expect(open[0].occurrences).toBe(2);
+  });
+
+  it('a tool-core create JOINS a row minted by upsertConditionWorkItem — one key, either filer', async () => {
+    const KEY = 'detector-test:cross-filer';
+    const seeded = await upsertConditionWorkItem(KEY, spec('seeded by the module (t1)'));
+    expect(seeded.created).toBe(true);
+
+    const viaTool = await createOneWorkItem(
+      { kind: 'bug', title: 'refiled via the tool (t2)', harness: H, severity: 'major', conditionKey: KEY },
+      ctx,
+    );
+    expect(viaTool.ok).toBe(true);
+    if (!viaTool.ok) return;
+    expect(viaTool.conditionUpsert?.adopted).toBe(true);
+    expect(viaTool.workItem.id).toBe(seeded.id);
+    expect(await openItemsFor(KEY)).toHaveLength(1);
+  });
+});
