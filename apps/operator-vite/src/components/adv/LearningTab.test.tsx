@@ -804,19 +804,30 @@ describe("LearningTab — Improvements view (default)", () => {
     expect(screen.getByText("15")).toBeTruthy(); // resolved (stat line)
   });
 
-  it("mounts windowed improvement rows with measurable positioning", () => {
+  it("renders the merged list through the shared VirtualGrid (WI-39536)", () => {
     render(<LearningTab />);
 
-    // The windowed branch must pass both the TanStack measurement callback and
-    // its absolute-positioning style through LoopRowView. A missing prop
-    // declaration used to throw `measureRef is not defined` during this mount,
-    // taking down every Improvements assertion in the suite.
-    const row = document.querySelector<HTMLElement>(".pc-learning__row");
-    expect(row).not.toBeNull();
-    expect(row?.style.position).toBe("absolute");
-    expect(row?.style.width).toBe("100%");
-    expect(row?.style.transform).toMatch(/^translateY\(/);
-    expect(row?.getAttribute("data-index")).toMatch(/^\d+$/);
+    // WI-39536: the dashboard-mode Improve list renders through the same grid
+    // engine as the work queue / Retained ledger (VirtualGrid — the virtualizer
+    // stub above mounts every row). Each merged row is a grid row carrying its
+    // title cell; the old windowed-<li> contract (absolute positioning,
+    // data-index) retired with the card list.
+    const gridRows = Array.from(
+      document.querySelectorAll<HTMLElement>('[role="row"]'),
+    ).filter((el) => el.querySelector(".pc-learning__title"));
+    expect(gridRows.length).toBeGreaterThan(0);
+    // Both halves of the merged population render: a filed work item…
+    expect(
+      gridRows.some((el) =>
+        el.textContent?.includes("cup:spawn children are coordination-MUTE"),
+      ),
+    ).toBe(true);
+    // …and an idea-only row (routed to a non-`wi:` rail).
+    expect(
+      gridRows.some((el) =>
+        el.textContent?.includes("Cache-warmup plan draft"),
+      ),
+    ).toBe(true);
   });
 
   it("lists both lanes in the all view", () => {
@@ -2024,10 +2035,12 @@ describe("LearningTab — an idea's provenance on a merged row: rail, lens, trac
   });
 
   const rowFor = (title: string): HTMLElement => {
+    // WI-39536: the merged list is a VirtualGrid, so a row is a `[role="row"]`
+    // wrapper (header rows carry no title cell, so the filter skips them).
     const row = Array.from(
-      document.querySelectorAll<HTMLElement>(".pc-learning__row"),
+      document.querySelectorAll<HTMLElement>('[role="row"]'),
     ).find(
-      (li) => li.querySelector(".pc-learning__title")?.textContent === title,
+      (el) => el.querySelector(".pc-learning__title")?.textContent === title,
     );
     if (!row) throw new Error(`no row titled "${title}" in the merged list`);
     return row;
@@ -2075,14 +2088,16 @@ describe("LearningTab — an idea's provenance on a merged row: rail, lens, trac
     // suppressed" would be satisfied by a component that shows every other
     // outcome, which is not the contract.
     const row = rowFor("Tighter scoper prompt");
-    const meta = row.querySelector(".pc-learning__meta");
-    // Pin that we are looking at the real meta cell FIRST — every assertion
-    // below is a negative, and a negative against an element that silently
-    // stopped matching passes for the wrong reason.
-    expect(txt(meta)).toContain("analogical");
-    expect(txt(meta)).toContain("not ready yet");
-    expect(txt(meta)).not.toContain("won");
-    expect(txt(meta)).not.toContain("pending");
+    // The open trace renders INSIDE the row wrapper as the grid's expanded
+    // node, so scope to the CELLS — the row's first child grid — the same way
+    // the old card scoped to its meta cell. Pin the positive matches FIRST —
+    // every assertion below is a negative, and a negative against an element
+    // that silently stopped matching passes for the wrong reason.
+    const cells = row.firstElementChild as HTMLElement;
+    expect(txt(cells)).toContain("analogical");
+    expect(txt(cells)).toContain("not ready yet");
+    expect(txt(cells)).not.toContain("won");
+    expect(txt(cells)).not.toContain("pending");
 
     // ...and it IS in the trace, which is open on this row.
     const trace = screen.getByLabelText("Pipeline trace for Tighter scoper prompt");
