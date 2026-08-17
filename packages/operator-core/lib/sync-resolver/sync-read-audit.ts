@@ -167,6 +167,7 @@ export const SYNC_QUERY_FIXTURES: Record<string, QueryFixture> = {
   'sidebar.cupMail': null, // a specific owner id
   'userMemory.feedbackStats': null, // a specific userId
   'userMemory.list': null, // a specific userId
+  'userMemory.total': null, // a specific userId (the denominator beside userMemory.list)
   'weather.current': null, // lat/lon — an external fetch, not a DB sync-read payload
 };
 

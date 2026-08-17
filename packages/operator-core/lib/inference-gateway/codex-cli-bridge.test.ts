@@ -3,7 +3,7 @@
  * the runner against a fake spawn. Event shapes mirror the live capture on
  * codex 0.142.2 (2026-07-01); see codex-cli-bridge.ts header.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
 import * as os from 'node:os';
 import {
@@ -15,6 +15,17 @@ import {
   parseCodexCliRef,
   runCodexCliCompletion,
 } from './codex-cli-bridge';
+import { resolveAgentBinarySync } from '../agent-bin-detect';
+
+// Spy-wrapped, NOT stubbed: the real resolver still runs by default, so this
+// file keeps testing the production path. Only the fallback case below pins a
+// return value, and it does so to assert the seam is CONSULTED — the whole
+// point of WI-39538, where spawning the bare name 'codex' meant the operator
+// could not find an installed codex under its own systemd PATH.
+vi.mock('../agent-bin-detect', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../agent-bin-detect')>();
+  return { ...actual, resolveAgentBinarySync: vi.fn(actual.resolveAgentBinarySync) };
+});
 
 describe('parseCodexCliRef', () => {
   it('parses the codex-cli scheme and expands ~', () => {
@@ -167,6 +178,12 @@ describe('runCodexCliCompletion', () => {
       prompt: 'say hi',
       timeoutMs: 5_000,
       spawnFn,
+      // Pinned explicitly so this case asserts the ARGV contract, not whatever
+      // codex happens to be installed on the host running the suite. Without
+      // it the resolver returns a real absolute path here (e.g.
+      // /home/<user>/.local/node25/bin/codex) and the assertion below fails on
+      // a developer box while passing in a container — a host-dependent test.
+      codexBin: 'codex',
     });
     expect(r).toEqual({ text: 'BRIDGED', inputTokens: 9, outputTokens: 2 });
     const c = calls[0];
@@ -180,6 +197,27 @@ describe('runCodexCliCompletion', () => {
     expect(c.argv[c.argv.length - 1]).toBe('-'); // prompt via stdin
     expect(c.stdinBody).toBe('say hi');
     expect((c.opts.env as Record<string, string>).CODEX_HOME).toBe('/tmp/sub-home');
+  });
+
+  it('resolves the binary through the shared resolver when no codexBin is passed (WI-39538)', async () => {
+    // THE REGRESSION THIS PINS: the bridge used to spawn the bare name 'codex'.
+    // The operator runs under systemd with a PATH that does not carry the
+    // user's npm/local bin dirs, so the bare name ENOENT'd even with codex
+    // installed — the same root cause as settings reporting "✗ not found".
+    // Asserting a RESOLVED path (not the bare name) is what makes a revert to
+    // `spawn('codex')` fail here instead of only in production.
+    vi.mocked(resolveAgentBinarySync).mockReturnValueOnce('/opt/pinned/bin/codex');
+    const { spawnFn, calls } = fakeSpawn({ stdout: OK_STDOUT, code: 0 });
+    await runCodexCliCompletion({
+      home: '/tmp/sub-home',
+      model: 'gpt-5.4',
+      effort: 'medium',
+      prompt: 'say hi',
+      timeoutMs: 5_000,
+      spawnFn,
+    });
+    expect(vi.mocked(resolveAgentBinarySync)).toHaveBeenCalledWith('codex');
+    expect(calls[0].bin).toBe('/opt/pinned/bin/codex');
   });
 
   it('rejects on a non-zero exit with stderr context', async () => {

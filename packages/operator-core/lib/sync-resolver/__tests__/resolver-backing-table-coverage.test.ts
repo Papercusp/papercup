@@ -127,6 +127,13 @@ const PUSH_EXEMPT: Record<string, string> = {
     'event-driven but carries no owner-scoped key the bridge could scope by, so a trigger would full-bust every open panel for a mode set on an unrelated agent. modes/store.ts setMode pushes past its noop guards.',
   'agentOrders.byOwner :: harness_shared.agent_mode_changes':
     'append-only audit of the same transition as agent_modes; pushed by the same modes/store.ts setMode call rather than twice from two triggers.',
+
+  // WI-39540 — the settings Memory page's denominator ("Showing 500 of 2,746").
+  //
+  // RE-ARM: drop this entry and wire memory_canonical in table-to-query-names.ts
+  // if the memory backend seam is ever removed in favour of direct table reads.
+  'userMemory.total :: harness_shared.memory_canonical':
+    'read through the pluggable memory BACKEND seam (getMemoryBackend().list()), so under a remote backend (mem0) the rows never touch this table and a trigger would see nothing at all — it cannot be the whole invalidation story by construction. Every write path instead routes through memory/invalidate-user-memory-views.ts, which pushes this key together with userMemory.list so the count and the window can never refresh independently — the stale-denominator bug this query was added to fix.',
 };
 
 /**

@@ -3120,6 +3120,16 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // notifySyncInvalidate('userMemory.list') also fires this one, so the
   // denominator moves with the rows rather than going stale beside them.
   'userMemory.total': {
+    // The corpus is read through the pluggable memory BACKEND seam, not a direct
+    // table read — under the Postgres backend it is memory_canonical, and under a
+    // remote backend (mem0) there is no local table at all. So a row trigger can
+    // never be the whole invalidation story here, and the write paths push
+    // instead: every one of them routes through invalidateUserMemoryViews(),
+    // which fires this key alongside userMemory.list. Declared (rather than
+    // parked in the undeclared baseline) so the pairing is provable; the
+    // producer-push rationale is recorded in PUSH_EXEMPT in
+    // __tests__/resolver-backing-table-coverage.test.ts.
+    backingTables: ['harness_shared.memory_canonical'],
     argsSchema: z.object({ userId: z.string().min(1) }),
     resolve: async (args) => {
       const { userId } = args as { userId: string };
