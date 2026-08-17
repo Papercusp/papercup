@@ -946,7 +946,15 @@ export function gateRedStreakBroadcast(opts: {
 
 /** Pure classification of a green-checkpoint tick's outcome for gate_health tracking.
  *  Exported for unit testing (EI-2615). */
-export type GateStallClass = 'reset' | 'noop' | 'red';
+/**
+ * 'record-only' (WI-39450) is deliberately NOT 'noop'. 'noop' means "leave gate_health entirely
+ * untouched", which is right for a tick that never judged anything — but a superseded pass DID
+ * run a full suite, and EI-13288 persists its `retriageClassification` (and suppresses the
+ * stale-cap pair) on purpose. Routing it to 'noop' would silently delete that diagnostic. So
+ * 'record-only' writes every field exactly as a red does, and changes ONE thing: it does not
+ * advance the streak.
+ */
+export type GateStallClass = 'reset' | 'noop' | 'red' | 'record-only';
 
 /**
  * Classify a tick's `status` (+ whether the release pin moved since the last
@@ -1036,8 +1044,9 @@ export function classifyGateStallStatus(
   if (isGreen || pinMoved) return 'reset';
   if (status === 'skipped-locked' || status === 'migrations-pending') return 'noop';
   // WI-39450: a pass that superseded itself produced no verdict about the code — see
-  // isSupersededByRefire. The refire it spawned records the real one.
-  if (isSupersededByRefire(retriage)) return 'noop';
+  // isSupersededByRefire. The refire it spawned records the real one. Its diagnostics are still
+  // written (EI-13288); only the streak is left alone.
+  if (isSupersededByRefire(retriage)) return 'record-only';
   return 'red';
 }
 
@@ -1211,17 +1220,10 @@ export async function trackGateStall(
     //   · cleared by the next REAL verdict for free: that write replaces the whole
     //     `gate_health` key, and `next` sets `inconclusive: null` explicitly (same
     //     recovery-clear convention as `failingTests` / `retriageStaleTip`).
-    // Scoped to 'migrations-pending' and the WI-39450 superseded-pass case. 'skipped-locked'
-    // stays a total no-op on purpose: there a peer run IS in flight and about to write the real
-    // verdict, which is precisely the write EI-2615 proved must not be raced.
-    //
-    // The superseded pass is safe to record here for two independent reasons: its successor is
-    // this run's OWN in-process refire (sequential, not concurrent), and this write is a
-    // jsonb_set on the `{gate_health,inconclusive}` PATH, which by construction cannot shadow a
-    // counter write. Recording it is what preserves WI-37490's actual intent — "if the refire
-    // dies partway through, this completed pass's findings survive" — WITHOUT the false red that
-    // intent was paying for.
-    if (status === 'migrations-pending' || isSupersededByRefire(retriage)) {
+    // Scoped to 'migrations-pending' ONLY. 'skipped-locked' stays a total no-op on purpose:
+    // there a peer run IS in flight and about to write the real verdict, which is precisely
+    // the write EI-2615 proved must not be raced.
+    if (status === 'migrations-pending') {
       try {
         await sql.unsafe(
           `UPDATE harness_shared.routines
@@ -1235,17 +1237,6 @@ export async function trackGateStall(
               candidate: candidate?.slice(0, 12) ?? null,
               detail: summary ?? null,
               observedAtMs: Date.now(),
-              // WI-39450: only on the superseded-pass path. Deliberately NOT written to
-              // `gate_health.failingTests` — these files were judged against a tree that has
-              // already moved, so surfacing them as the gate's failing set is what sends agents
-              // at already-fixed tests. Kept here, under a name that says so, for diagnosis if
-              // the refire dies before recording its own verdict.
-              ...(isSupersededByRefire(retriage)
-                ? {
-                    supersededByRefire: true,
-                    staleFailingTests: failingTests ?? [],
-                  }
-                : {}),
             }),
           ],
         );
