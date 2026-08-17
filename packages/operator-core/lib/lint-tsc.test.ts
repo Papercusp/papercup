@@ -162,6 +162,126 @@ describe('LINT_TSC_RESULT completion marker (EI-19395061642732083)', () => {
     });
   });
 
+  // EI-20712456514085524 — the PARTIAL case. `nothingTypechecked` above pinned the ALL-uncovered
+  // run; the mixed run (some named files in-project, some outside) took the other branch, exited
+  // 0 because the covered verdict is genuinely true, and reported `status=clean`. Same
+  // false-coverage failure as the all-uncovered branch, through the door beside it. Repro: four
+  // files, two operator-core + two packages/agent-mcp, printed `exit=0 status=clean` while two of
+  // them were never compiled.
+  describe('reports PARTIAL coverage so a scoped pass cannot read as coverage of every named file', () => {
+    it('reports partial + the count when some named files were never compiled', () => {
+      expect(
+        formatLintTscResultMarker({
+          label: 'operator-core',
+          scope: 'files',
+          code: 0,
+          filesUnchecked: 2,
+        }),
+      ).toBe('LINT_TSC_RESULT label=operator-core scope=files exit=0 status=partial filesUnchecked=2');
+    });
+
+    // THE LOAD-BEARING ASSERTION, and the reason the token is `partial` rather than
+    // `clean-partial`: the established consumer idiom in this repo is a SUBSTRING grep
+    // (`grep -q 'status=clean'`, mirroring TEST_FILE_RESULT). A `clean-partial` token would
+    // satisfy that grep and reintroduce the exact misread this fix exists to kill.
+    it('cannot satisfy a substring grep for status=clean', () => {
+      const marker = formatLintTscResultMarker({
+        label: 'operator-core',
+        scope: 'files',
+        code: 0,
+        filesUnchecked: 1,
+      });
+      expect(marker).not.toContain('status=clean');
+      expect(marker).toContain('filesUnchecked=1');
+    });
+
+    it('still reports exactly status=clean when every named file was covered', () => {
+      // Additive for honest callers: full coverage is unchanged, including the explicit zero.
+      for (const filesUnchecked of [0, undefined]) {
+        expect(
+          formatLintTscResultMarker({
+            label: 'operator-core',
+            scope: 'files',
+            code: 0,
+            filesUnchecked,
+          }),
+        ).toBe('LINT_TSC_RESULT label=operator-core scope=files exit=0 status=clean');
+      }
+    });
+
+    // "3 files regressed" and "2 were never looked at" are INDEPENDENT facts. Suppressing the
+    // second because the first is louder is how a caller fixes the named files, re-runs to green,
+    // and ships the unexamined ones.
+    it('still reports unchecked files alongside a real regression', () => {
+      const marker = formatLintTscResultMarker({
+        label: 'operator-core',
+        scope: 'files',
+        code: 1,
+        filesUnchecked: 2,
+      });
+      expect(marker).toContain('status=regressed');
+      expect(marker).toContain('filesUnchecked=2');
+    });
+
+    // The same drift rule the `nothingTypechecked` note states, in the other direction: a
+    // coverage refinement may narrow what a PASS CLAIMS, but it must never change the pass/fail
+    // contract itself. The exit code is what CI branches on.
+    it('never changes the exit code — partial is a narrowed pass, not a new failure', () => {
+      expect(
+        formatLintTscResultMarker({ label: 'x', scope: 'files', code: 0, filesUnchecked: 5 }),
+      ).toContain('exit=0');
+      // And it must not dilute the all-uncovered verdict, which is a genuine FAILURE.
+      const fatal = formatLintTscResultMarker({
+        label: 'x',
+        scope: 'files',
+        code: 1,
+        nothingTypechecked: true,
+        filesUnchecked: 3,
+      });
+      expect(fatal).toContain('status=out-of-scope');
+      expect(fatal).toContain('exit=1');
+      expect(fatal).not.toContain('status=partial');
+    });
+
+    // A negative/NaN count must not manufacture a `partial` verdict out of a bad caller.
+    it('ignores a non-positive or non-finite count rather than inventing partial coverage', () => {
+      for (const filesUnchecked of [0, -1, Number.NaN]) {
+        expect(
+          formatLintTscResultMarker({ label: 'x', scope: 'files', code: 0, filesUnchecked }),
+        ).toBe('LINT_TSC_RESULT label=x scope=files exit=0 status=clean');
+      }
+    });
+
+    // EXECUTION, not a source-text regex. Everything above tests the pure formatter, which is
+    // true only if the GATE actually stamps the count — a `readFileSync` + regex assertion
+    // cannot tell live wiring from a comment that mentions it, and cannot see reachability at
+    // all. Runnable here because the coverage decision is a pure path comparison made BEFORE
+    // the ~150s compile: the all-uncovered path reaches its verdict in ~250ms. The path is
+    // deliberately SYNTHETIC — coverage is decided by prefix, never by a stat() — so this test
+    // cannot start failing because some real file was moved out from under it.
+    it('stamps the count from a REAL gate run, not just in the formatter', () => {
+      const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '../../..');
+      let stdout: string;
+      try {
+        stdout = execFileSync(
+          'node',
+          [
+            join(repoRoot, 'scripts/lint-tsc.mjs'),
+            '--files=packages/not-a-real-workspace/src/synthetic.ts',
+          ],
+          { cwd: repoRoot, encoding: 'utf-8', stdio: 'pipe' },
+        );
+      } catch (err) {
+        // exit 1 IS the correct outcome for an all-uncovered run; the marker rides the exit
+        // hook, so it is on stdout either way.
+        stdout = String((err as { stdout?: string }).stdout ?? '');
+      }
+      expect(stdout).toContain('LINT_TSC_RESULT');
+      expect(stdout).toContain('status=out-of-scope');
+      expect(stdout).toContain('filesUnchecked=1');
+    });
+  });
+
   it('reports the scope, so a --files verdict is never mistaken for a whole-project one', () => {
     expect(lintTscScopeFromArgv([])).toBe('all');
     expect(lintTscScopeFromArgv(['--mine'])).toBe('mine');
