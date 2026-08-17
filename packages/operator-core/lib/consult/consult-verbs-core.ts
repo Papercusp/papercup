@@ -61,7 +61,6 @@ interface ConsultStateRow {
   latency_contract: string;
   max_exchanges: number;
   exchanges_used: number;
-  wake_budget: number;
   wakes_used: number;
   origin_task_ref: string | null;
   routing: unknown;
@@ -147,7 +146,7 @@ async function readState(
 ): Promise<ConsultStateRow | null> {
   const rows = (await sql`
     SELECT workspace_id, conversation_id, requester_id, responder_id, state,
-           question, latency_contract, max_exchanges, exchanges_used, wake_budget,
+           question, latency_contract, max_exchanges, exchanges_used,
            wakes_used, origin_task_ref, routing, outcome, closed_at
       FROM harness_shared.consult_state
      WHERE workspace_id = ${workspaceId} AND conversation_id = ${conversationId}
@@ -203,13 +202,12 @@ export interface ConsultReplyResult {
   state: string;
   exchanges_used: number;
   max_exchanges: number;
-  /** Present on a requester follow-up (the D-005 budget report). */
+  /** Present on a requester follow-up. The per-task wake budget is REMOVED
+   * (consult-min-max-and-rubric-vetting-2026-08-17 D-005) — a requester
+   * follow-up always attempts the wake; wakes_used stays a plain stat. */
   wake?: {
     attempted: boolean;
     woke: number;
-    budget_exhausted: boolean;
-    wakes_used_for_task: number;
-    wake_budget: number;
   };
   hint: string;
 }
@@ -258,22 +256,11 @@ export async function consultReplyCore(
     };
   }
 
-  // Wake budget (D-005) — requester follow-ups only. Same aggregation as
-  // get-feedback-core: SUM(wakes_used) over consults sharing origin_task_ref;
-  // no ref ⇒ nothing to aggregate ⇒ the wake is allowed.
-  let usedForTask = 0;
-  let budgetExhausted = false;
-  const wantWake = role === 'requester' && row.responder_id != null && Boolean(deps.reach);
-  if (wantWake && row.origin_task_ref) {
-    const rows = (await sql`
-      SELECT COALESCE(SUM(wakes_used), 0)::int AS used
-        FROM harness_shared.consult_state
-       WHERE workspace_id = ${req.workspaceId} AND origin_task_ref = ${row.origin_task_ref}
-    `) as unknown as Array<{ used: number }>;
-    usedForTask = rows[0]?.used ?? 0;
-    budgetExhausted = usedForTask >= row.wake_budget;
-  }
-  const willWake = wantWake && !budgetExhausted;
+  // Requester follow-ups wake the responder unconditionally — the per-task
+  // wake budget is REMOVED (consult-min-max-and-rubric-vetting-2026-08-17
+  // D-005: the per-consult exchange cap above is the remaining bound;
+  // wakes_used keeps being written as a plain stat, never a gate).
+  const willWake = role === 'requester' && row.responder_id != null && Boolean(deps.reach);
 
   // Write-through: post (the substrate commit) → meta overlay → state debit.
   // Sequential by house style (no txn across the substrate binding); the meta
@@ -333,9 +320,7 @@ export async function consultReplyCore(
         : req.kind === 'answer'
           ? `Answer posted (exchange ${exchangesUsed}/${row.max_exchanges}); the requester was signaled via ${parkKey(req.conversationId)}. When the thread is settled, close it: consult:close { outcome: 'answered' }.`
           : `Posted (exchange ${exchangesUsed}/${row.max_exchanges}); the requester was signaled via ${parkKey(req.conversationId)}.`
-      : budgetExhausted
-        ? `Follow-up posted (exchange ${exchangesUsed}/${row.max_exchanges}) but the wake budget for ${row.origin_task_ref} is exhausted (${usedForTask}/${row.wake_budget}) — delivered by subscription only; the responder sees it on their next turn.`
-        : `Follow-up posted (exchange ${exchangesUsed}/${row.max_exchanges})${willWake ? `; responder ${woke > 0 ? 'woken' : 'pinged'}` : ''}.`;
+      : `Follow-up posted (exchange ${exchangesUsed}/${row.max_exchanges})${willWake ? `; responder ${woke > 0 ? 'woken' : 'pinged'}` : ''}.`;
 
   return {
     ok: true,
@@ -349,9 +334,6 @@ export async function consultReplyCore(
           wake: {
             attempted: willWake,
             woke,
-            budget_exhausted: budgetExhausted,
-            wakes_used_for_task: usedForTask + (willWake ? 1 : 0),
-            wake_budget: row.wake_budget,
           },
         }
       : {}),

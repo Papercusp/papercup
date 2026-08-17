@@ -395,9 +395,6 @@ export async function getFeedbackCore(
       wake: {
         attempted: false,
         woke: 0,
-        budget_exhausted: false,
-        wakes_used_for_task: 0,
-        wake_budget: WAKE_BUDGET_PER_TASK,
       },
       park_key: null,
       archive: {
