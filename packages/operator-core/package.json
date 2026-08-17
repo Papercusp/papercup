@@ -19,6 +19,7 @@
     "test:integration": "vitest run --config vitest.integration.config.ts --passWithNoTests",
     "lint:chunk-safe": "vitest run lib/child-output-guard.test.ts",
     "lint:federation-assert-nounset": "vitest run lib/federation-asserts-merge-probe-nounset.test.ts",
+    "lint:mutation-probe-example": "vitest run lib/doc-claims/mutation-probe-example-is-runnable.test.ts",
     "lint:attributor-runner-coverage": "vitest run lib/__tests__/attributor-runner-coverage.test.ts",
     "lint:guard-reachability": "node ../../scripts/check-lint-guard-reachability.mjs",
     "lint:sidecar-fallback-reported": "node ../../scripts/check-sidecar-fallback-reported.mjs",

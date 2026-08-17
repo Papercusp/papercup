@@ -68,11 +68,20 @@ export function parseExample(src: string): Example | null {
   const block = src.match(/^# EXAMPLE\b[\s\S]*?(?=\n# [A-Z][A-Z ]{3,}\n)/m)?.[0];
   if (!block) return null;
   // Strip the leading `#` and any line-continuation backslashes to recover one command.
-  const cmd = block
+  const uncommented = block
     .split('\n')
     .map((l) => l.replace(/^#\s?/, ''))
     .join('\n')
     .replace(/\\\n/g, ' ');
+
+  // Take the INVOCATION only, discarding the explanatory prose above it. This is not
+  // tidiness: the prose names the very flags being asserted on, so parsing the whole
+  // block let a `--fake-destructive` MENTIONED in a comment satisfy a check about the
+  // flag being PASSED. Measured — the copy-out probe that deleted the real flag reported
+  // MUTANT SURVIVED until this narrowing landed.
+  const start = uncommented.indexOf('scripts/mutation-probe.sh');
+  if (start < 0) return null;
+  const cmd = uncommented.slice(start);
 
   const file = cmd.match(/--file\s+(\S+)/)?.[1];
   const mutate = cmd.match(/--mutate\s+'([^']*)'/)?.[1];
@@ -233,6 +242,19 @@ describe('WI-39608 — the checks above are falsifiable (permanent controls)', (
     // Calibration: the real subject MUST trip the gate, or the `trips` branch above is
     // never exercised and the assertion is decorative.
     expect(ereToRegExp(ere!).test(subject)).toBe(true);
+  });
+
+  it('a flag MENTIONED in prose does not count as a flag PASSED', () => {
+    // The exact false-pass a copy-out probe caught in the first cut of this guard: the
+    // example's prose explains why --fake-destructive is needed, so parsing the whole
+    // comment block found the flag even after it was deleted from the invocation.
+    const ex = parseExample(
+      header(
+        "#   ...so --fake-destructive is required to run it at all.\n#   scripts/mutation-probe.sh --file scripts/mutation-probe.sh \\\n#     --mutate 's/set -uo/set -u/' \\\n#     --test 'PROBE_SCRIPT={} true'",
+      ),
+    );
+    expect(ex).not.toBeNull();
+    expect(ex!.flags).not.toContain('--fake-destructive');
   });
 
   it('ereToRegExp refuses a POSIX class it cannot translate', () => {

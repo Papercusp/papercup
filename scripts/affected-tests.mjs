@@ -971,6 +971,36 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     appliesTo: (f) => f === "papercusp-desktop/bin/lib/federation-asserts.sh",
   },
   {
+    // WI-39608 — the guard that keeps `scripts/mutation-probe.sh`'s copy-paste EXAMPLE
+    // runnable. Its three subjects do NOT route together: the two shell scripts select
+    // @papercusp/operator-core (so the guard's own suite runs), but the test the example
+    // NAMES lives under apps/operator/lib and selects @papercusp/web. Measured:
+    //   scripts/mutation-probe.sh                            -> AFFECTED_WS @papercusp/operator-core
+    //   scripts/verify-tauri-headless.sh                     -> AFFECTED_WS @papercusp/operator-core
+    //   apps/operator/lib/verify-tauri-headless-bind-retry.test.ts -> AFFECTED_WS @papercusp/web
+    // So deleting the PROBE_SCRIPT read from that test — i.e. reintroducing the exact
+    // defect WI-39608 fixed — was the one change the guard would not have run for.
+    //
+    // The failure this prevents is not a broken example, it is a FALSE VERDICT ABOUT A
+    // GUARD: with `{}` substituted into an env var nothing consumes, the probe measures
+    // the unmutated tracked file and reports "mutant SURVIVED" for a guard that is fine.
+    workspace: "@papercusp/operator-core",
+    script: "lint:mutation-probe-example",
+    // Cheap by construction: pure file reads + regex assertions — no DB, no network, no
+    // subprocess, no build. 11ms measured. No `--passWithNoTests`, so renaming the guard
+    // file fails loudly instead of silently guarding nothing.
+    //
+    // NO hostSuiteRatchet, deliberately — same reasoning as the two entries above.
+    // operator-core's own `test` task does re-run this file, but the subject that most
+    // needs the guard (the named test) is selected by a DISJOINT change, and that
+    // disjointness is the entire hole being closed. A ratchet would let that edit skip
+    // the guard on the strength of a suite the edit never runs.
+    appliesTo: (f) =>
+      f === "scripts/mutation-probe.sh" ||
+      f === "scripts/verify-tauri-headless.sh" ||
+      f === "apps/operator/lib/verify-tauri-headless-bind-retry.test.ts",
+  },
+  {
     // WI-38089. See declarationMjsInputs() above for the measurement and the derive-vs-mirror
     // rationale.
     workspace: "@papercusp/operator-core",
