@@ -1276,14 +1276,23 @@ export async function trackGateStall(
     // genuinely green verdict so a later reader cannot mistake the old dead launch for a
     // current gate failure. This uses the existing escalation table/phase surface and is
     // deliberately idempotent like the stall clear above.
-    try {
-      await sql.unsafe(
-        `UPDATE harness_shared.harness_escalations SET escalation = NULL, mtime_ms = $2
-          WHERE harness_slug = $1 AND phase = $3 AND escalation IS NOT NULL`,
-        [ctx.installSlug, Date.now(), RELEASE_FIXER_NO_TURN_PHASE],
-      );
-    } catch (e) {
-      console.warn(`${orchestratorStdoutTag()} release-fixer no-turn escalation clear failed: ${e instanceof Error ? e.message : e}`);
+    //
+    // EI-20706962612084953: "genuinely green" is what this comment always said, but the
+    // guard was missing — a NOT-GREEN pin-moved tick reaches this branch too and was
+    // clearing the escalation for a red episode that is still open. The stall clear above
+    // stays unconditional on purpose: it asserts only "main is advancing", which pinMoved
+    // is direct evidence of. This one asserts the gate RECOVERED, which is a different
+    // claim and false here.
+    if (isGreen) {
+      try {
+        await sql.unsafe(
+          `UPDATE harness_shared.harness_escalations SET escalation = NULL, mtime_ms = $2
+            WHERE harness_slug = $1 AND phase = $3 AND escalation IS NOT NULL`,
+          [ctx.installSlug, Date.now(), RELEASE_FIXER_NO_TURN_PHASE],
+        );
+      } catch (e) {
+        console.warn(`${orchestratorStdoutTag()} release-fixer no-turn escalation clear failed: ${e instanceof Error ? e.message : e}`);
+      }
     }
     // P-005: CLOSE the red-streak condition — the bridge settles the owning work-item
     // on this broadcast, so a missed resolve leaks one permanently-open incident item
@@ -1295,7 +1304,13 @@ export async function trackGateStall(
     // ⚠ Read `gh.stallAlerted` (the value BEFORE this green reset), never `next`
     // (which sets it false unconditionally two lines up) — testing the post-reset
     // value would make this dead code that never fires.
-    if (gh.stallAlerted) {
+    //
+    // EI-20706962612084953: `isGreen` guards it for the second reason — the broadcast SAYS
+    // "green-checkpoint GREEN again … the earlier red-gate alarm is stale", and on a
+    // not-green pin-moved tick that is a false all-clear that also SETTLES the owning
+    // work-item. A moved pin proves main is advancing; it proves nothing about this
+    // verdict, which is precisely the conflation this whole change removes.
+    if (isGreen && gh.stallAlerted) {
       try {
         const { broadcastSevereEventResolved } = await import('../../severe-event-broadcast');
         const { gateRedStreakConditionKey } = await import('../../coord/gate-ownership');
@@ -1453,14 +1468,19 @@ export async function trackGateStall(
     // stale-cap fields would make gate-verdict-freshness claim "the auto-refire cap was reached"
     // while the rescue is still running (EI-20243738214569472). Missing autoRefire is treated as
     // unknown for this safety-critical field: an old CLI cannot prove the cap was reached.
-    const retriageStale = retriage?.classification === 'stale-candidate';
-    const retriageBlocked = retriageStale && retriage?.autoRefire === false;
+    // (`retriageStale` / `retriageBlocked` are computed once above the branch — the
+    // not-green reset arm records the same provenance, so they cannot be allowed to drift.)
     next = {
       consecutiveReds,
       lastGreenAt,
       firstRedAt,
       stallAlerted,
+      // EI-20706962612084953: the explicit verdict marker. Every write path states it, so a
+      // reader never has to infer green-ness from a side-effect field like `lastGreenAt`.
+      lastVerdict: 'not-green',
       lastFrom: fromPin ?? gh.lastFrom ?? null,
+      // EI-20706962612084953: a red leaves `main` exactly where it found it.
+      lastMainPin: mainPinAfterRun,
       // EI-20571364274022293 — the PROVENANCE of the line above, and the only ordering evidence
       // this blob carries about the pin. `fromPin ?? gh.lastFrom` silently carries the PREVIOUS
       // pin forward whenever this run could not resolve the live one (a broken/orphaned release
