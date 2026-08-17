@@ -41,6 +41,15 @@ describe('buildChampionEscalationInput — capture shape', () => {
     expect(out.createdBy).toBe('gym:accept');
   });
 
+  it('carries the stable per-(harness, role) watchdogKey so a re-promotion COALESCES instead of filing a sibling (WI-39594)', () => {
+    const out = buildChampionEscalationInput(base);
+    // NOT per-cycle: the queue audit of 2026-08-17 dropped ~25 open one-per-cycle
+    // champion items. One open escalation per role@harness; cycles ride occurrences.
+    expect(out.watchdogKey).toBe('gym-champion:papercusp:scoper');
+    const nextCycle = buildChampionEscalationInput({ ...base, cycle: 43 });
+    expect(nextCycle.watchdogKey).toBe(out.watchdogKey);
+  });
+
   it('title names the role, harness, and cycle', () => {
     const out = buildChampionEscalationInput(base);
     expect(out.title).toContain('scoper@papercusp');
