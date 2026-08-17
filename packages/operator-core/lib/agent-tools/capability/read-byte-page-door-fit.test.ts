@@ -175,6 +175,24 @@ describe('WI-39670: byte-window pages survive the result door intact', () => {
     expect(Buffer.concat(chunks).equals(original)).toBe(true);
   });
 
+  it('REFUSES rather than serving a page the door would truncate', async () => {
+    // A path so long that not even MIN_PAGE_BYTES fits. Clamping UP to a floor
+    // here would re-emit an over-budget response and reintroduce exactly the
+    // silent mid-base64 truncation this fix exists to prevent, so the contract
+    // is a stated refusal — the guarantee stays unconditional.
+    const deep = join(sandbox, Array.from({ length: 40 }, (_, i) => `segment-${i}-${'x'.repeat(50)}`).join('/'), 'spill.md');
+    expect(doorSafePageBytes(deep, MAX_BYTE_PAGE)).toBeLessThan(MIN_PAGE_BYTES);
+
+    mkdirSync(dirname(deep), { recursive: true });
+    writeFileSync(deep, payload(40_000));
+    const raw = await rawResponseText({ file_path: deep, byte_offset: 0, byte_limit: MAX_BYTE_PAGE });
+    const parsed = JSON.parse(raw) as { ok: boolean; error?: string };
+    expect(parsed.ok).toBe(false);
+    expect(parsed.error).toContain('path_too_long_for_byte_window');
+    // A refusal is only an improvement if it still fits the door.
+    expect(raw.length).toBeLessThanOrEqual(DOOR_BUDGET_CHARS);
+  });
+
   it('shrinks the page as the path grows, since the path is in the envelope twice', () => {
     const shortPath = '/tmp/s.md';
     const longPath = `/tmp/${'deep-scratch-segment/'.repeat(12)}result-door-1786953789399.md`;
