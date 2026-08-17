@@ -372,6 +372,28 @@ describe('gateStallNoopLogMessage (EI-19321275470651356: one class, two opposite
     expect(msg).toContain('skipped-locked');
   });
 
+  it('WI-39450: a superseded pass gets its OWN wording — not the peer-lock one', () => {
+    // The successor here is this run's own in-process refire, so "an active peer run holds the
+    // lock" is factually false. It must also say the failing files it named are STALE — that
+    // list is exactly what sends agents at already-fixed tests.
+    const msg = gateStallNoopLogMessage('not-green', {
+      classification: 'stale-candidate',
+      autoRefire: true,
+    });
+    expect(msg).not.toContain('an active peer run holds the lock');
+    expect(msg).toContain('STALE');
+    expect(msg).toContain('auto-refire');
+  });
+
+  it('WI-39450: a BLOCKED refire does not get the superseded wording (it is a real red)', () => {
+    const msg = gateStallNoopLogMessage('not-green', {
+      classification: 'stale-candidate',
+      autoRefire: true,
+      refireBlockedBy: 'deadline',
+    });
+    expect(msg).not.toContain('handed off to an auto-refire');
+  });
+
   it('migrations-pending must NOT claim a peer run holds the lock — nobody is coming', () => {
     // The regression: this message is one of the first things read when `main` stops
     // advancing. "an active peer run holds the lock" tells the reader to WAIT, which is
