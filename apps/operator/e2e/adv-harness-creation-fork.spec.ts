@@ -190,10 +190,13 @@ test.describe('/adv Harnesses tab — creation fork (P-010/P-011)', () => {
     await openPicker(page); // into-hive default (hive scope selected)
     // Pick the "New local directory" entry → NewLocalForm.
     await page.getByRole('button', { name: /New local directory/i }).click();
+    // WI-39533: the form is now TWO fields, not three — the separate folderName
+    // input is gone (the slug IS "the folder name created inside the parent
+    // directory", per its own hint text), and the submit button is
+    // lexicon-labelled (`Create Pot`), so it is matched by shape.
     await page.getByPlaceholder('my-project').first().fill(NEW_MEMBER); // slug
     await page.getByPlaceholder('/home/user/projects').fill('/tmp');     // parentDir
-    await page.getByPlaceholder('my-project').nth(1).fill(NEW_MEMBER);   // folderName
-    await page.getByRole('button', { name: 'Create harness' }).click();
+    await page.getByRole('button', { name: /^Create / }).click();
 
     // P-011a: the create carried the membership edge to the selected hive.
     await expect.poll(() => cap.bodies.find((b) => !b.__hivesEndpoint)?.hive, { timeout: 10_000 }).toBe(HIVE);

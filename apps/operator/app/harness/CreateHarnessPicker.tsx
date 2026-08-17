@@ -27,7 +27,7 @@
  * URL, the house rule); form drafts inside each entry stay useState.
  */
 
-import { useState, useRef, type FormEvent, type ReactNode } from 'react';
+import { useState, useRef, useEffect, type FormEvent, type ReactNode } from 'react';
 import { parseAsBoolean, parseAsString, parseAsStringEnum, useQueryStates } from 'nuqs';
 import { Modal } from './Modal';
 import { Select } from './Select';
@@ -1103,6 +1103,17 @@ export function CreateHarnessPicker({ open, onOpenChange, onCreated, hiveScope =
   const setStep = (s: Step) => void setNav({ picker: s === 'picker' ? null : s });
   // Default into-hive when a hive is selected (the common case from the tab).
   const [mode, setMode] = useState<CreateMode>(hiveScope ? 'into-hive' : 'standalone');
+  // WI-39533: that initializer alone could never deliver the D-005 default. This
+  // picker is rendered by AdvShell UNCONDITIONALLY (visibility rides `open`), so
+  // it mounts with the shell — before `projects` have loaded, when `activeIsHive`
+  // is still false and `hiveScope` is therefore null. `mode` latched 'standalone'
+  // at that first render and nothing re-seeded it when the scope resolved, so the
+  // fork opened on Standalone even on a hive scope. Re-seed when the scope itself
+  // changes: a user's explicit toggle survives (hiveScope does not change while
+  // they interact), and handleClose still resets on close.
+  useEffect(() => {
+    setMode(hiveScope ? 'into-hive' : 'standalone');
+  }, [hiveScope]);
   const [createdSlug, setCreatedSlug] = useState<string | null>(null);
   // The hive the share-offer step can publish: the membership scope of an
   // into-hive create, or the new hive itself for a new-hive create. Per-harness
