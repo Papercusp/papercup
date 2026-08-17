@@ -54,6 +54,10 @@ function mkSnap(
     gate: {
       consecutiveReds: 0,
       lastGreenAtMs: null,
+      // EI-20706962612084953: defaults to null = "the writer stamped no verdict marker",
+      // i.e. the pre-fix blob shape, so every EXISTING case here keeps exercising the old
+      // behaviour and only the cases that opt in below assert the new one.
+      recordedVerdict: null,
       firstRedAtMs: null,
       stalled: false,
       lastFiredAtMs: null,
@@ -418,6 +422,39 @@ describe('EI-18646778682511611: an advanced-prefix tick must not report gate.gre
     expect(s.gate.green).toBe(false);
     expect(s.state).toBe('green-deployable');
     expect(s.canTriggerGreen).toBe(true); // deploying the CONFIRMED-green prefix is still safe
+  });
+
+  /**
+   * EI-20706962612084953 — the SAME laundering, one status over, and the reason the
+   * exclusion above had to stop being enumerated per-status.
+   *
+   * `trackGateStall`'s `reset` class zeroes `consecutiveReds` for a genuinely NOT-GREEN
+   * verdict too, whenever the release pin moved (`main` advancing via a path the routine
+   * never saw — a manual run, another lineage's gate). That tick's status is plain
+   * 'not-green', so the `advanced-prefix` carve-out above never sees it, and `gate.green`
+   * read TRUE for a run whose recorded verdict was red. The writer now states its own
+   * verdict in `gate_health.lastVerdict`, surfaced here as `recordedVerdict`, which
+   * settles it for every status at once instead of one incident at a time.
+   */
+  it('⭐ gate.green is false when the writer RECORDED not-green, even with consecutiveReds 0 and no advanced-prefix event', () => {
+    const s = computeDeployStatus(
+      mkSnap({ consecutiveReds: 0, fireStale: false, recordedVerdict: 'not-green' }, {}),
+    );
+    expect(s.gate.green).toBe(false);
+  });
+
+  it('a recorded GREEN verdict still reports gate.green=true', () => {
+    const s = computeDeployStatus(
+      mkSnap({ consecutiveReds: 0, fireStale: false, recordedVerdict: 'green' }, {}),
+    );
+    expect(s.gate.green).toBe(true);
+  });
+
+  it('a blob predating the marker (recordedVerdict null) degrades to the previous behaviour', () => {
+    // CONTROL: proves the new clause is scoped to an explicit 'not-green' and is not
+    // quietly turning every unmarked read red.
+    const s = computeDeployStatus(mkSnap({ consecutiveReds: 0, fireStale: false, recordedVerdict: null }, {}));
+    expect(s.gate.green).toBe(true);
   });
 });
 
