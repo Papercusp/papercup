@@ -2211,6 +2211,15 @@ export const FLAGS = {
   // so counts return to pre-P-012 behavior (rows marked while ON stay excluded —
   // acceptable residue for a diagnostic census).
   TELEMETRY_DISPATCH_WRAPPER_MARK: "papercusp-telemetry-dispatch-wrapper-mark",
+  // goal-mode-design-intent-hardening-2026-08-16 P-013 (D-004, owner-endorsed):
+  // grade-the-grader. ON ⇒ scorecards:emit stamps every TERMINAL standard-rubric
+  // card gradingAudit:'pending' (excluded from rubrics:trend, loudly counted) until
+  // a NON-AUTHOR auditor emits a grading-integrity scorecard whose subject is that
+  // card — the emit path enforces auditor ≠ author and settles the stamp
+  // passed/failed. One level deep by construction (the audit card is never stamped).
+  // DEFAULT ON. OFF = kill-switch: no new stamps; already-stamped cards keep their
+  // state (pending ones stay excluded — retract or audit them, never unhide).
+  GRADING_INTEGRITY_AUDIT_GATE: "papercusp-grading-integrity-audit-gate",
   // db-performance-remediation-2026-07-26 P-004: the INDEX-BLOAT REINDEX sweep — a daily
   // scheduled DBOS workflow that REINDEX INDEX CONCURRENTLY's btree indexes which the
   // continuous retention churn has inflated into mostly-empty pages. VACUUM marks those
