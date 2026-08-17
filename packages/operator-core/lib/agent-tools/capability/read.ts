@@ -11,6 +11,7 @@ import { isAbsolute, resolve } from 'node:path';
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { resolveCapabilityBaseDir } from './base-dir';
+import { CHARS_PER_TOKEN_ESTIMATE, computeTurnDoors } from '../../context-doors';
 
 /**
  * Exported so the bash-substitution audit can PIN its model to it
@@ -24,6 +25,62 @@ export const DEFAULT_LIMIT = 2000;
 const MAX_LINE_CHARS = 2000;
 const MAX_FILE_BYTES = 50 * 1024 * 1024; // refuse absurd reads outright
 export const MAX_BYTE_PAGE = 4_096;
+
+/** base64 encodes 3 bytes as 4 chars, padded up to the next multiple of 4. */
+function base64Chars(byteCount: number): number {
+  return Math.ceil(byteCount / 3) * 4;
+}
+
+/** Slack for JSON escaping inside `file_path` and for door-budget arithmetic we
+ *  do not want to depend on to the last character. */
+const DOOR_MARGIN_CHARS = 256;
+
+/** Never page so small that recovery becomes absurd, even on a pathological path. */
+const MIN_PAGE_BYTES = 512;
+
+/**
+ * WI-39670: the largest page whose base64 payload PLUS this response's own
+ * envelope still fits the `resultEach` door.
+ *
+ * Every tool result passes that door, and an over-budget result is projected —
+ * for this tool that means `data` is truncated MID-BASE64. Decoding the result
+ * then yields a valid plaintext prefix followed by `invalid input`, i.e. silent
+ * corruption of the byte-window recovery path, with `ok:true`, `eof:false` and a
+ * well-formed `next_cursor` all still looking healthy. `MAX_BYTE_PAGE` (4096)
+ * alone is 5464 chars of base64 — already over the 6000-char door once the
+ * envelope is counted, so the maximum page the schema ADVERTISES could never be
+ * returned intact.
+ *
+ * The envelope is measured, not guessed, because `file_path` is absolute and
+ * appears TWICE (top level and again in `next_cursor.args`) — a deep scratch path
+ * moves this by hundreds of chars, which is why a fixed smaller constant would
+ * only move the cliff rather than remove it. Clamping is lossless: `byte_length`
+ * and `next_cursor` describe the page actually returned, so paging simply takes
+ * more steps.
+ */
+export function doorSafePageBytes(absPath: string, requestedBytes: number): number {
+  const envelopeChars = JSON.stringify({
+    ok: true,
+    file_path: absPath,
+    encoding: 'base64',
+    byte_offset: Number.MAX_SAFE_INTEGER,
+    byte_length: Number.MAX_SAFE_INTEGER,
+    total_bytes: Number.MAX_SAFE_INTEGER,
+    eof: false,
+    data: '',
+    next_cursor: {
+      tool: 'capability:read',
+      args: { file_path: absPath, byte_offset: Number.MAX_SAFE_INTEGER, byte_limit: MAX_BYTE_PAGE },
+    },
+  }).length;
+  // Mirrors how RESULT_DOOR_TOKENS is derived (result-door.ts): the BAKED floor
+  // door. A session configured with a WIDER door just gets smaller pages than it
+  // strictly needs, which is safe; sizing to a wider door would not be.
+  const budgetChars = computeTurnDoors(0).resultEach * CHARS_PER_TOKEN_ESTIMATE;
+  const room = budgetChars - envelopeChars - DOOR_MARGIN_CHARS;
+  const fits = Math.floor(Math.max(0, room) / 4) * 3;
+  return Math.max(MIN_PAGE_BYTES, Math.min(requestedBytes, fits));
+}
 
 export default defineTool({
   name: 'capability:read',
@@ -90,7 +147,10 @@ export default defineTool({
         return err('mixed_window_modes', 'byte_offset/byte_limit cannot be combined with offset/limit/tail.');
       }
       const start = Math.min(args.byte_offset, bytes.length);
-      const page = bytes.subarray(start, Math.min(bytes.length, start + args.byte_limit));
+      // WI-39670: clamp to what survives the resultEach door. Requesting the
+      // schema's max would otherwise return base64 the door truncates mid-string.
+      const effectiveLimit = doorSafePageBytes(abs, args.byte_limit);
+      const page = bytes.subarray(start, Math.min(bytes.length, start + effectiveLimit));
       const nextOffset = start + page.length;
       return {
         content: [{
@@ -104,8 +164,12 @@ export default defineTool({
             total_bytes: bytes.length,
             eof: nextOffset >= bytes.length,
             data: page.toString('base64'),
+            // Echo the EFFECTIVE limit, not the caller's: a cursor that keeps
+            // asking for a size this tool will not honour reads as though the
+            // page were the caller's to choose, and invites the same over-large
+            // request every hop.
             next_cursor: nextOffset < bytes.length
-              ? { tool: 'capability:read', args: { file_path: abs, byte_offset: nextOffset, byte_limit: args.byte_limit } }
+              ? { tool: 'capability:read', args: { file_path: abs, byte_offset: nextOffset, byte_limit: effectiveLimit } }
               : null,
           }),
         }],
