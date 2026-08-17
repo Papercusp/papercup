@@ -3983,6 +3983,11 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // notifySyncInvalidate('learning.loopControl') after the flip commits — plus
   // the view's own invalidate() after a mutate. Always a 1-element array.
   'learning.loopControl': {
+    // agent_usage_samples is bridged in table-to-query-names.ts; `routines` is
+    // producer-pushed instead (see PUSH_EXEMPT in
+    // __tests__/resolver-backing-table-coverage.test.ts) because the routines
+    // row is rewritten on every tick.
+    backingTables: ['harness_shared.routines', 'harness_shared.agent_usage_samples'],
     argsSchema: z.object({}).optional(),
     resolve: async () => {
       const { activeWorkspaceId } = await import('../workspace-registry');
