@@ -310,7 +310,16 @@ export const rubricTemplateDataSchema = z
       .optional()
       .describe(
         "acceptance-kind only: the slug of the plan this rubric is the definition-of-done FOR. " +
-          "Required when kind='acceptance'; refused on a standard rubric",
+          "An acceptance rubric names exactly one subject (subjectPlan or subjectGoal); refused on a standard rubric",
+      ),
+    subjectGoal: z
+      .string()
+      .min(1)
+      .optional()
+      .describe(
+        "acceptance-kind only: the GOAL id this rubric is the definition-of-done FOR (the goal-mode " +
+          "'achieved' gate keys off it — consult-min-max-and-rubric-vetting-2026-08-17 D-004 §2). " +
+          'An acceptance rubric names exactly one subject (subjectPlan or subjectGoal); refused on a standard rubric',
       ),
     classRef: z
       .string()
@@ -437,6 +446,14 @@ export const rubricTemplateDataSchema = z
             "subjectPlan is acceptance-kind only — a standard rubric is a reusable library standard, not a per-plan definition-of-done. Set kind:'acceptance' if this rubric belongs to one plan",
         });
       }
+      if (d.subjectGoal !== undefined) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['subjectGoal'],
+          message:
+            "subjectGoal is acceptance-kind only — a standard rubric is a reusable library standard, not a per-goal definition-of-done. Set kind:'acceptance' if this rubric belongs to one goal",
+        });
+      }
       if (d.classRef !== undefined) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
@@ -465,12 +482,20 @@ export const rubricTemplateDataSchema = z
       });
     } else {
       // kind === 'acceptance'
-      if (!d.subjectPlan) {
+      if (!d.subjectPlan && !d.subjectGoal) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           path: ['subjectPlan'],
           message:
-            "an acceptance rubric requires subjectPlan (the slug of the plan it is the definition-of-done for) — without it the completion gate cannot find it and the rubric is orphaned",
+            "an acceptance rubric requires subjectPlan (the slug of the plan it is the definition-of-done for) or subjectGoal (the goal id, for the goal-mode 'achieved' gate) — without a subject the completion gate cannot find it and the rubric is orphaned",
+        });
+      }
+      if (d.subjectPlan && d.subjectGoal) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['subjectGoal'],
+          message:
+            'an acceptance rubric names exactly ONE subject — subjectPlan or subjectGoal, not both (a rubric graded against two different definitions-of-done gates neither honestly)',
         });
       }
       if (d.criteria.length === 0 && !d.classRef) {

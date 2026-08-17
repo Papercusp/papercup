@@ -1613,6 +1613,18 @@ export const FLAGS = {
   // CLOSED on flag/PG errors: it is a REFUSAL gate on the stop path, and you
   // must always be able to stop a loop you armed.
   GOAL_WINDDOWN_DISPOSITION_GATE: "papercusp-goal-winddown-disposition-gate",
+  // consult-min-max-and-rubric-vetting-2026-08-17 P-009 (D-004 §2, owner-ruled):
+  // 'achieved' is a CLAIM, and the claim needs acceptance evidence — a goal may only
+  // be dispositioned 'achieved' when it carries an acceptance rubric (kind:
+  // 'acceptance', subjectGoal = the goal id) authored post-pursuit by the goal-mode
+  // agent, VETTED against the meta-rubric (complete meta-scorecard with a linked
+  // consult on the CURRENT rubric revision), and GRADED by a NON-owner of the goal.
+  // 'killed'/'handoff' are exempt — you don't grade a goal you abandoned. DEFAULT
+  // ON; OFF = the kill-switch. Same stop-path posture as
+  // GOAL_WINDDOWN_DISPOSITION_GATE above: fails CLOSED on flag/PG errors — the gate
+  // refuses only on a POSITIVE finding, and an infra fault must never wedge an
+  // agent stopping its own loop.
+  GOAL_ACHIEVED_ACCEPTANCE_GATE: "papercusp-goal-achieved-acceptance-gate",
   // goal-mode-design-intent-hardening-2026-08-16 P-004: gates the server-side dedup
   // demand on work_items:create for a GOAL-mode creator. The creator's goal context
   // is resolved SERVER-SIDE (resolveGoalContext — never a tool argument, same

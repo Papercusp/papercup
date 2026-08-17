@@ -125,6 +125,10 @@ export interface Rubric {
   kind: RubricKind;
   /** acceptance-kind only: the plan this rubric is the definition-of-done FOR. */
   subjectPlan?: string | null;
+  /** acceptance-kind only: the GOAL this rubric is the definition-of-done FOR — the
+   *  goal-mode 'achieved' gate keys off it (consult-min-max-…-2026-08-17 D-004 §2).
+   *  Exactly one of subjectPlan/subjectGoal on an acceptance rubric. */
+  subjectGoal?: string | null;
   /** acceptance-kind only: the standard-kind CLASS rubric it builds on (plan D-006/D-009). */
   classRef?: string | null;
   /** Umbrella domain, e.g. 'hive-coordination' — Scout's digest groups by this. */
@@ -297,6 +301,7 @@ export function planRowToRubric(row: RubricPlanRow): Rubric | null {
     workspaceId: row.workspace_id,
     kind: rubricKindOf(d),
     ...(d.subjectPlan ? { subjectPlan: d.subjectPlan } : {}),
+    ...(d.subjectGoal ? { subjectGoal: d.subjectGoal } : {}),
     ...(d.classRef ? { classRef: d.classRef } : {}),
     characteristic: d.characteristic,
     title: row.title ?? row.plan_slug,
@@ -674,6 +679,35 @@ export async function getAcceptanceRubricForPlan(planSlug: string): Promise<Rubr
 }
 
 /**
+ * The acceptance rubric FOR a goal (consult-min-max-and-rubric-vetting-2026-08-17
+ * P-009 / D-004 §2): the most recently updated valid acceptance-kind rubric whose
+ * subjectGoal names `goalId`. The read behind the goal-mode 'achieved' gate — the
+ * subjectGoal twin of getAcceptanceRubricForPlan above. Never throws.
+ */
+export async function getAcceptanceRubricForGoal(goalId: string): Promise<Rubric | null> {
+  try {
+    const { sql } = getOrgPg();
+    const rows = await sql<RubricPlanRow[]>`
+      SELECT plan_slug, workspace_id, harness_slug, title, status, created, updated, updated_at,
+             owner, archived, template_data
+        FROM harness_shared.harness_plans
+       WHERE workspace_id = ${rubricsScopeWorkspace()}
+         AND template = ${RUBRIC_TEMPLATE_NAME}
+         AND template_slug IS NULL
+         AND template_data->>'kind' = 'acceptance'
+         AND template_data->>'subjectGoal' = ${goalId}
+       ORDER BY updated_at DESC
+       LIMIT 5`;
+    const mapped = rows
+      .map(planRowToRubric)
+      .filter((r): r is Rubric => r !== null && r.kind === 'acceptance' && r.subjectGoal === goalId);
+    return mapped[0] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Search rubrics by id / characteristic / title / description. Case-insensitive,
  * all-tokens-must-match (websearch's AND semantics). At this scale (tens of rubrics) an
  * in-process scan over the rubric-template plans is as fast as a table FTS. Standard-kind
@@ -712,6 +746,9 @@ export interface ProposeRubricInput {
   kind?: RubricKind;
   /** acceptance-kind only: the plan this rubric is the definition-of-done FOR. */
   subjectPlan?: string;
+  /** acceptance-kind only: the GOAL id this rubric is the definition-of-done FOR (validated to
+   *  EXIST — the goal-mode 'achieved' gate keys off it). Exactly one of subjectPlan/subjectGoal. */
+  subjectGoal?: string;
   /** acceptance-kind only: the standard-kind class rubric it builds on (validated to exist). */
   classRef?: string;
   characteristic: string;
@@ -1076,6 +1113,7 @@ function buildRubricTemplateData(input: ProposeRubricInput): unknown {
     // standard criteria fully-specified, …).
     ...(input.kind ? { kind: input.kind } : {}),
     ...(input.subjectPlan ? { subjectPlan: input.subjectPlan } : {}),
+    ...(input.subjectGoal ? { subjectGoal: input.subjectGoal } : {}),
     ...(input.classRef ? { classRef: input.classRef } : {}),
     characteristic: input.characteristic,
     criteria: input.criteria,
@@ -1112,28 +1150,50 @@ function buildRubricTemplateData(input: ProposeRubricInput): unknown {
  */
 async function assertAcceptanceLinksResolve(input: ProposeRubricInput): Promise<void> {
   const subjectPlan = input.subjectPlan;
-  if (!subjectPlan) return; // schema already refuses acceptance without subjectPlan
-  const { sql } = getOrgPg();
-  const subj = await sql<{ plan_slug: string; template: string | null }[]>`
-    SELECT plan_slug, template
-      FROM harness_shared.harness_plans
-     WHERE workspace_id = ${rubricsScopeWorkspace()}
-       AND plan_slug = ${subjectPlan}
-     LIMIT 1`;
-  const subjRow = subj.find((r) => r.plan_slug === subjectPlan);
-  if (!subjRow) {
-    throw new Error(
-      `invalid_args: proposeRubric: acceptance rubric '${input.rubricId}' names subjectPlan '${subjectPlan}', ` +
-        'but no such plan exists in this workspace — the completion gate keys off this link, so a dangling ' +
-        'subjectPlan would never gate anything. Fix the slug (or create the plan first).',
-    );
+  const subjectGoal = input.subjectGoal;
+  if (subjectPlan) {
+    const { sql } = getOrgPg();
+    const subj = await sql<{ plan_slug: string; template: string | null }[]>`
+      SELECT plan_slug, template
+        FROM harness_shared.harness_plans
+       WHERE workspace_id = ${rubricsScopeWorkspace()}
+         AND plan_slug = ${subjectPlan}
+       LIMIT 1`;
+    const subjRow = subj.find((r) => r.plan_slug === subjectPlan);
+    if (!subjRow) {
+      throw new Error(
+        `invalid_args: proposeRubric: acceptance rubric '${input.rubricId}' names subjectPlan '${subjectPlan}', ` +
+          'but no such plan exists in this workspace — the completion gate keys off this link, so a dangling ' +
+          'subjectPlan would never gate anything. Fix the slug (or create the plan first).',
+      );
+    }
+    if (subjRow.template === RUBRIC_TEMPLATE_NAME) {
+      throw new Error(
+        `invalid_args: proposeRubric: subjectPlan '${subjectPlan}' is itself a rubric-template plan — ` +
+          'rubrics do not get acceptance rubrics (infinite regress); point subjectPlan at the WORK plan.',
+      );
+    }
   }
-  if (subjRow.template === RUBRIC_TEMPLATE_NAME) {
-    throw new Error(
-      `invalid_args: proposeRubric: subjectPlan '${subjectPlan}' is itself a rubric-template plan — ` +
-        'rubrics do not get acceptance rubrics (infinite regress); point subjectPlan at the WORK plan.',
-    );
+  // The goal-subject twin (consult-min-max-…-2026-08-17 P-009): the 'achieved' gate
+  // keys off subjectGoal exactly as the completion gate keys off subjectPlan, so a
+  // dangling goal id is refused just as loudly.
+  if (subjectGoal) {
+    const { sql } = getOrgPg();
+    const subj = await sql<{ id: string }[]>`
+      SELECT id
+        FROM harness_shared.goals
+       WHERE workspace_id = ${rubricsScopeWorkspace()}
+         AND id = ${subjectGoal}
+       LIMIT 1`;
+    if (!subj.some((r) => r.id === subjectGoal)) {
+      throw new Error(
+        `invalid_args: proposeRubric: acceptance rubric '${input.rubricId}' names subjectGoal '${subjectGoal}', ` +
+          "but no such goal exists in this workspace — the goal-mode 'achieved' gate keys off this link, so a " +
+          'dangling subjectGoal would never gate anything. Fix the id (goals:list to find it).',
+      );
+    }
   }
+  if (!subjectPlan && !subjectGoal) return; // schema already refuses acceptance without a subject
   if (input.classRef) {
     const cls = await getRubric(input.classRef);
     if (!cls) {
@@ -1439,6 +1499,7 @@ export function applyRubricAmendment(stored: Rubric, input: AmendRubricInput): P
     // orphan its subjectPlan link — the WI-4287 loss class, on identity fields.
     ...(stored.kind !== 'standard' ? { kind: stored.kind } : {}),
     ...(stored.subjectPlan ? { subjectPlan: stored.subjectPlan } : {}),
+    ...(stored.subjectGoal ? { subjectGoal: stored.subjectGoal } : {}),
     ...(stored.classRef ? { classRef: stored.classRef } : {}),
     characteristic: stored.characteristic,
     title: stored.title,
@@ -1515,8 +1576,8 @@ export async function ratifyRubric(rubricId: string, by?: string): Promise<Rubri
   if (!existing) return null;
   if (existing.kind === 'acceptance') {
     throw new Error(
-      `invalid_args: ratifyRubric: '${rubricId}' is an acceptance-kind rubric (the definition-of-done for plan ` +
-        `'${existing.subjectPlan ?? '?'}') — acceptance rubrics are never ratified (acceptance-rubrics-on-every-plan ` +
+      `invalid_args: ratifyRubric: '${rubricId}' is an acceptance-kind rubric (the definition-of-done for ` +
+        `${existing.subjectGoal ? `goal '${existing.subjectGoal}'` : `plan '${existing.subjectPlan ?? '?'}'`}) — acceptance rubrics are never ratified (acceptance-rubrics-on-every-plan ` +
         'D-008): they activate on propose, and their judgment is a NON-implementer grading them at plan completion.',
     );
   }
