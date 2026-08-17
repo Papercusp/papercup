@@ -154,6 +154,36 @@ export interface StructuredObservation {
    * caller-supplied directly. See {@link ScorecardVetting}.
    */
   vetting?: ScorecardVetting;
+  /**
+   * P-011 (owner-ratified D-006): grading-time DETERMINISTIC check runs, keyed by
+   * criterion key — stamped server-side by scorecards:emit for every rated criterion
+   * whose rubric check is kind:'tests'. Each record is a LIVE run performed at emit
+   * time (never a stale ledger read), so a rating the run contradicts is machine-
+   * detectable from the scorecard itself. Never caller-supplied.
+   */
+  checkRuns?: Record<string, ScorecardCheckRun>;
+}
+
+/**
+ * One criterion's grading-time deterministic check run — see
+ * {@link StructuredObservation.checkRuns}. The emit path REFUSES a contradicted
+ * pass-claiming rating outright, so a persisted 'fail' verdict coexists only with a
+ * rating that honestly reflects it (or a bespoke scale word outside the pass map).
+ */
+export interface ScorecardCheckRun {
+  kind: 'tests';
+  /** The repo-root-relative files that ran. */
+  files: string[];
+  verdict: 'pass' | 'fail';
+  /** Test counts from the run (complete, never truncated). */
+  passed: number;
+  failed: number;
+  /** Run correlation id (PAPERCUSP_TEST_RUN_GROUP) — ledger rows findable by it. */
+  runId: string | null;
+  /** ISO instant the run finished (emit time). */
+  measuredAt: string;
+  /** Bounded failing-test names ("file: test"), only on a 'fail' verdict. */
+  failures?: string[];
 }
 
 /** The provisional stamp — see {@link StructuredObservation.provisional}. */

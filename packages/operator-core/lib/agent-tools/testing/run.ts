@@ -55,6 +55,7 @@ import {
   distillVitestRun,
   mergeDistilledRuns,
   TESTING_RUN_MAX_PAYLOAD_BYTES,
+  type DistilledTestRun,
 } from '../../testing-run-store';
 import { resolveAgentWorkspaceRoot } from '../capability/base-dir';
 import {
@@ -151,6 +152,35 @@ export function normalizeTestFilePaths(
  *  1 = a refused false-green OR a genuine test failure, 0 = clean pass. */
 const ROUTER_EXIT_ROUTE_ERROR = 2;
 
+/** The distilled outcome of one runTestFilesCore invocation — either the bounded
+ *  run payload (`ok` reflects the tests; counts always complete; no `error` field) or a
+ *  typed refusal naming why nothing could be judged. Discriminate on `error`. */
+export type TestFilesCoreResult =
+  | ({ ok: boolean; runId: string; root: string; error?: undefined } & DistilledTestRun & {
+      failuresReturned?: number;
+      failuresOmitted?: number;
+      truncationNote?: string;
+    })
+  | {
+      ok: false;
+      runId: string;
+      root: string;
+      error:
+        | 'invalid_root'
+        | 'ambiguous_workspace_path'
+        | 'timeout'
+        | 'route_error'
+        | 'no_report'
+        | 'name_filter_no_match';
+      hint?: string;
+      path?: string;
+      matches?: string[];
+      timeoutMs?: number;
+      skipped?: number;
+      files?: number;
+      routerOutput?: string;
+    };
+
 interface RouterOutcome {
   code: number | null;
   timedOut: boolean;
@@ -208,6 +238,162 @@ function runRouter(args: string[], cwd: string, env: NodeJS.ProcessEnv, timeoutM
   });
 }
 
+/**
+ * The whole run, callable OUTSIDE the MCP handler (P-011 / D-006: scorecards:emit runs
+ * a criterion's structured tests-check through this exact path, so a grading-time run
+ * and a testing:run judge files identically — one router, one distillation, one set of
+ * refusals). The handler below is now a thin wrapper: ctx root resolution + the
+ * foreground transport clamp stay THERE (they are transport concerns, not run
+ * concerns); everything else lives here.
+ */
+export async function runTestFilesCore(opts: {
+  files: string[];
+  root: string;
+  timeoutMs?: number;
+  maxFailures?: number;
+  testNamePattern?: string;
+}): Promise<TestFilesCoreResult> {
+  const { root } = opts;
+  const runId = randomUUID();
+
+  // WI-7189 / EI-19383071792758676: a wrong-tree resolution used to be SILENT —
+  // a file that happens to exist (with stale content) at the resolved root ran
+  // and returned a confident, plausible, WRONG green. `root` is echoed on EVERY
+  // return path so a wrong-tree run is visible instead of silent. One loud
+  // pre-flight refusal catches what the router's own check can't: a root that
+  // isn't a papercusp checkout AT ALL (missing the router script itself).
+  if (!existsSync(join(root, 'scripts', 'test-files.mjs'))) {
+    return {
+      ok: false,
+      runId,
+      root,
+      error: 'invalid_root',
+      hint:
+        `resolved workspace root '${root}' has no scripts/test-files.mjs — it is not a papercusp ` +
+        `checkout (or is a stale/partial one). This usually means the calling session is scoped to ` +
+        `the wrong harness/tree (e.g. a legacy standalone clone) rather than the canonical staging ` +
+        `checkout. Verify with 'pwd'/'git remote -v' in the tree you intend, and re-check how this ` +
+        `session's harness/project is registered.`,
+    };
+  }
+  const pathResolution = normalizeTestFilePaths(opts.files, root);
+  if (!pathResolution.ok) {
+    return {
+      ok: false,
+      runId,
+      root,
+      error: 'ambiguous_workspace_path',
+      path: pathResolution.path,
+      matches: pathResolution.matches,
+      hint:
+        `workspace-relative test path ${JSON.stringify(pathResolution.path)} exists in multiple declared ` +
+        `workspaces (${pathResolution.matches.join(', ')}). Re-run with a repo-root-relative or absolute path.`,
+    };
+  }
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+
+  const dir = await mkdtemp(join(tmpdir(), 'papercusp-testing-run-'));
+  const reportPath = join(dir, 'report.json');
+  try {
+    const vitestArgs = ['--reporter=json', `--outputFile=${reportPath}`];
+    if (opts.testNamePattern) vitestArgs.push('-t', opts.testNamePattern);
+
+    const outcome = await runRouter(
+      [...pathResolution.files, '--', ...vitestArgs],
+      root,
+      // The reporter inside the child reads this and stamps run_group_id, so
+      // the run's per-file rows are findable afterwards. We write no rows here.
+      { ...process.env, PAPERCUSP_TEST_RUN_GROUP: runId },
+      timeoutMs,
+    );
+
+    if (outcome.timedOut) {
+      return {
+        ok: false,
+        runId,
+        root,
+        error: 'timeout',
+        timeoutMs,
+        hint:
+          `hit the ${(timeoutMs / 1000).toFixed(0)}s budget. ` +
+          `This suite is too slow to run inline — re-run it detached: capability:inspect { check: 'test', package: '<owning workspace>', path: '<test file>', run_in_background: true }, then poll capability:bash_output.`,
+        routerOutput: outcome.output.slice(-2000),
+      };
+    }
+    // A route/launch error never produced a report — surface the router's own
+    // diagnostics (they name the cause: unmatched path, mid-install corruption).
+    if (outcome.code === ROUTER_EXIT_ROUTE_ERROR || outcome.code === null) {
+      return { ok: false, runId, root, error: 'route_error', routerOutput: outcome.output.slice(-2000) };
+    }
+
+    // EI-18822211427354845: the router runs ONE `vitest run` per owning workspace
+    // config, so a request spanning several workspaces writes SEVERAL reports —
+    // `report.json`, `report.0.json`, `report.1.json`, … Reading only `reportPath`
+    // distilled whichever group happened to write last and reported it as the whole
+    // run: a two-workspace request with a RED first group returned `failed:0,
+    // failures:[]`. `dir` is a private mkdtemp this function owns, so every *.json in
+    // it belongs to THIS run and can be merged without any output parsing.
+    let reportTexts: string[];
+    try {
+      const names = (await readdir(dir)).filter((n) => n.endsWith('.json')).sort();
+      reportTexts = (
+        await Promise.all(names.map((n) => readFile(join(dir, n), 'utf8').catch(() => null)))
+      ).filter((t): t is string => t !== null);
+    } catch {
+      reportTexts = [];
+    }
+    if (reportTexts.length === 0) {
+      // Exit 1 with no report is the REFUSED false-green (the router bailed
+      // before running anything) — the one case where "no results" is the
+      // answer, and must never read as a pass.
+      return { ok: false, runId, root, error: 'no_report', routerOutput: outcome.output.slice(-2000) };
+    }
+
+    const run = mergeDistilledRuns(
+      reportTexts.map((text) => distillVitestRun(text, root, { maxFailures: opts.maxFailures })),
+      { maxFailures: opts.maxFailures },
+    );
+
+    // EI-19425177453558152: a `testNamePattern` matching ZERO tests measured NOTHING, yet every
+    // test is merely SKIPPED and vitest exits 0 — so this used to return a green.
+    //
+    // The router carries its own refusal for this, but it reads vitest's `Tests` summary row
+    // from stdout and THIS path always passes `--reporter=json`, so no such row exists and the
+    // router's check correctly fails open. That is why the check is repeated here rather than
+    // delegated: at this layer the distilled report gives an EXACT executed count, which is a
+    // strictly better signal than any output parse. (Measured: with only the router's check,
+    // this path still returned ok:true.)
+    //
+    // `skipped` is deliberately not required to be > 0 — the point is that nothing RAN.
+    if (opts.testNamePattern && run.passed + run.failed === 0) {
+      return {
+        ok: false,
+        runId,
+        root,
+        error: 'name_filter_no_match',
+        skipped: run.skipped,
+        files: run.files,
+        hint:
+          `testNamePattern ${JSON.stringify(opts.testNamePattern)} matched ZERO tests, so NOTHING was ` +
+          `verified — this is NOT a pass (${run.skipped} test(s) were collected and skipped). The pattern ` +
+          "matches a test's FULL name — every enclosing `describe` joined to the `it` text — so a fragment " +
+          'of either matches, but a typo or a stale name matches nothing. Re-run without testNamePattern to ' +
+          'see the real test names.',
+      };
+    }
+    // D-062: bound the payload in BYTES, not entries. `maxFailures` caps the
+    // LIST COUNT and so cannot bound bytes at all — one long assertion diff
+    // outweighs fifty terse failures. Counts stay complete and a cut is stated
+    // explicitly, so `failures.length` is never readable as "how many failed".
+    return boundTestRunPayload(
+      { ok: run.failed === 0 && outcome.code === 0, runId, root },
+      run,
+    ) as TestFilesCoreResult;
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => { /* best-effort */ });
+  }
+}
+
 export default defineTool({
   name: 'testing:run',
   description:
@@ -252,169 +438,30 @@ export default defineTool({
     // → cwd resolver every capability tool (read/write/edit/bash/inspect) already
     // uses, so this tool now reads the same tree those tools write.
     const root = resolveAgentWorkspaceRoot(ctx);
-    const runId = randomUUID();
-
-    // WI-7189 / EI-19383071792758676: a wrong-tree resolution used to be SILENT —
-    // a file that happens to exist (with stale content) at the resolved root ran
-    // and returned a confident, plausible, WRONG green. `root` is now echoed on
-    // EVERY return path below so a wrong-tree run is visible instead of silent
-    // (deliberately NOT gated on the requested files existing under root — the
-    // router already refuses that loudly via `route_error`/TEST_FILE_ROUTE_ERROR,
-    // and duplicating the check here would only race that well-tested path).
-    // One additional loud pre-flight refusal catches what the router's own check
-    // can't: a root that isn't a papercusp checkout AT ALL — missing the router
-    // script itself (e.g. a stale/legacy clone such as
-    // `.papercusp-workspaces/clones/papercup`, the known phantom-pot identity
-    // `canonicalizeLegacyPapercup` collapses at the registry layer but that a
-    // session already scoped to it bypasses). Without this check that case fails
-    // as an opaque spawn error two layers down instead of naming the real cause.
-    if (!existsSync(join(root, 'scripts', 'test-files.mjs'))) {
-      return {
-        data: {
-          ok: false,
-          runId,
-          root,
-          error: 'invalid_root',
-          hint:
-            `resolved workspace root '${root}' has no scripts/test-files.mjs — it is not a papercusp ` +
-            `checkout (or is a stale/partial one). This usually means the calling session is scoped to ` +
-            `the wrong harness/tree (e.g. a legacy standalone clone) rather than the canonical staging ` +
-            `checkout. Verify with 'pwd'/'git remote -v' in the tree you intend, and re-check how this ` +
-            `session's harness/project is registered.`,
-        },
-      };
-    }
-    const pathResolution = normalizeTestFilePaths(args.files, root);
-    if (!pathResolution.ok) {
-      return {
-        data: {
-          ok: false,
-          runId,
-          root,
-          error: 'ambiguous_workspace_path',
-          path: pathResolution.path,
-          matches: pathResolution.matches,
-          hint:
-            `workspace-relative test path ${JSON.stringify(pathResolution.path)} exists in multiple declared ` +
-            `workspaces (${pathResolution.matches.join(', ')}). Re-run with a repo-root-relative or absolute path.`,
-        },
-      };
-    }
     // EI-18776865728050036 — same clamp as build:typecheck, for the same reason: this tool is
     // dispatched FOREGROUND over an MCP transport that hard-caps a call at ~55s (EI-6073), so a
-    // suite slower than that had the call killed before the `error:'timeout'` branch below could
+    // suite slower than that had the call killed before the core's `error:'timeout'` branch could
     // return, surfacing as an opaque `CONNECTION_CLOSED`. Clamping makes this handler win the
-    // race and hand back an actionable next step.
+    // race and hand back an actionable next step. The clamp is a TRANSPORT concern, so it lives
+    // here and not in runTestFilesCore (whose other callers budget for themselves).
     const timeoutMs = clampForegroundTimeoutMs(args.timeoutMs ?? DEFAULT_TIMEOUT_MS);
-
-    const dir = await mkdtemp(join(tmpdir(), 'papercusp-testing-run-'));
-    const reportPath = join(dir, 'report.json');
-    try {
-      const vitestArgs = ['--reporter=json', `--outputFile=${reportPath}`];
-      if (args.testNamePattern) vitestArgs.push('-t', args.testNamePattern);
-
-      const outcome = await runRouter(
-        [...pathResolution.files, '--', ...vitestArgs],
-        root,
-        // The reporter inside the child reads this and stamps run_group_id, so
-        // the run's per-file rows are findable afterwards. We write no rows here.
-        { ...process.env, PAPERCUSP_TEST_RUN_GROUP: runId },
-        timeoutMs,
-      );
-
-      if (outcome.timedOut) {
-        return {
-          data: {
-            ok: false,
-            runId,
-            root,
-            error: 'timeout',
-            timeoutMs,
-            hint:
-              `hit the ${(timeoutMs / 1000).toFixed(0)}s foreground cap (held below the ~55s MCP transport limit so you get this instead of an opaque CONNECTION_CLOSED). ` +
-              `This suite is too slow to run inline — re-run it detached: capability:inspect { check: 'test', package: '<owning workspace>', path: '<test file>', run_in_background: true }, then poll capability:bash_output.`,
-            routerOutput: outcome.output.slice(-2000),
-          },
-        };
-      }
-      // A route/launch error never produced a report — surface the router's own
-      // diagnostics (they name the cause: unmatched path, mid-install corruption).
-      if (outcome.code === ROUTER_EXIT_ROUTE_ERROR || outcome.code === null) {
-        return { data: { ok: false, runId, root, error: 'route_error', routerOutput: outcome.output.slice(-2000) } };
-      }
-
-
-      // EI-18822211427354845: the router runs ONE `vitest run` per owning workspace
-      // config, so a request spanning several workspaces writes SEVERAL reports —
-      // `report.json`, `report.0.json`, `report.1.json`, … Reading only `reportPath`
-      // distilled whichever group happened to write last and reported it as the whole
-      // run: a two-workspace request with a RED first group returned `failed:0,
-      // failures:[]`. `dir` is a private mkdtemp this handler owns, so every *.json in
-      // it belongs to THIS run and can be merged without any output parsing.
-      let reportTexts: string[];
-      try {
-        const names = (await readdir(dir)).filter((n) => n.endsWith('.json')).sort();
-        reportTexts = (
-          await Promise.all(names.map((n) => readFile(join(dir, n), 'utf8').catch(() => null)))
-        ).filter((t): t is string => t !== null);
-      } catch {
-        reportTexts = [];
-      }
-      if (reportTexts.length === 0) {
-        // Exit 1 with no report is the REFUSED false-green (the router bailed
-        // before running anything) — the one case where "no results" is the
-        // answer, and must never read as a pass.
-        return { data: { ok: false, runId, root, error: 'no_report', routerOutput: outcome.output.slice(-2000) } };
-      }
-
-      const run = mergeDistilledRuns(
-        reportTexts.map((text) => distillVitestRun(text, root, { maxFailures: args.maxFailures })),
-        { maxFailures: args.maxFailures },
-      );
-
-      // EI-19425177453558152: a `testNamePattern` matching ZERO tests measured NOTHING, yet every
-      // test is merely SKIPPED and vitest exits 0 — so this used to return a green.
-      //
-      // The router carries its own refusal for this, but it reads vitest's `Tests` summary row
-      // from stdout and THIS tool always passes `--reporter=json`, so no such row exists and the
-      // router's check correctly fails open. That is why the check is repeated here rather than
-      // delegated: at this layer the distilled report gives an EXACT executed count, which is a
-      // strictly better signal than any output parse. (Measured: with only the router's check,
-      // this path still returned ok:true.)
-      //
-      // `skipped` is deliberately not required to be > 0 — the point is that nothing RAN.
-      if (args.testNamePattern && run.passed + run.failed === 0) {
-        return {
-          data: {
-            ok: false,
-            runId,
-            root,
-            error: 'name_filter_no_match',
-            skipped: run.skipped,
-            files: run.files,
-            hint:
-              `testNamePattern ${JSON.stringify(args.testNamePattern)} matched ZERO tests, so NOTHING was ` +
-              `verified — this is NOT a pass (${run.skipped} test(s) were collected and skipped). The pattern ` +
-              "matches a test's FULL name — every enclosing `describe` joined to the `it` text — so a fragment " +
-              'of either matches, but a typo or a stale name matches nothing. Re-run without testNamePattern to ' +
-              'see the real test names.',
-          },
-        };
-      }
-      // D-062: bound the payload in BYTES, not entries. `maxFailures` caps the
-      // LIST COUNT and so cannot bound bytes at all — one long assertion diff
-      // outweighs fifty terse failures, which is how this tool reached 20,569 B
-      // with 2.6% of calls carrying 28.7% of its total. Counts stay complete and
-      // a cut is stated explicitly, so `failures.length` is never readable as
-      // "how many failed". A result that already fits is returned untouched.
+    const result = await runTestFilesCore({
+      files: args.files,
+      root,
+      timeoutMs,
+      ...(args.maxFailures !== undefined ? { maxFailures: args.maxFailures } : {}),
+      ...(args.testNamePattern !== undefined ? { testNamePattern: args.testNamePattern } : {}),
+    });
+    if (result.ok === false && result.error === 'timeout') {
       return {
-        data: boundTestRunPayload(
-          { ok: run.failed === 0 && outcome.code === 0, runId, root },
-          run,
-        ),
+        data: {
+          ...result,
+          hint:
+            `hit the ${(timeoutMs / 1000).toFixed(0)}s foreground cap (held below the ~55s MCP transport limit so you get this instead of an opaque CONNECTION_CLOSED). ` +
+            `This suite is too slow to run inline — re-run it detached: capability:inspect { check: 'test', package: '<owning workspace>', path: '<test file>', run_in_background: true }, then poll capability:bash_output.`,
+        },
       };
-    } finally {
-      await rm(dir, { recursive: true, force: true }).catch(() => { /* best-effort */ });
     }
+    return { data: result };
   },
 });
