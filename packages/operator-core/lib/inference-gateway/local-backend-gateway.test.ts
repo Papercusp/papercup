@@ -821,6 +821,38 @@ test('P-008/D-014 FIRST FAILURE: a proxy 502 from a backend the pool still belie
   assert.equal(proxy.requests.length, 2, 'the failed attempt plus the retry — the retry re-targets the SAME backend');
 });
 
+test('P-008/D-014: a CONNECT-TIME transport failure also cold-starts and retries — the branch for a backend with no proxy in front of it', async () => {
+  // The twin of the 502 case. ornith cannot produce this shape (its proxy answers instead of
+  // refusing), so it needs its own coverage: a backend registered WITHOUT a proxy refuses the
+  // connection outright, the fetch REJECTS, and the rescue has to fire from `catch` rather than
+  // from the status check. Destroying the socket before any headers are sent is what makes the
+  // failure connect-time (`!settled`) rather than mid-body.
+  let unitRunning = false;
+  const b1 = await startFakeBackend('bare', (req, res) => {
+    if (!unitRunning) {
+      req.socket.destroy(); // no response at all — the client sees a transport error
+      return;
+    }
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ id: 'chatcmpl-bare', choices: [] }));
+  });
+  backends = [b1];
+  const started: string[] = [];
+  await boot([onDemand('bare', b1.baseUrl, ['ornith-35b'])], {
+    ensureLocalBackendRunning: async (b) => {
+      started.push(b.unitName ?? '(none)');
+      unitRunning = true;
+      return { ok: true };
+    },
+  });
+
+  const r = await chatCompletions({ model: 'ornith-35b', messages: [] });
+
+  assert.equal(r.status, 200, 'the transport failure was rescued, not surfaced as a 502');
+  assert.equal(((await r.json()) as { id?: string }).id, 'chatcmpl-bare');
+  assert.deepEqual(started, ['llama-bare.service'], 'the unit was started exactly once');
+});
+
 test('P-008/D-014 CONTROL: the IDENTICAL proxy 502 from an ALWAYS-ON backend is relayed untouched and starts nothing — the rescue is scoped to on-demand units', async () => {
   const proxy = await startProxiedBackend('alwayson');
   backends = [proxy];
