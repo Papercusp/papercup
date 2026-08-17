@@ -411,16 +411,25 @@ describe('gateStallNoopLogMessage (EI-19321275470651356: one class, two opposite
     expect(msg).toContain('skipped-locked');
   });
 
-  it('WI-39450: a superseded pass gets its OWN wording — not the peer-lock one', () => {
-    // The successor here is this run's own in-process refire, so "an active peer run holds the
-    // lock" is factually false. It must also say the failing files it named are STALE — that
-    // list is exactly what sends agents at already-fixed tests — and that the streak did not
-    // move, which is the behaviour a reader would otherwise have to infer.
+  it('WI-39450: a proven-stale pass gets its OWN wording — not the peer-lock one', () => {
+    // No peer run holds the lock here, so that wording is factually false. It must also say the
+    // failing files it named are STALE — that list is exactly what sends agents at already-fixed
+    // tests — and that the streak did not move, which a reader would otherwise have to infer.
     const msg = gateStallRecordOnlyLogMessage('not-green');
     expect(msg).not.toContain('an active peer run holds the lock');
     expect(msg).toContain('STALE');
-    expect(msg).toContain('auto-refire');
     expect(msg).toContain('streak NOT');
+  });
+
+  it('does NOT promise a refire that may never come — the deadline-blocked case records nothing', () => {
+    // The original wording said this pass "handed off to an auto-refire, which will record the
+    // real verdict". That is false whenever the refire was blocked (`deadline` in the live
+    // 12:36:47Z freeze), and it is the worst thing to tell a reader who is asking why `main` is
+    // stuck: it says WAIT for a verdict that is not coming. Instead the message must point at
+    // the detectors that really do cover a frozen `main`.
+    const msg = gateStallRecordOnlyLogMessage('not-green');
+    expect(msg).not.toContain('which will record the real verdict');
+    expect(msg).toContain('checkMainBehindStaging');
   });
 
   it('migrations-pending must NOT claim a peer run holds the lock — nobody is coming', () => {
