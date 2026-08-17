@@ -20,7 +20,7 @@
  * only reproduces today's behaviour. This mirrors the WI-6056 asymmetry — "unreadable"
  * must never read as "the hive opts out".
  */
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterAll } from "vitest";
 import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

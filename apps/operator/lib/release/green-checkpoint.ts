@@ -9538,10 +9538,24 @@ export function realCheckpointDeps(
     // budgeted measures. Policy from the FLAGS system (FLAGS.DESKTOP_PERF_GATE,
     // default ON — a FLAGS entry, not env; block-mode never armed in V1). A no-op
     // `pass` (reads nothing) when the flag is off or no run is recorded.
-    desktopPerfGate: async (candidate) =>
-      runDesktopPerfGate(await desktopPerfGatePolicyFromFlags(), {
+    // WI-39672 (D-007): the run this reads is workspace-GLOBAL (no harness scoping column
+    // exists), so scope the LEG to hives that actually ship a desktop app — otherwise one
+    // Papercusp desktop measure holds every hive's promotion. Fails closed; see
+    // `hiveShipsDesktopApp`.
+    desktopPerfGate: async (candidate) => {
+      if (!hiveShipsDesktopApp(cfg.integrationRoot)) {
+        return {
+          action: "pass",
+          reasons: ["hive ships no desktop app"],
+          summary: `⬜ desktop-perf-gate: SKIPPED — hive ships no desktop app (WI-39672); ${candidate.slice(0, 8)} advances unjudged by desktop perf`,
+          verdictStatus: "unknown",
+          pressure: null,
+        };
+      }
+      return runDesktopPerfGate(await desktopPerfGatePolicyFromFlags(), {
         candidateSha: candidate,
-      }),
+      });
+    },
     // P-016 (agent-tool-delta-protocol D-008): the real delta gate reads the
     // baked production delta-flag default + the latest recorded Lane-C scenario
     // verdicts (llm_test_runs) — NOT a synchronous live-model eval. Policy from
