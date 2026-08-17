@@ -100,6 +100,95 @@ export interface RoutingSnapshot {
   /** Set when the instrument itself was degraded — 'embed-unavailable' means
    * similarity could not be measured at all (≠ measured and found nothing). */
   degraded?: 'embed-unavailable';
+  /** Min/max responder-selection provenance (consult-min-max-and-rubric-vetting
+   * D-001/D-002/D-003) — stamped by the CONSULT layer at selection time and
+   * persisted with the snapshot, so the D-003 honesty feed can always
+   * distinguish a floor-qualified responder from a best-available minimum
+   * fill. Absent on pre-min/max rows and on surfaces that route without
+   * selecting (grader discovery). */
+  selection?: SnapshotSelection;
+}
+
+/** How a responder entered the selected set (D-002): 'floor' = cleared both
+ * routing floors (the pre-min/max notion of qualified); 'minimum' = did NOT
+ * clear the floors but was selected as best-available to honor the caller's
+ * minResponders (D-001 §1 / D-003 — labeled, never silent). */
+export type SelectionVia = 'floor' | 'minimum';
+
+export interface SelectedResponder {
+  candidate: RoutingCandidate;
+  via: SelectionVia;
+}
+
+export interface SnapshotSelection {
+  min: number;
+  max: number;
+  selected: Array<{ ownerId: string; via: SelectionVia; score: number; similarity: number; liveness: string }>;
+}
+
+export interface ResponderSelectionParams {
+  /** Candidates clearing BOTH floors, best first (RouteResult.qualified). */
+  qualified: RoutingCandidate[];
+  /** ALL ranked candidates, best first (RoutingSnapshot.candidates) — the
+   * minimum-fill pool. A superset of `qualified`. */
+  allCandidates: RoutingCandidate[];
+  /** Select at least this many even when the floors filter everyone out
+   * (D-001 §1; global default 1 per D-003). Clamped to [0, max]. */
+  min: number;
+  /** Hard cap on the selected set (the cascade menu). */
+  max: number;
+  /** Caller-owned selectability gate (the consult layer passes its liveness
+   * gate). A candidate failing it is skipped for BOTH floor picks and fills —
+   * a minimum that can only be filled by the unreachable stays unfilled
+   * (honest no_live_responder beats a dead pick). */
+  isSelectable?: (c: RoutingCandidate) => boolean;
+}
+
+/**
+ * D-001 §1 selection: every selectable floor-qualified candidate best-first up
+ * to `max`; when fewer than `min` result, fill with the best-scoring remaining
+ * selectable candidates (labeled via:'minimum'). Deterministic, pure, shared
+ * by every selecting surface (get_feedback, plan-start) so the semantics
+ * cannot drift between call sites. Delivery stays a CASCADE regardless — the
+ * result is an ordered menu, never a parallel-wake set.
+ */
+export function selectResponders(params: ResponderSelectionParams): SelectedResponder[] {
+  const selectable = params.isSelectable ?? ((): boolean => true);
+  const max = Math.max(0, Math.floor(params.max));
+  const min = Math.min(Math.max(0, Math.floor(params.min)), max);
+  const picked: SelectedResponder[] = [];
+  const seen = new Set<string>();
+  for (const c of params.qualified) {
+    if (picked.length >= max) break;
+    if (seen.has(c.ownerId) || !selectable(c)) continue;
+    picked.push({ candidate: c, via: 'floor' });
+    seen.add(c.ownerId);
+  }
+  if (picked.length < min) {
+    for (const c of params.allCandidates) {
+      if (picked.length >= min) break;
+      if (seen.has(c.ownerId) || !selectable(c)) continue;
+      picked.push({ candidate: c, via: 'minimum' });
+      seen.add(c.ownerId);
+    }
+  }
+  return picked;
+}
+
+/** The SnapshotSelection record for a selected set — the persisted provenance
+ * half of selectResponders (D-002: labeled, never silent). */
+export function selectionSnapshot(min: number, max: number, selected: SelectedResponder[]): SnapshotSelection {
+  return {
+    min,
+    max,
+    selected: selected.map((s) => ({
+      ownerId: s.candidate.ownerId,
+      via: s.via,
+      score: s.candidate.score,
+      similarity: s.candidate.signals.similarity,
+      liveness: s.candidate.liveness,
+    })),
+  };
 }
 
 export interface RouteResult {

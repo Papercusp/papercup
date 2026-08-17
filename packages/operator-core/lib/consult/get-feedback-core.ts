@@ -28,8 +28,8 @@
  *    reply verbs). expires_at derives from the contract.
  */
 import type { Sql } from 'postgres';
-import type { RouteResult, RoutingCandidate } from './relevance-router';
-import { DEFAULT_SIM_FLOOR } from './relevance-router';
+import type { RouteResult, RoutingCandidate, SelectionVia } from './relevance-router';
+import { DEFAULT_SIM_FLOOR, selectResponders, selectionSnapshot } from './relevance-router';
 
 /** Mirrors consult_state.wake_budget DEFAULT (migration 834) — D-005. */
 export const WAKE_BUDGET_PER_TASK = 4;
@@ -48,6 +48,17 @@ export const HARD_BLOCKED_EXPIRY_MS = 30 * 60_000; // 30m
 export const DEAD_RESPONDER_STATES: ReadonlySet<string> = new Set(['ended', 'recorded']);
 /** Recursion ceiling (D-007 §7) — mirrors the consult_state.depth CHECK (0–2). */
 export const MAX_CONSULT_DEPTH = 2;
+/** consult-min-max-and-rubric-vetting-2026-08-17 D-003 [owner]: EVERY consult
+ * selects at least the best-available LIVE candidate even below the relevance
+ * floor (labeled per D-002). The honest no-route verdict survives only where a
+ * minimum is physically unfillable: no live candidate at all, or the embedder
+ * is down (no ranking exists to pick "best-available" from — D-003 keeps the
+ * cannot-measure degrade honest rather than inventing a recency fallback). */
+export const DEFAULT_MIN_RESPONDERS = 1;
+/** Default cap on the selected cascade menu — the router's historical
+ * qualified cap (maxQualified default). Rubric vetting pins 3 explicitly
+ * (D-001 §4); other call sites may widen up to the tool-layer bound. */
+export const DEFAULT_MAX_RESPONDERS = 3;
 
 /** The latched park/reply key for a consult conversation — the ONE format every
  * emitter (P-004 reply verbs, P-005 expiry sweep) and awaiter shares. */
@@ -82,6 +93,14 @@ export interface GetFeedbackRequest {
    * 1 (e.g. 2) to force fresh routing when an archived answer did not fit;
    * tests use 0 / unreachable as falsifiability controls. */
   archiveFloor?: number;
+  /** D-001 §1 / D-003: select at least this many responders even when the
+   * routing floors filter everyone out (best-available fill, labeled
+   * via:'minimum'). Default DEFAULT_MIN_RESPONDERS (1). Pass 0 to restore
+   * pure-floor selection. */
+  minResponders?: number;
+  /** D-001 §1: hard cap on the selected cascade menu. Default
+   * DEFAULT_MAX_RESPONDERS (3). Delivery remains single-wake cascade. */
+  maxResponders?: number;
 }
 
 /** P-005 creation-side refusals — structural, BEFORE any conversation/row is
@@ -132,8 +151,14 @@ export interface GetFeedbackResult {
    * widening in migration 834's CHECK). */
   state: 'awaiting_responder' | 'no_qualified_responder' | 'served_from_archive';
   responder: RoutingCandidate | null;
-  /** Qualified-but-not-chosen, best first — the D-007(7) manual-cascade menu. */
-  remaining_candidates: Array<{ ownerId: string; score: number; liveness: string }>;
+  /** How the responder entered the selected set (D-002): 'floor' = cleared the
+   * routing floors; 'minimum' = best-available fill below them (weigh the
+   * reply as a first-principles review). Null when no responder. */
+  responder_via: SelectionVia | null;
+  /** The rest of the SELECTED cascade menu, best first — the D-007(7)
+   * manual-cascade menu. On no_live_responder it falls back to the (dead)
+   * floor-qualified candidates so the retrieval path keeps its refs. */
+  remaining_candidates: Array<{ ownerId: string; score: number; liveness: string; via: SelectionVia }>;
   origin_task_ref: string | null;
   latency_contract: LatencyContract;
   expires_at: string | null;
@@ -361,10 +386,12 @@ export async function getFeedbackCore(
       thread_id: opened.thread_id,
       state: 'served_from_archive',
       responder: null,
+      responder_via: null,
       remaining_candidates: route.qualified.map((c) => ({
         ownerId: c.ownerId,
         score: c.score,
         liveness: c.liveness,
+        via: 'floor' as SelectionVia,
       })),
       origin_task_ref: originRef,
       latency_contract: latency,
@@ -394,9 +421,26 @@ export async function getFeedbackCore(
     };
   }
 
-  // 3) Liveness gate (v1, D-008 §5): top qualified that is not dead.
-  const liveQualified = route.qualified.filter((c) => !DEAD_RESPONDER_STATES.has(c.liveness));
-  const chosen = route.verdict === 'routed' ? (liveQualified[0] ?? null) : null;
+  // 3) D-001 §1 selection (min/max, liveness-gated per D-008 §5): every
+  //    selectable floor-qualified candidate best-first up to max; fewer than
+  //    min ⇒ best-available fill from the full ranked pool, labeled
+  //    via:'minimum' (D-002 — labeled, never silent). The selected set IS the
+  //    cascade menu; delivery stays single-wake. The selection provenance is
+  //    stamped into the routing snapshot BEFORE it is persisted, so the D-003
+  //    honesty feed can always tell floor-qualified from minimum-fill.
+  const minResponders = Math.max(0, req.minResponders ?? DEFAULT_MIN_RESPONDERS);
+  const maxResponders = Math.max(1, req.maxResponders ?? DEFAULT_MAX_RESPONDERS);
+  const selected = selectResponders({
+    qualified: route.qualified,
+    allCandidates: route.snapshot.candidates,
+    min: minResponders,
+    max: maxResponders,
+    isSelectable: (c) => !DEAD_RESPONDER_STATES.has(c.liveness),
+  });
+  route.snapshot.selection = selectionSnapshot(minResponders, maxResponders, selected);
+  const chosenSel = selected[0] ?? null;
+  const chosen = chosenSel?.candidate ?? null;
+  const chosenVia: SelectionVia | null = chosenSel?.via ?? null;
 
   // Belt + braces for the cycle rule (D-005): the excludeOwners fold means the
   // router can never hand back a lineage owner — but a future direct-responder
@@ -408,11 +452,15 @@ export async function getFeedbackCore(
       hint: "The resolved responder is already in this consult's lineage (A→B→A, D-005) — a cycle is refused. Re-call excluding them, or proceed on your own judgment.",
     };
   }
+  // With a minimum in play (D-003 default 1), an empty selection means the
+  // minimum was UNFILLABLE — the distinct causes stay distinguishable (D-003):
+  // instrument down ⇒ embed_unavailable; candidates existed but none live ⇒
+  // no_live_responder; no matching transcript at all ⇒ below_floor.
   const reason: GetFeedbackResult['reason'] = chosen
     ? undefined
     : route.snapshot.degraded === 'embed-unavailable'
       ? 'embed_unavailable'
-      : route.verdict === 'routed'
+      : route.snapshot.candidates.length > 0
         ? 'no_live_responder'
         : 'below_floor';
 
@@ -474,7 +522,12 @@ export async function getFeedbackCore(
     `;
   }
 
-  // 7) Wake the responder with why-you-were-chosen evidence (D-008 §5).
+  // 7) Wake the responder. A floor-qualified pick gets the why-you-were-chosen
+  //    evidence body (D-008 §5); a minimum-fill pick gets the HONEST
+  //    best-available body (D-002): first-principles review requested, no
+  //    pretence their transcript covers it, and no reflexive lack-of-context
+  //    decline (that protocol line would otherwise make every minimum consult
+  //    a designed decline — a burned wake).
   let woke = 0;
   if (willWake && chosen) {
     const r = await deps.reach({
@@ -482,11 +535,16 @@ export async function getFeedbackCore(
       conversationId: opened.conversation_id,
       summary: `🧭 consult from ${req.requesterId}: ${req.question.replace(/\s+/g, ' ').slice(0, 72)}`,
       body:
-        `Routed to you by transcript relevance (score ${chosen.score.toFixed(2)}, sim ${chosen.signals.similarity.toFixed(2)}).\n` +
-        `Why you: ${evidenceLine(chosen)} — sessions:read resolves the refs.\n` +
-        `Validate relevance FIRST; decline cheaply if your context doesn't cover it. Answer FROM your transcript, citing evidence. ` +
-        `Reply in conversation ${opened.conversation_id} with consult:reply { kind } (answer requires evidence); ` +
-        `consult:decline { reason } if it's not your area; consult:close { outcome } when settled. Untyped conversations:post is refused.`,
+        chosenVia === 'minimum'
+          ? `Selected as BEST-AVAILABLE reviewer (blended score ${chosen.score.toFixed(2)}, sim ${chosen.signals.similarity.toFixed(2)} — BELOW the relevance floor; no better-matched live peer exists, and this consult carries a minimum of ${minResponders}).\n` +
+            `This is a FIRST-PRINCIPLES review request, not a claim your transcript covers it — do NOT decline solely for lack of context. Review the question on its merits and state plainly what you can and cannot ground.\n` +
+            `Reply in conversation ${opened.conversation_id} with consult:reply { kind } (answer requires evidence — labeled first-principles reasoning is admissible here); ` +
+            `consult:decline { reason } only if you genuinely cannot add value; consult:close { outcome } when settled. Untyped conversations:post is refused.`
+          : `Routed to you by transcript relevance (score ${chosen.score.toFixed(2)}, sim ${chosen.signals.similarity.toFixed(2)}).\n` +
+            `Why you: ${evidenceLine(chosen)} — sessions:read resolves the refs.\n` +
+            `Validate relevance FIRST; decline cheaply if your context doesn't cover it. Answer FROM your transcript, citing evidence. ` +
+            `Reply in conversation ${opened.conversation_id} with consult:reply { kind } (answer requires evidence); ` +
+            `consult:decline { reason } if it's not your area; consult:close { outcome } when settled. Untyped conversations:post is refused.`,
     });
     woke = r.woke;
   }
