@@ -173,6 +173,8 @@ export default defineTool({
       allowMethodShrink: args.allowMethodShrink,
       shrinkReason: args.shrinkReason,
       ...(args.classDowngradeReason ? { classDowngradeReason: args.classDowngradeReason } : {}),
+      // P-011 (D-006): tests-check paths validate against the tree the AGENT edits.
+      checkPathRoot: resolveAgentWorkspaceRoot(ctx),
       by: id.ownerId,
       // Acceptance rubrics activate on propose (plan D-008: no ratification step) — the
       // lib defaults their status to 'active'; standard proposals stay Queen-gated.

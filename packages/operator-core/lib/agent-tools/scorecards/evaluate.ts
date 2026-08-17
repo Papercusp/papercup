@@ -54,6 +54,10 @@ export async function evaluateScorecard(args: z.infer<typeof scorecardEvaluateAr
     key: criterion.key,
     title: criterion.title,
     instrumentKey: criterion.instrumentKey ?? null,
+    // P-011 (D-006): the structured check, so a grader KNOWS a criterion is
+    // deterministic before rating it — a kind:'tests' check is actually RUN by
+    // scorecards:emit, and a pass-claiming rating a failing run contradicts is refused.
+    check: criterion.check ?? null,
     allowedRatings: criterion.ratingScale ?? rubric.ratingScale,
     rating: null,
     evidence: null,
