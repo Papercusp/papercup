@@ -3,9 +3,12 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
 import { resolveAgentIdentity } from '../coordination/identity';
-import { getRubric } from '../../rubrics';
+import { getOrgPg } from '@papercusp/db-org';
+import { getRubric, getRubricPlanRevision } from '../../rubrics';
 import { getIssue } from '../../issues-engineer';
 import { captureImprovement } from '../../harness/improvements/capture-core';
+import { activeWorkspaceId } from '../../workspace-registry';
+import { consultStateExists } from '../../consult/get-feedback-core';
 import {
   normalizeScorecardRatings,
   validateObservationRatings,
@@ -13,6 +16,7 @@ import {
   validateScorecardRatingValues,
   ObservationEvidenceError,
   type ObservationRatings,
+  type ScorecardVetting,
   asStructuredObservation,
 } from '../../harness/improvements/observation-types';
 import { readRunningGeneration } from '../../scout/generation-watermark';
@@ -36,6 +40,26 @@ export const scorecardEmitArgs = z
     body: z.string().max(8000).optional(),
     ratings: z.record(z.string().min(1), scorecardRatingEntrySchema),
     instrumentSnapshots: z.record(z.string().min(1), scorecardInstrumentSnapshotSchema).optional(),
+    subject: z
+      .object({
+        kind: z.enum(['agent-run', 'session', 'work-item', 'plan', 'pot', 'rubric']).optional(),
+        ref: z.string().min(1).max(200),
+        windowStart: z.string().min(1).max(64).optional(),
+        windowEnd: z.string().min(1).max(64).optional(),
+      })
+      .strict()
+      .optional()
+      .describe(
+        "WHAT this scorecard grades (stored as observation.subject) — e.g. { kind:'rubric', ref:'<rubricId>' } on a vetting card.",
+      ),
+    vettingConsult: z
+      .string()
+      .min(1)
+      .max(120)
+      .optional()
+      .describe(
+        'Vetting linkage (consult-min-max-and-rubric-vetting-2026-08-17 P-004): conversation_id of the get_feedback consult that critiqued the vetted rubric (subject.ref names it). Both are validated to exist, then stamped as observation.vetting.',
+      ),
     supersedes: z
       .string()
       .min(1)
@@ -118,6 +142,46 @@ export async function emitScorecard(
         instrumentContract,
       };
     }
+    // ── the vetting stamp (consult-min-max-and-rubric-vetting-2026-08-17 P-004) ──
+    // A vetting scorecard (meta-rubric grading of an acceptance rubric) links the
+    // get_feedback consult that critiqued the rubric and pins the rubric's plan-row
+    // version, so the acceptance gate can tell whether the attestation still covers
+    // the CURRENT revision. Both halves are validated to EXIST before anything is
+    // stamped — the gate trusts the stamp rather than re-querying, so a dangling
+    // link here would be a booby trap (same posture as the acceptance-kind link
+    // guards in proposeRubric).
+    let vetting: ScorecardVetting | undefined;
+    if (args.vettingConsult) {
+      const subjectRef = args.subject?.ref;
+      if (!subjectRef) {
+        return {
+          ok: false as const,
+          error:
+            "vettingConsult requires `subject` naming the vetted rubric — pass subject:{ kind:'rubric', ref:'<the acceptance rubricId>' }",
+        };
+      }
+      const vettedRubric = await getRubric(subjectRef);
+      if (!vettedRubric) {
+        return {
+          ok: false as const,
+          error: `vetting subject '${subjectRef}' does not resolve to a rubric — the vetting stamp would be a dangling link`,
+        };
+      }
+      const consultOk = await consultStateExists(getOrgPg().sql, activeWorkspaceId(), args.vettingConsult);
+      if (!consultOk) {
+        return {
+          ok: false as const,
+          error:
+            `vetting consult '${args.vettingConsult}' not found in consult_state — open the critique consult first ` +
+            `(consult:get_feedback about rubric '${subjectRef}') and pass its conversation_id`,
+        };
+      }
+      const rubricRevision = await getRubricPlanRevision(subjectRef);
+      vetting = {
+        consultId: args.vettingConsult,
+        ...(rubricRevision != null ? { rubricRevision } : {}),
+      };
+    }
     // P-008 (EI-20581177540737568): a 'violatable' criterion is monotonic-downward — one
     // violation falsifies it permanently — so a mid-run rating of one cannot be final.
     // DEFAULT IS PROVISIONAL: the emitter must AFFIRM subject termination (terminal:true)
@@ -166,9 +230,18 @@ export async function emitScorecard(
     // duplicate — the fingerprint (rubricRef+ratings+snapshots, unchanged for
     // compatibility with stored rows) cannot see finality, so compare it separately.
     const finalityChanged = latest !== undefined && (latest.provisional !== undefined) !== (provisional !== undefined);
+    // P-004: a re-emit that only moves the vetting stamp — a new consult, or the same
+    // consult re-attested against a NEW rubric revision after the author improved the
+    // rubric — is the re-vetting step, not a duplicate. The fingerprint cannot see it
+    // (rubricRef + ratings + snapshots only, unchanged for stored-row compatibility),
+    // so compare the stamps separately, like finality above.
+    const vettingChanged =
+      (latest?.vetting?.consultId ?? null) !== (vetting?.consultId ?? null) ||
+      (latest?.vetting?.rubricRevision ?? null) !== (vetting?.rubricRevision ?? null);
     if (
       !args.force &&
       !finalityChanged &&
+      !vettingChanged &&
       latestFingerprint === evidenceFingerprint &&
       (!args.supersedes || sameCorrectionAlreadyExists)
     ) {
@@ -211,6 +284,8 @@ export async function emitScorecard(
           ...(args.supersedes ? { supersedes: args.supersedes } : {}),
           ...(gradedGeneration ? { gradedGeneration } : {}),
           ...(provisional ? { provisional } : {}),
+          ...(args.subject ? { subject: args.subject } : {}),
+          ...(vetting ? { vetting } : {}),
         },
       },
     });
