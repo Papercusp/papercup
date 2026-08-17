@@ -420,6 +420,85 @@ export async function retractScorecard(
   return { ok: true, issueId, retracted: true, retraction };
 }
 
+/** P-013: the shared rating→verdict vocabulary, exported so the grading-audit
+ *  verdict and the instrument contract cannot drift. */
+export function ratingVerdict(rating: string): 'pass' | 'fail' | 'unknown' | null {
+  return expectedInstrumentVerdict(rating);
+}
+
+/** P-013: an audit FAILS iff any rating maps to 'fail' (severe/broken/etc. included);
+ *  unknown/custom ratings never fail an audit silently — they leave it passing only
+ *  when nothing failed, which errs toward auditing again, never toward muting. */
+export function auditVerdictFromRatings(
+  ratings: Record<string, { rating: string }>,
+): 'passed' | 'failed' {
+  for (const entry of Object.values(ratings)) {
+    if (expectedInstrumentVerdict(entry.rating) === 'fail') return 'failed';
+  }
+  return 'passed';
+}
+
+export interface GradingAuditRecordResult {
+  ok: boolean;
+  issueId: string;
+  error?: string;
+  gradingAudit?: ScorecardGradingAudit;
+}
+
+/**
+ * P-013: settle a graded card's audit-pending stamp after its audit scorecard filed.
+ * Mirrors {@link retractScorecard}: mergeIssuePayload merges the payload ROOT only,
+ * so the COMPLETE nested observation is written back with the settled stamp.
+ * Idempotent-safe: an already-settled stamp is returned as-is (never overwritten —
+ * the FIRST audit is the audit; a second auditor supersedes the audit card instead).
+ */
+export async function recordGradingAudit(
+  issueId: string,
+  input: { auditIssueId: string; auditor: string; verdict: 'passed' | 'failed'; at?: string },
+  deps: {
+    getIssue?: typeof getIssue;
+    mergeIssuePayload?: typeof mergeIssuePayload;
+  } = {},
+): Promise<GradingAuditRecordResult> {
+  const issue = await (deps.getIssue ?? getIssue)(issueId);
+  if (!issue) return { ok: false, issueId, error: `scorecard '${issueId}' not found` };
+  const payload = issue.payload && typeof issue.payload === 'object' && !Array.isArray(issue.payload)
+    ? issue.payload as Record<string, unknown>
+    : {};
+  const rawObservation = payload.observation;
+  const observation = asStructuredObservation(rawObservation);
+  if (!observation?.rubricRef || !observation.ratings) {
+    return { ok: false, issueId, error: `'${issueId}' is not a scorecard` };
+  }
+  const existing = observation.gradingAudit;
+  if (!existing) {
+    return { ok: false, issueId, error: `'${issueId}' carries no gradingAudit stamp to settle` };
+  }
+  if (existing.state !== 'pending') {
+    return { ok: true, issueId, gradingAudit: existing };
+  }
+  const settled: ScorecardGradingAudit = {
+    ...existing,
+    state: input.verdict,
+    auditIssueId: input.auditIssueId,
+    auditor: input.auditor,
+    auditedAt: input.at ?? new Date().toISOString(),
+  };
+  const updated = await (deps.mergeIssuePayload ?? mergeIssuePayload)(issueId, {
+    observation: { ...(rawObservation as Record<string, unknown>), gradingAudit: settled },
+  });
+  if (!updated) {
+    return { ok: false, issueId, error: `failed to record grading audit on '${issueId}'` };
+  }
+  void import('./sync-sse')
+    .then((m) => {
+      m.notifySyncInvalidate('scorecards.list');
+      m.notifySyncInvalidate('rubrics.trend');
+    })
+    .catch(() => {});
+  return { ok: true, issueId, gradingAudit: settled };
+}
+
 /**
  * PURE: validate a raw payload `gradedGeneration` into the projected shape.
  * Backward-compatible with pre-WI-5397 rows, which carried `{ sha, hostStartedAt }`
