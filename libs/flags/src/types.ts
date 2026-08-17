@@ -1588,6 +1588,19 @@ export const FLAGS = {
   // enforcement is EI-20581099901890760's lane). DEFAULT ON. OFF = the kill-switch:
   // the timer still ticks but every sweep no-ops before reading the ledger.
   GOAL_EDIT_CLAIM_WATCHDOG: "papercusp-goal-edit-claim-watchdog",
+  // goal-mode-design-intent-hardening-2026-08-16 P-009: gates the goal owner-report
+  // cadence watchdog — a 10-min sweep that nudges a goal-mode owner whose ACTIVE
+  // goal has had no owner report (coord_event_log escalations authored by the owner,
+  // or attention_notifications naming the goal/owner in data) past the 4h floor.
+  // The nudge is ONE directed wake per silence (gated on the deduped escalation
+  // being newly opened) and carries the GOAL contract's report skeleton: what
+  // moved, what it cost, what is owner-walled, what you killed. Measured failure
+  // (WI-39348): exemplary reporting for 2.5h, then 5h silence including goal-met.
+  // Floor carries a D-016 reviewBy (guard test fails past it). Only fires on a
+  // POSITIVELY-alive owner — a dead one is GOAL_LIVENESS_WATCHDOG's lane.
+  // DEFAULT ON. OFF = the kill-switch: the timer still ticks but every sweep
+  // no-ops before reading the goals table.
+  GOAL_OWNER_REPORT_WATCHDOG: "papercusp-goal-owner-report-watchdog",
   // goal-mode-design-intent-hardening-2026-08-16 P-002: gates the wind-down
   // DISPOSITION demand — loop:end (and session:end for a loopless owner) by a
   // GOAL-mode owner whose goal is still active refuses without a disposition

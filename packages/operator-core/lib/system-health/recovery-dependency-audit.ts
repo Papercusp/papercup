@@ -493,6 +493,13 @@ export const RECOVERY_MECHANISMS: readonly RecoveryMechanism[] = [
     note: 'P-008 — first edit-claim by a goal-mode owner, surfaced to graders in real time. A stale grading signal is not a substrate failure.',
   },
   {
+    name: 'goal-owner-report-watchdog',
+    file: 'packages/operator-core/lib/system-health/goal-owner-report-watchdog.ts',
+    executor: 'operator-in-process-timer',
+    recovers: [],
+    note: 'P-009 — a goal-mode owner report-silent past the cadence floor gets one nudge with the report skeleton. A quiet owner is not a substrate failure.',
+  },
+  {
     name: 'retrieval-degradation-watchdog',
     file: 'packages/operator-core/lib/system-health/retrieval-degradation-watchdog.ts',
     executor: 'operator-in-process-timer',

@@ -529,6 +529,17 @@ export async function startDbos(): Promise<void> {
       '../system-health/goal-edit-claim-watchdog'
     );
     startGoalEditClaimWatchdog(getOrgPg().sql);
+    // P-009: nudge a goal-mode owner whose ACTIVE goal has gone report-silent past
+    // the 4h cadence floor — one directed wake per silence with the GOAL contract's
+    // report skeleton (what moved / what it cost / what is owner-walled / what you
+    // killed). The measured failure (WI-39348): exemplary reporting for 2.5h, then
+    // 5h of silence including at goal-met. Fires only on a POSITIVELY-alive owner
+    // (a dead one is the liveness watchdog's lane). Runtime gate:
+    // FLAGS.GOAL_OWNER_REPORT_WATCHDOG (default ON), checked per tick.
+    const { startGoalOwnerReportWatchdog } = await import(
+      '../system-health/goal-owner-report-watchdog'
+    );
+    startGoalOwnerReportWatchdog(getOrgPg().sql);
     // goal-mode-design-intent-hardening-2026-08-16 P-005 (D-003): the goal spend
     // rollup tick — writes goals.metadata.spentCents platform-side from the cost
     // ledger (pot leg + subject/descendant session leg) so "actual spend
