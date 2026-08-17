@@ -37,6 +37,7 @@ import {
   attributeFailedTask,
   renderFailingFilesSummary,
 } from "./lib/vitest-summary.mjs";
+import { selectRelatedTests } from "./lib/related-tests.mjs";
 import { emptySuiteGuardArgs } from "./lib/empty-suite-guard.mjs";
 import { applyWorkerCapEnv } from "./lib/worker-cap.mjs";
 import {
@@ -2318,6 +2319,51 @@ for (const guard of REPO_WIDE_INVARIANT_GUARDS) {
     script: guard.script,
     notCheckedIsNonGating: Boolean(guard.notCheckedIsNonGating),
   });
+}
+
+// --related: narrow each workspace's `test` task to the test files the change can
+// actually reach. Everything else about the task list is untouched — in particular
+// the repo-wide invariant guards above keep attaching exactly as they do without
+// this flag, because they are the cross-cutting net that selection cannot replace.
+//
+// A task keeps `relatedFiles` only when the engine returns mode 'related'. Every
+// other outcome leaves it undefined and therefore runs the FULL suite, which is the
+// safe direction: over-running costs minutes, under-running certifies nothing.
+if (relatedOnly && !printAffected) {
+  const changedAbs = invariantGuardChangedPaths().map((f) => join(ROOT, f));
+  for (const t of tasks) {
+    // Only the ordinary unit-test task is narrowable. Lane splits, integration,
+    // el-suite and the invariant guards each mean something specific by "run"; a
+    // positional file filter would silently change what they assert.
+    if (t.script !== "test") continue;
+    const wsRoot = join(ROOT, t.ws.dir);
+    let result;
+    try {
+      result = selectRelatedTests({
+        rootDir: wsRoot,
+        changedPaths: changedAbs,
+        aliases: tsconfigAliasesFor(wsRoot),
+      });
+    } catch (err) {
+      // A crash in selection must never be able to SHRINK a run. Fall back loudly.
+      result = {
+        mode: "full",
+        selected: [],
+        total: 0,
+        reason: `selection-error(${(err && err.message) || err})`,
+      };
+    }
+    if (result.mode === "related") {
+      // vitest takes positional filters as substring matches against test paths;
+      // workspace-relative paths are what its `include` globs are resolved against.
+      t.relatedFiles = result.selected.map((f) => relative(wsRoot, f));
+    }
+    outSync(
+      `RELATED_SELECTION ws=${t.ws.name} selected=${
+        result.mode === "related" ? result.selected.length : result.total
+      } total=${result.total} mode=${result.mode} reason=${result.reason}`,
+    );
+  }
 }
 
 if (printAffected) {
