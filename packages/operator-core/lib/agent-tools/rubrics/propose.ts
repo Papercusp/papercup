@@ -11,7 +11,8 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { proposeRubric, rubricCompleteness } from '../../rubrics';
 import { validateRubricReplicationSql } from '../../rubrics-replication-sql';
-import { rubricCriterionWindowSchema } from '../plans/rubric-template';
+import { rubricCriterionWindowSchema, rubricCriterionCheckSchema } from '../plans/rubric-template';
+import { resolveAgentWorkspaceRoot } from '../capability/base-dir';
 
 const criterion = z.object({
   key: z.string().min(1).describe('stable kebab id; an observation rating references this'),
@@ -53,6 +54,15 @@ const criterion = z.object({
     .optional()
     .describe(
       "grading class (P-008): 'violatable' = monotonic-downward, one violation falsifies permanently — mid-run ratings are stamped PROVISIONAL by scorecards:emit until the graded subject terminates. Omitted = settle-once",
+    ),
+  check: rubricCriterionCheckSchema
+    .optional()
+    .describe(
+      "the criterion's STRUCTURED CHECK (P-011 / D-006), preferred wherever the outcome is objectively checkable: " +
+        "kind:'tests' { files:[...] } = deterministic must-pass — paths must resolve against the live tree or " +
+        "THIS PROPOSE IS REFUSED, and scorecards:emit actually RUNS the files at grading time (a contradicted " +
+        "pass-rating refuses the emit); kind:'instrument' { instrumentKey } = the generalized instrument binding. " +
+        'Omitted = fuzzy judgment criterion',
     ),
 });
 
