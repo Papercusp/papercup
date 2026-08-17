@@ -36,7 +36,8 @@ vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
 }));
 vi.mock('../../projected-tool-deps', () => ({ PROJECTED_DEPS: {} }));
 vi.mock('@papercusp/scheduled-registry', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@papercusp/scheduled-registry')>()), managedSetInterval: () => ({ unref: () => {} }) }));
+  ...(await importOriginal<typeof import('@papercusp/scheduled-registry')>()),
+  managedSetInterval: () => ({ unref: () => {} }) }));
 vi.mock('./engine', () => ({
   emitAwaitedEvent: async (opts: { key: string; payload?: unknown; summary?: string }) => {
     h.emits.push({ key: opts.key, payload: opts.payload, summary: opts.summary });
