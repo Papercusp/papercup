@@ -185,9 +185,55 @@ function stripComments(sql) {
  * verbatim rather than re-implementing the regex set (see ACK_MARKER's note).
  * Returns the matched RULES entries ({ id, re, why }), empty when clean.
  */
+/**
+ * Split stripped SQL into individual statements.
+ *
+ * WHY THIS EXISTS (EI-20745458722827468): several rules use `[\s\S]*?` to span a clause
+ * that may wrap lines — `narrowing-unique-index` looks for a WHERE after CREATE UNIQUE
+ * INDEX. Tested against the WHOLE FILE that wildcard also spans STATEMENT BOUNDARIES, so
+ * the rule fired whenever a unique index appeared anywhere before any WHERE anywhere
+ * later — even a WHERE belonging to a different, non-unique index. That is not a partial
+ * unique index; it is "a unique index exists, and the file mentions WHERE later", which
+ * is a routine and entirely safe shape (an identity unique index plus a partial index for
+ * a hot filtered read). Matching per statement makes each rule mean what it says.
+ *
+ * Splitting on `;` is safe here because comments (which may contain semicolons) are
+ * already stripped, and a `$$`-quoted DO block is kept whole below.
+ *
+ * @param {string} code comment-stripped SQL
+ * @returns {string[]}
+ */
+function splitStatements(code) {
+  const statements = [];
+  let current = '';
+  let inDollarBlock = false;
+  for (let i = 0; i < code.length; i += 1) {
+    // A DO $$ ... $$ block legitimately contains semicolons; keep it intact so its
+    // inner statements are still each seen as part of one enclosing statement rather
+    // than being sliced mid-block.
+    if (code.startsWith('$$', i)) {
+      inDollarBlock = !inDollarBlock;
+      current += '$$';
+      i += 1;
+      continue;
+    }
+    if (code[i] === ';' && !inDollarBlock) {
+      statements.push(current);
+      current = '';
+      continue;
+    }
+    current += code[i];
+  }
+  if (current.trim()) statements.push(current);
+  return statements;
+}
+
 export function violationsFor(sqlText) {
   const code = stripComments(sqlText);
-  return RULES.filter((r) => r.re.test(code));
+  const statements = splitStatements(code);
+  // A rule fires when ANY single statement violates it — never on a wildcard that
+  // wandered across statements into an unrelated one.
+  return RULES.filter((r) => statements.some((s) => r.re.test(s)));
 }
 
 /**
