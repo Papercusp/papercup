@@ -502,7 +502,10 @@ export function startInterestWatchSweeper(): void {
           log(`sweep tick failed: ${e instanceof Error ? e.message : e}`),
         );
       },
-      { category: 'global-sweep' },
+      // D-004 must-sample: the trigger is a session_turn becoming EMBEDDED, and
+      // nothing emits a change event when text_embedding lands — so the frontier
+      // this sweep advances can only be observed by sampling for it.
+      { category: 'global-sweep', classification: 'must-sample' },
     );
   })().catch((e) => {
     (globalThis as Globals).__papercuspInterestWatchSweeperStarted = false;
