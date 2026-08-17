@@ -6,7 +6,7 @@ import { RefreshCw } from 'lucide-react';
 import { useSyncQuery } from '@papercusp/sync';
 import { VirtualGrid, usePersistedColumnWidths } from '@papercusp/grid-core';
 import { readListTotal } from '@papercusp/operator-core/lib/sync-resolver/list-meta';
-import { useColumnFilters, ColumnFilterBar } from '../../harness/filters';
+import { useColumnFilters, ColumnFilterBar, filterCountLabel } from '../../harness/filters';
 import { Tooltip } from '../../harness/Tooltip';
 import { buildWorkItemColumns, WORK_ITEM_FILTER_NS } from './work-item-columns';
 import type { PanelComponentProps } from '../../harness/dock/panel-registry';
@@ -61,26 +61,22 @@ export interface WorkItemRow {
 }
 
 /**
- * Count label for the work-items pane. Users care about the STORE total, not how
- * many rows happen to be in memory right now — infinite scroll loads the rest on
- * demand — so the label always reports the true `total` (row[0]._meta.total, the
- * DB count), never the downloaded length. There is no "loaded of total" / capped
- * distinction: unfiltered shows "1821 items"; a filter/search shows "N of total
- * match".
- *   • shown = rows after the column filters + quick-search
- *   • total = the true store count for this harness
- * Pure — exported for tests.
+ * Count label for the work-items pane.
+ *
+ * The implementation MOVED to `../../harness/filters/filter-count-label` (owner ask
+ * 2026-08-17: "mimic how it works in the work queue in the work tab") — three
+ * Learning-tab panes had each hand-rolled a different label, so the one the Work
+ * Queue got right now lives beside the shared filter hook + bar that every pane
+ * already imports. Re-exported under the original name so this pane's own test and
+ * any other importer keep resolving; `noun` defaults to 'item', which is exactly
+ * what this pane passed before.
+ *
+ * ⚠ Read filter-count-label.ts's header before adopting it elsewhere: "N of total"
+ * is only honest for a pane that GROWS its fetch window to the store total (this
+ * one does, via `onEndReached`). A pane filtering one fixed page must fix that
+ * first — the label and the growing window ship together or not at all.
  */
-export function workItemCountLabel(
-  shown: number,
-  total: number,
-  filtered: boolean,
-): { title: string; summary: string } {
-  if (filtered) {
-    return { title: `${shown} of ${total}`, summary: `${shown} of ${total} match` };
-  }
-  return { title: `${total}`, summary: `${total} item${total === 1 ? '' : 's'}` };
-}
+export const workItemCountLabel = filterCountLabel;
 
 /** Stable empty-rows sentinel — see the `useColumnFilters` call below. */
 const NO_ROWS: WorkItemRow[] = [];
