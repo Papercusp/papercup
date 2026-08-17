@@ -2636,22 +2636,38 @@ export function createInferenceGateway(deps: GatewayDeps) {
    * Returns an error string when a start was attempted and failed (surfaced in the 502 so a failed
    * cold start never reads as "none registered"), or null when nothing was attempted or it worked.
    */
-  async function ensureOnDemandBackendForModel(model: string): Promise<string | null> {
+  /**
+   * UNREACHABLE-shaped upstream statuses (D-014): what a hop in FRONT of a dead backend emits when
+   * it cannot reach it. ornith's registered baseUrl is a sanitizing proxy (:11435) that converts an
+   * ECONNREFUSED on the unit's real port (:11436) into a well-formed `502 {"error":"connect
+   * ECONNREFUSED ..."}` — so a dead backend arrives here as a RESPONSE, never as a transport throw.
+   *
+   * ⚠ 500 is deliberately EXCLUDED. llama-server emits 500 for a genuine inference error; treating
+   * that as "the process is down" would restart-probe and re-issue a request that already burned
+   * real GPU work. 502/503/504 are the codes that actually mean "nothing answered upstream".
+   */
+  function isUpstreamUnreachable(status: number): boolean {
+    return status === 502 || status === 503 || status === 504;
+  }
+
+  /** A backend whose PROCESS this gateway may start: on-demand lifecycle + a recorded unit to start.
+   *  `unitName` is required and never derived from baseUrl (D-005) — baseUrl may be a proxy, as
+   *  ornith's is. `enabled` is already the pool's admission filter (launch.ts drops disabled rows),
+   *  but is re-checked so this stays correct if a caller ever constructs a pool by hand. */
+  function startableOnDemand(backend: LocalBackend): boolean {
+    return backend.enabled && backend.lifecycle === 'on-demand' && !!backend.unitName;
+  }
+
+  /** Start ONE known-startable backend and fold success back into the pool's health state.
+   *  Returns an error string when a start was attempted and failed, else null. */
+  async function ensureOnDemandBackend(candidate: LocalBackend): Promise<string | null> {
     const pool = deps.localBackends;
     const ensure = deps.ensureLocalBackendRunning;
     if (!pool || !ensure) return null;
 
-    // Startable = registered for this model, enabled, on-demand, and owning a unit to start.
-    // `enabled` is already the pool's admission filter (launch.ts drops disabled rows), but it is
-    // re-checked here so this stays correct if a caller ever constructs a pool by hand.
-    const candidate = pool
-      .entries()
-      .find((b) => b.enabled && b.models.includes(model) && b.lifecycle === 'on-demand' && b.unitName);
-    if (!candidate) return null;
-
     let started = localBackendColdStarts.get(candidate.id);
     if (!started) {
-      log('info', `inference-gateway: local backend '${candidate.id}' (${candidate.unitName}) is stopped and serves '${model}' — starting on demand`);
+      log('info', `inference-gateway: local backend '${candidate.id}' (${candidate.unitName}) is not answering — starting it on demand`);
       started = ensure(candidate).finally(() => localBackendColdStarts.delete(candidate.id));
       localBackendColdStarts.set(candidate.id, started);
     }
@@ -2670,8 +2686,19 @@ export function createInferenceGateway(deps: GatewayDeps) {
     // consecutiveFailures and flips healthy back to true (nextHealthState), which is what makes the
     // unchanged attempt loop below able to select it on this very request.
     pool.recordOutcome(candidate.id, true);
-    log('info', `inference-gateway: local backend '${candidate.id}' started on demand and is answering — routing '${model}'`);
+    log('info', `inference-gateway: local backend '${candidate.id}' started on demand and is answering — routing resumed`);
     return null;
+  }
+
+  /** Cold-start entry for the DEAD-END pre-flight: no healthy backend serves `model`, so find a
+   *  startable one that does. (The forward-failure path in proxyLocal already holds the specific
+   *  backend that just failed and calls `ensureOnDemandBackend` directly.) */
+  async function ensureOnDemandBackendForModel(model: string): Promise<string | null> {
+    const pool = deps.localBackends;
+    if (!pool || !deps.ensureLocalBackendRunning) return null;
+    const candidate = pool.entries().find((b) => b.models.includes(model) && startableOnDemand(b));
+    if (!candidate) return null;
+    return ensureOnDemandBackend(candidate);
   }
 
   /**
@@ -2758,6 +2785,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
 
       const tried = new Set<string>();
       let lastError: string | null = null;
+      // At most ONE cold start per request (D-014). Bounds the blast radius of the rescue below:
+      // a backend that keeps answering 502 after a successful start is a real fault to report, not
+      // a reason to restart it again.
+      let coldStartAttempted = false;
       for (let attempt = 0; attempt < LOCAL_BACKEND_MAX_ATTEMPTS; attempt++) {
         // P-028 slot affinity: the owner's last backend is preferred while eligible, so the
         // session's KV prefix survives across hops (a process switch = full re-prefill).
