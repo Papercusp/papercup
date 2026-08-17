@@ -151,7 +151,27 @@ export async function readRetainExtras(
 
 // ─── The unified Retained feed ───────────────────────────────────────────────
 
-export const RETAIN_FEED_PAGE_SIZE = 24;
+/**
+ * First-page size for the Retained ledger.
+ *
+ * Raised 24 → 75 for WI-39675 (plan learning-tab-filters-are-page-scoped-2026-08-17).
+ * D-002 requires a FRESH payload measurement for any page-size raise, not an
+ * appeal to the decision itself. Measured 2026-08-17 against :3170, warm, three
+ * samples each (`/api/zero-harness/rest-query?name=learning.retainFeed`,
+ * tab=all filter=all hive=papercusp):
+ *
+ *   limit=24  → 8,861 B   ~0.61s
+ *   limit=50  → 21,582 B  ~0.67s
+ *   limit=75  → 31,186 B  ~0.73s   ← the knee: 3.1x the rows for +20% latency
+ *   limit=100 → 45,830 B  ~1.02s   (+67% latency for 4.2x the rows)
+ *
+ * 31 KB is ~12% of the 250,000 B payload budget D-002 cites for
+ * learning.observations, so bytes are nowhere near the binding constraint here —
+ * LATENCY is, because all five legs each fetch `limit` rows before the k-way
+ * merge discards all but `limit` of them. 75 keeps the MAX_PAGE clamp a real
+ * ceiling rather than collapsing the default onto it.
+ */
+export const RETAIN_FEED_PAGE_SIZE = 75;
 const RETAIN_FEED_MAX_PAGE = 100;
 
 /** ISO-normalize a driver value (Date from a raw timestamptz select, string
