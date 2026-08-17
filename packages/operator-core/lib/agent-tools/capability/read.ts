@@ -35,8 +35,9 @@ function base64Chars(byteCount: number): number {
  *  do not want to depend on to the last character. */
 const DOOR_MARGIN_CHARS = 256;
 
-/** Never page so small that recovery becomes absurd, even on a pathological path. */
-const MIN_PAGE_BYTES = 512;
+/** Below this the byte window is not worth serving; the handler refuses outright
+ *  rather than emitting a page the door would truncate (see doorSafePageBytes). */
+export const MIN_PAGE_BYTES = 512;
 
 /**
  * WI-39670: the largest page whose base64 payload PLUS this response's own
@@ -57,6 +58,12 @@ const MIN_PAGE_BYTES = 512;
  * only move the cliff rather than remove it. Clamping is lossless: `byte_length`
  * and `next_cursor` describe the page actually returned, so paging simply takes
  * more steps.
+ *
+ * May return LESS than MIN_PAGE_BYTES (including 0) for a pathological path. The
+ * handler refuses in that case instead of clamping up to a floor: floor-and-serve
+ * would re-emit an over-budget response and reintroduce the silent truncation
+ * this exists to prevent, so the guarantee stays unconditional and the caller
+ * gets a stated reason rather than a corrupt page.
  */
 export function doorSafePageBytes(absPath: string, requestedBytes: number): number {
   const envelopeChars = JSON.stringify({
@@ -79,7 +86,7 @@ export function doorSafePageBytes(absPath: string, requestedBytes: number): numb
   const budgetChars = computeTurnDoors(0).resultEach * CHARS_PER_TOKEN_ESTIMATE;
   const room = budgetChars - envelopeChars - DOOR_MARGIN_CHARS;
   const fits = Math.floor(Math.max(0, room) / 4) * 3;
-  return Math.max(MIN_PAGE_BYTES, Math.min(requestedBytes, fits));
+  return Math.min(requestedBytes, fits);
 }
 
 export default defineTool({
@@ -153,6 +160,14 @@ export default defineTool({
       // WI-39670: clamp to what survives the resultEach door. Requesting the
       // schema's max would otherwise return base64 the door truncates mid-string.
       const effectiveLimit = doorSafePageBytes(abs, args.byte_limit);
+      if (effectiveLimit < MIN_PAGE_BYTES) {
+        return err(
+          'path_too_long_for_byte_window',
+          `${abs} is too long a path to page by bytes: its envelope leaves room for only ` +
+          `${Math.max(0, effectiveLimit)} bytes per response. Read it by lines (offset/limit/tail), ` +
+          `or reach it via a shorter path.`,
+        );
+      }
       const page = bytes.subarray(start, Math.min(bytes.length, start + effectiveLimit));
       const nextOffset = start + page.length;
       return {
