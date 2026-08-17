@@ -486,6 +486,13 @@ export const RECOVERY_MECHANISMS: readonly RecoveryMechanism[] = [
     note: 'Sibling of the above — a goal draining without the fleet its contract requires.',
   },
   {
+    name: 'goal-edit-claim-watchdog',
+    file: 'packages/operator-core/lib/system-health/goal-edit-claim-watchdog.ts',
+    executor: 'operator-in-process-timer',
+    recovers: [],
+    note: 'P-008 — first edit-claim by a goal-mode owner, surfaced to graders in real time. A stale grading signal is not a substrate failure.',
+  },
+  {
     name: 'retrieval-degradation-watchdog',
     file: 'packages/operator-core/lib/system-health/retrieval-degradation-watchdog.ts',
     executor: 'operator-in-process-timer',
