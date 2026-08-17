@@ -52,19 +52,12 @@ vi.mock('./turn', () => ({
 // below (which is hoisted above every const) closes over it.
 const launcherIdentity = vi.hoisted(
   () =>
-    (over: Partial<AgentIdentity> = {}): AgentIdentity =>
-      // Object.assign, not spread: spreading a Partial<T> over the defaults
-      // re-widens every required field to `| undefined` and the result stops
-      // being assignable to T. Object.assign keeps the intersection type.
-      Object.assign(
-        {
-          ownerId: 'launcher-1',
-          ownerLabel: 'launcher',
-          source: 'omp-hook-session' as const,
-          workspaceId: null,
-        },
-        over,
-      ),
+    (): AgentIdentity => ({
+      ownerId: 'launcher-1',
+      ownerLabel: 'launcher',
+      source: 'omp-hook-session',
+      workspaceId: null,
+    }),
 );
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: vi.fn(() => launcherIdentity()),
