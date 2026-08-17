@@ -253,7 +253,14 @@ export function projectionBanner({ client, file, reader, docId }) {
     `> \`harness_shared.harness_doc_parts\`, with \`harness_docs.content_mode='composed'\`). A hand-edit`,
     `> is overwritten by the next projection and is invisible to every other client.`,
     `>`,
-    `> **To change a rule:** edit its PART, then re-project with`,
+    // Both halves name a RUNNABLE command on purpose (WI-39623). This said "edit its
+    // PART" for months while no agent-facing write path existed — `dev:pg_query` is
+    // read-only and no docs:*/harness_docs:* tool addresses a part — so the instruction
+    // named an operation nobody could perform, and the actual practice became hand-rolled
+    // UPDATEs outside every guard (which left `author` null, losing who changed a rule).
+    `> **To change a rule:** edit its PART, then re-project — both halves are commands:`,
+    `> \`npm run set-doc-part -- --part-key <key> --body-file <path> --write\``,
+    `> (\`--list <prefix>\` to find the key; dry-run without \`--write\`), then`,
     `> \`node scripts/project-doc-parts.mjs --write\`.`,
     `>`,
     `> Supporting evidence for these rules is deliberately NOT here — it lives in the corpus`,
