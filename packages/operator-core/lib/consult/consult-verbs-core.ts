@@ -362,7 +362,12 @@ export async function consultReplyCore(
       sql,
       deps.reach,
     );
-    cascade = { advanced_to: adv.next?.ownerId ?? null, exhausted: adv.exhausted, woke: adv.woke };
+    // A raced advance means a concurrent trigger (the expiry sweep, typically)
+    // moved the chain first — its advance stands and already woke the next
+    // selectee, so this reply has no cascade consequence to report.
+    if (!adv.raced) {
+      cascade = { advanced_to: adv.next?.ownerId ?? null, exhausted: adv.exhausted, woke: adv.woke };
+    }
   }
   const cascadeNote = cascade
     ? cascade.advanced_to
@@ -473,6 +478,22 @@ export async function consultDeclineCore(
     deps.reach,
   );
   const remaining = remainingFromSnapshot(row.routing, req.authorId);
+
+  // A raced advance: a concurrent trigger (expiry sweep / a reply) moved the
+  // chain between our read and write — the winner already woke the next
+  // selectee and appended its digest entry. The decline post stands in the
+  // thread; do NOT terminal-close (the consult continues under the winner's
+  // selectee), and do not double-report the winner's wake.
+  if (adv.raced) {
+    return {
+      ok: true,
+      post_id: postId,
+      state: 'awaiting_responder',
+      cascade: { advanced_to: null, exhausted: false, woke: 0 },
+      remaining_candidates: remaining,
+      hint: 'Declined. A concurrent event had already advanced the cascade — the consult continues under the next selected responder.',
+    };
+  }
 
   if (adv.advanced) {
     return {

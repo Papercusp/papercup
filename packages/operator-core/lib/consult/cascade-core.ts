@@ -214,5 +214,5 @@ export async function advanceCascade(
     });
     woke = r.woke;
   }
-  return { advanced: true, exhausted: false, next: { ownerId: next.ownerId, via: next.via }, woke };
+  return { advanced: true, exhausted: false, raced: false, next: { ownerId: next.ownerId, via: next.via }, woke };
 }
