@@ -264,11 +264,21 @@ export const JOURNAL_OUTPUT_FIELDS = [
  * `--case-sensitive=false` matches what the corpus's hand-written `grep -i`
  * calls already do.
  */
+/**
+ * The scope selector, alone. `all` passes NEITHER flag — that is exactly how
+ * journalctl expresses "every message this caller can see"; emitting one of the
+ * two would narrow it. Shared so the window probe reads the SAME journal the
+ * main query did (a probe against a different journal could report "nothing is
+ * newer" about a journal the caller never asked about).
+ */
+export function journalScopeArgs(scope: JournalScope): string[] {
+  if (scope === 'all') return [];
+  return [scope === 'system' ? '--system' : '--user'];
+}
+
 export function buildJournalctlArgs(opts: JournalReadOptions): string[] {
   const scope = opts.scope ?? JOURNAL_DEFAULT_SCOPE;
-  // `all` passes NEITHER flag — that is exactly how journalctl expresses "every
-  // message this caller can see". Emitting one of the two would narrow it.
-  const args: string[] = scope === 'all' ? [] : [scope === 'system' ? '--system' : '--user'];
+  const args: string[] = [...journalScopeArgs(scope)];
   args.push('--no-pager', '-o', 'json');
   args.push(`--output-fields=${JOURNAL_OUTPUT_FIELDS.join(',')}`);
   for (const unit of opts.units ?? []) args.push('-u', unit);
