@@ -1276,6 +1276,84 @@ export function writeSelfWatchdogArmMarker(
   }
 }
 
+/** EI-20669541349219660: the suite's parsed failing-file list, persisted beside the
+ *  run-lock THE MOMENT the red suite output is parsed — BEFORE the isolation phase begins.
+ *  Same pattern as writeCheckpointRunPhase/writeSelfWatchdogArmMarker above. This exists
+ *  because a run killed mid-absorption (watchdog / parent group-kill) emitted an emergency
+ *  red with `failingTests: []` — the list HAD been produced, then died with the process —
+ *  so consecutive cap-killed runs each re-derived the same N failures from scratch and the
+ *  gate never taught anyone anything. `absorbed: true` records that the red was later
+ *  proven load-flake, so a kill AFTER absorption (e.g. during the post-suite legs) does not
+ *  report proven-flaky files as a trustworthy failing list. Keyed by runId: a reader must
+ *  ignore a marker from a PREVIOUS run (the lock dir outlives runs). Best-effort in every
+ *  direction; a missing/garbled marker degrades to today's empty list, never to a crash. */
+export function writeFailingFilesMarker(
+  lockDir: string,
+  info: { runId: string; files: string[]; absorbed?: boolean },
+): void {
+  try {
+    writeFileSync(
+      path.join(lockDir, "failing-files.json"),
+      JSON.stringify({
+        runId: info.runId,
+        files: info.files,
+        absorbed: info.absorbed === true,
+        at: new Date().toISOString(),
+      }),
+    );
+  } catch {
+    /* best-effort: enrichment for the emergency-red path, never load-bearing here */
+  }
+}
+
+/** EI-20669541349219660: read {@link writeFailingFilesMarker}'s marker. Null on any miss
+ *  or garble — the caller degrades to the empty failingTests it carried before. */
+export function readFailingFilesMarker(
+  lockDir: string,
+): { runId?: string; files?: string[]; absorbed?: boolean; at?: string } | null {
+  try {
+    const parsed = JSON.parse(
+      readFileSync(path.join(lockDir, "failing-files.json"), "utf8"),
+    ) as { runId?: string; files?: string[]; absorbed?: boolean; at?: string };
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+/** EI-20669541349219660: what the self-watchdog's emergency red should report as
+ *  `failingTests`, given the on-disk marker. Pure — the entrypoint's onFire closure is
+ *  untestable, so the decision lives here:
+ *   - no marker / wrong runId ⇒ empty + no note (exactly the pre-marker behavior;
+ *     a stale marker from an earlier run must never be reported as THIS run's state);
+ *   - absorbed ⇒ empty + a note (the files were PROVEN flaky — naming them as failing
+ *     would be false), but the note preserves that the suite did go red first;
+ *   - otherwise ⇒ the files + a note, so the kill still teaches the next run WHICH
+ *     files were failing instead of forcing a from-scratch re-derivation. */
+export function emergencyRedFailingTests(
+  marker: ReturnType<typeof readFailingFilesMarker>,
+  runId: string,
+): { failingTests: string[]; note: string | null } {
+  if (!marker || marker.runId !== runId) return { failingTests: [], note: null };
+  const files = Array.isArray(marker.files)
+    ? marker.files.filter((f): f is string => typeof f === "string")
+    : [];
+  if (marker.absorbed === true) {
+    return {
+      failingTests: [],
+      note:
+        files.length > 0
+          ? `The suite HAD finished red (${files.length} file(s)) but the red was ABSORBED as load-flakes before this kill — the run died later (post-absorption legs), not on those files.`
+          : `The suite HAD finished red but the red was ABSORBED as load-flakes before this kill.`,
+    };
+  }
+  if (files.length === 0) return { failingTests: [], note: null };
+  return {
+    failingTests: files,
+    note: `The suite HAD finished RED before this kill, naming ${files.length} failing file(s): ${files.join(", ")} — carried from the on-disk failing-files marker so the next run does not re-derive them from scratch.`,
+  };
+}
+
 export function acquireCheckpointRunLock(
   lockDir: string,
   opts: {
@@ -3871,6 +3949,14 @@ export async function attemptFlakeAbsorption(
     retryDelayMs?: number;
     /** Overall wall-clock budget for the whole retry phase. Default {@link ISOLATION_RETRY_BUDGET_MS}. */
     retryBudgetMs?: number;
+    /** EI-20669541349219660: ABSOLUTE epoch-ms deadline after which NO new absorption work
+     *  may START — first attempts included, not just retries, plus the co-execution confirm
+     *  runs. Files not yet re-run when it passes are treated as still-failing (fail-safe:
+     *  the gate keeps its red and the note names them as UNCONFIRMED), so a wide red gets a
+     *  partial-but-real verdict instead of outliving the run's kill budget and landing as
+     *  status:'error' with no failing-test list. Default Infinity (unbounded — existing
+     *  callers/tests unchanged); the real runGreen passes {@link isolationPhaseDeadlineMs}. */
+    phaseDeadlineMs?: number;
     /** Clock seam — injected for tests. Default `Date.now`. */
     now?: () => number;
     /** Sleep seam — injected for tests (never real-sleeps in a unit test). Default a real `setTimeout`. */
@@ -3907,6 +3993,7 @@ export async function attemptFlakeAbsorption(
   const retryMax = opts.retryMax ?? ISOLATION_RETRY_MAX;
   const retryDelayMs = opts.retryDelayMs ?? ISOLATION_RETRY_DELAY_MS;
   const retryBudgetMs = opts.retryBudgetMs ?? ISOLATION_RETRY_BUDGET_MS;
+  const phaseDeadlineMs = opts.phaseDeadlineMs ?? Infinity;
   const now = opts.now ?? (() => Date.now());
   const sleep =
     opts.sleep ??
@@ -3969,10 +4056,23 @@ export async function attemptFlakeAbsorption(
     /** EI-18685042025868279: `workspace::file` → how many times THIS gate ran it (incl. the
      *  original full-suite run). Measured, never estimated — see {@link RetriedTest}. */
     const isolationAttempts = new Map<string, number>();
+    // EI-20669541349219660: files NOT re-run because the phase deadline passed first.
+    // Treated as still-failing (fail-safe — absorption requires every file confirmed), and
+    // named in the note so the verdict that lands is partial-but-REAL, never silent.
+    const notReRun: FailingFile[] = [];
     for (const f of originalFailing) {
+      if (now() >= phaseDeadlineMs) {
+        notReRun.push(f);
+        continue;
+      }
       let result = await runOnce(f);
       let attempt = 1;
-      while (!result.passed && attempt <= retryMax && now() < retryDeadline) {
+      while (
+        !result.passed &&
+        attempt <= retryMax &&
+        now() < retryDeadline &&
+        now() < phaseDeadlineMs
+      ) {
         // WI-6969: before spending a retry, check whether THIS attempt already proves
         // determinism — its failing case list is byte-identical to the ORIGINAL gate
         // failure's, with no timing-signature string. A static/structural assertion
@@ -4051,6 +4151,33 @@ export async function attemptFlakeAbsorption(
         : ("still-failing" as const),
       via: "load-flake-isolation" as const,
     }));
+    // EI-20669541349219660: the phase deadline cut the loop short. Emit the
+    // partial-but-real verdict NOW — confirmed still-failing + unconfirmed (treated as
+    // still-failing) — instead of pressing on into the run's kill window, where the
+    // whole run dies as status:'error' with no failing-test list and the next run
+    // re-derives the same red from scratch. Fail-safe by construction: this path can
+    // only ever KEEP the red, never absorb.
+    if (notReRun.length > 0) {
+      const confirmedStillFailing = isolationResults
+        .filter((r) => !r.passed)
+        .map((r) => `${r.workspace}::${r.file}`);
+      const passedAlone = isolationResults
+        .filter((r) => r.passed)
+        .map((r) => `${r.workspace}::${r.file}`);
+      const note =
+        `isolation: PHASE BUDGET EXHAUSTED after re-running ${isolationResults.length} of ${originalFailing.length} originally-failing file(s) — ` +
+        `the remaining ${notReRun.length} were NOT re-run and are treated as still-failing (fail-safe): ` +
+        `UNCONFIRMED: ${notReRun.map((f) => `${f.workspace}::${f.file}`).join(", ")}` +
+        (confirmedStillFailing.length > 0
+          ? `; CONFIRMED still-failing: ${confirmedStillFailing.join(", ")}`
+          : "") +
+        (passedAlone.length > 0
+          ? `; passed alone but NOT absorbed (absorption requires EVERY file confirmed): ${passedAlone.join(", ")}`
+          : "") +
+        `; gate stays red with a real, named verdict instead of dying at the run's kill budget (EI-20669541349219660)`;
+      log(note);
+      return keep(note);
+    }
     const decision = decideFlakeAbsorption({
       originalFailing,
       isolationResults,
@@ -4076,6 +4203,16 @@ export async function attemptFlakeAbsorption(
       );
       const concurrentResults: ConcurrentRerunResult[] = [];
       for (const [workspace, files] of filesByWorkspace) {
+        // EI-20669541349219660: same phase deadline as the isolation loop — a confirm run
+        // that must not START leaves its workspace with NO result, which
+        // decideConcurrencyConfirmation already reads as `undetermined` ⇒ the gate keeps
+        // its red (uncertainty never flips red→green) and the verdict still LANDS.
+        if (now() >= phaseDeadlineMs) {
+          log(
+            `isolation: phase budget exhausted before the confirming co-execution re-run of ${workspace} could start — undetermined, gate stays red (EI-20669541349219660)`,
+          );
+          continue;
+        }
         try {
           concurrentResults.push(await concurrentRun({ workspace, files }));
         } catch (e) {
@@ -8548,6 +8685,16 @@ export function realCheckpointDeps(
           cfg.integrationRoot,
         );
         writeCheckpointRunPhase(_phaseLockDir, "isolating");
+        // EI-20669541349219660: persist the parsed failing-file list BEFORE isolation
+        // begins. A run killed mid-absorption previously lost this list with the process,
+        // so its emergency red carried failingTests:[] and the next run re-derived the
+        // same failures from scratch — see emergencyRedFailingTests, which reads this.
+        writeFailingFilesMarker(_phaseLockDir, {
+          runId,
+          files: parseFailingFilesByWorkspace(fullOutput).map(
+            (f) => `${f.workspace}::${f.file}`,
+          ),
+        });
         // WI-6956: `concurrentRun` first so an explicitly-configured flakeAbsorptionOpts
         // (the real-deps tests' injection seam) still wins; absent it, the real confirming
         // runner above is what gates absorption.
@@ -8557,6 +8704,11 @@ export function realCheckpointDeps(
           log,
           {
             concurrentRun,
+            // EI-20669541349219660: bound the WHOLE phase (first attempts included) by
+            // what will actually kill this run, so a wide-but-<=cap red produces a
+            // partial-but-real verdict instead of outliving the suite budget. Before the
+            // spread so a test's injected opts still win.
+            phaseDeadlineMs: isolationPhaseDeadlineMs(),
             ...flakeAbsorptionOpts,
           },
         );
@@ -8601,6 +8753,13 @@ export function realCheckpointDeps(
         writeCheckpointRunPhase(_phaseLockDir, "suite");
 
         if (suiteAbsorbed) {
+          // EI-20669541349219660: the red was PROVEN load-flake — update the marker so a
+          // kill during the legs below does not report proven-flaky files as failing.
+          writeFailingFilesMarker(_phaseLockDir, {
+            runId,
+            files: flakeSuspects ?? [],
+            absorbed: true,
+          });
           // WI-6053 — THE FIX. Absorption is not a bypass. The suite is now considered
           // passing, so this candidate must clear exactly the same bar a natively-green one
           // clears: PAY for the legs the red suite skipped, instead of inheriting their
