@@ -520,6 +520,64 @@ Signed: su-e3b21216 (leader, fleet `p2p-release`), plan
 > convergence verdict survives on a committed path. Recovering row 14's evidence requires re-running
 > the ladder, which needs a quiet host (see the row's own open question).
 
+> ## ✅ UPDATE 2026-08-17T04:4xZ (su-0c703, `WI-39359`, owner-directed AUTO) — THE RETAINED-SURFACE CLAIM ABOVE IS NOW STALE; THE CLASS FIX IS PROVEN END-TO-END; A FOURTH INSTRUMENT DEFECT FELL OUT OF CHECKING IT. **Verdict unchanged (NO-GO), and no §3 blocker moves.**
+>
+> **1. The stale claim, corrected.** The re-sign block above states that the only retained
+> p2p-perf surface, `baselines/tier1.json`, "was captured **2026-07-26** … and contains **zero**
+> occurrences of `convergence`, `convergencePassed` or `budgetMs`". Re-measured on the file now on
+> disk — sha256 `b68598d386f6a7eb`, `capturedAt` **2026-08-17T03:02:51.421Z**, profile `ci`, 128-cpu
+> host — **9 of its 17 entries carry a non-null `convergence` block** with `budgetMs`,
+> `convergedMs` percentiles, `convergedReaders/expectedReaders` and `laggingReaders`. The class fix
+> is no longer merely landed in code: it has survived a real promotion onto a committed path.
+> The other 8 entries are `convergence: null`, which is the **calibration case working, not a gap** —
+> they are exactly the four pure-merge microbenchmarks (`merge.decode-throughput`, `merge.full-merge`,
+> `merge.idle-tick`, `merge.delta-tick`, two history sizes each), which form no mesh and have no
+> readers to judge. Incidentally corroborated on a committed artifact: all 9 carry
+> `p95LimitMs: null`, i.e. the latency half of `convergenceVerdict` is unreachable in every real run
+> because `convergenceP95LimitMs` has no production caller.
+>
+> ⛔ **2. What this does NOT do — and the bound IS the point. It does not restore row 14, and it
+> brings nothing above 5 peers back into evidence.** The retained convergence entries top out at
+> `replication.sustained peers:5` and `replication.ceiling peers:5` (4 readers each), plus
+> `churn.reconnect-storm` (8 expected readers). Row 14's subject is **64** peers and its target is
+> **256**. The committed surface therefore now carries convergence data **an order of magnitude
+> below the last honestly-measured point**, and still cannot be diffed against the deleted
+> `06-20-39-454Z` ladder. **Row 14 stays 🟡**, its figures stay *recorded-only*, and separating host
+> contention from a genuine >64-peer mesh defect still requires a fresh ladder on a quiet host.
+>
+> 🛑 **3. A FOURTH INSTRUMENT DEFECT — and it was already committed into that baseline
+> (`WI-39359`, fixed here).** `scenarios/churn.ts` never received the `#D-014` (shared deadline) or
+> `#D-015` (declared goalpost) fixes; both were applied to `scenarios/replication.ts` and to the
+> shared helpers only. Churn kept the pre-fix shape in three places —
+> `for (const r of readers) await r.waitFor('caught-up', budget)` — which, because `waitFor` returns
+> immediately for an already-fired event, makes a reader's deadline a function of its **position in
+> the array** (budget PLUS all time already spent on the readers ahead of it), strictly more lenient
+> the later it sits. It also never called `convergenceBudget()` or `readerConverged()`, so its
+> artifacts carried `budgetMs: null` + `convergedMs: null`: a bare converged/not boolean with no
+> goalpost and no times — **precisely the un-interpretable green `#D-015` exists to prevent**, which
+> is how `churn.reconnect-storm 8/8 converged` entered the retained baseline meaning nothing about
+> speed. Fixed: all three sites route through `awaitAllChildEvent()` (one shared deadline) and
+> declare their budget and per-reader times. Guarded by
+> `perf/scenario-convergence-instrumentation.test.ts` (5 tests) — a pure source auditor with a
+> **permanent pre-fix control** that must report all three violations, a fixed-shape control that
+> must report none, a calibration case pinning "forms no mesh ⇒ out of scope, not a violation", and
+> a positive control asserting the audit actually reaches the sources (an empty glob would make
+> "no violations" vacuous). It complements `await-all-child-event.test.ts`, which proves the
+> *mechanism*; this one proves its *adoption*, the gap that let churn sit unconverted. 5/5 + 55/55
+> across the neighbouring perf suites; `lint:tsc` `scope=files exit=0 status=clean`.
+>
+> ⚠ **SCOPE — this must NOT be read as bounding row 14's ladder.** That ladder ran
+> `replication.sustained`, whose sites were converted at the time; **none** of row 14's 64/80/96/128
+> figures came from `churn.*`. What this defect bounds is the two churn entries in the retained
+> baseline and any future churn convergence verdict — nothing else. The baseline is **not**
+> re-promoted here: a good baseline is not overwritten to demonstrate a fix.
+>
+> ✅ **4. §3 re-derived: no blocker moves.** Rows 0 (`aviynw` token), A (C-001 from-repo consent
+> cut), B (dark gate timer), 1 (WI-6680 pull-chain seeding), 2 (hive-git live legs), 3 (gate
+> coverage gaps) and 4 (code-signing certs) were **none of them gated on convergence data**. Each
+> was re-read against the restored surface and is unchanged. Recording that plainly is the finding:
+> the retained baseline answers a regression-guard question, not a release-blocker question.
+
 ---
 
 ## 1. What changed, and the one fact that governs this document
