@@ -107,10 +107,38 @@ describe('WI-5600: the spanned Windows Server is normalized to a single publisha
     expect(innoSpanHelper).toMatch(/\(\( \$\{#PAPERCUSP_SPANNED_SERVER_SLICES\[@\]\} > 0 \)\)/);
   });
 
-  it('swaps the raw stub+slices OUT of ARTIFACTS and the single zip IN', () => {
-    // The published set is the one zip, not the ~5 GB of raw disks the page can't use.
+  it('swaps the raw stub+slices OUT of ARTIFACTS and the normalization OUTPUTS in', () => {
+    // The published set is the normalized download, not the ~5 GB of raw disks
+    // the page can't use. It is the OUTPUTS ARRAY, never the bare zip: the
+    // normalization also emits the zip's updater signature, and re-appending
+    // $PAPERCUSP_SPANNED_SERVER_ZIP directly is exactly how 0.0.16 and 0.0.17
+    // shipped the Windows Server UNSIGNED (EI-20595279927716716). This guard
+    // used to pin that bare-zip form, so the regression is asserted ABSENT here
+    // rather than merely un-asserted — re-pinning it would re-ship unsigned.
     expect(releaseLocal).toMatch(
+      /ARTIFACTS=\(\s*"\$\{_win_kept\[@\]\}"\s*"\$\{PAPERCUSP_SPANNED_SERVER_OUTPUTS\[@\]\}"\s*\)/,
+    );
+    expect(releaseLocal).not.toMatch(
       /ARTIFACTS=\(\s*"\$\{_win_kept\[@\]\}"\s*"\$PAPERCUSP_SPANNED_SERVER_ZIP"\s*\)/,
+    );
+    // The "swaps OUT" half: _win_kept is ARTIFACTS with every raw span member
+    // filtered out by the shared predicate (stub, slices, and the outputs
+    // themselves — so re-appending OUTPUTS cannot duplicate an entry).
+    expect(releaseLocal).toMatch(/papercusp_spanned_server_artifact "\$_a" && continue/);
+  });
+
+  it('OUTPUTS carries the zip AND its updater signature (never the zip alone)', () => {
+    // EI-20595279927716716: 0.0.16/0.0.17 published the spanned Server zip with
+    // no .sig because the caller re-appended only the zip. The signature became
+    // reachable when the helper started exporting an OUTPUTS array — which had
+    // NO test coverage until this case, which is why the stale assertion above
+    // could sit red against a correct fix. OUTPUTS starts as the zip and grows
+    // the signature whenever signing produced one.
+    expect(innoSpanHelper).toMatch(
+      /PAPERCUSP_SPANNED_SERVER_OUTPUTS=\(\s*"\$PAPERCUSP_SPANNED_SERVER_ZIP"\s*\)/,
+    );
+    expect(innoSpanHelper).toMatch(
+      /\[\[ -n "\$PAPERCUSP_SPANNED_SERVER_ZIP_SIG" \]\][\s\S]{0,80}PAPERCUSP_SPANNED_SERVER_OUTPUTS\+=\(\s*"\$PAPERCUSP_SPANNED_SERVER_ZIP_SIG"\s*\)/,
     );
   });
 
