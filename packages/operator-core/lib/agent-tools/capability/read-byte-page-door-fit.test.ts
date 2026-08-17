@@ -186,9 +186,11 @@ describe('WI-39670: byte-window pages survive the result door intact', () => {
     mkdirSync(dirname(deep), { recursive: true });
     writeFileSync(deep, payload(40_000));
     const raw = await rawResponseText({ file_path: deep, byte_offset: 0, byte_limit: MAX_BYTE_PAGE });
-    const parsed = JSON.parse(raw) as { ok: boolean; error?: string };
+    const parsed = JSON.parse(raw) as { ok: boolean; reason?: string; message?: string };
     expect(parsed.ok).toBe(false);
-    expect(parsed.error).toContain('path_too_long_for_byte_window');
+    expect(parsed.reason).toBe('path_too_long_for_byte_window');
+    // The refusal has to say what to do instead, or it just relocates the dead end.
+    expect(parsed.message).toContain('offset/limit/tail');
     // A refusal is only an improvement if it still fits the door.
     expect(raw.length).toBeLessThanOrEqual(DOOR_BUDGET_CHARS);
   });
