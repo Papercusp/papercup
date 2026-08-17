@@ -24,6 +24,7 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { z } from 'zod';
+import type { AgentIdentity } from '../coordination/identity';
 
 vi.mock('./_ctx-opts', () => ({ resolveCtxHarnessSlug: vi.fn(() => 'member-harness') }));
 vi.mock('../_harness-scope', async (orig) => ({
@@ -45,8 +46,22 @@ vi.mock('./runs', () => ({ insertPlanRun: vi.fn(async () => 41) }));
 vi.mock('./turn', () => ({
   executePlanAgentTurn: vi.fn(async () => ({ status: 'completed', costUsd: 0 })),
 }));
+// Typed factory, not a cast: the fixture stays checked against AgentIdentity,
+// so a field added to the real interface strands HERE at tsc (a one-line fix)
+// instead of at runtime in the gate. vi.hoisted because the vi.mock factory
+// below (which is hoisted above every const) closes over it.
+const launcherIdentity = vi.hoisted(
+  () =>
+    (over: Partial<AgentIdentity> = {}): AgentIdentity => ({
+      ownerId: 'launcher-1',
+      ownerLabel: 'launcher',
+      source: 'omp-hook-session',
+      workspaceId: null,
+      ...over,
+    }),
+);
 vi.mock('../coordination/identity', () => ({
-  resolveAgentIdentity: vi.fn(() => ({ ownerId: 'launcher-1', source: 'su-session' })),
+  resolveAgentIdentity: vi.fn(() => launcherIdentity()),
 }));
 vi.mock('../coordination/plan-events', () => ({ emitPlanEventForCaller: vi.fn(async () => {}) }));
 // `source` serves BOTH tools under test: launch.ts reads resolvePlanScope +
@@ -97,7 +112,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   resolveScopeM.mockResolvedValue({ workspaceId: 'ws-1', harnessSlug: 'hive-home' });
   stampM.mockResolvedValue('goal-42');
-  identityM.mockReturnValue({ ownerId: 'launcher-1', source: 'su-session' } as never);
+  identityM.mockReturnValue(launcherIdentity());
 });
 
 describe('plans:launch stamps plan goal provenance from the RESOLVED scope + launcher identity', () => {
