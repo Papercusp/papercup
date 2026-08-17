@@ -1305,8 +1305,8 @@ export interface AmendRubricInput {
  * throws teaching errors on an unknown criterion key / an empty amendment.
  */
 export function applyRubricAmendment(stored: Rubric, input: AmendRubricInput): ProposeRubricInput {
-  if (!input.criterion && input.methodRef === undefined) {
-    throw new Error('amendRubric: nothing to amend — pass criterion and/or methodRef');
+  if (!input.criterion && !input.criterionClass && input.methodRef === undefined) {
+    throw new Error('amendRubric: nothing to amend — pass criterion, criterionClass, and/or methodRef');
   }
 
   let criteria = stored.criteria;
@@ -1323,6 +1323,27 @@ export function applyRubricAmendment(stored: Rubric, input: AmendRubricInput): P
     const current = target[field] ?? '';
     const next = mode === 'append' ? (current ? `${current}\n\n${text}` : text) : text;
     criteria = stored.criteria.map((c) => (c.key === key ? { ...c, [field]: next } : c));
+  }
+  if (input.criterionClass) {
+    const { key, class: cls } = input.criterionClass;
+    const target = criteria.find((c) => c.key === key);
+    if (!target) {
+      throw new Error(
+        `amendRubric: rubric '${input.rubricId}' has no criterion '${key}' — keys: ${criteria
+          .map((c) => c.key)
+          .join(', ')}`,
+      );
+    }
+    // Upgrade-only (P-008): removing 'violatable' strips the provisional-until-terminal
+    // protection, which must not ride the no-demotion amend path.
+    if (target.criterionClass === 'violatable' && cls !== 'violatable') {
+      throw new Error(
+        `invalid_args: amendRubric: criterion '${key}' is 'violatable' — downgrading to '${cls}' removes its ` +
+          'provisional-until-terminal protection. Use rubrics:propose (whole-document) with classDowngradeReason ' +
+          'so the edit gets a fresh ratification',
+      );
+    }
+    criteria = criteria.map((c) => (c.key === key ? { ...c, criterionClass: cls } : c));
   }
 
   return {
