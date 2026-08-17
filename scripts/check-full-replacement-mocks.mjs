@@ -338,6 +338,51 @@ export const SELF_TESTS = [
     ].join('\n'),
     expect: 1,
   },
+  // BARE PACKAGE SPECIFIERS (WI-39707). Until this, resolveSpec returned null for anything
+  // not starting with '.', so the entire package-mocking population — where every measured
+  // incident actually happened — could not be protected at all. These fixtures are the
+  // teeth: without the resolveSpec change the first one silently expects 1 and gets 0.
+  {
+    name: 'BARE: FIRES on the hand-listed factory (the real WI-39707 shape)',
+    path: FIXTURE_PATH,
+    text: `vi.mock('@papercusp/agent-mcp', () => ({ defineTool: (def: unknown) => def }));`,
+    expect: 1,
+  },
+  {
+    name: 'BARE: silent for the import-actual spread (the prescribed fix)',
+    path: FIXTURE_PATH,
+    text: [
+      `vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({`,
+      `  ...(await importOriginal<typeof import('@papercusp/agent-mcp')>()),`,
+      `  defineTool: (def: unknown) => def,`,
+      `}));`,
+    ].join('\n'),
+    expect: 0,
+  },
+  {
+    name: 'BARE: silent for an UNPROTECTED package with the same bad shape (precision)',
+    path: FIXTURE_PATH,
+    text: `vi.mock('nuqs', () => ({ useQueryState: vi.fn() }));`,
+    expect: 0,
+  },
+  {
+    name: 'BARE: a SUB-PATH export is a DISTINCT module, not the protected package',
+    path: FIXTURE_PATH,
+    text: `vi.mock('@papercusp/agent-mcp/server', () => ({ defineTool: (def: unknown) => def }));`,
+    expect: 0,
+  },
+  {
+    name: 'BARE: fires regardless of the mocking file’s directory (identity is global)',
+    path: 'apps/operator/lib/somewhere/else/deep.test.ts',
+    text: `vi.mock('@papercusp/agent-mcp', () => ({ SU_ROLES: ['operator'] }));`,
+    expect: 1,
+  },
+  {
+    name: 'BARE: a relative spec whose basename merely LOOKS like the package is not it',
+    path: FIXTURE_PATH,
+    text: `vi.mock('./agent-mcp', () => ({ defineTool: (def: unknown) => def }));`,
+    expect: 0,
+  },
 ];
 
 function runSelfTest() {
