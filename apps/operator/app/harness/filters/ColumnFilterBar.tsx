@@ -351,11 +351,19 @@ export function FilterEditor<TRow>({
  *
  * memo() here breaks the fuel supply at its true source — this bar re-renders
  * only when ITS OWN (already-stable) props actually change, independent of
- * how often the parent re-renders for unrelated reasons. See
- * ColumnFilterBar.crash-regression.test.tsx for the guarding case, and keep
- * `controller`/`activeChips`/`hasActive`/`clearAll` genuinely stable at every
- * call site (`useColumnFilters`'s own `cols`/`rows` args must not be fresh
- * literals per render) — memo() only helps if its inputs actually hold still.
+ * how often the parent re-renders for unrelated reasons.
+ *
+ * The durable guard for the Radix half is `patches/@radix-ui+react-slot+1.2.3.patch`,
+ * NOT a test — this comment used to cite a `ColumnFilterBar.crash-regression.test.tsx`
+ * that does not exist anywhere in the repo (checked repo-wide, WI-39552), which reads
+ * as "the memo() is test-guarded" when it is not.
+ *
+ * Your half of the contract: keep `controller`/`activeChips`/`hasActive`/`clearAll`
+ * genuinely stable at every call site — `useColumnFilters`'s own `cols`/`rows` args
+ * must not be fresh literals per render. memo() only helps if its inputs actually hold
+ * still, and both callers have since been caught violating exactly that (WI-39552:
+ * DepGraphPanel's `visibleItems` ran a real render loop, WorkItemsPanel passed a bare
+ * `items ?? []`).
  */
 function ColumnFilterBarImpl<TRow>({
   controller,
