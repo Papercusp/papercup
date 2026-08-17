@@ -2321,6 +2321,42 @@ for (const guard of REPO_WIDE_INVARIANT_GUARDS) {
   });
 }
 
+/**
+ * Path aliases for a workspace, read from its tsconfig `compilerOptions.paths`.
+ *
+ * Only intra-package aliases matter here (`@/…`); a bare package specifier is out of
+ * graph by design. Returning {} on any problem is SAFE, not lossy: an alias we cannot
+ * resolve makes the importing file "unresolved", and related-tests.mjs treats an
+ * unresolved file as reaching everything — so a missing mapping widens the run rather
+ * than silently dropping edges from the graph.
+ */
+function tsconfigAliasesFor(wsRoot) {
+  try {
+    const tsconfigPath = join(wsRoot, "tsconfig.json");
+    if (!existsSync(tsconfigPath)) return {};
+    // Tolerate comments/trailing commas — tsconfig is JSON5-ish in practice.
+    const raw = readFileSync(tsconfigPath, "utf8")
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/(^|\s)\/\/.*$/gm, "$1")
+      .replace(/,(\s*[}\]])/g, "$1");
+    const cfg = JSON.parse(raw);
+    const opts = cfg.compilerOptions ?? {};
+    const baseUrl = join(wsRoot, opts.baseUrl ?? ".");
+    const out = {};
+    for (const [pattern, targets] of Object.entries(opts.paths ?? {})) {
+      const target = Array.isArray(targets) ? targets[0] : null;
+      if (typeof target !== "string") continue;
+      // "@/*": ["./*"]  ->  prefix "@/" maps to <baseUrl>/
+      const prefix = pattern.replace(/\*$/, "");
+      const dir = join(baseUrl, target.replace(/\*$/, ""));
+      out[prefix] = dir.endsWith("/") ? dir : dir + "/";
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
 // --related: narrow each workspace's `test` task to the test files the change can
 // actually reach. Everything else about the task list is untouched — in particular
 // the repo-wide invariant guards above keep attaching exactly as they do without
@@ -2844,7 +2880,16 @@ function runCapturedTask(
     argv,
     cwd,
     env: specEnv,
-  } = spawnSpecFor(spawnTask, [...context.guardArgs, ...extraArgs]);
+    // `--related` narrowing applies ONLY to the initial, complete invocation. A
+    // targeted retry already carries its own explicit file list in extraArgs, and
+    // appending the selection there would widen the very run that exists to isolate
+    // one file. (The passing-verdict cache keys on the full argv, so a narrowed run
+    // gets a distinct identity and can never be replayed as a full-suite pass.)
+  } = spawnSpecFor(spawnTask, [
+    ...context.guardArgs,
+    ...extraArgs,
+    ...(extraArgs.length === 0 ? (spawnTask.relatedFiles ?? []) : []),
+  ]);
   const childEnv = {
     ...process.env,
     ...(specEnv ?? {}),
