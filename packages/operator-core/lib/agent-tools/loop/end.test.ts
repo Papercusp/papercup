@@ -50,6 +50,16 @@ vi.mock('../../goals/wind-down-disposition', async (importOriginal) => {
     applyGoalDisposition: vi.fn(async () => {}),
     deliverGoalWindDownReport: vi.fn(async () => {}),
     windDownDispositionGateEnabled: vi.fn(async () => true),
+    // P-009 acceptance gate (consult-min-max-and-rubric-vetting-2026-08-17 D-004 §2).
+    // MUST be mocked: the real one resolves its deps via `await import('../rubrics')` /
+    // `('../scorecards')` and queries Postgres. Left real, this unit test's verdict flips
+    // with PG REACHABILITY — the gate is positive-finding-only (`catch → satisfied:true`),
+    // so it PASSES on a box with no PG and REFUSES on one with PG, where the fake goal
+    // naturally has no acceptance rubric. That is what made this file "fail repeatedly"
+    // (EI-20714629197442202) while reading green wherever PG was down. The gate's own
+    // behavior is covered by its own tests; here we assert only that loop:end CONSULTS it
+    // and honors BOTH verdicts.
+    evaluateGoalAcceptanceGate: vi.fn(async () => ({ satisfied: true })),
   };
 });
 
