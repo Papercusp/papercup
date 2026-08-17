@@ -43,6 +43,9 @@ import type { ClaimSpecSubject } from '../../scheduler/claim-spec-match';
 import { ROUTING_GATE_INTENTS } from '../../routing-gate-hints';
 import { getModes } from '../../modes/store';
 import { withDrainBugAdmission } from './drain-flow';
+import { FLAGS } from '@papercusp/flags';
+import { getFlag } from '@papercusp/flags/server';
+import { resolveGoalContext } from '../../modes/goal-context';
 
 /**
  * Inline typed-link spec (WI-3956) — one edge written from the NEW work-item to a
@@ -327,10 +330,26 @@ export default defineTool({
           (mode) => mode.mode === 'drain',
         )
       : undefined;
+    // P-004 (goal-mode-design-intent-hardening-2026-08-16): derive the goal dedup
+    // rail SERVER-SIDE from the creator's RESOLVED goal context — never a tool
+    // argument (the zod schema above is untouched on purpose; same operative rule
+    // as the goal-provenance stamps, whose whole point is replacing self-report).
+    // Resolved ONCE per call, not per item. The resolver erroring fails OPEN
+    // (non-goal is the overwhelming case and this must never block ordinary
+    // filing); a resolved goal with the flag ON arms the fail-CLOSED dedup
+    // contract in the core (see _create-core.ts goalDedupGate).
+    const goalDedupGate =
+      (await getFlag(FLAGS.GOAL_CREATE_DEDUP_GATE, 'system')) &&
+      Boolean(
+        ident.workspaceId && ident.workspaceId !== '*' && ident.ownerId
+          ? await resolveGoalContext(ident.workspaceId, ident.ownerId).catch(() => null)
+          : null,
+      );
     const env = await runBulk(
       list,
       async (spec) => {
         spec.requireCompleteDedupCoverage = Boolean(drainMode) && spec.kind === 'bug';
+        spec.goalDedupGate = goalDedupGate;
         // EI-18784357226895330: a claim spec governs what a member may PULL from the
         // shared claimable pool. It must NOT govern what a member may FILE. This block
         // used to refuse the whole create, which meant a member who discovered an
