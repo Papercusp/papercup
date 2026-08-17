@@ -68,13 +68,15 @@ vi.mock('../pot-membership', async (importOriginal) => {
   };
 });
 // WI-39604 tool-path leg: createOneWorkItem drags in the create-time dedup
-// screens and the mirror-guard flag. Each is fail-open and separately tested;
-// here they are pinned benign so THIS file's subject stays the condition-key
-// routing, not the screens' fixture appetites.
-vi.mock('@papercusp/flags/server', async (importOriginal) => {
-  const actual = await importOriginal<Record<string, unknown>>();
-  return { ...actual, getFlag: async () => false };
-});
+// screens. Each is fail-open and separately tested; here they are pinned benign
+// so THIS file's subject stays the condition-key routing, not the screens'
+// fixture appetites. ⚠ Deliberately NO '@papercusp/flags/server' mock: a blanket
+// getFlag→false flips ISSUES_PER_WORKSPACE off after its ~seconds cache refresh,
+// silently re-scoping every later createIssue OUT of this fixture's workspace so
+// workspace-scoped condition-key claims match 0 rows (measured here 2026-08-17 —
+// test 1 green, tests 2+ red, purely time-based). issues-engineer.ts's header
+// documents the same trap. The mirror guard needs no pin either: these titles
+// embed no WI-id, so it is a structural no-op.
 vi.mock('../agent-tools/work_items/semantic-dupe-guard', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
   return { ...actual, findSemanticDupes: async () => null };
