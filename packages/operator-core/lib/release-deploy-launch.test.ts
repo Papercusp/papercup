@@ -456,6 +456,26 @@ describe('EI-18646778682511611: an advanced-prefix tick must not report gate.gre
     const s = computeDeployStatus(mkSnap({ consecutiveReds: 0, fireStale: false, recordedVerdict: null }, {}));
     expect(s.gate.green).toBe(true);
   });
+
+  /**
+   * CONTROL (permanent, pure): a guard that has never been observed to FAIL is a guard
+   * nobody has tested. This keeps the PRE-FIX predicate in the file as a deliberately-wrong
+   * implementation, so the ⭐ case above is provably falsifiable without mutating the shared
+   * tree (which git-sync can commit mid-probe). If the `!lastVerdictRecordedNotGreen` clause
+   * is ever dropped from `computeDeployStatus`, the real subject converges on this control
+   * and the ⭐ case goes red.
+   */
+  it('control: the PRE-FIX predicate reports GREEN for the exact input the fix reports red for', () => {
+    const g = { consecutiveReds: 0, fireStale: false, recordedVerdict: 'not-green' as const };
+    const lastVerdictWasPartialRed = false; // no advanced-prefix event — the old carve-out cannot see this tick
+
+    // the predicate as it stood before EI-20706962612084953
+    const preFixGateGreen = g.consecutiveReds === 0 && !g.fireStale && !lastVerdictWasPartialRed;
+    expect(preFixGateGreen).toBe(true); // ← the false green this item was filed about
+
+    // the real subject, same input
+    expect(computeDeployStatus(mkSnap(g, {})).gate.green).toBe(false);
+  });
 });
 
 /**
