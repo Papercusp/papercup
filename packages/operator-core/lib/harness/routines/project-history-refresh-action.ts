@@ -81,12 +81,6 @@ import { registerSystemAction, type SystemActionCtx } from './system-actions';
  *  a target. */
 export const PROJECT_HISTORY_TIMEOUT_MS = 15 * 60_000;
 
-/** Default cadence floor. The artifact only changes when plans/work-items change,
- *  and a regeneration that produces identical bytes is a no-op for git — so the
- *  cost of running is bounded and the cost of being stale is what we are paying
- *  down. Six hours keeps the History tab within a working session of reality. */
-export const DEFAULT_PROJECT_HISTORY_MIN_INTERVAL_SEC = 6 * 60 * 60;
-
 /** Raise an operator notification once a streak reaches this length. Two is
  *  deliberate: a single failure is usually a transient (PG restart, a deploy
  *  mid-tick), while two consecutive means the refresher itself is broken and the
