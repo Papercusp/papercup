@@ -22,6 +22,7 @@ function read(over: Partial<JournalReadResult> = {}): JournalReadResult {
     journalAvailable: true,
     journalError: null,
     unitsUnknown: [],
+    windowOutsideJournal: null,
     command: 'journalctl ...',
     ...over,
   };
