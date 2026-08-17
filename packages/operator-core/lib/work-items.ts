@@ -2397,6 +2397,49 @@ export interface AttachedCompletionEvidence {
 }
 
 /**
+ * WHAT SHOULD HAPPEN when a completion record arrives for a row that is already terminal —
+ * the whole decision, with no I/O, so it is falsifiable without a database.
+ *
+ * `install` (→ `recorded`) — nothing is being protected: either the row carries no completion
+ * record at all (the shape every `watchdog-auto-close` row has), or the caller IS the credited
+ * closer amending their own. Mirrors what the state-write path already does in both cases.
+ * `install` (→ `upgraded`) — a peer's record is there, and this one is strictly richer.
+ * `attest` — a peer's record stands. A TIE attests, because the property being defended is
+ * "a second write must not destroy the first", not "the newest wins".
+ */
+export function classifySettledCompletionEvidence(input: {
+  by: string;
+  terminalOwner: string | null;
+  terminalCompletionRef: string | null;
+  completionAuthority: WorkItemCompletionAuthority | null;
+  storedEvidence: CompletionVerificationEvidence | null | undefined;
+  incomingEvidence: CompletionVerificationEvidence | null | undefined;
+}): {
+  outcome: 'recorded' | 'upgraded' | 'attested';
+  install: boolean;
+  existingSufficient: boolean;
+  incomingSufficient: boolean;
+} {
+  // The same two signals `isSecondTerminalClose` keys on: a credited owner, PLUS a
+  // ref-or-authority meaning "someone recorded a real completion here". Both must hold, and
+  // the closer must be someone else, before there is a record worth defending.
+  const hasStoredRecord = Boolean(input.terminalCompletionRef || input.completionAuthority);
+  const foreignRecord = hasStoredRecord && Boolean(input.terminalOwner) && input.by !== input.terminalOwner;
+  const existingSufficient = isSufficientEvidence(input.storedEvidence);
+  const incomingSufficient = isSufficientEvidence(input.incomingEvidence);
+  if (!foreignRecord) {
+    return { outcome: 'recorded', install: true, existingSufficient, incomingSufficient };
+  }
+  const upgrade = incomingSufficient && !existingSufficient;
+  return {
+    outcome: upgrade ? 'upgraded' : 'attested',
+    install: upgrade,
+    existingSufficient,
+    incomingSufficient,
+  };
+}
+
+/**
  * EI-19362441037986499 — attach a completion record to an ALREADY-TERMINAL item without
  * writing state and without firing the settled-event fan-out.
  *
@@ -2472,11 +2515,14 @@ export async function attachCompletionEvidenceToSettledItem(
     return { outcome: 'nothing-to-record', workItem: wi };
   }
 
-  // The same two signals `isSecondTerminalClose` keys on: a credited owner, plus a
-  // ref-or-authority meaning "someone recorded a real completion here". Both must hold, and
-  // the closer must be someone else, before there is a record worth defending.
-  const hasStoredRecord = Boolean(wi.terminalCompletionRef || wi.completionAuthority);
-  const foreignRecord = hasStoredRecord && Boolean(wi.terminalOwner) && opts.by !== wi.terminalOwner;
+  const decision = classifySettledCompletionEvidence({
+    by: opts.by,
+    terminalOwner: wi.terminalOwner,
+    terminalCompletionRef: wi.terminalCompletionRef,
+    completionAuthority: wi.completionAuthority,
+    storedEvidence: wi.terminalCompletionEvidence,
+    incomingEvidence: opts.completionEvidence,
+  });
 
   const install = async (): Promise<WorkItem | null> => {
     const { sql } = getOrgPg();
@@ -2495,13 +2541,12 @@ export async function attachCompletionEvidenceToSettledItem(
     return (await getWorkItem(id, opts.harness)) ?? wi;
   };
 
-  if (!foreignRecord) {
+  if (decision.outcome === 'recorded') {
     return { outcome: 'recorded', workItem: await install() };
   }
 
-  const existingSufficient = isSufficientEvidence(wi.terminalCompletionEvidence);
-  const incomingSufficient = isSufficientEvidence(opts.completionEvidence);
-  const upgrade = incomingSufficient && !existingSufficient;
+  const { existingSufficient, incomingSufficient } = decision;
+  const upgrade = decision.outcome === 'upgraded';
   const attestation: CompletionAttestation = {
     at: new Date().toISOString(),
     by: upgrade ? wi.terminalOwner : opts.by,
