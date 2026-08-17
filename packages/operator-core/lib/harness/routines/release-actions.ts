@@ -733,6 +733,10 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
     // Isolate the multi-GB suite in its own transient scope/cgroup so its memory
     // never counts against (or OOM-kills) the bg-host cage that runs the hive loop.
     { memoryMaxG: CHECKPOINT_SCOPE_MEMORY_MAX_G },
+    // EI-20709645463022690: for a SUBJECT hive, drop the operator's inherited DATABASE_URL/PG*
+    // so the pot's suite resolves its OWN database. EMPTY for operator-home, whose gate legs
+    // genuinely need that DSN — so papercusp's own pipeline is byte-identical (D-007).
+    routing.clearEnv,
   );
   if (r.code !== 0) {
     console.warn(`${orchestratorStdoutTag()} exited ${r.code}: ${(r.stderr || r.stdout).slice(-500)}`);
