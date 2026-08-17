@@ -20,6 +20,30 @@ let registryProjects: Array<{ slug: string; path: string; self_repo?: boolean }>
 let homeSlug: string;
 let tmpDirs: string[];
 
+/** Env keys the DSN-routing tests below drive (EI-20709645463022690). Saved + restored
+ *  wholesale so a test that plants an ambient operator DSN can never leak it into a
+ *  sibling test — or into the rest of the worker's suite. */
+const DSN_ENV_KEYS = [
+  'HARNESS_ADMIN_DATABASE_URL',
+  'DATABASE_URL',
+  'PAPERCUSP_PG_URL',
+  'PAPERCUSP_SKIP_PG_DISCOVERY',
+] as const;
+let savedDsnEnv: Record<string, string | undefined>;
+
+/** Plant an ambient operator DSN exactly as the gate subprocess inherits one, with the
+ *  namespaced + discovery sources cleared so `getHarnessAdminUrl()` resolves to THIS value
+ *  (embedded-pg-discovery: env vars are consulted before the discovery file / native
+ *  fallback). That makes the "re-homed to HARNESS_ADMIN_DATABASE_URL" assertion a real
+ *  provenance check rather than an echo of a value the test also supplied under that name. */
+const AMBIENT_OPERATOR_DSN = 'postgres://operator:pw@127.0.0.1:5432/papercusp_operator_test';
+function plantAmbientOperatorDsn(): void {
+  delete process.env.HARNESS_ADMIN_DATABASE_URL;
+  delete process.env.PAPERCUSP_PG_URL;
+  process.env.DATABASE_URL = AMBIENT_OPERATOR_DSN;
+  process.env.PAPERCUSP_SKIP_PG_DISCOVERY = '1';
+}
+
 function makeHiveDir(extendsId: string, opts: { git?: boolean; extraKnobs?: string } = {}): string {
   const d = mkdtempSync(join(tmpdir(), 'hre-'));
   tmpDirs.push(d);
@@ -35,6 +59,7 @@ beforeEach(() => {
   registryProjects = [];
   homeSlug = 'papercusp';
   tmpDirs = [];
+  savedDsnEnv = Object.fromEntries(DSN_ENV_KEYS.map((k) => [k, process.env[k]]));
   vi.doMock('../../harness-registry', () => ({
     loadHarnessRegistry: async () => ({ projects: registryProjects }),
   }));
@@ -48,6 +73,10 @@ beforeEach(() => {
   }));
 });
 afterEach(() => {
+  for (const k of DSN_ENV_KEYS) {
+    if (savedDsnEnv[k] === undefined) delete process.env[k];
+    else process.env[k] = savedDsnEnv[k] as string;
+  }
   vi.doUnmock('../../harness-registry');
   vi.doUnmock('../operator-home-harness');
   vi.doUnmock('../../hive-settings-store');
