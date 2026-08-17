@@ -1127,11 +1127,18 @@ describe('work_items:complete (keyed-array)', () => {
       expect(r.stateWarning).toBeUndefined();
     });
 
-    it('does NOT warn when the item was already terminal (re-complete a passed item)', async () => {
+    it('does NOT nag "not closed" when the item was already terminal — it reports what became of the record', async () => {
+      // EI-19362441037986499 CHANGED WHAT THIS ASSERTS, deliberately. The property this test
+      // was defending — never tell a caller their CLOSED item is "NOT closed" — still holds
+      // and is still asserted below. What it USED to also assert was that the terminal case
+      // says NOTHING AT ALL, and that silence was the defect: it made "your evidence was
+      // stored" indistinguishable from "your evidence was discarded", which is exactly what
+      // was happening. So the nag stays suppressed; the outcome is now reported instead.
       getWorkItem.mockResolvedValue({ ...item, state: 'passed' });
       const r = await one({ id: 'F-12', completion: { summary: 'noting it again' } });
       expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
-      expect(r.stateWarning).toBeUndefined();
+      expect(r.stateWarning).not.toMatch(/NOT closed/);
+      expect(r.stateWarning).toContain('ALREADY terminal');
     });
 
     it('warns for an issue-family item left open (no `state`), not when resolved', async () => {
@@ -2938,5 +2945,110 @@ describe('work_items:complete input coercion (EI-7031)', () => {
       expect(r.completionAuthority).toBeUndefined();
       expect(r.authorityWarning).toBeUndefined();
     });
+  });
+});
+
+// ── EI-19362441037986499: a record-only completion of an ALREADY-TERMINAL item ────────────
+// Reported as a race (a watchdog auto-resolve beating the agent's own close) but measured
+// with NO concurrency at all: the row had been terminal for 33 minutes. Nothing here is
+// timing-dependent, because the defect never needed a race — a completion that passes no
+// `state` takes no persistence branch, and `completion.status:'done'` can never infer one
+// (it IS the schema default). So the evidence went nowhere, and the "it is NOT closed"
+// warning was suppressed precisely because the item WAS closed: ok:true, a mutation count,
+// and no stored record anywhere.
+describe('record-only completion of an already-terminal item (EI-19362441037986499)', () => {
+  const resolved = { ...item, id: 'EI-1', kind: 'bug', family: 'issue', state: 'resolved' };
+
+  beforeEach(() => {
+    getWorkItem.mockResolvedValue(resolved);
+  });
+
+  const recordOnly = () =>
+    one({
+      id: 'EI-1',
+      completion: {
+        summary: 'a partial vi.mock had gone stale for the third time',
+        status: 'done',
+        verifiedHow: 'unit',
+        testsRun: 'testing:run complete.test.ts',
+        testResult: '144 passed / 0 failed',
+      },
+    });
+
+  it('ATTACHES the evidence instead of discarding it — and writes no state', async () => {
+    const r = await recordOnly();
+    expect(r.ok).toBe(true);
+    expect(attachCompletionEvidenceToSettledItem).toHaveBeenCalledTimes(1);
+    // The whole point of a separate writer: NO state write. A terminal→same-terminal
+    // re-assert would re-fire `work-item:done:<id>` (that emit carries no state-changed
+    // guard), waking everything parked on the item on every record-only completion.
+    expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+    const [id, opts] = attachCompletionEvidenceToSettledItem.mock.calls[0] as [string, Record<string, any>];
+    expect(id).toBe('EI-1');
+    expect(opts.by).toBe('su-tester');
+    // The narrative rides in the evidence, exactly as it does on the state-write path.
+    expect(opts.completionEvidence?.verifiedHow).toBe('unit');
+    expect(opts.completionEvidence?.testResult).toBe('144 passed / 0 failed');
+    expect(opts.completionRef).toBeUndefined();
+  });
+
+  it('TELLS the caller the record was stored — the terminal case no longer warns silently', async () => {
+    attachCompletionEvidenceToSettledItem.mockResolvedValue({ outcome: 'recorded', workItem: { ...resolved } });
+    const r = await recordOnly();
+    // Before the fix this was `undefined` for EVERY terminal final state, which is exactly
+    // why a discarded completion was indistinguishable from a successful one.
+    expect(r.stateWarning).toBeTruthy();
+    expect(r.stateWarning).toContain('ALREADY terminal');
+    expect(r.stateWarning).toContain('EI-1');
+  });
+
+  it('surfaces the conflict note when a peer record stands and this one is only attested', async () => {
+    attachCompletionEvidenceToSettledItem.mockImplementation(
+      async (_id: string, opts: { onTerminalConflict?: (i: unknown) => void }) => {
+        opts.onTerminalConflict?.({
+          outcome: 'attested',
+          existingOwner: 'watchdog-green-resolve',
+          existingAuthority: null,
+          existingEvidenceSufficient: true,
+          incomingEvidenceSufficient: true,
+          note: 'was ALREADY completed by watchdog-green-resolve … FILED AS A SECOND ATTESTATION',
+        });
+        return { outcome: 'attested', workItem: { ...resolved } };
+      },
+    );
+    const r = await recordOnly();
+    expect(r.ok).toBe(true);
+    expect(r.stateWarning).toContain('second attestation');
+    // Routed through the SAME result field the state-write path already uses, so a caller
+    // reading one surface sees both kinds of terminal-completion conflict.
+    expect(JSON.stringify(r)).toContain('watchdog-green-resolve');
+  });
+
+  it('reports an attach failure instead of claiming the record landed', async () => {
+    attachCompletionEvidenceToSettledItem.mockRejectedValue(new Error('pg down'));
+    const r = await recordOnly();
+    expect(r.stateError).toContain('pg down');
+    expect(r.stateWarning).toContain('could NOT be attached');
+  });
+
+  it('does NOT demand `assumptions` — the caller is closing nothing', async () => {
+    // Routing this through the close-intent path would convert a silent no-op into a HARD
+    // REFUSAL for callers who never asked to close anything.
+    const r = await oneRaw({
+      id: 'EI-1',
+      completion: { summary: 'progress note', status: 'done', verifiedHow: 'unit', testResult: 'ok' },
+    });
+    expect(r.ok).toBe(true);
+    expect(r.error).toBeUndefined();
+  });
+
+  it('leaves a NON-terminal item on the ordinary record-only path, untouched', async () => {
+    // The positive control for the arm's guard: same call shape, open item ⇒ the new writer
+    // must not fire, and the pre-existing "it is NOT closed" warning must still appear. Without
+    // this, every assertion above would also pass for an arm that fires unconditionally.
+    getWorkItem.mockResolvedValue({ ...resolved, state: 'open' });
+    const r = await recordOnly();
+    expect(attachCompletionEvidenceToSettledItem).not.toHaveBeenCalled();
+    expect(r.stateWarning).toContain('NOT closed');
   });
 });
