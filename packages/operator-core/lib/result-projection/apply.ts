@@ -43,6 +43,32 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
   return !!v && typeof v === 'object' && !Array.isArray(v);
 }
 
+/**
+ * One line naming the body's ACTUAL root shape, for the pick-miss notes
+ * (EI-20720054720826414). A miss report that only repeats the failed paths
+ * costs the caller a blind second guess; naming the shape (and, for arrays,
+ * the element keys and the `[].key` spelling) converts the round trip into a
+ * corrected call. Bounded: at most 12 keys, first object element only.
+ */
+export function describeBodyShape(body: unknown): string {
+  const keyList = (keys: string[]): string =>
+    keys.slice(0, 12).join(', ') + (keys.length > 12 ? ', …' : '');
+  if (Array.isArray(body)) {
+    const first = body.find(isPlainObject);
+    const keys = first ? Object.keys(first) : [];
+    return (
+      `an ARRAY of ${body.length} element(s)` +
+      (keys.length ? ` with keys: ${keyList(keys)}` : '') +
+      ` — select array elements with \`[].key\``
+    );
+  }
+  if (isPlainObject(body)) {
+    const keys = Object.keys(body);
+    return keys.length ? `an OBJECT with key(s): ${keyList(keys)}` : 'an empty OBJECT';
+  }
+  return `a bare ${body === null ? 'null' : typeof body} value`;
+}
+
 /** How a materialized result body looks to the two projection domains. */
 export interface ProjectionBodyShape {
   /** The JSON payload, when the body (or one of its text items) parses. */
@@ -462,13 +488,49 @@ export function applyResultProjection<T extends ProjectableResult>(
             ? writeOutcomePickPaths(json.parsed).filter((path) => !spec.pick!.includes(path))
             : [];
         const pickPaths = [...spec.pick, ...implicitWritePaths];
-        const { picked, unmatched } = applyPick(json.parsed, pickPaths);
-        const requestedUnmatched = unmatched.filter((path) => !implicitWritePaths.includes(path));
+        let pickRun = applyPick(json.parsed, pickPaths);
+        let effectivePick = spec.pick;
+        let requestedUnmatched = pickRun.unmatched.filter((path) => !implicitWritePaths.includes(path));
+        // EI-20720054720826414: a bare `key` path addresses an OBJECT root, so on
+        // an ARRAY-root body it can never match — and it is the single most
+        // common miss (the playbook's own pick examples were object-root only).
+        // When the `[].key` spelling PROVABLY matches, apply that selection
+        // instead of failing open into the full promoted body (which is larger
+        // than the un-projected default and then spills). Only paths that missed
+        // are rewritten, and only when the rewrite is verified to match, so a
+        // working path is never reinterpreted and a genuine miss still misses.
+        if (requestedUnmatched.length > 0 && Array.isArray(json.parsed)) {
+          const repairs = new Map<string, string>();
+          for (const missed of requestedUnmatched) {
+            if (missed.startsWith('[')) continue;
+            const candidate = `[].${missed}`;
+            if (effectivePick.includes(candidate)) continue;
+            if (applyPick(json.parsed, [candidate]).unmatched.length === 0) {
+              repairs.set(missed, candidate);
+            }
+          }
+          if (repairs.size > 0) {
+            effectivePick = effectivePick.map((p) => repairs.get(p) ?? p);
+            pickRun = applyPick(json.parsed, [...effectivePick, ...implicitWritePaths]);
+            requestedUnmatched = pickRun.unmatched.filter((path) => !implicitWritePaths.includes(path));
+            // Non-degrading: the caller's intended selection was recovered and
+            // is exactly what the body below contains — but say so, so the
+            // corrected spelling is learned rather than silently absorbed.
+            note(
+              `pick path(s) auto-adjusted for this array-root body: ` +
+                [...repairs].map(([from, to]) => `${from} → ${to}`).join(', ') +
+                ` — a bare key addresses an object root; use \`[].key\` on an array. ` +
+                `The adjusted selection is applied below.`,
+              false,
+            );
+          }
+        }
+        const { picked, unmatched } = pickRun;
         const implicitRetained = implicitWritePaths.filter((path) => !unmatched.includes(path));
-        if (requestedUnmatched.length === spec.pick.length) {
+        if (requestedUnmatched.length === effectivePick.length) {
           note(
             `pick matched NOTHING (${requestedUnmatched.join(', ')}) — body left unprojected rather than ` +
-              `returning an empty object. Check the real shape with a smaller path first.`,
+              `returning an empty object. The body is ${describeBodyShape(json.parsed)}.`,
           );
         } else {
           if (requestedUnmatched.length > 0) {
@@ -478,7 +540,8 @@ export function applyResultProjection<T extends ProjectableResult>(
             // silently absent. Loud, and — via `degraded` — ahead of the number.
             note(
               `pick path(s) matched nothing: ${requestedUnmatched.join(', ')} — those field(s) are ABSENT ` +
-                `from the body below, which is otherwise a normal-looking result.`,
+                `from the body below, which is otherwise a normal-looking result. ` +
+                `The body is ${describeBodyShape(json.parsed)}.`,
             );
           }
           if (implicitRetained.length > 0) {
@@ -613,8 +676,7 @@ export function applyResultProjection<T extends ProjectableResult>(
 
     const leadNotes = noteRows.filter((n) => n.degrades).map((n) => n.text);
     const tailNotes = noteRows.filter((n) => !n.degrades).map((n) => n.text);
-    const footer =
-      '\n' +
+    const footerCore =
       (emptyLead ? `${emptyLead}\n` : '') +
       (leadNotes.length ? `⚠ ${leadNotes.join('\n⚠ ')}\n` : '') +
       stats +
@@ -632,7 +694,18 @@ export function applyResultProjection<T extends ProjectableResult>(
       }
       rebuilt.push(it as Record<string, unknown>);
     }
-    rebuilt.push({ type: 'text', text: footer });
+    // EI-20720054720826414 (delivery half): the result-door's over-budget
+    // truncation keeps the HEAD of the serialized text and drops the TAIL — and
+    // the fail-open case (a pick that matched nothing, leaving the full promoted
+    // body in place) is precisely the case most likely to overflow it. A caveat
+    // living only in a tail footer is therefore deleted at the exact moment it
+    // matters most (observed live: an all-miss warning tail-truncated away by
+    // the spill, leaving a confident-looking raw body). So a DEGRADED verdict
+    // renders as a HEADER, ahead of the body, where no head-keeping truncation
+    // can silence it. An honest, un-degraded reduction keeps the tail footer
+    // and pays nothing.
+    if (degraded) rebuilt.unshift({ type: 'text', text: footerCore });
+    else rebuilt.push({ type: 'text', text: `\n${footerCore}` });
 
     const out = {
       ...result,
