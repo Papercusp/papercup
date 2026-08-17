@@ -2622,6 +2622,58 @@ export function createInferenceGateway(deps: GatewayDeps) {
     clientCircuits.set(ownerId, state);
   }
 
+  /** In-flight cold starts, keyed by backend id (P-008/D-009). systemd already merges concurrent
+   *  `start` jobs for one unit, so this is not needed for CORRECTNESS — it de-duplicates the WAIT,
+   *  so N simultaneous requests for a stopped backend share ONE poll loop instead of each holding a
+   *  connection through the whole model load. Entries are deleted on settle, so this never grows. */
+  const localBackendColdStarts = new Map<string, Promise<{ ok: boolean; error?: string }>>();
+
+  /**
+   * COLD START (P-008/D-009): a request found no healthy backend for `model`. If a registered
+   * on-demand backend serves it, start it and wait for it to answer; on success feed the health
+   * state back so the normal selection path can route to it immediately.
+   *
+   * Returns an error string when a start was attempted and failed (surfaced in the 502 so a failed
+   * cold start never reads as "none registered"), or null when nothing was attempted or it worked.
+   */
+  async function ensureOnDemandBackendForModel(model: string): Promise<string | null> {
+    const pool = deps.localBackends;
+    const ensure = deps.ensureLocalBackendRunning;
+    if (!pool || !ensure) return null;
+
+    // Startable = registered for this model, enabled, on-demand, and owning a unit to start.
+    // `enabled` is already the pool's admission filter (launch.ts drops disabled rows), but it is
+    // re-checked here so this stays correct if a caller ever constructs a pool by hand.
+    const candidate = pool
+      .entries()
+      .find((b) => b.enabled && b.models.includes(model) && b.lifecycle === 'on-demand' && b.unitName);
+    if (!candidate) return null;
+
+    let started = localBackendColdStarts.get(candidate.id);
+    if (!started) {
+      log('info', `inference-gateway: local backend '${candidate.id}' (${candidate.unitName}) is stopped and serves '${model}' — starting on demand`);
+      started = ensure(candidate).finally(() => localBackendColdStarts.delete(candidate.id));
+      localBackendColdStarts.set(candidate.id, started);
+    }
+
+    let result: { ok: boolean; error?: string };
+    try {
+      result = await started;
+    } catch (e) {
+      // A throwing ensure impl must not crash the request — it is an upstream-shaped failure.
+      return `cold start of '${candidate.id}' threw: ${(e as Error).message ?? String(e)}`;
+    }
+    if (!result.ok) return `cold start of '${candidate.id}' failed: ${result.error ?? 'unknown error'}`;
+
+    // The pool still believes this backend unhealthy — health state moves only on probes and live
+    // outcomes, and the probe that demoted it ran while the unit was down. A single ok resets
+    // consecutiveFailures and flips healthy back to true (nextHealthState), which is what makes the
+    // unchanged attempt loop below able to select it on this very request.
+    pool.recordOutcome(candidate.id, true);
+    log('info', `inference-gateway: local backend '${candidate.id}' started on demand and is answering — routing '${model}'`);
+    return null;
+  }
+
   /**
    * Proxy an OpenAI-compatible `/v1/chat/completions` or `/v1/completions` request to the LOCAL
    * backend pool (local-concurrent-inference-2026-07-02 P-004, D-002). No account/credential/
