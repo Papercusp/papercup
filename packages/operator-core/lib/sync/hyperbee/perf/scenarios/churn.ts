@@ -25,6 +25,7 @@ import {
   spawnPeerChild,
   spawnProcMesh,
   foldChildResults,
+  awaitAllChildEvent,
   type PeerChildHandle,
 } from '../child-driver';
 import type { PeerChildResult } from '../peer-child';
@@ -80,8 +81,20 @@ export const coldJoin: PerfScenario = {
         }
         const reader = mesh.readers[0];
         meter.expectReaders(1);
-        const caught = await reader.waitFor('caught-up', budget);
-        if (!caught) meter.readerDidNotConverge(reader.cfg.peerIndex, 'never caught up within the cold-join budget');
+        // Declare the GOALPOST beside the verdict. A bare converged/not boolean
+        // is unattributable after a budget change (the EI-20581532536662596
+        // lesson), and here the goalpost MOVES WITHIN this scenario's own sweep:
+        // `catchUpBudgetMs` scales with H, so 1k and 10k rungs are judged against
+        // different deadlines and their verdicts are not comparable without it.
+        meter.convergenceBudget(budget);
+        // `elapsedMs` comes from awaitAllChildEvent's ONE shared start instant —
+        // the same origin `budget` is measured from — so `budget - max(elapsed)`
+        // is real headroom. Do not substitute the child's bootT0-relative `t`.
+        const [settled] = await awaitAllChildEvent([reader], 'caught-up', budget);
+        const caught = settled.event !== null;
+        if (!caught)
+          meter.readerDidNotConverge(reader.cfg.peerIndex, 'never caught up within the cold-join budget');
+        else meter.readerConverged(reader.cfg.peerIndex, settled.elapsedMs);
         const results = [
           await mesh.writer.stopAndCollect(),
           await reader.stopAndCollect(),
@@ -143,9 +156,20 @@ export const reconnectStorm: PerfScenario = {
 
       // Two phases, so 2N convergence checks — expectReaders is additive.
       meter.expectReaders(mesh.readers.length);
-      for (const r of mesh.readers) {
-        const ok = await r.waitFor('caught-up', budget);
-        if (!ok) meter.readerDidNotConverge(`phase1:${r.cfg.peerIndex}`, 'never caught up');
+      meter.convergenceBudget(budget);
+      // SHARED deadline, not a fresh `budget` per reader as the loop reaches it.
+      // The serial form (EI-20581532536662596) makes the deadline a function of a
+      // reader's POSITION IN THE ARRAY — strictly more lenient the later it sits —
+      // which is the instrument defect that disqualified the replication ladder's
+      // convergence verdict. It survived here after the replication sites were
+      // converted; guarded now by scenario-convergence-instrumentation.test.ts.
+      for (const { reader, event, elapsedMs } of await awaitAllChildEvent(
+        mesh.readers,
+        'caught-up',
+        budget,
+      )) {
+        if (event) meter.readerConverged(`phase1:${reader.cfg.peerIndex}`, elapsedMs);
+        else meter.readerDidNotConverge(`phase1:${reader.cfg.peerIndex}`, 'never caught up');
       }
 
       ctx.log('reconnect-storm: phase 2 — SIGKILL all readers, rejoin at once…');
@@ -167,9 +191,22 @@ export const reconnectStorm: PerfScenario = {
       }
       const results: Array<PeerChildResult | null> = [];
       meter.expectReaders(respawned.length);
-      for (const r of respawned) {
-        const caught = await r.waitFor('caught-up', budget);
-        if (!caught) meter.readerDidNotConverge(`rejoin:${r.cfg.peerIndex}`, 'never caught up after the storm');
+      meter.convergenceBudget(budget);
+      // The rejoin wave is the whole point of this scenario: every reader is
+      // relaunched at once, so they MUST be judged against one deadline started
+      // after the last respawn — a per-reader budget would hand the readers at
+      // the end of the array extra time precisely during the thundering herd.
+      for (const { reader, event, elapsedMs } of await awaitAllChildEvent(
+        respawned,
+        'caught-up',
+        budget,
+      )) {
+        if (event) meter.readerConverged(`rejoin:${reader.cfg.peerIndex}`, elapsedMs);
+        else
+          meter.readerDidNotConverge(
+            `rejoin:${reader.cfg.peerIndex}`,
+            'never caught up after the storm',
+          );
       }
       for (const r of respawned) {
         const res = await r.stopAndCollect();
