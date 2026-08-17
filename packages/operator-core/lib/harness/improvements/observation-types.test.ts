@@ -262,6 +262,30 @@ describe('asStructuredObservation — read-side payload surfacing', () => {
     expect(asStructuredObservation({})).toBeUndefined();
     expect(asStructuredObservation({ unknownOnly: 1 })).toBeUndefined();
   });
+
+  // ── the vetting stamp (consult-min-max-and-rubric-vetting-2026-08-17 P-004) ──
+
+  it('surfaces a well-formed vetting stamp, extra keys dropped', () => {
+    const out = asStructuredObservation({
+      rubricRef: 'meta-acceptance-rubric',
+      subject: { kind: 'rubric', ref: 'ar-some-plan' },
+      vetting: { consultId: 'conv-1', rubricRevision: 7, junk: 'nope' },
+    });
+    expect(out?.vetting).toEqual({ consultId: 'conv-1', rubricRevision: 7 });
+    expect(out?.subject).toEqual({ kind: 'rubric', ref: 'ar-some-plan' });
+  });
+
+  it('discards a vetting block that cannot name its consult (consultId is load-bearing)', () => {
+    expect(asStructuredObservation({ rubricRef: 'r', vetting: { rubricRevision: 7 } })?.vetting).toBeUndefined();
+    expect(asStructuredObservation({ rubricRef: 'r', vetting: { consultId: '  ' } })?.vetting).toBeUndefined();
+    expect(asStructuredObservation({ rubricRef: 'r', vetting: 'conv-1' })?.vetting).toBeUndefined();
+    expect(asStructuredObservation({ rubricRef: 'r', vetting: ['conv-1'] })?.vetting).toBeUndefined();
+  });
+
+  it('drops a non-numeric rubricRevision but keeps the consult linkage', () => {
+    const out = asStructuredObservation({ rubricRef: 'r', vetting: { consultId: 'conv-1', rubricRevision: '7' } });
+    expect(out?.vetting).toEqual({ consultId: 'conv-1' });
+  });
 });
 
 describe('canonical scorecard ratings (EI-12458)', () => {
