@@ -5237,6 +5237,11 @@ export function historicalFlakeAnnotations(
  */
 export type GatePromotionReason =
   | CheckpointResult["reason"]
+  /** WI-39450 / WI-39671: stamped the instant the SUITE verdict is known, before any of the
+   *  optional post-verdict legs run. Never a final disposition — every disposition site below
+   *  re-stamps, and readers take the LAST trailer. Its survival as the last line is the signal:
+   *  it means the run died between the suite and the promotion decision. */
+  | "decision-pending"
   | "superseded-by-refire";
 
 /** Render the trailer. Uppercase-token line, the same shape as GATE_HELD_BY /
@@ -5250,13 +5255,29 @@ export type GatePromotionReason =
  *  an impostor turns a MEANINGFUL absence into a plausible-looking answer. Guarded by
  *  `packages/operator-core/lib/doc-claims/machine-line-grep-anchors.test.ts`.
  *
- *  ABSENCE IS MEANINGFUL, and is the reason this is a TRAILER rather than a rewritten header:
- *  no GATE_PROMOTION line means the run never reached a promotion decision at all (killed,
- *  crashed, or still in flight) — a third reading the old header could not express, and one
- *  that rewriting the header in place would have silently converted into a confident wrong
- *  answer. `promoted` is the ACTUAL fast-forward outcome, not a restatement of `reason`:
- *  reason='advanced' with promoted=false is a real state (`advance()` declined the FF) and
- *  used to be invisible.
+ *  READ THE LAST TRAILER, NOT THE FIRST — `tail -1`. There are THREE readings, and the middle
+ *  one is why a `decision-pending` line is stamped up front (WI-39450 / WI-39671):
+ *
+ *    1. NO line at all          -> the run died before its suite even produced a verdict (the
+ *                                  log file itself is only written once the suite completes,
+ *                                  so in practice this pairs with a missing/empty log).
+ *    2. reason=decision-pending -> the suite verdict IS known and is stated right here, but the
+ *                                  run died in an OPTIONAL post-verdict leg before deciding
+ *                                  promotion. This is the reading that used to be indistinguishable
+ *                                  from (1), and the confusion was expensive in both directions:
+ *                                  on papercusp a GENUINE red died mid-prefix-salvage and its
+ *                                  verdict was never recorded (so the streak inflated and `main`
+ *                                  froze); on oddsmith a suite that PASSED (4460 tests) died before
+ *                                  promotion and the ledger recorded it as a FALSE red. Same
+ *                                  window, opposite misreadings — `green=` on this line separates
+ *                                  them without re-running a ~55min suite.
+ *    3. any other reason        -> the run reached a real promotion decision; that is the verdict.
+ *
+ *  This is still a TRAILER rather than a rewritten header: rewriting the header in place would
+ *  silently convert a killed run into a confident wrong answer, and appending keeps every
+ *  intermediate state on the record instead of destroying it. `promoted` is the ACTUAL
+ *  fast-forward outcome, not a restatement of `reason`: reason='advanced' with promoted=false is
+ *  a real state (`advance()` declined the FF) and used to be invisible.
  */
 export function formatGatePromotionTrailer(v: {
   candidate: string;
@@ -5817,6 +5838,20 @@ export async function runGreenCheckpoint(
       { candidate, green, promoted, reason, advancedTo },
       (s) => deps.log(s),
     );
+  // WI-39450 / WI-39671: publish the verdict NOW, before any optional post-verdict leg can kill
+  // the run and take it with them. Everything between here and a disposition site is optional
+  // work that can outlive its budget — the prefix salvage on the red path (a SECOND full affected
+  // suite) and the perf / desktop-perf / delta / cupboard-hygiene legs on the green path. A
+  // SIGTERM at the run deadline anywhere in that window used to leave NO trailer, so the log could
+  // not say whether the suite had gone green, and the ledger fell back to recording `not-green` —
+  // which is a real red on papercusp but a FALSE red on oddsmith. Both are the same missing datum.
+  //
+  // Safe to stamp early precisely BECAUSE it is a trailer read with `tail -1`: every disposition
+  // site below re-stamps the real outcome, which supersedes this line. Note this is a LOG write
+  // only — it deliberately does NOT record a verdict to `gate_health`, because `trackGateStall`
+  // increments `consecutiveReds` unconditionally per call, so an early ledger write plus the
+  // terminal one would count ONE red TWICE and inflate the very streak this is meant to explain.
+  stampPromotion(false, "decision-pending");
   const logPartialGreenGate = (line: string) =>
     appendPartialGreenGateLine(logPath, line, (s) => deps.log(s));
   // load-flake-isolation-2026-06-23: runGreen may have ABSORBED a load-flake — the
@@ -9175,7 +9210,7 @@ export function realCheckpointDeps(
           // trailer), so tagging it costs no reader.
           `${orchestratorStdoutTag()} candidate=${candidateSha ?? "unresolved"} ` +
           `base=${base ?? "none"} written=${new Date().toISOString()} green=${green} ` +
-          `promoted=see-GATE_PROMOTION (trailer at EOF; absent ⇒ this run never reached a promotion decision)\n`;
+          `promoted=see-GATE_PROMOTION (LAST trailer at EOF, tail -1; reason=decision-pending ⇒ this run died before deciding promotion)\n`;
         // EI-19346606967082413: the ORCHESTRATOR transcript rides AHEAD of the suite stdout.
         // Without this call the file records only what the SUITE printed, never what the gate
         // DECIDED — and a SCHEDULER-fired run redirects its stdout nowhere (only a manual run

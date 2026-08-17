@@ -8553,4 +8553,58 @@ describe("EI-20014356905761236: the verdict log records whether its verdict prom
       "GATE_PROMOTION candidate=aaaaaaaaaaaa green=true promoted=true reason=advanced advancedTo=bbbbbbbbbbbb",
     );
   });
+
+  /**
+   * WI-39450 / WI-39671: the verdict must be on disk BEFORE the optional post-verdict legs,
+   * because those legs are where runs die. Two harnesses hit the same window from opposite
+   * sides on 2026-08-17: papercusp's GENUINE red died mid-prefix-salvage (a second full affected
+   * suite) and left no trailer, so the verdict was never recorded and `main` froze behind an
+   * inflated streak; oddsmith's suite PASSED (4460 tests) and died before promotion, and the
+   * ledger recorded a FALSE red. One missing datum, two opposite misreadings.
+   *
+   * These do NOT kill a process — they read the log from INSIDE a leg that runs in the death
+   * window, which is the same observation a SIGTERM at that instant would leave behind, and is
+   * deterministic. `trailer()` takes the LAST match, so it also proves the early stamp is
+   * superseded rather than sticky.
+   */
+  it("⭐ stamps the suite verdict before the optional GREEN-path legs (oddsmith's window)", async () => {
+    const c1 = await commit("a", "1", "c1");
+    await git(repo, ["branch", "ready", c1]);
+    await commit("a", "2", "c2");
+    const logPath = join(repo, "verdict-pending-green.log");
+    const deps = withLog(stubDeps(true).deps, true, logPath);
+    let onDiskDuringLeg = "";
+    deps.perfGate = async () => {
+      onDiskDuringLeg = trailer(logPath);
+      return { action: "pass", summary: "perf ok" };
+    };
+
+    await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    // A run killed right here now says how its suite went, instead of saying nothing.
+    expect(onDiskDuringLeg).toContain("green=true");
+    expect(onDiskDuringLeg).toContain("reason=decision-pending");
+    // ...and the real disposition supersedes it, so `tail -1` never reports pending afterwards.
+    expect(trailer(logPath)).not.toContain("decision-pending");
+  });
+
+  it("⭐ stamps the suite verdict before the optional RED-path legs (papercusp's window)", async () => {
+    const c1 = await commit("a", "1", "c1");
+    await git(repo, ["branch", "ready", c1]);
+    await commit("a", "2", "c2");
+    const logPath = join(repo, "verdict-pending-red.log");
+    const deps = withLog(stubDeps(false).deps, false, logPath);
+    let onDiskDuringLeg = "";
+    deps.deployStaleness = async () => {
+      onDiskDuringLeg = trailer(logPath);
+      return null as never;
+    };
+
+    await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    expect(onDiskDuringLeg).toContain("green=false");
+    expect(onDiskDuringLeg).toContain("reason=decision-pending");
+    expect(trailer(logPath)).toContain("reason=not-green");
+    expect(trailer(logPath)).not.toContain("decision-pending");
+  });
 });
