@@ -47,6 +47,7 @@ import type { PerfArtifact } from './artifact';
 import {
   baselineFromArtifacts,
   baselineFromHistory,
+  checkBaselinePromotion,
   compareArtifacts,
   formatCompareReport,
   type BaselineFile,
@@ -278,6 +279,17 @@ export interface RunSummary {
      *  it means a specific reader was genuinely stuck (the substrate is). */
     slowestConvergedMs: number | null;
   }>;
+  /**
+   * Present only when `--update-baseline` was asked for. `written: false` means
+   * the promotion was REFUSED and the committed baseline is unchanged — recorded
+   * because an explicitly-requested promotion that silently does nothing is the
+   * same class of trap the refusal exists to prevent.
+   */
+  baselinePromotion?: {
+    requested: true;
+    written: boolean;
+    refusals: Array<{ reason: string; overrideFlag: string; droppedKeys: string[] }>;
+  };
   regressions: Array<{ scenario: string; paramsKey: string; metric: string; baseline: number; current: number; relChange: number }>;
   improvements: number;
   baselineCompared: boolean;
@@ -737,6 +749,7 @@ async function main(): Promise<void> {
       relChange: d.relChange,
     })),
     improvements: compareReport?.improvements.length ?? 0,
+    baselinePromotion,
     baselineCompared: compared,
     hostLoad,
   };
@@ -746,7 +759,13 @@ async function main(): Promise<void> {
     writeFileSync(args.summaryJson, JSON.stringify(summary, null, 2));
   }
 
-  if (failed) process.exitCode = 1;
+  // A REFUSED promotion is a failure of what the caller explicitly asked for,
+  // so it must not exit 0 — a script that runs `--update-baseline` and reads
+  // only the status would otherwise record "baseline updated" for a run that
+  // deliberately left it untouched. Checked first: it is a fact about THIS
+  // invocation's request, independent of the run's own gate verdicts.
+  if (baselinePromotion && !baselinePromotion.written) process.exitCode = 1;
+  else if (failed) process.exitCode = 1;
   // A non-converged mesh fails BOTH gated paths. `--slo-only` narrows the gate
   // to "is this run acceptable", not "is the host responsive" — and a run whose
   // readers are ten minutes behind is not acceptable under any reading of that
