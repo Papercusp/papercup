@@ -776,6 +776,15 @@ export interface ProposeRubricInput {
    * the row for a future silent auto-upgrade.
    */
   seedContentHash?: string;
+  /**
+   * P-011 (D-006): the workspace root kind:'tests' structured-check file paths resolve
+   * against at propose time. The MCP tool passes its ctx-resolved root
+   * (resolveAgentWorkspaceRoot) so a harness-scoped propose validates against the tree
+   * the AGENT edits; omitted ⇒ the same resolver's ctx-less fallback
+   * (PAPERCUSP_INTEGRATION_ROOT → cwd). Irrelevant when no criterion carries a
+   * tests-check.
+   */
+  checkPathRoot?: string;
 }
 
 // ─── WI-4287: loss-guards + completeness — never silently drop a testing procedure ────
@@ -861,6 +870,26 @@ export function assertNoSilentRubricLoss(stored: Rubric | null, input: ProposeRu
       );
     }
   }
+  // 2b) structured-check loss (P-011 / D-006) — a stored criterion's deterministic
+  //    `check` resubmitted absent silently converts a machine-enforced criterion back
+  //    to fuzzy judgment: the same silent-weakening family as a procedure shrink, so it
+  //    rides the same allowMethodShrink + shrinkReason ack (a check IS procedure, in
+  //    structured form). Changing a check's content (different files / different
+  //    instrument) is a visible edit, not a silent loss — only total removal is guarded.
+  const checkLosses = stored.criteria.filter((c) => {
+    if (!c.check) return false;
+    const proposed = proposedByKey.get(c.key);
+    return proposed !== undefined && proposed.check === undefined;
+  });
+  if (checkLosses.length > 0) {
+    shrinkViolations.push(
+      ...checkLosses.map(
+        (c) =>
+          `criterion '${c.key}' LOSES its structured ${c.check!.kind} check (deterministic enforcement reverts to fuzzy judgment)`,
+      ),
+    );
+  }
+
   // 3) criterion-class weakening (P-008) — a stored 'violatable' criterion resubmitted
   //    without the class (or downgraded to settle-once) silently removes its
   //    provisional-until-terminal protection, the same silent-weakening family as a
@@ -924,10 +953,14 @@ export interface RubricCompleteness {
   note?: string;
 }
 
-/** Backward-compatible instrument binding: structured field first, then legacy token. */
+/** Backward-compatible instrument binding: the structured check first (P-011 / D-006 —
+ *  the generalized slot), then the criterion-level field, then the legacy model token. */
 export function effectiveCriterionInstrumentKey(
-  criterion: { model?: string; instrumentKey?: string },
+  criterion: { model?: string; instrumentKey?: string; check?: RubricCriterionCheck },
 ): string | null {
+  if (criterion.check?.kind === 'instrument' && criterion.check.instrumentKey.trim()) {
+    return criterion.check.instrumentKey.trim();
+  }
   if (criterion.instrumentKey?.trim()) return criterion.instrumentKey.trim();
   const match = /\[instrumentKey:\s*([a-z0-9-]+|none)\]\s*$/.exec(criterion.model ?? '');
   return match?.[1] ?? null;
@@ -1271,6 +1304,13 @@ export async function proposeRubric(input: ProposeRubricInput): Promise<Rubric> 
   // WI-4287 loss-guard: propose is a whole-document replace — refuse to silently drop
   // stored criteria or gut their testing procedures (see assertNoSilentRubricLoss).
   assertNoSilentRubricLoss(await getRubric(input.rubricId), input);
+  // P-011 (owner-ratified D-006): every kind:'tests' structured check must name files
+  // that RESOLVE against the live tree, or the propose is REFUSED — a check that can
+  // never run is a booby trap, not advice (unlike the advisory replicationSqlCheck,
+  // whose subject is external moving-target DB state). Enforced HERE in the lib write
+  // path, like the loss-guards, so every caller (MCP tool, amend's re-propose, seeds)
+  // inherits it. Criteria without a tests-check are untouched.
+  assertCriterionCheckPathsResolve(input.criteria, { root: input.checkPathRoot });
   const scope = await resolveRubricWriteScope(input.rubricId);
   const date = new Date().toISOString().slice(0, 10);
   const body = buildRubricPlanBody({
