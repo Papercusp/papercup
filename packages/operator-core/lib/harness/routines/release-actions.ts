@@ -1460,9 +1460,18 @@ export async function trackGateStall(
         const { gateRedStreakConditionKey } = await import('../../coord/gate-ownership');
         await broadcastSevereEventResolved({
           conditionKey: gateRedStreakConditionKey(ctx.installSlug),
+          // The harness slug is repeated on EVERY clause on purpose. This broadcast lands in
+          // the inbox of agents working OTHER harnesses, where the consequence clauses ("the
+          // red streak is over", "the earlier red-gate alarm is stale") read as global
+          // all-clears — a reader on a still-red harness can take it as their own gate
+          // recovering. Naming the slug once in the lead is not enough: inbox summaries
+          // TRUNCATE, and it is the unscoped tail that survives and gets believed. Observed
+          // live 2026-08-17: a sidestage GREEN-again broadcast read as papercusp news while
+          // papercusp sat at 15 consecutive reds.
           summary:
-            `green-checkpoint GREEN again on ${ctx.installSlug} — the red streak is over and \`main\` is ` +
-            `advancing; the earlier red-gate alarm is stale.`,
+            `[${ctx.installSlug}] green-checkpoint GREEN again on ${ctx.installSlug} — ${ctx.installSlug}'s red ` +
+            `streak is over and its \`main\` is advancing, so the earlier red-gate alarm for ${ctx.installSlug} ` +
+            `is stale. This says NOTHING about any other harness's gate — each harness has its own.`,
         });
       } catch (e) {
         console.warn(`${orchestratorStdoutTag()} red-streak condition resolve failed: ${e instanceof Error ? e.message : e}`);
