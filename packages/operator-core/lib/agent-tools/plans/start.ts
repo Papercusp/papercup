@@ -281,7 +281,7 @@ export default defineTool({
               checkpointConsult = {
                 verdict: 'routed_dead_context',
                 note:
-                  'The router found above-floor peer history for this plan, but every candidate context is dead — no wake is possible, so their matched transcript excerpts are injected here instead (retrieval, not consult). Read them before fanning out.',
+                  'The router found above-floor peer history for this plan, but every candidate context is dead and no live peer could fill the min:1 — no wake is possible, so their matched transcript excerpts are injected here instead (retrieval, not consult). Read them before fanning out.',
                 candidates: outcome.candidates.map((c) => ({
                   ownerId: c.ownerId,
                   score: c.score,
