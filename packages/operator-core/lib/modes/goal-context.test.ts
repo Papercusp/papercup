@@ -203,3 +203,84 @@ describe('inheriting goal context does NOT confer GOAL mode', () => {
     expect(isGoalSessionModes(agentModes)).toBe(true);
   });
 });
+
+describe('stampPlanGoalProvenance (migration 791 / goal-mode-design-intent-hardening P-003)', () => {
+  const planRow = (goal: string | null = null): PlanRow => ({
+    workspace_id: WS,
+    harness_slug: 'hive-home',
+    plan_slug: 'the-plan',
+    goal_id: goal,
+  });
+  const stampArgs = (ownerId: string) => ({
+    workspaceId: WS,
+    harnessSlug: 'hive-home',
+    planSlug: 'the-plan',
+    ownerId,
+  });
+
+  it('stamps a plan created by an agent RUNNING a goal', async () => {
+    const { sql, plans } = mockSql({ modes: [goalMode('agent-a', 'goal-42')], plans: [planRow()] });
+    expect(await stampPlanGoalProvenance({ ...stampArgs('agent-a'), sql })).toBe('goal-42');
+    expect(plans[0]!.goal_id).toBe('goal-42');
+  });
+
+  it('stamps a plan created by an agent that INHERITED its goal — a launched descendant', async () => {
+    const { sql, plans } = mockSql({
+      briefs: [{ owner_id: 'member-1', workspace_id: WS, goal_id: 'goal-42' }],
+      plans: [planRow()],
+    });
+    expect(await stampPlanGoalProvenance({ ...stampArgs('member-1'), sql })).toBe('goal-42');
+    expect(plans[0]!.goal_id).toBe('goal-42');
+  });
+
+  it('writes nothing for a goal-less creator — the common case stays NULL', async () => {
+    const { sql, plans } = mockSql({ plans: [planRow()] });
+    expect(await stampPlanGoalProvenance({ ...stampArgs('ordinary-agent'), sql })).toBeNull();
+    expect(plans[0]!.goal_id).toBeNull();
+  });
+
+  it('NEVER overwrites an existing stamp — first attribution wins, a later editor cannot re-parent', async () => {
+    // The mock honors the statement's own `goal_id IS NULL` predicate, so this
+    // fails if production drops that clause — not because the mock hardcodes it.
+    const { sql, plans } = mockSql({
+      modes: [goalMode('agent-b', 'goal-B')],
+      plans: [planRow('goal-A')],
+    });
+    await stampPlanGoalProvenance({ ...stampArgs('agent-b'), sql });
+    expect(plans[0]!.goal_id).toBe('goal-A');
+  });
+
+  it('no argument can name the goal: the goal id is only ever the RESOLVED context', async () => {
+    // The args type carries workspace/harness/plan/owner — there is no goalId
+    // input to smuggle. A creator resolving to no goal stamps nothing even when
+    // a caller tries to pass one; the excess property is a TS error, and at
+    // runtime the resolver (not the argument) decides.
+    const { sql, plans } = mockSql({ plans: [planRow()] });
+    const smuggled = { ...stampArgs('ordinary-agent'), goalId: 'goal-evil', sql } as Parameters<
+      typeof stampPlanGoalProvenance
+    >[0];
+    expect(await stampPlanGoalProvenance(smuggled)).toBeNull();
+    expect(plans[0]!.goal_id).toBeNull();
+  });
+
+  it('degrades to null rather than throwing when the plans UPDATE fails', async () => {
+    const { sql, plans } = mockSql({
+      modes: [goalMode('agent-a', 'goal-42')],
+      plans: [planRow()],
+      failOn: /UPDATE harness_shared.harness_plans/,
+    });
+    await expect(stampPlanGoalProvenance({ ...stampArgs('agent-a'), sql })).resolves.toBeNull();
+    expect(plans[0]!.goal_id).toBeNull();
+  });
+
+  it('refuses a wildcard workspace and missing identifiers', async () => {
+    const { sql, plans } = mockSql({ modes: [goalMode('agent-a', 'goal-42')], plans: [planRow()] });
+    expect(
+      await stampPlanGoalProvenance({ ...stampArgs('agent-a'), workspaceId: '*', sql }),
+    ).toBeNull();
+    expect(
+      await stampPlanGoalProvenance({ ...stampArgs('agent-a'), ownerId: undefined as unknown as string, sql }),
+    ).toBeNull();
+    expect(plans[0]!.goal_id).toBeNull();
+  });
+});
