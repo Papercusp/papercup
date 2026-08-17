@@ -32,6 +32,7 @@ function backend(over: Partial<LocalBackendRecord> & Pick<LocalBackendRecord, 'k
     lifecycle: 'always-on',
     idleTtlSec: null,
     unitName: null,
+    lastBusyAt: '',
     createdAt: '',
     updatedAt: '',
     ...over,
