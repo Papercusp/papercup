@@ -283,10 +283,34 @@ export async function reconcileLinkedWorkItemsForPlanItem(
       // whether we trust the completion, was never lifted. Best-effort: a clear
       // failure here must never block the skip/flip logic that follows.
       await clearStaleLaneHold(wi, planLaneBlockerRef(item.planSlug, item.itemId));
-      if (wi.lastProgressAt && wi.assignee) {
-        // Independent in-flight progress recorded on THIS item AND someone
-        // currently holds it — a sibling completed the plan item, but this one
-        // is genuinely still being worked. Never clobber it.
+      if (wi.assignee) {
+        // SOMEONE CURRENTLY HOLDS THIS ITEM — a sibling completed the plan item,
+        // but this one is genuinely still being worked. Never clobber it.
+        //
+        // EI-20405552992224051: this keys on the CURRENT HOLDER ALONE, deliberately.
+        // It previously required `lastProgressAt && wi.assignee`, which stranded the
+        // exact REVERSE of the WI-6303 case below: an item an agent has just REOPENED
+        // and RE-CLAIMED in order to finish the work carries an assignee but no
+        // `lastProgressAt` yet — nothing has been recorded against it since the reopen
+        // — so it read as NOT in-flight and this sweep terminal-closed it back out from
+        // under its live holder. That is the "each reconcile pass re-closes whatever the
+        // last agent reopened" loop two agents hit independently on WI-38661/WI-38600:
+        // reopening the work-item alone never stuck, because its plan item stayed
+        // terminal and the next pass simply re-closed it. A CURRENT CLAIMANT is
+        // sufficient evidence of in-flight work by itself; also demanding a progress
+        // stamp asks a just-started holder to prove activity it has not yet had time to
+        // record. Note WI-6303 below ADDED `&& wi.assignee` rather than REPLACING the
+        // timestamp, and its own closing sentence ("Requiring a CURRENT assignee closes
+        // the gap") describes the predicate it meant to leave behind — this restores it.
+        //
+        // Measured when this landed (papercusp-workspace, non-terminal rows): 4 held
+        // with no progress stamp (the vulnerable population), 25 held with one (already
+        // protected either way), 803 carrying a stale stamp with NO holder (the WI-6303
+        // population, which stays reconcilable because it has no assignee).
+        //
+        // Biased safely: skipping leaves the item OPEN and therefore RECOVERABLE, which
+        // is the same asymmetry the unproven-link guard below is argued from — a silent
+        // terminal close is the unrecoverable direction.
         //
         // WI-6303: `lastProgressAt` alone is NOT a safe in-flight signal — three
         // reclaim paths (work-items-stale-claims.ts's dead/stalled-holder reaper,
