@@ -208,6 +208,24 @@ describe('rubric kind (standard | acceptance)', () => {
     ).toContain("standard-kind criterion 'light' requires model");
   });
 
+  it('standard: refuses subjectGoal too (the goal-subject twin, consult-min-max-…-2026-08-17 P-009)', () => {
+    expect(issues({ ...minimalData, subjectGoal: 'ship-a-paid-app-abc123' })).toContain(
+      'subjectGoal is acceptance-kind only',
+    );
+  });
+
+  it('acceptance: subjectGoal is a valid subject on its own; naming BOTH subjects is refused', () => {
+    const goalSubject = {
+      characteristic: 'goal-acceptance',
+      kind: 'acceptance',
+      subjectGoal: 'ship-a-paid-app-abc123',
+      criteria: [{ key: 'paying-user', title: 'At least one paying user exists' }],
+      ratingScale: ['pass', 'fail', 'unknown'],
+    };
+    expect(rubricTemplateDataSchema.safeParse(goalSubject).success).toBe(true);
+    expect(issues({ ...goalSubject, subjectPlan: 'some-plan-2026-08-11' })).toContain('exactly ONE subject');
+  });
+
   it('acceptance: requires subjectPlan; light criteria are valid', () => {
     expect(issues({ ...minimalData, kind: 'acceptance' })).toContain('requires subjectPlan');
     const ok = rubricTemplateDataSchema.safeParse({

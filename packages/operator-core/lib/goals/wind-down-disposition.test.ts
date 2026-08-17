@@ -271,3 +271,193 @@ describe('windDownDispositionGateEnabled — FAIL-CLOSED', () => {
     expect(await windDownDispositionGateEnabled()).toBe(false);
   });
 });
+
+// ─── the 'achieved' acceptance gate (consult-min-max-…-2026-08-17 P-009 / D-004 §2) ──
+describe("evaluateGoalAcceptanceGate — 'achieved' is a claim needing acceptance evidence", () => {
+  const GOAL = { goalId: 'ship-a-paid-app-abc123', goalTitle: 'Ship a paid app', goalOwner: 'su-goal-owner' };
+  const card = (over: Partial<GoalAcceptanceCard> = {}): GoalAcceptanceCard => ({
+    createdBy: 'su-goal-owner',
+    rubricResolved: true,
+    missingKeys: [],
+    synthesized: false,
+    ...over,
+  });
+  const vettedCard = (over: Partial<GoalAcceptanceCard> = {}): GoalAcceptanceCard =>
+    card({ vetting: { consultId: 'conv-vet-1', rubricRevision: 3 }, ...over });
+  /** Default deps: rubric exists (authored by the goal owner), meta registered,
+   *  revision 3, no scorecards anywhere — each test overrides the leg it exercises. */
+  const deps = (over: Partial<GoalAcceptanceGateDeps> = {}): GoalAcceptanceGateDeps => ({
+    gateEnabled: async () => true,
+    getRubricForGoal: async () => ({
+      rubricId: 'ship-a-paid-app-acceptance',
+      criteria: [{ key: 'outcome-1' }],
+      proposedBy: 'su-goal-owner',
+    }),
+    getMetaRubric: async () => ({}),
+    getRubricRevision: async () => 3,
+    listCards: async () => [],
+    metaRubricId: 'meta-acceptance-rubric',
+    ...over,
+  });
+  /** listCards stub answering the meta (vetting) and rubric (grading) reads separately. */
+  const cardsByRef = (meta: GoalAcceptanceCard[], grades: GoalAcceptanceCard[]) =>
+    async ({ rubricRef }: { rubricRef: string }) => (rubricRef === 'meta-acceptance-rubric' ? meta : grades);
+
+  it('flag OFF → satisfied without probing anything', async () => {
+    const getRubricForGoal = vi.fn();
+    const v = await evaluateGoalAcceptanceGate(GOAL, deps({ gateEnabled: async () => false, getRubricForGoal }));
+    expect(v).toEqual({ satisfied: true });
+    expect(getRubricForGoal).not.toHaveBeenCalled();
+  });
+
+  it('no acceptance rubric names the goal → refused, and the message carries the whole repair flow', async () => {
+    const v = await evaluateGoalAcceptanceGate(GOAL, deps({ getRubricForGoal: async () => null }));
+    expect(v.satisfied).toBe(false);
+    expect(v.code).toBe('goal_acceptance_rubric_missing');
+    // The refused agent's only way forward is this text: it must name the propose
+    // call with subjectGoal, the vetting step, the non-owner grading, AND the honest
+    // alternatives (killed/handoff).
+    expect(v.message).toContain(`subjectGoal:'${GOAL.goalId}'`);
+    expect(v.message).toContain('rubrics:propose');
+    expect(v.message).toContain('meta-acceptance-rubric');
+    expect(v.message).toContain('NON-owner');
+    expect(v.message).toMatch(/'killed' \/ 'handoff'/);
+  });
+
+  it('rubric never vetted → refused with the vet-first flow (consult, then attest)', async () => {
+    const v = await evaluateGoalAcceptanceGate(
+      GOAL,
+      deps({ listCards: cardsByRef([], [card({ createdBy: 'su-peer' })]) }),
+    );
+    expect(v.satisfied).toBe(false);
+    expect(v.code).toBe('goal_acceptance_rubric_unvetted');
+    expect(v.message).toContain('get_feedback');
+    expect(v.message).toContain('vettingConsult');
+  });
+
+  it('vetted at a STALE revision → refused with the re-emit variant (same-consult re-emit allowed)', async () => {
+    const staleVet = vettedCard({ vetting: { consultId: 'conv-vet-1', rubricRevision: 2 } });
+    const v = await evaluateGoalAcceptanceGate(
+      GOAL,
+      deps({ listCards: cardsByRef([staleVet], [card({ createdBy: 'su-peer' })]) }),
+    );
+    expect(v.satisfied).toBe(false);
+    expect(v.code).toBe('goal_acceptance_rubric_unvetted');
+    expect(v.message).toContain('Re-emit');
+  });
+
+  it('a meta-grade WITHOUT a linked consult is not a vetting', async () => {
+    const plainMetaGrade = card({ createdBy: 'su-goal-owner' }); // no vetting.consultId
+    const v = await evaluateGoalAcceptanceGate(
+      GOAL,
+      deps({ listCards: cardsByRef([plainMetaGrade], [card({ createdBy: 'su-peer' })]) }),
+    );
+    expect(v.satisfied).toBe(false);
+    expect(v.code).toBe('goal_acceptance_rubric_unvetted');
+  });
+
+  it('no meta-rubric registered → the vetting check disables (never deadlocks) and grading still gates', async () => {
+    const v = await evaluateGoalAcceptanceGate(
+      GOAL,
+      deps({ getMetaRubric: async () => null, listCards: cardsByRef([], []) }),
+    );
+    expect(v.satisfied).toBe(false);
+    expect(v.code).toBe('goal_acceptance_ungraded');
+  });
+
+  it('vetted but ungraded → refused naming the non-owner grading step', async () => {
+    const v = await evaluateGoalAcceptanceGate(GOAL, deps({ listCards: cardsByRef([vettedCard()], []) }));
+    expect(v.satisfied).toBe(false);
+    expect(v.code).toBe('goal_acceptance_ungraded');
+    expect(v.message).toContain(GOAL.goalOwner);
+    expect(v.message).toContain('scorecards:emit');
+  });
+
+  it('incomplete / synthesized cards do not count as a grading', async () => {
+    const incomplete = card({ createdBy: 'su-peer', missingKeys: ['outcome-1'] });
+    const synthesized = card({ createdBy: 'su-peer', synthesized: true });
+    const unresolved = card({ createdBy: 'su-peer', rubricResolved: false });
+    const v = await evaluateGoalAcceptanceGate(
+      GOAL,
+      deps({ listCards: cardsByRef([vettedCard()], [incomplete, synthesized, unresolved]) }),
+    );
+    expect(v.satisfied).toBe(false);
+    expect(v.code).toBe('goal_acceptance_ungraded');
+  });
+
+  it('graded ONLY by the goal owner → self-graded refusal', async () => {
+    const v = await evaluateGoalAcceptanceGate(
+      GOAL,
+      deps({ listCards: cardsByRef([vettedCard()], [card({ createdBy: 'su-goal-owner' })]) }),
+    );
+    expect(v.satisfied).toBe(false);
+    expect(v.code).toBe('goal_self_graded_only');
+  });
+
+  it("graded only by the RUBRIC's author (≠ goal owner) is still self-graded homework", async () => {
+    const v = await evaluateGoalAcceptanceGate(
+      GOAL,
+      deps({
+        getRubricForGoal: async () => ({
+          rubricId: 'ship-a-paid-app-acceptance',
+          criteria: [{ key: 'outcome-1' }],
+          proposedBy: 'su-rubric-author',
+        }),
+        listCards: cardsByRef([vettedCard()], [card({ createdBy: 'su-rubric-author' })]),
+      }),
+    );
+    expect(v.satisfied).toBe(false);
+    expect(v.code).toBe('goal_self_graded_only');
+  });
+
+  it('vetted on the current revision + independently graded → satisfied with provenance', async () => {
+    const v = await evaluateGoalAcceptanceGate(
+      GOAL,
+      deps({ listCards: cardsByRef([vettedCard()], [card({ createdBy: 'su-independent-peer' })]) }),
+    );
+    expect(v).toEqual({
+      satisfied: true,
+      rubricId: 'ship-a-paid-app-acceptance',
+      gradedBy: 'su-independent-peer',
+    });
+  });
+
+  it('unknown revision (null) accepts any vetted attestation — revision pinning needs a revision', async () => {
+    const v = await evaluateGoalAcceptanceGate(
+      GOAL,
+      deps({
+        getRubricRevision: async () => null,
+        listCards: cardsByRef(
+          [vettedCard({ vetting: { consultId: 'conv-vet-1', rubricRevision: 1 } })],
+          [card({ createdBy: 'su-independent-peer' })],
+        ),
+      }),
+    );
+    expect(v.satisfied).toBe(true);
+  });
+
+  it('a probe FAULT resolves toward satisfied — positive-finding-only on the stop path', async () => {
+    const v = await evaluateGoalAcceptanceGate(
+      GOAL,
+      deps({
+        getRubricForGoal: async () => {
+          throw new Error('pg down');
+        },
+      }),
+    );
+    expect(v).toEqual({ satisfied: true });
+  });
+});
+
+describe('goalAchievedAcceptanceGateEnabled — fail-CLOSED like its disposition sibling', () => {
+  it('reads FLAGS.GOAL_ACHIEVED_ACCEPTANCE_GATE', async () => {
+    getFlagMock.mockResolvedValue(true);
+    expect(await goalAchievedAcceptanceGateEnabled()).toBe(true);
+    expect(getFlagMock).toHaveBeenCalledWith('papercusp-goal-achieved-acceptance-gate', 'system');
+  });
+
+  it('disables on flag-infra errors — never wedge an agent stopping its own loop', async () => {
+    getFlagMock.mockRejectedValue(new Error('flag store unreachable'));
+    expect(await goalAchievedAcceptanceGateEnabled()).toBe(false);
+  });
+});
