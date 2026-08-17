@@ -2,11 +2,14 @@ import { describe, expect, it } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { constants as fsConstants } from 'node:fs';
 import {
   parseLlamaServerUnit,
   diffUnitParams,
   diffCatalogAgainstDeployedUnit,
   describeUnitDrift,
+  parseUnitExecStartBinary,
+  checkUnitExecStartBinary,
 } from './unit-drift';
 import { CERTIFIED_CATALOG } from './catalog';
 
@@ -44,6 +47,88 @@ StandardError=append:/var/tmp/llama-server-ornith.log
 [Install]
 WantedBy=default.target
 `;
+
+/** Access stubs — the check takes `access` injected so none of this touches the real filesystem. */
+const accessOk = async () => {};
+const accessDenied = async () => {
+  throw Object.assign(new Error('ENOENT: no such file or directory'), { code: 'ENOENT' });
+};
+/** Present, but without +x — F_OK succeeds while X_OK fails. */
+const accessPresentNotExecutable = async (_path: string, mode: number) => {
+  if (mode === fsConstants.X_OK) throw Object.assign(new Error('EACCES'), { code: 'EACCES' });
+};
+
+describe('checkUnitExecStartBinary (EI-20721621940954812)', () => {
+  it('CONTROL: the parameter guard returns an IDENTICAL verdict for a startable and an unstartable unit', async () => {
+    // This is the incident, reduced to one assertion. llama-ornith.service was 100% unstartable
+    // (its hand-built ExecStart binary had been deleted; status=203/EXEC, NRestarts=182) and every
+    // check in this module stayed GREEN, because the unit text still declared the right flags.
+    //
+    // Rather than assert that blindness in prose, MEASURE it: swapping the ExecStart binary for a
+    // path that does not exist must not move the parameter diff by even one element. That is what
+    // makes the separate existence check load-bearing rather than belt-and-braces — and if someone
+    // later folds binaryPath into LlamaServerUnitParams, this test fails and tells them why.
+    const startable = DRIFTED_UNIT;
+    const unstartable = DRIFTED_UNIT.replace('/opt/llama.cpp/build/bin/llama-server', '/gone/llama.cpp/build/bin/llama-server');
+
+    expect(diffCatalogAgainstDeployedUnit(ORNITH, unstartable)).toEqual(diffCatalogAgainstDeployedUnit(ORNITH, startable));
+
+    // ...and the new check is what tells the two apart.
+    expect((await checkUnitExecStartBinary(unstartable, accessDenied)).ok).toBe(false);
+    expect((await checkUnitExecStartBinary(startable, accessOk)).ok).toBe(true);
+  });
+
+  it('reports a MISSING binary with the systemd failure it will actually produce', async () => {
+    const check = await checkUnitExecStartBinary(DRIFTED_UNIT, accessDenied);
+    expect(check.ok).toBe(false);
+    expect(check.reason).toBe('missing');
+    expect(check.binaryPath).toBe('/opt/llama.cpp/build/bin/llama-server');
+    // Naming 203/EXEC is the point: the observed symptom was a 15-minute silent timeout that read
+    // exactly like a slow 15.5GB model load, so the message has to carry the real diagnosis.
+    expect(check.detail).toContain('203/EXEC');
+  });
+
+  it('distinguishes PRESENT-BUT-NOT-EXECUTABLE from missing — different operator fixes, same 203/EXEC', async () => {
+    const check = await checkUnitExecStartBinary(DRIFTED_UNIT, accessPresentNotExecutable);
+    expect(check.ok).toBe(false);
+    expect(check.reason).toBe('not-executable');
+    expect(check.detail).toContain('NOT executable');
+  });
+
+  it('passes a binary that exists and is executable', async () => {
+    const check = await checkUnitExecStartBinary(DRIFTED_UNIT, accessOk);
+    expect(check).toMatchObject({ ok: true, reason: 'ok', binaryPath: '/opt/llama.cpp/build/bin/llama-server' });
+  });
+
+  it('a unit with no ExecStart is NOT reported as ok', async () => {
+    // The failure mode to avoid: "nothing to check" collapsing into a pass.
+    const check = await checkUnitExecStartBinary('[Unit]\nDescription=nothing here\n', accessOk);
+    expect(check.ok).toBe(false);
+    expect(check.reason).toBe('no-execstart');
+    expect(check.binaryPath).toBeNull();
+  });
+});
+
+describe('parseUnitExecStartBinary', () => {
+  it('reads the binary through systemd backslash continuations', () => {
+    expect(parseUnitExecStartBinary(DRIFTED_UNIT)).toBe('/opt/llama.cpp/build/bin/llama-server');
+  });
+
+  it('strips ExecStart prefix modifiers, including combined ones', () => {
+    // systemd allows `-` (ignore failure), `@` (set argv0), `+` (full privileges), `!`/`!!`, and
+    // permits them combined. Leaving one attached yields a path that can never exist, i.e. a
+    // guard that reports `missing` for a perfectly healthy unit — a false alarm is a bug in the
+    // alarm, and a noisy guard gets silenced.
+    expect(parseUnitExecStartBinary('ExecStart=-/usr/bin/llama-server --host 127.0.0.1')).toBe('/usr/bin/llama-server');
+    expect(parseUnitExecStartBinary('ExecStart=@/usr/bin/llama-server argv0')).toBe('/usr/bin/llama-server');
+    expect(parseUnitExecStartBinary('ExecStart=+/usr/bin/llama-server')).toBe('/usr/bin/llama-server');
+    expect(parseUnitExecStartBinary('ExecStart=!!-@/usr/bin/llama-server')).toBe('/usr/bin/llama-server');
+  });
+
+  it('returns null when the unit declares no ExecStart', () => {
+    expect(parseUnitExecStartBinary('[Unit]\nDescription=nothing here\n')).toBeNull();
+  });
+});
 
 describe('parseLlamaServerUnit', () => {
   it('reads flags across systemd backslash continuations', () => {
