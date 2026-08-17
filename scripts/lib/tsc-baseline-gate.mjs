@@ -1638,23 +1638,56 @@ export function lintTscScopeFromArgv(argv) {
  * without that one branch being wrong about itself. Pinned by
  * packages/operator-core/lib/lint-tsc.test.ts.
  *
- * @param {{ label: string, scope: string, code: number, nothingTypechecked?: boolean }} input
+ * ## EI-20712456514085524 — PARTIAL coverage is the third outcome, and it exited 0 as `clean`
+ *
+ * `nothingTypechecked` above covers the ALL-uncovered case. The mixed case — some named files
+ * inside the project, some outside — took the other branch: the banner warns on stderr, the
+ * covered verdict is genuinely true, so the gate exits 0 and the marker read `status=clean`.
+ * That is the same false-coverage failure the all-uncovered branch exists to prevent, arriving
+ * through the door left open beside it. `--files=a,b,c,d` naming two operator-core files and two
+ * `packages/agent-mcp` ones printed `exit=0 status=clean`, and an agent who names four files and
+ * reads `clean` concludes four files compiled. Two never did.
+ *
+ * The exit CODE is deliberately unchanged (0): the covered files really were judged, and making
+ * the mixed case fatal would red the common, legitimate "check my edit across two packages" run.
+ * What changes is the machine-readable token, because that is what is actually misread:
+ * `status=partial filesUnchecked=N`. `partial` is chosen over `clean-partial` so that the
+ * established consumer idiom — a substring `grep 'status=clean'` — CANNOT match a run that left
+ * files unchecked. A run with full coverage still reports exactly `status=clean`, so this is
+ * additive for every caller that was already honest.
+ *
+ * @param {{ label: string, scope: string, code: number, nothingTypechecked?: boolean, filesUnchecked?: number }} input
  * @returns {string}
  */
-export function formatLintTscResultMarker({ label, scope, code, nothingTypechecked = false }) {
+export function formatLintTscResultMarker({
+  label,
+  scope,
+  code,
+  nothingTypechecked = false,
+  filesUnchecked = 0,
+}) {
   // The refinement applies ONLY to the gate's own considered failure (exit 1). An abnormal
   // code — SIGTERM, OOM, a toolchain crash — means the run is UNMEASURED, and it must keep
   // reading as `error(N)` rather than borrowing the tidy out-of-scope label just because the
   // flag happened to be set before the process died.
+  const unchecked = Number.isFinite(filesUnchecked) && filesUnchecked > 0 ? filesUnchecked : 0;
   const status =
     code === 0
-      ? 'clean'
+      ? // Same rule as `nothingTypechecked`, in the other direction: a coverage refinement may
+        // narrow what a PASS claims, but it must never turn a pass into a failure. exit stays 0.
+        unchecked > 0
+        ? 'partial'
+        : 'clean'
       : code === 1
         ? nothingTypechecked
           ? 'out-of-scope'
           : 'regressed'
         : `error(${code})`;
-  return `LINT_TSC_RESULT label=${label} scope=${scope} exit=${code} status=${status}`;
+  const marker = `LINT_TSC_RESULT label=${label} scope=${scope} exit=${code} status=${status}`;
+  // Reported on a REGRESSION too: "3 files regressed" and "2 more were never looked at" are
+  // independent facts, and suppressing the second because the first is louder is how a caller
+  // fixes the named files and ships the unexamined ones.
+  return unchecked > 0 ? `${marker} filesUnchecked=${unchecked}` : marker;
 }
 
 export async function runTscBaselineGate({
@@ -1694,10 +1727,21 @@ export async function runTscBaselineGate({
   // `process.exit(1)`, so the flag and the exit it describes are the same decision. It refines
   // WHICH failure this is; it can never turn a failure into a pass (see the formatter's note).
   let nothingTypechecked = false;
+  // EI-20712456514085524 — how many named files this project never compiles. Set by the SAME
+  // coverage branch that sets `nothingTypechecked`, so the two can never disagree about one run;
+  // it is the PARTIAL case (`fatal === false`), where the gate still exits 0 on a true verdict
+  // about the covered files and the marker must not let that read as coverage of all of them.
+  let filesUnchecked = 0;
 
   process.on('exit', (code) => {
     console.log(
-      formatLintTscResultMarker({ label, scope: lintTscScopeFromArgv(argv), code, nothingTypechecked }),
+      formatLintTscResultMarker({
+        label,
+        scope: lintTscScopeFromArgv(argv),
+        code,
+        nothingTypechecked,
+        filesUnchecked,
+      }),
     );
   });
 
@@ -1732,6 +1776,9 @@ export async function runTscBaselineGate({
       if (uncovered.length > 0) {
         const suggestions = new Map(uncovered.map((f) => [f, suggestTypecheckGate(root, f)]));
         const fatal = covered.length === 0;
+        // Stamped for BOTH branches: the fatal one already reports `out-of-scope`, and the
+        // partial one below exits 0 — which is precisely the case that used to read `clean`.
+        filesUnchecked = uncovered.length;
         // EI-19461218392796337 — resolve against the SIBLING lint:tsc* gates before saying
         // anything about coverage. Only reached on the error path, so the imports cost nothing
         // on a normal run.
