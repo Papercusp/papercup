@@ -172,25 +172,45 @@ export function status(live: { branch: string | null; head: string | null }) {
 });
 
 describe('KNOWN_DEFECTS hygiene', () => {
-  // This map suppresses a FAILURE, so it is the one place a real hazard can go quiet.
-  // It is deliberately governed harder than the allowlist rather than more softly.
-  it('gives every entry a tracking ref, not just prose', () => {
+  // This map suppresses a FAILURE, so it is the one place a real hazard can go quiet, and
+  // it is governed harder than the allowlist rather than more softly.
+  //
+  // It is currently EMPTY (its one entry, local-whisper-service.ts / WI-39563, was fixed
+  // rather than exempted). A loop over an empty map passes no matter what the rule says,
+  // so the rule is expressed as a FUNCTION and tested against synthetic entries — the map
+  // being empty then makes the suite vacuous only in the harmless direction.
+  const defectEntryProblem = (path: string, reason: string): string | null => {
+    if (!reason || reason.length <= 40) return 'reason too thin';
+    if (!/\b(WI|EI)-\d+/.test(reason)) return 'no WI-/EI- tracking ref';
+    if (allow.has(path)) return 'also in ALLOWLIST — an entry means one thing or the other';
+    return null;
+  };
+
+  it('REJECTS an entry with no tracking ref — a parked defect with no owner is the blind spot', () => {
+    expect(defectEntryProblem('packages/x/a.ts', 'we know about this one, it is fine for now really'))
+      .toBe('no WI-/EI- tracking ref');
+  });
+
+  it('REJECTS a thin reason, and an entry double-booked in ALLOWLIST', () => {
+    expect(defectEntryProblem('packages/x/a.ts', 'WI-1 broken')).toBe('reason too thin');
+    const [allowlisted] = [...allow.keys()];
+    expect(defectEntryProblem(allowlisted!, 'WI-39563 a suitably long and specific reason string here'))
+      .toBe('also in ALLOWLIST — an entry means one thing or the other');
+  });
+
+  it('ACCEPTS a well-formed entry (calibration — the rule must not reject everything)', () => {
+    expect(defectEntryProblem('packages/x/a.ts', 'WI-39563 — parks a long-lived child on a module-scope property; wants managedSpawn'))
+      .toBe(null);
+  });
+
+  it('every REAL entry satisfies that same rule', () => {
     for (const [path, reason] of KNOWN_DEFECTS as Map<string, string>) {
-      expect(reason, `${path} needs a real reason`).toBeTruthy();
-      expect(reason.length, `${path}'s reason is too thin`).toBeGreaterThan(40);
-      expect(reason, `${path} needs a WI-/EI- tracking ref — a parked defect with no`
-        + ` owner is the blind spot this guard was widened to remove`).toMatch(/\b(WI|EI)-\d+/);
+      expect(defectEntryProblem(path, reason), `${path} is a malformed KNOWN_DEFECTS entry`).toBe(null);
     }
   });
 
   it('stays tiny — a parking lot is not an allowlist', () => {
     expect(KNOWN_DEFECTS.size).toBeLessThanOrEqual(3);
-  });
-
-  it('never overlaps ALLOWLIST — an entry means one thing or the other', () => {
-    for (const path of (KNOWN_DEFECTS as Map<string, string>).keys()) {
-      expect(allow.has(path), `${path} is in BOTH maps`).toBe(false);
-    }
   });
 });
 
