@@ -15,6 +15,29 @@ import {
 
 const mockListLocalBackends = vi.mocked(listLocalBackends);
 
+/**
+ * A LocalBackendRecord with every field this suite does not care about filled in.
+ *
+ * These tests are about `models` and workspace scoping ONLY, so spelling out the full record at
+ * each call site adds noise and — more to the point — strands all four of them every time the
+ * record gains a field. Migration 843 (lifecycle/idleTtlSec/unitName) did exactly that. Overriding
+ * through one factory means the next field addition is a one-line change here.
+ */
+function backend(over: Partial<LocalBackendRecord> & Pick<LocalBackendRecord, 'kind' | 'models'>): LocalBackendRecord {
+  return {
+    id: 'b1',
+    baseUrl: 'http://x',
+    maxConcurrent: 4,
+    enabled: true,
+    lifecycle: 'always-on',
+    idleTtlSec: null,
+    unitName: null,
+    createdAt: '',
+    updatedAt: '',
+    ...over,
+  };
+}
+
 beforeEach(() => {
   mockListLocalBackends.mockReset();
   __resetLocalModelIdsCacheForTests();
@@ -29,7 +52,7 @@ describe('localModelIdsSync — WI-4395 (per-workspace snapshot, resolved at the
 
   it('a landed refresh (via the test seam) is visible to a later sync call in the SAME workspace', async () => {
     mockListLocalBackends.mockResolvedValue([
-      { id: 'b1', kind: 'ollama', baseUrl: 'http://x', models: ['ornith-35b'], maxConcurrent: 4, enabled: true, createdAt: '', updatedAt: '' },
+      backend({ kind: 'ollama', models: ['ornith-35b'] }),
     ]);
     await runWithWorkspace('ws-a', () => __refreshLocalModelIdsForTests());
     const result = runWithWorkspace('ws-a', () => localModelIdsSync());
@@ -44,7 +67,7 @@ describe('localModelIdsSync — WI-4395 (per-workspace snapshot, resolved at the
     mockListLocalBackends.mockImplementation(async ({ workspaceId }: { workspaceId?: string } = {}) => {
       if (workspaceId === 'ws-with-backend') {
         return [
-          { id: 'b1', kind: 'ollama', baseUrl: 'http://x', models: ['ornith-35b'], maxConcurrent: 4, enabled: true, createdAt: '', updatedAt: '' },
+          backend({ kind: 'ollama', models: ['ornith-35b'] }),
         ];
       }
       return [];
@@ -73,7 +96,7 @@ describe('localModelIdsSync — WI-4395 (per-workspace snapshot, resolved at the
     expect(mockListLocalBackends).toHaveBeenCalledWith({ workspaceId: 'ws-b' });
     // Resolve OUTSIDE any workspace ALS scope (mirrors the real fire-and-forget .then()).
     resolveBackends([
-      { id: 'b1', kind: 'llama-server', baseUrl: 'http://x', models: ['m1'], maxConcurrent: 4, enabled: true, createdAt: '', updatedAt: '' },
+      backend({ kind: 'llama-server', models: ['m1'] }),
     ]);
     await new Promise((r) => setTimeout(r, 0));
     const after = runWithWorkspace('ws-b', () => localModelIdsSync());
@@ -82,7 +105,7 @@ describe('localModelIdsSync — WI-4395 (per-workspace snapshot, resolved at the
 
   it('fail-open on a rejected refresh: keeps the previous snapshot rather than throwing', async () => {
     mockListLocalBackends.mockResolvedValueOnce([
-      { id: 'b1', kind: 'ollama', baseUrl: 'http://x', models: ['m1'], maxConcurrent: 4, enabled: true, createdAt: '', updatedAt: '' },
+      backend({ kind: 'ollama', models: ['m1'] }),
     ]);
     await runWithWorkspace('ws-c', () => __refreshLocalModelIdsForTests());
     expect(runWithWorkspace('ws-c', () => localModelIdsSync())).toEqual(['m1']);

@@ -42,4 +42,38 @@ describe('validateLocalBackendInput', () => {
     const { maxConcurrent: _mc, ...rest } = valid;
     expect(validateLocalBackendInput(rest)).toBeNull();
   });
+
+  // Lifecycle (migration 843 / plan on-demand-local-inference-lifecycle-2026-08-17 D-005).
+  // These mirror the DB CHECK constraints; the DB is the real enforcement, but a caller deserves
+  // a sentence rather than a raw constraint violation.
+
+  it('lifecycle is optional, and omitting it is what keeps a pre-843 caller always-on', () => {
+    expect(validateLocalBackendInput(valid)).toBeNull();
+    expect(validateLocalBackendInput({ ...valid, lifecycle: 'always-on' })).toBeNull();
+  });
+
+  it('rejects an unknown lifecycle', () => {
+    expect(validateLocalBackendInput({ ...valid, lifecycle: 'sometimes' })).toMatch(/lifecycle must be one of/);
+  });
+
+  it('rejects a non-positive idleTtlSec, but allows null (meaning: the reaper default)', () => {
+    expect(validateLocalBackendInput({ ...valid, idleTtlSec: 0 })).toMatch(/idleTtlSec must be/);
+    expect(validateLocalBackendInput({ ...valid, idleTtlSec: -30 })).toMatch(/idleTtlSec must be/);
+    expect(validateLocalBackendInput({ ...valid, idleTtlSec: null })).toBeNull();
+    expect(validateLocalBackendInput({ ...valid, idleTtlSec: 1800 })).toBeNull();
+  });
+
+  it('refuses on-demand without a unitName — an armed-looking backend nothing can actually stop', () => {
+    expect(validateLocalBackendInput({ ...valid, lifecycle: 'on-demand' })).toMatch(/requires unitName/);
+    expect(validateLocalBackendInput({ ...valid, lifecycle: 'on-demand', unitName: '   ' })).toMatch(/requires unitName/);
+    expect(
+      validateLocalBackendInput({ ...valid, lifecycle: 'on-demand', unitName: 'llama-ornith.service' }),
+    ).toBeNull();
+  });
+
+  it('does not require a unitName for an always-on backend', () => {
+    // The pairing matters: the requirement is conditional on lifecycle, not universal. A universal
+    // unitName requirement would break every existing always-on registration.
+    expect(validateLocalBackendInput({ ...valid, lifecycle: 'always-on', unitName: null })).toBeNull();
+  });
 });

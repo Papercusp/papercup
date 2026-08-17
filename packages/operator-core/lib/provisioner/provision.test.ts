@@ -54,6 +54,14 @@ describe('planProvision', () => {
       baseUrl: 'http://127.0.0.1:11436',
       models: ['maxwell1500/ornith-35b:IQ3_M'],
       maxConcurrent: 2,
+      // The catalog entry marks this combo on-demand (it occupies a whole 24GB card), and the
+      // plan must carry that into the REGISTRY, which is what the reaper and gateway read — the
+      // catalog itself is only a recommendation source (D-005).
+      lifecycle: 'on-demand',
+      idleTtlSec: 1800,
+      // Captured here rather than inferred from baseUrl later: for a backend fronted by a proxy
+      // those are different processes, and guessing stops the wrong one (D-005).
+      unitName: 'provisioner-ornith-35b-iq3m-llama-server.service',
     });
   });
 
@@ -117,6 +125,12 @@ describe('planProvision', () => {
       baseUrl: 'http://127.0.0.1:8000',
       models: ['ornith-35b-awq'],
       maxConcurrent: 4,
+      // This fixture's catalog entry says nothing about lifecycle, and the default is the whole
+      // safety argument for the field: an entry that is silent — including any third-party
+      // catalog written before 843 existed — stays always-on and never becomes reapable.
+      lifecycle: 'always-on',
+      idleTtlSec: null,
+      unitName: 'provisioner-ornith-35b-awq-vllm.service',
     });
   });
 
