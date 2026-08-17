@@ -223,6 +223,192 @@ async function defaultHealthCheck(baseUrl: string): Promise<boolean> {
   }
 }
 
+/* ────────────────────────────────────────────────────────────────────────────────────────
+ * Runtime lifecycle (on-demand-local-inference-lifecycle-2026-08-17 P-006)
+ *
+ * `applyProvision` above is the WIZARD's one-shot start. The two functions below are the
+ * RUNTIME seam the idle-reaper (P-007) and the gateway's ensure-running path (P-008) call
+ * against an ALREADY-REGISTERED backend. They deliberately live beside `applyProvision` and
+ * reuse the same `defaultSystemctl` / `defaultHealthCheck` injection points, so this module
+ * stays the single place that knows how this repo talks to systemctl about a backend — one
+ * exec path to audit, and no second copy to drift.
+ *
+ * No new spawn mechanism: both go through the same short-lived, non-detached `execFile` that
+ * was already here, so `lint:no-unenrolled-spawn` / the managedSpawn enrolment rules are
+ * satisfied by inheritance (an ordinary child of an already-confined process).
+ * ──────────────────────────────────────────────────────────────────────────────────────── */
+
+/** The fields of a `LocalBackendRecord` these operations act on. Deliberately a structural
+ *  subset rather than the whole record: the reaper reads rows from the registry, but a test
+ *  (or the CLI) can drive these with a literal, and neither needs a DB. */
+export interface BackendLifecycleTarget {
+  id: string;
+  /** From the registry (migration 843). `null` ⇒ this backend has no unit recorded, and both
+   *  operations below REFUSE rather than guess — see the D-005 note on `LocalBackendRecord`. */
+  unitName: string | null;
+  /** What the gateway actually routes to. Health is checked here, end-to-end, rather than on
+   *  the unit's own port: for a proxied backend those differ, and the routable address is the
+   *  one whose readiness callers care about. */
+  baseUrl: string;
+}
+
+export interface BackendLifecycleOptions {
+  runSystemctl?: (args: string[]) => Promise<{ stdout: string; stderr: string }>;
+  healthCheck?: (baseUrl: string) => Promise<boolean>;
+}
+
+export interface StopBackendResult {
+  ok: boolean;
+  /** True only when `systemctl stop` was actually issued and returned cleanly. */
+  stopped: boolean;
+  unitName: string | null;
+  error?: string;
+}
+
+/**
+ * Stop an on-demand backend's systemd unit, freeing whatever it holds (for `llama-ornith`,
+ * ~19.8GB of VRAM).
+ *
+ * **Refuses when `unitName` is null instead of falling back to `baseUrl`.** That refusal is
+ * the whole point of the function's shape, not defensive noise: measured on this box,
+ * `ornith-llamaserver`'s baseUrl `:11435` is the always-on `ollama-schema-proxy.service`,
+ * while the GPU-resident process is `llama-ornith.service` on `:11436`. A baseUrl-derived
+ * stop kills the cheap proxy, leaves the 19.8GB process resident, and reports success (D-005).
+ *
+ * `stop` only — never `disable`. Disabling additionally changes boot behaviour, which is a
+ * policy decision belonging to whoever registered the backend, not to an idle sweep.
+ */
+export async function stopLocalBackend(
+  target: BackendLifecycleTarget,
+  opts: BackendLifecycleOptions = {},
+): Promise<StopBackendResult> {
+  if (!target.unitName) {
+    return {
+      ok: false,
+      stopped: false,
+      unitName: null,
+      error: `backend '${target.id}' has no unitName recorded — refusing to derive one from baseUrl (D-005)`,
+    };
+  }
+
+  const systemctl = opts.runSystemctl ?? defaultSystemctl;
+  try {
+    // `Restart=on-failure` (backend-config.ts) — a deliberate stop is not a failure, so
+    // systemd will not race us by restarting the unit.
+    await systemctl(['--user', 'stop', target.unitName]);
+    return { ok: true, stopped: true, unitName: target.unitName };
+  } catch (err) {
+    return {
+      ok: false,
+      stopped: false,
+      unitName: target.unitName,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
+export interface EnsureBackendRunningOptions extends BackendLifecycleOptions {
+  /** How long to wait for the backend to answer its health check after `systemctl start`.
+   *
+   *  **REQUIRED — there is deliberately no default.** Cold start here means faulting a
+   *  multi-GB quantized model off disk (ornith is 15.5GB IQ3_M), and that duration has not
+   *  been measured on this box. A default would be a guess that every caller silently
+   *  inherits; making it required forces the caller that DOES know (P-008, from a real
+   *  measurement) to state it. */
+  readyTimeoutMs: number;
+  /** Gap between health polls while waiting (default 1000ms). */
+  pollIntervalMs?: number;
+  /** Injected for hermetic tests — the default is real wall-clock. */
+  sleep?: (ms: number) => Promise<void>;
+  now?: () => number;
+}
+
+export interface EnsureBackendRunningResult {
+  ok: boolean;
+  /** Health check passed BEFORE we touched systemd — the common case on a warm backend. */
+  alreadyRunning: boolean;
+  /** `systemctl start` was issued. */
+  started: boolean;
+  /** The backend answered its health check within `readyTimeoutMs`. */
+  healthy: boolean;
+  waitedMs: number;
+  error?: string;
+}
+
+/**
+ * Ensure an on-demand backend is up and answering, starting it if it is not.
+ *
+ * Health is probed FIRST, so a warm backend costs one HTTP request and no subprocess — this
+ * sits on the gateway's request path (P-008), where the overwhelmingly common case is
+ * "already running".
+ *
+ * Concurrency is safe without an in-process guard: systemd merges concurrent `start` jobs for
+ * the same unit, so N simultaneous callers produce one activation. De-duplicating the *wait*
+ * (so N requests don't each hold a connection for the cold-start duration) is the gateway's
+ * concern, not this seam's.
+ *
+ * On timeout the unit is left RUNNING and `healthy:false` is returned — a model part-way
+ * through loading is worth more than a clean slate, and the caller may want to fail this one
+ * request while the load completes for the next.
+ */
+export async function ensureLocalBackendRunning(
+  target: BackendLifecycleTarget,
+  opts: EnsureBackendRunningOptions,
+): Promise<EnsureBackendRunningResult> {
+  const healthCheck = opts.healthCheck ?? defaultHealthCheck;
+  const now = opts.now ?? (() => Date.now());
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const pollIntervalMs = opts.pollIntervalMs ?? 1000;
+  const startedAt = now();
+
+  if (await healthCheck(target.baseUrl)) {
+    return { ok: true, alreadyRunning: true, started: false, healthy: true, waitedMs: 0 };
+  }
+
+  if (!target.unitName) {
+    return {
+      ok: false,
+      alreadyRunning: false,
+      started: false,
+      healthy: false,
+      waitedMs: now() - startedAt,
+      error: `backend '${target.id}' has no unitName recorded — refusing to derive one from baseUrl (D-005)`,
+    };
+  }
+
+  const systemctl = opts.runSystemctl ?? defaultSystemctl;
+  try {
+    await systemctl(['--user', 'start', target.unitName]);
+  } catch (err) {
+    return {
+      ok: false,
+      alreadyRunning: false,
+      started: false,
+      healthy: false,
+      waitedMs: now() - startedAt,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+
+  // Poll until the deadline. The FIRST probe happens after one interval: `systemctl start`
+  // has just returned, and for a cold model load there is no chance it is ready yet.
+  while (now() - startedAt < opts.readyTimeoutMs) {
+    await sleep(pollIntervalMs);
+    if (await healthCheck(target.baseUrl)) {
+      return { ok: true, alreadyRunning: false, started: true, healthy: true, waitedMs: now() - startedAt };
+    }
+  }
+
+  return {
+    ok: false,
+    alreadyRunning: false,
+    started: true,
+    healthy: false,
+    waitedMs: now() - startedAt,
+    error: `backend '${target.id}' (${target.unitName}) did not answer ${target.baseUrl} within ${opts.readyTimeoutMs}ms — unit left running`,
+  };
+}
+
 /**
  * Apply a plan: write the unit file + register the backend in the gateway pool's durable
  * registry. With `opts.start` left at its default (`false`), this NEVER starts a process or
