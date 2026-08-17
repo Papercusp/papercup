@@ -126,3 +126,51 @@ describe('work_items:hold_open clear — claim-hold ownership gate', () => {
     expect(setWorkItemClaimHold).toHaveBeenCalledWith('WI-9', false, { harness: 'papercup' });
   });
 });
+
+/**
+ * EI-20710656847511624 — the hold RESPONSE must disclose that the hold expires.
+ *
+ * Three agents in a row fenced the same owner-gated live-money items with hold_open
+ * intending "permanent" and each got "until I die": the dead-owner sweeps match
+ * `held_open_by = <dead owner>` and lift the hold + `_claimHold`. Every one of them had
+ * verified the hold APPLIED and stopped there, because `{ ok:true, held:true }` reads as
+ * a completed fence. These pin the disclosure so a refactor cannot quietly drop it.
+ */
+describe('work_items:hold_open hold — lease-expiry disclosure', () => {
+  beforeEach(() => {
+    setWorkItemClaimHold.mockResolvedValue({ id: 'WI-9', harness: 'papercup', hold: true, applicable: true });
+    getWorkItem.mockResolvedValue(itemWith(null));
+  });
+
+  it('an ordinary hold discloses that it is a LEASE and names the durable alternative', async () => {
+    const out = await call({ id: 'WI-9', reason: 'verifying the fix before anyone closes it' });
+    expect(out).toMatchObject({ ok: true, held: true, heldBy: 'me' });
+    expect(out.durability).toBe('lease (expires when you do)');
+    // The two things a caller must be told: it expires, and what to use instead.
+    expect(out.leaseNote).toMatch(/LEASE, NOT a permanent fence/);
+    expect(out.leaseNote).toMatch(/release \{ claimHold:true \}/);
+  });
+
+  it('a POLICY-TIER reason is reported exempt, but still warns the exemption keys off wording', async () => {
+    const out = await call({ id: 'WI-9', reason: 'Explicit policy-tier human gate (D-003): owner sign-off' });
+    expect(out.durability).toBe('lease (policy-tier exempt from reaping)');
+    expect(out.leaseNote).toMatch(/exempt/);
+    expect(out.leaseNote).toMatch(/WORDING, not intent/);
+    expect(out.leaseNote).toMatch(/release \{ claimHold:true \}/);
+  });
+
+  it('the disclosure is UNCONDITIONAL — a terse reason still gets it', async () => {
+    // The failure mode was a caller concluding "fenced" from { ok:true, held:true } alone,
+    // so the warning must not depend on how the reason happens to be phrased.
+    const out = await call({ id: 'WI-9', reason: 'gate' });
+    expect(out.leaseNote).toBeTruthy();
+    expect(out.durability).toMatch(/^lease/);
+  });
+
+  it('re-stamping a peer\'s hold keeps BOTH the re-stamp note and the lease disclosure', async () => {
+    getWorkItem.mockResolvedValue(itemWith({ _claimHold: true, held_open_by: 'peer', held_open_reason: 'theirs' }));
+    const out = await call({ id: 'WI-9', reason: 'taking over the gate' });
+    expect(out.note).toMatch(/re-stamped \(was held by peer\)/);
+    expect(out.leaseNote).toMatch(/LEASE/);
+  });
+});
