@@ -61,22 +61,24 @@ export interface WorkItemRow {
 }
 
 /**
- * Count label for the work-items pane.
- *
- * The implementation MOVED to `../../harness/filters/filter-count-label` (owner ask
+ * The count label this pane renders MOVED to
+ * `../../harness/filters/filter-count-label` as `filterCountLabel` (owner ask
  * 2026-08-17: "mimic how it works in the work queue in the work tab") — three
- * Learning-tab panes had each hand-rolled a different label, so the one the Work
- * Queue got right now lives beside the shared filter hook + bar that every pane
- * already imports. Re-exported under the original name so this pane's own test and
- * any other importer keep resolving; `noun` defaults to 'item', which is exactly
- * what this pane passed before.
+ * Learning-tab panes had each hand-rolled a different one, so the label the Work
+ * Queue got right now lives beside the shared filter hook + bar every pane already
+ * imports. `noun` defaults to 'item', exactly what this pane passed before.
+ *
+ * No `workItemCountLabel` alias is kept here: this repo has no users yet and takes
+ * the breaking rename over a deprecation shim (CLAUDE.md), and an alias would ALSO
+ * be a live trap — this pane's test mocks `../../harness/filters` wholesale, so a
+ * re-export of a mocked symbol resolves to undefined at import time rather than
+ * failing loudly at the mock. Import `filterCountLabel` from the barrel instead.
  *
  * ⚠ Read filter-count-label.ts's header before adopting it elsewhere: "N of total"
  * is only honest for a pane that GROWS its fetch window to the store total (this
  * one does, via `onEndReached`). A pane filtering one fixed page must fix that
  * first — the label and the growing window ship together or not at all.
  */
-export const workItemCountLabel = filterCountLabel;
 
 /** Stable empty-rows sentinel — see the `useColumnFilters` call below. */
 const NO_ROWS: WorkItemRow[] = [];
@@ -189,7 +191,7 @@ export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
   // narrowing the list shows how many rows matched out of the store total; when
   // unfiltered it's just the store total.
   const isFiltered = cf.hasActive || search.trim() !== '';
-  const counts = items ? workItemCountLabel(filtered.length, total, isFiltered) : null;
+  const counts = items ? filterCountLabel(filtered.length, total, isFiltered) : null;
   const titleCount = counts?.title;
   useEffect(() => {
     if (titleCount != null) api.setTitle(`Work items · ${slug} (${titleCount})`);

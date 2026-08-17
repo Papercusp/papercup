@@ -46,11 +46,18 @@ vi.mock('@papercusp/grid-core', () => ({
 }));
 // list-meta (readListTotal/listCountLabel) is pure — used REAL, not mocked, so the
 // "N of TOTAL" assertion exercises the actual count logic.
-vi.mock('../../harness/filters', () => ({
+// `filterCountLabel` is deliberately the REAL implementation, not a stub: the
+// panel renders its output into the badge this file asserts on, so stubbing it
+// would make those assertions test the stub. Only the stateful/visual members
+// (the hook, the bar) are faked.
+vi.mock('../../harness/filters', async () => ({
   useColumnFilters: (_cols: unknown, rows: unknown[]) => ({
     rows, controller: {}, activeChips: [], hasActive: false, clearAll: vi.fn(),
   }),
   ColumnFilterBar: () => <div data-testid="filter-bar" />,
+  filterCountLabel: (await vi.importActual<typeof import('../../harness/filters/filter-count-label')>(
+    '../../harness/filters/filter-count-label',
+  )).filterCountLabel,
 }));
 vi.mock('../../harness/Tooltip', () => ({ Tooltip: ({ children }: { children: ReactNode }) => <>{children}</> }));
 vi.mock('../../harness/primitives', () => ({
