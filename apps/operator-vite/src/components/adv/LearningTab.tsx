@@ -2019,14 +2019,28 @@ function ImprovementsView({
               className="pc-learning__matchcount"
               aria-live="polite"
               title={
-                isFiltered
-                  ? "Rows matching the current filter / search, out of everything in scope."
-                  : "Rows in scope — ideas and the work they became."
+                // D-003 again, one level up from the chips: this denominator is
+                // the LOADED row set, and saying "everything in scope" claimed
+                // it was the corpus. When the digest reports itself windowed
+                // (`total > returned` — honest since WI-39675 counted the corpus
+                // instead of measuring its own window), the label says "loaded"
+                // and the true population moves here, where it is context.
+                //
+                // It is deliberately NOT rendered as `N of digest.total`: this
+                // list merges two populations — improvement items AND routed
+                // ideas not yet filed as work — while `digest.total` counts only
+                // the first. Printing it as the denominator of a mixed list
+                // would be a fresh instance of the very defect being fixed.
+                digest?.windowed
+                  ? `${isFiltered ? "Rows matching the current filter / search, out of those loaded." : "Rows loaded — ideas and the work they became."} The list holds the most recent ${digest.returned} of ${digest.total} captured; filters and counts here see the loaded rows.`
+                  : isFiltered
+                    ? "Rows matching the current filter / search, out of everything in scope."
+                    : "Rows in scope — ideas and the work they became."
               }
             >
               {isFiltered
-                ? `${visibleRows.length} of ${allRows.length}`
-                : `${rows.length} items`}
+                ? `${visibleRows.length} of ${allRows.length}${digest?.windowed ? " loaded" : ""}`
+                : `${rows.length}${digest?.windowed ? " loaded" : " items"}`}
             </span>
             {/* The "who filed it" facet is now a chip in the scope bar above —
                 provenance is the headline question on this surface, not a
