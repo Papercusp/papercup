@@ -18,7 +18,12 @@
  *   --baseline <file>                           baseline JSON (default baselines/tier1.json next to this file)
  *   --reference <rolling|frozen>                advisory reference (default rolling: p90 of recent runs;
  *                                               falls back to the frozen baseline when history is thin)
- *   --update-baseline                           rewrite the baseline from this run
+ *   --update-baseline                           REWRITE the baseline from THIS RUN ONLY (destructive —
+ *                                               it does not merge). Refused when the run would drop
+ *                                               covered cells or was flagged host-oversubscribed;
+ *                                               override per-risk with the two flags below.
+ *   --allow-baseline-shrink                     accept a promotion that drops covered cells
+ *   --allow-contended-baseline                  accept a promotion captured on an oversubscribed host
  *   --gate                                      exit 1 on regressions/SLO violations (OFF by default — D-005)
  *   --slo-only                                  exit 1 only on SLO violations (used by the CI-able invariant path)
  *   --summary-json <file>                       ALSO write a machine-readable run summary (the
@@ -184,6 +189,10 @@ interface Args {
   out: string;
   baseline: string;
   updateBaseline: boolean;
+  /** Accept a `--update-baseline` promotion that DROPS covered cells. */
+  allowBaselineShrink: boolean;
+  /** Accept a `--update-baseline` promotion captured on an oversubscribed host. */
+  allowContendedBaseline: boolean;
   /** Which reference the advisory compares against (WI-2788). Default rolling. */
   reference: 'rolling' | 'frozen';
   gate: boolean;
@@ -333,6 +342,8 @@ function parseArgs(argv: string[]): Args | 'list' {
     reference: (get('--reference') as 'rolling' | 'frozen' | undefined) ?? 'rolling',
     baseline: get('--baseline') ?? join(HERE, 'baselines', 'tier1.json'),
     updateBaseline: argv.includes('--update-baseline'),
+    allowBaselineShrink: argv.includes('--allow-baseline-shrink'),
+    allowContendedBaseline: argv.includes('--allow-contended-baseline'),
     gate: argv.includes('--gate'),
     sloOnly: argv.includes('--slo-only'),
     summaryJson: get('--summary-json'),
