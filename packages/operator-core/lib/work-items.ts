@@ -86,6 +86,11 @@ import {
   isWorkItemCompletionAuthority,
   type WorkItemCompletionAuthority,
 } from './work-item-completion-authority';
+import { classifySettledCompletionEvidence } from './work-item-settled-completion-evidence';
+export {
+  classifySettledCompletionEvidence,
+  type SettledCompletionEvidenceDecision,
+} from './work-item-settled-completion-evidence';
 import { liveDriveTerminalRefusal } from './turn-provenance/owner-visible-surface-acceptance';
 import { readExternalBlockers, type ExternalBlockerRecord } from './external-blockers';
 import { pgTimestampToIso, pgTimestampToIsoOrNull } from './pg-timestamp';
