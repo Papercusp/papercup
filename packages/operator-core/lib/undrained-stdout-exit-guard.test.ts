@@ -217,21 +217,55 @@ describe('the tree is currently clean (ratchet)', () => {
     // Execs the guard over REPO_ROOT so this counts as ENFORCEMENT, not merely a unit
     // test of its helpers: check-lint-guard-reachability classifies a test that only
     // feeds fixtures as `logic-test` (ADVISORY), which lets the ratchet rot silently.
-    const out = execFileSync('node', ['scripts/check-undrained-stdout-exit.mjs', '--json'], {
+    //
+    // ⚠ Read the report BEFORE judging the status, and never re-introduce execFileSync
+    // here. The guard prints its findings to stdout and only THEN sets exitCode=1, so on
+    // a red the report exists — but execFileSync THROWS on a non-zero exit and discards
+    // stdout with it. This assertion used to do exactly that: 8 reds over 6h across 4
+    // commits all reported the same "Command failed: node scripts/check-undrained-
+    // stdout-exit.mjs --json", naming no file, and the offender (ONE line, in a script a
+    // peer had just added) was recoverable only by hand-running the guard — which three
+    // separate wakes each did from scratch. The tree here is shared and swept, so any
+    // peer can red this at any time; the report has to survive the failure.
+    // EI-20692923474318761.
+    const guard = runGuardScript('node', ['scripts/check-undrained-stdout-exit.mjs', '--json'], {
       cwd: REPO_ROOT,
-      encoding: 'utf8',
-      timeout: 180_000,
-      maxBuffer: 64 * 1024 * 1024,
+      timeoutMs: 180_000,
     });
-    const report = JSON.parse(out) as {
+
+    let report: {
       filesScanned: number;
-      unbaselined: { file: string; line: number }[];
+      unbaselined: { file: string; line: number; why: string }[];
       staleBaseline: string[];
     };
+    try {
+      report = JSON.parse(guard.stdout);
+    } catch {
+      // A crash, a timeout, or a truncated buffer lands here — all of which would
+      // otherwise surface as an opaque JSON parse error about position 0.
+      throw new Error(`the guard produced no parseable --json report:\n${guard.output}`);
+    }
 
     // A scan that measured nothing would pass vacuously — assert it really walked the tree.
     expect(report.filesScanned).toBeGreaterThan(1000);
-    expect(report.unbaselined).toEqual([]);
-    expect(report.staleBaseline).toEqual([]);
+
+    // Rendered as `file:line — why` STRINGS rather than compared as objects, so the
+    // vitest diff itself names the offender and its reason. That diff is what gets
+    // captured as the failure tail downstream (the watchdog files a bug from it), which
+    // is the difference between a red that hands over the fix and one that hides it.
+    expect(
+      report.unbaselined.map((o) => `${o.file}:${o.line} — ${o.why}`),
+      'Fix each site: 1. `process.exitCode = N` and let the program end naturally; ' +
+        '2. drop the process.exit() when the status is 0 and nothing follows; ' +
+        '3. must exit immediately? use writeStdoutSync from scripts/lib/write-stdout-sync.mjs. ' +
+        'Do NOT baseline it — BASELINE is shrink-only.',
+    ).toEqual([]);
+
+    expect(report.staleBaseline, 'BASELINE entries matching no site — delete them').toEqual([]);
+
+    // The script's exit STATUS must agree with its own report. An inverted exitCode
+    // would make every other consumer — the npm lint entry, the gate — read a dirty
+    // tree as clean, and no assertion above would notice.
+    expect(guard.status, guard.output).toBe(0);
   });
 });
