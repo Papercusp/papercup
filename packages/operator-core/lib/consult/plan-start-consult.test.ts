@@ -15,7 +15,9 @@ import { describe, expect, it } from 'vitest';
 import type { RouteResult, RoutingCandidate } from './relevance-router';
 import { DEAD_RESPONDER_STATES, DEFAULT_MAX_RESPONDERS, DEFAULT_MIN_RESPONDERS } from './get-feedback-core';
 import {
+  buildGoalKickoffQuery,
   buildPlanStartQuery,
+  goalKickoffConsult,
   PLAN_START_QUERY_MAX_CHARS,
   planStartConsult,
   type PlanStartConsultDeps,

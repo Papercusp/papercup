@@ -56,6 +56,10 @@ export default defineTool({
     notWhen:
       'Do not use this as the mode-entry path for a new GOAL-mode agent — use goals:start, which creates the goal, enters GOAL mode, and spawns atomically. For a concrete unit of work use work_items:create; for a project use pot:create; for the plan of attack use plans:new. A goal is the INTENT those serve — if it has an obvious done-when-this-PR-merges, it is not a goal.',
     chaining: 'goals:start for a new GOAL-mode owner, or goals:create → mode:set { mode:"goal", subject:"<id>" } for an existing session → pot:create / plans:new per project → goals:update to record actuals, or status:"killed" when the kill criterion trips.',
+    returns:
+      'On success: { id, title, status, kill_criterion, budget_cents, tripwires, workspace_id, mode_subject_stamped, mode_subject_advisory?, kickoff_consult? }. ' +
+      'For a caller with an ACTIVE GOAL-mode row, the goal-kickoff CHECKPOINT consult (min:1) runs first: the goal outline (outcome + kill criterion) is routed through the relevance router, and any selectable live peer refuses ONCE with data { error: "consult_available", candidates, selection, hint } — the goal is NOT created; re-call with consulted: true/false + consult_reason (a nudge, never a gate; any infra fault proceeds). ' +
+      'Non-GOAL-mode callers (owner UI confirm cards, scripts) are never consulted. `kickoff_consult` records the disposition (override reason, no_live_responder, or routed_dead_context + transcript excerpts).',
   },
   requirePrincipal: false,
   agentRoles: [...SU_WRITE_ROLES],
@@ -83,6 +87,20 @@ export default defineTool({
       ),
     status: z.enum(GOAL_STATUSES).default('active'),
     metadata: z.record(z.string(), z.unknown()).optional(),
+    consulted: stringTolerantBool
+      .optional()
+      .describe(
+        'Answer to a `consult_available` refusal (the GOAL-mode kickoff consult). Pass true after actually consulting a listed candidate (name the consult in consult_reason), or false + consult_reason to proceed WITHOUT consulting (the reason is recorded). Omit on a first call — for a GOAL-mode caller the kickoff routing runs then. Accepts the wire strings "true"/"false" too.',
+      ),
+    consult_reason: z
+      .string()
+      .min(1)
+      .max(2000)
+      .optional()
+      .describe('Why you are overriding (consulted: false) or what the consult concluded (consulted: true). Recorded on the result.'),
+  }).refine((a) => a.consulted !== false || Boolean(a.consult_reason), {
+    message:
+      'consulted: false requires consult_reason — state why you are proceeding without consulting (it is recorded)',
   }),
   async handler(args, ctx) {
     // The table declares workspace_id NOT NULL with a CHECK (workspace_id <> ''),
@@ -136,6 +154,145 @@ export default defineTool({
       if (problem) return { data: null, degraded: true, degradedReasons: [problem] };
     }
 
+    // ── The GOAL-mode kickoff consult (consult-min-max-and-rubric-vetting
+    // 2026-08-17 P-010 / D-004 §1) ───────────────────────────────────────────
+    // GOAL mode's kickoff contract commits weeks of portfolio spend at this
+    // door, so the goal OUTLINE (outcome + kill criterion + body) is routed
+    // through the same checkpoint partition plans:start uses
+    // (goalKickoffConsult — global min:1, D-001 §2). GATED ON THE CALLER'S
+    // ACTIVE GOAL-MODE ROW: the owner UI confirm cards (GoalProposalCard,
+    // SubGoalsSection) call this tool as the OWNER with no goal-mode row and
+    // must never be nudge-refused — only a GOAL-mode agent committing its own
+    // kickoff gets the consult. NUDGE, never a hard block: any router/infra
+    // fault proceeds, and the override (consulted + consult_reason) always
+    // works — the proven plans:start similar_exists/consulted shape.
+    const callerOwnerId = ctx.uiClientId ?? null;
+    let kickoffConsult: Record<string, unknown> | undefined;
+    if (callerOwnerId) {
+      let goalModeActive = false;
+      try {
+        // Same predicate the provenance stamp below uses — one definition of
+        // "this caller is running GOAL mode".
+        const modeRows = await ctx.tx<Array<{ owner_id: string }>>`
+          SELECT owner_id
+            FROM harness_shared.agent_modes
+           WHERE workspace_id = ${workspaceId}
+             AND owner_id = ${callerOwnerId}
+             AND mode = 'goal'
+        `;
+        goalModeActive = modeRows.length > 0;
+      } catch {
+        goalModeActive = false; // fail open — the consult is a nudge, not a gate
+      }
+      if (goalModeActive) {
+        if (args.consulted !== undefined) {
+          // Override / acknowledgement path: routing already ran on the
+          // refused call — record the disposition on the result and proceed.
+          kickoffConsult = {
+            overridden: true,
+            consulted: args.consulted,
+            ...(args.consult_reason ? { reason: args.consult_reason } : {}),
+          };
+        } else {
+          try {
+            // Dynamic imports, mirroring plans:start — the consult wiring is
+            // heavyweight (embedder, liveness oracle) and must never tax the
+            // common non-GOAL-mode create path.
+            const [
+              { getOrgPg },
+              { routeConsult },
+              { buildQueryEmbedder },
+              { resolveSessionStates },
+              consult,
+            ] = await Promise.all([
+              import('@papercusp/db-org'),
+              import('@papercusp/operator-core/lib/consult/relevance-router'),
+              import('@papercusp/operator-core/lib/agent-tools/search/embedder'),
+              import('@papercusp/operator-core/lib/agent-tools/coordination/liveness-oracle'),
+              import('@papercusp/operator-core/lib/consult/plan-start-consult'),
+            ]);
+            const embed = await buildQueryEmbedder();
+            const outcome = await consult.goalKickoffConsult(
+              {
+                workspaceId,
+                requesterId: callerOwnerId,
+                title: args.title,
+                body: args.body ?? null,
+                killCriterion: args.killCriterion ?? null,
+              },
+              {
+                route: (params) =>
+                  routeConsult(params, {
+                    getSql: () => getOrgPg().sql,
+                    embed,
+                    getLiveness: async (ownerIds) => {
+                      const verdicts = await resolveSessionStates(
+                        ownerIds.map((ownerId) => ({ ownerId })),
+                        { hydratePerId: true },
+                      );
+                      return Object.fromEntries(
+                        [...verdicts.values()].map((v) => [v.ownerId, v.sessionState]),
+                      );
+                    },
+                  }),
+                getExcerpts: (refs) => consult.fetchTurnExcerpts(getOrgPg().sql, workspaceId, refs),
+              },
+            );
+            if (outcome.outcome === 'nudge') {
+              const hasMinimumFill = outcome.selection.selected.some((s) => s.via === 'minimum');
+              // ToolResponse is a CLOSED envelope (data + degraded fields), so
+              // the structured refusal rides INSIDE data — the same
+              // information plans:start's consult_available refusal carries,
+              // adapted to this tool's idiom. `data.error` present + no `id`
+              // ⇒ the goal was NOT created.
+              return {
+                data: {
+                  error: 'consult_available' as const,
+                  candidates: outcome.candidates,
+                  selection: outcome.selection,
+                  hint:
+                    'Peers with relevant transcript history were selected for this goal outline — `selection.selected` labels each: via "floor" = cleared the router\'s precision floor on real evidence; via "minimum" = best-available LIVE peer BELOW the floor, selected because the goal-kickoff consult carries a minimum of 1 (a goal commits weeks of portfolio spend, so a wrong outline assumption is cheapest to catch HERE, before any pot or plan exists). ' +
+                    (hasMinimumFill
+                      ? 'A via:"minimum" candidate should review from FIRST PRINCIPLES — their selection is best-available, not evidence-matched. '
+                      : '') +
+                    'Review the candidates + their evidence turns; consult via get_feedback { question } — its default minResponders:1 reaches at least the best-available live peer. ' +
+                    'Then re-call goals:create with consulted: true (+ consult_reason naming what the consult concluded), or consulted: false + consult_reason to proceed without consulting — the override always works; this is a nudge, never a gate.',
+                },
+                degraded: true,
+                degradedReasons: [
+                  'consult_available — the goal was NOT created; consult a listed candidate (get_feedback) or re-call with consulted + consult_reason',
+                ],
+              };
+            }
+            if (outcome.outcome === 'proceed' && outcome.verdict === 'no_live_responder') {
+              // Not silent (P-002): a candidate pool existed but only liveness
+              // kept everyone out — record the honest verdict on the result.
+              kickoffConsult = {
+                verdict: 'no_live_responder',
+                note:
+                  'The goal-kickoff consult found candidate peer history, but no LIVE candidate exists to consult (min:1 physically unfillable) — the create proceeded. Consider get_feedback later if a relevant peer comes alive.',
+              };
+            }
+            if (outcome.outcome === 'proceed_with_excerpts') {
+              kickoffConsult = {
+                verdict: 'routed_dead_context',
+                note:
+                  'The router found above-floor peer history for this goal, but every candidate context is dead and no live peer could fill the min:1 — no wake is possible, so their matched transcript excerpts are injected here instead (retrieval, not consult). Read them before committing the portfolio.',
+                candidates: outcome.candidates.map((c) => ({
+                  ownerId: c.ownerId,
+                  score: c.score,
+                  liveness: c.liveness,
+                })),
+                excerpts: outcome.excerpts,
+              };
+            }
+          } catch {
+            /* nudge, never block — a router/infra fault must not stop a goal create */
+          }
+        }
+      }
+    }
+
     const id = goalId(args.title);
     await insertGoalRow(ctx.tx, {
       id,
@@ -169,7 +326,6 @@ export default defineTool({
     // caller happens not to be in GOAL mode (the common case for a human-driven
     // or scripted create), or because the transport carried no session id.
     let modeSubjectStamped = false;
-    const callerOwnerId = ctx.uiClientId ?? null;
     if (callerOwnerId) {
       try {
         const stamped = await ctx.tx<Array<{ owner_id: string }>>`
@@ -239,6 +395,10 @@ export default defineTool({
         // work will not be attributable to this goal.
         mode_subject_stamped: modeSubjectStamped,
         ...(modeSubjectAdvisory ? { mode_subject_advisory: modeSubjectAdvisory } : {}),
+        // The kickoff-consult disposition (override, no_live_responder, or
+        // routed_dead_context + excerpts) — recorded so the create result
+        // itself says what the routing found (P-002: honest, never silent).
+        ...(kickoffConsult ? { kickoff_consult: kickoffConsult } : {}),
       },
     };
   },
