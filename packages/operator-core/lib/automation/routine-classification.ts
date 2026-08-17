@@ -351,6 +351,10 @@ export const TARGET_ROLE_SPEND: Readonly<Record<string, SpendEntry>> = {
   'system:session-dir-gc': { spend: 'none', why: 'Deletes isolation dirs of ended sessions' },
   'system:telemetry-retention': { spend: 'none', why: 'Applies telemetry retention windows' },
   'system:idle-session-reaper': { spend: 'none', why: 'Reaps idle session rows' },
+  'system:idle-backend-reaper': {
+    spend: 'none',
+    why: 'Polls /slots and stops idle on-demand local inference backends — no LLM calls',
+  },
   'system:hetzner-orphan-frame-reaper': { spend: 'none', why: 'Reaps orphaned remote frames' },
   'system:test-webview-reaper': { spend: 'none', why: 'Reaps leaked test webviews' },
   'system:orphaned-mcp-reaper': { spend: 'none', why: 'Reaps leaked agent-spawned playwright-mcp server processes' },
