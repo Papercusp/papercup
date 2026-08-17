@@ -1006,8 +1006,8 @@ export type GateStallRetriage = {
 };
 
 /**
- * WI-39450: is this not-green verdict a SUPERSEDED PASS — one that proved its OWN candidate
- * stale and handed off to an auto-refire which will produce the real verdict?
+ * WI-39450: is this not-green verdict a PROVEN-STALE pass — one whose own re-triage re-ran the
+ * failing files at tip and watched them PASS?
  *
  * This is the third instance of the EI-2615 / EI-18757975681519069 bug, and the most expensive:
  * a pass that judged an already-superseded tree is not a statement about the code, but
@@ -1017,21 +1017,45 @@ export type GateStallRetriage = {
  * the 23 commits since that candidate and passed 52/0 at tip. That red sends agents at
  * already-fixed files, which is precisely the harm EI-19405864032365760 documents.
  *
- * The rationale is `skipped-locked`'s exactly: a successor IS coming and it writes the real
- * verdict. So the guard is on the SUCCESSOR EXISTING, not on staleness alone —
- * `autoRefire === true` and nothing blocking the refire. When the refire is blocked
- * (`refireBlockedBy`: budget/ceiling/deadline/cap-disabled) NO successor is coming, this pass IS
- * the final word, and it must still count as a red.
+ * ⚠ THE FIRST VERSION OF THIS GUARD ALSO REQUIRED `autoRefire === true`, AND THAT MADE IT DEAD
+ * CODE. Rationale then: "the guard is on the SUCCESSOR EXISTING — when the refire is blocked no
+ * successor is coming, so this pass is the final word and must still count as a red." Measured
+ * against 25 consecutive papercusp runs (2026-08-15..17), `autoRefire` was **false in 18 of 18**
+ * runs that re-triaged at all — so the guarded branch never once executed. The run that actually
+ * froze `main` (12:36:47Z, candidate 7a040c5c) is the exact shape it missed:
+ * `classification=stale-candidate refireBlockedBy=deadline` — the gate PROVED all 4 failing files
+ * pass at tip, then banked the red anyway because a second suite would outrun the run budget.
+ *
+ * The old rationale conflated two independent questions:
+ *   · "is a rescue scheduled?"  — `autoRefire` / `refireBlockedBy`. A CLOCK-AND-BUDGET fact.
+ *   · "is the code broken?"     — `classification`. An EVIDENCE fact, and the only one the streak
+ *                                 is entitled to move on.
+ * `stale-candidate` is returned from exactly one branch of `triageRed` (green-checkpoint.ts), the
+ * one whose detail reads "N failing file(s) PASS at tip" — it is the strongest negative evidence
+ * the gate ever produces. Whether the run then had the *minutes* to act on it changes nothing
+ * about the code. So the streak guard keys on the evidence and ignores the schedule.
+ *
+ * ONE exception is preserved deliberately: `refireBlockedBy === 'charged-budget'` means the SAME
+ * breakage survived every rescue attempt, which green-checkpoint.ts:2609-2611 calls out as the
+ * loop guard "that must survive: it is what converges a genuinely-broken tip to a held gate and a
+ * human". That one still counts as a red. The other three blockers are not evidentiary at all —
+ * `deadline` is a clock, `cap-disabled` is a feature switch, and `absolute-ceiling`'s own operator
+ * text says "every individual red WAS rescued ... the fix is to slow the tree or widen the window,
+ * NOT to debug the files named above".
+ *
+ * Under-alerting is NOT a new risk here: this leaves `lastGreenAt` stale on purpose, exactly as
+ * 'noop' does, so the two backstops documented above still fire — `checkMainBehindStaging`
+ * (>20 commits behind, >1h, no advance in 2h) and `evaluateGreenStall`'s 12h `verdictStale`. A
+ * frozen `main` escalates on its own; it never needed a miscounted red streak to be noticed.
  *
  * ⚠ Deliberately NOT keyed on the string `superseded-by-refire`: that is only a LOG trailer
  * (`green-checkpoint.ts` `stampPromotion`) and never reaches this function — the recorded
  * reason is a plain `not-green`.
  */
-export function isSupersededByRefire(retriage?: GateStallRetriage | null): boolean {
+export function isProvenStaleCandidate(retriage?: GateStallRetriage | null): boolean {
   return (
     retriage?.classification === 'stale-candidate' &&
-    retriage.autoRefire === true &&
-    !retriage.refireBlockedBy
+    retriage.refireBlockedBy !== 'charged-budget'
   );
 }
 
