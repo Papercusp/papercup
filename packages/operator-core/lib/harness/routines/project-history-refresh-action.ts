@@ -303,10 +303,18 @@ export function runProjectHistoryGenerate(
       if (escalate) clearTimeout(escalate);
       resolvePromise(res);
     };
-    child.stdout?.on('data', (d) => (stdout += d.toString()));
-    child.stderr?.on('data', (d) => (stderr += d.toString()));
-    child.on('error', (e) => finish({ code: 1, stdout, stderr: stderr + String(e), timedOut }));
-    child.on('close', (code) => finish({ code: code ?? 1, stdout, stderr, timedOut }));
+    child.on('error', (e) => {
+      errCollector.append(String(e));
+      finish({ code: 1, stdout: outCollector.text(), stderr: errCollector.text(), timedOut });
+    });
+    child.on('close', (code) =>
+      finish({
+        code: code ?? 1,
+        stdout: outCollector.text(),
+        stderr: errCollector.text(),
+        timedOut,
+      }),
+    );
   });
 }
 
