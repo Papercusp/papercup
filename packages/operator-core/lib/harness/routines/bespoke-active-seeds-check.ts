@@ -93,6 +93,7 @@ export const BESPOKE_ACTIVE_SEEDS: BespokeActiveSeed[] = [
     seedScript: 'seed-plan-item-reflect-orphan-reconcile-routine.ts',
   },
   { name: 'precompute-derived-reads', seedScript: 'seed-precompute-derived-reads-routine.ts' },
+  { name: 'project-history-refresh', seedScript: 'seed-project-history-refresh-routine.ts' },
   { name: 'sql-read-census', seedScript: 'seed-sql-read-census-routine.ts' },
   { name: 'supervision-reconcile', seedScript: 'seed-supervision-reconcile-routine.ts' },
   { name: 'sweep-stalled-loops', seedScript: 'seed-stalled-loops-routine.ts' },
