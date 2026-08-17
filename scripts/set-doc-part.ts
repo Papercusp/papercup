@@ -37,7 +37,7 @@ import {
   type SetDocPartInput,
 } from '../packages/operator-core/lib/harness/docs/doc-record';
 import { connectScriptPg } from './lib/pg-url.mjs';
-import { writeStderrSync } from './lib/write-stdout-sync.mjs';
+import { writeStderrSync, writeStdoutSync } from './lib/write-stdout-sync.mjs';
 
 const WORKSPACE_ID = process.env.PAPERCUSP_WORKSPACE_ID ?? 'papercusp-workspace';
 const HARNESS_SLUG = process.env.PAPERCUSP_HARNESS_SLUG ?? 'papercusp';
