@@ -65,7 +65,7 @@ export default defineTool({
       .array(z.string().min(1))
       .max(16)
       .optional()
-      .describe('Owners to exclude from candidacy — pass prior decliners on a re-call (manual cascade).'),
+      .describe("Owners to exclude from candidacy — e.g. the exhausted menu's decliners when re-routing after a terminal 'declined'/'expired' (the cascade itself advances server-side; no per-decline re-call)."),
     parent_consult_id: z
       .string()
       .min(1)

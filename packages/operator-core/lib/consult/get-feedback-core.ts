@@ -78,7 +78,9 @@ export interface GetFeedbackRequest {
   /** Explicit origin task ref; undefined ⇒ default to the requester's most
    * recently progressed wip work-item (fail-soft: none ⇒ null). */
   originTaskRef?: string | null;
-  /** D-007(7) manual cascade: exclude prior decliners on a re-call. */
+  /** Exclude owners from candidacy — e.g. exhausted-menu decliners on a FRESH
+   * re-route (the cascade itself is server-driven now, D-005/P-013: declines
+   * and expiries advance the selected menu without a re-call). */
   excludeOwners?: string[];
   /** P-005 recursion lineage: set when this consult is opened from WITHIN a
    * consult turn (the responder consulting onward) — the parent consult's
@@ -154,9 +156,11 @@ export interface GetFeedbackResult {
    * routing floors; 'minimum' = best-available fill below them (weigh the
    * reply as a first-principles review). Null when no responder. */
   responder_via: SelectionVia | null;
-  /** The rest of the SELECTED cascade menu, best first — the D-007(7)
-   * manual-cascade menu. On no_live_responder it falls back to the (dead)
-   * floor-qualified candidates so the retrieval path keeps its refs. */
+  /** The rest of the SELECTED cascade menu, best first. The SERVER drains
+   * this menu itself (D-005 always-advance: reply/decline/expiry wake the
+   * next selectee); returned as retrieval refs, not a re-call worklist. On
+   * no_live_responder it falls back to the (dead) floor-qualified candidates
+   * so the retrieval path keeps its refs. */
   remaining_candidates: Array<{ ownerId: string; score: number; liveness: string; via: SelectionVia }>;
   origin_task_ref: string | null;
   latency_contract: LatencyContract;
@@ -295,8 +299,9 @@ export async function getFeedbackCore(
   }
 
   // 2) Route (one embedding + bounded SQL; snapshot comes back for persisting).
-  //    The caller's manual-cascade exclusions and the recursion lineage fold
-  //    into ONE excludeOwners set (P-005 cycle refusal rides P-002's arg).
+  //    The caller's explicit exclusions (e.g. a fresh route after an
+  //    exhausted cascade) and the recursion lineage fold into ONE
+  //    excludeOwners set (P-005 cycle refusal rides P-002's arg).
   const excludeOwners = [...new Set([...(req.excludeOwners ?? []), ...lineageOwners])];
   const route = await deps.route({
     workspaceId: req.workspaceId,
@@ -545,7 +550,7 @@ export async function getFeedbackCore(
   const hint = chosen
     ? latency === 'hard-blocked'
       ? `Routed + woke ${chosen.ownerId}. Park on events:await { event: '${parkKey}' } and end your turn — the reply wakes you (latched). Expires ${expiresAt}.${viaNote}`
-      : `Routed + woke ${chosen.ownerId}; the reply lands in conversation ${opened.conversation_id}. PROCEED on your own judgment meanwhile and reconcile when it arrives. A decline returns the remaining candidates — re-call with exclude:['${chosen.ownerId}'].${viaNote}`
+      : `Routed + woke ${chosen.ownerId}; the reply lands in conversation ${opened.conversation_id}. PROCEED on your own judgment meanwhile and reconcile when it arrives. Declines/expiries advance the cascade SERVER-side (the next selectee is woken with the feedback so far, D-005) — no re-call needed unless the whole menu exhausts.${viaNote}`
     : reason === 'embed_unavailable'
       ? 'The embedder is unavailable on this host — similarity could NOT be measured, so there is no ranking to fill a minimum from (cannot-measure ≠ measured-nothing). Proceed on your own judgment; retry later if the answer matters.'
       : reason === 'no_live_responder'
