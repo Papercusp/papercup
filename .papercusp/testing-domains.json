@@ -1720,6 +1720,14 @@
               "kind": "shell",
               "cmd": "bash",
               "args": [
+                "papercusp-desktop/bin/lib/inno-uninstall-cleanup.selftest.sh"
+              ],
+              "label": "Windows installer UNINSTALL cleanup: login-autostart removed, sibling role + shared runtime spared (WI-39403)"
+            },
+            {
+              "kind": "shell",
+              "cmd": "bash",
+              "args": [
                 "papercusp-desktop/bin/lib/rust-path-remap.selftest.sh"
               ],
               "label": "Rust build-box path remap: every build entry point sets it itself + is idempotent (EI-20075266271803900)"
