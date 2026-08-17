@@ -228,7 +228,15 @@ export default defineTool({
   emits: [
     {
       fire: 'coord:emit',
-      when: (e) => Boolean((e.result?.data as { ok?: boolean } | undefined)?.ok),
+      // WI-39604: a condition-key ADOPTION is not new demand — the incumbent's
+      // demand event already fired when it was created, so re-announcing it per
+      // detector re-fire would be the very flood the upsert exists to stop.
+      when: (e) => {
+        const data = e.result?.data as
+          | { ok?: boolean; conditionUpsert?: { adopted?: boolean } }
+          | undefined;
+        return Boolean(data?.ok) && data?.conditionUpsert?.adopted !== true;
+      },
       render: (e) => {
         const data = e.result.data as {
           workItem?: { id?: string; kind?: string; title?: string; harness?: string | null };
@@ -322,6 +330,7 @@ export default defineTool({
             state: args.state, // EI-10897
             urgent: args.urgent,
             force: args.force,
+            conditionKey: args.conditionKey, // WI-39604 (items[] path carries it via ...rest)
             assign_to: resolveSelfLiteral(args.assign_to, ident.ownerId) ?? (args.assign_all_to_self ? ident.ownerId : undefined),
             ...(args.plan_item ? { targetPlanItem: { slug: args.plan_item.slug, itemId: args.plan_item.item } } : {}),
             ...(args.links ? { links: args.links } : {}),
@@ -520,6 +529,9 @@ export default defineTool({
           ...(res.admissionIdentity !== undefined ? { admissionIdentity: res.admissionIdentity } : {}),
           ...(res.dedupCoverage !== undefined ? { dedupCoverage: res.dedupCoverage } : {}),
           ...(res.queueAdmission !== undefined ? { queueAdmission: res.queueAdmission } : {}),
+          // WI-39604: the conditionKey routed this create onto an OPEN incumbent —
+          // `workItem`/`id` are that incumbent, refreshed; no new row was filed.
+          ...(res.conditionUpsert !== undefined ? { conditionUpsert: res.conditionUpsert } : {}),
         };
       },
       { keyOf: (spec) => ({ title: spec.title }) },
