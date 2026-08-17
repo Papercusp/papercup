@@ -71,6 +71,7 @@ import {
   applyGoalDisposition,
   deliverGoalWindDownReport,
   windDownDispositionGateEnabled,
+  evaluateGoalAcceptanceGate,
 } from '../../goals/wind-down-disposition';
 import endTool from './end';
 
@@ -81,6 +82,7 @@ const activeGoalForOwnerMock = activeGoalForOwner as unknown as ReturnType<typeo
 const applyGoalDispositionMock = applyGoalDisposition as unknown as ReturnType<typeof vi.fn>;
 const deliverReportMock = deliverGoalWindDownReport as unknown as ReturnType<typeof vi.fn>;
 const gateEnabledMock = windDownDispositionGateEnabled as unknown as ReturnType<typeof vi.fn>;
+const acceptanceGateMock = evaluateGoalAcceptanceGate as unknown as ReturnType<typeof vi.fn>;
 
 const ACTIVE_GOAL = {
   goalId: 'ship-paid-app-3f9a1c',
@@ -118,6 +120,8 @@ beforeEach(() => {
   deliverReportMock.mockResolvedValue(undefined);
   gateEnabledMock.mockReset();
   gateEnabledMock.mockResolvedValue(true);
+  acceptanceGateMock.mockReset();
+  acceptanceGateMock.mockResolvedValue({ satisfied: true });
 });
 
 describe('the P-002 disposition gate (acceptance)', () => {
