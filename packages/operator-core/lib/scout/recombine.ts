@@ -135,6 +135,20 @@ export interface RecombineResult {
   proposals: Proposal[];
   /** Groups whose LLM output failed the D-006 validation gate (dropped, with why). */
   dropped: { sourceIdeaIds: string[]; errors: string[] }[];
+  /**
+   * WI-39721 — route hints the model emitted that `parseProposal` did NOT accept,
+   * tallied by value (count desc, then value asc). Each one was coerced to
+   * `undefined` and therefore falls through to `DEFAULT_ROUTING_RAIL`.
+   *
+   * This tally is the ONLY place that drop is observable: every persisted
+   * proposal/routing surface downstream is POST-coercion, so no stored table can
+   * answer "how often did the model ask for rail X?" (plan
+   * blender-goal-rail-first-live-goal-2026-08-17 D-008). The live signal is the
+   * `[scout/recombine]` warn emitted alongside this field — the cycle's recombine
+   * port (cycle-deps.ts) currently keeps only `.proposals`, so a reader of the
+   * journal, not of this object, is who notices a starved rail.
+   */
+  droppedRouteHints: { value: string; count: number }[];
 }
 
 export function buildRecombinePrompt(
@@ -175,6 +189,19 @@ export function buildRecombinePrompt(
   return { system, user };
 }
 
+/**
+ * The route hints this parser ACCEPTS from the model — deliberately NARROWER
+ * than the `Proposal['routeHint']` union declared in types.ts, which also
+ * carries 'goal' and 'instance'.
+ *
+ * ⚠ Do NOT widen this here. Admitting 'goal'/'instance' at intake is an OWNER
+ * decision, reserved by plan blender-goal-rail-first-live-goal-2026-08-17 D-006:
+ * a routed goal spends a real budget and launches an autonomous agent. WI-39721
+ * makes the resulting drop LOUD (below); it deliberately does not change which
+ * hints are accepted.
+ */
+const ACCEPTED_ROUTE_HINTS = ['plan', 'gym', 'improvement'] as const;
+
 type ParsedProposal = {
   framing: string;
   mechanism: string;
@@ -182,6 +209,9 @@ type ParsedProposal = {
   bet: string;
   cheapExperiment: ScoutExperiment;
   routeHint?: Proposal['routeHint'];
+  /** WI-39721: a non-empty hint the model asked for that was NOT accepted above,
+   *  recorded verbatim so the coercion is countable instead of silent. */
+  droppedRouteHint?: string;
 };
 
 function parseProposal(raw: unknown): ParsedProposal | null {
@@ -195,8 +225,8 @@ function parseProposal(raw: unknown): ParsedProposal | null {
     falsifiableSignal: str(expSrc?.falsifiableSignal ?? expSrc?.falsifiable_signal),
   };
   const route = str(o.route ?? o.routeHint);
-  const routeHint =
-    route === 'plan' || route === 'gym' || route === 'improvement' ? route : undefined;
+  const accepted = (ACCEPTED_ROUTE_HINTS as readonly string[]).includes(route);
+  const routeHint = accepted ? (route as Proposal['routeHint']) : undefined;
   return {
     framing: str(o.framing),
     mechanism: str(o.mechanism),
@@ -204,6 +234,10 @@ function parseProposal(raw: unknown): ParsedProposal | null {
     bet: str(o.bet),
     cheapExperiment,
     routeHint,
+    // Routing is UNCHANGED by this record: an unaccepted hint still coerces to
+    // undefined (→ DEFAULT_ROUTING_RAIL). We only stop throwing away the fact
+    // that the model asked for something else. An ABSENT hint is not a drop.
+    ...(route && !accepted ? { droppedRouteHint: route } : {}),
   };
 }
 
@@ -236,7 +270,10 @@ export async function recombineProposals(
     groups.map(
       async (
         group,
-      ): Promise<{ ok: true; base: Partial<Proposal> } | { ok: false; sourceIdeaIds: string[]; errors: string[] }> => {
+      ): Promise<
+        | { ok: true; base: Partial<Proposal>; droppedRouteHint?: string }
+        | { ok: false; sourceIdeaIds: string[]; errors: string[]; droppedRouteHint?: string }
+      > => {
         const sourceIdeaIds = group.members.map((m) => m.idea.id);
         const addressesPatternRefs = [
           ...new Set(group.members.flatMap((m) => m.idea.addressesPatternRefs ?? [])),
