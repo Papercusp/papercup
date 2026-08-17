@@ -20,7 +20,12 @@
 
 import { ScenarioMeter, summarize } from '../metrics';
 import type { PerfScenario, ScenarioRunCtx } from '../scenario-types';
-import { spawnProcMesh, foldChildResults, awaitAllChildEvent } from '../child-driver';
+import {
+  spawnProcMesh,
+  foldChildResults,
+  awaitAllChildEvent,
+  catchUpElapsedMs,
+} from '../child-driver';
 
 export const sustained: PerfScenario = {
   id: 'replication.sustained',
@@ -118,11 +123,18 @@ export const ceiling: PerfScenario = {
   async run(ctx: ScenarioRunCtx): Promise<void> {
     const count = ctx.profile === 'smoke' ? 300 : ctx.profile === 'ci' ? 1500 : 5000;
     for (const peers of ctx.peerCounts) {
+      // ONE budget feeding both the child's own timeout and the parent's wait, so
+      // the two cannot drift apart the way sustained's 120_000-vs-30_000 pair did.
+      const catchUpBudgetMs = 300_000;
       const mesh = await spawnProcMesh({
         readers: peers - 1,
         log: ctx.log,
         writerCfg: { rate: 0, count, seed: ctx.seed },
-        readerCfg: { mergePollMs: 200, expectedWinners: count, catchUpTimeoutMs: 300_000 },
+        readerCfg: {
+          mergePollMs: 200,
+          expectedWinners: count,
+          catchUpTimeoutMs: catchUpBudgetMs,
+        },
       });
       try {
         const meter = new ScenarioMeter({
@@ -142,12 +154,12 @@ export const ceiling: PerfScenario = {
         // open-code `Date.now() - tGo` here: with concurrent waits every reader has
         // resolved before the body runs, so that expression would stamp them all
         // with the SLOWEST reader's time.
-        meter.convergenceBudget(CEILING_CATCH_UP_BUDGET_MS);
+        meter.convergenceBudget(catchUpBudgetMs);
         const tAwait = Date.now();
         for (const { reader, event, elapsedMs } of await awaitAllChildEvent(
           mesh.readers,
           'caught-up',
-          CEILING_CATCH_UP_BUDGET_MS,
+          catchUpBudgetMs,
         )) {
           const elapsed = catchUpElapsedMs(event, { tGo, tAwait, elapsedMs });
           if (elapsed === null) {

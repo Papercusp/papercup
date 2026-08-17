@@ -19,7 +19,12 @@
 
 import { execFileSync } from 'node:child_process';
 import createTestnet from 'hyperdht/testnet.js';
-import { spawnProcMesh, foldChildResults, awaitAllChildEvent } from './child-driver';
+import {
+  spawnProcMesh,
+  foldChildResults,
+  awaitAllChildEvent,
+  catchUpElapsedMs,
+} from './child-driver';
 import { resolveNetemFailure } from './mesh-outcome';
 import { ScenarioMeter, summarize } from './metrics';
 import { expectedWinnersFor } from './scenarios/churn';
@@ -248,13 +253,14 @@ async function main(): Promise<void> {
           'caught-up',
           budget,
         )) {
-          if (event) {
-            // Time from `go`, preserving the pre-fix metric's meaning: the gap
-            // between the writer starting and THIS reader catching up.
-            const elapsed = tAwait - tGo + elapsedMs;
+          // Time from `go` to THIS reader's catch-up. EI-20582417177742601:
+          // prefer the child's OWN instant over any parent-side reading — see
+          // catchUpElapsedMs, which also owns the concurrent-await trap noted above.
+          const elapsed = catchUpElapsedMs(event, { tGo, tAwait, elapsedMs });
+          if (elapsed !== null) {
             catchUp.push(elapsed);
-            ceiling.push(count / (elapsed / 1000));
-            meter.readerConverged(reader.cfg.peerIndex, elapsedMs);
+            if (elapsed > 0) ceiling.push(count / (elapsed / 1000));
+            meter.readerConverged(reader.cfg.peerIndex, elapsed);
           } else {
             meter.readerDidNotConverge(
               reader.cfg.peerIndex,
