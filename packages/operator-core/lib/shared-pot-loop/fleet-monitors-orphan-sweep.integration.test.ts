@@ -194,6 +194,41 @@ describe('EI-20723522274831539 — sweepOrphanedTakenBy must not rob a live hold
     expect(await takenBy('F-REMOTE-OLD')).toBeNull();
   });
 
+  it('FALSIFIABILITY CONTROL: the PRE-FIX predicate does rob the live holder on these fixtures', async () => {
+    // A deliberately-wrong implementation kept permanently beside the real one
+    // (the repo's prescribed way to prove a guard is falsifiable WITHOUT mutating
+    // the shared tree). This is the sweep's victim predicate EXACTLY as it stood
+    // before EI-20723522274831539: row-write grace + the lease guard, and no
+    // holder-liveness check of any kind.
+    //
+    // It must select the live holder. If this control ever stops selecting it,
+    // the fixtures — not the guard — have drifted, and the negative assertions
+    // above have quietly stopped testing anything.
+    await seedClaim('F-CONTROL', 'su-live');
+    await seedPresence('su-live', '30 seconds');
+
+    const cutoff = Date.now() - 5 * 60_000;
+    const victims = await sql<{ feature_id: string }[]>`
+      SELECT f.feature_id
+        FROM harness_shared.harness_features_consolidated f
+       WHERE f.workspace_id = ${WS} AND f.harness_slug = ${H}
+         AND f.taken_by IS NOT NULL AND f.taken_by <> ''
+         AND NOT (f.status = ANY(ARRAY['resolved','passed','closed','deprecated','done','dropped']::text[]))
+         AND f.updated_ts < ${cutoff}
+         AND NOT EXISTS (
+               SELECT 1 FROM harness_shared.work_item_claims c
+                WHERE c.workspace_id = ${WS}
+                  AND c.harness_slug = f.harness_slug
+                  AND c.work_item_id = f.feature_id
+                  AND c.expires_ts > clock_timestamp())`;
+
+    expect(victims.map((v) => v.feature_id)).toContain('F-CONTROL');
+
+    // ...while the FIXED sweep leaves the very same row alone.
+    expect((await sweep()).cleared).toEqual([]);
+    expect(await takenBy('F-CONTROL')).toBe('su-live');
+  });
+
   it('a live holder is protected even in a batch that also contains a dead one', async () => {
     // The incident was a BULK statement: both victims were freed by one UPDATE,
     // 6ms apart. A per-row guard must hold inside a multi-row sweep.
