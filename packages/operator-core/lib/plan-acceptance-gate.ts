@@ -10,6 +10,12 @@
  * NON-implementer graded it (grader ≠ rubric author, mirroring blender:grade-idea's
  * self-grade refusal). There is deliberately no gate at plans:new / plans:start.
  *
+ * The VETTING check (consult-min-max-and-rubric-vetting-2026-08-17 P-004) sits inside
+ * the rubric family: before the work is graded, the rubric AUTHOR vets the RUBRIC
+ * against the meta-rubric (META_ACCEPTANCE_RUBRIC_ID), informed by a get_feedback
+ * consult — the gate refuses (acceptance_rubric_unvetted) unless the CURRENT rubric
+ * revision carries a complete meta-scorecard with a linked consult.
+ *
  * This module exists (rather than inlining in set-plan-status.ts) because rubrics.ts
  * cannot import scorecards.ts (scorecards already imports rubrics — a cycle), and any
  * future completion surface (a work-items completion audit, a plans:complete verb)
