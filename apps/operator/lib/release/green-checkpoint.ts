@@ -6973,6 +6973,45 @@ export function checkNpmScript(
     : "absent";
 }
 
+/** WI-39672 (cutover-plan D-007): does this hive ship a desktop app at all?
+ *
+ * `harness_shared.desktop_perf_runs` has NO harness/hive scoping column — the gate reads
+ * ONE workspace-global row (`workspace_id` 'default', because the checkpoint call site
+ * passes no workspaceId) and judges EVERY hive's candidate by it. So a Papercusp desktop
+ * measure recording `invariant:webview-http-egress = -1` — the UNMEASURABLE sentinel, not
+ * a real egress — held promotion on sidestage, a hive with no desktop app for that measure
+ * to describe. `main` froze for hours on a verdict about someone else's webview.
+ *
+ * The scoping fix is at the CALL SITE, not in the invariant: a hive that ships no desktop
+ * app has nothing for a desktop-perf measure to say, so the leg does not apply — the same
+ * shape as the `spaBuildWorkspace===''` SPA-build skip and the EI-8744 `isNothingToGate`
+ * short-circuit ("nothing to gate" is GREEN, not RED).
+ *
+ * FAILS CLOSED, deliberately: a probe error (or an empty root) keeps the gate ARMED.
+ * Wrongly skipping is fail-OPEN — a real desktop regression ships unjudged — while wrongly
+ * evaluating only reproduces today's behaviour. This is the WI-6056 asymmetry: "unreadable"
+ * must never read as "the hive opts out".
+ *
+ * NOT scoped by harness id on purpose. A harness-scoped read returns zero rows for every
+ * non-platform hive — but ALSO for Papercusp under any id other than the recorder's, which
+ * would silently disarm a real safety gate. That trades today's visible hold for an
+ * invisible hole; the presence of the desktop app is the honest predicate.
+ *
+ * `exists` is injectable (defaults to `existsSync`) so this is unit-testable without a real
+ * tree, mirroring `validateFailingTestPaths`.
+ */
+export function hiveShipsDesktopApp(
+  integrationRoot: string,
+  exists: (p: string) => boolean = existsSync,
+): boolean {
+  if (!integrationRoot) return true;
+  try {
+    return exists(path.join(integrationRoot, "papercusp-desktop"));
+  } catch {
+    return true;
+  }
+}
+
 /** Whether the isolated candidate checkout exposes the platform typecheck leg.
  *
  * The Papercusp root owns `lint:tsc`; subject hives are allowed to omit it, so the
