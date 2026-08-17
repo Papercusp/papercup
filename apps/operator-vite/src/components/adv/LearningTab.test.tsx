@@ -2370,10 +2370,25 @@ describe("LearningTab — an idea's provenance on a merged row: rail, lens, trac
     // Unfiltered: "All rails" is the pressed one.
     expect(facetNamed("All rails").getAttribute("aria-pressed")).toBe("true");
     expect(facetNamed("plan draft").getAttribute("aria-pressed")).toBe("false");
-    // The facet counts come from the snapshot's railCounts, not from the
-    // rendered rows — they describe the whole population, not this page of it.
+    // D-003 (learning-tab-filters-are-page-scoped-2026-08-17): a number rendered
+    // ON a filter control is a promise about what clicking it yields, so these
+    // counts are derived from the rows the filter runs on — NOT from the
+    // snapshot's corpus-wide `railCounts`. This assertion is the inverse of the
+    // one it replaces, which pinned the superseded contract ("they describe the
+    // whole population, not this page of it") and is exactly the behaviour the
+    // owner called broken: the chip advertised a number the list could not show.
+    //
+    // The fixture encodes that gap deliberately: railCounts claims plan:3 / gym:1
+    // (totalRouted 4) while `recent` carries ONE plan idea and ONE gym idea.
+    expect(txt(facetNamed("plan draft"))).toContain("1");
+    // The falsifier — reverting to snap.railCounts prints the corpus 3 here.
+    expect(txt(facetNamed("plan draft"))).not.toContain("3");
+    // ⚠ "All rails" is NOT a useful guard in this fixture: the loaded set is 4
+    // rows (2 digest items + 2 unfiled ideas), which COINCIDES with the stale
+    // totalRouted of 4 — it passes under both contracts. Asserting it would look
+    // like coverage while proving nothing, so the promise is pinned on the rail
+    // chip above and on the rows the click actually delivers, below.
     expect(txt(facetNamed("All rails"))).toContain("4");
-    expect(txt(facetNamed("plan draft"))).toContain("3");
 
     // WRITE half of the round-trip.
     fireEvent.click(facetNamed("plan draft"));
