@@ -365,9 +365,20 @@ describe('stampPromotedWorkItemProvenance + promotion wiring (P-003 / D-005 obli
     createWorkItemM = (await import('../work-items')).createWorkItem as unknown as ReturnType<typeof vi.fn>;
   });
 
+  // Same shape as the stamp() helper above (scoped to its own describe) — the
+  // durable payload.plan_item back-pointer promotion writes.
+  const promoStamp = (plan: string, item: string) => ({
+    plan_item: { plan_slug: plan, item_id: item, harness_slug: HARNESS },
+  });
+
   async function insertItem(
     id: string,
-    over: { goal?: string | null; slug?: string | null; ids?: string[] | null; payload?: object | null } = {},
+    over: {
+      goal?: string | null;
+      slug?: string | null;
+      ids?: string[] | null;
+      payload?: ReturnType<typeof promoStamp> | null;
+    } = {},
   ) {
     await rootSql`INSERT INTO harness_shared.work_items
         (harness_slug, feature_id, item_kind, workspace_id, goal_id, source_plan_slug, source_plan_item_ids, payload)
@@ -452,7 +463,7 @@ describe('stampPromotedWorkItemProvenance + promotion wiring (P-003 / D-005 obli
     });
     claimPlanItemM.mockResolvedValue({ status: 'claimed', claim: { claimId: 'c1' }, mode: 'solo', viaAssignment: false });
     createWorkItemM.mockImplementation(async (input: { title: string }) => {
-      await insertItem('WI-9005', { payload: stamp('pp', 'P-007') });
+      await insertItem('WI-9005', { payload: promoStamp('pp', 'P-007') });
       return { id: 'WI-9005', harness: HARNESS, state: 'open', title: input.title };
     });
 
@@ -474,7 +485,7 @@ describe('stampPromotedWorkItemProvenance + promotion wiring (P-003 / D-005 obli
 
   it("convertPlanItem's RESUME heals a row promoted before the stamp existed", async () => {
     // The measured live state: stamp only in payload.plan_item, columns NULL.
-    await insertItem('WI-9006', { payload: stamp('pq', 'P-003') });
+    await insertItem('WI-9006', { payload: promoStamp('pq', 'P-003') });
     await givenRunsGoal('healer-1', 'goal-88');
     readPlanM.mockResolvedValue({
       row: { items: [{ id: 'P-003', status: 'wip', text: 'Old promoted work' }] },

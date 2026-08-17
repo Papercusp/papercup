@@ -52,13 +52,19 @@ vi.mock('./turn', () => ({
 // below (which is hoisted above every const) closes over it.
 const launcherIdentity = vi.hoisted(
   () =>
-    (over: Partial<AgentIdentity> = {}): AgentIdentity => ({
-      ownerId: 'launcher-1',
-      ownerLabel: 'launcher',
-      source: 'omp-hook-session',
-      workspaceId: null,
-      ...over,
-    }),
+    (over: Partial<AgentIdentity> = {}): AgentIdentity =>
+      // Object.assign, not spread: spreading a Partial<T> over the defaults
+      // re-widens every required field to `| undefined` and the result stops
+      // being assignable to T. Object.assign keeps the intersection type.
+      Object.assign(
+        {
+          ownerId: 'launcher-1',
+          ownerLabel: 'launcher',
+          source: 'omp-hook-session' as const,
+          workspaceId: null,
+        },
+        over,
+      ),
 );
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: vi.fn(() => launcherIdentity()),
@@ -177,17 +183,19 @@ describe('no tool argument can name a goal (D-005 self-report immunity)', () => 
     expect(goalish).toEqual([]);
   });
 
-  it('zod strips a smuggled goal key rather than passing it through', () => {
+  it('the schema REJECTS a smuggled goal key outright (strict — not even stripped)', () => {
     const schema = (launchTool as { args: z.ZodObject<z.ZodRawShape> }).args;
-    const parsed = schema.parse({
+    const res = schema.safeParse({
       harness: 'member-harness',
       slug: 'the-plan',
       goalId: 'goal-evil',
       goal_id: 'goal-evil',
       goal: 'goal-evil',
     });
-    expect(parsed).not.toHaveProperty('goalId');
-    expect(parsed).not.toHaveProperty('goal_id');
-    expect(parsed).not.toHaveProperty('goal');
+    expect(res.success).toBe(false);
+    expect(JSON.stringify(!res.success ? res.error.issues : [])).toMatch(/unrecognized_keys/);
+    // Control: the same input without the smuggled keys parses fine — the
+    // rejection above is about the keys, not the fixture.
+    expect(schema.safeParse({ harness: 'member-harness', slug: 'the-plan' }).success).toBe(true);
   });
 });
