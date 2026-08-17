@@ -7175,6 +7175,63 @@ export async function clearDetectorEscalation(
   }
 }
 
+/** WI-39685: the REAL escalation store behind the detector lifecycle.
+ *
+ *  Dynamically imported for the same reason `escalate`/`clearEscalation` do it —
+ *  this CLI's static module graph deliberately does not carry the
+ *  escalations/attention DB modules. */
+async function realDetectorEscalationIo(): Promise<DetectorEscalationIo> {
+  const { openEscalation, listEscalations, resolveEscalation } = await import(
+    "@papercusp/operator-core/lib/agent-tools/coordination/escalations"
+  );
+  const { SELF_RECONCILING_META_KEY } = await import(
+    "@papercusp/operator-core/lib/attention/reconcile-escalations"
+  );
+  return {
+    list: async () =>
+      (await listEscalations({ status: "open" })) as Array<{
+        msg_id: string;
+        source?: unknown;
+      }>,
+    open: async (summary, body) => {
+      await openEscalation(
+        {
+          ownerId: "green-checkpoint",
+          ownerLabel: "green-checkpoint",
+          source: "static-client",
+          workspaceId: null,
+          userId: null,
+        },
+        {
+          severity: "blocker",
+          summary,
+          body,
+          // WI-36238's self-reconciling contract, checked against THIS row rather
+          // than inherited: both legs must hold, and here both do.
+          //   1. `openDetectorEscalation` skips while one is open, so GC'ing the
+          //      row does not remove a duplicate — it RE-ARMS the alert on a
+          //      still-absent detector.
+          //   2. `clearDetectorEscalation` resolves it once the invariant is
+          //      measured again, so the TTL is not needed as a backstop.
+          // Leg 2 is the one that makes this safe: opting out of the TTL sweep
+          // WITHOUT a clear path is how an alert becomes immortal.
+          meta: {
+            source: DETECTOR_ESCALATION_SOURCE,
+            [SELF_RECONCILING_META_KEY]: true,
+          },
+        },
+      );
+    },
+    resolve: async (msg_id) => {
+      await resolveEscalation({
+        msg_id,
+        choice: "desktop-perf measured again",
+        resolver: "green-checkpoint",
+      }).catch(() => {});
+    },
+  };
+}
+
 /** Whether the isolated candidate checkout exposes the platform typecheck leg.
  *
  * The Papercusp root owns `lint:tsc`; subject hives are allowed to omit it, so the
