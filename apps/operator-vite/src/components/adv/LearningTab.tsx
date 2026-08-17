@@ -5153,43 +5153,32 @@ function LearningsView({
   active?: boolean;
 }) {
   const t = useLexicon();
-  const [selectedLearning, setSelectedLearning] = useQueryState(
-    "lretain",
-    parseAsString,
-  );
-  const [searchOpen, setSearchOpen] = useState(false);
-  const [searchQuery, setSearchQuery] = useState("");
   const [, setLviewNav] = useQueryState("lview", parseAsString);
   const [, setTabNav] = useQueryState("tab", parseAsString);
   const [, setCreateViewNav] = useQueryState("view", parseAsString);
-  const [, setPlanNav] = useQueryState("plan", parseAsString);
 
-  // WI-6384: gated on `hiveReady` ALONE, like every sibling read in this view.
-  // It used to also require `hive.length > 0`, so selecting All Pots — the
-  // BROADEST lens — disabled the main list while the extras strip beside it
-  // kept reporting workspace-wide counts. The resolver now serves '' as the
-  // workspace-wide rollup the tab's contract always promised.
-  const sync = useSyncQuery<HiveLearningsSnapshot>({
-    queryName: "learning.hive",
-    args: hive ? { hive } : {},
-    enabled: hiveReady,
-    staleTime: 30_000,
+  // WI-39535: the shared-memory pool is a KIND in the Retained ledger below
+  // (learning.retainFeed 'memory' leg) — the standalone learning.hive list this
+  // view used to render is gone. The card reports its state up through ONE
+  // callback so the view keeps its status dot, header signal, and the
+  // banked-strip memories chip without a second data path.
+  const [ledgerState, setLedgerState] = useState<RetainLedgerCardState>({
+    settled: false,
+    error: false,
+    rowCount: 0,
+    memoriesCount: null,
   });
   // Perf settle point for PERF_INTERACTIONS.learningViewSwitch — same contract
   // as the improvements view above (EI-19375505819043214): gated on the PRIMARY
-  // read only, settles on a fault as well as success. learning.hive measured
-  // 230,147B on the live operator, the second-heaviest read on this tab, so
-  // leaving it unmeasured left the payload-cost question unanswerable for it.
+  // read (now the retainFeed page 1), settles on a fault as well as success.
   //
   // Gated on `active` as well: this pane is kept MOUNTED when the user switches
-  // away (warmViews), so on a revisit `learningsSettled` is already true and
+  // away (warmViews), so on a revisit the settled flag is already true and
   // never changes — an effect keyed on it alone would never re-run and the
   // switch would measure nothing (EI-19383745196363732).
-  const learningsSettled =
-    !sync.loading && (sync.data !== undefined || Boolean(sync.error));
   useInteractionSettle(
     PERF_INTERACTIONS.learningViewSwitch,
-    learningsSettled,
+    ledgerState.settled,
     active,
   );
   // The rest of what the colony keeps (WI-5412, owner ask: lens weights,
@@ -5224,148 +5213,18 @@ function LearningsView({
       .map(([k, v]) => [k, Math.round((v / sum) * 100)] as [string, number])
       .sort((a, b) => b[1] - a[1]);
   }, [extrasSnap]);
-  const snap = sync.data?.[0];
-  const rows = snap?.rows ?? [];
-  const filtered = searchQuery.trim()
-    ? rows.filter((row) =>
-        row.text.toLowerCase().includes(searchQuery.trim().toLowerCase()),
-      )
-    : rows;
-  const selectedRow = selectedLearning
-    ? (rows.find((row) => row.id === selectedLearning) ?? null)
-    : null;
-  const primaryRows = [
-    ...(selectedRow && !filtered.slice(0, 6).includes(selectedRow)
-      ? [selectedRow]
-      : []),
-    ...filtered,
-  ]
-    .filter(
-      (row, index, all) =>
-        all.findIndex((item) => item.id === row.id) === index,
-    )
-    .slice(0, 6);
-  const primaryIds = new Set(primaryRows.map((row) => row.id));
-  const earlierRows = filtered.filter((row) => !primaryIds.has(row.id));
-  const selectedProvenance = selectedRow
-    ? learningProvenance(selectedRow.createdBy, selectedRow.kind, t("scout"))
-    : null;
-  const SelectedProvenanceIcon = selectedProvenance?.Icon;
   useEffect(() => {
-    onStatus?.(sync.error ? "bad" : rows.length > 0 ? "good" : "neutral");
-  }, [onStatus, rows.length, sync.error]);
-  const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
-  const { prompt: askPrompt, element: promptEl } = usePromptDialog();
-
-  const forget = async (row: HiveLearningRowT) => {
-    const ok = await askConfirm({
-      title: "Remove this learning?",
-      body: row.text.slice(0, 160),
-      confirmLabel: "Remove",
-      destructive: true,
-    });
-    if (!ok) return;
-    try {
-      await fetch(`/api/user/memory?id=${encodeURIComponent(row.id)}`, {
-        method: "DELETE",
-      });
-    } finally {
-      sync.invalidate();
-    }
-  };
-  const edit = async (row: HiveLearningRowT) => {
-    const next = await askPrompt({
-      title: "Edit learning",
-      label: "Learning text",
-      body: "Agents recall the exact text.",
-      defaultValue: row.text,
-      submitLabel: "Save",
-      validate: (value) => (value.trim() ? null : "Learning text is required."),
-    });
-    if (next == null || !next.trim() || next === row.text) return;
-    try {
-      await fetch("/api/user/memory", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: row.id, text: next.trim() }),
-      });
-    } finally {
-      sync.invalidate();
-    }
-  };
-
-  const actionBtn: React.CSSProperties = {
-    background: "none",
-    border: "1px solid var(--border)",
-    borderRadius: 4,
-    color: "var(--fg-dim)",
-    cursor: "pointer",
-    fontSize: 11,
-    padding: "1px 7px",
-  };
-
-  const renderLearning = (r: HiveLearningRowT) => {
-    const selected = selectedLearning === r.id;
-    const preview = learningPreview(r.text);
-    const provenance = learningProvenance(r.createdBy, r.kind, t("scout"));
-    const ProvenanceIcon = provenance.Icon;
-    return (
-      <li
-        key={r.id}
-        className={`pc-learning__row pc-learning__row--retained${selected ? " is-selected" : ""}`}
-        style={{ alignItems: "flex-start" }}
-      >
-        <span
-          className="pc-learning__sev"
-          style={{
-            background: "var(--good)",
-            marginTop: 5,
-          }}
-          aria-hidden
-        />
-        <button
-          type="button"
-          className="pc-learning__retainedmain"
-          aria-expanded={selected}
-          aria-label={`${selected ? "Close" : "Open"} learning ${preview.headline}`}
-          onClick={() => void setSelectedLearning(selected ? null : r.id)}
-        >
-          <span className="pc-learning__retainedsummary">
-            <strong>{preview.headline}</strong>
-            {preview.preview ? <span>{preview.preview}</span> : null}
-          </span>
-          <span
-            style={{
-              display: "flex",
-              flexWrap: "wrap",
-              gap: 6,
-              marginTop: 3,
-              fontSize: 10.5,
-              color: "var(--fg-mute)",
-            }}
-          >
-            {r.createdBy || r.kind ? (
-              <Tooltip
-                label={`${provenance.label}${r.createdBy ? ` · ${r.createdBy}` : ""}${r.kind ? ` · ${r.kind}` : ""}`}
-              >
-                <span
-                  className={`pc-learning__provenance is-${provenance.tone}`}
-                  aria-label={`${provenance.label}${r.createdBy ? ` by ${r.createdBy}` : ""}`}
-                >
-                  <ProvenanceIcon size={10} aria-hidden />
-                </span>
-              </Tooltip>
-            ) : null}
-          </span>
-        </button>
-      </li>
+    onStatus?.(
+      ledgerState.error
+        ? "bad"
+        : ledgerState.rowCount > 0
+          ? "good"
+          : "neutral",
     );
-  };
+  }, [onStatus, ledgerState.error, ledgerState.rowCount]);
 
   return (
     <>
-      {confirmEl}
-      {promptEl}
       <section className="pc-learning__section">
         {/* WI-5412 item 5: ONE concept, one heading — the page was titled
             "Shared learnings" over a list headed "Shared memory", two names
