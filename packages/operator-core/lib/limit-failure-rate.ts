@@ -52,6 +52,7 @@ FROM harness_shared.tool_invocations
 WHERE status <> 'ok' AND invoked_at > now() - (($1)::int || ' days')::interval
   AND (error_message ILIKE '%must contain at most%' OR error_message ILIKE '%Too big%'
        OR error_message ILIKE '%expected string to have <=%' OR error_code ILIKE '%too_big%')
+  AND ${DISPATCH_WRAPPER_EXCLUSION_SQL}
 GROUP BY tool_name ORDER BY errs DESC
 `;
 

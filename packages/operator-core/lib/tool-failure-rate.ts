@@ -171,6 +171,7 @@ SELECT tool_name,
 FROM harness_shared.tool_invocations
 WHERE workspace_id = $1
   AND invoked_at > now() - (($2)::int || ' minutes')::interval
+  AND ${DISPATCH_WRAPPER_EXCLUSION_SQL}
 GROUP BY tool_name
 HAVING count(*) FILTER (WHERE status IN ('ok','error','timeout')) > 0
 `;
