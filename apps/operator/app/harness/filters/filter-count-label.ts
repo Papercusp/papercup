@@ -27,8 +27,21 @@
  * was 305, because it had searched 200 rows. So: adopt the growing window and this
  * label together, or neither.
  *
+ * Digits are GROUPED ("36,096", not "36096"). The Learning corpora are the first
+ * to make this matter — Observations is ~36k rows, and its hand-rolled label
+ * grouped before adopting this one, so not grouping here would have shipped a
+ * legibility regression on the very pane whose counts the owner called broken.
+ * The locale is pinned to 'en-US' rather than the host default ON PURPOSE: the
+ * host default makes the rendered string vary by environment, which turns every
+ * pinned assertion below into a latent CI flake.
+ *
  * Pure — no React, no I/O. Exported for tests.
  */
+
+/** Grouped, environment-independent digits — see the header on the pinned locale. */
+function n(value: number): string {
+  return value.toLocaleString('en-US');
+}
 
 export interface FilterCountLabel {
   /** Compact form for a tab/panel title — "42 of 905" or "1821". */
@@ -50,7 +63,13 @@ export function filterCountLabel(
   noun = 'item',
 ): FilterCountLabel {
   if (filtered) {
-    return { title: `${shown} of ${total}`, summary: `${shown} of ${total} match` };
+    return {
+      title: `${n(shown)} of ${n(total)}`,
+      summary: `${n(shown)} of ${n(total)} match`,
+    };
   }
-  return { title: `${total}`, summary: `${total} ${noun}${total === 1 ? '' : 's'}` };
+  return {
+    title: n(total),
+    summary: `${n(total)} ${noun}${total === 1 ? '' : 's'}`,
+  };
 }

@@ -191,11 +191,19 @@ describe('filterCountLabel (pure — always the DB store total, never "loaded")'
   it('unfiltered → just the store total (loaded length is irrelevant; infinite scroll loads the rest)', () => {
     expect(filterCountLabel(12, 12, false)).toEqual({ title: '12', summary: '12 items' });
     // Even when far fewer rows are loaded than exist, the badge shows the TRUE total.
-    expect(filterCountLabel(500, 1821, false)).toEqual({ title: '1821', summary: '1821 items' });
+    expect(filterCountLabel(500, 1821, false)).toEqual({ title: '1,821', summary: '1,821 items' });
   });
   it('filtered → shown of total match', () => {
     expect(filterCountLabel(42, 905, true)).toEqual({ title: '42 of 905', summary: '42 of 905 match' });
-    expect(filterCountLabel(42, 1674, true)).toEqual({ title: '42 of 1674', summary: '42 of 1674 match' });
+    expect(filterCountLabel(42, 1674, true)).toEqual({ title: '42 of 1,674', summary: '42 of 1,674 match' });
+  });
+
+  // The locale is pinned inside the helper ('en-US'), not inherited from the
+  // host — so these grouped assertions cannot flake on a box/CI whose default
+  // locale groups differently (de-DE "1.674", fr-FR "1 674").
+  it('groups digits identically regardless of the host default locale', () => {
+    expect(filterCountLabel(0, 36096, false).summary).toBe('36,096 items');
+    expect(filterCountLabel(305, 36096, true).title).toBe('305 of 36,096');
   });
   it('singular item reads "1 item"', () => {
     expect(filterCountLabel(1, 1, false).summary).toBe('1 item');
