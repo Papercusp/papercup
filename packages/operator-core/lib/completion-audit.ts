@@ -149,14 +149,22 @@ type OrgSql = ReturnType<typeof getOrgPg>['sql'];
  *    {@link RECONCILER_SYSTEM_ACTOR}. D-012 RESCUED this rule out of the deleted
  *    `no-evidence` branch, where it had been riding as an unrelated second clause; it is a
  *    RENAME, not a new audit. `plan-items/reconcile-linked-work-items.ts` terminal-closes a
- *    work-item by MIRRORING its linked plan-item's status, calling `setWorkItemState` with a
- *    SYNTHETIC completionRef and no `authority` stamp. So such a row is invisible to
- *    `no-completion-record` (it HAS a ref) and untouched by P-004 (no authority), while being
- *    by construction never independently verified — the failure mode is a mis-flipped plan
+ *    work-item by MIRRORING its linked plan-item's status, calling `setWorkItemState` with
+ *    `completionAuthority:'proposed'` and NO completionRef. That is deliberate: a synthetic
+ *    ref reads as genuine prose evidence, so manufacturing one would dress an unverified
+ *    mirror up as an evidenced close (pinned by that module's integration tests). Such a row
+ *    is by construction never independently verified — the failure mode is a mis-flipped plan
  *    item silently marking a live defect "fixed". Flagged on the ACTOR, not on an evidence
  *    key, so a future caller adding a well-meaning evidence stamp to that write path cannot
- *    defeat it. The structural fix (have the reconciler stamp an authority, making this
- *    bucket deletable for D-003's own reason) is filed, not built here.
+ *    defeat it.
+ *
+ *    ⚠ EI-20405552992224051 corrected this paragraph, which had INVERTED both halves of the
+ *    write it describes: it claimed a "SYNTHETIC completionRef and no `authority` stamp", and
+ *    concluded the row was "invisible to `no-completion-record` (it HAS a ref) and untouched
+ *    by P-004 (no authority)". Both flipped when the structural fix this text called "filed,
+ *    not built here" actually landed (2026-08-12) — the ref went away and the authority
+ *    arrived, so the row now carries the opposite signature to the one documented. Read the
+ *    write site before reasoning from any description of it, including this one.
  */
 export const COMPLETION_AUDITS = [
   'no-completion-record',
@@ -191,8 +199,10 @@ export const KNOWN_SYSTEM_COMPLETION_BYPASS_IDENTITIES: readonly string[] = [
 /**
  * EI-18677799334390930: the `by` identity `plan-items/reconcile-linked-work-items.ts`
  * stamps when it terminal-closes a work-item by MIRRORING its linked plan-item's
- * done/dropped status (NOT `skipCompletionGate` — it satisfies the ordinary by+
- * completionRef gate with a synthetic ref). Declared here, in the module that owns
+ * done/dropped status (NOT `skipCompletionGate` — it satisfies the ordinary completion
+ * gate with its `completionAuthority:'proposed'` stamp, carrying no completionRef at all;
+ * EI-20405552992224051 corrected this from "by+completionRef gate with a synthetic ref",
+ * which described the pre-2026-08-12 writer). Declared here, in the module that owns
  * the audit predicate, and imported by the reconciler — never re-typed as a bare
  * string in either place — so the write and the read can't drift apart (the exact
  * discipline this module's header describes for `_completionEvidence`).

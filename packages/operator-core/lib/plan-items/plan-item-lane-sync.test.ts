@@ -87,6 +87,20 @@ describe('decideLaneGate — GATE (plan lane blocked/needs-human) [EI-14699]', (
     expect(d).toEqual({ op: 'gate', capability: 'live-dependency' });
   });
 
+  it('EI-20405552992224051: a live assignee with NO lastProgressAt YET is in-flight — does NOT park it', () => {
+    // The REVERSE of the WI-6303 case directly above: there the stamp was stale and the
+    // holder absent; here the holder is present and the stamp merely absent. An agent who
+    // has just claimed (or re-claimed) an item has recorded no progress against it yet, so
+    // requiring BOTH signals parked live work out of the claim pool from under its holder.
+    // A current claimant is sufficient evidence of in-flight work on its own.
+    const d = decideLaneGate(
+      wi({ state: 'wip', lastProgressAt: null, assignee: 'su-live-holder' }),
+      'blocked',
+      REF,
+    );
+    expect(d).toEqual({ op: 'noop', reason: 'in-flight' });
+  });
+
   it('is IDEMPOTENT — a re-gate of an already lane-parked item is a no-op (no repeated writes)', () => {
     const d = decideLaneGate(wi({ state: 'blocked', payload: parkedPayload() }), 'blocked', REF);
     expect(d).toEqual({ op: 'noop', reason: 'already-gated' });
