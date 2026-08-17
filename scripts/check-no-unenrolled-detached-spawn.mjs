@@ -14,23 +14,56 @@
  * actually needs naming is the ROOT of a subtree — a process launched to OUTLIVE
  * the call that made it (plan D-001).
  *
- * The precise, statically-detectable signal for that is `detached: true` in a spawn
- * options object. That flag means exactly "this child gets its own process group
- * because it will outlive me and I intend to reap its tree later" — which is the
- * same population the task manager needs enrolled. There are ~26 such sites, which
- * is a reviewable allowlist rather than a rubber stamp.
+ * ── THE TRIGGER, AND WHY IT IS NOT `detached: true` ANY MORE (EI-19483245448673321)
+ *
+ * The original trigger was the literal text `detached: true`. That picked a property
+ * CORRELATED with "outlives the call" rather than the property itself, and it was
+ * blind in two measured ways (sized 2026-08-17 over 7,058 tracked files):
+ *
+ *   A. `detached: <non-literal>` was INVISIBLE. `/detached:\s*true/` cannot see
+ *      `detached: detach` (green-checkpoint.ts:9289) or `detached: isPosix`
+ *      (scratch-env.ts:200). Worse than a miss: the old predicate returned false at
+ *      that regex BEFORE reaching the ALLOWLIST check, so scratch-env's allowlist
+ *      entry was DECORATIVE — a maintainer read it as "judged and consciously
+ *      exempted" when the file was never judged at all. An allowlist is evidence of
+ *      what a guard was ASKED to ignore, never evidence of what it can SEE.
+ *
+ *   B. A `detached: false` child whose HANDLE IS PARKED on a module/class property
+ *      outlives its call in every way that matters — it just does so inside the
+ *      parent's cgroup, which is the exact hazard enrolment prevents. It never
+ *      tripped the rule and never reached the allowlist either.
+ *
+ * So the trigger is now, on the AST:
+ *   (1) a spawn/fork call whose options carry `detached` set to anything but the
+ *       literal `false` — a strict superset of the old rule; and
+ *   (2) a spawn/fork call whose handle is STORED ON A PROPERTY (`state.child = c`,
+ *       `this.proc = c`) — the statically-detectable form of "kept past the call".
+ *
+ * Deliberately NOT a trigger: a handle merely RETURNED to the caller (9 measured
+ * sites). An awaited caller is precisely the false-positive class the ALLOWLIST
+ * header below already documents as category (2); hard-failing it would encode a
+ * rule this file's own doc says is wrong.
+ *
+ * ── WHY AN AST AND NOT A WIDER REGEX ────────────────────────────────────────
+ *
+ * A text rule cannot answer "is this a spawn option?". `git-stats.ts:883` carries
+ * `detached: live.branch === null && ...` on an unrelated DATA object in a file that
+ * also calls spawn(); any widened text rule scores it an offender. The TS parse is
+ * gated behind a cheap raw pre-filter, so ~160 call sites get parsed rather than
+ * 7,058 files. Eight sibling guards already do exactly this.
  *
  * A file passes when it EITHER imports the task-manager enrolment surface
  * (`task-manager/managed-spawn` or `task-manager/enroll-sync`) OR carries an
- * explicit ALLOWLIST entry with a reason. New unenrolled detached spawns fail.
+ * explicit ALLOWLIST entry with a reason. New unenrolled spawns fail.
  *
  * The predicate is exported and unit-tested, so "fails on a new raw detached spawn"
  * is a durably verified property rather than green-on-a-clean-tree (the same
  * discipline check-no-raw-agent-spawn.mjs applies to its own bypass predicate).
  */
-import { stripCommentsAndStrings, stripCommentsOnly } from './lib/strip-comments-and-strings.mjs';
+import { stripCommentsOnly } from './lib/strip-comments-and-strings.mjs';
 import { describeUnscanned, listTrackedFiles } from './lib/tracked-files.mjs';
 import { readFileSync, realpathSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 
 const ROOT = new URL('..', import.meta.url).pathname;
@@ -65,6 +98,14 @@ export const ALLOWLIST = new Map([
   // these two should come off the list.
   ['packages/operator-core/lib/agent-tools/testing/run.ts', 'detached ONLY to lead a process group so a timeout group-kills vitest; the child is awaited and dies with the call'],
   ['packages/operator-core/lib/agent-tools/build/typecheck.ts', 'detached ONLY to lead a process group so a timeout group-kills tsc; the child is awaited and dies with the call'],
+  // Surfaced for the FIRST time by the AST trigger: `detached: detach` at :9289, where
+  // `const detach = opts.killProcessGroupOnTimeout === true`. The literal-text predicate
+  // could not see a computed value, so this file had never been judged at all — it is in
+  // neither the allowlist nor any enrolment import. Verified first-hand before adding:
+  // the child is AWAITED (Promise + `settled` + resolve/reject) and detached ONLY so the
+  // timeout can `process.kill(-child.pid)` the group (L9320-9337). Same shape, same reason
+  // string, as the two entries above.
+  ['apps/operator/lib/release/green-checkpoint.ts', 'detached ONLY to lead a process group so a timeout group-kills the leg; the child is awaited and dies with the call'],
 
   // ── one-shot host/dev plumbing, not fleet work ───────────────────────────
   // NOTE: this file serves TWO shapes and only ONE of them is exempt. The HEADLESS
@@ -125,12 +166,51 @@ export const ALLOWLIST = new Map([
   ['packages/operator-core/lib/events/await/wake-executor.ts', 'delivers a wake to an already-enrolled agent session'],
 ]);
 
+/**
+ * Sites the WIDENED trigger newly finds that are real defects rather than legitimate
+ * exemptions. Kept OUT of ALLOWLIST on purpose: that list means "this lifetime is not
+ * ours to own", and diluting it with "we know, we haven't fixed it yet" is how an
+ * allowlist becomes a rubber stamp (the D-012 lesson quoted above). Every entry needs
+ * a tracking ref, and `main()` prints this list LOUDLY on every run — including a
+ * clean one — so a parked defect cannot go quiet the way the old blind spot did.
+ */
+export const KNOWN_DEFECTS = new Map([
+  [
+    'packages/operator-core/lib/voice-node/local-whisper-service.ts',
+    'WI-39545 — spawns the whisper-server with detached:false and parks the handle in module-scope `state.child`, so it is a long-lived child inside the operator cgroup. Genuinely wants managedSpawn, not an exemption; the fix crosses a spawnFn DI seam and its own tests, so it is tracked separately rather than bundled into the guard landing.',
+  ],
+]);
+
+/**
+ * The enrolment PRIMITIVES themselves. They spawn, and they hand the handle back —
+ * that is what enrolling something looks like from the inside. Without this, a
+ * widened guard flags the fix as the defect.
+ */
+const SELF_EXCLUDED = new Set([
+  'packages/operator-core/lib/task-manager/managed-spawn.ts',
+  'packages/operator-core/lib/task-manager/enroll-sync.ts',
+]);
+
 const ENROLMENT_IMPORTS = [
   'task-manager/managed-spawn',
   'task-manager/enroll-sync',
   './managed-spawn',
   './enroll-sync',
 ];
+
+/** Callee names treated as process launches. `spawnFn` is the repo's DI seam name. */
+const SPAWN_CALLEES = new Set(['spawn', 'childSpawn', 'spawnFn', 'fork']);
+
+/** Cheap RAW pre-filter: no spawn token in the raw bytes ⇒ no need to parse at all. */
+const SPAWN_TOKEN = /\b(spawn|childSpawn|spawnFn|fork)\s*\(/;
+
+const require_ = createRequire(import.meta.url);
+/** @type {any} */
+let tsCache = null;
+function ts() {
+  if (!tsCache) tsCache = require_('typescript');
+  return tsCache;
+}
 
 /**
  * PURE predicate: does this file spawn a detached process without enrolling it?
