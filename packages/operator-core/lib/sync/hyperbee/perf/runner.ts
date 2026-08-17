@@ -667,11 +667,50 @@ async function main(): Promise<void> {
     );
   }
 
+  // `--update-baseline` REWRITES the committed regression threshold from this
+  // run alone. Two ordinary mistakes destroy it silently — a partial run that
+  // collapses the covered cells, and a contended run that bakes shared-box
+  // contention in as the bar. Both are refused here unless explicitly accepted;
+  // see checkBaselinePromotion for why each override is separate.
+  let baselinePromotion: RunSummary['baselinePromotion'];
   if (args.updateBaseline && artifacts.length) {
     const baseline = baselineFromArtifacts(artifacts, args.profile);
-    mkdirSync(dirname(args.baseline), { recursive: true });
-    writeFileSync(args.baseline, JSON.stringify(baseline, null, 2));
-    console.log(`\nbaseline updated: ${args.baseline} (${baseline.entries.length} entries)`);
+    let existing: BaselineFile | null = null;
+    if (existsSync(args.baseline)) {
+      try {
+        existing = JSON.parse(readFileSync(args.baseline, 'utf8')) as BaselineFile;
+      } catch (e) {
+        // An unreadable existing baseline cannot be shown to be covered by this
+        // run, so it is treated as "cannot prove this is safe" — not as absent.
+        console.warn(
+          `\n⚠ existing baseline at ${args.baseline} is unreadable ` +
+            `(${e instanceof Error ? e.message : String(e)}) — refusing to overwrite what cannot be read.`,
+        );
+        existing = { schema: 1, capturedAt: '', profile: '', host: { hostname: '', platform: '', cpus: 0 }, entries: [] };
+      }
+    }
+    const refusals = checkBaselinePromotion({
+      existing,
+      next: baseline,
+      hostOversubscribed: oversubscribed,
+      allowShrink: args.allowBaselineShrink,
+      allowContended: args.allowContendedBaseline,
+    });
+    if (refusals.length) {
+      console.error(`\n⛔ BASELINE NOT UPDATED — ${refusals.length} refusal(s):`);
+      for (const r of refusals) console.error(`\n  [${r.reason}] ${r.message}`);
+      console.error(`\n  Baseline left unchanged: ${args.baseline}`);
+      baselinePromotion = {
+        requested: true,
+        written: false,
+        refusals: refusals.map((r) => ({ reason: r.reason, overrideFlag: r.overrideFlag, droppedKeys: r.droppedKeys })),
+      };
+    } else {
+      mkdirSync(dirname(args.baseline), { recursive: true });
+      writeFileSync(args.baseline, JSON.stringify(baseline, null, 2));
+      console.log(`\nbaseline updated: ${args.baseline} (${baseline.entries.length} entries)`);
+      baselinePromotion = { requested: true, written: true, refusals: [] };
+    }
   }
 
   const reportPath = join(outDir, 'report.md');
