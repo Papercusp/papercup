@@ -156,6 +156,12 @@ def plan_exists(slug):
         'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
         'params': {'name': 'plans:get', 'arguments': {
             'slug': slug, 'harness': harness,
+            # EI-20720054720826414: without this, a LARGE real plan's full body
+            # hits the result-door and spills, the JSON below fails to parse,
+            # and the identity check reads "inconclusive" for exactly the
+            # plans most worth guarding. Pick only the existence verdict — a
+            # few dozen bytes that can never trip the door.
+            'projection': {'pick': ['results[].ok', 'results[].error']},
         }},
     }).encode()
     req = urllib.request.Request(
