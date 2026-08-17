@@ -6416,6 +6416,28 @@ export async function runGreenCheckpoint(
         "partial-green-gate: skipped — disabled by PAPERCUSP_PARTIAL_GREEN_GATE=0",
       );
     }
+    // WI-39450: persist THIS pass's verdict BEFORE the salvage, for the same reason WI-37490
+    // does it before an auto-refire recursion — except this path is the COMMON one (a
+    // confirmed real red, autoRefire=false), and until now it had no in-process persistence
+    // at all: on the non-refire path the verdict reaches gate_health ONLY via the result
+    // MARKER the routine parses on clean exit. tryLongestGreenPrefix consults NO deadline
+    // (unlike the isolation phase, which honours isolationPhaseDeadlineMs), so when the 120m
+    // GREEN_CHECKPOINT_SUITE_TIMEOUT_MS SIGTERM lands mid-confirm there is no marker and the
+    // routine records status:'error' / candidate:null / failingTests:[] — discarding a
+    // verdict this run had ALREADY fully computed, so the next run re-derives the same
+    // failures from scratch. That is precisely the positive feedback loop
+    // EI-20669541349219660 bounded for the isolation phase ("a verdict ALWAYS lands");
+    // it survived one phase later, here. Observed 2026-08-17: pid 3749262 ran exactly its
+    // 120m cap, logged "candidate 9d19fdc6 is NOT green" + a real-red re-triage naming
+    // win-leg-default-roles.test.ts, then died mid "confirming longest clean prefix" — and
+    // gate_health came back observedCandidate=null, failingTests=[]. 10 of 13 recent
+    // checkpoint logs end on that same salvage line.
+    //
+    // Recording early is safe: recordVerdict is an upsert, and a salvage that DOES advance
+    // falls through to the terminal result which records over this one. The only state this
+    // can leave behind is an accurate not-green verdict for a run that was killed — strictly
+    // better than the empty error verdict it replaces.
+    await deps.recordVerdict?.(buildNotGreenResult(retriage)).catch(() => {});
     if (lastReady && !staleRed && partialGreenEnabled) {
       logPartialGreenGate(
         `partial-green-gate: attempting longest-green-prefix salvage between ${lastReady.slice(0, 8)} and candidate ${candidate.slice(0, 8)}`,
