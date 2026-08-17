@@ -38,10 +38,17 @@ interface SetStatusItemResult {
 
 /**
  * EI-18677799334390930: best-effort resolve the coordination identity of whoever's
- * `plans:set-status` call triggered this reaction, for attribution on the
- * synthetic completionRef the reconciler stamps on every work-item it
- * terminal-closes (so a leader can route a correction to the real actor instead
- * of broadcasting "who flipped this plan item?" to the fleet). `resolveAgentIdentity`
+ * `plans:set-status` call triggered this reaction, threaded through as TRANSIENT
+ * trigger context on {@link CompletedPlanItem.triggeredBy}.
+ *
+ * ⚠ It is deliberately NOT persisted: the reconciler stamps
+ * `completionAuthority:'proposed'` and NO completionRef, precisely so an unverified
+ * mirror is never dressed up as an evidenced close — see the note on the field in
+ * reconcile-linked-work-items.ts, plus the tests asserting this identity never reaches
+ * the stored row. EI-20405552992224051 corrected the claim that stood here ("for
+ * attribution on the synthetic completionRef the reconciler stamps on every work-item it
+ * terminal-closes"), which described the pre-2026-08-12 writer and had become false; the
+ * value has no persisted consumer today. `resolveAgentIdentity`
  * THROWS for a ctx it cannot attribute (e.g. an unverified/system-internal call) —
  * that is expected here and simply means no attribution is available; never let it
  * fail the reconcile sweep itself.
