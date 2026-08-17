@@ -121,7 +121,11 @@ import { ExperimentsPanel } from "./ExperimentsPanel";
 import { Tooltip } from "@/app/harness/Tooltip";
 import { Popover } from "@/app/harness/Popover";
 import { CardStack } from "@papercusp/card-stack";
-import { useColumnFilters, ColumnFilterBar } from "@/app/harness/filters";
+import {
+  useColumnFilters,
+  ColumnFilterBar,
+  filterCountLabel,
+} from "@/app/harness/filters";
 import type { FilterableColumn } from "@papercusp/grid-core";
 import { statusToneColor } from "@/app/harness/theme";
 import { useConfirmDialog } from "@/app/harness/useConfirmDialog";
@@ -5626,10 +5630,16 @@ function buildRetainColumns(opts: {
       header: "Kind",
       width: 1,
       toCopyText: (r) => (r.rowType === "item" ? r.row.kind : "wi"),
-      filter: {
-        type: "enum",
-        accessor: (r) => (r.rowType === "item" ? r.row.kind : "wi"),
-      },
+      // NO `filter` here, deliberately (WI-39675, D-003). Kind is ALREADY an
+      // axis — the `rtab` segmented control, applied SERVER-side. A second
+      // client-side kind filter over the loaded page could only ever be a
+      // strictly worse duplicate of it, and it actively lied: the tab badges
+      // read the corpus ("Memories 544 / Recipes 2.8k") while this enum offered
+      // only what the current page happened to contain (recipe 13 / rubric 2 /
+      // runbook 1 / wi 8), never listing `memory` or `plan` at all. Per D-003 a
+      // number on a filter control is a promise about what clicking it yields;
+      // this control could not keep that promise, so the control goes and the
+      // tabs keep the axis.
       render: ({ row: r }) => {
         if (r.rowType === "child") return null;
         const Icon = RETAIN_KIND_ICON[r.row.kind];
