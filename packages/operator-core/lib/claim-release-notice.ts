@@ -192,12 +192,20 @@ export async function recordInvoluntaryClaimReleases(
     try {
       await sendMessageFn(identity, {
         to: [holder],
-        expects: 'action',
         summary:
           `YOUR CLAIM WAS RELEASED by ${opts.actor}: ${idList}` +
           ` — re-claim if you are still working ${ids.length === 1 ? 'it' : 'them'}.`,
         body: text,
-        extra: { sections: [{ text, forYouBecause: { relation: 'owns', ref: ids[0] } }] },
+        // `expects` is an ENVELOPE-ONLY field (`ENVELOPE_ONLY_FIELDS`), not a `SendOptions` one —
+        // on the raw seam it rides in `extra`, the same way the coord tests write it. `expectsReply`
+        // is DERIVED from `expects` (D-048: "anything but 'none'") inside tools/send.ts, so this
+        // seam — which bypasses that layer — must set it explicitly or the message would read as
+        // fire-and-forget and never surface as unanswered-directed to the holder we need to reach.
+        expectsReply: true,
+        extra: {
+          expects: 'action',
+          sections: [{ text, forYouBecause: { relation: 'owns', ref: ids[0] } }],
+        },
       });
       result.notified += 1;
     } catch (err) {
