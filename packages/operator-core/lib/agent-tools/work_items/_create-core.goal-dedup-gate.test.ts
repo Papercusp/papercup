@@ -1,0 +1,218 @@
+/**
+ * _create-core.goal-dedup-gate.test — the P-004 GOAL rail on createOneWorkItem
+ * (goal-mode-design-intent-hardening-2026-08-16): with `goalDedupGate` set (derived
+ * SERVER-SIDE by the tool handler from the creator's resolved goal context — never a
+ * tool argument; the wrapper derivation + strict-schema rejection are pinned in
+ * create.goal-dedup-gate.test.ts), a create whose SEMANTIC dedup leg is down fails
+ * CLOSED with 'dedup_unavailable' instead of failing open with a degraded marker
+ * stamped where nobody looks — the exact WI-39373 relapse shape. force:true remains
+ * the explicit escape (unlike DRAIN's requireCompleteDedupCoverage, which overrides
+ * force), but the probes still RUN under force so the caller always gets the
+ * coverage verdict + candidates. Feature-family creates are gated too: their
+ * full-text lexical leg is legitimately 'skipped' (engineer_issues has no feature
+ * rows) and must NOT count as degraded — only the semantic leg carries that verdict.
+ * The guards themselves are mocked — their internals are covered by
+ * semantic-dupe-guard.test.ts / fulltext-lexical-dupe-guard tests.
+ */
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const occurrenceMocks = vi.hoisted(() => ({
+  record: vi.fn(async () => null),
+  readPressure: vi.fn(async (): Promise<
+    import('../../issue-occurrence-ledger').IssueAdmissionPressure | null
+  > => null),
+}));
+
+vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn(async () => false) }));
+vi.mock('../../work-items', () => ({
+  createWorkItem: vi.fn(async (input: { kind: string; title: string }) => ({
+    id: 'WI-NEW',
+    kind: input.kind,
+    title: input.title,
+  })),
+  getWorkItem: vi.fn(async () => null),
+  linkWorkItem: vi.fn(async () => {}),
+  isWorkItemKind: (k: string) => ['feature', 'chunk', 'bug', 'change', 'task'].includes(k),
+  familyOf: (k: string) => (['bug', 'change', 'task'].includes(k) ? 'issue' : 'feature'),
+  ensureClaimHoldAttribution: (payload: unknown) => payload,
+}));
+vi.mock('./mirror-guard', () => ({ findMirroredOpenItem: vi.fn(async () => null) }));
+vi.mock('../_hive-scope', () => ({
+  resolveHiveScope: vi.fn(async () => ({ kind: 'hive', slug: 'papercusp' })),
+  HIVE_REQUIRED_DETAIL: 'hive required',
+}));
+vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: {} }) }));
+vi.mock('../../datatype-registry-store', () => ({ getGenericKindDatatype: vi.fn(async () => null) }));
+vi.mock('../../datatype-payload-validation', () => ({ validateDatatypePayload: () => ({ ok: true as const }) }));
+vi.mock('../../routing-gate-hints', () => ({ matchRoutingGateHint: () => null }));
+vi.mock('../../issue-blocks-merge', () => ({ planItemRef: (s: string, i: string) => `${s}#${i}`, PLAN_ITEM_KIND: 'plan_item' }));
+vi.mock('./semantic-dupe-guard', () => ({ findSemanticDupes: vi.fn(async () => null) }));
+vi.mock('./recent-lexical-dupe-guard', () => ({ findRecentLexicalDupes: vi.fn(async () => null) }));
+vi.mock('./fulltext-lexical-dupe-guard', () => ({ findFulltextLexicalDupes: vi.fn(async () => null) }));
+vi.mock('../../issue-occurrence-ledger', async () => {
+  const actual = await vi.importActual<typeof import('../../issue-occurrence-ledger')>(
+    '../../issue-occurrence-ledger',
+  );
+  return {
+    ...actual,
+    recordIssueOccurrence: occurrenceMocks.record,
+    readIssueAdmissionPressure: occurrenceMocks.readPressure,
+  };
+});
+
+import { createOneWorkItem } from './_create-core';
+import { findSemanticDupes, type SemanticDupeResult } from './semantic-dupe-guard';
+import { findFulltextLexicalDupes } from './fulltext-lexical-dupe-guard';
+import { createWorkItem } from '../../work-items';
+
+const guardM = vi.mocked(findSemanticDupes);
+const fulltextM = vi.mocked(findFulltextLexicalDupes);
+const createM = vi.mocked(createWorkItem);
+const ctx = { ownerId: 'me', workspaceId: 'default', harnessSlug: 'papercusp' };
+
+const verdict = (hard: number[], soft: number[]): SemanticDupeResult => ({
+  hard: hard.map((s, i) => ({ id: `EI-${i + 1}`, title: `open dupe ${i + 1}`, state: 'open', harness: 'papercusp', similarity: s })),
+  soft: soft.map((s, i) => ({ id: `WI-${i + 10}`, title: `near ${i}`, state: 'todo', harness: 'papercusp', similarity: s })),
+  thresholds: { hard: 0.93, soft: 0.85 },
+});
+
+beforeEach(() => {
+  guardM.mockReset();
+  guardM.mockResolvedValue(null);
+  fulltextM.mockReset();
+  fulltextM.mockResolvedValue([]);
+  createM.mockClear();
+  occurrenceMocks.record.mockClear();
+  occurrenceMocks.readPressure.mockReset();
+  occurrenceMocks.readPressure.mockResolvedValue(null);
+});
+
+describe('createOneWorkItem × goal dedup gate (P-004)', () => {
+  it('gate + semantic leg down + no force → fails CLOSED with dedup_unavailable (the WI-39373 shape)', async () => {
+    // findSemanticDupes → null = the guard could not run (fail-open elsewhere).
+    const r = await createOneWorkItem(
+      { kind: 'bug', title: 'a goal-mode filing', goalDedupGate: true },
+      ctx,
+    );
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error('unreachable');
+    expect(r.error).toBe('dedup_unavailable');
+    expect(r.message).toContain('goal-mode');
+    expect(r.message).toContain('force:true');
+    expect(r.dedupCoverage).toEqual({ lexical: 'ok', semantic: 'unavailable', degraded: true });
+    expect(createM).not.toHaveBeenCalled();
+  });
+
+  it('no gate (flag off / non-goal creator) + semantic leg down → proceeds fail-open, unchanged', async () => {
+    // The wrapper only ever sets goalDedupGate under flag ∧ resolved-goal, so BOTH
+    // "flag off" and "creator not under a goal" reach the core as an unset rail.
+    const r = await createOneWorkItem({ kind: 'bug', title: 'an ordinary filing' }, ctx);
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw new Error('unreachable');
+    // The degradation is still RECORDED (issue-family coverage always was) — it
+    // just does not refuse: that is exactly the pre-P-004 behavior.
+    expect(r.dedupCoverage).toEqual({ lexical: 'ok', semantic: 'unavailable', degraded: true });
+    expect(createM).toHaveBeenCalledOnce();
+  });
+
+  it('gate + force + semantic leg down → proceeds, with the degraded coverage recorded on result AND row', async () => {
+    const r = await createOneWorkItem(
+      { kind: 'bug', title: 'must land now', force: true, goalDedupGate: true },
+      ctx,
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw new Error('unreachable');
+    // Unlike plain force (which skips the prescreen entirely), the gate keeps the
+    // probes RUNNING under force — the pass is informed, not blind.
+    expect(guardM).toHaveBeenCalled();
+    expect(r.dedupCoverage).toEqual({ lexical: 'ok', semantic: 'unavailable', degraded: true });
+    expect(createM).toHaveBeenCalledWith(
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          dedupCoverage: { lexical: 'ok', semantic: 'unavailable', degraded: true },
+        }),
+      }),
+    );
+  });
+
+  it('gate + force + healthy probe with soft siblings → proceeds WITH candidates + coverage in the result', async () => {
+    guardM.mockResolvedValue(verdict([], [0.88, 0.86]));
+    const r = await createOneWorkItem(
+      { kind: 'bug', title: 'genuinely distinct', force: true, goalDedupGate: true },
+      ctx,
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw new Error('unreachable');
+    expect(r.similarOpen?.map((c) => c.id)).toEqual(['WI-10', 'WI-11']);
+    expect(r.dedupCoverage).toEqual({ lexical: 'ok', semantic: 'ok', degraded: false });
+  });
+
+  it('gate + healthy probe + hard match + no force → the MATCH refusal still fires first', async () => {
+    guardM.mockResolvedValue(verdict([0.96], []));
+    const r = await createOneWorkItem(
+      { kind: 'bug', title: 'a reworded duplicate', goalDedupGate: true },
+      ctx,
+    );
+    expect(r).toMatchObject({ ok: false, error: 'duplicate_semantic', existing: { id: 'EI-1' } });
+    expect(createM).not.toHaveBeenCalled();
+  });
+
+  it('FEATURE-family gate + semantic leg down → fails CLOSED too (lexical skipped, not counted degraded)', async () => {
+    const r = await createOneWorkItem(
+      { kind: 'feature', title: 'a goal-mode feature', harness: 'papercusp', goalDedupGate: true },
+      ctx,
+    );
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error('unreachable');
+    expect(r.error).toBe('dedup_unavailable');
+    expect(r.dedupCoverage).toEqual({ lexical: 'skipped', semantic: 'unavailable', degraded: true });
+    // admissionIdentity keys the ISSUE occurrence ledger — feature-family must not carry it.
+    expect('admissionIdentity' in r).toBe(false);
+    expect(createM).not.toHaveBeenCalled();
+    // The full-text lexical leg queries engineer_issues only — never consulted here.
+    expect(fulltextM).not.toHaveBeenCalled();
+  });
+
+  it('FEATURE-family gate + healthy semantic leg → creates, coverage NOT degraded despite lexical=skipped', async () => {
+    guardM.mockResolvedValue(verdict([], []));
+    const r = await createOneWorkItem(
+      { kind: 'feature', title: 'a goal-mode feature', harness: 'papercusp', goalDedupGate: true },
+      ctx,
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw new Error('unreachable');
+    expect(r.dedupCoverage).toEqual({ lexical: 'skipped', semantic: 'ok', degraded: false });
+    const persisted = createM.mock.calls[0][0] as { payload?: Record<string, unknown> };
+    expect(persisted.payload?.dedupCoverage).toEqual({ lexical: 'skipped', semantic: 'ok', degraded: false });
+    expect(persisted.payload?.admissionIdentity).toBeUndefined();
+  });
+
+  it('FEATURE-family without the gate → no coverage computed at all (unchanged)', async () => {
+    guardM.mockResolvedValue(verdict([], []));
+    const r = await createOneWorkItem(
+      { kind: 'feature', title: 'an ordinary feature', harness: 'papercusp' },
+      ctx,
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw new Error('unreachable');
+    expect('dedupCoverage' in r).toBe(false);
+  });
+
+  it('DRAIN + gate both degraded → the DRAIN refusal (which overrides even force) wins', async () => {
+    const r = await createOneWorkItem(
+      {
+        kind: 'bug',
+        title: 'drain filing',
+        force: true,
+        goalDedupGate: true,
+        requireCompleteDedupCoverage: true,
+      },
+      ctx,
+    );
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error('unreachable');
+    expect(r.error).toBe('dedup_unavailable');
+    expect(r.message).toContain('DRAIN');
+    expect(createM).not.toHaveBeenCalled();
+  });
+});
