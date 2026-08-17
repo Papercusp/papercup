@@ -517,6 +517,24 @@ export function buildCheckpointDetail(v: CheckpointVerdict): Record<string, unkn
       detail: v.retriage.detail.slice(0, 500),
     };
   }
+  // EI-20702428259478130: persist the ABNORMAL-EXIT discriminators. `summary` and `crashed` were
+  // the only CheckpointVerdict fields this function never copied, and that made an INFRA DEATH and
+  // a REAL TEST FAILURE identical in the durable record: both land as status='not-green' with
+  // detail {green:false, runId, candidate} and nothing else to tell them apart.
+  //
+  // Measured cost, 2026-08-17 on oddsmith: four consecutive verdicts recorded not-green while the
+  // suite passed 4460/4460. Nothing in the ledger could distinguish them from a genuine red — the
+  // disproof required hand-reading the checkpoint log and diffing it against the last good run.
+  // The thrown error exists at runtime, in `summary`, and was being discarded at exactly this
+  // storage boundary. `crashed` is the structural mirror of CheckpointResult.crashed
+  // (EI-18850448565330905) and is the field that makes the distinction MACHINE-readable rather
+  // than leaving it to a human parsing prose.
+  //
+  // Copied conditionally, for the same reason the lineage discriminators above are: an absent leg
+  // must stay ABSENT rather than be written as a falsey value that reads like a measurement — a
+  // persisted `crashed: false` would assert a clean exit that nobody actually verified.
+  if (v.summary) detail.summary = v.summary.slice(0, 2000);
+  if (v.crashed === true) detail.crashed = true;
   return detail;
 }
 

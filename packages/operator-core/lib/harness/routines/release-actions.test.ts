@@ -1046,6 +1046,50 @@ describe('WI-4494: recordCheckpointVerdict — the producer records', () => {
     expect((d.isolationNote as string).length).toBe(2000);
   });
 
+  it('EI-20702428259478130: a CRASHED verdict is distinguishable from a real red in the durable record', () => {
+    // The defect this guards: `summary` and `crashed` were the only CheckpointVerdict fields
+    // buildCheckpointDetail never copied, so an infra death and a genuine test failure both
+    // landed as status='not-green' + {green:false, runId, candidate} and NOTHING else. Observed
+    // 2026-08-17 on oddsmith: four consecutive not-green verdicts whose suite passed 4460/4460,
+    // indistinguishable in the ledger from a real red.
+    const crashed = buildCheckpointDetail({
+      reason: 'not-green',
+      green: false,
+      candidate: 'a'.repeat(40),
+      runId: 'run-1',
+      crashed: true,
+      summary: 'Error: does not provide an export named X',
+    });
+    const realRed = buildCheckpointDetail({
+      reason: 'not-green',
+      green: false,
+      candidate: 'a'.repeat(40),
+      runId: 'run-2',
+      failingTests: ['@p/core::broken.test.ts'],
+    });
+
+    // The whole point: these two must NOT serialize to the same shape.
+    expect(crashed.crashed).toBe(true);
+    expect(crashed.summary).toBe('Error: does not provide an export named X');
+    expect('crashed' in realRed).toBe(false);
+    expect(realRed.failingTests).toEqual(['@p/core::broken.test.ts']);
+    expect('failingTests' in crashed).toBe(false);
+  });
+
+  it('EI-20702428259478130: an ABSENT crashed stays absent — a clean exit is never fabricated', () => {
+    // `detail.crashed = v.crashed` (or a truthiness-free copy) would write `crashed: false` on
+    // every ordinary verdict, asserting a clean exit that nobody measured — the same failure
+    // mode the cleanGreen tests above guard, one field over.
+    const d = buildCheckpointDetail({ reason: 'not-green', green: false, candidate: 'a'.repeat(40) });
+    expect('crashed' in d).toBe(false);
+    expect('summary' in d).toBe(false);
+  });
+
+  it('EI-20702428259478130: buildCheckpointDetail caps an oversized summary at 2000 chars', () => {
+    const d = buildCheckpointDetail({ reason: 'not-green', green: false, summary: 'x'.repeat(5000) });
+    expect((d.summary as string).length).toBe(2000);
+  });
+
   it('EI-18685041726970077: buildCheckpointDetail persists the gate lineage (candidate/tip truncated to 12, list capped)', () => {
     const d = buildCheckpointDetail({
       reason: 'not-green',
