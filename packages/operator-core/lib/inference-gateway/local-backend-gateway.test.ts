@@ -74,11 +74,18 @@ async function boot(
 }
 
 /**
- * Demote a backend to unhealthy exactly the way a STOPPED unit does in production: its
+ * Demote a backend to unhealthy the way a stopped unit EVENTUALLY does in production: its
  * `/v1/models` probe fails, and HEALTH_FAIL_THRESHOLD consecutive failures flip `healthy` false.
- * From the gateway's point of view "stopped" is not a distinct state — it is simply not
- * selectable, which is the whole reason ensure-running attaches at the dead-end pre-flight
- * rather than at the forward (D-009).
+ *
+ * ⚠ "EVENTUALLY" is load-bearing, and every test below this line that calls `markStopped` is
+ * therefore testing the STEADY STATE, not the moment of failure (D-014). Probes tick every 30s and
+ * demotion needs 2 of them, so for up to ~60s after a real stop the pool still reports the backend
+ * HEALTHY and selects it — and ornith's registered baseUrl is a sanitizing proxy that answers that
+ * request with a 502 rather than refusing the connection. The FIRST caller after a stop hits that
+ * window, never this one. D-013 mistook this helper's state for one production cannot reach; the
+ * truth is narrower and worse — production reaches it only after two callers have eaten a 502.
+ * The window itself is covered by the D-014 tests at the end of this file, which deliberately do
+ * NOT call this helper.
  */
 const markStopped = (id: string) => {
   for (let i = 0; i < HEALTH_FAIL_THRESHOLD; i++) pool.recordOutcome(id, false, 'probe failed: connection refused');
@@ -761,4 +768,134 @@ test('P-008/D-009: N concurrent requests for a stopped backend share ONE cold st
   );
   assert.deepEqual(ensured, ['ornith'], 'exactly ONE start for three concurrent requests — the wait is shared, not repeated');
   assert.equal(b1.requests.length, CONCURRENCY, 'and all three were forwarded once it was up');
+});
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// P-008 / D-014 — COLD START AT THE FORWARD (the FIRST-FAILURE window)
+//
+// Everything above reaches ensure-running through the DEAD-END pre-flight, which requires the pool
+// to already know the backend is unhealthy. That is the steady state, and it is not the state a
+// real caller meets: for up to ~60s after a stop (a 30s probe tick x HEALTH_FAIL_THRESHOLD=2) the
+// pool still selects the backend, and ornith's registered baseUrl is a SANITIZING PROXY that stays
+// up and answers 502 instead of refusing the connection — so no transport error is thrown either.
+// The gateway used to relay that 502 to the caller. These tests pin the rescue, and none of them
+// calls `markStopped`: the pool believes the backend healthy throughout, which is the point.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/** Plays the SANITIZING PROXY in front of a unit: 502 with the proxy's exact ECONNREFUSED body
+ *  while `running` is false, a real completion once it flips. `flip` is what a start does. */
+async function startProxiedBackend(id: string, opts: { staysDown?: boolean } = {}) {
+  let running = false;
+  const b = await startFakeBackend(id, (_req, res) => {
+    if (!running) {
+      // Byte-shape of ollama-schema-proxy.mjs's error path: `res.writeHead(502)` +
+      // `{"error":"connect ECONNREFUSED 127.0.0.1:11436"}`.
+      res.writeHead(502, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: 'connect ECONNREFUSED 127.0.0.1:11436' }));
+      return;
+    }
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ id: `chatcmpl-${id}`, choices: [{ message: { content: 'ok' } }] }));
+  });
+  return { ...b, start: () => { if (!opts.staysDown) running = true; } };
+}
+
+test('P-008/D-014 FIRST FAILURE: a proxy 502 from a backend the pool still believes HEALTHY cold-starts the unit and retries — the caller gets a completion, not the 502', async () => {
+  const proxy = await startProxiedBackend('ornith');
+  backends = [proxy];
+  const started: string[] = [];
+  await boot([onDemand('ornith', proxy.baseUrl, ['ornith-35b'])], {
+    ensureLocalBackendRunning: async (b) => {
+      started.push(b.unitName ?? '(none)');
+      proxy.start();
+      return { ok: true };
+    },
+  });
+
+  const r = await chatCompletions({ model: 'ornith-35b', messages: [] });
+
+  assert.equal(r.status, 200, 'the 502 was rescued, not relayed');
+  const body = (await r.json()) as { id?: string };
+  assert.equal(body.id, 'chatcmpl-ornith', 'and the body is a real completion from the started backend');
+  assert.deepEqual(started, ['llama-ornith.service'], 'the unit was started exactly once');
+  assert.equal(proxy.requests.length, 2, 'the failed attempt plus the retry — the retry re-targets the SAME backend');
+});
+
+test('P-008/D-014 CONTROL: the IDENTICAL proxy 502 from an ALWAYS-ON backend is relayed untouched and starts nothing — the rescue is scoped to on-demand units', async () => {
+  const proxy = await startProxiedBackend('alwayson');
+  backends = [proxy];
+  const started: string[] = [];
+  await boot(
+    [{ id: 'alwayson', kind: 'llama-server', baseUrl: proxy.baseUrl, models: ['ornith-35b'], maxConcurrent: 4, enabled: true }],
+    {
+      ensureLocalBackendRunning: async (b) => {
+        started.push(b.unitName ?? '(none)');
+        proxy.start();
+        return { ok: true };
+      },
+    },
+  );
+
+  const r = await chatCompletions({ model: 'ornith-35b', messages: [] });
+
+  assert.equal(r.status, 502, 'an always-on backend has no unit to start, so its 502 is the answer');
+  assert.deepEqual(started, [], 'nothing was started');
+  assert.equal(proxy.requests.length, 1, 'and it was not retried');
+});
+
+test('P-008/D-014: a 500 is NOT unreachable-shaped — a genuine inference error is relayed, never answered by restarting the GPU process', async () => {
+  const started: string[] = [];
+  const b1 = await startFakeBackend('ornith', (_req, res) => {
+    res.writeHead(500, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: { message: 'failed to decode: out of context' } }));
+  });
+  backends = [b1];
+  await boot([onDemand('ornith', b1.baseUrl, ['ornith-35b'])], {
+    ensureLocalBackendRunning: async (b) => {
+      started.push(b.unitName ?? '(none)');
+      return { ok: true };
+    },
+  });
+
+  const r = await chatCompletions({ model: 'ornith-35b', messages: [] });
+
+  assert.equal(r.status, 500, 'the upstream 500 reached the caller');
+  assert.deepEqual(started, [], 'and no restart was attempted — 500 means the process is alive and refusing the work');
+  assert.equal(b1.requests.length, 1, 'no duplicate request: retrying a 500 would re-burn real GPU work');
+});
+
+test('P-008/D-014: at most ONE cold start per request — a backend still 502ing after a successful start is reported, not restarted again', async () => {
+  const proxy = await startProxiedBackend('ornith', { staysDown: true }); // start "succeeds" but it keeps 502ing
+  backends = [proxy];
+  const started: string[] = [];
+  await boot([onDemand('ornith', proxy.baseUrl, ['ornith-35b'])], {
+    ensureLocalBackendRunning: async (b) => {
+      started.push(b.unitName ?? '(none)');
+      proxy.start();
+      return { ok: true };
+    },
+  });
+
+  const r = await chatCompletions({ model: 'ornith-35b', messages: [] });
+
+  assert.equal(r.status, 502, 'a backend that will not come up is a real fault to surface');
+  assert.deepEqual(started, ['llama-ornith.service'], 'exactly one start — the rescue does not loop');
+});
+
+test('P-008/D-014: a FAILED cold start on the forward path is NAMED in the 502, not flattened into the relayed upstream body', async () => {
+  const proxy = await startProxiedBackend('ornith', { staysDown: true });
+  backends = [proxy];
+  await boot([onDemand('ornith', proxy.baseUrl, ['ornith-35b'])], {
+    ensureLocalBackendRunning: async () => ({ ok: false, error: 'unit llama-ornith.service failed: status=203/EXEC' }),
+  });
+
+  const r = await chatCompletions({ model: 'ornith-35b', messages: [] });
+  const body = (await r.json()) as { error?: { message?: string } };
+
+  assert.equal(r.status, 502);
+  assert.match(
+    body.error?.message ?? '',
+    /cold start of 'ornith' failed: unit llama-ornith\.service failed: status=203\/EXEC/,
+    'the operator is told the START failed, not just that the backend answered 502',
+  );
 });
