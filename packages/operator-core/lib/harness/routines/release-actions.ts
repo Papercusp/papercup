@@ -201,11 +201,37 @@ interface RunResult {
   stderr: string;
 }
 
+/** Per-fork vitest heap budget (GiB) — one fork's `--max-old-space-size` worth. */
+const CHECKPOINT_FORK_HEAP_G = 4;
+
+/** Fixed scope overhead (GiB): tsx/npm plus the testcontainers helpers, and headroom. */
+const CHECKPOINT_SCOPE_OVERHEAD_G = 8;
+
+/** Vitest fork count per capacity mode. MUST track `GREEN_CHECKPOINT_MAX_FORKS` /
+ *  `GREEN_CHECKPOINT_RESERVED_MAX_FORKS` in apps/operator/lib/release/green-checkpoint.ts.
+ *  Duplicated rather than imported because operator-core is the LOWER layer and must not
+ *  import from apps/operator; `release-actions-memory-cap.test.ts` pins these to the real
+ *  constants so the two cannot silently desynchronize again. */
+const CHECKPOINT_FORKS_BY_MODE = { shared: 2, reserved: 8 } as const;
+
 /** Memory cap (GiB) for the ISOLATED green-checkpoint scope (see `runScript` isolate).
- *  Sized to the suite's real working set (2 vitest forks × 4 GB heap + tsx/npm +
- *  testcontainers helpers) with headroom — the point is not to squeeze the suite but
- *  to keep its OOM inside its OWN cgroup, away from the bg-host cage. */
-const CHECKPOINT_SCOPE_MEMORY_MAX_G = 16;
+ *
+ *  DERIVED from the fork count, never a fixed number. The cap exists to keep the suite's
+ *  OOM inside its OWN cgroup, away from the bg-host cage — NOT to squeeze the suite.
+ *
+ *  It used to be a hard 16, sized for 2 forks. When the gate moved to `reserved` (8 forks)
+ *  on 2026-08-17 the cap did not follow, so 4× the workers ran in a cgroup sized for the old
+ *  count: the scope hit `memory.max` 310 times in the first ~2 minutes of a run while
+ *  `oom_kill` stayed 0 — which is exactly why it read as healthy. Forced reclaim at the
+ *  ceiling surfaces as vitest worker teardown ("environment was torn down" cascades) and
+ *  stall-timer `console.error` reds on tests that PASS in isolation, i.e. indistinguishable
+ *  from real breakage unless you read `memory.events`. That produced a different random red
+ *  set every run and a 15-deep red streak that never converged. WI-39472. */
+export function checkpointScopeMemoryMaxG(env: NodeJS.ProcessEnv = process.env): number {
+  const mode =
+    env.PAPERCUSP_GREEN_CHECKPOINT_CAPACITY_MODE === 'reserved' ? 'reserved' : 'shared';
+  return CHECKPOINT_SCOPE_OVERHEAD_G + CHECKPOINT_FORKS_BY_MODE[mode] * CHECKPOINT_FORK_HEAP_G;
+}
 
 function runScript(
   root: string,
