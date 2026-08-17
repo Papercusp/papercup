@@ -3848,7 +3848,7 @@ export const ISOLATION_PHASE_RESERVE_MS = 15 * 60_000;
  * naming what was and was not confirmed) beats a cap kill that names nothing.
  */
 export function isolationPhaseDeadlineMs(
-  env: NodeJS.ProcessEnv = process.env,
+  env: Readonly<Record<string, string | undefined>> = process.env,
   nowMs: number = Date.now(),
   processUptimeMs: number = process.uptime() * 1000,
 ): number {
@@ -9988,18 +9988,27 @@ if (require.main === module) {
                 `checkpoint run likely lost its supervising parent; run-lock released and process group is being terminated.`,
           runId,
         };
+        // EI-20669541349219660: the suite MAY have finished red before this kill — its
+        // parsed failing-file list is persisted beside the run-lock the moment it exists
+        // (writeFailingFilesMarker, keyed by runId). Carrying it here is what breaks the
+        // "cap kill teaches the next run nothing" loop; when no marker exists (the suite
+        // itself never finished) this degrades to the WI-4957 explicit empty array, so a
+        // consumer can still tell "never got far enough to know" from "nothing failing".
+        const carried = emergencyRedFailingTests(
+          readFailingFilesMarker(
+            checkpointRunLockDir(cfg.checkpointLogDir, cfg.integrationRoot),
+          ),
+          runId,
+        );
+        if (carried.note) red.summary = `${red.summary} ${carried.note}`;
         await emitResult(red);
         const pipeline = pipelineName(cfg.integrationRoot);
-        // WI-4957: no failing-test signature exists for a watchdog timeout (the suite never
-        // finished) — carry an explicit empty array rather than omitting the field, so a
-        // consumer can tell "ran and found nothing failing" (impossible here) apart from
-        // "never got far enough to know" by checking `reason` rather than a missing key.
         const payload = {
           sha: red.candidate,
           from: red.from,
           pipeline,
           summary: red.summary,
-          failingTests: [] as string[],
+          failingTests: carried.failingTests,
           runId,
         };
         // EI-12457: symmetric with the normal red path — cancel any still-pending

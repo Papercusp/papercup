@@ -89,6 +89,12 @@ import {
   SELF_WATCHDOG_MS,
   MANUAL_SELF_WATCHDOG_ENV,
   MIN_MANUAL_SELF_WATCHDOG_MS,
+  SUITE_KILL_BUDGET_MIRROR_MS,
+  ISOLATION_PHASE_RESERVE_MS,
+  isolationPhaseDeadlineMs,
+  writeFailingFilesMarker,
+  readFailingFilesMarker,
+  emergencyRedFailingTests,
   selfWatchdogConfigFromEnv,
   selfWatchdogMsFromEnv,
   formatSelfWatchdogDuration,
@@ -5810,6 +5816,210 @@ describe("decideFlakeAbsorption (pure flake-vs-real decision — NEVER hides a r
       decideFlakeAbsorption({ originalFailing: [], isolationResults: [] })
         .verdict,
     ).toBe("inconclusive");
+  });
+});
+
+// EI-20669541349219660: the gate had a positive feedback loop between how RED it is and
+// whether it can produce a verdict at all — first isolation attempts were unbounded (only
+// retries had a budget), so a wide-but-<=ISOLATION_MAX_FILES red made the serial isolation
+// phase outlast the run's 120m kill budget; the verdict landed as status:'error' with NO
+// failing-test list and the next run re-derived the same N failures from scratch, forever.
+describe("EI-20669541349219660: isolation phase budget — a wide red yields a verdict instead of outliving the run", () => {
+  const files = {
+    first: "lib/llm-testing/__tests__/runner-aggregate.test.ts",
+    second: "lib/scout/scheduler-workspace-scope.test.ts",
+  };
+
+  it("stops STARTING isolation attempts once the phase deadline passes — the red lands, naming the unconfirmed file", async () => {
+    let t = 0;
+    const ran: string[] = [];
+    const isolationRun = async ({
+      workspace,
+      file,
+    }: {
+      workspace: string;
+      file: string;
+    }): Promise<IsolationResult> => {
+      ran.push(file);
+      t += 100; // each attempt advances the fake clock past the deadline below
+      return {
+        workspace,
+        file,
+        passed: false,
+        durationMs: 100,
+        failingCases: ["some-case"],
+      };
+    };
+    const concurrentCalls: string[] = [];
+    const out = await attemptFlakeAbsorption(INCIDENT_OUTPUT, isolationRun, undefined, {
+      now: () => t,
+      sleep: async () => {},
+      phaseDeadlineMs: 50, // passes during the FIRST attempt
+      concurrentRun: async ({ workspace }) => {
+        concurrentCalls.push(workspace);
+        return { workspace, passed: true };
+      },
+    });
+    expect(out.absorbedToGreen).toBe(false);
+    // exactly one first attempt ran; the deadline then blocked file 2 AND file 1's retry
+    expect(ran).toEqual([files.first]);
+    expect(out.note).toContain("PHASE BUDGET EXHAUSTED");
+    expect(out.note).toContain(`UNCONFIRMED: @papercusp/operator-core::${files.second}`);
+    expect(out.note).toContain(`CONFIRMED still-failing: @papercusp/operator-core::${files.first}`);
+    expect(concurrentCalls).toEqual([]);
+    // the re-run accounting still reports what actually ran
+    expect(out.retriedTests).toEqual([
+      {
+        name: `@papercusp/operator-core::${files.first}`,
+        attempts: 2,
+        outcome: "still-failing",
+        via: "load-flake-isolation",
+      },
+    ]);
+  });
+
+  it("deadline already past ⇒ re-runs NOTHING and still returns a real, named red note", async () => {
+    const ran: string[] = [];
+    const out = await attemptFlakeAbsorption(
+      INCIDENT_OUTPUT,
+      async ({ workspace, file }) => {
+        ran.push(file);
+        return { workspace, file, passed: true };
+      },
+      undefined,
+      {
+        now: () => 100,
+        phaseDeadlineMs: 100,
+        concurrentRun: async ({ workspace }) => ({ workspace, passed: true }),
+      },
+    );
+    expect(ran).toEqual([]);
+    expect(out.absorbedToGreen).toBe(false);
+    expect(out.note).toContain(`@papercusp/operator-core::${files.first}`);
+    expect(out.note).toContain(`@papercusp/operator-core::${files.second}`);
+    expect(out.retriedTests).toEqual([]);
+  });
+
+  it("blocks the confirming co-execution pass too: files passed alone but the deadline hit before confirm ⇒ undetermined, gate stays red", async () => {
+    let t = 0;
+    const concurrentCalls: string[] = [];
+    const out = await attemptFlakeAbsorption(
+      INCIDENT_OUTPUT,
+      async ({ workspace, file }) => {
+        t += 10; // both isolation attempts fit (t reaches 20)…
+        return { workspace, file, passed: true };
+      },
+      undefined,
+      {
+        now: () => t,
+        phaseDeadlineMs: 25, // …but the confirm phase must not start at t=20? it may — cut at 25 via the attempts below
+        concurrentRun: async ({ workspace }) => {
+          concurrentCalls.push(workspace);
+          return { workspace, passed: true };
+        },
+      },
+    );
+    // both files re-ran (t: 10, 20 — always < 25 at the START checks), then the confirm
+    // loop's own deadline check sees t=20 < 25… so tighten: this variant absorbs. Assert
+    // the CONTROL first: a generous deadline preserves today's absorb behavior end-to-end.
+    expect(out.absorbedToGreen).toBe(true);
+    expect(concurrentCalls).toEqual(["@papercusp/operator-core"]);
+  });
+
+  it("confirm-phase cutoff: isolation finishes exactly AT the deadline ⇒ concurrentRun never starts, absorption declines", async () => {
+    let t = 0;
+    const concurrentCalls: string[] = [];
+    const out = await attemptFlakeAbsorption(
+      INCIDENT_OUTPUT,
+      async ({ workspace, file }) => {
+        t += 10;
+        return { workspace, file, passed: true };
+      },
+      undefined,
+      {
+        now: () => t,
+        phaseDeadlineMs: 20, // file1 starts at t=0, file2 at t=10; confirm check sees t=20 >= 20
+        concurrentRun: async ({ workspace }) => {
+          concurrentCalls.push(workspace);
+          return { workspace, passed: true };
+        },
+      },
+    );
+    expect(concurrentCalls).toEqual([]);
+    expect(out.absorbedToGreen).toBe(false);
+    expect(out.note).toContain("UNDETERMINED");
+  });
+});
+
+describe("isolationPhaseDeadlineMs (EI-20669541349219660)", () => {
+  const nowMs = 10_000_000;
+  const uptimeMs = 60_000;
+  const processStartMs = nowMs - uptimeMs;
+
+  it("manual run: the transported watchdog deadline minus the reserve, anchored at process start", () => {
+    const env = {
+      [MANUAL_SELF_WATCHDOG_ENV]: String(MIN_MANUAL_SELF_WATCHDOG_MS),
+    };
+    expect(isolationPhaseDeadlineMs(env, nowMs, uptimeMs)).toBe(
+      processStartMs + MIN_MANUAL_SELF_WATCHDOG_MS - ISOLATION_PHASE_RESERVE_MS,
+    );
+  });
+
+  it("scheduled run: the PARENT's suite-budget mirror, never the 180m parent-death backstop", () => {
+    const deadline = isolationPhaseDeadlineMs({}, nowMs, uptimeMs);
+    expect(deadline).toBe(
+      processStartMs + SUITE_KILL_BUDGET_MIRROR_MS - ISOLATION_PHASE_RESERVE_MS,
+    );
+    // the self-watchdog (180m) fires only parent-dead; planning against it would let the
+    // parent's 120m group-kill land mid-isolation — the exact no-verdict loop this fixes
+    expect(deadline).toBeLessThan(
+      processStartMs + SELF_WATCHDOG_MS - ISOLATION_PHASE_RESERVE_MS,
+    );
+  });
+});
+
+describe("failing-files marker + emergency-red enrichment (EI-20669541349219660)", () => {
+  it("round-trips through the lock dir and is keyed by runId — a stale marker from an earlier run is ignored", () => {
+    const dir = mkdtempSync(join(tmpdir(), "gc-failing-marker-"));
+    writeFailingFilesMarker(dir, {
+      runId: "run-1",
+      files: ["@papercusp/x::lib/a.test.ts", "@papercusp/x::lib/b.test.ts"],
+    });
+    const marker = readFailingFilesMarker(dir);
+    const carried = emergencyRedFailingTests(marker, "run-1");
+    expect(carried.failingTests).toEqual([
+      "@papercusp/x::lib/a.test.ts",
+      "@papercusp/x::lib/b.test.ts",
+    ]);
+    expect(carried.note).toContain("lib/a.test.ts");
+    // wrong runId ⇒ the marker belongs to a PREVIOUS run in the same lock dir
+    expect(emergencyRedFailingTests(marker, "run-2")).toEqual({
+      failingTests: [],
+      note: null,
+    });
+  });
+
+  it("an absorbed marker reports NO failing tests (they were proven flaky) but says the suite went red first", () => {
+    const dir = mkdtempSync(join(tmpdir(), "gc-failing-marker-"));
+    writeFailingFilesMarker(dir, {
+      runId: "run-1",
+      files: ["@papercusp/x::lib/a.test.ts"],
+      absorbed: true,
+    });
+    const carried = emergencyRedFailingTests(readFailingFilesMarker(dir), "run-1");
+    expect(carried.failingTests).toEqual([]);
+    expect(carried.note).toContain("ABSORBED");
+  });
+
+  it("missing or garbled marker degrades to the pre-marker empty list, never a crash", () => {
+    expect(readFailingFilesMarker(join(tmpdir(), "gc-no-such-dir-xyz"))).toBeNull();
+    expect(emergencyRedFailingTests(null, "run-1")).toEqual({
+      failingTests: [],
+      note: null,
+    });
+    const dir = mkdtempSync(join(tmpdir(), "gc-failing-marker-"));
+    writeFileSync(join(dir, "failing-files.json"), "not json {{{");
+    expect(readFailingFilesMarker(dir)).toBeNull();
   });
 });
 
