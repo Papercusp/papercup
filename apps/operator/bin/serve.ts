@@ -65,6 +65,7 @@ import { getBuildInfo } from "@papercusp/operator-core/lib/build-info";
 import { readProcessIdentity } from "@papercusp/operator-core/lib/process-identity";
 import { managedSetInterval } from "@papercusp/scheduled-registry";
 import { installTimestampedConsole } from "@papercusp/operator-core/lib/timestamped-console";
+import { installStdioPeerGuard } from "@papercusp/operator-core/lib/process-supervision/stdio-peer-guard";
 
 // WI-5778 (P-422): install as the very first statement below the imports —
 // before ANYTHING else in this file has a chance to console.log/warn/error —
@@ -75,6 +76,16 @@ import { installTimestampedConsole } from "@papercusp/operator-core/lib/timestam
 // stderr straight to `$H/serve.log`), so fixing it here fixes it for every
 // rig at once instead of patching N shell redirects.
 installTimestampedConsole();
+
+// WI-39599: install immediately after the console is wired and BEFORE the
+// process-level fault handlers below — those handlers report by writing to
+// stderr, so once our stdio peer dies (the operator that spawned us is
+// SIGKILLed and both pipe read ends close) their own diagnostic write raises
+// EPIPE, re-enters them, and the pair becomes a self-sustaining loop that burns
+// a full core for as long as the orphan lives. Absorbing the stream error here
+// means a broken pipe never becomes an uncaughtException, so the amplification
+// cannot start. See stdio-peer-guard.ts for the measurement.
+const stdioPeerGuard = installStdioPeerGuard();
 
 // The three sidecar entrypoints (substrate / spawner / inference-gateway) are
 // imported DYNAMICALLY inside main(), never here — same as host-bootstrap,
@@ -129,13 +140,22 @@ installTimestampedConsole();
 // spawned in one 8-minute window of concurrent packaged-desktop e2e runs.
 const PROCESS_START_PPID = process.ppid;
 
+// WI-39599: both handlers report BY WRITING, so once our stdio peer is gone the
+// report is itself a failing write that re-enters the handler that made it. The
+// guard installed above already stops that from reaching us as an
+// uncaughtException; skipping the write as well keeps this pair from being an
+// amplifier again if some other unlistened stream error ever reappears. There is
+// nothing left to read the output at this point, so nothing is lost by staying
+// quiet — and the durable file sinks (e.g. gatewayLogLine) are unaffected.
 process.on('unhandledRejection', (reason) => {
+  if (stdioPeerGuard.peerGone()) return;
   console.error(
     '[serve] non-fatal unhandledRejection in a detached boot/background task (continuing boot):',
     reason instanceof Error ? (reason.stack ?? reason.message) : reason,
   );
 });
 process.on('uncaughtException', (err) => {
+  if (stdioPeerGuard.peerGone()) return;
   console.error(
     '[serve] non-fatal uncaughtException in a detached boot/background task (continuing boot):',
     err instanceof Error ? (err.stack ?? err.message) : err,
