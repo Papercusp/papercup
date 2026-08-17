@@ -136,10 +136,11 @@ export function groupEditClaims(rows: readonly EditClaimRowLike[]): GoalEditClai
 export interface GoalEditClaimSweepDeps {
   /** New edit-claims by goal-mode owners. `sinceLedgerId === null` = the boot sweep
    *  (ts-window lookback); a number = the pkey range scan. Also returns the ledger's
-   *  CURRENT max id so the high-water mark advances even on a claim-free tick. */
+   *  CURRENT max id so the high-water mark advances even on a claim-free tick (the
+   *  sweep, not the reader, decides how far — see advanceHighWaterMark). */
   readNewEditClaims: (
     sinceLedgerId: number | null,
-  ) => Promise<{ rows: EditClaimRowLike[]; maxLedgerId: number }>;
+  ) => Promise<{ rows: EditClaimRowLike[]; ledgerMaxId: number }>;
   /** ownerIds of grade-mode sessions per workspace (the graders to inject). */
   resolveGraders: (workspaceIds: string[]) => Promise<Map<string, string[]>>;
   escalate: (alert: GoalEditClaimAlert) => Promise<void>;
@@ -209,14 +210,24 @@ function makeReadNewEditClaims(sql: Sql): GoalEditClaimSweepDeps['readNewEditCla
         repo: r.repo,
         tsMs: Number(r.ts_ms),
       })),
-      // A capped batch must NOT advance past what it read — the next tick continues
-      // the drain from the batch's own tail instead of skipping the overflow.
-      maxLedgerId:
-        rows.length >= GOAL_EDIT_CLAIM_SWEEP_ROW_CAP
-          ? Number(rows[rows.length - 1].id)
-          : Number(max_id),
+      ledgerMaxId: Number(max_id),
     };
   };
+}
+
+/**
+ * PURE: where the next sweep resumes. A capped batch must NOT advance past its own
+ * tail — the next tick continues draining the overflow instead of skipping it; an
+ * uncapped batch advances to the ledger's current max so a claim-free tick still
+ * moves forward. Exported for tests.
+ */
+export function advanceHighWaterMark(
+  rows: readonly EditClaimRowLike[],
+  ledgerMaxId: number,
+  rowCap: number = GOAL_EDIT_CLAIM_SWEEP_ROW_CAP,
+): number {
+  if (rows.length >= rowCap) return rows[rows.length - 1].ledgerId;
+  return ledgerMaxId;
 }
 
 function makeResolveGraders(sql: Sql): GoalEditClaimSweepDeps['resolveGraders'] {
@@ -338,7 +349,8 @@ export async function runGoalEditClaimSweepOnce(
     return { scanned: 0, alerted: 0, skipped: true, nextSinceLedgerId: sinceLedgerId };
   }
 
-  const { rows, maxLedgerId } = await deps.readNewEditClaims(sinceLedgerId);
+  const { rows, ledgerMaxId } = await deps.readNewEditClaims(sinceLedgerId);
+  const nextSinceLedgerId = advanceHighWaterMark(rows, ledgerMaxId);
   const alerts = groupEditClaims(rows);
   let alerted = 0;
   const graderMap =
@@ -373,7 +385,7 @@ export async function runGoalEditClaimSweepOnce(
       );
     }
   }
-  return { scanned: rows.length, alerted, skipped: false, nextSinceLedgerId: maxLedgerId };
+  return { scanned: rows.length, alerted, skipped: false, nextSinceLedgerId };
 }
 
 let watchdogTimer: ManagedHandle | null = null;
