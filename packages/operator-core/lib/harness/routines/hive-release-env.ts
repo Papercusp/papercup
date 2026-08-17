@@ -201,9 +201,53 @@ export async function resolveHiveReleaseEnv(slug: string, workspaceId: string): 
   // defaults it to '' rather than null) so a subject hive can never fall through to
   // release-config.ts's own '@papercusp/operator-vite' fallback by omission.
   env.PAPERCUSP_SPA_BUILD_WORKSPACE = gate.spaBuildWorkspace ?? '';
+
+  // EI-20709645463022690: the gate subprocess inherited the OPERATOR's DATABASE_URL, so a
+  // SUBJECT pot's suite silently dialed the papercusp database instead of its own. Observed
+  // on sidestage: a "schema drift — 39 tables" red that nobody could reproduce in the pot's
+  // own tree, because the tables it saw were papercusp's.
+  //
+  // Two DIFFERENT consumers read a DSN out of this subprocess's env, and they must be
+  // separated rather than both served by one variable:
+  //   1. the SUBJECT pot's own code/tests — read bare DATABASE_URL, and want THEIR database;
+  //   2. the gate's OWN bookkeeping — green-checkpoint.ts dynamically imports operator-core
+  //      (gate-verdict-target, coordination/messages, escalations, db-boot-migrate) to record
+  //      its verdict, and genuinely wants the PAPERCUSP database.
+  // So deleting DATABASE_URL alone would fix (1) by BREAKING (2) — verdict recording for
+  // every pot gate. Instead, hand papercusp's DSN to its own namespaced channel and clear
+  // the ambient one:
+  //   embedded-pg-discovery resolves the admin DB from
+  //   ['HARNESS_ADMIN_DATABASE_URL', 'DATABASE_URL', 'PAPERCUSP_PG_URL'] + discovery file +
+  //   native fallback — HARNESS_ADMIN_DATABASE_URL OUTRANKS DATABASE_URL.
+  // This is an EXISTING convention, not a new one: the gated pots already ship
+  // libs/test-config/src/admin-test-runs-reporter.ts reading HARNESS_ADMIN_DATABASE_URL to
+  // report their test runs back to papercusp (today it falls through to a hardcoded
+  // localhost:5432/papercusp literal because nothing sets the var — this sets it properly).
+  // Their setup-no-real-pg.ts hermeticity guard blocks real pools at buildClient regardless
+  // of env, so setting this variable cannot trip it.
+  //
+  // Measured before landing: of the 24 gated non-operator-home harnesses, only oddsmith,
+  // quartermaster and sidestage reference a DSN at all. oddsmith/quartermaster use their own
+  // namespaced vars + testcontainers; sidestage's database.module.ts resolves
+  // `env.DATABASE_URL ?? DEFAULT_DATABASE_URL` — so clearing the inherited value is exactly
+  // what lets its OWN hermetic default win. None construct a bare `new Pool()`, so nothing
+  // depends on inheriting PG* either. Operator-home never reaches this code (early return
+  // above), which is what keeps papercusp's own PG-backed gate legs untouched (D-007).
+  env.HARNESS_ADMIN_DATABASE_URL = getHarnessAdminUrl();
+  const clearEnv = [
+    'DATABASE_URL',
+    'PGHOST',
+    'PGPORT',
+    'PGDATABASE',
+    'PGUSER',
+    'PGPASSWORD',
+    'PGSSLMODE',
+  ];
+
   return {
     enabled: true,
     env,
+    clearEnv,
     hasDeploy: !!gate.deploy,
     isOperatorHome: false,
     greenCmd,
