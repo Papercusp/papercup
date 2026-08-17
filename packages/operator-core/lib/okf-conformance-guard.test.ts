@@ -28,25 +28,30 @@
  * distinct jobs, three places — a green detector says nothing about where the
  * detector is RUN, which is the whole reason this file exists.
  */
-import { execFileSync } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 import { OKF_SCAN_ROOTS, isOkfScannedFile } from '../../../scripts/check-okf-conformance.mjs';
+import { runGuardScript } from './testing-guard-script';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
 describe('OKF conformance ratchet', () => {
   it('both corpora are conformant, and a NON-ZERO population of each was judged', () => {
-    // execFileSync throws on a non-zero exit, so the run itself is half the
-    // assertion. ONE run, both checks: this executes on every operator-core-
-    // affecting change, and every agent pays for it.
-    const out = execFileSync('npx', ['tsx', 'scripts/check-okf-conformance.mjs'], {
+    // The exit status is half the assertion, so it is asserted explicitly below rather
+    // than left to a throw. It used to be an execFileSync, whose throw on a non-zero
+    // exit DISCARDS stdout — the lint's own list of non-conformant files went with it,
+    // leaving only "Command failed: npx tsx scripts/check-okf-conformance.mjs" (the cost
+    // of that shape, measured on a sibling guard: EI-20692923474318761). ONE run, both
+    // checks: this executes on every operator-core-affecting change, and every agent
+    // pays for it.
+    const guard = runGuardScript('npx', ['tsx', 'scripts/check-okf-conformance.mjs'], {
       cwd: REPO_ROOT,
-      encoding: 'utf8',
-      timeout: 120_000,
+      timeoutMs: 120_000,
     });
+    const out = guard.stdout;
+    expect(guard.status, guard.output).toBe(0);
     expect(out).toContain('OKF v0.2 conformance holds');
 
     // The denominator half is not decoration. A lint that silently stops walking

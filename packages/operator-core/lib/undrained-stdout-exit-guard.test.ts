@@ -36,6 +36,7 @@ import { describe, expect, it } from 'vitest';
 // @ts-expect-error — .mjs guard script with no type declarations; the pure detector is
 // exported precisely so this test can drive it without spawning a process per case.
 import { findOffendersInSource } from '../../../scripts/check-undrained-stdout-exit.mjs';
+import { runGuardScript } from './testing-guard-script';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 

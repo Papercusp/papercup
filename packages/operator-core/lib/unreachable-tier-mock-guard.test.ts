@@ -27,6 +27,7 @@ import { describe, expect, it } from 'vitest';
 
 // @ts-expect-error — plain .mjs guard script, no type declarations
 import { checkFile, constantOf, findConstantPredicates } from '../../../scripts/check-unreachable-tier-mock.mjs';
+import { runGuardScript } from './testing-guard-script';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 
@@ -144,13 +145,18 @@ describe('CALIBRATIONS — the shapes it must stay silent on', () => {
 describe('the guard over the REAL tree', () => {
   it('passes, and every allowlist entry BINDS — a suppression that suppresses nothing is the same defect', () => {
     // The guard exits 1 both on a real violation AND on a stale allowlist entry,
-    // so this one assertion covers both. It is the whole-tree run, not a fixture:
+    // so the status assertion covers both. It is the whole-tree run, not a fixture:
     // the fixtures above prove the analyzer fires, this proves the tree is clean.
-    const out = execFileSync('node', ['scripts/check-unreachable-tier-mock.mjs'], {
+    //
+    // Not execFileSync: its throw on a non-zero exit discards stdout, which is where the
+    // guard prints WHICH mock offends — so the red would name the command instead of the
+    // violation (EI-20692923474318761, measured on a sibling ratchet guard).
+    const guard = runGuardScript('node', ['scripts/check-unreachable-tier-mock.mjs'], {
       cwd: REPO_ROOT,
-      encoding: 'utf8',
       maxBuffer: 16 * 1024 * 1024,
     });
+    const out = guard.stdout;
+    expect(guard.status, guard.output).toBe(0);
     expect(out).toContain('no impossible mock defaults');
     expect(out).toMatch(/(\d+)\/\1 allowlist entries binding/);
   });
