@@ -2469,25 +2469,37 @@ describe("LearningTab — inherited pot lens (owner directive 2026-07-26; was P-
   // this: it asserts on query enablement/args, and both were already correct.
   // A read-layer guard is structurally blind to a render-layer refusal, so the
   // All-Pots contract needs a test that renders.
-  it("All Pots (hive '') RENDERS the workspace-wide retained rollup, not 'No pots'", () => {
+  it("All Pots (hive '') RENDERS the workspace-wide retained ledger, not 'No pots'", () => {
     nuqsState.lview = "learnings";
     advScopeState.allMode = true;
     advScopeState.slug = null;
     advScopeState.hive = "";
-    hiveResult = {
+    retainFeedResult = {
       data: [
         {
-          hive: "",
           rows: [
             {
+              kind: "memory",
               id: "learning-rollup-1",
-              text: "Workspace-wide retained learning visible under the All Pots lens.",
-              kind: "migration",
-              createdBy: "system-migration",
+              title:
+                "Workspace-wide retained learning visible under the All Pots lens.",
+              ts: "2026-08-15T12:00:00.000Z",
+              status: null,
+              shipped: false,
+              meta: {},
             },
           ],
-          packs: [],
-          organicCount: 1,
+          counts: {
+            memories: 1,
+            plans: 0,
+            wi: 0,
+            rubrics: 0,
+            runbooks: 0,
+            recipes: 0,
+          },
+          nextCursor: null,
+          degraded: [],
+          generatedAt: "2026-08-16T00:00:00.000Z",
         },
       ],
       loading: false,
@@ -2502,23 +2514,23 @@ describe("LearningTab — inherited pot lens (owner directive 2026-07-26; was P-
     expect(document.body.textContent).not.toContain("No pot");
   });
 
-  // The other half of the same contract: with the short-circuit gone, an
-  // unavailable rollup must still surface its REASON rather than falling
-  // through to the calm "No retained learnings" empty (WI-6382's class).
-  it("All Pots (hive '') surfaces an unavailable rollup's reason", () => {
+  // The other half of the same contract: a leg that failed to read must surface
+  // VISIBLY (WI-6382's class — the calm empty state hiding a fault). The feed
+  // degrades per leg server-side and names the fallen legs; the ledger renders
+  // them rather than silently omitting that kind.
+  it("All Pots (hive '') surfaces a degraded feed leg by name", () => {
     nuqsState.lview = "learnings";
     advScopeState.allMode = true;
     advScopeState.slug = null;
     advScopeState.hive = "";
-    hiveResult = {
+    retainFeedResult = {
       data: [
         {
-          hive: "",
           rows: [],
-          packs: [],
-          organicCount: 0,
-          unavailable: true,
-          unavailableReason: "no pots registered in this workspace",
+          counts: null,
+          nextCursor: null,
+          degraded: ["memory"],
+          generatedAt: "2026-08-16T00:00:00.000Z",
         },
       ],
       loading: false,
@@ -2527,27 +2539,55 @@ describe("LearningTab — inherited pot lens (owner directive 2026-07-26; was P-
       invalidate: vi.fn(),
     };
     render(<LearningTab />);
-    expect(document.body.textContent).toContain(
-      "no pots registered in this workspace",
-    );
+    expect(document.body.textContent).toContain("degraded: memory");
   });
 
-  it("turns retained prose into a headline preview with typed provenance", () => {
+  // WI-39534: a memory row's detail aside — click selects (rsel), the aside
+  // renders the FULL body (the row title is the 200-char clamp), and an
+  // editable memory exposes edit/remove. Close clears the selection.
+  it("opens a memory row's detail aside on click and closes it again", () => {
     nuqsState.lview = "learnings";
-    hiveResult = {
+    retainFeedResult = {
       data: [
         {
-          hive: "alpha-hive",
           rows: [
             {
+              kind: "memory",
               id: "learning-1",
-              text: "Migration 557 completed the canonical federation table rename. Live code now uses pot-prefixed tables everywhere.",
-              kind: "migration",
-              createdBy: "system-migration",
+              title:
+                "Migration 557 completed the canonical federation table rename.",
+              ts: "2026-08-15T12:00:00.000Z",
+              status: null,
+              shipped: false,
+              meta: { memKind: "migration", createdBy: "system-migration" },
             },
           ],
-          packs: [],
-          organicCount: 1,
+          counts: null,
+          nextCursor: null,
+          degraded: [],
+          generatedAt: "2026-08-16T00:00:00.000Z",
+        },
+      ],
+      loading: false,
+      fetching: false,
+      error: null,
+      invalidate: vi.fn(),
+    };
+    retainDetailResult = {
+      data: [
+        {
+          kind: "memory",
+          id: "learning-1",
+          title:
+            "Migration 557 completed the canonical federation table rename.",
+          status: null,
+          ts: "2026-08-15T12:00:00.000Z",
+          body: "Migration 557 completed the canonical federation table rename. Live code now uses pot-prefixed tables everywhere.",
+          bodyTruncated: false,
+          code: null,
+          listItems: [],
+          fields: [{ label: "kind", value: "migration" }],
+          editable: true,
         },
       ],
       loading: false,
@@ -2556,43 +2596,62 @@ describe("LearningTab — inherited pot lens (owner directive 2026-07-26; was P-
       invalidate: vi.fn(),
     };
     const { rerender } = render(<LearningTab />);
-    const summary = document.querySelector(".pc-learning__retainedsummary")!;
-    expect(summary.querySelector("strong")?.textContent).toBe(
-      "Migration 557 completed the canonical federation table rename.",
-    );
-    expect(summary.textContent).toContain("Live code now uses");
-    expect(
-      document.querySelector(".pc-learning__provenance.is-system"),
-    ).not.toBeNull();
     fireEvent.click(
-      screen.getByRole("button", {
-        name: /Open learning Migration 557 completed/,
-      }),
+      screen.getByText(/Migration 557 completed the canonical federation/),
     );
-    expect(nuqsSetters.lretain).toHaveBeenCalledWith("learning-1");
-    nuqsState.lretain = "learning-1";
+    expect(nuqsState.rsel).toBe("memory:learning-1");
     rerender(<LearningTab />);
-    expect(screen.getByLabelText("Selected learning")).toBeTruthy();
+    expect(screen.getByLabelText("Retained item detail")).toBeTruthy();
     expect(
-      screen.getByRole("button", { name: "Close selected learning" }),
+      screen.getByText(/Live code now uses pot-prefixed tables everywhere/),
     ).toBeTruthy();
+    // The editable footer — the pool's inline edit/remove moved here (WI-39535).
+    expect(screen.getByRole("button", { name: "edit" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "remove" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Close detail" }));
+    expect(nuqsState.rsel).toBeNull();
   });
 
-  it("pins a deep-linked earlier learning into the visible Retain index", () => {
+  it("pins a deep-linked ?rsel selection into the detail aside on first render", () => {
     nuqsState.lview = "learnings";
-    nuqsState.lretain = "learning-8";
-    hiveResult = {
+    nuqsState.rsel = "memory:learning-8";
+    retainFeedResult = {
       data: [
         {
-          hive: "alpha-hive",
           rows: Array.from({ length: 8 }, (_, index) => ({
+            kind: "memory",
             id: `learning-${index + 1}`,
-            text: `Learning ${index + 1}. Supporting detail.`,
-            kind: "fact",
-            createdBy: "owner",
+            title: `Learning ${index + 1}. Supporting detail.`,
+            ts: "2026-08-15T12:00:00.000Z",
+            status: null,
+            shipped: false,
+            meta: {},
           })),
-          packs: [],
-          organicCount: 8,
+          counts: null,
+          nextCursor: null,
+          degraded: [],
+          generatedAt: "2026-08-16T00:00:00.000Z",
+        },
+      ],
+      loading: false,
+      fetching: false,
+      error: null,
+      invalidate: vi.fn(),
+    };
+    retainDetailResult = {
+      data: [
+        {
+          kind: "memory",
+          id: "learning-8",
+          title: "Learning 8. Supporting detail.",
+          status: null,
+          ts: "2026-08-15T12:00:00.000Z",
+          body: "Learning 8 full body.",
+          bodyTruncated: false,
+          code: null,
+          listItems: [],
+          fields: [],
+          editable: true,
         },
       ],
       loading: false,
@@ -2601,29 +2660,44 @@ describe("LearningTab — inherited pot lens (owner directive 2026-07-26; was P-
       invalidate: vi.fn(),
     };
     render(<LearningTab />);
-    expect(
-      screen.getByRole("button", { name: /Close learning Learning 8/ }),
-    ).toBeTruthy();
-    expect(screen.getByLabelText("Selected learning")).toBeTruthy();
+    expect(screen.getByLabelText("Retained item detail")).toBeTruthy();
+    expect(screen.getByText("Learning 8 full body.")).toBeTruthy();
+    // The detail read asked for exactly the deep-linked row.
+    expect(seenArgs["learning.retainDetail"]).toMatchObject({
+      kind: "memory",
+      id: "learning-8",
+    });
   });
 
-  it("filters retained learnings through the compact search affordance", () => {
+  it("filters retained rows through the ledger quick-search", () => {
     nuqsState.lview = "learnings";
-    hiveResult = {
+    retainFeedResult = {
       data: [
         {
-          hive: "alpha-hive",
           rows: [
             {
+              kind: "memory",
               id: "a",
-              text: "Alpha memory.",
-              kind: "fact",
-              createdBy: "owner",
+              title: "Alpha memory.",
+              ts: "2026-08-15T12:00:00.000Z",
+              status: null,
+              shipped: false,
+              meta: {},
             },
-            { id: "b", text: "Beta memory.", kind: "fact", createdBy: "owner" },
+            {
+              kind: "memory",
+              id: "b",
+              title: "Beta memory.",
+              ts: "2026-08-15T11:00:00.000Z",
+              status: null,
+              shipped: false,
+              meta: {},
+            },
           ],
-          packs: [],
-          organicCount: 2,
+          counts: null,
+          nextCursor: null,
+          degraded: [],
+          generatedAt: "2026-08-16T00:00:00.000Z",
         },
       ],
       loading: false,
@@ -2631,13 +2705,53 @@ describe("LearningTab — inherited pot lens (owner directive 2026-07-26; was P-
       error: null,
       invalidate: vi.fn(),
     };
-    render(<LearningTab />);
-    fireEvent.click(screen.getByRole("button", { name: "Search learnings" }));
-    fireEvent.change(screen.getByLabelText("Search retained learnings"), {
+    const { rerender } = render(<LearningTab />);
+    expect(screen.getByText("Alpha memory.")).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("Filter retained items"), {
       target: { value: "beta" },
     });
+    // The nuqs mock is not reactive — the write lands in nuqsState; re-render
+    // to observe the filtered ledger (same dance as the older lretain tests).
+    rerender(<LearningTab />);
     expect(screen.getByText("Beta memory.")).toBeTruthy();
     expect(screen.queryByText("Alpha memory.")).toBeNull();
+  });
+
+  // WI-39535: the Memories tab is a first-class kind tab on the unified ledger
+  // — selecting it narrows SERVER-side (the tab arg) rather than client-side.
+  it("the Memories tab narrows the feed server-side and badges the corpus size", () => {
+    nuqsState.lview = "learnings";
+    retainFeedResult = {
+      data: [
+        {
+          rows: [],
+          counts: {
+            memories: 42,
+            plans: 1,
+            wi: 2,
+            rubrics: 3,
+            runbooks: 4,
+            recipes: 5,
+          },
+          nextCursor: null,
+          degraded: [],
+          generatedAt: "2026-08-16T00:00:00.000Z",
+        },
+      ],
+      loading: false,
+      fetching: false,
+      error: null,
+      invalidate: vi.fn(),
+    };
+    const { rerender } = render(<LearningTab />);
+    const memoriesTab = screen.getByRole("tab", { name: /Memories/ });
+    expect(memoriesTab.textContent).toContain("42");
+    fireEvent.click(memoriesTab);
+    expect(nuqsState.rtab).toBe("memories");
+    rerender(<LearningTab />);
+    expect(seenArgs["learning.retainFeed"]).toMatchObject({
+      tab: "memories",
+    });
   });
 
   it("gates hive-aware queries until the inherited scope is resolved (WI-5412 first-fetch perf)", () => {
