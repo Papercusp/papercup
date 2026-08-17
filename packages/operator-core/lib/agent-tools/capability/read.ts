@@ -121,7 +121,10 @@ export default defineTool({
       .positive()
       .max(MAX_BYTE_PAGE)
       .optional()
-      .describe(`Exact bytes to return as base64 (max ${MAX_BYTE_PAGE}). Use with byte_offset.`),
+      .describe(
+        `Bytes to return as base64 (max ${MAX_BYTE_PAGE}), an UPPER BOUND — the page is clamped to ` +
+        `fit the result door, so read byte_length and follow next_cursor. Use with byte_offset.`,
+      ),
   }),
   async handler(args, ctx) {
     const baseDir = resolveCapabilityBaseDir(ctx);
