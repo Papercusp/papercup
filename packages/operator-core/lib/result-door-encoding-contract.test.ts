@@ -116,15 +116,34 @@ describe('EI-20685195115158619: spill cursor encoding contract', () => {
     expect(cursor).not.toHaveProperty('encoding');
   });
 
-  it('states which field to decode and warns off `base64 -d` on the path', () => {
+  it('names the field to decode by its OWNER, not as a bare `data`', () => {
     const { next } = doorOversizedResult();
 
-    expect(next).toContain('`data`');
-    expect(next).toMatch(/RESPONSE/);
-    // The hazard itself: a plaintext file put through `base64 -d` fails EMPTY,
-    // which reads as an empty spill rather than a wrong decoder.
-    expect(next).toContain('plaintext');
-    expect(next).toContain('base64 -d');
+    // A bare "base64-decode data" is what left the reporter decoding the file.
+    expect(next).toContain('response.data');
+    // WI-5656: this is the JSON branch, whose pointer is budgeted together with
+    // the retained preview — the fuller prose warning must NOT appear here. A
+    // ~90-char addition measurably evicted coord:orient's recovery fields.
+    expect(next).not.toContain('grep/tail it directly');
+  });
+
+  it('carries the full plaintext warn-off on the raw-text branch, which has budget', () => {
+    // Non-JSON body: the `{ text, _projection }` envelope, where the fuller
+    // honesty wording already lives and the preview budget is not at stake.
+    const doored = applyResultDoor(
+      { content: [{ type: 'text' as const, text: 'not json — '.repeat(4_000) }] },
+      { toolName: 'code:tools', workspaceId: WS, runId: RUN_ID },
+    ) as DoorableResult;
+    const body = JSON.parse(
+      (doored.content.find((c) => (c as { type?: string }).type === 'text') as { text: string }).text,
+    ) as { _projection: { next: string } };
+
+    expect(body._projection.next).toContain('response.data');
+    // The hazard itself: `base64 -d` on plaintext exits non-zero with EMPTY
+    // stdout, which reads as an empty spill rather than a wrong decoder.
+    expect(body._projection.next).toContain('plaintext');
+    expect(body._projection.next).toContain('base64 -d');
+    expect(body._projection.next).toContain('fails EMPTY');
   });
 
   it('writes the spill as PLAINTEXT — the file is greppable, not base64', () => {

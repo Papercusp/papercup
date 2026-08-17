@@ -502,16 +502,26 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
             spillFileEncoding: 'utf-8',
           },
           next:
-            `Call capability:read with _projection.cursor.args and base64-decode the RESPONSE's ` +
-            `\`data\` (the spill FILE is plaintext — \`base64 -d\` on args.file_path fails EMPTY), ` +
-            `then follow next_cursor until eof to recover the exact spill bytes. The spill begins ` +
-            `with a text header and then contains the result as it reached this door.` +
+            // `response.data` rather than a bare `data`: naming the field's OWNER
+            // is what stops the misread (EI-20685195115158619), and it costs 9
+            // chars against the budget the comment below guards. The rest of the
+            // disambiguation rides on the self-describing cursor fields above,
+            // which are branch-independent and cost the JSON preview nothing.
+            `Call capability:read with _projection.cursor.args, base64-decode response.data, then follow ` +
+            `next_cursor until eof to recover the exact spill bytes. The spill begins with a text ` +
+            `header and then contains the result as it reached this door.` +
             // Keep the established JSON recovery pointer deliberately terse. The
             // payload projector budgets the pointer together with the retained
             // JSON preview; expanding it here can evict coord:orient's recovery
-            // fields from that preview (WI-5656). Raw text needs the fuller
-            // honesty wording because its new `{ text, _projection }` envelope
-            // replaced the former prose footer that carried those disclosures.
+            // fields from that preview (WI-5656) — measured again on
+            // EI-20685195115158619, where a ~90-char plaintext warning here reded
+            // orient-recovery-door-priority. Raw text needs the fuller honesty
+            // wording because its new `{ text, _projection }` envelope replaced
+            // the former prose footer that carried those disclosures.
+            (parsedJsonBody
+              ? ''
+              : ` The spill FILE is plaintext — grep/tail it directly; \`base64 -d\` on ` +
+                `args.file_path fails EMPTY, which reads as an empty spill.`) +
             (parsedJsonBody
               ? ''
               : upstreamProjection
