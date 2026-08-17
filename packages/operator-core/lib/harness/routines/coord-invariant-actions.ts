@@ -1275,15 +1275,6 @@ async function runSharedHiveLeg(ctx: SystemActionCtx): Promise<void> {
 // the filed improvement above remains the durable record for that case; the wake
 // costs nothing when it misses and is the whole point when it lands.
 
-/** System identity for the orphan-sweep holder notice. */
-const ORPHAN_SWEEP_IDENTITY: AgentIdentity = {
-  ownerId: 'system:coord-invariant-monitor',
-  ownerLabel: 'system · coord-invariant-monitor',
-  source: 'principal',
-  workspaceId: null,
-  userId: null,
-};
-
 export interface OrphanSweepNotice {
   /** Holder + its fleet leader (when resolvable), the wake/send targets. */
   targets: string[];
@@ -1346,7 +1337,7 @@ async function notifySweptHolders(
   ]).catch(() => new Map<string, string | null>());
   for (const notice of planOrphanSweepNotices(cleared, leaderByOwner, harness)) {
     try {
-      await sendMessage(ORPHAN_SWEEP_IDENTITY, {
+      await sendMessage(MONITOR_IDENTITY, {
         to: notice.targets,
         summary: notice.summary,
         body:
@@ -1362,7 +1353,7 @@ async function notifySweptHolders(
       });
       await wakeRecipients(notice.targets, {
         summary: notice.summary,
-        source: ORPHAN_SWEEP_IDENTITY.ownerId,
+        source: MONITOR_IDENTITY.ownerId,
       });
     } catch {
       /* one holder's notice failing never suppresses the rest */
