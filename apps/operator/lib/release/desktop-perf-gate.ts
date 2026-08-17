@@ -270,8 +270,47 @@ function fmtMeasure(m: DesktopPerfMeasure): string {
 }
 
 /** The budgeted measures that missed their budget — the definitive regressions. */
+/**
+ * An invariant whose probe DID NOT RUN — "could not measure", never "measured a breach"
+ * (WI-39665 D-008).
+ *
+ * WHY A NEGATIVE VALUE IS AN UNAMBIGUOUS SENTINEL. Every invariant this gate reads is a
+ * `count` unit asserted against budget 0, and a count is non-negative by construction, so
+ * no real reading can ever be < 0. `-1` is the DETECTOR-ABSENT sentinel written by
+ * `libs/generic/desktop-ipc/src/desktop-bootstrap.ts`, whose own header warns in these
+ * words: "A detector that goes quiet exactly when the fault is present is worse than no
+ * detector, because `-1/unknown` and `0/clean` are one careless `>= 0` apart."
+ *
+ * This gate was making precisely that conflation, pointed at CONVICTION rather than
+ * clearance: `!m.ok` is true for a sentinel, so an invariant nobody measured was reported
+ * as an invariant that FAILED — and the invariant branch blocks independently of
+ * block-mode arming AND of the PSI-quiet window, i.e. it bypasses every safety valve that
+ * exists to absorb false reds. One such row (workspace-global, no harness scoping on
+ * `desktop_perf_runs`) froze `main` for EVERY harness in the workspace on 2026-08-17.
+ *
+ * The correct reading is the one this file already applies to STALE data one branch up:
+ * "the honest reading is *nothing is measuring this*, not *the invariant is broken now*".
+ *
+ * NOT fail-open: a real breach is value > 0 and still blocks, and value 0 still passes.
+ * Only the never-taken reading stops being treated as evidence — and it is surfaced as a
+ * loud `unknown` warn rather than swallowed, because a detector that has gone silent is
+ * itself a defect worth paging on.
+ */
+export function isUnmeasuredInvariant(m: DesktopPerfMeasure): boolean {
+  return m.invariant === true && !(m.value >= 0);
+}
+
+/** The invariants whose probe did not run — see {@link isUnmeasuredInvariant}. */
+export function unmeasuredInvariants(run: DesktopPerfRun): DesktopPerfMeasure[] {
+  return run.measures.filter(isUnmeasuredInvariant);
+}
+
 export function failingMeasures(run: DesktopPerfRun): DesktopPerfMeasure[] {
-  return run.measures.filter((m) => m.budget !== null && !m.ok);
+  // Unmeasured invariants are excluded here TOO, not just from breachedInvariants. They
+  // carry budget 0 (non-null) with ok:false, so leaving them in would simply relocate the
+  // false block from the invariant branch to the budget branch — which, with block-mode
+  // armed by default since D-005, still blocks on a quiet host. Same defect, new address.
+  return run.measures.filter((m) => m.budget !== null && !m.ok && !isUnmeasuredInvariant(m));
 }
 
 /**
@@ -290,11 +329,20 @@ export function failingMeasures(run: DesktopPerfRun): DesktopPerfMeasure[] {
  * non-enforcement this gate already fell into once.
  */
 export function breachedInvariants(run: DesktopPerfRun): DesktopPerfMeasure[] {
-  return run.measures.filter((m) => m.invariant === true && !m.ok);
+  // WI-39665 D-008: a BREACH is a reading that was taken and did not hold. An invariant
+  // whose probe never ran is `unknown`, not `false` — see isUnmeasuredInvariant for why a
+  // negative count is an unambiguous sentinel and why this is not a fail-open.
+  return run.measures.filter(
+    (m) => m.invariant === true && !m.ok && !isUnmeasuredInvariant(m),
+  );
 }
 
 function fmtInvariant(m: DesktopPerfMeasure): string {
   return `${m.key} = ${m.value} (invariant: must be ${m.budget ?? 0})`;
+}
+
+function fmtUnmeasuredInvariant(m: DesktopPerfMeasure): string {
+  return `${m.key} = ${m.value} (DETECTOR ABSENT — the probe did not run; any real reading is ≥ 0)`;
 }
 
 /**
@@ -305,6 +353,8 @@ function fmtInvariant(m: DesktopPerfMeasure): string {
  *   no run / no measures (unknown)   → pass  (fail-soft: never block on missing data)
  *   run older than policy.maxAgeMs   → pass  (fail-soft: stale data is not a verdict)
  *   an INVARIANT measure breached    → block ALWAYS (independent of policy.block)
+ *   an INVARIANT never MEASURED      → warn  (unknown: a probe that did not run is not a
+ *                                            breach — WI-39665 D-008)
  *   ok (all budgeted measures met)   → pass
  *   warn (suite warned, no breach)   → warn  (surface, never block — even when armed)
  *   crit (a budgeted measure breach) → block IFF policy.block else warn
@@ -440,6 +490,33 @@ export function evaluateDesktopPerfGate(
         `🟥 desktop-perf-gate: desktop interaction REGRESSED on a QUIET host (${fmtPressure(p)}) — ` +
         `deploy of ${sha} ${verb}: ${reasons.join('; ')}`,
       verdictStatus: 'crit',
+      pressure,
+    };
+  }
+
+  // WI-39665 D-008: an invariant whose PROBE DID NOT RUN. Deliberately positioned AFTER
+  // the breach and budget branches, so it can never mask a verdict that was actually
+  // measured: a real invariant breach (value > 0) still blocks above, and a real budget
+  // breach still reaches its own branch. By the time control arrives here, nothing that
+  // was measured has anything to say, and the only outstanding fact is that something
+  // went unmeasured.
+  //
+  // `warn`/`unknown` and never `block`, for the reason the staleness branch gives: a
+  // missing measurement is not a verdict. But never `pass` either — a silent detector is
+  // itself a defect, and reporting it as a clean gate is the 13-day fail-soft silence
+  // D-007 exists to end. This is the branch that keeps "nothing measured it" audible
+  // without letting it freeze the fleet.
+  const unmeasured = unmeasuredInvariants(run);
+  if (unmeasured.length > 0) {
+    const reasons = unmeasured.map(fmtUnmeasuredInvariant);
+    return {
+      action: 'warn',
+      reasons,
+      summary:
+        `🟧 desktop-perf-gate: INVARIANT UNMEASURED — ${sha} advances UNVERIFIED: ${reasons.join('; ')}. ` +
+        `This is NOT a clear and NOT a breach: the probe did not run, so the gate has no evidence either way. ` +
+        `Fix the producer — a correctness invariant nobody is measuring is the failure this reports.`,
+      verdictStatus: 'unknown',
       pressure,
     };
   }

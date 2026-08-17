@@ -31,7 +31,17 @@ const breach: DesktopPerfMeasure = { key: 'interaction:plan-popup-open', value: 
 /** The P-003c invariant measures: egress held / egress escaped / detector absent. */
 const egressClean: DesktopPerfMeasure = { key: 'invariant:webview-http-egress', value: 0, unit: 'count', budget: 0, ok: true, invariant: true };
 const egressBreach: DesktopPerfMeasure = { key: 'invariant:webview-http-egress', value: 9, unit: 'count', budget: 0, ok: false, invariant: true };
-/** -1 is the spec's "detector absent" sentinel — unknown must read as a breach. */
+/**
+ * -1 is the spec's "detector absent" sentinel: the probe DID NOT RUN.
+ *
+ * WI-39665 D-008 changed what this means to the gate. It used to read as a BREACH, on the
+ * reasoning that "unknown must never read as clean" — which is right, and is still
+ * asserted below. But `block` is not the only way to avoid reading as clean, and it is the
+ * one with a catastrophic blast radius: `desktop_perf_runs` has no harness scoping, and the
+ * invariant branch bypasses BOTH block-mode arming and the PSI-quiet window, so one
+ * unmeasured probe froze `main` for every harness in the workspace for hours on
+ * 2026-08-17. The verdict is now `warn`/`unknown` — audible, never clean, never blocking.
+ */
 const egressUnknown: DesktopPerfMeasure = { key: 'invariant:webview-http-egress', value: -1, unit: 'count', budget: 0, ok: false, invariant: true };
 /** An invariant carrying NO budget — breachedInvariants must still catch it. */
 const unbudgetedInvariant: DesktopPerfMeasure = { key: 'invariant:console-errors', value: 3, unit: 'count', budget: null, ok: false, invariant: true };
@@ -283,10 +293,51 @@ describe('invariant measures (P-003c)', () => {
     expect(d.verdictStatus).toBe('ok');
   });
 
-  it('an absent detector (-1 sentinel) blocks — unknown must never read as clean', () => {
+  // WI-39665 D-008. These four cases pin the whole shape of the unmeasured-invariant
+  // verdict. Read them together: the property is "never clean, never blocking, and never
+  // able to mask something that WAS measured", and no single assertion states it.
+  it('an absent detector (-1 sentinel) does NOT block — a probe that never ran is not a breach', () => {
     const d = evaluateDesktopPerfGate(run([ok, egressUnknown]), WARN_ONLY);
-    expect(d.action).toBe('block');
+    expect(d.action).toBe('warn');
+    expect(d.verdictStatus).toBe('unknown');
     expect(d.summary).toContain('invariant:webview-http-egress');
+    expect(d.summary).toContain('UNMEASURED');
+  });
+
+  // The ORIGINAL intent of this case, preserved verbatim as an assertion because it is the
+  // half a future reader is most likely to undo: the fix must not have turned -1 into a
+  // clear. `pass` is what green-checkpoint says NOTHING about (it only logs/broadcasts a
+  // non-pass), so a silent detector degrading to `pass` is the fail-open D-007 exists to end.
+  it('an absent detector never reads as CLEAN — the -1 sentinel must not degrade to pass', () => {
+    const d = evaluateDesktopPerfGate(run([ok, egressUnknown]), WARN_ONLY);
+    expect(d.action).not.toBe('pass');
+    expect(d.verdictStatus).not.toBe('ok');
+  });
+
+  // THE RELOCATION TRAP. -1 carries budget 0 (non-null) with ok:false, so excluding it from
+  // breachedInvariants alone would simply move the false block into the BUDGET branch —
+  // which, armed and on a quiet host, blocks just the same. Same defect, new address.
+  it('an absent detector does not block via the BUDGET branch either, even armed on a quiet host', () => {
+    const d = evaluateDesktopPerfGate(run([ok, egressUnknown, ...quiet()]), ARMED);
+    expect(d.action).toBe('warn');
+    expect(d.verdictStatus).toBe('unknown');
+  });
+
+  // CALIBRATION CONTROL. Without this, every assertion above would also pass if the gate
+  // had simply stopped evaluating invariants at all — the guard would look strong while
+  // enforcing nothing. A real reading (value > 0) must still block, unarmed.
+  it('a MEASURED breach still blocks — the fix must not have disabled invariant enforcement', () => {
+    const d = evaluateDesktopPerfGate(run([ok, egressBreach]), WARN_ONLY);
+    expect(d.action).toBe('block');
+    expect(d.summary).toContain('INVARIANT BREACHED');
+  });
+
+  // The unmeasured branch sits AFTER the measured branches so it can never mask a verdict
+  // that WAS taken: a real budget regression on a quiet armed host still wins.
+  it('an unmeasured invariant does not mask a real budget breach in the same run', () => {
+    const d = evaluateDesktopPerfGate(run([breach, egressUnknown, ...quiet()]), ARMED);
+    expect(d.action).toBe('block');
+    expect(d.summary).toContain('REGRESSED');
   });
 
   it('an invariant breach outranks a budget breach in the summary', () => {
