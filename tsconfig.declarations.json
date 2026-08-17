@@ -184,6 +184,10 @@
     "apps/operator/scripts/operator-discovery.mjs",
     "packages/operator-core/lib/model-context-budget.mjs",
     "apps/operator/scripts/hooks/cc/posttooluse-migration-forward-compat-nudge.mjs",
-    "apps/operator/scripts/hooks/cc/posttooluse-no-proc-path-fixture-nudge.mjs"
+    "apps/operator/scripts/hooks/cc/posttooluse-no-proc-path-fixture-nudge.mjs",
+    // Imported by `scripts/set-doc-part.ts`. Enrolling rather than `@ts-ignore`-ing
+    // it because the module is a shared exit-safety helper with full JSDoc, so the
+    // emit is genuinely typed rather than a suppression.
+    "scripts/lib/write-stdout-sync.mjs"
   ]
 }
