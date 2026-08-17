@@ -27,6 +27,7 @@
  *   node --import tsx scripts/set-doc-part.ts --part-key <key> --body-file <path> --write
  *   cat body.md | node --import tsx scripts/set-doc-part.ts --part-key <key> --body-stdin --write
  *   node --import tsx scripts/set-doc-part.ts --list <prefix>
+ *   node --import tsx scripts/set-doc-part.ts --part-key <key> --show > body.md
  *
  * Exit codes: 0 ok (or dry run) · 1 refused (a guard fired) · 2 misuse.
  */
@@ -157,6 +158,10 @@ async function main(): Promise<void> {
         '  --write                actually write (default is a DRY RUN)',
         '  --author <id>          provenance; default $PAPERCUSP_SID',
         '  --list [prefix]        list part keys (optionally by prefix) and exit',
+        '  --show                 print ONE part: body to stdout, metadata to stderr, then',
+        '                         exit. `--part-key K --show > body.md` round-trips exactly',
+        '                         back through --body-file. Refuses a missing key rather',
+        '                         than printing nothing.',
         '',
         '  create/override (a NEW key requires --create plus the projection columns):',
         '  --create --kind <invariant|pointer|recipe|prose> --ordinal <n>',
@@ -198,6 +203,45 @@ async function main(): Promise<void> {
 
     const partKey = str(args.get('part-key'));
     if (!partKey) die(MISUSE, 'misuse: --part-key is required. Use --list <prefix> to find one.');
+
+    // ── --show: the READ half. Without it the only way to see what you are about to
+    // overwrite was a hand-written SELECT against harness_doc_parts — which is the exact
+    // raw-table access the write half exists to stop people doing (it is how `author`
+    // used to end up NULL). Hit live on EI-20687080717457981.
+    //
+    // The BODY goes to stdout and everything else to stderr, so
+    //   set-doc-part --part-key K --show > body.md
+    // yields a file that round-trips byte-exactly back through --body-file. Written
+    // synchronously because that redirect/pipe is the primary use: an async console.log
+    // followed by exit truncates (EI-20055889379250637, see `die`).
+    if (args.has('show')) {
+      const { rows } = await client.query<PartRow>(
+        `SELECT part_key, kind, body, ordinal, tombstone, client_scope, project_rank,
+                target_section, rationale_part_key
+           FROM harness_shared.harness_doc_parts
+          WHERE workspace_id = $1 AND harness_slug = $2 AND doc_id = $3 AND part_key = $4`,
+        [WORKSPACE_ID, HARNESS_SLUG, docId, partKey],
+      );
+      // A missing part must FAIL, never print nothing: empty stdout is indistinguishable
+      // from a genuinely empty body, and "I read it and it was blank" is how a real part
+      // gets clobbered by a write derived from a read that never happened.
+      if (rows.length === 0) {
+        die(
+          REFUSED,
+          `refused: no part "${partKey}" in ${docId}.\n` +
+            `  An empty read must not look like an empty body, so this is an error, not "".\n` +
+            `  Run --list <prefix> to find the real key.\n`,
+        );
+      }
+      const r = rows[0];
+      writeStderrSync(
+        `${r.tombstone ? '⊘ TOMBSTONED ' : ''}${r.part_key}  [${r.kind}, ord ${r.ordinal}, ` +
+          `${r.body.length} chars, scope ${JSON.stringify(r.client_scope)}, ` +
+          `rank ${r.project_rank}, section ${JSON.stringify(r.target_section)}]\n`,
+      );
+      writeStdoutSync(r.body);
+      return;
+    }
 
     const body = readBody(args);
     const write = args.get('write') === true;
