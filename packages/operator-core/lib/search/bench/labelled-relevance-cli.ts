@@ -33,7 +33,12 @@ import fs from 'node:fs';
 import type { SearchHit } from '@papercusp/search';
 
 import { llmCall } from '../../llm-testing/llm-client';
-import { judgeRelevance } from './judge-agreement';
+import {
+  JUDGE_AGREEMENT_MODEL,
+  JUDGE_AGREEMENT_RUBRIC_VERSION,
+  judgeRelevance,
+} from './judge-agreement';
+import { createCachedJudge } from './judge-cache';
 import {
   DOC_CHARS,
   formatLabelledReport,
@@ -364,10 +369,31 @@ async function main(): Promise<void> {
     );
   }
 
+  // ---- Judge-grade reuse ---------------------------------------------------
+  // Grades are PAID DATA. They persist to Postgres keyed on the judged TEXT
+  // (not rank, not tool), so the control arm — the same documents in a
+  // different order — reuses this arm's judgements for free. See judge-cache.ts
+  // and EI-20653219342536753, filed after ~$21.68 of grades were reaped from
+  // /tmp along with the "$0 re-sweep" capability that depended on them.
+  const runId = `${seed}:${Date.now()}`;
+  const cached = createCachedJudge({
+    sql,
+    workspaceId,
+    judgeModel: JUDGE_AGREEMENT_MODEL,
+    rubricVersion: JUDGE_AGREEMENT_RUBRIC_VERSION,
+    runId,
+    inner: (input) => judgeRelevance(input, llmCall),
+    bypassReads: process.argv.includes('--no-judge-cache'),
+    onWarn: (m) => console.warn(`[judge-cache] ${m}`),
+  });
+  if (process.argv.includes('--no-judge-cache')) {
+    console.log('[labelled] --no-judge-cache: re-judging every pair. Grades are still WRITTEN, just not served.');
+  }
+
   const report = await runLabelledPass({
     queries,
     retrieve,
-    judge: (input) => judgeRelevance(input, llmCall),
+    judge: cached.judge,
     k,
     judgeConcurrency: argInt('--concurrency', 4),
     sampleSeed: seed,
