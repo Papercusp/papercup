@@ -119,16 +119,57 @@ test.describe('/adv Work items panel — render loop', () => {
     const debug = Boolean(process.env.WI39552_DEBUG);
     const loops: string[] = [];
 
+    const dumps: Promise<string>[] = [];
     page.on('console', (msg) => {
       if (msg.type() !== 'error' || !LOOP_RE.test(msg.text())) return;
       const loc = msg.location();
       loops.push(`${loc.url}:${loc.lineNumber}:${loc.columnNumber}`);
+      if (debug && dumps.length < 2) {
+        dumps.push(
+          Promise.all(
+            msg
+              .args()
+              .map((a) =>
+                a
+                  .evaluate((v: unknown) =>
+                    v && typeof v === 'object' && 'stack' in (v as object)
+                      ? String((v as { stack?: unknown }).stack)
+                      : String(v),
+                  )
+                  .catch((e: unknown) => `<arg eval failed: ${String(e)}>`),
+              ),
+          ).then((parts) => parts.join('\n@@ARG@@\n')),
+        );
+      }
     });
     page.on('pageerror', (err) => {
       if (!LOOP_RE.test(err.message)) return;
       if (debug) console.log(`[pageerror stack]\n${err.stack}\n---`);
       loops.push(`pageerror: ${err.message}`);
     });
+
+    if (debug) {
+      // Vite's client console forwarder stringifies args before Playwright sees
+      // them. Patch console.error FIRST (init scripts run before page scripts),
+      // so we capture React's original args + the call stack.
+      await page.addInitScript(() => {
+        const w = window as unknown as { __mud?: string[] };
+        w.__mud = [];
+        const orig = console.error.bind(console);
+        console.error = (...args: unknown[]) => {
+          const first = String(args[0] ?? '');
+          if (first.includes('Maximum update depth') && (w.__mud?.length ?? 0) < 3) {
+            const rendered = args.map((a) =>
+              a && typeof a === 'object' && 'stack' in (a as object)
+                ? String((a as { stack?: unknown }).stack)
+                : String(a),
+            );
+            w.__mud?.push(`${rendered.join('\n@@ARG@@\n')}\n@@CALLSTACK@@\n${new Error().stack}`);
+          }
+          orig(...args);
+        };
+      });
+    }
 
     const sync = await stubApis(page);
     await page.goto(`${baseURL}/adv?tab=harnesses&slug=${SLUG}&scope=self&welcome=0`, {
@@ -154,7 +195,13 @@ test.describe('/adv Work items panel — render loop', () => {
     // window so a slow loop cannot pass by finishing after the assertion.
     await page.waitForTimeout(5_000);
 
-    if (debug && loops.length) console.log(`[loop sites]\n${loops.join('\n')}`);
+    if (debug && loops.length) {
+      for (const d of await Promise.all(dumps)) console.log(`[loop args]\n${d}\n=====`);
+      const captured = await page.evaluate(
+        () => (window as unknown as { __mud?: string[] }).__mud ?? [],
+      );
+      for (const c of captured) console.log(`[loop capture]\n${c}\n=====`);
+    }
     expect(
       loops.length,
       `React aborted ${loops.length} runaway update loop(s) on mount (WI-39552). ` +
