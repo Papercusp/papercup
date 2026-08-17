@@ -35,8 +35,25 @@ export function analyzeMockCalls(text: string, fileName?: string): {
     form: string;
     line: number;
 }[];
-/** Resolve a relative mock specifier against the mocking file, extensionless + repo-relative. */
-export function resolveSpec(filePath: any, spec: any): string | null;
+/**
+ * Resolve a mock specifier to the MODULE IDENTITY the registry is keyed by.
+ *
+ * A RELATIVE specifier is resolved against the mocking file (extensionless, repo-relative),
+ * because the same `'./x'` means a different module from each directory.
+ *
+ * A BARE specifier (`@papercusp/agent-mcp`, `nuqs`, `node:child_process`) is ALREADY a
+ * global identity, so it is returned verbatim. Returning `null` for these — the behaviour
+ * until WI-39707 — made every package-mocking factory structurally invisible to this guard,
+ * which is the entire population that actually reds the gate: measured 2026-08-17, bare
+ * specifiers carry 174 full-replacement factories on `@papercusp/db-org`, 151 on
+ * `@papercusp/sync` and 50 on `@papercusp/agent-mcp`, against 26 for the one relative
+ * module the registry had protected. The guard was watching the small half of the class.
+ *
+ * Sub-path exports stay DISTINCT (`@papercusp/flags` !== `@papercusp/flags/server`): they
+ * have different export surfaces, so collapsing them would both miss strandings and mint
+ * false ones.
+ */
+export function resolveSpec(filePath: any, spec: any): any;
 /** Pure check of ONE file against the protected set. Returns violations. */
 export function checkFile({ path, text, protectedModules }: {
     path: any;
@@ -60,7 +77,12 @@ export function collectCandidateFiles({ listFiles, read, protectedModules }: {
 }[];
 /**
  * Modules whose mock factories MUST use the import-actual spread.
- * Repo-relative, extensionless. Each entry costs a one-time conversion of its mockers.
+ *
+ * An entry is EITHER a repo-relative extensionless path (for a module mocked by relative
+ * specifier) OR a bare package specifier exactly as tests write it (`@papercusp/agent-mcp`,
+ * `@papercusp/flags/server`). Sub-path exports are DISTINCT modules with distinct export
+ * surfaces, so `@papercusp/flags` and `@papercusp/flags/server` must be listed separately.
+ * Each entry costs a one-time conversion of its mockers.
  */
 export const PROTECTED_MODULES: {
     module: string;

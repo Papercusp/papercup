@@ -781,14 +781,33 @@ export function lintTscScopeFromArgv(argv: string[]): "update" | "update:files" 
  * without that one branch being wrong about itself. Pinned by
  * packages/operator-core/lib/lint-tsc.test.ts.
  *
- * @param {{ label: string, scope: string, code: number, nothingTypechecked?: boolean }} input
+ * ## EI-20712456514085524 — PARTIAL coverage is the third outcome, and it exited 0 as `clean`
+ *
+ * `nothingTypechecked` above covers the ALL-uncovered case. The mixed case — some named files
+ * inside the project, some outside — took the other branch: the banner warns on stderr, the
+ * covered verdict is genuinely true, so the gate exits 0 and the marker read `status=clean`.
+ * That is the same false-coverage failure the all-uncovered branch exists to prevent, arriving
+ * through the door left open beside it. `--files=a,b,c,d` naming two operator-core files and two
+ * `packages/agent-mcp` ones printed `exit=0 status=clean`, and an agent who names four files and
+ * reads `clean` concludes four files compiled. Two never did.
+ *
+ * The exit CODE is deliberately unchanged (0): the covered files really were judged, and making
+ * the mixed case fatal would red the common, legitimate "check my edit across two packages" run.
+ * What changes is the machine-readable token, because that is what is actually misread:
+ * `status=partial filesUnchecked=N`. `partial` is chosen over `clean-partial` so that the
+ * established consumer idiom — a substring `grep 'status=clean'` — CANNOT match a run that left
+ * files unchecked. A run with full coverage still reports exactly `status=clean`, so this is
+ * additive for every caller that was already honest.
+ *
+ * @param {{ label: string, scope: string, code: number, nothingTypechecked?: boolean, filesUnchecked?: number }} input
  * @returns {string}
  */
-export function formatLintTscResultMarker({ label, scope, code, nothingTypechecked }: {
+export function formatLintTscResultMarker({ label, scope, code, nothingTypechecked, filesUnchecked, }: {
     label: string;
     scope: string;
     code: number;
     nothingTypechecked?: boolean;
+    filesUnchecked?: number;
 }): string;
 export function runTscBaselineGate({ root, tscCommand, baselineFile, label, argv, countField, foreignBaselines, }: {
     root: any;
