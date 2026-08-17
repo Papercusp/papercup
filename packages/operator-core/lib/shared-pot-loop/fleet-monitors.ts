@@ -160,7 +160,6 @@ export async function sweepOrphanedTakenBy(
   // CTE captures the OLD taken_by (RETURNING alone reflects the NEW row).
   const rows = await sql<Array<{ feature_id: string; taken_by: string; updated_ts: number }>>`
     WITH live_holder AS (${liveHolderFragment(sql, liveGraceSec)}),
-    known_holder AS (${knownHolderFragment(sql)}),
     parked_holder AS (${parkedHolderFragment(sql, parkedGraceSec)}),
     victims AS (
       SELECT f.harness_slug, f.feature_id, f.taken_by, f.updated_ts
