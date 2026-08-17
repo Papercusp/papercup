@@ -24,10 +24,14 @@ export interface StallEvent {
 export interface StallWakerDeps {
   /** GET /admin/stalls?since=<ms> on the running gateway → the new stall candidates. */
   fetchStalls: (sinceMs: number) => Promise<{ now: number; stalls: StallEvent[] }>;
-  /** Did this OWNER (ANY role — a harness bee, an su/psu session, anything holding a coord wake-key) actually
-   *  STALL (go idle/stream-silent), vs recover on its own retry? The false-positive guard: we only wake an
-   *  owner we've confirmed is sitting idle. Role-agnostic — the autowake works the same for every caller. */
-  ownerIsIdle: (ownerId: string) => Promise<boolean>;
+  /** Last OBSERVED activity for this owner, epoch ms (0 = unknown owner): the max across every liveness
+   *  source available — bee stream output, coord presence, and the gateway's per-owner ledger `lastAt`
+   *  (ANY request counts, including a retry that got shed another 429). Replaces the old boolean
+   *  `ownerIsIdle`: the waker needs the TIMESTAMP so it can compare activity against the stall itself —
+   *  "silent for 30s right now" is TRUE for any healthy agent mid-long-tool-call or mid-inference, and
+   *  acting on that bare verdict is what mass-ESC'd 17 live agents/min on 2026-08-17 (owner-reported
+   *  "agents keep getting interrupted"). Role-agnostic — the same for every caller. */
+  ownerLastActivityAt: (ownerId: string) => Promise<number>;
   /** Has the account's budget actually returned (its pause expired + the gateway can serve again)? Guards
    *  against waking a bee straight back into a still-throttled pool. */
   capacityBack: (accountId: string, soonestResetAt: number) => Promise<boolean>;
@@ -74,12 +78,35 @@ export interface StallWakerOptions {
    *  it only reclaims memory from an owner that's been silent this long (its session is
    *  surely over). Default 24 h. */
   breadcrumbTtlMs?: number;
+  /** Silence needed before an owner counts as IDLE (wake-able / possibly wedged). Was the loop-side
+   *  IDLE_SILENCE_MS threshold buried inside the old ownerIsIdle dep; it lives here now so the state
+   *  machine that acts on it is the thing that owns it. Default 30 s. */
+  idleSilenceMs?: number;
+  /** 2026-08-17 mass-interrupt root cause: a turn may be declared DEAD (fast-ESC-able) only once the
+   *  owner's stall stream AND all observed activity have BOTH been quiet this long past the LATEST
+   *  stall. The gateway records a stall per shed request, and every request (retries included) bumps
+   *  the owner ledger — so an alive CLI in 429 retry-backoff keeps refreshing both signals and can
+   *  never be declared dead mid-retry. The old code ESC'd after 30s of bare silence, which is exactly
+   *  a backoff gap — it was killing healthy retrying turns. Default 2 min. */
+  deadQuietMs?: number;
+  /** Post-stall activity must be this much LATER than the stall to count as recovery — the stall
+   *  write itself bumps the gateway ledger's lastAt, so an equal-ish timestamp is the shed, not
+   *  evidence the owner survived it. Default 5 s. */
+  recoveryGraceMs?: number;
 }
 
 interface Pending {
   accountId: string;
   soonestResetAt: number;
   recordedAt: number;
+  /** When this owner's LATEST stall was shed — the reference point for both the recovered check
+   *  (activity after it ⇒ the turn survived) and the dead-quiet gate (silence since it ⇒ dead). */
+  lastStallAt: number;
+  /** One fast-ESC per stall episode: latched once an ESC landed (or found no live session), reset
+   *  only by a strictly NEWER stall (fresh evidence of a fresh death). Without this the waker
+   *  re-ESC'd the same owner every unwedgeCooldownMs for up to pendingTtlMs while capacity stayed
+   *  walled — the 2026-08-17 every-45s interrupt hammering. */
+  unwedged: boolean;
 }
 
 const DEFAULTS: Required<StallWakerOptions> = {
@@ -89,6 +116,9 @@ const DEFAULTS: Required<StallWakerOptions> = {
   maxWakesPerBee: 3,
   pendingTtlMs: 2 * 60 * 60_000,
   breadcrumbTtlMs: 24 * 60 * 60_000,
+  idleSilenceMs: 30_000,
+  deadQuietMs: 2 * 60_000,
+  recoveryGraceMs: 5_000,
 };
 
 export class StallWaker {
@@ -132,8 +162,21 @@ export class StallWaker {
         this.since = Math.max(this.since, s.at);
         pulled++;
         const ex = this.pending.get(s.ownerId);
-        if (!ex) this.pending.set(s.ownerId, { accountId: s.accountId, soonestResetAt: s.soonestResetAt, recordedAt: now });
-        else ex.soonestResetAt = Math.max(ex.soonestResetAt, s.soonestResetAt); // a later stall pushes the wait out
+        if (!ex) {
+          this.pending.set(s.ownerId, {
+            accountId: s.accountId,
+            soonestResetAt: s.soonestResetAt,
+            recordedAt: now,
+            lastStallAt: s.at,
+            unwedged: false,
+          });
+        } else {
+          ex.soonestResetAt = Math.max(ex.soonestResetAt, s.soonestResetAt); // a later stall pushes the wait out
+          if (s.at > ex.lastStallAt) {
+            ex.lastStallAt = s.at;
+            ex.unwedged = false; // a NEWER stall = fresh death evidence — re-arm the one-shot un-wedge
+          }
+        }
       }
     } catch (e) {
       this.deps.log('warn', `stall-waker: fetchStalls failed: ${(e as Error).message}`);
@@ -148,15 +191,30 @@ export class StallWaker {
         continue;
       }
 
-      // 2a. FALSE-POSITIVE GUARD — only act once the bee is confirmed idle. A bee that recovered on its own
-      //     CLI retry is still running → not idle → dropped after the confirm window.
-      let idle = false;
+      // 2a. FALSE-POSITIVE GUARDS — establish what the owner has DONE, not just whether it is quiet.
+      let lastAct = 0;
       try {
-        idle = await this.deps.ownerIsIdle(ownerId);
+        lastAct = await this.deps.ownerLastActivityAt(ownerId);
       } catch (e) {
-        this.deps.log('warn', `stall-waker: ownerIsIdle(${ownerId}) failed: ${(e as Error).message}`);
+        this.deps.log('warn', `stall-waker: ownerLastActivityAt(${ownerId}) failed: ${(e as Error).message}`);
         continue; // unknown → re-check next tick, don't wake blindly
       }
+
+      // 2a-i. RECOVERED — the owner demonstrably acted AFTER its latest stall (a successful gateway
+      //       request, a coord call, bee stream output), so the shed 429 did NOT kill its turn. Drop it:
+      //       a live turn must never be ESC'd or woken. (The grace excludes the stall's own ledger bump.)
+      //       This is the check the old 30s-silence heuristic could not make — an agent 31s into a long
+      //       tool call read as "idle" and got its healthy turn ESC'd (2026-08-17 mass-interrupt).
+      if (lastAct > info.lastStallAt + this.opt.recoveryGraceMs) {
+        this.pending.delete(ownerId);
+        dropped.push(ownerId);
+        this.deps.log('info', `stall-waker: ${ownerId} active after its last stall (recovered on its own) — dropped`);
+        continue;
+      }
+
+      // 2a-ii. IDLE — quiet long enough to be wake-able. An unknown owner (lastAct 0: no bee row, no
+      //        coord presence, no gateway ledger) is never idle → falls to the confirm-window drop.
+      const idle = lastAct > 0 && now - lastAct > this.opt.idleSilenceMs;
       if (!idle) {
         if (now - info.recordedAt > this.opt.confirmWindowMs) {
           this.pending.delete(ownerId);
@@ -166,33 +224,38 @@ export class StallWaker {
         continue;
       }
 
-      // 2a-FAST. UN-WEDGE NOW (owner-requested 2026-06-23): the bee is confirmed idle = its turn DIED on a
-      // gateway error and the CLI is wedged (can't receive ANY message — not even the wake below — until the
-      // dead turn is ESC'd). Don't make it wait out the capacity gate to become reachable: ESC it immediately
-      // so it can receive messages again. Storm-safe (ESC only, NO wake → we don't push it back into a still-
-      // throttled pool); the capacity-gated wake below does the actual resume once budget returns. Cooldowned
-      // so a session that keeps erroring isn't ESC-stormed.
-      if (this.deps.unwedge && now - (this.lastUnwedgeAt.get(ownerId) ?? 0) >= this.opt.unwedgeCooldownMs) {
-        // Attempt cadence unconditional (keeps the existing unwedgeCooldownMs pacing regardless of
-        // outcome — a permanently-unreachable owner, e.g. a headless bee with no live pty, must not
-        // be retried every tick). What changed (root-cause fix, 2026-07-01): the OUTCOME is now
-        // actually checked — `unwedge` returns false on a refused/failed ESC (it never throws for
-        // that), so we must NOT report success (push to `unwedged` / log "reachable again") when it
-        // didn't land. Silently treating a refusal as success was exactly why a mass gateway-outage
-        // burst (>~10 distinct owners/60s trips the storm guard) left owners past the cap wedged with
-        // no visible failure and no urgency to retry.
+      // 2a-FAST. UN-WEDGE (owner-requested 2026-06-23): ESC the dead turn so the wedged CLI re-arms its
+      // inbox-wake watch, decoupled from the capacity gate. Guarded three ways (2026-08-17 mass-interrupt
+      // root-cause fix — the ESC is a keystroke into a live session, so a false positive KILLS real work):
+      //   (a) ONE ESC per stall episode (`info.unwedged`) — never the old every-cooldown hammering;
+      //   (b) the death must be CORROBORATED: stall stream AND activity both quiet ≥ deadQuietMs past the
+      //       latest stall — an alive CLI in 429 retry-backoff refreshes both, so it can't be ESC'd mid-retry;
+      //   (c) the recovered check above already dropped anyone who acted after the stall.
+      // Cooldown retained for retry-after-REFUSAL (storm guard etc.) only.
+      if (
+        this.deps.unwedge &&
+        !info.unwedged &&
+        now - info.lastStallAt >= this.opt.deadQuietMs &&
+        now - (this.lastUnwedgeAt.get(ownerId) ?? 0) >= this.opt.unwedgeCooldownMs
+      ) {
+        // The OUTCOME decides what happens next (2026-07-01 root-cause fix, extended 2026-08-17):
+        // ok → the ESC landed; the episode is un-wedged, LATCH it — repeating the keystroke would
+        //   only kill whatever fresh turn the ESC (or a wake, or the owner) started.
+        // expected (no live session) → nothing to ESC; equally latched — only a NEW stall re-arms.
+        // refusal (storm guard etc.) → stays un-latched, retried after unwedgeCooldownMs.
         this.lastUnwedgeAt.set(ownerId, now);
         try {
           const res = await this.deps.unwedge(ownerId);
           if (res.ok) {
+            info.unwedged = true;
             unwedged.push(ownerId);
             this.deps.log('info', `stall-waker: fast-ESC un-wedged ${ownerId} (turn died on a gateway error) — reachable again`);
           } else if (res.expected) {
             // EXPECTED non-event: the "stalled" owner has no live turn to ESC (idle, or already ended its turn)
-            // — it is NOT wedged. Non-actionable, and it recurs every cooldown for the same gone owners, so we
-            // DON'T log it (this was the ~27×/15min `[stall-waker] … no live interruptible session` host-log
-            // spam). A truly gone owner is dropped when its bee row / coord presence ages out; a resumable one
-            // is handled by the capacity-gated wake path below.
+            // — it is NOT wedged. Non-actionable and silent (this was the ~27×/15min `[stall-waker] … no live
+            // interruptible session` host-log spam). Latched: re-attempting every cooldown is what turned a
+            // stale pending entry into a standing threat to the owner's NEXT live turn.
+            info.unwedged = true;
           } else {
             this.deps.log(
               'warn',
