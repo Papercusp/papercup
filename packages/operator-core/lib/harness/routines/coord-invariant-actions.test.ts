@@ -906,3 +906,79 @@ describe('planSharedHiveCapture (shared-hive-loop P-012/P-013 leg)', () => {
     expect(a.title).toBe(b.title);
   });
 });
+
+// WI-39736 fix property 2: a background sweep that DOES release a claim must
+// notify the holder, so a silent divergence (agent keeps working an item the
+// fleet has re-issued) is impossible. `sweepOrphanedTakenBy` deliberately omits
+// the sibling reaper's known-holder clause, so a live REMOTE holder with no
+// local presence row is still swept — that is precisely who this notice reaches.
+describe('planOrphanSweepNotices (WI-39736 — the swept holder is told)', () => {
+  const leaders = (m: Record<string, string | null>) => new Map(Object.entries(m));
+
+  it('addresses the HOLDER and its fleet leader, naming every item it lost', () => {
+    const notices = planOrphanSweepNotices(
+      [
+        { workItemId: 'WI-1', takenBy: 'su-aaa' },
+        { workItemId: 'WI-2', takenBy: 'su-aaa' },
+      ],
+      leaders({ 'su-aaa': 'su-leader' }),
+      'sidestage',
+    );
+    expect(notices).toHaveLength(1);
+    expect(notices[0].targets).toEqual(['su-aaa', 'su-leader']);
+    expect(notices[0].workItemIds).toEqual(['WI-1', 'WI-2']);
+    expect(notices[0].summary).toContain('WI-1, WI-2');
+    expect(notices[0].summary).toContain('sidestage');
+  });
+
+  it('sends ONE notice per holder, not one per item — a swarm death frees many at once', () => {
+    // The incident that motivated the fix cleared two items in a single
+    // statement; N wakes to the same owner would be a storm, not a signal.
+    const notices = planOrphanSweepNotices(
+      [
+        { workItemId: 'WI-1', takenBy: 'su-aaa' },
+        { workItemId: 'WI-2', takenBy: 'su-aaa' },
+        { workItemId: 'WI-3', takenBy: 'su-bbb' },
+      ],
+      leaders({}),
+      'sidestage',
+    );
+    expect(notices.map((n) => n.holderOwnerId).sort()).toEqual(['su-aaa', 'su-bbb']);
+    expect(notices.every((n) => n.targets.length === 1)).toBe(true);
+  });
+
+  it('never addresses a holder that is itself its fleet leader twice', () => {
+    const notices = planOrphanSweepNotices(
+      [{ workItemId: 'WI-1', takenBy: 'su-aaa' }],
+      leaders({ 'su-aaa': 'su-aaa' }),
+      'sidestage',
+    );
+    expect(notices[0].targets).toEqual(['su-aaa']);
+  });
+
+  it('drops non-agent holders — a reaper/system marker has nobody to wake', () => {
+    const notices = planOrphanSweepNotices(
+      [
+        { workItemId: 'WI-1', takenBy: 'reaper:orphan-sweep' },
+        { workItemId: 'WI-2', takenBy: 'system:claim-integrity-monitor' },
+        { workItemId: 'WI-3', takenBy: '  ' },
+        { workItemId: 'WI-4', takenBy: 'su-real' },
+      ],
+      leaders({}),
+      'sidestage',
+    );
+    expect(notices.map((n) => n.holderOwnerId)).toEqual(['su-real']);
+  });
+
+  it('bounds the summary but keeps the full id list on the notice', () => {
+    const cleared = Array.from({ length: 8 }, (_, i) => ({ workItemId: `WI-${i}`, takenBy: 'su-aaa' }));
+    const [notice] = planOrphanSweepNotices(cleared, leaders({}), 'sidestage');
+    expect(notice.workItemIds).toHaveLength(8);
+    expect(notice.summary).toContain('+3 more');
+    expect(notice.summary).not.toContain('WI-7');
+  });
+
+  it('CALIBRATION: an empty sweep produces no notice at all', () => {
+    expect(planOrphanSweepNotices([], leaders({}), 'sidestage')).toEqual([]);
+  });
+});
