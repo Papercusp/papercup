@@ -529,3 +529,205 @@ test('slot affinity (P-028): an identified owner sticks to its warm backend whil
   assert.equal(admin.affinity.switches, 0);
   assert.equal(admin.affinity.trackedOwners, 2);
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// P-008 / D-009 — START-ON-DEMAND (on-demand-local-inference-lifecycle-2026-08-17)
+//
+// D-009 settled WHERE the seam attaches, and these tests pin that decision rather than the
+// item's original (unreachable) framing. "On a request routed to a stopped backend, start it
+// before forwarding" cannot happen: pickLeastLoaded filters on `healthy`, a stopped backend
+// fails its probe, so select() returns null and proxyLocal 502s BEFORE any forward. Nothing is
+// ever routed to a stopped backend. Ensure-running therefore attaches at the DEAD-END PRE-FLIGHT
+//   if (!pool.select(model) && !pool.saturatedFor(model)) coldStartError = await ensure...
+// and the tests below fix each half of that condition, plus the health feedback that makes the
+// started backend selectable on the SAME request.
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('P-008/D-009 cold start: a model served ONLY by a stopped on-demand backend starts it and routes on that SAME request', async () => {
+  const b1 = await startFakeBackend('ornith', okJsonReply({ id: 'from-cold-started' }));
+  backends = [b1];
+  const ensured: string[] = [];
+  await boot([onDemand('ornith', b1.baseUrl, ['ornith-35b'])], {
+    ensureLocalBackendRunning: async (b) => {
+      ensured.push(b.id);
+      return { ok: true };
+    },
+  });
+  markStopped('ornith');
+  assert.equal(pool.select('ornith-35b'), null, 'precondition: a stopped backend is NOT selectable');
+
+  const res = await chatCompletions({ model: 'ornith-35b', messages: [] });
+
+  assert.equal(res.status, 200, 'the cold start rescued a request that would otherwise 502');
+  assert.deepEqual(ensured, ['ornith'], 'the stopped on-demand backend serving this model was started');
+  assert.equal(((await res.json()) as { id: string }).id, 'from-cold-started');
+  assert.equal(b1.requests.length, 1, 'the request was FORWARDED after the start, not dropped');
+  // recordOutcome(id, true) is REQUIRED, not decoration: health moves only on probes and live
+  // outcomes, so without feeding the success back the pool still believes the backend unhealthy
+  // and the request 502s despite a running backend. The 200 above is what actually proves it.
+  assert.equal(pool.health().get('ornith')?.healthy, true, 'the successful start was fed back into health state');
+});
+
+test('P-008/D-009: the WARM path never calls ensure-running — a healthy on-demand backend routes with zero lifecycle I/O', async () => {
+  const b1 = await startFakeBackend('ornith', okJsonReply({ id: 'from-warm' }));
+  backends = [b1];
+  const ensured: string[] = [];
+  await boot([onDemand('ornith', b1.baseUrl, ['ornith-35b'])], {
+    ensureLocalBackendRunning: async (b) => {
+      ensured.push(b.id);
+      return { ok: true };
+    },
+  });
+  // No markStopped: the backend is healthy, so select() hits on the first read.
+
+  const res = await chatCompletions({ model: 'ornith-35b', messages: [] });
+
+  assert.equal(res.status, 200);
+  assert.deepEqual(ensured, [], 'a selectable backend must never reach the lifecycle seam — the warm path is one in-memory scan');
+  assert.equal(b1.requests.length, 1);
+});
+
+test('P-008/D-009: a SATURATED pool still 429s and does NOT start another backend — the !saturatedFor guard is load-bearing', async () => {
+  const b1 = await startFakeBackend('ornith', okJsonReply({ id: 'never-reached' }));
+  backends = [b1];
+  const ensured: string[] = [];
+  // maxConcurrent 1, and its one slot is occupied: the model IS served by a healthy backend,
+  // there is simply no free slot. select() returns null for a reason that has NOTHING to do with
+  // the unit being down — exactly the case a naive "select() was null → start one" would answer
+  // by spawning more GPU processes.
+  await boot([onDemand('ornith', b1.baseUrl, ['ornith-35b'], 1)], {
+    ensureLocalBackendRunning: async (b) => {
+      ensured.push(b.id);
+      return { ok: true };
+    },
+  });
+  pool.recordStart('ornith');
+  assert.equal(pool.select('ornith-35b'), null, 'precondition: nothing selectable');
+  assert.equal(pool.saturatedFor('ornith-35b'), true, 'precondition: null for SATURATION, not for a dead end');
+
+  const res = await chatCompletions({ model: 'ornith-35b', messages: [] });
+
+  assert.equal(res.status, 429, 'backpressure, not a cold start');
+  assert.ok(res.headers.get('retry-after'));
+  assert.deepEqual(ensured, [], 'starting more GPU processes is not an answer to backpressure');
+  assert.equal(b1.requests.length, 0);
+});
+
+test('P-008/D-009: an ALWAYS-ON unhealthy backend is never started — the seam is scoped to on-demand units', async () => {
+  const b1 = await startFakeBackend('always', okJsonReply({ id: 'never-reached' }));
+  backends = [b1];
+  const ensured: string[] = [];
+  // lifecycle omitted == 'always-on': a unit someone else owns the lifecycle of. Its being
+  // unhealthy is a FAULT to report, not a cold start to perform.
+  await boot([{ id: 'always', kind: 'llama-server', baseUrl: b1.baseUrl, models: ['m'], maxConcurrent: 4, enabled: true }], {
+    ensureLocalBackendRunning: async (b) => {
+      ensured.push(b.id);
+      return { ok: true };
+    },
+  });
+  markStopped('always');
+
+  const res = await chatCompletions({ model: 'm', messages: [] });
+
+  assert.equal(res.status, 502);
+  assert.deepEqual(ensured, [], 'an always-on backend must never be started by the request path');
+  const json = (await res.json()) as { error: { message: string } };
+  assert.match(json.error.message, /none registered \/ all unhealthy/);
+  assert.doesNotMatch(json.error.message, /cold start/, 'no start was attempted, so none may be reported');
+});
+
+test('P-008/D-009: a FAILED cold start is NAMED in the 502 — never flattened into "none registered"', async () => {
+  const b1 = await startFakeBackend('ornith', okJsonReply({ id: 'never-reached' }));
+  backends = [b1];
+  await boot([onDemand('ornith', b1.baseUrl, ['ornith-35b'])], {
+    ensureLocalBackendRunning: async () => ({ ok: false, error: 'unit llama-ornith.service failed: status=203/EXEC' }),
+  });
+  markStopped('ornith');
+
+  const res = await chatCompletions({ model: 'ornith-35b', messages: [] });
+
+  assert.equal(res.status, 502);
+  const json = (await res.json()) as { error: { message: string } };
+  // "we tried to start the backend that serves this model and could not" is a DIFFERENT operator
+  // problem from "nothing serves this model" — reporting it as the latter hides the real fault.
+  assert.match(json.error.message, /cold start of 'ornith' failed: unit llama-ornith\.service failed: status=203\/EXEC/);
+  assert.doesNotMatch(json.error.message, /none registered/);
+  assert.equal(b1.requests.length, 0);
+});
+
+test('P-008/D-009: a cold start that THROWS is surfaced as a 502, not an unhandled crash', async () => {
+  const b1 = await startFakeBackend('ornith', okJsonReply({ id: 'never-reached' }));
+  backends = [b1];
+  await boot([onDemand('ornith', b1.baseUrl, ['ornith-35b'])], {
+    ensureLocalBackendRunning: async () => {
+      throw new Error('systemctl not on PATH');
+    },
+  });
+  markStopped('ornith');
+
+  const res = await chatCompletions({ model: 'ornith-35b', messages: [] });
+
+  assert.equal(res.status, 502, 'an upstream-shaped lifecycle failure must not take the request (or the gateway) down');
+  const json = (await res.json()) as { error: { message: string } };
+  assert.match(json.error.message, /cold start of 'ornith' threw: systemctl not on PATH/);
+
+  // And the gateway is still serving afterwards.
+  const after = await chatCompletions({ model: 'nothing-serves-this', messages: [] });
+  assert.equal(after.status, 502);
+});
+
+test('P-008/D-009: N concurrent requests for a stopped backend share ONE cold start — the in-flight map de-duplicates the WAIT', async () => {
+  const b1 = await startFakeBackend('ornith', okJsonReply({ id: 'from-cold-started' }));
+  backends = [b1];
+  const ensured: string[] = [];
+
+  let releaseStart: () => void = () => {};
+  const startGate = new Promise<void>((r) => {
+    releaseStart = r;
+  });
+
+  // Open the gate only once ALL THREE requests are genuinely parked on the shared promise — no
+  // sleep, so this cannot flake under load. The cold-start PRE-FLIGHT is the only select() call
+  // made with no `exclude` set; the attempt loop always passes its `tried` set.
+  const CONCURRENCY = 3;
+  let preflights = 0;
+  let markParked: () => void = () => {};
+  const allParked = new Promise<void>((r) => {
+    markParked = r;
+  });
+
+  await boot(
+    [onDemand('ornith', b1.baseUrl, ['ornith-35b'], 8)],
+    {
+      ensureLocalBackendRunning: async (b) => {
+        ensured.push(b.id);
+        await startGate;
+        return { ok: true };
+      },
+    },
+    (p) => ({
+      ...p,
+      select: (model, exclude, ownerId) => {
+        if (exclude === undefined) {
+          preflights++;
+          if (preflights === CONCURRENCY) markParked();
+        }
+        return p.select(model, exclude, ownerId);
+      },
+    }),
+  );
+  markStopped('ornith');
+
+  const inflight = Array.from({ length: CONCURRENCY }, () => chatCompletions({ model: 'ornith-35b', messages: [] }));
+  await allParked; // every request has reached the pre-flight and is waiting on the shared start
+  releaseStart();
+  const results = await Promise.all(inflight);
+
+  assert.deepEqual(
+    results.map((r) => r.status),
+    [200, 200, 200],
+    'all three requests were served by the single started backend',
+  );
+  assert.deepEqual(ensured, ['ornith'], 'exactly ONE start for three concurrent requests — the wait is shared, not repeated');
+  assert.equal(b1.requests.length, CONCURRENCY, 'and all three were forwarded once it was up');
+});
