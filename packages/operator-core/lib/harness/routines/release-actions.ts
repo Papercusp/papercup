@@ -1080,7 +1080,7 @@ export async function trackGateStall(
     `SELECT metadata->'gate_health' AS gh, metadata->'last_fixer' AS lf FROM harness_shared.routines
       WHERE install_slug = $1 AND target_role = 'system:green-checkpoint'`,
     [ctx.installSlug],
-  )) as Array<{ gh: { consecutiveReds?: number; lastGreenAt?: number; firstRedAt?: number; stallAlerted?: boolean; lastFrom?: string; watchdogAlerted?: boolean; failingTests?: string[]; retriageStaleTip?: string | null; retriageDetail?: string | null; retriageClassification?: 'real-red' | 'stale-candidate' | 'unknown' | null } | null; lf: ReleaseFixerRecord | null }>;
+  )) as Array<{ gh: { consecutiveReds?: number; lastGreenAt?: number; firstRedAt?: number; stallAlerted?: boolean; lastFrom?: string; lastMainPin?: string | null; watchdogAlerted?: boolean; failingTests?: string[]; retriageStaleTip?: string | null; retriageDetail?: string | null; retriageClassification?: 'real-red' | 'stale-candidate' | 'unknown' | null } | null; lf: ReleaseFixerRecord | null }>;
   const gh = rows[0]?.gh ?? {};
   const lastFixer = rows[0]?.lf ?? null;
   // Release-pin movement (green-checkpoint-lock-starvation-2026-07-02): `from` is the
@@ -1093,7 +1093,22 @@ export async function trackGateStall(
   // false green-stall-watchdog escalation (it keys on lastGreenAt too). A moved pin is
   // hard evidence the pipeline is flowing, so it resets the streak like a green does.
   const fromPin = from ? from.slice(0, 12) : null;
-  const pinMoved = fromPin != null && gh.lastFrom != null && fromPin !== gh.lastFrom;
+  // EI-20706962612084953: compare the live pin against where `main` was LEFT by the last
+  // routine observation — NOT against the pin that run STARTED from. `lastFrom` is the
+  // pre-fast-forward pin by definition, so after any 'advanced' run the next run reads a
+  // live pin that differs from it and declares `pinMoved` for the routine's OWN advance.
+  // That misclassified the first red after a green as 'reset' — systematically masking
+  // the single most important red to surface. `lastFrom` is deliberately NOT repurposed:
+  // its "the pin as observed AT verdict time" contract is load-bearing for
+  // `evaluateGateVerdictFreshness` Rule 1 ORDERING (gate-verdict-freshness.ts), which
+  // needs the pre-FF value. `lastMainPin` records where main ENDED, so only a genuinely
+  // EXTERNAL advance (a manual detached run, another lineage's gate — the
+  // green-checkpoint-lock-starvation-2026-07-02 case this reset exists for) moves it.
+  // The `?? gh.lastFrom` fallback covers a blob written before this field existed: it
+  // degrades to exactly the previous behaviour rather than reading a missing pin as
+  // "main never moved".
+  const lastObservedMainPin = gh.lastMainPin ?? gh.lastFrom ?? null;
+  const pinMoved = fromPin != null && lastObservedMainPin != null && fromPin !== lastObservedMainPin;
   const gateClass = classifyGateStallStatus(status, pinMoved);
   if (gateClass === 'noop') {
     // EI-2615: a lock collision with an ACTIVE peer run proves nothing about the
@@ -1166,6 +1181,25 @@ export async function trackGateStall(
           commitsBehindTip: null,
         }))
       : { candidateCommittedAt: null, commitsBehindTip: null };
+  // EI-20706962612084953: where `main` is left AFTER this run — the value the NEXT tick
+  // compares its live pin against (see `lastObservedMainPin` above). 'advanced' fast-forwards
+  // main to the candidate; every non-advancing status leaves it exactly where this run found
+  // it. 'advanced-prefix' moves main to the longest green PREFIX — a sha this function is
+  // never handed — so it records null and the next tick falls back to `lastFrom`, i.e. the
+  // pre-existing behaviour for that one status rather than a value we would be inventing.
+  const mainPinAfterRun =
+    status === 'advanced'
+      ? (candidate?.slice(0, 12) ?? fromPin)
+      : status === 'advanced-prefix'
+        ? null
+        : fromPin;
+  // EI-13288 / WI-7482 / EI-20243738214569472 — full rationale on the red branch below.
+  // Hoisted above the branch so the NOT-GREEN reset arm records the same re-triage
+  // provenance a red does: that arm IS a red verdict in every respect except the stall
+  // streak, and leaving these null there would re-introduce, one field down, the very
+  // "a not-green run recorded as if it had nothing to report" defect this change fixes.
+  const retriageStale = retriage?.classification === 'stale-candidate';
+  const retriageBlocked = retriageStale && retriage?.autoRefire === false;
   let next: Record<string, unknown>;
   if (gateClass === 'reset') {
     if (!isGreen) {
@@ -1190,7 +1224,29 @@ export async function trackGateStall(
     // A real verdict supersedes it, so clear it here — explicit rather than relying on the
     // whole-key replace, matching the `retriageStaleTip` / `failingTests` convention so a later
     // change to a merging write cannot silently resurrect a stale abort note.
-    next = { consecutiveReds: 0, lastGreenAt: Date.now(), firstRedAt: null, stallAlerted: false, lastFrom: fromPin ?? gh.lastFrom ?? null, lastFromFresh: fromPin != null, watchdogAlerted: false, failingTests: [], observedAt: Date.now(), observedCandidate: candidate?.slice(0, 12) ?? null, retriageStaleTip: null, retriageDetail: null, retriageClassification: null, candidateCommittedAt: staleness.candidateCommittedAt, commitsBehindTip: staleness.commitsBehindTip, inconclusive: null };
+    // EI-20706962612084953: this branch has TWO populations and only one of them is green.
+    // `pinMoved` puts a NOT-GREEN verdict here on purpose (main is advancing via a path this
+    // routine never saw, so the "main is frozen" stall streak is not real) — but the blob
+    // written below was the full green signature regardless: consecutiveReds 0, firstRedAt
+    // null, failingTests [], lastGreenAt = now. Every field agreed with a green and nothing
+    // marked it apart, so every surface pointed at gate_health answered "green" for a run
+    // that recorded not-green, and the stall detectors keyed on lastGreenAt/consecutiveReds
+    // were silently suppressed for it. Reset the STALL STREAK (this branch's legitimate
+    // purpose) WITHOUT claiming a green:
+    //   · `lastGreenAt` is CARRIED, never stamped — the gate did not green, so the age of the
+    //     last real green must keep running (it is what `verdictStale` measures).
+    //   · `failingTests` carries this run's real list instead of being cleared as a recovery.
+    //   · `watchdogAlerted` is carried, not cleared: clearing is a RECOVERY action and this is
+    //     not a recovery (EI-7472 — the whole-key replace drops whatever `next` omits).
+    //   · `stallAlerted` is carried for the same reason, and for one more: it is the dedup flag
+    //     recording that the red-streak CONDITION is open. Clearing it while leaving that
+    //     condition open would strand it — the later genuine green reads `gh.stallAlerted`
+    //     false and broadcasts no resolve, leaking a permanently-open incident item (D-011).
+    //   · `lastVerdict` is the explicit marker that was missing: with it a reader can tell the
+    //     two populations of this branch apart instead of having to infer it from side-effects.
+    next = isGreen
+      ? { consecutiveReds: 0, lastGreenAt: Date.now(), firstRedAt: null, stallAlerted: false, lastVerdict: 'green', lastFrom: fromPin ?? gh.lastFrom ?? null, lastFromFresh: fromPin != null, lastMainPin: mainPinAfterRun, watchdogAlerted: false, failingTests: [], observedAt: Date.now(), observedCandidate: candidate?.slice(0, 12) ?? null, retriageStaleTip: null, retriageDetail: null, retriageClassification: null, candidateCommittedAt: staleness.candidateCommittedAt, commitsBehindTip: staleness.commitsBehindTip, inconclusive: null }
+      : { consecutiveReds: 0, lastGreenAt: gh.lastGreenAt ?? null, firstRedAt: null, stallAlerted: gh.stallAlerted ?? false, lastVerdict: 'not-green', lastFrom: fromPin ?? gh.lastFrom ?? null, lastFromFresh: fromPin != null, lastMainPin: mainPinAfterRun, watchdogAlerted: gh.watchdogAlerted ?? false, failingTests: (failingTests ?? []).slice(0, 20), observedAt: Date.now(), observedCandidate: candidate?.slice(0, 12) ?? null, retriageStaleTip: retriageBlocked ? (retriage!.tip?.slice(0, 12) ?? null) : null, retriageDetail: retriageBlocked ? retriage!.detail : null, retriageClassification: retriage?.classification ?? null, candidateCommittedAt: staleness.candidateCommittedAt, commitsBehindTip: staleness.commitsBehindTip, inconclusive: null };
     // P-003: clear the durable stall escalation on the green transition (idempotent).
     // WI-2825: a 0-row match here (harness_slug/phase mismatch, or the row was already
     // cleared/removed some other way) previously succeeded silently — no error, no log —
