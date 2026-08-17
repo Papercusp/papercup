@@ -5522,9 +5522,13 @@ describe("realCheckpointDeps.runGreen — the orchestrator transcript reaches th
 
     expect(header).toContain("green=");
     expect(header).toContain("promoted=see-GATE_PROMOTION");
-    // ...and it must state what ABSENCE means, or a run killed before its decision (which
-    // writes no trailer at all) reads as a missing field rather than a real third state.
-    expect(header).toContain("never reached a promotion decision");
+    // ...and it must tell the reader HOW to read the trailer, or a run killed before its
+    // decision reads as a missing field rather than a real third state. WI-39450 / WI-39671
+    // moved that third state out of ABSENCE (which could not also carry the suite verdict)
+    // and onto an explicit `decision-pending` trailer, so the forward has to name two things:
+    // take the LAST trailer, and what the pending one means.
+    expect(header).toContain("tail -1");
+    expect(header).toContain("decision-pending");
   });
 
   it("adds no fence at all when the run recorded nothing (an empty header is worse than none)", () => {
@@ -8597,7 +8601,7 @@ describe("EI-20014356905761236: the verdict log records whether its verdict prom
     let onDiskDuringLeg = "";
     deps.deployStaleness = async () => {
       onDiskDuringLeg = trailer(logPath);
-      return null as never;
+      return null;
     };
 
     await runGreenCheckpoint(cfg(), deps, { noPush: true });
