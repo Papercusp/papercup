@@ -94,10 +94,12 @@ describe("realCheckpointDeps.desktopPerfGate scoping (WI-39672 / D-007)", () => 
     const decision = await deps.desktopPerfGate!(SHA);
 
     // `pass` is inert at the call site (green-checkpoint only acts when action !== "pass"),
-    // so this neither logs, broadcasts, nor holds promotion.
+    // so this neither logs, broadcasts, nor holds promotion. The CheckpointDeps contract
+    // narrows the decision to { action, summary } — assert the consumed surface, not the
+    // wider internal DesktopPerfGateDecision the real gate happens to return.
     expect(decision.action).toBe("pass");
-    expect(decision.verdictStatus).toBe("unknown");
-    expect(decision.reasons.join(" ")).toMatch(/no desktop app/i);
+    expect(decision.summary).toMatch(/no desktop app/i);
+    expect(decision.summary).toContain("WI-39672");
     expect(mockRunDesktopPerfGate).not.toHaveBeenCalled();
   });
 
