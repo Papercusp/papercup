@@ -349,7 +349,16 @@ export interface CheckpointDeps {
    *  when off or when no run is recorded) so existing stubs need not provide it. */
   desktopPerfGate?(
     candidate: string,
-  ): Promise<{ action: "pass" | "warn" | "block"; summary: string }>;
+  ): Promise<{
+    action: "pass" | "warn" | "block";
+    summary: string;
+    /** WI-39685 (cutover-plan D-013): the gate's own verdict class — 'ok' | 'warn' |
+     *  'crit' | 'unknown' (desktop-perf-gate.ts). Needed at the call site to tell an
+     *  UNMEASURED leg ('unknown') from a measured warn, so a permanently-absent
+     *  detector alerts instead of failing silent. OPTIONAL so existing test stubs
+     *  (which return only action+summary) still satisfy this contract. */
+    verdictStatus?: "ok" | "warn" | "crit" | "unknown";
+  }>;
   /** P-016 (agent-tool-delta-protocol D-008): the delta-protocol SAFETY gate.
    *  Runs post-runGreen / pre-advance on a GREEN candidate: if the production
    *  semantic-delta flag is ON but the Lane-C scenarios (S23/S24/S25) are not
