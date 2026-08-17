@@ -68,7 +68,8 @@ const captured: { events: CapturedEvent[]; ready: Promise<void> } = {
   events: [],
   ready: Promise.resolve(),
 };
-vi.mock('@papercusp/sse', () => ({
+vi.mock('@papercusp/sse', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/sse')>()),
   sseResponse: ({ setup }: { setup: (sink: unknown) => Promise<void> | void }) => {
     const events: CapturedEvent[] = [];
     const sink = {

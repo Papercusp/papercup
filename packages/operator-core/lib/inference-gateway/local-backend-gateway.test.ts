@@ -9,7 +9,7 @@ import { test, beforeEach, afterEach } from 'vitest';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { createInferenceGateway, OWNER_HEADER, type GatewayDeps } from './gateway';
-import { createLocalBackendPool, type LocalBackend, type LocalBackendPool } from './local-backend-pool';
+import { createLocalBackendPool, HEALTH_FAIL_THRESHOLD, type LocalBackend, type LocalBackendPool } from './local-backend-pool';
 
 interface FakeBackend {
   id: string;
@@ -58,11 +58,43 @@ afterEach(async () => {
  *  local-backend path (it never reaches the account/token code for those routes). */
 const stubAccount = { accountId: 'unused-stub', token: async () => 'unused' };
 
-async function boot(entries: LocalBackend[], extraDeps: Partial<GatewayDeps> = {}) {
+/**
+ * `wrapPool` hands the GATEWAY a decorated pool while the test keeps the real one in `pool` (so
+ * recordOutcome/recordStart still drive the genuine state). Used to observe the cold-start
+ * pre-flight without a sleep.
+ */
+async function boot(
+  entries: LocalBackend[],
+  extraDeps: Partial<GatewayDeps> = {},
+  wrapPool?: (p: LocalBackendPool) => LocalBackendPool,
+) {
   pool = createLocalBackendPool(entries);
-  gw = createInferenceGateway({ ...stubAccount, localBackends: pool, ...extraDeps });
+  gw = createInferenceGateway({ ...stubAccount, localBackends: wrapPool ? wrapPool(pool) : pool, ...extraDeps });
   port = await gw.listen(0);
 }
+
+/**
+ * Demote a backend to unhealthy exactly the way a STOPPED unit does in production: its
+ * `/v1/models` probe fails, and HEALTH_FAIL_THRESHOLD consecutive failures flip `healthy` false.
+ * From the gateway's point of view "stopped" is not a distinct state — it is simply not
+ * selectable, which is the whole reason ensure-running attaches at the dead-end pre-flight
+ * rather than at the forward (D-009).
+ */
+const markStopped = (id: string) => {
+  for (let i = 0; i < HEALTH_FAIL_THRESHOLD; i++) pool.recordOutcome(id, false, 'probe failed: connection refused');
+};
+
+/** A registered on-demand backend — `lifecycle` + `unitName` are what make it STARTABLE. */
+const onDemand = (id: string, baseUrl: string, models: string[], maxConcurrent = 4): LocalBackend => ({
+  id,
+  kind: 'llama-server',
+  baseUrl,
+  models,
+  maxConcurrent,
+  enabled: true,
+  lifecycle: 'on-demand',
+  unitName: `llama-${id}.service`,
+});
 
 const chatCompletions = (body: unknown, headers: Record<string, string> = {}) =>
   fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {

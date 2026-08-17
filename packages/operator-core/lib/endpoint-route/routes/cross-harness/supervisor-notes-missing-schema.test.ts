@@ -27,7 +27,8 @@ const undefinedTableError = () => {
   return e;
 };
 
-vi.mock('@papercusp/db-org', () => ({
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({
     sql: Object.assign(
       async () => {

@@ -73,7 +73,8 @@ vi.mock('../../../agent-tools/plans/source', () => ({
   readAllPlans: readAllPlansMock,
   readPlanBySlug: readPlanBySlugMock,
 }));
-vi.mock('node:fs/promises', () => ({ readFile: vi.fn(async () => 'mock markdown') }));
+vi.mock('node:fs/promises', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('node:fs/promises')>()), readFile: vi.fn(async () => 'mock markdown') }));
 
 import routesDefault, { loadCoordInbox, loadCoordPlans, loadCoordHistory, preWarmCoordPlans } from './index';
 

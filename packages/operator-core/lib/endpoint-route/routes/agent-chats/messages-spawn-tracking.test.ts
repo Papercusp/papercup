@@ -26,7 +26,8 @@ const h = vi.hoisted(() => ({
 }));
 
 vi.mock('../../../agent-tools/index', () => ({}));
-vi.mock('@papercusp/sse', () => ({
+vi.mock('@papercusp/sse', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/sse')>()),
   sseResponse: (opts: { setup: (sink: unknown) => Promise<void> }) => {
     h.setupHolder.fn = opts.setup;
     return new Response('sse-started');
@@ -38,7 +39,8 @@ vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
   dispatchProjectedToolStream: h.dispatchMock,
   lookupByMcpName: () => ({ mcpToolName: 'agent_chats:chat' }),
 }));
-vi.mock('@papercusp/db-org', () => ({
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/db-org')>()),
   // The route acquires a PG-backed per-chat lock (agent-chat-lock.ts, WI-7139)
   // before assembling, and that lock calls `getOrgPg().sql` when no sql is
   // injected. A factory WITHOUT getOrgPg makes it throw -> the lock fails CLOSED
@@ -90,7 +92,8 @@ vi.mock('../../../harness-effective-config', () => ({ readEffectiveHarnessConfig
 vi.mock('../../../harness-prompt-overrides', () => ({ getPromptOverride: async () => null }));
 vi.mock('../../../memory/injection', () => ({ buildMemoryContextBlock: async () => null }));
 vi.mock('../../../operator-notes', () => ({ projectDirForSlug: async () => '/tmp/proj-x' }));
-vi.mock('@papercusp/orchestrator/role-prompt', () => ({
+vi.mock('@papercusp/orchestrator/role-prompt', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/orchestrator/role-prompt')>()),
   assembleRolePrompt: () => ({ text: 'PROMPT', meta: { runId: 'run-1' } }),
 }));
 vi.mock('../../../agent-chats-data', async (importOriginal) => {

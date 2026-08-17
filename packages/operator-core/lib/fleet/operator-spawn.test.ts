@@ -10,7 +10,8 @@ const h = vi.hoisted(() => ({
   ownerSteering: { value: null as null | Record<string, unknown> },
 }));
 
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: vi.fn(), setAdminPoolStatementTimeoutProvider: vi.fn() }));
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/db-org')>()), getOrgPg: vi.fn(), setAdminPoolStatementTimeoutProvider: vi.fn() }));
 vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/agent-mcp')>()),
   // 'overwatch' included so the B-10 flag-gate (which runs AFTER the known-role
@@ -29,7 +30,8 @@ vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
 // impl (set in beforeEach) returns each flag's real default, so the other getFlag
 // callers in operator-spawn (WEDGE_AUTO_REAP / SPAWN_HANDOFF_HYDRATION) behave exactly
 // as they did under the real getFlag's no-PostHog fallback — behavior-preserving.
-vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn(), onFlagChange: vi.fn() }));
+vi.mock('@papercusp/flags/server', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/flags/server')>()), getFlag: vi.fn(), onFlagChange: vi.fn() }));
 vi.mock('../harness-core', () => ({ resolveProject: vi.fn() }));
 // WI-1937: operator-spawn.ts imports isEphemeralForeignProject directly, and
 // the module graph ALSO reaches harness-registry.ts transitively (via

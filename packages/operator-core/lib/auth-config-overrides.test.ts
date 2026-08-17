@@ -16,7 +16,8 @@ const h = vi.hoisted(() => ({
   capturedResolver: undefined as ((role: string | null | undefined) => boolean | null | undefined) | undefined,
 }));
 
-vi.mock('@papercusp/flags/server', () => ({
+vi.mock('@papercusp/flags/server', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/flags/server')>()),
   getFlag: vi.fn(async (key: string) => h.flagState[key] ?? false),
   onFlagChange: () => {},
 }));

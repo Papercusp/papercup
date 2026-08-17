@@ -31,7 +31,8 @@ vi.mock('@papercusp/agent-mcp', async (importOriginal) => {
 });
 
 let capturedCtx: UnifiedToolContext | null = null;
-vi.mock('@papercusp/tooldef-mcp', () => ({
+vi.mock('@papercusp/tooldef-mcp', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/tooldef-mcp')>()),
   dispatchProjectedToolToMcp: vi.fn(async (_projected: unknown, _name: string, _args: unknown, ctx: UnifiedToolContext) => {
     capturedCtx = ctx;
     return { ok: true };

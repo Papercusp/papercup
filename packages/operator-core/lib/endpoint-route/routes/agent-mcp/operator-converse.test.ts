@@ -6,7 +6,8 @@ const budgetMocks = vi.hoisted(() => ({
     typeof uiClientId === 'string' && uiClientId.startsWith('llm-testing/')),
 }));
 
-vi.mock('@papercusp/sse', () => ({
+vi.mock('@papercusp/sse', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/sse')>()),
   sseResponse: vi.fn(() => new Response('stream-started', { status: 200 })),
 }));
 

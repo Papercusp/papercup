@@ -520,7 +520,8 @@ describe('resolveNamedQueryV2 — p2p.* (p2p-work-distribution-2026-07-02 P-002)
       },
     ];
     vi.doMock('../harness/usage-actor', () => ({ resolveUsageActor: vi.fn(async () => actor) }));
-    vi.doMock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: async () => members }) }));
+    vi.doMock('@papercusp/db-org', async (importOriginal) => ({
+      ...(await importOriginal<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: async () => members }) }));
     vi.doMock('../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
     const { resolveNamedQueryV2: r } = await import('./index');
     const out = (await r('p2p.devices', {})) as Array<Record<string, unknown>>;
@@ -543,7 +544,8 @@ describe('resolveNamedQueryV2 — p2p.* (p2p-work-distribution-2026-07-02 P-002)
       },
     ];
     vi.doMock('../harness/usage-actor', () => ({ resolveUsageActor: vi.fn(async () => actor) }));
-    vi.doMock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: async () => members }) }));
+    vi.doMock('@papercusp/db-org', async (importOriginal) => ({
+      ...(await importOriginal<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: async () => members }) }));
     vi.doMock('../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
     const { resolveNamedQueryV2: r } = await import('./index');
     const out = (await r('p2p.devices', {})) as Array<Record<string, unknown>>;
@@ -557,7 +559,8 @@ describe('resolveNamedQueryV2 — p2p.* (p2p-work-distribution-2026-07-02 P-002)
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const actor = { githubUserId: 279242982, devicePubkey: 'DEV-THIS' };
     vi.doMock('../harness/usage-actor', () => ({ resolveUsageActor: vi.fn(async () => actor) }));
-    vi.doMock('@papercusp/db-org', () => ({
+    vi.doMock('@papercusp/db-org', async (importOriginal) => ({
+      ...(await importOriginal<typeof import('@papercusp/db-org')>()),
       getOrgPg: () => ({
         sql: async () => {
           throw Object.assign(new Error('relation "hive_members" does not exist'), { code: '42P01' });
@@ -607,7 +610,8 @@ describe('resolveNamedQueryV2 — p2p.* (p2p-work-distribution-2026-07-02 P-002)
   it('p2p.audit returns p2p-prefixed audit rows and applies the argsSchema default limit (50)', async () => {
     const rows = [{ id: 'a1', ts: 1_700_000_000_000, actor: 'owner', action: 'p2p:kill-switch', subject: 'host', details: {} }];
     const captured: { args: unknown[] } = { args: [] };
-    vi.doMock('@papercusp/db-org', () => ({
+    vi.doMock('@papercusp/db-org', async (importOriginal) => ({
+      ...(await importOriginal<typeof import('@papercusp/db-org')>()),
       getOrgPg: () => ({
         sql: async (..._a: unknown[]) => {
           captured.args = _a;
@@ -627,7 +631,8 @@ describe('resolveNamedQueryV2 — p2p.* (p2p-work-distribution-2026-07-02 P-002)
 
   it('p2p.audit degrades to [] when the audit read throws — never a 500', async () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    vi.doMock('@papercusp/db-org', () => ({
+    vi.doMock('@papercusp/db-org', async (importOriginal) => ({
+      ...(await importOriginal<typeof import('@papercusp/db-org')>()),
       getOrgPg: () => ({
         sql: async () => {
           throw new Error('audit_log unavailable');
@@ -1150,7 +1155,8 @@ describe('resolveNamedQueryV2 — featuresConsolidated.byHive (WI-259 P-006 cros
       })),
     }));
     const rows = [{ featureId: 'F-1', harnessSlug: 'member-a' }];
-    vi.doMock('@papercusp/db-org', () => ({
+    vi.doMock('@papercusp/db-org', async (importOriginal) => ({
+      ...(await importOriginal<typeof import('@papercusp/db-org')>()),
       getOrgPg: () => ({ db: fakeDb(rows) }),
       generated: { harnessFeaturesConsolidatedInHarnessShared: FAKE_COLS },
     }));
@@ -1187,7 +1193,8 @@ describe('resolveNamedQueryV2 — featuresConsolidated.byHive (WI-259 P-006 cros
         throw new Error('registry boom');
       }),
     }));
-    vi.doMock('@papercusp/db-org', () => ({
+    vi.doMock('@papercusp/db-org', async (importOriginal) => ({
+      ...(await importOriginal<typeof import('@papercusp/db-org')>()),
       getOrgPg: () => ({ db: fakeDb([]) }),
       generated: { harnessFeaturesConsolidatedInHarnessShared: FAKE_COLS },
     }));
@@ -1233,7 +1240,8 @@ describe('resolveNamedQueryV2 — featuresConsolidated.byHive (WI-259 P-006 cros
       hiveMemberHarnessScopes: vi.fn(() => ['hive-home']),
       loadHarnessRegistry: vi.fn(async () => ({ projects: [{ slug: 'hive-home', harness_kind: 'hive' }] })),
     }));
-    vi.doMock('@papercusp/db-org', () => ({
+    vi.doMock('@papercusp/db-org', async (importOriginal) => ({
+      ...(await importOriginal<typeof import('@papercusp/db-org')>()),
       getOrgPg: () => ({
         db: {
           select: (cols: Record<string, unknown>) => {
@@ -1307,7 +1315,8 @@ describe('resolveNamedQueryV2 — plans.byHive (WI-259 P-006 cross-member plan r
     }));
     vi.doMock('../agent-tools/plans/read-dispatch', () => ({ callPlansRead }));
     // Skip attribution enrichment (flag off) so the rows pass through unchanged.
-    vi.doMock('@papercusp/flags/server', () => ({ getFlag: vi.fn(async () => false) }));
+    vi.doMock('@papercusp/flags/server', async (importOriginal) => ({
+      ...(await importOriginal<typeof import('@papercusp/flags/server')>()), getFlag: vi.fn(async () => false) }));
 
     const { resolveNamedQueryV2: r } = await import('./index');
     const out = (await r('plans.byHive', { potHomeSlug: 'hive-home' })) as unknown[];

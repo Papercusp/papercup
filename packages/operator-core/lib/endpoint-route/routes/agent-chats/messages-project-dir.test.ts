@@ -22,7 +22,8 @@ const { projectDirForSlugMock, assembleRolePromptMock, prepareLog } = vi.hoisted
 // Keep the module import light: the side-effect tool-catalog import and the
 // transport deps are irrelevant to the seam under test.
 vi.mock('../../../agent-tools/index', () => ({}));
-vi.mock('@papercusp/sse', () => ({ sseResponse: () => new Response('sse-started') }));
+vi.mock('@papercusp/sse', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/sse')>()), sseResponse: () => new Response('sse-started') }));
 vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/agent-mcp')>()),
   defineTool: (d: unknown) => d,
@@ -31,7 +32,8 @@ vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
   // exit with a deterministic 500 — far enough to prove assembly succeeded.
   lookupByMcpName: () => null,
 }));
-vi.mock('@papercusp/db-org', () => ({
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/db-org')>()),
   // The route acquires a PG-backed per-chat lock (agent-chat-lock.ts, WI-7139)
   // before assembling, and that lock calls `getOrgPg().sql` when no sql is
   // injected. A factory WITHOUT getOrgPg makes it throw -> the lock fails CLOSED
@@ -86,7 +88,8 @@ vi.mock('../../../harness-effective-config', () => ({ readEffectiveHarnessConfig
 vi.mock('../../../harness-prompt-overrides', () => ({ getPromptOverride: async () => null }));
 vi.mock('../../../memory/injection', () => ({ buildMemoryContextBlock: async () => null }));
 vi.mock('../../../operator-notes', () => ({ projectDirForSlug: projectDirForSlugMock }));
-vi.mock('@papercusp/orchestrator/role-prompt', () => ({ assembleRolePrompt: assembleRolePromptMock }));
+vi.mock('@papercusp/orchestrator/role-prompt', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/orchestrator/role-prompt')>()), assembleRolePrompt: assembleRolePromptMock }));
 vi.mock('../../../agent-chats-data', async (importOriginal) => {
   const orig = await importOriginal<typeof import('../../../agent-chats-data')>();
   return { ...orig, readFeatureLockState: async () => null };

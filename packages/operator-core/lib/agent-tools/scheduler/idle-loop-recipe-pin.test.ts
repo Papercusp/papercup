@@ -31,11 +31,13 @@ vi.mock('../coordination/roles', () => ({ COORD_ROLES: ['operator'] }));
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: () => ({ ownerId: 'su-idle', ownerLabel: 'i', source: 'static-client', workspaceId: 'ws-x', userId: null }),
 }));
-vi.mock('@papercusp/flags', () => ({ FLAGS: { SCHEDULER_SPEC_CLAIM: 'scheduler_spec_claim' } }));
+vi.mock('@papercusp/flags', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/flags')>()), FLAGS: { SCHEDULER_SPEC_CLAIM: 'scheduler_spec_claim' } }));
 // `onFlagChange` is required even though this test never exercises a flag change:
 // coordination/log.ts subscribes to it at MODULE SCOPE, so any transitive import of
 // the coord module graph explodes at collection time if the mock omits it.
-vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn(async () => true), onFlagChange: vi.fn() }));
+vi.mock('@papercusp/flags/server', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/flags/server')>()), getFlag: vi.fn(async () => true), onFlagChange: vi.fn() }));
 vi.mock('../../scheduler/claim-spec-store', () => ({
   getNextForBee: vi.fn(async () => null),
   resolveClaimSpecWorkspace: (w: unknown) => w ?? 'default',
