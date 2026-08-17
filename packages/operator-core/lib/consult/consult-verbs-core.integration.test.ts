@@ -114,6 +114,7 @@ function makeDeps(opts: { postError?: string; withReach?: boolean; withMint?: bo
   const posts: Array<{ conversation_id: string; body: string; via_consult_verb: true }> = [];
   const emits: Array<{ key: string; summary: string; payload: Record<string, unknown>; to: string[] }> = [];
   const reached: Array<{ responder: string; conversationId: string }> = [];
+  const reachCalls: Array<{ responder: string; conversationId: string; summary: string; body: string }> = [];
   const minted: Array<Parameters<NonNullable<ConsultVerbDeps['mintGraduationWorkItem']>>[0]> = [];
   const deps: ConsultVerbDeps = {
     getSql: () => rootSql,
@@ -138,6 +139,7 @@ function makeDeps(opts: { postError?: string; withReach?: boolean; withMint?: bo
       : {
           reach: async (o) => {
             reached.push({ responder: o.responder, conversationId: o.conversationId });
+            reachCalls.push(o);
             return { woke: 1 };
           },
         }),
@@ -152,7 +154,7 @@ function makeDeps(opts: { postError?: string; withReach?: boolean; withMint?: bo
       : {}),
     now: () => NOW,
   };
-  return { deps, posts, emits, reached, minted };
+  return { deps, posts, emits, reached, reachCalls, minted };
 }
 
 async function stateRow(conversationId: string) {
@@ -163,7 +165,7 @@ async function stateRow(conversationId: string) {
   expect(rows).toHaveLength(1);
   const row = rows[0];
   // This fixture connection returns jsonb unparsed — normalize before asserting.
-  for (const k of ['routing', 'outcome'] as const) {
+  for (const k of ['routing', 'outcome', 'cascade_digest'] as const) {
     if (typeof row[k] === 'string') row[k] = JSON.parse(row[k] as string);
   }
   return row;
@@ -584,5 +586,120 @@ describe('consultCloseCore — graduate', () => {
     if ('error' in refused && refused.error === 'exchange_cap') {
       expect(refused.hint).toContain("outcome: 'graduate'");
     }
+  });
+});
+
+// ── D-005/P-013 always-advance cascade (consult-min-max-and-rubric-vetting) ─
+
+/** A routing snapshot with a real selection menu (the 844 cascade drives off
+ * selection.selected) plus route-time candidates for remaining_candidates. */
+function menuSnapshot(owners: string[]) {
+  return {
+    candidates: owners.map((o, i) => ({ ownerId: o, score: 0.9 - i * 0.1, liveness: 'live' })),
+    selection: {
+      selected: owners.map((o, i) => ({
+        ownerId: o,
+        via: 'floor' as const,
+        score: 0.9 - i * 0.1,
+        similarity: 0.8 - i * 0.1,
+        liveness: 'live',
+      })),
+    },
+  };
+}
+
+describe('cascade advance (D-005/P-013)', () => {
+  it('a perspective reply ADVANCES the chain: cursor+responder move, digest carries the reply, next selectee woken with the feedback so far', async () => {
+    const id = await seedConsult({ routing: menuSnapshot([RESPONDER, 'resp-2', 'resp-3']) });
+    const { deps, reachCalls } = makeDeps();
+    const r = await consultReplyCore(
+      { workspaceId: WS, authorId: RESPONDER, conversationId: id, kind: 'answer', body: 'the answer', evidence: EVIDENCE },
+      deps,
+    );
+    if ('error' in r) throw new Error(r.error);
+    expect(r.cascade).toEqual({ advanced_to: 'resp-2', exhausted: false, woke: 1 });
+    expect(r.hint).toContain('Cascade advanced');
+
+    const row = await stateRow(id);
+    expect(row.state).toBe('active'); // reply-triggered advance keeps the consult engaged
+    expect(row.responder_id).toBe('resp-2');
+    expect(row.cascade_cursor).toBe(1);
+    expect(row.expires_at).not.toBeNull(); // fresh latency window for the next selectee
+    const digest = row.cascade_digest as Array<{ ownerId: string; kind: string; excerpt: string }>;
+    expect(digest).toHaveLength(1);
+    expect(digest[0]).toMatchObject({ ownerId: RESPONDER, kind: 'answer', excerpt: 'the answer' });
+
+    // The next selectee's wake body: position, question, and the digest line.
+    expect(reachCalls).toHaveLength(1);
+    expect(reachCalls[0].responder).toBe('resp-2');
+    expect(reachCalls[0].body).toContain('reviewer 2/3');
+    expect(reachCalls[0].body).toContain('QUESTION: q');
+    expect(reachCalls[0].body).toContain(`- ${RESPONDER} (answer): the answer`);
+  });
+
+  it('hard-blocked: the FIRST reply fires the park key while the chain continues behind it (D-007)', async () => {
+    const id = await seedConsult({ latency: 'hard-blocked', routing: menuSnapshot([RESPONDER, 'resp-2']) });
+    const { deps, emits } = makeDeps();
+    const r = await consultReplyCore(
+      { workspaceId: WS, authorId: RESPONDER, conversationId: id, kind: 'answer', body: 'a1', evidence: EVIDENCE },
+      deps,
+    );
+    if ('error' in r) throw new Error(r.error);
+    // The parked requester is woken by the FIRST responder post…
+    expect(emits).toHaveLength(1);
+    expect(emits[0].key).toBe(`consult:reply:${id}`);
+    expect(emits[0].to).toEqual([REQUESTER]);
+    // …AND the cascade still advanced behind them.
+    expect(r.cascade).toEqual({ advanced_to: 'resp-2', exhausted: false, woke: 1 });
+    expect((await stateRow(id)).responder_id).toBe('resp-2');
+  });
+
+  it('a mid-chain decline ADVANCES instead of closing — no park-key emit, digest records the decline', async () => {
+    const id = await seedConsult({ state: 'active', routing: menuSnapshot([RESPONDER, 'resp-2']) });
+    const { deps, emits, reachCalls } = makeDeps();
+    const r = await consultDeclineCore(
+      { workspaceId: WS, authorId: RESPONDER, conversationId: id, reason: 'not my area' },
+      deps,
+    );
+    if ('error' in r) throw new Error(r.error);
+    expect(r.state).toBe('awaiting_responder');
+    expect(r.cascade).toEqual({ advanced_to: 'resp-2', exhausted: false, woke: 1 });
+    expect(emits).toHaveLength(0); // mid-chain: more feedback is coming — the parked requester sleeps on
+
+    const row = await stateRow(id);
+    expect(row.state).toBe('awaiting_responder');
+    expect(row.closed_at).toBeNull();
+    expect(row.responder_id).toBe('resp-2');
+    const digest = row.cascade_digest as Array<{ ownerId: string; kind: string }>;
+    expect(digest).toMatchObject([{ ownerId: RESPONDER, kind: 'decline' }]);
+    expect(reachCalls[0].body).toContain(`- ${RESPONDER} (decline): not my area`);
+  });
+
+  it('advanceCascade is CAS-guarded: a stale-cursor second call is a raced no-op (no duplicate wake, no duplicate digest)', async () => {
+    const id = await seedConsult({ routing: menuSnapshot([RESPONDER, 'resp-2', 'resp-3']) });
+    const wakes: string[] = [];
+    const reach = async (o: { responder: string }) => {
+      wakes.push(o.responder);
+      return { woke: 1 };
+    };
+    const params = {
+      workspaceId: WS,
+      conversationId: id,
+      question: 'q',
+      latencyContract: 'proceed',
+      routing: menuSnapshot([RESPONDER, 'resp-2', 'resp-3']),
+      cascadeCursor: 0,
+      digest: [],
+      event: makeDigestEntry(RESPONDER, 'decline' as const, NOW.toISOString(), 'x'),
+      stateOnAdvance: 'awaiting_responder' as const,
+      nowIso: NOW.toISOString(),
+    };
+    const first = await advanceCascade(params, rootSql, reach);
+    expect(first).toMatchObject({ advanced: true, raced: false, next: { ownerId: 'resp-2' } });
+    const second = await advanceCascade(params, rootSql, reach); // same stale cursor 0
+    expect(second).toMatchObject({ advanced: false, exhausted: false, raced: true, woke: 0 });
+    expect(wakes).toEqual(['resp-2']); // exactly one wake
+    const digest = (await stateRow(id)).cascade_digest as unknown[];
+    expect(digest).toHaveLength(1); // the raced call appended nothing
   });
 });
