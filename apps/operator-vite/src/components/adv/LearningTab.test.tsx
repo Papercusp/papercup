@@ -116,8 +116,8 @@ vi.mock("nuqs", () => ({
 // useVirtualizer to yield one VirtualItem per row so the full window mounts
 // under test (mirrors grid-core's own RichGrid.virtual.test.tsx and
 // AdvConversationsTab.test.tsx).
-vi.mock("@tanstack/react-virtual", () => ({
-  useVirtualizer: ({
+vi.mock("@tanstack/react-virtual", () => {
+  const stubVirtualizer = ({
     count,
     getItemKey,
   }: {
@@ -138,9 +138,14 @@ vi.mock("@tanstack/react-virtual", () => ({
       getTotalSize: () => count * ROW,
       measureElement: () => {},
       measure: () => {},
+      scrollToIndex: () => {},
     };
-  },
-}));
+  };
+  // The factory REPLACES the whole module, so every export a mounted view
+  // touches must exist: VirtualGrid uses useVirtualizer, the Improvements
+  // list uses useWindowVirtualizer.
+  return { useVirtualizer: stubVirtualizer, useWindowVirtualizer: stubVirtualizer };
+});
 
 // The pot lens is INHERITED from the top-bar selector via useAdvScope (owner
 // directive 2026-07-26 — the tab's own ?lhive= picker is gone). Tests drive the
