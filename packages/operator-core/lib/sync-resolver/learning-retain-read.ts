@@ -200,11 +200,8 @@ export function retainMemoryTitle(text: string): string {
 export interface RetainFeedDeps {
   /** The hive's shared-memory pool (WI-39535), already scope-resolved by the
    *  caller (`hive:<slug>` / every pot under the All-Pots lens). A throw
-   *  degrades the leg like any other. TRANSITIONALLY optional (the resolver
-   *  entry in index.ts is lock-held by a peer as this lands); an unwired dep
-   *  degrades the leg VISIBLY (degraded: ['memory']), never silently. Make it
-   *  required once the index.ts wiring is in. */
-  listMemories?: () => Promise<RetainMemorySource[]>;
+   *  degrades the leg like any other. */
+  listMemories: () => Promise<RetainMemorySource[]>;
   listRubrics: () => Promise<Array<{ slug: string; title: string; status: string; updatedAt: string }>>;
   /** One keyset page of recipes by recent activity (code-recipes-store
    *  listRecipesActivityPage). `ts` = GREATEST(last_run_at, updated_at, created_at). */

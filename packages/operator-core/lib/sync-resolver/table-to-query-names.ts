@@ -255,6 +255,12 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
     // and the query would sit subscribed to a scope it can never match — i.e.
     // silently never refreshing, which is the exact failure this list prevents.
     'goals.detail',
+    // learning.retainFeed / learning.retainDetail (WI-39493/WI-39534): the
+    // Retained ledger's plans leg (and rubrics, which are plan-doc-backed) and
+    // an open plan/rubric detail aside. Full-bust: the feed is cursor-keyed and
+    // the detail is `{ kind, id }`-keyed, so no plan-slug scope can match.
+    'learning.retainFeed',
+    'learning.retainDetail',
   ],
   'harness_shared.plan_revisions': ['plans.revisions'],
   // plan_runs feeds BOTH the Agents-tab flat list (plans.runs, { slug }) and the
