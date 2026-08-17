@@ -70,11 +70,11 @@ describe('a failing guard keeps its report (the regression this helper exists fo
     const attachedStdout = String((thrown as { stdout?: string }).stdout ?? '');
 
     expect(message).toContain('Command failed');
-    expect(message).not.toContain('scripts/x.mjs');
+    expect(message).not.toContain(OFFENDER);
     // The data is on the error OBJECT — but nothing renders it, and the offender is
     // absent from the one string a test runner reports. That gap is the whole defect:
     // recovering one already-computed line costs a hand-run of the guard.
-    expect(attachedStdout).toContain('scripts/x.mjs');
+    expect(attachedStdout).toContain(OFFENDER);
   });
 });
 
