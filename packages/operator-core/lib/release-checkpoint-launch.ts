@@ -1021,13 +1021,35 @@ export function buildCheckpointSystemdArgv(
    *  pipeline event) instead of discarding it. Omitted ⇒ pre-WI-4494 behaviour (the caller records
    *  — which for a detached manual run meant nobody did). */
   verdictTarget?: GateVerdictTarget | null,
+  /** WI-39472: the capacity contract ("shared" | "reserved") the launcher is running under.
+   *  Same forwarding reason as `partialGreenGate` — see the note below. Anything other than
+   *  those two literals is DROPPED rather than forwarded (see the validation below). */
+  capacityMode?: string | null,
 ): string[] {
   // Mirror the PERIODIC gate: the routine spawns green-checkpoint.ts with { ...process.env } so it
   // inherits PAPERCUSP_PARTIAL_GREEN_GATE (the longest-green-prefix FF). A MANUAL checkpoint runs via
   // `systemd-run --user`, which does NOT inherit the launching process env — so without this it always
   // ran whole-batch. Forward the flag into the inner command when the launcher itself has it set, so
   // release:checkpoint-run behaves the same as the scheduled gate.
-  const gateEnv = partialGreenGate ? `PAPERCUSP_PARTIAL_GREEN_GATE='1' ` : '';
+  //
+  // WI-39472: PAPERCUSP_GREEN_CHECKPOINT_CAPACITY_MODE needs the SAME treatment, and its absence
+  // was worse than whole-batch because it is SILENT: setting the var on papercup-dev-api.service
+  // correctly changes every SCHEDULED run (the routine inherits process.env) while every MANUAL
+  // run keeps the old capacity, so `systemctl show` reports the new value and the gate still runs
+  // at the old fork count. Observed 2026-08-17: a drop-in set reserved/8, `systemctl show` and
+  // /proc/<operator>/environ both confirmed it, and the very next release:checkpoint-run still
+  // logged `mode=shared maxForks=2`. The run's own GREEN_CHECKPOINT_CAPACITY line is the only
+  // honest witness of which contract it actually got — verifying the SERVICE proves nothing about
+  // the RUN. Any future gate env var belongs here too, for the same reason.
+  //
+  // Forward ONLY the two literals release-config.ts accepts. This value reaches a `bash -c` string,
+  // so an unvalidated passthrough would be a shell-injection seam; an unrecognised value is dropped
+  // and the run falls back to its own default rather than inheriting something unquotable.
+  const capacity =
+    capacityMode === 'shared' || capacityMode === 'reserved'
+      ? `PAPERCUSP_GREEN_CHECKPOINT_CAPACITY_MODE='${capacityMode}' `
+      : '';
+  const gateEnv = `${partialGreenGate ? `PAPERCUSP_PARTIAL_GREEN_GATE='1' ` : ''}${capacity}`;
   // Write to the per-run file and point the stable path at it (`ln -sfn`, so a symlink
   // left by a previous run is replaced, not followed into). The redirect binds to the
   // green-checkpoint command only — the symlink is created first, so a reader polling
@@ -1818,6 +1840,9 @@ export function launchDetachedCheckpoint(
     // WI-4494: this run records its own verdict. Explicit opt-out (`target: null`) is honoured;
     // omitted ⇒ the operator-home gate, which is this launcher's documented scope.
     opts.target === undefined ? resolveHomeGateTarget() : opts.target,
+    // WI-39472: forward the launcher's capacity contract, so a manual run uses the same fork
+    // budget as the scheduled gate instead of silently falling back to `shared`.
+    process.env.PAPERCUSP_GREEN_CHECKPOINT_CAPACITY_MODE ?? null,
   );
 
   // WI-5124: resolve — right before launch, so it's as fresh as possible — which commit this
