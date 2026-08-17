@@ -390,7 +390,12 @@ export default defineTool({
       startPredicateWatchPoller();
       const workspaceId = ctx.workspaceId ?? activeWorkspaceId();
       const role = ctx.role ?? 'su';
-      const harnessSlug = ctx.harnessSlug ?? null;
+      // Same reasoning as the interest branch above: NOT `ctx.harnessSlug ?? null`.
+      // On an operator-scoped call ctx.harnessSlug is the WILDCARD sentinel ('*'/'all'),
+      // and this binding feeds BOTH the dedup lookup below and the persisted
+      // predicate_watches.harness_slug — so a raw `??` addresses a bucket named '*'
+      // and stores it as though it were a concrete slug.
+      const harnessSlug = resolvePotHomeSlug(undefined, ctx.harnessSlug);
       const intervalSec = args.interval_sec ?? 60;
 
       // EI-8998 dedup (fleet-reliability-verification-2026-07-10 P-004): join an

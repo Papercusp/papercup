@@ -50,12 +50,16 @@ export const ALLOWLIST = new Set(['scripts/check-no-raw-harness-sentinel.mjs']);
  * pending baseline to 67. The facts:assert site was then fixed through the same
  * resolver, shrinking the pending baseline to 66. The work-items:update plan
  * stamp sites were then fixed through the same resolver, shrinking it to 63.
+ * The events/watch.ts predicate-branch binding was then fixed through
+ * resolvePotHomeSlug (EI-20664974139266563), shrinking it to 62 — that binding
+ * fed both the dedup lookup and the persisted predicate_watches.harness_slug,
+ * so the two bare `harnessSlug,` uses downstream of it are fixed with it.
  * A source fingerprint makes a REWRITTEN or removed site fail closed.
  *
  * Keys are LINE-INSENSITIVE (`file:kind#occurrence:text`) — see `findingKey`.
  * They carried a line number until 2026-08-12, which made a baselined site red
  * the shared release gate whenever an unrelated edit shifted it downward; the
- * 63 entries below are the same 63 sites, re-keyed, not a re-measurement.
+ * entries below are those same sites, re-keyed, not a re-measurement.
  */
 export const BASELINE = new Set([
   "libs/generic/tooldef/src/dispatch-stack.ts:predicate#1:const slug = ctx.harnessSlug?.trim();",
@@ -71,7 +75,6 @@ export const BASELINE = new Set([
   "packages/operator-core/lib/agent-tools/datatypes/declare.ts:fallback#1:potSlug: ctx.harnessSlug ?? null,",
   "packages/operator-core/lib/agent-tools/dev/pg_query.ts:identity-field#1:harnessSlug: ctx.harnessSlug,",
   "packages/operator-core/lib/agent-tools/dev/why.ts:fallback#1:harnessSlug: args.harness ?? ctx.harnessSlug,",
-  "packages/operator-core/lib/agent-tools/events/watch.ts:fallback#1:const harnessSlug = ctx.harnessSlug ?? null;",
   "packages/operator-core/lib/agent-tools/facts/scope-ctx.ts:identity-field#1:harnessSlug: ctx.harnessSlug,",
   "packages/operator-core/lib/agent-tools/improvements/resolve.ts:fallback#1:harnessSlug: ctx.harnessSlug ?? null,",
   "packages/operator-core/lib/agent-tools/recipes/run.ts:fallback#1:harnessSlug: ctx.harnessSlug ?? null,",
