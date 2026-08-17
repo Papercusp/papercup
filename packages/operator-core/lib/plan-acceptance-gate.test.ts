@@ -8,7 +8,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { evaluatePlanAcceptanceGate } from './plan-acceptance-gate';
-import { getAcceptanceRubricForPlan, type Rubric } from './rubrics';
+import { getAcceptanceRubricForPlan, getRubric, getRubricPlanRevision, type Rubric } from './rubrics';
 import { listScorecards, type ScorecardRow } from './scorecards';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
@@ -36,6 +36,8 @@ vi.mock('./workspace-registry', () => ({
 // module (it is dependency-free) so RUBRIC_TEMPLATE_NAME stays the real constant.
 
 const mockRubric = vi.mocked(getAcceptanceRubricForPlan);
+const mockGetRubric = vi.mocked(getRubric);
+const mockRevision = vi.mocked(getRubricPlanRevision);
 const mockScorecards = vi.mocked(listScorecards);
 const mockFlag = vi.mocked(getFlag);
 const mockPg = vi.mocked(getOrgPg);
@@ -179,5 +181,126 @@ describe('evaluatePlanAcceptanceGate', () => {
     mockRubric.mockResolvedValue(null);
     const v = await evaluatePlanAcceptanceGate('some-plan-2026-08-11');
     expect(v).toMatchObject({ satisfied: false, code: 'acceptance_rubric_missing' });
+  });
+});
+
+describe('the vetting check (consult-min-max-and-rubric-vetting-2026-08-17 P-004)', () => {
+  /** A complete vetting scorecard: meta-rubric grading of the acceptance rubric,
+   *  self-emitted by the AUTHOR (self-vetting is the design — the external critique
+   *  comes from the linked consult, not from grader independence). */
+  const metaVettingCard = (over: Partial<ScorecardRow> = {}): ScorecardRow =>
+    scorecard({
+      issueId: 'EI-vet',
+      rubricRef: 'meta-acceptance-rubric',
+      createdBy: 'su-implementer',
+      subject: { kind: 'rubric', ref: 'ar-some-plan' },
+      vetting: { consultId: 'conv-vet-1', rubricRevision: 7 },
+      ...over,
+    });
+
+  /** Scorecard store split by rubric: meta cards for the meta-rubric read, an
+   *  independent complete acceptance grading for everything else (so the ONLY
+   *  variable under test is the vetting state). */
+  const stockScorecards = (metaCards: ScorecardRow[], acceptanceCards?: ScorecardRow[]) => {
+    mockScorecards.mockImplementation(async (filter?: { rubricRef?: string }) =>
+      filter?.rubricRef === 'meta-acceptance-rubric'
+        ? metaCards
+        : acceptanceCards ?? [scorecard({ createdBy: 'su-grader' })],
+    );
+  };
+
+  beforeEach(() => {
+    mockFlag.mockImplementation(
+      async (flag) =>
+        flag === FLAGS.ACCEPTANCE_RUBRIC_COMPLETION_GATE || flag === FLAGS.ACCEPTANCE_RUBRIC_VETTING_GATE,
+    );
+    mockRubric.mockResolvedValue(acceptanceRubric());
+    // The meta-rubric is REGISTERED but deliberately still 'proposed': the gate must
+    // tolerate it (ratification governs content authority, not gate mechanics) or the
+    // whole ship gate deadlocks on the owner's ratification.
+    mockGetRubric.mockResolvedValue(
+      acceptanceRubric({ rubricId: 'meta-acceptance-rubric', kind: 'standard', subjectPlan: null, status: 'proposed' }),
+    );
+    mockRevision.mockResolvedValue(7);
+    mockPg.mockReturnValue(sqlReturning([{ plan_slug: 'some-plan-2026-08-11', template: null, template_slug: null }]));
+  });
+
+  it('refuses acceptance_rubric_unvetted when no meta-scorecard exists — even with an independent acceptance grading already filed', async () => {
+    stockScorecards([]);
+    const v = await evaluatePlanAcceptanceGate('some-plan-2026-08-11');
+    expect(v).toMatchObject({ satisfied: false, code: 'acceptance_rubric_unvetted', rubricId: 'ar-some-plan' });
+    // The refusal is the teaching surface: it must name the full flow.
+    expect(v.message).toContain('vettingConsult');
+    expect(v.message).toContain('meta-acceptance-rubric');
+    expect(v.message).toContain('consult:get_feedback');
+  });
+
+  it('a plain meta-grade WITHOUT the linked consult does not satisfy — the consult is what makes an attestation a vetting', async () => {
+    stockScorecards([metaVettingCard({ vetting: undefined })]);
+    const v = await evaluatePlanAcceptanceGate('some-plan-2026-08-11');
+    expect(v).toMatchObject({ satisfied: false, code: 'acceptance_rubric_unvetted' });
+  });
+
+  it('a vetting pinned to an OLDER revision refuses, naming both revisions', async () => {
+    stockScorecards([metaVettingCard({ vetting: { consultId: 'conv-vet-1', rubricRevision: 6 } })]);
+    const v = await evaluatePlanAcceptanceGate('some-plan-2026-08-11');
+    expect(v).toMatchObject({ satisfied: false, code: 'acceptance_rubric_unvetted' });
+    expect(v.message).toContain('revision 6');
+    expect(v.message).toContain('revision 7');
+  });
+
+  it('a current-revision vetting with a linked consult satisfies (meta-rubric still proposed — tolerance proven)', async () => {
+    stockScorecards([metaVettingCard()]);
+    const v = await evaluatePlanAcceptanceGate('some-plan-2026-08-11');
+    expect(v).toMatchObject({ satisfied: true, rubricId: 'ar-some-plan', gradedBy: 'su-grader' });
+  });
+
+  it('CONTROL (falsifiability, in-test — no tree mutation): the vetting stamp ALONE flips the verdict', async () => {
+    // Identical state twice; the only delta is the stamp. If the check were vacuous
+    // (or wired to the wrong field), both runs would agree and this control fails.
+    stockScorecards([metaVettingCard()]);
+    const withStamp = await evaluatePlanAcceptanceGate('some-plan-2026-08-11');
+    stockScorecards([metaVettingCard({ vetting: undefined })]);
+    const withoutStamp = await evaluatePlanAcceptanceGate('some-plan-2026-08-11');
+    expect(withStamp.satisfied).toBe(true);
+    expect(withoutStamp).toMatchObject({ satisfied: false, code: 'acceptance_rubric_unvetted' });
+  });
+
+  it('synthesized or incomplete meta-cards never count as a vetting', async () => {
+    stockScorecards([
+      metaVettingCard({ synthesized: true }),
+      metaVettingCard({ issueId: 'EI-vet-2', missingKeys: ['k2'] }),
+    ]);
+    const v = await evaluatePlanAcceptanceGate('some-plan-2026-08-11');
+    expect(v).toMatchObject({ satisfied: false, code: 'acceptance_rubric_unvetted' });
+  });
+
+  it('a criteria:[] investigation rubric is exempt from vetting (D-009 — nothing to vet)', async () => {
+    mockRubric.mockResolvedValue(acceptanceRubric({ criteria: [], classRef: 'plan-class-investigation' }));
+    stockScorecards([]);
+    const v = await evaluatePlanAcceptanceGate('some-plan-2026-08-11');
+    expect(v.satisfied).toBe(true);
+    expect(v.code).toBeUndefined();
+  });
+
+  it('no registered meta-rubric ⇒ the check disables rather than deadlocking every ship', async () => {
+    mockGetRubric.mockResolvedValue(null);
+    stockScorecards([]);
+    const v = await evaluatePlanAcceptanceGate('some-plan-2026-08-11');
+    expect(v).toMatchObject({ satisfied: true, gradedBy: 'su-grader' });
+  });
+
+  it('vetting flag OFF ⇒ the sibling rubric checks run unchanged and no vetting is demanded', async () => {
+    mockFlag.mockImplementation(async (flag) => flag === FLAGS.ACCEPTANCE_RUBRIC_COMPLETION_GATE);
+    stockScorecards([]);
+    const v = await evaluatePlanAcceptanceGate('some-plan-2026-08-11');
+    expect(v).toMatchObject({ satisfied: true, gradedBy: 'su-grader' });
+  });
+
+  it('an unreadable current revision degrades OPEN: any linked vetting satisfies (never throws, never deadlocks)', async () => {
+    mockRevision.mockResolvedValue(null);
+    stockScorecards([metaVettingCard({ vetting: { consultId: 'conv-vet-1', rubricRevision: 3 } })]);
+    const v = await evaluatePlanAcceptanceGate('some-plan-2026-08-11');
+    expect(v.satisfied).toBe(true);
   });
 });
