@@ -362,18 +362,35 @@ export async function countImprovementItems(
   opts: ReadImprovementOpts = {},
   deps: CountImprovementDeps = defaultCountImprovementDeps,
 ): Promise<number> {
-  if (opts.loopOutputOnly) {
-    throw new Error(
-      'countImprovementItems: loopOutputOnly is not supported for the scalar count (no caller needs it yet) — ' +
-        'resolve issueIds via readLoopOutputIds and count them directly, or extend this function.',
-    );
-  }
   const origins = opts.origins ?? ORGANIC_ONLY;
   const base: ListIssuesFilter = {
     topic: IMPROVEMENT_TOPIC,
     state: opts.state,
     signalOrigins: origins,
   };
+  // Learning-loop provenance scope — resolved to the SAME `issueIds` predicate
+  // readBySelector applies, so this count is taken over exactly the population
+  // the matching read returns. Previously this threw ("no caller needs it yet");
+  // the Learning tab is that caller (WI-39675): its default scope IS 'loop', so
+  // without this the tab could only report the WINDOW size as its total.
+  //
+  // The fail-loud stance is kept, not softened: a missing dep still throws rather
+  // than counting the whole untagged corpus under a name that promises the loop's
+  // output — that would reinstate the 8,202-row Work-tab duplication this option
+  // exists to remove, and it would be WORSE than the window bug, because a total
+  // larger than the truth reads as a plausible corpus count.
+  if (opts.loopOutputOnly) {
+    if (!deps.readLoopOutputIds) {
+      throw new Error(
+        'countImprovementItems: loopOutputOnly requires deps.readLoopOutputIds (see improvements/loop-output.ts)',
+      );
+    }
+    const loopIds = await deps.readLoopOutputIds();
+    // Mirrors the harnessScopes empty-set rule below: an empty id set matches
+    // nothing, and must not degrade to an unscoped count.
+    if (loopIds.length === 0) return 0;
+    base.issueIds = loopIds;
+  }
   if (opts.harnessScopes) {
     if (opts.harnessScopes.length === 0) return 0; // mirrors readByTopic: an empty set matches nothing
     const counts = await Promise.all(opts.harnessScopes.map((scope) => deps.countIssues({ ...base, scope })));

@@ -94,7 +94,7 @@ export interface LearningImprovementsArgs {
 export async function computeLearningImprovementsSnapshot(
   a: LearningImprovementsArgs,
 ): Promise<Array<LearningImprovementsRow>> {
-  const { readImprovementItems } = await import('./read-items');
+  const { readImprovementItems, countImprovementItems } = await import('./read-items');
   const { buildDigest } = await import('./digest');
   const { applyHumanQueueRanking } = await import('../../queue-ranker/human-queue');
   const { computeImprovementFlow, readWatchdogFlowTicks } = await import('./flow-metrics');
@@ -120,7 +120,7 @@ export async function computeLearningImprovementsSnapshot(
       console.warn('[learning.improvements] hive scope resolution failed:', err instanceof Error ? err.message : err);
     }
   }
-  const items = await readImprovementItems({
+  const readOpts = {
     state: a.state,
     limit: a.limit,
     ...(harnessScopes ? { harnessScopes } : {}),
@@ -128,13 +128,28 @@ export async function computeLearningImprovementsSnapshot(
     // flag explicitly (rather than letting read-items default it) keeps the scope
     // decision visible at the one call site that owns the Learning tab's semantics.
     ...(a.scope === 'all' ? {} : { loopOutputOnly: true }),
-  });
+  };
+  // WI-39675: the TRUE corpus total, read alongside the (windowed) items over the
+  // SAME filter — so `digest.total`, which the tab renders as "From the loop N",
+  // stops reporting the WINDOW size. This is the same D2 fix EI-18790490225750395
+  // made to the `improvements:digest` AGENT TOOL; it was never propagated to this
+  // SYNC-RESOLVER path, so the tab's own total silently saturated at the default
+  // 500-row window while the agent-facing tool reported the truth.
+  //
+  // Best-effort, exactly as on that path: a count failure must never sink an
+  // otherwise-good digest, so it degrades to `undefined` and buildDigest falls
+  // back to candidates.length (the prior behavior) rather than throwing.
+  const [items, corpusTotal] = await Promise.all([
+    readImprovementItems(readOpts),
+    countImprovementItems(readOpts).catch(() => undefined),
+  ]);
   // Human lane ordered by the ONE ranker (frontier P-040; feature #1 is
   // consume-edges P-022's blocking impact) — the owner's queue leads with
   // what blocks the most, each item carrying its per-feature breakdown.
-  const digest = await applyHumanQueueRanking(buildDigest(items, { nowMs, ownerFullAutonomy }), {
-    candidates: items,
-  });
+  const digest = await applyHumanQueueRanking(
+    buildDigest(items, { nowMs, ownerFullAutonomy, corpusTotal }),
+    { candidates: items },
+  );
   // Watchdog ticks are best-effort: a tick-read failure degrades the flow
   // strip to "watchdog: never" rather than 500ing the whole improvements view.
   let ticks: Awaited<ReturnType<typeof readWatchdogFlowTicks>> = [];
