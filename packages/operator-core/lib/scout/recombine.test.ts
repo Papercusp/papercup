@@ -400,9 +400,11 @@ describe('routeHint drift guard (WI-39724)', () => {
  */
 type AssertNever<T extends never> = T;
 const INCOMPLETE_HINTS = ['plan'] as const;
-// @ts-expect-error — 'gym' | 'improvement' | 'instance' | 'goal' are missing, so Exclude
-// yields them instead of never and AssertNever must refuse to compile.
-export type IncompleteRouteHintListIsRejected = AssertNever<
-  Exclude<NonNullable<Proposal['routeHint']>, (typeof INCOMPLETE_HINTS)[number]>
+/** 'gym' | 'improvement' | 'instance' | 'goal' — i.e. NOT never, which is the point. */
+type MissingFromIncompleteList = Exclude<
+  NonNullable<Proposal['routeHint']>,
+  (typeof INCOMPLETE_HINTS)[number]
 >;
+// @ts-expect-error — the four missing members make Exclude non-never, so AssertNever must refuse to compile. (Keep this directive and the line it guards adjacent and single-line: a directive whose next line is a comment or an unfinished expression suppresses nothing and reports as unused.)
+export type IncompleteRouteHintListIsRejected = AssertNever<MissingFromIncompleteList>;
 
