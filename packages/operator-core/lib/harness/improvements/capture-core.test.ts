@@ -1642,3 +1642,161 @@ describe('exact watchdogKey is a first-class blocking dedup source (EI-204844303
     expect(res.dedupCoverage?.degraded).toBe(true);
   });
 });
+
+describe('captureImprovement — NON-observation coalescing by watchdogKey (WI-39594)', () => {
+  /** Same stateful store shape as the observation-coalesce fixture above: a 2nd
+   *  call genuinely finds the 1st call's row, exercising the real coalesce loop. */
+  function keyDeps(): CaptureDeps & {
+    created: CreateIssueInput[];
+    store: EngineerIssue[];
+    occurrences: RecordIssueOccurrenceInput[];
+  } {
+    const created: CreateIssueInput[] = [];
+    const store: EngineerIssue[] = [];
+    const occurrences: RecordIssueOccurrenceInput[] = [];
+    let nextId = 500;
+    return {
+      created,
+      store,
+      occurrences,
+      recordIssueOccurrence: async (input) => {
+        occurrences.push(input);
+        return null;
+      },
+      searchIssues: async () => [],
+      createIssue: async (input) => {
+        created.push(input);
+        const issue = existing({
+          id: `EI-${nextId++}`,
+          title: input.title,
+          kind: (input.kind as 'bug' | 'change') ?? 'change',
+          payload: input.payload ?? null,
+          createdBy: input.createdBy ?? null,
+        });
+        store.push(issue);
+        return issue;
+      },
+      findIssuesByWatchdogKeys: async (keys) =>
+        store.filter((i) => {
+          const k = (i.payload as Record<string, unknown> | null)?.watchdogKey;
+          return typeof k === 'string' && keys.includes(k);
+        }),
+      mergeIssuePayload: async (id, patch) => {
+        const i = store.find((x) => x.id === id);
+        if (!i) return null;
+        i.payload = { ...(i.payload as Record<string, unknown> | null), ...patch };
+        return i;
+      },
+      updateIssuePatch: async (id, patch) => {
+        const i = store.find((x) => x.id === id);
+        if (!i) return null;
+        if (patch.title !== undefined) i.title = patch.title;
+        if (patch.body !== undefined) i.body = patch.body;
+        return i;
+      },
+    };
+  }
+
+  it('re-firing a keyed detector twice yields ONE open row — 2nd call coalesces (repeatCount 2, title refreshed)', async () => {
+    const d = keyDeps();
+    const first = await captureImprovement(
+      {
+        title: 'Gym champion promoted: judge@h-pao cycle 4 — consider generalizing',
+        kind: 'change',
+        lane: 'improvement',
+        watchdogKey: 'gym-champion:h-pao:judge',
+      },
+      d,
+    );
+    expect(first.created).toBe(true);
+    expect(d.created).toHaveLength(1);
+    expect((d.store[0].payload as Record<string, unknown>).watchdogKey).toBe('gym-champion:h-pao:judge');
+
+    const second = await captureImprovement(
+      {
+        title: 'Gym champion promoted: judge@h-pao cycle 5 — consider generalizing',
+        kind: 'change',
+        lane: 'improvement',
+        watchdogKey: 'gym-champion:h-pao:judge',
+      },
+      d,
+    );
+    expect(second.created).toBe(false);
+    expect(second.reason).toBe('coalesced');
+    expect(d.created).toHaveLength(1); // ONE open item — the WI-39594 acceptance
+    expect(d.store).toHaveLength(1);
+    expect((d.store[0].payload as Record<string, unknown>).repeatCount).toBe(2);
+    expect(d.store[0].title).toBe('Gym champion promoted: judge@h-pao cycle 5 — consider generalizing');
+    expect(second.issue?.id).toBe(first.issue?.id);
+    expect(second.coalescedOnto).toMatchObject({ id: first.issue?.id, repeatCount: 2 });
+  });
+
+  it('key-coalesce WINS over force:true — a forced detector re-fire refreshes, never forks (the champion-escalation dupe class)', async () => {
+    const d = keyDeps();
+    await captureImprovement(
+      {
+        title: 'Hive canary papercusp/WI-1 breached its 30min completion SLA',
+        kind: 'bug',
+        force: true,
+        watchdogKey: 'hive-canary-sla:papercusp',
+      },
+      d,
+    );
+    const second = await captureImprovement(
+      {
+        title: 'Hive canary papercusp/WI-2 breached its 30min completion SLA',
+        kind: 'bug',
+        force: true,
+        watchdogKey: 'hive-canary-sla:papercusp',
+      },
+      d,
+    );
+    expect(second.created).toBe(false);
+    expect(second.reason).toBe('coalesced');
+    expect(d.created).toHaveLength(1);
+    expect((d.store[0].payload as Record<string, unknown>).repeatCount).toBe(2);
+  });
+
+  it('CONTROL: a different watchdogKey files fresh — coalesce is keyed identity, not a blanket suppressor', async () => {
+    const d = keyDeps();
+    await captureImprovement(
+      { title: 'Hive canary a/WI-1 breached its SLA', kind: 'bug', watchdogKey: 'hive-canary-sla:a' },
+      d,
+    );
+    const second = await captureImprovement(
+      { title: 'Hive canary b/WI-9 breached its SLA', kind: 'bug', watchdogKey: 'hive-canary-sla:b' },
+      d,
+    );
+    expect(second.created).toBe(true);
+    expect(d.created).toHaveLength(2);
+  });
+
+  it('CONTROL: a RESOLVED prior with the same key does not swallow the capture — a recurrence re-files', async () => {
+    const d = keyDeps();
+    await captureImprovement(
+      { title: 'live-federation-gate RED: content-matrix failed (t1)', kind: 'bug', watchdogKey: 'live-federation-gate-red:papercusp' },
+      d,
+    );
+    d.store[0].state = 'resolved';
+    const second = await captureImprovement(
+      { title: 'live-federation-gate RED: content-matrix failed (t2)', kind: 'bug', watchdogKey: 'live-federation-gate-red:papercusp' },
+      d,
+    );
+    expect(second.created).toBe(true);
+    expect(d.created).toHaveLength(2);
+  });
+
+  it('CONTROL: an open OBSERVATION-lane row with the same key does not capture a non-observation filing', async () => {
+    const d = keyDeps();
+    await captureImprovement(
+      { title: 'sensor reading', kind: 'change', lane: 'observation', watchdogKey: 'shared:key' },
+      d,
+    );
+    const second = await captureImprovement(
+      { title: 'real improvement filing', kind: 'change', watchdogKey: 'shared:key' },
+      d,
+    );
+    expect(second.reason).not.toBe('coalesced');
+    expect(d.created).toHaveLength(2);
+  });
+});
