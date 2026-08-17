@@ -16,6 +16,18 @@
     "isolatedModules": true,
     "incremental": true,
     "noEmit": true,
+    // WI-39692: this program follows `@papercusp/test-config/vitest-config` into the
+    // dependency's SOURCE (include:["**/*.ts"] + moduleResolution:"bundler"), and that file
+    // imports './lane-split.ts' with the explicit `.ts` extension — REQUIRED at runtime by
+    // Node's native TS config loader, which resolves neither the extensionless nor the `.js`
+    // form. libs/test-config's own tsconfig sets this flag, which is why the file is legal in
+    // its own program and green under lint:tsc:workspaces; without it here the two programs
+    // disagree about a file they both compile and tsc reports TS5097. Legal in this config
+    // because `noEmit` above is set (tsc requires noEmit or emitDeclarationOnly for it), and
+    // it only PERMITS the extension — it never requires one, so no existing import changes.
+    // Do NOT "fix" that import by dropping its `.ts`: that breaks the loader at runtime to
+    // satisfy a typecheck.
+    "allowImportingTsExtensions": true,
     "allowJs": false,
     "ignoreDeprecations": "6.0",
     "baseUrl": ".",
