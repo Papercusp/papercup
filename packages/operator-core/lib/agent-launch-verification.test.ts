@@ -66,10 +66,19 @@ describe('verifyFreshLaunchStarted — the ACCEPTANCE CASE (adv_session 14842)',
     expect(verdict.note).toContain('14842');
   });
 
-  it('reports FALSE when nothing registered at all', async () => {
+  it('reports UNCONFIRMED (null) when nothing registered at all — absence is not observed death (EI-20437060078324174)', async () => {
+    // The measured false-negative: a member registered 5.5s past the window and
+    // went straight on to claim work while this branch asserted "psu died" with
+    // three invented causes. Zero sessions at expiry is the ABSENCE of an
+    // observation; per the FreshLaunchVerdict contract, `false` is reserved for
+    // OBSERVED silence (the 14842 shape below), and an expired window is `null`.
     const verdict = await verifyFreshLaunchStarted(ARGS, { ...FAST, probe: fixedProbe([]) });
-    expect(verdict.agentStarted).toBe(false);
+    expect(verdict.agentStarted).toBe(null);
     expect(verdict.note).toMatch(/no session registered/);
+    expect(verdict.note).toMatch(/UNCONFIRMED/);
+    expect(verdict.note).toMatch(/Do NOT relaunch/);
+    // The confidently-wrong diagnosis must be gone: the note may not assert death.
+    expect(verdict.note).not.toMatch(/DID NOT START/);
   });
 });
 

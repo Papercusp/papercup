@@ -1498,9 +1498,13 @@ describe('fleet:launch-on-plan handler — verified canary-first transaction (P-
   });
 
   it('does not open the cohort when the canary never reaches a successful tool invocation', async () => {
-    launchTransaction.verify.mockResolvedValueOnce({
-      agentStarted: null, waitedMs: 10_000, sessions: [], note: 'UNVERIFIED',
-    });
+    // EI-20437060078324174: an UNCONFIRMED first probe now earns ONE bounded
+    // re-probe before the gate decision (a slow boot verifies there instead of
+    // being stamped a false 502) — so the mock must stay unconfirmed TWICE for
+    // the canary gate to hold.
+    launchTransaction.verify
+      .mockResolvedValueOnce({ agentStarted: null, waitedMs: 10_000, sessions: [], note: 'UNVERIFIED' })
+      .mockResolvedValueOnce({ agentStarted: null, waitedMs: 30_000, sessions: [], note: 'UNVERIFIED' });
     const res = await tool.handler(
       { name: 'Canary Stop Fleet', plan: 'my-plan', harness: 'papercusp', count: 5 } as never,
       {} as never,
@@ -1510,6 +1514,17 @@ describe('fleet:launch-on-plan handler — verified canary-first transaction (P-
     expect(payload.ok).toBe(false);
     expect(payload.launchTransaction.state).toBe('partial');
     expect(payload.launchTransaction.verifiedMemberIds).toEqual([]);
+    // Both probes targeted the canary alone.
+    expect(launchTransaction.verify).toHaveBeenCalledTimes(2);
+    for (const call of launchTransaction.verify.mock.calls) {
+      expect((call[0] as { expectedOwnerIds: string[] }).expectedOwnerIds).toHaveLength(1);
+    }
+    // The unconfirmed canary is the THIRD state — reported as unverified, never
+    // absorbed into failed[] as a 502 (that false refusal is the measured bug).
+    expect(payload.launchTransaction.failed).toEqual([]);
+    expect(payload.unverifiedMembers).toHaveLength(1);
+    expect(payload.unverifiedMembers[0].ownerId).toBe(payload.launchTransaction.openedMemberIds[0]);
+    expect(payload.launchTransaction.unconfirmedMemberIds).toEqual(payload.launchTransaction.openedMemberIds);
   });
 
   it('rolls out one canary then bounded waves, with exact pre-pinned identities', async () => {
