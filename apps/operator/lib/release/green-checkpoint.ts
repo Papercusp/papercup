@@ -3734,6 +3734,55 @@ export const ISOLATION_RETRY_DELAY_MS = 5_000;
  *  attempt), the worst case never regresses below what the gate did before this fix. */
 export const ISOLATION_RETRY_BUDGET_MS = 20 * 60_000;
 
+/** EI-20669541349219660: mirror of GREEN_CHECKPOINT_SUITE_TIMEOUT_MS (release-actions.ts) —
+ *  the SCHEDULED parent SIGTERMs this process's group at that mark, so it is the effective
+ *  kill deadline for a scheduled run (the 180m SELF_WATCHDOG_MS only matters parent-dead).
+ *  Mirrored because operator-core registers routine actions as a module-load side effect
+ *  (same convention as MANUAL_CHECKPOINT_WATCHDOG_MS / the result MARKERs); pinned equal in
+ *  release-timing-invariants.test.ts so drift fails the build instead of un-bounding the
+ *  isolation phase below. */
+export const SUITE_KILL_BUDGET_MIRROR_MS = 120 * 60_000;
+
+/** EI-20669541349219660: headroom the isolation phase must leave before the run's kill
+ *  deadline. The phase deadline is "stop STARTING new absorption work" (an isolation
+ *  attempt, a retry, a co-execution confirm run), so the worst case still in flight when it
+ *  passes is ONE bounded child (ISOLATION_RUN_TIMEOUT_MS = 5m, or one
+ *  CONCURRENT_CONFIRM_TIMEOUT_MS = 10m confirm run) plus the verdict write — this reserve
+ *  covers that with margin. Pinned >= ISOLATION_RUN_TIMEOUT_MS in
+ *  release-timing-invariants.test.ts. */
+export const ISOLATION_PHASE_RESERVE_MS = 15 * 60_000;
+
+/**
+ * EI-20669541349219660: the absolute wall-clock deadline after which the flake-absorption
+ * phase must stop STARTING new work, derived from what will actually kill this run:
+ *   - manual run: the transported self-watchdog deadline (MANUAL_CHECKPOINT_WATCHDOG_MS,
+ *     armed from process start);
+ *   - scheduled run: the parent's GREEN_CHECKPOINT_SUITE_TIMEOUT_MS group-kill (mirrored
+ *     above), which fires long before the 180m self-watchdog.
+ * Both clocks start at PROCESS start, so the deadline is anchored there, minus the reserve.
+ *
+ * WHY: the gate had a positive feedback loop between how red it is and whether it can
+ * produce a verdict at all — a wide-but-<=ISOLATION_MAX_FILES red made the SERIAL isolation
+ * phase (first attempts were unbounded; only retries had a budget) outlast the suite
+ * budget, the kill landed mid-isolation, and the verdict landed as status:'error' with NO
+ * failing-test list, so the next run re-derived the same N failures from scratch, forever.
+ * Bounding the phase here means a verdict ALWAYS lands: partial-but-real (fail-safe red,
+ * naming what was and was not confirmed) beats a cap kill that names nothing.
+ */
+export function isolationPhaseDeadlineMs(
+  env: NodeJS.ProcessEnv = process.env,
+  nowMs: number = Date.now(),
+  processUptimeMs: number = process.uptime() * 1000,
+): number {
+  const processStartMs = nowMs - processUptimeMs;
+  const watchdog = selfWatchdogConfigFromEnv(env);
+  const killMs =
+    watchdog.trigger === "manual-run-deadline"
+      ? watchdog.ms
+      : SUITE_KILL_BUDGET_MIRROR_MS;
+  return processStartMs + killMs - ISOLATION_PHASE_RESERVE_MS;
+}
+
 /**
  * EI-18685042025868279: ONE test the gate had to re-run before it would call the tree
  * green — name, how many times this gate actually ran it, and how that ended.
