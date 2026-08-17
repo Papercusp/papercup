@@ -546,19 +546,25 @@ async function newestJournalEntryMs(
     // Deliberately UNFILTERED except for scope: the question is "does the journal
     // hold anything newer than the requested window", which a unit/grep filter
     // would confound with its own emptiness.
+    //
+    // ⚠ MESSAGE must stay in --output-fields even though only the timestamp is
+    // used: parseJournalJson DROPS any record whose MESSAGE will not decode, so
+    // requesting the timestamp alone makes every record parse to nothing and this
+    // probe silently return null forever — a diagnosis that never fires, which is
+    // indistinguishable from a window that is fine.
     const { stdout } = await exec([
       ...journalScopeArgs(scope),
+      '--no-pager',
       '-n',
       '1',
       '-o',
       'json',
-      '--output-fields=__REALTIME_TIMESTAMP',
+      '--output-fields=__REALTIME_TIMESTAMP,MESSAGE',
     ]);
     const [record] = parseJournalJson(stdout);
-    const raw = record?.__REALTIME_TIMESTAMP;
-    if (typeof raw !== 'string') return null;
-    const micros = Number(raw);
-    return Number.isFinite(micros) ? Math.round(micros / 1000) : null;
+    if (!record?.ts) return null;
+    const ms = Date.parse(record.ts);
+    return Number.isFinite(ms) ? ms : null;
   } catch {
     return null;
   }
