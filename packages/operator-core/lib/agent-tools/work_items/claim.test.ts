@@ -65,6 +65,7 @@ vi.mock('../../premises-claim-port', () => ({ getClaimTimePremises: premisePort.
 
 import { claimWorkItem, classifyClaimFailure, getWorkItem, readWorkItemClaimHoldProvenance } from '../../work-items';
 import { recordClaimHoldBypassAudit, notifyClaimHoldBypass } from './claim-hold-guard';
+import { mockResolvedTyped, mockReturnTyped } from '../../testing/typed-mock';
 const claimM = vi.mocked(claimWorkItem);
 const classifyM = vi.mocked(classifyClaimFailure);
 const getM = vi.mocked(getWorkItem);
@@ -264,7 +265,6 @@ describe('work_items:claim handler (keyed-array)', () => {
   describe('self-held transfer', () => {
     it('passes the CALLER as fromHolder, so the handoff lands in the same compare-and-claim', async () => {
       identity.ownerId = 'me';
-      claimM.mockResolvedValue({ id: 'WI-MINE', assignee: 'peer' } as never);
       const b = await body({ id: 'WI-MINE', assignee: 'peer' });
       expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
       // fromHolder is the whole mechanism: it widens the CAS by the caller's OWN claim.
@@ -274,7 +274,6 @@ describe('work_items:claim handler (keyed-array)', () => {
 
     it('never offers a THIRD party as fromHolder — only ever the caller', async () => {
       identity.ownerId = 'me';
-      claimM.mockResolvedValue({ id: 'WI-X', assignee: 'peer' } as never);
       await body({ id: 'WI-X', assignee: 'peer' });
       // The safety property: fromHolder is bound to identity, never to the assignee, so
       // this can only ever move a claim the CALLER already holds.
@@ -284,9 +283,8 @@ describe('work_items:claim handler (keyed-array)', () => {
 
     it('a conflict whose holder IS the caller does not return the someone-else-holds-it hint', async () => {
       identity.ownerId = 'me';
-      claimM.mockResolvedValue(null as never);
-      getM.mockResolvedValue({ id: 'WI-MINE', assignee: 'me' } as never);
-      classifyM.mockReturnValue({ reason: 'conflict', holder: 'me' } as never);
+      mockResolvedTyped(claimM, null);
+      mockReturnTyped(classifyM, { reason: 'conflict', holder: 'me' });
       const b = await body({ id: 'WI-MINE', assignee: 'peer' });
       expect(b.results[0]).toMatchObject({ ok: false, error: 'claim_conflict', holder: 'me' });
       const hint = b.results[0].hint as string;
@@ -303,9 +301,8 @@ describe('work_items:claim handler (keyed-array)', () => {
 
     it('a conflict held by a PEER still returns the original hint', async () => {
       identity.ownerId = 'me';
-      claimM.mockResolvedValue(null as never);
-      getM.mockResolvedValue({ id: 'WI-HELD', assignee: 'peer' } as never);
-      classifyM.mockReturnValue({ reason: 'conflict', holder: 'peer' } as never);
+      mockResolvedTyped(claimM, null);
+      mockReturnTyped(classifyM, { reason: 'conflict', holder: 'peer' });
       const b = await body({ id: 'WI-HELD' });
       const hint = b.results[0].hint as string;
       expect(hint).toMatch(/Already claimed by peer/);
