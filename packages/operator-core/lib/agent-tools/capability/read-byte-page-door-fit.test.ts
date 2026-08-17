@@ -22,7 +22,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { BAKED_DOOR_CONSTANTS } from '../../context-doors';
+import { BAKED_DOOR_CONSTANTS, CHARS_PER_TOKEN_ESTIMATE, computeTurnDoors } from '../../context-doors';
 
 const { doorConstantsMock } = vi.hoisted(() => ({ doorConstantsMock: vi.fn() }));
 vi.mock('../../context-doors-config', () => ({ getDoorConstantsSync: doorConstantsMock }));
@@ -49,8 +49,25 @@ beforeEach(() => {
   doorConstantsMock.mockReset();
   doorConstantsMock.mockReturnValue(BAKED_DOOR_CONSTANTS);
   // A deep path is part of the subject: `file_path` is absolute and appears
-  // TWICE in the response, so path length is what moves the real ceiling.
-  filePath = join(sandbox, 'scratch', 'papercusp-workspace', 'work_items:get', 'a'.repeat(36), 'result-door-1786953789399.md');
+  // TWICE in the response, so path length is what moves the real ceiling. This
+  // mirrors a REAL scratch path (~170 chars) on purpose — at ~140 chars an
+  // unclamped 4096-byte page lands at ~5944 chars and slips under the 6000-char
+  // door, so the fixture passes for the wrong reason and the guard stops
+  // constraining anything. Measured: the production repro was 6104 chars.
+  filePath = join(
+    sandbox,
+    'scratch',
+    'papercusp-workspace',
+    'work_items:get',
+    '6168d863-ee2f-4570-a1b2-8c1b631cee4d',
+    'nested-scratch-segment',
+    'result-door-1786953789399.md',
+  );
+  // Self-computing fixture precondition, not a magic length: the path must be
+  // deep enough that clamping actually ENGAGES at the advertised max. Without
+  // this the suite passes whether or not the clamp exists (measured — an
+  // earlier ~140-char fixture let the mutant survive).
+  expect(doorSafePageBytes(filePath, MAX_BYTE_PAGE)).toBeLessThan(MAX_BYTE_PAGE);
   mkdirSync(dirname(filePath), { recursive: true });
   writeFileSync(filePath, payload(40_000));
 });
@@ -74,7 +91,40 @@ async function readThroughDoor(args: Record<string, unknown>) {
   return { text, parsed: JSON.parse(text) as Record<string, unknown> };
 }
 
+/** The tool's own response, BEFORE the door — the thing that must fit. */
+async function rawResponseText(args: Record<string, unknown>): Promise<string> {
+  const res = (await readTool.handler(args as never, { projectDir: sandbox } as never)) as {
+    content: Array<{ text: string }>;
+  };
+  return res.content[0].text;
+}
+
+const DOOR_BUDGET_CHARS = computeTurnDoors(0).resultEach * CHARS_PER_TOKEN_ESTIMATE;
+
 describe('WI-39670: byte-window pages survive the result door intact', () => {
+  it('emits a response within the door budget at the ADVERTISED max byte_limit', async () => {
+    // The crisp invariant, independent of how the door happens to project: a
+    // response the door must not touch. This is what the clamp exists to hold,
+    // and it bites for ANY path length rather than only the fixture's.
+    const text = await rawResponseText({ file_path: filePath, byte_offset: 0, byte_limit: MAX_BYTE_PAGE });
+    expect(text.length).toBeLessThanOrEqual(DOOR_BUDGET_CHARS);
+  });
+
+  it('holds that budget for pathological path lengths too', async () => {
+    // The ceiling moves with the path; a fixed page size would only relocate the
+    // cliff. Build progressively deeper real files and re-check the invariant.
+    for (const depth of [1, 6, 12]) {
+      const deep = join(sandbox, 'scratch', Array.from({ length: depth }, () => 'deep-scratch-segment').join('/'), 'spill.md');
+      mkdirSync(dirname(deep), { recursive: true });
+      writeFileSync(deep, payload(40_000));
+      const text = await rawResponseText({ file_path: deep, byte_offset: 0, byte_limit: MAX_BYTE_PAGE });
+      expect(text.length).toBeLessThanOrEqual(DOOR_BUDGET_CHARS);
+      expect(JSON.parse(text).data as string).toBe(
+        Buffer.from(payload(40_000).subarray(0, JSON.parse(text).byte_length as number)).toString('base64'),
+      );
+    }
+  });
+
   it('returns base64 that decodes cleanly at the ADVERTISED max byte_limit', async () => {
     const { parsed } = await readThroughDoor({ file_path: filePath, byte_offset: 0, byte_limit: MAX_BYTE_PAGE });
 
