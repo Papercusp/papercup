@@ -185,7 +185,7 @@ export default defineTool({
     // liveness-bound. A caller who reads only `{ ok:true, held:true }` must not be able to
     // conclude "fenced permanently". Emitted unconditionally — never inferred from reason prose,
     // which is exactly the free-text guessing the policy-gate exemption already shows is fragile.
-    const policyExempt = looksLikePolicyGate(args.reason);
+    const policyExempt = looksLikePolicyGate(args.reason ?? null);
     return {
       content: [
         {
