@@ -550,17 +550,21 @@ export async function getFeedbackCore(
   }
 
   const parkKey = chosen && latency === 'hard-blocked' ? consultParkKey(opened.conversation_id) : null;
+  const viaNote =
+    chosenVia === 'minimum'
+      ? ' ⚠ Best-available pick BELOW the relevance floor (minimum-fill, D-001) — weigh the reply as a first-principles review, not grounded expertise.'
+      : '';
   const hint = chosen
     ? budgetExhausted
-      ? `Routed to ${chosen.ownerId} but the wake budget for ${originRef} is exhausted (${usedForTask}/${WAKE_BUDGET_PER_TASK}) — delivered by subscription only; they see it on their next turn. Proceed meanwhile.`
+      ? `Routed to ${chosen.ownerId} but the wake budget for ${originRef} is exhausted (${usedForTask}/${WAKE_BUDGET_PER_TASK}) — delivered by subscription only; they see it on their next turn. Proceed meanwhile.${viaNote}`
       : latency === 'hard-blocked'
-        ? `Routed + woke ${chosen.ownerId}. Park on events:await { event: '${parkKey}' } and end your turn — the reply wakes you (latched). Expires ${expiresAt}.`
-        : `Routed + woke ${chosen.ownerId}; the reply lands in conversation ${opened.conversation_id}. PROCEED on your own judgment meanwhile and reconcile when it arrives. A decline returns the remaining candidates — re-call with exclude:['${chosen.ownerId}'].`
+        ? `Routed + woke ${chosen.ownerId}. Park on events:await { event: '${parkKey}' } and end your turn — the reply wakes you (latched). Expires ${expiresAt}.${viaNote}`
+        : `Routed + woke ${chosen.ownerId}; the reply lands in conversation ${opened.conversation_id}. PROCEED on your own judgment meanwhile and reconcile when it arrives. A decline returns the remaining candidates — re-call with exclude:['${chosen.ownerId}'].${viaNote}`
     : reason === 'embed_unavailable'
-      ? 'The embedder is unavailable on this host — similarity could NOT be measured (cannot-measure ≠ measured-nothing). Proceed on your own judgment; retry later if the answer matters.'
+      ? 'The embedder is unavailable on this host — similarity could NOT be measured, so there is no ranking to fill a minimum from (cannot-measure ≠ measured-nothing). Proceed on your own judgment; retry later if the answer matters.'
       : reason === 'no_live_responder'
-        ? 'Qualified experts exist but none is live — no wake possible. Their cited turns are in remaining_candidates[].evidence; read them via sessions:read (retrieval fallback) and proceed.'
-        : 'No one’s transcript clears the relevance floor — no one knows more than you do. Proceed on your own judgment (first-class honest verdict, not an error).';
+        ? 'Matching candidates exist but none is LIVE — no wake is possible and the minimum could not be filled with a reachable reviewer. remaining_candidates lists them; read their transcripts via sessions:read / sessions:search (retrieval fallback) and proceed.'
+        : 'No transcript in the workspace matched this question at all — there is no best-available reviewer to fill the minimum with. Proceed on your own judgment (first-class honest verdict, not an error).';
 
   return {
     ok: true,
@@ -570,9 +574,16 @@ export async function getFeedbackCore(
     thread_id: opened.thread_id,
     state,
     responder: chosen,
-    remaining_candidates: route.qualified
-      .filter((c) => c !== chosen)
-      .map((c) => ({ ownerId: c.ownerId, score: c.score, liveness: c.liveness })),
+    responder_via: chosenVia,
+    remaining_candidates: (selected.length > 0
+      ? selected.slice(1)
+      : route.qualified.map((c) => ({ candidate: c, via: 'floor' as SelectionVia }))
+    ).map((s) => ({
+      ownerId: s.candidate.ownerId,
+      score: s.candidate.score,
+      liveness: s.candidate.liveness,
+      via: s.via,
+    })),
     origin_task_ref: originRef,
     latency_contract: latency,
     expires_at: expiresAt,
