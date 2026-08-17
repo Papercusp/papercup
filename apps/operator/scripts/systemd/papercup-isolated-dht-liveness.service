@@ -37,12 +37,18 @@ TimeoutStartSec=150
 #
 # Set DHT_REQUIRE_CROSS_HOST=1 to make an unreachable remote INCONCLUSIVE
 # instead of falling back (use that only while actively gating on P-302).
-Environment=DHT_REMOTE_HOST=aviweiss@172.31.44.2
-# A DURABLE staging dir, deliberately not /tmp: macOS purges /tmp by access age,
-# which would rot this into a permanent INCONCLUSIVE with no obvious cause.
-# It needs hyperswarm/hyperdht resolvable from it; the probe stages ITSELF there.
-Environment=DHT_REMOTE_CWD=/Users/aviweiss/dht-probe
-# The app's OWN bundled node — the only interpreter on that host with the
-# matching native deps (sodium-native / udx-native) for this module tree.
-Environment=DHT_REMOTE_NODE=/Applications/Papercusp Server.app/Contents/Resources/sidecar/bin/node
+#
+# WHICH remote is a property of a PARTICULAR dev box, not of the product, so it
+# is NOT hardcoded here — a peer's rig has a different host, user and paths, and
+# a home path baked into shipped source reds the identity-lint leg and freezes
+# `main` for the whole fleet. The leading `-` makes it optional: a machine with
+# no rig simply has no file and runs LOCAL-ONLY, which is the correct default.
+#
+# To enable the cross-host leg on a rig box, create that file with:
+#   DHT_REMOTE_HOST=<user>@<rig-host>
+#   DHT_REMOTE_CWD=<dir on the rig with hyperswarm/hyperdht resolvable>
+#   DHT_REMOTE_NODE=<node binary on the rig with matching native deps>
+# Use a DURABLE dir, never /tmp: macOS purges /tmp by access age, which would
+# rot the leg into a permanent INCONCLUSIVE with no obvious cause.
+EnvironmentFile=-%h/.papercusp/dht-liveness.env
 ExecStart=%h/papercupai-workspace/papercusp/apps/operator/scripts/papercup-dht-liveness-check.sh
