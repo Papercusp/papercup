@@ -214,6 +214,12 @@ function runScript(
   timeoutMs: number,
   extraEnv: Record<string, string> = {},
   isolate?: { memoryMaxG: number },
+  /** Env keys DELETED from the inherited env before `extraEnv` is applied. `extraEnv` cannot
+   *  express a deletion, and for a SUBJECT-hive gate run the value that must go is one this
+   *  process INHERITED (EI-20709645463022690). Explicit string[] rather than
+   *  Record<string,string|undefined> — the latter would lean on Node silently dropping
+   *  undefined env values, which is true but unstated. */
+  clearEnv: string[] = [],
 ): Promise<RunResult> {
   const base = [tsxBin(root), path.join(root, relScript), ...args];
   // Isolation kill-switch: PAPERCUSP_CHECKPOINT_SCOPE=0 forces the pre-2026-07-01
@@ -228,9 +234,14 @@ function runScript(
       // box past the cap and manufactured the very load-flakes the gate then has to absorb.
       // (Under the scope wrapper the group leader is systemd-run; the payload inherits
       // its pgid, so the group kill covers the same tree.)
+      // Deletions apply to the INHERITED env only, BEFORE the overlay — so an `extraEnv`
+      // entry naming a cleared key still wins (that is how the gate hands the subject run
+      // papercusp's own DSN under HARNESS_ADMIN_DATABASE_URL while clearing DATABASE_URL).
+      const childEnv: NodeJS.ProcessEnv = { ...process.env };
+      for (const key of clearEnv) delete childEnv[key];
       const child = spawn(argv[0], argv.slice(1), {
         cwd: root,
-        env: { ...process.env, PAPERCUSP_INTEGRATION_ROOT: root, ...extraEnv },
+        env: { ...childEnv, PAPERCUSP_INTEGRATION_ROOT: root, ...extraEnv },
         detached: true,
       });
       let stdout = '';
