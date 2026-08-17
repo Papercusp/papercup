@@ -552,9 +552,16 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
   // listLocalBackends (see bin.ts) — mirrors defaultObservePool's lazy-import-only-when-used shape.
   const resolveLocalBackends = opts.resolveLocalBackends ?? (async () => []);
   const localBackendPool: LocalBackendPool = createLocalBackendPool();
+  // ⚠ lifecycle + unitName ARE PART OF THIS SIGNATURE ON PURPOSE (P-008/D-009). The signature is
+  // what gates reload(), so a field missing here is a field the RUNNING gateway can never see
+  // change: flipping a backend to 'on-demand' in the DB would leave the live pool believing it is
+  // always-on, and the cold-start path would never fire for it.
   const localBackendSig = (bs: readonly LocalBackend[]) =>
     [...bs]
-      .map((b) => `${b.id}|${b.kind}|${b.baseUrl}|${b.models.join(',')}|${b.maxConcurrent}|${b.enabled}`)
+      .map(
+        (b) =>
+          `${b.id}|${b.kind}|${b.baseUrl}|${b.models.join(',')}|${b.maxConcurrent}|${b.enabled}|${b.lifecycle ?? 'always-on'}|${b.unitName ?? ''}`,
+      )
       .sort()
       .join(';');
   /** Hot-reload the local-backend registry from the DB into the live pool. Fail-soft: a load error
@@ -570,7 +577,18 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
     }
     const next: LocalBackend[] = records
       .filter((r) => r.enabled)
-      .map((r) => ({ id: r.id, kind: r.kind, baseUrl: r.baseUrl, models: r.models, maxConcurrent: r.maxConcurrent, enabled: r.enabled }));
+      .map((r) => ({
+        id: r.id,
+        kind: r.kind,
+        baseUrl: r.baseUrl,
+        models: r.models,
+        maxConcurrent: r.maxConcurrent,
+        enabled: r.enabled,
+        // Carried into the live pool so the ROUTING path can tell a startable dead end from a
+        // permanent one (P-008/D-009) — the gateway owns that judgement, not this mapping.
+        lifecycle: r.lifecycle,
+        unitName: r.unitName,
+      }));
     const changed = localBackendSig(next) !== localBackendSig(localBackendPool.entries());
     if (changed) {
       localBackendPool.reload(next);
@@ -799,6 +817,27 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
     // refreshLocalBackends() below mutates it in place via reload(), so this reference stays live.
     localBackends: localBackendPool,
     onAdminReloadLocalBackends: () => refreshLocalBackends(),
+    // START-ON-DEMAND (P-008/D-009): the gateway decides WHETHER a dead end is startable (it reads
+    // lifecycle + unitName off the pool entry); this closure is the MECHANISM — systemd + the
+    // durable watermark, both of which the gateway itself deliberately does not import.
+    ensureLocalBackendRunning: async (backend) => {
+      const { ensureLocalBackendRunning } = await import('../provisioner/provision');
+      const { markLocalBackendBusy } = await import('./local-backend-store');
+      const result = await ensureLocalBackendRunning(
+        { id: backend.id, unitName: backend.unitName ?? null, baseUrl: backend.baseUrl },
+        { readyTimeoutMs: LOCAL_BACKEND_COLD_START_TIMEOUT_MS },
+      );
+      if (result.ok) {
+        // STAMP THE WATERMARK ON START, not just on observed work. `last_busy_at` still holds the
+        // pre-stop value, which is by definition older than idleTtlSec — so without this the
+        // idle-reaper's very next sweep (every 2 min) could stop a backend we started seconds ago,
+        // before it has served its first request.
+        await markLocalBackendBusy(backend.id, { workspaceId: opts.workspace }).catch((e) => {
+          log('warn', `inference-gateway: started '${backend.id}' but could not stamp last_busy_at: ${(e as Error).message}`);
+        });
+      }
+      return { ok: result.ok, error: result.error };
+    },
   });
 
   const port = await gateway.listen(opts.port ?? DEFAULT_GATEWAY_PORT);

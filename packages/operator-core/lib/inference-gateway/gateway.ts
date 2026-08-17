@@ -2834,7 +2834,15 @@ export function createInferenceGateway(deps: GatewayDeps) {
       }
       sendJson(res, 502, {
         type: 'error',
-        error: { type: 'api_error', message: `inference-gateway: no reachable local backend for model '${model}'${lastError ? ` (last error: ${lastError})` : ' (none registered / all unhealthy)'}` },
+        // A FAILED COLD START outranks both generic readings (P-008/D-009): "we tried to start the
+        // backend that serves this model and could not" is a different operator problem from "none
+        // registered / all unhealthy", and reporting it as the latter hides the actual fault.
+        error: {
+          type: 'api_error',
+          message: `inference-gateway: no reachable local backend for model '${model}'${
+            coldStartError ? ` (${coldStartError})` : lastError ? ` (last error: ${lastError})` : ' (none registered / all unhealthy)'
+          }`,
+        },
         gateway: true,
       });
       // requestOk stays false — every backend attempt was exhausted with none reachable.
