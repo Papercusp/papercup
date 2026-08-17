@@ -79,6 +79,12 @@ const openEscalationCalls: {
   identity: Record<string, unknown>;
   input: Record<string, unknown>;
 }[] = [];
+// WI-39686: the open-row set the mocked `listEscalations` returns, and the
+// resolve calls the sweep makes. Both DEFAULT to today's behaviour (no open
+// rows, resolves unobserved) so every pre-existing test in this file is
+// unaffected; the sweep-scoping tests below populate them per-case.
+let openEscalationRows: Record<string, unknown>[] = [];
+const resolveEscalationCalls: Record<string, unknown>[] = [];
 vi.mock(
   "@papercusp/operator-core/lib/agent-tools/coordination/escalations",
   () => ({
@@ -88,8 +94,10 @@ vi.mock(
     ) => {
       openEscalationCalls.push({ identity, input });
     },
-    listEscalations: async () => [],
-    resolveEscalation: async () => {},
+    listEscalations: async () => openEscalationRows,
+    resolveEscalation: async (input: Record<string, unknown>) => {
+      resolveEscalationCalls.push(input);
+    },
     resolveEscalationsBatch: async () => ({ resolved: 0 }),
   }),
 );
