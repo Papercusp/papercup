@@ -29,6 +29,7 @@ import {
   type ObservationSubject,
   type ScorecardRetraction,
   type ScorecardRatingRubric,
+  type ScorecardProvisional,
 } from './harness/improvements/observation-types';
 import {
   getIssue,
@@ -268,6 +269,12 @@ export interface ScorecardRow {
   supersedes?: string;
   /** Machine-readable withdrawal metadata, when the scorecard was retracted. */
   retracted?: ScorecardRetraction;
+  /**
+   * P-008 provisional stamp (EI-20581177540737568): this card rated 'violatable'-class
+   * criteria without the emitter affirming subject termination — a working note
+   * (D-004), excluded from the trend until a terminal re-emit supersedes it.
+   */
+  provisional?: ScorecardProvisional;
   /** The newest payload superseder that points at this scorecard, when known. */
   supersededBy?: string;
   /**
@@ -750,6 +757,7 @@ export async function listScorecards(filter: ListScorecardsFilter = {}): Promise
       ...(observation.evidenceFingerprint ? { evidenceFingerprint: observation.evidenceFingerprint } : {}),
       ...(observation.supersedes ? { supersedes: observation.supersedes } : {}),
       ...(observation.retracted ? { retracted: observation.retracted } : {}),
+      ...(observation.provisional ? { provisional: observation.provisional } : {}),
       ...(row.superseded_by ? { supersededBy: row.superseded_by } : {}),
       synthesized,
       score10: scorecardScore10(projectionRatings, meta.overrides),
@@ -1093,6 +1101,15 @@ export interface RubricTrend {
    * default — this can only ever remove samples an author explicitly retired.
    */
   preContractResetExcluded: number;
+  /**
+   * How many scorecards were EXCLUDED as PROVISIONAL (P-008 / EI-20581177540737568):
+   * they rated 'violatable'-class criteria mid-run, and a violatable criterion is
+   * monotonic-downward — the WI-39348 grading went stale 28 minutes after an honest
+   * interim 'exemplary'. A provisional card is a working note (D-004); only its
+   * terminal re-emit moves the trend. Reported, never silent, like the two counts
+   * above. 0 for every rubric with no violatable criteria.
+   */
+  provisionalExcluded: number;
 }
 
 export interface ScorecardTrendFilter {
@@ -1178,8 +1195,15 @@ export async function scorecardTrend(filter: ScorecardTrendFilter): Promise<Rubr
   const live = supersededIds.size
     ? inGeneration.filter((r) => !supersededIds.has(r.issueId))
     : inGeneration;
+  // P-008: drop PROVISIONAL cards — mid-run ratings of 'violatable' criteria are
+  // working notes (D-004), not settled gradings; the terminal re-emit that supersedes
+  // one is what enters the series. Applied after the superseded filter for the same
+  // one-bucket arithmetic reason as above: a provisional card that was ALSO superseded
+  // counts once, as superseded.
+  const finalCards = live.filter((r) => !r.provisional);
+  const provisionalExcluded = live.length - finalCards.length;
   // listScorecards is newest-first; the series wants chronological (oldest→newest).
-  const chrono = [...live].reverse();
+  const chrono = [...finalCards].reverse();
 
   const scoreOverrides = scoreOverridesForScale(trendRubric?.ratingScale);
   const declaredCriterionKeys = trendRubric
