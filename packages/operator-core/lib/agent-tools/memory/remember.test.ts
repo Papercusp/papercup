@@ -23,7 +23,11 @@ vi.mock('../../memory/backend', () => ({
 vi.mock('../../auth', () => ({
   getSessionUserOrDefault: vi.fn(),
 }));
-vi.mock('@papercusp/agent-mcp', () => ({
+// Spread the real module so pure exports survive the mock — a minimal stub
+// breaks at collection when a transitive import derefs them (EI-14928; AGENT_ROLES
+// in testing/run.ts did exactly that across this directory on 2026-08-17).
+vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/agent-mcp')>()),
   defineTool: (def: unknown) => def,
 }));
 // Spread the real module so pure exports (e.g. `generated`, the drizzle schema
