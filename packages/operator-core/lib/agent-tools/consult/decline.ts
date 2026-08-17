@@ -59,6 +59,19 @@ export default defineTool({
             .then(({ emitAwaitedEvent }) => emitAwaitedEvent({ ...e, source: identity.ownerId }))
             .catch(() => {});
         },
+        // D-005 cascade advance: wake the next selectee (subscribe + ping +
+        // wake — notifyAgents subscribes them into the consult conversation).
+        reach: async (opts) => {
+          const { notifyAgents } = await import('../coordination/notify-agents');
+          const r = await notifyAgents(identity, {
+            addressees: [opts.responder],
+            objectRef: { kind: 'conversation', ref: opts.conversationId },
+            summary: opts.summary,
+            body: opts.body,
+            wake: true,
+          });
+          return { woke: r.woke };
+        },
       },
     );
     return ok(result as unknown as Record<string, unknown>);

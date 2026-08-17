@@ -19,7 +19,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import postgres, { type Sql } from 'postgres';
 import { randomBytes } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { getTestPg } from '@papercusp/test-config/pg';
 import type { RouteResult, RoutingCandidate, RoutingSnapshot } from './relevance-router';
@@ -78,6 +78,14 @@ beforeAll(async () => {
   // (query_embedding column + hnsw index behind its extension guard).
   await rootSql.unsafe('CREATE EXTENSION IF NOT EXISTS vector');
   await rootSql.unsafe(readFileSync(MIGRATION_837, 'utf8'));
+  // Migration 844 (cascade_cursor + cascade_digest) — .sql once armed, .DRAFT
+  // while iterating, so the suite is valid on both sides of the arming mv.
+  const MIGRATION_844_ARMED = fileURLToPath(
+    new URL('../../../../libs/papercusp/libs/db/sql/844-consult-cascade-cursor.sql', import.meta.url),
+  );
+  await rootSql.unsafe(
+    readFileSync(existsSync(MIGRATION_844_ARMED) ? MIGRATION_844_ARMED : `${MIGRATION_844_ARMED}.DRAFT`, 'utf8'),
+  );
   // Only the columns the core's origin-ref default reads (work_items is
   // migration-owned; the core touches taken_by/status/timestamps/feature_id).
   await rootSql.unsafe(`

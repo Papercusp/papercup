@@ -20,7 +20,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import postgres, { type Sql } from 'postgres';
 import { randomBytes } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { getTestPg } from '@papercusp/test-config/pg';
 import type { ThreadPostRow } from '@papercusp/coordination/capabilities';
@@ -38,6 +38,12 @@ const RESPONDER = 'resp-1';
 const MIGRATION_834 = fileURLToPath(
   new URL('../../../../libs/papercusp/libs/db/sql/834-consult-threads.sql', import.meta.url),
 );
+// Migration 844 (cascade_cursor + cascade_digest) — .sql once armed, .DRAFT
+// while iterating, so the suite is valid on both sides of the arming mv.
+const MIGRATION_844_ARMED = fileURLToPath(
+  new URL('../../../../libs/papercusp/libs/db/sql/844-consult-cascade-cursor.sql', import.meta.url),
+);
+const MIGRATION_844 = existsSync(MIGRATION_844_ARMED) ? MIGRATION_844_ARMED : `${MIGRATION_844_ARMED}.DRAFT`;
 
 let rootSql: Sql;
 
@@ -63,6 +69,7 @@ beforeAll(async () => {
     )`);
   // The REAL migration — consult_state + consult_post_meta cannot drift.
   await rootSql.unsafe(readFileSync(MIGRATION_834, 'utf8'));
+  await rootSql.unsafe(readFileSync(MIGRATION_844, 'utf8'));
 }, 120_000);
 
 afterAll(async () => {
@@ -188,8 +195,9 @@ describe('consultReplyCore — kind rules + transitions', () => {
     if ('error' in r) throw new Error(r.error);
     expect(r.role).toBe('responder');
     expect(r.state).toBe('active');
-    expect(r.exchanges_used).toBe(1);
-    expect(r.wake).toBeUndefined(); // responder replies never wake-budget
+    expect(r.exchanges_used).toBe(0); // a PERSPECTIVE reply is cap-exempt and does not debit (D-005)
+    expect(r.wake).toBeUndefined(); // responder replies carry no wake report
+    expect(r.cascade).toEqual({ advanced_to: null, exhausted: true, woke: 0 }); // seed has no selection menu
 
     // Write-through went via the (gated) post seam.
     expect(posts).toEqual([{ conversation_id: id, body: 'the answer', via_consult_verb: true }]);
@@ -201,10 +209,10 @@ describe('consultReplyCore — kind rules + transitions', () => {
     expect(meta[0].author_id).toBe(RESPONDER);
     expect(meta[0].evidence).toEqual(EVIDENCE);
 
-    // State row transitioned + debited.
+    // State row transitioned; a perspective reply does NOT debit the cap (D-005).
     const row = await stateRow(id);
     expect(row.state).toBe('active');
-    expect(row.exchanges_used).toBe(1);
+    expect(row.exchanges_used).toBe(0);
 
     // The hard-blocked requester's park key fired, latched, addressed to them.
     expect(emits).toHaveLength(1);
@@ -268,8 +276,10 @@ describe('consultReplyCore — kind rules + transitions', () => {
   it('the exchange cap refuses a reply with the close-instead nudge; close still works AT the cap', async () => {
     const id = await seedConsult({ state: 'active', exchangesUsed: 4, maxExchanges: 4 });
     const { deps, posts } = makeDeps();
+    // The cap binds NON-perspective posts (a requester follow-up here) — the
+    // current responder's perspective reply is deliberately cap-exempt (D-005).
     const refused = await consultReplyCore(
-      { workspaceId: WS, authorId: RESPONDER, conversationId: id, kind: 'new_fact', body: 'one more thing' },
+      { workspaceId: WS, authorId: REQUESTER, conversationId: id, kind: 'new_fact', body: 'one more thing' },
       deps,
     );
     expect(refused).toMatchObject({ error: 'exchange_cap', exchanges_used: 4, max_exchanges: 4 });
@@ -363,7 +373,7 @@ describe('consultDeclineCore', () => {
       { ownerId: 'agent-next', score: 0.7, liveness: 'parked' },
       { ownerId: 'agent-third', score: 0.6, liveness: 'live' },
     ]);
-    expect(r.hint).toContain(`exclude:['${RESPONDER}']`);
+    expect(r.hint).toContain('cascade menu is exhausted'); // no selection block in the seed ⇒ terminal decline (D-005)
 
     const row = await stateRow(id);
     expect(row.state).toBe('declined');
@@ -564,8 +574,10 @@ describe('consultCloseCore — graduate', () => {
   it('the cap-hit reply refusal names the graduate option (D-004 canonical trigger)', async () => {
     const id = await seedConsult({ state: 'active', exchangesUsed: 4, maxExchanges: 4 });
     const { deps } = makeDeps();
+    // Cap-bound post = a NON-perspective one (requester follow-up; D-005
+    // exempts the current responder's perspective reply).
     const refused = await consultReplyCore(
-      { workspaceId: WS, authorId: RESPONDER, conversationId: id, kind: 'new_fact', body: 'one more thing' },
+      { workspaceId: WS, authorId: REQUESTER, conversationId: id, kind: 'new_fact', body: 'one more thing' },
       deps,
     );
     expect(refused).toMatchObject({ error: 'exchange_cap' });

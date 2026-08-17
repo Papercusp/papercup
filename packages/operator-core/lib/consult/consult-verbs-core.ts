@@ -376,8 +376,8 @@ export async function consultReplyCore(
       ? capNow
         ? `Posted (exchange ${exchangesUsed}/${row.max_exchanges} — cap reached). Further replies are refused; settle with consult:close { outcome: 'answered' | 'cant_help' } — or still deliberating? consult:close { outcome: 'graduate', reason } mints a shared work item that carries it forward (D-004).`
         : req.kind === 'answer'
-          ? `Answer posted (exchange ${exchangesUsed}/${row.max_exchanges}); the requester was signaled via ${parkKey(req.conversationId)}. When the thread is settled, close it: consult:close { outcome: 'answered' }.`
-          : `Posted (exchange ${exchangesUsed}/${row.max_exchanges}); the requester was signaled via ${parkKey(req.conversationId)}.`
+          ? `Answer posted (exchange ${exchangesUsed}/${row.max_exchanges}); the requester was signaled via ${parkKey(req.conversationId)}. When the thread is settled, close it: consult:close { outcome: 'answered' }.${cascadeNote}`
+          : `Posted (exchange ${exchangesUsed}/${row.max_exchanges}); the requester was signaled via ${parkKey(req.conversationId)}.${cascadeNote}`
       : `Follow-up posted (exchange ${exchangesUsed}/${row.max_exchanges})${willWake ? `; responder ${woke > 0 ? 'woken' : 'pinged'}` : ''}.`;
 
   return {
@@ -395,6 +395,7 @@ export async function consultReplyCore(
           },
         }
       : {}),
+    ...(cascade ? { cascade } : {}),
     hint,
   };
 }
