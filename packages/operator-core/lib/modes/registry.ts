@@ -244,7 +244,12 @@ KICKOFF QUESTION (mandatory): before creating anything, read the existing
 portfolio (goals:list + pot:list + plans:list + search:semantic on the goal's
 terms), report what ALREADY targets this goal, and settle the two things a goal
 cannot run without — its KILL CRITERION and its SPEND CEILING — proposing a
-concrete value for each rather than offering a blank menu.
+concrete value for each rather than offering a blank menu. Before committing
+the portfolio, run get_feedback on the goal OUTLINE (outcome + kill criterion +
+intended approach) — the global consult minimum of 1 means it always reaches at
+least the best-available live peer, so "nobody relevant" is never a reason to
+skip it; goals:create runs the same routing as a checkpoint and may refuse once
+with consult_available (override: consulted + consult_reason).
 IF SOMETHING ALREADY TARGETS IT, settle the RELATIONSHIP before creating
 anything — looking is not enough, and the default answer is not "a new goal":
 (a) a PLAN inside that goal's existing pot — the usual right answer; "release it
