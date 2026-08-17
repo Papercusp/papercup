@@ -41,6 +41,11 @@ interface WindowSummary {
     notGreen: number;
     notFastForward: number;
     createFailed: number;
+    /** EI-20702428259478130 — mirrors PipelineWindowSummary (operator-core). */
+    advancedPrefix: number;
+    error: number;
+    skipped: number;
+    other: number;
   };
   deploy: { total: number; ok: number; rolledBack: number; failed: number; refused: number };
 }
@@ -500,14 +505,34 @@ export default function GitClient() {
                 value={w.greenCheckpoint.total}
                 sub={`${w.greenCheckpoint.advanced} advanced · ${w.greenCheckpoint.upToDate} up-to-date`}
               />
+              {/* EI-20702428259478130: `error` (a green-checkpoint crash / the 25-min
+                  timeout / unparseable JSON) used to be in NEITHER the numerator nor the
+                  denominator, so a gate that died on every single tick rendered
+                  "main-green rate 100%" with a `good` tone — the infra death was not just
+                  indistinguishable in the ledger, it read as success. The denominator is
+                  now every tick that reached a VERDICT about the code; `skipped`/`other`
+                  stay out because those ticks judged nothing. `advancedPrefix` joins the
+                  numerator: a partial advance did move `main`. */}
               <Stat
                 label="main-green rate"
                 value={pct(
-                  w.greenCheckpoint.advanced + w.greenCheckpoint.upToDate,
-                  w.greenCheckpoint.advanced + w.greenCheckpoint.upToDate + w.greenCheckpoint.notGreen,
+                  w.greenCheckpoint.advanced + w.greenCheckpoint.upToDate + w.greenCheckpoint.advancedPrefix,
+                  w.greenCheckpoint.advanced +
+                    w.greenCheckpoint.upToDate +
+                    w.greenCheckpoint.advancedPrefix +
+                    w.greenCheckpoint.notGreen +
+                    w.greenCheckpoint.notFastForward +
+                    w.greenCheckpoint.createFailed +
+                    w.greenCheckpoint.error,
                 )}
-                tone={w.greenCheckpoint.notGreen > 0 ? 'warn' : 'good'}
-                sub={`${w.greenCheckpoint.notGreen} not-green`}
+                tone={
+                  w.greenCheckpoint.error > 0 ? 'bad' : w.greenCheckpoint.notGreen > 0 ? 'warn' : 'good'
+                }
+                sub={
+                  w.greenCheckpoint.error > 0
+                    ? `${w.greenCheckpoint.notGreen} not-green · ${w.greenCheckpoint.error} died`
+                    : `${w.greenCheckpoint.notGreen} not-green`
+                }
               />
               <Stat
                 label="auto-deploys"

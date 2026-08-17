@@ -151,7 +151,18 @@ export function emptyWindow(sinceMs: number): PipelineWindowSummary {
     sinceMs,
     gitSync: { total: 0, synced: 0, nothing: 0, conflict: 0, error: 0 },
     mergeResolver: { total: 0, ok: 0, failed: 0, error: 0 },
-    greenCheckpoint: { total: 0, advanced: 0, upToDate: 0, notGreen: 0, notFastForward: 0, createFailed: 0 },
+    greenCheckpoint: {
+      total: 0,
+      advanced: 0,
+      upToDate: 0,
+      notGreen: 0,
+      notFastForward: 0,
+      createFailed: 0,
+      advancedPrefix: 0,
+      error: 0,
+      skipped: 0,
+      other: 0,
+    },
     deploy: { total: 0, ok: 0, rolledBack: 0, failed: 0, refused: 0 },
   };
 }
@@ -185,6 +196,16 @@ export function foldPipelineWindow(
       else if (r.status === 'not-green') out.greenCheckpoint.notGreen += n;
       else if (r.status === 'not-fast-forward') out.greenCheckpoint.notFastForward += n;
       else if (r.status === 'create-failed') out.greenCheckpoint.createFailed += n;
+      // EI-20702428259478130 — see the bucket doc on PipelineWindowSummary. Unlike the
+      // other kinds above, this chain is TOTAL: the trailing `other` means a status
+      // added later cannot silently vanish from the readout the way `error` and
+      // `advanced-prefix` did. `skipped-` is matched by PREFIX on purpose (it covers
+      // skipped-disabled + skipped-locked, and any future skip) rather than by
+      // enumerating them, because enumeration is what drifted in the first place.
+      else if (r.status === 'advanced-prefix') out.greenCheckpoint.advancedPrefix += n;
+      else if (r.status === 'error') out.greenCheckpoint.error += n;
+      else if (r.status.startsWith('skipped-')) out.greenCheckpoint.skipped += n;
+      else out.greenCheckpoint.other += n;
     } else if (r.kind === 'deploy') {
       out.deploy.total += n;
       if (r.status === 'ok') out.deploy.ok += n;
