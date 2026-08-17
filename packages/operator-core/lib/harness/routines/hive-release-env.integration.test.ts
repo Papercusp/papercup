@@ -311,6 +311,77 @@ describe('resolveHiveReleaseEnv', () => {
   });
 });
 
+/**
+ * EI-20709645463022690 — the gate subprocess inherited the OPERATOR's DATABASE_URL, so a
+ * SUBJECT pot's suite silently dialed papercusp's database instead of its own (observed as a
+ * "schema drift — 39 tables" red on sidestage that nobody could reproduce in the pot's tree).
+ *
+ * The fix is deliberately TWO-SIDED and both sides are load-bearing, so both are pinned here:
+ *   - CLEAR the ambient DATABASE_URL/PG* → the pot's own hermetic default wins;
+ *   - SET HARNESS_ADMIN_DATABASE_URL → the gate's OWN bookkeeping (green-checkpoint.ts
+ *     dynamically imports gate-verdict-target / coordination / db-boot-migrate) still reaches
+ *     papercusp's database. Clearing alone would have fixed the pot by BREAKING verdict
+ *     recording for every pot gate — a test that asserted only the deletion would have called
+ *     that regression green.
+ */
+describe('resolveHiveReleaseEnv — subject-hive DSN routing (EI-20709645463022690)', () => {
+  it('a gated non-home hive: re-homes the operator DSN to HARNESS_ADMIN_DATABASE_URL and CLEARS the ambient one', async () => {
+    plantAmbientOperatorDsn();
+    const dir = makeHiveDir('coding', { git: true });
+    homeSlug = 'papercusp';
+    registryProjects = [{ slug: 'sidestage', path: dir, self_repo: true }];
+    const { resolveHiveReleaseEnv } = await import('./hive-release-env');
+    const res = await resolveHiveReleaseEnv('sidestage', 'default');
+
+    expect(res.enabled).toBe(true);
+    expect(res.isOperatorHome).toBe(false);
+    // (a) papercusp's DSN survives, on its OWN channel — the one embedded-pg-discovery ranks
+    // ABOVE DATABASE_URL, so the gate's own bookkeeping still finds it after the clear.
+    expect(res.env.HARNESS_ADMIN_DATABASE_URL).toBe(AMBIENT_OPERATOR_DSN);
+    // (b) …and the ambient channel the POT reads is scheduled for deletion.
+    expect(res.clearEnv).toContain('DATABASE_URL');
+    for (const k of ['PGHOST', 'PGPORT', 'PGDATABASE', 'PGUSER', 'PGPASSWORD', 'PGSSLMODE']) {
+      expect(res.clearEnv).toContain(k);
+    }
+    // The overlay must not ALSO re-set the bare DATABASE_URL — the overlay is applied after
+    // the deletions, so an entry here would silently undo the whole fix.
+    expect(res.env.DATABASE_URL).toBeUndefined();
+  });
+
+  it('operator-home → clearEnv EMPTY: papercusp keeps the DSN its own PG-backed gate legs need (D-007)', async () => {
+    plantAmbientOperatorDsn();
+    const dir = makeHiveDir('coding', { git: true });
+    homeSlug = 'papercusp';
+    registryProjects = [{ slug: 'papercusp', path: dir, self_repo: true }];
+    const { resolveHiveReleaseEnv } = await import('./hive-release-env');
+    const res = await resolveHiveReleaseEnv('papercusp', 'default');
+
+    expect(res.isOperatorHome).toBe(true);
+    expect(res.clearEnv).toEqual([]);
+    expect(res.env).toEqual({});
+  });
+
+  it('every disabled branch returns clearEnv [] — a skipped hive never mutates a subprocess env', async () => {
+    const { resolveHiveReleaseEnv } = await import('./hive-release-env');
+    const notFound = await resolveHiveReleaseEnv('ghost', 'default');
+
+    const workDir = makeHiveDir('work', { git: true });
+    registryProjects = [{ slug: 'workhive', path: workDir, self_repo: true }];
+    const gateDisabled = await resolveHiveReleaseEnv('workhive', 'default');
+
+    const noGitDir = makeHiveDir('coding', { git: false });
+    registryProjects = [{ slug: 'c1', path: noGitDir, self_repo: true }];
+    const noRepo = await resolveHiveReleaseEnv('c1', 'default');
+
+    expect([notFound.reason, gateDisabled.reason, noRepo.reason]).toEqual([
+      'not_found',
+      'gate_disabled',
+      'no_repo',
+    ]);
+    for (const res of [notFound, gateDisabled, noRepo]) expect(res.clearEnv).toEqual([]);
+  });
+});
+
 describe('resolveCheckpointRouting', () => {
   it('no installSlug → default root, empty overlay, no skip (current behavior)', async () => {
     const { resolveCheckpointRouting } = await import('./hive-release-env');
@@ -339,6 +410,31 @@ describe('resolveCheckpointRouting', () => {
     expect(r.root).toBe('/DEFAULT');
     expect(r.extraEnv.PAPERCUSP_INTEGRATION_ROOT).toBe(dir);
     expect(r.skip).toBeUndefined();
+  });
+
+  it('EI-20709645463022690: a gated hive threads clearEnv + the namespaced DSN through to the caller', async () => {
+    plantAmbientOperatorDsn();
+    const dir = makeHiveDir('coding', { git: true });
+    registryProjects = [{ slug: 'sidestage', path: dir, self_repo: true }];
+    const { resolveCheckpointRouting } = await import('./hive-release-env');
+    const r = await resolveCheckpointRouting({ installSlug: 'sidestage', workspaceId: 'default' }, '/DEFAULT');
+    // release-actions' runScript reads exactly these two fields; a routing that resolved the
+    // hive correctly but dropped clearEnv on the floor would leave the bug fully intact.
+    expect(r.clearEnv).toContain('DATABASE_URL');
+    expect(r.extraEnv.HARNESS_ADMIN_DATABASE_URL).toBe(AMBIENT_OPERATOR_DSN);
+  });
+
+  it('EI-20709645463022690: no-slug, operator-home and skipped routings all carry clearEnv []', async () => {
+    plantAmbientOperatorDsn();
+    homeSlug = 'papercusp';
+    const workDir = makeHiveDir('work', { git: true });
+    registryProjects = [{ slug: 'workhive', path: workDir, self_repo: true }];
+    const { resolveCheckpointRouting } = await import('./hive-release-env');
+    const noSlug = await resolveCheckpointRouting({ workspaceId: 'default' }, '/DEFAULT');
+    const home = await resolveCheckpointRouting({ installSlug: 'papercusp', workspaceId: 'default' }, '/DEFAULT');
+    const skipped = await resolveCheckpointRouting({ installSlug: 'workhive', workspaceId: 'default' }, '/DEFAULT');
+    expect(skipped.skip?.reason).toBe('gate_disabled');
+    for (const r of [noSlug, home, skipped]) expect(r.clearEnv).toEqual([]);
   });
 
   it('non-gated slug (work hive) → skip with reason, default root, no suite', async () => {
