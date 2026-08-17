@@ -10,17 +10,29 @@
  * itself — a system-authored query (the plan is already the ideal query
  * document, which kills checkbox-prompt ritualization).
  *
- * D-006 semantics, exactly:
- *   - What is REQUIRED is the ROUTING, not a wake. By D-003's honesty
- *     invariant the common result is `no_qualified_responder` → the start
- *     proceeds silently at the cost of one embedding search.
- *   - Above-floor matches gate by liveness: any LIVE/parked responder →
- *     `nudge` (the tool layer refuses ONCE with candidates + evidence,
- *     overridable with consulted:false + a stated reason — the proven
- *     similar_exists/force:true shape); ALL responders dead (`ended` /
- *     `recorded`, the same DEAD_RESPONDER_STATES the consult wake gate uses)
- *     → no wake is possible, so inject transcript EXCERPTS instead
- *     (retrieval, not consult) and proceed.
+ * Selection semantics (consult-min-max-and-rubric-vetting-2026-08-17 P-002,
+ * superseding the predecessor plan's below-floor-proceeds-silently D-006):
+ *   - What is REQUIRED is the ROUTING, not a wake — and per D-001 §2 the
+ *     plan-step consult runs with min:1: a plan never promotes with zero
+ *     feedback merely because nobody cleared the relevance threshold. The
+ *     shared selectResponders (D-001 §1) picks floor-qualified live
+ *     candidates first, then fills to the minimum with the best-available
+ *     LIVE candidate below the floor, labeled via:'minimum' (D-002 — labeled,
+ *     never silent).
+ *   - ANY selected (live/parked) candidate → `nudge` (the tool layer refuses
+ *     ONCE with the labeled candidates + evidence, overridable with
+ *     consulted:false + a stated reason — the proven similar_exists/force:true
+ *     shape). Dead floor-qualified candidates ride along as evidence — their
+ *     history still grounds the "someone attempted this" claim.
+ *   - Nothing selectable: floor-qualified but ALL dead (`ended`/`recorded`,
+ *     the same DEAD_RESPONDER_STATES the consult wake gate uses) → no wake is
+ *     possible, so inject transcript EXCERPTS instead (retrieval, not
+ *     consult) and proceed. Excerpts stay scoped to FLOOR-QUALIFIED dead
+ *     candidates — below-floor evidence is never injected (precision).
+ *   - The honest proceed survives only where the minimum is physically
+ *     unfillable (D-003): a pool that only liveness kept out →
+ *     `no_live_responder`; no pool at all / embedder down →
+ *     `no_qualified_responder` (+ degraded).
  *   - NUDGE, never a hard block — plan-start must not be hostage to
  *     consult-thread latency. This module never opens a consult thread and
  *     never wakes anyone; it only routes and annotates.
@@ -32,8 +44,9 @@
  * mirroring the get_feedback tool's wiring of routeConsult.
  */
 import type { Sql } from 'postgres';
-import type { ConsultRouteParams, RouteResult, RoutingCandidate, TurnEvidence } from './relevance-router';
-import { DEAD_RESPONDER_STATES } from './get-feedback-core';
+import type { ConsultRouteParams, RouteResult, RoutingCandidate, SnapshotSelection, TurnEvidence } from './relevance-router';
+import { selectResponders, selectionSnapshot } from './relevance-router';
+import { DEAD_RESPONDER_STATES, DEFAULT_MAX_RESPONDERS, DEFAULT_MIN_RESPONDERS } from './get-feedback-core';
 
 /** Query cap: the embedder's model window is far smaller than a big plan body,
  * and the query-embed memo keys on the full text — cap keeps both bounded. */
@@ -53,20 +66,29 @@ export interface PlanStartExcerpt {
 }
 
 export type PlanStartConsultOutcome =
-  /** Below the floor (or degraded instrument) — the start proceeds silently. */
+  /** The min:1 minimum was physically unfillable (D-003) — the start
+   * proceeds, annotated honestly: 'no_live_responder' = a candidate pool
+   * existed but only liveness kept everyone out; 'no_qualified_responder' =
+   * no pool at all (no match, or the embedder was down → degraded). */
   | {
       outcome: 'proceed';
-      verdict: 'no_qualified_responder';
+      verdict: 'no_qualified_responder' | 'no_live_responder';
       degraded?: 'embed-unavailable';
     }
-  /** Above the floor with at least one wakeable (not-dead) candidate — the
-   * tool layer refuses once with these candidates + their evidence. */
+  /** At least one selectable (not-dead) candidate — floor-qualified or
+   * best-available minimum fill (D-001 §2 min:1). The tool layer refuses once
+   * with these candidates + their evidence; `selection` carries the
+   * via:'floor'|'minimum' provenance per selectee (D-002). `candidates` lists
+   * the selected set first, then any dead floor-qualified candidates whose
+   * evidence still grounds the "someone attempted this" claim. */
   | {
       outcome: 'nudge';
       candidates: RoutingCandidate[];
+      selection: SnapshotSelection;
     }
-  /** Above the floor but every qualified candidate's context is dead — inject
-   * transcript excerpts (retrieval, not consult) and proceed. */
+  /** Floor-qualified candidates exist but every one's context is dead and no
+   * live below-floor fill exists — inject transcript excerpts (retrieval, not
+   * consult) and proceed. */
   | {
       outcome: 'proceed_with_excerpts';
       candidates: RoutingCandidate[];
@@ -98,10 +120,10 @@ export function buildPlanStartQuery(planSlug: string, planContent: string): stri
 }
 
 /**
- * Route the plan body and partition the verdict per D-006. Never throws for
- * routing verdicts (an honest degrade IS a proceed); infrastructure faults
- * (SQL down) do propagate — the tool layer catches and proceeds, because a
- * checkpoint nudge must never block a start.
+ * Route the plan body and partition the verdict per P-002 (D-001 §2/D-002/
+ * D-003). Never throws for routing verdicts (an honest degrade IS a proceed);
+ * infrastructure faults (SQL down) do propagate — the tool layer catches and
+ * proceeds, because a checkpoint nudge must never block a start.
  */
 export async function planStartConsult(
   params: PlanStartConsultParams,
@@ -113,27 +135,56 @@ export async function planStartConsult(
     question: buildPlanStartQuery(params.planSlug, params.planContent),
   });
 
-  if (route.verdict !== 'routed' || route.qualified.length === 0) {
+  // D-001 §1 selection with the GLOBAL min/max defaults (D-003: min 1 —
+  // reused from get-feedback-core so plan-start can never drift from the
+  // get_feedback semantics): floor-qualified live candidates best-first, then
+  // best-available live fill labeled via:'minimum' (D-002).
+  const selected = selectResponders({
+    qualified: route.qualified,
+    allCandidates: route.snapshot.candidates,
+    min: DEFAULT_MIN_RESPONDERS,
+    max: DEFAULT_MAX_RESPONDERS,
+    isSelectable: (c) => !DEAD_RESPONDER_STATES.has(c.liveness),
+  });
+
+  if (selected.length > 0) {
+    const selection = selectionSnapshot(DEFAULT_MIN_RESPONDERS, DEFAULT_MAX_RESPONDERS, selected);
+    // Stamp the provenance into the snapshot exactly as get_feedback does —
+    // the D-003 honesty feed keeps floor-qualified vs minimum-fill
+    // distinguishable wherever this route ends up recorded.
+    route.snapshot.selection = selection;
+    const picked = new Set(selected.map((s) => s.candidate.ownerId));
+    // Dead floor-qualified candidates ride along AFTER the selected set —
+    // their evidence still grounds the "someone attempted this" claim; the
+    // tool layer renders liveness per candidate so the caller knows who is
+    // actually reachable.
+    const deadQualified = route.qualified.filter((c) => !picked.has(c.ownerId));
     return {
-      outcome: 'proceed',
-      verdict: 'no_qualified_responder',
-      ...(route.snapshot.degraded ? { degraded: route.snapshot.degraded } : {}),
+      outcome: 'nudge',
+      candidates: [...selected.map((s) => s.candidate), ...deadQualified],
+      selection,
     };
   }
 
-  const wakeable = route.qualified.filter((c) => !DEAD_RESPONDER_STATES.has(c.liveness));
-  if (wakeable.length > 0) {
-    // Nudge lists every qualified candidate (dead ones included — their
-    // evidence still grounds the "someone attempted this" claim); the tool
-    // layer renders liveness per candidate so the caller knows who is
-    // actually reachable.
-    return { outcome: 'nudge', candidates: route.qualified };
+  // Nothing selectable. Floor-qualified but all-dead → retrieval: inject the
+  // dead candidates' transcript excerpts and proceed (excerpts stay scoped to
+  // floor-qualified evidence — below-floor matches are never injected).
+  if (route.qualified.length > 0) {
+    const excerpts = await deps
+      .getExcerpts(route.qualified.map((c) => ({ ownerId: c.ownerId, evidence: c.evidence })))
+      .catch(() => [] as PlanStartExcerpt[]);
+    return { outcome: 'proceed_with_excerpts', candidates: route.qualified, excerpts };
   }
 
-  const excerpts = await deps
-    .getExcerpts(route.qualified.map((c) => ({ ownerId: c.ownerId, evidence: c.evidence })))
-    .catch(() => [] as PlanStartExcerpt[]);
-  return { outcome: 'proceed_with_excerpts', candidates: route.qualified, excerpts };
+  // The minimum was physically unfillable (D-003): distinguish a pool that
+  // only liveness kept out (no_live_responder) from no pool at all / a downed
+  // embedder (no_qualified_responder + degraded) — mirrors the get_feedback
+  // reason partition.
+  return {
+    outcome: 'proceed',
+    verdict: route.snapshot.candidates.length > 0 ? 'no_live_responder' : 'no_qualified_responder',
+    ...(route.snapshot.degraded ? { degraded: route.snapshot.degraded } : {}),
+  };
 }
 
 /**

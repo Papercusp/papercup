@@ -81,7 +81,7 @@ const argsSchema = z.object({
 export default defineTool({
   name: 'plans:start',
   description:
-    "Approve a plan and start its item-promotion path. Starting IS the approval signal — a draft plan is auto-advanced to 'ready'. Re-starting is a no-op. The retired op_status axis is never written (P-068 deleted the flag). Runs the plan-start CHECKPOINT consult (P-010): the plan body is routed through the relevance router; an above-floor live peer nudge-refuses once with `consult_available` + candidates (override: consulted + consult_reason).",
+    "Approve a plan and start its item-promotion path. Starting IS the approval signal — a draft plan is auto-advanced to 'ready'. Re-starting is a no-op. The retired op_status axis is never written (P-068 deleted the flag). Runs the plan-start CHECKPOINT consult (min:1): the plan body is routed through the relevance router; any selectable live peer — floor-qualified or best-available below the floor — nudge-refuses once with `consult_available` + labeled candidates (override: consulted + consult_reason).",
   guidance: {
     when: 'An agent is asked to begin work on a specific plan — this starts its item-promotion path into work-items.',
     notWhen:
@@ -171,13 +171,19 @@ export default defineTool({
           return { ok: false as const, harnessSlug, ...gate.refusal };
         }
 
-        // P-010 (get-feedback-relevance-consults-2026-08-16 / D-006): the
-        // plan-start CHECKPOINT consult. The ROUTING is mandatory (the plan
-        // body is the system-authored query); a wake is not. Below the floor
-        // the start proceeds silently; above it, a live/parked candidate
-        // nudge-refuses ONCE (override: consulted:false + consult_reason —
-        // the similar_exists/force shape), and an all-dead candidate set
-        // injects transcript excerpts instead (retrieval, not consult).
+        // P-010 (get-feedback-relevance-consults-2026-08-16) as amended by
+        // consult-min-max-and-rubric-vetting-2026-08-17 P-002 (D-001 §2): the
+        // plan-start CHECKPOINT consult runs with min:1 — a plan never
+        // promotes with zero feedback merely because nobody cleared the
+        // relevance floor. The ROUTING is mandatory (the plan body is the
+        // system-authored query); a wake is not. ANY selectable live/parked
+        // candidate — floor-qualified or best-available minimum fill, labeled
+        // via:'floor'|'minimum' (D-002) — nudge-refuses ONCE (override:
+        // consulted:false + consult_reason — the similar_exists/force shape);
+        // a floor-qualified-but-all-dead set injects transcript excerpts
+        // instead (retrieval, not consult); the proceed verdicts survive only
+        // where the minimum is physically unfillable (D-003:
+        // no_live_responder / no_qualified_responder — recorded, not silent).
         // NUDGE, never a hard block: any router/infra fault proceeds.
         let checkpointConsult: Record<string, unknown> | undefined;
         if (args.consulted !== undefined) {
@@ -238,18 +244,37 @@ export default defineTool({
                 getExcerpts: (refs) => consult.fetchTurnExcerpts(getOrgPg().sql, startWorkspaceId, refs),
               },
             );
-            ctxAny.metadata?.({ slug, harnessSlug, checkpointConsult: outcome.outcome });
+            ctxAny.metadata?.({
+              slug,
+              harnessSlug,
+              checkpointConsult: outcome.outcome,
+              ...(outcome.outcome === 'proceed' ? { checkpointVerdict: outcome.verdict } : {}),
+            });
             if (outcome.outcome === 'nudge') {
+              const hasMinimumFill = outcome.selection.selected.some((s) => s.via === 'minimum');
               return {
                 ok: false as const,
                 slug,
                 harnessSlug,
                 error: 'consult_available' as const,
                 candidates: outcome.candidates,
+                selection: outcome.selection,
                 hint:
-                  'Qualified peers have relevant transcript history for this plan — the relevance router routed the PLAN BODY above its precision floor (a wrong plan assumption multiplies across every promoted item, so this is the cheapest moment to check it). ' +
-                  'Review the candidates + their evidence turns; a live/parked candidate is reachable via get_feedback { question } (bounded consult thread). ' +
+                  'Peers with relevant transcript history were selected for this plan — `selection.selected` labels each: via "floor" = cleared the router\'s precision floor on real evidence; via "minimum" = best-available LIVE peer BELOW the floor, selected because the plan-step consult carries a minimum of 1 (a plan never promotes with zero feedback merely because nobody cleared the threshold; a wrong plan assumption multiplies across every promoted item, so this is the cheapest moment to check it). ' +
+                  (hasMinimumFill
+                    ? 'A via:"minimum" candidate should review from FIRST PRINCIPLES — their selection is best-available, not evidence-matched. '
+                    : '') +
+                  'Review the candidates + their evidence turns; consult via get_feedback { question } — its default minResponders:1 reaches at least the best-available live peer. ' +
                   'Then re-call plans:start with consulted: true (+ consult_reason naming what the consult concluded), or consulted: false + consult_reason to proceed without consulting — the override always works; this is a nudge, never a gate.',
+              };
+            }
+            if (outcome.outcome === 'proceed' && outcome.verdict === 'no_live_responder') {
+              // Not silent (P-002): a candidate pool existed but only liveness
+              // kept everyone out — record the honest verdict on the result.
+              checkpointConsult = {
+                verdict: 'no_live_responder',
+                note:
+                  'The plan-start consult found candidate peer history, but no LIVE candidate exists to consult (min:1 physically unfillable) — the start proceeded. Consider get_feedback later if a relevant peer comes alive.',
               };
             }
             if (outcome.outcome === 'proceed_with_excerpts') {
