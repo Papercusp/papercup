@@ -10,7 +10,8 @@ vi.mock('@papercusp/sse', () => ({
   sseResponse: vi.fn(() => new Response('stream-started', { status: 200 })),
 }));
 
-vi.mock('@papercusp/agent-mcp', () => ({
+vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/agent-mcp')>()),
   defineTool: (def: unknown) => def,
   dispatchProjectedToolStream: vi.fn(async function* () {}),
   emitToSseSink: vi.fn(),

@@ -42,7 +42,8 @@ vi.mock('../../../adv-sessions', async (orig) => ({ ...(await orig<typeof import
   recordAdvSession: vi.fn(async () => 1),
   markAdvSessionEnded: vi.fn(async () => {}),
 }));
-vi.mock('@papercusp/agent-mcp', () => ({
+vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/agent-mcp')>()),
   defineTool: vi.fn((spec: unknown) => spec),
 }));
 vi.mock('../../../operator-api-base', () => ({

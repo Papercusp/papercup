@@ -74,8 +74,13 @@ flight with \`projection\`.
 tool's own args, never inside them — with \`tools:invoke\` that means alongside
 \`name\`/\`args\`, NOT nested in \`args\`, where the inner tool rejects it as an unknown key.
 
-    projection: { pick: ["results[].id", "results[].state"] }
+    projection: { pick: ["results[].id", "results[].state"] }   // object-root body
+    projection: { pick: ["[].id", "[].title"] }                 // ARRAY-root body (a bare list)
     projection: { pipe: [{ op: "grep", pattern: "ERROR" }, { op: "tail", n: 20 }] }
+
+Path shape follows the BODY's root: a tool that returns a bare array (work_items:list,
+plans:items, …) is selected with \`[].field\` — a bare \`field\` addresses an object root
+and matches nothing there (the door auto-adjusts the obvious case and tells you).
 
 **Choose by the result's SHAPE — this is the part that is easy to get wrong.** An MCP
 tool result is a JSON object serialized on ONE line, so the line operators cannot

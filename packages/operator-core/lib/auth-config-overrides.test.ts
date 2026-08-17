@@ -26,7 +26,8 @@ vi.mock('./operator-state-pg', () => ({
     h.storedRow = p;
   }),
 }));
-vi.mock('@papercusp/agent-mcp', () => ({
+vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/agent-mcp')>()),
   setTestingFullAccessResolver: (fn: typeof h.capturedResolver) => {
     h.capturedResolver = fn;
   },

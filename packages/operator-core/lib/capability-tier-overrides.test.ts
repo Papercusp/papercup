@@ -24,7 +24,8 @@ vi.mock('./operator-state-pg', () => ({
     h.storedRow = p;
   }),
 }));
-vi.mock('@papercusp/agent-mcp', () => ({
+vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/agent-mcp')>()),
   setCapabilityTierOverride: (fn: typeof h.capturedSeam) => {
     h.capturedSeam = fn;
   },

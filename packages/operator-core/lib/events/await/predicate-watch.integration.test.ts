@@ -28,7 +28,8 @@ vi.mock('@papercusp/db-org', () => ({
 }));
 // The real dispatch path is exercised in prod via dispatch-projected (tested
 // there); tests drive the configurePredicateDispatch seam instead.
-vi.mock('@papercusp/agent-mcp', () => ({
+vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/agent-mcp')>()),
   lookupByMcpName: () => undefined,
   dispatchProjectedTool: async () => ({ ok: false, error: { code: 'test', message: 'not wired in tests' } }),
 }));

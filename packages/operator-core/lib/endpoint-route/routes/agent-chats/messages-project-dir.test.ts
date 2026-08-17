@@ -23,7 +23,8 @@ const { projectDirForSlugMock, assembleRolePromptMock, prepareLog } = vi.hoisted
 // transport deps are irrelevant to the seam under test.
 vi.mock('../../../agent-tools/index', () => ({}));
 vi.mock('@papercusp/sse', () => ({ sseResponse: () => new Response('sse-started') }));
-vi.mock('@papercusp/agent-mcp', () => ({
+vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/agent-mcp')>()),
   defineTool: (d: unknown) => d,
   dispatchProjectedToolStream: vi.fn(),
   // After assembly the handler looks the chat tool up; returning null makes it

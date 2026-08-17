@@ -51,7 +51,8 @@ const {
   readPlanBySlugMock: vi.fn(async () => null as any),
 }));
 
-vi.mock('@papercusp/agent-mcp', () => ({
+vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/agent-mcp')>()),
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   defineTool: (spec: unknown) => spec as any,
 }));

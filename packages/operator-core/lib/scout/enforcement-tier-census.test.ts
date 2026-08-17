@@ -224,7 +224,8 @@ describe('findStaleDeclarations', () => {
   describe('loadCoordRegistrySnapshot — the runtime seam', () => {
     const withRegistry = async (tools: Array<{ name: string; seeAlso?: unknown }>) => {
       vi.resetModules();
-      vi.doMock('@papercusp/agent-mcp', () => ({
+      vi.doMock('@papercusp/agent-mcp', async (importOriginal) => ({
+        ...(await importOriginal<typeof import('@papercusp/agent-mcp')>()),
         listAllProjectedTools: () =>
           tools.map((t) => ({ expose: { mcp: { name: t.name } }, seeAlso: t.seeAlso })),
       }));

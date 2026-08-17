@@ -45,7 +45,8 @@ vi.mock('../../../agent-tools/index', () => ({}));
 // dispatchProjectedToolStream (called inside setup) would never fire. The
 // real sseResponse DOES invoke setup() and returns a real ReadableStream we
 // drain below, letting the dispatch call args become observable.
-vi.mock('@papercusp/agent-mcp', () => ({
+vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/agent-mcp')>()),
   defineTool: (d: unknown) => d,
   // A truthy stub tool + an empty async generator: the route's `for await`
   // loop over dispatchProjectedToolStream completes immediately with no

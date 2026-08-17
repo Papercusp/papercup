@@ -1100,7 +1100,8 @@ describe('resolveNamedQueryV2 — fleetAssignments.byHarness (workspace scoping)
       ...(await orig<typeof import('../adv-sessions')>()),
       listAdvSessions: vi.fn(async () => []),
     }));
-    vi.doMock('@papercusp/agent-mcp', () => ({
+    vi.doMock('@papercusp/agent-mcp', async (importOriginal) => ({
+      ...(await importOriginal<typeof import('@papercusp/agent-mcp')>()),
       classifyAgentPane: vi.fn(() => ({ kind: 'su', driveMode: 'manual' })),
     }));
     vi.doMock('../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-active' }));

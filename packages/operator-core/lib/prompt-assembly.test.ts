@@ -40,7 +40,8 @@ const mockTools: Array<{
   replaces?: readonly string[];
 }> = [];
 
-vi.mock('@papercusp/agent-mcp', () => ({
+vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/agent-mcp')>()),
   listAllProjectedTools: () => mockTools,
 }));
 

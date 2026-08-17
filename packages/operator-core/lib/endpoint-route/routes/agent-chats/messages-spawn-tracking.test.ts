@@ -32,7 +32,8 @@ vi.mock('@papercusp/sse', () => ({
     return new Response('sse-started');
   },
 }));
-vi.mock('@papercusp/agent-mcp', () => ({
+vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/agent-mcp')>()),
   defineTool: (d: unknown) => d,
   dispatchProjectedToolStream: h.dispatchMock,
   lookupByMcpName: () => ({ mcpToolName: 'agent_chats:chat' }),

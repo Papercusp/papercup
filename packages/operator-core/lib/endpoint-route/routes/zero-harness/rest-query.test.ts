@@ -9,7 +9,8 @@ vi.mock('../../../sync-resolver', () => ({
 vi.mock('../../../sync-resolver/resolve-observability', () => ({ observeResolve: vi.fn() }));
 vi.mock('../../../sync-resolver/resource-delta-config', () => ({ resourceDeltaConfig: () => undefined }));
 vi.mock('@papercusp/tooldef', () => ({ negotiateRowsDelta: vi.fn() }));
-vi.mock('@papercusp/agent-mcp', () => ({ defineTool: (input: unknown) => input }));
+vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/agent-mcp')>()), defineTool: (input: unknown) => input }));
 vi.mock('../../../cpu-task-worker', () => ({
   serializeJsonResponse: async (value: unknown) => JSON.stringify(value),
 }));

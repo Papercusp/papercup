@@ -34,7 +34,8 @@ const WS = 'ws';
  */
 const SELF_SET_1M_CEILING = 825_000;
 
-vi.mock('@papercusp/agent-mcp', () => ({
+vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/agent-mcp')>()),
   classifyAgentPane: (...a: unknown[]) => classifyAgentPane(...a),
 }));
 vi.mock('../../agent-fleets-store', () => ({ getFleet: (...a: unknown[]) => getFleet(...a) }));

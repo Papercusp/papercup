@@ -42,7 +42,8 @@ const mocks = vi.hoisted(() => ({
   runWithWorkspaceIfConcrete: vi.fn(async (_workspaceId: string | undefined, fn: () => unknown) => fn()),
 }));
 
-vi.mock('@papercusp/agent-mcp', () => ({
+vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/agent-mcp')>()),
   lookupByMcpName: mocks.lookupByMcpName,
   dispatchProjectedTool: mocks.dispatchProjectedTool,
 }));

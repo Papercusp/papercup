@@ -6,7 +6,8 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('@papercusp/agent-mcp', () => ({ resolveCardResponse: vi.fn() }));
+vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/agent-mcp')>()), resolveCardResponse: vi.fn() }));
 
 import { unblockLinkedCard } from './card-link';
 import { resolveCardResponse } from '@papercusp/agent-mcp';

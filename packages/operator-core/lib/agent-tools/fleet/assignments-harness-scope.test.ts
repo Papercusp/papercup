@@ -18,7 +18,8 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import type { PlanItemCoverage } from '../../plan-item-coverage';
 
-vi.mock('@papercusp/agent-mcp', () => ({
+vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/agent-mcp')>()),
   defineTool: (def: unknown) => def,
   readJsonResult: () => undefined,
 }));

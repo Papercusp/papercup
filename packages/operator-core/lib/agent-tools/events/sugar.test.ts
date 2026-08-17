@@ -11,7 +11,8 @@ const definedTools = vi.hoisted(
     }>,
 );
 
-vi.mock("@papercusp/agent-mcp", () => ({
+vi.mock("@papercusp/agent-mcp", async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/agent-mcp')>()),
   defineTool: (def: (typeof definedTools)[number]) => {
     definedTools.push(def);
     return def;

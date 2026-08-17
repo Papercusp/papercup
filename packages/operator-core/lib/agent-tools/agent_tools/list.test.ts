@@ -14,7 +14,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const lookupSystemPrincipalCapabilitiesByRoleMock = vi.fn();
 
-vi.mock('@papercusp/agent-mcp', () => ({
+vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/agent-mcp')>()),
   defineTool: (def: unknown) => def,
   SU_ROLES: ['su', 'operator'],
   lookupSystemPrincipalCapabilitiesByRole: (...a: unknown[]) =>

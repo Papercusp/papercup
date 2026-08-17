@@ -19,7 +19,8 @@ const H = vi.hoisted(() => ({
   nextResult: null as unknown,
 }));
 
-vi.mock('@papercusp/agent-mcp', () => ({
+vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/agent-mcp')>()),
   handleHttpToolRequest: vi.fn(async (req: { pathname: string; body: Record<string, unknown> }) => {
     H.calls.push({ pathname: req.pathname, body: req.body });
     const payload = H.nextResult ?? { ok: true };
