@@ -12,6 +12,21 @@
  * one; mirrors `supervision-reconcile-action.ts`'s documented deviation.
  */
 import { registerSystemAction } from './system-actions';
+import type { AgentIdentity } from '../../agent-tools/coordination/identity';
+
+/** The sweep acts under a per-row workspace SYSTEM identity when it wakes the
+ * next cascade selectee — consult_state is workspace-partitioned and one sweep
+ * serves every workspace, so identity cannot come from the routine's ALS scope
+ * (mirrors probeIdentity in coord-invariant-actions.ts). */
+function sweepIdentity(workspaceId: string): AgentIdentity {
+  return {
+    ownerId: 'system:consult-expiry-sweep',
+    ownerLabel: 'consult expiry sweep',
+    source: 'omp-hook-session',
+    workspaceId,
+    userId: null,
+  } as AgentIdentity;
+}
 
 registerSystemAction('consult-expiry-sweep', async () => {
   const [{ getOrgPg }, { sweepExpiredConsults }, { emitAwaitedEvent }] = await Promise.all([
@@ -33,6 +48,20 @@ registerSystemAction('consult-expiry-sweep', async () => {
         workspaceId: e.workspaceId,
         source: 'consult-expiry-sweep',
       });
+    },
+    // D-005 cascade advance: an unanswered window elapsing wakes the NEXT
+    // selectee exactly like a decline does — notifyAgents (subscribe + ping +
+    // wake, so the selectee joins the consult conversation durably).
+    reach: async (opts) => {
+      const { notifyAgents } = await import('../../agent-tools/coordination/notify-agents');
+      const r = await notifyAgents(sweepIdentity(opts.workspaceId), {
+        addressees: [opts.responder],
+        objectRef: { kind: 'conversation', ref: opts.conversationId },
+        summary: opts.summary,
+        body: opts.body,
+        wake: true,
+      });
+      return { woke: r.woke };
     },
   });
 });
