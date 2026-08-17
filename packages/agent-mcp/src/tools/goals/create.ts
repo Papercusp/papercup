@@ -34,6 +34,13 @@ import { GOAL_STATUSES, TripwireSchema, goalId, insertGoalRow } from './_core';
 export { GOAL_STATUSES, TripwireSchema, goalId };
 export type { Tripwire, GoalStatus } from './_core';
 
+// Wire clients deliver booleans as the strings 'true'/'false' on some paths —
+// the same tolerance plans:start ships for its consult override args.
+const stringTolerantBool = z.preprocess(
+  (v) => (v === 'true' ? true : v === 'false' ? false : v),
+  z.boolean(),
+);
+
 export default defineTool({
   name: 'goals:create',
   description:
