@@ -940,6 +940,37 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     appliesTo: (f) => f.startsWith("papercusp-desktop/bin/"),
   },
   {
+    // WI-5472 — the SAME disjointness defect as the entry directly above, one directory over.
+    // The guard's subject is papercusp-desktop/bin/lib/federation-asserts.sh; the guard itself
+    // lives in @papercusp/operator-core (alongside the sibling desktop-shell guards, e.g.
+    // live-federation-gate-k3-cut-verdict.test.ts). Measured 2026-08-17:
+    //   papercusp-desktop/bin/lib/federation-asserts.sh -> AFFECTED_WS @papercusp/desktop
+    //   packages/operator-core/lib/<this guard>.test.ts -> AFFECTED_WS @papercusp/operator-core
+    // Disjoint, so without this entry the guard runs only when operator-core changes for some
+    // unrelated reason — i.e. never when its subject actually moves.
+    //
+    // ⚠ The test CANNOT simply be relocated into @papercusp/desktop: that package is not in the
+    // root `workspaces` list, so nothing under it is selected or run by the root vitest at all.
+    // Attaching it here is the only way subject and guard travel together.
+    //
+    // The invariant: fed_hive_merge_probe / fed_coord_merge_probe must reach their 0/1 verdict
+    // under `set -u` with RIG_HIVE_ID unset. When they do not, they die on an unbound `ws`, every
+    // caller's `$( ... || true )` swallows it, and the federation-merge assertions read FAIL
+    // whether or not federation works — a false RED that costs whole debugging sessions on the
+    // transport layer, which is fine.
+    workspace: "@papercusp/operator-core",
+    script: "lint:federation-assert-nounset",
+    // Cheap by construction: sources the shell lib with drv_psql stubbed — no PG, no network, no
+    // sleeps (both probes short-circuit before their poll loops). 542ms measured. No
+    // `--passWithNoTests`, so renaming the guard file fails loudly instead of guarding nothing.
+    //
+    // NO hostSuiteRatchet, deliberately — same reasoning as the entry above: operator-core's own
+    // `test` task does re-run this file, but subject and host suite are selected by DISJOINT
+    // changes, and that disjointness is the entire defect being fixed here. A ratchet would let a
+    // federation-asserts.sh edit skip the guard on the strength of a suite that edit never runs.
+    appliesTo: (f) => f === "papercusp-desktop/bin/lib/federation-asserts.sh",
+  },
+  {
     // WI-38089. See declarationMjsInputs() above for the measurement and the derive-vs-mirror
     // rationale.
     workspace: "@papercusp/operator-core",
