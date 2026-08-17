@@ -199,6 +199,51 @@ const surfaceOf = (res: Awaited<ReturnType<typeof rebindIdentity>>, name: string
   return s!;
 };
 
+/**
+ * Every re-key surface rebindIdentity() visits when the caller wires NO
+ * rebindLockOwner. Authored here deliberately rather than derived from the
+ * tool: adding a surface SHOULD have to be acknowledged in this file, because
+ * a surface the tool forgets is a claim that silently outlives its session.
+ *
+ * It is a NAMED LIST and not a bare count because the count alone reports the
+ * wrong thing. When `interest-watches` landed, six independent
+ * `toHaveLength(16)` assertions each failed as "expected 17 to have a length
+ * of 16" — which names neither the new surface nor the file that has to change,
+ * and reads like six separate defects. The whole green-checkpoint gate sat red
+ * behind that for hours. Compared against a list, the same change fails once
+ * and prints the newcomer's name.
+ */
+const BASE_SURFACES = [
+  'loop-routine',
+  'carry-note',
+  'presence',
+  'fleet-membership',
+  'fleet-leadership',
+  'claim-spec',
+  'awaits',
+  'interest-watches',
+  'plan-claims',
+  'work-claims',
+  'watermarks',
+  'held-items',
+  'held-work-items',
+  'owner-facts',
+  'owner-directives',
+  'read-cursors',
+  'pending-wakes',
+] as const;
+
+/** `file-locks` is opt-in — present only when the caller wires rebindLockOwner. */
+const WITH_FILE_LOCKS = [...BASE_SURFACES, 'file-locks'] as const;
+
+/** Assert the visited surface SET, so a drift names the surface that drifted. */
+const expectSurfaces = (
+  res: Awaited<ReturnType<typeof rebindIdentity>>,
+  expected: readonly string[] = BASE_SURFACES,
+) => {
+  expect([...res.surfaces.map((s) => s.surface)].sort()).toEqual([...expected].sort());
+};
+
 describe('argument + liveness guards', () => {
   it('refuses identical / blank identities without touching the DB', async () => {
     const sql = fakeSql();
@@ -237,7 +282,7 @@ describe('argument + liveness guards', () => {
       expect(res.ok).toBe(true);
       expect(res).toMatchObject({ fromSessionState: state, fromHeartbeatFresh: true });
       expect(res.refused).toBeUndefined();
-      expect(res.surfaces).toHaveLength(16);
+      expectSurfaces(res);
     },
   );
 
@@ -253,7 +298,7 @@ describe('argument + liveness guards', () => {
     const resolve = resolvesTo('live');
     const res = await rebind(FROM, TO, fakeSql(), { force: true, resolveLiveness: resolve });
     expect(res.ok).toBe(true);
-    expect(res.surfaces).toHaveLength(16);
+    expectSurfaces(res);
     // force skips the guard entirely — the oracle is never consulted.
     expect(resolve.seen).toHaveLength(0);
   });
@@ -265,7 +310,7 @@ describe('argument + liveness guards', () => {
     ]) {
       const res = await rebind(FROM, TO, opts.sql, { resolveLiveness: opts.resolveLiveness });
       expect(res.ok).toBe(true);
-      expect(res.surfaces).toHaveLength(16);
+      expectSurfaces(res);
     }
   });
 
@@ -569,7 +614,7 @@ describe('remaining re-keys, totals, and error isolation', () => {
     const res = await rebind(FROM, TO, sql);
     expect(res.ok).toBe(false);
     expect(surfaceOf(res, 'fleet-leadership').error).toContain('surface exploded');
-    expect(res.surfaces).toHaveLength(16);
+    expectSurfaces(res);
     expect(surfaceOf(res, 'plan-claims')).toMatchObject({ moved: 1 });
   });
 });
@@ -578,7 +623,7 @@ describe('SU-locks file locks + waiters (EI-8999/P-002 — opt-in, separate side
   it('is entirely SKIPPED when the caller does not wire rebindLockOwner — no I/O attempted, surface count unchanged', async () => {
     const sql = fakeSql();
     const res = await rebind(FROM, TO, sql);
-    expect(res.surfaces).toHaveLength(16);
+    expectSurfaces(res);
     expect(res.surfaces.find((s) => s.surface === 'file-locks')).toBeUndefined();
   });
 
@@ -586,7 +631,7 @@ describe('SU-locks file locks + waiters (EI-8999/P-002 — opt-in, separate side
     const sql = fakeSql();
     const rebindLockOwner = vi.fn().mockResolvedValue({ fileLocksMoved: 2, waitersMoved: 1 });
     const res = await rebind(FROM, TO, sql, { rebindLockOwner });
-    expect(res.surfaces).toHaveLength(17);
+    expectSurfaces(res, WITH_FILE_LOCKS);
     expect(surfaceOf(res, 'file-locks')).toMatchObject({ moved: 3 });
     expect(rebindLockOwner).toHaveBeenCalledWith(FROM, TO);
     expect(res.totalMoved).toBeGreaterThanOrEqual(3);
