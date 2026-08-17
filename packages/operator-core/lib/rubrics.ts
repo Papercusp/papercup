@@ -69,6 +69,12 @@ export const RUBRIC_STATUSES: readonly RubricStatus[] = ['proposed', 'active', '
  *  Locked with the Overwatch scorecard + Scout digest consumers (interface contract). */
 export const DEFAULT_RATING_SCALE: readonly string[] = ['healthy', 'degraded', 'broken', 'unknown'];
 
+/** A criterion's grading class (EI-20581177540737568, P-008): 'violatable' = monotonic-
+ *  downward — one violation falsifies it permanently, so a mid-run rating is provisional
+ *  until the graded subject terminates. 'settle-once' (the omitted default) = settled
+ *  permanently once its phase ends. */
+export type CriterionClass = 'settle-once' | 'violatable';
+
 /** One gradeable item within a rubric (the per-characteristic criterion). */
 export interface RubricCriterion {
   /** Stable kebab id; a structured observation's ratings Record is keyed by this. */
@@ -94,6 +100,8 @@ export interface RubricCriterion {
    *  resolveCriterionWindow() instead of re-hardcoding a look-back in prose. Omitted =
    *  the consumer's default (48h rolling). */
   window?: RubricCriterionWindow;
+  /** Grading class — see {@link CriterionClass}. Omitted = 'settle-once'. */
+  criterionClass?: CriterionClass;
 }
 
 export interface Rubric {
@@ -299,6 +307,7 @@ export function planRowToRubric(row: RubricPlanRow): Rubric | null {
       ...(c.replication ? { replication: c.replication } : {}),
       ...(c.instrumentKey ? { instrumentKey: c.instrumentKey } : {}),
       ...(c.window ? { window: c.window } : {}),
+      ...(c.criterionClass ? { criterionClass: c.criterionClass } : {}),
     })),
     ratingScale: d.ratingScale,
     methodRef: d.methodRef ?? null,
@@ -699,6 +708,13 @@ export interface ProposeRubricInput {
   /** Why the procedure shrink is intentional (required with allowMethodShrink). */
   shrinkReason?: string;
   /**
+   * P-008 loss-guard ack: allow a stored 'violatable' criterion to be resubmitted as
+   * settle-once (or with the class dropped). A silent downgrade removes the criterion's
+   * provisional-until-terminal protection — the exact machinery EI-20581177540737568
+   * added — so it must be a conscious, explained edit. Non-empty string = ack + reason.
+   */
+  classDowngradeReason?: string;
+  /**
    * EI-10751: carry an EXISTING ratification through a whole-document replace. Only the
    * amendRubric path sets this (a small amendment to an already-active rubric keeps its
    * ratifier of record); a plain propose/re-propose leaves it unset, which DROPS the
@@ -799,6 +815,23 @@ export function assertNoSilentRubricLoss(stored: Rubric | null, input: ProposeRu
       );
     }
   }
+  // 3) criterion-class weakening (P-008) — a stored 'violatable' criterion resubmitted
+  //    without the class (or downgraded to settle-once) silently removes its
+  //    provisional-until-terminal protection, the same silent-weakening family as a
+  //    procedure shrink. Upgrades (settle-once → violatable) are never guarded.
+  const downgraded = stored.criteria.filter((c) => {
+    if (c.criterionClass !== 'violatable') return false;
+    const proposed = proposedByKey.get(c.key);
+    return proposed !== undefined && proposed.criterionClass !== 'violatable';
+  });
+  if (downgraded.length > 0 && (input.classDowngradeReason ?? '').trim() === '') {
+    violations.push(
+      `DOWNGRADES ${downgraded.length} 'violatable' criteri${downgraded.length === 1 ? 'on' : 'a'} to settle-once: ${downgraded
+        .map((c) => `'${c.key}'`)
+        .join(', ')} — mid-run ratings of these would stop being stamped provisional. If intentional, pass a non-empty classDowngradeReason; otherwise resubmit them with criterionClass:'violatable'`,
+    );
+  }
+
   if (shrinkViolations.length > 0) {
     if (input.allowMethodShrink && (input.shrinkReason ?? '').trim() !== '') {
       // conscious, explained shrink — allowed.
@@ -1245,6 +1278,18 @@ export interface AmendRubricInput {
     field: AmendableCriterionField;
     mode: 'append' | 'replace';
     text: string;
+  };
+  /**
+   * P-008: set ONE criterion's grading class. UPGRADE-ONLY through this path — setting
+   * 'violatable' (or classifying an unclassed criterion) only tightens grading, so it
+   * keeps the stored status + ratifier like any amendment. DOWNGRADING a stored
+   * 'violatable' criterion removes its provisional-until-terminal protection and is
+   * REFUSED here: that edit is rubrics:propose territory (classDowngradeReason + a
+   * fresh ratification).
+   */
+  criterionClass?: {
+    key: string;
+    class: CriterionClass;
   };
   /** Set/replace the rubric-level runbook slug (agent-insights). */
   methodRef?: string;

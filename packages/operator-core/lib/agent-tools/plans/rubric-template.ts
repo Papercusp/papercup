@@ -202,6 +202,15 @@ export const rubricCriterionSchema = z
           'via resolveCriterionWindow() instead of re-hardcoding a look-back in prose. Omitted = ' +
           "the consumer's default (48h rolling)",
       ),
+    criterionClass: z
+      .enum(['settle-once', 'violatable'])
+      .optional()
+      .describe(
+        "grading class (EI-20581177540737568): 'violatable' = monotonic-downward — one violation " +
+          'falsifies it permanently and no later virtue restores it, so a mid-run rating is ' +
+          'PROVISIONAL until the graded subject terminates (scorecards:emit stamps this). ' +
+          "'settle-once' (also the omitted default) = settled permanently once its phase ends",
+      ),
   })
   .strict();
 
