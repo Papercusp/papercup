@@ -57,6 +57,8 @@ import {
   lastReleaseTriggerPauseOwner,
   evaluateReleaseTriggerFireStale,
   checkReleaseTriggerFireStale,
+  attributeVerdictStale,
+  readLastGateRunEvidence,
 } from './green-stall-watchdog';
 
 const H = 60 * 60 * 1000;
