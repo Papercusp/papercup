@@ -137,6 +137,23 @@ export interface StructuredObservation {
    * carries no subject and is unaffected.
    */
   subject?: ObservationSubject;
+  /**
+   * P-008 (EI-20581177540737568): stamped SERVER-SIDE by scorecards:emit when this
+   * scorecard rates 'violatable'-class criteria (monotonic-downward — one violation
+   * falsifies permanently) without the emitter affirming the graded subject has
+   * TERMINATED. A provisional card is a working note (plan D-004): trend/release
+   * surfaces exclude it, and the terminal re-emit (terminal:true, superseding this
+   * card) is what makes the grading final. Never caller-supplied.
+   */
+  provisional?: ScorecardProvisional;
+}
+
+/** The provisional stamp — see {@link StructuredObservation.provisional}. */
+export interface ScorecardProvisional {
+  /** The rated 'violatable' criterion keys that make this card provisional. */
+  violatableKeys: string[];
+  /** ISO instant the stamp was applied (emit time). */
+  stampedAt: string;
 }
 
 /** What kind of thing a scorecard's `subject` names. Open-ended by design: the
@@ -394,6 +411,17 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
   }
   if (o.instrumentSnapshots && typeof o.instrumentSnapshots === 'object' && !Array.isArray(o.instrumentSnapshots)) {
     out.instrumentSnapshots = o.instrumentSnapshots as Record<string, unknown>;
+  }
+  // P-008: the provisional stamp. violatableKeys is load-bearing (an empty stamp says
+  // nothing was provisional), so a malformed block is discarded rather than half-kept.
+  if (o.provisional && typeof o.provisional === 'object' && !Array.isArray(o.provisional)) {
+    const p = o.provisional as Record<string, unknown>;
+    const keys = Array.isArray(p.violatableKeys)
+      ? p.violatableKeys.filter((x): x is string => typeof x === 'string' && x.trim() !== '')
+      : [];
+    if (keys.length > 0 && typeof p.stampedAt === 'string' && p.stampedAt.trim()) {
+      out.provisional = { violatableKeys: keys, stampedAt: p.stampedAt };
+    }
   }
   // P-009: the graded subject. This parse is an explicit ALLOWLIST — a key absent
   // here is silently dropped on READ even though it persisted fine on write, so
