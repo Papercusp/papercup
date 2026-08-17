@@ -27,6 +27,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   addedColumnsFor,
+  alteredTablesFor,
   ACK_MARKER,
   ENFORCE_FROM,
   findDraftColumnReferences,
@@ -199,6 +200,58 @@ describe('the parked-migration dependency guard (EI-20208711931756460)', () => {
         line: 1,
       },
     ]);
+  });
+
+  it('extracts the altered table without its schema qualifier', () => {
+    expect(
+      alteredTablesFor('ALTER TABLE harness_shared.local_backends ADD COLUMN IF NOT EXISTS lifecycle text;'),
+    ).toEqual(['local_backends']);
+    expect(alteredTablesFor('ALTER TABLE IF EXISTS ONLY "adv_sessions" ADD COLUMN x text;')).toEqual(['adv_sessions']);
+  });
+
+  it('does not flag a file that uses the column name but never names the table', () => {
+    // Regression: migration 843 added `local_backends.lifecycle`, and the column-name-only scan
+    // matched 357 unrelated files (plugin lifecycle, release lifecycle, work-item lifecycle),
+    // red-pinning green-checkpoint. A flood that large does not get read as a guard — it gets
+    // silenced with the ACK marker, which is how a REAL forward-compat break gets waved through.
+    const sql = 'ALTER TABLE harness_shared.local_backends ADD COLUMN IF NOT EXISTS lifecycle text;';
+    const result = findDraftColumnReferences(sql, [
+      {
+        file: 'packages/plugin-loader/src/daemon/supervisor.ts',
+        text: 'export type PluginLifecycle = "starting" | "ready";\nconst lifecycle: PluginLifecycle = "ready";\n',
+      },
+    ]);
+
+    expect(result.references).toEqual([]);
+  });
+
+  it('still flags a real read of the new column on the altered table', () => {
+    // The falsifiability half of the pair above: narrowing by table must not defang the scan.
+    const sql = 'ALTER TABLE harness_shared.local_backends ADD COLUMN IF NOT EXISTS lifecycle text;';
+    const result = findDraftColumnReferences(sql, [
+      {
+        file: 'packages/operator-core/lib/inference-gateway/local-backend-store.ts',
+        text: 'const rows = await sql`SELECT id, lifecycle FROM harness_shared.local_backends`;\n',
+      },
+    ]);
+
+    expect(result.references).toEqual([
+      {
+        column: 'lifecycle',
+        file: 'packages/operator-core/lib/inference-gateway/local-backend-store.ts',
+        line: 1,
+      },
+    ]);
+  });
+
+  it('falls back to the column-only scan when no ALTER TABLE target can be parsed', () => {
+    // Fail-safe: an SQL shape the table regex does not understand must stay exactly as strict as
+    // it was before table-qualification existed, never weaker.
+    const result = findDraftColumnReferences('CREATE TABLE t (x int); ADD COLUMN IF NOT EXISTS ended_signal text;', [
+      { file: 'packages/operator-core/lib/adv-sessions.ts', text: 'const v = ended_signal;\n' },
+    ]);
+
+    expect(result.references.map((r) => r.column)).toEqual(['ended_signal']);
   });
 
   it('keeps the source scan domain explicit and production-oriented', () => {
