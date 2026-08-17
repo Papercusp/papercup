@@ -102,6 +102,18 @@ export function sha256(text: string): string {
   return createHash('sha256').update(text, 'utf8').digest('hex');
 }
 
+/**
+ * Is this output path somewhere the OS will eventually delete?
+ *
+ * Not a safety mechanism — grades are durable in Postgres regardless. It exists
+ * so a reaped JSON report is never again mistaken for lost EVIDENCE, which is
+ * what happened when D-096's and D-088's artifacts vanished and the underlying
+ * judgements had no other home.
+ */
+export function isReapablePath(outPath: string): boolean {
+  return /^(\/tmp|\/var\/tmp|\/private\/var\/folders|\/dev\/shm)(\/|$)/.test(outPath);
+}
+
 const SELECT_SQL = `
   SELECT relevance, judged_relevant, judge_notes, judge_cost_usd
     FROM harness_shared.search_judge_grades

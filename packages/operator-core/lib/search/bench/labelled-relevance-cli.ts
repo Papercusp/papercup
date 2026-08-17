@@ -38,7 +38,7 @@ import {
   JUDGE_AGREEMENT_RUBRIC_VERSION,
   judgeRelevance,
 } from './judge-agreement';
-import { createCachedJudge } from './judge-cache';
+import { createCachedJudge, isReapablePath } from './judge-cache';
 import {
   DOC_CHARS,
   formatLabelledReport,
