@@ -225,19 +225,24 @@ describe('getFeedbackCore — routed', () => {
     const { deps, opened } = makeDeps(routeOf([deadTop, liveSecond]));
     const r = asOk(await getFeedbackCore(baseReq, deps));
     expect(r.responder?.ownerId).toBe('agent-live');
+    expect(r.responder_via).toBe('floor');
     expect(opened[0].direct_to).toEqual(['agent-live']);
-    // The skipped dead candidate stays visible for the manual cascade.
-    expect(r.remaining_candidates).toEqual([{ ownerId: 'agent-dead', score: 0.9, liveness: 'ended', via: 'floor' }]);
+    // min/max selection: the menu is the SELECTED set only — a dead candidate
+    // is never selected, so it no longer pads remaining_candidates (its refs
+    // survive in the persisted routing snapshot).
+    expect(r.remaining_candidates).toEqual([]);
   });
 });
 
 describe('getFeedbackCore — honest no_qualified_responder', () => {
-  it('below_floor: still opens + persists the verdict (D-003 honesty feed), no wake', async () => {
+  it('below_floor (pure-floor min:0): still opens + persists the verdict (D-003 honesty feed), no wake', async () => {
+    // Under the D-003 global min of 1 a live below-floor pool now ROUTES
+    // (minimum-fill) — the honest below_floor verdict survives via min:0.
     const { deps, opened, reached } = makeDeps(routeOf([], { all: [cand('agent-sub', { score: 0.3 })] }));
-    const r = asOk(await getFeedbackCore(baseReq, deps));
+    const r = asOk(await getFeedbackCore({ ...baseReq, minResponders: 0 }, deps));
     expect(r.verdict).toBe('no_qualified_responder');
     expect(r.reason).toBe('below_floor');
-    expect(r.hint).toContain('no one knows more than you do');
+    expect(r.hint).toContain('Proceed on your own judgment');
     expect(opened[0].direct_to).toEqual([]);
     expect(reached).toHaveLength(0);
     const row = await stateRow(r.conversation_id);
