@@ -84,6 +84,11 @@ describe('readLimitFailureRate — runs the canonical SQL through an injected ru
     const roll = await readLimitFailureRate(fakeRun, { sinceDays: 14 });
     expect(captured[0].params).toEqual([14]);
     expect(captured[0].query).toBe(LIMIT_FAILURE_RATE_SQL);
+    // P-012: wrapper rows excluded — a too-big arg rejected via tools:invoke would
+    // otherwise be double-counted (wrapper + inner).
+    expect(LIMIT_FAILURE_RATE_SQL).toContain(
+      "NOT coalesce((metadata_json->>'dispatchWrapper')::boolean, false)",
+    );
     expect(roll.totalErrs).toBe(412);
     expect(roll.byTool[0]).toMatchObject({ toolName: 'fleet:place_batch.brief', errs: 412 });
   });

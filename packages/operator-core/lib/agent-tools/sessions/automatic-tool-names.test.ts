@@ -66,4 +66,44 @@ describe('tool invocation SQL predicates', () => {
     expect(call.strings.join(' ')).toContain('<> ALL');
     expect(values).toEqual(expect.arrayContaining(['ti.call_origin', 'ti.tool_name', ...AGENT_CALL_ORIGINS, ...AUTOMATIC_TOOL_NAMES]));
   });
+
+  it('P-012: the wrapper-exclusion fragment keeps NULL/absent metadata and targets the shared key', () => {
+    const sql = sqlStub();
+    dispatchWrapperExclusionPredicate(sql as never, 'ti');
+    const call = sql.calls[0];
+    expect(call.strings.join(' ')).toContain('NOT coalesce');
+    expect(call.values).toEqual(expect.arrayContaining(['ti.metadata_json', DISPATCH_WRAPPER_METADATA_KEY]));
+    // The raw-string twin (for template-literal SQL constants) must express the SAME
+    // predicate over the SAME key — the two forms drifting is the failure this pins.
+    expect(DISPATCH_WRAPPER_EXCLUSION_SQL).toContain('NOT coalesce');
+    expect(DISPATCH_WRAPPER_EXCLUSION_SQL).toContain(DISPATCH_WRAPPER_METADATA_KEY);
+  });
+});
+
+/**
+ * P-012 (census double-count): the row-side classifier. The literal-false and
+ * truthy-but-not-true cases are the falsifiability controls — a classifier reading
+ * mere key PRESENCE (or truthiness) as "wrapper" passes the first test and fails
+ * those, so this suite can catch both wrong implementations.
+ */
+describe('isDispatchWrapperMetadata (P-012)', () => {
+  it('true only for a literal dispatchWrapper: true', () => {
+    expect(isDispatchWrapperMetadata({ [DISPATCH_WRAPPER_METADATA_KEY]: true })).toBe(true);
+    expect(
+      isDispatchWrapperMetadata({ [DISPATCH_WRAPPER_METADATA_KEY]: true, dispatchedTool: 'x' }),
+    ).toBe(true);
+  });
+
+  it('false for absent / null / non-object metadata', () => {
+    expect(isDispatchWrapperMetadata(null)).toBe(false);
+    expect(isDispatchWrapperMetadata(undefined)).toBe(false);
+    expect(isDispatchWrapperMetadata('{}')).toBe(false);
+    expect(isDispatchWrapperMetadata({})).toBe(false);
+  });
+
+  it('control: presence-without-true is NOT a wrapper (a mere-presence reader fails here)', () => {
+    expect(isDispatchWrapperMetadata({ [DISPATCH_WRAPPER_METADATA_KEY]: false })).toBe(false);
+    expect(isDispatchWrapperMetadata({ [DISPATCH_WRAPPER_METADATA_KEY]: 'true' })).toBe(false);
+    expect(isDispatchWrapperMetadata({ [DISPATCH_WRAPPER_METADATA_KEY]: 1 })).toBe(false);
+  });
 });

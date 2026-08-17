@@ -129,6 +129,12 @@ describe('readToolFailureRate', () => {
     expect(TOOL_FAILURE_RATE_SQL).toContain("count(*) FILTER (WHERE status IN ('ok','error','timeout')) AS calls");
   });
 
+  it('P-012: excludes dispatch-wrapper rows — a tools:invoke wrapper failure duplicates its inner row', () => {
+    expect(TOOL_FAILURE_RATE_SQL).toContain(
+      "NOT coalesce((metadata_json->>'dispatchWrapper')::boolean, false)",
+    );
+  });
+
   it('is workspace-scoped — an unscoped read would mix tenants', () => {
     expect(TOOL_FAILURE_RATE_SQL).toContain('workspace_id = $1');
   });
