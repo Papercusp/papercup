@@ -372,7 +372,10 @@ export function computeDeployStatus(snap: GitPipelineSnapshot, inFlight: DeployI
   // `gate_health.lastVerdict` is the writer's own statement of what the verdict WAS, so it
   // settles the question generally instead of one status at a time; `null` (a blob written
   // before the marker existed) degrades to exactly the previous behaviour.
-  const lastVerdictRecordedNotGreen = g.lastVerdict === 'not-green';
+  // (named `recordedVerdict`, not `lastVerdict`, precisely because `lastVerdict` above is a
+  // DIFFERENT thing in this same scope — the checkpoint EVENT object. Two shapes under one
+  // name is how a reader ends up asserting on the wrong one.)
+  const lastVerdictRecordedNotGreen = g.recordedVerdict === 'not-green';
   const gateGreen = g.consecutiveReds === 0 && !fireStale && !lastVerdictWasPartialRed && !lastVerdictRecordedNotGreen;
   const deployedBehindGreenPin = d.deployedBehindGreenPin;
   const greenPinBehindStaging = d.greenPinBehindStaging;

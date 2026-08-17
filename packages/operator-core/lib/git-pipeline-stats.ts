@@ -152,7 +152,7 @@ export interface GitPipelineSnapshot {
      * recorded red. `null` = a blob written before the writer stamped this, in which case
      * a consumer must degrade to its previous behaviour rather than assume either value.
      */
-    lastVerdict: 'green' | 'not-green' | null;
+    recordedVerdict: 'green' | 'not-green' | null;
     firstRedAtMs: number | null;
     stalled: boolean;
     /** WI-282: the green-checkpoint routine's last fire (epoch ms) + a freshness
@@ -935,7 +935,7 @@ export async function gitPipelineSnapshot(
       // the one field here that is a statement rather than an inference. Anything other than
       // the two known values (including absent, i.e. a blob predating the marker) is `null`,
       // so a consumer can tell "recorded not-green" from "not recorded" and degrade honestly.
-      lastVerdict:
+      recordedVerdict:
         gateHealth.lastVerdict === 'green' || gateHealth.lastVerdict === 'not-green'
           ? gateHealth.lastVerdict
           : null,
