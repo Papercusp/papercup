@@ -26,11 +26,22 @@
  * Defects 2 and 3 fail LOUDLY (exit 2, with an explanation). Defect 1 did not — which
  * is why the example is now pinned mechanically rather than by reading it carefully.
  *
- * NOTE ON SCOPE. `CLAUDE.md` / `AGENTS.md` carry a copy of this example, but they are
- * PROJECTIONS of `harness_shared.harness_doc_parts` and there is currently no
- * agent-facing write path for a part (`validateDocPart` has zero production callers),
- * so this guard deliberately judges only the in-tree script it can keep green. See the
- * follow-up filed alongside WI-39608.
+ * SCOPE — BOTH COPIES, since WI-39623. `CLAUDE.md` / `AGENTS.md` carry their own copy of
+ * this example. They are PROJECTIONS of `harness_shared.harness_doc_parts`, and when this
+ * guard was first written there was no agent-facing write path for a part, so a red here
+ * would have named a defect nobody could fix — it judged only the in-tree script.
+ * `scripts/set-doc-part.ts` is now that write path, so the projected copy is fixable and
+ * is therefore judged too.
+ *
+ * The projected copy is read from `doc-projection/claude-md-corpus.generated.md` rather
+ * than from Postgres ON PURPOSE: the green gate runs `npm run test:affected` with no
+ * `--integration`, so a guard needing a database would quietly stop gating the fleet.
+ * That corpus file exists for exactly this reason (see project-doc-parts.mjs).
+ *
+ * The two copies are pinned to EACH OTHER as well as to reality. Equivalence alone would
+ * pass if both drifted together; the property checks against the real subject are what
+ * stop that, and the equivalence check is what stops the projected copy rotting while the
+ * script stays green — which is precisely what happened between WI-39608 and WI-39623.
  */
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
