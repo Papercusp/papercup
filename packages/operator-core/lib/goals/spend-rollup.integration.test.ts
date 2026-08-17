@@ -155,6 +155,17 @@ async function seedPartitionFixture() {
 }
 
 describe('goal spend rollup (P-005 / D-003) — real PG', () => {
+  it('DIAG jsonb merge write', async () => {
+    await seedGoal();
+    const r = await rootSql`UPDATE harness_shared.goals
+      SET metadata = COALESCE(metadata, '{}'::jsonb) || ${'{"x":1}'}::jsonb
+      WHERE id = ${GOAL} AND workspace_id = ${WS}`;
+    console.log('DIAG count', r.count);
+    const rows = await rootSql<Array<{ metadata: unknown; tname: string }>>`
+      SELECT metadata, pg_typeof(metadata)::text AS tname FROM harness_shared.goals WHERE id = ${GOAL}`;
+    console.log('DIAG row', JSON.stringify(rows[0]), 'typeof md', typeof rows[0]?.metadata);
+  });
+
   it('partitions the ledger exactly: pot leg + session leg, the shared sample counted ONCE', async () => {
     await seedPartitionFixture();
     const r = await computeGoalSpendRollup(rootSql, { workspaceId: WS, goalId: GOAL });

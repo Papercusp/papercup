@@ -182,7 +182,7 @@ export async function writeGoalSpendSnapshot(
   opts: { workspaceId: string; goalId: string },
   rollup: GoalSpendRollup,
   nowIso: string = new Date().toISOString(),
-): Promise<void> {
+): Promise<number> {
   const patch = {
     spentCents: rollup.totalCents,
     spentCentsSource: GOAL_SPEND_TICK_SOURCE,
@@ -196,12 +196,13 @@ export async function writeGoalSpendSnapshot(
       measured: rollup.measured,
     },
   };
-  await sql`
+  const res = await sql`
     UPDATE harness_shared.goals
        SET metadata = COALESCE(metadata, '{}'::jsonb) || ${JSON.stringify(patch)}::jsonb
      WHERE id = ${opts.goalId}
        AND workspace_id = ${opts.workspaceId}
   `;
+  return res.count;
 }
 
 export interface GoalSpendRollupSweepResult {
@@ -229,7 +230,10 @@ export async function runGoalSpendRollupOnce(sql: Sql): Promise<GoalSpendRollupS
     try {
       const scope = { workspaceId: g.workspace_id, goalId: g.id };
       const rollup = await computeGoalSpendRollup(sql, scope);
-      await writeGoalSpendSnapshot(sql, scope, rollup);
+      const count = await writeGoalSpendSnapshot(sql, scope, rollup);
+      // A zero-row write means the snapshot silently went nowhere (the goal row
+      // vanished mid-sweep, or a scope mismatch) — an error, never a success.
+      if (count !== 1) throw new Error(`snapshot UPDATE matched ${count} rows`);
       written += 1;
     } catch (e) {
       errors.push({ goalId: g.id, error: e instanceof Error ? e.message : String(e) });
