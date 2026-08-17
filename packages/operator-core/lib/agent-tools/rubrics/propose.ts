@@ -48,6 +48,12 @@ const criterion = z.object({
     .optional()
     .describe("stable machine-readable instrument binding; use 'none' only for an explicitly manual criterion"),
   window: rubricCriterionWindowSchema.optional(),
+  criterionClass: z
+    .enum(['settle-once', 'violatable'])
+    .optional()
+    .describe(
+      "grading class (P-008): 'violatable' = monotonic-downward, one violation falsifies permanently — mid-run ratings are stamped PROVISIONAL by scorecards:emit until the graded subject terminates. Omitted = settle-once",
+    ),
 });
 
 export const rubricsProposeArgs = z.object({
@@ -110,6 +116,14 @@ export const rubricsProposeArgs = z.object({
     .max(2000)
     .optional()
     .describe('why the procedure shrink is intentional (required with allowMethodShrink)'),
+  classDowngradeReason: z
+    .string()
+    .min(1)
+    .max(2000)
+    .optional()
+    .describe(
+      "loss-guard ack (P-008): why a stored 'violatable' criterion is intentionally being downgraded to settle-once (removing its provisional-until-terminal protection)",
+    ),
 });
 
 export default defineTool({
@@ -148,6 +162,7 @@ export default defineTool({
       dropKeys: args.dropKeys,
       allowMethodShrink: args.allowMethodShrink,
       shrinkReason: args.shrinkReason,
+      ...(args.classDowngradeReason ? { classDowngradeReason: args.classDowngradeReason } : {}),
       by: id.ownerId,
       // Acceptance rubrics activate on propose (plan D-008: no ratification step) — the
       // lib defaults their status to 'active'; standard proposals stay Queen-gated.

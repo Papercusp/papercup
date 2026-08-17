@@ -41,6 +41,15 @@ export default defineTool({
       })
       .optional()
       .describe('patch one criterion field'),
+    criterionClass: z
+      .object({
+        key: z.string().min(1).describe('the criterion key (must exist)'),
+        class: z.enum(['settle-once', 'violatable']),
+      })
+      .optional()
+      .describe(
+        "set one criterion's grading class (P-008). UPGRADE-ONLY here: tagging 'violatable' tightens grading, so it keeps status + ratifier; downgrading a stored 'violatable' is refused — use rubrics:propose with classDowngradeReason",
+      ),
     methodRef: z.string().max(200).optional().describe('set/replace the agent-insights runbook slug for the rubric-level method'),
     allowMethodShrink: z
       .boolean()
@@ -73,6 +82,7 @@ export default defineTool({
     const rubric = await amendRubric({
       rubricId: args.rubricRef,
       ...(args.criterion ? { criterion: args.criterion } : {}),
+      ...(args.criterionClass ? { criterionClass: args.criterionClass } : {}),
       ...(args.methodRef !== undefined ? { methodRef: args.methodRef } : {}),
       ...(args.allowMethodShrink !== undefined ? { allowMethodShrink: args.allowMethodShrink } : {}),
       ...(args.shrinkReason !== undefined ? { shrinkReason: args.shrinkReason } : {}),
