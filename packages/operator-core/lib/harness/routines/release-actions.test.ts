@@ -118,6 +118,7 @@ import {
   isStaleReleaseFixerCandidate,
   checkReleaseFixerCandidateStale,
   classifyGateStallStatus,
+  gateStallRecordOnlyLogMessage,
   gateStallNoopLogMessage,
   shouldWarnOnStallClearMiss,
   annotateFailingTestsWithFlakeStats,
@@ -300,13 +301,25 @@ describe('classifyGateStallStatus (EI-2615: skipped-locked must not fake a red s
     // EI-2615 / EI-18757975681519069: a pass that judged an already-superseded tree said nothing
     // about the code, and the successor writes the real verdict.
 
-    it('stale-candidate + autoRefire is a noop — the successor records the real verdict', () => {
+    it('stale-candidate + autoRefire is record-only — the successor records the real verdict', () => {
       expect(
         classifyGateStallStatus('not-green', false, {
           classification: 'stale-candidate',
           autoRefire: true,
         }),
-      ).toBe('noop');
+      ).toBe('record-only');
+    });
+
+    it('is NOT classified noop — noop would delete the diagnostics EI-13288 persists', () => {
+      // The distinction is load-bearing, not cosmetic: trackGateStall's 'noop' branch returns
+      // early and leaves gate_health entirely untouched, which would drop the
+      // retriageClassification EI-13288 deliberately writes for exactly this case.
+      expect(
+        classifyGateStallStatus('not-green', false, {
+          classification: 'stale-candidate',
+          autoRefire: true,
+        }),
+      ).not.toBe('noop');
     });
 
     // The three guards below are the whole safety argument: the noop is earned by a SUCCESSOR
@@ -375,23 +388,13 @@ describe('gateStallNoopLogMessage (EI-19321275470651356: one class, two opposite
   it('WI-39450: a superseded pass gets its OWN wording — not the peer-lock one', () => {
     // The successor here is this run's own in-process refire, so "an active peer run holds the
     // lock" is factually false. It must also say the failing files it named are STALE — that
-    // list is exactly what sends agents at already-fixed tests.
-    const msg = gateStallNoopLogMessage('not-green', {
-      classification: 'stale-candidate',
-      autoRefire: true,
-    });
+    // list is exactly what sends agents at already-fixed tests — and that the streak did not
+    // move, which is the behaviour a reader would otherwise have to infer.
+    const msg = gateStallRecordOnlyLogMessage('not-green');
     expect(msg).not.toContain('an active peer run holds the lock');
     expect(msg).toContain('STALE');
     expect(msg).toContain('auto-refire');
-  });
-
-  it('WI-39450: a BLOCKED refire does not get the superseded wording (it is a real red)', () => {
-    const msg = gateStallNoopLogMessage('not-green', {
-      classification: 'stale-candidate',
-      autoRefire: true,
-      refireBlockedBy: 'deadline',
-    });
-    expect(msg).not.toContain('handed off to an auto-refire');
+    expect(msg).toContain('streak NOT');
   });
 
   it('migrations-pending must NOT claim a peer run holds the lock — nobody is coming', () => {

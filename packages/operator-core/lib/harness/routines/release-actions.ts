@@ -1080,19 +1080,23 @@ export function shouldWarnOnStallClearMiss(stallAlerted: boolean, clearedCount: 
  * Pure + exported so the distinction has a DB-free regression test, matching the
  * convention `shouldWarnOnStallClearMiss` / `classifyGateStallStatus` already set here.
  */
-export function gateStallNoopLogMessage(status: string, retriage?: GateStallRetriage | null): string {
-  // WI-39450: a THIRD noop condition with its own correct operator response. Telling this
-  // reader "an active peer run holds the lock" is false (the successor is this run's OWN
-  // in-process refire), and the failing files it just named are stale — saying so here is the
-  // whole point, because that list is what sends agents at already-fixed tests.
-  if (isSupersededByRefire(retriage)) {
-    return (
-      `${orchestratorStdoutTag()} '${status}' — this pass proved its OWN candidate STALE and ` +
-      `handed off to an auto-refire, which will record the real verdict. Leaving gate_health ` +
-      `untouched (not a red: this pass judged an already-superseded tree, so any failing files ` +
-      `it named are stale — re-verify at tip before fixing anything. See classifyGateStallStatus)`
-    );
-  }
+/**
+ * WI-39450: the log line for a `'record-only'` tick. Its own function because the operator
+ * response differs from BOTH noop conditions: no peer run holds a lock (the successor is this
+ * run's OWN in-process refire), and unlike `migrations-pending` a full suite really did run —
+ * it just judged a tree that has already moved. Saying so is the point: that failing-file list
+ * is exactly what sends agents at already-fixed tests.
+ */
+export function gateStallRecordOnlyLogMessage(status: string): string {
+  return (
+    `${orchestratorStdoutTag()} '${status}' — this pass proved its OWN candidate STALE and handed ` +
+    `off to an auto-refire, which will record the real verdict. Diagnostics written, streak NOT ` +
+    `advanced (this pass judged an already-superseded tree, so any failing files it named are ` +
+    `stale — re-verify at tip before fixing anything. See classifyGateStallStatus)`
+  );
+}
+
+export function gateStallNoopLogMessage(status: string): string {
   if (status === 'migrations-pending') {
     return (
       `${orchestratorStdoutTag()} 'migrations-pending' — this run ABORTED at the migration preflight ` +
@@ -1199,7 +1203,7 @@ export async function trackGateStall(
     // can never be shadowed by this tick's false-red read-modify-write.
     // EI-19321275470651356: the two conditions in this class need opposite operator
     // advice, so the message is chosen by status (see gateStallNoopLogMessage).
-    console.log(gateStallNoopLogMessage(status, retriage));
+    console.log(gateStallNoopLogMessage(status));
     // EI-19405864032365760: 'noop' must not COUNT this tick as a red — that reasoning
     // (EI-2615 / EI-18757975681519069) is correct and unchanged above. But "don't count it"
     // silently became "don't record it AT ALL", and those are different claims. The counters
@@ -1407,8 +1411,18 @@ export async function trackGateStall(
       }
     }
   } else {
-    const consecutiveReds = (gh.consecutiveReds ?? 0) + 1;
-    const firstRedAt = gh.firstRedAt ?? Date.now();
+    // WI-39450: a 'record-only' tick carries the streak FORWARD instead of advancing it. It is
+    // not a green (nothing was promoted, so it must not reset either) — it is a pass that judged
+    // an already-superseded tree and handed off to a refire that will record the real verdict.
+    // Advancing here double-counts one logical run: the superseded pass AND its successor each
+    // land a verdict. Measured 2026-08-17: consecutiveReds 10 -> 11 off a pass whose own
+    // classifier said `stale-candidate`, naming 7 files that passed 52/0 at tip.
+    // `firstRedAt` is left alone for the same reason — a non-verdict must not START a streak,
+    // or a `stalledByAge` escalation could be dated from a tick that judged nothing current.
+    const recordOnly = gateClass === 'record-only';
+    if (recordOnly) console.log(gateStallRecordOnlyLogMessage(status));
+    const consecutiveReds = recordOnly ? (gh.consecutiveReds ?? 0) : (gh.consecutiveReds ?? 0) + 1;
+    const firstRedAt = recordOnly ? (gh.firstRedAt ?? null) : (gh.firstRedAt ?? Date.now());
     const lastGreenAt = gh.lastGreenAt ?? null;
     let stallAlerted = gh.stallAlerted ?? false;
     const stalledByCount = consecutiveReds >= releaseCheckpointConfig().stallReds;
