@@ -13,6 +13,22 @@
  * `clear:true` lifts the hold (holder or force). The lifecycle note is
  * best-effort: a coord hiccup never un-holds the item.
  *
+ * ⚠ EI-20710656847511624 — THIS TOOL IS THE WRONG ONE FOR A FENCE THAT MUST OUTLIVE YOU, and
+ * its description now says so at CHOOSE time (it previously mentioned the sibling park only as
+ * an AUDIT-time footnote, which is not where the decision gets made). The hold is a LEASE:
+ * `sweepDeadOwnerControlState` / `reclaimStaleHoldOpens` match on `held_open_by = <dead owner>`
+ * and lift the hold + `_claimHold` once the holder is past grace, so the item silently re-enters
+ * the self-select pool when the fencing session dies. Both sweeps preserve a coexisting durable
+ * park (`claim_hold_by`) and both exempt a policy-tier `held_open_reason` via the same shared
+ * pattern constant — but that exemption keys off free-text reason WORDING, so it is not a
+ * durability guarantee anyone should lean on.
+ *   Measured: THREE agents in a row (2026-07-27 via a bare claim, su-89f241ac 2026-08-02 via
+ * hold_open, su-a787d98c 2026-08-17 via hold_open) each fenced the SAME owner-gated live-money
+ * items (WI-6175 / WI-5735) intending "permanent" and each got "until I die" — the 08-02 lease
+ * was verified intact at 06:16Z and was gone by 08-17. When competent agents repeat a
+ * predecessor's exact error, the defect is the AFFORDANCE, not the agents: the choose-time text
+ * never mentioned the reaper. Both items are now durably parked via release { claimHold:true }.
+ *
  * ⚠ EI-18672701535825889: `held_open_by`/`held_open_reason` is ONE of TWO `_claimHold`
  * provenance conventions, not the only one. `release { claimHold:true }` writes a SIBLING
  * convention — `claim_hold_by`/`claim_hold_reason` (a durable PARK: no reaper, no
@@ -48,18 +64,28 @@ export default defineTool({
     'Hold a work-item OPEN without releasing your claim: stamps you as held_open_by (+ reason), excludes it from ' +
     'claim_next/scheduler self-select, and makes a terminal transition (done/resolved/closed/dropped) by anyone ELSE ' +
     'refuse until you clear it. { id, reason } to hold; { id, clear:true } to lift. Clearing another agent\'s hold ' +
-    'needs force:true (leader override). Returns { ok, id, held, heldBy, reason }. NOTE: a sibling convention ' +
-    '(release{claimHold:true}) durably parks via claim_hold_by/claim_hold_reason instead — when AUDITING why a row ' +
-    'is held, read work_items:burn_down\'s parked reason (checks both) rather than held_open_by alone.',
+    'needs force:true (leader override). ⚠ THIS HOLD IS A LEASE, NOT A PERMANENT FENCE: the WI-4531 dead-owner reaper ' +
+    'lifts it once you are dead past grace, so the item re-enters self-select when your session ends. To fence ' +
+    'anything that must OUTLIVE your session (an owner-gated item, a policy decision), use release { claimHold:true } ' +
+    '— a durable PARK (claim_hold_by) no reaper touches. Auditing why a row is held? read work_items:burn_down\'s ' +
+    'parked reason — it checks both conventions.',
   guidance: {
     when:
       'You are gating an item — verifying, awaiting evidence, or keeping a recurring/leader item alive — and peers must ' +
       'neither close it nor self-select it while you do. Your claim stays; work continues.',
     notWhen:
-      'You are WALKING AWAY from the item — that is work_items:park (checkpoint + release) or release { claimHold:true } ' +
-      '(release + hold). Blocked on a dependency → set_state{blocked}. Done → complete (a holder completing their own held item is allowed).',
+      'You are WALKING AWAY from the item, or the fence must OUTLIVE your session — that is work_items:park (checkpoint ' +
+      '+ release) or release { claimHold:true } (release + hold). Blocked on a dependency → set_state{blocked}. Done → ' +
+      'complete (a holder completing their own held item is allowed).',
     chaining:
       'work_items:hold_open { id, reason } → work → complete/set_state yourself (holder passes the guard), or hold_open { id, clear:true } to hand it back to normal lifecycle.',
+    returns:
+      'Hold: { ok, id, held:true, heldBy, reason, note? } (note is set when you re-stamped another agent\'s hold). ' +
+      'Clear: { ok, id, held:false, clearedFrom }. Refusals: not_holder (+ heldBy, reason, convention — says whether ' +
+      'you hit a held_open LEASE or a claim_hold DURABLE PARK), policy_gate_requires_owner_override (force:true alone ' +
+      'is refused for a policy-tier reason; a policy-tier reason is also exempt from the reaper, but do NOT rely on ' +
+      'reason wording for durability — park it), work_item_unreadable (a READ failure, not a missing item: retry ' +
+      'rather than re-filing), clear_failed, hold_failed.',
   },
   capability: 'work_items:write',
   requirePrincipal: false,
