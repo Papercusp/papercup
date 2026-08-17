@@ -212,7 +212,7 @@ const CHECKPOINT_SCOPE_OVERHEAD_G = 8;
  *  Duplicated rather than imported because operator-core is the LOWER layer and must not
  *  import from apps/operator; `release-actions-memory-cap.test.ts` pins these to the real
  *  constants so the two cannot silently desynchronize again. */
-const CHECKPOINT_FORKS_BY_MODE = { shared: 2, reserved: 8 } as const;
+export const CHECKPOINT_FORKS_BY_MODE = { shared: 2, reserved: 8 } as const;
 
 /** Memory cap (GiB) for the ISOLATED green-checkpoint scope (see `runScript` isolate).
  *
@@ -758,7 +758,7 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
     },
     // Isolate the multi-GB suite in its own transient scope/cgroup so its memory
     // never counts against (or OOM-kills) the bg-host cage that runs the hive loop.
-    { memoryMaxG: CHECKPOINT_SCOPE_MEMORY_MAX_G },
+    { memoryMaxG: checkpointScopeMemoryMaxG() },
     // EI-20709645463022690: for a SUBJECT hive, drop the operator's inherited DATABASE_URL/PG*
     // so the pot's suite resolves its OWN database. EMPTY for operator-home, whose gate legs
     // genuinely need that DSN — so papercusp's own pipeline is byte-identical (D-007).
