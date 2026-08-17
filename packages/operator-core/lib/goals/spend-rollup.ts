@@ -278,6 +278,9 @@ export function startGoalSpendRollupTick(
     },
     // 'must-sample': the cost ledger emits no event this could subscribe to —
     // periodic aggregation is the only trigger available for a spend snapshot.
-    { category: 'watchdog', classification: 'must-sample' },
+    // 'global-sweep', not 'watchdog': this is a host-wide idempotent aggregation,
+    // not an out-of-band sentinel — it recovers nothing, so it does not belong in
+    // RECOVERY_MECHANISMS (the recovery-dependency-audit enumerates 'watchdog').
+    { category: 'global-sweep', classification: 'must-sample' },
   );
 }
