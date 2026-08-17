@@ -74,6 +74,7 @@ import { spawn } from 'node:child_process';
 import * as path from 'node:path';
 import { existsSync, accessSync, constants as fsConstants } from 'node:fs';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
+import { collectChildOutput } from '../../child-output';
 
 /** Generation walks every plan + work-item for the harness and renders a multi-MB
  *  artifact; SideStage's ~51-plan archive runs well under a minute, but a larger
