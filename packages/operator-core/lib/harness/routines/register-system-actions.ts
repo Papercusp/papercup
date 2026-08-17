@@ -534,3 +534,16 @@ import '../../gates/gate-canary-sweep-action';
 // Seeded ACTIVE (seed-gitnexus-reindex-routine.ts --inactive to seed off) — it writes
 // only the gitignored .gitnexus/ index and self-gates to the operator-home installSlug.
 import './gitnexus-reindex-action';
+// EI-20475585438015488 (cause 3): `system:project-history-refresh` — the refresh owner
+// for a hive's committed Project History artifact. The artifact is generated from PG
+// (plans + work-items) but SERVED by a hive whose public repo must build and run with
+// no operator and no database, so it can be refreshed neither at build time nor at
+// request time — which left it with no owner at all: SideStage's snapshot was
+// hand-generated once and had drifted ~2 days (and carried 17 acceptance-* template
+// plans) by the time the History tab was found presenting it as the full archive.
+// Generic over harness: repo root, output, prefix, ids and export name are all
+// trigger_config, so a second History-shipping hive seeds a row and needs no code.
+// Seeded ACTIVE (seed-project-history-refresh-routine.ts --inactive to seed off) — it
+// is precondition-gated (refuses rather than writing when the pinned CLI or `ptool`
+// cannot be resolved) and writes only the artifact path an operator supplied.
+import './project-history-refresh-action';

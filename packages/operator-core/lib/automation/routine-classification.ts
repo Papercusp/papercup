@@ -319,6 +319,10 @@ export const TARGET_ROLE_SPEND: Readonly<Record<string, SpendEntry>> = {
   'system:autoloop-release-readiness-monitor': { spend: 'none', why: 'Reads release-readiness state' },
   'system:doc-anchor-reconcile': { spend: 'none', why: 'Reconciles doc anchors against HEAD (sha compare)' },
   'system:gitnexus-reindex': { spend: 'none', why: 'Shells out to `gitnexus analyze` to refresh the code graph — subprocess CPU/FS only' },
+  'system:project-history-refresh': {
+    spend: 'none',
+    why: 'Shells out to `papercusp project-history generate` to refresh a hive\'s committed History artifact — subprocess CPU/FS plus PG reads, no model call',
+  },
   'system:knowledge-pack-delivery': { spend: 'none', why: 'Copies pack items into pools — no authoring' },
   'system:knowledge-pack-hygiene': { spend: 'none', why: 'Rule-based stale/contradiction sweep over pack rows' },
   'system:pot-git-gc': { spend: 'none', why: 'Garbage-collects pot git objects' },
