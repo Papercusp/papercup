@@ -3211,6 +3211,13 @@ export default defineTool({
         requested: count,
         liveMembers,
         requestedOpenCount,
+        // EI-20437060078324174: the THIRD verification state, machine-readable.
+        // These members OPENED and were neither confirmed nor observed failing —
+        // a caller must treat them as possibly-live (verify via coord:presence),
+        // never as a shortfall to relaunch into.
+        unverifiedMembers: unconfirmed.length
+          ? unconfirmed.map((u) => ({ ownerId: u.ownerId, note: u.note }))
+          : null,
         // P-006: the MACHINE-READABLE fill verdict, so a caller never has to infer "did I get the
         // fleet I asked for?" from an opened count whose denominator is the post-clamp attempt.
         fleetSize: fill.fleetSize,
