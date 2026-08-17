@@ -271,6 +271,27 @@ describe('reconcileLinkedWorkItemsForPlanItem (PG, EI-5925)', () => {
     );
   });
 
+  it('EI-20405552992224051: a FRESHLY-CLAIMED item with no lastProgressAt YET is skipped as in-flight, not re-closed', async () => {
+    // The reopen/re-close loop. An agent reopens a falsely-closed item and claims it
+    // to finish the work; nothing has been recorded against it since the reopen, so
+    // `lastProgressAt` is still null while a LIVE holder owns it. While the guard
+    // required BOTH signals, this sweep terminal-closed the item back out from under
+    // that holder on its very next pass, so the reopen never stuck — WI-38661 and
+    // WI-38600 each had to be hand-repaired twice by two agents who independently
+    // discovered that reopening the work-item alone does nothing while its plan item
+    // stays terminal. This is the REVERSE of the WI-6303 case directly above: there
+    // the stamp was stale and the holder absent, here the holder is present and the
+    // stamp merely absent.
+    stub({ id: 'WI-reopened', state: 'wip', lastProgressAt: null, assignee: 'su-live-holder' });
+    await edge({ plan: 'p1', item: 'P-reopen', srcRef: 'WI-reopened' });
+
+    const result = await reconcileLinkedWorkItemsForPlanItem({ planSlug: 'p1', itemId: 'P-reopen' });
+
+    expect(result.reconciled).toEqual([]);
+    expect(result.skippedInFlight).toEqual(['WI-reopened']);
+    expect(setWorkItemState).not.toHaveBeenCalled();
+  });
+
   it('skips an already-terminal linked item as a no-op', async () => {
     stub({ id: 'WI-done', state: 'resolved', lastProgressAt: null });
     await edge({ plan: 'p1', item: 'P-003', srcRef: 'WI-done' });
