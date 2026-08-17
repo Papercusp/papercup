@@ -1639,17 +1639,42 @@ function ImprovementsView({
     return [...s].sort();
   }, [digest]);
 
+  // The rows the RAIL facet runs on: everything the view loaded, narrowed only
+  // by the upstream source chip. Split out of `rows` below so the rail chip
+  // COUNTS and the rail FILTER are computed from one row set rather than two
+  // derivations that can disagree (D-003).
+  //
+  // Who filed it (`?lsrc=`) — a chip row in the scope bar rather than the old
+  // dropdown, so the provenance split is readable without opening a menu.
+  const railScopedRows = useMemo<LoopRow[]>(
+    () => (src ? allRows.filter((row) => row.item?.source === src) : allRows),
+    [allRows, src],
+  );
+  // D-003: a number rendered ON a filter control is a promise about what
+  // clicking it yields. These chips used to print `snap.railCounts` — a
+  // CORPUS-wide tally from the scout snapshot — above a list that holds at most
+  // the digest's window, so `improvement 992` clicked through to `17 of 503`.
+  // Deriving the count from the rows the filter actually runs on is the same
+  // invariant the Work Queue gets from `deriveEnumOptions(rows, col)`, and it
+  // holds BY CONSTRUCTION here: this map and `rows` below read `railScopedRows`.
+  // The corpus number is not lost — it moves to the chip's tooltip, where it is
+  // context rather than a promise (and to the honest `N of total` denominators).
+  const railCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const row of railScopedRows) {
+      const rail = row.idea?.rail;
+      if (!rail) continue;
+      counts.set(rail, (counts.get(rail) ?? 0) + 1);
+    }
+    return counts;
+  }, [railScopedRows]);
   const rows = useMemo<LoopRow[]>(() => {
-    let out = allRows;
-    // Who filed it (`?lsrc=`) — a chip row in the scope bar rather than the old
-    // dropdown, so the provenance split is readable without opening a menu.
-    if (src) out = out.filter((row) => row.item?.source === src);
     // Which rail the idea routed into (`?irail=`, absorbed from Ideas). A rail
     // is a property of the IDEA, so filtering by one necessarily narrows to
     // idea-bearing rows — that is the question being asked.
-    if (railFilter) out = out.filter((row) => row.idea?.rail === railFilter);
-    return out;
-  }, [allRows, railFilter, src]);
+    if (!railFilter) return railScopedRows;
+    return railScopedRows.filter((row) => row.idea?.rail === railFilter);
+  }, [railScopedRows, railFilter]);
   // The small-queue path: no dashboard, no facets, just the list. It must span
   // BOTH halves — a pot with routed ideas but nothing filed yet has a perfectly
   // non-empty Improve list, and rendering only the work items there would show
@@ -1915,12 +1940,27 @@ function ImprovementsView({
             onClick={() => void setRailFilter(null)}
           >
             <Radar size={11} aria-hidden />
-            All rails <strong>{snap.totalRouted}</strong>
+            {/* Clearing the rail filter yields the whole rail-scoped set — so
+                that, not the snapshot's corpus-wide `totalRouted`, is what this
+                control promises. */}
+            All rails <strong>{railScopedRows.length}</strong>
           </button>
           {rails.map((rail) => {
             const meta = RAIL_META[rail.rail];
+            // D-003: what clicking this chip actually leaves behind. Rails the
+            // loaded list cannot show read 0 rather than advertising a corpus
+            // number they will not deliver — the same "explicit options keep a
+            // live count, zero included" rule `deriveEnumOptions` applies.
+            const shown = railCounts.get(rail.rail) ?? 0;
             return (
-              <Tooltip key={rail.rail} label={meta?.desc}>
+              <Tooltip
+                key={rail.rail}
+                label={
+                  shown === rail.count
+                    ? meta?.desc
+                    : `${meta?.desc ?? meta?.label ?? rail.rail} — ${shown} in the loaded list; ${rail.count} routed to this rail in all.`
+                }
+              >
                 <button
                   type="button"
                   aria-pressed={railFilter === rail.rail}
@@ -1931,7 +1971,7 @@ function ImprovementsView({
                   }
                 >
                   <i style={{ background: meta?.color }} aria-hidden />
-                  {meta?.label ?? rail.rail} <strong>{rail.count}</strong>
+                  {meta?.label ?? rail.rail} <strong>{shown}</strong>
                 </button>
               </Tooltip>
             );
