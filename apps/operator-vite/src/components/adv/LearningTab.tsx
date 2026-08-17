@@ -5100,45 +5100,15 @@ function LensWeights({
 
 // ─── Learnings view (a hive's editable shared memory — knowledge-packs P-008) ──
 
-type HiveLearningRowT = HiveLearningsSnapshot["rows"][number];
-
-function learningPreview(text: string): { headline: string; preview: string } {
-  const normalized = text.replace(/\s+/g, " ").trim();
-  const boundary = [/\.\s/, /:\s/, / —\s/, /;\s/]
-    .map((pattern) => normalized.search(pattern))
-    .filter((index) => index >= 32 && index <= 120)
-    .sort((a, b) => a - b)[0];
-  const cut =
-    boundary ??
-    (normalized.length > 104
-      ? normalized.lastIndexOf(" ", 104)
-      : normalized.length);
-  const safeCut =
-    cut > 0 ? cut + (boundary == null ? 0 : 1) : normalized.length;
-  return {
-    headline: normalized.slice(0, safeCut).trim(),
-    preview: normalized.slice(safeCut).trim(),
-  };
-}
-
-function learningProvenance(
-  createdBy: string | null | undefined,
-  kind: string | null | undefined,
-  scoutLabel: string,
-) {
-  const source = `${createdBy ?? ""} ${kind ?? ""}`.toLowerCase();
-  if (/owner|user|human/.test(source))
-    return { Icon: UserRound, tone: "owner", label: "Owner retained" };
-  if (/queen|mug|brain/.test(source))
-    return { Icon: Brain, tone: "brain", label: "Learning loop retained" };
-  if (/scout|idea/.test(source))
-    return { Icon: Radar, tone: "scout", label: `${scoutLabel} retained` };
-  if (/migration|system/.test(source))
-    return { Icon: ShieldCheck, tone: "system", label: "System retained" };
-  if (/reference|project/.test(source))
-    return { Icon: BookOpen, tone: "reference", label: "Project reference" };
-  return { Icon: Sparkles, tone: "agent", label: "Agent retained" };
-}
+/** What the RetainedLedgerCard reports up to LearningsView (WI-39535): the
+ *  view's status dot, perf settle, and memories chip all derive from the ONE
+ *  feed instead of a second data path. */
+type RetainLedgerCardState = {
+  settled: boolean;
+  error: boolean;
+  rowCount: number;
+  memoriesCount: number | null;
+};
 
 function LearningsView({
   hive,
@@ -5340,6 +5310,7 @@ function LearningsView({
 
 const RETAIN_TAB_LABELS: Record<RetainFeedTab, string> = {
   all: "All",
+  memories: "Memories",
   plans: "Plans",
   wi: "Work items",
   rubrics: "Rubrics",
@@ -5354,12 +5325,26 @@ const RETAIN_FILTER_LABELS: Record<RetainFeedFilter, string> = {
 };
 
 const RETAIN_KIND_ICON: Record<RetainFeedKind, typeof GitBranch> = {
+  memory: Brain,
   plan: GitBranch,
   wi: CircleDot,
   rubric: Gauge,
   runbook: BookOpen,
   recipe: FlaskConical,
 };
+
+/** rsel URL param codec: `<kind>:<id>` (ids may themselves contain ':'). */
+function parseRetainSel(
+  sel: string | null,
+): { kind: RetainFeedKind; id: string } | null {
+  if (!sel) return null;
+  const i = sel.indexOf(":");
+  if (i <= 0) return null;
+  const kind = sel.slice(0, i);
+  const id = sel.slice(i + 1);
+  if (!id || !(kind in RETAIN_KIND_ICON)) return null;
+  return { kind: kind as RetainFeedKind, id };
+}
 
 /** Column-filter URL namespace — the hook owns ONE param, `rtf`. */
 const RETAIN_FILTER_NS = "rt";
@@ -5577,6 +5562,20 @@ function buildRetainColumns(opts: {
               title="Discovered date from the runbook's frontmatter"
             >
               {row.meta.discovered}
+            </span>
+          );
+        }
+        if (row.kind === "memory" && (row.meta.memKind || row.meta.packId)) {
+          return (
+            <span
+              className="pc-learning__retainedroll"
+              title={
+                row.meta.packId
+                  ? `Pack-seeded (${row.meta.packId})`
+                  : "The memory's own kind tag"
+              }
+            >
+              {row.meta.memKind ?? `pack:${row.meta.packId}`}
             </span>
           );
         }
