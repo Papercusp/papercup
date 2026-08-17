@@ -86,11 +86,10 @@ import {
   isWorkItemCompletionAuthority,
   type WorkItemCompletionAuthority,
 } from './work-item-completion-authority';
+// EI-19362441037986499: the DECISION lives in a leaf module so it is exercisable without PG
+// or a wholesale module mock; this file keeps only the write that acts on it. Deliberately
+// NOT re-exported — the leaf is the import site for anyone who needs the decision itself.
 import { classifySettledCompletionEvidence } from './work-item-settled-completion-evidence';
-export {
-  classifySettledCompletionEvidence,
-  type SettledCompletionEvidenceDecision,
-} from './work-item-settled-completion-evidence';
 import { liveDriveTerminalRefusal } from './turn-provenance/owner-visible-surface-acceptance';
 import { readExternalBlockers, type ExternalBlockerRecord } from './external-blockers';
 import { pgTimestampToIso, pgTimestampToIsoOrNull } from './pg-timestamp';
