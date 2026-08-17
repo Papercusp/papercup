@@ -59,15 +59,21 @@ describe('full-replacement mock guard: the analyzer has teeth (WI-7187)', () => 
     expect(fixtures.filter((t) => t.expect === 0).length).toBeGreaterThan(0);
   });
 
-  it('classifies each factory form and resolves relative specifiers only', () => {
+  it('classifies each factory form and resolves specifiers to module identities', () => {
     const forms = analyzeMockCalls(SELF_TESTS.map((t: Fixture) => t.text).join('\n')).map(
       (c: { form: string }) => c.form,
     );
     expect(new Set(forms)).toEqual(new Set(['automock', 'full-replacement', 'import-actual']));
+    // A relative specifier means a different module from each directory, so it is
+    // resolved against the mocking file (extensionless, repo-relative).
     expect(resolveSpec('a/b/x.test.ts', './y')).toBe('a/b/y');
     expect(resolveSpec('a/b/x.test.ts', '../y.ts')).toBe('a/y');
-    // A bare package specifier is not ours to police — it has no repo path.
-    expect(resolveSpec('a/b/x.test.ts', 'vitest')).toBeNull();
+    // A bare package specifier is ALREADY a global identity and is returned verbatim
+    // (WI-39707): returning null here made every package-mocking factory invisible to
+    // the guard — the population where every measured incident actually happened.
+    expect(resolveSpec('a/b/x.test.ts', 'vitest')).toBe('vitest');
+    // Sub-path exports stay distinct identities — never collapsed onto the package root.
+    expect(resolveSpec('a/b/x.test.ts', '@papercusp/flags/server')).toBe('@papercusp/flags/server');
   });
 });
 
