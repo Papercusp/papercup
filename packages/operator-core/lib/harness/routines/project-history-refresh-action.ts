@@ -276,8 +276,9 @@ export function runProjectHistoryGenerate(
       env,
       detached: true,
     });
-    let stdout = '';
-    let stderr = '';
+    // Chunk-safe accumulation: a multi-byte UTF-8 character split across two
+    // 'data' events must not decode to replacement chars (WI-6728).
+    const { stdout: outCollector, stderr: errCollector } = collectChildOutput(child);
     let timedOut = false;
     let escalate: NodeJS.Timeout | null = null;
     const killTree = (sig: NodeJS.Signals): void => {
