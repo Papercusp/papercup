@@ -574,6 +574,7 @@ export async function readJournal(
   opts: JournalReadOptions,
   exec: JournalExec = defaultExec,
   probeUnits: UnitLoadProbe = defaultUnitLoadProbe,
+  resolveWindow: WindowResolver = defaultWindowResolver,
 ): Promise<JournalReadResult> {
   const limit = clampLimit(opts.limit);
   const args = buildJournalctlArgs({ ...opts, limit });
@@ -588,6 +589,7 @@ export async function readJournal(
     },
     units,
     unitsUnknown: [] as string[],
+    windowOutsideJournal: null as JournalWindowDiagnosis | null,
     command: `journalctl ${args.join(' ')}`,
   };
 
@@ -597,13 +599,51 @@ export async function readJournal(
     return { ...result, unitsUnknown: await probeUnits(units, opts.scope ?? JOURNAL_DEFAULT_SCOPE) };
   };
 
+  /**
+   * Zero lines from a window that is in the FUTURE is the same class of ambiguity
+   * (WI-7133) — and unlike a wrong unit name it leaves no trace anywhere else in
+   * the result. Checked ONLY on the empty, successful path, so a normal read pays
+   * nothing; two short probes, each of which reports nothing when it cannot tell.
+   */
+  const withWindowDiagnosis = async (result: JournalReadResult): Promise<JournalReadResult> => {
+    if (result.entries.length || !result.journalAvailable || result.journalError) return result;
+    const requestedSince = result.window.since;
+    const [resolvedMs, newestMs] = await Promise.all([
+      resolveWindow(requestedSince),
+      newestJournalEntryMs(opts.scope ?? JOURNAL_DEFAULT_SCOPE, exec),
+    ]);
+    if (resolvedMs === null || newestMs === null || resolvedMs <= newestMs) return result;
+    const aheadByMs = resolvedMs - newestMs;
+    const offsetMinutes = -new Date().getTimezoneOffset();
+    const hours = (aheadByMs / 3_600_000).toFixed(1);
+    return {
+      ...result,
+      windowOutsideJournal: {
+        requestedSince,
+        resolvedSinceUtc: new Date(resolvedMs).toISOString(),
+        newestEntryUtc: new Date(newestMs).toISOString(),
+        aheadByMs,
+        hostUtcOffsetMinutes: offsetMinutes,
+        hint:
+          `0 rows because the WINDOW IS EMPTY, not because nothing was logged: \`since\` resolved to ` +
+          `${new Date(resolvedMs).toISOString()}, which is ${hours}h AFTER the newest record in this ` +
+          `journal (${new Date(newestMs).toISOString()}). journalctl parses \`since\`/\`until\` in LOCAL ` +
+          `time (this host is UTC${offsetMinutes < 0 ? '' : '+'}${(offsetMinutes / 60).toFixed(0)}) while ` +
+          `papercusp reports UTC — passing a UTC stamp here queries the future. Use a RELATIVE window ` +
+          `('-30 min', '2 hours ago'), or convert to local time first.`,
+      },
+    };
+  };
+
   let stdout: string;
   try {
     ({ stdout } = await exec(args));
   } catch (err) {
     const { kind, message } = classifyJournalctlFailure(err);
     if (kind === 'no-match') {
-      return withUnknownUnits({ ...base, entries: [], journalAvailable: true, journalError: null });
+      return withWindowDiagnosis(
+        await withUnknownUnits({ ...base, entries: [], journalAvailable: true, journalError: null }),
+      );
     }
     // matched:null, not 0 — the scan did not complete (or the journal is
     // unreadable), so there is no honest count to report. See the field's own
@@ -625,13 +665,15 @@ export async function readJournal(
   const truncated = records.length > limit;
   const kept = truncated ? records.slice(records.length - limit) : records;
   const { entries, collapsed } = collapseConsecutive(kept);
-  return withUnknownUnits({
-    ...base,
-    entries,
-    matched: records.length,
-    collapsed,
-    truncated,
-    journalAvailable: true,
-    journalError: null,
-  });
+  return withWindowDiagnosis(
+    await withUnknownUnits({
+      ...base,
+      entries,
+      matched: records.length,
+      collapsed,
+      truncated,
+      journalAvailable: true,
+      journalError: null,
+    }),
+  );
 }
