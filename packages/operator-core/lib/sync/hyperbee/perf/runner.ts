@@ -158,17 +158,73 @@ export function parsePsiSome(psiText: string): { avg10: number; avg60: number } 
 }
 
 /**
- * Combine the CPU-ratio and swap-delta signals into one host-health verdict.
- * Pure + exported for unit testing (EI-9145) — the two confounds are
+ * EI-19301664378023382 (part 2, measured 2026-08-17): the page-count threshold
+ * is NOT SATISFIABLE on this box, so it stopped qualifying runs and started
+ * suppressing them. Two measurements on the shared dev box, same hour:
+ *   - a genuinely QUIET moment — PSI memory `some avg60` = 0.76%, i.e. the
+ *     kernel recorded essentially no memory-stall time — still produced a
+ *     run-window delta of 3,364 pages, 3.4× the 1,000-page threshold;
+ *   - a 40s sample with NO perf run active moved 909,444 pages (~3.5GB).
+ * A ~4MB swap budget for a WHOLE run is background noise here, so `swapping`
+ * was pinned true and every run inherited `oversubscribed`.
+ *
+ * That is NOT a conservative default. `oversubscribed` SUPPRESSES auto-filed
+ * regressions and SLO violations (p2p-perf-actions.ts fileFindings), so a
+ * permanently-true confound HIDES real regressions — and it simultaneously
+ * blocks every baseline promotion, so the committed baseline cannot be
+ * refreshed either. It fails in both directions at once.
+ *
+ * The original note above already named the fix and deliberately deferred it:
+ * "A page-count threshold has no notion of RATE or of whether anything was
+ * actually STALLED waiting on it; PSI does." So PSI is now the AUTHORITATIVE
+ * memory-contention signal wherever the kernel exposes it, and the page delta
+ * is demoted to a FALLBACK for hosts without PSI (non-Linux, /proc unreadable).
+ * The page delta is still RECORDED as evidence in both cases.
+ *
+ * PSI also strictly widens what is caught: stall from reclaim/page-cache
+ * thrashing shows up in PSI with little or no swap I/O, and the page-delta
+ * check missed that case entirely.
+ *
+ * Threshold — PSI memory `some avg60` > 5%, corroborated twice and
+ * independently: the 2026-08-02 audit above called ~2-5% "low, not the
+ * sustained thrashing the verdict implies", and this host's own infra watchdog
+ * alerts at memory `full avg60 >= 5`. `some` >= `full` always, so 5 on `some`
+ * is the stricter of the two readings.
+ */
+const HOST_PSI_MEM_STALL_PCT = 5.0;
+
+/**
+ * Combine the CPU-ratio and memory-contention signals into one host-health
+ * verdict. Pure + exported for unit testing (EI-9145) — the two confounds are
  * independent: either alone should mark the comparison UNCERTAIN.
  */
 export function computeHostHealth(input: {
   ratio1m: number;
   swapPagesDelta: number | null;
-}): { oversubscribed: boolean; swapping: boolean } {
-  const swapping = input.swapPagesDelta !== null && input.swapPagesDelta > HOST_SWAPPING_PAGES_THRESHOLD;
-  const oversubscribed = input.ratio1m > HOST_OVERSUBSCRIBED_RATIO || swapping;
-  return { oversubscribed, swapping };
+  /**
+   * PSI memory `some avg60` over the run window; `null` only when
+   * /proc/pressure/memory could not be read. REQUIRED (deliberately not
+   * optional): a new call site must state what it knows about memory stall
+   * rather than silently inheriting the unsatisfiable page-count fallback,
+   * which is exactly how this confound went unnoticed for two weeks.
+   */
+  psiMemSome60: number | null;
+}): {
+  oversubscribed: boolean;
+  memoryContended: boolean;
+  memoryContendedReason: 'psi-stall' | 'swap-pages-fallback' | null;
+} {
+  const memoryContendedReason: 'psi-stall' | 'swap-pages-fallback' | null =
+    input.psiMemSome60 !== null
+      ? input.psiMemSome60 > HOST_PSI_MEM_STALL_PCT
+        ? 'psi-stall'
+        : null // PSI readable and low ⇒ authoritative NOT-contended; do NOT consult the page delta
+      : input.swapPagesDelta !== null && input.swapPagesDelta > HOST_SWAPPING_PAGES_THRESHOLD
+        ? 'swap-pages-fallback'
+        : null;
+  const memoryContended = memoryContendedReason !== null;
+  const oversubscribed = input.ratio1m > HOST_OVERSUBSCRIBED_RATIO || memoryContended;
+  return { oversubscribed, memoryContended, memoryContendedReason };
 }
 
 const TIER1: PerfScenario[] = [...mergeCostScenarios, ...replicationScenarios, ...churnScenarios];
@@ -298,21 +354,23 @@ export interface RunSummary {
    *  swap-page delta). `oversubscribed` ⇒ the baseline comparison above is
    *  UNCERTAIN — a wall-clock/PG-latency-sensitive scenario could be
    *  measuring shared-box CPU contention OR swap thrashing, not a code
-   *  regression. `swapping` isolates which confound fired.
+   *  regression. `memoryContended` isolates which confound fired, and
+   *  `memoryContendedReason` names WHICH memory signal produced it.
    *
    *  `psiMemSome60`/`psiCpuSome60` (EI-19301664378023382): the kernel's own
-   *  PSI "some" stall-time evidence (max of a start/end sample), recorded
-   *  ALONGSIDE the verdict above so it is evidence-based rather than a bare
-   *  assertion — see samplePsiSome's doc comment. Does NOT feed the
-   *  oversubscribed/swapping decision; `null` when /proc/pressure is
-   *  unavailable (non-Linux, permission denied). */
+   *  PSI "some" stall-time evidence (max of a start/end sample). `psiMemSome60`
+   *  is the AUTHORITATIVE memory-contention input as of 2026-08-17 (see
+   *  computeHostHealth) — the swap-page delta is only the fallback for hosts
+   *  where it reads `null` (non-Linux, permission denied). `swapPagesDelta` is
+   *  still recorded as evidence regardless of which branch decided. */
   hostLoad: {
     loadavg1m: number;
     cpus: number;
     ratio1m: number;
     oversubscribed: boolean;
     swapPagesDelta: number | null;
-    swapping: boolean;
+    memoryContended: boolean;
+    memoryContendedReason: 'psi-stall' | 'swap-pages-fallback' | null;
     psiMemSome60: number | null;
     psiCpuSome60: number | null;
   };
@@ -644,38 +702,48 @@ async function main(): Promise<void> {
   const endSwap = sampleSwapPages();
   const swapPagesDelta =
     startSwap && endSwap ? endSwap.pswpin - startSwap.pswpin + (endSwap.pswpout - startSwap.pswpout) : null;
-  const { oversubscribed, swapping } = computeHostHealth({ ratio1m, swapPagesDelta });
   // EI-19301664378023382: max(start, end) PSI "some" — same conservative shape
-  // as the load/swap samples above, recorded but NOT fed into computeHostHealth
-  // (see samplePsiSome's doc comment for why this is evidence, not a gate change).
+  // as the load/swap samples above. Sampled BEFORE computeHostHealth because it
+  // is now the authoritative memory-contention input, not just report evidence.
   const endPsiMem = samplePsiSome('memory');
   const endPsiCpu = samplePsiSome('cpu');
   const psiMemSome60 =
     startPsiMem || endPsiMem ? Math.max(startPsiMem?.avg60 ?? 0, endPsiMem?.avg60 ?? 0) : null;
   const psiCpuSome60 =
     startPsiCpu || endPsiCpu ? Math.max(startPsiCpu?.avg60 ?? 0, endPsiCpu?.avg60 ?? 0) : null;
+  const { oversubscribed, memoryContended, memoryContendedReason } = computeHostHealth({
+    ratio1m,
+    swapPagesDelta,
+    psiMemSome60,
+  });
   const hostLoad = {
     loadavg1m: loadavg()[0],
     cpus: osCpus().length,
     ratio1m,
     oversubscribed,
     swapPagesDelta,
-    swapping,
+    memoryContended,
+    memoryContendedReason,
     psiMemSome60,
     psiCpuSome60,
   };
   if (oversubscribed) {
     const reasons = [
       ratio1m > HOST_OVERSUBSCRIBED_RATIO ? `CPU load ratio ${ratio1m.toFixed(2)}× cpus (limit ${HOST_OVERSUBSCRIBED_RATIO}×, EI-8843)` : null,
-      swapping ? `host swapping (Δ${swapPagesDelta} pages over the run, EI-9145)` : null,
+      // Name the branch that ACTUALLY fired — a reader of this line must never
+      // have to guess whether PSI or the fallback produced the verdict.
+      memoryContendedReason === 'psi-stall'
+        ? `memory stall (PSI some avg60 ${psiMemSome60?.toFixed(1)}% > ${HOST_PSI_MEM_STALL_PCT}%, EI-19301664378023382)`
+        : memoryContendedReason === 'swap-pages-fallback'
+          ? `host swapping (Δ${swapPagesDelta} pages over the run — PSI UNAVAILABLE, page-delta fallback, EI-9145)`
+          : null,
     ].filter(Boolean);
     console.warn(
       `\n⚠ host oversubscribed during this run (${reasons.join(' AND ')}) — the baseline comparison ` +
         `above is UNCERTAIN: a wall-clock/PG-latency-sensitive scenario may be measuring shared-box ` +
         `contention, not a code regression. The nightly routine will skip auto-filing findings from this run. ` +
-        `PSI some avg60 (kernel stall-time evidence, EI-19301664378023382): mem=${psiMemSome60 !== null ? `${psiMemSome60.toFixed(1)}%` : 'n/a'} ` +
-        `cpu=${psiCpuSome60 !== null ? `${psiCpuSome60.toFixed(1)}%` : 'n/a'} — a LOW PSI reading alongside this verdict means the ` +
-        `page-delta/loadavg proxy likely over-called it; a human/auditor should weigh this before trusting the suppression.`,
+        `Evidence: PSI some avg60 mem=${psiMemSome60 !== null ? `${psiMemSome60.toFixed(1)}%` : 'n/a'} ` +
+        `cpu=${psiCpuSome60 !== null ? `${psiCpuSome60.toFixed(1)}%` : 'n/a'}, swap Δ${swapPagesDelta ?? 'n/a'} pages.`,
     );
   }
 
