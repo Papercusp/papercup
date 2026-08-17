@@ -10,7 +10,10 @@
  */
 
 import { getOrgPg } from '@papercusp/db-org';
-import { agentToolInvocationPredicate } from './agent-tools/sessions/automatic-tool-names';
+import {
+  agentToolInvocationPredicate,
+  dispatchWrapperExclusionPredicate,
+} from './agent-tools/sessions/automatic-tool-names';
 
 /**
  * Build a transport WHERE-fragment for tool_invocations queries.
@@ -150,6 +153,9 @@ export async function telemetryRollup(
   const wsFilter = input.workspaceIds && input.workspaceIds.length > 0;
   const workspaceIds = input.workspaceIds ?? [];
   const tFilter = buildTransportFilter(sql, input.transports);
+  // P-012: a dispatch-wrapper row (tools:invoke / a tool-dispatching code:run) duplicates
+  // its inner call's row — excluded so this census counts logical calls once.
+  const wrapperFilter = dispatchWrapperExclusionPredicate(sql);
 
   type Row = {
     tool_name: string;
@@ -179,6 +185,7 @@ export async function telemetryRollup(
         FROM harness_shared.tool_invocations
         WHERE invoked_at > ${sinceIso}::timestamptz
           AND workspace_id = ANY(${sql.array(workspaceIds)})
+          AND ${wrapperFilter}
           ${tFilter}
         GROUP BY tool_name
         ORDER BY call_count DESC
@@ -198,6 +205,7 @@ export async function telemetryRollup(
           array_agg(DISTINCT workspace_id) AS workspaces
         FROM harness_shared.tool_invocations
         WHERE invoked_at > ${sinceIso}::timestamptz
+          AND ${wrapperFilter}
           ${tFilter}
         GROUP BY tool_name
         ORDER BY call_count DESC
@@ -909,6 +917,7 @@ export async function toolCooccurrence(
         AND coord_owner_id IS NOT NULL
         AND tool_name IS NOT NULL
         AND ${agentToolFilter}
+        AND ${dispatchWrapperExclusionPredicate(sql)}
         ${wsFrag}
     ),
     marked AS (

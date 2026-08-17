@@ -39,6 +39,8 @@ import { resolveLearningPotSlug } from '../../learning/pot-scope';
 import { getRecipe, recordRecipeRun } from '../../code-recipes-store';
 import { PROJECTED_DEPS } from '../../projected-tool-deps';
 import { runBulk, bulkContent, type BulkItemResult } from '../_bulk';
+import { DISPATCH_WRAPPER_METADATA_KEY } from '../sessions/automatic-tool-names';
+import { dispatchWrapperMarkEnabled } from '../../telemetry-dispatch-wrapper';
 import {
   recipeAuthorityMatchesLiveRefs,
   validateRecipeAuthorityProof,
@@ -209,6 +211,9 @@ export default defineTool({
       ...(liveFleet ? { fleet: liveFleet } : {}),
       ...(ctx.harnessSlug ? { harness: ctx.harnessSlug } : {}),
     };
+    // P-012 (census double-count): aggregate inner dispatches across the whole batch —
+    // each wrote its own telemetry row, so this row is wrapper overhead when > 0.
+    let totalInnerDispatches = 0;
     let liveBoundRefsPromise: Promise<RecipeAuthorityRefs> | null = null;
     const liveBoundRefs = (): Promise<RecipeAuthorityRefs> | null => {
       if (!ownerId || !coordinationDomain) return null;
@@ -292,6 +297,9 @@ export default defineTool({
           dryRun,
           timeoutMs: it.timeoutSec ? it.timeoutSec * 1000 : undefined,
         });
+        // P-012: counted before any early return below — a failed item's dispatches
+        // still wrote their own telemetry rows.
+        totalInnerDispatches += result.dispatchCount ?? 0;
 
         // EI-20224785432797349: code-mode tracks reads of fields that are absent from a
         // child tool result. Treat those misses as a failed recipe reuse, even when the
@@ -342,6 +350,15 @@ export default defineTool({
       },
       { keyOf: (it) => ({ id: it.id }) },
     );
+
+    // P-012: mark this row as a dispatch wrapper only when the batch actually
+    // dispatched inner tools (a dry-run or not-found batch stays countable).
+    if (totalInnerDispatches > 0 && (await dispatchWrapperMarkEnabled())) {
+      ctx.metadata?.({
+        [DISPATCH_WRAPPER_METADATA_KEY]: true,
+        dispatchedToolCalls: totalInnerDispatches,
+      });
+    }
 
     return bulkContent(env);
   },
