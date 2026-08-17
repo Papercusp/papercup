@@ -337,3 +337,164 @@ describe('findConvertedWorkItemByStamp (PG, jsonb object-only payload)', () => {
     expect(await findConvertedWorkItemByStamp('p6', 'I-6', 'web')).toMatchObject({ id: 'EI-relates-only' });
   });
 });
+
+/**
+ * P-003 / D-005 obligation 3 (goal-mode-design-intent-hardening-2026-08-16):
+ * promotion must land FIRST-CLASS source_plan_slug / source_plan_item_ids /
+ * goal_id — measured live on WI-39506, promotion wrote only payload.plan_item
+ * and all three columns stayed NULL, leaving promoted items invisible to a
+ * goal-scoped drain lane (the `goal` claim-spec field matches POSITIVELY per
+ * WI-37711: a NULL row is excluded, never wildcarded).
+ *
+ * Real SQL on purpose: the UPDATE's COALESCE/array semantics and its
+ * composition with resolveGoalContext (both goal legs are real tables here)
+ * are exactly what a fake-sql mock would assert into existence.
+ */
+describe('stampPromotedWorkItemProvenance + promotion wiring (P-003 / D-005 obligation 3)', () => {
+  const HARNESS = 'web';
+  // The mocked collaborators, programmable per-test. Handle-casts (not argument
+  // casts): the vi.mock factories made these plain vi.fn()s, so the cast only
+  // recovers the mock surface the factory installed.
+  let readPlanM: ReturnType<typeof vi.fn>;
+  let claimPlanItemM: ReturnType<typeof vi.fn>;
+  let createWorkItemM: ReturnType<typeof vi.fn>;
+
+  beforeAll(async () => {
+    readPlanM = (await import('../agent-tools/plans/source')).readPlanBySlug as unknown as ReturnType<typeof vi.fn>;
+    claimPlanItemM = (await import('./liveness')).claimPlanItem as unknown as ReturnType<typeof vi.fn>;
+    createWorkItemM = (await import('../work-items')).createWorkItem as unknown as ReturnType<typeof vi.fn>;
+  });
+
+  async function insertItem(
+    id: string,
+    over: { goal?: string | null; slug?: string | null; ids?: string[] | null; payload?: object | null } = {},
+  ) {
+    await rootSql`INSERT INTO harness_shared.work_items
+        (harness_slug, feature_id, item_kind, workspace_id, goal_id, source_plan_slug, source_plan_item_ids, payload)
+      VALUES (${HARNESS}, ${id}, 'task', ${WS}, ${over.goal ?? null}, ${over.slug ?? null},
+              ${over.ids ?? null}, ${over.payload ? rootSql.json(over.payload) : null})`;
+  }
+  async function readItem(id: string): Promise<{ goal_id: string | null; source_plan_slug: string | null; source_plan_item_ids: string[] | null }> {
+    const rows = await rootSql<
+      { goal_id: string | null; source_plan_slug: string | null; source_plan_item_ids: string[] | null }[]
+    >`SELECT goal_id, source_plan_slug, source_plan_item_ids
+        FROM harness_shared.work_items WHERE feature_id = ${id}`;
+    return rows[0]!;
+  }
+  /** The promoter RUNS this goal — agent_modes leg of resolveGoalContext. */
+  async function givenRunsGoal(ownerId: string, goalId: string) {
+    await rootSql`INSERT INTO harness_shared.agent_modes (workspace_id, owner_id, axis_key, mode, subject, set_by)
+                  VALUES (${WS}, ${ownerId}, 'overlay:goal', 'goal', ${goalId}, ${ownerId})`;
+  }
+  /** The promoter INHERITED this goal at launch — session_briefs leg. */
+  async function givenInheritedGoal(ownerId: string, goalId: string) {
+    await rootSql`INSERT INTO harness_shared.session_briefs (owner_id, workspace_id, goal_id)
+                  VALUES (${ownerId}, ${WS}, ${goalId})`;
+  }
+  const args = (
+    id: string,
+    over: Partial<Parameters<typeof stampPromotedWorkItemProvenance>[0]> = {},
+  ) => ({
+    workItemId: id,
+    harnessSlug: HARNESS,
+    workspaceId: WS,
+    planSlug: 'the-plan',
+    itemId: 'P-007',
+    ownerId: 'promoter-1',
+    ...over,
+  });
+
+  it('stamps goal + both first-class plan columns for a promoter RUNNING a goal', async () => {
+    await givenRunsGoal('promoter-1', 'goal-42');
+    await insertItem('WI-9001');
+    expect(await stampPromotedWorkItemProvenance(args('WI-9001'))).toBe('goal-42');
+    expect(await readItem('WI-9001')).toEqual({
+      goal_id: 'goal-42',
+      source_plan_slug: 'the-plan',
+      source_plan_item_ids: ['P-007'],
+    });
+  });
+
+  it('a goal-less promoter still lands the plan columns — goal_id stays NULL', async () => {
+    await insertItem('WI-9002');
+    expect(await stampPromotedWorkItemProvenance(args('WI-9002'))).toBeNull();
+    expect(await readItem('WI-9002')).toEqual({
+      goal_id: null,
+      source_plan_slug: 'the-plan',
+      source_plan_item_ids: ['P-007'],
+    });
+  });
+
+  it('first attribution wins; item ids accumulate without duplicates', async () => {
+    await givenRunsGoal('promoter-1', 'goal-B');
+    await insertItem('WI-9003', { goal: 'goal-A', slug: 'plan-x', ids: ['P-001'] });
+    await stampPromotedWorkItemProvenance(args('WI-9003', { itemId: 'P-002' }));
+    expect(await readItem('WI-9003')).toEqual({
+      goal_id: 'goal-A', // NOT goal-B — an attributed item is never re-parented
+      source_plan_slug: 'plan-x', // NOT the-plan
+      source_plan_item_ids: ['P-001', 'P-002'],
+    });
+    // Idempotent on repeat — the array gains nothing it already carries.
+    await stampPromotedWorkItemProvenance(args('WI-9003', { itemId: 'P-002' }));
+    expect((await readItem('WI-9003')).source_plan_item_ids).toEqual(['P-001', 'P-002']);
+  });
+
+  it('fail-soft: resolves null instead of throwing when the DB is unreachable', async () => {
+    const boom = (() => Promise.reject(new Error('pg down'))) as unknown as postgres.Sql;
+    await expect(stampPromotedWorkItemProvenance(args('WI-9004', { sql: boom }))).resolves.toBeNull();
+  });
+
+  it("convertPlanItem's MINT leaves the promoted row goal-stamped and plan-addressed", async () => {
+    await givenInheritedGoal('member-9', 'goal-77');
+    readPlanM.mockResolvedValue({
+      row: { items: [{ id: 'P-007', status: 'todo', text: 'Do the thing' }] },
+      parsed: { items: [], frontmatter: null, now: null },
+    });
+    claimPlanItemM.mockResolvedValue({ status: 'claimed', claim: { claimId: 'c1' }, mode: 'solo', viaAssignment: false });
+    createWorkItemM.mockImplementation(async (input: { title: string }) => {
+      await insertItem('WI-9005', { payload: stamp('pp', 'P-007') });
+      return { id: 'WI-9005', harness: HARNESS, state: 'open', title: input.title };
+    });
+
+    const res = await convertPlanItem({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      planSlug: 'pp',
+      itemId: 'P-007',
+      owner: 'member-9',
+      ownerUser: 'member-9',
+    });
+    expect(res.status).toBe('converted');
+    expect(await readItem('WI-9005')).toEqual({
+      goal_id: 'goal-77',
+      source_plan_slug: 'pp',
+      source_plan_item_ids: ['P-007'],
+    });
+  });
+
+  it("convertPlanItem's RESUME heals a row promoted before the stamp existed", async () => {
+    // The measured live state: stamp only in payload.plan_item, columns NULL.
+    await insertItem('WI-9006', { payload: stamp('pq', 'P-003') });
+    await givenRunsGoal('healer-1', 'goal-88');
+    readPlanM.mockResolvedValue({
+      row: { items: [{ id: 'P-003', status: 'wip', text: 'Old promoted work' }] },
+      parsed: { items: [], frontmatter: null, now: null },
+    });
+    claimPlanItemM.mockResolvedValue({ status: 'claimed', claim: { claimId: 'c2' }, mode: 'solo', viaAssignment: false });
+
+    const res = await convertPlanItem({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      planSlug: 'pq',
+      itemId: 'P-003',
+      owner: 'healer-1',
+      ownerUser: 'healer-1',
+    });
+    expect(res.status).toBe('resumed');
+    expect(await readItem('WI-9006')).toEqual({
+      goal_id: 'goal-88',
+      source_plan_slug: 'pq',
+      source_plan_item_ids: ['P-003'],
+    });
+  });
+});
