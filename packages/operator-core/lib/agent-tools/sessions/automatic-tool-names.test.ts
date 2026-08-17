@@ -4,9 +4,13 @@ import {
   AGENT_CALL_ORIGINS,
   AUTOMATIC_CALL_ORIGINS,
   AUTOMATIC_TOOL_NAMES,
+  DISPATCH_WRAPPER_EXCLUSION_SQL,
+  DISPATCH_WRAPPER_METADATA_KEY,
   agentToolInvocationPredicate,
   automaticToolInvocationPredicate,
   classifyToolInvocationBehavior,
+  dispatchWrapperExclusionPredicate,
+  isDispatchWrapperMetadata,
 } from './automatic-tool-names';
 
 describe('tool invocation behavior classification', () => {
