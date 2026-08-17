@@ -489,12 +489,23 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
             tool: 'capability:read',
             args: { file_path: fsPath, byte_offset: 0, byte_limit: 3_072 },
             uri,
-            encoding: 'base64',
+            // EI-20685195115158619: these two are NAMED for what they describe.
+            // A bare `encoding: 'base64'` sitting beside `file_path` reads as
+            // "the file at that path is base64" — an agent acted on exactly that
+            // reading, ran `base64 -d <path>`, got `invalid input`, and burned
+            // calls. Only capability:read's RESPONSE `data` field is base64
+            // (byte-window mode, read.ts); the spill FILE is plaintext UTF-8, and
+            // being directly greppable/tailable is the point of writing it that
+            // way. `result-door-encoding-contract.test.ts` follows this cursor
+            // end-to-end so the two can never drift apart silently.
+            responseDataEncoding: 'base64',
+            spillFileEncoding: 'utf-8',
           },
           next:
-            `Call capability:read with _projection.cursor.args, base64-decode data, then follow ` +
-            `next_cursor until eof to recover the exact spill bytes. The spill begins with a text ` +
-            `header and then contains the result as it reached this door.` +
+            `Call capability:read with _projection.cursor.args and base64-decode the RESPONSE's ` +
+            `\`data\` (the spill FILE is plaintext — \`base64 -d\` on args.file_path fails EMPTY), ` +
+            `then follow next_cursor until eof to recover the exact spill bytes. The spill begins ` +
+            `with a text header and then contains the result as it reached this door.` +
             // Keep the established JSON recovery pointer deliberately terse. The
             // payload projector budgets the pointer together with the retained
             // JSON preview; expanding it here can evict coord:orient's recovery
