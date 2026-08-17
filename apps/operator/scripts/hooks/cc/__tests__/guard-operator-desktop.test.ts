@@ -56,7 +56,11 @@ afterAll(() => fs.rmSync(shimDir, { recursive: true, force: true }));
 
 function run(input: string, opts: { shim?: boolean } = {}) {
   const shim = opts.shim ?? true;
-  const r = spawnSync("node", [HOOK], {
+  // Launch by ABSOLUTE path: some cases below strip PATH to starve the hook's
+  // `getent` lookup, and a bare "node" would then fail to spawn at all —
+  // spawnSync reports that as status:null, which is not the fail-open we mean
+  // to assert.
+  const r = spawnSync(process.execPath, [HOOK], {
     input,
     encoding: "utf8",
     env: {
@@ -121,11 +125,14 @@ describe("guard-operator-desktop — loopback deception (EI-20732462499061834)",
     });
 
     it("ALLOWS when no resolver is on PATH at all", () => {
-      const r = spawnSync("node", [HOOK], {
+      const r = spawnSync(process.execPath, [HOOK], {
         input: navigate(`https://${PINNED}/`),
         encoding: "utf8",
         env: { ...process.env, PATH: "/nonexistent-dir-for-this-test" },
       });
+      // Guard against the trap this test just hit: a failure to spawn also
+      // yields a non-2 status, which would pass a bare `not.toBe(2)`.
+      expect(r.error).toBeUndefined();
       expect(r.status).toBe(0);
     });
 
