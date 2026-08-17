@@ -15,6 +15,7 @@ import {
   resolveGoalContext,
   getInheritedGoalContext,
   setInheritedGoalContext,
+  stampPlanGoalProvenance,
 } from './goal-context';
 import { goalIdFromModes, isGoalSessionModes, GOAL_MODE } from './goal-session';
 import { modeById, axisKeyFor } from './registry';
@@ -32,15 +33,36 @@ interface ModeRow {
  * template, matching the mockSql discipline in store.test.ts. `failOn` forces
  * the "column does not exist / PG down" path the fail-soft legs must survive.
  */
-function mockSql(opts: { modes?: ModeRow[]; briefs?: Array<{ owner_id: string; workspace_id: string; goal_id: string | null }>; failOn?: RegExp } = {}) {
+interface PlanRow {
+  workspace_id: string;
+  harness_slug: string;
+  plan_slug: string;
+  goal_id: string | null;
+}
+
+function mockSql(opts: { modes?: ModeRow[]; briefs?: Array<{ owner_id: string; workspace_id: string; goal_id: string | null }>; plans?: PlanRow[]; failOn?: RegExp } = {}) {
   const modes = [...(opts.modes ?? [])];
   const briefs = [...(opts.briefs ?? [])];
+  const plans = [...(opts.plans ?? [])];
 
   const fn = (first: unknown, ...vals: unknown[]): unknown => {
     if (!Array.isArray(first) || !('raw' in (first as object))) return { __in: first };
     const text = (first as string[]).join('¤').replace(/\s+/g, ' ');
     if (opts.failOn?.test(text)) return Promise.reject(new Error('column "goal_id" does not exist'));
 
+    if (text.includes('UPDATE harness_shared.harness_plans')) {
+      const [goalId, ws, harness, slug] = vals as string[];
+      for (const p of plans) {
+        if (p.workspace_id !== ws || p.harness_slug !== harness || p.plan_slug !== slug) continue;
+        // Faithful to the statement's OWN predicate: the `goal_id IS NULL`
+        // guard is honored only when the SQL still carries it. Dropping the
+        // clause in production makes this mock overwrite — which is exactly
+        // what fails the first-attribution test below (falsifiability: the
+        // mock must not hardcode the invariant the SQL is supposed to state).
+        if (!text.includes('goal_id IS NULL') || p.goal_id == null) p.goal_id = goalId;
+      }
+      return Promise.resolve([]);
+    }
     if (text.includes('SELECT subject FROM harness_shared.agent_modes')) {
       const [ws, owner, axis, mode] = vals as string[];
       const row = modes.find(
@@ -62,7 +84,7 @@ function mockSql(opts: { modes?: ModeRow[]; briefs?: Array<{ owner_id: string; w
     }
     return Promise.resolve([]);
   };
-  return { sql: fn as unknown as Sql, briefs };
+  return { sql: fn as unknown as Sql, briefs, plans };
 }
 
 const WS = 'ws-1';
