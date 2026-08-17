@@ -291,6 +291,74 @@ describe('classifyGateStallStatus (EI-2615: skipped-locked must not fake a red s
       expect(classifyGateStallStatus(status, false)).toBe('red');
     }
   });
+
+  describe('WI-39450: a SUPERSEDED PASS is a non-verdict, not a red', () => {
+    // Measured 2026-08-17: a run classified its own candidate `stale-candidate`, stamped
+    // `superseded-by-refire`, handed off to its in-process refire — and STILL drove
+    // consecutiveReds 10 -> 11, naming 7 operator-core memory/*.test.ts files that had all been
+    // modified in the 23 commits since that candidate and passed 52/0 at tip. Same shape as
+    // EI-2615 / EI-18757975681519069: a pass that judged an already-superseded tree said nothing
+    // about the code, and the successor writes the real verdict.
+
+    it('stale-candidate + autoRefire is a noop — the successor records the real verdict', () => {
+      expect(
+        classifyGateStallStatus('not-green', false, {
+          classification: 'stale-candidate',
+          autoRefire: true,
+        }),
+      ).toBe('noop');
+    });
+
+    // The three guards below are the whole safety argument: the noop is earned by a SUCCESSOR
+    // EXISTING, never by staleness alone. Get any of them wrong and this silences a real red.
+
+    it('a BLOCKED refire still counts as a red — no successor is coming, so this pass is final', () => {
+      for (const blockedBy of ['cap-disabled', 'charged-budget', 'absolute-ceiling', 'deadline'] as const) {
+        expect(
+          classifyGateStallStatus('not-green', false, {
+            classification: 'stale-candidate',
+            autoRefire: true,
+            refireBlockedBy: blockedBy,
+          }),
+        ).toBe('red');
+      }
+    });
+
+    it('stale-candidate WITHOUT autoRefire still counts as a red — nothing handed off', () => {
+      expect(
+        classifyGateStallStatus('not-green', false, { classification: 'stale-candidate' }),
+      ).toBe('red');
+      expect(
+        classifyGateStallStatus('not-green', false, {
+          classification: 'stale-candidate',
+          autoRefire: false,
+        }),
+      ).toBe('red');
+    });
+
+    it('a REAL red that auto-refired still counts — only a STALE candidate is a non-verdict', () => {
+      for (const classification of ['real-red', 'unknown'] as const) {
+        expect(
+          classifyGateStallStatus('not-green', false, { classification, autoRefire: true }),
+        ).toBe('red');
+      }
+    });
+
+    it('no retriage at all is unchanged — a plain not-green is still a red', () => {
+      expect(classifyGateStallStatus('not-green', false, undefined)).toBe('red');
+      expect(classifyGateStallStatus('not-green', false, null)).toBe('red');
+      expect(classifyGateStallStatus('not-green', false, {})).toBe('red');
+    });
+
+    it('a green verdict still resets even if a refire was in play (green wins first)', () => {
+      expect(
+        classifyGateStallStatus('advanced', false, {
+          classification: 'stale-candidate',
+          autoRefire: true,
+        }),
+      ).toBe('reset');
+    });
+  });
 });
 
 describe('gateStallNoopLogMessage (EI-19321275470651356: one class, two opposite operator advices)', () => {
