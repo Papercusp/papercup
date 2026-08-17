@@ -1,14 +1,19 @@
 /**
- * plan-start-consult.test.ts — D-006 partition semantics (P-010).
+ * plan-start-consult.test.ts — P-002 partition semantics
+ * (consult-min-max-and-rubric-vetting-2026-08-17, D-001 §2 / D-002 / D-003).
  *
- * The three-way verdict is the contract: below-floor → silent proceed;
- * above-floor with ANY wakeable candidate → nudge; above-floor all-dead →
- * proceed with transcript excerpts. Route + excerpt deps are stubbed — the
- * router itself is covered by relevance-router.integration.test.ts.
+ * The partition is the contract: any selectable live candidate —
+ * floor-qualified or best-available minimum fill — → nudge (labeled
+ * selection); floor-qualified all-dead → proceed with transcript excerpts;
+ * minimum physically unfillable → honest proceed (no_live_responder when a
+ * pool existed, no_qualified_responder when none / degraded). Route + excerpt
+ * deps are stubbed — the router itself is covered by
+ * relevance-router.integration.test.ts, and the shared selectResponders by
+ * get-feedback-core's suites.
  */
 import { describe, expect, it } from 'vitest';
 import type { RouteResult, RoutingCandidate } from './relevance-router';
-import { DEAD_RESPONDER_STATES } from './get-feedback-core';
+import { DEAD_RESPONDER_STATES, DEFAULT_MAX_RESPONDERS, DEFAULT_MIN_RESPONDERS } from './get-feedback-core';
 import {
   buildPlanStartQuery,
   PLAN_START_QUERY_MAX_CHARS,
@@ -21,22 +26,25 @@ function candidate(ownerId: string, liveness: string, score = 0.7): RoutingCandi
   return {
     ownerId,
     score,
-    signals: { similarity: 0.6, recency: 0.5, verification: 0.2, authorship: 0 },
+    signals: { similarity: score >= 0.5 ? 0.6 : 0.3, recency: 0.5, verification: 0.2, authorship: 0 },
     evidence: [{ session_id: `s-${ownerId}`, turn_idx: 1, ts: '2026-08-16T00:00:00.000Z', sim: 0.6 }],
     liveness,
   };
 }
 
-function routed(cands: RoutingCandidate[]): RouteResult {
+/** qualified = floor-clearing candidates; pool = the full ranked snapshot
+ * (defaults to qualified — pass a superset to model below-floor candidates). */
+function routed(qualified: RoutingCandidate[], pool?: RoutingCandidate[]): RouteResult {
+  const candidates = pool ?? qualified;
   return {
-    verdict: cands.length > 0 ? 'routed' : 'no_qualified_responder',
-    qualified: cands,
+    verdict: qualified.length > 0 ? 'routed' : 'no_qualified_responder',
+    qualified,
     snapshot: {
       query: 'q',
       floor: 0.5,
       simFloor: 0.4,
       weights: { similarity: 0.55, recency: 0.15, verification: 0.15, authorship: 0.15 },
-      candidates: cands,
+      candidates,
       computedAt: '2026-08-16T00:00:00.000Z',
     },
     queryVec: [0.1],
@@ -66,8 +74,8 @@ const params = {
   planContent: '# a plan\n\nbody',
 };
 
-describe('planStartConsult (D-006 partition)', () => {
-  it('below the floor → silent proceed', async () => {
+describe('planStartConsult (P-002 partition, min:1)', () => {
+  it('empty candidate pool → honest proceed (no_qualified_responder)', async () => {
     const out = await planStartConsult(params, deps(routed([])));
     expect(out).toEqual({ outcome: 'proceed', verdict: 'no_qualified_responder' });
   });
@@ -84,13 +92,51 @@ describe('planStartConsult (D-006 partition)', () => {
     });
   });
 
-  it('any LIVE candidate → nudge with the full qualified set (dead ones included as evidence)', async () => {
+  it('below the floor with a LIVE best-available → nudge labeled via:"minimum" (D-001 §2 — no silent promote)', async () => {
+    const fill = candidate('su-below', 'live', 0.3);
+    const d = deps(routed([], [fill]));
+    const out = await planStartConsult(params, d);
+    expect(out.outcome).toBe('nudge');
+    if (out.outcome === 'nudge') {
+      expect(out.candidates.map((c) => c.ownerId)).toEqual(['su-below']);
+      expect(out.selection.min).toBe(DEFAULT_MIN_RESPONDERS);
+      expect(out.selection.max).toBe(DEFAULT_MAX_RESPONDERS);
+      expect(out.selection.selected).toEqual([
+        expect.objectContaining({ ownerId: 'su-below', via: 'minimum' }),
+      ]);
+    }
+    expect(d.excerptCalls).toHaveLength(0);
+  });
+
+  it('minimum fill takes the BEST-scoring live below-floor candidate, exactly one (min:1)', async () => {
+    const better = candidate('su-better', 'live', 0.4);
+    const worse = candidate('su-worse', 'live', 0.2);
+    const out = await planStartConsult(params, deps(routed([], [better, worse])));
+    expect(out.outcome).toBe('nudge');
+    if (out.outcome === 'nudge') {
+      expect(out.selection.selected.map((s) => s.ownerId)).toEqual(['su-better']);
+      expect(out.candidates.map((c) => c.ownerId)).toEqual(['su-better']);
+    }
+  });
+
+  it('below the floor with an ALL-DEAD pool → proceed no_live_responder (unfillable minimum, not silent)', async () => {
+    const out = await planStartConsult(
+      params,
+      deps(routed([], [candidate('su-dead', 'ended', 0.3), candidate('su-rec', 'recorded', 0.2)])),
+    );
+    expect(out).toEqual({ outcome: 'proceed', verdict: 'no_live_responder' });
+  });
+
+  it('floor-qualified LIVE candidate → nudge via:"floor"; dead qualified ride along as evidence', async () => {
     const live = candidate('su-live', 'live');
     const dead = candidate('su-dead', 'ended');
     const d = deps(routed([live, dead]));
     const out = await planStartConsult(params, d);
     expect(out.outcome).toBe('nudge');
-    if (out.outcome === 'nudge') expect(out.candidates.map((c) => c.ownerId)).toEqual(['su-live', 'su-dead']);
+    if (out.outcome === 'nudge') {
+      expect(out.candidates.map((c) => c.ownerId)).toEqual(['su-live', 'su-dead']);
+      expect(out.selection.selected).toEqual([expect.objectContaining({ ownerId: 'su-live', via: 'floor' })]);
+    }
     expect(d.excerptCalls).toHaveLength(0); // no retrieval on the nudge branch
   });
 
@@ -99,7 +145,31 @@ describe('planStartConsult (D-006 partition)', () => {
     expect(out.outcome).toBe('nudge');
   });
 
-  it('ALL candidates dead → proceed_with_excerpts (retrieval, not consult)', async () => {
+  it('qualified all dead + a live below-floor fill → nudge (minimum fill), dead qualified appended', async () => {
+    const deadQ = candidate('su-deadq', 'ended');
+    const fill = candidate('su-fill', 'parked', 0.3);
+    const d = deps(routed([deadQ], [deadQ, fill]));
+    const out = await planStartConsult(params, d);
+    expect(out.outcome).toBe('nudge');
+    if (out.outcome === 'nudge') {
+      expect(out.selection.selected).toEqual([expect.objectContaining({ ownerId: 'su-fill', via: 'minimum' })]);
+      // Selected set first, then the dead floor-qualified evidence.
+      expect(out.candidates.map((c) => c.ownerId)).toEqual(['su-fill', 'su-deadq']);
+    }
+    expect(d.excerptCalls).toHaveLength(0);
+  });
+
+  it('the selected set caps at the global max even with more live qualified', async () => {
+    const many = [1, 2, 3, 4, 5].map((i) => candidate(`su-${i}`, 'live'));
+    const out = await planStartConsult(params, deps(routed(many)));
+    expect(out.outcome).toBe('nudge');
+    if (out.outcome === 'nudge') {
+      expect(out.selection.selected).toHaveLength(DEFAULT_MAX_RESPONDERS);
+      expect(out.selection.selected.every((s) => s.via === 'floor')).toBe(true);
+    }
+  });
+
+  it('ALL candidates dead, no live fill anywhere → proceed_with_excerpts (retrieval, not consult)', async () => {
     const excerpt: PlanStartExcerpt = {
       ownerId: 'su-dead',
       session_id: 's-su-dead',
@@ -118,6 +188,15 @@ describe('planStartConsult (D-006 partition)', () => {
     expect(d.excerptCalls[0]).toEqual([{ ownerId: 'su-dead' }, { ownerId: 'su-rec' }]);
   });
 
+  it('excerpts stay scoped to FLOOR-QUALIFIED dead candidates — a dead below-floor pool row is never fetched', async () => {
+    const deadQ = candidate('su-deadq', 'ended');
+    const deadBelow = candidate('su-deadbelow', 'ended', 0.3);
+    const d = deps(routed([deadQ], [deadQ, deadBelow]));
+    const out = await planStartConsult(params, d);
+    expect(out.outcome).toBe('proceed_with_excerpts');
+    expect(d.excerptCalls[0]).toEqual([{ ownerId: 'su-deadq' }]);
+  });
+
   it('excerpt fetch failure still proceeds (nudge never block) — empty excerpts, no throw', async () => {
     const d = deps(routed([candidate('su-dead', 'ended')]), new Error('pg down'));
     const out = await planStartConsult(params, d);
@@ -125,13 +204,15 @@ describe('planStartConsult (D-006 partition)', () => {
     if (out.outcome === 'proceed_with_excerpts') expect(out.excerpts).toEqual([]);
   });
 
-  it('D-006 partition premise: the shared dead-set excludes live and parked', () => {
+  it('partition premises: the shared dead-set excludes live/parked; the global min is 1', () => {
     // If get-feedback-core ever widens DEAD_RESPONDER_STATES to swallow
-    // live/parked, the nudge branch silently dies — fail here first.
+    // live/parked, the nudge branch silently dies — fail here first. If the
+    // global minimum ever drops to 0, D-001 §2 (plan-step min:1) is broken.
     expect(DEAD_RESPONDER_STATES.has('live')).toBe(false);
     expect(DEAD_RESPONDER_STATES.has('parked')).toBe(false);
     expect(DEAD_RESPONDER_STATES.has('ended')).toBe(true);
     expect(DEAD_RESPONDER_STATES.has('recorded')).toBe(true);
+    expect(DEFAULT_MIN_RESPONDERS).toBeGreaterThanOrEqual(1);
   });
 });
 
