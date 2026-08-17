@@ -39,6 +39,7 @@ import {
   findMatchingActivePredicateWatch,
 } from '../../events/await/predicate-watch';
 import { activeWorkspaceId } from '../../workspace-registry';
+import { resolvePotHomeSlug } from '../../pot/wake';
 import { subscribeTopic } from '../coordination/topics';
 import { subscribeEventKey } from '../coordination/event-subscriptions';
 import { softText, clampText, LIMITS } from '../limits';
@@ -274,7 +275,12 @@ export default defineTool({
         id,
         workspaceId,
         ownerId: identity.ownerId,
-        harnessSlug: ctx.harnessSlug ?? null,
+        // NOT `ctx.harnessSlug ?? null`: on an operator-scoped call ctx.harnessSlug is
+        // the WILDCARD sentinel ('*'/'all'), and a raw `??` would persist that sentinel
+        // into interest_watches.harness_slug as though it were a concrete slug.
+        // resolvePotHomeSlug skips the sentinel at each level, falls through to the env
+        // home, and canonicalises — yielding a real slug or null, never '*'.
+        harnessSlug: resolvePotHomeSlug(undefined, ctx.harnessSlug),
         eventKey,
         interest: args.pattern,
         embedding: vec,
