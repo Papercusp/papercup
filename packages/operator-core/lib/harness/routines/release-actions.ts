@@ -1211,10 +1211,17 @@ export async function trackGateStall(
     //   · cleared by the next REAL verdict for free: that write replaces the whole
     //     `gate_health` key, and `next` sets `inconclusive: null` explicitly (same
     //     recovery-clear convention as `failingTests` / `retriageStaleTip`).
-    // Scoped to 'migrations-pending' ONLY. 'skipped-locked' stays a total no-op on purpose:
-    // there a peer run IS in flight and about to write the real verdict, which is precisely
-    // the write EI-2615 proved must not be raced.
-    if (status === 'migrations-pending') {
+    // Scoped to 'migrations-pending' and the WI-39450 superseded-pass case. 'skipped-locked'
+    // stays a total no-op on purpose: there a peer run IS in flight and about to write the real
+    // verdict, which is precisely the write EI-2615 proved must not be raced.
+    //
+    // The superseded pass is safe to record here for two independent reasons: its successor is
+    // this run's OWN in-process refire (sequential, not concurrent), and this write is a
+    // jsonb_set on the `{gate_health,inconclusive}` PATH, which by construction cannot shadow a
+    // counter write. Recording it is what preserves WI-37490's actual intent — "if the refire
+    // dies partway through, this completed pass's findings survive" — WITHOUT the false red that
+    // intent was paying for.
+    if (status === 'migrations-pending' || isSupersededByRefire(retriage)) {
       try {
         await sql.unsafe(
           `UPDATE harness_shared.routines
@@ -1228,6 +1235,17 @@ export async function trackGateStall(
               candidate: candidate?.slice(0, 12) ?? null,
               detail: summary ?? null,
               observedAtMs: Date.now(),
+              // WI-39450: only on the superseded-pass path. Deliberately NOT written to
+              // `gate_health.failingTests` — these files were judged against a tree that has
+              // already moved, so surfacing them as the gate's failing set is what sends agents
+              // at already-fixed tests. Kept here, under a name that says so, for diagnosis if
+              // the refire dies before recording its own verdict.
+              ...(isSupersededByRefire(retriage)
+                ? {
+                    supersededByRefire: true,
+                    staleFailingTests: failingTests ?? [],
+                  }
+                : {}),
             }),
           ],
         );
