@@ -242,6 +242,29 @@ export function addedColumnsFor(sqlText) {
   return columns;
 }
 
+/**
+ * Extract the table identifiers an ALTER TABLE statement targets, WITHOUT the schema
+ * qualifier (`harness_shared.local_backends` -> `local_backends`), because source code
+ * names the bare table far more often than the schema-qualified one.
+ *
+ * This exists to qualify the column scan below. A bare column-name match alone is far too
+ * broad: measured on migration 843, the column `lifecycle` matched **357 source files**,
+ * none of which had anything to do with `local_backends` — plugin lifecycle, release
+ * lifecycle, work-item lifecycle. That flood is not a conservative guard, it is the thing
+ * that makes authors reach for the `-- FORWARD-COMPAT:` escape hatch to silence a lint they
+ * (correctly) read as broken, which is how a REAL forward-compat break gets waved through.
+ */
+export function alteredTablesFor(sqlText) {
+  const code = stripComments(sqlText);
+  const tables = new Set();
+  const alterTable = /\bALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?(?:ONLY\s+)?((?:"[^"]+"|[A-Za-z_][A-Za-z0-9_$]*)(?:\s*\.\s*(?:"[^"]+"|[A-Za-z_][A-Za-z0-9_$]*))*)/gi;
+  for (const match of code.matchAll(alterTable)) {
+    const last = match[1].split('.').pop().trim();
+    tables.add(last.replace(/^"|"$/g, ''));
+  }
+  return [...tables];
+}
+
 function sourceFileExtension(file) {
   return extname(file).toLowerCase();
 }
@@ -296,6 +319,12 @@ function sourceFilesForRepo() {
  */
 export function findDraftColumnReferences(sqlText, sourceFiles = []) {
   const columns = addedColumnsFor(sqlText);
+  const tables = alteredTablesFor(sqlText);
+  // A file cannot be reading `<table>.<column>` if it never mentions `<table>`. Requiring both
+  // is what makes the scan usable for a column whose name is also an ordinary programming word.
+  // If no table could be parsed we fall back to the column-only match, so an SQL shape this
+  // regex does not understand is still scanned exactly as strictly as it was before.
+  const tableTokens = tables.map((t) => new RegExp(`(?<![A-Za-z0-9_$])${escapeRe(t)}(?![A-Za-z0-9_$])`, 'i'));
   const references = [];
   for (const column of columns) {
     const token = new RegExp(`(?<![A-Za-z0-9_$])${escapeRe(column)}(?![A-Za-z0-9_$])`, 'i');
@@ -304,6 +333,7 @@ export function findDraftColumnReferences(sqlText, sourceFiles = []) {
       const masked = sourceCommentsMasked(source.text, source.file);
       const match = token.exec(masked);
       if (!match || match.index === undefined) continue;
+      if (tableTokens.length && !tableTokens.some((t) => t.test(masked))) continue;
       references.push({
         column,
         file: source.file,

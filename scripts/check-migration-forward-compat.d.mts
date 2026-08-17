@@ -37,6 +37,19 @@ export function isDraftMigrationFile(file: any): boolean;
  */
 export function addedColumnsFor(sqlText: any): string[];
 /**
+ * Extract the table identifiers an ALTER TABLE statement targets, WITHOUT the schema
+ * qualifier (`harness_shared.local_backends` -> `local_backends`), because source code
+ * names the bare table far more often than the schema-qualified one.
+ *
+ * This exists to qualify the column scan below. A bare column-name match alone is far too
+ * broad: measured on migration 843, the column `lifecycle` matched **357 source files**,
+ * none of which had anything to do with `local_backends` — plugin lifecycle, release
+ * lifecycle, work-item lifecycle. That flood is not a conservative guard, it is the thing
+ * that makes authors reach for the `-- FORWARD-COMPAT:` escape hatch to silence a lint they
+ * (correctly) read as broken, which is how a REAL forward-compat break gets waved through.
+ */
+export function alteredTablesFor(sqlText: any): any[];
+/**
  * Find source files that already reference columns introduced by a parked
  * migration. `sourceFiles` is injectable so unit tests can prove the detector on
  * small fixtures without writing into the shared checkout.
