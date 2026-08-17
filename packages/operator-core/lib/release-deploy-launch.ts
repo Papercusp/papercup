@@ -364,7 +364,16 @@ export function computeDeployStatus(snap: GitPipelineSnapshot, inFlight: DeployI
   // === 0` answers "is main stalled"; it must NOT also answer "is the last-evaluated
   // candidate green" when the two diverge, so exclude the one status where they do.
   const lastVerdictWasPartialRed = lastVerdict?.status === 'advanced-prefix';
-  const gateGreen = g.consecutiveReds === 0 && !fireStale && !lastVerdictWasPartialRed;
+  // EI-20706962612084953: 'advanced-prefix' was the one status KNOWN to diverge — it was never
+  // the only one. The writer's `reset` class also zeroes the streak for a genuinely NOT-GREEN
+  // verdict whenever the release pin moved (`main` advancing via a path the routine never saw),
+  // so the exclusion above left `consecutiveReds === 0` still reporting GREEN for a run that
+  // recorded red — the same laundering this line was written to stop, one status over.
+  // `gate_health.lastVerdict` is the writer's own statement of what the verdict WAS, so it
+  // settles the question generally instead of one status at a time; `null` (a blob written
+  // before the marker existed) degrades to exactly the previous behaviour.
+  const lastVerdictRecordedNotGreen = g.lastVerdict === 'not-green';
+  const gateGreen = g.consecutiveReds === 0 && !fireStale && !lastVerdictWasPartialRed && !lastVerdictRecordedNotGreen;
   const deployedBehindGreenPin = d.deployedBehindGreenPin;
   const greenPinBehindStaging = d.greenPinBehindStaging;
   const releaseTriggerRow = snap.routines.releaseTrigger;

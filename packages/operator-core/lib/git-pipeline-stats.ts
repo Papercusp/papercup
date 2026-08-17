@@ -142,6 +142,17 @@ export interface GitPipelineSnapshot {
      */
     countersUnknown: CellUnknown | null;
     lastGreenAtMs: number | null;
+    /**
+     * EI-20706962612084953: the last verdict's OWN green-ness, as STATED by the writer
+     * (`gate_health.lastVerdict`) rather than inferred from a side-effect field.
+     * `consecutiveReds === 0` answers "is `main` stalled", NOT "was the last candidate
+     * green" — the writer's `reset` class deliberately zeroes the streak for a genuinely
+     * NOT-GREEN verdict whenever the release pin moved (main advancing via a path the
+     * routine never saw). A reader that conflates the two reports GREEN for a run that
+     * recorded red. `null` = a blob written before the writer stamped this, in which case
+     * a consumer must degrade to its previous behaviour rather than assume either value.
+     */
+    lastVerdict: 'green' | 'not-green' | null;
     firstRedAtMs: number | null;
     stalled: boolean;
     /** WI-282: the green-checkpoint routine's last fire (epoch ms) + a freshness
@@ -920,6 +931,14 @@ export async function gitPipelineSnapshot(
       consecutiveReds: effectiveGate.consecutiveReds,
       countersUnknown,
       lastGreenAtMs: num(gateHealth.lastGreenAt),
+      // EI-20706962612084953: pass the writer's own verdict marker through UNCHANGED — it is
+      // the one field here that is a statement rather than an inference. Anything other than
+      // the two known values (including absent, i.e. a blob predating the marker) is `null`,
+      // so a consumer can tell "recorded not-green" from "not recorded" and degrade honestly.
+      lastVerdict:
+        gateHealth.lastVerdict === 'green' || gateHealth.lastVerdict === 'not-green'
+          ? gateHealth.lastVerdict
+          : null,
       firstRedAtMs: effectiveGate.firstRedAtMs,
       // A stalled-streak alert can't survive proof the streak it was raised on has already ended.
       stalled: effectiveGate.stalled,
