@@ -237,7 +237,7 @@ describe('determinism — P-012 depends on this, and so does git-sync not churni
       expect(t1).not.toBe(t0);
 
       expect(projectClient(parts, { ...CLIENT, budget: 100_000 }).text).toBe(a);
-      expect(projectClient(parts, { ...CLIENT, budget: 900 }).text).toBe(aCut);
+      expect(projectClient(parts, { ...CLIENT, budget: cutBudget }).text).toBe(aCut);
     } finally {
       vi.useRealTimers();
     }
