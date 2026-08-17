@@ -18,8 +18,16 @@
  */
 import { notifySyncInvalidate } from '../sync-sse';
 
-/** Every sync query whose result changes when a user's memories change. */
-export const USER_MEMORY_SYNC_KEYS = ['userMemory.list', 'userMemory.total'] as const;
+/** Every sync query whose result changes when a user's memories change.
+ *  learning.retainFeed / learning.retainDetail (WI-39535): the Retained ledger
+ *  interleaves the shared-memory pool as its own kind, so a memory write moves
+ *  its rows and any open memory detail exactly like the settings page's. */
+export const USER_MEMORY_SYNC_KEYS = [
+  'userMemory.list',
+  'userMemory.total',
+  'learning.retainFeed',
+  'learning.retainDetail',
+] as const;
 
 /**
  * Best-effort — invalidation is a freshness optimisation, never a
