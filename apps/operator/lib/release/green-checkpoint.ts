@@ -6448,8 +6448,25 @@ export async function runGreenCheckpoint(
     // call (release-actions.ts, `(gh.consecutiveReds ?? 0) + 1`, no per-candidate dedup), so
     // an early record plus the terminal recordOwnVerdict would count ONE red twice and
     // inflate the very streak this work is meant to clear.
+    // Sizing note: ISOLATION_PHASE_RESERVE_MS (15m) is NOT sufficient on its own here. It is
+    // sized for the isolation phase's worst case — ONE bounded child (ISOLATION_RUN_TIMEOUT_MS
+    // 5m / CONCURRENT_CONFIRM_TIMEOUT_MS 10m). The salvage's confirm is a different animal: it
+    // calls deps.runGreen (a FULL affected suite) with NO timeoutMs, and on a miss walks up to
+    // maxRecoveryConfirms = 4 MORE of them. The observed 2026-08-17 run reached the salvage 92m
+    // into its 120m budget — comfortably INSIDE a bare 105m deadline, so a reserve-only check
+    // would have waved it through and lost the verdict anyway.
+    //
+    // So ESTIMATE the confirm's cost rather than guess a constant: the best predictor available
+    // is what THIS run has already spent (runStartedAtMs is threaded across refires, so it
+    // measures the whole run). That over-estimates slightly — elapsed covers setup + suite +
+    // isolation + re-triage, while the confirm is one suite over a NARROWER range — which is the
+    // correct direction to be wrong in: it fails toward skipping. Self-calibrating by design:
+    // when the suite gets faster (more forks, less fleet load) the salvage re-enables on its
+    // own, with no constant to retune.
     const salvageDeadlineMs = opts.salvageDeadlineMs ?? isolationPhaseDeadlineMs();
-    const salvageOutOfTime = Date.now() >= salvageDeadlineMs;
+    const salvageCostEstimateMs = Date.now() - runStartedAtMs;
+    const salvageOutOfTime =
+      Date.now() + salvageCostEstimateMs > salvageDeadlineMs;
     if (salvageOutOfTime && lastReady && !staleRed && partialGreenEnabled) {
       logPartialGreenGate(
         "partial-green-gate: skipped — out of run budget before the salvage's confirm suite " +
