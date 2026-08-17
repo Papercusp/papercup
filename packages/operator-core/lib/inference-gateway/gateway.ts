@@ -2807,6 +2807,31 @@ export function createInferenceGateway(deps: GatewayDeps) {
           settled = true;
           pool.recordEnd(backend.id);
           pool.recordOutcome(backend.id, upstream.ok || (upstream.status >= 400 && upstream.status < 500));
+
+          // COLD START AT THE FORWARD (D-014) — the reachable half of P-008, which the dead-end
+          // pre-flight above cannot cover. A 502/503/504 from an ON-DEMAND backend is not an answer
+          // to relay: ornith sits behind a sanitizing proxy that turns a dead unit into a well-formed
+          // 502, so `catch` never fires and the pool's own health signal lags the stop by up to ~60s
+          // (a 30s probe tick x HEALTH_FAIL_THRESHOLD=2). Relaying it made the caller eat the 502 and
+          // merely demoted the backend for the NEXT request — two users paid before the pre-flight
+          // could ever engage. Start the unit and retry THIS request instead.
+          if (isUpstreamUnreachable(upstream.status) && startableOnDemand(backend) && !coldStartAttempted) {
+            coldStartAttempted = true;
+            lastError = `upstream ${upstream.status} from ${backend.baseUrl}`;
+            log('warn', `inference-gateway: local backend '${backend.id}' answered ${upstream.status} (upstream unreachable) — attempting cold start and one retry`);
+            // Release the socket: we are NOT relaying this body, and an un-consumed response body
+            // holds the connection open until GC.
+            try { await upstream.body?.cancel(); } catch { /* already torn down */ }
+            coldStartError = await ensureOnDemandBackend(backend);
+            if (!coldStartError) {
+              // Retry THIS backend — it is the one we just started, and it is the only one serving
+              // the model in the single-backend case that motivates all of this.
+              tried.delete(backend.id);
+              continue;
+            }
+            break; // cold start failed — fall through to the 502 that NAMES the failure
+          }
+
           const headers: Record<string, string> = { 'content-type': upstream.headers.get('content-type') ?? 'application/json' };
           res.writeHead(upstream.status, headers);
           if (upstream.body) {
@@ -2835,6 +2860,20 @@ export function createInferenceGateway(deps: GatewayDeps) {
           }
           lastError = (e as Error).message ?? String(e);
           log('warn', `inference-gateway: local backend '${backend.id}' (${backend.baseUrl}) failed for model '${model}': ${lastError} — trying another candidate`);
+
+          // D-014: the same rescue for a genuine TRANSPORT failure — a backend with no proxy in
+          // front of it refuses the connection outright instead of answering 502. `!settled` keeps
+          // this to CONNECT-time failures: a mid-body stream error means the backend was alive and
+          // already producing, so restarting it would be wrong.
+          if (!settled && startableOnDemand(backend) && !coldStartAttempted) {
+            coldStartAttempted = true;
+            coldStartError = await ensureOnDemandBackend(backend);
+            if (!coldStartError) {
+              tried.delete(backend.id);
+              continue;
+            }
+            break; // cold start failed — fall through to the 502 that NAMES the failure
+          }
         }
       }
       // Fell through the attempt loop with nothing forwarded. Distinguish RETRYABLE SATURATION (the
