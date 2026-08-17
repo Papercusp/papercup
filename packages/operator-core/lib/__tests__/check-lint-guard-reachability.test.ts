@@ -232,6 +232,18 @@ describe('ENFORCING_TEST_RE — the discriminator', () => {
     // A pure-helper test: imports the detector, feeds it a string, asserts. Enforces nothing.
     expect(ENFORCING_TEST_RE.test("expect(findEscapes('x as never')).toHaveLength(1)")).toBe(false);
   });
+
+  it('credits runGuardScript — the helper that spawns a guard on a test’s behalf', () => {
+    // EI-20692923474318761: runGuardScript wraps spawnSync so a red carries the guard's own report.
+    // The marker therefore moves OUT of the test and into the helper, and a test that
+    // adopts it while letting the helper own the cwd would carry none of the other
+    // markers — enforcing the guard for real, classified as advisory.
+    expect(ENFORCING_TEST_RE.test("const g = runGuardScript('node', ['scripts/check-x.mjs'], opts);")).toBe(true);
+
+    // Calibration: the promotion above must not have blunted the discriminator. A
+    // fixture-driven test still enforces nothing, however the guard is spawned elsewhere.
+    expect(ENFORCING_TEST_RE.test("expect(findOffendersInSource('f.mjs', src)).toHaveLength(1)")).toBe(false);
+  });
 });
 
 describe('stripComments — prose about a guard is not a runner of it', () => {
