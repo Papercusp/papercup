@@ -43,6 +43,11 @@ export interface LocalBackendRecord {
    *  is `llama-ornith.service` on :11436. "Stop whatever serves baseUrl" would kill the cheap
    *  proxy and leave the 19.8GB process resident. */
   unitName: string | null;
+  /** Idle-reaper watermark (migration 845): the most recent moment this backend was OBSERVED
+   *  doing work, or was started/registered. The reaper stops a backend when
+   *  `now - lastBusyAt > idleTtlSec` — never on a single idle sample, which would stop a
+   *  backend in the gap between two requests. */
+  lastBusyAt: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -146,7 +151,7 @@ export async function registerLocalBackend(input: RegisterLocalBackendInput, inj
       unit_name      = EXCLUDED.unit_name,
       updated_at     = now()
     RETURNING id, kind, base_url, models, max_concurrent, enabled,
-              lifecycle, idle_ttl_sec, unit_name,
+              lifecycle, idle_ttl_sec, unit_name, last_busy_at::text,
               created_at::text, updated_at::text`;
   return rowToRecord(rows[0]);
 }
@@ -158,7 +163,7 @@ export async function listLocalBackends(opts: { workspaceId?: string } = {}, inj
   const ws = opts.workspaceId ?? activeWorkspaceId();
   const rows = await sql<LocalBackendRow[]>`
     SELECT id, kind, base_url, models, max_concurrent, enabled,
-           lifecycle, idle_ttl_sec, unit_name,
+           lifecycle, idle_ttl_sec, unit_name, last_busy_at::text,
            created_at::text, updated_at::text
       FROM harness_shared.local_backends
      WHERE workspace_id = ${ws}
@@ -178,12 +183,41 @@ export async function listOnDemandLocalBackends(
   const ws = opts.workspaceId ?? activeWorkspaceId();
   const rows = await sql<LocalBackendRow[]>`
     SELECT id, kind, base_url, models, max_concurrent, enabled,
-           lifecycle, idle_ttl_sec, unit_name,
+           lifecycle, idle_ttl_sec, unit_name, last_busy_at::text,
            created_at::text, updated_at::text
       FROM harness_shared.local_backends
      WHERE workspace_id = ${ws} AND enabled AND lifecycle = 'on-demand'
      ORDER BY id`;
   return rows.map(rowToRecord);
+}
+
+/**
+ * Stamp a backend's idle watermark to now — "this backend was observed doing work" (P-007).
+ *
+ * Called by the idle-reaper on every poll that finds a slot processing, and by the
+ * ensure-running path when it starts a backend (so a cold-started backend is not reapable
+ * before it has had the chance to serve anything).
+ *
+ * Deliberately does NOT touch `updated_at`: that column means "the registration changed", and a
+ * backend merely being busy is not a change to its registration. Conflating them would make
+ * `updated_at` useless for spotting real config drift, and would churn a row every poll.
+ *
+ * Returns whether a row was stamped — `false` means no such backend in this workspace, which a
+ * caller iterating a list it just read should treat as a row deleted underneath it, not an error.
+ */
+export async function markLocalBackendBusy(
+  id: string,
+  opts: { workspaceId?: string; at?: Date } = {},
+  inject?: Sql,
+): Promise<boolean> {
+  const sql = sqlOf(inject);
+  const ws = opts.workspaceId ?? activeWorkspaceId();
+  const rows = await sql<{ id: string }[]>`
+    UPDATE harness_shared.local_backends
+       SET last_busy_at = ${opts.at ?? new Date()}
+     WHERE id = ${id.trim()} AND workspace_id = ${ws}
+    RETURNING id`;
+  return rows.length > 0;
 }
 
 /** Remove a backend registration by id. Returns whether a row was deleted. */
@@ -212,7 +246,7 @@ export async function setLocalBackendEnabled(
        SET enabled = ${enabled}, updated_at = now()
      WHERE id = ${id.trim()} AND workspace_id = ${ws}
     RETURNING id, kind, base_url, models, max_concurrent, enabled,
-              lifecycle, idle_ttl_sec, unit_name,
+              lifecycle, idle_ttl_sec, unit_name, last_busy_at::text,
               created_at::text, updated_at::text`;
   return rows[0] ? rowToRecord(rows[0]) : null;
 }
@@ -227,6 +261,7 @@ interface LocalBackendRow {
   lifecycle: string;
   idle_ttl_sec: number | null;
   unit_name: string | null;
+  last_busy_at: string;
   created_at: string;
   updated_at: string;
 }
@@ -248,6 +283,7 @@ function rowToRecord(r: LocalBackendRow): LocalBackendRecord {
       : 'always-on',
     idleTtlSec: r.idle_ttl_sec ?? null,
     unitName: r.unit_name ?? null,
+    lastBusyAt: r.last_busy_at,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   };
