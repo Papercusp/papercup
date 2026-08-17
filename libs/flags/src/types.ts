@@ -1589,6 +1589,20 @@ export const FLAGS = {
   // CLOSED on flag/PG errors: it is a REFUSAL gate on the stop path, and you
   // must always be able to stop a loop you armed.
   GOAL_WINDDOWN_DISPOSITION_GATE: "papercusp-goal-winddown-disposition-gate",
+  // goal-mode-design-intent-hardening-2026-08-16 P-004: gates the server-side dedup
+  // demand on work_items:create for a GOAL-mode creator. The creator's goal context
+  // is resolved SERVER-SIDE (resolveGoalContext — never a tool argument, same
+  // operative rule as the P-002/P-003 provenance stamps) and, when it resolves, the
+  // create-time dedup probes must actually RUN and the create fails CLOSED
+  // ('dedup_unavailable') if the semantic leg — the only leg that catches reworded
+  // titles — is down (WI-39373 relapsed exactly there: probes ran, semantic leg
+  // 'unavailable', create failed OPEN, dup landed 107s after the canonical).
+  // force:true remains the explicit escape (the probes still run and their
+  // coverage/candidates are returned); DRAIN's requireCompleteDedupCoverage rail is
+  // unchanged and still overrides force. DEFAULT ON. OFF = the kill-switch:
+  // goal-mode creates degrade to the fail-open advisory behavior every other
+  // creator gets.
+  GOAL_CREATE_DEDUP_GATE: "papercusp-goal-create-dedup-gate",
   // system-notices-on-its-own-2026-08-16 P-002: gates the retrieval-degradation
   // watchdog — reads the trailing-window leg-health rate that observeLegs now
   // records for every hybrid search, and escalates when a sustained share of

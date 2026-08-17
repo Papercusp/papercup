@@ -70,6 +70,14 @@ export interface CreateOneWorkItemArgs {
   force?: boolean;
   /** Internal DRAIN rail derived by the tool handler from live mode state. */
   requireCompleteDedupCoverage?: boolean;
+  /** Internal GOAL rail (P-004, goal-mode-design-intent-hardening-2026-08-16),
+   *  derived by the tool handler from the creator's RESOLVED goal context — never a
+   *  tool argument (same operative rule as requireCompleteDedupCoverage above and
+   *  the goal-provenance stamps: self-report is what this replaces). When set, the
+   *  dedup probes run even under force:true, and a create whose SEMANTIC leg is
+   *  down fails CLOSED ('dedup_unavailable') unless force is passed — the WI-39373
+   *  relapse was exactly a goal-mode create failing OPEN on a down semantic leg. */
+  goalDedupGate?: boolean;
   /** Atomic create+claim target (B-LOOP-4): the agent id to own the new item. */
   assign_to?: string;
   /**
@@ -328,7 +336,11 @@ export async function createOneWorkItem(
     // EI-316 lexical mirror-guard above cannot see). Hard match refuses (force:true
     // overrides, same contract as the mirror guard); soft match creates WITH an
     // advisory `similarOpen`. STRICTLY fail-open: null = "no verdict" = proceed.
-    const shouldScreen = !args.force || Boolean(args.requireCompleteDedupCoverage);
+    // P-004: a goal-mode create keeps the probes running even under force — force
+    // still bypasses the MATCH refusals below (only DRAIN overrides that), but the
+    // caller always gets the coverage verdict + candidates instead of a blind pass.
+    const shouldScreen =
+      !args.force || Boolean(args.requireCompleteDedupCoverage) || Boolean(args.goalDedupGate);
     let semanticLeg: WorkItemDedupCoverage['semantic'] = issueAdmission ? 'skipped' : 'skipped';
     let lexicalLeg: WorkItemDedupCoverage['lexical'] = issueAdmission ? 'skipped' : 'skipped';
     let similarOpen: SemanticDupeCandidate[] | undefined;
@@ -339,7 +351,9 @@ export async function createOneWorkItem(
         summary: args.summary,
         harness: args.harness ?? ctx.harnessSlug ?? undefined,
       });
-      if (issueAdmission) semanticLeg = dupes ? 'ok' : 'unavailable';
+      // P-004: under the goal gate the semantic leg's health matters for EVERY kind
+      // (the gate's whole point is "the probe actually ran"), not only issue-family.
+      if (issueAdmission || args.goalDedupGate) semanticLeg = dupes ? 'ok' : 'unavailable';
       if (dupes && dupes.hard.length > 0 && (!args.force || args.requireCompleteDedupCoverage)) {
         const canonical = selectCanonicalIssue(
           identity,
@@ -407,13 +421,20 @@ export async function createOneWorkItem(
         if (fresh.length > 0) similarOpen = [...(similarOpen ?? []), ...fresh];
       }
     }
+    // P-004: coverage is now computed for FEATURE-family creates too when the goal
+    // gate is on. The full-text lexical leg only queries engineer_issues (no
+    // feature/chunk rows), so for feature-family it is legitimately 'skipped' and
+    // must NOT count as degraded — only the semantic leg (the one that catches
+    // reworded titles across every kind) carries the verdict there.
     const dedupCoverage: WorkItemDedupCoverage | undefined = issueAdmission
       ? {
           lexical: lexicalLeg,
           semantic: semanticLeg,
           degraded: lexicalLeg !== 'ok' || semanticLeg !== 'ok',
         }
-      : undefined;
+      : args.goalDedupGate
+        ? { lexical: 'skipped', semantic: semanticLeg, degraded: semanticLeg !== 'ok' }
+        : undefined;
     if (args.requireCompleteDedupCoverage && dedupCoverage?.degraded) {
       return {
         ok: false,
@@ -422,6 +443,28 @@ export async function createOneWorkItem(
           `DRAIN bug admission requires complete dedup coverage; lexical=${dedupCoverage.lexical}, ` +
           `semantic=${dedupCoverage.semantic}. No work-item was created — retry when every leg is available.`,
         ...(similarOpen ? { similarOpen } : {}),
+      };
+    }
+    // P-004 (goal-mode-design-intent-hardening-2026-08-16): a GOAL-mode create whose
+    // dedup probe could not actually run fails CLOSED instead of open. The WI-39373
+    // relapse this hardens against: the probes RAN but semantic coverage was
+    // 'unavailable' — the ONLY leg that catches a reworded title — so the duplicate
+    // was admitted with a degraded marker stamped where nobody looks. Unlike DRAIN
+    // above, force:true remains an explicit escape for work that must land now; the
+    // coverage verdict + any candidates still come back on the result either way.
+    if (args.goalDedupGate && !args.force && dedupCoverage?.degraded) {
+      return {
+        ok: false,
+        error: 'dedup_unavailable',
+        message:
+          `goal-mode create requires a LIVE dedup probe and the semantic leg is down ` +
+          `(lexical=${dedupCoverage.lexical}, semantic=${dedupCoverage.semantic}) — a reworded ` +
+          `duplicate cannot be screened, which is how WI-39373 relapsed. No work-item was ` +
+          `created: retry when the probe is back, or pass force:true if this must land now ` +
+          `(the degraded coverage is then recorded on the item).`,
+        ...(similarOpen ? { similarOpen } : {}),
+        ...(issueAdmission ? { admissionIdentity: identity } : {}),
+        dedupCoverage,
       };
     }
     const exactIdentity = fulltextDupes?.find(
@@ -582,7 +625,12 @@ export async function createOneWorkItem(
     });
     const payloadWithAdmission = issueAdmission
       ? { ...(args.payload ?? {}), admissionIdentity: identity, dedupCoverage }
-      : args.payload;
+      : // P-004: a goal-gated feature-family create records its coverage verdict on
+        // the row too (admissionIdentity stays issue-only — it keys the occurrence
+        // ledger, which has no feature rows).
+        args.goalDedupGate && dedupCoverage
+        ? { ...(args.payload ?? {}), dedupCoverage }
+        : args.payload;
     const payloadWithHint =
       routingHint && !(payloadWithAdmission && 'routingHint' in payloadWithAdmission)
         ? { ...(payloadWithAdmission ?? {}), routingHint }
