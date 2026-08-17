@@ -11,16 +11,38 @@
  * because they are the whole reason a goal needs a record of its own.
  */
 
-import { describe, expect, it, beforeEach } from 'vitest';
+import { describe, expect, it, beforeEach, vi } from 'vitest';
 import tool, { goalId, GOAL_STATUSES } from './create';
+
+// ── P-010 (consult-min-max-and-rubric-vetting-2026-08-17): the goal-kickoff
+// consult's wiring is dynamically imported by the handler; mock every leg so
+// the consult branch is deterministic (no embedder, no PG, no liveness oracle)
+// and drivable per-test via `goalKickoffConsultMock`.
+const { goalKickoffConsultMock } = vi.hoisted(() => ({ goalKickoffConsultMock: vi.fn() }));
+vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: {} as never }) }));
+vi.mock('@papercusp/operator-core/lib/consult/relevance-router', () => ({ routeConsult: vi.fn() }));
+vi.mock('@papercusp/operator-core/lib/agent-tools/search/embedder', () => ({
+  buildQueryEmbedder: vi.fn(async () => vi.fn(async () => [0])),
+}));
+vi.mock('@papercusp/operator-core/lib/agent-tools/coordination/liveness-oracle', () => ({
+  resolveSessionStates: vi.fn(async () => new Map()),
+}));
+vi.mock('@papercusp/operator-core/lib/consult/plan-start-consult', () => ({
+  goalKickoffConsult: goalKickoffConsultMock,
+  fetchTurnExcerpts: vi.fn(async () => []),
+}));
 
 type Call = { sql: string; params: unknown[] };
 let calls: Call[] = [];
 let gucWorkspace: string | null = null;
-/** Whether the caller has a GOAL-mode row for the subject UPDATE to hit. */
+/** Whether the caller has a GOAL-mode row — answers BOTH the P-010 kickoff
+ * gating SELECT and the subject-stamp UPDATE (one definition of "in GOAL
+ * mode", same as the handler's shared predicate). */
 let callerInGoalMode = false;
 /** Forces the subject stamp to throw, proving the goal still gets created. */
 let modeUpdateThrows = false;
+/** Forces the kickoff gating SELECT to throw — the consult must fail OPEN. */
+let modeSelectThrows = false;
 
 /** A postgres-js-shaped tagged-template `tx` that records what it was asked. */
 function makeTx() {
@@ -28,6 +50,10 @@ function makeTx() {
     const sql = strings.join('?');
     calls.push({ sql, params });
     if (/current_setting/.test(sql)) return Promise.resolve([{ ws: gucWorkspace }]);
+    if (/SELECT[^]*FROM harness_shared\.agent_modes/.test(sql)) {
+      if (modeSelectThrows) return Promise.reject(new Error('agent_modes read is down'));
+      return Promise.resolve(callerInGoalMode ? [{ owner_id: 'su-test' }] : []);
+    }
     if (/UPDATE harness_shared\.agent_modes/.test(sql)) {
       if (modeUpdateThrows) return Promise.reject(new Error('agent_modes is on fire'));
       return Promise.resolve(callerInGoalMode ? [{ owner_id: 'su-test' }] : []);
@@ -63,6 +89,11 @@ beforeEach(() => {
   gucWorkspace = null;
   callerInGoalMode = false;
   modeUpdateThrows = false;
+  modeSelectThrows = false;
+  goalKickoffConsultMock.mockReset();
+  // Default: routing found nothing — the consult proceeds silently, so every
+  // pre-P-010 test observes the exact behaviour it always did.
+  goalKickoffConsultMock.mockResolvedValue({ outcome: 'proceed', verdict: 'no_qualified_responder' });
 });
 
 describe('goals:create — workspace resolution', () => {
@@ -342,5 +373,153 @@ describe('goalId', () => {
   it('bounds the stem so a long title cannot produce an unwieldy key', () => {
     const id = goalId('x'.repeat(300));
     expect(id.length).toBeLessThanOrEqual(48 + 1 + 6);
+  });
+});
+
+describe('goals:create — the GOAL-mode kickoff consult (P-010)', () => {
+  /**
+   * The consult is GATED on the caller's active GOAL-mode row: the owner UI
+   * confirm cards (GoalProposalCard, SubGoalsSection) call this tool as the
+   * OWNER with no goal-mode row and must never be nudge-refused. For a
+   * GOAL-mode agent it is a NUDGE, never a gate: one refusal with labeled
+   * candidates, always overridable, and any infra fault proceeds.
+   */
+  const peer = (ownerId: string, liveness: string, score = 0.7) => ({
+    ownerId,
+    score,
+    signals: { similarity: 0.6, recency: 0.5, verification: 0.2, authorship: 0 },
+    evidence: [{ session_id: `s-${ownerId}`, turn_idx: 1, ts: null, sim: 0.6 }],
+    liveness,
+  });
+  const nudgeOutcome = (via: 'floor' | 'minimum' = 'minimum') => ({
+    outcome: 'nudge',
+    candidates: [peer('su-peer', 'live')],
+    selection: { min: 1, max: 3, selected: [{ ownerId: 'su-peer', via, score: 0.7 }] },
+  });
+
+  it('nudge-refuses ONCE for a GOAL-mode caller — the goal is NOT created', async () => {
+    callerInGoalMode = true;
+    goalKickoffConsultMock.mockResolvedValue(nudgeOutcome());
+    const res = await call(ARGS({ killCriterion: 'no paying user by day 30' }), CTX());
+    const data = res.data as { error: string; candidates: unknown[]; hint: string };
+    expect(data.error).toBe('consult_available');
+    expect(data.candidates).toHaveLength(1);
+    // The minimum-fill selectee gets the first-principles line in the hint.
+    expect(data.hint).toMatch(/FIRST PRINCIPLES/);
+    expect(res.degraded).toBe(true);
+    expect(res.degradedReasons?.join(' ')).toMatch(/NOT created/);
+    expect(calls.some((c) => /INSERT INTO/.test(c.sql))).toBe(false);
+    // The consult received the OUTLINE, requester-scoped.
+    expect(goalKickoffConsultMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workspaceId: 'papercusp-workspace',
+        requesterId: 'su-test',
+        title: 'Ship a paid app',
+        killCriterion: 'no paying user by day 30',
+      }),
+      expect.anything(),
+    );
+  });
+
+  it('a floor-qualified selection omits the first-principles caveat', async () => {
+    callerInGoalMode = true;
+    goalKickoffConsultMock.mockResolvedValue(nudgeOutcome('floor'));
+    const res = await call(ARGS(), CTX());
+    expect((res.data as { hint: string }).hint).not.toMatch(/FIRST PRINCIPLES/);
+  });
+
+  it('NEVER consults a caller without a GOAL-mode row — the owner UI confirm-card path stays unrefused', async () => {
+    callerInGoalMode = false;
+    goalKickoffConsultMock.mockResolvedValue(nudgeOutcome());
+    const res = await call(ARGS(), CTX());
+    expect((res.data as { id?: string }).id).toBeTruthy();
+    expect(goalKickoffConsultMock).not.toHaveBeenCalled();
+    expect(calls.some((c) => /INSERT INTO/.test(c.sql))).toBe(true);
+  });
+
+  it('consulted: true acknowledges the refusal — no re-route, disposition recorded on the result', async () => {
+    callerInGoalMode = true;
+    const res = await call(
+      ARGS({ consulted: true, consult_reason: 'consulted su-peer; outline confirmed' }),
+      CTX(),
+    );
+    expect(goalKickoffConsultMock).not.toHaveBeenCalled();
+    const data = res.data as { id: string; kickoff_consult?: Record<string, unknown> };
+    expect(data.id).toBeTruthy();
+    expect(data.kickoff_consult).toMatchObject({
+      overridden: true,
+      consulted: true,
+      reason: 'consulted su-peer; outline confirmed',
+    });
+  });
+
+  it('consulted: false + reason proceeds without consulting, reason recorded', async () => {
+    callerInGoalMode = true;
+    const res = await call(ARGS({ consulted: false, consult_reason: 'time-critical kickoff' }), CTX());
+    expect(goalKickoffConsultMock).not.toHaveBeenCalled();
+    const data = res.data as { id: string; kickoff_consult?: Record<string, unknown> };
+    expect(data.id).toBeTruthy();
+    expect(data.kickoff_consult).toMatchObject({ overridden: true, consulted: false, reason: 'time-critical kickoff' });
+  });
+
+  it('arg contract: consulted:false without consult_reason is refused at parse; wire strings tolerated', () => {
+    expect(tool.args.safeParse({ title: 'x', consulted: false }).success).toBe(false);
+    expect(tool.args.safeParse({ title: 'x', consulted: false, consult_reason: 'why' }).success).toBe(true);
+    expect(tool.args.safeParse({ title: 'x', consulted: 'true' }).success).toBe(true);
+    expect(tool.args.parse({ title: 'x', consulted: 'false', consult_reason: 'why' }).consulted).toBe(false);
+  });
+
+  it('a consult infra fault proceeds — nudge never blocks the create', async () => {
+    callerInGoalMode = true;
+    goalKickoffConsultMock.mockRejectedValue(new Error('router down'));
+    const res = await call(ARGS(), CTX());
+    expect((res.data as { id?: string }).id).toBeTruthy();
+    expect(calls.some((c) => /INSERT INTO/.test(c.sql))).toBe(true);
+  });
+
+  it('the gating probe fails OPEN: an agent_modes read fault skips the consult and creates', async () => {
+    callerInGoalMode = true;
+    modeSelectThrows = true;
+    goalKickoffConsultMock.mockResolvedValue(nudgeOutcome());
+    const res = await call(ARGS(), CTX());
+    expect((res.data as { id?: string }).id).toBeTruthy();
+    expect(goalKickoffConsultMock).not.toHaveBeenCalled();
+  });
+
+  it('routed_dead_context annotates the create with excerpts instead of refusing', async () => {
+    callerInGoalMode = true;
+    goalKickoffConsultMock.mockResolvedValue({
+      outcome: 'proceed_with_excerpts',
+      candidates: [peer('su-dead', 'ended')],
+      excerpts: [
+        { ownerId: 'su-dead', session_id: 's-su-dead', turn_idx: 1, ts: null, sim: 0.6, excerpt: 'I tried this…' },
+      ],
+    });
+    const res = await call(ARGS(), CTX());
+    const data = res.data as {
+      id: string;
+      kickoff_consult?: { verdict: string; excerpts: unknown[]; candidates: Array<{ ownerId: string }> };
+    };
+    expect(data.id).toBeTruthy();
+    expect(data.kickoff_consult?.verdict).toBe('routed_dead_context');
+    expect(data.kickoff_consult?.excerpts).toHaveLength(1);
+    expect(data.kickoff_consult?.candidates).toEqual([
+      expect.objectContaining({ ownerId: 'su-dead', liveness: 'ended' }),
+    ]);
+  });
+
+  it('no_live_responder is recorded honestly on the created goal', async () => {
+    callerInGoalMode = true;
+    goalKickoffConsultMock.mockResolvedValue({ outcome: 'proceed', verdict: 'no_live_responder' });
+    const res = await call(ARGS(), CTX());
+    const data = res.data as { id: string; kickoff_consult?: { verdict: string } };
+    expect(data.id).toBeTruthy();
+    expect(data.kickoff_consult?.verdict).toBe('no_live_responder');
+  });
+
+  it('the silent verdict (no_qualified_responder) stays silent — no kickoff_consult clutter', async () => {
+    callerInGoalMode = true;
+    const res = await call(ARGS(), CTX());
+    expect((res.data as { kickoff_consult?: unknown }).kickoff_consult).toBeUndefined();
   });
 });

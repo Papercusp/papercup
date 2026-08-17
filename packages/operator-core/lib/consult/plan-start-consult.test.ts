@@ -230,3 +230,81 @@ describe('buildPlanStartQuery', () => {
     expect(q.length).toBe(PLAN_START_QUERY_MAX_CHARS);
   });
 });
+
+describe('buildGoalKickoffQuery (P-010 — the goal OUTLINE as query document)', () => {
+  it('prefixes the title and carries body + labeled kill criterion', () => {
+    const q = buildGoalKickoffQuery({
+      title: 'Ship a paid app',
+      body: 'what winning looks like',
+      killCriterion: 'no paying user by day 30',
+    });
+    expect(q).toContain('goal Ship a paid app');
+    expect(q).toContain('what winning looks like');
+    expect(q).toContain('Kill criterion: no paying user by day 30');
+  });
+
+  it('omits absent/blank sections instead of emitting empty labels', () => {
+    const q = buildGoalKickoffQuery({ title: 'Ship it', body: '   ', killCriterion: null });
+    expect(q).toBe('goal Ship it');
+    expect(q).not.toContain('Kill criterion:');
+  });
+
+  it('caps at the same window as the plan query (shared embedder budget)', () => {
+    const q = buildGoalKickoffQuery({ title: 'T', body: 'x'.repeat(100_000) });
+    expect(q.length).toBe(PLAN_START_QUERY_MAX_CHARS);
+  });
+});
+
+describe('goalKickoffConsult (P-010 — same partition as the plan-step consult)', () => {
+  const goalParams = {
+    workspaceId: 'ws',
+    requesterId: 'su-me',
+    title: 'Ship a paid app',
+    body: 'scope + constraints',
+    killCriterion: 'no paying user by day 30',
+  };
+
+  it('routes the OUTLINE query — not a plan-slug query', async () => {
+    let seenQuestion = '';
+    const d = deps(routed([]));
+    const routeSpy: PlanStartConsultDeps['route'] = async (p) => {
+      seenQuestion = p.question;
+      return routed([]);
+    };
+    const out = await goalKickoffConsult(goalParams, { ...d, route: routeSpy });
+    expect(out).toEqual({ outcome: 'proceed', verdict: 'no_qualified_responder' });
+    expect(seenQuestion).toContain('goal Ship a paid app');
+    expect(seenQuestion).toContain('Kill criterion: no paying user by day 30');
+  });
+
+  it('delegates to the shared partition: live qualified → nudge via:"floor" (min:1 semantics intact)', async () => {
+    const out = await goalKickoffConsult(goalParams, deps(routed([candidate('su-live', 'live')])));
+    expect(out.outcome).toBe('nudge');
+    if (out.outcome === 'nudge') {
+      expect(out.selection.min).toBe(DEFAULT_MIN_RESPONDERS);
+      expect(out.selection.selected).toEqual([
+        expect.objectContaining({ ownerId: 'su-live', via: 'floor' }),
+      ]);
+    }
+  });
+
+  it('delegates the minimum-fill branch too: live below-floor → nudge via:"minimum"', async () => {
+    const out = await goalKickoffConsult(
+      goalParams,
+      deps(routed([], [candidate('su-below', 'live', 0.3)])),
+    );
+    expect(out.outcome).toBe('nudge');
+    if (out.outcome === 'nudge') {
+      expect(out.selection.selected).toEqual([
+        expect.objectContaining({ ownerId: 'su-below', via: 'minimum' }),
+      ]);
+    }
+  });
+
+  it('all-dead qualified → proceed_with_excerpts (retrieval, not consult)', async () => {
+    const d = deps(routed([candidate('su-dead', 'ended')]));
+    const out = await goalKickoffConsult(goalParams, d);
+    expect(out.outcome).toBe('proceed_with_excerpts');
+    expect(d.excerptCalls[0]).toEqual([{ ownerId: 'su-dead' }]);
+  });
+});
