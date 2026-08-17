@@ -82,6 +82,27 @@ vi.mock('../operator-home-harness', async (orig) => ({
   operatorHomeHarnessSlug: () => 'my-harness',
 }));
 
+// EI-20709645463022690: the SUBJECT-hive gate run is what the DSN fix is about, and the
+// fixture slug above IS the operator home — so the subject path is unreachable through the
+// real resolver here. Override the ROUTING only (never the env construction, which
+// hive-release-env.integration.test.ts pins directly): the test below is about what
+// release-actions DOES with a routing that carries clearEnv, i.e. the child's actual env.
+// Null override → the real resolver, so every other test in this file is untouched.
+// A PATCH over the real routing, not a replacement: `root` stays whatever the real resolver
+// produced (the tooling-availability guard runs against it, and a hand-invented root would
+// skip the suite instead of spawning it). Null → untouched real behavior for every other test.
+let routingPatch: Partial<import('./hive-release-env').CheckpointRouting> | null = null;
+vi.mock('./hive-release-env', async (orig) => {
+  const actual = await orig<typeof import('./hive-release-env')>();
+  return {
+    ...actual,
+    resolveCheckpointRouting: async (...a: Parameters<typeof actual.resolveCheckpointRouting>) => {
+      const real = await actual.resolveCheckpointRouting(...a);
+      return routingPatch ? { ...real, ...routingPatch } : real;
+    },
+  };
+});
+
 // importing register-system-actions runs every side-effect import (git-sync,
 // blueprint, release-actions) so the registry is populated as in production.
 import '../git-sync/git-sync-action';
@@ -926,6 +947,85 @@ describe('green-checkpoint scope isolation (2026-07-01 bg-host OOM blast-radius)
     const [cmd] = spawnMock.mock.calls[0] as [string, string[]];
     expect(cmd).not.toBe('systemd-run');
     expect(cmd).toContain('tsx');
+  });
+});
+
+/**
+ * EI-20709645463022690 — what the gate CHILD actually inherits.
+ *
+ * The bug was invisible at every layer that reads source or resolver output: the env
+ * construction looked right and the suite it broke lived in another repo. It is only
+ * observable in the env handed to `spawn`, so that is what these assert — the spawn OPTIONS,
+ * never the source text. (Part 2 of this same item shipped a source-regex pin AND a
+ * behavioural one precisely because the regex alone proved nothing about the artifact.)
+ */
+describe('green-checkpoint child env — subject-hive DSN isolation (EI-20709645463022690)', () => {
+  const GREEN_MARKER = '__GREEN_CHECKPOINT_RESULT__';
+  const okStdout = `${GREEN_MARKER} ${JSON.stringify({ reason: 'up-to-date', green: true })}\n`;
+  const AMBIENT_OPERATOR_DSN = 'postgres://operator:pw@127.0.0.1:5432/papercusp_operator_test';
+  const PAPERCUSP_ADMIN_DSN = 'postgres://operator:pw@127.0.0.1:5432/papercusp_admin_channel';
+  const TOUCHED = ['PAPERCUSP_CHECKPOINT_SCOPE', 'DATABASE_URL', 'PGHOST', 'HARNESS_ADMIN_DATABASE_URL'] as const;
+  let saved: Record<string, string | undefined>;
+
+  beforeEach(() => {
+    saved = Object.fromEntries(TOUCHED.map((k) => [k, process.env[k]]));
+    // Direct spawn (no systemd-run wrapper) so call[0] is the payload itself — the env is
+    // identical either way, but this keeps the assertion pointed at one unambiguous call.
+    process.env.PAPERCUSP_CHECKPOINT_SCOPE = '0';
+    // The operator's ambient DSN, exactly as the routine host carries it into the fire.
+    process.env.DATABASE_URL = AMBIENT_OPERATOR_DSN;
+    process.env.PGHOST = '127.0.0.1';
+  });
+  afterEach(() => {
+    routingPatch = null;
+    for (const k of TOUCHED) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k] as string;
+    }
+  });
+
+  function childEnv(): NodeJS.ProcessEnv {
+    const [, , opts] = spawnMock.mock.calls[0] as [string, string[], { env: NodeJS.ProcessEnv }];
+    return opts.env;
+  }
+
+  it('a SUBJECT hive: the child loses the ambient DATABASE_URL/PG* and gains the namespaced one', async () => {
+    routingPatch = {
+      extraEnv: { PAPERCUSP_RELEASE_SLUG: 'sidestage', HARNESS_ADMIN_DATABASE_URL: PAPERCUSP_ADMIN_DSN },
+      clearEnv: ['DATABASE_URL', 'PGHOST'],
+    };
+    spawnMock.mockImplementationOnce(() => fakeSpawn(okStdout, 0));
+    await getSystemAction('green-checkpoint')!(ctx);
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+    const env = childEnv();
+    // THE BUG: before the fix these two were present and the pot's suite dialed papercusp.
+    expect(env.DATABASE_URL).toBeUndefined();
+    expect(env.PGHOST).toBeUndefined();
+    // …and the half that keeps the gate's OWN bookkeeping working after the clear.
+    expect(env.HARNESS_ADMIN_DATABASE_URL).toBe(PAPERCUSP_ADMIN_DSN);
+    // Scoped deletion, not a wiped env: the rest of the inherited environment is intact
+    // (without this control, an env cleared to `{}` would also satisfy the two asserts above).
+    expect(env.PATH).toBe(process.env.PATH);
+    expect(env.PAPERCUSP_RELEASE_SLUG).toBe('sidestage');
+  });
+
+  it('an overlay entry naming a CLEARED key still wins — deletions apply to the inherited env only', async () => {
+    // The ordering that makes the fix expressible at all: clear the inherited DATABASE_URL,
+    // then let an explicit overlay value (a hive that genuinely supplies its own DSN) land.
+    // If the deletion ran AFTER the overlay, this key would come back undefined.
+    routingPatch = { extraEnv: { DATABASE_URL: 'postgres://pot-own/db' }, clearEnv: ['DATABASE_URL'] };
+    spawnMock.mockImplementationOnce(() => fakeSpawn(okStdout, 0));
+    await getSystemAction('green-checkpoint')!(ctx);
+    expect(childEnv().DATABASE_URL).toBe('postgres://pot-own/db');
+  });
+
+  it('operator-home (clearEnv []) keeps its inherited DSN — papercusp\'s own pipeline is byte-identical (D-007)', async () => {
+    routingPatch = null; // the real resolver: ctx.installSlug IS the mocked operator home
+    spawnMock.mockImplementationOnce(() => fakeSpawn(okStdout, 0));
+    await getSystemAction('green-checkpoint')!(ctx);
+    const env = childEnv();
+    expect(env.DATABASE_URL).toBe(AMBIENT_OPERATOR_DSN);
+    expect(env.PGHOST).toBe('127.0.0.1');
   });
 });
 
