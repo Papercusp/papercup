@@ -156,6 +156,95 @@ export function baselineFromArtifacts(
   };
 }
 
+export interface BaselinePromotionRefusal {
+  reason: 'coverage-shrink' | 'contended-host';
+  /** Human-readable refusal, already naming the override that would accept it. */
+  message: string;
+  /** The `entryKey`s the promotion would have dropped (coverage-shrink only). */
+  droppedKeys: string[];
+  /** The exact CLI flag that accepts this specific risk. */
+  overrideFlag: string;
+}
+
+/**
+ * Decide whether a `--update-baseline` promotion may overwrite the committed
+ * baseline. Returns the refusals that apply; an empty array means promote.
+ *
+ * WHY THIS EXISTS. `--update-baseline` rewrites the baseline from THE CURRENT
+ * RUN ONLY, and its name does not say so. The committed `baselines/tier1.json`
+ * is the fleet's regression threshold, so two ordinary mistakes silently
+ * destroy it:
+ *
+ *  1. COVERAGE SHRINK — a partial run (`--scenario x --profile smoke`) produces
+ *     one entry and collapses a 17-entry reference to that one entry. Nothing
+ *     errors; the file just quietly stops guarding 16 cells. Measured on
+ *     2026-08-16: a 3-peer smoke run would have replaced all 17 committed
+ *     entries had it been pointed at the real path.
+ *  2. CONTENDED HOST — a run the runner ITSELF flagged `oversubscribed` bakes
+ *     shared-box contention in as the threshold every future run is judged
+ *     against, which is strictly worse than having no baseline: it moves the
+ *     bar in the direction that hides real regressions.
+ *
+ * Both are fail-closed with a SEPARATE override each, deliberately: a single
+ * blanket `--force` would let someone who meant to accept a shrink also
+ * silently accept a contended capture. A legitimate rebaseline — full profile,
+ * quiet box — trips neither and needs no flag.
+ *
+ * This is a pure decision over two `BaselineFile`s so it is provable without
+ * driving the runner's `main()` or writing to the shared tree.
+ */
+export function checkBaselinePromotion(opts: {
+  /** The baseline currently on disk, or null when there is none yet. */
+  existing: BaselineFile | null;
+  /** The baseline this run would write. */
+  next: BaselineFile;
+  /** The runner's own host verdict for this run (`hostLoad.oversubscribed`). */
+  hostOversubscribed: boolean;
+  allowShrink: boolean;
+  allowContended: boolean;
+}): BaselinePromotionRefusal[] {
+  const refusals: BaselinePromotionRefusal[] = [];
+
+  // Creating a baseline where none exists drops no coverage — only an
+  // OVERWRITE can shrink one.
+  if (opts.existing && !opts.allowShrink) {
+    const nextKeys = new Set(opts.next.entries.map((e) => entryKey(e.scenario, e.params)));
+    const droppedKeys = opts.existing.entries
+      .map((e) => entryKey(e.scenario, e.params))
+      .filter((k) => !nextKeys.has(k));
+    if (droppedKeys.length) {
+      refusals.push({
+        reason: 'coverage-shrink',
+        droppedKeys,
+        overrideFlag: '--allow-baseline-shrink',
+        message:
+          `REFUSING to overwrite the baseline: this run covers ${opts.next.entries.length} ` +
+          `entr${opts.next.entries.length === 1 ? 'y' : 'ies'} but the existing baseline covers ` +
+          `${opts.existing.entries.length}, so promoting it would DROP ${droppedKeys.length} ` +
+          `cell(s) the fleet currently regression-guards:\n` +
+          droppedKeys.map((k) => `    - ${k}`).join('\n') +
+          `\n  A baseline is only meant to be re-captured by a run that covers at least what it ` +
+          `replaces — re-run the FULL profile, or pass --allow-baseline-shrink to accept the loss.`,
+      });
+    }
+  }
+
+  if (opts.hostOversubscribed && !opts.allowContended) {
+    refusals.push({
+      reason: 'contended-host',
+      droppedKeys: [],
+      overrideFlag: '--allow-contended-baseline',
+      message:
+        `REFUSING to overwrite the baseline: this run was flagged HOST OVERSUBSCRIBED, so its ` +
+        `numbers measure shared-box contention as much as this code. Promoting them makes the ` +
+        `fleet's regression threshold permanently lenient, which HIDES future regressions. ` +
+        `Re-capture on a quiet host, or pass --allow-contended-baseline to accept it.`,
+    });
+  }
+
+  return refusals;
+}
+
 export interface RollingBaselineOpts {
   /**
    * Quantile of the historical p95 series used as the reference. Defaults to
