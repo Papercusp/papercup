@@ -42,6 +42,12 @@ export const scorecardEmitArgs = z
       .max(120)
       .optional()
       .describe('Issue id of the earlier scorecard this corrected filing replaces.'),
+    terminal: z
+      .boolean()
+      .optional()
+      .describe(
+        "Affirm the graded SUBJECT has terminated (P-008). Without it, rating any 'violatable'-class criterion stamps the card PROVISIONAL — a working note excluded from rubrics:trend until a terminal re-emit (terminal:true, supersedes the interim) makes the grading final.",
+      ),
     force: z
       .boolean()
       .optional()
@@ -112,6 +118,19 @@ export async function emitScorecard(
         instrumentContract,
       };
     }
+    // P-008 (EI-20581177540737568): a 'violatable' criterion is monotonic-downward — one
+    // violation falsifies it permanently — so a mid-run rating of one cannot be final.
+    // DEFAULT IS PROVISIONAL: the emitter must AFFIRM subject termination (terminal:true)
+    // to file a final card. Forgetting the flag yields a card that doesn't count toward
+    // the trend, never a false final (WI-39348's exemplary went stale 28 minutes after
+    // an honest interim grade; the burden now sits on the safe side by construction).
+    const violatableRatedKeys = rubric.criteria
+      .filter((c) => c.criterionClass === 'violatable' && ratings[c.key] !== undefined)
+      .map((c) => c.key);
+    const provisional =
+      !args.terminal && violatableRatedKeys.length > 0
+        ? { violatableKeys: violatableRatedKeys, stampedAt: new Date().toISOString() }
+        : undefined;
     const sourceHive = args.sourceHive ?? input.ctxHarness;
     if (args.supersedes) {
       const superseded = await getIssue(args.supersedes);
@@ -143,7 +162,16 @@ export async function emitScorecard(
         scorecardEvidenceFingerprint({ rubricRef: latest.rubricRef, ratings: latest.ratings })
       : null;
     const sameCorrectionAlreadyExists = args.supersedes && latest?.supersedes === args.supersedes;
-    if (!args.force && latestFingerprint === evidenceFingerprint && (!args.supersedes || sameCorrectionAlreadyExists)) {
+    // P-008: a terminal re-emit of IDENTICAL ratings is the finalization step, not a
+    // duplicate — the fingerprint (rubricRef+ratings+snapshots, unchanged for
+    // compatibility with stored rows) cannot see finality, so compare it separately.
+    const finalityChanged = latest !== undefined && (latest.provisional !== undefined) !== (provisional !== undefined);
+    if (
+      !args.force &&
+      !finalityChanged &&
+      latestFingerprint === evidenceFingerprint &&
+      (!args.supersedes || sameCorrectionAlreadyExists)
+    ) {
       const acceptanceGraderCleanup = rubric.kind === 'acceptance' && input.role === 'judge'
         ? await cleanupAcceptanceGraderTasks(args.rubricRef, { workspaceId: input.workspaceId })
         : undefined;
@@ -182,6 +210,7 @@ export async function emitScorecard(
           evidenceFingerprint,
           ...(args.supersedes ? { supersedes: args.supersedes } : {}),
           ...(gradedGeneration ? { gradedGeneration } : {}),
+          ...(provisional ? { provisional } : {}),
         },
       },
     });
@@ -206,6 +235,9 @@ export async function emitScorecard(
       evidenceFingerprint,
       ...(args.supersedes ? { supersedes: args.supersedes } : {}),
       canonicalRatings: ratings,
+      // P-008: surfaced loudly so the emitter knows this card is a working note — a
+      // terminal re-emit (terminal:true, supersedes this issueId) finalizes it.
+      ...(provisional ? { provisional } : {}),
       ...(acceptanceGraderCleanup ? { acceptanceGraderCleanup } : {}),
     };
   } catch (error) {
