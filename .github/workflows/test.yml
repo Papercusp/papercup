@@ -318,6 +318,19 @@ jobs:
         if: ${{ !cancelled() }}
         run: npm run lint:no-raw-block-edge
 
+      # no-raw-goal-holder-read guard (goal-live-holder-guarantee-2026-08-18 P-001 / D-003):
+      # a goal's holder is an `agent_modes` row (mode='goal', subject=<goal id>) that
+      # OUTLIVES the session that wrote it — nothing clears it on death, so counting rows
+      # reports a goal nobody has touched in days as staffed. Measured: 4 of 6 active goals
+      # dark 2-5 days while every surface called them held; the Blender's steward gone six
+      # days with the row still naming it. The liveness fold lives in ONE module
+      # (operator-core/lib/goals/holder.ts) and was never hard to write — it was easy to
+      # FORGET, and forgetting it fails nothing. A behaviour test cannot observe a call site
+      # that never calls it, which is the gap this closes. BASELINE is EMPTY and must stay so.
+      - name: Lint no raw goal-holder read
+        if: ${{ !cancelled() }}
+        run: npm run lint:no-raw-goal-holder-read
+
       # no-unenrolled-detached-spawn guard (task-manager-no-escape-2026-07-27 P-016):
       # the PROCESS analogue of the setInterval guard above. A `detached: true` spawn
       # is a process meant to OUTLIVE the call that made it — the root of a subtree —

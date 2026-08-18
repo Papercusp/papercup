@@ -1056,6 +1056,28 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     appliesTo: (f) => f === "papercusp-desktop/bin/lib/federation-asserts.sh",
   },
   {
+    // goal-live-holder-guarantee-2026-08-18 P-001 / D-003 — lint:no-raw-goal-holder-read.
+    // The guard scans EVERY tracked .ts/.mjs in the repo for a raw read of "who holds this
+    // goal" that skips the liveness fold, but its enforcing test lives in
+    // @papercusp/operator-core. Without this entry, a bypass introduced in agent-mcp, the
+    // sidecar, or a HUD model would only be judged when operator-core happened to be
+    // independently affected — the partial-enforcement hole check-lint-guard-reachability
+    // names, and precisely the hole that let the fold exist in two system-health sweeps and
+    // nowhere else for the surfaces a human actually looks at.
+    //
+    // Cheap: pure text scan of tracked files, no tsc, no DB, no network.
+    workspace: "@papercusp/operator-core",
+    script: "lint:no-raw-goal-holder-read",
+    // Mirror of the script's own isExcluded filter: judge a changed path only if the guard
+    // would actually scan it.
+    appliesTo: (f) =>
+      /\.(ts|mjs|cjs)$/.test(f) &&
+      !/\.(test|spec)\.[cm]?tsx?$/.test(f) &&
+      !/(^|\/)(dist|build|node_modules|_retired|db-sql|env-sidecars)\//.test(f) &&
+      !f.startsWith("papercup-release/") &&
+      !f.startsWith("papercup-checkpoint/"),
+  },
+  {
     // WI-39608 — the guard that keeps `scripts/mutation-probe.sh`'s copy-paste EXAMPLE
     // runnable. Its three subjects do NOT route together: the two shell scripts select
     // @papercusp/operator-core (so the guard's own suite runs), but the test the example

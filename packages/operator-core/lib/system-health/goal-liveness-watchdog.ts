@@ -47,10 +47,31 @@
  *    defect being fixed, and an escalation fixes it. Deliberate scope choice.
  *  - Dedup is delegated to openEscalation's (dedupKind, subjectSignature) PG
  *    dedup — cluster-safe, no new state surface.
+ *
+ * P-005 (goal-dag-shared-substrate-2026-08-18): the same sweep also reads each
+ * active goal's DAG readiness (derived on read, D-006) and reports — never acts
+ * on — two more conditions:
+ *  - BECAME-READY: a goal with blocked-by edges whose blockers are now all
+ *    satisfied, with nobody alive on it. Readiness at goal level is an
+ *    ACTIVATION gate, never dispatch (D-003): becoming ready produces this
+ *    surfaced OFFER, and a human or the parent goal's agent decides to start
+ *    it. The watchdog never auto-starts.
+ *  - PREMISE-INVALIDATED: a goal with a KILLED goal-blocker (D-002 — killed
+ *    invalidates the dependent's premise and never silently unblocks). Fired
+ *    regardless of holder liveness: a live holder needs the review too.
  */
 import type { Sql } from 'postgres';
 
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
+import type { GoalSqlTag } from '@papercusp/agent-mcp/goals';
+import {
+  goalReadiness,
+  blockerStatusKey,
+  readGoalBlockedByEdges,
+  resolveBlockerStatuses,
+  type GoalBlockerView,
+  type GoalReadiness,
+} from '@papercusp/agent-mcp/goal-deps';
 import { openEscalation } from '../agent-tools/coordination/escalations';
 import type { AgentIdentity } from '../agent-tools/coordination/identity';
 import type { LivenessVerdict } from '../agent-tools/coordination/liveness-oracle';

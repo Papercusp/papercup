@@ -38,6 +38,18 @@
 // package leaves it inferred for the same reason.
 
 import { GOAL_SPEND_SNAPSHOT_SOURCE, GOAL_SPEND_TICK_SOURCE } from '@papercusp/db-org';
+// P-001 — goal-live-holder-guarantee-2026-08-18: ROW PRESENCE IS NOT LIVENESS.
+// A goal-mode row outlives the session that wrote it, so both surfaces below
+// (the board and the popup) reported goals dark for days as staffed. The
+// classification lives in ONE module; these are its read-side consumers.
+import {
+  goalHolderKey,
+  resolveGoalHoldersBatchFromRows,
+  resolveGoalHoldersFromRows,
+  resolveHolderLiveness,
+  type GoalHolderLiveness,
+  type GoalHolderRow,
+} from '../goals/holder';
 
 export interface GoalTripwire {
   metric: string;
