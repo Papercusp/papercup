@@ -84,6 +84,7 @@ import {
   resolveTaskBudget,
   resolveWorkerMemoryMb,
   runBudgetedTasks,
+  timeoutDurationEstimate,
   writeDurationHistoryAtomic,
 } from "./lib/budgeted-task-scheduler.mjs";
 import {
@@ -2897,7 +2898,11 @@ function runCapturedTask(
     ? { ...context.t, script: scriptOverride }
     : context.t;
   const spawnTaskKey = taskKey(spawnTask);
-  const taskDurationMs = durationEstimate(durationHistory, spawnTaskKey);
+  // EI-20803703725014949: the WATCHDOG bound uses the peak-aware estimate, not
+  // the ordering EWMA — an EWMA of a bimodal task (lane-stateful: ~7m vs ~45m)
+  // collapses the timeout to the floor and turns it into a coin flip against
+  // the honest slow mode. Ordering (estimateMs at runBudgetedTasks) keeps the EWMA.
+  const taskDurationMs = timeoutDurationEstimate(durationHistory, spawnTaskKey);
   const taskTimeoutMs = resolveTaskTimeoutMs({
     overrideMs: BATCH_TIMEOUT_OVERRIDE_MS,
     floorMs: BATCH_TIMEOUT_FLOOR_MS,
