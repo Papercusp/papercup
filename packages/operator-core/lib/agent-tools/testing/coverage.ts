@@ -248,18 +248,20 @@ export function assembleCoverage(input: CoverageRawInput) {
 
   const byKindMap = new Map<
     string,
-    { surfaces: number; meets: number; waived: number; fid: FidelityCounts }
+    { surfaces: number; meets: number; waived: number; belowUnwaived: number; fid: FidelityCounts }
   >();
   for (const r of input.byKindRows) {
     const entry = byKindMap.get(r.kind) ?? {
       surfaces: 0,
       meets: 0,
       waived: 0,
+      belowUnwaived: 0,
       fid: emptyFidelityCounts(),
     };
     entry.surfaces += num(r.n);
     entry.meets += num(r.meets);
     entry.waived += num(r.waived);
+    entry.belowUnwaived += num(r.below_unwaived);
     if ((FIDELITY_ORDER as readonly string[]).includes(r.fidelity)) {
       entry.fid[r.fidelity as Fidelity] += num(r.n);
     }
@@ -318,6 +320,7 @@ export function assembleCoverage(input: CoverageRawInput) {
         surfaces,
         meets: num(totals?.meets_floor),
         waived: num(totals?.waived),
+        belowUnwaived: num(totals?.below_unwaived_floor),
         fidelityCounts,
       }),
       /** Every rung, so a caller sees the shape of the ladder without four calls.
@@ -329,6 +332,9 @@ export function assembleCoverage(input: CoverageRawInput) {
             surfaces,
             meets: num(totals?.[RUNGS[r].column as keyof NonNullable<CoverageRawInput['totals']>]),
             waived: num(totals?.waived),
+            belowUnwaived: num(
+              totals?.[`below_unwaived_${r}` as keyof NonNullable<CoverageRawInput['totals']>],
+            ),
             fidelityCounts,
           }),
         ]),
@@ -342,6 +348,7 @@ export function assembleCoverage(input: CoverageRawInput) {
           surfaces: v.surfaces,
           meets: v.meets,
           waived: v.waived,
+          belowUnwaived: v.belowUnwaived,
           fidelityCounts: v.fid,
         }),
       }))
@@ -545,6 +552,11 @@ export async function readCoverage(args: CoverageArgs) {
         meets_l3: string;
         meets_l4: string;
         meets_floor: string;
+        below_unwaived_l1: string;
+        below_unwaived_l2: string;
+        below_unwaived_l3: string;
+        below_unwaived_l4: string;
+        below_unwaived_floor: string;
       }[]
     >`
       SELECT count(*)                                                      AS surfaces,
@@ -576,7 +588,15 @@ export async function readCoverage(args: CoverageArgs) {
     `;
 
     const byKindRows = await sql<
-      { kind: string; surfaces: string; meets: string; waived: string; fidelity: string; n: string }[]
+      {
+        kind: string;
+        surfaces: string;
+        meets: string;
+        waived: string;
+        below_unwaived: string;
+        fidelity: string;
+        n: string;
+      }[]
     >`
       SELECT kind,
              fidelity,
