@@ -247,7 +247,21 @@ function iso(v: string | Date | null): string | null {
   return v instanceof Date ? v.toISOString() : String(v);
 }
 
-function toSummary(r: RawGoal): GoalSummaryRow {
+/**
+ * A goal summary BEFORE its holder liveness is folded in (P-001).
+ *
+ * This type exists so `GoalSummaryRow` is UNCONSTRUCTIBLE without going through
+ * `withHolderLiveness`. The liveness join was never hard to write — it was easy
+ * to forget, and forgetting it is silent: a board rendering the raw mode rows
+ * reports goals dark for days as staffed, and nothing anywhere fails. Making
+ * the annotated shape the only reachable one moves that from a discipline
+ * nobody can enforce to a thing the compiler will not let you skip.
+ */
+type GoalSummaryRowBase = Omit<GoalSummaryRow, 'agents' | 'holderLiveness'> & {
+  agents: Array<{ ownerId: string; setAtMs: number }>;
+};
+
+function toSummary(r: RawGoal): GoalSummaryRowBase {
   const metadata = r.metadata ?? {};
   const spentCents =
     // Either measured source: the agent-verified pots rollup (goals:update) or
@@ -424,8 +438,16 @@ export async function resolveGoalsList(args: {
              -- but a goal with TWO is a coordination fault worth seeing, and
              -- picking one would hide it. COALESCE to '[]' so "no agents" is a
              -- list, never SQL NULL.
+             -- P-001: setAtMs rides along because ROW PRESENCE IS NOT LIVENESS.
+             -- The rows fetched here are folded through resolveHolderLiveness in
+             -- withHolderLiveness before they can become a GoalSummaryRow, and
+             -- set_at is that fold's evidence timestamp. This is NOT a second
+             -- definition of who holds a goal — the classification lives in
+             -- lib/goals/holder.ts.
              (SELECT COALESCE(
-                       json_agg(json_build_object('ownerId', am.owner_id)
+                       json_agg(json_build_object(
+                                  'ownerId', am.owner_id,
+                                  'setAtMs', (extract(epoch FROM am.set_at) * 1000)::bigint)
                                 ORDER BY am.set_at DESC),
                        '[]'::json)
                 FROM harness_shared.agent_modes am
