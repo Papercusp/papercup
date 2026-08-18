@@ -54,8 +54,19 @@ export interface GoalSummaryRow {
   status: string;
   parentId: string | null;
   /** The agents working this goal (agent_modes mode='goal'), so the HUD Goals
-   *  tab can filter by agent id. A LIST — see the subselect's comment. */
-  agents: Array<{ ownerId: string }>;
+   *  tab can filter by agent id. A LIST — see the subselect's comment.
+   *
+   *  P-001: each carries its LIVENESS, because the mode row alone does not mean
+   *  anyone is there. The row outlives the session that wrote it and nothing
+   *  clears it on death, so a board rendering `agents.length` was reporting
+   *  goals dark for days as staffed. `live: null` means UNRESOLVABLE, never
+   *  dead — see `holderLiveness`. */
+  agents: Array<{ ownerId: string; live: boolean | null; sessionState: string | null }>;
+  /** The goal's holder verdict, computed fresh on this read (P-001):
+   *  `held` (someone is positively alive on it) | `unheld` (never picked up) |
+   *  `lost` (holders exist, all resolved, none alive) | `unknown` (at least one
+   *  holder could not be resolved — NOT evidence of death). */
+  holderLiveness: GoalHolderLiveness;
   killCriterion: string | null;
   tripwires: GoalTripwire[];
   budgetCents: number | null;
