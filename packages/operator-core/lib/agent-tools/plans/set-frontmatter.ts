@@ -96,7 +96,7 @@ export function applyFrontmatterBlock(current: string, fmBlock: string): string 
   return fmBlock + '\n\n' + current;
 }
 
-/** Convert a legacy body and enforce the terminal-Now invariant in the same write. */
+/** Convert a legacy body and enforce the Now-block invariants in the same write. */
 export function buildFirstClassPlanBody(
   current: string,
   args: z.infer<typeof argsSchema>,
