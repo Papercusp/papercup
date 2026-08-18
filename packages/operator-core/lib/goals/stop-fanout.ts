@@ -43,6 +43,8 @@
  * only `status` will still be wrong — which is why `degraded` is set alongside it.
  */
 
+import type { Sql } from 'postgres';
+
 import { getOrgPg, potsForGoal } from '@papercusp/db-org';
 import {
   setGoalTransitionExecutor,
@@ -57,26 +59,32 @@ import {
 import { pausePotState, resumePotState } from '../pot/pause-core';
 import { deactivateLoop, loopRoutineName } from '../harness/routines/loop';
 import { setMode } from '../modes/store';
+import { readGoalHolderRows } from './holder';
 
 /**
  * Session owner ids running GOAL mode for this goal. Presence of the row IS the
  * attribution: clearing a mode DELETEs it (modes/store.ts), so there is no enabled
  * flag to filter on.
+ *
+ * P-001: goes through the canonical holder read, but deliberately takes the
+ * UNFILTERED holder list rather than `.live`. STOP is the one goal-holder read
+ * where liveness must NOT narrow the set: the whole point is to disarm every
+ * session ever attributed to this goal, and a holder the oracle calls dead may
+ * still hold an armed loop that will wake it (that combination — a row whose
+ * session is gone but whose loop is not — is precisely the residue stop exists
+ * to clear). Disarming a genuinely-dead owner's loop is a harmless no-op;
+ * skipping a live one is a fleet still burning after the owner pressed stop.
  */
 async function attributedOwners(
   sql: ReturnType<typeof getOrgPg>['sql'],
   workspaceId: string,
   goalId: string,
 ): Promise<string[]> {
-  const rows = await sql<Array<{ owner_id: string }>>`
-    SELECT DISTINCT owner_id
-      FROM harness_shared.agent_modes
-     WHERE workspace_id = ${workspaceId}
-       AND mode = 'goal'
-       AND subject = ${goalId}
-       AND owner_id IS NOT NULL
-  `;
-  return rows.map((r) => r.owner_id);
+  const rows = await readGoalHolderRows(sql as unknown as Sql, {
+    workspaceId,
+    goalIds: [goalId],
+  });
+  return [...new Set(rows.map((r) => r.ownerId))];
 }
 
 /**

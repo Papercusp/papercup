@@ -497,7 +497,7 @@ function sweepDeps(
   sql: Sql,
   overrides: Partial<GoalDrainFleetSweepDeps>,
 ): GoalDrainFleetSweepDeps {
-  const resolveLiveness = overrides.resolveLiveness ?? defaultResolveLiveness;
+  const resolveLiveness = overrides.resolveLiveness ?? resolveHolderLiveness;
   return {
     readGoals: makeReadGoals(sql),
     resolveLiveness,
