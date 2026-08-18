@@ -127,6 +127,7 @@ describe('applyFleetPauseHolds — the pause leg', () => {
 
   it('fails soft when the QUERY throws — a hold failure never wedges the pause', async () => {
     sqlThrows = true;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
     // A throw from the write path is caught per-item (test above); a throw from the
     // query is caught by the outer guard. Neither may propagate: the control flip —
@@ -142,6 +143,10 @@ describe('applyFleetPauseHolds — the pause leg', () => {
     // matched", or a pause that protects nothing looks exactly like a pause with nothing
     // to protect — which is how the original bug would return wearing a "fixed" label.
     expect(res.degraded).toContain('pg down');
+    // The operator-visible half of that signal.
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0]![0])).toContain('lane NOT protected');
+    warn.mockRestore();
   });
 
   it('a healthy empty result is NOT marked degraded', async () => {
@@ -193,5 +198,23 @@ describe('fleetPauseHoldMarker', () => {
   it('control: a fleet-INDEPENDENT marker is caught by the same property', () => {
     const wrong = (_slug: string) => '[fleet-pause]';
     expect(wrong('a')).toBe(wrong('b'));
+  });
+});
+
+describe('control: the holder-column assertion is falsifiable', () => {
+  // Proves the `taken_by` guard above DISCRIMINATES rather than merely passing. The
+  // regression it exists to catch is not hypothetical — it is the bug this module
+  // actually shipped in its first draft, where `assignee` (a tool-layer projection name
+  // with no column behind it) raised 42703 and the fail-soft catch hid it entirely.
+  // Mutating the real module to re-prove this would dirty a swept shared tree, so the
+  // wrong implementation lives here permanently instead (repo mutation-probe tier 1).
+  const wrongSql = `SELECT w.feature_id FROM harness_shared.work_items w WHERE w.assignee IS NOT NULL`;
+  const rightSql = `SELECT w.feature_id FROM harness_shared.work_items w WHERE w.taken_by IS NOT NULL`;
+
+  it('the wrong column FAILS both assertions the real query passes', () => {
+    expect(wrongSql).not.toContain('w.taken_by');
+    expect(wrongSql).toContain('assignee');
+    expect(rightSql).toContain('w.taken_by');
+    expect(rightSql).not.toContain('assignee');
   });
 });
