@@ -12,6 +12,7 @@ import {
   mergeDurationHistory,
   readDurationHistory,
   resolveGlobalWorkerBudget,
+  resolveMemoryBudgetMb,
   resolveTaskBudget,
   resolveWorkerMemoryMb,
   runBudgetedTasks,
@@ -229,6 +230,55 @@ describe('resolveWorkerMemoryMb', () => {
         fallback: 1024,
       }),
     ).toBe(8192);
+  });
+});
+
+describe('resolveMemoryBudgetMb', () => {
+  // WI-39472: the caller's old default (workerBudget * workerMemoryMb) made memoryWorkerBudget
+  // identically equal to workerBudget, so resolveTaskBudget's Math.min could NEVER bind and the
+  // memory rail was inert. These cases pin the property that made it inert, so a regression to
+  // the old default fails here rather than silently un-arming the clamp again.
+  const base = { workerBudget: 8, workerMemoryMb: 1024 };
+
+  it('binds on available memory, so a loaded host admits fewer workers than its ceiling allows', () => {
+    // 4096 MiB available, 25% reserved => 3072 usable => 3 tokens, BELOW the 8-worker ceiling.
+    const budget = resolveMemoryBudgetMb({ ...base, memAvailableMb: 4096 });
+    expect(budget).toBe(3072);
+    expect(resolveTaskBudget({ ...base, memoryBudgetMb: budget, maxConcurrentTasks: 8, reserveWorkers: 1 }))
+      .toMatchObject({ memoryWorkerBudget: 3, effectiveWorkerBudget: 3, primaryWorkers: 2 });
+  });
+
+  it('NEVER widens the budget past the worker ceiling, however much memory is free', () => {
+    // A 1 TiB host must not admit more than the 8-worker ceiling can pay for.
+    expect(resolveMemoryBudgetMb({ ...base, memAvailableMb: 1024 * 1024 })).toBe(8 * 1024);
+  });
+
+  it('floors at one worker so a memory-starved host degrades to serial instead of throwing', () => {
+    // 100 MiB available would otherwise buy ZERO tokens, which resolveTaskBudget rejects outright.
+    expect(resolveMemoryBudgetMb({ ...base, memAvailableMb: 100 })).toBe(1024);
+    expect(() =>
+      resolveTaskBudget({ ...base, memoryBudgetMb: 1024, maxConcurrentTasks: 8, reserveWorkers: 1 }),
+    ).not.toThrow();
+  });
+
+  it('lets an explicit AFFECTED_GLOBAL_MEMORY_MB win over the measured host', () => {
+    expect(
+      resolveMemoryBudgetMb({ ...base, affectedGlobalMemoryMb: '2048', memAvailableMb: 999_999 }),
+    ).toBe(2048);
+  });
+
+  it('falls back to the ceiling when the host reading is unavailable, never to zero', () => {
+    expect(resolveMemoryBudgetMb({ ...base, memAvailableMb: null })).toBe(8 * 1024);
+    expect(resolveMemoryBudgetMb({ ...base, memAvailableMb: '' })).toBe(8 * 1024);
+  });
+
+  it('rejects a nonsensical reserve fraction instead of silently admitting everything', () => {
+    expect(() => resolveMemoryBudgetMb({ ...base, memAvailableMb: 4096, reserveFraction: 1 })).toThrow(
+      /reserveFraction/,
+    );
+    expect(() => resolveMemoryBudgetMb({ ...base, memAvailableMb: 4096, reserveFraction: -0.5 })).toThrow(
+      /reserveFraction/,
+    );
   });
 });
 
