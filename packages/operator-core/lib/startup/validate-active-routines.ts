@@ -28,6 +28,7 @@
  */
 
 import { getOrgPg } from '@papercusp/db-org';
+import { backgroundWorkersEnabled } from '../background-workers';
 import { resolveProject } from '../harness-core';
 import { isReservedHarnesslessRoutineHost } from '../harness/routines/routine-host';
 import { activeWorkspaceId } from '../workspace-registry';
@@ -75,6 +76,50 @@ export interface RoutineValidationResult {
     action: string;
     workspaceId: string;
   }>;
+  /**
+   * Whether the unregistered-handler check ACTUALLY RAN on this host (WI-39810). It is
+   * skipped on a host that does not execute routines — see `hostExecutesRoutines`. Callers
+   * MUST distinguish this from "ran and found none": both leave `unregisteredSystemActions`
+   * empty, but only the latter is evidence that the routines are healthy. Clearing a
+   * persisted mark on a skip would delete a TRUE finding written by the host that does run
+   * them.
+   */
+  systemActionCheckApplicable: boolean;
+}
+
+/**
+ * Does THIS process execute routines — i.e. is its system-action registry the one whose
+ * contents decide whether a routine's handler resolves at fire time? (WI-39810)
+ *
+ * The unregistered-handler check below asks "is this routine's handler registered?", but that
+ * question is only answerable by the host that DISPATCHES it. `routinesTick` +
+ * `ephemeral-executor` run only under `PAPERCUSP_BACKGROUND_WORKERS=1` (bg-host); the operator
+ * API hosts boot request-only and never execute a routine, so their registry says nothing
+ * about liveness.
+ *
+ * Measured 2026-08-18 (WI-39810), the concrete failure this prevents: `papercup-dev-api` runs
+ * request-only (`PAPERCUSP_BACKGROUND_WORKERS=0`) out of the RELEASE checkout, which lagged
+ * `staging` by four `import './<x>-action'` lines because `main` was frozen behind a red gate.
+ * Its startup validator therefore reported `consult-expiry-sweep`, `coverage-census`,
+ * `idle-backend-reaper` and `project-history-refresh` as having NO REGISTERED HANDLER — while
+ * bg-host, running the same routines out of `staging`, was executing all four on cadence
+ * (`[idle-backend-reaper] scanned 1` every 2m; `[coverage-census] … upserted 1105`). The
+ * marks accumulated to 210+ "occurrences", `routines:list` rendered them as SILENTLY DEAD,
+ * and the remedy it named — add the import — was already present in the tree being edited.
+ *
+ * So the two trees drifting is NOT the bug to fix here (that is normal: the release checkout
+ * legitimately lags staging). The bug is a host answering a question it cannot see the
+ * answer to.
+ *
+ * `backgroundWorkersEnabled` short-circuits to `false` under VITEST so unit tests never start
+ * real background work. That clause is about STARTING work, not about the host-TOPOLOGY
+ * question asked here, and honouring it would silently disable this check throughout its own
+ * test suite — a vacuous green. Strip it, and delegate the rest so there is one source of
+ * truth for the topology.
+ */
+export function hostExecutesRoutines(env: NodeJS.ProcessEnv = process.env): boolean {
+  const { VITEST: _vitest, ...topology } = env;
+  return backgroundWorkersEnabled(topology as NodeJS.ProcessEnv);
 }
 
 /**
