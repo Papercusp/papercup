@@ -1384,17 +1384,13 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
        AND (workspace_id, scope, coalesce(scope_ref,''), key) IN (
        SELECT workspace_id, scope, coalesce(scope_ref,''), key
          FROM harness_shared.agent_facts
-        WHERE workspace_id = ${ws} AND scope = ${input.scope}
-          AND coalesce(scope_ref,'') = ${ref ?? ''}
-          AND source_hive IS NULL
-          AND superseded_at IS NULL
-          AND retracted_at IS NULL AND expires_at > now()
-          AND key NOT LIKE ${`${WALL_KEY_PREFIX}%`}
-          AND key NOT LIKE ${`${DEAD_END_KEY_PREFIX}%`}
-          -- P-028: conventions are governance rows, not ordinary cap
-          -- population. Their explicit TTL still controls natural expiry,
-          -- but the per-scope observation cap must never retract policy.
-          AND COALESCE(kind, '') <> 'convention'
+        WHERE ${capPopulationPredicate(sql, ws, input.scope, ref ?? '')}
+          -- WI-7292: the row THIS call just wrote is excluded from the VICTIM
+          -- ranking (it already occupies its slot and must not evict itself).
+          -- The survival query below deliberately does NOT carry this clause —
+          -- it has to find the written row to rank it. That is the ONE
+          -- legitimate difference between the two, which is why it lives here
+          -- at the call site and not in the shared fragment.
           AND id IS DISTINCT FROM ${writtenId}
         ORDER BY CASE confidence
                    WHEN 'verified'    THEN 0
@@ -1707,6 +1703,55 @@ export interface FactSelector {
  * one edit later — so both callers compose this single fragment, and
  * `count-page-parity` in store.integration.test.ts asserts the two agree.
  */
+/**
+ * The CAP population — every row the per-scope eviction sweep is allowed to
+ * choose a victim from, and therefore the only population a survival verdict
+ * may be ranked against.
+ *
+ * ⚠ This is NOT {@link liveFactPredicate}. That one describes what a FOLD
+ * serves; this one describes what the CAP may destroy, and the two differ by
+ * exactly the rows that are exempt from eviction: the typed safety slots
+ * (`wall:` / `dead-end:`, WI-6935 (a)) and `kind:'convention'` (P-028 —
+ * governance rows; their explicit TTL still controls natural expiry, but the
+ * per-scope observation cap must never retract policy). Reading one where you
+ * meant the other is the whole bug this fragment exists to prevent.
+ *
+ * ── WHY IT IS SHARED (EI-20515478467800187) ────────────────────────────────
+ * The sweep and the survival report each carried their own hand-copied WHERE.
+ * They agreed on the safety slots and disagreed on conventions: the sweep
+ * excluded them, the survival query counted them. So `survival.liveCount`
+ * counted rows the sweep can never evict and `survival.rank` ranked the write
+ * against a population interleaved with exempt rows — making the receipt's
+ * headline advice ("rank N of M, survives M-N more asserts") arithmetically
+ * wrong on any scope holding conventions, and reporting `nextVictim:false`
+ * ("you are safe") for a write that really was next to die whenever the
+ * bottom-ranked row was a convention. Measured on the live workspace scope at
+ * the time of the fix: 285 ranked, 202 actually evictable, 83 conventions,
+ * against a cap of 200 — which is exactly the "liveCount 259 against a
+ * 200-fact cap" the reporter of EI-20515478467800187 could not reconcile.
+ *
+ * The sibling fragment above already learned this lesson for the census/page
+ * pair; the cap population simply never got it. `sweep-survival-population-
+ * parity` in store.integration.test.ts holds the two together.
+ */
+function capPopulationPredicate(sql: Sql, ws: string, scope: string, ref: string) {
+  return sql`workspace_id = ${ws} AND scope = ${scope}
+         AND coalesce(scope_ref,'') = ${ref}
+         -- LOCAL partition only (H6): the local writer's cap must never evict
+         -- foreign-source observations.
+         AND source_hive IS NULL
+         -- P-008 (a): CURRENT versions only, so the cap is not a function of
+         -- how often a fact was corrected.
+         AND superseded_at IS NULL
+         AND retracted_at IS NULL AND expires_at > now()
+         -- WI-6935 (a): the typed SAFETY slots are exempt, and are excluded
+         -- from the ranking entirely so they neither evict nor consume offset.
+         AND key NOT LIKE ${`${WALL_KEY_PREFIX}%`}
+         AND key NOT LIKE ${`${DEAD_END_KEY_PREFIX}%`}
+         -- P-028: conventions are governance rows, not ordinary cap population.
+         AND COALESCE(kind, '') <> 'convention'`;
+}
+
 function liveFactPredicate(
   sql: Sql,
   ws: string,
