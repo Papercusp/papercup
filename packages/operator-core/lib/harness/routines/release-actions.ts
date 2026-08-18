@@ -820,7 +820,9 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
   // A contentless red is worse than no red: it names nothing to fix while asserting something
   // is broken. `parsed?.reason` below still wins whenever the run DID print a verdict before
   // dying, so this only relabels the genuinely verdict-less case.
-  let status = checkpointFallbackStatus(r.timedOut);
+  // Explicitly `string`, NOT the helper's narrow union: this is the broad status vocabulary and
+  // it is reassigned from `parsed.reason` below (advanced | up-to-date | not-green | …).
+  let status: string = checkpointFallbackStatus(r.timedOut);
   let candidate: string | undefined;
   let summary: string | undefined;
   let failingTests: string[] | undefined;
