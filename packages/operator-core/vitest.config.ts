@@ -1,4 +1,8 @@
 import { defineVitestConfig } from '@papercusp/test-config/vitest-config';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // operator-core unit tests. Resolution of internal imports is relative
 // (no @/ alias in this package); @papercusp/* workspace deps resolve via the
@@ -14,4 +18,13 @@ import { defineVitestConfig } from '@papercusp/test-config/vitest-config';
 // operator-core is the workspace this exists for: its leg is ~50% of the gate's entire serial
 // test phase (D-031), and ~69% of its 4,105 unit files never touch the module registry, so they
 // can share a fork instead of cold-transpiling the operator-core graph once per file.
-export default defineVitestConfig({ layer: 'unit', laneSplit: true });
+// Coverage-census attribution (plan deterministic-coverage-census-2026-08-17, P-004). Wired
+// here — not into @papercusp/test-config's shared setup list — because only this workspace and
+// apps/operator run tests that can reach a Hono route or an MCP dispatch; every other workspace
+// would load it to observe traffic it cannot generate. Inert unless PAPERCUSP_TEST_ATTRIBUTION=1
+// (the setup file registers no hooks at all when disarmed).
+export default defineVitestConfig({
+  layer: 'unit',
+  laneSplit: true,
+  setupFiles: [resolve(__dirname, 'lib/coverage-census/attribution/setup-vitest.ts')],
+});
