@@ -3,7 +3,6 @@
  * Ported from app/api/plugins/host/events/route.ts. `auth: 'public'`.
  */
 import { sseResponse } from '@papercusp/sse';
-import { getPluginHost } from '../../../plugin-host-runtime';
 import { defineTool } from '@papercusp/agent-mcp';
 
 export default defineTool({
@@ -22,25 +21,20 @@ export default defineTool({
       return new Response('plugin, install, name query params required', { status: 400 });
     }
 
-    const state = await getPluginHost();
-
+    // The HookBus this stream used to bridge (`state.bus.registerAction`) was
+    // retired with the plugin-host rework — plugin events now feed the
+    // event-reaction matcher via emitSystemEvent (plugin-system-hive-port
+    // P-006/D-003) — and HostState carries no bus. No iframe-facing fan-out
+    // exists on the new path yet, so this stream carries heartbeats only: the
+    // EventSource contract PluginIframe.tsx expects stays intact (before this
+    // change the setup crashed on the missing bus and the connection errored
+    // anyway, so no events are lost that were previously delivered). Re-wiring
+    // iframe event delivery onto the reaction engine is tracked as a work item.
     return sseResponse({
       signal: req.signal,
       heartbeatMs: 30_000,
       initialHeartbeat: true,
-      setup: (sink) => {
-        const subKey = `__iframe_sse_${pluginName}_${installSlug}_${name}_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-        let active = true;
-        state.bus.registerAction(name, subKey, (arg: unknown) => {
-          if (!active || sink.closed) return;
-          const payload = typeof arg === 'string' ? arg : JSON.stringify(arg);
-          sink.eventRaw('message', payload);
-        });
-        sink.onClose(() => {
-          active = false;
-          state.bus.unregisterPlugin(subKey);
-        });
-      },
+      setup: () => {},
     });
   },
 });

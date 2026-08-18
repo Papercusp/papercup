@@ -57,6 +57,7 @@
 
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { getOrgPg, generated } from '@papercusp/db-org';
+import type { AgentIdentity } from './agent-tools/coordination/identity';
 import { eq, sql as dsql } from 'drizzle-orm';
 // The signing PRIMITIVES (allowlist + canonicalize + HMAC) live in ONE shared
 // module the orchestrator process imports too — so the rule can't drift between
@@ -419,11 +420,21 @@ async function remediateRotatedSpawns(
     }
 
     try {
+      // Synthetic in-process identity for the cancel's coord notice (mirrors
+      // scorecard-emission-pulse's wedge-escalation identity).
+      const rotationActor: AgentIdentity = {
+        ownerId: 'spawn-signing-rotation',
+        ownerLabel: 'system · spawn-signing-rotation',
+        source: 'principal',
+        workspaceId: row.workspace_id ?? null,
+        userId: null,
+      };
       const cancel = await cancelSubtree(sql as never, {
         workspaceId: row.workspace_id,
         rootSpawnId: row.spawn_id,
         reason:
           'spawn-signing key rotated; cancelling stranded old signed MCP credential before active remediation relaunch',
+        actor: rotationActor,
       });
       cancelledSpawnCount += cancel.cancelled.length;
     } catch (err) {
