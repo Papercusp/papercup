@@ -106,6 +106,18 @@ export interface Aggregate {
   surfaces: number;
   meets: number;
   below: number;
+  /**
+   * Below the floor AND NOT waived — the gap population the house already treats as
+   * real ("a live waiver is an accepted, expiry-dated gap", which is why `gapsOnly`
+   * excludes waived rows by default).
+   *
+   * This exists as an AGGREGATE, computed in SQL, because it is the pass condition of
+   * the kind:'coverage' criterion check (P-006). Counting it from the returned `rows`
+   * instead would judge a gate on a `limit`-capped page — flatteringly, since gaps that
+   * fell off the page cannot be counted — which is the precise defect this whole plan
+   * exists to make unrepresentable.
+   */
+  belowUnwaived: number;
   waived: number;
   /** NULL when `surfaces` is 0. A ratio with no denominator is not-measured, never 0 or 100. */
   pct: number | null;
@@ -139,12 +151,15 @@ export function aggregate(input: {
   surfaces: number;
   meets: number;
   waived: number;
+  /** Below floor AND unwaived, counted in SQL — see {@link Aggregate.belowUnwaived}. */
+  belowUnwaived: number;
   fidelityCounts: FidelityCounts;
 }): Aggregate {
   return {
     surfaces: input.surfaces,
     meets: input.meets,
     below: input.surfaces - input.meets,
+    belowUnwaived: input.belowUnwaived,
     waived: input.waived,
     pct: pct(input.meets, input.surfaces),
     fidelity: fidelityMarker(input.fidelityCounts, input.surfaces),
@@ -169,10 +184,22 @@ export interface CoverageRawInput {
         meets_l3: string | number;
         meets_l4: string | number;
         meets_floor: string | number;
+        below_unwaived_l1: string | number;
+        below_unwaived_l2: string | number;
+        below_unwaived_l3: string | number;
+        below_unwaived_l4: string | number;
+        below_unwaived_floor: string | number;
       }
     | undefined;
   fidelityRows: { fidelity: string; n: string | number }[];
-  byKindRows: { kind: string; fidelity: string; n: string | number; meets: string | number; waived: string | number }[];
+  byKindRows: {
+    kind: string;
+    fidelity: string;
+    n: string | number;
+    meets: string | number;
+    waived: string | number;
+    below_unwaived: string | number;
+  }[];
   registrations: { registered: string | number; enabled: string | number } | undefined;
   rows: {
     kind: string;
@@ -528,7 +555,15 @@ export async function readCoverage(args: CoverageArgs) {
              count(*) FILTER (WHERE meets_l2)                              AS meets_l2,
              count(*) FILTER (WHERE meets_l3)                              AS meets_l3,
              count(*) FILTER (WHERE meets_l4)                              AS meets_l4,
-             count(*) FILTER (WHERE ${meetsCol})                           AS meets_floor
+             count(*) FILTER (WHERE ${meetsCol})                           AS meets_floor,
+             -- The kind:'coverage' check's pass condition, counted over the WHOLE
+             -- matching population (never the limit-capped rows). "NOT waived" matches
+             -- the gap list's own default: a live waiver is an accepted, expiry-dated gap.
+             count(*) FILTER (WHERE NOT meets_l1 AND NOT waived)            AS below_unwaived_l1,
+             count(*) FILTER (WHERE NOT meets_l2 AND NOT waived)            AS below_unwaived_l2,
+             count(*) FILTER (WHERE NOT meets_l3 AND NOT waived)            AS below_unwaived_l3,
+             count(*) FILTER (WHERE NOT meets_l4 AND NOT waived)            AS below_unwaived_l4,
+             count(*) FILTER (WHERE NOT ${meetsCol} AND NOT waived)         AS below_unwaived_floor
         FROM harness_shared.testing_surface_depth
         ${where}
     `;
@@ -548,6 +583,7 @@ export async function readCoverage(args: CoverageArgs) {
              count(*)                            AS n,
              count(*) FILTER (WHERE ${meetsCol}) AS meets,
              count(*) FILTER (WHERE waived)      AS waived,
+             count(*) FILTER (WHERE NOT ${meetsCol} AND NOT waived) AS below_unwaived,
              0                                   AS surfaces
         FROM harness_shared.testing_surface_depth
         ${where}
