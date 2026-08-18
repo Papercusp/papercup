@@ -280,3 +280,94 @@ describe('enrichPlanDetail', () => {
     expect(out.lastEditor).toMatchObject({ handle: 'su-88991fc5', kind: 'agent' });
   });
 });
+
+// ── WI-39823: the read deadline ────────────────────────────────────────────
+//
+// This file's header states the contract: "additive + best-effort: any failure
+// leaves the base payload untouched (the UI simply renders no badge)". The
+// `try`/`catch` around the author fan-out delivered that for a leg that THROWS.
+// A leg that HANGS was never covered — `Promise.all` waits for the slowest, so
+// one wedged author read held the whole plan-detail sync query past the resolver
+// timeout. That is not "no badge", that is no PLAN: a decoration taking the
+// payload down is precisely the inversion the best-effort contract forbids.
+//
+// Controls are PERMANENT and tier-1 (CLAUDE.md): the deliberately-wrong version
+// is the real function with `budgetMs` widened past firing — a production
+// parameter, so the control exercises a live branch instead of a copy that rots.
+describe('enrichPlanDetail — read deadline (WI-39823)', () => {
+  /** Never settles — a wedged store, not a failing one. */
+  const hangingSql = (): Sql => ({ unsafe: () => new Promise(() => {}) }) as unknown as Sql;
+
+  type Settled = { kind: 'resolved'; value: unknown } | { kind: 'rejected'; message: string } | { kind: 'pending' };
+
+  /** "Never settled" has to be an assertable OUTCOME, not a vitest timeout. */
+  const settleWithin = (p: Promise<unknown>, ms: number): Promise<Settled> =>
+    Promise.race([
+      p.then(
+        (value): Settled => ({ kind: 'resolved', value }),
+        (error): Settled => ({ kind: 'rejected', message: String((error as Error)?.message ?? error) }),
+      ),
+      new Promise<Settled>((resolve) => {
+        const t = setTimeout(() => resolve({ kind: 'pending' }), ms);
+        (t as unknown as { unref?: () => void }).unref?.();
+      }),
+    ]);
+
+  const plan = () => ({
+    harness: 'papercup',
+    frontmatter: { slug: 'a', owner: 'aviynw2@gmail.com' },
+    items: [{ id: 'P-001' }],
+  });
+
+  it('a hung author read degrades to NO BADGE and still returns the plan', async () => {
+    const outcome = await settleWithin(
+      enrichPlanDetail(plan(), { sql: hangingSql(), workspaceId: 'default', harnessSlug: 'papercup', budgetMs: 25 }),
+      500,
+    );
+
+    expect(outcome.kind).toBe('resolved');
+    if (outcome.kind !== 'resolved') return;
+    const out = outcome.value as { frontmatter: { slug: string }; lastEditor?: unknown; items: unknown[] };
+    // The PLAN survives — that is the contract. The badge does not, which is the
+    // documented, acceptable degradation.
+    expect(out.frontmatter.slug).toBe('a');
+    expect(out.items).toHaveLength(1);
+    // `null`, not absent: unlike the LIST enricher (WI-7045, where an unresolved
+    // badge is omitted), the detail payload writes an explicit null here. Pinned
+    // as observed rather than as assumed — the claim under test is that the plan
+    // survives, and asserting the wrong neighbour would make this guard fail for
+    // a reason that has nothing to do with the deadline.
+    expect(out.lastEditor).toBeNull();
+  });
+
+  it('CONTROL: the same hung read NEVER settles when the bound is widened — so it is the deadline doing the work', async () => {
+    const outcome = await settleWithin(
+      enrichPlanDetail(plan(), {
+        sql: hangingSql(),
+        workspaceId: 'default',
+        harnessSlug: 'papercup',
+        budgetMs: 10_000_000,
+      }),
+      120,
+    );
+
+    expect(outcome.kind).toBe('pending');
+  });
+
+  it('CALIBRATION: a healthy read still attaches its badges under the same tight budget', async () => {
+    // Guards the opposite failure: a bound that "passes" the test above by
+    // stripping every badge, healthy store or not.
+    const sql = fakeSql({
+      revisions: [{ harness_slug: 'papercup', plan_slug: 'a', author_id: 'su-88991fc5-dd92', author_kind: 'agent' }],
+    });
+
+    const out = (await enrichPlanDetail(plan(), {
+      sql,
+      workspaceId: 'default',
+      harnessSlug: 'papercup',
+      budgetMs: 25,
+    })) as { lastEditor: unknown };
+
+    expect(out.lastEditor).toMatchObject({ handle: 'su-88991fc5', kind: 'agent' });
+  });
+});

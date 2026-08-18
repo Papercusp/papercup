@@ -80,3 +80,97 @@ describe('learning.analyze P-007 (summary-slim + analyzeCycle detail)', () => {
     expect(await readAnalyzeCycle(sql, 'ws', 'nope')).toBeNull();
   });
 });
+
+// ── WI-39823: the read deadline ────────────────────────────────────────────
+//
+// Both Analyze reads fan out over `Promise.all` after their primary artifacts
+// read. Each enrichment leg already tolerated a THROW (warn + empty map) — the
+// gap was a leg that HANGS, which `Promise.all` waits on regardless, taking an
+// otherwise-successful read past the sync layer's ~10s resolver timeout.
+//
+// `readAnalyzeCycle` is the sharper case and the reason the timeout must NOT be
+// swallowed into its `null`: the consumer renders `!cycle` as "Loading cycle
+// artifacts…", so returning null on a timeout is a permanent spinner — the same
+// shape as the owner-reported "Loading retained items… forever". Propagating
+// instead reaches the resolver's `degraded(…)`, which says the read failed.
+//
+// Controls are PERMANENT and tier-1 (CLAUDE.md): the "wrong implementation" is
+// the real function with its budget widened past firing, which is a real,
+// production-reachable branch rather than a copy that can rot.
+describe('learning.analyze — read deadline (WI-39823)', () => {
+  /** Never settles — a wedged store, not a failing one. */
+  const hang = (): Promise<Array<Record<string, unknown>>> => new Promise(() => {});
+
+  type Settled<T> = { kind: 'resolved'; value: T } | { kind: 'rejected'; message: string } | { kind: 'pending' };
+
+  /** "Never settled" has to be an assertable OUTCOME, not a vitest timeout. */
+  const settleWithin = <T>(p: Promise<T>, ms: number): Promise<Settled<T>> =>
+    Promise.race([
+      p.then(
+        (value): Settled<T> => ({ kind: 'resolved', value }),
+        (error): Settled<T> => ({ kind: 'rejected', message: String((error as Error)?.message ?? error) }),
+      ),
+      new Promise<Settled<T>>((resolve) => {
+        const t = setTimeout(() => resolve({ kind: 'pending' }), ms);
+        (t as unknown as { unref?: () => void }).unref?.();
+      }),
+    ]);
+
+  it('snapshot: a hung ENRICHMENT leg still ships the cycles, minus that leg', async () => {
+    const sql = fakeSql({ artifacts: async () => [ART_ROW], ticks: hang });
+
+    const outcome = await settleWithin(readAnalyzeSnapshot(sql, 'ws', { budgetMs: 25 }), 500);
+
+    // The partial IS the point: the artifacts read already succeeded, so losing
+    // the economics must not cost the cycles it had in hand.
+    expect(outcome.kind).toBe('resolved');
+    if (outcome.kind !== 'resolved') return;
+    expect(outcome.value.cycles).toHaveLength(1);
+    expect(outcome.value.cycles[0].cycleId).toBe('cyc-1');
+    expect(outcome.value.cycles[0].tick).toBeNull();
+  });
+
+  it('CONTROL: the same hung leg NEVER settles when the bound is widened — so it is the deadline doing the work', async () => {
+    const sql = fakeSql({ artifacts: async () => [ART_ROW], ticks: hang });
+
+    const outcome = await settleWithin(readAnalyzeSnapshot(sql, 'ws', { budgetMs: 10_000_000 }), 120);
+
+    expect(outcome.kind).toBe('pending');
+  });
+
+  it('analyzeCycle: a hung PRIMARY read rejects — it must never degrade to the null the consumer renders as a spinner', async () => {
+    const sql = fakeSql({ artifacts: hang });
+
+    const outcome = await settleWithin(readAnalyzeCycle(sql, 'ws', 'cyc-1', { budgetMs: 25 }), 500);
+
+    expect(outcome.kind).toBe('rejected');
+    expect(outcome.kind === 'rejected' && outcome.message).toContain(
+      'analyze-cycle artifacts exceeded the read budget',
+    );
+  });
+
+  it('CONTROL: that same hung primary read NEVER settles with the bound widened', async () => {
+    const sql = fakeSql({ artifacts: hang });
+
+    const outcome = await settleWithin(readAnalyzeCycle(sql, 'ws', 'cyc-1', { budgetMs: 10_000_000 }), 120);
+
+    expect(outcome.kind).toBe('pending');
+  });
+
+  it('CALIBRATION: healthy reads are unaffected by the same tight budget', async () => {
+    // Guards the opposite failure — a bound that "passes" the tests above by
+    // breaking every read. Also pins that a MISSING cycle still yields null
+    // (absent is not the same as timed out, and only one of them is an error).
+    const sql = fakeSql({ artifacts: async () => [ART_ROW] });
+
+    const snap = await readAnalyzeSnapshot(sql, 'ws', { budgetMs: 25 });
+    expect(snap.cycles).toHaveLength(1);
+
+    const cycle = await readAnalyzeCycle(sql, 'ws', 'cyc-1', { budgetMs: 25 });
+    expect(cycle).not.toBeNull();
+    expect(cycle!.ideas).toHaveLength(3);
+
+    const absent = await readAnalyzeCycle(fakeSql({ artifacts: async () => [] }), 'ws', 'nope', { budgetMs: 25 });
+    expect(absent).toBeNull();
+  });
+});
