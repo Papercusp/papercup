@@ -106,6 +106,21 @@ export const DEFAULT_MIN_INACTIVITY_MS = 30 * 24 * 60 * 60_000;
 export interface StalenessSweepOptions {
   minEiAgeMs?: number;
   minInactivityMs?: number;
+  /**
+   * Clock override (ms epoch). Production leaves it unset and the sweep stamps `Date.now()`.
+   *
+   * ⚠ IT EXISTS SO TESTS ARE NOT TIME BOMBS. `decideStaleness` already takes `nowMs`
+   * explicitly, so the pure-decision tests were always deterministic — this IO wrapper was
+   * the ONE place that reached for the real clock, which silently made every injected
+   * fixture's age drift with the calendar. A fixture written to mean "recently active"
+   * (frozen `NOW - 1d`, where NOW is 2026-07-20) became "inactive for 30 days" the moment
+   * real time crossed 2026-08-18T00:00Z, and RED the green gate — 9 days after either file
+   * was last touched, so nothing in the diff could explain it. The drift is one-directional
+   * and silent: fixtures meant to be OLD only get safely older, so only the "recent" ones
+   * rot, and they rot into a PASSING-looking assertion flip rather than an error.
+   * Pass `nowMs` and a fixture means what it says permanently.
+   */
+  nowMs?: number;
 }
 
 export interface StalenessCandidate {
@@ -301,7 +316,7 @@ export async function runReplicationLivenessStalenessSweepOnce(
     return { checked: 0, resolvedIds: [], errors: 0, skipped: emptySkipCensus() };
   }
 
-  const nowMs = Date.now();
+  const nowMs = opts.nowMs ?? Date.now();
   const activeCache = new Map<string, number | null>();
   // Per-target-workspace flag check (cached) — a multi-tenant sweep must respect each
   // target workspace's OWN owner ratification, never a single external caller-supplied

@@ -37,6 +37,19 @@ export function discoverOperatorUrl({ home = homedir() } = {}) {
 /**
  * Standard CLI precedence: explicit --operator-url arg → PAPERCUSP_OPERATOR_URL
  * env override → live desktop discovery (operator.json) → dev-box :3070.
+ *
+ * Returns a BASE ORIGIN — callers append their own path (ptool posts to
+ * `base + '/api/mcp'`). `PAPERCUSP_OPERATOR_URL` is OVERLOADED and cannot be
+ * assumed to be one: `apps/operator/.env.local` unconditionally exports it WITH
+ * the endpoint path (`http://localhost:3070/api/mcp`) because MCP-config
+ * consumers want the full endpoint, and every operator process that sources
+ * `.env.local` — including bg-host — inherits that form. Appending `/api/mcp`
+ * to it yields `/api/mcp/api/mcp`, which the host answers `404 {"error":"not_found"}`,
+ * so the CLI reports "could not reach the operator" for a host that is perfectly
+ * healthy. Strip the suffix here, exactly as operator-core's
+ * `resolveInheritedOperatorBaseUrl` / `resolveSpawnHostOperatorBaseUrl` already do
+ * for the same overloaded variable (the WI-6154 bug class).
+ *
  * @param {{operatorUrl?: string | null}} [args]
  * @param {EnvironmentMap} [env]
  * @param {{home?: string}} [opts]
@@ -48,7 +61,9 @@ export function resolveOperatorBase(args = {}, env = process.env, opts = {}) {
     env.PAPERCUSP_OPERATOR_URL ??
     discoverOperatorUrl(opts) ??
     'http://127.0.0.1:3070'
-  ).replace(/\/$/, '');
+  )
+    .replace(/\/api\/mcp\/?$/, '')
+    .replace(/\/$/, '');
 }
 
 /**
