@@ -45,7 +45,7 @@ export const PROCEED_EXPIRY_MS = 4 * 3_600_000; // 4h
 export const HARD_BLOCKED_EXPIRY_MS = 30 * 60_000; // 30m
 /** sessionStates a v1 consult never wakes (D-008 §5 liveness gate). */
 export const DEAD_RESPONDER_STATES: ReadonlySet<string> = new Set(['ended', 'recorded']);
-/** WI-39852 revival cap [owner:Avi 2026-08-18]: at most ONE carry-respawn per
+/** WI-39852 revival cap [owner 2026-08-18]: at most ONE carry-respawn per
  * consult — revival is a cost lever, not a fleet-resurrection loop. The flow
  * enforces it structurally (dead-preempt and wake-failed share one budget). */
 export const MAX_REVIVALS_PER_CONSULT = 1;
@@ -140,6 +140,21 @@ export interface GetFeedbackDeps {
     summary: string;
     body: string;
   }) => Promise<{ woke: number }>;
+  /** WI-39852 revival leg [owner 2026-08-18: respawn-and-consult beats
+   * retrieval-only]: carry-respawn a DEAD expert's session (headless resume —
+   * the resumed session re-attaches its ORIGINAL coord identity) with `brief`
+   * delivered as its first turn. Optional: absent keeps the D-008 §5
+   * retrieval-only behavior exactly. MUST resolve (never throw) with
+   * spawned:false on any failure — the core then falls back to the
+   * pre-revival selection outcome. `verified` is three-state like the launch
+   * verifier (D-004): true = a live host registered; null = still booting
+   * within the wait window (NOT a failure — the cascade expiry guards the
+   * reply); spawned:false makes it meaningless. */
+  revive?: (opts: {
+    ownerId: string;
+    conversationId: string;
+    brief: string;
+  }) => Promise<{ spawned: boolean; verified: boolean | null; detail: string }>;
   now?: () => Date;
 }
 
@@ -175,6 +190,17 @@ export interface GetFeedbackResult {
   };
   /** Latched park key for a hard-blocked requester (P-004 reply verbs emit). */
   park_key: string | null;
+  /** WI-39852: present when a revival was attempted this consult (cap 1).
+   * 'dead-preempt' = a dead above-floor expert beat a live below-floor fill /
+   * an unfillable minimum; 'wake-failed' = the chosen live-read responder's
+   * wake reached nobody (false-parked zombie) and was treated as dead. */
+  revival?: {
+    ownerId: string;
+    trigger: 'dead-preempt' | 'wake-failed';
+    spawned: boolean;
+    verified: boolean | null;
+    detail: string;
+  };
   /** P-006 archive-serve provenance — present only on served_from_archive. */
   archive?: {
     source_conversation_id: string;
@@ -218,6 +244,29 @@ function evidenceLine(c: RoutingCandidate): string {
   return c.evidence
     .map((e) => `${e.session_id}#${e.turn_idx} (sim ${e.sim.toFixed(2)})`)
     .join('; ');
+}
+
+/** WI-39852: the revived session's FIRST TURN — the consult delivered as the
+ * carry-respawn kickoff (psu injects it once the resumed CLI reaches its
+ * prompt). Says plainly WHY they were revived and carries the full reply
+ * protocol: a revived session missed the conversation ping, so this brief is
+ * its only guaranteed delivery. Exported for the binding + tests. */
+export function revivalBrief(opts: {
+  requesterId: string;
+  question: string;
+  conversationId: string;
+  candidate: RoutingCandidate;
+}): string {
+  const c = opts.candidate;
+  return (
+    `🧭 You were REVIVED (carry-respawn of your own session) to answer a consult — your archived transcript is the most relevant context in the workspace for this question, and no live peer matched better (WI-39852 revival leg).\n` +
+    `From ${opts.requesterId} (score ${c.score.toFixed(2)}, sim ${c.signals.similarity.toFixed(2)}).\n` +
+    `Why you: ${evidenceLine(c)} — sessions:read resolves the refs (they are YOUR turns).\n` +
+    `QUESTION: ${opts.question}\n` +
+    `Answer FROM your transcript, citing evidence: consult:reply { conversation_id: '${opts.conversationId}', kind: 'answer', body, evidence } — ` +
+    `consult:decline { reason } if your context genuinely does not cover it; consult:close { outcome } when settled. ` +
+    `Untyped conversations:post is refused. When done, you may end your turn — you were revived for this consult, not for a standing mission.`
+  );
 }
 
 /**
