@@ -38,6 +38,7 @@ import {
   renderFailingFilesSummary,
 } from "./lib/vitest-summary.mjs";
 import { selectRelatedTests } from "./lib/related-tests.mjs";
+import { stripCommentsOnly } from "./lib/strip-comments-and-strings.mjs";
 import { emptySuiteGuardArgs } from "./lib/empty-suite-guard.mjs";
 import { applyWorkerCapEnv } from "./lib/worker-cap.mjs";
 import {
