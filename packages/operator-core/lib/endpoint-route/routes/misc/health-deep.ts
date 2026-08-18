@@ -24,7 +24,7 @@ import { dbosLaunchesHere } from '../../../background-workers';
 import { dbosStarted } from '../../../dbos/bootstrap';
 import { getMemoryBackend } from '../../../memory/backend';
 import { currentLoopLag, loopPressure } from '../../../event-loop-lag-monitor';
-import { getCpuWorkerState } from '../../../cpu-task-worker';
+import { getCpuWorkerState, type CpuWorkerVerdict } from '../../../cpu-task-worker';
 
 export type ProbeStatus = 'ok' | 'disabled' | 'down';
 
@@ -127,9 +127,13 @@ export interface CpuWorkerReading {
   /** A worker thread currently exists (it is spawned lazily, on first offload). */
   alive: boolean;
   /**
-   * The crash-breaker has LATCHED: this process has permanently stopped
-   * offloading and every serialization now runs inline. The one field to alert
-   * on — see the WHY on `readCpuWorker`.
+   * The crash-breaker has LATCHED: this process has stopped offloading and every
+   * serialization now runs inline. Since EI-20505664003243915 this is no longer
+   * permanent — the breaker re-arms itself; `reArmInMs` says when the next
+   * half-open probe is admitted.
+   *
+   * ⚠ Do NOT alert on this field alone: `disabled:false` is an ABSENCE of bad
+   * news, not evidence the offload works. Read `verdict`.
    */
   disabled: boolean;
   pendingCount: number;
@@ -138,6 +142,28 @@ export interface CpuWorkerReading {
   keepAlive: boolean;
   /** Crashes since the last request the worker actually served (breaker trips at 3). */
   consecutiveCrashes: number;
+  /**
+   * Requests the worker thread has actually SERVED — the only positive signal
+   * here, and the one the reporting item asked for: it proves worker-served
+   * requests RESUME rather than merely that a latch was cleared.
+   */
+  servedByWorker: number;
+  /** Offload-ELIGIBLE requests that ran inline anyway (small batches excluded). */
+  eligibleFallbacks: number;
+  /** Message of the most recent worker crash, or null if none this process. */
+  lastCrashError: string | null;
+  /** Breaker closures earned by a served probe (NOT by a restart). */
+  reArms: number;
+  /** Half-open probes that crashed; each doubles the next cooldown. */
+  reArmFailures: number;
+  /** ms until the next half-open probe; null when the breaker is closed. */
+  reArmInMs: number | null;
+  /**
+   * The reading `disabled` cannot give — 'serving' | 'idle-unproven' |
+   * 'silently-falling-back' | 'disabled'. The middle two BOTH report
+   * `disabled:false`, and telling them apart is the whole point.
+   */
+  verdict: CpuWorkerVerdict;
 }
 
 /**

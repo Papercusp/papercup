@@ -348,10 +348,15 @@ describe('runGitSync (real git, no submodule)', () => {
   it('clearStaleConfigLock removes only an old empty holderless lock', async () => {
     const fakeRunGit: RunGit = async () => ({ code: 0, stdout: '/fake/.git\n', stderr: '' });
     const unlinked: string[] = [];
+    // One STABLE snapshot, like the it.each cases below: clearStaleConfigLock
+    // inspects twice and bails if the two disagree. Recomputing Date.now()
+    // inside the mock made `after` differ from `before` by the elapsed
+    // millisecond, so this read as a replaced lock and returned false — a flake
+    // that only showed up under lane load, where the two calls straddle a tick.
+    const snapshot = { mtimeMs: Date.now() - 10 * 60_000, size: 0, dev: 1, ino: 2 };
     expect(
       await clearStaleConfigLock(fakeRunGit, '/fake', () => {}, {
-        inspectLock: async (p) =>
-          p.endsWith('/config.lock') ? { mtimeMs: Date.now() - 10 * 60_000, size: 0, dev: 1, ino: 2 } : null,
+        inspectLock: async (p) => (p.endsWith('/config.lock') ? snapshot : null),
         isOpen: async () => false,
         unlinkFile: async (p) => {
           unlinked.push(p);
