@@ -499,10 +499,51 @@ export async function materializeLoop(
  * filed watchdog issue is confusing/stale noise for whoever triages it later.
  * Unconditional (not source-scoped like the reaper's clear): ending the loop
  * makes ANY residual error moot, regardless of who recorded it.
+ *
+ * WI-39786 (end-after-disarm, measured live by su-50a96a51 2026-08-18): `loop:end` also
+ * stamps the pause family (`loop_paused_reason`/`loop_paused_at`/`pause{}`) with its OWN
+ * reason — INCLUDING when the loop is already inactive, where the deactivation UPDATE
+ * no-ops. Before this, an owner ending a guard-disarmed loop left the guard's turn-stalled
+ * residue as the row's live down-cause: `armed_at` never advanced (nothing to supersede),
+ * readRevivableLoops' reason-prefix predicate still matched, and the next sweep revived a
+ * loop its owner had explicitly ended. `loop_paused_reason` is the system's answer to "why
+ * is this row down", and OVERWRITING it on a new down-event is the key's normal semantics
+ * (each later disarm already does); only DELETION is forbidden (see reviveDisarmedLoop's
+ * doc). The prior words are preserved under `loop_end_superseded_pause_reason` — kept
+ * across repeated ends, so the guard's original reason survives an idempotent re-end —
+ * and the canonical `pause{reason, pausedAtMs}` shape is written so readStalePausedRoutines
+ * reads a deliberately-ended loop as an EXPLAINED pause instead of reasonMissing.
  */
+export const LOOP_END_PAUSE_PREFIX = 'loop:end (WI-39786): owner-deliberate:';
+
 export async function deactivateLoop(ownerId: string, opts: { sql?: Sql; reason?: string } = {}): Promise<boolean> {
   const sql = opts.sql ?? getOrgPg().sql;
   const reason = opts.reason?.trim() || 'loop:end — deactivated by its owner';
+  const pauseReason = `${LOOP_END_PAUSE_PREFIX} ${reason}`;
+  // The already-inactive stamp runs FIRST: after the deactivation UPDATE below flips the row,
+  // this predicate would also match the row just ended and overwrite the superseded-copy key
+  // with the reason we just wrote. Ordered this way, each row is stamped exactly once.
+  await sql`
+    UPDATE harness_shared.routines
+       SET metadata = COALESCE(metadata, '{}'::jsonb)
+                    || jsonb_build_object(
+                         -- Preserve the FIRST non-loop:end down-cause across repeated ends: a
+                         -- second loop:end must not overwrite the copy with our own first stamp.
+                         'loop_end_superseded_pause_reason',
+                         CASE WHEN metadata->>'loop_paused_reason' LIKE ${LOOP_END_PAUSE_PREFIX + '%'}
+                              THEN COALESCE(metadata->'loop_end_superseded_pause_reason', 'null'::jsonb)
+                              ELSE COALESCE(metadata->'loop_paused_reason', 'null'::jsonb)
+                         END,
+                         'loop_paused_reason', ${pauseReason}::text,
+                         'loop_paused_at', now()::text,
+                         'pause', jsonb_build_object(
+                           'reason', ${pauseReason}::text,
+                           'pausedAtMs', (extract(epoch from now()) * 1000)::bigint
+                         )
+                       ),
+           updated_at = now()
+     WHERE name = ${loopRoutineName(ownerId)} AND active = FALSE
+  `;
   const ended = await sql<
     Array<{
       id: string;
@@ -515,7 +556,23 @@ export async function deactivateLoop(ownerId: string, opts: { sql?: Sql; reason?
   >`
     UPDATE harness_shared.routines
        SET active = FALSE, updated_at = now(),
-           metadata = COALESCE(metadata, '{}'::jsonb) - 'last_error' - 'last_error_at' - 'last_error_source'
+           -- WI-39786: the same pause-family stamp as the already-inactive path above, so after
+           -- ANY loop:end the row reads "down because its owner ended it" — defence in depth
+           -- beside the armed_at supersession bound for the end-after-re-arm shape.
+           metadata = (COALESCE(metadata, '{}'::jsonb) - 'last_error' - 'last_error_at' - 'last_error_source')
+                    || jsonb_build_object(
+                         'loop_end_superseded_pause_reason',
+                         CASE WHEN metadata->>'loop_paused_reason' LIKE ${LOOP_END_PAUSE_PREFIX + '%'}
+                              THEN COALESCE(metadata->'loop_end_superseded_pause_reason', 'null'::jsonb)
+                              ELSE COALESCE(metadata->'loop_paused_reason', 'null'::jsonb)
+                         END,
+                         'loop_paused_reason', ${pauseReason}::text,
+                         'loop_paused_at', now()::text,
+                         'pause', jsonb_build_object(
+                           'reason', ${pauseReason}::text,
+                           'pausedAtMs', (extract(epoch from now()) * 1000)::bigint
+                         )
+                       )
      WHERE name = ${loopRoutineName(ownerId)} AND active = TRUE
     RETURNING id, workspace_id, install_slug, name, target_role, reschedule_interval_sec
   `;

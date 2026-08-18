@@ -586,10 +586,16 @@ export async function sweepStalledLoops(
   // module has no mandate over — measured live 2026-08-18: the 04:07:03Z sweep re-armed a loop
   // whose owner had re-armed at 00:18:52Z and loop:end'd at 03:44:18Z under a fleet stand-down.
   // `armed_at` is stamped on EVERY arm (stampLoopArmedAt), so `armed_at` newer than the pause
-  // instant proves the disarm was superseded; an explicit `loop:end` can only follow a re-arm
-  // (ending an inactive loop is a no-op), so this one comparison also covers the end-after-re-arm
-  // case. An absent `armed_at` reads as '-infinity' — failing toward revival, the module's
-  // designed direction for uncertain reads.
+  // instant proves the disarm was superseded, covering the end-after-RE-ARM shape. It does NOT
+  // cover end-after-DISARM (guard disarms, owner `loop:end`s with no intervening re-arm): there
+  // the deactivation no-ops and `armed_at` never advances, so this bound reads "not superseded"
+  // (measured live by su-50a96a51, WI-39786 — the original 03:26Z case). That shape is excluded
+  // by the reason-prefix predicate above instead: `deactivateLoop` stamps `loop_paused_reason`
+  // with its own LOOP_END_PAUSE_PREFIX even when the loop is already inactive, so a
+  // deliberately-ended row no longer carries this module's prefix and never re-enters the
+  // revivable set. Both bounds stay: the prefix is the primary discriminator, this comparison
+  // is defence in depth. An absent `armed_at` reads as '-infinity' — failing toward revival,
+  // the module's designed direction for uncertain reads.
   const readRevivableLoops =
     deps.readRevivableLoops ??
     (async (o: { sql: Sql; workspaceId: string; pausedAfterMs: number; maxRevivals: number }) => {

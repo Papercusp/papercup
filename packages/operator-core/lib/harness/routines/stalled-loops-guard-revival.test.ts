@@ -27,7 +27,7 @@ import {
   type StalledLoopsSweepDeps,
   type OwnerToolActivity,
 } from './stalled-loops-guard';
-import { reviveDisarmedLoop, type LoopStatus } from './loop';
+import { deactivateLoop, reviveDisarmedLoop, LOOP_END_PAUSE_PREFIX, type LoopStatus } from './loop';
 
 // Bound to the REAL dep signatures for the reason the sibling file documents at length: a bare
 // `vi.fn(async () => {})` records a ZERO-arg call tuple, so every `.mock.calls[0][1]` read below
@@ -600,6 +600,77 @@ describe('the DEFAULT revival candidate read carries the supersession bound (202
     // And the pre-existing bounds are still in the same statement, not displaced by the new one.
     expect(revivalSql).toContain('loop_revived_count');
     expect(revivalSql).toContain('active = false');
+  });
+});
+
+describe('end-after-DISARM: a loop:end with no intervening re-arm must exclude the row (WI-39786)', () => {
+  /**
+   * The shape the item's TITLE names, measured by its reporter (su-50a96a51, thread post 69711):
+   * guard disarms at 02:07 -> owner `loop:end`s at 03:26 -> the deactivation no-ops (already
+   * inactive), `armed_at` never advances, so the SUPERSESSION BOUND reads "not superseded" and
+   * the sweep revives a loop its owner explicitly ended. The armed_at comparison structurally
+   * CANNOT cover this shape — nothing it compares ever moves. The fix discriminates on the
+   * reason-prefix predicate instead: `deactivateLoop` stamps `loop_paused_reason` with its own
+   * prefix EVEN WHEN the loop is already inactive, so the revival read's
+   * `LIKE TURN_STALLED_PAUSE_PREFIX || '%'` (pinned one describe down) no longer matches.
+   *
+   * Same proof budget as the neighbours: statement inspection, not a database. The chain is
+   * (a) an already-inactive loop:end WRITES the stamp, (b) the stamped reason CANNOT match the
+   * revival predicate's prefix, (c) the prior down-cause words survive under the superseded-copy
+   * key (the census stays auditable), and the anti-drift test below keeps (b) honest against
+   * the query's own prefix constant.
+   */
+  it('stamps loop_paused_reason on an ALREADY-INACTIVE row — the no-op path that hid the bug', async () => {
+    const statements: string[] = [];
+    const captureSql = ((strings: TemplateStringsArray) => {
+      statements.push(strings.join(' ? '));
+      return Promise.resolve([]);
+    }) as never;
+
+    const ended = await deactivateLoop('su-50a96a51', { sql: captureSql, reason: 'standing down per fleet pause' });
+
+    // The end still reports "no active loop crossed TRUE->FALSE" — the stamp is not a disarm.
+    expect(ended).toBe(false);
+    // One statement targets rows that are ALREADY inactive, and it writes the pause family.
+    const inactiveStamps = statements.filter((s) => s.includes('active = FALSE') && !s.includes('active = TRUE'));
+    expect(inactiveStamps).toHaveLength(1);
+    const stamp = inactiveStamps[0]!;
+    expect(stamp).toContain(`'loop_paused_reason'`);
+    expect(stamp).toContain(`'loop_paused_at'`);
+    // The canonical shape readStalePausedRoutines consumes — a deliberate end is an EXPLAINED
+    // pause, not a reasonMissing flag.
+    expect(stamp).toContain(`'pausedAtMs'`);
+    // The prior down-cause is COPIED, never deleted (reviveDisarmedLoop's census constraint,
+    // arriving at this write): the guard's words survive the owner's end.
+    expect(stamp).toContain(`'loop_end_superseded_pause_reason'`);
+    expect(stamp).not.toContain(`- 'loop_paused_reason'`);
+    expect(stamp).not.toContain(`- 'pause'`);
+  });
+
+  it('stamps the ACTIVE path too, so end-after-re-arm is excluded by prefix as well as by armed_at', async () => {
+    const statements: string[] = [];
+    const captureSql = ((strings: TemplateStringsArray) => {
+      statements.push(strings.join(' ? '));
+      return Promise.resolve([]);
+    }) as never;
+
+    await deactivateLoop('su-03eda174', { sql: captureSql });
+
+    const activeEnd = statements.filter((s) => s.includes('active = TRUE'));
+    expect(activeEnd).toHaveLength(1);
+    expect(activeEnd[0]!).toContain(`'loop_paused_reason'`);
+    expect(activeEnd[0]!).toContain(`'loop_end_superseded_pause_reason'`);
+  });
+
+  it('the stamped reason can NEVER match the revival predicate — the discriminator itself', () => {
+    // The revival read matches `loop_paused_reason LIKE TURN_STALLED_PAUSE_PREFIX || '%'`
+    // (prefix-anchored, no wildcards in the constant). A stamped reason always begins with
+    // LOOP_END_PAUSE_PREFIX, so mutual prefix-exclusion is exactly the non-match proof.
+    expect(LOOP_END_PAUSE_PREFIX.startsWith(TURN_STALLED_PAUSE_PREFIX)).toBe(false);
+    expect(TURN_STALLED_PAUSE_PREFIX.startsWith(LOOP_END_PAUSE_PREFIX)).toBe(false);
+    // LIKE treats % and _ as wildcards; the guard prefix must stay literal or the anchored
+    // comparison above stops being a proof.
+    expect(TURN_STALLED_PAUSE_PREFIX).not.toMatch(/[%_]/);
   });
 });
 
