@@ -47,7 +47,7 @@ function mockClient(opts: { rowsAffected?: number; rows?: Record<string, unknown
   return { client: client as never, calls, state };
 }
 
-const auditCallsOf = (calls: { sql: string }[]) =>
+const auditCallsOf = <T extends { sql: string }>(calls: T[]): T[] =>
   calls.filter((c) => /^insert into harness_shared\.audit_log/i.test(c.sql.trim()));
 
 describe('assertSingleWriteStatement', () => {
