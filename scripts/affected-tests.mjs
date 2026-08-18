@@ -2367,38 +2367,54 @@ function tsconfigAliasesFor(wsRoot) {
 // safe direction: over-running costs minutes, under-running certifies nothing.
 if (relatedOnly && !printAffected) {
   const changedAbs = invariantGuardChangedPaths().map((f) => join(ROOT, f));
+  // The unit suite is narrowable whether it is one `test` script or a lane split.
+  // Passing the selection to a LANE still runs that lane's own env + include set,
+  // so each lane executes exactly (its files ∩ the selection) and lane semantics are
+  // preserved. Integration, el-suite and the invariant guards are NOT narrowable:
+  // each means something specific by "run" that a positional filter would quietly
+  // change.
+  const narrowable = (script) => script === "test" || LANE_SCRIPTS.includes(script);
+  const byWorkspace = new Map();
+
   for (const t of tasks) {
-    // Only the ordinary unit-test task is narrowable. Lane splits, integration,
-    // el-suite and the invariant guards each mean something specific by "run"; a
-    // positional file filter would silently change what they assert.
-    if (t.script !== "test") continue;
-    const wsRoot = join(ROOT, t.ws.dir);
-    let result;
-    try {
-      result = selectRelatedTests({
-        rootDir: wsRoot,
-        changedPaths: changedAbs,
-        aliases: tsconfigAliasesFor(wsRoot),
-      });
-    } catch (err) {
-      // A crash in selection must never be able to SHRINK a run. Fall back loudly.
-      result = {
-        mode: "full",
-        selected: [],
-        total: 0,
-        reason: `selection-error(${(err && err.message) || err})`,
-      };
+    if (!narrowable(t.script)) continue;
+    // A zero-match positional filter is a FAILURE for a script without
+    // --passWithNoTests. Narrowing legitimately produces zero matches for a lane, so
+    // only narrow where an empty run is a clean pass; otherwise leave the task alone.
+    if (!/--passWithNoTests\b/.test(t.ws.scripts?.[t.script] ?? "")) continue;
+
+    if (!byWorkspace.has(t.ws.name)) {
+      const wsRoot = join(ROOT, t.ws.dir);
+      let result;
+      try {
+        result = selectRelatedTests({
+          rootDir: wsRoot,
+          changedPaths: changedAbs,
+          aliases: tsconfigAliasesFor(wsRoot),
+        });
+      } catch (err) {
+        // A crash in selection must never be able to SHRINK a run. Fall back loudly.
+        result = {
+          mode: "full",
+          selected: [],
+          total: 0,
+          reason: `selection-error(${(err && err.message) || err})`,
+        };
+      }
+      byWorkspace.set(t.ws.name, { result, wsRoot });
+      outSync(
+        `RELATED_SELECTION ws=${t.ws.name} selected=${
+          result.mode === "related" ? result.selected.length : result.total
+        } total=${result.total} mode=${result.mode} reason=${result.reason}`,
+      );
     }
+
+    const { result, wsRoot } = byWorkspace.get(t.ws.name);
     if (result.mode === "related") {
       // vitest takes positional filters as substring matches against test paths;
-      // workspace-relative paths are what its `include` globs are resolved against.
+      // workspace-relative paths are what its `include` globs resolve against.
       t.relatedFiles = result.selected.map((f) => relative(wsRoot, f));
     }
-    outSync(
-      `RELATED_SELECTION ws=${t.ws.name} selected=${
-        result.mode === "related" ? result.selected.length : result.total
-      } total=${result.total} mode=${result.mode} reason=${result.reason}`,
-    );
   }
 }
 
