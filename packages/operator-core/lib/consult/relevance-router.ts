@@ -123,7 +123,23 @@ export interface SelectedResponder {
 export interface SnapshotSelection {
   min: number;
   max: number;
-  selected: Array<{ ownerId: string; via: SelectionVia; score: number; similarity: number; liveness: string }>;
+  selected: Array<{
+    ownerId: string;
+    via: SelectionVia;
+    score: number;
+    similarity: number;
+    liveness: string;
+    /** WI-39852 revival leg: this selectee's session was DEAD at route time and
+     * a carry-respawn was launched to make them reachable (labeled, never
+     * silent — the D-002 rule applied to liveness provenance). */
+    revived?: boolean;
+    /** WI-39861 min-ANSWERS refill: this selectee entered the menu on the ONE
+     * post-exhaustion refill round, not at original selection time. */
+    refill?: boolean;
+  }>;
+  /** WI-39861: stamped when the one bounded refill round ran (cascade-core
+   * maybeRefillMenu) — its presence is the one-round guard. */
+  refill?: { at: string; added: string[]; reason: string };
 }
 
 export interface ResponderSelectionParams {
