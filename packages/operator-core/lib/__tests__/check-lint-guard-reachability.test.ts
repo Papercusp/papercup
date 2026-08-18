@@ -150,6 +150,37 @@ describe('classifyGuard — the `test` tier takes EXECUTION evidence only', () =
     }
   });
 
+  /* ── the MIRROR failure: a structurally-enforced guard scored by mention ──────
+   * Three guards are IMPLEMENTED AS *.test.ts files (lint:tool-prompts,
+   * lint:plane-guards, lint:design-primitives). vitest runs those by existence, so no
+   * one has to mention them — yet `lint:tool-prompts` was credited only because seven
+   * unrelated suites happen to name `tools-md-sync.test.ts`. Same root cause, opposite
+   * failure direction: delete those incidental mentions and a genuinely-enforced guard
+   * reads as "runs on NO blocking path", reddening the gate with a false finding.
+   */
+  it('credits a guard IMPLEMENTED AS a tracked test file with NO mention anywhere', () => {
+    const r = classifyGuard({
+      name: 'lint:x',
+      command: 'node scripts/test-files.mjs packages/operator-core/lib/__tests__/x-sync.test.ts',
+      corpora: corpora({}), // every corpus EMPTY — nothing names this guard at all
+      trackedTestFiles: new Set(['packages/operator-core/lib/__tests__/x-sync.test.ts']),
+    });
+    expect(r.tiers).toContain('test');
+    expect(r.blocking).toBe(true);
+  });
+
+  it('does NOT credit a test-file implementation that is not tracked', () => {
+    // An untracked path is invisible to vitest's selection just as it is to the corpus
+    // builder, so existence alone is not the claim — TRACKED existence is.
+    const r = classifyGuard({
+      name: 'lint:x',
+      command: 'node scripts/test-files.mjs packages/operator-core/lib/__tests__/x-sync.test.ts',
+      corpora: corpora({}),
+      trackedTestFiles: new Set(),
+    });
+    expect(r.tiers).not.toContain('test');
+  });
+
   it('CONTROL: the OLD rule credits every fixture above — that gap is the bug', () => {
     // Kept permanently. Without it the six assertions above would also pass against a
     // classifier that credits NOTHING, and would silently stop testing anything.
