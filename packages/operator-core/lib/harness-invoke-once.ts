@@ -285,6 +285,11 @@ export function applyRoleModel(baseCmd: string, role: string, overrideSpec?: str
     .replace(/\s-m\s+\S+/g, '')
     .replace(/\s--effort(?:=|\s+)\S+/g, '')
     .replace(/\s-c\s+model_reasoning_effort=(?:"[^"]*"|'[^']*'|\S+)/g, '')
+    // Strip a PREVIOUSLY-appended window pair too, or re-applying this function
+    // to its own output accumulates duplicate `-c` overrides for a model that
+    // may since have changed (plan codex-1m-context-window-2026-08-17 P-003).
+    .replace(/\s-c\s+model_context_window=(?:"[^"]*"|'[^']*'|\S+)/g, '')
+    .replace(/\s-c\s+model_auto_compact_token_limit=(?:"[^"]*"|'[^']*'|\S+)/g, '')
     .trimEnd();
   // Claude CLI exec boundary: a default-1M-family spec (opus/fable/sonnet-5,
   // incl. the bare `sonnet` alias) must carry the `[1m]` window marker — a bare
@@ -299,6 +304,16 @@ export function applyRoleModel(baseCmd: string, role: string, overrideSpec?: str
     cmd = isCodex
       ? `${cmd} -c model_reasoning_effort="${effort}"`
       : `${cmd} --effort ${effort}`;
+  }
+  // Codex extended-window models launch at their declared window (plan
+  // codex-1m-context-window-2026-08-17 D-002). Kept in lockstep with
+  // psu-launcher `modelArgsFor` by the EI-7138 parity guard in
+  // apps/operator/lib/psu-launcher.test.ts — a window pair added on one side
+  // only will red that test, which is the point. Empty for a model with no
+  // extended window, so those commands stay byte-identical.
+  if (isCodex) {
+    const windowArgs = codexContextConfigArgs(cliModel);
+    if (windowArgs.length) cmd = `${cmd} ${windowArgs.join(' ')}`;
   }
   return cmd;
 }
