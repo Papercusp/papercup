@@ -833,7 +833,7 @@ export const SELF_WATCHDOG_MS = 3 * 60 * 60_000;
  */
 export const MANUAL_SELF_WATCHDOG_ENV =
   "PAPERCUSP_MANUAL_GREEN_CHECKPOINT_WATCHDOG_MS";
-export const MIN_MANUAL_SELF_WATCHDOG_MS = 120 * 60_000 + 15_000;
+export const MIN_MANUAL_SELF_WATCHDOG_MS = 115 * 60_000 + 15_000;
 
 export type SelfWatchdogTrigger =
   | "scheduled-parent-backstop"
@@ -3898,7 +3898,7 @@ export const ISOLATION_RETRY_BUDGET_MS = 20 * 60_000;
  *  (same convention as MANUAL_CHECKPOINT_WATCHDOG_MS / the result MARKERs); pinned equal in
  *  release-timing-invariants.test.ts so drift fails the build instead of un-bounding the
  *  isolation phase below. */
-export const SUITE_KILL_BUDGET_MIRROR_MS = 120 * 60_000;
+export const SUITE_KILL_BUDGET_MIRROR_MS = 115 * 60_000;
 
 /** EI-20669541349219660: headroom the isolation phase must leave before the run's kill
  *  deadline. The phase deadline is "stop STARTING new absorption work" (an isolation

@@ -355,8 +355,36 @@ function runScript(
  * box's memory BASELINE / the :3070 operator-cluster size. Freeing memory there
  * would let the gate run more forks → finish faster → afford a SHORTER budget.
  * This bump UNWEDGES the gate; it does not remove that deeper cost.
+ *
+ * SECOND INVARIANT — it must NOT be an integer multiple of the gate's fire period
+ * (WI-39841). A scheduled run starts a second or two after its cron fire, so its
+ * deadline lands a second or two after a LATER fire, and it is still holding the
+ * exclusive run-lock at that moment: the fire that should have replaced it is refused,
+ * and the gate sits idle until the following hour. At the old 120m against a 60m
+ * period this was not a race that sometimes bit — it was deterministic for every run
+ * that went the distance. Measured 2026-08-18: run started 17:15:04.877Z, cron fired
+ * 19:15:01.941Z, run SIGTERMed 19:15:04 (journal `exited 143`), no run until 20:15.
+ * One over-long run therefore cost ~2h of wall-clock, not 2h of work.
+ *
+ * Hence 115m, not 120m — the LARGEST value that still clears the boundary: a run that
+ * starts at HH:15 now dies at HH+1:55 and the HH+2:15 fire finds the lock free, ~5 min
+ * of slack. The 5 minutes given up are cheap — a run that needs >115m is a run that
+ * was going to be killed mid-suite anyway and record a verdict-less red (the 17:15 run
+ * produced NOTHING at its 120m mark) — while the slot recovered is a whole extra hour
+ * of gate availability. `phase margin` in release-timing-invariants.test.ts pins it.
  */
-export const GREEN_CHECKPOINT_SUITE_TIMEOUT_MS = 120 * 60_000;
+export const GREEN_CHECKPOINT_SUITE_TIMEOUT_MS = 115 * 60_000;
+
+/** The cron the gate is seeded with (seed-hive-release-routines.ts,
+ *  seed-release-routines.ts, retrofit-hive-to-gate.ts all use this literal) and the
+ *  fire period it implies. Exported so the phase invariant above is CHECKABLE rather
+ *  than a comment — see release-timing-invariants.test.ts. */
+export const GREEN_CHECKPOINT_CRON = "0 15 * * * *";
+export const GREEN_CHECKPOINT_FIRE_PERIOD_MS = 60 * 60_000;
+
+/** Minimum gap the suite timeout must leave between a deadline-kill and the next
+ *  scheduled fire, so the lock is demonstrably free when that fire lands. */
+export const GREEN_CHECKPOINT_PHASE_MARGIN_MS = 5 * 60_000;
 
 /**
  * A green-checkpoint run's result, as the CLI reports it on its result-marker line.

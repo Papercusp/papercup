@@ -22,7 +22,11 @@
 import { describe, expect, it } from "vitest";
 
 import { DEFAULT_STALE_ROUTINE_FIRE_NO_OUTPUT_MS } from "@papercusp/operator-core/lib/dbos/dbos-executor-reaper";
-import { GREEN_CHECKPOINT_SUITE_TIMEOUT_MS } from "@papercusp/operator-core/lib/harness/routines/release-actions";
+import {
+  GREEN_CHECKPOINT_FIRE_PERIOD_MS,
+  GREEN_CHECKPOINT_PHASE_MARGIN_MS,
+  GREEN_CHECKPOINT_SUITE_TIMEOUT_MS,
+} from "@papercusp/operator-core/lib/harness/routines/release-actions";
 import {
   CHECKPOINT_MAX_RUNTIME_SEC,
   MANUAL_CHECKPOINT_WATCHDOG_ENV,
@@ -248,5 +252,70 @@ describe("green-gate timing chain (WI-6112)", () => {
     expect(REPLACE_STALE_MIN_AGE_SEC * 1000).toBeLessThan(
       CHECKPOINT_LOCK_STALE_MS,
     );
+  });
+});
+
+/**
+ * WI-39841. The chain above asks "does a run get killed before something else reclaims
+ * its lock". This asks the question nothing was asking: WHEN, relative to the schedule,
+ * does that kill land — because a run holds the exclusive run-lock right up to it.
+ *
+ * A scheduled run starts a second or two after its cron fire. So its deadline lands a
+ * second or two after a LATER fire whenever the budget is an integer multiple of the
+ * fire period, and that fire is refused by a run which is about to die anyway. The gate
+ * then sits idle until the following period. At the old 120m against a 60m period this
+ * was deterministic, not occasional, for every run that went the distance.
+ *
+ * Measured 2026-08-18: start 17:15:04.877Z, fire 19:15:01.941Z, SIGTERM 19:15:04
+ * (journal `exited 143`), next run 20:15 — one over-long run cost ~2h of wall clock.
+ */
+describe("green-gate schedule phase (WI-39841)", () => {
+  /**
+   * How long a deadline-killed run dies BEFORE the next scheduled fire.
+   *
+   * A run starts ε (a second or two) after the fire that launched it, so measuring in
+   * run-relative time, the fire boundaries sit at `k * period - ε`. The outer `% period`
+   * is the whole point and the easy thing to get wrong: a budget that is an exact
+   * multiple of the period has `timeout % period === 0`, which reads as "a full period
+   * of slack" if you stop at the subtraction — when in fact the boundary lands ε INSIDE
+   * the run and that fire is the one being refused. Folding it back to 0 states the real
+   * quantity: zero slack.
+   */
+  const slackBeforeNextFireMs =
+    (GREEN_CHECKPOINT_FIRE_PERIOD_MS -
+      (GREEN_CHECKPOINT_SUITE_TIMEOUT_MS % GREEN_CHECKPOINT_FIRE_PERIOD_MS)) %
+    GREEN_CHECKPOINT_FIRE_PERIOD_MS;
+
+  it("kills a deadline-run far enough BEFORE a fire that the lock is free when it lands", () => {
+    // Not merely "non-zero": a kill 30s ahead of a fire frees the lock on paper and loses
+    // the slot in practice. The margin is what makes the recovered slot real.
+    expect(slackBeforeNextFireMs).toBeGreaterThanOrEqual(
+      GREEN_CHECKPOINT_PHASE_MARGIN_MS,
+    );
+  });
+
+  it("buys that phase with the smallest possible cut to the budget", () => {
+    // This fix must not become cover for shrinking the budget. 55m→120m (EI-7553) was paid
+    // for because short budgets kill healthy runs pre-verdict; what is being bought here is
+    // PHASE, not headroom. So the budget must sit at the LARGEST value that still clears the
+    // boundary by the margin. Together with the guard above this pins it exactly — lowering
+    // it further is a separate decision, and one that has to come and edit this line.
+    expect(GREEN_CHECKPOINT_SUITE_TIMEOUT_MS).toBeGreaterThanOrEqual(
+      2 * GREEN_CHECKPOINT_FIRE_PERIOD_MS - GREEN_CHECKPOINT_PHASE_MARGIN_MS,
+    );
+  });
+
+  it("detects the historical phase-lock it exists to prevent", () => {
+    // The exact live configuration through 2026-08-18: 120m against a 60m fire period — a
+    // deadline landing dead on a fire boundary, zero slack. If this ever stops being a
+    // violation, the guard above has been loosened into a no-op and the gate can quietly go
+    // back to eating two slots per long run.
+    const historicalTimeoutMs = 120 * MIN;
+    const historicalSlackMs =
+      (GREEN_CHECKPOINT_FIRE_PERIOD_MS -
+        (historicalTimeoutMs % GREEN_CHECKPOINT_FIRE_PERIOD_MS)) %
+      GREEN_CHECKPOINT_FIRE_PERIOD_MS;
+    expect(historicalSlackMs).toBe(0);
+    expect(historicalSlackMs).toBeLessThan(GREEN_CHECKPOINT_PHASE_MARGIN_MS);
   });
 });
