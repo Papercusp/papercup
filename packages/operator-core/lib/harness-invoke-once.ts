@@ -20,7 +20,7 @@ import { augmentedSpawnPath, resolveBin } from './plugin-spawn-impl';
 import { getHarnessAdminUrl } from './embedded-pg-discovery';
 import { roleModelDefault } from '@papercusp/orchestrator/role-models';
 import { DEFAULT_BACKEND_CMDS, normalizeModelSpec, type AgentBackend } from './agent-config-constants';
-import { normalizeCodexCliModel } from './model-context-budget.mjs';
+import { codexContextConfigArgs, normalizeCodexCliModel } from './model-context-budget.mjs';
 import type { TurnBackend } from '@papercusp/papercusp-shared/agent';
 
 export { normalizeCodexCliModel } from './model-context-budget.mjs';
