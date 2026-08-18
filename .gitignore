@@ -266,3 +266,19 @@ probehome.*/
 # Note this only silences git — the snapshot still occupies disk, and is still
 # its author's to delete when the investigation is done (WI-6463).
 *.heapsnapshot
+
+# Console liveness markers — per-PID, per-MACHINE runtime state, never source.
+# `console-spawn.ts:372` opens every console with `touch .papercup-console-active.$$`
+# and a `trap 'rm -f …' EXIT`, so the marker names the live console's pid and is how
+# a leftover window's pid is recovered after its agent exits. The trap only runs on a
+# CLEAN exit: a console killed by SIGKILL (or lost with the host) leaks its marker
+# forever, and each leak is a NEW path named for a pid that no previous ignore covers
+# — the same pattern-not-path argument as the heapsnapshot entry above.
+# Nothing ignored them, so git-sync's blanket `git add -A` has been committing them:
+# 689 zero-byte markers were tracked as of 2026-08-18, 3 of them added in the
+# preceding 24h, i.e. slow unbounded growth in the shared tree's file count.
+# Ignoring only stops NEW ones — the 689 already tracked need a `git rm --cached`,
+# deliberately NOT done here: that is a 689-file DELETION commit, and the 2026-08-15
+# incident guard blocks deletion commits from reaching origin while the owner's
+# ruling on it is still open (WI-39646). Untrack once that is ruled, not before.
+.papercup-console-active.*
