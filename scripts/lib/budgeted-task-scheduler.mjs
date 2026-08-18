@@ -57,6 +57,47 @@ export function resolveWorkerMemoryMb({ affectedWorkerMemoryMb, nodeOptions, fal
 }
 
 /**
+ * Resolve the memory envelope that worker tokens are admitted against.
+ *
+ * WI-39472: the caller's default used to be `workerBudget * workerMemoryMb`, which made
+ * `memoryWorkerBudget` identically equal to `workerBudget` — so the `Math.min` in
+ * {@link resolveTaskBudget} could never bind and the memory rail was INERT. Nothing failed
+ * loudly; the gate simply had no memory-awareness at all, which is why its concurrency had to
+ * be pinned at a hardcoded worst-case 2 (green-checkpoint.ts:4588-4610 records the 8 -> 4 -> 2
+ * walk, each step taken after a real OOM). A live clamp is the precondition for ever raising
+ * that ceiling again: with it, a quiet box runs wide and a loaded box is throttled instead of
+ * OOM-killed.
+ *
+ * MemAvailable, never MemFree/os.freemem(): free memory excludes reclaimable page cache and
+ * reads catastrophically low on any box that has been up for a while, which would throttle the
+ * scheduler to a single worker for no reason.
+ *
+ * SAFETY: the result is `min(ceiling, usable)`, so this can only ever LOWER the admitted budget
+ * relative to the previous behaviour — it can never widen it. The floor of one worker's worth
+ * keeps `memoryWorkerBudget >= 1`, so a memory-starved host still makes progress serially
+ * rather than tripping the "cannot admit one token" throw.
+ */
+export function resolveMemoryBudgetMb({
+  affectedGlobalMemoryMb,
+  memAvailableMb,
+  workerBudget,
+  workerMemoryMb,
+  reserveFraction = 0.25,
+}) {
+  const perWorker = positiveInteger(workerMemoryMb, 'workerMemoryMb');
+  if (affectedGlobalMemoryMb != null && affectedGlobalMemoryMb !== '') {
+    return positiveInteger(affectedGlobalMemoryMb, 'AFFECTED_GLOBAL_MEMORY_MB');
+  }
+  const ceiling = positiveInteger(workerBudget, 'workerBudget') * perWorker;
+  if (memAvailableMb == null || memAvailableMb === '') return ceiling;
+  if (!(reserveFraction >= 0 && reserveFraction < 1)) {
+    throw new Error(`reserveFraction must be in [0, 1); received ${String(reserveFraction)}`);
+  }
+  const usable = Math.floor(positiveInteger(memAvailableMb, 'memAvailableMb') * (1 - reserveFraction));
+  return Math.max(perWorker, Math.min(ceiling, usable));
+}
+
+/**
  * Resolve the single resource envelope shared by every concurrently-running task.
  * Memory is represented as tokens per worker: the scheduler never admits more worker
  * tokens than either the worker ceiling OR the memory ceiling can pay for.
