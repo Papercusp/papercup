@@ -172,7 +172,9 @@ export interface StructuredObservation {
  * pass-claiming rating outright, so a persisted 'fail' verdict coexists only with a
  * rating that honestly reflects it (or a bespoke scale word outside the pass map).
  */
-export interface ScorecardCheckRun {
+export type ScorecardCheckRun = ScorecardTestsCheckRun | ScorecardCoverageCheckRun;
+
+export interface ScorecardTestsCheckRun {
   kind: 'tests';
   /** The repo-root-relative files that ran. */
   files: string[];
@@ -186,6 +188,43 @@ export interface ScorecardCheckRun {
   measuredAt: string;
   /** Bounded failing-test names ("file: test"), only on a 'fail' verdict. */
   failures?: string[];
+}
+
+/**
+ * One criterion's grading-time SURFACE-CENSUS measurement (deterministic-coverage-census
+ * P-006). Persisted so the verdict stays auditable after the census itself has moved on.
+ *
+ * ⚠ Every count here is an aggregate over the WHOLE in-scope population, taken from
+ * `readCoverage` — never from its `limit`-capped row list. `belowSurfaces` IS bounded
+ * (it is a message, not a measurement), which is exactly why `belowUnwaived` is stored
+ * beside it: a reader must be able to see that 3 named surfaces stand for 40.
+ */
+export interface ScorecardCoverageCheckRun {
+  kind: 'coverage';
+  /** The scope as RESOLVED at grading time (planTouched already expanded to files). */
+  scope: { surfaceKind?: string; sourceFiles?: string[]; planTouched?: true };
+  /** The rung asserted — the census's own l1..l4 vocabulary. */
+  floor: 'l1' | 'l2' | 'l3' | 'l4';
+  verdict: 'pass' | 'fail';
+  /** Censused surfaces in scope (the denominator; a 0 here REFUSES rather than passing). */
+  surfaces: number;
+  /** In-scope surfaces meeting `floor`. */
+  meets: number;
+  /** In-scope surfaces below `floor` and NOT waived — the pass condition (0 ⇒ pass). */
+  belowUnwaived: number;
+  /** meets/surfaces as a percentage; NULL when there is no denominator, never 0 or 100. */
+  pct: number | null;
+  /**
+   * The honest ceiling on what the numbers mean. `weakest` is the flimsiest fidelity
+   * present in the counted population — 90% over a 'file-only' census is not 90% over a
+   * 'declared' one — and a partial census always flatters, because surfaces that were
+   * never enumerated cannot appear as gaps.
+   */
+  fidelity: { weakest: string | null; declaredPct: number | null };
+  /** BOUNDED sample of the surfaces below the floor, for the refusal message. */
+  belowSurfaces?: string[];
+  /** ISO instant the census was read (emit time). */
+  measuredAt: string;
 }
 
 /** The provisional stamp — see {@link StructuredObservation.provisional}. */
@@ -602,6 +641,58 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
           ...(Array.isArray(r.failures)
             ? { failures: r.failures.filter((x): x is string => typeof x === 'string') }
             : {}),
+        };
+      } else if (
+        r.kind === 'coverage' &&
+        (r.verdict === 'pass' || r.verdict === 'fail') &&
+        (r.floor === 'l1' || r.floor === 'l2' || r.floor === 'l3' || r.floor === 'l4') &&
+        typeof r.surfaces === 'number' &&
+        typeof r.meets === 'number' &&
+        typeof r.belowUnwaived === 'number' &&
+        typeof r.measuredAt === 'string' &&
+        r.measuredAt.trim() !== ''
+      ) {
+        // Load-bearing on READ: verdict + floor + the three counts. Without them the
+        // record cannot say what it judged or how it came out, so a malformed entry is
+        // discarded rather than half-kept — the same posture as the tests arm above.
+        const rawScope = (r.scope && typeof r.scope === 'object' && !Array.isArray(r.scope)
+          ? (r.scope as Record<string, unknown>)
+          : {}) as Record<string, unknown>;
+        const rawFid = (r.fidelity && typeof r.fidelity === 'object' && !Array.isArray(r.fidelity)
+          ? (r.fidelity as Record<string, unknown>)
+          : {}) as Record<string, unknown>;
+        runs[key] = {
+          kind: 'coverage',
+          scope: {
+            ...(typeof rawScope.surfaceKind === 'string' && rawScope.surfaceKind.trim()
+              ? { surfaceKind: rawScope.surfaceKind }
+              : {}),
+            ...(Array.isArray(rawScope.sourceFiles)
+              ? {
+                  sourceFiles: rawScope.sourceFiles.filter(
+                    (x): x is string => typeof x === 'string' && x.trim() !== '',
+                  ),
+                }
+              : {}),
+            ...(rawScope.planTouched === true ? { planTouched: true as const } : {}),
+          },
+          floor: r.floor,
+          verdict: r.verdict,
+          surfaces: r.surfaces,
+          meets: r.meets,
+          belowUnwaived: r.belowUnwaived,
+          pct: typeof r.pct === 'number' && Number.isFinite(r.pct) ? r.pct : null,
+          fidelity: {
+            weakest: typeof rawFid.weakest === 'string' && rawFid.weakest.trim() ? rawFid.weakest : null,
+            declaredPct:
+              typeof rawFid.declaredPct === 'number' && Number.isFinite(rawFid.declaredPct)
+                ? rawFid.declaredPct
+                : null,
+          },
+          ...(Array.isArray(r.belowSurfaces)
+            ? { belowSurfaces: r.belowSurfaces.filter((x): x is string => typeof x === 'string') }
+            : {}),
+          measuredAt: r.measuredAt,
         };
       }
     }
