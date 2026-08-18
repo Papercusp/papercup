@@ -1,0 +1,28 @@
+[Unit]
+Description=Papercusp Docker disk reclaim — evicts stale build cache, unreferenced images and ORPHANED ANONYMOUS volumes so /var/lib/docker cannot fill the root filesystem (WI-39305)
+# Deliberately a systemd timer, NOT a DBOS scheduled workflow and NOT an
+# in-process operator tick (dbos-scheduler-consolidation-2026-06-03 D-004 /
+# EI-1622): this is dev-box host-level infra hygiene, not product behavior —
+# the same reasoning as papercup-testvm-reaper.service,
+# papercup-vitest-orphan-reaper.service and papercup-webkit-reaper.service.
+#
+# This unit is the ACTOR half of a detector that had none. disk-space-alarm.ts
+# detects a filling filesystem but is read-only by construction, and its own
+# header records it firing 318 times over 8 days while the box sat under 1%
+# free with nothing consuming the toast (EI-20092729937622838). Three
+# successive CRITICAL work-items (WI-38595 90%, WI-38973 95%, WI-39305 99%)
+# could not be durably closed because the only response available was a manual
+# one-time prune.
+
+[Service]
+Type=oneshot
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+# A sweep is a handful of docker CLI calls plus one `volume inspect` per
+# orphaned anonymous volume. The measured full reclaim (34.85 GB of cache, 30
+# images, 143 volumes) took well under a minute; 600s bounds a pathological run
+# against a slow or partially-wedged daemon without cutting a legitimate sweep
+# short.
+TimeoutStartSec=600
+ExecStart=%h/papercupai-workspace/papercusp/bin/reclaim-docker-disk.sh

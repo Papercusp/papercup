@@ -1,0 +1,24 @@
+[Unit]
+Description=Run the Papercusp Docker disk reclaim hourly (WI-39305)
+
+[Timer]
+# OnCalendar, NOT OnBootSec/OnUnitActiveSec (memory 26f538f6, EI-10733/EI-11989):
+# monotonic triggers measure from the service's last transition, which is NOT
+# persisted across a `systemctl --user` manager restart — the trigger silently
+# goes dark (no fire, no error) until the NEXT manager restart re-arms it. That
+# exact mechanism caused two real backup-timer outages on this box (~20h dark).
+# OnCalendar fires on wall-clock boundaries regardless of manager restarts, and
+# Persistent=true catches up a run the box slept through — mirroring
+# papercup-testvm-reaper.timer and papercup-live-federation-gate.timer.
+#
+# Hourly, at :17 past. Rationale for the cadence: this box went 90% -> 99% full
+# in ~2 days, so a daily sweep is too coarse to keep the trailing edge away
+# from the cliff, while the script's age filters (24h build cache, 7d images,
+# 24h anonymous volumes) mean a healthy box does almost nothing on most ticks —
+# the sweep is a cheap no-op until there is genuinely stale garbage to evict.
+# The offset keeps it off the top-of-hour boundary shared by other timers.
+OnCalendar=*-*-* *:17:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
