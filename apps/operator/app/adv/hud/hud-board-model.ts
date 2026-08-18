@@ -1276,12 +1276,27 @@ export function deriveBadges(
 
   // A manual-wake session STAGES your reply instead of delivering it. Surfacing
   // this is the difference between "it ignored me" and "it never heard me".
+  //
+  // popup-agent-state-coverage-2026-08-18 P-007: the COUNT rides in this badge
+  // rather than in a chip of its own. `pendingWakes` has always been on the
+  // roster row and was rendered nowhere, so the badge could say the mechanism
+  // was armed but never that anything was actually caught in it — and in the
+  // popup the composer is inches below, which makes "3 staged" the difference
+  // between "it is ignoring me" and "it has not heard any of the three things I
+  // said". A separate chip would have spent one of the capped board slots to say
+  // half of what this badge already says.
   if (e.wakeMode === 'manual') {
+    // `?? 0` guards a payload from an older operator only: the field is required
+    // on the roster row, and 0 is a real value (armed, nothing caught yet).
+    const staged = e.pendingWakes ?? 0;
     out.push({
       id: 'wake',
-      label: 'wake: manual',
+      label: staged > 0 ? `wake: manual · ${staged} staged` : 'wake: manual',
       tone: 'warn',
-      title: 'Messages are staged, not delivered, until released',
+      title:
+        staged > 0
+          ? `${staged} message${staged === 1 ? '' : 's'} staged and NOT delivered — this agent has not seen ${staged === 1 ? 'it' : 'them'}. Release the wake to deliver.`
+          : 'Messages are staged, not delivered, until released',
     });
   }
 
