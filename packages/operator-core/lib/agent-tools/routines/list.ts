@@ -160,6 +160,13 @@ export default defineTool({
   // drops the two rarely-read columns and caps rows with a loud notice row
   // (count keeps the true total). standard falls through to full.
   shape: {
+    // EI-20803112372029993: opt this allowlist into the contract check
+    // (`../trimmed-contract.ts`). The FIELD LIST is not repeated here on
+    // purpose — it is derived from the `returns` promise above, so the sentence
+    // agents read and the check that enforces it are one artifact. This tool
+    // shipped the drop-a-promised-field bug three times; the third (triggerKind
+    // + targetRole) was found BY this guard.
+    contract: { rows: 'routines' },
     trimmed: (data) => {
       const d = data as { count?: number; routines?: unknown[]; rollup?: unknown[] } | null;
       if (!d) return data;
