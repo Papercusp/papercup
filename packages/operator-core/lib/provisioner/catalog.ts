@@ -79,6 +79,25 @@ export interface CatalogEntry {
     /** llama-server `--reasoning-budget N` (0 = disable thinking-mode preambles — part of
      *  the certified qwen3 config; WI-1596). Only meaningful when `backend === 'llama-server'`. */
     reasoningBudget?: number;
+    /** llama-server `-ngl N` (`--n-gpu-layers`) — how many transformer layers to offload to the
+     *  GPU. 999 means "all of them"; ABSENT means the engine's own default, which for a packaged
+     *  ollama build is effectively CPU-only. Only meaningful when `backend === 'llama-server'`.
+     *
+     *  Declare it whenever the deployed unit sets it. The drift guard COMPARES it, so a catalog
+     *  that stays silent about a flag the unit sets reports drift — deliberately, and in line with
+     *  this module's "never substitute a default" rule: an undeclared GPU-offload setting is
+     *  exactly what let a CPU-only fallback pass every green check (WI-39735, D-012). */
+    gpuLayers?: number;
+    /** Environment variable NAMES this backend cannot serve correctly without. The drift guard
+     *  asserts each is PRESENT and non-empty in the deployed unit; it deliberately does NOT compare
+     *  their VALUES, which are per-box install paths — comparing those is how a guard starts crying
+     *  wolf on every install and gets silenced (see unit-drift.ts's header).
+     *
+     *  Presence-not-value is the whole point here: ornith needs LD_LIBRARY_PATH + GGML_BACKEND_PATH
+     *  because ollama ships its CUDA backend inside a subdirectory ggml's loader does not scan.
+     *  Delete either line and the unit still starts, still reports `active`, still answers /health
+     *  200, and still matches every compared flag — while serving entirely from the CPU. */
+    requiredEnv?: readonly string[];
     /** How this combo's backend should be MANAGED at runtime — the RECOMMENDED DEFAULT for the
      *  combo, not the operative setting (on-demand-local-inference-lifecycle-2026-08-17 D-005:
      *  the catalog recommends, `harness_shared.local_backends` is the truth the reaper and the
@@ -127,6 +146,12 @@ export const CERTIFIED_CATALOG: readonly CatalogEntry[] = [
       // freed the card equally well. 30 min keeps the worst-case waste bounded while staying far
       // above any plausible gap inside one working session.
       idleTtlSec: 1800,
+      // Both of the following are what make this unit use the GPU AT ALL, and all three were
+      // invisible to the drift guard until WI-39735. Measured 2026-08-17: without them the unit
+      // loads ~10.1GB into system RAM, GPU memory stays flat, /health returns 200 in 117.9s; with
+      // them it loads to the card (4448 -> 21754 MiB) and cold-starts in 67.5s.
+      gpuLayers: 999,
+      requiredEnv: ['LD_LIBRARY_PATH', 'GGML_BACKEND_PATH'],
     },
     // DEMOTED 2026-08-17 from 'certified' — on-demand-local-inference-lifecycle-2026-08-17 D-011.
     // The 2026-07-02 certification was earned on a HAND-BUILT ~/llama.cpp/build/bin/llama-server

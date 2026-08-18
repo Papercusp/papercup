@@ -26,6 +26,9 @@ export interface LlamaServerUnitOptions {
   /** Pass `--reasoning-budget N` (0 disables thinking-mode preambles on reasoning models —
    *  the qwen3 cert-battery config; WI-1596). Omit to leave the server default. */
   reasoningBudget?: number;
+  /** llama-server `-ngl N` (`--n-gpu-layers`) — layers offloaded to the GPU (999 = all). Omit to
+   *  leave the engine default, which on a packaged ollama build means CPU-only. */
+  gpuLayers?: number;
   /** Absolute path to append stdout/stderr to. */
   logPath: string;
   /** llama-server binary — defaults to relying on PATH. */
@@ -42,6 +45,9 @@ export function renderLlamaServerUnit(opts: LlamaServerUnitOptions): string {
     ...(opts.reasoningBudget !== undefined ? [`--reasoning-budget ${opts.reasoningBudget}`] : []),
   ];
   const extraLine = extraFlags.length ? `  ${extraFlags.join(' ')} \\\n` : '';
+  // Its own continuation line, matching the real llama-ornith.service layout, so the deployed unit
+  // and this renderer stay diffable line-for-line by the P-010 drift guard.
+  const nglLine = opts.gpuLayers !== undefined ? `  -ngl ${opts.gpuLayers} \\\n` : '';
   return `[Unit]
 Description=${description}
 After=network.target
@@ -52,7 +58,7 @@ ExecStart=${bin} \\
   -m ${opts.weightsPath} \\
   --host ${opts.host} --port ${opts.port} \\
   --flash-attn ${opts.flashAttn ? 'on' : 'off'} \\
-  -np ${opts.parallelSlots} -c ${opts.ctxTotal} \\
+${nglLine}  -np ${opts.parallelSlots} -c ${opts.ctxTotal} \\
   --cache-type-k ${opts.kvCacheType} --cache-type-v ${opts.kvCacheType} \\
 ${extraLine}  --alias ${opts.alias}
 Restart=on-failure
