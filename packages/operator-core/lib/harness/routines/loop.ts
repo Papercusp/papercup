@@ -1067,6 +1067,14 @@ export async function rearmFireStarvedLoop(sql: Sql, routineId: string, reason: 
  * stops a genuinely broken loop from flapping between this write and the disarm forever. The
  * caller refuses to revive past its own ceiling by reading this same counter.
  *
+ * It ALSO restamps the arm epoch (`armed_at` / `fire_count_at_arm`, the same pair
+ * stampLoopArmedAt writes) because a revival IS an arm. That is an overwrite of the arm-epoch
+ * keys, not a deletion of census keys, so it does not conflict with the additivity constraint
+ * below — and it is load-bearing for the revival predicate's supersession bound: without it, an
+ * owner who `loop:end`s the revived loop leaves `armed_at` older than the pause instant, the row
+ * re-matches `readRevivableLoops`, and the next sweep undoes the owner's explicit end (measured
+ * live on loop-su-50a96a51, 2026-08-18).
+ *
  * ⚠⚠ PURELY ADDITIVE ON METADATA — IT MUST NOT DELETE `loop_paused_reason`, AND THAT IS A
  * CORRECTNESS CONSTRAINT, NOT TIDINESS. This function's first draft cleared `pause` and
  * `loop_paused_reason` on the reasoning that they had become false. Both premises were wrong,
@@ -1126,7 +1134,16 @@ export async function reviveDisarmedLoop(sql: Sql, routineId: string, reason: st
                          -- doc above); this copy survives a later disarm overwriting it.
                          'loop_revived_from_pause_reason', COALESCE(metadata->'loop_paused_reason', 'null'::jsonb),
                          -- RATCHET. Never reset by this write; the caller's ceiling reads it.
-                         'loop_revived_count', to_jsonb(COALESCE((metadata->>'loop_revived_count')::int, 0) + 1)
+                         'loop_revived_count', to_jsonb(COALESCE((metadata->>'loop_revived_count')::int, 0) + 1),
+                         -- A revival IS an arm, so it stamps the arm epoch exactly as
+                         -- stampLoopArmedAt does on every other arm. Without this the row keeps
+                         -- its pre-disarm armed_at, and an owner who loop:end's the REVIVED loop
+                         -- leaves armed_at < pause instant — which re-matches the revival
+                         -- predicate's supersession bound (stalled-loops-guard
+                         -- readRevivableLoops) and lets the next sweep undo the owner's explicit
+                         -- end (measured live on loop-su-50a96a51, 2026-08-18).
+                         'armed_at', now()::text,
+                         'fire_count_at_arm', COALESCE((metadata->>'fire_count')::int, 0)
                        ),
            updated_at = now()
      WHERE id = ${routineId} AND active = FALSE

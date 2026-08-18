@@ -633,6 +633,12 @@ describe('reviveDisarmedLoop must not blind the census that judges it (WI-37546,
     // The revival is recorded additively, including the ratchet that bounds the flap.
     expect(sql).toContain('loop_revived_at');
     expect(sql).toContain('loop_revived_count');
+    // A revival IS an arm: it restamps the arm epoch (the stampLoopArmedAt pair), so an owner
+    // who loop:end's the revived loop reads as end-after-arm and the supersession bound in
+    // readRevivableLoops excludes the row instead of letting the next sweep undo the end
+    // (2026-08-18 incident, loop-su-50a96a51).
+    expect(sql).toContain(`'armed_at'`);
+    expect(sql).toContain(`'fire_count_at_arm'`);
     // And it only ever crosses back over a genuinely disarmed row.
     expect(sql).toContain('active = FALSE');
   });
