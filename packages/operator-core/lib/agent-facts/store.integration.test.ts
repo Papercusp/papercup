@@ -730,8 +730,30 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
          AND key NOT LIKE 'dead-end:%'
          AND COALESCE(kind, '') <> 'convention'`;
 
+    // ── THE PERMANENT CONTROL ──────────────────────────────────────────────
+    // A guard that has never failed is a guard nobody has tested. Rather than
+    // mutate production code in a shared tree to prove this can fail (the
+    // sweep-race the repo forbids), keep the PRE-FIX query here permanently as
+    // a deliberately-wrong control: this is the survival WHERE exactly as it
+    // stood before EI-20515478467800187, i.e. missing the convention filter.
+    // If the fix is ever reverted, `liveCount` becomes this number and BOTH
+    // assertions below flip — which is what makes them real assertions.
+    const [{ count: preFixPopulation }] = await db.sql<{ count: number }[]>`
+      SELECT count(*)::int AS count
+        FROM harness_shared.agent_facts
+       WHERE workspace_id = ${WS} AND scope = 'owner' AND scope_ref = ${scopeRef}
+         AND source_hive IS NULL
+         AND superseded_at IS NULL
+         AND retracted_at IS NULL AND expires_at > now()
+         AND key NOT LIKE 'wall:%'
+         AND key NOT LIKE 'dead-end:%'`;
+    // The control must genuinely differ, or this whole test is a tautology.
+    expect(preFixPopulation).toBe(evictable + CONVENTIONS);
+
     expect(doomed.survival).toBeDefined();
-    // BEFORE the fix this was `evictable + CONVENTIONS` — the exact inflation.
+    // The receipt must NOT be reporting the inflated population...
+    expect(doomed.survival!.liveCount).not.toBe(preFixPopulation);
+    // ...it must be reporting exactly what the sweep can evict.
     expect(doomed.survival?.liveCount).toBe(evictable);
     // And the rank must sit inside that population, not past its end.
     expect(doomed.survival!.rank).toBeLessThanOrEqual(evictable);
