@@ -650,6 +650,140 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
     expect(live.map((f) => f.key)).not.toContain('doomed');
   });
 
+  it('EI-20515478467800187: sweep-survival-population-parity — survival counts ONLY rows the sweep may evict, so conventions never inflate liveCount', async () => {
+    const scopeRef = 'su-population-parity';
+    const base = { scope: 'owner' as const, scopeRef, createdBy: 'su-int', workspaceId: WS };
+
+    // ── WHAT THIS CATCHES ──────────────────────────────────────────────────
+    // The sweep and the survival report used to carry SEPARATE hand-copied
+    // WHERE clauses. They agreed on the safety slots and DISAGREED on
+    // conventions: P-028 forbids the sweep from evicting `kind:'convention'`,
+    // but the survival query counted them anyway. `survival.liveCount` then
+    // described a population the sweep cannot act on, and `survival.rank`
+    // ranked the write against rows interleaved with exempt ones — so the
+    // receipt's headline advice ("rank N of M, survives M-N more asserts") was
+    // arithmetically wrong on every scope holding conventions. On the live
+    // workspace scope that read as liveCount 259 against a 200-fact cap, which
+    // is the anomaly the reporter of EI-20515478467800187 could not reconcile.
+    //
+    // The sibling guard `survival-ranking-matches-sweep` above cannot catch
+    // this and never could: it pins the ORDER BY, and its fixture contains no
+    // convention row, so the divergent WHERE is invisible to it. Ordering
+    // parity and POPULATION parity are different properties.
+    //
+    // ⚠ The fixture MUST hold conventions for this test to mean anything — the
+    // non-vacuity block below is what stops it degrading into a tautology.
+    const CONVENTIONS = 3;
+    for (let i = 0; i < CONVENTIONS; i++) {
+      await assertFact(
+        {
+          ...base,
+          key: `governing-convention-${i}`,
+          body: `we do it this way (${i})`,
+          kind: 'convention',
+          enforcement: { tier: 'structural' },
+        },
+        db.sql,
+      );
+    }
+
+    // Saturate the EVICTABLE population to exactly the cap.
+    for (let i = 0; i < FACTS_PER_SCOPE_CAP; i++) {
+      await assertFact(
+        { ...base, key: `incumbent-${i}`, body: `n ${i}`, confidence: 'verified', ttlSec: 30 * 86400 },
+        db.sql,
+      );
+    }
+
+    const doomed = await assertFact(
+      { ...base, key: 'doomed', body: 'a hedge among findings', confidence: 'suspected', ttlSec: 30 * 86400 },
+      db.sql,
+    );
+
+    // ── NON-VACUITY, BOTH HALVES ───────────────────────────────────────────
+    // (1) the cap must actually have bitten, or "liveCount is right" would be a
+    //     claim about a scope where the sweep never ran;
+    // (2) the conventions must actually be LIVE, or the population difference
+    //     this test exists to detect would not exist in the fixture at all.
+    expect(doomed.evicted?.length).toBeGreaterThan(0);
+    const [{ count: liveConventions }] = await db.sql<{ count: number }[]>`
+      SELECT count(*)::int AS count
+        FROM harness_shared.agent_facts
+       WHERE workspace_id = ${WS} AND scope = 'owner' AND scope_ref = ${scopeRef}
+         AND kind = 'convention'
+         AND superseded_at IS NULL AND retracted_at IS NULL AND expires_at > now()`;
+    expect(liveConventions).toBe(CONVENTIONS);
+
+    // ── THE PIN ────────────────────────────────────────────────────────────
+    // Measure the evictable population directly and require the receipt to
+    // agree with it. Asserting the literal FACTS_PER_SCOPE_CAP would be weaker:
+    // this form states the actual invariant ("liveCount == what the sweep may
+    // evict") and stays honest if the cap constant ever moves.
+    const [{ count: evictable }] = await db.sql<{ count: number }[]>`
+      SELECT count(*)::int AS count
+        FROM harness_shared.agent_facts
+       WHERE workspace_id = ${WS} AND scope = 'owner' AND scope_ref = ${scopeRef}
+         AND source_hive IS NULL
+         AND superseded_at IS NULL
+         AND retracted_at IS NULL AND expires_at > now()
+         AND key NOT LIKE 'wall:%'
+         AND key NOT LIKE 'dead-end:%'
+         AND COALESCE(kind, '') <> 'convention'`;
+
+    expect(doomed.survival).toBeDefined();
+    // BEFORE the fix this was `evictable + CONVENTIONS` — the exact inflation.
+    expect(doomed.survival?.liveCount).toBe(evictable);
+    // And the rank must sit inside that population, not past its end.
+    expect(doomed.survival!.rank).toBeLessThanOrEqual(evictable);
+    // The doomed hedge is bottom of a scope of verified findings, so the
+    // receipt's "you are next" must be true AND consistent with the count.
+    expect(doomed.survival?.nextVictim).toBe(true);
+    expect(doomed.survival!.rank).toBe(evictable);
+  });
+
+  it('EI-20515478467800187: a convention write gets NO survival verdict — it is exempt from the cap, so it has no victim ranking', async () => {
+    const scopeRef = 'su-convention-no-survival';
+    const base = { scope: 'owner' as const, scopeRef, createdBy: 'su-int', workspaceId: WS };
+
+    // Saturate so the sweep fires on the next write — otherwise "no survival"
+    // would be trivially true (survival is only computed on an at-cap write).
+    for (let i = 0; i < FACTS_PER_SCOPE_CAP; i++) {
+      await assertFact(
+        { ...base, key: `incumbent-${i}`, body: `n ${i}`, confidence: 'verified', ttlSec: 30 * 86400 },
+        db.sql,
+      );
+    }
+
+    const convention = await assertFact(
+      {
+        ...base,
+        key: 'a-governing-rule',
+        body: 'policy, not an observation',
+        kind: 'convention',
+        enforcement: { tier: 'structural' },
+      },
+      db.sql,
+    );
+
+    // Non-vacuity: the cap DID bite on this write (it evicted an incumbent),
+    // so we are on the at-cap path where a survival verdict would be produced.
+    expect(convention.evicted?.length).toBeGreaterThan(0);
+
+    // ...but the written row is exempt, so reporting a victim-rank for it would
+    // be a category error — it can never be the victim. Silence is the correct
+    // answer here, where the old code would have ranked it among rows it can
+    // never join.
+    expect(convention.survival).toBeUndefined();
+
+    // And it really is exempt: it survives its own at-cap write.
+    const [row] = await db.sql<{ retracted_at: string | null }[]>`
+      SELECT retracted_at::text
+        FROM harness_shared.agent_facts
+       WHERE workspace_id = ${WS} AND scope = 'owner' AND scope_ref = ${scopeRef}
+         AND key = 'a-governing-rule' AND superseded_at IS NULL`;
+    expect(row.retracted_at).toBeNull();
+  });
+
   it('EI-19483432832662150: an urgent SHORT-TTL fact is no longer doomed on arrival — the most-ELAPSED incumbent dies instead', async () => {
     const scopeRef = 'su-short-ttl-survives';
     const base = { scope: 'owner' as const, scopeRef, createdBy: 'su-int', workspaceId: WS };
