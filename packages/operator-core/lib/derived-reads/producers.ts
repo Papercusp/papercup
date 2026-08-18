@@ -524,7 +524,14 @@ registerDerivedRead({
   // permits it to clobber the slim row back indefinitely. The version bump is what
   // makes a shape change self-enforcing — same rule as the v1 → v2 bump above:
   // a superseded SHAPE is treated as absent and re-warmed by the new-code reader.
-  producerVersion: 3,
+  //
+  // v3 → v4 (WI-39773 / D-008): the humanQueue wire shape changed again —
+  // `tierReason` now ships INTERNED as `trc` (a code) plus a per-payload
+  // `tierReasonLegend`. A stored v3 row has the fat string and NO legend, so a
+  // reader that resolves `trc` through the legend would find neither and show an
+  // empty tier reason in quick search — the exact silent-narrowing this encoding
+  // was chosen to avoid. Bumping is what makes the change self-enforcing.
+  producerVersion: 4,
   scope: 'workspace',
   compute: async () => {
     const { computeLearningImprovementsSnapshot } = await import(
@@ -576,7 +583,9 @@ registerDerivedRead({
 registerDerivedRead({
   key: 'learning.improvements.hive',
   ttlMs: 90_000,
-  producerVersion: 3,
+  // v3 → v4 tracks the sibling's tierReason interning (WI-39773 / D-008), per the
+  // note above: same compute, same wire shape, so the same stale-row hazard.
+  producerVersion: 4,
   scope: 'harness',
   compute: async ({ harnessSlug }) => {
     const { computeLearningImprovementsSnapshot } = await import(

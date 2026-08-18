@@ -42,10 +42,31 @@ export const HUMAN_QUEUE_WIRE_FIELDS = [
   'assignee',
   'score',
   'ageDays',
-  'tierReason',
   'ideaType',
   'source',
 ] as const satisfies ReadonlyArray<keyof ScoredItem>;
+
+/**
+ * `tierReason` is NOT in the list above — it ships INTERNED, as `trc` (an index
+ * into {@link LearningImprovementsRow.tierReasonLegend}). It is not dropped:
+ * dropping it would silently narrow the owner's quick search (see the projection
+ * comment below), which is the failure this encoding exists to avoid.
+ *
+ * WHY (WI-39773 / plan learning-tab-filters-are-page-scoped-2026-08-17 D-008):
+ * measured live on :3170 2026-08-18, `tierReason` was 83,526 B of a 272,705 B
+ * humanQueue — 30.6%, 167 B/row — repeated across only SIX distinct strings on
+ * 500/500 rows. They are whole sentences ("kind=feature is not auto-eligible
+ * (autoKinds: [bug]) → human"), so the repetition, not the content, was the cost.
+ *
+ * ⚠ The prior record of this said "15% across FOUR distinct strings" (WI-7278,
+ * and the comment that used to sit on the projection below). Both numbers were
+ * carried, not re-measured, and both were wrong — re-measure before citing.
+ *
+ * The key is deliberately SHORT. At ~500-623 rows a 12-character key name is
+ * ~7 KB of pure key repetition, which is the difference between fitting the
+ * 250,000 B budget at a full-corpus window and missing it (D-008).
+ */
+export const TIER_REASON_CODE_KEY = 'trc';
 
 /**
  * One `learning.improvements` humanQueue row AS SERVED — deliberately narrower
@@ -57,13 +78,50 @@ export const HUMAN_QUEUE_WIRE_FIELDS = [
  * `undefined` at runtime, which is how a field declared-but-never-sent rots
  * into a silent bug.
  */
-export type SlimHumanQueueItem = Pick<ScoredItem, (typeof HUMAN_QUEUE_WIRE_FIELDS)[number]>;
+export type SlimHumanQueueItem = Pick<ScoredItem, (typeof HUMAN_QUEUE_WIRE_FIELDS)[number]> & {
+  /**
+   * The INTERNED `tierReason`: an index into
+   * {@link LearningImprovementsRow.tierReasonLegend}. Omitted when the item has
+   * no tier reason (the ranker leaves it '' for some rows), exactly as the
+   * null-omit below drops an absent `assignee`.
+   *
+   * Read it through `tierReasonOf(row, item)` — never index the legend by hand,
+   * or a row from a stale snapshot (one legend) paired with a fresh legend
+   * silently resolves to the WRONG sentence instead of failing.
+   */
+  trc?: number;
+};
 
 /** The `learning.improvements` payload row as served to the Learning tab. */
 export type LearningImprovementsRow = Omit<ImprovementDigest, 'humanQueue'> & {
   humanQueue: SlimHumanQueueItem[];
   flow: import('./flow-metrics').ImprovementFlow;
+  /**
+   * The legend for {@link SlimHumanQueueItem.trc} — every distinct `tierReason`
+   * in THIS payload, in code order. Self-contained per payload on purpose: it
+   * travels with the rows it describes, so a client never has to hold a shared
+   * enum in sync with the server (the tier-reason strings are generated prose
+   * and DO change when the risk-tier policy changes).
+   */
+  tierReasonLegend: string[];
 };
+
+/**
+ * Resolve a humanQueue row's tier reason back to its sentence.
+ *
+ * The ONE supported way to read `trc`. Returns '' for a missing code or an
+ * out-of-range one rather than `undefined`, so a caller that concatenates it
+ * into a search haystack cannot end up with the string "undefined" in the
+ * haystack (which would match a search for "undef").
+ */
+export function tierReasonOf(
+  legend: readonly string[] | undefined,
+  item: Pick<SlimHumanQueueItem, 'trc'> | null | undefined,
+): string {
+  const code = item?.trc;
+  if (code === undefined || !legend) return '';
+  return legend[code] ?? '';
+}
 
 export interface LearningImprovementsArgs {
   state?: 'open' | 'resolved' | 'closed';
@@ -196,10 +254,13 @@ export async function computeLearningImprovementsSnapshot(
   //     `title`, `tierReason`, `scope`.
   //   LearningLoopFace.tsx — reads `humanQueue.length` only.
   //
-  // ⚠ `tierReason` is 15% of the remaining payload across only FOUR distinct
-  // strings, and is never RENDERED — but it is a quick-search input, so
-  // dropping it silently narrows what the owner can find. It is kept
-  // deliberately; interning it is filed as WI-7278, not done here.
+  // ⚠ `tierReason` is never RENDERED, but it IS a quick-search input, so
+  // dropping it would silently narrow what the owner can find — no error, just
+  // fewer hits. It is therefore INTERNED rather than dropped (WI-39773 / D-008):
+  // 30.6% of the humanQueue across only SIX distinct sentences, measured live.
+  // See TIER_REASON_CODE_KEY above for the numbers and the stale ones it corrects.
+  const tierReasonLegend: string[] = [];
+  const tierReasonCodes = new Map<string, number>();
   const humanQueue: SlimHumanQueueItem[] = digest.humanQueue.map((item) => {
     const slim = {} as Record<string, unknown>;
     for (const key of HUMAN_QUEUE_WIRE_FIELDS) {
@@ -210,7 +271,20 @@ export async function computeLearningImprovementsSnapshot(
       if (v === undefined || v === null) continue;
       slim[key] = v;
     }
+    // Intern the tier reason. An EMPTY reason is left off entirely rather than
+    // interned as a code for '': it carries nothing, and a legend entry for it
+    // would put an empty string in every consumer's search haystack.
+    const reason = item.tierReason;
+    if (reason) {
+      let code = tierReasonCodes.get(reason);
+      if (code === undefined) {
+        code = tierReasonLegend.length;
+        tierReasonLegend.push(reason);
+        tierReasonCodes.set(reason, code);
+      }
+      slim[TIER_REASON_CODE_KEY] = code;
+    }
     return slim as unknown as SlimHumanQueueItem;
   });
-  return [{ ...digest, humanQueue, flow }];
+  return [{ ...digest, humanQueue, flow, tierReasonLegend }];
 }

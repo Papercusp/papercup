@@ -68,6 +68,11 @@ import type {
   LearningImprovementsRow,
   SlimHumanQueueItem,
 } from "@papercusp/operator-core/lib/harness/improvements/learning-digest-snapshot";
+// `tierReason` ships INTERNED (WI-39773 / D-008) — a `trc` code plus a
+// per-payload legend. Resolve it through this helper, never by indexing the
+// legend inline: pairing a row with the wrong payload's legend would resolve to
+// a DIFFERENT sentence rather than fail.
+import { tierReasonOf } from "@papercusp/operator-core/lib/harness/improvements/learning-digest-snapshot";
 import { CATEGORICAL, SEVERITY } from "@/app/harness/theme";
 import type { ImprovementFlow } from "@papercusp/operator-core/lib/harness/improvements/flow-metrics";
 import type {
