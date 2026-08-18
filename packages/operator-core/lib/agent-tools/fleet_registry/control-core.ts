@@ -279,5 +279,6 @@ export async function applyFleetControl(
     notified,
     cueMsgId,
     ...(drainStamp ? { drainStamp } : {}),
+    ...(pauseHolds ? { pauseHolds } : {}),
   };
 }
