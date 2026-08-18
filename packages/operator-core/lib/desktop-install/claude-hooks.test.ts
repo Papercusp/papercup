@@ -22,8 +22,9 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
     // (AskUserQuestion|ExitPlanMode, owner-inbox-single-pane P-001) + guard-operator-desktop
     // (browser-navigation MCP tools + Skill, EI-16981) + content-lint (Edit|Write|MultiEdit,
     // P-013, wired WI-5543) + secrets-guard (Edit|Write|MultiEdit, wired WI-5542) +
-    // nul-byte-edit-guard (Edit|MultiEdit, EI-18896033546676518) + tool-prompt-weight-guard
-    // (Edit|Write|MultiEdit, EI-20204186116417704) +
+    // nul-byte-edit-guard (Edit|MultiEdit, EI-18896033546676518) +
+    // control-bytes-content-guard (Edit|Write|MultiEdit, EI-20782070131658758) +
+    // tool-prompt-weight-guard (Edit|Write|MultiEdit, EI-20204186116417704) +
     // schedule-wakeup-provenance (ScheduleWakeup, EI-18680056073436345) +
     // write-overwrite-guard (Write, EI-19966323166806405) + generated-file-edit-guard
     // (Edit|Write|MultiEdit, claude-md-projection-from-pg-2026-08-10 P-006) +
@@ -38,6 +39,7 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
       `${DEST}/pretooluse-content-lint.mjs`,
       `${DEST}/pretooluse-secrets-guard.mjs`,
       `${DEST}/pretooluse-nul-byte-edit-guard.mjs`,
+      `${DEST}/pretooluse-control-bytes-content-guard.mjs`,
       `${DEST}/pretooluse-tool-prompt-weight-guard.mjs`,
       `${DEST}/pretooluse-schedule-wakeup-provenance.mjs`,
       `${DEST}/pretooluse-write-overwrite-guard.mjs`,
