@@ -65,22 +65,41 @@ export interface FanOutSite {
   snippet: string;
   /** Which seam token bounded the enclosing function, or null if none did. */
   boundedBy: string | null;
+  /** Name of the outermost enclosing function, when it has one. */
+  functionName: string | null;
+  /**
+   * The stable handle an exemption names: the registry key when the site sits
+   * under one, else `file#functionName`, else the file. Function-level so an
+   * exemption cannot silently cover a NEW fan-out added elsewhere in the file.
+   */
+  identity: string;
 }
 
 /** A site the guard accepts unbounded, and the reason it is safe. */
 export interface FanOutExemption {
-  /** Registry key or file-local function name the exemption applies to. */
+  /**
+   * The site's `identity` — a registry key, or `file.ts#functionName`. Function-
+   * scoped on purpose: a file-wide exemption would silently swallow the NEXT
+   * fan-out someone adds to that file, which is the failure this guard exists for.
+   */
   where: string;
-  /** Why this fan-out needs no deadline. Required — an unexplained hole is a hole. */
+  /** Why this fan-out needs no deadline of its own. Required — an unexplained hole is a hole. */
   reason: string;
 }
 
 /**
- * Sites whose legs perform no store IO, so their arity multiplies nothing.
+ * The two honest reasons a variable-arity fan-out needs no deadline HERE:
+ * its legs do no IO, or an OUTER deadline already governs the whole call.
  *
- * SHRINK-ONLY in spirit: an entry here asserts a property of the LEG BODY, not a
- * preference. If a leg later gains a store read, the entry stops being true and
- * must be removed rather than widened.
+ * The second kind is this analyzer's blind spot, not an excuse: it reads one
+ * function at a time and cannot follow a call graph, so a helper bounded by its
+ * CALLER looks identical to one bounded by nobody. Each entry below therefore
+ * cites the exact bounding call site, so the claim is checkable by reading two
+ * named lines rather than by trusting the entry.
+ *
+ * SHRINK-ONLY in spirit: an entry asserts a property that is either true or has
+ * stopped being true. If a leg gains a store read, or a caller stops wrapping
+ * it, the entry must be REMOVED — never widened to keep the guard quiet.
  */
 export const FANOUT_EXEMPTIONS: readonly FanOutExemption[] = [
   {
@@ -88,9 +107,14 @@ export const FANOUT_EXEMPTIONS: readonly FanOutExemption[] = [
     reason:
       'The leg body awaits nothing — getOmpSessionRowSummary is a synchronous in-memory lookup, so the map is a per-row reshape and its arity multiplies zero store reads.',
   },
+  {
+    where: 'learning-retain-read.ts#readInsightDocsPage',
+    reason:
+      'Bounded by its CALLER: index.ts wires it as deps.listRunbooksPage, which readRetainFeed invokes only inside withinBudget(legFns[k](), `${k} leg`) — so a hang in either fs fan-out rejects the whole runbook leg on the shared deadline and degrades it, exactly like a throw.',
+  },
 ];
 
-function enclosingFunctionText(node: ts.Node, sf: ts.SourceFile): string {
+function enclosingFunction(node: ts.Node, sf: ts.SourceFile): { text: string; name: string | null } {
   let cur: ts.Node | undefined = node.parent;
   let last: ts.Node = node;
   while (cur) {
@@ -106,7 +130,16 @@ function enclosingFunctionText(node: ts.Node, sf: ts.SourceFile): string {
     }
     cur = cur.parent;
   }
-  return last.getText(sf);
+
+  let name: string | null = null;
+  if ((ts.isFunctionDeclaration(last) || ts.isFunctionExpression(last)) && last.name) {
+    name = last.name.getText(sf);
+  } else if (last.parent && ts.isVariableDeclaration(last.parent)) {
+    name = last.parent.name.getText(sf);
+  } else if (last.parent && ts.isPropertyAssignment(last.parent)) {
+    name = last.parent.name.getText(sf).replace(/['"]/g, '');
+  }
+  return { text: last.getText(sf), name };
 }
 
 /**
@@ -143,14 +176,17 @@ export function findVariableArityFanOuts(sourceText: string, file = 'source.ts')
     ) {
       const argText = node.arguments.map((a) => a.getText(sf)).join(',');
       if (/\.\s*map\s*\(/.test(argText)) {
-        const fnText = enclosingFunctionText(node, sf);
-        const boundedBy = BOUNDING_SEAMS.find((seam) => fnText.includes(seam)) ?? null;
+        const fn = enclosingFunction(node, sf);
+        const boundedBy = BOUNDING_SEAMS.find((seam) => fn.text.includes(seam)) ?? null;
+        const resolverKey = enclosingResolverKey(node, sf);
         sites.push({
           file,
           line: sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1,
-          resolverKey: enclosingResolverKey(node, sf),
+          resolverKey,
           snippet: argText.split('\n')[0]!.trim().slice(0, 100),
           boundedBy,
+          functionName: fn.name,
+          identity: resolverKey ?? (fn.name ? `${file}#${fn.name}` : file),
         });
       }
     }
@@ -162,18 +198,14 @@ export function findVariableArityFanOuts(sourceText: string, file = 'source.ts')
 
 /**
  * The sites a reviewer must act on: variable-arity, unbounded, and not exempt.
- *
- * An exemption matches on the resolver key when the site has one, else on the
- * file name — the two stable identities available without a call graph.
+ * An exemption matches a site's `identity` — nothing coarser.
  */
 export function unboundedFanOuts(
   sites: readonly FanOutSite[],
   exemptions: readonly FanOutExemption[] = FANOUT_EXEMPTIONS,
 ): FanOutSite[] {
   const exempt = new Set(exemptions.map((e) => e.where));
-  return sites.filter(
-    (s) => s.boundedBy === null && !exempt.has(s.resolverKey ?? '') && !exempt.has(s.file),
-  );
+  return sites.filter((s) => s.boundedBy === null && !exempt.has(s.identity));
 }
 
 /** A human-readable line per finding, for a failing assertion's message. */

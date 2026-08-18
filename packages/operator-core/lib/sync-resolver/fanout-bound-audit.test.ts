@@ -141,10 +141,22 @@ describe('fanout-bound-audit — the live sync-resolver tree', () => {
   });
 
   it('every exemption names a site that actually exists (it cannot drift ahead of the tree)', () => {
-    const identities = new Set(sites.flatMap((s) => [s.resolverKey ?? '', s.file]));
+    const identities = new Set(sites.map((s) => s.identity));
     for (const exemption of FANOUT_EXEMPTIONS) {
       expect(identities.has(exemption.where), `stale exemption: ${exemption.where}`).toBe(true);
       expect(exemption.reason.length).toBeGreaterThan(20);
+    }
+  });
+
+  it('no exemption is file-wide — each names one function or resolver', () => {
+    // A bare `file.ts` entry would swallow every FUTURE fan-out added to that
+    // file, which is precisely the silent-coverage failure this guard exists for.
+    for (const exemption of FANOUT_EXEMPTIONS) {
+      expect(
+        exemption.where.includes('#') || exemption.where.includes('.'),
+        `exemption ${exemption.where} must be a resolver key or file.ts#functionName`,
+      ).toBe(true);
+      expect(exemption.where.endsWith('.ts'), `file-wide exemption: ${exemption.where}`).toBe(false);
     }
   });
 
