@@ -386,8 +386,24 @@ export async function createOneWorkItem(
     // overrides, same contract as the mirror guard); soft match creates WITH an
     // advisory `similarOpen`. STRICTLY fail-open: null = "no verdict" = proceed.
     // P-004: a goal-mode create keeps the probes running even under force — force
-    // still bypasses the MATCH refusals below (only DRAIN overrides that), but the
-    // caller always gets the coverage verdict + candidates instead of a blind pass.
+    // bypasses the MATCH refusal below, but the caller always gets the coverage
+    // verdict + candidates instead of a blind pass.
+    //
+    // WI-39824: DRAIN used to override force here too, which made the refusal's own
+    // advice ("or pass force:true if this is genuinely distinct") FALSE for the whole
+    // drain-mode bug-filing population — the primary filers. A genuinely distinct bug
+    // within cosine 0.93 was then unfileable through the only remedy the message
+    // names, and the finding got buried as a comment on whichever item happened to be
+    // semantically nearest. Two things make force the right winner on a MATCH: the
+    // guard's own calibration block records that cosine alone cannot separate
+    // duplicates from distinct filings in this corpus AT ANY CUT (0.93 is "the only
+    // defensible pure-cosine refusal", not a reliable verdict), and force is an
+    // explicit, attributable caller assertion rather than the blind pass the dupe
+    // storm was made of. DRAIN's actual contract — that the probe RAN and was not
+    // degraded — is untouched and still fails closed under force (see the
+    // requireCompleteDedupCoverage rail below, pinned by its own test): `shouldScreen`
+    // deliberately still forces the screen under DRAIN, so force suppresses the VETO,
+    // never the MEASUREMENT, and the coverage verdict is still recorded on the item.
     const shouldScreen =
       !args.force || Boolean(args.requireCompleteDedupCoverage) || Boolean(args.goalDedupGate);
     let semanticLeg: WorkItemDedupCoverage['semantic'] = issueAdmission ? 'skipped' : 'skipped';
@@ -403,7 +419,7 @@ export async function createOneWorkItem(
       // P-004: under the goal gate the semantic leg's health matters for EVERY kind
       // (the gate's whole point is "the probe actually ran"), not only issue-family.
       if (issueAdmission || args.goalDedupGate) semanticLeg = dupes ? 'ok' : 'unavailable';
-      if (dupes && dupes.hard.length > 0 && (!args.force || args.requireCompleteDedupCoverage)) {
+      if (dupes && dupes.hard.length > 0 && !args.force) {
         const canonical = selectCanonicalIssue(
           identity,
           dupes.hard.map((candidate) => ({ ...candidate, eligible: true })),

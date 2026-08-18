@@ -208,6 +208,59 @@ describe('createOneWorkItem × semantic dupe prescreen (P-008)', () => {
     expect(createM).not.toHaveBeenCalled();
   });
 
+  // WI-39824: the DRAIN rail's job is COVERAGE ("the probe actually ran"), which the
+  // test above pins and this change leaves untouched. It must NOT also veto an explicit
+  // force on a HEALTHY probe: the guard's own calibration block records that cosine
+  // ALONE cannot separate duplicates from distinct filings in this corpus at any cut
+  // (0.93 is merely "the only defensible pure-cosine refusal"), so a weak metric was
+  // permanently outranking an accountable caller assertion. The observed cost was a
+  // genuinely distinct bug that could not be filed AT ALL through the remedy the
+  // refusal itself names — the same silent-drop shape EI-18784357226895330 fixed one
+  // guard over by downgrading refusal→file. The three tests below are one positive
+  // case plus two calibration controls; without the controls the positive case also
+  // passes when the prescreen is broken outright.
+  it('DRAIN + healthy probe + hard match + force:true → FILES the item (force is the distinctness escape)', async () => {
+    guardM.mockResolvedValue(verdict([0.94], []));
+    const r = await createOneWorkItem(
+      { kind: 'bug', title: 'a genuinely distinct drain finding', force: true, requireCompleteDedupCoverage: true },
+      ctx,
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw new Error('unreachable');
+    // The probe still RAN and its verdict is still recorded — force suppresses the
+    // veto, never the measurement. This is what keeps DRAIN's coverage contract real.
+    expect(r.dedupCoverage).toEqual({ lexical: 'ok', semantic: 'ok', degraded: false });
+    expect(createM).toHaveBeenCalled();
+  });
+
+  it('CONTROL: DRAIN + healthy probe + hard match + NO force → still refuses duplicate_semantic', async () => {
+    guardM.mockResolvedValue(verdict([0.94], []));
+    const r = await createOneWorkItem(
+      { kind: 'bug', title: 'a reworded drain duplicate', requireCompleteDedupCoverage: true },
+      ctx,
+    );
+    expect(r).toMatchObject({ ok: false, error: 'duplicate_semantic' });
+    expect(createM).not.toHaveBeenCalled();
+  });
+
+  it('CONTROL: the refusal message never names a remedy the same call would reject', async () => {
+    guardM.mockResolvedValue(verdict([0.94], []));
+    const r = await createOneWorkItem(
+      { kind: 'bug', title: 'a reworded drain duplicate', requireCompleteDedupCoverage: true },
+      ctx,
+    );
+    if (r.ok) throw new Error('unreachable');
+    // The message advises force:true. That advice is only honest because the refusal
+    // above is now unreachable WITH force — this test fails if the veto is ever
+    // re-coupled to the DRAIN rail while the message keeps promising the escape.
+    expect(r.message).toContain('force:true');
+    const forced = await createOneWorkItem(
+      { kind: 'bug', title: 'a reworded drain duplicate', force: true, requireCompleteDedupCoverage: true },
+      ctx,
+    );
+    expect(forced.ok).toBe(true);
+  });
+
   it('rejects an exact normalized identity match in DRAIN even when coverage is healthy', async () => {
     guardM.mockResolvedValue(verdict([], []));
     fulltextM.mockResolvedValue([
