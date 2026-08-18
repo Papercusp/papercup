@@ -364,6 +364,50 @@ describe('readRetainFeed', () => {
     expect(listRecipesPage).not.toHaveBeenCalled();
   });
 
+  it('the full-corpus deps are read ONCE per page even when both their leg and the counts consume them', async () => {
+    // listMemories/listRubrics are the only two legs that read a FULL corpus
+    // (every other leg is keyset-paged), and on page 1 of an `all` tab BOTH
+    // their row leg and the counts fan-out want them. Reading twice doubles
+    // the dominant cost of the page to recompute a length the first read
+    // already held, so the page must share one read per dep.
+    const listMemories = vi.fn(async () => [
+      { id: 'm1', text: 'first memory', metadata: { created_at: '2026-08-16T00:00:00.000Z' } },
+      { id: 'm2', text: 'second memory', metadata: { created_at: '2026-08-15T00:00:00.000Z' } },
+    ]);
+    const listRubrics = vi.fn(async () => [
+      { slug: 'r1', title: 'Rubric one', status: 'active', updatedAt: '2026-08-14T00:00:00.000Z' },
+    ]);
+    const sql = sqlStub(() => [{ n: 0 }]);
+
+    const page = await readRetainFeed(sql, 'ws-1', { ...emptyFeedDeps(), listMemories, listRubrics }, { tab: 'all' });
+
+    expect(listMemories).toHaveBeenCalledTimes(1);
+    expect(listRubrics).toHaveBeenCalledTimes(1);
+    // …and because the count is taken over the SAME array the rows came from,
+    // it cannot drift from what the leg actually returned.
+    expect(page.counts?.memories).toBe(2);
+    expect(page.counts?.rubrics).toBe(1);
+    expect(page.rows.filter((r) => r.kind === 'memory')).toHaveLength(2);
+  });
+
+  it('a full-corpus dep that rejects still degrades its leg and nulls its count (one shared rejection)', async () => {
+    // The shared promise is observed by two consumers. Both must keep their
+    // own handling, or a single upstream failure escalates from "this leg
+    // degraded" to an unhandled rejection that throws the whole page.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const listMemories = vi.fn(async () => {
+      throw new Error('memory backend unavailable');
+    });
+    const sql = sqlStub(() => [{ n: 0 }]);
+
+    const page = await readRetainFeed(sql, 'ws-1', { ...emptyFeedDeps(), listMemories }, { tab: 'all' });
+
+    expect(listMemories).toHaveBeenCalledTimes(1);
+    expect(page.degraded).toContain('memory');
+    expect(page.counts?.memories).toBeNull();
+    warn.mockRestore();
+  });
+
   it('a throwing leg lands in `degraded` while the rest of the page survives', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const sql = sqlStub((t) => {
