@@ -1152,6 +1152,43 @@ const REPO_WIDE_INVARIANT_GUARDS = [
       f === ".papercusp/docs.json",
   },
   {
+    // EI-20272515693397454 — the SAME class as the entry above, one table over. There
+    // `harness_docs.content` is canonical and the .mdx is the projection; here
+    // `harness_doc_parts` is canonical and CLAUDE.md / AGENTS.md are the projections.
+    // `gen:client-docs:check` is the only thing that asserts projected == on-disk, and it
+    // ran on NO blocking path: a hand-edit to the generated CLAUDE.md JAMS the projector
+    // (it correctly refuses to overwrite bytes it did not write), and that jam is both
+    // sticky and SILENT — until someone happens to run the projector, no CLAUDE.md rule
+    // change can be projected by anyone. One such jam sat undetected from 2026-08-12 to
+    // 2026-08-16 and was cleared only because an unrelated agent tripped over it.
+    //
+    // ⚠ The reachability census does NOT catch this one: it credits the guard tier=`test`
+    // because three doc-projection unit tests `import` symbols from
+    // scripts/project-doc-parts.mjs — while their own headers state "NOTHING HERE READS
+    // THE LIVE CLAUDE.md OR A DATABASE". Importing a guard's helpers is not running the
+    // guard, so the census reported ENFORCED for a leg nothing ran. Filed separately.
+    //
+    // Runnable off-box by construction, and that is NEW here: `connect()` used to sit
+    // outside the try, so an unreachable Postgres exited 1 with a stack trace. The check
+    // path now SKIPS cleanly (exit 0, saying it checked nothing) — while --write and
+    // --write-corpus still throw, because a mutation that silently no-ops against a
+    // missing DB is worse than a loud failure.
+    workspace: "@papercusp/operator-core",
+    script: "gen:client-docs:check",
+    // No hostSuiteRatchet, deliberately: project-doc-parts.test.ts and
+    // load-claude-md-doc-parts.test.ts are fixture-only by their own stated design, and
+    // doc-corpus.test.ts compares the committed corpus against the committed MANIFEST —
+    // never the on-disk client files against a composition of the live rows. Declaring a
+    // ratchet off those suites is exactly the phantom this registry forbids.
+    appliesTo: (f) =>
+      f === "CLAUDE.md" ||
+      f === "AGENTS.md" ||
+      f === "packages/operator-core/lib/doc-projection/claude-md-corpus.generated.md" ||
+      // A change to HOW projection is computed can drift every projected file at once
+      // without any of them being edited.
+      f === "scripts/project-doc-parts.mjs",
+  },
+  {
     // WI-38239 — `gen:compaction:check` was one of the 8 orphaned `gen:*:check` guards the
     // census widening exposed (it ran on NO blocking path). It is the ONLY real-tree assertion
     // that the shipped compaction floor renders: compaction-strategy.test.ts exercises
