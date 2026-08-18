@@ -5141,6 +5141,20 @@ export function createInferenceGateway(deps: GatewayDeps) {
         aimd: s.aimd,
         codexAimd: s.codexAimd,
         codexHealthyAccounts: s.codexHealthyAccounts,
+        // THE CONTRADICTION THIS ENDPOINT USED TO WITHHOLD. `admission.maxConcurrent` and `aimd.effective`
+        // were both forwarded while `clamp` — the only field that explains a gap between them — was not, so
+        // gateway:status showed `maxConcurrent: 4` beside `effective: 24` with nothing connecting the two.
+        // An agent read that as an unexplained AIMD defect and carried the wrong diagnosis for a day, while
+        // the real cause (a serviceable-account clamp recommending 4 from ONE serviceable account) sat one
+        // line away in stats(). The surface is the only thing that can see both terms, so it states which
+        // one binds rather than leaving the reader to infer it.
+        clamp: s.clamp,
+        admissionCeiling: describeAdmissionCeiling({
+          applied: s.admission.maxConcurrent,
+          aimdEffective: s.aimd?.effective ?? s.admission.maxConcurrent,
+          configuredCap: s.concurrencyCap,
+          clamp: s.clamp,
+        }),
         upstreamBase,
       });
       return;
