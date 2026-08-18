@@ -25,7 +25,7 @@
  */
 import { access as fsAccess } from 'node:fs/promises';
 import { constants as fsConstants } from 'node:fs';
-import type { CatalogEntry } from './catalog';
+import { CERTIFIED_CATALOG, type CatalogEntry } from './catalog';
 import { renderLlamaServerUnit } from './backend-config';
 
 export interface LlamaServerUnitParams {
@@ -351,4 +351,130 @@ export function checkRequiredEnvironment(entry: CatalogEntry, deployedUnitText: 
 export function describeEnvIssues(issues: readonly UnitEnvIssue[]): string {
   if (issues.length === 0) return 'no missing required environment';
   return issues.map((i) => `${i.key}: ${i.reason}`).join(' · ');
+}
+
+export interface CatalogResolution {
+  entry: CatalogEntry | null;
+  /** `ok` · `no-model-refs` (caller passed none) · `no-match` · `ambiguous` (>1 entry matched). */
+  reason: 'ok' | 'no-model-refs' | 'no-match' | 'ambiguous';
+  detail: string;
+}
+
+/**
+ * Resolve the catalog entry a REGISTERED backend was provisioned from.
+ *
+ * ⚠ THE OBVIOUS IMPLEMENTATION IS WRONG AND FAILS SILENTLY. `findCatalogEntry(backend.id)` looks
+ * like the way to do this and returns `undefined` for the one backend on this box: the registry id
+ * is `ornith-llamaserver` while the catalog id is `ornith-35b-iq3m-llama-server` (measured
+ * 2026-08-18). They are independent namespaces — `planProvision` only derives one from the other
+ * when it invents an id (`provisioner-<entryId>`), and a hand-registered backend (which is every
+ * on-demand backend here) never went through it. An id-keyed lookup therefore reports "nothing to
+ * audit" on exactly the units that need auditing, and reports it as SUCCESS.
+ *
+ * The join that does hold is the MODEL REF: `local_backends.models` contains the alias set the
+ * gateway routes on, and the entry's `model.ollamaRef` is one of them. `kind` disambiguates the
+ * same model served by two backends (llama-server vs vLLM), which is a real catalog shape.
+ *
+ * Returns a REASON rather than a bare null on failure, because "no entry" and "several entries"
+ * are different bugs, and because a caller that cannot tell them apart from "audited, all clear"
+ * will report a broken audit as a green one — the exact failure this module exists to prevent.
+ */
+export function resolveCatalogEntryForBackend(
+  backend: { models?: readonly string[]; kind?: string },
+  catalog: readonly CatalogEntry[] = CERTIFIED_CATALOG,
+): CatalogResolution {
+  const models = backend.models ?? [];
+  if (models.length === 0) {
+    return { entry: null, reason: 'no-model-refs', detail: 'backend declares no model refs — nothing to join the catalog on' };
+  }
+  const matches = catalog.filter(
+    (e) => models.includes(e.model.ollamaRef) && (backend.kind === undefined || e.backend === backend.kind),
+  );
+  if (matches.length === 1) {
+    return { entry: matches[0], reason: 'ok', detail: `catalog entry '${matches[0].id}' matched on model ref` };
+  }
+  if (matches.length === 0) {
+    return {
+      entry: null,
+      reason: 'no-match',
+      detail: `no catalog entry serves any of [${models.join(', ')}]${backend.kind ? ` on backend '${backend.kind}'` : ''}`,
+    };
+  }
+  return {
+    entry: null,
+    reason: 'ambiguous',
+    detail: `${matches.length} catalog entries matched (${matches.map((m) => m.id).join(', ')}) — refusing to guess which one this unit implements`,
+  };
+}
+
+export interface DeployedUnitAudit {
+  /** `ok` · `degraded` (something the catalog requires is wrong) · `unauditable` (could not check). */
+  verdict: 'ok' | 'degraded' | 'unauditable';
+  catalogEntryId: string | null;
+  drift: UnitDrift[];
+  envIssues: UnitEnvIssue[];
+  binary: UnitBinaryCheck | null;
+  summary: string;
+}
+
+/**
+ * Run EVERY check in this module against one deployed unit, and return a single verdict.
+ *
+ * The three checks answer three different questions and a caller needs all three — "does this unit
+ * match the catalog" (`diffCatalogAgainstDeployedUnit`), "can it start at all"
+ * (`checkUnitExecStartBinary`, D-011), and "can it do the job the catalog claims"
+ * (`checkRequiredEnvironment`, D-012). Both historical incidents passed two of the three, so a
+ * caller wiring up only its favourite would reproduce the original blindness.
+ *
+ * `unauditable` is a FIRST-CLASS verdict, never folded into `ok`: an audit that could not run and
+ * an audit that found nothing wrong are opposite facts, and collapsing them is how a guard reports
+ * green while looking at nothing.
+ */
+export async function auditDeployedUnit(
+  entry: CatalogEntry,
+  deployedUnitText: string,
+  opts: { access?: (path: string, mode: number) => Promise<void> } = {},
+): Promise<DeployedUnitAudit> {
+  const drift = diffCatalogAgainstDeployedUnit(entry, deployedUnitText);
+  const envIssues = checkRequiredEnvironment(entry, deployedUnitText);
+  const binary = await checkUnitExecStartBinary(deployedUnitText, opts.access);
+  const degraded = drift.length > 0 || envIssues.length > 0 || !binary.ok;
+  const parts = [
+    drift.length > 0 ? `drift[${describeUnitDrift(drift)}]` : null,
+    envIssues.length > 0 ? `env[${describeEnvIssues(envIssues)}]` : null,
+    binary.ok ? null : `binary[${binary.reason}: ${binary.detail}]`,
+  ].filter((p): p is string => p !== null);
+  return {
+    verdict: degraded ? 'degraded' : 'ok',
+    catalogEntryId: entry.id,
+    drift,
+    envIssues,
+    binary,
+    summary: degraded
+      ? `unit does not match catalog '${entry.id}' — ${parts.join(' · ')}`
+      : `unit matches catalog '${entry.id}' (params, required env, engine binary)`,
+  };
+}
+
+/**
+ * `auditDeployedUnit` for a backend as the GATEWAY knows it — resolve the catalog entry first,
+ * and report an honest `unauditable` when it cannot be resolved.
+ */
+export async function auditDeployedUnitForBackend(
+  backend: { models?: readonly string[]; kind?: string },
+  deployedUnitText: string,
+  opts: { access?: (path: string, mode: number) => Promise<void>; catalog?: readonly CatalogEntry[] } = {},
+): Promise<DeployedUnitAudit> {
+  const resolution = resolveCatalogEntryForBackend(backend, opts.catalog);
+  if (resolution.entry === null) {
+    return {
+      verdict: 'unauditable',
+      catalogEntryId: null,
+      drift: [],
+      envIssues: [],
+      binary: null,
+      summary: `cannot audit deployed unit: ${resolution.detail}`,
+    };
+  }
+  return auditDeployedUnit(resolution.entry, deployedUnitText, { access: opts.access });
 }
