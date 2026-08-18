@@ -67,10 +67,12 @@ export const ALL_PAIRS: SubstitutionPair[] = [
   // and DATA-EMPTY. The hold is carried here, in data, because a promotion
   // selecting on `equivalence_verdict` alone cannot read a decision body (D-042).
   ...CODE_SEARCH_PAIRS,
-  // P-028. The only pair that BLOCKS. Every row above argues cost; this one
-  // argues correctness (a bare install corrupts other agents' trees), which is
-  // why it is also the only one carrying a `policyTier` — see its header for the
-  // D-003 authorization that permits it.
+  // P-028. Blocks rather than teaches, on the PREFIX route: its intent IS the
+  // violation (a bare install corrupts other agents' trees), so there is nothing
+  // to substitute and no equivalence to prove — see its header for the D-003
+  // authorization. Contrast the file-read family above, which blocks on the
+  // CITATION route (D-044): an ordinary intent, mandated through the tool by an
+  // owner rule, and admitted only because its verdict is `equivalent`.
   ...DEPENDENCY_INSTALL_PAIRS,
   // P-009. The first pairs drawn from the SQL corpus rather than the shell one —
   // same registry, same equivalence harness, same CLAUDE.md projection; only the

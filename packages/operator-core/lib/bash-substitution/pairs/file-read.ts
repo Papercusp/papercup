@@ -363,6 +363,8 @@ export const sedRangeRead: BashSubstitutionPair = {
     insteadOf: "`sed -n 'N,Mp' FILE` (offset=N, limit=M-N+1)",
   },
   expectedVerdict: 'equivalent',
+  policyTier: 'deny',
+  policyAuthority: FILE_READ_MANDATE,
   cover(atom: string): CoverageResult {
     const parsed = parseAtom(atom);
     // Drop the sed script itself (`-n` is a flag; `'1,80p'` parses as an operand).
@@ -421,6 +423,8 @@ export const catFileRead: BashSubstitutionPair = {
     insteadOf: '`cat FILE` (a heredoc or redirect is a WRITE — not this)',
   },
   expectedVerdict: 'equivalent',
+  policyTier: 'deny',
+  policyAuthority: FILE_READ_MANDATE,
   cover(atom: string): CoverageResult {
     const parsed = parseAtom(atom);
     if (/<</.test(atom)) return { covered: false, reason: 'heredoc — this is a write, not a read' };
@@ -471,6 +475,8 @@ export const headFileRead: BashSubstitutionPair = {
     insteadOf: '`head -n N FILE` (a `… | head` pipe filter is not this)',
   },
   expectedVerdict: 'equivalent',
+  policyTier: 'deny',
+  policyAuthority: FILE_READ_MANDATE,
   cover(atom: string): CoverageResult {
     const parsed = parseAtom(atom);
     const byteWindow = checkByteWindow(parsed);
@@ -534,6 +540,8 @@ export const tailFileRead: BashSubstitutionPair = {
     insteadOf: '`tail -n N FILE` (`tail -f` streaming has no tool form — keep using bash)',
   },
   expectedVerdict: 'equivalent',
+  policyTier: 'deny',
+  policyAuthority: FILE_READ_MANDATE,
   cover(atom: string): CoverageResult {
     const parsed = parseAtom(atom);
     if (parsed.flags.includes('-f') || parsed.flags.includes('--follow') || /--pid=/.test(atom)) {
