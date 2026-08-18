@@ -593,6 +593,12 @@ export interface CheckpointResult {
   /** The individual failing CASE names, for the human reading the verdict. Never used
    *  as a signature (see extractFailingTestNames). */
   failingTestNames?: string[];
+  /** EI-20767792192323374: present ⇒ this run rendered NO verdict about the code because the
+   *  gate's own vite-node module cache was deleted mid-suite (`green: null`, reason
+   *  'infra-inconclusive'). Carries the evidence — occurrence count and the vanished cache
+   *  roots — so the abort is auditable from the verdict alone, not only from the run's stdout.
+   *  See {@link classifyInfraFault}. */
+  infraFault?: InfraFaultClassification;
   /** Stale-candidate re-triage (2026-07-10): was this red still broken at TIP? Present
    *  on the not-green path whenever the re-triage could run. `stale-candidate` means the
    *  gate judged a commit whose failures peers had already fixed. */
@@ -5991,6 +5997,7 @@ export async function runGreenCheckpoint(
     retriedTests,
     cleanGreen,
     postSuiteMeasured,
+    infraFault,
   } = earlyPreflightFailure ??
   (await deps.runGreen(cfg.checkpointRoot, lastReady));
   // EI-20014356905761236: this pass's own verdict log is now known — its PROMOTION outcome is
@@ -6052,6 +6059,44 @@ export async function runGreenCheckpoint(
     deps.log(
       `candidate ${candidate.slice(0, 8)} is NOT green — ${cfg.releaseRef} stays at ${lastReady?.slice(0, 8) ?? "unset"}`,
     );
+    // EI-20767792192323374 — THE INFRA-FAULT ARM, deliberately FIRST in the red block.
+    //
+    // Everything below this point ACTS on `failingTests`: the lineage note points a reader at
+    // them, the stale-candidate re-triage re-runs them, an auto-refire spends a whole suite on
+    // them, the prefix salvage bisects around them, and the release-fixer gets dispatched at
+    // them. When the gate's own module cache was deleted mid-run, that list is a list of
+    // innocent files (measured: 4,789 of 5,505), so every one of those actions is not merely
+    // wasted but ACTIVELY harmful — the 2026-08-18 incident sent agents after ~4,800 files and
+    // banked red #20 on the streak that freezes `main`.
+    //
+    // So render the verdict the evidence supports and stop: `green: null` — no claim about the
+    // code, in EITHER direction. Same shape and same safety as the migration preflight's abort
+    // (EI-18757975681519069): it cannot promote, `classifyGateStallStatus` treats it as a no-op
+    // so it never inflates the red streak, and the separate fireStale / verdictStale detectors
+    // still catch a gate that has stopped rendering verdicts entirely — which is what keeps
+    // "inconclusive" from becoming silent. `failingTests` rides along ONLY inside the summary's
+    // prose, never as the result's `failingTests` field, precisely so no downstream consumer
+    // re-derives a dispatch signature from files this run cannot vouch for.
+    if (infraFault) {
+      const infraSummary =
+        `green-checkpoint ABORTED its verdict on ${candidate.slice(0, 8)} — ${infraFault.note} ` +
+        `The suite reported ${failingTests?.length ?? 0} failing signature(s); they are NOT reported as ` +
+        `failingTests and must not be triaged. The next run judges normally once the host fault clears.`;
+      deps.log(infraSummary);
+      stampPromotion(false, "infra-inconclusive");
+      return {
+        advanced: false,
+        candidate,
+        from: lastReady,
+        green: null,
+        reason: "infra-inconclusive",
+        summary: infraSummary,
+        infraFault,
+        ...(deps.runId ? { runId: deps.runId } : {}),
+        ...(logPath ? { logPath } : {}),
+        ...(isolationNote ? { isolationNote } : {}),
+      };
+    }
     // EI-6542 / EI-18685041726970077: surface "this exact failing test file already
     // changed since the candidate" AND the one-line LINEAGE the owner flagged as the
     // single highest-leverage fix from the nine-detector audit — the manual git-log
@@ -9565,6 +9610,13 @@ export function realCheckpointDeps(
       const failingFiles = green
         ? []
         : parseFailingFilesByWorkspace(signatureOutput);
+      // EI-20767792192323374: LAST, after both absorbers have declined — did this red come from
+      // the gate's own module cache being deleted mid-run? Only on the red path: a suite that
+      // passed despite a cache hiccup keeps its pass. See classifyInfraFault for why an infra
+      // fault is INCONCLUSIVE rather than absorbed-to-green (it never promotes, so it cannot
+      // manufacture a false green the way an absorber can).
+      const infraFault = green ? null : classifyInfraFault(fullOutput);
+      if (infraFault) log(infraFault.note);
       // Publish the gate's canonical red attribution while we are still inside the real-deps
       // runner. The orchestration caller appends richer notes later, but a self-watchdog,
       // supervisor loss, or other interruption between this return and that append must not
@@ -9588,6 +9640,7 @@ export function realCheckpointDeps(
         // absorber ran at all, so nothing was re-run. An absorber that ran and declined
         // yields a non-empty list, which correctly makes this false.
         ...(green ? { cleanGreen: !retriedTests?.length } : {}),
+        ...(infraFault ? { infraFault } : {}),
       };
     },
     advance: (candidate) =>

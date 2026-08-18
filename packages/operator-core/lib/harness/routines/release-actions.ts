@@ -1092,7 +1092,19 @@ export function classifyGateStallStatus(
 ): GateStallClass {
   const isGreen = status === 'advanced' || status === 'up-to-date' || status === 'advanced-prefix';
   if (isGreen || pinMoved) return 'reset';
-  if (status === 'skipped-locked' || status === 'migrations-pending') return 'noop';
+  // EI-20767792192323374: 'infra-inconclusive' joins the same class for the same reason one
+  // step LATER in the run — the suite executed, but the gate's own vite-node module cache was
+  // deleted underneath it, so its failures are a HOST fault and not a verdict about the code
+  // (measured 2026-08-18: 4,789 of 5,505 files failed on candidate 1c64cd9f, and red #20 went
+  // on the streak that freezes `main`). Same backstops as 'migrations-pending' — this leaves
+  // `lastGreenAt` stale on purpose, so checkMainBehindStaging and evaluateGreenStall's 12h
+  // `verdictStale` still escalate a frozen `main`; only the mislabelling stops.
+  if (
+    status === 'skipped-locked' ||
+    status === 'migrations-pending' ||
+    status === 'infra-inconclusive'
+  )
+    return 'noop';
   // WI-39450: a pass whose own re-triage watched the failing files PASS at tip produced no
   // verdict about the code — see isProvenStaleCandidate. Its diagnostics are still written
   // (EI-13288); only the streak is left alone.
@@ -1155,6 +1167,21 @@ export function gateStallRecordOnlyLogMessage(status: string): string {
 }
 
 export function gateStallNoopLogMessage(status: string): string {
+  // EI-20767792192323374: the THIRD noop condition, and its correct operator response differs
+  // from BOTH of the others — nobody holds a lock (so "wait, it resolves itself" is wrong) and
+  // no migration is pending (so pointing at the migration list is wrong). The host deleted the
+  // runner's temp root mid-suite; the next scheduled run judges normally once that stops, and
+  // the files this run named are innocent and must not be triaged.
+  if (status === 'infra-inconclusive') {
+    return (
+      `${orchestratorStdoutTag()} 'infra-inconclusive' — this run's suite FAILED WHOLESALE because the gate's own ` +
+      `vite-node module cache was deleted mid-run (a HOST fault: a /tmp reaper or a peer sweeping the runner's temp ` +
+      `root). It rendered no verdict about the code IN EITHER DIRECTION, so ⚠ DO NOT TRIAGE the files it failed — ` +
+      `they are innocent. No peer run is in flight; the next scheduled run judges normally once the host fault ` +
+      `clears. Leaving gate_health untouched (not a red; a frozen \`main\` is still escalated by ` +
+      `checkMainBehindStaging / evaluateGreenStall, not by this counter — see classifyGateStallStatus)`
+    );
+  }
   if (status === 'migrations-pending') {
     return (
       `${orchestratorStdoutTag()} 'migrations-pending' — this run ABORTED at the migration preflight ` +
@@ -1282,10 +1309,13 @@ export async function trackGateStall(
     //   · cleared by the next REAL verdict for free: that write replaces the whole
     //     `gate_health` key, and `next` sets `inconclusive: null` explicitly (same
     //     recovery-clear convention as `failingTests` / `retriageStaleTip`).
-    // Scoped to 'migrations-pending' ONLY. 'skipped-locked' stays a total no-op on purpose:
-    // there a peer run IS in flight and about to write the real verdict, which is precisely
-    // the write EI-2615 proved must not be raced.
-    if (status === 'migrations-pending') {
+    // Scoped to the two ABORT conditions — 'migrations-pending' and (EI-20767792192323374)
+    // 'infra-inconclusive'. 'skipped-locked' stays a total no-op on purpose: there a peer run IS
+    // in flight and about to write the real verdict, which is precisely the write EI-2615 proved
+    // must not be raced. An infra fault has no such peer, and leaving the previous red standing
+    // is the exact 2.5h "the reds are yours to fix" failure described above — worse here, because
+    // the stale red it keeps rendering names up to 4,789 innocent files.
+    if (status === 'migrations-pending' || status === 'infra-inconclusive') {
       try {
         await sql.unsafe(
           `UPDATE harness_shared.routines
