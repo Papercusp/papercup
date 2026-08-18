@@ -222,6 +222,15 @@ describe('readCpuWorker', () => {
       disabled: expect.any(Boolean),
       pendingCount: expect.any(Number),
       consecutiveCrashes: expect.any(Number),
+      // EI-20505664003243915: the detector has to reach the WIRE, not just the
+      // function. `verdict` is the field that separates a working offload from
+      // one that is silently falling back — a reading `disabled` cannot give —
+      // so a payload that drops it is back to the original silent degradation.
+      servedByWorker: expect.any(Number),
+      eligibleFallbacks: expect.any(Number),
+      verdict: expect.stringMatching(
+        /^(serving|idle-unproven|silently-falling-back|disabled)$/,
+      ),
     });
   }, 30000);
 });

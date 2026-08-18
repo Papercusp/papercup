@@ -32,7 +32,14 @@
  *     worker reports its own trip, which dissolves the sampling problem rather than
  *     working around it.
  *
- * Both legs render through `formatBreakerTrip` here so the two announcements read alike.
+ * ⚠ `formatBreakerTrip` renders the SIDECAR leg only — it has exactly one call site, in
+ * `workerBreakerWatchTick` below. This header previously claimed both legs rendered
+ * through it; they never did (`cpu-task-worker.ts`'s `tripBreaker` has always built its
+ * own summary inline), so editing this formatter does NOT change the cpuWorker message.
+ * The two have since diverged on purpose: cpuWorker re-arms itself and names its crash
+ * cause (EI-20505664003243915), while the sidecar breakers below still latch permanently
+ * and still report no cause — so the "PERMANENT ... never re-arms" wording here remains
+ * accurate for THESE two workers and must not be copied to the cpuWorker leg.
  *
  * ── Report-only, inherited from WI-37696 ─────────────────────────────────────────────
  * A fallen-back worker is DEGRADED, not down: it still returns correct vectors, scores
