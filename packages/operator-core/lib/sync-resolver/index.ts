@@ -2316,14 +2316,22 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       const { count, desc, eq } = await import('drizzle-orm');
       const t = generated.projectSpecRevisionsInHarnessShared;
       const { db } = getOrgPg();
-      const [rows, totalRows] = await Promise.all([
-        db.select().from(t).where(eq(t.projectId, projectId)).orderBy(desc(t.ts)).limit(lim),
-        db.select({ n: count() }).from(t).where(eq(t.projectId, projectId)),
-      ]);
-      // Carry the TRUE total on row[0]._meta (the flat-row sync contract has no
+      // BOUNDED (WI-39825) via the shared rows+count fan-out, which also carries
+      // the TRUE total on row[0]._meta (the flat-row sync contract has no
       // envelope) so the UI shows "N of TOTAL" instead of the capped length.
-      const total = totalRows[0]?.n ?? rows.length;
-      return attachListMeta(rows, { total }) as unknown[];
+      // This site's hand-written version resolved a failed count to
+      // `?? rows.length` — rendering a confident WRONG total equal to the window
+      // size; the helper flags `totalUnavailable` instead. See its header.
+      const { readBoundedList } = await import('./bounded-list-read');
+      return (await readBoundedList({
+        rows: db.select().from(t).where(eq(t.projectId, projectId)).orderBy(desc(t.ts)).limit(lim),
+        count: db
+          .select({ n: count() })
+          .from(t)
+          .where(eq(t.projectId, projectId))
+          .then((r) => r[0]?.n ?? null),
+        label: 'projectSpecRevisions.byProject',
+      })) as unknown[];
     },
   },
 
@@ -2414,28 +2422,36 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         import('../work-items'),
       ]);
       const k = kind && isWorkItemKind(kind) ? kind : undefined;
-      const [rows, total] = states && states.length > 0
-        ? await Promise.all([
-            Promise.all(
-              states.map((s) =>
-                listEnrichedWorkItems({
-                  harness: harnessSlug,
-                  harnesses: harnessSlug ? undefined : harnessSlugs,
-                  kind: k,
-                  state: s,
-                  limit: perState ?? 60,
-                }),
-              ),
-            ).then((perStateRows) => perStateRows.flat()),
-            // The TRUE corpus total, deliberately NOT scoped to `states` — it is
-            // what row[0]._meta.total is for (see below), and a total that only
-            // counted the sampled states would restate the sample, not the store.
-            countWorkItems({ harness: harnessSlug, harnesses: harnessSlug ? undefined : harnessSlugs, kind: k }),
-          ])
-        : await Promise.all([
-            listEnrichedWorkItems({ harness: harnessSlug, harnesses: harnessSlug ? undefined : harnessSlugs, kind: k, state, limit }),
-            countWorkItems({ harness: harnessSlug, harnesses: harnessSlug ? undefined : harnessSlugs, kind: k, state }),
-          ]);
+      const scope = { harness: harnessSlug, harnesses: harnessSlug ? undefined : harnessSlugs, kind: k };
+      // BOUNDED (WI-39825) via the shared rows+count fan-out. Both branches read
+      // twice under one deadline: a wedged COUNT — the leg this view lives
+      // perfectly well without — used to take the whole grid past the sync
+      // layer's resolver timeout, and a FAILED one used to render as the page
+      // length rather than as unknown. See `bounded-list-read.ts`.
+      //
+      // The per-state branch's rows leg is itself a fan-out, and stays ONE leg on
+      // purpose: the rows ARE the grid, so a wedge in any state's window is a
+      // failure of the list rather than of a section it can render without.
+      const { readBoundedList } = await import('./bounded-list-read');
+      const rows = await readBoundedList({
+        rows:
+          states && states.length > 0
+            ? Promise.all(
+                states.map((s) =>
+                  listEnrichedWorkItems({ ...scope, state: s, limit: perState ?? 60 }),
+                ),
+              ).then((perStateRows) => perStateRows.flat())
+            : listEnrichedWorkItems({ ...scope, state, limit }),
+        // The TRUE corpus total. In the per-state branch it is deliberately NOT
+        // scoped to `states` — it is what row[0]._meta.total is for (see below),
+        // and a total that only counted the sampled states would restate the
+        // sample, not the store.
+        count:
+          states && states.length > 0
+            ? countWorkItems(scope)
+            : countWorkItems({ ...scope, state }),
+        label: 'workItems.byHarness',
+      });
       // Carry the TRUE total on row[0]._meta (the flat-row sync contract has no
       // envelope) so the UI shows "N of TOTAL" instead of the capped length.
       // P-006: drop the heavy per-row `summary` (avg ~694 chars, the dominant
@@ -2448,7 +2464,9 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       // 258KB (−40%) live, because ~14 unread fields (three of them already
       // force-nulled by slimListRow) were pure key-name overhead on the wire.
       const { projectWorkItemsListForUi } = await import('./work-items-ui-projection');
-      return projectWorkItemsListForUi(attachListMeta(rows, { total }));
+      // `rows` already carries its list `_meta` — readBoundedList attaches it, so
+      // the total (or its `totalUnavailable` flag) survives the UI projection.
+      return projectWorkItemsListForUi(rows);
     },
   },
 
