@@ -37,7 +37,11 @@ import {
   encodeScopedRef,
 } from './chat/chat-ref-popup-params';
 import { PotHealthPane } from './PotHealthPane';
-import { useInboxPendingCount, usePlansNeedingYouCount } from './inbox/use-inbox-pending';
+import {
+  useAttentionCountsDegraded,
+  useInboxPendingCount,
+  usePlansNeedingYouCount,
+} from './inbox/use-inbox-pending';
 import { useAttentionRefs } from '@/app/admin/plans/plans-api';
 import { BUILT_IN_CHAT_VIEWS, dedupeChatFaces, type OpChatFace } from './op-chat-faces';
 
@@ -575,9 +579,15 @@ export function OperatorChatSidebar({ faces = [] }: { faces?: readonly OpChatFac
               >
                 <ClipboardList className="op-chat-inbox-icon" aria-hidden="true" />
                 <span className="op-chat-inbox-toggle-label">Plans</span>
-                {plansNeedingYou > 0 ? (
-                  <span className="op-chat-inbox-badge" data-testid="op-chat-plans-badge">
-                    {plansBadge}
+                {showPlansBadge ? (
+                  <span
+                    className="op-chat-inbox-badge"
+                    data-testid="op-chat-plans-badge"
+                    data-degraded={attentionUnknown ? 'true' : undefined}
+                    title={attentionUnknown ? UNKNOWN_LABEL : undefined}
+                    aria-label={attentionUnknown ? UNKNOWN_LABEL : undefined}
+                  >
+                    {attentionUnknown ? INDETERMINATE : plansBadge}
                   </span>
                 ) : null}
               </button>
