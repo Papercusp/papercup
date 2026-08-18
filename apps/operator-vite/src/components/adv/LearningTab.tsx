@@ -1745,12 +1745,17 @@ function ImprovementsView({
     if (!q) return cf.rows;
     // Search spans BOTH halves — an idea's title is often the only text an
     // as-yet-unfiled row has.
+    // `tierReason` is EXPANDED from its interned code here (WI-39773 / D-008).
+    // It is never rendered, but it has always been searchable, and the whole
+    // point of interning rather than dropping it is that this haystack keeps
+    // matching the same text — a miss here costs no error, just quietly fewer
+    // hits, which is why the expansion lives at the haystack and not at render.
     return cf.rows.filter((row) =>
-      `${row.item?.id ?? ""} ${row.item?.title ?? ""} ${row.item?.tierReason ?? ""} ${row.item?.scope ?? ""} ${row.idea?.title ?? ""} ${row.idea?.lens ?? ""}`
+      `${row.item?.id ?? ""} ${row.item?.title ?? ""} ${tierReasonOf(digest?.tierReasonLegend, row.item)} ${row.item?.scope ?? ""} ${row.idea?.title ?? ""} ${row.idea?.lens ?? ""}`
         .toLowerCase()
         .includes(q),
     );
-  }, [cf.rows, search]);
+  }, [cf.rows, search, digest]);
   const isFiltered =
     cf.hasActive ||
     (search ?? "").trim() !== "" ||
