@@ -126,6 +126,7 @@ export default defineTool({
       '`paused` — non-null means a DELIBERATE hold, carrying { reason, by, at }. Read it before calling a routine stalled; a bare active:false with paused:null is the one worth investigating.',
       '`health` — the operational half of the routine row, null when the row carries none of it. Includes `gate_health` on the green-checkpoint routine (the live in-flight-retriage marker, observed candidate and consecutive-red count), plus last_status / last_error / consecutive_error_ticks / fire_count / armed_at where present.',
       'THIS IS THE GATE-HEALTH READ: `health.gate_health` is what 112 agents were hand-writing `SELECT metadata->\'gate_health\' FROM harness_shared.routines` for. No raw SQL needed. For the deploy-position question ("is my change live, what is blocking it") use dev:pipeline_position instead — different question.',
+      '⚠ `health.validation[\'unregistered-system-action\']` means that routine is SILENTLY DEAD: its `system:` handler is registered nowhere, so it fires on cadence and does nothing. active/nextFireAt still read healthy — this key is the only tell. Fix is a missing side-effect import in register-system-actions.ts.',
     ].join(' '),
     seeAlso: [
       'routines:set (retune / pause a routine)',
