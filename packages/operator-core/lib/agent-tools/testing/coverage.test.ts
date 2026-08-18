@@ -370,6 +370,13 @@ describe('rungs are judged by their FLAG, never by depth >= N', () => {
         meets_l4: 5,
         // The SQL computes meets_floor with the requested rung's column; mirrored here.
         meets_floor: 30,
+        // 100 surfaces, 0 waived: below_unwaived_lN = 100 - meets_lN. The floor is l3
+        // here, so below_unwaived_floor tracks below_unwaived_l3, not l1.
+        below_unwaived_l1: 60,
+        below_unwaived_l2: 90,
+        below_unwaived_l3: 70,
+        below_unwaived_l4: 95,
+        below_unwaived_floor: 70,
       },
       fidelityRows: [{ fidelity: 'declared', n: 100 }],
       registrations: { registered: 3, enabled: 3 },

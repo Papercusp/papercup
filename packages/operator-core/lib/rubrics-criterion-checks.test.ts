@@ -229,8 +229,12 @@ describe('evaluateCriterionTestChecks (grading time)', () => {
     });
     expect(res.ok).toBe(true);
     if (res.ok) {
-      expect(res.checkRuns.det.verdict).toBe('fail');
-      expect(res.checkRuns.det.failures?.[0]).toContain('does the thing');
+      const det = res.checkRuns.det;
+      expect(det.verdict).toBe('fail');
+      // `failures` rides only the kind:'tests' arm of the ScorecardCheckRun union, so
+      // narrow on the discriminant rather than asserting past it.
+      if (det.kind !== 'tests') throw new Error(`expected a tests check run, got ${det.kind}`);
+      expect(det.failures?.[0]).toContain('does the thing');
     }
   });
 
@@ -439,6 +443,11 @@ describe('evaluateCriterionCoverageChecks (grading time)', () => {
     expect(res.error).toBe('coverage_contradicted');
     expect(res.detail).toContain('3 of 10');
     expect(res.detail).toContain('tool:a');
+    // `run` rides only the coverage_contradicted arm of CriterionCoverageRefusal; narrow
+    // on the discriminant so the assertion below is typed rather than asserted past.
+    if (res.error !== 'coverage_contradicted') {
+      throw new Error(`expected coverage_contradicted, got ${res.error}`);
+    }
     expect(res.run).toMatchObject({ verdict: 'fail', belowUnwaived: 3 });
   });
 
