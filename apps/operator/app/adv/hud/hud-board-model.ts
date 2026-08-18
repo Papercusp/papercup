@@ -1152,17 +1152,14 @@ export function deriveColumn(
   // payload, or a degraded fetch). Fall back to the heartbeat legs rather than
   // guessing — an unknown verdict must never silently empty this column, which
   // would hide a real stall instead of a fake one.
-  const nominallyAlive =
-    e.sessionState != null
-      ? e.sessionState === 'live' || e.loopArmed
-      : e.liveness === 'live' || e.liveness === 'idle' || e.loopArmed;
+  const nominallyAlive = isNominallyAlive(e);
 
   // A zombie is the sharpest case: heartbeat fresh, process gone. Report it as a
   // stall with its own reason rather than letting it masquerade as working.
-  if (nominallyAlive && e.pidAlive === false && !e.stale) {
+  if (isZombieSession(e)) {
     return {
       column: 'stalled',
-      reason: 'Heartbeat is fresh but the OS process is gone — this session is a zombie',
+      reason: ZOMBIE_REASON,
       sinceSec: sinceActivity,
     };
   }
