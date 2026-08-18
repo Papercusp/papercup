@@ -35,8 +35,21 @@ import {
   type FlagValues,
 } from './types';
 
-const KEY = ALL_FLAG_KEYS[0];
-const OTHER = ALL_FLAG_KEYS[1];
+// These tests assert that an UNSET flag resolves to `false`, so they need keys whose
+// DEFAULT is false. FLAG_DEFAULTS is derived (`!DARK_FLAGS.has(k)`), so all but the ~31
+// dark flags default ON — indexing ALL_FLAG_KEYS blindly silently binds KEY to whatever
+// flag happens to be registered first and breaks the moment that one defaults ON. It did:
+// 'papercusp-pg-mutate-tool' landed at index 0 and red-pinned the gate. Derive instead.
+const DEFAULT_OFF_KEYS = ALL_FLAG_KEYS.filter((k) => FLAG_DEFAULTS[k] === false);
+// Guard the premise: if the dark set ever empties, fail loudly here rather than as a
+// baffling `expected true to be false` deep inside a re-render assertion.
+if (DEFAULT_OFF_KEYS.length < 2) {
+  throw new Error(
+    `client.test.ts needs 2 default-OFF flags to test defaulting; found ${DEFAULT_OFF_KEYS.length}.`,
+  );
+}
+const KEY = DEFAULT_OFF_KEYS[0];
+const OTHER = DEFAULT_OFF_KEYS[1];
 
 // The store is module-level; reset to all-defaults before each test.
 beforeEach(() => {
@@ -71,10 +84,11 @@ describe('useFlag — defaulting', () => {
   });
 
   it('EI-2425 fix A: a MOUNTED hook re-renders live when setFlagPayload changes the flag — the exact bug this fixes (a plain function read never updated an already-rendered consumer)', () => {
-    // Drive the transitions off KEY's ACTUAL default, never a hardcoded literal:
-    // KEY is whichever flag sorts first in ALL_FLAG_KEYS and most flags now ship
-    // default-ON, so a literal both breaks the test AND silently guts it (setting
-    // a true-by-default flag to `true` is a no-op that re-renders nothing).
+    // KEY is default-OFF by construction (see DEFAULT_OFF_KEYS above), but drive the
+    // transitions off its ACTUAL default rather than a hardcoded literal so this test
+    // states its own premise. A literal would not just break if that binding changed —
+    // it would silently GUT the test, because setting an already-true flag to `true`
+    // is a no-op that re-renders nothing and would still pass.
     const initial = FLAG_DEFAULTS[KEY];
     const { result } = renderHook(() => useFlag(KEY));
     expect(result.current).toBe(initial); // default
