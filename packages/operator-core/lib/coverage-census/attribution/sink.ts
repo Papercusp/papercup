@@ -45,6 +45,7 @@ import {
   type TrafficObservation,
 } from './buffer';
 import {
+  FORBID_REAL_PG_ENV,
   isAttributionArmed,
   resolveAttributionScope,
   resolveCaller,
@@ -276,6 +277,17 @@ export async function flushTrafficEvidence(): Promise<void> {
   if (state.inFlight) return state.inFlight;
   if (state.disabled) return;
   if (state.buffer.size === 0) return;
+
+  // Stand down QUIETLY in a layer that forbids a real connection — this is an expected
+  // configuration, not a fault, so it is neither counted as a flush failure nor warned
+  // about. `lastError` still says so, which is what keeps "correctly inert here" legible
+  // in `attributionStatus()` rather than looking like silent data loss.
+  if (realPgForbidden()) {
+    state.disabled = true;
+    state.lastError = `no real PG in this layer (${FORBID_REAL_PG_ENV}=1) — attribution stood down`;
+    state.buffer.clear();
+    return;
+  }
 
   const scope = await resolveAttributionScope();
   if (!scope) {
