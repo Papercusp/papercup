@@ -24,6 +24,7 @@ import { defineTool } from '@papercusp/tooldef';
 import { killCriterionProblem } from '@papercusp/operator-core/lib/goals/kill-criterion';
 import { SU_WRITE_ROLES } from '../../role-config';
 import { GOAL_STATUSES, TripwireSchema, goalId, insertGoalRow } from './_core';
+import { applyGoalBlockedBy } from './goal-deps';
 
 // The id minter, the status vocabulary, the tripwire schema and the row write
 // live in `./_core` so `goals:start` (operator-core — it also SPAWNS the
@@ -409,6 +410,7 @@ export default defineTool({
         title: args.title,
         status: args.status,
         parent_id: args.parentId ?? null,
+        blocked_by: blockedByApplied,
         budget_cents: args.budgetCents ?? null,
         kill_criterion: args.killCriterion ?? null,
         tripwires: args.tripwires ?? null,
@@ -425,6 +427,7 @@ export default defineTool({
         // itself says what the routing found (P-002: honest, never silent).
         ...(kickoffConsult ? { kickoff_consult: kickoffConsult } : {}),
       },
+      ...(blockedByProblem ? { degraded: true, degradedReasons: [blockedByProblem] } : {}),
     };
   },
 });
