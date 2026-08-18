@@ -95,3 +95,110 @@ describe('describeInFlightCandidate', () => {
     expect(line).not.toContain('quiet cut');
   });
 });
+
+/**
+ * The detector for a run that DIED without a verdict. Written against the 2026-08-17 incident
+ * (agent-insights/green-checkpoint-refire-lost-to-bg-host-restart): an auto-refire onto
+ * f16fa1c7030d published its marker and then vanished with its bg-host generation, leaving a
+ * marker that read "in flight" for hours. A peer spent a claim waiting on that verdict.
+ */
+describe('judgeAbandonedInFlightCandidate', () => {
+  it('never reports a run\'s OWN marker as lost — an in-process refire re-publishes over itself', () => {
+    // The healthy rescue path re-enters runGreenCheckpoint recursively with pid UNCHANGED. A
+    // detector that fired here would cry wolf on every refire and be switched off within a day.
+    const verdict = judgeAbandonedInFlightCandidate(marker({ pid: 4242, refireDepth: 2 }), {
+      selfPid: 4242,
+      pidAlive: true,
+      nowMs: NOW,
+    });
+    expect(verdict).toEqual({ abandoned: false, reason: 'own-run' });
+  });
+
+  it('reports a dead pid as an abandoned run', () => {
+    const verdict = judgeAbandonedInFlightCandidate(marker({ pid: 763041 }), {
+      selfPid: 226009,
+      pidAlive: false,
+      nowMs: NOW,
+    });
+    expect(verdict.abandoned).toBe(true);
+    expect(verdict.abandoned && verdict.reason).toBe('dead-pid');
+  });
+
+  it('prefers the host-generation stamp over a LIVE pid — pid reuse must not mask a real loss', () => {
+    // PID wrap happens ~daily on this box under fleet load, so a dead run's pid can be recycled by
+    // an unrelated process and probe as alive. If `pid-alive` were checked first, that recycled pid
+    // would silently convert a real loss into "still running" — the exact reading this exists to
+    // kill. Ordering is the assertion here, not merely the returned reason.
+    const hostStartedAtMs = NOW - 30_000;
+    const verdict = judgeAbandonedInFlightCandidate(
+      marker({ pid: 763041, observedAtMs: hostStartedAtMs - 1 }),
+      { selfPid: 226009, pidAlive: true, hostStartedAtMs, nowMs: NOW },
+    );
+    expect(verdict.abandoned).toBe(true);
+    expect(verdict.abandoned && verdict.reason).toBe('predates-host-generation');
+  });
+
+  it('does NOT report a loss when the pid probe could not determine liveness', () => {
+    // A dead instrument reads exactly like a clean result. This writes a loud durable record, so an
+    // undeterminable probe must yield "not abandoned" rather than manufacture a loss.
+    const verdict = judgeAbandonedInFlightCandidate(marker({ pid: 763041 }), {
+      selfPid: 226009,
+      pidAlive: null,
+      nowMs: NOW,
+    });
+    expect(verdict).toEqual({ abandoned: false, reason: 'pid-unknown' });
+  });
+
+  it('leaves a genuinely live foreign run alone', () => {
+    const verdict = judgeAbandonedInFlightCandidate(marker({ pid: 763041 }), {
+      selfPid: 226009,
+      pidAlive: true,
+      nowMs: NOW,
+    });
+    expect(verdict).toEqual({ abandoned: false, reason: 'pid-alive' });
+  });
+
+  it('treats an absent marker as nothing to report', () => {
+    expect(judgeAbandonedInFlightCandidate(null, { selfPid: 1, pidAlive: null, nowMs: NOW })).toEqual({
+      abandoned: false,
+      reason: 'no-marker',
+    });
+  });
+});
+
+describe('isPidAlive', () => {
+  it('sees this very process', () => {
+    expect(isPidAlive(process.pid)).toBe(true);
+  });
+
+  it('returns false — not null — for a pid that does not exist', () => {
+    // The distinction is the whole detector: `false` is a loss, `null` is an unreadable instrument.
+    expect(isPidAlive(0x7ffffffe)).toBe(false);
+  });
+
+  it('returns null for a nonsense pid rather than guessing', () => {
+    expect(isPidAlive(0)).toBeNull();
+    expect(isPidAlive(-1)).toBeNull();
+    expect(isPidAlive(1.5)).toBeNull();
+  });
+});
+
+describe('describeAbandonedInFlightCandidate', () => {
+  it('states outright that no verdict is coming — the sentence that ends the waiting', () => {
+    const verdict = judgeAbandonedInFlightCandidate(
+      marker({ pid: 763041, candidate: 'f16fa1c7030d4e5a6b7c8d9e0f1a2b3c4d5e6f70', refireDepth: 1 }),
+      { selfPid: 226009, pidAlive: false, nowMs: NOW },
+    );
+    const line = describeAbandonedInFlightCandidate(verdict);
+    expect(line).toContain('NO VERDICT IS COMING FOR f16fa1c7030d');
+    // A refire is named as such, because "the candidate moved" is otherwise read as corruption.
+    expect(line).toContain('auto-refire #1');
+    expect(line).toContain('RECURSIVELY IN THE SAME PROCESS');
+  });
+
+  it('returns null for a healthy marker, so callers can log unconditionally', () => {
+    expect(
+      describeAbandonedInFlightCandidate({ abandoned: false, reason: 'pid-alive' }),
+    ).toBeNull();
+  });
+});
