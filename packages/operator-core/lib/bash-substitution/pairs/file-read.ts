@@ -55,6 +55,20 @@ import type {
  * verdict is also `equivalent`, which is the owner's own condition ("IF it has
  * full parity") enforced rather than remembered.
  *
+ * ⚠ PIPELINE HOLE — why these rows sit at 'advise' and not the authorized 'deny'.
+ * Matching is per-ATOM and `atomize` splits a pipeline into its stages, so the
+ * pattern never sees the pipe: `cat FILE | grep X` presents as the bare atom
+ * `cat FILE` and matches. At `advise` that is merely a slightly-off suggestion,
+ * but at `deny` it HARD-FAILS a command whose advised replacement cannot serve
+ * it — `capability:read` returns a numbered, headed, paged rendering, not the
+ * raw stdout a pipeline consumes. That is exactly the D-001 harm the registry
+ * exists to prevent, so the tier is held down until the matcher can tell a
+ * whole-command read from a pipeline stage.
+ *
+ * Found by canary AFTER the first deny rollout, not by the unit tests: every
+ * case in the blast-radius guard was a bare atom, so the whole class was
+ * invisible to it. Any fix must add piped forms to that guard FIRST.
+ *
  * Read D-044 before widening any pattern below. The authorization is scoped to
  * what the patterns matched when it was granted: every form `capability:read`
  * cannot express — piped stdin filters, heredocs and redirects, `cat -A/-v/-e/-t`,
@@ -363,7 +377,9 @@ export const sedRangeRead: BashSubstitutionPair = {
     insteadOf: "`sed -n 'N,Mp' FILE` (offset=N, limit=M-N+1)",
   },
   expectedVerdict: 'equivalent',
-  policyTier: 'deny',
+  // TEMPORARILY 'advise', NOT 'deny' — see the PIPELINE HOLE note on
+  // FILE_READ_MANDATE. Restore to 'deny' only once a piped atom is excluded.
+  policyTier: 'advise',
   policyAuthority: FILE_READ_MANDATE,
   cover(atom: string): CoverageResult {
     const parsed = parseAtom(atom);
@@ -423,7 +439,9 @@ export const catFileRead: BashSubstitutionPair = {
     insteadOf: '`cat FILE` (a heredoc or redirect is a WRITE — not this)',
   },
   expectedVerdict: 'equivalent',
-  policyTier: 'deny',
+  // TEMPORARILY 'advise', NOT 'deny' — see the PIPELINE HOLE note on
+  // FILE_READ_MANDATE. Restore to 'deny' only once a piped atom is excluded.
+  policyTier: 'advise',
   policyAuthority: FILE_READ_MANDATE,
   cover(atom: string): CoverageResult {
     const parsed = parseAtom(atom);
@@ -475,7 +493,9 @@ export const headFileRead: BashSubstitutionPair = {
     insteadOf: '`head -n N FILE` (a `… | head` pipe filter is not this)',
   },
   expectedVerdict: 'equivalent',
-  policyTier: 'deny',
+  // TEMPORARILY 'advise', NOT 'deny' — see the PIPELINE HOLE note on
+  // FILE_READ_MANDATE. Restore to 'deny' only once a piped atom is excluded.
+  policyTier: 'advise',
   policyAuthority: FILE_READ_MANDATE,
   cover(atom: string): CoverageResult {
     const parsed = parseAtom(atom);
@@ -540,7 +560,9 @@ export const tailFileRead: BashSubstitutionPair = {
     insteadOf: '`tail -n N FILE` (`tail -f` streaming has no tool form — keep using bash)',
   },
   expectedVerdict: 'equivalent',
-  policyTier: 'deny',
+  // TEMPORARILY 'advise', NOT 'deny' — see the PIPELINE HOLE note on
+  // FILE_READ_MANDATE. Restore to 'deny' only once a piped atom is excluded.
+  policyTier: 'advise',
   policyAuthority: FILE_READ_MANDATE,
   cover(atom: string): CoverageResult {
     const parsed = parseAtom(atom);
