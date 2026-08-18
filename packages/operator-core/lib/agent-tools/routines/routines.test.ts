@@ -309,6 +309,122 @@ describe('routines:list', () => {
     expect(trimmed.routines[0].paused).toMatchObject({ reason: 'Paused via the Agents pane' });
   });
 
+  it('EI-20503768406496801: KEEPS `health` and `lastFiredAt` in the trimmed projection — the gate-health read must work on the DEFAULT tier', async () => {
+    // The same defect as `paused` above, one field over. This shaper REBUILDS each
+    // row from an allowlist, so a field added to the row mapper never arrives here —
+    // it vanishes, and only on the tier agents get by default. Both fields below are
+    // promised by this tool's own `returns` block, and CLAUDE.md's tool-routing table
+    // sends agents here for gate health specifically so they stop hand-writing
+    // `SELECT metadata->'gate_health' FROM harness_shared.routines`. Trimmed away, the
+    // documented answer was simply absent and the only way back was that raw SQL.
+    const trimmed = listTool.shape!.trimmed!({
+      count: 2,
+      routines: [
+        {
+          installSlug: 'sidestage',
+          name: 'green-checkpoint',
+          cron: '0 15 * * * *',
+          active: true,
+          nextFireAt: '2026-08-18T15:15:00.000Z',
+          lastFiredAt: '2026-08-18T14:15:00.000Z',
+          group: null,
+          paused: null,
+          health: { gate_health: { consecutive_reds: 3 }, last_status: 'error' },
+        },
+        {
+          installSlug: 'papercusp',
+          name: 'consult-expiry-sweep',
+          cron: '0 */5 * * * *',
+          active: true,
+          nextFireAt: '2026-08-18T15:05:00.000Z',
+          lastFiredAt: null,
+          group: null,
+          paused: null,
+          // An ACTIVE routine whose handler is registered nowhere: active/nextFireAt
+          // both read healthy and this key is the only tell.
+          health: { validation: { 'unregistered-system-action': true } },
+        },
+      ],
+    }, { args: {} } as never) as { routines: Array<Record<string, unknown>> };
+
+    // The gate-health read, on the default tier.
+    expect(trimmed.routines[0].health).toMatchObject({ gate_health: { consecutive_reds: 3 } });
+    // lastFiredAt survives — and it is not redundant with nextFireAt: a STALLED routine
+    // keeps advancing nextFireAt while lastFiredAt stays put, so the divergence between
+    // the two IS the stall signal. Dropping one side made the pair unreadable.
+    expect(trimmed.routines[0].lastFiredAt).toBe('2026-08-18T14:15:00.000Z');
+    expect(trimmed.routines[0].nextFireAt).toBe('2026-08-18T15:15:00.000Z');
+    // The silently-dead-routine tell survives too.
+    expect(trimmed.routines[1].health).toMatchObject({
+      validation: { 'unregistered-system-action': true },
+    });
+
+    // CONTROL: a row genuinely carrying neither must still say so explicitly rather
+    // than omitting the keys — otherwise "no health" and "health was trimmed" are
+    // indistinguishable to the reader, which is the ambiguity that hid this bug.
+    const bare = listTool.shape!.trimmed!({
+      count: 1,
+      routines: [
+        {
+          installSlug: 'papercusp',
+          name: 'git-sync',
+          cron: '0 */2 * * * *',
+          active: true,
+          nextFireAt: '2026-08-18T15:00:00.000Z',
+          lastFiredAt: null,
+          group: 'release',
+          paused: null,
+          health: null,
+        },
+      ],
+    }, { args: {} } as never) as { routines: Array<Record<string, unknown>> };
+    expect(bare.routines[0]).toHaveProperty('health', null);
+    expect(bare.routines[0]).toHaveProperty('lastFiredAt', null);
+  });
+
+  it('CONTROL: the PRE-FIX allowlist is caught — proving the guard above can fail', async () => {
+    // A guard that has never failed is a guard nobody has tested. Rather than mutate
+    // production code in this shared tree to prove it (the sweep-race the repo
+    // forbids), the pre-fix shaper is kept here PERMANENTLY as a deliberately-wrong
+    // control: this is the exact 7-key allowlist as it stood before
+    // EI-20503768406496801, and the assertions above are re-run against it.
+    const preFixTrim = (rows: Array<Record<string, unknown>>) =>
+      rows.map((r) => ({
+        installSlug: r.installSlug ?? null,
+        name: r.name ?? null,
+        cron: r.cron ?? null,
+        active: r.active === true,
+        nextFireAt: r.nextFireAt ?? null,
+        group: r.group ?? null,
+        paused: r.paused ?? null,
+      }));
+
+    const row = {
+      installSlug: 'sidestage',
+      name: 'green-checkpoint',
+      cron: '0 15 * * * *',
+      active: true,
+      nextFireAt: '2026-08-18T15:15:00.000Z',
+      lastFiredAt: '2026-08-18T14:15:00.000Z',
+      group: null,
+      paused: null,
+      health: { gate_health: { consecutive_reds: 3 } },
+    };
+
+    // The control drops exactly what the reporter observed missing...
+    const stale = preFixTrim([row])[0] as Record<string, unknown>;
+    expect(stale).not.toHaveProperty('health');
+    expect(stale).not.toHaveProperty('lastFiredAt');
+
+    // ...while the REAL shaper keeps them. If a future edit re-slims the allowlist,
+    // the real shaper starts behaving like this control and the test above reds.
+    const live = listTool.shape!.trimmed!({ count: 1, routines: [row] }, {
+      args: {},
+    } as never) as { routines: Array<Record<string, unknown>> };
+    expect(live.routines[0]).toHaveProperty('health');
+    expect(live.routines[0]).toHaveProperty('lastFiredAt');
+  });
+
   // EI-7242: `q` was previously not a recognized arg at all — zod silently
   // stripped it and the query ran unfiltered (the whole catalog came back).
   it('accepts a `q` free-text filter and passes it through as an ILIKE pattern (EI-7242)', async () => {

@@ -180,6 +180,35 @@ export default defineTool({
           // trimmed is the tier an agent sees by default — dropping `paused` here would
           // reinstate the whole bug for every default call.
           paused: r.paused ?? null,
+          // EI-20503768406496801: the SAME bug as `paused` above, one field over.
+          // This allowlist REBUILDS the row, so a field added to the mapper does not
+          // arrive here — it is dropped silently, and only on the tier agents actually
+          // get by default. Both of these were promised by this tool's own `returns`
+          // block while being unreachable on the default path:
+          //
+          //   • `lastFiredAt` — "has it fired?" is half of every routine question, and
+          //     nextFireAt alone cannot answer it: a stalled routine keeps advancing
+          //     nextFireAt while lastFiredAt stays put. That divergence IS the stall
+          //     signal, and dropping one side of it made the pair unreadable.
+          //   • `health` — carries `gate_health` (the green-checkpoint gate's
+          //     consecutive-red count, observed candidate and in-flight-retriage
+          //     marker) and `validation['unregistered-system-action']` (the ONLY tell
+          //     that an active routine's handler is registered nowhere and it has been
+          //     firing into the void). `returns` calls this "THE GATE-HEALTH READ ...
+          //     No raw SQL needed", and CLAUDE.md's tool-routing table sends agents
+          //     here instead of hand-writing SELECT metadata->'gate_health'. With it
+          //     trimmed away, the documented answer was absent and the only way back
+          //     was the raw SQL this tool exists to replace — which is exactly what the
+          //     reporter of EI-20503768406496801 was forced into.
+          //
+          // COST: `healthOf` already returns null unless the row carries one of the
+          // operational keys (see its header, which states it is shaped this way so the
+          // field "stays cheap on the trimmed projection" — written on the assumption it
+          // was IN this tier). Ordinary rows therefore add one null; only genuinely
+          // unhealthy rows and the gate rows carry a body. The CAP=60 row cap is
+          // untouched and remains the real size control.
+          lastFiredAt: r.lastFiredAt ?? null,
+          health: r.health ?? null,
         };
       });
       if (d.routines.length > CAP) {
@@ -191,6 +220,11 @@ export default defineTool({
           nextFireAt: null,
           group: null,
           paused: null,
+          // Keep this notice row the SAME SHAPE as a real row above: a sentinel
+          // missing keys its siblings have reads as "this routine has no health"
+          // rather than "this is not a routine".
+          lastFiredAt: null,
+          health: null,
         });
       }
       return { count: d.count ?? d.routines.length, routines: rows };

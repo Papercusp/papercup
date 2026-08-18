@@ -264,6 +264,16 @@ export default defineTool({
           `subjectVolatile:true also requires measuredAt.`,
       ),
     shareable: z.boolean().optional().describe('OPT-IN federation egress (F0-2): true = this fact may leave the pot over the substrate. Default false — facts are pot-private.'),
+    dryRun: z
+      .boolean()
+      .optional()
+      .describe(
+        'Compute what this assert WOULD cost and write NOTHING: which fact the per-scope cap would evict ' +
+          '(key, owner, confidence, remaining TTL), where your row would land in the victim ranking, and ' +
+          'whether the key you are replacing already exists. Use it before asserting into a scope you know ' +
+          'is busy, and before RESTORING an evicted fact — a restore is itself a write and can displace a ' +
+          'third party. FORECAST, NOT A RESERVATION: a peer asserting first changes the victim.',
+      ),
     acceptTruncation: z
       .boolean()
       .optional()
@@ -431,6 +441,30 @@ export default defineTool({
       ...(args.shareable !== undefined ? { shareable: args.shareable } : {}),
       ...(potHomeSlug ? { potHomeSlug } : {}),
     };
+    // EI-20515478467800187: the eviction cap's look-before-you-leap surface.
+    // The BODY cap has refused-before-write + preview since EI-18685042986450096
+    // (above); the EVICTION cap disclosed its victim only in the receipt of the
+    // write that had already destroyed them. dryRun closes that asymmetry
+    // WITHOUT making eviction refuse by default: workspace scope runs
+    // permanently at cap, so a default refusal would stop every ordinary assert
+    // and train agents to pass the override reflexively — ceremony, not a guard.
+    if (args.dryRun === true) {
+      const { previewFactCapImpact } = await import('../../agent-facts/store');
+      const preview = await previewFactCapImpact(factInput);
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({
+              ok: true,
+              dryRun: true,
+              wrote: false,
+              ...preview,
+            }),
+          },
+        ],
+      };
+    }
     const fact = await acquireWithContentionRetry(() =>
       boundedOrgTxn((tx) => assertFact(factInput, tx)),
     );

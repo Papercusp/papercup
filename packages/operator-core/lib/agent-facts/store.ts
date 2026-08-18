@@ -1733,9 +1733,12 @@ export interface FactSelector {
  * wrong on any scope holding conventions, and reporting `nextVictim:false`
  * ("you are safe") for a write that really was next to die whenever the
  * bottom-ranked row was a convention. Measured on the live workspace scope at
- * the time of the fix: 285 ranked, 202 actually evictable, 83 conventions,
- * against a cap of 200 — which is exactly the "liveCount 259 against a
- * 200-fact cap" the reporter of EI-20515478467800187 could not reconcile.
+ * the time of the fix: 285 ranked, but only 202 actually evictable, because 83
+ * were conventions. That gap is what the reporter of EI-20515478467800187 hit
+ * and could not reconcile. Quoted verbatim from that report as it stood that
+ * day: "liveCount 259 against a 200-fact cap" (cap-drift-ok — a DATED reading,
+ * not a statement of the enforced cap; that is FACTS_PER_SCOPE_CAP, and every
+ * agent-facing string must interpolate it rather than type a digit).
  *
  * The sibling fragment above already learned this lesson for the census/page
  * pair; the cap population simply never got it. `sweep-survival-population-
@@ -1757,6 +1760,149 @@ function capPopulationPredicate(sql: Sql, ws: string, scope: string, ref: string
          AND key NOT LIKE ${`${DEAD_END_KEY_PREFIX}%`}
          -- P-028: conventions are governance rows, not ordinary cap population.
          AND COALESCE(kind, '') <> 'convention'`;
+}
+
+/**
+ * What an assert WOULD cost, computed WITHOUT writing anything
+ * (EI-20515478467800187).
+ *
+ * The eviction cap was the only destructive path in this store with no
+ * look-before-you-leap surface: the body-length cap already refuses over-cap
+ * writes and previews the exact tail it would drop (assert.ts), while the
+ * eviction cap disclosed its victim only in the receipt of the write that had
+ * already destroyed them. That asymmetry is what EI-20515478467800187 reported,
+ * and it makes remediation hazardous rather than merely annoying: an agent
+ * trying to restore an evicted fact cannot see that the restoring write is
+ * itself about to displace a third party.
+ *
+ * ⚠ THIS IS A FORECAST, NOT A RESERVATION — see `raceCaveat`. It reads
+ * committed state at one instant; on a shared scope a peer may assert between
+ * the preview and the write, which changes both the population and the victim.
+ * It narrows a blind write to an informed one; it cannot make it atomic. Do not
+ * present it to a caller as a guarantee.
+ */
+export interface FactCapPreview {
+  scope: FactScope;
+  scopeRef: string | null;
+  /** Rows the sweep may currently evict here — the true cap population. */
+  populationSize: number;
+  /** The cap this scope is measured against. */
+  cap: number;
+  /** True when this write would push the population past {@link cap}. */
+  atCap: boolean;
+  /** An upsert of a live key supersedes it, so it consumes no NEW slot. */
+  replacesExistingKey: boolean;
+  /** Exempt from the cap entirely (a convention, or a typed safety slot). */
+  exempt: boolean;
+  /** WHO would be destroyed if this write happened now. Empty ⇒ nothing dies. */
+  wouldEvict: FactEviction[];
+  /** Where the written row would land in the victim ranking; null when exempt. */
+  survival: FactSurvival | null;
+  raceCaveat: string;
+}
+
+/** Sentinel id for the not-yet-written row while it is ranked against incumbents. */
+const PREVIEW_ROW_ID = '__preview__';
+
+export async function previewFactCapImpact(
+  input: AssertFactInput,
+  inject?: Sql,
+): Promise<FactCapPreview> {
+  const sql = sqlOf(inject);
+  const err = validateFactScope(input.scope, input.scopeRef);
+  if (err) throw new InvalidInputError(`facts:assert — ${err}`);
+  const key = input.key.trim();
+  if (!key) throw new InvalidInputError('facts:assert — key required (stable slug)');
+  const ws = input.workspaceId ?? activeWorkspaceId();
+  const ref = input.scope === 'workspace' ? null : (input.scopeRef ?? '').trim();
+
+  // The exemptions are the SAME three the cap population excludes. Stated here
+  // in TS because the row does not exist yet to be filtered by SQL — if you
+  // change capPopulationPredicate's exemptions, change these in the same edit.
+  const exempt =
+    input.kind === 'convention' ||
+    key.startsWith(WALL_KEY_PREFIX) ||
+    key.startsWith(DEAD_END_KEY_PREFIX);
+
+  const population = await sql<
+    {
+      id: string | number | null;
+      key: string;
+      confidence: string | null;
+      created_by: string;
+      expires_at: string | Date;
+      created_at: string | Date;
+      updated_at: string | Date;
+    }[]
+  >`
+    SELECT id, key, confidence, created_by, expires_at, created_at, updated_at
+      FROM harness_shared.agent_facts
+     WHERE ${capPopulationPredicate(sql, ws, input.scope, ref ?? '')}`;
+
+  // An upsert supersedes the live row under the same key, so that row leaves the
+  // population as this one enters it — the net slot count is unchanged. Missing
+  // this is how a preview would over-predict eviction for every ordinary refresh
+  // of an existing fact, which is the single most common assert there is.
+  const incumbents = population.filter((r) => r.key !== key);
+  const replacesExistingKey = incumbents.length !== population.length;
+
+  const { orderAsSweepWould, rankOfId, sweepRemainingFraction } = await import('./sweep-ranking');
+  const nowMs = Date.now();
+
+  // Rank the incumbents exactly as the sweep's ORDER BY would, then take the
+  // tail past the offset — the same arithmetic as `OFFSET FACTS_PER_SCOPE_CAP-1`.
+  const orderedIncumbents = orderAsSweepWould(incumbents, nowMs);
+  const doomed = orderedIncumbents.slice(Math.max(0, FACTS_PER_SCOPE_CAP - 1));
+  const wouldEvict: FactEviction[] = doomed.map((r) => ({
+    key: r.key,
+    confidence: parseFactConfidence(r.confidence),
+    expiresAt: typeof r.expires_at === 'string' ? r.expires_at : r.expires_at.toISOString(),
+    createdBy: r.created_by,
+  }));
+
+  let survival: FactSurvival | null = null;
+  if (!exempt) {
+    // The hypothetical row. A FRESH write always scores the MAXIMUM on ranking
+    // key 2 — the fraction is (expires-now)/(expires-created) and created==now,
+    // so it is 1.0 for any positive TTL. The declared TTL therefore cannot
+    // change this row's rank, which is why no TTL resolution is duplicated here.
+    const survivors = orderedIncumbents.slice(0, Math.max(0, FACTS_PER_SCOPE_CAP - 1));
+    const hypothetical = {
+      id: PREVIEW_ROW_ID,
+      confidence: input.confidence ?? null,
+      expires_at: new Date(nowMs + 86_400_000),
+      created_at: new Date(nowMs),
+      updated_at: new Date(nowMs),
+    };
+    const ordered = orderAsSweepWould([...survivors, hypothetical], nowMs);
+    const rank = rankOfId(ordered, PREVIEW_ROW_ID);
+    if (rank > 0) {
+      const isLast = rank === ordered.length;
+      const neighbourAbove = isLast && rank > 1 ? ordered[rank - 2] : null;
+      survival = {
+        rank,
+        liveCount: ordered.length,
+        nextVictim: isLast,
+        survivingFractionFloor: neighbourAbove ? sweepRemainingFraction(neighbourAbove, nowMs) : null,
+      };
+    }
+  }
+
+  return {
+    scope: input.scope,
+    scopeRef: ref,
+    populationSize: population.length,
+    cap: FACTS_PER_SCOPE_CAP,
+    atCap: wouldEvict.length > 0,
+    replacesExistingKey,
+    exempt,
+    wouldEvict,
+    survival,
+    raceCaveat:
+      'FORECAST, NOT A RESERVATION: read from committed state at one instant. A peer asserting ' +
+      'into this scope before you write changes both the population and the victim. Re-previewing ' +
+      'does not close the gap — it only re-dates it.',
+  };
 }
 
 function liveFactPredicate(

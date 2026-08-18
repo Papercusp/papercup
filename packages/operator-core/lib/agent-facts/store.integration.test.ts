@@ -39,6 +39,7 @@ import {
   listConventionFacts,
   factCitationRef,
   listFactEvictionDisclosures,
+  previewFactCapImpact,
   type FactDependency,
 } from './store';
 import { isAgentFactWireRow } from '../sync/hyperbee/projections/agent-facts';
@@ -804,6 +805,101 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
        WHERE workspace_id = ${WS} AND scope = 'owner' AND scope_ref = ${scopeRef}
          AND key = 'a-governing-rule' AND superseded_at IS NULL`;
     expect(row.retracted_at).toBeNull();
+  });
+
+  it('EI-20515478467800187: preview-predicts-the-sweep — dryRun names the victim BEFORE the write, and the write destroys exactly that row', async () => {
+    const scopeRef = 'su-preview-predicts';
+    const base = { scope: 'owner' as const, scopeRef, createdBy: 'su-int', workspaceId: WS };
+
+    // ── WHY THIS TEST IS THE LOAD-BEARING ONE ──────────────────────────────
+    // A preview computes the answer a SECOND way (TypeScript over a snapshot)
+    // from the way the sweep computes it (SQL). That is a MIRROR, and an
+    // unpinned mirror is the exact defect class this whole item is about — it
+    // would replace "the receipt tells you too late" with "the forecast tells
+    // you the wrong victim", which is strictly worse because it is trusted.
+    // So: predict, then execute, then require them to agree on the SAME key.
+    for (let i = 0; i < FACTS_PER_SCOPE_CAP; i++) {
+      await assertFact(
+        { ...base, key: `incumbent-${i}`, body: `n ${i}`, confidence: 'verified', ttlSec: 30 * 86400 },
+        db.sql,
+      );
+    }
+    // One clearly-worst row, so the victim is determinate rather than a tie.
+    await assertFact(
+      { ...base, key: 'weakest', body: 'a hedge', confidence: 'suspected', ttlSec: 30 * 86400 },
+      db.sql,
+    );
+
+    const preview = await previewFactCapImpact(
+      { ...base, key: 'the-new-arrival', body: 'incoming', confidence: 'verified', ttlSec: 30 * 86400 },
+      db.sql,
+    );
+
+    // Non-vacuity: the preview must actually be forecasting a LOSS, or "they
+    // agree" would just be two empty lists agreeing.
+    expect(preview.atCap).toBe(true);
+    expect(preview.wouldEvict.length).toBeGreaterThan(0);
+    expect(preview.replacesExistingKey).toBe(false);
+    expect(preview.exempt).toBe(false);
+    // It names the owner + evidence strength, which is the actionable part —
+    // "I am about to cost a peer a verified finding" is the decision this
+    // surface exists to inform.
+    expect(preview.wouldEvict[0].createdBy).toBe('su-int');
+    expect(preview.wouldEvict[0].key).toBe('weakest');
+
+    // ── THE PIN: the forecast must survive contact with the real sweep ─────
+    const real = await assertFact(
+      { ...base, key: 'the-new-arrival', body: 'incoming', confidence: 'verified', ttlSec: 30 * 86400 },
+      db.sql,
+    );
+    expect(real.evicted?.map((e) => e.key)).toEqual(preview.wouldEvict.map((e) => e.key));
+
+    // And nothing was written by the preview itself — the whole point.
+    const [{ count: arrivalsBefore }] = await db.sql<{ count: number }[]>`
+      SELECT count(*)::int AS count
+        FROM harness_shared.agent_facts
+       WHERE workspace_id = ${WS} AND scope = 'owner' AND scope_ref = ${scopeRef}
+         AND key = 'the-new-arrival' AND superseded_at IS NULL`;
+    // Exactly ONE live row: the real write. Two would mean the preview wrote.
+    expect(arrivalsBefore).toBe(1);
+  });
+
+  it('EI-20515478467800187: dryRun on an EXISTING key forecasts no eviction — an upsert supersedes its own row and consumes no new slot', async () => {
+    const scopeRef = 'su-preview-upsert';
+    const base = { scope: 'owner' as const, scopeRef, createdBy: 'su-int', workspaceId: WS };
+
+    // Saturate to the cap so a NEW key would certainly evict — that is the
+    // control that makes "no eviction" a statement about upserts specifically,
+    // rather than about a scope with room to spare.
+    for (let i = 0; i < FACTS_PER_SCOPE_CAP; i++) {
+      await assertFact(
+        { ...base, key: `incumbent-${i}`, body: `n ${i}`, confidence: 'verified', ttlSec: 30 * 86400 },
+        db.sql,
+      );
+    }
+
+    const newKey = await previewFactCapImpact(
+      { ...base, key: 'a-brand-new-key', body: 'x', confidence: 'verified', ttlSec: 30 * 86400 },
+      db.sql,
+    );
+    expect(newKey.wouldEvict.length).toBeGreaterThan(0);
+    expect(newKey.replacesExistingKey).toBe(false);
+
+    // The SAME scope, at the SAME saturation — only the key differs.
+    const refresh = await previewFactCapImpact(
+      { ...base, key: 'incumbent-7', body: 'refreshed body', confidence: 'verified', ttlSec: 30 * 86400 },
+      db.sql,
+    );
+    expect(refresh.replacesExistingKey).toBe(true);
+    expect(refresh.wouldEvict).toEqual([]);
+
+    // Confirm against reality: refreshing an existing fact really does destroy
+    // nothing, so the forecast above is not merely self-consistent.
+    const real = await assertFact(
+      { ...base, key: 'incumbent-7', body: 'refreshed body', confidence: 'verified', ttlSec: 30 * 86400 },
+      db.sql,
+    );
+    expect(real.evicted ?? []).toEqual([]);
   });
 
   it('EI-19483432832662150: an urgent SHORT-TTL fact is no longer doomed on arrival — the most-ELAPSED incumbent dies instead', async () => {
