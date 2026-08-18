@@ -89,6 +89,13 @@ export function resolveWorkerMemoryMb(input: {
   fallback: number | string;
 }): number;
 
+/**
+ * Headroom held back from MemAvailable before any worker token is paid for — shared by the
+ * startup budget (resolveMemoryBudgetMb) and the per-admission re-check
+ * (admissibleWorkersForMemory) so the two rails cannot drift apart (EI-20801764054303492).
+ */
+export const MEMORY_RESERVE_FRACTION: number;
+
 export function resolveMemoryBudgetMb(input: {
   affectedGlobalMemoryMb?: number | string;
   memAvailableMb?: number | string | null;
@@ -98,6 +105,18 @@ export function resolveMemoryBudgetMb(input: {
 }): number;
 
 export function resolveTaskBudget(input: TaskBudgetInput): ResolvedTaskBudget;
+
+/**
+ * Per-admission memory re-check: clamps a lane's worker count to what the measured
+ * MemAvailable (minus the reserve fraction) can afford. A missing/broken reading returns the
+ * configured lane width unchanged — an instrument failure must never read as "no memory".
+ */
+export function admissibleWorkersForMemory(input: {
+  laneWorkers: number | string;
+  workerMemoryMb: number | string;
+  memAvailableMb?: number | string | null;
+  reserveFraction?: number;
+}): number;
 
 export function runBudgetedTasks<Task, Value>(
   tasks: Task[],
