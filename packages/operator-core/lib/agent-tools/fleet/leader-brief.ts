@@ -55,7 +55,7 @@ import {
   type AutoClaimedNotice,
 } from './leadership-disposition';
 import { resolvePresenceFleet } from '../coordination/presence-fleet';
-import { resolveSelfRef, markSelfRows } from '../coordination/self-marker';
+import { resolveSelfRef, markSelfRows, type SelfRef } from '../coordination/self-marker';
 import { selectFleetPopulation, type FleetPopulationCensus } from './fleet-population';
 import { COORD_ROLES } from '../coordination/roles';
 import { listFleetRosterDiagnosed } from '../../fleet/fleet-roster';
