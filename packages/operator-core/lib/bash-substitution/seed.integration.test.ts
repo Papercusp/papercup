@@ -104,11 +104,9 @@ describe('seedSubstitutionRegistry (real PG)', () => {
   });
 
   it('seeds a below-floor policy row as unaudited instead of deriving a verdict', async () => {
-    // Specifically the BELOW-FLOOR policy row (the prefix route), which is the
-    // only kind that can be `unaudited`. Since D-044 there are also policy rows
-    // on the citation route, and those are `equivalent` by construction — so
-    // selecting merely "the first pair with a policyTier" would silently retarget
-    // this test onto a row it is not about.
+    // Specifically the BELOW-FLOOR policy row, which is what this test is about.
+    // Selecting merely "the first pair with a policyTier" would silently
+    // retarget it onto a different row if another policy pair is ever added.
     const pair = BASH_GATE_PAIRS.find(
       (candidate) => candidate.policyTier !== undefined && candidate.expectedVerdict === 'unaudited',
     )!;
