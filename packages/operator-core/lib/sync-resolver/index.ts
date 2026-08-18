@@ -53,6 +53,23 @@ import { attachListMeta } from './list-meta';
 // a bare empty — that made a broken substrate byte-identical to an idle healthy
 // one and left every panel's error branch unreachable for the data-layer class.
 import { classifyReadFailure, degraded } from './degraded-snapshot';
+import { createReadDeadline } from './read-deadline';
+
+/**
+ * Shared deadline for the fan-outs bounded IN PLACE (WI-39825). 6s — the budget
+ * the extracted `*-read.ts` modules carry, measured against real :3170 latency
+ * (p90 599ms) and deliberately under the sync layer's ~10s
+ * `RESOLVER_READ_TIMEOUT_MS`, which a bound has to beat to be worth anything.
+ *
+ * These sites are bounded HERE rather than extracted because every leg
+ * PROPAGATES a lapse — there is no per-leg degradation policy to falsify, so the
+ * only behaviour added is `createReadDeadline`'s own, which
+ * `read-deadline.test.ts` already guards with two permanent controls. A site with
+ * a SUPPLEMENTARY leg is the opposite case and must be extracted to be
+ * guardable: see `adv-roster-read.ts`'s header for why (a resolver's only input
+ * is its wire args, so the budget knob cannot live on it).
+ */
+const RESOLVER_FANOUT_BUDGET_MS = 6_000;
 import { projectAuthoredFields } from '../agent-tools/coordination/message-fields';
 // GOAL mode's two client reads (goal-mode-2026-08-07 P-017). They live in their
 // own module rather than inline here because both carry a counting rule the SQL
@@ -5843,9 +5860,15 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         const [{ activeWorkspaceId }, { listHiveInstancePromptOverrides, listHiveLocalBlueprintConfig }] =
           await Promise.all([import('../workspace-registry'), import('../hive-settings-store')]);
         const ws = workspaceId ?? activeWorkspaceId();
+        // BOUNDED (WI-39825). Both legs build the SAME row list, so neither is
+        // supplementary and a lapse propagates — into this resolver's own outer
+        // catch, which already degrades the whole read to `[]` with a warn. That
+        // makes the deadline a strict upgrade: the pre-bound version could hang
+        // instead, and a hang reaches neither the catch nor the log.
+        const withinBudget = createReadDeadline(RESOLVER_FANOUT_BUDGET_MS);
         const [prompts, config] = await Promise.all([
-          listHiveInstancePromptOverrides(ws, potSlug),
-          listHiveLocalBlueprintConfig(ws, potSlug),
+          withinBudget(listHiveInstancePromptOverrides(ws, potSlug), 'hive.overrides prompts'),
+          withinBudget(listHiveLocalBlueprintConfig(ws, potSlug), 'hive.overrides config'),
         ]);
         const rows: Array<{ kind: 'prompt' | 'config'; name: string; value: unknown }> = [];
         for (const [role, md] of Object.entries(prompts)) rows.push({ kind: 'prompt', name: role, value: md });
@@ -6279,8 +6302,17 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       // newest TAIL entries and no further filters run, so stopping the read once
       // TAIL are in hand yields the identical result — and when fewer than TAIL
       // exist `enough` stays false and it pages on to exhaustion.
+      // BOUNDED (WI-39825). The `enough` predicates above bound how many ROWS each
+      // half pulls; they do nothing about a half that never comes back, and
+      // `Promise.all` waits for the slowest. Both halves are rendered side by side
+      // so neither is supplementary: a lapse propagates as a labelled failure
+      // rather than a silent half-view.
+      const withinBudget = createReadDeadline(RESOLVER_FANOUT_BUDGET_MS);
       const [inboxAll, outboxAll] = await Promise.all([
-        readInbox(owner, {}, { enough: (entries) => entries.length >= TAIL }),
+        withinBudget(
+          readInbox(owner, {}, { enough: (entries) => entries.length >= TAIL }),
+          'beeDossier inbox',
+        ),
         // EI-19323045109346905: the same stopping rule on the outbox half. This
         // is a SMALLER win than the inbox one and the asymmetry is the point:
         // the outbox predicate (`from = owner`) is genuinely selective, where
@@ -6289,7 +6321,10 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         // a sender's entire history to render tail(50) — not a whole-table scan.
         // It is also the LAST unbounded read of the pair, so leaving it would
         // keep this resolver's cost tied to how much the owner has ever sent.
-        readOutbox(owner, {}, { enough: (entries) => entries.length >= TAIL }),
+        withinBudget(
+          readOutbox(owner, {}, { enough: (entries) => entries.length >= TAIL }),
+          'beeDossier outbox',
+        ),
       ]);
       const tail = <T>(arr: T[]) => (arr.length > TAIL ? arr.slice(arr.length - TAIL) : arr);
       return [{ owner, inbox: tail(inboxAll), outbox: tail(outboxAll) }];
@@ -6495,9 +6530,18 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         import('../operator-state-pg'),
         import('../operator-prompt-system'),
       ]);
+      // BOUNDED (WI-39825). Two state reads, both rendered by the same editor, so
+      // neither is supplementary and a lapse propagates as a labelled failure.
+      const withinBudget = createReadDeadline(RESOLVER_FANOUT_BUDGET_MS);
       const [prompt, prefs] = await Promise.all([
-        readOperatorState<{ content?: string }>('operator_prompt_user'),
-        readOperatorState<{ content?: string }>('operator_preferences'),
+        withinBudget(
+          readOperatorState<{ content?: string }>('operator_prompt_user'),
+          'operatorPrompt user',
+        ),
+        withinBudget(
+          readOperatorState<{ content?: string }>('operator_preferences'),
+          'operatorPrompt preferences',
+        ),
       ]);
       return [
         {
