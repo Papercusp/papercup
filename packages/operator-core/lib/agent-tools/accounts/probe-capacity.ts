@@ -25,6 +25,7 @@ import { COORD_ROLES } from '../coordination/roles';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { DRAIN_FULL_UTIL } from '../../deployment/account-pool';
 import { probeCapacityForAccounts, type CapacityProbeResult } from '../../inference-gateway/capacity-probe';
+import { trackDetached } from '../../detached-imports';
 
 const wsArg = z.string().min(1).optional().describe('Workspace id (defaults to the active workspace)');
 
@@ -180,7 +181,7 @@ export default defineTool({
         applied.push(r.accountId);
       }
       if (applied.length > 0) {
-        void import('../../sync-sse')
+        void trackDetached(import('../../sync-sse'))
           .then(({ notifySyncInvalidate }) => notifySyncInvalidate('accounts.pool', {}))
           .catch(() => {});
       }

@@ -81,7 +81,7 @@ export function recordFromRepoStep(
   entry.touched = now;
   store.set(progressId, entry);
   // Lazy import avoids a cycle (sync-sse pulls broad operator infra).
-  void import('../sync-sse')
+  void trackDetached(import('../sync-sse'))
     .then(({ notifySyncInvalidate }) => notifySyncInvalidate('hiveFromRepo.progress', { progressId }))
     .catch(() => {});
 }
