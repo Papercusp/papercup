@@ -356,8 +356,24 @@ export function PotHealthPane() {
         {spend != null && (
           <span className="op-ph-chip">${spend.h24.spendUsd.toFixed(2)} 24h</span>
         )}
-        {needYou > 0 && (
-          <span className="op-ph-chip bad">{compactCount(needYou)} need you</span>
+        {/* MIXED aggregate: on a degraded attention read the goals term is
+            still a real reading, so state the FLOOR rather than the total —
+            and when there is no floor to state, say so instead of vanishing.
+            A missing chip is what made the pane assert "nothing needs you". */}
+        {attentionDegraded ? (
+          needYou > 0 ? (
+            <span className="op-ph-chip bad" title={ATTENTION_FLOOR_LABEL}>
+              ≥{compactCount(needYou)} need you
+            </span>
+          ) : (
+            <span className="op-ph-chip warn" title={ATTENTION_UNKNOWN_LABEL}>
+              ? need you
+            </span>
+          )
+        ) : (
+          needYou > 0 && (
+            <span className="op-ph-chip bad">{compactCount(needYou)} need you</span>
+          )
         )}
       </div>
 
@@ -441,18 +457,32 @@ export function PotHealthPane() {
               v={`${movement.opened} opened · ${movement.closed} closed`}
               tone={movement.closed >= movement.opened ? 'ok' : 'warn'}
             />
+            {/* PURE attention: a degraded read leaves NOTHING here, so these
+                render `unknown` and drop the dot entirely. The all-clear `ok`
+                dot is earned only by a REAL zero — keeping it on a timed-out
+                read is the confident-wrong reading WI-39779 added the bit for. */}
             {attention != null && (
               <KvRow
                 k="needs a decision"
-                v={`${attention.decisionItems} items · ${attention.decisionPlans} plans`}
-                tone={attention.decisionItems + attention.decisionPlans > 0 ? 'warn' : 'ok'}
+                v={
+                  attentionDegraded
+                    ? ATTENTION_UNKNOWN_TEXT
+                    : `${attention.decisionItems} items · ${attention.decisionPlans} plans`
+                }
+                tone={
+                  attentionDegraded
+                    ? undefined
+                    : attention.decisionItems + attention.decisionPlans > 0
+                      ? 'warn'
+                      : 'ok'
+                }
               />
             )}
             {attention != null && (
               <KvRow
                 k="alerts"
-                v={`${attention.alerts}`}
-                tone={attention.alerts > 0 ? 'bad' : 'ok'}
+                v={attentionDegraded ? ATTENTION_UNKNOWN_TEXT : `${attention.alerts}`}
+                tone={attentionDegraded ? undefined : attention.alerts > 0 ? 'bad' : 'ok'}
               />
             )}
             {spend != null && (
