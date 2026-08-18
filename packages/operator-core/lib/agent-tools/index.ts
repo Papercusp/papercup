@@ -935,6 +935,11 @@ import './system-health/unack';
 import './work_items/create';
 import './work_items/get';
 import './work_items/list';
+// project-history-real-completion-evidence-2026-08-18 P-001/D-003 — the bulk read door.
+// The result payload is a bounded transport, so an exporter reading many rows through
+// work_items:get gets a silently EMPTY `results` past the ceiling (WI-39831). This is the
+// plans:export sibling: rows go out as files, and the result carries counts only.
+import './work_items/export';
 // claimable-read-tool-and-sql-encapsulation-audit-2026-07-21 P-001 — the authoritative
 // "what issue-family work can I actually claim now" read (the SSOT floors as a tool, so
 // agents stop reaching for raw SQL on work_items / the claimable view).
