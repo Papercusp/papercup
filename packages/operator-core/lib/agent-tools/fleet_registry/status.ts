@@ -361,6 +361,38 @@ export default defineTool({
         resumableByOwner = new Map();
       }
     }
+
+    // LAUNCH-PROBE FALSE-NEGATIVE CROSS-CHECK. `launchTransaction.failed` records what a ~25s probe saw at
+    // spawn time; it is not an observation of whether the member worked. Two members stamped "AGENT DID NOT
+    // START" on 2026-08-16 went on to close 15 evidenced items over 15-19h while this surface reported an
+    // empty fleet. The registry holds both halves — the launch record and the work ledger — so it runs the
+    // falsifier itself rather than leaving it to a reader who will forget.
+    const failedOwnerIds = (fleet.lastLaunchTransaction?.failed ?? [])
+      .map((f) => f?.ownerId)
+      .filter((id): id is string => typeof id === 'string' && id.length > 0);
+    let launchVerification: Awaited<ReturnType<typeof crossCheckLaunchVerification>> = {
+      launchVerificationFalseNegative: [],
+    };
+    if (failedOwnerIds.length > 0) {
+      try {
+        const { getOrgPg } = await import('@papercusp/db-org');
+        const { sql } = getOrgPg();
+        launchVerification = await crossCheckLaunchVerification(
+          failedOwnerIds,
+          buildOwnerActivityReader(
+            sql as unknown as (s: TemplateStringsArray, ...v: unknown[]) => Promise<Record<string, unknown>[]>,
+            fleet.workspaceId,
+          ),
+        );
+      } catch (e) {
+        // UNKNOWN, not clean. A cross-check that could not run must never render as "checked, nothing found".
+        launchVerification = {
+          launchVerificationFalseNegative: null,
+          note: `launch-verification cross-check unavailable (${e instanceof Error ? e.message : String(e)}); the failed[] list is UNVERIFIED.`,
+        };
+      }
+    }
+
     return {
       data: {
       ok: true,
@@ -376,6 +408,7 @@ export default defineTool({
       // checkpoint + release and pull no new work until fleet:resume.
       controlState: fleet.controlState,
       launchTransaction: fleet.lastLaunchTransaction,
+      ...launchVerification,
       ...(fleet.controlState !== 'active'
         ? { controlReason: fleet.controlReason, controlBy: fleet.controlBy, controlAt: fleet.controlAt }
         : {}),
