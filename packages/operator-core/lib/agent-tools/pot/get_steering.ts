@@ -70,10 +70,39 @@ export default defineTool({
     } catch {
       /* unreadable agent-config — compare against the committed default menu */
     }
+    // THE GETTER MUST CARRY THE SAME RETIREMENT FACT THE SETTER REFUSES WITH. pot:set-steering rejects every
+    // write with `mug_kettle_retired`, but this read kept answering as though it described a live control —
+    // so `pauseNewWork: true` read as "work is paused" when the only component that ever obeyed it (the Mug)
+    // no longer exists, and the flag cannot even be cleared. An agent stopped work for hours on it
+    // (2026-08-17) and carried it as an owner-gated wall across ~15 wakes.
+    //
+    // A read is NOT refused: the stored values are still worth seeing as residue, and refusing would break
+    // callers that legitimately inspect them. What changes is that the payload can no longer be mistaken for
+    // a live control surface. Same fail-CLOSED resolution as the setter's gate — an unreadable flag reports
+    // retired, because that is the reading that cannot manufacture a phantom pause.
+    let tierRetired = true;
+    try {
+      tierRetired = !(await mugKettleSystemEnabled());
+    } catch {
+      /* fail-closed: unreadable ⇒ report retired */
+    }
     return json({
       ok: true,
       pot: installSlug,
       steering,
+      ...(tierRetired
+        ? {
+            retired: true,
+            retiredError: MUG_KETTLE_RETIRED_ERROR,
+            governs: 'nothing',
+            retiredMessage:
+              'RESIDUE, NOT A CONTROL: the Mug/Kettle/Cup tier is RETIRED, so these values steer nothing. ' +
+              'In particular `pauseNewWork` does NOT pause anything — it only ever gated the MUG\'s placement ' +
+              'of new work, never an su session working items directly — and it CANNOT be cleared, because ' +
+              'pot:set-steering refuses every write with `mug_kettle_retired`. Judge whether work is paused ' +
+              'from fleet:status -> controlState, never from this flag.',
+          }
+        : {}),
       // EI-8277: flag when the directive text reads like "resumed" but pauseNewWork
       // is still the hard gate ON — advisory only, never auto-clears the pause.
       inconsistent: steeringLooksInconsistent(steering),
