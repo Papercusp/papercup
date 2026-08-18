@@ -26,7 +26,7 @@ import {
 function run(over: Partial<DistilledTestRun> = {}): DistilledTestRun {
   return {
     passed: 0, failed: 0, skipped: 0, files: 0,
-    failures: [], failuresTruncated: false, durationMs: null,
+    failures: [], failuresTruncated: false, durationMs: null, byFile: {},
     ...over,
   };
 }

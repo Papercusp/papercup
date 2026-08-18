@@ -637,7 +637,7 @@ export function mergeDistilledRuns(
   const maxFailures = opts?.maxFailures ?? DEFAULT_MAX_FAILURES;
   const merged: DistilledTestRun = {
     passed: 0, failed: 0, skipped: 0, files: 0,
-    failures: [], failuresTruncated: false, durationMs: null,
+    failures: [], failuresTruncated: false, durationMs: null, byFile: {},
   };
   let sawDuration = false;
   let durationTotal = 0;
@@ -649,6 +649,18 @@ export function mergeDistilledRuns(
     merged.skipped += run.skipped;
     merged.files += run.files;
     if (run.failuresTruncated) merged.failuresTruncated = true;
+    // Per-file grain must survive the merge, or a caller that batched files spanning
+    // several ROUTER GROUPS (each group is its own vitest config, run sequentially) would
+    // get a merged report whose byFile is missing every group after the first. A file is
+    // only ever reported by the one group that owns it, so a plain accumulate is right;
+    // the += guards the pathological case of the same file appearing twice.
+    for (const [file, b] of Object.entries(run.byFile ?? {})) {
+      const bucket = (merged.byFile[file] ??= { passed: 0, failed: 0, skipped: 0, collectionFailed: false });
+      bucket.passed += b.passed;
+      bucket.failed += b.failed;
+      bucket.skipped += b.skipped;
+      if (b.collectionFailed) bucket.collectionFailed = true;
+    }
     for (const failure of run.failures) {
       if (merged.failures.length < maxFailures) merged.failures.push(failure);
       else merged.failuresTruncated = true;

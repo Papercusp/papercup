@@ -157,25 +157,45 @@ describe('validateCriterionCheckPaths / assertCriterionCheckPathsResolve', () =>
 });
 
 // ── grading-time evaluation (live-run semantics, injectable runner) ───────────
-const passRun = (files: string[]) => ({
-  ok: true,
-  runId: 'run-1',
-  root,
-  passed: 3,
-  failed: 0,
-  skipped: 0,
-  files: files.length,
-  failures: [],
-  failuresTruncated: false,
-  durationMs: 100,
+// These stubs stand in for the REAL runner, so they carry the same `byFile` per-file
+// grain a real report does (WI-39848) — the batched evaluator attributes verdicts from
+// it. Totals are DERIVED from byFile rather than hand-written beside it, so a stub can
+// never drift into an internally-inconsistent shape the real distiller could not produce.
+const totalsOf = (byFile: Record<string, { passed: number; failed: number; skipped: number; collectionFailed: boolean }>) => ({
+  passed: Object.values(byFile).reduce((n, b) => n + b.passed, 0),
+  failed: Object.values(byFile).reduce((n, b) => n + b.failed, 0),
+  skipped: Object.values(byFile).reduce((n, b) => n + b.skipped, 0),
 });
-const failRun = (files: string[]) => ({
-  ...passRun(files),
-  ok: false,
-  passed: 2,
-  failed: 1,
-  failures: [{ file: files[0], test: 'does the thing', message: 'boom' }],
-});
+const passRun = (files: string[]) => {
+  const byFile = Object.fromEntries(
+    files.map((f) => [f, { passed: 3, failed: 0, skipped: 0, collectionFailed: false }]),
+  );
+  return {
+    ok: true,
+    runId: 'run-1',
+    root,
+    ...totalsOf(byFile),
+    files: files.length,
+    failures: [],
+    failuresTruncated: false,
+    durationMs: 100,
+    byFile,
+  };
+};
+const failRun = (files: string[]) => {
+  // Only the FIRST file is red — which is also what makes this a meaningful batched
+  // fixture: a criterion naming a later file must NOT inherit this failure.
+  const byFile = Object.fromEntries(
+    files.map((f, i) => [f, { passed: i === 0 ? 2 : 3, failed: i === 0 ? 1 : 0, skipped: 0, collectionFailed: false }]),
+  );
+  return {
+    ...passRun(files),
+    ok: false,
+    ...totalsOf(byFile),
+    failures: [{ file: files[0], test: 'does the thing', message: 'boom' }],
+    byFile,
+  };
+};
 
 const CRITERIA = [
   { key: 'fuzzy', check: undefined },
