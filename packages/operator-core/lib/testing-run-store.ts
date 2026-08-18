@@ -567,6 +567,7 @@ export function distillVitestRun(
       if (!a) continue;
       if (a.status === 'failed') {
         out.failed += 1;
+        bucket.failed += 1;
         const message = (Array.isArray(a.failureMessages) ? a.failureMessages : [])
           .find((m): m is string => typeof m === 'string' && m.trim().length > 0);
         if (out.failures.length < maxFailures) {
@@ -580,8 +581,10 @@ export function distillVitestRun(
         }
       } else if (a.status === 'skipped' || a.status === 'pending' || a.status === 'todo') {
         out.skipped += 1;
+        bucket.skipped += 1;
       } else if (a.status === 'passed') {
         out.passed += 1;
+        bucket.passed += 1;
       }
     }
 
@@ -591,6 +594,8 @@ export function distillVitestRun(
     const hasFailingAssertion = asserts.some((a) => a?.status === 'failed');
     if (f.status === 'failed' && !hasFailingAssertion) {
       out.failed += 1;
+      bucket.failed += 1;
+      bucket.collectionFailed = true;
       if (out.failures.length < maxFailures) {
         out.failures.push({
           file,
