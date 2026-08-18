@@ -602,8 +602,7 @@ export async function readRetainFeed(
         console.warn('[learning.retainFeed] wi count failed:', err instanceof Error ? err.message : err);
         return null;
       }),
-      deps
-        .listRubrics()
+      listRubricsOnce()
         .then((r) => r.length)
         .catch(() => null),
       deps.countRunbooks().catch(() => null),
