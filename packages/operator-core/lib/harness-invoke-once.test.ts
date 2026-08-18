@@ -241,9 +241,25 @@ describe('applyRoleModel — per-role model override', () => {
     expect(applyRoleModel('codex exec --model gpt-5.4', 'blender')).toBe(
       'codex exec --model gpt-5.5 -c model_reasoning_effort="high"',
     );
+    // gpt-5.6-sol declares an extended window, so the command also carries the
+    // window pair (plan codex-1m-context-window-2026-08-17 P-003). The two
+    // gpt-5.5 cases above deliberately do NOT: that model's max equals its
+    // default, so there is nothing bigger to ask for.
     expect(applyRoleModel('codex exec -m gpt-5.4', 'worker')).toBe(
-      'codex exec --model gpt-5.6-sol -c model_reasoning_effort="max"',
+      'codex exec --model gpt-5.6-sol -c model_reasoning_effort="max"' +
+        ' -c model_context_window=872000 -c model_auto_compact_token_limit=784800',
     );
+  });
+
+  it('does not accumulate window overrides when re-applied to its own output (P-003)', () => {
+    vi.stubEnv('AGENT_MODELS', JSON.stringify({ worker: 'sol:max' }));
+    const once = applyRoleModel('codex exec -m gpt-5.4', 'worker');
+    expect(applyRoleModel(once, 'worker')).toBe(once);
+    expect(once.match(/model_context_window/g)).toHaveLength(1);
+    // ...and a re-apply that MOVES to a non-extended model drops the stale pair
+    // rather than leaving an 872k declaration on a 272k model.
+    vi.stubEnv('AGENT_MODELS', JSON.stringify({ worker: 'gpt-5.5:high' }));
+    expect(applyRoleModel(once, 'worker')).toBe('codex exec --model gpt-5.5 -c model_reasoning_effort="high"');
   });
 
   // EI-7138: omp takes `<model>[:<effort>]` as ONE opaque spec natively (no standalone
