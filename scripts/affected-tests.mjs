@@ -40,6 +40,11 @@ import {
 import { selectRelatedTests } from "./lib/related-tests.mjs";
 import { stripCommentsOnly } from "./lib/strip-comments-and-strings.mjs";
 import { emptySuiteGuardArgs } from "./lib/empty-suite-guard.mjs";
+import {
+  summarizeDerivation,
+  formatDerivationMarker,
+  derivationBannerLines,
+} from "./lib/changed-path-provenance.mjs";
 import { applyWorkerCapEnv } from "./lib/worker-cap.mjs";
 import {
   resolveBatchTimeoutMs,
@@ -528,16 +533,34 @@ function sh(cmd) {
 // honest without reintroducing the fatal.
 // `git ls-files --others` does not recurse into submodules, so it needs no such
 // flag. Throws on a genuine git error so the caller can decide to warn or bail.
+// EI-20812741760514969: the per-leg counts behind the derived set, recorded as it is
+// computed and reported by the AFFECTED_DERIVATION marker below. Four legs go into one
+// deduped list, and which one dominates is the whole diagnostic: a radius driven by
+// `committed` means `base` has drifted (origin/main only fast-forwards on a green
+// checkpoint, so it sits hundreds of commits behind under fleet load), while one driven by
+// `uncommitted`/`untracked` really is the shared tree's in-flight work. Collapsed to a
+// single total, the two are indistinguishable — and the filed report guessed wrong.
+let changedPathLegs = null;
+// The DEDUPED size of the derived set — recorded rather than recomputed, so the marker
+// reports the list the run actually used and cannot drift from it as the legs are unioned.
+let changedPathTotal = null;
+// Set when the git derivation FAILED and the run degraded to every workspace. The marker
+// reports that as its own source rather than as a legitimate `--all`: "we ran everything
+// because you asked" and "we ran everything because we could not tell what changed" are
+// different runs, and only the second is a bug (EI-1989's failure mode, in the log this time).
+let derivationDegraded = false;
 function changedFiles() {
   if (rangeFrom && rangeTo) {
     // P-016: two-dot range — files changed BY the commits in (rangeFrom, rangeTo]. No
     // working-tree / untracked component: we're probing a historical commit prefix for
     // the green-checkpoint salvage, not diffing the live tree.
-    return sh(
+    const inRange = sh(
       `git diff --name-only --ignore-submodules=dirty ${rangeFrom}..${rangeTo}`,
     )
       .split("\n")
       .filter(Boolean);
+    changedPathTotal = inRange.length;
+    return inRange;
   }
   const committed = sh(
     `git diff --name-only --ignore-submodules=dirty ${base}...HEAD`,
@@ -550,14 +573,18 @@ function changedFiles() {
   const untracked = sh("git ls-files --others --exclude-standard")
     .split("\n")
     .filter(Boolean);
-  return [
-    ...new Set([
-      ...committed,
-      ...uncommitted,
-      ...untracked,
-      ...submoduleDirtyPaths(),
-    ]),
+  const submoduleDirty = submoduleDirtyPaths();
+  changedPathLegs = {
+    committed: committed.length,
+    uncommitted: uncommitted.length,
+    untracked: untracked.length,
+    submoduleDirty: submoduleDirty.length,
+  };
+  const deduped = [
+    ...new Set([...committed, ...uncommitted, ...untracked, ...submoduleDirty]),
   ];
+  changedPathTotal = deduped.length;
+  return deduped;
 }
 
 // The changed-path list REPO_WIDE_INVARIANT_GUARDS matches against, memoized so
@@ -2189,6 +2216,7 @@ function affectedWorkspaces() {
       );
       errSync("!!!!!! Fix the git error above; do not rely on this fallback.");
       errSync("");
+      derivationDegraded = true;
       return [...wsByDir.values()];
     }
   }
