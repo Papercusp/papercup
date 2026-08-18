@@ -555,6 +555,54 @@ describe('sweepStalledLoops — recoverable disarm (WI-37546 sub-case B)', () =>
   });
 });
 
+describe('the DEFAULT revival candidate read carries the supersession bound (2026-08-18 incident)', () => {
+  /**
+   * The 2026-08-18 04:07:03Z sweep re-armed a loop whose owner had explicitly re-armed at
+   * 00:18:52Z — superseding the 2026-08-17T21:07:03Z turn-stalled disarm — and then explicitly
+   * `loop:end`'d at 03:44:18Z under a fleet stand-down. The candidate SQL matched the row anyway:
+   * `loop_paused_reason`/`pause` are deliberately sticky (see the census test below), and nothing
+   * compared the pause instant against `armed_at`, so the pass "compensated" a disarm the owner
+   * had already compensated and undid an explicit owner `loop:end`.
+   *
+   * Same proof budget as the census test: this inspects the STATEMENT the default reader issues,
+   * not a database. It pins the `armed_at`-vs-pause comparison into the query text, so removing
+   * the bound breaks a named test instead of silently resurrecting explicitly-ended loops again.
+   */
+  it('selects only rows NOT armed since the pause instant it would compensate', async () => {
+    const statements: string[] = [];
+    const captureSql = ((strings: TemplateStringsArray) => {
+      statements.push(strings.join(' ? '));
+      return Promise.resolve([]);
+    }) as never;
+
+    await sweepStalledLoops(
+      { sql: captureSql, workspaceId: 'ws' },
+      {
+        probeReachability: reach(false),
+        broadcast: vi.fn<BroadcastFn>(async () => true),
+        notify: vi.fn<NotifyFn>(async () => {}),
+        getStatuses: vi.fn(async () => new Map<string, LoopStatus>()),
+        autoPause: vi.fn<AutoPauseFn>(async () => {}),
+        readOwnerToolActivity: noActivity(),
+        // readRevivableLoops deliberately NOT injected: the DEFAULT reader's SQL is the subject.
+      },
+    );
+
+    // Exactly one statement in the sweep selects on the disarm-reason prefix: the revival read.
+    const revivalReads = statements.filter((s) => s.includes('loop_paused_reason'));
+    expect(revivalReads).toHaveLength(1);
+    const revivalSql = revivalReads[0];
+    // The supersession bound, by its moving parts: the stamp every arm writes, compared against
+    // the pause instant the revival would compensate, with absence failing toward revival.
+    expect(revivalSql).toContain(`'armed_at'`);
+    expect(revivalSql).toContain('to_timestamp');
+    expect(revivalSql).toContain(`'-infinity'`);
+    // And the pre-existing bounds are still in the same statement, not displaced by the new one.
+    expect(revivalSql).toContain('loop_revived_count');
+    expect(revivalSql).toContain('active = false');
+  });
+});
+
 describe('reviveDisarmedLoop must not blind the census that judges it (WI-37546, peer review 56734)', () => {
   /**
    * The first draft of this write cleared `pause` and `loop_paused_reason` as "no longer true".

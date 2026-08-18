@@ -143,11 +143,14 @@
  * has since made progressing tool calls, is re-armed. The disarm becomes a pause with a
  * condition instead of a one-way door — which is what a wrong verdict is allowed to be.
  *
- * The revival is bounded on three axes so it cannot become a resurrection engine: only rows
+ * The revival is bounded on four axes so it cannot become a resurrection engine: only rows
  * carrying THIS module's own turns-stalled pause reason (never the `dead-owner` path, never a
- * cost-cap or dead-man pause), only inside `REVIVE_WINDOW_MS`, and only `MAX_REVIVALS` times per
+ * cost-cap or dead-man pause), only inside `REVIVE_WINDOW_MS`, only `MAX_REVIVALS` times per
  * loop — a loop that keeps needing revival is a real fault, and the ratchet is what makes it
- * stay down and stay visible rather than flapping.
+ * stay down and stay visible rather than flapping — and only while this module's disarm is still
+ * the transition that put the loop down: a row armed AFTER the pause instant was superseded by
+ * its owner (re-arm, and possibly an explicit `loop:end` after that), and reviving it would undo
+ * an owner decision rather than correct this module's own wrong verdict.
  */
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
@@ -572,7 +575,21 @@ export async function sweepStalledLoops(
     });
   // WI-37546 — the revival candidate set. Every bound lives in SQL: this module's OWN
   // turns-stalled pause reason (never `dead-owner`, never a cost-cap/dead-man pause), inside the
-  // revival window, under the revival ceiling.
+  // revival window, under the revival ceiling, and — the supersession bound — only while this
+  // module's disarm is still the transition that put the row down.
+  //
+  // The supersession bound exists because `loop_paused_reason`/`pause` are deliberately sticky
+  // (reviveDisarmedLoop must never clear them — see its doc), so a row that was disarmed here,
+  // explicitly RE-ARMED by its owner, and then explicitly ENDED by its owner (`loop:end`) matches
+  // every other predicate again: `active = false` with this module's stale pause residue. Reviving
+  // it "compensates" a disarm the owner already compensated, and undoes an owner decision this
+  // module has no mandate over — measured live 2026-08-18: the 04:07:03Z sweep re-armed a loop
+  // whose owner had re-armed at 00:18:52Z and loop:end'd at 03:44:18Z under a fleet stand-down.
+  // `armed_at` is stamped on EVERY arm (stampLoopArmedAt), so `armed_at` newer than the pause
+  // instant proves the disarm was superseded; an explicit `loop:end` can only follow a re-arm
+  // (ending an inactive loop is a no-op), so this one comparison also covers the end-after-re-arm
+  // case. An absent `armed_at` reads as '-infinity' — failing toward revival, the module's
+  // designed direction for uncertain reads.
   const readRevivableLoops =
     deps.readRevivableLoops ??
     (async (o: { sql: Sql; workspaceId: string; pausedAfterMs: number; maxRevivals: number }) => {
@@ -591,6 +608,8 @@ export async function sweepStalledLoops(
            AND metadata->>'loop_paused_reason' LIKE ${TURN_STALLED_PAUSE_PREFIX + '%'}
            AND (metadata->'pause'->>'pausedAtMs')::bigint >= ${o.pausedAfterMs}
            AND COALESCE((metadata->>'loop_revived_count')::int, 0) < ${o.maxRevivals}
+           AND COALESCE((metadata->>'armed_at')::timestamptz, '-infinity'::timestamptz)
+               < to_timestamp(((metadata->'pause'->>'pausedAtMs')::bigint) / 1000.0)
       `;
       return rows
         .filter((r) => typeof r?.target_owner_id === 'string' && r.target_owner_id.length > 0)
