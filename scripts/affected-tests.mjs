@@ -44,7 +44,7 @@ import { applyWorkerCapEnv } from "./lib/worker-cap.mjs";
 import {
   resolveBatchTimeoutMs,
   resolveTaskTimeoutMs,
-  decideWatchdogExpiry,
+  createProgressAwareWatchdog,
   isWatchdogTimeout,
   killSpawnedProcessTree,
   parseBatchProgress,
@@ -3036,7 +3036,7 @@ function runCapturedTask(
           // Reported so a log reader is never left computing a kill against a bound that
           // no longer applied. green-checkpoint consumes this line by prefix, so the
           // trailing field is additive.
-          `watchdogDeadlineMs=${watchdogDeadlineMs}`,
+          `watchdogDeadlineMs=${watchdog.deadlineMs}`,
       );
     };
     // EI-20803703725014949: the deadline is a CHECKPOINT, not a verdict. A synchronous
@@ -3050,36 +3050,19 @@ function runCapturedTask(
     // Policy + its two safety properties (MONOTONE — never kills earlier than the time-only
     // watchdog did; BOUNDED — extensions stop at BATCH_TIMEOUT_MAX_MS, under the ~120m gate
     // ceiling) live in decideWatchdogExpiry, unit-tested with these measured numbers.
-    let lastProgressAtMs = Date.now();
-    let watchdogDeadlineMs = taskTimeoutMs;
-    let watchdogKillReason = null;
-    let watchdogTimer = null;
-    const onWatchdogExpiry = () => {
-      if (settled) return;
-      const elapsedMs = Date.now() - startedAt;
-      const decision = decideWatchdogExpiry({
-        elapsedMs,
-        lastProgressAgeMs: Date.now() - lastProgressAtMs,
-        maxMs: BATCH_TIMEOUT_MAX_MS,
-        stallWindowMs: BATCH_TIMEOUT_QUANTUM_MS,
-        extensionMs: BATCH_TIMEOUT_QUANTUM_MS,
-      });
-      if (decision.action === "extend") {
-        watchdogDeadlineMs = elapsedMs + decision.extendByMs;
-        emitProgress("watchdog-extended");
-        armWatchdog(decision.extendByMs);
-        return;
-      }
-      watchdogTimedOut = true;
-      watchdogKillReason = decision.reason;
-      emitProgress("watchdog-firing");
-      killSpawnedProcessTree(child, BATCH_KILL_SIGNAL);
-    };
-    const armWatchdog = (delayMs) => {
-      watchdogTimer = setTimeout(onWatchdogExpiry, delayMs);
-      watchdogTimer.unref?.();
-    };
-    armWatchdog(taskTimeoutMs);
+    const watchdog = createProgressAwareWatchdog({
+      timeoutMs: taskTimeoutMs,
+      maxMs: BATCH_TIMEOUT_MAX_MS,
+      stallWindowMs: BATCH_TIMEOUT_QUANTUM_MS,
+      extensionMs: BATCH_TIMEOUT_QUANTUM_MS,
+      onExtend: () => emitProgress("watchdog-extended"),
+      onKill: () => {
+        if (settled) return;
+        watchdogTimedOut = true;
+        emitProgress("watchdog-firing");
+        killSpawnedProcessTree(child, BATCH_KILL_SIGNAL);
+      },
+    });
     let progressTimer = null;
     const scheduleProgress = () => {
       progressTimer = setTimeout(() => {
@@ -3095,7 +3078,7 @@ function runCapturedTask(
       capturedBytes += chunk.length;
       // The live forward-progress reading the watchdog consults at its deadline. Bytes
       // arriving IS progress: a synchronously-spinning worker cannot emit any.
-      lastProgressAtMs = Date.now();
+      watchdog.noteProgress();
       if (capturedBytes <= MAX_CAPTURE_BYTES) {
         chunks.push(chunk);
       } else if (!captureError) {
@@ -3140,8 +3123,8 @@ function runCapturedTask(
         __timeoutSource: taskTimeoutSource,
         __durationEstimateMs: taskDurationMs,
         __watchdogTimedOut: watchdogTimedOut,
-        __watchdogDeadlineMs: watchdogDeadlineMs,
-        __watchdogKillReason: watchdogKillReason,
+        __watchdogDeadlineMs: watchdog.deadlineMs,
+        __watchdogKillReason: watchdog.killReason,
         ...(cacheDecision
           ? {
               __cacheStatus: "miss",

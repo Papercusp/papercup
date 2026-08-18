@@ -149,6 +149,93 @@ export function decideWatchdogExpiry({
 }
 
 /**
+ * The re-arming watchdog itself, with its clock and timer injected.
+ *
+ * This lives here rather than inline in `affected-tests.mjs` for the reason this
+ * module's header already gives: a timer that, by construction, only does anything
+ * once the gate is already red cannot be covered by a source-text assertion. With
+ * `now`/`setTimer` injected, the whole extend-then-kill sequence is exercised with
+ * real objects and no wall-clock wait.
+ *
+ * `noteProgress()` is the forward-progress signal — the caller calls it when child
+ * output arrives, because a synchronously-spinning worker cannot emit any.
+ *
+ * @param {{ timeoutMs: number, maxMs: number, stallWindowMs?: number, extensionMs?: number,
+ *   now?: () => number, setTimer?: (fn: () => void, ms: number) => any,
+ *   clearTimer?: (handle: any) => void,
+ *   onExtend?: (decision: ReturnType<typeof decideWatchdogExpiry>) => void,
+ *   onKill?: (decision: ReturnType<typeof decideWatchdogExpiry>) => void }} opts
+ */
+export function createProgressAwareWatchdog({
+  timeoutMs,
+  maxMs,
+  stallWindowMs,
+  extensionMs,
+  now = () => Date.now(),
+  setTimer = (fn, ms) => setTimeout(fn, ms),
+  clearTimer = (handle) => clearTimeout(handle),
+  onExtend = () => {},
+  onKill = () => {},
+}) {
+  const startedAt = now();
+  let lastProgressAt = startedAt;
+  let handle = null;
+  let deadlineMs = timeoutMs;
+  let killReason = null;
+  let extensions = 0;
+  let stopped = false;
+
+  const arm = (delayMs) => {
+    handle = setTimer(expire, delayMs);
+    handle?.unref?.();
+  };
+
+  function expire() {
+    if (stopped) return;
+    const elapsedMs = now() - startedAt;
+    const decision = decideWatchdogExpiry({
+      elapsedMs,
+      lastProgressAgeMs: now() - lastProgressAt,
+      maxMs,
+      stallWindowMs,
+      extensionMs,
+    });
+    if (decision.action === 'extend') {
+      extensions += 1;
+      deadlineMs = elapsedMs + decision.extendByMs;
+      onExtend(decision);
+      arm(decision.extendByMs);
+      return;
+    }
+    killReason = decision.reason;
+    onKill(decision);
+  }
+
+  arm(timeoutMs);
+
+  return {
+    /** Child output arrived: forward progress is real. */
+    noteProgress() {
+      lastProgressAt = now();
+    },
+    /** The task settled on its own; the watchdog must not fire afterwards. */
+    stop() {
+      stopped = true;
+      if (handle != null) clearTimer(handle);
+    },
+    get deadlineMs() {
+      return deadlineMs;
+    },
+    get killReason() {
+      return killReason;
+    },
+    get extensions() {
+      return extensions;
+    },
+  };
+}
+
+/**
  * Did THIS `spawnSync` result come from our own batch-level watchdog kill,
  * rather than the child's own normal exit or an unrelated external signal
  * (an operator's manual kill, the kernel OOM killer — both can also send
