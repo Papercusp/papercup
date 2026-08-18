@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, beforeAll } from 'vitest';
 
 /**
  * adv-roster-read — the read deadline on the Sessions roster fan-out (WI-39825).
@@ -41,13 +41,36 @@ vi.mock('../adv-roster', () => ({
   dedupeStartingAgainstActive: (starting: unknown) => starting,
 }));
 
-vi.mock('../adv-sessions', () => ({
+// Spread the real module rather than enumerating the three legs this file drives.
+// A bare `() => ({ ... })` factory lists only the exports the subject imports
+// TODAY, so the next export added to adv-sessions (45 and counting) strands this
+// file and reds the fleet gate hours later, in a file its author never touched.
+// That is WI-7185/WI-7187, and this file was the 28th occurrence; the spread form
+// is immune BY CONSTRUCTION and `lint:full-replacement-mocks` enforces it here.
+vi.mock('../adv-sessions', async (orig) => ({
+  ...(await orig<typeof import('../adv-sessions')>()),
   listEndedAdvSessions: (...a: unknown[]) => listEndedAdvSessions(...a),
   listPendingWorkbenchLaunches: (...a: unknown[]) => listPendingWorkbenchLaunches(...a),
   listStartingTerminalLaunches: (...a: unknown[]) => listStartingTerminalLaunches(...a),
 }));
 
 import { readAdvRoster, ROSTER_READ_BUDGET_MS } from './adv-roster-read';
+
+/**
+ * Pay the real `../adv-sessions` module-load cost ONCE, outside any timed window.
+ *
+ * The mock above spreads the real module, and adv-sessions is ~96KB that pulls in
+ * `@papercusp/db-org` — a multi-second first import. Every deadline case below
+ * races a millisecond-scale budget against a 120-500ms observation window, so if
+ * that load lands inside the first timed case it eats the whole window and the
+ * case reports `pending` — i.e. a PASSING deadline reads as a broken one. Warming
+ * it here moves a fixed setup cost out of the measurement, and changes nothing
+ * about what is measured: the budgets, the windows and the assertions are
+ * untouched. Without this, the spread form and these timings cannot coexist.
+ */
+beforeAll(async () => {
+  await import('../adv-sessions');
+}, 60_000);
 
 beforeEach(() => {
   mergeRosterWithAssignments.mockReset().mockResolvedValue({ active: [], orphanedClaims: [] });
