@@ -27,7 +27,9 @@ import {
   resolveImplementationPaths,
   selectGuardScripts,
   ACKNOWLEDGED_UNREACHABLE,
+  ACKNOWLEDGED_UNGATEABLE,
   UNREACHABLE_HIGH_WATERMARK,
+  sharedImplementationPaths,
   ENFORCING_TEST_RE,
   stripComments,
   computeCoverage,
@@ -53,6 +55,152 @@ const corpora = (over: Partial<Record<string, string>> = {}) => ({
   hook: '',
   'logic-test': '',
   ...over,
+});
+
+/* ── the `test` tier takes EXECUTION evidence, not a mention (WI-39832) ────────
+ *
+ * The corpus for this tier is 424 *.test.ts files concatenated. Tests are the most
+ * prose-dense code in the repo and they name guards for every reason EXCEPT running
+ * them — so the substring match that is correct for `gate`/`ci` (config that runs a
+ * guard by npm name) manufactures enforcement here.
+ *
+ * All three fixtures below are transcribed from real credits measured on the live
+ * tree; the first is the one worth remembering, because the evidence did not merely
+ * fail to prove enforcement — it asserted the OPPOSITE.
+ */
+describe('classifyGuard — the `test` tier takes EXECUTION evidence only', () => {
+  const cmd = 'node scripts/check-x.mjs';
+
+  it('does NOT credit a guard named only to assert it is NOT run', () => {
+    // VERBATIM SHAPE of green-checkpoint.test.ts's `NEVER gates lint:cell-matrix` case.
+    // That assertion exists to keep the guard OUT of the gate (it needs live operators);
+    // the census read it as proof something runs it, and reported the guard ENFORCED for
+    // ~2 weeks. A padlock scored as a running engine.
+    const r = classifyGuard({
+      name: 'lint:x',
+      command: cmd,
+      corpora: corpora({ test: 'expect(scripts, "must not gate").not.toContain("lint:x");' }),
+    });
+    expect(r.tiers).not.toContain('test');
+    expect(r.blocking).toBe(false);
+  });
+
+  it('does NOT credit a guard named only in a fixture string', () => {
+    // Measured: `lint:plane-adoption` was credited off a fixture literal inside THIS
+    // checker's own test file. A census that counts its own fixtures is measuring itself.
+    const r = classifyGuard({
+      name: 'lint:x',
+      command: cmd,
+      corpora: corpora({ test: `const src = "{ script: 'lint:x', label: 'PROBE' },";` }),
+    });
+    expect(r.tiers).not.toContain('test');
+  });
+
+  it('does NOT credit a guard off a SHARED runner path that names no guard in particular', () => {
+    // `scripts/test-files.mjs` is the implementation of lint:tool-prompts, lint:plane-guards
+    // AND lint:design-primitives, so any test naming that runner credited all three.
+    const shared = sharedImplementationPaths({
+      'lint:x': 'node scripts/test-files.mjs a.test.ts',
+      'lint:y': 'node scripts/test-files.mjs b.test.ts',
+    });
+    expect(shared).toContain('scripts/test-files.mjs');
+
+    const r = classifyGuard({
+      name: 'lint:x',
+      command: 'node scripts/test-files.mjs a.test.ts',
+      corpora: corpora({ test: "spawnSync('node', ['scripts/test-files.mjs'])" }),
+      sharedImpls: shared,
+    });
+    expect(r.tiers).not.toContain('test');
+  });
+
+  it('DOES credit a test that runs the guard by its own implementation path', () => {
+    const r = classifyGuard({
+      name: 'lint:x',
+      command: cmd,
+      corpora: corpora({ test: "execFileSync('node', ['scripts/check-x.mjs'], { cwd: REPO_ROOT })" }),
+    });
+    expect(r.tiers).toContain('test');
+    expect(r.blocking).toBe(true);
+  });
+
+  it('DOES credit a test that runs the guard by npm name, including argv spelling', () => {
+    for (const invocation of ["npm run lint:x", "spawnSync('npm', ['run', 'lint:x'])"]) {
+      const r = classifyGuard({ name: 'lint:x', command: cmd, corpora: corpora({ test: invocation }) });
+      expect(r.tiers, invocation).toContain('test');
+    }
+  });
+
+  it('does not let a LONGER guard name credit its own prefix', () => {
+    // `lint:no-retired` is a prefix of `lint:no-retired-resurrection` and both are real.
+    const r = classifyGuard({
+      name: 'lint:x',
+      command: 'node scripts/check-x.mjs',
+      corpora: corpora({ test: 'npm run lint:x-extended' }),
+    });
+    expect(r.tiers).not.toContain('test');
+  });
+
+  it('leaves the gate/ci/hook tiers matching by NAME — there a mention IS the evidence', () => {
+    // The asymmetry is the whole design: narrowing these too would report every
+    // gate-run guard as unenforced, which is the false positive that red-pins a fleet.
+    for (const tier of ['gate', 'ci', 'hook'] as const) {
+      const r = classifyGuard({ name: 'lint:x', command: cmd, corpora: corpora({ [tier]: "'lint:x'" }) });
+      expect(r.tiers, tier).toContain(tier);
+    }
+  });
+
+  it('CONTROL: the OLD rule credits every fixture above — that gap is the bug', () => {
+    // Kept permanently. Without it the six assertions above would also pass against a
+    // classifier that credits NOTHING, and would silently stop testing anything.
+    const creditsAnyMention = (text: string, name: string, impls: string[]) =>
+      text.includes(name) || impls.some((p) => text.includes(p));
+
+    expect(creditsAnyMention('expect(scripts).not.toContain("lint:x");', 'lint:x', [])).toBe(true);
+    expect(creditsAnyMention(`const src = "{ script: 'lint:x' }";`, 'lint:x', [])).toBe(true);
+    expect(
+      creditsAnyMention("spawnSync('node', ['scripts/test-files.mjs'])", 'lint:x', ['scripts/test-files.mjs']),
+    ).toBe(true);
+  });
+
+  it('CALIBRATION: per-file attribution alone would NOT have fixed this', () => {
+    // The obvious remedy — stop concatenating the corpus, attribute per file — measured
+    // ZERO revoked credits on the live tree: the enforcing marker and the mention already
+    // co-occur in the same file. Pinned so nobody re-derives the wrong fix. Here the ONE
+    // file both matches ENFORCING_TEST_RE and names the guard, and it still must not count.
+    const oneFile = 'const r = spawnSync(BIN, [], { cwd: REPO_ROOT });\nexpect(legs).not.toContain("lint:x");';
+    expect(ENFORCING_TEST_RE.test(oneFile)).toBe(true);
+    expect(oneFile.includes('lint:x')).toBe(true);
+
+    const r = classifyGuard({ name: 'lint:x', command: cmd, corpora: corpora({ test: oneFile }) });
+    expect(r.tiers).not.toContain('test');
+  });
+});
+
+describe('ACKNOWLEDGED_UNGATEABLE — a population the watermark must not ration', () => {
+  it('is disjoint from the shrink-only debt set', () => {
+    // An entry in both would be counted as debt AND excused as by-design — the shape that
+    // lets a permanent exclusion quietly consume a debt slot.
+    for (const name of ACKNOWLEDGED_UNGATEABLE.keys()) {
+      expect(ACKNOWLEDGED_UNREACHABLE.has(name), name).toBe(false);
+    }
+  });
+
+  it('does not spend the debt ceiling', () => {
+    // The guarantee that matters: adding a by-design exclusion must never make the NEXT
+    // real debt entry fail the watermark.
+    expect(ACKNOWLEDGED_UNREACHABLE.size).toBeLessThanOrEqual(UNREACHABLE_HIGH_WATERMARK);
+    expect(ACKNOWLEDGED_UNREACHABLE.size + ACKNOWLEDGED_UNGATEABLE.size).toBeGreaterThan(
+      ACKNOWLEDGED_UNREACHABLE.size,
+    );
+  });
+
+  it('gives every entry a reason naming why RUNNING it in the gate is unsound', () => {
+    // Cost is never a reason to sit here (that is the wire-or-retire probe's job).
+    for (const [name, reason] of ACKNOWLEDGED_UNGATEABLE) {
+      expect(reason, name).toMatch(/design|live|operator|checkpoint tree/i);
+    }
+  });
 });
 
 describe('selectGuardScripts', () => {
