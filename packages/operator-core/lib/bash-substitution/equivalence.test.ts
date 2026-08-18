@@ -239,9 +239,12 @@ describe('file-read pattern boundaries', () => {
    * against the tool's envelope, not assumed — so bash remains the correct answer
    * and blocking it would be the D-001 harm the registry exists to prevent.
    */
-  it('never lets a DENY row claim a form that has no tool expression', () => {
-    const denyPairs = FILE_READ_PAIRS.filter((p) => p.policyTier === 'deny');
-    expect(denyPairs.length).toBe(4);
+  it('never lets an ENFORCED row claim a form that has no tool expression', () => {
+    // Every ENFORCED row, not just the denying ones: the property must hold at
+    // whatever tier the family currently sits at, so that restoring `deny` is a
+    // one-line change rather than a change that also needs new coverage.
+    const enforced = FILE_READ_PAIRS.filter((p) => p.policyTier !== undefined);
+    expect(enforced.length).toBe(4);
 
     const unexpressible: Array<[string, string]> = [
       ['tail -f /tmp/run.log', 'streaming follow — capability:read has no streaming form'],
@@ -262,9 +265,36 @@ describe('file-read pattern boundaries', () => {
     ];
 
     for (const [atom, why] of unexpressible) {
-      for (const pair of denyPairs) {
+      for (const pair of enforced) {
         expect(claims(pair, atom), `${pair.id} would BLOCK \`${atom}\` — ${why}`).toBe(false);
       }
+    }
+  });
+
+  /**
+   * THE CASE THIS GUARD MISSED, kept as a standing reminder of the shape of the
+   * miss rather than only of the miss itself.
+   *
+   * Every entry in the list above is a BARE atom, so the whole pipeline class was
+   * invisible to it: `atomize` splits `cat FILE | grep X` into stages and the
+   * pattern only ever sees `cat FILE`, which it legitimately claims. At `advise`
+   * that is a slightly-off suggestion; at `deny` it hard-fails a command whose
+   * advised replacement returns a numbered, headed, paged rendering rather than
+   * the raw stdout the next stage consumes.
+   *
+   * This test therefore asserts the CURRENT, honest behaviour — the atom IS
+   * claimed — so that it reads as documentation of a known hole rather than as
+   * an aspiration. Whoever excludes piped stages should invert these to `false`
+   * and move them into the list above; the tier can be restored to `deny` in the
+   * same change, and not before.
+   */
+  it('DOES still claim a piped stage — the known hole holding the tier at advise', () => {
+    expect(claims(catFileRead, 'cat package.json')).toBe(true);
+    expect(claims(headFileRead, 'head -n 5 package.json')).toBe(true);
+    for (const pair of FILE_READ_PAIRS) {
+      expect(pair.policyTier, `${pair.id} must not sit at deny while the pipeline hole is open`).not.toBe(
+        'deny',
+      );
     }
   });
 
@@ -1200,7 +1230,14 @@ describe('policy tier authorization', () => {
     expect(sedRangeRead.intentLabel.startsWith(POLICY_INTENT_PREFIX)).toBe(false);
     expect(sedRangeRead.expectedVerdict).toBe('equivalent');
     expect(sedRangeRead.policyAuthority?.ref).toMatch(/#D-\d+$/);
-    expect(assertPolicyTier(sedRangeRead)).toBe('deny');
+    // Whatever tier the pair currently declares, the citation is what authorizes
+    // it — asserted against the declared value rather than a hardcoded one, so
+    // this stays a test of the ROUTE and not of today's rollout state.
+    expect(assertPolicyTier(sedRangeRead)).toBe(sedRangeRead.policyTier);
+    // …and `deny` specifically is REACHABLE by this route. That is the claim the
+    // guard change actually made, and it must keep holding while the file-read
+    // family sits at the lower tier for the pipeline hole.
+    expect(assertPolicyTier({ ...sedRangeRead, policyTier: 'deny' })).toBe('deny');
   });
 
   it('refuses a citation that does not resolve to anything', () => {
