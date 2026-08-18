@@ -170,11 +170,14 @@ describe('scorecards:emit vetting stamp (P-004)', () => {
   });
 
   it('refuses a consult that has no consult_state row (dangling link)', async () => {
-    consultStateExists.mockResolvedValue(false);
+    readVettingConsultCritique.mockResolvedValue(
+      critique({ exists: false, state: null, critiquePosts: 0, critics: [] }),
+    );
     const res = await emitScorecard(vettingArgs() as never, EMIT_INPUT);
     expect(res.ok).toBe(false);
     if (res.ok) throw new Error('expected refusal');
     expect(res.error).toContain('conv-vet-1');
+    expect(res.error).toContain('not found in consult_state');
     expect(captureImprovement).not.toHaveBeenCalled();
   });
 
@@ -185,7 +188,129 @@ describe('scorecards:emit vetting stamp (P-004)', () => {
     const payload = captureImprovement.mock.calls[0][0] as {
       payloadExtra: { observation: { vetting?: Record<string, unknown> } };
     };
-    expect(payload.payloadExtra.observation.vetting).toEqual({ consultId: 'conv-vet-1' });
+    expect(payload.payloadExtra.observation.vetting).toEqual({
+      consultId: 'conv-vet-1',
+      critiquePosts: 2,
+      critics: ['su-reviewer'],
+    });
+  });
+
+  // ── EI-20821478338037350: the gate must require CRITIQUE, not a consult ROW ──
+
+  it('REFUSES an existing consult that nobody has replied to — the vacuous-green hole', async () => {
+    readVettingConsultCritique.mockResolvedValue(
+      critique({ state: 'awaiting_responder', critiquePosts: 0, critics: [] }),
+    );
+    const res = await emitScorecard(vettingArgs() as never, EMIT_INPUT);
+    expect(res.ok).toBe(false);
+    if (res.ok) throw new Error('expected refusal');
+    expect(res.error).toContain('NO critique');
+    expect(res.error).toContain('nobody has replied yet');
+    expect(res.error).toContain('awaiting_responder');
+    // The refusal must name the waiver, or an author with no reviewer has no legal move.
+    expect(res.error).toContain('vettingUnanswered');
+    expect(captureImprovement).not.toHaveBeenCalled();
+  });
+
+  it('distinguishes "everyone declined" from "nobody replied" — the remedies differ', async () => {
+    readVettingConsultCritique.mockResolvedValue(
+      critique({ state: 'declined', critiquePosts: 0, declinePosts: 3, critics: [] }),
+    );
+    const res = await emitScorecard(vettingArgs() as never, EMIT_INPUT);
+    expect(res.ok).toBe(false);
+    if (res.ok) throw new Error('expected refusal');
+    expect(res.error).toContain('DECLINED');
+    expect(res.error).toContain('re-route');
+    expect(res.error).not.toContain('nobody has replied yet');
+  });
+
+  it('accepts an EXPLICIT waiver and stamps it visibly (unanswered + reason) rather than passing silently', async () => {
+    readVettingConsultCritique.mockResolvedValue(
+      critique({ state: 'expired', critiquePosts: 0, critics: [] }),
+    );
+    const res = await emitScorecard(
+      vettingArgs({
+        vettingUnanswered: true,
+        vettingUnansweredReason: 'all 3 routed reviewers ended; consult expired 19:54Z with 0 posts',
+      }) as never,
+      EMIT_INPUT,
+    );
+    expect(res.ok).toBe(true);
+    const payload = captureImprovement.mock.calls[0][0] as {
+      payloadExtra: { observation: { vetting?: Record<string, unknown> } };
+    };
+    expect(payload.payloadExtra.observation.vetting).toEqual({
+      consultId: 'conv-vet-1',
+      rubricRevision: 7,
+      critiquePosts: 0,
+      unanswered: true,
+      unansweredReason: 'all 3 routed reviewers ended; consult expired 19:54Z with 0 posts',
+    });
+  });
+
+  it('refuses a waiver with no reason — an unexplained waiver is the silent pass again', async () => {
+    readVettingConsultCritique.mockResolvedValue(critique({ critiquePosts: 0, critics: [] }));
+    const res = await emitScorecard(vettingArgs({ vettingUnanswered: true }) as never, EMIT_INPUT);
+    expect(res.ok).toBe(false);
+    if (res.ok) throw new Error('expected refusal');
+    expect(res.error).toContain('vettingUnansweredReason');
+    expect(captureImprovement).not.toHaveBeenCalled();
+  });
+
+  it('refuses a waiver when the consult DID receive critique — it cannot be passed reflexively', async () => {
+    const res = await emitScorecard(
+      vettingArgs({
+        vettingUnanswered: true,
+        vettingUnansweredReason: 'claiming nobody replied even though two reviewers did',
+      }) as never,
+      EMIT_INPUT,
+    );
+    expect(res.ok).toBe(false);
+    if (res.ok) throw new Error('expected refusal');
+    expect(res.error).toContain('DID receive critique');
+    expect(res.error).toContain('su-reviewer');
+    expect(captureImprovement).not.toHaveBeenCalled();
+  });
+
+  it('CONTROL (falsifiability): a consult with critique is NOT refused — the guard rejects absence, not everything', async () => {
+    // Pins that the four refusals above fire on the no-critique condition itself.
+    // Without this, a predicate hard-wired to `false` would pass every one of them.
+    readVettingConsultCritique.mockResolvedValue(critique({ critiquePosts: 1, critics: ['su-x'] }));
+    const res = await emitScorecard(vettingArgs() as never, EMIT_INPUT);
+    expect(res.ok).toBe(true);
+    expect(captureImprovement).toHaveBeenCalledTimes(1);
+  });
+
+  it('a re-emit that upgrades a WAIVED stamp to a real critiqued one is a vetting change, not unchanged-evidence', async () => {
+    // Identical rubricRef + ratings + consult + revision: only `unanswered` moves.
+    // Without unanswered in vettingChanged, the recorded waiver would be stuck forever.
+    const fingerprint = scorecardEvidenceFingerprint({
+      rubricRef: 'meta-acceptance-rubric',
+      ratings: META_RATINGS,
+    });
+    listScorecards.mockResolvedValue([
+      {
+        issueId: 'EI-prior',
+        createdAt: '2026-08-17T01:00:00Z',
+        createdBy: 'su-author',
+        rubricRef: 'meta-acceptance-rubric',
+        ratings: META_RATINGS,
+        nKeys: 2,
+        missingKeys: [],
+        extraKeys: [],
+        rubricResolved: true,
+        evidenceFingerprint: fingerprint,
+        synthesized: false,
+        score10: 10,
+        linkedItems: [],
+        vetting: { consultId: 'conv-vet-1', rubricRevision: 7, critiquePosts: 0, unanswered: true },
+      },
+    ]);
+    const res = await emitScorecard(vettingArgs() as never, EMIT_INPUT);
+    expect(res.ok).toBe(true);
+    if (!res.ok) throw new Error('expected ok');
+    expect((res as { reason?: string }).reason).not.toBe('unchanged-evidence');
+    expect(captureImprovement).toHaveBeenCalledTimes(1);
   });
 
   it('a re-emit that only moves the vetting stamp to a NEW revision is the re-vetting step, not unchanged-evidence', async () => {
