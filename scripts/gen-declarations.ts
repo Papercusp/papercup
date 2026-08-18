@@ -167,7 +167,8 @@ function check(): void {
       console.error(
         `\nEdit the .d.mts to match its .mjs. (Do NOT "fix" this by adding the module to\n` +
           `${CONFIG} — for these modules generation emits a WEAKER type than the\n` +
-          `hand-written declaration; see exportParityProblems() in this file.)`,
+          `hand-written declaration; the measurement is in the header of\n` +
+          `scripts/lib/declaration-export-parity.ts.)`,
       );
       process.exit(1);
     }
