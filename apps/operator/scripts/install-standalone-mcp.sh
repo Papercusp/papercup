@@ -1589,70 +1589,27 @@ if [ -f "${CC_HOOK_SRC_DIR}/pretooluse-locks-acquire.sh" ]; then
     cp "${CC_HOOK_SRC_DIR}/pc_tty.py" "${CC_HOOK_DEST_DIR}/pc_tty.py"
     chmod 644 "${CC_HOOK_DEST_DIR}/pc_tty.py"
   fi
-  if [ -f "${CC_HOOK_SRC_DIR}/statusline-fleet.sh" ]; then
-    cp "${CC_HOOK_SRC_DIR}/statusline-fleet.sh" "$CC_STATUSLINE"
-    chmod 755 "$CC_STATUSLINE"
-  fi
-  if [ -f "${CC_HOOK_SRC_DIR}/posttooluse-objective-title.sh" ]; then
-    cp "${CC_HOOK_SRC_DIR}/posttooluse-objective-title.sh" "$CC_OBJECTIVE_HOOK"
-    chmod 755 "$CC_OBJECTIVE_HOOK"
-  fi
-  if [ -f "${CC_HOOK_SRC_DIR}/pretooluse-bash-resource-gate.sh" ]; then
-    cp "${CC_HOOK_SRC_DIR}/pretooluse-bash-resource-gate.sh" "$CC_BASH_GATE_HOOK"
-    chmod 755 "$CC_BASH_GATE_HOOK"
-  fi
-  if [ -f "${CC_HOOK_SRC_DIR}/pretooluse-plans-read-guard.sh" ]; then
-    cp "${CC_HOOK_SRC_DIR}/pretooluse-plans-read-guard.sh" "$CC_PLANS_GUARD_HOOK"
-    chmod 755 "$CC_PLANS_GUARD_HOOK"
-  fi
-  if [ -f "${CC_HOOK_SRC_DIR}/workitem-verify-nudge.sh" ]; then
-    cp "${CC_HOOK_SRC_DIR}/workitem-verify-nudge.sh" "$CC_WORKITEM_NUDGE_HOOK"
-    chmod 755 "$CC_WORKITEM_NUDGE_HOOK"
-  fi
-  if [ -f "${CC_HOOK_SRC_DIR}/userpromptsubmit-provenance.sh" ]; then
-    cp "${CC_HOOK_SRC_DIR}/userpromptsubmit-provenance.sh" "$CC_PROVENANCE_HOOK"
-    chmod 755 "$CC_PROVENANCE_HOOK"
-  fi
-  if [ -f "${CC_HOOK_SRC_DIR}/userpromptsubmit-memory.sh" ]; then
-    cp "${CC_HOOK_SRC_DIR}/userpromptsubmit-memory.sh" "$CC_TURN_MEMORY_HOOK"
-    chmod 755 "$CC_TURN_MEMORY_HOOK"
-  fi
-  if [ -f "${CC_HOOK_SRC_DIR}/posttoolbatch-midturn-context.sh" ]; then
-    cp "${CC_HOOK_SRC_DIR}/posttoolbatch-midturn-context.sh" "$CC_MIDTURN_CONTEXT_HOOK"
-    chmod 755 "$CC_MIDTURN_CONTEXT_HOOK"
-  fi
-  if [ -f "${CC_HOOK_SRC_DIR}/stop-turn-journal.sh" ]; then
-    cp "${CC_HOOK_SRC_DIR}/stop-turn-journal.sh" "$CC_TURN_JOURNAL_HOOK"
-    chmod 755 "$CC_TURN_JOURNAL_HOOK"
-  fi
-  if [ -f "${CC_HOOK_SRC_DIR}/ask-gate-mirror.sh" ]; then
-    cp "${CC_HOOK_SRC_DIR}/ask-gate-mirror.sh" "$CC_ASK_GATE_HOOK"
-    chmod 755 "$CC_ASK_GATE_HOOK"
-  fi
-  if [ -f "${CC_HOOK_SRC_DIR}/guard-operator-desktop.mjs" ]; then
-    cp "${CC_HOOK_SRC_DIR}/guard-operator-desktop.mjs" "$CC_GUARD_OPERATOR_DESKTOP_HOOK"
-    chmod 755 "$CC_GUARD_OPERATOR_DESKTOP_HOOK"
-  fi
-  if [ -f "${CC_HOOK_SRC_DIR}/pretooluse-content-lint.mjs" ]; then
-    cp "${CC_HOOK_SRC_DIR}/pretooluse-content-lint.mjs" "$CC_CONTENT_LINT_HOOK"
-    chmod 755 "$CC_CONTENT_LINT_HOOK"
-  fi
-  if [ -f "${CC_HOOK_SRC_DIR}/pretooluse-secrets-guard.mjs" ]; then
-    cp "${CC_HOOK_SRC_DIR}/pretooluse-secrets-guard.mjs" "$CC_SECRETS_GUARD_HOOK"
-    chmod 755 "$CC_SECRETS_GUARD_HOOK"
-  fi
-  if [ -f "${CC_HOOK_SRC_DIR}/pretooluse-nul-byte-edit-guard.mjs" ]; then
-    cp "${CC_HOOK_SRC_DIR}/pretooluse-nul-byte-edit-guard.mjs" "$CC_NUL_BYTE_EDIT_GUARD_HOOK"
-    chmod 755 "$CC_NUL_BYTE_EDIT_GUARD_HOOK"
-  fi
-  if [ -f "${CC_HOOK_SRC_DIR}/pretooluse-schedule-wakeup-provenance.mjs" ]; then
-    cp "${CC_HOOK_SRC_DIR}/pretooluse-schedule-wakeup-provenance.mjs" "$CC_SCHEDULE_WAKEUP_PROVENANCE_HOOK"
-    chmod 755 "$CC_SCHEDULE_WAKEUP_PROVENANCE_HOOK"
-  fi
-  if [ -f "${CC_HOOK_SRC_DIR}/pretooluse-write-overwrite-guard.mjs" ]; then
-    cp "${CC_HOOK_SRC_DIR}/pretooluse-write-overwrite-guard.mjs" "$CC_WRITE_OVERWRITE_GUARD_HOOK"
-    chmod 755 "$CC_WRITE_OVERWRITE_GUARD_HOOK"
-  fi
+  # EI-20782070131658758: copy every hook payload by ENUMERATION, never a hand-maintained
+  # list of `cp` lines. The list form had silently drifted to 12 of 18 .mjs hooks never
+  # copied here — every PostToolUse nudge, plus the control-bytes, generated-file-edit,
+  # tool-prompt-weight and unreserved-migration PreToolUse guards. Each was absent from a
+  # standalone install while its own unit tests passed, because a unit test proves a hook
+  # WORKS, never that it is INSTALLED. The guard meant to catch exactly this
+  # (apps/operator/lib/tty-title-target.test.ts, "copies every hooks/cc file") filtered to
+  # *.sh/*.py and therefore could not see a single .mjs hook; it now covers *.mjs too.
+  #
+  # Destination basenames are unchanged: every CC_*_HOOK variable above is defined as
+  # "${CC_HOOK_DEST_DIR}/<same basename>", so this loop lands each already-copied file at
+  # byte-identical paths and merely stops forgetting the rest.
+  for cc_hook_src in "${CC_HOOK_SRC_DIR}"/*.sh "${CC_HOOK_SRC_DIR}"/*.mjs; do
+    [ -f "$cc_hook_src" ] || continue  # unmatched glob stays literal; skip it
+    cc_hook_name="$(basename "$cc_hook_src")"
+    case "$cc_hook_name" in
+      *.tmp | *.bak*) continue ;;  # residue from an interrupted install / hand-kept backups
+    esac
+    cp "$cc_hook_src" "${CC_HOOK_DEST_DIR}/${cc_hook_name}"
+    chmod 755 "${CC_HOOK_DEST_DIR}/${cc_hook_name}"
+  done
   echo "✓ Installed Claude/Codex lock + coord hooks to $CC_HOOK_DEST_DIR"
 else
   echo "! Expected CC lock hooks at $CC_HOOK_SRC_DIR; skipping (Claude/Codex lock enforcement inactive)"

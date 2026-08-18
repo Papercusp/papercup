@@ -375,20 +375,60 @@ describe('install parity — hooks/cc reaches ALL THREE deploy paths', () => {
     __dirname,
     '../../../packages/operator-core/lib/desktop-install/papercusp-files.ts',
   );
+  // EI-20782070131658758: `.mjs` MUST be in this filter. It used to read `.sh || .py`, which
+  // exempted the ENTIRE modern hook population — every PreToolUse guard and PostToolUse nudge
+  // written since the shell era is `.mjs`. All three "guard existed in-repo but never
+  // installed" incidents (WI-5543, WI-5542, EI-20782070131658758) were `.mjs`, so this suite
+  // reported green through every one of them while claiming to check that the installers
+  // "cop[y] every hooks/cc file". Widening it exposed 12 of 18 `.mjs` hooks uncopied by
+  // install-standalone-mcp.sh; that installer now enumerates instead of listing by hand.
   const hookFiles = execFileSync('ls', [HOOKS_CC], { encoding: 'utf8' })
     .split('\n')
     .map((f) => f.trim())
-    .filter((f) => f.endsWith('.sh') || f.endsWith('.py'));
+    .filter((f) => /\.(sh|py|mjs)$/.test(f))
+    .filter((f) => !/\.(tmp|d\.mts)$/.test(f) && !/\.bak(-|\.|$)/.test(f));
 
   it('the repo actually has hook files + the shared lib (guards a vacuous suite)', () => {
     expect(hookFiles).toContain('pc_tty.py');
     expect(hookFiles).toContain('statusline-fleet.sh');
+    // EI-20782070131658758: pin the .mjs half of the filter. Without this the suite goes
+    // vacuous again the moment someone "simplifies" the extension test back to .sh/.py, and
+    // that regression is invisible — every assertion below still passes, on a smaller set.
+    expect(hookFiles).toContain('pretooluse-control-bytes-content-guard.mjs');
+    expect(hookFiles.filter((f) => f.endsWith('.mjs')).length).toBeGreaterThan(10);
+    // ...and pin the exclusions, so tracked install residue never enters the population.
+    expect(hookFiles.some((f) => f.endsWith('.tmp'))).toBe(false);
   });
 
   it('1/3 install-standalone-mcp.sh copies every hooks/cc file', () => {
     const sh = readFileSync(INSTALLER, 'utf8');
-    const missing = hookFiles.filter((f) => !sh.includes(f));
-    expect(missing, `never copied by install-standalone-mcp.sh: ${missing.join(', ')}`).toEqual([]);
+    // EI-20782070131658758: the installer now ENUMERATES the hook dir
+    // (`for cc_hook_src in "${CC_HOOK_SRC_DIR}"/*.sh "${CC_HOOK_SRC_DIR}"/*.mjs`) rather than
+    // naming each file in its own `cp` line. So "is this filename mentioned in the script"
+    // is no longer a valid instrument — under enumeration it is false for every file while
+    // all of them ARE copied. The invariant that survives the mechanism change, and is the
+    // one that actually prevents a forgotten hook, is per EXTENSION: every extension present
+    // in hooks/cc must be either enumerated by a glob or exhaustively named.
+    const extOf = (f: string) => f.slice(f.lastIndexOf('.'));
+    const exts = [...new Set(hookFiles.map(extOf))].sort();
+
+    const uncovered = exts.filter((ext) => {
+      const enumerated = sh.includes(`"\${CC_HOOK_SRC_DIR}"/*${ext}`);
+      const allNamed = hookFiles.filter((f) => extOf(f) === ext).every((f) => sh.includes(f));
+      return !enumerated && !allNamed;
+    });
+
+    expect(
+      uncovered,
+      `install-standalone-mcp.sh copies neither a "\${CC_HOOK_SRC_DIR}"/*<ext> glob nor every ` +
+        `file for these extensions, so a hook with one is silently never installed: ` +
+        `${uncovered.join(', ')}`,
+    ).toEqual([]);
+
+    // Calibration: the check above is only meaningful if it read a real, populated dir with
+    // more than one extension in it — otherwise `uncovered` is trivially empty.
+    expect(exts.length).toBeGreaterThan(1);
+    expect(exts).toContain('.mjs');
   });
 
   it('2/3 build-desktop-sidecar.sh ships the *.py libs, not just *.sh', () => {
