@@ -122,6 +122,28 @@ describe('DRAIN mode defect-filing contract (WI-38401)', () => {
   });
 });
 
+describe('GOAL mode DAG addendum (goal-dag-shared-substrate-2026-08-18 P-006)', () => {
+  const goal = modeById('goal');
+
+  it('teaches edges-as-prerequisites, stub-then-arm, and the activation gate', () => {
+    expect(goal).not.toBeNull();
+    // D-005 — the waterfall hazard: phases of one outcome are never chained goals.
+    expect(goal!.contract).toContain('PREREQUISITES ARE EDGES, NOT PHASES');
+    expect(goal!.contract).toMatch(/NEVER phases of one outcome/);
+    expect(goal!.contract).toContain('build->market->monetize');
+    // D-004 — recorded ≠ armed; the kickoff contract runs at activation.
+    expect(goal!.contract).toContain('stub-then-arm');
+    expect(goal!.contract).toMatch(/full kickoff contract at ACTIVATION/);
+    // D-003 — readiness is visibility, never dispatch; the override is named.
+    expect(goal!.contract).toMatch(/ACTIVATION GATE, never\s+dispatch/);
+    expect(goal!.contract).toMatch(/never enter a claim queue/);
+    expect(goal!.contract).toContain('startBlocked');
+    // D-002 — a killed blocker flags, never silently unblocks.
+    expect(goal!.contract).toMatch(/KILLED blocker never silently unblocks/);
+    expect(goal!.contract).toContain('premiseInvalidated');
+  });
+});
+
 describe('modeChipLabel', () => {
   it('renders a mode id as a chip label, hyphens as spaces', () => {
     expect(modeChipLabel('auto')).toBe('AUTO');
