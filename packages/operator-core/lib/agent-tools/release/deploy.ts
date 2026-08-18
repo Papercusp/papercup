@@ -160,11 +160,16 @@ async function readStatusBounded(): Promise<BoundedTimeoutResult<DeployStatus | 
   });
 }
 
-function statusUnavailable(op: 'status' | 'trigger' | 'force', read: BoundedTimeoutResult<DeployStatus | null>) {
+function statusUnavailable(
+  op: 'status' | 'trigger' | 'force',
+  read: BoundedTimeoutResult<DeployStatus | null>,
+  stamp: ReleaseSubjectStamp,
+) {
   const timedOut = read.reason === 'timeout';
   return json({
     ok: false,
     op,
+    ...stamp,
     error: {
       code: timedOut ? 'status_timeout' : 'status_unavailable',
       message: timedOut
@@ -230,9 +235,10 @@ export default defineTool({
   agentRoles: [...SU_ROLES, 'cup', 'release-fixer', 'release-manager'],
   rolesQuota: { operator: { perRun: 20 } },
   args: z.discriminatedUnion('op', [
-    z.object({ op: z.literal('status') }),
+    z.object({ op: z.literal('status'), harness: harnessAssertion }),
     z.object({
       op: z.literal('trigger'),
+      harness: harnessAssertion,
       confirm: z.boolean().optional().describe('false/absent ⇒ DRY RUN (preview what would deploy). true ⇒ fire the detached green deploy.'),
     }),
     z.object({
