@@ -24,6 +24,7 @@
  */
 
 import { useSyncQuery } from '@papercusp/sync';
+import type { RecordedOrientDisclosures } from './Disclosures';
 
 // ── Server DTO mirror (packages/operator-core/lib/adv-agent-orders.ts).
 //    Inlined, not imported, so this client module never pulls the PG-backed
@@ -31,7 +32,7 @@ import { useSyncQuery } from '@papercusp/sync';
 
 /** Which orders signal's read THREW this call. A key present here means
  *  "we could not ask", which is a different conclusion from "there is none". */
-export type AgentOrdersSignalKey = 'mission' | 'modes' | 'wakeMode' | 'carry';
+export type AgentOrdersSignalKey = 'mission' | 'modes' | 'wakeMode' | 'carry' | 'disclosures';
 
 export interface AgentOrdersMission {
   constraint: string | null;
@@ -132,6 +133,12 @@ export interface AgentOrders {
   directivesTotalOpen?: number;
   facts?: AgentOrdersFact[];
   carry: AgentOrdersCarry | null;
+  /** What this agent's own last `coord:orient` left OUT (P-005).
+   *
+   *  ⚠ `null`/absent means NO RECORDING — the session has not oriented since the
+   *  recording existed, or the read failed. It must NEVER be rendered as
+   *  "nothing was withheld"; see Disclosures.tsx. */
+  disclosures?: RecordedOrientDisclosures | null;
   unavailable?: AgentOrdersSignalKey[];
 }
 
