@@ -57,7 +57,7 @@ afterAll(async () => {
   // straight from the working tree, with no commit required.
   if (db) {
     await db.adminSql`DELETE FROM harness_shared.testing_surfaces WHERE workspace_id = ${WS}`;
-    await db.close?.();
+    await db.cleanup();
   }
 });
 
