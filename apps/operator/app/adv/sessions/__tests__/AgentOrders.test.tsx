@@ -534,4 +534,76 @@ describe('AgentOrders', () => {
       expect(header?.textContent).not.toContain('what it was told');
     });
   });
+
+  /* ── P-005: the disclosure family reaches the panel ──────────────────────
+     Disclosures.test.tsx owns the component's own behaviour. These four assert
+     the WIRING, and specifically the case the wiring is easy to get wrong: the
+     markers must survive the branch where their section rendered EMPTY. That is
+     where they matter most, and it is the branch a later refactor will drop
+     them from, because the natural place to put them is inside the populated
+     card. */
+  describe('disclosures (P-005)', () => {
+    const NARROWED = {
+      at: '2026-08-18T20:57:00.000Z',
+      disclosures: {
+        factsNarrowed: {
+          fold: 'never-drop',
+          prefixes: ['dead-end:', 'wall:'],
+          reason: "mode:'monitor' tick",
+        },
+      },
+    };
+
+    it('qualifies an EMPTY facts section — "none in scope" is a lie on a narrowed fold', () => {
+      // The whole point. RailQuiet says "none in scope"; the agent was never
+      // shown its facts, so that absence is not evidence that none stand.
+      setOrders({ facts: [], disclosures: NARROWED });
+      const { getByTestId } = render(<AgentOrders ownerId="su-1" />);
+      expect(getByTestId('rail-quiet-facts')).toBeTruthy();
+      expect(getByTestId('disclosures-facts').textContent).toMatch(/not a census/i);
+    });
+
+    it('qualifies a POPULATED facts section too', () => {
+      setOrders({
+        facts: [{ key: 'k', body: 'a standing fact' }],
+        disclosures: NARROWED,
+      });
+      const { getByTestId } = render(<AgentOrders ownerId="su-1" />);
+      expect(getByTestId('disclosures-facts')).toBeTruthy();
+    });
+
+    it('renders NOTHING when the agent has no recording — never a false clean', () => {
+      // `disclosures: null` = this session has not oriented since the recording
+      // existed. A line here saying "nothing was withheld" would be a confident
+      // FALSE statement on the surface a human uses to judge an agent's blindness.
+      setOrders({ facts: [], disclosures: null });
+      const { queryByTestId, getByTestId } = render(<AgentOrders ownerId="su-1" />);
+      expect(queryByTestId('disclosures-facts')).toBeNull();
+      expect(queryByTestId('disclosures-reads')).toBeNull();
+      // Positive control: the section itself still rendered, so the absence
+      // above is the disclosure's, not the whole panel failing to mount.
+      expect(getByTestId('rail-quiet-facts')).toBeTruthy();
+    });
+
+    it('renders NOTHING when the last orient genuinely cut nothing', () => {
+      setOrders({ facts: [], disclosures: { at: '2026-08-18T20:57:00.000Z', disclosures: {} } });
+      const { queryByTestId } = render(<AgentOrders ownerId="su-1" />);
+      expect(queryByTestId('disclosures-facts')).toBeNull();
+    });
+
+    it('shows the bounded-read markers that have no section of their own', () => {
+      setOrders({
+        disclosures: {
+          at: '2026-08-18T20:57:00.000Z',
+          disclosures: {
+            announcedGatesTruncated: { shown: 8, total: 14, more: 'events:catalog' },
+          },
+        },
+      });
+      const { getByTestId } = render(<AgentOrders ownerId="su-1" />);
+      const text = getByTestId('disclosures-reads').textContent ?? '';
+      expect(text).toMatch(/never told/i);
+      expect(text).toContain('events:catalog');
+    });
+  });
 });
