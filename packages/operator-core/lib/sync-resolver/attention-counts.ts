@@ -174,6 +174,47 @@ export function deriveAttentionCounts(groups: readonly unknown[]): AttentionCoun
   return { decisionItems, decisionPlans: decisionPlans.size, alerts, total: seen.size };
 }
 
+/**
+ * The WIRE row for `plans.attentionCounts` — the counts plus the honesty bit.
+ *
+ * `degraded` is NOT part of `AttentionCounts` on purpose: `AttentionCounts` is
+ * the DERIVATION, and attention-counts-parity.test.ts pins it field-for-field
+ * against the client's own derivation so the badge can never disagree with the
+ * list. A transport concern added there would either break that equality or,
+ * worse, have to be papered over in the parity test — weakening the guard that
+ * matters. The marker rides one level up, where the transport lives.
+ */
+export interface AttentionCountsRow extends AttentionCounts {
+  /**
+   * TRUE when these counts are the deadline FALLBACK rather than a real answer
+   * — "we never found out", not "nothing needs you".
+   *
+   * The badge is always mounted, so the zero it renders is the most-read number
+   * in the app. Without this bit a fired deadline is byte-identical to a real
+   * empty inbox, and the user is told, confidently, that nothing needs them.
+   */
+  degraded: boolean;
+}
+
+/**
+ * Compose the wire row from a deadline outcome.
+ *
+ * This exists as a named function rather than a spread at the call site so the
+ * "graceful empty must be MARKED" property has one seam to pin a test to. The
+ * bug it guards against is not hypothetical: the resolver previously dropped
+ * the outcome wrapper entirely, which both lost the marker AND read `.groups`
+ * off the wrapper — deriving all-zeros on EVERY call, degraded or not.
+ */
+export function attentionCountsRowFromOutcome(
+  outcome: DeadlineOutcome<{ groups?: unknown[] } | null | undefined>,
+): AttentionCountsRow {
+  const groups = outcome.value?.groups;
+  return {
+    ...deriveAttentionCounts(Array.isArray(groups) ? groups : []),
+    degraded: outcome.degraded,
+  };
+}
+
 /* ── attention REFS — the drill-in projection (no-http-anywhere-2026-07-28 D-031) ──
  *
  * The second consumer that pulls the whole feed for a sliver of it. The chat
