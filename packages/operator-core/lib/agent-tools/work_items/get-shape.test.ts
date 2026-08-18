@@ -201,13 +201,26 @@ describe("shapeWorkItemsGet — bulk reads stay under the transport ceiling", ()
 });
 
 describe("shapeWorkItemsGet — tier differences and defensive behaviour", () => {
-  it("standard keeps a clipped summary; trimmed drops it entirely", () => {
+  // EI-20743148487714069 REPLACED this test's contract. It used to assert
+  // "standard keeps a clipped summary; trimmed drops it entirely" — which pinned
+  // the defect: a trimmed read returned the TITLE and no sentence of the body, on
+  // a payload using ~15% of its door budget. The tier difference is now one of
+  // BUDGET, not presence: both carry the summary when the rung has slack, standard
+  // simply affords more of it.
+  it("both tiers carry the summary when there is slack; standard affords more", () => {
     const env = envelope([row({ checkpoint: "C".repeat(500) })]);
     const std = shapeWorkItemsGet(env, "standard") as Envelope;
     const trm = shapeWorkItemsGet(env, "trimmed") as Envelope;
+    const stdSummary = String((std.results[0].workItem as Record<string, unknown>).summary);
+    const trmSummary = String((trm.results[0].workItem as Record<string, unknown>).summary);
 
-    expect((std.results[0].workItem as Record<string, unknown>).summary).toMatch(/TRUNCATED/);
-    expect((trm.results[0].workItem as Record<string, unknown>).summary).toBeUndefined();
+    expect(stdSummary.length).toBeGreaterThan(trmSummary.length);
+    // Neither is the useless head the old flat cap produced.
+    expect(trmSummary.length).toBeGreaterThan(1_000);
+    // A clip still says so in-band, and the small checkpoint is untouched at both.
+    expect(trmSummary).toMatch(/TRUNCATED/);
+    expect(trm.results[0].checkpoint).toBe("C".repeat(500));
+    expect(std.results[0].checkpoint).toBe("C".repeat(500));
   });
 
   it("passes an error row through untouched — it is already tiny and self-describing", () => {
