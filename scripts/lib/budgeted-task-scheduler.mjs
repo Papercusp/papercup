@@ -266,10 +266,31 @@ export function readDurationHistory(path) {
   try {
     const parsed = JSON.parse(readFileSync(path, 'utf8'));
     if (parsed?.version !== DURATION_HISTORY_VERSION || !parsed.tasks || typeof parsed.tasks !== 'object') {
+      // EI-20806073740910935: a silent discard here is indistinguishable from
+      // "first run, no history yet" — and it disarms every watchdog bound for
+      // the whole run. Say WHY the history was thrown away.
+      process.stderr.write(
+        `[budgeted-task-scheduler] duration history at ${path} DISCARDED: ` +
+          `version=${JSON.stringify(parsed?.version)} (want ${DURATION_HISTORY_VERSION}), ` +
+          `tasks=${parsed?.tasks ? typeof parsed.tasks : 'missing'} — starting empty\n`,
+      );
       return emptyDurationHistory();
     }
     return parsed;
-  } catch {
+  } catch (err) {
+    // ENOENT is the expected first-run case and stays quiet. ANYTHING else
+    // (EMFILE/EIO/EACCES/parse error on a present file) silently disarmed the
+    // watchdog estimator for an entire gate run on 2026-08-18 (run 10, all 36
+    // progress lines durationEstimateMs=unknown while the file was valid) —
+    // EI-20806073740910935. A single loud line makes the next occurrence
+    // self-diagnosing.
+    if (err?.code !== 'ENOENT') {
+      process.stderr.write(
+        `[budgeted-task-scheduler] duration history READ FAILED at ${path}: ` +
+          `${err?.code ?? err?.name ?? 'error'} ${err?.message ?? ''} — starting empty ` +
+          `(EI-20806073740910935: all duration estimates will print unknown this run)\n`,
+      );
+    }
     return emptyDurationHistory();
   }
 }
