@@ -74,12 +74,6 @@ export const ATTENTION_COUNTS_FALLBACK_MS = 8_000;
 
 const DEADLINE = Symbol('attention-counts-deadline');
 
-/**
- * Resolve an attention-derived read with a caller-facing deadline. The
- * underlying operation is intentionally not cancelled: cachedRead's
- * single-flight build can finish and warm the next caller. A real rejection
- * remains an error; only the deadline takes the supplied graceful fallback.
- */
 export interface DeadlineOutcome<T> {
   /** The real result, or the graceful fallback when the deadline fired. */
   value: T;
@@ -98,6 +92,12 @@ export interface DeadlineOutcome<T> {
   degraded: boolean;
 }
 
+/**
+ * Resolve an attention-derived read with a caller-facing deadline. The
+ * underlying operation is intentionally not cancelled: cachedRead's
+ * single-flight build can finish and warm the next caller. A real rejection
+ * remains an error; only the deadline takes the supplied graceful fallback.
+ */
 export async function withDeadlineFallback<T>(
   operation: Promise<T>,
   deadlineMs: number,
