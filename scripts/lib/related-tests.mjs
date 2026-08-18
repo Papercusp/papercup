@@ -106,6 +106,30 @@ function candidatesFor(base) {
 }
 
 /**
+ * The injectable filesystem seam. Declared as a typedef because `gen:declarations`
+ * emits from JSDoc: an UNDOCUMENTED destructured option is inferred as a CLOSED
+ * literal type (or, with no default to infer from, dropped from the emitted type
+ * altogether), and every caller passing it then fails TS2353 "does not exist in
+ * type". That is not hypothetical — it is exactly how this block came to be
+ * written: the first emit declared `selectRelatedTests` as accepting only the
+ * three params its JSDoc happened to list, and lint:tsc reported 10 errors in
+ * related-tests-selection.test.ts for the ones it omitted. Keep every option
+ * documented here, or the declaration silently narrows again.
+ *
+ * @typedef {object} RelatedFs
+ * @property {(dir: string) => string[]}      list   recursively enumerate source files under `dir`
+ * @property {(p: string) => string | null}   read   file contents, or null when unreadable
+ * @property {(p: string) => boolean}         exists does this path resolve on disk
+ */
+
+/**
+ * @typedef {object} RelatedIndex
+ * @property {string[]}                files      every source file found under the root
+ * @property {Map<string, Set<string>>} deps      file -> the intra-repo files it imports directly
+ * @property {Set<string>}             unresolved files carrying an import we could NOT resolve
+ */
+
+/**
  * Build the forward dependency graph for `rootDir`.
  *
  * Returns `{ files, deps, unresolved }` where `unresolved` is the set of files
@@ -113,6 +137,12 @@ function candidatesFor(base) {
  * treated as depending on everything (see `selectRelatedTests`) — an unresolved
  * edge is a hole in the graph, and the safe reading of a hole is "this might depend
  * on the thing you changed".
+ *
+ * @param {object}                  [o]
+ * @param {string}                  o.rootDir   absolute dir to index (a workspace's source root)
+ * @param {Record<string, string>}  [o.aliases] tsconfig `paths` prefix -> absolute dir
+ * @param {RelatedFs}               [o.fs]      filesystem seam (injected in tests)
+ * @returns {RelatedIndex}
  */
 export function buildIndex({ rootDir, aliases = {}, fs = defaultFs() } = {}) {
   const files = fs.list(rootDir);
@@ -194,10 +224,14 @@ export function transitiveDeps(index) {
  * outcome is `'full'`, meaning the caller should run the whole suite. `reason`
  * always says which rail fired, so a collapse to "0 tests" can never be silent.
  *
- * @param {object}   o
- * @param {string}   o.rootDir      absolute dir to index (a workspace's source root)
- * @param {string[]} o.changedPaths absolute paths that changed
- * @param {number}   o.threshold    fraction of the suite above which selecting is pointless
+ * @param {object}                 [o]
+ * @param {string}                 o.rootDir        absolute dir to index (a workspace's source root)
+ * @param {string[]}               o.changedPaths   absolute paths that changed
+ * @param {Record<string, string>} [o.aliases]      tsconfig `paths` prefix -> absolute dir
+ * @param {number}                 [o.threshold]    fraction of the suite above which selecting is pointless
+ * @param {RelatedFs}              [o.fs]           filesystem seam (injected in tests)
+ * @param {RelatedIndex | null}    [o.index]        prebuilt index, to avoid re-walking the tree
+ * @returns {{ mode: 'related' | 'full', selected: string[], total: number, reason: string }}
  */
 export function selectRelatedTests({
   rootDir,
