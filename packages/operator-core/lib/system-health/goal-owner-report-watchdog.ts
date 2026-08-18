@@ -52,11 +52,14 @@ import type { Sql } from 'postgres';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import { openEscalation } from '../agent-tools/coordination/escalations';
 import type { AgentIdentity } from '../agent-tools/coordination/identity';
-import {
-  resolveSessionStates,
-  type LivenessVerdict,
-} from '../agent-tools/coordination/liveness-oracle';
-import { holderCountsAsAlive } from './goal-liveness-watchdog';
+import type { LivenessVerdict } from '../agent-tools/coordination/liveness-oracle';
+// P-001: the alive predicate and the oracle fold come from the ONE goal-holder
+// module (previously re-imported from the sibling liveness watchdog). This
+// file's own `agent_modes` read stays raw on purpose — it is not a plain holder
+// read but a LATERAL join carrying each owner's report timestamps — and the
+// holder-read guard clears it because the liveness fold below is present, which
+// is the property D-003 actually enforces.
+import { holderCountsAsAlive, resolveHolderLiveness } from '../goals/holder';
 
 /** Hours-scale detection needs no seconds-scale sweep: one tick per 10 minutes
  *  bounds the worst-case detection lag to ~4% of the floor. */
@@ -246,14 +249,6 @@ function makeReadGoalModeOwners(sql: Sql): GoalOwnerReportSweepDeps['readGoalMod
   };
 }
 
-function makeResolveLiveness(): GoalOwnerReportSweepDeps['resolveLiveness'] {
-  return async (ownerIds) =>
-    resolveSessionStates(
-      ownerIds.map((ownerId) => ({ ownerId })),
-      { hydratePerId: true, selfWake: true },
-    );
-}
-
 async function defaultEscalate(alert: GoalOwnerReportAlert): Promise<{ coalesced: boolean }> {
   const silentHours = Math.round((alert.silentMs / 3600_000) * 10) / 10;
   const result = await openEscalation(WATCHDOG_IDENTITY, {
@@ -312,7 +307,7 @@ async function defaultNudge(alert: GoalOwnerReportAlert): Promise<void> {
 function sweepDeps(sql: Sql, overrides: Partial<GoalOwnerReportSweepDeps>): GoalOwnerReportSweepDeps {
   return {
     readGoalModeOwners: makeReadGoalModeOwners(sql),
-    resolveLiveness: makeResolveLiveness(),
+    resolveLiveness: resolveHolderLiveness,
     escalate: defaultEscalate,
     nudge: defaultNudge,
     flagEnabled: defaultFlagEnabled,
