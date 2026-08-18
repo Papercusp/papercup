@@ -22,6 +22,7 @@
  */
 
 import { mergeIssuePayload, commentIssue, type EngineerIssue } from '../../issues-engineer';
+import { trackDetached } from '../../detached-imports';
 import type { ThreadPostRow } from '@papercusp/coordination/capabilities';
 import type { ImprovementCandidate } from './policy';
 import { readImprovementItems } from './read-items';
