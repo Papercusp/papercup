@@ -83,12 +83,22 @@ beforeAll(async () => {
   }> = [
     // THE live repro (EI-20770382118019284 / EI-20770384048873414): a file with a
     // clean history whose only recent "failures" are zero-duration tmp-cache
-    // ENOENTs. Green before AND after — exactly what the real rows showed.
+    // ENOENTs, with the poisoned rows NEWEST — the state the watchdog actually
+    // ticks in right after a cache wipe, and the only ordering that exercises
+    // this filter at all.
+    //
+    // ⚠ The poisoned rows MUST be the most recent runs. If a later green run is
+    // appended, `fetchRedTestRows`'s pre-existing `rn = 1` freshness check
+    // ("latest run in the window is still red") already excludes the file on its
+    // own, and this test passes IDENTICALLY with or without the fix under test —
+    // i.e. it silently becomes vacuous. `surfacesWithoutTheFix` below is the
+    // guard against exactly that: it fails if this fixture ever stops being
+    // fire-worthy for the pre-fix query.
     { filePath: 'packages/operator-core/lib/harness/improvements/dispatch-ledger.test.ts', status: 'pass', startedAt: at(60), durationMs: 11, tail: null },
+    { filePath: 'packages/operator-core/lib/harness/improvements/dispatch-ledger.test.ts', status: 'pass', startedAt: at(50), durationMs: 12, tail: null },
     { filePath: 'packages/operator-core/lib/harness/improvements/dispatch-ledger.test.ts', status: 'fail', startedAt: at(40), durationMs: 0, tail: ENOENT_TAIL },
     { filePath: 'packages/operator-core/lib/harness/improvements/dispatch-ledger.test.ts', status: 'fail', startedAt: at(38), durationMs: 0, tail: ENOENT_TAIL },
     { filePath: 'packages/operator-core/lib/harness/improvements/dispatch-ledger.test.ts', status: 'fail', startedAt: at(36), durationMs: 0, tail: ENOENT_TAIL },
-    { filePath: 'packages/operator-core/lib/harness/improvements/dispatch-ledger.test.ts', status: 'pass', startedAt: at(5), durationMs: 12, tail: null },
 
     // CONTROL A — a genuinely broken file: same fail count, real durations, real
     // assertion tail, latest run still red. The fix must not suppress it.
@@ -159,5 +169,41 @@ describe('fetchRedTestRows excludes wiped-tmp-cache infra reds (EI-2077039593868
     const row = (await fetch()).find((r) => r.file_path === 'packages/operator-core/lib/zero-duration-env-break.test.ts');
     expect(row).toBeDefined();
     expect(row?.fails).toBe(3);
+  });
+
+  /**
+   * FALSIFIABILITY CONTROL — the deliberately-wrong (pre-fix) implementation,
+   * kept permanently in the test file rather than mutated into the shared tree
+   * (a tree mutation can be swept into a commit by git-sync even when nothing
+   * goes wrong). This is the PRE-FIX `recent` CTE: byte-identical to the real
+   * one except that the tmp-cache-ENOENT exclusion is absent.
+   *
+   * It asserts the repro fixture IS fire-worthy without the fix. Without this,
+   * the suppression assertions above could pass for the wrong reason — because
+   * the fixture stopped being able to fire at all — and the suite would look
+   * green while testing nothing. If this ever goes red, the fixture has drifted
+   * vacuous; fix the FIXTURE, never this control.
+   */
+  it('surfacesWithoutTheFix: the repro fixture DOES fire under the pre-fix query (proves the filter is what suppresses it)', async () => {
+    const rows = await db.sql<Array<{ file_path: string; fails: number }>>`
+      WITH recent AS (
+        SELECT file_path, status,
+               row_number() OVER (PARTITION BY file_path ORDER BY started_at DESC) AS rn
+          FROM harness_shared.test_runs
+         WHERE started_at > now() - make_interval(hours => 6)
+           AND status IN ('pass', 'fail', 'error')
+           AND file_path LIKE '%/%'
+           AND is_scratch_config = false
+      )
+      SELECT file_path,
+             count(*) FILTER (WHERE status IN ('fail', 'error'))::int AS fails
+        FROM recent
+       GROUP BY file_path
+      HAVING count(*) FILTER (WHERE status IN ('fail', 'error')) >= 3
+         AND max(CASE WHEN rn = 1 THEN status END) IN ('fail', 'error')`;
+
+    const paths = rows.map((r) => r.file_path);
+    expect(paths).toContain('packages/operator-core/lib/harness/improvements/dispatch-ledger.test.ts');
+    expect(paths).toContain('packages/operator-core/lib/only-poisoned.test.ts');
   });
 });
