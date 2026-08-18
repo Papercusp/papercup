@@ -326,3 +326,152 @@ describe('DB-url resolution in scripts/ is SHRINK-ONLY (baseline: empty)', () =>
     for (const name of PG_URL_ENV_VARS as string[]) expect(wrapper).toContain(name);
   });
 });
+
+// ---------------------------------------------------------------------------
+// scripts/pg-url.mjs — the SHELL-facing door onto the same resolver
+// ---------------------------------------------------------------------------
+
+/**
+ * ## What EI-20478658560683440 actually was
+ *
+ * Not a resolver bug. The gated chain was already correct: presented with a 15-day-stale
+ * discovery file (dead pid 1471022, nothing listening on port 19838) it rejected the file
+ * and resolved to the native :5432 that was serving. Every JS caller was fine.
+ *
+ * The defect was that the chain was reachable only from JS. An agent needing to MUTATE the
+ * database — which `dev:pg_query` cannot do, it runs read-only — had to use psql, and the
+ * only thing a shell could read was the discovery file itself. So it read the raw `url`
+ * field, which is precisely the "existence is liveness" mistake the gates exist to prevent,
+ * and got ECONNREFUSED against a port nothing had served for two weeks.
+ *
+ * A guard on the resolver would not have caught this, because the resolver was right. The
+ * thing worth pinning is that the shell door EXISTS and that its credential handling holds.
+ */
+describe('scripts/pg-url.mjs (the shell door)', () => {
+  describe('parseArgs', () => {
+    it('defaults to printing the url, with verification ON', () => {
+      expect(parseArgs([])).toEqual({ mode: 'url', verify: true });
+    });
+
+    for (const [flag, mode] of [
+      ['--export', 'export'],
+      ['--describe', 'describe'],
+      ['--help', 'help'],
+      ['-h', 'help'],
+    ] as const) {
+      it(`maps ${flag} to mode=${mode}`, () => {
+        expect(parseArgs([flag])).toEqual({ mode, verify: true });
+      });
+    }
+
+    it('--no-verify composes with a mode rather than being one', () => {
+      expect(parseArgs(['--export', '--no-verify'])).toEqual({ mode: 'export', verify: false });
+    });
+
+    /**
+     * The security-relevant case. A silently-ignored unknown flag falls through to the
+     * DEFAULT mode, which prints the DSN — so `--descrbe` would spray credentials into a
+     * log the caller believed was redacted. Rejecting is what makes the redaction promise
+     * of `--describe` hold under a typo.
+     */
+    it('REFUSES an unknown flag instead of falling through to the credential-printing default', () => {
+      expect(parseArgs(['--descrbe'])).toEqual({ error: 'unknown argument: --descrbe' });
+    });
+
+    it('refuses two conflicting modes rather than letting argument order decide', () => {
+      expect(parseArgs(['--export', '--describe'])).toEqual({
+        error: 'conflicting modes: --export and --describe',
+      });
+    });
+
+    it('tolerates a mode repeated (it is unambiguous)', () => {
+      expect(parseArgs(['--export', '--export'])).toEqual({ mode: 'export', verify: true });
+    });
+  });
+
+  describe('shellSingleQuote', () => {
+    /**
+     * The output of `--export` is consumed by `eval`, so an unquoted password is command
+     * injection against whoever ran it. A DSN password is arbitrary bytes and this repo's
+     * own generated credentials are not the only ones this runs against.
+     */
+    it('neutralises shell metacharacters', () => {
+      expect(shellSingleQuote('a$(id)b`id`;rm -rf /')).toBe("'a$(id)b`id`;rm -rf /'");
+    });
+
+    it('escapes an embedded single quote (the one character quoting cannot contain)', () => {
+      expect(shellSingleQuote("pw'; id #")).toBe(`'pw'\\''; id #'`);
+    });
+
+    it('round-trips through a real shell, quote included', () => {
+      const secret = `p'w$(id)\`x\` ;#`;
+      const out = execFileSync('/bin/sh', ['-c', `printf %s ${shellSingleQuote(secret)}`], {
+        encoding: 'utf8',
+      });
+      expect(out).toBe(secret);
+    });
+  });
+
+  describe('formatExportLines', () => {
+    const URL_WITH_NASTY_PW = 'postgresql://harness_admin:p%27w%24x@localhost:19838/papercusp';
+
+    it('emits the libpq variables psql reads without them appearing in argv', () => {
+      expect(formatExportLines('postgresql://u:pw@db.example:6000/mydb').split('\n')).toEqual([
+        "export PGHOST='db.example'",
+        "export PGPORT='6000'",
+        "export PGUSER='u'",
+        "export PGPASSWORD='pw'",
+        "export PGDATABASE='mydb'",
+      ]);
+    });
+
+    it('percent-decodes credentials — libpq wants the raw value, not the URL encoding', () => {
+      expect(formatExportLines(URL_WITH_NASTY_PW)).toContain(`export PGPASSWORD='p'\\''w$x'`);
+    });
+
+    it('defaults a portless url to 5432 rather than emitting an empty PGPORT', () => {
+      // An empty PGPORT is worse than a missing one: it overrides libpq's own default.
+      expect(formatExportLines('postgresql://u:pw@h/db')).toContain("export PGPORT='5432'");
+    });
+
+    /**
+     * Fail loudly rather than emit a PARTIAL environment. A half-set libpq environment does
+     * not error — it silently completes itself from libpq's defaults (local socket, $USER),
+     * so the caller connects somewhere real and wrong.
+     */
+    it('throws on an unparseable url instead of emitting a partial environment', () => {
+      expect(() => formatExportLines('not a url')).toThrow();
+    });
+
+    it('the emitted block is evaluable and sets exactly the five variables', () => {
+      const probe = `${formatExportLines(URL_WITH_NASTY_PW)}\nprintf '%s|%s|%s|%s|%s' "$PGHOST" "$PGPORT" "$PGUSER" "$PGPASSWORD" "$PGDATABASE"`;
+      expect(execFileSync('/bin/sh', ['-c', probe], { encoding: 'utf8' })).toBe(
+        "localhost|19838|harness_admin|p'w$x|papercusp",
+      );
+    });
+  });
+
+  describe('the shell door is wired to the gated chain, not to the discovery file', () => {
+    const source = readFileSync(join(SCRIPTS_DIR, 'pg-url.mjs'), 'utf8');
+    const masked = stripCommentsOnly(source, 'pg-url.mjs') as string;
+
+    /**
+     * The whole point. If this CLI ever grows its own `readFileSync(embedded-pg.json)` it
+     * becomes the very bug it was written to close — and it would look like a reasonable
+     * optimisation to whoever wrote it.
+     */
+    it('never reads the discovery file itself', () => {
+      expect(masked).not.toMatch(/embedded-pg\.json/);
+    });
+
+    it('delegates to the shared helper', () => {
+      expect(masked).toMatch(/from '\.\/lib\/pg-url\.mjs'/);
+    });
+
+    /** It lives under scripts/, so the shrink-only guard above must already cover it. */
+    it('is subject to the hand-rolled-resolver guard and passes it', () => {
+      expect(scriptFiles()).toContain('pg-url.mjs');
+      expect(classify(masked)).toEqual([]);
+    });
+  });
+});
