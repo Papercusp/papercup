@@ -46,22 +46,35 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
       `${DEST}/pretooluse-generated-file-edit-guard.mjs`,
       `${DEST}/pretooluse-unreserved-migration-guard.mjs`,
     ]);
-    expect(cfg.hooks.PreToolUse[0].matcher).toBe(FILE_WRITE_MATCHER);
-    expect(cfg.hooks.PreToolUse[1].matcher).toBe('*'); // activity-pre
-    expect(cfg.hooks.PreToolUse[2].matcher).toBe('Bash');
-    expect(cfg.hooks.PreToolUse[3].matcher).toBe('Read|Grep');
-    expect(cfg.hooks.PreToolUse[4].matcher).toBe('AskUserQuestion|ExitPlanMode');
-    expect(cfg.hooks.PreToolUse[5].matcher).toBe(
+    // Matchers are asserted BY COMMAND NAME, not by array index. The index form silently
+    // re-pointed every assertion below the insertion point whenever a hook was added — the
+    // reviewer sees a green suite and an unrelated-looking renumber diff, so a genuinely
+    // wrong matcher rides in unnoticed. (The `toEqual` above still pins install ORDER, which
+    // is the part that carries meaning: hooks fire in registration order.)
+    const matcherOf = (name: string): string | undefined =>
+      (cfg.hooks.PreToolUse as any[]).find((e) => cmd(e) === `${DEST}/${name}`)?.matcher;
+
+    expect(matcherOf('pretooluse-locks-acquire.sh')).toBe(FILE_WRITE_MATCHER);
+    expect(matcherOf('pretooluse-activity-report.sh')).toBe('*');
+    expect(matcherOf('pretooluse-bash-resource-gate.sh')).toBe('Bash');
+    expect(matcherOf('pretooluse-plans-read-guard.sh')).toBe('Read|Grep');
+    expect(matcherOf('ask-gate-mirror.sh')).toBe('AskUserQuestion|ExitPlanMode');
+    expect(matcherOf('guard-operator-desktop.mjs')).toBe(
       'mcp__playwright__browser_navigate|mcp__claude-in-chrome__navigate|mcp__claude-in-chrome__tabs_create_mcp|Skill',
     );
-    expect(cfg.hooks.PreToolUse[6].matcher).toBe(FILE_WRITE_MATCHER); // content-lint
-    expect(cfg.hooks.PreToolUse[7].matcher).toBe(FILE_WRITE_MATCHER); // secrets-guard
-    expect(cfg.hooks.PreToolUse[8].matcher).toBe(FILE_EDIT_MATCHER); // nul-byte-edit-guard
-    expect(cfg.hooks.PreToolUse[9].matcher).toBe(FILE_WRITE_MATCHER); // tool-prompt-weight-guard
-    expect(cfg.hooks.PreToolUse[10].matcher).toBe('ScheduleWakeup'); // schedule-wakeup-provenance
-    expect(cfg.hooks.PreToolUse[11].matcher).toBe(FILE_OVERWRITE_MATCHER); // write-overwrite-guard
-    expect(cfg.hooks.PreToolUse[12].matcher).toBe(FILE_WRITE_MATCHER); // generated-file-edit-guard
-    expect(cfg.hooks.PreToolUse[13].matcher).toBe(FILE_WRITE_MATCHER); // unreserved-migration-guard
+    expect(matcherOf('pretooluse-content-lint.mjs')).toBe(FILE_WRITE_MATCHER);
+    expect(matcherOf('pretooluse-secrets-guard.mjs')).toBe(FILE_WRITE_MATCHER);
+    expect(matcherOf('pretooluse-nul-byte-edit-guard.mjs')).toBe(FILE_EDIT_MATCHER);
+    // EI-20782070131658758: Write MUST be in this matcher. Its sibling directly above is
+    // Edit-only by design, so registering this one on FILE_EDIT_MATCHER would reopen the
+    // exact reported hole (a `Write` of NUL-bearing content) while still looking wired.
+    expect(matcherOf('pretooluse-control-bytes-content-guard.mjs')).toBe(FILE_WRITE_MATCHER);
+    expect(matcherOf('pretooluse-control-bytes-content-guard.mjs')).toContain('Write');
+    expect(matcherOf('pretooluse-tool-prompt-weight-guard.mjs')).toBe(FILE_WRITE_MATCHER);
+    expect(matcherOf('pretooluse-schedule-wakeup-provenance.mjs')).toBe('ScheduleWakeup');
+    expect(matcherOf('pretooluse-write-overwrite-guard.mjs')).toBe(FILE_OVERWRITE_MATCHER);
+    expect(matcherOf('pretooluse-generated-file-edit-guard.mjs')).toBe(FILE_WRITE_MATCHER);
+    expect(matcherOf('pretooluse-unreserved-migration-guard.mjs')).toBe(FILE_WRITE_MATCHER);
 
     // PostToolBatch: mid-turn context push (context-injection-audit-2026-07-28 P-015).
     // ⚠ It lives HERE and not on PreToolUse deliberately (D-027) — PreToolUse only
