@@ -3365,24 +3365,23 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       // this sync resolver has a 10s outer deadline. Return the badge's graceful
       // empty value first so a slow cold build cannot surface as HTTP 500; the
       // single-flight build continues warming the shared cache for the next poll.
-      const r = await withDeadlineFallback(
-        callPlansRead('attention', {}) as Promise<{ groups?: unknown[] }>,
-        ATTENTION_COUNTS_FALLBACK_MS,
-        () => ({ groups: [] }),
-      );
-      // `withDeadlineFallback` returns DeadlineOutcome<T> — { value, degraded } —
-      // not a bare T. `r.degraded` is TRUE when the deadline fired and `r.value`
-      // is the empty fallback rather than a real answer.
       //
-      // This site renders the graceful zeros either way, which is exactly what it
-      // did before the signature reported degradation at all. It is named here
-      // rather than destructured away so that ignoring it stays the VISIBLE choice
-      // the DeadlineOutcome doc asks for: this resolver's array element is the
-      // badge's wire shape, and adding a degradation field to it is a UI contract
-      // change, not a typecheck fix. Whoever plumbs disclosure through to the badge
-      // should start here — `degraded` is already carried this far.
-      const attention = r.degraded ? { groups: [] } : r.value;
-      return [deriveAttentionCounts(Array.isArray(attention?.groups) ? attention.groups : [])];
+      // ⚠ THAT FALLBACK IS AN EMPTY FEED, WHICH DERIVES TO ALL-ZEROS — the same
+      // row a genuinely empty inbox produces. `attentionCountsRowFromOutcome`
+      // stamps `degraded` onto the row so the two are distinguishable on the
+      // wire; the badge renders an indeterminate mark instead of a confident
+      // "nothing needs you" (WI-39779). Do NOT unwrap `.value` and drop the
+      // flag here — that is precisely the defect this fixed, and
+      // attention-counts.test.ts fails if the graceful empty goes out unmarked.
+      return [
+        attentionCountsRowFromOutcome(
+          await withDeadlineFallback(
+            callPlansRead('attention', {}) as Promise<{ groups?: unknown[] }>,
+            ATTENTION_COUNTS_FALLBACK_MS,
+            () => ({ groups: [] }),
+          ),
+        ),
+      ];
     },
   },
   // plans.waitingCount was REMOVED here 2026-08-10 (P-075). It was the
