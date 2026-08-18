@@ -173,6 +173,21 @@ interface SubstitutionPairCommon {
    */
   policyTier?: SubstitutionTier;
   /**
+   * The human-authored rule a {@link SubstitutionPair.policyTier} rests on, cited
+   * so a reader can go re-read it instead of trusting this file.
+   *
+   * Required to set a `policyTier` on a pair whose `intentLabel` is NOT a
+   * `policy-violation:` — see {@link assertPolicyTier} for why that is the
+   * narrower of the two routes, not a loophole around the prefix.
+   *
+   * The point of the citation is that the authorization lives SOMEWHERE ELSE and
+   * outlives this row. "The owner told me in chat" is not citable; a plan
+   * decision is. Write the rule down there first, then point at it — a `ref` that
+   * resolves to nothing is an assertion wearing a citation's clothes, which is
+   * the specific thing D-003 refuses.
+   */
+  policyAuthority?: PolicyAuthority;
+  /**
    * OPT-OUT: this pair may NEVER be promoted past `observe`, whatever its
    * verdict, until the stated condition is met. The value IS the reason, and it
    * is required — a hold with no argument is indistinguishable from an oversight.
@@ -325,15 +340,69 @@ export function patternFlagsOf(pair: SubstitutionPair): string {
   return isSqlPair(pair) ? '' : pair.bashPattern.flags;
 }
 
+/**
+ * A citation to the human-authored rule that authorizes a policy tier.
+ *
+ * Both fields are load-bearing and neither is decoration: `ref` is where the
+ * rule is written down (so it can be re-read, and so it outlives this row), and
+ * `rule` is what it actually says (so a reader of the registry alone can tell
+ * whether the rule still covers what the pattern now matches).
+ */
+export interface PolicyAuthority {
+  /**
+   * Where a human wrote the rule down — a plan decision (`<plan-slug>#D-NNN`),
+   * a work-item id, or a doc path. It must RESOLVE: the citation is the entire
+   * authorization, so an unresolvable one authorizes nothing.
+   */
+  ref: string;
+  /** The rule in the authoring human's own terms, quoted rather than paraphrased. */
+  rule: string;
+}
+
 /** The prefix an `intentLabel` must carry to be allowed a {@link SubstitutionPair.policyTier}. */
 export const POLICY_INTENT_PREFIX = 'policy-violation:';
 
 /**
  * The tier a pair actually seeds at, refusing an unauthorized escalation.
  *
- * @throws if `policyTier` is set on a pair whose intent is not a
- *   `policy-violation:` — the check that keeps "the gate enforces policy, never
- *   invents it" (D-003) a property of the code rather than of reviewer memory.
+ * ── The two routes, and why there are exactly two ────────────────────────────
+ * This function's own error has always named two ways past `observe`: "earned by
+ * P-020 observation, or authorized by a pre-existing rule (D-003)". Only the
+ * second reaches `deny` — {@link maxTierFor} caps an earned verdict at `advise`
+ * and never returns `deny`, because a score must not unlock a block.
+ *
+ * The second route was originally encoded as the `policy-violation:` PREFIX,
+ * which works when the intent IS the violation (`unsafe-dependency-install`:
+ * there is nothing to substitute, so there is no equivalence to prove). It does
+ * NOT work for a rule that mandates a substitution for an ordinary intent —
+ * naming that intent a violation would be false, and `intentLabel` is a KEY
+ * (`ON CONFLICT (workspace_id, intent_label)`, and the `fires` join), so
+ * renaming one strands the live row and severs its telemetry rather than
+ * editing it.
+ *
+ * So a cited {@link SubstitutionPair.policyAuthority} is the same second route,
+ * expressible for that case — and it is deliberately the NARROWER of the two,
+ * demanding strictly more than the prefix does:
+ *
+ *   prefix route     → any label an author types. No evidence required.
+ *   authority route  → a resolvable citation to a human ruling, AND a verdict of
+ *                      `equivalent` (measured, not asserted).
+ *
+ * Requiring `equivalent` is what makes this un-launderable: a cost argument
+ * ("the tool is cheaper") cannot produce an equivalence verdict, so it cannot
+ * reach `deny` here however it is worded.
+ *
+ * It also makes the mirror-claim below TRUE. Migration 665's
+ * `tier_requires_equivalence` CHECK permits a non-observe tier on three
+ * branches — `tier='observe' OR equivalence_verdict='equivalent' OR intent_label
+ * LIKE 'policy-violation:%'` — and this function used to mirror only the third.
+ * That gap is precisely why every `advise` row (equivalent, unprefixed) was
+ * legal in the database but `deny` on the same row was unreachable in code.
+ *
+ * @throws if `policyTier` is set on a pair that carries neither a
+ *   `policy-violation:` intent nor a cited authority over proven equivalence —
+ *   the check that keeps "the gate enforces policy, never invents it" (D-003) a
+ *   property of the code rather than of reviewer memory.
  */
 export function assertPolicyTier(pair: SubstitutionPair): SubstitutionTier {
   if (pair.policyTier === undefined) return 'observe';
@@ -344,11 +413,34 @@ export function assertPolicyTier(pair: SubstitutionPair): SubstitutionTier {
     );
   }
   if (!pair.intentLabel.startsWith(POLICY_INTENT_PREFIX)) {
-    throw new Error(
-      `pair ${pair.id} sets policyTier='${pair.policyTier}' but its intentLabel ` +
-        `'${pair.intentLabel}' is not a '${POLICY_INTENT_PREFIX}…'. A tier above 'observe' is ` +
-        'earned by P-020 observation, or authorized by a pre-existing rule (D-003) — never asserted.',
-    );
+    const authority = pair.policyAuthority;
+    if (authority === undefined) {
+      throw new Error(
+        `pair ${pair.id} sets policyTier='${pair.policyTier}' but its intentLabel ` +
+          `'${pair.intentLabel}' is not a '${POLICY_INTENT_PREFIX}…' and it cites no policyAuthority. ` +
+          "A tier above 'observe' is earned by P-020 observation, or authorized by a pre-existing " +
+          'rule (D-003) — never asserted.',
+      );
+    }
+    if (authority.ref.trim() === '' || authority.rule.trim() === '') {
+      throw new Error(
+        `pair ${pair.id} cites a policyAuthority with an empty ref or rule. The citation is the ` +
+          'whole authorization — an unresolvable one is an assertion wearing its clothes.',
+      );
+    }
+    // The owner's condition, enforced rather than remembered: a rule may mandate
+    // a substitution only where the substitution is PROVEN faithful. Without
+    // this, the authority route would be a way to block a command whose
+    // replacement cannot do the job — the exact D-001 harm the registry exists
+    // to prevent, and the one `dev:processes` already demonstrated.
+    if (pair.expectedVerdict !== 'equivalent') {
+      throw new Error(
+        `pair ${pair.id} cites policyAuthority '${authority.ref}' to reach ` +
+          `policyTier='${pair.policyTier}', but its verdict is '${pair.expectedVerdict}', not ` +
+          "'equivalent'. A cited rule may mandate a substitution only where the tool is proven to " +
+          'express the command; blocking an unproven one sends agents to a tool that cannot serve them.',
+      );
+    }
   }
   return pair.policyTier;
 }
