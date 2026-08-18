@@ -547,7 +547,7 @@ export function distillVitestRun(
   const files = Array.isArray(parsed.testResults) ? parsed.testResults : [];
   if (files.length === 0) return empty;
 
-  const out: DistilledTestRun = { ...empty, failures: [] };
+  const out: DistilledTestRun = { ...empty, failures: [], byFile: {} };
   let minStart: number | null = null;
   let maxEnd: number | null = null;
 
@@ -555,6 +555,9 @@ export function distillVitestRun(
     if (!f || typeof f.name !== 'string' || f.name.length === 0) continue;
     out.files += 1;
     const file = relToRootPosix(f.name, rootAbs);
+    // One bucket per reported file, created even for a file with zero assertions, so a
+    // caller can tell "this file ran and reported nothing" from "this file never ran".
+    const bucket = (out.byFile[file] ??= { passed: 0, failed: 0, skipped: 0, collectionFailed: false });
 
     if (typeof f.startTime === 'number') minStart = minStart === null ? f.startTime : Math.min(minStart, f.startTime);
     if (typeof f.endTime === 'number') maxEnd = maxEnd === null ? f.endTime : Math.max(maxEnd, f.endTime);
