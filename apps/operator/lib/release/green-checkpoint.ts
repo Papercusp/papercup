@@ -5194,7 +5194,9 @@ async function tryLongestGreenPrefix(
   const confirmWouldOverrun = (): boolean =>
     Date.now() + nextConfirmEstimateMs() > budget.deadlineMs;
   /** Run one confirm suite, charging its measured cost to the budget. */
-  const runConfirm = async (): Promise<GreenRunResult> => {
+  const runConfirm = async (): Promise<
+    Awaited<ReturnType<CheckpointDeps["runGreen"]>>
+  > => {
     const startedAt = Date.now();
     try {
       return await deps.runGreen(cfg.checkpointRoot, lastReady);
@@ -5252,7 +5254,7 @@ async function tryLongestGreenPrefix(
       );
       await deps.setupTree(sha);
       recoveryAttempts += 1;
-      const laterConfirm = await deps.runGreen(cfg.checkpointRoot, lastReady);
+      const laterConfirm = await runConfirm();
       if (laterConfirm.green) {
         recoveryPrefix = sha;
         confirm = laterConfirm;
@@ -5264,11 +5266,34 @@ async function tryLongestGreenPrefix(
       return false;
     };
 
+    // WI-39841 (Defect 3): the recovery walk is where the salvage actually spends its
+    // time — up to `maxRecoveryConfirms` MORE full affected suites after the initial
+    // confirm already missed. `maxRecoveryConfirms` bounds the COUNT of those suites; it
+    // says nothing about whether the run can afford them, and on the measured 2026-08-18
+    // run it could not. Re-ask the budget before each one, so the bound is time as well as
+    // count. Logged ONCE (the first refusal), because the two call sites below would
+    // otherwise repeat the same line as the loop re-tests its condition.
+    let deadlineHit = false;
+    const outOfTimeForAnotherConfirm = (): boolean => {
+      if (!confirmWouldOverrun()) return false;
+      if (!deadlineHit) {
+        deadlineHit = true;
+        logPartialGreenGate(
+          `partial-green-gate: recovery STOPPED after ${recoveryAttempts} of ${maxRecoveryConfirms} ` +
+            `confirm(s) — next confirm ~${Math.round(nextConfirmEstimateMs() / 60_000)}m, ` +
+            `~${Math.round((budget.deadlineMs - Date.now()) / 60_000)}m of run budget left. ` +
+            `Holding: a verdict that LANDS beats a partial advance that does not.`,
+        );
+      }
+      return true;
+    };
+
     // The immediate successor is the highest-value probe: it catches a repair that landed
     // directly after the locator's conservative cut without paying for a binary search.
     if (
       recoveryLeft <= lastPrefixIndex &&
-      recoveryAttempts < maxRecoveryConfirms
+      recoveryAttempts < maxRecoveryConfirms &&
+      !outOfTimeForAnotherConfirm()
     ) {
       const forwardIndex = recoveryLeft;
       await confirmLaterPrefix(forwardIndex, "forward");
@@ -5280,7 +5305,8 @@ async function tryLongestGreenPrefix(
     // forward, where a later repair can still make the prefix green.
     while (
       recoveryLeft <= lastPrefixIndex &&
-      recoveryAttempts < maxRecoveryConfirms
+      recoveryAttempts < maxRecoveryConfirms &&
+      !outOfTimeForAnotherConfirm()
     ) {
       const middle =
         recoveryLeft + Math.floor((lastPrefixIndex - recoveryLeft) / 2);
@@ -6838,6 +6864,14 @@ export async function runGreenCheckpoint(
         failingTests,
         !!opts.noPush,
         logPartialGreenGate,
+        // WI-39841 (Defect 3): the check above is the cheap DON'T-START gate; this carries
+        // the same budget INTO the salvage so it is re-asked before each of the up-to-five
+        // confirm suites it may run. Same deadline, same estimator — the salvage just gets
+        // a strictly better input for it (its own measured confirm cost) once it has one.
+        {
+          deadlineMs: salvageDeadlineMs,
+          initialConfirmEstimateMs: salvageCostEstimateMs,
+        },
       ).catch((e) => {
         salvageErrored = true;
         logPartialGreenGate(
