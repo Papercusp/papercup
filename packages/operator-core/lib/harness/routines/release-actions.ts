@@ -1074,8 +1074,21 @@ export type GateStallClass = 'reset' | 'noop' | 'red' | 'record-only';
  *     own vite-node module cache, deleted underneath it mid-run by something on the
  *     host. Its ~4,800 failing files are innocent, so the tick is a non-verdict for
  *     the same reason a migrations-pending abort is, and gets the same backstops.
+ *   - 'noop': `status === 'deadline-exceeded'` (WI-39841) — the run was SIGTERM'd at
+ *     its own suite budget before it could record a verdict. The other two aborts
+ *     happen BEFORE judging; this one is killed DURING or AFTER judging and simply
+ *     cannot report, which is why it used to arrive here indistinguishable from a
+ *     crash: non-zero exit, no parseable marker. The runner now stamps
+ *     `RunResult.timedOut` at the timer that does the killing, so the two are told
+ *     apart by an OBSERVED fact rather than by the shape of what is missing.
+ *     Measured 2026-08-18: the 17:15:04Z run died at its 120m cap and banked red #27
+ *     carrying `failingTests:[]` / `observedCandidate:null` — a red naming nothing to
+ *     fix, which still drove the held-gate alarm and the release-fixer dispatch. Same
+ *     backstops as the two above.
  *   - 'red': every other non-green verdict (not-green / error / create-failed /
- *     not-fast-forward / …) still counts toward the stall streak.
+ *     not-fast-forward / …) still counts toward the stall streak. 'error' keeps its
+ *     place here: after WI-39841 it means a genuine crash or unparseable output, NOT
+ *     a deadline-kill.
  */
 /** The re-triage fields this module reads. Structural + narrow on purpose: `trackGateStall`'s
  *  own `retriage` param (and the CLI's CheckpointVerdict.retriage) satisfy it without either
@@ -1301,8 +1314,11 @@ export async function trackGateStall(
   // a full advance — the red tip is tracked separately via the release-fixer dispatch.
   const isGreen = status === 'advanced' || status === 'up-to-date' || status === 'advanced-prefix';
   // P-006: every non-green verdict OTHER than 'skipped-locked' counts toward the stall
-  // streak — INCLUDING 'error' (a green-checkpoint script crash, the 25-min timeout, or
-  // unparseable JSON). 'skipped-locked' (a run-lock collision — green-checkpoint-stale-
+  // streak — INCLUDING 'error' (a green-checkpoint script crash or unparseable JSON).
+  // WI-39841 CARVED THE TIMEOUT BACK OUT of that set: a run killed at its own suite budget
+  // now arrives as 'deadline-exceeded' (stamped from RunResult.timedOut) and is a 'noop',
+  // because it recorded no verdict and its red named no failing file. A CRASH still counts.
+  // 'skipped-locked' (a run-lock collision — green-checkpoint-stale-
   // lock-2026-06-26) is handled separately below (EI-2615: `classifyGateStallStatus`
   // treats it as a no-op, not a red — see that function's doc for why). A persistent
   // crash/hang/wedged-lock still increments the streak (via 'error' + the separate
