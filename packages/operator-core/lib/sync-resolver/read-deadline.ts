@@ -46,6 +46,46 @@ export const RESOLVER_READ_TIMEOUT_MS = 10_000;
 export type WithinBudget = <T>(p: Promise<T>, label: string) => Promise<T>;
 
 /**
+ * The rejection a lapsed deadline produces (WI-39823).
+ *
+ * WHY A TYPE AND NOT JUST THE MESSAGE: a caller frequently needs to treat a
+ * BUDGET expiry differently from an ordinary leg failure — most often because
+ * its existing `catch` degrades to a confident empty value (`return null`,
+ * `cycles: []`) that a client renders as "nothing here" or, worse, as a
+ * permanent spinner. Sorting a timeout out of that path by matching on message
+ * text is the brittle version of this; `instanceof` is the durable one.
+ *
+ * The `message` is deliberately UNCHANGED from the original literal
+ * (`<label> exceeded the read budget`) — existing guards assert on that exact
+ * string, and subclassing `Error` keeps both `instanceof Error` and `.message`
+ * true, so this is additive to every caller that predates it.
+ */
+export class ReadBudgetExceededError extends Error {
+  /** The leg label the budget lapsed on — the "which leg" a bare message hides. */
+  readonly label: string;
+  constructor(label: string) {
+    super(`${label} exceeded the read budget`);
+    this.name = 'ReadBudgetExceededError';
+    this.label = label;
+  }
+}
+
+/**
+ * True when `err` is a lapsed read deadline rather than a failing dependency.
+ *
+ * Prefer this over `instanceof` at a module boundary: this file can be loaded
+ * through more than one module record here (bare specifier vs relative path,
+ * bundled copy beside source), and a cross-record `instanceof` silently answers
+ * false. The name check is the fallback that survives that.
+ */
+export function isReadBudgetExceeded(err: unknown): boolean {
+  return (
+    err instanceof ReadBudgetExceededError ||
+    (err instanceof Error && err.name === 'ReadBudgetExceededError')
+  );
+}
+
+/**
  * Open a deadline `budgetMs` from now and return the bounding function for it.
  *
  * Every call shares the ONE deadline, so a read with several sequential
