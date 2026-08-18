@@ -147,14 +147,7 @@ describe('seedSubstitutionRegistry (real PG)', () => {
     expect(policyPairs.length).toBeGreaterThan(0);
 
     for (const pair of policyPairs) {
-      // Every policy row must sit on ONE of the two authorized routes — the
-      // `policy-violation:` prefix (its intent IS the violation), or a cited
-      // authority over a PROVEN-equivalent verdict (D-044). Asserting the
-      // disjunction here, rather than the prefix alone, is what keeps a future
-      // row from reaching `deny` on neither.
-      const byPrefix = pair.intentLabel.startsWith(POLICY_INTENT_PREFIX);
-      const byCitation = pair.policyAuthority !== undefined && pair.expectedVerdict === 'equivalent';
-      expect(byPrefix || byCitation).toBe(true);
+      expect(pair.intentLabel.startsWith(POLICY_INTENT_PREFIX)).toBe(true);
       await db.adminSql`
         UPDATE harness_shared.bash_tool_substitutions SET tier = 'observe'
          WHERE workspace_id = ${WORKSPACE} AND intent_label = ${pair.intentLabel}
