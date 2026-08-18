@@ -654,6 +654,18 @@ async function recordInvocationImpl(
   // the palette's mutating ACTIONS through the same tools are not read-shaped and
   // still record.
   if (isPaletteUiPollRead(input)) return;
+  // Coverage-census attribution (plan deterministic-coverage-census-2026-08-17, P-004).
+  // Inert unless PAPERCUSP_TEST_ATTRIBUTION=1. This is the single sink EVERY settled
+  // `tools/call` reaches — including the replay branch — and `input.toolName` is the same
+  // identity `providers/mcp-tools.ts` enumerates from the live catalog, so the observer and
+  // the census name surfaces identically. Placed AFTER the palette-poll drop on purpose: a
+  // dock UI refresh is not a test exercising a tool, and counting it as coverage would credit
+  // a surface no test touches.
+  try {
+    recordMcpTraffic({ toolName: input.toolName, status: input.status });
+  } catch {
+    /* attribution is best-effort — never let it break a dispatch */
+  }
   // P-003: snapshot the row synchronously, then enqueue + return. The actual PG
   // INSERT happens in a batched background flush, OFF the dispatcher's awaited
   // hot path.

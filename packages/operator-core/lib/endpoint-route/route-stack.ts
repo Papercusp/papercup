@@ -21,6 +21,7 @@ import { PrincipalCheckError, requirePrincipal } from '../auth/require-principal
 import type { RouteDefinition } from './define-route';
 import { requireLoopbackOr403 } from './loopback-guard';
 import { recordRouteInvocation } from './telemetry';
+import { recordHttpTraffic } from '../coverage-census/attribution/sink';
 
 /* ─── Step names ─────────────────────────────────────────────────────── */
 
