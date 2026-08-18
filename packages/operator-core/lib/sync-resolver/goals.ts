@@ -282,10 +282,12 @@ function toSummary(r: RawGoal): GoalSummaryRowBase {
     // narrowed defensively: a legacy/cached payload predating P-006 has no such
     // key, and `undefined.map` would take the whole board down over a filter.
     agents: Array.isArray(r.agents)
-      ? (r.agents as Array<{ ownerId?: unknown }>)
-          .map((a) => String(a?.ownerId ?? ''))
-          .filter((id) => id.length > 0)
-          .map((ownerId) => ({ ownerId }))
+      ? (r.agents as Array<{ ownerId?: unknown; setAtMs?: unknown }>)
+          .map((a) => ({
+            ownerId: String(a?.ownerId ?? ''),
+            setAtMs: Number(a?.setAtMs ?? 0),
+          }))
+          .filter((a) => a.ownerId.length > 0)
       : [],
     // Fall back to the pre-migration-765 home so a legacy goal still shows the
     // one string the whole GUI is built around, rather than rendering blank.
