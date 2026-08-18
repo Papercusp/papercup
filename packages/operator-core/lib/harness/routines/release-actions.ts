@@ -199,6 +199,12 @@ interface RunResult {
   code: number;
   stdout: string;
   stderr: string;
+  /** WI-39841 (Defect 2): THIS runner's own deadline timer fired and SIGTERM'd the group.
+   *  Without it, a deadline-kill is indistinguishable from a script crash — both arrive as a
+   *  non-zero exit with no parseable result marker, and both were recorded as a red. They call
+   *  for opposite operator actions, so the fact is captured at the only place that knows it
+   *  first-hand (the timer callback) rather than inferred downstream from empty fields. */
+  timedOut?: boolean;
 }
 
 /** Per-fork vitest heap budget (GiB) — one fork's `--max-old-space-size` worth. */
@@ -281,7 +287,12 @@ function runScript(
           /* group already gone */
         }
       };
+      // WI-39841 (Defect 2): remember that WE killed it. This is the only point in the system
+      // that observes the deadline-kill directly; everywhere downstream sees only "non-zero
+      // exit, no marker", which is the same shape a crash produces.
+      let timedOut = false;
       const killer = setTimeout(() => {
+        timedOut = true;
         killGroup('SIGTERM');
         // Escalate if a wedged worker ignores SIGTERM, so the group can't linger.
         sigkiller = setTimeout(() => killGroup('SIGKILL'), 15_000);
@@ -291,7 +302,7 @@ function runScript(
         settled = true;
         clearTimeout(killer);
         if (sigkiller) clearTimeout(sigkiller);
-        resolve(r);
+        resolve(timedOut ? { ...r, timedOut: true } : r);
       };
       // Scope-launch failure (spawn error / fast systemd-run exit with a launch-shaped
       // stderr) → retry DIRECT once, so a box without a reachable user bus degrades to
@@ -802,7 +813,14 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
   // The CLI prints the CheckpointResult as JSON ({ advanced, candidate, from,
   // green, reason }); `reason` IS our status vocabulary. On a crash before that
   // print (non-zero exit, no parseable JSON), record an 'error' row instead.
-  let status = 'error';
+  // WI-39841 (Defect 2): a run KILLED at its own deadline is not a crash and is not a verdict.
+  // Measured on the 2026-08-18T17:15:04Z cron run: SIGTERM'd at its 120m cap mid-salvage, it
+  // recorded `failingTests:[] observedCandidate:null retriageDetail:null` — and still drove
+  // consecutiveReds 26 -> 27, the streak that freezes `main` and dispatches release-fixers.
+  // A contentless red is worse than no red: it names nothing to fix while asserting something
+  // is broken. `parsed?.reason` below still wins whenever the run DID print a verdict before
+  // dying, so this only relabels the genuinely verdict-less case.
+  let status = r.timedOut ? 'deadline-exceeded' : 'error';
   let candidate: string | undefined;
   let summary: string | undefined;
   let failingTests: string[] | undefined;
@@ -1136,10 +1154,23 @@ export function classifyGateStallStatus(
   // on the streak that freezes `main`). Same backstops as 'migrations-pending' — this leaves
   // `lastGreenAt` stale on purpose, so checkMainBehindStaging and evaluateGreenStall's 12h
   // `verdictStale` still escalate a frozen `main`; only the mislabelling stops.
+  // WI-39841 (Defect 2): 'deadline-exceeded' — the run was SIGTERM'd at its own suite budget
+  // before it could record a verdict. Same class, arrived at from the opposite end: the other
+  // two abort BEFORE judging, this one is killed DURING/AFTER judging but cannot report. Either
+  // way the tick establishes nothing about the code, and the streak may only move on evidence.
+  // Measured 2026-08-18: the 17:15:04Z run died at its 120m cap and banked red #27 carrying
+  // `failingTests:[]` and `observedCandidate:null` — a red that names nothing to fix, which
+  // then drives the held-gate alarm and the release-fixer dispatch.
+  // Same backstops as the other two, and they are what make this safe rather than quieter:
+  // this leaves `lastGreenAt` stale ON PURPOSE, so checkMainBehindStaging (>20 behind, >1h, no
+  // advance in 2h) and evaluateGreenStall's 12h `verdictStale` still escalate a frozen `main`.
+  // A gate that keeps dying at its deadline therefore still reaches a human — as an abort that
+  // names its own cause, instead of as a broken-build report naming nobody.
   if (
     status === 'skipped-locked' ||
     status === 'migrations-pending' ||
-    status === 'infra-inconclusive'
+    status === 'infra-inconclusive' ||
+    status === 'deadline-exceeded'
   )
     return 'noop';
   // WI-39450: a pass whose own re-triage watched the failing files PASS at tip produced no
@@ -1352,7 +1383,15 @@ export async function trackGateStall(
     // must not be raced. An infra fault has no such peer, and leaving the previous red standing
     // is the exact 2.5h "the reds are yours to fix" failure described above — worse here, because
     // the stale red it keeps rendering names up to 4,789 innocent files.
-    if (status === 'migrations-pending' || status === 'infra-inconclusive') {
+    // WI-39841 (Defect 2): 'deadline-exceeded' joins them for the same reason, one phase later
+    // still — the suite ran and may even have REACHED a verdict, but the process was killed
+    // before it could record one, so nothing about the code was established. Recording it here
+    // is what stops the abort going silent once it no longer counts as a red.
+    if (
+      status === 'migrations-pending' ||
+      status === 'infra-inconclusive' ||
+      status === 'deadline-exceeded'
+    ) {
       try {
         await sql.unsafe(
           `UPDATE harness_shared.routines
