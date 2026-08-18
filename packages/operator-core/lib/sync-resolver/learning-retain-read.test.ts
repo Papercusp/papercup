@@ -273,9 +273,7 @@ describe('readRetainFeed', () => {
     });
     const deps: RetainFeedDeps = {
       ...emptyFeedDeps(),
-      listRubrics: async () => [
-        { slug: 'r1', title: 'R', status: 'active', updatedAt: '2026-08-01T00:00:00.000Z' },
-      ],
+      listRubrics: async () => [{ slug: 'r1', title: 'R', status: 'active', updatedAt: '2026-08-01T00:00:00.000Z' }],
       countRunbooks: async () => 512,
       countRecipes: async () => 13561,
     };
@@ -422,6 +420,161 @@ describe('readRetainFeed', () => {
   });
 
   /**
+   * WI-39813 — a store that HANGS must degrade exactly like one that THROWS.
+   *
+   * The per-leg try/catch above only ever covered a leg that rejects. Nothing
+   * bounded a leg that merely never settles, so `Promise.all` waited for it,
+   * the read blew the sync layer's 10s resolver timeout, and the whole page
+   * 500'd with ZERO rows even though every other leg had already returned —
+   * the "Loading retained items… forever" reported on 2026-08-17 (the client
+   * sets no `retry`, so v5 retries 3x at a full 10s each before any error
+   * branch can surface). Slowness is the characteristic symptom of a hiccuping
+   * store here, not the exception: memory-backend p50 is ~10.9s (WI-39554) and
+   * the memory leg is a full-corpus read over exactly that backend.
+   */
+  describe('a hung store degrades instead of hanging the page (WI-39813)', () => {
+    /** Never settles — a wedged store, not a failing one. */
+    const hang = <T>(): Promise<T> => new Promise<T>(() => {});
+    const oneWi = (t: string) => (isWiLeg(t) ? [wiRow('EI-1', '2026-08-16T00:00:00.000Z')] : [{ n: 0 }]);
+
+    it('a hanging leg lands in `degraded` and every other leg still serves its rows', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const page = await readRetainFeed(
+        sqlStub(oneWi),
+        'ws-1',
+        { ...emptyFeedDeps(), listMemories: () => hang() },
+        { tab: 'all', budgetMs: 40 },
+      );
+
+      expect(page.degraded).toContain('memory');
+      // The whole point: the page still SERVES. Before the budget this returned
+      // nothing at all, because the hung leg took the entire read down with it.
+      expect(page.rows.map((r) => r.id)).toEqual(['EI-1']);
+      expect(page.counts?.memories).toBeNull();
+      warn.mockRestore();
+    });
+
+    // Without this control the guard above would pass just as happily against a
+    // branch that degrades unconditionally — "always degraded" satisfies every
+    // assertion that only ever inspects the failing case.
+    it('a healthy page under the SAME budget degrades nothing — the guard discriminates on the hang, not on the budget', async () => {
+      const page = await readRetainFeed(
+        sqlStub(oneWi),
+        'ws-1',
+        {
+          ...emptyFeedDeps(),
+          listMemories: async () => [
+            { id: 'm1', text: 'a memory', metadata: { created_at: '2026-08-15T00:00:00.000Z' } },
+          ],
+        },
+        { tab: 'all', budgetMs: 40 },
+      );
+
+      expect(page.degraded).toEqual([]);
+      expect(page.counts?.memories).toBe(1);
+      expect(page.rows.map((r) => r.kind).sort()).toEqual(['memory', 'wi']);
+    });
+
+    // The counts fan-out is a SECOND, later `Promise.all` and hangs the page
+    // just as thoroughly as the legs do. Budgeting only the legs leaves the
+    // original defect fully reachable through any count.
+    it('a hanging COUNT nulls that one count without hanging the page, and its siblings still resolve', async () => {
+      const page = await readRetainFeed(
+        sqlStub(oneWi),
+        'ws-1',
+        { ...emptyFeedDeps(), countRecipes: () => hang(), countRunbooks: async () => 7 },
+        { tab: 'all', budgetMs: 40 },
+      );
+
+      expect(page.counts?.recipes).toBeNull();
+      expect(page.counts?.runbooks).toBe(7);
+      expect(page.rows.map((r) => r.id)).toEqual(['EI-1']);
+    });
+
+    // Pins the DEADLINE decision itself. Two independent per-call budgets would
+    // total 2x and overrun the very 10s resolver timeout this exists to stay
+    // under; the observable difference is that counts run AFTER the legs, so a
+    // budget the legs already spent must leave them none.
+    it('the deadline is SHARED by both fan-outs — the counts get no second budget after the legs spent the first', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      // Needs one real timer tick: fast, but not a microtask (an already-settled
+      // promise legitimately wins a zero-remaining budget, by design).
+      const slowishCount = () => new Promise<number>((r) => setTimeout(() => r(9), 5));
+
+      const spent = await readRetainFeed(
+        sqlStub(oneWi),
+        'ws-1',
+        { ...emptyFeedDeps(), listMemories: () => hang(), countRecipes: slowishCount },
+        { tab: 'all', budgetMs: 30 },
+      );
+      expect(spent.degraded).toContain('memory');
+      expect(spent.counts?.recipes).toBeNull();
+
+      // Control: the identical count against a deadline nothing has spent lands
+      // — so the null above is the shared deadline, not a count that can't run.
+      const fresh = await readRetainFeed(
+        sqlStub(oneWi),
+        'ws-1',
+        { ...emptyFeedDeps(), countRecipes: slowishCount },
+        { tab: 'all', budgetMs: 2000 },
+      );
+      expect(fresh.counts?.recipes).toBe(9);
+      warn.mockRestore();
+    });
+
+    /**
+     * FALSIFIABILITY CONTROL for the three guards above — they are only worth
+     * their runtime if they FAIL when the bound stops being applied.
+     *
+     * The read builds its deadline internally, so the honest lever is the one
+     * knob it exposes: a budget far outside the test's patience is
+     * observationally identical to no bound at all. Under it the SAME hang
+     * takes the WHOLE read down — the defect itself, reproduced on demand
+     * rather than asserted, and the reason `degraded` can never ship from an
+     * unbounded read (the response never ships either).
+     *
+     * `pending` has to be an assertable outcome here, not a test timeout: "it
+     * never settles" is precisely the condition under test.
+     */
+    const PENDING = Symbol('still-pending');
+    const settledWithin = <T>(p: Promise<T>, ms: number): Promise<T | typeof PENDING> =>
+      Promise.race([
+        p,
+        new Promise<typeof PENDING>((resolve) => {
+          const t = setTimeout(() => resolve(PENDING), ms);
+          (t as unknown as { unref?: () => void }).unref?.();
+        }),
+      ]);
+
+    it('CONTROL: with a budget that cannot fire, the same hang takes the whole read down — so the guards above are falsifiable', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const unbounded = readRetainFeed(
+        sqlStub(oneWi),
+        'ws-1',
+        { ...emptyFeedDeps(), listMemories: () => hang() },
+        { tab: 'all', budgetMs: 10 * 60_000 },
+      );
+      expect(await settledWithin(unbounded, 150)).toBe(PENDING);
+
+      // Calibration: the identical call under a REAL budget settles, degraded.
+      // Without this the assertion above would also pass against a read that
+      // can never settle for some unrelated reason.
+      const bounded = await settledWithin(
+        readRetainFeed(
+          sqlStub(oneWi),
+          'ws-1',
+          { ...emptyFeedDeps(), listMemories: () => hang() },
+          { tab: 'all', budgetMs: 40 },
+        ),
+        2000,
+      );
+      expect(bounded).not.toBe(PENDING);
+      expect(bounded !== PENDING && bounded.degraded).toContain('memory');
+      warn.mockRestore();
+    });
+  });
+
+  /**
    * EI-18792873324746237 — the shipped verdict is stamped SERVER-side against
    * the shared unified status set. The regression: a query naming only the
    * pre-unify 'resolved'/'closed' spellings selected nothing post-flip, and a
@@ -473,9 +626,7 @@ describe('readRetainFeed', () => {
   });
 
   it('plan rows carry the plan-born child rollup + origin idea', async () => {
-    const sql = sqlStub((t) =>
-      isPlanLeg(t) ? [planRow('p1', '2026-08-15T00:00:00.000Z')] : [{ n: 0 }],
-    );
+    const sql = sqlStub((t) => (isPlanLeg(t) ? [planRow('p1', '2026-08-15T00:00:00.000Z')] : [{ n: 0 }]));
     const page = await readRetainFeed(sql, 'ws-1', emptyFeedDeps(), { tab: 'plans' });
     expect(page.rows[0]!.meta).toEqual({
       ideaId: 'idea-p1',
@@ -496,9 +647,7 @@ describe('readRetainFeed', () => {
     });
 
     it('interleaves memory rows by metadata recency, with provenance in meta', async () => {
-      const sql = sqlStub((t) =>
-        isWiLeg(t) ? [wiRow('EI-1', '2026-08-15T00:00:00.000Z')] : [{ n: 0 }],
-      );
+      const sql = sqlStub((t) => (isWiLeg(t) ? [wiRow('EI-1', '2026-08-15T00:00:00.000Z')] : [{ n: 0 }]));
       const deps: RetainFeedDeps = {
         ...emptyFeedDeps(),
         listMemories: async () => [
@@ -548,7 +697,11 @@ describe('readRetainFeed', () => {
     it('an UNWIRED listMemories dep degrades VISIBLY, never silently', async () => {
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
       const { listMemories: _omit, ...rest } = emptyFeedDeps();
-      const page = await readRetainFeed(sqlStub(() => [{ n: 0 }]), 'ws-1', rest as RetainFeedDeps);
+      const page = await readRetainFeed(
+        sqlStub(() => [{ n: 0 }]),
+        'ws-1',
+        rest as RetainFeedDeps,
+      );
       expect(page.degraded).toEqual(['memory']);
       expect(page.counts?.memories).toBeNull();
       warn.mockRestore();
@@ -668,7 +821,15 @@ describe('readRetainDetail', () => {
     const d = await readRetainDetail(sql, 'ws-1', 'wi', 'EI-1', emptyDetailDeps());
     expect(d).toMatchObject({ kind: 'wi', title: 'The issue', status: 'done', body: 'repro steps' });
     expect(d!.fields.map((f) => f.label)).toEqual(['Severity', 'Scope', 'Created by', 'Created']);
-    expect(await readRetainDetail(sqlStub(() => []), 'ws-1', 'wi', 'EI-none', emptyDetailDeps())).toBeNull();
+    expect(
+      await readRetainDetail(
+        sqlStub(() => []),
+        'ws-1',
+        'wi',
+        'EI-none',
+        emptyDetailDeps(),
+      ),
+    ).toBeNull();
   });
 
   it('rubric: criteria as listItems', async () => {
@@ -683,7 +844,13 @@ describe('readRetainDetail', () => {
         updatedAt: '2026-08-15T00:00:00.000Z',
       }),
     };
-    const d = await readRetainDetail(sqlStub(() => []), 'ws-1', 'rubric', 'r-1', deps);
+    const d = await readRetainDetail(
+      sqlStub(() => []),
+      'ws-1',
+      'rubric',
+      'r-1',
+      deps,
+    );
     expect(d).toMatchObject({ kind: 'rubric', title: 'Rubric R', body: 'what good looks like' });
     expect(d!.listItems).toEqual(['C1', 'C2', 'c3']);
     expect(d!.fields).toEqual([{ label: 'Characteristic', value: 'hive-coordination' }]);
@@ -697,7 +864,13 @@ describe('readRetainDetail', () => {
         ts: '2026-08-01T00:00:00.000Z',
       }),
     };
-    const d = await readRetainDetail(sqlStub(() => []), 'ws-1', 'runbook', 'doc-1', deps);
+    const d = await readRetainDetail(
+      sqlStub(() => []),
+      'ws-1',
+      'runbook',
+      'doc-1',
+      deps,
+    );
     expect(d).toMatchObject({ title: 'The doc', body: 'The method itself.', ts: '2026-08-01T00:00:00.000Z' });
     expect(d!.fields).toEqual([{ label: 'Discovered', value: '2026-07-01' }]);
   });
@@ -719,7 +892,13 @@ describe('readRetainDetail', () => {
         updatedAt: '2026-08-10T00:00:00.000Z',
       }),
     };
-    const d = await readRetainDetail(sqlStub(() => []), 'ws-1', 'recipe', 'rec-1', deps);
+    const d = await readRetainDetail(
+      sqlStub(() => []),
+      'ws-1',
+      'recipe',
+      'rec-1',
+      deps,
+    );
     expect(d).toMatchObject({ kind: 'recipe', body: 'what it automates', code: 'console.log(1)' });
     expect(d!.ts).toBe('2026-08-15T00:00:00.000Z');
     expect(d!.fields).toEqual([
@@ -749,7 +928,13 @@ describe('readRetainDetail', () => {
         },
       }),
     };
-    const d = await readRetainDetail(sqlStub(() => []), 'ws-1', 'memory', 'm-1', deps);
+    const d = await readRetainDetail(
+      sqlStub(() => []),
+      'ws-1',
+      'memory',
+      'm-1',
+      deps,
+    );
     expect(d).toMatchObject({
       kind: 'memory',
       body: 'The retained fact, in full.',
@@ -773,8 +958,24 @@ describe('readRetainDetail', () => {
   });
 
   it('an empty id, an unknown id, and a throwing store all resolve null — never a 500', async () => {
-    expect(await readRetainDetail(sqlStub(() => []), 'ws-1', 'plan', '', emptyDetailDeps())).toBeNull();
-    expect(await readRetainDetail(sqlStub(() => []), 'ws-1', 'memory', 'm-none', emptyDetailDeps())).toBeNull();
+    expect(
+      await readRetainDetail(
+        sqlStub(() => []),
+        'ws-1',
+        'plan',
+        '',
+        emptyDetailDeps(),
+      ),
+    ).toBeNull();
+    expect(
+      await readRetainDetail(
+        sqlStub(() => []),
+        'ws-1',
+        'memory',
+        'm-none',
+        emptyDetailDeps(),
+      ),
+    ).toBeNull();
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const deps: RetainDetailDeps = {
       ...emptyDetailDeps(),
@@ -782,7 +983,15 @@ describe('readRetainDetail', () => {
         throw new Error('store down');
       },
     };
-    expect(await readRetainDetail(sqlStub(() => []), 'ws-1', 'rubric', 'r-1', deps)).toBeNull();
+    expect(
+      await readRetainDetail(
+        sqlStub(() => []),
+        'ws-1',
+        'rubric',
+        'r-1',
+        deps,
+      ),
+    ).toBeNull();
     warn.mockRestore();
   });
 

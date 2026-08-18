@@ -118,4 +118,68 @@ describe('readReleaseReadiness', () => {
     expect(snap.errors).toHaveLength(2);
     expect(snap.readAt).toBeTruthy();
   });
+
+  /**
+   * EI-20801200386596605 (sibling of WI-39813) — fail-soft covered a leg that
+   * THROWS and nothing at all for a leg that HANGS. `Promise.all` waits for the
+   * slowest, so one wedged reader blew the ~10s resolver timeout and 500'd the
+   * whole strip — which could not then show the degraded state the `.catch`es
+   * above so carefully computed, because the response itself never shipped.
+   */
+  describe('a hung leg degrades instead of hanging the strip (EI-20801200386596605)', () => {
+    /** Never settles — a wedged reader, not a failing one. */
+    const hang = () => new Promise<never>(() => {});
+
+    it('a hanging ledger read degrades that leg while the rubric line still serves', async () => {
+      buildProgramSuccessReport.mockImplementation(hang);
+      const snap = await readReleaseReadiness({ budgetMs: 40 });
+
+      expect(snap.report).toBeNull();
+      // The whole point: the strip still SERVES. Before the budget this returned
+      // nothing at all — the hung leg took the entire read down with it.
+      expect(snap.rubric?.rubricId).toBe(RELEASE_READINESS_RUBRIC_ID);
+      expect(snap.errors?.some((e) => e.includes('success-metrics'))).toBe(true);
+    });
+
+    // Without this control the guard above would pass just as happily against a
+    // read that degrades unconditionally — "always degraded" satisfies every
+    // assertion that only ever inspects the failing case.
+    it('a healthy read under the SAME budget degrades nothing — the guard discriminates on the hang, not on the budget', async () => {
+      const snap = await readReleaseReadiness({ budgetMs: 40 });
+
+      expect(snap.errors).toBeUndefined();
+      expect(snap.report).toEqual(sampleReport);
+      expect(snap.rubric?.rubricId).toBe(RELEASE_READINESS_RUBRIC_ID);
+    });
+
+    /**
+     * FALSIFIABILITY CONTROL for the two guards above. The read builds its
+     * deadline internally, so the lever is the one knob it exposes: a budget
+     * outside the test's patience is observationally identical to no bound at
+     * all, and under it the SAME hang takes the whole strip down — the defect
+     * reproduced on demand instead of asserted. "Never settles" is the
+     * condition under test, so it has to be an assertable outcome rather than
+     * a test timeout.
+     */
+    const PENDING = Symbol('still-pending');
+    const settledWithin = <T>(p: Promise<T>, ms: number): Promise<T | typeof PENDING> =>
+      Promise.race([
+        p,
+        new Promise<typeof PENDING>((resolve) => {
+          const t = setTimeout(() => resolve(PENDING), ms);
+          (t as unknown as { unref?: () => void }).unref?.();
+        }),
+      ]);
+
+    it('CONTROL: with a budget that cannot fire, the same hang takes the whole strip down — so the guards above are falsifiable', async () => {
+      buildProgramSuccessReport.mockImplementation(hang);
+
+      expect(await settledWithin(readReleaseReadiness({ budgetMs: 10 * 60_000 }), 150)).toBe(PENDING);
+
+      // Calibration: the identical call under a REAL budget settles, degraded.
+      const bounded = await settledWithin(readReleaseReadiness({ budgetMs: 40 }), 2000);
+      expect(bounded).not.toBe(PENDING);
+      expect(bounded !== PENDING && bounded.report).toBeNull();
+    });
+  });
 });

@@ -25,6 +25,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import type { Sql } from 'postgres';
 import { ISSUE_ABANDONED_STATUSES, ISSUE_SHIPPED_STATUSES } from '../work-item-blocking';
+import { createReadDeadline } from './read-deadline';
 import {
   compareRetainRows,
   decodeRetainCursor,
@@ -87,7 +88,10 @@ export interface RetainExtrasDeps {
 
 /** Parse `title:` + `discovered:` out of an .mdx frontmatter block (regex — the
  *  files are our own generated runbooks, never arbitrary input). */
-export function parseInsightFrontmatter(slug: string, text: string): { slug: string; title: string; discovered: string | null } {
+export function parseInsightFrontmatter(
+  slug: string,
+  text: string,
+): { slug: string; title: string; discovered: string | null } {
   const head = text.slice(0, 2000);
   const title = /^title:\s*(?:["']?)(.+?)(?:["']?)\s*$/m.exec(head)?.[1]?.trim();
   const discovered = /^discovered:\s*(\d{4}-\d{2}-\d{2})\s*$/m.exec(head)?.[1] ?? null;
@@ -250,6 +254,11 @@ export interface RetainFeedOpts {
   harnessScopes?: readonly string[];
   /** Hive-member harness slugs; scopes the plans leg by `hp.harness_slug`. */
   memberSlugs?: readonly string[];
+  /** Whole-read deadline override in ms (default {@link RETAIN_READ_BUDGET_MS}).
+   *  SERVER-SET ONLY: the resolver builds this opts object field by field and
+   *  never spreads client args, so a caller cannot widen it into a DoS knob.
+   *  Tests pass a tiny value to exercise the degrade path without waiting. */
+  budgetMs?: number;
 }
 
 /** The SQL predicate mirroring {@link inRetainLegWindow}, over a subquery
@@ -262,6 +271,19 @@ function legWindowSql(sql: Sql, w: RetainLegWindow | null) {
     return sql`(x.ts < ${w.beforeTs}::timestamptz OR (x.ts = ${w.beforeTs}::timestamptz AND x.id COLLATE "C" > ${w.tieIdAfter}))`;
   return sql`x.ts < ${w.beforeTs}::timestamptz`;
 }
+
+/**
+ * Whole-read budget for one Retained page, in ms — comfortably under the
+ * ~10s RESOLVER_READ_TIMEOUT_MS this exists to stay beneath, and ~2.6x the
+ * ~2.3s a healthy loaded read measured on 2026-08-18.
+ *
+ * See ./read-deadline for WHY a bound is needed at all (a per-leg try/catch
+ * isolates a leg that THROWS but not one that HANGS — WI-39813, the owner's
+ * "Loading retained items… forever") and why it is a shared DEADLINE rather
+ * than a per-call budget (this read has two sequential fan-outs: rows, then
+ * counts).
+ */
+const RETAIN_READ_BUDGET_MS = 6_000;
 
 /** A plan is "in flight" while it can still ship; superseded is abandoned. */
 const PLAN_INFLIGHT_EXCLUDED = ['shipped', 'superseded'];
@@ -298,6 +320,12 @@ export async function readRetainFeed(
   const degraded: string[] = [];
   const shippedArr = [...ISSUE_SHIPPED_STATUSES];
   const abandonedArr = [...ISSUE_ABANDONED_STATUSES];
+
+  // ONE deadline for the WHOLE read — the rows fan-out and then the counts
+  // fan-out share it, so the two phases can never sum past it. Anything still
+  // outstanding when it passes is treated exactly like a leg that threw:
+  // recorded in `degraded` / nulled, never left to hang the page.
+  const withinBudget = createReadDeadline(opts.budgetMs ?? RETAIN_READ_BUDGET_MS);
 
   // `listMemories` and `listRubrics` are each consumed TWICE per page: once by
   // their own leg (which needs the rows) and once by the counts fan-out below
@@ -544,7 +572,9 @@ export async function readRetainFeed(
   const legRows = await Promise.all(
     kinds.map(async (k) => {
       try {
-        return await legFns[k]();
+        // Budgeted: a leg that HANGS must degrade exactly like one that throws,
+        // which is what keeps one wedged store from 500-ing the whole page.
+        return await withinBudget(legFns[k](), `${k} leg`);
       } catch (err) {
         degraded.push(k);
         console.warn(`[learning.retainFeed] ${k} leg failed:`, err instanceof Error ? err.message : err);
@@ -566,12 +596,14 @@ export async function readRetainFeed(
   if (!cursor) {
     const [memories, plans, wi, rubrics, runbooks, recipes] = await Promise.all([
       listMemoriesOnce
-        ? listMemoriesOnce()
-            .then((r) => r.length)
-            .catch(() => null)
+        ? withinBudget(
+            listMemoriesOnce().then((r) => r.length),
+            'memories count',
+          ).catch(() => null)
         : Promise.resolve(null),
-      (async () => {
-        const r = (await sql`
+      withinBudget(
+        (async () => {
+          const r = (await sql`
           SELECT count(DISTINCT hp.plan_slug)::int AS n
             FROM harness_shared.scout_routed_ideas r
             JOIN harness_shared.harness_plans hp
@@ -582,13 +614,16 @@ export async function readRetainFeed(
              AND r.routed_ref LIKE 'plan:%'
              AND ${opts.memberSlugs ? sql`hp.harness_slug = ANY(${opts.memberSlugs as string[]}::text[])` : sql`TRUE`}
         `) as Array<{ n: number }>;
-        return Number(r[0]?.n ?? 0);
-      })().catch((err) => {
+          return Number(r[0]?.n ?? 0);
+        })(),
+        'plans count',
+      ).catch((err) => {
         console.warn('[learning.retainFeed] plans count failed:', err instanceof Error ? err.message : err);
         return null;
       }),
-      (async () => {
-        const r = (await sql`
+      withinBudget(
+        (async () => {
+          const r = (await sql`
           SELECT count(DISTINCT ei.issue_id)::int AS n
             FROM harness_shared.scout_routed_ideas r
             JOIN harness_shared.engineer_issues ei
@@ -599,16 +634,19 @@ export async function readRetainFeed(
              AND ei.source_plan_slug IS NULL
              AND ${opts.harnessScopes ? sql`ei.scope = ANY(${opts.harnessScopes as string[]}::text[])` : sql`TRUE`}
         `) as Array<{ n: number }>;
-        return Number(r[0]?.n ?? 0);
-      })().catch((err) => {
+          return Number(r[0]?.n ?? 0);
+        })(),
+        'wi count',
+      ).catch((err) => {
         console.warn('[learning.retainFeed] wi count failed:', err instanceof Error ? err.message : err);
         return null;
       }),
-      listRubricsOnce()
-        .then((r) => r.length)
-        .catch(() => null),
-      deps.countRunbooks().catch(() => null),
-      deps.countRecipes().catch(() => null),
+      withinBudget(
+        listRubricsOnce().then((r) => r.length),
+        'rubrics count',
+      ).catch(() => null),
+      withinBudget(deps.countRunbooks(), 'runbooks count').catch(() => null),
+      withinBudget(deps.countRecipes(), 'recipes count').catch(() => null),
     ]);
     counts = { memories, plans, wi, rubrics, runbooks, recipes };
   }
@@ -872,7 +910,10 @@ export async function readRetainDetail(
           fields: [
             ...detailField('Kind', entry.kind),
             ...detailField('Created by', typeof m.created_by === 'string' ? m.created_by : null),
-            ...detailField('Pack', isPack ? `${String(m.pack_id)}${m.pack_version ? ` @${String(m.pack_version)}` : ''}` : null),
+            ...detailField(
+              'Pack',
+              isPack ? `${String(m.pack_id)}${m.pack_version ? ` @${String(m.pack_version)}` : ''}` : null,
+            ),
             ...detailField(
               'Applies to',
               Array.isArray(m.applies_to) && m.applies_to.length ? (m.applies_to as string[]).join(', ') : null,

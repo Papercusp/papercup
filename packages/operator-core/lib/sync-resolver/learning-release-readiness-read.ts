@@ -17,6 +17,17 @@
  */
 import { buildProgramSuccessReport, type ProgramSuccessReport } from '../scout/success-metrics';
 import type { RubricStatus } from '../rubrics';
+import { createReadDeadline } from './read-deadline';
+
+/**
+ * Whole-read budget for the readiness strip, in ms — under the ~10s
+ * RESOLVER_READ_TIMEOUT_MS. See ./read-deadline: the per-leg `.catch`es below
+ * fail-soft a leg that THROWS but bound nothing for a leg that HANGS, and
+ * `Promise.all` waits for the slowest — so one wedged reader 500s the whole
+ * strip, which cannot then show the degraded state it carefully computed
+ * (EI-20801200386596605, the sibling of WI-39813).
+ */
+const RELEASE_READINESS_BUDGET_MS = 6_000;
 
 /** The gate rubric's id — proposed on 2026-07-13 as the public-release testing gate (WI-4497). */
 export const RELEASE_READINESS_RUBRIC_ID = 'blender-release-readiness';
@@ -46,15 +57,18 @@ export interface ReleaseReadinessSnapshot {
   errors?: string[];
 }
 
-export async function readReleaseReadiness(): Promise<ReleaseReadinessSnapshot> {
+export async function readReleaseReadiness(opts: { budgetMs?: number } = {}): Promise<ReleaseReadinessSnapshot> {
   const errors: string[] = [];
+  // Budgeted so a leg that HANGS degrades exactly like one that throws — the
+  // `.catch`es alone only ever covered the throwing case.
+  const withinBudget = createReadDeadline(opts.budgetMs ?? RELEASE_READINESS_BUDGET_MS);
 
   const [report, rubric] = await Promise.all([
-    buildProgramSuccessReport({}).catch((e: unknown) => {
+    withinBudget(buildProgramSuccessReport({}), 'success-metrics').catch((e: unknown) => {
       errors.push(`success-metrics: ${e instanceof Error ? e.message : String(e)}`.slice(0, 200));
       return null;
     }),
-    readRubricInfo().catch((e: unknown) => {
+    withinBudget(readRubricInfo(), 'rubric').catch((e: unknown) => {
       errors.push(`rubric: ${e instanceof Error ? e.message : String(e)}`.slice(0, 200));
       return null;
     }),
@@ -69,10 +83,7 @@ export async function readReleaseReadiness(): Promise<ReleaseReadinessSnapshot> 
 }
 
 async function readRubricInfo(): Promise<ReleaseReadinessRubricInfo | null> {
-  const [{ getRubric }, { listScorecards }] = await Promise.all([
-    import('../rubrics'),
-    import('../scorecards'),
-  ]);
+  const [{ getRubric }, { listScorecards }] = await Promise.all([import('../rubrics'), import('../scorecards')]);
   const rubric = await getRubric(RELEASE_READINESS_RUBRIC_ID);
   if (!rubric) return null;
   // Scorecards are a decoration on the governance line — their read failing must not
