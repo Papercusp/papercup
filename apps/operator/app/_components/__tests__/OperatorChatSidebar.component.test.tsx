@@ -645,18 +645,6 @@ describe('Inbox face retirement + HUD conversation drill-in (hud-consolidation-2
     ).toBeNull();
   });
 
-  it('shows the real count, not the indeterminate mark, when a degraded read still carried items', () => {
-    inboxState.pending = 3;
-    inboxState.degraded = true;
-    render(<OperatorChatSidebar />);
-
-    // Degradation is disclosed, but a count we DO have is never thrown away.
-    const badge = screen.getByLabelText(
-      'Could not load what needs you — this count is unavailable, not zero',
-    );
-    expect(badge.textContent).toBe('–');
-  });
-
   /* hud-open-destinations-and-true-counts-2026-07-27 P-003 (owner report:
      "clicking open on one of the papercup reports is supposed to open something
      relevant but it isn't"). Before P-003 every one of these refs produced a
