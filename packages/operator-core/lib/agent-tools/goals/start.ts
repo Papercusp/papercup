@@ -35,6 +35,7 @@ import { join } from 'node:path';
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { TripwireSchema, deleteGoalRow, goalId, insertGoalRow } from '@papercusp/agent-mcp/goals';
+import { applyGoalBlockedBy, replaceGoalBlockedBy } from '@papercusp/agent-mcp/goal-deps';
 import { killCriterionProblem } from '../../goals/kill-criterion';
 import { buildConsoleEnvelope } from '../../console-launcher';
 import { spawnConsole, spawnHeadless } from '../../console-spawn';
@@ -213,6 +214,13 @@ export default defineTool({
       .optional()
       .describe('structured form of the kill criterion — renders as live bars instead of prose nobody re-checks'),
     parentId: z.string().min(1).optional().describe('parent goal id, for a sub-goal'),
+    blockedBy: z
+      .array(z.string().min(1).max(200))
+      .max(20)
+      .optional()
+      .describe(
+        'Prerequisite refs (goal ids / bare WI-/EI- issue ids) this goal is blocked by. NOTE: goals:start spawns the owning agent NOW — a goal whose prerequisites are unsatisfied is usually better filed as a STUB via goals:create { blockedBy } and armed at activation (stub-then-arm, goal-dag-shared-substrate-2026-08-18 D-004). Refs must resolve; the goal graph must stay acyclic.',
+      ),
     harness: z
       .string()
       .max(120)
