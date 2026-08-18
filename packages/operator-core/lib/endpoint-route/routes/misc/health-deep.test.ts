@@ -138,6 +138,10 @@ describe('readCpuWorker', () => {
   it('tracks the live worker through spawn and crash (proves it reads the module, not a snapshot of its own)', async () => {
     const m = await cpuMod();
     const rows = bigBatch(m);
+    // EI-20505664003243915: every crash now logs its cause, transient ones
+    // included — those are exactly the crashes that used to vanish and leave a
+    // later trip unexplained.
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
     await m.serializeJsonResponse({ rows }, rows.length);
     expect(readCpuWorker().alive).toBe(true);
@@ -148,6 +152,11 @@ describe('readCpuWorker', () => {
     // One transient crash must NOT read as a tripped breaker — that distinction
     // is the whole point of surfacing `disabled` rather than `alive`.
     expect(afterCrash.disabled).toBe(false);
+    // ...but it is ALSO not an all-clear: nothing has been served since, so the
+    // verdict must say so rather than letting `disabled:false` read as healthy.
+    expect(afterCrash.verdict).toBe('silently-falling-back');
+    expect(errSpy.mock.calls.flat().join(' ')).toContain('transient boom');
+    errSpy.mockRestore();
   });
 
   it('surfaces a TRIPPED breaker — the one field an operator must be able to alert on', async () => {
