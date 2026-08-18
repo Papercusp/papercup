@@ -132,9 +132,12 @@ export default defineTool({
     // tenant-scoped table must carry the tenant predicate.
     const tenantAdvisory = await buildTenantScopeAdvisory(args.sql, {
       workspaceId: ctx.workspaceId,
-      // Explicit sentinel guard (no-raw-harness-sentinel): '*' must never reach a
-      // tenant predicate as if it were a concrete harness slug.
-      harnessSlug: ctx.harnessSlug && ctx.harnessSlug !== '*' ? ctx.harnessSlug : null,
+      // Sentinel guard via the CANONICAL resolver (no-raw-harness-sentinel): an
+      // all-harness sentinel must never reach a tenant predicate as if it were a
+      // concrete slug. The hand-rolled `!== '*'` form this replaced admitted the
+      // OTHER sentinel spelling ('all') and did not trim, so it could leak a
+      // non-concrete scope into the predicate.
+      harnessSlug: resolveConcreteHarnessSlug(null, ctx),
     }).catch(() => null);
     if (tenantAdvisory && !args.allowUnscoped) {
       return jsonError(
