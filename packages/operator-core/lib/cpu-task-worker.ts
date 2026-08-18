@@ -85,6 +85,46 @@ let _consecutiveCrashes = 0;
 let _workerRefd = false;
 
 /**
+ * Requests SERVED by the worker thread (a `serialize_ok` round-trip).
+ *
+ * The only POSITIVE signal this module has. Every other field is an
+ * absence-of-bad — `disabled:false` + `alive:false` + `consecutiveCrashes:0`
+ * is the state of a healthy idle process AND of a process whose worker has
+ * never once served a request, and nothing could tell them apart
+ * (EI-20505664003243915). A count of work actually done on the worker thread
+ * is what makes "the offload is working" observable rather than inferred.
+ */
+let _servedByWorker = 0;
+
+/**
+ * Offload-ELIGIBLE requests that fell back to the main thread.
+ *
+ * Deliberately not "every sync stringify": a small batch taking the inline
+ * path is the designed behaviour and counting it would bury the signal. Only
+ * `itemCount >= OFFLOAD_MIN_ITEMS` — work this module exists to move — counts
+ * here, so `eligibleFallbacks > 0 && servedByWorker === 0` means the offload
+ * is silently not happening.
+ */
+let _eligibleFallbacks = 0;
+
+/** Message of the most recent worker crash — see `tripBreaker`'s `cause`. */
+let _lastCrashError: string | null = null;
+/** When the breaker latched, for the re-arm cooldown. Null ⇒ not latched. */
+let _breakerTrippedAt: number | null = null;
+/** Failed half-open probes since the breaker latched; drives the backoff. */
+let _reArmFailures = 0;
+/** Breaker closures earned by a SERVED request (not by a restart). */
+let _reArms = 0;
+/**
+ * A half-open probe is admitted.
+ *
+ * Gates re-entry so a latched breaker admits ONE probe rather than letting
+ * every concurrent request respawn a worker that is still broken — the
+ * respawn-per-request failure MAX_CONSECUTIVE_CRASHES exists to prevent.
+ */
+let _halfOpen = false;
+
+/**
  * Consecutive runtime crashes after which the worker is given up on for good.
  *
  * A TRANSIENT crash must not disable the offload permanently (WI-37688): the
@@ -97,6 +137,28 @@ let _workerRefd = false;
  * unlimited.
  */
 const MAX_CONSECUTIVE_CRASHES = 3;
+
+/**
+ * Cooldown before a latched breaker admits one half-open probe, doubling per
+ * failed probe up to REARM_MAX_COOLDOWN_MS.
+ *
+ * Until EI-20505664003243915 the latch was PERMANENT for the process
+ * lifetime and the documented remedy was "restart the host" — restart-to-
+ * clear, which is a mitigation, not a fix: an operator host lives for days,
+ * so one transient burst of three crashes bought days of degraded
+ * serialization. The backoff is what lets recovery be automatic without
+ * reintroducing respawn-per-request: at the cap a broken worker costs four
+ * spawn attempts an hour, while a worker whose cause has cleared is back
+ * within one cooldown.
+ */
+const REARM_BASE_COOLDOWN_MS = 60_000;
+const REARM_MAX_COOLDOWN_MS = 900_000;
+
+/** Cooldown for the NEXT probe, given how many probes have already failed. */
+function reArmCooldownMs(): number {
+  const backed = REARM_BASE_COOLDOWN_MS * 2 ** _reArmFailures;
+  return Math.min(backed, REARM_MAX_COOLDOWN_MS);
+}
 
 /**
  * Announce a breaker trip (WI-37700). Null ⇒ nothing wired; the trip is still logged.
@@ -143,18 +205,30 @@ export function configureCpuWorkerBreakerNotifier(
  * pending check — and because the failure it prevents (one broadcast per request to the
  * whole fleet) is far worse than a redundant branch.
  */
-function tripBreaker(reason: string): void {
+function tripBreaker(reason: string, cause?: unknown): void {
   if (_workerDisabled) return;
   _workerDisabled = true;
+  _breakerTrippedAt = Date.now();
+  if (cause !== undefined) _lastCrashError = describeCause(cause);
+  // The CAUSE, not just the count. Until EI-20505664003243915 the crash Error
+  // was in scope in the 'error' handler and thrown away — it reached only
+  // rejectAllPending/rejectReady, both of which terminate in the bare `catch`
+  // in serializeJsonResponse. So the one durable record of a trip (this
+  // announcement) said THAT the worker died and never WHY, and the 2026-08-15
+  // trip left no recoverable cause anywhere. A responder cannot investigate a
+  // crash mechanism the announcement discarded.
+  const causeLine = _lastCrashError === null ? '' : ` Last crash: ${_lastCrashError}.`;
   const summary =
     `⚠ worker-breaker TRIPPED: \`cpuWorker\` in operator host pid ${process.pid} has ` +
     `latched \`disabled\` (${reason}) — every JSON response body above ` +
     `${OFFLOAD_MIN_ITEMS} items now serializes INLINE on the main event loop instead of ` +
     `the worker thread, which is the 30-50ms-per-response lag this module exists to ` +
-    `remove. This is PERMANENT for the life of this process: the breaker never re-arms ` +
-    `itself, and the fallback is byte-identical, so nothing else will ever signal it. ` +
-    `On a clustered host this is ONE worker of N — the others are unaffected, and ` +
-    `restarting the host is what clears it.`;
+    `remove.${causeLine} The breaker RE-ARMS itself: after a cooldown (from ` +
+    `${Math.round(REARM_BASE_COOLDOWN_MS / 1000)}s, doubling per failed probe to ` +
+    `${Math.round(REARM_MAX_COOLDOWN_MS / 60000)}min) one probe request retries the ` +
+    `worker, and the breaker closes only when a request is actually SERVED. ` +
+    `On a clustered host this is ONE worker of N — the others are unaffected. ` +
+    `If it never recovers, the cause above is what to fix; a host restart also clears it.`;
   // Logged unconditionally: the log line is the floor, the notifier the improvement.
   // A trip that only ever reached a notifier nobody wired would be as silent as before.
   console.error(`[cpu-task-worker] ${summary}`);
@@ -163,6 +237,56 @@ function tripBreaker(reason: string): void {
   } catch (err) {
     // The notifier is best-effort telemetry on a degradation path — it must never
     // turn a survivable fallback into a thrown error inside a response handler.
+    console.error('[cpu-task-worker] breaker notifier threw (ignored):', err);
+  }
+}
+
+/**
+ * Render a crash cause as one line for the announcement.
+ *
+ * Bounded because it is interpolated into a message broadcast to the fleet and
+ * a worker can throw an Error whose message is a whole serialized payload.
+ */
+function describeCause(cause: unknown): string {
+  const raw =
+    cause instanceof Error
+      ? `${cause.name}: ${cause.message}`
+      : typeof cause === 'string'
+        ? cause
+        : String(cause);
+  const oneLine = raw.replace(/\s+/g, ' ').trim();
+  return oneLine.length > 300 ? `${oneLine.slice(0, 299)}…` : oneLine;
+}
+
+/**
+ * Close the breaker because a half-open probe was actually SERVED.
+ *
+ * Called from the `serialize_ok` branch and nowhere else, which is the whole
+ * point: the item that asked for this (EI-20505664003243915) asked for a
+ * detector proving worker-served requests RESUME "instead of only clearing the
+ * latch". Clearing `_workerDisabled` when a worker merely SPAWNS would be
+ * exactly the latch-clearing it ruled out — a worker that spawns fine and dies
+ * on every message would flap closed forever. A served round-trip is the only
+ * evidence the offload works, so it is the only thing that closes the breaker.
+ */
+function closeBreakerOnServe(): void {
+  _workerDisabled = false;
+  _halfOpen = false;
+  _breakerTrippedAt = null;
+  _reArmFailures = 0;
+  _reArms += 1;
+  const summary =
+    `✅ worker-breaker RECOVERED: \`cpuWorker\` in operator host pid ${process.pid} ` +
+    `re-armed after a half-open probe was SERVED by the worker thread — JSON bodies ` +
+    `above ${OFFLOAD_MIN_ITEMS} items are off the main event loop again ` +
+    `(recovery #${_reArms}${_lastCrashError === null ? '' : `; prior crash: ${_lastCrashError}`}).`;
+  // Announced for the same reason the trip is: the fallback is byte-identical,
+  // so a recovery is as invisible as the degradation was. A trip that is never
+  // followed by a recovery notice reads forever as "still broken".
+  console.error(`[cpu-task-worker] ${summary}`);
+  try {
+    _breakerNotifier?.(summary);
+  } catch (err) {
     console.error('[cpu-task-worker] breaker notifier threw (ignored):', err);
   }
 }
@@ -207,7 +331,11 @@ function rejectAllPending(err: Error): void {
 }
 
 function ensureWorker(): Promise<void> {
-  if (_workerDisabled) return Promise.reject(new Error('cpu-task worker disabled'));
+  // `_halfOpen` is the ONE admission past a latched breaker: serializeJsonResponse
+  // sets it for a single probe once the cooldown has elapsed.
+  if (_workerDisabled && !_halfOpen) {
+    return Promise.reject(new Error('cpu-task worker disabled'));
+  }
   if (_workerReady) return _workerReady;
 
   _workerReady = new Promise<void>((resolveReady, rejectReady) => {
@@ -248,6 +376,11 @@ function ensureWorker(): Promise<void> {
           // message would reset the counter each cycle and the breaker would
           // never trip — which is the one case it exists for.
           _consecutiveCrashes = 0;
+          // The positive signal. Incremented HERE, on the completed round-trip,
+          // for the same reason the crash counter resets here: this is the only
+          // point at which the worker has demonstrably done the work.
+          _servedByWorker += 1;
+          if (_halfOpen) closeBreakerOnServe();
           p.resolve({ json: msg.json ?? null });
         } else {
           p.reject(new Error(msg.error ?? 'cpu-task worker error'));
