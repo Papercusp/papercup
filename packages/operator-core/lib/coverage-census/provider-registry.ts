@@ -13,19 +13,26 @@
  *
  * EMPTY IS SAFE, BY CONSTRUCTION. With no implementations, no provider reports success, so no
  * kind is retirable and the census cannot retire anything (see diff.ts's retirement scoping).
- * The cadence therefore runs as a correct no-op until P-003 lands the declared providers, rather
- * than needing to stay dark until then.
+ * The cadence therefore ran as a correct no-op between P-002 and P-003, rather than needing to
+ * stay dark until then.
+ *
+ * P-003 populated it with the three declared providers below. Each derives its rows from the SAME
+ * registry that serves production traffic — the mount table, the tool catalog, the sync-resolver
+ * registry — never a hand-maintained list, which drifts silently and yields false confidence.
+ * Each also refuses to report success on an EMPTY enumeration (see providers/_non-empty.ts),
+ * because `kinds` is the retirement scope: a registry that fails to LOAD would otherwise present
+ * as "every surface of this kind was deleted".
  */
 
 import type { SurfaceCensusProvider } from '@papercusp/testing-shell/census';
+import { honoRoutesProvider } from './providers/hono-routes';
+import { mcpToolsProvider } from './providers/mcp-tools';
+import { syncQueriesProvider } from './providers/sync-queries';
 
 const providers: SurfaceCensusProvider[] = [
-  // P-003 lands the declared providers for the Papercusp stack here:
-  //   hono-routes  (routeRegistrationOrder seam)
-  //   mcp-tools    (agent-tools index + zod schema capture)
-  //   sync-queries (sync-resolver registry)
-  // Each must derive its rows from the SAME registry that serves production traffic — never a
-  // hand-maintained list, which drifts silently and yields false confidence.
+  honoRoutesProvider, // http-route  — routeRegistrationOrder() mount table
+  mcpToolsProvider, //  mcp-tool    — getCatalog() + zod schema capture
+  syncQueriesProvider, // sync-query — knownQueryNamesV2() dispatch registry
 ];
 
 /** The providers this build can run. */
