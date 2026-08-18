@@ -170,6 +170,15 @@ export function resolveCriterionWindow(
  *  - kind:'instrument' → the existing instrumentKey binding, generalized into the same
  *    structured slot. `effectiveCriterionInstrumentKey` prefers it over the legacy
  *    top-level field.
+ *  - kind:'coverage'   → { scope, floor } asserts that every surface the SURFACE CENSUS
+ *    knows about in `scope` is proven to depth `floor` (deterministic-coverage-census
+ *    P-006). Judged at grading time against `readCoverage` — the one derivation the
+ *    tool, both state cells and the /admin/testing panel already share — so the gate can
+ *    never disagree with the panel a human just read. Refuses the emit naming the
+ *    surfaces below the floor. `floor` reuses the census's OWN rung vocabulary
+ *    (l1..l4); there is deliberately no second scale and no percentage threshold —
+ *    "90% covered" invites a denominator argument, "these 3 surfaces are unproven"
+ *    does not.
  *  - absent            → a fuzzy judgment criterion (today's behavior, still first-class).
  *
  * Fuzzy + deterministic criteria coexist in one rubric.
@@ -197,6 +206,42 @@ export const rubricCriterionCheckSchema = z.discriminatedUnion('kind', [
         .min(1)
         .describe(
           "stable machine-readable instrument binding (the generalized form of the criterion-level instrumentKey field); 'none' means explicitly manual",
+        ),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('coverage'),
+      scope: z
+        .object({
+          surfaceKind: z
+            .string()
+            .min(1)
+            .optional()
+            .describe("census surface kind to scope to, e.g. 'http-route' | 'mcp-tool' | 'sync-query'"),
+          sourceFiles: z
+            .array(z.string().min(1))
+            .min(1)
+            .max(50)
+            .optional()
+            .describe(
+              'implementing-file substrings; a surface is in scope if ANY matches (matched as one SQL union, never summed per file)',
+            ),
+          planTouched: z
+            .literal(true)
+            .optional()
+            .describe(
+              "resolve sourceFiles at grading time from the subject plan's completed work-items (their completion-evidence filesChanged) — the reverse map from 'what this plan changed' to 'the surfaces those files implement'. Mutually exclusive with an explicit sourceFiles.",
+            ),
+        })
+        .strict()
+        .describe(
+          'which censused surfaces this criterion is about. An EMPTY scope means the whole harness census — legitimate, and still refused if it resolves to zero surfaces.',
+        ),
+      floor: z
+        .enum(['l1', 'l2', 'l3', 'l4'])
+        .describe(
+          'the depth rung every in-scope surface must meet (the census\'s own vocabulary: l1 executed, l2 conformant, l3 intent-tested, l4 hardened). Judged by the meets_lN flag, never depth >= N — the rungs are not nested.',
         ),
     })
     .strict(),
