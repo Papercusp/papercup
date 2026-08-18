@@ -41,6 +41,7 @@ import { listTasks } from '../../task-manager/store';
 import { evaluateCriterionTestChecks } from '../../rubrics-criterion-checks';
 import { resolveAgentWorkspaceRoot } from '../capability/base-dir';
 import { clampForegroundTimeoutMs } from '../capability/foreground-transport-cap';
+import { trackDetached } from '../../detached-imports';
 
 export const scorecardEmitArgs = z
   .object({
@@ -408,7 +409,7 @@ export async function emitScorecard(
     if (result.created) {
       // Push-on-write (push-audit 2026-07-26): the Verify stage's scorecard
       // list + rubric trend + release-readiness strip all fold this filing in.
-      void import('../../sync-sse')
+      void trackDetached(import('../../sync-sse'))
         .then((m) => {
           m.notifySyncInvalidate('scorecards.list');
           m.notifySyncInvalidate('rubrics.trend');

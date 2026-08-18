@@ -49,6 +49,7 @@ import {
   readBgHostActiveEnterMs,
   type GenerationFreshness,
 } from './scout/generation-watermark';
+import { trackDetached } from './detached-imports';
 
 /** The owner-mandated built-in rubric whose prompt/backstop contract is fixed. */
 export const HIVE_COORDINATION_HEALTH_RUBRIC = 'pot-coordination-health';
@@ -410,7 +411,7 @@ export async function retractScorecard(
     return { ok: false, issueId, retracted: false, error: `failed to retract scorecard '${issueId}'` };
   }
 
-  void import('./sync-sse')
+  void trackDetached(import('./sync-sse'))
     .then((m) => {
       m.notifySyncInvalidate('scorecards.list');
       m.notifySyncInvalidate('rubrics.trend');
@@ -490,7 +491,7 @@ export async function recordGradingAudit(
   if (!updated) {
     return { ok: false, issueId, error: `failed to record grading audit on '${issueId}'` };
   }
-  void import('./sync-sse')
+  void trackDetached(import('./sync-sse'))
     .then((m) => {
       m.notifySyncInvalidate('scorecards.list');
       m.notifySyncInvalidate('rubrics.trend');
