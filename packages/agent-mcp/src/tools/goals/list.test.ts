@@ -36,9 +36,13 @@ vi.mock('drizzle-orm/postgres-js', () => ({
 
 import tool from './list';
 
+// ctx.tx must be BOTH the drizzle handle (mocked above) AND a callable
+// tagged-template tag: the readiness fold (goal-dag-shared-substrate-2026-08-18
+// P-003) reads blocked-by edges through it directly. Returning [] = no edges ⇒
+// every goal actionable, premise intact.
 const CTX = () => ({
   principal: { slug: 'op', workspaceId: 'default' } as never,
-  tx: {} as never,
+  tx: ((..._args: unknown[]) => Promise.resolve([])) as never,
   log: vi.fn(),
 });
 
@@ -49,27 +53,29 @@ beforeEach(() => {
 });
 
 describe('goals:list — summary/full projection', () => {
-  it('summary keeps only {id,title}, dropping body + budget_cents', async () => {
+  it('summary keeps {id,title} + readiness, dropping body + budget_cents', async () => {
     fixtureRows = [
-      { id: 'g1', title: 'Ship v1', body: 'long body', parent_id: null, budget_cents: 9999, created_at: 1 },
+      { id: 'g1', title: 'Ship v1', body: 'long body', parent_id: null, budget_cents: 9999, created_at: 1, workspace_id: 'default', status: 'active' },
     ];
     const res = await tool.handler({ detail: 'summary', limit: 50 } as never, CTX() as never);
-    expect(res.data).toEqual([{ id: 'g1', title: 'Ship v1' }]);
+    expect(res.data).toEqual([
+      { id: 'g1', title: 'Ship v1', actionable: true, premiseInvalidated: false },
+    ]);
     expect(JSON.stringify(res.data)).not.toContain('long body');
     expect(JSON.stringify(res.data)).not.toContain('9999');
   });
 
-  it('full returns the raw rows untouched', async () => {
-    const rows = [{ id: 'g1', title: 'Ship v1', body: 'b', parent_id: null, budget_cents: 5, created_at: 1 }];
+  it('full returns the raw rows + readiness', async () => {
+    const rows = [{ id: 'g1', title: 'Ship v1', body: 'b', parent_id: null, budget_cents: 5, created_at: 1, workspace_id: 'default', status: 'active' }];
     fixtureRows = rows;
     const res = await tool.handler({ detail: 'full', limit: 50 } as never, CTX() as never);
-    expect(res.data).toEqual(rows);
+    expect(res.data).toEqual(rows.map((r) => ({ ...r, actionable: true, premiseInvalidated: false })));
   });
 
   it('requests the full column set even in summary mode (shaping is post-query)', async () => {
     await tool.handler({ detail: 'summary', limit: 50 } as never, CTX() as never);
     expect(Object.keys(selectProjection!).sort()).toEqual(
-      ['body', 'budget_cents', 'created_at', 'id', 'parent_id', 'title'].sort(),
+      ['body', 'budget_cents', 'created_at', 'id', 'parent_id', 'title', 'workspace_id', 'status'].sort(),
     );
   });
 });
