@@ -1201,14 +1201,12 @@ describe('policy tier authorization', () => {
   });
 
   it('refuses a tier escalation on an ordinary cost-argument intent', () => {
-    // sedRangeRead itself is a policy row since D-044, so strip its citation to
-    // get back the shape this guard is about: an author asserting a tier with no
-    // authority behind it at all.
-    const uncited = { ...sedRangeRead, policyAuthority: undefined };
-    expect(() => assertPolicyTier({ ...uncited, policyTier: 'deny' })).toThrow(
-      /cites no policyAuthority/,
+    expect(() => assertPolicyTier({ ...sedRangeRead, policyTier: 'deny' })).toThrow(
+      /not a 'policy-violation:/,
     );
-    expect(() => assertPolicyTier({ ...uncited, policyTier: 'advise' })).toThrow(/never asserted/);
+    expect(() => assertPolicyTier({ ...sedRangeRead, policyTier: 'advise' })).toThrow(
+      /never asserted/,
+    );
   });
 
   it('keeps the file-read family OUT of any enforcing tier (D-045)', () => {

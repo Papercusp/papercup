@@ -49,7 +49,14 @@ describe('matchCommandToSubstitutions — per-atom semantics', () => {
   it('reports the ATOM that matched, not the whole command line', () => {
     // What an `observe` tier logs must be the thing the pattern claimed, or the
     // observation window (P-020) reviews evidence it cannot act on.
-    const hits = matchCommandToSubstitutions("ls -la; sed -n '5,9p' b.ts | wc -l", [row()]);
+    //
+    // The fixture used to end `| wc -l`. That pipe was incidental to what this
+    // test is about, and D-045 now withholds a capability:read advisory whose
+    // stdout feeds a pipe — so the piped form returns no hit at all and could no
+    // longer exercise atom reporting. Kept multi-atom via `;` to preserve the
+    // actual subject. (That a casual fixture reached for a piped read is itself
+    // a small sign of how ordinary the form is.)
+    const hits = matchCommandToSubstitutions("ls -la; sed -n '5,9p' b.ts", [row()]);
     expect(hits[0].atom).toBe("sed -n '5,9p' b.ts");
   });
 
