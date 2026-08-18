@@ -141,3 +141,38 @@ describe("classifyInfraFault — refuses to withdraw a verdict without the real 
     expect(classifyInfraFault("")).toBeNull();
   });
 });
+
+describe("control: the negative cases above are falsifying, not decorative", () => {
+  /**
+   * The obvious wrong implementation — count the word, ignore the path — kept here
+   * PERMANENTLY rather than mutating the shared tree to prove falsifiability (the repo's
+   * "a MODULE you import" tier). If a future edit relaxes the path anchor back toward this,
+   * the assertions below stop distinguishing the two and this control fails.
+   */
+  const naiveSubstringClassifier = (output: string) =>
+    (output.match(/ENOENT/g)?.length ?? 0) >= INFRA_FAULT_MIN_OCCURRENCES
+      ? { kind: "vite-node-cache-vanished" as const }
+      : null;
+
+  const testTitleOutput = Array.from(
+    { length: 40 },
+    (_, i) =>
+      ` FAIL  lib/release/green-checkpoint-real-deps.test.ts > ENOENT retry budget still surfaces a real error (${i})`,
+  ).join("\n");
+
+  it("the naive substring classifier WOULD withdraw the verdict on ENOENT-named test titles", () => {
+    // Calibration: the fixture really does carry enough ENOENTs to trip a substring rule, so
+    // the real classifier's `null` above comes from the path anchor and not from a thin fixture.
+    expect(naiveSubstringClassifier(testTitleOutput)).not.toBeNull();
+    expect(classifyInfraFault(testTitleOutput)).toBeNull();
+  });
+
+  it("…and both agree on the genuine incident signature (the anchor costs no true positives)", () => {
+    const real = Array.from({ length: INFRA_FAULT_MIN_OCCURRENCES }, (_, i) =>
+      humanForm(ROOT_1, "ssr", `${"0".repeat(39)}${i}`),
+    ).join("\n");
+
+    expect(naiveSubstringClassifier(real)).not.toBeNull();
+    expect(classifyInfraFault(real)).not.toBeNull();
+  });
+});
