@@ -26,7 +26,10 @@ import { isAbsolute, resolve } from 'node:path';
 import { resolveAgentWorkspaceRoot } from './agent-tools/capability/base-dir';
 import { normalizeTestFilePaths, runTestFilesCore, type TestFilesCoreResult } from './agent-tools/testing/run';
 import type { RubricCriterionCheck } from './agent-tools/plans/rubric-template';
-import type { ScorecardCheckRun } from './harness/improvements/observation-types';
+import type {
+  ScorecardCheckRun,
+  ScorecardCoverageCheckRun,
+} from './harness/improvements/observation-types';
 
 /** The minimal criterion shape this module reads — key + the optional check. */
 export interface CheckedCriterion {
@@ -48,6 +51,19 @@ export interface CriterionCheckPathValidation {
   /** tests-check files examined across all criteria (0 ⇒ no criterion carries one). */
   checked: number;
   failures: CriterionCheckPathFailure[];
+  /**
+   * STRUCTURAL faults in kind:'coverage' scopes, found without touching the database.
+   *
+   * ⚠ Deliberately NOT the coverage analog of the tests arm's existsSync: "does this
+   * scope match any surface" is a census QUERY, and the census legitimately moves
+   * between propose and grade (a surface censused today may be retired tomorrow), so a
+   * propose-time DB answer would be stale precisely when it mattered and would make
+   * this pure function async for every caller. The vacuity refusal that actually
+   * protects the gate — a scope resolving to ZERO surfaces — is enforced at GRADING
+   * time in {@link evaluateCriterionCoverageChecks}, where it is measured fresh. What
+   * IS caught here is the fault no query can fix: a scope that contradicts itself.
+   */
+  scopeFailures: CriterionCheckPathFailure[];
   /** Criterion key → its files NORMALIZED to repo-root-relative form (workspace-relative
    *  spellings expanded). Present for every tests-check criterion that validated clean —
    *  callers should persist THESE so grading-time resolution is deterministic. */
@@ -66,9 +82,25 @@ export function validateCriterionCheckPaths(
 ): CriterionCheckPathValidation {
   const root = opts.root ?? resolveAgentWorkspaceRoot({});
   const failures: CriterionCheckPathFailure[] = [];
+  const scopeFailures: CriterionCheckPathFailure[] = [];
   const normalizedByKey: Record<string, string[]> = {};
   let checked = 0;
   for (const c of criteria) {
+    if (c.check?.kind === 'coverage') {
+      // A scope naming BOTH an explicit file list and planTouched is contradictory:
+      // planTouched RESOLVES to a file list at grading time, so the two would silently
+      // race and whichever won would be invisible in the record. Refuse rather than pick.
+      if (c.check.scope.planTouched === true && (c.check.scope.sourceFiles?.length ?? 0) > 0) {
+        scopeFailures.push({
+          criterionKey: c.key,
+          path: 'scope',
+          reason:
+            'scope names both planTouched and an explicit sourceFiles list — planTouched IS the ' +
+            'file list, resolved from the subject plan at grading time. Pick one.',
+        });
+      }
+      continue;
+    }
     if (c.check?.kind !== 'tests') continue;
     const absolutes = c.check.files.filter((f) => isAbsolute(f));
     for (const f of absolutes) {
@@ -104,7 +136,14 @@ export function validateCriterionCheckPaths(
       normalizedByKey[c.key] = normalized;
     }
   }
-  return { ok: failures.length === 0, root, checked, failures, normalizedByKey };
+  return {
+    ok: failures.length === 0 && scopeFailures.length === 0,
+    root,
+    checked,
+    failures,
+    scopeFailures,
+    normalizedByKey,
+  };
 }
 
 /**
@@ -118,12 +157,22 @@ export function assertCriterionCheckPathsResolve(
 ): void {
   const v = validateCriterionCheckPaths(criteria, opts);
   if (v.ok) return;
-  throw new Error(
-    `invalid_args: proposeRubric: structured tests-check paths must resolve against the live tree ` +
-      `(P-011 / D-006 — a check that can never run is a booby trap, not advice). Against root '${v.root}':\n` +
-      v.failures.map((f) => `  • criterion '${f.criterionKey}': ${f.path} — ${f.reason}`).join('\n') +
-      `\nFix the path(s) (repo-root-relative), or drop the check to leave the criterion fuzzy.`,
-  );
+  const parts: string[] = [];
+  if (v.failures.length > 0) {
+    parts.push(
+      `structured tests-check paths must resolve against the live tree ` +
+        `(P-011 / D-006 — a check that can never run is a booby trap, not advice). Against root '${v.root}':\n` +
+        v.failures.map((f) => `  • criterion '${f.criterionKey}': ${f.path} — ${f.reason}`).join('\n') +
+        `\nFix the path(s) (repo-root-relative), or drop the check to leave the criterion fuzzy.`,
+    );
+  }
+  if (v.scopeFailures.length > 0) {
+    parts.push(
+      `structured coverage-check scopes must be self-consistent:\n` +
+        v.scopeFailures.map((f) => `  • criterion '${f.criterionKey}': ${f.reason}`).join('\n'),
+    );
+  }
+  throw new Error(`invalid_args: proposeRubric: ${parts.join('\n\n')}`);
 }
 
 /** One criterion's grading-time check run — the persisted shape is the ledger's
@@ -155,9 +204,26 @@ export type CriterionCheckRefusal =
       run: CriterionCheckRun;
     };
 
+export type CriterionCoverageRefusal =
+  | {
+      ok: false;
+      error: 'coverage_scope_empty';
+      criterionKey: string;
+      detail: string;
+    }
+  | {
+      ok: false;
+      error: 'coverage_contradicted';
+      criterionKey: string;
+      rating: string;
+      detail: string;
+      run: CoverageCheckRun;
+    };
+
 export type CriterionCheckEvaluation =
   | { ok: true; checkRuns: Record<string, CriterionCheckRun> }
-  | CriterionCheckRefusal;
+  | CriterionCheckRefusal
+  | CriterionCoverageRefusal;
 
 /** Injectable runner seam (tests stub this; production shells the real router). */
 export type CriterionCheckRunner = (opts: {
