@@ -182,6 +182,14 @@ export interface CheckpointDeps {
      *  the early-preflight path), which a consumer must NOT read as `true`: that is exactly
      *  the reading that turns an unmeasured post-suite blocker into an apparently-clean one. */
     postSuiteMeasured?: boolean;
+    /** EI-20767792192323374: this RED run's failures are a HOST fault (the gate's own vite-node
+     *  module cache was deleted mid-suite), not a verdict about the code — see
+     *  {@link classifyInfraFault}. Present ⇒ `runGreenCheckpoint` renders INCONCLUSIVE
+     *  (`green: null`, reason 'infra-inconclusive') instead of a red, and skips the whole red
+     *  apparatus (re-triage, auto-refire, prefix salvage, fixer dispatch) because every one of
+     *  those acts on failing files this run cannot vouch for. ABSENT ⇒ an ordinary red, or a
+     *  stub/older dep that does not classify — never read as "the run was clean". */
+    infraFault?: InfraFaultClassification;
   }>;
   /** Fast-forward `ready` to `candidate` (advanceReady). */
   advance(candidate: string): Promise<AdvanceResult>;
@@ -562,7 +570,12 @@ export interface CheckpointResult {
     | "delta-held"
     | "cupboard-hygiene-held"
     | "skipped-locked"
-    | "migrations-pending";
+    | "migrations-pending"
+    /** EI-20767792192323374: the run's own module cache vanished mid-suite, so its failures
+     *  are a HOST fault, not a verdict about the code. `green: null` (never `false`) — see
+     *  {@link classifyInfraFault}. Treated as a no-op by `classifyGateStallStatus`, exactly
+     *  like 'migrations-pending', so an infra fault cannot inflate the red streak. */
+    | "infra-inconclusive";
   /** WI-4494: THIS RUN recorded its own verdict (gate_health + the pipeline event), because its
    *  launcher stamped the record target into the env. Read by the routine, which then does NOT
    *  record it a second time (that would double-count the red streak). Absent ⇒ the caller records,
@@ -4367,6 +4380,92 @@ export function parseCrashedWorkspaces(output: string): string[] {
       seen.add(m[1]);
   }
   return [...seen].sort();
+}
+
+/**
+ * EI-20767792192323374 — the RUNNER'S OWN MODULE CACHE vanishing mid-run.
+ *
+ * Vitest keeps its vite-node transform cache under `<tmp-root>/{ssr,client}/<sha1>` (the root
+ * is `join(os.tmpdir(), nanoid())`, chosen by a CLASS FIELD INITIALIZER at `new Vitest()` —
+ * see libs/test-config's tmpdir-guard for why a config-time TMPDIR write is too late to move
+ * it). When that root is deleted underneath a LIVE run — a /tmp reaper, a peer sweeping bare
+ * `/tmp/*`, a teardown — every worker that then loads a cached module dies with
+ * `ENOENT: no such file or directory, open '<root>/ssr/<sha1>'`.
+ *
+ * Measured 2026-08-18 on candidate 1c64cd9f: 5,448 failures across 4,789 of 5,505 files (87% of
+ * the suite), none of which says anything about the code. Neither existing absorber can decide
+ * it: the isolation absorber would have to re-run 4,789 files (and is capped far below that),
+ * and {@link attemptWorkerCrashAbsorption} declines because the output is not a pool crash. So
+ * the run fell through to a hard RED that named ~4,800 innocent files and banked a red on the
+ * streak that freezes `main`.
+ *
+ * The honest verdict is neither green nor red but INCONCLUSIVE — the same disposition the
+ * migration preflight renders (`green: null`), and SAFE for the same reason: `green: null` never
+ * promotes, so a false positive here can only cost a red the streak declines to count; it can
+ * never manufacture a false green. That asymmetry is why this classifier does NOT try to
+ * attribute individual failures to the fault, and does not care whether OTHER real failures are
+ * present: once the module cache is gone mid-run, every result in that run is untrustworthy in
+ * BOTH directions (a real break can be masked exactly as easily as an innocent file can be
+ * failed), and "we cannot tell" is the only claim the evidence supports.
+ */
+export interface InfraFaultClassification {
+  /** the fault class — the only one recognised today. */
+  kind: "vite-node-cache-vanished";
+  /** how many cache-ENOENT lines the output carried (a floor: vitest truncates its own
+   *  reporter output, so this is never the true failure count). */
+  occurrences: number;
+  /** the distinct cache ROOTS that vanished (one per vitest instance in the run). */
+  roots: string[];
+  /** human-readable note for the verdict summary / broadcast. */
+  note: string;
+}
+
+/** EI-20767792192323374: how many vite-node cache ENOENTs before a run is called INCONCLUSIVE
+ *  rather than red. Deliberately small (the fault is unmistakable and a green is never at
+ *  stake) but non-zero, so a single stray line — including a test that legitimately prints one
+ *  — cannot by itself withdraw a verdict. */
+export const INFRA_FAULT_MIN_OCCURRENCES = 5;
+
+/** EI-20767792192323374: the vite-node module-cache ENOENT shape. Anchored on BOTH halves —
+ *  an `ENOENT` on the same line AND a quoted path whose final two segments are
+ *  `{ssr,client}/<40-hex | .tmp-…>` — so prose that merely mentions ENOENT (this repo has test
+ *  TITLES that do: "ENOENT retry budget still surfaces a real error") cannot match. Matches the
+ *  human `Error: ENOENT: …, open '<path>'` form and vitest's `Serialized Error: { … path: '<path>' }`
+ *  form alike, since both carry the word and the path on one line. */
+const VITE_NODE_CACHE_ENOENT_RE =
+  /ENOENT[^\n]*?['"]([^'"\n]*\/(?:ssr|client)\/(?:[0-9a-f]{40}|\.tmp-[0-9a-z]+(?:-[0-9a-z]+)*))['"]/g;
+
+/**
+ * EI-20767792192323374: classify a suite output as an INFRA FAULT — the gate's own module
+ * cache disappeared mid-run — rather than a verdict about the code. Pure + total: no match ⇒
+ * `null` (today's behaviour, a plain red), never throws.
+ *
+ * Called ONLY on the red path, after both absorbers have declined. A green run is never
+ * reclassified: if the suite passed despite a cache hiccup, the pass stands.
+ */
+export function classifyInfraFault(
+  output: string,
+): InfraFaultClassification | null {
+  const roots = new Set<string>();
+  let occurrences = 0;
+  for (const m of output.matchAll(VITE_NODE_CACHE_ENOENT_RE)) {
+    occurrences++;
+    roots.add(m[1].replace(/\/(?:ssr|client)\/[^/]*$/, ""));
+  }
+  if (occurrences < INFRA_FAULT_MIN_OCCURRENCES) return null;
+  const rootList = [...roots].sort();
+  return {
+    kind: "vite-node-cache-vanished",
+    occurrences,
+    roots: rootList,
+    note:
+      `infra fault: the vite-node module cache VANISHED mid-run — ${occurrences} ENOENT(s) opening cached ` +
+      `modules under ${rootList.length} root(s) (${rootList.slice(0, 3).join(", ")}${rootList.length > 3 ? ", …" : ""}). ` +
+      `Every result in this run is untrustworthy in BOTH directions (a real break is masked exactly as easily as an ` +
+      `innocent file is failed), so NO verdict is rendered about the code and the failing files named by this run ` +
+      `must NOT be triaged. This is a HOST fault, not a code fault: something deleted the runner's own temp root ` +
+      `while it was executing.`,
+  };
 }
 
 /** worker-pool-crash-absorption-2026-06-25 (WI-806): result of re-running ONE crashed
