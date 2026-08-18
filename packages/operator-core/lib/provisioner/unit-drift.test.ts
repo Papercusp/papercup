@@ -13,8 +13,11 @@ import {
   parseUnitEnvironment,
   checkRequiredEnvironment,
   describeEnvIssues,
+  resolveCatalogEntryForBackend,
+  auditDeployedUnit,
+  auditDeployedUnitForBackend,
 } from './unit-drift';
-import { CERTIFIED_CATALOG } from './catalog';
+import { CERTIFIED_CATALOG, findCatalogEntry, type CatalogEntry } from './catalog';
 
 const ORNITH = CERTIFIED_CATALOG.find((e) => e.id === 'ornith-35b-iq3m-llama-server')!;
 
