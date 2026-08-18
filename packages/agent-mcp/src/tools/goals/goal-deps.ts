@@ -268,6 +268,61 @@ export async function resolveBlockerStatuses(
 }
 
 /**
+ * The one-call WRITE all three doors share (goals:create / goals:update /
+ * goals:start — P-002): classify the caller's refs, verify every one RESOLVES
+ * (the D-017 lesson: an unresolvable ref would sit absent ⇒ permanently
+ * satisfied ⇒ a silently-inert edge that looks recorded and gates nothing —
+ * refuse instead), run the acyclicity guard over the goal graph, then replace
+ * the blocked-by set. Returns the problem as a MESSAGE (the kill-criterion
+ * convention: every door surfaces it verbatim) or the applied endpoints.
+ */
+export async function applyGoalBlockedBy(
+  sql: GoalSqlTag,
+  opts: {
+    workspaceId: string;
+    goalId: string;
+    /** Caller-supplied refs — goal ids and/or bare WI-/EI- issue ids. */
+    refs: readonly string[];
+    createdBy?: string | null;
+  },
+): Promise<{ ok: true; blockers: GoalBlockerEndpoint[] } | { ok: false; problem: string }> {
+  const blockers = opts.refs.map(classifyGoalBlockerRef).filter((b) => b.ref.length > 0);
+  const statuses = await resolveBlockerStatuses(sql, opts.workspaceId, blockers);
+  const unresolved = blockers.filter((b) => !statuses.has(blockerStatusKey(b)));
+  if (unresolved.length > 0) {
+    return {
+      ok: false,
+      problem:
+        `blockedBy refs do not resolve: ${unresolved.map((b) => b.ref).join(', ')} — a goal id must ` +
+        'match harness_shared.goals in this workspace and an issue ref must be a bare existing ' +
+        'WI-/EI- id. An unresolvable blocker would read as permanently satisfied (silently inert), ' +
+        'so it is refused rather than recorded.',
+    };
+  }
+  if (blockers.some((b) => b.kind === GOAL_DEP_KIND && b.ref === opts.goalId)) {
+    return { ok: false, problem: 'a goal cannot be blocked by itself' };
+  }
+  const edges = await readGoalBlockedByEdges(sql, opts.workspaceId);
+  const goalBlockerRefs = blockers.filter((b) => b.kind === GOAL_DEP_KIND).map((b) => b.ref);
+  if (goalBlockedByWouldCycle(edges, opts.goalId, goalBlockerRefs)) {
+    return {
+      ok: false,
+      problem:
+        'blockedBy would create a dependency cycle in the goal graph — a goal cannot (transitively) ' +
+        'block itself. Re-examine the decomposition: a cycle usually means two edges are really ' +
+        'phases of one outcome (D-005), which belong INSIDE one goal as plans/tripwires.',
+    };
+  }
+  await replaceGoalBlockedBy(sql, {
+    workspaceId: opts.workspaceId,
+    goalId: opts.goalId,
+    blockers,
+    createdBy: opts.createdBy ?? null,
+  });
+  return { ok: true, blockers };
+}
+
+/**
  * The one-call read most consumers want: `goalId`'s blockers with live statuses
  * and the folded readiness verdict. Two queries (edges + statuses), workspace-
  * scoped, derived on read (D-006).
