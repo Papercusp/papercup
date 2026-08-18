@@ -1196,16 +1196,8 @@ export function deriveColumn(
   // was mostly idle — and `parked` is column 5, whose own doc says it is "not a
   // problem by itself".
   //
-  // `loopArmed` stays in the test on purpose, and is the one case where a
-  // non-live verdict still belongs here: an agent whose engine loop is armed is
-  // SUPPOSED to be producing turns on a cadence, so an armed loop with a dead
-  // activity clock is a dead loop — the sharpest genuine stall this column can
-  // report, and exactly what it exists for.
-  //
-  // `sessionState` absent/null means the oracle had no verdict (an older
-  // payload, or a degraded fetch). Fall back to the heartbeat legs rather than
-  // guessing — an unknown verdict must never silently empty this column, which
-  // would hide a real stall instead of a fake one.
+  // The `loopArmed` and null-`sessionState` halves of the rule now live on
+  // `isNominallyAlive` (P-006), which is where they are enforced.
   const nominallyAlive = isNominallyAlive(e);
 
   // A zombie is the sharpest case: heartbeat fresh, process gone. Report it as a
