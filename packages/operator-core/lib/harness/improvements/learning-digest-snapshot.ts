@@ -47,26 +47,22 @@ export const HUMAN_QUEUE_WIRE_FIELDS = [
 ] as const satisfies ReadonlyArray<keyof ScoredItem>;
 
 /**
- * `tierReason` is NOT in the list above — it ships INTERNED, as `trc` (an index
- * into {@link LearningImprovementsRow.tierReasonLegend}). It is not dropped:
- * dropping it would silently narrow the owner's quick search (see the projection
- * comment below), which is the failure this encoding exists to avoid.
+ * `tierReason` is NOT in the list above — it ships INTERNED, as `trc` (a code
+ * into the payload's own `tierReasonLegend`). It is NOT dropped: dropping it
+ * would silently narrow the owner's quick search (see the projection below),
+ * which is the failure this encoding exists to avoid.
  *
- * WHY (WI-39773 / plan learning-tab-filters-are-page-scoped-2026-08-17 D-008):
- * measured live on :3170 2026-08-18, `tierReason` was 83,526 B of a 272,705 B
- * humanQueue — 30.6%, 167 B/row — repeated across only SIX distinct strings on
- * 500/500 rows. They are whole sentences ("kind=feature is not auto-eligible
- * (autoKinds: [bug]) → human"), so the repetition, not the content, was the cost.
- *
- * ⚠ The prior record of this said "15% across FOUR distinct strings" (WI-7278,
- * and the comment that used to sit on the projection below). Both numbers were
- * carried, not re-measured, and both were wrong — re-measure before citing.
- *
- * The key is deliberately SHORT. At ~500-623 rows a 12-character key name is
- * ~7 KB of pure key repetition, which is the difference between fitting the
- * 250,000 B budget at a full-corpus window and missing it (D-008).
+ * The contract — the key, the legend type, and the `tierReasonOf` reader — lives
+ * in `./learning-digest-wire`, a leaf with no imports, because the BROWSER needs
+ * `tierReasonOf` and must not pull this module's server-side dynamic-import graph
+ * to get it. Re-exported here so server-side callers have one obvious home.
  */
-export const TIER_REASON_CODE_KEY = 'trc';
+export {
+  TIER_REASON_CODE_KEY,
+  tierReasonOf,
+  type TierReasonLegend,
+} from './learning-digest-wire';
+import { TIER_REASON_CODE_KEY } from './learning-digest-wire';
 
 /**
  * One `learning.improvements` humanQueue row AS SERVED — deliberately narrower
@@ -105,23 +101,6 @@ export type LearningImprovementsRow = Omit<ImprovementDigest, 'humanQueue'> & {
    */
   tierReasonLegend: string[];
 };
-
-/**
- * Resolve a humanQueue row's tier reason back to its sentence.
- *
- * The ONE supported way to read `trc`. Returns '' for a missing code or an
- * out-of-range one rather than `undefined`, so a caller that concatenates it
- * into a search haystack cannot end up with the string "undefined" in the
- * haystack (which would match a search for "undef").
- */
-export function tierReasonOf(
-  legend: readonly string[] | undefined,
-  item: Pick<SlimHumanQueueItem, 'trc'> | null | undefined,
-): string {
-  const code = item?.trc;
-  if (code === undefined || !legend) return '';
-  return legend[code] ?? '';
-}
 
 export interface LearningImprovementsArgs {
   state?: 'open' | 'resolved' | 'closed';
