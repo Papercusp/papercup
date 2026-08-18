@@ -78,6 +78,7 @@ import { knownQueryNamesV2 } from './index';
 import {
   computeLearningImprovementsSnapshot,
   HUMAN_QUEUE_WIRE_FIELDS,
+  tierReasonOf,
 } from '../harness/improvements/learning-digest-snapshot';
 import { assertShapeMatchesRecordedVersion } from '../derived-reads/shape-fingerprint';
 import { __clearDerivedReadRegistryForTest, listDerivedReadProducers } from '../derived-reads/registry';
@@ -181,13 +182,17 @@ describe('learning.improvements — digest + flow row (P-041)', () => {
       'assignee',
       'score',
       'ageDays',
-      'tierReason',
       'ideaType',
       'source',
     ]);
     // The COUNT pinned separately: a bare re-add that happens to keep the list
     // sorted would otherwise read as fine on a skimmed diff.
-    expect(HUMAN_QUEUE_WIRE_FIELDS).toHaveLength(12);
+    expect(HUMAN_QUEUE_WIRE_FIELDS).toHaveLength(11);
+    // `tierReason` LEFT this list in WI-39773 (D-008) but did NOT leave the wire —
+    // it ships interned as `trc` + a legend, guarded below. Pinned as an explicit
+    // absence so a future re-add has to confront the interning rather than
+    // silently restoring 30.6% of the payload alongside it.
+    expect([...HUMAN_QUEUE_WIRE_FIELDS]).not.toContain('tierReason');
   });
 
   it('serves ONLY allowlisted humanQueue fields, and omits null ones (WI-7279)', async () => {
@@ -217,7 +222,11 @@ describe('learning.improvements — digest + flow row (P-041)', () => {
     const rows = await computeLearningImprovementsSnapshot({});
     expect(rows[0].humanQueue.length).toBeGreaterThan(0);
 
-    const allowed = new Set<string>(HUMAN_QUEUE_WIRE_FIELDS);
+    // `trc` (the interned tierReason, WI-39773/D-008) is a wire key that is
+    // deliberately NOT in HUMAN_QUEUE_WIRE_FIELDS — that list is the projection
+    // source, and `trc` is synthesized beside it. Named here rather than folded
+    // into the list so the pin above keeps meaning "these are projected verbatim".
+    const allowed = new Set<string>([...HUMAN_QUEUE_WIRE_FIELDS, 'trc']);
     for (const item of rows[0].humanQueue) {
       // Half 1 — nothing outside the allowlist reaches the client. This is the
       // assertion the old denylist test could not make.
@@ -246,6 +255,85 @@ describe('learning.improvements — digest + flow row (P-041)', () => {
       expect(item.id).toBe('EI-9');
       expect(item.title).toBe('needs a human');
     }
+  });
+
+  // ── tierReason interning (WI-39773 / plan …-2026-08-17 D-008) ───────────────
+  //
+  // Measured live 2026-08-18: `tierReason` was 83,526 B of a 272,705 B humanQueue
+  // (30.6%, 167 B/row) across only SIX distinct sentences on 500/500 rows. It now
+  // ships as a `trc` code into a per-payload `tierReasonLegend`.
+  //
+  // The load-bearing assertion here is DEDUPE, not round-trip. A legend that
+  // emitted one entry per row would round-trip perfectly and save nothing — it
+  // would be the same payload with an extra array — so a round-trip-only test
+  // would pass on an encoding that does not work. Both are asserted below.
+  it('interns tierReason: rows sharing a reason share ONE legend entry (WI-39773/D-008)', async () => {
+    // Three items that must land on the SAME tier reason (explicitly needs-human)
+    // and one that must land on a DIFFERENT one (kind=feature is not auto-eligible).
+    readImprovementItems.mockResolvedValue([
+      ...['EI-1', 'EI-2', 'EI-3'].map((id) => ({
+        id,
+        kind: 'bug',
+        scope: 'operator',
+        title: `human ${id}`,
+        state: 'open',
+        createdAt: recentIso(1),
+        needsHuman: true,
+      })),
+      {
+        id: 'EI-4',
+        kind: 'feature',
+        scope: 'operator',
+        title: 'a feature',
+        state: 'open',
+        createdAt: recentIso(1),
+      },
+    ]);
+    readWatchdogFlowTicks.mockResolvedValue([]);
+    const [row] = await computeLearningImprovementsSnapshot({});
+    const queue = row.humanQueue;
+    expect(queue).toHaveLength(4);
+
+    // 1. The fat string is GONE from every row — assert key ABSENCE, since an
+    //    explicitly-undefined key would still cost bytes.
+    for (const item of queue) expect(item).not.toHaveProperty('tierReason');
+
+    // 2. Every row resolves to a non-empty sentence through the legend. This is
+    //    the round-trip half: interning must not lose the text, or the owner's
+    //    quick search silently matches less (no error, just fewer hits).
+    for (const item of queue) {
+      expect(tierReasonOf(row.tierReasonLegend, item)).not.toBe('');
+    }
+
+    // 3. THE ONE THAT BITES — dedupe. Four rows, exactly two distinct reasons, so
+    //    the legend must hold 2 entries, not 4. The three needs-human rows must
+    //    carry the SAME code and the feature row a DIFFERENT one. Asserted on
+    //    codes rather than on the policy's prose so a reworded reason string does
+    //    not fail this test for the wrong reason.
+    expect(row.tierReasonLegend).toHaveLength(2);
+    expect(new Set(row.tierReasonLegend).size).toBe(2); // entries are distinct
+    const codeOf = (id: string) => queue.find((i) => i.id === id)?.trc;
+    expect(codeOf('EI-1')).toBe(codeOf('EI-2'));
+    expect(codeOf('EI-2')).toBe(codeOf('EI-3'));
+    expect(codeOf('EI-4')).not.toBe(codeOf('EI-1'));
+
+    // 4. Codes index the legend they shipped with.
+    for (const item of queue) {
+      expect(item.trc).toBeGreaterThanOrEqual(0);
+      expect(item.trc).toBeLessThan(row.tierReasonLegend.length);
+    }
+  });
+
+  it('omits trc entirely when an item has no tier reason (WI-39773/D-008)', () => {
+    // A legend entry for '' would put an empty string in every consumer's search
+    // haystack and cost a code on rows that carry nothing.
+    expect(tierReasonOf([], null)).toBe('');
+    expect(tierReasonOf(undefined, { trc: 0 })).toBe('');
+    // An out-of-range code degrades to '' rather than `undefined` — a caller
+    // concatenating it into a haystack would otherwise inject the literal
+    // "undefined" and make a search for "undef" match every row.
+    expect(tierReasonOf(['only-one'], { trc: 7 })).toBe('');
+    expect(tierReasonOf(['a', 'b'], { trc: 1 })).toBe('b');
   });
 
   it('degrades to an empty watchdog block when the tick read fails (no 500 for the tab)', async () => {
