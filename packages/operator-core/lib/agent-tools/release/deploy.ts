@@ -36,13 +36,57 @@ import { hardText, LIMITS } from '../limits';
 import { getOrgPg } from '@papercusp/db-org';
 import { readIdentity } from '../locks/identity';
 import { activeWorkspaceId } from '../../workspace-registry';
-import { readDeployStatus, launchDetachedDeploy, type DeployStatus } from '../../release-deploy-launch';
+import { readDeployStatus, launchDetachedDeploy, integrationRoot, type DeployStatus } from '../../release-deploy-launch';
 import { currentDiagnosticVintage } from '../../diagnostic-vintage';
 import { fireGitSyncNow } from '../../harness/git-sync/git-sync-action';
-import { operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
+import { operatorHomeHarnessSlug, canonicalHarnessSlug } from '../../harness/operator-home-harness';
 import { withBoundedTimeout, type BoundedTimeoutResult } from '../../bounded-timeout';
 
 const json = (payload: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(payload) }] });
+
+/**
+ * EI-20482937744589016 — THE SUBJECT STAMP. This tool reads exactly ONE pipeline: the
+ * operator-HOME harness's release pipeline (its integration tree, its green-checkpoint, its
+ * :3070). It is NOT harness-scoped and never has been — every other harness (SideStage and
+ * any other registered hive) promotes staging→main on its OWN green-checkpoint, which these
+ * numbers say nothing about.
+ *
+ * The defect this closes is a MISATTRIBUTION, not a wrong number: called from a SideStage
+ * session the reply is a correct reading of the Papercusp pipeline that CARRIED NOTHING SAYING
+ * SO — SHAs, a red-streak and a commit backlog that look exactly like an answer about the
+ * caller's own harness. Filed after a WI-39128 session got Papercusp SHAs + a 98-commit
+ * backlog while cwd and task were both SideStage, and again on 2026-08-17 (WI-39713) where it
+ * nearly produced a false finding about SideStage's frozen origin/main.
+ *
+ * So every reply — status, refusal, dry-run, fire, and the degraded status_unavailable
+ * envelope — names its subject, and a caller whose OWN harness differs gets a loud mismatch
+ * alert beside it. A number that cannot be misattributed needs no reader to remember this.
+ */
+function releaseSubjectStamp(ctx: { harnessSlug?: string | null }) {
+  const home = canonicalHarnessSlug(operatorHomeHarnessSlug());
+  const subject = {
+    harness: home,
+    scope: 'operator-home-release-pipeline' as const,
+    integrationRoot: integrationRoot(),
+    note: `Every sha, gate verdict and deploy position in this reply describes the \`${home}\` operator release pipeline ONLY. Other harnesses run their own green-checkpoint and their own promotion — this reply is not evidence about them.`,
+  };
+  // `'*'` is the superuser wildcard and an absent slug is simply unknown: in neither case can
+  // we assert a mismatch, so we stamp the subject and claim nothing more. Only a concrete,
+  // different slug earns the alert (a retired alias is canonicalized first, so a `papercup`
+  // caller against a `papercusp` home is correctly NOT a mismatch).
+  const raw = ctx?.harnessSlug?.trim();
+  const caller = raw && raw !== '*' ? canonicalHarnessSlug(raw) : null;
+  if (!caller || caller === home) return { subject };
+  return {
+    subject,
+    harnessMismatch: {
+      callerHarness: caller,
+      reportedHarness: home,
+      warning: `⚠ CROSS-HARNESS READ — you called from harness \`${caller}\`, but release:deploy reports the \`${home}\` operator pipeline. These SHAs, gate reds and deploy positions are NOT \`${caller}\`'s and must not be quoted as its release truth: \`${caller}\` promotes on its OWN green-checkpoint. This tool has no \`${caller}\` mode; use that harness's own release surface.`,
+    },
+  };
+}
+type ReleaseSubjectStamp = ReturnType<typeof releaseSubjectStamp>;
 
 /**
  * The status operation is a liveness diagnostic, so it must return a terminal
