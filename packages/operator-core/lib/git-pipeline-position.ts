@@ -942,8 +942,14 @@ export interface PipelinePosition {
      *  Null when there is no verdict, or on a blob predating this field. */
     observedCandidate: string | null;
     /**
-     * EI-19405864032365760: the last tick ABORTED before judging — it rendered no verdict, and
-     * none is coming until the named condition clears (today only `'migrations-pending'`).
+     * EI-19405864032365760: the last tick ABORTED without rendering a verdict, and none is coming
+     * until the named condition clears. Two statuses reach here: `'migrations-pending'` (aborted
+     * BEFORE judging, against a schema known to be behind) and — EI-20767792192323374 —
+     * `'infra-inconclusive'` (the suite ran, but the gate's own vite-node module cache was deleted
+     * underneath it mid-run, so its ~4,800 failing files are a HOST fault and not a claim about the
+     * code). They differ in their lever: the first needs the migration applied, the second needs
+     * only a quieter box, so `nextAction` branches on the status rather than treating both as a
+     * standing blocker.
      *
      * ⚠ READ BEFORE `consecutiveReds`/`failingTests`. An abort is deliberately not counted as a
      * red, which leaves those counters frozen on the PREVIOUS verdict — so when this is non-null
@@ -2768,7 +2774,14 @@ export function computeStages(
               g.inconclusive
               ? g.inconclusive.status === 'migrations-pending'
                 ? 'db:migrate (the gate aborts before judging while a migration is pending — apply it, THEN the next scheduled run judges normally; firing one now aborts the same way)'
-                : `clear the gate's abort condition (${g.inconclusive.status}) — it renders no verdict until then, and re-firing aborts the same way`
+                : // EI-20767792192323374: an infra abort is the one abort where RE-FIRING IS the
+                  // lever — the condition is transient host weather (something deleted the runner's
+                  // temp root mid-suite), not a standing blocker, so the generic "re-firing aborts
+                  // the same way" below would be false and would tell the reader to wait on nothing.
+                  // The load caveat is the point: firing into the same pressure repeats the fault.
+                  g.inconclusive.status === 'infra-inconclusive'
+                  ? "release:checkpoint-run once the box is quiet (the gate's own module cache was deleted mid-run — a HOST fault, so it rendered no verdict; ⚠ do NOT triage the files the last red named, they are innocent)"
+                  : `clear the gate's abort condition (${g.inconclusive.status}) — it renders no verdict until then, and re-firing aborts the same way`
               : g.fireStale
                 ? 'release:checkpoint-run (the green-checkpoint is not firing — no verdict is coming on its own)'
                 : gateHealth === 'stalled'

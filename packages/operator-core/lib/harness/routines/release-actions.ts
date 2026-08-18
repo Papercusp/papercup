@@ -1023,6 +1023,11 @@ export type GateStallClass = 'reset' | 'noop' | 'red' | 'record-only';
  *       · `evaluateGreenStall`'s `verdictStale` — no GREEN verdict in 12h, the
  *         deep backstop. Keyed on `lastGreenAt`, which a noop leaves stale on
  *         purpose — that staleness IS the signal.
+ *   - 'noop': `status === 'infra-inconclusive'` (EI-20767792192323374) — the same
+ *     reasoning one step LATER. Here the suite DID run; what failed was the gate's
+ *     own vite-node module cache, deleted underneath it mid-run by something on the
+ *     host. Its ~4,800 failing files are innocent, so the tick is a non-verdict for
+ *     the same reason a migrations-pending abort is, and gets the same backstops.
  *   - 'red': every other non-green verdict (not-green / error / create-failed /
  *     not-fast-forward / …) still counts toward the stall streak.
  */
