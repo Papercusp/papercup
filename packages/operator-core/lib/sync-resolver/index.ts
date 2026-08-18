@@ -3358,7 +3358,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       const { callPlansRead } = await import('../agent-tools/plans/read-dispatch');
       const {
         ATTENTION_COUNTS_FALLBACK_MS,
-        deriveAttentionCounts,
+        attentionCountsRowFromOutcome,
         withDeadlineFallback,
       } = await import('./attention-counts');
       // The underlying attention aggregation has a 45s cachedRead deadline, but
