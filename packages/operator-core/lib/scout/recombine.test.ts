@@ -15,6 +15,7 @@ import {
   DELIBERATELY_UNACCEPTED_ROUTE_HINTS,
   type RouteHintsAreExhaustive,
 } from './recombine';
+import { classifyProposal, makeGoalScaleOverride, DEFAULT_ROUTING_RAIL } from './router';
 
 function idea(over: Partial<Idea> = {}): Idea {
   return {
