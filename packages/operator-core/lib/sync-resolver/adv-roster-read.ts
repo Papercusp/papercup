@@ -67,9 +67,13 @@ import { createReadDeadline } from './read-deadline';
 
 /**
  * The whole snapshot's budget, shared by every leg (see `createReadDeadline`:
- * one deadline for the fan-out, not a per-call budget). Sits under the sync
- * layer's `RESOLVER_READ_TIMEOUT_MS` ceiling so the bound can actually prevent
- * the failure it exists to prevent, and matches the gym read's budget.
+ * one deadline for the fan-out, not a per-call budget). 6s — the budget the
+ * bounded `learning.*` reads carry, measured against real :3170 latency (p90
+ * 599ms) and sized to fire under both the sync layer's ~10s
+ * `RESOLVER_READ_TIMEOUT_MS` and the memory backend's degraded p50 of ~10.9s.
+ * That ordering is the whole point: a budget above the resolver ceiling cannot
+ * prevent the failure it exists to prevent, and one below normal latency turns
+ * a healthy read into an outage.
  */
 export const ROSTER_READ_BUDGET_MS = 6_000;
 
