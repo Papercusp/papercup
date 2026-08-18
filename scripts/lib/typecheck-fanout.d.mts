@@ -53,4 +53,12 @@ export const SKIP_DIRS: Set<string>;
 /** Deep enough for packages/harness/docs-viewer (3), with headroom; bounded so a symlink loop
  *  or a stray vendored tree can never turn discovery into an unbounded walk. */
 export const MAX_DEPTH: 5;
+/** The argv a package is typechecked with. `npm run typecheck` when it declares one;
+ *  otherwise whatever the caller supplied via `pkg.command`.
+ *
+ *  The seam exists so a package can be gated on its TSCONFIG rather than on having
+ *  remembered to add a script (EI-19409185011887864). Requiring the script made
+ *  coverage a ROSTER — every new package uncovered until someone hand-enrolls it —
+ *  which is exactly what this fan-out's "Discovery, not a roster" design rejects. */
+export const commandFor: (pkg: any) => string[];
 export function realSpawn(pkg: any): any;

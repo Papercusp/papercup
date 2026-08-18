@@ -25,7 +25,7 @@ import {
 import { join, dirname, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
-import ts from 'typescript';
+import { exportParityProblems, formatProblems } from './lib/declaration-export-parity.js';
 
 const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
 const CONFIG = 'tsconfig.declarations.json';
@@ -156,7 +156,26 @@ function check(): void {
       console.error(`\nRun \`npm run gen:declarations\` and commit the result.`);
       process.exit(1);
     }
-    console.log(`✓ gen:declarations:check: ${inputs().length} declaration file(s) up to date`);
+
+    // Hand-written declarations are not regenerated, so the byte-compare above says
+    // nothing about them. This is the only thing that does (EI-20805816236289594).
+    const parity = formatProblems(
+      exportParityProblems(REPO_ROOT, new Set(inputs().map(declarationFor))),
+    );
+    if (parity.length) {
+      console.error(`✗ hand-written declaration(s) out of sync with their source:\n   ${parity.join('\n   ')}`);
+      console.error(
+        `\nEdit the .d.mts to match its .mjs. (Do NOT "fix" this by adding the module to\n` +
+          `${CONFIG} — for these modules generation emits a WEAKER type than the\n` +
+          `hand-written declaration; see exportParityProblems() in this file.)`,
+      );
+      process.exit(1);
+    }
+
+    console.log(
+      `✓ gen:declarations:check: ${inputs().length} declaration file(s) up to date; ` +
+        `hand-written declarations match their sources`,
+    );
   } finally {
     rmSync(out, { recursive: true, force: true });
   }
