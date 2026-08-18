@@ -3099,7 +3099,7 @@ function runCapturedTask(
     child.once("close", (status, signal) => {
       if (settled) return;
       settled = true;
-      clearTimeout(watchdogTimer);
+      watchdog.stop();
       if (progressTimer) clearTimeout(progressTimer);
       emitProgress(
         watchdogTimedOut
