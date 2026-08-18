@@ -102,6 +102,34 @@ vi.mock('../../goals/drain-fleet-mint', () => ({
   teardownDrainFleetMint: (a: unknown) => teardownMock(a),
 }));
 
+// P-004 (goal-dag-shared-substrate-2026-08-18): the dependency substrate is
+// mocked as a seam — its OWN row-level semantics (resolve-validated writes, the
+// cycle guard, the verdict fold) are pinned in
+// packages/agent-mcp/src/tools/goals/goal-deps.test.ts; what THIS file pins is
+// the wiring: when the activation gate reads readiness, what a refusal rolls
+// back, and how the override is recorded.
+type Readiness = {
+  actionable: boolean;
+  premiseInvalidated: boolean;
+  blockers: Array<{ kind: string; ref: string; status: string | null; verdict: string }>;
+};
+const ACTIONABLE: Readiness = { actionable: true, premiseInvalidated: false, blockers: [] };
+const applyBlockedByMock = vi.fn(
+  async (_sql: unknown, _o: unknown): Promise<{ ok: true; blockers: unknown[] } | { ok: false; problem: string }> => ({
+    ok: true,
+    blockers: [],
+  }),
+);
+const readinessMock = vi.fn(async (_sql: unknown, _ws: unknown, _id: unknown): Promise<Readiness> => ACTIONABLE);
+const replaceBlockedByMock = vi.fn(async (_sql: unknown, _o: unknown) => {
+  order.push('deps-clear');
+});
+vi.mock('@papercusp/agent-mcp/goal-deps', () => ({
+  applyGoalBlockedBy: (s: unknown, o: unknown) => applyBlockedByMock(s, o),
+  readGoalReadiness: (s: unknown, w: unknown, g: unknown) => readinessMock(s, w, g),
+  replaceGoalBlockedBy: (s: unknown, o: unknown) => replaceBlockedByMock(s, o),
+}));
+
 const goalsStart = (await import('./start')).default;
 const { buildGoalKickoffBrief } = await import('./start');
 const { buildAgentLaunchCommand } = await import('../../agent-launch-core');
@@ -157,6 +185,11 @@ beforeEach(() => {
     setModeCalls.push(opts);
     order.push(opts.enabled ? 'mode-set' : 'mode-clear');
     return { ok: true };
+  });
+  applyBlockedByMock.mockImplementation(async () => ({ ok: true, blockers: [] }));
+  readinessMock.mockImplementation(async () => ACTIONABLE);
+  replaceBlockedByMock.mockImplementation(async () => {
+    order.push('deps-clear');
   });
 });
 
@@ -498,5 +531,105 @@ describe('goals:start — the shared kill-criterion rule applies at THIS door to
     const res = await call({ killCriterion: '   ' });
     expect(isError(res)).toBe(false);
     expect(sql.find((s) => /INSERT INTO harness_shared\.goals/i.test(s.text))).toBeTruthy();
+  });
+});
+
+// ── goal-dag-shared-substrate-2026-08-18 P-004 ────────────────────────────
+describe('goals:start — the activation gate (P-004)', () => {
+  /** One pending goal blocker + one satisfied issue blocker: not actionable. */
+  const pendingReadiness = (): Readiness => ({
+    actionable: false,
+    premiseInvalidated: false,
+    blockers: [
+      { kind: 'goal', ref: 'other-goal-ab12cd', status: 'active', verdict: 'pending' },
+      { kind: 'issue', ref: 'WI-100', status: 'resolved', verdict: 'satisfied' },
+    ],
+  });
+
+  it('warn-refuses ONCE on unsatisfied blockers: full rollback, nothing spawned, override + stub-then-arm named', async () => {
+    readinessMock.mockImplementation(async () => pendingReadiness());
+    const res = await call({ blockedBy: ['other-goal-ab12cd', 'WI-100'] });
+    expect(isError(res)).toBe(true);
+    const text = textOf(res);
+    // The refusal names the UNSATISFIED blocker — and only that one; a listing
+    // that included satisfied blockers would read as a broken gate.
+    expect(text).toContain('other-goal-ab12cd');
+    expect(text).not.toContain('WI-100 (');
+    // ...and both exits: the override and the stub-then-arm alternative (D-004).
+    expect(text).toContain('startBlocked');
+    expect(text).toContain('goals:create');
+    // Rollback: edges cleared AND the row deleted; no mode stamp, no spawn.
+    expect(replaceBlockedByMock).toHaveBeenCalled();
+    expect(order).toContain('delete');
+    expect(setModeCalls).toHaveLength(0);
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
+  });
+
+  it('startBlocked: true overrides — proceeds and records start_blocked_override verbatim', async () => {
+    readinessMock.mockImplementation(async () => pendingReadiness());
+    const res = await call({
+      blockedBy: ['other-goal-ab12cd'],
+      startBlocked: true,
+      startBlockedReason: 'prerequisite lands tomorrow; scaffolding can start today',
+    });
+    expect(isError(res)).toBe(false);
+    expect(dataOf(res).start_blocked_override).toBe(
+      'prerequisite lands tomorrow; scaffolding can start today',
+    );
+    // The override changes the verdict, never the order contract.
+    expect(stampPrecedesSpawn(order)).toBe(true);
+  });
+
+  it('startBlocked with NO reason still proceeds, recording the blockers as the override note', async () => {
+    readinessMock.mockImplementation(async () => pendingReadiness());
+    const res = await call({ blockedBy: ['other-goal-ab12cd'], startBlocked: true });
+    expect(isError(res)).toBe(false);
+    expect(String(dataOf(res).start_blocked_override)).toContain('other-goal-ab12cd');
+  });
+
+  it('an ACTIONABLE blockedBy set passes with NO override recorded — startBlocked is not sticky', async () => {
+    const res = await call({ blockedBy: ['WI-100'], startBlocked: true });
+    expect(isError(res)).toBe(false);
+    expect(dataOf(res).start_blocked_override).toBeUndefined();
+  });
+
+  it('no blockedBy ⇒ the gate never reads readiness (a fresh goal has no other edges)', async () => {
+    const res = await call();
+    expect(isError(res)).toBe(false);
+    expect(readinessMock).not.toHaveBeenCalled();
+  });
+
+  it('a refused blockedBy set rolls the goal back BEFORE the gate ever runs (P-002 wiring, via the seam)', async () => {
+    applyBlockedByMock.mockImplementation(async () => ({ ok: false, problem: 'refs do not resolve: nope' }));
+    const res = await call({ blockedBy: ['nope'] });
+    expect(isError(res)).toBe(true);
+    expect(textOf(res)).toContain('refs do not resolve');
+    expect(order).toContain('delete');
+    expect(readinessMock).not.toHaveBeenCalled();
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+  });
+
+  it('a killed blocker (premise invalidated) also refuses, naming the invalidating verdict', async () => {
+    readinessMock.mockImplementation(async () => ({
+      actionable: false,
+      premiseInvalidated: true,
+      blockers: [{ kind: 'goal', ref: 'dead-goal-ff00aa', status: 'killed', verdict: 'invalidating' }],
+    }));
+    const res = await call({ blockedBy: ['dead-goal-ff00aa'] });
+    expect(isError(res)).toBe(true);
+    expect(textOf(res)).toContain('invalidating');
+  });
+
+  it('a mode-stamp failure with blockedBy clears the edges too — no dangling edge rows (the P-002 gap)', async () => {
+    setModeMock.mockImplementation(async (opts: SetModeCall) => {
+      setModeCalls.push(opts);
+      order.push('mode-set');
+      return { ok: false, error: 'sticky conflict' };
+    });
+    const res = await call({ blockedBy: ['WI-100'] });
+    expect(isError(res)).toBe(true);
+    expect(replaceBlockedByMock).toHaveBeenCalled();
+    expect(order).toContain('delete');
   });
 });
