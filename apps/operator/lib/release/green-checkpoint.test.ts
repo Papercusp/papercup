@@ -463,8 +463,13 @@ describe("armSelfWatchdog (WI-1319 root fix (c) — orphaned OS process past DBO
   });
 
   it("renders the resolved watchdog duration without hiding the manual kill grace", () => {
+    // Pinned as a LITERAL on purpose: what is being checked is that the trailing 15s
+    // survives rendering, which a minutes-only formatter would silently drop — a derived
+    // expectation would format its own input and assert nothing. The cost is that this
+    // line is coupled to GREEN_CHECKPOINT_SUITE_TIMEOUT_MS and must be retuned with it
+    // (120m15s → 115m15s when the budget moved 120m → 115m, WI-39841).
     expect(formatSelfWatchdogDuration(MIN_MANUAL_SELF_WATCHDOG_MS)).toBe(
-      "120m15s",
+      "115m15s",
     );
     expect(formatSelfWatchdogDuration(SELF_WATCHDOG_MS)).toBe("180m");
   });
