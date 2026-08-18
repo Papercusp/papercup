@@ -4,6 +4,7 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { findIncompleteSubmoduleInstalls, formatProblems } from './lib/submodule-installs.mjs';
+import { findShallowGitdirs, formatShallowProblems } from './lib/shallow-gitdirs.mjs';
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
