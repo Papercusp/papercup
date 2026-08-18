@@ -22,6 +22,7 @@ import {
   HUD_DEFAULT_THRESHOLDS,
   isInfrastructureAwait,
   isSuSession,
+  isZombieSession,
   matchesSessionText,
   parseHighlight,
   searchHitAnchor,
@@ -663,6 +664,89 @@ describe('deriveBadges', () => {
     const chip = deriveBadges(entry({ wakeMode: 'manual' }), OPTS).find((x) => x.id === 'wake');
     expect(chip?.tone).toBe('warn');
     expect(chip?.title).toContain('staged');
+  });
+
+  /**
+   * popup-agent-state-coverage-2026-08-18 P-007. `pendingWakes` rode on the
+   * roster row and was rendered nowhere, so the badge could say the staging
+   * mechanism was armed but never that anything was caught in it.
+   */
+  it('carries the STAGED COUNT in the manual-wake badge, and stays silent at zero', () => {
+    const armedOnly = deriveBadges(entry({ wakeMode: 'manual', pendingWakes: 0 }), OPTS).find(
+      (x) => x.id === 'wake',
+    );
+    // 0 is a real state (armed, nothing caught) — it must not render "0 staged",
+    // which reads as a defect report rather than as the normal case.
+    expect(armedOnly?.label).toBe('wake: manual');
+
+    const staged = deriveBadges(entry({ wakeMode: 'manual', pendingWakes: 3 }), OPTS).find(
+      (x) => x.id === 'wake',
+    );
+    expect(staged?.label).toBe('wake: manual · 3 staged');
+    expect(staged?.title).toContain('3 messages staged');
+
+    // Singular, because "1 messages" on the surface a human reads to decide
+    // whether their message landed is exactly where sloppiness costs trust.
+    const one = deriveBadges(entry({ wakeMode: 'manual', pendingWakes: 1 }), OPTS).find(
+      (x) => x.id === 'wake',
+    );
+    expect(one?.label).toBe('wake: manual · 1 staged');
+    expect(one?.title).toContain('1 message staged');
+  });
+
+  /** An AUTO-wake session delivers immediately; a staged count there would be
+   *  meaningless, and the badge does not exist at all. */
+  it('emits no wake badge for an auto-wake session, whatever pendingWakes says', () => {
+    expect(
+      deriveBadges(entry({ wakeMode: 'auto', pendingWakes: 4 }), OPTS).find((x) => x.id === 'wake'),
+    ).toBeUndefined();
+  });
+});
+
+/**
+ * popup-agent-state-coverage-2026-08-18 P-006. Extracted from `deriveColumn` so
+ * the conversation popup renders the identical verdict in the identical words;
+ * these assert the extraction preserved the rule, including its two guards.
+ */
+describe('isZombieSession', () => {
+  it('fires on a nominally-alive session whose OS process is gone', () => {
+    expect(isZombieSession(entry({ sessionState: 'live', pidAlive: false, stale: false }))).toBe(true);
+  });
+
+  it('does NOT fire on a stale row — already known-gone, and reported as such', () => {
+    // Redundant noise on the one signal that has to stay sharp.
+    expect(isZombieSession(entry({ sessionState: 'live', pidAlive: false, stale: true }))).toBe(false);
+  });
+
+  it('does NOT fire on pidAlive:null — "could not check" is not a death claim', () => {
+    // null is a different host, no pid, or a stale entry. Treating it as false
+    // would put a confident ☠ on every federated peer on the board.
+    expect(isZombieSession(entry({ sessionState: 'live', pidAlive: null, stale: false }))).toBe(false);
+  });
+
+  it('does NOT fire on a parked session — it is not supposed to be producing turns', () => {
+    expect(isZombieSession(entry({ sessionState: 'parked', loopArmed: false, pidAlive: false }))).toBe(
+      false,
+    );
+  });
+
+  it('DOES fire on a parked session with an armed loop — a dead loop is the sharpest stall', () => {
+    expect(isZombieSession(entry({ sessionState: 'parked', loopArmed: true, pidAlive: false }))).toBe(
+      true,
+    );
+  });
+
+  it('falls back to the heartbeat legs when the oracle had no verdict', () => {
+    // An unknown verdict must never silently suppress a real zombie.
+    expect(
+      isZombieSession(entry({ sessionState: null, liveness: 'live', pidAlive: false, stale: false })),
+    ).toBe(true);
+  });
+
+  it('and deriveColumn reports it with the SAME exported wording', () => {
+    const v = deriveColumn(entry({ sessionState: 'live', pidAlive: false }), undefined, OPTS);
+    expect(v.column).toBe('stalled');
+    expect(v.reason).toBe(ZOMBIE_REASON);
   });
 
   it('flags a declared-but-unclaimed lane', () => {
