@@ -30,6 +30,10 @@ export interface WorkItemBlockingEdge {
 /** The issue-family endpoint kind, the counterpart of FEATURE_KIND for this table. */
 const ISSUE_ENDPOINT_KIND = 'issue';
 
+/** The goal endpoint kind (goal-dag-shared-substrate-2026-08-18) — goals are the table's second
+ *  consumer family; their readers/writers live in `@papercusp/agent-mcp/goal-deps`. */
+export const GOAL_ENDPOINT_KIND = 'goal';
+
 /**
  * P-005 / D-009 — the kind↔ref-FORM invariant, enforced at the ONE write seam.
  *
