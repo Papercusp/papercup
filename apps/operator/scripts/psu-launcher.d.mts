@@ -2505,8 +2505,12 @@ export const SU_BASELINE_NON_PERSONA_TOKENS: Readonly<{
  * Idempotent; a no-op for a spec already carrying `[1m]` or outside the
  * default-1M families. `[1m]` is inserted before a recognized `:effort`
  * suffix, else appended. Papercusp then caps their compaction at 400k —
- * named-fleet MEMBERS at 300k (owner directive 2026-07-03; agent-config-constants
- * defaultCompactionLimitForSpec) — to bound token spend.
+ * named-fleet MEMBERS at 200k (owner directive 2026-07-19, superseding the
+ * 300k of 2026-07-03; agent-config-constants
+ * COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP / defaultCompactionLimitForSpec)
+ * — to bound token spend. The same two caps now bind extended-window CODEX
+ * sessions (plan codex-1m-context-window-2026-08-17 D-001), which previously
+ * seeded 158k because the window resolver only recognized this `[1m]` marker.
  * sonnet-5 REQUIRES the marker too — REVERSAL of the earlier P-031 note
  * (2026-07-02), live-verified via `/context` the same day: bare `--model
  * sonnet` runs a 200k AUTO-COMPACT window in CC 2.1.198 ("76k/200k ·
