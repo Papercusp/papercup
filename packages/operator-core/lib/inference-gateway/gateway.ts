@@ -1009,7 +1009,17 @@ export interface GatewayStats {
    *  .fetchGatewayHeadroom), which under deploy skew may be an older binary that predates this field —
    *  exactly the case on 2026-07-09, when the running gateway was older than the routes being shipped.
    *  A consumer must treat its absence as "unknown", never as "not clamped". */
-  clamp?: { mode: ServiceableClampMode; recommendation: number | null; applied: number; overridden: boolean };
+  clamp?: {
+    mode: ServiceableClampMode;
+    recommendation: number | null;
+    applied: number;
+    overridden: boolean;
+    /** Serviceable accounts the recommendation was computed FROM — the raw input, published so a reader
+     *  never has to invert `max(MIN_SERVICEABLE_ADMISSION, n * PER_ACCOUNT_ADMISSION)` to recover it. That
+     *  inversion is not even well-defined at the floor: a recommendation of 2 is produced by BOTH 0
+     *  serviceable accounts and the MIN floor. Optional for the same deploy-skew reason as `clamp` itself. */
+    serviceableAccounts?: number | null;
+  };
   /** MAINTENANCE summarize lane (deterministic-context-carry P-002): compaction summaries served /
    *  failed via POST /maintenance/summarize. Optional for deploy-skew readers of older gateways.
    *  `carried` (P-017) = requests answered by the DETERMINISTIC carry branch instead of the LLM
