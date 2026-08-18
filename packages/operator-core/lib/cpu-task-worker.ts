@@ -40,6 +40,20 @@
  * so a one-off process could not exit. All three are fixed here and there;
  * see `syncWorkerRef`, `rejectAllPending` and MAX_CONSECUTIVE_CRASHES below,
  * and keep the two modules in step when either changes.
+ *
+ * ⚠ THE TWO MODULES ARE NOW OUT OF STEP, DELIBERATELY (EI-20505664003243915).
+ * WI-37688 BOUNDED the first trap (three crashes, not one) but did not remove
+ * it: past the bound the latch was still permanent for the process lifetime,
+ * with "restart the host" as the documented remedy — restart-to-clear, which
+ * is a mitigation, not a fix. This module now RE-ARMS: a latched breaker
+ * admits one half-open probe on a backed-off cooldown and closes only when a
+ * request is actually SERVED (`closeBreakerOnServe`), it carries the crash
+ * CAUSE into the announcement instead of discarding it, and it reports a
+ * `verdict` that separates "offload proven working" from "silently falling
+ * back". The embedder/reranker breakers in libs/generic/memory and
+ * libs/generic/rerank still latch permanently and still carry no cause — the
+ * same class, tracked separately rather than fixed by widening this item into
+ * a generic lib and the sidecar.
  */
 
 import { Worker } from 'node:worker_threads';
