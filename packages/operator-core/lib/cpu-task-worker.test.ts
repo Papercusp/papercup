@@ -170,11 +170,17 @@ describe('cpu-task-worker — transient-failure recovery (WI-37688)', () => {
   it('a single worker crash does NOT disable the offload, and the next call respawns', async () => {
     const m = await mod();
     const rows = bigBatch(m);
+    // EI-20505664003243915: every crash is now logged with its cause, including
+    // a transient one that never trips the breaker. Asserted rather than merely
+    // silenced — these are precisely the crashes that used to vanish, leaving a
+    // later trip with nothing to explain it.
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
     await m.serializeJsonResponse({ rows }, rows.length);
     expect(m.getCpuWorkerState().alive).toBe(true);
 
     expect(m._injectWorkerCrashForTest(new Error('transient boom'))).toBe(true);
+    expect(errSpy.mock.calls.flat().join(' ')).toContain('transient boom');
 
     // The latch is the defect: one transient crash must not turn the offload
     // off for the rest of the process lifetime.
@@ -191,11 +197,13 @@ describe('cpu-task-worker — transient-failure recovery (WI-37688)', () => {
     // A success resets the crash run — otherwise unrelated crashes spread out
     // over a long-lived process would eventually trip the breaker.
     expect(healed.consecutiveCrashes).toBe(0);
+    errSpy.mockRestore();
   });
 
   it('a crash run BROKEN BY a served request does not trip the breaker', async () => {
     const m = await mod();
     const rows = bigBatch(m);
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
     // Crash, serve, crash, serve, crash... A worker that is answering
     // requests is working, however flaky — it must keep being respawned.
@@ -206,6 +214,10 @@ describe('cpu-task-worker — transient-failure recovery (WI-37688)', () => {
       expect(m.getCpuWorkerState().consecutiveCrashes).toBe(1);
     }
     expect(m.getCpuWorkerState().disabled).toBe(false);
+    // A flaky-but-serving worker leaves a per-crash trail: the state resets, so
+    // without the log there would be no evidence it is degrading at all.
+    expect(errSpy.mock.calls.flat().join(' ')).toContain('flaky 3');
+    errSpy.mockRestore();
   });
 
   it('gives up after a run of crashes that serve NOTHING, so a broken worker is not respawned per request', async () => {
@@ -475,5 +487,177 @@ describe('cpu-task-worker — breaker announcement (WI-37700)', () => {
 
     expect(seen).toHaveLength(2);
     errSpy.mockRestore();
+  });
+});
+
+describe('cpu-task-worker — breaker re-arm + served detector (EI-20505664003243915)', () => {
+  afterEach(async () => {
+    const m = await mod();
+    m.configureCpuWorkerBreakerNotifier(null);
+  });
+
+  function bigBatch(m: { OFFLOAD_MIN_ITEMS: number }) {
+    return Array.from({ length: m.OFFLOAD_MIN_ITEMS + 1 }, (_, i) => ({ id: i }));
+  }
+
+  /**
+   * Drive N crashes with the worker's postMessage stubbed out, so each request
+   * stays pending and the injected crash lands on a real in-flight round-trip.
+   * Same shape as the WI-37700 block's helper; kept local for the same reason.
+   */
+  async function crashRun(m: Awaited<ReturnType<typeof mod>>, times: number, label = 'boom') {
+    const rows = bigBatch(m);
+    const realPost = Worker.prototype.postMessage;
+    (Worker.prototype as unknown as { postMessage: () => void }).postMessage = () => {};
+    try {
+      for (let i = 0; i < times; i++) {
+        const inFlight = m.serializeJsonResponse({ rows }, rows.length);
+        for (let t = 0; t < 200 && m.getCpuWorkerState().pendingCount === 0; t++) {
+          await new Promise((r) => setTimeout(r, 10));
+        }
+        m._injectWorkerCrashForTest(new Error(`${label} ${i}`));
+        await inFlight;
+      }
+    } finally {
+      (Worker.prototype as unknown as { postMessage: typeof realPost }).postMessage = realPost;
+    }
+  }
+
+  it('carries the CRASH CAUSE into the announcement, not just the crash count', async () => {
+    // The defect: `err` was in scope in the 'error' handler and reached only
+    // rejectAllPending/rejectReady, both swallowed by serializeJsonResponse's bare
+    // catch — so the one durable record of a trip said THAT the worker died and
+    // never WHY. The 2026-08-15 trip left no recoverable cause anywhere.
+    const m = await mod();
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const seen: string[] = [];
+    m.configureCpuWorkerBreakerNotifier((s) => seen.push(s));
+
+    await crashRun(m, 3, 'ENOMEM-simulated');
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toContain('ENOMEM-simulated 2');
+    expect(m.getCpuWorkerState().lastCrashError).toContain('ENOMEM-simulated 2');
+    errSpy.mockRestore();
+  });
+
+  it('does NOT admit a probe before the cooldown has elapsed', async () => {
+    // FALSIFIABILITY CONTROL for the re-arm window: delete the cooldown
+    // comparison in serializeJsonResponse and this test fails, because the very
+    // next eligible request would probe and (with a healthy worker) close the
+    // breaker. Without it, the re-arm tests below would also pass for an
+    // implementation that re-armed instantly — i.e. for no breaker at all.
+    const m = await mod();
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await crashRun(m, 3);
+    expect(m.getCpuWorkerState().disabled).toBe(true);
+
+    const rows = bigBatch(m);
+    const json = await m.serializeJsonResponse({ rows }, rows.length);
+
+    const s = m.getCpuWorkerState();
+    expect(s.disabled).toBe(true);
+    expect(s.reArms).toBe(0);
+    expect(s.servedByWorker).toBe(0);
+    expect(s.verdict).toBe('disabled');
+    expect(s.reArmInMs ?? 0).toBeGreaterThan(0);
+    // Still byte-correct via the sync fallback — a latched breaker degrades, never fails.
+    expect(JSON.parse(json)).toEqual({ rows });
+    errSpy.mockRestore();
+  });
+
+  it('re-arms after the cooldown when a probe is actually SERVED, and announces recovery', async () => {
+    const m = await mod();
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const seen: string[] = [];
+    m.configureCpuWorkerBreakerNotifier((s) => seen.push(s));
+
+    await crashRun(m, 3);
+    expect(m.getCpuWorkerState().disabled).toBe(true);
+
+    // The seam rewinds the REAL trip timestamp the REAL comparison reads.
+    expect(m._advanceBreakerClockForTest(60_000)).toBe(true);
+
+    const rows = bigBatch(m);
+    const json = await m.serializeJsonResponse({ rows }, rows.length);
+
+    const s = m.getCpuWorkerState();
+    expect(s.disabled).toBe(false);
+    expect(s.reArms).toBe(1);
+    expect(s.servedByWorker).toBeGreaterThan(0);
+    expect(s.verdict).toBe('serving');
+    expect(JSON.parse(json)).toEqual({ rows });
+    // Recovery is announced for the same reason the trip is: the fallback is
+    // byte-identical, so a recovery is as invisible as the degradation was.
+    expect(seen).toHaveLength(2);
+    expect(seen[1]).toContain('RECOVERED');
+    errSpy.mockRestore();
+  });
+
+  it('a probe that CRASHES does not close the breaker, and backs the next probe off', async () => {
+    // The property that stops re-arm from reintroducing respawn-per-request:
+    // only a SERVED request closes the breaker, never a mere spawn.
+    const m = await mod();
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await crashRun(m, 3);
+    expect(m._advanceBreakerClockForTest(60_000)).toBe(true);
+    const before = m.getCpuWorkerState().reArmInMs ?? 0;
+
+    await crashRun(m, 1, 'probe-died');
+
+    const s = m.getCpuWorkerState();
+    expect(s.disabled).toBe(true);
+    expect(s.reArms).toBe(0);
+    expect(s.reArmFailures).toBe(1);
+    expect(s.verdict).toBe('disabled');
+    // Backoff doubled: the next probe waits longer than the first did.
+    expect(s.reArmInMs ?? 0).toBeGreaterThan(before);
+    errSpy.mockRestore();
+  });
+
+  it('the clock seam refuses to no-op silently when the breaker is not latched', async () => {
+    // A seam that returned void would let every re-arm test above pass against a
+    // breaker that never latched — the assertions would be measuring nothing.
+    const m = await mod();
+    expect(m.getCpuWorkerState().disabled).toBe(false);
+    expect(m._advanceBreakerClockForTest(60_000)).toBe(false);
+  });
+
+  it('verdict separates PROVEN-working from silently-falling-back', async () => {
+    // The reading `disabled:false` cannot give. All three states below report
+    // disabled:false, and before this item nothing could tell them apart.
+    const m = await mod();
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    // (1) Nothing asked yet — benign, but NOT evidence the offload works.
+    expect(m.getCpuWorkerState().verdict).toBe('idle-unproven');
+
+    // (2) One crash: handle cleared, breaker NOT latched, nothing ever served.
+    //     This is the invisible degradation — a healthy-looking row.
+    await crashRun(m, 1);
+    const mid = m.getCpuWorkerState();
+    expect(mid.disabled).toBe(false);
+    expect(mid.servedByWorker).toBe(0);
+    expect(mid.eligibleFallbacks).toBeGreaterThan(0);
+    expect(mid.verdict).toBe('silently-falling-back');
+
+    // (3) A real served round-trip is the only thing that proves it.
+    const rows = bigBatch(m);
+    await m.serializeJsonResponse({ rows }, rows.length);
+    expect(m.getCpuWorkerState().verdict).toBe('serving');
+    errSpy.mockRestore();
+  });
+
+  it('does not count small-batch sync stringifies as offload fallbacks', async () => {
+    // If every sync stringify counted, `eligibleFallbacks` would be dominated by
+    // the designed small-batch path and the silent-failure signal would be buried.
+    const m = await mod();
+    await m.serializeJsonResponse({ a: 1 }, 1);
+    await m.serializeJsonResponse({ a: 2 }, 1);
+    const s = m.getCpuWorkerState();
+    expect(s.eligibleFallbacks).toBe(0);
+    expect(s.verdict).toBe('idle-unproven');
   });
 });
