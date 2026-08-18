@@ -23,6 +23,44 @@ function run(over: Partial<DistilledTestRun> = {}): DistilledTestRun {
 }
 
 describe('mergeDistilledRuns', () => {
+  // WI-39848: the SAME class as this file's founding incident, one field over. The
+  // grading-time check evaluator batches every criterion's files into one run and
+  // attributes verdicts from `byFile`. Files spanning several workspaces arrive as
+  // several groups, so a merge that dropped byFile would leave every group after the
+  // first unattributable — and an unattributable file is refused as unjudged, which
+  // would have made a multi-workspace rubric ungradeable all over again.
+  it('WI-39848: merges the per-file grain across groups, so a multi-workspace batch stays attributable', () => {
+    const groupA = run({
+      passed: 22, failed: 1, files: 1,
+      byFile: { 'packages/operator-core/lib/a.test.ts': { passed: 22, failed: 1, skipped: 0, collectionFailed: false } },
+    });
+    const groupB = run({
+      passed: 7, files: 1,
+      byFile: { 'packages/agent-mcp/src/b.test.ts': { passed: 7, failed: 0, skipped: 0, collectionFailed: false } },
+    });
+
+    const merged = mergeDistilledRuns([groupA, groupB]);
+
+    expect(Object.keys(merged.byFile).sort()).toEqual([
+      'packages/agent-mcp/src/b.test.ts',
+      'packages/operator-core/lib/a.test.ts',
+    ]);
+    // Per-file verdicts stay SEPARATE — the red file's failure must not smear onto the
+    // green one, which is the whole basis of per-criterion attribution.
+    expect(merged.byFile['packages/operator-core/lib/a.test.ts']).toEqual({ passed: 22, failed: 1, skipped: 0, collectionFailed: false });
+    expect(merged.byFile['packages/agent-mcp/src/b.test.ts']).toEqual({ passed: 7, failed: 0, skipped: 0, collectionFailed: false });
+  });
+
+  it('WI-39848: a collection failure survives the merge — a file red with zero failing assertions still reads red', () => {
+    const merged = mergeDistilledRuns([
+      run({ failed: 1, files: 1, byFile: { 'x.test.ts': { passed: 0, failed: 1, skipped: 0, collectionFailed: true } } }),
+      run({ passed: 3, files: 1, byFile: { 'y.test.ts': { passed: 3, failed: 0, skipped: 0, collectionFailed: false } } }),
+    ]);
+    expect(merged.byFile['x.test.ts'].collectionFailed).toBe(true);
+    expect(merged.byFile['x.test.ts'].failed).toBe(1);
+    expect(merged.byFile['y.test.ts'].collectionFailed).toBe(false);
+  });
+
   it('reproduces the incident: a red group merged with a green one is NOT reported as green', () => {
     const redGroup = run({
       passed: 22, failed: 1, files: 1, durationMs: 3000,
