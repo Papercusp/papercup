@@ -47,6 +47,12 @@ export const TEST_CASE_HEADER = 'x-papercusp-test-case';
 /** The one arming switch. Test config, not a product flag — see the file header. */
 export const ATTRIBUTION_ENV = 'PAPERCUSP_TEST_ATTRIBUTION';
 
+/**
+ * The UNIT layer's rail (`libs/test-config/src/setup-no-real-pg.ts`), which forbids a real
+ * PG connection. Attribution DISARMS itself when it is set — see {@link isAttributionArmed}.
+ */
+export const FORBID_REAL_PG_ENV = 'PAPERCUSP_FORBID_REAL_PG';
+
 /** Which test is executing in THIS process, when the dispatcher runs inside the test fork. */
 export interface AmbientTestContext {
   /** Repo-relative test file path, matching `test_runs.file_path` so the two join. */
