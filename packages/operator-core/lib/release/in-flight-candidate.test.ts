@@ -7,7 +7,10 @@ import { describe, expect, it } from 'vitest';
 
 import {
   IN_FLIGHT_CANDIDATE_MAX_AGE_MS,
+  describeAbandonedInFlightCandidate,
   describeInFlightCandidate,
+  isPidAlive,
+  judgeAbandonedInFlightCandidate,
   parseInFlightCandidate,
   type StoredInFlightCandidate,
 } from './in-flight-candidate';
