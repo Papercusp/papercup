@@ -109,7 +109,7 @@ function FidelityChip({ marker }: { marker: FidelityMarker }): React.ReactElemen
         marginLeft: 6,
         fontSize: 11,
         opacity: 0.75,
-        color: weak ? 'var(--pc-warn, #b45309)' : undefined,
+        color: weak ? 'var(--warn, #b45309)' : undefined,
       }}
     >
       {marker.weakest}
@@ -178,7 +178,7 @@ export default function CoverageTab(): React.ReactElement {
         <div
           className="pc-test-card"
           role="status"
-          style={{ borderLeft: '3px solid var(--pc-warn, #b45309)', marginBottom: 12 }}
+          style={{ borderLeft: '3px solid var(--warn, #b45309)', marginBottom: 12 }}
         >
           <div className="pc-test-card-title">NOT MEASURED — this is not 0% coverage</div>
           <div style={{ fontSize: 12, opacity: 0.85 }}>
