@@ -148,7 +148,7 @@ describe('defaultCompactionLimitForSpec (keys on the [1m] MARKER only)', () => {
   });
   it('an UNRESOLVABLE spec (null / empty) seeds the [1m] policy default, NOT 158k (WI-3383, owner 2026-07-08)', () => {
     // On this opus[1m]-default fleet a truly-unknown spec is an opus[1m] session:
-    // seed 400k (300k member), never the haiku-sized 158k that mis-seeded a
+    // seed 400k (200k member), never the haiku-sized 158k that mis-seeded a
     // manually-launched su session. Only null/empty lifts — a NON-null bare
     // `opus`/`sonnet` still derives 158k (asserted above).
     expect(defaultCompactionLimitForSpec(null)).toBe(400_000);
@@ -172,6 +172,43 @@ describe('defaultCompactionLimitForWindow (live backend window)', () => {
   it('preserves the established 1M and 200k derivations', () => {
     expect(defaultCompactionLimitForWindow(1_000_000)).toBe(400_000);
     expect(defaultCompactionLimitForWindow(200_000)).toBe(158_000);
+  });
+});
+
+/**
+ * plan codex-1m-context-window-2026-08-17 D-001. Papercusp's soft limits are
+ * UNCHANGED — these assert that a Codex session can now REACH them. Before this,
+ * `modelWindowForSpec` recognised only Claude's `[1m]` marker, so every codex
+ * spec fell to a fabricated 200k window and seeded 158,000: an su on gpt-5.6
+ * compacted at well under half the runway the 400k policy grants it.
+ */
+describe('codex extended-window specs seed the SAME role caps as claude [1m]', () => {
+  it('seeds 400k for an ad-hoc su / fleet leader', () => {
+    for (const spec of ['gpt-5.6-sol', 'gpt-5.6-sol:high', 'gpt-5.6-terra:xhigh', 'sol', 'luna:max', 'gpt-5.4']) {
+      expect(defaultCompactionLimitForSpec(spec), spec).toBe(400_000);
+    }
+  });
+
+  it('seeds 200k for a fleet member', () => {
+    for (const spec of ['gpt-5.6-sol:high', 'terra', 'gpt-5.4']) {
+      expect(defaultCompactionLimitForSpec(spec, { fleetMember: true }), spec).toBe(200_000);
+    }
+  });
+
+  it('leaves NON-extended codex models on the conservative 158k derivation', () => {
+    // These report max_context_window == context_window, so they really do run a
+    // small window and a 400k seed would mean papercusp never pre-empts. Note
+    // gpt-5.4 IS extended while gpt-5.4-mini is NOT — a substring test would get
+    // this exact pair wrong.
+    for (const spec of ['gpt-5.5', 'gpt-5.5:high', 'gpt-5.4-mini', 'gpt-5.3-codex-spark']) {
+      expect(defaultCompactionLimitForSpec(spec), spec).toBe(158_000);
+    }
+  });
+
+  it('does not disturb the claude derivations it shares a resolver with', () => {
+    expect(defaultCompactionLimitForSpec('opus[1m]')).toBe(400_000);
+    expect(defaultCompactionLimitForSpec('haiku')).toBe(158_000);
+    expect(defaultCompactionLimitForSpec('sonnet')).toBe(158_000);
   });
 });
 
