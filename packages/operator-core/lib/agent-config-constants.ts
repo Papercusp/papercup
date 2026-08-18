@@ -791,6 +791,47 @@ export function defaultCompactionLimitForSpec(
 }
 
 /**
+ * Limits a SUPERSEDED policy once derived for this spec — numbers the SYSTEM
+ * chose, not a human. Empty for a spec whose derivation never moved.
+ *
+ * WHY THIS EXISTS. The compaction watchdog's raise gate uses value-equality as a
+ * provenance proxy: it heals a stored limit that is still exactly "the number
+ * nobody chose", and leaves anything else alone as a deliberate override (D-006
+ * leanness). That proxy silently breaks whenever a derivation CHANGES — every
+ * live session still carrying the OLD derived value stops matching the new one,
+ * so it reads as deliberate and becomes unraisable. The lower-only branch cannot
+ * reach it either, because the stale value is BELOW the correct one.
+ *
+ * That is not hypothetical: it is exactly what WI-38347's own comment describes
+ * ("a repair that only runs downhill converts a GOOD input into the unfixable
+ * one"), and codex-1m-context-window-2026-08-17 reintroduced it sideways —
+ * moving the extended-codex derivation 158,000 → the 400k role cap orphaned 13
+ * live sessions at 158,000 (measured 2026-08-18). So a derivation change must
+ * declare its previous value HERE, next to the policy that supersedes it, rather
+ * than leaving the watchdog to hardcode a number whose meaning it cannot see.
+ *
+ * The risk this deliberately accepts is the one the raise gate already accepts:
+ * a human who hand-set exactly this value is treated as un-chosen. Explicit
+ * `--compaction-limit` / per-tier limits are protected by `explicit` provenance
+ * upstream and never reach this test, whatever their value.
+ */
+export function supersededDerivedCompactionLimits(
+  spec?: string | null,
+  opts?: { fleetMember?: boolean },
+): number[] {
+  // Before codex-1m-context-window-2026-08-17, modelWindowForSpec had no codex
+  // branch: `[1m]` is a Claude-only marker and no codex spec carries it, so every
+  // codex spec fell to the conservative MODEL_WINDOW_DEFAULT. A spec that is
+  // extended TODAY therefore derived that fabricated-window value yesterday.
+  if (!isCodexExtendedWindowSpec(spec)) return [];
+  const superseded = defaultCompactionLimitForWindow(MODEL_WINDOW_DEFAULT, opts);
+  // Guard against a future policy that makes these equal: a value that is still
+  // the CURRENT derivation is not superseded, and returning it here would be a
+  // no-op at best and confusing at worst.
+  return superseded === defaultCompactionLimitForSpec(spec, opts) ? [] : [superseded];
+}
+
+/**
  * The ceiling a DELIBERATE self-set (`config:set-compaction-limit`) may reach —
  * as opposed to `defaultCompactionLimitForSpec`, which is what a session is
  * SEEDED with.
