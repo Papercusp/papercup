@@ -136,15 +136,13 @@ describe('runReplicationLivenessStalenessSweepOnce', () => {
   });
 
   it('leaves a still-existing, recently-active harness alone', async () => {
-    // ⚠ "Recently active" MUST be anchored to the REAL clock: the IO sweep stamps its
-    // own nowMs = Date.now(), so a frozen-NOW-relative stamp AGES — NOW - 1d crossed
-    // the 30d inactivity floor on 2026-08-18T00:00Z and this test became a time bomb
-    // (WI-39450 red #18). Ages that must stay SMALL use Date.now(); ages that must
-    // stay LARGE (already past a floor) may use the frozen NOW — they only grow.
+    // With the injected nowMs seam, every age here is judged against the frozen NOW —
+    // so NOW - 1d is "recently active" forever. (Pre-seam, this stamp aged across the
+    // 30d floor at 2026-08-18T00:00Z and became WI-39450 red #18's time bomb.)
     const { deps, resolved } = fakeDeps({
       open: [{ id: 'EI-2', body: bodyFor('ws1', 'live-harness', 'frozen'), createdAtMs: NOW - 20 * DAY_MS }],
       existing: new Set(['ws1::live-harness']),
-      lastActive: new Map([['ws1::live-harness', Date.now() - 1 * DAY_MS]]),
+      lastActive: new Map([['ws1::live-harness', NOW - 1 * DAY_MS]]),
     });
     const result = await runReplicationLivenessStalenessSweepOnce({ nowMs: NOW }, deps);
     expect(result.resolvedIds).toEqual([]);
@@ -221,9 +219,12 @@ describe('runReplicationLivenessStalenessSweepOnce', () => {
         ['ws1::drainy', NOW - 40 * DAY_MS],
         ['ws1::demo-a', NOW - 40 * DAY_MS],
         ['ws1::no-history', null],
-        // REAL_NOW-anchored for the same reason as EI-C4 above: "recently active"
-        // ages past the 30d floor if pinned to the frozen NOW (WI-39450 red #18).
-        ['ws1::live-harness', REAL_NOW - 1 * DAY_MS],
+        // "Recently active", and it STAYS that way: the sweep is handed the frozen NOW
+        // via opts.nowMs, so this is 1 day of inactivity permanently. Pinning it to the
+        // real clock instead (WI-39450 red #18) fixes this one symptom but leaves the
+        // wrapper reading Date.now() — the defect that aged this fixture past the 30d
+        // floor in the first place, and that would do it again to the next "recent" one.
+        ['ws1::live-harness', NOW - 1 * DAY_MS],
         ['ws1::abandoned', NOW - 40 * DAY_MS],
       ]),
     });
