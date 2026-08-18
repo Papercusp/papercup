@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { describe, expect, it, vi } from 'vitest';
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -382,6 +382,56 @@ describe('duration history', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  // EI-20806073740910935: gate run 10 loaded EMPTY history while a valid,
+  // populated file sat at the path — the bare catch{} swallowed whatever the
+  // transient read failure was, every watchdog bound fell to its floor, and
+  // the estimator fix above was inert for the entire ~55min run with zero
+  // trace. A read failure that is NOT plain first-run ENOENT must say so.
+  it('a non-ENOENT read failure returns empty AND reports itself on stderr', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'pc-task-history-test-'));
+    const spy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      // A DIRECTORY at the path makes readFileSync throw EISDIR — a stand-in
+      // for the whole non-ENOENT class (EMFILE/EIO/EACCES) without flakiness.
+      expect(readDurationHistory(dir)).toEqual(emptyDurationHistory());
+      const written = spy.mock.calls.map((c) => String(c[0])).join('');
+      expect(written).toContain('READ FAILED');
+      expect(written).toContain(dir);
+      expect(written).toContain('EI-20806073740910935');
+    } finally {
+      spy.mockRestore();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('a version-mismatched file returns empty AND reports the discard on stderr', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'pc-task-history-test-'));
+    const path = join(dir, 'history.json');
+    const spy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      writeFileSync(path, JSON.stringify({ version: 999, tasks: { 'a :: test': { durationMs: 5 } } }));
+      expect(readDurationHistory(path)).toEqual(emptyDurationHistory());
+      const written = spy.mock.calls.map((c) => String(c[0])).join('');
+      expect(written).toContain('DISCARDED');
+      expect(written).toContain('version=999');
+    } finally {
+      spy.mockRestore();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('plain ENOENT (first run, no history yet) stays quiet', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'pc-task-history-test-'));
+    const spy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      expect(readDurationHistory(join(dir, 'never-written.json'))).toEqual(emptyDurationHistory());
+      expect(spy).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('operator-visible budget markers', () => {
@@ -419,12 +469,18 @@ describe('affected-tests scheduler wiring', () => {
   it('measures the host for its memory budget instead of deriving it from the worker budget', () => {
     expect(AFFECTED_TESTS_SRC).toContain('memoryBudgetMb: resolveMemoryBudgetMb({');
     expect(AFFECTED_TESTS_SRC).toContain('memAvailableMb: readMemAvailableMb()');
-    // MemAvailable, never MemFree/os.freemem() — the latter two ignore reclaimable page cache.
+    // MemAvailable, never MemFree/os.freemem() — the latter two ignore reclaimable page cache and
+    // read catastrophically low on a long-lived box. (Asserted on the READ, not on the absence of
+    // the string "os.freemem()" anywhere in the file: the prose explaining WHY we avoid it names
+    // it, so an absence assertion would be defeated by its own rationale.)
     expect(AFFECTED_TESTS_SRC).toContain('MemAvailable:');
-    expect(AFFECTED_TESTS_SRC).not.toContain('os.freemem()');
-    // THE REGRESSION: the self-referential default that made the clamp unable to bind.
-    expect(AFFECTED_TESTS_SRC).not.toContain(
-      'SCHEDULER_WORKER_BUDGET * SCHEDULER_WORKER_MEMORY_MB',
+    expect(AFFECTED_TESTS_SRC).not.toMatch(/memAvailableMb:\s*(?:os\.)?freemem\(/);
+    // THE REGRESSION: the self-referential default that made the clamp unable to bind. Matched
+    // STRUCTURALLY (as the value of memoryBudgetMb) rather than as a bare substring — a bare
+    // substring assertion is defeated by the comment that explains the regression, which is a
+    // trap this very test fell into twice while being written.
+    expect(AFFECTED_TESTS_SRC).not.toMatch(
+      /memoryBudgetMb:[\s\S]{0,120}?SCHEDULER_WORKER_BUDGET \* SCHEDULER_WORKER_MEMORY_MB/,
     );
   });
 
