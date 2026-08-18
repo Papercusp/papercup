@@ -57,6 +57,21 @@ export function resolveWorkerMemoryMb({ affectedWorkerMemoryMb, nodeOptions, fal
 }
 
 /**
+ * Headroom held back from MemAvailable before any worker token is paid for.
+ *
+ * EI-20801764054303492 route (a): the STARTUP budget ({@link resolveMemoryBudgetMb}) and the
+ * PER-ADMISSION re-check ({@link admissibleWorkersForMemory}) must reserve the same slice, or the
+ * two rails disagree about what "available" means and the run oscillates between them. Exported
+ * as one constant so a future tuning change cannot move one and leave the other behind.
+ *
+ * It is also the ONLY thing standing in for memory a just-admitted child has not yet allocated:
+ * a worker's 4 GiB heap materialises over its first minutes, so a reading taken right after an
+ * admission still reports that memory as available. See the conservatism note on
+ * {@link admissibleWorkersForMemory}.
+ */
+export const MEMORY_RESERVE_FRACTION = 0.25;
+
+/**
  * Resolve the memory envelope that worker tokens are admitted against.
  *
  * WI-39472: the caller's default used to be `workerBudget * workerMemoryMb`, which made
@@ -82,7 +97,7 @@ export function resolveMemoryBudgetMb({
   memAvailableMb,
   workerBudget,
   workerMemoryMb,
-  reserveFraction = 0.25,
+  reserveFraction = MEMORY_RESERVE_FRACTION,
 }) {
   const perWorker = positiveInteger(workerMemoryMb, 'workerMemoryMb');
   if (affectedGlobalMemoryMb != null && affectedGlobalMemoryMb !== '') {
