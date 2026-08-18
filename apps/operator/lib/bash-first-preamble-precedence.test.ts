@@ -49,7 +49,12 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const REPO = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+// Overridable so falsifiability can be proven at TIER 2 — against a COPY of these four
+// files outside the tree — instead of mutating the shared checkout. Without this line the
+// only way to prove the guard can fail is an in-tree mutation, which git-sync can commit
+// mid-probe (it sweeps the WHOLE tree on a schedule, and no trap prevents that race).
+const REPO =
+  process.env.PRECEDENCE_GUARD_ROOT ?? join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
 /** Both headers the stock text ships under — an agent may be handed either one. */
 const PREAMBLE_HEADERS = [
