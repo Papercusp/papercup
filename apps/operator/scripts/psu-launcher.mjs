@@ -3432,6 +3432,65 @@ export function codexRolloutModelProvider(rolloutPath) {
   } catch { return null; }
 }
 
+const CODEX_CONTEXT_WINDOW_BEGIN = '# BEGIN PAPERCUSP_CODEX_CONTEXT_WINDOW';
+const CODEX_CONTEXT_WINDOW_END = '# END PAPERCUSP_CODEX_CONTEXT_WINDOW';
+
+/**
+ * Upsert the extended-window keys into a codex `config.toml` (plan
+ * codex-1m-context-window-2026-08-17 P-004). Pure — exported for tests.
+ *
+ * WHY THE FILE AND NOT JUST `-c`: `modelArgsFor` emits the overrides only when
+ * a launch NAMES a model, and a bare `psu --resume` names none — so a resumed
+ * session would silently drop back to codex's 272k default and start
+ * native-compacting at ~258k, under the very soft limit this plan exists to
+ * make reachable. The file is what a model-less resume inherits.
+ *
+ * ⚠ THE BLOCK IS PREPENDED, and that placement is load-bearing, not cosmetic:
+ * these are ROOT keys, and in TOML a root key written after any `[table]`
+ * header binds to that table instead. Emitting at the top is the only position
+ * that is correct regardless of what the rest of the file already contains.
+ * For the same reason this must run AFTER codexGatewayConfigPatch, which
+ * re-orders the file around its own markers.
+ *
+ * @param {string} configText  existing config.toml text ('' when absent)
+ * @param {string | null} model  the model whose window to declare
+ * @returns {string}
+ */
+export function codexContextWindowConfigPatch(configText, model) {
+  const stripped = String(configText || '').replace(
+    new RegExp(`${CODEX_CONTEXT_WINDOW_BEGIN}\\n[\\s\\S]*?${CODEX_CONTEXT_WINDOW_END}\\n?`, 'g'),
+    '',
+  );
+  // '' for a model with no extended window — the strip above still runs, so a
+  // home that MOVED to such a model loses a stale block rather than keeping a
+  // window its new model does not have.
+  const body = model ? codexContextConfigToml(model) : '';
+  if (!body) return stripped;
+  return `${CODEX_CONTEXT_WINDOW_BEGIN}\n${body}${CODEX_CONTEXT_WINDOW_END}\n${stripped}`;
+}
+
+/**
+ * Write the extended-window block into a session's codex home. The model comes
+ * from this launch when it names one, else from the home's OWN `model = ` line
+ * (per-session homes carry it) — so a bare resume still refreshes correctly.
+ * Returns the model it resolved, or null when it could not act.
+ */
+function applyCodexContextWindow(codexHome, model = null) {
+  try {
+    const configPath = join(codexHome, 'config.toml');
+    if (!existsSync(configPath)) return null;
+    const current = readFileSync(configPath, 'utf8');
+    const effective = model || current.match(/^model\s*=\s*["']([^"']+)["']/m)?.[1] || null;
+    const next = codexContextWindowConfigPatch(current, effective);
+    if (next !== current) writeFileSync(configPath, next, { mode: 0o600 });
+    return effective;
+  } catch {
+    // Never fail a launch over a window optimization — the `-c` args on a
+    // model-carrying launch already cover the common path.
+    return null;
+  }
+}
+
 function applyCodexGatewayRoute(
   codexHome,
   { mode = 'default', id = null, ownerId = null, keepExistingWhenUnrouted = false } = {},
@@ -6637,6 +6696,11 @@ async function launchResume(session, { brain = false, fork = false, passthrough 
       ownerId: session.coordOwnerId ?? null,
       keepExistingWhenUnrouted: boundProvider === CODEX_GATEWAY_PROVIDER_ID,
     });
+    // AFTER the gateway patch, which re-orders the file around its own markers —
+    // see codexContextWindowConfigPatch for why these root keys must land first.
+    // A resume that names no model resolves it from the home itself, which is
+    // what stops a resumed session falling back to codex's 272k default (P-004).
+    applyCodexContextWindow(env.CODEX_HOME, resumeModel);
   }
 
   const { bin, args } = resumeArgsFor(session, {
