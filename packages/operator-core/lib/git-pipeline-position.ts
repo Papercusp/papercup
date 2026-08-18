@@ -2781,7 +2781,16 @@ export function computeStages(
                   // The load caveat is the point: firing into the same pressure repeats the fault.
                   g.inconclusive.status === 'infra-inconclusive'
                   ? "release:checkpoint-run once the box is quiet (the gate's own module cache was deleted mid-run — a HOST fault, so it rendered no verdict; ⚠ do NOT triage the files the last red named, they are innocent)"
-                  : `clear the gate's abort condition (${g.inconclusive.status}) — it renders no verdict until then, and re-firing aborts the same way`
+                  : // WI-39841: a deadline-kill is the OTHER abort where the generic arm below
+                    // would be actively wrong. "Re-firing aborts the same way" is false — there
+                    // is no standing blocker to clear, the run simply ran out of clock, and the
+                    // next one may well finish. But it is not the infra case either: the lever
+                    // is the run's BUDGET vs its WORKLOAD, not host weather. And the strongest
+                    // thing to say is what NOT to do: this tick recorded no verdict, so any
+                    // failing files still on display belong to an older run.
+                    g.inconclusive.status === 'deadline-exceeded'
+                    ? 'release:checkpoint-run (the last run was SIGTERMd at its suite budget before it could record a verdict — nothing is blocking a re-fire; ⚠ do NOT triage the files an earlier red named, they are not what stopped it. If it keeps dying at the deadline, the run needs more budget or less work — that is the fix, not triage)'
+                    : `clear the gate's abort condition (${g.inconclusive.status}) — it renders no verdict until then, and re-firing aborts the same way`
               : g.fireStale
                 ? 'release:checkpoint-run (the green-checkpoint is not firing — no verdict is coming on its own)'
                 : gateHealth === 'stalled'
