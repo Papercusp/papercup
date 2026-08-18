@@ -6656,7 +6656,11 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     resolve: async (args) => {
       const { limit } = args as { limit: number };
       const { sql } = (await import('@papercusp/db-org')).getOrgPg();
-      const [rows, totalRows] = await Promise.all([
+      // BOUNDED (WI-39825) via the shared rows+count fan-out — third site of this
+      // shape, and the third with the same `?? rows.length` wrong-total on a failed
+      // count. See `bounded-list-read.ts`.
+      const { readBoundedList } = await import('./bounded-list-read');
+      return readBoundedList<Record<string, unknown>>({
         // `harness_slug` is null on 5,698 of 5,761 threads, and BOTH the ref
         // pill and WorkItemPopupModal need a harness to scope workItems.detail
         // — so the "ATTACHED TO" link (owner requirement, D-005) was dead on
@@ -6669,7 +6673,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         // And NOT "inherit the pane's harness": issue-thread-WI-6355 renders
         // under papercusp but its work-item lives in oddsmith-hive, so
         // inheriting would look the item up confidently in the WRONG harness.
-        sql`
+        rows: sql<Record<string, unknown>[]>`
           SELECT t.thread_id, t.parent_kind, t.parent_ref, t.title, t.created_by,
                  COALESCE(t.harness_slug,
                           (SELECT w.harness_slug
@@ -6680,10 +6684,12 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
                  t.created_at, t.last_post_at, t.post_count
             FROM harness_shared.coord_threads t
            ORDER BY t.last_post_at DESC NULLS LAST, t.created_at DESC NULLS LAST
-           LIMIT ${limit}`,
-        sql<{ n: number }[]>`SELECT count(*)::int AS n FROM harness_shared.coord_threads`,
-      ]);
-      return attachListMeta(rows, { total: totalRows[0]?.n ?? rows.length });
+           LIMIT ${limit}`.then((r) => [...r]),
+        count: sql<
+          { n: number }[]
+        >`SELECT count(*)::int AS n FROM harness_shared.coord_threads`.then((r) => r[0]?.n ?? null),
+        label: 'conversations.deliberationList',
+      });
     },
   },
   'conversations.deliberationDetail': {
