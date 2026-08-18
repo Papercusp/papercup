@@ -52,7 +52,7 @@ vi.mock('../../issues-engineer', async (importOriginal) => {
 });
 vi.mock('../../consult/get-feedback-core', async (importOriginal) => {
   const real = await importOriginal<typeof import('../../consult/get-feedback-core')>();
-  return { ...real, consultStateExists: (...a: unknown[]) => consultStateExists(...a) };
+  return { ...real, readVettingConsultCritique: (...a: unknown[]) => readVettingConsultCritique(...a) };
 });
 vi.mock('../../workspace-registry', async (importOriginal) => {
   const real = await importOriginal<typeof import('../../workspace-registry')>();
@@ -129,7 +129,7 @@ beforeEach(() => {
   getRubricPlanRevision.mockReset().mockResolvedValue(7);
   listScorecards.mockReset().mockResolvedValue([]);
   captureImprovement.mockReset().mockResolvedValue({ created: true, issue: { id: 'EI-1' } });
-  consultStateExists.mockReset().mockResolvedValue(true);
+  readVettingConsultCritique.mockReset().mockResolvedValue(critique());
 });
 
 describe('scorecards:emit vetting stamp (P-004)', () => {
