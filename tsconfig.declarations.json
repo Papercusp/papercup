@@ -206,43 +206,6 @@
     // Imported by `scripts/set-doc-part.ts`. Enrolling rather than `@ts-ignore`-ing
     // it because the module is a shared exit-safety helper with full JSDoc, so the
     // emit is genuinely typed rather than a suppression.
-    "scripts/lib/write-stdout-sync.mjs",
-    // EI-20805816236289594 — the 18 below were HAND-WRITTEN `.d.mts` files sitting
-    // OUTSIDE this list. That is the exact defect the header of this file describes,
-    // except it was invisible: `--check` and every test in
-    // `generated-declarations.test.ts` iterate THIS list, so an unregistered
-    // declaration is never generated, never compared, and never reported. The check
-    // printed "51 declaration file(s) up to date" — the 51 registered — while these
-    // 18 rotted beside them. Two exports had already been stranded in
-    // budgeted-task-scheduler.d.mts alone (`timeoutDurationEstimate`, and `peakMs`
-    // on `DurationHistoryEntry`), each a TS2724/TS2339 for every importer.
-    //
-    // Registering them is the instance repair; the CLASS is closed by the
-    // unregistered-declaration scan in `scripts/gen-declarations.ts`, which now fails
-    // `--check` when a `.d.mts` exists whose sibling `.mjs` is absent from this list.
-    // Adding a new hand-written declaration can no longer go unnoticed.
-    "scripts/check-generic-independence.mjs",
-    // Not optional and not independent, exactly like psu-pty-host.mjs above:
-    // check-generic-independence.mjs imports it at :38, so tsc emits its declaration
-    // REGARDLESS. Left unregistered it lands as an untracked byproduct that `--check`
-    // does not police and that reappears on every run.
-    "scripts/gen-borrowable-catalog.mjs",
-    "scripts/lib/tracked-files.mjs",
-    "scripts/lib/submodule-installs.mjs",
-    "scripts/lib/mug-kettle-baseline.mjs",
-    "scripts/lib/shallow-gitdirs.mjs",
-    "scripts/lib/budgeted-task-scheduler.mjs",
-    "scripts/lib/serial-phase.mjs",
-    "scripts/lib/passing-task-verdict-cache.mjs",
-    "scripts/lib/tsc-red-observations.mjs",
-    "scripts/lib/typecheck-fanout.mjs",
-    "apps/operator/app/_lints/letter-spacing-pattern.mjs",
-    "apps/operator/lib/mcp-proxy/pgbouncer-pool-sample.mjs",
-    "apps/operator/lib/mcp-proxy/watchdog.mjs",
-    "apps/operator/lib/mcp-proxy/budgets.mjs",
-    "packages/operator-core/lib/psu-launch-log.mjs",
-    "packages/operator-core/lib/su-tier-roles.mjs",
-    "packages/operator-core/lib/backend-bin-resolve.mjs",
-    "libs/testing-shell/src/web/chaos-runner.mjs"
+    "scripts/lib/write-stdout-sync.mjs"
   ]
 }
