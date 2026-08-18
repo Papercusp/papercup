@@ -411,6 +411,23 @@ describe('affected-tests scheduler wiring', () => {
     }
   });
 
+  // WI-39472: the memory rail was INERT for as long as this default was
+  // `SCHEDULER_WORKER_BUDGET * SCHEDULER_WORKER_MEMORY_MB` — that makes memoryWorkerBudget
+  // identically equal to workerBudget, so resolveTaskBudget's Math.min can never bind. Nothing
+  // failed loudly, which is exactly why it survived. Pin the wiring at the source, because a
+  // behavioural test cannot see the difference on a host with plenty of free memory.
+  it('measures the host for its memory budget instead of deriving it from the worker budget', () => {
+    expect(AFFECTED_TESTS_SRC).toContain('memoryBudgetMb: resolveMemoryBudgetMb({');
+    expect(AFFECTED_TESTS_SRC).toContain('memAvailableMb: readMemAvailableMb()');
+    // MemAvailable, never MemFree/os.freemem() — the latter two ignore reclaimable page cache.
+    expect(AFFECTED_TESTS_SRC).toContain('MemAvailable:');
+    expect(AFFECTED_TESTS_SRC).not.toContain('os.freemem()');
+    // THE REGRESSION: the self-referential default that made the clamp unable to bind.
+    expect(AFFECTED_TESTS_SRC).not.toContain(
+      'SCHEDULER_WORKER_BUDGET * SCHEDULER_WORKER_MEMORY_MB',
+    );
+  });
+
   it('drains the initial pool before reporting and reuses the same scheduler for retries', () => {
     const pool = AFFECTED_TESTS_SRC.indexOf(
       'const initialPool = await runBudgetedTasks(taskContexts',

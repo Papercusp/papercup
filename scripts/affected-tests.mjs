@@ -283,11 +283,33 @@ const SCHEDULER_WORKER_BUDGET = resolveGlobalWorkerBudget({
   vitestMaxThreads: process.env.VITEST_MAX_THREADS,
   fallback: WORKER_CAP,
 });
+// WI-39472: MemAvailable is the kernel's own estimate of what a new allocation can actually get
+// WITHOUT swapping — it counts reclaimable page cache, which MemFree and os.freemem() do not. On a
+// long-lived box those two read catastrophically low and would throttle the scheduler to one
+// worker for no reason. Returns null (not 0) when the reading is unavailable, so the caller can
+// tell "no measurement" apart from "no memory".
+function readMemAvailableMb() {
+  try {
+    const line = readFileSync("/proc/meminfo", "utf8").match(/^MemAvailable:\s+(\d+)\s+kB$/m);
+    return line ? Math.floor(Number(line[1]) / 1024) : null;
+  } catch {
+    return null; // non-Linux, or /proc not mounted — fall back to the ceiling.
+  }
+}
+// WI-39472: this default USED to be `SCHEDULER_WORKER_BUDGET * SCHEDULER_WORKER_MEMORY_MB`, which
+// made resolveTaskBudget's `memoryWorkerBudget` identically equal to `workerBudget` — so its
+// Math.min could NEVER bind and the memory rail was inert. Nothing failed loudly; the gate simply
+// had no memory-awareness, which is why its concurrency is pinned at a hardcoded worst-case 2.
+// Measuring the host makes the clamp real, which is the precondition for ever raising that
+// ceiling. It can only ever LOWER the admitted budget, never widen it (see resolveMemoryBudgetMb).
 const SCHEDULER_CONFIG = resolveTaskBudget({
   workerBudget: SCHEDULER_WORKER_BUDGET,
-  memoryBudgetMb:
-    process.env.AFFECTED_GLOBAL_MEMORY_MB ??
-    SCHEDULER_WORKER_BUDGET * SCHEDULER_WORKER_MEMORY_MB,
+  memoryBudgetMb: resolveMemoryBudgetMb({
+    affectedGlobalMemoryMb: process.env.AFFECTED_GLOBAL_MEMORY_MB,
+    memAvailableMb: readMemAvailableMb(),
+    workerBudget: SCHEDULER_WORKER_BUDGET,
+    workerMemoryMb: SCHEDULER_WORKER_MEMORY_MB,
+  }),
   workerMemoryMb: SCHEDULER_WORKER_MEMORY_MB,
   maxConcurrentTasks: process.env.AFFECTED_MAX_CONCURRENT_TASKS ?? 2,
   reserveWorkers: 1,
