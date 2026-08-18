@@ -130,18 +130,23 @@ describe('runReplicationLivenessStalenessSweepOnce', () => {
       existing: new Set(['ws1::demo-harness']),
       lastActive: new Map([['ws1::demo-harness', NOW - 40 * DAY_MS]]),
     });
-    const result = await runReplicationLivenessStalenessSweepOnce({}, deps);
+    const result = await runReplicationLivenessStalenessSweepOnce({ nowMs: NOW }, deps);
     expect(result.resolvedIds).toEqual(['EI-1']);
     expect(resolved[0].note).toContain('auto-resolved (staleness sweep)');
   });
 
   it('leaves a still-existing, recently-active harness alone', async () => {
+    // ⚠ "Recently active" MUST be anchored to the REAL clock: the IO sweep stamps its
+    // own nowMs = Date.now(), so a frozen-NOW-relative stamp AGES — NOW - 1d crossed
+    // the 30d inactivity floor on 2026-08-18T00:00Z and this test became a time bomb
+    // (WI-39450 red #18). Ages that must stay SMALL use Date.now(); ages that must
+    // stay LARGE (already past a floor) may use the frozen NOW — they only grow.
     const { deps, resolved } = fakeDeps({
       open: [{ id: 'EI-2', body: bodyFor('ws1', 'live-harness', 'frozen'), createdAtMs: NOW - 20 * DAY_MS }],
       existing: new Set(['ws1::live-harness']),
-      lastActive: new Map([['ws1::live-harness', NOW - 1 * DAY_MS]]),
+      lastActive: new Map([['ws1::live-harness', Date.now() - 1 * DAY_MS]]),
     });
-    const result = await runReplicationLivenessStalenessSweepOnce({}, deps);
+    const result = await runReplicationLivenessStalenessSweepOnce({ nowMs: NOW }, deps);
     expect(result.resolvedIds).toEqual([]);
     expect(resolved).toHaveLength(0);
   });
@@ -152,7 +157,7 @@ describe('runReplicationLivenessStalenessSweepOnce', () => {
       existing: new Set(),
       lastActive: new Map(),
     });
-    const result = await runReplicationLivenessStalenessSweepOnce({}, deps);
+    const result = await runReplicationLivenessStalenessSweepOnce({ nowMs: NOW }, deps);
     expect(result.resolvedIds).toEqual([]);
     expect(resolved).toHaveLength(0);
   });
@@ -163,7 +168,7 @@ describe('runReplicationLivenessStalenessSweepOnce', () => {
       existing: new Set(),
       lastActive: new Map(),
     });
-    const result = await runReplicationLivenessStalenessSweepOnce({}, deps);
+    const result = await runReplicationLivenessStalenessSweepOnce({ nowMs: NOW }, deps);
     expect(result.checked).toBe(1);
     expect(result.resolvedIds).toEqual([]);
     expect(resolved).toHaveLength(0);
@@ -182,7 +187,7 @@ describe('runReplicationLivenessStalenessSweepOnce', () => {
       ]),
       resolveErrorFor: 'EI-5a',
     });
-    const result = await runReplicationLivenessStalenessSweepOnce({}, deps);
+    const result = await runReplicationLivenessStalenessSweepOnce({ nowMs: NOW }, deps);
     expect(result.errors).toBe(1);
     expect(result.resolvedIds).toEqual(['EI-5b']);
   });
@@ -198,17 +203,15 @@ describe('runReplicationLivenessStalenessSweepOnce', () => {
   });
 
   it('censuses every skip reason, and the census + resolutions account for all checked items', async () => {
-    // ⚠ The IO sweep stamps its own `nowMs = Date.now()` — it does NOT take the
-    // frozen NOW the pure-decision tests use. Any age this test wants judged as
-    // "too new" must therefore be relative to REAL now; `NOW - 2d` is ~3 weeks old
-    // in real terms and sails past the 14d floor.
-    const REAL_NOW = Date.now();
+    // The sweep takes the frozen NOW via `opts.nowMs`, so every age below is judged
+    // against it. Before that seam existed this test had to express "too new" relative to
+    // REAL now, and the fixtures that had to stay "recent" silently aged into staleness.
     const { deps } = fakeDeps({
       open: [
         { id: 'EI-C1', body: 'no target stamp here', createdAtMs: NOW - 20 * DAY_MS },
         { id: 'EI-C2', body: bodyFor('ws1', 'renamed-away', 'no_replicator'), createdAtMs: NOW - 20 * DAY_MS },
         { id: 'EI-C3', body: bodyFor('ws1', 'drainy', 'drain_stalled'), createdAtMs: NOW - 20 * DAY_MS },
-        { id: 'EI-C4', body: bodyFor('ws1', 'demo-a', 'no_replicator'), createdAtMs: REAL_NOW - 2 * DAY_MS },
+        { id: 'EI-C4', body: bodyFor('ws1', 'demo-a', 'no_replicator'), createdAtMs: NOW - 2 * DAY_MS },
         { id: 'EI-C5', body: bodyFor('ws1', 'no-history', 'no_replicator'), createdAtMs: NOW - 20 * DAY_MS },
         { id: 'EI-C6', body: bodyFor('ws1', 'live-harness', 'frozen'), createdAtMs: NOW - 20 * DAY_MS },
         { id: 'EI-C7', body: bodyFor('ws1', 'abandoned', 'no_replicator'), createdAtMs: NOW - 20 * DAY_MS },
@@ -218,11 +221,13 @@ describe('runReplicationLivenessStalenessSweepOnce', () => {
         ['ws1::drainy', NOW - 40 * DAY_MS],
         ['ws1::demo-a', NOW - 40 * DAY_MS],
         ['ws1::no-history', null],
-        ['ws1::live-harness', NOW - 1 * DAY_MS],
+        // REAL_NOW-anchored for the same reason as EI-C4 above: "recently active"
+        // ages past the 30d floor if pinned to the frozen NOW (WI-39450 red #18).
+        ['ws1::live-harness', REAL_NOW - 1 * DAY_MS],
         ['ws1::abandoned', NOW - 40 * DAY_MS],
       ]),
     });
-    const r = await runReplicationLivenessStalenessSweepOnce({}, deps);
+    const r = await runReplicationLivenessStalenessSweepOnce({ nowMs: NOW }, deps);
 
     expect(r.resolvedIds).toEqual(['EI-C7']);
     expect(r.skipped).toEqual({
