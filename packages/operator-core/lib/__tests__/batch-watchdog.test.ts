@@ -21,6 +21,7 @@ import {
   resolveBatchTimeoutMs,
   resolveTaskTimeoutMs,
   decideWatchdogExpiry,
+  createProgressAwareWatchdog,
   isWatchdogTimeout,
   killSpawnedProcessTree,
   parseBatchProgress,
@@ -186,6 +187,110 @@ describe('decideWatchdogExpiry', () => {
         }
       }
     }
+  });
+});
+
+/**
+ * The WIRING, not just the policy. A timer that only does anything once the gate is
+ * already red cannot be covered by a source-text assertion — this module's own header
+ * makes that argument — so the clock and timer are injected and the whole
+ * extend-then-kill sequence runs with real objects and no wall-clock wait.
+ */
+function fakeScheduler() {
+  let now = 0;
+  let nextId = 1;
+  let timers: { id: number; at: number; fn: () => void }[] = [];
+  return {
+    now: () => now,
+    setTimer: (fn: () => void, ms: number) => {
+      const timer = { id: nextId++, at: now + ms, fn };
+      timers.push(timer);
+      return timer;
+    },
+    clearTimer: (timer: { id: number }) => {
+      timers = timers.filter((t) => t.id !== timer?.id);
+    },
+    advance(ms: number) {
+      const target = now + ms;
+      for (;;) {
+        const due = timers.filter((t) => t.at <= target).sort((a, b) => a.at - b.at)[0];
+        if (!due) break;
+        timers = timers.filter((t) => t.id !== due.id);
+        now = due.at;
+        due.fn();
+      }
+      now = target;
+    },
+  };
+}
+
+const MINUTE = 60_000;
+
+describe('createProgressAwareWatchdog', () => {
+  const build = (scheduler: ReturnType<typeof fakeScheduler>) => {
+    const kills: string[] = [];
+    const watchdog = createProgressAwareWatchdog({
+      timeoutMs: 45 * MINUTE,
+      maxMs: 90 * MINUTE,
+      stallWindowMs: 5 * MINUTE,
+      extensionMs: 5 * MINUTE,
+      now: scheduler.now,
+      setTimer: scheduler.setTimer,
+      clearTimer: scheduler.clearTimer,
+      onKill: (d: { reason: string }) => kills.push(d.reason),
+    });
+    return { watchdog, kills };
+  };
+
+  it('does NOT kill a task that is still emitting at its deadline (the RUN 9 regression)', () => {
+    const scheduler = fakeScheduler();
+    const { watchdog, kills } = build(scheduler);
+    // lane-stateful kept producing output right through the 45m floor and was killed anyway.
+    for (let minute = 0; minute < 60; minute += 1) {
+      scheduler.advance(MINUTE);
+      watchdog.noteProgress();
+    }
+    expect(kills).toEqual([]);
+    expect(watchdog.extensions).toBeGreaterThan(0);
+  });
+
+  it('still kills a SILENT task at its original deadline — never later than the old watchdog', () => {
+    const scheduler = fakeScheduler();
+    const { watchdog, kills } = build(scheduler);
+    scheduler.advance(45 * MINUTE);
+    expect(kills).toEqual(['progress-stalled']);
+    expect(scheduler.now()).toBe(45 * MINUTE);
+  });
+
+  it('kills a task that goes quiet mid-run, one stall window after the output stops', () => {
+    const scheduler = fakeScheduler();
+    const { watchdog, kills } = build(scheduler);
+    for (let minute = 0; minute < 45; minute += 1) {
+      scheduler.advance(MINUTE);
+      watchdog.noteProgress();
+    }
+    expect(kills).toEqual([]);
+    scheduler.advance(20 * MINUTE); // now silent
+    expect(kills).toEqual(['progress-stalled']);
+  });
+
+  it('stays BOUNDED: a wedge that chatters while wedged is still killed at the ceiling', () => {
+    const scheduler = fakeScheduler();
+    const { watchdog, kills } = build(scheduler);
+    for (let minute = 0; minute < 120; minute += 1) {
+      scheduler.advance(MINUTE);
+      watchdog.noteProgress();
+    }
+    expect(kills).toEqual(['absolute-ceiling']);
+    expect(watchdog.killReason).toBe('absolute-ceiling');
+  });
+
+  it('never fires after the task settles on its own', () => {
+    const scheduler = fakeScheduler();
+    const { watchdog, kills } = build(scheduler);
+    watchdog.stop();
+    scheduler.advance(200 * MINUTE);
+    expect(kills).toEqual([]);
   });
 });
 
