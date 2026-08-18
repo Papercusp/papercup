@@ -16,7 +16,7 @@ vi.mock('../harness/improvements/read-items', () => ({
 
 import { knownQueryNamesV2, resolveNamedQueryV2 } from './index';
 import { computeLearningObservations } from './learning-observations-read';
-import { readListTotal } from './list-meta';
+import { readListMeta, readListTotal } from './list-meta';
 import { assertShapeMatchesRecordedVersion } from '../derived-reads/shape-fingerprint';
 
 const issue = (id: string, createdAt: string) => ({
@@ -199,5 +199,105 @@ describe('learning.observations — Work Queue pagination contract', () => {
         2: 'arr<obj{_meta:obj{total:number},body:string,confidence:string,createdAt:string,id:string,kind:string,refs:arr<string>,scope:string,sourceRole:string,title:string}|obj{body:string,confidence:string,createdAt:string,id:string,kind:string,refs:arr<string>,scope:string,sourceRole:string,title:string}>',
       },
     });
+  });
+});
+
+// ── WI-39823: the read deadline ────────────────────────────────────────────
+//
+// Both legs of this compute read `engineer_issues`, and until WI-39823 the
+// fan-out had neither a deadline NOR a try/catch — so a store that HUNG (rather
+// than threw) held `Promise.all` past the sync layer's ~10s resolver timeout and
+// 500'd the pane, with TanStack's default 3 retries each paying that full
+// timeout before the error branch could render.
+//
+// The controls are PERMANENT, per CLAUDE.md's falsifiability tiers: this subject
+// is an imported module, so it belongs in tier 1 (a deliberately-wrong
+// implementation kept in the test file) and NOT in the tier-3 in-tree mutation
+// probe, which would need the git-sync lock and can be committed by a sweep
+// while it holds the tree broken. Here the "wrong implementation" costs nothing
+// to keep, because it is simply the REAL function with its bound widened — a
+// production-reachable branch (`budgetMs` is a real parameter), so it can never
+// rot out of sync with the code it is controlling for.
+describe('learning.observations — read deadline (WI-39823)', () => {
+  /** Never settles — a wedged store, not a failing one. This is the case a
+   *  per-leg `try`/`catch` cannot see and only a deadline can. */
+  const hang = <T>(): Promise<T> => new Promise<T>(() => {});
+
+  type Settled = { kind: 'resolved'; rows: unknown[] } | { kind: 'rejected'; message: string } | { kind: 'pending' };
+
+  /**
+   * Observe WITHOUT waiting forever. "Never settles" is the failure mode under
+   * test, so it has to be an assertable OUTCOME (`pending`) rather than a vitest
+   * timeout — a timeout would report the control as a broken test instead of as
+   * the guard discriminating correctly.
+   */
+  const settleWithin = (p: Promise<unknown[]>, ms: number): Promise<Settled> =>
+    Promise.race([
+      p.then(
+        (rows): Settled => ({ kind: 'resolved', rows }),
+        (error): Settled => ({ kind: 'rejected', message: String((error as Error)?.message ?? error) }),
+      ),
+      new Promise<Settled>((resolve) => {
+        const t = setTimeout(() => resolve({ kind: 'pending' }), ms);
+        (t as unknown as { unref?: () => void }).unref?.();
+      }),
+    ]);
+
+  it('a hung rows leg is REJECTED at the budget instead of hanging the read', async () => {
+    listIssues.mockReturnValue(hang());
+
+    const outcome = await settleWithin(
+      computeLearningObservations({}, { budgetMs: 25 }) as unknown as Promise<unknown[]>,
+      500,
+    );
+
+    // The honest claim: the pane's ERROR branch becomes reachable in ~25ms rather
+    // than the read sitting past the resolver timeout. NOT that the pane renders
+    // — the rows leg IS the data, so there is no partial to ship here.
+    expect(outcome.kind).toBe('rejected');
+    expect(outcome.kind === 'rejected' && outcome.message).toContain('observations rows exceeded the read budget');
+  });
+
+  it('CONTROL: the same hung leg NEVER settles when the bound is widened — so it is the deadline doing the work', async () => {
+    listIssues.mockReturnValue(hang());
+
+    // Deliberately-wrong version: a budget so large it cannot fire — which is
+    // exactly the pre-WI-39823 behaviour, reached through a real parameter. If
+    // this ever reports anything but `pending`, the test above has stopped
+    // measuring the deadline and is passing for some other reason.
+    const outcome = await settleWithin(
+      computeLearningObservations({}, { budgetMs: 10_000_000 }) as unknown as Promise<unknown[]>,
+      120,
+    );
+
+    expect(outcome.kind).toBe('pending');
+  });
+
+  it('CALIBRATION: a healthy read still returns its rows under the same tight budget', async () => {
+    // Guards the opposite failure: a bound that "passes" the test above by
+    // breaking every read, healthy or not. Same 25ms budget, working store.
+    const rows = await computeLearningObservations({}, { budgetMs: 25 });
+
+    expect((rows as Array<{ id: string }>).map((r) => r.id)).toEqual(['EI-2', 'EI-1']);
+    expect(readListTotal(rows as unknown as Array<Record<string, unknown>>)).toBe(725);
+  });
+
+  it('a hung COUNT leg degrades to no-total and still ships the rows', async () => {
+    // The two legs are not symmetric: the count is only the "N of TOTAL" label,
+    // so it fails soft. This is the partial the class-fix exists to preserve.
+    countIssues.mockReturnValue(hang());
+
+    const rows = await computeLearningObservations({}, { budgetMs: 25 });
+
+    expect((rows as Array<{ id: string }>).map((r) => r.id)).toEqual(['EI-2', 'EI-1']);
+    // No total is attached at all — the degraded count must not be published as a
+    // real one.
+    expect(readListMeta(rows as unknown as Array<Record<string, unknown>>)?.total).toBeUndefined();
+    // ...and THIS is why the explicit flag has to exist. `readListTotal` returns
+    // `number`, falling back to the downloaded page length — so on its own a
+    // degraded count is indistinguishable from "that is all there is" (here it
+    // would render "2"). The flag is the only thing that keeps the two apart.
+    expect(readListTotal(rows as unknown as Array<Record<string, unknown>>)).toBe(2);
+    expect((rows as Array<{ _meta?: { totalUnavailable?: boolean } }>)[0]?._meta?.totalUnavailable).toBe(true);
   });
 });
