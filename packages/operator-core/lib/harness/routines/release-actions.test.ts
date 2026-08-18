@@ -287,6 +287,19 @@ describe('classifyGateStallStatus (EI-2615: skipped-locked must not fake a red s
     expect(classifyGateStallStatus('migrations-pending', true)).toBe('reset');
   });
 
+  it('EI-20767792192323374: infra-inconclusive is a NON-VERDICT, not a red', () => {
+    // One step LATER in the run than migrations-pending: the suite really executed, but the
+    // gate's own vite-node module cache was deleted underneath it mid-run, so its failures are
+    // a HOST fault and say nothing about the code IN EITHER DIRECTION (measured 2026-08-18:
+    // 4,789 of 5,505 files failed on candidate 1c64cd9f, and red #20 went on the streak that
+    // freezes `main`). Same disposition, and same backstops: this leaves `lastGreenAt` stale on
+    // purpose so checkMainBehindStaging / evaluateGreenStall still escalate a frozen `main` —
+    // only the MISLABELLING stops.
+    expect(classifyGateStallStatus('infra-inconclusive', false)).toBe('noop');
+    // …and a moved pin still wins, exactly as for every other status.
+    expect(classifyGateStallStatus('infra-inconclusive', true)).toBe('reset');
+  });
+
   it('every other non-green verdict still counts as a red (crash / not-green / etc.)', () => {
     for (const status of ['not-green', 'error', 'create-failed', 'not-fast-forward']) {
       expect(classifyGateStallStatus(status, false)).toBe('red');
@@ -447,6 +460,31 @@ describe('gateStallNoopLogMessage (EI-19321275470651356: one class, two opposite
     // Leaving gate_health untouched reads like "unmonitored" unless the message says
     // otherwise; the freeze is caught by checkMainBehindStaging, not by this counter.
     expect(gateStallNoopLogMessage('migrations-pending')).toContain('checkMainBehindStaging');
+  });
+
+  it('EI-20767792192323374: infra-inconclusive gets a THIRD wording — both other advices are wrong here', () => {
+    // Nobody holds a lock (so "wait, it resolves itself" is wrong) and no migration is pending
+    // (so pointing at the migration list is wrong). The load-bearing instruction is the one no
+    // other noop message needs: the files this run failed are INNOCENT and must not be triaged.
+    // Without it a reader does exactly what the incident produced — agents sent at ~4,800 files
+    // that were never broken.
+    const msg = gateStallNoopLogMessage('infra-inconclusive');
+    expect(msg).not.toContain('an active peer run holds the lock');
+    expect(msg).not.toContain('migration preflight');
+    expect(msg).toContain('DO NOT TRIAGE');
+    expect(msg).toContain('No peer run is in flight');
+    // Same "something still watches the freeze" guarantee the other two carry.
+    expect(msg).toContain('checkMainBehindStaging');
+  });
+
+  it('EI-20767792192323374: the three noop wordings are mutually distinct', () => {
+    // The regression this whole describe exists to prevent is a SHARED message across
+    // conditions whose correct operator response differs. Assert the property directly rather
+    // than only per-message, so a future fourth condition cannot quietly reuse an existing arm.
+    const msgs = ['skipped-locked', 'migrations-pending', 'infra-inconclusive'].map((s) =>
+      gateStallNoopLogMessage(s),
+    );
+    expect(new Set(msgs).size).toBe(3);
   });
 
   it('an unknown noop-class status falls back to the peer-lock wording rather than throwing', () => {
