@@ -41,6 +41,7 @@ import {
   getWakeModeOverride,
 } from './agent-tools/coordination/wake-mode';
 import type { CheckEntry, WallEntry } from './carry-note';
+import { readOrientDisclosures, type RecordedOrientDisclosures } from './agent-orient-disclosures';
 
 /** Which orders signal failed to read this call — see D-003 above. */
 export type AgentOrdersSignalKey = 'mission' | 'modes' | 'wakeMode' | 'carry' | 'disclosures';
@@ -414,6 +415,7 @@ export async function getAgentOrders(owner: string): Promise<AgentOrders> {
         carryBrief?.factsStaleness?.find((s) => s.key === f.key)?.verdict === 'possibly-stale',
     })),
     carry,
+    disclosures,
     unavailable,
   };
 }
