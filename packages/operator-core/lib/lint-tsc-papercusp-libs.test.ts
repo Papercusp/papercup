@@ -317,3 +317,152 @@ describe('GATE_COVERAGE cannot drift from what the leg runs (EI-1946277665530016
     for (const p of GATE_COVERAGE()) expect(p.endsWith('/')).toBe(true);
   });
 });
+
+/**
+ * WI-39727 — `--files=` was accepted and COMPLETELY IGNORED, and the run emitted no completion
+ * marker at all. Both defects pointed the same way: a caller who scoped to their own edit got a
+ * whole-project pass, and neither of the two signals available to them could say otherwise.
+ * The filed repro — `--files=packages/not-a-real-workspace/src/synthetic.ts` — typechecked all
+ * eight packages, printed "8 passed, 0 failed" and exited 0.
+ *
+ * `argv` is passed explicitly in every test here rather than left to `process.argv`, so these
+ * assertions describe the flag and not whatever the test runner was invoked with.
+ */
+describe('--files= is a verdict scope, and the run says what it measured (WI-39727)', () => {
+  /** Records which packages were actually compiled, so "it ran only mine" is measurable. */
+  function makeSpawnSpy() {
+    const ran: string[] = [];
+    return { ran, spawn: (pkg: { rel: string }) => (ran.push(pkg.rel), PASS) };
+  }
+
+  const twoPackages = () => makeLibsRoot({
+    'packages/locks': { typecheck: true },
+    'libs/db': { typecheck: true },
+  });
+
+  it('runs ONLY the package owning the named file — not the whole fan-out', () => {
+    const root = twoPackages();
+    const sink = makeSink();
+    const spy = makeSpawnSpy();
+
+    const code = main({
+      libsRoot: root,
+      relativeTo: root,
+      argv: ['node', 'lint-tsc-papercusp-libs.mjs', '--files=packages/locks/src/path-normalize.ts'],
+      spawn: spy.spawn,
+      ...sink.io,
+    });
+
+    expect(code).toBe(0);
+    expect(spy.ran, 'the scope was dropped and the whole fan-out ran').toEqual(['packages/locks']);
+    expect(sink.stdout()).toContain('LINT_TSC_RESULT label=papercusp-libs scope=files exit=0 status=clean');
+  });
+
+  it('REFUSES to pass when every named file is outside its coverage — the filed repro', () => {
+    // The defect: this returned 0 after typechecking all eight packages, so a whole-project
+    // green stood in for files this gate never looked at. It has no verdict to give here.
+    const root = twoPackages();
+    const sink = makeSink();
+    const spy = makeSpawnSpy();
+
+    const code = main({
+      libsRoot: root,
+      relativeTo: root,
+      argv: ['node', 'x.mjs', '--files=packages/not-a-real-workspace/src/synthetic.ts'],
+      spawn: spy.spawn,
+      ...sink.io,
+    });
+
+    expect(code, 'an out-of-scope scoped run must not report success').toBe(1);
+    expect(spy.ran, 'it compiled something despite every named file being out of scope').toEqual([]);
+    expect(sink.stderr()).toContain('checked NOTHING');
+    expect(sink.stdout()).toContain('status=out-of-scope');
+    expect(sink.stdout()).toContain('filesUnchecked=1');
+  });
+
+  it('reports PARTIAL when only some named files are covered', () => {
+    const root = twoPackages();
+    const sink = makeSink();
+    const spy = makeSpawnSpy();
+
+    const code = main({
+      libsRoot: root,
+      relativeTo: root,
+      argv: ['node', 'x.mjs', '--files=packages/locks/src/a.ts,packages/elsewhere/b.ts'],
+      spawn: spy.spawn,
+      ...sink.io,
+    });
+
+    // Exit stays 0 on purpose: the covered file really was judged, and making the mixed case
+    // fatal would red the legitimate "check my edit" run. The TOKEN is what changes.
+    expect(code).toBe(0);
+    expect(spy.ran).toEqual(['packages/locks']);
+    expect(sink.stdout()).toContain('status=partial');
+    expect(sink.stdout()).toContain('filesUnchecked=1');
+    expect(sink.warns.join('\n')).toContain('NOT typechecked');
+  });
+
+  it('never lets a `grep status=clean` match a run that left files unchecked', () => {
+    // EARNED CONTROL: the first draft of this fix printed the literal token inside the warning
+    // prose that EXPLAINS the partial result ("...so a `grep status=clean` cannot match..."),
+    // which made a substring grep over the gate's output hit on exactly the run the token is
+    // designed to exclude. The marker was correct and the run was still misreadable. The
+    // established consumer idiom greps the whole output, so that is what this asserts.
+    const root = twoPackages();
+
+    for (const argv of [
+      ['node', 'x.mjs', '--files=packages/locks/src/a.ts,packages/elsewhere/b.ts'], // partial
+      ['node', 'x.mjs', '--files=packages/elsewhere/b.ts'], // out-of-scope
+    ]) {
+      const sink = makeSink();
+      main({ libsRoot: root, relativeTo: root, argv, spawn: () => PASS, ...sink.io });
+      const whole = [sink.stdout(), sink.stderr(), sink.warns.join('\n')].join('\n');
+      expect(whole, `a partial/out-of-scope run matched status=clean for argv ${argv[2]}`).not.toContain(
+        'status=clean',
+      );
+    }
+  });
+
+  it('with NO --files it still fans out over everything and marks the run scope=all', () => {
+    // The release gate calls this leg with no flags (runPostSuiteLegs in green-checkpoint.ts).
+    // That path must be untouched by the scoping work — only the marker is added.
+    const root = twoPackages();
+    const sink = makeSink();
+    const spy = makeSpawnSpy();
+
+    const code = main({
+      libsRoot: root,
+      relativeTo: root,
+      argv: ['node', 'lint-tsc-papercusp-libs.mjs'],
+      spawn: spy.spawn,
+      ...sink.io,
+    });
+
+    expect(code).toBe(0);
+    expect(spy.ran.sort()).toEqual(['libs/db', 'packages/locks']);
+    expect(sink.stdout()).toContain('LINT_TSC_RESULT label=papercusp-libs scope=all exit=0 status=clean');
+  });
+
+  it('emits NO marker on the branches that measure nothing — absent means UNMEASURED', () => {
+    // The marker's contract is "absent => the run did not finish; the output is UNMEASURED,
+    // not clean". `--list` runs nothing, and a present-but-gating-nothing tree compiles
+    // nothing, so stamping either would claim a coverage that did not happen — the same false
+    // green this item is about, arriving through the fix for it.
+    const listSink = makeSink();
+    main({
+      libsRoot: twoPackages(),
+      relativeTo: '/',
+      argv: ['node', 'x.mjs', '--list'],
+      listOnly: true,
+      spawn: () => PASS,
+      ...listSink.io,
+    });
+    expect(listSink.stdout()).not.toContain('LINT_TSC_RESULT');
+
+    const bareRoot = makeLibsRoot({ 'packages/locks': { typecheck: false } });
+    const bareSink = makeSink();
+    main({ libsRoot: bareRoot, relativeTo: bareRoot, argv: ['node', 'x.mjs'], spawn: () => PASS, ...bareSink.io });
+    expect(bareSink.stdout()).not.toContain('LINT_TSC_RESULT');
+    expect(bareSink.warns.join('\n')).toContain('gated NOTHING');
+  });
+});
