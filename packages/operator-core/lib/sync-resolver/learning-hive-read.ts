@@ -23,6 +23,15 @@
 
 import type { MemoryEntry } from '../memory/backend';
 import { memoryTextOf, type KnowledgePack } from '../knowledge-packs/pack-format';
+import { createReadDeadline, type WithinBudget } from './read-deadline';
+
+/**
+ * This read's share of the sync layer's `RESOLVER_READ_TIMEOUT_MS` ceiling.
+ * Matches the sibling resolver budgets (`LIST_READ_BUDGET_MS`,
+ * `RESOLVER_FANOUT_BUDGET_MS`) so one wedged pack store degrades this panel
+ * instead of 500-ing the query.
+ */
+export const HIVE_LEARNINGS_BUDGET_MS = 6_000;
 
 export interface HiveLearningRow {
   id: string;
@@ -107,7 +116,21 @@ function str(v: unknown): string | undefined {
 export async function readHiveLearnings(
   potSlug: string,
   deps: HiveLearningsDeps,
+  options?: {
+    /**
+     * The deadline this read's legs share (WI-39849). Injectable so a test can
+     * drive an expiry deterministically; defaults to a fresh one so every
+     * existing caller is bounded without changing its call site.
+     */
+    withinBudget?: WithinBudget;
+  },
 ): Promise<HiveLearningsSnapshot> {
+  // ONE deadline for the whole read, not one per call: the pack fan-out below is
+  // VARIABLE-ARITY (one leg per referenced pack), so per-call budgets would sum
+  // to N × the budget and overrun the very resolver timeout this bound exists to
+  // stay under. Each leg keeps its own error handling — the deadline only adds
+  // the case a `.catch` cannot cover, a leg that never settles at all.
+  const withinBudget = options?.withinBudget ?? createReadDeadline(HIVE_LEARNINGS_BUDGET_MS);
   const unavailable = (reason: string): HiveLearningsSnapshot => ({
     hive: potSlug,
     rows: [],
@@ -127,7 +150,7 @@ export async function readHiveLearnings(
     if (!deps.listPotSlugs) return unavailable('workspace rollup unsupported by this caller');
     let slugs: string[];
     try {
-      slugs = await deps.listPotSlugs();
+      slugs = await withinBudget(deps.listPotSlugs(), 'hiveLearnings listPotSlugs');
     } catch (err) {
       return unavailable(err instanceof Error ? err.message : String(err));
     }
