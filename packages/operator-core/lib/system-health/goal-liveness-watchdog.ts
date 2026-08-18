@@ -202,6 +202,62 @@ export function classifyGoalLiveness(
   };
 }
 
+/* ── P-005: the readiness leg ─────────────────────────────────────────────── */
+
+export type GoalReadinessAlertKind = 'became-ready' | 'premise-invalidated';
+
+export interface GoalReadinessAlert {
+  goalId: string;
+  workspaceId: string;
+  title: string;
+  kind: GoalReadinessAlertKind;
+  /** The blockers relevant to the verdict (invalidating ones for premise-invalidated; all for became-ready). */
+  blockers: GoalBlockerView[];
+}
+
+/** The holder-liveness fold `resolveGoalHoldersFromRows` produces for one goal. */
+export type GoalHolderLivenessFold = 'held' | 'unheld' | 'lost' | 'unknown';
+
+/**
+ * PURE: classify one goal's DAG readiness into a report, or null.
+ *
+ * Rules (D-002/D-003):
+ *  - No edges ⇒ nothing to say: a goal that never declared prerequisites was
+ *    always startable, so "became ready" would be noise for every plain goal.
+ *  - PREMISE-INVALIDATED wins over everything: a killed blocker needs review
+ *    whether or not somebody is on the goal, so holder liveness is ignored.
+ *  - BECAME-READY only when every blocker is satisfied AND nobody is alive on
+ *    the goal ('unheld' / 'lost'). 'held' means it is being worked — no offer
+ *    needed; 'unknown' suppresses, the same conservative rule as the liveness
+ *    leg (an unresolvable holder is not evidence of absence).
+ */
+export function classifyGoalReadiness(
+  goal: GoalRowLike,
+  readiness: GoalReadiness | undefined,
+  holderLiveness: GoalHolderLivenessFold,
+): GoalReadinessAlert | null {
+  if (!readiness || readiness.blockers.length === 0) return null;
+  if (readiness.premiseInvalidated) {
+    return {
+      goalId: goal.goalId,
+      workspaceId: goal.workspaceId,
+      title: goal.title,
+      kind: 'premise-invalidated',
+      blockers: readiness.blockers.filter((b) => b.verdict === 'invalidating'),
+    };
+  }
+  if (readiness.actionable && (holderLiveness === 'unheld' || holderLiveness === 'lost')) {
+    return {
+      goalId: goal.goalId,
+      workspaceId: goal.workspaceId,
+      title: goal.title,
+      kind: 'became-ready',
+      blockers: readiness.blockers,
+    };
+  }
+  return null;
+}
+
 /** PURE: classify a whole batch. Exported for tests and for a future read-side surface. */
 export function scanGoalLiveness(
   goals: readonly GoalRowLike[],
@@ -228,9 +284,20 @@ export interface GoalLivenessSweepDeps {
   readGoals: () => Promise<{ goals: GoalRowLike[]; holders: GoalHolderLike[] }>;
   resolveLiveness: (ownerIds: string[]) => Promise<Map<string, LivenessVerdict>>;
   escalate: (alert: GoalLivenessAlert) => Promise<void>;
+  /**
+   * P-005: each goal's DAG readiness, keyed `workspaceId:goalId` (the
+   * `blockerStatusKey` colon convention). Goals with NO edges may be absent.
+   */
+  readReadiness: (goals: readonly GoalRowLike[]) => Promise<Map<string, GoalReadiness>>;
+  escalateReadiness: (alert: GoalReadinessAlert) => Promise<void>;
   flagEnabled: () => Promise<boolean>;
   now: () => number;
   graceMs: number;
+}
+
+/** The `readReadiness` map key. Colon-composite, same convention as `blockerStatusKey`. */
+export function goalReadinessKey(g: Pick<GoalRowLike, 'workspaceId' | 'goalId'>): string {
+  return `${g.workspaceId}:${g.goalId}`;
 }
 
 async function defaultFlagEnabled(): Promise<boolean> {
@@ -269,6 +336,53 @@ function makeReadGoals(sql: Sql): GoalLivenessSweepDeps['readGoals'] {
       })),
       holders,
     };
+  };
+}
+
+/**
+ * P-005 default `readReadiness`: derived on read per D-006, batched per
+ * workspace (edges in one query, then one status resolve over the union of that
+ * workspace's blocker endpoints). FAIL-SOFT by design: readiness is an additive
+ * leg, and a degraded DAG read must not cost the liveness sweep — it warns and
+ * returns what it has.
+ */
+function makeReadReadiness(sql: Sql): GoalLivenessSweepDeps['readReadiness'] {
+  return async (goals) => {
+    const out = new Map<string, GoalReadiness>();
+    const tag = sql as unknown as GoalSqlTag;
+    const byWorkspace = new Map<string, GoalRowLike[]>();
+    for (const g of goals) {
+      const arr = byWorkspace.get(g.workspaceId) ?? [];
+      arr.push(g);
+      byWorkspace.set(g.workspaceId, arr);
+    }
+    for (const [workspaceId, wsGoals] of byWorkspace) {
+      try {
+        const edges = await readGoalBlockedByEdges(tag, workspaceId);
+        const withEdges = wsGoals.filter((g) => (edges.get(g.goalId) ?? []).length > 0);
+        if (withEdges.length === 0) continue;
+        // One status resolve over the union — goal cardinality is tiny (D-006).
+        const union = new Map<string, { kind: 'goal' | 'issue'; ref: string }>();
+        for (const g of withEdges) {
+          for (const b of edges.get(g.goalId) ?? []) union.set(blockerStatusKey(b), b);
+        }
+        const statuses = await resolveBlockerStatuses(tag, workspaceId, [...union.values()]);
+        for (const g of withEdges) {
+          const blockers = edges.get(g.goalId) ?? [];
+          out.set(
+            goalReadinessKey(g),
+            goalReadiness(
+              blockers.map((b) => ({ ...b, status: statuses.get(blockerStatusKey(b)) ?? null })),
+            ),
+          );
+        }
+      } catch (e) {
+        console.warn(
+          `[goal-liveness-watchdog] readiness read failed for workspace ${workspaceId} (non-fatal, leg skipped): ${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
+    }
+    return out;
   };
 }
 
@@ -311,6 +425,49 @@ async function defaultEscalate(alert: GoalLivenessAlert): Promise<void> {
   });
 }
 
+/** P-005: the report-only readiness escalations. Same dedup surface as the liveness leg. */
+async function defaultEscalateReadiness(alert: GoalReadinessAlert): Promise<void> {
+  const blockerList = alert.blockers
+    .map((b) => `${b.ref} (${b.kind}/${b.status ?? 'absent'}/${b.verdict})`)
+    .join(', ');
+  const isPremise = alert.kind === 'premise-invalidated';
+  await openEscalation(WATCHDOG_IDENTITY, {
+    severity: 'advisory',
+    summary: isPremise
+      ? `Goal '${alert.goalId}' premise INVALIDATED — killed blocker(s): ${blockerList}`
+      : `Goal '${alert.goalId}' is now ACTIONABLE — every blocker satisfied, and nobody is on it`,
+    body: isPremise
+      ? `The goal "${alert.title}" (${alert.goalId}, workspace ${alert.workspaceId}) is blocked ` +
+        `by ${blockerList} — KILLED, which invalidates this goal's premise (D-002: a killed ` +
+        `blocker never silently unblocks; achieving and killing a prerequisite mean opposite ` +
+        `things downstream).\n\n` +
+        `Review — pick ONE, deliberately:\n` +
+        `  • Premise survives anyway? Remove the edge: goals:update { blockedBy } without it.\n` +
+        `  • Premise is gone? Kill the dependent too: goals:update { status:'killed' }.\n` +
+        `  • Retarget: rewrite this goal against the world as it now is.\n\n` +
+        `Reported, never auto-resolved: the substrate flags the premise for review and a human ` +
+        `or the parent goal's agent decides.`
+      : `The goal "${alert.title}" (${alert.goalId}, workspace ${alert.workspaceId}) declared ` +
+        `prerequisites and they are now ALL satisfied: ${blockerList}. No live holder is on it.\n\n` +
+        `This is a surfaced OFFER, not a dispatch (D-003 — readiness at goal level is an ` +
+        `activation gate; goals never enter a claim queue and are never auto-started):\n` +
+        `  • Start it: goals:start — or mode:set { mode:'goal', subject:'${alert.goalId}' } for an ` +
+        `existing session. If it was filed as a stub (D-004), activation is where the full ` +
+        `kickoff contract runs — kill criterion, ceiling, consult, drain fleet — against the ` +
+        `world as it NOW is.\n` +
+        `  • Or leave it deliberately parked / re-scope it. Either is fine; the defect this ` +
+        `report prevents is the goal unblocking with nobody NOTICING.`,
+    meta: {
+      dedupKind: 'goal-readiness',
+      subjectSignature: `${alert.workspaceId}:${alert.goalId}:${alert.kind}`,
+      goalId: alert.goalId,
+      goalWorkspaceId: alert.workspaceId,
+      kind: alert.kind,
+      blockers: alert.blockers,
+    },
+  });
+}
+
 function sweepDeps(
   sql: Sql,
   overrides: Partial<GoalLivenessSweepDeps>,
@@ -319,6 +476,8 @@ function sweepDeps(
     readGoals: makeReadGoals(sql),
     resolveLiveness: resolveHolderLiveness,
     escalate: defaultEscalate,
+    readReadiness: makeReadReadiness(sql),
+    escalateReadiness: defaultEscalateReadiness,
     flagEnabled: defaultFlagEnabled,
     now: Date.now,
     graceMs: GOAL_LIVENESS_GRACE_MS,
@@ -337,12 +496,16 @@ function sweepDeps(
 export async function runGoalLivenessSweepOnce(
   sql: Sql,
   overrides: Partial<GoalLivenessSweepDeps> = {},
-): Promise<{ scanned: number; escalated: number; skipped: boolean }> {
+): Promise<{ scanned: number; escalated: number; readinessEscalated: number; skipped: boolean }> {
   const deps = sweepDeps(sql, overrides);
-  if (!(await deps.flagEnabled())) return { scanned: 0, escalated: 0, skipped: true };
+  if (!(await deps.flagEnabled())) {
+    return { scanned: 0, escalated: 0, readinessEscalated: 0, skipped: true };
+  }
 
   const { goals, holders } = await deps.readGoals();
-  if (goals.length === 0) return { scanned: 0, escalated: 0, skipped: false };
+  if (goals.length === 0) {
+    return { scanned: 0, escalated: 0, readinessEscalated: 0, skipped: false };
+  }
 
   // Only resolve holders that actually point at an active goal — the agent_modes
   // read is unfiltered by design (so `unheld` stays visible), but there is no
@@ -363,7 +526,24 @@ export async function runGoalLivenessSweepOnce(
       );
     }
   }
-  return { scanned: goals.length, escalated, skipped: false };
+
+  // ── P-005: the readiness leg — report-only, same conservative rules ──────
+  let readinessEscalated = 0;
+  const readiness = await deps.readReadiness(goals);
+  for (const g of goals) {
+    const fold = resolveGoalHoldersFromRows(g.goalId, g.workspaceId, relevant, verdicts);
+    const alert = classifyGoalReadiness(g, readiness.get(goalReadinessKey(g)), fold.liveness);
+    if (!alert) continue;
+    try {
+      await deps.escalateReadiness(alert);
+      readinessEscalated += 1;
+    } catch (e) {
+      console.warn(
+        `[goal-liveness-watchdog] readiness escalate failed for ${alert.goalId} (non-fatal): ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+  }
+  return { scanned: goals.length, escalated, readinessEscalated, skipped: false };
 }
 
 let watchdogTimer: ManagedHandle | null = null;
