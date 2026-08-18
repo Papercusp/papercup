@@ -220,6 +220,22 @@ export interface HudCardIdentity {
   sessionId?: string | null;
   /** Short display handle, e.g. `su-12b70` — what the owner actually types. */
   agentHandle?: string | null;
+  /**
+   * Is this identity's session actually ALIVE right now?
+   * `true` positively alive · `false` positively gone · `null`/absent UNKNOWN.
+   *
+   * goal-live-holder-guarantee-2026-08-18 P-001. For a GOAL card this is the
+   * difference the whole plan exists for: a goal's agent is recorded as an
+   * `agent_modes` row that OUTLIVES the session that wrote it, so a card
+   * rendering the identity alone showed a steward six days dead exactly as it
+   * showed one working. Never coerce `null` to `false` — an unresolvable
+   * verdict is not a dead one, and treating it as such would mark every card
+   * dead at once whenever the presence oracle degrades.
+   */
+  live?: boolean | null;
+  /** The oracle's session state (live|parked|draining|suspect|ended|recorded),
+   *  when resolved — the detail behind `live`, for a tooltip or a chip. */
+  sessionState?: string | null;
 }
 
 export interface HudEntityBoard {
@@ -366,8 +382,22 @@ export interface HudGoalInput {
    * D-006 makes this one agent in practice, but collapsing it would silently
    * hide a second stamp, and a goal with two agents is a coordination fault
    * worth SEEING rather than a row to discard.
+   *
+   * P-001 (goal-live-holder-guarantee-2026-08-18): each entry now carries its
+   * LIVENESS, resolved fresh by the payload on every read. Optional here only
+   * because a cached/legacy payload predating P-001 has no such key — NOT
+   * because it is discretionary: absent reads as UNKNOWN, never as dead.
    */
-  agents?: Array<{ ownerId: string }> | null;
+  agents?: Array<{
+    ownerId: string;
+    live?: boolean | null;
+    sessionState?: string | null;
+  }> | null;
+  /**
+   * The goal's holder verdict: `held` | `unheld` | `lost` | `unknown` (P-001).
+   * Optional for the same legacy-payload reason as `agents` above.
+   */
+  holderLiveness?: string | null;
 }
 
 /**
@@ -1229,9 +1259,19 @@ export function toGoalCard(
     // P-006. ALL the goal's agents, not just the first — see identityMatches.
     // Undefined (not []) when there are none, so "no agent on this goal" stays
     // one explicit state rather than an empty list that reads as "loaded, none".
+    // P-001: `live`/`sessionState` are carried THROUGH, not dropped. The payload
+    // resolves them fresh on every read (sync-resolver/goals.ts), and a board
+    // that discarded them here would keep showing a dead holder identically to a
+    // live one — the exact defect the resolver was built to end, surviving one
+    // layer higher up.
     identity:
       goal.agents && goal.agents.length > 0
-        ? goal.agents.map((a) => ({ ownerId: a.ownerId, agentHandle: shortAssignee(a.ownerId) }))
+        ? goal.agents.map((a) => ({
+            ownerId: a.ownerId,
+            agentHandle: shortAssignee(a.ownerId),
+            live: a.live ?? null,
+            sessionState: a.sessionState ?? null,
+          }))
         : undefined,
   };
 }
