@@ -1388,7 +1388,24 @@ export async function checkCompactionCompliance(sql: Sql): Promise<CompactionCom
             apply = safeLimit;
           } else if (r.compaction_limit < safeLimit) {
             const seed = await derivedSeedLimitForOwner(sql, r.owner_id, tierMenu, fleetMember);
-            if (!seed.explicit && seed.limit === r.compaction_limit) apply = safeLimit;
+            // WI-39789: heal a stored limit that matches the CURRENT derived
+            // default OR one a SUPERSEDED policy derived for this spec. The
+            // second test is not belt-and-braces — without it, changing a
+            // derivation silently orphans every live session still carrying the
+            // old number: it stops equalling the new default, so it reads as a
+            // deliberate override, and the lower-only branch cannot reach it
+            // because a stale seed sits BELOW the correct one. That is the same
+            // unraisable-forever shape this block was written to cure, arriving
+            // sideways (a policy change) instead of downhill. Measured: moving
+            // the extended-codex derivation to the 400k role cap stranded 13
+            // live sessions at the old 158,000 (2026-08-18).
+            const superseded = supersededDerivedCompactionLimits(seed.spec, { fleetMember });
+            if (
+              !seed.explicit &&
+              (seed.limit === r.compaction_limit || superseded.includes(r.compaction_limit))
+            ) {
+              apply = safeLimit;
+            }
           }
           if (apply != null) {
             await setCompactionLimit(r.owner_id, apply);
