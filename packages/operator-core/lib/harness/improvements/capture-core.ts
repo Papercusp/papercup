@@ -39,6 +39,7 @@ import {
   type CreateIssueInput,
 } from '../../issues-engineer';
 import { findSemanticDupes, type SemanticDupeResult } from '../../agent-tools/work_items/semantic-dupe-guard';
+import { trackDetached } from '../../detached-imports';
 import { IMPROVEMENT_TOPIC, OBSERVATION_TOPIC, issueToCandidate } from './read-items';
 import {
   validateObservationRatings,
@@ -1380,17 +1381,21 @@ export async function captureImprovement(
   // Push the right Learning-tab feed (operator-learning-tab-2026-06-09 P-002 /
   // observations P-044). Fire-and-forget via a lazy import so the pure, PG-free
   // capture core (+ its unit tests) never statically depend on the SSE layer.
-  void import('../../sync-sse')
-    .then((m) => m.notifySyncInvalidate(isObservation ? 'learning.observations' : 'learning.improvements'))
-    .catch(() => {});
+  void trackDetached(
+    import('../../sync-sse').then((m) =>
+      m.notifySyncInvalidate(isObservation ? 'learning.observations' : 'learning.improvements'),
+    ),
+  ).catch(() => {});
   // Push-on-write for the Health tab's observations/improvements panels
   // (stop-discarded-dedup-and-audit-server-polling-2026-07-26 P-013 / D-007):
   // refresh the cached panel now instead of waiting up to 30s for the next
   // health tick to notice this write. Same lazy fire-and-forget discipline —
   // a cold health cache (or the flag off) makes this a safe no-op.
-  void import('../../system-health/compute')
-    .then((m) => m.refreshHealthPanel(isObservation ? 'observations' : 'improvements'))
-    .catch(() => {});
+  void trackDetached(
+    import('../../system-health/compute').then((m) =>
+      m.refreshHealthPanel(isObservation ? 'observations' : 'improvements'),
+    ),
+  ).catch(() => {});
   // Calibration bet on flake-shaped signals (frontier P-041 / FB-13): filing a
   // flake IS the natural moment to bet on its recurrence. Same lazy
   // fire-and-forget discipline as above (the seam is flag-gated + never-throw
@@ -1400,8 +1405,8 @@ export async function captureImprovement(
   if (flakeKey && isFlakeKey(flakeKey)) {
     const flakePredictor = input.createdBy ?? sourceRole;
     const flakeSubjectId = issue.id;
-    void import('../../calibration/capture')
-      .then((m) =>
+    void trackDetached(
+      import('../../calibration/capture').then((m) =>
         m.recordPrediction({
           predictor: flakePredictor,
           domain: 'flake-recurrence',
@@ -1416,8 +1421,8 @@ export async function captureImprovement(
             ? input.scope.slice('harness:'.length)
             : null,
         }),
-      )
-      .catch(() => {});
+      ),
+    ).catch(() => {});
   }
   // Auto-ratify-on-first-scorecard (WI-5415): a scorecard just landed against
   // `observationForGate.rubricRef` — if that rubric is still `proposed`, grading it IS
