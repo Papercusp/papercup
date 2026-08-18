@@ -2336,10 +2336,19 @@ function tsconfigAliasesFor(wsRoot) {
     const tsconfigPath = join(wsRoot, "tsconfig.json");
     if (!existsSync(tsconfigPath)) return {};
     // Tolerate comments/trailing commas — tsconfig is JSON5-ish in practice.
-    const raw = readFileSync(tsconfigPath, "utf8")
-      .replace(/\/\*[\s\S]*?\*\//g, "")
-      .replace(/(^|\s)\/\/.*$/gm, "$1")
-      .replace(/,(\s*[}\]])/g, "$1");
+    // Comments are masked by the SHARED stripper, never a local regex. A naive
+    // `//`-to-end-of-line rule is string-literal-blind, so a tsconfig value that
+    // merely CONTAINS " // " (measured: `"note": "ratio 1 // 2 is fine"`) is
+    // truncated mid-string and JSON.parse throws. The catch below would swallow
+    // that and return {}, silently dropping every alias — which makes each aliased
+    // import unresolvable and fail-safes the whole workspace to "reaches
+    // everything". Safe direction, but it disables narrowing INVISIBLY, which is
+    // the failure mode this file can least afford to hide. Trailing commas are
+    // stripped AFTER masking, so a comma inside a string is never touched either.
+    const raw = stripCommentsOnly(readFileSync(tsconfigPath, "utf8"), tsconfigPath).replace(
+      /,(\s*[}\]])/g,
+      "$1",
+    );
     const cfg = JSON.parse(raw);
     const opts = cfg.compilerOptions ?? {};
     const baseUrl = join(wsRoot, opts.baseUrl ?? ".");
