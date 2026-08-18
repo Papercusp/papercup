@@ -156,9 +156,15 @@ export default defineTool({
       .optional()
       .describe('Return a per-group aggregate (count, active/inactive, most-recent last-fire) instead of raw rows. Ignores installSlug/name/q; group still narrows to one group.'),
   }),
-  // context-trimming-tiers P-023: rows are already lean scalars — trimmed just
-  // drops the two rarely-read columns and caps rows with a loud notice row
-  // (count keeps the true total). standard falls through to full.
+  // context-trimming-tiers P-023: rows are already lean scalars, so the CAP=60 row
+  // cap plus a loud notice row IS the size control (count keeps the true total);
+  // standard falls through to full.
+  //
+  // This comment used to say trimmed "drops the two rarely-read columns". It was
+  // wrong when written (four were dropped) and stayed wrong through two fixes —
+  // which is how the third instance survived. The allowlist below now emits every
+  // field `returns` promises and drops NONE; the contract check enforces that, so
+  // this sentence can no longer drift from the code without a red test.
   shape: {
     // EI-20803112372029993: opt this allowlist into the contract check
     // (`../trimmed-contract.ts`). The FIELD LIST is not repeated here on
@@ -230,7 +236,9 @@ export default defineTool({
         rows.push({
           installSlug: '(truncated)',
           name: `showing ${CAP} of ${d.routines.length} — narrow with installSlug/name/group, rollup:true, or payloadTier:"full"`,
+          triggerKind: null,
           cron: null,
+          targetRole: null,
           active: false,
           nextFireAt: null,
           group: null,
