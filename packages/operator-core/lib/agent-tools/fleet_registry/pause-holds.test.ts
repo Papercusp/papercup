@@ -117,23 +117,19 @@ describe('applyFleetPauseHolds — the pause leg', () => {
     expect(res.failed).toEqual(['WI-2']);
   });
 
-  it('fails soft when the query itself throws — a hold failure never wedges the pause', async () => {
-    holdM.mockReset();
-    const boom = () => {
-      throw new Error('pg down');
-    };
-    vi.mocked(setWorkItemClaimHold).mockImplementation(boom as never);
-    nextRows = [{ feature_id: 'WI-1', harness_slug: null }];
+  it('fails soft when the QUERY throws — a hold failure never wedges the pause', async () => {
+    sqlThrows = true;
 
-    // A throw from the write path is caught per-item; a throw from the QUERY is caught
-    // by the outer guard. Both must return the zeroed result rather than propagate.
+    // A throw from the write path is caught per-item (test above); a throw from the
+    // query is caught by the outer guard. Neither may propagate: the control flip —
+    // and above all the ability to RESUME — must survive a broken hold leg.
     const res = await applyFleetPauseHolds({
       fleetSlug: 'f',
       workspaceId: 'ws-1',
       byOwnerId: 'su-owner',
     });
-    expect(res.failed).toEqual(['WI-1']);
-    expect(res.items).toEqual([]);
+    expect(res).toEqual({ items: [], failed: [] });
+    expect(holdM).not.toHaveBeenCalled();
   });
 });
 
