@@ -281,12 +281,24 @@ export default defineTool({
           type: 'text' as const,
           text: JSON.stringify({
             ok: true,
-            verdict: accountAvailability ? 'measured' : 'unknown',
+            // `measured` USED TO MEAN "an availability object exists" — bookkeeping — while being read as
+            // "these numbers were measured". Those come apart precisely when it matters: on 2026-08-18 this
+            // returned verdict:'measured' with poolExhausted:true while `blind` was true for 6 of 7 accounts,
+            // i.e. the exhaustion verdict rested on stale/missing readings. A blind reading now DEMOTES the
+            // verdict instead of being a footnote under a confident one (EI-19928050541357086: one
+            // probe-capacity call flipped poolExhausted true→false with no other change).
+            verdict: !accountAvailability ? 'unknown' : report.blind ? 'blind' : 'measured',
             provider: scope.provider,
             model: args.model ?? null,
             account: args.account ?? null,
             scope: scopePayload,
             ...report,
+            // THE TWO STORES, SIDE BY SIDE, WITH THE CONTRADICTION NAMED. `usableAccounts` is the GATEWAY's
+            // in-memory exclusion state; `availableAccounts` comes from the account-pool projection that
+            // accounts:probe-capacity writes from upstream. Nothing reconciled them, so both could be
+            // "right" about different objects and an agent would relay them as one fact. Only this surface
+            // sees both halves, so it owns the contradiction rather than leaving it to be noticed.
+            divergence: divergenceBetweenStores(report),
           }),
         },
       ],
