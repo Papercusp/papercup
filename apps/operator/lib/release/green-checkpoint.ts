@@ -252,6 +252,20 @@ export interface CheckpointDeps {
    *  a verdict is reached, so a finished run never reads as live. The 3h freshness bound cannot
    *  do this job — it is deliberately generous enough for a ~55min suite plus refires. */
   clearInFlightCandidate?(): Promise<void>;
+  /**
+   * Detect a PREDECESSOR run that died without ever reaching a verdict, and report it loudly.
+   *
+   * Called immediately BEFORE this run publishes its own marker — the one moment the previous
+   * run's marker is still readable. Returns the loud line to log, or null when the marker is
+   * absent, our own (an in-process refire), or belongs to a live process.
+   *
+   * The gap it closes: a marker is cleared only on a TERMINAL verdict, so a run killed mid-flight
+   * (an auto-refire dying with its bg-host generation — the measured 2026-08-17 case) leaves a
+   * marker that reads "in flight" for its full 3h window with no verdict, no log and no
+   * `routines.last_error`. Nothing distinguished that from a healthy long run, and a peer agent
+   * spent a claim waiting on a verdict that was never coming. Best-effort by contract.
+   */
+  reportAbandonedInFlightCandidate?(): Promise<string | null>;
   recordInFlightRetriage?(info: {
     fromCandidate: string;
     refiringCandidate: string;
