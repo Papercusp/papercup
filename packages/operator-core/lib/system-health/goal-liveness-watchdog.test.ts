@@ -338,3 +338,126 @@ describe('runGoalLivenessSweepOnce', () => {
     expect(asked).toEqual(['relevant']);
   });
 });
+
+// ── goal-dag-shared-substrate-2026-08-18 P-005: the readiness leg ──────────
+type BlockerView = GoalReadiness['blockers'][number];
+const bv = (over: Partial<BlockerView> = {}): BlockerView => ({
+  kind: 'goal',
+  ref: 'prereq-goal-aa11bb',
+  status: 'achieved',
+  verdict: 'satisfied',
+  ...over,
+});
+const ready = (blockers: BlockerView[]): GoalReadiness => ({
+  actionable: blockers.every((b) => b.verdict === 'satisfied'),
+  premiseInvalidated: blockers.some((b) => b.verdict === 'invalidating'),
+  blockers,
+});
+
+describe('classifyGoalReadiness (P-005)', () => {
+  it('offers a BECAME-READY goal: all blockers satisfied, nobody on it', () => {
+    const alert = classifyGoalReadiness(goal(), ready([bv()]), 'unheld');
+    expect(alert?.kind).toBe('became-ready');
+    expect(alert?.blockers).toHaveLength(1);
+    // A lost (dead-holder) goal is just as unattended as an unheld one.
+    expect(classifyGoalReadiness(goal(), ready([bv()]), 'lost')?.kind).toBe('became-ready');
+  });
+
+  it('never offers a goal somebody is ALIVE on — held means no offer needed', () => {
+    expect(classifyGoalReadiness(goal(), ready([bv()]), 'held')).toBeNull();
+  });
+
+  it("suppresses the offer on UNKNOWN holder liveness — the liveness leg's conservative rule", () => {
+    expect(classifyGoalReadiness(goal(), ready([bv()]), 'unknown')).toBeNull();
+  });
+
+  it('stays silent on a goal with NO edges — a plain goal was always startable', () => {
+    expect(classifyGoalReadiness(goal(), undefined, 'unheld')).toBeNull();
+    expect(classifyGoalReadiness(goal(), ready([]), 'unheld')).toBeNull();
+  });
+
+  it('stays silent while a blocker is merely PENDING — waiting is the intended state', () => {
+    expect(
+      classifyGoalReadiness(goal(), ready([bv({ status: 'active', verdict: 'pending' })]), 'unheld'),
+    ).toBeNull();
+  });
+
+  it('flags PREMISE-INVALIDATED on a killed blocker, naming only the invalidating ones', () => {
+    const alert = classifyGoalReadiness(
+      goal(),
+      ready([bv(), bv({ ref: 'dead-goal-ff00aa', status: 'killed', verdict: 'invalidating' })]),
+      'unheld',
+    );
+    expect(alert?.kind).toBe('premise-invalidated');
+    expect(alert?.blockers.map((b) => b.ref)).toEqual(['dead-goal-ff00aa']);
+  });
+
+  it('premise-invalidated fires EVEN WHEN held — a live holder needs the review too', () => {
+    const alert = classifyGoalReadiness(
+      goal(),
+      ready([bv({ ref: 'dead-goal-ff00aa', status: 'killed', verdict: 'invalidating' })]),
+      'held',
+    );
+    expect(alert?.kind).toBe('premise-invalidated');
+  });
+});
+
+describe('runGoalLivenessSweepOnce — the readiness leg (P-005)', () => {
+  const sql = {} as never;
+  const base = (over: Record<string, unknown> = {}) => ({
+    // Holder dead but INSIDE the grace window: the liveness leg stays silent,
+    // so anything escalated here is the readiness leg's own doing.
+    readGoals: async () => ({
+      goals: [goal({ updatedAtMs: NOW - 60_000 })],
+      holders: [],
+    }),
+    resolveLiveness: async () => new Map(),
+    escalate: async () => {},
+    flagEnabled: async () => true,
+    now: () => NOW,
+    graceMs: GOAL_LIVENESS_GRACE_MS,
+    ...over,
+  });
+
+  it('escalates a became-ready goal through the readiness surface', async () => {
+    const seen: GoalReadinessAlert[] = [];
+    const g = goal({ updatedAtMs: NOW - 60_000 });
+    const r = await runGoalLivenessSweepOnce(sql, {
+      ...base(),
+      readReadiness: async () => new Map([[goalReadinessKey(g), ready([bv()])]]),
+      escalateReadiness: async (a) => {
+        seen.push(a);
+      },
+    });
+    expect(r.readinessEscalated).toBe(1);
+    expect(r.escalated).toBe(0); // the liveness leg had nothing to say
+    expect(seen[0]?.kind).toBe('became-ready');
+  });
+
+  it('a readiness-escalation failure is contained and reported, never fatal', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const g = goal({ updatedAtMs: NOW - 60_000 });
+    const r = await runGoalLivenessSweepOnce(sql, {
+      ...base(),
+      readReadiness: async () => new Map([[goalReadinessKey(g), ready([bv()])]]),
+      escalateReadiness: async () => {
+        throw new Error('escalation surface down');
+      },
+    });
+    expect(r.readinessEscalated).toBe(0);
+    expect(warn).toHaveBeenCalledOnce();
+    expect(warn.mock.calls[0]?.[0]).toContain('readiness escalate failed');
+    warn.mockRestore();
+  });
+
+  it('an empty readiness map escalates nothing — the leg is inert for edge-less goals', async () => {
+    const r = await runGoalLivenessSweepOnce(sql, {
+      ...base(),
+      readReadiness: async () => new Map(),
+      escalateReadiness: async () => {
+        throw new Error('must not be called');
+      },
+    });
+    expect(r.readinessEscalated).toBe(0);
+  });
+});
