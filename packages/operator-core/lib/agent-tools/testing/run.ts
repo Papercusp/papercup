@@ -296,7 +296,13 @@ export async function runTestFilesCore(opts: {
   const reportPath = join(dir, 'report.json');
   try {
     const vitestArgs = ['--reporter=json', `--outputFile=${reportPath}`];
-    if (opts.testNamePattern) vitestArgs.push('-t', opts.testNamePattern);
+    // WI-39830: the JOINED form, never `['-t', pattern]`. Split across two argv entries,
+    // vitest's CAC parser reads any `-`-prefixed pattern as a new OPTION instead of as `-t`'s
+    // value and dies with an opaque CACError — which makes every test in this repo whose name
+    // starts with `--` (lint-tsc.test.ts, mutation-probe-script.test.ts, …) unrunnable by name.
+    // The router normalizes this too, so the two agree; emitting it correctly here keeps the
+    // tool's own contract from depending on a repair one layer down.
+    if (opts.testNamePattern) vitestArgs.push(`--testNamePattern=${opts.testNamePattern}`);
 
     const outcome = await runRouter(
       [...pathResolution.files, '--', ...vitestArgs],
