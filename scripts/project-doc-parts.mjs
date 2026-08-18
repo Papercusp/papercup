@@ -636,7 +636,35 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   );
   const budget = memoryWarningThreshold({ contextTokens, charsPerToken });
 
-  const client = await connect();
+  // ── no-DB degrade, CHECK PATH ONLY ───────────────────────────────────────
+  // `gen:client-docs:check` is this file with no flags, and until EI-20272515693397454
+  // it ran on NO blocking path: the only thing that would notice a hand-edit to the
+  // generated CLAUDE.md/AGENTS.md was an agent happening to run the projector, which is
+  // how one jam sat undetected for four days. Wiring it as a repo-wide guard is what
+  // closes that, and this branch is the precondition — `connect()` sat OUTSIDE the try,
+  // so an unreachable Postgres exited non-zero with a stack trace, and registering it
+  // would have failed EVERY off-box run and taught the fleet to ignore the leg. Same
+  // reasoning, and same shape, as the sibling `project-authored-docs.ts --check`.
+  //
+  // ⚠ DELIBERATELY NOT extended to --write / --write-corpus. Those MUTATE the tree, and
+  // a write that silently no-ops because its database was unreachable is worse than a
+  // loud failure: the caller believes the files were projected when nothing was. A
+  // skipped CHECK under-reports drift for one run; a skipped WRITE corrupts the premise
+  // every later run is judged against.
+  let client;
+  try {
+    client = await connect();
+  } catch (err) {
+    if (!write && !writeCorpus) {
+      console.log(
+        `project-doc-parts: SKIPPED — Postgres unreachable, so projection drift cannot be measured here.\n` +
+          `  This is NOT a pass: nothing was checked. Re-run where the operator DB is reachable.\n` +
+          `  reason: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      process.exit(0);
+    }
+    throw err;
+  }
   let failed = false;
   try {
     const doc = await readDocRow(client, docId);
