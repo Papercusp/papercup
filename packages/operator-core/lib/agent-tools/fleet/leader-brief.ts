@@ -1949,7 +1949,89 @@ export default defineTool({
     } catch {
       actorWorkspace = null;
     }
-    const membership = await resolvePresenceFleet(ownerId, deriveFleetMembership());
+    return buildLeaderBrief(args, {
+      agentIdentity,
+      ownerId,
+      actorWorkspace,
+      self: resolveSelfRef(ctx),
+      // An AGENT calling its own brief is the case leadership bookkeeping was
+      // written for: a fleet nobody leads is how a whole fleet dies unnoticed,
+      // so the caller is installed when the seat is empty.
+      allowLeadershipWrites: true,
+      resolveCallerMembership: true,
+    });
+  },
+});
+
+/**
+ * Who the brief is computed AS, and what that caller is permitted to do.
+ *
+ * Extracted (popup-agent-state-coverage-2026-08-18 P-002) so a READ-ONLY viewer
+ * — the HUD conversation popup, showing a leader what that leader itself reads —
+ * can compute the identical brief without inheriting the tool handler's two
+ * agent-shaped behaviours, both of which are wrong for a viewer and neither of
+ * which a `payloadTier`/args knob could have turned off:
+ *
+ *  1. LEADERSHIP WRITES. `fleet:leader-brief` deliberately CLAIMS an empty
+ *     leader seat (`takeFleetLeadership`) and refreshes the control row
+ *     (`ensureFleetLeaderControl`). Correct for an agent; catastrophic for a
+ *     UI read — opening a popup would install the human's session as leader of
+ *     someone else's fleet, demoting whoever held it. `allowLeadershipWrites:
+ *     false` skips BOTH; the `notLeader` NOTICE is still produced, because that
+ *     is a read.
+ *  2. AMBIENT FLEET RESOLUTION. The handler falls back to the CALLER's presence
+ *     membership (and then the launch environment) when `fleet` is omitted. In
+ *     the operator process that resolves to whatever fleet the operator itself
+ *     was launched into — a real answer to the wrong question. A viewer passes
+ *     `resolveCallerMembership: false` and MUST name the fleet.
+ *
+ * Everything else is identical by construction: this is the same function, not
+ * a parallel reimplementation, so the popup cannot drift from what the agent is
+ * told (the whole point of surfacing it).
+ */
+export interface LeaderBriefCaller {
+  /** Full identity — required only for the leadership CLAIM (it heartbeats
+   *  presence to label the new leader's row). Undefined for a viewer. */
+  agentIdentity?: AgentIdentity;
+  /**
+   * The owner the brief is computed FOR. This is NOT bookkeeping: it scopes
+   * `directives` (P-013 — the ledger's verdict on YOUR directives to each
+   * member), so a viewer passes the VIEWED LEADER's ownerId to see what that
+   * leader sees, not its own.
+   */
+  ownerId?: string;
+  /** The caller's workspace, or null. Normalized through
+   *  `resolveConcreteWorkspaceId` with `args.workspace` exactly as before. */
+  actorWorkspace: string | null;
+  /** Marks the caller's own row `isSelf`. Undefined ⇒ no row is marked. */
+  self?: SelfRef;
+  /** See LeaderBriefCaller's docblock §1. */
+  allowLeadershipWrites: boolean;
+  /** See LeaderBriefCaller's docblock §2. */
+  resolveCallerMembership: boolean;
+}
+
+/**
+ * The READ half of `fleet:leader-brief` — every leg from roster through
+ * decorations, alerts and the fleet-block verdict. Pure with respect to the
+ * fleet registry when `allowLeadershipWrites` is false.
+ */
+export async function buildLeaderBrief(
+  args: {
+    fleet?: string;
+    harness?: string;
+    workspace?: string;
+    include_stale?: boolean;
+    unowned_critical_age_hours?: number;
+    orphan_min_age_minutes?: number;
+    since?: string;
+  },
+  caller: LeaderBriefCaller,
+) {
+    const { agentIdentity, ownerId, actorWorkspace, self, allowLeadershipWrites } = caller;
+    const membership = caller.resolveCallerMembership
+      ? await resolvePresenceFleet(ownerId, deriveFleetMembership())
+      : { fleetSlug: null as string | null };
     const fleet = args.fleet ?? membership.fleetSlug;
     if (!fleet) {
       return {
@@ -2001,8 +2083,19 @@ export default defineTool({
         leaderSessionState: leaderRow?.sessionState,
       });
       if (disposition.kind === 'not-leader') {
+        // A READ — the notice only reports who the registered leader is, so a
+        // read-only viewer still gets it.
         notLeader = buildNotLeaderNotice(disposition, fleet);
-      } else if (disposition.kind === 'auto-claim' && fleetRecord && agentIdentity && ownerId) {
+      } else if (
+        disposition.kind === 'auto-claim' &&
+        // P-002: a viewer never seizes a vacant leader seat. Without this a
+        // human opening the popup would install their own session as leader of
+        // a fleet they are merely looking at.
+        allowLeadershipWrites &&
+        fleetRecord &&
+        agentIdentity &&
+        ownerId
+      ) {
         const out = await takeFleetLeadership(workspaceId, fleetRecord, agentIdentity, ownerId, {
           harnessSlug: args.harness,
         });
@@ -2017,7 +2110,10 @@ export default defineTool({
               ? `'${fleet}' had NO registered leader; you are now installed as its leader. A fleet nobody leads is how a whole fleet dies unnoticed — you now own monitoring it.`
               : `The registered leader of '${fleet}' (${out.previousLeader}) is gone, so leadership passed to you. Nothing live was displaced.`,
         };
-      } else if (disposition.kind === 'is-leader' && fleetRecord && ownerId) {
+      } else if (disposition.kind === 'is-leader' && allowLeadershipWrites && fleetRecord && ownerId) {
+        // Also a WRITE (it refreshes the leader's control row), so it is gated
+        // too — a viewer reading a leader's brief must not touch that leader's
+        // control state.
         leaderControl = await ensureFleetLeaderControl({
           workspaceId,
           ownerId,
@@ -2203,7 +2299,8 @@ export default defineTool({
         poolCapacity,
       ),
     );
-    const self = resolveSelfRef(ctx);
+    // `self` now arrives on the caller bag (see LeaderBriefCaller): a viewer has
+    // no row of its own in the fleet, so nothing is marked for it.
     const markedMembers = markSelfRows(members, self, 'agentId');
     const summary = {
       fleet,
@@ -2747,5 +2844,4 @@ export default defineTool({
         ...(specMatched !== undefined ? { specMatched } : {}),
       },
     };
-  },
-});
+}
