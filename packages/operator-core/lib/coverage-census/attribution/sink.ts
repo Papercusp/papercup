@@ -304,15 +304,34 @@ export async function flushTrafficEvidence(): Promise<void> {
   return run;
 }
 
+/**
+ * Diagnostics go to `process.stderr`, NOT to `console.warn`.
+ *
+ * This is not a style choice. The shared vitest setup installs `vitest-fail-on-console`, which
+ * turns any `console.warn` into a test FAILURE — so a sink that warned about its own PG trouble
+ * would red every test in the file it happened to fire in, in EVERY layer. Instrumentation that
+ * can fail the suite it is instrumenting is worse than no instrumentation: the failure would be
+ * attributed to the test, not to attribution. stderr keeps the diagnostic visible to a human
+ * reading the run output while staying out of the assertion path. The structured version is
+ * always available in `attributionStatus()`, which is what tests assert on.
+ */
+function warn(message: string): void {
+  try {
+    process.stderr.write(`[coverage-attribution] ${message}\n`);
+  } catch {
+    /* no stderr (non-node runtime) — attributionStatus() still carries lastError */
+  }
+}
+
 function noteFlushFailure(message: string): void {
   state.consecutiveFailures += 1;
   state.lastError = message;
   if (state.consecutiveFailures === 1 || state.consecutiveFailures === MAX_CONSECUTIVE_FAILURES) {
-    console.warn(`[coverage-attribution] flush failed (${state.consecutiveFailures}): ${message}`);
+    warn(`flush failed (${state.consecutiveFailures}): ${message}`);
   }
   if (state.consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
     state.disabled = true;
-    console.warn('[coverage-attribution] disabled for this process after repeated flush failures');
+    warn('disabled for this process after repeated flush failures');
   }
 }
 

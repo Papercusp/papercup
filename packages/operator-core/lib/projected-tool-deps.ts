@@ -56,6 +56,7 @@ import { recordDecisionLedger } from "./decision-ledger/emit";
 import { resolveAgentIdentity } from "./agent-tools/coordination/identity";
 import { readAgentStateStamp } from "./agent-state-stamp";
 import { classifyCallOrigin } from "./telemetry-call-origin";
+import { recordMcpTraffic } from "./coverage-census/attribution/sink";
 
 /**
  * Serialize to a Postgres-`jsonb`-safe JSON string. Postgres `jsonb` (and `text`)
