@@ -1244,6 +1244,29 @@ export async function fetchRedTestRows(sql: Sql, opts: CollectOptions = {}): Pro
          -- is identical to the real test's and would otherwise mask which run is
          -- actually the newest genuine one.
          AND is_scratch_config = false
+         -- EI-20770395938680312: a run that died on the RUNNER'S OWN vite-node
+         -- transform cache under /tmp never executed the test at all — that is an
+         -- infra fault, not a code signal. When one such cache dir is wiped
+         -- mid-run every subsequent file instantly zero-duration-"fails" with an
+         -- identical tail: on 2026-08-18 that poisoned 9,246 rows across 4,963
+         -- files in a single 45-minute run and manufactured four bogus
+         -- "Test failing repeatedly" majors against files that were green both
+         -- before and after. Excluded from BOTH the fail count and the "latest
+         -- run" freshness check (rn=1) for the same reason as scratch-config
+         -- above: the poisoned row shares the real test's path, so leaving it in
+         -- would mask which run is actually the newest genuine one.
+         --
+         -- BOTH conjuncts are load-bearing, and each is measured over 30d of
+         -- test_runs — do not simplify this to either half alone:
+         --   * duration_ms = 0 alone would also swallow 648 real rows across 440
+         --     files whose tail is an ordinary env break ('afterAll is not defined');
+         --   * the ENOENT tail alone would suppress 3 real assertion failures
+         --     across 2 files whose output merely quotes that string.
+         AND NOT (
+           status IN ('fail', 'error')
+           AND duration_ms = 0
+           AND output_tail LIKE '%ENOENT: no such file or directory, open ''/tmp/%'
+         )
     )
     SELECT file_path,
            max(framework) AS framework,
