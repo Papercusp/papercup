@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   PG_MUTATE_DEFAULT_MAX_AFFECTED,
@@ -319,20 +319,26 @@ describe('writePgMutateOutcomeAudit (best-effort, non-commit outcomes)', () => {
     expect(details.error).toBe('ddl');
   });
 
-  it('never throws — a failing audit write is swallowed', async () => {
-    const client = {
-      unsafe: async () => {
-        throw new Error('audit db down');
-      },
-    };
-    await expect(
-      writePgMutateOutcomeAudit(
-        { actor: 'su-test', reason: 'unit', workspaceId: 'ws-1' },
-        'error',
-        'DELETE FROM t WHERE id = 1',
-        {},
-        client as never,
-      ),
-    ).resolves.toBeUndefined();
+  it('never throws — a failing audit write is swallowed (and warned)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const client = {
+        unsafe: async () => {
+          throw new Error('audit db down');
+        },
+      };
+      await expect(
+        writePgMutateOutcomeAudit(
+          { actor: 'su-test', reason: 'unit', workspaceId: 'ws-1' },
+          'error',
+          'DELETE FROM t WHERE id = 1',
+          {},
+          client as never,
+        ),
+      ).resolves.toBeUndefined();
+      expect(warn).toHaveBeenCalledOnce();
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

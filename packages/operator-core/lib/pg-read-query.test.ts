@@ -325,6 +325,20 @@ describe('extractReferencedTables (P-005)', () => {
   it('returns [] when nothing matches', () => {
     expect(extractReferencedTables('SELECT 1')).toEqual([]);
   });
+
+  it('extracts UPDATE / INSERT INTO write targets (pg-mutate tenant gate, EI-20478724424443538)', () => {
+    expect(
+      extractReferencedTables("UPDATE harness_shared.Work_Items SET state = 'done' WHERE id = 'x'"),
+    ).toEqual(['harness_shared.work_items']);
+    expect(extractReferencedTables('INSERT INTO plans (id) VALUES (1)')).toEqual(['plans']);
+    expect(extractReferencedTables('UPDATE only t SET a = 1 WHERE true')).toEqual(['t']);
+  });
+
+  it('does not mis-read FOR UPDATE OF / SKIP LOCKED keywords as tables', () => {
+    expect(extractReferencedTables('SELECT * FROM t FOR UPDATE OF t SKIP LOCKED')).toEqual(['t']);
+    expect(extractReferencedTables('SELECT * FROM t FOR UPDATE SKIP LOCKED')).toEqual(['t']);
+    expect(extractReferencedTables('SELECT * FROM t FOR UPDATE')).toEqual(['t']);
+  });
 });
 
 /** A tagged-template `sql` stub returning canned information_schema rows. */
