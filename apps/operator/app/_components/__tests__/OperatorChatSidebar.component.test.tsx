@@ -612,13 +612,16 @@ describe('Inbox face retirement + HUD conversation drill-in (hud-consolidation-2
     inboxState.degraded = true;
     render(<OperatorChatSidebar />);
 
-    const badge = screen.getByLabelText(
-      'Could not load what needs you — this count is unavailable, not zero',
-    );
+    // Scoped by testid, not by label: BOTH badges carry the same degraded
+    // label, so a label query is ambiguous by construction here.
+    const badge = screen.getByTestId('op-chat-rail-badge');
     // The load-bearing assertion is that SOMETHING renders: a hidden badge is
     // exactly the silent "0 need you" this fixes.
     expect(badge.textContent).toBe('–');
     expect(badge.getAttribute('data-degraded')).toBe('true');
+    expect(badge.getAttribute('aria-label')).toBe(
+      'Could not load what needs you — this count is unavailable, not zero',
+    );
   });
 
   it('marks the Plans badge indeterminate when the attention read degraded', () => {
