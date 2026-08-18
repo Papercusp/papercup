@@ -123,12 +123,31 @@ interface AttentionCountsRow {
   decisionPlans: number;
   alerts: number;
   total: number;
+  /**
+   * TRUE when the server's 8s deadline fired and these counts are its graceful
+   * EMPTY fallback rather than a real answer (WI-39779).
+   *
+   * Read it before believing a zero. The badges below render a zero by showing
+   * nothing at all, so without this bit a timed-out read is presented to the
+   * user as a confident "nothing needs you" — the one reading that is never
+   * safe to guess.
+   */
+  degraded?: boolean;
 }
 
 /** Stable identity — a fresh {} each render would churn the sync query key. */
 const NO_ARGS: Record<string, unknown> = {};
 
-function useAttentionCounts(): AttentionCountsRow {
+interface AttentionCounts {
+  decisionItems: number;
+  decisionPlans: number;
+  alerts: number;
+  total: number;
+  /** The counts are the server's deadline fallback, not a real answer. */
+  degraded: boolean;
+}
+
+function useAttentionCounts(): AttentionCounts {
   const q = useSyncQuery<AttentionCountsRow>({ queryName: 'plans.attentionCounts', args: NO_ARGS });
   const row = q.data?.[0];
   return {
@@ -136,6 +155,13 @@ function useAttentionCounts(): AttentionCountsRow {
     decisionPlans: row?.decisionPlans ?? 0,
     alerts: row?.alerts ?? 0,
     total: row?.total ?? 0,
+    // A row that has not arrived yet is NOT "degraded" — that is `q.loading`,
+    // a state the badge already handles by rendering nothing while it waits.
+    // Degraded means the server answered and told us its answer is empty-by-
+    // timeout. Defaulting to false keeps a pre-WI-39779 server (no field on the
+    // row) reading exactly as it does today rather than flipping every badge
+    // into the unknown state.
+    degraded: row?.degraded === true,
   };
 }
 
@@ -151,4 +177,20 @@ export function useInboxPendingCount(): number {
  *  counts query, so mounting both adds no second request. */
 export function usePlansNeedingYouCount(): number {
   return useAttentionCounts().decisionPlans;
+}
+
+/**
+ * TRUE when the counts above are the server's deadline fallback (WI-39779).
+ *
+ * Kept as its own hook rather than widening the two count hooks' return type:
+ * every existing caller wants the number and nothing else, and a badge that
+ * cares about honesty is the rare one. Shares the single counts query, so
+ * calling it beside a count hook adds no request.
+ *
+ * A consumer that ignores this renders exactly what it rendered before — the
+ * bit discloses, it does not force. What it must NOT do is present the zero as
+ * fact; see OperatorChatSidebar for the intended treatment.
+ */
+export function useAttentionCountsDegraded(): boolean {
+  return useAttentionCounts().degraded;
 }
