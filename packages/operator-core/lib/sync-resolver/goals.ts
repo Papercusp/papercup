@@ -311,6 +311,55 @@ function toSummary(r: RawGoal): GoalSummaryRowBase {
 }
 
 /**
+ * Fold holder liveness onto goal summaries (P-001) — the ONLY way to produce a
+ * `GoalSummaryRow`.
+ *
+ * ONE oracle call for the whole batch, not one per goal: a goals list is
+ * rendered on every HUD tick, and the per-goal shape would be an N+1 on the hot
+ * path this resolver was explicitly written to avoid.
+ *
+ * A goal whose holders all resolve dead comes back `holderLiveness: 'lost'` with
+ * its (dead) holders still listed — the caller renders them greyed rather than
+ * vanishing them, so "this goal HAD an agent and it died" stays legible. That is
+ * the whole difference between the board this fixes and the board it replaces:
+ * before, a dead holder was indistinguishable from a live one.
+ */
+async function withHolderLiveness(
+  workspaceId: string,
+  base: readonly GoalSummaryRowBase[],
+): Promise<GoalSummaryRow[]> {
+  const rows: GoalHolderRow[] = base.flatMap((g) =>
+    g.agents.map((a) => ({
+      goalId: g.id,
+      workspaceId,
+      ownerId: a.ownerId,
+      setAtMs: a.setAtMs,
+    })),
+  );
+  const verdicts = await resolveHolderLiveness(rows.map((r) => r.ownerId));
+  const byGoal = resolveGoalHoldersBatchFromRows(
+    base.map((g) => ({ goalId: g.id, workspaceId })),
+    rows,
+    verdicts,
+  );
+  return base.map((g) => {
+    // Always present: `byGoal` is built from `base` itself, so every goal has an
+    // entry (an absent one would be a bug in resolveGoalHoldersBatchFromRows,
+    // not a goal without holders — that case is `unheld`).
+    const h = byGoal.get(goalHolderKey(workspaceId, g.id));
+    return {
+      ...g,
+      agents: (h?.holders ?? []).map((x) => ({
+        ownerId: x.ownerId,
+        live: x.live,
+        sessionState: x.sessionState,
+      })),
+      holderLiveness: h?.liveness ?? 'unheld',
+    };
+  });
+}
+
+/**
  * The goal cards: every goal in the workspace with its live counters.
  *
  * Counters are computed in ONE pass of correlated sub-selects rather than N+1
@@ -502,7 +551,10 @@ export async function resolveGoalsList(args: {
     totalGoals = totalRow?.total == null ? goalRows.length : Number(totalRow.total);
     return goalRows;
   });
-  const goals = rows.map(toSummary);
+  // P-001: liveness is folded in AFTER the transaction — the oracle is its own
+  // read path (presence, wakeability, self-wake) and holding the goals tx open
+  // across it would widen a hot-path transaction for no benefit.
+  const goals = await withHolderLiveness(workspaceId, rows.map(toSummary));
 
   // The portfolio total, over DISTINCT pots. Deliberately returned
   // alongside the rows the client already has: the natural thing to do with a
@@ -789,8 +841,14 @@ export async function resolveGoalDetail(args: {
     // goal), but it is returned as a LIST rather than a scalar: collapsing it
     // would silently hide a second stamp, and a goal with two agents is a
     // coordination fault worth SEEING rather than a row to discard.
+    //
+    // P-001: this read is RAW because the popup needs set_at/set_by, which the
+    // shared holder read does not project — but the rows are folded through
+    // `resolveGoalHoldersFromRows` below before anything renders them, so the
+    // popup can never again show a dead holder as an available conversation.
     const agentRows = (await tx`
-      SELECT am.owner_id, am.set_at, am.set_by
+      SELECT am.owner_id, am.set_at, am.set_by,
+             (extract(epoch FROM am.set_at) * 1000)::bigint AS set_ms
         FROM harness_shared.agent_modes am
        WHERE am.workspace_id = ${workspaceId}
          AND am.mode = 'goal'
@@ -826,7 +884,31 @@ export async function resolveGoalDetail(args: {
       openWorkItems: num(p.open_work_items),
     }));
 
-    const goal = toSummary(goalRow);
+    // P-001: the popup's holder verdict, folded from the rows already fetched
+    // above — one shared classifier, no second oracle round-trip, and the same
+    // held/unheld/lost/unknown vocabulary the board uses.
+    const detailHolderRows: GoalHolderRow[] = agentRows.map((a) => ({
+      goalId,
+      workspaceId,
+      ownerId: String(a.owner_id),
+      setAtMs: Number(a.set_ms ?? 0),
+      setBy: (a.set_by as string | null) ?? null,
+    }));
+    const detailHolders = resolveGoalHoldersFromRows(
+      goalId,
+      workspaceId,
+      detailHolderRows,
+      await resolveHolderLiveness(detailHolderRows.map((r) => r.ownerId)),
+    );
+    const goal: GoalSummaryRow = {
+      ...toSummary(goalRow),
+      agents: detailHolders.holders.map((h) => ({
+        ownerId: h.ownerId,
+        live: h.live,
+        sessionState: h.sessionState,
+      })),
+      holderLiveness: detailHolders.liveness,
+    };
     goal.potCount = pots.filter((p) => !p.removedAt).length;
     // From the UNBOUNDED count, never `waiting.length` — that array stops at 25,
     // so a goal with 31 parked items used to render "31 needs you" on the card
@@ -925,11 +1007,21 @@ export async function resolveGoalDetail(args: {
         ? { id: String(parentRow.id), title: (parentRow.title as string | null) ?? String(parentRow.id) }
         : null,
       pots,
-      agents: agentRows.map((a) => ({
-        ownerId: String(a.owner_id),
-        setAt: iso(a.set_at as string | Date | null),
-        setBy: (a.set_by as string | null) ?? null,
+      /** P-001: each holder carries its LIVENESS. `live: null` means the oracle
+       *  could not resolve it — UNKNOWN, never dead. The popup's conversation
+       *  affordance is only honest for a holder that is actually there. */
+      agents: detailHolders.holders.map((h) => ({
+        ownerId: h.ownerId,
+        // From the holder row's own setAtMs — never a positional lookup back
+        // into agentRows, which would silently mis-pair if the classifier ever
+        // filtered or reordered.
+        setAt: h.setAtMs > 0 ? new Date(h.setAtMs).toISOString() : null,
+        setBy: h.setBy ?? null,
+        live: h.live,
+        sessionState: h.sessionState,
       })),
+      /** held | unheld | lost | unknown — see GoalSummaryRow.holderLiveness. */
+      holderLiveness: detailHolders.liveness,
       plans: planRows.map((p) => ({
         planSlug: String(p.plan_slug),
         harnessSlug: String(p.harness_slug),
