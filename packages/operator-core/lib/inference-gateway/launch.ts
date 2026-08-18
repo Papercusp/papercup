@@ -33,6 +33,7 @@ import {
   type PriorityTierMap,
   type TierAdmissionConfig,
 } from '@papercusp/papercusp-shared/agent';
+import { trackDetached } from '../detached-imports';
 
 /** Default localhost port for the gateway (not one of the dev stack's ports). */
 export const DEFAULT_GATEWAY_PORT = 8788;
@@ -145,7 +146,7 @@ export interface RunningGatewayService {
 function defaultObservePool(_accountId: string, ws: string | undefined, log: GatewayServiceOptions['log']): () => void {
   // Lazy import to keep the gateway bin's cold-start light + avoid a PG import in tests that inject.
   let unsub = () => {};
-  void import('../deployment/account-pool-store')
+  void trackDetached(import('../deployment/account-pool-store'))
     .then(({ initAccountScaleObserver }) => {
       unsub = initAccountScaleObserver({
         workspaceId: ws ? () => ws : undefined,
@@ -213,7 +214,7 @@ function makeWindowProjector(
       resetAt7d !== prev.resetAt7d;
     if (!significant) return;
     last.set(accountId, { util, resetAt, util7d, resetAt7d, at: t });
-    void import('../deployment/account-pool-store')
+    void trackDetached(import('../deployment/account-pool-store'))
       .then(({ updateAccountPool }) =>
         import('../deployment/account-pool').then(({ recordAccountWindow }) =>
           updateAccountPool(
@@ -820,7 +821,7 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
             // Fire-and-forget: the sampler is lazily imported (its module graph —
             // PG readers, the pass core — never loads while the flag is dark) and
             // every fault is swallowed; the served compaction is already on the wire.
-            void import('../residual-carry-pass-live')
+            void trackDetached(import('../residual-carry-pass-live'))
               .then((m) => m.runMaintenanceResidualSample(input))
               .catch(() => {});
           },
