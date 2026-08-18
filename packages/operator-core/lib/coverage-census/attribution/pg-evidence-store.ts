@@ -36,10 +36,19 @@ import type { BufferedEvidence } from './buffer';
 import type { AttributionScope } from './context';
 import type { EvidenceStore } from './sink';
 
-/** The narrow slice of postgres.js this module uses. */
-type SqlTag = {
-  <T = unknown>(strings: TemplateStringsArray, ...values: unknown[]): Promise<T>;
-};
+/**
+ * The postgres.js client type, taken from the library itself via a TYPE-ONLY import — which
+ * costs no runtime import, so this module still loads without pulling `postgres` in (the real
+ * client is behind the dynamic import in `defaultSql`, which is what keeps the sink inert in a
+ * process that never flushes).
+ *
+ * Deliberately NOT a hand-written structural stand-in. The first draft declared
+ * `<T = unknown>(strings, ...values) => Promise<T>`, which looks equivalent and is not: the real
+ * tag constrains its generic to a row-array, so a genuine `postgres.Sql` is NOT assignable to
+ * the loose shape and every caller passing a real handle fails to typecheck. Naming the library
+ * type means this cannot drift from the client it describes.
+ */
+type SqlTag = import('postgres').Sql;
 
 export interface PgEvidenceStoreOptions {
   /** Injected by tests (the integration test passes its testcontainer admin handle). */
