@@ -28,6 +28,57 @@ import { probeCapacityForAccounts, type CapacityProbeResult } from '../../infere
 
 const wsArg = z.string().min(1).optional().describe('Workspace id (defaults to the active workspace)');
 
+const gwBase = () => `http://127.0.0.1:${Number(process.env.PAPERCUSP_GATEWAY_PORT) || 8788}`;
+
+/**
+ * CONVERGE THE SECOND STORE. This tool writes the DB account-pool projection; the running gateway keeps a
+ * SEPARATE in-memory `exhaustedUntil` map, and nothing reconciled the two. So a probe could prove upstream
+ * that an account serves, write that truth to the projection, and leave the gateway still benching it —
+ * with `accounts:probe-capacity` reporting success and `fleet:capacity` reporting `poolExhausted: true` at
+ * the same moment, each correct about a different object. Worse, the gateway's stale count feeds the
+ * serviceable-admission clamp, so a stale exclusion silently pins fleet-wide admission (measured
+ * 2026-08-18: 1 "serviceable" account → live admission 4 while AIMD allowed 24).
+ *
+ * Readmitting here makes ONE action converge BOTH stores. It is safe: readmit only returns accounts to
+ * ROTATION — the governors, the AIMD controller and the freshly-written projection all still apply, so a
+ * genuinely walled account is re-excluded by its next real 429 rather than being forced open.
+ *
+ * Reports what actually happened (never assumed): an unreachable gateway is a WARNING on an otherwise
+ * successful probe, because the projection write did land and is the durable half.
+ */
+async function readmitIntoGateway(accountIds: string[]): Promise<{
+  converged: boolean;
+  readmitted: string[];
+  healthyAccounts: number | null;
+  warning?: string;
+}> {
+  if (accountIds.length === 0) return { converged: false, readmitted: [], healthyAccounts: null };
+  try {
+    const r = await fetch(`${gwBase()}/admin/readmit`, { method: 'POST', signal: AbortSignal.timeout(5000) });
+    if (!r.ok) {
+      return {
+        converged: false,
+        readmitted: [],
+        healthyAccounts: null,
+        warning: `projection updated, but the gateway's in-memory exclusions were NOT cleared (/admin/readmit → ${r.status}). fleet:capacity may still report these accounts as unusable.`,
+      };
+    }
+    const b = (await r.json().catch(() => ({}))) as { readmitted?: string[]; healthyAccounts?: number };
+    return {
+      converged: true,
+      readmitted: Array.isArray(b.readmitted) ? b.readmitted : [],
+      healthyAccounts: typeof b.healthyAccounts === 'number' ? b.healthyAccounts : null,
+    };
+  } catch (e) {
+    return {
+      converged: false,
+      readmitted: [],
+      healthyAccounts: null,
+      warning: `projection updated, but the gateway was unreachable at ${gwBase()} (${e instanceof Error ? e.message : String(e)}), so its in-memory exclusions still stand. fleet:capacity may still report these accounts as unusable.`,
+    };
+  }
+}
+
 // { data } shape (definetool-token-optimization P-003): the framework owns wire
 // encoding (auto-TOON on the MCP transport, lossless JSON elsewhere) — no hand-rolled
 // inline-JSON content array. Payload is identical to the legacy shape.
@@ -135,13 +186,34 @@ export default defineTool({
       }
     }
 
+    // Converge the gateway's in-memory exclusions with the projection we just wrote (see
+    // readmitIntoGateway). Only for accounts that actually PROVED they serve — a 429 reply confirms a real
+    // wall, and readmitting that would just send the fleet back to hammer a capped account.
+    const serving = results.filter((r) => r.ok && r.status !== 429).map((r) => r.accountId);
+    const gateway = apply
+      ? await readmitIntoGateway(serving)
+      : { converged: false, readmitted: [], healthyAccounts: null as number | null };
+
     return ok({
       probed: results.length,
+      // ⚠ `unwalled` is a DELTA — accounts this call CORRECTED. A healthy account was never walled, so it
+      // never appears here, and an empty array means "nothing needed fixing", NOT "nothing works". Judge
+      // capacity from `serving` (a STATE array) or from rows[].status, never from this one. A gate phrased
+      // over `unwalled` being non-empty is unsatisfiable by construction (EI-20742908053146075).
       unwalled: results.filter((r) => r.unwalls).map((r) => r.accountId),
+      /** STATE, not delta: accounts that answered upstream RIGHT NOW without a 429. This is the field to
+       *  gate a launch on. */
+      serving,
       confirmedWalled: results.filter((r) => r.ok && !r.unwalls && r.status === 429).map((r) => r.accountId),
       failed: results.filter((r) => !r.ok).map((r) => r.accountId),
       applied,
       dryRun: !apply,
+      /** Did this call also converge the gateway's SEPARATE in-memory exclusion set? Reported rather than
+       *  assumed — the projection write and the gateway readmit can succeed independently. */
+      gatewayConverged: gateway.converged,
+      gatewayReadmitted: gateway.readmitted,
+      gatewayHealthyAccounts: gateway.healthyAccounts,
+      ...(gateway.warning ? { warning: gateway.warning } : {}),
       rows: results.map(reportRow),
     });
   },
