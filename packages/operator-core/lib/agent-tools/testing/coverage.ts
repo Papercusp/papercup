@@ -440,6 +440,18 @@ export interface CoverageArgs {
   workspace?: string;
   kind?: string;
   sourceFile?: string;
+  /**
+   * MANY source-file substrings, matched as a union (a surface counts if ANY of them
+   * matches). The reverse map for a multi-file scope — "the surfaces the files this plan
+   * touched implement" — expressed as ONE query so the aggregate is still computed in
+   * SQL across the whole matching population.
+   *
+   * ⚠ The alternative (call readCoverage once per file and add the results up) is
+   * FORBIDDEN by this module's own contract: summing per-file aggregates double-counts
+   * any surface two patterns both match, and re-derives a ratio outside the one place
+   * {@link pct} enforces the null-when-vacuous rule. Widen the query, never the caller.
+   */
+  sourceFiles?: string[];
   rung?: Rung;
   gapsOnly?: boolean;
   includeRetired?: boolean;
@@ -469,6 +481,16 @@ export async function readCoverage(args: CoverageArgs) {
     const includeRetired = args.includeRetired ?? false;
     const includeWaived = args.includeWaived ?? false;
     const filePattern = args.sourceFile ? `%${args.sourceFile}%` : null;
+    // A union of substrings. Empty-after-trim ⇒ null, NOT an empty array: `ILIKE ANY('{}')`
+    // matches nothing, so an all-blank list would silently produce a 0-surface scope that
+    // reads as a real (and vacuously passing) measurement. null means "no filter"; a
+    // caller that meant to scope to specific files and supplied none must not be handed
+    // the whole census either — that is the CALLER's error to detect, and the coverage
+    // check's scope resolver refuses it before it ever reaches this function.
+    const filePatterns =
+      args.sourceFiles && args.sourceFiles.some((f) => f.trim() !== '')
+        ? args.sourceFiles.filter((f) => f.trim() !== '').map((f) => `%${f.trim()}%`)
+        : null;
     const kind = args.kind ?? null;
 
     // The flag column for the requested rung. Interpolated from the RUNGS table, never
@@ -480,7 +502,8 @@ export async function readCoverage(args: CoverageArgs) {
          AND harness_slug = ${harness}
          AND (${includeRetired}::boolean OR retired_at IS NULL)
          AND (${kind}::text IS NULL OR kind = ${kind})
-         AND (${filePattern}::text IS NULL OR source_file ILIKE ${filePattern})`;
+         AND (${filePattern}::text IS NULL OR source_file ILIKE ${filePattern})
+         AND (${filePatterns}::text[] IS NULL OR source_file ILIKE ANY(${filePatterns}))`;
 
     // ── The aggregates. Computed across the whole matching set in SQL, so `limit`
     //    cannot reach them (AGGREGATE_BASIS declares this, the behavioural test pins it).
