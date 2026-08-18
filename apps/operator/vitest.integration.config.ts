@@ -1,4 +1,8 @@
 import { defineVitestConfig, BASELINE_SCHEMA_GLOBAL_SETUP_PATH } from '@papercusp/test-config/vitest-config';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // The admin test-runs reporter is auto-wired by defineVitestConfig — so
 // apps/operator's *.integration.test.ts files record to harness_shared.test_runs

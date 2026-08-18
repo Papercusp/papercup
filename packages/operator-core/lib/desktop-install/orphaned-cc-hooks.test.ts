@@ -52,7 +52,11 @@ function isHookPayload(name: string): boolean {
 
 describe('CC hook registry — no orphaned hook scripts (EI-20782070131658758)', () => {
   it('every hook script in the source dir is listed in CC_HOOK_FILES', () => {
-    const listed = new Set(CC_HOOK_FILES);
+    // `Set<string>`, not the inferred `Set<"a"|"b"|...>`: CC_HOOK_FILES is a const tuple of
+    // string literals, so an inferred Set rejects `.has(someString)` at compile time (TS2345)
+    // — and the whole point here is to test names read off DISK, which are plain strings.
+    // Same idiom as papercusp-files.ts:2259.
+    const listed = new Set<string>(CC_HOOK_FILES);
     const orphans = hookScriptsOnDisk().filter((n) => !listed.has(n));
 
     expect(
@@ -99,7 +103,9 @@ describe('CC hook registry — no orphaned hook scripts (EI-20782070131658758)',
     const onDisk = hookScriptsOnDisk();
     expect(onDisk.length).toBeGreaterThan(10); // the instrument read a real directory
 
-    const withoutOne = new Set(CC_HOOK_FILES.filter((n) => n !== 'pretooluse-secrets-guard.mjs'));
+    const withoutOne = new Set<string>(
+      CC_HOOK_FILES.filter((n) => n !== 'pretooluse-secrets-guard.mjs'),
+    );
     const orphans = onDisk.filter((n) => !withoutOne.has(n));
 
     expect(orphans).toEqual(['pretooluse-secrets-guard.mjs']);
