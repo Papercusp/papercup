@@ -1320,6 +1320,81 @@ export function buildClaimabilityAdvisory(rawSql: string): string | null {
 }
 
 /**
+ * BACKLOG FLOW measured over `work_items` — three ways to get a confidently WRONG number, all of which
+ * return well-formed rows that look like an answer.
+ *
+ * Measured 2026-08-17/18, in one investigation, by one agent, reporting to the owner. Each error was
+ * independently plausible and together they inverted the SIGN of the reported trend — "the queue grew by
+ * 772" was actually "the queue shrank by 1175":
+ *
+ *   1. NO `lane` PREDICATE. `work_items` holds more than the bug backlog: agents' own end-of-turn
+ *      observations live in the same table under `lane='observation'`. An unfiltered aggregate counts
+ *      them as filed work. Measured: 1001 "filings" was really 518, with 500 in the observation lane.
+ *
+ *   2. `authority IN ('committed','validated')` USED AS A FLOW FILTER. `authority` grades how well a
+ *      close was JUSTIFIED. Filtering closes by it while counting filings unfiltered compares two
+ *      different populations, so a healthy queue reads as a growing one. Fix throughput and backlog flow
+ *      are different questions; only one of them has an evidence filter.
+ *
+ *   3. A HAND-ROLLED `created_ts`/`closed_ts` WINDOW. `work_items:burn_down` already computes this, and
+ *      already gets right three things a hand-written GROUP BY does not: it attributes from an
+ *      append-only ledger so members that have since died still count, it declares that its buckets sum
+ *      to the delta so one bucket cannot be misread as a sample, and it stamps `truncatedByLimit` on the
+ *      AGGREGATE so a capped census is never quoted as a total.
+ *
+ * These compose deliberately: an agent measuring "is the backlog growing" typically writes all three at
+ * once, so the advisory reports every part that applies rather than only the first.
+ */
+export function buildBacklogFlowAdvisory(rawSql: string): string | null {
+  const tables = extractReferencedTables(rawSql);
+  if (!tables.some((t) => bareTableName(t) === 'work_items')) return null;
+
+  const stripped = stripSqlLiteralsAndComments(rawSql);
+  // The tool's own SQL and the burn-down path already handle all of this.
+  if (/\bwork_item_claim_floors\b/i.test(stripped)) return null;
+
+  const isAggregate = /\b(count|sum|avg|min|max)\s*\(/i.test(stripped) || /\bgroup\s+by\b/i.test(stripped);
+  const parts: string[] = [];
+
+  // (1) An aggregate with no lane predicate silently spans the observation lane.
+  if (isAggregate && !/\blane\b/i.test(stripped)) {
+    parts.push(
+      "no `lane` predicate: harness_shared.work_items also holds agents' own end-of-turn notes under " +
+        "lane='observation'. An unfiltered aggregate counts those as filed work — measured 2026-08-17, " +
+        'this turned 518 real filings into 1001. Add a lane predicate, or use work_items:list ' +
+        '{ includeObservations: false } / work_items:burn_down, which scope it for you.',
+    );
+  }
+
+  // (2) An evidence-quality column used as if it selected "closed".
+  if (/\bauthority\b\s*(?:=|\bin\b|=\s*any)/i.test(stripped)) {
+    parts.push(
+      '`authority` grades how well a close was JUSTIFIED, not whether the item left the queue. Filtering ' +
+        'closes by it while counting filings unfiltered compares two different populations and can invert ' +
+        'the sign of a backlog trend. Use it to measure EVIDENCE QUALITY; for flow, count terminal rows ' +
+        'without an authority filter.',
+    );
+  }
+
+  // (3) A hand-rolled window that burn_down already computes correctly.
+  if (/\b(created_ts|closed_ts)\b/i.test(stripped) && isAggregate) {
+    parts.push(
+      'a hand-rolled created_ts/closed_ts window: work_items:burn_down already computes this AND reports ' +
+        'what a hand-written GROUP BY cannot — it attributes from an append-only ledger (so members that ' +
+        'have since died still count), declares that its buckets sum to the delta (so a bucket cannot be ' +
+        'read as a sample), and stamps `truncatedByLimit` on the AGGREGATE (so a capped census is never ' +
+        'quoted as a total).',
+    );
+  }
+
+  if (parts.length === 0) return null;
+  return (
+    `⚠ BACKLOG FLOW over work_items — ${parts.length} way(s) this query answers a different question than ` +
+    `it appears to: ${parts.map((p, i) => `(${i + 1}) ${p}`).join(' ')}`
+  );
+}
+
+/**
  * The relation → covering-tool map behind {@link buildToolRoutingAdvisory}
  * (plan `sql-escape-tool-routing-2026-08-12`, P-001).
  *
