@@ -750,7 +750,8 @@ plan's `## Now` + your completion report. The dark allowlist carries a
 ## Tests after editing
 
 ```bash
-npm run test:affected                  # unit only — fast, default
+npm run test:affected -- --changed-paths <the files you edited>   # YOUR radius
+npm run test:affected                  # unit only — the WHOLE tree's radius, not yours
 npm run test:affected:integration      # also runs *.integration.test.ts
 npm run lint:tsc -- --files=<the files you edited>   # TYPES — vitest does not typecheck
 ```
@@ -766,6 +767,17 @@ The print-only probe emits `AFFECTED_WS\t<workspace>` for selected workspaces an
 `AFFECTED_GUARD\t<workspace>\t<script>` for repo-wide invariant guards attached by the
 same run. Guard lines may appear even when there are zero `AFFECTED_WS` lines; that is
 the intended fail-safe behavior for root-level changes.
+
+⚠ **The probe takes `--changed-paths`; the RUN takes it too — use it, or you measure one
+radius and run another.** A bare `npm run test:affected` derives its radius from git
+(committed vs `origin/main` + working tree + untracked), which on this SHARED tree is the
+whole fleet's work plus base drift — `origin/main` only fast-forwards on a green checkpoint,
+so it sits ~1,500 commits back and a 3-file edit selected 71 workspaces / 90 tasks
+(EI-20812741760514969). Every run now opens with one greppable
+`AFFECTED_DERIVATION source=… changedPaths=… committed=… workspaces=… tasks=…` line saying
+where its radius came from, plus a stderr banner when an unscoped set is tree-sized. That
+wide scope is CORRECT for the green-checkpoint gate (it certifies the whole candidate) and
+wrong for you: `source=explicit` is what verifying your own edit looks like.
 
 ⚠⚠ **`lint:tsc` typechecks `packages/operator-core` ONLY** — it is a single
 `tsc -p packages/operator-core/tsconfig.json` (`scripts/lint-tsc.mjs`). 
