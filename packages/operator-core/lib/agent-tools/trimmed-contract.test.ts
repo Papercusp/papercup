@@ -14,7 +14,7 @@
  * to come back CLEAN.
  */
 import { describe, it, expect } from 'vitest';
-import { getCatalog } from '@papercusp/tooldef';
+import { listDeclaredToolShapers, listAllProjectedTools } from '@papercusp/tooldef';
 import '../agent-tools/index';
 import {
   parseReturnsRowFields,
@@ -137,28 +137,20 @@ describe('checkTrimmedContract — falsifiability controls', () => {
 });
 
 describe('the LIVE tool catalog honours every declared trimmed contract', () => {
-  const catalog = getCatalog();
+  const declared = listDeclaredToolShapers();
 
   it('reads a plausibly-registered catalog (a vacuous green is worse than a red)', () => {
     // Mirrors MIN_PLAUSIBLE_CATALOG_SIZE in tool-guidance-budget.ts: outside the
-    // barrel side-effect this read returns a handful of tools and every check
+    // barrel side-effect the registry holds a handful of tools and every check
     // below would pass having examined nothing.
-    expect(catalog.length).toBeGreaterThanOrEqual(500);
+    expect(listAllProjectedTools().length).toBeGreaterThanOrEqual(500);
   });
 
-  const subjects: TrimmedContractSubject[] = catalog.map((t) => {
-    const def = t as unknown as {
-      name?: string;
-      expose?: { mcp?: { name?: string } };
-      guidance?: { returns?: unknown };
-      shape?: TrimmedContractSubject['shape'];
-    };
-    return {
-      name: def.expose?.mcp?.name ?? def.name ?? '<unnamed>',
-      returns: def.guidance?.returns,
-      shape: def.shape,
-    };
-  });
+  const subjects: TrimmedContractSubject[] = declared.map((d) => ({
+    name: d.name,
+    returns: d.returns,
+    shape: d.shape as TrimmedContractSubject['shape'],
+  }));
 
   it('every opted-in tool resolves a field list', () => {
     expect(unresolvableContracts(subjects)).toEqual([]);
