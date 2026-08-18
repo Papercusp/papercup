@@ -293,18 +293,25 @@ export default defineTool({
     }),
   ]),
   async handler(args, ctx) {
+    // EI-20482937744589016: resolve the subject BEFORE any read — every exit below (refusal,
+    // degraded envelope, dry-run, fire) must name which pipeline it is about, and a caller
+    // asserting a different harness is refused before we do any work at all.
+    const stamp = releaseSubjectStamp(ctx as { harnessSlug?: string | null });
+    const wrongHarness = harnessAssertionRefusal(args.op, args.harness, stamp);
+    if (wrongHarness) return wrongHarness;
     // ── status: read-only, always allowed ──
     // EI-20262656218311418: readDeployStatus fans out to PG/systemd and can outlive the MCP
     // transport. Return a structured, retryable envelope instead of allowing an empty response.
     const statusRead = await readStatusBounded();
     if (statusRead.degraded || !statusRead.value) {
-      return statusUnavailable(args.op, statusRead);
+      return statusUnavailable(args.op, statusRead, stamp);
     }
     let status = statusRead.value;
     if (args.op === 'status') {
       return json({
         ok: true,
         op: 'status',
+        ...stamp,
         ...status,
         diagnosticVintage: currentDiagnosticVintage({
           stagingHeadSha: status.deploy.stagingHeadSha,
