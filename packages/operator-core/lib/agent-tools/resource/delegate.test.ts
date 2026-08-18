@@ -21,6 +21,17 @@ vi.mock('../../p2p/resource-allotments', () => ({
   ALLOTMENT_AUDIENCES: ['trusted-members', 'whole-pot'],
 }));
 vi.mock('../../sync-sse', () => ({ notifySyncInvalidate: vi.fn(async () => {}) }));
+// The delegation success path fires a best-effort seat-offer publish. It is NOT this file's
+// subject (this file pins the D-004→store mapping) and delegate.ts's own header says unit tests
+// must not publish. It was previously inert here only by ACCIDENT: the publish rode a floating
+// `void import(...)` that never finished before the test did. Now that detached imports are
+// enrolled and drained before teardown (WI-39811), the real implementation runs inside the test
+// and logs its expected `no_single_shared_hive` skip — which vitest-fail-on-console rejects.
+// Mocking the collaborator (rather than silencing console) keeps that diagnostic meaningful in
+// production, where EI-19304844689981989 deliberately made the outcome observable.
+vi.mock('../../p2p/offer-store-publish', () => ({
+  publishSeatOfferForDelegationBestEffort: vi.fn(),
+}));
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: vi.fn(() => ({ workspaceId: 'ws-actor' })),
 }));

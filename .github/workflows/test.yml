@@ -264,6 +264,21 @@ jobs:
         if: ${{ !cancelled() }}
         run: npm run lint:no-raw-setinterval
 
+      # no-unenrolled-detached-import guard (WI-39811, follow-up to EI-20349773342925327):
+      # a fire-and-forget `void import(...)` can still be walking its module graph after the
+      # test file that started it finished. Vitest then throws EnvironmentTeardownError
+      # mid-graph, and in the PURE lane (isolate:false, shared fork) the failure is charged to
+      # whichever CO-RESIDENT file is collecting — victims report `(0 test)` and pass again in
+      # a fresh process. Measured on the 2026-08-18 gate: 8 failed suites, rotating cast, none
+      # of them the culprit. Enrolment is `trackDetached` (lib/detached-imports), which the
+      # unit-layer setup drains before teardown. GATING, with an EMPTY baseline.
+      # NOTE the failing scope is DERIVED from which workspaces set `laneSplit: true`, so a
+      # workspace opting into the lane split later joins this guard automatically instead of
+      # silently losing coverage; opting in WITHOUT wiring the drain is itself a failure.
+      - name: Lint no unenrolled detached import
+        if: ${{ !cancelled() }}
+        run: npm run lint:no-unenrolled-detached-import
+
       # systemd StartLimit-placement guard (EI-19381535849234617): StartLimitIntervalSec
       # / StartLimitBurst are [Unit]-only directives. systemd parses one in [Service],
       # warns "Unknown key name ... ignoring", and silently falls back to the DEFAULT

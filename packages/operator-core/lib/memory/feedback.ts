@@ -31,8 +31,27 @@ async function invalidateFeedbackStats(): Promise<void> {
   }
 }
 
+/**
+ * Actor id for feedback the AGENT LAYER produces (memory:forget / memory:update), as opposed
+ * to a person acting through /api/user/memory.
+ *
+ * `harness_shared.memory_feedback.user_id` is `uuid NOT NULL`, so a descriptive string cannot
+ * go there — the two agent call sites passed the literal `'agent-tool'` and every insert died
+ * on `invalid input syntax for type uuid`, inside a `catch` that only `console.warn`ed. The
+ * write is fire-and-forget, so nothing ever awaited the rejection and the warning was never
+ * seen: measured 2026-08-18, the table held 2 rows lifetime (both from the human endpoint) and
+ * ZERO agent rows, so the extraction-adaptation loop's agent signal had never once landed.
+ *
+ * Deliberately NOT the nil uuid: in this repo `00000000-…-000000000000` is used in tests to
+ * mean an INVALID/absent id, so reusing it here would encode "no actor" where we mean "a
+ * specific, known, non-human actor". `buildLearningInstructions` aggregates by action+kind and
+ * never reads user_id, so this column is provenance only — but provenance that is now true.
+ */
+export const AGENT_TOOL_ACTOR_ID = 'a9e70000-0000-4000-8000-000000000001';
+
 export interface FeedbackInput {
   memId: string;
+  /** A person's uuid, or {@link AGENT_TOOL_ACTOR_ID} for agent-layer feedback. Must be a uuid. */
   userId: string;
   action: 'create' | 'edit' | 'delete' | 'forget_all';
   kind?: string | null;
