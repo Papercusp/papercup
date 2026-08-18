@@ -350,6 +350,12 @@ export default function AgentOrders({
           )}
 
           {/* ── Standing facts ── */}
+          {/* P-005: the facts disclosures sit OUTSIDE both branches, because the
+              branch that needs them most is the QUIET one. "none in scope" is a
+              lie when the fold ran narrowed — the agent was never shown its
+              facts, so their absence is not evidence that none stand, and
+              RailQuiet's own contract ("I don't know must never be quieter than
+              nothing") is the same distinction one state over. */}
           {(orders.facts ?? []).length === 0 ? (
             <RailQuiet label="Standing facts" none="none in scope" testId="rail-quiet-facts" />
           ) : (
@@ -388,6 +394,22 @@ export default function AgentOrders({
             )}
           </section>
           )}
+          <Disclosures
+            recorded={orders.disclosures}
+            keys={FACTS_DISCLOSURE_KEYS}
+            testId="disclosures-facts"
+          />
+
+          {/* ── What its last orient left out ──
+              The other three markers qualify reads that have no section of their
+              own in this rail (the claimable backlog, announced gates, recipes).
+              They get one shared line rather than three bespoke ones, and they
+              render only when the agent's own orient actually cut something. */}
+          <Disclosures
+            recorded={orders.disclosures}
+            keys={READ_DISCLOSURE_KEYS}
+            testId="disclosures-reads"
+          />
 
           <RailCluster label="What they’re carrying" />
 
