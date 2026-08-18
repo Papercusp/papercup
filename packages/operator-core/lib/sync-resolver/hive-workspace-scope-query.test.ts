@@ -1,6 +1,18 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const resolveWorkspaceHiveScope = vi.fn();
+// `vi.mock` factories are HOISTED above these declarations, and the federation-scope
+// factory below references `resolveWorkspaceHiveScope` EAGERLY (directly in the object
+// literal it returns). A plain `const … = vi.fn()` is therefore still in the temporal
+// dead zone when that factory runs, which vitest surfaces as a module-mocking error
+// caused by `ReferenceError: Cannot access 'resolveWorkspaceHiveScope' before
+// initialization`. `vi.hoisted()` lifts the mock fn alongside the factories so it is
+// initialised first.
+//
+// `activeWs` below needs no such treatment: it is only ever read LAZILY, inside the
+// arrow handed to `activeWorkspaceId`, which runs at test time.
+const { resolveWorkspaceHiveScope } = vi.hoisted(() => ({
+  resolveWorkspaceHiveScope: vi.fn(),
+}));
 let activeWs: string | null = 'ws-test';
 
 vi.mock('../workspace-registry', () => ({

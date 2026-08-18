@@ -29,7 +29,14 @@ vi.mock('../iq-battery/benchmark-read', () => ({
 }));
 
 const ORG_SQL = Symbol('org-sql');
-vi.mock('@papercusp/db-org', () => ({
+// FULL-REPLACEMENT MOCK HAZARD (same class as WI-39843): a bare factory replaces the
+// WHOLE module, so every export this file's import graph touches but does not re-declare
+// becomes undefined — and vitest throws on ANY access to a missing mock export. Here it
+// was `setAdminPoolStatementTimeoutProvider`, reached transitively via
+// agent-tools/locks/configure.ts:38, which broke COLLECTION of this file entirely.
+// Spread the original module so only `getOrgPg` is overridden.
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({ sql: ORG_SQL }),
 }));
 
