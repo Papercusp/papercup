@@ -96,7 +96,9 @@ export function createPgCensusStore(options: PgCensusStoreOptions = {}): CensusS
       let upserted = 0;
       let retired = 0;
 
-      await sql.begin(async (tx: Sql) => {
+      // `tx` is postgres.js's TransactionSql, not Sql — typed via the callback parameter rather
+      // than annotated, so this cannot drift if the client's transaction type changes.
+      await sql.begin(async (tx) => {
         for (const u of diff.upserts) {
           // NOTE THE UPDATE SET LIST: last_seen, provider, fidelity, source_file, schema_ref,
           // attrs, retired_at. `first_seen` is deliberately ABSENT — see the file header.
