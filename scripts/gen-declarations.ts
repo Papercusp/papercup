@@ -25,6 +25,7 @@ import {
 import { join, dirname, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
+import ts from 'typescript';
 
 const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
 const CONFIG = 'tsconfig.declarations.json';
