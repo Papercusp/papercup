@@ -17,18 +17,18 @@
  */
 import { getOrgPg } from '@papercusp/db-org';
 import { runCensus } from '@papercusp/testing-shell/census';
-import { activeWorkspaceId } from '../../workspace-registry';
 import { createPgCensusStore } from '../../coverage-census/pg-store';
 import { censusProviders } from '../../coverage-census/provider-registry';
-import { operatorHomeHarnessSlug } from '../operator-home-harness';
+import { resolveCensusScope } from '../../coverage-census/scope';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 
 registerSystemAction('coverage-census', async (_ctx: SystemActionCtx) => {
   const providers = censusProviders();
-  const scope = {
-    workspaceId: activeWorkspaceId(),
-    harnessSlug: operatorHomeHarnessSlug(),
-  };
+  // D-011: the SAME resolver the attribution layer uses, so evidence rows can only ever
+  // land in the scope these surfaces are written under. Inlining the two resolvers here
+  // is what let attribution drift onto an env-only derivation that resolved to (NULL,
+  // NULL) in every real run — see coverage-census/scope.ts.
+  const scope = resolveCensusScope();
 
   const store = createPgCensusStore({ getSql: () => getOrgPg().sql });
 

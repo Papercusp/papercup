@@ -277,10 +277,13 @@ export async function flushTrafficEvidence(): Promise<void> {
   if (state.disabled) return;
   if (state.buffer.size === 0) return;
 
-  const scope = resolveAttributionScope();
+  const scope = await resolveAttributionScope();
   if (!scope) {
-    // No scope means no join target. Dropping is deliberate — see resolveAttributionScope.
-    noteFlushFailure('no attribution scope (PAPERCUSP_WORKSPACE_ID + harness slug required)');
+    // D-011: the resolver is TOTAL, so reaching here means it THREW (an unreadable workspace
+    // registry), not that the scope was merely unconfigured. Dropping is still right — there
+    // is no join target — but this is now an exceptional path, not the steady state it used
+    // to be. See resolveAttributionScope.
+    noteFlushFailure('no attribution scope (census scope resolution failed)');
     state.buffer.clear();
     return;
   }

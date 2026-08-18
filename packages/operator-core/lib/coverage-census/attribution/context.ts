@@ -111,24 +111,36 @@ export interface AttributionScope {
 }
 
 /**
- * Resolve the census scope from the environment, using the SAME variables the test-runs
- * reporter resolves `harness_slug`/`workspace_id` from — so a run's `test_runs` rows and its
- * evidence rows always land in one scope.
+ * Resolve the census scope — by DELEGATING to the same resolver the census itself uses to
+ * scope the surfaces these rows join to (`../scope`, Decision D-011).
  *
- * Returns null when either half is missing. That is a REFUSAL, not a degradation: a guessed
- * scope writes evidence that joins to no surface (silently invisible) or, worse, to another
- * harness's surface of the same name (silently WRONG). An unattributed run is recoverable; a
- * misattributed one is not.
+ * ⚠ THIS FUNCTION USED TO RE-DERIVE THE SCOPE FROM ENV, AND THAT MADE THE WHOLE LAYER A
+ * NO-OP. It mirrored the test-runs reporter's variables on the reasoning that a run's
+ * `test_runs` rows and its evidence rows should land in one scope — but nothing sets those
+ * variables: measured 2026-08-18, `harness_slug` was NULL on 100% of the 7,202 `test_runs`
+ * rows written in the preceding 90 minutes, and neither live operator host had any of them
+ * in its environment. So the "shared" scope was `(NULL, NULL)`, this function returned null
+ * on every flush, and the sink dropped every buffer it ever filled. The full measurement is
+ * in `../scope.ts`; the lesson is that a derivation agreeing with another derivation IN
+ * PRINCIPLE is not evidence that either one resolves IN FACT.
+ *
+ * Deliberately ASYNC and dynamically imported. The scope module reaches the workspace
+ * registry, and this file is on the import path of every Hono route stack — a static import
+ * would pull that graph into a production request that will never attribute anything. The
+ * dynamic import is reached only from {@link flushTrafficEvidence}, i.e. only in a process
+ * that is armed AND has observed traffic, which keeps "inert when disarmed" literally true.
+ *
+ * Still returns `AttributionScope | null`: the resolver itself is total, but a throwing
+ * registry read must never propagate into the request this layer is only describing. Null
+ * therefore now means "scope resolution FAILED", not "scope was not configured".
  */
-export function resolveAttributionScope(): AttributionScope | null {
-  const workspaceId = process.env.PAPERCUSP_WORKSPACE_ID || process.env.PAPERCUSP_WORKSPACE || null;
-  const harnessSlug =
-    process.env.PAPERCUSP_TEST_RUN_HARNESS ||
-    process.env.HARNESS_SLUG ||
-    process.env.PAPERCUSP_HARNESS_SLUG ||
-    null;
-  if (!workspaceId || !harnessSlug) return null;
-  return { workspaceId, harnessSlug };
+export async function resolveAttributionScope(): Promise<AttributionScope | null> {
+  try {
+    const { resolveCensusScope } = await import('../scope');
+    return resolveCensusScope();
+  } catch {
+    return null;
+  }
 }
 
 /** The caller identity for one observed call, however it was carried. */
