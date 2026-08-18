@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 739,
+  "count": 740,
   "tools": [
     {
       "name": "ablation:report",
@@ -25832,6 +25832,42 @@
         "when": "You have reached an \"expand-here\" node (or any node) that should now fan out into concrete child work_items — the decomposition you deferred until you had the context to make it well.",
         "notWhen": "A flat structural note / re-approach → work_items:amend. A single follow-up → just create/convert one work_item. Re-prioritizing existing nodes → no expansion.",
         "chaining": "work_items:get → work_items:expand { id, children:[{title, files?, brief?}] }. A bee PROPOSES (disposition=proposed, nothing created yet); the Mug DISPOSES (children created with payload.expanded_from = parent)."
+      }
+    },
+    {
+      "name": "work_items:export",
+      "http": {
+        "path": "/api/agent-tools/work_items/export",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Materialize work-item rows as `<id>.json` files under `toDir` (the sibling of plans:export). For a BULK consumer — an exporter, an audit, a history projection — that must read many rows WITH their completion evidence, which the bounded result payload silently truncates to nothing. Returns counts and the directory, never the rows.",
+      "capabilities": [
+        "work_items:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "cup",
+        "mug",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "doc-steward"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "You are reading many work-item rows programmatically and need their full payload/terminalCompletionEvidence — e.g. a project-history export, a completion-integrity audit, an offline dump.",
+        "notWhen": "You want to READ a few items in-context → work_items:get (1–100 ids). You want to browse/filter the queue → work_items:list. This tool writes files and returns no rows, so it is useless for an in-context read.",
+        "chaining": "work_items:export { harness, toDir } → read the files → correlate with plans:export { toDir } for the plan side."
       }
     },
     {
