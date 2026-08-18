@@ -3741,9 +3741,46 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         a.state === undefined && a.limit === undefined && a.hive !== undefined && a.scope !== 'all';
       let rows: Array<Record<string, unknown>>;
       if (isDefaultVariant) {
-        const { readDerivedSnapshotRows } = await import('../derived-reads/registry');
+        const { readDerivedSnapshot } = await import('../derived-reads/registry');
         await import('../derived-reads/producers');
-        rows = await readDerivedSnapshotRows<Record<string, unknown>>('learning.improvements');
+        // readDerivedSnapshot, NOT ...Rows — the SAME reason the hive branch below
+        // gives, which this branch was missing (WI-39773).
+        //
+        // OBSERVED, not theorised: bumping this producer to v4 for the tierReason
+        // interning invalidated every stored v3 row, and because `...Rows` flattens
+        // a MISS to `[]`, the tab's DEFAULT view — its landing view — served an
+        // EMPTY digest until the producer next ran. Measured live on :3170
+        // 2026-08-18: blank immediately after the restart, populated ~2 min later.
+        // A background fill is kicked on the miss, so it self-heals, but "the
+        // Learning tab is blank for a couple of minutes" is not the right cost for
+        // a shape change — and it recurs on EVERY future producerVersion bump and
+        // on any cold key.
+        //
+        // Falling through to the live compute makes a miss exactly as correct as a
+        // hit and merely slower (the 0.4-0.5s inline path), which is what the hive
+        // branch already does.
+        const { payload, meta } = await readDerivedSnapshot<Array<Record<string, unknown>>>(
+          'learning.improvements',
+        );
+        if (!meta.missing && Array.isArray(payload)) {
+          rows = payload;
+          // Preserve what readDerivedSnapshotRows stamped: the panel renders
+          // "as of HH:MM" from _meta.derivedRead, so dropping it would silently
+          // remove the staleness disclosure this precomputed read depends on.
+          if (rows.length > 0 && rows[0] && typeof rows[0] === 'object') {
+            rows[0]._meta = {
+              ...(rows[0]._meta as Record<string, unknown> | undefined),
+              derivedRead: meta,
+            };
+          }
+        } else {
+          const { computeLearningImprovementsSnapshot } = await import(
+            '../harness/improvements/learning-digest-snapshot'
+          );
+          rows = (await computeLearningImprovementsSnapshot(a)) as unknown as Array<
+            Record<string, unknown>
+          >;
+        }
       } else if (isHiveLensVariant) {
         const { readDerivedSnapshot } = await import('../derived-reads/registry');
         await import('../derived-reads/producers');
