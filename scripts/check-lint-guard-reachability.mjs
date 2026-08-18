@@ -633,7 +633,14 @@ export function sharedImplementationPaths(scripts, names = selectGuardScripts(sc
  * spelling (`'npm', 'run', 'lint:x'`) and closed against name nesting, since
  * `lint:no-retired` is a prefix of `lint:no-retired-resurrection`.
  */
-export function classifyGuard({ name, command, corpora, repoWideRegistered = new Set(), sharedImpls = new Set() }) {
+export function classifyGuard({
+  name,
+  command,
+  corpora,
+  repoWideRegistered = new Set(),
+  sharedImpls = new Set(),
+  trackedTestFiles = new Set(),
+}) {
   const impls = resolveImplementationPaths(command);
   const tiers = [];
   const mentions = (text) => text.includes(name) || impls.some((p) => p && text.includes(p));
@@ -645,6 +652,19 @@ export function classifyGuard({ name, command, corpora, repoWideRegistered = new
   for (const [tier, text] of Object.entries(corpora)) {
     if (tier === 'test' ? runsGuard(text) : mentions(text)) tiers.push(tier);
   }
+  // THE OTHER HALF OF THE SAME DEFECT (WI-39832). Three guards — `lint:tool-prompts`,
+  // `lint:plane-guards`, `lint:design-primitives` — are IMPLEMENTED AS *.test.ts files
+  // rather than as a checker script. vitest runs those files directly under
+  // `test:affected`, so their enforcement is STRUCTURAL: it follows from the file
+  // existing and being tracked, and no one has to mention it anywhere.
+  //
+  // Scoring them by mention got the right answer for the wrong reason — `lint:tool-prompts`
+  // was credited only because seven unrelated suites happen to name
+  // `tools-md-sync.test.ts`. Delete those incidental mentions and a genuinely-enforced
+  // guard flips to "runs on NO blocking path", reddening the gate with a false finding
+  // and sending someone to WIRE a guard that was already running. The failure direction
+  // is the mirror of the one above and just as wrong.
+  if (!tiers.includes('test') && impls.some((p) => trackedTestFiles.has(p))) tiers.push('test');
   // Appended AFTER the corpora so `blocking[0]` keeps reporting the more specific tier for a
   // guard that is both registered and named by a CI job / gate leg / enforcing test — all 11
   // registrations that pre-dated this tier are in that state, so their reported tier is
@@ -861,6 +881,8 @@ export function buildReachabilityCensus({
   // too because enforcement is measurable without the coverage inputs, and conflating them
   // is what let the two axes disagree about registration in the first place (see BLOCKING_TIERS).
   repoWideRegistered = coverage?.repoWideRegistered ?? new Set(),
+  // Tracked *.test.ts paths — a guard implemented AS one is run by vitest itself (WI-39832).
+  trackedTestFiles = new Set(),
 } = {}) {
   // Which impl paths are shared is a property of the whole guard SET, so it is computed
   // once here rather than per guard — a path is only non-distinguishing relative to its
@@ -868,7 +890,7 @@ export function buildReachabilityCensus({
   const guardNames = selectGuardScripts(scripts);
   const sharedImpls = sharedImplementationPaths(scripts, guardNames);
   const rows = guardNames.map((name) =>
-    classifyGuard({ name, command: scripts[name], corpora, repoWideRegistered, sharedImpls }),
+    classifyGuard({ name, command: scripts[name], corpora, repoWideRegistered, sharedImpls, trackedTestFiles }),
   );
 
   // A `chained` guard inherits reachability from whatever reachable script runs it.
@@ -993,7 +1015,11 @@ function buildCorpora() {
 
   // Key order matters: `classifyGuard` reports the first matching tier for a guard
   // with no blocking tier, so the advisory tiers come last.
-  return { corpora: { gate, ci, test, hook, 'logic-test': logicTest }, enforcingTests, files };
+  // Tracked *.test.ts paths, for the guards whose IMPLEMENTATION is a test file — vitest
+  // runs those by existence, so they need no mention anywhere (WI-39832).
+  const trackedTestFiles = new Set(testTexts.map((t) => t.path));
+
+  return { corpora: { gate, ci, test, hook, 'logic-test': logicTest }, enforcingTests, files, trackedTestFiles };
 }
 
 /**
@@ -1102,7 +1128,7 @@ function main() {
   const pkgPath = process.env.LINT_GUARD_REACHABILITY_PACKAGE_JSON || resolve(ROOT, 'package.json');
   const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'));
   const scripts = pkg.scripts ?? {};
-  const { corpora, enforcingTests, files } = buildCorpora();
+  const { corpora, enforcingTests, files, trackedTestFiles } = buildCorpora();
 
   // Implementation sources for the coverage scan. Only guards the census actually has a
   // row for are read, so this adds a handful of file reads, not a second tree walk.
@@ -1168,6 +1194,7 @@ function main() {
     // Both populations silence the "runs on NO blocking path" failure; only the DEBT set
     // is rationed by the watermark below (WI-39832).
     acknowledged: new Map([...ACKNOWLEDGED_UNREACHABLE, ...ACKNOWLEDGED_UNGATEABLE]),
+    trackedTestFiles,
     repoWideRegistered: effectiveRepoWideRegistered,
     coverage: coverageMeasurable
       ? {
