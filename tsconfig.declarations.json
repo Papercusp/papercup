@@ -88,6 +88,15 @@
     // red'd on the un-baselined offender and lint:tsc reported the matching TS7016 on
     // the same import, one defect surfacing at two gates.
     "scripts/lib/related-tests.mjs",
+    // EI-20812741760514969 — the "where did this run's blast radius come from" reporter.
+    // Registered for the FIRST reason this list exists: it is imported directly by
+    // affected-tests-changed-path-provenance.test.ts, which is what makes the disclosure
+    // rules (scoped vs derived, threshold, which leg dominates) falsifiable hermetically
+    // instead of against whatever state the shared tree happens to be in. Unregistered
+    // that import is a TS7016 absorbed into the test file's permanent tsc baseline, and
+    // `gen:declarations` reports SUCCESS while emitting nothing for an unlisted input
+    // (EI-20035436440627349), so the absence is silent.
+    "scripts/lib/changed-path-provenance.mjs",
     "scripts/lib/quarantine.mjs",
     "scripts/lib/sync-write.mjs",
     "scripts/lib/vitest-summary.mjs",
