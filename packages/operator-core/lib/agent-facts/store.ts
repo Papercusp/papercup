@@ -1466,8 +1466,21 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
       // EI-19451909636567773: this query used to be `SELECT DISTINCT confidence`
       // — enough to answer "did confidence discriminate", not enough to answer
       // "will MY write survive". Selecting the ranking columns for the same
-      // (already-bounded, <= CAP) row set answers both from ONE query, with no
-      // extra round-trip and no second copy of the ordering in SQL.
+      // row set answers both from ONE query, with no extra round-trip and no
+      // second copy of the ordering in SQL.
+      //
+      // EI-20515478467800187: "the same row set" is now enforced rather than
+      // asserted — this composes the SAME `capPopulationPredicate` the sweep
+      // does, so a verdict can only ever be ranked against rows the sweep can
+      // actually evict. It previously carried a hand-copied WHERE that had
+      // drifted: it counted `kind:'convention'` rows the sweep is forbidden to
+      // touch, inflating liveCount and mis-ranking every write on a scope
+      // holding conventions.
+      //
+      // A `kind:'convention'` write is now legitimately ABSENT from this set,
+      // so `rankOfId` returns 0 and no survival is reported for it. That is
+      // correct: a convention is exempt from the cap, so it has no victim
+      // ranking to report — and the `rank > 0` guard below already handles it.
       const survivors = await sql<
         {
           id: string | number | null;
@@ -1479,13 +1492,7 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
       >`
         SELECT id, confidence, expires_at, created_at, updated_at
           FROM harness_shared.agent_facts
-         WHERE workspace_id = ${ws} AND scope = ${input.scope}
-           AND coalesce(scope_ref,'') = ${ref ?? ''}
-           AND source_hive IS NULL
-           AND superseded_at IS NULL
-           AND retracted_at IS NULL AND expires_at > now()
-           AND key NOT LIKE ${`${WALL_KEY_PREFIX}%`}
-           AND key NOT LIKE ${`${DEAD_END_KEY_PREFIX}%`}`;
+         WHERE ${capPopulationPredicate(sql, ws, input.scope, ref ?? '')}`;
       const confRank = (c: FactConfidence | null): number =>
         c === 'verified' ? 0 : c === 'suspected' ? 2 : 1;
       const values = new Set<FactConfidence | null>();
