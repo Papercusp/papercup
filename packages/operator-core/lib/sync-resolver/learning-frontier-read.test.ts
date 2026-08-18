@@ -235,10 +235,16 @@ describe('readFrontierSnapshot bounds a HUNG leg (EI-20801200386596605)', () => 
     expect(snap.lanes[0]?.blueprintId).toBe('regret');
     expect(snap.lanes[0]?.governor?.loopId).toBe('regret:papercusp');
     expect(snap.lanes[0]?.outcome).toBeNull();
-    expect(warn).toHaveBeenCalledWith(
-      '[learning.frontier] outcome rollup failed:',
-      'lane-outcomes exceeded the read budget',
-    );
+    // Since WI-39817 the casualty is attributed PER LANE rather than as one
+    // coarse 'lane-outcomes' rollup failure. `hangingSql` wedges every query, so
+    // all four lanes report — and each names itself, which is what lets a reader
+    // tell "one store is wedged" from "the whole rollup is down".
+    for (const lane of ['calibration', 'regret', 'transfer', 'prompt-ablation']) {
+      expect(warn).toHaveBeenCalledWith(
+        `[learning.frontier] outcome read failed for ${lane}:`,
+        `lane-outcome:${lane} exceeded the read budget`,
+      );
+    }
   });
 
   // Without this control both guards above pass just as happily against a read
