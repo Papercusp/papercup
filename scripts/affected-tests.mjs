@@ -2536,6 +2536,63 @@ if (relatedOnly && !printAffected) {
   }
 }
 
+// ── WHERE THIS RUN'S BLAST RADIUS CAME FROM (EI-20812741760514969) ──
+// Emitted BEFORE anything runs, on every path including `--print-affected`, because the
+// symptom of a wrongly-scoped run is only "this is slower than I expected" — which reads as
+// slowness, not as having measured one thing and run another. The marker is one greppable
+// stdout line (existing consumers filter stdout by prefix, so it is inert for them); the
+// loud banner goes to stderr and only for an UNSCOPED git derivation big enough that it
+// cannot be one agent's edit.
+//
+// Report-only, deliberately: the wide set is CORRECT for the green-checkpoint gate, whose
+// job is to certify the whole candidate. Narrowing what the gate runs to "your" paths would
+// trade a legible slowness for an illegible false green.
+const derivationSource = derivationDegraded
+  ? "git-fallback-all"
+  : runAll
+    ? "all"
+    : changedPathsOverride
+      ? "explicit"
+      : rangeFrom && rangeTo
+        ? "range"
+        : "git-status";
+const derivationSummary = summarizeDerivation({
+  source: derivationSource,
+  total: changedPathsOverride
+    ? changedPathsOverride.length
+    : (changedPathTotal ?? 0),
+  legs: derivationSource === "git-status" ? (changedPathLegs ?? {}) : {},
+  base: derivationSource === "git-status" ? base : null,
+  // How far the base trails HEAD, which is what turns a big `committed` leg from an
+  // alarming number into a diagnosis. Measured only when it is the number being explained,
+  // and never allowed to fail the run: this whole block is disclosure, not a rail.
+  baseCommitsBehind:
+    derivationSource === "git-status"
+      ? (() => {
+          try {
+            const n = Number(sh(`git rev-list --count ${base}..HEAD`));
+            return Number.isFinite(n) ? n : null;
+          } catch {
+            return null;
+          }
+        })()
+      : null,
+  range: rangeFrom && rangeTo ? `${rangeFrom}..${rangeTo}` : null,
+});
+outSync(
+  formatDerivationMarker(derivationSummary, {
+    workspaces: affected.length,
+    guards: selectedInvariantGuards.length,
+    tasks: tasks.length,
+  }),
+);
+for (const line of derivationBannerLines(derivationSummary, {
+  workspaces: affected.length,
+  tasks: tasks.length,
+})) {
+  errSync(line);
+}
+
 if (printAffected) {
   for (const ws of affected) outSync(`AFFECTED_WS\t${ws.name}`);
   for (const guard of selectedInvariantGuards) {
