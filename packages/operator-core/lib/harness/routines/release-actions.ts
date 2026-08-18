@@ -841,7 +841,11 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
   if (!recordedByRun) {
     // EI-13288: thread the parsed run's own retriage verdict through this fallback recorder too
     // (version-skew / crash path) — same as the WI-4494 producer-side path above.
-    await trackGateStall(ctx, status, candidate, failingTests, parsed?.from ?? null, parsed?.retriage).catch((e) =>
+    // EI-20767792192323374: thread `summary` here too. Both abort reasons ('migrations-pending',
+    // 'infra-inconclusive') record their cause in `gate_health.inconclusive` and the summary is
+    // the ONLY field carrying it — omitting it on this fallback path recorded a detail-less
+    // abort, which reads as "aborted, cause unknown" exactly where the reader needs the cause.
+    await trackGateStall(ctx, status, candidate, failingTests, parsed?.from ?? null, parsed?.retriage, parsed?.summary ?? null).catch((e) =>
       console.warn(`${orchestratorStdoutTag()} stall tracking failed: ${e instanceof Error ? e.message : e}`),
     );
   }
