@@ -976,7 +976,7 @@ async function resolveSpawnRecordLimit(
   ownerId: string,
   tierMenu: () => Promise<readonly ModelTier[] | undefined>,
   fleetMember = false,
-): Promise<{ limit: number; explicit: boolean } | null> {
+): Promise<{ limit: number; explicit: boolean; spec: string | null } | null> {
   try {
     const rows = await sql<{ model_spec: string | null; model_tier: string | null }[]>`
       SELECT model_spec, model_tier
@@ -991,13 +991,23 @@ async function resolveSpawnRecordLimit(
       const tiers = await tierMenu();
       const tier = tiers?.find((t) => t.name === row.model_tier);
       // parseTiers already clamped a stored explicit limit to the spec's window.
-      if (tier?.compactionLimit != null) return { limit: tier.compactionLimit, explicit: true };
+      if (tier?.compactionLimit != null) {
+        return { limit: tier.compactionLimit, explicit: true, spec: tier.spec ?? null };
+      }
       if (tier?.spec) {
-        return { limit: defaultCompactionLimitForSpec(tier.spec, { fleetMember }), explicit: false };
+        return {
+          limit: defaultCompactionLimitForSpec(tier.spec, { fleetMember }),
+          explicit: false,
+          spec: tier.spec,
+        };
       }
     }
     if (row.model_spec) {
-      return { limit: defaultCompactionLimitForSpec(row.model_spec, { fleetMember }), explicit: false };
+      return {
+        limit: defaultCompactionLimitForSpec(row.model_spec, { fleetMember }),
+        explicit: false,
+        spec: row.model_spec,
+      };
     }
     return null;
   } catch {
@@ -1023,7 +1033,7 @@ async function derivedSeedLimitForOwner(
   ownerId: string,
   tierMenu: () => Promise<readonly ModelTier[] | undefined>,
   fleetMember: boolean,
-): Promise<{ limit: number; explicit: boolean }> {
+): Promise<{ limit: number; explicit: boolean; spec: string | null }> {
   // per-member-declarative-launch-specs P-005: an EXPLICIT `psu
   // --compaction-limit` on the recorded launch argv outranks every DERIVED
   // default below — the leader stated this member's limit outright
@@ -1043,10 +1053,10 @@ async function derivedSeedLimitForOwner(
   const needsSpec = fromLaunch != null || fromSpawn == null;
   const spec = needsSpec ? await resolveModelSpecForOwner(ownerId) : null;
   if (fromLaunch != null) {
-    return { limit: clampCompactionLimit(fromLaunch, spec, { fleetMember }), explicit: true };
+    return { limit: clampCompactionLimit(fromLaunch, spec, { fleetMember }), explicit: true, spec };
   }
   if (fromSpawn != null) return fromSpawn;
-  return { limit: defaultCompactionLimitForSpec(spec, { fleetMember }), explicit: false };
+  return { limit: defaultCompactionLimitForSpec(spec, { fleetMember }), explicit: false, spec };
 }
 
 /**
