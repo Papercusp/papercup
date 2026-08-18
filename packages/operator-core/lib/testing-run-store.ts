@@ -186,6 +186,10 @@ export function startRun(req: SpawnRequest): RunSnapshot {
       env: {
         ...process.env,
         PAPERCUSP_TEST_RUN_GROUP: runId,
+        // P-004 (deterministic-coverage-census): arm coverage attribution, so an admin-UI
+        // run contributes the same surface→test evidence an agent's `testing:run` does. A
+        // unit fork disarms itself off the no-real-pg rail — see attribution/context.ts.
+        PAPERCUSP_TEST_ATTRIBUTION: '1',
         // P-014: tell the in-process reporter (vitest/playwright) to stamp
         // rows with source='admin-ui' instead of inferring ci/local. For
         // node/shell runners we additionally write a single fallback row
