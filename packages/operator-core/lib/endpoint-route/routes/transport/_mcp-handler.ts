@@ -75,8 +75,14 @@ import {
 import { getOrgPg, retryOnRetryableDbDeadline, withWorkspace } from '@papercusp/db-org';
 import { applyResultDoor } from '../../../result-door';
 import { annotateStoreIdentitySuspectResult, mayAnnotateResultText } from './store-identity-suspect';
-import { PROJECTION_ARG, applyResultProjection, parseProjection } from '../../../result-projection';
-import type { ProjectionSpec } from '../../../result-projection';
+import {
+  PROJECTION_ARG,
+  applyNamedViewToResult,
+  applyResultProjection,
+  parseProjection,
+  takeNamedViewFromArgs,
+} from '../../../result-projection';
+import type { ProjectionSpec, ViewResolution } from '../../../result-projection';
 import { resolveAgentIdentity } from '../../../agent-tools/coordination/identity';
 import { canonicalCoordRole } from '../../../agent-tools/coordination/roles';
 import { dispatchNeedsTx, effectiveDispatchWorkspace, synthesizeDispatchPrincipal } from './role-principal-caps';
@@ -1423,6 +1429,27 @@ async function buildMcpToolContext(
       // controls stay transport-only even for raw ProjectedTool registrations.
       projectionNeedsFullSource = !('payloadTier' in dispatchToolArgs);
     }
+    // Named result views (P-001). Resolved through the SAME helper the direct
+    // path uses, so the two cannot drift — which is the failure this seam has
+    // already had once, when nested dispatch fell behind on free-form
+    // projection. Fail-CLOSED on an unknown name: it is the caller's bug and is
+    // knowable without running anything, and silently returning the full
+    // payload would hand back exactly what the caller declined to pay for.
+    const takenView = takeNamedViewFromArgs(dispatchToolArgs, canonicalName);
+    if (takenView.kind === 'error') {
+      return {
+        isError: true,
+        content: [{ type: 'text' as const, text: takenView.error }],
+      };
+    }
+    let namedView: Extract<ViewResolution, { ok: true }> | null = null;
+    if (takenView.kind === 'view') {
+      namedView = takenView.resolved;
+      dispatchToolArgs = takenView.args;
+      // Same rationale as projection: a view must select over the MATERIALIZED
+      // source, not an excerpt a tier already cut.
+      projectionNeedsFullSource = !('payloadTier' in dispatchToolArgs);
+    }
     // EI-6982: bind the tx/principal the TARGET tool needs — NOT the outer
     // tools:invoke ctx (requirePrincipal:false, so tx-less). Without this, every
     // crossWorkspace/needsTx target (memory:*, flags:set, harness:list, …) threw
@@ -1448,16 +1475,23 @@ async function buildMcpToolContext(
         PROJECTED_DEPS,
       );
     })) as McpCallResult;
-    const projectedDispatched = projectionSpec
+    const freeFormProjected = projectionSpec
       ? applyResultProjection(dispatched, projectionSpec, { toolName: canonicalName, effect: target.effect })
       : dispatched;
+    const projectedDispatched = namedView
+      ? applyNamedViewToResult(freeFormProjected, namedView)
+      : freeFormProjected;
     // A projected call was temporarily promoted to payloadTier:'full' above.
     // Do not carry the target's door exemption across that seam: a successful
     // projection is already small so the outer door is a no-op, while a
     // fail-open/miss must be bounded instead of leaking the full promoted body.
     return carryNestedResultDoorSkip(
       projectedDispatched,
-      projectionSpec ? undefined : target.skipResultDoor,
+      // A NAMED VIEW is promoted to full source exactly like a projection, so it
+      // must drop the exemption on the same terms: a successful view is already
+      // budget-bounded (the door is a no-op), and a fail-open must be bounded
+      // rather than leak the full promoted body.
+      projectionSpec || namedView ? undefined : target.skipResultDoor,
     );
   };
   const builtCtx: UnifiedToolContext = {
@@ -2241,6 +2275,25 @@ const handler = createMcpHandler(
             // reserved control is exposed to the target's validated args.
             projectionNeedsFullSource = !('payloadTier' in dispatchArgs);
           }
+          // Named result views (P-001) — the DIRECT path. Same helper, same
+          // semantics as the nested `tools:invoke` path above; routing both
+          // through one function is what keeps them from drifting.
+          const takenView = takeNamedViewFromArgs(
+            dispatchArgs as Record<string, unknown> | undefined,
+            name,
+          );
+          if (takenView.kind === 'error') {
+            return {
+              isError: true,
+              content: [{ type: 'text' as const, text: takenView.error }],
+            };
+          }
+          let namedView: Extract<ViewResolution, { ok: true }> | null = null;
+          if (takenView.kind === 'view') {
+            namedView = takenView.resolved;
+            dispatchArgs = takenView.args;
+            projectionNeedsFullSource = !('payloadTier' in dispatchArgs);
+          }
           if ((spawnRes.ctx.isPowerUser || scopedSuperuserClamp) && args && typeof args === 'object') {
             for (const key of WORKSPACE_TARGET_ARGS) {
               if (key in (args as Record<string, unknown>)) {
@@ -2423,6 +2476,13 @@ const handler = createMcpHandler(
                 projectionSpec,
                 { toolName, effect: projected?.effect },
               );
+              // P-001 named views: applied AFTER free-form projection (so an
+              // explicit `pick` still composes) and BEFORE the door, on the same
+              // reasoning — a reduction the caller ASKED for pre-empts the
+              // door's fixed policy rather than racing it.
+              const viewedResult = namedView
+                ? applyNamedViewToResult(projectedResult, namedView)
+                : projectedResult;
               // EI-19386201256023240: a tool whose documented/near-exclusive
               // caller is a programmatic client (a shell hook `json.loads`-ing
               // the raw body — e.g. activity:report's hook_bundle fold — see
@@ -2439,13 +2499,13 @@ const handler = createMcpHandler(
               // that result even for an exempt tool: a successful reduction fits
               // and passes byte-identically, while a fail-open/miss is bounded
               // instead of exporting the full promoted source.
-              const resultDoorSkipReason = projectionSpec
+              const resultDoorSkipReason = projectionSpec || namedView
                 ? undefined
-                : projected.skipResultDoor ?? nestedResultDoorSkipReason(projectedResult);
+                : projected.skipResultDoor ?? nestedResultDoorSkipReason(viewedResult);
               const doored = resultDoorSkipReason
-                ? projectedResult
+                ? viewedResult
                 : applyResultDoor(
-                projectedResult,
+                viewedResult,
                 {
                   toolName,
                   workspaceId: dispatchSpawnCtx.workspaceId,

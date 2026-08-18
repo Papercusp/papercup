@@ -50,6 +50,18 @@ import {
   classifyBatchProgress,
   formatBatchProgress,
 } from "./lib/batch-watchdog.mjs";
+import { ensurePapercuspTmpdir } from "../libs/test-config/src/tmpdir-guard.ts";
+
+// EI-20767792192323374 — MUST happen HERE, in the launcher, and not in vitest.config.ts.
+// Vitest fixes its module-cache root as a class field initializer (`_tmpDir = join(tmpdir(),
+// nanoid())`) when `new Vitest()` is constructed, which `createVitest()` does BEFORE it loads any
+// vitest config — so the identical call inside @papercusp/test-config's vitest-config.ts is always
+// too late for it. Left unset, that root lands at bare `/tmp/<nanoid>`: un-namespaced,
+// un-attributable, and in the blast radius of anything sweeping `/tmp/*`. On 2026-08-18 something
+// swept it mid-run and 5,448 rows across 4,789 files failed with `ENOENT ... mkdir
+// '/tmp/<nanoid>/ssr'` — the gate counted that as red #20 and froze every agent's deploys.
+// This is the gate's own entrypoint, so it is the single highest-value call site.
+ensurePapercuspTmpdir();
 import { classifyTaskExit, isGatingFailure } from "./lib/task-exit-class.mjs";
 import {
   classifyResidualFailure,

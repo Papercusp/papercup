@@ -27,6 +27,20 @@ import { stripVitestAnsi, parseTransformFailure } from './lib/vitest-summary.mjs
 export { parseTransformFailure };
 import { peekFsMutexSync } from './lib/fs-mutex.mjs';
 import { repoLockName } from './npm-install-safe.mjs';
+import { ensurePapercuspTmpdir } from '../libs/test-config/src/tmpdir-guard.ts';
+
+// EI-20767792192323374 — MUST happen HERE, in the launcher, and not in vitest.config.ts.
+// Vitest fixes its module-cache root as a class field initializer (`_tmpDir = join(tmpdir(),
+// nanoid())`) when `new Vitest()` is constructed, which `createVitest()` does BEFORE it loads any
+// vitest config — so the identical call inside @papercusp/test-config's vitest-config.ts is always
+// too late for it. Left unset, that root lands at bare `/tmp/<nanoid>`: un-namespaced,
+// un-attributable, and in the blast radius of anything sweeping `/tmp/*`. On 2026-08-18 something
+// swept it mid-run and 5,448 rows across 4,789 files failed with `ENOENT ... mkdir
+// '/tmp/<nanoid>/ssr'`, red-pinning the release gate on an infra artifact.
+// Every vitest spawn below passes `env: process.env`, so this propagates to every worker — and it
+// covers workspaces whose config does NOT import @papercusp/test-config (the libs/generic
+// submodules, which generic-first forbids from depending on it).
+ensurePapercuspTmpdir();
 
 export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 

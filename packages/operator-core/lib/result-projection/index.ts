@@ -17,3 +17,30 @@ export {
 export type { ProjectionParseErr, ProjectionParseOk, ProjectionParseResult } from './parse';
 export { PROJECTION_ARG } from './types';
 export type { ProjectionReport, ProjectionSpec, ProjectionStage } from './types';
+
+/**
+ * Named result views — schema-stable recovery capsules (P-001 of
+ * named-result-views-schema-stable-recovery-capsules-with-proj-2026-08-14).
+ * A stable NAME resolves to a VERSIONED field selection plus a byte budget, and
+ * the receipt reports which version applied — the part free-form `pick` cannot
+ * give a cold successor.
+ */
+export {
+  NAMED_VIEWS,
+  VIEW_ARG,
+  VIEW_BUDGET_MARKER,
+  applyNamedView,
+  applyNamedViewToResult,
+  describeNamedView,
+  resolveNamedView,
+  takeNamedViewFromArgs,
+  viewNamesFor,
+} from './named-views';
+export type {
+  AppliedNamedView,
+  NamedViewDef,
+  NamedViewReceipt,
+  TakeNamedViewResult,
+  ViewResolution,
+  ViewableResult,
+} from './named-views';
