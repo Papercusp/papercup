@@ -389,7 +389,23 @@ describe('measured window outranks the spec-derived guess (WI-38347)', () => {
       specMock.mockResolvedValue(CODEX_SPEC);
     });
 
+    /**
+     * The raise gate uses VALUE EQUALITY with the current derived seed as its
+     * provenance signal (see the sibling cases below). After
+     * codex-1m-context-window-2026-08-17, an extended-window codex spec derives
+     * 400k — always ABOVE the limit its measured 258.4k window justifies — so for
+     * codex the seed can now only be LOWERED, and this branch is unreachable with
+     * CODEX_SPEC. The mechanism itself is unchanged and still load-bearing for any
+     * spec whose derived seed sits BELOW its measured window, so it is pinned here
+     * with a 200k-window spec (derives 158k) against the same measured window.
+     *
+     * ⚠ Consequence deliberately NOT hidden by this retarget: a codex session
+     * seeded 158_000 BEFORE that plan landed no longer equals the derived seed, so
+     * it reads as a deliberate override and is never healed upward. Filed for the
+     * owning lane rather than papered over here.
+     */
     it('RAISES a session still carrying the spec-derived seed (the heal the lower-only rule could not reach)', async () => {
+      specMock.mockResolvedValue('claude-sonnet-4-6'); // 200k window ⇒ derives 158_000
       const out = await checkCompactionCompliance(sweep(158_000));
       expect(out.relimited).toContainEqual({ owner: 'cx', from: 158_000, to: CODEX_SAFE_LIMIT });
       expect(setLimitMock).toHaveBeenCalledWith('cx', CODEX_SAFE_LIMIT);
