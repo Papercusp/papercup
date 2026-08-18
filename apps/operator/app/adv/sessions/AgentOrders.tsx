@@ -45,6 +45,7 @@ import {
   type AgentOrdersSignalKey,
 } from './use-agent-orders';
 import { RailCluster, RailQuiet, RailSectionHead, useRailCollapse } from './rail-sections';
+import { Disclosures, FACTS_DISCLOSURE_KEYS, READ_DISCLOSURE_KEYS } from './Disclosures';
 import './AgentOrders.css';
 
 /** A section that could not be read, rendered so it can never be mistaken for
