@@ -3140,6 +3140,8 @@ function runCapturedTask(
         __timeoutSource: taskTimeoutSource,
         __durationEstimateMs: taskDurationMs,
         __watchdogTimedOut: watchdogTimedOut,
+        __watchdogDeadlineMs: watchdogDeadlineMs,
+        __watchdogKillReason: watchdogKillReason,
         ...(cacheDecision
           ? {
               __cacheStatus: "miss",
@@ -3296,9 +3298,14 @@ for (const scheduled of initialPool.results) {
     );
     errSync(
       `\n>>> ${t.ws.name} :: ${t.script} WATCHDOG-KILLED after ${(r.__elapsedMs / 60000).toFixed(1)}m with no exit ` +
-        `(effective timeout=${r.__timeoutMs}ms source=${r.__timeoutSource} ` +
+        `(effective timeout=${r.__watchdogDeadlineMs ?? r.__timeoutMs}ms source=${r.__timeoutSource} ` +
         `durationEstimateMs=${r.__durationEstimateMs ?? "unknown"}; ` +
         `AFFECTED_BATCH_TIMEOUT_MS=${process.env.AFFECTED_BATCH_TIMEOUT_MS ?? "unset"}). ` +
+        // EI-20803703725014949: the kill now carries the REASON it was chosen, so a
+        // triager is not left inferring it. 'progress-stalled' is the real spin signal;
+        // 'absolute-ceiling' means it kept emitting to the 90m bound; 'progress-unknown'
+        // means no live reading existed and the time-only bound applied.
+        `Kill reason: ${r.__watchdogKillReason ?? "unknown"}. ` +
         `NOT retrying. ${progress}. ` +
         `A synchronously-spinning test remains a hypothesis only when a live progress signal shows progress ` +
         `stopped; captured output without timing must not be used to assert a spin ` +
