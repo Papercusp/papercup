@@ -244,6 +244,139 @@ describe("shapeWorkItemsGet — tier differences and defensive behaviour", () =>
   });
 });
 
+/**
+ * EI-20743148487714069. `work_items:get` is how an agent reads a backlog item
+ * before acting on it, and the trimmed tier returned the TITLE with no sentence of
+ * the body — the one shape the standing "a title is a LABEL, read the writer"
+ * discipline exists to prevent. The budget was there all along: a single-item
+ * trimmed read measured ~890 chars against a 6,000-char door.
+ *
+ * The repair is a LADDER-SHARED summary budget, and these tests pin the two
+ * properties that make it safe — it must not cost the checkpoint anything, and it
+ * must not cost a bulk read its rows.
+ */
+describe("shapeWorkItemsGet — the summary rides the slack (EI-20743148487714069)", () => {
+  const DOOR = RESULT_DOOR_TOKENS * CHARS_PER_TOKEN_ESTIMATE;
+
+  function itemRow(id: string, summaryLen: number, checkpointLen = 0): Record<string, unknown> {
+    return {
+      ok: true,
+      id,
+      workItem: {
+        id,
+        kind: "bug",
+        state: "open",
+        title: "a title",
+        severity: "major",
+        summary: "S".repeat(summaryLen),
+      },
+      ...(checkpointLen > 0 ? { checkpoint: "C".repeat(checkpointLen) } : {}),
+    };
+  }
+
+  it("delivers a median-sized body WHOLE on the single-item read that was title-only", () => {
+    // 402 chars is the measured p50 body length across 33,853 open work-items.
+    const summary = "S".repeat(402);
+    const out = shapeWorkItemsGet(envelope([itemRow("WI-1", 402)]), "trimmed") as Envelope;
+    const w = out.results[0].workItem as Record<string, unknown>;
+
+    expect(w.summary).toBe(summary);
+    expect(String(w.summary)).not.toMatch(/TRUNCATED/);
+    // Nothing was lost, so there must be no note at all (the note must keep meaning
+    // something — see the sibling test above).
+    expect(out._shapeNote).toBeUndefined();
+  });
+
+  it("NEVER buys summary bytes from the checkpoint — the summary yields first", () => {
+    // The rung that would fit this summary cannot also fit the checkpoint whole.
+    // "Degraded last" means the checkpoint wins and the summary is what goes.
+    const checkpoint = "C".repeat(5_000);
+    const out = shapeWorkItemsGet(
+      envelope([itemRow("WI-1", 4_000, 5_000)]),
+      "trimmed",
+    ) as Envelope;
+    const w = out.results[0].workItem as Record<string, unknown>;
+
+    expect(out.results[0].checkpoint).toBe(checkpoint); // byte-identical
+    expect(w.summary).toBeUndefined();
+    expect(out._shapeNote?.dropped).toEqual(expect.arrayContaining(["workItem.summary"]));
+  });
+
+  it("costs a 100-id bulk read NOTHING — no row is stubbed to pay for prose", () => {
+    // The regression this design exists to avoid: a FLAT per-row summary cap is
+    // multiplied by the row count and pushes a bulk read down the ladder, trading
+    // 97 items' identity for 3 items' prose. The ladder-shared budget falls below
+    // the useful floor at this width and is dropped instead.
+    const rows = Array.from({ length: 100 }, (_, i) => itemRow(`WI-${i}`, 1_091));
+    const out = shapeWorkItemsGet(envelope(rows), "trimmed") as Envelope;
+    const full = out.results.filter((r) => r._stub === undefined);
+
+    // Correlation is never broken, whatever the shaping.
+    expect(out.results.map((r) => r.id)).toEqual(rows.map((r) => r.id));
+    // No summary survives at this width, and that is the CORRECT trade.
+    expect(
+      out.results.every((r) => (r.workItem as Record<string, unknown> | undefined)?.summary === undefined),
+    ).toBe(true);
+    expect(out._shapeNote?.summaryCharsPerRow).toBe(0);
+    // CALIBRATION: the same 100 rows WITHOUT summaries must degrade identically.
+    // If the summary budget were being paid for out of rows, these would differ —
+    // which is what makes the assertion above non-vacuous.
+    const bare = shapeWorkItemsGet(
+      envelope(Array.from({ length: 100 }, (_, i) => itemRow(`WI-${i}`, 0))),
+      "trimmed",
+    ) as Envelope;
+    expect(full.length).toBe(bare.results.filter((r) => r._stub === undefined).length);
+  });
+
+  it("distinguishes a CLIPPED summary from a DROPPED one — different losses", () => {
+    // A clip is recoverable from what is in hand; a drop is not. A reader acts
+    // differently on them, so one label for both would be a worse answer.
+    const clipped = shapeWorkItemsGet(envelope([itemRow("WI-1", 40_000)]), "trimmed") as Envelope;
+    expect(clipped._shapeNote?.dropped).toEqual(
+      expect.arrayContaining(["workItem.summary(clipped)"]),
+    );
+    expect(String((clipped.results[0].workItem as Record<string, unknown>).summary)).toMatch(
+      /TRUNCATED/,
+    );
+    expect(clipped._shapeNote?.dropped).not.toContain("workItem.summary");
+
+    const dropped = shapeWorkItemsGet(
+      envelope([itemRow("WI-1", 4_000, 5_000)]),
+      "trimmed",
+    ) as Envelope;
+    expect(dropped._shapeNote?.dropped).toContain("workItem.summary");
+    expect(dropped._shapeNote?.dropped).not.toContain("workItem.summary(clipped)");
+  });
+
+  it("says the SUMMARY specifically was dropped, not just that something was", () => {
+    // The generic size advisory reads as "you got the item, just smaller" — which
+    // is how a reader ends up acting on the title.
+    const dropped = shapeWorkItemsGet(
+      envelope([itemRow("WI-1", 4_000, 5_000)]),
+      "trimmed",
+    ) as Envelope;
+    expect(dropped._shapeNote?.next).toMatch(/SUMMARY was dropped/);
+    expect(dropped._shapeNote?.next).toMatch(/title is a LABEL/i);
+
+    // And it does NOT cry summary when the summary survived — the warning has to
+    // stay worth reading.
+    const kept = shapeWorkItemsGet(envelope([itemRow("WI-1", 40_000)]), "trimmed") as Envelope;
+    expect(kept._shapeNote?.next).not.toMatch(/SUMMARY was dropped/);
+  });
+
+  it("keeps every scenario under the result door", () => {
+    for (const rows of [
+      [itemRow("WI-1", 402)],
+      [itemRow("WI-1", 42_220)],
+      [itemRow("WI-1", 4_000, 13_000)],
+      Array.from({ length: 10 }, (_, i) => itemRow(`WI-${i}`, 1_091)),
+    ]) {
+      const out = shapeWorkItemsGet(envelope(rows), "trimmed");
+      expect(JSON.stringify(out)!.length).toBeLessThanOrEqual(DOOR);
+    }
+  });
+});
+
 describe("citedFacts survives the shaper (EI-19465127338264010)", () => {
   const citedFacts = {
     dangling: 1,
