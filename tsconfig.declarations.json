@@ -114,6 +114,15 @@
     // so tsc emits its declaration regardless and leaving it unregistered would make that an
     // untracked byproduct --check cannot police.
     "scripts/lib/pg-url.mjs",
+    // EI-20478658560683440 — the SHELL-facing door onto that same resolver (a psql/mutation
+    // caller had no entry to the gated chain and read the stale discovery file directly).
+    // Registered for the first reason this list exists: its pure argv/shell-quoting helpers
+    // are imported directly by scripts-pg-url.test.ts, which is what makes the credential
+    // safety of `--export` falsifiable, and unregistered that import pays a TS7016. It also
+    // imports the already-registered scripts/lib/pg-url.mjs, so tsc emits its declaration
+    // regardless — leaving it unregistered would make that an untracked byproduct --check
+    // cannot police.
+    "scripts/pg-url.mjs",
     "scripts/lint-tsc.mjs",
     "scripts/lint-tsc-operator-vite.mjs",
     "scripts/check-transitive-boundary.mjs",
