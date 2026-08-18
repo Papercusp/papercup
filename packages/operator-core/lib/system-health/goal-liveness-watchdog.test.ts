@@ -5,13 +5,17 @@ import type { SessionState } from '../agent-tools/coordination/presence-wakeabil
 import {
   GOAL_LIVENESS_GRACE_MS,
   classifyGoalLiveness,
+  classifyGoalReadiness,
+  goalReadinessKey,
   holderCountsAsAlive,
   runGoalLivenessSweepOnce,
   scanGoalLiveness,
   type GoalHolderLike,
   type GoalLivenessAlert,
+  type GoalReadinessAlert,
   type GoalRowLike,
 } from './goal-liveness-watchdog';
+import type { GoalReadiness } from '@papercusp/agent-mcp/goal-deps';
 
 const NOW = Date.parse('2026-08-16T04:00:00Z');
 const LONG_AGO = NOW - 5 * 24 * 60 * 60_000; // 5 days — the measured sidestage case
@@ -245,6 +249,10 @@ describe('runGoalLivenessSweepOnce', () => {
   const deps = (over: Record<string, unknown> = {}) => ({
     readGoals: async () => ({ goals: [goal()], holders: [holder()] }),
     resolveLiveness: async () => vmap(verdict('su-2c130be1', 'ended')),
+    // P-005: the readiness leg is injected inert here — its own behavior has a
+    // dedicated describe block below.
+    readReadiness: async () => new Map<string, GoalReadiness>(),
+    escalateReadiness: async () => {},
     flagEnabled: async () => true,
     now: () => NOW,
     graceMs: GOAL_LIVENESS_GRACE_MS,
@@ -260,7 +268,7 @@ describe('runGoalLivenessSweepOnce', () => {
         seen.push(a);
       },
     });
-    expect(r).toEqual({ scanned: 1, escalated: 1, skipped: false });
+    expect(r).toEqual({ scanned: 1, escalated: 1, readinessEscalated: 0, skipped: false });
     expect(seen[0]?.reason).toBe('abandoned');
   });
 
@@ -276,7 +284,7 @@ describe('runGoalLivenessSweepOnce', () => {
       }),
       escalate: async () => {},
     });
-    expect(r).toEqual({ scanned: 0, escalated: 0, skipped: true });
+    expect(r).toEqual({ scanned: 0, escalated: 0, readinessEscalated: 0, skipped: true });
     expect(called).toBe(false); // the kill-switch stops it BEFORE reading the DB
   });
 
