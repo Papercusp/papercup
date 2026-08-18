@@ -406,6 +406,9 @@ export async function emitScorecard(
     const coverageCheckedCriteria = rubric.criteria.filter((c) => c.check?.kind === 'coverage');
     if (coverageCheckedCriteria.length > 0) {
       const evaluateCoverage = deps.evaluateCoverageChecks ?? evaluateCriterionCoverageChecks;
+      // Hoisted to a local const so the narrowing survives into the closure below —
+      // narrowing a property access does not carry across a function boundary.
+      const subjectPlan = rubric.subjectPlan;
       const coverageEvaluation = await evaluateCoverage({
         criteria: rubric.criteria,
         ratings,
@@ -414,9 +417,7 @@ export async function emitScorecard(
         // changed. Only an acceptance rubric has a subject plan; anywhere else this
         // returns null and the check refuses rather than silently widening its scope.
         resolvePlanTouchedFiles: () =>
-          rubric.subjectPlan
-            ? planTouchedFiles(input.workspaceId, rubric.subjectPlan)
-            : Promise.resolve(null),
+          subjectPlan ? planTouchedFiles(input.workspaceId, subjectPlan) : Promise.resolve(null),
       });
       if (!coverageEvaluation.ok) {
         return {
