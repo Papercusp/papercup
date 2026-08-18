@@ -2549,6 +2549,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
         recommendation: Number.isFinite(lastServiceableRecommendation) ? lastServiceableRecommendation : null,
         applied: lastAdmissionApplied,
         overridden: clampMode === 'off' && Number.isFinite(lastServiceableRecommendation) && lastServiceableRecommendation < lastAimdEff,
+        serviceableAccounts: lastServiceableAccounts,
       },
       maxQueued,
       concurrencyCap: concurrency,
