@@ -12,6 +12,7 @@ import { eq } from 'drizzle-orm';
 import { z } from 'zod';
 import { generated, schemaOf } from '@papercusp/db-org';
 import { defineTool } from '@papercusp/tooldef';
+import { readGoalReadiness } from './goal-deps';
 
 const goals = generated.goalsInHarnessShared;
 const GoalSelect = schemaOf(goals).select;
@@ -40,13 +41,34 @@ export default defineTool({
       return { data: null, degraded: true, degradedReasons: [`goal ${args.id} not found`] };
     }
     const goal = rows[0];
+    // Readiness (goal-dag-shared-substrate-2026-08-18 P-003, D-002/D-003):
+    // derived on read from the shared dependency substrate. `actionable` = every
+    // blocked-by edge satisfied (doable right now); `premiseInvalidated` = a
+    // KILLED goal blocker — this goal needs review, not silent unblocking. A
+    // READ, never a dispatch signal.
+    const readiness = await readGoalReadiness(ctx.tx, goal.workspaceId, goal.id);
     if (args.detail === 'summary') {
-      return { data: { id: goal.id, title: goal.title } };
+      return {
+        data: {
+          id: goal.id,
+          title: goal.title,
+          actionable: readiness.actionable,
+          premiseInvalidated: readiness.premiseInvalidated,
+        },
+      };
     }
     const children = (await txDb
       .select({ id: goals.id, title: goals.title })
       .from(goals)
       .where(eq(goals.parentId, args.id))) as Array<Pick<GoalRow, 'id' | 'title'>>;
-    return { data: { ...goal, children } };
+    return {
+      data: {
+        ...goal,
+        children,
+        actionable: readiness.actionable,
+        premiseInvalidated: readiness.premiseInvalidated,
+        blockedBy: readiness.blockers,
+      },
+    };
   },
 });
