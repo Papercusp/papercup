@@ -44,6 +44,11 @@ import { existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { discover, looksOom, realSpawn, runOne, runPackages } from './lib/typecheck-fanout.mjs';
+import {
+  parseExplicitFiles,
+  partitionFilesByCoverage,
+  formatLintTscResultMarker,
+} from './lib/tsc-baseline-gate.mjs';
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const LIBS_ROOT = join(REPO_ROOT, 'libs', 'papercusp');
@@ -102,16 +107,73 @@ export function selectGatedPackages({ libsRoot = LIBS_ROOT, relativeTo = REPO_RO
  */
 export const GATE_COVERAGE = () => selectGatedPackages().packages.map((p) => `${p.rel}/`);
 
+/**
+ * WI-39727 — `--files=` is a VERDICT SCOPE here, exactly as it is for every sibling gate.
+ *
+ * It used to be accepted and completely ignored: this leg fanned out over all 8 packages and
+ * reported a whole-project verdict, so `--files=packages/not-a-real-workspace/src/synthetic.ts`
+ * printed "8 passed, 0 failed" and exited 0. A caller who scoped to their edit got a green that
+ * said nothing about the paths they named.
+ *
+ * The sibling gates inherit this partitioning free from `runTscBaselineGate`; this leg has a
+ * different architecture and never calls it, so it is wired here explicitly against the SAME
+ * shared helpers rather than reimplemented — the two must not drift.
+ *
+ * Coverage is DISCOVERED (see `selectGatedPackages`), so the prefixes are the discovered
+ * packages' own directories. A named file under one of them selects that package; a named file
+ * under none of them is `uncovered` and is reported as such instead of being silently absorbed
+ * into a whole-project pass.
+ *
+ * @param {{packages: any[], files: Set<string> | null}} input
+ * @returns {{selected: any[], uncovered: string[]}}
+ */
+export function selectByExplicitFiles({ packages, files }) {
+  if (!files) return { selected: packages, uncovered: [] };
+
+  const { covered, uncovered } = partitionFilesByCoverage({
+    files,
+    coveredPrefixes: packages.map((p) => `${p.rel}/`),
+  });
+  const selected = packages.filter((p) => covered.some((f) => f.startsWith(`${p.rel}/`)));
+  return { selected, uncovered };
+}
+
 export function main({
   libsRoot = LIBS_ROOT,
   relativeTo = REPO_ROOT,
-  listOnly = process.argv.includes('--list'),
+  argv = process.argv,
+  listOnly = argv.includes('--list'),
   spawn = realSpawn,
   log = console.log,
   warn = console.warn,
   error = console.error,
 } = {}) {
+  const explicitFiles = parseExplicitFiles(argv);
   const { present, packages, unreadable } = selectGatedPackages({ libsRoot, relativeTo });
+
+  /**
+   * EI-19395061642732083's completion marker, which this leg never emitted (WI-39727 defect 2).
+   * Its contract is "marker ABSENT => the run did not finish; the output is UNMEASURED, not
+   * clean", so the established consumer idiom could not tell this gate's normal successful run
+   * from a killed one — while the caller's other signal, exit 0, said clean.
+   *
+   * Deliberately NOT emitted on the three branches that measure nothing (`--list`, submodule
+   * absent, zero packages declaring a script). For those, "absent" is the accurate reading; a
+   * marker there would read `status=clean` and claim a coverage that did not happen — the very
+   * false green this item is about. Each of those branches already says so in prose.
+   */
+  const finish = (code, { filesUnchecked = 0, nothingTypechecked = false } = {}) => {
+    log(
+      formatLintTscResultMarker({
+        label: 'papercusp-libs',
+        scope: explicitFiles ? 'files' : 'all',
+        code,
+        nothingTypechecked,
+        filesUnchecked,
+      }),
+    );
+    return code;
+  };
 
   // The submodule genuinely absent (a subject hive, an uninitialised checkout) is a legitimate
   // opt-out — there is nothing to gate. Distinct from "present but gating nothing" below.
@@ -155,8 +217,42 @@ export function main({
     return 0;
   }
 
-  const { failed } = runPackages({ packages, label: 'libs/papercusp', unreadableCount: unreadable.length, spawn, log, warn, error });
-  return failed.length > 0 || unreadable.length > 0 ? 1 : 0;
+  const { selected, uncovered } = selectByExplicitFiles({ packages, files: explicitFiles });
+
+  // Every named file lies outside this leg's coverage: it compiled none of them and has NO
+  // VERDICT TO GIVE. Reporting that as a pass is the filed defect — a whole-project green
+  // standing in for files this gate never looked at. Same contract as the sibling gates'
+  // all-uncovered branch: fatal, and marked `status=out-of-scope` so the machine-readable token
+  // cannot be misread as a regression the caller must hunt.
+  if (explicitFiles && selected.length === 0) {
+    error(
+      `\n✗ none of the ${uncovered.length} file(s) you named is under a libs/papercusp package` +
+        ` that declares a typecheck script — this leg checked NOTHING.\n` +
+        `  Named: ${uncovered.join(', ')}\n` +
+        `  Covered prefixes: ${packages.map((p) => `${p.rel}/`).join(', ')}\n` +
+        `  (Use \`--list\` to see what this gate covers, or run the gate that owns your path.)`,
+    );
+    return finish(1, { filesUnchecked: uncovered.length, nothingTypechecked: true });
+  }
+
+  if (uncovered.length > 0) {
+    // ⚠ This text must never contain the literal marker token a consumer greps for. The
+    // established idiom is a SUBSTRING grep over this gate's whole output, so spelling the
+    // full-coverage token here — even inside prose explaining that it does not apply — makes a
+    // partial run match it. Measured while verifying this very change: the run below reported
+    // `status=partial`, and an earlier draft of this warning still made the grep hit.
+    warn(
+      `\n⚠ ${uncovered.length} of the file(s) you named are outside this leg's coverage and were` +
+        ` NOT typechecked: ${uncovered.join(', ')}\n` +
+        `  The verdict below covers only the selected package(s) — the completion marker reports` +
+        ` a PARTIAL run, not a full-coverage one.`,
+    );
+  }
+
+  const { failed } = runPackages({ packages: selected, label: 'libs/papercusp', unreadableCount: unreadable.length, spawn, log, warn, error });
+  return finish(failed.length > 0 || unreadable.length > 0 ? 1 : 0, {
+    filesUnchecked: uncovered.length,
+  });
 }
 
 // Only run when invoked as a CLI — the test imports the pure pieces above, and a module-level
