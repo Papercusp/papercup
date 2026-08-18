@@ -33,7 +33,8 @@
 
 import { getHarnessAdminUrl } from '../../embedded-pg-discovery';
 import type { BufferedEvidence } from './buffer';
-import type { AttributionScope, EvidenceStore } from './sink';
+import type { AttributionScope } from './context';
+import type { EvidenceStore } from './sink';
 
 /** The narrow slice of postgres.js this module uses. */
 type SqlTag = {
