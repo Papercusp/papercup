@@ -41,6 +41,7 @@ const ok = (id: string) => ({ id, harness: null, hold: true, applicable: true })
 beforeEach(() => {
   sqlCalls.length = 0;
   nextRows = [];
+  sqlThrows = false;
   holdM.mockReset();
   holdM.mockImplementation(async (id: string) => ok(id));
 });
