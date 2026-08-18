@@ -540,6 +540,13 @@ export async function _resetCpuWorker(): Promise<void> {
   _workerDisabled = false;
   _consecutiveCrashes = 0;
   _workerRefd = false;
+  _servedByWorker = 0;
+  _eligibleFallbacks = 0;
+  _lastCrashError = null;
+  _breakerTrippedAt = null;
+  _reArmFailures = 0;
+  _reArms = 0;
+  _halfOpen = false;
   // REJECT stragglers, never drop them — a bare `_pending.clear()` here left
   // the caller's promise unsettled forever (WI-37688). The 'exit' handler
   // fired by terminate() above normally drains this first; the loop is the
@@ -567,6 +574,25 @@ export function _injectWorkerCrashForTest(err: Error): boolean {
 }
 
 /**
+ * Test seam — rewind the breaker's trip timestamp so the re-arm cooldown reads
+ * as elapsed.
+ *
+ * Rewinds the REAL `_breakerTrippedAt` that the REAL cooldown comparison in
+ * `serializeJsonResponse` reads, rather than adding a bypass branch: a seam that
+ * short-circuits the comparison would leave the actual admission logic untested
+ * while looking covered. Same reasoning as `_injectWorkerCrashForTest`, which
+ * drives the registered handler instead of a copy of it.
+ *
+ * @returns false when the breaker is not latched, so a test cannot silently
+ *          assert against a no-op.
+ */
+export function _advanceBreakerClockForTest(ms: number): boolean {
+  if (_breakerTrippedAt === null) return false;
+  _breakerTrippedAt -= ms;
+  return true;
+}
+
+/**
  * Diagnostics, surfaced by `GET /api/health/deep` as its `cpuWorker` block
  * (`endpoint-route/routes/misc/health-deep.ts` → `readCpuWorker`).
  *
@@ -588,6 +614,13 @@ export function getCpuWorkerState(): {
   minItems: number;
   keepAlive: boolean;
   consecutiveCrashes: number;
+  servedByWorker: number;
+  eligibleFallbacks: number;
+  lastCrashError: string | null;
+  reArms: number;
+  reArmFailures: number;
+  reArmInMs: number | null;
+  verdict: CpuWorkerVerdict;
 } {
   return {
     alive: _worker !== null,
@@ -596,5 +629,42 @@ export function getCpuWorkerState(): {
     minItems: OFFLOAD_MIN_ITEMS,
     keepAlive: _worker !== null && _workerRefd,
     consecutiveCrashes: _consecutiveCrashes,
+    servedByWorker: _servedByWorker,
+    eligibleFallbacks: _eligibleFallbacks,
+    lastCrashError: _lastCrashError,
+    reArms: _reArms,
+    reArmFailures: _reArmFailures,
+    reArmInMs: cpuWorkerReArmInMs(),
+    verdict: cpuWorkerVerdict(),
   };
+}
+
+/**
+ * What the offload is ACTUALLY doing — the reading `disabled` cannot give.
+ *
+ * `disabled:false` is an absence-of-bad, and three very different situations
+ * produce it: the offload is working, nothing has asked it to work yet, and it
+ * is being asked and silently not doing it. The last is the one that motivated
+ * EI-20505664003243915 and the one no previous field could express.
+ */
+export type CpuWorkerVerdict =
+  /** Breaker closed and the worker has served ≥1 request — offload PROVEN working. */
+  | 'serving'
+  /** Breaker closed, nothing offload-eligible has been asked yet. Benign, unproven. */
+  | 'idle-unproven'
+  /** Breaker closed, eligible work happened, NONE served by the worker. The silent failure. */
+  | 'silently-falling-back'
+  /** Breaker latched; `reArmInMs` says when the next half-open probe is admitted. */
+  | 'disabled';
+
+/** Milliseconds until the next half-open probe; null when the breaker is closed. */
+function cpuWorkerReArmInMs(): number | null {
+  if (!_workerDisabled || _breakerTrippedAt === null) return null;
+  return Math.max(0, reArmCooldownMs() - (Date.now() - _breakerTrippedAt));
+}
+
+function cpuWorkerVerdict(): CpuWorkerVerdict {
+  if (_workerDisabled) return 'disabled';
+  if (_servedByWorker > 0) return 'serving';
+  return _eligibleFallbacks > 0 ? 'silently-falling-back' : 'idle-unproven';
 }
