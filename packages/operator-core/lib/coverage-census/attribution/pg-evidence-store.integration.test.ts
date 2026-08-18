@@ -78,12 +78,15 @@ beforeAll(async () => {
 }, 180_000);
 
 afterAll(async () => {
+  // NOT `db?.adminSql\`...\`` — a tagged template is not permitted in an optional chain (TS1358).
+  // Deleting the surfaces cascades the evidence (coverage_evidence.surface_ref is ON DELETE
+  // CASCADE), so no separate evidence cleanup is needed.
   if (db) {
     await db.adminSql`
       DELETE FROM harness_shared.testing_surfaces
        WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS}
     `;
-    await db.close?.();
+    await db.cleanup();
   }
 });
 
