@@ -6697,12 +6697,17 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     resolve: async (args) => {
       const { id } = args as { id: string };
       const { sql } = (await import('@papercusp/db-org')).getOrgPg();
+      // BOUNDED (WI-39825). A thread and its posts: the view is a transcript, so
+      // neither leg is supplementary (a thread with silently-missing posts reads as
+      // an empty conversation) and a lapse propagates as a labelled failure.
+      const withinBudget = createReadDeadline(RESOLVER_FANOUT_BUDGET_MS);
       const [thread, posts] = await Promise.all([
         // Same parent-work-item harness fallback as deliberationList — the two
         // MUST agree. A list that resolves the harness while the detail does
         // not is the worst outcome: the pill looks live in the row and dies
         // the moment you open it.
-        sql`SELECT t.thread_id, t.parent_kind, t.parent_ref, t.title, t.created_by,
+        withinBudget(
+          sql`SELECT t.thread_id, t.parent_kind, t.parent_ref, t.title, t.created_by,
                    COALESCE(t.harness_slug,
                             (SELECT w.harness_slug
                                FROM harness_shared.work_items w
@@ -6712,11 +6717,16 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
                    t.created_at, t.last_post_at, t.post_count
               FROM harness_shared.coord_threads t
              WHERE t.thread_id = ${id} LIMIT 1`,
-        sql`SELECT id, author_id, body, created_at, harness_slug
+          'deliberationDetail thread',
+        ),
+        withinBudget(
+          sql`SELECT id, author_id, body, created_at, harness_slug
               FROM harness_shared.coord_thread_posts
              WHERE thread_id = ${id}
              ORDER BY created_at ASC NULLS LAST
              LIMIT 1000`,
+          'deliberationDetail posts',
+        ),
       ]);
       if (!thread[0]) return [];
       const safePosts = posts.map((post) => ({
