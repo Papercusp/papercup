@@ -850,8 +850,33 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
       const { ensureLocalBackendRunning } = await import('../provisioner/provision');
       const { markLocalBackendBusy } = await import('./local-backend-store');
       const result = await ensureLocalBackendRunning(
-        { id: backend.id, unitName: backend.unitName ?? null, baseUrl: backend.baseUrl },
-        { readyTimeoutMs: LOCAL_BACKEND_COLD_START_TIMEOUT_MS },
+        {
+          id: backend.id,
+          unitName: backend.unitName ?? null,
+          baseUrl: backend.baseUrl,
+          // Carried purely so the cold-start audit can resolve this backend's catalog entry
+          // (D-016). The join is the MODEL REF, not the id: the registry id and the catalog id are
+          // independent namespaces (`ornith-llamaserver` vs `ornith-35b-iq3m-llama-server`), and an
+          // id-keyed lookup silently audits nothing.
+          models: backend.models,
+          kind: backend.kind,
+        },
+        {
+          readyTimeoutMs: LOCAL_BACKEND_COLD_START_TIMEOUT_MS,
+          // The guard's production reporter (WI-39735). WARN-only by design: a degraded backend
+          // still serves, so this never blocks the start — see the D-016 note at the call site.
+          // Logged at every verdict, including `ok`: a line that only ever appears on failure
+          // cannot be distinguished from a guard that is not running at all.
+          onUnitAudit: (audit) => {
+            if (audit.verdict === 'degraded') {
+              log('warn', `inference-gateway: DEGRADED UNIT starting '${backend.id}' — ${audit.summary}`);
+            } else if (audit.verdict === 'unauditable') {
+              log('warn', `inference-gateway: could not audit '${backend.id}' before start — ${audit.summary}`);
+            } else {
+              log('info', `inference-gateway: unit audit clean for '${backend.id}' — ${audit.summary}`);
+            }
+          },
+        },
       );
       if (result.ok) {
         // STAMP THE WATERMARK ON START, not just on observed work. `last_busy_at` still holds the
