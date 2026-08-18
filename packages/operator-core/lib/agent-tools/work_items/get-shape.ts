@@ -24,6 +24,25 @@
  *   3. `workItem.summary` / `workItem.payload` / `lifecycle` events are the bulk,
  *      and are what a trimmed tier should spend its budget on instead. Dropped or
  *      capped, ALWAYS with a `_shapeNote` saying so (D-004: no silent caps).
+ *
+ * EI-20743148487714069. Point 3 was originally implemented as a FLAT
+ * `FIELD_CAPS.trimmed.summary = 0` — a hard drop at every rung. Measured, that
+ * spent nothing to save nothing: a single-item trimmed read is ~890 chars against
+ * a 6,000-char door, so the field was dropped from a payload using 15% of its
+ * budget, and even the 13,000-char-checkpoint case above finishes ~2,000 chars
+ * short of the door. The cost was real — `work_items:get` is how an agent reads a
+ * backlog item before acting on it, and title-only is the one shape the standing
+ * "a title is a LABEL, read the writer" discipline exists to prevent.
+ *
+ * A flat per-row cap is the wrong repair, though: `ids` accepts 100, so any fixed
+ * summary spend is multiplied by the row count and pushes a bulk read down the
+ * ladder into stubbing rows — trading 97 items' identity for 3 items' prose,
+ * which is the worse answer for a read that asked about 100 things. So the
+ * summary budget is LADDER-SHARED like `checkpointTotal`: a per-rung total,
+ * divided across the rows actually carrying one. A 1-row read gets the whole
+ * budget (enough for the 95th-percentile body outright); a 100-row read's share
+ * falls below `SUMMARY_USEFUL_MIN_CHARS` and is dropped as it is today. Nothing is
+ * hand-tuned per row count — the existing measured ladder resolves it.
  *   4. The `detail:true` coord substrate (`workItem.topics/posts/links`) is
  *      dropped, but its COUNTS are disclosed — see `noteDroppedDetail`. Content
  *      out, evidence-of-content in: a reader must never conclude "no comments"
@@ -56,25 +75,40 @@ const TIER_TARGET_CHARS = { trimmed: RESULT_DOOR_BUDGET_CHARS, standard: RESULT_
 
 /**
  * Each rung: how many rows get the FULL projection (the rest degrade to an
- * id-preserving stub, so correlation NEVER breaks) and the TOTAL checkpoint
- * chars shared across them. Ordered most→least generous.
+ * id-preserving stub, so correlation NEVER breaks), the TOTAL checkpoint chars
+ * shared across them, and the TOTAL summary chars shared across them. Ordered
+ * most→least generous.
+ *
+ * `summaryTotal` sits BELOW `checkpointTotal` at every rung on purpose: the
+ * checkpoint is this tool's payload and is degraded last (point 1 above), so when
+ * a rung cannot fit both, the summary is what gives way.
  */
 const DEGRADATION_LADDER = {
   trimmed: [
-    { fullRows: 100, checkpointTotal: 6_000 },
-    { fullRows: 25, checkpointTotal: 3_000 },
-    { fullRows: 12, checkpointTotal: 1_200 },
-    { fullRows: 6, checkpointTotal: 600 },
-    { fullRows: 3, checkpointTotal: 0 },
+    { fullRows: 100, checkpointTotal: 6_000, summaryTotal: 2_400 },
+    { fullRows: 25, checkpointTotal: 3_000, summaryTotal: 1_200 },
+    { fullRows: 12, checkpointTotal: 1_200, summaryTotal: 600 },
+    { fullRows: 6, checkpointTotal: 600, summaryTotal: 0 },
+    { fullRows: 3, checkpointTotal: 0, summaryTotal: 0 },
   ],
   standard: [
-    { fullRows: 100, checkpointTotal: 16_000 },
-    { fullRows: 50, checkpointTotal: 8_000 },
-    { fullRows: 25, checkpointTotal: 3_000 },
-    { fullRows: 12, checkpointTotal: 1_200 },
-    { fullRows: 6, checkpointTotal: 600 },
+    { fullRows: 100, checkpointTotal: 16_000, summaryTotal: 4_000 },
+    { fullRows: 50, checkpointTotal: 8_000, summaryTotal: 2_400 },
+    { fullRows: 25, checkpointTotal: 3_000, summaryTotal: 1_200 },
+    { fullRows: 12, checkpointTotal: 1_200, summaryTotal: 600 },
+    { fullRows: 6, checkpointTotal: 600, summaryTotal: 0 },
   ],
 } as const;
+
+/**
+ * Below this, a summary's share of the rung budget buys nothing: the head of a
+ * body is not a smaller answer to "what is this item about", and a 24-char
+ * fragment costs the marker bytes that say it was clipped. So a share under this
+ * floor DROPS the field (disclosed, exactly as today) instead of emitting a
+ * useless stub. This is what makes the ladder-shared budget safe at 100 rows
+ * without a per-row-count special case.
+ */
+const SUMMARY_USEFUL_MIN_CHARS = 200;
 
 const FIELD_CAPS = {
   trimmed: {

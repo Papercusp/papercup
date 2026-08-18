@@ -104,7 +104,14 @@ describe('seedSubstitutionRegistry (real PG)', () => {
   });
 
   it('seeds a below-floor policy row as unaudited instead of deriving a verdict', async () => {
-    const pair = BASH_GATE_PAIRS.find((candidate) => candidate.policyTier !== undefined)!;
+    // Specifically the BELOW-FLOOR policy row (the prefix route), which is the
+    // only kind that can be `unaudited`. Since D-044 there are also policy rows
+    // on the citation route, and those are `equivalent` by construction — so
+    // selecting merely "the first pair with a policyTier" would silently retarget
+    // this test onto a row it is not about.
+    const pair = BASH_GATE_PAIRS.find(
+      (candidate) => candidate.policyTier !== undefined && candidate.expectedVerdict === 'unaudited',
+    )!;
     const fixture = loadPairFixtures([pair])[0].fixture;
     expect(pair.expectedVerdict).toBe('unaudited');
     expect(fixture.sample.length).toBeLessThan(MIN_SAMPLE_SIZE);
@@ -140,7 +147,14 @@ describe('seedSubstitutionRegistry (real PG)', () => {
     expect(policyPairs.length).toBeGreaterThan(0);
 
     for (const pair of policyPairs) {
-      expect(pair.intentLabel.startsWith(POLICY_INTENT_PREFIX)).toBe(true);
+      // Every policy row must sit on ONE of the two authorized routes — the
+      // `policy-violation:` prefix (its intent IS the violation), or a cited
+      // authority over a PROVEN-equivalent verdict (D-044). Asserting the
+      // disjunction here, rather than the prefix alone, is what keeps a future
+      // row from reaching `deny` on neither.
+      const byPrefix = pair.intentLabel.startsWith(POLICY_INTENT_PREFIX);
+      const byCitation = pair.policyAuthority !== undefined && pair.expectedVerdict === 'equivalent';
+      expect(byPrefix || byCitation).toBe(true);
       await db.adminSql`
         UPDATE harness_shared.bash_tool_substitutions SET tier = 'observe'
          WHERE workspace_id = ${WORKSPACE} AND intent_label = ${pair.intentLabel}
