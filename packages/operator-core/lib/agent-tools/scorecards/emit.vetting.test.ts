@@ -16,7 +16,17 @@ const getRubric = vi.fn();
 const getRubricPlanRevision = vi.fn();
 const listScorecards = vi.fn();
 const captureImprovement = vi.fn();
-const consultStateExists = vi.fn();
+const readVettingConsultCritique = vi.fn();
+
+/** The critique verdict shape readVettingConsultCritique returns. */
+const critique = (over: Record<string, unknown> = {}) => ({
+  exists: true,
+  state: 'active',
+  critiquePosts: 2,
+  declinePosts: 0,
+  critics: ['su-reviewer'],
+  ...over,
+});
 
 vi.mock('../../rubrics', async (importOriginal) => {
   const real = await importOriginal<typeof import('../../rubrics')>();
