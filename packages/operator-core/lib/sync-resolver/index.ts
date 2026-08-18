@@ -6148,54 +6148,19 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     argsSchema: z.object({ workspace: z.string().optional() }),
     resolve: async (args) => {
       const { workspace } = args as { workspace?: string };
-      const [{ listPresence }, { listWorkspaceMembers }, { activeWorkspaceId }] = await Promise.all([
-        import('../agent-tools/coordination/presence'),
-        import('../hive-membership-store'),
-        import('../workspace-registry'),
-      ]);
-      const wsId = workspace ?? activeWorkspaceId();
-      const [presence, members] = await Promise.all([
-        listPresence({ workspaceId: workspace ?? null }) as Promise<
-          Array<{
-            ownerId: string;
-            ownerLabel: string | null;
-            intent: string | null;
-            userId: string | null;
-            stale?: boolean;
-          }>
-        >,
-        listWorkspaceMembers(wsId).catch(() => []),
-      ]);
-      const live = presence.filter((p) => !p.stale);
-      // Which github members are already represented by a live session? Today
-      // presence carries no github id, so this matches only when a session's userId
-      // is already a `gh:<id>` form (nothing on a gh-unauth box) — forward-compatible.
-      const liveKeys = new Set<string>();
-      for (const p of live) {
-        if (p.userId) liveKeys.add(p.userId);
-        liveKeys.add(p.ownerId);
-      }
-      const onlineRows = live.map((p) => ({
-        assignAddress: p.ownerId,
-        key: p.ownerId,
-        label: p.ownerLabel ?? p.ownerId,
-        present: true,
-        intent: p.intent ?? null,
-        userId: p.userId ?? null,
-        githubUsername: null as string | null,
-      }));
-      const offlineRows = members
-        .filter((m) => !liveKeys.has(`gh:${m.githubUserId}`) && !liveKeys.has(String(m.githubUserId)))
-        .map((m) => ({
-          assignAddress: `@user:gh:${m.githubUserId}`,
-          key: `gh:${m.githubUserId}`,
-          label: m.displayName ?? m.githubUsername,
-          present: false,
-          intent: null as string | null,
-          userId: null as string | null,
-          githubUsername: m.githubUsername,
-        }));
-      return [...onlineRows, ...offlineRows];
+      // BOUNDED + GUARDED in presence-roster-read.ts (WI-39825): two stores fan
+      // out here, and a wedged membership read used to take the whole picker
+      // past RESOLVER_READ_TIMEOUT_MS — so AssignDialog rendered nothing and you
+      // could not assign to ANYONE, including the live sessions already in hand.
+      // Presence PROPAGATES on lapse (an empty online list would read as "nobody
+      // is running"); the members leg degrades to a NAMED casualty instead of
+      // the old swallowing `.catch(() => [])`, which made an empty offline list
+      // indistinguishable from "this workspace has no offline members".
+      const { readAssignableMembers } = await import('./presence-roster-read');
+      const { rows, degradedFields } = await readAssignableMembers({ workspace });
+      // Flat-row sync contract, so degradation travels on row[0]._meta. Absent
+      // (not empty) on a healthy read — the field's PRESENCE is the signal.
+      return degradedFields ? attachListMeta(rows, { degradedFields }) : rows;
     },
   },
 
