@@ -1,4 +1,6 @@
 /**
+ * @vitest-environment jsdom
+ *
  * Disclosures — the popup's render of what an agent's own orient left OUT
  * (popup-agent-state-coverage-2026-08-18 P-005).
  *
@@ -14,8 +16,8 @@
  * an agent is flying blind.
  */
 
-import { describe, it, expect } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { afterEach, describe, it, expect } from 'vitest';
+import { cleanup, render, screen } from '@testing-library/react';
 import {
   Disclosures,
   disclosureLine,
