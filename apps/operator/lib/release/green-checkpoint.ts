@@ -7668,26 +7668,22 @@ export function hasNpmScript(treeDir: string, scriptName: string): boolean {
 }
 
 /**
- * The root-owned typecheck legs that travel WITH `lint:tsc` (WI-37485).
+ * The tsc project that `lint:tsc` exists to check (WI-37485).
  *
- * Used to tell the two meanings of a missing `lint:tsc` apart in `runPostSuiteLegs`:
- * a SUBJECT HIVE legitimately omits the whole typecheck family (skip it silently, per
- * `hasNpmScript` above), whereas a tree still exposing these siblings is the Papercusp
- * root with its operator-core leg missing — which silently disables the gate's only
- * typecheck for `packages/operator-core`.
+ * `lint:tsc` is `tsc -p packages/operator-core/tsconfig.json` (scripts/lint-tsc.mjs), and
+ * `runPostSuiteLegs` uses the PRESENCE OF THIS PROJECT in a candidate to tell the two
+ * meanings of a missing `lint:tsc` apart: a SUBJECT HIVE ships no operator-core at all and
+ * legitimately has no typecheck leg (skip silently, per `hasNpmScript` above), whereas a
+ * candidate that CONTAINS operator-core while exposing no script to check it has the gate's
+ * only typecheck for that package silently disabled.
  *
- * Every entry must be a script `runPostSuiteLegs` actually probes, or the discriminator
- * degrades: an entry naming a script no leg checks can never be `present`, weakening the
- * signal, and one naming a script a SUBJECT HIVE also ships would misfire on a hive.
- * `green-checkpoint-legs-verdict-coverage.test.ts` pins the first half against the legs
- * DISCOVERED from a real run, so this list cannot silently drift out of that set — the
- * same anchor-to-the-property rule that file already applies to `legs.ok`.
+ * Keyed on the checked artifact rather than on a sibling script ON PURPOSE: a subject hive
+ * may legitimately ship `lint:tsc:papercusp-libs` WITHOUT `lint:tsc`, which
+ * green-checkpoint-real-deps' `libsTypecheckTree` fixture pins explicitly, so any
+ * sibling-script discriminator misfires on a legitimate hive.
  */
-export const ROOT_OWNED_TYPECHECK_SIBLINGS = [
-  "lint:tsc:papercusp-libs",
-  "lint:tsc:workspaces",
-  "lint:tsc:orchestrator",
-] as const;
+export const OPERATOR_CORE_TSCONFIG_RELPATH =
+  "packages/operator-core/tsconfig.json";
 
 /**
  * EI-18661485259809120: every commit git-sync produces (and therefore every commit
@@ -8054,28 +8050,36 @@ export async function runPostSuiteLegs(
     // decide whether exactly that had happened, because the evidence that would settle
     // it is never recorded.
     //
-    // The discriminator is the ROOT-OWNED SIBLING legs. A real subject hive omits the
-    // whole family; a tree still exposing `lint:tsc:papercusp-libs`/`:workspaces`/
-    // `:orchestrator` while missing `lint:tsc` is not "a hive without a typecheck", it
-    // is the Papercusp root with its operator-core leg knocked out. Fail that loudly.
+    // The discriminator is THE THING THE SCRIPT EXISTS TO CHECK, not a sibling script.
+    // `lint:tsc` is `tsc -p packages/operator-core/tsconfig.json` (scripts/lint-tsc.mjs),
+    // so if the candidate CONTAINS that project while exposing no script to run it, the
+    // code is present and now typechecked by NOTHING — `test:affected` is esbuild/Vitest
+    // and never typechecks. A genuine subject hive has no packages/operator-core at all
+    // and is unaffected.
+    //
+    // ⚠ Do NOT re-key this off a sibling like `lint:tsc:papercusp-libs`: a subject hive
+    // may legitimately ship that WITHOUT `lint:tsc`, which green-checkpoint-real-deps'
+    // `libsTypecheckTree` fixture pins ("without requiring it from subject hives"). That
+    // was tried here first and misfired on exactly that fixture.
     //
     // Deliberately NOT `haltedBy`: halting skips every later leg, which this file's own
     // coverage test calls the most expensive shape there is (and a non-zero `lint:tsc`
     // is itself only a soft failure below). `status:'failed'` reds the verdict through
     // `legs.ok` while the remaining legs still run and report.
-    const rootOwnedSiblingsPresent = ROOT_OWNED_TYPECHECK_SIBLINGS.filter(
-      (sibling) => checkNpmScript(treeDir, sibling) === "present",
+    const operatorCoreProject = path.join(
+      treeDir,
+      OPERATOR_CORE_TSCONFIG_RELPATH,
     );
-    if (rootOwnedSiblingsPresent.length > 0) {
+    if (existsSync(operatorCoreProject)) {
       legs.typecheck = { status: "failed" };
       failingSignatures.push("lint:tsc-missing");
       outputs.push(
-        `\n\n=== lint:tsc MISSING FROM A ROOT TREE (WI-37485) — ${treeDir} exposes root-owned typecheck leg(s) ` +
-          `${rootOwnedSiblingsPresent.join(", ")} but no \`lint:tsc\` script, so the operator-core typecheck ` +
-          `did not run. That is the gate's ONLY typecheck for packages/operator-core (test:affected is ` +
-          `esbuild/Vitest and never typechecks), so treating this as "this subject has no typecheck leg" ` +
-          `would let an operator-core type regression through a GREEN gate. Restore the \`lint:tsc\` script ` +
-          `in the candidate's package.json. ===\n`,
+        `\n\n=== lint:tsc MISSING WHILE operator-core IS PRESENT (WI-37485) — ${treeDir} contains ` +
+          `${OPERATOR_CORE_TSCONFIG_RELPATH} but exposes no \`lint:tsc\` script, so the operator-core ` +
+          `typecheck did not run. That is the gate's ONLY typecheck for packages/operator-core ` +
+          `(test:affected is esbuild/Vitest and never typechecks), so treating this as "this subject ` +
+          `has no typecheck leg" would let an operator-core type regression through a GREEN gate. ` +
+          `Restore the \`lint:tsc\` script in the candidate's package.json. ===\n`,
       );
     } else {
       legs.typecheck = {

@@ -28,15 +28,15 @@
  * A new leg is therefore covered the moment it is wired, with no edit here.
  */
 import { describe, it, expect } from 'vitest';
-import { join } from 'node:path';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 
 import {
   runPostSuiteLegs,
   isRerunnableGateEntry,
   checkNpmScript,
-  ROOT_OWNED_TYPECHECK_SIBLINGS,
+  OPERATOR_CORE_TSCONFIG_RELPATH,
   type CheckpointExec,
 } from './green-checkpoint';
 
@@ -254,11 +254,22 @@ describe('green-checkpoint post-suite legs — verdict coverage', () => {
  * never mutates the shared checkout — the copy-out tier of CLAUDE.md's falsifiability rule.
  */
 describe('green-checkpoint — a missing lint:tsc cannot silently skip the typecheck leg (WI-37485)', () => {
-  /** Build a throwaway tree exposing exactly `scripts`, and run the real leg chain on it. */
-  async function runLegsInTree(scripts: Record<string, string>) {
+  /** Build a throwaway tree exposing exactly `scripts`, optionally CONTAINING the
+   *  operator-core tsc project, and run the real leg chain on it. */
+  function makeTree(scripts: Record<string, string>, withOperatorCore: boolean) {
     const dir = mkdtempSync(join(tmpdir(), 'gc-wi37485-'));
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'probe-tree', scripts }));
+    if (withOperatorCore) {
+      const project = join(dir, OPERATOR_CORE_TSCONFIG_RELPATH);
+      mkdirSync(dirname(project), { recursive: true });
+      writeFileSync(project, JSON.stringify({ include: ['lib/**/*.ts'] }));
+    }
+    return dir;
+  }
+
+  async function runLegsInTree(scripts: Record<string, string>, withOperatorCore: boolean) {
+    const dir = makeTree(scripts, withOperatorCore);
     try {
-      writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'probe-tree', scripts }));
       const invokedScripts: string[] = [];
       const exec: CheckpointExec = async (cmd, args) => {
         const script = npmScriptOf(cmd, args);
@@ -273,41 +284,44 @@ describe('green-checkpoint — a missing lint:tsc cannot silently skip the typec
     }
   }
 
-  const SIBLINGS = Object.fromEntries(
-    ROOT_OWNED_TYPECHECK_SIBLINGS.map((s) => [s, `echo ${s}`]),
-  ) as Record<string, string>;
+  /** A sibling typecheck leg a SUBJECT HIVE may legitimately ship without `lint:tsc`
+   *  (green-checkpoint-real-deps' `libsTypecheckTree` pins exactly this). Present in the
+   *  hive-shaped trees below so the guard is forced to ignore it. */
+  const HIVE_SIBLING = { 'lint:tsc:papercusp-libs': 'echo libs' };
 
-  it('FAILS loudly when a tree exposes the root-owned sibling legs but no lint:tsc', async () => {
-    const { legs, invokedScripts } = await runLegsInTree(SIBLINGS);
+  it('FAILS loudly when the candidate CONTAINS operator-core but exposes no lint:tsc', async () => {
+    const { legs, invokedScripts } = await runLegsInTree(HIVE_SIBLING, true);
 
     expect(
       legs.typecheck?.status,
-      'A root-shaped tree missing `lint:tsc` must FAIL the typecheck leg, not skip it — ' +
-        'skipping is what let WI-37485 be unfalsifiable.',
+      'A candidate carrying packages/operator-core with no `lint:tsc` must FAIL the typecheck ' +
+        'leg, not skip it — skipping is what made WI-37485 unfalsifiable.',
     ).toBe('failed');
     expect(
       legs.ok,
       'A failed typecheck leg must red the verdict through legs.ok, or the gate reports GREEN ' +
         'on a candidate whose operator-core typecheck never ran.',
     ).toBe(false);
-    // It must not have HALTED the chain: the siblings still have to run and report.
-    expect(invokedScripts).toContain(ROOT_OWNED_TYPECHECK_SIBLINGS[0]);
+    // It must not have HALTED the chain: later legs still have to run and report.
+    expect(invokedScripts).toContain('lint:tsc:papercusp-libs');
   });
 
-  it('still SKIPS silently for a genuine subject hive that omits the whole typecheck family', async () => {
-    // The legitimate case `absent` exists for. Breaking it would red every subject hive.
-    const { legs } = await runLegsInTree({ build: 'echo build' });
+  it('still SKIPS silently for a subject hive — even one shipping lint:tsc:papercusp-libs', async () => {
+    // The legitimate case `absent` exists for, and the exact shape that broke the first
+    // attempt at this guard: green-checkpoint-real-deps' `libsTypecheckTree` provides the
+    // libs leg WITHOUT `lint:tsc` and must stay green.
+    const { legs } = await runLegsInTree(HIVE_SIBLING, false);
 
     expect(legs.typecheck?.status).toBe('skipped');
     expect(
       legs.ok,
-      'A subject hive legitimately has no platform typecheck; it must not be failed for that.',
+      'A subject hive legitimately has no operator-core typecheck; it must not be failed for that.',
     ).not.toBe(false);
   });
 
-  it('CALIBRATION: the same root-shaped tree WITH lint:tsc does not trip the guard', async () => {
+  it('CALIBRATION: the same operator-core-bearing tree WITH lint:tsc does not trip the guard', async () => {
     // Without this, the first test would also pass if the guard failed the leg unconditionally.
-    const { legs } = await runLegsInTree({ 'lint:tsc': 'echo tsc', ...SIBLINGS });
+    const { legs } = await runLegsInTree({ 'lint:tsc': 'echo tsc', ...HIVE_SIBLING }, true);
 
     expect(legs.typecheck?.status).toBe('passed');
     expect(legs.ok).not.toBe(false);
@@ -323,45 +337,40 @@ describe('green-checkpoint — a missing lint:tsc cannot silently skip the typec
     // tests above show the new discriminator gives them OPPOSITE verdicts. Without this, a
     // future refactor could make the root-shaped tree fail for an unrelated reason (say an
     // 'unreadable' package.json) and the test above would still pass, proving nothing.
-    const rootShaped = mkdtempSync(join(tmpdir(), 'gc-wi37485-ctl-root-'));
-    const hiveShaped = mkdtempSync(join(tmpdir(), 'gc-wi37485-ctl-hive-'));
+    const withCore = makeTree(HIVE_SIBLING, true);
+    const withoutCore = makeTree(HIVE_SIBLING, false);
     try {
-      writeFileSync(join(rootShaped, 'package.json'), JSON.stringify({ scripts: SIBLINGS }));
-      writeFileSync(
-        join(hiveShaped, 'package.json'),
-        JSON.stringify({ scripts: { build: 'echo build' } }),
-      );
+      // The exact input the old branch saw — IDENTICAL for both trees, so the old rule
+      // mapped both to the same silent skip and could not have failed either.
+      expect(checkNpmScript(withCore, 'lint:tsc')).toBe('absent');
+      expect(checkNpmScript(withoutCore, 'lint:tsc')).toBe('absent');
 
-      // The exact input the old branch saw — identical for both trees.
-      expect(checkNpmScript(rootShaped, 'lint:tsc')).toBe('absent');
-      expect(checkNpmScript(hiveShaped, 'lint:tsc')).toBe('absent');
+      // The trees are also identical in their SCRIPTS, so nothing script-shaped can be
+      // doing the work — the only difference is the presence of the checked project.
+      expect(checkNpmScript(withCore, 'lint:tsc:papercusp-libs')).toBe('present');
+      expect(checkNpmScript(withoutCore, 'lint:tsc:papercusp-libs')).toBe('present');
 
-      // ...and the only thing that now separates them.
-      expect(
-        ROOT_OWNED_TYPECHECK_SIBLINGS.some((s) => checkNpmScript(rootShaped, s) === 'present'),
-      ).toBe(true);
-      expect(
-        ROOT_OWNED_TYPECHECK_SIBLINGS.some((s) => checkNpmScript(hiveShaped, s) === 'present'),
-      ).toBe(false);
+      // ...and that is the only thing separating them.
+      expect(existsSync(join(withCore, OPERATOR_CORE_TSCONFIG_RELPATH))).toBe(true);
+      expect(existsSync(join(withoutCore, OPERATOR_CORE_TSCONFIG_RELPATH))).toBe(false);
     } finally {
-      rmSync(rootShaped, { recursive: true, force: true });
-      rmSync(hiveShaped, { recursive: true, force: true });
+      rmSync(withCore, { recursive: true, force: true });
+      rmSync(withoutCore, { recursive: true, force: true });
     }
   });
 
-  it('every ROOT_OWNED_TYPECHECK_SIBLINGS entry is a leg the real chain actually probes', async () => {
-    // Anchors the list to the property instead of to a name list, exactly as the legs.ok
-    // sweep above does: an entry naming a script no leg checks could never be 'present',
-    // silently weakening the discriminator to "never fires" with every test still green.
-    const { invokedScripts } = await runLegs(null);
-    const probed = new Set(invokedScripts);
-    const strays = ROOT_OWNED_TYPECHECK_SIBLINGS.filter((s) => !probed.has(s));
-
+  it('OPERATOR_CORE_TSCONFIG_RELPATH names a project that really exists in this repo', () => {
+    // Anchors the constant to the tree instead of to a string literal: if operator-core's
+    // tsconfig is ever moved or renamed, this path silently stops matching and the guard
+    // degrades to "never fires" with every test above still green — the same
+    // weakens-to-vacuous failure the legs.ok sweep guards against.
     expect(
-      strays,
-      `These ROOT_OWNED_TYPECHECK_SIBLINGS entries are not run as legs on the real root tree, ` +
-        `so they can never be 'present' and the WI-37485 discriminator silently weakens toward ` +
-        `never firing. Remove them, or wire the leg they name:\n${JSON.stringify(strays)}`,
-    ).toEqual([]);
+      existsSync(join(ROOT, OPERATOR_CORE_TSCONFIG_RELPATH)),
+      `${OPERATOR_CORE_TSCONFIG_RELPATH} does not exist in this repo, so the WI-37485 guard can ` +
+        `never fire. Re-point OPERATOR_CORE_TSCONFIG_RELPATH at the project lint:tsc checks.`,
+    ).toBe(true);
+    // And the real root is the shape the guard expects: it HAS the project AND the script,
+    // so the guard must be silent on it (a root that tripped its own guard would red main).
+    expect(checkNpmScript(ROOT, 'lint:tsc')).toBe('present');
   });
 });
