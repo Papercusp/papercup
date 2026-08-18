@@ -637,7 +637,9 @@ export function classifyGuard({ name, command, corpora, repoWideRegistered = new
   const impls = resolveImplementationPaths(command);
   const tiers = [];
   const mentions = (text) => text.includes(name) || impls.some((p) => p && text.includes(p));
-  const npmRun = new RegExp(`npm\\W{1,4}run\\W{1,4}${escapeRe(name)}(?![\\w:.-])`);
+  // The separator bound spans the argv spelling `'npm', ['run', 'lint:x'` — five
+  // non-word chars between tokens, not the one a shell string has.
+  const npmRun = new RegExp(`npm\\W{1,8}run\\W{1,8}${escapeRe(name)}(?![\\w:.-])`);
   const runsGuard = (text) =>
     npmRun.test(text) || impls.some((p) => p && !sharedImpls.has(p) && text.includes(p));
   for (const [tier, text] of Object.entries(corpora)) {
