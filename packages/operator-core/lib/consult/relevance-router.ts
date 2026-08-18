@@ -352,15 +352,28 @@ export async function routeConsult(
   const owners = [...byOwner.keys()];
 
   // 3) Verification: committed completions in the last 90 days per owner.
-  //    completion_authority='committed' is the evidence-backed close — a bare
-  //    "done" assertion lands 'proposed' and does not count (D-002: earned,
-  //    not asserted).
+  //    authority='committed' is the evidence-backed close — a bare "done"
+  //    assertion lands 'proposed' and does not count (D-002: earned, not
+  //    asserted).
+  //
+  //    ⚠ The column is `authority`, NOT `completion_authority`, and the date
+  //    column is `closed_ts` (bigint epoch-ms), NOT `closed_at` (EI-20816404371786180).
+  //    Both wrong names were live here and killed EVERY consult:get_feedback call
+  //    with `column "completion_authority" does not exist` — which, because the
+  //    acceptance-rubric VETTING gate requires a consult, meant no plan in the
+  //    workspace could ship. The name is misleading on purpose-of-record:
+  //    678-rename-authority-to-completion-authority.sql is named for that rename
+  //    but is COMMENT-ONLY — the rename was ABANDONED (D-009), because the column
+  //    is exposed through the consolidated views and is therefore rename-proof.
+  //    Do not "restore" the longer name here; change the schema first or not at all.
+  //    (`closed_at` DOES exist on harness_shared.consult_state — that is why the
+  //    other consult modules use it correctly and only this query was wrong.)
   const verRows = (await sql`
     SELECT terminal_owner AS owner, count(*)::int AS c
       FROM harness_shared.work_items
      WHERE terminal_owner = ANY(${owners}::text[])
-       AND completion_authority = 'committed'
-       AND closed_at >= ${new Date(now.getTime() - 90 * 24 * 3600 * 1000).toISOString()}::timestamptz
+       AND authority = 'committed'
+       AND closed_ts >= ${now.getTime() - 90 * 24 * 3600 * 1000}
   GROUP BY terminal_owner
   `) as unknown as Array<{ owner: string; c: number }>;
   const verByOwner = new Map(verRows.map((r) => [r.owner, r.c]));
