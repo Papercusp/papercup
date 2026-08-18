@@ -34,6 +34,7 @@ import { parsePlan } from './parser';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 import { clearStartedForTerminalPlan, isTerminalPlanStatus } from './plan-start-state';
 import { stampTerminalNowBlock } from './terminal-now-stamp';
+import { stampGreenlitNowBlock } from './greenlit-now-stamp';
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -103,7 +104,10 @@ export function buildFirstClassPlanBody(
   today: string,
 ): { body: string; nowStamped: boolean } {
   const converted = applyFrontmatterBlock(current, buildFrontmatter(args, today));
-  const stamped = stampTerminalNowBlock(converted, args.status, new Date(`${today}T00:00:00.000Z`));
+  const at = new Date(`${today}T00:00:00.000Z`);
+  const stamped =
+    stampTerminalNowBlock(converted, args.status, at) ??
+    stampGreenlitNowBlock(converted, args.status, at);
   return { body: stamped ?? converted, nowStamped: stamped !== null };
 }
 
