@@ -67,9 +67,9 @@ let wiSeq = 0;
 async function insertWorkItem(owner: string, authority: string, closedMsAgo: number, paths: string[] | null) {
   wiSeq += 1;
   await rootSql`
-    INSERT INTO harness_shared.work_items (feature_id, terminal_owner, completion_authority, closed_at, payload)
+    INSERT INTO harness_shared.work_items (feature_id, terminal_owner, authority, closed_ts, payload)
     VALUES (${'WI-T' + wiSeq}, ${owner}, ${authority},
-            ${new Date(NOW.getTime() - closedMsAgo).toISOString()}::timestamptz,
+            ${NOW.getTime() - closedMsAgo},
             ${paths ? rootSql.json({ paths }) : rootSql.json({})})`;
 }
 
@@ -87,7 +87,15 @@ beforeAll(async () => {
   rootSql = postgres(u.toString(), { max: 1, onnotice: () => {} });
   await rootSql.unsafe('CREATE EXTENSION IF NOT EXISTS vector');
   await rootSql.unsafe('CREATE SCHEMA harness_shared');
-  // Only the columns the router reads (mirrors migration-owned tables).
+  // Only the columns the router reads. ⚠ These names MUST match the real
+  // migration-owned schema exactly — a hand-rolled fixture that invents column
+  // names makes this suite self-consistent and WRONG. That is not hypothetical:
+  // this table previously declared `completion_authority text` / `closed_at
+  // timestamptz`, matching the router's SQL but NOT the live schema (which has
+  // `authority text` / `closed_ts bigint`). The suite passed green while every
+  // consult:get_feedback call in production died on `column
+  // "completion_authority" does not exist` (EI-20816404371786180). Verify any
+  // column added here against information_schema before trusting a green run.
   await rootSql.unsafe(`
     CREATE TABLE harness_shared.session_turns (
       workspace_id text NOT NULL DEFAULT 'default',
@@ -107,8 +115,8 @@ beforeAll(async () => {
     CREATE TABLE harness_shared.work_items (
       feature_id text PRIMARY KEY,
       terminal_owner text,
-      completion_authority text,
-      closed_at timestamptz,
+      authority text,
+      closed_ts bigint,
       payload jsonb NOT NULL DEFAULT '{}'::jsonb
     )`);
 
