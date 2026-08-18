@@ -1021,6 +1021,60 @@ export interface ColumnVerdict {
  * - `stalled` outranks `working` because it is the *contradiction* of working:
  *   nominally alive, demonstrably not moving.
  */
+/**
+ * Is this session SUPPOSED to be producing turns right now?
+ *
+ * Extracted from `deriveColumn` (popup-agent-state-coverage-2026-08-18 P-006)
+ * only so `isZombieSession` below can be shared; the rule is unchanged.
+ *
+ * `loopArmed` stays in the test on purpose, and is the one case where a
+ * non-live verdict still belongs: an agent whose engine loop is armed is
+ * SUPPOSED to be producing turns on a cadence, so an armed loop with a dead
+ * activity clock is a dead loop — the sharpest genuine stall the board can
+ * report, and exactly what its stalled column exists for.
+ *
+ * `sessionState` absent/null means the oracle had no verdict (an older payload,
+ * or a degraded fetch). Fall back to the heartbeat legs rather than guessing —
+ * an unknown verdict must never silently empty the stalled column, which would
+ * hide a real stall instead of a fake one.
+ */
+export function isNominallyAlive(
+  e: Pick<HudRosterEntry, 'sessionState' | 'loopArmed' | 'liveness'>,
+): boolean {
+  return e.sessionState != null
+    ? e.sessionState === 'live' || e.loopArmed
+    : e.liveness === 'live' || e.liveness === 'idle' || e.loopArmed;
+}
+
+/**
+ * The zombie verdict's wording, single-sourced.
+ *
+ * EXPORTED (P-006) because the board and the conversation popup both report
+ * this condition now, and two surfaces describing the same session in different
+ * words is worse than one of them staying silent: the reader cannot tell
+ * whether they disagree about the wording or about the session.
+ */
+export const ZOMBIE_REASON =
+  'Heartbeat is fresh but the OS process is gone — this session is a zombie';
+
+/**
+ * Fresh heartbeat, dead process. The sharpest failure this model can name, and
+ * the one whose cost is immediate on the popup: the composer sits inches below
+ * the status band, so a zombie rendered as "live" means you type, see "Sent",
+ * and get nothing back — with no way to tell that from an agent thinking hard.
+ *
+ * `!e.stale` is load-bearing: a STALE row is already known-gone and is reported
+ * as such, so calling it a zombie would be redundant noise on the one signal
+ * that has to stay sharp. `pidAlive === false` (not falsy) is equally
+ * load-bearing — `null` is "could not check" (different host, no pid, stale
+ * entry) and must never render as a positive death claim.
+ */
+export function isZombieSession(
+  e: Pick<HudRosterEntry, 'sessionState' | 'loopArmed' | 'liveness' | 'pidAlive' | 'stale'>,
+): boolean {
+  return isNominallyAlive(e) && e.pidAlive === false && !e.stale;
+}
+
 export function deriveColumn(
   e: HudRosterEntry,
   asks: HudAsk[] | undefined,
