@@ -1,0 +1,209 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+/**
+ * adv-roster-read — the read deadline on the Sessions roster fan-out (WI-39825).
+ *
+ * Every case here HANGS a leg rather than rejecting it, because a hang is the
+ * failure the pre-WI-39825 code could not survive and a rejection is the one it
+ * already could. Four legs fan out under one `Promise.all`, which waits for the
+ * slowest: one wedged store took the whole roster past the sync layer's
+ * `RESOLVER_READ_TIMEOUT_MS` and the Sessions view rendered nothing at all. This
+ * is a POLLED query behind the header pill and the Agents tile, so that is not a
+ * one-off 500 — it is every poll, for as long as the store stays slow.
+ *
+ * The subject is `readAdvRoster` and not the `advRoster.list` resolver,
+ * deliberately: proving a deadline fires requires MOVING it, and a resolver's
+ * only input is its wire `argsSchema`, so a resolver-level guard would have to
+ * either ship a `budgetMs` test knob to every client or genuinely wait the 6s
+ * budget out (blowing vitest's 5s default). `budgetMs` is a FUNCTION parameter
+ * on the extracted read, so the budget here is milliseconds and the shipped
+ * contract is untouched. See the module header for the full reasoning.
+ *
+ * The CONTROL and CALIBRATION cases are PERMANENT, per CLAUDE.md's falsifiability
+ * tiers: this subject is imported, so the deliberately-wrong version lives in the
+ * test file as a control rather than being produced by mutating the tree.
+ */
+
+const mergeRosterWithAssignments = vi.fn();
+const listEndedAdvSessions = vi.fn();
+const listPendingWorkbenchLaunches = vi.fn();
+const listStartingTerminalLaunches = vi.fn();
+
+// The pure projection/dedupe helpers are pass-throughs here so that what the
+// snapshot reports about a leg is exactly what that leg returned — the point
+// under test is which legs SURVIVE a wedge, not how rows are shaped afterwards
+// (that is `adv-roster`'s own suite).
+vi.mock('../adv-roster', () => ({
+  mergeRosterWithAssignments: (...a: unknown[]) => mergeRosterWithAssignments(...a),
+  dedupeEndedAgainstActive: (ended: unknown) => ended,
+  pendingLaunchesToRosterEntries: (rows: unknown) => rows,
+  startingLaunchesToRosterEntries: (rows: unknown) => rows,
+  dedupeStartingAgainstActive: (starting: unknown) => starting,
+}));
+
+vi.mock('../adv-sessions', () => ({
+  listEndedAdvSessions: (...a: unknown[]) => listEndedAdvSessions(...a),
+  listPendingWorkbenchLaunches: (...a: unknown[]) => listPendingWorkbenchLaunches(...a),
+  listStartingTerminalLaunches: (...a: unknown[]) => listStartingTerminalLaunches(...a),
+}));
+
+import { readAdvRoster, ROSTER_READ_BUDGET_MS } from './adv-roster-read';
+
+beforeEach(() => {
+  mergeRosterWithAssignments.mockReset().mockResolvedValue({ active: [], orphanedClaims: [] });
+  listEndedAdvSessions.mockReset().mockResolvedValue([]);
+  listPendingWorkbenchLaunches.mockReset().mockResolvedValue([]);
+  listStartingTerminalLaunches.mockReset().mockResolvedValue([]);
+});
+
+/** A store read that never settles — the wedge, not a rejection. */
+const hang = () => new Promise<never>(() => {});
+
+type Roster = {
+  active: unknown[];
+  ended: unknown[];
+  pending: unknown[];
+  starting: unknown[];
+  orphanedClaims: unknown[];
+  degradedFields?: Array<{ field: string; kind: string; reason: string }>;
+};
+type Settled =
+  | { kind: 'resolved'; roster: Roster }
+  | { kind: 'rejected'; message: string }
+  | { kind: 'pending' };
+
+/**
+ * Observe WITHOUT waiting forever. "Never settles" is the failure mode under
+ * test, so it has to be an assertable OUTCOME (`pending`) rather than a vitest
+ * timeout — a timeout would report the control as a broken test instead of as
+ * the guard discriminating correctly.
+ */
+const settleWithin = (p: Promise<unknown>, ms: number): Promise<Settled> =>
+  Promise.race([
+    p.then(
+      (roster): Settled => ({ kind: 'resolved', roster: roster as Roster }),
+      (error): Settled => ({ kind: 'rejected', message: String((error as Error)?.message ?? error) }),
+    ),
+    new Promise<Settled>((resolve) => {
+      const t = setTimeout(() => resolve({ kind: 'pending' }), ms);
+      (t as unknown as { unref?: () => void }).unref?.();
+    }),
+  ]);
+
+const read = (budgetMs: number) => readAdvRoster({ workspaceId: 'ws-test', budgetMs });
+
+describe('readAdvRoster — the read deadline (WI-39825)', () => {
+  it('the shipped budget sits under the resolver timeout it exists to beat', async () => {
+    // Not a tautology: a budget at or above RESOLVER_READ_TIMEOUT_MS cannot
+    // prevent the timeout, so the bound would be decorative. The relationship
+    // is the invariant, and it is the one a later "just bump the budget" breaks.
+    const { RESOLVER_READ_TIMEOUT_MS } = await import('./read-deadline');
+    expect(ROSTER_READ_BUDGET_MS).toBeLessThan(RESOLVER_READ_TIMEOUT_MS);
+  });
+
+  // PRIMARY leg. `active` IS the roster: a snapshot without it is not a degraded
+  // roster but a wrong one — an empty fleet reads as "nothing is running", the
+  // most misleading thing this view can say. So a lapse PROPAGATES, exactly as a
+  // throw from that reader already does. The gain is a fast, LABELLED failure at
+  // the budget instead of a hang the resolver timeout converts into nothing.
+  it('a hung PRIMARY leg (active) is REJECTED at the budget instead of hanging the read', async () => {
+    mergeRosterWithAssignments.mockReturnValue(hang());
+
+    const outcome = await settleWithin(read(25), 500);
+
+    expect(outcome.kind).toBe('rejected');
+    // The label is the point: a bare timeout hides WHICH leg wedged, which is
+    // the first thing anyone triaging a spinning roster needs.
+    expect(outcome.kind === 'rejected' && outcome.message).toContain(
+      'roster active exceeded the read budget',
+    );
+  });
+
+  it('CONTROL: the same hung leg NEVER settles when the bound is widened — so it is the deadline doing the work', async () => {
+    mergeRosterWithAssignments.mockReturnValue(hang());
+
+    // The deliberately-wrong version: a budget so large it cannot fire, which IS
+    // the pre-WI-39825 behaviour. If this ever reports anything but `pending`,
+    // the case above has stopped measuring the deadline and passes for some
+    // other reason.
+    const outcome = await settleWithin(read(10_000_000), 120);
+
+    expect(outcome.kind).toBe('pending');
+  });
+
+  it('CALIBRATION: a healthy read still returns its roster under the same tight budget', async () => {
+    // Guards the opposite failure: a bound that "passes" every case above by
+    // breaking every read, healthy or not. Same 25ms budget, working store.
+    mergeRosterWithAssignments.mockResolvedValue({
+      active: [{ id: 'agent-1' }],
+      orphanedClaims: [{ id: 'WI-1' }],
+    });
+    listEndedAdvSessions.mockResolvedValue([{ id: 'ended-1' }]);
+    listPendingWorkbenchLaunches.mockResolvedValue([{ id: 'pending-1' }]);
+    listStartingTerminalLaunches.mockResolvedValue([{ id: 'starting-1' }]);
+
+    const outcome = await settleWithin(read(25), 500);
+
+    expect(outcome.kind).toBe('resolved');
+    const roster = outcome.kind === 'resolved' ? outcome.roster : null;
+    expect(roster?.active).toEqual([{ id: 'agent-1' }]);
+    expect(roster?.ended).toEqual([{ id: 'ended-1' }]);
+    expect(roster?.pending).toEqual([{ id: 'pending-1' }]);
+    expect(roster?.starting).toEqual([{ id: 'starting-1' }]);
+    expect(roster?.orphanedClaims).toEqual([{ id: 'WI-1' }]);
+    // A healthy roster stays byte-identical to what it was before the bound:
+    // the flag's PRESENCE is the signal, so it must be absent, not empty.
+    expect(roster?.degradedFields).toBeUndefined();
+  });
+
+  // SUPPLEMENTARY legs render empty perfectly well, so their lapse costs their
+  // own section and nothing else. This is the partial the whole class-fix exists
+  // to preserve: the fleet still ships.
+  for (const [field, mockFn, label] of [
+    ['ended', () => listEndedAdvSessions, 'roster ended'],
+    ['pending', () => listPendingWorkbenchLaunches, 'roster pending'],
+    ['starting', () => listStartingTerminalLaunches, 'roster starting'],
+  ] as const) {
+    it(`a hung SUPPLEMENTARY leg (${field}) lands as a NAMED degradedFields entry and the roster still ships`, async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      mergeRosterWithAssignments.mockResolvedValue({ active: [{ id: 'agent-1' }], orphanedClaims: [] });
+      mockFn().mockReturnValue(hang());
+
+      const outcome = await settleWithin(read(25), 500);
+      warn.mockRestore();
+
+      expect(outcome.kind).toBe('resolved');
+      const roster = outcome.kind === 'resolved' ? outcome.roster : null;
+      // The intact legs are TRUE, not sacrificed to the wedged one.
+      expect(roster?.active).toEqual([{ id: 'agent-1' }]);
+      expect(roster?.[field]).toEqual([]);
+      // ...and the casualty is NAMED. Without this the empty section is
+      // indistinguishable from "no sessions have ended" / "nothing is booting",
+      // which is exactly the calm-and-empty answer the in-place `.catch(() => [])`
+      // used to give and the degradedFields channel exists to prevent.
+      const degraded = roster?.degradedFields ?? [];
+      expect(degraded.map((d) => d.field)).toEqual([field]);
+      expect(degraded[0]?.reason).toContain(`${label} exceeded the read budget`);
+      // Classified as a read failure, NOT a new `timed-out` kind: UnavailableKind
+      // is a shared union the client degraded-provenance guards consume, and
+      // widening it to say what the verbatim reason already says would strand
+      // them for no information gain.
+      expect(degraded[0]?.kind).toBe('read-failed');
+    });
+
+    it(`a REJECTING supplementary leg (${field}) is named too, not swallowed into an empty section`, async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      mockFn().mockRejectedValue(new Error('relation "adv_sessions" does not exist'));
+
+      const outcome = await settleWithin(read(25), 500);
+      warn.mockRestore();
+
+      expect(outcome.kind).toBe('resolved');
+      const roster = outcome.kind === 'resolved' ? outcome.roster : null;
+      expect(roster?.[field]).toEqual([]);
+      const degraded = roster?.degradedFields ?? [];
+      expect(degraded.map((d) => d.field)).toEqual([field]);
+      expect(degraded[0]?.reason).toContain('does not exist');
+    });
+  }
+});
