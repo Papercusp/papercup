@@ -1464,6 +1464,48 @@ describe('plan + goal cards carry identity (P-006)', () => {
     expect(toGoalCard(goal({ agents: [] }), NOW).identity).toBeUndefined();
     expect(toGoalCard(goal({}), NOW).identity).toBeUndefined();
   });
+
+  /**
+   * goal-live-holder-guarantee-2026-08-18 P-001. The payload resolves each
+   * holder's liveness fresh on every read; this board is the LAST layer that
+   * could quietly throw it away, and until P-001 it did — mapping agents down to
+   * `{ownerId, agentHandle}` and nothing else.
+   *
+   * That is the whole defect one level up from where it was fixed: a goal-mode
+   * row OUTLIVES the session that wrote it, so a card built from the identity
+   * alone rendered a steward six days dead exactly as it rendered one working.
+   * These lock the carry-through, so a later "simplify the map" cannot silently
+   * restore it.
+   */
+  it('carries each holder LIVENESS through to the card — a dead holder is distinguishable', () => {
+    const card = toGoalCard(
+      goal({
+        agents: [
+          { ownerId: 'su-alive-1111', live: true, sessionState: 'live' },
+          { ownerId: 'su-dead-2222', live: false, sessionState: 'ended' },
+        ],
+      }),
+      NOW,
+    );
+    const ids = card.identity as Array<{ ownerId?: string | null; live?: boolean | null }>;
+    expect(ids.map((i) => [i.ownerId, i.live])).toEqual([
+      ['su-alive-1111', true],
+      ['su-dead-2222', false],
+    ]);
+  });
+
+  /**
+   * The direction most likely to be "tidied" into a boolean. An UNRESOLVABLE
+   * verdict is not a dead one: the presence oracle omits an entry when its
+   * wakeability fetch degrades, so coercing null→false here would mark every
+   * holder on the board dead at once during a transient hiccup.
+   */
+  it('keeps an UNRESOLVED verdict as null — never coerced to false', () => {
+    const card = toGoalCard(goal({ agents: [{ ownerId: 'su-unknown-3333' }] }), NOW);
+    const ids = card.identity as Array<{ live?: boolean | null; sessionState?: string | null }>;
+    expect(ids[0].live).toBeNull();
+    expect(ids[0].sessionState).toBeNull();
+  });
 });
 
 describe('work-item cards carry identity so the Work items tab filters by agent', () => {
