@@ -300,6 +300,26 @@ export default defineTool({
       return err(`Could not open the goal: ${(e as Error)?.message ?? e}`);
     }
 
+    // ── 1.5 blocked-by edges (goal-dag-shared-substrate-2026-08-18 P-002) ──
+    // Validate-and-write BEFORE the mode stamp: a refused set (unresolvable
+    // ref, cycle) unwinds only the goal row — cheap, nothing spawned. This door
+    // REFUSES rather than degrading (unlike goals:create) because it is about
+    // to spawn an agent against exactly this record: silently dropping the
+    // prerequisites the caller declared would start an agent on a premise the
+    // caller did not state.
+    if (args.blockedBy?.length) {
+      const applied = await applyGoalBlockedBy(ctx.tx, {
+        workspaceId,
+        goalId: id,
+        refs: args.blockedBy,
+        createdBy: callerOwnerId ?? null,
+      });
+      if (!applied.ok) {
+        await deleteGoalRow(ctx.tx, { id, workspaceId }).catch(() => {});
+        return err(`blockedBy refused (nothing spawned, goal rolled back): ${applied.problem}`);
+      }
+    }
+
     // ── 2. the join: this agent, in GOAL mode, on THIS goal ───────────────
     // Written BEFORE the spawn on purpose — see the header. `subject` is the
     // marker the sessions pane filters on and the Goals board pairs by
@@ -372,6 +392,10 @@ export default defineTool({
           setBy: callerOwnerId ?? 'operator-ui',
         }).catch(() => {});
       }
+      // Edges before the row: a deleted goal must not leave dangling blocked-by
+      // edges (they would be invisible absent-blocker no-ops, but they pollute
+      // the workspace edge read every consumer folds).
+      await replaceGoalBlockedBy(ctx.tx, { workspaceId, goalId: id, blockers: [] }).catch(() => {});
       await deleteGoalRow(ctx.tx, { id, workspaceId }).catch(() => {});
     };
 
