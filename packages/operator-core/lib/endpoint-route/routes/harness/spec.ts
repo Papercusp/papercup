@@ -100,8 +100,8 @@ const putSpec = defineTool({
       const { notifySyncInvalidate } = await import('../../../sync-sse');
       // Invalidate both harnessProjectFiles (config) and discordConfig (which extracts discord from config)
       await Promise.all([
-        notifySyncInvalidate('harnessProjectFiles.byHarness', [{ harnessSlug: slug }]),
-        notifySyncInvalidate('discordConfig.byHarness', [{ harnessSlug: slug }]),
+        notifySyncInvalidate('harnessProjectFiles.byHarness', { harnessSlug: slug }),
+        notifySyncInvalidate('discordConfig.byHarness', { harnessSlug: slug }),
       ]);
     }
 

@@ -24,10 +24,10 @@ export default defineTool({
   method: 'GET',
   path: '/harness/:slug/assertion/:valId',
   auth: 'public',
-  guidance: {
-    when: 'Validator agent needs to resolve a VAL-* assertion text by id before writing its report.',
-    notWhen: 'Do not use as a fallback for validation-contract.md — a 404 here means the feature was not promoted from a plan with inline VAL-* assertions.',
-  },
+  // For validator agents resolving a VAL-* assertion text by id before writing
+  // a report. NOT a fallback for validation-contract.md — a 404 here means the
+  // feature was not promoted from a plan with inline VAL-* assertions.
+  // (HTTP-route defineTools carry no `guidance` block — that's MCP-tool only.)
   async handler(_req, ctx) {
     const slug = ctx.params.slug as string;
     const valId = ctx.params.valId as string;

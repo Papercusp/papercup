@@ -2787,8 +2787,10 @@ const handler = createMcpHandler(
           // Format-aware serialization (P-005) — parity with the projected path.
           // This bearer-only legacy branch is still an MCP (agent) transport, so
           // it defaults to compact; honor `_meta.format`/`?format=` overrides.
+          const resp = r.response!;
+          if ('content' in resp) return resp;
           const serialized = serializeToolResponse(
-            r.response!,
+            resp,
             formatOptsFromCtx({ requestedFormat, transport: 'mcp' }, lookupByMcpName(toolName)?.resultEligibility),
           );
           return {

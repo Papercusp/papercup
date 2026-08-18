@@ -19,7 +19,7 @@ export async function recordFlagAudit(
   key: string,
   enabled: boolean,
   actor: string,
-  extra?: { reason?: string; backend?: string },
+  extra?: { reason?: string; backend?: string; posthogFailureReason?: string },
 ): Promise<void> {
   try {
     const { sql } = getOrgPg();

@@ -11,7 +11,7 @@ import { readCredentials } from '../../../credentials';
 interface HealthPayload {
   pgvector: boolean;
   mem0_ready: boolean;
-  embedder_mode: 'openai' | 'local' | 'gemma' | 'disabled' | null;
+  embedder_mode: ReturnType<typeof getResolvedMode>;
   has_anthropic_key: boolean;
   has_openai_key: boolean;
   entry_count_user: number | null;

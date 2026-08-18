@@ -62,7 +62,7 @@ export default defineTool({
   // (HTTP-route defineTools carry no `guidance` block — that's MCP-tool only.)
   async handler(req) {
     let body: {
-      deps?: { tools?: unknown; packs?: unknown; plugins?: unknown };
+      deps?: { tools?: unknown; packs?: unknown; plugins?: unknown; events?: unknown };
       blueprintId?: string;
       blueprint?: Record<string, unknown>;
       harness?: string;
