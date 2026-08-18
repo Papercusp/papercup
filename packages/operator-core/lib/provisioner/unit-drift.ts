@@ -163,6 +163,7 @@ export function parseLlamaServerUnit(unitText: string): LlamaServerUnitParams {
     kvCacheTypeV: null,
     flashAttn: null,
     alias: null,
+    gpuLayers: null,
   };
   if (start === -1) return params;
 
@@ -199,6 +200,11 @@ export function parseLlamaServerUnit(unitText: string): LlamaServerUnitParams {
       case '--flash-attn':
         // llama-server takes `--flash-attn on|off`; treat a bare flag as enabled.
         params.flashAttn = tokens[i + 1] === 'off' ? false : true;
+        break;
+      case '-ngl':
+      case '--gpu-layers':
+      case '--n-gpu-layers':
+        params.gpuLayers = num(tokens[i + 1]);
         break;
       case '--alias':
         params.alias = tokens[i + 1] ?? null;
@@ -247,6 +253,7 @@ export function diffCatalogAgainstDeployedUnit(entry: CatalogEntry, deployedUnit
     flashAttn: entry.serve.flashAttn,
     jinja: entry.serve.jinja,
     reasoningBudget: entry.serve.reasoningBudget,
+    gpuLayers: entry.serve.gpuLayers,
     logPath: 'IRRELEVANT-NOT-COMPARED',
   });
   // Both sides go through the SAME parser on purpose: that is what puts a renderer regression in
@@ -258,4 +265,90 @@ export function diffCatalogAgainstDeployedUnit(entry: CatalogEntry, deployedUnit
 export function describeUnitDrift(drift: readonly UnitDrift[]): string {
   if (drift.length === 0) return 'no drift';
   return drift.map((d) => `${d.param}: catalog=${d.generated} deployed=${d.deployed}`).join(' · ');
+}
+
+/**
+ * Environment variables a unit DECLARES, as `KEY -> value`.
+ *
+ * Separate from `parseLlamaServerUnit` because these live outside `ExecStart` entirely, and because
+ * they are CHECKED differently — see `checkRequiredEnvironment`.
+ *
+ * Later assignments win, which is systemd's own precedence for a repeated key. Handles both
+ * `Environment=K=V` and the multi-assignment quoted form `Environment="K=V" "K2=V2"`.
+ */
+export function parseUnitEnvironment(unitText: string): Record<string, string> {
+  const env: Record<string, string> = {};
+  const assignment = /([A-Za-z_][A-Za-z0-9_]*)=("[^"]*"|'[^']*'|\S*)/g;
+  for (const raw of unitText.split('\n')) {
+    const line = raw.trim();
+    // `EnvironmentFile=` is a DIFFERENT directive naming a file we cannot read from here. Matching
+    // it as if it were an assignment would invent a variable called `EnvironmentFile`, so require
+    // the `=` immediately: startsWith('Environment=') excludes it.
+    if (!line.startsWith('Environment=')) continue;
+    const body = line.slice('Environment='.length).trim();
+    assignment.lastIndex = 0;
+    let m = assignment.exec(body);
+    while (m !== null) {
+      env[m[1]] = m[2].replace(/^["']|["']$/g, '');
+      m = assignment.exec(body);
+    }
+  }
+  return env;
+}
+
+export interface UnitEnvIssue {
+  key: string;
+  /** `missing` (no such assignment) · `empty` (declared, assigned nothing — same net effect). */
+  reason: 'missing' | 'empty';
+  detail: string;
+}
+
+/**
+ * Assert the environment variables a catalog entry declares it CANNOT SERVE CORRECTLY WITHOUT.
+ *
+ * WHY THIS IS PRESENCE-ONLY, AND NOT A FIELD ON `diffUnitParams`. The values are per-box install
+ * paths — the catalog cannot know where this machine keeps its CUDA runtime — so comparing them
+ * would report drift on every install until someone silenced the guard, the death-by-noise this
+ * module's header warns about. Their PRESENCE is not per-box at all: it is the whole difference
+ * between using the GPU and not. So this asks the half that has a machine-independent answer.
+ *
+ * WHY IT EXISTS (WI-39735 / D-012, measured 2026-08-17). `llama-ornith.service` needs
+ * `LD_LIBRARY_PATH` and `GGML_BACKEND_PATH` because ollama ships its CUDA backend as
+ * `cuda_v13/libggml-cuda.so`, inside a subdirectory ggml's backend loader does not scan. Delete
+ * either line and the engine finds no CUDA device, silently falls back to CPU, loads the model into
+ * ~10GB of system RAM, and returns HTTP 200 on `/health` exactly as if all were well — matching the
+ * catalog on every parameter `diffUnitParams` compares. The one outward tell was GPU memory never
+ * moving, i.e. you had to already suspect the answer to find it.
+ *
+ * Same shape as `checkUnitExecStartBinary`: not "does this unit match the catalog" but "can this
+ * unit do the job the catalog says it does".
+ */
+export function checkRequiredEnvironment(entry: CatalogEntry, deployedUnitText: string): UnitEnvIssue[] {
+  const required = entry.serve.requiredEnv ?? [];
+  if (required.length === 0) return [];
+  const env = parseUnitEnvironment(deployedUnitText);
+  const issues: UnitEnvIssue[] = [];
+  for (const key of required) {
+    const value = env[key];
+    if (value === undefined) {
+      issues.push({
+        key,
+        reason: 'missing',
+        detail: `${key} is not set by the deployed unit, and catalog '${entry.id}' declares it REQUIRED — the backend will start, report active and answer /health while serving degraded (D-012)`,
+      });
+    } else if (value.trim() === '') {
+      issues.push({
+        key,
+        reason: 'empty',
+        detail: `${key} is declared but assigned an empty value — the same net effect as omitting it`,
+      });
+    }
+  }
+  return issues;
+}
+
+/** One-line human summary for a log or a test failure message. */
+export function describeEnvIssues(issues: readonly UnitEnvIssue[]): string {
+  if (issues.length === 0) return 'no missing required environment';
+  return issues.map((i) => `${i.key}: ${i.reason}`).join(' · ');
 }
