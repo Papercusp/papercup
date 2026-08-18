@@ -356,13 +356,26 @@ describe('measured window outranks the spec-derived guess (WI-38347)', () => {
       specMock.mockResolvedValue(CODEX_SPEC);
       contextWindowMock.mockResolvedValue(null); // omp / a rollout that has not landed yet
       await checkCompactionCompliance(fakeSql({ unseeded: [{ owner_id: 'cx' }] }));
-      // codex-1m-context-window-2026-08-17 D-001/D-002: an extended-window codex
-      // family now seeds against MODEL_WINDOW_CODEX_EXTENDED (872k → 718k derived),
-      // which the 400k su/leader role cap binds. The old 158_000 here was exactly
-      // the "fabricated 200k window" pin that plan removed, so asserting it again
-      // would re-pin the bug. The unobservable-window risk is covered elsewhere:
-      // the measured-window branch lowers an over-derived limit UNCONDITIONALLY.
+      // 158_000 is CORRECT here, and is NOT a re-pin of the "fabricated 200k
+      // window" bug: CODEX_SPEC is gpt-5.5, which genuinely has no extended
+      // window (D-002), so the conservative branch IS the honest derivation for
+      // this model. The extended family's 400k derivation is pinned by its own
+      // case below against its own spec — keeping the two contracts on separate
+      // fixtures is what lets both stay truthful.
+      expect(setLimitMock).toHaveBeenCalledWith('cx', 158_000);
+    });
+
+    it('derives the 400k role cap — NOT the 158k fallback — for an EXTENDED codex spec (D-001/D-002)', async () => {
+      specMock.mockResolvedValue('gpt-5.6-sol:xhigh');
+      contextWindowMock.mockResolvedValue(null); // no measurement: the spec guess is all there is
+      await checkCompactionCompliance(fakeSql({ unseeded: [{ owner_id: 'cx' }] }));
+      // The point of codex-1m-context-window-2026-08-17: an extended codex session
+      // must stop seeding against the fabricated 200k window. 872k binds to the
+      // 400k su/leader role cap (D-001). This is the falsifier for a revert of the
+      // codex-aware branch in modelWindowForSpec — without it, that branch is
+      // untested at this consumer and a revert passes silently.
       expect(setLimitMock).toHaveBeenCalledWith('cx', 400_000);
+      expect(setLimitMock).not.toHaveBeenCalledWith('cx', 158_000);
     });
 
     it('never overrides an EXPLICIT launch --compaction-limit with the measured window', async () => {
