@@ -127,8 +127,13 @@ export default defineTool({
   // boundary; the checkpoint is your continuity"), and a clipped checkpoint is not
   // a smaller answer but a different one — a note that opens with a superseded
   // root cause and retracts it further down reads, truncated, as endorsement of
-  // the retracted lead. get-shape.ts spends the budget on `checkpoint` + the
-  // warnings, and drops `workItem.summary`/`payload` instead.
+  // the retracted lead. get-shape.ts therefore spends the budget on `checkpoint`
+  // + the warnings FIRST, and drops `workItem.payload` outright.
+  // EI-20743148487714069: `workItem.summary` used to be dropped outright too, and
+  // that over-corrected — a title-only read is the shape agents are told never to
+  // act on. It now draws on a LADDER-SHARED budget (see get-shape.ts), so a
+  // single-item read carries its body out of the slack the checkpoint case leaves
+  // behind, while a 100-id bulk read still spends nothing on it.
   shape: {
     standard: (data) => shapeWorkItemsGet(data, "standard"),
     trimmed: (data) => shapeWorkItemsGet(data, "trimmed"),

@@ -119,7 +119,7 @@ export const CHECKPOINT_MAX_RUNTIME_SEC = 3 * 60 * 60;
  * timing test pins the mirror to GREEN_CHECKPOINT_SUITE_TIMEOUT_MS + 15s.
  */
 export const MANUAL_CHECKPOINT_WATCHDOG_ENV = 'PAPERCUSP_MANUAL_GREEN_CHECKPOINT_WATCHDOG_MS';
-export const MANUAL_CHECKPOINT_WATCHDOG_MS = 120 * 60_000 + 15_000;
+export const MANUAL_CHECKPOINT_WATCHDOG_MS = 115 * 60_000 + 15_000;
 
 export interface LaunchCheckpointResult {
   launched: boolean;
