@@ -183,7 +183,7 @@ export interface RealQueenBacklogOps {
   /** Free spawn headroom + the FIFO arm's gather (live bees) — only used by the FIFO scripted loop. */
   gatherForFifo(input: { hiveHome: string; members: RealQueenEnrolled[]; workspaceId: string }): Promise<{
     tasks: BatchPlacementInput['tasks'];
-    bees: BatchPlacementInput['bees'];
+    bees: NonNullable<BatchPlacementInput['bees']>;
     headroom: number;
   }>;
   /** Execute a FIFO plan (scripted-loop only) — spawn/warm-inject bees running external-bench. */

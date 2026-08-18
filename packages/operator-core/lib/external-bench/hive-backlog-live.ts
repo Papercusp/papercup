@@ -106,7 +106,7 @@ export interface HiveBacklogOps {
   /** Ready, unplaced frontier tasks (importance order for 'hive', backlog order for 'queen-ablated'). */
   gatherFrontier(input: { hiveHome: string; arm: string; workspaceId: string }): Promise<BatchPlacementInput['tasks']>;
   /** Live bees + free spawn headroom. */
-  gatherBees(input: { hiveHome: string; workspaceId: string }): Promise<{ bees: BatchPlacementInput['bees']; headroom: number }>;
+  gatherBees(input: { hiveHome: string; workspaceId: string }): Promise<{ bees: NonNullable<BatchPlacementInput['bees']>; headroom: number }>;
   /** Execute the planner's decisions (spawn / warm-inject bees running external-bench). */
   placeBatch(input: {
     hiveHome: string;
