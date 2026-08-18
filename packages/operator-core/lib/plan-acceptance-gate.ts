@@ -272,6 +272,9 @@ export async function evaluatePlanAcceptanceGate(
   // so the ratings' values are never inspected here. Independently flagged and, like
   // the sibling rubric checks, NOT waivable by `force` (D-005).
   const vettingGate = await getFlag(FLAGS.ACCEPTANCE_RUBRIC_VETTING_GATE, 'system').catch(() => true);
+  // EI-20821478338037350: carried out of the vetting block so the SATISFIED verdict can
+  // report a no-critique waiver. Set only when the attesting card says so explicitly.
+  let vettedUnderWaiver: { consultId: string; reason?: string } | undefined;
   // Exempt: a criteria:[] investigation rubric (D-009 — nothing to vet) and the
   // meta-rubric itself (kind:'standard' so it can never be a plan's acceptance rubric,
   // but the guard is cheap and the regress would be infinite).
@@ -319,6 +322,12 @@ export async function evaluatePlanAcceptanceGate(
               `Pass is your judgment per criterion — no mechanical score floor (D-001 §3).`,
         };
       }
+      if (current.vetting?.unanswered) {
+        vettedUnderWaiver = {
+          consultId: current.vetting.consultId,
+          ...(current.vetting.unansweredReason ? { reason: current.vetting.unansweredReason } : {}),
+        };
+      }
     }
   }
 
@@ -354,6 +363,7 @@ export async function evaluatePlanAcceptanceGate(
   return {
     satisfied: true,
     rubricId: rubric.rubricId,
+    ...(vettedUnderWaiver ? { vettedUnderWaiver } : {}),
     gradedBy: independent.createdBy ?? null,
     ...(forcedChecks.length > 0 && force ? { forcedPast: { reason: force.reason, checks: forcedChecks } } : {}),
   };
