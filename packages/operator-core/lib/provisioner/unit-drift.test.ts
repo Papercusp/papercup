@@ -374,6 +374,17 @@ describe('deployed unit on this machine', () => {
     ).toEqual([]);
   });
 
+  it.runIf(present)('carries every environment variable the catalog declares it cannot serve without', () => {
+    const issues = checkRequiredEnvironment(ORNITH, readFileSync(unitPath, 'utf8'));
+    expect(
+      issues,
+      `DEPLOYED UNIT IS MISSING REQUIRED ENVIRONMENT (${unitPath}): ${describeEnvIssues(issues)}. ` +
+        `This is the WI-39735 / D-012 failure: the unit will still start, still report active and ` +
+        `still answer /health 200 — while serving from the CPU, at roughly half the load speed and ` +
+        `far worse throughput. Restore the Environment= line(s); do not drop them from the catalog.`,
+    ).toEqual([]);
+  });
+
   it.skipIf(present)('is absent on this machine — nothing deployed to compare', () => {
     expect(present).toBe(false);
   });
