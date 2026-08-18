@@ -33,6 +33,7 @@ import {
   clampCompactionLimit,
   defaultCompactionLimitForSpec,
   defaultCompactionLimitForWindow,
+  supersededDerivedCompactionLimits,
   MODEL_WINDOW_1M,
   modelWindowForSpec,
   type ModelTier,
