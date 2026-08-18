@@ -145,6 +145,10 @@ const USAGE = `pg-url — the gated Postgres DSN for a shell caller.
 
 Exit: 0 ok · 1 resolved but unreachable · 2 bad usage.`;
 
+/**
+ * @param {string[]} argv
+ * @returns {Promise<0 | 1 | 2>} the process exit code
+ */
 export async function main(argv) {
   const args = parseArgs(argv);
   if ('error' in args) {
