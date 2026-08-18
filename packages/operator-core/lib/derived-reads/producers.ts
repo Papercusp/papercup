@@ -464,19 +464,18 @@ registerDerivedRead({
   producerVersion: 1,
   scope: 'workspace',
   compute: async ({ workspaceId }) => {
-    const { loadModelPricingBook, loadCoordTokenBreakdown, loadCoordPollVolume } = await import(
-      '../harness-insights/load-token-rollups'
-    );
+    // BOUNDED (WI-39825) via the SAME extracted fan-out the resolver uses, so the
+    // precomputed default and the on-read variants cannot drift — and, the reason
+    // it mattered here first, so the copy that runs UNATTENDED every 5 minutes is
+    // the one that got the deadline. Three unbounded GROUP BY / COUNT aggregates
+    // over the busiest telemetry tables could previously hang and occupy a
+    // scheduled routine indefinitely.
+    const { readCoordTokens } = await import('../sync-resolver/insights-coordtokens-read');
     return withWorkspace(workspaceId, async (tx) => {
       const runQuery = async <T>(query: string, params: unknown[]): Promise<T[]> =>
         (await tx.unsafe(query, params as never)) as unknown as T[];
       // Default variant only: no harness_slug, default windows (7d cost / 1d poll).
-      const [pricingBook, coordBreakdown, pollVolume] = await Promise.all([
-        loadModelPricingBook(runQuery),
-        loadCoordTokenBreakdown({ workspace_id: workspaceId, runQuery }),
-        loadCoordPollVolume({ workspace_id: workspaceId, runQuery }),
-      ]);
-      return [{ pricingBook, coordBreakdown, pollVolume }];
+      return readCoordTokens({ runQuery, workspaceId });
     });
   },
 });

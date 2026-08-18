@@ -3960,18 +3960,18 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       }
       const { activeWorkspaceId } = await import('../workspace-registry');
       const { routeWithWorkspace } = await import('../route-workspace');
-      const { loadModelPricingBook, loadCoordTokenBreakdown, loadCoordPollVolume } =
-        await import('../harness-insights/load-token-rollups');
+      // BOUNDED + EXTRACTED (WI-39825). The three-leg fan-out and its per-leg
+      // degradation policy now live in `insights-coordtokens-read.ts`, shared with
+      // the derived-read PRODUCER that computes the default variant every 5
+      // minutes — bounding only this copy would have left the one that runs
+      // unattended still able to hang. Only the tx acquisition differs between
+      // the two callers, which is why `runQuery` is the parameter.
+      const { readCoordTokens } = await import('./insights-coordtokens-read');
       const ws = activeWorkspaceId();
       return await routeWithWorkspace(async (tx) => {
         const runQuery = async <T>(query: string, params: unknown[]): Promise<T[]> =>
           (await tx.unsafe(query, params as never)) as unknown as T[];
-        const [pricingBook, coordBreakdown, pollVolume] = await Promise.all([
-          loadModelPricingBook(runQuery),
-          loadCoordTokenBreakdown({ workspace_id: ws, harness_slug: a.harness, windowMs: a.windowMs, runQuery }),
-          loadCoordPollVolume({ workspace_id: ws, windowMs: a.windowMs, runQuery }),
-        ]);
-        return [{ pricingBook, coordBreakdown, pollVolume }];
+        return readCoordTokens({ runQuery, workspaceId: ws, harness: a.harness, windowMs: a.windowMs });
       });
     },
   },
