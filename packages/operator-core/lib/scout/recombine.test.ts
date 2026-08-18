@@ -16,7 +16,6 @@ import {
   type RouteHintsAreExhaustive,
 } from './recombine';
 import { classifyProposal, DEFAULT_ROUTING_RAIL, makeGoalScaleOverride } from './router';
-import { classifyProposal, makeGoalScaleOverride, DEFAULT_ROUTING_RAIL } from './router';
 
 function idea(over: Partial<Idea> = {}): Idea {
   return {
