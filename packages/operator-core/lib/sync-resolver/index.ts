@@ -5734,17 +5734,27 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
           return [degraded({ hives: [] }, err)];
         }
       }
+      // VARIABLE-ARITY fan-out (WI-39849): the leg count is `homes.length`, so the
+      // exposure GROWS with the workspace. One deadline shared by the listPots leg
+      // and every per-home soak read — each keeps its own existing fallback, so a
+      // lapsed budget degrades that home to null instead of hanging the panel.
+      const withinBudget = createReadDeadline(RESOLVER_FANOUT_BUDGET_MS);
       try {
         const { listPots } = await import('../agent-tools/pot/_resolve');
         const { activeWorkspaceId } = await import('../workspace-registry');
         const { readPotSoakReport } = await import('../pot/soak-report');
         const ws = activeWorkspaceId();
-        const homes = hive ? [{ slug: hive }] : await listPots(ws).catch(() => []);
+        const homes = hive
+          ? [{ slug: hive }]
+          : await withinBudget(listPots(ws), 'soakReport listPots').catch(() => []);
         const reports = (
           await Promise.all(
             homes.map(async (home) => {
               try {
-                return await readPotSoakReport(home.slug, { windowHours });
+                return await withinBudget(
+                  readPotSoakReport(home.slug, { windowHours }),
+                  `soakReport ${home.slug}`,
+                );
               } catch {
                 return null;
               }
@@ -6923,22 +6933,39 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       const { summarizeOpenPlacements, latestMugWakeAt } = await import('../pot/placement-watchdog');
       const { activeWorkspaceId } = await import('../workspace-registry');
       const ws = activeWorkspaceId();
-      const hives = await listPots(ws).catch(() => []);
+      // VARIABLE-ARITY fan-out (WI-39849): FOUR store reads per hive, so the leg
+      // count is 1 + 4×hives.length and grows with the workspace. One deadline
+      // shared by all of them; each read keeps its own existing fallback, so a
+      // lapsed budget degrades that field instead of hanging the whole control.
+      const withinBudget = createReadDeadline(RESOLVER_FANOUT_BUDGET_MS);
+      const hives = await withinBudget(listPots(ws), 'controlState listPots').catch(() => []);
       return Promise.all(
         hives.map(async (hv) => {
           // lastWakeAt = the MORE RECENT of the recordHiveWake ledger AND the Queen's
           // REAL queen-spawn wakes. The wake-brain Queen never calls recordHiveWake, so
           // without the real-spawn read the heartbeat shows "Paused/Stalled" while she
           // is alive (the visibility regression). ISO strings sort chronologically.
-          const realWake = await latestMugWakeAt(ws, hv.slug).catch(() => null);
+          const realWake = await withinBudget(
+            latestMugWakeAt(ws, hv.slug),
+            `controlState latestMugWakeAt ${hv.slug}`,
+          ).catch(() => null);
           const lastWakeAt = [realWake, hv.wake?.lastWakeAt ?? null].filter(Boolean).sort().at(-1) ?? null;
           return {
             slug: hv.slug,
-            started: await getPotPlacementStarted(ws, hv.slug).catch(() => false),
+            started: await withinBudget(
+              getPotPlacementStarted(ws, hv.slug),
+              `controlState started ${hv.slug}`,
+            ).catch(() => false),
             nextFireAt: hv.wake?.nextFireAt ?? null,
             lastWakeAt,
-            watchdogFires24h: await recentWatchdogFires(ws, hv.slug).catch(() => 0),
-            placements: await summarizeOpenPlacements(ws, hv.slug).catch(() => ({
+            watchdogFires24h: await withinBudget(
+              recentWatchdogFires(ws, hv.slug),
+              `controlState watchdog ${hv.slug}`,
+            ).catch(() => 0),
+            placements: await withinBudget(
+              summarizeOpenPlacements(ws, hv.slug),
+              `controlState placements ${hv.slug}`,
+            ).catch(() => ({
               recovering: 0,
               cursed: 0,
               stranded: 0,
@@ -6964,7 +6991,13 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       const { getOwnerSteering, DEFAULT_OWNER_STEERING } = await import('../owner-steering');
       const { activeWorkspaceId } = await import('../workspace-registry');
       const ws = activeWorkspaceId();
-      const hives = await listPots(ws).catch(() => []);
+      // VARIABLE-ARITY fan-out (WI-39849): one getOwnerSteering read per hive, so
+      // the leg count grows with the workspace. One deadline shared by the listPots
+      // leg and every per-hive steering read; each keeps its own existing fallback,
+      // so a lapsed budget degrades that hive to DEFAULT_OWNER_STEERING rather than
+      // hanging the 👑 tab.
+      const withinBudget = createReadDeadline(RESOLVER_FANOUT_BUDGET_MS);
+      const hives = await withinBudget(listPots(ws), 'steering listPots').catch(() => []);
       // Throttle defaults (queen-steering-panel P-006, D-006): the SYSTEM defaults
       // the 👑-tab shows beside each session override for its default-vs-override
       // badge — so the UI never hardcodes them. Same numbers the live seams clamp
@@ -7009,7 +7042,9 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         hives.map(async (hv) => ({
           slug: hv.slug,
           isHome: homeSlug != null && hv.slug === homeSlug,
-          ...(await getOwnerSteering(ws, hv.slug).catch(() => DEFAULT_OWNER_STEERING)),
+          ...(await withinBudget(getOwnerSteering(ws, hv.slug), `steering ${hv.slug}`).catch(
+            () => DEFAULT_OWNER_STEERING,
+          )),
           throttleDefaults,
         })),
       );
