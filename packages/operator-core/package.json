@@ -47,6 +47,7 @@
     "lint:green-checkpoint-tag": "node ../../scripts/check-green-checkpoint-tag.mjs",
     "lint:explicit-presence": "node ../../scripts/check-explicit-presence.mjs --ratchet",
     "gen:authored-docs:check": "tsx ../../scripts/project-authored-docs.ts --check",
+    "gen:client-docs:check": "node ../../scripts/project-doc-parts.mjs",
     "gen:compaction:check": "tsx ../../scripts/gen-compaction.ts --check",
     "gen:knowledge-packs:check": "node ../../scripts/gen-knowledge-packs.mjs --check",
     "gen:tool-catalog:check": "tsx ../../scripts/gen-tool-catalog.ts --check",
