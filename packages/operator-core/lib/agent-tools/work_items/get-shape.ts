@@ -110,10 +110,15 @@ const DEGRADATION_LADDER = {
  */
 const SUMMARY_USEFUL_MIN_CHARS = 200;
 
+/**
+ * Per-row caps for the fields whose size does NOT scale with the row count in a
+ * way the ladder must arbitrate. `summary` is deliberately NOT here: it is the
+ * one bulk field a caller can multiply by 100, so its budget is ladder-shared
+ * (see DEGRADATION_LADDER) rather than fixed per row.
+ */
 const FIELD_CAPS = {
   trimmed: {
     title: 160,
-    summary: 0,
     warning: 300,
     lifecycleEvents: 4,
     checkpointMin: 400,
@@ -122,7 +127,6 @@ const FIELD_CAPS = {
   },
   standard: {
     title: 300,
-    summary: 400,
     warning: 600,
     lifecycleEvents: 10,
     checkpointMin: 800,
@@ -199,8 +203,17 @@ function noteDroppedDetail(w: Row, dropped: Set<string>): Record<string, number>
   return Object.keys(omitted).length > 0 ? omitted : null;
 }
 
-/** Identity + lifecycle facts about the item; never the summary/payload blob. */
-function projectWorkItem(raw: unknown, caps: FieldCaps, dropped: Set<string>): unknown {
+/**
+ * Identity + lifecycle facts about the item, plus as much of the summary as the
+ * rung's shared budget affords (`summaryChars`; 0 ⇒ the field is omitted, which
+ * `projectRow` discloses). Never the payload blob.
+ */
+function projectWorkItem(
+  raw: unknown,
+  caps: FieldCaps,
+  summaryChars: number,
+  dropped: Set<string>,
+): unknown {
   if (!raw || typeof raw !== "object") return raw ?? null;
   const w = raw as Row;
   const detailOmitted = noteDroppedDetail(w, dropped);
@@ -219,7 +232,7 @@ function projectWorkItem(raw: unknown, caps: FieldCaps, dropped: Set<string>): u
     createdAt: w.createdAt ?? null,
     updatedAt: w.updatedAt ?? null,
     closedAt: w.closedAt ?? null,
-    ...(caps.summary > 0 ? { summary: clip(w.summary, caps.summary) } : {}),
+    ...(summaryChars > 0 ? { summary: clip(w.summary, summaryChars) } : {}),
     // Per-row attribution: `dropped` is payload-level, so across 100 rows it
     // cannot say WHICH item has the 7 unread comments. Mirrors the existing
     // `citedTruncated` / `eventsTruncated` convention in this file.
@@ -310,7 +323,13 @@ function projectThreadWindow(raw: unknown, tier: WorkItemsGetTier, dropped: Set<
   };
 }
 
-function projectRow(r: Row, caps: FieldCaps, checkpointChars: number, dropped: Set<string>): Row {
+function projectRow(
+  r: Row,
+  caps: FieldCaps,
+  checkpointChars: number,
+  summaryChars: number,
+  dropped: Set<string>,
+): Row {
   if (r.ok === false) return r; // an error row is already tiny and self-describing
 
   const checkpoint = r.checkpoint;
@@ -318,7 +337,13 @@ function projectRow(r: Row, caps: FieldCaps, checkpointChars: number, dropped: S
     dropped.add("checkpoint(clipped)");
   }
   const w = r.workItem as Row | undefined;
-  if (typeof w?.summary === "string" && caps.summary === 0) dropped.add("workItem.summary");
+  // Disclose the summary's fate in the SAME two shapes used for the checkpoint:
+  // a full drop and a clip are different losses and a reader acts differently on
+  // them (a clip is recoverable from what is in hand; a drop is not).
+  if (typeof w?.summary === "string") {
+    if (summaryChars === 0) dropped.add("workItem.summary");
+    else if (w.summary.length > summaryChars) dropped.add("workItem.summary(clipped)");
+  }
   if (w?.payload !== undefined) dropped.add("workItem.payload");
 
   const lifecycle = r.lifecycle as Row | undefined;
@@ -343,7 +368,7 @@ function projectRow(r: Row, caps: FieldCaps, checkpointChars: number, dropped: S
   return {
     ok: r.ok ?? true,
     id: r.id ?? null,
-    workItem: projectWorkItem(r.workItem, caps, dropped),
+    workItem: projectWorkItem(r.workItem, caps, summaryChars, dropped),
     ...(r.threadWindow !== undefined
       ? { threadWindow: projectThreadWindow(r.threadWindow, caps === FIELD_CAPS.trimmed ? "trimmed" : "standard", dropped) }
       : {}),
@@ -389,7 +414,7 @@ export function shapeWorkItemsGet(data: unknown, tier: WorkItemsGetTier): unknow
 
   let out: unknown;
   for (let rung = 0; rung < ladder.length; rung += 1) {
-    const { fullRows, checkpointTotal } = ladder[rung];
+    const { fullRows, checkpointTotal, summaryTotal } = ladder[rung];
     const dropped = new Set<string>();
     const carrying = rows
       .slice(0, fullRows)
@@ -397,8 +422,26 @@ export function shapeWorkItemsGet(data: unknown, tier: WorkItemsGetTier): unknow
     const checkpointChars =
       carrying === 0 ? 0 : Math.max(caps.checkpointMin, Math.floor(checkpointTotal / carrying));
 
+    // Divided across the rows that actually HAVE a summary, so one row's read is
+    // not rationed against 99 rows that would not have spent it. Deliberately NO
+    // `Math.max(min, …)` floor: unlike the checkpoint — whose floor is what keeps
+    // the tool's payload readable at all — a summary below the useful floor is
+    // worth less than the bytes it costs, so the share is taken to zero and the
+    // drop is disclosed instead.
+    const carryingSummaries = rows
+      .slice(0, fullRows)
+      .filter((r) => {
+        const s = (r.workItem as Row | undefined)?.summary;
+        return typeof s === "string" && s.length > 0;
+      }).length;
+    const summaryShare =
+      carryingSummaries === 0 ? 0 : Math.floor(summaryTotal / carryingSummaries);
+    const summaryChars = summaryShare >= SUMMARY_USEFUL_MIN_CHARS ? summaryShare : 0;
+
     const projected = rows.map((r, i) =>
-      i < fullRows ? projectRow(r, caps, checkpointChars, dropped) : stubRow(r, caps),
+      i < fullRows
+        ? projectRow(r, caps, checkpointChars, summaryChars, dropped)
+        : stubRow(r, caps),
     );
     if (rows.length > fullRows) dropped.add(`rows(${rows.length - fullRows} stubbed)`);
 
@@ -410,8 +453,18 @@ export function shapeWorkItemsGet(data: unknown, tier: WorkItemsGetTier): unknow
             _shapeNote: {
               tier,
               checkpointCharsPerRow: checkpointChars,
+              summaryCharsPerRow: summaryChars,
               dropped: [...dropped].sort(),
-              next: `Fields above were dropped or clipped to fit the '${tier}' payload tier. Re-read with payloadTier:'full' — it is FRAMEWORK-RESERVED and absent from this tool's published schema, so route it through your host's raw-args dispatch path (papercusp: tools:invoke { name:'work_items:get', args:{ …, payloadTier:'full' } }).`,
+              // The generic sentence is not enough when the dropped field is the
+              // item's PROSE: a reader who still has the title reads a size
+              // advisory as "you got the item, just smaller" and acts on the
+              // label. Name that specific loss, once per payload (never per row
+              // — D-012).
+              next: `${
+                dropped.has("workItem.summary")
+                  ? "⚠ The SUMMARY was dropped — you have this item's TITLE and no sentence of its body. A title is a LABEL: do not act on it. Re-read before deciding anything. "
+                  : ""
+              }Fields above were dropped or clipped to fit the '${tier}' payload tier. Re-read with payloadTier:'full' — it is FRAMEWORK-RESERVED and absent from this tool's published schema, so route it through your host's raw-args dispatch path (papercusp: tools:invoke { name:'work_items:get', args:{ …, payloadTier:'full' } }).`,
             },
           }
         : {}),
