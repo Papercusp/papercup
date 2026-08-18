@@ -344,7 +344,10 @@ function ensureWorker(): Promise<void> {
       // A fresh Worker is ref'd by libuv until we say otherwise.
       _workerRefd = true;
     } catch (err) {
-      tripBreaker(`the worker thread could not be spawned: ${err instanceof Error ? err.message : String(err)}`);
+      tripBreaker(
+        `the worker thread could not be spawned: ${err instanceof Error ? err.message : String(err)}`,
+        err,
+      );
       rejectReady(err as Error);
       return;
     }
@@ -396,8 +399,34 @@ function ensureWorker(): Promise<void> {
       // be respawned on every request (WI-37688).
       _worker = null;
       _workerReady = null;
-      if (++_consecutiveCrashes >= MAX_CONSECUTIVE_CRASHES) {
-        tripBreaker(`${_consecutiveCrashes} consecutive runtime crashes without a served request`);
+      _lastCrashError = describeCause(err);
+      _consecutiveCrashes += 1;
+      // EVERY crash is logged, not just the one that trips the breaker. The
+      // first two of a run used to be entirely silent — `err` reached only
+      // rejectAllPending/rejectReady, whose rejections the caller swallows to
+      // take the sync fallback — so the crashes that EXPLAIN a trip vanished
+      // before the trip that reported it (EI-20505664003243915). Bounded by
+      // MAX_CONSECUTIVE_CRASHES and then by the re-arm backoff.
+      console.error(
+        `[cpu-task-worker] worker crash ${_consecutiveCrashes} ` +
+          `(pid ${process.pid}): ${_lastCrashError}`,
+      );
+      if (_halfOpen) {
+        // The half-open probe crashed: the worker is still broken. The breaker
+        // was never un-latched (only `_halfOpen` admitted this one request), so
+        // there is nothing to re-trip — just close the window and back off.
+        _halfOpen = false;
+        _reArmFailures += 1;
+        _breakerTrippedAt = Date.now();
+        console.error(
+          `[cpu-task-worker] half-open probe FAILED (${_reArmFailures} so far); next probe in ` +
+            `${Math.round(reArmCooldownMs() / 1000)}s`,
+        );
+      } else if (_consecutiveCrashes >= MAX_CONSECUTIVE_CRASHES) {
+        tripBreaker(
+          `${_consecutiveCrashes} consecutive runtime crashes without a served request`,
+          err,
+        );
       }
       if (!initialized) rejectReady(err);
     });
@@ -440,7 +469,27 @@ export async function serializeJsonResponse(
   value: unknown,
   itemCount: number,
 ): Promise<string> {
-  const useWorker = !_workerDisabled && itemCount >= OFFLOAD_MIN_ITEMS;
+  const eligible = itemCount >= OFFLOAD_MIN_ITEMS;
+
+  // Half-open admission: a latched breaker lets exactly ONE probe through once
+  // the (backed-off) cooldown has elapsed. `_halfOpen` gates re-entry so a burst
+  // of concurrent requests cannot each respawn a still-broken worker — the
+  // respawn-per-request failure MAX_CONSECUTIVE_CRASHES exists to prevent.
+  if (
+    eligible &&
+    _workerDisabled &&
+    !_halfOpen &&
+    _breakerTrippedAt !== null &&
+    Date.now() - _breakerTrippedAt >= reArmCooldownMs()
+  ) {
+    _halfOpen = true;
+  }
+
+  const useWorker = eligible && (!_workerDisabled || _halfOpen);
+  // Counted BEFORE the attempt: an eligible request that the breaker turned
+  // away never reaches the worker path at all, and that refusal is exactly the
+  // silent degradation this counter makes visible.
+  if (eligible && !useWorker) _eligibleFallbacks += 1;
 
   if (useWorker) {
     try {
@@ -463,8 +512,13 @@ export async function serializeJsonResponse(
 
       if (result.json !== null) return result.json;
       // Unexpected null result — fall through to sync path.
+      _eligibleFallbacks += 1;
     } catch {
-      // Worker spawn failed or crashed — sync fallback below.
+      // Worker spawn failed or crashed — sync fallback below. Counted for the
+      // same reason as a breaker refusal: the offload did not happen. The crash
+      // itself is logged by the 'error' handler; this bare catch stays silent so
+      // a degradation path never throws inside a response handler.
+      _eligibleFallbacks += 1;
     }
   }
 
