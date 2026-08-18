@@ -91,12 +91,19 @@ type ReleaseSubjectStamp = ReturnType<typeof releaseSubjectStamp>;
 /**
  * EI-20482937744589016 — an ASSERTION, not a selector. The filed defect names the schema
  * itself as half the trap: with no harness field at all, a caller has nowhere to state which
- * pipeline they believe they are asking about, and a zod object SILENTLY STRIPS an unknown
- * key — so `{ op:'status', harness:'sidestage' }` would be accepted and answered about
- * Papercusp, which is the misread wearing a selector's clothes.
+ * pipeline they believe they are asking about.
  *
- * Declaring it makes the belief checkable: pass it and a wrong one is REFUSED by name instead
- * of being quietly ignored. It is deliberately not a way to target another harness — this
+ * ⚠ CORRECTED 2026-08-18 (measured, not assumed): an earlier draft of this comment claimed a
+ * bare `{ op:'status', harness:'sidestage' }` would be SILENTLY STRIPPED and answered about
+ * Papercusp. That is FALSE for this tool. The args schema is a strict `oneOf` with
+ * `additionalProperties:false` on every branch, so the pre-fix build REFUSED the key outright
+ * — verified live against the running pre-fix `:3070` (deployed sha 4824a92b):
+ * `invalid_input: Unrecognized key: "harness"`. There was never a silent-misanswer window.
+ *
+ * So what this field actually buys is the QUALITY of the refusal, not the existence of one:
+ * before, a caller stating their belief got an anonymous schema dump that never says WHICH
+ * pipeline the tool reports; now they get a refusal that names the home harness and explains
+ * the one-pipeline rule. It is deliberately not a way to target another harness — this
  * tool drives one pipeline and adding a real selector would be a different (and much larger)
  * change.
  */
