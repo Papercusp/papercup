@@ -299,10 +299,29 @@ export async function readRetainFeed(
   const shippedArr = [...ISSUE_SHIPPED_STATUSES];
   const abandonedArr = [...ISSUE_ABANDONED_STATUSES];
 
+  // `listMemories` and `listRubrics` are each consumed TWICE per page: once by
+  // their own leg (which needs the rows) and once by the counts fan-out below
+  // (which needs only `.length`). Both are FULL-CORPUS reads — unlike every
+  // other leg, which is keyset-paged — so calling each twice doubles the
+  // dominant cost of the page to recompute a number the first read already
+  // held. Memoize per invocation: one read each, and the count can no longer
+  // disagree with the rows it is counting (they are now the same array).
+  //
+  // Rejection semantics are unchanged. A shared rejected promise is still
+  // observed by both consumers, and both already handle it — the leg via the
+  // per-leg try/catch that records `degraded`, the count via its own `.catch`
+  // — so a failure still degrades visibly rather than throwing the page.
+  const memoOnce = <T>(fn: () => Promise<T>): (() => Promise<T>) => {
+    let cached: Promise<T> | null = null;
+    return () => (cached ??= fn());
+  };
+  const listMemoriesOnce = deps.listMemories ? memoOnce(deps.listMemories) : undefined;
+  const listRubricsOnce = memoOnce(deps.listRubrics);
+
   const legMemories = async (): Promise<RetainFeedRow[]> => {
     const w = retainLegWindowFor('memory', cursor);
-    if (!deps.listMemories) throw new Error('listMemories dep not wired');
-    const all = await deps.listMemories();
+    if (!listMemoriesOnce) throw new Error('listMemories dep not wired');
+    const all = await listMemoriesOnce();
     return all
       .flatMap((e) => {
         if (!e.id || !e.text) return [];
@@ -449,7 +468,7 @@ export async function readRetainFeed(
 
   const legRubrics = async (): Promise<RetainFeedRow[]> => {
     const w = retainLegWindowFor('rubric', cursor);
-    const all = await deps.listRubrics();
+    const all = await listRubricsOnce();
     return all
       .flatMap((r) => {
         const ts = toIsoMs(r.updatedAt);
@@ -544,9 +563,8 @@ export async function readRetainFeed(
   let counts: RetainFeedCounts | null = null;
   if (!cursor) {
     const [memories, plans, wi, rubrics, runbooks, recipes] = await Promise.all([
-      deps.listMemories
-        ? deps
-            .listMemories()
+      listMemoriesOnce
+        ? listMemoriesOnce()
             .then((r) => r.length)
             .catch(() => null)
         : Promise.resolve(null),
