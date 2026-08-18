@@ -34,6 +34,7 @@ import {
   type LocalBackendRecord,
 } from '../inference-gateway/local-backend-store';
 import type { CatalogEntry } from './catalog';
+import { auditDeployedUnitForBackend, type DeployedUnitAudit } from './unit-drift';
 
 const execFileAsync = promisify(execFile);
 
@@ -246,6 +247,12 @@ export interface BackendLifecycleTarget {
   /** From the registry (migration 843). `null` ⇒ this backend has no unit recorded, and both
    *  operations below REFUSE rather than guess — see the D-005 note on `LocalBackendRecord`. */
   unitName: string | null;
+  /** The alias set this backend serves, straight off the registry row. Optional: it exists ONLY
+   *  to resolve the catalog entry for the cold-start unit audit (D-016), and every pre-existing
+   *  construction site stays valid without it — absent simply makes the audit `unauditable`. */
+  models?: readonly string[];
+  /** Backend engine, for the same resolution — it disambiguates one model served two ways. */
+  kind?: string;
   /** What the gateway actually routes to. Health is checked here, end-to-end, rather than on
    *  the unit's own port: for a proxied backend those differ, and the routable address is the
    *  one whose readiness callers care about. */
@@ -321,6 +328,18 @@ export interface EnsureBackendRunningOptions extends BackendLifecycleOptions {
   /** Injected for hermetic tests — the default is real wall-clock. */
   sleep?: (ms: number) => Promise<void>;
   now?: () => number;
+  /** Where the cold-start audit (D-016) REPORTS. Omitted ⇒ the audit still runs and still lands on
+   *  the result, it just goes nowhere a human will see — so a caller on the request path should
+   *  pass this. It is called for EVERY verdict including `ok`, because a caller that only hears
+   *  about failures cannot tell a passing guard from an absent one. */
+  onUnitAudit?: (audit: DeployedUnitAudit) => void;
+  /** Read the DEPLOYED unit text. Default `systemctl --user cat <unit>`, which is the deployed
+   *  truth including drop-ins — as opposed to re-deriving a path the unit may not live at. */
+  readUnitText?: (unitName: string) => Promise<string>;
+  /** Catalog to resolve the entry against (default `CERTIFIED_CATALOG`). */
+  catalog?: readonly CatalogEntry[];
+  /** Injected for hermetic tests — the binary-existence probe. */
+  access?: (path: string, mode: number) => Promise<void>;
 }
 
 export interface EnsureBackendRunningResult {
@@ -333,6 +352,10 @@ export interface EnsureBackendRunningResult {
   healthy: boolean;
   waitedMs: number;
   error?: string;
+  /** The cold-start unit audit (D-016). Present only on the START path; `undefined` on the warm
+   *  path means NOT CHECKED, never "checked and clean" — the audit's own `unauditable` verdict is
+   *  what "checked, could not conclude" looks like. */
+  unitAudit?: DeployedUnitAudit;
 }
 
 /**
@@ -377,6 +400,52 @@ export async function ensureLocalBackendRunning(
   }
 
   const systemctl = opts.runSystemctl ?? defaultSystemctl;
+
+  // AUDIT THE UNIT WE ARE ABOUT TO START (D-016, WI-39735). This is the guard's production caller:
+  // provisioner/unit-drift can compare a deployed unit against its catalog entry, and until now
+  // nothing in production ever asked it to — it ran only when a test happened to select the
+  // provisioner suite, i.e. when someone edited the provisioner, never when the deployed unit
+  // changed underneath it. A widened detector nobody calls is decoration.
+  //
+  // WHY HERE. This is the one moment the system deliberately looks at a stopped unit and decides to
+  // run it, so the check costs nothing anybody waits on: a cold start here is ~90s of model load
+  // and `systemctl cat` is a few ms. It is also the moment the answer is most actionable — both
+  // historical incidents (a deleted engine binary, missing CUDA env) presented as a start that
+  // "worked" and then served wrong or timed out silently.
+  //
+  // WHY BEFORE THE START, not after: the binary check EXPLAINS a failed start (203/EXEC), so
+  // running it first means the log line that diagnoses the failure is already emitted when the
+  // failure happens, instead of never (we return early on a start error).
+  //
+  // WHY IT WARNS AND NEVER REFUSES. A degraded backend still serves; refusing to start one turns a
+  // slow-but-answering box into a dead one, and converts every false positive in this guard into an
+  // outage. That asymmetry is also what keeps the guard alive: a warning that cries wolf gets
+  // fixed, a refusal that cries wolf gets deleted. The audit therefore cannot fail the start —
+  // including by throwing, which is what the catch-all is for.
+  let unitAudit: DeployedUnitAudit | undefined;
+  try {
+    const readUnitText = opts.readUnitText ?? ((unit: string) => systemctl(['--user', 'cat', unit]).then((r) => r.stdout));
+    unitAudit = await auditDeployedUnitForBackend(
+      { models: target.models, kind: target.kind },
+      await readUnitText(target.unitName),
+      { access: opts.access, catalog: opts.catalog },
+    );
+  } catch (err) {
+    unitAudit = {
+      verdict: 'unauditable',
+      catalogEntryId: null,
+      drift: [],
+      envIssues: [],
+      binary: null,
+      summary: `unit audit could not run: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+  try {
+    opts.onUnitAudit?.(unitAudit);
+  } catch {
+    // A broken reporter must not fail a start either.
+  }
+
   try {
     await systemctl(['--user', 'start', target.unitName]);
   } catch (err) {
@@ -387,6 +456,7 @@ export async function ensureLocalBackendRunning(
       healthy: false,
       waitedMs: now() - startedAt,
       error: err instanceof Error ? err.message : String(err),
+      unitAudit,
     };
   }
 
@@ -395,7 +465,7 @@ export async function ensureLocalBackendRunning(
   while (now() - startedAt < opts.readyTimeoutMs) {
     await sleep(pollIntervalMs);
     if (await healthCheck(target.baseUrl)) {
-      return { ok: true, alreadyRunning: false, started: true, healthy: true, waitedMs: now() - startedAt };
+      return { ok: true, alreadyRunning: false, started: true, healthy: true, waitedMs: now() - startedAt, unitAudit };
     }
   }
 
@@ -405,7 +475,13 @@ export async function ensureLocalBackendRunning(
     started: true,
     healthy: false,
     waitedMs: now() - startedAt,
-    error: `backend '${target.id}' (${target.unitName}) did not answer ${target.baseUrl} within ${opts.readyTimeoutMs}ms — unit left running`,
+    // A timeout and a degraded unit have the same outward shape (see checkUnitExecStartBinary's
+    // header: a missing binary read as a slow 15.5GB load for 15 minutes), so name the audit
+    // verdict right here rather than leaving the reader to correlate two log lines.
+    error:
+      `backend '${target.id}' (${target.unitName}) did not answer ${target.baseUrl} within ${opts.readyTimeoutMs}ms — unit left running` +
+      (unitAudit && unitAudit.verdict !== 'ok' ? ` · unit audit: ${unitAudit.summary}` : ''),
+    unitAudit,
   };
 }
 
