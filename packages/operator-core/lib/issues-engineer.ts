@@ -68,6 +68,7 @@ import { ISSUE_TERMINAL_STATUSES } from './work-item-blocking';
 import { mirrorWorkItemBlockingEdge, removeMirroredWorkItemBlockingEdge } from './dbos/work-item-deps-store';
 import { randomInt } from 'node:crypto';
 import { isTransportOnlyIdentity } from './agent-tools/coordination/identity';
+import { trackDetached } from './detached-imports';
 
 /**
  * Upper bound on rows a single `listIssues` read returns. Kept in lock-step with
@@ -2225,7 +2226,7 @@ export async function releaseIssue(
     // Workspace defaults to activeWorkspaceId() inside releaseIssueClaimLease — the workspace
     // leaseClaimedWorkItem keyed the lease under at acquire (which is NOT necessarily the
     // issue's scope-workspace `ws`); passing `ws` here would miss the lease if they diverge.
-    void import('./work-item-claim-lease-wiring')
+    void trackDetached(import('./work-item-claim-lease-wiring'))
       .then((m) => m.releaseIssueClaimLease({ workItemId: id, owner: formerAssignee }))
       .catch(() => {});
   }

@@ -176,6 +176,12 @@ export interface CheckpointDeps {
      *  (AFFECTED_RETRY_FAILED) — the gate never sees those, so claiming otherwise would be
      *  a stronger statement than the evidence supports. */
     cleanGreen?: boolean;
+    /** WI-39807: did the POST-SUITE phase run for this verdict? On a red suite the legs are
+     *  deferred (`legsNotRun`), so `failingTests` names test files ONLY and contains no leg
+     *  signature — a FLOOR, not the full holder list. ABSENT ⇒ unknown (a stub/older dep, or
+     *  the early-preflight path), which a consumer must NOT read as `true`: that is exactly
+     *  the reading that turns an unmeasured post-suite blocker into an apparently-clean one. */
+    postSuiteMeasured?: boolean;
   }>;
   /** Fast-forward `ready` to `candidate` (advanceReady). */
   advance(candidate: string): Promise<AdvanceResult>;
@@ -5334,17 +5340,29 @@ export function formatGatePromotionTrailer(v: {
  */
 export function formatGateHeldByNote(
   failingTests: readonly string[] | undefined,
+  opts: { postSuiteMeasured?: boolean } = {},
 ): string {
   const maxEntries = 40;
   const entries = failingTests ?? [];
+  // `truncated` answers ONLY "was the entries LIST clipped at 40". It is not, and must not
+  // be read as, a completeness claim about the MEASUREMENT behind the list — the repo rule
+  // is that a bounded measurement has to say so on the AGGREGATE, because the aggregate is
+  // what gets read as a verdict. `postSuite` is that marker for the half this line silently
+  // omitted. Emitted only when we affirmatively know the phase was skipped: `undefined`
+  // keeps the byte-identical legacy line, so a caller that cannot know (the early-preflight
+  // path) reports nothing rather than guessing.
+  const postSuiteSkipped = opts.postSuiteMeasured === false;
   return (
     `\n\nGATE_HELD_BY count=${entries.length} ` +
     `attribution=${entries.length ? "attributed" : "unattributed"} ` +
     `truncated=${entries.length > maxEntries} ` +
+    (postSuiteSkipped ? `postSuite=not-measured ` : ``) +
     `entries=${JSON.stringify(entries.slice(0, maxEntries))}` +
-    (entries.length
-      ? `\n(post-suite LEG signatures AND failing TEST files, combined — this is the list the gate held the release on)`
-      : `\n(the gate decided RED but produced NO attributable leg signature or failing test file — this is NOT "nothing held it". Read this log's own leg output; see the empty-failingTests red noted at green-checkpoint.ts ~L1048.)`)
+    (postSuiteSkipped
+      ? `\n(⚠ FLOOR, NOT THE FULL LIST — failing TEST files ONLY. The post-suite legs (typecheck · lint · SPA build) were SKIPPED because the suite failed first, so NO leg signature could be collected and none appears above. A post-suite blocker may still be holding the release and is simply UNMEASURED here: this list becoming empty does NOT mean the gate would go green. Re-read after the suite passes, or run the legs directly.)`
+      : entries.length
+        ? `\n(post-suite LEG signatures AND failing TEST files, combined — this is the list the gate held the release on)`
+        : `\n(the gate decided RED but produced NO attributable leg signature or failing test file — this is NOT "nothing held it". Read this log's own leg output; see the empty-failingTests red noted at green-checkpoint.ts ~L1048.)`)
   );
 }
 
@@ -5362,10 +5380,11 @@ function appendGateHeldByIfMissing(
   logPath: string | undefined,
   failingTests: readonly string[] | undefined,
   log?: (s: string) => void,
+  postSuiteMeasured?: boolean,
 ): void {
   if (!logPath || hasGateHeldByLine(logPath)) return;
   try {
-    appendFileSync(logPath, formatGateHeldByNote(failingTests));
+    appendFileSync(logPath, formatGateHeldByNote(failingTests, { postSuiteMeasured }));
   } catch (e) {
     log?.(
       `warn: GATE_HELD_BY line not published to ${logPath}: ${e instanceof Error ? e.message : e}`,
@@ -5872,6 +5891,7 @@ export async function runGreenCheckpoint(
     isolationNote,
     retriedTests,
     cleanGreen,
+    postSuiteMeasured,
   } = earlyPreflightFailure ??
   (await deps.runGreen(cfg.checkpointRoot, lastReady));
   // EI-20014356905761236: this pass's own verdict log is now known — its PROMOTION outcome is
@@ -6056,7 +6076,9 @@ export async function runGreenCheckpoint(
     // that way) — so the LEG route cannot yield an empty list. The SUITE route derives
     // entries by PARSING output via extractFailingTests, which L1048 records returning []
     // on a genuine red. That is the case that used to go silent.
-    const heldByNote = formatGateHeldByNote(failingTests);
+    const heldByNote = formatGateHeldByNote(failingTests, {
+      postSuiteMeasured,
+    });
     // EI-19370028836452003: the per-candidate log is WRITTEN by runGreen (see the
     // writeFileSync ~line 4550) BEFORE this verdict block runs, so the file named
     // `...-cand-<X>.log` never contained X's OWN lineage / already-fixed-since /
@@ -7496,6 +7518,16 @@ interface PostSuiteLegs {
   /** True when no leg FAILED. A skipped leg is neither a pass nor a fail: it is the
    *  documented subject-hive opt-out, and it never contributes evidence of green. */
   ok: boolean;
+  /** Did the post-suite phase actually RUN? `ok: true` alone cannot answer this — it is
+   *  true both when every leg passed and when every leg was skipped (see `legsNotRun`),
+   *  and on the skipped path `failingSignatures` is `[]` because nothing was measured,
+   *  not because nothing failed. Consumers that REPORT what held the gate must branch on
+   *  this: without it, a red suite's GATE_HELD_BY line names only failing test files while
+   *  still claiming to be the combined leg+test list, so a post-suite blocker that is very
+   *  much still there reads as absent (WI-39807: `lint:tsc:scripts` was the SOLE holder at
+   *  10:26Z, then vanished from the line for six consecutive runs purely because the suite
+   *  began failing first). */
+  ran: boolean;
   typecheck: LegOutcome;
   typecheckPapercuspLibs: LegOutcome;
   /** WI-7155 / EI-19376779013716004: the SUPERPROJECT roots (apps/*, packages/*,
@@ -7550,6 +7582,7 @@ function legsNotRun(skipReason: string): PostSuiteLegs {
   const skipped: LegOutcome = { status: "skipped", skipReason };
   return {
     ok: true,
+    ran: false,
     typecheck: skipped,
     typecheckPapercuspLibs: skipped,
     typecheckWorkspaces: skipped,
@@ -8616,6 +8649,10 @@ export async function runPostSuiteLegs(
   // preserves the diagnostic tail without weakening the timing evidence.
   legs.output = `\n${telemetry.join("\n")}${outputs.join("")}\n`;
   legs.failingSignatures = failingSignatures;
+  // The phase reached its telemetry, so its signatures are a MEASUREMENT. Set here rather
+  // than at entry: the hard-halt returns above bail before any leg is judged, and they must
+  // keep reporting not-measured instead of an empty-because-unmeasured signature list.
+  legs.ran = true;
   return legs;
 }
 
@@ -9433,11 +9470,13 @@ export function realCheckpointDeps(
       // runner. The orchestration caller appends richer notes later, but a self-watchdog,
       // supervisor loss, or other interruption between this return and that append must not
       // erase the only structured answer to "what held the gate?" (EI-19995300915348764).
-      if (!green) appendGateHeldByIfMissing(logPath, failingTests, log);
+      if (!green)
+        appendGateHeldByIfMissing(logPath, failingTests, log, legs.ran);
       return {
         green,
         summary,
         failingTests,
+        postSuiteMeasured: legs.ran,
         ...(flakeSuspects?.length ? { flakeSuspects } : {}),
         ...(failingFiles.length ? { failingFiles } : {}),
         ...(logPath ? { logPath } : {}),

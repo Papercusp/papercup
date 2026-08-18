@@ -1286,6 +1286,7 @@ export async function getWorkItem(id: string, harness?: string): Promise<WorkIte
  * `undefined` at precisely the call sites it exists to protect.
  */
 export { harnessScopeMismatch, type HarnessScopeMismatch } from './work-items-harness-scope';
+import { trackDetached } from './detached-imports';
 
 /**
  * The FEATURE-family half of {@link getWorkItem} (its issue-family half is a bare
@@ -1834,7 +1835,7 @@ export interface CreateWorkItemInput {
  *  failure must never break the write. */
 function maybeFireUrgentWake(input: CreateWorkItemInput, wi: WorkItem): void {
   if (!input.urgent) return;
-  void import('./pot/urgent-wake')
+  void trackDetached(import('./pot/urgent-wake'))
     .then((m) =>
       m.requestUrgentPotWake({
         reason: `urgent work_item ${wi.id} (${wi.kind}) enqueued: ${wi.title}`,
@@ -1854,7 +1855,7 @@ function maybeFireUrgentWake(input: CreateWorkItemInput, wi: WorkItem): void {
  */
 function maybeFireClaimedEvent(assignTo: string | null, wi: WorkItem): void {
   if (!assignTo) return;
-  void import('./work-items-events').then((m) => m.emitWorkItemClaimedEvent(wi, assignTo)).catch(() => {});
+  void trackDetached(import('./work-items-events')).then((m) => m.emitWorkItemClaimedEvent(wi, assignTo)).catch(() => {});
 }
 
 /**
@@ -1865,7 +1866,7 @@ function maybeFireClaimedEvent(assignTo: string | null, wi: WorkItem): void {
 function maybeFireCreatedEvent(wi: WorkItem): void {
   // P-007: emitWorkItemCreatedEvent internally co-fires the canonical
   // `work-item:claimable` key for an unclaimed-claimable create — one hook here.
-  void import('./work-items-events').then((m) => m.emitWorkItemCreatedEvent(wi)).catch(() => {});
+  void trackDetached(import('./work-items-events')).then((m) => m.emitWorkItemCreatedEvent(wi)).catch(() => {});
 }
 
 /** Create a work-item of any kind, minting a kind-independent WI-NNN id (D-008). */
@@ -3236,7 +3237,7 @@ export async function setWorkItemState(
   if (result && result.state !== wi.state) {
     const transitioned = result;
     const prevState = wi.state;
-    void import('./work-items-events').then((m) => m.emitWorkItemStatusEvent(transitioned, prevState)).catch(() => {});
+    void trackDetached(import('./work-items-events')).then((m) => m.emitWorkItemStatusEvent(transitioned, prevState)).catch(() => {});
   }
   // await-event-primitive P-012/P-013: a SETTLED item fires
   // `work-item:done:<id>` (+ `work-item:unblocked:<dep>` for dependents whose
@@ -3244,7 +3245,7 @@ export async function setWorkItemState(
   // imports this module statically) — an emit failure never breaks the write.
   if (result && isSettledWorkItemState(result.state)) {
     const settled = result;
-    void import('./work-items-events').then((m) => m.emitWorkItemSettledEvents(settled)).catch(() => {});
+    void trackDetached(import('./work-items-events')).then((m) => m.emitWorkItemSettledEvents(settled)).catch(() => {});
     // WI-4119: generated blocker follows are no longer useful once this
     // blocker settles. Keep cleanup on the lifecycle write path so it does not
     // depend on a subscriber's next turn or on the event fan-out succeeding.
@@ -3254,7 +3255,7 @@ export async function setWorkItemState(
     // the hindsight "[While you were away]" channel. Same fire-and-forget +
     // lazy-import shape as the settled-events emit; the watch module reads the
     // item's topics (the cheap gate) and no-ops for any non-handoff item.
-    void import('./operator-sentinel-handoff-watch')
+    void trackDetached(import('./operator-sentinel-handoff-watch'))
       .then((m) =>
         m.reportHandoffLandingIfTracked(
           { id: settled.id, title: settled.title, state: settled.state, harness: settled.harness },
@@ -3270,7 +3271,7 @@ export async function setWorkItemState(
     // summary back into the Sentinel pane as `[deep-answer WI-NNN] …` so the
     // answer is presented + spoken through the one pipeline. Same fire-and-forget
     // + lazy-import shape; the watch gates on the topic and no-ops otherwise.
-    void import('./papercup/papercup-deep-watch')
+    void trackDetached(import('./papercup/papercup-deep-watch'))
       .then((m) =>
         m.injectDeepAnswerIfTracked(
           {
@@ -3293,7 +3294,7 @@ export async function setWorkItemState(
   // durable signal, not a prose message. Same fire-and-forget shape.
   if (result && result.state === 'blocked' && wi.state !== 'blocked') {
     const blocked = result;
-    void import('./work-items-events').then((m) => m.emitWorkItemBlockedEvent(blocked)).catch(() => {});
+    void trackDetached(import('./work-items-events')).then((m) => m.emitWorkItemBlockedEvent(blocked)).catch(() => {});
   }
   // EI-15461: a feature transitioning INTO `passed` that was minted by
   // promote-issue.ts (metadata.sourceIssueId) auto-resolves its SOURCE issue —
@@ -3839,7 +3840,7 @@ export async function claimWorkItem(
   // (events:await leg; reaction rules observe the claim tools via postInvoke).
   if (claimed) {
     const won = claimed;
-    void import('./work-items-events').then((m) => m.emitWorkItemClaimedEvent(won, assignee)).catch(() => {});
+    void trackDetached(import('./work-items-events')).then((m) => m.emitWorkItemClaimedEvent(won, assignee)).catch(() => {});
     // P-009 / D-011 / D-014: "claiming IS declaring the goal" — so the goal ref
     // is stamped from here, the ONE chokepoint every by-id claim path funnels
     // through (work_items:claim, claim_next, pickup, scheduler:get_next), rather
@@ -5470,7 +5471,7 @@ export async function claimNextWorkItem(filter: ClaimNextFilter): Promise<WorkIt
   }
   // plugin-system-hive-port P-004: same claimed-event as claimWorkItem.
   if (claimed) {
-    void import('./work-items-events')
+    void trackDetached(import('./work-items-events'))
       .then((m) => m.emitWorkItemClaimedEvent(claimed!, filter.assignee))
       .catch(() => {});
   }
@@ -6408,7 +6409,7 @@ export async function releaseWorkItem(
       // for a row that returned to a claimable state — one hook here. EI-15019:
       // thread announceClaimable through so an internal quarantine release can
       // suppress that broad co-fire.
-      void import('./work-items-events')
+      void trackDetached(import('./work-items-events'))
         .then((m) => m.emitClaimReleasedEvent(released, { announceClaimable: opts.announceClaimable }))
         .catch(() => {});
       // P-009 / D-008: the FLEET-scoped counterpart. `claim:released:<id>` above is
@@ -6421,7 +6422,7 @@ export async function releaseWorkItem(
       // claim-then-immediate-release round-trip the broad co-fire skips — it exposes
       // no real change, so it is not a transition a leader should be woken for.
       if (opts.announceClaimable !== false) {
-        void import('./fleet-transition-events')
+        void trackDetached(import('./fleet-transition-events'))
           .then((m) => m.announceFleetClaimReleased(priorHolder, released))
           .catch(() => {});
       }
@@ -6434,7 +6435,7 @@ export async function releaseWorkItem(
       // that path never exposes real held-work to lose. Fire-and-forget,
       // bounded, fail-soft: never blocks or fails the release itself.
       if (priorHolder && opts.announceClaimable !== false) {
-        void import('./turn-end-tracking-io')
+        void trackDetached(import('./turn-end-tracking-io'))
           .then((m) =>
             m.checkpointOnRelease({
               releasingOwnerId: priorHolder,
@@ -6938,7 +6939,7 @@ export async function unlinkWorkItem(
   // silently strands to its 30-min timeout-wake. Fire-and-forget + lazy import
   // (mirrors the settle-path call above) — never blocks or fails this write.
   if (rel === 'blocks') {
-    void import('./work-items-events').then((m) => m.emitUnblockedOnEdgeRemoved(dst, id)).catch(() => {});
+    void trackDetached(import('./work-items-events')).then((m) => m.emitUnblockedOnEdgeRemoved(dst, id)).catch(() => {});
   }
   return { ok: true };
 }
