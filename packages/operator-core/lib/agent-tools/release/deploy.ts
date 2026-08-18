@@ -89,6 +89,41 @@ function releaseSubjectStamp(ctx: { harnessSlug?: string | null }) {
 type ReleaseSubjectStamp = ReturnType<typeof releaseSubjectStamp>;
 
 /**
+ * EI-20482937744589016 — an ASSERTION, not a selector. The filed defect names the schema
+ * itself as half the trap: with no harness field at all, a caller has nowhere to state which
+ * pipeline they believe they are asking about, and a zod object SILENTLY STRIPS an unknown
+ * key — so `{ op:'status', harness:'sidestage' }` would be accepted and answered about
+ * Papercusp, which is the misread wearing a selector's clothes.
+ *
+ * Declaring it makes the belief checkable: pass it and a wrong one is REFUSED by name instead
+ * of being quietly ignored. It is deliberately not a way to target another harness — this
+ * tool drives one pipeline and adding a real selector would be a different (and much larger)
+ * change.
+ */
+const harnessAssertion = z
+  .string()
+  .min(1)
+  .optional()
+  .describe(
+    'OPTIONAL ASSERTION (not a selector): the harness you believe you are asking about. This tool ONLY ever reports the operator-home pipeline, so any other value is REFUSED rather than silently answered about the wrong harness. Omit it to accept the home pipeline.',
+  );
+
+/** Refuse a harness assertion naming anything but the one pipeline this tool can report. */
+function harnessAssertionRefusal(op: 'status' | 'trigger' | 'force', asserted: string | undefined, stamp: ReleaseSubjectStamp) {
+  const raw = asserted?.trim();
+  if (!raw) return null;
+  const want = canonicalHarnessSlug(raw);
+  if (want === stamp.subject.harness) return null;
+  return json({
+    ok: false,
+    op,
+    refused: true,
+    ...stamp,
+    reason: `harness_not_reportable — you asserted harness \`${want}\`, but release:deploy can only ever report the \`${stamp.subject.harness}\` operator pipeline (it is not harness-scoped). Refusing rather than answering about a DIFFERENT harness than you asked for. \`${want}\` promotes on its own green-checkpoint; read its release state there.`,
+  });
+}
+
+/**
  * The status operation is a liveness diagnostic, so it must return a terminal
  * envelope before the MCP client's transport deadline even when one of its
  * read-only dependencies stalls under load. The underlying read is not
@@ -243,6 +278,7 @@ export default defineTool({
     }),
     z.object({
       op: z.literal('force'),
+      harness: harnessAssertion,
       reason: hardText(LIMITS.SHORT_TITLE, { min: 8 }).describe('Why a force (un-green) deploy is justified — loudly audited.'),
       acknowledgeRedTests: z
         .array(z.string().min(1))
