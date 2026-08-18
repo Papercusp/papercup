@@ -17,6 +17,19 @@ export interface ResolvedTaskBudget {
   mode: 'parallel' | 'serial';
   primaryWorkers: number;
   reserveLaneWorkers: number;
+  /**
+   * Which constraint actually bound the budget. `resolveTaskBudget` always sets it
+   * (budgeted-task-scheduler.mjs:140), but `formatTaskBudgetMarker` re-derives it with a
+   * `??` fallback for stats objects assembled elsewhere — so it is optional here to keep
+   * both callers representable.
+   */
+  boundBy?: 'memory' | 'ceiling';
+  /**
+   * The measured available memory, present only when the caller measured it — its
+   * ABSENCE is meaningful (the marker omits the field rather than printing a guess), so
+   * this is nullable as well as optional.
+   */
+  memAvailableMb?: number | string | null;
 }
 
 export interface TaskAllocation {
