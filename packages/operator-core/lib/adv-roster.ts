@@ -318,6 +318,36 @@ export interface RosterEntry {
    *  applies, so a pressure percentage cannot be computed from this row alone. */
   compactionLimit: number | null;
   /**
+   * WHEN the `contextTokens` reading above was taken (coord_presence
+   * `context_estimated_at`, written by the compaction-compliance watchdog on a
+   * cadence). Carried so a reader can render the READING'S AGE beside the
+   * percentage instead of a bare number with no provenance.
+   *
+   * ⚠ A fresh timestamp does NOT prove a fresh VALUE, and readers must not
+   * present it as one (popup-agent-state-coverage-2026-08-18 D-004). That is
+   * precisely how the recorded incident hid: the estimate froze while its
+   * timestamp kept refreshing, and 48 sessions were misjudged — one at 2.7× its
+   * true usage. Render "measured 3m ago", never "fresh".
+   *
+   * OPTIONAL for the same reason as every other field added to this interface
+   * after the fact: the pending/starting launch tiers have no presence row to
+   * source it from, and making it required would strand every fixture that
+   * builds an entry (the WI-37470 failure mode, where one required field on
+   * PresenceRecord stranded ~23 committed type errors across 13 files).
+   * Absent/undefined = "the roster could not tell us", NEVER "not measured".
+   */
+  contextEstimatedAt?: string | null;
+  // ── provenance (coord_presence, previously dropped on the floor here) ──
+  /** The agent's home Hive slug (`coord_presence.pot_slug`); null = standalone.
+   *  Optional for the same reason as `contextEstimatedAt`. */
+  potSlug?: string | null;
+  /** The host machine's DG-3 capability tags (platform/deps/DB) as presence
+   *  carries them. `[]` is a real value ("resolved, none"); absent is "unknown". */
+  capabilityTags?: string[];
+  /** The terminal device path this session owns (`coord_presence.tty`); null when
+   *  never reported (headless, or a pre-tty-column row). */
+  tty?: string | null;
+  /**
    * The DURABLE dynamic account pin in force for this agent (`accounts:pin` →
    * `harness_shared.operator_owner_pins`), or null when it carries none
    * (hud-chat-owner-controls-2026-08-11 P-003 / D-009 §D).
@@ -742,6 +772,18 @@ export function mergeRosterEntries(
       // rendering unknown as 0% would read as "plenty of room left".
       contextTokens: p.contextTokens ?? null,
       compactionLimit: p.compactionLimit ?? null,
+      // `?? null` for the same reason as contextTokens: an unsampled reading is
+      // UNKNOWN. A reader renders the reading's AGE from this, never a freshness
+      // claim (D-004) — a fresh stamp on a frozen value is the incident, not the
+      // reassurance.
+      contextEstimatedAt: p.contextEstimatedAt ?? null,
+      potSlug: p.potSlug ?? null,
+      // `?? []` is NOT a coercion of unknown here: PresenceRecord declares
+      // capabilityTags as a required string[], and its PG store already parses a
+      // missing/!unparseable column to []. The guard is for a federated/legacy
+      // record that predates the column.
+      capabilityTags: p.capabilityTags ?? [],
+      tty: p.tty ?? null,
       accountPin: extra.accountPinByOwner?.get(p.ownerId) ?? null,
       intentDeclaredAt: p.intentDeclaredAt ?? null,
       openAwait: extra.awaitByOwner?.get(p.ownerId) ?? null,

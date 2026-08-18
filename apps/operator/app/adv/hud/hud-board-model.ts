@@ -169,6 +169,27 @@ export interface HudRosterEntry {
   contextTokens: number | null;
   compactionLimit: number | null;
   /**
+   * WHEN the `contextTokens` reading was taken (adv-roster's
+   * `contextEstimatedAt`). Render the reading's AGE from it — "ctx 47% ·
+   * measured 3m ago" — and NEVER a freshness claim
+   * (popup-agent-state-coverage-2026-08-18 D-004): a fresh timestamp does not
+   * prove a fresh value, which is exactly how the recorded incident hid.
+   *
+   * OPTIONAL for the same reason as `sessionState` and `accountPin`: an older
+   * operator's payload, a mid-deploy SSE push, and the pending/starting launch
+   * tiers all legitimately carry none. Absent = the roster could not tell us.
+   */
+  contextEstimatedAt?: string | null;
+  /** The agent's home Hive slug (adv-roster's `potSlug`); optional for the same
+   *  reason as `contextEstimatedAt`. */
+  potSlug?: string | null;
+  /** The host machine's capability tags. `[]` is a real value ("resolved,
+   *  none"); absent is "unknown" — do not collapse the two. */
+  capabilityTags?: string[];
+  /** The terminal device this session owns (adv-roster's `tty`); null when never
+   *  reported (headless, or a pre-tty-column row). */
+  tty?: string | null;
+  /**
    * The DURABLE dynamic account pin in force for this session (adv-roster's
    * `accountPin`) — what the chat footer's ACCOUNT pill reports and sets
    * (hud-chat-owner-controls-2026-08-11 P-003).

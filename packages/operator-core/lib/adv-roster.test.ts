@@ -329,6 +329,65 @@ describe('mergeRosterEntries', () => {
     expect(unmeasured.intentDeclaredAt).toBeNull();
   });
 
+  /**
+   * popup-agent-state-coverage-2026-08-18 P-001. `PresenceRecord` has carried
+   * these four all along (`pg-store.ts` `toRecord()` maps every one); the shaper
+   * simply dropped them on the floor, so no surface downstream could render
+   * them. The costly one is `contextEstimatedAt`: without it the `ctx 47%` pill
+   * has no provenance at all, which is what let a frozen estimate go unnoticed
+   * across 48 sessions (one at 2.7× its true usage).
+   */
+  it('forwards contextEstimatedAt / potSlug / capabilityTags / tty from the presence row', () => {
+    const [full, bare] = mergeRosterEntries(
+      [
+        presence({
+          ownerId: 'a',
+          contextTokens: 124_000,
+          contextEstimatedAt: '2026-08-18T12:00:00.000Z',
+          potSlug: 'sb-devboard-hive',
+          capabilityTags: ['linux', 'pg17'],
+          tty: '/dev/pts/4',
+        }),
+        // Never sampled / never reported: a federated peer, a headless session,
+        // a standalone agent with no hive.
+        presence({ ownerId: 'b' }),
+      ],
+      new Map(),
+      NOW,
+    );
+    expect(full.contextEstimatedAt).toBe('2026-08-18T12:00:00.000Z');
+    expect(full.potSlug).toBe('sb-devboard-hive');
+    expect(full.capabilityTags).toEqual(['linux', 'pg17']);
+    expect(full.tty).toBe('/dev/pts/4');
+
+    // The null case. `contextEstimatedAt` is UNDEFINED on PresenceRecord when
+    // the watchdog has never sampled the row, and it must arrive here as null
+    // rather than vanishing — a reader distinguishes "no reading" from "a
+    // reading whose age I can show", and both are legitimate.
+    expect(bare.contextEstimatedAt).toBeNull();
+    expect(bare.potSlug).toBeNull();
+    expect(bare.tty).toBeNull();
+    // `[]` is a POSITIVE value here ("resolved, no tags"), not a stand-in for
+    // unknown — which is why it is an empty array and not null.
+    expect(bare.capabilityTags).toEqual([]);
+  });
+
+  /**
+   * The four fields are OPTIONAL precisely so the two launch tiers, which have
+   * no presence row to source them from, can omit them. `undefined` there means
+   * "the roster could not tell us"; defaulting them to null/[] would let a
+   * pending launch claim it had been measured and found empty. This asserts the
+   * omission on purpose so a later "tidy up the fixtures" change has to argue
+   * with a test rather than silently invent the reading.
+   */
+  it('omits the presence-only fields on tiers that have no presence row', () => {
+    const [pending] = pendingLaunchesToRosterEntries([adv({ display: 'workbench' })], 'h');
+    expect(pending.contextEstimatedAt).toBeUndefined();
+    expect(pending.potSlug).toBeUndefined();
+    expect(pending.capabilityTags).toBeUndefined();
+    expect(pending.tty).toBeUndefined();
+  });
+
   it('attaches the open await via the extra options bag; absent owners get null', () => {
     const awaitByOwner = new Map([
       [
