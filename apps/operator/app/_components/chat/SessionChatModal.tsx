@@ -486,6 +486,17 @@ function SessionStateHeader({
     return Number.isNaN(t) ? null : Math.max(0, Math.round((nowMs - t) / 1000));
   }, [entry.lastActiveAt, nowMs]);
 
+  /** P-008: seconds since the CONTEXT READING was taken — not since the session
+   *  was active, and emphatically not a claim that the reading is current. null
+   *  when the roster carries no stamp (an older payload, a federated peer, or a
+   *  row the watchdog has never sampled), in which case the pill says nothing
+   *  rather than implying "just now". */
+  const ctxMeasuredAgeSec = useMemo(() => {
+    if (!entry.contextEstimatedAt) return null;
+    const t = Date.parse(entry.contextEstimatedAt);
+    return Number.isNaN(t) ? null : Math.max(0, Math.round((nowMs - t) / 1000));
+  }, [entry.contextEstimatedAt, nowMs]);
+
   /**
    * The held claim — deck change #2 calls it "the single most useful thing about
    * a working agent", and today it lives only in the rail.
@@ -560,12 +571,42 @@ function SessionStateHeader({
         {statusLabel}
         {ageSec != null ? ` · ${formatAge(ageSec)}` : ''}
       </span>
+      {/* P-006. A zombie renders as "live" everywhere else on this surface, and
+          the composer is directly below — so this chip is the difference between
+          "it is ignoring me" and "there is nothing there to ignore me". It sits
+          INLINE beside the status chip it contradicts rather than behind the
+          right-edge alert affordance [D-007]: an alert you have to click is the
+          wrong home for the one fact that invalidates the control underneath it.
+          Wording is the board's, imported, so the two surfaces cannot describe
+          the same session differently. */}
+      {isZombieSession(entry) ? (
+        <span
+          className="pc-ctl-state pc-ctl-state--bad"
+          data-testid="session-chat-state-zombie"
+          title={ZOMBIE_REASON}
+        >
+          <span aria-hidden="true">☠</span> process gone
+        </span>
+      ) : null}
       {pct != null ? (
         <span
           className="pc-ctl-state"
-          title={`${entry.contextTokens ?? '?'} / ${entry.compactionLimit ?? '?'} tokens`}
+          title={`${entry.contextTokens ?? '?'} / ${entry.compactionLimit ?? '?'} tokens${
+            ctxMeasuredAgeSec != null
+              ? `\n\nReading taken ${formatAge(ctxMeasuredAgeSec)} ago. This is the age of the READING, not a freshness guarantee: the estimate can freeze while its timestamp keeps refreshing, which is how 48 sessions were once misjudged (one at 2.7× its true usage).`
+              : '\n\nNo measurement time on record for this reading.'
+          }`}
         >
           ctx {pct}%
+          {/* P-008 / D-004. The AGE of the reading, never a freshness CLAIM —
+              "measured 3m ago", not "fresh". A fresh contextEstimatedAt does not
+              prove a fresh value, and presenting it as if it did is precisely
+              how the recorded incident hid. Absent stamp ⇒ say nothing here and
+              let the tooltip carry the gap; inventing "just now" would be the
+              same lie in a shorter form. */}
+          {ctxMeasuredAgeSec != null ? (
+            <span className="pc-ctl-state__muted"> · measured {formatAge(ctxMeasuredAgeSec)} ago</span>
+          ) : null}
         </span>
       ) : null}
       {claimIds.length > 0 ? (
