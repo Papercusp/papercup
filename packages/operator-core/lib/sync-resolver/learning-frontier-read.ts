@@ -18,11 +18,30 @@
  *      that match no lane are surfaced in `unmatchedGovernor`, never hidden.
  *
  * Every leg fails soft (a missing migration blanks that leg, never a 500) —
- * the sibling learning.* reads' posture.
+ * the sibling learning.* reads' posture — and BOUNDED, so a leg that merely
+ * HANGS degrades like one that throws (see FRONTIER_BUDGET_MS below).
  */
 import type { Sql } from 'postgres';
 import { FLAGS, type FlagKey } from '@papercusp/flags';
 import type { LearningLoopHealth } from '../blueprint/learning-loop-health';
+import { createReadDeadline } from './read-deadline';
+
+/**
+ * Whole-read budget for the Frontier grid, in ms — under the ~10s
+ * RESOLVER_READ_TIMEOUT_MS (see ./read-deadline).
+ *
+ * Why this read needs a SHARED deadline rather than a per-leg budget: the four
+ * legs below run SEQUENTIALLY, so four independent 6s budgets would total 24s
+ * and overrun by 2.4x the very timeout the bound exists to stay under. One
+ * deadline shared by every leg cannot — whatever leg 1 spends, leg 4 has less.
+ *
+ * The per-leg `try/catch`es fail-soft a leg that THROWS but bound nothing for a
+ * leg that HANGS, and the resolver's outer catch only degrades on a throw too —
+ * so one wedged reader blew the resolver timeout and 500'd the whole grid,
+ * which could not then ship the `degraded()` snapshot it computes for exactly
+ * this case (EI-20801200386596605; same defect as WI-39813 / releaseReadiness).
+ */
+const FRONTIER_BUDGET_MS = 6_000;
 
 /** Untyped row bag from a raw tagged-template query (the gym control-plane idiom). */
 type Row = Record<string, unknown>;
@@ -282,14 +301,19 @@ export function governorRowMatchesLane(loopId: string, blueprintId: string): boo
 export async function readFrontierSnapshot(
   sql: Sql,
   workspaceId: string,
-  opts: { hive?: string | null } = {},
+  opts: { hive?: string | null; budgetMs?: number } = {},
 ): Promise<FrontierSnapshot> {
   const hive = typeof opts.hive === 'string' && opts.hive.trim() ? opts.hive.trim() : null;
+  // ONE deadline shared by all four sequential legs, so a hung leg is routed
+  // into the `catch` that already handles a failing one instead of taking the
+  // whole grid down (FRONTIER_BUDGET_MS).
+  const withinBudget = createReadDeadline(opts.budgetMs ?? FRONTIER_BUDGET_MS);
+
   // Leg 1 — liveness, from the shared reader (never re-derived).
   let health: LearningLoopHealth[] = [];
   try {
     const { readLearningLoopHealth } = await import('../blueprint/learning-loop-read');
-    health = await readLearningLoopHealth(sql, workspaceId);
+    health = await withinBudget(readLearningLoopHealth(sql, workspaceId), 'loop-health');
   } catch (err) {
     console.warn('[learning.frontier] loop-health read failed:', err instanceof Error ? err.message : err);
   }
@@ -299,14 +323,17 @@ export async function readFrontierSnapshot(
   try {
     const { getFlag } = await import('@papercusp/flags/server');
     const keys = [...new Set(Object.values(FRONTIER_LANE_FLAGS).filter((k): k is FlagKey => k != null))];
-    await Promise.all(
-      keys.map(async (key) => {
-        try {
-          flagStates.set(key, await getFlag(key, 'system'));
-        } catch {
-          /* leave unknown */
-        }
-      }),
+    await withinBudget(
+      Promise.all(
+        keys.map(async (key) => {
+          try {
+            flagStates.set(key, await getFlag(key, 'system'));
+          } catch {
+            /* leave unknown */
+          }
+        }),
+      ),
+      'flag-gates',
     );
   } catch (err) {
     console.warn('[learning.frontier] flag read failed:', err instanceof Error ? err.message : err);
@@ -316,7 +343,7 @@ export async function readFrontierSnapshot(
   let governorRows: FrontierGovernorInfo[] = [];
   try {
     const { listLearningLoops } = await import('../learning-governor/store');
-    const regs = await listLearningLoops(sql, { workspaceId });
+    const regs = await withinBudget(listLearningLoops(sql, { workspaceId }), 'governor-registrations');
     governorRows = regs.map((r) => ({
       loopId: r.loopId,
       potSlug: r.potSlug ?? null,
@@ -334,7 +361,7 @@ export async function readFrontierSnapshot(
   // Leg 4 — per-lane outcome rollups (WI-5800). Fail-soft as a whole AND per lane.
   let outcomes: Record<string, FrontierLaneOutcome> = {};
   try {
-    outcomes = await readLaneOutcomes(sql, workspaceId);
+    outcomes = await withinBudget(readLaneOutcomes(sql, workspaceId), 'lane-outcomes');
   } catch (err) {
     console.warn('[learning.frontier] outcome rollup failed:', err instanceof Error ? err.message : err);
   }

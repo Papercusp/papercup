@@ -51,6 +51,9 @@ export function readGrafts(shallowPath) {
   }
 }
 
+/** How the superproject is named in a report, distinct from any submodule path. */
+export const SUPERPROJECT_LABEL = '(superproject)';
+
 const isDir = (path) => {
   try {
     return statSync(path).isDirectory();
@@ -74,6 +77,11 @@ function collectGitdirs(gitdir, label, out) {
   const modules = join(gitdir, 'modules');
   if (!isDir(modules)) return;
 
+  // A submodule's own submodules are labelled UNDER it (`libs/papercusp/libs/db`), not by
+  // their bare inner path: two parents can each carry a `libs/db`, and a report that named
+  // both the same would send someone to repair the wrong gitdir.
+  const qualify = (name) => (label === SUPERPROJECT_LABEL ? name : `${label}/${name}`);
+
   const walk = (dir, prefix) => {
     let entries;
     try {
@@ -85,7 +93,7 @@ function collectGitdirs(gitdir, label, out) {
       if (!entry.isDirectory()) continue;
       const child = join(dir, entry.name);
       const name = prefix ? `${prefix}/${entry.name}` : entry.name;
-      if (existsSync(join(child, 'HEAD'))) collectGitdirs(child, name, out);
+      if (existsSync(join(child, 'HEAD'))) collectGitdirs(child, qualify(name), out);
       else walk(child, name);
     }
   };
@@ -101,7 +109,7 @@ export function findShallowGitdirs({ gitCommonDir }) {
   if (!isDir(gitCommonDir)) return [];
 
   const gitdirs = [];
-  collectGitdirs(gitCommonDir, '(superproject)', gitdirs);
+  collectGitdirs(gitCommonDir, SUPERPROJECT_LABEL, gitdirs);
 
   const problems = [];
   for (const { gitdir, label } of gitdirs) {
