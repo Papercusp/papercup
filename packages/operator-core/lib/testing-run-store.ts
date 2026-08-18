@@ -535,7 +535,7 @@ export function distillVitestRun(
   const maxMessageChars = opts?.maxMessageChars ?? DEFAULT_MAX_MESSAGE_CHARS;
   const empty: DistilledTestRun = {
     passed: 0, failed: 0, skipped: 0, files: 0,
-    failures: [], failuresTruncated: false, durationMs: null,
+    failures: [], failuresTruncated: false, durationMs: null, byFile: {},
   };
 
   let parsed: { testResults?: VitestJsonFile[] };
