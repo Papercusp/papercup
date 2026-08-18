@@ -324,9 +324,21 @@ describe('checkCompactionCompliance seeding (context-trimming-tiers P-006)', () 
  *     when its stored limit is still exactly the number nobody chose.
  */
 describe('measured window outranks the spec-derived guess (WI-38347)', () => {
-  // A real live codex spec: names a model, carries no `[1m]` marker (no codex
-  // spec ever does), and therefore derives the fabricated 200k → 158,000.
-  const CODEX_SPEC = 'gpt-5.6-sol:xhigh';
+  // A real live codex spec on the NON-EXTENDED family: names a model, carries no
+  // `[1m]` marker (no codex spec ever does), and therefore still falls to the
+  // conservative 200k branch → 158,000.
+  //
+  // ⚠ DO NOT "modernise" this to gpt-5.6-sol. Since codex-1m-context-window-2026-08-17
+  // (D-002) the gpt-5.6 sol/terra/luna family and gpt-5.4 are EXTENDED-window
+  // specs: they derive 872k → the 400k role cap, which sits ABOVE the measured
+  // window below. Every case here would still run, but the block would stop
+  // testing what it claims to: `falls back to the spec-derived default` would
+  // assert 400_000, and `RAISES a session still carrying the spec-derived seed`
+  // would no longer describe a raise at all — a stored 158_000 would read as a
+  // deliberate lower override and be left alone, so the test would pass by
+  // exercising nothing. gpt-5.5 has no extended window (max == default 272,000),
+  // which is also what makes CODEX_WINDOW below a truthful measurement.
+  const CODEX_SPEC = 'gpt-5.5:xhigh';
   const CODEX_WINDOW = 258_400; // 272k model × the CLI's 95% effective window
   const CODEX_SAFE_LIMIT = 207_000; // (258_400 − 10_000) / 1.2, floored to 1k
 
