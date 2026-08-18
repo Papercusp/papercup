@@ -3370,7 +3370,19 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         ATTENTION_COUNTS_FALLBACK_MS,
         () => ({ groups: [] }),
       );
-      return [deriveAttentionCounts(Array.isArray(r?.groups) ? r.groups : [])];
+      // `withDeadlineFallback` returns DeadlineOutcome<T> — { value, degraded } —
+      // not a bare T. `r.degraded` is TRUE when the deadline fired and `r.value`
+      // is the empty fallback rather than a real answer.
+      //
+      // This site renders the graceful zeros either way, which is exactly what it
+      // did before the signature reported degradation at all. It is named here
+      // rather than destructured away so that ignoring it stays the VISIBLE choice
+      // the DeadlineOutcome doc asks for: this resolver's array element is the
+      // badge's wire shape, and adding a degradation field to it is a UI contract
+      // change, not a typecheck fix. Whoever plumbs disclosure through to the badge
+      // should start here — `degraded` is already carried this far.
+      const attention = r.degraded ? { groups: [] } : r.value;
+      return [deriveAttentionCounts(Array.isArray(attention?.groups) ? attention.groups : [])];
     },
   },
   // plans.waitingCount was REMOVED here 2026-08-10 (P-075). It was the

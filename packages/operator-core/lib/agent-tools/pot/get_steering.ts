@@ -13,6 +13,8 @@ import { COORD_ROLES } from '../coordination/roles';
 import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import { resolvePotHomeSlug } from '../../pot/wake';
 import { getOwnerSteering, steeringLooksInconsistent, steeringModelSpecDrift } from '../../owner-steering';
+import { MUG_KETTLE_RETIRED_ERROR } from '../_mug-kettle-gate';
+import { mugKettleSystemEnabled } from '../../pot/started';
 import { DEFAULT_MODEL_TIERS, type ModelTier } from '../../agent-config-constants';
 
 const json = (o: unknown) => ({ data: o });
