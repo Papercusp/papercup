@@ -489,6 +489,20 @@ export function OperatorChatSidebar({ faces = [] }: { faces?: readonly OpChatFac
   const inboxBadge = inboxPending > 99 ? '99+' : String(inboxPending);
   const plansNeedingYou = usePlansNeedingYouCount();
   const plansBadge = plansNeedingYou > 99 ? '99+' : String(plansNeedingYou);
+  // WI-39779: the server's attention read has an 8s deadline whose graceful
+  // fallback is an EMPTY feed, which derives to zero. Both badges render a zero
+  // by rendering NOTHING — so a timed-out read looked exactly like "nothing
+  // needs you", the one reading we must never assert without knowing.
+  //
+  // When the read degraded we show the badge anyway, with an indeterminate mark
+  // instead of a count. Deliberately not a silent hide and not a spinner: the
+  // user's question is "does anything need me", and the honest answer here is
+  // "unknown", which a spinner (implying "any moment now") also misstates.
+  const attentionUnknown = useAttentionCountsDegraded();
+  const showInboxBadge = inboxPending > 0 || attentionUnknown;
+  const showPlansBadge = plansNeedingYou > 0 || attentionUnknown;
+  const INDETERMINATE = '–';
+  const UNKNOWN_LABEL = 'Could not load what needs you — this count is unavailable, not zero';
 
   // EI-13551: collapse AudienceModeSelector into a Popover below
   // AUDIENCE_MODE_OVERFLOW_WIDTH — see the constant's doc comment. Driven off
@@ -517,9 +531,14 @@ export function OperatorChatSidebar({ faces = [] }: { faces?: readonly OpChatFac
         <span className="op-chat-expand-orb" aria-hidden="true">
           <OperatorLogoMark className="op-chat-expand-logo" />
         </span>
-        {inboxPending > 0 ? (
-          <span className="op-chat-rail-badge" aria-label={`${inboxPending} inbox items need you`}>
-            {inboxBadge}
+        {showInboxBadge ? (
+          <span
+            className="op-chat-rail-badge"
+            data-degraded={attentionUnknown ? 'true' : undefined}
+            title={attentionUnknown ? UNKNOWN_LABEL : undefined}
+            aria-label={attentionUnknown ? UNKNOWN_LABEL : `${inboxPending} inbox items need you`}
+          >
+            {attentionUnknown ? INDETERMINATE : inboxBadge}
           </span>
         ) : null}
         <span className="op-chat-expand-label">Chat</span>
