@@ -94,6 +94,7 @@ import {
   type IdentityEntries,
   type PackResidueHit,
 } from './pack-residue';
+import { trackDetached } from '../detached-imports';
 
 // FLEET_LESSONS_PACK_ID moved to the client-safe ./candidates-shared (P-006);
 // re-exported below so existing importers of this module are unchanged.
@@ -178,7 +179,7 @@ function rowToCandidate(r: CandidateRow): KnowledgePackCandidate {
 }
 
 function invalidate(names: string[]): void {
-  void import('../sync-sse')
+  void trackDetached(import('../sync-sse'))
     .then((m) => names.forEach((n) => m.notifySyncInvalidate(n)))
     .catch(() => {});
 }

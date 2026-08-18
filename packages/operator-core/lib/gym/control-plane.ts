@@ -24,6 +24,7 @@ import { recordBehaviorChange } from '../change-ledger/change-ledger';
 import type { LoopProposalRecord } from './loop';
 import { recordChampionAcceptance } from './post-acceptance-outcomes';
 import type { GymJudgedCorpus } from './task-corpus';
+import { trackDetached } from '../detached-imports';
 
 /** The judge rubric is edited like a role prompt but isn't an AGENT_ROLES role. */
 export const JUDGE_PROMPT_KEY = 'judge';
@@ -240,7 +241,7 @@ export async function recordProposal(sql: Sql, input: RecordProposalInput): Prom
      WHERE gym_proposals.status = 'pending'`;
   // Push-on-write for the Learning tab's Gym view (owner report 2026-07-26 —
   // learning.gym had no producer; pg_notify fans out cross-process).
-  void import('../sync-sse')
+  void trackDetached(import('../sync-sse'))
     .then((m) => m.notifySyncInvalidate('learning.gym'))
     .catch(() => {});
   return id;
@@ -672,7 +673,7 @@ export async function setAutoloop(sql: Sql, q: SetAutoloopInput): Promise<GymAut
        status = EXCLUDED.status, last_cycle = EXCLUDED.last_cycle, last_cycle_at = EXCLUDED.last_cycle_at,
        updated_at = EXCLUDED.updated_at`;
   // Push-on-write: the Gym view's autoloop pill (RUNNING/spend) reads this row.
-  void import('../sync-sse')
+  void trackDetached(import('../sync-sse'))
     .then((m) => m.notifySyncInvalidate('learning.gym'))
     .catch(() => {});
   return merged;

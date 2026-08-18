@@ -55,6 +55,7 @@ import { PgCrossHiveOutbox } from './cross-hive-outbox-pg';
 import { PgCrossHiveAsks } from './cross-hive-asks-pg';
 import { signWithHiveKey } from './identity/hive-keypair';
 import type { AgentIdentity } from './agent-tools/coordination/identity';
+import { trackDetached } from './detached-imports';
 
 /** An inbound reply (answer/decline) surfaced to the originator for correlation. */
 export interface CrossHiveInboundReply {
@@ -309,7 +310,7 @@ export function wireCrossHiveBoundary(deps: WireCrossHiveBoundaryDeps): CrossHiv
     deps.quotaLedger ?? pgCrossHiveQuotaLedger(deps.workspaceId, deps.potSlug, deps.sql);
 
   const pushAskInvalidates = (): void => {
-    void import('./sync-sse')
+    void trackDetached(import('./sync-sse'))
       .then((m) => {
         void m.notifySyncInvalidate('network.board').catch(() => {});
         void m.notifySyncInvalidate('network.hive.asks').catch(() => {});
@@ -359,7 +360,7 @@ export function wireCrossHiveBoundary(deps: WireCrossHiveBoundaryDeps): CrossHiv
     }
     // An answered/declined row changes the board's ask counts + the dossier ask
     // log — push both (lazy fire-and-forget; a missing SSE bus is a no-op).
-    void import('./sync-sse')
+    void trackDetached(import('./sync-sse'))
       .then((m) => {
         void m.notifySyncInvalidate('network.board').catch(() => {});
         void m.notifySyncInvalidate('network.hive.asks').catch(() => {});

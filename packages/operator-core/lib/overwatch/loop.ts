@@ -71,6 +71,7 @@ import { registerOverwatchWaker } from "./wake-bridge";
 import { agentProducedTurn } from "../fleet/invoke-outcome";
 import { resolvePotHomeSlug } from "../pot/wake";
 import { operatorHomeHarnessSlug } from "../harness/operator-home-harness";
+import { trackDetached } from '../detached-imports';
 
 const operatorBase = operatorApiBase;
 
@@ -467,7 +468,7 @@ async function runScorecardBackstop(
  *  at boot, before the SSE bus is necessarily wired) + fully fail-soft — a notify
  *  miss never affects the launch. */
 function invalidateOverwatchLiveness(): void {
-  void import("../sync-sse")
+  void trackDetached(import("../sync-sse"))
     .then(({ notifySyncInvalidate }) =>
       notifySyncInvalidate("overwatch.liveness", {}),
     )

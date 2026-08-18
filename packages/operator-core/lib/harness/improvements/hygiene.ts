@@ -59,6 +59,7 @@ import type { ImprovementCandidate, ImprovementSeverity } from './policy';
 import { readImprovementItems } from './read-items';
 import { findLikelyDuplicates, signatureRecurrence, dedupSignature } from './digest';
 import { initializeIdeaLifecycle, updateIdeaLifecycle } from './lifecycle';
+import { trackDetached } from '../../detached-imports';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -293,13 +294,13 @@ export async function runHygieneSweep(
   }
 
   if (planned.length > 0) {
-    void import('../../sync-sse')
+    void trackDetached(import('../../sync-sse'))
       .then((m) => m.notifySyncInvalidate('learning.improvements'))
       .catch(() => {});
     // Push-on-write for the Health tab's improvements panel
     // (stop-discarded-dedup-and-audit-server-polling-2026-07-26 P-013 / D-007) —
     // same lazy fire-and-forget discipline as the invalidate above.
-    void import('../../system-health/compute')
+    void trackDetached(import('../../system-health/compute'))
       .then((m) => m.refreshHealthPanel('improvements'))
       .catch(() => {});
   }

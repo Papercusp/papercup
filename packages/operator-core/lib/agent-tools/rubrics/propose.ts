@@ -13,6 +13,7 @@ import { proposeRubric, rubricCompleteness } from '../../rubrics';
 import { validateRubricReplicationSql } from '../../rubrics-replication-sql';
 import { rubricCriterionWindowSchema, rubricCriterionCheckSchema } from '../plans/rubric-template';
 import { resolveAgentWorkspaceRoot } from '../capability/base-dir';
+import { trackDetached } from '../../detached-imports';
 
 const criterion = z.object({
   key: z.string().min(1).describe('stable kebab id; an observation rating references this'),
@@ -186,7 +187,7 @@ export default defineTool({
     // (non-blocking — see rubrics-replication-sql.ts for why this warns, never rejects).
     const replicationSqlCheck = await validateRubricReplicationSql(rubric.criteria);
     // Push-on-write (push-audit 2026-07-26): the Rubrics pane + trend read these.
-    void import('../../sync-sse')
+    void trackDetached(import('../../sync-sse'))
       .then((m) => {
         m.notifySyncInvalidate('rubrics.list');
         m.notifySyncInvalidate('rubrics.trend');

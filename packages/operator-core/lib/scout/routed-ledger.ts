@@ -36,6 +36,7 @@ import {
 } from './outcome-feedback';
 import { CREATIVE_LENSES, type CreativeLens, type SuIdeationLens } from './types';
 import { SHADOW_VARIANT_ORIGIN, type ShadowVariantOrigin } from './shadow-variant-origin';
+import { trackDetached } from '../detached-imports';
 
 /** Input to {@link recordRoutedIdea} — the provenance P-007 persists at routing time. */
 export interface RecordRoutedIdeaInput {
@@ -254,7 +255,7 @@ export async function recordRoutedIdea(input: RecordRoutedIdeaInput): Promise<vo
   // Push the Learning tab's Scout view (learning.scout reads this ledger).
   // Fire-and-forget via a lazy import so the PG seam (+ its tests) never
   // statically depends on the SSE layer; a missing SSE bus is a no-op.
-  void import('../sync-sse')
+  void trackDetached(import('../sync-sse'))
     .then((m) => m.notifySyncInvalidate('learning.scout'))
     .catch(() => {});
 }
@@ -367,7 +368,7 @@ export async function gradeRoutedIdea(input: GradeRoutedIdeaInput): Promise<Grad
   }
   // Push the Learning tab's Scout view — same lazy fire-and-forget seam as
   // recordRoutedIdea (a missing SSE bus is a no-op). Applied writes only.
-  void import('../sync-sse')
+  void trackDetached(import('../sync-sse'))
     .then((m) => m.notifySyncInvalidate('learning.scout'))
     .catch(() => {});
   return { applied: true };

@@ -15,6 +15,7 @@ import {
   setAccountOverride,
   type AccountSessionOverridePatch,
 } from '../../deployment/account-session-override';
+import { trackDetached } from '../../detached-imports';
 
 const json = (o: unknown) => ({ data: o });
 
@@ -58,12 +59,12 @@ export const accountsSetSessionOverrideTool = defineTool({
         const { setDefaultAccount } = await import('../../deployment/account-pool-store');
         if (Object.keys(patch).length > 0) await setAccountOverride(ws, patch);
         const override = await setDefaultAccount(args.defaultAccountId, ws);
-        void import('../../sync-sse').then(({ notifySyncInvalidate }) => notifySyncInvalidate('accounts.pool', {})).catch(() => {});
+        void trackDetached(import('../../sync-sse')).then(({ notifySyncInvalidate }) => notifySyncInvalidate('accounts.pool', {})).catch(() => {});
         return json({ ok: true, override });
       }
       const override = await setAccountOverride(ws, patch);
       // Live UI reflection — the Accounts tab re-reads on a steer.
-      void import('../../sync-sse').then(({ notifySyncInvalidate }) => notifySyncInvalidate('accounts.pool', {})).catch(() => {});
+      void trackDetached(import('../../sync-sse')).then(({ notifySyncInvalidate }) => notifySyncInvalidate('accounts.pool', {})).catch(() => {});
       return json({ ok: true, override });
     } catch (e) {
       return json({ ok: false, error: e instanceof Error ? e.message : String(e) });

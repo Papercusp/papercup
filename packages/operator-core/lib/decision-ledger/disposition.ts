@@ -31,6 +31,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { decideAutonomy, type AutonomyDecision, type AutonomyDecisionInput } from '../autonomy/decider';
+import { trackDetached } from '../detached-imports';
 
 /** The P-111 disposition verbs (the Queen's chosen response to a considered item). */
 export const DISPOSITIONS = ['act', 'defer', 'reject', 'route-to-research', 'no-op'] as const;
@@ -221,7 +222,7 @@ export async function recordDecisionDisposition(
     // the low-volume, feed-relevant layer — the action emit deliberately does NOT
     // invalidate. Fire-and-forget; a sync miss never breaks the decision turn.
     if (id != null) {
-      void import('../sync-sse')
+      void trackDetached(import('../sync-sse'))
         .then(({ notifySyncInvalidate }) => notifySyncInvalidate('decision.ledger'))
         .catch(() => {});
     }

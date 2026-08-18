@@ -32,6 +32,7 @@ import {
 // it subscribes to flag changes (emitFlagChange, below) to keep its cached
 // active pack fresh. Side-effect import — see ./lexicon/configure.
 import './lexicon/configure';
+import { trackDetached } from './detached-imports';
 
 export type FlagChangeEnvelope = {
   type: 'flag_changed';
@@ -115,7 +116,7 @@ export function publishFlagChange(key: FlagKey | null = null): void {
   // into a failed write. `ts` is part of the args so two real flips of the
   // same key inside the sync bus's dedupe window are not collapsed; the
   // channel sequence closes the same-millisecond case.
-  void import('./sync-sse')
+  void trackDetached(import('./sync-sse'))
     .then(({ notifySyncInvalidate }) =>
       notifySyncInvalidate(FLAGS_CHANGED_EVENT, { key, ts: env.ts, sequence }),
     )

@@ -22,6 +22,7 @@ import { requestUrgentPotWake } from '../../pot/urgent-wake';
 import { setOwnerSteering, type OwnerSteeringPatch } from '../../owner-steering';
 import { refuseIfMugKettleRetired } from '../_mug-kettle-gate';
 import { LIMITS } from '../limits';
+import { trackDetached } from '../../detached-imports';
 
 const json = (o: unknown) => ({ data: o });
 
@@ -219,7 +220,7 @@ export default defineTool({
       .catch(() => {});
 
     // Refresh the 👑 Mug tab (pot.steering resolver) — best-effort.
-    void import('../../sync-sse')
+    void trackDetached(import('../../sync-sse'))
       .then(({ notifySyncInvalidate }) => notifySyncInvalidate('pot.steering', {}))
       .catch(() => {});
 

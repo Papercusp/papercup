@@ -22,6 +22,7 @@ import { COORD_ROLES } from '../coordination/roles';
 import { ratifyRubric, rubricCompleteness } from '../../rubrics';
 import { validateRubricReplicationSql } from '../../rubrics-replication-sql';
 import { mergeIds, runBulk, bulkContent } from '../_bulk';
+import { trackDetached } from '../../detached-imports';
 
 export default defineTool({
   name: 'rubrics:ratify',
@@ -67,7 +68,7 @@ export default defineTool({
         const replicationSqlCheck = await validateRubricReplicationSql(rubric.criteria);
         // Push-on-write (push-audit 2026-07-26): ratification flips governance
         // state the Rubrics pane + readiness strip both display.
-        void import('../../sync-sse')
+        void trackDetached(import('../../sync-sse'))
           .then((m) => {
             m.notifySyncInvalidate('rubrics.list');
             m.notifySyncInvalidate('rubrics.trend');

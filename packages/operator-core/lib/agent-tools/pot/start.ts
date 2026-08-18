@@ -28,6 +28,7 @@ import { setDefaultWakeMode } from '../coordination/wake-mode';
 import { requestUrgentPotWake } from '../../pot/urgent-wake';
 import { isWorkspaceCoordinationOn } from '../../workspace-brain-scope';
 import { softText, clampText, LIMITS } from '../limits';
+import { trackDetached } from '../../detached-imports';
 
 export default defineTool({
   name: 'pot:start',
@@ -124,7 +125,7 @@ export default defineTool({
     });
     // Live UI reflection (P-006): the AdvShell harness-bar control
     // (AdvNowRunning) reads pot.controlState.
-    void import('../../sync-sse')
+    void trackDetached(import('../../sync-sse'))
       .then(({ notifySyncInvalidate }) => notifySyncInvalidate('pot.controlState', {}))
       .catch(() => {});
 

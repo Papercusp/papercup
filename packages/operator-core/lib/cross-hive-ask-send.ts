@@ -23,6 +23,7 @@ import { randomUUID } from 'node:crypto';
 import type { CrossHiveBoundaryWiring } from './cross-hive-wiring';
 import { crossHiveReplyEventKey, type CrossHiveRequestKind } from './cross-hive-transport';
 import type { CrossHiveAsksStore } from './cross-hive-asks-store-port';
+import { trackDetached } from './detached-imports';
 
 /**
  * Decide whether THIS Hive may send `kind` to `peerPubkey` (outbound grant — B-05;
@@ -140,7 +141,7 @@ export async function sendCrossHiveAsk(
   // Push the Network board's ask counts + the dossier ask log (lazy fire-and-
   // forget so this composition + its fake-deps tests never statically depend
   // on the SSE layer; a missing bus is a no-op).
-  void import('./sync-sse')
+  void trackDetached(import('./sync-sse'))
     .then((m) => {
       void m.notifySyncInvalidate('network.board').catch(() => {});
       void m.notifySyncInvalidate('network.hive.asks').catch(() => {});

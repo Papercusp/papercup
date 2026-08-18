@@ -16,6 +16,7 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { resolveImprovement } from '../../harness/improvements/resolve-core';
 import { EXTERNAL_BLOCKER_CAPABILITIES } from '../../external-blockers';
+import { trackDetached } from '../../detached-imports';
 
 export default defineTool({
   name: 'improvements:resolve',
@@ -75,7 +76,7 @@ export default defineTool({
     // seam is flag-gated + never-throw, so the resolve path is unaffected).
     if (args.outcome === 'fixed') {
       const confidence = args.confidence;
-      void import('../../calibration/capture')
+      void trackDetached(import('../../calibration/capture'))
         .then((m) =>
           m.recordPrediction({
             predictor: id.ownerId,

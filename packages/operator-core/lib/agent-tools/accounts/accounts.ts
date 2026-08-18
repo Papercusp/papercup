@@ -13,6 +13,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { mergeIds, runBulk, bulkContent } from '@papercusp/agent-mcp/_bulk';
+import { trackDetached } from '../../detached-imports';
 
 const ok = (payload: Record<string, unknown>) => ({
   content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, ...payload }) }],
@@ -237,7 +238,7 @@ export const accountsResetRateTool = defineTool({
     );
     // Live UI reflection — the Accounts tab reads accounts.pool. Fire ONCE for the batch.
     if (anyReset) {
-      void import('../../sync-sse')
+      void trackDetached(import('../../sync-sse'))
         .then(({ notifySyncInvalidate }) => notifySyncInvalidate('accounts.pool', {}))
         .catch(() => {});
     }

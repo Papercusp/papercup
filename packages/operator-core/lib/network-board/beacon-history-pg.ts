@@ -10,6 +10,7 @@
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import type { HiveStatusBeacon } from '../hive-beacon';
+import { trackDetached } from '../detached-imports';
 
 function pg(sql?: Sql): Sql {
   return sql ?? getOrgPg().sql;
@@ -71,7 +72,7 @@ export async function captureBeaconSnapshot(
     INSERT INTO harness_shared.cross_pot_beacon_history (hive_id, hive_pubkey, beacon)
     VALUES (${potId}, ${hivePubkey ?? null}, ${JSON.stringify(beacon)}::text::jsonb)
   `;
-  void import('../sync-sse')
+  void trackDetached(import('../sync-sse'))
     .then((m) => {
       void m.notifySyncInvalidate('network.hive.beacons').catch(() => {});
       void m.notifySyncInvalidate('network.board').catch(() => {});

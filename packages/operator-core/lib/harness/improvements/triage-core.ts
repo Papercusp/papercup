@@ -41,6 +41,7 @@ import {
   isValidTransition,
   type IdeaLifecyclePayload,
 } from './lifecycle';
+import { trackDetached } from '../../detached-imports';
 
 // Lazily promisified (NOT `const pexecFile = promisify(execFile)` at module scope):
 // this module is reachable via a long, easy-to-hit transitive import chain from test
@@ -471,13 +472,13 @@ export async function applyTriageDecision(
 
   // Push the Learning tab's improvements feed (lazy + fire-and-forget — the
   // capture-core pattern; a missing SSE bus is a no-op).
-  void import('../../sync-sse')
+  void trackDetached(import('../../sync-sse'))
     .then((m) => m.notifySyncInvalidate('learning.improvements'))
     .catch(() => {});
   // Push-on-write for the Health tab's improvements panel
   // (stop-discarded-dedup-and-audit-server-polling-2026-07-26 P-013 / D-007) —
   // same lazy fire-and-forget discipline as the invalidate above.
-  void import('../../system-health/compute')
+  void trackDetached(import('../../system-health/compute'))
     .then((m) => m.refreshHealthPanel('improvements'))
     .catch(() => {});
 

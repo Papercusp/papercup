@@ -26,6 +26,7 @@ import {
   isAutonomyCeiling,
   minCeiling,
 } from './policy';
+import { trackDetached } from '../detached-imports';
 
 /** PG error code for "relation does not exist" — table not applied yet. */
 const UNDEFINED_TABLE = '42P01';
@@ -196,7 +197,7 @@ export async function setAutonomyPolicy(
   // Lazy import so this store stays decoupled from the sync/health layers (the
   // same fire-and-forget discipline as the improvements-lane capture/decay/
   // triage/hygiene writes) — a cold health cache makes this a safe no-op.
-  void import('../system-health/compute')
+  void trackDetached(import('../system-health/compute'))
     .then((m) => m.refreshHealthPanel('autonomy', workspaceId))
     .catch(() => {});
 

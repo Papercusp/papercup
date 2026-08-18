@@ -38,6 +38,7 @@ import {
   type SpawnNode,
   type SpawnStatus,
 } from '@papercusp/structured-concurrency';
+import { trackDetached } from '../detached-imports';
 
 /** A query handle the stores accept — a pooled client or an open transaction. */
 export type Db = Sql | TransactionSql;
@@ -144,7 +145,7 @@ export async function recordSpawnPg(sql: Db, input: RecordSpawnInput): Promise<v
   // the 90s source-dedupe caps the rate. A rolled-back caller txn is harmless — the
   // resolver just re-reads the unchanged max.
   if (input.childRole === 'mug') {
-    void import('../sync-sse')
+    void trackDetached(import('../sync-sse'))
       .then(({ notifySyncInvalidate }) => notifySyncInvalidate('hive.controlState', {}))
       .catch(() => {});
   }

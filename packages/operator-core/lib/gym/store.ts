@@ -11,6 +11,7 @@ import type { VariantOverlay } from './variant-overlay';
 import type { GymScore } from './judge';
 import { assertGymTaskNotContaminated } from './report-set-firewall';
 import { asGymTaskCorpus } from './task-corpus';
+import { trackDetached } from '../detached-imports';
 
 type Row = Record<string, unknown>;
 
@@ -258,7 +259,7 @@ export async function copyRunAnalyticsToDurable(
   // producer, so new durable rows never reached an open pane). pg_notify
   // fans out cross-process, so this works from the gym CLI and bg-host alike;
   // fire-and-forget so an SSE hiccup never fails the durable copy.
-  void import('../sync-sse')
+  void trackDetached(import('../sync-sse'))
     .then((m) => m.notifySyncInvalidate('learning.gym'))
     .catch(() => {});
 

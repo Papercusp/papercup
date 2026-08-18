@@ -21,6 +21,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { setRubricHistoryReset } from '../../rubrics';
+import { trackDetached } from '../../detached-imports';
 
 export default defineTool({
   name: 'rubrics:set-history-reset',
@@ -57,7 +58,7 @@ export default defineTool({
       };
     }
     // Push-on-write: the boundary changes what the Rubrics pane's trend column reports.
-    void import('../../sync-sse')
+    void trackDetached(import('../../sync-sse'))
       .then((m) => {
         m.notifySyncInvalidate('rubrics.list');
         m.notifySyncInvalidate('rubrics.trend');

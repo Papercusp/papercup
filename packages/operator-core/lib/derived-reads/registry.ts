@@ -39,6 +39,7 @@ import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { systemDistinctId } from '../flag-distinct-id';
 import { activeWorkspaceId } from '../workspace-registry';
+import { trackDetached } from '../detached-imports';
 
 /** Sentinel `harness_slug` for a workspace-global producer (see the migration). */
 const GLOBAL_SCOPE = '';
@@ -456,7 +457,7 @@ export async function refreshDerivedReads(ctx: {
       const refused = written.length === 0;
       const changed = !refused && (!row || written[0]?.payload_md5 !== row.payload_md5);
       if (changed) {
-        void import('../sync-sse')
+        void trackDetached(import('../sync-sse'))
           .then((m) => m.notifySyncInvalidate(producer.key))
           .catch(() => {});
       }

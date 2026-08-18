@@ -30,6 +30,7 @@ import {
   type AppliesTo,
   type KnowledgePack,
 } from './pack-format';
+import { trackDetached } from '../detached-imports';
 
 /** Map a DetectionResult-shaped value onto applies_to shapes. Defensive on shape. */
 export function shapesFromDetection(detection: unknown): AppliesTo[] | undefined {
@@ -167,7 +168,7 @@ export async function seedPackIntoHive(input: SeedPackInput): Promise<SeedPackRe
 
   // Live-refresh the Learnings view (P-008 registers `learning.hive`).
   // Fire-and-forget; a missing SSE bus / unregistered name is a no-op.
-  void import('../sync-sse')
+  void trackDetached(import('../sync-sse'))
     .then((m) => m.notifySyncInvalidate('learning.hive'))
     .catch(() => {});
 

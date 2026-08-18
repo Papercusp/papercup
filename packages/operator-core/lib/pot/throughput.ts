@@ -25,6 +25,7 @@
 
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../workspace-registry';
+import { trackDetached } from '../detached-imports';
 
 // ── tunables ─────────────────────────────────────────────────────────────────
 
@@ -445,7 +446,7 @@ export async function recordPotThroughputTick(opts: {
 
     // Push the Learning tab's Throughput view. Fire-and-forget via lazy import so
     // the PG seam (+ tests) never statically depends on the SSE layer.
-    void import('../sync-sse')
+    void trackDetached(import('../sync-sse'))
       // Name fixed 2026-07-26: the client + resolver are 'learning.hiveThroughput';
       // 'learning.potThroughput' invalidated a name nobody subscribes to (dead push).
       .then((m) => m.notifySyncInvalidate('learning.hiveThroughput'))

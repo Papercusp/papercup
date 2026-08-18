@@ -37,6 +37,7 @@ import {
   type KnowledgePack,
 } from './pack-format';
 import { rememberPackItem } from './seed';
+import { trackDetached } from '../detached-imports';
 
 /** Same env-tunable threshold family as memory:remember's dedup (P-016). */
 function dupThreshold(): number {
@@ -288,7 +289,7 @@ export async function applyPackInstall(
     }
   }
 
-  void import('../sync-sse')
+  void trackDetached(import('../sync-sse'))
     .then((m) => {
       m.notifySyncInvalidate('learning.hive');
       m.notifySyncInvalidate('knowledgePacks.list');
@@ -355,7 +356,7 @@ export async function uninstallPack(
     }
   }
 
-  void import('../sync-sse')
+  void trackDetached(import('../sync-sse'))
     .then((m) => {
       m.notifySyncInvalidate('learning.hive');
       m.notifySyncInvalidate('knowledgePacks.list');
@@ -421,7 +422,7 @@ export async function setPackEnabled(opts: {
     settingKey: DISABLED_PACKS_SETTING,
     value: next, // store serializes JSON values
   });
-  void import('../sync-sse')
+  void trackDetached(import('../sync-sse'))
     .then((m) => m.notifySyncInvalidate('learning.hive'))
     .catch(() => {});
   return { ok: true, disabled: next };

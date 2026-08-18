@@ -65,6 +65,7 @@ import {
   type LeakCheckResult,
   type MttshSegments,
 } from './types';
+import { trackDetached } from '../detached-imports';
 
 /** Injectable seam — unit tests run the whole cycle without PG. */
 export interface DrillCycleDeps {
@@ -129,7 +130,7 @@ export interface DrillCycleResult {
 
 /** Fire the Learning tab's vital-sign refresh (capture-core's lazy idiom). */
 function invalidateVitals(): void {
-  void import('../sync-sse')
+  void trackDetached(import('../sync-sse'))
     .then((m) => m.notifySyncInvalidate('learning.redQueen'))
     .catch(() => {});
 }

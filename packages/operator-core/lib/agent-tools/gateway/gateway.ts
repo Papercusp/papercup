@@ -10,6 +10,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
 import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import { setOwnerPin, clearOwnerPin } from '../../deployment/account-owner-pins';
+import { trackDetached } from '../../detached-imports';
 
 /** Localhost base of the running gateway. Read PER-CALL (not at module load) so tests can point it at a
  *  mock server via PAPERCUSP_GATEWAY_PORT, and so an env override is honored without a re-import. */
@@ -109,7 +110,7 @@ export const accountsPinTool = defineTool({
         body: JSON.stringify({ ownerId: agent, account, hard: !!hard }),
         signal: AbortSignal.timeout(10000),
       }).catch((e) => ({ ok: false, status: 0, _e: errMsg(e) }) as unknown as Response);
-      void import('../../sync-sse').then(({ notifySyncInvalidate }) => notifySyncInvalidate('accounts.pool', {})).catch(() => {});
+      void trackDetached(import('../../sync-sse')).then(({ notifySyncInvalidate }) => notifySyncInvalidate('accounts.pool', {})).catch(() => {});
       return ok({
         ownerId: agent,
         pin,
@@ -152,7 +153,7 @@ export const accountsUnpinTool = defineTool({
         body: JSON.stringify({ ownerId: agent, clear: true }),
         signal: AbortSignal.timeout(10000),
       }).catch((e) => ({ ok: false, status: 0, _e: errMsg(e) }) as unknown as Response);
-      void import('../../sync-sse').then(({ notifySyncInvalidate }) => notifySyncInvalidate('accounts.pool', {})).catch(() => {});
+      void trackDetached(import('../../sync-sse')).then(({ notifySyncInvalidate }) => notifySyncInvalidate('accounts.pool', {})).catch(() => {});
       return ok({ ownerId: agent, cleared, appliedLive: r.ok });
     } catch (e) {
       return fail({ error: `accounts:unpin failed: ${errMsg(e)}` });

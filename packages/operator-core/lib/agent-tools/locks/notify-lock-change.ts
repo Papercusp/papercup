@@ -42,6 +42,7 @@
  * -lock rate. Widening this filter is a volume decision, not a cosmetic one.
  */
 import { PLANS_DIR_REL } from '../plans/source';
+import { trackDetached } from '../../detached-imports';
 
 /**
  * The sync query name the plan lock banner subscribes to. Args are
@@ -86,7 +87,7 @@ export function isPlanLockPath(lockPath: string): boolean {
 export function notifyPlanLockChange(paths: readonly string[]): void {
   const planPaths = [...new Set(paths.filter(isPlanLockPath))];
   if (planPaths.length === 0) return;
-  void import('../../sync-sse')
+  void trackDetached(import('../../sync-sse'))
     .then(({ notifySyncInvalidate }) =>
       Promise.all(
         planPaths.map((path) =>

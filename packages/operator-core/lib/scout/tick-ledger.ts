@@ -20,6 +20,7 @@
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../workspace-registry';
 import { resolveLearningPotSlug } from '../learning/pot-scope';
+import { trackDetached } from '../detached-imports';
 
 /** Why a tick ended: a full cycle ran, a self-gate withheld it, or the cycle threw. */
 export type ScoutTickStatus = 'ran' | 'gated' | 'error';
@@ -90,7 +91,7 @@ export async function recordScoutTick(input: RecordScoutTickInput): Promise<void
   // lands with the Phase 3 observability item). Fire-and-forget via a lazy import
   // so the PG seam (+ its tests) never statically depends on the SSE layer.
   if (origin === 'scout') {
-    void import('../sync-sse')
+    void trackDetached(import('../sync-sse'))
       .then((m) => m.notifySyncInvalidate('learning.scout'))
       .catch(() => {});
     // WI-4274: an ERROR tick may complete a pageable streak — check-and-fire is

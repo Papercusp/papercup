@@ -24,6 +24,7 @@ import type {
   TripwireSignalKind,
   TripwireStatus,
 } from './core';
+import { trackDetached } from '../../detached-imports';
 
 /** PG error code for "relation does not exist" — table not applied yet. */
 const UNDEFINED_TABLE = '42P01';
@@ -45,7 +46,7 @@ function genId(): string {
  * cold health cache makes this a safe no-op.
  */
 function refreshAutonomyHealthPanel(workspaceId: string): void {
-  void import('../../system-health/compute')
+  void trackDetached(import('../../system-health/compute'))
     .then((m) => m.refreshHealthPanel('autonomy', workspaceId))
     .catch(() => {});
 }

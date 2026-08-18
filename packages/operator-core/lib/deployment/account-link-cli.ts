@@ -31,6 +31,7 @@ import { randomUUID, randomBytes } from 'node:crypto';
 import { registerAccount, normalizeAccountProvider, type AccountProvider } from './account-pool';
 import { updateAccountPool, accountStatus, type AccountStatusRow } from './account-pool-store';
 import { papercuspPath } from '../papercusp-root';
+import { trackDetached } from '../detached-imports';
 
 const ID_RE = /^[A-Za-z0-9._-]+$/;
 // Match the authorize URL / the minted token in the CLI's (ANSI-stripped) output.
@@ -354,7 +355,7 @@ export interface CompleteCliLinkDeps {
 export type CompleteCliLinkResult = { ok: true; account: AccountStatusRow | null } | { ok: false; error: string };
 
 function defaultNotify(): void {
-  void import('../sync-sse')
+  void trackDetached(import('../sync-sse'))
     .then(({ notifySyncInvalidate }) => notifySyncInvalidate('accounts.pool', {}))
     .catch(() => {});
 }

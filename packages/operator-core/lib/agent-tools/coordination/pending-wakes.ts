@@ -9,6 +9,7 @@
  */
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../workspace-registry';
+import { trackDetached } from '../../detached-imports';
 
 /**
  * Push the wake board after a queue write — both the hive-scoped
@@ -18,7 +19,7 @@ import { activeWorkspaceId } from '../../workspace-registry';
  * never statically depends on the SSE layer; a missing bus is a no-op.
  */
 function pushWakeBoard(): void {
-  void import('../../sync-sse')
+  void trackDetached(import('../../sync-sse'))
     .then((m) => {
       m.notifySyncInvalidate('network.hive.wakes');
       m.notifySyncInvalidate('network.fleet.wakes');

@@ -12,6 +12,7 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { amendRubric, rubricCompleteness, AMENDABLE_CRITERION_FIELDS } from '../../rubrics';
 import { validateRubricReplicationSql } from '../../rubrics-replication-sql';
+import { trackDetached } from '../../detached-imports';
 
 export default defineTool({
   name: 'rubrics:amend',
@@ -98,7 +99,7 @@ export default defineTool({
     // EI-10514: schema-validate embedded replication-drill SQL against live PG (non-blocking).
     const replicationSqlCheck = await validateRubricReplicationSql(rubric.criteria);
     // Push-on-write (push-audit 2026-07-26): the Rubrics pane + trend read these.
-    void import('../../sync-sse')
+    void trackDetached(import('../../sync-sse'))
       .then((m) => {
         m.notifySyncInvalidate('rubrics.list');
         m.notifySyncInvalidate('rubrics.trend');

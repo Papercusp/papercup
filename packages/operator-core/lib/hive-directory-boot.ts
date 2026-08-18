@@ -31,6 +31,7 @@ import { publishHiveToDirectory, type HiveDirectoryMeta, type HiveOwnerIdentity 
 import type { HiveDirectory } from './hive-directory';
 import { bakedCanonicalHiveInvite } from './harness/papercusp-hive-join';
 import { requestOnlyHost } from './background-workers';
+import { trackDetached } from './detached-imports';
 
 /** Default re-announce cadence (5 min) — keeps a hive fresh under the TTL. */
 export const DEFAULT_REANNOUNCE_MS = 5 * 60 * 1000;
@@ -226,7 +227,7 @@ export async function wireHiveDirectoryAtBoot(opts: WireHiveDirectoryOpts): Prom
         // UI-freshness nicety with no test ever asserting on it, so skip it
         // hermetically in test env — unchanged in every real deployment.
         if (!process.env.VITEST) {
-          void import('./sync-sse')
+          void trackDetached(import('./sync-sse'))
             .then((m) => {
               void m.notifySyncInvalidate('network.hiveDirectory').catch(() => {});
               void m.notifySyncInvalidate('network.federationStatus').catch(() => {});

@@ -41,6 +41,7 @@ import {
 } from '../workspace-brain-scope';
 import { setCarryNote, getCarryNote, getCarryJournal, hiveScope } from '../carry-note';
 import { UNVERIFIED_NOTE_STAMP } from './owner-claim-guard';
+import { trackDetached } from '../detached-imports';
 // The Mug carry-journal converged onto the ONE shared carry-note substrate
 // (su-cold-auto-mode-2026-07-03 P-001 / D-004). The journal ring primitives moved
 // there; re-exported here for back-compat importers (pot/carry-journal.test.ts).
@@ -581,7 +582,7 @@ export async function recordPotWake(workspaceId?: string): Promise<void> {
   // forget + non-throwing (mirrors pot:start/pause); name-only/{} matches the
   // no-arg consumer. (A wake path that bypasses recordPotWake is still caught by the
   // @papercusp/sync 180s drift-repair tick.)
-  void import('../sync-sse')
+  void trackDetached(import('../sync-sse'))
     .then(({ notifySyncInvalidate }) => notifySyncInvalidate('pot.controlState', {}))
     .catch(() => {});
 }

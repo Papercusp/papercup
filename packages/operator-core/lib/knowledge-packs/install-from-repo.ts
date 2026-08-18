@@ -19,6 +19,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { cloneGithubRepo, isCloneError } from '../harness/clone-github';
 import { installedKnowledgePacksRoot, loadKnowledgePackFromDir } from './load-packs';
+import { trackDetached } from '../detached-imports';
 
 export interface FetchPackResult {
   ok: boolean;
@@ -87,7 +88,7 @@ export async function fetchKnowledgePackFromRepo(opts: {
     await rm(dest, { recursive: true, force: true });
     await cp(candidates[0], dest, { recursive: true });
 
-    void import('../sync-sse')
+    void trackDetached(import('../sync-sse'))
       .then((m) => m.notifySyncInvalidate('knowledgePacks.list'))
       .catch(() => {});
 
