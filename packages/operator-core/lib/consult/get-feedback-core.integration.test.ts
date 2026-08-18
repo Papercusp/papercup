@@ -32,6 +32,7 @@ import {
   type GetFeedbackError,
   type GetFeedbackRequest,
   type GetFeedbackResult,
+  readVettingConsultCritique,
 } from './get-feedback-core';
 
 /** Narrow the P-005 result union for the tests that expect success. */
@@ -613,5 +614,100 @@ describe('getFeedbackCore — archive-first retrieval (P-006)', () => {
     expect(r.verdict).toBe('routed');
     const row = await stateRow(r.conversation_id, ws);
     expect(row.has_query_embedding).toBe(false);
+  });
+});
+
+// ── readVettingConsultCritique (EI-20821478338037350) ──────────────────────
+//
+// The rubric-vetting gate's predicate is SQL, and the emit-side unit suite
+// mocks this function wholesale — so the authorship and kind exclusions that
+// make it mean "critique happened" rather than "a row exists" are only ever
+// exercised HERE, against the real migration-834 tables.
+describe('readVettingConsultCritique — the vetting gate reads CRITIQUE, not existence', () => {
+  const WSV = 'ws-vetting';
+  const REQUESTER = 'su-rubric-author'; // opens the consult AND emits the attestation
+
+  /** Seed one consult + its typed posts. Post rows are [author, kind] pairs. */
+  async function seedConsult(
+    conv: string,
+    state: string,
+    posts: [author: string | null, kind: string][],
+  ) {
+    await rootSql`
+      INSERT INTO harness_shared.consult_state
+        (workspace_id, conversation_id, requester_id, state, question)
+      VALUES (${WSV}, ${conv}, ${REQUESTER}, ${state}, 'critique this rubric')
+    `;
+    let postId = Math.floor(Math.random() * 1_000_000) * 100;
+    for (const [author, kind] of posts) {
+      await rootSql`
+        INSERT INTO harness_shared.consult_post_meta
+          (workspace_id, post_id, conversation_id, author_id, kind)
+        VALUES (${WSV}, ${(postId += 1)}, ${conv}, ${author}, ${kind})
+      `;
+    }
+  }
+
+  it('a consult with no row at all is exists:false — a DANGLING link, distinct from an unanswered one', async () => {
+    const v = await readVettingConsultCritique(rootSql, WSV, 'conv-nonexistent', REQUESTER);
+    expect(v).toEqual({ exists: false, state: null, critiquePosts: 0, declinePosts: 0, critics: [] });
+  });
+
+  it('an opened-but-unanswered consult is exists:true with ZERO critique — the hole this closes', async () => {
+    await seedConsult('conv-silent', 'awaiting_responder', []);
+    const v = await readVettingConsultCritique(rootSql, WSV, 'conv-silent', REQUESTER);
+    expect(v).toMatchObject({ exists: true, state: 'awaiting_responder', critiquePosts: 0, critics: [] });
+  });
+
+  it('counts a third-party reply as critique and names its author', async () => {
+    await seedConsult('conv-answered', 'active', [
+      ['su-reviewer', 'answer'],
+      ['su-reviewer', 'new_fact'],
+    ]);
+    const v = await readVettingConsultCritique(rootSql, WSV, 'conv-answered', REQUESTER);
+    expect(v).toMatchObject({ exists: true, critiquePosts: 2, declinePosts: 0, critics: ['su-reviewer'] });
+  });
+
+  it('EXCLUDES the requester’s own follow-ups — the ask is not the answer', async () => {
+    await seedConsult('conv-self-only', 'awaiting_responder', [
+      [REQUESTER, 'question'],
+      [REQUESTER, 'new_fact'],
+    ]);
+    const v = await readVettingConsultCritique(rootSql, WSV, 'conv-self-only', REQUESTER);
+    expect(v.critiquePosts).toBe(0);
+    expect(v.critics).toEqual([]);
+  });
+
+  it('EXCLUDES the EMITTER even when the emitter is not the requester — self-critique is not vetting', async () => {
+    await seedConsult('conv-emitter-posts', 'active', [['su-emitter', 'answer']]);
+    // Requester opened it; su-emitter is attesting, so su-emitter's own post cannot count.
+    const v = await readVettingConsultCritique(rootSql, WSV, 'conv-emitter-posts', 'su-emitter');
+    expect(v.critiquePosts).toBe(0);
+    // CONTROL: the same row IS critique for a different emitter — proving the
+    // exclusion is authorship-driven, not a predicate stuck at zero.
+    const other = await readVettingConsultCritique(rootSql, WSV, 'conv-emitter-posts', REQUESTER);
+    expect(other.critiquePosts).toBe(1);
+    expect(other.critics).toEqual(['su-emitter']);
+  });
+
+  it('a DECLINE is not critique — counted separately so the refusal can say "re-route", not "wait"', async () => {
+    await seedConsult('conv-declined', 'declined', [
+      ['su-a', 'decline'],
+      ['su-b', 'decline'],
+    ]);
+    const v = await readVettingConsultCritique(rootSql, WSV, 'conv-declined', REQUESTER);
+    expect(v).toMatchObject({ critiquePosts: 0, declinePosts: 2, critics: [] });
+  });
+
+  it('a NULL author cannot evidence external critique', async () => {
+    await seedConsult('conv-null-author', 'active', [[null, 'answer']]);
+    const v = await readVettingConsultCritique(rootSql, WSV, 'conv-null-author', REQUESTER);
+    expect(v.critiquePosts).toBe(0);
+  });
+
+  it('is workspace-scoped — a same-named consult in another workspace is invisible', async () => {
+    await seedConsult('conv-scoped', 'active', [['su-reviewer', 'answer']]);
+    const v = await readVettingConsultCritique(rootSql, 'ws-other', 'conv-scoped', REQUESTER);
+    expect(v.exists).toBe(false);
   });
 });
