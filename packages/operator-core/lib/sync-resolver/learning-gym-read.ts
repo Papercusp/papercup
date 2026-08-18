@@ -53,7 +53,7 @@
  * reason already says would strand those consumers for no information gain.
  */
 
-import { classifyReadFailure } from './degraded-snapshot';
+import { classifyReadFailure, type DegradedField } from './degraded-snapshot';
 import { createReadDeadline } from './read-deadline';
 
 /**
@@ -64,12 +64,12 @@ import { createReadDeadline } from './read-deadline';
  */
 export const GYM_READ_BUDGET_MS = 6_000;
 
-/** A leg that degraded, recorded next to the intact data (WI-6395). */
-export interface GymDegradedField {
-  field: string;
-  kind: string;
-  reason: string;
-}
+// A leg that degraded is recorded next to the intact data (WI-6395) as a shared
+// `DegradedField` — the per-leg analog of `DegradedProvenance`, which lives in
+// `degraded-snapshot.ts` beside the `classifyReadFailure` that populates it. It
+// started life as a local `GymDegradedField` here and was lifted the moment the
+// roster read needed the same three fields (WI-39825): one shape, one place, so
+// a client guard written against it holds for every fan-out that reports one.
 
 export interface ReadGymSnapshotOptions {
   /** Active workspace id — the gym is scoped per (workspace_id, harness_slug). */
@@ -107,7 +107,7 @@ export async function readGymSnapshot(opts: ReadGymSnapshotOptions) {
   } = await import('../gym/control-plane');
 
   const slugArg = harnessSlug ? { harnessSlug } : {};
-  const degradedFields: GymDegradedField[] = [];
+  const degradedFields: DegradedField[] = [];
   /** Note a best-effort leg's failure instead of swallowing it into `[]`. */
   const noteDegraded = (field: string, err: unknown): never[] => {
     const { kind, reason } = classifyReadFailure(err);
