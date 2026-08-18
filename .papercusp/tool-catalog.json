@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 737,
+  "count": 738,
   "tools": [
     {
       "name": "ablation:report",
@@ -8087,6 +8087,35 @@
         "when": "You need to know what is burning database time NOW, or whether a catastrophic pg_stat_statements lifetime total is still advancing. This catches frequent short queries that an instantaneous pg_stat_activity read misses.",
         "notWhen": "You need one currently-running/blocked query → dev:pg_active_queries. You need ad-hoc SQL or EXPLAIN → dev:pg_query. This call intentionally waits windowSec between snapshots.",
         "chaining": "Start with the default 15s window. A zero is conclusive only when zeroCallVerdict is dead; too-rare-to-tell needs a longer window or a stored long-running baseline. Use filter for a case-insensitive query-text substring."
+      }
+    },
+    {
+      "name": "dev:pg_mutate",
+      "http": {
+        "path": "/api/agent-tools/dev/pg_mutate",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Run ONE audited INSERT/UPDATE/DELETE against operator Postgres — the authorized-data-repair escape hatch. Requires `reason`; UPDATE/DELETE need a top-level WHERE; rolls back over `maxAffectedRows` or on an `expectedRows` mismatch; `dryRun` previews. DDL refused — schema changes stay migrations-only.",
+      "capabilities": [
+        "intel:write"
+      ],
+      "agentRoles": [
+        "operator",
+        "architect",
+        "debugger",
+        "cup",
+        "mug",
+        "scoper",
+        "reviewer",
+        "validator",
+        "worker"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "An AUTHORIZED one-off data mutation with no documented write verb — repairing a stale row, retiring a wedged record. Probe the predicate with dev:pg_query first, then pass the measured count as expectedRows (or use dryRun).",
+        "notWhen": "A mutation a documented verb already covers (work_items:*, plans:*, facts:* … — those also emit sync invalidation; this tool does NOT, so UI projections can lag until their next refresh). Never DDL — migrations only."
       }
     },
     {
