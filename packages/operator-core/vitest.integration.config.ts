@@ -4,7 +4,11 @@ import { defineVitestConfig, BASELINE_SCHEMA_GLOBAL_SETUP_PATH } from '@papercus
 // inject('baselineSchemaDsn') via _pg-tool-fixture, so this package needs the
 // shared baseline-schema globalSetup (was only wired in apps/operator before).
 // The admin test-runs reporter is auto-wired by defineVitestConfig.
+// Coverage-census attribution (P-004) — see the note in vitest.config.ts. The INTEGRATION
+// layer is where this actually produces rows: it is the layer with a reachable Postgres, so a
+// flush lands instead of disabling the sink.
 export default defineVitestConfig({
   layer: 'integration',
   globalSetup: [BASELINE_SCHEMA_GLOBAL_SETUP_PATH],
+  setupFiles: [resolve(__dirname, 'lib/coverage-census/attribution/setup-vitest.ts')],
 });
