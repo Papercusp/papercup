@@ -473,6 +473,15 @@ import './supervision-reconcile-action';
 // timeout. A bespoke ephemeral (tier:'ephemeral', 300s) operator-HOME cadence (one sweep
 // serves every workspace's rows). Seeded ACTIVE by seed-consult-expiry-routine.ts.
 import './consult-expiry-action';
+// deterministic-coverage-census-2026-08-17 P-002: `system:coverage-census` — projects the
+// testable-surface census (harness_shared.testing_surfaces) from the same code registries that
+// serve production traffic, then upserts/retires the diff. A bespoke ephemeral
+// (tier:'ephemeral', 15min) operator-HOME cadence, same deviation reasoning as
+// supervision-reconcile-action. Registered BEFORE its providers exist (they land in P-003) so
+// the seeded routine has a real handler rather than silently skipping every fire
+// (EI-18741229858124453); with no providers it is a correct no-op, because retirement is scoped
+// to kinds a provider successfully enumerated. Seeded by seed-coverage-census-routine.ts.
+import './coverage-census-action';
 // WI-37700 (follow-on to WI-37696): `system:worker-breaker-watch` — announces a tripped
 // persistent-worker crash-breaker on the embed SIDECAR (`workers.{embedder,reranker}` on
 // its /healthz), a bespoke ephemeral (tier:'ephemeral', 5min) operator-HOME cadence (same
