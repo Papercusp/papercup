@@ -27,6 +27,11 @@
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { deleteGoalRow, goalId, insertGoalRow, type GoalSqlTag } from '@papercusp/agent-mcp/goals';
+import {
+  applyGoalBlockedBy,
+  readGoalReadiness,
+  replaceGoalBlockedBy,
+} from '@papercusp/agent-mcp/goal-deps';
 import { killCriterionProblem } from './kill-criterion';
 import {
   drainFleetAutoMintEnabled,
@@ -61,6 +66,15 @@ export interface AutoStartGoalInput {
   proposalId?: string;
   /** Who caused this start (an ownerId, or the rail's own stamp). */
   launchedBy?: string | null;
+  /** Prerequisite refs (goal ids / bare WI-/EI- issue ids) this goal is blocked by (P-004). */
+  blockedBy?: readonly string[];
+  /**
+   * Acknowledge starting DESPITE unsatisfied blockers — without it the
+   * activation gate (P-004) throws once, with the rollback the header promises.
+   */
+  startBlocked?: boolean;
+  /** Why starting blocked is right — recorded as `startBlockedOverride` on the result. */
+  startBlockedReason?: string | null;
 }
 
 export interface AutoStartGoalResult {
@@ -69,6 +83,11 @@ export interface AutoStartGoalResult {
   agentOwnerId: string;
   /** The auto-minted standing drain fleet, when the mint is enabled and succeeded. */
   drainFleet: string | null;
+  /**
+   * Non-null ONLY when the caller overrode the activation gate (P-004) — the
+   * audit trail that this goal started with unsatisfied prerequisites.
+   */
+  startBlockedOverride: string | null;
   /** Fail-soft legs that degraded without stopping the start (drain fleet / member). */
   warnings: string[];
 }
@@ -118,6 +137,47 @@ export async function autoStartGoal(input: AutoStartGoalInput): Promise<AutoStar
     },
   });
 
+  // ── 1.5 blocked-by edges + the activation gate (P-004) ──────────────────
+  // Same shape as goals:start: validate-and-write the edges (refuse+rollback —
+  // this rail is about to spawn an agent against exactly this record), then
+  // gate activation on readiness. Readiness is an ACTIVATION gate, never
+  // dispatch (D-003); the gate throws ONCE and the caller overrides with
+  // startBlocked (+ reason) when starting blocked is deliberate. Gated on
+  // input.blockedBy: the goal row was minted moments ago, so the edges just
+  // applied are the only edges it can have.
+  let startBlockedOverride: string | null = null;
+  if (input.blockedBy?.length) {
+    const applied = await applyGoalBlockedBy(sql, {
+      workspaceId,
+      goalId: id,
+      refs: input.blockedBy,
+      createdBy: launchedBy,
+    });
+    if (!applied.ok) {
+      await deleteGoalRow(sql, { id, workspaceId }).catch(() => {});
+      throw new Error(`blockedBy refused (goal rolled back, nothing spawned): ${applied.problem}`);
+    }
+    const readiness = await readGoalReadiness(sql, workspaceId, id);
+    if (!readiness.actionable) {
+      const unsatisfied = readiness.blockers
+        .filter((b) => b.verdict !== 'satisfied')
+        .map((b) => `${b.ref} (${b.kind}/${b.status ?? 'absent'}/${b.verdict})`)
+        .join(', ');
+      if (!input.startBlocked) {
+        await replaceGoalBlockedBy(sql, { workspaceId, goalId: id, blockers: [] }).catch(() => {});
+        await deleteGoalRow(sql, { id, workspaceId }).catch(() => {});
+        throw new Error(
+          `refusing to auto-start: unsatisfied blocker(s) ${unsatisfied} — goal rolled back, nothing spawned. ` +
+            'File it as a STUB and arm it at activation instead (goals:create { blockedBy } — stub-then-arm, ' +
+            'goal-dag-shared-substrate-2026-08-18 D-004), or pass startBlocked: true (+ startBlockedReason) ' +
+            'if starting blocked is deliberate.',
+        );
+      }
+      startBlockedOverride =
+        input.startBlockedReason?.trim() || `started despite unsatisfied blocker(s): ${unsatisfied}`;
+    }
+  }
+
   // ── 2. the join: the pre-pinned agent, in GOAL mode, on THIS goal ───────
   const modeRes = await setMode({
     workspaceId,
@@ -129,6 +189,9 @@ export async function autoStartGoal(input: AutoStartGoalInput): Promise<AutoStar
     subject: id,
   });
   if (!modeRes.ok) {
+    // Edges before the row (P-004): a deleted goal must not leave dangling
+    // blocked-by edges behind — same rule as the rollback below.
+    await replaceGoalBlockedBy(sql, { workspaceId, goalId: id, blockers: [] }).catch(() => {});
     await deleteGoalRow(sql, { id, workspaceId }).catch(() => {});
     throw new Error(
       `could not put the goal's agent in GOAL mode (${modeRes.error ?? 'unknown error'}) — goal rolled back`,
@@ -173,6 +236,8 @@ export async function autoStartGoal(input: AutoStartGoalInput): Promise<AutoStar
         setBy: launchedBy,
       }).catch(() => {});
     }
+    // Edges before the row (P-004) — same rule as goals:start's rollback.
+    await replaceGoalBlockedBy(sql, { workspaceId, goalId: id, blockers: [] }).catch(() => {});
     await deleteGoalRow(sql, { id, workspaceId }).catch(() => {});
   };
 
@@ -272,5 +337,11 @@ export async function autoStartGoal(input: AutoStartGoalInput): Promise<AutoStar
     }
   }
 
-  return { goalId: id, agentOwnerId: ownerId, drainFleet: drainFleet?.slug ?? null, warnings };
+  return {
+    goalId: id,
+    agentOwnerId: ownerId,
+    drainFleet: drainFleet?.slug ?? null,
+    startBlockedOverride,
+    warnings,
+  };
 }

@@ -35,7 +35,7 @@ import { join } from 'node:path';
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { TripwireSchema, deleteGoalRow, goalId, insertGoalRow } from '@papercusp/agent-mcp/goals';
-import { applyGoalBlockedBy, replaceGoalBlockedBy } from '@papercusp/agent-mcp/goal-deps';
+import { applyGoalBlockedBy, readGoalReadiness, replaceGoalBlockedBy } from '@papercusp/agent-mcp/goal-deps';
 import { killCriterionProblem } from '../../goals/kill-criterion';
 import { buildConsoleEnvelope } from '../../console-launcher';
 import { spawnConsole, spawnHeadless } from '../../console-spawn';
@@ -221,6 +221,17 @@ export default defineTool({
       .describe(
         'Prerequisite refs (goal ids / bare WI-/EI- issue ids) this goal is blocked by. NOTE: goals:start spawns the owning agent NOW — a goal whose prerequisites are unsatisfied is usually better filed as a STUB via goals:create { blockedBy } and armed at activation (stub-then-arm, goal-dag-shared-substrate-2026-08-18 D-004). Refs must resolve; the goal graph must stay acyclic.',
       ),
+    startBlocked: z
+      .boolean()
+      .optional()
+      .describe(
+        'Acknowledge starting DESPITE unsatisfied blockedBy prerequisites. The activation gate (goal-dag-shared-substrate-2026-08-18 P-004) warn-refuses ONCE without it; passing true overrides and records start_blocked_override on the result. Pair with startBlockedReason.',
+      ),
+    startBlockedReason: z
+      .string()
+      .max(2000)
+      .optional()
+      .describe('Why starting despite unsatisfied blockers is right anyway — recorded verbatim as start_blocked_override.'),
     harness: z
       .string()
       .max(120)
@@ -320,6 +331,38 @@ export default defineTool({
       }
     }
 
+    // ── 1.75 the activation gate (P-004, D-003/D-004) ─────────────────────
+    // Readiness is an ACTIVATION gate, never dispatch (D-003): this door is
+    // about to spawn an agent to pursue the goal RIGHT NOW, so unsatisfied
+    // prerequisites get a warn-refuse-ONCE — retry with startBlocked (+ a
+    // reason) if starting blocked is deliberate, or file the goal as a STUB
+    // and arm it at activation instead (goals:create { blockedBy },
+    // stub-then-arm, D-004). Gated on args.blockedBy: the goal row was minted
+    // moments ago, so the edges just applied are the only edges it can have.
+    let startBlockedOverride: string | null = null;
+    if (args.blockedBy?.length) {
+      const readiness = await readGoalReadiness(ctx.tx, workspaceId, id);
+      if (!readiness.actionable) {
+        const unsatisfied = readiness.blockers
+          .filter((b) => b.verdict !== 'satisfied')
+          .map((b) => `${b.ref} (${b.kind}/${b.status ?? 'absent'}/${b.verdict})`)
+          .join(', ');
+        if (!args.startBlocked) {
+          await replaceGoalBlockedBy(ctx.tx, { workspaceId, goalId: id, blockers: [] }).catch(() => {});
+          await deleteGoalRow(ctx.tx, { id, workspaceId }).catch(() => {});
+          return err(
+            `Refusing to start: unsatisfied blocker(s) ${unsatisfied}. Nothing was spawned and the goal was rolled back. ` +
+              'Either file it as a STUB and arm it when its prerequisites clear — goals:create { blockedBy } ' +
+              '(stub-then-arm, goal-dag-shared-substrate-2026-08-18 D-004) — or, if starting NOW despite the ' +
+              'prerequisites is deliberate, retry with startBlocked: true (+ startBlockedReason).',
+          );
+        }
+        startBlockedOverride =
+          args.startBlockedReason?.trim() ||
+          `started despite unsatisfied blocker(s): ${unsatisfied}`;
+      }
+    }
+
     // ── 2. the join: this agent, in GOAL mode, on THIS goal ───────────────
     // Written BEFORE the spawn on purpose — see the header. `subject` is the
     // marker the sessions pane filters on and the Goals board pairs by
@@ -335,6 +378,10 @@ export default defineTool({
       subject: id,
     });
     if (!modeRes.ok) {
+      // Edges before the row — same rule as the main rollback below: a deleted
+      // goal must not leave dangling blocked-by edges (P-004 closes the gap
+      // P-002 left on this early-failure path).
+      await replaceGoalBlockedBy(ctx.tx, { workspaceId, goalId: id, blockers: [] }).catch(() => {});
       await deleteGoalRow(ctx.tx, { id, workspaceId }).catch(() => {});
       return err(
         `Could not put the new agent in GOAL mode (${modeRes.error ?? 'unknown error'}), so nothing was spawned and the goal was rolled back. ` +
@@ -558,6 +605,9 @@ export default defineTool({
         // mint was skipped (flag off) or failed; see `warning`.
         drain_fleet: drainFleet?.slug ?? null,
         drain_member_pid: drainMember?.pid ?? null,
+        // P-004: present ONLY when the caller overrode the activation gate —
+        // the audit trail that this goal started with unsatisfied prerequisites.
+        ...(startBlockedOverride ? { start_blocked_override: startBlockedOverride } : {}),
         ...(drainWarnings.length ? { warning: drainWarnings.join('\n') } : {}),
       },
     };
