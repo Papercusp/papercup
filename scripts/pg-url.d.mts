@@ -34,4 +34,8 @@ export function shellSingleQuote(v: string): string;
  * @returns {string}
  */
 export function formatExportLines(url: string): string;
-export function main(argv: any): Promise<2 | 0 | 1>;
+/**
+ * @param {string[]} argv
+ * @returns {Promise<0 | 1 | 2>} the process exit code
+ */
+export function main(argv: string[]): Promise<0 | 1 | 2>;
