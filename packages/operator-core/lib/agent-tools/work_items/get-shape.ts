@@ -413,7 +413,22 @@ export function shapeWorkItemsGet(data: unknown, tier: WorkItemsGetTier): unknow
   const target = TIER_TARGET_CHARS[tier];
 
   let out: unknown;
+  // Two attempts per rung — this ordering is what makes "the checkpoint is
+  // degraded LAST" true rather than aspirational. Descending a rung CUTS THE
+  // CHECKPOINT, so before we do that we retry the SAME rung with the summary
+  // budget withdrawn. A summary therefore only ever spends slack the rung already
+  // had; it can never buy its bytes from the checkpoint. (Without this, adding any
+  // summary spend at rung 1 pushed the 5,000-char-checkpoint single-item read down
+  // to a rung that clipped it to 3,000 — reintroducing EI-19447969329510166's
+  // exact defect from a new direction.)
+  const attempts: Array<{ rung: number; withSummary: boolean }> = [];
   for (let rung = 0; rung < ladder.length; rung += 1) {
+    if (ladder[rung].summaryTotal > 0) attempts.push({ rung, withSummary: true });
+    attempts.push({ rung, withSummary: false });
+  }
+
+  for (let attempt = 0; attempt < attempts.length; attempt += 1) {
+    const { rung, withSummary } = attempts[attempt];
     const { fullRows, checkpointTotal, summaryTotal } = ladder[rung];
     const dropped = new Set<string>();
     const carrying = rows
@@ -435,7 +450,9 @@ export function shapeWorkItemsGet(data: unknown, tier: WorkItemsGetTier): unknow
         return typeof s === "string" && s.length > 0;
       }).length;
     const summaryShare =
-      carryingSummaries === 0 ? 0 : Math.floor(summaryTotal / carryingSummaries);
+      !withSummary || carryingSummaries === 0
+        ? 0
+        : Math.floor(summaryTotal / carryingSummaries);
     const summaryChars = summaryShare >= SUMMARY_USEFUL_MIN_CHARS ? summaryShare : 0;
 
     const projected = rows.map((r, i) =>
@@ -469,8 +486,8 @@ export function shapeWorkItemsGet(data: unknown, tier: WorkItemsGetTier): unknow
           }
         : {}),
     };
-    // Measured, not assumed. The last rung is the floor and ships regardless.
-    if (jsonLen(out) <= target || rung === ladder.length - 1) return out;
+    // Measured, not assumed. The last attempt is the floor and ships regardless.
+    if (jsonLen(out) <= target || attempt === attempts.length - 1) return out;
   }
   return out;
 }
