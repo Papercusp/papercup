@@ -14,6 +14,8 @@
  * Rows are transient UX, not state — capped + TTL-swept, never persisted.
  */
 
+import { trackDetached } from '../detached-imports';
+
 // `submodules` is the dogfood clone-on-first-boot's second phase
 // (bootstrap-papercusp-hive) — the create-from-URL flow doesn't emit it.
 export type FromRepoStep = 'lookup' | 'clone' | 'submodules' | 'detect' | 'create' | 'seed' | 'publish';
