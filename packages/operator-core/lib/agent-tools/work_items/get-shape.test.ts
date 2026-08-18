@@ -19,7 +19,12 @@ type Envelope = {
   ok: boolean;
   results: Array<Record<string, unknown>>;
   counts: { ok: number; failed: number };
-  _shapeNote?: { dropped: string[]; checkpointCharsPerRow: number; next: string };
+  _shapeNote?: {
+    dropped: string[];
+    checkpointCharsPerRow: number;
+    summaryCharsPerRow: number;
+    next: string;
+  };
 };
 
 function row(over: Record<string, unknown> = {}): Record<string, unknown> {
