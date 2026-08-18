@@ -13,6 +13,10 @@ const auditUnsafeM = vi.hoisted(() => vi.fn());
 vi.mock('../../release-deploy-launch', () => ({
   readDeployStatus: vi.fn(),
   launchDetachedDeploy: vi.fn(),
+  // EI-20482937744589016: the subject stamp names the integration TREE the shas come from, so
+  // the tool now reads integrationRoot too. A fixed value here keeps the assertion about the
+  // stamp's shape, not about this box's checkout path.
+  integrationRoot: () => '/test/integration-root',
 }));
 // Partial-mocks (importOriginal) — the tool's import graph (agent-mcp bootstrap) needs the
 // real OTHER exports of these modules; we override only the single function each touches.
