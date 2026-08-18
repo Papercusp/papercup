@@ -24,6 +24,7 @@
  */
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
+import { createReadDeadline } from './read-deadline';
 import { activeWorkspaceId } from '../workspace-registry';
 import { resolveWorkspaceForHarness } from '../harness/workspace-for-harness';
 import {
@@ -35,6 +36,15 @@ import {
 
 /** Part authors that carry no real identity (single-box origin sentinels). */
 const SENTINEL_AUTHORS = new Set(['', 'local', 'remote']);
+
+/**
+ * Whole-enrichment deadline for {@link enrichPlanDetail} (WI-39823). Badges are
+ * cosmetic, so this sits WELL under the 6s the data-bearing learning.* reads
+ * carry: 3s already leaves ~5x headroom over the p90 measured for this family,
+ * and spending more of a shared resolver budget on a decoration than on the
+ * payload would be the wrong trade.
+ */
+const PLAN_ATTRIBUTION_BUDGET_MS = 3_000;
 
 function pg(sql?: Sql): Sql {
   return sql ?? getOrgPg().sql;
@@ -308,11 +318,19 @@ interface PlanDetailLike {
  */
 export async function enrichPlanDetail(
   plan: unknown,
-  opts?: { sql?: Sql; workspaceId?: string; harnessSlug?: string },
+  opts?: { sql?: Sql; workspaceId?: string; harnessSlug?: string; budgetMs?: number },
 ): Promise<unknown> {
   const p = plan as PlanDetailLike;
   if (!p || typeof p !== 'object' || !p.frontmatter) return plan;
   const sql = pg(opts?.sql);
+  // BOUNDED (WI-39823). This file's contract is stated at the top — "additive +
+  // best-effort: any failure leaves the base payload untouched (the UI simply
+  // renders no badge)" — and the `try`/`catch` below delivers that for a leg that
+  // THROWS. A leg that HANGS was never covered: `Promise.all` waits for the
+  // slowest, so one wedged author read held the whole plan-detail sync query past
+  // the resolver timeout, which is not "no badge", it is no PLAN. The deadline is
+  // what makes the documented best-effort promise true for a slow store too.
+  const withinBudget = createReadDeadline(opts?.budgetMs ?? PLAN_ATTRIBUTION_BUDGET_MS);
   // WI-7259 (sibling of WI-7246): prefer the payload's own stamped `slug`
   // (plans:get → row.planSlug, the canonical identity) over
   // `frontmatter.slug` — a scheduled-run snapshot copies its parent plan's
@@ -344,11 +362,11 @@ export async function enrichPlanDetail(
   let itemAuthors = new Map<string, string>();
   try {
     [latest, itemAuthors] = await Promise.all([
-      latestRevisionAuthors(workspaceId, [slug], sql),
-      planItemAuthors(workspaceId, harnessSlug, slug, sql),
+      withinBudget(latestRevisionAuthors(workspaceId, [slug], sql), 'plan-detail revision-authors'),
+      withinBudget(planItemAuthors(workspaceId, harnessSlug, slug, sql), 'plan-detail item-authors'),
     ]);
   } catch {
-    /* leave empty → graceful no-badge */
+    /* leave empty → graceful no-badge (now reached by a lapsed budget too) */
   }
 
   const owner = typeof p.frontmatter.owner === 'string' ? p.frontmatter.owner.trim() : '';
@@ -357,7 +375,15 @@ export async function enrichPlanDetail(
   if (owner) inputs.push({ kind: 'email', value: owner });
   if (le) inputs.push({ kind: 'authorId', value: le.authorId, authorKind: le.authorKind });
   for (const author of itemAuthors.values()) inputs.push({ kind: 'pubkey', value: author });
-  const resolved = await resolvePlanAuthorIdentities(workspaceId, inputs, { sql });
+  // The identity resolve is a THIRD store read on this path and, unlike the pair
+  // above, it sat outside any `catch` — so a failure here took the plan payload
+  // down, contradicting this file's own best-effort header. Bounded by the SAME
+  // deadline (never a second budget: two 3s budgets would total 6s and defeat the
+  // ceiling the bound exists to stay under) and degraded to no-badge.
+  const resolved = await withinBudget(
+    resolvePlanAuthorIdentities(workspaceId, inputs, { sql }),
+    'plan-detail author identities',
+  ).catch(() => new Map<string, ResolvedAuthor>());
 
   const ownerIdentity = owner ? resolved.get(planAuthorKey('email', owner)) ?? null : null;
   const lastEditor = le ? resolved.get(planAuthorKey('authorId', le.authorId)) ?? null : null;

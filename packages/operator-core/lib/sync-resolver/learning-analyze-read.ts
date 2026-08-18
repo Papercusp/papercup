@@ -314,9 +314,15 @@ export async function readAnalyzeCycle(
   };
   if (!cycle.cycleId) return cycle;
 
+  // Enrichment over a cycle already in hand — a lapsed leg costs the economics or
+  // the routed refs, never the artifacts the disclosure was expanded to show.
   const [tickByCycle, routedByCycle] = await Promise.all([
-    tickEconomicsByCycle(sql, workspaceId, [cycle.cycleId]),
-    routedRefsByCycle(sql, workspaceId, [cycle.cycleId]),
+    withinBudget(tickEconomicsByCycle(sql, workspaceId, [cycle.cycleId]), 'analyze-cycle tick-economics').catch(
+      () => new Map<string, ScoutTickEconomics>(),
+    ),
+    withinBudget(routedRefsByCycle(sql, workspaceId, [cycle.cycleId]), 'analyze-cycle routed-refs').catch(
+      () => new Map<string, AnalyzeRoutedRef[]>(),
+    ),
   ]);
   cycle.tick = tickByCycle.get(cycle.cycleId) ?? null;
   cycle.routed = routedByCycle.get(cycle.cycleId) ?? [];
