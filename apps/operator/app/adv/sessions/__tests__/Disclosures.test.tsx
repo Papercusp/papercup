@@ -27,6 +27,8 @@ import {
   type RecordedOrientDisclosures,
 } from '../Disclosures';
 
+afterEach(() => cleanup());
+
 const AT = '2026-08-18T20:57:00.000Z';
 
 const NARROWED: RecordedOrientDisclosures = {
