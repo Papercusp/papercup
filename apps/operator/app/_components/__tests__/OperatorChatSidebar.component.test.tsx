@@ -600,6 +600,63 @@ describe('Inbox face retirement + HUD conversation drill-in (hud-consolidation-2
     expect(screen.getByLabelText('132 inbox items need you').textContent).toBe('99+');
   });
 
+  /* WI-39779 — a timed-out attention read must not render as "nothing needs you".
+     The server's 8s deadline falls back to an EMPTY feed, which derives to zero,
+     and both badges render a zero by rendering NOTHING. So the failure mode is an
+     ABSENCE: the user sees a clean sidebar and reasonably concludes nothing is
+     waiting, when in truth the read never completed. These pin the disclosure at
+     the surface the user actually looks at. */
+
+  it('renders an indeterminate rail badge — not silence — when the attention read degraded', () => {
+    inboxState.pending = 0;
+    inboxState.degraded = true;
+    render(<OperatorChatSidebar />);
+
+    const badge = screen.getByLabelText(
+      'Could not load what needs you — this count is unavailable, not zero',
+    );
+    // The load-bearing assertion is that SOMETHING renders: a hidden badge is
+    // exactly the silent "0 need you" this fixes.
+    expect(badge.textContent).toBe('–');
+    expect(badge.getAttribute('data-degraded')).toBe('true');
+  });
+
+  it('marks the Plans badge indeterminate when the attention read degraded', () => {
+    inboxState.plansNeedingYou = 0;
+    inboxState.degraded = true;
+    render(<OperatorChatSidebar />);
+
+    const badge = screen.getByTestId('op-chat-plans-badge');
+    expect(badge.textContent).toBe('–');
+    expect(badge.getAttribute('data-degraded')).toBe('true');
+  });
+
+  it('does NOT claim degradation when the inbox is genuinely empty', () => {
+    inboxState.pending = 0;
+    inboxState.plansNeedingYou = 0;
+    inboxState.degraded = false;
+    render(<OperatorChatSidebar />);
+
+    // A real zero still renders nothing — the pre-existing, correct behaviour.
+    // Without this case, marking EVERY row degraded would pass the two above.
+    expect(screen.queryByTestId('op-chat-plans-badge')).toBeNull();
+    expect(
+      screen.queryByLabelText('Could not load what needs you — this count is unavailable, not zero'),
+    ).toBeNull();
+  });
+
+  it('shows the real count, not the indeterminate mark, when a degraded read still carried items', () => {
+    inboxState.pending = 3;
+    inboxState.degraded = true;
+    render(<OperatorChatSidebar />);
+
+    // Degradation is disclosed, but a count we DO have is never thrown away.
+    const badge = screen.getByLabelText(
+      'Could not load what needs you — this count is unavailable, not zero',
+    );
+    expect(badge.textContent).toBe('–');
+  });
+
   /* hud-open-destinations-and-true-counts-2026-07-27 P-003 (owner report:
      "clicking open on one of the papercup reports is supposed to open something
      relevant but it isn't"). Before P-003 every one of these refs produced a
