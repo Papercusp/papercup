@@ -5586,6 +5586,12 @@ export async function runGreenCheckpoint(
    * cleanup. The best-effort writer swallows its own errors, so publication failure still never
    * fails the checkpoint run; the single metadata write is part of entering the in-flight state.
    */
+  // BEFORE overwriting it: is the marker we are about to replace a DEAD run's residue? This is the
+  // only instant that question can be asked — our own write destroys the evidence. A loss detected
+  // here is announced into the transcript AND persisted to `gate_health.lastLostRun`, so "a run
+  // died judging that sha" stops being indistinguishable from "a run is judging that sha".
+  const abandonedNote = await deps.reportAbandonedInFlightCandidate?.();
+  if (abandonedNote) deps.log(abandonedNote);
   await deps.recordInFlightCandidate?.({
     candidate,
     base: lastReady ?? null,
@@ -8953,6 +8959,39 @@ export function realCheckpointDeps(
         await clear(target);
       } catch {
         /* best-effort diagnostic — never let this break the checkpoint run */
+      }
+    },
+    // The detector for a run that died without a verdict. Same best-effort contract as its
+    // siblings: an un-stamped run (no record target) reports nothing, exactly as it does today,
+    // and a reader treats silence as "unknown" rather than "no loss occurred".
+    async reportAbandonedInFlightCandidate() {
+      try {
+        const { gateVerdictTargetFromEnv } =
+          await import("@papercusp/operator-core/lib/release/gate-verdict-target");
+        const target = gateVerdictTargetFromEnv();
+        if (!target) return null;
+        const {
+          readInFlightCandidate,
+          judgeAbandonedInFlightCandidate,
+          isPidAlive,
+          describeAbandonedInFlightCandidate,
+          recordLostGateRun,
+        } = await import("@papercusp/operator-core/lib/release/in-flight-candidate");
+        const prior = await readInFlightCandidate(
+          target.installSlug,
+          target.workspaceId,
+        );
+        if (!prior) return null;
+        const verdict = judgeAbandonedInFlightCandidate(prior, {
+          selfPid: process.pid,
+          pidAlive: isPidAlive(prior.pid),
+        });
+        if (!verdict.abandoned) return null;
+        await recordLostGateRun(target, verdict);
+        return describeAbandonedInFlightCandidate(verdict);
+      } catch {
+        /* best-effort diagnostic — never let this break the checkpoint run */
+        return null;
       }
     },
     // EI-19326481022404981: real wiring — reuse the SAME helper WI-4957's `replaceStale`
