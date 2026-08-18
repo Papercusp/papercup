@@ -64,9 +64,9 @@ import type { Sql } from 'postgres';
 import {
   resolveSessionStates,
   type LivenessVerdict,
-  type SelfWakeSource,
-  type SessionState,
 } from '../agent-tools/coordination/liveness-oracle';
+import type { SelfWakeSource } from '../agent-tools/coordination/presence-selfwake';
+import type { SessionState } from '../agent-tools/coordination/presence-wakeability';
 import { GOAL_MODE } from '../modes/goal-session';
 
 /**

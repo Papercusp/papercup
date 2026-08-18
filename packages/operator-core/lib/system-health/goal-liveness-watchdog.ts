@@ -53,10 +53,21 @@ import type { Sql } from 'postgres';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import { openEscalation } from '../agent-tools/coordination/escalations';
 import type { AgentIdentity } from '../agent-tools/coordination/identity';
+import type { LivenessVerdict } from '../agent-tools/coordination/liveness-oracle';
 import {
-  resolveSessionStates,
-  type LivenessVerdict,
-} from '../agent-tools/coordination/liveness-oracle';
+  readGoalHolderRows,
+  resolveGoalHoldersFromRows,
+  resolveHolderLiveness,
+} from '../goals/holder';
+
+/**
+ * P-001: `holderCountsAsAlive` moved to `../goals/holder`, which is now the ONE
+ * definition of "who holds this goal and is any of them alive". Re-exported here
+ * because this file was its original home and the drain-fleet sibling imports it
+ * from this path; both now resolve to the shared implementation rather than the
+ * watchdog owning a rule the product surfaces had no access to.
+ */
+export { holderCountsAsAlive } from '../goals/holder';
 
 export const GOAL_LIVENESS_SWEEP_INTERVAL_MS = 10 * 60_000;
 
@@ -121,29 +132,6 @@ export interface GoalLivenessAlert {
 }
 
 /**
- * PURE: is this holder evidence that the goal is being worked?
- *
- * Deliberately generous — every ambiguous case counts as ALIVE, because a false
- * "abandoned" on a goal someone is actively working is far more corrosive than a
- * late alarm. Specifically:
- *
- *  - `live` / `recorded` — working now.
- *  - `parked` — parked is NOT dead: an agent between turns is parked. It counts
- *    as alive UNLESS the self-wake leg positively says nothing will ever wake it
- *    (`selfWake === 'none'`), which is the "dead member in a healthy costume"
- *    case liveness-oracle documents. An ABSENT self-wake leg is UNKNOWN and must
- *    read as alive — never as 'none'.
- *  - `draining` / `suspect` — mid-verdict; treat as alive and let the next sweep
- *    decide once the state settles.
- *  - `ended` — the only state that positively means gone.
- */
-export function holderCountsAsAlive(v: LivenessVerdict): boolean {
-  if (v.sessionState === 'ended') return false;
-  if (v.sessionState === 'parked' && v.selfWake === 'none') return false;
-  return true;
-}
-
-/**
  * PURE: classify one goal. Returns null when the goal is healthy OR when the
  * evidence is insufficient to call it dark.
  *
@@ -152,7 +140,9 @@ export function holderCountsAsAlive(v: LivenessVerdict): boolean {
  * verdict is UNKNOWN, not dead. `resolveSessionStates` omits an entry when its
  * wakeability fetch degraded, so treating a missing entry as death would turn a
  * transient DB hiccup into a wave of false abandonment alarms across every goal
- * at once. An unresolvable holder therefore suppresses the alert entirely.
+ * at once. An unresolvable holder therefore suppresses the alert entirely — this
+ * is `resolveGoalHolders`' `liveness: 'unknown'` verdict, which the shared module
+ * keeps distinct from `'lost'` for exactly this reason (P-001).
  */
 export function classifyGoalLiveness(
   goal: GoalRowLike,
@@ -161,17 +151,16 @@ export function classifyGoalLiveness(
   nowMs: number,
   graceMs: number = GOAL_LIVENESS_GRACE_MS,
 ): GoalLivenessAlert | null {
-  const mine = holders.filter(
-    (h) => h.goalId === goal.goalId && h.workspaceId === goal.workspaceId,
+  const resolved = resolveGoalHoldersFromRows(
+    goal.goalId,
+    goal.workspaceId,
+    holders,
+    verdicts,
   );
-
-  // Any holder that is alive (or whose liveness we cannot determine) means this
-  // goal is not reportable.
-  for (const h of mine) {
-    const v = verdicts.get(h.ownerId);
-    if (!v) return null; // UNKNOWN — never inferred as dead
-    if (holderCountsAsAlive(v)) return null;
-  }
+  // 'held' → someone is on it. 'unknown' → at least one holder is unresolvable,
+  // which is not evidence of death. Only 'unheld' / 'lost' are reportable.
+  if (resolved.liveness === 'held' || resolved.liveness === 'unknown') return null;
+  const mine = resolved.holders;
 
   const lastEvidenceMs = Math.max(goal.updatedAtMs, ...mine.map((h) => h.setAtMs), 0);
   const darkMs = nowMs - lastEvidenceMs;
@@ -181,12 +170,12 @@ export function classifyGoalLiveness(
     goalId: goal.goalId,
     workspaceId: goal.workspaceId,
     title: goal.title,
-    reason: mine.length === 0 ? 'unheld' : 'abandoned',
+    reason: resolved.liveness === 'unheld' ? 'unheld' : 'abandoned',
     lastEvidenceMs,
     darkMs,
     holders: mine.map((h) => ({
       ownerId: h.ownerId,
-      sessionState: verdicts.get(h.ownerId)?.sessionState ?? 'unknown',
+      sessionState: h.sessionState ?? 'unknown',
     })),
   };
 }
@@ -244,16 +233,11 @@ function makeReadGoals(sql: Sql): GoalLivenessSweepDeps['readGoals'] {
              (extract(epoch FROM updated_at) * 1000)::bigint AS updated_ms
         FROM harness_shared.goals
        WHERE status = 'active'`;
-    // Every goal-mode row in one read; joined in memory so a goal with NO holder
-    // row is still visible (an inner join would silently drop the `unheld` case,
-    // which is one of the two conditions this watchdog exists to report).
-    const holderRows = await sql<
-      { workspace_id: string; subject: string; owner_id: string; set_ms: string }[]
-    >`
-      SELECT workspace_id, subject, owner_id,
-             (extract(epoch FROM set_at) * 1000)::bigint AS set_ms
-        FROM harness_shared.agent_modes
-       WHERE mode = 'goal' AND subject IS NOT NULL`;
+    // Every goal-mode row in one read, via the canonical holder read (P-001);
+    // joined in memory so a goal with NO holder row is still visible (an inner
+    // join would silently drop the `unheld` case, which is one of the two
+    // conditions this watchdog exists to report).
+    const holders = await readGoalHolderRows(sql);
     return {
       goals: goalRows.map((r) => ({
         goalId: r.id,
@@ -261,27 +245,9 @@ function makeReadGoals(sql: Sql): GoalLivenessSweepDeps['readGoals'] {
         title: r.title,
         updatedAtMs: Number(r.updated_ms),
       })),
-      holders: holderRows.map((r) => ({
-        goalId: r.subject,
-        workspaceId: r.workspace_id,
-        ownerId: r.owner_id,
-        setAtMs: Number(r.set_ms),
-      })),
+      holders,
     };
   };
-}
-
-async function defaultResolveLiveness(ownerIds: string[]): Promise<Map<string, LivenessVerdict>> {
-  if (ownerIds.length === 0) return new Map();
-  // hydratePerId: we hold only owner ids from agent_modes, so the oracle must
-  // fill heartbeat/pid/host/source from each subject's own presence row.
-  // selfWake: this is a SUPERVISORY read — noticing a stranded holder is the
-  // entire job — and it is the leg that distinguishes a parked agent that will
-  // re-wake from one that never will.
-  return await resolveSessionStates(
-    ownerIds.map((ownerId) => ({ ownerId })),
-    { hydratePerId: true, selfWake: true },
-  );
 }
 
 async function defaultEscalate(alert: GoalLivenessAlert): Promise<void> {
@@ -329,7 +295,7 @@ function sweepDeps(
 ): GoalLivenessSweepDeps {
   return {
     readGoals: makeReadGoals(sql),
-    resolveLiveness: defaultResolveLiveness,
+    resolveLiveness: resolveHolderLiveness,
     escalate: defaultEscalate,
     flagEnabled: defaultFlagEnabled,
     now: Date.now,
