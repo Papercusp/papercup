@@ -1393,6 +1393,52 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // agentLeaderBrief.byOwner — the FLEET-PEERS half of the session popup, for a
+  // viewed agent that resolves as a fleet LEADER
+  // (popup-agent-state-coverage-2026-08-18 P-002).
+  //
+  // Deliberately a THIRD named query beside agentDetail/agentOrders, for the
+  // same reason those two are separate: the brief is an expensive fan-out
+  // (roster, ~9 decorations, unowned criticals, lane health, capacity, spec
+  // preview, invariants), and the overwhelming majority of popups are opened on
+  // an agent that leads nothing. Folding it into agentDetail would make that
+  // cost unconditional on every popup open AND on every footer summary-chip
+  // read. Here a non-leader costs two cheap reads and returns a `skipped`
+  // verdict — see adv-agent-leader-brief.ts for why the skip REASON is carried
+  // rather than collapsed into a null brief.
+  //
+  // It calls buildLeaderBrief — the READ half of the `fleet:leader-brief` tool
+  // itself, extracted for this purpose — never a reimplementation. A second
+  // derivation would drift from what the leader is actually told, which would
+  // make the pane worse than absent: confidently wrong about a fleet in
+  // trouble. The two behaviours that are correct for an agent caller and wrong
+  // for a viewer (claiming a vacant leader seat; resolving the fleet from the
+  // CALLER's presence, which inside the operator process means the operator's
+  // own launch fleet) are turned off through the caller bag, not by forking.
+  'agentLeaderBrief.byOwner': {
+    // coord_presence is the RIGHT push source here, and the opposite call from
+    // the one agentOrders.byOwner makes about the same table. There, presence
+    // was excluded because a heartbeat is not a change in what the agent was
+    // TOLD, so listing it would push a panel on a timer. Here member LIVENESS
+    // is the pane's whole subject: `dormant`, `spinning`, `throttled` and
+    // `coordHook` are all derived from presence rows, so a presence write is a
+    // real change in what the pane says. The 90s (name,args) dedupe bounds the
+    // refetch rate, and the query only runs while a leader's popup is open.
+    //
+    // agent_fleets (the leadership registry) is NOT declared: it has no entry in
+    // the invalidation map, and every write that moves leadership
+    // (fleet:take-leadership / fleet:join) also writes the mover's presence
+    // fleet_role, so the push above already covers the case. Declaring it would
+    // buy a PUSH_EXEMPT row and no liveness.
+    backingTables: ['harness_shared.coord_presence'],
+    argsSchema: z.object({ ownerId: z.string().min(1) }),
+    resolve: async (args) => {
+      const { ownerId } = args as { ownerId: string };
+      const { getAgentLeaderBrief } = await import('../adv-agent-leader-brief');
+      return [await getAgentLeaderBrief(ownerId)];
+    },
+  },
+
   // advRoster.list — shared Sessions roster context, formerly a 4s
   // `/api/adv/roster` poll. Shape matches the route payload.
   'advRoster.list': {

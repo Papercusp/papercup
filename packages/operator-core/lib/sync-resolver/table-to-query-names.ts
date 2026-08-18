@@ -620,6 +620,14 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
     // WI-6961: the ORDERS half of the same session popup — buildCarryBrief reads
     // presence, so the panel goes stale on exactly the writes agentDetail does.
     'agentOrders.byOwner',
+    // popup-agent-state-coverage-2026-08-18 P-002: the FLEET-PEERS half of that
+    // same popup. Presence is not incidental to it — it IS its subject: every
+    // per-member marker the pane exists to show (dormant / spinning / throttled
+    // / coordHook) is derived from presence rows, so a presence write is a real
+    // change in what the pane says, not the heartbeat churn that keeps
+    // agentOrders.byOwner off this list. The query only runs while a LEADER's
+    // popup is open, and the 90s (name,args) dedupe bounds the refetch rate.
+    'agentLeaderBrief.byOwner',
     'advRoster.list',
     // hiveRoster.byHive (presence-v2 P-006) folds coord_presence + the fleet
     // work-detail; a presence/intent/claim/last_active write refreshes it too.
