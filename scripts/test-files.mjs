@@ -579,6 +579,50 @@ export function nameFilterFrom(vitestArgs) {
   return null;
 }
 
+/**
+ * WI-39830 — vitest's CAC parser reads a `-`-prefixed pattern as a NEW OPTION, never as the
+ * value of a preceding `-t`, so the SPLIT form makes every test whose name starts with `-`
+ * unaddressable by name. Measured here against `lib/harness-invoke-once.test.ts` (65 tests, 2
+ * of them named `--model=<x> …`):
+ *
+ *   no filter                     -> exit 0, 65 matched   (positive control)
+ *   -t '--model='                 -> exit 1,  0 matched   CACError: Unknown option `--model`
+ *   --testNamePattern=--model=    -> exit 0,  2 matched   (both real tests)
+ *
+ * A pattern CAC *does* know fails differently but just as hard (`-t '--silent'` ->
+ * "option `-t, --testNamePattern <pattern>` value is missing"), so neither shape degrades to a
+ * quiet wrong answer — but neither runs the test either, and an opaque CACError reads as
+ * "my pattern is wrong" rather than "the router mangled it".
+ *
+ * This repo's test names routinely START with `--` (lint-tsc.test.ts, mutation-probe-script.test.ts,
+ * harness-invoke-once.test.ts, scripts-pg-url.test.ts …), so this is a live trap, not a corner
+ * case. Rewriting HERE — the one seam the `testing:run` tool, `npm run test:file`, and the
+ * per-file fallback re-run all funnel through — fixes every caller at once.
+ *
+ * Converts unconditionally rather than sniffing for a leading dash: the joined form is
+ * unambiguous for EVERY value (CAC splits on the FIRST `=`, so a pattern that itself contains
+ * `=` survives intact), and one rule with no branch cannot be wrong about which branch it is in.
+ * A trailing `-t` with no value is left alone — there is no pattern to join, and vitest's own
+ * error for it is the correct one.
+ *
+ * @param {string[]} vitestArgs args forwarded after the `--` separator
+ * @returns {string[]} the same args, with any split `-t <pattern>` joined to `--testNamePattern=<pattern>`
+ */
+export function joinNameFilterArgs(vitestArgs) {
+  const args = vitestArgs ?? [];
+  const out = [];
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if ((arg === '-t' || arg === '--testNamePattern') && i + 1 < args.length) {
+      out.push(`--testNamePattern=${args[i + 1]}`);
+      i += 1;
+      continue;
+    }
+    out.push(arg);
+  }
+  return out;
+}
+
 /** Bare (non-flag) args left after the pattern — the fingerprint of shell/npm quote-eating. */
 function positionalsAfter(args, from) {
   const strays = [];
@@ -1043,7 +1087,10 @@ function parseCli(argv) {
       : [];
   const dry = own.includes('--dry');
   const files = own.filter((arg) => arg !== '--dry');
-  return { dry, files, vitestArgs };
+  // WI-39830: normalize the name filter to the joined form ONCE, here, so every downstream
+  // consumer of `vitestArgs` gets it — the main `vitest run` spawn, the per-file fallback
+  // re-run, and `nameFilterFrom` (which already accepts both forms) alike.
+  return { dry, files, vitestArgs: joinNameFilterArgs(vitestArgs) };
 }
 
 function run(command, args, options) {
