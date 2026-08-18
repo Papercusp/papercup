@@ -47,6 +47,12 @@ export interface DurationHistoryEntry {
   durationMs: number;
   samples: number;
   updatedAt: string;
+  /**
+   * Decayed high-water duration. OPTIONAL because a legacy entry written before the peak was
+   * tracked has no `peakMs`, and every reader (timeoutDurationEstimate, mergeDurationHistory)
+   * treats a missing value as "seed from the EWMA" rather than zero.
+   */
+  peakMs?: number;
 }
 
 export interface DurationHistory {
@@ -70,6 +76,14 @@ export function resolveWorkerMemoryMb(input: {
   fallback: number | string;
 }): number;
 
+export function resolveMemoryBudgetMb(input: {
+  affectedGlobalMemoryMb?: number | string;
+  memAvailableMb?: number | string | null;
+  workerBudget: number | string;
+  workerMemoryMb: number | string;
+  reserveFraction?: number;
+}): number;
+
 export function resolveTaskBudget(input: TaskBudgetInput): ResolvedTaskBudget;
 
 export function runBudgetedTasks<Task, Value>(
@@ -85,6 +99,13 @@ export function emptyDurationHistory(): DurationHistory;
 export function readDurationHistory(path: string): DurationHistory;
 
 export function durationEstimate(history: DurationHistory, key: string): number | null;
+
+/**
+ * Like {@link durationEstimate}, but for sizing a TIMEOUT rather than for ordering: it returns
+ * the max of the EWMA and the decayed peak, so a bimodal task's slow mode keeps its headroom
+ * through a run of fast completions.
+ */
+export function timeoutDurationEstimate(history: DurationHistory, key: string): number | null;
 
 export function mergeDurationHistory(
   history: DurationHistory,
