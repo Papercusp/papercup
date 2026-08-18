@@ -80,11 +80,29 @@ const DEADLINE = Symbol('attention-counts-deadline');
  * single-flight build can finish and warm the next caller. A real rejection
  * remains an error; only the deadline takes the supplied graceful fallback.
  */
+export interface DeadlineOutcome<T> {
+  /** The real result, or the graceful fallback when the deadline fired. */
+  value: T;
+  /**
+   * TRUE when `value` is the FALLBACK rather than a real answer.
+   *
+   * This is returned rather than kept private on purpose. The previous
+   * signature resolved to a bare `T`, which made a timed-out result
+   * BYTE-IDENTICAL to a real one at every call site — so the caller could not
+   * disclose the degradation even if it wanted to, and the graceful value got
+   * rendered as fact. That is what happened to the attention badge: a fired
+   * deadline yields empty groups, empty groups derive to all-zeros, and the
+   * user was shown a confident "0 decisions need you" that was really "we
+   * never found out". Returning the flag makes ignoring it a visible choice.
+   */
+  degraded: boolean;
+}
+
 export async function withDeadlineFallback<T>(
   operation: Promise<T>,
   deadlineMs: number,
   fallback: () => T | Promise<T>,
-): Promise<T> {
+): Promise<DeadlineOutcome<T>> {
   operation.catch(() => {});
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<typeof DEADLINE>((resolve) => {
@@ -95,7 +113,9 @@ export async function withDeadlineFallback<T>(
   });
   try {
     const result = await Promise.race([operation, timeout]);
-    return result === DEADLINE ? await fallback() : result;
+    return result === DEADLINE
+      ? { value: await fallback(), degraded: true }
+      : { value: result as T, degraded: false };
   } finally {
     clearTimeout(timer);
   }
