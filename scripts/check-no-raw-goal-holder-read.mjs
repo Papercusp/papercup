@@ -108,22 +108,35 @@ export const ALLOWLIST = new Set([
  */
 export const BASELINE = new Set([]);
 
-/** Vendored / generated / non-source / test files are never scanned. */
-export const isExcluded = (f) =>
-  f.startsWith('_retired/') ||
-  f.includes('/_retired/') ||
-  f.includes('/node_modules/') ||
-  f.includes('/dist/') ||
-  f.includes('/.next/') ||
-  f.includes('/build/') ||
-  f.includes('/storybook-static/') ||
-  f.includes('/code-server/') ||
-  f.includes('/env-sidecars/') ||
-  f.includes('/db-sql/') ||
-  f.includes('/spa/assets/') ||
-  f.includes('/holepunch-spike/') ||
-  /\.(test|spec)\.[cm]?tsx?$/.test(f) ||
-  !/\.(ts|mjs|cjs)$/.test(f);
+/**
+ * Vendored / generated / non-source / test files are never scanned.
+ *
+ * Segment-matched via a leading `/` on the normalised path rather than
+ * `f.includes('/dir/')`: the sibling guards' `includes` form silently MISSES a
+ * top-level `node_modules/x.ts` (no leading slash to match), which the unit test
+ * for this guard caught. Paths here are repo-relative, so the root case is the
+ * realistic one.
+ */
+const EXCLUDED_SEGMENTS = [
+  '_retired',
+  'node_modules',
+  'dist',
+  '.next',
+  'build',
+  'storybook-static',
+  'code-server',
+  'env-sidecars',
+  'db-sql',
+  'holepunch-spike',
+];
+
+export const isExcluded = (f) => {
+  const p = `/${f}`;
+  if (EXCLUDED_SEGMENTS.some((seg) => p.includes(`/${seg}/`))) return true;
+  if (p.includes('/spa/assets/')) return true;
+  if (/\.(test|spec)\.[cm]?tsx?$/.test(f)) return true;
+  return !/\.(ts|mjs|cjs)$/.test(f);
+};
 
 /** Strip block + line comments so prose about goal holders isn't flagged. */
 export function stripComments(text) {
