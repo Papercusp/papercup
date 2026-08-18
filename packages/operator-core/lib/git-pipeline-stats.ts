@@ -195,8 +195,10 @@ export interface GitPipelineSnapshot {
     /**
      * EI-19405864032365760: the gate ABORTED before judging, so the counters above describe an
      * OLDER run. Non-null ⇒ the last tick rendered no verdict at all and none is coming until the
-     * named condition clears — today only `status: 'migrations-pending'` (the migration preflight
-     * refusing to judge against a schema known to be behind the candidate).
+     * named condition clears. Two statuses reach here: `'migrations-pending'` (the migration
+     * preflight refusing to judge against a schema known to be behind the candidate) and
+     * `'infra-inconclusive'` (EI-20767792192323374 — the suite ran, but the gate's own vite-node
+     * module cache was deleted underneath it mid-run, so its failures are a HOST fault).
      *
      * ⚠ READ THIS BEFORE `consecutiveReds`. A preflight abort is deliberately NOT counted as a red
      * (EI-2615's reasoning: a tick that judged no code cannot be evidence of a broken build), which
