@@ -48,6 +48,41 @@ StandardError=append:/var/tmp/llama-server-ornith.log
 WantedBy=default.target
 `;
 
+/**
+ * The unit as deployed AFTER the 2026-08-17 engine repoint (D-011/D-012) — the shape the catalog
+ * now describes. Carries the two things WI-39735 added to the guard's range: an explicit `-ngl` and
+ * the two load-bearing `Environment=` lines that are the difference between using the GPU and
+ * silently serving from the CPU.
+ *
+ * Binary and log paths are genericized, as in DRIFTED_UNIT, because they are per-box and are
+ * deliberately not compared.
+ */
+const CURRENT_UNIT = `[Unit]
+Description=llama-server serving ornith-35b IQ3_M
+After=network.target
+
+[Service]
+Type=simple
+Environment=LD_LIBRARY_PATH=/usr/local/lib/ollama/cuda_v13:/usr/local/lib/ollama
+Environment=GGML_BACKEND_PATH=/usr/local/lib/ollama/cuda_v13/libggml-cuda.so
+ExecStart=/usr/local/lib/ollama/llama-server \\
+  -m /usr/share/ollama/.ollama/models/blobs/sha256-18f775956e1ee05608de578ad9e02b10f5b9c04d6eee59c48a0f38c897857298 \\
+  --host 127.0.0.1 --port 11436 \\
+  --flash-attn on \\
+  -ngl 999 \\
+  -np 2 -c 180224 \\
+  --cache-type-k q8_0 --cache-type-v q8_0 \\
+  --alias maxwell1500/ornith-35b:IQ3_M
+Restart=on-failure
+RestartSec=5
+Nice=5
+StandardOutput=append:/var/tmp/llama-server-ornith.log
+StandardError=append:/var/tmp/llama-server-ornith.log
+
+[Install]
+WantedBy=default.target
+`;
+
 /** Access stubs — the check takes `access` injected so none of this touches the real filesystem. */
 const accessOk = async () => {};
 const accessDenied = async () => {
@@ -143,6 +178,10 @@ describe('parseLlamaServerUnit', () => {
       kvCacheTypeV: 'q4_0',
       flashAttn: true,
       alias: 'maxwell1500/ornith-35b:IQ3_M',
+      // Absent from this unit — and reported as absent, not as some assumed default. That
+      // distinction is the entire bug in WI-39735: a guard that defaults a missing `-ngl` to
+      // "all layers" reports agreement between a GPU unit and a CPU-only one.
+      gpuLayers: null,
     });
   });
 
