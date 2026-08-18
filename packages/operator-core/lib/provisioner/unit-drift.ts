@@ -37,6 +37,7 @@ export interface LlamaServerUnitParams {
   kvCacheTypeV: string | null;
   flashAttn: boolean | null;
   alias: string | null;
+  gpuLayers: number | null;
 }
 
 /**
