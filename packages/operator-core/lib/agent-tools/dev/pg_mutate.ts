@@ -25,6 +25,7 @@ import {
 } from '../../pg-mutate-query';
 import { extractPgErrorInfo, buildTenantScopeAdvisory, PgReadQueryTimeoutError } from '../../pg-read-query';
 import { resolveAgentIdentity } from '../coordination/identity';
+import { resolveConcreteHarnessSlug } from '../_harness-scope';
 
 function jsonResult(payload: unknown) {
   return { content: [{ type: 'text' as const, text: JSON.stringify(payload) }] };
