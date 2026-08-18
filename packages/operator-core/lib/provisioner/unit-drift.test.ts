@@ -203,12 +203,22 @@ describe('parseLlamaServerUnit', () => {
 });
 
 describe('diffCatalogAgainstDeployedUnit', () => {
-  /** The control: the guard must name exactly the four fields that really drifted. */
+  /** The control: the guard must name exactly the parameters that really drifted. */
   it('catches the REAL 2026-08-17 drift, and names every drifted parameter', () => {
     const drift = diffCatalogAgainstDeployedUnit(ORNITH, DRIFTED_UNIT);
     const byParam = Object.fromEntries(drift.map((d) => [d.param, d]));
 
-    expect(Object.keys(byParam).sort()).toEqual(['ctxTotal', 'kvCacheTypeK', 'kvCacheTypeV', 'parallelSlots']);
+    // `gpuLayers` joined this list in WI-39735. It is not a historical claim about what that unit
+    // did on the GPU — it is the guard reporting that the catalog declares an offload setting the
+    // deployed unit does not, which is precisely the silence that hid a CPU-only fallback.
+    expect(Object.keys(byParam).sort()).toEqual([
+      'ctxTotal',
+      'gpuLayers',
+      'kvCacheTypeK',
+      'kvCacheTypeV',
+      'parallelSlots',
+    ]);
+    expect(byParam.gpuLayers).toMatchObject({ generated: '999', deployed: 'null' });
     expect(byParam.parallelSlots).toMatchObject({ generated: '2', deployed: '3' });
     expect(byParam.ctxTotal).toMatchObject({ generated: '180224', deployed: '614400' });
     expect(byParam.kvCacheTypeK).toMatchObject({ generated: 'q8_0', deployed: 'q4_0' });
@@ -231,7 +241,7 @@ describe('diffCatalogAgainstDeployedUnit', () => {
     // calibration case: without it, a diff that reported everything as drifted would still
     // pass the control above.
     const selfRendered = diffCatalogAgainstDeployedUnit(ORNITH, DRIFTED_UNIT);
-    expect(selfRendered.length).toBe(4); // sanity: the control really does differ
+    expect(selfRendered.length).toBe(5); // sanity: the control really does differ
     const clean = diffUnitParams(
       parseLlamaServerUnit(DRIFTED_UNIT),
       parseLlamaServerUnit(DRIFTED_UNIT),
