@@ -79,7 +79,19 @@ function agent(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function seedThroughput() {
+/** The server's 8s-deadline fallback for `plans.attentionCounts`: a graceful
+ *  EMPTY feed, which derives to all-zeros, marked `degraded` (WI-39779). This
+ *  is the exact shape a timed-out read puts on the wire — the zeros are the
+ *  point, and rendering them as fact is what WI-39802 fixed. */
+const DEGRADED_ATTENTION = {
+  decisionItems: 0,
+  decisionPlans: 0,
+  alerts: 0,
+  total: 0,
+  degraded: true,
+};
+
+function seedThroughput(attentionOverrides: Record<string, unknown> = {}) {
   h.queries['workItems.stats'] = {
     data: [
       { kind: 'bug', state: 'open', n: 12, terminal: false },
@@ -94,7 +106,7 @@ function seedThroughput() {
     ],
   };
   h.queries['plans.attentionCounts'] = {
-    data: [{ decisionItems: 2, decisionPlans: 1, alerts: 0, total: 3 }],
+    data: [{ decisionItems: 2, decisionPlans: 1, alerts: 0, total: 3, ...attentionOverrides }],
   };
   h.queries['usage.spend'] = {
     data: [{ h1: { spendUsd: 1.25, calls: 30 }, h24: { spendUsd: 42.5, calls: 900 } }],
@@ -273,5 +285,69 @@ describe('PotHealthPane (su-only rebuild — P-018..P-021 / D-032)', () => {
 
     expect(screen.getByText(/nothing is steering this pot/i)).toBeTruthy();
     expect(screen.getByText(/nobody is driving this pot/i)).toBeTruthy();
+  });
+
+  /* ── A DEGRADED attention read must never render as fact (WI-39779/WI-39802) ──
+   *
+   * `plans.attentionCounts` has an 8s server deadline whose graceful fallback is
+   * an EMPTY feed deriving to all-zeros. WI-39779 put a `degraded` bit on the
+   * row so that empty is distinguishable from a real one; the failure this
+   * guards is the bit being DROPPED again — at the local row type, or (as it
+   * was) by computing `attentionDegraded` and then never rendering it.
+   *
+   * The two readouts degrade DIFFERENTLY and both directions are pinned: the
+   * chip is a MIXED aggregate (goals term unaffected ⇒ a real FLOOR survives),
+   * the kv rows are PURE attention (⇒ nothing survives). */
+  describe('degraded attention read', () => {
+    it('CHIP: states a FLOOR — never a confident total that silently omits the attention terms', () => {
+      seedGoals(); // defaultGoal carries needsHuman: 2 — a real, un-degraded term
+      seedAgents([agent()]);
+      seedThroughput(DEGRADED_ATTENTION);
+      render(<PotHealthPane />);
+
+      // The floor (the goals term) is stated AS a floor...
+      expect(screen.getByText('≥2 need you')).toBeTruthy();
+      // ...and never as the bare total, which would read as "exactly 2 need you"
+      // while the attention terms silently contributed 0.
+      expect(screen.queryByText('2 need you')).toBeNull();
+    });
+
+    it('CHIP: with NO floor to state, still renders — the pane must not assert "nothing needs you"', () => {
+      seedGoals([defaultGoal({ needsHuman: 0 })]);
+      seedAgents([agent()]);
+      seedThroughput(DEGRADED_ATTENTION);
+      render(<PotHealthPane />);
+
+      // needYou === 0 here. Un-degraded that correctly renders NO chip; degraded
+      // it must not vanish, because a missing chip reads as a confident all-clear.
+      expect(screen.getByText('? need you')).toBeTruthy();
+    });
+
+    it('KV ROWS: pure-attention rows read `unknown` and drop the all-clear dot', () => {
+      seedGoals();
+      seedAgents([agent()]);
+      seedThroughput(DEGRADED_ATTENTION);
+      render(<PotHealthPane />);
+
+      // Both pure-attention rows ("needs a decision" and "alerts") degrade.
+      const unknown = screen.getAllByText('unknown — read timed out');
+      expect(unknown).toHaveLength(2);
+      // The `ok` dot is earned only by a REAL zero; a timed-out read has none.
+      for (const row of unknown) expect(row.querySelector('.op-pot-dot')).toBeNull();
+      expect(screen.queryByText('0 items · 0 plans')).toBeNull();
+    });
+
+    it('CONTROL: an un-degraded read is untouched — real zeros keep their dot and the plain chip', () => {
+      seedAll();
+      render(<PotHealthPane />);
+
+      // Positive control for the two absence assertions above: on a real read the
+      // dot IS present and the chip has no floor marker, so those queries are
+      // measuring the degraded branch rather than a broken selector.
+      expect(screen.getByText('5 need you')).toBeTruthy();
+      expect(screen.queryByText(/≥\d+ need you/)).toBeNull();
+      expect(screen.queryByText('unknown — read timed out')).toBeNull();
+      expect(screen.getByText('0').querySelector('.op-pot-dot.ok')).toBeTruthy();
+    });
   });
 });
