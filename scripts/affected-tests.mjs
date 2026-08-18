@@ -82,6 +82,7 @@ import {
   mergeDurationHistory,
   readDurationHistory,
   resolveGlobalWorkerBudget,
+  resolveMemoryBudgetMb,
   resolveTaskBudget,
   resolveWorkerMemoryMb,
   runBudgetedTasks,
