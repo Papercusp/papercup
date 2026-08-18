@@ -39,6 +39,7 @@ vi.mock('../route-workspace', () => ({
 }));
 
 import { resolveNamedQueryV2 } from './index';
+import { readGymSnapshot } from './learning-gym-read';
 
 beforeEach(() => {
   listRecentProposalsForWorkspace.mockReset().mockResolvedValue([]);
@@ -194,4 +195,153 @@ describe('learning.gym — recent RUN activity (WI-5808)', () => {
     expect(rows[0].runs).toEqual([]);
     warn.mockRestore();
   });
+});
+
+// ---------------------------------------------------------------------------
+// The read deadline (WI-39825).
+//
+// The three `.catch` blocks above are real leg isolation for a leg that THROWS
+// and nothing at all for a leg that HANGS: `Promise.all` waits for the slowest,
+// so one wedged store took the whole snapshot past the sync layer's resolver
+// timeout and the view 500'd — shipping no rows AND no `degradedFields`, because
+// the response itself never shipped. That is the failure the tests above cannot
+// see, and it is why every case here hangs a leg rather than rejecting it.
+//
+// The subject is `readGymSnapshot` and not the resolver, deliberately: a
+// resolver's only input is its wire `argsSchema`, so proving a deadline fires
+// through one would mean shipping a `budgetMs` test knob to every client, or
+// genuinely waiting GYM_READ_BUDGET_MS (6s) per case. `budgetMs` is a FUNCTION
+// parameter on the extracted read, so the guard shrinks the budget to
+// milliseconds and the shipped contract is untouched.
+//
+// The CONTROL is PERMANENT, per CLAUDE.md's falsifiability tiers: this subject
+// is an imported module, so it belongs in tier 1 (a deliberately-wrong
+// implementation kept in the test file) and NOT in the tier-3 in-tree mutation
+// probe, which needs the git-sync lock and can be committed by a sweep while it
+// holds the tree broken. Here the "wrong implementation" costs nothing to keep,
+// because it is the REAL function with its bound widened past firing — exactly
+// the pre-WI-39825 behaviour, reached through a production-real parameter, so it
+// cannot rot out of sync with the code it controls for.
+describe('learning.gym — read deadline (WI-39825)', () => {
+  /** Never settles — a WEDGED store, not a failing one. */
+  const hang = <T>(): Promise<T> => new Promise<T>(() => {});
+
+  type Snapshot = {
+    proposals: unknown[];
+    autoloops: unknown[];
+    archiveSeeds: unknown[];
+    cycles: unknown[];
+    runs: unknown[];
+    degradedFields?: Array<{ field: string; kind: string; reason: string }>;
+  };
+  type Settled =
+    | { kind: 'resolved'; snapshot: Snapshot }
+    | { kind: 'rejected'; message: string }
+    | { kind: 'pending' };
+
+  /**
+   * Observe WITHOUT waiting forever. "Never settles" is the failure mode under
+   * test, so it has to be an assertable OUTCOME (`pending`) rather than a vitest
+   * timeout — a timeout would report the control as a broken test instead of as
+   * the guard discriminating correctly.
+   */
+  const settleWithin = (p: Promise<unknown>, ms: number): Promise<Settled> =>
+    Promise.race([
+      p.then(
+        (snapshot): Settled => ({ kind: 'resolved', snapshot: snapshot as Snapshot }),
+        (error): Settled => ({ kind: 'rejected', message: String((error as Error)?.message ?? error) }),
+      ),
+      new Promise<Settled>((resolve) => {
+        const t = setTimeout(() => resolve({ kind: 'pending' }), ms);
+        (t as unknown as { unref?: () => void }).unref?.();
+      }),
+    ]);
+
+  const read = (budgetMs: number) => readGymSnapshot({ workspaceId: 'ws-test', budgetMs });
+
+  // PRIMARY legs. `proposals`/`autoloops` ARE the Gym view — a snapshot without
+  // them is not degraded, it is wrong — so a lapse PROPAGATES, exactly as a
+  // throw from those readers already does. The gain is a fast, LABELLED failure
+  // at the budget instead of a hang the resolver timeout converts into an
+  // unlabelled 500.
+  for (const [leg, mockFn, label] of [
+    ['proposals', () => listRecentProposalsForWorkspace, 'gym proposals'],
+    ['autoloops', () => listAutoloopsForWorkspace, 'gym autoloops'],
+  ] as const) {
+    it(`a hung PRIMARY leg (${leg}) is REJECTED at the budget instead of hanging the read`, async () => {
+      mockFn().mockReturnValue(hang());
+
+      const outcome = await settleWithin(read(25), 500);
+
+      expect(outcome.kind).toBe('rejected');
+      // The label is the point: a bare timeout hides WHICH leg wedged, which is
+      // the first thing anyone triaging this needs.
+      expect(outcome.kind === 'rejected' && outcome.message).toContain(`${label} exceeded the read budget`);
+    });
+  }
+
+  it('CONTROL: the same hung leg NEVER settles when the bound is widened — so it is the deadline doing the work', async () => {
+    listRecentProposalsForWorkspace.mockReturnValue(hang());
+
+    // Deliberately-wrong version: a budget so large it cannot fire, which IS the
+    // pre-WI-39825 behaviour. If this ever reports anything but `pending`, the
+    // cases above have stopped measuring the deadline and pass for some other
+    // reason.
+    const outcome = await settleWithin(read(10_000_000), 120);
+
+    expect(outcome.kind).toBe('pending');
+  });
+
+  it('CALIBRATION: a healthy read still returns its snapshot under the same tight budget', async () => {
+    // Guards the opposite failure: a bound that "passes" every case above by
+    // breaking every read, healthy or not. Same 25ms budget, working store.
+    listRecentProposalsForWorkspace.mockResolvedValue([{ id: 'SP-1' }]);
+    listRecentGymRunsForWorkspace.mockResolvedValue([{ id: 'run-1' }]);
+
+    const outcome = await settleWithin(read(25), 500);
+
+    expect(outcome.kind).toBe('resolved');
+    const snapshot = outcome.kind === 'resolved' ? outcome.snapshot : null;
+    expect(snapshot?.proposals).toEqual([{ id: 'SP-1' }]);
+    expect(snapshot?.runs).toEqual([{ id: 'run-1' }]);
+    // A healthy snapshot stays byte-identical to what it was before the bound:
+    // the flag's PRESENCE is the signal, so it must be absent, not empty.
+    expect(snapshot?.degradedFields).toBeUndefined();
+  });
+
+  // SUPPLEMENTARY legs render empty perfectly well, so their lapse routes into
+  // the EXISTING noteDegraded path — a timeout lands in the same place a read
+  // failure already lands, carrying the leg label verbatim as its reason. This
+  // is the partial the whole class-fix exists to preserve: rows still ship.
+  for (const [field, mockFn, label] of [
+    ['archiveSeeds', () => listScoutArchiveSeeds, 'gym archiveSeeds'],
+    ['cycles', () => listRecentCyclesForWorkspace, 'gym cycles'],
+    ['runs', () => listRecentGymRunsForWorkspace, 'gym runs'],
+  ] as const) {
+    it(`a hung SUPPLEMENTARY leg (${field}) lands as a NAMED degradedFields entry and the snapshot still ships`, async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      listRecentProposalsForWorkspace.mockResolvedValue([{ id: 'SP-1' }]);
+      mockFn().mockReturnValue(hang());
+
+      const outcome = await settleWithin(read(25), 500);
+      warn.mockRestore();
+
+      expect(outcome.kind).toBe('resolved');
+      const snapshot = outcome.kind === 'resolved' ? outcome.snapshot : null;
+      // The intact legs are TRUE, not sacrificed to the wedged one.
+      expect(snapshot?.proposals).toEqual([{ id: 'SP-1' }]);
+      expect(snapshot?.[field]).toEqual([]);
+      // ...and the casualty is NAMED. Without this the empty section is
+      // indistinguishable from "there is genuinely nothing here", which is the
+      // silent-wrong-answer the degradedFields channel exists to prevent.
+      const degraded = snapshot?.degradedFields ?? [];
+      expect(degraded.map((d) => d.field)).toEqual([field]);
+      expect(degraded[0]?.reason).toContain(`${label} exceeded the read budget`);
+      // Classified as a read failure, NOT a new `timed-out` kind: UnavailableKind
+      // is a shared union the learning-degraded-provenance client guards consume,
+      // and widening it to say what the verbatim reason already says would strand
+      // them for no information gain.
+      expect(degraded[0]?.kind).toBe('read-failed');
+    });
+  }
 });
