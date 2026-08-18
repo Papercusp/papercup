@@ -16,6 +16,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
+  joinNameFilterArgs,
   nameFilterFrom,
   testsExecutedFrom,
   testsExecutedFromReport,
@@ -71,6 +72,93 @@ describe('nameFilterFrom — is a -t/--testNamePattern filter in play, and what 
 
   it('does not invent a pattern when the flag is last and has no value', () => {
     expect(nameFilterFrom(['-t'])).toBeNull();
+  });
+});
+
+describe('joinNameFilterArgs — the name filter must reach vitest as ONE argv token (WI-39830)', () => {
+  // WHY THIS IS PINNED. vitest's CAC parser reads a `-`-prefixed token as a NEW OPTION, never as
+  // the value of a preceding `-t`. Measured against lib/harness-invoke-once.test.ts (65 tests, 2
+  // named `--model=<x> …`): `-t '--model='` exits 1 with 0 matched (`CACError: Unknown option
+  // --model`), while `--testNamePattern=--model=` exits 0 and matches both. A pattern CAC *does*
+  // know fails differently but as hard (`-t '--silent'` -> "option `-t, --testNamePattern
+  // <pattern>` value is missing"). This repo's test names routinely START with `--`, so those
+  // tests were unaddressable by name from every caller.
+  //
+  // FALSIFIABILITY CONTROL. `SPLIT_FORM` below is the OLD, defective construction, kept here
+  // permanently as a deliberately-wrong implementation to measure the assertions against — the
+  // repo's tier-1 way to prove a guard can fail without mutating the shared tree. Every
+  // expectation on joinNameFilterArgs is paired with the same expectation on SPLIT_FORM
+  // resolving the other way; an assertion that both satisfy is measuring nothing.
+  const SPLIT_FORM = (args: string[]) => args;
+
+  /** No `-t`/`--testNamePattern` may be followed by a token CAC would claim as its own option. */
+  const survivesCacParsing = (args: string[]) =>
+    args.every(
+      (arg, i) =>
+        !(arg === '-t' || arg === '--testNamePattern') ||
+        args[i + 1] === undefined ||
+        !args[i + 1].startsWith('-'),
+    );
+
+  it('joins a split `-t <pattern>` into the one token CAC parses correctly', () => {
+    expect(joinNameFilterArgs(['-t', '--files= is ignored'])).toEqual([
+      '--testNamePattern=--files= is ignored',
+    ]);
+    // The control: the old construction leaves the two tokens split, which is the shape CAC
+    // mis-parses. If this ever starts matching the line above, the subject stopped doing anything.
+    expect(SPLIT_FORM(['-t', '--files= is ignored'])).not.toEqual([
+      '--testNamePattern=--files= is ignored',
+    ]);
+  });
+
+  it('joins the long flag the same way', () => {
+    expect(joinNameFilterArgs(['--testNamePattern', '--mine (INFERRED)'])).toEqual([
+      '--testNamePattern=--mine (INFERRED)',
+    ]);
+  });
+
+  it('keeps a pattern that itself contains `=` intact — CAC splits on the FIRST `=` only', () => {
+    expect(joinNameFilterArgs(['-t', '--model=<x> equals form'])).toEqual([
+      '--testNamePattern=--model=<x> equals form',
+    ]);
+  });
+
+  it('produces argv CAC can parse, where the old split construction does not', () => {
+    const dashPrefixed = ['--reporter=json', '-t', '--fake-destructive runs the probe'];
+    expect(survivesCacParsing(joinNameFilterArgs(dashPrefixed))).toBe(true);
+    // The control resolving the OTHER way is what proves the predicate discriminates at all.
+    expect(survivesCacParsing(SPLIT_FORM(dashPrefixed))).toBe(false);
+  });
+
+  it('leaves an already-joined filter, other flags, and their order untouched', () => {
+    const args = ['--reporter=json', '--outputFile=/tmp/r.json', '--testNamePattern=already'];
+    expect(joinNameFilterArgs(args)).toEqual(args);
+  });
+
+  it('preserves surrounding flags when it rewrites', () => {
+    expect(
+      joinNameFilterArgs(['--reporter=json', '-t', 'plain', '--outputFile', '/tmp/r.json']),
+    ).toEqual(['--reporter=json', '--testNamePattern=plain', '--outputFile', '/tmp/r.json']);
+  });
+
+  it('does not invent a value for a trailing flag — vitest’s own error for that one is correct', () => {
+    expect(joinNameFilterArgs(['--reporter=json', '-t'])).toEqual(['--reporter=json', '-t']);
+  });
+
+  it('is a no-op on args with no name filter at all', () => {
+    expect(joinNameFilterArgs(['--reporter=json', '--outputFile', 'r.json'])).toEqual([
+      '--reporter=json',
+      '--outputFile',
+      'r.json',
+    ]);
+    expect(joinNameFilterArgs([])).toEqual([]);
+  });
+
+  it('leaves the router’s own parser able to read what it produced', () => {
+    // The two halves have to agree: whatever this emits, nameFilterFrom must still recognise as
+    // a filter in play, or the zero-match guard (EI-19425177453558152) stops policing it.
+    const joined = joinNameFilterArgs(['-t', '--files= is ignored']);
+    expect(nameFilterFrom(joined)).toMatchObject({ pattern: '--files= is ignored' });
   });
 });
 
@@ -299,8 +387,25 @@ describe('main() — a name filter that matches ZERO tests must not report a ver
   it('forwards Vitest flags placed directly after the file list', () => {
     stubVitest(REAL_ROWS.partial);
     expect(main([FILE, '-t', 'rejects'])).toBe(0);
-    expect(vitestRunCall()?.[1]).toEqual(expect.arrayContaining(['-t', 'rejects']));
+    // WI-39830: forwarded as the JOINED token. This assertion previously pinned the split
+    // `['-t', 'rejects']` pair — i.e. it pinned the defect, which is why the defect survived a
+    // green suite. Order matters: `arrayContaining(['-t','rejects'])` would also pass on argv
+    // where the two are far apart, so match the single token that actually reaches CAC.
+    expect(vitestRunCall()?.[1]).toContain('--testNamePattern=rejects');
+    expect(vitestRunCall()?.[1]).not.toContain('-t');
     expect(linesFrom(logSpy)).toMatch(/TEST_FILE_RESULT .*status=passed/);
+  });
+
+  // The end-to-end shape of WI-39830, through the real main(): a `--`-prefixed pattern — which
+  // this repo's own test names routinely are — must never reach vitest as two argv entries.
+  it('never hands vitest a split `-t <pattern>` for a name that starts with `--`', () => {
+    stubVitest(REAL_ROWS.partial);
+    expect(main([FILE, '--', '-t', '--files= is ignored'])).toBe(0);
+    const argv = vitestRunCall()?.[1] as string[];
+    expect(argv).toContain('--testNamePattern=--files= is ignored');
+    // The failing shape stated positively: `-t` immediately followed by a `-`-prefixed token is
+    // exactly what CAC reads as a new option instead of as the pattern.
+    expect(argv.some((a, i) => a === '-t' && (argv[i + 1] ?? '').startsWith('-'))).toBe(false);
   });
 
   // Non-vacuousness: every assertion above would also hold if the new check refused EVERY run.
