@@ -5048,6 +5048,39 @@ async function pushGreenCandidateOrThrow(
  * `candidate` stays the RED tip so the failing-test signature + release-fixer dispatch
  * keep targeting the real failure; `advancedTo` carries the prefix `main` moved to.
  */
+
+/**
+ * WI-39841 (Defect 3) — the salvage's time budget, checked BEFORE EVERY confirm.
+ *
+ * The call site has a pre-start check (`salvageOutOfTime`), and it is necessary but NOT
+ * sufficient: it budgets for ONE suite while this function runs up to
+ * `1 + maxRecoveryConfirms` = **5** of them, sequentially, each calling `deps.runGreen`
+ * with NO `timeoutMs`. So a salvage whose worst case is 5x the measured budget is admitted
+ * by a check that measured 1x, and nothing between the confirms ever re-asks.
+ *
+ * Measured on the 2026-08-18T17:15:04Z cron run: the salvage was admitted at ~23m elapsed
+ * (estimate 23m, ~77m of headroom — correctly admitted for ONE confirm), then spent
+ * 17:37:57→18:54+ walking prefixes and was STILL RUNNING when the run deadline SIGTERMed
+ * the process. The verdict that run had already fully computed at 17:37:55 ("candidate
+ * 44159641 is NOT green") was destroyed with it: `gate_health` recorded
+ * `observedCandidate:null`, `failingTests:[]` — and still incremented `consecutiveReds`.
+ *
+ * The estimator is the same self-calibrating one the call site uses, with a strictly better
+ * input once measurement is available: the MEASURED mean of the confirms this salvage has
+ * already run. Before the first confirm there is nothing to measure, so it falls back to
+ * the caller's whole-run-elapsed figure, which over-estimates a single confirm — the
+ * correct direction, because it fails toward skipping.
+ *
+ * Declining is the SAFE direction, for the same reason the pre-start check gives: the
+ * salvage only ever ADDS a partial advance of `main` to an already-green prefix. Stopping
+ * early costs one deferred partial advance; overrunning costs the whole verdict.
+ */
+interface SalvageBudget {
+  /** No further confirm may START after this instant (absolute epoch ms). */
+  deadlineMs: number;
+  /** Cost estimate for the FIRST confirm, before this salvage has measured one itself. */
+  initialConfirmEstimateMs: number;
+}
 async function tryLongestGreenPrefix(
   cfg: ReleaseConfig,
   deps: CheckpointDeps,
@@ -5056,6 +5089,7 @@ async function tryLongestGreenPrefix(
   failingTests: string[] | undefined,
   noPush: boolean,
   logPartialGreenGate: (line: string) => void,
+  budget: SalvageBudget,
 ): Promise<CheckpointResult | null> {
   if (!deps.commitsInRange || !deps.affectedWorkspacesForRange) return null; // not wired (e.g. a minimal stub)
   if (!failingTests?.length) return null; // no signature → can't localize → don't guess
