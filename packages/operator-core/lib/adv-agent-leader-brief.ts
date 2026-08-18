@@ -55,7 +55,7 @@
  * all, so an ordinary session's popup pays nothing.
  */
 
-import { activeWorkspaceId } from './workspace-scope';
+import { activeWorkspaceId } from './workspace-registry';
 import { buildLeaderBrief } from './agent-tools/fleet/leader-brief';
 
 /** The brief payload, taken from the producer so it cannot drift from it. */
