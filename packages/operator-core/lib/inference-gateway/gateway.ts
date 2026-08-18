@@ -1543,10 +1543,16 @@ export function createInferenceGateway(deps: GatewayDeps) {
   let lastServiceableRecommendation = Number.POSITIVE_INFINITY;
   /** Live admission after the mode is honored — surfaced on /stats so an override is never invisible. */
   let lastAdmissionApplied = concurrency;
+  /** The RAW serviceable-account count behind the recommendation. Recorded so `/stats` can publish the
+   *  clamp's INPUT and not only its output — `recommendation: 4` alone cannot tell a reader whether that
+   *  came from one serviceable account or from the MIN floor. */
+  let serviceableAccountsFn: () => number | null = () => null;
+  let lastServiceableAccounts: number | null = null;
   const applyAdmissionCap = (eff: number): void => {
     lastAimdEff = eff;
     const recommendation = serviceableAdmissionCapFn();
     lastServiceableRecommendation = recommendation;
+    lastServiceableAccounts = serviceableAccountsFn();
     // `auto` honors the recommendation; `off` reports it and admits at the AIMD effective.
     const capped = clampMode === 'off' ? Math.max(1, eff) : Math.max(1, Math.min(eff, recommendation));
     lastAdmissionApplied = capped;
@@ -1656,6 +1662,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
     if (!SERVICEABLE_CLAMP_ON || serviceable == null) return Number.POSITIVE_INFINITY;
     return Math.max(MIN_SERVICEABLE_ADMISSION, serviceable * PER_ACCOUNT_ADMISSION);
   };
+  serviceableAccountsFn = () => serviceableHealthyCount() ?? null;
   // Apply the clamp ONCE, NOW that it has its real implementation. Previously the first application waited
   // for the periodic tick (SERVICEABLE_CLAMP_TICK_MS) or an AIMD change, so a freshly-booted gateway spent up
   // to a full tick admitting at the UNCLAMPED cap into a pool that may have zero serviceable accounts — the
