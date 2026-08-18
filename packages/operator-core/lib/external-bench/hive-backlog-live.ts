@@ -513,7 +513,7 @@ export function liveHiveBacklogOps(opts: LiveHiveBacklogOpts): HiveBacklogOps {
       ]);
       const bees = await gatherLiveBees(ws);
       const { headroom } = await getSpawnHeadroom(ws);
-      return { bees: bees as unknown as BatchPlacementInput['bees'], headroom };
+      return { bees: bees as unknown as NonNullable<BatchPlacementInput['bees']>, headroom };
     },
 
     async placeBatch({ plan, arm }) {

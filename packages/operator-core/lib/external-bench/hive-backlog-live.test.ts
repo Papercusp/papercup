@@ -65,7 +65,7 @@ function fakeOps(over: Partial<HiveBacklogOps> = {}): { ops: HiveBacklogOps; cal
       (polls === 0
         ? TASKS.map((t) => ({ id: t.instanceId, harness: 'm', title: t.instanceId }))
         : []) as unknown as BatchPlacementInput['tasks'],
-    gatherBees: async () => ({ bees: [] as unknown as BatchPlacementInput['bees'], headroom: 2 }),
+    gatherBees: async () => ({ bees: [] as unknown as NonNullable<BatchPlacementInput['bees']>, headroom: 2 }),
     placeBatch: async ({ plan }) => {
       const placements = plan.decisions.map((d) => ({
         instanceId: (d.task as unknown as { id: string }).id,
@@ -123,7 +123,7 @@ test('peakConcurrentBees samples the running fleet even after the frontier drain
         ? TASKS.map((t) => ({ id: t.instanceId, harness: 'm', title: t.instanceId }))
         : []) as unknown as BatchPlacementInput['tasks'],
     gatherBees: async () => {
-      const bees = (liveBees[Math.min(beePolls, liveBees.length - 1)] ?? []) as unknown as BatchPlacementInput['bees'];
+      const bees = (liveBees[Math.min(beePolls, liveBees.length - 1)] ?? []) as unknown as NonNullable<BatchPlacementInput['bees']>;
       beePolls++;
       return { bees, headroom: 3 };
     },

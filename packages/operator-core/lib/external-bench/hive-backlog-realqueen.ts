@@ -769,7 +769,7 @@ export function realQueenBacklogOps(opts: RealQueenBacklogOpts): RealQueenBacklo
       const { headroom } = await getSpawnHeadroom(ws);
       return {
         tasks: (res.tasks ?? []) as unknown as BatchPlacementInput['tasks'],
-        bees: bees as unknown as BatchPlacementInput['bees'],
+        bees: bees as unknown as NonNullable<BatchPlacementInput['bees']>,
         headroom,
       };
     },
