@@ -60,6 +60,7 @@ import { projectAuthoredFields } from '../agent-tools/coordination/message-field
 // figures deliberately DO NOT SUM and the list returns a distinct-project
 // portfolio total instead. See ./goals.
 import { resolveGoalDetail, resolveGoalsList } from './goals';
+import { trackDetached } from '../detached-imports';
 
 // CLAMP, don't REJECT (clamp-not-reject, plan coordination-unification-data-sync-hardening
 // P-001 / D-002): a client-sent pagination `limit` must never make the resolver throw on
@@ -756,6 +757,50 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // storage.usage — live storage usage by category for Settings → Storage
   // (storage-settings-page-2026-06-15 P-003). Reuses the audit introspection
   // (pg table sizes + age distribution + on-disk du). No args.
+  /**
+   * testing.coverage — the `/admin/testing` Coverage panel
+   * (deterministic-coverage-census-2026-08-17 P-005).
+   *
+   * ONE ROW, and that is the design rather than a shortcut. The panel needs the census
+   * VERDICT (aggregates, fidelity markers, the not-measured hoist), not a page of
+   * surfaces, and the aggregates are computed in SQL across the whole population while
+   * the row list is capped. Shipping flat surface rows and letting the client total them
+   * would compute every percentage over one PAGE — silently, and always flatteringly.
+   *
+   * So this delegates to `readCoverage`, the same function the `testing:coverage` tool
+   * and both state cells resolve through. Surfaces project it; none re-derive it.
+   */
+  'testing.coverage': {
+    // The three BASE tables the census writes. `testing_surface_depth` is deliberately NOT
+    // listed: it is a VIEW (relkind 'v'), so it holds no rows of its own to change and can
+    // carry no trigger — declaring it would name a relation no writer can ever invalidate.
+    // All three are PUSH_EXEMPT in resolver-backing-table-coverage.test.ts, with the push
+    // coming from the producers instead (see the exemption's reason + re-arm condition).
+    backingTables: [
+      'harness_shared.testing_surfaces',
+      'harness_shared.coverage_evidence',
+      'harness_shared.census_provider_registrations',
+    ],
+    argsSchema: z.object({
+      harness: z.string().trim().min(1).max(120).optional(),
+      rung: z.enum(['l1', 'l2', 'l3', 'l4']).optional(),
+      kind: z.string().trim().min(1).max(80).optional(),
+      gapsOnly: z.boolean().optional(),
+      limit: z.number().int().min(1).max(200).optional(),
+    }),
+    resolve: async (rawArgs) => {
+      const args = rawArgs as {
+        harness?: string;
+        rung?: 'l1' | 'l2' | 'l3' | 'l4';
+        kind?: string;
+        gapsOnly?: boolean;
+        limit?: number;
+      };
+      const { readCoverage } = await import('../agent-tools/testing/coverage');
+      return [await readCoverage(args)];
+    },
+  },
+
   'storage.usage': {
     // PRECOMPUTED (precompute-derived-sync-reads-2026-07-19 P-003). This used to
     // call computeStorageUsage() inline: a recursive disk walk + PG catalog sizing
@@ -3827,7 +3872,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         ? humanQueue0.map((i) => (i as { id: string }).id).filter((id): id is string => typeof id === 'string')
         : [];
       if (exposedIds.length > 0) {
-        void import('../owner-preference/interactions')
+        void trackDetached(import('../owner-preference/interactions'))
           .then((m) => m.recordQueueExposure(exposedIds))
           .catch(() => {});
       }

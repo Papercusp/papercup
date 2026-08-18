@@ -67,6 +67,28 @@ defineTestDomain({
   ],
 });
 
+// The surface census (CoverageTab) — deterministic-coverage-census-2026-08-17 P-005.
+// Distinct from `test-runs` on purpose: that domain reports what RAN, this one reports
+// what EXISTS and which of it is proven. A fully green suite is silent about every
+// surface it never touched, which is the blind spot the census was built to close.
+defineTestDomain({
+  id: 'coverage',
+  label: 'Coverage',
+  description: 'Surface census: what exists, and which surfaces are proven to the depth floor.',
+  tier: 'quick',
+  sections: [
+    {
+      id: 'all',
+      label: 'Census',
+      description: 'The census read surfaces and their honesty guards.',
+      globs: [
+        'packages/operator-core/lib/agent-tools/testing/coverage.test.ts',
+        'apps/operator/app/admin/testing/_components/CoverageTab.test.ts',
+      ],
+    },
+  ],
+});
+
 // Operator desktop vitals (LiveMetricsTab). Renamed `live` → `vitals` so the
 // universal in-page observer (live-web, from buildUniversalTesting) owns the
 // generic "Live" slot — universal-testing-domains-generic Phase 6.
@@ -1630,7 +1652,7 @@ defineTestDomain({
 });
 
 const PAPERCUSP_IDS = [
-  'test-runs', 'vitals', 'chaos-desktop', 'ai-explore',
+  'test-runs', 'coverage', 'vitals', 'chaos-desktop', 'ai-explore',
   'memory', 'packaged', 'llm', 'harness', 'voice', 'papercusp-su', 'backup',
   'plans', 'operator', 'design', 'plugins', 'transport', 'instance-spec', 'mobile',
   'provisioning', 'docs', 'dogfood',

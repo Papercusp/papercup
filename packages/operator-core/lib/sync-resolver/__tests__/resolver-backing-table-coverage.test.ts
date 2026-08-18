@@ -128,6 +128,26 @@ const PUSH_EXEMPT: Record<string, string> = {
   'agentOrders.byOwner :: harness_shared.agent_mode_changes':
     'append-only audit of the same transition as agent_modes; pushed by the same modes/store.ts setMode call rather than twice from two triggers.',
 
+  // The coverage census (deterministic-coverage-census-2026-08-17 P-005). Same producer-push
+  // shape as the derived-reads block above: both writers are BATCH producers whose row count
+  // says nothing about whether the panel's numbers moved.
+  //
+  // Worth stating plainly, because the honest version is weaker than the derived-reads one:
+  // the census push fires once per RUN, not once per CHANGE (`upserted` counts no-op upserts),
+  // so it is "at most one invalidation an hour" rather than "only when the payload changed".
+  // That is still strictly better than the trigger it replaces; it is not equivalent to the
+  // md5-guarded producer push, and should not be described as if it were.
+  //
+  // RE-ARM (all three): drop the entry and wire the table in table-to-query-names.ts if either
+  // producer push is removed, or if a writer outside these two paths starts moving these rows —
+  // at that point the trigger is the only thing that can see the write.
+  'testing.coverage :: harness_shared.testing_surfaces':
+    'batch census re-upserts the whole surface population (1,105 rows) each run, nearly all no-ops; harness/routines/coverage-census-action.ts pushes ONCE per run instead of ~1,105 NOTIFYs.',
+  'testing.coverage :: harness_shared.coverage_evidence':
+    'written per-binding by the attribution flush; coverage-census/attribution/pg-evidence-store.ts pushes once per flush, guarded on written>0 so a flush that matched no surfaces stays quiet.',
+  'testing.coverage :: harness_shared.census_provider_registrations':
+    'registration rows are seeded/paused by operators, never by a census run; the panel only reads them as the registered/enabled counts behind censusUnknown, which the same once-per-run census push already covers.',
+
   // WI-39501 — the Learnings tab's pause/resume-all control.
   //
   // RE-ARM: drop this entry and wire the table in table-to-query-names.ts if

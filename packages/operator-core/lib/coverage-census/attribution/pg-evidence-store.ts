@@ -142,6 +142,23 @@ export function createPgEvidenceStore(options: PgEvidenceStoreOptions = {}): Evi
         written += 1;
       }
 
+      // PRODUCER-SIDE PUSH for the `/admin/testing` Coverage panel — one invalidation per
+      // FLUSH, not per row. This is the write that actually moves the number a reader cares
+      // about (evidence is the numerator of every coverage ratio), so without it the panel
+      // would refresh on remount only — the `accounts.pool` failure documented on
+      // `QueryEntry.backingTables`, where a live-looking panel sat stale for ~7 weeks.
+      //
+      // Guarded on `written > 0`: a flush that matched no surfaces changed nothing, and
+      // pushing there would invalidate every subscriber to say so.
+      // The import is DYNAMIC and must stay that way: sync-sse declares itself a host-only
+      // module that opens a long-lived PG LISTEN connection at load. This store is reached
+      // from the attribution flush inside ordinary TEST processes, so a static import would
+      // open that connection in every one of them.
+      if (written > 0) {
+        const { notifySyncInvalidate } = await import('../../sync-sse');
+        await notifySyncInvalidate('testing.coverage');
+      }
+
       return { written, unmatchedSurfaces };
     },
   };

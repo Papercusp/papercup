@@ -8,6 +8,7 @@ import RoutesTab from './_components/RoutesTab';
 import PackagedBuildTab from './_components/PackagedBuildTab';
 import TestRunsTab from './_components/TestRunsTab';
 import MemoryTab from './_components/MemoryTab';
+import CoverageTab from './_components/CoverageTab';
 // Panel-helper styles (.pc-test-tab-header / cards / tables) travel with the
 // panels themselves — every host of these tabs (the /adv harness Tests tab)
 // gets them without needing a route-level import.
@@ -98,6 +99,10 @@ export function useTestingCustomTabs(): Record<string, () => ReactElement> {
     () => ({
       ...universal.customTabs, // live-web, chaos-web, ai-explore, chaos-desktop
       'test-runs': TestRunsTab,
+      // The census view: what surfaces EXIST and which are proven. Complements
+      // `test-runs`, which can only speak about tests that ran — a green suite says
+      // nothing about the routes it never touched.
+      coverage: CoverageTab,
       vitals: LiveMetricsTab, // operator desktop vitals (renamed from `live`; the universal observer owns `live-web`)
       memory: MemoryTab,
       routes: RoutesTab,

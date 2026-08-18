@@ -20,6 +20,7 @@ import { runCensus } from '@papercusp/testing-shell/census';
 import { createPgCensusStore } from '../../coverage-census/pg-store';
 import { censusProviders } from '../../coverage-census/provider-registry';
 import { resolveCensusScope } from '../../coverage-census/scope';
+import { notifySyncInvalidate } from '../../sync-sse';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 
 registerSystemAction('coverage-census', async (_ctx: SystemActionCtx) => {
@@ -72,4 +73,20 @@ registerSystemAction('coverage-census', async (_ctx: SystemActionCtx) => {
       `upserted ${report.applied?.upserted ?? 0}, retired ${report.applied?.retired ?? 0} ` +
       `(retirable kinds: ${report.diff.retirableKinds.join(',') || 'none'})`,
   );
+
+  // PRODUCER-SIDE PUSH for the `/admin/testing` Coverage panel, exactly ONCE per run.
+  //
+  // The alternative — an `emit_change_notify` trigger on `testing_surfaces` — is the wrong
+  // instrument for a BATCH producer: a run re-upserts the whole surface population (1,105 rows
+  // here), nearly all of them byte-identical to what was already there, so the trigger would
+  // fire ~1,105 NOTIFYs per hour to communicate one fact. Same reasoning the derived-reads
+  // resolvers are PUSH_EXEMPT for (sync-resolver/__tests__/resolver-backing-table-coverage.test.ts).
+  //
+  // ⚠ This fires once per RUN, not once per CHANGE: `upserted` counts no-op upserts too, so a
+  // census that changed nothing still pushes. That is deliberate (one cheap invalidation an hour
+  // beats plumbing a change-hash through the generic census core) but it is NOT the stronger
+  // "only when the payload actually changed" guarantee derived-reads gives — do not read it as one.
+  if (report.applied) {
+    await notifySyncInvalidate('testing.coverage');
+  }
 });

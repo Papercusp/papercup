@@ -745,6 +745,171 @@ export const AGENT_GOAL_CELL: CellSpec = {
    */
 };
 
+/* ═══════════════════════════════════════════════════════════════════════════════
+ * deterministic-coverage-census-2026-08-17 P-005 — THE TWO COVERAGE CELLS
+ *
+ * A coverage number is the most transcribable value in this system: it is small,
+ * it sounds like a fact, and it is quoted into plans, completion evidence and
+ * status reports where nobody re-reads it. It is also one of the least stable —
+ * it moves every time the census runs or a test is deleted.
+ *
+ * They are a PAIR, split along the line between a RATIO and a COUNT, because the
+ * two have different honesty problems. The ratio has no answer over an empty
+ * population (nullable). The population is a row count and always has one
+ * (not nullable). Collapsing them into a single cell would force one of those
+ * two truths to be stated wrongly.
+ * ══════════════════════════════════════════════════════════════════════════════ */
+
+/**
+ * WHY THE POPULATION IS A CELL AT ALL, and not just a field of the one below: it
+ * is the falsifier, and a falsifier a reader cannot independently re-read is a
+ * promise rather than a check.
+ */
+export const TESTING_CENSUS_POPULATION_CELL: CellSpec = {
+  cell: 'testing.census.population',
+  owner: 'deterministic-coverage-census-2026-08-17',
+  headline: 'census.surfaces',
+
+  /**
+   * Axis 1. The independent leg is a DIFFERENT TABLE —
+   * `census_provider_registrations`, which says whether the census loop had
+   * anything to iterate at all, and shares no input with the surface rows.
+   *
+   * It kills the exact reading that hid this feature's total inertness for a day:
+   * measured 2026-08-18, all four census tables sat at 0 rows and the cadence
+   * reported healthy fires, because nothing had ever registered a provider
+   * (WI-39809). "Zero surfaces" read as "this project has no testable surfaces";
+   * the registration count is what distinguishes that from "nobody ever looked".
+   */
+  falsifier: {
+    field: 'census.providersRegistered',
+    measurement:
+      'a count over harness_shared.census_provider_registrations for this scope — the list runCensus iterates, written by registration (template/detected/manual) and never by a census run',
+    kills:
+      '"0 testable surfaces" read as "this project has nothing to test". With no registration row the census loop body never executes, so it CANNOT write a surface however healthy its fires look — measured live 2026-08-18 (WI-39809). A zero population and an unasked question are indistinguishable without this.',
+  },
+
+  /**
+   * Axis 2. FALSE, deliberately, and the asymmetry with its sibling is the point:
+   * this is a COUNT of rows, so 0 is a real measurement rather than an absent one.
+   * Declaring it nullable would invent an unknown that cannot occur and teach
+   * readers to discount an honest zero.
+   */
+  nullable: false,
+  callerRelativity: {
+    kind: 'ambient',
+    source:
+      'the census scope — the operator home harness + active workspace, resolved by resolveCensusScope(); a cell reader cannot pass it',
+  },
+
+  provenance: {
+    obtainedBy:
+      'count(*) over harness_shared.testing_surface_depth for the scope, alongside a count over census_provider_registrations, via the testing:coverage handler',
+    liveExercised: true,
+    evidence:
+      'Run live against the operator DB 2026-08-18T14:1xZ: 1105 surfaces (http-route 832, mcp-tool 49, sync-query 224), all fidelity=declared, providersRegistered=3, lastCensusAt=2026-08-18T13:57:07.645Z. Exercised in its ZERO state first — before the registrations were seeded the same handler returned surfaces=0 with the no-providers-registered hoist, which is the branch this falsifier exists for.',
+  },
+
+  resolver:
+    'the testing:coverage handler (assembleCoverage over harness_shared.testing_surface_depth) @ packages/operator-core/lib/agent-tools/testing/coverage.ts',
+
+  visibility: { kind: 'workspace' },
+  /** `local`: a surface population is a statement about THIS pot's own code. In a
+   *  foreign hive it would not merely be uninteresting, it would be read as a
+   *  claim about their surfaces. */
+  federation: { kind: 'local' },
+  changeSignal: { kind: 'poll', tool: 'testing:coverage', path: 'census.surfaces' },
+  shape:
+    '{ census: { surfaces, retired, lastCensusAt, ageMs, providersRegistered, providersEnabled, fidelity: { counts, weakest, declaredPct }, basis }, verdict, censusUnknown[]|null }',
+};
+
+/**
+ * The ratio. Registered SECOND so its pointer target already exists in the file's
+ * reading order (registration order does not matter to the validator — pointer
+ * targets are resolved at read time — but the reader's order does).
+ */
+export const TESTING_COVERAGE_FLOOR_CELL: CellSpec = {
+  cell: 'testing.coverage.floor',
+  owner: 'deterministic-coverage-census-2026-08-17',
+  headline: 'coverage.pct',
+
+  /**
+   * Axis 1. The population count again — but here it is doing different work. The
+   * headline is produced by JOINING surfaces against coverage_evidence; the
+   * falsifier is the surface table alone, with no evidence join, so the two can
+   * disagree in both directions (a population with no evidence, evidence for
+   * retired surfaces).
+   *
+   * It kills TWO readings, and the second is the subtle one:
+   *   - the vacuous ratio: 0 of 0 rendered as 0% or 100%.
+   *   - the TRUNCATED population: a ratio computed over a world smaller than the
+   *     real one, which always flatters. Measured 2026-08-18: the mcp-tool
+   *     population censused as 49 against 675 tool files on disk (WI-39812), so
+   *     that kind's ratio was computed over 7% of its world and could not show the
+   *     other 93% as gaps.
+   */
+  falsifier: {
+    field: 'census.surfaces',
+    measurement:
+      'the surface population from harness_shared.testing_surfaces alone, with no join against coverage_evidence — the denominator, measured independently of the evidence that forms the numerator',
+    kills:
+      '"0% / 100% covered" read as a measurement when the denominator is 0 or truncated. A ratio over an empty census is not-measured, and a ratio over a census that enumerated 49 of 675 surfaces is a real number about a fake world — flattering in the direction nobody checks.',
+  },
+
+  /**
+   * Axis 2. TRUE — and this is the whole reason the cell exists. `pct` is `null`
+   * whenever its denominator is 0, never 0 and never 100. `censusUnknown` is the
+   * result-level hoist enumerating WHY (no-providers-registered |
+   * census-has-not-run | no-surfaces-match-filters), so a caller who reads only
+   * the headline gets a null and a caller who reads only the hoist gets prose.
+   */
+  nullable: true,
+  unknownHoist: 'censusUnknown',
+  callerRelativity: {
+    kind: 'ambient',
+    source:
+      'the census scope — the operator home harness + active workspace, resolved by resolveCensusScope(); a cell reader cannot pass it',
+  },
+
+  provenance: {
+    obtainedBy:
+      "count(*) FILTER (WHERE meets_lN) over harness_shared.testing_surface_depth, divided by the matching population — the view's own rung FLAG, never depth >= N, because the rungs are not nested",
+    liveExercised: true,
+    evidence:
+      'Run live against the operator DB 2026-08-18T14:1xZ at floor l1: meets=0, below=1105, pct=0 with verdict "measured" and censusUnknown null — a GENUINE zero (the census enumerated 1105 surfaces and no attribution evidence exists yet), which is the reading that must not be confused with the vacuous one. The same handler over the pre-seed empty census returned pct=null + verdict "not-measured".',
+  },
+
+  resolver:
+    'the testing:coverage handler (assembleCoverage over harness_shared.testing_surface_depth) @ packages/operator-core/lib/agent-tools/testing/coverage.ts',
+
+  visibility: { kind: 'workspace' },
+  federation: { kind: 'local' },
+  changeSignal: { kind: 'poll', tool: 'testing:coverage', path: 'coverage.pct' },
+
+  /**
+   * A coverage ratio moves on every census run as surfaces churn. The MATERIAL
+   * change is whether the gap count moved — a percentage drifting because the
+   * denominator grew by one route is not news, and a cell that woke a subscriber
+   * for it would be unsubscribed within a day.
+   */
+  materiality: {
+    path: 'coverage.below',
+    why: 'the number of surfaces BELOW the floor is the actionable quantity — it is the gap queue\'s length. The ratio moves whenever the census adds or retires a surface, including when nothing about the testing changed; the gap count moves only when the set of unproven surfaces does.',
+  },
+
+  pointers: [
+    {
+      cell: 'testing.census.population',
+      when: 'pct is null, or verdict reads "not-measured"',
+      answers:
+        'whether a census exists at all for this scope, and whether any provider was ever registered to produce one — the difference between "nothing is covered" and "nobody looked".',
+    },
+  ],
+
+  shape:
+    '{ verdict: "measured"|"not-measured", censusUnknown: string[]|null, coverage: { floor, floorMeans, surfaces, meets, below, waived, pct: number|null, fidelity, basis, byRung }, byKind[], census }',
+};
+
 /** Every built-in cell, in registration order. */
 export const BUILTIN_CELLS: CellSpec[] = [
   GIT_PIPELINE_POSITION_CELL,
@@ -755,6 +920,8 @@ export const BUILTIN_CELLS: CellSpec[] = [
   MAIN_BEHIND_STAGING_CELL,
   HOST_MEMORY_PRESSURE_CELL,
   AGENT_GOAL_CELL,
+  TESTING_CENSUS_POPULATION_CELL,
+  TESTING_COVERAGE_FLOOR_CELL,
 ];
 
 /** Register every built-in cell. Idempotent — safe to call from more than one entry

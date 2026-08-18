@@ -45,6 +45,7 @@ import type { CellSpec } from './cell-registry';
 import { BUILTIN_CELLS } from './cell-registrations';
 import { gitPipelinePosition } from './git-pipeline-position';
 import hostMemoryPressureTool from './agent-tools/state/host-memory';
+import coverageTool from './agent-tools/testing/coverage';
 
 /**
  * EI-19316737896654304 — this file takes the no-real-PG rail's DOCUMENTED opt-out
@@ -136,6 +137,9 @@ const GOAL_CELLS = BUILTIN_CELLS.filter((c) => c.changeSignal.kind === 'poll' &&
 const HOST_MEMORY_CELLS = BUILTIN_CELLS.filter(
   (c) => c.changeSignal.kind === 'poll' && c.changeSignal.tool === 'host:memory_pressure',
 );
+const COVERAGE_CELLS = BUILTIN_CELLS.filter(
+  (c) => c.changeSignal.kind === 'poll' && c.changeSignal.tool === 'testing:coverage',
+);
 
 /**
  * The `dev:pipeline_position` handler spreads the resolver result unmodified
@@ -147,6 +151,25 @@ const HOST_MEMORY_CELLS = BUILTIN_CELLS.filter(
  */
 async function livePipelinePayload(path?: string) {
   return gitPipelinePosition(path === undefined ? {} : { path });
+}
+
+/**
+ * Drive the real `testing:coverage` handler against the live census tables.
+ *
+ * `limit: 1` because the ROW LIST is irrelevant to a path walk and this suite should not
+ * pull 1,105 rows to check six key names — the aggregates it walks are computed in SQL
+ * over the whole population regardless of this argument, which is itself one of the
+ * properties the tool's own suite pins.
+ */
+async function liveCoveragePayload(): Promise<unknown> {
+  // `.data` — the handler returns a `{ data }` envelope and `dispatchReadOnlyTool` unwraps
+  // it, so THAT unwrapped object is what readCell walks. Walking the envelope instead would
+  // report every declared path missing at its first segment: a confident false alarm of
+  // exactly the kind this file's header warns about for `agent.goal`.
+  const result = (await (
+    coverageTool as unknown as { handler: (args: unknown) => Promise<{ data: unknown }> }
+  ).handler({ limit: 1 }));
+  return result.data;
 }
 
 /** Drive the actual poll-tool handler because that serialized payload is what readCell walks. */
@@ -172,12 +195,13 @@ describe('P-011: every registered cell declares paths its resolver ACTUALLY prod
    */
   it('examines the WHOLE registry — no cell is silently unrouted', () => {
     expect(BUILTIN_CELLS.length).toBeGreaterThanOrEqual(6);
-    expect(PIPELINE_CELLS.length + GOAL_CELLS.length + HOST_MEMORY_CELLS.length).toBe(
-      BUILTIN_CELLS.length,
-    );
+    expect(
+      PIPELINE_CELLS.length + GOAL_CELLS.length + HOST_MEMORY_CELLS.length + COVERAGE_CELLS.length,
+    ).toBe(BUILTIN_CELLS.length);
     expect(PIPELINE_CELLS.length).toBeGreaterThanOrEqual(5);
     expect(GOAL_CELLS.length).toBeGreaterThanOrEqual(1);
     expect(HOST_MEMORY_CELLS).toHaveLength(1);
+    expect(COVERAGE_CELLS).toHaveLength(2);
   });
 
   /**
@@ -209,6 +233,38 @@ describe('P-011: every registered cell declares paths its resolver ACTUALLY prod
             `(missing at "${r.missingAt}"${optional ? `; checked its container "${target}" because this path is optional-by-design` : ''}). ` +
             `The cell is unreadable: readCell would report insufficient-data. ` +
             `Either the resolver's shape changed or the declaration has a typo — a declaration test cannot tell you.`,
+        ).toBe(true);
+      }
+    },
+    20_000,
+  );
+
+  /**
+   * deterministic-coverage-census-2026-08-17 P-005.
+   *
+   * ⚠ THE NULLABLE-LEAF CASE IS THE POINT HERE, not an edge. `testing.coverage.floor`'s
+   * headline `coverage.pct` is null by design whenever the census is empty, and its
+   * `censusUnknown` hoist is null whenever it is not — so on ANY given run one of the two
+   * is null, and a walker that confused MISSING with NULL would report this cell broken
+   * roughly half the time. `pathExists` walks own-keys precisely so it does not, and this
+   * family is the first to depend on that distinction rather than merely benefit from it.
+   *
+   * The census is genuinely allowed to be empty when this runs (it is on a fresh
+   * checkout, and was repo-wide until 2026-08-18), which is why the assertion is about
+   * the SHAPE the handler always produces and never about a row count.
+   */
+  it.each(COVERAGE_CELLS.map((c) => [c.cell, c] as const))(
+    '%s — every declared path exists in the real testing:coverage handler payload',
+    async (_id, spec) => {
+      const payload = await liveCoveragePayload();
+      for (const { label, path } of declaredPaths(spec)) {
+        const r = pathExists(payload, path);
+        expect(
+          r.exists,
+          `${spec.cell}: declared ${label} "${path}" is ABSENT from the live resolver payload ` +
+            `(missing at "${r.missingAt}"). Note this asserts PRESENCE, not a non-null value: ` +
+            `coverage.pct is null over an empty census by design, and that is a readable answer, ` +
+            `not drift.`,
         ).toBe(true);
       }
     },

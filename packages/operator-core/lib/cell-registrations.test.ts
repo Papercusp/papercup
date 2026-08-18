@@ -115,6 +115,12 @@ describe('P-007: the four verdict cells', () => {
       'git.mainBehindStaging',
       'git.pipelinePosition',
       'host.memoryPressure',
+      // deterministic-coverage-census-2026-08-17 P-005. A PAIR, split along the line
+      // between a count and a ratio: the population is never unknown (it is a row
+      // count, so 0 is a measurement), while the ratio has no answer at all when that
+      // population is 0. One cell could not state both truths.
+      'testing.census.population',
+      'testing.coverage.floor',
     ]);
   });
 
