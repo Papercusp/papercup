@@ -1,0 +1,182 @@
+/**
+ * fanout-bound-audit.ts — the STRUCTURAL guard for variable-arity read fan-outs.
+ *
+ * WHY THIS EXISTS (WI-39849)
+ *
+ * WI-39823/WI-39825 bounded the sync-resolver read fan-outs by working from an
+ * audited site list. That list was built by matching the shape
+ *
+ *     Promise.all([legA(), legB(), legC()])          // FIXED arity
+ *
+ * and it therefore never saw the other shape:
+ *
+ *     Promise.all(xs.map(async (x) => store(x)))     // VARIABLE arity
+ *
+ * Four such sites survived an audit that read as exhaustive — and they are the
+ * WORSE half, because their leg count is not a constant a reviewer can eyeball:
+ * it scales with the workspace (one leg per hive, per pot, per referenced pack).
+ * A workspace that grows turns a passing read into a timing-out one with no code
+ * change at all.
+ *
+ * The lesson is not "we missed three sites", it is that the SHAPE PREDICATE was
+ * the defect. A list of sites cannot encode that lesson; a predicate can. So the
+ * predicate lives here, executable, and the guard re-derives the population from
+ * source on every run instead of trusting a list someone once wrote down.
+ *
+ * WHAT IT CHECKS
+ *
+ * Every variable-arity `Promise.all(... .map(...))` in the audited files must sit
+ * inside a function that establishes a bounding seam — a `createReadDeadline`, an
+ * injected `withinBudget`, or delegation to a reader that carries one
+ * (`readBoundedList`). Anything else is reported, with the resolver key when the
+ * site sits under one, so the finding names the panel that would hang.
+ *
+ * WHAT IT DELIBERATELY DOES NOT CHECK
+ *
+ * It does not prove the legs are ACTUALLY bounded — a resolver could create a
+ * deadline and then forget to wrap one leg. Proving that needs the call graph,
+ * not the syntax. This guard closes the cheap, high-recurrence gap (a NEW fan-out
+ * added to an unbounded function) and says so rather than implying more.
+ */
+
+import ts from 'typescript';
+
+/**
+ * Tokens whose presence in an enclosing function means a deadline governs the
+ * reads inside it. `withinBudget` covers both the local `const withinBudget =
+ * createReadDeadline(...)` idiom and the injected-`WithinBudget` seam the
+ * extracted `*-read.ts` readers take as an option.
+ */
+export const BOUNDING_SEAMS = ['createReadDeadline', 'withinBudget', 'readBoundedList'] as const;
+
+/** One variable-arity `Promise.all(xs.map(...))` found in source. */
+export interface FanOutSite {
+  /** File the site was found in, as handed to the analyzer. */
+  file: string;
+  /** 1-indexed line of the `Promise.all` call. */
+  line: number;
+  /**
+   * The sync-resolver registry key the site sits under (`'hive.controlState'`),
+   * or null when the site is not inside a registry `resolve:` — e.g. a helper in
+   * an extracted `*-read.ts`.
+   */
+  resolverKey: string | null;
+  /** The mapped expression, e.g. `hives.map(async (hv) => {` — for the report. */
+  snippet: string;
+  /** Which seam token bounded the enclosing function, or null if none did. */
+  boundedBy: string | null;
+}
+
+/** A site the guard accepts unbounded, and the reason it is safe. */
+export interface FanOutExemption {
+  /** Registry key or file-local function name the exemption applies to. */
+  where: string;
+  /** Why this fan-out needs no deadline. Required — an unexplained hole is a hole. */
+  reason: string;
+}
+
+/**
+ * Sites whose legs perform no store IO, so their arity multiplies nothing.
+ *
+ * SHRINK-ONLY in spirit: an entry here asserts a property of the LEG BODY, not a
+ * preference. If a leg later gains a store read, the entry stops being true and
+ * must be removed rather than widened.
+ */
+export const FANOUT_EXEMPTIONS: readonly FanOutExemption[] = [
+  {
+    where: 'advSessions.list',
+    reason:
+      'The leg body awaits nothing — getOmpSessionRowSummary is a synchronous in-memory lookup, so the map is a per-row reshape and its arity multiplies zero store reads.',
+  },
+];
+
+function enclosingFunctionText(node: ts.Node, sf: ts.SourceFile): string {
+  let cur: ts.Node | undefined = node.parent;
+  let last: ts.Node = node;
+  while (cur) {
+    if (
+      ts.isFunctionDeclaration(cur) ||
+      ts.isFunctionExpression(cur) ||
+      ts.isArrowFunction(cur) ||
+      ts.isMethodDeclaration(cur)
+    ) {
+      last = cur;
+      // Keep walking: a nested arrow (the map callback itself) is not where the
+      // deadline lives. The OUTERMOST function in the chain is the read.
+    }
+    cur = cur.parent;
+  }
+  return last.getText(sf);
+}
+
+/**
+ * The registry key a site sits under: walk out to the `resolve:` property, then
+ * take the name of the property assignment that owns its object literal.
+ */
+function enclosingResolverKey(node: ts.Node, sf: ts.SourceFile): string | null {
+  let cur: ts.Node | undefined = node.parent;
+  while (cur) {
+    if (ts.isPropertyAssignment(cur) && cur.name.getText(sf).replace(/['"]/g, '') === 'resolve') {
+      const objectLiteral = cur.parent;
+      const owner = objectLiteral?.parent;
+      if (owner && ts.isPropertyAssignment(owner)) {
+        return owner.name.getText(sf).replace(/['"]/g, '');
+      }
+      return null;
+    }
+    cur = cur.parent;
+  }
+  return null;
+}
+
+/** Every variable-arity `Promise.all(xs.map(...))` in one source text. */
+export function findVariableArityFanOuts(sourceText: string, file = 'source.ts'): FanOutSite[] {
+  const sf = ts.createSourceFile(file, sourceText, ts.ScriptTarget.ES2022, true, ts.ScriptKind.TS);
+  const sites: FanOutSite[] = [];
+
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isCallExpression(node) &&
+      ts.isPropertyAccessExpression(node.expression) &&
+      node.expression.name.text === 'all' &&
+      node.expression.expression.getText(sf) === 'Promise'
+    ) {
+      const argText = node.arguments.map((a) => a.getText(sf)).join(',');
+      if (/\.\s*map\s*\(/.test(argText)) {
+        const fnText = enclosingFunctionText(node, sf);
+        const boundedBy = BOUNDING_SEAMS.find((seam) => fnText.includes(seam)) ?? null;
+        sites.push({
+          file,
+          line: sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1,
+          resolverKey: enclosingResolverKey(node, sf),
+          snippet: argText.split('\n')[0]!.trim().slice(0, 100),
+          boundedBy,
+        });
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sf);
+  return sites;
+}
+
+/**
+ * The sites a reviewer must act on: variable-arity, unbounded, and not exempt.
+ *
+ * An exemption matches on the resolver key when the site has one, else on the
+ * file name — the two stable identities available without a call graph.
+ */
+export function unboundedFanOuts(
+  sites: readonly FanOutSite[],
+  exemptions: readonly FanOutExemption[] = FANOUT_EXEMPTIONS,
+): FanOutSite[] {
+  const exempt = new Set(exemptions.map((e) => e.where));
+  return sites.filter(
+    (s) => s.boundedBy === null && !exempt.has(s.resolverKey ?? '') && !exempt.has(s.file),
+  );
+}
+
+/** A human-readable line per finding, for a failing assertion's message. */
+export function describeFanOut(site: FanOutSite): string {
+  return `${site.file}:${site.line} ${site.resolverKey ? `[${site.resolverKey}] ` : ''}${site.snippet}`;
+}
