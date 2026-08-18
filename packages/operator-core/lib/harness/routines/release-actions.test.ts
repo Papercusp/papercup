@@ -117,6 +117,7 @@ import {
   shouldDispatchReleaseFixer,
   isStaleReleaseFixerCandidate,
   checkReleaseFixerCandidateStale,
+  checkpointFallbackStatus,
   classifyGateStallStatus,
   gateStallRecordOnlyLogMessage,
   gateStallNoopLogMessage,
@@ -298,6 +299,19 @@ describe('classifyGateStallStatus (EI-2615: skipped-locked must not fake a red s
     expect(classifyGateStallStatus('infra-inconclusive', false)).toBe('noop');
     // …and a moved pin still wins, exactly as for every other status.
     expect(classifyGateStallStatus('infra-inconclusive', true)).toBe('reset');
+  });
+
+  // WI-39841 (Defect 2): the discriminator itself. A crash and a deadline-kill are BYTE-
+  // IDENTICAL downstream — non-zero exit, no parseable marker — so the whole fix rests on
+  // `RunResult.timedOut` being carried out of the timer that does the killing. If this
+  // mapping ever collapses, the classifier tests below still pass while the gate never
+  // produces a 'deadline-exceeded' status at all, and the fix is silently inert.
+  it('WI-39841: a killed run maps to deadline-exceeded; a crash still maps to error', () => {
+    expect(checkpointFallbackStatus(true)).toBe('deadline-exceeded');
+    expect(checkpointFallbackStatus(false)).toBe('error');
+    // Absent (an older RunResult, or a path that never set it) must degrade to the
+    // pre-WI-39841 behaviour — a red — never to a free pass.
+    expect(checkpointFallbackStatus(undefined)).toBe('error');
   });
 
   it('WI-39841: deadline-exceeded is a NON-VERDICT, not a red', () => {

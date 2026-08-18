@@ -8021,10 +8021,46 @@ export async function runPostSuiteLegs(
       `\n\n=== PACKAGE.JSON UNREADABLE (WI-6056) — could not read/parse package.json in ${treeDir} while checking for lint:tsc; a corrupt/partial candidate tree must fail loudly, not silently skip every remaining leg ===\n`,
     );
   } else if (lintTscCheck === "absent") {
-    legs.typecheck = {
-      status: "skipped",
-      skipReason: "candidate provides no lint:tsc script",
-    };
+    // WI-37485: `absent` is a DELIBERATE silent skip so a SUBJECT HIVE may omit the
+    // platform typecheck (spelled out on `hasNpmScript`) — that case must stay silent.
+    //
+    // But it is also the ONLY branch that skips this leg while setting no `haltedBy`,
+    // pushing no signature and (runPostSuiteLegs persists a non-test leg's output only
+    // on failure) writing nothing to the log. So a tree that PARSES but has lost this
+    // one key silently disables the gate's only operator-core typecheck and the gate
+    // proceeds — leaving no artifact that says so. WI-37485 spent a session unable to
+    // decide whether exactly that had happened, because the evidence that would settle
+    // it is never recorded.
+    //
+    // The discriminator is the ROOT-OWNED SIBLING legs. A real subject hive omits the
+    // whole family; a tree still exposing `lint:tsc:papercusp-libs`/`:workspaces`/
+    // `:orchestrator` while missing `lint:tsc` is not "a hive without a typecheck", it
+    // is the Papercusp root with its operator-core leg knocked out. Fail that loudly.
+    //
+    // Deliberately NOT `haltedBy`: halting skips every later leg, which this file's own
+    // coverage test calls the most expensive shape there is (and a non-zero `lint:tsc`
+    // is itself only a soft failure below). `status:'failed'` reds the verdict through
+    // `legs.ok` while the remaining legs still run and report.
+    const rootOwnedSiblingsPresent = ROOT_OWNED_TYPECHECK_SIBLINGS.filter(
+      (sibling) => checkNpmScript(treeDir, sibling) === "present",
+    );
+    if (rootOwnedSiblingsPresent.length > 0) {
+      legs.typecheck = { status: "failed" };
+      failingSignatures.push("lint:tsc-missing");
+      outputs.push(
+        `\n\n=== lint:tsc MISSING FROM A ROOT TREE (WI-37485) — ${treeDir} exposes root-owned typecheck leg(s) ` +
+          `${rootOwnedSiblingsPresent.join(", ")} but no \`lint:tsc\` script, so the operator-core typecheck ` +
+          `did not run. That is the gate's ONLY typecheck for packages/operator-core (test:affected is ` +
+          `esbuild/Vitest and never typechecks), so treating this as "this subject has no typecheck leg" ` +
+          `would let an operator-core type regression through a GREEN gate. Restore the \`lint:tsc\` script ` +
+          `in the candidate's package.json. ===\n`,
+      );
+    } else {
+      legs.typecheck = {
+        status: "skipped",
+        skipReason: "candidate provides no lint:tsc script",
+      };
+    }
   } else {
     const typecheck = await exec("npm", ["run", "lint:tsc"], {
       cwd: treeDir,
