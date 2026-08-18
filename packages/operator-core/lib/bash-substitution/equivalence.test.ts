@@ -223,6 +223,65 @@ describe('file-read pattern boundaries', () => {
   const claims = (pair: (typeof FILE_READ_PAIRS)[number], atom: string) =>
     matchingAtoms(pair, [{ sid: 's', ts: 't', atom }]).length === 1;
 
+  /**
+   * THE BLAST-RADIUS GUARD (D-044). Everything else in this block predates
+   * enforcement and asserts that an excluded form draws no ADVISORY. Since these
+   * four rows moved to `deny`, the same exclusions carry a far heavier
+   * consequence: a form that leaks into a pattern is no longer a bad suggestion,
+   * it is a command the agent CANNOT RUN — fleet-wide, on a family that fires
+   * ~690 times in 12h here, and with no degraded mode.
+   *
+   * So this asserts the property against the WHOLE deny set at once rather than
+   * pair-by-pair. A widening usually lands on one pair, and the author is looking
+   * at that pair's own tests; this one fails wherever it lands, and says why.
+   *
+   * Each case is a form `capability:read` genuinely cannot express — verified
+   * against the tool's envelope, not assumed — so bash remains the correct answer
+   * and blocking it would be the D-001 harm the registry exists to prevent.
+   */
+  it('never lets a DENY row claim a form that has no tool expression', () => {
+    const denyPairs = FILE_READ_PAIRS.filter((p) => p.policyTier === 'deny');
+    expect(denyPairs.length).toBe(4);
+
+    const unexpressible: Array<[string, string]> = [
+      ['tail -f /tmp/run.log', 'streaming follow — capability:read has no streaming form'],
+      ['tail --follow=name /tmp/run.log', 'streaming follow, long form'],
+      ['head -c 2000 /tmp/run.log', 'raw-byte window — byte mode returns structured base64'],
+      ['tail -c 2000 /tmp/run.log', 'raw-byte window, and no EOF-relative byte offset exists'],
+      ['cat -A /tmp/x.raw', 'renders non-printing characters; the tool returns text only'],
+      ['cat -v /tmp/x.raw', 'renders non-printing characters'],
+      ['cat -', 'reads stdin, not a file'],
+      ['sed -n "1,200p"', 'stdin pipe filter — no file operand to hand the tool'],
+      ['head -20', 'stdin pipe filter'],
+      ['tail -16', 'stdin pipe filter'],
+      ["cat > /tmp/x.ts << 'EOF'", 'heredoc — a WRITE, the opposite of a read'],
+      ['cat /tmp/a.log > /tmp/b.log', 'stdout redirect — a write'],
+      ['cat $TRIAGE/scn.log', 'shell expansion — no literal path to pass'],
+      ['cat /tmp/a.log /tmp/b.log', 'two files in one call; capability:read takes one file_path'],
+      ['head -1 serve-a-*.log', 'glob — no literal path to pass'],
+    ];
+
+    for (const [atom, why] of unexpressible) {
+      for (const pair of denyPairs) {
+        expect(claims(pair, atom), `${pair.id} would BLOCK \`${atom}\` — ${why}`).toBe(false);
+      }
+    }
+  });
+
+  /**
+   * The positive control for the guard above. A test that only proves things do
+   * NOT match still passes if the patterns stop matching anything at all — at
+   * which point enforcement is silently dead and the suite is green. These are
+   * the forms the deny set is SUPPOSED to claim.
+   */
+  it('still claims the forms the mandate is actually about', () => {
+    expect(claims(sedRangeRead, "sed -n '1,80p' packages/operator-core/lib/x.ts")).toBe(true);
+    expect(claims(catFileRead, 'cat packages/operator-core/lib/x.ts')).toBe(true);
+    expect(claims(catFileRead, 'cat -n packages/operator-core/lib/x.ts')).toBe(true);
+    expect(claims(headFileRead, 'head -n 40 packages/operator-core/lib/x.ts')).toBe(true);
+    expect(claims(tailFileRead, 'tail -n 60 /tmp/gate.log')).toBe(true);
+  });
+
   it('excludes pipe filters, which are stream shaping and not file reads', () => {
     // `head`/`tail` are dominated by this form (11,381 head atoms, only 408
     // distinct) — claiming them would swamp the registry with false advisories.
@@ -1127,12 +1186,66 @@ describe('policy tier authorization', () => {
   });
 
   it('refuses a tier escalation on an ordinary cost-argument intent', () => {
-    expect(() => assertPolicyTier({ ...sedRangeRead, policyTier: 'deny' })).toThrow(
-      /not a 'policy-violation:/,
+    // sedRangeRead itself is a policy row since D-044, so strip its citation to
+    // get back the shape this guard is about: an author asserting a tier with no
+    // authority behind it at all.
+    const uncited = { ...sedRangeRead, policyAuthority: undefined };
+    expect(() => assertPolicyTier({ ...uncited, policyTier: 'deny' })).toThrow(
+      /cites no policyAuthority/,
     );
-    expect(() => assertPolicyTier({ ...sedRangeRead, policyTier: 'advise' })).toThrow(
-      /never asserted/,
+    expect(() => assertPolicyTier({ ...uncited, policyTier: 'advise' })).toThrow(/never asserted/);
+  });
+
+  it('honours a cited authority over a proven-equivalent verdict (D-044)', () => {
+    expect(sedRangeRead.intentLabel.startsWith(POLICY_INTENT_PREFIX)).toBe(false);
+    expect(sedRangeRead.expectedVerdict).toBe('equivalent');
+    expect(sedRangeRead.policyAuthority?.ref).toMatch(/#D-\d+$/);
+    expect(assertPolicyTier(sedRangeRead)).toBe('deny');
+  });
+
+  it('refuses a citation that does not resolve to anything', () => {
+    // The citation IS the authorization, so an empty one authorizes nothing —
+    // otherwise the route degrades into the say-so this guard exists to refuse.
+    for (const authority of [
+      { ref: '', rule: 'the owner said so' },
+      { ref: 'some-plan#D-001', rule: '   ' },
+    ]) {
+      expect(() => assertPolicyTier({ ...sedRangeRead, policyAuthority: authority })).toThrow(
+        /empty ref or rule/,
+      );
+    }
+  });
+
+  it('refuses a cited authority when the substitution is NOT proven equivalent', () => {
+    // The owner's condition was conditional — "IF it has full parity" — so the
+    // citation route requires the parity, in code. Blocking a command whose
+    // replacement cannot express it is the D-001 harm, and a rule saying "use the
+    // tool" cannot make a tool able to do the job.
+    expect(() =>
+      assertPolicyTier({ ...sedRangeRead, expectedVerdict: 'needs-widening' }),
+    ).toThrow(/is 'needs-widening', not 'equivalent'/);
+    expect(() => assertPolicyTier({ ...sedRangeRead, expectedVerdict: 'not-a-substitute' })).toThrow(
+      /may mandate a substitution only where the tool is proven/,
     );
+  });
+
+  it('puts every policy row in the registry on one of the two authorized routes', () => {
+    // The population-level invariant. The two cases above prove each route in
+    // isolation; this one proves nothing has reached `deny` on NEITHER — which is
+    // the only way the guard can be defeated once both routes exist.
+    const policyPairs = ALL_PAIRS.filter((p) => p.policyTier !== undefined);
+    expect(policyPairs.length).toBeGreaterThan(0);
+    for (const pair of policyPairs) {
+      const byPrefix = pair.intentLabel.startsWith(POLICY_INTENT_PREFIX);
+      const byCitation =
+        pair.policyAuthority !== undefined &&
+        pair.policyAuthority.ref.trim() !== '' &&
+        pair.expectedVerdict === 'equivalent';
+      expect(byPrefix || byCitation, `${pair.id} reached ${pair.policyTier} on neither route`).toBe(
+        true,
+      );
+      expect(assertPolicyTier(pair)).toBe(pair.policyTier);
+    }
   });
 
   it('keeps deny out of what an equivalence score alone can unlock', () => {
