@@ -643,9 +643,7 @@ describe('Inbox face retirement + HUD conversation drill-in (hud-consolidation-2
     // A real zero still renders nothing — the pre-existing, correct behaviour.
     // Without this case, marking EVERY row degraded would pass the two above.
     expect(screen.queryByTestId('op-chat-plans-badge')).toBeNull();
-    expect(
-      screen.queryByLabelText('Could not load what needs you — this count is unavailable, not zero'),
-    ).toBeNull();
+    expect(screen.queryByTestId('op-chat-rail-badge')).toBeNull();
   });
 
   /* hud-open-destinations-and-true-counts-2026-07-27 P-003 (owner report:
