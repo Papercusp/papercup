@@ -78,6 +78,13 @@ export default defineTool({
       .optional()
       .describe('declared spend ceiling in cents — the number actuals are reported against'),
     parentId: z.string().min(1).optional().describe('parent goal id, for a sub-goal'),
+    blockedBy: z
+      .array(z.string().min(1).max(200))
+      .max(20)
+      .optional()
+      .describe(
+        'Prerequisite refs this goal is blocked by (goal-dag-shared-substrate-2026-08-18): goal ids and/or bare WI-/EI- issue ids. The stub-then-arm lever (D-004) — file a FUTURE goal now with its prerequisites recorded, and run the full kickoff (criterion, ceiling, consult) at activation when it unblocks. Every ref must resolve; the goal graph must stay acyclic. Edges are prerequisites between SEPARATE outcomes, never phases of one outcome (D-005).',
+      ),
     tripwires: z
       .array(TripwireSchema)
       .max(12)
@@ -307,6 +314,24 @@ export default defineTool({
       tripwires: args.tripwires ?? null,
       metadata: args.metadata ?? null,
     });
+
+    // ── Blocked-by edges (goal-dag-shared-substrate-2026-08-18 P-002) ─────
+    // AFTER the row, same transaction tag, same degrade-not-fail ethos as the
+    // mode stamp below: a goal creation must not be lost because a blocker ref
+    // was mistyped. On refusal the goal EXISTS with no edges and the result
+    // says exactly what to re-run (goals:update { blockedBy }).
+    let blockedByProblem: string | null = null;
+    let blockedByApplied: string[] = [];
+    if (args.blockedBy?.length) {
+      const applied = await applyGoalBlockedBy(ctx.tx, {
+        workspaceId,
+        goalId: id,
+        refs: args.blockedBy,
+        createdBy: callerOwnerId ?? null,
+      });
+      if (applied.ok) blockedByApplied = applied.blockers.map((b) => b.ref);
+      else blockedByProblem = `blockedBy NOT recorded: ${applied.problem} — fix the refs and re-run goals:update { blockedBy }`;
+    }
 
     // ── Stamp the caller's GOAL mode with the goal it is now running ─────
     // This side effect IS the provenance mechanism (P-016). Everything the
