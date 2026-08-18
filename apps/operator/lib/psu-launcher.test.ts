@@ -92,6 +92,7 @@ import {
   sessionTranscriptFile,
   lastActiveModelFor,
   resumeSessionLineageLabel,
+  codexContextWindowConfigPatch,
   modelArgsFor,
   normalizeOmpModelSpec,
   ompModelCompatibilityNotice,
@@ -6940,5 +6941,46 @@ describe('launch-time mode: the tokens launch-su emits are the tokens psu parses
       expect(effectiveAutoMode(args)).toBe(true);
       if (id !== 'auto') expect(args.mode).toBe(id);
     }
+  });
+});
+
+/**
+ * plan codex-1m-context-window-2026-08-17 P-004 — the per-session config.toml
+ * block a MODEL-LESS `psu --resume` inherits. `modelArgsFor` cannot cover that
+ * path: it emits nothing when no model is named.
+ */
+describe('codexContextWindowConfigPatch (resume inherits the window)', () => {
+  it('prepends the window keys as ROOT keys, above any table', () => {
+    const out = codexContextWindowConfigPatch('[mcp_servers.papercusp-su]\nurl = "x"\n', 'gpt-5.6-sol');
+    // TOML binds a root key written AFTER a table header to that table, so the
+    // block landing first is correctness, not tidiness: emitted below the
+    // [mcp_servers.papercusp-su] header these would become MCP server settings.
+    expect(out.indexOf('model_context_window')).toBeLessThan(out.indexOf('[mcp_servers.papercusp-su]'));
+    expect(out).toContain('model_context_window = 872000');
+    expect(out).toContain('model_auto_compact_token_limit = 784800');
+    expect(out).toContain('url = "x"'); // pre-existing content survives
+  });
+
+  it('is idempotent — re-applying does not accumulate duplicate blocks', () => {
+    const once = codexContextWindowConfigPatch('model = "gpt-5.6-sol"\n', 'gpt-5.6-sol');
+    const twice = codexContextWindowConfigPatch(once, 'gpt-5.6-sol');
+    expect(twice).toBe(once);
+    expect(twice.match(/model_context_window/g)).toHaveLength(1);
+  });
+
+  it('REMOVES a stale block when the home moves to a model with no extended window', () => {
+    // The failure this prevents: a home switched gpt-5.6-sol -> gpt-5.5 keeps an
+    // 872k declaration for a 272k model, and papercusp then seeds a soft limit
+    // above the real wall.
+    const withBlock = codexContextWindowConfigPatch('model = "gpt-5.5"\n', 'gpt-5.6-sol');
+    expect(withBlock).toContain('model_context_window');
+    const moved = codexContextWindowConfigPatch(withBlock, 'gpt-5.5');
+    expect(moved).not.toContain('model_context_window');
+    expect(moved).toContain('model = "gpt-5.5"');
+  });
+
+  it('strips the block rather than guessing when the model is unresolvable', () => {
+    const withBlock = codexContextWindowConfigPatch('', 'sol');
+    expect(codexContextWindowConfigPatch(withBlock, null)).toBe('');
   });
 });
