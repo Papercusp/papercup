@@ -1084,6 +1084,28 @@ export function codexGatewayConfigPatch(configText: string, account?: string | n
  *  tests. */
 export function codexRolloutModelProvider(rolloutPath: any): string | null;
 /**
+ * Upsert the extended-window keys into a codex `config.toml` (plan
+ * codex-1m-context-window-2026-08-17 P-004). Pure — exported for tests.
+ *
+ * WHY THE FILE AND NOT JUST `-c`: `modelArgsFor` emits the overrides only when
+ * a launch NAMES a model, and a bare `psu --resume` names none — so a resumed
+ * session would silently drop back to codex's 272k default and start
+ * native-compacting at ~258k, under the very soft limit this plan exists to
+ * make reachable. The file is what a model-less resume inherits.
+ *
+ * ⚠ THE BLOCK IS PREPENDED, and that placement is load-bearing, not cosmetic:
+ * these are ROOT keys, and in TOML a root key written after any `[table]`
+ * header binds to that table instead. Emitting at the top is the only position
+ * that is correct regardless of what the rest of the file already contains.
+ * For the same reason this must run AFTER codexGatewayConfigPatch, which
+ * re-orders the file around its own markers.
+ *
+ * @param {string} configText  existing config.toml text ('' when absent)
+ * @param {string | null} model  the model whose window to declare
+ * @returns {string}
+ */
+export function codexContextWindowConfigPatch(configText: string, model: string | null): string;
+/**
  * Resolve which fields the flags PRE-SELECT vs which still need an
  * interactive prompt. Pure — exported for tests. Throws on a bad --agent.
  *
