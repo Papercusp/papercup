@@ -152,9 +152,15 @@ describe('readCpuWorker', () => {
     // One transient crash must NOT read as a tripped breaker — that distinction
     // is the whole point of surfacing `disabled` rather than `alive`.
     expect(afterCrash.disabled).toBe(false);
-    // ...but it is ALSO not an all-clear: nothing has been served since, so the
-    // verdict must say so rather than letting `disabled:false` read as healthy.
-    expect(afterCrash.verdict).toBe('silently-falling-back');
+    // The crash landed with NOTHING in flight, so no request actually failed:
+    // the last eligible request WAS served and the verdict correctly still reads
+    // 'serving'. The crash is carried by consecutiveCrashes, not by demoting a
+    // working offload. (This assertion originally read 'silently-falling-back'
+    // and was wrong — it exposed a verdict keyed off a CUMULATIVE served count,
+    // which would have reported 'serving' forever after a single boot-time
+    // success. The verdict now keys off the most recent eligible outcome.)
+    expect(afterCrash.verdict).toBe('serving');
+    expect(afterCrash.consecutiveCrashes).toBe(1);
     expect(errSpy.mock.calls.flat().join(' ')).toContain('transient boom');
     errSpy.mockRestore();
   });

@@ -121,6 +121,19 @@ let _servedByWorker = 0;
  */
 let _eligibleFallbacks = 0;
 
+/**
+ * Was the MOST RECENT offload-eligible request served by the worker? Null until
+ * one has been asked for.
+ *
+ * The verdict keys off this rather than off `servedByWorker > 0` because the
+ * counters are CUMULATIVE and a cumulative count cannot express "it is working
+ * NOW": a process that served one request at boot and has failed every request
+ * since would report `servedByWorker: 1` forever, and on an operator host that
+ * lives for days that is precisely the window in which the answer matters.
+ * (Caught by health-deep.test.ts asserting against the cumulative form.)
+ */
+let _lastEligibleServed: boolean | null = null;
+
 /** Message of the most recent worker crash — see `tripBreaker`'s `cause`. */
 let _lastCrashError: string | null = null;
 /** When the breaker latched, for the re-arm cooldown. Null ⇒ not latched. */
@@ -419,6 +432,7 @@ function ensureWorker(): Promise<void> {
           // for the same reason the crash counter resets here: this is the only
           // point at which the worker has demonstrably done the work.
           _servedByWorker += 1;
+          _lastEligibleServed = true;
           if (_halfOpen) closeBreakerOnServe();
           p.resolve({ json: msg.json ?? null });
         } else {
@@ -483,6 +497,18 @@ function ensureWorker(): Promise<void> {
   return _workerReady;
 }
 
+/**
+ * Record that an offload-ELIGIBLE request ran inline after all.
+ *
+ * One helper rather than three assignments so the cumulative count and the
+ * most-recent-outcome flag cannot drift apart — the exact two-writers-of-one-
+ * fact shape that produces a well-formed reading nothing can falsify.
+ */
+function noteEligibleFallback(): void {
+  _eligibleFallbacks += 1;
+  _lastEligibleServed = false;
+}
+
 /** BigInt→Number replacer (inline fallback path — byte-identical to worker). */
 function bigIntReplacer(_k: string, v: unknown): unknown {
   return typeof v === 'bigint' ? Number(v) : v;
@@ -528,7 +554,7 @@ export async function serializeJsonResponse(
   // Counted BEFORE the attempt: an eligible request that the breaker turned
   // away never reaches the worker path at all, and that refusal is exactly the
   // silent degradation this counter makes visible.
-  if (eligible && !useWorker) _eligibleFallbacks += 1;
+  if (eligible && !useWorker) noteEligibleFallback();
 
   if (useWorker) {
     try {
@@ -551,13 +577,13 @@ export async function serializeJsonResponse(
 
       if (result.json !== null) return result.json;
       // Unexpected null result — fall through to sync path.
-      _eligibleFallbacks += 1;
+      noteEligibleFallback();
     } catch {
       // Worker spawn failed or crashed — sync fallback below. Counted for the
       // same reason as a breaker refusal: the offload did not happen. The crash
       // itself is logged by the 'error' handler; this bare catch stays silent so
       // a degradation path never throws inside a response handler.
-      _eligibleFallbacks += 1;
+      noteEligibleFallback();
     }
   }
 
@@ -581,6 +607,7 @@ export async function _resetCpuWorker(): Promise<void> {
   _workerRefd = false;
   _servedByWorker = 0;
   _eligibleFallbacks = 0;
+  _lastEligibleServed = null;
   _lastCrashError = null;
   _breakerTrippedAt = null;
   _reArmFailures = 0;
@@ -704,6 +731,9 @@ function cpuWorkerReArmInMs(): number | null {
 
 function cpuWorkerVerdict(): CpuWorkerVerdict {
   if (_workerDisabled) return 'disabled';
-  if (_servedByWorker > 0) return 'serving';
-  return _eligibleFallbacks > 0 ? 'silently-falling-back' : 'idle-unproven';
+  // Keyed off the MOST RECENT eligible outcome, not the cumulative count — see
+  // `_lastEligibleServed`. Null means nothing has asked yet, which is unproven
+  // rather than healthy.
+  if (_lastEligibleServed === null) return 'idle-unproven';
+  return _lastEligibleServed ? 'serving' : 'silently-falling-back';
 }
