@@ -39,6 +39,25 @@ import type { ScorecardGradingAudit } from '../../harness/improvements/observati
 import { killTask } from '../../task-manager/control';
 import { listTasks } from '../../task-manager/store';
 import { evaluateCriterionTestChecks, evaluateCriterionCoverageChecks } from '../../rubrics-criterion-checks';
+
+/**
+ * The `planTouched` reverse map: every implementing file the subject plan's work-items
+ * recorded as changed, deduped. Returns [] when the plan exists but nothing recorded a
+ * `filesChanged` — the CALLER distinguishes that from null (no plan subject at all), and
+ * both refuse the check rather than widening its scope to the whole census.
+ */
+async function planTouchedFiles(workspaceId: string, planSlug: string): Promise<string[]> {
+  const { sql } = getOrgPg();
+  const rows: { f: string }[] = await sql`
+    SELECT DISTINCT jsonb_array_elements_text(
+             COALESCE(payload->${TERMINAL_COMPLETION_EVIDENCE_KEY}->'filesChanged', '[]'::jsonb)
+           ) AS f
+      FROM harness_shared.work_items
+     WHERE workspace_id = ${workspaceId}
+       AND source_plan_slug = ${planSlug}
+  `;
+  return rows.map((r) => r.f).filter((f) => typeof f === 'string' && f.trim() !== '');
+}
 import { readCoverage } from '../testing/coverage';
 import { TERMINAL_COMPLETION_EVIDENCE_KEY } from '../../coord-lifecycle/records';
 import { resolveAgentWorkspaceRoot } from '../capability/base-dir';
@@ -394,21 +413,10 @@ export async function emitScorecard(
         // planTouched resolves to the files the subject plan's COMPLETED work actually
         // changed. Only an acceptance rubric has a subject plan; anywhere else this
         // returns null and the check refuses rather than silently widening its scope.
-        resolvePlanTouchedFiles: async () => {
-          const planSlug = rubric.subjectPlan;
-          if (!planSlug) return null;
-          const { sql } = getOrgPg();
-          const rows = await sql<{ f: string }[]>`
-            SELECT DISTINCT jsonb_array_elements_text(
-                     COALESCE(payload->${TERMINAL_COMPLETION_EVIDENCE_KEY}->'filesChanged', '[]'::jsonb)
-                   ) AS f
-              FROM harness_shared.work_items
-             WHERE workspace_id = ${input.workspaceId}
-               AND source_plan_slug = ${planSlug}
-          `;
-          const files = rows.map((r) => r.f).filter((f) => typeof f === 'string' && f.trim() !== '');
-          return files.length > 0 ? files : [];
-        },
+        resolvePlanTouchedFiles: () =>
+          rubric.subjectPlan
+            ? planTouchedFiles(input.workspaceId, rubric.subjectPlan)
+            : Promise.resolve(null),
       });
       if (!coverageEvaluation.ok) {
         return {
