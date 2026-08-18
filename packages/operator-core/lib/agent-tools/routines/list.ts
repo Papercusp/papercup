@@ -178,7 +178,15 @@ export default defineTool({
         return {
           installSlug: r.installSlug ?? null,
           name: r.name ?? null,
+          // EI-20803112372029993: the THIRD instance of this allowlist dropping a
+          // field `returns` promises — found by the contract check declared above,
+          // not by a reader hitting it. `triggerKind` separates a cron routine from
+          // an event-triggered one, which is the first thing "why has this not
+          // fired?" turns on; `targetRole` says who it runs as. Both were promised
+          // and both were unreachable on the default tier.
+          triggerKind: r.triggerKind ?? null,
           cron: r.cron ?? null,
+          targetRole: r.targetRole ?? null,
           active: r.active === true,
           nextFireAt: r.nextFireAt ?? null,
           group: r.group ?? null,
