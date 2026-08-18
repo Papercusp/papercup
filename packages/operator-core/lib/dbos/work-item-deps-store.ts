@@ -86,6 +86,20 @@ export function assertDepEndpointRefForm(endpoint: WorkItemDepEndpoint, role: 'b
         `bare feature_id, so a qualified ref here is silently inert (D-009 / D-007).`,
     );
   }
+  // goal endpoints (goal-dag-shared-substrate-2026-08-18 P-001, D-001/D-006): goal ids are
+  // bare slug-hex (`ship-paid-app-3f9a1c`, minted by goalId()) and NEVER harness-qualified —
+  // `harness_shared.goals` keys on (workspace_id, id), so a qualified ref here would match
+  // nothing on the goal read side and mint a silently-inert edge, the same failure shape the
+  // two branches above pin for their families. The goal readers/writers live in
+  // `@papercusp/agent-mcp/goal-deps`; this seam-level guard exists so a future writer that
+  // reaches the table through THIS module's helpers is held to the same convention.
+  if (endpoint.kind === GOAL_ENDPOINT_KIND && qualified) {
+    throw new Error(
+      `work_item_deps ${role} endpoint kind='${GOAL_ENDPOINT_KIND}' requires a bare goal id ` +
+        `(e.g. 'ship-paid-app-3f9a1c'), got the harness-qualified '${endpoint.ref}'. Goals key on ` +
+        `(workspace_id, id), so a qualified ref is silently inert.`,
+    );
+  }
 }
 
 /**
