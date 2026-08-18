@@ -136,6 +136,8 @@ describe('PUT /harness/:slug/discord', () => {
     const [, files] = H.saveProjectFiles.mock.calls[0];
     expect(JSON.parse((files as { config: string }).config).discord).toEqual({ guildId: '12345', inviteUrl: 'https://discord.gg/y' });
     // Sync-cache invalidation fired (mocked — see the sync-sse vi.mock above).
-    expect(H.notifySyncInvalidate).toHaveBeenCalledWith('discordConfig.byHarness', [{ harnessSlug: 'shared-harness' }]);
+    // notifySyncInvalidate takes `args` as a plain Record (sync-sse.ts:234-239) —
+    // the array-wrapped form this asserted before b9d5a09f94 was a call-site bug.
+    expect(H.notifySyncInvalidate).toHaveBeenCalledWith('discordConfig.byHarness', { harnessSlug: 'shared-harness' });
   });
 });
