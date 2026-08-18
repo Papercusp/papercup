@@ -6729,8 +6729,13 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     resolve: async (args) => {
       const { limit, harness, role } = args as { limit: number; harness?: string; role?: string };
       const { sql } = (await import('@papercusp/db-org')).getOrgPg();
-      const [rows, totalRows] = await Promise.all([
-        sql`
+      // BOUNDED (WI-39825) via the shared rows+count fan-out. Same shape, and same
+      // pre-existing wrong-answer, as projectSpecRevisions.byProject: a failed
+      // count resolved to `?? rows.length`, rendering a confident total equal to
+      // the window size. The helper flags `totalUnavailable` instead.
+      const { readBoundedList } = await import('./bounded-list-read');
+      return readBoundedList<Record<string, unknown>>({
+        rows: sql<Record<string, unknown>[]>`
           SELECT id, harness_slug, role, feature_id, title,
                  created_at, updated_at, archived_at,
                  total_input_tokens, total_output_tokens, total_cost_usd_cents,
@@ -6739,14 +6744,16 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
            WHERE (${harness ?? null}::text IS NULL OR harness_slug = ${harness ?? null})
              AND (${role ?? null}::text IS NULL OR role = ${role ?? null})
            ORDER BY updated_at DESC NULLS LAST, created_at DESC NULLS LAST
-           LIMIT ${limit}`,
-        sql<{ n: number }[]>`
+           LIMIT ${limit}`.then((r) => [...r]),
+        count: sql<{ n: number }[]>`
           SELECT count(*)::int AS n
             FROM harness_shared.agent_chats_consolidated
            WHERE (${harness ?? null}::text IS NULL OR harness_slug = ${harness ?? null})
-             AND (${role ?? null}::text IS NULL OR role = ${role ?? null})`,
-      ]);
-      return attachListMeta(rows, { total: totalRows[0]?.n ?? rows.length });
+             AND (${role ?? null}::text IS NULL OR role = ${role ?? null})`.then(
+          (r) => r[0]?.n ?? null,
+        ),
+        label: 'conversations.agentChatList',
+      });
     },
   },
   'conversations.agentChatDetail': {
