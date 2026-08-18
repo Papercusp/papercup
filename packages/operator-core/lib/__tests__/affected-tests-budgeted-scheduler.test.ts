@@ -15,8 +15,12 @@ import {
   resolveTaskBudget,
   resolveWorkerMemoryMb,
   runBudgetedTasks,
+  timeoutDurationEstimate,
   writeDurationHistoryAtomic,
 } from '../../../../scripts/lib/budgeted-task-scheduler.mjs';
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore — pure JS policy module, no declaration file.
+import { resolveTaskTimeoutMs } from '../../../../scripts/lib/batch-watchdog.mjs';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
 const AFFECTED_TESTS_SRC = readFileSync(resolve(REPO_ROOT, 'scripts/affected-tests.mjs'), 'utf8');
@@ -234,7 +238,82 @@ describe('duration history', () => {
     expect(durationEstimate(empty, 'missing')).toBeNull();
     const first = mergeDurationHistory(empty, [{ key: 'a :: test', durationMs: 1000 }], 't1');
     const second = mergeDurationHistory(first, [{ key: 'a :: test', durationMs: 3000 }], 't2');
-    expect(second.tasks['a :: test']).toEqual({ durationMs: 1500, samples: 2, updatedAt: 't2' });
+    expect(second.tasks['a :: test']).toEqual({
+      durationMs: 1500,
+      peakMs: 3000,
+      samples: 2,
+      updatedAt: 't2',
+    });
+  });
+
+  // EI-20803703725014949: lane-stateful is bimodal (~7m vs ~45m, both honest
+  // completions). The watchdog bound must clear the honest SLOW mode even when
+  // the EWMA has been dragged down by a run of fast finishes — otherwise the
+  // timeout collapses to its floor and a legitimate slow finish races a timer
+  // set at exactly its own duration (the measured ~50% SIGKILL coin flip).
+  it('timeoutDurationEstimate keeps the slow mode of a bimodal task alive through fast runs', () => {
+    const SLOW = 45 * 60_000;
+    const FAST = 7 * 60_000;
+    let history = mergeDurationHistory(emptyDurationHistory(), [{ key: 'oc :: lane', durationMs: SLOW }], 't1');
+    for (let i = 0; i < 4; i += 1) {
+      history = mergeDurationHistory(history, [{ key: 'oc :: lane', durationMs: FAST }], `t${i + 2}`);
+    }
+    const ewma = durationEstimate(history, 'oc :: lane');
+    const forTimeout = timeoutDurationEstimate(history, 'oc :: lane');
+    // The EWMA has collapsed well below the slow mode…
+    expect(ewma).toBeLessThan(SLOW / 2);
+    // …but the peak-aware estimate still remembers it (modulo slow decay).
+    expect(forTimeout).toBeGreaterThan(SLOW * 0.9 ** 4 * 0.99);
+    // End to end: the bound computed from it clears the honest slow mode.
+    const timeoutMs = resolveTaskTimeoutMs({
+      overrideMs: null,
+      floorMs: 45 * 60_000,
+      durationMs: forTimeout,
+      headroomMultiplier: 2,
+      quantumMs: 5 * 60_000,
+      maxMs: 90 * 60_000,
+    });
+    expect(timeoutMs).toBeGreaterThan(SLOW);
+    // Control: the same bound computed from the bare EWMA is the floor — the
+    // exact coin-flip configuration this estimator exists to prevent.
+    const ewmaTimeoutMs = resolveTaskTimeoutMs({
+      overrideMs: null,
+      floorMs: 45 * 60_000,
+      durationMs: ewma,
+      headroomMultiplier: 2,
+      quantumMs: 5 * 60_000,
+      maxMs: 90 * 60_000,
+    });
+    expect(ewmaTimeoutMs).toBe(45 * 60_000);
+  });
+
+  it('timeoutDurationEstimate falls back to the EWMA for a legacy entry without peakMs', () => {
+    const legacy = {
+      version: emptyDurationHistory().version,
+      tasks: { 'a :: test': { durationMs: 1234, samples: 3, updatedAt: 't0' } },
+    };
+    expect(timeoutDurationEstimate(legacy, 'a :: test')).toBe(1234);
+    expect(timeoutDurationEstimate(legacy, 'missing')).toBeNull();
+  });
+
+  it('a merge over a legacy entry seeds the peak from its EWMA rather than zero', () => {
+    const legacy = {
+      version: emptyDurationHistory().version,
+      tasks: { 'a :: test': { durationMs: 10_000, samples: 3, updatedAt: 't0' } },
+    };
+    const next = mergeDurationHistory(legacy, [{ key: 'a :: test', durationMs: 1000 }], 't1');
+    // decayed EWMA seed (10000 * 0.9) beats the fast observation
+    expect(next.tasks['a :: test'].peakMs).toBe(9000);
+  });
+
+  it('the recorded peak decays so a one-off outlier does not pin the bound forever', () => {
+    let history = mergeDurationHistory(emptyDurationHistory(), [{ key: 'a :: test', durationMs: 100_000 }], 't1');
+    for (let i = 0; i < 30; i += 1) {
+      history = mergeDurationHistory(history, [{ key: 'a :: test', durationMs: 1000 }], `t${i + 2}`);
+    }
+    // 100000 * 0.9^30 ≈ 4240 — the outlier has decayed to the same order as
+    // the observed durations instead of pinning the timeout at its own scale.
+    expect(timeoutDurationEstimate(history, 'a :: test')).toBeLessThan(10_000);
   });
 
   it('atomically replaces a complete local file and leaves no temporary sibling', () => {

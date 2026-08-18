@@ -237,6 +237,37 @@ export function durationEstimate(history, key) {
   return finiteEstimate(history?.tasks?.[key]?.durationMs);
 }
 
+/**
+ * The estimate the WATCHDOG BOUND must use — never the bare EWMA.
+ *
+ * EI-20803703725014949: operator-core::test:lane-stateful is BIMODAL (~7min vs
+ * ~45min, both honest completions). An EWMA of a bimodal distribution settles
+ * between the modes and describes neither, so a mostly-fast history collapses
+ * the batch timeout to its floor and a legitimate slow-mode finish then races
+ * a timer set at exactly its own duration — the "coin flip" the policy comment
+ * in affected-tests.mjs explicitly forbids. Worse, a SIGKILLed leg records
+ * elapsed≈timeout into the EWMA, so the estimate oscillates around the
+ * coin-flip regime instead of ever escaping it (measured ~50% kill rate).
+ *
+ * A watchdog cares about the honest WORST case, not the typical case: take the
+ * max of the EWMA and the decayed peak. Ordering keeps using durationEstimate
+ * (the EWMA) — typical cost is the right input for scheduling.
+ */
+export function timeoutDurationEstimate(history, key) {
+  const entry = history?.tasks?.[key];
+  const ewma = finiteEstimate(entry?.durationMs);
+  const peak = finiteEstimate(entry?.peakMs);
+  if (ewma == null && peak == null) return null;
+  return Math.max(ewma ?? 0, peak ?? 0);
+}
+
+/**
+ * Per-run decay for the recorded peak: slow enough that one honest slow-mode
+ * completion protects roughly the next dozen runs (0.9^12 ≈ 0.28), fast enough
+ * that a one-off pathological outlier does not pin the timeout forever.
+ */
+const PEAK_DECAY_PER_RUN = 0.9;
+
 /** Keep a small EWMA so one loaded run informs ordering without pinning it forever. */
 export function mergeDurationHistory(history, observations, now = new Date().toISOString()) {
   const next = {
@@ -249,8 +280,12 @@ export function mergeDurationHistory(history, observations, now = new Date().toI
     if (!key || durationMs == null) continue;
     const prior = next.tasks[key];
     const samples = Number.isSafeInteger(prior?.samples) && prior.samples > 0 ? prior.samples : 0;
+    // A legacy entry has no peakMs; seed the decay base from its EWMA rather
+    // than 0 so an upgrade never *lowers* an existing task's effective bound.
+    const priorPeak = finiteEstimate(prior?.peakMs) ?? finiteEstimate(prior?.durationMs) ?? 0;
     next.tasks[key] = {
       durationMs: samples > 0 ? Math.round(prior.durationMs * 0.75 + durationMs * 0.25) : Math.round(durationMs),
+      peakMs: Math.max(Math.round(durationMs), Math.round(priorPeak * PEAK_DECAY_PER_RUN)),
       samples: samples + 1,
       updatedAt: now,
     };
