@@ -315,8 +315,10 @@ export async function readRetainFeed(
     let cached: Promise<T> | null = null;
     return () => (cached ??= fn());
   };
-  const listMemoriesOnce = deps.listMemories ? memoOnce(deps.listMemories) : undefined;
-  const listRubricsOnce = memoOnce(deps.listRubrics);
+  // Called through `deps` rather than as a detached reference so a dep
+  // implemented as a real method keeps its `this`.
+  const listMemoriesOnce = deps.listMemories ? memoOnce(() => deps.listMemories!()) : undefined;
+  const listRubricsOnce = memoOnce(() => deps.listRubrics());
 
   const legMemories = async (): Promise<RetainFeedRow[]> => {
     const w = retainLegWindowFor('memory', cursor);
