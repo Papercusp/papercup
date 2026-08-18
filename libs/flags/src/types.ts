@@ -11,6 +11,12 @@ export const FLAGS = {
   // clone is now the lightweight InstanceSpec (capture/boot/vary, ungated). The
   // legacy :3057 marketplace + /templates were already deleted (revive-cupboard D-004);
   // distribution lives in the (ungated) Cupboard.
+  // dev:pg_mutate — the audited, guarded DML escape hatch over operator PG
+  // (EI-20478724424443538). Default ON (derived FLAG_DEFAULTS — not in
+  // DARK_FLAGS); this flag is the kill-switch: OFF makes the tool refuse with
+  // flag_disabled while dev:pg_query and every documented write verb are
+  // untouched.
+  PG_MUTATE_TOOL: "papercusp-pg-mutate-tool",
   CLOUDFLARE_PUBLISH: "papercusp-cloudflare-publish",
   HARNESS_PHASES: "papercusp-harness-phases",
   DESIGN: "papercusp-design",
