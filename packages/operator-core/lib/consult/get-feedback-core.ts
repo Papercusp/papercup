@@ -45,6 +45,10 @@ export const PROCEED_EXPIRY_MS = 4 * 3_600_000; // 4h
 export const HARD_BLOCKED_EXPIRY_MS = 30 * 60_000; // 30m
 /** sessionStates a v1 consult never wakes (D-008 §5 liveness gate). */
 export const DEAD_RESPONDER_STATES: ReadonlySet<string> = new Set(['ended', 'recorded']);
+/** WI-39852 revival cap [owner:Avi 2026-08-18]: at most ONE carry-respawn per
+ * consult — revival is a cost lever, not a fleet-resurrection loop. The flow
+ * enforces it structurally (dead-preempt and wake-failed share one budget). */
+export const MAX_REVIVALS_PER_CONSULT = 1;
 /** Recursion ceiling (D-007 §7) — mirrors the consult_state.depth CHECK (0–2). */
 export const MAX_CONSULT_DEPTH = 2;
 /** consult-min-max-and-rubric-vetting-2026-08-17 D-003 [owner]: EVERY consult
