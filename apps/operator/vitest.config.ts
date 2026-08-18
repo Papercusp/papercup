@@ -17,6 +17,15 @@ export default mergeConfig(
     setupFiles: [
       resolve(__dirname, 'vitest-shims/resize-observer.ts'),
       resolve(__dirname, 'vitest-shims/radix-jsdom.ts'),
+      // Coverage-census attribution (plan deterministic-coverage-census-2026-08-17, P-004).
+      // apps/operator and packages/operator-core are the only two workspaces whose tests can
+      // reach a Hono route or an MCP dispatch, so the setup is wired into those two rather
+      // than into @papercusp/test-config's shared list. It registers NO hooks unless
+      // PAPERCUSP_TEST_ATTRIBUTION=1, so an ordinary run pays one env read.
+      resolve(
+        __dirname,
+        '../../packages/operator-core/lib/coverage-census/attribution/setup-vitest.ts',
+      ),
     ],
   }),
   {
