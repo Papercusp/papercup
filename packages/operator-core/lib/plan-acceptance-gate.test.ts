@@ -303,4 +303,41 @@ describe('the vetting check (consult-min-max-and-rubric-vetting-2026-08-17 P-004
     const v = await evaluatePlanAcceptanceGate('some-plan-2026-08-11');
     expect(v.satisfied).toBe(true);
   });
+
+  // EI-20821478338037350: a rubric vetted under an explicit no-critique waiver still
+  // ships, but the verdict must SAY so — same posture as `forcedPast`, whose whole
+  // point is that a waiver which is easy to hide is worth very little.
+  it('a vetting stamped `unanswered` still satisfies, but reports vettedUnderWaiver', async () => {
+    stockScorecards([
+      metaVettingCard({
+        vetting: {
+          consultId: 'conv-vet-1',
+          rubricRevision: 7,
+          critiquePosts: 0,
+          unanswered: true,
+          unansweredReason: 'all 3 routed reviewers ended; consult expired 19:54Z with 0 posts',
+        },
+      }),
+    ]);
+    const v = await evaluatePlanAcceptanceGate('some-plan-2026-08-11');
+    expect(v).toMatchObject({
+      satisfied: true,
+      vettedUnderWaiver: {
+        consultId: 'conv-vet-1',
+        reason: 'all 3 routed reviewers ended; consult expired 19:54Z with 0 posts',
+      },
+    });
+  });
+
+  it('CONTROL: a genuinely critiqued vetting satisfies with NO vettedUnderWaiver marker', async () => {
+    // Without this, a `vettedUnderWaiver` hard-wired on would pass the test above.
+    stockScorecards([
+      metaVettingCard({
+        vetting: { consultId: 'conv-vet-1', rubricRevision: 7, critiquePosts: 2, critics: ['su-reviewer'] },
+      }),
+    ]);
+    const v = await evaluatePlanAcceptanceGate('some-plan-2026-08-11');
+    expect(v.satisfied).toBe(true);
+    expect(v.vettedUnderWaiver).toBeUndefined();
+  });
 });
