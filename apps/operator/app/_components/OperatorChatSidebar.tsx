@@ -538,6 +538,7 @@ export function OperatorChatSidebar({ faces = [] }: { faces?: readonly OpChatFac
         {showInboxBadge ? (
           <span
             className="op-chat-rail-badge"
+            data-testid="op-chat-rail-badge"
             data-degraded={attentionUnknown ? 'true' : undefined}
             title={attentionUnknown ? UNKNOWN_LABEL : undefined}
             aria-label={attentionUnknown ? UNKNOWN_LABEL : `${inboxPending} inbox items need you`}
