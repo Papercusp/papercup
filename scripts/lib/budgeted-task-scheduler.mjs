@@ -130,6 +130,14 @@ export function resolveTaskBudget({
     memoryBudgetMb: configuredMemoryBudgetMb,
     workerMemoryMb: configuredWorkerMemoryMb,
     memoryWorkerBudget,
+    // EI-20801764054303492: WHICH term bound the budget. Without this, a gate log records the
+    // resolved concurrency but not the reason for it, so the next incident has to re-derive the
+    // whole chain from source to learn whether the memory rail engaged at all — which is exactly
+    // how the rail stayed INERT unnoticed long enough to force the 8 -> 4 -> 2 fork walk.
+    // 'memory' means the host measurement is what held concurrency down (raising the ceiling
+    // would change nothing); 'ceiling' means the configured ceiling is binding and memory had
+    // headroom to spare. Read this BEFORE proposing a ceiling change.
+    boundBy: memoryWorkerBudget < configuredWorkerBudget ? 'memory' : 'ceiling',
     effectiveWorkerBudget,
     maxConcurrentTasks: configuredMaxConcurrentTasks,
     reserveWorkers: configuredReserveWorkers,
@@ -364,11 +372,21 @@ export function writeDurationHistoryAtomic(path, history, nonce = `${process.pid
 }
 
 export function formatTaskBudgetMarker(stats, prefix = 'AFFECTED_TESTS_SCHEDULER') {
+  // EI-20801764054303492 step 3: report the memory term and WHICH term bound, so a gate run's
+  // concurrency decision is readable from its own log instead of re-derived from source. Both are
+  // derived defensively rather than required, so a hand-built stats object (tests, older callers)
+  // still formats. `memAvailableMb` is appended only when the caller measured it — its absence is
+  // meaningful ("no measurement"), so it is omitted rather than printed as 0 or null.
+  const boundBy =
+    stats.boundBy ?? (stats.memoryWorkerBudget < stats.workerBudget ? 'memory' : 'ceiling');
+  const measured =
+    stats.memAvailableMb == null ? '' : ` memAvailableMb=${stats.memAvailableMb}`;
   return (
     `${prefix} mode=${stats.mode} workerBudget=${stats.workerBudget} ` +
     `memoryBudgetMb=${stats.memoryBudgetMb} workerMemoryMb=${stats.workerMemoryMb} ` +
     `effectiveWorkers=${stats.effectiveWorkerBudget} maxTasks=${stats.maxConcurrentTasks} ` +
-    `reserveWorkers=${stats.reserveWorkers}`
+    `reserveWorkers=${stats.reserveWorkers} memoryWorkers=${stats.memoryWorkerBudget} ` +
+    `boundBy=${boundBy}${measured}`
   );
 }
 

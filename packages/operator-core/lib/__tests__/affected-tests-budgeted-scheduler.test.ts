@@ -449,6 +449,48 @@ describe('operator-visible budget markers', () => {
       }),
     ).toBe('AFFECTED_TESTS_SCHEDULER_OBSERVED maxWorkers=4 maxMemoryMb=4096 maxTasks=2');
   });
+
+  // EI-20801764054303492 step 3. The gate log used to record the RESOLVED concurrency but not the
+  // REASON for it, so "is the memory rail engaging?" could only be answered by re-deriving the
+  // whole chain from source — which is how the rail stayed inert unnoticed. These assert the two
+  // readings are distinguishable in the log, because that distinction is the whole point: under
+  // 'ceiling' a ceiling raise would take effect, under 'memory' it would change nothing.
+  it('names the CEILING as the binding term when memory has headroom to spare', () => {
+    const resolved = resolveTaskBudget({ ...config, memoryBudgetMb: 64 * 1024 });
+    expect(resolved.boundBy).toBe('ceiling');
+    expect(resolved.memoryWorkerBudget).toBeGreaterThan(resolved.workerBudget);
+    expect(resolved.effectiveWorkerBudget).toBe(resolved.workerBudget);
+    expect(formatTaskBudgetMarker(resolved)).toContain('memoryWorkers=64 boundBy=ceiling');
+  });
+
+  it('names MEMORY as the binding term when the host measurement holds concurrency down', () => {
+    // 2 workers' worth of memory against a 4-worker ceiling: the min() binds on memory.
+    const resolved = resolveTaskBudget({ ...config, memoryBudgetMb: 2 * 1024 });
+    expect(resolved.boundBy).toBe('memory');
+    expect(resolved.effectiveWorkerBudget).toBe(2);
+    expect(resolved.effectiveWorkerBudget).toBeLessThan(resolved.workerBudget);
+    expect(formatTaskBudgetMarker(resolved)).toContain('memoryWorkers=2 boundBy=memory');
+  });
+
+  it('reports the host measurement when one was taken, and omits it when there was none', () => {
+    const resolved = resolveTaskBudget(config);
+    // Present: the operator can compare what the box had against what was admitted.
+    expect(formatTaskBudgetMarker({ ...resolved, memAvailableMb: 51_200 })).toContain(
+      'memAvailableMb=51200',
+    );
+    // Absent: "no measurement" is meaningful and must NOT be rendered as 0/null, which would
+    // read as "the box had no memory" — the exact misreading this marker exists to prevent.
+    expect(formatTaskBudgetMarker(resolved)).not.toContain('memAvailableMb');
+    expect(formatTaskBudgetMarker({ ...resolved, memAvailableMb: null })).not.toContain(
+      'memAvailableMb',
+    );
+  });
+
+  it('derives the binding term for a caller that supplies no boundBy (older/hand-built stats)', () => {
+    expect(
+      formatTaskBudgetMarker({ ...resolveTaskBudget(config), boundBy: undefined }),
+    ).toContain('boundBy=ceiling');
+  });
 });
 
 describe('affected-tests scheduler wiring', () => {
@@ -468,7 +510,13 @@ describe('affected-tests scheduler wiring', () => {
   // behavioural test cannot see the difference on a host with plenty of free memory.
   it('measures the host for its memory budget instead of deriving it from the worker budget', () => {
     expect(AFFECTED_TESTS_SRC).toContain('memoryBudgetMb: resolveMemoryBudgetMb({');
-    expect(AFFECTED_TESTS_SRC).toContain('memAvailableMb: readMemAvailableMb()');
+    // EI-20801764054303492: the reading is hoisted to a const so the budget and the
+    // operator-visible marker report the SAME measurement (two readFileSync calls would drift on
+    // a busy box). The guard's INTENT is unchanged — "the host is measured, not derived" — so it
+    // now pins the hoist plus its use, which is strictly more than the single call site it
+    // replaced. Both halves are required: the const alone could be measured and then ignored.
+    expect(AFFECTED_TESTS_SRC).toContain('const MEM_AVAILABLE_MB = readMemAvailableMb()');
+    expect(AFFECTED_TESTS_SRC).toContain('memAvailableMb: MEM_AVAILABLE_MB');
     // MemAvailable, never MemFree/os.freemem() — the latter two ignore reclaimable page cache and
     // read catastrophically low on a long-lived box. (Asserted on the READ, not on the absence of
     // the string "os.freemem()" anywhere in the file: the prose explaining WHY we avoid it names

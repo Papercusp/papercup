@@ -304,11 +304,15 @@ function readMemAvailableMb() {
 // had no memory-awareness, which is why its concurrency is pinned at a hardcoded worst-case 2.
 // Measuring the host makes the clamp real, which is the precondition for ever raising that
 // ceiling. It can only ever LOWER the admitted budget, never widen it (see resolveMemoryBudgetMb).
+// EI-20801764054303492: read the host ONCE and keep the value, so the budget and the
+// operator-visible marker report the SAME measurement. Two separate readFileSync calls would
+// drift between them on a busy box, which makes the log unreadable exactly when it matters.
+const MEM_AVAILABLE_MB = readMemAvailableMb();
 const SCHEDULER_CONFIG = resolveTaskBudget({
   workerBudget: SCHEDULER_WORKER_BUDGET,
   memoryBudgetMb: resolveMemoryBudgetMb({
     affectedGlobalMemoryMb: process.env.AFFECTED_GLOBAL_MEMORY_MB,
-    memAvailableMb: readMemAvailableMb(),
+    memAvailableMb: MEM_AVAILABLE_MB,
     workerBudget: SCHEDULER_WORKER_BUDGET,
     workerMemoryMb: SCHEDULER_WORKER_MEMORY_MB,
   }),
@@ -2515,7 +2519,7 @@ outSync(
 plannedTaskCount = tasks.length;
 outSync(`Running ${tasks.length} task(s):`);
 for (const t of tasks) outSync(`  - ${t.ws.name} :: ${t.script}`);
-outSync(formatTaskBudgetMarker(SCHEDULER_CONFIG));
+outSync(formatTaskBudgetMarker({ ...SCHEDULER_CONFIG, memAvailableMb: MEM_AVAILABLE_MB }));
 // EI-15802: printed EARLY (before any suite runs) and again in the final
 // summary — a truncated background-task tail is more likely to still show
 // this line than a full multi-suite run's early output, so it survives even
