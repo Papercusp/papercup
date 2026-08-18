@@ -160,7 +160,7 @@ export async function readHiveLearnings(
 
   let entries: MemoryEntry[];
   try {
-    entries = await deps.listPool(scope);
+    entries = await withinBudget(deps.listPool(scope), 'hiveLearnings listPool');
   } catch (err) {
     // Carry the reason (see `unavailableReason`) — never swallow it.
     return unavailable(err instanceof Error ? err.message : String(err));
@@ -174,8 +174,17 @@ export async function readHiveLearnings(
         .filter((v): v is string => !!v),
     ),
   ];
+  // VARIABLE-ARITY fan-out (WI-39849): one leg per referenced pack, so the
+  // exposure grows with the corpus. The existing `.catch(() => null)` degrades a
+  // pack that THROWS; the shared deadline is what degrades one that HANGS.
   const loaded = await Promise.all(
-    packIds.map(async (id) => [id, await deps.loadPack(id).catch(() => null)] as const),
+    packIds.map(
+      async (id) =>
+        [
+          id,
+          await withinBudget(deps.loadPack(id), `hiveLearnings loadPack ${id}`).catch(() => null),
+        ] as const,
+    ),
   );
   const packById = new Map(loaded);
 
