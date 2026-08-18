@@ -22,6 +22,37 @@
 import type { Sql } from 'postgres';
 import type { Idea, Proposal, ScoredIdea } from '../scout/types';
 import { isUndefinedTable, normalizeTickEconomics, type ScoutTickEconomics } from './learning-scout-read';
+import { createReadDeadline, isReadBudgetExceeded } from './read-deadline';
+
+/**
+ * Whole-read deadline for both Analyze reads (WI-39823) — 6s, the budget the
+ * bounded sibling learning.* reads carry, measured against :3170 latency
+ * (p90 599ms) and sized to fire under the sync layer's ~10s resolver timeout.
+ */
+const ANALYZE_READ_BUDGET_MS = 6_000;
+
+/** Options shared by {@link readAnalyzeSnapshot} and {@link readAnalyzeCycle}. */
+export interface AnalyzeReadOpts {
+  /** Whole-read deadline override in ms (default {@link ANALYZE_READ_BUDGET_MS}). */
+  budgetMs?: number;
+}
+
+/**
+ * Re-raise a lapsed budget instead of letting an existing `catch` swallow it.
+ *
+ * Both reads below degrade a FAILED artifacts read to a confident empty value
+ * (`{ cycles: [] }` / `null`) so a substrate without migration 623 renders the
+ * explain-empty state rather than a 500. That is right for a missing table and
+ * WRONG for a timeout: `readAnalyzeCycle`'s `null` is rendered by the consumer as
+ * "Loading cycle artifacts…", so swallowing a lapsed deadline there would convert
+ * a bounded failure straight back into the permanent spinner this bound exists to
+ * end (the WI-6395 shape, re-entering through the inner catch). Letting it
+ * propagate reaches the resolver's own `degraded(…)` wrapper, which says the read
+ * failed. Non-budget errors keep their existing handling exactly.
+ */
+function rethrowIfBudgetLapsed(err: unknown): void {
+  if (isReadBudgetExceeded(err)) throw err;
+}
 
 /** One ideator roster slot's outcome (ScoutCycleLike.ideators, EI-13119). */
 export interface AnalyzeIdeatorSlot {
@@ -169,8 +200,13 @@ async function routedRefsByCycle(
   return byCycle;
 }
 
-export async function readAnalyzeSnapshot(sql: Sql, workspaceId: string): Promise<AnalyzeSnapshot> {
+export async function readAnalyzeSnapshot(
+  sql: Sql,
+  workspaceId: string,
+  opts: AnalyzeReadOpts = {},
+): Promise<AnalyzeSnapshot> {
   const generatedAt = new Date().toISOString();
+  const withinBudget = createReadDeadline(opts.budgetMs ?? ANALYZE_READ_BUDGET_MS);
 
   let rows: Array<Record<string, unknown>> = [];
   try {
@@ -178,14 +214,18 @@ export async function readAnalyzeSnapshot(sql: Sql, workspaceId: string): Promis
     // but do NOT ship the full ideas/scored/proposals arrays — the collapsed
     // disclosure label only needs counts + verdicts + spend. (Kept in the SELECT
     // because the count/verdict derivation needs them; they never leave here.)
-    rows = (await sql`
+    rows = (await withinBudget(
+      sql`
       SELECT cycle_id, created_at, ideas, scored, proposals
         FROM harness_shared.scout_cycle_stage_artifacts
        WHERE workspace_id = ${workspaceId}
        ORDER BY created_at DESC
        LIMIT ${ANALYZE_CYCLE_LIMIT}
-    `) as Array<Record<string, unknown>>;
+    `,
+      'analyze artifacts',
+    )) as Array<Record<string, unknown>>;
   } catch (err) {
+    rethrowIfBudgetLapsed(err);
     // Migration 623 not applied on this substrate ⇒ the explain-empty state.
     if (!isUndefinedTable(err)) {
       console.warn('[learning.analyze] artifacts read failed:', err instanceof Error ? err.message : err);
@@ -205,9 +245,18 @@ export async function readAnalyzeSnapshot(sql: Sql, workspaceId: string): Promis
   const cycleIds = summaries.map((c) => c.cycleId).filter((c) => c.length > 0);
   if (cycleIds.length === 0) return { cycles: summaries, generatedAt };
 
+  // Both legs are ENRICHMENT over rows already in hand, so a lapsed one is a true
+  // partial: the cycles still render, just without economics / routed counts. Each
+  // already tolerates a THROW internally (warn + empty map) — the bound is what
+  // extends that to a HANG, which `Promise.all` would otherwise let run past the
+  // resolver timeout and take the whole, already-successful read down with it.
   const [tickByCycle, routedByCycle] = await Promise.all([
-    tickEconomicsByCycle(sql, workspaceId, cycleIds),
-    routedRefsByCycle(sql, workspaceId, cycleIds),
+    withinBudget(tickEconomicsByCycle(sql, workspaceId, cycleIds), 'analyze tick-economics').catch(
+      () => new Map<string, ScoutTickEconomics>(),
+    ),
+    withinBudget(routedRefsByCycle(sql, workspaceId, cycleIds), 'analyze routed-refs').catch(
+      () => new Map<string, AnalyzeRoutedRef[]>(),
+    ),
   ]);
   for (const c of summaries) {
     c.tick = tickByCycle.get(c.cycleId) ?? null;
@@ -225,17 +274,26 @@ export async function readAnalyzeCycle(
   sql: Sql,
   workspaceId: string,
   cycleId: string,
+  opts: AnalyzeReadOpts = {},
 ): Promise<AnalyzeCycle | null> {
+  const withinBudget = createReadDeadline(opts.budgetMs ?? ANALYZE_READ_BUDGET_MS);
   let rows: Array<Record<string, unknown>> = [];
   try {
-    rows = (await sql`
+    rows = (await withinBudget(
+      sql`
       SELECT cycle_id, created_at, ideas, scored, proposals, ideator_slots
         FROM harness_shared.scout_cycle_stage_artifacts
        WHERE workspace_id = ${workspaceId}
          AND cycle_id = ${cycleId}
        LIMIT 1
-    `) as Array<Record<string, unknown>>;
+    `,
+      'analyze-cycle artifacts',
+    )) as Array<Record<string, unknown>>;
   } catch (err) {
+    // A lapsed budget must NOT become `null` here: the consumer renders `!cycle`
+    // as "Loading cycle artifacts…", so returning null on a timeout is the
+    // permanent spinner in its purest form. Propagate to the resolver's degraded().
+    rethrowIfBudgetLapsed(err);
     if (!isUndefinedTable(err)) {
       console.warn('[learning.analyzeCycle] artifacts read failed:', err instanceof Error ? err.message : err);
     }
