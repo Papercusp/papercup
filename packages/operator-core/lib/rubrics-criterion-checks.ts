@@ -266,6 +266,12 @@ export async function evaluateCriterionTestChecks(input: {
   const nowIso = input.nowIso ?? (() => new Date().toISOString());
   const deadline = input.timeoutMs !== undefined ? Date.now() + input.timeoutMs : null;
   const checkRuns: Record<string, CriterionCheckRun> = {};
+
+  // ── Pass 1: resolve every rated tests-check's paths BEFORE running anything ──
+  // Path resolution is per-criterion and must keep its own refusal (D-006), so a stale
+  // path still names the criterion that carries it. Doing all of it up front also means
+  // a rubric with one bad path costs zero test runs instead of failing partway through.
+  const planned: { key: string; files: string[] }[] = [];
   for (const c of input.criteria) {
     if (c.check?.kind !== 'tests') continue;
     if (input.ratings[c.key] === undefined) continue;
@@ -285,51 +291,102 @@ export async function evaluateCriterionTestChecks(input: {
           `Fix the rubric's check (rubrics:propose) or restore the file(s), then re-emit.`,
       };
     }
-    const files = validation.normalizedByKey[c.key] ?? [...c.check.files];
-    const remaining = deadline === null ? undefined : Math.max(1000, deadline - Date.now());
-    const run = await runner({ files, root, ...(remaining !== undefined ? { timeoutMs: remaining } : {}) });
-    if (run.error !== undefined) {
+    planned.push({ key: c.key, files: validation.normalizedByKey[c.key] ?? [...c.check.files] });
+  }
+  if (planned.length === 0) return { ok: true, checkRuns };
+
+  // ── Pass 2: ONE batched run for every file, then attribute per criterion ──
+  // WI-39848: this used to be one vitest process PER criterion against a SHARED deadline
+  // (`Math.max(1000, deadline - Date.now())`), so each run ate budget the next one needed
+  // and the LAST criterion was starved deterministically — a 7-check rubric could never be
+  // graded, and the refusal blamed the starved criterion's file for being "too slow" when
+  // the budget had been spent upstream. The cost driver was N cold starts, not any one
+  // suite, so the fix is to pay for ONE. Attribution stays exact because it now reads
+  // `byFile` — per-file counts that are complete even when the failure LIST is capped.
+  const uniqueFiles = [...new Set(planned.flatMap((p) => p.files))];
+  const budget = deadline === null ? undefined : Math.max(1000, deadline - Date.now());
+  const run = await runner({ files: uniqueFiles, root, ...(budget !== undefined ? { timeoutMs: budget } : {}) });
+  if (run.error !== undefined) {
+    return {
+      ok: false,
+      error: 'check_run_failed',
+      criterionKey: planned[0]?.key ?? '(none)',
+      detail:
+        `the batched tests-check run for ${planned.length} criterion/criteria ` +
+        `(${uniqueFiles.length} file(s): ${uniqueFiles.join(', ')}) could not be judged ` +
+        `(${run.error}${'hint' in run && run.hint ? ` — ${run.hint}` : ''}). ` +
+        `D-006 requires the named files to actually RUN at grading time — an unjudgeable check refuses ` +
+        `the emit rather than passing silently. NOTE: this is the whole batch, so it does NOT single out ` +
+        `any one criterion's suite as the slow one.`,
+    };
+  }
+
+  // A runner that reports no per-file grain (a stub, or an older shape) cannot be
+  // attributed from a batch. Refuse rather than spread the batch's aggregate across
+  // criteria — that would let one criterion's failure condemn another's, or worse, let a
+  // green aggregate vouch for a file that never reported.
+  const byFile = (run as { byFile?: Record<string, { passed: number; failed: number; skipped: number; collectionFailed: boolean }> }).byFile;
+  if (byFile === undefined) {
+    return {
+      ok: false,
+      error: 'check_run_failed',
+      criterionKey: planned[0]?.key ?? '(none)',
+      detail:
+        `the batched tests-check run returned no per-file breakdown (byFile), so its result cannot be ` +
+        `attributed to individual criteria. Refusing rather than judging every criterion on the batch ` +
+        `aggregate, which would let one criterion's failure condemn another's.`,
+    };
+  }
+
+  for (const { key, files } of planned) {
+    // A file the report never mentions is UNJUDGED, not passed. Without this the batch's
+    // green aggregate would vouch for a file that silently failed to run at all.
+    const missing = files.filter((f) => byFile[f] === undefined);
+    if (missing.length > 0) {
       return {
         ok: false,
         error: 'check_run_failed',
-        criterionKey: c.key,
+        criterionKey: key,
         detail:
-          `criterion '${c.key}' tests-check could not be judged (${run.error}${'hint' in run && run.hint ? ` — ${run.hint}` : ''}). ` +
-          `D-006 requires the named files to actually RUN at grading time — an unjudgeable check refuses ` +
-          `the emit rather than passing silently.`,
+          `criterion '${key}' names test file(s) the batched run never reported on ` +
+          `(${missing.join(', ')}), so the check is unjudged. Treating an unreported file as a pass ` +
+          `would be exactly the silent pass D-006 forbids.`,
       };
     }
+    const passed = files.reduce((n, f) => n + (byFile[f]?.passed ?? 0), 0);
+    const failed = files.reduce((n, f) => n + (byFile[f]?.failed ?? 0), 0);
     const record: CriterionCheckRun = {
       kind: 'tests',
       files,
-      verdict: run.failed === 0 && run.ok === true ? 'pass' : 'fail',
-      passed: run.passed,
-      failed: run.failed,
+      verdict: failed === 0 ? 'pass' : 'fail',
+      passed,
+      failed,
       runId: run.runId ?? null,
       measuredAt: nowIso(),
-      ...(run.failed > 0 && Array.isArray(run.failures)
+      ...(failed > 0 && Array.isArray(run.failures)
         ? {
             failures: run.failures
+              .filter((f) => files.includes((f as { file?: string }).file ?? ''))
               .slice(0, 10)
               .map((f) => `${(f as { file?: string }).file ?? '?'}: ${(f as { test?: string }).test ?? '?'}`),
           }
         : {}),
     };
-    const rating = input.ratings[c.key]?.rating ?? '';
+    const rating = input.ratings[key]?.rating ?? '';
     if (record.verdict === 'fail' && ratingClaimsPass(rating)) {
       return {
         ok: false,
         error: 'check_contradicted',
-        criterionKey: c.key,
+        criterionKey: key,
         rating,
         run: record,
         detail:
-          `criterion '${c.key}' is rated '${rating}' but its deterministic tests-check FAILED ` +
+          `criterion '${key}' is rated '${rating}' but its deterministic tests-check FAILED ` +
           `(${record.failed} failing of ${record.passed + record.failed} run${record.failures ? `: ${record.failures.join(' · ')}` : ''}). ` +
           `A must-pass check outranks judgment — fix the code (or the tests), or rate the criterion honestly.`,
       };
     }
-    checkRuns[c.key] = record;
+    checkRuns[key] = record;
   }
   return { ok: true, checkRuns };
 }
