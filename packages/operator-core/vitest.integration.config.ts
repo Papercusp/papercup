@@ -1,4 +1,8 @@
 import { defineVitestConfig, BASELINE_SCHEMA_GLOBAL_SETUP_PATH } from '@papercusp/test-config/vitest-config';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // The SP1 C4 carve moved the plans/cross_harness integration tests here; they
 // inject('baselineSchemaDsn') via _pg-tool-fixture, so this package needs the
