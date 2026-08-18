@@ -36,6 +36,7 @@ import { hostAudienceResolvers } from '../coordination/audience-host';
 import { resolveFleetCaller } from './_shared';
 import { classifyFleetControlInvoker } from './fleet-auth';
 import type { ResolveIdentityCtx } from '../coordination/identity';
+import type { FleetPauseHoldResult } from './pause-holds';
 
 export type FleetControlAction = 'wind-down' | 'resume';
 
@@ -63,6 +64,11 @@ export interface FleetControlResult {
    *  exclusion breakdown + the exact re-verify command. Absent when it could not be
    *  computed (fails soft) or the action was resume. */
   drainStamp?: import('./drain-stamp').FleetDrainStamp;
+  /** EI-20199397615670608: the claim-holds this control flip SET (wind-down) or CLEARED
+   *  (resume) on the fleet members' held work-items, so the pause cannot leak its lane
+   *  back into the claimable pool the moment members comply with it. Absent when nothing
+   *  matched or the leg failed soft. */
+  pauseHolds?: FleetPauseHoldResult;
   error?: string;
   message?: string;
 }
@@ -182,6 +188,34 @@ export async function applyFleetControl(
       drainStamp = stamp;
       effectiveReason = reason ? `${reason} | ${stamp.summary}` : stamp.summary;
     }
+  }
+
+  // EI-20199397615670608: PROTECT THE LANE BEFORE CUEING IT TO STAND DOWN.
+  // The wind-down cue below tells every member to "release your claims" — and until this
+  // leg existed, that release dropped the item straight back into the claimable pool,
+  // where the next scheduler:get_next silently resumed the paused work. Complying with
+  // the pause was what created the exposure, so the fix belongs HERE and not in member
+  // discipline. See pause-holds.ts for why this is a durable park (claim_hold_*) rather
+  // than a liveness-bound hold-open lease, and why resume clears only its own marker.
+  //
+  // ORDER IS LOAD-BEARING: the holds are set BEFORE the cue is sent (step 3), so the
+  // fastest-complying member cannot release into an unprotected window. Fails soft on
+  // both legs, exactly like the drain stamp above — a hold-write failure must never
+  // wedge the control flip, and must never make a fleet impossible to RESUME.
+  let pauseHolds: FleetPauseHoldResult | undefined;
+  {
+    const { applyFleetPauseHolds, clearFleetPauseHolds } = await import('./pause-holds');
+    const held =
+      action === 'wind-down'
+        ? await applyFleetPauseHolds({
+            fleetSlug: slug,
+            workspaceId,
+            byOwnerId: ownerId,
+            leaderOwnerId: fleet.leaderOwnerId,
+            reason: effectiveReason,
+          }).catch(() => null)
+        : await clearFleetPauseHolds({ fleetSlug: slug, workspaceId }).catch(() => null);
+    if (held && (held.items.length > 0 || held.failed.length > 0)) pauseHolds = held;
   }
 
   // 2. PERSIST the typed state (idempotent — a re-invoke refreshes reason/by/at).
