@@ -27,6 +27,7 @@ import { emitPlanEventForCaller } from '../coordination/plan-events';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 import { clearStartedForTerminalPlan, isTerminalPlanStatus } from './plan-start-state';
 import { stampTerminalNowBlock } from './terminal-now-stamp';
+import { stampGreenlitNowBlock } from './greenlit-now-stamp';
 import { stampForcedPastWaiver } from './forced-past-stamp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { emitDeprecateLearnings, type DeprecateLearnings } from '../../harness/improvements/deprecate-learnings';
@@ -183,10 +184,13 @@ export function flipPlanFrontmatterStatus(
 }
 
 /**
- * Apply a plan-level lifecycle target and the terminal-Now invariant as one
- * pure mutation. Unlike {@link flipPlanFrontmatterStatus}, an already-terminal
- * target is not necessarily a no-op: it repairs an unstamped `## Now` block.
- * That makes the existing bulk status verb a safe, idempotent backfill path.
+ * Apply a plan-level lifecycle target and the Now-block invariants as one pure
+ * mutation. Unlike {@link flipPlanFrontmatterStatus}, an already-terminal (or
+ * already-`ready`) target is not necessarily a no-op: it repairs an unstamped
+ * `## Now` block. That makes the existing bulk status verb a safe, idempotent
+ * backfill path for BOTH directions — a plan that closed while its Now still
+ * read live, and a greenlit draft whose Now still reads "not active until
+ * greenlit" (WI-39804).
  */
 export function applyPlanStatusBody(
   body: string,
@@ -207,7 +211,12 @@ export function applyPlanStatusBody(
 
   const statusChanged = flip.code !== 'noop';
   const candidate = flip.newBody ?? body;
-  const stamped = stampTerminalNowBlock(candidate, target, today);
+  // The two stamps are mutually exclusive by target — terminal covers
+  // shipped/superseded, greenlit covers ready — so the first non-null wins and
+  // neither can ever see a body the other rewrote.
+  const stamped =
+    stampTerminalNowBlock(candidate, target, today) ??
+    stampGreenlitNowBlock(candidate, target, today);
   if (!statusChanged && stamped === null) {
     return { ...flip, changed: false, nowStamped: false };
   }
