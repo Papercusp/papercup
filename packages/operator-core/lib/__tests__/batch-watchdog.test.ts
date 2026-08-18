@@ -20,6 +20,7 @@ import { createTextCollector } from '../child-output';
 import {
   resolveBatchTimeoutMs,
   resolveTaskTimeoutMs,
+  decideWatchdogExpiry,
   isWatchdogTimeout,
   killSpawnedProcessTree,
   parseBatchProgress,
@@ -93,6 +94,98 @@ describe('resolveTaskTimeoutMs', () => {
     expect(
       resolveTaskTimeoutMs({ ...TASK_TIMEOUT_POLICY, overrideMs: 100 * 60_000, durationMs: 70 * 60_000 }),
     ).toBe(100 * 60_000);
+  });
+});
+
+/**
+ * EI-20803703725014949 — the deadline is a CHECKPOINT, not a verdict.
+ *
+ * The watchdog exists to kill a SYNCHRONOUS spin, and a spin is silent: output goes
+ * flat and stays flat. A merely-slow suite keeps emitting right into the wall. Time
+ * alone cannot separate them, so the time-only watchdog SIGKILLed live work under
+ * fleet load and red-pinned the gate for a non-code reason.
+ *
+ * The calibration case below is the real measurement from green-checkpoint RUN 9
+ * (2026-08-18): `operator-core :: test:lane-stateful` killed at exactly 2700s with
+ * captured output still climbing. If that input ever decides `kill` again, this fix
+ * has regressed — which is why it is asserted with the observed numbers rather than
+ * with a tidy synthetic pair.
+ */
+const EXPIRY_POLICY = {
+  maxMs: 90 * 60_000,
+  stallWindowMs: 5 * 60_000,
+  extensionMs: 5 * 60_000,
+};
+
+describe('decideWatchdogExpiry', () => {
+  it('extends a task whose output is still advancing at the deadline (the RUN 9 case)', () => {
+    // Killed at 2700s while capturedBytes went 762,401 -> 797,873 over the last 360s,
+    // i.e. output had advanced ~1s before the deadline fired.
+    expect(
+      decideWatchdogExpiry({ ...EXPIRY_POLICY, elapsedMs: 2_700_000, lastProgressAgeMs: 1_000 }),
+    ).toEqual({ action: 'extend', reason: 'progress-advancing', extendByMs: 5 * 60_000 });
+  });
+
+  it('still kills the silent wedge the watchdog exists for', () => {
+    expect(
+      decideWatchdogExpiry({
+        ...EXPIRY_POLICY,
+        elapsedMs: 2_700_000,
+        lastProgressAgeMs: 6 * 60_000,
+      }),
+    ).toEqual({ action: 'kill', reason: 'progress-stalled', extendByMs: 0 });
+  });
+
+  it('fails SAFE to today’s time-only kill when no progress reading is available', () => {
+    for (const lastProgressAgeMs of [undefined, null, Number.NaN, -1]) {
+      expect(
+        decideWatchdogExpiry({ ...EXPIRY_POLICY, elapsedMs: 2_700_000, lastProgressAgeMs }),
+      ).toEqual({ action: 'kill', reason: 'progress-unknown', extendByMs: 0 });
+    }
+  });
+
+  it('kills at the absolute ceiling even while output is still advancing', () => {
+    // A wedge that CHATTERS while wedged cannot extend forever: the ceiling still binds.
+    expect(
+      decideWatchdogExpiry({ ...EXPIRY_POLICY, elapsedMs: 90 * 60_000, lastProgressAgeMs: 0 }),
+    ).toEqual({ action: 'kill', reason: 'absolute-ceiling', extendByMs: 0 });
+  });
+
+  it('clamps the last extension to the remaining ceiling instead of overshooting it', () => {
+    expect(
+      decideWatchdogExpiry({ ...EXPIRY_POLICY, elapsedMs: 88 * 60_000, lastProgressAgeMs: 0 }),
+    ).toEqual({ action: 'extend', reason: 'progress-advancing', extendByMs: 2 * 60_000 });
+  });
+
+  it('fails toward the kill rather than silently disabling the bound on a bad policy constant', () => {
+    for (const bad of [{ stallWindowMs: 0 }, { extensionMs: Number.NaN }, { stallWindowMs: -1 }]) {
+      expect(
+        decideWatchdogExpiry({
+          ...EXPIRY_POLICY,
+          ...bad,
+          elapsedMs: 2_700_000,
+          lastProgressAgeMs: 0,
+        }).action,
+      ).toBe('kill');
+    }
+  });
+
+  it('is MONOTONE and BOUNDED across the input space: never kills earlier, never past the ceiling', () => {
+    // The two properties that make this safe in front of the gate's only hard bound.
+    // Every decision is taken AT an expiry, so "never earlier" reduces to: an extension
+    // is always strictly positive (never a zero-delay re-arm that kills on the same tick),
+    // and it never carries the task past maxMs.
+    for (let elapsedMs = 5 * 60_000; elapsedMs <= 90 * 60_000; elapsedMs += 5 * 60_000) {
+      for (const lastProgressAgeMs of [0, 1_000, 60_000, 5 * 60_000, 5 * 60_000 + 1, 3_600_000]) {
+        const d = decideWatchdogExpiry({ ...EXPIRY_POLICY, elapsedMs, lastProgressAgeMs });
+        if (d.action === 'extend') {
+          expect(d.extendByMs).toBeGreaterThan(0);
+          expect(elapsedMs + d.extendByMs).toBeLessThanOrEqual(EXPIRY_POLICY.maxMs);
+        } else {
+          expect(d.extendByMs).toBe(0);
+        }
+      }
+    }
   });
 });
 

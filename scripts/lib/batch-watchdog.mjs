@@ -74,6 +74,81 @@ export function resolveTaskTimeoutMs({
 }
 
 /**
+ * Decide what to do when a task's watchdog deadline expires (EI-20803703725014949).
+ *
+ * The deadline alone cannot tell the two cases apart, and this module's own header
+ * says which one it exists to kill: a test that blocks its worker's event loop
+ * SYNCHRONOUSLY. That case is *silent* — a spinning worker emits nothing, so its
+ * output goes flat and stays flat. A legitimately slow suite does the opposite: it
+ * keeps completing files and keeps emitting right into the wall. Killing on elapsed
+ * time alone cannot separate them, so under fleet load it SIGKILLs live work and
+ * reports a non-code red — the failure `BATCH_TIMEOUT_FLOOR_MS`'s own comment calls
+ * "a coin flip on load". Measured 2026-08-18: green-checkpoint RUN 9 lost
+ * `operator-core :: test:lane-stateful` at exactly 2700s with captured output still
+ * climbing (762,401B @2340s -> 797,873B @2700s) — killed while demonstrably alive,
+ * which red-pinned a candidate that carried every fix the gate was waiting for.
+ *
+ * The parent already samples that signal; it was simply never consulted before the
+ * kill (`classifyBatchProgress` ran only afterwards, to word the report). So the
+ * deadline becomes a CHECKPOINT rather than a verdict: still advancing -> extend by
+ * one quantum; gone quiet -> kill exactly as before.
+ *
+ * Two properties make this safe to put in front of the gate's only hard bound:
+ *
+ * 1. MONOTONE. Every branch either kills at the same instant today's code would, or
+ *    kills LATER. No input makes it kill EARLIER, so it cannot introduce a new red.
+ * 2. STILL BOUNDED. Extensions stop at `maxMs` (90m), below the ~120m gate ceiling
+ *    this watchdog protects. A wedge that emits nothing is killed at the original
+ *    deadline; a wedge that *chatters* while wedged is bounded by the ceiling. The
+ *    unbounded-hang class that motivated the watchdog stays closed.
+ *
+ * Missing evidence FAILS SAFE: an unusable `lastProgressAgeMs` kills on time, so a
+ * caller that cannot measure progress keeps exactly today's behavior.
+ *
+ * @param {{ elapsedMs: number, lastProgressAgeMs?: number | null, maxMs: number,
+ *   stallWindowMs?: number, extensionMs?: number }} opts
+ * @returns {{ action: 'kill' | 'extend', reason: 'absolute-ceiling' | 'progress-unknown'
+ *   | 'progress-stalled' | 'invalid-policy' | 'progress-advancing', extendByMs: number }}
+ */
+export function decideWatchdogExpiry({
+  elapsedMs,
+  lastProgressAgeMs,
+  maxMs,
+  stallWindowMs = 5 * 60_000,
+  extensionMs = 5 * 60_000,
+}) {
+  const kill = (reason) => ({ action: 'kill', reason, extendByMs: 0 });
+
+  // A bad policy constant must not silently disable the bound: fail toward the kill.
+  if (
+    !Number.isFinite(stallWindowMs) ||
+    stallWindowMs <= 0 ||
+    !Number.isFinite(extensionMs) ||
+    extensionMs <= 0 ||
+    !Number.isFinite(elapsedMs)
+  ) {
+    return kill('invalid-policy');
+  }
+
+  const remainingToCeilingMs = Number.isFinite(maxMs) ? maxMs - elapsedMs : 0;
+  if (remainingToCeilingMs <= 0) return kill('absolute-ceiling');
+
+  // No live reading -> behave exactly as the time-only watchdog did.
+  if (!Number.isFinite(lastProgressAgeMs) || lastProgressAgeMs < 0) {
+    return kill('progress-unknown');
+  }
+
+  // Output went flat and stayed flat: this is the wedge the watchdog exists for.
+  if (lastProgressAgeMs > stallWindowMs) return kill('progress-stalled');
+
+  return {
+    action: 'extend',
+    reason: 'progress-advancing',
+    extendByMs: Math.min(extensionMs, remainingToCeilingMs),
+  };
+}
+
+/**
  * Did THIS `spawnSync` result come from our own batch-level watchdog kill,
  * rather than the child's own normal exit or an unrelated external signal
  * (an operator's manual kill, the kernel OOM killer — both can also send
