@@ -69,6 +69,12 @@ export interface PlanAcceptanceGateVerdict {
    *  caller stamps this on the plan so the waiver is permanent and visible, never a
    *  silent bypass — a force that is easy to hide is worth very little. */
   forcedPast?: { reason: string; checks: PlanAcceptanceGateCode[] };
+  /** EI-20821478338037350: the vetting attestation that satisfied the gate was made
+   *  over a consult NOBODY critiqued, under an explicit recorded waiver. The ship is
+   *  allowed (a dead reviewer pool is a real condition), but for the same reason
+   *  `forcedPast` exists it must not be silent: this rubric received no external
+   *  critique, and a reader of the verdict is entitled to know that. */
+  vettedUnderWaiver?: { consultId: string; reason?: string };
 }
 
 export interface PlanAcceptanceGateOpts {

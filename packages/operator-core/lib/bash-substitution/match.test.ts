@@ -68,6 +68,59 @@ describe('matchCommandToSubstitutions — per-atom semantics', () => {
   });
 });
 
+/**
+ * D-045 — guidance fires only where the tool is a FULLY EQUIVALENT substitute for
+ * what the agent actually wrote (owner ruling, 2026-08-18).
+ *
+ * The case that produced the rule: `capability:read` returns a numbered, headed,
+ * paged rendering, so it answers `cat FILE` faithfully but cannot feed the next
+ * stage of `cat FILE | grep X`. A live `deny` rollout blocked exactly those
+ * commands; the advice was wrong there even at `advise`.
+ */
+describe('matchCommandToSubstitutions — advice is withheld where the tool is not equivalent', () => {
+  const catRow = () =>
+    row({ intentLabel: 'file-whole-read', bashPattern: String.raw`cat\s+\S+$`, toolName: 'capability:read' });
+
+  it('advises on a whole-command read', () => {
+    expect(matchCommandToSubstitutions('cat package.json', [catRow()])).toHaveLength(1);
+  });
+
+  it('withholds the advisory when the read feeds a pipe', () => {
+    expect(matchCommandToSubstitutions('cat package.json | grep name', [catRow()])).toHaveLength(0);
+    expect(matchCommandToSubstitutions('cat package.json | head -3 | wc -l', [catRow()])).toHaveLength(0);
+  });
+
+  it('still advises the LAST stage of a pipeline, whose own stdout is free', () => {
+    // The rule is about an atom's stdout, not about "appears in a pipeline". A
+    // terminal stage hands its output to the agent, exactly like a bare command,
+    // so suppressing it would withhold correct advice.
+    const hits = matchCommandToSubstitutions('grep -rn x . | cat summary.txt', [catRow()]);
+    expect(hits).toHaveLength(1);
+  });
+
+  it('does NOT suppress a tool that subsumes the whole pipeline', () => {
+    // The counter-case that makes this a rule rather than a blanket ban:
+    // testing:run returns failing tests structurally, so it replaces the `tail`
+    // too. Suppressing here would withhold good advice.
+    const testsRow = row({
+      intentLabel: 'run-test-files',
+      bashPattern: String.raw`npm\s+run\s+test:file`,
+      toolName: 'testing:run',
+    });
+    const hits = matchCommandToSubstitutions('npm run test:file -- a.test.ts 2>&1 | tail -60', [testsRow]);
+    expect(hits).toHaveLength(1);
+  });
+
+  it('keeps COUNTING unaffected — a suppressed advisory is still a fire', () => {
+    // Telemetry answers "how much of this intent happened", which is exactly the
+    // denominator for judging whether the guidance is working. Letting the
+    // suppression leak into counting would make the metric measure the rule
+    // instead of the behaviour.
+    const atoms = atomsOf('cat package.json | grep name');
+    expect(matchAtomsToSubstitutions(atoms, [catRow()])).toHaveLength(1);
+  });
+});
+
 describe('matchCommandToSubstitutions — safety', () => {
   it('never throws on a malformed pattern; that row simply does not match', () => {
     const bad = row({ bashPattern: '([unclosed' });

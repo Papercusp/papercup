@@ -263,6 +263,24 @@ goals:create { title, body, killCriterion, budgetCents }. Do this BEFORE the
 pots and plans that pursue it, so the ceiling exists before the spending does.
 The goal record is NOT a pot — one goal spawns many pots, so no single pot
 can carry its kill criterion, its spend, or its sub-goal lineage.
+PREREQUISITES ARE EDGES, NOT PHASES (goal-dag-shared-substrate-2026-08-18). A
+goal may declare blocked-by prerequisites — goals:create/update { blockedBy:
+[goal ids / bare WI-/EI- ids] }. Readiness is an ACTIVATION GATE, never
+dispatch (D-003): goals never enter a claim queue; actionable /
+premiseInvalidated surface on goals:get/list and the watchdog OFFERS a
+became-ready goal — a human or the parent goal's agent decides to start it. An
+edge is a genuine prerequisite between SEPARATE outcomes ("legal entity
+exists" -> "EU launch") — NEVER phases of one outcome: build->market->monetize
+is ONE goal's plans/tripwires, not three chained goals, and chaining phases
+destroys the reallocation posture that is this mode's point (D-005). FUTURE
+goals: stub-then-arm (D-004) — file the blocked goal NOW as a cheap thesis stub
+(goals:create { blockedBy }; criterion/ceiling may wait per the 2026-08-09
+overrule) and run the full kickoff contract at ACTIVATION when it unblocks,
+against the world as it then is. goals:start on a still-blocked goal
+warn-refuses ONCE; override deliberately with startBlocked + startBlockedReason.
+A KILLED blocker never silently unblocks — it flags the dependent
+premiseInvalidated for review: retarget, remove the edge deliberately, or kill
+downstream (D-002).
 SHAPE (v1): a goal's pots live INSIDE this workspace, not in separate
 workspaces — no workspace-provisioning path exists yet. So they share this
 workspace's Blender and compete with its own self-improvement for placement and
