@@ -180,6 +180,10 @@ vi.mock('@/app/admin/plans/PlanOtherList', () => ({
 }));
 
 import SessionChatModal from './SessionChatModal';
+// P-006: the zombie wording is asserted against the BOARD's exported constant,
+// never a retyped copy — a retyped string would pass this test on the day the
+// two surfaces started disagreeing, which is the only day it matters.
+import { ZOMBIE_REASON } from '../../adv/hud/hud-board-model';
 
 function mkEscalation(id: string, over: Partial<AttentionItem> = {}): AttentionItem {
   return {
@@ -647,6 +651,138 @@ describe('SessionChatModal', () => {
       expect(band.textContent).not.toContain('👑');
       expect(band.textContent).not.toContain('gui-chat-session-controls-2026-07-25');
       expect(band.textContent).not.toContain('Building the session footer');
+    });
+
+    /**
+     * popup-agent-state-coverage-2026-08-18 P-006. `pidAlive` reached this
+     * component on every roster payload and was read ZERO times across the whole
+     * popup tree, so a zombie — fresh heartbeat, dead process — rendered as an
+     * ordinary live session with a composer under it. You type, see "Sent", and
+     * nothing ever comes back.
+     */
+    it('flags a ZOMBIE inline in the band — fresh heartbeat, dead process', async () => {
+      seedRoster([
+        {
+          ownerId: 'su-live-1',
+          liveness: 'live',
+          sessionState: 'live',
+          pidAlive: false,
+          stale: false,
+          modes: [],
+          claims: [],
+          currentFiles: [],
+          openAwait: null,
+        },
+      ]);
+      mockFetchOnce(200, { sessions: [{ source_kind: 'claude', session_id: 'claude-abc', last_ts: null }] });
+      render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+      await waitFor(() => expect(captured).not.toBeNull());
+      act(() => {
+        captured!.handlers.backfill!(JSON.stringify([{ kind: 'text', text: 'hi' }]));
+      });
+
+      const chip = await waitFor(() => screen.getByTestId('session-chat-state-zombie'));
+      expect(chip.textContent).toContain('process gone');
+      // The board's exact wording, imported rather than retyped — if these two
+      // surfaces ever describe the same session differently, this fails.
+      expect(chip.getAttribute('title')).toBe(ZOMBIE_REASON);
+      // It sits INLINE, beside the status chip it contradicts — not behind the
+      // right-edge alert affordance (D-007). An alert you have to click is the
+      // wrong home for the fact that invalidates the composer below it.
+      const band = screen.getByTestId('session-chat-state-header');
+      expect(band.contains(chip)).toBe(true);
+    });
+
+    it('does NOT flag a zombie when liveness could not be checked (pidAlive null)', async () => {
+      seedRoster([
+        {
+          ownerId: 'su-live-1',
+          liveness: 'live',
+          sessionState: 'live',
+          // A federated peer, a row with no pid, a different host. "Could not
+          // check" is not a death claim, and rendering it as one would put a ☠
+          // on every remote agent on the board.
+          pidAlive: null,
+          stale: false,
+          modes: [],
+          claims: [],
+          currentFiles: [],
+          openAwait: null,
+        },
+      ]);
+      mockFetchOnce(200, { sessions: [{ source_kind: 'claude', session_id: 'claude-abc', last_ts: null }] });
+      render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+      await waitFor(() => expect(captured).not.toBeNull());
+      act(() => {
+        captured!.handlers.backfill!(JSON.stringify([{ kind: 'text', text: 'hi' }]));
+      });
+
+      await waitFor(() => expect(screen.getByTestId('session-chat-state-header')).toBeTruthy());
+      expect(screen.queryByTestId('session-chat-state-zombie')).toBeNull();
+    });
+
+    /**
+     * P-008 / D-004. The ctx pill had no provenance at all. That is how a frozen
+     * estimate went unnoticed across 48 sessions (one at 2.7× its true usage) —
+     * the value stopped moving while its timestamp kept refreshing. So the pill
+     * renders the AGE OF THE READING and never a freshness claim.
+     */
+    it('renders the AGE of the context reading, never a freshness claim', async () => {
+      seedRoster([
+        {
+          ownerId: 'su-live-1',
+          liveness: 'live',
+          contextTokens: 94_000,
+          compactionLimit: 200_000,
+          contextEstimatedAt: new Date(Date.now() - 3 * 60_000).toISOString(),
+          modes: [],
+          claims: [],
+          currentFiles: [],
+          openAwait: null,
+        },
+      ]);
+      mockFetchOnce(200, { sessions: [{ source_kind: 'claude', session_id: 'claude-abc', last_ts: null }] });
+      render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+      await waitFor(() => expect(captured).not.toBeNull());
+      act(() => {
+        captured!.handlers.backfill!(JSON.stringify([{ kind: 'text', text: 'hi' }]));
+      });
+
+      const band = await waitFor(() => screen.getByTestId('session-chat-state-header'));
+      expect(band.textContent).toContain('ctx 47%');
+      expect(band.textContent).toContain('measured 3m ago');
+      // The words that would make this a lie. A fresh STAMP does not prove a
+      // fresh VALUE, and the pill must never imply that it does.
+      expect(band.textContent).not.toMatch(/\bfresh\b/i);
+      expect(band.textContent).not.toMatch(/\bcurrent\b/i);
+    });
+
+    it('omits the reading age entirely when the roster carries no stamp', async () => {
+      seedRoster([
+        {
+          ownerId: 'su-live-1',
+          liveness: 'live',
+          contextTokens: 94_000,
+          compactionLimit: 200_000,
+          // An older operator's payload, a federated peer, or a row the watchdog
+          // has never sampled. Saying nothing is honest; "measured just now"
+          // would be the same lie the age exists to prevent, in a shorter form.
+          modes: [],
+          claims: [],
+          currentFiles: [],
+          openAwait: null,
+        },
+      ]);
+      mockFetchOnce(200, { sessions: [{ source_kind: 'claude', session_id: 'claude-abc', last_ts: null }] });
+      render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+      await waitFor(() => expect(captured).not.toBeNull());
+      act(() => {
+        captured!.handlers.backfill!(JSON.stringify([{ kind: 'text', text: 'hi' }]));
+      });
+
+      const band = await waitFor(() => screen.getByTestId('session-chat-state-header'));
+      expect(band.textContent).toContain('ctx 47%');
+      expect(band.textContent).not.toContain('measured');
     });
 
     it('renders the authoritative sessionState instead of heartbeat liveness', async () => {

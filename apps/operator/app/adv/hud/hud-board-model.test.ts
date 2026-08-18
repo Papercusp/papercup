@@ -32,6 +32,7 @@ import {
   TERMINAL_LAUNCH_ONLINE_GRACE_SEC,
   toHudSession,
   unattributedAsks,
+  ZOMBIE_REASON,
   type HudAsk,
   type HudRosterEntry,
   type HudSearchHit,
