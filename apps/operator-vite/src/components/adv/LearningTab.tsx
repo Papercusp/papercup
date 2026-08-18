@@ -72,7 +72,12 @@ import type {
 // per-payload legend. Resolve it through this helper, never by indexing the
 // legend inline: pairing a row with the wrong payload's legend would resolve to
 // a DIFFERENT sentence rather than fail.
-import { tierReasonOf } from "@papercusp/operator-core/lib/harness/improvements/learning-digest-snapshot";
+//
+// Imported from `learning-digest-wire`, NOT from `learning-digest-snapshot`: the
+// latter is the server compute module and this is a real (non-erased) import, so
+// reaching through it would put its dynamic server-side import graph in front of
+// the browser bundler. The wire module is a leaf with no imports.
+import { tierReasonOf } from "@papercusp/operator-core/lib/harness/improvements/learning-digest-wire";
 import { CATEGORICAL, SEVERITY } from "@/app/harness/theme";
 import type { ImprovementFlow } from "@papercusp/operator-core/lib/harness/improvements/flow-metrics";
 import type {
