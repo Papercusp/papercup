@@ -10,6 +10,9 @@ import {
   describeUnitDrift,
   parseUnitExecStartBinary,
   checkUnitExecStartBinary,
+  parseUnitEnvironment,
+  checkRequiredEnvironment,
+  describeEnvIssues,
 } from './unit-drift';
 import { CERTIFIED_CATALOG } from './catalog';
 
@@ -254,6 +257,93 @@ describe('diffCatalogAgainstDeployedUnit', () => {
     expect(describeUnitDrift(diffCatalogAgainstDeployedUnit(ORNITH, DRIFTED_UNIT))).toContain(
       'parallelSlots: catalog=2 deployed=3',
     );
+  });
+});
+
+describe('GPU offload (-ngl) — WI-39735', () => {
+  it('reads every spelling llama-server accepts', () => {
+    expect(parseLlamaServerUnit('ExecStart=llama-server -ngl 999').gpuLayers).toBe(999);
+    expect(parseLlamaServerUnit('ExecStart=llama-server --n-gpu-layers 32').gpuLayers).toBe(32);
+    expect(parseLlamaServerUnit('ExecStart=llama-server --gpu-layers 0').gpuLayers).toBe(0);
+  });
+
+  it('distinguishes `-ngl 0` from an absent flag', () => {
+    // Both mean "no GPU" in effect, but they are different FACTS about the unit: one declares the
+    // intent, the other leaves it to whatever the engine defaults to on this build. Collapsing
+    // them is the same substitution error the module header forbids.
+    expect(parseLlamaServerUnit('ExecStart=llama-server -ngl 0').gpuLayers).toBe(0);
+    expect(parseLlamaServerUnit('ExecStart=llama-server').gpuLayers).toBeNull();
+  });
+
+  it('reports drift when a deployed unit silently drops the GPU offload flag', () => {
+    // The failure this exists for: strip `-ngl` and the unit still starts, still reports active,
+    // still answers /health 200, and still matches every OTHER compared parameter.
+    const noNgl = CURRENT_UNIT.replace('  -ngl 999 \\\n', '');
+    const drift = diffCatalogAgainstDeployedUnit(ORNITH, noNgl);
+    expect(drift.map((d) => d.param)).toEqual(['gpuLayers']);
+    expect(describeUnitDrift(drift)).toContain('gpuLayers: catalog=999 deployed=null');
+  });
+
+  it('reports NO drift for the current deployed shape', () => {
+    // Calibration: without this, a guard that flagged everything would still pass the case above.
+    expect(diffCatalogAgainstDeployedUnit(ORNITH, CURRENT_UNIT)).toEqual([]);
+  });
+});
+
+describe('required Environment= vars (WI-39735 / D-012)', () => {
+  it('parses single, repeated and quoted multi-assignment forms', () => {
+    const env = parseUnitEnvironment(CURRENT_UNIT);
+    expect(env.GGML_BACKEND_PATH).toBe('/usr/local/lib/ollama/cuda_v13/libggml-cuda.so');
+    expect(env.LD_LIBRARY_PATH).toBe('/usr/local/lib/ollama/cuda_v13:/usr/local/lib/ollama');
+    expect(parseUnitEnvironment('Environment="A=1" "B=2"')).toEqual({ A: '1', B: '2' });
+    // Last assignment of a key wins, as systemd itself resolves it.
+    expect(parseUnitEnvironment('Environment=A=1\nEnvironment=A=2').A).toBe('2');
+  });
+
+  it('does NOT mistake EnvironmentFile= for an assignment', () => {
+    // It names a file we cannot read from here; matching it would invent a variable called
+    // `EnvironmentFile` and, worse, report a required var as present when nothing set it.
+    expect(parseUnitEnvironment('EnvironmentFile=/etc/default/llama')).toEqual({});
+  });
+
+  it('CONTROL: the parameter diff is BLIND to a deleted CUDA var — this check is what sees it', () => {
+    // The same measurement `checkUnitExecStartBinary`'s control makes, for the other half of the
+    // 2026-08-17 incident. Deleting the line that decides whether the model touches the GPU must
+    // not move the parameter diff by one element — that blindness is the bug, so measure it here
+    // rather than assert it in prose. If someone later folds environment into
+    // LlamaServerUnitParams, this test fails and tells them why it was kept separate.
+    const noCuda = CURRENT_UNIT.replace(
+      'Environment=GGML_BACKEND_PATH=/usr/local/lib/ollama/cuda_v13/libggml-cuda.so\n',
+      '',
+    );
+    expect(diffCatalogAgainstDeployedUnit(ORNITH, noCuda)).toEqual(
+      diffCatalogAgainstDeployedUnit(ORNITH, CURRENT_UNIT),
+    );
+
+    // ...and the new check is what tells the two apart.
+    expect(checkRequiredEnvironment(ORNITH, CURRENT_UNIT)).toEqual([]);
+    const issues = checkRequiredEnvironment(ORNITH, noCuda);
+    expect(issues.map((i) => i.key)).toEqual(['GGML_BACKEND_PATH']);
+    expect(issues[0].reason).toBe('missing');
+    expect(describeEnvIssues(issues)).toBe('GGML_BACKEND_PATH: missing');
+  });
+
+  it('treats a declared-but-empty value as missing in effect', () => {
+    const emptied = CURRENT_UNIT.replace(
+      '/usr/local/lib/ollama/cuda_v13/libggml-cuda.so\nExecStart=',
+      '\nExecStart=',
+    );
+    const issues = checkRequiredEnvironment(ORNITH, emptied);
+    expect(issues.map((i) => [i.key, i.reason])).toEqual([['GGML_BACKEND_PATH', 'empty']]);
+  });
+
+  it('is silent for an entry that declares no requiredEnv', () => {
+    // Every other catalog entry must stay unaffected, or this becomes the cry-wolf the header warns
+    // about: an opt-in guard that fires on boxes whose catalog never opted in.
+    const qwen = CERTIFIED_CATALOG.find((e) => e.id === 'qwen3-8b-q4km-llama-server')!;
+    expect(qwen.serve.requiredEnv).toBeUndefined();
+    expect(checkRequiredEnvironment(qwen, CURRENT_UNIT)).toEqual([]);
+    expect(describeEnvIssues([])).toBe('no missing required environment');
   });
 });
 
