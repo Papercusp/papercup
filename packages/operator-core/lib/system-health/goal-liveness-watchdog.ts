@@ -58,6 +58,7 @@ import {
   readGoalHolderRows,
   resolveGoalHoldersFromRows,
   resolveHolderLiveness,
+  type GoalHolderRow,
 } from '../goals/holder';
 
 /**
@@ -100,14 +101,14 @@ export interface GoalRowLike {
   updatedAtMs: number;
 }
 
-/** One `agent_modes` goal-mode row pointing at a goal. */
-export interface GoalHolderLike {
-  goalId: string;
-  workspaceId: string;
-  ownerId: string;
-  /** ms epoch the mode was set. */
-  setAtMs: number;
-}
+/**
+ * One `agent_modes` goal-mode row pointing at a goal.
+ *
+ * P-001: this is now an ALIAS of the shared `GoalHolderRow` rather than a
+ * parallel shape — a second structural definition of "a holder row" is how the
+ * liveness join came to exist here and nowhere else.
+ */
+export type GoalHolderLike = GoalHolderRow;
 
 /**
  * Why a goal is being reported.
