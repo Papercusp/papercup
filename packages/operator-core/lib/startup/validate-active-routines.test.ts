@@ -3,7 +3,11 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { validateActiveRoutines, enforceActiveRoutines } from './validate-active-routines';
+import {
+  validateActiveRoutines,
+  enforceActiveRoutines,
+  hostExecutesRoutines,
+} from './validate-active-routines';
 
 // Mock the dependencies
 vi.mock('@papercusp/db-org', () => ({
