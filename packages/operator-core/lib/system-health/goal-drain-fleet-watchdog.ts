@@ -48,14 +48,17 @@ import type { Sql } from 'postgres';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import { openEscalation } from '../agent-tools/coordination/escalations';
 import type { AgentIdentity } from '../agent-tools/coordination/identity';
-import {
-  resolveSessionStates,
-  type LivenessVerdict,
-} from '../agent-tools/coordination/liveness-oracle';
+import type { LivenessVerdict } from '../agent-tools/coordination/liveness-oracle';
+// P-001: holder rows, the alive predicate and the oracle fold all come from the
+// ONE goal-holder module. This file used to import the predicate from its
+// sibling watchdog, which is how the rule ended up owned by system-health and
+// absent from every product surface.
 import {
   holderCountsAsAlive,
-  type GoalHolderLike,
-} from './goal-liveness-watchdog';
+  readGoalHolderRows,
+  resolveHolderLiveness,
+  type GoalHolderRow as GoalHolderLike,
+} from '../goals/holder';
 
 export const GOAL_DRAIN_FLEET_SWEEP_INTERVAL_MS = 10 * 60_000;
 
@@ -289,13 +292,9 @@ function makeReadGoals(sql: Sql): GoalDrainFleetSweepDeps['readGoals'] {
              metadata->>'drainFleet' AS drain_fleet
         FROM harness_shared.goals
        WHERE status = 'active'`;
-    const holderRows = await sql<
-      { workspace_id: string; subject: string; owner_id: string; set_ms: string }[]
-    >`
-      SELECT workspace_id, subject, owner_id,
-             (extract(epoch FROM set_at) * 1000)::bigint AS set_ms
-        FROM harness_shared.agent_modes
-       WHERE mode = 'goal' AND subject IS NOT NULL`;
+    // P-001: the canonical holder read. Unfiltered by goal on purpose — an inner
+    // join to active goals would drop the no-holder case.
+    const holders = await readGoalHolderRows(sql);
     return {
       goals: goalRows.map((r) => ({
         goalId: r.id,
@@ -304,22 +303,9 @@ function makeReadGoals(sql: Sql): GoalDrainFleetSweepDeps['readGoals'] {
         createdAtMs: Number(r.created_ms),
         drainFleet: r.drain_fleet,
       })),
-      holders: holderRows.map((r) => ({
-        goalId: r.subject,
-        workspaceId: r.workspace_id,
-        ownerId: r.owner_id,
-        setAtMs: Number(r.set_ms),
-      })),
+      holders,
     };
   };
-}
-
-async function defaultResolveLiveness(ownerIds: string[]): Promise<Map<string, LivenessVerdict>> {
-  if (ownerIds.length === 0) return new Map();
-  return await resolveSessionStates(
-    ownerIds.map((ownerId) => ({ ownerId })),
-    { hydratePerId: true, selfWake: true },
-  );
 }
 
 /**

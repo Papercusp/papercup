@@ -53,9 +53,14 @@ vi.mock('drizzle-orm', async (importOriginal) => ({
 
 import tool from './get';
 
+// ctx.tx must be BOTH the drizzle handle (mocked above) AND a callable
+// tagged-template tag: the readiness read (goal-dag-shared-substrate-2026-08-18
+// P-003) queries blocked-by edges through it directly. Returning [] = no edges
+// ⇒ actionable, premise intact. Tagged-template calls do NOT count toward
+// queriesBuilt (that counter pins the drizzle-query shape only).
 const CTX = () => ({
   principal: { slug: 'op', workspaceId: 'default' } as never,
-  tx: {} as never,
+  tx: ((..._args: unknown[]) => Promise.resolve([])) as never,
   log: vi.fn(),
 });
 
@@ -65,6 +70,7 @@ const GOAL_ROW = (over: Record<string, unknown> = {}): Record<string, unknown> =
   body: 'rationale + acceptance criteria',
   parentId: null,
   budgetCents: 9999,
+  workspaceId: 'default',
   ...over,
 });
 
@@ -89,7 +95,12 @@ describe('goals:get — summary skips the children query (Gap 11)', () => {
   it('summary (default) projects {id,title} and fires exactly ONE query', async () => {
     fixtureQueue = [[GOAL_ROW()]];
     const res = await tool.handler({ id: 'g-1', detail: 'summary' } as never, CTX() as never);
-    expect(res.data).toEqual({ id: 'g-1', title: 'Ship v1' });
+    expect(res.data).toEqual({
+      id: 'g-1',
+      title: 'Ship v1',
+      actionable: true,
+      premiseInvalidated: false,
+    });
     const json = JSON.stringify(res.data);
     expect(json).not.toContain('rationale'); // body dropped
     expect(json).not.toContain('9999'); // budget dropped
@@ -116,6 +127,9 @@ describe('goals:get — full mode fires the children query (Gap 11)', () => {
         { id: 'g-2', title: 'Child A' },
         { id: 'g-3', title: 'Child B' },
       ],
+      actionable: true,
+      premiseInvalidated: false,
+      blockedBy: [],
     });
   });
 
