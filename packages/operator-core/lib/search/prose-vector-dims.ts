@@ -112,6 +112,20 @@ export const PROSE_VECTOR_COLUMNS: ReadonlyArray<{ table: string; column: string
   { table: 'harness_shared.harness_decisions', column: 'body_embedding' },
   { table: 'harness_shared.code_recipes', column: 'embedding' },
   { table: 'harness_shared.datatype_registry', column: 'embedding' },
+  // WI-39840. Both are QUERY vectors compared against `session_turns.text_embedding`,
+  // so they are governed by the shared prose width — but both were created AFTER
+  // migration 727 moved that width to 768 and each declared `vector(384)` anyway
+  // (837-consult-query-embedding.sql:24, 839-interest-watches.sql:65). The result was
+  // total, silent failure of every write AND every read on both columns: pgvector
+  // raised `expected 384 dimensions, not 768`, which killed consult:get_feedback for
+  // EVERY caller at the archive-first leg (get-feedback-core.ts:353) and with it the
+  // non-force-waivable acceptance-rubric VETTING gate, i.e. every plan ship in the
+  // workspace. Migration 847 widened them; these two entries are what stops the NEXT
+  // width migration from skipping them the same way. This is exactly the failure the
+  // `auditSurfaces` leg of prose-vector-dims.integration.test.ts already detects —
+  // it never ran, because an integration test is not selected by a migration edit.
+  { table: 'harness_shared.consult_state', column: 'query_embedding' },
+  { table: 'harness_shared.interest_watches', column: 'embedding' },
 ];
 
 /**
