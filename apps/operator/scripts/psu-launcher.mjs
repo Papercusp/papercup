@@ -40,6 +40,8 @@ import { PSU_REQUEST_TIMEOUT_MS } from '../lib/mcp-proxy/budgets.mjs';
 import {
   RUNTIME_OVERHEAD_TOKENS,
   buildContextBudget,
+  codexContextConfigArgs,
+  codexContextConfigToml,
   normalizeCodexCliModel,
 } from '../../../packages/operator-core/lib/model-context-budget.mjs';
 // EI-996: the ONE su-tier role list, shared with the server-side allow-list in
@@ -706,10 +708,18 @@ export function modelArgsFor(agent, model) {
         : model;
   const m = /^(.+):(low|medium|high|xhigh|max)$/.exec(effectiveModel);
   if (agent === 'codex') {
+    // Extended-window models are launched at their declared window with the
+    // native auto-compact pushed to a 90% backstop (plan
+    // codex-1m-context-window-2026-08-17 D-002). Without this, codex runs its
+    // 272k default -> 258,400 effective and its OWN summarizer fires before
+    // papercusp's 400k su/leader carry cut is ever reached, so the soft limit
+    // in D-001 never gets to run. `[]` for a model with no extended window, so
+    // those launches stay byte-identical to before.
+    const windowArgs = codexContextConfigArgs(m ? m[1] : effectiveModel);
     if (m) {
-      return ['-m', m[1], '-c', `model_reasoning_effort="${m[2]}"`];
+      return ['-m', m[1], '-c', `model_reasoning_effort="${m[2]}"`, ...windowArgs];
     }
-    return ['-m', effectiveModel];
+    return ['-m', effectiveModel, ...windowArgs];
   }
   if (agent === 'claude' && m) return ['--model', m[1], '--effort', m[2]];
   return ['--model', effectiveModel];
