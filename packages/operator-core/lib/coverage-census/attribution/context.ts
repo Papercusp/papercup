@@ -49,7 +49,13 @@ export const ATTRIBUTION_ENV = 'PAPERCUSP_TEST_ATTRIBUTION';
 
 /**
  * The UNIT layer's rail (`libs/test-config/src/setup-no-real-pg.ts`), which forbids a real
- * PG connection. Attribution DISARMS itself when it is set — see {@link isAttributionArmed}.
+ * PG connection.
+ *
+ * It gates the SINK'S STORE RESOLUTION, not arming — see `sink.ts`'s `resolveStore`. The
+ * distinction is load-bearing and was got wrong once: disarming on this rail also suppresses
+ * OBSERVATION, which breaks every unit test that exercises the hooks against an injected
+ * fake store and needs no database at all. What the rail actually forbids is one specific
+ * thing — opening a real connection — so that is the only thing it may veto.
  */
 export const FORBID_REAL_PG_ENV = 'PAPERCUSP_FORBID_REAL_PG';
 

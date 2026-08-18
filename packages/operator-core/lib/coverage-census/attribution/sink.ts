@@ -338,6 +338,24 @@ function noteFlushFailure(message: string): void {
   }
 }
 
+/**
+ * True when this process may not open a real PG connection AND no store was injected.
+ *
+ * This is why the RUNNERS (`testing:run`, the admin-UI runner) can stamp
+ * `PAPERCUSP_TEST_ATTRIBUTION=1` unconditionally: one `files` array routinely spans the unit
+ * and integration layers, so the runner cannot make this call — each fork can. Without the
+ * check a unit fork would attempt a forbidden connection, fail, retry twice, and only then
+ * disable itself: three failed connections and two stderr lines per fork, every ordinary
+ * unit run, to record nothing.
+ *
+ * Note what it does NOT do: it never suppresses OBSERVATION, and it yields to an injected
+ * store. A unit test driving the hooks against a fake store is a legitimate armed case, and
+ * an earlier version of this rail that disarmed instead broke exactly those tests.
+ */
+function realPgForbidden(): boolean {
+  return !state.store && process.env[FORBID_REAL_PG_ENV] === '1';
+}
+
 async function resolveStore(): Promise<EvidenceStore> {
   if (state.store) return state.store;
   // Imported lazily so a process that never observes traffic never loads the PG client — which
