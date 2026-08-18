@@ -3534,18 +3534,39 @@ describe('cloud model-family/backend coupling (owner Luna→Claude incident 2026
   it('canonicalizes a user-facing Codex family before constructing fresh-launch argv', () => {
     const parsed = parseArgs(['--no-picker', '--model=sol:xhigh']);
     expect(parsed).toMatchObject({ agent: 'codex', model: 'gpt-5.6-sol:xhigh' });
+    // The trailing window pair is the extended-window config (plan
+    // codex-1m-context-window-2026-08-17 D-002) — gpt-5.6 declares an 872k
+    // ceiling, so the launch asks for it and pushes codex's own auto-compact to
+    // a 90% backstop that should never fire under our 400k/200k soft limits.
     expect(modelArgsFor(parsed.agent, parsed.model)).toEqual([
       '-m',
       'gpt-5.6-sol',
       '-c',
       'model_reasoning_effort="xhigh"',
+      '-c',
+      'model_context_window=872000',
+      '-c',
+      'model_auto_compact_token_limit=784800',
     ]);
     expect(modelArgsFor('codex', 'gpt-5.6-terra:high')).toEqual([
       '-m',
       'gpt-5.6-terra',
       '-c',
       'model_reasoning_effort="high"',
+      '-c',
+      'model_context_window=872000',
+      '-c',
+      'model_auto_compact_token_limit=784800',
     ]);
+  });
+
+  it('emits NO window config for a codex model that has no extended window', () => {
+    // gpt-5.5 reports max_context_window == context_window, so there is nothing
+    // bigger to ask for and its argv must stay byte-identical to pre-feature.
+    // This is the assertion that catches a policy which "helpfully" defaults.
+    expect(modelArgsFor('codex', 'gpt-5.5:max')).toEqual(['-m', 'gpt-5.5', '-c', 'model_reasoning_effort="max"']);
+    expect(modelArgsFor('codex', 'gpt-5.5')).toEqual(['-m', 'gpt-5.5']);
+    expect(modelArgsFor('codex', 'gpt-5.4-mini')).toEqual(['-m', 'gpt-5.4-mini']);
   });
 
   it('rejects an explicit native backend mismatch regardless of flag order', () => {
@@ -3602,6 +3623,18 @@ describe('suWrapperExtraArgs ⟷ applyRoleModel model:effort CLI-flag PARITY (EI
   it('codex: identical argv for every spec vector (the 2026-07-03 effort-drop this ticket tracks)', () => {
     for (const spec of ['gpt-5.5', 'gpt-5.5:low', 'gpt-5.5:high', 'gpt-5.5:xhigh', 'gpt-5.5:max']) {
       expect(appliedFlags('codex', spec), spec).toEqual(normalize(suWrapperExtraArgs('codex', { model: spec })));
+    }
+  });
+
+  it('codex EXTENDED-window specs stay in lockstep too (plan codex-1m-context-window P-003)', () => {
+    // The gpt-5.5 vectors above can NEVER catch a window-config drift: that
+    // model has no extended window, so both sides correctly emit nothing and
+    // the guard passes whatever either side does. These vectors are the ones
+    // that fail if the window pair is added to one composer and not the other.
+    for (const spec of ['gpt-5.6-sol', 'gpt-5.6-sol:high', 'sol:xhigh', 'gpt-5.4']) {
+      const psu = normalize(suWrapperExtraArgs('codex', { model: spec }));
+      expect(psu.join(' '), spec).toContain('model_context_window=');
+      expect(appliedFlags('codex', spec), spec).toEqual(psu);
     }
   });
 
@@ -4823,7 +4856,10 @@ describe('WI-3758 — psu --resume model select + last-active model', () => {
     // codex: bare -m + config-override effort, preserving max verbatim.
     expect(modelArgsFor('codex', 'gpt-5.5:max')).toEqual(['-m', 'gpt-5.5', '-c', 'model_reasoning_effort="max"']);
     expect(modelArgsFor('codex', 'gpt-5.5')).toEqual(['-m', 'gpt-5.5']);
-    expect(modelArgsFor('codex', 'sol:high')).toEqual(['-m', 'gpt-5.6-sol', '-c', 'model_reasoning_effort="high"']);
+    expect(modelArgsFor('codex', 'sol:high')).toEqual([
+      '-m', 'gpt-5.6-sol', '-c', 'model_reasoning_effort="high"',
+      '-c', 'model_context_window=872000', '-c', 'model_auto_compact_token_limit=784800',
+    ]);
     // omp understands the suffixed spec natively.
     expect(modelArgsFor('omp', 'opus:high')).toEqual(['--model', 'opus:high']);
     expect(modelArgsFor('claude', null)).toEqual([]);
@@ -4859,7 +4895,12 @@ describe('WI-3758 — psu --resume model select + last-active model', () => {
     // codex `-m`/`-c` are TOP-LEVEL options — after the `resume` subcommand they'd
     // be parsed as resume's own args and fail the launch.
     expect(resumeArgsFor({ agent: 'codex', sessionId: 'uuid-2' }, { model: 'gpt-5.6-sol:high' }).args).toEqual([
-      '--dangerously-bypass-hook-trust', '--dangerously-bypass-approvals-and-sandbox', '-m', 'gpt-5.6-sol', '-c', 'model_reasoning_effort="high"', 'resume', 'uuid-2',
+      '--dangerously-bypass-hook-trust', '--dangerously-bypass-approvals-and-sandbox', '-m', 'gpt-5.6-sol',
+      '-c', 'model_reasoning_effort="high"',
+      // The window pair rides the RESUME too, and stays ahead of the subcommand
+      // with the other top-level options (plan codex-1m D-002 / P-002).
+      '-c', 'model_context_window=872000', '-c', 'model_auto_compact_token_limit=784800',
+      'resume', 'uuid-2',
     ]);
     expect(resumeArgsFor({ agent: 'omp', ompThreadId: 'thr-1' }, { model: 'opus:high' }).args).toEqual([
       '-r', 'thr-1', '--approval-mode', 'yolo', '--model', 'opus:high',

@@ -172,8 +172,53 @@ export const MODEL_WINDOW_DEFAULT = 200_000;
  */
 export function modelWindowForSpec(spec?: string | null): number {
   if (spec == null) return MODEL_WINDOW_DEFAULT;
-  return spec.includes('[1m]') ? MODEL_WINDOW_1M : MODEL_WINDOW_DEFAULT;
+  if (spec.includes('[1m]')) return MODEL_WINDOW_1M;
+  if (isCodexExtendedWindowSpec(spec)) return MODEL_WINDOW_CODEX_EXTENDED;
+  return MODEL_WINDOW_DEFAULT;
 }
+
+/**
+ * Codex families papercusp LAUNCHES at an extended window (plan
+ * codex-1m-context-window-2026-08-17 D-002 — the launch side lives in
+ * model-context-budget.mjs `codexContextWindowConfig`, which reads the installed
+ * registry; this is the pure, fs-free twin the spec-derived seed needs).
+ *
+ * DELIBERATELY EXCLUDED, because their `max_context_window` equals their default
+ * and there is no bigger window to request: `gpt-5.5`, `gpt-5.4-mini`,
+ * `gpt-5.3-codex-spark`. Note `gpt-5.4` IS extended (1M) while `gpt-5.4-mini` is
+ * not — the anchors are what keep those apart, so do not loosen them to a
+ * substring test.
+ */
+export const CODEX_EXTENDED_WINDOW_FAMILY_RE =
+  /^(?:gpt-5\.6-(?:sol|terra|luna)|gpt-5\.4|sol|terra|luna)(?:\[[^\]]*\])?(?::[a-z0-9]+)?$/i;
+
+export function isCodexExtendedWindowSpec(spec?: string | null): boolean {
+  return spec != null && CODEX_EXTENDED_WINDOW_FAMILY_RE.test(spec.trim());
+}
+
+/**
+ * The window an extended-window Codex spec is SEEDED against. 872,000 is the
+ * `max_context_window` the whole gpt-5.6 family reports (codex-cli 0.147.0); it
+ * is deliberately the SMALLEST extended ceiling in the family rather than the
+ * largest, so a spec that resolves here can only under-claim.
+ *
+ * It exists only to clear the role cap: `defaultCompactionLimitForWindow(872_000)`
+ * derives 718,000, which the 400k su/leader and 200k fleet-member caps then bind.
+ * So the exact value below never reaches a session — the ROLE CAP does, which is
+ * the whole point of D-001 (papercusp's soft limits are unchanged; codex sessions
+ * simply become able to reach them instead of being pinned at 158,000 by a
+ * fabricated 200k window).
+ *
+ * FAIL-SAFE NOTE — the direction that matters. A spec-derived seed is a CLAIM
+ * about a window this process cannot observe: on a codex CLI too old to honour
+ * `model_context_window`, the session really would run 258,400 and a 400k limit
+ * would mean papercusp never pre-empts. That is caught, not assumed away: the
+ * compaction watchdog reads the window Codex REPORTS in every token_count event
+ * and lowers a stored limit that sits above the safe derivation
+ * UNCONDITIONALLY (see its D-011 note). So the worst case self-heals on the
+ * first sweep, while the common case is correct from the first turn.
+ */
+export const MODEL_WINDOW_CODEX_EXTENDED = 872_000;
 
 /**
  * Model FAMILIES papercusp launches at the FULL 1M window: `opus`, `fable`
@@ -713,7 +758,9 @@ export function defaultCompactionLimitForWindow(
  * a user/agent-set limit is clamped to (context-trimming-tiers D-001):
  * `floor((window − margin) / 1.2)`, floored to 1k for stable display.
  * 200k window → 158,000. EXCEPTION: a `[1m]`-carrying spec is capped at
- * 400,000 — 300,000 when `opts.fleetMember` (owner directive 2026-07-03) —
+ * 400,000 — 200,000 when `opts.fleetMember` (owner directive 2026-07-19,
+ * superseding the 300,000 of 2026-07-03; see
+ * COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP) —
  * so it compacts preemptively despite the 1M window. Keyed on the `[1m]`
  * MARKER, not the family name: a bare `sonnet` / `opus` launch that skipped
  * normalization really runs a 200k auto-compact window in CC (live-verified
@@ -723,7 +770,7 @@ export function defaultCompactionLimitForWindow(
  * presence row) shapes only the [1m] leg — role never changes a real-window
  * derivation.
  *
- * UNRESOLVABLE spec (null / empty) → the SAME [1m] default (400k, 300k member),
+ * UNRESOLVABLE spec (null / empty) → the SAME [1m] default (400k, 200k member),
  * NOT the conservative 200k → 158k (owner directive 2026-07-08, WI-3383). On
  * this fleet the default model is opus[1m], and a genuine small-window model is
  * ALWAYS explicitly specced (so it resolves to a real spec and derives its 158k
