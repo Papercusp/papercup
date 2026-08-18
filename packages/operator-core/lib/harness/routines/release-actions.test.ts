@@ -300,10 +300,35 @@ describe('classifyGateStallStatus (EI-2615: skipped-locked must not fake a red s
     expect(classifyGateStallStatus('infra-inconclusive', true)).toBe('reset');
   });
 
+  it('WI-39841: deadline-exceeded is a NON-VERDICT, not a red', () => {
+    // One phase later again, and arrived at from the opposite end: migrations-pending and
+    // infra-inconclusive abort BEFORE judging, while this run was killed DURING/AFTER judging
+    // and could not report. Measured 2026-08-18: the 17:15:04Z run was SIGTERM'd at its 120m
+    // cap and banked red #27 carrying `failingTests:[]` / `observedCandidate:null` — a red
+    // that names nothing to fix, yet drives the held-gate alarm and the release-fixer
+    // dispatch. Same backstops (lastGreenAt is left stale on purpose), so a gate that keeps
+    // dying at its deadline still reaches a human — as an abort naming its own cause.
+    expect(classifyGateStallStatus('deadline-exceeded', false)).toBe('noop');
+    // …and a moved pin still wins, exactly as for every other status.
+    expect(classifyGateStallStatus('deadline-exceeded', true)).toBe('reset');
+  });
+
   it('every other non-green verdict still counts as a red (crash / not-green / etc.)', () => {
     for (const status of ['not-green', 'error', 'create-failed', 'not-fast-forward']) {
       expect(classifyGateStallStatus(status, false)).toBe('red');
     }
+  });
+
+  // CONTROL for the test above — the load-bearing half of WI-39841's Defect 2. A crash and a
+  // deadline-kill both reach the routine as "non-zero exit, no parseable marker"; the ONLY
+  // thing separating them is `RunResult.timedOut`, stamped by the timer that does the killing.
+  // If that distinction were ever lost, 'error' would silently follow 'deadline-exceeded' into
+  // the noop class and a genuinely CRASHING gate would stop counting reds entirely — failing
+  // exactly the way this whole classifier exists to prevent. Pinning both directions in one
+  // assertion is what makes that regression impossible to land quietly.
+  it('WI-39841 control: a genuine CRASH is still a red — only the deadline-kill was carved out', () => {
+    expect(classifyGateStallStatus('error', false)).toBe('red');
+    expect(classifyGateStallStatus('deadline-exceeded', false)).toBe('noop');
   });
 
   describe('WI-39450: a PROVEN-STALE pass is a non-verdict, not a red', () => {
