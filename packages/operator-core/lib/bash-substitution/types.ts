@@ -173,21 +173,6 @@ interface SubstitutionPairCommon {
    */
   policyTier?: SubstitutionTier;
   /**
-   * The human-authored rule a {@link SubstitutionPair.policyTier} rests on, cited
-   * so a reader can go re-read it instead of trusting this file.
-   *
-   * Required to set a `policyTier` on a pair whose `intentLabel` is NOT a
-   * `policy-violation:` — see {@link assertPolicyTier} for why that is the
-   * narrower of the two routes, not a loophole around the prefix.
-   *
-   * The point of the citation is that the authorization lives SOMEWHERE ELSE and
-   * outlives this row. "The owner told me in chat" is not citable; a plan
-   * decision is. Write the rule down there first, then point at it — a `ref` that
-   * resolves to nothing is an assertion wearing a citation's clothes, which is
-   * the specific thing D-003 refuses.
-   */
-  policyAuthority?: PolicyAuthority;
-  /**
    * OPT-OUT: this pair may NEVER be promoted past `observe`, whatever its
    * verdict, until the stated condition is met. The value IS the reason, and it
    * is required — a hold with no argument is indistinguishable from an oversight.
@@ -338,25 +323,6 @@ export function patternSourceOf(pair: SubstitutionPair): string {
 /** The regex flags a bash pair was audited with; empty for a SQL pair. */
 export function patternFlagsOf(pair: SubstitutionPair): string {
   return isSqlPair(pair) ? '' : pair.bashPattern.flags;
-}
-
-/**
- * A citation to the human-authored rule that authorizes a policy tier.
- *
- * Both fields are load-bearing and neither is decoration: `ref` is where the
- * rule is written down (so it can be re-read, and so it outlives this row), and
- * `rule` is what it actually says (so a reader of the registry alone can tell
- * whether the rule still covers what the pattern now matches).
- */
-export interface PolicyAuthority {
-  /**
-   * Where a human wrote the rule down — a plan decision (`<plan-slug>#D-NNN`),
-   * a work-item id, or a doc path. It must RESOLVE: the citation is the entire
-   * authorization, so an unresolvable one authorizes nothing.
-   */
-  ref: string;
-  /** The rule in the authoring human's own terms, quoted rather than paraphrased. */
-  rule: string;
 }
 
 /** The prefix an `intentLabel` must carry to be allowed a {@link SubstitutionPair.policyTier}. */

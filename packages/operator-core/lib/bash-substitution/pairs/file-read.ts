@@ -38,52 +38,34 @@
  *  • One `file_path` per call.
  */
 
-import type {
-  AnswerEnvelope,
-  CoverageResult,
-  PolicyAuthority,
-  ReplayToolCall,
-  BashSubstitutionPair,
-} from '../types';
+import type { AnswerEnvelope, CoverageResult, ReplayToolCall, BashSubstitutionPair } from '../types';
 
 /**
- * The owner ruling that puts this family at `deny` rather than `advise` (D-044).
+ * ⚠ THIS FAMILY TEACHES, IT DOES NOT BLOCK — and that is a settled ruling, not a
+ * tier nobody got around to raising (D-045, superseding D-044).
  *
- * Every other row in the registry teaches; these four BLOCK, and the difference
- * is not a stronger opinion about tool quality — it is that a human wrote a rule
- * down. `assertPolicyTier` will not accept this citation unless the pair's
- * verdict is also `equivalent`, which is the owner's own condition ("IF it has
- * full parity") enforced rather than remembered.
+ * These four rows were promoted to `deny` on 2026-08-18 and rolled back the same
+ * hour. The rollback is the instructive part, so it is recorded here rather than
+ * only in the plan: matching is per-ATOM and `atomize` splits a pipeline into its
+ * stages, so the pattern never sees the pipe. `cat FILE | grep X` presents as the
+ * bare atom `cat FILE` and is claimed. At `advise` that is a slightly-off
+ * suggestion; at `deny` it HARD-FAILED a command whose advised replacement cannot
+ * serve it, because `capability:read` returns a numbered, headed, paged rendering
+ * rather than the raw stdout the next stage consumes.
  *
- * ⚠ PIPELINE HOLE — why these rows sit at 'advise' and not the authorized 'deny'.
- * Matching is per-ATOM and `atomize` splits a pipeline into its stages, so the
- * pattern never sees the pipe: `cat FILE | grep X` presents as the bare atom
- * `cat FILE` and matches. At `advise` that is merely a slightly-off suggestion,
- * but at `deny` it HARD-FAILS a command whose advised replacement cannot serve
- * it — `capability:read` returns a numbered, headed, paged rendering, not the
- * raw stdout a pipeline consumes. That is exactly the D-001 harm the registry
- * exists to prevent, so the tier is held down until the matcher can tell a
- * whole-command read from a pipeline stage.
+ * The blast-radius test did not catch it: all 15 of its cases were bare atoms, so
+ * the entire pipeline class was structurally invisible to a guard that looked
+ * thorough. A well-formed test gave complete false assurance.
  *
- * Found by canary AFTER the first deny rollout, not by the unit tests: every
- * case in the blast-radius guard was a bare atom, so the whole class was
- * invisible to it. Any fix must add piped forms to that guard FIRST.
+ * The standing rule this produced (owner, 2026-08-18): guidance fires ONLY where
+ * the tool is a fully equivalent substitute for what the agent actually wrote.
+ * That is now enforced for this family in `match.ts` — a `capability:read` row is
+ * suppressed when the matched atom's stdout feeds a pipe.
  *
- * Read D-044 before widening any pattern below. The authorization is scoped to
- * what the patterns matched when it was granted: every form `capability:read`
- * cannot express — piped stdin filters, heredocs and redirects, `cat -A/-v/-e/-t`,
- * `-c` byte windows, `tail -f`, `cat -` — is OUTSIDE these patterns by D-008 and
- * must stay outside, because a blocked command with no tool form is the one
- * failure this registry exists to prevent. Widening a pattern here does not just
- * add an advisory, it adds a hard failure to every agent on the box.
+ * Every form `capability:read` cannot express — piped stdin filters, heredocs and
+ * redirects, `cat -A/-v/-e/-t`, `-c` byte windows, `tail -f`, `cat -` — is OUTSIDE
+ * these patterns by D-008 and must stay outside.
  */
-const FILE_READ_MANDATE: PolicyAuthority = {
-  ref: 'bash-to-tool-substitution-2026-07-26#D-044',
-  rule:
-    'Owner, 2026-08-18: "are ther any features in our tool version that is missing from the bash ' +
-    'version? does it have full parity? if it has full parity then lets block it and force them ' +
-    'through our tool" — parity verified within the matched set, so file reads go through the tool.',
-};
 
 /**
  * How to strip `capability:read`'s framing to reach the file content (P-021).
@@ -377,10 +359,6 @@ export const sedRangeRead: BashSubstitutionPair = {
     insteadOf: "`sed -n 'N,Mp' FILE` (offset=N, limit=M-N+1)",
   },
   expectedVerdict: 'equivalent',
-  // TEMPORARILY 'advise', NOT 'deny' — see the PIPELINE HOLE note on
-  // FILE_READ_MANDATE. Restore to 'deny' only once a piped atom is excluded.
-  policyTier: 'advise',
-  policyAuthority: FILE_READ_MANDATE,
   cover(atom: string): CoverageResult {
     const parsed = parseAtom(atom);
     // Drop the sed script itself (`-n` is a flag; `'1,80p'` parses as an operand).
@@ -439,10 +417,6 @@ export const catFileRead: BashSubstitutionPair = {
     insteadOf: '`cat FILE` (a heredoc or redirect is a WRITE — not this)',
   },
   expectedVerdict: 'equivalent',
-  // TEMPORARILY 'advise', NOT 'deny' — see the PIPELINE HOLE note on
-  // FILE_READ_MANDATE. Restore to 'deny' only once a piped atom is excluded.
-  policyTier: 'advise',
-  policyAuthority: FILE_READ_MANDATE,
   cover(atom: string): CoverageResult {
     const parsed = parseAtom(atom);
     if (/<</.test(atom)) return { covered: false, reason: 'heredoc — this is a write, not a read' };
@@ -493,10 +467,6 @@ export const headFileRead: BashSubstitutionPair = {
     insteadOf: '`head -n N FILE` (a `… | head` pipe filter is not this)',
   },
   expectedVerdict: 'equivalent',
-  // TEMPORARILY 'advise', NOT 'deny' — see the PIPELINE HOLE note on
-  // FILE_READ_MANDATE. Restore to 'deny' only once a piped atom is excluded.
-  policyTier: 'advise',
-  policyAuthority: FILE_READ_MANDATE,
   cover(atom: string): CoverageResult {
     const parsed = parseAtom(atom);
     const byteWindow = checkByteWindow(parsed);
@@ -560,10 +530,6 @@ export const tailFileRead: BashSubstitutionPair = {
     insteadOf: '`tail -n N FILE` (`tail -f` streaming has no tool form — keep using bash)',
   },
   expectedVerdict: 'equivalent',
-  // TEMPORARILY 'advise', NOT 'deny' — see the PIPELINE HOLE note on
-  // FILE_READ_MANDATE. Restore to 'deny' only once a piped atom is excluded.
-  policyTier: 'advise',
-  policyAuthority: FILE_READ_MANDATE,
   cover(atom: string): CoverageResult {
     const parsed = parseAtom(atom);
     if (parsed.flags.includes('-f') || parsed.flags.includes('--follow') || /--pid=/.test(atom)) {
