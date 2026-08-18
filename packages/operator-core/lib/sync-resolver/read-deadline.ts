@@ -104,7 +104,7 @@ export function createReadDeadline(budgetMs: number): WithinBudget {
   return <T>(p: Promise<T>, label: string): Promise<T> =>
     new Promise<T>((resolve, reject) => {
       const timer = setTimeout(
-        () => reject(new Error(`${label} exceeded the read budget`)),
+        () => reject(new ReadBudgetExceededError(label)),
         Math.max(0, deadlineAt - Date.now()),
       );
       // Never hold the process open for a budget that is about to be moot.

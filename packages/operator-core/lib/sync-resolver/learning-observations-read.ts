@@ -38,10 +38,26 @@
  * WI-7304 (on-demand body + server-side search), NOT a ceiling raise.
  */
 import { attachListMeta } from './list-meta';
+import { createReadDeadline } from './read-deadline';
+
+/**
+ * Whole-read deadline for this compute (WI-39823). 6s, the same budget the three
+ * bounded learning.* reads carry and for the same measured reason: :3170 served
+ * this family at p50 385ms / p90 599ms / max 1.24s (n=10), so 6s is ~10x headroom
+ * at p90 while still firing well under both the sync layer's ~10s resolver timeout
+ * and the memory backend's degraded p50 of ~10.9s (WI-39554).
+ */
+const OBSERVATIONS_READ_BUDGET_MS = 6_000;
 
 export interface LearningObservationsArgs {
   state?: 'open' | 'resolved' | 'closed';
   limit?: number;
+}
+
+/** Options for {@link computeLearningObservations}. */
+export interface LearningObservationsOpts {
+  /** Whole-read deadline override in ms (default {@link OBSERVATIONS_READ_BUDGET_MS}). */
+  budgetMs?: number;
 }
 
 /**
@@ -61,8 +77,32 @@ export interface LearningObservationRow {
   createdAt: string;
 }
 
-/** Build the `learning.observations` rows (newest-first) with list `_meta` (total). */
-export async function computeLearningObservations(a: LearningObservationsArgs): Promise<LearningObservationRow[]> {
+/** Build the `learning.observations` rows (newest-first) with list `_meta` (total).
+ *
+ * BOUNDED (WI-39823). Both legs read the same `engineer_issues` store, and until
+ * this bound they had neither a deadline NOR a `try`/`catch` — the weakest form of
+ * the class fixed in the three sibling learning.* reads. A store that merely
+ * HUNG (not threw) therefore held `Promise.all` past the sync layer's ~10s
+ * resolver timeout, 500ing the pane; the client sets no `retry`, so TanStack's
+ * default 3 attempts each paid that full timeout and the Observations pane sat on
+ * a spinner for ~45s before its error branch could render — the same mechanism
+ * behind the owner-reported "Loading retained items… forever".
+ *
+ * The two legs degrade DIFFERENTLY on purpose, because only one of them is data:
+ *   • rows (`listIssues`) IS the read — there is no partial to ship, so a lapsed
+ *     budget rejects, and it does so at ~6s instead of never. That is deliberately
+ *     a faster failure and NOT a rescued render: the honest claim is that the
+ *     error branch becomes reachable, not that the pane still fills.
+ *   • count (`countIssues`) is only the "N of TOTAL" label — it fails soft, and
+ *     `_meta.totalUnavailable` says so rather than letting the client read the
+ *     downloaded length as if it were the true total (the exact misread
+ *     `attachListMeta` exists to prevent).
+ */
+export async function computeLearningObservations(
+  a: LearningObservationsArgs,
+  opts: LearningObservationsOpts = {},
+): Promise<LearningObservationRow[]> {
+  const withinBudget = createReadDeadline(opts.budgetMs ?? OBSERVATIONS_READ_BUDGET_MS);
   const { listIssues, countIssues } = await import('../issues-engineer');
   // P-006/D-031: the `lane` column is the canonical observation identity; the topic
   // join under-reads (fenced to coordScopeWorkspace(), and 471 rows carry no tag).
@@ -77,7 +117,10 @@ export async function computeLearningObservations(a: LearningObservationsArgs): 
     excludeRubricGraded: true,
     ...(a.state ? { state: a.state } : {}),
   };
-  const [issues, total] = await Promise.all([listIssues({ ...filter, limit: a.limit ?? 200 }), countIssues(filter)]);
+  const [issues, total] = await Promise.all([
+    withinBudget(listIssues({ ...filter, limit: a.limit ?? 200 }), 'observations rows'),
+    withinBudget(countIssues(filter), 'observations count').catch(() => null),
+  ]);
   const rows: LearningObservationRow[] = issues
     .map((i) => {
       const p = i.payload && typeof i.payload === 'object' ? (i.payload as Record<string, unknown>) : {};
@@ -99,5 +142,8 @@ export async function computeLearningObservations(a: LearningObservationsArgs): 
       return row;
     })
     .sort((x, y) => (x.createdAt < y.createdAt ? 1 : x.createdAt > y.createdAt ? -1 : 0));
-  return attachListMeta(rows, { total });
+  // A degraded count must not be reported as a real one. `total: undefined` would
+  // make the client fall back to the downloaded length and render it as the truth;
+  // the explicit flag keeps "we don't know" distinguishable from "that is all".
+  return attachListMeta(rows, total == null ? { totalUnavailable: true } : { total });
 }
