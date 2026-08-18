@@ -545,16 +545,72 @@ export function referencedScripts(command) {
   return [...String(command).matchAll(/npm run ([\w:.-]+)/g)].map((m) => m[1]);
 }
 
+/** Escape a guard name for embedding in a RegExp. */
+function escapeRe(s) {
+  return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Impl paths claimed by MORE THAN ONE guard, and therefore NOT evidence about any one of
+ * them (WI-39832). `lint:tool-prompts`, `lint:plane-guards` and `lint:design-primitives`
+ * all run through `scripts/test-files.mjs`, so every test that names that shared runner —
+ * the test-router and tmpdir-guard suites among them — credited all three.
+ *
+ * Companion invocations are collapsed by `selectGuardScripts` BEFORE this runs, so a
+ * `:report`/`:update` sibling sharing its base guard's implementation is not counted here.
+ */
+export function sharedImplementationPaths(scripts, names = selectGuardScripts(scripts)) {
+  const claims = new Map();
+  for (const name of names) {
+    for (const p of resolveImplementationPaths(scripts[name] ?? '')) {
+      if (!claims.has(p)) claims.set(p, new Set());
+      claims.get(p).add(name);
+    }
+  }
+  return new Set([...claims].filter(([, owners]) => owners.size > 1).map(([p]) => p));
+}
+
 /**
  * Classify one guard against the pre-built runner corpora.
  * Returns the STRONGEST tier found, plus every tier for reporting.
+ *
+ * ⚠ THE `test` TIER TAKES EXECUTION EVIDENCE ONLY — a bare NAME mention does not count
+ * (WI-39832). For `gate`/`ci`/`hook` a name mention IS the evidence: those corpora are
+ * config that runs a guard BY npm name, so seeing `lint:x` in green-checkpoint.ts means
+ * the gate runs it. A *.test.ts is different — it is prose-dense code that names guards
+ * for every reason except running them, and the corpus is 424 such files concatenated.
+ *
+ * MEASURED, all three from the live tree on 2026-08-18:
+ *   • `lint:cell-matrix` was reported ENFORCED / blocking on the strength of
+ *     `expect(scripts).not.toContain("lint:cell-matrix")` — an assertion whose entire
+ *     purpose is to pin the guard SHUT, read as proof that something runs it. The
+ *     census inverted the meaning of its own evidence.
+ *   • `lint:plane-adoption` was credited from a FIXTURE STRING inside this checker's
+ *     OWN test (`const src = "{ script: 'lint:plane-adoption', … }"`).
+ *   • four more (`lint:declared-consumed`, `lint:plane-producers`, `lint:plane-ratchet`,
+ *     `lint:timer-classification`) from string literals in a gate-wiring list assertion.
+ *
+ * WHY THE OBVIOUS FIX IS A NO-OP — DO NOT RE-TRY IT. The natural reading is that the bug
+ * is the CONCATENATION (per-file identity is lost, so file A's `spawnSync` can vouch for
+ * file B's mention) and that the remedy is per-file attribution. Measured against the
+ * real tree, per-file attribution revokes ZERO credits: for all 61 test-tier guards the
+ * enforcing marker and the mention already co-occur in the SAME file. The defect is
+ * evidence QUALITY, not attribution granularity.
+ *
+ * Execution evidence is therefore: a DISTINGUISHING implementation path (see
+ * `sharedImplementationPaths`), or an `npm run <name>` invocation — tolerant of argv
+ * spelling (`'npm', 'run', 'lint:x'`) and closed against name nesting, since
+ * `lint:no-retired` is a prefix of `lint:no-retired-resurrection`.
  */
-export function classifyGuard({ name, command, corpora, repoWideRegistered = new Set() }) {
+export function classifyGuard({ name, command, corpora, repoWideRegistered = new Set(), sharedImpls = new Set() }) {
   const impls = resolveImplementationPaths(command);
   const tiers = [];
   const mentions = (text) => text.includes(name) || impls.some((p) => p && text.includes(p));
+  const npmRun = new RegExp(`npm\\W{1,4}run\\W{1,4}${escapeRe(name)}(?![\\w:.-])`);
+  const runsGuard = (text) =>
+    npmRun.test(text) || impls.some((p) => p && !sharedImpls.has(p) && text.includes(p));
   for (const [tier, text] of Object.entries(corpora)) {
-    if (mentions(text)) tiers.push(tier);
+    if (tier === 'test' ? runsGuard(text) : mentions(text)) tiers.push(tier);
   }
   // Appended AFTER the corpora so `blocking[0]` keeps reporting the more specific tier for a
   // guard that is both registered and named by a CI job / gate leg / enforcing test — all 11
@@ -773,8 +829,13 @@ export function buildReachabilityCensus({
   // is what let the two axes disagree about registration in the first place (see BLOCKING_TIERS).
   repoWideRegistered = coverage?.repoWideRegistered ?? new Set(),
 } = {}) {
-  const rows = selectGuardScripts(scripts).map((name) =>
-    classifyGuard({ name, command: scripts[name], corpora, repoWideRegistered }),
+  // Which impl paths are shared is a property of the whole guard SET, so it is computed
+  // once here rather than per guard — a path is only non-distinguishing relative to its
+  // rivals (WI-39832).
+  const guardNames = selectGuardScripts(scripts);
+  const sharedImpls = sharedImplementationPaths(scripts, guardNames);
+  const rows = guardNames.map((name) =>
+    classifyGuard({ name, command: scripts[name], corpora, repoWideRegistered, sharedImpls }),
   );
 
   // A `chained` guard inherits reachability from whatever reachable script runs it.
