@@ -43,7 +43,7 @@ import {
 import type { CheckEntry, WallEntry } from './carry-note';
 
 /** Which orders signal failed to read this call — see D-003 above. */
-export type AgentOrdersSignalKey = 'mission' | 'modes' | 'wakeMode' | 'carry';
+export type AgentOrdersSignalKey = 'mission' | 'modes' | 'wakeMode' | 'carry' | 'disclosures';
 
 /**
  * The resolved instruction precedence, flattened for rendering.
@@ -165,6 +165,20 @@ export interface AgentOrders {
   directivesTotalOpen: number;
   facts: AgentOrdersFact[];
   carry: AgentOrdersCarry | null;
+  /** The six disclosure markers this agent's most recent `coord:orient` carried
+   *  — what its OWN reads left out (P-005, D-008).
+   *
+   *  `null` is load-bearing and must NOT be rendered as an empty disclosure
+   *  line: it means this session has recorded nothing (it has not oriented since
+   *  the recording existed, or the read failed), which is a different statement
+   *  from `disclosures: {}` — the positive one that its last orient cut nothing.
+   *  Collapsing the two re-creates on screen the exact false-clean reading the
+   *  whole marker family exists to prevent.
+   *
+   *  Optional so the fixtures that construct an AgentOrders in files this change
+   *  does not touch keep compiling (the `lint:required-field-strands` trigger);
+   *  `getAgentOrders` always populates it for real traffic. */
+  disclosures?: RecordedOrientDisclosures | null;
   /** Signal keys whose read THREW this call (D-003). Empty = all resolved,
    *  even where some legitimately came back empty. */
   unavailable: AgentOrdersSignalKey[];
@@ -264,7 +278,7 @@ export async function getAgentOrders(owner: string): Promise<AgentOrders> {
   const workspaceId = activeWorkspaceId() ?? 'default';
   const unavailable: AgentOrdersSignalKey[] = [];
 
-  const [controlState, carryBrief, wakeMode] = await Promise.all([
+  const [controlState, carryBrief, wakeMode, disclosures] = await Promise.all([
     buildControlAnchorState(owner, workspaceId).catch(() => {
       unavailable.push('modes');
       return null;
@@ -285,6 +299,14 @@ export async function getAgentOrders(owner: string): Promise<AgentOrders> {
       };
     })().catch(() => {
       unavailable.push('wakeMode');
+      return null;
+    }),
+    // P-005: what the agent's own last orient told it that it did NOT see.
+    // `readOrientDisclosures` swallows its own errors into `null`, so this
+    // .catch is the belt to that braces — and either way the result is the same
+    // honest reading: no recording, rendered as nothing rather than as a clean.
+    readOrientDisclosures(owner).catch(() => {
+      unavailable.push('disclosures');
       return null;
     }),
   ]);

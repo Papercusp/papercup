@@ -66,6 +66,10 @@ import {
   type FleetDelta,
 } from './fleet-monitor-delta';
 import { fingerprintIdList, idListUnchanged, rowKey } from './orient-list-delta';
+import {
+  collectOrientDisclosures,
+  recordOrientDisclosures,
+} from '../../../agent-orient-disclosures';
 
 /**
  * WI-38349 — the pid anchor for locating a session's REAL `CLAUDE_CONFIG_DIR`.
@@ -2667,6 +2671,27 @@ export default defineTool({
         }
       })(),
     );
+    // popup-agent-state-coverage-2026-08-18 P-005 (D-008): RECORD the six
+    // disclosure markers this payload carried, so the HUD sessions popup can
+    // show a human what THIS agent was actually told about what its reads left
+    // out. Deliberately here, in the handler, and not inside composeOrient —
+    // that function is contractually IO-free so it stays unit-testable, and its
+    // every ctx-dependent value is injected.
+    //
+    // Recorded rather than re-derived at view time because four of the six are
+    // artifacts of the ARGUMENTS of this very call (mode, claimableLimit,
+    // recipesLimit/intent, the caller's drive-mode classification). A popup
+    // recomputing them would measure the VIEWER's bounds and render the answer
+    // as the agent's — coming back clean nearly always, which reads as "nothing
+    // was withheld". See agent-orient-disclosures.ts for the full argument.
+    //
+    // Awaited, not fire-and-forget: it is one bounded upsert that no-ops when
+    // the markers are unchanged, and its own catch turns any failure into "no
+    // recording" — which renders as nothing, never as a false clean.
+    if (ownerId) {
+      const ws = (ctx as { workspaceId?: string | null }).workspaceId ?? 'default';
+      await recordOrientDisclosures(ownerId, ws, collectOrientDisclosures(result));
+    }
     // Fold in the caller's own identity so the orientation states YOUR ownerId
     // explicitly (the roster/assignments it composes are about peers; `self` is
     // the "and this is you" anchor). Best-effort — omitted for an unattributable
