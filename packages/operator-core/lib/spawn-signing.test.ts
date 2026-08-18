@@ -308,6 +308,10 @@ describe('rotateSpawnSigningKey active remediation (WI-3194)', () => {
         workspaceId: 'ws',
         rootSpawnId: 's-new',
         reason: expect.stringContaining('spawn-signing key rotated'),
+        actor: expect.objectContaining({
+          ownerId: 'spawn-signing-rotation',
+          source: 'principal',
+        }),
       });
       expect(abortLocalSpawn).toHaveBeenCalledWith('s-new');
       expect(relaunchReclaimedSpawn).toHaveBeenCalledWith(
