@@ -82,24 +82,7 @@ const state = pinModuleState<AttributionState>(
  * either all or none, since a partial census reads as a real coverage gap.
  */
 export function isAttributionArmed(): boolean {
-  if (state.armed === null) {
-    // TWO conditions, and the second is what lets the RUNNERS arm unconditionally.
-    //
-    // `testing:run` and the admin-UI runner cannot tell a unit file from an integration one
-    // — a single call routes files across layers — so they stamp the switch for the whole
-    // run and let each fork decide. A unit fork carries `setup-no-real-pg.ts`'s rail, under
-    // which the sink's first flush would fail to connect, and the second and third, and
-    // only then disable itself: three failed connections and two stderr lines per fork, in
-    // every ordinary unit run, to record nothing. Reading the rail turns that into a single
-    // cached boolean, and — the part that matters — the exclusion is derived from the same
-    // fact that makes attribution impossible there, so it cannot drift out of agreement
-    // with it the way a hand-maintained layer list would.
-    //
-    // Resolved once per process, like the switch itself: the rail is installed by a setup
-    // file, which runs long before any dispatcher can observe traffic.
-    state.armed =
-      process.env[ATTRIBUTION_ENV] === '1' && process.env[FORBID_REAL_PG_ENV] !== '1';
-  }
+  if (state.armed === null) state.armed = process.env[ATTRIBUTION_ENV] === '1';
   return state.armed;
 }
 

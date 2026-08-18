@@ -244,17 +244,52 @@ describe('surfaces the census does not know', () => {
   });
 });
 
-describe('scope refusal', () => {
-  it('drops the buffer rather than guessing a scope when the workspace is unknown', async () => {
-    // A guessed scope writes evidence that joins to no surface, or — far worse — to another
-    // harness's surface of the same name. Refusing is the only safe direction.
+describe('scope resolution (D-011)', () => {
+  it('falls back to the census scope — never to a guess — when no env pin is set', async () => {
+    // ⚠ THIS TEST ASSERTED THE OPPOSITE UNTIL D-011, AND THAT IS THE POINT.
+    //
+    // It used to prove the layer REFUSED when `PAPERCUSP_WORKSPACE_ID` was unset, and it
+    // passed — while the same condition held in every real run, so the refusal it was
+    // guarding fired universally and the layer wrote nothing, ever. A green test over a
+    // condition that is meant to be exceptional is worth very little if nobody checks how
+    // often the condition actually holds. (Measured 2026-08-18: `harness_slug` NULL on 100%
+    // of 7,202 `test_runs` rows in 90 minutes; neither operator host had the vars.)
+    //
+    // The invariant that actually matters is unchanged, and is what this now asserts: an
+    // unpinned run must not write evidence onto a surface belonging to a DIFFERENT scope.
+    // It just gets there by resolving the census's own scope instead of refusing — so the
+    // probe's synthetic surface (seeded under WS/HARNESS) is correctly not matched, and the
+    // miss is COUNTED rather than silently inserted.
     const ref = await seedSurface('http-route', 'GET /api/no-scope');
     delete process.env.PAPERCUSP_WORKSPACE_ID;
+    delete process.env.PAPERCUSP_TEST_RUN_HARNESS;
 
     recordHttpTraffic({ method: 'GET', path: '/api/no-scope', status: 'ok' });
     await flushTrafficEvidence();
 
+    const status = attributionStatus();
+    // No row on the probe's surface — the resolved scope is the box's, not the probe's.
     expect(await evidenceFor(ref)).toHaveLength(0);
-    expect(attributionStatus().lastError).toContain('no attribution scope');
+    // ...and it got there by RESOLVING, not by refusing. This is the assertion that would
+    // have caught the original defect: a refusal here means the resolver is back to
+    // returning null, i.e. the layer is inert again.
+    expect(status.lastError).toBeNull();
+    // The miss is reported, so "wrote nothing" is never mistaken for "covered nothing".
+    expect(status.unmatchedSurfaces).toBe(1);
+    expect(status.written).toBe(0);
+  });
+
+  it('honours an explicit env pin over the ambient census scope', async () => {
+    // The pin is what makes a cross-process run attributable: a test fork driving another
+    // workspace's operator is the one case where the ambient answer is wrong.
+    const ref = await seedSurface('http-route', 'GET /api/pinned');
+    setAmbientTestContext({ file: 'packages/operator-core/lib/pinned.test.ts', case: 'pinned' });
+
+    recordHttpTraffic({ method: 'GET', path: '/api/pinned', status: 'ok' });
+    await flushTrafficEvidence();
+
+    // beforeEach pins WS/HARNESS, which is where the surface was seeded — so it MATCHES.
+    expect(await evidenceFor(ref)).toHaveLength(1);
+    expect(attributionStatus().unmatchedSurfaces).toBe(0);
   });
 });
