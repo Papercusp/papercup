@@ -33,6 +33,12 @@ afterAll(() => rmSync(root, { recursive: true, force: true }));
 
 const testsCheck = (files: string[]) => ({ kind: 'tests' as const, files });
 
+// WI-39848 fixtures: enough distinct resolving files to model a THOROUGH rubric — the
+// exact shape that used to be ungradeable, because each criterion cost its own vitest
+// cold start against one shared deadline.
+const MANY = Array.from({ length: 8 }, (_, i) => `packages/x/many-${i}.test.ts`);
+for (const f of MANY) writeFileSync(join(root, f), 'export {};\n');
+
 // ── schema ────────────────────────────────────────────────────────────────────
 describe('rubricCriterionCheckSchema (P-011 schema)', () => {
   it('accepts a tests check and an instrument check; refuses unknown fields and unknown kinds', () => {
@@ -539,6 +545,97 @@ describe('evaluateCriterionCoverageChecks (grading time)', () => {
       // and it never got as far as measuring the unscoped census
       expect(called).toBe(false);
     }
+  });
+
+  // ── WI-39848: the starvation guard ──────────────────────────────────────────
+  // A rubric with many tests-checks used to be UNGRADEABLE: one vitest process per
+  // criterion against a single shared deadline, so each run ate budget the next needed
+  // and the last criterion timed out every time — deterministically, on criterion COUNT.
+  // That blocked the plan's ship gate outright, and the refusal blamed the starved
+  // criterion's file for being "too slow" when the budget had been spent upstream.
+  it('WI-39848: batches EVERY criterion into ONE runner call, so budget cannot be starved by criterion count', async () => {
+    const calls: string[][] = [];
+    const runner: CriterionCheckRunner = async ({ files }) => {
+      calls.push(files);
+      return passRun(files) as never;
+    };
+    const criteria = MANY.map((f, i) => ({ key: `c${i}`, check: testsCheck([f]) }));
+    const res = await evaluateCriterionTestChecks({
+      criteria,
+      ratings: Object.fromEntries(criteria.map((c) => [c.key, { rating: 'healthy' }])),
+      root,
+      runner,
+      // The real budget. Under the old per-criterion loop the 8th run got the 1000ms
+      // floor and timed out; the point of the fix is that N no longer divides it.
+      timeoutMs: 50_000,
+    });
+    expect(res.ok).toBe(true);
+    // THE assertion: one run total, not one per criterion.
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toEqual(MANY);
+    if (res.ok) {
+      expect(Object.keys(res.checkRuns).sort()).toEqual(criteria.map((c) => c.key).sort());
+      for (const c of criteria) expect(res.checkRuns[c.key]).toMatchObject({ verdict: 'pass' });
+    }
+  });
+
+  it('WI-39848: attributes per-file — one criterion failing does NOT condemn another sharing the batch', async () => {
+    // failRun reds only the FIRST file, which is what makes this meaningful: with a
+    // batched run, judging on the aggregate would fail every criterion at once.
+    const runner: CriterionCheckRunner = async ({ files }) => failRun(files) as never;
+    const criteria = [
+      { key: 'red', check: testsCheck([MANY[0]]) },
+      { key: 'green', check: testsCheck([MANY[1]]) },
+    ];
+    const res = await evaluateCriterionTestChecks({
+      criteria,
+      // Honest ratings, so the contradiction refusal does not fire and we can inspect
+      // both verdicts in one pass.
+      ratings: { red: { rating: 'broken' }, green: { rating: 'healthy' } },
+      root,
+      runner,
+    });
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      expect(res.checkRuns.red).toMatchObject({ verdict: 'fail', failed: 1, passed: 2 });
+      expect(res.checkRuns.green).toMatchObject({ verdict: 'pass', failed: 0, passed: 3 });
+    }
+  });
+
+  it('WI-39848: a file the batch never reported is REFUSED as unjudged, never counted as a pass', async () => {
+    // The silent-pass hazard batching introduces: a green aggregate must not vouch for a
+    // file that never ran. Runner reports only the first file.
+    const runner: CriterionCheckRunner = async ({ files }) => passRun([files[0]]) as never;
+    const res = await evaluateCriterionTestChecks({
+      criteria: [
+        { key: 'reported', check: testsCheck([MANY[0]]) },
+        { key: 'silent', check: testsCheck([MANY[1]]) },
+      ],
+      ratings: { reported: { rating: 'healthy' }, silent: { rating: 'healthy' } },
+      root,
+      runner,
+    });
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.error).toBe('check_run_failed');
+      expect(res.criterionKey).toBe('silent');
+      expect(res.detail).toContain(MANY[1]);
+    }
+  });
+
+  it('WI-39848: a runner reporting no per-file grain REFUSES rather than judging on the aggregate', async () => {
+    const runner: CriterionCheckRunner = async ({ files }) => {
+      const { byFile: _drop, ...noGrain } = passRun(files);
+      return noGrain as never;
+    };
+    const res = await evaluateCriterionTestChecks({
+      criteria: [{ key: 'det', check: testsCheck(['packages/x/real.test.ts']) }],
+      ratings: { det: { rating: 'healthy' } },
+      root,
+      runner,
+    });
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).toBe('check_run_failed');
   });
 
   it('skips unrated and non-coverage criteria without reading the census at all', async () => {
