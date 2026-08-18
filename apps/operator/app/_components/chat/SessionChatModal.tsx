@@ -89,7 +89,11 @@ import {
   formatAge,
   HUD_DEFAULT_THRESHOLDS,
   isInfrastructureAwait,
+  // P-006: the zombie predicate AND its wording come from the board, so the two
+  // surfaces cannot describe the same session differently.
+  isZombieSession,
   shortHandle,
+  ZOMBIE_REASON,
   type HudBadge,
   type HudRosterEntry,
 } from '../../adv/hud/hud-board-model';

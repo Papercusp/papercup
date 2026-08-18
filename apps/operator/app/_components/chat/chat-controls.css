@@ -592,6 +592,21 @@
 .pc-ctl-state--warn .pc-ctl-state__dot { background: var(--warn); }
 .pc-ctl-state--bad .pc-ctl-state__dot { background: var(--bad); }
 
+/** A SUBORDINATE clause inside a state chip — the provenance of the number
+ *  beside it, not a second fact (popup-agent-state-coverage-2026-08-18 P-008:
+ *  "ctx 47% · measured 3m ago").
+ *
+ *  It is deliberately quieter than its host chip rather than a chip of its own.
+ *  A reading's age qualifies that reading and is meaningless apart from it, so
+ *  splitting it into a sibling chip would put it in the band's flat left-to-right
+ *  scan as if it were independent — and would spend a whole chip slot saying
+ *  something nobody reads first. Dimmer, attached, and legible on the second
+ *  look is exactly the weight it should carry. */
+.pc-ctl-state__muted {
+  opacity: 0.62;
+  font-variant-numeric: tabular-nums;
+}
+
 /* ═══ ② Mode — a state you can change. A switch that is currently on. ════════ */
 
 /* The <button> itself is display:block (see the WebKitGTK note above); the inner
