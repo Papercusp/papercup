@@ -650,6 +650,74 @@ describe('cpu-task-worker — breaker re-arm + served detector (EI-2050566400324
     errSpy.mockRestore();
   });
 
+  it('the admission predicate refuses at the cooldown boundary and admits on it', async () => {
+    // Pins the REAL predicate the request path calls, at the boundary — the one
+    // place an off-by-one or an inverted comparison hides. The integration tests
+    // above prove it is WIRED; this proves it is RIGHT. Neither alone is enough:
+    // a predicate that always returned true would pass a wiring test, and a
+    // correct predicate nothing calls would pass this one.
+    const m = await mod();
+    const base = m._reArmCooldownMs(0);
+    const at = (elapsed: number, reArmFailures = 0) =>
+      m._breakerAdmitsProbe({
+        disabled: true,
+        halfOpen: false,
+        trippedAt: 1_000_000,
+        reArmFailures,
+        now: 1_000_000 + elapsed,
+      });
+
+    expect(at(base - 1)).toBe(false);
+    expect(at(base)).toBe(true);
+
+    // A failed probe must lengthen the wait, or the backoff is decorative: the
+    // elapsed time that just admitted a probe must no longer admit one.
+    expect(at(base, 1)).toBe(false);
+    expect(at(m._reArmCooldownMs(1), 1)).toBe(true);
+
+    // Each guard clause, independently — every one of these is a state in which
+    // admitting a probe would be wrong for a different reason.
+    expect(
+      m._breakerAdmitsProbe({
+        disabled: false,
+        halfOpen: false,
+        trippedAt: 1,
+        reArmFailures: 0,
+        now: 1e12,
+      }),
+    ).toBe(false); // not latched — the worker path is already open
+    expect(
+      m._breakerAdmitsProbe({
+        disabled: true,
+        halfOpen: true,
+        trippedAt: 1,
+        reArmFailures: 0,
+        now: 1e12,
+      }),
+    ).toBe(false); // a probe is already in flight — exactly one at a time
+    expect(
+      m._breakerAdmitsProbe({
+        disabled: true,
+        halfOpen: false,
+        trippedAt: null,
+        reArmFailures: 0,
+        now: 1e12,
+      }),
+    ).toBe(false); // latched with no trip time recorded — unknown, not elapsed
+  });
+
+  it('backoff grows exponentially and is capped, so a broken worker cannot be respawned per request', async () => {
+    const m = await mod();
+    const c0 = m._reArmCooldownMs(0);
+    expect(m._reArmCooldownMs(1)).toBe(c0 * 2);
+    expect(m._reArmCooldownMs(2)).toBe(c0 * 4);
+    // Capped — without a ceiling the cooldown doubles into effective permanence,
+    // which is the very defect the re-arm exists to remove.
+    const huge = m._reArmCooldownMs(50);
+    expect(huge).toBe(m._reArmCooldownMs(60));
+    expect(huge).toBeLessThanOrEqual(60 * 60 * 1000);
+  });
+
   it('does not count small-batch sync stringifies as offload fallbacks', async () => {
     // If every sync stringify counted, `eligibleFallbacks` would be dominated by
     // the designed small-batch path and the silent-failure signal would be buried.

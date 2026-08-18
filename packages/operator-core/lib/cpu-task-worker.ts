@@ -169,9 +169,31 @@ const REARM_BASE_COOLDOWN_MS = 60_000;
 const REARM_MAX_COOLDOWN_MS = 900_000;
 
 /** Cooldown for the NEXT probe, given how many probes have already failed. */
-function reArmCooldownMs(): number {
-  const backed = REARM_BASE_COOLDOWN_MS * 2 ** _reArmFailures;
+export function _reArmCooldownMs(failures: number): number {
+  const backed = REARM_BASE_COOLDOWN_MS * 2 ** failures;
   return Math.min(backed, REARM_MAX_COOLDOWN_MS);
+}
+
+/**
+ * Is a half-open probe admissible right now?
+ *
+ * PURE, and exported, so the admission boundary is tested against the REAL
+ * predicate the request path calls rather than a restatement of it. Inline in
+ * `serializeJsonResponse` this comparison was reachable only through a live
+ * breaker trip plus a clock the test cannot move, which is how a cooldown that
+ * silently never fired would still have read as covered.
+ */
+export function _breakerAdmitsProbe(a: {
+  disabled: boolean;
+  halfOpen: boolean;
+  trippedAt: number | null;
+  reArmFailures: number;
+  now: number;
+}): boolean {
+  // Not latched ⇒ the worker path is open anyway; already probing ⇒ exactly one
+  // probe at a time, which is what stops a burst from respawning a broken worker.
+  if (!a.disabled || a.halfOpen || a.trippedAt === null) return false;
+  return a.now - a.trippedAt >= _reArmCooldownMs(a.reArmFailures);
 }
 
 /**
@@ -434,7 +456,7 @@ function ensureWorker(): Promise<void> {
         _breakerTrippedAt = Date.now();
         console.error(
           `[cpu-task-worker] half-open probe FAILED (${_reArmFailures} so far); next probe in ` +
-            `${Math.round(reArmCooldownMs() / 1000)}s`,
+            `${Math.round(_reArmCooldownMs(_reArmFailures) / 1000)}s`,
         );
       } else if (_consecutiveCrashes >= MAX_CONSECUTIVE_CRASHES) {
         tripBreaker(
@@ -491,10 +513,13 @@ export async function serializeJsonResponse(
   // respawn-per-request failure MAX_CONSECUTIVE_CRASHES exists to prevent.
   if (
     eligible &&
-    _workerDisabled &&
-    !_halfOpen &&
-    _breakerTrippedAt !== null &&
-    Date.now() - _breakerTrippedAt >= reArmCooldownMs()
+    _breakerAdmitsProbe({
+      disabled: _workerDisabled,
+      halfOpen: _halfOpen,
+      trippedAt: _breakerTrippedAt,
+      reArmFailures: _reArmFailures,
+      now: Date.now(),
+    })
   ) {
     _halfOpen = true;
   }
@@ -674,7 +699,7 @@ export type CpuWorkerVerdict =
 /** Milliseconds until the next half-open probe; null when the breaker is closed. */
 function cpuWorkerReArmInMs(): number | null {
   if (!_workerDisabled || _breakerTrippedAt === null) return null;
-  return Math.max(0, reArmCooldownMs() - (Date.now() - _breakerTrippedAt));
+  return Math.max(0, _reArmCooldownMs(_reArmFailures) - (Date.now() - _breakerTrippedAt));
 }
 
 function cpuWorkerVerdict(): CpuWorkerVerdict {
