@@ -82,6 +82,28 @@ export interface DegradedProvenance {
 /** A snapshot shape that MAY carry degraded provenance. */
 export type MaybeDegraded<T> = T & Partial<DegradedProvenance>;
 
+/**
+ * The PER-LEG analog of {@link DegradedProvenance} (WI-39825).
+ *
+ * `DegradedProvenance` says "this whole snapshot is a stand-in". A multi-leg
+ * fan-out needs the narrower claim: the snapshot IS real, and exactly these
+ * named sections are not. Collected into a `degradedFields` array beside the
+ * intact data, omitted entirely when every leg succeeded — so, exactly as with
+ * `unavailable`, the field's PRESENCE is the signal and a healthy payload stays
+ * byte-identical to what it was before the leg was bounded.
+ *
+ * Populate it from {@link classifyReadFailure}, never by hand: `kind` is what
+ * consumers branch on and the prose `reason` is only ever for humans.
+ */
+export interface DegradedField {
+  /** The snapshot key that is empty for a reason — e.g. `'ended'`. */
+  field: string;
+  /** Machine-classifiable cause — branch on this, not on the prose. */
+  kind: UnavailableKind;
+  /** The cause verbatim from the backend, clamped. Never swallowed. */
+  reason: string;
+}
+
 /** Extract a human-readable reason from an unknown thrown value. */
 export function reasonOf(err: unknown): string {
   const raw = err instanceof Error ? err.message : String(err);
