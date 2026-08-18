@@ -28,6 +28,7 @@
  */
 import { spawn as nodeSpawn } from 'node:child_process';
 import { resolveAgentBinarySync } from '../agent-bin-detect';
+import { codexContextConfigArgs } from '../model-context-budget.mjs';
 import * as os from 'node:os';
 import type { AccountEgress } from '../deployment/account-pool';
 

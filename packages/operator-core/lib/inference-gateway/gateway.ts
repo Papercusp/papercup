@@ -2958,7 +2958,25 @@ export function createInferenceGateway(deps: GatewayDeps) {
       { effort: 'high', description: 'Greater reasoning depth for complex problems' },
       { effort: 'xhigh', description: 'Extra high reasoning depth for complex problems' },
     ];
-    const model = (slug: string, displayName: string, description: string, priority: number) => ({
+    /**
+     * `contextWindow` / `maxContextWindow` are per-model on purpose (plan
+     * codex-1m-context-window-2026-08-17 P-005). They used to be a flat 272,000
+     * for EVERY model, which told each gateway-routed Codex agent that no
+     * extended window existed anywhere — the CLI cannot fetch the account's real
+     * catalog through a custom `model_provider`, so whatever we return HERE is
+     * the only catalog it ever sees. Values mirror the upstream registry
+     * (codex-cli 0.147.0, 2026-08-17); keep them in sync alongside the lineup
+     * itself, and note `max == context` is a real state meaning "no extended
+     * window", not a placeholder to fill in.
+     */
+    const model = (
+      slug: string,
+      displayName: string,
+      description: string,
+      priority: number,
+      contextWindow = 272_000,
+      maxContextWindow = contextWindow,
+    ) => ({
       slug,
       display_name: displayName,
       description,
@@ -2983,8 +3001,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
       truncation_policy: { mode: 'tokens', limit: 10_000 },
       supports_parallel_tool_calls: true,
       supports_image_detail_original: true,
-      context_window: 272_000,
-      max_context_window: 272_000,
+      context_window: contextWindow,
+      max_context_window: maxContextWindow,
       comp_hash: 'papercusp-gateway',
       effective_context_window_percent: 95,
       experimental_supported_tools: [],
@@ -3004,13 +3022,13 @@ export function createInferenceGateway(deps: GatewayDeps) {
       // upstream catalog; ordering is by descending `priority`. Follow-up: source
       // this live from upstream so it can't go stale again.
       models: [
-        model('gpt-5.6-sol', 'gpt-5.6-sol', 'Latest frontier agentic coding model.', 15),
-        model('gpt-5.6-terra', 'gpt-5.6-terra', 'Balanced agentic coding model for everyday work.', 14),
-        model('gpt-5.6-luna', 'gpt-5.6-luna', 'Fast and affordable agentic coding model.', 13),
+        model('gpt-5.6-sol', 'gpt-5.6-sol', 'Latest frontier agentic coding model.', 15, 272_000, 872_000),
+        model('gpt-5.6-terra', 'gpt-5.6-terra', 'Balanced agentic coding model for everyday work.', 14, 272_000, 872_000),
+        model('gpt-5.6-luna', 'gpt-5.6-luna', 'Fast and affordable agentic coding model.', 13, 272_000, 872_000),
         model('gpt-5.5', 'gpt-5.5', 'Frontier model for complex coding, research, and real-world work.', 12),
-        model('gpt-5.4', 'gpt-5.4', 'Strong model for everyday coding.', 11),
+        model('gpt-5.4', 'gpt-5.4', 'Strong model for everyday coding.', 11, 272_000, 1_000_000),
         model('gpt-5.4-mini', 'gpt-5.4-mini', 'Small, fast, and cost-efficient model for simpler coding tasks.', 10),
-        model('gpt-5.3-codex-spark', 'gpt-5.3-codex-spark', 'Ultra-fast coding model.', 9),
+        model('gpt-5.3-codex-spark', 'gpt-5.3-codex-spark', 'Ultra-fast coding model.', 9, 128_000),
       ],
     };
   }
