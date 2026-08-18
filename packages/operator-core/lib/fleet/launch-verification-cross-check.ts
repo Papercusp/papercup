@@ -126,7 +126,6 @@ export function buildOwnerActivityReader(
        AND (w.terminal_owner LIKE o.owner_id || '%' OR w.taken_by LIKE o.owner_id || '%')
       GROUP BY o.owner_id
     `;
-    void patterns;
     return rows.map((r) => ({
       ownerId: String(r.owner_id),
       closes: Number(r.closes ?? 0),

@@ -22,6 +22,7 @@ import { getCompletionIntegrityStats, type CompletionIntegrityStats } from '../.
 import { withBoundedTimeout } from '../../bounded-timeout';
 import type { AdvSessionEndedBy } from '../../adv-sessions';
 import { json, resolveFleetCaller, ROUTING_LADDER } from './_shared';
+import { crossCheckLaunchVerification, buildOwnerActivityReader } from '../../fleet/launch-verification-cross-check';
 
 /**
  * WI-3818: bound the two OPTIONAL legs — completionStats (harness-scoped
