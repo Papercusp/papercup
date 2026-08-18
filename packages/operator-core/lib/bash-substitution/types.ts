@@ -331,44 +331,26 @@ export const POLICY_INTENT_PREFIX = 'policy-violation:';
 /**
  * The tier a pair actually seeds at, refusing an unauthorized escalation.
  *
- * ── The two routes, and why there are exactly two ────────────────────────────
- * This function's own error has always named two ways past `observe`: "earned by
- * P-020 observation, or authorized by a pre-existing rule (D-003)". Only the
- * second reaches `deny` — {@link maxTierFor} caps an earned verdict at `advise`
- * and never returns `deny`, because a score must not unlock a block.
+ * ── Why this stayed prefix-only (D-045) ──────────────────────────────────────
+ * A second route was added here on 2026-08-18 — a cited `policyAuthority` over a
+ * proven-`equivalent` verdict — to let an owner ruling put the file-read family
+ * at `deny` without renaming its intents. The ruling was withdrawn the same hour
+ * (the block was rolled back; see pairs/file-read.ts), which left that route with
+ * ZERO callers, so it was removed rather than kept as speculative generality: an
+ * unused way past a safety guard is a liability that reads as precedent.
  *
- * The second route was originally encoded as the `policy-violation:` PREFIX,
- * which works when the intent IS the violation (`unsafe-dependency-install`:
- * there is nothing to substitute, so there is no equivalence to prove). It does
- * NOT work for a rule that mandates a substitution for an ordinary intent —
- * naming that intent a violation would be false, and `intentLabel` is a KEY
- * (`ON CONFLICT (workspace_id, intent_label)`, and the `fires` join), so
- * renaming one strands the live row and severs its telemetry rather than
- * editing it.
+ * If a future rule needs it, the argument is on record in D-044 and the shape is
+ * recoverable from git. Do not re-add it without a live caller.
  *
- * So a cited {@link SubstitutionPair.policyAuthority} is the same second route,
- * expressible for that case — and it is deliberately the NARROWER of the two,
- * demanding strictly more than the prefix does:
+ * Note this guard is deliberately STRICTER than migration 665's
+ * `tier_requires_equivalence` CHECK, which also admits any `equivalent` row. The
+ * database bounds what is legal to STORE; this bounds what a pair may DECLARE,
+ * and a stricter code-side policy over a permissive storage constraint is the
+ * intended arrangement, not a mismatch to be "fixed".
  *
- *   prefix route     → any label an author types. No evidence required.
- *   authority route  → a resolvable citation to a human ruling, AND a verdict of
- *                      `equivalent` (measured, not asserted).
- *
- * Requiring `equivalent` is what makes this un-launderable: a cost argument
- * ("the tool is cheaper") cannot produce an equivalence verdict, so it cannot
- * reach `deny` here however it is worded.
- *
- * It also makes the mirror-claim below TRUE. Migration 665's
- * `tier_requires_equivalence` CHECK permits a non-observe tier on three
- * branches — `tier='observe' OR equivalence_verdict='equivalent' OR intent_label
- * LIKE 'policy-violation:%'` — and this function used to mirror only the third.
- * That gap is precisely why every `advise` row (equivalent, unprefixed) was
- * legal in the database but `deny` on the same row was unreachable in code.
- *
- * @throws if `policyTier` is set on a pair that carries neither a
- *   `policy-violation:` intent nor a cited authority over proven equivalence —
- *   the check that keeps "the gate enforces policy, never invents it" (D-003) a
- *   property of the code rather than of reviewer memory.
+ * @throws if `policyTier` is set on a pair whose intent is not a
+ *   `policy-violation:` — the check that keeps "the gate enforces policy, never
+ *   invents it" (D-003) a property of the code rather than of reviewer memory.
  */
 export function assertPolicyTier(pair: SubstitutionPair): SubstitutionTier {
   if (pair.policyTier === undefined) return 'observe';
@@ -379,34 +361,11 @@ export function assertPolicyTier(pair: SubstitutionPair): SubstitutionTier {
     );
   }
   if (!pair.intentLabel.startsWith(POLICY_INTENT_PREFIX)) {
-    const authority = pair.policyAuthority;
-    if (authority === undefined) {
-      throw new Error(
-        `pair ${pair.id} sets policyTier='${pair.policyTier}' but its intentLabel ` +
-          `'${pair.intentLabel}' is not a '${POLICY_INTENT_PREFIX}…' and it cites no policyAuthority. ` +
-          "A tier above 'observe' is earned by P-020 observation, or authorized by a pre-existing " +
-          'rule (D-003) — never asserted.',
-      );
-    }
-    if (authority.ref.trim() === '' || authority.rule.trim() === '') {
-      throw new Error(
-        `pair ${pair.id} cites a policyAuthority with an empty ref or rule. The citation is the ` +
-          'whole authorization — an unresolvable one is an assertion wearing its clothes.',
-      );
-    }
-    // The owner's condition, enforced rather than remembered: a rule may mandate
-    // a substitution only where the substitution is PROVEN faithful. Without
-    // this, the authority route would be a way to block a command whose
-    // replacement cannot do the job — the exact D-001 harm the registry exists
-    // to prevent, and the one `dev:processes` already demonstrated.
-    if (pair.expectedVerdict !== 'equivalent') {
-      throw new Error(
-        `pair ${pair.id} cites policyAuthority '${authority.ref}' to reach ` +
-          `policyTier='${pair.policyTier}', but its verdict is '${pair.expectedVerdict}', not ` +
-          "'equivalent'. A cited rule may mandate a substitution only where the tool is proven to " +
-          'express the command; blocking an unproven one sends agents to a tool that cannot serve them.',
-      );
-    }
+    throw new Error(
+      `pair ${pair.id} sets policyTier='${pair.policyTier}' but its intentLabel ` +
+        `'${pair.intentLabel}' is not a '${POLICY_INTENT_PREFIX}…'. A tier above 'observe' is ` +
+        'earned by P-020 observation, or authorized by a pre-existing rule (D-003) — never asserted.',
+    );
   }
   return pair.policyTier;
 }

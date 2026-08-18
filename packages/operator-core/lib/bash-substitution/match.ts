@@ -15,7 +15,7 @@
  * against a live read, with byte-identical semantics.
  */
 
-import { atomize } from './atomize';
+import { atomize, atomizePipeline } from './atomize';
 import type { EquivalenceVerdict, SubstitutionTier } from './types';
 
 /**
@@ -119,6 +119,7 @@ export function matchCommandToSubstitutions(
   rows: SubstitutionRow[],
 ): SubstitutionMatch[] {
   const out: SubstitutionMatch[] = [];
+  const pipedOut = atomsWhoseStdoutFeedsAPipe(command);
   // First matching atom wins: one row speaks about one intent, so a command
   // reading two files should produce ONE `file-whole-read` advisory, not two
   // copies of the same sentence. That dedup is an ADVISORY concern — see
@@ -126,9 +127,64 @@ export function matchCommandToSubstitutions(
   const seen = new Set<string>();
   for (const m of matchAtomsToSubstitutions(atomsOf(command), rows)) {
     if (seen.has(m.intentLabel)) continue;
+    if (RENDERED_OUTPUT_TOOLS.has(m.toolName) && pipedOut.has(m.atom)) continue;
     seen.add(m.intentLabel);
     out.push(m);
   }
+  return out;
+}
+
+/**
+ * Tools whose result is a RENDERED payload rather than the command's raw stdout.
+ *
+ * The standing rule (owner, 2026-08-18 — D-045): guidance fires only where the
+ * tool is a fully equivalent substitute for what the agent actually wrote. A
+ * pipeline stage is the case where that silently stops being true. `cat FILE`
+ * and `capability:read { file_path }` answer the same question when the agent is
+ * the reader, but `cat FILE | grep X` feeds BYTES to a next stage, and
+ * `capability:read` returns a numbered, headed, paged rendering — so the advice
+ * is not merely less helpful there, it is wrong.
+ *
+ * Membership is a property of the TOOL, not of the row, which is why this is
+ * keyed on `toolName` and needs no new column. The test for membership is
+ * concrete: does the pair need an {@link AnswerEnvelope} to make the two sides
+ * comparable? `capability:read` does (header + per-line number prefix + pager
+ * footer), and that envelope IS the proof its output is not byte-identical.
+ *
+ * DELIBERATELY NOT a blanket "suppress every piped atom" rule, which would be
+ * wrong in the other direction: `npm test … 2>&1 | tail -60` should still advise
+ * `testing:run`, because that tool subsumes the WHOLE pipeline — it returns the
+ * failing tests structurally, so there is nothing left for the `tail` to do.
+ * Suppressing that advisory would withhold good advice. The distinction is
+ * whether the tool replaces the ATOM (and hands the next stage something it
+ * cannot use) or replaces the PIPELINE.
+ *
+ * Only `capability:read` is listed because it is the only membership backed by
+ * evidence today — the file-read family is where a live rollout demonstrated the
+ * failure. The remaining tools are UNSURVEYED, not cleared; adding one requires
+ * the same envelope argument, not an intuition.
+ */
+const RENDERED_OUTPUT_TOOLS = new Set(['capability:read']);
+
+/**
+ * The atoms of `command` whose stdout is consumed by a pipe.
+ *
+ * Derived from the NEXT atom's separator rather than the atom's own: `atomize`
+ * records what precedes an atom (`pipedInto`), and "my output goes to a pipe" is
+ * exactly "the atom after me was piped into".
+ *
+ * Returns normalised atom TEXT, which is the same grain
+ * {@link matchAtomsToSubstitutions} reports in `SubstitutionMatch.atom`, so the
+ * two can be compared directly. A command that legitimately repeats an atom on
+ * both sides of a pipe collapses to one entry; that is harmless here, because a
+ * repeated atom piping out even once is enough to withhold the advisory.
+ */
+export function atomsWhoseStdoutFeedsAPipe(command: string): Set<string> {
+  const parts = atomizePipeline(command);
+  const out = new Set<string>();
+  parts.forEach((part, index) => {
+    if (parts[index + 1]?.pipedInto) out.add(part.atom);
+  });
   return out;
 }
 

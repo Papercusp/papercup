@@ -239,11 +239,8 @@ describe('file-read pattern boundaries', () => {
    * against the tool's envelope, not assumed — so bash remains the correct answer
    * and blocking it would be the D-001 harm the registry exists to prevent.
    */
-  it('never lets an ENFORCED row claim a form that has no tool expression', () => {
-    // Every ENFORCED row, not just the denying ones: the property must hold at
-    // whatever tier the family currently sits at, so that restoring `deny` is a
-    // one-line change rather than a change that also needs new coverage.
-    const enforced = FILE_READ_PAIRS.filter((p) => p.policyTier !== undefined);
+  it('never claims a form that has no tool expression', () => {
+    const enforced = FILE_READ_PAIRS;
     expect(enforced.length).toBe(4);
 
     const unexpressible: Array<[string, string]> = [
@@ -272,30 +269,18 @@ describe('file-read pattern boundaries', () => {
   });
 
   /**
-   * THE CASE THIS GUARD MISSED, kept as a standing reminder of the shape of the
-   * miss rather than only of the miss itself.
+   * The PATTERN still claims a piped stage, and that is correct — the pattern
+   * sees one atom and cannot see the pipe. Suppression happens a layer up, in
+   * the advisory path, which is the only layer that has the whole command.
    *
-   * Every entry in the list above is a BARE atom, so the whole pipeline class was
-   * invisible to it: `atomize` splits `cat FILE | grep X` into stages and the
-   * pattern only ever sees `cat FILE`, which it legitimately claims. At `advise`
-   * that is a slightly-off suggestion; at `deny` it hard-fails a command whose
-   * advised replacement returns a numbered, headed, paged rendering rather than
-   * the raw stdout the next stage consumes.
-   *
-   * This test therefore asserts the CURRENT, honest behaviour — the atom IS
-   * claimed — so that it reads as documentation of a known hole rather than as
-   * an aspiration. Whoever excludes piped stages should invert these to `false`
-   * and move them into the list above; the tier can be restored to `deny` in the
-   * same change, and not before.
+   * Kept as a pair with the advisory-path test in `match.test.ts`: together they
+   * say "the pattern matches, and the advice is withheld anyway". Asserting only
+   * the second would leave it ambiguous whether the rule works or the pattern
+   * merely stopped matching.
    */
-  it('DOES still claim a piped stage — the known hole holding the tier at advise', () => {
+  it('leaves the piped stage to the advisory layer, not the pattern', () => {
     expect(claims(catFileRead, 'cat package.json')).toBe(true);
     expect(claims(headFileRead, 'head -n 5 package.json')).toBe(true);
-    for (const pair of FILE_READ_PAIRS) {
-      expect(pair.policyTier, `${pair.id} must not sit at deny while the pipeline hole is open`).not.toBe(
-        'deny',
-      );
-    }
   });
 
   /**
@@ -1226,61 +1211,27 @@ describe('policy tier authorization', () => {
     expect(() => assertPolicyTier({ ...uncited, policyTier: 'advise' })).toThrow(/never asserted/);
   });
 
-  it('honours a cited authority over a proven-equivalent verdict (D-044)', () => {
-    expect(sedRangeRead.intentLabel.startsWith(POLICY_INTENT_PREFIX)).toBe(false);
-    expect(sedRangeRead.expectedVerdict).toBe('equivalent');
-    expect(sedRangeRead.policyAuthority?.ref).toMatch(/#D-\d+$/);
-    // Whatever tier the pair currently declares, the citation is what authorizes
-    // it — asserted against the declared value rather than a hardcoded one, so
-    // this stays a test of the ROUTE and not of today's rollout state.
-    expect(assertPolicyTier(sedRangeRead)).toBe(sedRangeRead.policyTier);
-    // …and `deny` specifically is REACHABLE by this route. That is the claim the
-    // guard change actually made, and it must keep holding while the file-read
-    // family sits at the lower tier for the pipeline hole.
-    expect(assertPolicyTier({ ...sedRangeRead, policyTier: 'deny' })).toBe('deny');
-  });
-
-  it('refuses a citation that does not resolve to anything', () => {
-    // The citation IS the authorization, so an empty one authorizes nothing —
-    // otherwise the route degrades into the say-so this guard exists to refuse.
-    for (const authority of [
-      { ref: '', rule: 'the owner said so' },
-      { ref: 'some-plan#D-001', rule: '   ' },
-    ]) {
-      expect(() => assertPolicyTier({ ...sedRangeRead, policyAuthority: authority })).toThrow(
-        /empty ref or rule/,
-      );
+  it('keeps the file-read family OUT of any enforcing tier (D-045)', () => {
+    // The owner withdrew the block after the pipeline rollback. This is the
+    // mechanical form of that ruling: these four teach, and a future edit that
+    // quietly re-promotes them fails here rather than fleet-wide.
+    for (const pair of FILE_READ_PAIRS) {
+      expect(pair.policyTier, `${pair.id} must not declare an enforcing tier`).toBeUndefined();
+      expect(assertPolicyTier(pair)).toBe('observe');
     }
   });
 
-  it('refuses a cited authority when the substitution is NOT proven equivalent', () => {
-    // The owner's condition was conditional — "IF it has full parity" — so the
-    // citation route requires the parity, in code. Blocking a command whose
-    // replacement cannot express it is the D-001 harm, and a rule saying "use the
-    // tool" cannot make a tool able to do the job.
-    expect(() =>
-      assertPolicyTier({ ...sedRangeRead, expectedVerdict: 'needs-widening' }),
-    ).toThrow(/is 'needs-widening', not 'equivalent'/);
-    expect(() => assertPolicyTier({ ...sedRangeRead, expectedVerdict: 'not-a-substitute' })).toThrow(
-      /may mandate a substitution only where the tool is proven/,
-    );
-  });
-
-  it('puts every policy row in the registry on one of the two authorized routes', () => {
-    // The population-level invariant. The two cases above prove each route in
-    // isolation; this one proves nothing has reached `deny` on NEITHER — which is
-    // the only way the guard can be defeated once both routes exist.
+  it('leaves the policy hatch reachable ONLY by the policy-violation prefix', () => {
+    // The citation route was removed with its last caller (D-045), so the prefix
+    // is once again the single way past `observe`. Pinned because "the guard has
+    // exactly one route" is the property that makes it auditable.
     const policyPairs = ALL_PAIRS.filter((p) => p.policyTier !== undefined);
     expect(policyPairs.length).toBeGreaterThan(0);
     for (const pair of policyPairs) {
-      const byPrefix = pair.intentLabel.startsWith(POLICY_INTENT_PREFIX);
-      const byCitation =
-        pair.policyAuthority !== undefined &&
-        pair.policyAuthority.ref.trim() !== '' &&
-        pair.expectedVerdict === 'equivalent';
-      expect(byPrefix || byCitation, `${pair.id} reached ${pair.policyTier} on neither route`).toBe(
-        true,
-      );
+      expect(
+        pair.intentLabel.startsWith(POLICY_INTENT_PREFIX),
+        `${pair.id} reached ${pair.policyTier} without a policy-violation intent`,
+      ).toBe(true);
       expect(assertPolicyTier(pair)).toBe(pair.policyTier);
     }
   });
