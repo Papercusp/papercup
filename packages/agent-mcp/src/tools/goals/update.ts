@@ -27,6 +27,7 @@ import {
 } from '@papercusp/operator-core/lib/goal-launch-settings';
 import { SU_WRITE_ROLES } from '../../role-config';
 import { GOAL_STATUSES, TripwireSchema } from './create';
+import { applyGoalBlockedBy } from './goal-deps';
 import { resolveGoalWorkspace } from './_workspace';
 import {
   getGoalTransitionExecutor,
@@ -85,6 +86,14 @@ export default defineTool({
         'cents from the all-time measured child-fleet goals:pots rollup; the handler rejects missing, partial, or mismatched measurements and never derives interactive-session cost',
       ),
     parentId: z.string().min(1).nullable().optional().describe('re-parent, or null to detach'),
+    blockedBy: z
+      .array(z.string().min(1).max(200))
+      .max(20)
+      .nullable()
+      .optional()
+      .describe(
+        'REPLACE this goal\'s blocked-by set (goal-dag-shared-substrate-2026-08-18): goal ids and/or bare WI-/EI- issue ids that must resolve before this goal is actionable. Declarative full-set — the previous set is replaced; null or [] clears it. Every ref must RESOLVE (a goal in this workspace / an existing issue) and the goal graph must stay acyclic. Edges are prerequisites between SEPARATE outcomes — phases of one outcome belong inside the goal as plans/tripwires (D-005). An achieved goal blocker satisfies; a KILLED one flags this goal premiseInvalidated instead of unblocking it.',
+      ),
     drainFleet: z
       .string()
       .min(1)
