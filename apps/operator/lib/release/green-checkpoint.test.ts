@@ -7426,6 +7426,10 @@ describe("runGreenCheckpoint — longest-green-prefix (P-016)", () => {
     commits: string[]; // lastReady..candidate, OLDEST-FIRST full shas
     confirmGreen: boolean | boolean[];
     logPath?: string;
+    /** WI-39841: wall-clock cost of EACH confirm suite. The salvage's budget check is a
+     *  time measurement, so exercising it needs a confirm that actually costs time — the
+     *  real one is tens of minutes. */
+    confirmDelayMs?: number;
   }): { deps: CheckpointDeps; calls: string[] } {
     const calls: string[] = [];
     let runGreenN = 0;
@@ -7445,6 +7449,9 @@ describe("runGreenCheckpoint — longest-green-prefix (P-016)", () => {
           };
         }
         calls.push("runGreen:confirm");
+        if (opts.confirmDelayMs) {
+          await new Promise((r) => setTimeout(r, opts.confirmDelayMs));
+        }
         const confirmVerdicts = Array.isArray(opts.confirmGreen)
           ? opts.confirmGreen
           : [opts.confirmGreen];
@@ -7735,6 +7742,102 @@ describe("runGreenCheckpoint — longest-green-prefix (P-016)", () => {
     );
     expect(body).toContain(`✅ partial-green-gate: ready advanced`);
     expect(body).toContain(`→ ${c3.slice(0, 8)}`);
+  });
+
+  // WI-39841 (Defect 3) — the recovery walk must be bounded by TIME, not only by COUNT.
+  //
+  // `maxRecoveryConfirms = 4` bounds how many extra full affected suites the salvage may
+  // run; it says nothing about whether the run can afford them. The call-site pre-start
+  // check (WI-39450, above) budgets for exactly ONE confirm, so it admits a salvage whose
+  // worst case is 1 + 4 = FIVE of them, and nothing in between ever re-asks.
+  //
+  // Measured on the 2026-08-18T17:15:04Z cron run: admitted at ~23m elapsed with ~77m of
+  // headroom (correct, for one confirm), then walked prefixes 17:37:57 → 18:54+ and was
+  // still running when the run deadline SIGTERMed the process — destroying the verdict it
+  // had already computed at 17:37:55 (`gate_health` recorded observedCandidate:null,
+  // failingTests:[], and still incremented consecutiveReds).
+  //
+  // Both directions are pinned: the deadline must STOP the walk, and — the control — it
+  // must be the ONLY thing that stops it, or a bug that disabled recovery outright would
+  // pass the first test and look like a fix.
+  describe("WI-39841: the recovery walk is bounded by the run budget, not just the attempt cap", () => {
+    /** A chain long enough that the recovery walk has somewhere to go: the located prefix
+     *  is c2, leaving c3 and c4 as probe targets ahead of the red tip c5. */
+    async function chain5() {
+      const c1 = await commit("a", "1", "c1");
+      await git(repo, ["branch", "ready", c1]);
+      const c2 = await commit("b", "2", "c2");
+      const c3 = await commit("c", "3", "c3");
+      const c4 = await commit("d", "4", "c4");
+      const c5 = await commit("e", "5", "c5"); // the red tip
+      return { c2, c3, c4, c5 };
+    }
+
+    const CONFIRM_COST_MS = 1500;
+
+    it("STOPS the walk when the next confirm would overrun the budget", async () => {
+      const { c2, c3, c4, c5 } = await chain5();
+      const logPath = join(repo, "candidate-red.log");
+      writeFileSync(logPath, "CANDIDATE SUITE BODY\n");
+      const { deps, calls } = partialDeps({
+        candidateFailingTests: ["@ws/failing"],
+        // c2 is clean ⇒ located as the prefix; everything after implicates the failure.
+        affected: {
+          [c2]: ["@ws/other"],
+          [c3]: ["@ws/failing"],
+          [c4]: ["@ws/failing"],
+          [c5]: ["@ws/failing"],
+        },
+        commits: [c2, c3, c4, c5],
+        confirmGreen: false, // every confirm misses ⇒ the walk would run to its attempt cap
+        confirmDelayMs: CONFIRM_COST_MS,
+        logPath,
+      });
+
+      const r = await runGreenCheckpoint(cfg(), deps, {
+        noPush: true,
+        // Room for the FIRST confirm, but not for a second one after it is measured.
+        salvageDeadlineMs: Date.now() + 2 * CONFIRM_COST_MS - 1000,
+      });
+
+      // Exactly ONE confirm — the initial one. The walk never started.
+      expect(calls.filter((c) => c === "runGreen:confirm")).toHaveLength(1);
+      // ...and it said so, rather than stopping silently (WI-38207's rule for this path).
+      const body = readFileSync(logPath, "utf8");
+      expect(body).toContain("partial-green-gate: recovery STOPPED after 0 of 4");
+      // The whole point: the verdict still lands intact. This is what the SIGTERM destroyed.
+      expect(r.green).toBe(false);
+      expect(r.candidate).toBe(c5);
+      expect(r.failingTests).toEqual(["@ws/failing"]);
+      expect(r.advanced).toBe(false);
+    });
+
+    it("control: the SAME red with budget to spare still walks the recovery probes", async () => {
+      const { c2, c3, c4, c5 } = await chain5();
+      const { deps, calls } = partialDeps({
+        candidateFailingTests: ["@ws/failing"],
+        affected: {
+          [c2]: ["@ws/other"],
+          [c3]: ["@ws/failing"],
+          [c4]: ["@ws/failing"],
+          [c5]: ["@ws/failing"],
+        },
+        commits: [c2, c3, c4, c5],
+        confirmGreen: false,
+        confirmDelayMs: 0,
+        logPath: undefined,
+      });
+
+      await runGreenCheckpoint(cfg(), deps, {
+        noPush: true,
+        salvageDeadlineMs: Date.now() + 60 * 60_000,
+      });
+
+      // Initial confirm + the forward probe + one bisect probe.
+      expect(
+        calls.filter((c) => c === "runGreen:confirm").length,
+      ).toBeGreaterThan(1);
+    });
   });
 
   it("holds when the FIRST new commit already implicates a failing workspace (no clean prefix)", async () => {
