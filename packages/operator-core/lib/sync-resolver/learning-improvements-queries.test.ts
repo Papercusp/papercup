@@ -93,14 +93,22 @@ describe('learning.improvements resolver gate', () => {
     afterEach(() => vi.resetModules());
 
     it('DEFAULT variant ({}) reads the precomputed snapshot — never the inline compute — and records exposure from the snapshot humanQueue', async () => {
-      const snap = { humanQueue: [{ id: 'EI-1' }, { id: 'EI-2' }], flow: {}, recurringSignatures: [] };
-      readDerivedSnapshotRowsMock.mockImplementation(async () => [snap]);
+      const snap = { humanQueue: [{ id: 'EI-1' }, { id: 'EI-2' }], flow: {}, recurringSignatures: [] } as Record<string, unknown>;
+      // WI-39773: the DEFAULT variant reads via readDerivedSnapshot (meta-carrying),
+      // no longer readDerivedSnapshotRows — same contract as the hive lens below.
+      readDerivedSnapshotMock.mockImplementation(async () => ({
+        payload: [snap] as unknown,
+        meta: { computedAt: 123, computeMs: 4, missing: false, stale: false, error: null, precomputed: true },
+      }));
       const { resolveNamedQueryV2: r } = await import('./index');
-      const rows = (await r('learning.improvements', {})) as unknown[];
-      expect(rows).toEqual([snap]);
-      expect(readDerivedSnapshotRowsMock).toHaveBeenCalledWith('learning.improvements');
+      const rows = (await r('learning.improvements', {})) as Array<Record<string, unknown>>;
+      expect(rows).toHaveLength(1);
+      expect(rows[0].humanQueue).toEqual([{ id: 'EI-1' }, { id: 'EI-2' }]);
+      expect(readDerivedSnapshotMock).toHaveBeenCalledWith('learning.improvements');
       // The point of P-003: the read path runs NO digest compute.
       expect(computeSnapshotMock).not.toHaveBeenCalled();
+      // Staleness meta rides along so the panel can show "as of HH:MM" (WI-39773).
+      expect((rows[0]._meta as { derivedRead?: { precomputed?: boolean } })?.derivedRead?.precomputed).toBe(true);
       await flushMicrotasks();
       // Exposure fires on the real read, keyed off the snapshot's humanQueue ids.
       expect(recordQueueExposureMock).toHaveBeenCalledWith(['EI-1', 'EI-2']);
@@ -172,10 +180,21 @@ describe('learning.improvements resolver gate', () => {
       expect(recordQueueExposureMock).not.toHaveBeenCalled();
     });
 
-    it('an empty snapshot (cold DB / miss) returns [] and records no exposure', async () => {
-      readDerivedSnapshotRowsMock.mockImplementation(async () => []);
+    it('a DEFAULT-variant snapshot MISS (cold pot) falls through to the live compute — never a blank landing view (WI-39773)', async () => {
+      // The hoisted default is already a miss; be explicit about what is under test.
+      readDerivedSnapshotMock.mockImplementation(async () => ({
+        payload: null as unknown,
+        meta: { computedAt: null, computeMs: null, missing: true, stale: false, error: null, precomputed: false },
+      }));
+      computeSnapshotMock.mockImplementation(async () => []);
       const { resolveNamedQueryV2: r } = await import('./index');
       const rows = (await r('learning.improvements', {})) as unknown[];
+      expect(readDerivedSnapshotMock).toHaveBeenCalledWith('learning.improvements');
+      // WI-39773: a miss must NOT flatten to [] — it serves the live compute while
+      // the background fill warms the pot (the pre-WI-39773 `...Rows` read served
+      // an EMPTY digest for ~2 min after every producerVersion bump).
+      expect(computeSnapshotMock).toHaveBeenCalledWith({});
+      // Cold DB: the live compute is empty too ⇒ [] and no exposure row written.
       expect(rows).toEqual([]);
       await flushMicrotasks();
       expect(recordQueueExposureMock).not.toHaveBeenCalled();
