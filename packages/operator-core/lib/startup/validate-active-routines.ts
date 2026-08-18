@@ -182,7 +182,8 @@ export async function validateActiveRoutines(
     }
   }
 
-  const unregisteredSystemActions = await findUnregisteredSystemActions(activeRoutines);
+  const { applicable: systemActionCheckApplicable, missing: unregisteredSystemActions } =
+    await findUnregisteredSystemActions(activeRoutines);
 
   const ok = problematicRoutines.length === 0 && unregisteredSystemActions.length === 0;
 
@@ -207,6 +208,7 @@ export async function validateActiveRoutines(
     unregisteredHarnesses,
     problematicRoutines,
     unregisteredSystemActions,
+    systemActionCheckApplicable,
   };
 }
 
@@ -233,7 +235,18 @@ export async function validateActiveRoutines(
  */
 async function findUnregisteredSystemActions(
   activeRoutines: readonly unknown[],
-): Promise<Array<{ installSlug: string; routineName: string; action: string; workspaceId: string }>> {
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<{
+  applicable: boolean;
+  missing: Array<{ installSlug: string; routineName: string; action: string; workspaceId: string }>;
+}> {
+  // WI-39810: a host that does not DISPATCH routines cannot answer whether their handlers
+  // resolve — its registry is a different process's. Report nothing AND say we did not look,
+  // so the caller neither raises nor clears on this host's behalf.
+  if (!hostExecutesRoutines(env)) {
+    return { applicable: false, missing: [] };
+  }
+
   let getSystemAction: (name: string) => unknown;
   try {
     // Side-effect import: populates the registry. The boot sequence does NOT otherwise import
@@ -246,7 +259,7 @@ async function findUnregisteredSystemActions(
       '[routine-validation] system-action registry import failed — skipping the ' +
         `unregistered-handler check (reporting none): ${e instanceof Error ? e.message : e}`,
     );
-    return [];
+    return { applicable: false, missing: [] };
   }
 
   const SYSTEM_PREFIX = 'system:';
@@ -274,7 +287,7 @@ async function findUnregisteredSystemActions(
       workspaceId: r.workspace_id || '<empty>',
     });
   }
-  return missing;
+  return { applicable: true, missing };
 }
 
 /** The operator-facing message for a dead system-action routine — names the exact one-line fix. */
@@ -658,14 +671,42 @@ export async function enforceActiveRoutines(workspaceId?: string): Promise<Enfor
   // is now reserved for a TRANSITION (the offender set gained or lost a member); an unchanged
   // set collapses to one chronic line that still carries the full recurrence facts.
   const nowMs = Date.now();
-  if (result.unregisteredSystemActions.length > 0) {
-    const aged = await ageFatalClass(ws, 'unregistered-system-action', result.unregisteredSystemActions, nowMs);
-    if (aged) {
-      const line =
-        `${formatUnregisteredSystemActions(result.unregisteredSystemActions, aged.severity)} ` +
-        `[${aged.recurrence}]`;
-      if (aged.severity === 'fatal') console.error(line);
-      else console.warn(line);
+  // WI-39810: three cases, not two. `unregisteredSystemActions` being empty is ambiguous —
+  // it means "no offenders" ONLY when the check actually ran (`systemActionCheckApplicable`).
+  // On a host that does not dispatch routines the check is skipped, and we must neither
+  // report nor clear: clearing there would delete a TRUE mark written by the host that does.
+  if (result.systemActionCheckApplicable) {
+    if (result.unregisteredSystemActions.length > 0) {
+      const aged = await ageFatalClass(ws, 'unregistered-system-action', result.unregisteredSystemActions, nowMs);
+      if (aged) {
+        const line =
+          `${formatUnregisteredSystemActions(result.unregisteredSystemActions, aged.severity)} ` +
+          `[${aged.recurrence}]`;
+        if (aged.severity === 'fatal') console.error(line);
+        else console.warn(line);
+      }
+    } else {
+      // The offender set went EMPTY on a host that CAN see the registry — the routines are
+      // healthy here. `ageFatalClass` (which owns the clear) is only reached with a non-empty
+      // set, so before this a mark outlived the defect that caused it: a routine whose import
+      // was subsequently added stayed rendered as SILENTLY DEAD by `routines:list` forever,
+      // with occurrences frozen at whatever it reached. Clear it explicitly. Fail-soft — a
+      // boot must never die over a health check.
+      try {
+        const { sql } = getOrgPg();
+        const cleared = await clearRoutineValidationMarks(sql, ws, 'unregistered-system-action', []);
+        if (cleared > 0) {
+          console.log(
+            `[routine-validation] RESOLVED: cleared ${cleared} stale unregistered-system-action ` +
+              `mark(s) — every active system:<action> routine now resolves on this host.`,
+          );
+        }
+      } catch (e) {
+        console.warn(
+          '[routine-validation] could not clear resolved unregistered-system-action marks ' +
+            `(non-fatal): ${e instanceof Error ? e.message : e}`,
+        );
+      }
     }
   }
   if (stillProblematic.length > 0) {
