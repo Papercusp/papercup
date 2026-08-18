@@ -348,6 +348,7 @@ export default defineTool({
           ok: false,
           op: 'trigger',
           refused: true,
+          ...stamp,
           reason:
             // EI-18724155280048738: checked FIRST — a caller landing here after a trigger that
             // returned a transport error needs "your deploy IS running", not a gate lecture.
@@ -366,6 +367,7 @@ export default defineTool({
           ok: true,
           op: 'trigger',
           dry_run: true,
+          ...stamp,
           would_deploy: { greenPinSha: status.deploy.greenPinSha, commitsAhead: status.deploy.deployedBehindGreenPin },
           note: 'Pass confirm:true to fire the detached green deploy (restarts :3070; only ships the green pin). The deploy reports its own outcome (broadcast + pipeline event + release:deployed/deploy-failed events).',
           status: statusBrief(status),
@@ -390,6 +392,7 @@ export default defineTool({
       return json({
         ok: launch.launched,
         op: 'trigger',
+        ...stamp,
         launched: launch.launched,
         unit: launch.unit,
         logPath: launch.logPath,
@@ -410,6 +413,7 @@ export default defineTool({
         ok: false,
         op: 'force',
         refused: true,
+        ...stamp,
         reason: `role_forbidden — release:deploy{op:force} requires operator, mug, or architect role (you are role:${ctx.role ?? 'unknown'}). Forcing ships KNOWN-BROKEN code; it is an owner-authorized escape, never an agent's reflex. Prefer fixing the reds.`,
         status: statusBrief(status),
       });
@@ -420,6 +424,7 @@ export default defineTool({
         ok: false,
         op: 'force',
         refused: true,
+        ...stamp,
         reason: 'no_commit — could not resolve the staging HEAD to force-deploy; pass an explicit `commit` sha.',
         status: statusBrief(status),
       });
@@ -429,6 +434,7 @@ export default defineTool({
         ok: true,
         op: 'force',
         dry_run: true,
+        ...stamp,
         would_force_deploy: {
           commit,
           acknowledgeRedTests: args.acknowledgeRedTests,
@@ -463,6 +469,7 @@ export default defineTool({
     return json({
       ok: launch.launched,
       op: 'force',
+      ...stamp,
       launched: launch.launched,
       unit: launch.unit,
       commit,
