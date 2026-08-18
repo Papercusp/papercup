@@ -26,10 +26,38 @@ export function selectGatedPackages({ libsRoot, relativeTo }?: {
     packages: any[];
     unreadable: any[];
 };
-export function main({ libsRoot, relativeTo, listOnly, spawn, log, warn, error, }?: {
+/**
+ * WI-39727 — `--files=` is a VERDICT SCOPE here, exactly as it is for every sibling gate.
+ *
+ * It used to be accepted and completely ignored: this leg fanned out over all 8 packages and
+ * reported a whole-project verdict, so `--files=packages/not-a-real-workspace/src/synthetic.ts`
+ * printed "8 passed, 0 failed" and exited 0. A caller who scoped to their edit got a green that
+ * said nothing about the paths they named.
+ *
+ * The sibling gates inherit this partitioning free from `runTscBaselineGate`; this leg has a
+ * different architecture and never calls it, so it is wired here explicitly against the SAME
+ * shared helpers rather than reimplemented — the two must not drift.
+ *
+ * Coverage is DISCOVERED (see `selectGatedPackages`), so the prefixes are the discovered
+ * packages' own directories. A named file under one of them selects that package; a named file
+ * under none of them is `uncovered` and is reported as such instead of being silently absorbed
+ * into a whole-project pass.
+ *
+ * @param {{packages: any[], files: Set<string> | null}} input
+ * @returns {{selected: any[], uncovered: string[]}}
+ */
+export function selectByExplicitFiles({ packages, files }: {
+    packages: any[];
+    files: Set<string> | null;
+}): {
+    selected: any[];
+    uncovered: string[];
+};
+export function main({ libsRoot, relativeTo, argv, listOnly, spawn, log, warn, error, }?: {
     libsRoot?: string | undefined;
     relativeTo?: string | undefined;
-    listOnly?: boolean | undefined;
+    argv?: string[] | undefined;
+    listOnly?: any;
     spawn?: typeof realSpawn | undefined;
     log?: {
         (...data: any[]): void;
@@ -43,7 +71,7 @@ export function main({ libsRoot, relativeTo, listOnly, spawn, log, warn, error, 
         (...data: any[]): void;
         (message?: any, ...optionalParams: any[]): void;
     } | undefined;
-}): 0 | 1;
+}): any;
 export function GATE_COVERAGE(): string[];
 import { realSpawn } from './lib/typecheck-fanout.mjs';
 import { discover } from './lib/typecheck-fanout.mjs';
