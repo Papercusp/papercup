@@ -47,6 +47,13 @@ function input(over: Partial<CoverageRawInput> = {}): CoverageRawInput {
       meets_l3: 0,
       meets_l4: 0,
       meets_floor: 0,
+      // below_unwaived_* mirrors the SQL: count(NOT meets_lN AND NOT waived) over the
+      // whole population — i.e. `surfaces - meets_lN - waived` while waived ∩ meets = ∅.
+      below_unwaived_l1: 0,
+      below_unwaived_l2: 0,
+      below_unwaived_l3: 0,
+      below_unwaived_l4: 0,
+      below_unwaived_floor: 0,
     },
     fidelityRows: [],
     byKindRows: [],
@@ -166,15 +173,22 @@ describe('markers ride EVERY aggregate (the P-005 acceptance requirement)', () =
         meets_l3: 30,
         meets_l4: 5,
         meets_floor: 40,
+        // 100 surfaces, 1 waived: below_unwaived_lN = 100 - meets_lN - 1.
+        below_unwaived_l1: 59,
+        below_unwaived_l2: 89,
+        below_unwaived_l3: 69,
+        below_unwaived_l4: 94,
+        below_unwaived_floor: 59,
       },
       fidelityRows: [
         { fidelity: 'declared', n: 90 },
         { fidelity: 'file-only', n: 10 },
       ],
       byKindRows: [
-        { kind: 'http-route', fidelity: 'declared', n: 80, meets: 30, waived: 1 },
-        { kind: 'mcp-tool', fidelity: 'file-only', n: 10, meets: 5, waived: 0 },
-        { kind: 'mcp-tool', fidelity: 'declared', n: 10, meets: 5, waived: 0 },
+        // below_unwaived = n - meets - waived, per kind+fidelity row.
+        { kind: 'http-route', fidelity: 'declared', n: 80, meets: 30, waived: 1, below_unwaived: 49 },
+        { kind: 'mcp-tool', fidelity: 'file-only', n: 10, meets: 5, waived: 0, below_unwaived: 5 },
+        { kind: 'mcp-tool', fidelity: 'declared', n: 10, meets: 5, waived: 0, below_unwaived: 5 },
       ],
       registrations: { registered: 3, enabled: 3 },
     }),
@@ -236,6 +250,12 @@ describe('the aggregates do not move with `limit` — behavioural, not by field 
     meets_l3: 0,
     meets_l4: 0,
     meets_floor: 200,
+    // 500 surfaces, 0 waived: below_unwaived_lN = 500 - meets_lN.
+    below_unwaived_l1: 300,
+    below_unwaived_l2: 500,
+    below_unwaived_l3: 500,
+    below_unwaived_l4: 500,
+    below_unwaived_floor: 300,
   };
   const fidelityRows = [{ fidelity: 'declared', n: 500 }];
   const registrations = { registered: 3, enabled: 3 };
@@ -320,6 +340,12 @@ describe('rungs are judged by their FLAG, never by depth >= N', () => {
           meets_l3: 30,
           meets_l4: 5,
           meets_floor: 40,
+          // 100 surfaces, 0 waived: below_unwaived_lN = 100 - meets_lN.
+          below_unwaived_l1: 60,
+          below_unwaived_l2: 90,
+          below_unwaived_l3: 70,
+          below_unwaived_l4: 95,
+          below_unwaived_floor: 60,
         },
         fidelityRows: [{ fidelity: 'declared', n: 100 }],
         registrations: { registered: 3, enabled: 3 },
