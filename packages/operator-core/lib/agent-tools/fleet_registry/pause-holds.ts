@@ -64,9 +64,30 @@ export interface FleetPauseHoldResult {
   items: string[];
   /** Items matched but whose write failed — surfaced, never thrown. */
   failed: string[];
+  /**
+   * Set ONLY when the leg failed wholesale (the query threw). Distinguishes "nothing
+   * matched" — a normal, healthy outcome — from "this protection did not run", which
+   * are otherwise the SAME empty result.
+   *
+   * This field exists because fail-soft nearly shipped the original bug back: the first
+   * draft of the query named a column that does not exist on `harness_shared.work_items`
+   * (`assignee`; the claim holder is `taken_by`). The catch below swallowed it, so a
+   * pause would have reported success while parking NOTHING — the exact leak this module
+   * closes, now wearing a "fixed" label and impossible to notice. Fail-soft is still
+   * right (a hold failure must never wedge a pause, still less a RESUME), but it must be
+   * LOUD: silence here is indistinguishable from correctness.
+   */
+  degraded?: string;
 }
 
 const EMPTY: FleetPauseHoldResult = { items: [], failed: [] };
+
+/** Fail-soft, but never silent — see {@link FleetPauseHoldResult.degraded}. */
+function degraded(leg: 'pause' | 'resume', fleetSlug: string, err: unknown): FleetPauseHoldResult {
+  const message = (err as Error)?.message ?? String(err);
+  console.warn(`[fleet-pause-holds] ${leg} leg FAILED for '${fleetSlug}' — lane NOT protected:`, message);
+  return { ...EMPTY, degraded: message };
+}
 
 /**
  * PAUSE leg: park every non-terminal work-item currently held by a member of this fleet,
@@ -103,31 +124,35 @@ export async function applyFleetPauseHolds(args: {
     const marker = fleetPauseHoldMarker(args.fleetSlug);
     const parkedReason = args.reason ? `${marker} ${args.reason}` : marker;
 
+    // NB: the claim HOLDER column is `taken_by`, not `assignee` — `assignee` is a
+    // TOOL-LAYER projection name (work_items:list/get) with no column behind it. Verified
+    // against the live relation: a query naming `assignee` raises 42703, which the
+    // fail-soft catch would otherwise have hidden completely.
     const rows = await sql<{ feature_id: string; harness_slug: string | null }[]>`
       SELECT w.feature_id, w.harness_slug
         FROM harness_shared.work_items w
        WHERE w.workspace_id = ${args.workspaceId}
-         AND w.assignee IS NOT NULL
-         AND w.assignee <> ''
+         AND w.taken_by IS NOT NULL
+         AND w.taken_by <> ''
          AND NOT (w.status = ANY(${ANY_FAMILY_TERMINAL_STATES as string[]}::text[]))
          -- Already parked (by anyone, for any reason): leave its provenance alone.
          AND COALESCE(w.payload, '{}'::jsonb) ->> '_claimHold' IS DISTINCT FROM 'true'
          AND (
-           w.assignee IN (
+           w.taken_by IN (
              SELECT p.owner_id
                FROM harness_shared.coord_presence p
               WHERE p.workspace_id = ${args.workspaceId}
                 AND p.fleet_slug = ${args.fleetSlug}
            )
-           OR (${args.leaderOwnerId ?? null}::text IS NOT NULL AND w.assignee = ${args.leaderOwnerId ?? null})
+           OR (${args.leaderOwnerId ?? null}::text IS NOT NULL AND w.taken_by = ${args.leaderOwnerId ?? null})
          )`;
 
     return await writeHolds(rows, true, {
       parkedBy: args.byOwnerId,
       parkedReason,
     });
-  } catch {
-    return EMPTY;
+  } catch (err) {
+    return degraded('pause', args.fleetSlug, err);
   }
 }
 
@@ -152,8 +177,8 @@ export async function clearFleetPauseHolds(args: {
          AND COALESCE(w.payload, '{}'::jsonb) ->> 'claim_hold_reason' LIKE ${`${marker}%`}`;
 
     return await writeHolds(rows, false, {});
-  } catch {
-    return EMPTY;
+  } catch (err) {
+    return degraded('resume', args.fleetSlug, err);
   }
 }
 

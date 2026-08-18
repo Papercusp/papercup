@@ -91,10 +91,15 @@ describe('applyFleetPauseHolds — the pause leg', () => {
     // A member that has ALREADY parked in response to the pause is the very case this
     // protects, so membership must not be gated on heartbeat freshness.
     expect(text).not.toMatch(/heartbeat|stale|interval/i);
-    // Only non-terminal, currently-assigned, not-already-held rows.
+    // Only non-terminal, currently-held, not-already-parked rows.
     expect(text).toContain('_claimHold');
-    expect(text).toContain('assignee');
     expect(text).toContain('NOT (w.status = ANY(');
+    // THE CLAIM-HOLDER COLUMN IS `taken_by`. `assignee` is a TOOL-LAYER projection name
+    // with no column behind it: the first draft used it and Postgres raised 42703, which
+    // the fail-soft catch swallowed whole — a pause that reports success and parks
+    // NOTHING, i.e. the original bug wearing a "fixed" label. Pin both directions.
+    expect(text).toContain('w.taken_by');
+    expect(text).not.toContain('assignee');
     // The registry leader is unioned in (singular coord_presence.fleet_slug, mig 407).
     expect(values).toContain('su-leader');
   });
@@ -131,8 +136,23 @@ describe('applyFleetPauseHolds — the pause leg', () => {
       workspaceId: 'ws-1',
       byOwnerId: 'su-owner',
     });
-    expect(res).toEqual({ items: [], failed: [] });
+    expect(res.items).toEqual([]);
     expect(holdM).not.toHaveBeenCalled();
+    // ...but NOT silently. A wholesale failure must be distinguishable from "nothing
+    // matched", or a pause that protects nothing looks exactly like a pause with nothing
+    // to protect — which is how the original bug would return wearing a "fixed" label.
+    expect(res.degraded).toContain('pg down');
+  });
+
+  it('a healthy empty result is NOT marked degraded', async () => {
+    nextRows = [];
+    const res = await applyFleetPauseHolds({
+      fleetSlug: 'f',
+      workspaceId: 'ws-1',
+      byOwnerId: 'su-owner',
+    });
+    expect(res).toEqual({ items: [], failed: [] });
+    expect(res.degraded).toBeUndefined();
   });
 });
 
