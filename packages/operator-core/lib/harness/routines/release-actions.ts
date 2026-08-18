@@ -820,7 +820,7 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
   // A contentless red is worse than no red: it names nothing to fix while asserting something
   // is broken. `parsed?.reason` below still wins whenever the run DID print a verdict before
   // dying, so this only relabels the genuinely verdict-less case.
-  let status = r.timedOut ? 'deadline-exceeded' : 'error';
+  let status = checkpointFallbackStatus(r.timedOut);
   let candidate: string | undefined;
   let summary: string | undefined;
   let failingTests: string[] | undefined;
@@ -1151,6 +1151,26 @@ export function isProvenStaleCandidate(retriage?: GateStallRetriage | null): boo
     retriage?.classification === 'stale-candidate' &&
     retriage.refireBlockedBy !== 'charged-budget'
   );
+}
+
+/**
+ * WI-39841 (Defect 2) — the status for a run that produced NO parseable result marker.
+ *
+ * Both inputs to this decision arrive looking identical downstream (non-zero exit, no marker),
+ * so the discriminator has to be carried from the one place that observes it first-hand: the
+ * runner's deadline timer, which stamps `RunResult.timedOut` at the moment it SIGTERMs the
+ * group. This is deliberately NOT inferred from empty `failingTests`/`candidate` — a genuine
+ * red can be sparse, and reading absence as a cause is how the two got conflated originally.
+ *
+ * ⚠ This is only the FALLBACK. A run that printed its verdict and was then killed keeps that
+ * verdict: the caller overwrites `status` from `parsed.reason` whenever a marker parsed. So a
+ * 'deadline-exceeded' status means "killed AND never reported", which is exactly the tick that
+ * establishes nothing about the code.
+ */
+export function checkpointFallbackStatus(
+  timedOut: boolean | undefined,
+): 'deadline-exceeded' | 'error' {
+  return timedOut ? 'deadline-exceeded' : 'error';
 }
 
 export function classifyGateStallStatus(
