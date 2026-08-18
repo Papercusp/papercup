@@ -7668,6 +7668,28 @@ export function hasNpmScript(treeDir: string, scriptName: string): boolean {
 }
 
 /**
+ * The root-owned typecheck legs that travel WITH `lint:tsc` (WI-37485).
+ *
+ * Used to tell the two meanings of a missing `lint:tsc` apart in `runPostSuiteLegs`:
+ * a SUBJECT HIVE legitimately omits the whole typecheck family (skip it silently, per
+ * `hasNpmScript` above), whereas a tree still exposing these siblings is the Papercusp
+ * root with its operator-core leg missing — which silently disables the gate's only
+ * typecheck for `packages/operator-core`.
+ *
+ * Every entry must be a script `runPostSuiteLegs` actually probes, or the discriminator
+ * degrades: an entry naming a script no leg checks can never be `present`, weakening the
+ * signal, and one naming a script a SUBJECT HIVE also ships would misfire on a hive.
+ * `green-checkpoint-legs-verdict-coverage.test.ts` pins the first half against the legs
+ * DISCOVERED from a real run, so this list cannot silently drift out of that set — the
+ * same anchor-to-the-property rule that file already applies to `legs.ok`.
+ */
+export const ROOT_OWNED_TYPECHECK_SIBLINGS = [
+  "lint:tsc:papercusp-libs",
+  "lint:tsc:workspaces",
+  "lint:tsc:orchestrator",
+] as const;
+
+/**
  * EI-18661485259809120: every commit git-sync produces (and therefore every commit
  * `main` ever advances to, since main only ever FAST-FORWARDS from a staging commit
  * — it never gets a fresh commit of its own) carries a literal `[skip ci]` suffix

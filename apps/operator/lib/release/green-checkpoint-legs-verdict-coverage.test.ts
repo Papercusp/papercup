@@ -29,8 +29,16 @@
  */
 import { describe, it, expect } from 'vitest';
 import { join } from 'node:path';
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 
-import { runPostSuiteLegs, isRerunnableGateEntry, type CheckpointExec } from './green-checkpoint';
+import {
+  runPostSuiteLegs,
+  isRerunnableGateEntry,
+  checkNpmScript,
+  ROOT_OWNED_TYPECHECK_SIBLINGS,
+  type CheckpointExec,
+} from './green-checkpoint';
 
 /** Repo root: apps/operator/lib/release/ -> ../../../.. */
 const ROOT = join(import.meta.dirname, '..', '..', '..', '..');
@@ -225,6 +233,135 @@ describe('green-checkpoint post-suite legs — verdict coverage', () => {
         `way, add it to RESCUE_EXCLUDED above WITH the reason it is not re-runnable — never ` +
         `delete this check, which is the only thing standing between a new lint leg and another ` +
         `un-rescuable red streak.`,
+    ).toEqual([]);
+  });
+});
+
+/**
+ * WI-37485: a MISSING `lint:tsc` must not silently disable the gate's only operator-core
+ * typecheck.
+ *
+ * `checkNpmScript(treeDir,'lint:tsc') === 'absent'` is the ONE branch that skips this leg
+ * while setting no `haltedBy`, pushing no failing signature, and — since runPostSuiteLegs
+ * persists a non-test leg's output only on failure — writing nothing to the log. WI-37485
+ * observed a candidate whose later legs ran (proving the operator-core leg had not halted
+ * the chain) while that candidate provably contained a TS2741, and could not settle whether
+ * this branch had fired, because a tree taking it leaves no artifact behind.
+ *
+ * `absent` must STAY silent for a real subject hive, so the tests below pin BOTH directions:
+ * the root-shaped tree fails loudly, the hive-shaped tree still skips quietly. Every tree
+ * here is built in a TEMP DIR (`runPostSuiteLegs` takes `treeDir` as a parameter), so this
+ * never mutates the shared checkout — the copy-out tier of CLAUDE.md's falsifiability rule.
+ */
+describe('green-checkpoint — a missing lint:tsc cannot silently skip the typecheck leg (WI-37485)', () => {
+  /** Build a throwaway tree exposing exactly `scripts`, and run the real leg chain on it. */
+  async function runLegsInTree(scripts: Record<string, string>) {
+    const dir = mkdtempSync(join(tmpdir(), 'gc-wi37485-'));
+    try {
+      writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'probe-tree', scripts }));
+      const invokedScripts: string[] = [];
+      const exec: CheckpointExec = async (cmd, args) => {
+        const script = npmScriptOf(cmd, args);
+        if (script) invokedScripts.push(script);
+        if (cmd === 'git') return { code: 1, stdout: '', stderr: '' };
+        return ok;
+      };
+      const legs = await runPostSuiteLegs(dir, process.env, exec, '@papercusp/operator-vite');
+      return { legs, invokedScripts };
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  const SIBLINGS = Object.fromEntries(
+    ROOT_OWNED_TYPECHECK_SIBLINGS.map((s) => [s, `echo ${s}`]),
+  ) as Record<string, string>;
+
+  it('FAILS loudly when a tree exposes the root-owned sibling legs but no lint:tsc', async () => {
+    const { legs, invokedScripts } = await runLegsInTree(SIBLINGS);
+
+    expect(
+      legs.typecheck?.status,
+      'A root-shaped tree missing `lint:tsc` must FAIL the typecheck leg, not skip it — ' +
+        'skipping is what let WI-37485 be unfalsifiable.',
+    ).toBe('failed');
+    expect(
+      legs.ok,
+      'A failed typecheck leg must red the verdict through legs.ok, or the gate reports GREEN ' +
+        'on a candidate whose operator-core typecheck never ran.',
+    ).toBe(false);
+    // It must not have HALTED the chain: the siblings still have to run and report.
+    expect(invokedScripts).toContain(ROOT_OWNED_TYPECHECK_SIBLINGS[0]);
+  });
+
+  it('still SKIPS silently for a genuine subject hive that omits the whole typecheck family', async () => {
+    // The legitimate case `absent` exists for. Breaking it would red every subject hive.
+    const { legs } = await runLegsInTree({ build: 'echo build' });
+
+    expect(legs.typecheck?.status).toBe('skipped');
+    expect(
+      legs.ok,
+      'A subject hive legitimately has no platform typecheck; it must not be failed for that.',
+    ).not.toBe(false);
+  });
+
+  it('CALIBRATION: the same root-shaped tree WITH lint:tsc does not trip the guard', async () => {
+    // Without this, the first test would also pass if the guard failed the leg unconditionally.
+    const { legs } = await runLegsInTree({ 'lint:tsc': 'echo tsc', ...SIBLINGS });
+
+    expect(legs.typecheck?.status).toBe('passed');
+    expect(legs.ok).not.toBe(false);
+  });
+
+  it('CONTROL: the OLD rule provably could not tell these two trees apart', () => {
+    // Permanent falsifiability control (CLAUDE.md: for a MODULE you import, keep the
+    // deliberately-wrong implementation in the test rather than mutating the shared tree).
+    //
+    // The pre-WI-37485 code branched on `checkNpmScript(...) === 'absent'` ALONE and skipped
+    // silently. This asserts BOTH trees land on that same 'absent' input — so the old rule
+    // mapped them to the identical silent skip and could not have failed either — while the
+    // tests above show the new discriminator gives them OPPOSITE verdicts. Without this, a
+    // future refactor could make the root-shaped tree fail for an unrelated reason (say an
+    // 'unreadable' package.json) and the test above would still pass, proving nothing.
+    const rootShaped = mkdtempSync(join(tmpdir(), 'gc-wi37485-ctl-root-'));
+    const hiveShaped = mkdtempSync(join(tmpdir(), 'gc-wi37485-ctl-hive-'));
+    try {
+      writeFileSync(join(rootShaped, 'package.json'), JSON.stringify({ scripts: SIBLINGS }));
+      writeFileSync(
+        join(hiveShaped, 'package.json'),
+        JSON.stringify({ scripts: { build: 'echo build' } }),
+      );
+
+      // The exact input the old branch saw — identical for both trees.
+      expect(checkNpmScript(rootShaped, 'lint:tsc')).toBe('absent');
+      expect(checkNpmScript(hiveShaped, 'lint:tsc')).toBe('absent');
+
+      // ...and the only thing that now separates them.
+      expect(
+        ROOT_OWNED_TYPECHECK_SIBLINGS.some((s) => checkNpmScript(rootShaped, s) === 'present'),
+      ).toBe(true);
+      expect(
+        ROOT_OWNED_TYPECHECK_SIBLINGS.some((s) => checkNpmScript(hiveShaped, s) === 'present'),
+      ).toBe(false);
+    } finally {
+      rmSync(rootShaped, { recursive: true, force: true });
+      rmSync(hiveShaped, { recursive: true, force: true });
+    }
+  });
+
+  it('every ROOT_OWNED_TYPECHECK_SIBLINGS entry is a leg the real chain actually probes', async () => {
+    // Anchors the list to the property instead of to a name list, exactly as the legs.ok
+    // sweep above does: an entry naming a script no leg checks could never be 'present',
+    // silently weakening the discriminator to "never fires" with every test still green.
+    const { invokedScripts } = await runLegs(null);
+    const probed = new Set(invokedScripts);
+    const strays = ROOT_OWNED_TYPECHECK_SIBLINGS.filter((s) => !probed.has(s));
+
+    expect(
+      strays,
+      `These ROOT_OWNED_TYPECHECK_SIBLINGS entries are not run as legs on the real root tree, ` +
+        `so they can never be 'present' and the WI-37485 discriminator silently weakens toward ` +
+        `never firing. Remove them, or wire the leg they name:\n${JSON.stringify(strays)}`,
     ).toEqual([]);
   });
 });
