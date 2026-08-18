@@ -246,9 +246,18 @@ function ratingClaimsPass(rating: string): boolean {
 /**
  * GRADING-time evaluation (called by scorecards:emit): for every RATED criterion whose
  * check is kind:'tests', re-resolve the files (refusing a stale path — D-006), RUN them
- * through the testing:run core (one run per criterion, so attribution is exact and a
- * truncated failure list can never mis-assign a verdict), and refuse a rating the run
- * contradicts. Sequential on purpose: checks share one tree and one worker budget.
+ * through the testing:run core, and refuse a rating the run contradicts.
+ *
+ * ONE BATCHED RUN for all files, attributed per criterion via the report's `byFile`
+ * grain (WI-39848). This replaced one-run-per-criterion, which was chosen so that "a
+ * truncated failure list can never mis-assign a verdict" — a real hazard, but it bought
+ * that safety with N cold vitest starts against a SINGLE shared deadline, so each run ate
+ * the budget the next one needed and the LAST criterion starved deterministically. A
+ * 7-check rubric became ungradeable, which blocked its plan's ship gate outright.
+ * `byFile` gives exact per-file counts that stay complete even when the failure LIST is
+ * capped, so batching now keeps the original safety property AND removes the starvation:
+ * the truncation hazard is answered by the data, not by paying for extra processes.
+ * A file the report never mentions is refused as unjudged, never treated as a pass.
  */
 export async function evaluateCriterionTestChecks(input: {
   criteria: ReadonlyArray<CheckedCriterion>;
