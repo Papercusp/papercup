@@ -430,3 +430,158 @@ describe('release:deploy — force (owner-gated)', () => {
     expect(notifyM).toHaveBeenCalledTimes(1); // loud owner notification
   });
 });
+
+/**
+ * EI-20482937744589016 — the SUBJECT STAMP guards.
+ *
+ * The defect was a MISATTRIBUTION, not a wrong number: release:deploy reports the
+ * operator-HOME pipeline and only that, but its reply carried nothing saying so, so a
+ * SideStage-scoped caller received Papercusp SHAs / gate reds / a commit backlog that read
+ * exactly like an answer about SideStage. Measured live at HEAD 4824a92b before the fix:
+ * `release:deploy {op:status}` called from a `sidestage` session returned the Papercusp
+ * pipeline with NO `subject` and NO `harness` field anywhere in the payload — which is why
+ * every assertion below necessarily fails against the pre-fix tool (the fields did not exist).
+ *
+ * `operatorHomeHarnessSlug` is mocked to 'test-home' at the top of this file, so 'test-home'
+ * IS the home pipeline for these tests and any other slug is a foreign harness.
+ */
+describe('release:deploy — subject stamp + cross-harness misattribution (EI-20482937744589016)', () => {
+  it('names its subject on op:status — the reply says WHICH pipeline the shas describe', async () => {
+    statusM.mockResolvedValue(mkStatus({ state: 'gate-red', canTriggerGreen: false }));
+    const b = body(await tool.handler({ op: 'status' } as never, { role: 'cup' } as never));
+    expect(b.subject).toMatchObject({ harness: 'test-home', scope: 'operator-home-release-pipeline' });
+    expect(b.subject.integrationRoot).toEqual(expect.any(String));
+    expect(b.subject.note).toContain('test-home');
+  });
+
+  it('WARNS LOUDLY when the caller\'s own harness is not the reported one', async () => {
+    statusM.mockResolvedValue(mkStatus({ state: 'gate-red', canTriggerGreen: false }));
+    const b = body(
+      await tool.handler({ op: 'status' } as never, { role: 'cup', harnessSlug: 'sidestage' } as never),
+    );
+    expect(b.harnessMismatch).toMatchObject({ callerHarness: 'sidestage', reportedHarness: 'test-home' });
+    // The warning must name BOTH harnesses — the misread it prevents is a reader quoting these
+    // numbers as SideStage's release truth.
+    expect(b.harnessMismatch.warning).toContain('sidestage');
+    expect(b.harnessMismatch.warning).toContain('test-home');
+    // ...and the numbers still come back: this is a disclosure, never a refusal to answer.
+    expect(b).toMatchObject({ ok: true, state: 'gate-red' });
+  });
+
+  it('does NOT claim a mismatch for a same-harness caller, the superuser wildcard, or an unknown slug', async () => {
+    statusM.mockResolvedValue(mkStatus());
+    for (const ctx of [
+      { role: 'cup', harnessSlug: 'test-home' },
+      { role: 'cup', harnessSlug: '*' }, // superuser wildcard — cannot assert a mismatch
+      { role: 'cup', harnessSlug: '  ' }, // blank
+      { role: 'cup' }, // absent
+    ]) {
+      const b = body(await tool.handler({ op: 'status' } as never, ctx as never));
+      expect(b.harnessMismatch).toBeUndefined();
+      expect(b.subject.harness).toBe('test-home'); // the stamp still rides, always
+    }
+  });
+
+  it('canonicalizes a RETIRED caller slug before judging it foreign', async () => {
+    statusM.mockResolvedValue(mkStatus());
+    const b = body(await tool.handler({ op: 'status' } as never, { role: 'cup', harnessSlug: 'papercup' } as never));
+    // 'papercup' is the retired alias of 'papercusp'; the alert must report the CURRENT slug so
+    // a reader chasing it does not go looking for a harness that no longer exists.
+    expect(b.harnessMismatch.callerHarness).toBe('papercusp');
+  });
+
+  it('REFUSES a harness assertion naming another harness — without reading status at all', async () => {
+    statusM.mockResolvedValue(mkStatus());
+    const b = body(
+      await tool.handler({ op: 'status', harness: 'sidestage' } as never, { role: 'cup' } as never),
+    );
+    expect(b).toMatchObject({ ok: false, refused: true, op: 'status' });
+    expect(b.reason).toContain('harness_not_reportable');
+    expect(b.reason).toContain('sidestage');
+    expect(b.subject.harness).toBe('test-home');
+    // Refused BEFORE the work: an unanswerable question must not cost a pipeline read.
+    expect(statusM).not.toHaveBeenCalled();
+  });
+
+  it('accepts a harness assertion that matches the home pipeline (incl. a retired alias)', async () => {
+    statusM.mockResolvedValue(mkStatus({ state: 'gate-red' }));
+    const b = body(await tool.handler({ op: 'status', harness: 'test-home' } as never, { role: 'cup' } as never));
+    expect(b).toMatchObject({ ok: true, op: 'status', state: 'gate-red' });
+    expect(b.refused).toBeUndefined();
+  });
+
+  it('REFUSES a foreign harness assertion on the WRITE ops too — no cross-harness deploy by mistake', async () => {
+    statusM.mockResolvedValue(mkStatus({ canTriggerGreen: true }));
+    const trig = body(
+      await tool.handler({ op: 'trigger', harness: 'sidestage', confirm: true } as never, { role: 'operator' } as never),
+    );
+    expect(trig).toMatchObject({ ok: false, refused: true, op: 'trigger' });
+    expect(trig.reason).toContain('harness_not_reportable');
+    const forced = body(
+      await tool.handler(
+        { op: 'force', harness: 'sidestage', reason: 'testing the gate', acknowledgeRedTests: ['x'], confirm: true } as never,
+        { role: 'operator' } as never,
+      ),
+    );
+    expect(forced).toMatchObject({ ok: false, refused: true, op: 'force' });
+    expect(launchM).not.toHaveBeenCalled();
+  });
+
+  it('stamps EVERY exit — degraded envelope, refusal, dry-run and fire all name the subject', async () => {
+    const ctx = { role: 'operator', harnessSlug: 'sidestage' } as never;
+    const expectStamped = (b: { subject?: { harness?: string }; harnessMismatch?: { callerHarness?: string } }, where: string) => {
+      expect(b.subject?.harness, `subject missing on ${where}`).toBe('test-home');
+      expect(b.harnessMismatch?.callerHarness, `mismatch missing on ${where}`).toBe('sidestage');
+    };
+
+    // 1. degraded status_unavailable envelope — the reply a caller gets when the read fails is
+    //    exactly where an unstamped sha would be most confusing.
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    statusM.mockRejectedValue(new Error('snapshot unavailable'));
+    expectStamped(body(await tool.handler({ op: 'status' } as never, ctx)), 'status_unavailable');
+
+    // 2. trigger refusal (gate red — nothing green to ship)
+    statusM.mockResolvedValue(mkStatus({ state: 'gate-red', canTriggerGreen: false }));
+    expectStamped(body(await tool.handler({ op: 'trigger', confirm: true } as never, ctx)), 'trigger refusal');
+
+    // 3. trigger dry-run
+    statusM.mockResolvedValue(mkStatus({ canTriggerGreen: true }));
+    expectStamped(body(await tool.handler({ op: 'trigger' } as never, ctx)), 'trigger dry-run');
+
+    // 4. trigger fire
+    expectStamped(body(await tool.handler({ op: 'trigger', confirm: true } as never, ctx)), 'trigger fire');
+
+    // 5. force role refusal
+    expectStamped(
+      body(
+        await tool.handler(
+          { op: 'force', reason: 'testing the gate', acknowledgeRedTests: ['x'] } as never,
+          { role: 'cup', harnessSlug: 'sidestage' } as never,
+        ),
+      ),
+      'force role_forbidden',
+    );
+
+    // 6. force dry-run
+    expectStamped(
+      body(
+        await tool.handler(
+          { op: 'force', reason: 'testing the gate', acknowledgeRedTests: ['x'] } as never,
+          ctx,
+        ),
+      ),
+      'force dry-run',
+    );
+
+    // 7. force fire
+    expectStamped(
+      body(
+        await tool.handler(
+          { op: 'force', reason: 'testing the gate', acknowledgeRedTests: ['x'], confirm: true } as never,
+          ctx,
+        ),
+      ),
+      'force fire',
+    );
+  });
+});
