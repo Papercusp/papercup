@@ -429,13 +429,25 @@ describe('fidelityMarker', () => {
 
 describe('aggregate()', () => {
   it('derives below as surfaces - meets', () => {
-    const a = aggregate({ surfaces: 10, meets: 4, waived: 0, fidelityCounts: counts({ declared: 10 }) });
+    const a = aggregate({
+      surfaces: 10,
+      meets: 4,
+      waived: 0,
+      belowUnwaived: 6,
+      fidelityCounts: counts({ declared: 10 }),
+    });
     expect(a.below).toBe(6);
     expect(a.pct).toBe(40);
   });
 
   it('shares one frozen basis object rather than re-stating the claim per aggregate', () => {
-    const a = aggregate({ surfaces: 1, meets: 1, waived: 0, fidelityCounts: counts({ declared: 1 }) });
+    const a = aggregate({
+      surfaces: 1,
+      meets: 1,
+      waived: 0,
+      belowUnwaived: 0,
+      fidelityCounts: counts({ declared: 1 }),
+    });
     expect(a.basis).toBe(AGGREGATE_BASIS);
     expect(Object.isFrozen(a.basis)).toBe(true);
   });
