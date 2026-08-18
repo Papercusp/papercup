@@ -5181,14 +5181,49 @@ async function tryLongestGreenPrefix(
     return null;
   }
 
+  // WI-39841 (Defect 3): per-confirm time accounting. See {@link SalvageBudget} — the
+  // call-site pre-start check budgets for ONE confirm and this function runs up to five.
+  let confirmsRun = 0;
+  let confirmSpentMs = 0;
+  /** Best available predictor of the NEXT confirm: the measured mean of this salvage's own
+   *  confirms once any has completed, else the caller's (over-)estimate. */
+  const nextConfirmEstimateMs = (): number =>
+    confirmsRun > 0
+      ? Math.ceil(confirmSpentMs / confirmsRun)
+      : budget.initialConfirmEstimateMs;
+  const confirmWouldOverrun = (): boolean =>
+    Date.now() + nextConfirmEstimateMs() > budget.deadlineMs;
+  /** Run one confirm suite, charging its measured cost to the budget. */
+  const runConfirm = async (): Promise<GreenRunResult> => {
+    const startedAt = Date.now();
+    try {
+      return await deps.runGreen(cfg.checkpointRoot, lastReady);
+    } finally {
+      // Charge in a `finally` so a THROWN confirm still costs its wall-clock. Otherwise a
+      // failing confirm would look free and the next estimate would shrink toward zero —
+      // the budget must track time spent, not confirms that happened to succeed.
+      confirmsRun += 1;
+      confirmSpentMs += Date.now() - startedAt;
+    }
+  };
+
   // CONFIRM the prefix is itself green before FF-ing `main` to it (the invariant guard).
+  if (confirmWouldOverrun()) {
+    logPartialGreenGate(
+      `partial-green-gate: skipped — no budget for the confirm suite ` +
+        `(~${Math.round(nextConfirmEstimateMs() / 60_000)}m estimated, ` +
+        `~${Math.round((budget.deadlineMs - Date.now()) / 60_000)}m remaining). ` +
+        `A verdict that LANDS beats a partial advance that does not.`,
+    );
+    return null;
+  }
   logPartialGreenGate(
     `partial-green-gate: candidate ${candidate.slice(0, 8)} red (failing ws: ${[...failingWs].join(", ")}); ` +
       `confirming longest clean prefix ${prefixTip.slice(0, 8)}`,
   );
   const initialPrefixIndex = commits.indexOf(prefixTip);
   await deps.setupTree(prefixTip);
-  let confirm = await deps.runGreen(cfg.checkpointRoot, lastReady);
+  let confirm = await runConfirm();
   if (!confirm.green) {
     // WI-38298: the cheap locator is deliberately conservative, but its first candidate
     // can still be red because an unrelated failure predates the candidate's repair. Do
