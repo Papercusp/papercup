@@ -4323,70 +4323,21 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     resolve: async (args) => {
       const a = (args ?? {}) as { hive?: string };
       const { activeWorkspaceId } = await import('../workspace-registry');
-      const { routeWithWorkspace } = await import('../route-workspace');
-      const { listRecentProposalsForWorkspace, listAutoloopsForWorkspace, listScoutArchiveSeeds, listRecentCyclesForWorkspace, listRecentGymRunsForWorkspace } = await import(
-        '../gym/control-plane'
-      );
+      // BOUNDED + EXTRACTED (WI-39825). The five-leg fan-out, the WI-6395 partial
+      // degradation (`degradedFields` records WHICH leg degraded, next to the
+      // intact data) and the per-leg degradation policy now live in
+      // `learning-gym-read.ts`. The move is what makes the deadline GUARDABLE: a
+      // budget can only be proved to fire by moving it, and a resolver's only
+      // input is its wire args — so the knob had to become a function parameter
+      // rather than a client-visible field. That module's header carries the
+      // full reasoning and the per-leg policy.
+      const { readGymSnapshot } = await import('./learning-gym-read');
       const ws = activeWorkspaceId();
       const harnessSlug = a.hive || undefined;
-      // WI-6395: PARTIAL degradation, which is a different defect from the whole-
-      // snapshot one WI-6382 fixed and needs a different shape. Three of the legs
-      // below are best-effort `.catch(() => [])`: when one fails the snapshot is
-      // still returned, still successful, and still TRUE about its other legs —
-      // so `unavailable` on the whole object would be a lie. What was missing is
-      // that the failed leg's empty was indistinguishable from a genuinely empty
-      // one, so "the archive is empty" and "the archive read blew up" rendered
-      // identically. Record WHICH leg degraded, next to the intact data.
-      const fetchSnapshot = (slug: string | undefined) => {
-        const degradedFields: Array<{ field: string; kind: string; reason: string }> = [];
-        /** Note a best-effort leg's failure instead of swallowing it into `[]`. */
-        const noteDegraded = (field: string, err: unknown): never[] => {
-          const { kind, reason } = classifyReadFailure(err);
-          console.warn(`[learning.gym] ${field} read failed:`, reason);
-          degradedFields.push({ field, kind, reason });
-          return [];
-        };
-        return routeWithWorkspace(async (tx) => {
-          const [proposals, autoloops, archiveSeeds, cycles, runs] = await Promise.all([
-            listRecentProposalsForWorkspace(tx, { workspaceId: ws, limit: 50, ...(slug ? { harnessSlug: slug } : {}) }),
-            listAutoloopsForWorkspace(tx, { workspaceId: ws, ...(slug ? { harnessSlug: slug } : {}) }),
-            // WI-5412 item 4: the Scout-seeded MAP-Elites niches — where the
-            // Ideas view's gym-rail pills (`gym:SP-…`) actually land. Best-effort:
-            // a missing archive table degrades to an absent section, never a 500.
-            listScoutArchiveSeeds(tx, { workspaceId: ws, ...(slug ? { harnessSlug: slug } : {}) }).catch((err) =>
-              noteDegraded('archiveSeeds', err),
-            ),
-            // WI-5685: recent completed CYCLES from the durable run-analytics. A
-            // cycle whose candidate loses mints NO proposal, so without this leg
-            // a finished gym run is invisible here ("I was expecting runs from
-            // today"). Best-effort like archiveSeeds: degrades to absent.
-            listRecentCyclesForWorkspace(tx, { workspaceId: ws, limit: 20, ...(slug ? { harnessSlug: slug } : {}) }).catch((err) =>
-              noteDegraded('cycles', err),
-            ),
-            // WI-5808: recent RUN activity, straight from gym_runs. The cycles leg
-            // above can be a single stale row (a cycle row is written once per
-            // COMPLETED cycle and was overwritten in place pre-WI-5799), which is
-            // why the tab kept reading "no recent runs" while the gym was plainly
-            // running. Runs accumulate per (variant, task, repeat) as they finish.
-            listRecentGymRunsForWorkspace(tx, { workspaceId: ws, limit: 20, ...(slug ? { harnessSlug: slug } : {}) }).catch((err) =>
-              noteDegraded('runs', err),
-            ),
-          ]);
-          return {
-            proposals,
-            autoloops,
-            archiveSeeds,
-            cycles,
-            runs,
-            generatedAt: new Date().toISOString(),
-            // Omitted entirely when every leg succeeded, so a healthy snapshot is
-            // byte-identical to what it was before — the flag's PRESENCE is the
-            // signal, exactly as `unavailable` is for a whole-snapshot fault.
-            ...(degradedFields.length > 0 ? { degradedFields } : {}),
-          };
-        });
-      };
-      const scoped = await fetchSnapshot(harnessSlug);
+      const scoped = await readGymSnapshot({
+        workspaceId: ws,
+        ...(harnessSlug ? { harnessSlug } : {}),
+      });
       // WI-5809 (owner report 2026-07-25): NO CROSS-TENANT FALLBACK.
       //
       // This used to detect an empty Hive-scoped read and silently return the
