@@ -142,9 +142,15 @@ export function extractReferencedTables(rawSql: string): string[] {
   const stripped = stripSqlLiteralsAndComments(rawSql);
   const out: string[] = [];
   const seen = new Set<string>();
-  const re = /\b(?:from|join)\s+([A-Za-z_][A-Za-z0-9_$]*(?:\.[A-Za-z_][A-Za-z0-9_$]*)?)/gi;
+  // `update`/`into` cover the DML target tables (UPDATE t …, INSERT INTO t …)
+  // so pg-mutate-query's tenant gate sees the table being written, not just
+  // FROM/JOIN sources. A `SELECT … FOR UPDATE OF t` capture lands on a keyword
+  // (`of`/`nowait`/`skip`) — filtered below rather than mis-read as a table.
+  const re = /\b(?:from|join|update|into)\s+(?:only\s+)?([A-Za-z_][A-Za-z0-9_$]*(?:\.[A-Za-z_][A-Za-z0-9_$]*)?)/gi;
+  const notATable = new Set(['of', 'nowait', 'skip', 'set', 'select']);
   for (let m = re.exec(stripped); m && out.length < GUARD_MAX_TABLES; m = re.exec(stripped)) {
     const name = m[1].toLowerCase();
+    if (notATable.has(name)) continue;
     if (seen.has(name)) continue;
     seen.add(name);
     out.push(name);
@@ -2012,7 +2018,7 @@ export const PG_READ_QUERY_CALL_OVERHEAD_MS = 3000;
  * the timer wins, so a late resolution/rejection is a no-op (resolve/reject
  * only takes effect once) rather than an unhandled rejection.
  */
-function withCallDeadline<T>(work: Promise<T>, deadlineMs: number, timeoutMessage: string): Promise<T> {
+export function withCallDeadline<T>(work: Promise<T>, deadlineMs: number, timeoutMessage: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const timer = setTimeout(() => reject(new PgReadQueryTimeoutError(timeoutMessage)), deadlineMs);
     work.then(
@@ -2028,8 +2034,8 @@ function withCallDeadline<T>(work: Promise<T>, deadlineMs: number, timeoutMessag
   });
 }
 
-/** The message `withCallDeadline` raises for `pgReadQuery`/`explainReadQuery` — one string so the two call sites can't drift. */
-function callTimeoutMessage(timeoutMs: number, callDeadlineMs: number): string {
+/** The message `withCallDeadline` raises for `pgReadQuery`/`explainReadQuery`/`pgMutateQuery` — one string so the call sites can't drift. */
+export function callTimeoutMessage(timeoutMs: number, callDeadlineMs: number): string {
   return (
     `Query call did not complete within ${callDeadlineMs}ms of the WHOLE call (connect + acquire + ` +
     `execute) — statement_timeout=${timeoutMs}ms only bounds server-side execution once a connection ` +
@@ -2063,7 +2069,7 @@ function callTimeoutMessage(timeoutMs: number, callDeadlineMs: number): string {
  * transaction, so it can never leak onto a pooled connection shared with app
  * code that legitimately wants server-local time.
  */
-const SET_LOCAL_UTC = "SET LOCAL TIME ZONE 'UTC'";
+export const SET_LOCAL_UTC = "SET LOCAL TIME ZONE 'UTC'";
 
 /**
  * Strip SQL noise a naive `;`-scan would misread as a statement separator:
@@ -2073,8 +2079,10 @@ const SET_LOCAL_UTC = "SET LOCAL TIME ZONE 'UTC'";
  * content is replaced with an equal-length placeholder (never containing a
  * `;` or quote char) so position/structure is preserved for the caller's
  * `;`-count check — only the literal's TEXT is discarded, never executed.
+ * Exported for pg-mutate-query, whose statement validation needs the identical
+ * quote/comment semantics — a second implementation would drift.
  */
-function stripSqlLiteralsAndComments(sql: string): string {
+export function stripSqlLiteralsAndComments(sql: string): string {
   let out = '';
   let i = 0;
   const len = sql.length;
