@@ -39,6 +39,7 @@ import {
   PG_ISOLATION_ENV_VARS,
   PG_URL_ENV_VARS,
 } from '../../../scripts/lib/pg-url.mjs';
+import { formatExportLines, parseArgs, shellSingleQuote } from '../../../scripts/pg-url.mjs';
 
 const REPO_ROOT = fileURLToPath(new URL('../../../', import.meta.url));
 const SCRIPTS_DIR = join(REPO_ROOT, 'scripts');
