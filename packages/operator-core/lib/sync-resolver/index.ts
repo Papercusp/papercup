@@ -53,15 +53,6 @@ import { attachListMeta } from './list-meta';
 // a bare empty — that made a broken substrate byte-identical to an idle healthy
 // one and left every panel's error branch unreachable for the data-layer class.
 import { classifyReadFailure, degraded } from './degraded-snapshot';
-import { createReadDeadline } from './read-deadline';
-
-/**
- * Whole-read deadline for the roster fan-out (WI-39825). 6s — the budget the
- * bounded learning.* reads carry, measured against real :3170 latency (p90
- * 599ms) and sized to fire under both the sync layer's ~10s
- * RESOLVER_READ_TIMEOUT_MS and the memory backend's degraded p50 of ~10.9s.
- */
-const ROSTER_READ_BUDGET_MS = 6_000;
 import { projectAuthoredFields } from '../agent-tools/coordination/message-fields';
 // GOAL mode's two client reads (goal-mode-2026-08-07 P-017). They live in their
 // own module rather than inline here because both carry a counting rule the SQL
@@ -1399,46 +1390,15 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         workspaceId?: string | null;
         endedLimit?: number;
       };
-      const os = await import('node:os');
-      const {
-        mergeRosterWithAssignments,
-        dedupeEndedAgainstActive,
-        pendingLaunchesToRosterEntries,
-        startingLaunchesToRosterEntries,
-        dedupeStartingAgainstActive,
-      } = await import('../adv-roster');
-      const { listEndedAdvSessions, listPendingWorkbenchLaunches, listStartingTerminalLaunches } =
-        await import('../adv-sessions');
-      // BOUNDED (WI-39825). Four store legs, previously with neither a deadline
-      // nor a catch: `Promise.all` waits for the slowest, so one wedged read took
-      // the whole roster past the sync layer's ~10s resolver timeout. The legs are
-      // NOT equal, so they do not degrade equally — `active` IS the roster, while
-      // ended/pending/starting are supplementary sections that render empty
-      // perfectly well. A lapse on the primary therefore surfaces as a failure
-      // (as a throw does today); a lapse on a supplementary leg costs its section
-      // and nothing else.
-      const withinBudget = createReadDeadline(ROSTER_READ_BUDGET_MS);
-      const [{ active, orphanedClaims }, endedAll, pendingRows, startingRows] = await Promise.all([
-        withinBudget(mergeRosterWithAssignments({ workspaceId }), 'roster active'),
-        withinBudget(listEndedAdvSessions({ workspaceId, limit: endedLimit }), 'roster ended').catch(() => []),
-        withinBudget(listPendingWorkbenchLaunches({ workspaceId }), 'roster pending').catch(() => []),
-        withinBudget(listStartingTerminalLaunches({ workspaceId }), 'roster starting').catch(() => []),
-      ]);
-      const host = os.hostname();
-      return [
-        {
-          active,
-          ended: dedupeEndedAgainstActive(endedAll, active),
-          orphanedClaims,
-          pending: pendingLaunchesToRosterEntries(pendingRows, host),
-          // WI-6376: terminal-spawned launches inside their boot window, minus
-          // any that already came online (presence wins — see the dedupe's doc).
-          starting: dedupeStartingAgainstActive(
-            startingLaunchesToRosterEntries(startingRows, host),
-            active,
-          ),
-        },
-      ];
+      // BOUNDED + EXTRACTED (WI-39825). The four-leg fan-out, its shared read
+      // deadline and the per-leg degradation policy now live in
+      // `adv-roster-read.ts`. The move is what makes the deadline GUARDABLE: a
+      // budget can only be proved to fire by moving it, and a resolver's only
+      // input is its wire args — so the knob had to become a function parameter
+      // rather than a client-visible field. That module's header carries the
+      // full reasoning and the per-leg policy.
+      const { readAdvRoster } = await import('./adv-roster-read');
+      return [await readAdvRoster({ workspaceId, endedLimit })];
     },
   },
 
