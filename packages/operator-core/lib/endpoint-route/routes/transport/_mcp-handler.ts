@@ -2280,7 +2280,7 @@ const handler = createMcpHandler(
           // through one function is what keeps them from drifting.
           const takenView = takeNamedViewFromArgs(
             dispatchArgs as Record<string, unknown> | undefined,
-            name,
+            toolName,
           );
           if (takenView.kind === 'error') {
             return {
