@@ -51,6 +51,25 @@ export type RoutineValidationFatalClass = 'unregistered-system-action' | 'unpaus
  */
 export const EMPTY_INSTALL_SLUG = '<empty>';
 
+/**
+ * The `harness_shared.routines.metadata` key this subsystem persists its episode marks under
+ * (`metadata.validation.<class>`). Exported so the AGENT-FACING projection can key off the
+ * writer instead of re-typing the literal.
+ *
+ * EI-20747395137280903: the detector worked perfectly and was invisible anyway. Its only
+ * output was a `console.error`, and `routines:list` projects `metadata` through a hand-typed
+ * allowlist that this key was never added to — so four routines (`consult-expiry-sweep`,
+ * `idle-backend-reaper`, `project-history-refresh`, `coverage-census`) sat `active:true` with
+ * `nextFireAt` advancing while every fire was skipped, 210 skipped fires between them, and
+ * every tool an agent would naturally check reported them healthy.
+ *
+ * That allowlist's own header already warned this was "THE THIRD TIME" and that a per-field
+ * fix "is what guarantees a fourth instance" — this WAS the fourth. So the projection now
+ * imports this constant rather than repeating `'validation'`: renaming the key moves both
+ * halves together, which is the only version of this that cannot rot again.
+ */
+export const ROUTINE_VALIDATION_METADATA_KEY = 'validation';
+
 /** Per-offender episode state, persisted on the routine row at `metadata.validation.<class>`. */
 export interface EpisodeMark {
   /** When this offender was FIRST observed offending, and never rewritten after. */

@@ -9,6 +9,9 @@ import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../workspace-registry';
+// Pure, import-free module (see its header) — safe to pull into a tool without dragging the
+// validator's pg/system-action-registry dependencies along.
+import { ROUTINE_VALIDATION_METADATA_KEY } from '../../startup/routine-validation-episode';
 
 /**
  * The DELIBERATE-PAUSE record, read back out of `routines.metadata.pause`.
@@ -78,6 +81,16 @@ function healthOf(metadata: Record<string, unknown> | null): Record<string, unkn
   if (!metadata) return null;
   const OPERATIONAL_KEYS = [
     'gate_health',
+    // EI-20747395137280903 — THE FOURTH INSTANCE this header predicted. `metadata.validation`
+    // carries the routine-validation episode marks, and `unregistered-system-action` is the
+    // one that matters: an ACTIVE routine whose `system:` handler is registered NOWHERE fires
+    // on schedule and does NOTHING, forever. Its detector has always worked and always written
+    // this key; it just had no reader, so the only witness was a console.error in journalctl.
+    // Measured when this was added: 4 routines live in that state (consult-expiry-sweep 97
+    // skipped fires, idle-backend-reaper 54, project-history-refresh 34, coverage-census 25) —
+    // every one reporting active:true with nextFireAt advancing. Imported, not re-typed, so
+    // the projection cannot drift from the writer (see the constant's own comment).
+    ROUTINE_VALIDATION_METADATA_KEY,
     'last_status',
     'last_error',
     'last_errors',
