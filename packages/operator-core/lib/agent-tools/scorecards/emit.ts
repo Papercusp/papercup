@@ -8,7 +8,7 @@ import { getRubric, getRubricPlanRevision } from '../../rubrics';
 import { getIssue } from '../../issues-engineer';
 import { captureImprovement } from '../../harness/improvements/capture-core';
 import { activeWorkspaceId } from '../../workspace-registry';
-import { consultStateExists } from '../../consult/get-feedback-core';
+import { readVettingConsultCritique } from '../../consult/get-feedback-core';
 import {
   normalizeScorecardRatings,
   validateObservationRatings,
@@ -401,9 +401,15 @@ export async function emitScorecard(
     // rubric — is the re-vetting step, not a duplicate. The fingerprint cannot see it
     // (rubricRef + ratings + snapshots only, unchanged for stored-row compatibility),
     // so compare the stamps separately, like finality above.
+    // EI-20821478338037350: the waiver→critiqued upgrade is the same kind of move.
+    // An author who honestly attested `unanswered` and LATER receives critique must be
+    // able to re-emit the real stamp over the waived one; without this the fingerprint
+    // (identical rubricRef + ratings + consult + revision) declines it as unchanged and
+    // the recorded waiver is stuck on the card forever.
     const vettingChanged =
       (latest?.vetting?.consultId ?? null) !== (vetting?.consultId ?? null) ||
-      (latest?.vetting?.rubricRevision ?? null) !== (vetting?.rubricRevision ?? null);
+      (latest?.vetting?.rubricRevision ?? null) !== (vetting?.rubricRevision ?? null) ||
+      (latest?.vetting?.unanswered ?? false) !== (vetting?.unanswered ?? false);
     if (
       !args.force &&
       !finalityChanged &&
