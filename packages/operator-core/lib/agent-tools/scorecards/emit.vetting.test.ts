@@ -133,14 +133,20 @@ beforeEach(() => {
 });
 
 describe('scorecards:emit vetting stamp (P-004)', () => {
-  it('stamps observation.vetting { consultId, rubricRevision } + subject when consult and rubric both exist', async () => {
+  it('stamps observation.vetting { consultId, rubricRevision, critiquePosts, critics } + subject when the consult carries critique', async () => {
     const res = await emitScorecard(vettingArgs() as never, EMIT_INPUT);
     expect(res.ok).toBe(true);
-    expect(consultStateExists).toHaveBeenCalledWith({}, 'ws-test', 'conv-vet-1');
+    // The emitter is passed through so the core can exclude the emitter's OWN posts.
+    expect(readVettingConsultCritique).toHaveBeenCalledWith({}, 'ws-test', 'conv-vet-1', 'su-author');
     const payload = captureImprovement.mock.calls[0][0] as {
       payloadExtra: { observation: Record<string, unknown> };
     };
-    expect(payload.payloadExtra.observation.vetting).toEqual({ consultId: 'conv-vet-1', rubricRevision: 7 });
+    expect(payload.payloadExtra.observation.vetting).toEqual({
+      consultId: 'conv-vet-1',
+      rubricRevision: 7,
+      critiquePosts: 2,
+      critics: ['su-reviewer'],
+    });
     expect(payload.payloadExtra.observation.subject).toEqual({ kind: 'rubric', ref: 'ar-some-plan' });
   });
 
