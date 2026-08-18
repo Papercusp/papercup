@@ -55,6 +55,16 @@ function stubResolvedProject(slug: string): void {
   vi.mocked(harnessCore.resolveProject).mockResolvedValue({ slug } as any);
 }
 
+/**
+ * How many statements PAUSED a row. The count-of-all-statements form broke a third time in
+ * WI-39810 (which added a resolved-mark clear), for the reason the comment above gives.
+ */
+function pauseUpdateCount(mockSql: { mock: { calls: unknown[][] } }): number {
+  return mockSql.mock.calls.filter((c) =>
+    /SET\s+active\s*=\s*false/i.test(Array.isArray(c[0]) ? c[0].join(' ? ') : String(c[0])),
+  ).length;
+}
+
 function pausedARow(mockSql: { mock: { calls: unknown[][] } }): boolean {
   return mockSql.mock.calls.some((c) =>
     /SET\s+active\s*=\s*false/i.test(Array.isArray(c[0]) ? c[0].join(' ? ') : String(c[0])),
@@ -211,11 +221,13 @@ describe('enforceActiveRoutines (EI-18678269428596559 recurrence guard P-3)', ()
     const mockWs = 'papercusp-workspace';
     const mockRoutines = [{ install_slug: 'ei665-verify-x1', name: 'git-sync', workspace_id: mockWs }];
 
-    // 1st call = the validator's SELECT; 2nd call = enforce's UPDATE ... RETURNING (1 row).
+    // 1st call = the validator's SELECT; 2nd = enforce's UPDATE ... RETURNING (1 row);
+    // 3rd = WI-39810's resolved-mark clear (no system-action offenders in this fixture).
     const mockSql = vi
       .fn()
       .mockResolvedValueOnce(mockRoutines)
-      .mockResolvedValueOnce([{ name: 'git-sync' }]);
+      .mockResolvedValueOnce([{ name: 'git-sync' }])
+      .mockResolvedValue([]);
     mockOrgPgSql(vi.mocked(dbOrg.getOrgPg), mockSql);
     vi.mocked(workspaceRegistry.activeWorkspaceId).mockReturnValue(mockWs);
     vi.mocked(harnessCore.resolveProject).mockResolvedValueOnce(null); // unregistered
@@ -226,7 +238,7 @@ describe('enforceActiveRoutines (EI-18678269428596559 recurrence guard P-3)', ()
 
     expect(result.ok).toBe(false); // the scan still found a violation this pass
     expect(result.autoDeactivated).toEqual([{ installSlug: 'ei665-verify-x1', routineName: 'git-sync' }]);
-    expect(mockSql).toHaveBeenCalledTimes(2); // SELECT, then exactly one UPDATE
+    expect(pauseUpdateCount(mockSql)).toBe(1); // exactly one row-pausing UPDATE
 
     const logged = consoleSpy.mock.calls.map((c) => String(c[0]));
     expect(logged.some((l) => l.includes('[routine-validation] AUTO-DEACTIVATED'))).toBe(true);
@@ -243,7 +255,8 @@ describe('enforceActiveRoutines (EI-18678269428596559 recurrence guard P-3)', ()
     const mockSql = vi
       .fn()
       .mockResolvedValueOnce(mockRoutines)
-      .mockResolvedValueOnce([]); // another worker won the race — 0 rows updated
+      .mockResolvedValueOnce([]) // another worker won the race — 0 rows updated
+      .mockResolvedValue([]); // WI-39810's resolved-mark clear — nothing to clear
     mockOrgPgSql(vi.mocked(dbOrg.getOrgPg), mockSql);
     vi.mocked(workspaceRegistry.activeWorkspaceId).mockReturnValue(mockWs);
     vi.mocked(harnessCore.resolveProject).mockResolvedValueOnce(null);
@@ -588,5 +601,137 @@ describe('routine-validation FATAL recurrence aging (EI-18685043834332306)', () 
 
     errorSpy.mockRestore();
     warnSpy.mockRestore();
+  });
+});
+
+/**
+ * WI-39810 — the unregistered-handler check must only run on a host that DISPATCHES routines.
+ *
+ * The live failure: `papercup-dev-api` boots request-only (`PAPERCUSP_BACKGROUND_WORKERS=0`)
+ * out of the RELEASE checkout, which lagged `staging` by four `import './<x>-action'` lines
+ * while `main` sat behind a red gate. It reported `consult-expiry-sweep`, `coverage-census`,
+ * `idle-backend-reaper` and `project-history-refresh` as having NO REGISTERED HANDLER, and the
+ * marks reached 210+ occurrences — while bg-host was demonstrably executing all four on
+ * cadence out of `staging`. `routines:list` rendered a live routine as SILENTLY DEAD and told
+ * the reader to add an import that was already present in the tree being edited.
+ *
+ * The property: a host whose registry is not the dispatching one reports NOTHING, and stays
+ * distinguishable from a host that looked and found nothing (`systemActionCheckApplicable`).
+ */
+describe('unregistered-handler check is scoped to the routine-dispatching host (WI-39810)', () => {
+  const mockWs = 'papercusp-workspace';
+
+  /** The routine row the EXISTING suite above proves IS flagged on a dispatching host. */
+  const deadRoutineRow = {
+    install_slug: 'papercusp',
+    name: 'sweep-stalled-loops',
+    workspace_id: mockWs,
+    target_role: 'system:sweep-stalled-loops',
+    reschedule_interval_sec: null,
+    target_owner_id: null,
+  };
+
+  /** Did any statement CLEAR persisted validation marks? (`clearRoutineValidationMarks`) */
+  function clearedMarks(mockSql: { mock: { calls: unknown[][] } }): boolean {
+    return mockSql.mock.calls.some((c) =>
+      /jsonb_exists\(metadata->'validation'/i.test(
+        Array.isArray(c[0]) ? c[0].join(' ? ') : String(c[0]),
+      ),
+    );
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    registeredRef.current = new Set<string>(); // EMPTY registry — flags everything on a dispatching host
+    vi.mocked(workspaceRegistry.activeWorkspaceId).mockReturnValue(mockWs);
+    stubResolvedProject('papercusp');
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.clearAllMocks();
+  });
+
+  describe('hostExecutesRoutines', () => {
+    it('is FALSE for a request-only host — the topology that produced the false positives', () => {
+      expect(hostExecutesRoutines({ PAPERCUSP_BACKGROUND_WORKERS: '0' })).toBe(false);
+    });
+
+    it('is TRUE for the background-workers host that actually dispatches routines', () => {
+      expect(hostExecutesRoutines({ PAPERCUSP_BACKGROUND_WORKERS: '1' })).toBe(true);
+    });
+
+    it('is FALSE for the :3170 staging host, which boots request-only by default', () => {
+      expect(hostExecutesRoutines({ PAPERCUSP_HONO_PORT: '3170' })).toBe(false);
+    });
+
+    it('IGNORES the VITEST short-circuit, so this guard is never vacuously green in its own suite', () => {
+      // `backgroundWorkersEnabled` returns false under VITEST so unit tests never start real
+      // background work. Honouring that clause here would skip the check in every case below,
+      // and they would all pass while asserting nothing.
+      expect(hostExecutesRoutines({ VITEST: 'true' })).toBe(true);
+    });
+  });
+
+  it('SKIPS the check on a request-only host — the same input a dispatching host flags', async () => {
+    vi.stubEnv('PAPERCUSP_BACKGROUND_WORKERS', '0');
+    const mockSql = vi.fn().mockResolvedValue([deadRoutineRow]);
+    mockOrgPgSql(vi.mocked(dbOrg.getOrgPg), mockSql);
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const result = await validateActiveRoutines();
+
+    // CALIBRATION: this exact row + empty registry yields one offender on a dispatching host
+    // (the case immediately below). Here it must yield none — so a pass cannot be explained
+    // by the input being harmless.
+    expect(result.unregisteredSystemActions).toHaveLength(0);
+    expect(result.systemActionCheckApplicable).toBe(false);
+    expect(result.ok).toBe(true);
+    const logged = consoleSpy.mock.calls.map((c) => String(c[0]));
+    expect(logged.some((l) => l.includes('NO REGISTERED HANDLER'))).toBe(false);
+    consoleSpy.mockRestore();
+  });
+
+  it('RUNS the check on the dispatching host, and says so', async () => {
+    vi.stubEnv('PAPERCUSP_BACKGROUND_WORKERS', '1');
+    const mockSql = vi.fn().mockResolvedValue([deadRoutineRow]);
+    mockOrgPgSql(vi.mocked(dbOrg.getOrgPg), mockSql);
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const result = await validateActiveRoutines();
+
+    expect(result.systemActionCheckApplicable).toBe(true);
+    expect(result.unregisteredSystemActions).toHaveLength(1);
+    expect(result.ok).toBe(false);
+    consoleSpy.mockRestore();
+  });
+
+  it('enforce CLEARS a stale mark once every handler resolves on the dispatching host', async () => {
+    // Before WI-39810 the clear lived only inside `ageFatalClass`, which is reached only when
+    // the offender set is NON-empty — so a mark outlived the defect that caused it and
+    // `routines:list` kept rendering an already-fixed routine as SILENTLY DEAD, forever.
+    vi.stubEnv('PAPERCUSP_BACKGROUND_WORKERS', '1');
+    registeredRef.current = new Set(['sweep-stalled-loops']); // now registered
+    const mockSql = vi.fn().mockResolvedValue([deadRoutineRow]);
+    mockOrgPgSql(vi.mocked(dbOrg.getOrgPg), mockSql);
+
+    const result = await enforceActiveRoutines();
+
+    expect(result.unregisteredSystemActions).toHaveLength(0);
+    expect(result.systemActionCheckApplicable).toBe(true);
+    expect(clearedMarks(mockSql)).toBe(true);
+  });
+
+  it('enforce does NOT clear on a request-only host — that mark belongs to the dispatching host', async () => {
+    // The dangerous inverse: dev-api boots, cannot see the registry, and must not erase a TRUE
+    // finding bg-host wrote. "No offenders" and "did not look" must not collapse.
+    vi.stubEnv('PAPERCUSP_BACKGROUND_WORKERS', '0');
+    registeredRef.current = new Set(['sweep-stalled-loops']);
+    const mockSql = vi.fn().mockResolvedValue([deadRoutineRow]);
+    mockOrgPgSql(vi.mocked(dbOrg.getOrgPg), mockSql);
+
+    const result = await enforceActiveRoutines();
+
+    expect(result.systemActionCheckApplicable).toBe(false);
+    expect(clearedMarks(mockSql)).toBe(false);
   });
 });
