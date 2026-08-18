@@ -392,3 +392,125 @@ describe('deployed unit on this machine', () => {
     expect(present).toBe(false);
   });
 });
+
+/**
+ * The alias set + kind EXACTLY as `harness_shared.local_backends` holds them for this box's one
+ * on-demand backend (read 2026-08-18). Copied rather than synthesized: the whole point of these
+ * tests is that the production row resolves, and a tidied-up fixture would not prove that.
+ */
+const ORNITH_REGISTRY_ROW = {
+  id: 'ornith-llamaserver',
+  kind: 'llama-server',
+  models: [
+    'maxwell1500/ornith-35b:IQ3_M',
+    'ollama-cc/maxwell1500/ornith-35b:IQ3_M',
+    'ornith:35b',
+    'ornith:fast',
+    'ornith-35b',
+    'ornith',
+  ],
+} as const;
+
+describe('resolveCatalogEntryForBackend (WI-39735 wiring / D-016)', () => {
+  it('CONTROL: the registry id is NOT the catalog id, so an id-keyed lookup finds nothing', () => {
+    // This is the trap the resolver exists to avoid, measured rather than asserted. If someone
+    // "simplifies" resolveCatalogEntryForBackend to findCatalogEntry(backend.id), THIS is the fact
+    // that makes it silently audit nothing — so the guard's own test suite states it out loud.
+    expect(findCatalogEntry(ORNITH_REGISTRY_ROW.id)).toBeUndefined();
+    expect(ORNITH_REGISTRY_ROW.id).not.toBe(ORNITH.id);
+  });
+
+  it('resolves the live production row to its catalog entry via the model ref', () => {
+    const resolution = resolveCatalogEntryForBackend(ORNITH_REGISTRY_ROW);
+    expect(resolution.reason).toBe('ok');
+    expect(resolution.entry?.id).toBe('ornith-35b-iq3m-llama-server');
+  });
+
+  it('distinguishes no-model-refs, no-match and ambiguous — they are different bugs', () => {
+    expect(resolveCatalogEntryForBackend({ models: [], kind: 'llama-server' }).reason).toBe('no-model-refs');
+    expect(resolveCatalogEntryForBackend({ models: ['some/other-model:Q4'], kind: 'llama-server' }).reason).toBe('no-match');
+
+    // Same model, two backends — a real catalog shape (llama-server vs vLLM), and the reason kind
+    // disambiguates. With the kind dropped it becomes genuinely ambiguous and must NOT guess.
+    const twoWays: CatalogEntry[] = [ORNITH, { ...ORNITH, id: 'ornith-via-vllm', backend: 'vllm' } as CatalogEntry];
+    expect(resolveCatalogEntryForBackend({ models: [ORNITH.model.ollamaRef], kind: 'vllm' }, twoWays).entry?.id).toBe(
+      'ornith-via-vllm',
+    );
+    const ambiguous = resolveCatalogEntryForBackend({ models: [ORNITH.model.ollamaRef] }, twoWays);
+    expect(ambiguous.reason).toBe('ambiguous');
+    expect(ambiguous.entry).toBeNull();
+  });
+
+  it('does not match on kind alone when no model ref overlaps', () => {
+    expect(resolveCatalogEntryForBackend({ models: ['unrelated'], kind: 'llama-server' }).entry).toBeNull();
+  });
+});
+
+describe('auditDeployedUnit (WI-39735 wiring / D-016)', () => {
+  it('passes the current unit on all three checks at once', async () => {
+    const audit = await auditDeployedUnit(ORNITH, CURRENT_UNIT, { access: accessOk });
+    expect(audit.verdict).toBe('ok');
+    expect(audit.drift).toEqual([]);
+    expect(audit.envIssues).toEqual([]);
+    expect(audit.binary?.ok).toBe(true);
+    expect(audit.catalogEntryId).toBe('ornith-35b-iq3m-llama-server');
+  });
+
+  it('catches PARAM drift — the 2026-08-17 deployed unit', async () => {
+    const audit = await auditDeployedUnit(ORNITH, DRIFTED_UNIT, { access: accessOk });
+    expect(audit.verdict).toBe('degraded');
+    expect(audit.summary).toMatch(/parallelSlots|ctxTotal|kvCacheTypeK/);
+  });
+
+  it('catches a MISSING REQUIRED ENV var while every compared param still matches', async () => {
+    // The D-012 failure mode exactly: delete the CUDA backend path and the unit still matches the
+    // catalog on every parameter a diff compares, starts, and answers /health from the CPU.
+    const cpuFallback = CURRENT_UNIT.split('\n')
+      .filter((l) => !l.startsWith('Environment=GGML_BACKEND_PATH'))
+      .join('\n');
+    expect(diffCatalogAgainstDeployedUnit(ORNITH, cpuFallback)).toEqual([]); // the old blindness, measured
+
+    const audit = await auditDeployedUnit(ORNITH, cpuFallback, { access: accessOk });
+    expect(audit.verdict).toBe('degraded');
+    expect(audit.envIssues.map((i) => i.key)).toEqual(['GGML_BACKEND_PATH']);
+  });
+
+  it('catches a MISSING ENGINE BINARY while every compared param still matches', async () => {
+    expect(diffCatalogAgainstDeployedUnit(ORNITH, CURRENT_UNIT)).toEqual([]);
+    const audit = await auditDeployedUnit(ORNITH, CURRENT_UNIT, { access: accessDenied });
+    expect(audit.verdict).toBe('degraded');
+    expect(audit.binary?.reason).toBe('missing');
+  });
+
+  it('reports a present-but-not-executable binary as degraded too', async () => {
+    const audit = await auditDeployedUnit(ORNITH, CURRENT_UNIT, { access: accessPresentNotExecutable });
+    expect(audit.verdict).toBe('degraded');
+    expect(audit.binary?.reason).toBe('not-executable');
+  });
+});
+
+describe('auditDeployedUnitForBackend — unauditable is never reported as clean', () => {
+  it('audits a resolvable backend end-to-end from its registry row', async () => {
+    const audit = await auditDeployedUnitForBackend(ORNITH_REGISTRY_ROW, CURRENT_UNIT, { access: accessOk });
+    expect(audit.verdict).toBe('ok');
+    expect(audit.catalogEntryId).toBe('ornith-35b-iq3m-llama-server');
+  });
+
+  it('returns UNAUDITABLE — not ok — when the catalog entry cannot be resolved', async () => {
+    // The distinction this asserts is the whole reason `unauditable` is a verdict rather than a
+    // null entry: a caller that cannot tell "could not check" from "checked, clean" will log a
+    // broken guard as a passing one, which is how the original drift survived for weeks.
+    const audit = await auditDeployedUnitForBackend({ models: ['not/in-catalog'], kind: 'llama-server' }, CURRENT_UNIT, {
+      access: accessOk,
+    });
+    expect(audit.verdict).toBe('unauditable');
+    expect(audit.verdict).not.toBe('ok');
+    expect(audit.catalogEntryId).toBeNull();
+    expect(audit.summary).toMatch(/cannot audit/);
+  });
+
+  it('does not silently pass a DEGRADED unit just because the text was readable', async () => {
+    const audit = await auditDeployedUnitForBackend(ORNITH_REGISTRY_ROW, DRIFTED_UNIT, { access: accessOk });
+    expect(audit.verdict).toBe('degraded');
+  });
+});

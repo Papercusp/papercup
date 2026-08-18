@@ -420,3 +420,203 @@ describe('ensureLocalBackendRunning', () => {
     expect(result.waitedMs).toBe(0);
   });
 });
+
+/**
+ * The same backend as ORNITH above, but carrying the registry fields the cold-start audit needs
+ * (D-016). Kept SEPARATE from ORNITH on purpose: the tests above construct a target without them
+ * and must keep working, because every pre-D-016 call site does.
+ */
+const ORNITH_AUDITABLE: BackendLifecycleTarget = {
+  ...ORNITH,
+  kind: 'llama-server',
+  models: ['maxwell1500/ornith-35b:IQ3_M', 'ornith'],
+};
+
+/** A unit matching the ornith catalog entry on every audited dimension. */
+const HEALTHY_UNIT = `[Service]
+Environment=LD_LIBRARY_PATH=/usr/local/lib/ollama/cuda_v13:/usr/local/lib/ollama
+Environment=GGML_BACKEND_PATH=/usr/local/lib/ollama/cuda_v13/libggml-cuda.so
+ExecStart=/usr/local/lib/ollama/llama-server \\
+  -m /blobs/sha256-deadbeef \\
+  --host 127.0.0.1 --port 11436 \\
+  --flash-attn on \\
+  -ngl 999 \\
+  -np 2 -c 180224 \\
+  --cache-type-k q8_0 --cache-type-v q8_0 \\
+  --alias maxwell1500/ornith-35b:IQ3_M
+`;
+
+/** The D-012 failure: identical on every compared PARAM, but silently CPU-only. */
+const CPU_FALLBACK_UNIT = HEALTHY_UNIT.split('\n')
+  .filter((l) => !l.startsWith('Environment=GGML_BACKEND_PATH'))
+  .join('\n');
+
+const accessOk = async () => {};
+
+describe('ensureLocalBackendRunning — cold-start unit audit (WI-39735 / D-016)', () => {
+  it('WARNS about a degraded unit and STARTS IT ANYWAY', async () => {
+    // The load-bearing assertion of the whole wiring: a degraded backend still serves, so refusing
+    // to start one converts every false positive in the guard into an outage. If someone later
+    // makes the audit fatal, this test is what says no.
+    const runSystemctl = vi.fn(async () => ({ stdout: CPU_FALLBACK_UNIT, stderr: '' }));
+    const onUnitAudit = vi.fn();
+
+    const result = await ensureLocalBackendRunning(ORNITH_AUDITABLE, {
+      readyTimeoutMs: 600_000,
+      pollIntervalMs: 1000,
+      runSystemctl,
+      healthCheck: (() => {
+        let probes = 0;
+        return async () => ++probes > 1;
+      })(),
+      onUnitAudit,
+      access: accessOk,
+      ...fakeClock(),
+    });
+
+    expect(result).toMatchObject({ ok: true, started: true, healthy: true });
+    expect(runSystemctl).toHaveBeenCalledWith(['--user', 'start', 'llama-ornith.service']);
+    expect(onUnitAudit).toHaveBeenCalledTimes(1);
+    expect(onUnitAudit.mock.calls[0][0]).toMatchObject({ verdict: 'degraded' });
+    expect(result.unitAudit?.envIssues.map((i) => i.key)).toEqual(['GGML_BACKEND_PATH']);
+  });
+
+  it('reads the DEPLOYED unit with `systemctl cat`, BEFORE issuing the start', async () => {
+    // Ordering is not cosmetic: the binary check explains a 203/EXEC start failure, and the start
+    // failure path returns early — so an audit sequenced after the start would never be emitted in
+    // exactly the case it diagnoses.
+    const calls: string[][] = [];
+    const runSystemctl = vi.fn(async (args: string[]) => {
+      calls.push(args);
+      return { stdout: HEALTHY_UNIT, stderr: '' };
+    });
+
+    await ensureLocalBackendRunning(ORNITH_AUDITABLE, {
+      readyTimeoutMs: 600_000,
+      pollIntervalMs: 1000,
+      runSystemctl,
+      healthCheck: (() => {
+        let probes = 0;
+        return async () => ++probes > 1;
+      })(),
+      access: accessOk,
+      ...fakeClock(),
+    });
+
+    expect(calls[0]).toEqual(['--user', 'cat', 'llama-ornith.service']);
+    expect(calls[1]).toEqual(['--user', 'start', 'llama-ornith.service']);
+  });
+
+  it('does NOT audit on the warm path — no subprocess when the backend is already up', async () => {
+    const runSystemctl = vi.fn(async () => ({ stdout: '', stderr: '' }));
+    const onUnitAudit = vi.fn();
+
+    const result = await ensureLocalBackendRunning(ORNITH_AUDITABLE, {
+      readyTimeoutMs: 600_000,
+      runSystemctl,
+      healthCheck: async () => true,
+      onUnitAudit,
+      ...fakeClock(),
+    });
+
+    expect(result.alreadyRunning).toBe(true);
+    expect(runSystemctl).not.toHaveBeenCalled();
+    expect(onUnitAudit).not.toHaveBeenCalled();
+    // `undefined` here means NOT CHECKED. It must never be read as "checked and clean" — which is
+    // why the audit's own "checked, could not conclude" is the explicit `unauditable` verdict.
+    expect(result.unitAudit).toBeUndefined();
+  });
+
+  it('reports a clean unit too, so a passing guard is distinguishable from an absent one', async () => {
+    const onUnitAudit = vi.fn();
+    const result = await ensureLocalBackendRunning(ORNITH_AUDITABLE, {
+      readyTimeoutMs: 600_000,
+      pollIntervalMs: 1000,
+      runSystemctl: async () => ({ stdout: HEALTHY_UNIT, stderr: '' }),
+      healthCheck: (() => {
+        let probes = 0;
+        return async () => ++probes > 1;
+      })(),
+      onUnitAudit,
+      access: accessOk,
+      ...fakeClock(),
+    });
+
+    expect(onUnitAudit).toHaveBeenCalledTimes(1);
+    expect(result.unitAudit?.verdict).toBe('ok');
+  });
+
+  it('a broken audit CANNOT break the start — unreadable unit', async () => {
+    // A guard that can take down the thing it guards is worse than no guard.
+    const result = await ensureLocalBackendRunning(ORNITH_AUDITABLE, {
+      readyTimeoutMs: 600_000,
+      pollIntervalMs: 1000,
+      runSystemctl: async () => ({ stdout: '', stderr: '' }),
+      readUnitText: async () => {
+        throw new Error('systemctl: command not found');
+      },
+      healthCheck: (() => {
+        let probes = 0;
+        return async () => ++probes > 1;
+      })(),
+      ...fakeClock(),
+    });
+
+    expect(result).toMatchObject({ ok: true, started: true, healthy: true });
+    expect(result.unitAudit).toMatchObject({ verdict: 'unauditable' });
+    expect(result.unitAudit?.summary).toMatch(/could not run/);
+  });
+
+  it('a throwing REPORTER cannot break the start either', async () => {
+    const result = await ensureLocalBackendRunning(ORNITH_AUDITABLE, {
+      readyTimeoutMs: 600_000,
+      pollIntervalMs: 1000,
+      runSystemctl: async () => ({ stdout: HEALTHY_UNIT, stderr: '' }),
+      healthCheck: (() => {
+        let probes = 0;
+        return async () => ++probes > 1;
+      })(),
+      onUnitAudit: () => {
+        throw new Error('log sink exploded');
+      },
+      access: accessOk,
+      ...fakeClock(),
+    });
+
+    expect(result).toMatchObject({ ok: true, started: true, healthy: true });
+  });
+
+  it('a backend with no model refs is UNAUDITABLE, not silently clean', async () => {
+    // ORNITH (no models/kind) is every pre-D-016 call site. It must keep working — and must not
+    // report a pass it never performed.
+    const result = await ensureLocalBackendRunning(ORNITH, {
+      readyTimeoutMs: 600_000,
+      pollIntervalMs: 1000,
+      runSystemctl: async () => ({ stdout: HEALTHY_UNIT, stderr: '' }),
+      healthCheck: (() => {
+        let probes = 0;
+        return async () => ++probes > 1;
+      })(),
+      ...fakeClock(),
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.unitAudit?.verdict).toBe('unauditable');
+  });
+
+  it('names the audit verdict in the TIMEOUT error — the two failures look identical from outside', async () => {
+    const result = await ensureLocalBackendRunning(ORNITH_AUDITABLE, {
+      readyTimeoutMs: 30_000,
+      pollIntervalMs: 1000,
+      runSystemctl: async () => ({ stdout: CPU_FALLBACK_UNIT, stderr: '' }),
+      healthCheck: async () => false,
+      access: accessOk,
+      ...fakeClock(),
+    });
+
+    expect(result).toMatchObject({ ok: false, started: true, healthy: false });
+    expect(result.error).toMatch(/did not answer/);
+    expect(result.error).toMatch(/unit audit:/);
+    expect(result.error).toMatch(/GGML_BACKEND_PATH/);
+  });
+});
