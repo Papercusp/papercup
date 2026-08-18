@@ -124,7 +124,10 @@ const readinessMock = vi.fn(async (_sql: unknown, _ws: unknown, _id: unknown): P
 const replaceBlockedByMock = vi.fn(async (_sql: unknown, _o: unknown) => {
   order.push('deps-clear');
 });
-vi.mock('@papercusp/agent-mcp/goal-deps', () => ({
+vi.mock('@papercusp/agent-mcp/goal-deps', async (orig) => ({
+  // Keep every other export real: the same module file is reached by relative
+  // path from goals:create / goals:update inside the agent-mcp tool index.
+  ...(await orig<Record<string, unknown>>()),
   applyGoalBlockedBy: (s: unknown, o: unknown) => applyBlockedByMock(s, o),
   readGoalReadiness: (s: unknown, w: unknown, g: unknown) => readinessMock(s, w, g),
   replaceGoalBlockedBy: (s: unknown, o: unknown) => replaceBlockedByMock(s, o),
