@@ -81,6 +81,48 @@ describe('resolveOperatorBase precedence', () => {
   });
 });
 
+// The caller appends its own `/api/mcp`, but `PAPERCUSP_OPERATOR_URL` is OVERLOADED:
+// `apps/operator/.env.local` exports it WITH the endpoint path for MCP-config
+// consumers, and every process sourcing that file inherits the suffixed form. Without
+// stripping, ptool posted to `/api/mcp/api/mcp` and the host answered
+// `404 {"error":"not_found"}` — surfacing as "could not reach the operator" against a
+// perfectly healthy host. That silently no-op'd the bg-host project-history-refresh
+// routine on every fire (EI-20475585438015488); same overloaded-variable bug class as
+// WI-6154 in operator-core.
+describe('resolveOperatorBase strips an /api/mcp endpoint suffix (EI-20475585438015488)', () => {
+  it('strips the suffix from the env override — the bg-host inherited form', () => {
+    const home = homeWithOperatorJson(null);
+    expect(
+      resolveOperatorBase({}, { PAPERCUSP_OPERATOR_URL: 'http://localhost:3070/api/mcp' }, { home }),
+    ).toBe('http://localhost:3070');
+  });
+
+  it('strips a trailing-slash variant of the suffix', () => {
+    const home = homeWithOperatorJson(null);
+    expect(
+      resolveOperatorBase({}, { PAPERCUSP_OPERATOR_URL: 'http://localhost:3070/api/mcp/' }, { home }),
+    ).toBe('http://localhost:3070');
+  });
+
+  it('strips the suffix from an explicit arg and from operator.json discovery', () => {
+    const home = homeWithOperatorJson(JSON.stringify({ httpUrl: 'http://127.0.0.1:20114/api/mcp' }));
+    expect(resolveOperatorBase({ operatorUrl: 'http://x:1/api/mcp' }, {}, { home })).toBe('http://x:1');
+    expect(resolveOperatorBase({}, {}, { home })).toBe('http://127.0.0.1:20114');
+  });
+
+  it('leaves a plain base origin untouched, and does not strip a mid-path /api/mcp', () => {
+    const home = homeWithOperatorJson(null);
+    expect(resolveOperatorBase({}, { PAPERCUSP_OPERATOR_URL: 'http://localhost:3070' }, { home })).toBe(
+      'http://localhost:3070',
+    );
+    // Only a TRAILING endpoint suffix is an overloaded-variable artifact; a proxy
+    // mounted under that path is a real base and must survive.
+    expect(
+      resolveOperatorBase({}, { PAPERCUSP_OPERATOR_URL: 'http://localhost:9071/api/mcp/proxy' }, { home }),
+    ).toBe('http://localhost:9071/api/mcp/proxy');
+  });
+});
+
 // WI-3141: the onboarding/tutorial launchers must ride THROUGH the operator's
 // first-boot / recycle window (owner 2026-07-05: "3 attempts before the tutorial
 // showed up") instead of hard-failing on the first connection-refused.
