@@ -307,6 +307,25 @@ export async function runRouteStack(
     } catch {
       /* telemetry is best-effort */
     }
+    // Coverage-census attribution (plan deterministic-coverage-census-2026-08-17, P-004).
+    // Inert unless PAPERCUSP_TEST_ATTRIBUTION=1 — the first statement in the hook is a cached
+    // boolean, so a production request pays one branch. It sits HERE, not in a Hono middleware,
+    // because `def` IS the census identity: `providers/hono-routes.ts` enumerates
+    // `routeRegistrationOrder()`, and `registerRoute` mounts exactly one `runRouteStack` per
+    // entry of that same array — so observer and census cannot disagree about what a surface
+    // is. A middleware would have to re-derive it from `c.req.routePath`, a second source of
+    // truth for the one identity this system may not get wrong.
+    try {
+      recordHttpTraffic({
+        method: def.method,
+        path: def.path,
+        status: exec.status,
+        httpStatus: response.status,
+        headers: hono.req.raw.headers,
+      });
+    } catch {
+      /* attribution is best-effort — it must never affect the response it describes */
+    }
   }
   return response;
 }
