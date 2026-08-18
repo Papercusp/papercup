@@ -37,6 +37,44 @@
  * deadline and then forget to wrap one leg. Proving that needs the call graph,
  * not the syntax. This guard closes the cheap, high-recurrence gap (a NEW fan-out
  * added to an unbounded function) and says so rather than implying more.
+ *
+ * WHY IT AUDITS THIS DIRECTORY ONLY — the triage criterion (WI-39865)
+ *
+ * An unbounded variable-arity fan-out is NOT automatically a defect. What made
+ * the sync-resolver sites defects is the READ PATH they sit on: a resolver leg is
+ * awaited inside the sync layer's ~10s RESOLVER_READ_TIMEOUT, and ONE hanging leg
+ * fails the WHOLE panel (a 500), not just its own row. The class is therefore
+ *
+ *     awaited on a bounded shared read path AND a hang FAILS the surface
+ *
+ * not "an unbounded `Promise.all`". Measured 2026-08-18 over the neighbouring
+ * population: 50 variable-arity fan-outs with no enclosing seam exist across
+ * `derived-reads/` + `agent-tools/` — a SHAPE count, not a defect count. The 3 in
+ * `derived-reads/producers.ts` (the only ones plausibly in the class, since they
+ * feed the same panels) were read and are OUT of it, structurally:
+ *
+ *   - a producer's `compute` is never awaited by a sync read while
+ *     `FLAGS.PRECOMPUTE_DERIVED_READS` is on (FLAG_DEFAULTS resolves `true`, and
+ *     it is not in KNOWN_DARK_FLAGS). The read is a plain snapshot SELECT, and a
+ *     miss fires a `void` warm that derived-reads/registry.ts documents as
+ *     "Never awaited by a read" — that is invariant D-003 of that substrate.
+ *   - so a hanging leg DEGRADES (an empty/stale panel carrying its `_meta`),
+ *     which is the trade the substrate exists to make. It cannot 500 the panel.
+ *   - the expensive leg is already bounded one layer down regardless:
+ *     JOURNALCTL_TIMEOUT_MS on the per-hive `execFile` (EI-19937931088042507).
+ *
+ * Their residual risk is real but DIFFERENT, and belongs to the registry rather
+ * than to any one fan-out: `refreshDerivedReads` runs producers sequentially with
+ * no per-producer timeout, so one wedged producer stales every derived panel
+ * until the DBOS fire deadline (ROUTINE_FIRE_TIMEOUT_MS, 2h) reaps it. If that is
+ * ever worth tightening, the fix is ONE timeout around the single
+ * `producer.compute` call in registry.ts — bounding 3 fan-outs inside 3 producers
+ * would leave the other ~20 producers unbounded and the class unfixed.
+ *
+ * So: before pointing this guard at another directory, apply the criterion above
+ * to it. Widening it to a population whose hangs merely degrade turns a precise
+ * signal into noise, and mass-bounding those 50 sites would be churn defended by
+ * a shape count nobody has tied to a failure.
  */
 
 import ts from 'typescript';
