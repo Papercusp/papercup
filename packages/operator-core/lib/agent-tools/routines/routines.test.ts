@@ -152,6 +152,81 @@ describe('routines:list', () => {
     });
   });
 
+  /**
+   * EI-20747395137280903 — the FOURTH instance of the defect {@link healthOf}'s own header
+   * predicted ("a per-field fix here is what guarantees a fourth instance").
+   *
+   * A routine whose `system:` action is registered NOWHERE fires on schedule and does nothing,
+   * forever. The detector for it has always worked and has always written its findings to
+   * `metadata.validation`; that key simply was not in the projection's allowlist, so the only
+   * witness was a `console.error` in journalctl. Every surface an agent would naturally check
+   * — `active`, `nextFireAt`, `lastFiredAt` — reports a perfectly healthy routine, which is
+   * precisely why this needs a POSITIVE assertion rather than trust in the log.
+   *
+   * Measured when this landed: 4 routines were live in this state with 210 skipped fires
+   * between them.
+   */
+  it('surfaces metadata.validation so a silently-dead routine stops reading as healthy (EI-20747395137280903)', async () => {
+    sqlMock.mockResolvedValue([
+      {
+        install_slug: 'papercusp',
+        name: 'coverage-census',
+        trigger_kind: 'interval',
+        trigger_config: { interval_sec: 900 },
+        target_role: 'system:coverage-census',
+        // Every one of these reads HEALTHY. That is the bug this test pins.
+        active: true,
+        next_fire_at: new Date('2026-08-18T13:30:00Z'),
+        last_fired_at: new Date('2026-08-18T13:12:11Z'),
+        metadata: {
+          validation: {
+            'unregistered-system-action': {
+              occurrences: 25,
+              firstSeenMs: 1787028895814,
+              lastSeenMs: 1787057475766,
+            },
+          },
+        },
+      },
+    ]);
+    const b = body(await listTool.handler({} as never, { role: 'su' } as never));
+    expect(b.routines[0].health).toMatchObject({
+      validation: {
+        'unregistered-system-action': { occurrences: 25 },
+      },
+    });
+  });
+
+  /**
+   * The calibration control for the test above. A `toMatchObject` assertion on a projected
+   * field passes for the WRONG reason if the projection ever starts echoing metadata wholesale
+   * — so prove the allowlist is still an allowlist by sending a key that must NOT come through.
+   * Without this, widening `healthOf` to `return metadata` would leave both tests green.
+   */
+  it('still filters non-operational metadata keys — the allowlist is not an echo', async () => {
+    sqlMock.mockResolvedValue([
+      {
+        install_slug: 'papercusp',
+        name: 'coverage-census',
+        trigger_kind: 'interval',
+        trigger_config: { interval_sec: 900 },
+        target_role: 'system:coverage-census',
+        active: true,
+        next_fire_at: null,
+        last_fired_at: null,
+        metadata: {
+          validation: { 'unregistered-system-action': { occurrences: 25 } },
+          // Real key from this table, deliberately not operational — and one of the
+          // biggest (measured max 16,613 chars), which is why the allowlist exists at all.
+          residue_census: { huge: 'x'.repeat(64) },
+        },
+      },
+    ]);
+    const b = body(await listTool.handler({} as never, { role: 'su' } as never));
+    expect(b.routines[0].health).toHaveProperty('validation');
+    expect(b.routines[0].health).not.toHaveProperty('residue_census');
+  });
+
   it('reports health:null for a routine carrying no operational metadata — the field stays cheap', async () => {
     // The projection must not turn every ordinary row into a bag of nulls: the
     // trimmed payload is what an agent sees by default, and this tool lists
