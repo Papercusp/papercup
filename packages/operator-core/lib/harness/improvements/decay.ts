@@ -180,15 +180,15 @@ export async function runDecaySweep(
   }
 
   if (result.verified || result.recurred) {
-    void import('../../sync-sse')
-      .then((m) => m.notifySyncInvalidate('learning.improvements'))
-      .catch(() => {});
+    void trackDetached(
+      import('../../sync-sse').then((m) => m.notifySyncInvalidate('learning.improvements')),
+    ).catch(() => {});
     // Push-on-write for the Health tab's improvements panel
     // (stop-discarded-dedup-and-audit-server-polling-2026-07-26 P-013 / D-007) —
     // same lazy fire-and-forget discipline as the invalidate above.
-    void import('../../system-health/compute')
-      .then((m) => m.refreshHealthPanel('improvements'))
-      .catch(() => {});
+    void trackDetached(
+      import('../../system-health/compute').then((m) => m.refreshHealthPanel('improvements')),
+    ).catch(() => {});
   }
   return result;
 }

@@ -23,8 +23,18 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // apps/operator run tests that can reach a Hono route or an MCP dispatch; every other workspace
 // would load it to observe traffic it cannot generate. Inert unless PAPERCUSP_TEST_ATTRIBUTION=1
 // (the setup file registers no hooks at all when disarmed).
+// detached-imports: drains tracked fire-and-forget dynamic imports before each file's
+// environment is torn down. Without it a lazy side-effect import (sync-sse / system-health /
+// calibration) that outlives its test file throws EnvironmentTeardownError mid-graph, and in
+// the pure lane (isolate:false, shared fork) that failure is attributed to whichever CO-RESIDENT
+// file is collecting — victims report `(0 test)` and pass again in a fresh process. Wired here
+// rather than in @papercusp/test-config for the same reason as the census setup above: these
+// imports only exist in this workspace.
 export default defineVitestConfig({
   layer: 'unit',
   laneSplit: true,
-  setupFiles: [resolve(__dirname, 'lib/coverage-census/attribution/setup-vitest.ts')],
+  setupFiles: [
+    resolve(__dirname, 'lib/coverage-census/attribution/setup-vitest.ts'),
+    resolve(__dirname, 'lib/detached-imports/setup-vitest.ts'),
+  ],
 });
