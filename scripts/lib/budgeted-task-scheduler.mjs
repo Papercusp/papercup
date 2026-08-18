@@ -162,6 +162,53 @@ export function resolveTaskBudget({
   };
 }
 
+/**
+ * How many worker tokens the host can pay for RIGHT NOW, from a fresh MemAvailable reading.
+ *
+ * EI-20801764054303492 route (a). The startup budget is resolved from a SINGLE reading taken
+ * before any child exists, and a gate run lasts ~55 minutes on a box shared with a large agent
+ * fleet — so by the time the tenth task is admitted, the reading the whole run's concurrency
+ * rests on can be an hour stale and describe a machine that no longer exists. Re-measuring at
+ * each admission is what makes "a quiet box runs wide, a loaded box throttles" actually TRUE,
+ * rather than "the box was quiet once, so we run wide regardless".
+ *
+ * SAFETY — this can only ever LOWER admission, never widen it: the result is clamped by the
+ * lane's configured width, which was itself already clamped by the startup budget. A missing or
+ * unreadable measurement returns the lane width unchanged, so a non-Linux host or a /proc read
+ * failure degrades to exactly the previous behaviour instead of throttling to one worker.
+ *
+ * FLOOR of one: a host that cannot pay for a single token still makes progress serially. The
+ * alternative — refusing admission — would deadlock a run that is already under memory pressure,
+ * which is the worst possible moment to stop making forward progress.
+ *
+ * ⚠ KNOWN CONSERVATISM GAP: a child's heap materialises over its first minutes, so a reading
+ * taken moments after an admission still counts that memory as available. {@link
+ * MEMORY_RESERVE_FRACTION} is the headroom standing in for it. Modelling the unrealised
+ * remainder would need a per-child ramp estimate this scheduler does not have, and guessing it
+ * wrong throttles a healthy box — so the gap is documented rather than approximated.
+ */
+export function admissibleWorkersForMemory({
+  laneWorkers,
+  workerMemoryMb,
+  memAvailableMb,
+  reserveFraction = MEMORY_RESERVE_FRACTION,
+}) {
+  const configuredLaneWorkers = positiveInteger(laneWorkers, 'laneWorkers');
+  if (memAvailableMb == null || memAvailableMb === '') return configuredLaneWorkers;
+  const perWorker = positiveInteger(workerMemoryMb, 'workerMemoryMb');
+  if (!(reserveFraction >= 0 && reserveFraction < 1)) {
+    throw new Error(`reserveFraction must be in [0, 1); received ${String(reserveFraction)}`);
+  }
+  const measured = Number(memAvailableMb);
+  // A reading is an OBSERVATION, not a configuration value: a negative or non-finite one means
+  // the instrument is broken, and a broken instrument must not be read as "no memory" (that
+  // would throttle a healthy box to one worker). Fall back to the unchanged lane width.
+  if (!Number.isFinite(measured) || measured < 0) return configuredLaneWorkers;
+  const usable = Math.floor(measured * (1 - reserveFraction));
+  const affordable = Math.floor(usable / perWorker);
+  return Math.max(1, Math.min(configuredLaneWorkers, affordable));
+}
+
 const finiteEstimate = (value) =>
   typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
 
