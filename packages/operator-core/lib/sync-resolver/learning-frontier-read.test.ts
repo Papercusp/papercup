@@ -15,9 +15,11 @@ import {
   applyFrontierPotLens,
   FRONTIER_LANE_FLAGS,
   governorRowMatchesLane,
+  readLaneOutcomes,
   type FrontierGovernorInfo,
   type FrontierLaneSnapshot,
 } from './learning-frontier-read';
+import { createReadDeadline } from './read-deadline';
 
 describe('FRONTIER_LANE_FLAGS', () => {
   it('covers every LEARNING_SINGLETONS lane (explicit null = deliberately ungated)', () => {
@@ -294,5 +296,97 @@ describe('readFrontierSnapshot bounds a HUNG leg (EI-20801200386596605)', () => 
     const bounded = await settledWithin(read(emptySql, 'w', { budgetMs: 40 }), 2000);
     expect(bounded).not.toBe(PENDING);
     expect(bounded !== PENDING && bounded.lanes).toEqual([]);
+  });
+});
+
+/**
+ * WI-39817 — the bound has to reach the LANE, not just the rollup.
+ *
+ * readLaneOutcomes fans its four lanes out with Promise.all and gives each a
+ * try/catch. That is real fail-soft for a lane that THROWS and nothing at all
+ * for a lane that HANGS, because Promise.all waits for the slowest one. The
+ * caller's outer wrap hid that: it bounded the whole rollup, so the read never
+ * hung — it just lost all four lanes whenever any one of them wedged, including
+ * the three that had already returned.
+ *
+ * The control here is not a hand-written wrong implementation: OMITTING the
+ * optional `withinBudget` argument IS the pre-fix code path, and it is still
+ * reachable in production by any caller that has no deadline to give. So the
+ * control tests a real branch rather than a museum piece.
+ */
+describe('readLaneOutcomes bounds each LANE, not just the rollup (WI-39817)', () => {
+  /** Never settles — a wedged store, not a failing one. */
+  const hang = () => new Promise<never>(() => {});
+
+  /**
+   * "Never settles" must be an ASSERTABLE outcome, not a vitest timeout: a test
+   * that makes its point by timing out reports the wrong thing when it is right,
+   * and is indistinguishable from an unintended hang when it is wrong.
+   */
+  const PENDING = Symbol('still-pending');
+  const settledWithin = <T>(p: Promise<T>, ms: number): Promise<T | typeof PENDING> =>
+    Promise.race([
+      p,
+      new Promise<typeof PENDING>((resolve) => {
+        const t = setTimeout(() => resolve(PENDING), ms);
+        (t as unknown as { unref?: () => void }).unref?.();
+      }),
+    ]);
+
+  /** Every lane shares the guard `num(r.total) === 0 ⇒ null`, so one row serves any of them. */
+  const LANE_TABLE = {
+    calibration: 'calibration_predictions',
+    regret: 'regret_findings',
+    transfer: 'transfer_lessons',
+    'prompt-ablation': 'prompt_ablation_runs',
+  } as const;
+  const ALL_LANES = Object.keys(LANE_TABLE).sort();
+
+  /** A store that wedges ONLY the query naming `table`; every other lane reads normally. */
+  const sqlWedging = (table: string) =>
+    ((strings: TemplateStringsArray) =>
+      strings.join(' ').includes(table) ? hang() : Promise.resolve([{ total: 5 }])) as unknown as Sql;
+  const healthySql = (() => Promise.resolve([{ total: 5 }])) as unknown as Sql;
+
+  const lanesIn = (r: Record<string, unknown> | typeof PENDING) => (r === PENDING ? [] : Object.keys(r).sort());
+
+  let warn: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  it('a wedged lane loses ONLY itself — the other three rollups survive', async () => {
+    const out = await settledWithin(
+      readLaneOutcomes(sqlWedging(LANE_TABLE.calibration), 'w', createReadDeadline(40)),
+      2000,
+    );
+
+    expect(out).not.toBe(PENDING);
+    expect(lanesIn(out)).toEqual(['prompt-ablation', 'regret', 'transfer']);
+    // The casualty reports itself rather than vanishing silently.
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('calibration'), expect.anything());
+  });
+
+  it('a healthy read under the SAME budget keeps all four — the bound discriminates on the hang, not on the budget', async () => {
+    const out = await settledWithin(readLaneOutcomes(healthySql, 'w', createReadDeadline(40)), 2000);
+
+    expect(out).not.toBe(PENDING);
+    expect(lanesIn(out)).toEqual(ALL_LANES);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('CONTROL: with no deadline threaded in, one wedged lane wedges the WHOLE rollup — so the guard above is falsifiable', async () => {
+    // Pre-fix behaviour. In production the caller's outer wrap turned this hang
+    // into "all four lanes lost"; here it is visible as what it actually is.
+    expect(await settledWithin(readLaneOutcomes(sqlWedging(LANE_TABLE.calibration), 'w'), 150)).toBe(PENDING);
+  });
+
+  it('CALIBRATION: that same unbounded call serves a HEALTHY read fine — the control is a plausible near-miss, not a broken function', async () => {
+    // Without this half, a readLaneOutcomes broken in some OTHER way would also
+    // satisfy the CONTROL above, and the control would prove nothing.
+    const out = await settledWithin(readLaneOutcomes(healthySql, 'w'), 2000);
+
+    expect(out).not.toBe(PENDING);
+    expect(lanesIn(out)).toEqual(ALL_LANES);
   });
 });

@@ -22,6 +22,9 @@
 import { useMemo } from 'react';
 import { parseAsBoolean, parseAsStringEnum, useQueryState } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
+import { Checkbox } from '../../../harness/Checkbox';
+import { Select } from '../../../harness/Select';
+import { Table } from '../../../harness/Table';
 
 type Rung = 'l1' | 'l2' | 'l3' | 'l4';
 
@@ -148,16 +151,20 @@ export default function CoverageTab(): React.ReactElement {
         <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
           <label>
             Floor{' '}
-            <select value={rung} onChange={(e) => void setRung(e.target.value as Rung)}>
-              {(Object.keys(RUNG_LABEL) as Rung[]).map((r) => (
-                <option key={r} value={r}>
-                  {RUNG_LABEL[r]}
-                </option>
-              ))}
-            </select>
+            <Select
+              value={rung}
+              onChange={(value) => void setRung(value as Rung)}
+              ariaLabel="Coverage floor"
+              options={(Object.keys(RUNG_LABEL) as Rung[]).map((r) => ({ value: r, label: RUNG_LABEL[r] }))}
+            />
           </label>
           <label>
-            <input type="checkbox" checked={gapsOnly} onChange={(e) => void setGapsOnly(e.target.checked)} /> gaps only
+            <Checkbox
+              checked={gapsOnly}
+              onChange={(checked) => void setGapsOnly(checked)}
+              ariaLabel="Show only surfaces below the floor"
+            />{' '}
+            gaps only
           </label>
         </div>
       </div>
@@ -228,90 +235,64 @@ export default function CoverageTab(): React.ReactElement {
         </div>
       </div>
 
-      <table className="pc-test-table">
-        <thead>
-          <tr>
-            <th>Rung</th>
-            <th>Meets</th>
-            <th>Below</th>
-            <th>Coverage</th>
-            <th>Fidelity</th>
-          </tr>
-        </thead>
-        <tbody>
-          {(Object.keys(RUNG_LABEL) as Rung[]).map((r) => (
-            <tr key={r}>
-              <td>{RUNG_LABEL[r]}</td>
-              <td>{coverage.byRung[r].meets}</td>
-              <td>{coverage.byRung[r].below}</td>
-              <td>{formatPct(coverage.byRung[r].pct)}</td>
-              <td>
-                <FidelityChip marker={coverage.byRung[r].fidelity} />
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      <Table<Rung>
+        className="pc-test-table"
+        rows={Object.keys(RUNG_LABEL) as Rung[]}
+        getRowKey={(r) => r}
+        columns={[
+          { key: 'rung', header: 'Rung', render: (r) => RUNG_LABEL[r] },
+          { key: 'meets', header: 'Meets', render: (r) => coverage.byRung[r].meets },
+          { key: 'below', header: 'Below', render: (r) => coverage.byRung[r].below },
+          { key: 'coverage', header: 'Coverage', render: (r) => formatPct(coverage.byRung[r].pct) },
+          {
+            key: 'fidelity',
+            header: 'Fidelity',
+            render: (r) => <FidelityChip marker={coverage.byRung[r].fidelity} />,
+          },
+        ]}
+      />
 
-      <table className="pc-test-table">
-        <thead>
-          <tr>
-            <th>Kind</th>
-            <th>Surfaces</th>
-            <th>Meets</th>
-            <th>Below</th>
-            <th>Coverage</th>
-            <th>Fidelity</th>
-          </tr>
-        </thead>
-        <tbody>
-          {payload.byKind.map((k) => (
-            <tr key={k.kind}>
-              <td>{k.kind}</td>
-              <td>{k.surfaces}</td>
-              <td>{k.meets}</td>
-              <td>{k.below}</td>
-              <td>{formatPct(k.pct)}</td>
-              <td>
-                {/* Per-kind, NOT the census-wide marker: a global caveat copied onto every
-                    row would flag a fully-declared kind as weak, and a caveat that is
-                    always present is one readers learn to skip. */}
-                <FidelityChip marker={k.fidelity} />
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      <Table
+        className="pc-test-table"
+        rows={payload.byKind}
+        getRowKey={(k) => k.kind}
+        columns={[
+          { key: 'kind', header: 'Kind', render: (k) => k.kind },
+          { key: 'surfaces', header: 'Surfaces', render: (k) => k.surfaces },
+          { key: 'meets', header: 'Meets', render: (k) => k.meets },
+          { key: 'below', header: 'Below', render: (k) => k.below },
+          { key: 'coverage', header: 'Coverage', render: (k) => formatPct(k.pct) },
+          {
+            key: 'fidelity',
+            header: 'Fidelity',
+            // Per-kind, NOT the census-wide marker: a global caveat copied onto every
+            // row would flag a fully-declared kind as weak, and a caveat that is
+            // always present is one readers learn to skip.
+            render: (k) => <FidelityChip marker={k.fidelity} />,
+          },
+        ]}
+      />
 
       <div className="pc-test-card-title">
         {gapsOnly ? 'Gaps' : 'Surfaces'} — showing {payload.count} of {payload.total}
         {payload.truncatedByLimit ? ' (truncated)' : ''}
       </div>
-      <table className="pc-test-table">
-        <thead>
-          <tr>
-            <th>Kind</th>
-            <th>Surface</th>
-            <th>Source file</th>
-            <th>Depth</th>
-            <th>Fidelity</th>
-          </tr>
-        </thead>
-        <tbody>
-          {payload.rows.map((row) => (
-            <tr key={`${row.kind}:${row.surfaceId}`}>
-              <td>{row.kind}</td>
-              <td>{row.surfaceId}</td>
-              <td>{row.sourceFile ?? '—'}</td>
-              <td>{row.depth}</td>
-              <td>
-                {row.fidelity}
-                {row.waived ? ' · waived' : ''}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      <Table
+        className="pc-test-table"
+        rows={payload.rows}
+        getRowKey={(row) => `${row.kind}:${row.surfaceId}`}
+        columns={[
+          { key: 'kind', header: 'Kind', render: (row) => row.kind },
+          { key: 'surface', header: 'Surface', render: (row) => row.surfaceId },
+          { key: 'sourceFile', header: 'Source file', render: (row) => row.sourceFile ?? '—' },
+          { key: 'depth', header: 'Depth', render: (row) => row.depth },
+          {
+            key: 'fidelity',
+            header: 'Fidelity',
+            render: (row) => `${row.fidelity}${row.waived ? ' · waived' : ''}`,
+          },
+        ]}
+      />
     </div>
   );
 }
