@@ -41,6 +41,7 @@
  */
 
 import type { ReactNode } from 'react';
+import './Disclosures.css';
 
 // ── Server DTO mirror (packages/operator-core/lib/agent-orient-disclosures.ts).
 //    Inlined, not imported, so this client module never pulls the PG-backed
