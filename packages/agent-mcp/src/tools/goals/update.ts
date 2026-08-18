@@ -291,6 +291,33 @@ export default defineTool({
       if (!w.ok) launchSettingsError = `launch settings NOT saved: ${w.error ?? 'unknown error'}`;
     }
 
+    /* BLOCKED-BY (goal-dag-shared-substrate-2026-08-18 P-002). Same
+       partial-by-construction contract as every other field: omitted leaves the
+       edge set alone; null/[] clears it; a refused set (unresolvable ref,
+       cycle) degrades WITHOUT reverting the rest of the update — the failure
+       rides degradedReasons like launchSettingsError above. Runs in ctx.tx, so
+       the edges and the row commit together. */
+    let blockedByError: string | null = null;
+    let blockedByApplied: string[] | null = null;
+    if (args.blockedBy !== undefined) {
+      const workspaceId = await resolveGoalWorkspace({
+        tx: ctx.tx,
+        workspaceId: ctx.principal?.workspaceId,
+      });
+      if (!workspaceId) {
+        blockedByError = 'blockedBy NOT saved: no concrete workspace in scope to resolve the refs against';
+      } else {
+        const applied = await applyGoalBlockedBy(ctx.tx, {
+          workspaceId,
+          goalId: args.id,
+          refs: args.blockedBy ?? [],
+          createdBy: ctx.uiClientId ?? null,
+        });
+        if (applied.ok) blockedByApplied = applied.blockers.map((b) => b.ref);
+        else blockedByError = `blockedBy NOT saved: ${applied.problem}`;
+      }
+    }
+
     const [row] = await ctx.tx<
       Array<{
         id: string;
@@ -363,6 +390,7 @@ export default defineTool({
     // Loud, not swallowed: an owner who just raised a ceiling and got `ok` back
     // would otherwise believe a limit is in force that was never written.
     if (launchSettingsError) degradedReasons.push(launchSettingsError);
+    if (blockedByError) degradedReasons.push(blockedByError);
     if (stopError) degradedReasons.push(stopError);
     if (stop?.degraded) {
       if (isStopReport(stop)) {
@@ -393,7 +421,9 @@ export default defineTool({
     }
 
     return {
-      data: row ? { ...row, stop } : null,
+      data: row
+        ? { ...row, stop, ...(blockedByApplied !== null ? { blocked_by: blockedByApplied } : {}) }
+        : null,
       ...(degradedReasons.length ? { degraded: true, degradedReasons } : {}),
     };
   },
