@@ -105,6 +105,18 @@ interface AttentionCountsRow {
   decisionPlans: number;
   alerts: number;
   total: number;
+  /**
+   * TRUE when the server's 8s attention deadline fired and these counts are its
+   * graceful EMPTY fallback rather than a real answer (WI-39779 shipped the bit;
+   * WI-39802 wired it in here, where dropping it from this type was what silently
+   * discarded it).
+   *
+   * OPTIONAL on purpose, exactly as `inbox/use-inbox-pending.ts` declares it: a
+   * pre-WI-39779 server omits the field, and defaulting that to `false` keeps
+   * this pane reading precisely as it does today rather than flipping every
+   * attention readout into the unknown state.
+   */
+  degraded?: boolean;
 }
 
 interface SpendRow {
@@ -147,6 +159,24 @@ function livenessTone(state: string | null | undefined): Tone {
 function livenessWord(state: string | null | undefined): string {
   return state == null || state === '' ? 'unknown' : state;
 }
+
+/* ── Degraded-attention vocabulary ────────────────────────────────────────────
+ *
+ * The `plans.attentionCounts` read has an 8s server deadline whose graceful
+ * fallback is an EMPTY feed, which derives to all-zeros (WI-39779). These are
+ * what the pane says INSTEAD of presenting that empty as fact.
+ *
+ * There are two labels because the pane's two attention readouts degrade
+ * DIFFERENTLY — see `attentionDegraded` below. Keep them as text the user can
+ * act on ("unavailable, not zero"), never a bare glyph: the mark alone is the
+ * thing a reader most reliably interprets as "nothing". */
+const ATTENTION_FLOOR_LABEL =
+  'At least this many need you — the attention read timed out, so part of this count is missing';
+const ATTENTION_UNKNOWN_LABEL =
+  'Could not load what needs you — this count is unavailable, not zero';
+/** The KV value for a PURE attention readout whose read degraded. Matches the
+ *  pane's existing word for an absent reading (`livenessWord` → 'unknown'). */
+const ATTENTION_UNKNOWN_TEXT = 'unknown — read timed out';
 
 /* ── Small presentational helpers ─────────────────────────────────────────── */
 
@@ -279,6 +309,27 @@ export function PotHealthPane() {
       (attention?.decisionPlans ?? 0),
     [goals, attention],
   );
+
+  /**
+   * TRUE when the attention counts are the server's deadline fallback, not a
+   * real answer. Read it before believing ANY attention zero on this pane.
+   *
+   * The two readouts it governs need DIFFERENT honest renderings, which is the
+   * whole subtlety and the reason this is not a copy of the sidebar's badge:
+   *
+   *  - `needYou` is a MIXED aggregate. Its goals term comes from `goals.list`
+   *    and is unaffected by the attention deadline, so a degraded read still
+   *    leaves a real FLOOR — "at least N" — not total ignorance.
+   *  - the throughput rows below are PURE attention, so a degraded read leaves
+   *    nothing at all. They render `unknown`, and must never keep the all-clear
+   *    dot that only a REAL zero earns.
+   *
+   * (OperatorChatSidebar is the pure case throughout and renders an
+   * indeterminate mark. Do not copy that treatment onto the chip, which has a
+   * floor worth stating; do not copy the chip's floor onto a pure readout,
+   * which has no floor to state.)
+   */
+  const attentionDegraded = attention?.degraded === true;
 
   const cold = !goalsEnvelope && agents.length === 0 && !attention && !spend;
   if (cold) {
