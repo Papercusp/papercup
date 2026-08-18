@@ -303,7 +303,16 @@ export async function runTestFilesCore(opts: {
       root,
       // The reporter inside the child reads this and stamps run_group_id, so
       // the run's per-file rows are findable afterwards. We write no rows here.
-      { ...process.env, PAPERCUSP_TEST_RUN_GROUP: runId },
+      //
+      // P-004: arm coverage attribution for the same child. Stamped unconditionally even
+      // though a unit fork cannot use it — the fork disarms itself off the no-real-pg rail
+      // (see attribution/context.ts), which is a decision only the fork can make correctly,
+      // because one `files` array routinely spans both layers.
+      {
+        ...process.env,
+        PAPERCUSP_TEST_RUN_GROUP: runId,
+        PAPERCUSP_TEST_ATTRIBUTION: '1',
+      },
       timeoutMs,
     );
 
