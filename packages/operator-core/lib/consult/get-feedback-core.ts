@@ -217,25 +217,90 @@ function evidenceLine(c: RoutingCandidate): string {
 }
 
 /**
- * Does a consult_state row exist for this conversation in this workspace?
- * (consult-min-max-and-rubric-vetting-2026-08-17 P-004): scorecards:emit validates a
- * `vettingConsult` linkage against the real consult ledger BEFORE stamping it — a
- * dangling consult id on a vetting scorecard would be a booby trap for the
- * acceptance gate, which trusts the stamp rather than re-querying. Deps-injected
- * `sql` like everything else in this module, so callers bind their own seam.
+ * Did anyone actually CRITIQUE this consult?
+ *
+ * (consult-min-max-and-rubric-vetting-2026-08-17 P-004; tightened by
+ * EI-20821478338037350.) scorecards:emit validates a `vettingConsult` before
+ * stamping it, because the acceptance gate trusts the stamp rather than
+ * re-querying. The original predicate was a bare `consult_state` EXISTENCE
+ * check, which validated LINKAGE ("the consult row is real") and was read
+ * downstream as VETTING ("critique happened") — so a consult that was opened
+ * and never answered satisfied the ship gate. That is the vacuous-green shape
+ * the vetting gate exists to prevent, one level up.
+ *
+ * A CRITIQUE POST here is one authored by a KNOWN third party — neither the
+ * emitter attesting the vetting nor the consult's own requester, whose posts
+ * are the ask, not the answer — with a kind other than 'decline'. Two
+ * deliberate exclusions:
+ *  - 'decline' ("my context does not cover this") is the documented
+ *    no-responder path, not critique; counting it would rebuild the same hole
+ *    one rung lower.
+ *  - a NULL author_id cannot be attributed to a third party, so it cannot
+ *    evidence external critique.
+ * Every other kind counts: a `clarifying_question` from a live reviewer is
+ * genuine engagement with the rubric, and being stricter than that just pushes
+ * honest authors onto the waiver path.
+ *
+ * Deps-injected `sql` like everything else in this module, so callers bind
+ * their own seam.
  */
-export async function consultStateExists(
+export interface VettingConsultCritique {
+  /** false ⇒ no consult_state row: a dangling link, not an unanswered consult. */
+  exists: boolean;
+  /** The consult's fine-grained lifecycle state, for a refusal that can say WHY. */
+  state: string | null;
+  /** Third-party posts that constitute critique (see the kind rules above). */
+  critiquePosts: number;
+  /** Third-party 'decline' posts — reviewers who explicitly could not help. */
+  declinePosts: number;
+  /** Distinct authors of the critique posts, so the stamp can name the critics. */
+  critics: string[];
+}
+
+export async function readVettingConsultCritique(
   sql: Sql,
   workspaceId: string,
   conversationId: string,
-): Promise<boolean> {
-  const rows = (await sql`
-    SELECT 1 AS one
+  emitterId: string,
+): Promise<VettingConsultCritique> {
+  const stateRows = (await sql`
+    SELECT state, requester_id
       FROM harness_shared.consult_state
      WHERE workspace_id = ${workspaceId} AND conversation_id = ${conversationId}
      LIMIT 1
-  `) as unknown as unknown[];
-  return rows.length > 0;
+  `) as unknown as { state: string; requester_id: string }[];
+  const stateRow = stateRows[0];
+  if (!stateRow) {
+    return { exists: false, state: null, critiquePosts: 0, declinePosts: 0, critics: [] };
+  }
+  const postRows = (await sql`
+    SELECT kind, author_id
+      FROM harness_shared.consult_post_meta
+     WHERE workspace_id = ${workspaceId}
+       AND conversation_id = ${conversationId}
+       AND author_id IS NOT NULL
+       AND author_id <> ${emitterId}
+       AND author_id <> ${stateRow.requester_id}
+  `) as unknown as { kind: string; author_id: string }[];
+
+  const critics = new Set<string>();
+  let critiquePosts = 0;
+  let declinePosts = 0;
+  for (const post of postRows) {
+    if (post.kind === 'decline') {
+      declinePosts += 1;
+      continue;
+    }
+    critiquePosts += 1;
+    critics.add(post.author_id);
+  }
+  return {
+    exists: true,
+    state: stateRow.state,
+    critiquePosts,
+    declinePosts,
+    critics: [...critics].sort(),
+  };
 }
 
 /** Walk the parent_consult_id chain collecting every lineage participant —

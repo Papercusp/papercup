@@ -288,6 +288,27 @@ export interface ScorecardVetting {
    *  the version read failed at emit; the gate then treats the card as NOT current
    *  whenever a current revision IS known (strict toward re-vetting). */
   rubricRevision?: number;
+  /**
+   * EI-20821478338037350: how much critique the cited consult had actually
+   * received when the stamp was made. The gate used to key off a consult row
+   * EXISTING, which made "opened, never answered" indistinguishable from
+   * "critiqued" — these three fields are what make the distinction readable
+   * after the fact, by a gate or by a human.
+   *
+   * Third-party posts (neither the emitter's nor the requester's) that counted
+   * as critique. 0 only ever appears alongside `unanswered`.
+   */
+  critiquePosts?: number;
+  /** Distinct authors of those critique posts — WHO actually reviewed it. */
+  critics?: string[];
+  /**
+   * An EXPLICIT, recorded no-critique waiver: the emitter attested with a
+   * consult nobody answered. Honest and allowed (D-003's live-reviewer fill can
+   * still leave a dead responder); what is NOT allowed is it being invisible.
+   */
+  unanswered?: true;
+  /** Why no critique was available — required whenever `unanswered` is set. */
+  unansweredReason?: string;
 }
 
 /**

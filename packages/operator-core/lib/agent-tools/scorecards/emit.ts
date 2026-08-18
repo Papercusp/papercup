@@ -91,7 +91,21 @@ export const scorecardEmitArgs = z
       .max(120)
       .optional()
       .describe(
-        'Vetting linkage (consult-min-max-and-rubric-vetting-2026-08-17 P-004): conversation_id of the get_feedback consult that critiqued the vetted rubric (subject.ref names it). Both are validated to exist, then stamped as observation.vetting.',
+        'Vetting linkage (consult-min-max-and-rubric-vetting-2026-08-17 P-004): conversation_id of the get_feedback consult that critiqued the vetted rubric (subject.ref names it). The rubric must exist AND the consult must carry at least one third-party critique reply (EI-20821478338037350) — an opened-but-unanswered consult is refused, not silently accepted. Stamped as observation.vetting with the critique count and critics.',
+      ),
+    vettingUnanswered: z
+      .boolean()
+      .optional()
+      .describe(
+        'Attest that the cited vetting consult received NO critique (every routed reviewer was dead/parked or it expired unanswered) and you are proceeding anyway. Requires `vettingUnansweredReason`, and is REFUSED when the consult did receive critique — this is the recorded-waiver path, not a way to skip reading replies. Stamped visibly as observation.vetting.unanswered so a later reader can tell a vetted rubric from an un-critiqued one.',
+      ),
+    vettingUnansweredReason: z
+      .string()
+      .min(24)
+      .max(500)
+      .optional()
+      .describe(
+        'Why no critique was available (required with `vettingUnanswered`). Name what you actually observed — e.g. "all 3 routed reviewers ended; consult expired 19:54Z with 0 posts" — not "no reply yet".',
       ),
     supersedes: z
       .string()
@@ -213,8 +227,13 @@ export async function emitScorecard(
           error: `vetting subject '${subjectRef}' does not resolve to a rubric — the vetting stamp would be a dangling link`,
         };
       }
-      const consultOk = await consultStateExists(getOrgPg().sql, activeWorkspaceId(), args.vettingConsult);
-      if (!consultOk) {
+      const critique = await readVettingConsultCritique(
+        getOrgPg().sql,
+        activeWorkspaceId(),
+        args.vettingConsult,
+        input.createdBy,
+      );
+      if (!critique.exists) {
         return {
           ok: false as const,
           error:
@@ -222,10 +241,51 @@ export async function emitScorecard(
             `(consult:get_feedback about rubric '${subjectRef}') and pass its conversation_id`,
         };
       }
+      // EI-20821478338037350: the gate's purpose is EXTERNAL CRITIQUE, so the
+      // predicate has to be "someone critiqued it", not "a consult row exists".
+      // The two failure modes are reported apart because their remedies differ:
+      // silence means wait or re-route; a decline means the reviewer already
+      // told you they cannot help, so waiting is pointless.
+      const waived = args.vettingUnanswered === true;
+      if (critique.critiquePosts === 0 && !waived) {
+        const because =
+          critique.declinePosts > 0
+            ? `every routed reviewer DECLINED (${critique.declinePosts} decline post(s)) — waiting will not produce critique, so re-route the consult`
+            : `nobody has replied yet (consult state '${critique.state ?? 'unknown'}') — wait for critique or re-route the consult`;
+        return {
+          ok: false as const,
+          error:
+            `vetting consult '${args.vettingConsult}' exists but carries NO critique: ${because}. ` +
+            `A vetting attestation over an un-critiqued consult would make the acceptance gate vacuously green. ` +
+            `If no reviewer can be had at all, say so explicitly: vettingUnanswered:true + vettingUnansweredReason:'<what you observed>'.`,
+        };
+      }
+      if (waived && critique.critiquePosts > 0) {
+        return {
+          ok: false as const,
+          error:
+            `vettingUnanswered was passed, but consult '${args.vettingConsult}' DID receive critique ` +
+            `(${critique.critiquePosts} post(s) from ${critique.critics.join(', ')}) — read the critique, improve the ` +
+            `rubric from it, and re-emit without the waiver`,
+        };
+      }
+      if (waived && !args.vettingUnansweredReason) {
+        return {
+          ok: false as const,
+          error:
+            'vettingUnanswered requires vettingUnansweredReason — an unexplained no-critique waiver is exactly the ' +
+            'silent pass this gate exists to prevent',
+        };
+      }
       const rubricRevision = await getRubricPlanRevision(subjectRef);
       vetting = {
         consultId: args.vettingConsult,
         ...(rubricRevision != null ? { rubricRevision } : {}),
+        critiquePosts: critique.critiquePosts,
+        ...(critique.critics.length > 0 ? { critics: critique.critics } : {}),
+        ...(waived
+          ? { unanswered: true as const, unansweredReason: args.vettingUnansweredReason }
+          : {}),
       };
     }
     // P-008 (EI-20581177540737568): a 'violatable' criterion is monotonic-downward — one
