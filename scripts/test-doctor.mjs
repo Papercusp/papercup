@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { execSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { findIncompleteSubmoduleInstalls, formatProblems } from './lib/submodule-installs.mjs';
 import { findShallowGitdirs, formatShallowProblems } from './lib/shallow-gitdirs.mjs';
@@ -80,6 +80,20 @@ if (!submodulesOnly) {
   });
 }
 check('submodule worktrees sane', assertSubmoduleWorktreesSane);
+
+// A `git fetch --depth=N` against this tree silently converts the target into a SHALLOW
+// repository — no error, clean `git status`, nothing for the sweep to show — after which its
+// history reads answer WRONG without erroring and it cannot push at all. Measured 2026-08-18:
+// four submodules were shallowed by a probe (papercusp-desktop 1595->71 commits) and the
+// damage read as an unrelated push blocker. Nothing else in the tree notices this.
+check('no shallow gitdirs (superproject or any submodule)', () => {
+  const problems = findShallowGitdirs({
+    gitCommonDir: resolve(REPO_ROOT, sh('git rev-parse --git-common-dir')),
+  });
+  if (problems.length > 0) {
+    throw new Error(`shallow repositor${problems.length === 1 ? 'y' : 'ies'} detected:\n    ${formatShallowProblems(problems)}`);
+  }
+});
 
 // A submodule that carries its own package-lock.json is NOT covered by the root
 // `npm install` unless it is also a root workspace — and papercusp-desktop is not one.
