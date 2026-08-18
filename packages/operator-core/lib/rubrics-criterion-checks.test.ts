@@ -17,7 +17,10 @@ import {
   validateCriterionCheckPaths,
   assertCriterionCheckPathsResolve,
   evaluateCriterionTestChecks,
+  evaluateCriterionCoverageChecks,
   type CriterionCheckRunner,
+  type CoverageMeasurement,
+  type CoverageReader,
 } from './rubrics-criterion-checks';
 import { rubricCriterionSchema, rubricTemplateDataSchema, rubricCriterionCheckSchema } from './agent-tools/plans/rubric-template';
 import { effectiveCriterionInstrumentKey, planRowToRubric } from './rubrics';
@@ -275,5 +278,254 @@ describe('evaluateCriterionTestChecks (grading time)', () => {
     });
     expect(res.ok).toBe(true);
     expect(ran).toBe(false);
+  });
+});
+
+// ── kind:'coverage' (P-006) ───────────────────────────────────────────────────
+const coverageCheck = (
+  scope: { surfaceKind?: string; sourceFiles?: string[]; planTouched?: true },
+  floor: 'l1' | 'l2' | 'l3' | 'l4' = 'l1',
+) => ({ kind: 'coverage' as const, scope, floor });
+
+/** A census reading. Defaults describe a healthy, fully-covered, DECLARED population,
+ *  so each test perturbs exactly the one field it is about. */
+const measurement = (over: {
+  surfaces?: number;
+  meets?: number;
+  belowUnwaived?: number;
+  verdict?: 'measured' | 'not-measured';
+  censusUnknown?: string[] | null;
+  rows?: string[];
+  weakest?: string | null;
+} = {}): CoverageMeasurement => {
+  const surfaces = over.surfaces ?? 10;
+  const meets = over.meets ?? 10;
+  return {
+    verdict: over.verdict ?? (surfaces > 0 ? 'measured' : 'not-measured'),
+    censusUnknown: over.censusUnknown ?? null,
+    coverage: {
+      surfaces,
+      meets,
+      belowUnwaived: over.belowUnwaived ?? surfaces - meets,
+      pct: surfaces > 0 ? Math.round((meets / surfaces) * 1000) / 10 : null,
+      fidelity: { weakest: over.weakest ?? 'declared', declaredPct: surfaces > 0 ? 100 : null },
+    },
+    rows: (over.rows ?? []).map((surfaceId) => ({ surfaceId, kind: 'mcp-tool', sourceFile: null })),
+  };
+};
+
+const reader = (m: CoverageMeasurement, spy?: (a: Parameters<CoverageReader>[0]) => void): CoverageReader =>
+  async (a) => {
+    spy?.(a);
+    return m;
+  };
+
+describe('rubricCriterionCheckSchema — the coverage arm (P-006)', () => {
+  it('accepts a coverage check; refuses unknown fields, a bad floor, and an empty file list', () => {
+    expect(rubricCriterionCheckSchema.safeParse(coverageCheck({ surfaceKind: 'mcp-tool' })).success).toBe(true);
+    expect(rubricCriterionCheckSchema.safeParse(coverageCheck({ planTouched: true }, 'l3')).success).toBe(true);
+    expect(rubricCriterionCheckSchema.safeParse(coverageCheck({})).success).toBe(true);
+    expect(
+      rubricCriterionCheckSchema.safeParse({ kind: 'coverage', scope: {}, floor: 'l1', extra: 1 }).success,
+    ).toBe(false);
+    expect(rubricCriterionCheckSchema.safeParse({ kind: 'coverage', scope: {}, floor: 'l9' }).success).toBe(false);
+    expect(rubricCriterionCheckSchema.safeParse(coverageCheck({ sourceFiles: [] })).success).toBe(false);
+    // scope is strict too — a typo'd key must not silently widen the scope to everything
+    expect(
+      rubricCriterionCheckSchema.safeParse({ kind: 'coverage', scope: { surfaceKinds: 'mcp-tool' }, floor: 'l1' })
+        .success,
+    ).toBe(false);
+  });
+});
+
+describe('validateCriterionCheckPaths — coverage scopes', () => {
+  it('REFUSES a scope naming both planTouched and an explicit sourceFiles list', () => {
+    const v = validateCriterionCheckPaths(
+      [{ key: 'cov', check: coverageCheck({ planTouched: true, sourceFiles: ['a.ts'] }) }],
+      { root },
+    );
+    expect(v.ok).toBe(false);
+    expect(v.scopeFailures[0]?.criterionKey).toBe('cov');
+    expect(() => assertCriterionCheckPathsResolve([{ key: 'cov', check: coverageCheck({ planTouched: true, sourceFiles: ['a.ts'] }) }], { root })).toThrow(/invalid_args/);
+  });
+
+  it('CONTROL: either one alone is accepted, and a coverage check never counts as a tests path', () => {
+    for (const scope of [{ planTouched: true as const }, { sourceFiles: ['a.ts'] }, {}]) {
+      const v = validateCriterionCheckPaths([{ key: 'cov', check: coverageCheck(scope) }], { root });
+      expect(v.ok).toBe(true);
+      expect(v.checked).toBe(0);
+    }
+  });
+});
+
+describe('evaluateCriterionCoverageChecks (grading time)', () => {
+  const rated = (rating: string) => ({ cov: { rating } });
+
+  it('stamps a pass verdict when nothing in scope is below the floor, and re-reads the census at the asked rung', async () => {
+    let seen: Parameters<CoverageReader>[0] | undefined;
+    const res = await evaluateCriterionCoverageChecks({
+      criteria: [{ key: 'cov', check: coverageCheck({ surfaceKind: 'mcp-tool' }, 'l3') }],
+      ratings: rated('healthy'),
+      readCoverage: reader(measurement({ surfaces: 10, meets: 10 }), (a) => (seen = a)),
+      nowIso: () => '2026-01-01T00:00:00.000Z',
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.checkRuns.cov).toMatchObject({
+      kind: 'coverage',
+      verdict: 'pass',
+      floor: 'l3',
+      surfaces: 10,
+      belowUnwaived: 0,
+    });
+    // measured NOW, at the criterion's own floor, over the gap list
+    expect(seen).toMatchObject({ kind: 'mcp-tool', rung: 'l3', gapsOnly: true });
+  });
+
+  // ── FAILURE MODE 1: the vacuous pass ────────────────────────────────────────
+  it('REFUSES a scope matching ZERO surfaces rather than passing it (coverage_scope_empty)', async () => {
+    const res = await evaluateCriterionCoverageChecks({
+      criteria: [{ key: 'cov', check: coverageCheck({ surfaceKind: 'nonesuch' }) }],
+      ratings: rated('healthy'),
+      readCoverage: reader(measurement({ surfaces: 0, meets: 0, censusUnknown: ['census-has-not-run: …'] })),
+    });
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.error).toBe('coverage_scope_empty');
+    expect(res.detail).toContain('ZERO censused surfaces');
+    expect(res.detail).toContain('census-has-not-run');
+  });
+
+  it('REFUSES an empty scope even when the rating is HONEST — 0-of-0 is not measurable, whatever the grader says', async () => {
+    const res = await evaluateCriterionCoverageChecks({
+      criteria: [{ key: 'cov', check: coverageCheck({}) }],
+      ratings: rated('broken'),
+      readCoverage: reader(measurement({ surfaces: 0, meets: 0 })),
+    });
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.error).toBe('coverage_scope_empty');
+  });
+
+  it('CONTROL: the SAME shape with a real denominator passes — the refusal keys on the empty population, not the scope shape', async () => {
+    const res = await evaluateCriterionCoverageChecks({
+      criteria: [{ key: 'cov', check: coverageCheck({}) }],
+      ratings: rated('healthy'),
+      readCoverage: reader(measurement({ surfaces: 1, meets: 1 })),
+    });
+    expect(res.ok).toBe(true);
+  });
+
+  it("REFUSES a not-measured verdict even if a count sneaked through — the words and the number are both honoured", async () => {
+    const res = await evaluateCriterionCoverageChecks({
+      criteria: [{ key: 'cov', check: coverageCheck({}) }],
+      ratings: rated('healthy'),
+      readCoverage: reader(measurement({ surfaces: 5, meets: 5, verdict: 'not-measured' })),
+    });
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.error).toBe('coverage_scope_empty');
+  });
+
+  // ── the contradiction pair ──────────────────────────────────────────────────
+  it('REFUSES a pass-claiming rating the census contradicts, NAMING the failing surfaces', async () => {
+    const res = await evaluateCriterionCoverageChecks({
+      criteria: [{ key: 'cov', check: coverageCheck({}, 'l2') }],
+      ratings: rated('healthy'),
+      readCoverage: reader(measurement({ surfaces: 10, meets: 7, rows: ['tool:a', 'tool:b', 'tool:c'] })),
+    });
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.error).toBe('coverage_contradicted');
+    expect(res.detail).toContain('3 of 10');
+    expect(res.detail).toContain('tool:a');
+    expect(res.run).toMatchObject({ verdict: 'fail', belowUnwaived: 3 });
+  });
+
+  it('CONTROL: the SAME failing measurement with an honest rating is STAMPED, not refused — the verdict keys on the pair', async () => {
+    const res = await evaluateCriterionCoverageChecks({
+      criteria: [{ key: 'cov', check: coverageCheck({}, 'l2') }],
+      ratings: rated('degraded'),
+      readCoverage: reader(measurement({ surfaces: 10, meets: 7, rows: ['tool:a'] })),
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.checkRuns.cov).toMatchObject({ verdict: 'fail', belowUnwaived: 3 });
+  });
+
+  // ── FAILURE MODE 2: a bounded sample must not read as the whole ─────────────
+  it('says the named surfaces stand for a LARGER population when the gap list is bounded', async () => {
+    const res = await evaluateCriterionCoverageChecks({
+      criteria: [{ key: 'cov', check: coverageCheck({}) }],
+      ratings: rated('healthy'),
+      readCoverage: reader(measurement({ surfaces: 100, meets: 60, rows: ['a', 'b'] })),
+    });
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.detail).toContain('+38 more');
+  });
+
+  it('carries the fidelity ceiling into the refusal — a partial census flatters, and the message must say so', async () => {
+    const res = await evaluateCriterionCoverageChecks({
+      criteria: [{ key: 'cov', check: coverageCheck({}) }],
+      ratings: rated('healthy'),
+      readCoverage: reader(measurement({ surfaces: 10, meets: 4, rows: ['a'], weakest: 'file-only' })),
+    });
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.detail).toContain('file-only');
+    expect(res.detail).toContain('flatters');
+  });
+
+  // ── plan-touched: the reverse map ───────────────────────────────────────────
+  it('resolves planTouched to the plan\'s changed files and measures over THEM', async () => {
+    let seen: Parameters<CoverageReader>[0] | undefined;
+    const res = await evaluateCriterionCoverageChecks({
+      criteria: [{ key: 'cov', check: coverageCheck({ planTouched: true }) }],
+      ratings: rated('healthy'),
+      readCoverage: reader(measurement({ surfaces: 3, meets: 3 }), (a) => (seen = a)),
+      resolvePlanTouchedFiles: async () => ['packages/x/a.ts', 'packages/x/b.ts'],
+    });
+    expect(res.ok).toBe(true);
+    expect(seen?.sourceFiles).toEqual(['packages/x/a.ts', 'packages/x/b.ts']);
+    if (!res.ok) return;
+    // the record stores what was MEASURED, not merely the intent to measure
+    expect(res.checkRuns.cov).toMatchObject({
+      scope: { planTouched: true, sourceFiles: ['packages/x/a.ts', 'packages/x/b.ts'] },
+    });
+  });
+
+  it('REFUSES planTouched that resolves to NOTHING instead of silently widening to the whole census', async () => {
+    for (const resolver of [async () => null, async () => [] as string[]]) {
+      let called = false;
+      const res = await evaluateCriterionCoverageChecks({
+        criteria: [{ key: 'cov', check: coverageCheck({ planTouched: true }) }],
+        ratings: rated('healthy'),
+        readCoverage: reader(measurement({ surfaces: 999, meets: 999 }), () => (called = true)),
+        resolvePlanTouchedFiles: resolver,
+      });
+      expect(res.ok).toBe(false);
+      if (res.ok) return;
+      expect(res.error).toBe('coverage_scope_empty');
+      // and it never got as far as measuring the unscoped census
+      expect(called).toBe(false);
+    }
+  });
+
+  it('skips unrated and non-coverage criteria without reading the census at all', async () => {
+    let called = false;
+    const res = await evaluateCriterionCoverageChecks({
+      criteria: [
+        { key: 'cov', check: coverageCheck({}) },
+        { key: 'fuzzy' },
+        { key: 'det', check: testsCheck(['packages/x/real.test.ts']) },
+      ],
+      ratings: { det: { rating: 'healthy' } },
+      readCoverage: reader(measurement(), () => (called = true)),
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(Object.keys(res.checkRuns)).toEqual([]);
+    expect(called).toBe(false);
   });
 });
