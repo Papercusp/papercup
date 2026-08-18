@@ -36,6 +36,7 @@
     "lint:js-syntax": "node ../../scripts/check-js-syntax.mjs",
     "lint:no-retired": "node ../../scripts/check-no-retired-imports.mjs",
     "lint:no-raw-spawn": "node ../../scripts/check-no-raw-agent-spawn.mjs",
+    "lint:no-raw-goal-holder-read": "node ../../scripts/check-no-raw-goal-holder-read.mjs",
     "lint:no-retired-resurrection": "node ../../scripts/check-retired-resurrection.mjs",
     "lint:vimock-export-strands": "node ../../scripts/check-vimock-export-strands.mjs",
     "lint:required-field-strands": "node ../../scripts/check-required-field-strands.mjs",

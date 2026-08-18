@@ -76,11 +76,21 @@ const ROOT = new URL('..', import.meta.url).pathname;
 export const ALLOWLIST = new Set([
   // THE MODULE ITSELF. It necessarily contains the raw read — it IS the thing
   // every other site routes through.
+  //
+  // DEFENSIVE, not currently load-bearing: measured against the live tree, this
+  // file is already cleared by SANCTIONED (it defines those very entry points).
+  // Kept so that renaming the exports cannot silently turn the module into its
+  // own first offender.
   'packages/operator-core/lib/goals/holder.ts',
 
   // The generic mode store: CRUD over agent_modes across every mode axis, of
   // which 'goal' is one. It is the layer the holder module is built ON, so
   // routing it through the holder module would be circular.
+  //
+  // DEFENSIVE, not currently load-bearing: its queries take `mode` as a
+  // parameter rather than pinning it to 'goal', so the predicate does not fire
+  // today. Kept because a goal-specific query added here would be correct and
+  // must not need an allowlist edit to land.
   'packages/operator-core/lib/modes/store.ts',
 
   // Cost attribution over a goal's lifetime. A holder that has since died still
