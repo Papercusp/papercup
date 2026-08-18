@@ -436,6 +436,35 @@ describe('measured window outranks the spec-derived guess (WI-38347)', () => {
       expect(setLimitMock).toHaveBeenCalledWith('cx', CODEX_SAFE_LIMIT);
     });
 
+    it('HEALS a seed a SUPERSEDED policy derived — the orphan a derivation CHANGE would otherwise strand (WI-39789)', async () => {
+      // The failure this pins is one level up from the original WI-38347 bug: not
+      // a repair that only runs downhill, but one whose provenance proxy is
+      // value-equality against the CURRENT default. Move a derivation and every
+      // session still carrying the OLD number stops matching, reads as a
+      // deliberate override, and is stranded below the correct limit where the
+      // lower-only branch can never reach it.
+      //
+      // Here: an extended codex spec derives the role cap today, but this session
+      // was seeded 158_000 under the pre-codex-aware policy (codex-1m-context-
+      // window-2026-08-17). Equality with the current default fails; only the
+      // superseded-value test rescues it.
+      specMock.mockResolvedValue('gpt-5.6-sol:xhigh');
+      const out = await checkCompactionCompliance(sweep(158_000));
+      expect(out.relimited).toContainEqual({ owner: 'cx', from: 158_000, to: CODEX_SAFE_LIMIT });
+      expect(setLimitMock).toHaveBeenCalledWith('cx', CODEX_SAFE_LIMIT);
+    });
+
+    it('does NOT treat a deliberate override as superseded just because the spec is extended (WI-39789 falsifier)', async () => {
+      // The guard against the fix above over-reaching: 100_000 is not a value ANY
+      // policy derived for this spec, so an extended spec must not make it
+      // healable. Without this, "heal superseded values" quietly becomes "raise
+      // anything below the safe limit" and D-006 leanness is gone.
+      specMock.mockResolvedValue('gpt-5.6-sol:xhigh');
+      const out = await checkCompactionCompliance(sweep(100_000));
+      expect(out.relimited).toEqual([]);
+      expect(setLimitMock).not.toHaveBeenCalledWith('cx', CODEX_SAFE_LIMIT);
+    });
+
     it('leaves a DELIBERATE lower override alone — its value differs from the derived seed (D-006 leanness)', async () => {
       const out = await checkCompactionCompliance(sweep(100_000));
       expect(out.relimited).toEqual([]);
