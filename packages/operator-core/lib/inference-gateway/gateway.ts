@@ -20,6 +20,7 @@
  */
 import http from 'node:http';
 import { Readable } from 'node:stream';
+import { describeAdmissionCeiling } from './admission-ceiling';
 import {
   governorForBackend,
   snapshotGovernors,
