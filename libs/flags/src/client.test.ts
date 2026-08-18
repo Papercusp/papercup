@@ -63,7 +63,7 @@ describe('useFlag — defaulting', () => {
   it('a partial payload still defaults every unset flag (resolveWithDefaults)', () => {
     setFlagPayload({ flags: { [KEY]: true } as FlagValues, evaluatedAt: 1, source: 'posthog' });
     expect(renderHook(() => useFlag(KEY)).result.current).toBe(true);
-    expect(renderHook(() => useFlag(OTHER)).result.current).toBe(false); // unset → default
+    expect(renderHook(() => useFlag(OTHER)).result.current).toBe(FLAG_DEFAULTS[OTHER]); // unset → default
     // every key resolves to a boolean
     for (const k of ALL_FLAG_KEYS) {
       expect(typeof renderHook(() => useFlag(k)).result.current).toBe('boolean');
@@ -71,18 +71,23 @@ describe('useFlag — defaulting', () => {
   });
 
   it('EI-2425 fix A: a MOUNTED hook re-renders live when setFlagPayload changes the flag — the exact bug this fixes (a plain function read never updated an already-rendered consumer)', () => {
+    // Drive the transitions off KEY's ACTUAL default, never a hardcoded literal:
+    // KEY is whichever flag sorts first in ALL_FLAG_KEYS and most flags now ship
+    // default-ON, so a literal both breaks the test AND silently guts it (setting
+    // a true-by-default flag to `true` is a no-op that re-renders nothing).
+    const initial = FLAG_DEFAULTS[KEY];
     const { result } = renderHook(() => useFlag(KEY));
-    expect(result.current).toBe(false); // default
+    expect(result.current).toBe(initial); // default
 
     act(() => {
-      setFlagPayload({ flags: { [KEY]: true } as FlagValues, evaluatedAt: 1, source: 'posthog' });
+      setFlagPayload({ flags: { [KEY]: !initial } as FlagValues, evaluatedAt: 1, source: 'posthog' });
     });
-    expect(result.current).toBe(true); // re-rendered with the NEW value, no remount
+    expect(result.current).toBe(!initial); // re-rendered with the NEW value, no remount
 
     act(() => {
-      setFlagPayload({ flags: { [KEY]: false } as FlagValues, evaluatedAt: 2, source: 'posthog' });
+      setFlagPayload({ flags: { [KEY]: initial } as FlagValues, evaluatedAt: 2, source: 'posthog' });
     });
-    expect(result.current).toBe(false); // flips back live too
+    expect(result.current).toBe(initial); // flips back live too
   });
 });
 
