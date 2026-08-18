@@ -85,6 +85,132 @@ function recordWindow(record) {
   );
 }
 
+/**
+ * Codex models with an EXTENDED context window, for a box whose
+ * `models_cache.json` is absent or unreadable (a fresh install, a CODEX_HOME
+ * that has never talked to the backend). The REGISTRY ALWAYS WINS when it
+ * carries the model — this table only keeps the feature working on first
+ * launch, so it can never pin a stale ceiling on a box that has real data.
+ *
+ * Values are the `max_context_window` observed on codex-cli 0.147.0
+ * (2026-08-17). Deliberately NOT the 1,050,000 quoted in OpenAI's config
+ * write-up for gpt-5.6-sol: the registry the CLI itself reads says 872,000,
+ * and an unrunnable ceiling is worse than a conservative one.
+ */
+export const CODEX_EXTENDED_WINDOW_FALLBACK = Object.freeze({
+  'gpt-5.6-sol': 872_000,
+  'gpt-5.6-terra': 872_000,
+  'gpt-5.6-luna': 872_000,
+  'gpt-5.4': 1_000_000,
+});
+
+/** Ceiling on the window we will DECLARE to the Codex CLI (plan D-002). */
+export const CODEX_MAX_CONFIGURED_WINDOW = 1_000_000;
+
+/**
+ * Codex's own auto-compact fires at this fraction of the declared window. It is
+ * a pure BACKSTOP and is meant never to run: papercusp's carry-respawn cuts at
+ * the role soft limit (400k su/leader, 200k fleet member) far below it. Its only
+ * job is to sit high enough that the native summarizer cannot pre-empt ours —
+ * the exact failure the 272k default causes today, where Codex's effective
+ * 258,400 window compacts BEFORE a leader's 400k limit is ever reached.
+ */
+export const CODEX_AUTO_COMPACT_FRACTION = 0.9;
+
+function codexModelRecord(id, home) {
+  if (!id) return null;
+  return findModelRecord(jsonFile(join(home, '.codex', 'models_cache.json')), id);
+}
+
+/**
+ * The context window papercusp DECLARES to the Codex CLI for `model`, or null
+ * when that model has no extended window to ask for (plan
+ * codex-1m-context-window-2026-08-17 D-002).
+ *
+ * NULL IS A MEANINGFUL ANSWER, not a failure: gpt-5.5, gpt-5.4-mini and
+ * gpt-5.3-codex-spark report `max_context_window == context_window`, so there is
+ * no bigger window to request and their launch argv must stay byte-identical to
+ * today. Callers emit nothing on null — they must not substitute a default.
+ *
+ * Precedence: the installed registry's `max_context_window` when it carries the
+ * model, else the static family fallback. Clamped to
+ * CODEX_MAX_CONFIGURED_WINDOW, and refused outright unless it genuinely EXCEEDS
+ * the model's own default window — so this can never talk a model DOWN.
+ *
+ * @param {string | null | undefined} model  a psu model spec, alias, or native id
+ * @param {{ home?: string }} [opts]
+ * @returns {{ model: string, window: number, autoCompactLimit: number, source: string } | null}
+ */
+export function codexContextWindowConfig(model, { home = homedir() } = {}) {
+  const spec = model || codexDefaultModel(home);
+  const id = bareModelId(normalizeCodexCliModel(String(spec ?? '')));
+  if (!id) return null;
+
+  const record = codexModelRecord(id, home);
+  const declaredMax = POSITIVE(record?.max_context_window ?? record?.maxContextWindow);
+  const declaredDefault = POSITIVE(record?.context_window ?? record?.contextWindow);
+
+  let window = null;
+  let source = null;
+  if (declaredMax) {
+    // The registry carries this model: it is authoritative in BOTH directions.
+    // max == default means "no extended window exists" — fall through to null
+    // rather than to the fallback table, which would override real data.
+    if (declaredDefault != null && declaredMax <= declaredDefault) return null;
+    window = declaredMax;
+    source = 'codex-model-cache-max';
+  } else {
+    const fallback = POSITIVE(CODEX_EXTENDED_WINDOW_FALLBACK[id]);
+    if (!fallback) return null;
+    window = fallback;
+    source = 'codex-extended-window-fallback';
+  }
+
+  window = Math.min(window, CODEX_MAX_CONFIGURED_WINDOW);
+  if (window <= (declaredDefault ?? DEFAULT_CONTEXT_WINDOWS.codex)) return null;
+  return {
+    model: id,
+    window,
+    autoCompactLimit: Math.floor(window * CODEX_AUTO_COMPACT_FRACTION),
+    source,
+  };
+}
+
+/**
+ * The `-c key=value` pair every Codex launch composer appends. `[]` when the
+ * model has no extended window (see codexContextWindowConfig) — an empty argv
+ * is the correct, deliberate output there, not a silent failure.
+ *
+ * Emitted as CONFIG OVERRIDES rather than written into a shared config.toml so
+ * a per-launch model choice cannot leak across sessions sharing a CODEX_HOME.
+ * The per-session home ALSO bakes the same keys (P-004) because a bare
+ * `psu --resume` names no model and therefore emits no `-c` at all.
+ */
+export function codexContextConfigArgs(model, { home = homedir() } = {}) {
+  const cfg = codexContextWindowConfig(model, { home });
+  if (!cfg) return [];
+  return [
+    '-c',
+    `model_context_window=${cfg.window}`,
+    '-c',
+    `model_auto_compact_token_limit=${cfg.autoCompactLimit}`,
+  ];
+}
+
+/**
+ * The same policy as a config.toml fragment, for the per-session CODEX_HOME
+ * (P-004). `''` when the model has no extended window, so a caller can
+ * concatenate unconditionally.
+ */
+export function codexContextConfigToml(model, { home = homedir() } = {}) {
+  const cfg = codexContextWindowConfig(model, { home });
+  if (!cfg) return '';
+  return (
+    `model_context_window = ${cfg.window}\n` +
+    `model_auto_compact_token_limit = ${cfg.autoCompactLimit}\n`
+  );
+}
+
 function codexDefaultModel(home) {
   try {
     const text = readFileSync(join(home, '.codex', 'config.toml'), 'utf8');
@@ -131,6 +257,13 @@ export function appendCodexLaunchContextPrompt(promptText, launchContextText) {
 export function installedModelContextWindow({ agent, model, home = homedir() }) {
   const backend = String(agent ?? '').toLowerCase();
   if (backend === 'codex') {
+    // We LAUNCH extended-window models at their declared max (D-002), so the
+    // budget math must see that window and not the 272k default the registry
+    // reports as `context_window`. Without this the preflight would refuse a
+    // launch context that comfortably fits, and the seeded soft limit would be
+    // derived from a window the session is not actually running.
+    const configured = codexContextWindowConfig(model, { home });
+    if (configured) return { window: configured.window, source: configured.source };
     const root = jsonFile(join(home, '.codex', 'models_cache.json'));
     const id = bareModelId(model || codexDefaultModel(home));
     const exact = id ? findModelRecord(root, id) : null;
