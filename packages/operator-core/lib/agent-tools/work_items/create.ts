@@ -181,7 +181,7 @@ const itemSpec = z.object({
   routing_intent: z.enum(ROUTING_GATE_INTENTS).optional().describe('explicit papercusp-way routing intent. Body/summary prose is never classified. schedule-recurrence also requires cadence.'),
   cadence: hardText(200).optional().describe('explicit cadence for routing_intent=schedule-recurrence, e.g. "daily at 09:00" or a cron expression'),
   urgent: z.boolean().optional().describe('URGENT enqueue: wake the brain immediately (floor-debounced). Reserve for a production fire.'),
-  force: z.boolean().optional().describe('Override the EI-316 mirror-duplicate guard for this item.'),
+  force: z.boolean().optional().describe('Override the dupe guards (EI-316 mirror, semantic cosine, exact identity) for this item.'),
   assign_to: z.string().max(120).optional().describe('Atomically CLAIM this item for this agent id in the SAME create (B-LOOP-4) — pass a concrete ownerId, or the literal "self" to resolve to the caller. Overrides assign_all_to_self for this item.'),
   // EI-10897: the su persona itself documents `work_items:create { title, assign_to:'self',
   // state:'wip' }` as THE way to open an ad-hoc unit you are starting right now — and the
@@ -273,7 +273,7 @@ export default defineTool({
       routing_intent: z.enum(ROUTING_GATE_INTENTS).optional().describe('explicit papercusp-way routing intent. Body/summary prose is never classified. schedule-recurrence also requires cadence.'),
       cadence: hardText(200).optional().describe('explicit cadence for routing_intent=schedule-recurrence, e.g. "daily at 09:00" or a cron expression'),
       urgent: z.boolean().optional().describe('URGENT enqueue: wake the brain immediately (floor-debounced). Reserve for a production fire, not routine filing.'),
-      force: z.boolean().optional().describe('Override the EI-316 mirror-duplicate guard.'),
+      force: z.boolean().optional().describe('Override the dupe guards (EI-316 mirror, semantic cosine, exact identity).'),
       assign_to: z.string().max(120).optional().describe('Atomically CLAIM the new item for this agent id in the SAME create (B-LOOP-4) — pass a concrete ownerId, or the literal "self" to resolve to the caller. Omit ⇒ unclaimed.'),
       state: stateOnCreate.optional(), // EI-10897
       plan_item: z
