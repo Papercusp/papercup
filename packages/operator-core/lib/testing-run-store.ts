@@ -498,6 +498,16 @@ export interface DistilledTestRun {
   failuresTruncated: boolean;
   /** Wall-clock span of the run (max endTime - min startTime), null if unreported. */
   durationMs: number | null;
+  /**
+   * Per-FILE counts, keyed by the same repo-root-relative POSIX path `failures[].file`
+   * uses. Complete even when `failures` is capped — which is the whole point: it lets a
+   * caller that batched several files into ONE run attribute a verdict back to each file
+   * WITHOUT trusting the (truncatable) failure list. Reading a file's verdict off
+   * `failures` alone is unsound: once the cap trips, a genuinely failing file can be
+   * absent from that list and would read as a pass. `collectionFailed` marks a file that
+   * failed without producing a failing assertion, so `failed: 0` there still means red.
+   */
+  byFile: Record<string, { passed: number; failed: number; skipped: number; collectionFailed: boolean }>;
 }
 
 /** Budgets chosen from D-021's measurement: agents keep a median of 60 output
