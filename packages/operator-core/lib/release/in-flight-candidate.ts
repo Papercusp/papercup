@@ -187,3 +187,165 @@ export async function readInFlightCandidate(
     return null; // best-effort diagnostic read — never surface an infra error as a gate fact
   }
 }
+
+/**
+ * ── THE LOSS THIS MODULE COULD ALWAYS SEE AND NEVER REPORTED ──────────────────────────────
+ *
+ * `pid` above has always carried the comment "so a reader can confirm the marker belongs to a
+ * process that is still alive rather than trusting the age bound alone". NO consumer ever did:
+ * {@link parseInFlightCandidate} copies it through and tests only the 3h age bound. A comment
+ * describing a safeguard is not the safeguard.
+ *
+ * What that cost, measured 2026-08-17 (agent-insights/green-checkpoint-refire-lost-to-bg-host-restart):
+ * a not-green verdict at 22:39:56.909Z spawned an auto-refire onto f16fa1c7030d (refireDepth 1,
+ * pid 763041) which published its marker at 22:39:59.590Z and then produced NOTHING — no verdict,
+ * no checkpoint log, no `routines.last_error`. The bg-host was stopped and restarted at 22:48:14Z
+ * (`NRestarts=0` — external, not a crash-loop) about 8 minutes in. A refire re-enters
+ * `runGreenCheckpoint` RECURSIVELY IN THE SAME PROCESS, so it dies with its bg-host generation and
+ * no code path records that it ever existed. The marker then sat naming a dead pid for the rest of
+ * its 3h window, and a peer agent claimed the gate work-item to "check the f16fa1c7 rescue-run
+ * verdict" — a verdict that was never going to come.
+ *
+ * Two readings of an uncleared marker are indistinguishable without this: "a run is judging that
+ * sha right now" and "a run died judging that sha and nobody noticed". The first is the healthy
+ * common case, so an unaided reader defaults to it and waits.
+ *
+ * ⚠ THIS DOES NOT PREVENT THE LOSS — it makes it LOUD. Giving a refire a lifetime independent of
+ * the bg-host generation is the real fix and is design work; guarding the restart against the
+ * run-lock is the middle option. Detection is the cheapest of the three and the only one that also
+ * covers losses from causes nobody has enumerated yet.
+ */
+
+/** Why a pre-existing marker is (or is not) an abandoned run's residue. */
+export type AbandonedInFlightVerdict =
+  | { abandoned: false; reason: 'no-marker' | 'own-run' | 'pid-alive' | 'pid-unknown' }
+  | {
+      abandoned: true;
+      /** `dead-pid` — the OS has no such process. `predates-host-generation` — the marker was
+       *  written before the CURRENT host process started, so whatever wrote it cannot still be
+       *  running regardless of what the pid now resolves to. */
+      reason: 'dead-pid' | 'predates-host-generation';
+      marker: StoredInFlightCandidate;
+      /** How long the lost run's marker had been sitting unclaimed when we caught it. */
+      ageMs: number;
+    };
+
+/**
+ * PURE: judge whether a pre-existing marker belongs to a run that is GONE.
+ *
+ * Check ORDER is load-bearing, and the two subtleties are the whole reason this is a separate
+ * function rather than an `if` at the call site:
+ *
+ * 1. `own-run` FIRST. An in-process auto-refire re-enters `runGreenCheckpoint` recursively and
+ *    re-publishes over its OWN marker with the same pid. Judged by liveness alone that marker is
+ *    perfectly alive — but judged as a stranger's it would be reported as a loss on every single
+ *    refire, which is the healthy case. A detector that cries wolf on the rescue path would be
+ *    turned off within a day.
+ *
+ * 2. `predates-host-generation` BEFORE `dead-pid`. PID wrap happens roughly daily on this box
+ *    under fleet load (the repo guide warns about exactly this for `processes:kill`), so a dead
+ *    run's pid can be REUSED by an unrelated process and read back as alive. The generation stamp
+ *    does not care what the pid now resolves to, so when a caller can supply it, it is the
+ *    stronger evidence and must not be masked by a false `pid-alive`.
+ *
+ * `pidAlive: null` (unknown — the probe could not tell) deliberately yields NOT-abandoned: this
+ * writes a loud durable record, and an instrument that cannot see must never manufacture a loss.
+ * That is the same discipline as the absence-claim rule in the repo guide — a failed probe reads
+ * identically to a clean result unless you refuse to interpret it.
+ */
+export function judgeAbandonedInFlightCandidate(
+  marker: StoredInFlightCandidate | null,
+  probe: {
+    /** The pid of the process doing the judging — its OWN marker is never a loss. */
+    selfPid: number;
+    /** Result of {@link isPidAlive} for `marker.pid`; `null` = could not determine. */
+    pidAlive: boolean | null;
+    /** Start of the current host process generation, if the caller can observe it. */
+    hostStartedAtMs?: number | null;
+    nowMs?: number;
+  },
+): AbandonedInFlightVerdict {
+  if (!marker) return { abandoned: false, reason: 'no-marker' };
+  if (marker.pid === probe.selfPid) return { abandoned: false, reason: 'own-run' };
+  const nowMs = probe.nowMs ?? Date.now();
+  const ageMs = Math.max(0, nowMs - marker.observedAtMs);
+  if (probe.hostStartedAtMs != null && marker.observedAtMs < probe.hostStartedAtMs) {
+    return { abandoned: true, reason: 'predates-host-generation', marker, ageMs };
+  }
+  if (probe.pidAlive === false) return { abandoned: true, reason: 'dead-pid', marker, ageMs };
+  if (probe.pidAlive === null) return { abandoned: false, reason: 'pid-unknown' };
+  return { abandoned: false, reason: 'pid-alive' };
+}
+
+/**
+ * Does this pid exist? `true` / `false` / `null` when genuinely undeterminable.
+ *
+ * `process.kill(pid, 0)` sends no signal — it is the standard existence probe. EPERM means the
+ * process EXISTS but belongs to another user, which is ALIVE, not absent; conflating the two would
+ * report every cross-user run as lost. Note this cannot distinguish a reused pid from the original
+ * process, which is why {@link judgeAbandonedInFlightCandidate} prefers the generation stamp.
+ */
+export function isPidAlive(pid: number): boolean | null {
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException | undefined)?.code;
+    if (code === 'ESRCH') return false;
+    if (code === 'EPERM') return true;
+    return null;
+  }
+}
+
+/** Pure: the loud one-liner for a detected loss. Says what died, what it was judging, and — the
+ *  part that actually saves a reader's hour — that no verdict is coming for that sha. */
+export function describeAbandonedInFlightCandidate(verdict: AbandonedInFlightVerdict): string | null {
+  if (!verdict.abandoned) return null;
+  const { marker, ageMs, reason } = verdict;
+  const mins = Math.round(ageMs / 60_000);
+  const why =
+    reason === 'dead-pid'
+      ? `its pid ${marker.pid} no longer exists`
+      : `it was published before the current host generation started (pid ${marker.pid})`;
+  const refire =
+    marker.refireDepth > 0
+      ? ` It was auto-refire #${marker.refireDepth}, which runs RECURSIVELY IN THE SAME PROCESS and therefore dies with its host generation.`
+      : '';
+  return (
+    `LOST GATE RUN — the previous run judging ${marker.candidate.slice(0, 12)} never reached a verdict: ${why}, ` +
+    `and its marker sat uncleared for ${mins}m.${refire} NO VERDICT IS COMING FOR ${marker.candidate.slice(0, 12)} — ` +
+    `do not wait on one, and do not read its absence as "still running". (reason=${reason})`
+  );
+}
+
+/**
+ * Persist the detected loss into `gate_health.lastLostRun` so it outlives this run's log.
+ *
+ * Deliberately a single field written through {@link mergeGateHealth}, not an appended history:
+ * that helper is THE one write path for this blob by design, and an append would need a
+ * read-modify-write that two concurrent runs could interleave. Recurrence is already recoverable
+ * from `pipeline_events` and the checkpoint logs; what was missing was any durable record AT ALL.
+ * Best-effort, like every other write in this module.
+ */
+export async function recordLostGateRun(
+  target: GateVerdictTarget,
+  verdict: Extract<AbandonedInFlightVerdict, { abandoned: true }>,
+  detectedByPid: number = process.pid,
+): Promise<void> {
+  await mergeGateHealth(target, {
+    lastLostRun: {
+      candidate: verdict.marker.candidate,
+      base: verdict.marker.base,
+      pid: verdict.marker.pid,
+      refireDepth: verdict.marker.refireDepth,
+      observedAtMs: verdict.marker.observedAtMs,
+      selectedAtMs: verdict.marker.selectedAtMs,
+      detectedAtMs: Date.now(),
+      detectedByPid,
+      reason: verdict.reason,
+      ageMs: verdict.ageMs,
+      note: describeAbandonedInFlightCandidate(verdict),
+    },
+  });
+}
