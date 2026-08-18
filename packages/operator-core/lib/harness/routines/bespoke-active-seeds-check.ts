@@ -77,6 +77,7 @@ export const BESPOKE_ACTIVE_SEEDS: BespokeActiveSeed[] = [
   { name: 'claim-discipline-watch', seedScript: 'seed-claim-discipline-routine.ts' },
   { name: 'consult-expiry-sweep', seedScript: 'seed-consult-expiry-routine.ts' },
   { name: 'corpus-term-df', seedScript: 'seed-corpus-term-df-routine.ts' },
+  { name: 'coverage-census', seedScript: 'seed-coverage-census-routine.ts' },
   { name: 'cross-hive-outbox-drain', seedScript: 'seed-cross-hive-drain-routine.ts' },
   { name: 'fleet-headcount-governor', seedScript: 'seed-fleet-headcount-routine.ts' },
   { name: 'gc-dead-loops', seedScript: 'seed-gc-dead-loops-routine.ts' },

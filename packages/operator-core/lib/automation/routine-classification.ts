@@ -326,6 +326,16 @@ export const TARGET_ROLE_SPEND: Readonly<Record<string, SpendEntry>> = {
   'system:knowledge-pack-delivery': { spend: 'none', why: 'Copies pack items into pools — no authoring' },
   'system:knowledge-pack-hygiene': { spend: 'none', why: 'Rule-based stale/contradiction sweep over pack rows' },
   'system:pot-git-gc': { spend: 'none', why: 'Garbage-collects pot git objects' },
+  'system:coverage-census': {
+    spend: 'none',
+    // Verified against coverage-census-action.ts before classifying (plan
+    // deterministic-coverage-census-2026-08-17 P-002): the handler resolves the
+    // registered census providers, runs them, and upserts/retires rows through the
+    // PG census store. No spawn, no session wake, no dispatch — so a fire cannot
+    // bill model turns. The mass-retirement breaker and provider failures only
+    // console.warn; they never launch anything.
+    why: 'Runs the deterministic testable-surface census and upserts/retires census rows — provider + PG work only, no spawn/wake/dispatch',
+  },
   'system:corpus-term-df': {
     spend: 'none',
     why: 'Recomputes corpus term document-frequency by tokenizing sampled turns locally — no model call',
