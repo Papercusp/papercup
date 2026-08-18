@@ -53,6 +53,7 @@
  */
 
 import { recordBootEvent } from './boot-history';
+import { trackDetached } from '../../detached-imports';
 
 /** One merge-pass observation of an admitted remote log. */
 export interface ReplicationLogSample {
@@ -685,7 +686,7 @@ function defaultEpisodeReporter(episode: ReplicationStallEpisode): void {
   // Leg 2 — durable EI (the escalation P-004 requires: visible fleet-wide even
   // if nobody reads this process's status). Lazy import so the pure module
   // never statically links PG.
-  void import('./replication-stall-ei')
+  void trackDetached(import('./replication-stall-ei'))
     .then((m) => m.fileReplicationStallEi(episode))
     .catch(() => {
       /* escalation is best-effort; the registry verdict still surfaces it */

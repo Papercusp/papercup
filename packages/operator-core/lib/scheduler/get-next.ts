@@ -83,6 +83,7 @@ import {
 } from '../work-items';
 import { issuesScopeWorkspace } from '../issues-engineer';
 import { isIssueLocallyClaimableWhereSql } from '../work-items-admission';
+import { trackDetached } from '../detached-imports';
 
 /** A composed `sql` WHERE/ORDER-BY fragment (porsager pending-query — the type a bare
  *  `sql`...`` tagged template returns, so fragments compose by `${}` interpolation). */
@@ -2251,7 +2252,7 @@ export async function getNextWorkItem(
 
   if (!claimed) return null;
   // Same claimed-event as the legacy claim path (best-effort fanout).
-  void import('../work-items-events').then((m) => m.emitWorkItemClaimedEvent(claimed!, bee.assignee)).catch(() => {});
+  void trackDetached(import('../work-items-events')).then((m) => m.emitWorkItemClaimedEvent(claimed!, bee.assignee)).catch(() => {});
   return { workItem: claimed, claimedUnder: { specId: spec.specId, revision: spec.revision } };
 }
 

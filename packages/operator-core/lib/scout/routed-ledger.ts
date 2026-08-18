@@ -348,7 +348,7 @@ export async function gradeRoutedIdea(input: GradeRoutedIdeaInput): Promise<Grad
   // model learns the owner's attention, nobody else's.
   const row = updated[0];
   if (input.gradedBy === 'owner') {
-    void import('../owner-preference/interactions')
+    void trackDetached(import('../owner-preference/interactions'))
       .then((m) =>
         m.recordOwnerInteraction({
           kind: row.prev_grade != null && row.prev_graded_by === 'owner' ? 'regrade' : 'grade',

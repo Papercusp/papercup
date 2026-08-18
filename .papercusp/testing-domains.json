@@ -69,6 +69,23 @@
       ]
     },
     {
+      "id": "coverage",
+      "label": "Coverage",
+      "description": "Surface census: what exists, and which surfaces are proven to the depth floor.",
+      "tier": "project",
+      "sections": [
+        {
+          "id": "all",
+          "label": "Census",
+          "description": "The census read surfaces and their honesty guards.",
+          "globs": [
+            "packages/operator-core/lib/agent-tools/testing/coverage.test.ts",
+            "apps/operator/app/admin/testing/_components/CoverageTab.test.ts"
+          ]
+        }
+      ]
+    },
+    {
       "id": "vitals",
       "label": "Live metrics",
       "description": "Operator desktop vitals: interactions, console, layout, unhandled errors.",

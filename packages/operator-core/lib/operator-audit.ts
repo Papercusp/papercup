@@ -19,6 +19,7 @@ import { withWorkspace, generated } from '@papercusp/db-org';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import { activeWorkspaceId } from './workspace-registry';
 import { notifySyncInvalidate } from './sync-sse';
+import { trackDetached } from './detached-imports';
 
 const al = generated.auditLogInHarnessShared;
 
@@ -101,7 +102,7 @@ export async function writeOperatorAudit(ev: OperatorAuditEvent): Promise<void> 
   // After every dispatched event, refresh the standing-approval candidates
   // file so the settings page reflects new patterns. Best-effort, async.
   if (ev.kind === 'dispatched') {
-    void import('./operator-standing-candidates')
+    void trackDetached(import('./operator-standing-candidates'))
       .then((m) => m.refreshCandidates())
       .catch(() => {});
   }

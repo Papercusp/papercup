@@ -20,6 +20,7 @@ import {
   schemeForSlug,
   type ColorScheme,
 } from './console-color-schemes';
+import { trackDetached } from './detached-imports';
 
 /** Typed fleet control state (coord-authority-hardening-2026-07-11 P-009 / H4). */
 export type FleetControlState = 'active' | 'winding-down';
@@ -202,7 +203,7 @@ function refreshDirectoryCard(
   opts?: { archived?: boolean; sql?: Sql },
 ): void {
   if (opts?.sql) return; // test-schema override ⇒ never publish for real
-  void import('./p2p/fleet-directory-publish')
+  void trackDetached(import('./p2p/fleet-directory-publish'))
     .then((m) => m.publishFleetDirectoryRecordBestEffort({ workspaceId, fleetSlug, archived: opts?.archived }))
     .catch(() => {});
 }

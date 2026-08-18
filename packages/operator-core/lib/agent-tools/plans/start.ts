@@ -49,6 +49,7 @@ import { isTerminalPlanStatus } from './plan-start-state';
 import { checkPlanStartable } from './plan-start-gate';
 import { mugKettleSystemEnabled } from '../../pot/started';
 import { bulkContent, mergeIds, runBulk } from '../_bulk';
+import { trackDetached } from '../../detached-imports';
 
 /** Boolean that also accepts the exact wire strings 'true'/'false' — same
  * EI-302 manifest-pinned-schema tolerance as plans:new's `force`. */
@@ -402,7 +403,7 @@ export default defineTool({
         ctxAny.metadata?.({ slug, harnessSlug, status: row?.op_status, autoApproved, transitioned });
 
         const promoWorkspaceId = startWorkspaceId;
-        void import('../../plan-workitem-promotion-run')
+        void trackDetached(import('../../plan-workitem-promotion-run'))
           .then(async (m) => {
             const { resolveAgentIdentity } = await import('../coordination/identity');
             await m.promotePlanItems({

@@ -55,6 +55,7 @@ import {
   type SetAllotmentArgs,
 } from '../../p2p/resource-allotments';
 import type { OrgSql } from '../../work-items';
+import { trackDetached } from '../../detached-imports';
 
 /** D-003: the gateway-auto account sentinel a slot defaults to at the tool layer. */
 export const AUTO_ACCOUNT = 'AUTO';
@@ -199,7 +200,7 @@ export async function delegateResource(
       a = parts[2] || a || AUTO_ACCOUNT;
     }
     if (!m || !e) return; // nothing derivable — never publish a junk trio
-    void import('../../p2p/offer-store-publish')
+    void trackDetached(import('../../p2p/offer-store-publish'))
       .then((mod) =>
         mod.publishSeatOfferForDelegationBestEffort({
           workspaceId: input.workspaceId,

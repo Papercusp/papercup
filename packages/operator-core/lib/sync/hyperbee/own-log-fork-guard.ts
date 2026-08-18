@@ -39,6 +39,8 @@
  * `.on` (test fakes, and any future non-Hypercore CoreLike).
  */
 
+import { trackDetached } from '../../detached-imports';
+
 /** One detected own-log fork ("conflict") episode. */
 export interface OwnLogForkEpisode {
   workspaceId: string;
@@ -94,7 +96,7 @@ function defaultEpisodeReporter(episode: OwnLogForkEpisode): void {
   }
   // Lazy import so the pure module never statically links PG (same pattern
   // as replication-liveness.ts's defaultEpisodeReporter).
-  void import('./own-log-fork-ei')
+  void trackDetached(import('./own-log-fork-ei'))
     .then((m) => m.fileOwnLogForkEi(episode))
     .catch(() => {
       /* escalation is best-effort; the registry state still surfaces it */

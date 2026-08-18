@@ -10,6 +10,7 @@
 
 import { list, runCommand } from '../registry';
 import type { CommandContext } from '../types';
+import { trackDetached } from '../../detached-imports';
 import '../defs';
 
 export interface PaletteItem {
@@ -48,7 +49,7 @@ export function buildRegistryPaletteItems(opts: {
         void runCommand(def.id, {}, ctx).then((r) => {
           if (!r.ok && typeof window !== 'undefined') {
             // Surface failures via toast — same pattern voice uses.
-            void import('sonner').then(({ toast }) => {
+            void trackDetached(import('sonner')).then(({ toast }) => {
               toast.error(`${def.id}: ${r.error.code} — ${r.error.message}`);
             }).catch(() => { /* sonner not in bundle */ });
           }

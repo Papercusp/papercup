@@ -39,6 +39,7 @@ import { getSessionUserOrDefault } from '../../auth';
 import { resolveFactFederationSlug } from '../../agent-facts/store';
 import { hardText, LIMITS } from '../limits';
 import { coerceMemoryKind } from './remember-coerce';
+import { trackDetached } from '../../detached-imports';
 
 // The store holds only STABLE facts (docs-and-memory-as-projections-2026-06-05 D-006).
 // The `ephemeral` kind was retired — ephemeral state belongs in coord (delta-
@@ -594,7 +595,7 @@ export default defineTool({
 
     // Live-refresh the settings memory page (userMemory.list sync query) —
     // fire-and-forget, never load-bearing (memory-settings-page-refresh P-008).
-    void import('../../memory/invalidate-user-memory-views')
+    void trackDetached(import('../../memory/invalidate-user-memory-views'))
       .then(({ invalidateUserMemoryViews }) => invalidateUserMemoryViews())
       .catch(() => { /* best-effort */ });
 

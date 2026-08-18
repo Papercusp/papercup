@@ -21,6 +21,7 @@ import {
   type PlanRunStatus,
   type PlanRunTurnRole,
 } from './runs';
+import { trackDetached } from '../../detached-imports';
 
 /**
  * Append a transcript turn, best-effort — the run has already streamed
@@ -168,7 +169,7 @@ export async function executePlanAgentTurn(
   // wakes the waiter instead of the old poll-the-sweep pattern (the sweep in
   // runs.ts stays as the orphan-lease backstop). Fire-and-forget; lazy import
   // (the engine's plan-run wake channel imports THIS module).
-  void import('../../events/await/engine')
+  void trackDetached(import('../../events/await/engine'))
     .then(({ emitAwaitedEvent }) =>
       emitAwaitedEvent({
         key: `plan-run:finished:${opts.runId}`,

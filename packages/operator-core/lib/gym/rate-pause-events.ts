@@ -24,10 +24,11 @@
  */
 
 import type { RatePauseDeps } from './rate-pause';
+import { trackDetached } from '../detached-imports';
 
 export function ratePauseEventHooks(scope: string): Pick<RatePauseDeps, 'onPause' | 'onReset'> {
   const emit = (key: string, summary: string, payload: Record<string, unknown>) => {
-    void import('../events/await/engine')
+    void trackDetached(import('../events/await/engine'))
       .then(({ emitAwaitedEvent }) => emitAwaitedEvent({ key, summary, payload, source: `gym:${scope}` }))
       .catch(() => {
         /* visibility only — never break the pause */

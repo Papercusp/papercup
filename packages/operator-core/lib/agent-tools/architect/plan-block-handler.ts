@@ -13,6 +13,7 @@ import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { handleHttpToolRequest } from '@papercusp/agent-mcp';
 import { PROJECTED_DEPS } from '../../projected-tool-deps';
+import { trackDetached } from '../../detached-imports';
 
 /* ── Block parser ─────────────────────────────────────────────────── */
 
@@ -263,7 +264,7 @@ export async function applyPlanBlock(
   // await-event-primitive-2026-06-05 P-014 (D-006 #6): the draft is ready —
   // an awaitable event replaces the old "callers should poll/refresh" advice
   // (`events:await { event: 'plan:draft-ready:<slug>' }`). Fire-and-forget.
-  void import('../../events/await/engine')
+  void trackDetached(import('../../events/await/engine'))
     .then(({ emitAwaitedEvent }) =>
       emitAwaitedEvent({
         key: `plan:draft-ready:${slug}`,

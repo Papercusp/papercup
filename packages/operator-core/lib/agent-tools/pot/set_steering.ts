@@ -213,7 +213,7 @@ export default defineTool({
     // storage-policy "PG-canonical, file projected just-in-time" pattern (the bash
     // wrapper can't read hive_settings). The dock is volatile (relaunches on its
     // own), so the next relaunch picks up the new model. Best-effort.
-    void import('../../sentinel-model-file')
+    void trackDetached(import('../../sentinel-model-file'))
       .then(({ materializeSentinelModelFile }) =>
         materializeSentinelModelFile(steering.modelOverrides?.papercup ?? null),
       )

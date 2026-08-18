@@ -13,6 +13,7 @@
  */
 import { defineTool } from '@papercusp/agent-mcp';
 import { buildHiveDirectoryRows } from '../../../discovery-hive-rows';
+import { trackDetached } from '../../../detached-imports';
 
 export default defineTool({
   method: 'GET',
@@ -22,7 +23,7 @@ export default defineTool({
     // Lazy-wire the directory (fire-and-forget): a box that gh-authenticated
     // after boot starts listening on the directory topic from the first browse,
     // instead of staying dead until restart. Instant no-op when already wired.
-    void import('../../../hive-directory-boot')
+    void trackDetached(import('../../../hive-directory-boot'))
       .then(({ ensureHiveDirectoryWired }) =>
         import('../../../workspace-registry').then(({ activeWorkspaceId }) =>
           ensureHiveDirectoryWired(activeWorkspaceId()),

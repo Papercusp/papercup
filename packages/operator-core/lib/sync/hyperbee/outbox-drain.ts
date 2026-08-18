@@ -37,6 +37,7 @@ import { isSessionClosedError } from './own-log-fork-guard';
 import { redactContentOpValueForEgress } from './content-op-egress-guard';
 import { logIfStageStalls, STAGE_STALL_LOG_MS } from './stage-stall-log';
 import { extractPgErrorInfo } from '../../pg-read-query';
+import { trackDetached } from '../../detached-imports';
 
 /**
  * The projection tableTag for federated plans (harness-plans.ts:199 — the value
@@ -994,7 +995,7 @@ export function startOutboxDrain(
       opts._onStallEpisode(detail, kind);
       return;
     }
-    void import('./replication-stall-ei').then(
+    void trackDetached(import('./replication-stall-ei')).then(
       (m) =>
         m.fileReplicationStallEi({
           workspaceId: handle.workspaceId,
@@ -1045,7 +1046,7 @@ export function startOutboxDrain(
       opts._onStallRecovery(detail, kind);
       return;
     }
-    void import('./replication-stall-ei').then(
+    void trackDetached(import('./replication-stall-ei')).then(
       (m) =>
         m.resolveReplicationStallEi({
           harnessSlug: handle.harnessSlug,

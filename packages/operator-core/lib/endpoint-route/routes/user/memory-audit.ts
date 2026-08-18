@@ -19,6 +19,7 @@ import * as path from 'node:path';
 import { getSessionUserOrDefault } from '../../../auth';
 import { defineTool } from '@papercusp/agent-mcp';
 import { audit } from '../../../memory/audit-memory-anchors';
+import { trackDetached } from '../../../detached-imports';
 
 export default defineTool({
   method: 'POST',
@@ -78,7 +79,7 @@ export default defineTool({
     }
     // Audit flips canonical state/anchor rows the userMemory.list sync
     // query projects — refresh any open settings page (P-008).
-    void import('../../../memory/invalidate-user-memory-views')
+    void trackDetached(import('../../../memory/invalidate-user-memory-views'))
       .then(({ invalidateUserMemoryViews }) => invalidateUserMemoryViews())
       .catch(() => { /* best-effort */ });
     return Response.json({

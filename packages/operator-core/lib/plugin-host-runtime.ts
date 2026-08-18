@@ -55,6 +55,7 @@ import { PgAuditWriter } from './plugin-audit-writer';
 import { InMemoryAuditWriter as _InMemoryAuditWriter } from '@papercusp/plugin-loader';
 import { cooperativeYield } from './event-loop-lag-monitor';
 import { pinModuleState } from '@papercusp/module-singleton';
+import { trackDetached } from './detached-imports';
 
 // operator-core is an ESM package (`type: module`); under the host's ESM
 // runtime (tsx) the CommonJS globals `require` and `__dirname` are UNDEFINED.
@@ -955,7 +956,7 @@ async function initializeWasmPlugin(
       const topic = `${namespace}.${event}`;
       let payload: unknown = payloadJson;
       try { payload = payloadJson ? JSON.parse(payloadJson) : null; } catch { /* keep raw */ }
-      void import('./events/engine')
+      void trackDetached(import('./events/engine'))
         .then((m) => m.emitSystemEvent({
           tool: topic,
           args: (payload && typeof payload === 'object' ? payload : { value: payload }) as Record<string, unknown>,

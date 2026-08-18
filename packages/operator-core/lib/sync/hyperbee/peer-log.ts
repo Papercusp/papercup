@@ -36,6 +36,7 @@ import type Corestore from 'corestore';
 // `OpEnvelope` now lives in its own types module (Stage 4d).
 import type { OpEnvelope } from './op-envelope-types';
 import { resolveRemoteCoreHost } from './remote-core-host';
+import { trackDetached } from '../../detached-imports';
 
 /**
  * A single-writer op envelope. This is the `OpEnvelope` shape MINUS the
@@ -246,7 +247,7 @@ export async function openNamedLog(
     // fork-guard's (eventual, lazy-inside-the-reporter) PG dependency —
     // mirrors replication-liveness.ts's own lazy-import-for-escalation
     // pattern. Best-effort: a wiring failure must never block opening the log.
-    void import('./own-log-fork-guard')
+    void trackDetached(import('./own-log-fork-guard'))
       .then((m) => m.attachOwnLogForkListener(core, forkGuard.workspaceId, forkGuard.harnessSlug, keyHex))
       .catch(() => {
         /* best-effort: the log still opens even if the listener can't attach */

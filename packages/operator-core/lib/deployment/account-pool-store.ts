@@ -73,6 +73,7 @@ import {
 } from '../opus-budget-governor';
 import { fetchGatewayStatsRaw } from '../inference-gateway/observability';
 import type { RawGatewayStats } from '../inference-gateway/gateway-wedge';
+import { trackDetached } from '../detached-imports';
 
 // ── P-004: the owner's session-now account override (fail-soft, no-op-when-unset) ──
 
@@ -623,7 +624,7 @@ export interface ScaleObserverDeps {
 function defaultEmitExhausted(accountId: string, pausedUntil: number): void {
   // Reuse the await-event primitive (the gym's `rate-limit:*` family) so anyone can
   // `events:await { event: 'rate-limit:exhausted:<id>' }`. Lazy + fire-and-forget.
-  void import('../events/await/engine')
+  void trackDetached(import('../events/await/engine'))
     .then(({ emitAwaitedEvent }) =>
       emitAwaitedEvent({
         key: `rate-limit:exhausted:${accountId}`,

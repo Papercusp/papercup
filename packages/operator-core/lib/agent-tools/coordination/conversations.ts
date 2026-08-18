@@ -153,6 +153,7 @@ import {
 import type { AgentIdentity } from './identity';
 import type { ConversationRow, ListConversationsOpts } from './conversations-store';
 import type { DeliveryMode } from '@papercusp/coordination/capabilities';
+import { trackDetached } from '../../detached-imports';
 
 const storeOpts = {
   getSql: () => getOrgPg().sql,
@@ -282,7 +283,7 @@ export async function resolveConversation(
         })),
       );
     })().catch(() => {});
-    void import('../../events/await/engine')
+    void trackDetached(import('../../events/await/engine'))
       .then(({ emitAwaitedEvent }) =>
         emitAwaitedEvent({
           key: `conversation:answered:${conv.id}`,

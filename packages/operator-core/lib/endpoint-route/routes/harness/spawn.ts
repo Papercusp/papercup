@@ -42,6 +42,7 @@ import {
   interactiveBackendFromSpawnBackend,
 } from '../../../backend-feature-capabilities';
 import { canonicalCoordRole } from '../../../agent-tools/coordination/roles';
+import { trackDetached } from '../../../detached-imports';
 
 /**
  * launch-path-argv-reconstruction (WI-1343), extended to the hive/overwatch invoke
@@ -734,7 +735,7 @@ const invoke = defineTool({
     // the fallback sleep (never an immediate re-invoke, D-004). Fire-and-forget
     // off the response path; the module is fail-soft by contract.
     if (isHiveLaunch) {
-      void import('../../../pot/watchdog')
+      void trackDetached(import('../../../pot/watchdog'))
         .then(({ potTurnEndCheck }) =>
           potTurnEndCheck({ workspaceId: activeWorkspaceId(), installSlug: project.slug }),
         )
@@ -750,7 +751,7 @@ const invoke = defineTool({
     // immediate re-invoke — a broken-prompt overwatch must fail toward "sleeps too
     // long"). Fire-and-forget off the response path; the module is fail-soft.
     if (isOverwatchLaunch) {
-      void import('../../../overwatch/watchdog')
+      void trackDetached(import('../../../overwatch/watchdog'))
         .then(({ overwatchTurnEndCheck }) =>
           overwatchTurnEndCheck({ workspaceId: activeWorkspaceId(), installSlug: project.slug }),
         )
@@ -765,7 +766,7 @@ const invoke = defineTool({
       // pot-coordination-health scorecard, synthesize + file a baseline floor from the
       // system-health brief so the monitor is never silent (the agent skip stays visible
       // — the floor is excluded from the agent-emission freshness detector). Fail-soft.
-      void import('../../../overwatch/scorecard-backstop')
+      void trackDetached(import('../../../overwatch/scorecard-backstop'))
         .then(({ overwatchScorecardEndCheck }) =>
           overwatchScorecardEndCheck({ workspaceId: activeWorkspaceId(), installSlug: project.slug }),
         )

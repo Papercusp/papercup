@@ -27,6 +27,8 @@ import { journalPendingWrite } from '../../memory/write-journal';
 import { detectPossibleSecrets, possibleSecretWarning } from '../../memory/secret-detect';
 import { runBulk, bulkContent } from '../_bulk';
 import { hardText, LIMITS } from '../limits';
+import { trackDetached } from '../../detached-imports';
+import { AGENT_TOOL_ACTOR_ID } from '../../memory/feedback';
 
 /** The per-memory patch fields, shared by the inline single, the homogeneous
  *  `ids` default, and each heterogeneous `items[]` entry. */
@@ -295,9 +297,9 @@ export default defineTool({
         // Skipped for a metadata-only patch (no text changed to learn from).
         // Fire-and-forget.
         if (it.content !== undefined) {
-          void import('../../memory/feedback')
+          void trackDetached(import('../../memory/feedback'))
             .then(({ recordFeedback }) =>
-              recordFeedback({ memId: it.id, userId: 'agent-tool', action: 'edit', newText: it.content }),
+              recordFeedback({ memId: it.id, userId: AGENT_TOOL_ACTOR_ID, action: 'edit', newText: it.content }),
             )
             .catch(() => { /* best-effort */ });
         }
@@ -345,7 +347,7 @@ export default defineTool({
     // fire-and-forget, never load-bearing (memory-settings-page-refresh P-008).
     // One invalidate covers the whole batch.
     if (env.counts.ok > 0) {
-      void import('../../memory/invalidate-user-memory-views')
+      void trackDetached(import('../../memory/invalidate-user-memory-views'))
         .then(({ invalidateUserMemoryViews }) => invalidateUserMemoryViews())
         .catch(() => { /* best-effort */ });
     }

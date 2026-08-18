@@ -20,6 +20,7 @@ import {
 import { keychainLoad } from './identity/keychain';
 import { deriveHiveFederationTopic } from './sync/hyperbee/derive-swarm-topic';
 import { getHiveBySlug, insertHiveIfAbsent, type HiveRecord } from './hive-store';
+import { trackDetached } from './detached-imports';
 
 export interface EnsureHiveIdentityResult {
   record: HiveRecord;
@@ -221,7 +222,7 @@ export async function isCanonicalHiveOwner(
     // (WI-5714: the sibling recovery edge signalHiveKeyDivergent never had).
     // No-op when this hive was never flagged divergent (Set.delete's return
     // value gates the broadcast inside clearHiveKeyDivergence itself).
-    void import('./hive-owner-key-health')
+    void trackDetached(import('./hive-owner-key-health'))
       .then((m) => m.clearHiveKeyDivergence({ workspaceId, potSlug: homeSlug }))
       .catch(() => {});
     return true;
@@ -229,7 +230,7 @@ export async function isCanonicalHiveOwner(
   // Divergent local identity — the epoch-poison class. Signal loudly (deduped,
   // best-effort) and report NOT-owner.
   const canonicalPk = canonical;
-  void import('./hive-owner-key-health')
+  void trackDetached(import('./hive-owner-key-health'))
     .then((m) =>
       m.signalHiveKeyDivergent({
         workspaceId,

@@ -89,6 +89,8 @@
  * exhaustive.
  */
 
+import { trackDetached } from '../../detached-imports';
+
 export type BootHistoryKind =
   | 'boot_start'
   | 'boot_ok'
@@ -399,7 +401,7 @@ let _mirrorImpl: (line: string) => void = (line) => console.log(line);
  * boot/announce/merge path.
  */
 function _defaultPgWriteImpl(entry: BootHistoryEntry): void {
-  void import('./boot-history-pg-store')
+  void trackDetached(import('./boot-history-pg-store'))
     .then(({ insertBootHistoryEventPg }) => insertBootHistoryEventPg(entry))
     .catch(() => {
       // diagnostic-only — never let a PG hiccup break a boot/announce path

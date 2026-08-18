@@ -98,7 +98,7 @@ export async function recordScoutTick(input: RecordScoutTickInput): Promise<void
     // debounced + fail-soft inside the module, and fire-and-forget here so the
     // ledger write path never blocks on (or fails because of) paging.
     if (input.status === 'error') {
-      void import('./error-streak-alarm')
+      void trackDetached(import('./error-streak-alarm'))
         .then((m) =>
           m.checkAndFireErrorStreakAlarm({
             ...(input.workspaceId ? { workspaceId: input.workspaceId } : {}),

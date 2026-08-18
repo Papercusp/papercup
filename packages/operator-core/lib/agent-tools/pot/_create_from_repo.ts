@@ -51,6 +51,7 @@ import {
   deriveHiveFederationTopic,
   topicAsHex,
 } from '../../sync/hyperbee/derive-swarm-topic';
+import { trackDetached } from '../../detached-imports';
 
 // ── Options / results ─────────────────────────────────────────────────────────
 
@@ -356,7 +357,7 @@ export async function createPotFromRepo(
   const recordStep =
     deps.recordStep ??
     ((id: string, step: 'lookup' | 'clone' | 'detect' | 'create' | 'seed' | 'publish', status: 'running' | 'done' | 'error' | 'skipped') => {
-      void import('../../harness/from-repo-progress')
+      void trackDetached(import('../../harness/from-repo-progress'))
         .then((m) => m.recordFromRepoStep(id, step, status))
         .catch(() => {});
     });

@@ -19,6 +19,7 @@ import type { HydratableRef } from '../ref-hydrate';
 import { renderHydratedRefs } from '../ref-hydrate';
 import { hydrateRefs, makePlanItemResolver } from '../ref-hydrate-resolve';
 import { runFlushGate } from '../../../enforcement-gate-io';
+import { trackDetached } from '../../../detached-imports';
 
 /**
  * WI-4165: inline the named plan-items' own bodies into a handoff's `body`
@@ -103,7 +104,7 @@ export default defineTool({
       }
       // await-event-primitive-2026-06-05 P-015: a sleeping offerer wakes on
       // `handoff:accepted:<msg_id>`; the accept message already covers notify.
-      void import('../../../events/await/engine')
+      void trackDetached(import('../../../events/await/engine'))
         .then(({ emitAwaitedEvent }) =>
           emitAwaitedEvent({
             key: `handoff:accepted:${args.accept_msg_id}`,

@@ -33,6 +33,7 @@ import {
   type FeatureRef,
 } from '../../../feature-deps';
 import { defineTool } from '@papercusp/agent-mcp';
+import { trackDetached } from '../../../detached-imports';
 
 // F-001, PROJ-sheets, DIR-D-001 — verbatim from legacy.
 const FEATURE_ID_RE = /^[A-Z][A-Z0-9-]+(-[A-Z0-9-]+)?$/;
@@ -386,7 +387,7 @@ const updateFeature = defineTool({
       // retired HookBus `task.passed` / `feature.completed` topics. The
       // per-schema harness_features write lands in the consolidated table, so
       // the unified read sees the settled row.
-      void import('../../../work-items')
+      void trackDetached(import('../../../work-items'))
         .then(async (wiMod) => {
           const wi = await wiMod.getWorkItem(id, project.slug);
           if (!wi) return;

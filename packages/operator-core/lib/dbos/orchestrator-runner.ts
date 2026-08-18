@@ -95,6 +95,7 @@ import {
   finishSyncEnrolment,
 } from '../task-manager/enroll-sync';
 import { warmScopeProbe, scopeSupportKnown } from '../task-manager/managed-spawn';
+import { trackDetached } from '../detached-imports';
 
 // Warm the scope probe so the first agent turn after boot can already be enrolled
 // into a NAMED scope (task-manager P-009). Fire-and-forget — an agent turn must
@@ -1536,7 +1537,7 @@ export function wireOrchestratorInvokeRunner(): void {
   // signal into the account pool — record each account's rate state, and when an account is
   // SUSTAINEDLY limited, scale out onto a fresh account instead of only pausing. A no-op until
   // a process runs under PAPERCUSP_ACCOUNT_ID (i.e. account-keyed buckets exist).
-  void import('../deployment/account-pool-store')
+  void trackDetached(import('../deployment/account-pool-store'))
     .then(({ initAccountScaleObserver, syncDefaultAccountEnv }) => {
       initAccountScaleObserver();
       // default-deploy-account-2026-08-08 P-008: publish the "a default account is in force"

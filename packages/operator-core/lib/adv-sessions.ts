@@ -17,6 +17,7 @@ import { boundedOrgTxn } from './pg-bounded-txn';
 import { activeWorkspaceId } from './workspace-registry';
 import type { SuAgent } from './su-agents';
 import { caveat, type FieldCaveat } from './field-reliability';
+import { trackDetached } from './detached-imports';
 
 /**
  * Log a best-effort read/write failure UNLESS it's PG's undefined_table
@@ -928,7 +929,7 @@ export async function markAdvSessionEnded(
       // Dynamic import: no module cycle, and this hot end path stays free of
       // FS/zstd imports. Fire-and-forget — ending never blocks on archival;
       // a missed schedule is caught by the P-006 reconciler.
-      void import('./session-archive-hook')
+      void trackDetached(import('./session-archive-hook'))
         .then((m) => m.scheduleArchiveForAdvSession(id))
         .catch((e) => console.warn(`[adv-sessions] archive hook unavailable: ${(e as Error)?.message ?? e}`));
     }

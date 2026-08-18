@@ -19,6 +19,8 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { getMemoryBackend } from '../../memory/backend';
 import { MemoryTimeoutError, withMemoryToolTimeout } from '../../memory/op-deadline';
 import { mergeIds, runBulk, bulkContent } from '../_bulk';
+import { trackDetached } from '../../detached-imports';
+import { AGENT_TOOL_ACTOR_ID } from '../../memory/feedback';
 
 export default defineTool({
   name: 'memory:forget',
@@ -119,9 +121,9 @@ export default defineTool({
         // Learning signal (learning-system-audit P-050): an agent-driven forget is
         // the contradiction/staleness signal the extraction-adaptation loop reads
         // (memory_feedback → rebuildCustomInstructions). Fire-and-forget.
-        void import('../../memory/feedback')
+        void trackDetached(import('../../memory/feedback'))
           .then(({ recordFeedback }) =>
-            recordFeedback({ memId: id, userId: 'agent-tool', action: 'delete' }),
+            recordFeedback({ memId: id, userId: AGENT_TOOL_ACTOR_ID, action: 'delete' }),
           )
           .catch(() => { /* best-effort */ });
         return { ok: true as const, id, ...(invalidateEntry ? { soft: true as const } : {}) };
@@ -132,7 +134,7 @@ export default defineTool({
     // fire-and-forget, never load-bearing (memory-settings-page-refresh P-008).
     // One invalidate covers the whole batch.
     if (env.counts.ok > 0) {
-      void import('../../memory/invalidate-user-memory-views')
+      void trackDetached(import('../../memory/invalidate-user-memory-views'))
         .then(({ invalidateUserMemoryViews }) => invalidateUserMemoryViews())
         .catch(() => { /* best-effort */ });
     }

@@ -11,6 +11,13 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+// WI-39811: detached imports are now enrolled in trackDetached and DRAINED before the
+// environment tears down, so this best-effort side effect — previously a floating
+// `void import(...)` that never finished inside the test — now really runs and logs its
+// diagnostic for a dependency this unit test never configures. Mock the collaborator
+// rather than silencing console, so the diagnostic stays meaningful in production.
+vi.mock('../../sync-sse', () => ({ notifySyncInvalidate: vi.fn(async () => {}) }));
+
 vi.mock('../../memory/write-journal', () => ({
   journalPendingWrite: vi.fn(async () => null),
   markJournalCommitted: vi.fn(async () => {}),
