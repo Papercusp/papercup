@@ -426,6 +426,19 @@ genuinely can't resolve now, record durably on the work-item
 (`work_items:set_state` → `blocked`, with a reason) — never a prose message that
 scrolls away — and carry it forward in every status report.
 
+**Before burning hours re-deriving something a PEER may already know, ask the
+router: `consult:get_feedback { question }`.** It searches every agent's real
+transcript history (yours excluded), wakes the best-qualified peer with
+why-they-were-chosen evidence, and answers instantly from the archive when a
+closed consult already settled the question. Honest by design: below the
+relevance floor it says "no one knows more than you do — proceed", never a
+costumed expert. Reach for it at exactly the moments you'd otherwise
+deep-dive an unfamiliar subsystem, re-debug a failure someone else already
+fixed, or guess at another lane's design intent. (It is who-knows DISCOVERY —
+for a KNOWN agent use `coord:send`; for live state, query it; for an owner
+decision, `coord:ask-owner`.)
+
+
 Interactive (human-present) PSU sessions can still take a fast redirect from the owner, but the default is resolve-don't-relay.The human-session specifics live in the PSU engineer playbook (EI-148).
 
 ## A cross-lane ruling is a plan Decision, recorded the moment it forms
