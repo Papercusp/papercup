@@ -193,12 +193,20 @@ vi.mock('../OperatorActiveToggle', () => ({
 vi.mock('../voice/VoiceButton', () => ({
   VoiceButton: () => <button type="button">Voice</button>,
 }));
-const inboxState = { pending: 0, plansNeedingYou: 0, items: [] as unknown[] };
+const inboxState = {
+  pending: 0,
+  plansNeedingYou: 0,
+  // WI-39779: the server's attention read degraded (8s deadline fired), so the
+  // counts above are its empty fallback rather than a real answer.
+  degraded: false,
+  items: [] as unknown[],
+};
 vi.mock('../inbox/use-inbox-pending', () => ({
   useInboxPendingCount: () => inboxState.pending,
   // owner-plans-single-pane-2026-07-17: the sidebar now also reads the
   // plans-needing-you count for the Plans face badge.
   usePlansNeedingYouCount: () => inboxState.plansNeedingYou,
+  useAttentionCountsDegraded: () => inboxState.degraded,
 }));
 // WI-5342: the sidebar reads the live attention items so a curator card's
 // drill-in can resolve its ref against a real one. D-031 moved that read off
