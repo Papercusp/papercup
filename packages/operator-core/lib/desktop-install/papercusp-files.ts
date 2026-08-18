@@ -793,7 +793,10 @@ function extensionCandidates(operatorAppRoot: string, explicitRoot: boolean): st
  * whole set (mirrors the bash `[ -f … ]` guard). `posttooluse-objective-title.sh` is
  * copied for parity but, like the bash installer, is not registered in settings.json.
  */
-const CC_HOOK_FILES = [
+// Exported so `orphaned-cc-hooks.test.ts` can assert the INVARIANT that every hook script
+// on disk appears here — the check that would have caught WI-5543, WI-5542 and
+// EI-20782070131658758, each of which shipped a working guard that never installed.
+export const CC_HOOK_FILES = [
   'pretooluse-locks-acquire.sh',
   'posttooluse-locks-release.sh',
   // EI-11405 / coordination-hook-rpc-fanout-collapse-2026-07-16: this hook now
@@ -855,6 +858,19 @@ const CC_HOOK_FILES = [
   // corruption bug on such files (silently writes a different byte than requested
   // while reporting success). See the script's own header for the full writeup.
   'pretooluse-nul-byte-edit-guard.mjs',
+  // EI-20782070131658758: PreToolUse (matcher "Edit|Write|MultiEdit") hard DENY on a raw
+  // forbidden CONTROL BYTE in the content being written. Disjoint from the nul-byte sibling
+  // directly above, which is easy to mistake for coverage: that one asks "is the file I am
+  // about to PATCH already dirty?" (NUL-only, and it deliberately excludes Write), while this
+  // one asks "is the content I am about to WRITE legal?". A `Write` of a NUL-bearing .ts
+  // therefore passed BOTH — the reported failure: the file became binary, `file` reported
+  // `data`, and grep silently skipped it, so the natural verification ("grep for the symbol I
+  // just wrote") returned nothing and read as "my edit did not land".
+  //   ⚠ THIRD instance of this exact dead-code shape (cf. WI-5543 content-lint, WI-5542
+  //   secrets-guard above): the guard existed in-repo since 2026-08-03, WITH a passing
+  //   dedicated test file, and was never added here — so it never installed and never ran.
+  //   `orphaned-cc-hooks.test.ts` now fails on any hook script that is not listed here.
+  'pretooluse-control-bytes-content-guard.mjs',
   // EI-18680056073436345: PreToolUse (matcher "ScheduleWakeup") best-effort
   // turn-provenance ENROLLMENT for the Claude-CLI-native ScheduleWakeup tool —
   // observes the SCHEDULING call (which does pass through this hook chain) and
@@ -2496,6 +2512,17 @@ export function mergeClaudeHookSettings(
     hooks.PreToolUse = replaceOurHookEntries(ev('PreToolUse'), ours('pretooluse-nul-byte-edit-guard.mjs'), {
       matcher: fileEditMatcher,
       hooks: cmd('pretooluse-nul-byte-edit-guard.mjs'),
+    });
+  // merge_control_bytes_content_guard_hook — PreToolUse, matcher 'Edit|Write|MultiEdit'
+  // (EI-20782070131658758). Write IS in the matcher, and that is the load-bearing difference
+  // from the nul-byte sibling above: the reported failure was a `Write` of a NUL-bearing .ts,
+  // which the Edit-only sibling can never see. The guard reads its byte policy + scanned-set
+  // from scripts/check-no-control-bytes.mjs (the green-checkpoint leg's own module), so it can
+  // only refuse content that `lint:no-control-bytes` would red the fleet gate on anyway.
+  if (has('pretooluse-control-bytes-content-guard.mjs'))
+    hooks.PreToolUse = replaceOurHookEntries(ev('PreToolUse'), ours('pretooluse-control-bytes-content-guard.mjs'), {
+      matcher: fileWriteMatcher,
+      hooks: cmd('pretooluse-control-bytes-content-guard.mjs'),
     });
   // merge_tool_prompt_weight_guard_hook — PreToolUse, matcher 'Edit|Write|MultiEdit'
   // (EI-20204186116417704). Write IS in the matcher: a full-file rewrite of a tool definition is
