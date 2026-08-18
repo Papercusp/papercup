@@ -333,3 +333,209 @@ export async function evaluateCriterionTestChecks(input: {
   }
   return { ok: true, checkRuns };
 }
+
+/** The coverage run record — {@link ScorecardCoverageCheckRun}, re-exported for callers. */
+export type CoverageCheckRun = ScorecardCoverageCheckRun;
+
+/**
+ * The slice of `readCoverage`'s response this module judges on. Declared STRUCTURALLY
+ * rather than importing the inferred return type so the seam is stubbable in tests —
+ * and, more importantly, so what the gate actually depends on is written down: if
+ * `readCoverage` ever stops returning one of these, this breaks HERE, loudly, instead
+ * of the gate quietly judging on an `undefined` that coerces to a passing 0.
+ */
+export interface CoverageMeasurement {
+  verdict: 'measured' | 'not-measured';
+  censusUnknown: string[] | null;
+  coverage: {
+    surfaces: number;
+    meets: number;
+    belowUnwaived: number;
+    pct: number | null;
+    fidelity: { weakest: string | null; declaredPct: number | null };
+  };
+  rows: { surfaceId: string; kind: string; sourceFile: string | null }[];
+}
+
+/** Injectable census-read seam (tests stub this; production passes `readCoverage`). */
+export type CoverageReader = (args: {
+  kind?: string;
+  sourceFiles?: string[];
+  rung: 'l1' | 'l2' | 'l3' | 'l4';
+  gapsOnly: boolean;
+  limit: number;
+}) => Promise<CoverageMeasurement>;
+
+/**
+ * Resolves `scope.planTouched` to the file list it stands for: the implementing files
+ * the subject plan's completed work actually changed. Returns null when the caller has
+ * no plan subject to resolve against — which REFUSES the check rather than silently
+ * widening it to the whole census.
+ */
+export type PlanTouchedFilesResolver = () => Promise<string[] | null>;
+
+/** How many failing surfaces to name in a refusal before summarising the rest. */
+const MAX_NAMED_SURFACES = 12;
+
+/**
+ * GRADING-time evaluation for kind:'coverage' checks — the census counterpart of
+ * {@link evaluateCriterionTestChecks}, holding the identical three-part contract:
+ * measure NOW (never a stale row), refuse what cannot be judged, and refuse a
+ * pass-claiming rating the measurement contradicts.
+ *
+ * The three failure modes it is built to NOT have — each of them this plan's own
+ * subject matter, so shipping one here would be self-refuting:
+ *
+ *  1. **0-of-0 rendering as pass.** A scope matching ZERO censused surfaces REFUSES.
+ *     An empty scope is the cheapest possible way to make a coverage gate vacuously
+ *     green ("0 gaps! everything is covered"), and `readCoverage` already refuses to
+ *     express it as a ratio — `pct` is null and `verdict` says `not-measured` in words.
+ *     A gate that passed there would contradict the very surface it reads.
+ *  2. **A truncated population flattering the ratio.** The census can be a real number
+ *     about a partial world (WI-39812: 675 defineTool files censused as 49, because the
+ *     catalog is module-split). Truncation ALWAYS flatters, since surfaces that were
+ *     never enumerated cannot appear as gaps — so every verdict message carries the
+ *     fidelity marker, and the record stores it.
+ *  3. **Stale evidence.** The census is re-read here, at grading time.
+ */
+export async function evaluateCriterionCoverageChecks(input: {
+  criteria: ReadonlyArray<CheckedCriterion>;
+  ratings: Record<string, { rating: string } | undefined>;
+  readCoverage: CoverageReader;
+  resolvePlanTouchedFiles?: PlanTouchedFilesResolver;
+  nowIso?: () => string;
+}): Promise<CriterionCheckEvaluation> {
+  const nowIso = input.nowIso ?? (() => new Date().toISOString());
+  const checkRuns: Record<string, CriterionCheckRun> = {};
+  let planTouchedFiles: string[] | null | undefined;
+
+  for (const c of input.criteria) {
+    if (c.check?.kind !== 'coverage') continue;
+    if (input.ratings[c.key] === undefined) continue;
+    const { scope, floor } = c.check;
+
+    // ── Resolve the scope. planTouched expands to a real file list HERE, so the record
+    //    stores what was measured rather than the intention to measure something.
+    let sourceFiles = scope.sourceFiles;
+    if (scope.planTouched === true) {
+      if (planTouchedFiles === undefined) {
+        planTouchedFiles = input.resolvePlanTouchedFiles ? await input.resolvePlanTouchedFiles() : null;
+      }
+      if (planTouchedFiles === null || planTouchedFiles.length === 0) {
+        return {
+          ok: false,
+          error: 'coverage_scope_empty',
+          criterionKey: c.key,
+          detail:
+            `criterion '${c.key}' carries a coverage-check scoped to planTouched, but no changed files ` +
+            `could be resolved for the subject plan${planTouchedFiles === null ? ' (no plan subject on this emit)' : ' (its completed work-items record no filesChanged)'}. ` +
+            `An unresolved scope would measure the WHOLE census instead of this plan's surfaces — ` +
+            `silently widening a gate is worse than refusing it. Give the criterion an explicit ` +
+            `scope.sourceFiles, or grade a card whose subject plan has completion evidence.`,
+        };
+      }
+      sourceFiles = planTouchedFiles;
+    }
+
+    // ── Measure. ONE read: the aggregates are computed over the whole in-scope
+    //    population regardless of gapsOnly (which bounds only the returned rows), so
+    //    this yields both an unbounded verdict and a bounded list of names for it.
+    const measurement = await input.readCoverage({
+      ...(scope.surfaceKind ? { kind: scope.surfaceKind } : {}),
+      ...(sourceFiles && sourceFiles.length > 0 ? { sourceFiles } : {}),
+      rung: floor,
+      gapsOnly: true,
+      limit: MAX_NAMED_SURFACES,
+    });
+
+    // ── FAILURE MODE 1. Zero denominator ⇒ refuse. Never a pass, never a 0%, never 100%.
+    if (measurement.verdict === 'not-measured' || measurement.coverage.surfaces === 0) {
+      return {
+        ok: false,
+        error: 'coverage_scope_empty',
+        criterionKey: c.key,
+        detail:
+          `criterion '${c.key}' carries a coverage-check whose scope matches ZERO censused surfaces, ` +
+          `so there is nothing to be covered and no denominator to form a ratio from ` +
+          `(${describeScope(scope, sourceFiles)}, floor ${floor}). ` +
+          (measurement.censusUnknown?.length
+            ? `The census says why: ${measurement.censusUnknown.join(' | ')}. `
+            : '') +
+          `Passing here would be a vacuous truth — "0 gaps" because nothing was ever looked at. ` +
+          `Fix the scope so it names real surfaces, or drop the check to leave the criterion fuzzy.`,
+      };
+    }
+
+    const { surfaces, meets, belowUnwaived, pct, fidelity } = measurement.coverage;
+    const belowSurfaces = measurement.rows.map((r) => r.surfaceId);
+    const record: CoverageCheckRun = {
+      kind: 'coverage',
+      scope: {
+        ...(scope.surfaceKind ? { surfaceKind: scope.surfaceKind } : {}),
+        ...(sourceFiles && sourceFiles.length > 0 ? { sourceFiles } : {}),
+        ...(scope.planTouched === true ? { planTouched: true as const } : {}),
+      },
+      floor,
+      verdict: belowUnwaived === 0 ? 'pass' : 'fail',
+      surfaces,
+      meets,
+      belowUnwaived,
+      pct,
+      fidelity,
+      ...(belowSurfaces.length > 0 ? { belowSurfaces } : {}),
+      measuredAt: nowIso(),
+    };
+
+    const rating = input.ratings[c.key]?.rating ?? '';
+    if (record.verdict === 'fail' && ratingClaimsPass(rating)) {
+      return {
+        ok: false,
+        error: 'coverage_contradicted',
+        criterionKey: c.key,
+        rating,
+        run: record,
+        detail:
+          `criterion '${c.key}' is rated '${rating}' but ${belowUnwaived} of ${surfaces} censused ` +
+          `surfaces in scope do NOT meet ${floor} (${describeScope(scope, sourceFiles)}): ` +
+          `${namedSurfaces(belowSurfaces, belowUnwaived)}. ` +
+          `${fidelityCaveat(fidelity)} ` +
+          `A measured gap outranks judgment — prove the surfaces to ${floor}, waive them ` +
+          `deliberately, or rate the criterion honestly.`,
+      };
+    }
+    checkRuns[c.key] = record;
+  }
+  return { ok: true, checkRuns };
+}
+
+function describeScope(
+  scope: { surfaceKind?: string; sourceFiles?: string[]; planTouched?: true },
+  resolvedFiles: string[] | undefined,
+): string {
+  const parts: string[] = [];
+  if (scope.surfaceKind) parts.push(`kind=${scope.surfaceKind}`);
+  if (scope.planTouched === true) {
+    parts.push(`planTouched=${resolvedFiles ? `${resolvedFiles.length} file(s)` : 'unresolved'}`);
+  } else if (resolvedFiles && resolvedFiles.length > 0) {
+    parts.push(`files=${resolvedFiles.length}`);
+  }
+  return parts.length > 0 ? `scope ${parts.join(' ')}` : 'scope = the whole harness census';
+}
+
+/** Names the surfaces, and says so when the named list stands for a larger population —
+ *  a bounded sample presented as if it were the whole is the same lie as a bounded
+ *  aggregate presented as a total. */
+function namedSurfaces(named: string[], total: number): string {
+  if (named.length === 0) return `${total} surface(s), none listed`;
+  const shown = named.join(', ');
+  return named.length < total ? `${shown} (+${total - named.length} more)` : shown;
+}
+
+function fidelityCaveat(fidelity: { weakest: string | null; declaredPct: number | null }): string {
+  if (!fidelity.weakest) return '';
+  return (
+    `Population fidelity: weakest '${fidelity.weakest}'` +
+    (fidelity.declaredPct !== null ? `, ${fidelity.declaredPct}% declared` : '') +
+    ` — a partial census flatters, since surfaces it never enumerated cannot appear as gaps.`
+  );
+}

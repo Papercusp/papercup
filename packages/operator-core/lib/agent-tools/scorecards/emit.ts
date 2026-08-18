@@ -38,7 +38,9 @@ import {
 import type { ScorecardGradingAudit } from '../../harness/improvements/observation-types';
 import { killTask } from '../../task-manager/control';
 import { listTasks } from '../../task-manager/store';
-import { evaluateCriterionTestChecks } from '../../rubrics-criterion-checks';
+import { evaluateCriterionTestChecks, evaluateCriterionCoverageChecks } from '../../rubrics-criterion-checks';
+import { readCoverage } from '../testing/coverage';
+import { TERMINAL_COMPLETION_EVIDENCE_KEY } from '../../coord-lifecycle/records';
 import { resolveAgentWorkspaceRoot } from '../capability/base-dir';
 import { clampForegroundTimeoutMs } from '../capability/foreground-transport-cap';
 import { trackDetached } from '../../detached-imports';
@@ -134,6 +136,7 @@ export async function emitScorecard(
   deps: {
     /** Injectable seam for tests — production runs the real router via the testing:run core. */
     evaluateChecks?: typeof evaluateCriterionTestChecks;
+    evaluateCoverageChecks?: typeof evaluateCriterionCoverageChecks;
   } = {},
 ) {
   const rubric = await getRubric(args.rubricRef);
@@ -372,6 +375,51 @@ export async function emitScorecard(
         };
       }
       checkRuns = Object.keys(checkEvaluation.checkRuns).length > 0 ? checkEvaluation.checkRuns : undefined;
+    }
+
+    // ── P-006 (deterministic-coverage-census): kind:'coverage' criterion checks ──
+    // The census counterpart of the block above, and it reads THE shared derivation
+    // (`readCoverage`) rather than querying testing_surface_depth itself — the panel,
+    // both state cells, the tool and now this gate all resolve through one function, so
+    // the gate cannot disagree with the panel a human just read. A scope matching zero
+    // surfaces REFUSES (a coverage gate over an empty scope is vacuously green, which is
+    // precisely the defect this plan exists to make unrepresentable).
+    const coverageCheckedCriteria = rubric.criteria.filter((c) => c.check?.kind === 'coverage');
+    if (coverageCheckedCriteria.length > 0) {
+      const evaluateCoverage = deps.evaluateCoverageChecks ?? evaluateCriterionCoverageChecks;
+      const coverageEvaluation = await evaluateCoverage({
+        criteria: rubric.criteria,
+        ratings,
+        readCoverage: (a) => readCoverage(a),
+        // planTouched resolves to the files the subject plan's COMPLETED work actually
+        // changed. Only an acceptance rubric has a subject plan; anywhere else this
+        // returns null and the check refuses rather than silently widening its scope.
+        resolvePlanTouchedFiles: async () => {
+          const planSlug = rubric.subjectPlan;
+          if (!planSlug) return null;
+          const { sql } = getOrgPg();
+          const rows = await sql<{ f: string }[]>`
+            SELECT DISTINCT jsonb_array_elements_text(
+                     COALESCE(payload->${TERMINAL_COMPLETION_EVIDENCE_KEY}->'filesChanged', '[]'::jsonb)
+                   ) AS f
+              FROM harness_shared.work_items
+             WHERE workspace_id = ${input.workspaceId}
+               AND source_plan_slug = ${planSlug}
+          `;
+          const files = rows.map((r) => r.f).filter((f) => typeof f === 'string' && f.trim() !== '');
+          return files.length > 0 ? files : [];
+        },
+      });
+      if (!coverageEvaluation.ok) {
+        return {
+          ok: false as const,
+          error: coverageEvaluation.detail,
+          checkRefusal: coverageEvaluation,
+        };
+      }
+      if (Object.keys(coverageEvaluation.checkRuns).length > 0) {
+        checkRuns = { ...(checkRuns ?? {}), ...coverageEvaluation.checkRuns };
+      }
     }
 
     const gradedGeneration = await readRunningGeneration().catch(() => null);
