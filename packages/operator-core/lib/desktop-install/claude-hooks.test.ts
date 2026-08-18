@@ -203,6 +203,28 @@ describe('mergeClaudeHookSettings — graceful degradation via `present`', () =>
     expect(cfg.enableAllProjectMcpServers).toBeUndefined(); // gated on the lock hooks
   });
 
+  it('control: a hook absent from `present` does NOT register (calibrates the matcher assertions)', () => {
+    // Falsifiability control for the EI-20782070131658758 assertions in the first describe.
+    // Those assert control-bytes-content-guard registers on the WRITE matcher; this proves
+    // that assertion can FAIL — when the hook is not installed, it registers nowhere. Without
+    // this, a registration silently deleted from mergeClaudeHookSettings would leave the
+    // positive assertion green-by-vacuity if `matcherOf` ever degraded to a loose match.
+    const withoutIt = mergeClaudeHookSettings({}, DEST, {
+      present: new Set(['pretooluse-locks-acquire.sh', 'posttooluse-locks-release.sh']),
+      isClaudeSettings: true,
+    });
+    expect(commandsFor(withoutIt, 'PreToolUse')).not.toContain(
+      `${DEST}/pretooluse-control-bytes-content-guard.mjs`,
+    );
+
+    // Calibration: the REAL subject must still register, or the control above passes for the
+    // trivial reason that nothing ever registers.
+    const full = mergeClaudeHookSettings({}, DEST, { isClaudeSettings: true });
+    expect(commandsFor(full, 'PreToolUse')).toContain(
+      `${DEST}/pretooluse-control-bytes-content-guard.mjs`,
+    );
+  });
+
   it('does NOT set the Claude-only project-MCP flag when isClaudeSettings is false (codex home)', () => {
     const cfg = mergeClaudeHookSettings({}, DEST, {});
     expect(cfg.enableAllProjectMcpServers).toBeUndefined();
