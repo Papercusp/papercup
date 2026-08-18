@@ -131,7 +131,9 @@ export default defineTool({
     // tenant-scoped table must carry the tenant predicate.
     const tenantAdvisory = await buildTenantScopeAdvisory(args.sql, {
       workspaceId: ctx.workspaceId,
-      harnessSlug: ctx.harnessSlug,
+      // Explicit sentinel guard (no-raw-harness-sentinel): '*' must never reach a
+      // tenant predicate as if it were a concrete harness slug.
+      harnessSlug: ctx.harnessSlug && ctx.harnessSlug !== '*' ? ctx.harnessSlug : null,
     }).catch(() => null);
     if (tenantAdvisory && !args.allowUnscoped) {
       return jsonError(
