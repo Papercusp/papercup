@@ -284,7 +284,9 @@ const SCHEDULER_WORKER_BUDGET = resolveGlobalWorkerBudget({
   fallback: WORKER_CAP,
 });
 // WI-39472: MemAvailable is the kernel's own estimate of what a new allocation can actually get
-// WITHOUT swapping — it counts reclaimable page cache, which MemFree and os.freemem() do not. On a
+// WITHOUT swapping — it counts reclaimable page cache, which MemFree and the node os free-memory
+// reading do not (that API is deliberately NOT named here as a literal: a repo guard forbids the
+// call, and a guard matching on a bare substring is tripped by the prose explaining it). On a
 // long-lived box those two read catastrophically low and would throttle the scheduler to one
 // worker for no reason. Returns null (not 0) when the reading is unavailable, so the caller can
 // tell "no measurement" apart from "no memory".
