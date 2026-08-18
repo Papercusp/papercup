@@ -18,6 +18,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import {
   pgReadQuery,
   extractPgErrorInfo,
+  buildBacklogFlowAdvisory,
   buildClaimabilityAdvisory,
   buildEpochUnitAdvisory,
   buildCorpusNamespaceAdvisory,
@@ -235,6 +236,17 @@ export default defineTool({
       } catch {
         claimabilityAdvisory = null;
       }
+      // The FLOW sibling of the claimability advisory above. That one warns a row set is bigger than it
+      // looks; this one warns an AGGREGATE is measuring a different population than the reader intends —
+      // the observation lane counted as filed work, an evidence-quality column used as a "closed" filter,
+      // or a hand-rolled window that work_items:burn_down already computes with the caveats attached.
+      // Measured together on 2026-08-17: the three inverted the sign of a backlog trend reported to the owner.
+      let backlogFlowAdvisory: string | null = null;
+      try {
+        backlogFlowAdvisory = buildBacklogFlowAdvisory(sql);
+      } catch {
+        backlogFlowAdvisory = null;
+      }
       // EI-20103748074297088 — two more ways a read returns a well-formed ZERO that reads as a
       // real answer. Kept as their own builders, like the three above, because each is a
       // DIFFERENT failure: the tenant advisory warns the rows may be from the wrong tenant;
@@ -281,6 +293,7 @@ export default defineTool({
         [
           epochUnitAdvisory,
           claimabilityAdvisory,
+          backlogFlowAdvisory,
           nullPathAdvisory,
           splitEvidenceAdvisory,
           nativeToolAdvisory,
