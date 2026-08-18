@@ -801,6 +801,42 @@ export const TARGETS: BackfillTarget[] = [
     recencyCol: 'created_at',
     recencyColKind: 'timestamptz',
   },
+  // WI-39840 — the two columns migration 847 widened to the 768 prose contract.
+  // They are in PROSE_VECTOR_COLUMNS, so a width migration WIPES them, and the
+  // refill-coverage guard in prose-vector-dims.test.ts requires a target here.
+  //
+  // ⚠ THE "IT REFILLS ORGANICALLY" ARGUMENT IS ONLY HALF TRUE, WHICH IS WHY BOTH
+  // ENTRIES EXIST. Both vectors are written once at row creation, so it is tempting
+  // to conclude a wipe heals itself as rows churn. That holds for `interest_watches`
+  // (a watch is short-lived and re-registered). It does NOT hold for `consult_state`:
+  // the whole POINT of query_embedding is the ARCHIVE-FIRST lookup, which matches a
+  // new question against PAST consults — and a past consult is never re-created, so a
+  // wipe silently and permanently removes exactly the rows the column exists to serve.
+  // The failure would present as "archive-first just never finds anything", with no
+  // error anywhere. That is the guard's stated hazard, so it gets a real refill path.
+  {
+    table: 'harness_shared.consult_state',
+    embedCol: 'query_embedding',
+    // Same 2000-char convention as every other target (EI-12967): the sidecar
+    // hard-rejects a single text over 32000 chars with an UNRETRYABLE 400, which
+    // would re-select and re-fail the same row on every 5-minute tick forever.
+    bodySql: `left(COALESCE(question, ''), 2000)`,
+    keyCols: ['workspace_id', 'conversation_id'],
+    recencyCol: 'created_at',
+    recencyColKind: 'timestamptz',
+  },
+  {
+    table: 'harness_shared.interest_watches',
+    embedCol: 'embedding',
+    // A watch whose embedding is NULL cannot match at all — interest-watch.ts:369
+    // throws rather than silently matching nothing — so refilling here also repairs
+    // any watch left embedding-less by a widen, instead of leaving it permanently
+    // inert until someone notices it never fires.
+    bodySql: `left(COALESCE(interest, ''), 2000)`,
+    keyCols: ['id'],
+    recencyCol: 'created_at',
+    recencyColKind: 'timestamptz',
+  },
 ];
 
 /**

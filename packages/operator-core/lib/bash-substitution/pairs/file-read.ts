@@ -38,7 +38,38 @@
  *  • One `file_path` per call.
  */
 
-import type { AnswerEnvelope, CoverageResult, ReplayToolCall, BashSubstitutionPair } from '../types';
+import type {
+  AnswerEnvelope,
+  CoverageResult,
+  PolicyAuthority,
+  ReplayToolCall,
+  BashSubstitutionPair,
+} from '../types';
+
+/**
+ * The owner ruling that puts this family at `deny` rather than `advise` (D-044).
+ *
+ * Every other row in the registry teaches; these four BLOCK, and the difference
+ * is not a stronger opinion about tool quality — it is that a human wrote a rule
+ * down. `assertPolicyTier` will not accept this citation unless the pair's
+ * verdict is also `equivalent`, which is the owner's own condition ("IF it has
+ * full parity") enforced rather than remembered.
+ *
+ * Read D-044 before widening any pattern below. The authorization is scoped to
+ * what the patterns matched when it was granted: every form `capability:read`
+ * cannot express — piped stdin filters, heredocs and redirects, `cat -A/-v/-e/-t`,
+ * `-c` byte windows, `tail -f`, `cat -` — is OUTSIDE these patterns by D-008 and
+ * must stay outside, because a blocked command with no tool form is the one
+ * failure this registry exists to prevent. Widening a pattern here does not just
+ * add an advisory, it adds a hard failure to every agent on the box.
+ */
+const FILE_READ_MANDATE: PolicyAuthority = {
+  ref: 'bash-to-tool-substitution-2026-07-26#D-044',
+  rule:
+    'Owner, 2026-08-18: "are ther any features in our tool version that is missing from the bash ' +
+    'version? does it have full parity? if it has full parity then lets block it and force them ' +
+    'through our tool" — parity verified within the matched set, so file reads go through the tool.',
+};
 
 /**
  * How to strip `capability:read`'s framing to reach the file content (P-021).
