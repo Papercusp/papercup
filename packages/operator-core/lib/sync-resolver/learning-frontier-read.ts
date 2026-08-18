@@ -24,7 +24,7 @@
 import type { Sql } from 'postgres';
 import { FLAGS, type FlagKey } from '@papercusp/flags';
 import type { LearningLoopHealth } from '../blueprint/learning-loop-health';
-import { createReadDeadline } from './read-deadline';
+import { createReadDeadline, type WithinBudget } from './read-deadline';
 
 /**
  * Whole-read budget for the Frontier grid, in ms — under the ~10s
@@ -146,10 +146,23 @@ export interface FrontierLaneOutcome {
  * degrades INDEPENDENTLY (a missing table ⇒ that lane reads no outcome, never
  * a failed snapshot), matching the other legs' fail-soft contract. Lanes with
  * no outcome table yet simply have no entry.
+ *
+ * PASS `withinBudget` (WI-39817). Without it the per-lane try/catch below is
+ * fail-soft for a lane that THROWS and nothing at all for a lane that HANGS:
+ * `Promise.all` waits for the slowest lane, so one wedged store costs all four
+ * rollups — including the three that had already returned. That is the exact
+ * "per-leg error handling is NOT leg isolation" distinction this class exists
+ * to make (see read-deadline.ts, WI-39813). Bounding each lane by the caller's
+ * SHARED deadline means a wedged lane loses only itself.
+ *
+ * The parameter is optional so the fail-soft contract still holds for a caller
+ * that has no deadline to give — it simply degrades at whole-rollup
+ * granularity, exactly as it did before.
  */
 export async function readLaneOutcomes(
   sql: Sql,
   workspaceId: string,
+  withinBudget?: WithinBudget,
 ): Promise<Record<string, FrontierLaneOutcome>> {
   const out: Record<string, FrontierLaneOutcome> = {};
   const num = (v: unknown): number => Number(v ?? 0);
@@ -157,7 +170,9 @@ export async function readLaneOutcomes(
     v == null ? null : v instanceof Date ? v.toISOString() : new Date(String(v)).toISOString();
   const leg = async (id: string, run: () => Promise<FrontierLaneOutcome | null>) => {
     try {
-      const r = await run();
+      // The bound must wrap the AWAITED promise, not sit downstream of it — a
+      // deadline applied after the await cannot interrupt a hang.
+      const r = await (withinBudget ? withinBudget(run(), `lane-outcome:${id}`) : run());
       if (r) out[id] = r;
     } catch (err) {
       console.warn(`[learning.frontier] outcome read failed for ${id}:`, err instanceof Error ? err.message : err);
@@ -358,10 +373,18 @@ export async function readFrontierSnapshot(
     console.warn('[learning.frontier] governor read failed:', err instanceof Error ? err.message : err);
   }
 
-  // Leg 4 — per-lane outcome rollups (WI-5800). Fail-soft as a whole AND per lane.
+  // Leg 4 — per-lane outcome rollups (WI-5800). Fail-soft as a whole AND per
+  // lane, for a lane that HANGS as well as one that throws (WI-39817).
+  //
+  // The deadline is threaded IN rather than wrapped AROUND, deliberately. Each
+  // lane is bounded individually, so `readLaneOutcomes` always resolves by the
+  // deadline and returns whatever lanes did finish. Wrapping the whole call as
+  // well would defeat that: both bounds expire on the same shared deadline, and
+  // the outer rejection would discard the partial rollups the inner legs just
+  // preserved. The try/catch stays as the backstop for a non-leg failure.
   let outcomes: Record<string, FrontierLaneOutcome> = {};
   try {
-    outcomes = await withinBudget(readLaneOutcomes(sql, workspaceId), 'lane-outcomes');
+    outcomes = await readLaneOutcomes(sql, workspaceId, withinBudget);
   } catch (err) {
     console.warn('[learning.frontier] outcome rollup failed:', err instanceof Error ? err.message : err);
   }
