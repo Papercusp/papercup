@@ -44,6 +44,7 @@ import { applyWorkerCapEnv } from "./lib/worker-cap.mjs";
 import {
   resolveBatchTimeoutMs,
   resolveTaskTimeoutMs,
+  decideWatchdogExpiry,
   isWatchdogTimeout,
   killSpawnedProcessTree,
   parseBatchProgress,
@@ -3030,16 +3031,55 @@ function runCapturedTask(
           `elapsedSec=${Math.floor((Date.now() - startedAt) / 1000)} capturedBytes=${capturedBytes} ` +
           `timeoutMs=${taskTimeoutMs} timeoutSource=${taskTimeoutSource} ` +
           `durationEstimateMs=${taskDurationMs ?? "unknown"} ` +
-          `exitStatus=${status ?? "pending"} signal=${signal ?? "pending"}`,
+          `exitStatus=${status ?? "pending"} signal=${signal ?? "pending"} ` +
+          // The EFFECTIVE deadline, which a progress-extension moves past taskTimeoutMs.
+          // Reported so a log reader is never left computing a kill against a bound that
+          // no longer applied. green-checkpoint consumes this line by prefix, so the
+          // trailing field is additive.
+          `watchdogDeadlineMs=${watchdogDeadlineMs}`,
       );
     };
-    const watchdogTimer = setTimeout(() => {
+    // EI-20803703725014949: the deadline is a CHECKPOINT, not a verdict. A synchronous
+    // spin — the thing this watchdog exists to kill — is SILENT, so its output goes flat
+    // and stays flat. A merely-slow suite keeps completing files and emits right into the
+    // wall. Killing on elapsed time alone cannot tell them apart, so under fleet load this
+    // SIGKILLed live work and red-pinned the gate for a non-code reason (RUN 9 lost
+    // lane-stateful at exactly 2700s with captured output still climbing,
+    // 762,401B@2340s -> 797,873B@2700s). The signal was already here: `capturedBytes`
+    // advances on every chunk, and it was only ever read AFTER the kill to word the report.
+    // Policy + its two safety properties (MONOTONE — never kills earlier than the time-only
+    // watchdog did; BOUNDED — extensions stop at BATCH_TIMEOUT_MAX_MS, under the ~120m gate
+    // ceiling) live in decideWatchdogExpiry, unit-tested with these measured numbers.
+    let lastProgressAtMs = Date.now();
+    let watchdogDeadlineMs = taskTimeoutMs;
+    let watchdogKillReason = null;
+    let watchdogTimer = null;
+    const onWatchdogExpiry = () => {
       if (settled) return;
+      const elapsedMs = Date.now() - startedAt;
+      const decision = decideWatchdogExpiry({
+        elapsedMs,
+        lastProgressAgeMs: Date.now() - lastProgressAtMs,
+        maxMs: BATCH_TIMEOUT_MAX_MS,
+        stallWindowMs: BATCH_TIMEOUT_QUANTUM_MS,
+        extensionMs: BATCH_TIMEOUT_QUANTUM_MS,
+      });
+      if (decision.action === "extend") {
+        watchdogDeadlineMs = elapsedMs + decision.extendByMs;
+        emitProgress("watchdog-extended");
+        armWatchdog(decision.extendByMs);
+        return;
+      }
       watchdogTimedOut = true;
+      watchdogKillReason = decision.reason;
       emitProgress("watchdog-firing");
       killSpawnedProcessTree(child, BATCH_KILL_SIGNAL);
-    }, taskTimeoutMs);
-    watchdogTimer.unref?.();
+    };
+    const armWatchdog = (delayMs) => {
+      watchdogTimer = setTimeout(onWatchdogExpiry, delayMs);
+      watchdogTimer.unref?.();
+    };
+    armWatchdog(taskTimeoutMs);
     let progressTimer = null;
     const scheduleProgress = () => {
       progressTimer = setTimeout(() => {
@@ -3053,6 +3093,9 @@ function runCapturedTask(
     scheduleProgress();
     const capture = (chunks) => (chunk) => {
       capturedBytes += chunk.length;
+      // The live forward-progress reading the watchdog consults at its deadline. Bytes
+      // arriving IS progress: a synchronously-spinning worker cannot emit any.
+      lastProgressAtMs = Date.now();
       if (capturedBytes <= MAX_CAPTURE_BYTES) {
         chunks.push(chunk);
       } else if (!captureError) {
