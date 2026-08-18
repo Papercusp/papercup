@@ -344,7 +344,13 @@ describe('measured window outranks the spec-derived guess (WI-38347)', () => {
       specMock.mockResolvedValue(CODEX_SPEC);
       contextWindowMock.mockResolvedValue(null); // omp / a rollout that has not landed yet
       await checkCompactionCompliance(fakeSql({ unseeded: [{ owner_id: 'cx' }] }));
-      expect(setLimitMock).toHaveBeenCalledWith('cx', 158_000);
+      // codex-1m-context-window-2026-08-17 D-001/D-002: an extended-window codex
+      // family now seeds against MODEL_WINDOW_CODEX_EXTENDED (872k → 718k derived),
+      // which the 400k su/leader role cap binds. The old 158_000 here was exactly
+      // the "fabricated 200k window" pin that plan removed, so asserting it again
+      // would re-pin the bug. The unobservable-window risk is covered elsewhere:
+      // the measured-window branch lowers an over-derived limit UNCONDITIONALLY.
+      expect(setLimitMock).toHaveBeenCalledWith('cx', 400_000);
     });
 
     it('never overrides an EXPLICIT launch --compaction-limit with the measured window', async () => {
