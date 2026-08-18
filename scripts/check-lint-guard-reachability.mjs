@@ -311,6 +311,37 @@ export const ACKNOWLEDGED_UNREACHABLE = new Map([
 export const UNREACHABLE_HIGH_WATERMARK = 13;
 
 /**
+ * Guards that CANNOT be gated, by design — a DIFFERENT population from the debt above,
+ * governed differently (WI-39832).
+ *
+ * The set above is a parking lot with a shrink-only ceiling: every entry is a guard that
+ * SHOULD be wired and is not yet. An entry here is the opposite — wiring it is the
+ * MISTAKE, and the ceiling must never be spent on one. Rationing these against the debt
+ * budget would mean a correctly-diagnosed permanent exclusion crowds out a real debt slot,
+ * and the next agent "graduates" it by wiring it, which is exactly the damage the entry
+ * exists to prevent. This mirrors how `KNOWN_DARK_FLAGS` splits by `DarkCase`: the
+ * parking subset carries the watermark, owner-authority/cutover flags are governed only
+ * by re-review.
+ *
+ * The bar for an entry is high — a guard is only ungateable if RUNNING it in the gate
+ * environment is unsound, not merely slow or noisy. Cost is never a reason (see the
+ * wire-or-retire probe above); "it fails in the checkpoint tree" is.
+ */
+export const ACKNOWLEDGED_UNGATEABLE = new Map([
+  // Surfaced 2026-08-18 when the `test` tier stopped taking bare name mentions as
+  // execution evidence (WI-39832). This guard was reported ENFORCED for ~2 weeks on the
+  // strength of green-checkpoint.test.ts's `expect(scripts).not.toContain("lint:cell-matrix")`
+  // — an assertion that exists precisely to keep it OUT of the gate. The census was
+  // reading a padlock as a running engine.
+  //
+  // ⛔ DO NOT WIRE THIS. It drives reads against RUNNING operators on :3170 and :3070,
+  // which the isolated checkpoint tree does not have; every read would fail and red-pin
+  // `main` for the whole fleet. green-checkpoint.test.ts pins it shut on purpose, and
+  // that test is the enforcement of this entry.
+  ['lint:cell-matrix', 'needs live operators on :3170/:3070; green-checkpoint.test.ts pins it OUT of the gate by design'],
+]);
+
+/**
  * Guards that ARE enforced, but only over PART of what they scan (EI-19461064447747454).
  *
  * Seeded 2026-08-03 at its MEASURED size, for the same reason the unreachable set was:
@@ -1132,7 +1163,9 @@ function main() {
   const census = buildReachabilityCensus({
     scripts,
     corpora,
-    acknowledged: ACKNOWLEDGED_UNREACHABLE,
+    // Both populations silence the "runs on NO blocking path" failure; only the DEBT set
+    // is rationed by the watermark below (WI-39832).
+    acknowledged: new Map([...ACKNOWLEDGED_UNREACHABLE, ...ACKNOWLEDGED_UNGATEABLE]),
     repoWideRegistered: effectiveRepoWideRegistered,
     coverage: coverageMeasurable
       ? {
@@ -1307,9 +1340,16 @@ function main() {
   // enforced" while 13 guards are not is the same quotable-green this script exists to
   // stop — the number has to be visible in the ordinary output, not only on failure.
   const enforced = census.rows.length - census.notEnforced.length;
+  // The two populations are reported SEPARATELY: rolling them into one number would let a
+  // by-design exclusion read as debt that someone is expected to burn down — and burning
+  // down `lint:cell-matrix` means wiring it, which red-pins the fleet (WI-39832).
+  const ungateable = census.notEnforced.filter((r) => ACKNOWLEDGED_UNGATEABLE.has(r.name)).length;
+  const debt = census.notEnforced.length - ungateable;
   console.log(
     `\n✓ no NEW unenforced lint guard. ${enforced}/${census.rows.length} enforced; ` +
-      `${census.notEnforced.length} acknowledged-unenforced (ceiling ${UNREACHABLE_HIGH_WATERMARK}, shrink-only).`,
+      `${debt} acknowledged-unenforced (ceiling ${UNREACHABLE_HIGH_WATERMARK}, shrink-only)` +
+      (ungateable ? `; ${ungateable} ungateable by design (never wire these)` : '') +
+      '.',
   );
   if (census.notEnforced.length) {
     console.log('  Burn it down: `node scripts/check-lint-guard-reachability.mjs --census` lists each one and why.');
