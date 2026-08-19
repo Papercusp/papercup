@@ -504,3 +504,11 @@
   font-style: italic;
   color: var(--pc-orders-mute);
 }
+
+/* Disclosures rendered inside the orders board pick up the lightened orders
+   tint. The base color (--fg-mute) lives in Disclosures.css; the override sits
+   HERE because the css-tokens lint scopes component tokens to their defining
+   file — Disclosures.css may not reference --pc-orders-mute cross-file. */
+.pc-orders .pc-disclosures__line {
+  color: var(--pc-orders-mute);
+}
