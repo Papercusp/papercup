@@ -143,6 +143,11 @@ beforeEach(() => {
   h.assertFact.mockClear().mockResolvedValue({ ok: true });
   h.retractFact.mockClear().mockResolvedValue(true);
   h.getModeSubject.mockClear().mockResolvedValue(null);
+  // Default: the goal exists and HAS declared a policy, so the pre-P-003 tests
+  // above observe exactly the behaviour they always did.
+  h.readGoalLaunchSettings
+    .mockClear()
+    .mockResolvedValue({ settings: { holder: { requireLive: true } }, budget: {}, error: null });
 });
 
 /* ── a subject-requiring mode cannot be entered unattributed (EI-20015592992797890)
@@ -206,6 +211,101 @@ describe('mode:set — a subject-requiring mode must resolve a subject', () => {
     expect(res.ok).toBe(true);
     expect(h.getModeSubject).not.toHaveBeenCalled();
     expect(h.setMode.mock.calls[0][0]).not.toHaveProperty('subject');
+  });
+});
+
+/* ── ATTACHING to a goal requires that goal to have declared a holder policy
+   (goal-live-holder-guarantee-2026-08-18 P-003, D-008) ───────────────────────
+   `goals:create` / `goals:start` cover goals born after P-003. This door covers
+   the ones that already exist — measured 2026-08-19, all 18 of them, none
+   carrying a holder key. Attaching is the moment somebody takes responsibility
+   for HOLDING the goal, which is why the question is asked here and not on
+   every mode:set. ── */
+describe('mode:set — attaching to a goal requires a declared holder policy', () => {
+  it('REFUSES attaching to a goal that declares nothing, and writes nothing', async () => {
+    h.readGoalLaunchSettings.mockResolvedValue({ settings: null, budget: {}, error: null });
+    const res = parse(await run({ mode: 'goal', reason: 'own it', subject: 'goal-undeclared' }));
+    expect(res.ok).toBe(false);
+    expect(res.error).toMatch(/holder policy/i);
+    // The refusal must name the way OUT, and that way must be the MERGING door:
+    // pointing at launchSettings would tell the reader to clobber their ceilings.
+    expect(res.fix).toMatch(/goals:update/);
+    expect(res.fix).toMatch(/requireLive/);
+    expect(h.setMode).not.toHaveBeenCalled();
+  });
+
+  it('ACCEPTS attaching to a goal that opted OUT explicitly', async () => {
+    h.readGoalLaunchSettings.mockResolvedValue({
+      settings: { holder: { requireLive: false } },
+      budget: {},
+      error: null,
+    });
+    const res = parse(await run({ mode: 'goal', reason: 'own it', subject: 'goal-optout' }));
+    expect(res.ok).toBe(true);
+    expect(h.setMode).toHaveBeenCalledTimes(1);
+  });
+
+  /* THE LOAD-BEARING CASE. The subject guard's own comment records why: a
+     reason-only re-registration must keep working. Every live GOAL-mode agent
+     today holds an UNDECLARED goal, so a guard that fired on those would not be
+     a declaration gate — it would be an outage, refusing exactly the sessions
+     that are already doing the work. */
+  it('does NOT refuse a re-registration of an ALREADY-attached session, even undeclared', async () => {
+    h.readGoalLaunchSettings.mockResolvedValue({ settings: null, budget: {}, error: null });
+    h.getModeSubject.mockResolvedValue('goal-existing');
+    const res = parse(await run({ mode: 'goal', reason: 're-registering after compaction' }));
+    expect(res.ok).toBe(true);
+    expect(h.setMode).toHaveBeenCalledTimes(1);
+  });
+
+  it('does NOT refuse re-asserting the SAME subject a session already holds', async () => {
+    // Passing the subject explicitly is still a re-registration, not an attach.
+    h.readGoalLaunchSettings.mockResolvedValue({ settings: null, budget: {}, error: null });
+    h.getModeSubject.mockResolvedValue('goal-existing');
+    const res = parse(await run({ mode: 'goal', reason: 'refresh', subject: 'goal-existing' }));
+    expect(res.ok).toBe(true);
+    expect(h.setMode).toHaveBeenCalledTimes(1);
+  });
+
+  it('REFUSES a SWITCH to a different, undeclared goal', async () => {
+    // The complement of the two cases above: same session, different subject, so
+    // it IS an attach and the question has to be answered.
+    h.readGoalLaunchSettings.mockResolvedValue({ settings: null, budget: {}, error: null });
+    h.getModeSubject.mockResolvedValue('goal-existing');
+    const res = parse(await run({ mode: 'goal', reason: 'switching', subject: 'goal-other' }));
+    expect(res.ok).toBe(false);
+    expect(h.setMode).not.toHaveBeenCalled();
+  });
+
+  it('fails CLOSED when the goal read errors — an unreadable goal is not an admitted one', async () => {
+    h.readGoalLaunchSettings.mockResolvedValue({ settings: null, budget: null, error: 'pg down' });
+    const res = parse(await run({ mode: 'goal', reason: 'own it', subject: 'goal-x' }));
+    expect(res.ok).toBe(false);
+    expect(res.detail).toMatch(/pg down/);
+    expect(h.setMode).not.toHaveBeenCalled();
+  });
+
+  it('says NO SUCH GOAL rather than blaming the policy when the goal does not exist', async () => {
+    // budget:null with no error is the "zero rows" signal. Without this branch
+    // the guard would tell a caller to declare a policy on a goal that is not
+    // there — a refusal that sends them to fix the wrong thing.
+    h.readGoalLaunchSettings.mockResolvedValue({ settings: null, budget: null, error: null });
+    const res = parse(await run({ mode: 'goal', reason: 'own it', subject: 'goal-ghost' }));
+    expect(res.ok).toBe(false);
+    expect(res.detail).toMatch(/no goal 'goal-ghost' exists/);
+  });
+
+  /* CONTROL. Without it, every refusal above still passes if the guard refused
+     EVERY goal attach — including declared ones — and the suite could not tell. */
+  it('CONTROL: attaching to a DECLARED goal is admitted and threads the subject', async () => {
+    const res = parse(await run({ mode: 'goal', reason: 'own it', subject: 'goal-declared' }));
+    expect(res.ok).toBe(true);
+    expect(h.setMode.mock.calls[0][0]).toMatchObject({ modeId: 'goal', subject: 'goal-declared' });
+  });
+
+  it('CONTROL: a non-goal mode never reads goal launch settings', async () => {
+    await run({ mode: 'auto', reason: 'act, do not ask' });
+    expect(h.readGoalLaunchSettings).not.toHaveBeenCalled();
   });
 });
 
