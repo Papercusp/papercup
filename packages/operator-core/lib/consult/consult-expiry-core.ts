@@ -156,9 +156,32 @@ export async function sweepExpiredConsults(deps: ExpirySweepDeps): Promise<Expir
 
     // Menu exhausted → terminal expire. Guarded like the advance: a concurrent
     // close between the digest write and this flip turns it into a no-op.
+    //
+    // WI-39862 honest expiry (EI-20824019943814803): "expired" used to conflate
+    // "nobody answered" with "the cascade ended after collecting real answers".
+    // Count substantive ANSWERS from the row's own digest (the pre-advance
+    // in-memory copy — the final selectee's 'expired' event that advanceCascade
+    // appended is kind 'expired', so it never inflates this): with ≥1 answer the
+    // row still flips state='expired' (no enum widening) but its outcome
+    // records an answered-flavored disposition, and the requester may still
+    // record a real disposition late via consult:close (consult-verbs-core's
+    // late-close gate).
+    const priorDigest = digestFromRow(row.cascade_digest);
+    const answerEvents = priorDigest.filter((e) => e.kind === 'answer');
+    const answers = answerEvents.length;
+    const answeredBy = [...new Set(answerEvents.map((e) => e.ownerId))];
     const flipped = (await sql`
       UPDATE harness_shared.consult_state
          SET state = 'expired',
+             outcome = COALESCE(${
+               answers > 0
+                 ? sql.json({
+                     disposition: 'cascade_exhausted_with_answers',
+                     answers,
+                     answered_by: answeredBy,
+                   } as never)
+                 : null
+             }::jsonb, outcome),
              closed_at = ${nowIso}::timestamptz,
              updated_at = ${nowIso}::timestamptz
        WHERE workspace_id = ${row.workspace_id}
@@ -176,11 +199,15 @@ export async function sweepExpiredConsults(deps: ExpirySweepDeps): Promise<Expir
     try {
       await deps.emitReplyEvent({
         key: consultParkKey(row.conversation_id),
-        summary: `consult ${row.conversation_id}: EXPIRED unanswered (hard-blocked contract, cascade exhausted) — proceed on your own judgment`,
+        summary:
+          answers > 0
+            ? `consult ${row.conversation_id}: cascade exhausted with ${answers} answer(s) collected — NOT unanswered; review the thread and record your disposition with consult:close`
+            : `consult ${row.conversation_id}: EXPIRED unanswered (hard-blocked contract, cascade exhausted) — proceed on your own judgment`,
         payload: {
           conversation_id: row.conversation_id,
           responder: row.responder_id,
           kind: 'expired',
+          ...(answers > 0 ? { answers } : {}),
         },
         to: [row.requester_id],
         workspaceId: row.workspace_id,
