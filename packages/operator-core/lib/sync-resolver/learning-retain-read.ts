@@ -451,7 +451,32 @@ export async function readRetainFeed(
         : filter === 'inflight'
           ? sql`NOT x.shipped AND x.status <> ALL(${abandonedArr}::text[])`
           : sql`TRUE`;
+    // ⚠ The `= ANY(ARRAY(SELECT …))` form is LOAD-BEARING, not a style choice.
+    // Written as a plain join (`JOIN engineer_issues ei ON ei.issue_id =
+    // substring(r.routed_ref from 4)`) the planner cannot see that only ~1k ids
+    // can match, so it hash-joins the WHOLE work_items table: measured
+    // 2026-08-19 on the live corpus, seq scan of 67,828 rows / 19,734 buffers
+    // (~154MB) / 14MB hash, 104ms warm — and far worse cold, which is what the
+    // owner experienced as "a few seconds" on this tab. Materializing the id
+    // list into an InitPlan lets it index-scan work_items_pkey instead:
+    // 17.8ms / 2,781 buffers for the SAME 905 rows. If you rewrite this join,
+    // re-run EXPLAIN and confirm you still get "Index Scan using
+    // work_items_pkey … Index Cond: (feature_id = ANY …)", never a Seq Scan.
+    const routedWiIds = sql`ARRAY(
+      SELECT DISTINCT substring(r2.routed_ref from 4)
+        FROM harness_shared.scout_routed_ideas r2
+       WHERE r2.workspace_id = ${workspaceId}
+         AND r2.routed_ref LIKE 'wi:%'
+    )`;
     const rows = (await sql`
+      WITH routed_wi AS MATERIALIZED (
+        SELECT ei.issue_id, ei.title, ei.state, ei.updated_at
+          FROM harness_shared.engineer_issues ei
+         WHERE ei.workspace_id = ${workspaceId}
+           AND ei.source_plan_slug IS NULL
+           AND ${opts.harnessScopes ? sql`ei.scope = ANY(${opts.harnessScopes as string[]}::text[])` : sql`TRUE`}
+           AND ei.issue_id = ANY(${routedWiIds})
+      )
       SELECT * FROM (
         SELECT DISTINCT ON (ei.issue_id)
                ei.issue_id AS id,
@@ -461,13 +486,10 @@ export async function readRetainFeed(
                date_trunc('milliseconds', ei.updated_at) AS ts,
                r.idea_id, r.title AS idea_title, r.lens
           FROM harness_shared.scout_routed_ideas r
-          JOIN harness_shared.engineer_issues ei
-            ON ei.workspace_id = r.workspace_id
-           AND ei.issue_id = substring(r.routed_ref from 4)
+          JOIN routed_wi ei
+            ON ei.issue_id = substring(r.routed_ref from 4)
          WHERE r.workspace_id = ${workspaceId}
            AND r.routed_ref LIKE 'wi:%'
-           AND ei.source_plan_slug IS NULL
-           AND ${opts.harnessScopes ? sql`ei.scope = ANY(${opts.harnessScopes as string[]}::text[])` : sql`TRUE`}
          ORDER BY ei.issue_id, r.routed_at DESC
       ) x
       WHERE ${filterPred} AND ${legWindowSql(sql, w)}
