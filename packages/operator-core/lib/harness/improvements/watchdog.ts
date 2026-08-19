@@ -824,7 +824,11 @@ export function redTestSignalsFromRows(rows: RedTestRow[], windowHours: number):
     const lastPassSha = r.last_pass_sha ?? undefined;
     const lastPassAt = toIsoOrUndefined(r.last_pass_at);
     const failShas = failShaCounts.map(([sha]) => sha);
-    const sameShaFlip = hasSameShaVerdictFlip(failShas, lastPassSha);
+    // (WI-39890) Distinct passing shas, newest first — the ancestry-complete
+    // candidate set. `countFailShas` is a misnomer here but is exactly the
+    // dedupe+order we want, and reusing it keeps ONE normalization for shas.
+    const passShas = countFailShas(r.pass_shas).map(([sha]) => sha);
+    const sameShaFlip = hasSameShaVerdictFlip(failShas, passShas);
     return {
       source: 'red-test' as const,
       key: r.file_path,
