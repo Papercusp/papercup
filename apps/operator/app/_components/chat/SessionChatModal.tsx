@@ -1178,6 +1178,23 @@ export default function SessionChatModal({
     return entries.find((e) => e.ownerId === sessionOwnerId) ?? null;
   }, [actionRoster.data, sessionOwnerId]);
 
+  // hud-first-nav-and-dossier-2026-07-26 P-003: the SAME advRoster.list row
+  // (actionRoster, already fetched above for the action bar — no new query)
+  // re-read as a RosterEntry (AgentDossier's own prop shape) instead of
+  // HudRosterEntry. Both are independently-inlined TS projections of the
+  // identical server payload (same rationale as this file's own RosterPayload
+  // duplicate of hud-board-model's), so the already-fetched row structurally
+  // satisfies RosterEntry at runtime even though it was fetched under a
+  // narrower type — cast rather than re-query.
+  //
+  // Declared ABOVE the chat hook (P-012) because it is now also the projection
+  // that reads `thinkingResolvable` for the stream URL: RosterEntry declares
+  // that field and HudRosterEntry does not, and one cast beats two.
+  const dossierEntry = useMemo<RosterEntry | null>(() => {
+    if (!actionRosterEntry) return null;
+    return actionRosterEntry as unknown as RosterEntry;
+  }, [actionRosterEntry]);
+
   /* Resolve only after the roster read is in scope: its canonical nativeSession
      handle is what distinguishes a Codex rollout/adv-row key from an OMP thread
      and a Claude session id. The hook retains sessions:list as the compatibility
@@ -1203,24 +1220,9 @@ export default function SessionChatModal({
       // P-012: the roster's own transcript probe. Only `false` acts — it routes
       // the stream to the rematerialize-from-archive fallback, which is the one
       // thing that can still fill this pane once the on-disk transcript is gone.
-      // Read off the same row under its RosterEntry projection, which is the
-      // mirror that declares the field (HudRosterEntry does not).
-      thinkingResolvable: (actionRosterEntry as unknown as RosterEntry | null)?.thinkingResolvable,
+      thinkingResolvable: dossierEntry?.thinkingResolvable,
     },
   );
-
-  // hud-first-nav-and-dossier-2026-07-26 P-003: the SAME advRoster.list row
-  // (actionRoster, already fetched above for the action bar — no new query)
-  // re-read as a RosterEntry (AgentDossier's own prop shape) instead of
-  // HudRosterEntry. Both are independently-inlined TS projections of the
-  // identical server payload (same rationale as this file's own RosterPayload
-  // duplicate of hud-board-model's), so the already-fetched row structurally
-  // satisfies RosterEntry at runtime even though it was fetched under a
-  // narrower type — cast rather than re-query.
-  const dossierEntry = useMemo<RosterEntry | null>(() => {
-    if (!actionRosterEntry) return null;
-    return actionRosterEntry as unknown as RosterEntry;
-  }, [actionRosterEntry]);
 
   // WI-6440: the DURABLE half of the same signal. `pendingLaunch` below is
   // client-local state that dies with the page, so before this a reload during
@@ -1960,16 +1962,41 @@ export default function SessionChatModal({
             session found for this agent.
           </div>
         ) : streamUrl && sessionOwnerId ? (
-          <LiveSessionChat
-            streamUrl={streamUrl}
-            sessionOwnerId={sessionOwnerId}
-            agentName={agentName}
-            onSend={handleSend}
-            sending={sending}
-            sendError={sendError}
-            focusAnchor={focusAnchor}
-            focusTerm={focusTerm}
-          />
+          <>
+            {/* P-012 / D-011: `thinkingResolvable === false` is a PROPERTY of
+                the record — the operator ALREADY probed this session's recorded
+                id and found no transcript — not a measurement we failed to
+                take, so it is said out loud rather than left to present as an
+                empty pane (WI-2680: an empty inspector reads as "the agent is
+                silent", which is the one thing it does not mean).
+
+                The view is MARKED, never suppressed: the stream still mounts,
+                because the `ended=1` fallback this flag now also triggers can
+                still rematerialize the transcript from the archive, and a
+                federated/older payload that carries no flag says nothing here. */}
+            {dossierEntry?.thinkingResolvable === false ? (
+              <div
+                style={{ ...BANNER_STYLE, color: 'var(--warn, #fbbf24)' }}
+                data-testid="session-chat-thinking-unresolvable"
+              >
+                No live transcript for this session — the operator probed its recorded id and found
+                none (it has ended, or its transcript was rotated away since it last took a turn).
+                Anything below is replayed from the archive; an empty pane means the archive had no
+                copy either, NOT that this agent has gone quiet. Messages you send still reach its
+                inbox.
+              </div>
+            ) : null}
+            <LiveSessionChat
+              streamUrl={streamUrl}
+              sessionOwnerId={sessionOwnerId}
+              agentName={agentName}
+              onSend={handleSend}
+              sending={sending}
+              sendError={sendError}
+              focusAnchor={focusAnchor}
+              focusTerm={focusTerm}
+            />
+          </>
         ) : null}
         {/* P-002: say what ACTUALLY happened. "Staged" is the case this fixes —
             a manual-wake-mode agent has the message held for you to release, so
