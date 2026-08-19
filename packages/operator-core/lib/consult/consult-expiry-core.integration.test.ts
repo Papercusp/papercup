@@ -295,3 +295,128 @@ describe('sweepExpiredConsults — cascade advance (D-005/P-013)', () => {
     expect(row.cascade_cursor).toBe(1);
   });
 });
+
+// ── WI-39862 honest expiry + WI-39861 min-ANSWERS refill ─────────────────────
+describe('sweepExpiredConsults — honest expiry (WI-39862) + min-ANSWERS refill (WI-39861)', () => {
+  const liveCand = (ownerId: string, score: number, similarity: number, liveness = 'live') => ({
+    ownerId,
+    score,
+    signals: { similarity },
+    liveness,
+  });
+  const selEntry = (ownerId: string, via: 'floor' | 'minimum' = 'floor') => ({
+    ownerId,
+    via,
+    score: 0.8,
+    similarity: 0.7,
+    liveness: 'live',
+  });
+  async function setDigest(id: string, digest: unknown[]) {
+    await rootSql`
+      UPDATE harness_shared.consult_state
+         SET cascade_digest = ${JSON.stringify(digest)}::jsonb
+       WHERE workspace_id = ${WS} AND conversation_id = ${id}`;
+  }
+  function routingOf(row: Record<string, unknown>): { selection?: { selected?: Array<Record<string, unknown>>; refill?: Record<string, unknown>; min?: number } } {
+    return (typeof row.routing === 'string' ? JSON.parse(row.routing) : row.routing) as ReturnType<typeof routingOf>;
+  }
+
+  it('terminal expiry WITH collected answers: answered-flavored outcome + NOT-unanswered emit; answers ≥ min suppresses refill', async () => {
+    const routing = {
+      floor: 0.5,
+      simFloor: 0.4,
+      // 'c' is live, untried, above-floor — refillable if the guard were wrong.
+      candidates: [liveCand('ans-a', 0.9, 0.8), liveCand('exp-b', 0.8, 0.7), liveCand('c', 0.7, 0.6)],
+      selection: { min: 1, max: 2, selected: [selEntry('ans-a'), selEntry('exp-b')] },
+    };
+    const id = await seedConsult({ latency: 'hard-blocked', routing, cascadeCursor: 1 });
+    await setDigest(id, [{ ownerId: 'ans-a', kind: 'answer', at: PAST, excerpt: 'a real answer' }]);
+    const { deps, emits } = makeDeps({ withReach: true });
+    const r = await sweepExpiredConsults(deps);
+    expect(r).toMatchObject({ advanced: 0, expired: 1, woke: [id] });
+
+    const row = await cascadeRow(id);
+    expect(row.state).toBe('expired');
+    const outcome = typeof row.outcome === 'string' ? JSON.parse(row.outcome as string) : row.outcome;
+    expect(outcome).toMatchObject({
+      disposition: 'cascade_exhausted_with_answers',
+      answers: 1,
+      answered_by: ['ans-a'],
+    });
+    // No refill ran: answers (1) ≥ min (1) — menu length unchanged, no stamp.
+    const routingRow = routingOf(row);
+    expect(routingRow.selection?.selected).toHaveLength(2);
+    expect(routingRow.selection?.refill).toBeUndefined();
+    // The emit says NOT unanswered and points at the late-close disposition.
+    expect(emits).toHaveLength(1);
+    expect(emits[0].summary).toContain('NOT unanswered');
+    expect(emits[0].summary).toContain('consult:close');
+    expect(emits[0].payload).toMatchObject({ conversation_id: id, kind: 'expired', answers: 1 });
+  });
+
+  it('zero answers keeps the honest EXPIRED-unanswered emit and a bare outcome', async () => {
+    const id = await seedConsult({ latency: 'hard-blocked', routing: menuSnapshot(['only-r']) });
+    const { deps, emits } = makeDeps({ withReach: true });
+    await sweepExpiredConsults(deps);
+    const row = await cascadeRow(id);
+    expect(row.state).toBe('expired');
+    expect(row.outcome).toBeNull();
+    expect(emits[0].summary).toContain('EXPIRED unanswered');
+    expect(emits[0].payload.answers).toBeUndefined();
+  });
+
+  it('exhaustion below min with an untried live pool: ONE refill round — menu extended (honest via), refill selectee woken', async () => {
+    const routing = {
+      floor: 0.5,
+      simFloor: 0.4,
+      candidates: [
+        liveCand('r-a', 0.9, 0.8), // the original (expiring) selectee
+        liveCand('r-b', 0.6, 0.5), // above-floor live → refill via 'floor'
+        liveCand('r-dead', 0.55, 0.5, 'ended'), // route-time-dead → excluded
+        liveCand('r-d', 0.3, 0.2), // below-floor live → refill via 'minimum'
+      ],
+      selection: { min: 2, max: 2, selected: [selEntry('r-a')] },
+    };
+    const id = await seedConsult({ routing, cascadeCursor: 0 });
+    const { deps, reachCalls } = makeDeps({ withReach: true });
+    const r = await sweepExpiredConsults(deps);
+    expect(r).toMatchObject({ advanced: 1, expired: 0 });
+
+    const row = await cascadeRow(id);
+    expect(row.state).toBe('awaiting_responder');
+    expect(row.responder_id).toBe('r-b');
+    expect(row.cascade_cursor).toBe(1); // first refill entry (old menu length)
+    expect(new Date(row.expires_at as string).getTime()).toBeGreaterThan(NOW.getTime()); // fresh window
+    const routingRow = routingOf(row);
+    expect(routingRow.selection?.selected).toHaveLength(3);
+    expect(routingRow.selection?.selected?.[1]).toMatchObject({ ownerId: 'r-b', via: 'floor', refill: true });
+    expect(routingRow.selection?.selected?.[2]).toMatchObject({ ownerId: 'r-d', via: 'minimum', refill: true });
+    expect(routingRow.selection?.refill).toMatchObject({ added: ['r-b', 'r-d'] });
+    expect(reachCalls).toHaveLength(1);
+    expect(reachCalls[0]).toMatchObject({ responder: 'r-b', conversationId: id });
+    expect(reachCalls[0].summary).toContain('min-answers refill');
+    expect(reachCalls[0].body).toContain('reviewer 2/3');
+  });
+
+  it('the refill stamp is the ONE-round guard: a second exhaustion is terminal even with pool remaining', async () => {
+    const routing = {
+      floor: 0.5,
+      simFloor: 0.4,
+      candidates: [liveCand('s-a', 0.9, 0.8), liveCand('s-b', 0.6, 0.5), liveCand('s-c', 0.55, 0.5)],
+      selection: {
+        min: 2,
+        max: 2,
+        selected: [selEntry('s-a'), { ...selEntry('s-b'), refill: true }],
+        refill: { at: PAST, added: ['s-b'], reason: 'cascade exhausted with 0 answer(s) < min 2' },
+      },
+    };
+    const id = await seedConsult({ routing, cascadeCursor: 1 });
+    const { deps } = makeDeps({ withReach: true });
+    const r = await sweepExpiredConsults(deps);
+    expect(r).toMatchObject({ advanced: 0, expired: 1 });
+    const row = await cascadeRow(id);
+    expect(row.state).toBe('expired');
+    // s-c stayed untried: the stamp, not pool exhaustion, ended the chain.
+    expect(routingOf(row).selection?.selected).toHaveLength(2);
+  });
+});
