@@ -31,7 +31,7 @@ const NOOP_UNDO = async () => {};
 
 /** The per-hive routine set. green-checkpoint always; release-trigger only when the hive
  *  declares a deploy target (leg 3). Crons match the operator-home defaults. */
-const GREEN_CHECKPOINT = { name: 'green-checkpoint', target: 'system:green-checkpoint', cron: '0 15 * * * *' } as const;
+const GREEN_CHECKPOINT = { name: 'green-checkpoint', target: 'system:green-checkpoint', cron: GREEN_CHECKPOINT_CRON } as const;
 const RELEASE_TRIGGER = { name: 'release-trigger', target: 'system:release-trigger', cron: '0 */15 * * * *' } as const;
 
 export async function seedHiveReleaseRoutines(opts: {
