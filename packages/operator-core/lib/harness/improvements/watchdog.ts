@@ -584,36 +584,26 @@ export function partitionSignalsByKnownKeys(
     // subsystem retired the item between ticks, which is the case the item-state checks
     // below cannot see.
     //
-    // ⚠ TIME-BOUNDED (EI-20847917368795366). The intent above is about a ONE-TICK window,
-    // but an unbounded gate suppresses a continuously-firing key FOREVER: it never reaches
-    // the resolution checks, so it can never re-file. Measured 2026-08-19 — 11 keys were
-    // standing with no item tracking them, 8 of them on all 48 ticks of a 12h window,
-    // including `ship-link-stuck:staging->main` (main WAS frozen) and
-    // `routine-failure:routine:git-sync`. A monitoring blackout on exactly the conditions
-    // that matter most, produced by the detector working perfectly.
+    // ⚠ KNOWN COST, measured and deliberately NOT fixed here (EI-20847917368795366):
+    // because this gate has no time bound, a key that fires on EVERY tick is suppressed
+    // FOREVER once nothing open matches it — it never reaches the resolution checks below,
+    // so it can never re-file. Measured 2026-08-19: 11 keys standing with no item tracking
+    // them, 8 on all 48 ticks of a 12h window, including `ship-link-stuck:staging->main`
+    // (main WAS frozen at the time) and `routine-failure:routine:git-sync`. Two variants:
+    // 7 retired-then-still-firing, and 4 NEVER FILED AT ALL (deferred by the per-tick
+    // capture cap — seenKeys records deferred signals too, so they are seenLastTick on the
+    // very next tick and suppressed before they could be filed once).
     //
-    // The rule: suppress IFF a matching item exists AND its newest update is within the
-    // cooldown. That is one rule for the two observed variants —
-    //   • retired-then-still-firing (7/11): match exists but is days old → falls through.
-    //   • NEVER FILED (4/11): the first tick deferred it (the per-tick capture cap; seenKeys
-    //     records deferred signals too, so it is seenLastTick on the very next tick) and it
-    //     was suppressed before it could ever be filed → no match at all → falls through.
-    // Anti-churn is preserved exactly: a between-ticks retirement leaves a seconds-old
-    // match, which still suppresses. A never-filed key files exactly ONCE and then matches
-    // `knownOpen` above this gate on every later tick, so it cannot churn either. The
-    // auto-close lifecycle (signal clears → item closes → signal returns) is untouched,
-    // because a signal that went quiet is not `seenLastTick` and never reaches this gate.
+    // ⛔ Do NOT "fix" this by time-bounding the suppression or by letting a no-match signal
+    // through. That was tried and reverted: the churn incident this gate was built for had
+    // NO dup row to match on (the item was retired by another subsystem as fast as it was
+    // filed — see the delta-gate tests, which pin exactly that shape), so "file once, then
+    // knownOpen catches it" does not hold and the 60-copies-of-one-key storm returns.
+    // Any real fix must bound the RE-FILE RATE from watchdog-owned state (tick history),
+    // not relax the gate — that keeps churn bounded AND stops the permanent blackout.
     if (seenLastTick.has(watchdogKeyOf(s))) {
-      const matchAgeMs = matches
-        .map((m) => nowMs - Date.parse(m.updatedAt))
-        .filter((age) => Number.isFinite(age));
-      // Unparseable timestamps fail OPEN (no suppression), consistent with this
-      // function's stated policy that a phantom re-file beats a suppressed real one.
-      const newestMatchAgeMs = matchAgeMs.length > 0 ? Math.min(...matchAgeMs) : null;
-      if (newestMatchAgeMs !== null && newestMatchAgeMs <= standingSuppressionMs) {
-        out.standing.push(s);
-        continue;
-      }
+      out.standing.push(s);
+      continue;
     }
     if (matches.length > 0 && s.latestAt) {
       const evidenceMs = Date.parse(s.latestAt);
