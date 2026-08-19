@@ -418,6 +418,7 @@ export default defineTool({
     // Loud, not swallowed: an owner who just raised a ceiling and got `ok` back
     // would otherwise believe a limit is in force that was never written.
     if (launchSettingsError) degradedReasons.push(launchSettingsError);
+    if (holderError) degradedReasons.push(holderError);
     if (blockedByError) degradedReasons.push(blockedByError);
     if (stopError) degradedReasons.push(stopError);
     if (stop?.degraded) {
