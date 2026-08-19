@@ -59,6 +59,10 @@ import { getPresence } from './agent-tools/coordination/presence';
 // whether the same agent is stalled.
 import { computeIntentStale } from './agent-tools/coordination/presence-tier1';
 import { fetchPresenceFleet } from './agent-tools/coordination/presence-fleet';
+import {
+  fetchOrientPipeline,
+  type OrientPipeline,
+} from './agent-tools/coordination/pipeline-health';
 import { fetchUnansweredDirected } from './agent-tools/coordination/unanswered-directed';
 import { lastToolCallAtByOwner } from './fleet/assignments';
 import { activeWorkspaceId } from './workspace-registry';
@@ -258,7 +262,8 @@ export type AgentSignalKey =
   | 'lastToolCall'
   | 'lane'
   | 'announcedGates'
-  | 'fleetControl';
+  | 'fleetControl'
+  | 'pipeline';
 
 /**
  * P-009 leg (a) — the agent's LANE: which plan it declared, and what that plan
@@ -362,6 +367,23 @@ export interface AgentSignals {
    *  no plan, the plan is unreadable — OR the read threw; check
    *  `unavailableSignals` to tell a lane-less agent from a broken read. */
   lane: AgentLane | null;
+  /** The release-pipeline block — THE SAME `OrientPipeline` this agent is handed
+   *  at its own wake (`fetchOrientPipeline`, shared 60s single-flight cache), so
+   *  the popup shows what the agent was told rather than a lookalike re-derived
+   *  from a different snapshot.
+   *
+   *  Repo-global rather than per-agent, and included anyway because it answers a
+   *  question the rest of this dossier cannot: whether the work described above
+   *  it can reach `:3070` at all. A reader looking at a busy, healthy agent whose
+   *  merges are going nowhere has no other signal for it here.
+   *
+   *  `null` is UNMEASURED (`health.known === false`, or the read had a bad day —
+   *  the producer is fail-soft by construction and resolves null rather than
+   *  throwing), so per plan D-011 it renders as NOTHING. It is deliberately NOT
+   *  reported through `unavailableSignals`: nothing threw, so there is no failed
+   *  read to disclose — and a green pipeline is likewise silent, never an
+   *  "all clear" badge. */
+  pipeline: OrientPipeline | null;
   /** Gates visible to this agent, each flagged awaited / not-awaited. Empty is a
    *  legitimate answer (nothing declared in its scopes) — a THROWN read is
    *  reported through `unavailableSignals`, never as an empty list. */
@@ -1183,6 +1205,7 @@ const ALL_AGENT_SIGNAL_KEYS: AgentSignalKey[] = [
   'lane',
   'announcedGates',
   'fleetControl',
+  'pipeline',
 ];
 
 // ─────────────── P-009 pure derivations (unit-tested without PG) ────────────
@@ -1291,6 +1314,7 @@ const EMPTY_SIGNALS: AgentSignals = {
   unansweredDirectedCount: 0,
   lastToolCallAt: null,
   lane: null,
+  pipeline: null,
   announcedGates: [],
   fleetControl: null,
   // The outer-catch fallback below can't tell which individual read failed
