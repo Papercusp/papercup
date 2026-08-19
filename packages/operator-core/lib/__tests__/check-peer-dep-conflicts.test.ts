@@ -53,21 +53,39 @@ import {
 const REPO_ROOT = resolve(fileURLToPath(new URL('.', import.meta.url)), '../../../..');
 const GUARD = join(REPO_ROOT, 'scripts/check-peer-dep-conflicts.mjs');
 
-/** Build a throwaway workspace tree outside the repo. Returns its root. */
+/**
+ * Build a throwaway workspace tree outside the repo. Returns its root.
+ *
+ * `lockPeer` defaults to MIRRORING `peer`, because an in-sync lock is the normal state and
+ * a fixture without one would trip the drift check instead of exercising the case under
+ * test. Pass it explicitly to construct drift; pass `noLock` to omit the lock entirely.
+ */
 function fixture(opts: {
   peer?: Record<string, string>;
   installed?: Record<string, string>;
+  lockPeer?: Record<string, string>;
+  noLock?: boolean;
 }): string {
   const root = mkdtempSync(join(tmpdir(), 'peerguard-'));
+  const peer = opts.peer ?? {};
   writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'root', workspaces: ['libs/*'] }));
   mkdirSync(join(root, 'libs/shared'), { recursive: true });
   writeFileSync(
     join(root, 'libs/shared/package.json'),
-    JSON.stringify({ name: '@x/shared', peerDependencies: opts.peer ?? {} }),
+    JSON.stringify({ name: '@x/shared', peerDependencies: peer }),
   );
   for (const [name, version] of Object.entries(opts.installed ?? {})) {
     mkdirSync(join(root, 'node_modules', name), { recursive: true });
     writeFileSync(join(root, 'node_modules', name, 'package.json'), JSON.stringify({ name, version }));
+  }
+  if (!opts.noLock) {
+    writeFileSync(
+      join(root, 'package-lock.json'),
+      JSON.stringify({
+        lockfileVersion: 3,
+        packages: { 'libs/shared': { peerDependencies: opts.lockPeer ?? peer } },
+      }),
+    );
   }
   return root;
 }

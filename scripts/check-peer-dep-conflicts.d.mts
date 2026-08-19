@@ -30,9 +30,26 @@ export interface PeerUnsupported {
   reason: string;
 }
 
+/**
+ * A peer declaration recorded differently in package.json and package-lock.json.
+ * `npm install` re-resolves from the manifest; `npm ci` installs from the lock — so any
+ * divergence means the two install paths can produce different trees.
+ */
+export interface PeerLockDrift {
+  workspace: string;
+  dir: string;
+  dep: string;
+  /** Range in the workspace's package.json, or null when absent there. */
+  manifest: string | null;
+  /** Range recorded in package-lock.json, or null when absent there. */
+  lock: string | null;
+}
+
 export interface PeerScanResult {
   conflicts: PeerConflict[];
   unsupported: PeerUnsupported[];
+  /** null when package-lock.json is missing/unreadable — reported as NOT CHECKED. */
+  drift: PeerLockDrift[] | null;
   /** Declarations actually judged (external, installed, and parseable). */
   checked: number;
   /** External peers with nothing installed to judge against — skipped, not flagged. */
@@ -67,6 +84,12 @@ export declare function satisfies(version: string, range: string): boolean;
 
 /** Scan a tree (defaults to the repo root, or `PEER_DEP_CONFLICTS_ROOT`). */
 export declare function scan(root?: string): PeerScanResult;
+
+/**
+ * Compare each workspace's declared peers against the copy package-lock.json records.
+ * Returns null when the lock is missing/unreadable (caller reports NOT CHECKED).
+ */
+export declare function scanLockDrift(root?: string): PeerLockDrift[] | null;
 
 /** Shrink-only grandfather list, EMPTY by construction — see the script header. */
 export declare const BASELINE: string[];
