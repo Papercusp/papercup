@@ -12,7 +12,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
 import { execFile, execFileSync, spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -2266,6 +2266,146 @@ describe('false-absence search-path guard (EI-20580705812821502)', () => {
         }),
       );
     });
+  });
+});
+
+/**
+ * false-absence SYMLINK-TRAVERSAL guard (EI-20825101204716643).
+ *
+ * Same class as the suite above, different mechanism — and a worse one. A
+ * missing path at least errors on stderr and exits non-zero. Here `find`
+ * prints nothing, exits 0, and says nothing on stderr, because it defaults to
+ * -P and will not follow a symlink operand: the link is treated as a FILE, so
+ * nothing is descended and no `-name` can match. Every channel reports
+ * success, which is why the filer only caught it when a POSITIVE CONTROL for
+ * a file they knew was there also came back empty.
+ *
+ * It was filed as "absolute paths are intercepted by the sandbox". They are
+ * not — `command find`, with every wrapper bypassed, behaves identically, and
+ * /tmp, /etc and $HOME all enumerate fine. `cd <symlink> && find .` works only
+ * because `cd` resolves the link, which is what made the bug look positional.
+ *
+ * The allow cases are again the load-bearing half: this guard DENIES, so each
+ * one names a construct it must refuse to judge, or a shape where not
+ * descending is what the caller actually asked for.
+ */
+describe('false-absence symlink-traversal guard (EI-20825101204716643)', () => {
+  let haystack: string;
+  let linked: string;
+
+  beforeAll(() => {
+    haystack = mkdtempSync(join(tmpdir(), 'fa-symlink-'));
+    mkdirSync(join(haystack, 'real_pkg'), { recursive: true });
+    writeFileSync(join(haystack, 'real_pkg', 'package.json'), '{}\n');
+    linked = join(haystack, 'linked');
+    symlinkSync(join(haystack, 'real_pkg'), linked, 'dir');
+    // A symlink to a FILE is deliberately NOT this trap: nothing was going to
+    // be descended, so denying it would be a false positive.
+    symlinkSync(join(haystack, 'real_pkg', 'package.json'), join(haystack, 'linked_file'));
+  });
+
+  afterAll(() => {
+    rmSync(haystack, { recursive: true, force: true });
+  });
+
+  const at = (command: string, cwd = haystack) => ({
+    tool_name: 'Bash',
+    tool_input: { command },
+    session_id: 's-test',
+    cwd,
+  });
+
+  const expectSymlinkDeny = (out: { stdout: string; stderr?: string; status: number | null }) => {
+    expect(out.status).toBe(0);
+    const decision = parseDecision(out).hookSpecificOutput;
+    expect(decision.permissionDecision).toBe('deny');
+    expect(decision.permissionDecisionReason as string).toContain(
+      'false-absence symlink-traversal guard',
+    );
+  };
+
+  /**
+   * CALIBRATION AGAINST REALITY, not against my belief about find.
+   *
+   * Every assertion below is worthless if find does not actually behave this
+   * way, and a guard that encodes a stale premise denies correct commands
+   * forever. So pin the premise to the system itself: if a future findutils
+   * (or the `bfs` the shell wraps `find` as) starts following symlink
+   * operands, THIS fails first and says the guard is now wrong — rather than
+   * the guard silently becoming a false-deny nobody can explain.
+   */
+  it('PREMISE: real `find` returns nothing for a bare symlink operand, and the file WITH a trailing slash', () => {
+    const run = (...args: string[]) =>
+      execFileSync('find', args, { encoding: 'utf8' }).trim();
+    expect(run(linked, '-maxdepth', '1', '-name', 'package.json')).toBe('');
+    // The positive control: same haystack, same needle, one character apart.
+    expect(run(`${linked}/`, '-maxdepth', '1', '-name', 'package.json')).toContain('package.json');
+    expect(run('-L', linked, '-maxdepth', '1', '-name', 'package.json')).toContain('package.json');
+  });
+
+  it('denies a bare symlink-to-directory operand', () => {
+    expectSymlinkDeny(runGate(at(`find ${linked} -maxdepth 1 -name package.json`)));
+  });
+
+  it('denies a RELATIVE symlink operand, resolved against the stated cwd', () => {
+    expectSymlinkDeny(runGate(at('find linked -name package.json')));
+  });
+
+  it('denies through a `cd`, like its sibling guard', () => {
+    expectSymlinkDeny(runGate(at('cd real_pkg && find ../linked -name package.json')));
+  });
+
+  it('names the link target AND the trailing-slash remedy in the refusal', () => {
+    const reason = parseDecision(runGate(at(`find ${linked} -name package.json`)))
+      .hookSpecificOutput.permissionDecisionReason as string;
+    expect(reason).toContain('real_pkg');                     // where it actually points
+    expect(reason).toContain(`find ${linked}/`);              // the one-character fix
+    expect(reason).toContain('AN ABSENCE CLAIM NEEDS A POSITIVE CONTROL');
+  });
+
+  /**
+   * CALIBRATION CONTROL. Without this, every allow below would also pass if
+   * the guard were simply inert — the failure mode that makes a guard suite
+   * look green while guarding nothing.
+   */
+  it('silent for a REAL directory operand — the deny is about the symlink, not about `find`', () => {
+    expectAllow(runGate(at(`find ${join(haystack, 'real_pkg')} -maxdepth 1 -name package.json`)));
+  });
+
+  it('silent WITH a trailing slash — the remedy the deny recommends must not be denied', () => {
+    expectAllow(runGate(at(`find ${linked}/ -maxdepth 1 -name package.json`)));
+  });
+
+  it.each(['-L', '-H'])('silent with %s, which follows the operand', (flag) => {
+    expectAllow(runGate(at(`find ${flag} ${linked} -name package.json`)));
+  });
+
+  it('silent with the deprecated `-follow` expression spelling', () => {
+    expectAllow(runGate(at(`find ${linked} -follow -name package.json`)));
+  });
+
+  it('silent with `-maxdepth 0` — not descending is the stated intent', () => {
+    expectAllow(runGate(at(`find ${linked} -maxdepth 0 -type l`)));
+  });
+
+  it('silent for a symlink to a FILE — nothing was going to be descended', () => {
+    expectAllow(runGate(at(`find ${join(haystack, 'linked_file')} -name package.json`)));
+  });
+
+  it('silent for a variable operand — unresolvable, so never judged', () => {
+    expectAllow(runGate(at('find $DIR -name package.json')));
+  });
+
+  it('silent for a glob operand — the shell, not the guard, decides what it names', () => {
+    expectAllow(runGate(at('find link* -name package.json')));
+  });
+
+  it('does not read a redirect fd digit as a path (`find /x 2>/dev/null`)', () => {
+    expectAllow(runGate(at(`find ${join(haystack, 'real_pkg')} 2>/dev/null`)));
+  });
+
+  it('silent when a non-`cd` command precedes it — it may be CREATING that path', () => {
+    expectAllow(runGate(at(`mkdir -p made && find ${linked} -name package.json`)));
   });
 });
 
