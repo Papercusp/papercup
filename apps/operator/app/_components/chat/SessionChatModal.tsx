@@ -68,6 +68,7 @@ import AgentDossier from '../../adv/sessions/AgentDossier';
 // group and how they sort lives in the unit-tested module beside it.
 import FleetPeersRail from './FleetPeersRail';
 import { deriveFleetPeers, isUnknownSession } from './fleet-peers';
+import { deriveLeaderBriefAlerts } from './leader-brief-alerts';
 import { useChatClock } from './message-timestamp';
 // P-015: the ORDERS panel — what the agent was TOLD (mission/authority,
 // modes + who set them, owner directives, standing facts, walls, carry brief).
@@ -80,6 +81,7 @@ import type { RosterEntry } from '../../adv/sessions/SessionsRosterView';
 // mocks wholesale) so this hook keeps working under that mock.
 import { LivenessDot, normalizeSessionState } from '@/app/coord/presence-ui';
 import { useAgentDetail } from '../../adv/sessions/use-agent-detail';
+import { useAgentLeaderBrief } from '../../adv/sessions/use-agent-leader-brief';
 import type { ChatActionContext } from '@/lib/chat-actions/types';
 import { Maximize, Maximize2, Minimize, Minimize2, Terminal, X } from 'lucide-react';
 import { AGENT_MARKS, type ChatMessage } from './ChatConversation';
@@ -1353,6 +1355,24 @@ export default function SessionChatModal({
      placeholder, not silence). A solo agent still gets no rail AND no toggle,
      rather than a toggle that opens an empty column explaining it is empty. */
   const peersVisible = open && fleetOpen && (fleetPeers != null || fleetUnknownSession);
+
+  /* popup-agent-state-coverage-2026-08-18 P-003/P-004: the leader-brief overlay
+     for the rail above — the object a fleet LEADER is actually handed, which no
+     UI read before this plan.
+
+     Gated on the rail being ON SCREEN and the agent being in a fleet at all, so
+     a collapsed rail and a solo agent both cost nothing. It is deliberately NOT
+     gated on "the roster says this agent is the leader": the roster carries only
+     the PRESENCE half of leadership, and presence disagreeing with the fleet
+     registry is exactly the drift `coord:orient` warns leaders about. Gating on
+     it here would blank the pane for the agent whose own orient says it leads.
+     The server decides leadership from both sources; a non-leader costs two
+     cheap reads and returns a `skipped` verdict with no brief. */
+  const { leaderBrief } = useAgentLeaderBrief(
+    sessionOwnerId,
+    peersVisible && fleetPeers != null,
+  );
+  const leaderBriefAlerts = useMemo(() => deriveLeaderBriefAlerts(leaderBrief), [leaderBrief]);
 
   /* P-015: the Orders panel's own toggle, nuqs like every other bit of this
      popup's state. Defaults OPEN, same as the dossier
