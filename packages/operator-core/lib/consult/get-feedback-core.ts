@@ -46,9 +46,25 @@ export const HARD_BLOCKED_EXPIRY_MS = 30 * 60_000; // 30m
 /** sessionStates a v1 consult never wakes (D-008 §5 liveness gate). */
 export const DEAD_RESPONDER_STATES: ReadonlySet<string> = new Set(['ended', 'recorded']);
 /** WI-39852 revival cap [owner 2026-08-18]: at most ONE carry-respawn per
- * consult — revival is a cost lever, not a fleet-resurrection loop. The flow
- * enforces it structurally (dead-preempt and wake-failed share one budget). */
+ * consult — revival is a cost lever, not a fleet-resurrection loop. Enforced
+ * by revivalBudgetSpent (EI-20864690354207496): the budget is READ from the
+ * persisted `revived` stamps on selection.selected, never from a call-local
+ * flag, so every revival site (creation dead-preempt / wake-failed, and the
+ * cascade refill-exhaustion leg) debits the same per-CONSULT ledger. */
 export const MAX_REVIVALS_PER_CONSULT = 1;
+
+/** The per-consult revival budget, read from the PERSISTED selection
+ * provenance (EI-20864690354207496 F2). A `revived: true` stamp is written
+ * exactly when a revival SPAWNED (dead-preempt / wake-failed here; the
+ * refill-exhaustion leg in cascade-core), so counting stamps counts spawned
+ * revivals — a FAILED spawn leaves no stamp and does not spend the budget.
+ * Never enforce the cap with a local boolean: that turns the per-consult cap
+ * into a per-invocation accident the moment a second revival site exists. */
+export function revivalBudgetSpent(
+  selected: ReadonlyArray<{ revived?: boolean } | null | undefined> | undefined,
+): boolean {
+  return (selected ?? []).filter((e) => e?.revived === true).length >= MAX_REVIVALS_PER_CONSULT;
+}
 /** Recursion ceiling (D-007 §7) — mirrors the consult_state.depth CHECK (0–2). */
 export const MAX_CONSULT_DEPTH = 2;
 /** consult-min-max-and-rubric-vetting-2026-08-17 D-003 [owner]: EVERY consult
@@ -238,9 +254,20 @@ function consultBody(req: GetFeedbackRequest): string {
   return parts.join('\n\n');
 }
 
+/** Structural minimum the revival brief needs from a candidate.
+ * RoutingCandidate satisfies it, and so does a candidate parsed back from the
+ * persisted D-008 routing snapshot (score/signals/evidence are stored
+ * verbatim) — which is what cascade-core's refill-exhaustion revival leg
+ * passes (EI-20864690354207496). */
+export interface RevivalBriefCandidate {
+  score: number;
+  signals: { similarity: number };
+  evidence: Array<{ session_id: string; turn_idx: number; sim: number }>;
+}
+
 /** Compact why-you-were-chosen evidence for the wake body (D-008 §5) — refs
  * resolvable via sessions:read, so relevance validation is a cheap check. */
-function evidenceLine(c: RoutingCandidate): string {
+function evidenceLine(c: Pick<RevivalBriefCandidate, 'evidence'>): string {
   return c.evidence
     .map((e) => `${e.session_id}#${e.turn_idx} (sim ${e.sim.toFixed(2)})`)
     .join('; ');
@@ -255,7 +282,7 @@ export function revivalBrief(opts: {
   requesterId: string;
   question: string;
   conversationId: string;
-  candidate: RoutingCandidate;
+  candidate: RevivalBriefCandidate;
 }): string {
   const c = opts.candidate;
   return (
@@ -623,13 +650,15 @@ export async function getFeedbackCore(
   // 5b) Attempt the dead-preempt revival. spawn:false ⇒ fall back to the
   //     pre-revival selection outcome — the attempt is still reported in the
   //     result (labeled, never silent — D-002 applied to liveness provenance).
+  //     Budget: revivalBudgetSpent over the snapshot's OWN selection entries
+  //     (EI-20864690354207496 F2) — the same persisted-stamp ledger every
+  //     revival site reads; a fresh selection carries no stamps, so this
+  //     guard is structural, not decorative.
   let revival: GetFeedbackResult['revival'] | undefined;
-  let revivalUsed = false;
   let finalSelected = selected;
   let finalChosen = chosen;
   let finalChosenVia = chosenVia;
-  if (revivalCandidate && deps.revive) {
-    revivalUsed = true;
+  if (revivalCandidate && deps.revive && !revivalBudgetSpent(route.snapshot.selection?.selected)) {
     const r = await deps.revive({
       ownerId: revivalCandidate.ownerId,
       conversationId: opened.conversation_id,
@@ -742,12 +771,16 @@ export async function getFeedbackCore(
 
     // 7b) WI-39852 wake-failed leg: a LIVE-read chosen responder whose wake
     //     reached NOBODY is a false-parked zombie — treat as dead and revive
-    //     the SAME owner. Shares the one-revival budget with dead-preempt
-    //     (revivalUsed), so a revived-then-unreachable session can never loop.
+    //     the SAME owner. Shares the one-revival budget with dead-preempt via
+    //     the persisted `revived` stamps (revivalBudgetSpent,
+    //     EI-20864690354207496 F2): a SPAWNED dead-preempt stamped
+    //     selected[0].revived, so this guard finds the budget spent and a
+    //     revived-then-unreachable session can never loop. (A dead-preempt
+    //     that FAILED to spawn left no stamp — the budget is honestly unspent
+    //     and this leg may still make the consult's one revival attempt.)
     //     The row is already persisted; on spawn, stamp the revival marker
     //     onto the persisted selection provenance (selected[0] IS the chosen).
-    if (woke === 0 && !revivalUsed && deps.revive) {
-      revivalUsed = true;
+    if (woke === 0 && deps.revive && !revivalBudgetSpent(route.snapshot.selection?.selected)) {
       const rr = await deps.revive({
         ownerId: finalChosen.ownerId,
         conversationId: opened.conversation_id,
@@ -766,6 +799,11 @@ export async function getFeedbackCore(
         detail: rr.detail,
       };
       if (rr.spawned) {
+        // Stamp BOTH copies of the selection: the persisted row (the durable
+        // budget ledger every later revival site reads) and the in-memory
+        // snapshot (so any same-invocation budget read stays coherent).
+        const wakeFailedHead = route.snapshot.selection?.selected?.[0];
+        if (wakeFailedHead) wakeFailedHead.revived = true;
         await sql`
           UPDATE harness_shared.consult_state
              SET routing = jsonb_set(routing, '{selection,selected,0,revived}', 'true'::jsonb)
