@@ -31,6 +31,7 @@ import {
   type GateVerdictTarget,
 } from '../../release/gate-verdict-target';
 import { releaseCheckpointConfig } from '../../release-checkpoint-config';
+import { GREEN_CHECKPOINT_SUITE_TIMEOUT_MS } from '../../release/green-checkpoint-schedule';
 import { describeGateRedOwnership, gateFailureSignature, type GateRedOwnership } from '../../release/gate-red-ownership';
 import { RELEASE_FIXER_NO_TURN_PHASE, releaseFixerSpawnAlive } from '../../release/fixer-liveness';
 // WI-37605: narrate under the RESOLVED tag, never a hardcoded '[green-checkpoint]'. This module's
@@ -387,8 +388,13 @@ function runScript(
  * its fire period, and the required margin — that file is also the ONE place the seed
  * sites get the cron from, so this budget and the schedule it is phased against cannot
  * drift apart silently).
+ *
+ * ⚠ THE CONSTANT MOVED. It, and the reasoning above in full, now live in
+ * `../../release/green-checkpoint-schedule.ts` — a leaf with no imports, which is what
+ * lets the three files that used to hand-copy this number derive it instead. This module
+ * imports it like everyone else and does NOT re-export it: one definition, one import
+ * path, no second name to drift.
  */
-export const GREEN_CHECKPOINT_SUITE_TIMEOUT_MS = 115 * 60_000;
 
 /**
  * A green-checkpoint run's result, as the CLI reports it on its result-marker line.
