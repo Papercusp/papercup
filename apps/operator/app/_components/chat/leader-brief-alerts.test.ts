@@ -410,3 +410,99 @@ describe('deriveLeaderBriefAlerts — member index', () => {
     expect(model.fleet!.alerts).toHaveLength(1);
   });
 });
+
+describe('deriveLeaderBriefAlerts — leadership drift (P-013)', () => {
+  const drift = (kind: 'presence-behind' | 'registry-disowned', note = 'PRESENCE DRIFT: …') => ({
+    kind,
+    fleet: 'p2p-release',
+    note,
+  });
+
+  it('leads the fleet block with the drift, because it qualifies everything under it', () => {
+    const model = deriveLeaderBriefAlerts(
+      briefed(
+        { summary: { strandedFleetAlert: true }, strandedFleetAlertReason: 'zero WIP' },
+        { presenceDrift: drift('presence-behind') },
+      ),
+    )!;
+    // FIRST, not merely present: a leader who reads only the top line must be
+    // told the rail's footing is in question before they act on its findings.
+    expect(model.fleet!.alerts[0].key).toBe('presence-drift');
+    expect(model.fleet!.alerts.map((a) => a.key)).toContain('stranded');
+  });
+
+  it('grades a registry-disowned drift as BAD and a presence-behind one as WARN', () => {
+    // The severities are opposite because the REMEDIES are: under
+    // registry-disowned the member rows may belong to somebody else's fleet, so
+    // acting on them is the error. presence-behind's brief is real and already
+    // recovered — worth saying, not worth alarming over. Collapsing these into
+    // one severity is what would make the dangerous half easy to skim past.
+    const bad = deriveLeaderBriefAlerts(briefed({}, { presenceDrift: drift('registry-disowned') }))!;
+    expect(bad.fleet!.alerts[0].severity).toBe('bad');
+    expect(bad.fleet!.alerts[0].text).toMatch(/registry does not/i);
+
+    const warn = deriveLeaderBriefAlerts(briefed({}, { presenceDrift: drift('presence-behind') }))!;
+    expect(warn.fleet!.alerts[0].severity).toBe('warn');
+    expect(warn.fleet!.alerts[0].text).toMatch(/behind the registry/i);
+  });
+
+  it('carries the producer’s own note through as the detail rather than restating the headline', () => {
+    const note = 'PRESENCE DRIFT: the registry says this agent LEADS x; corroborate with fleet:status.';
+    const model = deriveLeaderBriefAlerts(briefed({}, { presenceDrift: drift('presence-behind', note) }))!;
+    expect(model.fleet!.alerts[0].detail).toBe(note);
+  });
+
+  it('renders a drift that arrived with NO brief instead of dropping it', () => {
+    // The two reads racing is not a normal shape, but returning null here would
+    // discard the one finding this pane exists to surface — the same
+    // "absence reads as all-clear" failure the rest of this file guards.
+    const model = deriveLeaderBriefAlerts({
+      ownerId: 'su-leader',
+      fleetSlug: 'p2p-release',
+      presenceFleetRole: null,
+      registeredLeader: 'su-leader',
+      isLeader: false,
+      skipped: 'not-leader',
+      presenceDrift: drift('presence-behind'),
+      brief: null,
+    })!;
+    expect(model.fleet!.alerts.map((a) => a.key)).toEqual(['presence-drift']);
+    // `briefed` stays false: nothing was actually checked, so "no member
+    // glyphs" here must not read as a healthy fleet.
+    expect(model.briefed).toBe(false);
+  });
+
+  it('still reports the drift when the brief itself came back an error', () => {
+    const model = deriveLeaderBriefAlerts(
+      briefed({}, { presenceDrift: drift('registry-disowned') }),
+    );
+    const errored = deriveLeaderBriefAlerts({
+      ...briefed({}, { presenceDrift: drift('registry-disowned') }),
+      brief: { ok: false, error: 'fleet read failed' },
+    })!;
+    expect(model).not.toBeNull();
+    expect(errored.fleet!.alerts.map((a) => a.key)).toEqual(['presence-drift', 'brief-error']);
+  });
+
+  it('says NOTHING when no drift was measured — and never an "in agreement" inverse', () => {
+    // D-011: absent is UNMEASURED. A clean fleet with no drift field must
+    // produce no fleet block at all, not a reassuring "leadership verified".
+    const model = deriveLeaderBriefAlerts(briefed({ members: [member()] }))!;
+    expect(model.fleet).toBeNull();
+  });
+
+  it('reports no drift on a failed read, where neither source was measured', () => {
+    // The read-failed skip fires BEFORE the drift is derived, so this asserts
+    // the ordering: a fleet we could not read must not also claim a drift.
+    const model = deriveLeaderBriefAlerts({
+      ownerId: 'su-leader',
+      fleetSlug: null,
+      presenceFleetRole: null,
+      registeredLeader: null,
+      isLeader: false,
+      skipped: 'read-failed',
+      brief: null,
+    })!;
+    expect(model.fleet!.alerts.map((a) => a.key)).toEqual(['read-failed']);
+  });
+});
