@@ -89,13 +89,48 @@ export default defineTool({
       try { createWriteStream(logPath, { flags: 'w' }).end(r.output); } catch { /* ignore */ }
       output = `${r.output.slice(0, INLINE_OUTPUT_CAP)}\n… [truncated — full output: ${logPath}]`;
     }
-    const header = `git ${args.args.join(' ')} · exit ${r.code ?? 'null'}${truncated ? ` · spilled → ${logPath}` : ''}`;
+    // The cwd is part of the ANSWER, not debug noise: every result below is scoped
+    // to this directory (and, for a worktree, to ITS branch). capability:bash has
+    // always printed its cwd; capability:git printing none is what let the wrong-tree
+    // reading above look like a normal empty result. (EI-20881501070735530)
+    const header = `git ${args.args.join(' ')} · exit ${r.code ?? 'null'} · cwd ${cwd}${truncated ? ` · spilled → ${logPath}` : ''}`;
+    const body = output || `(no output)${emptyPathspecNote(args.args, r.code, output, cwd)}`;
     return {
-      content: [{ type: 'text' as const, text: `${header}\n${output || '(no output)'}` }],
+      content: [{ type: 'text' as const, text: `${header}\n${body}` }],
       isError: r.code === null,
     };
   },
 });
+
+/**
+ * The other half of EI-20881501070735530, kept even though the cwd bug above is
+ * fixed: `git <cmd> -- <pathspec>` that matches NOTHING prints nothing and exits
+ * **0**, so a wrong path (a typo, a submodule path queried from the superproject,
+ * a path that only exists on another branch) is indistinguishable from a real
+ * "no commits touch this file". That is the false-absence class this repo keeps
+ * paying for, and here the instrument can just say which reading it is.
+ *
+ * Deliberately narrow: it fires ONLY when an explicit `--` pathspec was given and
+ * the command still produced nothing at exit 0. It must never fire on a legitimate
+ * empty result such as `git diff` over a clean tree, so no heuristic guesses at
+ * bare trailing operands.
+ *
+ * Exported for unit testing.
+ */
+export function emptyPathspecNote(argv: string[], code: number | null, output: string, cwd: string): string {
+  if (code !== 0 || output.trim() !== '') return '';
+  const sep = argv.indexOf('--');
+  if (sep === -1) return '';
+  const pathspecs = argv.slice(sep + 1);
+  if (pathspecs.length === 0) return '';
+  return (
+    `\n⚠ pathspec matched nothing in ${cwd} — git prints nothing and exits 0 for BOTH ` +
+    `"no commits touch this path" and "this path does not exist here", so this is not ` +
+    `evidence of absence. Pathspec: ${pathspecs.join(' ')}. Re-check with a positive ` +
+    `control (the same query for a path you know is tracked), and note that a path inside ` +
+    `a git SUBMODULE never matches from the superproject — run it with cwd set to the submodule.`
+  );
+}
 
 /** Exported for direct unit testing (mirrors bash-jobs.ts's runForeground export) —
  *  decouples the env-scrub regression test from the flag/DB plumbing the
