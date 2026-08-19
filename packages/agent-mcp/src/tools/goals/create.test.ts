@@ -71,8 +71,19 @@ const CTX = (over: Record<string, unknown> = {}) => ({
   ...over,
 });
 
+/**
+ * The default fixture DECLARES a holder policy because the door now requires
+ * one (goal-live-holder-guarantee-2026-08-18 P-003): every goal created here
+ * would otherwise inherit the live-holder requirement without its creator
+ * having chosen it, which is exactly what that item refuses.
+ *
+ * It lives in the shared fixture rather than being sprinkled per test so the
+ * tests below keep testing what they are named for. Any test that cares about
+ * the holder policy itself overrides it — including with `holder: undefined`,
+ * which is how the refusal is exercised.
+ */
 const ARGS = (over: Record<string, unknown> = {}) =>
-  tool.args.parse({ title: 'Ship a paid app', ...over });
+  tool.args.parse({ title: 'Ship a paid app', holder: { requireLive: true }, ...over });
 
 /**
  * `handler` is typed as the `ToolResult | ToolResponse<unknown>` union, so a

@@ -155,6 +155,15 @@ const ARGS = {
   title: 'Ship a paid app',
   killCriterion: 'no paying user by day 30',
   budgetCents: 50_000,
+  /*
+   * DECLARED because the door now requires it (goal-live-holder-guarantee
+   * 2026-08-18 P-003): this tool spawns the session that holds the goal, so a
+   * goal created here without stating whether it needs a live holder is exactly
+   * what that item refuses. In the shared fixture rather than per test, so the
+   * tests below keep testing what they are named for; the refusal is exercised
+   * by overriding it to undefined.
+   */
+  holder: { requireLive: true },
 };
 
 const call = (extra: Record<string, unknown> = {}) =>
