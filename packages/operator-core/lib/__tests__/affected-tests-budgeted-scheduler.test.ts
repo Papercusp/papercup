@@ -549,6 +549,29 @@ describe('operator-visible budget markers', () => {
     ).toBe('AFFECTED_TESTS_SCHEDULER_OBSERVED maxWorkers=4 maxMemoryMb=4096 maxTasks=2');
   });
 
+  // EI-20801764054303492 route (a). The admission fields are appended ONLY when a reader was
+  // wired, so the legacy string above stays byte-identical for every caller that passes none —
+  // the two assertions are a matched pair and must be read together.
+  it('appends the admission terms only when a memory reader was wired', () => {
+    const resolved = resolveTaskBudget(config);
+    const observed = { ...resolved, observedMaxWorkers: 4, observedMaxMemoryMb: 4096, observedMaxTasks: 2 };
+
+    expect(formatTaskBudgetObservedMarker({ ...observed, memoryReadings: null })).toBe(
+      'AFFECTED_TESTS_SCHEDULER_OBSERVED maxWorkers=4 maxMemoryMb=4096 maxTasks=2',
+    );
+    expect(
+      formatTaskBudgetObservedMarker({
+        ...observed,
+        memoryReadings: 3,
+        admissionClamps: 2,
+        minAdmittedWorkers: 1,
+      }),
+    ).toBe(
+      'AFFECTED_TESTS_SCHEDULER_OBSERVED maxWorkers=4 maxMemoryMb=4096 maxTasks=2 ' +
+        'memReadings=3 clamps=2 minAdmittedWorkers=1',
+    );
+  });
+
   // EI-20801764054303492 step 3. The gate log used to record the RESOLVED concurrency but not the
   // REASON for it, so "is the memory rail engaging?" could only be answered by re-deriving the
   // whole chain from source — which is how the rail stayed inert unnoticed. These assert the two
