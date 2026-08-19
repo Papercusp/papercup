@@ -1080,6 +1080,16 @@ export async function resolveGoalDetail(args: {
       })),
       /** held | unheld | lost | unknown — see GoalSummaryRow.holderLiveness. */
       holderLiveness: detailHolders.liveness,
+      /** P-004: the status a reader should USE — `status` verbatim, or
+       *  `'dormant'` when this goal requires a live holder and has none.
+       *  Derived on this read from the settings and liveness already fetched
+       *  above; the raw column is never written. */
+      effectiveStatus: detailActivity.effectiveStatus,
+      deactivated: detailActivity.deactivated,
+      /** Why `deactivated` is what it is — the resolved policy the fold used,
+       *  so the panel can say "inheriting the default" rather than re-deriving
+       *  it from an absent key (D-008). */
+      holderPolicy: detailActivity.policy,
       plans: planRows.map((p) => ({
         planSlug: String(p.plan_slug),
         harnessSlug: String(p.harness_slug),
