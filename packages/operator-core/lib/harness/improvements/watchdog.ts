@@ -51,6 +51,7 @@ import { effectiveOrigin, type SignalOrigin } from './provenance';
 import {
   processKnownOpenAging,
   agingOptionsFromTick,
+  type KnownOpenAgingInput,
   type KnownOpenAgingOutcome,
   type KnownOpenAgingTickTunables,
 } from './known-open-aging';
