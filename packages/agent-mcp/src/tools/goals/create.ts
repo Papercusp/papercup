@@ -174,6 +174,23 @@ export default defineTool({
       if (problem) return { data: null, degraded: true, degradedReasons: [problem] };
     }
 
+    // ── The holder-policy write boundary (goal-live-holder-guarantee-2026-08-18
+    // P-003, D-008) ──────────────────────────────────────────────────────────
+    // A goal created here will require a LIVE holder by default. That default
+    // exists to cover the goals that already existed when the policy shipped —
+    // it is NOT a way for new goals to keep inheriting a requirement nobody
+    // chose. So this door refuses a goal whose creator declared nothing, which
+    // is the only reason the legacy population can shrink rather than grow.
+    //
+    // Note this is the OPPOSITE composition to the kill-criterion check above:
+    // there, absence is fine and only a supplied-but-stub value is refused;
+    // here, ABSENCE is the thing being refused. Both are correct because the
+    // two facts differ — the owner overruled requiring a criterion (WI-37604),
+    // and no one has overruled requiring the holder answer.
+    const launchSettings = args.holder ? { holder: args.holder } : null;
+    const holderProblem = goalHolderPolicyProblem(launchSettings);
+    if (holderProblem) return { data: null, degraded: true, degradedReasons: [holderProblem] };
+
     // ── The GOAL-mode kickoff consult (consult-min-max-and-rubric-vetting
     // 2026-08-17 P-010 / D-004 §1) ───────────────────────────────────────────
     // GOAL mode's kickoff contract commits weeks of portfolio spend at this
@@ -326,6 +343,7 @@ export default defineTool({
       killCriterion: args.killCriterion ?? null,
       tripwires: args.tripwires ?? null,
       metadata: args.metadata ?? null,
+      launchSettings,
     });
 
     // ── Blocked-by edges (goal-dag-shared-substrate-2026-08-18 P-002) ─────
