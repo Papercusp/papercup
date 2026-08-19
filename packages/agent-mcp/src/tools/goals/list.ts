@@ -115,11 +115,56 @@ export default defineTool({
     const readinessOf = (id: string) =>
       readinessById.get(id) ?? { actionable: true, premiseInvalidated: false };
 
+    // Deterministic deactivation (P-004, D-011). ONE holder read + ONE oracle
+    // call for the whole page — `resolveGoalHoldersBatch` exists for exactly
+    // this shape, so the per-row cost of the fold is zero queries. Goal
+    // cardinality is tiny (D-006), so this is the same trade the readiness fold
+    // above already makes.
+    const holdersByGoal = await resolveGoalHoldersBatch(
+      ctx.tx,
+      rows.map((r) => ({ goalId: r.id, workspaceId: r.workspace_id })),
+    );
+    const activityOf = (r: (typeof rows)[number]) => {
+      // An absent entry would be a bug in the batch resolver, not a goal without
+      // holders (that case is `unheld`) — but defaulting to `unknown` keeps a
+      // resolver bug from silently DEACTIVATING every row, which is the one
+      // direction this fold must never fail in.
+      const liveness = holdersByGoal.get(goalHolderKey(r.workspace_id, r.id))?.liveness ?? 'unknown';
+      const { settings } = parseGoalLaunchSettings(r.launch_settings);
+      return resolveGoalEffectiveActivity({
+        status: r.status,
+        launchSettings: settings,
+        liveness,
+      });
+    };
+
     if (args.detail === 'summary') {
       return {
-        data: rows.map((r) => ({ id: r.id, title: r.title, ...readinessOf(r.id) })),
+        data: rows.map((r) => ({
+          id: r.id,
+          title: r.title,
+          ...readinessOf(r.id),
+          deactivated: activityOf(r).deactivated,
+        })),
       };
     }
-    return { data: rows.map((r) => ({ ...r, ...readinessOf(r.id) })) };
+    return {
+      data: rows.map((r) => {
+        const activity = activityOf(r);
+        // `launch_settings` is an input to the fold, not an output — the
+        // resolved `holderPolicy` says what it MEANT, without handing back a
+        // raw blob every caller would have to re-parse.
+        const { launch_settings: _launchSettings, ...row } = r;
+        return {
+          ...row,
+          ...readinessOf(r.id),
+          status: activity.effectiveStatus,
+          rawStatus: r.status,
+          deactivated: activity.deactivated,
+          holderLiveness: activity.liveness ?? 'unknown',
+          holderPolicy: activity.policy,
+        };
+      }),
+    };
   },
 });
