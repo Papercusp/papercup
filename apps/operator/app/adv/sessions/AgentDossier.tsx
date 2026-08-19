@@ -1162,7 +1162,7 @@ export default function AgentDossier({
             return (
               <div
                 className="pc-dossier__note"
-                style={{ color: note.severity === 'bad' ? 'var(--err, #f87171)' : 'var(--warn, #fbbf24)' }}
+                style={{ color: note.severity === 'bad' ? 'var(--bad, #f87171)' : 'var(--warn, #fbbf24)' }}
                 data-testid="dossier-pipeline"
                 data-severity={note.severity}
               >
