@@ -135,6 +135,21 @@ export async function autoStartGoal(input: AutoStartGoalInput): Promise<AutoStar
       agentOwnerId: ownerId,
       ...(input.proposalId ? { routedProposalId: input.proposalId } : {}),
     },
+    // The holder policy, DECLARED rather than inherited
+    // (goal-live-holder-guarantee-2026-08-18 P-003, D-008). The tool doors
+    // refuse an undeclared goal because their caller has to answer the
+    // question; this door answers it in code because it is the one caller that
+    // cannot be asked — and it knows the answer with more certainty than any
+    // agent could, since the next thing it does is SPAWN the headless session
+    // that holds this goal. A goal created here with nothing holding it is
+    // precisely the state the plan exists to make visible.
+    //
+    // Same reasoning as the rails above (D-005): an autonomously created goal
+    // carries its rails explicitly because there is no owner in the loop to
+    // accept the risk of a default nobody chose. `onLoss` is deliberately left
+    // unpinned so it takes D-001's `deactivate` — respawn is opt-in per goal
+    // and an auto-created goal is not where that opt-in belongs.
+    launchSettings: { holder: { requireLive: true } },
   });
 
   // ── 1.5 blocked-by edges + the activation gate (P-004) ──────────────────
