@@ -187,6 +187,9 @@ export async function readGoalDraftQueue(opts: {
   budgetCentsCap?: number;
   /** Goal-scale vocabulary (the P-009 scout-config seam). Defaults to the live set. */
   markers?: readonly string[];
+  /** Count a marker that appears ONLY inside a code-ish span (P-009 / D-012). Default
+   *  FALSE, matching live routing. */
+  includeCodeSpanMatches?: boolean;
   /** Max CYCLES scanned (default: the artifact store's full retention). */
   limit?: number;
 } = {}): Promise<GoalDraft[]> {
@@ -203,5 +206,8 @@ export async function readGoalDraftQueue(opts: {
     ...(opts.rail == null ? {} : { rail: opts.rail }),
     ...(opts.budgetCentsCap == null ? {} : { budgetCentsCap: opts.budgetCentsCap }),
     ...(opts.markers == null ? {} : { markers: opts.markers }),
+    ...(opts.includeCodeSpanMatches == null
+      ? {}
+      : { includeCodeSpanMatches: opts.includeCodeSpanMatches }),
   });
 }
