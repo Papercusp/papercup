@@ -220,7 +220,7 @@ export interface GoalEffectiveActivity extends GoalActivityVerdict {
  */
 export function resolveGoalEffectiveActivity(input: {
   status: string | null | undefined;
-  launchSettings?: GoalLaunchSettings | null;
+  launchSettings?: GoalHolderPolicyInput | null;
   liveness?: GoalHolderLiveness | null;
 }): GoalEffectiveActivity {
   const verdict = resolveGoalActivity({ status: input.status, liveness: input.liveness });

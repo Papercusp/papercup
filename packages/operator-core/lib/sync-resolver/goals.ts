@@ -378,6 +378,11 @@ async function withHolderLiveness(
     rows,
     verdicts,
   );
+  // Dynamic for the same reason as `resolveGoalDetail`'s neighbour: this module
+  // is imported by callers that must not pay for the store's server
+  // dependencies at load, and `goal-launch-settings` statically imports them.
+  const { parseGoalLaunchSettings } = await import('../goal-launch-settings');
+  const { resolveGoalEffectiveActivity } = await import('../goals/activity');
   return base.map((g) => {
     // Always present: `byGoal` is built from `base` itself, so every goal has an
     // entry (an absent one would be a bug in resolveGoalHoldersBatchFromRows,
@@ -460,7 +465,7 @@ export async function resolveGoalsList(args: {
     await tx.unsafe(`SELECT set_config('app.workspace_id', $1, true)`, [workspaceId]);
     const goalRows = (await tx`
       SELECT g.id, g.title, g.body, g.status, g.parent_id, g.kill_criterion, g.tripwires,
-             g.budget_cents, g.metadata, g.created_at, g.updated_at,
+             g.budget_cents, g.metadata, g.launch_settings, g.created_at, g.updated_at,
              (SELECT COUNT(*) FROM harness_shared.goal_pots gp
                WHERE gp.workspace_id = g.workspace_id AND gp.goal_id = g.id
                  AND gp.removed_at IS NULL) AS pot_count,
