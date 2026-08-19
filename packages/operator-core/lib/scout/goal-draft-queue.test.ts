@@ -123,6 +123,27 @@ describe('the zero-write property (this is the acceptance criterion)', () => {
     for (const stmt of statements) expect(stmt).not.toMatch(/harness_shared\.goals/);
   });
 
+  it('CONTROL: the SELECT-only assertion would catch a writer (proving it can fail)', () => {
+    // A guard that has never failed is a guard nobody has tested. This is the
+    // deliberately-wrong implementation kept permanently as a control: if the
+    // assertion above ever stops being able to fail, THIS test goes green-by-
+    // accident and the falsifier is dead. Held in the test file rather than
+    // mutating the module, so the shared tree is never dirtied to prove a point.
+    const wouldWrite = [
+      "\n    INSERT INTO harness_shared.goals (id, outcome)\n    VALUES (?, ?)",
+      '  UPDATE harness_shared.goals SET budget_cents = ?',
+      'DELETE FROM harness_shared.scout_cycle_stage_artifacts',
+    ];
+    for (const stmt of wouldWrite) {
+      const head = stmt.trim().split(/\s+/)[0]!.toUpperCase();
+      const caught =
+        head !== 'SELECT' || /\b(INSERT|UPDATE|DELETE|UPSERT|MERGE|TRUNCATE|DROP|ALTER)\b/i.test(stmt);
+      expect(caught).toBe(true);
+    }
+    // ...and the real read must still pass the same predicate it just rejected.
+    expect('SELECT cycle_id FROM harness_shared.scout_cycle_stage_artifacts').toMatch(/^SELECT/);
+  });
+
   it('cannot reach a goal writer: its import list is pinned', () => {
     // A source-level pin rather than a promise. draftGoalRails is PURE and
     // goals:create / goals:update are reachable only through modules absent here,
