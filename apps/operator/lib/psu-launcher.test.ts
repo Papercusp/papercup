@@ -2566,14 +2566,26 @@ describe('psu-launcher arg parsing', () => {
         forcedAccounts: [],
         provider,
       });
-      expect(choices.map((choice) => choice.value)).toEqual([null, 'auto', `${provider}-main`]);
+      expect(choices.map((choice) => choice.value)).toEqual(['system', 'auto', `${provider}-main`]);
     }
   });
 
   it('accountPickerChoices omits auto without a usable supported-provider pool', () => {
-    expect(accountPickerChoices({ pool: [], provider: 'codex' }).map((choice) => choice.value)).toEqual([null]);
+    expect(accountPickerChoices({ pool: [], provider: 'codex' }).map((choice) => choice.value)).toEqual(['system']);
     expect(accountPickerChoices({ pool: ['omp-main'], provider: 'omp' }).map((choice) => choice.value))
-      .toEqual([null, 'omp-main']);
+      .toEqual(['system', 'omp-main']);
+  });
+
+  it('accountPickerChoices: the default row carries the LITERAL system escape hatch, never null/""', () => {
+    // default-deploy-account-2026-08-08 P-004 D-002: server-side, an unspecified/`default` account
+    // means "the owner's NOMINATED default account" — a GATEWAY route whenever one is configured.
+    // Only `none`/`system` is guaranteed to stay on the machine's own login, so the row that
+    // PROMISES "skip the inference gateway" must send exactly that. A null here is the 2026-08-19
+    // silent misroute (su-254aa2e1 picked `default` and launched on the pool via :8788).
+    const row = accountPickerChoices({ gatewayOn: true, pool: ['aviynw8'], provider: 'claude' })[0];
+    expect(row.value).toBe('system');
+    expect(accountRoutingMode(row.value)).toBe('default'); // …and the client still reads it as "skip the gateway"
+    expect(row.name).toContain('skip the inference gateway');
   });
 
   it('accountProviderFromChoices: explicit null provider fails closed instead of falling back from the agent', () => {
