@@ -335,6 +335,7 @@ export default defineTool({
         killCriterion: args.killCriterion,
         tripwires: args.tripwires ?? null,
         metadata: { startedBy: callerOwnerId ?? 'operator-ui', agentOwnerId: ownerId },
+        launchSettings,
       });
     } catch (e) {
       return err(`Could not open the goal: ${(e as Error)?.message ?? e}`);
