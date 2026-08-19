@@ -721,6 +721,193 @@ describe('AgentDossier', () => {
   // needs somewhere to go" — and the answer is expand-in-place, which only
   // works if the drill-in genuinely reveals the rest AND stays honest when the
   // operator never sent the rest.
+  /**
+   * popup-agent-state-coverage-2026-08-18 P-009 — a duration on everything this
+   * pane describes as WAITING.
+   *
+   * The pane could say WHAT an agent was waiting on and never for HOW LONG, and
+   * the second half is the one that decides whether to intervene: "3 ahead" and
+   * "Waiting on gate-first-green" read exactly the same after twenty seconds and
+   * after four hours. `queuedAt`, `waitUntil` and `expiresTs` had been on these
+   * DTOs the whole time with no reader; the subscription row had a date, but a
+   * CALENDAR one that collapses everything inside 24h to "today".
+   *
+   * One rule runs through every case below and each is pinned separately: a
+   * duration we could not compute renders as NOTHING. A manufactured "0s" or
+   * "expired" is worse than a blank, because it is a number a reader would act
+   * on about a measurement nobody took.
+   */
+  describe('P-009 — how long has it been waiting', () => {
+    const sub = (over: Record<string, unknown> = {}) => ({
+      eventKey: 'gate-first-green',
+      policy: 'wake',
+      note: null,
+      once: true,
+      wakes: true,
+      urgent: false,
+      createdAt: new Date(Date.now() - 41 * 60_000).toISOString(),
+      expiresTs: null,
+      ...over,
+    });
+
+    it('dates a subscription with an ELAPSED age, not the calendar word "today"', async () => {
+      syncState.detail = {
+        ...DETAIL,
+        subscriptions: { count: 1, items: [sub()] },
+      } satisfies AgentDetail;
+      const { container } = render(
+        <AgentDossier ownerId="su-1" entry={entry()} onClose={() => {}} />,
+      );
+      const age = await waitFor(() => container.querySelector('[data-testid="dossier-event-age"]')!);
+      expect(age.textContent).toBe('41m');
+      // The regression this replaces: `formatRelativeUpdated` renders BOTH a
+      // 41-minute wait and a 23-hour one as "today", so the row could not tell
+      // a healthy wait from a stranded one.
+      expect(container.querySelector('#pc-dossier-events')!.textContent).not.toContain('today');
+    });
+
+    it('shows a subscription timeout beside the wait — and nothing at all when there is none', async () => {
+      syncState.detail = {
+        ...DETAIL,
+        subscriptions: {
+          count: 2,
+          items: [
+            sub({ eventKey: 'with-timeout', expiresTs: new Date(Date.now() + 25 * 60_000).toISOString() }),
+            sub({ eventKey: 'no-timeout', expiresTs: null }),
+          ],
+        },
+      } satisfies AgentDetail;
+      const { container } = render(
+        <AgentDossier ownerId="su-1" entry={entry()} onClose={() => {}} />,
+      );
+      await waitFor(() =>
+        expect(container.querySelector('[data-testid="dossier-event-expiry"]')).toBeTruthy(),
+      );
+      const expiries = Array.from(
+        container.querySelectorAll('[data-testid="dossier-event-expiry"]'),
+      ).map((n) => n.textContent);
+      // Exactly ONE — an await with a timeout will end itself, one without ends
+      // only when the event fires, and a subscription with no recorded expiry
+      // must not acquire the word "expired".
+      expect(expiries).toEqual(['25m left']);
+    });
+
+    it('says how long a queued lock has waited and when its ticket gives up', async () => {
+      syncState.detail = {
+        ...DETAIL,
+        locks: {
+          held: [],
+          waiting: [
+            {
+              ticketId: 't1',
+              paths: ['contended.ts'],
+              intent: 'waiting to edit',
+              aheadCount: 3,
+              queuedAt: new Date(Date.now() - 12 * 60_000).toISOString(),
+              waitUntil: new Date(Date.now() + 4 * 60_000).toISOString(),
+              blockedBy: [],
+            },
+          ],
+          error: null,
+        },
+      } satisfies AgentDetail;
+      const { container } = render(
+        <AgentDossier ownerId="su-1" entry={entry()} onClose={() => {}} />,
+      );
+      const exp = await waitFor(
+        () => container.querySelector('[data-testid="dossier-lock-wait-exp"]')!,
+      );
+      // Position AND duration. Position alone was the whole row before, and it
+      // is the half that does not change while the agent sits there.
+      expect(exp.textContent).toBe('3 ahead · 12m · 4m left');
+      const title = exp.getAttribute('title') ?? '';
+      expect(title).toContain('Queue position: 3 ahead');
+      expect(title).toContain('Waiting 12m');
+      expect(title).toContain('Gives up in 4m');
+    });
+
+    it('drops a lock duration rather than defaulting it when the ticket carries no times', async () => {
+      syncState.detail = {
+        ...DETAIL,
+        locks: {
+          held: [],
+          waiting: [
+            {
+              ticketId: 't1',
+              paths: ['contended.ts'],
+              intent: 'waiting to edit',
+              aheadCount: 0,
+              queuedAt: '',
+              waitUntil: '',
+              blockedBy: [],
+            },
+          ],
+          error: null,
+        },
+      } satisfies AgentDetail;
+      const { container } = render(
+        <AgentDossier ownerId="su-1" entry={entry()} onClose={() => {}} />,
+      );
+      const exp = await waitFor(
+        () => container.querySelector('[data-testid="dossier-lock-wait-exp"]')!,
+      );
+      expect(exp.textContent).toBe('next');
+      expect(exp.textContent).not.toContain('0s');
+      expect(exp.textContent).not.toContain('expired');
+      // The gap is stated where there is room to state it, rather than silently
+      // looking like a ticket with no deadline.
+      expect(exp.getAttribute('title')).toContain('No queued-at time on record');
+      expect(exp.getAttribute('title')).toContain('No wait-until time on record');
+    });
+
+    it('dates the declared intent', async () => {
+      const { container } = render(
+        <AgentDossier
+          ownerId="su-1"
+          entry={entry({ intentDeclaredAt: new Date(Date.now() - 3 * 3_600_000).toISOString() })}
+          onClose={() => {}}
+        />,
+      );
+      const age = container.querySelector('[data-testid="dossier-intent-age"]')!;
+      expect(age).toBeTruthy();
+      expect(age.textContent).toContain('3h');
+      // EI-9696: an intent is a present-tense sentence that keeps reading
+      // present-tense forever. The age is what separates "working on it" from
+      // "said that three hours ago" — and it must not be confused with the
+      // session's own age, which is a different number in the Reference rows.
+      expect(container.querySelector('.pc-dossier__intent')!.textContent).toContain(
+        'refactoring attempt-claim split',
+      );
+    });
+
+    it('never dates the "(no declared intent)" placeholder', async () => {
+      // Dating a declaration that never happened would be the same fabrication
+      // as a "0s" age — it would read as "declared nothing, just now".
+      const { container } = render(
+        <AgentDossier
+          ownerId="su-1"
+          entry={entry({ intent: '', intentDeclaredAt: new Date(Date.now() - 60_000).toISOString() })}
+          onClose={() => {}}
+        />,
+      );
+      expect(container.querySelector('.pc-dossier__intent')!.textContent).toContain(
+        '(no declared intent)',
+      );
+      expect(container.querySelector('[data-testid="dossier-intent-age"]')).toBeNull();
+    });
+
+    it('renders no intent age at all when the roster payload predates intentDeclaredAt', async () => {
+      // The field is OPTIONAL on the mirror because the SPA rebuilds on the vite
+      // hot path while the sidecar reloads only on restart — a bundle that knows
+      // about a field is routinely served payloads that predate it.
+      const { container } = render(
+        <AgentDossier ownerId="su-1" entry={entry()} onClose={() => {}} />,
+      );
+      expect(container.querySelector('.pc-dossier__intent')).toBeTruthy();
+      expect(container.querySelector('[data-testid="dossier-intent-age"]')).toBeNull();
+    });
+  });
+
   describe('rail R1 — capped sections', () => {
     it('caps a long section at three rows and reveals the rest on the drill-in', async () => {
       const files = Array.from({ length: 9 }, (_, i) => `apps/operator/lib/file-${i}.ts`);
