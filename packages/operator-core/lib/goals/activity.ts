@@ -35,6 +35,11 @@
  */
 import { isGoalAdministrativelyPaused } from '@papercusp/agent-mcp';
 
+import {
+  resolveGoalHolderPolicy,
+  type GoalLaunchSettings,
+  type ResolvedGoalHolderPolicy,
+} from '../goal-launch-settings';
 import type { GoalHolderLiveness } from './holder';
 
 /**
@@ -138,4 +143,99 @@ export function resolveGoalActivity(input: {
  */
 export function isGoalQuietUnexpectedly(verdict: GoalActivityVerdict): boolean {
   return verdict.activity === 'unheld' || verdict.activity === 'lost';
+}
+
+/* ────────────────────────────────────────────────────────────────────────────
+ * P-004 — DETERMINISTIC DEACTIVATION
+ *
+ * The half `resolveGoalActivity` above deliberately does NOT decide: whether a
+ * goal's quiet should stop it reading as `active`. That question needs one more
+ * input — the goal's own HOLDER POLICY (P-002's `holder { requireLive }`) — and
+ * folding it here keeps the whole rule in the module that already owns the
+ * status/liveness fold, rather than in each read-side surface.
+ *
+ * DERIVED AT READ TIME, NEVER SWEPT. Nothing below writes anything. A sweep
+ * that flipped `goals.status` would (a) need a writer racing every other writer
+ * of that column, (b) be unable to un-flip the moment a holder came back, and
+ * (c) destroy the administrative value the column is FOR — the difference
+ * between "somebody paused this" and "this went quiet", which D-009 records as
+ * the distinction the whole plan exists to keep. The column keeps meaning what
+ * a human put in it; the derived reading answers what is actually true now.
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+/**
+ * The read-side label for a holder-required goal that is quiet unexpectedly.
+ *
+ * Deliberately NOT a member of `GOAL_STATUSES`: it is computed on every read and
+ * MUST NEVER be written to `goals.status`. Keeping it outside the persisted
+ * union is what makes that mistake a type error rather than a silent one — and
+ * it is why the word is new rather than a reuse of `paused`, which already means
+ * something a human chose (D-009).
+ */
+export const GOAL_DORMANT_STATUS = 'dormant';
+
+export interface GoalEffectiveActivity extends GoalActivityVerdict {
+  /** The goal's resolved holder policy — read-time defaults applied (D-008). */
+  policy: ResolvedGoalHolderPolicy;
+  /** Shorthand for `policy.requireLive`. */
+  requiresLiveHolder: boolean;
+  /**
+   * The goal requires a live holder, is administratively `active`, and has none
+   * — so it should NOT be read as active. Never true for a paused, terminal, or
+   * `requireLive: false` goal, and never true on `unknown`.
+   */
+  deactivated: boolean;
+  /**
+   * The status a reader should USE in place of the raw column: the raw value,
+   * or `GOAL_DORMANT_STATUS` when `deactivated`.
+   */
+  effectiveStatus: string | null;
+}
+
+/**
+ * PURE: what a goal's status EFFECTIVELY is, once its policy and its holder
+ * liveness are folded in. The one function a read-side surface should call.
+ *
+ * Four gates, in this order — each one a reason NOT to deactivate:
+ *
+ *   1. `paused` / terminal — `resolveGoalActivity`'s administrative
+ *      short-circuit. Liveness is never consulted, so a deliberate hold can
+ *      never be rendered as a loss.
+ *   2. `requireLive: false` — the goal told us it is driven by routines rather
+ *      than a held session, so "nobody is holding it" is its normal condition
+ *      and not a fault. This is the opt-out D-008 requires be SAYABLE.
+ *   3. status not in `GOAL_LIVENESS_SWEEP_STATUSES` — only a goal that claims to
+ *      be active can stop reading as active. Reusing that constant is what keeps
+ *      this in-memory rule and the sweep's SQL predicate from drifting apart.
+ *   4. liveness is `held` or `unknown` — `isGoalQuietUnexpectedly`. `unknown` is
+ *      the load-bearing one: a degraded oracle fetch must never deactivate a
+ *      goal, or one transient DB hiccup silently empties the board.
+ *
+ * Omitting `liveness` yields `unknown`, so a caller that has not paid for the
+ * oracle gets the SAFE answer (not deactivated) rather than a confident wrong
+ * one.
+ */
+export function resolveGoalEffectiveActivity(input: {
+  status: string | null | undefined;
+  launchSettings?: GoalLaunchSettings | null;
+  liveness?: GoalHolderLiveness | null;
+}): GoalEffectiveActivity {
+  const verdict = resolveGoalActivity({ status: input.status, liveness: input.liveness });
+  const policy = resolveGoalHolderPolicy(input.launchSettings);
+  const rawStatus = input.status ?? null;
+
+  const deactivated =
+    !verdict.deliberatelyPaused &&
+    !verdict.terminal &&
+    policy.requireLive &&
+    GOAL_LIVENESS_SWEEP_STATUSES.includes(rawStatus ?? '') &&
+    isGoalQuietUnexpectedly(verdict);
+
+  return {
+    ...verdict,
+    policy,
+    requiresLiveHolder: policy.requireLive,
+    deactivated,
+    effectiveStatus: deactivated ? GOAL_DORMANT_STATUS : rawStatus,
+  };
 }
