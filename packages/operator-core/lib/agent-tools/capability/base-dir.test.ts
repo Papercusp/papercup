@@ -7,9 +7,10 @@
  * the env is consulted ONLY for the projectDir-undefined superuser case.
  */
 import { describe, it, expect, afterEach, beforeEach } from 'vitest';
-import { mkdtempSync, mkdirSync, symlinkSync, realpathSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, symlinkSync, realpathSync, rmSync, readdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { resolveCapabilityBaseDir, realpathSoft, resolveAgentWorkspaceRoot } from './base-dir';
 import { writeFileSync } from 'node:fs';
 
@@ -121,5 +122,76 @@ describe('EI-1754 — resolveAgentWorkspaceRoot', () => {
     const bare = join(tmp, 'bare');
     mkdirSync(bare, { recursive: true });
     expect(resolveAgentWorkspaceRoot({ projectDir: bare })).toBe(bare);
+  });
+});
+
+/**
+ * EI-20881501070735530 — the CLASS guard.
+ *
+ * EI-1754 migrated read / write / edit / inspect / bash to `resolveCapabilityBaseDir`
+ * and left `capability:git` and `locks/file-lock-guard` on the raw
+ * `ctx.projectDir ?? process.cwd()` fallback. Nothing failed, so the two survivors sat
+ * there for months answering out of the :3070 operator's own cwd — the RELEASE checkout,
+ * a different worktree pinned to green `main`, under an `apps/operator/` prefix. The
+ * symptoms were silent by construction: `git log -- <path>` printed nothing at exit 0
+ * (a false absence), and `capability:write`/`edit` took file locks on a key no peer and
+ * no PreToolUse hook ever uses (arbitration silently defeated on a shared tree).
+ *
+ * A one-file fix would leave the next copy of this line free to reappear, so the
+ * invariant is enforced over the whole tool tree instead: the fallback lives in exactly
+ * one module, and every tool asks that module.
+ */
+describe('EI-20881501070735530 — the base-dir fallback is not re-implemented per tool', () => {
+  /** The defect shape: a tool deciding for itself what "the project dir" means. */
+  const RAW_FALLBACK = /projectDir\s*\?\?\s*process\s*\.\s*cwd\s*\(\s*\)/;
+
+  /**
+   * Permanent controls. A source-scanning guard fails OPEN — if the pattern stops
+   * matching (a refactor to `??=`, an escaping slip, a bad path root) it reports a clean
+   * tree forever and nobody finds out. These two make the detector prove it still works
+   * on every run: one string it MUST flag, one it MUST NOT.
+   */
+  const DEFECT_CONTROL = 'const baseDir = ctx.projectDir ?? process.cwd();';
+  const FIXED_CONTROL = 'const baseDir = resolveCapabilityBaseDir(ctx);';
+
+  /** base-dir.ts owns the fallback and quotes the old shape in its own EI-1754 history. */
+  const EXEMPT = new Set(['base-dir.ts']);
+
+  const agentToolsRoot = fileURLToPath(new URL('..', import.meta.url));
+
+  function sourceFiles(dir: string, acc: string[] = []): string[] {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name !== 'node_modules' && entry.name !== '__tests__') sourceFiles(full, acc);
+        continue;
+      }
+      if (!entry.name.endsWith('.ts') || entry.name.endsWith('.test.ts')) continue;
+      if (EXEMPT.has(entry.name)) continue;
+      acc.push(full);
+    }
+    return acc;
+  }
+
+  it('the detector fires on the defect shape and stays silent on the fixed shape', () => {
+    expect(RAW_FALLBACK.test(DEFECT_CONTROL)).toBe(true);
+    expect(RAW_FALLBACK.test(FIXED_CONTROL)).toBe(false);
+  });
+
+  it('scans a non-empty set of agent-tool sources (a zero-file scan is a broken probe, not a pass)', () => {
+    expect(sourceFiles(agentToolsRoot).length).toBeGreaterThan(20);
+  });
+
+  it('no agent-tool source resolves its own base dir with `ctx.projectDir ?? process.cwd()`', () => {
+    const offenders = sourceFiles(agentToolsRoot)
+      .filter((f) => RAW_FALLBACK.test(readFileSync(f, 'utf8')))
+      .map((f) => relative(agentToolsRoot, f));
+    expect(
+      offenders,
+      `These files re-implement the base-dir fallback instead of calling resolveCapabilityBaseDir(ctx). ` +
+        `For a superuser ctx (projectDir undefined) that resolves to the :3070 operator's release-checkout ` +
+        `cwd, not the tree the agent edits — silently, at exit 0. Import { resolveCapabilityBaseDir } from ` +
+        `the capability/base-dir module instead.`,
+    ).toEqual([]);
   });
 });
