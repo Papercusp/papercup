@@ -153,8 +153,46 @@ export const LEARNING_SLO_DEFAULTS = {
    * sits at exactly 1.0; 0.85 also catches the near-total case (a scope that is
    * populated but effectively never matches) without firing on a merely quiet
    * pool. Measured healthy pools on this box sit at 0.0–0.25.
+   *
+   * ⚠ This is the bar for a pool with a LARGE corpus only. It is scaled up for
+   * a small corpus by `effectiveZeroHitGate` — see the two constants below and
+   * that function's contract for why a flat bar cannot work.
    */
   recallPoolMaxZeroHitRate: 0.85,
+  /**
+   * recall-pool (gate-2, EI-20878926803436140): at or below this many active
+   * memories, a pool is judged by `recallPoolSmallCorpusMaxZeroHitRate`
+   * instead of the flat `recallPoolMaxZeroHitRate`.
+   *
+   * WHY A CORPUS TERM EXISTS AT ALL: the zero-hit rate confounds two
+   * independent things — whether the pool is REACHABLE, and how SPECIFIC the
+   * asking surface's query is. Measured 2026-08-19 with the corpus and scope
+   * held constant (`hive:papercusp`, 58 active memories, 0% empty-scope):
+   *   initialize n=19,125 → 0.000 · turn-start n=13,948 → 0.529
+   *   claim      n= 1,674 → 0.843 · mid-turn   n=207,390 → 0.874
+   * One corpus, one scope, 0.000→0.874 purely by surface. Both extremes are
+   * large samples, so this is structural rather than noise — and it puts the
+   * flat 0.85 gate INSIDE the normal band for a small corpus. That false alarm
+   * held EI-19920080383279759 at CRITICAL for 11 days and was mis-triaged
+   * twice across ≥3 sessions before the confound was measured.
+   */
+  recallPoolSmallCorpus: 100,
+  /** recall-pool (gate-2): at or above this many active memories the flat
+   *  `recallPoolMaxZeroHitRate` applies unchanged — a corpus this large cannot
+   *  explain a near-total blackout by sparsity. Between the two bounds the bar
+   *  interpolates linearly, so there is no cliff for a pool sitting near it. */
+  recallPoolLargeCorpus: 500,
+  /**
+   * recall-pool (gate-2): the bar for a SMALL corpus. Deliberately close to
+   * 1.0 rather than disabling the gate for small pools, because the pathology
+   * gate-2 targets (a pool keyed on a scope nothing writes to) sits at exactly
+   * 1.0 REGARDLESS of corpus size — so a small pool that genuinely breaks is
+   * still caught. Validated against 32 real slices spanning both windows:
+   * `injection/harness` (27 active, 0.995 zero-hit) still fires, while
+   * `mid-turn/hive` (58 active, 0.858) — the 11-day false alarm — no longer
+   * does. Do NOT raise this to 1.0: a pool answering on 1% of calls is broken.
+   */
+  recallPoolSmallCorpusMaxZeroHitRate: 0.97,
   /**
    * recall-pool SLO (gate-4): a pool returning EXACTLY its own recorded budget on
    * at least this share of its recalls — the block is being sized by the limit
@@ -214,6 +252,9 @@ export interface LearningSloOptions {
   recallPoolWindowDays?: number;
   recallPoolMinRecalls?: number;
   recallPoolMaxZeroHitRate?: number;
+  recallPoolSmallCorpus?: number;
+  recallPoolLargeCorpus?: number;
+  recallPoolSmallCorpusMaxZeroHitRate?: number;
   recallPoolMaxSaturationRate?: number;
   recallPoolMaxEmptyScopeRate?: number;
   recallPoolEmptyScopeRecentHours?: number;
