@@ -217,8 +217,54 @@ function workspaceDirs(root) {
 }
 
 /**
+ * Compare each workspace's DECLARED peers against the copy package-lock.json records.
+ *
+ * WHY THIS IS A SEPARATE CHECK, and why the guard was incomplete without it: `npm install`
+ * re-resolves from the MANIFESTS, but `npm ci` installs strictly from the LOCK. They are
+ * two independent copies of the same declaration, and fixing one does not fix the other.
+ * Measured 2026-08-19 on this repo: after libs/papercusp-shared's bad `dockview ^5` peer
+ * was removed from its package.json, `npm install --dry-run` went green while
+ * package-lock.json STILL carried `"dockview": "^5.0.0"` — so the clean-checkout `npm ci`
+ * hydration path stayed broken (EI-20453932158555033, open 5 days), and a manifest-only
+ * guard reported CLEAN the whole time. That false-clean is the failure this catches.
+ *
+ * Drift is judged as EQUALITY, not satisfiability: any divergence means the two install
+ * paths can disagree, which is the defect regardless of which copy is "right".
+ * @returns {{workspace:string, dir:string, dep:string, manifest:string|null, lock:string|null}[]}
+ */
+export function scanLockDrift(root = ROOT) {
+  const lockPath = join(root, 'package-lock.json');
+  if (!existsSync(lockPath)) return null; // caller reports NOT CHECKED rather than clean
+  let lock;
+  try {
+    lock = JSON.parse(readFileSync(lockPath, 'utf8'));
+  } catch {
+    return null;
+  }
+  const drift = [];
+  for (const dir of workspaceDirs(root)) {
+    const entry = lock.packages?.[dir];
+    if (!entry) continue; // not recorded as a workspace in this lock — nothing to compare
+    let pkg;
+    try {
+      pkg = JSON.parse(readFileSync(join(root, dir, 'package.json'), 'utf8'));
+    } catch {
+      continue;
+    }
+    const fromManifest = pkg.peerDependencies || {};
+    const fromLock = entry.peerDependencies || {};
+    for (const dep of new Set([...Object.keys(fromManifest), ...Object.keys(fromLock)])) {
+      const m = fromManifest[dep] ?? null;
+      const l = fromLock[dep] ?? null;
+      if (m !== l) drift.push({ workspace: pkg.name || dir, dir, dep, manifest: m, lock: l });
+    }
+  }
+  return drift;
+}
+
+/**
  * Scan a tree for peer-range conflicts.
- * @returns {{conflicts:object[], unsupported:object[], checked:number, unprovided:number, declarations:number, workspaces:number}}
+ * @returns {{conflicts:object[], unsupported:object[], drift:object[]|null, checked:number, unprovided:number, declarations:number, workspaces:number}}
  */
 export function scan(root = ROOT) {
   const conflicts = [];
