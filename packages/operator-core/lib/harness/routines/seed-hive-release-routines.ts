@@ -14,6 +14,7 @@
  * (so a hive-create rollback removes the rows it added).
  */
 import type postgres from 'postgres';
+import { GREEN_CHECKPOINT_CRON } from '../../release/green-checkpoint-schedule';
 import { resolveHiveReleaseEnv } from './hive-release-env';
 
 export interface SeedHiveReleaseResult {
