@@ -183,6 +183,14 @@ export default defineTool({
     // leg, an unembedded row is not merely ranked lower, it is UNREACHABLE.
     const modeAggravated = mode === 'embeddings' && notable.length > 0;
 
+    // EI-20838436704308881: a FOURTH honesty axis, distinct from all three
+    // above — they all describe how well the corpora IN SCOPE were searched,
+    // and none of them says which corpora were never in scope at all. A zero
+    // from a correctly-working, fully-embedded source still reads as "this does
+    // not exist" when the content simply lives in a corpus the caller did not
+    // name. Zero-hit only, and derived from SEARCH_SOURCES; see ./scope-residue.
+    const residue = totalHits === 0 ? scopeResidue(scope) : null;
+
     return {
       content: [{
         type: 'text',
