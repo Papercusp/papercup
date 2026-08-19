@@ -6345,20 +6345,48 @@ function RetainedLedgerCard({
           className="pc-learning__retainedseg pc-learning__retainedseg--filters"
           role="group"
           aria-label="Outcome filter"
-          title="Shipped ∕ in-flight applies where a type has statuses (plans, work items); other kinds drop out of a filtered feed."
         >
-          {RETAIN_FEED_FILTERS.map((f) => (
-            <button
-              key={f}
-              type="button"
-              aria-pressed={rship === f}
-              className={`pc-learning__retainedtab${rship === f ? " is-on" : ""}`}
-              onClick={() => void setRship(f)}
-            >
-              {RETAIN_FILTER_LABELS[f]}
-            </button>
-          ))}
+          {RETAIN_FEED_FILTERS.map((f) => {
+            // Only plans and work items carry a shipped/in-flight outcome. On
+            // every other tab these two would return an empty ledger BY
+            // CONSTRUCTION, so they are disabled rather than clickable — the
+            // Work Queue's `deriveEnumOptions` invariant, stated for a control
+            // whose options are fixed: never offer a filter that cannot yield a
+            // row. "All" stays live everywhere; it is the state such a tab is
+            // already in.
+            const inert = !tabHasOutcomes && f !== "all";
+            return (
+              <Tooltip
+                key={f}
+                label={
+                  inert
+                    ? `${RETAIN_TAB_LABELS[rtab]} have no shipped ∕ in-flight outcome — only plans and work items do.`
+                    : null
+                }
+              >
+                <button
+                  type="button"
+                  aria-pressed={!inert && rship === f}
+                  disabled={inert}
+                  className={`pc-learning__retainedtab${!inert && rship === f ? " is-on" : ""}${inert ? " is-inert" : ""}`}
+                  onClick={() => void setRship(f)}
+                >
+                  {RETAIN_FILTER_LABELS[f]}
+                </button>
+              </Tooltip>
+            );
+          })}
         </div>
+        {!tabHasOutcomes && rship !== "all" ? (
+          // The reader ASKED for a filter this tab cannot apply. Saying so is
+          // the whole point: the old behaviour honoured it server-side and
+          // showed an empty list under a "706" badge.
+          <p className="pc-learning__retainedfilternote" role="status">
+            Showing all {RETAIN_TAB_LABELS[rtab].toLowerCase()} —{" "}
+            {RETAIN_FILTER_LABELS[rship].toLowerCase()} only applies to plans
+            and work items.
+          </p>
+        ) : null}
       </div>
       <div className="pc-advpanel__bar">
         <input
