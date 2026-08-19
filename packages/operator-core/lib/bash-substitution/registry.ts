@@ -65,14 +65,16 @@ interface RawRow {
 export async function fetchSubstitutionRows(
   workspaceId: string,
   client?: OrgSql,
+  opts?: { includeDisabled?: boolean },
 ): Promise<SubstitutionRow[]> {
   const sql = client ?? getOrgPg().sql;
+  const includeDisabled = opts?.includeDisabled === true;
   const rows = (await sql`
     SELECT intent_label, bash_pattern, bash_pattern_flags, tool_name,
            tier, advisory_text, equivalence_verdict
       FROM harness_shared.bash_tool_substitutions
      WHERE workspace_id = ${workspaceId}
-       AND enabled
+       AND (enabled OR ${includeDisabled})
      ORDER BY intent_label
   `) as unknown as RawRow[];
 
