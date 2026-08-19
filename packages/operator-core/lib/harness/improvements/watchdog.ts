@@ -1253,20 +1253,29 @@ export async function isSupersededByPassingDescendant(
   checkAncestry: GitAncestryCheck,
 ): Promise<boolean> {
   const meta = signal.redTest;
-  const passSha = meta?.lastPassSha;
-  if (!meta || !passSha || meta.failShas.length === 0) return false;
+  // (WI-39890) The candidate set is EVERY pass in the window. `lastPassSha` is
+  // deliberately not consulted here: it is a wall-clock pick, and a wall-clock
+  // pick is what this predicate exists to avoid depending on.
+  const passShas = meta?.passShas ?? [];
+  if (!meta || passShas.length === 0 || meta.failShas.length === 0) return false;
   // A pass on a sha that itself failed is not supersession — it is flakiness on
   // one commit, which is a real signal and must survive. (WI-10929: the SAME
   // predicate, via the shared helper so the fact has one home — the body's
   // SAME-SHA VERDICT FLIP line is rendered off it too, instead of this branch
   // silently discarding the strongest disattribution evidence in the row.)
-  if (hasSameShaVerdictFlip(meta.failShas, passSha)) return false;
+  if (hasSameShaVerdictFlip(meta.failShas, passShas)) return false;
   for (const failSha of meta.failShas) {
     let superseded = false;
-    try {
-      superseded = await checkAncestry(failSha, passSha);
-    } catch {
-      superseded = false; // fail open — a git error never suppresses a real signal
+    for (const passSha of passShas) {
+      try {
+        if (await checkAncestry(failSha, passSha)) {
+          superseded = true;
+          break;
+        }
+      } catch {
+        // fail open — a git error on ONE candidate never suppresses a real
+        // signal, and never disqualifies the remaining candidates either.
+      }
     }
     if (!superseded) return false;
   }
