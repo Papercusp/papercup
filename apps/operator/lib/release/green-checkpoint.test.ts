@@ -7643,6 +7643,146 @@ describe("runGreenCheckpoint — longest-green-prefix (P-016)", () => {
       expect(r.advanced).toBe(false);
       expect(await revParse(repo, "ready")).toBe(c1);
     });
+
+    // EI-20840168390311296 — the SAME vacuous-maximal-prefix hazard as the gate-id case
+    // directly above, reached by a route the `includes('/')` filter cannot see: a
+    // perfectly well-formed test path that NO commit in the range touches. It passes the
+    // shape test, matches at no iteration, the scan never stops, and prefixTip is left at
+    // the maximal prefix — one commit behind a KNOWN-RED candidate.
+    //
+    // Measured on the 2026-08-18T23:15Z cron run: 6 failing test files, ZERO commits
+    // touching any of them across the 1683-commit batch (positive control on the same
+    // range for packages/operator-core/lib: 1082 commits), salvage prefix exactly 1 commit
+    // behind the candidate, ~22 minutes spent confirming it, and it failed on a SUPERSET
+    // of the tip's own 6 files.
+    describe("EI-20840168390311296: a failing path no commit touched must not authorise the maximal prefix", () => {
+      it("THE DEFECT: falls back to workspace granularity and spends ZERO confirms when the scan matched nothing anywhere", async () => {
+        const { c1, c2, c3, c4 } = await chain();
+        const { deps, calls } = partialDeps({
+          // Both shapes present, exactly like the measured run ("failing ws:
+          // @papercusp/operator-core, @papercusp/web" alongside the failing files).
+          candidateFailingTests: [FAILING, HUB],
+          affected: { [c2]: [HUB], [c3]: [HUB], [c4]: [HUB] },
+          // FAILING appears in NO commit's diff — the break predates the whole batch.
+          changedFiles: {
+            [c2]: ["x/a.ts"],
+            [c3]: ["x/b.ts"],
+            [c4]: ["x/b.ts"],
+          },
+          commits: [c2, c3, c4],
+          // Deliberately GREEN: before the guard, the maximal prefix c3 would confirm and
+          // ADVANCE here. That is what makes this a real regression test — delete the
+          // guard and this test fails loudly rather than passing for a new reason.
+          confirmGreen: true,
+        });
+
+        const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+        expect(r.advanced).toBe(false);
+        expect(await revParse(repo, "ready")).toBe(c1); // never FF'd to the vacuous prefix
+        // The whole point: not one confirm suite was spent on a foregone red.
+        expect(calls.filter((c) => c === "runGreen:confirm")).toHaveLength(0);
+        // It fell back to the workspace scan rather than simply giving up.
+        expect(calls.some((c) => c.startsWith("affected:"))).toBe(true);
+      });
+
+      it("CALIBRATION: the guard does NOT fire when the excluded TIP commit implicates the failure — the legitimate salvage still advances", async () => {
+        const { c2, c3, c4 } = await chain();
+        const { deps, calls } = partialDeps({
+          candidateFailingTests: [FAILING, HUB],
+          affected: { [c2]: [HUB], [c3]: [HUB], [c4]: [HUB] },
+          // Identical to the case above EXCEPT that the tip — the one commit the walk
+          // never examines — touches the failing file. This is the one-bad-tip-commit
+          // case the salvage exists for.
+          changedFiles: {
+            [c2]: ["x/a.ts"],
+            [c3]: ["x/b.ts"],
+            [c4]: ["x/b.ts", FAILING],
+          },
+          commits: [c2, c3, c4],
+          confirmGreen: true,
+        });
+
+        const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+        // Without this case the test above would also pass for a guard that simply always
+        // declines, which would re-break WI-38218.
+        expect(r).toMatchObject({ advanced: true, reason: "advanced-prefix", advancedTo: c3 });
+        expect(await revParse(repo, "ready")).toBe(c3);
+        expect(calls.filter((c) => c === "runGreen:confirm")).toHaveLength(1);
+      });
+
+      it("declines outright when the red localizes to neither a changed file nor a workspace", async () => {
+        const { c1, c2, c3, c4 } = await chain();
+        const { deps, calls } = partialDeps({
+          candidateFailingTests: [FAILING], // no workspace entry ⇒ failingWs is empty
+          affected: { [c2]: ["@ws/other"], [c3]: ["@ws/other"], [c4]: ["@ws/other"] },
+          changedFiles: {
+            [c2]: ["x/a.ts"],
+            [c3]: ["x/b.ts"],
+            [c4]: ["x/b.ts"],
+          },
+          commits: [c2, c3, c4],
+          confirmGreen: true,
+        });
+
+        const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+        expect(r.advanced).toBe(false);
+        expect(await revParse(repo, "ready")).toBe(c1);
+        expect(calls.filter((c) => c === "runGreen:confirm")).toHaveLength(0);
+      });
+
+      it('a tail diff that CANNOT be computed is treated as no signal, never as "the tip is clean"', async () => {
+        const { c1, c2, c3, c4 } = await chain();
+        const { deps, calls } = partialDeps({
+          candidateFailingTests: [FAILING, HUB],
+          affected: { [c2]: [HUB], [c3]: [HUB], [c4]: [HUB] },
+          // null ⇒ could not compute. Reading that as "the tip touched nothing" would be
+          // the same null-as-empty confusion the per-prefix scan already guards against.
+          changedFiles: { [c2]: ["x/a.ts"], [c3]: ["x/b.ts"], [c4]: null },
+          commits: [c2, c3, c4],
+          confirmGreen: true,
+        });
+
+        const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+        expect(r.advanced).toBe(false);
+        expect(await revParse(repo, "ready")).toBe(c1);
+        expect(calls.filter((c) => c === "runGreen:confirm")).toHaveLength(0);
+      });
+
+      it("persists the NO SIGNAL narration into the candidate log, naming the granularity it fell back to", async () => {
+        const { c2, c3, c4 } = await chain();
+        const logPath = join(repo, "no-signal.log");
+        writeFileSync(logPath, "CANDIDATE SUITE BODY\n");
+        const { deps } = partialDeps({
+          candidateFailingTests: [FAILING, HUB],
+          affected: { [c2]: [HUB], [c3]: [HUB], [c4]: [HUB] },
+          changedFiles: {
+            [c2]: ["x/a.ts"],
+            [c3]: ["x/b.ts"],
+            [c4]: ["x/b.ts"],
+          },
+          commits: [c2, c3, c4],
+          confirmGreen: true,
+          logPath,
+        });
+
+        await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+        const body = readFileSync(logPath, "utf8");
+        expect(body).toContain("partial-green-gate: NO SIGNAL at file granularity");
+        expect(body).toContain("MAXIMAL prefix by vacuous truth");
+        expect(body).toContain("Falling back to workspace granularity");
+        // WI-38218's decline line must name the scan that actually produced the verdict —
+        // saying FILE here would send the next reader to the wrong scan.
+        expect(body).toContain(
+          "implicates the failure at workspace granularity",
+        );
+        expect(body).not.toContain("✅ partial-green-gate:");
+      });
+    });
   });
 
   it("advances `main` to the longest GREEN prefix and holds the red tip", async () => {
