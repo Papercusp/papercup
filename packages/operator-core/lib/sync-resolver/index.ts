@@ -4565,70 +4565,17 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       };
       const { activeWorkspaceId } = await import('../workspace-registry');
       const { getOrgPg } = await import('@papercusp/db-org');
-      const { readRetainFeed, readInsightDocsPage, countInsightDocs } = await import('./learning-retain-read');
-      const { DOCS_CONTENT_ROOT } = await import('../agent-tools/docs/_repo-paths');
+      const { readRetainFeed } = await import('./learning-retain-read');
       const ws = activeWorkspaceId();
       const { sql } = getOrgPg();
-      const insightsDir = `${DOCS_CONTENT_ROOT}/agent-insights`;
       // Same P-040 hive lens as learning.retain above: scope the plan/wi legs
-      // (and their tab-badge counts) to the Hive's members; the rubric /
-      // runbook / recipe corpora are lens-invariant. Degrades workspace-wide.
-      let harnessScopes: string[] | undefined;
-      if (a.hive) {
-        try {
-          const { loadHarnessRegistry, hiveMemberHarnessScopes } = await import('../harness-registry');
-          const reg = await loadHarnessRegistry();
-          harnessScopes = hiveMemberHarnessScopes(reg.projects, a.hive);
-        } catch (err) {
-          console.warn('[learning.retainFeed] hive scope resolution failed:', err instanceof Error ? err.message : err);
-        }
-      }
+      // to the Hive's members; the rubric / runbook / recipe corpora are
+      // lens-invariant. Degrades workspace-wide.
+      const harnessScopes = await retainHiveScopes(a.hive, 'learning.retainFeed');
       const page = await readRetainFeed(
         sql,
         ws,
-        {
-          // WI-39535: the hive's shared-memory pool as a ledger kind. Scope
-          // resolution mirrors learning.hive (learning-hive-read):
-          // `hive:<slug>` for a selected pot, every pot's pool under the
-          // All-Pots lens (ListOptions.scope takes the array in one call). An
-          // unavailable backend throws → the leg degrades VISIBLY
-          // (degraded: ['memory']), never silently.
-          listMemories: async () => {
-            const { getMemoryBackend } = await import('../memory/backend');
-            const backend = getMemoryBackend();
-            const avail = await backend.available();
-            if (!avail.ok) throw new Error(avail.reason);
-            if (a.hive) return backend.list({ scope: `hive:${a.hive}` });
-            const { listPots } = await import('../agent-tools/pot/_resolve');
-            const slugs = (await listPots(ws)).map((p) => p.slug);
-            if (slugs.length === 0) return [];
-            return backend.list({ scope: slugs.map((s) => `hive:${s}`) });
-          },
-          listRubrics: async () => {
-            const { listRubrics } = await import('../rubrics');
-            return (await listRubrics()).map((r) => ({
-              slug: r.rubricId,
-              title: r.title,
-              status: r.status,
-              updatedAt: r.updatedAt,
-            }));
-          },
-          listRecipesPage: async ({ window, limit }) => {
-            const { listRecipesActivityPage } = await import('../code-recipes-store');
-            return listRecipesActivityPage(sql, {
-              limit,
-              before: window
-                ? { ts: window.beforeTs, includeTies: window.includeTies, idAfter: window.tieIdAfter }
-                : null,
-            });
-          },
-          countRecipes: async () => {
-            const { countRecipes } = await import('../code-recipes-store');
-            return countRecipes(sql, { includeTrivial: false });
-          },
-          listRunbooksPage: ({ window, limit }) => readInsightDocsPage(insightsDir, { window, limit }),
-          countRunbooks: () => countInsightDocs(insightsDir),
-        },
+        retainStoreDeps(sql, ws, a.hive),
         {
           tab: a.tab,
           filter: a.filter,
