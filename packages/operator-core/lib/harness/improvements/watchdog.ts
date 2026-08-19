@@ -844,6 +844,7 @@ export function redTestSignalsFromRows(rows: RedTestRow[], windowHours: number):
       earliestAt: toIsoOrUndefined(r.earliest_fail_at),
       redTest: {
         failShas,
+        passShas,
         ...(lastPassSha ? { lastPassSha } : {}),
         ...(lastPassAt ? { lastPassAt } : {}),
         ...(sameShaFlip ? { sameShaFlip } : {}),
