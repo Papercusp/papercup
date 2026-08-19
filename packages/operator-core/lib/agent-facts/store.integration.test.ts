@@ -788,15 +788,45 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
       db.sql,
     );
 
-    // Non-vacuity: the cap DID bite on this write (it evicted an incumbent),
-    // so we are on the at-cap path where a survival verdict would be produced.
-    expect(convention.evicted?.length).toBeGreaterThan(0);
+    // Non-vacuity: we must be on the at-cap path, or "no survival verdict" is
+    // trivially true of any write into a roomy scope.
+    //
+    // ⚠ This control USED TO BE `expect(convention.evicted?.length)
+    // .toBeGreaterThan(0)` — "the cap bit on this write". That asserted the
+    // EI-20824216187836980 defect as though it were the contract: an exempt row
+    // never joins the cap population, so a convention write must destroy
+    // NOTHING, and requiring it to evict pinned the bug in place. The at-cap
+    // CONDITION is what this test actually needs, so measure the condition
+    // directly rather than inferring it from the damage.
+    const [{ count: population }] = await db.sql<{ count: number }[]>`
+      SELECT count(*)::int AS count
+        FROM harness_shared.agent_facts
+       WHERE workspace_id = ${WS} AND scope = 'owner' AND scope_ref = ${scopeRef}
+         AND source_hive IS NULL AND superseded_at IS NULL
+         AND retracted_at IS NULL AND expires_at > now()
+         AND COALESCE(kind, '') <> 'convention'
+         AND key NOT LIKE 'wall:%' AND key NOT LIKE 'dead-end:%'`;
+    expect(population).toBe(FACTS_PER_SCOPE_CAP);
+
+    // ...and the exempt write cost nobody their seat, precisely because it took
+    // none (EI-20824216187836980).
+    expect(convention.evicted ?? []).toEqual([]);
 
     // ...but the written row is exempt, so reporting a victim-rank for it would
     // be a category error — it can never be the victim. Silence is the correct
     // answer here, where the old code would have ranked it among rows it can
     // never join.
     expect(convention.survival).toBeUndefined();
+
+    // The SWEEP IS LIVE at this saturation — the other half of the non-vacuity
+    // control the eviction check used to provide. An ordinary newcomer into the
+    // very same scope still evicts, so "the convention evicted nothing" is a
+    // statement about exemption and not about a sweep that stopped running.
+    const ordinary = await assertFact(
+      { ...base, key: 'ordinary-newcomer', body: 'x', confidence: 'verified', ttlSec: 30 * 86400 },
+      db.sql,
+    );
+    expect(ordinary.evicted?.length).toBe(1);
 
     // And it really is exempt: it survives its own at-cap write.
     const [row] = await db.sql<{ retracted_at: string | null }[]>`
