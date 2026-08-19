@@ -471,6 +471,9 @@ describe('recallPoolSignalsFromHealth (P-013)', () => {
     scopes: ['harness:papercusp'],
     emptyScope: 0,
     emptyScopeRate: 0,
+    // null = "corpus unknown" ⇒ effectiveZeroHitGate returns the flat bar, so
+    // every case written before the corpus term keeps its original meaning.
+    corpusActive: null,
     ...over,
   });
   const surface = (over: Partial<RecallSurfaceHealth> = {}): RecallSurfaceHealth => ({
@@ -627,6 +630,9 @@ describe('recall empty-scope + scale-contradiction (P-037)', () => {
     scopes: ['harness:papercusp'],
     emptyScope: 0,
     emptyScopeRate: 0,
+    // null = "corpus unknown" ⇒ effectiveZeroHitGate returns the flat bar, so
+    // every case written before the corpus term keeps its original meaning.
+    corpusActive: null,
     ...over,
   });
 
