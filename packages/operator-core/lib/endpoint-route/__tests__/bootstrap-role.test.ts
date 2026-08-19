@@ -87,6 +87,10 @@ vi.mock('../../adv-sessions', async (orig) => ({ ...(await orig<typeof import('.
 vi.mock('../../role-registry', () => ({ roleConsumes: (...a: unknown[]) => roleConsumesMock(...a) }));
 vi.mock('../../role-launch-spec', () => ({ buildRoleLaunchSpec: (...a: unknown[]) => buildRoleLaunchSpecMock(...a) }));
 vi.mock('../../role-codex-home', () => ({ writeRoleCodexHome: (...a: unknown[]) => writeRoleCodexHomeMock(...a) }));
+// Keep this unit suite off the live flag store. Without this mock the first
+// request waits on getFlag's production datastore timeout (~7s), exceeding
+// Vitest's 5s test budget before any route assertion can run.
+vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn(async () => false) }));
 // bootstrap-role also resolves named-fleet env from bootstrap-su (P-005); these
 // CODEX_HOME unit cases pass no fleet, so stub the no-fleet default (empty env).
 vi.mock('../routes/agent-mcp/bootstrap-su', () => ({
