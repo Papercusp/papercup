@@ -304,7 +304,14 @@ export function buildSessionStreamUrl(
   // silently never fires unless the caller passes it. `resolved.active` is the
   // server-stamped liveness we already have in hand here — reuse it rather than
   // inventing a new signal.
-  if (resolved.active === false || isEarlierSession) p.set('ended', '1');
+  // P-012: the third way to reach the same fallback — the ROSTER already told
+  // us this session's recorded id resolves to no transcript. `resolved.active`
+  // cannot carry that on the roster path (`sessionTargetFromRoster` stamps
+  // `active: true` for a claude handle), so without this leg the one case the
+  // archive fallback exists for was also the one case that never requested it.
+  // This is the same gate `thinkingStreamUrl` (AgentsRunningPill) already
+  // applies; the two surfaces build the same URL and should not disagree.
+  if (resolved.active === false || isEarlierSession || roster.thinkingResolvable === false) p.set('ended', '1');
   /* `find` + `anchorTs` are the route's EXISTING contract
      (session-anchor-window.ts): it streams the whole transcript through a
      bounded collector and returns a window CENTERED on the matched entry, then
@@ -380,9 +387,16 @@ export function useOwnerSessionChat(
   ]);
 
   const { focusSessionId, focusTerm, focusAnchorTs } = focus;
+  const rosterThinkingResolvable = rosterHint.thinkingResolvable;
   const streamUrl = useMemo(
-    () => buildSessionStreamUrl(ownerId, resolved, { focusSessionId, focusTerm, focusAnchorTs }),
-    [ownerId, resolved, focusSessionId, focusTerm, focusAnchorTs],
+    () =>
+      buildSessionStreamUrl(
+        ownerId,
+        resolved,
+        { focusSessionId, focusTerm, focusAnchorTs },
+        { thinkingResolvable: rosterThinkingResolvable },
+      ),
+    [ownerId, resolved, focusSessionId, focusTerm, focusAnchorTs, rosterThinkingResolvable],
   );
 
   const send = useCallback(
