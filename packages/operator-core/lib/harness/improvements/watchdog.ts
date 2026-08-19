@@ -756,7 +756,15 @@ interface RedTestRow {
    * signal read as one live recurring bug.
    */
   fail_shas?: (string | null)[] | null;
-  /** Newest PASSING run's sha in the window, if any. */
+  /**
+   * (WI-39890) The `commit_sha` of every PASSING run in the window, newest
+   * first — the ancestry-complete candidate set for supersession. The same
+   * out-of-order-runners property documented above for `fail_shas` applies to
+   * passes, so the newest pass by wall-clock is NOT reliably the newest by
+   * ancestry and cannot stand in for the set.
+   */
+  pass_shas?: (string | null)[] | null;
+  /** Newest PASSING run's sha in the window, if any. Rendering/context only. */
   last_pass_sha?: string | null;
   /** Newest PASSING run's timestamp in the window, if any. */
   last_pass_at?: string | Date | null;
@@ -794,6 +802,11 @@ export function redTestSignalsFromRows(rows: RedTestRow[], windowHours: number):
       // The commit dimension merges too: the canonical and checkpoint trees test
       // the same shas, so the union is what "which commits failed" means here.
       prev.fail_shas = [...(prev.fail_shas ?? []), ...(r.fail_shas ?? [])];
+      // (WI-39890) The PASS set unions for the same reason: the canonical and
+      // checkpoint trees test the same shas, and supersession needs every
+      // candidate either tree saw green — dropping one tree's passes is exactly
+      // how a passing descendant goes missing.
+      prev.pass_shas = [...(prev.pass_shas ?? []), ...(r.pass_shas ?? [])];
       const pa = toIsoOrUndefined(prev.last_pass_at);
       const pb = toIsoOrUndefined(r.last_pass_at);
       if (pb && (!pa || pb > pa)) {
