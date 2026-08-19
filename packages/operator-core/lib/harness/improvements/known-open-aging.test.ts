@@ -405,7 +405,10 @@ describe('known-open aging carries the CURRENT evidence, not just the age', () =
     };
   }
 
-  const history = steadyHistory(key, 30);
+  // 80h continuous — past the 72h GENERAL threshold. This key is not
+  // infra-class, so the 24h infra threshold the sibling suite relies on does
+  // not apply and a 30h history would never escalate.
+  const history = steadyHistory(key, 80);
   const synthetic = () => item({ id: 'EI-199', severity: 'major' }, key);
 
   it('renders the re-measured body into BOTH the comment and the coord escalation', async () => {
@@ -473,8 +476,10 @@ describe('known-open aging carries the CURRENT evidence, not just the age', () =
   it('WIRING: watchdog.ts passes the signal body, not just the key', async () => {
     const src = await readFile(new URL('./watchdog.ts', import.meta.url), 'utf8');
     expect(src).toMatch(/processAging\(\s*workspaceId,\s*partition\.knownOpen\.map\(\(s\) => \(\{ key: watchdogKeyOf\(s\), evidence: s\.body \}\)\)/);
-    // Negative control: the OLD key-only shape must be gone, or a revert would
-    // leave both forms present and this guard would pass while the fix is dead.
-    expect(src).not.toContain('partition.knownOpen.map(watchdogKeyOf)');
+    // Negative control: the OLD key-only shape must be gone from THE AGING CALL.
+    // Scoped to `processAging(` deliberately — the tick RECORD legitimately
+    // stores `knownOpenKeys: partition.knownOpen.map(watchdogKeyOf)`, so a bare
+    // substring check matches that line and fails on correct code.
+    expect(src).not.toMatch(/processAging\(\s*workspaceId,\s*partition\.knownOpen\.map\(watchdogKeyOf\)/);
   });
 });
