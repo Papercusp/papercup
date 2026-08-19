@@ -347,14 +347,30 @@ function main() {
     process.exit(EXIT_NOT_CHECKED);
   }
 
-  if (result.checked === 0 && result.conflicts.length === 0) {
+  // ⚠ ORDER IS LOAD-BEARING: manifest/lock DRIFT is judged BEFORE the "nothing
+  // examinable" and "unsupported range" exits below. Drift is a pure manifest-vs-lock
+  // comparison and does not need anything installed — but both of those exits return
+  // NOT_CHECKED, which is registered non-gating, so evaluating them first would
+  // downgrade a real gating drift into a silent pass. Caught by the sibling test's
+  // "FIRES when the lock still records a peer the manifest has dropped" case, whose
+  // fixture has an empty manifest and therefore nothing installed to examine.
+  if (result.drift === null) {
+    console.error('check-peer-dep-conflicts: NOT CHECKED — package-lock.json is missing or');
+    console.error(`  unreadable under ${ROOT}, so manifest/lock peer drift could not be judged.`);
+    process.exit(EXIT_NOT_CHECKED);
+  }
+
+  if (result.checked === 0 && result.conflicts.length === 0 && result.drift.length === 0) {
     console.error('check-peer-dep-conflicts: NOT CHECKED — no externally-provided peer');
     console.error(`  declarations were examinable (declarations=${result.declarations},`);
     console.error(`  unprovided=${result.unprovided}). Is node_modules installed?`);
     process.exit(EXIT_NOT_CHECKED);
   }
 
-  if (result.unsupported.length > 0) {
+  // Same load-bearing ordering rule as above: only take the non-gating "unsupported
+  // range" exit when there is no gating drift waiting below it. A could-not-judge must
+  // never preempt a finding we CAN judge.
+  if (result.unsupported.length > 0 && result.drift.length === 0) {
     console.error(`check-peer-dep-conflicts: NOT CHECKED — ${result.unsupported.length} declaration(s)`);
     console.error('  use a range/version form this checker does not implement:\n');
     for (const u of result.unsupported) {
