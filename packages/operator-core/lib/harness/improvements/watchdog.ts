@@ -4538,6 +4538,9 @@ async function runWatchdogTickBody(
     staleResolvedKeys: partition.staleResolved.map(watchdogKeyOf),
     standing: partition.standing.length,
     standingKeys: partition.standing.map(watchdogKeyOf),
+    // Only the keys the limit actually RELEASED — intersect with what fired this tick, so a
+    // stale eligibility never reads as a filing that happened.
+    refileEligibleKeys: [...new Set(signals.map(watchdogKeyOf))].filter((k) => refileEligible.has(k)),
     metricSuppressed: metricSuppressed.length,
     metricSuppressedKeys: metricSuppressed.map(watchdogKeyOf),
     // P-002: EVERY key observed this tick — the next tick's delta basis. Deliberately the
@@ -4633,6 +4636,9 @@ export async function runWatchdogTick(
     staleResolvedKeys: [],
     standing: 0,
     standingKeys: [],
+    // A skipped tick suppressed nothing, so it released nothing. It is also excluded from
+    // the re-file window by the `status:'ran'` filter, so it cannot break a standing run.
+    refileEligibleKeys: [],
     metricSuppressed: 0,
     metricSuppressedKeys: [],
     // A skipped tick observed nothing. Safe for the delta gate because it reads the most
