@@ -35,7 +35,9 @@ import {
   collectCandidateFiles,
   exposureCensus,
   printExposureNote,
+  readAllFiles,
   resolveSpec,
+  selectCandidates,
   PROTECTED_MODULES,
   FIXTURE_PROTECTED,
   EXPOSURE_FIXTURES,
@@ -77,6 +79,59 @@ describe('full-replacement mock guard: the analyzer has teeth (WI-7187)', () => 
     expect(resolveSpec('a/b/x.test.ts', 'vitest')).toBe('vitest');
     // Sub-path exports stay distinct identities — never collapsed onto the package root.
     expect(resolveSpec('a/b/x.test.ts', '@papercusp/flags/server')).toBe('@papercusp/flags/server');
+  });
+});
+
+describe('full-replacement mock guard: the verdict states its own scope (EI-20836231573383362)', () => {
+  const F = EXPOSURE_FIXTURES as Record<string, { path: string; text: string }>;
+
+  it('counts a bare factory on an UNPROTECTED module as exposure the check did not cover', () => {
+    const exposure = exposureCensus({
+      files: [F.bareOnUnprotected],
+      protectedModules: FIXTURE_PROTECTED,
+    });
+    expect(exposure.modules).toBe(1);
+    expect(exposure.pairs).toBe(1);
+    expect(exposure.top[0].module).toBe('@papercusp/db-org');
+    // It is exposure precisely BECAUSE checkFile stays silent on it — the two must agree.
+    expect(
+      checkFile({ ...F.bareOnUnprotected, protectedModules: FIXTURE_PROTECTED }),
+    ).toHaveLength(0);
+  });
+
+  it('does NOT count a PROTECTED module as exposure — that half is genuinely checked', () => {
+    const exposure = exposureCensus({
+      files: [F.bareOnProtected],
+      protectedModules: FIXTURE_PROTECTED,
+    });
+    expect(exposure.modules).toBe(0);
+    expect(checkFile({ ...F.bareOnProtected, protectedModules: FIXTURE_PROTECTED })).toHaveLength(1);
+  });
+
+  it('does NOT count the safe import-actual spread — it cannot strand, so it is not exposure', () => {
+    expect(
+      exposureCensus({ files: [F.safeSpreadOnUnprotected], protectedModules: FIXTURE_PROTECTED })
+        .modules,
+    ).toBe(0);
+  });
+
+  it('renders a non-zero exposure as an explicit NON-all-clear', () => {
+    const note = printExposureNote(
+      exposureCensus({ files: [F.bareOnUnprotected], protectedModules: FIXTURE_PROTECTED }),
+    );
+    expect(note).toContain('NOT a tree-wide all-clear');
+    expect(note).toContain('@papercusp/db-org');
+  });
+
+  it('CALIBRATION: a genuinely-zero exposure renders as an all-clear, not the warning', () => {
+    // Without this the test above passes even if printExposureNote returned the warning
+    // unconditionally — i.e. if the scope note were boilerplate rather than a measurement.
+    // This is the control that makes the assertion above mean something.
+    const note = printExposureNote(
+      exposureCensus({ files: [F.safeSpreadOnUnprotected], protectedModules: FIXTURE_PROTECTED }),
+    );
+    expect(note).toContain('IS a tree-wide all-clear');
+    expect(note).not.toContain('NOT a tree-wide all-clear');
   });
 });
 
