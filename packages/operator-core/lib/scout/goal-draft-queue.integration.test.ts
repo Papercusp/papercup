@@ -36,6 +36,21 @@
  * asserts the marker set rather than just the count — a draft queue that reported
  * this as an unqualified goal-scale ask would be actively misleading, and the
  * assertion below is what would fail if that regressed.
+ *
+ * ## P-009 FIXED IT — and this file now pins BOTH sides of that fix
+ * The false positive above was the measurement; P-009 is the repair. `stripCodeSpans`
+ * blanks code-ish spans before the vocabulary is matched, so a marker quoted inside a
+ * SQL literal is a MENTION, not a request, and SP-001 no longer reaches the goal rail.
+ * The corpus therefore drafts NOTHING by default — which is the correct reading of
+ * D-012, not a broken read.
+ *
+ * Both states stay asserted here on purpose:
+ *  • DEFAULT (`includeCodeSpanMatches` unset) — SP-001 is EXCLUDED. This is the fix.
+ *  • `includeCodeSpanMatches:true` — SP-001 comes back, with its provenance. This keeps
+ *    the historical evidence REPRODUCIBLE against real production bytes; without it, the
+ *    only proof the false positive ever existed would be prose in a decision record.
+ * A future edit that genuinely made this proposal goal-scale would break the default
+ * case, which is exactly when someone should be forced to look.
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { OrgTestDb } from '../../test/_org-test-db';
@@ -146,8 +161,23 @@ describe('goal draft queue (real PG, migration 623)', () => {
     await db?.cleanup?.();
   });
 
+  /** The pre-P-009 reading, kept reproducible so the D-012 false positive stays
+   *  demonstrable against real production bytes rather than only described in prose. */
+  const LEGACY = { workspaceId: WS, includeCodeSpanMatches: true } as const;
+
+  it('P-009: the code-span false positive is EXCLUDED by default', async () => {
+    // THE FIX, on real production bytes. SP-001's only marker sits inside a quoted
+    // SQL value, so after stripCodeSpans nothing matches and the corpus drafts
+    // nothing — which is D-012's measured truth, now correctly reported.
+    expect(await readGoalDraftQueue({ workspaceId: WS })).toEqual([]);
+
+    // FALSIFIER: the row is present and IS selectable — the empty result above is
+    // the predicate working, not the fixture missing or the tenant scope eating it.
+    expect(await readGoalDraftQueue(LEGACY)).toHaveLength(1);
+  });
+
   it('returns the real override-path draft from a persisted stage-artifact row', async () => {
-    const drafts = await readGoalDraftQueue({ workspaceId: WS });
+    const drafts = await readGoalDraftQueue(LEGACY);
 
     // Exactly one, from the real cycle — the ordinary proposal beside it, the
     // null-proposals row, and the other tenant's copy are all correctly absent.
@@ -164,7 +194,7 @@ describe('goal draft queue (real PG, migration 623)', () => {
   });
 
   it('names the single marker that triggered it — the match is INCIDENTAL', async () => {
-    const [draft] = await readGoalDraftQueue({ workspaceId: WS });
+    const [draft] = await readGoalDraftQueue(LEGACY);
 
     // One marker, and it is 'goal mode'.
     expect(draft!.matchedMarkers).toEqual(['goal mode']);
@@ -177,10 +207,17 @@ describe('goal draft queue (real PG, migration 623)', () => {
     expect(p.framing.toLowerCase()).not.toContain('goal mode');
     expect((p.bet ?? '').toLowerCase()).not.toContain('goal mode');
     expect((p.whyNew ?? '').toLowerCase()).not.toContain('goal mode');
+
+    // And the STRUCTURED provenance says the same thing machine-readably: the
+    // marker lives in `mechanism` alone, and every occurrence is inside code. This
+    // is the field a reader (or a UI) uses to dismiss the draft without reading it.
+    expect(draft!.markerHits).toEqual([
+      { marker: 'goal mode', fields: ['mechanism'], onlyInCodeSpan: true },
+    ]);
   });
 
   it('drafts the rails the goal rail WOULD have used, from the proposal itself', async () => {
-    const [draft] = await readGoalDraftQueue({ workspaceId: WS });
+    const [draft] = await readGoalDraftQueue(LEGACY);
 
     // The framing is one long line (449 chars), so the title is it, capped at 200.
     // Compared against the FIXTURE's framing, not against the draft's own title —
