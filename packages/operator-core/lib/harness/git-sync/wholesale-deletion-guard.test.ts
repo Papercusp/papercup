@@ -19,21 +19,34 @@ import type { RunGit } from './run-git-sync';
 /** `git status --porcelain -z -uall` payload for a set of deleted paths. */
 const porcelainDeleted = (paths: string[]) => paths.map((p) => ` D ${p}`).join('\0') + (paths.length ? '\0' : '');
 
-/** A RunGit that answers the two commands the detector issues, and nothing else. */
+/** A RunGit that answers the three commands the detector issues, and nothing else. */
 function fakeGit({
   deleted,
   tracked,
+  ignored = () => false,
   statusCode = 0,
   treeCode = 0,
+  checkIgnoreCode,
 }: {
   deleted: string[];
   tracked: string[];
+  /** Stands in for the repo's .gitignore. Default: nothing is ignored. */
+  ignored?: (path: string) => boolean;
   statusCode?: number;
   treeCode?: number;
+  /** Force a real git failure out of check-ignore (0/1 are both normal answers). */
+  checkIgnoreCode?: number;
 }): RunGit {
   return async (args) => {
     if (args[0] === 'status') return { code: statusCode, stdout: porcelainDeleted(deleted), stderr: '' };
     if (args[0] === 'ls-tree') return { code: treeCode, stdout: tracked.join('\n'), stderr: '' };
+    if (args[0] === 'check-ignore') {
+      if (checkIgnoreCode !== undefined) return { code: checkIgnoreCode, stdout: '', stderr: 'fatal' };
+      const queried = args.slice(args.indexOf('--') + 1);
+      const hits = queried.filter(ignored);
+      // git exits 1 (not an error) when no queried path is ignored.
+      return { code: hits.length ? 0 : 1, stdout: hits.join('\0'), stderr: '' };
+    }
     throw new Error(`unexpected git ${args.join(' ')}`);
   };
 }
@@ -156,5 +169,123 @@ describe('detectWholesaleDeletion — the detector', () => {
       repoPath: '/repo',
     });
     expect(offenders).toEqual([]);
+  });
+});
+
+/**
+ * WI-39889 — the guard firing on its own inverse.
+ *
+ * The 2026-08-15 wipe left `node_modules/` TRACKED in four submodules (the
+ * .gitignore was missing from the working tree while a sweep ran, so `git add -A`
+ * legitimately swept it in). An ordinary `npm run install:safe` months later turned
+ * those into 1,526-file deletion sets — 96% of "tracked" files — and this guard
+ * quarantined them on every tick for 33 hours, stalling ALL commits in those repos
+ * and stranding real source edits behind build junk.
+ *
+ * An untracking repair is the OPPOSITE of a wipe, and the two are distinguishable
+ * without ambiguity: a wipe deletes the .gitignore, a repair is deleting what the
+ * .gitignore says.
+ */
+describe('WI-39889 — deletions of ignored paths are an untracking repair, not a wipe', () => {
+  const nodeModules = (n: number) => Array.from({ length: n }, (_, i) => `node_modules/pkg${i}/index.js`);
+  const isNodeModules = (p: string) => p.startsWith('node_modules/');
+
+  it('reproduces libs/ui-primitives exactly: 1526 ignored deletions of 1600 tracked → no opinion', async () => {
+    const junk = nodeModules(1526);
+    const source = Array.from({ length: 74 }, (_, i) => `src/f${i}.ts`);
+    const offenders = await detectWholesaleDeletion({
+      runGit: fakeGit({ deleted: junk, tracked: [...junk, ...source], ignored: isNodeModules }),
+      repoPath: '/repo/libs/ui-primitives',
+    });
+    // Pre-fix this was 1526 offenders and a 33-hour commit stall.
+    expect(offenders).toEqual([]);
+  });
+
+  it('does not let ignored junk INFLATE the denominator and hide a real wipe', async () => {
+    // 20 source files, ALL deleted, alongside 1000 ignored node_modules files that
+    // are NOT deleted. Counting them, the ratio is 20/1020 = 2% — comfortably
+    // "fine". Discounting them, it is 20/20 = a wipe, which is the truth.
+    const source = Array.from({ length: 20 }, (_, i) => `src/f${i}.ts`);
+    const offenders = await detectWholesaleDeletion({
+      runGit: fakeGit({ deleted: source, tracked: [...source, ...nodeModules(1000)], ignored: isNodeModules }),
+      repoPath: '/repo',
+    });
+    expect(offenders).toHaveLength(20);
+  });
+
+  it('still catches a REAL wipe: when .gitignore goes too, nothing reads as ignored', async () => {
+    // The actual 2026-08-15 signature — the .gitignore is deleted WITH everything
+    // else, so the ignore rules are gone and the discount cannot apply.
+    const tracked = ['.gitignore', 'package.json', ...Array.from({ length: 19 }, (_, i) => `src/f${i}.ts`)];
+    const offenders = await detectWholesaleDeletion({
+      // ignored: () => false — a deleted .gitignore ignores nothing.
+      runGit: fakeGit({ deleted: tracked, tracked }),
+      repoPath: '/repo',
+    });
+    expect(offenders).toHaveLength(tracked.length);
+  });
+
+  it('a package-defining deletion stays decisive even if an ignore rule covers it', async () => {
+    // Defence in depth: a pathological .gitignore must not be able to buy silence
+    // on the one signal that is catastrophic independent of ratio.
+    const offenders = await detectWholesaleDeletion({
+      runGit: fakeGit({
+        deleted: ['package.json'],
+        tracked: ['package.json', ...Array.from({ length: 99 }, (_, i) => `src/f${i}.ts`)],
+        ignored: (p) => p === 'package.json',
+      }),
+      repoPath: '/repo',
+    });
+    expect(offenders.map((o) => o.file)).toEqual(['package.json']);
+  });
+
+  it('FAILS OPEN (counts everything) when check-ignore errors — never toward committing a wipe', async () => {
+    const junk = nodeModules(1526);
+    const source = Array.from({ length: 74 }, (_, i) => `src/f${i}.ts`);
+    const offenders = await detectWholesaleDeletion({
+      runGit: fakeGit({
+        deleted: junk,
+        tracked: [...junk, ...source],
+        ignored: isNodeModules,
+        checkIgnoreCode: 128,
+      }),
+      repoPath: '/repo',
+    });
+    // No ignore information ⇒ the pre-WI-39889 behaviour, which quarantines.
+    expect(offenders).toHaveLength(1526);
+  });
+
+  it('asks check-ignore with --no-index, or every answer would be "not ignored"', async () => {
+    // Every path this guard asks about is tracked at HEAD by construction, and
+    // WITHOUT --no-index git reports a tracked path as not-ignored. Losing this flag
+    // silently reverts the whole fix while every other test still passes.
+    const seen: string[][] = [];
+    const junk = nodeModules(3);
+    await detectWholesaleDeletion({
+      runGit: async (args) => {
+        if (args[0] === 'status') return { code: 0, stdout: porcelainDeleted(junk), stderr: '' };
+        if (args[0] === 'ls-tree') return { code: 0, stdout: [...junk, 'src/a.ts'].join('\n'), stderr: '' };
+        seen.push(args);
+        return { code: 1, stdout: '', stderr: '' };
+      },
+      repoPath: '/repo',
+    });
+    expect(seen.length).toBeGreaterThan(0);
+    for (const args of seen) expect(args).toContain('--no-index');
+  });
+
+  it('chunks a huge path set instead of blowing ARG_MAX in one argv', async () => {
+    const junk = nodeModules(1526);
+    let maxArgv = 0;
+    await detectWholesaleDeletion({
+      runGit: async (args) => {
+        if (args[0] === 'status') return { code: 0, stdout: porcelainDeleted(junk), stderr: '' };
+        if (args[0] === 'ls-tree') return { code: 0, stdout: junk.join('\n'), stderr: '' };
+        maxArgv = Math.max(maxArgv, args.length);
+        return { code: 1, stdout: '', stderr: '' };
+      },
+      repoPath: '/repo',
+    });
+    expect(maxArgv).toBeLessThan(600);
   });
 });
