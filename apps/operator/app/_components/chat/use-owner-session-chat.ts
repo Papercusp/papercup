@@ -47,6 +47,23 @@ export interface SessionRosterHint {
   sessionId?: string | null;
   ompThreadId?: string | null;
   nativeSession?: NativeSessionHandle | null;
+  /**
+   * The roster's verdict on whether this session's transcript RESOLVES AT ALL
+   * (adv-roster's `thinkingResolvable`). Only `false` carries information here:
+   * the server already probed the recorded session id and found no transcript.
+   *
+   * It has to travel with the hint because `sessionTargetFromRoster` below
+   * hardcodes `active: true` for a claude native handle — correct as a liveness
+   * statement, but it means `buildSessionStreamUrl`'s existing
+   * `resolved.active === false` leg can NEVER fire on the roster path, so a
+   * session whose transcript was rotated away never reached the
+   * rematerialize-from-archive fallback and rendered an empty pane instead
+   * (EI-16982's gap, WI-2680's symptom). Passing it separately keeps `active`
+   * honest — an unresolvable transcript is not the same claim as an ended
+   * session, and the modal branches on `resolved.active === false` for its
+   * "session ended" copy.
+   */
+  thinkingResolvable?: boolean;
 }
 
 async function listOwnerSessions(ownerId: string): Promise<SessionListRow[]> {
