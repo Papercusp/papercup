@@ -64,6 +64,7 @@ import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
 import { describeUnscanned, listTrackedFiles } from './lib/tracked-files.mjs';
+import { stripCommentsOnly } from './lib/strip-comments-and-strings.mjs';
 
 const ROOT = new URL('..', import.meta.url).pathname;
 
@@ -148,10 +149,12 @@ export const isExcluded = (f) => {
   return !/\.(ts|mjs|cjs)$/.test(f);
 };
 
-/** Strip block + line comments so prose about goal holders isn't flagged. */
-export function stripComments(text) {
-  return text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
-}
+// Comment stripping is the shared, string-aware stripCommentsOnly (imported
+// above) — a hand-rolled regex stripper here is exactly the phantom-offender
+// class guard-string-literal-blindness.test.ts exists to prevent
+// (EI-19991116787260658). stripCommentsOnly (not stripCommentsAndStrings)
+// because the predicates below must still see SQL text inside template
+// literals — string contents are live evidence for this guard.
 
 /** The table. Schema-qualified: the bare word `agent_modes` appears in prose. */
 const HOLDER_TABLE = /harness_shared\.agent_modes/;
