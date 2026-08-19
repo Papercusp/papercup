@@ -37,6 +37,17 @@ export interface RosterEntry {
   label: string;
   source: string;
   intent: string;
+  /** When `intent` was DECLARED (adv-roster.ts:374 has always served it; this
+   *  mirror simply never declared it). Without it the dossier could show what
+   *  an agent says it is doing but not how long it has been saying it — and an
+   *  intent declared three hours ago beside an idle session is the reading that
+   *  distinguishes "working on it" from "stuck on it".
+   *
+   *  OPTIONAL, like `modes` below and for the same reason: the SPA rebuilds on
+   *  the vite hot path while the sidecar only reloads on restart, so a bundle
+   *  that knows about a field is routinely served payloads that predate it.
+   *  Per `popup-agent-state-coverage-2026-08-18` P-009. */
+  intentDeclaredAt?: string | null;
   currentFiles: string[];
   host: string;
   pid: number | null;

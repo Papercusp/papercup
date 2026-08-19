@@ -711,7 +711,27 @@ export default function AgentDossier({
       </div>
 
       {entry ? (
-        <div className="pc-dossier__intent">{entry.intent || '(no declared intent)'}</div>
+        <div className="pc-dossier__intent">
+          {entry.intent || '(no declared intent)'}
+          {/* P-009. The AGE of the declaration, not of the session. An intent
+              is a present-tense sentence ("implementing X") that keeps reading
+              present-tense forever — EI-9696 is the recorded case of a reader
+              taking hours-idle agents for active editors off exactly this.
+              Rendered only when the intent itself is (an age on "(no declared
+              intent)" would date a declaration that never happened) and only
+              when the stamp is present, since an undated intent must not
+              acquire a fabricated "0s". */}
+          {entry.intent && formatElapsedSince(entry.intentDeclaredAt) ? (
+            <span
+              className="pc-dossier__intent-age"
+              data-testid="dossier-intent-age"
+              title="How long ago this intent was declared — not how long the session has been alive, and not a claim that the work is still moving."
+            >
+              {' '}
+              · {formatElapsedSince(entry.intentDeclaredAt)}
+            </span>
+          ) : null}
+        </div>
       ) : launchFailed ? (
         <div className="pc-dossier__note">This session's launch failed — it never came online.</div>
       ) : launchBlocked ? (
