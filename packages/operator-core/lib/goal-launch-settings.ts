@@ -228,41 +228,24 @@ export const goalHolderPolicySchema = z
 
 export type GoalHolderPolicy = z.infer<typeof goalHolderPolicySchema>;
 
-/** A holder policy with every field resolved — no absent, no null, no guessing. */
-export interface ResolvedGoalHolderPolicy {
-  requireLive: boolean;
-  onLoss: GoalHolderOnLoss;
-  /**
-   * True when the goal pinned NOTHING and is running entirely on defaults.
-   * P-003 refuses at the write boundary on this; a surface that wants to show
-   * "inherited" vs "pinned" reads it rather than re-deriving it from absence.
-   */
-  isDefault: boolean;
-}
-
 /**
- * Resolve one goal's holder policy at READ time (D-008).
+ * `resolveGoalHolderPolicy` and its result type MOVED to
+ * `goal-launch-settings-shared.ts` (P-004) and are re-exported here so every
+ * existing importer is unaffected.
  *
- * This is `resolveCeiling`'s sibling and follows the module header's "WHY IN THE
- * RESOLVER AND NOT AT CREATE TIME" rule exactly: resolving here governs every
- * goal that already exists, with no migration and no backfill, and keeps an
- * absent key meaning exactly one thing.
- *
- * Absent and null both mean unpinned. Only an EXPLICIT `false` opts a goal out
- * of the live-holder requirement.
+ * WHY THE MOVE: the resolver is pure, but THIS module statically imports
+ * `@papercusp/db-org`, so importing it costs the store's server dependencies at
+ * load — which is why `resolveGoalDetail` reaches for it via `await import`.
+ * The read-side activity fold (`goals/activity.ts`) is pure and SYNCHRONOUS, so
+ * a dynamic import was not open to it; putting the resolver beside the defaults
+ * it applies, in the module that already has no dependencies, is the fix that
+ * keeps one definition rather than two.
  */
-export function resolveGoalHolderPolicy(
-  settings: GoalLaunchSettings | null | undefined,
-): ResolvedGoalHolderPolicy {
-  const stored = settings?.holder;
-  const requireLive = stored?.requireLive;
-  const onLoss = stored?.onLoss;
-  return {
-    requireLive: typeof requireLive === 'boolean' ? requireLive : GOAL_HOLDER_DEFAULTS.requireLive,
-    onLoss: onLoss ?? GOAL_HOLDER_DEFAULTS.onLoss,
-    isDefault: requireLive == null && onLoss == null,
-  };
-}
+export {
+  resolveGoalHolderPolicy,
+  type GoalHolderPolicyInput,
+  type ResolvedGoalHolderPolicy,
+} from './goal-launch-settings-shared';
 
 /**
  * The write-boundary refusal message, or null when the policy is acceptable
