@@ -22,6 +22,31 @@ let fixtureQueue: unknown[][] = [];
 let queriesBuilt = 0;
 const wherePredicates: unknown[] = [];
 
+/**
+ * The holder liveness `goals:get` sees (P-004). Mutable + reset per test, the
+ * same convention as `fixtureQueue`.
+ *
+ * Mocked rather than driven through the tagged-template `ctx.tx`, because the
+ * REAL resolver would then have to reach the presence oracle to turn a holder
+ * row into a verdict — infra this unit test has no business touching.
+ *
+ * Defaults to `unheld` so the existing fixtures keep exercising the
+ * deactivation path; the `held` case below is what proves this wiring actually
+ * CONSULTS liveness rather than always deactivating.
+ */
+let holderLivenessFixture: 'held' | 'unheld' | 'lost' | 'unknown' = 'unheld';
+
+vi.mock('@papercusp/operator-core/lib/goals/holder', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/operator-core/lib/goals/holder')>()),
+  resolveGoalHolders: async (_sql: unknown, opts: { workspaceId: string; goalId: string }) => ({
+    goalId: opts.goalId,
+    workspaceId: opts.workspaceId,
+    holders: [],
+    live: [],
+    liveness: holderLivenessFixture,
+  }),
+}));
+
 function makeBuilder() {
   const rows = fixtureQueue.shift() ?? [];
   queriesBuilt += 1;
@@ -90,6 +115,55 @@ beforeEach(() => {
   fixtureQueue = [];
   queriesBuilt = 0;
   wherePredicates.length = 0;
+  holderLivenessFixture = 'unheld';
+});
+
+/**
+ * P-004 / D-011 — the wiring CONSULTS liveness; it does not assume it.
+ *
+ * Every other fixture in this file has no holder, so all of them deactivate.
+ * That means a `goals:get` which simply hardcoded `deactivated: true` would
+ * pass the entire suite — the classic guard that has never been shown to fail.
+ * These two cases are the discriminator: same row, same policy, liveness the
+ * only variable.
+ */
+describe('goals:get — deactivation is DERIVED from holder liveness (P-004)', () => {
+  it('a HELD goal stays active — liveness is what moves the verdict', async () => {
+    holderLivenessFixture = 'held';
+    fixtureQueue = [[GOAL_ROW()]];
+    const res = await tool.handler({ id: 'g-1', detail: 'summary' } as never, CTX() as never);
+    expect(res.data).toMatchObject({
+      status: 'active',
+      rawStatus: 'active',
+      deactivated: false,
+      holderLiveness: 'held',
+    });
+  });
+
+  it('`unknown` liveness NEVER deactivates — a degraded oracle read is not abandonment', async () => {
+    // The load-bearing conservative case: one flaky presence fetch must not
+    // silently empty the board of every goal it could not resolve.
+    holderLivenessFixture = 'unknown';
+    fixtureQueue = [[GOAL_ROW()]];
+    const res = await tool.handler({ id: 'g-1', detail: 'summary' } as never, CTX() as never);
+    expect(res.data).toMatchObject({
+      status: 'active',
+      deactivated: false,
+      holderLiveness: 'unknown',
+    });
+  });
+
+  it('a LOST holder deactivates — the case the plan exists for', async () => {
+    holderLivenessFixture = 'lost';
+    fixtureQueue = [[GOAL_ROW()]];
+    const res = await tool.handler({ id: 'g-1', detail: 'summary' } as never, CTX() as never);
+    expect(res.data).toMatchObject({
+      status: 'dormant',
+      rawStatus: 'active',
+      deactivated: true,
+      holderLiveness: 'lost',
+    });
+  });
 });
 
 describe('goals:get — not-found degrade (Gap 11)', () => {
