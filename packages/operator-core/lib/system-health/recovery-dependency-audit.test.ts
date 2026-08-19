@@ -20,14 +20,18 @@ import { fileURLToPath } from 'node:url';
 import {
   RECOVERY_MECHANISMS,
   EXECUTOR_REQUIRES,
+  HOLDER_LOSS_DISPOSITIONS,
   auditRecoveryDependencies,
   fateSharedComponents,
   findBrokenBackstops,
   findCoverageGaps,
+  findHolderLossGaps,
   renderRecoveryAuditTable,
   verdictFor,
+  type HolderLossDisposition,
   type RecoveryMechanism,
 } from './recovery-dependency-audit';
+import { GOAL_HOLDER_ON_LOSS } from '../goal-launch-settings-shared';
 import {
   extractManagedTimerCalls,
   scanWatchdogTimers,
