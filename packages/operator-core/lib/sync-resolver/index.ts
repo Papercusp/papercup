@@ -4591,6 +4591,47 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // ── learning.retainCounts — the Retained ledger's tab badges (WI-39900) ──
+  //
+  // The six corpus sizes, SPLIT OUT of learning.retainFeed's first page because
+  // they were the whole of its latency: Runbooks first page measured 4.79s with
+  // them inline vs 0.024s without, and the `all` tab 1.0s vs 0.13s — the rows
+  // were never the slow part. Worse than slow, they were COUPLING: the memories
+  // count is a full-corpus read over a backend with a measured ~10.9s p50
+  // (WI-39554), so every tab's rows — including tabs with no memory rows at all
+  // — waited on it, and a hiccup burned the whole 6s read budget before
+  // rendering anything.
+  //
+  // Filter-independent by construction (a badge is a CORPUS size, not a count
+  // of the current filter's matches), so it takes no tab/filter/cursor arg and
+  // the client can hold it across tab switches. Each leg degrades to null
+  // independently: an unreadable badge renders unknown, never 0.
+  'learning.retainCounts': {
+    backingTables: [
+      'harness_shared.harness_plans',
+      'harness_shared.work_items',
+      'harness_shared.code_recipes',
+      'harness_shared.memory_canonical',
+    ],
+    argsSchema: z.object({ hive: z.string().max(120).optional() }).optional(),
+    resolve: async (args) => {
+      const a = (args ?? {}) as { hive?: string };
+      const { activeWorkspaceId } = await import('../workspace-registry');
+      const { getOrgPg } = await import('@papercusp/db-org');
+      const { readRetainCounts } = await import('./learning-retain-read');
+      const ws = activeWorkspaceId();
+      const { sql } = getOrgPg();
+      const harnessScopes = await retainHiveScopes(a.hive, 'learning.retainCounts');
+      const counts = await readRetainCounts(sql, ws, retainStoreDeps(sql, ws, a.hive), {
+        ...(harnessScopes ? { harnessScopes } : {}),
+        ...(harnessScopes
+          ? { memberSlugs: harnessScopes.map((s) => (s.startsWith('harness:') ? s.slice('harness:'.length) : s)) }
+          : {}),
+      });
+      return [counts];
+    },
+  },
+
   // ── learning.retainPlanChildren — one plan row's plan-born work items ──
   //
   // The expand chevron on a Retained-ledger plan row (WI-39493): work items
