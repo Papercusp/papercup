@@ -281,6 +281,7 @@ export function buildSessionStreamUrl(
   ownerId: string | null,
   resolved: SessionListRow | null,
   focus: SessionStreamFocus = {},
+  roster: Pick<SessionRosterHint, 'thinkingResolvable'> = {},
 ): string | null {
   if (!ownerId || !resolved) return null;
   /* A search deep-link streams the session the MATCH is in, not the owner's
