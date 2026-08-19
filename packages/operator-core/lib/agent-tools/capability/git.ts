@@ -15,6 +15,7 @@ import { isAbsolute, join, resolve } from 'node:path';
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { augmentedSpawnPath, resolveBin } from '../../plugin-spawn-impl';
+import { resolveCapabilityBaseDir } from './base-dir';
 import { INLINE_OUTPUT_CAP, scratchDir } from './bash-jobs';
 import { buildCapabilitySandboxCommand, capabilityExecSandboxEnabled, scrubExecEnv } from './exec-sandbox';
 
@@ -64,7 +65,16 @@ export default defineTool({
         isError: true,
       };
     }
-    const baseDir = ctx.projectDir ?? process.cwd();
+    // EI-20881501070735530: this was `ctx.projectDir ?? process.cwd()` — the ONE
+    // capability tool missed when EI-1754 migrated read/write/edit/inspect/bash to
+    // the shared resolver. A superuser ctx has `projectDir: undefined`, so git ran
+    // in the :3070 operator's own cwd — the RELEASE checkout's `apps/operator/`
+    // subdir (a different worktree, pinned to green `main`). Measured: `rev-parse
+    // --show-toplevel` returned papercup-release with prefix `apps/operator/`, so a
+    // repo-relative pathspec after `--` resolved to `apps/operator/<path>`, matched
+    // nothing, and printed nothing at exit 0 — a confident FALSE ABSENCE for every
+    // agent using `git log -- <path>` for landing/containment triage.
+    const baseDir = resolveCapabilityBaseDir(ctx);
     const cwd = args.cwd ? (isAbsolute(args.cwd) ? args.cwd : resolve(baseDir, args.cwd)) : baseDir;
     // P-022/D-008: re-apply the OS sandbox to this operator-side git subprocess
     // when the papercusp-capability-exec-sandbox flag is armed (default-OFF, fail-open).
