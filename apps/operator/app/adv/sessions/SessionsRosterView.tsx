@@ -50,6 +50,37 @@ export interface RosterEntry {
   intentDeclaredAt?: string | null;
   currentFiles: string[];
   host: string;
+  /** The MACHINE this agent runs on — this box's fingerprint for a local agent,
+   *  the announced `machine_label` for a FEDERATED one (adv-roster.ts:195; the
+   *  local rows that carry none are back-filled with the local label there).
+   *  The key the /adv roster groups its tabs by; the dossier reads it because
+   *  `host · pid`, `cwd` and `window` below all describe a machine, and which
+   *  one they describe is otherwise unstated.
+   *
+   *  OPTIONAL for the same wire-skew reason as `intentDeclaredAt` above. Absent
+   *  is UNMEASURED, and per `popup-agent-state-coverage-2026-08-18` D-011 an
+   *  unmeasured attribute renders as nothing rather than as a guess. */
+  machineLabel?: string | null;
+  /** True for an agent on THIS machine (coord_presence); false for a federated
+   *  agent surfaced from another machine in the shared hive
+   *  (shared_session_presence) — adv-roster.ts:198. Read together with
+   *  `machineLabel`: a federated row's pid/window/cwd are on another box, so
+   *  focus/kill cannot reach them from here.
+   *
+   *  Optional for the same reason as `machineLabel`. */
+  isLocal?: boolean;
+  /** Whether a transcript exists to STREAM AT ALL (adv-roster.ts:402, from
+   *  `state.resolvable`): stamped false for an interactive CLAUDE session whose
+   *  recorded `session_id` resolves to no transcript — an ended/parked agent
+   *  whose transcript was rotated away, or a stale id with no fallback. True by
+   *  default for every other backend, whose own handle-presence gates the
+   *  affordance.
+   *
+   *  `false` is a PROPERTY of the record, not a failed measurement, so D-011
+   *  requires it be SAID where a live view is offered rather than left to
+   *  present as an empty pane (WI-2680). Optional for the wire-skew reason
+   *  above; absent means the roster could not tell us, never "unresolvable". */
+  thinkingResolvable?: boolean;
   pid: number | null;
   startedAt: string;
   heartbeatAt: string;
