@@ -457,14 +457,28 @@ function runSelfTest() {
 // Thin I/O shell
 // ---------------------------------------------------------------------------
 
+/**
+ * Pure half of the pre-filter: which already-read files could mention a protected module.
+ * Split out so ONE read of the corpus can feed both the violation scan and the exposure
+ * census — two walks could disagree about what the tree contains, and the whole point of
+ * the census is that it qualifies THIS run's verdict.
+ */
+export function selectCandidates({ files, protectedModules }) {
+  const needles = protectedModules.map((p) => p.module.split('/').pop());
+  return files.filter((f) => needles.some((n) => f.text.includes(n)));
+}
+
 /** Test files that could possibly mention a protected module — cheap substring pre-filter. */
 export function collectCandidateFiles({ listFiles, read, protectedModules }) {
-  const needles = protectedModules.map((p) => p.module.split('/').pop());
+  return selectCandidates({ files: readAllFiles({ listFiles, read }), protectedModules });
+}
+
+/** Read every listed file once, dropping unreadable ones. */
+export function readAllFiles({ listFiles, read }) {
   const out = [];
   for (const f of listFiles()) {
     const text = read(f);
     if (text === null) continue;
-    if (!needles.some((n) => text.includes(n))) continue;
     out.push({ path: f, text });
   }
   return out;
@@ -490,11 +504,10 @@ function main() {
       return null;
     }
   };
-  const candidates = collectCandidateFiles({
-    listFiles: gitTestFiles,
-    read,
-    protectedModules: PROTECTED_MODULES,
-  });
+  // ONE read, ONE parse pass, both halves of the verdict. See exposureCensus().
+  const allFiles = readAllFiles({ listFiles: gitTestFiles, read });
+  const candidates = selectCandidates({ files: allFiles, protectedModules: PROTECTED_MODULES });
+  const exposure = exposureCensus({ files: allFiles, protectedModules: PROTECTED_MODULES });
 
   if (argv.includes('--list')) {
     // One parse per candidate, not one per (module × candidate): the analyzer now runs a
