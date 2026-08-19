@@ -6815,6 +6815,11 @@ export function LearningStyles() {
       .pc-learning__retainedtab:hover { color: var(--fg-dim, #b9d4e8); }
       .pc-learning__retainedtab.is-on { background: rgba(125, 211, 252, 0.14); color: var(--fg, #e7eef5); }
       .pc-learning__retainedtab em { font-style: normal; font-size: 9.5px; color: var(--fg-mute, #7f9bb4); font-variant-numeric: tabular-nums; }
+      /* An outcome filter the current tab cannot honour (WI-39900): visibly
+         unavailable rather than clickable-into-an-empty-ledger. */
+      .pc-learning__retainedtab.is-inert { opacity: 0.38; cursor: not-allowed; }
+      .pc-learning__retainedtab.is-inert:hover { color: var(--fg-mute, #7f9bb4); }
+      .pc-learning__retainedfilternote { margin: 4px 0 0; font-size: 11px; color: var(--fg-mute, #7f9bb4); }
       .pc-learning__retainedkindcell { display: inline-flex; align-items: center; gap: 5px; font-size: 10.5px; color: var(--fg-mute, #7f9bb4); }
       .pc-learning__retainedkindcell svg { flex-shrink: 0; }
       .pc-learning__retainedplancell { display: inline-flex; align-items: center; gap: 5px; min-width: 0; width: 100%; }
