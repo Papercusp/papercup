@@ -280,12 +280,22 @@ export interface GoalSpendRollupSweepResult {
  */
 export async function runGoalSpendRollupOnce(sql: Sql): Promise<GoalSpendRollupSweepResult> {
   const enabled = await getFlag(FLAGS.GOAL_SPEND_ROLLUP_TICK, 'system').catch(() => false);
-  if (!enabled) return { ok: true, ran: false, checked: 0, written: 0, errors: [] };
-  const goals = await sql<Array<{ id: string; workspace_id: string }>>`
-    SELECT id, workspace_id FROM harness_shared.goals WHERE status = 'active'
+  if (!enabled)
+    return { ok: true, ran: false, checked: 0, written: 0, tripwiresAdvanced: 0, errors: [] };
+  const goals = await sql<
+    Array<{
+      id: string;
+      workspace_id: string;
+      tripwires: GoalTripwireLike[] | null;
+      created_at: Date;
+    }>
+  >`
+    SELECT id, workspace_id, tripwires, created_at
+      FROM harness_shared.goals WHERE status = 'active'
   `;
   const errors: Array<{ goalId: string; error: string }> = [];
   let written = 0;
+  let tripwiresAdvanced = 0;
   for (const g of goals) {
     try {
       const scope = { workspaceId: g.workspace_id, goalId: g.id };
@@ -295,11 +305,28 @@ export async function runGoalSpendRollupOnce(sql: Sql): Promise<GoalSpendRollupS
       // vanished mid-sweep, or a scope mismatch) — an error, never a success.
       if (count !== 1) throw new Error(`snapshot UPDATE matched ${count} rows`);
       written += 1;
+
+      // P-004: carry the number one field further, onto the tripwire it was
+      // always meant to advance. Isolated from the snapshot write above — a
+      // tripwire refresh failing must never lose the spend snapshot that
+      // already succeeded, so it throws only after `written` is banked.
+      const refreshed = await refreshGoalTripwires(sql, scope, {
+        tripwires: g.tripwires ?? null,
+        createdAtMs: new Date(g.created_at).getTime(),
+      }, rollup);
+      tripwiresAdvanced += refreshed.advanced;
     } catch (e) {
       errors.push({ goalId: g.id, error: e instanceof Error ? e.message : String(e) });
     }
   }
-  return { ok: errors.length === 0, ran: true, checked: goals.length, written, errors };
+  return {
+    ok: errors.length === 0,
+    ran: true,
+    checked: goals.length,
+    written,
+    tripwiresAdvanced,
+    errors,
+  };
 }
 
 let tickTimer: ManagedHandle | null = null;
