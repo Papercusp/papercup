@@ -472,6 +472,17 @@ export function planWatchdogCaptures(signals: WatchdogSignal[], opts: WatchdogPl
 
 // ── P-004/P-005 key-based pre-filter (watchdog-audit-2026-06-09) ─────────────
 
+/**
+ * How long after a matching item's newest update the DELTA GATE keeps suppressing a
+ * continuously-firing key (EI-20847917368795366).
+ *
+ * Sized against the churn it must prevent, not against the condition: the gate exists for
+ * a retirement that lands BETWEEN two ticks (~15 min apart), so hours of margin is already
+ * generous. What it must not be is unbounded — that is the blackout this constant ends.
+ * Past it, a still-firing condition is allowed to re-file so something tracks it again.
+ */
+export const STANDING_SUPPRESSION_MS = 6 * 3_600_000;
+
 /** An existing improvement matched by `payload.watchdogKey` (the dedup feed). */
 export interface WatchdogKeyDup {
   watchdogKey: string;
