@@ -109,17 +109,20 @@ export const CHECKPOINT_MAX_RUNTIME_SEC = 3 * 60 * 60;
 
 /** Internal env transport from the detached MANUAL launcher to green-checkpoint.ts.
  *
- * The scheduled path owns a parent-side 120m suite timeout followed by a 15s SIGKILL grace,
- * while this detached path has no such parent and previously inherited only the 3h orphan
+ * The scheduled path owns a parent-side suite timeout followed by a SIGKILL grace, while
+ * this detached path has no such parent and previously inherited only the 3h orphan
  * backstop. Stamp the equivalent full kill window into the transient unit so a wedged manual
  * run terminates on the same schedule. The 3h systemd cap remains the final launch backstop.
  *
- * These values are mirrored in apps/operator/lib/release/green-checkpoint.ts because importing
- * release-actions.ts here registers routine actions as a module-load side effect. The cross-file
- * timing test pins the mirror to GREEN_CHECKPOINT_SUITE_TIMEOUT_MS + 15s.
+ * This used to be a hand-typed COPY of that window, because importing release-actions.ts
+ * here registers routine actions as a module-load side effect, and the cross-file timing
+ * test existed to catch the copy drifting. Both constants now come from
+ * `release/green-checkpoint-schedule.ts`, a leaf with no imports and no side effects — so
+ * the window is DERIVED and cannot drift, and retuning the budget moves this with it.
  */
 export const MANUAL_CHECKPOINT_WATCHDOG_ENV = 'PAPERCUSP_MANUAL_GREEN_CHECKPOINT_WATCHDOG_MS';
-export const MANUAL_CHECKPOINT_WATCHDOG_MS = 115 * 60_000 + 15_000;
+export const MANUAL_CHECKPOINT_WATCHDOG_MS =
+  GREEN_CHECKPOINT_SUITE_TIMEOUT_MS + GREEN_CHECKPOINT_SIGKILL_GRACE_MS;
 
 export interface LaunchCheckpointResult {
   launched: boolean;
