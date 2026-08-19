@@ -4346,26 +4346,33 @@ async function runWatchdogTickBody(
   // and the P-009 deferred-escalation boost below (its `deferredKeys`) — one indexed read per
   // tick rather than one per consumer. Best-effort: on failure both consumers degrade to
   // their no-history behaviour, which is exactly today's semantics.
-  let priorTick: RecentTick | undefined;
+  // EI-20847917368795366: the SAME read now returns the re-file window (still one indexed
+  // read per tick — `limit` widened from 1). ticks[0] remains the prior tick the delta gate
+  // and the deferred boost consume; the tail is the consecutive-standing history that
+  // decides whether a permanently-suppressed key has earned its one re-file.
+  let recentTicks: RecentTick[] = [];
   if (signals.length > 0) {
     try {
-      priorTick = (await readRecentTicks(workspaceId, 1, { status: 'ran' }))[0];
+      recentTicks = await readRecentTicks(workspaceId, WATCHDOG_REFILE_HISTORY_LIMIT, { status: 'ran' });
     } catch {
-      /* no prior-tick history this tick: delta gate off (fails open), deferred boost empty */
+      /* no prior-tick history this tick: delta gate off (fails open), deferred boost empty,
+         re-file rate limit off (fails CLOSED — an empty set suppresses nothing extra) */
     }
   }
+  const priorTick: RecentTick | undefined = recentTicks[0];
   const priorSeenKeys = priorTick?.seenKeys ?? [];
+  const refileEligible = computeRefileEligibleKeys(recentTicks, { nowMs: Date.now() });
 
   let partition: SignalPartition = { fresh: signals, knownOpen: [], staleResolved: [], standing: [] };
   if (signals.length > 0) {
     try {
       const dups = await readKeyDups([...new Set(signals.map(watchdogKeyOf))]);
-      partition = partitionSignalsByKnownKeys(signals, dups, priorSeenKeys);
+      partition = partitionSignalsByKnownKeys(signals, dups, priorSeenKeys, refileEligible);
     } catch (e) {
       console.warn(`[improvement-watchdog] key-dup pre-filter failed (degrading to title dedup): ${e instanceof Error ? e.message : e}`);
       // The dup pre-filter is gone, but the delta gate is independent of it and is the
       // load-bearing anti-churn guard — apply it alone rather than re-filing everything.
-      if (priorSeenKeys.length > 0) partition = partitionSignalsByKnownKeys(signals, [], priorSeenKeys);
+      if (priorSeenKeys.length > 0) partition = partitionSignalsByKnownKeys(signals, [], priorSeenKeys, refileEligible);
     }
   }
 
