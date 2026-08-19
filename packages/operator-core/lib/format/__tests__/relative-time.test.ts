@@ -3,7 +3,12 @@
  * Per `plans-newbutton-and-subharness-scope-2026-05-25` P-027/P-028.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { formatAbsoluteUpdated, formatRelativeUpdated } from '../relative-time';
+import {
+  formatAbsoluteUpdated,
+  formatElapsedSince,
+  formatRelativeUpdated,
+  formatTimeLeft,
+} from '../relative-time';
 
 describe('formatRelativeUpdated', () => {
   const FIXED_NOW = Date.parse('2026-05-25T12:00:00.000Z');
