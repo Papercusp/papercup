@@ -704,3 +704,122 @@ describe('cascade advance (D-005/P-013)', () => {
     expect(digest).toHaveLength(1); // the raced call appended nothing
   });
 });
+
+// ── WI-39862 honest expiry (late disposition) + WI-39861 refill via decline ──
+describe('consultCloseCore — late disposition on an expired consult (WI-39862 / EI-20824019943814803)', () => {
+  async function seedExpired(opts: { digest?: unknown[]; outcome?: unknown } = {}): Promise<string> {
+    const id = await seedConsult({ state: 'expired' });
+    await rootSql`
+      UPDATE harness_shared.consult_state
+         SET closed_at = ${NOW.toISOString()}::timestamptz,
+             cascade_digest = ${JSON.stringify(opts.digest ?? [])}::jsonb,
+             outcome = ${opts.outcome ? JSON.stringify(opts.outcome) : null}::jsonb
+       WHERE workspace_id = ${WS} AND conversation_id = ${id}`;
+    return id;
+  }
+
+  it('the REQUESTER may close an expired consult — the late disposition overwrites state + outcome (archive candidacy regained)', async () => {
+    const id = await seedExpired({
+      digest: [{ ownerId: 'rev-1', kind: 'answer', at: NOW.toISOString(), excerpt: 'ans' }],
+      outcome: { disposition: 'cascade_exhausted_with_answers', answers: 1, answered_by: ['rev-1'] },
+    });
+    const { deps, posts } = makeDeps();
+    const r = await consultCloseCore(
+      { workspaceId: WS, authorId: REQUESTER, conversationId: id, outcome: 'answered', answer: 'the settled answer', confidence: 0.8 },
+      deps,
+    );
+    if ('error' in r) throw new Error(r.error);
+    expect(r.state).toBe('closed_answered');
+    expect(posts).toHaveLength(1);
+    const row = await stateRow(id);
+    expect(row.state).toBe('closed_answered');
+    const outcome = typeof row.outcome === 'string' ? JSON.parse(row.outcome as string) : row.outcome;
+    expect(outcome).toMatchObject({ answer: 'the settled answer', confidence: 0.8 });
+    expect(row.closed_at).not.toBeNull();
+  });
+
+  it('a NON-requester (even the last responder) still cannot close an expired consult', async () => {
+    const id = await seedExpired();
+    const { deps } = makeDeps();
+    const r = await consultCloseCore(
+      { workspaceId: WS, authorId: RESPONDER, conversationId: id, outcome: 'cant_help', reason: 'late' },
+      deps,
+    );
+    expect(r).toMatchObject({ error: 'consult_not_open', state: 'expired' });
+  });
+
+  it('reply and decline on an expired consult stay refused — the hint names the requester late-close path', async () => {
+    const id = await seedExpired();
+    const { deps } = makeDeps();
+    const reply = await consultReplyCore(
+      { workspaceId: WS, authorId: RESPONDER, conversationId: id, kind: 'answer', body: 'late', evidence: EVIDENCE },
+      deps,
+    );
+    expect(reply).toMatchObject({ error: 'consult_not_open', state: 'expired' });
+    expect((reply as { hint?: string }).hint).toContain('consult:close');
+    const decline = await consultDeclineCore(
+      { workspaceId: WS, authorId: RESPONDER, conversationId: id, reason: 'late' },
+      deps,
+    );
+    expect(decline).toMatchObject({ error: 'consult_not_open', state: 'expired' });
+  });
+});
+
+describe('consultDeclineCore — exhaustion honesty + min-ANSWERS refill (WI-39862 / WI-39861)', () => {
+  it('a decline-exhaustion terminal that collected answers says so on the outcome', async () => {
+    // Menu [ans-r, RESPONDER], cursor 1 (RESPONDER current), digest holds ans-r's answer.
+    const id = await seedConsult({ state: 'active', routing: menuSnapshot(['ans-r', RESPONDER]) });
+    await rootSql`
+      UPDATE harness_shared.consult_state
+         SET cascade_cursor = 1,
+             cascade_digest = ${JSON.stringify([{ ownerId: 'ans-r', kind: 'answer', at: NOW.toISOString(), excerpt: 'real answer' }])}::jsonb
+       WHERE workspace_id = ${WS} AND conversation_id = ${id}`;
+    const { deps } = makeDeps();
+    const r = await consultDeclineCore(
+      { workspaceId: WS, authorId: RESPONDER, conversationId: id, reason: 'cannot add more' },
+      deps,
+    );
+    if ('error' in r) throw new Error(r.error);
+    expect(r.state).toBe('declined');
+    expect(r.cascade.exhausted).toBe(true);
+    const row = await stateRow(id);
+    const outcome = typeof row.outcome === 'string' ? JSON.parse(row.outcome as string) : row.outcome;
+    expect(outcome).toMatchObject({ reason: 'cannot add more', answers: 1, answered_by: ['ans-r'] });
+  });
+
+  it('a decline that exhausts BELOW min triggers the refill round (trigger-independence with the expiry path)', async () => {
+    const routing = {
+      floor: 0.5,
+      simFloor: 0.4,
+      candidates: [
+        { ownerId: RESPONDER, score: 0.9, signals: { similarity: 0.8 }, liveness: 'live' },
+        { ownerId: 'w-b', score: 0.6, signals: { similarity: 0.5 }, liveness: 'live' },
+      ],
+      selection: {
+        min: 1,
+        max: 1,
+        selected: [{ ownerId: RESPONDER, via: 'floor', score: 0.9, similarity: 0.8, liveness: 'live' }],
+      },
+    };
+    const id = await seedConsult({ state: 'active', routing });
+    const { deps, reachCalls } = makeDeps();
+    const r = await consultDeclineCore(
+      { workspaceId: WS, authorId: RESPONDER, conversationId: id, reason: 'not my area' },
+      deps,
+    );
+    if ('error' in r) throw new Error(r.error);
+    expect(r.state).toBe('awaiting_responder');
+    expect(r.cascade).toMatchObject({ advanced_to: 'w-b', exhausted: false, refilled: true });
+    expect(r.hint).toContain('min-ANSWERS refill');
+    const row = await stateRow(id);
+    expect(row.state).toBe('awaiting_responder');
+    expect(row.responder_id).toBe('w-b');
+    expect(row.closed_at).toBeNull();
+    const routingRow = (typeof row.routing === 'string' ? JSON.parse(row.routing as string) : row.routing) as {
+      selection?: { selected?: Array<Record<string, unknown>>; refill?: { added?: string[] } };
+    };
+    expect(routingRow.selection?.selected?.[1]).toMatchObject({ ownerId: 'w-b', refill: true });
+    expect(routingRow.selection?.refill?.added).toEqual(['w-b']);
+    expect(reachCalls.at(-1)?.responder).toBe('w-b');
+  });
+});
