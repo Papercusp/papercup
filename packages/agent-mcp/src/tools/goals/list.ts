@@ -12,6 +12,9 @@ import { desc } from 'drizzle-orm';
 import { z } from 'zod';
 import { generated, schemaOf } from '@papercusp/db-org';
 import { defineTool } from '@papercusp/tooldef';
+import { goalHolderKey, resolveGoalHoldersBatch } from '@papercusp/operator-core/lib/goals/holder';
+import { resolveGoalEffectiveActivity } from '@papercusp/operator-core/lib/goals/activity';
+import { parseGoalLaunchSettings } from '@papercusp/operator-core/lib/goal-launch-settings';
 import {
   blockerStatusKey,
   goalReadiness,

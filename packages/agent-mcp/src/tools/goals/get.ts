@@ -112,6 +112,20 @@ export default defineTool({
     return {
       data: {
         ...goal,
+        // `...goal` spreads the RAW column, so these must land AFTER it — the
+        // whole point is that a `full` read cannot hand back `active` for a
+        // goal nothing is holding.
+        status: activity.effectiveStatus,
+        rawStatus: goal.status,
+        deactivated: activity.deactivated,
+        holderLiveness: holders.liveness,
+        /** Why `deactivated` is what it is — the policy the fold actually used. */
+        holderPolicy: activity.policy,
+        holders: holders.holders.map((h) => ({
+          ownerId: h.ownerId,
+          live: h.live,
+          sessionState: h.sessionState,
+        })),
         children,
         pause,
         // The archived record of the last pause that has since been resumed —
