@@ -409,6 +409,25 @@ export interface Proposal {
    *   creates+starts the goal autonomously; rails ride inside the goal record).
    */
   routeHint?: 'plan' | 'gym' | 'improvement' | 'instance' | 'goal';
+  /**
+   * WI-39879 — the rail the model ASKED FOR that intake did not accept, recorded
+   * verbatim so a starved rail is READABLE rather than merely countable.
+   *
+   * ⚠ EVIDENCE ONLY. This field NEVER routes. `classifyProposal` reads `routeHint`
+   * and nothing else, so a proposal carrying `droppedRouteHint: 'goal'` still takes
+   * DEFAULT_ROUTING_RAIL exactly as before — admitting 'goal' at intake remains the
+   * owner-reserved decision (D-006), untouched by this field.
+   *
+   * WHY IT EXISTS: WI-39721 already tallied dropped hints, but the tally died at the
+   * `recombine` PORT boundary — the port is typed `=> Promise<Proposal[]>`, so the
+   * cycle structurally could not see it and the only trace was a console.warn. The
+   * proposal CONTENT was persisted all along (scout_cycle_stage_artifacts.proposals);
+   * the single field identifying which of those proposals were goal-scale was dropped
+   * one hop before it landed. Carrying it on the Proposal makes the existing artifact
+   * answer "what WOULD the Blender have proposed as a goal?" with no new pipeline,
+   * no new table, and no write to `harness_shared.goals`.
+   */
+  droppedRouteHint?: string;
   /** Corpus pattern refs carried from the source ideas — grounding (⊆ digest refs) + P-013 lens attribution. */
   addressesPatternRefs: string[];
   /** Federated mutation seeds preserved from the source ideas. */
