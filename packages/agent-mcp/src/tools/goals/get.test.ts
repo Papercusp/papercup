@@ -239,7 +239,7 @@ describe('goals:get — full mode fires the children query (Gap 11)', () => {
       rawStatus: 'active',
       deactivated: true,
       holderLiveness: 'unheld',
-      holderPolicy: { requireLive: true, onLoss: 'report', isDefault: true },
+      holderPolicy: { requireLive: true, onLoss: 'deactivate', isDefault: true },
       holders: [],
       children: [
         { id: 'g-2', title: 'Child A' },
