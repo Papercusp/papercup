@@ -377,6 +377,13 @@ export async function recombineProposals(
               addressesPatternRefs,
               ...(seededByRefs.length ? { seededByRefs } : {}),
               ...(parsed.routeHint ? { routeHint: parsed.routeHint } : {}),
+              // WI-39879: the unaccepted ask rides ON the proposal too, not only in
+              // the batch tally below. Routing is UNCHANGED — classifyProposal reads
+              // `routeHint` alone, which is still undefined here — but the proposal
+              // now persists (via scout_cycle_stage_artifacts.proposals) carrying the
+              // rail it wanted, which is what makes a starved rail READABLE instead of
+              // merely countable. Widening intake stays owner-reserved (D-006).
+              ...(parsed.droppedRouteHint ? { droppedRouteHint: parsed.droppedRouteHint } : {}),
             }
           : { sourceIdeaIds, addressesPatternRefs, ...(seededByRefs.length ? { seededByRefs } : {}) };
 
