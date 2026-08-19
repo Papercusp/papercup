@@ -15,6 +15,7 @@ import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { runFullTextSearch } from '@papercusp/search';
 import { SEARCH_SOURCES } from './sources';
+import { scopeResidue } from './scope-residue';
 import { rerankCandidateCount, rerankPageHead } from './rerank';
 import { searchFilterArgs, resolveSearchFilters } from './filters';
 import { scopeArg, DEFAULT_SCOPE } from './scope';
@@ -127,6 +128,16 @@ export default defineTool({
     // never changes `results`/`total_hits` for existing callers).
     const workItemUnsearched = !scope.includes('work_item');
 
+    // EI-20838436704308881: the hint above protects exactly ONE source, so the
+    // next instance of the same false-absence class landed on a different one —
+    // an agent read a correct zero from `turns` (the operator-chat corpus) as
+    // proof the scope was dead, because the phrase lived in `session_turn`.
+    // ./scope-residue derives the unsearched set from SEARCH_SOURCES, so it
+    // cannot fall behind the registry the way a hand-typed name does. Emitted
+    // only on a ZERO — that is the exact moment a caller is about to mistake
+    // their own scoping for an absence, and it costs nothing on a hit.
+    const residue = totalHits === 0 ? scopeResidue(scope) : null;
+
     return {
       content: [{
         type: 'text',
@@ -143,6 +154,7 @@ export default defineTool({
                   "Before filing (improvements:capture / work_items:create), re-run with scope including 'work_item' to dedup-check it.",
               }
             : {}),
+          ...(residue ? { scope_residue: residue } : {}),
         }),
       }],
     };
