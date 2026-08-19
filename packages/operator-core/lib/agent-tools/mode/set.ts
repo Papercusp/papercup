@@ -26,6 +26,7 @@ import { COORD_ROLES } from '../coordination/roles';
 import { sendMessage } from '../coordination/messages';
 import { modeById, MODES, modeImpliesAutonomy, modeRequiresSubject } from '../../modes/registry';
 import { setMode, getModeSubject } from '../../modes/store';
+import { goalHolderPolicyProblem, readGoalLaunchSettings } from '../../goal-launch-settings';
 import { assertFact, retractFact, FACT_BODY_MAX_CHARS } from '../../agent-facts/store';
 import { refreshControlAnchorAfterMutation } from '../coordination/control-anchor';
 import { getLoopStatus } from '../../harness/routines/loop';
