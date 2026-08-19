@@ -152,6 +152,40 @@ describe('diffRegistry', () => {
     }
   });
 
+  /**
+   * FALSIFIABILITY CONTROL for the test directly above — a guard that has never
+   * failed is a guard nobody has tested.
+   *
+   * The control is the PRE-D-046 expectation shape (an `ExpectedRow` carrying no
+   * `tier`), fed to the REAL `diffRegistry`. That is the whole of the old
+   * behaviour, reproduced without duplicating the comparison logic and without
+   * mutating anything in the tree: if the tier expectation were not load-bearing,
+   * this would report the same drift the real expectation does, and the assertion
+   * that it reports NOTHING would fail.
+   *
+   * The second half is the calibration the repo's mutation-probe guidance asks
+   * for: a control that catches nothing because it is simply broken would pass
+   * the first assertion for the wrong reason, so the same stripped expectation
+   * must still detect an ordinary, non-tier drift.
+   */
+  it('CONTROL: the pre-D-046 expectation (no tier) misses the drift, but still catches an ordinary one', () => {
+    const pair = POLICY_PAIRS[0];
+    expect(pair, 'no policy pair to control against').toBeDefined();
+    const withoutTier: ExpectedRow[] = expected.map(({ tier: _tier, ...rest }) => rest);
+
+    const tierDrifted = expected.map((e) => rowFor(e, e.intentLabel === pair.intentLabel ? { tier: 'observe' } : {}));
+    expect(
+      diffRegistry(withoutTier, tierDrifted),
+      'the old shape must be BLIND to this — if it sees it, the new expectation is not what catches it',
+    ).toEqual([]);
+
+    // Calibration: the control is not merely inert.
+    const advisoryDrifted = expected.map((e) =>
+      rowFor(e, e.intentLabel === pair.intentLabel ? { advisoryText: 'stale' } : {}),
+    );
+    expect(diffRegistry(withoutTier, advisoryDrifted)).toHaveLength(1);
+  });
+
   it('names the direction of a tier drift, so the reader knows which value is LIVE', () => {
     const pair = POLICY_PAIRS[0];
     expect(pair, 'no policy pair to format').toBeDefined();
