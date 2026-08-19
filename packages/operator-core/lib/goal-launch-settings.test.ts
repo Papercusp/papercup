@@ -54,6 +54,7 @@ import {
   resolveCeiling,
   resolveGoalLaunch,
   goalHolderPolicySchema,
+  goalHolderPolicyProblem,
   resolveGoalHolderPolicy,
   GOAL_HOLDER_ON_LOSS,
   type GoalLaunchSettings,

@@ -142,6 +142,52 @@ describe('goals:create — workspace resolution', () => {
   });
 });
 
+/* ── the holder-policy write boundary (goal-live-holder-guarantee-2026-08-18
+   P-003, D-008) ───────────────────────────────────────────────────────────────
+   `requireLive` defaults TRUE at READ time so the goals that already existed are
+   covered with no migration. That default is a rescue for the legacy population,
+   not a licence for it to grow — so this door refuses a NEW goal whose creator
+   declared nothing, and the undeclared set can only shrink from here. ── */
+describe('goals:create — a goal must declare its holder policy', () => {
+  it('REFUSES a goal that declares no holder policy, BEFORE any insert', async () => {
+    const res = await call(ARGS({ holder: undefined }), CTX());
+    expect(res.data).toBeNull();
+    expect(res.degraded).toBe(true);
+    expect(res.degradedReasons?.join(' ')).toMatch(/holder policy/i);
+    // Refused, not written-then-repaired: a goal that exists for even a moment
+    // with no declared policy is the state this guard exists to prevent.
+    expect(calls.some((c) => /INSERT INTO/.test(c.sql))).toBe(false);
+  });
+
+  it('ACCEPTS an explicit opt-OUT and stores it — the escape hatch must be sayable', async () => {
+    const res = await call(ARGS({ holder: { requireLive: false } }), CTX());
+    expect(res.data).not.toBeNull();
+    const insert = calls.find((c) => /INSERT INTO/.test(c.sql))!;
+    expect(JSON.stringify(insert.params)).toContain('"requireLive":false');
+  });
+
+  it('persists the declared policy into launch_settings on the SAME insert', async () => {
+    // Same statement as the row it governs, not a follow-up write: a two-write
+    // shape has a window in which the goal exists undeclared, and on a failure
+    // between them that window never closes.
+    const res = await call(ARGS({ holder: { requireLive: true, onLoss: 'respawn' } }), CTX());
+    expect(res.data).not.toBeNull();
+    const insert = calls.find((c) => /INSERT INTO/.test(c.sql))!;
+    expect(insert.sql).toMatch(/launch_settings/);
+    expect(JSON.stringify(insert.params)).toContain('"onLoss":"respawn"');
+  });
+
+  /* CONTROL. Without this, every assertion above still passes if the door
+     refused EVERY create — strict-looking and broken, with no way for the suite
+     to tell the difference. The default fixture declares a policy, so this also
+     pins that declaring is genuinely sufficient. */
+  it('CONTROL: a declared policy is admitted and writes the row', async () => {
+    const res = await call(ARGS(), CTX());
+    expect(res.data).not.toBeNull();
+    expect(calls.some((c) => /INSERT INTO/.test(c.sql))).toBe(true);
+  });
+});
+
 describe('goals:create — what the row must carry', () => {
   it('persists the kill criterion, which no pot could carry for a multi-project goal', async () => {
     const res = await call(ARGS({ killCriterion: 'no paying user after 2 weeks' }), CTX());
