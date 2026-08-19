@@ -23,11 +23,11 @@ import {
 /** The human `Error: ENOENT: …, open '<path>'` form, verbatim from the incident log
  *  (line 16897), ANSI colour codes included. */
 const humanForm = (root: string, dir: "ssr" | "client", hash: string) =>
-  `[31m[1mError[22m: ENOENT: no such file or directory, open '${root}/${dir}/${hash}'[39m`;
+  `\x1b[31m\x1b[1mError\x1b[22m: ENOENT: no such file or directory, open '${root}/${dir}/${hash}'\x1b[39m`;
 
 /** Vitest's own `Serialized Error: { … path: '<path>' }` form (incident log line 18357). */
 const serializedForm = (root: string, hash: string) =>
-  `[31m[1mSerialized Error:[22m[39m [90m{ errno: -2, code: 'ENOENT', syscall: 'open', path: '${root}/ssr/${hash}' }[39m`;
+  `\x1b[31m\x1b[1mSerialized Error:\x1b[22m\x1b[39m \x1b[90m{ errno: -2, code: 'ENOENT', syscall: 'open', path: '${root}/ssr/${hash}' }\x1b[39m`;
 
 const HASH_A = "a840d7df4b7ecb7bd8c054ce0820018df96d7351";
 const HASH_B = "f73d01ba976bca57945adce2a3bda2be9886e775";
