@@ -734,6 +734,101 @@ export function findCoverageGaps(
   };
 }
 
+/**
+ * ── HOLDER-REQUIRED GOALS (goal-live-holder-guarantee-2026-08-18 P-002) ───────────
+ *
+ * A holder-required goal declares, in `launch_settings.holder.onLoss`, what happens
+ * when its holder stops being live. That is a RECOVERY DISPOSITION in exactly this
+ * module's sense — it names what is supposed to put the system right — so it belongs
+ * under the same rule as every other one: DECLARED and CHECKED, never assumed.
+ *
+ * The gap this closes is specific. `onLoss` is a closed set in the schema, and adding
+ * a value to it is a one-line edit that reads as harmless. But each value is a promise
+ * about a recovery, and a value whose recovery does not exist is a goal quietly
+ * declaring a guarantee nobody honours — the same shape as the stale `agent_modes` row
+ * the whole plan exists to kill, one level up. So every admitted value must say here
+ * WHICH of three things it is, and the test fails when one does not:
+ *
+ *   derived-at-read     — no runtime actor at all. Nothing polls, nothing sweeps.
+ *                         Correct BECAUSE it is fate-shared with nothing.
+ *   recovery-mechanism  — a real actor, which must therefore appear in
+ *                         RECOVERY_MECHANISMS and be judged like every other one.
+ *   planned             — no actor exists yet, said out loud, with the plan item that
+ *                         owes it. Anything else here would let "we'll build it later"
+ *                         masquerade as coverage.
+ */
+export interface HolderLossDisposition {
+  kind: 'derived-at-read' | 'recovery-mechanism' | 'planned';
+  /** Required for 'recovery-mechanism': the RECOVERY_MECHANISMS row that performs it. */
+  mechanism?: string;
+  /** Required for 'planned': who owes the actor. */
+  planItem?: string;
+  why: string;
+}
+
+export const HOLDER_LOSS_DISPOSITIONS: Readonly<Record<string, HolderLossDisposition>> = {
+  deactivate: {
+    kind: 'derived-at-read',
+    why:
+      'P-004 derives `active` from the holder resolver on every read, so a lost holder ' +
+      'stops the goal reading active with nothing running. There is no executor to be ' +
+      'fate-shared WITH — the absence of an actor is the property, not a gap in this table.',
+  },
+  respawn: {
+    kind: 'planned',
+    planItem: 'goal-live-holder-guarantee-2026-08-18 P-009',
+    why:
+      'No actor exists yet. D-001 makes a goal EARN respawn by being named, and D-002 ' +
+      'gates the actor itself behind owner authority as a fleet-autonomy escalation. ' +
+      'Until P-009 lands, a goal that names respawn gets deactivate\'s behaviour — this ' +
+      'row is what says so out loud instead of letting the schema imply a recovery that ' +
+      'nothing performs. P-009 flips this to kind:\'recovery-mechanism\', which then ' +
+      'forces the respawner into RECOVERY_MECHANISMS to be judged like everything else.',
+  },
+};
+
+export interface HolderLossGap {
+  /** Values the schema admits with no declared disposition — the anti-rot case. */
+  undeclared: string[];
+  /** Dispositions declared for a value the schema no longer admits — stale bookkeeping. */
+  stale: string[];
+  /** 'recovery-mechanism' rows whose named mechanism is not in RECOVERY_MECHANISMS. */
+  unresolvedMechanism: { onLoss: string; mechanism: string | null }[];
+  /** 'planned' rows with no plan item, i.e. an IOU nobody owes. */
+  unownedPlan: string[];
+}
+
+/**
+ * PURE: the holder-disposition gate's decision, split from the real tables for the
+ * same reason `findCoverageGaps` is — a gate that can only be run against the live
+ * declarations cannot be shown to FAIL, and one that cannot fail proves nothing.
+ */
+export function findHolderLossGaps(
+  onLossValues: readonly string[],
+  dispositions: Readonly<Record<string, HolderLossDisposition>> = HOLDER_LOSS_DISPOSITIONS,
+  mechanisms: readonly RecoveryMechanism[] = RECOVERY_MECHANISMS,
+): HolderLossGap {
+  const declaredNames = new Set(mechanisms.map((m) => m.name));
+  const admitted = new Set(onLossValues);
+  const unresolvedMechanism: { onLoss: string; mechanism: string | null }[] = [];
+  const unownedPlan: string[] = [];
+
+  for (const [onLoss, d] of Object.entries(dispositions)) {
+    if (!admitted.has(onLoss)) continue; // reported as `stale` below
+    if (d.kind === 'recovery-mechanism' && (!d.mechanism || !declaredNames.has(d.mechanism))) {
+      unresolvedMechanism.push({ onLoss, mechanism: d.mechanism ?? null });
+    }
+    if (d.kind === 'planned' && !d.planItem) unownedPlan.push(onLoss);
+  }
+
+  return {
+    undeclared: onLossValues.filter((v) => !(v in dispositions)),
+    stale: Object.keys(dispositions).filter((k) => !admitted.has(k)),
+    unresolvedMechanism,
+    unownedPlan,
+  };
+}
+
 /** Render the audit as a markdown table — what P-004 asks to be produced and filed. */
 export function renderRecoveryAuditTable(result: RecoveryAuditResult = auditRecoveryDependencies()): string {
   const order: Record<RecoveryVerdict, number> = { 'fate-shared': 0, 'fate-shared-mitigated': 1, sound: 2 };
