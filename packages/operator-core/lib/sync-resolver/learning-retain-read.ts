@@ -25,7 +25,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import type { Sql } from 'postgres';
 import { ISSUE_ABANDONED_STATUSES, ISSUE_SHIPPED_STATUSES } from '../work-item-blocking';
-import { createReadDeadline } from './read-deadline';
+import { createReadDeadline, type WithinBudget } from './read-deadline';
 import {
   compareRetainRows,
   decodeRetainCursor,
