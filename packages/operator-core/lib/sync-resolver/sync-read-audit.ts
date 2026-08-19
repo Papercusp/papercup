@@ -143,6 +143,12 @@ export const SYNC_QUERY_FIXTURES: Record<string, QueryFixture> = {
   'agentChats.detail': null,
   'agentDetail.byOwner': null,
   'agentOrders.byOwner': null, // a specific ownerId, like its agentDetail sibling
+  // Same shape as its two byOwner siblings above: argsSchema requires a specific
+  // `ownerId` (z.string().min(1)) that DEFAULT_HARNESS_ARGS cannot satisfy, and there is
+  // no stable fixture owner — the read only runs while a particular leader's popup is
+  // open. `null` (intentionally unmeasurable) rather than a fabricated id, which would
+  // measure a one-row miss and report it as this read's real payload.
+  'agentLeaderBrief.byOwner': null,
   'chunkPlans.byFeature': null,
   'conversations.agentChatDetail': null,
   'conversations.agentMessageDetail': null, // a specific coord_event_log msg_id
