@@ -1316,6 +1316,10 @@ import './scout/route-idea';
 import './scout/ideate-pass-record';
 import './scout/success-metrics';
 import './scout/run-drill';
+// blender-goal-amendment-rail-2026-08-19 P-002 — read the write-nothing goal-draft
+// queue P-001 built (what the Blender WOULD have proposed as goal-scale work), so the
+// authority argument rests on evidence instead of hand-written SQL. Read-only.
+import './scout/goal-drafts';
 
 // self-learning-frontier-2026-06-12 P-004 (FB-02, D-003) — the behavior-change
 // ledger read surface: recent prompt/rule mutations (change_ledger:list) + the
