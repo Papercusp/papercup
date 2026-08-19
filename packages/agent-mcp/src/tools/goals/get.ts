@@ -63,12 +63,42 @@ export default defineTool({
     // summary that cannot say "paused, by whom, why" reproduces it exactly.
     const metadata = (goal.metadata ?? null) as Record<string, unknown> | null;
     const pause = readGoalPause(metadata);
+    // DETERMINISTIC DEACTIVATION (P-004, D-011). The raw column says what a
+    // human last wrote; it does NOT say whether the goal is still running. A
+    // holder-required goal whose holder is gone is administratively `active`
+    // and actually dormant, and answering `active` here is the motivating bug
+    // with an AGENT as the victim rather than the board — the audience that
+    // then acts on it.
+    //
+    // So `status` carries the DERIVED value and the administrative one moves to
+    // `rawStatus`. This deliberately differs from the sync-resolver board rows,
+    // which keep `status` raw and add `effectiveStatus` beside it: a UI renders
+    // the field it was told to render, whereas an agent reads the obvious one.
+    // Leaving `status` raw here would preserve the exact footgun while looking
+    // like it had been fixed.
+    //
+    // An invalid `launch_settings` parses to null → the DEFAULT policy
+    // (requireLive: true), never a silent opt-out; and `unknown` liveness (a
+    // degraded oracle read) never deactivates.
+    const holders = await resolveGoalHolders(ctx.tx, {
+      workspaceId: goal.workspaceId,
+      goalId: goal.id,
+    });
+    const { settings: launchSettings } = parseGoalLaunchSettings(goal.launchSettings);
+    const activity = resolveGoalEffectiveActivity({
+      status: goal.status,
+      launchSettings,
+      liveness: holders.liveness,
+    });
     if (args.detail === 'summary') {
       return {
         data: {
           id: goal.id,
           title: goal.title,
-          status: goal.status,
+          status: activity.effectiveStatus,
+          rawStatus: goal.status,
+          deactivated: activity.deactivated,
+          holderLiveness: holders.liveness,
           pause,
           actionable: readiness.actionable,
           premiseInvalidated: readiness.premiseInvalidated,
