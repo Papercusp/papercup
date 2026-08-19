@@ -1447,7 +1447,7 @@ export async function getAgentSignals(owner: string): Promise<AgentSignals> {
       : (await latestAdvSessionByCoordOwner(owner).catch(onFailure('lane')(null)))?.planSlug ?? null;
     const planSlug = declaredPlanSlug ?? launchPlanSlug;
     const harnessSlug = top?.harness ?? null;
-    const [lane, announcedGates, fleetControl] = await Promise.all([
+    const [lane, announcedGates, fleetControl, pipeline] = await Promise.all([
       readAgentLane(planSlug, harnessSlug, workspaceId, declaredPlanSlug ? 'declared' : 'launch').catch(
         onFailure('lane')(null),
       ),
@@ -1455,11 +1455,21 @@ export async function getAgentSignals(owner: string): Promise<AgentSignals> {
         onFailure('announcedGates')([] as AgentAnnouncedGate[]),
       ),
       readFleetControlFor(workspaceId, fleetSlug).catch(onFailure('fleetControl')(null)),
+      // Scoped to the harness the agent's own claim lives in, so the popup reads
+      // the pipeline that agent's work actually ships through — `undefined`
+      // falls back to the default/home pipeline exactly as orient's own call
+      // does. No `.catch` and no `unavailableSignals` key on purpose: the
+      // producer NEVER throws (it resolves null on every failure path), so a
+      // catch here would be unreachable code asserting a contract that already
+      // holds one layer down. Cost is a shared 60s single-flight cache entry —
+      // the same one the waking fleet is already paying for.
+      fetchOrientPipeline(harnessSlug ?? undefined),
     ]);
     const claimProgress = deriveClaimProgress(presence?.lastActiveAt ?? null);
 
     return {
       lane,
+      pipeline,
       announcedGates,
       fleetControl,
       loop: loopStatus
