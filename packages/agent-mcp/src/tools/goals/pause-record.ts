@@ -153,16 +153,18 @@ export function clearGoalPause(
 }
 
 /**
- * Is this goal DELIBERATELY paused? The goal-level analogue of the unit
- * reconciler's `isAdministrativelyPaused` (WI-5378), and the reason P-005
- * exists: there, a `disabled`/`masked` unit is read from a PERSISTED
- * administrative marker rather than inferred from the fact that nothing is
- * running, because a deliberate stop and a crash look identical from the
- * outside. A goal is no different.
+ * Is this goal DELIBERATELY paused? RE-EXPORTED — the definition moved to
+ * `@papercusp/operator-core`'s `lib/goals/activity.ts` (plan D-011), which is
+ * where the status/liveness fold that needs it lives.
  *
- * Takes the raw status string rather than `GoalStatus` so a caller holding an
- * unvalidated column value (every SQL read) can ask without a cast.
+ * Reaching for it from there through THIS package's barrel made operator-core's
+ * cheapest pure module import the whole agent-mcp index, forming a cycle for the
+ * sake of one string comparison. The re-export keeps every P-005 caller — and
+ * `src/index.ts` — pointed at the same name, so the move is invisible to them.
+ *
+ * Note the SUBPATH import (the `create.ts:24` precedent), never the
+ * `@papercusp/operator-core` root barrel: re-exporting through that barrel would
+ * drag operator-core's whole index into this module — the identical weight
+ * problem this move exists to remove, merely pointing the other way.
  */
-export function isGoalAdministrativelyPaused(status: string | null | undefined): boolean {
-  return status === 'paused';
-}
+export { isGoalAdministrativelyPaused } from '@papercusp/operator-core/lib/goals/activity';
