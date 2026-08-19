@@ -437,3 +437,116 @@ describe('goals:update — the degraded reason names the cause that fired', () =
     expect(res.degradedReasons).toHaveLength(2);
   });
 });
+
+/**
+ * The deliberate-pause record (goal-live-holder-guarantee-2026-08-18 P-005, D-009).
+ *
+ * `status='paused'` already had teeth — it gates placement and disarms attributed
+ * loops — but carried no record of the DECISION, so a later reader could not tell an
+ * owner's hold from a goal that quietly lost its holder. That is the distinction
+ * P-004's derived deactivation has to make, and it is the same one
+ * `isAdministrativelyPaused` makes one layer down by reading a PERSISTED marker
+ * rather than inferring from the fact that nothing is running.
+ */
+describe('goals:update — the deliberate-pause record (P-005)', () => {
+  const PRINCIPAL_CTX = () => ({
+    tx: makeTx() as never,
+    workspaceId: 'papercusp-workspace',
+    harnessSlug: 'papercusp',
+    principal: { slug: 'su-abc' },
+  });
+
+  it('REFUSES status:"paused" with no reason, and writes NOTHING', async () => {
+    const res = (await tool.handler(
+      tool.args.parse({ id: 'g1', status: 'paused' }) as never,
+      CTX() as never,
+    )) as { data: unknown; degraded?: boolean; degradedReasons?: string[] };
+
+    expect(res.data).toBeNull();
+    expect(res.degraded).toBe(true);
+    expect(res.degradedReasons?.join(' ')).toContain('requires `reason`');
+    // The refusal must cost nothing — not even the pre-read.
+    expect(calls.some((c) => /UPDATE harness_shared\.goals/.test(c.sql))).toBe(false);
+    expect(calls.some((c) => /SELECT title, body, status/.test(c.sql))).toBe(false);
+  });
+
+  it('a whitespace-only reason is NOT a reason', async () => {
+    const res = (await tool.handler(
+      tool.args.parse({ id: 'g1', status: 'paused', reason: '   ' }) as never,
+      CTX() as never,
+    )) as { data: unknown; degraded?: boolean };
+    expect(res.data).toBeNull();
+    expect(res.degraded).toBe(true);
+  });
+
+  it('stamps { reason, pausedBy, pausedAtMs } on pause', async () => {
+    await tool.handler(
+      tool.args.parse({ id: 'g1', status: 'paused', reason: 'owner holding the spend' }) as never,
+      PRINCIPAL_CTX() as never,
+    );
+    const pause = writtenMetadata().pause as Record<string, unknown>;
+    expect(pause.reason).toBe('owner holding the spend');
+    expect(pause.pausedBy).toBe('su-abc');
+    expect(typeof pause.pausedAtMs).toBe('number');
+  });
+
+  it('an unattributable caller degrades to a marker rather than BLOCKING the pause', async () => {
+    await tool.handler(
+      tool.args.parse({ id: 'g1', status: 'paused', reason: 'hold' }) as never,
+      CTX() as never, // no principal
+    );
+    expect((writtenMetadata().pause as Record<string, unknown>).pausedBy).toBe('unknown');
+  });
+
+  it('PRESERVES the rest of the metadata document — the data-loss case', async () => {
+    existingRow!.metadata = { startedBy: 'su-zzz', drainFleet: 'fleet-a' };
+    await tool.handler(
+      tool.args.parse({ id: 'g1', status: 'paused', reason: 'hold' }) as never,
+      PRINCIPAL_CTX() as never,
+    );
+    const meta = writtenMetadata();
+    expect(meta.startedBy).toBe('su-zzz');
+    expect(meta.drainFleet).toBe('fleet-a');
+    expect(meta.pause).toBeTruthy();
+  });
+
+  it('RESUME archives the record to lastPause and clears the live one', async () => {
+    existingRow!.status = 'paused';
+    existingRow!.metadata = {
+      pause: { reason: 'hold', pausedBy: 'su-abc', pausedAtMs: 1_755_000_000_000 },
+    };
+    await tool.handler(tool.args.parse({ id: 'g1', status: 'active' }) as never, CTX() as never);
+    const meta = writtenMetadata();
+    expect(meta.pause).toBeUndefined();
+    expect(meta.lastPause).toMatchObject({ reason: 'hold', pausedBy: 'su-abc' });
+    expect(typeof (meta.lastPause as Record<string, unknown>).resumedAtMs).toBe('number');
+  });
+
+  it('a TERMINAL status also ends the hold — a killed goal must not report a live pause', async () => {
+    existingRow!.status = 'paused';
+    existingRow!.metadata = {
+      pause: { reason: 'hold', pausedBy: 'su-abc', pausedAtMs: 1_755_000_000_000 },
+    };
+    await tool.handler(tool.args.parse({ id: 'g1', status: 'killed' }) as never, CTX() as never);
+    const meta = writtenMetadata();
+    expect(meta.pause).toBeUndefined();
+    expect(meta.lastPause).toBeTruthy();
+  });
+
+  it('an unrelated edit on a PAUSED goal leaves the record alone', async () => {
+    // The gate is the explicit `status` ARGUMENT, never the resolved value — a
+    // title edit passes no status, and clearing the record because next.status
+    // happens to be 'paused' would delete it on every unrelated write.
+    existingRow!.status = 'paused';
+    const stored = { reason: 'hold', pausedBy: 'su-abc', pausedAtMs: 1_755_000_000_000 };
+    existingRow!.metadata = { pause: stored };
+    await tool.handler(tool.args.parse({ id: 'g1', title: 'Renamed' }) as never, CTX() as never);
+    expect(writtenMetadata().pause).toEqual(stored);
+  });
+
+  it('does not stamp a pause record on any other status', async () => {
+    await tool.handler(tool.args.parse({ id: 'g1', status: 'achieved' }) as never, CTX() as never);
+    expect(writtenMetadata().pause).toBeUndefined();
+    expect(writtenMetadata().lastPause).toBeUndefined();
+  });
+});
