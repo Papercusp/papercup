@@ -5,10 +5,10 @@
  * uncoordinated path → no lock at all. The actual acquire/release SQL is the
  * same `tryAcquire`/`tryRelease` `locks:acquire` already uses in production.
  */
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkNonRepoTmpDir } from './non-repo-tmpdir';
 
 const h = vi.hoisted(() => ({
