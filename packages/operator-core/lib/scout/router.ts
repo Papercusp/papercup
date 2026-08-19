@@ -431,20 +431,113 @@ export const GOAL_SCALE_MARKERS = [
   'campaign',
 ] as const;
 
+/** The proposal fields the goal-scale vocabulary is scanned over, in scan order. */
+export const GOAL_SCALE_SCANNED_FIELDS = ['framing', 'mechanism', 'bet', 'whyNew'] as const;
+export type GoalScaleScannedField = (typeof GOAL_SCALE_SCANNED_FIELDS)[number];
+
+/**
+ * Blank out CODE-ISH spans, preserving offsets and length so a field's prose reads
+ * identically minus the code (plan blender-goal-amendment-rail-2026-08-19 P-009 / D-012).
+ *
+ * WHY THIS EXISTS, measured rather than imagined: D-012 measured `GOAL_SCALE_MARKERS`
+ * at a precision of 0/1 on the live corpus. The single override-path draft in 30 cycles
+ * (proposal SP-001) is about a tool-policy TABLE and reaches the goal rail solely because
+ * the literal string `goal mode` appears inside a quoted SQL value in its `mechanism` —
+ * `reason='goal mode: delegate, do not natively mutate'`. The author was writing a SQL
+ * INSERT, not asking for the goal rail. A marker quoted inside code is a mention, not a
+ * request, and treating the two alike is what makes the whole heuristic untrustworthy.
+ *
+ * WHAT IS STRIPPED, and why each is safe:
+ *  • fenced blocks (```…```) and inline code (`…`) — unambiguous by construction;
+ *  • quoted string LITERALS, but ONLY in a code position: the opening quote must follow
+ *    `=`, `(`, `[`, `,` or `:` (optionally spaced). That is the shape of `reason='…'`,
+ *    `action='deny'`, `f("…")` — and it deliberately does NOT match an English
+ *    apostrophe, because in `don't` / `the goal's mode` the quote follows a LETTER.
+ *    A naive quote-pair matcher eats real prose between two apostrophes, which would
+ *    trade this false positive for a worse false negative.
+ *
+ * Replacement is spaces of EQUAL length, never deletion: field offsets stay honest, so a
+ * caller reporting *where* a marker matched cannot be shifted by the stripping itself.
+ */
+export function stripCodeSpans(text: string): string {
+  const blank = (s: string): string => ' '.repeat(s.length);
+  return (
+    text
+      // Fenced blocks first — they may legally contain backticks and quotes.
+      .replace(/```[\s\S]*?```/g, blank)
+      .replace(/`[^`\n]*`/g, blank)
+      // Quoted literals in a CODE position only (see header): keep the leading
+      // operator/punctuation, blank the literal itself.
+      .replace(/([=(\[,:]\s*)('[^'\n]*'|"[^"\n]*")/g, (_m, lead: string, lit: string) => lead + blank(lit))
+  );
+}
+
+/** One goal-scale marker that appears in a proposal, with the provenance a reader needs
+ *  to judge whether it is a genuine ask or an incidental mention (D-012). */
+export interface GoalScaleMarkerHit {
+  /** The vocabulary entry that matched, verbatim. */
+  marker: string;
+  /** Which scanned fields it appears in — a marker present ONLY in `mechanism` reads very
+   *  differently from one in the `framing`, which is the proposal's actual thesis. */
+  fields: GoalScaleScannedField[];
+  /** True when EVERY occurrence sits inside a code-ish span — D-012's measured
+   *  false-positive shape, and the reason this match does not escalate the rail. */
+  onlyInCodeSpan: boolean;
+}
+
+/**
+ * Which goal-scale markers a proposal matches, and WHERE — the shared primitive behind
+ * both the routing predicate and the draft queue's reader-facing provenance.
+ *
+ * Returns every marker present in the raw text (so a false positive stays VISIBLE and
+ * auditable rather than silently vanishing), each flagged with whether it survives the
+ * code-span strip. Callers decide what to do with a code-span-only hit: routing ignores
+ * it, the draft queue shows it and says why.
+ */
+export function goalScaleMarkerHits(
+  p: Proposal,
+  markers: readonly string[] = GOAL_SCALE_MARKERS,
+): GoalScaleMarkerHit[] {
+  const raw: Record<string, string> = {};
+  const prose: Record<string, string> = {};
+  for (const f of GOAL_SCALE_SCANNED_FIELDS) {
+    const v = ((p as unknown as Record<string, unknown>)[f] as string | undefined) ?? '';
+    raw[f] = v.toLowerCase();
+    prose[f] = stripCodeSpans(v).toLowerCase();
+  }
+  const hits: GoalScaleMarkerHit[] = [];
+  for (const m of markers) {
+    const fields = GOAL_SCALE_SCANNED_FIELDS.filter((f) => (raw[f] ?? '').includes(m));
+    if (fields.length === 0) continue;
+    hits.push({
+      marker: m,
+      fields: [...fields],
+      onlyInCodeSpan: !fields.some((f) => (prose[f] ?? '').includes(m)),
+    });
+  }
+  return hits;
+}
+
 /**
  * Is this proposal GOAL-SCALE (multi-plan scope, weeks-long measurable end-state)
  * rather than plan-scale? An explicit `routeHint: 'goal'` always counts; otherwise
  * the proposal text is scanned for the goal-scale vocabulary — the same conservative
  * text heuristic as {@link isWholeSystemProposal}, and like it, a stronger signal is
  * for the hint producer to set `routeHint` directly.
+ *
+ * P-009 / D-012: a marker that appears ONLY inside a code-ish span does not count. See
+ * {@link stripCodeSpans} for the measurement that forced this. Pass
+ * `includeCodeSpans: true` to get the pre-P-009 behaviour — that exists so the historical
+ * false positive stays reproducible as evidence, NOT as a production option.
  */
 export function isGoalScaleProposal(
   p: Proposal,
   markers: readonly string[] = GOAL_SCALE_MARKERS,
+  opts: { includeCodeSpans?: boolean } = {},
 ): boolean {
   if (p.routeHint === 'goal') return true;
-  const hay = [p.framing, p.mechanism, p.bet, p.whyNew].map((s) => (s ?? '').toLowerCase()).join(' \n ');
-  return markers.some((m) => hay.includes(m));
+  const hits = goalScaleMarkerHits(p, markers);
+  return opts.includeCodeSpans === true ? hits.length > 0 : hits.some((h) => !h.onlyInCodeSpan);
 }
 
 /**
@@ -458,8 +551,9 @@ export function isGoalScaleProposal(
  */
 export function makeGoalScaleOverride(
   markers: readonly string[] = GOAL_SCALE_MARKERS,
+  opts: { includeCodeSpans?: boolean } = {},
 ): (p: Proposal) => RoutedRail | undefined {
-  return (p) => (p.routeHint === 'plan' && isGoalScaleProposal(p, markers) ? 'goal' : undefined);
+  return (p) => (p.routeHint === 'plan' && isGoalScaleProposal(p, markers, opts) ? 'goal' : undefined);
 }
 
 /**
