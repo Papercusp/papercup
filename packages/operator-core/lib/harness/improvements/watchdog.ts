@@ -4195,7 +4195,17 @@ async function runWatchdogTickBody(
   let agingEscalations: string[] = [];
   if (partition.knownOpen.length > 0) {
     try {
-      const outcomes = await deps.processAging(workspaceId, partition.knownOpen.map(watchdogKeyOf), opts);
+      // EI-19920080383279759: pass the RE-MEASURED body, not just the key. A
+      // known-open signal declines its capture (`dedupScope:'open'`), so the
+      // filed item's body is frozen at first-fire while this tick's signal —
+      // same key, possibly a completely different offender set and remedy —
+      // is discarded. Handing the body to the aging path is what lets an
+      // escalation show live evidence instead of a fossil.
+      const outcomes = await deps.processAging(
+        workspaceId,
+        partition.knownOpen.map((s) => ({ key: watchdogKeyOf(s), evidence: s.body })),
+        opts,
+      );
       agingEscalations = outcomes.map((o) => o.issueId);
     } catch (e) {
       console.warn(`[improvement-watchdog] known-open aging failed: ${e instanceof Error ? e.message : e}`);
