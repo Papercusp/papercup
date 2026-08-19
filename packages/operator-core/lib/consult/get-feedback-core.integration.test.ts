@@ -711,3 +711,139 @@ describe('readVettingConsultCritique — the vetting gate reads CRITIQUE, not ex
     expect(v.exists).toBe(false);
   });
 });
+
+// ── WI-39852 revival leg (plan consult-revival-and-honest-min-2026-08-18 P-001) ──
+describe('getFeedbackCore — revival leg (WI-39852)', () => {
+  /** Compose makeDeps with a recording revive fake. */
+  function makeReviveDeps(
+    route: RouteResult,
+    reviveResult: { spawned: boolean; verified: boolean | null; detail: string },
+    opts: { wokeOnReach?: number } = {},
+  ) {
+    const base = makeDeps(route);
+    const revived: Array<{ ownerId: string; conversationId: string; brief: string }> = [];
+    base.deps.revive = async (o) => {
+      revived.push(o);
+      return reviveResult;
+    };
+    if (opts.wokeOnReach !== undefined) {
+      const woke = opts.wokeOnReach;
+      base.deps.reach = async (o) => {
+        base.reached.push(o);
+        return { woke };
+      };
+    }
+    return { ...base, revived };
+  }
+
+  const deadExpert = cand('dead-x', { liveness: 'ended', score: 0.9 });
+  const liveLow = cand('live-low', {
+    score: 0.3,
+    signals: { similarity: 0.2, recency: 0.5, verification: 0.3, authorship: 0 },
+  });
+
+  it('dead-preempt: a dead ABOVE-FLOOR expert beats a live below-floor minimum-fill — revived, menu head, labeled', async () => {
+    const { deps, reached, revived } = makeReviveDeps(routeOf([deadExpert], { all: [deadExpert, liveLow] }), {
+      spawned: true,
+      verified: true,
+      detail: 'live host registered',
+    });
+    const res = asOk(await getFeedbackCore(baseReq, deps));
+    expect(res.verdict).toBe('routed');
+    expect(res.responder?.ownerId).toBe('dead-x');
+    expect(res.responder_via).toBe('floor');
+    expect(res.revival).toMatchObject({ ownerId: 'dead-x', trigger: 'dead-preempt', spawned: true, verified: true });
+    // The brief rode the revive seam and named the conversation + the question.
+    expect(revived).toHaveLength(1);
+    expect(revived[0].conversationId).toBe(res.conversation_id);
+    expect(revived[0].brief).toContain('REVIVED');
+    expect(revived[0].brief).toContain(baseReq.question);
+    // Reach went to the revived expert (redundant delivery; the brief is primary).
+    expect(reached[0]?.responder).toBe('dead-x');
+    // Persisted: responder_id = revived; selection snapshot revived-first + labeled.
+    const row = await stateRow(res.conversation_id);
+    expect(row.responder_id).toBe('dead-x');
+    const sel = (row.routing as { selection?: { selected?: Array<Record<string, unknown>> } }).selection;
+    expect(sel?.selected?.[0]).toMatchObject({ ownerId: 'dead-x', via: 'floor', revived: true });
+    // The pre-revival live fill stays on the menu behind the revived head.
+    expect(sel?.selected?.[1]).toMatchObject({ ownerId: 'live-low' });
+    expect(res.remaining_candidates[0]?.ownerId).toBe('live-low');
+    expect(res.hint).toContain('REVIVED');
+  });
+
+  it('spawn-fail falls back to the pre-revival outcome — attempt still reported, nothing relabeled', async () => {
+    const { deps, revived } = makeReviveDeps(routeOf([deadExpert], { all: [deadExpert, liveLow] }), {
+      spawned: false,
+      verified: null,
+      detail: 'no adv_sessions row',
+    });
+    const res = asOk(await getFeedbackCore(baseReq, deps));
+    expect(revived).toHaveLength(1);
+    expect(res.verdict).toBe('routed');
+    expect(res.responder?.ownerId).toBe('live-low');
+    expect(res.responder_via).toBe('minimum');
+    expect(res.revival).toMatchObject({ ownerId: 'dead-x', trigger: 'dead-preempt', spawned: false });
+    const row = await stateRow(res.conversation_id);
+    expect(row.responder_id).toBe('live-low');
+    const sel = (row.routing as { selection?: { selected?: Array<Record<string, unknown>> } }).selection;
+    expect(sel?.selected?.[0]).toMatchObject({ ownerId: 'live-low', via: 'minimum' });
+    expect(sel?.selected?.[0]?.revived).toBeUndefined();
+    expect(res.hint).toContain('FAILED to spawn');
+  });
+
+  it('all-dead pool: revival turns the honest no_live_responder into a routed consult', async () => {
+    const { deps } = makeReviveDeps(routeOf([deadExpert], { all: [deadExpert] }), {
+      spawned: true,
+      verified: null,
+      detail: 'booting',
+    });
+    const res = asOk(await getFeedbackCore(baseReq, deps));
+    expect(res.verdict).toBe('routed');
+    expect(res.responder?.ownerId).toBe('dead-x');
+    expect(res.reason).toBeUndefined();
+    expect(res.revival).toMatchObject({ trigger: 'dead-preempt', spawned: true, verified: null });
+    expect(res.state).toBe('awaiting_responder');
+    expect(res.expires_at).not.toBeNull();
+  });
+
+  it('no revive dep: the D-008 §5 retrieval-only behavior is exactly preserved', async () => {
+    const { deps } = makeDeps(routeOf([deadExpert], { all: [deadExpert] }));
+    const res = asOk(await getFeedbackCore(baseReq, deps));
+    expect(res.verdict).toBe('no_qualified_responder');
+    expect(res.reason).toBe('no_live_responder');
+    expect(res.revival).toBeUndefined();
+  });
+
+  it('wake-failed: a live-read chosen whose wake reached NOBODY is revived in place (persisted marker stamped)', async () => {
+    const liveTop = cand('zombie-a');
+    const { deps, revived } = makeReviveDeps(
+      routeOf([liveTop]),
+      { spawned: true, verified: null, detail: 'booting' },
+      { wokeOnReach: 0 },
+    );
+    const res = asOk(await getFeedbackCore(baseReq, deps));
+    expect(res.verdict).toBe('routed');
+    expect(res.responder?.ownerId).toBe('zombie-a');
+    expect(res.wake).toEqual({ attempted: true, woke: 0 });
+    expect(revived).toHaveLength(1);
+    expect(res.revival).toMatchObject({ ownerId: 'zombie-a', trigger: 'wake-failed', spawned: true });
+    // The row was persisted BEFORE reach — the marker lands via targeted update.
+    const row = await stateRow(res.conversation_id);
+    const sel = (row.routing as { selection?: { selected?: Array<Record<string, unknown>> } }).selection;
+    expect(sel?.selected?.[0]).toMatchObject({ ownerId: 'zombie-a', revived: true });
+  });
+
+  it('cap 1 (MAX_REVIVALS_PER_CONSULT): dead-preempt spends the budget — a failed wake on the revived cannot re-revive', async () => {
+    const { deps, revived } = makeReviveDeps(
+      routeOf([deadExpert], { all: [deadExpert, liveLow] }),
+      { spawned: true, verified: null, detail: 'booting' },
+      { wokeOnReach: 0 },
+    );
+    const res = asOk(await getFeedbackCore(baseReq, deps));
+    expect(res.responder?.ownerId).toBe('dead-x');
+    expect(res.wake.woke).toBe(0);
+    // ONE revival total — the wake-failed leg found the budget spent.
+    expect(revived).toHaveLength(1);
+    expect(res.revival?.trigger).toBe('dead-preempt');
+  });
+});
