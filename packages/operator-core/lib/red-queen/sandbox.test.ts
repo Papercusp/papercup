@@ -70,6 +70,7 @@ const ranTick = (captured: string[]): WatchdogTickResult => ({
   staleResolvedKeys: [],
   standing: 0,
   standingKeys: [],
+  refileEligibleKeys: [],
   metricSuppressed: 0,
   metricSuppressedKeys: [],
   seenKeys: [],
