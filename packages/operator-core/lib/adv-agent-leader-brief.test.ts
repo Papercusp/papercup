@@ -175,11 +175,20 @@ describe('getAgentLeaderBrief — an unmeasured source is not a drift (D-011)', 
     // `read-failed` is the honest third answer.
     presence(null);
     listFleetsLedBy.mockRejectedValue(new Error('pg down'));
+    // Asserted, not silenced: the source swears the failure is "surfaced, never
+    // swallowed into a look-alike empty", and that promise is the only thing
+    // separating this from a pane that quietly says "leads nothing".
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
     const r = await getAgentLeaderBrief('su-me');
 
     expect(r.skipped).toBe('read-failed');
     expect(r.presenceDrift).toBeUndefined();
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('getAgentLeaderBrief(su-me) failed'),
+      expect.any(Error),
+    );
+    warn.mockRestore();
   });
 
   it('does not consult the registry at all without a concrete workspace', async () => {
