@@ -1361,3 +1361,87 @@ describe('affected-tests: declarations freshness guard (WI-38089)', () => {
     expect(pkg.scripts?.[DECL_SCRIPT]).not.toContain('vitest');
   });
 });
+
+/**
+ * EI-20822558150340173 / D-046 — the same class again, on the registry that decides what
+ * every agent's PreToolUse gate ENFORCES.
+ *
+ * `ALL_PAIRS` has two projections. The `CLAUDE.md` routing table has had a `--check` gate
+ * since it shipped and stayed correct. The `harness_shared.bash_tool_substitutions` rows had
+ * NO automatic caller of any kind — `seedSubstitutionRegistry()` is reachable only from the
+ * manual `npm run seed:substitutions` — so a pair edit changed nothing about enforcement,
+ * indefinitely, while the unit tests, `gen:tool-routing:check`, typecheck and git-sync all
+ * reported success. Measured: `policy-violation:unsafe-dependency-install` was widened in
+ * code on 2026-08-14 and the live row still carried the narrower pattern four days later.
+ *
+ * Both directions are asserted, for the reason the migration-lint block above gives: a
+ * registration that attaches to EVERYTHING fails just as surely as one that attaches to
+ * nothing — it spends every agent's edit budget on a DB round-trip that cannot find anything.
+ */
+describe('affected-tests: substitution registry drift guard (D-046)', () => {
+  const SEED_SCRIPT = 'seed:substitutions:check';
+  const SEED_TASK = `${HOST_WORKSPACE} :: ${SEED_SCRIPT}`;
+  const PAIRS_DIR = 'packages/operator-core/lib/bash-substitution/pairs';
+  const FIXTURES_DIR = 'packages/operator-core/lib/bash-substitution/fixtures';
+
+  it('attaches for a change to a PAIR — the edit that silently rots the live rows', () => {
+    const out = dryTasks(`${PAIRS_DIR}/dependency-install.ts`);
+    expect(
+      out,
+      'a pair edit is the ONLY thing that can put the seeded registry out of date; if this ' +
+        `guard is not attached here it is attached nowhere useful. Task list was:\n${out}`,
+    ).toContain(SEED_TASK);
+  });
+
+  it('attaches for a re-frozen FIXTURE, which moves the recomputed verdict', () => {
+    // The verdict stored on each row is recomputed FROM the fixture sample, so re-freezing
+    // a sample drifts a seeded field without touching any pair.
+    const out = dryTasks(`${FIXTURES_DIR}/deps.unsafe-install.sample.json`);
+    expect(out).toContain(SEED_TASK);
+  });
+
+  it('STILL attaches when the host workspace is affected, because nothing in that suite re-runs it', () => {
+    // A pair lives inside operator-core, so its own suite is always selected too. The guard
+    // declares no hostSuiteRatchet, and correctly so: operator-core's vitest run never
+    // queries Postgres, so it cannot substitute for a check whose entire subject is the
+    // difference between the pairs and the live rows.
+    const out = dryTasks(`${PAIRS_DIR}/dependency-install.ts`);
+    expect(out).toContain(`${HOST_WORKSPACE} :: test`);
+    expect(
+      out,
+      'the host suite does not read the database, so deferring to it would be silent ' +
+        'coverage loss rather than a saved duplicate run',
+    ).toContain(SEED_TASK);
+  });
+
+  it('does NOT attach for a bash-substitution file that cannot drift a row', () => {
+    // The discriminating case, and the reason `appliesTo` is not the whole module: the
+    // matcher, the report and the census are all downstream of the seeded row rather than
+    // inputs to it. Attaching here would put a DB round-trip on edits that provably cannot
+    // produce a finding.
+    const out = dryTasks('packages/operator-core/lib/bash-substitution/match.ts');
+    expect(
+      out,
+      'only the pairs and their frozen fixtures are seeded from; a change to the matcher ' +
+        'cannot make the registry stale',
+    ).not.toContain(SEED_TASK);
+  });
+
+  it('keeps the guard script defined on the HOST workspace, so the attachment cannot silently no-op', () => {
+    const pkg = JSON.parse(
+      readFileSync(resolve(REPO_ROOT, 'packages/operator-core/package.json'), 'utf8'),
+    ) as { scripts?: Record<string, string> };
+    expect(
+      pkg.scripts?.[SEED_SCRIPT],
+      `${HOST_WORKSPACE} must define "${SEED_SCRIPT}". The router only builds a task when the ` +
+        'script exists on the HOST workspace, so declaring it only in the ROOT package.json ' +
+        'leaves the registration attaching nothing while every probe still looks healthy.',
+    ).toBeTruthy();
+    expect(pkg.scripts?.[SEED_SCRIPT]).toContain('seed-substitution-registry.ts');
+    expect(
+      pkg.scripts?.[SEED_SCRIPT],
+      'must invoke --check; without it the script SEEDS, which would make the guard write to ' +
+        'the live enforcement rows it is meant to merely police',
+    ).toContain('--check');
+  });
+});
