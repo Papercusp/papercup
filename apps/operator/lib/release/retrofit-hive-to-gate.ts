@@ -16,6 +16,8 @@ import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 
+import { GREEN_CHECKPOINT_CRON } from '@papercusp/operator-core/lib/release/green-checkpoint-schedule';
+
 interface RetrofitPlan {
   slug: string;
   path: string;
@@ -193,7 +195,7 @@ async function applyRetrofit(plan: RetrofitPlan): Promise<void> {
         (id, install_slug, workspace_id, name, trigger_kind, trigger_config, target_role,
          concurrency, catchup, active, next_fire_at)
       VALUES (${id}, ${plan.slug}, ${ws}, 'green-checkpoint', 'cron',
-              ${JSON.stringify({ cron: '0 15 * * * *' })}::text::jsonb, 'system:green-checkpoint',
+              ${JSON.stringify({ cron: GREEN_CHECKPOINT_CRON })}::text::jsonb, 'system:green-checkpoint',
               'skip', 'skip-old', true, now())
       ON CONFLICT (install_slug, name) DO UPDATE SET
         active=true, trigger_config=EXCLUDED.trigger_config, target_role=EXCLUDED.target_role,
