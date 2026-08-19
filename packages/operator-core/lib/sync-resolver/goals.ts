@@ -1035,6 +1035,22 @@ export async function resolveGoalDetail(args: {
       `goal ${goalId} launch settings`,
     );
 
+    /* P-004: fold status + holder policy + liveness into the reading the popup
+       should actually show. Both inputs are already in hand — no extra query.
+
+       NOTE the interaction with `launchSettingsInvalid` above: an unreadable
+       document parses to `null`, which resolves to the DEFAULT policy
+       (requireLive: true), so a corrupt blob makes the goal MORE guarded, not
+       less. That is the opposite of the ceiling case one field up, and
+       deliberately so: a ceiling that fails open spends money, a holder
+       requirement that fails open hides a dead goal. */
+    const { resolveGoalEffectiveActivity } = await import('../goals/activity');
+    const detailActivity = resolveGoalEffectiveActivity({
+      status: (goalRow as unknown as { status?: string | null }).status ?? null,
+      launchSettings,
+      liveness: detailHolders.liveness,
+    });
+
     return {
       goal,
       /** Null = none declared, and NOT an error. Since D-015 that means the
