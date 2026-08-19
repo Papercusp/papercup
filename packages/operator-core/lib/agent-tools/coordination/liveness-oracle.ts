@@ -59,7 +59,11 @@ import {
   type SessionState,
   type WakeabilitySignals,
 } from './presence-wakeability';
-import { PRESENCE_STALE_MS } from './presence';
+// Constant-only import from the pure package — see presence-wakeability.ts (WI-39450).
+// The `probeProcessLiveness`/`getPresence` import above legitimately needs the local
+// module; this constant does not, and routing it through the blanket-mocked './presence'
+// is what stranded it in unit-test collection.
+import { PRESENCE_STALE_MS } from '@papercusp/coordination/presence';
 import {
   fetchSelfWake,
   type SelfWakeSignals,

@@ -40,7 +40,13 @@
  */
 
 import { getOrgPg } from '@papercusp/db-org';
-import { PRESENCE_STALE_MS } from './presence';
+// Source the CONSTANT from the pure package, not the local './presence' re-export:
+// './presence' constructs a PgPresenceStore at module load, so unit tests blanket-mock
+// it — and a factory that omits this constant made line 88's top-level read throw
+// "No PRESENCE_STALE_MS export is defined on the mock", crashing COLLECTION in ~16
+// unrelated suites (WI-39450 gate reds). The pure module has no side effects, so it is
+// unaffected by that mock. Matches recipient-resolve/audience-host/federated-presence.
+import { PRESENCE_STALE_MS } from '@papercusp/coordination/presence';
 import { COORD_INBOX_WAKE_PREFIX } from './inbox-wake';
 import { SESSION_END_MARKER } from '../activity/lifecycle-markers';
 

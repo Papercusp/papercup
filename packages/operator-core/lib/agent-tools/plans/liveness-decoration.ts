@@ -23,7 +23,10 @@
  */
 
 import { getOrgPg } from '@papercusp/db-org';
-import { PRESENCE_STALE_MS } from '../coordination/presence';
+// Constant-only import from the pure package — see presence-wakeability.ts (WI-39450):
+// '../coordination/presence' has module-load side effects and is blanket-mocked by unit
+// tests, which strands this constant and crashes collection.
+import { PRESENCE_STALE_MS } from '@papercusp/coordination/presence';
 import { fetchWakeability } from '../coordination/presence-wakeability';
 import { deriveVerdict } from '../coordination/liveness-oracle';
 import { recordedLiveOwnerIds } from '../../adv-sessions';
