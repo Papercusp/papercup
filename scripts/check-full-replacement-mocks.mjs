@@ -262,6 +262,32 @@ export function exposureCensus({ files, protectedModules }) {
 }
 
 /**
+ * Render the scope qualifier that travels with a PASS. Pure, so a test can pin the one
+ * property that matters: a non-zero exposure must never render as an unqualified all-clear.
+ */
+export function printExposureNote(exposure) {
+  if (exposure.modules === 0) {
+    return (
+      '  SCOPE: every module carrying a bare full-replacement factory is in the registry — ' +
+      'this IS a tree-wide all-clear.'
+    );
+  }
+  const lines = [
+    `  ⚠ SCOPE — NOT a tree-wide all-clear. ${exposure.modules} unprotected module(s) ` +
+      `(${exposure.internalModules} internal) still carry ${exposure.pairs} bare ` +
+      `full-replacement factor(y/ies).`,
+    '    They are OUT OF SCOPE for this guard and were NOT checked, so a green here does not',
+    '    mean "bare factories are not the problem" — it means none reached a REGISTERED module.',
+    '    Largest unprotected exposures (promoting one costs converting its mockers first):',
+  ];
+  for (const r of exposure.top.slice(0, 5)) {
+    lines.push(`      ${String(r.files).padStart(4)} file(s)  ${r.module}`);
+  }
+  lines.push('    Full census: node scripts/check-full-replacement-mocks.mjs --list');
+  return lines.join('\n');
+}
+
+/**
  * Internal modules are the ACTIONABLE half of the exposure: our own export surfaces change
  * on any ordinary commit, whereas a third-party surface (`nuqs`, `sonner`) moves only on a
  * deliberate upgrade. Both can strand a factory, so both are counted — but a reader deciding
@@ -535,9 +561,13 @@ function main() {
 
   if (violations.length === 0) {
     console.log(
-      `✓ full-replacement-mocks: ${PROTECTED_MODULES.length} protected module(s), ` +
-        `${candidates.length} candidate test file(s) scanned — no bare vi.mock factories.`,
+      `✓ full-replacement-mocks: no bare vi.mock factories on the ` +
+        `${PROTECTED_MODULES.length} PROTECTED module(s) ` +
+        `(${candidates.length} candidate test file(s) parsed).`,
     );
+    // EI-20836231573383362: never print this pass as a tree-wide all-clear. It was read as
+    // one, on a tree that had a collection-breaking bare factory in it the whole time.
+    console.log(printExposureNote(exposure));
     process.exit(0);
   }
 
