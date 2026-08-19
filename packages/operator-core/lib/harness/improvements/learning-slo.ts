@@ -945,6 +945,57 @@ function poolLabel(p: RecallPoolHealth): string {
 }
 
 /**
+ * Gate-2's zero-hit bar for ONE pool, scaled by how big that pool's corpus is
+ * (EI-20878926803436140). Pure and exported so the controls below can pin the
+ * curve directly rather than inferring it from a signal's presence.
+ *
+ * THE CONFOUND: `zeroHitRate` measures "how often did this pool contribute
+ * nothing", which mixes two independent causes — the pool is UNREACHABLE (the
+ * defect), or the asking surface's query is SPECIFIC and the corpus is small
+ * (perfectly healthy). Holding corpus and scope constant, one 58-memory scope
+ * measured 0.000 zero-hit on `initialize` and 0.874 on `mid-turn`. A flat bar
+ * cannot separate those, and at 0.85 it lands inside the healthy band for
+ * every small pool on this box.
+ *
+ * THE FIX: make the bar a function of corpus size, because corpus size is
+ * exactly what decides whether sparsity is a sufficient explanation. Below
+ * ~100 active memories a near-total miss rate is ordinary, so only a blackout
+ * (≥0.97) is evidence; above ~500 sparsity can no longer explain it and the
+ * flat 0.85 stands. Linear in between, so no pool sits on a cliff edge.
+ *
+ * ⛔ DO NOT replace this with the tempting alternative — "suppress when the
+ * same SCOPE reads healthy on some OTHER surface". It looks equivalent and it
+ * is not: it would have silenced the documented 2026-08-01 true positive
+ * (`initialize/harness`, 54/54 zero-hit against a real 1,975-memory scope)
+ * because `mid-turn/harness` was answering normally on that very scope at that
+ * very time. Cross-surface reachability proves the KEY is live; it says
+ * nothing about whether THIS surface's pool is wired up. See the
+ * `emptyScopeRate` docstring in recall-stats.ts for that incident's record.
+ *
+ * A `null`/unknown corpus returns the flat bar unchanged, so a caller that
+ * predates the column behaves exactly as it did before.
+ */
+export function effectiveZeroHitGate(
+  corpusActive: number | null | undefined,
+  opts: LearningSloOptions = {},
+): number {
+  const maxZero = opts.recallPoolMaxZeroHitRate ?? LEARNING_SLO_DEFAULTS.recallPoolMaxZeroHitRate;
+  const smallCorpus = opts.recallPoolSmallCorpus ?? LEARNING_SLO_DEFAULTS.recallPoolSmallCorpus;
+  const largeCorpus = opts.recallPoolLargeCorpus ?? LEARNING_SLO_DEFAULTS.recallPoolLargeCorpus;
+  const smallMax =
+    opts.recallPoolSmallCorpusMaxZeroHitRate ?? LEARNING_SLO_DEFAULTS.recallPoolSmallCorpusMaxZeroHitRate;
+  // Unknown corpus ⇒ pre-column behavior, never a silently-relaxed gate.
+  if (corpusActive == null || !Number.isFinite(corpusActive)) return maxZero;
+  // Degenerate/inverted tuning must fail toward the STRICTER flat bar: a
+  // misconfigured knob should over-report, never blind the detector.
+  if (!(smallMax > maxZero) || !(largeCorpus > smallCorpus)) return maxZero;
+  if (corpusActive >= largeCorpus) return maxZero;
+  if (corpusActive <= smallCorpus) return smallMax;
+  const t = (corpusActive - smallCorpus) / (largeCorpus - smallCorpus);
+  return smallMax - t * (smallMax - maxZero);
+}
+
+/**
  * Pure: the per-pool aggregate (+ the per-surface aggregate, used ONLY to
  * annotate the contrast) → at most one starvation signal and one saturation
  * signal.
@@ -988,8 +1039,12 @@ export function recallPoolSignalsFromHealth(
 
   const signals: WatchdogSignal[] = [];
 
+  // gate-2: the bar is PER POOL, scaled by corpus size — see
+  // effectiveZeroHitGate. A flat `maxZero` here fired on healthy small pools
+  // asked specific questions, which is how a false alarm held a CRITICAL item
+  // for 11 days (EI-20878926803436140).
   const starved = eligible
-    .filter((p) => p.zeroHitRate >= maxZero)
+    .filter((p) => p.zeroHitRate >= effectiveZeroHitGate(p.corpusActive, opts))
     .sort((a, b) => b.zeroHitRate - a.zeroHitRate || b.recalls - a.recalls);
   if (starved.length > 0) {
     const lines = starved.slice(0, RECALL_POOL_BODY_SAMPLES).map((p) => {
@@ -1012,8 +1067,15 @@ export function recallPoolSignalsFromHealth(
           : p.emptyScope === 0
             ? ` (asked under a real scope every time — this is a genuine miss, not an unscoped call.)`
             : ` (${ratePct(p.emptyScopeRate)} of these asked under an empty scope.)`;
+      // Report the corpus AND the bar it earned: without them a reader cannot
+      // tell a starved pool from a small one, which is the exact mistake this
+      // gate made for 11 days.
+      const corpus =
+        p.corpusActive == null
+          ? ' corpus=unknown'
+          : ` corpus=${Math.round(p.corpusActive)} active (bar ${ratePct(effectiveZeroHitGate(p.corpusActive, opts))})`;
       return `  • ${poolLabel(p)}: returned nothing on ${p.zeroHit}/${p.recalls} recalls ` +
-        `(${ratePct(p.zeroHitRate)})${contrast}.${scopes}${asked}`;
+        `(${ratePct(p.zeroHitRate)})${contrast}.${corpus}.${scopes}${asked}`;
     });
     signals.push({
       source: 'memory-recall-pool',
