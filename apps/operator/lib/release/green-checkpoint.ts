@@ -3891,14 +3891,16 @@ export const ISOLATION_RETRY_DELAY_MS = 5_000;
  *  attempt), the worst case never regresses below what the gate did before this fix. */
 export const ISOLATION_RETRY_BUDGET_MS = 20 * 60_000;
 
-/** EI-20669541349219660: mirror of GREEN_CHECKPOINT_SUITE_TIMEOUT_MS (release-actions.ts) —
- *  the SCHEDULED parent SIGTERMs this process's group at that mark, so it is the effective
- *  kill deadline for a scheduled run (the 180m SELF_WATCHDOG_MS only matters parent-dead).
- *  Mirrored because operator-core registers routine actions as a module-load side effect
- *  (same convention as MANUAL_CHECKPOINT_WATCHDOG_MS / the result MARKERs); pinned equal in
- *  release-timing-invariants.test.ts so drift fails the build instead of un-bounding the
- *  isolation phase below. */
-export const SUITE_KILL_BUDGET_MIRROR_MS = 115 * 60_000;
+/** EI-20669541349219660: the SCHEDULED parent SIGTERMs this process's group at
+ *  GREEN_CHECKPOINT_SUITE_TIMEOUT_MS, so that is the effective kill deadline for a
+ *  scheduled run (the 180m SELF_WATCHDOG_MS only matters parent-dead).
+ *
+ *  This was a hand-typed MIRROR, because its old home (release-actions.ts) registers
+ *  routine actions as a module-load side effect and this script runs standalone under tsx
+ *  in an isolated checkout. The budget now lives in a leaf with no imports, so the mirror
+ *  is gone: the name is kept because it reads correctly at the use sites below, but it is
+ *  the SAME constant, not a copy of it, and can no longer drift. */
+export const SUITE_KILL_BUDGET_MIRROR_MS = GREEN_CHECKPOINT_SUITE_TIMEOUT_MS;
 
 /** EI-20669541349219660: headroom the isolation phase must leave before the run's kill
  *  deadline. The phase deadline is "stop STARTING new absorption work" (an isolation
