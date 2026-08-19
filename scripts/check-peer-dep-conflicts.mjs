@@ -368,12 +368,6 @@ function main() {
     process.exit(EXIT_NOT_CHECKED);
   }
 
-  if (result.drift === null) {
-    console.error('check-peer-dep-conflicts: NOT CHECKED — package-lock.json is missing or');
-    console.error(`  unreadable under ${ROOT}, so manifest/lock peer drift could not be judged.`);
-    process.exit(EXIT_NOT_CHECKED);
-  }
-
   if (result.drift.length > 0) {
     console.error(
       `check-peer-dep-conflicts: ${result.drift.length} peer declaration(s) DRIFTED between\n` +
