@@ -217,6 +217,11 @@ describe('recombineProposals — dropped routeHint signal', () => {
       expect(r.proposals[0].routeHint).toBeUndefined();
       // ...but the ask is no longer invisible.
       expect(r.droppedRouteHints).toEqual([{ value: 'goal', count: 1 }]);
+      // WI-39879 — and it rides ON the proposal, not only in the batch tally. The
+      // tally dies at the `recombine` PORT boundary (typed `=> Promise<Proposal[]>`),
+      // so this is the copy that survives into scout_cycle_stage_artifacts and makes
+      // the goal-draft queue readable. Still routing-neutral: routeHint stays undefined.
+      expect(r.proposals[0].droppedRouteHint).toBe('goal');
       expect(warn).toHaveBeenCalledTimes(1);
       expect(String(warn.mock.calls[0]?.[0])).toContain('goal×1');
     } finally {
