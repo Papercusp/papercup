@@ -456,6 +456,10 @@ describe('goals:update — the deliberate-pause record (P-005)', () => {
     principal: { slug: 'su-abc' },
   });
 
+  // The fan-out suite above installs a host executor; this one is about the
+  // RECORD, not the fan-out, so start from the un-wired state either way.
+  beforeEach(() => setGoalTransitionExecutor(undefined));
+
   it('REFUSES status:"paused" with no reason, and writes NOTHING', async () => {
     const res = (await tool.handler(
       tool.args.parse({ id: 'g1', status: 'paused' }) as never,
