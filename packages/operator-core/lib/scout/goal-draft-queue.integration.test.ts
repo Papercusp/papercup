@@ -115,7 +115,7 @@ describe('goal draft queue (real PG, migration 623)', () => {
       INSERT INTO harness_shared.scout_cycle_stage_artifacts
         (workspace_id, cycle_id, proposals, created_at)
       VALUES (${WS}, 'scout-1786878027729',
-              ${sql.json([LIVE_SP_001, ORDINARY] as never)},
+              ${sql.json([LIVE_SP_001, ORDINARY] as never)}::jsonb,
               '2026-08-16T11:03:51.848Z')`;
 
     // A NEWER cycle carrying no drafts — proves `limit` bounds CYCLES scanned.
@@ -123,7 +123,7 @@ describe('goal draft queue (real PG, migration 623)', () => {
       INSERT INTO harness_shared.scout_cycle_stage_artifacts
         (workspace_id, cycle_id, proposals, created_at)
       VALUES (${WS}, 'scout-newer-no-drafts',
-              ${sql.json([ORDINARY] as never)},
+              ${sql.json([ORDINARY] as never)}::jsonb,
               '2026-08-17T00:00:00.000Z')`;
 
     // proposals IS NULL — the WHERE clause must exclude it (a null jsonb reaching
@@ -138,12 +138,12 @@ describe('goal draft queue (real PG, migration 623)', () => {
       INSERT INTO harness_shared.scout_cycle_stage_artifacts
         (workspace_id, cycle_id, proposals, created_at)
       VALUES (${OTHER_WS}, 'scout-other-tenant',
-              ${sql.json([LIVE_SP_001] as never)},
+              ${sql.json([LIVE_SP_001] as never)}::jsonb,
               '2026-08-16T11:03:51.848Z')`;
   }, 120_000);
 
   afterAll(async () => {
-    await db?.close?.();
+    await db?.cleanup?.();
   });
 
   it('returns the real override-path draft from a persisted stage-artifact row', async () => {
