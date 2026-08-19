@@ -112,6 +112,14 @@ export default defineTool({
           `(${GOAL_LAUNCH_DEFAULTS.maxAgents} agents / ${GOAL_LAUNCH_DEFAULTS.maxPerFleet} per fleet), which is NOT the same as unlimited. ` +
           'Pass null to clear the whole document back to those defaults; omit to leave untouched.',
       ),
+    holder: goalHolderPolicySchema
+      .optional()
+      .describe(
+        'Declare (or revise) THIS goal\'s holder policy: does it need a LIVE holder to count as active, and what happens when it loses one. ' +
+          "{ requireLive: true } for a goal a session owns; { requireLive: false } for one driven by routines rather than a held session; onLoss 'deactivate' (default) or 'respawn'. " +
+          'MERGES into the existing launch settings — unlike launchSettings, which replaces the whole document — so declaring a policy cannot disturb a declared ceiling. ' +
+          'This is the door that clears a "no declared holder policy" refusal from goals:create / goals:start / mode:set { mode:"goal" }.',
+      ),
   }),
   async handler(args, ctx) {
     // ── The criterion gate (P-009) ───────────────────────────────────────────
@@ -289,6 +297,24 @@ export default defineTool({
     if (args.launchSettings !== undefined) {
       const w = await writeGoalLaunchSettings(args.id, args.launchSettings, ctx.tx);
       if (!w.ok) launchSettingsError = `launch settings NOT saved: ${w.error ?? 'unknown error'}`;
+    }
+
+    /* HOLDER POLICY (goal-live-holder-guarantee-2026-08-18 P-003). Its own arg
+       rather than "just pass launchSettings" because the two write the document
+       differently ON PURPOSE: `launchSettings` REPLACES it, which is right when
+       the owner is editing the document as a document, and wrong for a caller
+       answering only the holder question — sending `{ holder }` through that
+       path silently drops the goal's ceilings. Since this is the door the
+       P-003 refusals name as the fix, a fix that destroys a ceiling would be
+       worse than the refusal it clears.
+
+       AFTER the launchSettings write and in the same transaction, so passing
+       both in one call means the holder policy merges into the document just
+       written rather than into the one it replaced. */
+    let holderError: string | null = null;
+    if (args.holder !== undefined) {
+      const w = await declareGoalHolderPolicy(args.id, args.holder, ctx.tx);
+      if (!w.ok) holderError = `holder policy NOT saved: ${w.error ?? 'unknown error'}`;
     }
 
     /* BLOCKED-BY (goal-dag-shared-substrate-2026-08-18 P-002). Same
