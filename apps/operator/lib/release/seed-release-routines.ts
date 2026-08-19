@@ -24,11 +24,13 @@
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '@papercusp/operator-core/lib/workspace-registry';
 import { operatorHomeHarnessSlug } from '@papercusp/operator-core/lib/harness/operator-home-harness';
+import { GREEN_CHECKPOINT_CRON } from '@papercusp/operator-core/lib/release/green-checkpoint-schedule';
 
 const SLUG = process.env.RELEASE_ROUTINE_SLUG ?? operatorHomeHarnessSlug();
 const ROUTINES = [
-  // Hourly at :15 — offset from git-sync's every-10-min ticks.
-  { name: 'green-checkpoint', target: 'system:green-checkpoint', cron: '0 15 * * * *', activeDefault: true },
+  // Hourly at :15 — offset from git-sync's every-10-min ticks. The gate's run budget is
+  // phased against this period (WI-39841), so the cron is imported, never re-typed.
+  { name: 'green-checkpoint', target: 'system:green-checkpoint', cron: GREEN_CHECKPOINT_CRON, activeDefault: true },
   // ACTIVE: auto-serve (staging-branch-pipeline-2026-06-06 D-002).
   { name: 'release-trigger', target: 'system:release-trigger', cron: '0 */15 * * * *', activeDefault: true },
 ] as const;
