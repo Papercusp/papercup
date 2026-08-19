@@ -154,7 +154,29 @@ export type AgentSignalKey =
   | 'lastToolCall'
   | 'lane'
   | 'announcedGates'
-  | 'fleetControl';
+  | 'fleetControl'
+  | 'pipeline';
+
+/** Mirrors the server-side `OrientPipeline` — the release-pipeline block THIS
+ *  agent is handed at its own wake. Every field but `gate`/`deploy` is optional
+ *  because the producer omits each one when it has nothing to say (no reds, gate
+ *  currently green, all legs ok), so an absent field means "nothing to report",
+ *  never zero. See pipeline-health.ts for the field meanings. */
+export interface AgentPipeline {
+  /** `stale-verdict` = the recorded red is superseded, so the colour is UNKNOWN
+   *  — never render it as either green or red. */
+  gate: 'green' | 'red' | 'stalled' | 'wedged' | 'stale-verdict' | 'conflict';
+  /** Is what is live on :3070 caught up with the green pin and main? */
+  deploy: 'current' | 'behind';
+  consecutiveReds?: number;
+  lastGreenAgoMs?: number;
+  /** The test files behind a REAL red — the ones to go fix. Never set for a
+   *  stale-verdict gate, whose names must NOT be dispatched against. */
+  failingFiles?: string[];
+  rootCause?: string;
+  note?: string;
+  checkedAtMs?: number;
+}
 
 /** Mirrors the server-side `AgentLane` — the plan this agent declared and where
  *  that plan says the work stands. See adv-agent-detail.ts for field meaning. */
@@ -200,6 +222,11 @@ export interface AgentSignals {
   unansweredDirectedCount: number;
   lastToolCallAt: string | null;
   lane: AgentLane | null;
+  /** The release pipeline this agent's work ships through. `null` is UNMEASURED
+   *  (the producer is fail-soft and resolves null rather than throwing), so it
+   *  renders as nothing — and it is deliberately absent from
+   *  `unavailableSignals` for the same reason: nothing threw. */
+  pipeline: AgentPipeline | null;
   announcedGates: AgentAnnouncedGate[];
   fleetControl: AgentFleetControl | null;
   unavailableSignals: AgentSignalKey[];

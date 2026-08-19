@@ -1009,6 +1009,15 @@ export default function AgentDossier({
               {metaRows([
                 ['plan', signals.lane.planSlug],
                 ['now', signals.lane.nowState],
+                // P-014: `nowNext` is the plan AUTHOR'S OWN prose for what comes
+                // next; `next up` below is the mechanically-computed next
+                // actionable item. They are different claims and can disagree —
+                // the prose is intent, the item is what the scheduler would
+                // actually hand out — so the intent gets its own row rather than
+                // being collapsed into the item. It has been produced
+                // (adv-agent-detail.ts) and mirrored since the lane shipped, and
+                // simply never rendered.
+                ['now next', signals.lane.nowNext],
                 [
                   'next up',
                   signals.lane.nextActionable
