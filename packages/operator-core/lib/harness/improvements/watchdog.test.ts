@@ -2841,7 +2841,8 @@ describe('red-test SAME-SHA verdict flip (WI-10929)', () => {
     // "same sha", which reads as inconclusive instead of decisive. Leaving both
     // lines in would preserve the exact wrong next action this fixes.
     const s = redTestSignalsFromRows(
-      rows({ fail_shas: ['ed37db59c8'], last_pass_sha: 'ed37db59c8', last_pass_at: '2026-08-04T01:10:41Z' }),
+      // WI-39890: pass_shas is what the flip is derived from now (see the fixture above).
+      rows({ fail_shas: ['ed37db59c8'], last_pass_sha: 'ed37db59c8', pass_shas: ['ed37db59c8'], last_pass_at: '2026-08-04T01:10:41Z' }),
       6,
     )[0];
     expect(s.body).not.toContain('DESCENDANT');

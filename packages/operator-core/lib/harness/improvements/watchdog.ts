@@ -4275,6 +4275,13 @@ export interface WatchdogTickResult {
    */
   standing: number;
   standingKeys: string[];
+  /**
+   * Keys the RE-FILE RATE LIMIT (EI-20847917368795366) released from `standing` this tick,
+   * having measured them continuously suppressed for >= WATCHDOG_REFILE_AFTER_MS. Normally
+   * EMPTY: a non-empty value means a condition had gone untracked for half a day, so this is
+   * the counter that makes the escape hatch auditable instead of invisible.
+   */
+  refileEligibleKeys: string[];
   /** Signals dropped by the P-006 METRIC LANE: a statistic, routed to the Blender rather than filed. */
   metricSuppressed: number;
   metricSuppressedKeys: string[];
