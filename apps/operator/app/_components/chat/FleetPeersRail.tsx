@@ -63,17 +63,54 @@ export const COLUMN_WORD: Record<HudColumnId, string> = {
   parked: 'parked',
 };
 
+/** The alert marks for one row. Each glyph carries its own sentence in a native
+ *  `title` — legal on a span (the design-primitives rule bans it on buttons,
+ *  links and tabs, which is why the ROW's reason goes through `Tooltip`), and
+ *  the same sentences are appended to the row tooltip so a keyboard or touch
+ *  user reaches them too. */
+function PeerAlertGlyphs({ alerts }: { alerts: MemberAlert[] }) {
+  if (alerts.length === 0) return null;
+  return (
+    <span className="pc-peer__alerts" data-testid="peer-alert-glyphs">
+      {alerts.map((a) => (
+        <span
+          key={a.key}
+          className="pc-peer__alert"
+          data-sev={a.severity}
+          data-alert={a.key}
+          title={a.title}
+        >
+          {a.glyph}
+        </span>
+      ))}
+    </span>
+  );
+}
+
 function PeerRow({
   peer,
+  alerts,
   onSelect,
 }: {
   peer: FleetPeer;
+  /** Leader-brief alerts for THIS member, most-severe first. Empty/absent means
+   *  "nothing the brief flagged" — which is only an all-clear when a brief was
+   *  actually read; the rail's own block says whether it was. */
+  alerts?: MemberAlert[];
   /** Absent ⇒ render read-only. A row that looks clickable and is not is worse
    *  than one that plainly is not — see the rail's own `onSelectPeer` doc. */
   onSelect?: (ownerId: string) => void;
 }) {
   const age = formatAge(peer.sinceSec);
   const clickable = onSelect != null && !peer.isCurrent;
+  const rowAlerts = alerts ?? [];
+  // The board's own sentence FIRST, then what the brief adds. Both, never one:
+  // the column says how this row scored, the alerts say what that score cannot
+  // see, and a reader needs the pair to act.
+  const reason =
+    rowAlerts.length > 0
+      ? [peer.reason, ...rowAlerts.map((a) => a.title)].join(' · ')
+      : peer.reason;
 
   const body = (
     <>
@@ -82,6 +119,7 @@ function PeerRow({
         <FleetRoleGlyph role={peer.isLeader ? 'leader' : 'member'} className="pc-peer__glyph" />
         <span className="pc-peer__handle">{peer.handle}</span>
         {peer.agentPaneKind === 'cup' ? <span className="pc-peer__kind">cup</span> : null}
+        <PeerAlertGlyphs alerts={rowAlerts} />
         {peer.isCurrent ? (
           <span className="pc-peer__here">viewing</span>
         ) : peer.contextPct != null ? (
@@ -109,7 +147,7 @@ function PeerRow({
         data-current={peer.isCurrent ? 'true' : undefined}
         aria-current={peer.isCurrent ? 'true' : undefined}
         data-testid="fleet-peer-row"
-        title={peer.reason}
+        title={reason}
       >
         {body}
       </li>
