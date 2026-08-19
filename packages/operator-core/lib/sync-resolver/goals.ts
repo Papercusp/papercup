@@ -256,6 +256,8 @@ interface RawGoal {
   created_at: string | Date | null;
   updated_at: string | Date | null;
   last_activity_at: string | Date | null;
+  /** Raw jsonb — parsed by `parseGoalLaunchSettings`, never trusted here. */
+  launch_settings?: unknown;
   pot_count: string | null;
   /** json_agg of the sampled pots — shape validated by parsePotChips, not here. */
   pots: unknown;
@@ -340,6 +342,7 @@ function toSummary(r: RawGoal): GoalSummaryRowBase {
     spendUsd: num(r.spend_usd),
     spendRecentUsd: num(r.spend_recent_usd),
     spendRecentWindowDays: SPEND_RECENT_WINDOW_DAYS,
+    launchSettingsRaw: r.launch_settings ?? null,
   };
 }
 
@@ -380,14 +383,31 @@ async function withHolderLiveness(
     // entry (an absent one would be a bug in resolveGoalHoldersBatchFromRows,
     // not a goal without holders — that case is `unheld`).
     const h = byGoal.get(goalHolderKey(workspaceId, g.id));
+    const holderLiveness = h?.liveness ?? 'unheld';
+    // P-004: the liveness we just paid for is exactly the input the activity
+    // fold needs, so deriving here is free. Doing it HERE rather than in each
+    // caller is the same argument `GoalSummaryRowBase` already makes about the
+    // liveness join itself: easy to write, easy to forget, silent when
+    // forgotten. An invalid `launch_settings` parses to null, which resolves to
+    // the DEFAULT policy (requireLive: true) rather than opting the goal out —
+    // a corrupt blob must not silently disable the guarantee.
+    const { launchSettingsRaw, ...row } = g;
+    const { settings } = parseGoalLaunchSettings(launchSettingsRaw);
+    const activity = resolveGoalEffectiveActivity({
+      status: g.status,
+      launchSettings: settings,
+      liveness: holderLiveness,
+    });
     return {
-      ...g,
+      ...row,
       agents: (h?.holders ?? []).map((x) => ({
         ownerId: x.ownerId,
         live: x.live,
         sessionState: x.sessionState,
       })),
-      holderLiveness: h?.liveness ?? 'unheld',
+      holderLiveness,
+      effectiveStatus: activity.effectiveStatus,
+      deactivated: activity.deactivated,
     };
   });
 }

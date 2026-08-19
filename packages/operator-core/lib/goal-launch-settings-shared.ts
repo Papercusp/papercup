@@ -118,3 +118,56 @@ export const GOAL_HOLDER_DEFAULTS = {
   requireLive: true,
   onLoss: 'deactivate',
 } as const satisfies { requireLive: boolean; onLoss: GoalHolderOnLoss };
+
+/**
+ * The stored holder policy, typed STRUCTURALLY rather than as the zod-inferred
+ * `GoalLaunchSettings`.
+ *
+ * That is what keeps this module dependency-free, which is the whole reason it
+ * is split from `goal-launch-settings.ts`: that module statically imports
+ * `@papercusp/db-org`, so anything importing it pays for the store's server
+ * dependencies at load. `GoalLaunchSettings` is structurally assignable to this,
+ * so callers pass it unchanged.
+ */
+export interface GoalHolderPolicyInput {
+  holder?: { requireLive?: boolean | null; onLoss?: GoalHolderOnLoss | null } | null;
+}
+
+/** A holder policy with every field resolved — no absent, no null, no guessing. */
+export interface ResolvedGoalHolderPolicy {
+  requireLive: boolean;
+  onLoss: GoalHolderOnLoss;
+  /**
+   * True when the goal pinned NOTHING and is running entirely on defaults.
+   * P-003 refuses at the write boundary on this; a surface that wants to show
+   * "inherited" vs "pinned" reads it rather than re-deriving it from absence.
+   */
+  isDefault: boolean;
+}
+
+/**
+ * Resolve one goal's holder policy at READ time (D-008).
+ *
+ * This is `resolveCeiling`'s sibling and follows `goal-launch-settings.ts`'s
+ * "WHY IN THE RESOLVER AND NOT AT CREATE TIME" rule exactly: resolving here
+ * governs every goal that already exists, with no migration and no backfill,
+ * and keeps an absent key meaning exactly one thing.
+ *
+ * Absent and null both mean unpinned. Only an EXPLICIT `false` opts a goal out
+ * of the live-holder requirement.
+ *
+ * Lives HERE rather than beside the schema so the pure read-side fold
+ * (`goals/activity.ts`, P-004) can reach it without dragging the store in.
+ */
+export function resolveGoalHolderPolicy(
+  settings: GoalHolderPolicyInput | null | undefined,
+): ResolvedGoalHolderPolicy {
+  const stored = settings?.holder;
+  const requireLive = stored?.requireLive;
+  const onLoss = stored?.onLoss;
+  return {
+    requireLive: typeof requireLive === 'boolean' ? requireLive : GOAL_HOLDER_DEFAULTS.requireLive,
+    onLoss: onLoss ?? GOAL_HOLDER_DEFAULTS.onLoss,
+    isDefault: requireLive == null && onLoss == null,
+  };
+}
