@@ -106,6 +106,11 @@ const CSS_SOURCES = [
   '../operator-vite/src/components/left-sidebar/left-sidebar.styles.ts',
   '../operator-vite/src/components/dev-admin-rail/dev-admin-rail.styles.ts',
   '../operator-vite/src/components/adv/scheduled-calendar.css',
+  // The pc-orders panel palette (--pc-orders-*) is defined here and legitimately
+  // consumed by sibling files in the same panel (Disclosures.css inherits it via
+  // CSS custom-property inheritance, with global-token fallbacks) — a shared
+  // mini-palette, same class as scheduled-calendar.css above.
+  'app/adv/sessions/AgentOrders.css',
   '../operator-vite/src/components/voice-video/VoiceChannelPanel.css',
   '../operator-vite/src/components/voice-video/VideoGrid.css',
 ];
