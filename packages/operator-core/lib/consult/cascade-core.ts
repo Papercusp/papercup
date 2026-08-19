@@ -19,7 +19,13 @@
  * Schema: migration 844 (cascade_cursor + cascade_digest on consult_state).
  */
 import type { Sql } from 'postgres';
-import { DEAD_RESPONDER_STATES, HARD_BLOCKED_EXPIRY_MS, PROCEED_EXPIRY_MS } from './get-feedback-core';
+import {
+  DEAD_RESPONDER_STATES,
+  HARD_BLOCKED_EXPIRY_MS,
+  PROCEED_EXPIRY_MS,
+  revivalBrief,
+  revivalBudgetSpent,
+} from './get-feedback-core';
 
 /** Chain events a digest entry can record: the responder reply kinds, plus
  * the two non-reply advance triggers. */
@@ -112,11 +118,25 @@ export function cascadeWakeBody(input: {
   );
 }
 
+/** The revival seam advanceCascade's refill-exhaustion leg calls
+ * (EI-20864690354207496) — same contract as GetFeedbackDeps.revive: MUST
+ * resolve, never throw; spawned:false on any failure. Prod binds the WI-39852
+ * reviver (revive-responder.ts). */
+export type CascadeRevive = (opts: {
+  ownerId: string;
+  conversationId: string;
+  brief: string;
+}) => Promise<{ spawned: boolean; verified: boolean | null; detail: string }>;
+
 export interface AdvanceCascadeParams {
   workspaceId: string;
   conversationId: string;
   question: string;
   latencyContract: string;
+  /** The consult's requester (row.requester_id) — named in the
+   * refill-exhaustion revival brief (EI-20864690354207496). Optional only for
+   * older fixtures; the brief falls back to a neutral phrase. */
+  requesterId?: string;
   /** Persisted routing snapshot (selection.selected is the menu). */
   routing: unknown;
   /** Current cursor (index of the responder whose event triggered this). */
@@ -146,9 +166,29 @@ export interface AdvanceCascadeResult {
   /** WI-39861: this advance was the ONE bounded min-ANSWERS refill round — the
    * menu exhausted with fewer substantive answers than selection.min, so the
    * menu was extended from the untried route-time-live remainder of the
-   * snapshot pool (selection.refill stamps the round; a second exhaustion is
-   * terminal). */
+   * snapshot pool (selection.refill stamps the round). */
   refilled?: boolean;
+  /** EI-20864690354207496: a refill-exhaustion revival was ATTEMPTED this
+   * advance — the menu exhausted below selection.min with no live untried
+   * candidate left to fill it, and the persisted per-consult budget was
+   * unspent. spawned:true ⇒ the revived entry HEADS the menu extension and
+   * `next` points at them; spawned:false ⇒ see underFilled. */
+  revival?: {
+    ownerId: string;
+    trigger: 'refill-exhaustion';
+    spawned: boolean;
+    verified: boolean | null;
+    detail: string;
+  };
+  /** EI-20864690354207496 honest terminal: the cascade ended with fewer
+   * substantive answers than selection.min and NO revival could close the gap
+   * — `reason` names why. Mirrored durably onto the persisted snapshot as
+   * selection.underFilled so the label survives the caller. */
+  underFilled?: {
+    answers: number;
+    min: number;
+    reason: 'no-revive-dep' | 'budget-spent' | 'no-revivable-candidate' | 'revival-failed';
+  };
 }
 
 /**
@@ -176,14 +216,20 @@ export async function advanceCascade(
   const next = nextIdx < selected.length ? selected[nextIdx] : null;
 
   if (!next) {
-    // WI-39861 min-ANSWERS refill (ONE bounded round): the menu is exhausted.
-    // If fewer substantive ANSWERS than selection.min were collected (counting
-    // the just-appended event) and the refill round has not run, extend the
-    // menu from the snapshot pool's untried route-time-live remainder instead
-    // of going terminal. It lives HERE — shared by all three triggers
-    // (reply/decline/expiry) — so the semantics cannot drift. The
-    // selection.refill stamp IS the one-round guard: a second exhaustion finds
-    // it present and falls through to terminal.
+    // WI-39861 min-ANSWERS refill + EI-20864690354207496 revival: the menu is
+    // exhausted. If fewer substantive ANSWERS than selection.min were
+    // collected (counting the just-appended event), try to extend the menu
+    // instead of going terminal — first from the snapshot pool's untried
+    // route-time-LIVE remainder (ONE bounded round; the selection.refill
+    // stamp is that round's guard), then, when min is still unreachable from
+    // live untried candidates, by REVIVING one dead ABOVE-FLOOR untried
+    // candidate if the persisted per-consult budget is unspent
+    // (revivalBudgetSpent over the selection's `revived` stamps — the budget,
+    // not the refill stamp, bounds revival, so the post-refill exhaustion is
+    // covered too). When neither can fill the gap, the terminal state
+    // honestly reports WHY the min stays unfilled (selection.underFilled).
+    // It all lives HERE — shared by all three triggers (reply/decline/expiry)
+    // — so the semantics cannot drift.
     const snap =
       typeof params.routing === 'string'
         ? (JSON.parse(params.routing) as Record<string, unknown> | null)
@@ -193,18 +239,25 @@ export async function advanceCascade(
       | null;
     const answers = digest.filter((e) => e.kind === 'answer').length;
     const min = typeof sel?.min === 'number' ? sel.min : 0;
-    if (snap && sel && min > 0 && answers < min && !sel.refill) {
+    if (snap && sel && min > 0 && answers < min) {
       const tried = new Set<string>([...selected.map((e) => e.ownerId), ...digest.map((e) => e.ownerId)]);
       const floor = typeof snap.floor === 'number' ? (snap.floor as number) : Number.POSITIVE_INFINITY;
       const simFloor = typeof snap.simFloor === 'number' ? (snap.simFloor as number) : Number.POSITIVE_INFINITY;
-      const pool = (Array.isArray(snap.candidates) ? snap.candidates : []).filter(
-        (c): c is { ownerId: string; score?: number; signals?: { similarity?: number }; liveness?: string } =>
+      const needed = Math.max(0, min - answers);
+      type SnapCand = {
+        ownerId: string;
+        score?: number;
+        signals?: { similarity?: number };
+        liveness?: string;
+        evidence?: unknown;
+      };
+      const untried = (Array.isArray(snap.candidates) ? snap.candidates : []).filter(
+        (c): c is SnapCand =>
           Boolean(c) &&
           typeof (c as { ownerId?: unknown }).ownerId === 'string' &&
-          !tried.has((c as { ownerId: string }).ownerId) &&
-          !DEAD_RESPONDER_STATES.has(String((c as { liveness?: unknown }).liveness ?? '')),
+          !tried.has((c as { ownerId: string }).ownerId),
       );
-      const add: CascadeSelectionEntry[] = pool.slice(0, Math.max(0, min - answers)).map((c) => {
+      const entryOf = (c: SnapCand, extra: Partial<CascadeSelectionEntry>): CascadeSelectionEntry => {
         const score = typeof c.score === 'number' ? c.score : 0;
         const similarity = typeof c.signals?.similarity === 'number' ? c.signals.similarity : 0;
         return {
@@ -216,9 +269,70 @@ export async function advanceCascade(
           score,
           similarity,
           liveness: c.liveness ?? 'unknown',
-          refill: true,
+          ...extra,
         };
-      });
+      };
+      // WI-39861 live refill (ONE bounded round — selection.refill guards it).
+      const liveAdds: CascadeSelectionEntry[] = !sel.refill
+        ? untried
+            .filter((c) => !DEAD_RESPONDER_STATES.has(String(c.liveness ?? '')))
+            .slice(0, needed)
+            .map((c) => entryOf(c, { refill: true }))
+        : [];
+
+      // EI-20864690354207496 revival leg. Liveness here is the ROUTE-TIME
+      // snapshot, up to PROCEED_EXPIRY_MS stale — an ACCEPTED bound, named
+      // deliberately: a stale-DEAD candidate who respawned meanwhile is
+      // refused by the reviver's live-collision rule (spawned:false, WI-3882),
+      // and a stale-LIVE pick who died since expires via the sweep and the
+      // cascade advances past them — both staleness directions recover
+      // without a liveness re-read here.
+      let revival: AdvanceCascadeResult['revival'];
+      let revivedEntry: CascadeSelectionEntry | null = null;
+      let underFilledReason: NonNullable<AdvanceCascadeResult['underFilled']>['reason'] | null = null;
+      if (liveAdds.length < needed) {
+        const revivable = untried.find(
+          (c) =>
+            DEAD_RESPONDER_STATES.has(String(c.liveness ?? '')) &&
+            typeof c.score === 'number' &&
+            c.score >= floor &&
+            typeof c.signals?.similarity === 'number' &&
+            c.signals.similarity >= simFloor,
+        );
+        if (!revive) underFilledReason = 'no-revive-dep';
+        else if (revivalBudgetSpent(selected)) underFilledReason = 'budget-spent';
+        else if (!revivable) underFilledReason = 'no-revivable-candidate';
+        else {
+          const r = await revive({
+            ownerId: revivable.ownerId,
+            conversationId: params.conversationId,
+            brief: revivalBrief({
+              requesterId: params.requesterId ?? 'the consult requester',
+              question: params.question,
+              conversationId: params.conversationId,
+              candidate: {
+                score: typeof revivable.score === 'number' ? revivable.score : 0,
+                signals: {
+                  similarity:
+                    typeof revivable.signals?.similarity === 'number' ? revivable.signals.similarity : 0,
+                },
+                evidence: Array.isArray(revivable.evidence) ? (revivable.evidence as never) : [],
+              },
+            }),
+          });
+          revival = { ownerId: revivable.ownerId, trigger: 'refill-exhaustion', ...r };
+          if (r.spawned) {
+            // The revived entry HEADS the extension: the cursor must land on
+            // them (their spawn brief says "reply now", and a non-cursor
+            // selectee's reply is refused as not_the_responder) — mirroring
+            // the creation site's revived-first menu.
+            revivedEntry = entryOf(revivable, { revived: true });
+          } else {
+            underFilledReason = 'revival-failed';
+          }
+        }
+      }
+      const add: CascadeSelectionEntry[] = revivedEntry ? [revivedEntry, ...liveAdds] : liveAdds;
       if (add.length > 0) {
         const rawSelected = Array.isArray(sel.selected) ? (sel.selected as unknown[]) : [];
         const updatedSnap = {
