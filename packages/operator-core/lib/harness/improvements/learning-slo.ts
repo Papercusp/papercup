@@ -1084,7 +1084,10 @@ export function recallPoolSignalsFromHealth(
       body:
         `Watchdog signal (memory-recall-pool, gate-2): over the last ${windowDays}d, ` +
         `${starved.length} injection pool(s) with at least ${minRecalls} recalls returned NOTHING on ` +
-        `at least ${ratePct(maxZero)} of the recalls they took part in:\n` +
+        `more of the recalls they took part in than their own corpus size can explain ` +
+        `(bar: ${ratePct(maxZero)} for a large corpus, rising toward ` +
+        `${ratePct(opts.recallPoolSmallCorpusMaxZeroHitRate ?? LEARNING_SLO_DEFAULTS.recallPoolSmallCorpusMaxZeroHitRate)} ` +
+        `for a small one — a sparse pool asked a specific question misses often and is FINE):\n` +
         lines.join('\n') +
         (starved.length > RECALL_POOL_BODY_SAMPLES
           ? `\n  … and ${starved.length - RECALL_POOL_BODY_SAMPLES} more.`
@@ -1143,8 +1146,9 @@ export function recallPoolSignalsFromHealth(
     .sort((a, b) => b.emptyScopeRate - a.emptyScopeRate || b.recalls - a.recalls);
   if (unscoped.length > 0) {
     const lines = unscoped.slice(0, RECALL_POOL_BODY_SAMPLES).map((p) => {
-      const alsoStarved = p.zeroHitRate >= maxZero ? '' : ` — and its ${ratePct(p.zeroHitRate)} zero-hit rate is ` +
-        `UNDER the ${ratePct(maxZero)} starvation gate, so gate-2 cannot see this`;
+      const poolGate = effectiveZeroHitGate(p.corpusActive, opts);
+      const alsoStarved = p.zeroHitRate >= poolGate ? '' : ` — and its ${ratePct(p.zeroHitRate)} zero-hit rate is ` +
+        `UNDER the ${ratePct(poolGate)} starvation gate it earned for its corpus, so gate-2 cannot see this`;
       const recent = recentByKey.get(`${p.surface} ${p.pool} ${p.scoreScale}`);
       const trend = recent && recent.recalls >= minRecalls
         ? ` (still ${ratePct(recent.emptyScopeRate)} over the last ${recentHours}h — not a stale-window artifact)`
