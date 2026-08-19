@@ -22,11 +22,12 @@
 import { describe, expect, it } from "vitest";
 
 import { DEFAULT_STALE_ROUTINE_FIRE_NO_OUTPUT_MS } from "@papercusp/operator-core/lib/dbos/dbos-executor-reaper";
+import { GREEN_CHECKPOINT_SUITE_TIMEOUT_MS } from "@papercusp/operator-core/lib/harness/routines/release-actions";
 import {
+  GREEN_CHECKPOINT_CRON,
   GREEN_CHECKPOINT_FIRE_PERIOD_MS,
   GREEN_CHECKPOINT_PHASE_MARGIN_MS,
-  GREEN_CHECKPOINT_SUITE_TIMEOUT_MS,
-} from "@papercusp/operator-core/lib/harness/routines/release-actions";
+} from "@papercusp/operator-core/lib/release/green-checkpoint-schedule";
 import {
   CHECKPOINT_MAX_RUNTIME_SEC,
   MANUAL_CHECKPOINT_WATCHDOG_ENV,
