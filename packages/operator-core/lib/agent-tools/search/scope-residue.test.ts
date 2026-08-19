@@ -21,16 +21,37 @@ describe('SOURCE_CORPUS is bijective with the real SEARCH_SOURCES registry', () 
   // source was added. Deriving `not_searched` FROM the registry fixes the list;
   // this pair of assertions is what fixes the DESCRIPTIONS, which are the only
   // half a human still has to write.
+  //
+  // Each guard is stated as a PREDICATE and then run twice: once against the
+  // live registry (must be clean) and once against a synthetic registry that is
+  // deliberately broken (must be caught). A guard that has only ever been run
+  // against a passing input is a guard nobody has tested — and the in-tree
+  // mutation that would otherwise prove it can be committed by the git-sync
+  // sweep mid-run, so the known-bad input lives here permanently instead.
+  const undescribedIn = (names: readonly string[]) => names.filter((n) => !SOURCE_CORPUS[n]);
+  const staleAgainst = (names: readonly string[]) => {
+    const live = new Set(names);
+    return Object.keys(SOURCE_CORPUS).filter((k) => !live.has(k));
+  };
+  const liveNames = () => SEARCH_SOURCES.map((s) => s.name);
+
   it('every registered source has a corpus description', () => {
-    const undescribed = SEARCH_SOURCES.map((s) => s.name).filter((n) => !SOURCE_CORPUS[n]);
+    const undescribed = undescribedIn(liveNames());
     expect(undescribed, `add these to SOURCE_CORPUS in ./scope-residue.ts: ${undescribed.join(', ')}`)
       .toEqual([]);
   });
 
+  it('CALIBRATION: that guard DETECTS a source added without a description', () => {
+    expect(undescribedIn([...liveNames(), 'newly_added_source'])).toEqual(['newly_added_source']);
+  });
+
   it('has no descriptions for sources that no longer exist', () => {
-    const live = new Set(SEARCH_SOURCES.map((s) => s.name));
-    const stale = Object.keys(SOURCE_CORPUS).filter((k) => !live.has(k));
+    const stale = staleAgainst(liveNames());
     expect(stale, `remove these stale SOURCE_CORPUS rows: ${stale.join(', ')}`).toEqual([]);
+  });
+
+  it('CALIBRATION: that guard DETECTS a description left behind by a removed source', () => {
+    expect(staleAgainst(liveNames().filter((n) => n !== 'turns'))).toEqual(['turns']);
   });
 });
 
