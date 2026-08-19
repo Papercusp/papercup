@@ -2897,7 +2897,7 @@ describe('red-test supersession by a passing DESCENDANT (EI-19363804802198172)',
 
   it('drops the signal when EVERY failing sha is an ancestor of a sha that has since passed', async () => {
     const kept = await debounceRedTestSignals(
-      [sig({ failShas: ['c8aac92703', '1aa133bb11'], lastPassSha: 'd384a993f3' })],
+      [sig({ failShas: ['c8aac92703', '1aa133bb11'], passShas: ['d384a993f3'], lastPassSha: 'd384a993f3' })],
       keepAll,
       undefined,
       undefined,
@@ -2909,7 +2909,7 @@ describe('red-test supersession by a passing DESCENDANT (EI-19363804802198172)',
 
   it('KEEPS the signal when even one failing sha is NOT superseded (partial ≠ moot)', async () => {
     const kept = await debounceRedTestSignals(
-      [sig({ failShas: ['old', 'newer-than-the-pass'], lastPassSha: 'p' })],
+      [sig({ failShas: ['old', 'newer-than-the-pass'], passShas: ['p'], lastPassSha: 'p' })],
       keepAll,
       undefined,
       undefined,
@@ -2921,12 +2921,69 @@ describe('red-test supersession by a passing DESCENDANT (EI-19363804802198172)',
 
   it('KEEPS a genuine per-commit flake: the same sha both passed and failed', async () => {
     const kept = await debounceRedTestSignals(
-      [sig({ failShas: ['abc'], lastPassSha: 'abc' })],
+      [sig({ failShas: ['abc'], passShas: ['abc'], lastPassSha: 'abc' })],
       keepAll,
       undefined,
       undefined,
       undefined,
       ancestry({ abc: ['abc'] }),
+    );
+    expect(kept).toHaveLength(1);
+  });
+
+  // ---- WI-39890: the candidate set is EVERY pass in the window, not the newest ----
+
+  it('suppresses off a NON-newest pass: the newest-by-clock pass is an ANCESTOR, an older one is the descendant', async () => {
+    // The measured live case (2026-08-19). df89e330a7 failed 4×. The newest pass BY
+    // WALL-CLOCK was 7481dd033e — committed three days EARLIER and an ANCESTOR of the
+    // failing sha, so the old single-candidate rule found no supersession and filed
+    // three `major` items for a test that had been green for 13h. But 2150d3573e, an
+    // older-by-clock pass, IS a descendant and had passed this same test 37 minutes
+    // BEFORE the first failure. Note the ancestry oracle deliberately does NOT relate
+    // the fail sha to lastPassSha: if this ever regresses to reading lastPassSha, this
+    // test fails rather than passing for the wrong reason.
+    const kept = await debounceRedTestSignals(
+      [
+        sig({
+          failShas: ['df89e330a7'],
+          passShas: ['7481dd033e', '2150d3573e'],
+          lastPassSha: '7481dd033e',
+        }),
+      ],
+      keepAll,
+      undefined,
+      undefined,
+      undefined,
+      ancestry({ df89e330a7: ['2150d3573e'] }),
+    );
+    expect(kept).toEqual([]);
+  });
+
+  it('CONTROL: the same signal is KEPT when that descendant is absent from the pass set', async () => {
+    // Non-vacuity for the case above — it proves the suppression came from the extra
+    // candidate and not from the ancestry oracle being permissive.
+    const kept = await debounceRedTestSignals(
+      [sig({ failShas: ['df89e330a7'], passShas: ['7481dd033e'], lastPassSha: '7481dd033e' })],
+      keepAll,
+      undefined,
+      undefined,
+      undefined,
+      ancestry({ df89e330a7: ['2150d3573e'] }),
+    );
+    expect(kept).toHaveLength(1);
+  });
+
+  it('a same-sha verdict flip ANYWHERE in the pass set keeps the signal, not just against the newest', async () => {
+    // 'abc' failed and also passed earlier in the window, while a later pass 'z' is a
+    // descendant. The flip makes the test non-deterministic, which is a real signal —
+    // supersession must not swallow it just because 'z' happens to be newest.
+    const kept = await debounceRedTestSignals(
+      [sig({ failShas: ['abc'], passShas: ['z', 'abc'], lastPassSha: 'z' })],
+      keepAll,
+      undefined,
+      undefined,
+      undefined,
+      ancestry({ abc: ['z'] }),
     );
     expect(kept).toHaveLength(1);
   });
