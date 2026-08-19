@@ -38,10 +38,28 @@ export interface TaskAllocation {
   memoryMb: number;
 }
 
-export interface TaskSchedulerStats extends ResolvedTaskBudget {
+/**
+ * What `formatTaskBudgetObservedMarker` ACCEPTS. The admission terms are optional here on
+ * purpose: the formatter is deliberately defensive so a hand-built stats object (tests, older
+ * callers) still renders the legacy marker string. That tolerance is a real part of the
+ * contract, so it is stated in the type rather than left to a runtime `?? `.
+ */
+export interface TaskSchedulerObserved extends ResolvedTaskBudget {
   observedMaxWorkers: number;
   observedMaxMemoryMb: number;
   observedMaxTasks: number;
+  memoryReadings?: number | null;
+  admissionClamps?: number | null;
+  minAdmittedWorkers?: number | null;
+  lastMemAvailableMb?: number | null;
+}
+
+/**
+ * What `runBudgetedTasks` PRODUCES — the same shape with every admission term REQUIRED, because
+ * a real run always populates all four. Keeping them required here is what stops a future
+ * change from silently dropping one and under-reporting the clamp.
+ */
+export interface TaskSchedulerStats extends TaskSchedulerObserved {
   /**
    * How many times admission re-measured available memory, or `null` when no
    * `readMemAvailableMb` was supplied. `null` and `0` are DIFFERENT facts — "nobody measured"
