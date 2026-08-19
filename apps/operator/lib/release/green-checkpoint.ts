@@ -5154,8 +5154,59 @@ async function tryLongestGreenPrefix(
   const failingPaths = pathShapedFailing(failingTests).filter((f) =>
     f.includes("/"),
   );
-  const locateByFile = failingPaths.length > 0 && !!deps.changedFilesForRange;
+  let locateByFile = failingPaths.length > 0 && !!deps.changedFilesForRange;
   if (failingWs.size === 0 && !locateByFile) return null; // localizable by neither → hold
+
+  // EI-20840168390311296 — THE SAME VACUOUS-TRUTH HAZARD the comment above describes,
+  // reached by a route the `includes('/')` filter cannot see.
+  //
+  // That filter tests the SHAPE of a failing entry (is it path-like?), never whether the
+  // scan below actually MATCHES anything. A perfectly well-formed test path that NO commit
+  // in the range touches passes the shape test, matches nothing at every iteration, and so
+  // the loop never breaks — leaving `prefixTip` at the second-to-last commit. That is the
+  // MAXIMAL prefix, the loosest possible answer, arrived at by exactly the vacuous truth
+  // the gate-id filter exists to prevent. It differs from the KNOWN-RED candidate by ONE
+  // commit, so the confirm is a foregone red.
+  //
+  // MEASURED, 2026-08-18T23:15Z cron run (base 4824a92b, candidate 97a096c0, 1683 commits):
+  // the red named 6 test files and `git log <base>..<candidate> -- <file>` returned ZERO
+  // commits for every one of them (positive control on the same range for
+  // packages/operator-core/lib: 1082). The salvage picked b6668fb6 — `git rev-list --count
+  // b6668fb6..97a096c0` = 1, i.e. one commit behind the candidate — then spent ~22 minutes
+  // (00:15:56 → ~00:38) confirming it and failed on a SUPERSET of the tip's own 6 files.
+  // A red that no commit in the batch introduced cannot be escaped by any prefix of it.
+  //
+  // So ask the question once, over the WHOLE range, before walking it: does file
+  // granularity have ANY signal here? Zero matches ⇒ it has none, and the answer it would
+  // return is vacuous. Fall back to workspace granularity when the red localizes there
+  // (what the gate-id case already does), else decline. Declining is the safe direction —
+  // the salvage only ever ADDS a partial advance, so a decline costs one deferred advance
+  // while a foregone confirm costs a full suite out of the run's budget.
+  if (locateByFile) {
+    const fullRangeFiles = await deps.changedFilesForRange!(lastReady, candidate);
+    const fullRangeMatches = fullRangeFiles
+      ? matchFailingFilesToChanged(failingPaths, fullRangeFiles).length
+      : 0;
+    if (fullRangeMatches === 0) {
+      logPartialGreenGate(
+        `partial-green-gate: file-granularity locate has NO SIGNAL — ` +
+          (fullRangeFiles
+            ? `none of the ${failingPaths.length} failing path(s) is touched by ANY commit in `
+            : `the range diff for `) +
+          `${lastReady.slice(0, 8)}..${candidate.slice(0, 8)}` +
+          (fullRangeFiles ? "" : ` could not be computed`) +
+          `. The per-prefix scan would match nothing and authorise the MAXIMAL prefix by ` +
+          `vacuous truth — one commit behind a known-red candidate, so the confirm is a ` +
+          `foregone red. ` +
+          (failingWs.size > 0
+            ? `Falling back to workspace granularity (${[...failingWs].join(", ")}).`
+            : `Declining — the red localizes to neither a changed file nor a workspace.`),
+      );
+      if (failingWs.size === 0) return null;
+      locateByFile = false;
+    }
+  }
+
   logPartialGreenGate(
     `partial-green-gate: locating at ${locateByFile ? "FILE" : "workspace"} granularity ` +
       `(${locateByFile ? `${failingPaths.length} failing path(s)` : `failing ws: ${[...failingWs].join(", ")}`})`,
