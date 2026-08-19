@@ -72,6 +72,14 @@ describe('modelWindowForSpec (keys on the [1m] MARKER only)', () => {
     expect(modelWindowForSpec(null)).toBe(MODEL_WINDOW_DEFAULT);
     expect(modelWindowForSpec(undefined)).toBe(MODEL_WINDOW_DEFAULT);
   });
+  it('official 1.05M Codex families resolve to exact 1M without widening mini/nano', () => {
+    for (const spec of ['gpt-5.6-sol', 'terra:xhigh', 'luna', 'gpt-5.4']) {
+      expect(modelWindowForSpec(spec), spec).toBe(MODEL_WINDOW_1M);
+    }
+    for (const spec of ['gpt-5.4-mini', 'gpt-5.4-nano', 'gpt-5.5']) {
+      expect(modelWindowForSpec(spec), spec).toBe(MODEL_WINDOW_DEFAULT);
+    }
+  });
 });
 
 describe('selfSetCeilingForSpec — a DELIBERATE self-set may exceed the SEEDED default', () => {

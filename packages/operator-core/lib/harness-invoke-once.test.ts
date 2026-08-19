@@ -247,7 +247,7 @@ describe('applyRoleModel — per-role model override', () => {
     // default, so there is nothing bigger to ask for.
     expect(applyRoleModel('codex exec -m gpt-5.4', 'worker')).toBe(
       'codex exec --model gpt-5.6-sol -c model_reasoning_effort="max"' +
-        ' -c model_context_window=872000 -c model_auto_compact_token_limit=784800',
+        ' -c model_context_window=1000000 -c model_auto_compact_token_limit=900000',
     );
   });
 

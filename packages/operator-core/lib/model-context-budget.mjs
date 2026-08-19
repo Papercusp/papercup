@@ -86,21 +86,20 @@ function recordWindow(record) {
 }
 
 /**
- * Codex models with an EXTENDED context window, for a box whose
- * `models_cache.json` is absent or unreadable (a fresh install, a CODEX_HOME
- * that has never talked to the backend). The REGISTRY ALWAYS WINS when it
- * carries the model — this table only keeps the feature working on first
- * launch, so it can never pin a stale ceiling on a box that has real data.
+ * Codex models officially documented with a 1,050,000-token context window
+ * that Papercusp exposes as selectors. The configured value is deliberately
+ * 1,000,000 (not 1,050,000): that is the exact Codex guide setting and leaves
+ * the native 900,000 auto-compact backstop above Papercusp's 400k/200k cuts.
  *
- * Values are the `max_context_window` observed on codex-cli 0.147.0
- * (2026-08-17). Deliberately NOT the 1,050,000 quoted in OpenAI's config
- * write-up for gpt-5.6-sol: the registry the CLI itself reads says 872,000,
- * and an unrunnable ceiling is worse than a conservative one.
+ * The installed registry remains useful as a capability signal, but its stale
+ * 872,000 ceiling no longer caps these known 1M-class models (plan D-003).
+ * Keep the historical export name for callers; it is now the first-launch
+ * fallback AND the authoritative exact-window table for these model ids.
  */
 export const CODEX_EXTENDED_WINDOW_FALLBACK = Object.freeze({
-  'gpt-5.6-sol': 872_000,
-  'gpt-5.6-terra': 872_000,
-  'gpt-5.6-luna': 872_000,
+  'gpt-5.6-sol': 1_000_000,
+  'gpt-5.6-terra': 1_000_000,
+  'gpt-5.6-luna': 1_000_000,
   'gpt-5.4': 1_000_000,
 });
 
@@ -125,17 +124,18 @@ function codexModelRecord(id, home) {
 /**
  * The context window papercusp DECLARES to the Codex CLI for `model`, or null
  * when that model has no extended window to ask for (plan
- * codex-1m-context-window-2026-08-17 D-002).
+ * codex-1m-context-window-2026-08-17 D-003).
  *
  * NULL IS A MEANINGFUL ANSWER, not a failure: gpt-5.5, gpt-5.4-mini and
  * gpt-5.3-codex-spark report `max_context_window == context_window`, so there is
  * no bigger window to request and their launch argv must stay byte-identical to
  * today. Callers emit nothing on null — they must not substitute a default.
  *
- * Precedence: the installed registry's `max_context_window` when it carries the
- * model, else the static family fallback. Clamped to
- * CODEX_MAX_CONFIGURED_WINDOW, and refused outright unless it genuinely EXCEEDS
- * the model's own default window — so this can never talk a model DOWN.
+ * Precedence: the exact 1M policy table for officially documented 1.05M models,
+ * then the installed registry's `max_context_window` for every other model.
+ * The latter is clamped to CODEX_MAX_CONFIGURED_WINDOW and refused unless it
+ * genuinely EXCEEDS the model's own default window, so sub-1M behavior remains
+ * byte-identical and this can never talk an unknown model down.
  *
  * @param {string | null | undefined} model  a psu model spec, alias, or native id
  * @param {{ home?: string }} [opts]
@@ -149,21 +149,24 @@ export function codexContextWindowConfig(model, { home = homedir() } = {}) {
   const record = codexModelRecord(id, home);
   const declaredMax = POSITIVE(record?.max_context_window ?? record?.maxContextWindow);
   const declaredDefault = POSITIVE(record?.context_window ?? record?.contextWindow);
+  const officialWindow = POSITIVE(CODEX_EXTENDED_WINDOW_FALLBACK[id]);
 
   let window = null;
   let source = null;
-  if (declaredMax) {
+  if (officialWindow) {
+    // D-003: the 5.6 registry's observed 872k value is a capability signal,
+    // not a cap on the guide's exact 1M declaration for official 1.05M models.
+    window = officialWindow;
+    source = 'codex-official-1m-policy';
+  } else if (declaredMax) {
     // The registry carries this model: it is authoritative in BOTH directions.
     // max == default means "no extended window exists" — fall through to null
-    // rather than to the fallback table, which would override real data.
+    // rather than fabricating a larger window for an unrecognised model.
     if (declaredDefault != null && declaredMax <= declaredDefault) return null;
     window = declaredMax;
     source = 'codex-model-cache-max';
   } else {
-    const fallback = POSITIVE(CODEX_EXTENDED_WINDOW_FALLBACK[id]);
-    if (!fallback) return null;
-    window = fallback;
-    source = 'codex-extended-window-fallback';
+    return null;
   }
 
   window = Math.min(window, CODEX_MAX_CONFIGURED_WINDOW);

@@ -197,13 +197,12 @@ export function isCodexExtendedWindowSpec(spec?: string | null): boolean {
 }
 
 /**
- * The window an extended-window Codex spec is SEEDED against. 872,000 is the
- * `max_context_window` the whole gpt-5.6 family reports (codex-cli 0.147.0); it
- * is deliberately the SMALLEST extended ceiling in the family rather than the
- * largest, so a spec that resolves here can only under-claim.
+ * The window an extended-window Codex spec is SEEDED against. Plan D-003 makes
+ * the officially documented 1.05M families use the guide's exact 1,000,000
+ * configured window even when an installed registry still reports 872,000.
  *
- * It exists only to clear the role cap: `defaultCompactionLimitForWindow(872_000)`
- * derives 718,000, which the 400k su/leader and 200k fleet-member caps then bind.
+ * It exists mainly to clear the role cap: `defaultCompactionLimitForWindow(1_000_000)`
+ * derives 825,000, which the 400k su/leader and 200k fleet-member caps then bind.
  * So the exact value below never reaches a session — the ROLE CAP does, which is
  * the whole point of D-001 (papercusp's soft limits are unchanged; codex sessions
  * simply become able to reach them instead of being pinned at 158,000 by a
@@ -218,7 +217,7 @@ export function isCodexExtendedWindowSpec(spec?: string | null): boolean {
  * UNCONDITIONALLY (see its D-011 note). So the worst case self-heals on the
  * first sweep, while the common case is correct from the first turn.
  */
-export const MODEL_WINDOW_CODEX_EXTENDED = 872_000;
+export const MODEL_WINDOW_CODEX_EXTENDED = 1_000_000;
 
 /**
  * Model FAMILIES papercusp launches at the FULL 1M window: `opus`, `fable`

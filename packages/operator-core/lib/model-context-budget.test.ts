@@ -101,7 +101,7 @@ describe('model-context-budget', () => {
 });
 
 /**
- * plan codex-1m-context-window-2026-08-17 D-002. The load-bearing property is
+ * plan codex-1m-context-window-2026-08-17 D-003. The load-bearing property is
  * not "big number goes in" — it is that a model with NO extended window emits
  * NOTHING, so a launch argv for gpt-5.5 stays byte-identical to before this
  * feature existed. A policy that fell back to a default on that path would
@@ -125,14 +125,16 @@ describe('codex extended-window launch config', () => {
 
   const SOL = { slug: 'gpt-5.6-sol', context_window: 272_000, max_context_window: 872_000 };
   const GPT55 = { slug: 'gpt-5.5', context_window: 272_000, max_context_window: 272_000 };
+  const MINI = { slug: 'gpt-5.4-mini', context_window: 400_000, max_context_window: 400_000 };
+  const NANO = { slug: 'gpt-5.4-nano', context_window: 400_000, max_context_window: 400_000 };
 
-  it('declares the registry max and a 90% native-compaction backstop', () => {
+  it('declares exact 1M/900k for an official 1.05M model despite a stale 872k registry max', () => {
     const home = codexHome([SOL, GPT55], 'sol');
     expect(codexContextWindowConfig('gpt-5.6-sol', { home })).toEqual({
       model: 'gpt-5.6-sol',
-      window: 872_000,
-      autoCompactLimit: 784_800,
-      source: 'codex-model-cache-max',
+      window: 1_000_000,
+      autoCompactLimit: 900_000,
+      source: 'codex-official-1m-policy',
     });
   });
 
@@ -143,21 +145,22 @@ describe('codex extended-window launch config', () => {
     );
   });
 
-  it('emits NOTHING for a model whose max equals its default window', () => {
-    // gpt-5.5 has no bigger window to ask for. Empty argv is the correct answer:
-    // its launch must stay byte-identical to a pre-feature launch.
-    const home = codexHome([SOL, GPT55], 'flat');
-    expect(codexContextWindowConfig('gpt-5.5', { home })).toBeNull();
-    expect(codexContextConfigArgs('gpt-5.5', { home })).toEqual([]);
-    expect(codexContextConfigToml('gpt-5.5', { home })).toBe('');
+  it('emits NOTHING for sub-1M models whose max equals their default window', () => {
+    const home = codexHome([SOL, GPT55, MINI, NANO], 'flat');
+    for (const model of ['gpt-5.5', 'gpt-5.4-mini', 'gpt-5.4-nano']) {
+      expect(codexContextWindowConfig(model, { home }), model).toBeNull();
+      expect(codexContextConfigArgs(model, { home }), model).toEqual([]);
+      expect(codexContextConfigToml(model, { home }), model).toBe('');
+    }
   });
 
-  it('lets the registry OVERRIDE the static fallback in the shrinking direction', () => {
-    // The fallback says gpt-5.6-sol is 872k. A registry that reports no extended
-    // window for it must win, or a stale table would declare a window the
-    // installed CLI does not believe in.
+  it('does not let an old flat registry erase the official exact-1M policy', () => {
     const home = codexHome([{ slug: 'gpt-5.6-sol', context_window: 272_000, max_context_window: 272_000 }], 'shrink');
-    expect(codexContextWindowConfig('gpt-5.6-sol', { home })).toBeNull();
+    expect(codexContextWindowConfig('gpt-5.6-sol', { home })).toMatchObject({
+      window: 1_000_000,
+      autoCompactLimit: 900_000,
+      source: 'codex-official-1m-policy',
+    });
   });
 
   it('caps a registry ceiling above 1M at exactly 1M', () => {
@@ -168,42 +171,54 @@ describe('codex extended-window launch config', () => {
     expect(cfg.autoCompactLimit).toBe(900_000);
   });
 
-  it('falls back to the family table when the registry is missing or lacks the model', () => {
+  it('uses the official 1M table when the registry is missing or lacks the model', () => {
     const noRegistry = mkdtempSync(join(tmpdir(), 'psu-codex-bare-'));
     expect(codexContextWindowConfig('gpt-5.6-sol', { home: noRegistry })).toMatchObject({
-      window: 872_000,
-      source: 'codex-extended-window-fallback',
+      window: 1_000_000,
+      source: 'codex-official-1m-policy',
     });
     // A registry that simply does not carry this model is the same case.
     const other = codexHome([GPT55], 'partial');
     expect(codexContextWindowConfig('gpt-5.4', { home: other })).toMatchObject({
       window: 1_000_000,
-      source: 'codex-extended-window-fallback',
+      source: 'codex-official-1m-policy',
     });
     // ...and an unknown model gets nothing rather than a guess.
     expect(codexContextWindowConfig('gpt-unknown-model', { home: noRegistry })).toBeNull();
+  });
+
+  it('preserves registry-derived sub-1M extended-window behavior for unrecognised models', () => {
+    const home = codexHome([
+      { slug: 'gpt-registered-extended', context_window: 272_000, max_context_window: 400_000 },
+    ], 'registered-sub-1m');
+    expect(codexContextWindowConfig('gpt-registered-extended', { home })).toEqual({
+      model: 'gpt-registered-extended',
+      window: 400_000,
+      autoCompactLimit: 360_000,
+      source: 'codex-model-cache-max',
+    });
   });
 
   it('emits the CLI override pair and the config.toml fragment from one policy', () => {
     const home = codexHome([SOL], 'emit');
     expect(codexContextConfigArgs('sol', { home })).toEqual([
       '-c',
-      'model_context_window=872000',
+      'model_context_window=1000000',
       '-c',
-      'model_auto_compact_token_limit=784800',
+      'model_auto_compact_token_limit=900000',
     ]);
     expect(codexContextConfigToml('sol', { home })).toBe(
-      'model_context_window = 872000\nmodel_auto_compact_token_limit = 784800\n',
+      'model_context_window = 1000000\nmodel_auto_compact_token_limit = 900000\n',
     );
   });
 
   it('reports the window we LAUNCH with, not the registry default, to the budget math', () => {
     // Without this, a preflight would size the launch context against 272k while
-    // the session actually runs 872k.
+    // the session actually runs the configured 1M window.
     const home = codexHome([SOL], 'budget');
     expect(resolveModelContextWindow({ agent: 'codex', model: 'sol:high', home })).toEqual({
-      window: 872_000,
-      source: 'codex-model-cache-max',
+      window: 1_000_000,
+      source: 'codex-official-1m-policy',
     });
   });
 });

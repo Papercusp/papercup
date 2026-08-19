@@ -3548,8 +3548,8 @@ describe('cloud model-family/backend coupling (owner Luna→Claude incident 2026
     const parsed = parseArgs(['--no-picker', '--model=sol:xhigh']);
     expect(parsed).toMatchObject({ agent: 'codex', model: 'gpt-5.6-sol:xhigh' });
     // The trailing window pair is the extended-window config (plan
-    // codex-1m-context-window-2026-08-17 D-002) — gpt-5.6 declares an 872k
-    // ceiling, so the launch asks for it and pushes codex's own auto-compact to
+    // codex-1m-context-window-2026-08-17 D-003) — gpt-5.6 declares the guide's
+    // exact 1M window and pushes codex's own auto-compact to
     // a 90% backstop that should never fire under our 400k/200k soft limits.
     expect(modelArgsFor(parsed.agent, parsed.model)).toEqual([
       '-m',
@@ -3557,9 +3557,9 @@ describe('cloud model-family/backend coupling (owner Luna→Claude incident 2026
       '-c',
       'model_reasoning_effort="xhigh"',
       '-c',
-      'model_context_window=872000',
+      'model_context_window=1000000',
       '-c',
-      'model_auto_compact_token_limit=784800',
+      'model_auto_compact_token_limit=900000',
     ]);
     expect(modelArgsFor('codex', 'gpt-5.6-terra:high')).toEqual([
       '-m',
@@ -3567,9 +3567,9 @@ describe('cloud model-family/backend coupling (owner Luna→Claude incident 2026
       '-c',
       'model_reasoning_effort="high"',
       '-c',
-      'model_context_window=872000',
+      'model_context_window=1000000',
       '-c',
-      'model_auto_compact_token_limit=784800',
+      'model_auto_compact_token_limit=900000',
     ]);
   });
 
@@ -4871,7 +4871,7 @@ describe('WI-3758 — psu --resume model select + last-active model', () => {
     expect(modelArgsFor('codex', 'gpt-5.5')).toEqual(['-m', 'gpt-5.5']);
     expect(modelArgsFor('codex', 'sol:high')).toEqual([
       '-m', 'gpt-5.6-sol', '-c', 'model_reasoning_effort="high"',
-      '-c', 'model_context_window=872000', '-c', 'model_auto_compact_token_limit=784800',
+      '-c', 'model_context_window=1000000', '-c', 'model_auto_compact_token_limit=900000',
     ]);
     // omp understands the suffixed spec natively.
     expect(modelArgsFor('omp', 'opus:high')).toEqual(['--model', 'opus:high']);
@@ -4912,7 +4912,7 @@ describe('WI-3758 — psu --resume model select + last-active model', () => {
       '-c', 'model_reasoning_effort="high"',
       // The window pair rides the RESUME too, and stays ahead of the subcommand
       // with the other top-level options (plan codex-1m D-002 / P-002).
-      '-c', 'model_context_window=872000', '-c', 'model_auto_compact_token_limit=784800',
+      '-c', 'model_context_window=1000000', '-c', 'model_auto_compact_token_limit=900000',
       'resume', 'uuid-2',
     ]);
     expect(resumeArgsFor({ agent: 'omp', ompThreadId: 'thr-1' }, { model: 'opus:high' }).args).toEqual([
@@ -6968,8 +6968,8 @@ describe('codexContextWindowConfigPatch (resume inherits the window)', () => {
     // block landing first is correctness, not tidiness: emitted below the
     // [mcp_servers.papercusp-su] header these would become MCP server settings.
     expect(out.indexOf('model_context_window')).toBeLessThan(out.indexOf('[mcp_servers.papercusp-su]'));
-    expect(out).toContain('model_context_window = 872000');
-    expect(out).toContain('model_auto_compact_token_limit = 784800');
+    expect(out).toContain('model_context_window = 1000000');
+    expect(out).toContain('model_auto_compact_token_limit = 900000');
     expect(out).toContain('url = "x"'); // pre-existing content survives
   });
 
