@@ -288,6 +288,12 @@ export async function advanceCascade(
       // and a stale-LIVE pick who died since expires via the sweep and the
       // cascade advances past them — both staleness directions recover
       // without a liveness re-read here.
+      // Ordering: the revive spawn happens BEFORE the CAS write (mirroring
+      // the creation site — the extension write must record the revived-first
+      // selection). A raced loser may therefore have spawned a session whose
+      // menu entry never lands; that session simply answers into the consult
+      // thread as a bonus voice while the winner's advance stands — the one
+      // deliberate softening of the "raced ⇒ nothing happened" contract.
       let revival: AdvanceCascadeResult['revival'];
       let revivedEntry: CascadeSelectionEntry | null = null;
       let underFilledReason: NonNullable<AdvanceCascadeResult['underFilled']>['reason'] | null = null;

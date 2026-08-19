@@ -79,6 +79,18 @@ export interface ExpirySweepDeps {
     body: string;
     workspaceId: string;
   }) => Promise<{ woke: number }>;
+  /** EI-20864690354207496 refill-exhaustion revival (per-row workspace, like
+   * reach): carry-respawn a dead above-floor candidate when a due row's
+   * cascade exhausts below selection.min with no live untried candidate left.
+   * Prod binds the WI-39852 reviver; cascade-core enforces the persisted
+   * one-per-consult budget. Absent ⇒ terminal expiry with the honest
+   * under-filled label. */
+  revive?: (opts: {
+    ownerId: string;
+    conversationId: string;
+    brief: string;
+    workspaceId: string;
+  }) => Promise<{ spawned: boolean; verified: boolean | null; detail: string }>;
   now?: () => Date;
   /** Override the per-tick bound (tests). */
   limit?: number;

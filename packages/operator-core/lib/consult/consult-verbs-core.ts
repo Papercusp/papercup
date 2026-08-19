@@ -104,6 +104,16 @@ export interface ConsultVerbDeps {
     summary: string;
     body: string;
   }) => Promise<{ woke: number }>;
+  /** EI-20864690354207496 refill-exhaustion revival: carry-respawn a dead
+   * above-floor candidate when the cascade exhausts below selection.min with
+   * no live untried candidate left to fill it (prod binds the WI-39852
+   * reviver; cascade-core enforces the persisted one-per-consult budget).
+   * Absent ⇒ the advance goes terminal with the honest under-filled label. */
+  revive?: (opts: {
+    ownerId: string;
+    conversationId: string;
+    brief: string;
+  }) => Promise<{ spawned: boolean; verified: boolean | null; detail: string }>;
   /** P-005 graduation (D-004): mint the shared work item a 'graduate' close
    * hands off to — bound in prod (consult:close) to createWorkItem +
    * subscribe-both-participants + a rel:'relates' link to the conversation.
@@ -218,8 +228,15 @@ export interface ConsultReplyResult {
   /** Present on a cascade-advancing perspective reply (D-005): who was woken
    * next with the feedback-so-far digest, or exhausted:true when this
    * selectee was the menu's last. refilled marks the WI-39861 min-ANSWERS
-   * refill round (the menu was extended once because answers < min). */
-  cascade?: { advanced_to: string | null; exhausted: boolean; woke: number; refilled?: boolean };
+   * refill round (the menu was extended once because answers < min); revival
+   * marks the EI-20864690354207496 refill-exhaustion revival. */
+  cascade?: {
+    advanced_to: string | null;
+    exhausted: boolean;
+    woke: number;
+    refilled?: boolean;
+    revival?: { ownerId: string; spawned: boolean };
+  };
   hint: string;
 }
 
@@ -352,6 +369,7 @@ export async function consultReplyCore(
         conversationId: req.conversationId,
         question: row.question,
         latencyContract: row.latency_contract,
+        requesterId: row.requester_id,
         routing: row.routing,
         cascadeCursor: row.cascade_cursor,
         digest: row.cascade_digest,
@@ -364,6 +382,7 @@ export async function consultReplyCore(
       },
       sql,
       deps.reach,
+      deps.revive,
     );
     // A raced advance means a concurrent trigger (the expiry sweep, typically)
     // moved the chain first — its advance stands and already woke the next
@@ -374,6 +393,7 @@ export async function consultReplyCore(
         exhausted: adv.exhausted,
         woke: adv.woke,
         ...(adv.refilled ? { refilled: true } : {}),
+        ...(adv.revival ? { revival: { ownerId: adv.revival.ownerId, spawned: adv.revival.spawned } } : {}),
       };
     }
   }
@@ -429,8 +449,15 @@ export interface ConsultDeclineResult {
    * (D-005 — the consult stays open); 'declined' only on menu exhaustion. */
   state: 'awaiting_responder' | 'declined';
   /** Cascade consequence of this decline (D-005). refilled marks the
-   * WI-39861 min-ANSWERS refill round. */
-  cascade: { advanced_to: string | null; exhausted: boolean; woke: number; refilled?: boolean };
+   * WI-39861 min-ANSWERS refill round; revival marks the EI-20864690354207496
+   * refill-exhaustion revival. */
+  cascade: {
+    advanced_to: string | null;
+    exhausted: boolean;
+    woke: number;
+    refilled?: boolean;
+    revival?: { ownerId: string; spawned: boolean };
+  };
   /** Route-time candidate refs — decliner excluded, route-time-dead filtered
    * (retrieval fallback; the SERVER drains the selected menu itself). */
   remaining_candidates: Array<{ ownerId: string; score: number; liveness: string }>;
@@ -476,6 +503,7 @@ export async function consultDeclineCore(
       conversationId: req.conversationId,
       question: row.question,
       latencyContract: row.latency_contract,
+      requesterId: row.requester_id,
       routing: row.routing,
       cascadeCursor: row.cascade_cursor,
       digest: row.cascade_digest,
@@ -485,6 +513,7 @@ export async function consultDeclineCore(
     },
     sql,
     deps.reach,
+    deps.revive,
   );
   const remaining = remainingFromSnapshot(row.routing, req.authorId);
 
@@ -514,9 +543,10 @@ export async function consultDeclineCore(
         exhausted: false,
         woke: adv.woke,
         ...(adv.refilled ? { refilled: true } : {}),
+        ...(adv.revival ? { revival: { ownerId: adv.revival.ownerId, spawned: adv.revival.spawned } } : {}),
       },
       remaining_candidates: remaining,
-      hint: `Declined. Cascade advanced (D-005): ${adv.next?.ownerId ?? 'the next selectee'} was woken with the feedback so far — the consult stays open.${adv.refilled ? ' (min-ANSWERS refill, WI-39861: the menu was extended once — answers collected < selection.min.)' : ''}`,
+      hint: `Declined. Cascade advanced (D-005): ${adv.next?.ownerId ?? 'the next selectee'} was woken with the feedback so far — the consult stays open.${adv.refilled ? ' (min-ANSWERS refill, WI-39861: the menu was extended once — answers collected < selection.min.)' : ''}${adv.revival?.spawned ? ` (refill-exhaustion revival, EI-20864690354207496: ${adv.revival.ownerId} was carry-respawned to fill the minimum — no live untried candidate remained.)` : ''}`,
     };
   }
 
