@@ -304,6 +304,19 @@ export const goalLaunchSettingsSchema = z
      * so no stored document is invalidated by closing this set.
      */
     roles: z.partialRecord(z.enum(GOAL_LAUNCH_ROLES), launchProfileSchema).optional(),
+    /**
+     * P-002 (goal-live-holder-guarantee-2026-08-18): the goal's HOLDER policy.
+     *
+     * Purely additive, and measured so before shipping: of 18 goals in
+     * papercusp-workspace, 3 carry any launch_settings at all and 0 carry a
+     * `holder` key — so no stored document is invalidated by adding it, and no
+     * migration is needed (this column is jsonb).
+     *
+     * Absent means UNPINNED, not "not required" — see
+     * {@link resolveGoalHolderPolicy}, which supplies the defaults at read time
+     * so goals that already exist are covered.
+     */
+    holder: goalHolderPolicySchema.nullable().optional(),
   })
   .strict();
 
