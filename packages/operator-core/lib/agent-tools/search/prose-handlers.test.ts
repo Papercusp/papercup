@@ -586,3 +586,72 @@ describe('search:semantic — coverage honesty (P-009)', () => {
     }
   });
 });
+
+// =============================================================================
+// EI-20838436704308881 — zero-hit scope residue, at the HANDLER boundary.
+//
+// ./scope-residue.test.ts covers the pure helper and the registry bijection.
+// These tests exist because those cannot fail if someone deletes the
+// `...(residue ? { scope_residue: residue } : {})` spread or the
+// `totalHits === 0` gate from the two handlers: the helper would stay perfect
+// while callers silently went back to receiving an unqualified zero, which IS
+// the filed defect. A tool's OUTPUT is part of its contract, so it is asserted
+// on the tool.
+// =============================================================================
+describe('search:fulltext — zero-hit scope residue', () => {
+  it('a zero from a partial scope discloses the corpora it never queried', async () => {
+    const tool = (await import('./fulltext')).default;
+    const res = await tool.handler({ query: 'x', scope: ['turns'] } as never, CTX() as never);
+    const p = payloadOf(res as never);
+
+    expect(p.total_hits).toBe(0);
+    expect(p.scope_residue).toBeTruthy();
+    expect(p.scope_residue.not_searched.map((r: { scope: string }) => r.scope))
+      .toContain('session_turn');
+    expect(p.scope_residue.caveat).toMatch(/NOT AN ABSENCE CLAIM/);
+  });
+
+  it('CALIBRATION: a search WITH hits pays no residue tax', async () => {
+    // The disclosure is for the false-absence moment only. Without this
+    // control, a handler that attached the residue unconditionally would pass
+    // the test above while taxing every successful search.
+    ftResult = {
+      results: [{ source: 'turns', source_id: 't1', excerpt: 'e', highlight: 'h', score: 0.5 }],
+      totalHits: 1,
+    };
+    const tool = (await import('./fulltext')).default;
+    const res = await tool.handler({ query: 'x', scope: ['turns'] } as never, CTX() as never);
+    expect(payloadOf(res as never).scope_residue).toBeUndefined();
+  });
+
+  it('CALIBRATION: a zero over scope:["all"] has no residue — nothing was left out', async () => {
+    const tool = (await import('./fulltext')).default;
+    const res = await tool.handler({ query: 'x', scope: ['all'] } as never, CTX() as never);
+    const p = payloadOf(res as never);
+    expect(p.total_hits).toBe(0);
+    expect(p.scope_residue).toBeUndefined();
+  });
+});
+
+describe('search:semantic — zero-hit scope residue', () => {
+  it('discloses the unsearched corpora on a zero, same as fulltext', async () => {
+    const tool = (await import('./semantic')).default;
+    const res = await tool.handler({ query: 'x', scope: ['turns'] } as never, CTX() as never);
+    const p = payloadOf(res as never);
+
+    expect(p.total_hits).toBe(0);
+    expect(p.scope_residue.not_searched.map((r: { scope: string }) => r.scope))
+      .toContain('session_turn');
+  });
+
+  it('CALIBRATION: a semantic search WITH hits pays no residue tax', async () => {
+    hybridResult = {
+      results: [{ source: 'turns', source_id: 't1', excerpt: 'e', highlight: 'h', score: 0.5 }],
+      totalHits: 1,
+      embedderAvailable: true,
+    };
+    const tool = (await import('./semantic')).default;
+    const res = await tool.handler({ query: 'x', scope: ['turns'] } as never, CTX() as never);
+    expect(payloadOf(res as never).scope_residue).toBeUndefined();
+  });
+});
