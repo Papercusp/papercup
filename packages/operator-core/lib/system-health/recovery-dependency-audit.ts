@@ -535,6 +535,15 @@ export const RECOVERY_MECHANISMS: readonly RecoveryMechanism[] = [
     note: 'Runs the cold-boot drill on cadence.',
   },
 
+  // ── Work-item queue / claim layer ────────────────────────────────────────────────
+  {
+    name: 'unservable-critical-watchdog',
+    file: 'packages/operator-core/lib/system-health/unservable-critical-watchdog.ts',
+    executor: 'operator-in-process-timer',
+    recovers: [],
+    note: 'EI-19919820196426791 — a `critical` item aged past 7d in a lane no claim path serves (lane=observation / state=needs-human). The dispatcher is working correctly and excluding by design, so nothing in work-item-dispatch is inside the failure; the failure is the mis-file itself, and only an outside sweep can see an item nobody writes to.',
+  },
+
   // ── DURABLE TIER — hand-declared; see `coverage.durableTierDiscovery` ─────────────
   {
     name: 'plan-schedule-blender-steward-heartbeat-2026-08-11',
