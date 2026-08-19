@@ -259,6 +259,11 @@ export async function runBudgetedTasks(tasks, options) {
   const estimateMs = options.estimateMs ?? (() => null);
   const runTask = options.runTask;
   if (typeof runTask !== 'function') throw new Error('runTask must be a function');
+  // EI-20801764054303492 route (a): an OPT-IN live reading. Absent ⇒ every allocation below is
+  // byte-identical to the pre-clamp scheduler, which is the back-compat contract every existing
+  // caller and test relies on. Present ⇒ admission re-checks memory and may only ever admit LESS.
+  const readMemAvailableMb =
+    typeof options.readMemAvailableMb === 'function' ? options.readMemAvailableMb : null;
 
   const pending = tasks.map((task, index) => pendingTask(task, index, estimateMs(task, index)));
   const results = new Array(tasks.length);
@@ -268,9 +273,49 @@ export async function runBudgetedTasks(tasks, options) {
   let observedMaxMemoryMb = 0;
   let observedMaxTasks = 0;
   let firstError = null;
+  let admissions = 0;
+  // null (not 0) when no reader was supplied: "nobody measured" and "measured zero times" are
+  // different facts, and the marker below distinguishes them by exactly this null.
+  let memoryReadings = readMemAvailableMb ? 0 : null;
+  let admissionClamps = 0;
+  let minAdmittedWorkers = null;
+  let lastMemAvailableMb = null;
+
+  const clampByMemory = (laneWorkers) => {
+    let reading;
+    try {
+      reading = readMemAvailableMb();
+    } catch {
+      // A THROWING instrument is a broken instrument, never a report of "no memory left". Admit
+      // the unclamped lane width: a probe bug must not throttle a healthy box to one worker.
+      return laneWorkers;
+    }
+    memoryReadings += 1;
+    const measured = reading == null ? Number.NaN : Number(reading);
+    lastMemAvailableMb = Number.isFinite(measured) ? measured : null;
+    const admitted = admissibleWorkersForMemory({
+      laneWorkers,
+      workerMemoryMb: budget.workerMemoryMb,
+      memAvailableMb: reading,
+    });
+    if (admitted < laneWorkers) admissionClamps += 1;
+    return admitted;
+  };
+
+  // Re-measure before every admission EXCEPT the run's first: the startup reading that sized the
+  // budget is still fresh at that point, so re-reading it there would add noise without adding
+  // information. Every later admission is racing children whose heaps have grown since it.
+  const admitWorkersFor = (laneWorkers) => {
+    if (!readMemAvailableMb) return laneWorkers;
+    const admitted = admissions === 0 ? laneWorkers : clampByMemory(laneWorkers);
+    minAdmittedWorkers =
+      minAdmittedWorkers == null ? admitted : Math.min(minAdmittedWorkers, admitted);
+    return admitted;
+  };
 
   const runOne = async (entry, lane, workers) => {
     const memoryMb = workers * budget.workerMemoryMb;
+    admissions += 1;
     activeWorkers += workers;
     activeTasks += 1;
     observedMaxWorkers = Math.max(observedMaxWorkers, activeWorkers);
