@@ -41,6 +41,7 @@
 
 import { existsSync, statSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { resolveCapabilityBaseDir } from '../capability/base-dir';
 import { hasValidGitEntry } from './valid-git-entry';
 import { readFileLockIdentity, type IdentityCtx } from './identity';
 import { inWorkspaceTxn } from './in-workspace-txn';
@@ -125,7 +126,18 @@ export async function guardFileLock<T>(
 ): Promise<
   { acquired: true; result: T } | { acquired: false; busy: AcquireBusy[]; reader?: CellReader }
 > {
-  const cwd = ctx.projectDir ?? process.cwd();
+  // EI-20881501070735530: this was `ctx.projectDir ?? process.cwd()`, which broke the
+  // hook-parity contract documented at the top of this file for exactly the callers it
+  // guards. A superuser ctx has `projectDir: undefined`, so a RELATIVE path resolved
+  // against the :3070 operator's own cwd — the release checkout's `apps/operator/`
+  // subdir — while the capability tool wrote the file relative to
+  // `resolveCapabilityBaseDir(ctx)`. Measured: `packages/…/git.ts` keyed as
+  // `apps/operator/packages/…/git.ts`, a key no peer and no PreToolUse hook ever takes,
+  // so arbitration was silently defeated (the write still landed on the right file).
+  // Absolute paths were unaffected — `toRepoRelative` ignores cwd for those — which is
+  // why it went unseen. Use the SAME resolver the capability tools use, so the lock key
+  // and the byte that gets written can never disagree.
+  const cwd = resolveCapabilityBaseDir(ctx);
 
   // Resolve to the repo-relative keys the hook + server agree on. A path that
   // is uncoordinated (outside a repo / escapes it) is simply not locked.
