@@ -647,6 +647,75 @@ export function partitionSignalsByKnownKeys(
   return out;
 }
 
+/** Shared empty set so the 3-arg gate callers allocate nothing (and cannot mutate a default). */
+const EMPTY_REFILE_ELIGIBLE: ReadonlySet<string> = new Set<string>();
+
+/**
+ * How long a key must have been CONTINUOUSLY suppressed as `standing` before the delta
+ * gate lets it re-file once (EI-20847917368795366).
+ *
+ * The two failure modes are OPPOSITE, so this number is the whole design: too large and a
+ * real untracked condition stays invisible (measured blackout: 11 keys standing with no
+ * item, 8 of them on all 48 ticks of a 12h window, including `ship-link-stuck:staging->main`
+ * while main WAS frozen); too small and the gate stops bounding the churn it exists to stop
+ * (60 copies of one key in 7d ≈ 8.6/day). 12h caps a pathological key at 2 filings/day —
+ * ~4x below the incident rate — while guaranteeing no condition can hide for a whole day.
+ *
+ * Note this bound only ever applies when NOTHING open matches the key: an open item sends
+ * the signal to `knownOpen` (untouched by this), where known-open aging escalates it.
+ */
+export const WATCHDOG_REFILE_AFTER_MS = 12 * 60 * 60 * 1000;
+
+/** Cap on ran-ticks read for the re-file window — 240 covers 12h down to a 3-min cadence. */
+export const WATCHDOG_REFILE_HISTORY_LIMIT = 240;
+
+/**
+ * Pure (EI-20847917368795366): which currently-standing keys have earned ONE re-file.
+ *
+ * A key qualifies when it was suppressed as `standing` on the newest ran tick AND on every
+ * consecutive ran tick back to one at least `refileAfterMs` old. That consecutive run is
+ * the measure, and it is deliberately read from `standing_keys` — watchdog-owned state no
+ * other subsystem can mutate — rather than from item rows, whose disappearance is exactly
+ * what caused the churn incident the delta gate exists to stop.
+ *
+ * FAILS CLOSED everywhere (the inverse of the delta gate's fail-OPEN on empty history):
+ * no ticks, no `standingKeys`, an unparseable `tickAt`, or a run that breaks all return
+ * "not eligible" = keep suppressing = today's behaviour. A truncated read horizon can only
+ * UNDER-estimate a run's age, so it too errs toward suppression. That asymmetry is what
+ * lets this be added without weakening the gate: the escape hatch needs positive evidence,
+ * and absence of evidence is never mistaken for it.
+ */
+export function computeRefileEligibleKeys(
+  ticksNewestFirst: readonly RecentTick[],
+  opts: { nowMs: number; refileAfterMs?: number },
+): Set<string> {
+  const eligible = new Set<string>();
+  const refileAfterMs = opts.refileAfterMs ?? WATCHDOG_REFILE_AFTER_MS;
+  if (!Number.isFinite(opts.nowMs) || !(refileAfterMs > 0)) return eligible;
+  const newest = ticksNewestFirst[0];
+  if (!newest) return eligible;
+
+  // Only a key suppressed on the NEWEST tick can be standing right now; anything else
+  // already broke its run and is not in a blackout.
+  const candidates = newest.standingKeys ?? [];
+  if (candidates.length === 0) return eligible;
+
+  const standingSets = ticksNewestFirst.map((t) => new Set(t.standingKeys ?? []));
+  for (const key of new Set(candidates)) {
+    let runStartMs: number | null = null;
+    for (let i = 0; i < ticksNewestFirst.length; i += 1) {
+      if (!standingSets[i].has(key)) break; // run broken → this episode already ended
+      const ms = Date.parse(ticksNewestFirst[i].tickAt ?? '');
+      // An unusable stamp stops the walk and keeps the last good start — a SHORTER measured
+      // run, i.e. conservative. If it is the newest tick, runStartMs stays null → skip.
+      if (!Number.isFinite(ms)) break;
+      runStartMs = ms;
+    }
+    if (runStartMs !== null && opts.nowMs - runStartMs >= refileAfterMs) eligible.add(key);
+  }
+  return eligible;
+}
+
 /**
  * Default key-dup reader: one indexed lookup over `payload.watchdogKey`
  * (engineer_issues_watchdog_key_idx). Injectable via `WatchdogDeps`.
