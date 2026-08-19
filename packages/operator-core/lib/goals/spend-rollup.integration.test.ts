@@ -258,4 +258,70 @@ describe('goal spend rollup (P-005 / D-003) — real PG', () => {
     expect(md?.spentCents).toBe(0);
     expect(md?.spentCentsBreakdown).toMatchObject({ samples: 0, measured: false });
   });
+
+  /* ── P-004: the measured number reaches the tripwire ─────────────────────── */
+
+  async function goalTripwires(goalId = GOAL): Promise<Array<Record<string, any>> | null> {
+    const rows = await rootSql<Array<{ tripwires: Array<Record<string, any>> | null }>>`
+      SELECT tripwires FROM harness_shared.goals WHERE id = ${goalId} AND workspace_id = ${WS}`;
+    return rows[0]?.tripwires ?? null;
+  }
+  async function setTripwires(tw: postgres.JSONValue, goalId = GOAL) {
+    await rootSql`UPDATE harness_shared.goals SET tripwires = ${rootSql.json(tw)}
+      WHERE id = ${goalId} AND workspace_id = ${WS}`;
+  }
+
+  it('P-004: the sweep advances a spend tripwire and leaves a domain metric alone', async () => {
+    await seedPartitionFixture(); // 205c fully-priced
+    await setTripwires([
+      { metric: 'spend_usd', label: 'Measured child-fleet spend', threshold: 50, unit: 'usd' },
+      { metric: 'hours_since_verdict_advance', label: 'Domain', threshold: 48, unit: 'h' },
+    ]);
+    const before = await rootSql<Array<{ updated_at: string }>>`
+      SELECT updated_at FROM harness_shared.goals WHERE id = ${GOAL}`;
+
+    const res = await runGoalSpendRollupOnce(rootSql);
+    expect(res).toMatchObject({ ok: true, tripwiresAdvanced: 1, errors: [] });
+
+    const tw = await goalTripwires();
+    // 205 cents measured => $2.05, carried onto the tripwire that governs it.
+    expect(tw?.find((t) => t.metric === 'spend_usd')?.current).toBe(2.05);
+    // The domain metric only its executor can score is untouched — no invented value.
+    expect(tw?.find((t) => t.metric === 'hours_since_verdict_advance')).toEqual({
+      metric: 'hours_since_verdict_advance',
+      label: 'Domain',
+      threshold: 48,
+      unit: 'h',
+    });
+
+    // Scoring a tripwire REPORTS a measurement; it does not edit the goal's intent.
+    const after = await rootSql<Array<{ updated_at: string }>>`
+      SELECT updated_at FROM harness_shared.goals WHERE id = ${GOAL}`;
+    expect(String(after[0].updated_at)).toBe(String(before[0].updated_at));
+  });
+
+  it('P-004: an UNMEASURED (floor) rollup advances no spend tripwire', async () => {
+    await seedGoal();
+    await pot('hive-a');
+    await sample({ harness: 'hive-a', usd: 1.0 });
+    await sample({ harness: 'hive-a', usd: null }); // unpriced => measured:false
+    await setTripwires([{ metric: 'spend_usd', label: 'spend', threshold: 50, unit: 'usd' }]);
+
+    const res = await runGoalSpendRollupOnce(rootSql);
+    expect(res.tripwiresAdvanced).toBe(0);
+
+    // The snapshot still records the floor — but the tripwire stays blank rather
+    // than reporting a lower bound as though it were the measured figure.
+    expect((await goalMetadata())?.spentCentsBreakdown).toMatchObject({ measured: false });
+    expect(await goalTripwires()).toEqual([
+      { metric: 'spend_usd', label: 'spend', threshold: 50, unit: 'usd' },
+    ]);
+  });
+
+  it('P-004: a goal with no tripwires is written once, not twice', async () => {
+    await seedPartitionFixture();
+    const res = await runGoalSpendRollupOnce(rootSql);
+    expect(res).toMatchObject({ written: 1, tripwiresAdvanced: 0 });
+    expect(await goalTripwires()).toBeNull();
+  });
 });
