@@ -591,6 +591,75 @@ export async function getFeedbackCore(
       hint: "The resolved responder is already in this consult's lineage (A→B→A, D-005) — a cycle is refused. Re-call excluding them, or proceed on your own judgment.",
     };
   }
+  // 3b) WI-39852 revival leg [owner 2026-08-18: respawn-and-consult beats
+  //     retrieval-only]: a DEAD above-floor expert beats a live below-floor
+  //     minimum-fill AND beats an unfilled minimum. With a `revive` dep bound,
+  //     the top dead floor-qualified candidate is carry-respawned (headless
+  //     resume, cap MAX_REVIVALS_PER_CONSULT) and takes the head of the menu;
+  //     absent dep ⇒ exactly the old D-008 §5 retrieval-only behavior. The
+  //     revive call happens AFTER open (the brief needs the conversation id)
+  //     and BEFORE persist (the snapshot records the revived-first selection).
+  const revivalCandidate =
+    deps.revive && (!chosen || chosenVia === 'minimum')
+      ? (route.qualified.find(
+          (c) => DEAD_RESPONDER_STATES.has(c.liveness) && !lineageOwners.includes(c.ownerId),
+        ) ?? null)
+      : null;
+
+  // 5) Open the conversation — ALWAYS (D-003 honesty feed + the PK row).
+  //    direct_to covers both the planned recipient and the fallback (a dead
+  //    recipient never sees the ping — the revival brief is their delivery).
+  const opened = await deps.open({
+    kind: 'consult',
+    title: consultTitle(req.question),
+    body: consultBody(req),
+    ...(req.topics?.length ? { topics: req.topics } : {}),
+    ...(req.harnessSlug ? { harness_slug: req.harnessSlug } : {}),
+    direct_to: [
+      ...new Set([revivalCandidate?.ownerId, chosen?.ownerId].filter((o): o is string => Boolean(o))),
+    ],
+  });
+
+  // 5b) Attempt the dead-preempt revival. spawn:false ⇒ fall back to the
+  //     pre-revival selection outcome — the attempt is still reported in the
+  //     result (labeled, never silent — D-002 applied to liveness provenance).
+  let revival: GetFeedbackResult['revival'] | undefined;
+  let revivalUsed = false;
+  let finalSelected = selected;
+  let finalChosen = chosen;
+  let finalChosenVia = chosenVia;
+  if (revivalCandidate && deps.revive) {
+    revivalUsed = true;
+    const r = await deps.revive({
+      ownerId: revivalCandidate.ownerId,
+      conversationId: opened.conversation_id,
+      brief: revivalBrief({
+        requesterId: req.requesterId,
+        question: req.question,
+        conversationId: opened.conversation_id,
+        candidate: revivalCandidate,
+      }),
+    });
+    revival = {
+      ownerId: revivalCandidate.ownerId,
+      trigger: 'dead-preempt',
+      spawned: r.spawned,
+      verified: r.verified,
+      detail: r.detail,
+    };
+    if (r.spawned) {
+      finalSelected = [{ candidate: revivalCandidate, via: 'floor' as SelectionVia }, ...selected].slice(
+        0,
+        maxResponders,
+      );
+      finalChosen = revivalCandidate;
+      finalChosenVia = 'floor';
+      route.snapshot.selection = selectionSnapshot(minResponders, maxResponders, finalSelected);
+      const head = route.snapshot.selection.selected[0];
+      if (head) head.revived = true;
+    }
+  }
+
   // With a minimum in play (D-003 default 1), an empty selection means the
   // minimum was UNFILLABLE — the distinct causes stay distinguishable (D-003):
   // instrument down ⇒ embed_unavailable; a pool that only LIVENESS kept out
@@ -598,7 +667,7 @@ export async function getFeedbackCore(
   // no_live_responder; nothing selectable in the first place (no match at
   // all, or pure-floor min:0 with nothing above the floor) ⇒ below_floor —
   // a live below-floor pool under min:0 is a FLOOR verdict, not a liveness one.
-  const reason: GetFeedbackResult['reason'] = chosen
+  const reason: GetFeedbackResult['reason'] = finalChosen
     ? undefined
     : route.snapshot.degraded === 'embed-unavailable'
       ? 'embed_unavailable'
@@ -609,21 +678,11 @@ export async function getFeedbackCore(
   // 4) Wake gating is selection/liveness ONLY — the per-task wake budget is
   //    REMOVED (D-005: maxResponders is the only per-consult bound; residual
   //    spam guards = per-consult max, the depth cap, archive-first dedupe).
-  const willWake = Boolean(chosen);
-
-  // 5) Open the conversation — ALWAYS (D-003 honesty feed + the PK row).
-  const opened = await deps.open({
-    kind: 'consult',
-    title: consultTitle(req.question),
-    body: consultBody(req),
-    ...(req.topics?.length ? { topics: req.topics } : {}),
-    ...(req.harnessSlug ? { harness_slug: req.harnessSlug } : {}),
-    direct_to: chosen ? [chosen.ownerId] : [],
-  });
+  const willWake = Boolean(finalChosen);
 
   // 6) Persist consult_state (snapshot VERBATIM — D-008; never recomputed).
-  const state: GetFeedbackResult['state'] = chosen ? 'awaiting_responder' : 'no_qualified_responder';
-  const expiresAt = chosen
+  const state: GetFeedbackResult['state'] = finalChosen ? 'awaiting_responder' : 'no_qualified_responder';
+  const expiresAt = finalChosen
     ? new Date(now.getTime() + (latency === 'hard-blocked' ? HARD_BLOCKED_EXPIRY_MS : PROCEED_EXPIRY_MS)).toISOString()
     : null;
   // query_embedding is stored whenever the column exists (embeddingColumnOk —
@@ -637,7 +696,7 @@ export async function getFeedbackCore(
          depth, parent_consult_id, query_embedding)
       VALUES
         (${req.workspaceId}, ${opened.conversation_id}, ${req.requesterId},
-         ${chosen?.ownerId ?? null}, ${state}, ${req.question}, ${latency},
+         ${finalChosen?.ownerId ?? null}, ${state}, ${req.question}, ${latency},
          ${originRef}, ${sql.json(route.snapshot as never)}, ${expiresAt},
          ${willWake ? 1 : 0}, ${depth}, ${req.parentConsultId ?? null}, ${qVecStr}::vector)
     `;
@@ -649,7 +708,7 @@ export async function getFeedbackCore(
          depth, parent_consult_id)
       VALUES
         (${req.workspaceId}, ${opened.conversation_id}, ${req.requesterId},
-         ${chosen?.ownerId ?? null}, ${state}, ${req.question}, ${latency},
+         ${finalChosen?.ownerId ?? null}, ${state}, ${req.question}, ${latency},
          ${originRef}, ${sql.json(route.snapshot as never)}, ${expiresAt},
          ${willWake ? 1 : 0}, ${depth}, ${req.parentConsultId ?? null})
     `;
