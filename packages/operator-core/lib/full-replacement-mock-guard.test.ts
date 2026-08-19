@@ -179,6 +179,21 @@ describe('full-replacement mock guard: the live tree', () => {
     expect(exposure.top.some((r: { module: string }) => r.module === '@papercusp/db-org')).toBe(true);
   });
 
+  it('the CLI pass path actually prints the scope note — not just the helper that builds it', () => {
+    // Everything above tests exposureCensus/printExposureNote in isolation, so deleting the
+    // one `console.log(printExposureNote(...))` line from main() would leave them all green
+    // while restoring the exact defect this item was filed for. Only running the real binary
+    // pins the verdict a human/agent actually reads.
+    const out = execFileSync('node', ['scripts/check-full-replacement-mocks.mjs'], {
+      cwd: ROOT,
+      encoding: 'utf8',
+      maxBuffer: 16 * 1024 * 1024,
+    });
+    expect(out).toContain('PROTECTED module(s)');
+    expect(out).toContain('NOT a tree-wide all-clear');
+    expect(out).toMatch(/unprotected module\(s\).*carry \d+ bare/s);
+  }, 120_000);
+
   it('keeps collectCandidateFiles equivalent to selectCandidates(readAllFiles(...))', () => {
     // The two-walk split is a refactor, not a behaviour change; this pins the exported API
     // other guards import so it cannot quietly diverge from what main() actually scans.
