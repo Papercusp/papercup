@@ -797,6 +797,13 @@ beforeEach(() => {
     error: null,
     invalidate: vi.fn(),
   };
+  retainCountsResult = {
+    data: [null],
+    loading: false,
+    fetching: false,
+    error: null,
+    invalidate: vi.fn(),
+  };
   // Retained-ledger URL state (WI-39493/WI-39534) — reset like every other key.
   nuqsState.rtab = "all";
   nuqsState.rship = "all";
@@ -2826,22 +2833,11 @@ describe("LearningTab — inherited pot lens (owner directive 2026-07-26; was P-
   // — selecting it narrows SERVER-side (the tab arg) rather than client-side.
   it("the Memories tab narrows the feed server-side and badges the corpus size", () => {
     nuqsState.lview = "learnings";
-    retainFeedResult = {
+    // WI-39900: badges ride learning.retainCounts, their own read — the feed
+    // page carries counts: null by default and the badge must not need it.
+    retainCountsResult = {
       data: [
-        {
-          rows: [],
-          counts: {
-            memories: 42,
-            plans: 1,
-            wi: 2,
-            rubrics: 3,
-            runbooks: 4,
-            recipes: 5,
-          },
-          nextCursor: null,
-          degraded: [],
-          generatedAt: "2026-08-16T00:00:00.000Z",
-        },
+        { memories: 42, plans: 1, wi: 2, rubrics: 3, runbooks: 4, recipes: 5 },
       ],
       loading: false,
       fetching: false,
