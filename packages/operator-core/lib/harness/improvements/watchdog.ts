@@ -3989,6 +3989,17 @@ export interface RecentTick {
    * injected test fakes and pre-migration rows read as `[]`, which fails the gate OPEN.
    */
   seenKeys?: string[];
+  /**
+   * When that tick ran, ISO-8601 (EI-20847917368795366). The re-file rate limit measures a
+   * consecutive-standing RUN in wall-clock, so it needs the stamp, not just the ordering.
+   * Optional → `computeRefileEligibleKeys` fails CLOSED (keeps suppressing).
+   */
+  tickAt?: string;
+  /**
+   * Keys the delta gate suppressed as `standing` on that tick (EI-20847917368795366) — the
+   * re-file window's evidence. Optional → fails CLOSED, as above.
+   */
+  standingKeys?: string[];
 }
 
 /**
@@ -4004,9 +4015,16 @@ export async function readRecentWatchdogTicks(
   if (limit <= 0) return [];
   const { sql } = getOrgPg();
   const rows = await sql<
-    { status: 'ran' | 'skipped'; collectors: CollectorStatus[]; deferred_keys: string[]; seen_keys: string[] }[]
+    {
+      status: 'ran' | 'skipped';
+      collectors: CollectorStatus[];
+      deferred_keys: string[];
+      seen_keys: string[];
+      tick_at: Date | string;
+      standing_keys: string[];
+    }[]
   >`
-    SELECT status, collectors, deferred_keys, seen_keys
+    SELECT status, collectors, deferred_keys, seen_keys, tick_at, standing_keys
       FROM harness_shared.watchdog_ticks
      WHERE workspace_id = ${workspaceId}
        AND ${filter.status ? sql`status = ${filter.status}` : sql`TRUE`}
@@ -4018,6 +4036,10 @@ export async function readRecentWatchdogTicks(
     deferredKeys: Array.isArray(r.deferred_keys) ? r.deferred_keys : [],
     // P-002: pre-migration rows have no column value → [] → the delta gate fails OPEN.
     seenKeys: Array.isArray(r.seen_keys) ? r.seen_keys : [],
+    // EI-20847917368795366: the re-file window's evidence. Absent/unparseable → the rate
+    // limit fails CLOSED (keeps suppressing), the opposite of the delta gate's fail-open.
+    tickAt: r.tick_at instanceof Date ? r.tick_at.toISOString() : String(r.tick_at ?? ''),
+    standingKeys: Array.isArray(r.standing_keys) ? r.standing_keys : [],
   }));
 }
 
