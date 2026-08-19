@@ -43,12 +43,19 @@ export default defineTool({
   // array (default `summary` shape) → unlocks CSV + outputSchema advertisement.
   // actionable / premiseInvalidated: goal-dag-shared-substrate-2026-08-18 P-003
   // — derived on read from the shared dependency substrate (D-006).
+  // `deactivated` (goal-live-holder-guarantee-2026-08-18 P-004, D-011): a
+  // holder-required goal whose holder is gone is administratively `active` and
+  // actually dormant. The summary shape deliberately carries no `status`, so it
+  // could not state the falsehood outright — but listing a dead goal
+  // indistinguishably from a live one is the same failure by omission, and this
+  // is the read agents call most. One flat boolean keeps the row CSV-shaped.
   result: z.array(
     z.object({
       id: z.string(),
       title: z.string(),
       actionable: z.boolean(),
       premiseInvalidated: z.boolean(),
+      deactivated: z.boolean(),
     }),
   ),
   async handler(args, ctx) {
@@ -63,6 +70,7 @@ export default defineTool({
         created_at: goals.createdAt,
         workspace_id: goals.workspaceId,
         status: goals.status,
+        launch_settings: goals.launchSettings,
       })
       .from(goals)
       .orderBy(desc(goals.createdAt))
