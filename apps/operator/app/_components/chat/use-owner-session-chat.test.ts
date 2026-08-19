@@ -102,6 +102,27 @@ describe('buildSessionStreamUrl', () => {
     expect(p.get('ended')).toBe('1');
   });
 
+  /* popup-agent-state-coverage-2026-08-18 P-012 — the THIRD route to the same
+     fallback, and the one the roster path could not otherwise reach. */
+  it('sets ended=1 when the ROSTER says the transcript does not resolve, even on a session it calls live', () => {
+    /* This is the case `resolved.active` structurally cannot cover on the roster
+       path: `sessionTargetFromRoster` stamps `active: true` for every claude
+       native handle, so a session whose on-disk transcript was rotated away
+       looks live here and never requested the archive fallback — the empty
+       inspector of WI-2680. The roster already probed it; carry that verdict. */
+    const p = q(buildSessionStreamUrl('su-a', LIVE, {}, { thinkingResolvable: false }));
+    expect(p.get('sessionId')).toBe('s-live');
+    expect(p.get('ended')).toBe('1');
+  });
+
+  it('leaves ended alone when the roster says the transcript RESOLVES, or says nothing', () => {
+    // Absent must not act: an older operator's payload carries no flag, and
+    // reading that as "unresolvable" would send every live session to the
+    // archive path.
+    expect(q(buildSessionStreamUrl('su-a', LIVE, {}, { thinkingResolvable: true })).get('ended')).toBeNull();
+    expect(q(buildSessionStreamUrl('su-a', LIVE, {}, {})).get('ended')).toBeNull();
+  });
+
   it('omits the search params entirely when there is no deep-link', () => {
     // Their absence is what leaves an ordinary open on the tail backfill.
     const p = q(buildSessionStreamUrl('su-a', LIVE));
