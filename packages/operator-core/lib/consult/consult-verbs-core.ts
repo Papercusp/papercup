@@ -594,9 +594,21 @@ export async function consultCloseCore(
   const sql = deps.getSql();
   const now = (deps.now ? deps.now() : new Date()).toISOString();
 
-  const gated = gateCommon(await readState(sql, req.workspaceId, req.conversationId));
-  if ('error' in gated) return gated;
-  const row = gated.row;
+  // Close-specific gate (WI-39862 / EI-20824019943814803): unlike reply and
+  // decline, close ALSO admits the REQUESTER on a state='expired' row — a
+  // LATE DISPOSITION. The repro: a cascade collected 3 substantive answers,
+  // exhausted, was stamped 'expired', and the requester's disposition post was
+  // refused consult_not_open — the one row that most deserved a real outcome
+  // could never get one. A late close overwrites state/outcome (a
+  // closed_answered with a real answer regains archive candidacy — the point).
+  const rawRow = await readState(sql, req.workspaceId, req.conversationId);
+  if (!rawRow) return { error: 'not_a_consult' };
+  const lateDisposition = rawRow.state === 'expired' && req.authorId === rawRow.requester_id;
+  if (!lateDisposition) {
+    const gated = gateCommon(rawRow);
+    if ('error' in gated) return gated;
+  }
+  const row = rawRow;
 
   if (req.authorId !== row.responder_id && req.authorId !== row.requester_id) {
     return { error: 'not_a_participant' };
