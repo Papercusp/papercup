@@ -102,6 +102,69 @@ export interface KnownOpenAgingOptions {
 }
 
 /**
+ * One known-open key this tick, optionally carrying the evidence the signal
+ * re-measured on THIS tick.
+ *
+ * Why the evidence rides along at all (EI-19920080383279759): a re-firing signal
+ * is deduped with `dedupScope:'open'`, so the capture DECLINES and the filed
+ * item's body stays frozen at first-fire forever — while the aging path keeps
+ * escalating it (major → critical) on evidence it never shows. Measured live:
+ * EI-19920080383279759 was escalated to CRITICAL naming pool `brief/user`, a
+ * surface whose last row was written 10 days earlier; the pools actually
+ * breaching the gate at that moment were `mid-turn/hive` (85.8% zero-hit over
+ * 234k recalls) and `injection/harness` — and with `emptyScopeRate` 0.000 they
+ * carried the OPPOSITE remedy from the frozen body's "fix the CALLER, not the
+ * corpus". An assignee who trusts the body works a fossil.
+ *
+ * A bare `string` stays valid (a caller with no evidence to hand, and every
+ * pre-existing test), so this widens the input without stranding a call site.
+ */
+export type KnownOpenAgingInput = string | { key: string; evidence?: string | null };
+
+/** Longest current-evidence block rendered into an escalation (chars). */
+const AGING_EVIDENCE_MAX_CHARS = 1200;
+
+/** Pure: `KnownOpenAgingInput[]` → the keys, plus the evidence map for rendering. */
+export function splitAgingInputs(
+  inputs: readonly KnownOpenAgingInput[],
+): { keys: string[]; evidenceByKey: Map<string, string> } {
+  const keys: string[] = [];
+  const evidenceByKey = new Map<string, string>();
+  for (const raw of inputs) {
+    const key = typeof raw === 'string' ? raw : raw?.key;
+    if (typeof key !== 'string' || !key.trim()) continue;
+    keys.push(key);
+    if (typeof raw !== 'string') {
+      const ev = typeof raw.evidence === 'string' ? raw.evidence.trim() : '';
+      // Only a NON-EMPTY body is evidence. A blank string must not register, or
+      // the renderer would emit an empty "CURRENT EVIDENCE" header that reads as
+      // "re-measured and found nothing" — the opposite of "no evidence passed".
+      if (ev) evidenceByKey.set(key, ev);
+    }
+  }
+  return { keys, evidenceByKey };
+}
+
+/**
+ * Pure: the current-evidence block appended to an aging escalation, or '' when
+ * this tick handed us no re-measured body for the key.
+ */
+export function currentEvidenceBlock(evidence: string | undefined): string {
+  const body = typeof evidence === 'string' ? evidence.trim() : '';
+  if (!body) return '';
+  const clipped =
+    body.length > AGING_EVIDENCE_MAX_CHARS
+      ? `${body.slice(0, AGING_EVIDENCE_MAX_CHARS)}\n… (evidence clipped)`
+      : body;
+  return (
+    `\n\n── CURRENT EVIDENCE (re-measured THIS tick) ──\n${clipped}\n` +
+    `⚠ The filed report above was written when the item was FIRST opened and is never rewritten ` +
+    `(a re-fire dedupes as an open duplicate). Where the two disagree, THIS block is the live one — ` +
+    `the offenders a rotating signal names can change completely, remedy included, while the item stays open.`
+  );
+}
+
+/**
  * The hour/day-denominated tick tunables (rides `watchdogOptionsFromPayload`'s
  * numeric whitelist, so D-004's ratified values land via the routine payload
  * without a deploy).
