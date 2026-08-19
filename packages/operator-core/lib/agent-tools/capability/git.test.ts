@@ -11,7 +11,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { runGit } from './git';
+import { emptyPathspecNote, runGit } from './git';
 
 const STATE = mkdtempSync(join(tmpdir(), 'cap-git-'));
 const never = new AbortController().signal;
@@ -21,6 +21,47 @@ describe('runGit', () => {
     const r = await runGit(['--version'], STATE, STATE, never);
     expect(r.code).toBe(0);
     expect(r.output).toContain('git version');
+  });
+});
+
+/**
+ * EI-20881501070735530 — `git … -- <pathspec>` that matches nothing prints nothing and
+ * exits 0, which is byte-identical to a genuine "no commits touch this file". The cwd
+ * bug that produced the original false absence is fixed, but the ambiguous SHAPE is
+ * git's, not ours, so the tool names which reading it cannot distinguish.
+ *
+ * The teeth are in the negatives: a note on a legitimately-empty `git diff` would train
+ * agents to ignore it, which is worse than not having it.
+ */
+describe('emptyPathspecNote — the empty-at-exit-0 pathspec ambiguity', () => {
+  const CWD = '/tree';
+
+  it('fires when an explicit -- pathspec produced nothing at exit 0', () => {
+    const note = emptyPathspecNote(['log', '-3', '--', 'pkg/a.ts'], 0, '', CWD);
+    expect(note).toContain('pathspec matched nothing');
+    expect(note).toContain('pkg/a.ts');
+    expect(note).toContain(CWD); // the cwd IS the disambiguator — never omit it
+  });
+
+  it('does NOT fire on a clean `git diff` — an empty result there is the true answer', () => {
+    expect(emptyPathspecNote(['diff', '--stat'], 0, '', CWD)).toBe('');
+  });
+
+  it('does NOT fire when the command produced output', () => {
+    expect(emptyPathspecNote(['log', '--', 'pkg/a.ts'], 0, 'abc123 subject\n', CWD)).toBe('');
+  });
+
+  it('does NOT fire on a non-zero exit — git already said what went wrong', () => {
+    expect(emptyPathspecNote(['log', '--', 'pkg/a.ts'], 128, '', CWD)).toBe('');
+  });
+
+  it('does NOT fire on a bare `--` with no operands', () => {
+    expect(emptyPathspecNote(['log', '--'], 0, '', CWD)).toBe('');
+  });
+
+  it('names the submodule case — the one where the path exists but can never match', () => {
+    expect(emptyPathspecNote(['log', '--', 'libs/papercusp-shared/package.json'], 0, '', CWD))
+      .toContain('SUBMODULE');
   });
 });
 
