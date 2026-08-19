@@ -34,6 +34,7 @@ import {
   type GetFeedbackResult,
   readVettingConsultCritique,
 } from './get-feedback-core';
+import { peersKnowLookup } from './peers-know';
 
 /** Narrow the P-005 result union for the tests that expect success. */
 function asOk(r: GetFeedbackResult | GetFeedbackError): GetFeedbackResult {
