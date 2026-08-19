@@ -110,3 +110,96 @@ describe('formatAbsoluteUpdated', () => {
     expect(formatAbsoluteUpdated('definitely not a date')).toBe('definitely not a date');
   });
 });
+
+/**
+ * The two DURATION formatters added for `popup-agent-state-coverage-2026-08-18`
+ * P-009 — the pane that says an agent is WAITING has to say how long, and
+ * neither sibling above can: one collapses a 2-minute wait and a 23-hour wait
+ * into the same word, the other hands the reader a wall clock to subtract from.
+ *
+ * `nowMs` is passed explicitly throughout rather than faking the clock: these
+ * are pure functions of (instant, now), and passing `now` is what makes the
+ * boundary assertions exact instead of ±1 tick.
+ */
+describe('formatElapsedSince', () => {
+  const NOW = Date.parse('2026-08-18T12:00:00.000Z');
+  const ago = (ms: number) => new Date(NOW - ms).toISOString();
+
+  it('renders seconds, minutes, hours+minutes and days+hours', () => {
+    expect(formatElapsedSince(ago(42_000), NOW)).toBe('42s');
+    expect(formatElapsedSince(ago(9 * 60_000), NOW)).toBe('9m');
+    expect(formatElapsedSince(ago(2 * 3_600_000 + 41 * 60_000), NOW)).toBe('2h41m');
+    expect(formatElapsedSince(ago(3 * 86_400_000 + 2 * 3_600_000), NOW)).toBe('3d2h');
+  });
+
+  it('accepts epoch milliseconds as well as ISO strings', () => {
+    expect(formatElapsedSince(NOW - 5 * 60_000, NOW)).toBe('5m');
+  });
+
+  it('renders NOTHING — never "0s" — for an absent or unparseable instant', () => {
+    // The distinction this pins: a duration we could not compute must not
+    // render as a number the reader would act on. "0s" would say "this wait
+    // started just now", which is a measurement we never took.
+    expect(formatElapsedSince(null, NOW)).toBe('');
+    expect(formatElapsedSince(undefined, NOW)).toBe('');
+    expect(formatElapsedSince('definitely not a date', NOW)).toBe('');
+    expect(formatElapsedSince(Number.NaN, NOW)).toBe('');
+  });
+
+  it('clamps a forward-dated instant to 0s rather than rendering a negative age', () => {
+    expect(formatElapsedSince(NOW + 60_000, NOW)).toBe('0s');
+  });
+
+  it('separates two waits that formatRelativeUpdated both call "today"', () => {
+    // The information loss P-009 exists to fix, asserted directly: these are a
+    // 2-minute-old wait and a 23-hour-old one.
+    const twoMinutes = ago(2 * 60_000);
+    const nearlyADay = ago(23 * 3_600_000);
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+    expect(formatRelativeUpdated(twoMinutes)).toBe('today');
+    expect(formatRelativeUpdated(nearlyADay)).toBe('today');
+    vi.useRealTimers();
+    expect(formatElapsedSince(twoMinutes, NOW)).toBe('2m');
+    expect(formatElapsedSince(nearlyADay, NOW)).toBe('23h');
+  });
+});
+
+describe('formatTimeLeft', () => {
+  const NOW = Date.parse('2026-08-18T12:00:00.000Z');
+  const inMs = (ms: number) => new Date(NOW + ms).toISOString();
+
+  it('renders minutes, hours+minutes and days+hours remaining', () => {
+    expect(formatTimeLeft(inMs(19 * 60_000), NOW)).toBe('19m left');
+    expect(formatTimeLeft(inMs(2 * 3_600_000), NOW)).toBe('2h left');
+    expect(formatTimeLeft(inMs(2 * 3_600_000 + 41 * 60_000), NOW)).toBe('2h41m left');
+    expect(formatTimeLeft(inMs(3 * 86_400_000), NOW)).toBe('3d left');
+    expect(formatTimeLeft(inMs(3 * 86_400_000 + 2 * 3_600_000), NOW)).toBe('3d2h left');
+  });
+
+  it('ROUNDS to the minute so a 19m lock read a tick later is not "18m left"', () => {
+    // Truncation here is a real regression: the dossier's held-lock countdown
+    // is read against a fixture set exactly N minutes out, and the render
+    // happens some milliseconds after the fixture is built.
+    expect(formatTimeLeft(inMs(19 * 60_000 - 3), NOW)).toBe('19m left');
+  });
+
+  it('renders "<1m left" inside the last minute and "expired" once it has passed', () => {
+    expect(formatTimeLeft(inMs(20_000), NOW)).toBe('<1m left');
+    expect(formatTimeLeft(inMs(0), NOW)).toBe('expired');
+    expect(formatTimeLeft(inMs(-60_000), NOW)).toBe('expired');
+  });
+
+  it('renders NOTHING — never "expired" — for an absent or unparseable deadline', () => {
+    // "expired" is a claim about a deadline. An absent one has to say nothing
+    // at all, or a lock with no recorded expiry reads as an elapsed one.
+    expect(formatTimeLeft(null, NOW)).toBe('');
+    expect(formatTimeLeft(undefined, NOW)).toBe('');
+    expect(formatTimeLeft('definitely not a date', NOW)).toBe('');
+    expect(formatTimeLeft(Number.NaN, NOW)).toBe('');
+  });
+
+  it('accepts epoch milliseconds as well as ISO strings', () => {
+    expect(formatTimeLeft(NOW + 5 * 60_000, NOW)).toBe('5m left');
+  });
+});
