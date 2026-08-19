@@ -525,6 +525,28 @@ function SessionStateHeader({
     entry.openAwait && !isInfrastructureAwait(entry.openAwait)
       ? entry.openAwait.note?.trim() || `Waiting on ${entry.openAwait.eventKey}`
       : null;
+  /**
+   * P-009: HOW LONG the await has been open, and when it gives up.
+   *
+   * The chip said WHAT the agent is waiting on and never for how long, which is
+   * the half that decides whether to intervene: a 40-second await is the system
+   * working, and the same sentence at 3 hours is an agent parked on an event
+   * that may never fire. `openAwait.sinceIso` has been on the roster payload the
+   * whole time (`HudOpenAwait`) and had no reader.
+   *
+   * null when the stamp is absent or unparseable — the chip then renders exactly
+   * what it renders today rather than a manufactured "0s", which would read as
+   * "this wait just started" about a wait we never dated. Same rule for
+   * `expiresIso`: no recorded timeout is NOT the same as "no timeout", so it
+   * says nothing rather than "no expiry".
+   */
+  const awaitWaitedSec = useMemo(() => {
+    const since = entry.openAwait?.sinceIso;
+    if (!since) return null;
+    const t = Date.parse(since);
+    return Number.isNaN(t) ? null : Math.max(0, Math.round((nowMs - t) / 1000));
+  }, [entry.openAwait?.sinceIso, nowMs]);
+  const awaitTimeLeft = formatTimeLeft(entry.openAwait?.expiresIso, nowMs);
   const sessionState = normalizeSessionState(entry.sessionState);
   const statusLabel = sessionState ?? entry.liveness;
   const activityAgeTitle = ageSec != null ? `; last activity: ${formatAge(ageSec)} ago` : '';
@@ -642,14 +664,42 @@ function SessionStateHeader({
         <span
           className="pc-ctl-state pc-ctl-state--warn"
           data-testid="session-chat-state-await"
-          title={
+          title={[
             entry.openAwait?.eventKey && entry.openAwait.eventKey !== awaitText
               ? `${entry.openAwait.eventKey}\n\n${awaitText}`
-              : awaitText
-          }
+              : awaitText,
+            /* P-009: the two durations spelled out, because the chip has room
+               for one number and the pair is what the reader acts on — an
+               await 3h old with 5m left is about to end itself, and the same
+               age with no timeout is not. */
+            awaitWaitedSec != null
+              ? `\n\nOpen for ${formatAge(awaitWaitedSec)}.`
+              : '\n\nNo start time on record for this await.',
+            awaitTimeLeft === 'expired'
+              ? ' Its timeout has already passed.'
+              : awaitTimeLeft
+                ? ` Times out in ${awaitTimeLeft.replace(/ left$/, '')}.`
+                : ' No timeout on record — it ends only when the event fires.',
+          ].join('')}
         >
           <span aria-hidden="true">⏳</span>
           <span className="pc-ctl-state__clip">{awaitText}</span>
+          {/* The AGE, never a verdict. "3h" is a fact the reader judges; the
+              band deliberately does not decide for them what counts as too
+              long — that judgement is the leader-brief's (P-003/P-004) and it
+              speaks in the peers rail with the evidence behind it. */}
+          {awaitWaitedSec != null ? (
+            <span className="pc-ctl-state__muted" data-testid="session-chat-state-await-age">
+              {' '}
+              · {formatAge(awaitWaitedSec)}
+            </span>
+          ) : null}
+          {awaitTimeLeft === 'expired' ? (
+            <span className="pc-ctl-state__muted" data-testid="session-chat-state-await-expiry">
+              {' '}
+              · timed out
+            </span>
+          ) : null}
         </span>
       ) : null}
       {badges.map((b) => (
