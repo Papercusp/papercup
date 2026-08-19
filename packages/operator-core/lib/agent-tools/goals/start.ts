@@ -203,6 +203,14 @@ export default defineTool({
       .describe(
         'OPTIONAL — the declared spend ceiling in cents, the number actuals are reported against. Omitted ⇒ stored NULL (no ceiling declared), NOT 0.',
       ),
+    holder: goalHolderPolicySchema
+      .optional()
+      .describe(
+        'REQUIRED unless you opt out: does this goal need a LIVE holder to count as active, and what happens when it loses one. ' +
+          "{ requireLive: true } for a goal a session owns — the case this tool creates, since it spawns that session — so it stops reading 'active' when nobody holds it. " +
+          "{ requireLive: false } for a goal driven by routines rather than a held session. onLoss defaults to 'deactivate'; 'respawn' is opt-in per goal. " +
+          'Omitting this entirely is refused: the goal would inherit the live-holder requirement without anyone having chosen it.',
+      ),
     body: z
       .string()
       .max(20000)
