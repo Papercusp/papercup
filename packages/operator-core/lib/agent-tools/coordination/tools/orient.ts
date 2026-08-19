@@ -192,6 +192,9 @@ export interface OrientArgs {
   includeRecipes?: boolean;
   /** Max relevant recipes to surface (default 3, hard-capped 5). */
   recipesLimit?: number;
+  /** Fold a peers-know hint when the declared `intent` semantically matches a CLOSED
+   *  consult in the archive (default true; consult-revival-and-honest-min-2026-08-18 P-006). */
+  includePeersKnow?: boolean;
   /** Fold a bounded catch-up slice of YOUR fleet's audience-history when you belong to a
    *  named fleet — the auto "what did my fleet say while I was away" at wake (default true). */
   includeFleetCatchUp?: boolean;
@@ -428,6 +431,23 @@ export interface OrientResult {
     limit?: number;
     titlesClipped?: number;
     titleCap?: number;
+    more: string;
+  };
+  /** A CLOSED consult already settled a question semantically matching this orient's
+   *  declared `intent` (consult-revival-and-honest-min-2026-08-18 P-006). Read-only twin
+   *  of consult:get_feedback's archive-first serve — same corpus, same embedder space,
+   *  same precision-biased floor — surfaced HERE so the agent learns a peer already
+   *  answered before starting the work. ABSENT on no-match / short intent / monitor
+   *  tick / any embedder-or-pgvector degrade (zero payload cost on the common path). */
+  peersKnow?: {
+    /** The settled answer's one-liner (outcome.answer, capped). */
+    answer: string;
+    /** Source consult conversation id. */
+    ref: string;
+    responder: string | null;
+    closedAt: string | null;
+    sim: number;
+    /** How to read the full thread / re-ask fresh. */
     more: string;
   };
   /** Whether the optional coord:declare-intent succeeded (present only when
@@ -2353,6 +2373,12 @@ export default defineTool({
       .max(5)
       .optional()
       .describe('Max relevant recipes to surface (default 3; 0 skips recipe search).'),
+    includePeersKnow: z
+      .boolean()
+      .optional()
+      .describe(
+        'Fold a peers-know hint when your declared `intent` semantically matches a CLOSED consult in the archive: the settled answer one-liner + source consult + a consult:get_feedback pointer (default true; absent on no-match — zero cost).',
+      ),
     includeFleetCatchUp: z
       .boolean()
       .optional()
