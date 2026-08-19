@@ -159,11 +159,22 @@ describe('goals:create — a goal must declare its holder policy', () => {
     expect(calls.some((c) => /INSERT INTO/.test(c.sql))).toBe(false);
   });
 
+  /* The column is written as a JSON STRING param, so read it back by PARSING
+     the param rather than substring-matching the serialised params array:
+     `JSON.stringify(params)` escapes the inner quotes, so a `'"requireLive":false'`
+     substring can never match however correct the code is — a false red that
+     says nothing about the subject. */
+  const holderWritten = () => {
+    const insert = calls.find((c) => /INSERT INTO harness_shared\.goals/.test(c.sql))!;
+    expect(insert.sql).toMatch(/launch_settings/);
+    const raw = insert.params[insert.params.length - 1];
+    return raw == null ? null : (JSON.parse(String(raw)) as { holder?: Record<string, unknown> }).holder;
+  };
+
   it('ACCEPTS an explicit opt-OUT and stores it — the escape hatch must be sayable', async () => {
     const res = await call(ARGS({ holder: { requireLive: false } }), CTX());
     expect(res.data).not.toBeNull();
-    const insert = calls.find((c) => /INSERT INTO/.test(c.sql))!;
-    expect(JSON.stringify(insert.params)).toContain('"requireLive":false');
+    expect(holderWritten()).toEqual({ requireLive: false });
   });
 
   it('persists the declared policy into launch_settings on the SAME insert', async () => {
@@ -172,9 +183,7 @@ describe('goals:create — a goal must declare its holder policy', () => {
     // between them that window never closes.
     const res = await call(ARGS({ holder: { requireLive: true, onLoss: 'respawn' } }), CTX());
     expect(res.data).not.toBeNull();
-    const insert = calls.find((c) => /INSERT INTO/.test(c.sql))!;
-    expect(insert.sql).toMatch(/launch_settings/);
-    expect(JSON.stringify(insert.params)).toContain('"onLoss":"respawn"');
+    expect(holderWritten()).toEqual({ requireLive: true, onLoss: 'respawn' });
   });
 
   /* CONTROL. Without this, every assertion above still passes if the door
