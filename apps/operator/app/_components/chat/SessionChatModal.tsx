@@ -1200,6 +1200,12 @@ export default function SessionChatModal({
       sessionId: actionRosterEntry?.sessionId,
       ompThreadId: actionRosterEntry?.ompThreadId,
       nativeSession: actionRosterEntry?.nativeSession,
+      // P-012: the roster's own transcript probe. Only `false` acts — it routes
+      // the stream to the rematerialize-from-archive fallback, which is the one
+      // thing that can still fill this pane once the on-disk transcript is gone.
+      // Read off the same row under its RosterEntry projection, which is the
+      // mirror that declares the field (HudRosterEntry does not).
+      thinkingResolvable: (actionRosterEntry as unknown as RosterEntry | null)?.thinkingResolvable,
     },
   );
 
