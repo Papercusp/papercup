@@ -159,7 +159,31 @@ const CHANNEL = 'rate-limit-config-changes';
  * LISTENs to resync from PG (the single source of truth) on any peer's write.
  */
 const NOTIFY_CHANNEL = 'papercusp_rate_limit_config_changed';
-let cached: RateLimitConfig = { ...DEFAULT_RATE_LIMIT_CONFIG };
+/**
+ * LAZY on purpose — `null` means "not seeded yet", NOT "no config".
+ *
+ * This used to be `= { ...DEFAULT_RATE_LIMIT_CONFIG }` at module scope, which
+ * SPREADS the object and therefore INVOKES its `maxSimultaneousAgents` getter
+ * (line ~85) during module evaluation — i.e. `getResourceProfile()` ran on
+ * `import`, in every process and every test that merely reaches this module.
+ * That defeated two things the getter exists to guarantee:
+ *
+ *  1. `primePowerSource()`'s own doc comment warns that a profile read BEFORE it
+ *     runs memoizes the caps as AC. An import-time read makes losing that race
+ *     the DEFAULT, not a race — battery detection could never affect the caps.
+ *  2. It dragged env/PG-discovery detection (`detectEmbeddedPg` →
+ *     `getHarnessAdminUrlWithSource`, `detectHostRole` → `utilityHostEnabled`)
+ *     into the module graph of every unit test that transitively imports this
+ *     file, so any test partially mocking `embedded-pg-discovery` or
+ *     `background-workers` died at COLLECTION with "No <export> is defined on
+ *     the mock" — a failure with no relationship to what the test asserts.
+ *     (Green-checkpoint red for candidate e0c95ae7; 3 files broken this way.)
+ *
+ * Seed it on first READ instead. `getCachedRateLimitConfig()` is the only reader,
+ * so the observable value is unchanged — it is just resolved when someone asks
+ * for it rather than when the module is loaded.
+ */
+let cached: RateLimitConfig | null = null;
 let booted = false;
 
 export type RateLimitConfigEnvelope = { type: 'rate_limit_config_changed'; config: RateLimitConfig; ts: number };
