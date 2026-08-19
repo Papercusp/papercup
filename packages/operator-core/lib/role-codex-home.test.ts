@@ -333,6 +333,23 @@ describe('writeRoleCodexHome', () => {
 });
 
 describe('writeSuCodexHome', () => {
+  it('resolves an omitted launch model from the installed Codex default for model-less resumes', async () => {
+    mkdirSync(join(fakeHome, '.codex'), { recursive: true });
+    writeFileSync(join(fakeHome, '.codex', 'config.toml'), 'model = "gpt-5.6-luna"\n');
+
+    const { writeSuCodexHome } = await loadMod();
+    const out = writeSuCodexHome({
+      sessionKey: 'context-default-su',
+      mcpUrl: 'http://x/api/mcp?superuser=1',
+      promptText: 'P',
+      sid: 'su-context-default',
+    });
+
+    expect(readFileSync(out.configPath, 'utf8')).toMatch(
+      /^model_context_window = 1000000\nmodel_auto_compact_token_limit = 900000\n/,
+    );
+  });
+
   it('bakes the exact context roots into fresh and repaired SU homes', async () => {
     const { ensureSuCodexHomeConfig, writeSuCodexHome } = await loadMod();
     const fresh = writeSuCodexHome({

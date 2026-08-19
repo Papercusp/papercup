@@ -297,7 +297,13 @@ describe('bootstrap-role', () => {
   });
 
   it('codex → per-session CODEX_HOME, exported via envelopeEnv.CODEX_HOME', async () => {
-    const res = await callPost({ role: 'worker', agent: 'codex', harness_slug: 'papercup', feature: 'F-001' });
+    const res = await callPost({
+      role: 'worker',
+      agent: 'codex',
+      model: 'gpt-5.6-sol:high',
+      harness_slug: 'papercup',
+      feature: 'F-001',
+    });
     expect(res.status).toBe(200);
     const json = await res.json();
     expect(json.status).toBe('ok');
@@ -312,7 +318,12 @@ describe('bootstrap-role', () => {
     // and bakes the SAME sid the primitive minted (EI-4: url client === PAPERCUSP_SID
     // === codex-home baked client).
     expect(writeRoleCodexHomeMock).toHaveBeenCalledWith(
-      expect.objectContaining({ mcpUrl: 'http://localhost:3070/api/mcp?role=worker&sig=x', promptText: 'WORKER PROMPT', sid: 'role-abc' }),
+      expect.objectContaining({
+        mcpUrl: 'http://localhost:3070/api/mcp?role=worker&sig=x',
+        promptText: 'WORKER PROMPT',
+        sid: 'role-abc',
+        model: 'gpt-5.6-sol:high',
+      }),
     );
     // No .mcp.json written into the harness cwd for codex.
     expect(recordAdvSessionMock).toHaveBeenCalledWith(
