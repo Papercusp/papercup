@@ -498,6 +498,18 @@ export async function startDbos(): Promise<void> {
       '../system-health/goal-liveness-watchdog'
     );
     startGoalLivenessWatchdog(getOrgPg().sql);
+    // EI-19919820196426791 half 2: alarm on an issue that is simultaneously
+    // `critical` and structurally UNCLAIMABLE (observation lane / needs-human)
+    // past a 7-day floor. The write-time guard on set_priority/update covers the
+    // STEERING case — you are told the moment your steer is a no-op — but it
+    // cannot see an item NOBODY WRITES TO, which is precisely how the filed
+    // instance hid for 19 days. A periodic sweep is the only thing that closes
+    // the never-touched mis-file. Runtime gate:
+    // FLAGS.UNSERVABLE_CRITICAL_WATCHDOG (default ON), checked per tick.
+    const { startUnservableCriticalWatchdog } = await import(
+      '../system-health/unservable-critical-watchdog'
+    );
+    startUnservableCriticalWatchdog(getOrgPg().sql);
     // system-notices-on-its-own-2026-08-16 P-002: alarm when a sustained share of
     // hybrid searches did not run at full strength. summariseLegs already judged
     // every search; observeLegs now retains those verdicts in a trailing window,

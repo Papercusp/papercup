@@ -1550,6 +1550,21 @@ export const FLAGS = {
   // DEFAULT ON. OFF = the kill-switch: the timer still ticks but every sweep
   // no-ops before reading the goals table.
   GOAL_LIVENESS_WATCHDOG: "papercusp-goal-liveness-watchdog",
+  // EI-19919820196426791 (half 2): gates the unservable-critical watchdog — a
+  // deduped escalation per issue that is simultaneously `critical` and
+  // structurally UNCLAIMABLE (lane='observation' or state='needs-human'), past a
+  // 7-day age floor. Those two facts are in conflict and nothing else reported
+  // it. Sibling of the WRITE-TIME guard already shipped on set_priority/update
+  // (structuralClaimabilityWarning), and deliberately not folded into it: that
+  // guard only fires when SOMEONE WRITES to the row, and the filed instance was
+  // an item nobody ever wrote to after filing it as a nit in the observation
+  // lane — cup:spawn 100% broken for 19 days behind exactly that shape. Scoped
+  // to `critical` ON MEASUREMENT, not taste: on 2026-08-19 the filed
+  // critical-OR-major spec matched 57 rows past 7 days (a backlog listing that
+  // trains the reader to ignore it) against 5 for critical alone. DEFAULT ON.
+  // OFF = the kill-switch: the timer still ticks but every sweep no-ops before
+  // reading engineer_issues.
+  UNSERVABLE_CRITICAL_WATCHDOG: "papercusp-unservable-critical-watchdog",
   // EI-20581099901890760 (1): gates the GOAL-mode edit-deny guard wired into
   // agent-tools/locks/acquire.ts — a session whose REGISTERED mode is 'goal'
   // (an agent_modes row; the contract binds at mode:set) is denied PreToolUse
