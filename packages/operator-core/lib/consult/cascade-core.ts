@@ -209,6 +209,7 @@ export async function advanceCascade(
   params: AdvanceCascadeParams,
   sql: Sql,
   reach?: (opts: { responder: string; conversationId: string; summary: string; body: string }) => Promise<{ woke: number }>,
+  revive?: CascadeRevive,
 ): Promise<AdvanceCascadeResult> {
   const selected = selectionFromRouting(params.routing);
   const digest = [...digestFromRow(params.digest), params.event].slice(-CASCADE_DIGEST_MAX_ENTRIES);
@@ -340,11 +341,19 @@ export async function advanceCascade(
           selection: {
             ...sel,
             selected: [...rawSelected, ...add],
-            refill: {
-              at: params.nowIso,
-              added: add.map((a) => a.ownerId),
-              reason: `cascade exhausted with ${answers} answer(s) < min ${min}`,
-            },
+            // The refill stamp guards the ONE live round (WI-39861) — stamped
+            // whenever that round ran, even when it found nothing live (the
+            // snapshot pool is static, so a later re-scan cannot do better).
+            // A revival-only extension after the round keeps the old stamp.
+            ...(!sel.refill
+              ? {
+                  refill: {
+                    at: params.nowIso,
+                    added: liveAdds.map((a) => a.ownerId),
+                    reason: `cascade exhausted with ${answers} answer(s) < min ${min}`,
+                  },
+                }
+              : {}),
           },
         };
         // Cursor lands on the FIRST refill entry: in the selectionFromRouting
@@ -377,7 +386,7 @@ export async function advanceCascade(
           const r = await reach({
             responder: first.ownerId,
             conversationId: params.conversationId,
-            summary: `🧭 consult cascade (reviewer ${cursorIdx + 1}/${menuSize}, min-answers refill): ${params.question.replace(/\s+/g, ' ').slice(0, 72)}`,
+            summary: `🧭 consult cascade (reviewer ${cursorIdx + 1}/${menuSize}, ${revivedEntry ? 'refill-exhaustion revival' : 'min-answers refill'}): ${params.question.replace(/\s+/g, ' ').slice(0, 72)}`,
             body: cascadeWakeBody({
               question: params.question,
               conversationId: params.conversationId,
@@ -395,9 +404,38 @@ export async function advanceCascade(
           raced: false,
           next: { ownerId: first.ownerId, via: first.via },
           woke,
-          refilled: true,
+          ...(sel.refill ? {} : { refilled: true }),
+          ...(revival ? { revival } : {}),
         };
       }
+      // Nothing addable — HONEST terminal (EI-20864690354207496): the min
+      // stays unfilled and the persisted snapshot says WHY, so "exhausted"
+      // can never silently paper over a revivable-but-unrevived expert. The
+      // caller still owns the terminal state transition.
+      const underFilled = {
+        answers,
+        min,
+        reason: underFilledReason ?? 'no-revivable-candidate',
+      };
+      const wroteTerminal = (await sql`
+        UPDATE harness_shared.consult_state
+           SET cascade_digest = ${JSON.stringify(digest)}::jsonb,
+               routing = jsonb_set(routing, '{selection,underFilled}', ${JSON.stringify({ at: params.nowIso, ...underFilled })}::jsonb),
+               updated_at = ${params.nowIso}::timestamptz
+         WHERE workspace_id = ${params.workspaceId} AND conversation_id = ${params.conversationId}
+           AND cascade_cursor = ${params.cascadeCursor} AND closed_at IS NULL
+        RETURNING conversation_id
+      `) as unknown as Array<{ conversation_id: string }>;
+      if (wroteTerminal.length === 0) return { advanced: false, exhausted: false, raced: true, next: null, woke: 0 };
+      return {
+        advanced: false,
+        exhausted: true,
+        raced: false,
+        next: null,
+        woke: 0,
+        underFilled,
+        ...(revival ? { revival } : {}),
+      };
     }
     const wrote = (await sql`
       UPDATE harness_shared.consult_state
