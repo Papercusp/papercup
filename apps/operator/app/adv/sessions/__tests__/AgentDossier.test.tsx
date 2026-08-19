@@ -1041,6 +1041,60 @@ describe('AgentDossier', () => {
        test lands differently on each: an absent `machineLabel` is an
        unmeasured attribute (silence), while a PRESENT `isLocal` is a measured
        property and always speaks. */
+    describe('pipelineNoteValue (P-014)', () => {
+      it('is silent on a healthy pipeline AND on an unmeasured one', () => {
+        // Two different silences, both correct: a green gate needs no badge, and
+        // a null pipeline is a reading nobody took (the producer is fail-soft and
+        // resolves null rather than throwing). Neither may become an all-clear.
+        expect(pipelineNoteValue({ gate: 'green', deploy: 'current' })).toBeNull();
+        expect(pipelineNoteValue(null)).toBeNull();
+        expect(pipelineNoteValue(undefined)).toBeNull();
+      });
+
+      it('says a red gate blocks THIS agent’s work reaching :3070, and names the files to fix', () => {
+        const note = pipelineNoteValue({
+          gate: 'red',
+          deploy: 'behind',
+          consecutiveReds: 3,
+          lastGreenAgoMs: 4 * 60 * 60_000,
+          failingFiles: ['a.test.ts', 'b.test.ts', 'c.test.ts'],
+          rootCause: 'green-checkpoint — suite failed',
+        })!;
+        expect(note.severity).toBe('bad');
+        expect(note.text).toContain('RED');
+        expect(note.text).toContain('3 consecutive');
+        expect(note.text).toContain('last green 4h ago');
+        // Bounded on purpose — the rail is fixed-height, so the tail is counted
+        // rather than listed.
+        expect(note.text).toContain('a.test.ts, b.test.ts');
+        expect(note.text).toContain('(+1 more)');
+        expect(note.text).toContain(':3070');
+      });
+
+      it('refuses to colour a STALE verdict either way, and warns off its file names', () => {
+        // The one gate value that must not read as red OR green: the recorded red
+        // is superseded, so the real colour is unknown and its failing-test names
+        // are exactly what must not be dispatched against.
+        const note = pipelineNoteValue({
+          gate: 'stale-verdict',
+          deploy: 'current',
+          failingFiles: ['stale.test.ts'],
+        })!;
+        expect(note.text).toMatch(/unknown/i);
+        expect(note.text).toMatch(/do not act on its failing-test names/i);
+        expect(note.text).not.toContain('stale.test.ts');
+      });
+
+      it('distinguishes green-but-not-live from green', () => {
+        // A git fact is not a process fact — this is the state most often misread
+        // as "my change is deployed".
+        const note = pipelineNoteValue({ gate: 'green', deploy: 'behind' })!;
+        expect(note.severity).toBe('warn');
+        expect(note.text).toMatch(/BEHIND/);
+        expect(note.text).toMatch(/not live yet/i);
+      });
+    });
+
     describe('machine row (P-012)', () => {
       it('says nothing when the payload measured neither field — D-011 silence, not a guess', () => {
         expect(machineRowValue({ machineLabel: null, isLocal: undefined })).toBeNull();
