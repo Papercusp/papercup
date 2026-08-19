@@ -305,6 +305,14 @@ export async function runBudgetedTasks(tasks, options) {
   // Re-measure before every admission EXCEPT the run's first: the startup reading that sized the
   // budget is still fresh at that point, so re-reading it there would add noise without adding
   // information. Every later admission is racing children whose heaps have grown since it.
+  //
+  // ⚠ LOAD-BEARING COMPOSITION — the first admission is UNMEASURED, so on its own this clamp does
+  // NOT protect it: at an 8-worker/4GiB config that admission is 32GiB, the exact shape
+  // green-checkpoint records as OOM-killing this box. It is safe ONLY because the STARTUP budget
+  // is itself sized from a fresh reading (resolveMemoryBudgetMb, wired in affected-tests.mjs and
+  // source-pinned by the WI-39472 guards), so a box that is already short on memory never reaches
+  // admission #0 with a wide budget. Weaken that startup sizing and you silently unprotect the
+  // first admission — the two halves only work together (EI-20801764054303492).
   const admitWorkersFor = (laneWorkers) => {
     if (!readMemAvailableMb) return laneWorkers;
     const admitted = admissions === 0 ? laneWorkers : clampByMemory(laneWorkers);
