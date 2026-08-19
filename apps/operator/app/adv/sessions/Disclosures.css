@@ -36,7 +36,11 @@
   margin: 0;
   font-size: 11px;
   line-height: 1.35;
-  color: var(--pc-orders-mute, var(--fg-mute));
+  /* Base: global mute. Inside the orders board this is overridden to the
+     lightened orders tint by AgentOrders.css (.pc-orders .pc-disclosures__line)
+     — the css-tokens lint scopes component tokens to their defining file, so
+     the cross-file var(--pc-orders-mute, …) fallback form is not allowed here. */
+  color: var(--fg-mute);
 }
 
 /** ⊘ — "something was excluded here". Deliberately NOT ⚠: this qualifies a
