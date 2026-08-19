@@ -175,6 +175,8 @@ const PUSH_EXEMPT: Record<string, string> = {
     'memory leg reads through the pluggable backend seam (getMemoryBackend().list()) — a remote backend never touches this table; writes push via invalidate-user-memory-views.ts (USER_MEMORY_SYNC_KEYS carries learning.retainFeed).',
   'learning.retainDetail :: harness_shared.memory_canonical':
     'memory detail reads through the pluggable backend seam (getMemoryBackend().get()) — same seam argument as the feed row above; writes push via invalidate-user-memory-views.ts (USER_MEMORY_SYNC_KEYS carries learning.retainDetail).',
+  'learning.retainCounts :: harness_shared.memory_canonical':
+    'the memories BADGE counts through the same pluggable backend seam as the feed leg (WI-39900 split the counts off the page) — a remote backend never touches this table; writes push via invalidate-user-memory-views.ts (USER_MEMORY_SYNC_KEYS carries learning.retainCounts).',
 
   // WI-39493/WI-39534 — the ledger's recipes leg + an open recipe detail.
   // code_recipes has NO row trigger (its own list query, codeRecipes, is
@@ -189,6 +191,8 @@ const PUSH_EXEMPT: Record<string, string> = {
     'no trigger on code_recipes (codeRecipes list is likewise poll-only); recipe writes are rare agent-tool events, and the feed refreshes on mount/manual refresh.',
   'learning.retainDetail :: harness_shared.code_recipes':
     'no trigger on code_recipes — same as the feed leg above; an open recipe detail refreshes on remount/manual refresh.',
+  'learning.retainCounts :: harness_shared.code_recipes':
+    'no trigger on code_recipes — same as the feed leg above; the recipes BADGE (WI-39900) tolerates staleness by design (generous staleTime) and refreshes on remount/manual refresh.',
 };
 
 /**
