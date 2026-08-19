@@ -311,6 +311,105 @@ describe('recovery-dependency-audit — coverage of the live tree (THE ANTI-ROT 
   });
 });
 
+describe('recovery-dependency-audit — holder-loss dispositions (falsifiable controls)', () => {
+  /** CONTROL: an on-loss value the schema admits that nobody declared a disposition for. */
+  const undeclaredControl = { deactivate: HOLDER_LOSS_DISPOSITIONS.deactivate };
+
+  /** CONTROL: a disposition claiming a real actor that is not in RECOVERY_MECHANISMS. */
+  const phantomMechanismControl: Record<string, HolderLossDisposition> = {
+    deactivate: HOLDER_LOSS_DISPOSITIONS.deactivate,
+    respawn: { kind: 'recovery-mechanism', mechanism: 'goal-holder-respawner', why: 'control' },
+  };
+
+  /** CONTROL: an IOU with nobody on the hook for it. */
+  const unownedPlanControl: Record<string, HolderLossDisposition> = {
+    deactivate: HOLDER_LOSS_DISPOSITIONS.deactivate,
+    respawn: { kind: 'planned', why: 'control — no planItem' },
+  };
+
+  it('reports an admitted on-loss value with no declared disposition', () => {
+    const gaps = findHolderLossGaps(['deactivate', 'respawn'], undeclaredControl);
+    expect(gaps.undeclared).toEqual(['respawn']);
+  });
+
+  it('reports a disposition naming a recovery mechanism that does not exist', () => {
+    // This is the forcing function for P-009: the moment respawn claims a real
+    // actor, that actor has to appear in RECOVERY_MECHANISMS and be judged for
+    // fate-sharing like every other one. A named-but-absent mechanism is a
+    // recovery that is declared and does not exist.
+    const gaps = findHolderLossGaps(['deactivate', 'respawn'], phantomMechanismControl);
+    expect(gaps.unresolvedMechanism).toEqual([
+      { onLoss: 'respawn', mechanism: 'goal-holder-respawner' },
+    ]);
+  });
+
+  it('resolves a disposition whose mechanism IS in the table — the calibration case', () => {
+    // Without this, the control above could be passing because the check reports
+    // EVERY 'recovery-mechanism' row as unresolved.
+    const realName = RECOVERY_MECHANISMS[0].name;
+    const gaps = findHolderLossGaps(['deactivate', 'respawn'], {
+      deactivate: HOLDER_LOSS_DISPOSITIONS.deactivate,
+      respawn: { kind: 'recovery-mechanism', mechanism: realName, why: 'control' },
+    });
+    expect(gaps.unresolvedMechanism).toEqual([]);
+  });
+
+  it('reports a "planned" disposition that names no plan item', () => {
+    const gaps = findHolderLossGaps(['deactivate', 'respawn'], unownedPlanControl);
+    expect(gaps.unownedPlan).toEqual(['respawn']);
+  });
+
+  it('reports a disposition for a value the schema no longer admits', () => {
+    // Drift the other way: an on-loss value removed from the schema leaves a row
+    // here describing a recovery for a policy nothing can express any more.
+    // Synthetic on purpose — a control driven by the REAL table would change
+    // meaning every time that table legitimately grows.
+    const gaps = findHolderLossGaps(['deactivate'], {
+      deactivate: HOLDER_LOSS_DISPOSITIONS.deactivate,
+      'retired-value': { kind: 'derived-at-read', why: 'control — no longer in the schema' },
+    });
+    expect(gaps.stale).toEqual(['retired-value']);
+  });
+
+  it('is clean when the closed set and the dispositions agree', () => {
+    const gaps = findHolderLossGaps(['deactivate'], {
+      deactivate: HOLDER_LOSS_DISPOSITIONS.deactivate,
+    });
+    expect(gaps).toEqual({ undeclared: [], stale: [], unresolvedMechanism: [], unownedPlan: [] });
+  });
+});
+
+describe('recovery-dependency-audit — holder-loss coverage of the REAL closed set', () => {
+  it('every on-loss value the goal schema admits has a declared disposition', () => {
+    // THE ANTI-ROT GATE for holder-required goals, and the reason this test
+    // imports the closed set rather than restating it: adding a value to
+    // GOAL_HOLDER_ON_LOSS is a one-line edit that reads as harmless, but each
+    // value is a promise about a recovery. This fails until the promise is
+    // declared here and judged.
+    expect(GOAL_HOLDER_ON_LOSS.length).toBeGreaterThan(0);
+    const gaps = findHolderLossGaps(GOAL_HOLDER_ON_LOSS);
+    expect(gaps.undeclared).toEqual([]);
+    expect(gaps.stale).toEqual([]);
+    expect(gaps.unresolvedMechanism).toEqual([]);
+    expect(gaps.unownedPlan).toEqual([]);
+  });
+
+  it('deactivate is derived-at-read — it has no executor to be fate-shared with', () => {
+    // The plan's whole thesis, pinned: the default disposition runs NOTHING.
+    // A future edit that gives it a sweeper has to change this line, which is
+    // exactly the review moment that was missing when the stale agent_modes row
+    // became the accepted answer.
+    expect(HOLDER_LOSS_DISPOSITIONS.deactivate.kind).toBe('derived-at-read');
+    expect(HOLDER_LOSS_DISPOSITIONS.deactivate.mechanism).toBeUndefined();
+  });
+
+  it('every disposition carries a reason — an unexplained one is just a label', () => {
+    for (const [onLoss, d] of Object.entries(HOLDER_LOSS_DISPOSITIONS)) {
+      expect(d.why.length, `${onLoss} has no why`).toBeGreaterThan(40);
+    }
+  });
+});
+
 describe('recovery-dependency-audit — the real table (pinned verdicts)', () => {
   const result = auditRecoveryDependencies();
   const byName = new Map(result.rows.map((r) => [r.name, r]));
