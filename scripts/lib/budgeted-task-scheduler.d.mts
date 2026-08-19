@@ -75,6 +75,8 @@ export interface TaskSchedulerStats extends TaskSchedulerObserved {
   lastMemAvailableMb: number | null;
 }
 
+export function formatTaskBudgetObservedMarker(stats: TaskSchedulerObserved): string;
+
 export interface ScheduledTaskResult<Task, Value> {
   task: Task;
   index: number;
@@ -195,4 +197,3 @@ export function formatTaskBudgetMarker(
   prefix?: string,
 ): string;
 
-export function formatTaskBudgetObservedMarker(stats: TaskSchedulerStats): string;
