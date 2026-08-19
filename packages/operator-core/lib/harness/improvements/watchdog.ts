@@ -1233,10 +1233,20 @@ export async function isShaAncestorOf(ancestorSha: string, descendantSha: string
  * that shape, which is why the simpler "is the last PASS newer than the last
  * FAIL" rule would NOT have caught it.
  *
- * Fails CLOSED on suppression (= keeps the signal) throughout: no pass sha, no
+ * (WI-39890) And for the same reason the CANDIDATE SET must be every passing
+ * sha in the window, not the newest one. This function used to test against
+ * `lastPassSha` alone — a sha selected by newest WALL-CLOCK, i.e. by the exact
+ * ordering the paragraph above rejects — so a window that contained a passing
+ * descendant still filed. Measured 2026-08-19: fail sha df89e330a7 vs a chosen
+ * `lastPassSha` of 7481dd033e that was committed three days EARLIER and is an
+ * ANCESTOR of it, while 6 of the 8 other passes in the window were descendants
+ * — one of which had passed this same test 37 minutes BEFORE the first failure.
+ * Three `major` items were filed for a test that had been green for 13h.
+ *
+ * Fails CLOSED on suppression (= keeps the signal) throughout: no pass shas, no
  * fail shas, an unknown sha, or a throwing check all mean "cannot show
- * supersession", and a signal is only ever dropped on a positive answer for
- * EVERY failing sha.
+ * supersession", and a signal is only ever dropped when EVERY failing sha is an
+ * ancestor of SOME passing sha.
  */
 export async function isSupersededByPassingDescendant(
   signal: WatchdogSignal,
