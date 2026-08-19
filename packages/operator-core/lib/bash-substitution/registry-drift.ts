@@ -199,6 +199,15 @@ export function diffRegistry(expected: ExpectedRow[], actual: SubstitutionRow[])
       continue;
     }
     const fields: FieldDrift[] = [];
+    // Tier is compared ONLY for a pair that declares one (D-046). Kept out of
+    // COMPARED_FIELDS deliberately: that list is unconditional by construction,
+    // and folding a conditional field into it would make the exclusion depend on
+    // a value read inside the loop rather than on a property of the row — which
+    // is how the earned-promotion invariant would eventually get broken by
+    // someone tidying the loop. See the ExpectedRow docstring for the split.
+    if (want.tier !== undefined && got.tier !== want.tier) {
+      fields.push({ field: 'tier', expected: want.tier, actual: String(got.tier ?? '') });
+    }
     for (const field of COMPARED_FIELDS) {
       // `advisory_text` is nullable in the table; normalise so a NULL row reads
       // as an empty-string drift rather than throwing or comparing `null` to a
@@ -237,6 +246,18 @@ export function formatDrift(drifts: RowDrift[]): string {
       lines.push('           row has no pair behind it: enforced, but resting on no sample (D-001)');
     } else {
       lines.push(`  STALE    ${d.intentLabel}`);
+      // A tier drift is not just another stale string: it is the ENFORCEMENT
+      // STRENGTH the PreToolUse gate applies, so `deny` vs `advise` is the
+      // difference between a blocked agent and an advisory. Say which direction
+      // it is wrong in — a reader who sees only "tier: db advise / pairs deny"
+      // still has to work out which of those is currently live (it is the db).
+      const tierDrift = d.fields.find((f) => f.field === 'tier');
+      if (tierDrift) {
+        lines.push(
+          `           ⚠ ENFORCING AT THE WRONG STRENGTH: the gate is applying '${tierDrift.actual}' ` +
+            `where the pair declares '${tierDrift.expected}'`,
+        );
+      }
       for (const f of d.fields) {
         lines.push(`           ${f.field}:`);
         lines.push(`             db    ${clip(f.actual)}`);
