@@ -502,8 +502,17 @@ export function formatTaskBudgetMarker(stats, prefix = 'AFFECTED_TESTS_SCHEDULER
 }
 
 export function formatTaskBudgetObservedMarker(stats) {
+  // EI-20801764054303492 route (a): the per-admission clamp is only trustworthy if a run can say
+  // whether it actually measured anything and whether that measurement ever bit. Appended ONLY
+  // when a reader was wired (memoryReadings != null) — a hand-built stats object, and every
+  // caller that passes no reader, keeps the exact legacy string.
+  const admission =
+    stats.memoryReadings == null
+      ? ''
+      : ` memReadings=${stats.memoryReadings} clamps=${stats.admissionClamps} ` +
+        `minAdmittedWorkers=${stats.minAdmittedWorkers}`;
   return (
     `AFFECTED_TESTS_SCHEDULER_OBSERVED maxWorkers=${stats.observedMaxWorkers} ` +
-    `maxMemoryMb=${stats.observedMaxMemoryMb} maxTasks=${stats.observedMaxTasks}`
+    `maxMemoryMb=${stats.observedMaxMemoryMb} maxTasks=${stats.observedMaxTasks}${admission}`
   );
 }
