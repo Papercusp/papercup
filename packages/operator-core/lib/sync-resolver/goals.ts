@@ -79,6 +79,17 @@ export interface GoalSummaryRow {
    *  `lost` (holders exist, all resolved, none alive) | `unknown` (at least one
    *  holder could not be resolved — NOT evidence of death). */
   holderLiveness: GoalHolderLiveness;
+  /**
+   * The status a reader should USE (P-004): `status` verbatim, or `'dormant'`
+   * when this goal requires a live holder and has none.
+   *
+   * DERIVED ON THIS READ, never persisted — `status` above keeps meaning
+   * exactly what a human last put in it. Render this one; the raw column is for
+   * showing what was DECLARED, not what is true now.
+   */
+  effectiveStatus: string | null;
+  /** True when `effectiveStatus` differs from `status` for the P-004 reason. */
+  deactivated: boolean;
   killCriterion: string | null;
   tripwires: GoalTripwire[];
   budgetCents: number | null;
@@ -269,8 +280,18 @@ function iso(v: string | Date | null): string | null {
  * the annotated shape the only reachable one moves that from a discipline
  * nobody can enforce to a thing the compiler will not let you skip.
  */
-type GoalSummaryRowBase = Omit<GoalSummaryRow, 'agents' | 'holderLiveness'> & {
+type GoalSummaryRowBase = Omit<
+  GoalSummaryRow,
+  'agents' | 'holderLiveness' | 'effectiveStatus' | 'deactivated'
+> & {
   agents: Array<{ ownerId: string; setAtMs: number }>;
+  /**
+   * Raw `goals.launch_settings`, carried only as far as `withHolderLiveness`,
+   * which needs it to resolve the holder POLICY (P-004). Deliberately absent
+   * from the public row: a board has no business re-deriving the policy itself,
+   * and `effectiveStatus` is the answer it actually wants.
+   */
+  launchSettingsRaw: unknown;
 };
 
 function toSummary(r: RawGoal): GoalSummaryRowBase {
