@@ -805,7 +805,7 @@ export default function AgentDossier({
                       signals.loop.stalled
                         ? '⚠ stalled'
                         : signals.loop.nextFireAt
-                          ? `next ${expiresIn(signals.loop.nextFireAt)}`
+                          ? `next ${formatTimeLeft(signals.loop.nextFireAt)}`
                           : null,
                     ]
                       .filter(Boolean)
@@ -1177,25 +1177,54 @@ export default function AgentDossier({
               // Waiting rows lead: a lock you are BLOCKED on is the one that
               // explains a stalled agent, and with a 3-row cap whichever kind
               // comes first is the kind you see. Held locks are the calm case.
-              ...locks.waiting.map((w) => (
-                <div key={w.ticketId} className="pc-dossier__lock">
-                  <span className="pc-dossier__lockmark pc-dossier__lockmark--wait">W</span>
-                  <span className="pc-dossier__file-path">{w.paths.join(', ')}</span>
-                  <span className="pc-dossier__lock-exp">
-                    {w.aheadCount === 0 ? 'next' : `${w.aheadCount} ahead`}
-                  </span>
-                  {w.blockedBy.length > 0 ? (
-                    <span className="pc-dossier__lock-intent">
-                      blocked by {w.blockedBy.map((b) => b.holderLabel || b.holder).join(', ')}
+              ...locks.waiting.map((w) => {
+                /* P-009. `queuedAt` and `waitUntil` have been on this DTO since
+                   it was written and neither has ever reached the screen — so
+                   the one row that explains a stalled agent said WHERE it is in
+                   the queue and never HOW LONG it has been there. "3 ahead" is
+                   the same sentence after 20 seconds and after 40 minutes, and
+                   only the second one is a problem.
+
+                   Each part is dropped, not defaulted, when its timestamp is
+                   missing: a wait we cannot date must say nothing rather than
+                   render "queued 0s", which is a number a reader would act on.
+                   `waitUntil` is when this TICKET gives up, which is why it can
+                   read "expired" while the agent is still queued. */
+                const queuedFor = formatElapsedSince(w.queuedAt);
+                const givesUp = formatTimeLeft(w.waitUntil);
+                const position = w.aheadCount === 0 ? 'next' : `${w.aheadCount} ahead`;
+                return (
+                  <div key={w.ticketId} className="pc-dossier__lock">
+                    <span className="pc-dossier__lockmark pc-dossier__lockmark--wait">W</span>
+                    <span className="pc-dossier__file-path">{w.paths.join(', ')}</span>
+                    <span
+                      className="pc-dossier__lock-exp"
+                      data-testid="dossier-lock-wait-exp"
+                      title={[
+                        `Queue position: ${position}`,
+                        queuedFor ? `Waiting ${queuedFor}` : 'No queued-at time on record for this ticket',
+                        givesUp === 'expired'
+                          ? 'This ticket’s wait window has already elapsed'
+                          : givesUp
+                            ? `Gives up in ${givesUp.replace(/ left$/, '')}`
+                            : 'No wait-until time on record for this ticket',
+                      ].join('\n')}
+                    >
+                      {[position, queuedFor, givesUp].filter(Boolean).join(' · ')}
                     </span>
-                  ) : null}
-                </div>
-              )),
+                    {w.blockedBy.length > 0 ? (
+                      <span className="pc-dossier__lock-intent">
+                        blocked by {w.blockedBy.map((b) => b.holderLabel || b.holder).join(', ')}
+                      </span>
+                    ) : null}
+                  </div>
+                );
+              }),
               ...locks.held.map((l) => (
                 <div key={l.path} className="pc-dossier__lock">
                   <span className="pc-dossier__lockmark pc-dossier__lockmark--held">L</span>
                   <span className="pc-dossier__file-path">{l.path}</span>
-                  <span className="pc-dossier__lock-exp">{expiresIn(l.expiresAt)}</span>
+                  <span className="pc-dossier__lock-exp">{formatTimeLeft(l.expiresAt)}</span>
                   {l.intent ? <span className="pc-dossier__lock-intent">{l.intent}</span> : null}
                 </div>
               )),
