@@ -8,7 +8,12 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, waitFor, fireEvent, within } from '@testing-library/react';
-import AgentDossier, { type AgentDetail, machineRowValue, pushedEventDetail } from '../AgentDossier';
+import AgentDossier, {
+  type AgentDetail,
+  machineRowValue,
+  pipelineNoteValue,
+  pushedEventDetail,
+} from '../AgentDossier';
 import type { RosterEntry } from '../SessionsRosterView';
 
 const syncState = vi.hoisted(() => ({
@@ -1225,6 +1230,38 @@ describe('AgentDossier', () => {
         <AgentDossier ownerId="su-1" entry={entry({ declaredUnclaimed: true })} onClose={() => {}} />,
       );
       expect(await findByTestId('dossier-declared-unclaimed')).toBeTruthy();
+    });
+
+    // ── P-014 ───────────────────────────────────────────────────────────────
+    it('(P-014) renders the plan author’s own "now next" prose alongside the computed next item', async () => {
+      // These are DIFFERENT claims and can disagree: `now next` is what the plan
+      // author wrote is coming, `next up` is what the scheduler would actually
+      // hand out. Collapsing them would silently pick one and present it as both.
+      const { findByText, container } = render(
+        <AgentDossier ownerId="su-1" entry={entry()} onClose={() => {}} />,
+      );
+      await findByText('Plan');
+      const lane = container.querySelector('#pc-dossier-lane')! as HTMLElement;
+      expect(within(lane).getByText('merge B/C into one band')).toBeTruthy();
+      expect(within(lane).getByText(/P-004 — merge B\/C/)).toBeTruthy();
+    });
+
+    it('(P-014) renders the pipeline line when the gate is red, and stays silent when it is green', async () => {
+      withSignals({
+        pipeline: { gate: 'red', deploy: 'behind', consecutiveReds: 3, failingFiles: ['a.test.ts'] },
+      });
+      const { findByTestId, unmount } = render(
+        <AgentDossier ownerId="su-1" entry={entry()} onClose={() => {}} />,
+      );
+      const note = await findByTestId('dossier-pipeline');
+      expect(note.getAttribute('data-severity')).toBe('bad');
+      expect(note.textContent).toContain('a.test.ts');
+      unmount();
+
+      withSignals({ pipeline: { gate: 'green', deploy: 'current' } });
+      const clean = render(<AgentDossier ownerId="su-1" entry={entry()} onClose={() => {}} />);
+      await clean.findByText('Plan');
+      expect(clean.queryByTestId('dossier-pipeline')).toBeNull();
     });
 
     it('(b) shows a declared-but-unawaited gate INSIDE Waiting on, so both halves are read together', async () => {
