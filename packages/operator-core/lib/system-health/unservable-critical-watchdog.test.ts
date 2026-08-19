@@ -149,8 +149,9 @@ describe('runUnservableCriticalSweepOnce', () => {
     expect(res).toMatchObject({ scanned: 2, escalated: 2, failed: 0, skipped: false });
   });
 
-  it('one failing escalate does not abort the batch — the rest still report', async () => {
+  it('one failing escalate does not abort the batch — the rest still report, and the failure is logged not swallowed', async () => {
     const seen: string[] = [];
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const res = await runUnservableCriticalSweepOnce(sql, {
       flagEnabled: async () => true,
       readRows: async () => [
@@ -165,6 +166,12 @@ describe('runUnservableCriticalSweepOnce', () => {
     });
     expect(seen).toEqual(['good']);
     expect(res).toMatchObject({ scanned: 2, escalated: 1, failed: 1, skipped: false });
+    // A silently-dropped escalation would leave the stranded item invisible AND
+    // leave no trace that it was meant to be reported — assert the warning names
+    // the item, so a future refactor cannot quietly swallow it.
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0][0])).toContain('bad');
+    warn.mockRestore();
   });
 
   it('rows that do not meet the thresholds are scanned but not escalated', async () => {
