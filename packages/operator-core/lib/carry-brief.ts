@@ -124,6 +124,19 @@ export interface CarryBrief {
     body: string;
     sourceRef?: string | null;
     sourceProvenance?: FactSourceProvenance | null;
+    /**
+     * popup-agent-state-coverage-2026-08-18 P-011: the CONTESTED mark from
+     * `markContestedFacts` — other agents have already written to this key, or a
+     * prior version was settled UNDECIDABLE.
+     *
+     * It rides HERE rather than being recomputed downstream because the fold's
+     * cost property is one BATCHED query for the whole fact set (contested-fold.ts);
+     * a per-consumer recompute would multiply it by the number of surfaces. Absent
+     * (not false) when the key is uncontested — MARK, NEVER SUPPRESS is the house
+     * rule for this family, and an explicit `false` would invite a surface to render
+     * a reassuring "uncontested" badge nobody measured.
+     */
+    contested?: FactContestMark;
   }>;
   /**
    * P-026 leg (b) (WI-5141): embedding staleness verdicts for `facts` above —
@@ -309,7 +322,13 @@ export interface BuildCarryBriefOpts {
     ownerId: string,
     workspaceId: string | undefined,
   ) => Promise<
-    Array<{ key: string; body: string; sourceRef?: string | null; sourceProvenance?: FactSourceProvenance | null }>
+    Array<{
+      key: string;
+      body: string;
+      sourceRef?: string | null;
+      sourceProvenance?: FactSourceProvenance | null;
+      contested?: FactContestMark;
+    }>
   >;
   /** P-026 leg (b) (WI-5141): injectable staleness checker — defaults to the
    *  real {@link checkCarriedFactsStaleness} (which itself resolves the real
@@ -553,11 +572,22 @@ export async function buildCarryBrief(
           { workspaceId: ws, limitPerSelector: CARRY_BRIEF_MAX_FACTS },
           opts.sql,
         );
-        return facts.map((f) => ({
+        // P-011: fold the CONTESTED mark HERE — on the full `AgentFact` rows,
+        // BEFORE the narrowing below throws away `scope`/`scopeRef`/`createdBy`,
+        // which are exactly the fields `markContestedFacts` groups and attributes
+        // by. Doing it downstream would mean re-reading the store to recover them.
+        // It is one batched query for the whole set, self-limiting (it returns the
+        // input untouched when there are no facts and when no superseded rows come
+        // back), and internally try/caught — a fold failure degrades to unmarked
+        // facts, never to a carry brief with no facts in it.
+        const { markContestedFacts } = await import('./agent-tools/facts/contested-fold');
+        const marked = await markContestedFacts(facts);
+        return marked.map((f) => ({
           key: f.key,
           body: f.body,
           sourceRef: f.sourceRef,
           sourceProvenance: f.sourceProvenance,
+          ...(f.contested ? { contested: f.contested } : {}),
         }));
       });
     brief.facts = (await listOwnerFacts(ownerId, workspaceId)).slice(0, CARRY_BRIEF_MAX_FACTS);
