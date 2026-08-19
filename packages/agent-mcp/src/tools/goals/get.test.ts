@@ -71,8 +71,20 @@ const GOAL_ROW = (over: Record<string, unknown> = {}): Record<string, unknown> =
   parentId: null,
   budgetCents: 9999,
   workspaceId: 'default',
+  status: 'active',
+  metadata: null,
   ...over,
 });
+
+/** A goal paused deliberately, with the P-005/D-009 record `goals:update` writes. */
+const PAUSED_ROW = () =>
+  GOAL_ROW({
+    status: 'paused',
+    metadata: {
+      pause: { reason: 'owner holding the spend', pausedBy: 'su-abc', pausedAtMs: 1_755_000_000_000 },
+      spentCents: 4200,
+    },
+  });
 
 beforeEach(() => {
   fixtureQueue = [];
@@ -98,6 +110,8 @@ describe('goals:get — summary skips the children query (Gap 11)', () => {
     expect(res.data).toEqual({
       id: 'g-1',
       title: 'Ship v1',
+      status: 'active',
+      pause: null,
       actionable: true,
       premiseInvalidated: false,
     });
