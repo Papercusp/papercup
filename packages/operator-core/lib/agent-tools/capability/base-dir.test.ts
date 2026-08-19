@@ -187,8 +187,15 @@ describe('EI-20881501070735530 — the base-dir fallback is not re-implemented p
   }
 
   it('the detector fires on the defect shape and stays silent on the fixed shape', () => {
-    expect(RAW_FALLBACK.test(DEFECT_CONTROL)).toBe(true);
-    expect(RAW_FALLBACK.test(FIXED_CONTROL)).toBe(false);
+    expect(RAW_FALLBACK.test(stripComments(DEFECT_CONTROL))).toBe(true);
+    expect(RAW_FALLBACK.test(stripComments(FIXED_CONTROL))).toBe(false);
+  });
+
+  it('comment-stripping hides a DOCUMENTED occurrence without hiding a live one', () => {
+    expect(RAW_FALLBACK.test(stripComments(`// we used to write ${DEFECT_CONTROL}`))).toBe(false);
+    expect(RAW_FALLBACK.test(stripComments(`/**\n * history: ${DEFECT_CONTROL}\n */`))).toBe(false);
+    // …and the same file with the defect ALSO present as code is still caught.
+    expect(RAW_FALLBACK.test(stripComments(`// history: ${DEFECT_CONTROL}\n${DEFECT_CONTROL}`))).toBe(true);
   });
 
   it('scans a non-empty set of agent-tool sources (a zero-file scan is a broken probe, not a pass)', () => {
@@ -197,7 +204,7 @@ describe('EI-20881501070735530 — the base-dir fallback is not re-implemented p
 
   it('no agent-tool source resolves its own base dir with `ctx.projectDir ?? process.cwd()`', () => {
     const offenders = sourceFiles(agentToolsRoot)
-      .filter((f) => RAW_FALLBACK.test(readFileSync(f, 'utf8')))
+      .filter((f) => RAW_FALLBACK.test(stripComments(readFileSync(f, 'utf8'))))
       .map((f) => relative(agentToolsRoot, f));
     expect(
       offenders,
