@@ -109,6 +109,25 @@ export interface AgentOrdersFact {
   sourceRef?: string | null;
   /** Set when the fact's verified typed source has drifted since assert time. */
   possiblyStale?: boolean;
+  /**
+   * P-011: other agents already wrote to this key, or a prior version was settled
+   * UNDECIDABLE (contested-fold.ts). ORTHOGONAL to `possiblyStale`, which is why
+   * both render: `possiblyStale` says the fact's own source moved underneath it,
+   * `contested` says people disagreed about the answer. A fact can be either,
+   * both, or neither, and collapsing them into one "suspect" badge would lose
+   * which question the reader has to go settle.
+   *
+   * ABSENT when uncontested — never `false`. This surface must not grow a
+   * reassuring "uncontested" badge: the fold only looks at superseded rows, so
+   * absence means "no dispute in the version chain", not "verified agreed".
+   */
+  contested?: {
+    settledUndecidable: boolean;
+    settledBy: string | null;
+    priorAuthors: string[];
+    priorVersions: number;
+    note: string;
+  };
 }
 
 export interface AgentOrdersHeldItem {

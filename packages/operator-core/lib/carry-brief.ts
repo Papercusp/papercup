@@ -41,6 +41,9 @@ import { harnessOfScope } from './work-item-scope';
 import { renderOwnerDirectivesBlock, type OwnerDirectiveRow } from './owner-directives';
 import type { QueryHandle } from './ambient-push';
 import { DEAD_END_KEY_PREFIX, type FactSourceProvenance } from './agent-facts/store';
+// TYPE-only: the runtime `markContestedFacts` is dynamically imported at its one
+// call site below, matching how this module already defers `foldFacts`.
+import type { FactContestMark } from './agent-tools/facts/contested-fold';
 import { capPreservingOperative } from './operative-clause';
 import {
   checkCarriedFactsStaleness,
