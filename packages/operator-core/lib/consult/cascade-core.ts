@@ -176,6 +176,115 @@ export async function advanceCascade(
   const next = nextIdx < selected.length ? selected[nextIdx] : null;
 
   if (!next) {
+    // WI-39861 min-ANSWERS refill (ONE bounded round): the menu is exhausted.
+    // If fewer substantive ANSWERS than selection.min were collected (counting
+    // the just-appended event) and the refill round has not run, extend the
+    // menu from the snapshot pool's untried route-time-live remainder instead
+    // of going terminal. It lives HERE — shared by all three triggers
+    // (reply/decline/expiry) — so the semantics cannot drift. The
+    // selection.refill stamp IS the one-round guard: a second exhaustion finds
+    // it present and falls through to terminal.
+    const snap =
+      typeof params.routing === 'string'
+        ? (JSON.parse(params.routing) as Record<string, unknown> | null)
+        : (params.routing as Record<string, unknown> | null);
+    const sel = (snap?.selection ?? null) as
+      | ({ min?: unknown; selected?: unknown; refill?: unknown } & Record<string, unknown>)
+      | null;
+    const answers = digest.filter((e) => e.kind === 'answer').length;
+    const min = typeof sel?.min === 'number' ? sel.min : 0;
+    if (snap && sel && min > 0 && answers < min && !sel.refill) {
+      const tried = new Set<string>([...selected.map((e) => e.ownerId), ...digest.map((e) => e.ownerId)]);
+      const floor = typeof snap.floor === 'number' ? (snap.floor as number) : Number.POSITIVE_INFINITY;
+      const simFloor = typeof snap.simFloor === 'number' ? (snap.simFloor as number) : Number.POSITIVE_INFINITY;
+      const pool = (Array.isArray(snap.candidates) ? snap.candidates : []).filter(
+        (c): c is { ownerId: string; score?: number; signals?: { similarity?: number }; liveness?: string } =>
+          Boolean(c) &&
+          typeof (c as { ownerId?: unknown }).ownerId === 'string' &&
+          !tried.has((c as { ownerId: string }).ownerId) &&
+          !DEAD_RESPONDER_STATES.has(String((c as { liveness?: unknown }).liveness ?? '')),
+      );
+      const add: CascadeSelectionEntry[] = pool.slice(0, Math.max(0, min - answers)).map((c) => {
+        const score = typeof c.score === 'number' ? c.score : 0;
+        const similarity = typeof c.signals?.similarity === 'number' ? c.signals.similarity : 0;
+        return {
+          ownerId: c.ownerId,
+          // Honest floor-vs-minimum recomputed from the snapshot's own floors
+          // (D-002: labeled, never silent) — a refill pick below them is a
+          // best-available fill, not a costumed expert.
+          via: similarity >= simFloor && score >= floor ? 'floor' : 'minimum',
+          score,
+          similarity,
+          liveness: c.liveness ?? 'unknown',
+          refill: true,
+        };
+      });
+      if (add.length > 0) {
+        const rawSelected = Array.isArray(sel.selected) ? (sel.selected as unknown[]) : [];
+        const updatedSnap = {
+          ...snap,
+          selection: {
+            ...sel,
+            selected: [...rawSelected, ...add],
+            refill: {
+              at: params.nowIso,
+              added: add.map((a) => a.ownerId),
+              reason: `cascade exhausted with ${answers} answer(s) < min ${min}`,
+            },
+          },
+        };
+        // Cursor lands on the FIRST refill entry: in the selectionFromRouting
+        // view the adds append after the `selected.length` well-formed entries.
+        const cursorIdx = selected.length;
+        const first = add[0]!;
+        const expiresAt = new Date(
+          Date.parse(params.nowIso) +
+            (params.latencyContract === 'hard-blocked' ? HARD_BLOCKED_EXPIRY_MS : PROCEED_EXPIRY_MS),
+        ).toISOString();
+        const willAttempt = Boolean(reach);
+        const wrote = (await sql`
+          UPDATE harness_shared.consult_state
+             SET cascade_cursor = ${cursorIdx},
+                 responder_id = ${first.ownerId},
+                 state = ${params.stateOnAdvance},
+                 expires_at = ${expiresAt}::timestamptz,
+                 wakes_used = wakes_used + ${willAttempt ? 1 : 0},
+                 cascade_digest = ${JSON.stringify(digest)}::jsonb,
+                 routing = ${sql.json(updatedSnap as never)},
+                 updated_at = ${params.nowIso}::timestamptz
+           WHERE workspace_id = ${params.workspaceId} AND conversation_id = ${params.conversationId}
+             AND cascade_cursor = ${params.cascadeCursor} AND closed_at IS NULL
+          RETURNING conversation_id
+        `) as unknown as Array<{ conversation_id: string }>;
+        if (wrote.length === 0) return { advanced: false, exhausted: false, raced: true, next: null, woke: 0 };
+        let woke = 0;
+        if (reach) {
+          const menuSize = selected.length + add.length;
+          const r = await reach({
+            responder: first.ownerId,
+            conversationId: params.conversationId,
+            summary: `🧭 consult cascade (reviewer ${cursorIdx + 1}/${menuSize}, min-answers refill): ${params.question.replace(/\s+/g, ' ').slice(0, 72)}`,
+            body: cascadeWakeBody({
+              question: params.question,
+              conversationId: params.conversationId,
+              position: cursorIdx + 1,
+              menuSize,
+              next: first,
+              digest,
+            }),
+          });
+          woke = r.woke;
+        }
+        return {
+          advanced: true,
+          exhausted: false,
+          raced: false,
+          next: { ownerId: first.ownerId, via: first.via },
+          woke,
+          refilled: true,
+        };
+      }
+    }
     const wrote = (await sql`
       UPDATE harness_shared.consult_state
          SET cascade_digest = ${JSON.stringify(digest)}::jsonb,
