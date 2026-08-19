@@ -565,7 +565,8 @@ export async function processKnownOpenAging(
         `Known-open aging escalation #${dec.escalationNumber}: watchdog key \`${dec.watchdogKey}\` has fired ` +
           `continuously for ~${hours(dec.openForMs)} (threshold ${hours(dec.thresholdMs)}${dec.infra ? ', infra-class' : ''}). ` +
           (dec.bumpTo ? `Severity bumped ${dec.severity} → ${dec.bumpTo}. ` : '') +
-          `Owner escalated via coord (re-escalation at most weekly while it keeps firing).`,
+          `Owner escalated via coord (re-escalation at most weekly while it keeps firing).` +
+          currentEvidenceBlock(evidenceByKey.get(dec.watchdogKey)),
       );
     } catch (e) {
       console.warn(`[improvement-watchdog] aging comment failed for ${dec.issueId}: ${e instanceof Error ? e.message : e}`);
