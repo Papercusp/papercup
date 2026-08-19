@@ -39,7 +39,7 @@
 import type { Sql } from 'postgres';
 import type { PostResult } from '../agent-tools/coordination/conversations-core';
 import { DEAD_RESPONDER_STATES, consultParkKey as parkKey } from './get-feedback-core';
-import { advanceCascade, makeDigestEntry, selectionFromRouting, type CascadeEventKind } from './cascade-core';
+import { advanceCascade, digestFromRow, makeDigestEntry, selectionFromRouting, type CascadeEventKind } from './cascade-core';
 
 export const RESPONDER_REPLY_KINDS = ['answer', 'clarifying_question', 'new_fact'] as const;
 export const REQUESTER_REPLY_KINDS = ['question', 'new_fact'] as const;
@@ -182,7 +182,9 @@ function gateCommon(
       hint:
         row.state === 'declined'
           ? "This consult's cascade menu is exhausted (terminal decline) — re-call consult:get_feedback (optionally exclude the decliners) for a fresh route."
-          : `This consult is '${row.state}' and takes no further posts.`,
+          : row.state === 'expired'
+            ? 'This consult EXPIRED (cascade exhausted) and takes no further replies — but the REQUESTER may still record a late disposition with consult:close (WI-39862: e.g. outcome ‘answered’ citing the collected answers).'
+            : `This consult is '${row.state}' and takes no further posts.`,
     };
   }
   return { row };
@@ -215,8 +217,9 @@ export interface ConsultReplyResult {
   };
   /** Present on a cascade-advancing perspective reply (D-005): who was woken
    * next with the feedback-so-far digest, or exhausted:true when this
-   * selectee was the menu's last. */
-  cascade?: { advanced_to: string | null; exhausted: boolean; woke: number };
+   * selectee was the menu's last. refilled marks the WI-39861 min-ANSWERS
+   * refill round (the menu was extended once because answers < min). */
+  cascade?: { advanced_to: string | null; exhausted: boolean; woke: number; refilled?: boolean };
   hint: string;
 }
 
@@ -366,12 +369,17 @@ export async function consultReplyCore(
     // moved the chain first — its advance stands and already woke the next
     // selectee, so this reply has no cascade consequence to report.
     if (!adv.raced) {
-      cascade = { advanced_to: adv.next?.ownerId ?? null, exhausted: adv.exhausted, woke: adv.woke };
+      cascade = {
+        advanced_to: adv.next?.ownerId ?? null,
+        exhausted: adv.exhausted,
+        woke: adv.woke,
+        ...(adv.refilled ? { refilled: true } : {}),
+      };
     }
   }
   const cascadeNote = cascade
     ? cascade.advanced_to
-      ? ` Cascade advanced (D-005): ${cascade.advanced_to} was woken next with the feedback so far.`
+      ? ` Cascade advanced (D-005): ${cascade.advanced_to} was woken next with the feedback so far.${cascade.refilled ? ' (min-ANSWERS refill, WI-39861: the menu was extended once — answers collected < selection.min.)' : ''}`
       : ' Cascade menu exhausted — you were the last selectee.'
     : '';
 
@@ -420,8 +428,9 @@ export interface ConsultDeclineResult {
   /** 'awaiting_responder' when the cascade advanced to the next selectee
    * (D-005 — the consult stays open); 'declined' only on menu exhaustion. */
   state: 'awaiting_responder' | 'declined';
-  /** Cascade consequence of this decline (D-005). */
-  cascade: { advanced_to: string | null; exhausted: boolean; woke: number };
+  /** Cascade consequence of this decline (D-005). refilled marks the
+   * WI-39861 min-ANSWERS refill round. */
+  cascade: { advanced_to: string | null; exhausted: boolean; woke: number; refilled?: boolean };
   /** Route-time candidate refs — decliner excluded, route-time-dead filtered
    * (retrieval fallback; the SERVER drains the selected menu itself). */
   remaining_candidates: Array<{ ownerId: string; score: number; liveness: string }>;
@@ -500,16 +509,33 @@ export async function consultDeclineCore(
       ok: true,
       post_id: postId,
       state: 'awaiting_responder',
-      cascade: { advanced_to: adv.next?.ownerId ?? null, exhausted: false, woke: adv.woke },
+      cascade: {
+        advanced_to: adv.next?.ownerId ?? null,
+        exhausted: false,
+        woke: adv.woke,
+        ...(adv.refilled ? { refilled: true } : {}),
+      },
       remaining_candidates: remaining,
-      hint: `Declined. Cascade advanced (D-005): ${adv.next?.ownerId ?? 'the next selectee'} was woken with the feedback so far — the consult stays open.`,
+      hint: `Declined. Cascade advanced (D-005): ${adv.next?.ownerId ?? 'the next selectee'} was woken with the feedback so far — the consult stays open.${adv.refilled ? ' (min-ANSWERS refill, WI-39861: the menu was extended once — answers collected < selection.min.)' : ''}`,
     };
   }
 
+  // WI-39862: a decline-exhaustion terminal that still COLLECTED answers says
+  // so on its outcome — "declined" alone conflates "nobody helped" with "the
+  // last selectee declined after real answers landed".
+  const declineAnswerEvents = digestFromRow(row.cascade_digest).filter((e) => e.kind === 'answer');
   await sql`
     UPDATE harness_shared.consult_state
        SET state = 'declined',
-           outcome = ${JSON.stringify({ reason })}::jsonb,
+           outcome = ${JSON.stringify({
+             reason,
+             ...(declineAnswerEvents.length > 0
+               ? {
+                   answers: declineAnswerEvents.length,
+                   answered_by: [...new Set(declineAnswerEvents.map((e) => e.ownerId))],
+                 }
+               : {}),
+           })}::jsonb,
            closed_at = ${now}::timestamptz,
            updated_at = ${now}::timestamptz
      WHERE workspace_id = ${req.workspaceId} AND conversation_id = ${req.conversationId}
