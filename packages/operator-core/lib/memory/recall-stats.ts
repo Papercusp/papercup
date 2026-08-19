@@ -987,9 +987,23 @@ export async function readRecallHealthByPool(
         -- explicit [] are the same condition (asked for nothing), so coalesce
         -- rather than letting NULL fall out of the count.
         jsonb_array_length(coalesce(p.value -> 'scopes', '[]'::jsonb)) = 0
-                                                AS empty_scope
+                                                AS empty_scope,
+        -- Active memories THIS recall could reach: the sum over the scope keys
+        -- it actually asked under. Summed (not averaged) because a recall asks
+        -- all of its keys at once, so their corpora pool. NULL — not 0 — when
+        -- it asked under NO scope: that is "unknown", and conflating it with a
+        -- real empty corpus would let gate-3's population drag gate-2's
+        -- denominator toward zero and re-tighten the bar on exactly the rows
+        -- that were never queried at all.
+        rc.row_corpus                           AS row_corpus
       FROM harness_shared.memory_recall_stats s
       CROSS JOIN LATERAL jsonb_each(s.pools) AS p(key, value)
+      LEFT JOIN LATERAL (
+        SELECT CASE WHEN count(sk.scope) = 0 THEN NULL
+                    ELSE sum(coalesce(c.n, 0))::int END      AS row_corpus
+        FROM jsonb_array_elements_text(coalesce(p.value -> 'scopes', '[]'::jsonb)) AS sk(scope)
+        LEFT JOIN corpus c ON c.scope_key = sk.scope
+      ) rc ON true
       WHERE s.pools IS NOT NULL
         AND s.created_at >= now() - make_interval(hours => ${hours}::int)
         AND (${poolSurfaceFilter}::text IS NULL OR s.surface = ${poolSurfaceFilter}::text)
@@ -1002,6 +1016,12 @@ export async function readRecallHealthByPool(
       count(*) FILTER (WHERE hits = 0)::int                  AS zero_hits,
       count(*) FILTER (WHERE budget > 0 AND hits >= budget)::int AS saturated,
       count(*) FILTER (WHERE empty_scope)::int                AS empty_scope,
+      -- Recall-WEIGHTED: avg over rows, so a slice whose scope set is dominated
+      -- by one busy key is described by THAT key's corpus, not by the unweighted
+      -- mean of every key it ever touched. Measured 2026-08-19: initialize/harness
+      -- spans 26 distinct scope keys of which 21 hold nothing, so an unweighted
+      -- median reads 0 while ~all of its 30k recalls ask a 1,975-memory scope.
+      avg(row_corpus)                                        AS corpus_active,
       percentile_cont(0.5) WITHIN GROUP (ORDER BY hits)      AS hits_p50,
       percentile_cont(0.5) WITHIN GROUP (ORDER BY top)
         FILTER (WHERE top IS NOT NULL)                       AS top_p50,
@@ -1033,6 +1053,7 @@ export async function readRecallHealthByPool(
       scopes: Array.isArray(r.scope_keys) ? (r.scope_keys as unknown[]).map(String) : [],
       emptyScope,
       emptyScopeRate: recalls > 0 ? emptyScope / recalls : 0,
+      corpusActive: r.corpus_active == null ? null : Number(r.corpus_active),
     };
   });
 }
