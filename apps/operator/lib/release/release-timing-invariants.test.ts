@@ -19,6 +19,10 @@
  * move, and move the OTHERS to keep the ordering — the whole point is that these four
  * numbers are one decision, not four.
  */
+import { readFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
 import { describe, expect, it } from "vitest";
 
 import { DEFAULT_STALE_ROUTINE_FIRE_NO_OUTPUT_MS } from "@papercusp/operator-core/lib/dbos/dbos-executor-reaper";
@@ -318,5 +322,58 @@ describe("green-gate schedule phase (WI-39841)", () => {
       GREEN_CHECKPOINT_FIRE_PERIOD_MS;
     expect(historicalSlackMs).toBe(0);
     expect(historicalSlackMs).toBeLessThan(GREEN_CHECKPOINT_PHASE_MARGIN_MS);
+  });
+});
+
+/**
+ * The phase guard above is only as good as its premise: that GREEN_CHECKPOINT_CRON and
+ * GREEN_CHECKPOINT_FIRE_PERIOD_MS describe the schedule the gate is ACTUALLY seeded with.
+ *
+ * That premise used to be prose. The cron was a bare literal re-typed at each seed site,
+ * with a fourth copy exported for this file to read — so a seed site edited on its own
+ * left every assertion here green while the real gate moved. Same failure mode as the
+ * 55m→120m retune that stranded the DBOS reaper (see this file's header): a number that
+ * looks like the source of truth and is really a copy.
+ *
+ * These two tests close that gap from both ends — the constant must describe an hourly
+ * cron, and no seed site may carry its own copy of it.
+ */
+describe("green-gate schedule is single-sourced (WI-39841 follow-on)", () => {
+  /** Repo root, from apps/operator/lib/release/<this file>. */
+  const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
+
+  /**
+   * Every site that writes the green-checkpoint routine's trigger_config. Read with
+   * readFileSync deliberately: a path that no longer resolves THROWS, rather than
+   * scanning nothing and reporting a clean pass — the false-absence shape that makes a
+   * source-scanning guard worse than no guard at all.
+   */
+  const SEED_SITES = [
+    "packages/operator-core/lib/harness/routines/seed-hive-release-routines.ts",
+    "apps/operator/lib/release/seed-release-routines.ts",
+    "apps/operator/lib/release/retrofit-hive-to-gate.ts",
+  ] as const;
+
+  it("states a cron that really does fire once per GREEN_CHECKPOINT_FIRE_PERIOD_MS", () => {
+    // `sec min * * * *` — a fixed second and minute, every hour, every day. Anything else
+    // (a step, a list, a range, a narrower day/month field) fires on a DIFFERENT period,
+    // and the whole phase calculation above is then computed against a fiction. This is
+    // deliberately a shape assertion and not a cron parser: the useful outcome is that
+    // someone changing the schedule is forced to come here and re-derive the period, not
+    // that this file learns to evaluate arbitrary crons.
+    expect(GREEN_CHECKPOINT_CRON).toMatch(/^\d{1,2} \d{1,2} \* \* \* \*$/);
+    expect(GREEN_CHECKPOINT_FIRE_PERIOD_MS).toBe(60 * MIN);
+  });
+
+  it("is the ONLY place the gate's cron literal appears", () => {
+    const offenders = SEED_SITES.filter((site) =>
+      readFileSync(join(repoRoot, site), "utf8").includes(GREEN_CHECKPOINT_CRON),
+    );
+
+    // Note what is NOT asserted: that the literal appears nowhere in the repo.
+    // `autoloop-release-readiness-monitor` independently chose the same slot and is
+    // deliberately not wired to this constant (see its seed script) — a repo-wide ban
+    // would force a wrong coupling to stay green.
+    expect(offenders).toEqual([]);
   });
 });
