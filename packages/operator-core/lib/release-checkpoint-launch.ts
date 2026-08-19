@@ -931,13 +931,15 @@ export function checkActiveCheckpointRun(
  *
  *  ⚠ THIS NUMBER IS NOT FREE TO PICK — it is pinned to GREEN_CHECKPOINT_SUITE_TIMEOUT_MS
  *  (release/green-checkpoint-schedule.ts) by release-timing-invariants.test.ts, which is
- *  where the whole gate timing chain is enforced. It is written as a literal here rather than
- *  imported from that module ON PURPOSE: release-actions.ts calls registerSystemAction at
- *  module scope and pulls a large graph (pipeline-events, release-checkpoint-config, dev-data),
- *  so importing it into this low-level launch helper would drag that registration side effect
- *  into every consumer of this file. The existing chain constants already live in three files
- *  across two workspaces and are coupled by that test rather than by imports, for the same
- *  reason. If you retune the suite budget, the test tells you this must move with it.
+ *  where the whole gate timing chain is enforced. It was written as a literal here for a
+ *  real reason: release-actions.ts, its old home, calls registerSystemAction at module scope
+ *  and pulls a large graph (pipeline-events, release-checkpoint-config, dev-data), so
+ *  importing it into this low-level launch helper would have dragged that registration side
+ *  effect into every consumer of this file. That is fixed at the source — the budget now
+ *  lives in release/green-checkpoint-schedule.ts, a leaf with no imports — so this and the
+ *  other former copies IMPORT it. Retuning the suite budget moves them automatically; the
+ *  test now guards the ORDERING of the genuinely-different numbers in the chain, which is
+ *  the part no import can enforce.
  *
  *  It was a literal `20 * 60` for months, which is SIX TIMES tighter than the budget the
  *  system actually grants a run, so
