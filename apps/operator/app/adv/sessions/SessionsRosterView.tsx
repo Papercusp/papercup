@@ -81,6 +81,20 @@ export interface RosterEntry {
    *  present as an empty pane (WI-2680). Optional for the wire-skew reason
    *  above; absent means the roster could not tell us, never "unresolvable". */
   thinkingResolvable?: boolean;
+  /** The declared-but-unclaimed smell (adv-roster.ts:222, written at :722):
+   *  this agent DECLARES a plan, holds no claim backing that plan, and has no
+   *  armed loop that would pull one. It is the durable, per-agent equivalent of
+   *  what `coord:orient`'s `laneClaim.warning` tells the agent itself — "you do
+   *  NOT hold this lane" — measured from claim state rather than from the
+   *  arguments of one orient call, which is why the viewer can read it at all
+   *  (plan D-012).
+   *
+   *  Note the writer's `!loopArmed` term: a self-waking agent is exempt by
+   *  construction, so a `true` here is narrow and always worth saying.
+   *
+   *  Optional for the wire-skew reason above; `true` is MEASURED and speaks,
+   *  `false` and absent both stay silent (D-011). */
+  declaredUnclaimed?: boolean;
   pid: number | null;
   startedAt: string;
   heartbeatAt: string;

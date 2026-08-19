@@ -1038,6 +1038,35 @@ export default function AgentDossier({
               {signals ? 'Not working on a plan.' : '—'}
             </div>
           )}
+          {/* ── declared-but-unclaimed (P-013) ────────────────────────────────
+              The durable, viewer-readable equivalent of what `coord:orient`'s
+              `laneClaim.warning` tells the AGENT about itself. That field could
+              not come here: it is computed from the `planItems` argument of one
+              orient call and never persisted, so a viewer has no `requested`
+              set to compare against (plan D-012). `declaredUnclaimed` measures
+              the same condition from claim state instead, which is why it is on
+              a roster row at all.
+
+              Rendered LAST in the section on purpose: it qualifies the plan
+              rows above it — the agent says it is on this plan, and nothing in
+              the lane is actually assigned to it.
+
+              `=== true` only. D-011: a `true` is MEASURED and speaks; `false`
+              and an absent field (an older payload) are both silent, and an
+              "everything is claimed" inverse is never invented — the writer
+              exempts loop-armed agents by construction, so silence here means
+              "no smell measured", not "this agent holds its lane". */}
+          {entry.declaredUnclaimed === true ? (
+            <div
+              className="pc-dossier__note"
+              style={{ color: 'var(--warn, #fbbf24)' }}
+              data-testid="dossier-declared-unclaimed"
+            >
+              ⚠ Declares this plan but holds no claim on it — nothing in the lane is assigned to
+              this agent, and it has no armed loop that would pull work. Its own orient reports
+              this as “you do NOT hold this lane”.
+            </div>
+          ) : null}
         </section>
       ) : null}
 
