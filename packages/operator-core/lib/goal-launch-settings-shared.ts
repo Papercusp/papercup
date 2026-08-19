@@ -64,3 +64,57 @@ export type GoalLaunchRole = (typeof GOAL_LAUNCH_ROLES)[number];
 export function isGoalLaunchRole(value: unknown): value is GoalLaunchRole {
   return typeof value === 'string' && (GOAL_LAUNCH_ROLES as readonly string[]).includes(value);
 }
+
+/**
+ * What happens to a HOLDER-REQUIRED goal when its holder stops being live
+ * (goal-live-holder-guarantee-2026-08-18 P-002, D-001).
+ *
+ * The closed set lives HERE, beside the launch slots, for two reasons. The first
+ * is this file's original one: it is import-free, so a client surface can render
+ * the choices without dragging `@papercusp/db-org` into the browser graph. The
+ * second is new — `recovery-dependency-audit.ts` must enumerate these values to
+ * assert that every one of them has a DECLARED disposition, and an audit that
+ * had to value-import the server module to learn the set would be paying a PG
+ * dependency to read two strings.
+ *
+ *  - `deactivate` — the goal stops reading `active`, derived at READ time from
+ *    the holder resolver. No runtime actor: nothing polls, nothing sweeps, and
+ *    there is no cached answer left to go stale. This is the whole thesis of the
+ *    plan, which is why it is the default.
+ *  - `respawn` — something relaunches a holder. That is a real actor spending
+ *    real money unattended, so D-001 makes a goal EARN it by being named. The
+ *    audit's disposition table is what stops the actor from being added without
+ *    being declared.
+ */
+export const GOAL_HOLDER_ON_LOSS = ['deactivate', 'respawn'] as const;
+
+export type GoalHolderOnLoss = (typeof GOAL_HOLDER_ON_LOSS)[number];
+
+/** True for a string that is a real, bindable on-loss disposition. */
+export function isGoalHolderOnLoss(value: unknown): value is GoalHolderOnLoss {
+  return typeof value === 'string' && (GOAL_HOLDER_ON_LOSS as readonly string[]).includes(value);
+}
+
+/**
+ * The holder policy a goal that has pinned nothing runs under (D-001, D-008).
+ *
+ * `requireLive: true` is the load-bearing default and the reason this resolves
+ * at READ time rather than being stamped into the row by `goals:create`. A
+ * default written at create time reaches only goals created after it ships —
+ * i.e. none of the rows that were exposed — and the measured exposure is the
+ * entire point: 4 of 6 `status='active'` goals had been dark for 2–5 days while
+ * every surface called them held. A `false` default would cover none of them and
+ * leave the bug in place for every goal that already exists. Same reasoning, and
+ * the same shape, as `GOAL_LAUNCH_DEFAULTS` under D-015.
+ *
+ * `onLoss: 'deactivate'` is D-001, stated outright: most goals should not
+ * resurrect themselves, and going quiet is often correct.
+ *
+ * A goal that genuinely runs unheld says so with an explicit
+ * `holder: { requireLive: false }` — the opt-out has to be SAYABLE, or the
+ * default becomes a trap for the goals it does not fit.
+ */
+export const GOAL_HOLDER_DEFAULTS = {
+  requireLive: true,
+  onLoss: 'deactivate',
+} as const satisfies { requireLive: boolean; onLoss: GoalHolderOnLoss };

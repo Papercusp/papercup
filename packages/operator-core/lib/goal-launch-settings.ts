@@ -63,7 +63,13 @@ import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 // Re-exported below for the public surface; imported here because this module
 // uses both internally (the schema's role enum + the resolver signatures).
-import { GOAL_LAUNCH_ROLES, type GoalLaunchRole } from './goal-launch-settings-shared';
+import {
+  GOAL_LAUNCH_ROLES,
+  type GoalLaunchRole,
+  GOAL_HOLDER_ON_LOSS,
+  GOAL_HOLDER_DEFAULTS,
+  type GoalHolderOnLoss,
+} from './goal-launch-settings-shared';
 import { resolveGoalContext } from './modes/goal-context';
 
 function pg(sql?: Sql): Sql {
@@ -194,7 +200,69 @@ export {
   GOAL_LAUNCH_ROLES,
   isGoalLaunchRole,
   type GoalLaunchRole,
+  GOAL_HOLDER_ON_LOSS,
+  isGoalHolderOnLoss,
+  GOAL_HOLDER_DEFAULTS,
+  type GoalHolderOnLoss,
 } from './goal-launch-settings-shared';
+
+/**
+ * The holder policy a goal declares (P-002 of
+ * goal-live-holder-guarantee-2026-08-18).
+ *
+ * `requireLive` — must this goal be held by a LIVE agent to count as active?
+ * `onLoss`      — what happens when it is not.
+ *
+ * Both are `.nullable().optional()` for the same reason `ceilingSchema` is: the
+ * P-005 panel clears a field by writing `null`, and a cleared field means "the
+ * owner has not pinned this" — which must resolve to the system default rather
+ * than to `false`. Collapsing absent into `false` would silently opt a goal OUT
+ * of the guarantee at exactly the moment its owner tried to reset it.
+ */
+export const goalHolderPolicySchema = z
+  .object({
+    requireLive: z.boolean().nullable().optional(),
+    onLoss: z.enum(GOAL_HOLDER_ON_LOSS).nullable().optional(),
+  })
+  .strict();
+
+export type GoalHolderPolicy = z.infer<typeof goalHolderPolicySchema>;
+
+/** A holder policy with every field resolved — no absent, no null, no guessing. */
+export interface ResolvedGoalHolderPolicy {
+  requireLive: boolean;
+  onLoss: GoalHolderOnLoss;
+  /**
+   * True when the goal pinned NOTHING and is running entirely on defaults.
+   * P-003 refuses at the write boundary on this; a surface that wants to show
+   * "inherited" vs "pinned" reads it rather than re-deriving it from absence.
+   */
+  isDefault: boolean;
+}
+
+/**
+ * Resolve one goal's holder policy at READ time (D-008).
+ *
+ * This is `resolveCeiling`'s sibling and follows the module header's "WHY IN THE
+ * RESOLVER AND NOT AT CREATE TIME" rule exactly: resolving here governs every
+ * goal that already exists, with no migration and no backfill, and keeps an
+ * absent key meaning exactly one thing.
+ *
+ * Absent and null both mean unpinned. Only an EXPLICIT `false` opts a goal out
+ * of the live-holder requirement.
+ */
+export function resolveGoalHolderPolicy(
+  settings: GoalLaunchSettings | null | undefined,
+): ResolvedGoalHolderPolicy {
+  const stored = settings?.holder;
+  const requireLive = stored?.requireLive;
+  const onLoss = stored?.onLoss;
+  return {
+    requireLive: typeof requireLive === 'boolean' ? requireLive : GOAL_HOLDER_DEFAULTS.requireLive,
+    onLoss: onLoss ?? GOAL_HOLDER_DEFAULTS.onLoss,
+    isDefault: requireLive == null && onLoss == null,
+  };
+}
 
 /** The launch knobs a goal can pin, per slot or as its across-the-board default. */
 export const launchProfileSchema = z
