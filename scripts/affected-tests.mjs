@@ -3330,6 +3330,10 @@ function emitCapturedTaskOutput(t, r, allocation, label = "initial") {
 
 const initialPool = await runBudgetedTasks(taskContexts, {
   ...SCHEDULER_CONFIG,
+  // EI-20801764054303492 route (a): the startup budget is sized ONCE, from a reading taken before
+  // any child exists. A long run's real memory picture drifts underneath it, so admission
+  // re-measures and may only ever admit fewer workers than the ceiling already allows.
+  readMemAvailableMb,
   estimateMs: (context) =>
     durationEstimate(durationHistory, taskKey(context.t)),
   runTask: (context, allocation) => runCapturedTask(context, allocation),
