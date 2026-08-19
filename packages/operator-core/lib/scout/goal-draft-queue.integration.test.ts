@@ -182,11 +182,13 @@ describe('goal draft queue (real PG, migration 623)', () => {
   it('drafts the rails the goal rail WOULD have used, from the proposal itself', async () => {
     const [draft] = await readGoalDraftQueue({ workspaceId: WS });
 
-    expect(draft!.title).toBe(
-      'Policy enforcement changes that should take seconds (block an edit, require approval for a write) currently require a full git→gate→deploy cycle that is blocked by a GitHub 403, a red release gate (8h43m), and a 229-commit promotion lag. The \'never-implements regression\' fix is already written but cannot ship. Every future enforcement fix will hit the same wall unless the load-bearing assumption — that policy lives in compiled code — is removed.'.slice(
-        0,
-        draft!.title.length,
-      ),
+    // The framing is one long line (449 chars), so the title is it, capped at 200.
+    // Compared against the FIXTURE's framing, not against the draft's own title —
+    // an assertion derived from the value under test proves nothing.
+    expect(draft!.title).toBe(LIVE_SP_001.framing.slice(0, 200));
+    expect(draft!.title).toHaveLength(200);
+    expect(draft!.title.startsWith('Policy enforcement changes that should take seconds')).toBe(
+      true,
     );
     expect(draft!.budgetCents).toBe(DEFAULT_GOAL_BUDGET_CENTS);
     // Drafted from the proposal's OWN falsifiable signal, not a placeholder.
