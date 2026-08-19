@@ -847,3 +847,88 @@ describe('getFeedbackCore — revival leg (WI-39852)', () => {
     expect(res.revival?.trigger).toBe('dead-preempt');
   });
 });
+
+// ── peersKnowLookup (consult-revival-and-honest-min-2026-08-18 P-006) ────────
+//
+// The orient peers-know fold's read-only archive lookup. Only a real-PG test
+// can prove the corpus predicate (closed_answered + non-archive-source +
+// embedding present) and the pgvector ranking against real rows — the same
+// reason the archive-first serve above is tested here.
+describe('peersKnowLookup — the orient peers-know fold reads the settled archive, read-only', () => {
+  const fakeEmbed = (vec: number[]) => async (_text: string) => vec;
+
+  it('an above-floor closed_answered row surfaces: one-liner answer + provenance + sim; nothing is written', async () => {
+    const ws = 'ws-pk-hit';
+    await seedClosedConsult({
+      ws,
+      conv: 'pk-src-1',
+      vec: vecAt(0),
+      responder: 'resp-expert',
+      outcome: { answer: '  bump   hnsw.ef_search\n(the scan stops early otherwise)  ', confidence: 'high' },
+    });
+    const before = await rootSql`SELECT count(*)::int AS n FROM harness_shared.consult_state WHERE workspace_id = ${ws}`;
+    const hit = await peersKnowLookup(rootSql, fakeEmbed(vecAt(0)), {
+      workspaceId: ws,
+      intent: 'why does my hnsw vector scan under-return rows?',
+    });
+    expect(hit).not.toBeNull();
+    expect(hit!.ref).toBe('pk-src-1');
+    expect(hit!.responder).toBe('resp-expert');
+    expect(hit!.sim).toBeGreaterThanOrEqual(0.99);
+    expect(hit!.closedAt).toBe(NOW.toISOString());
+    // Whitespace collapsed into a ONE-liner.
+    expect(hit!.answer).toBe('bump hnsw.ef_search (the scan stops early otherwise)');
+    // READ-ONLY: no row was opened/inserted (the serve leg would have added one).
+    const after = await rootSql`SELECT count(*)::int AS n FROM harness_shared.consult_state WHERE workspace_id = ${ws}`;
+    expect(after[0].n).toBe(before[0].n);
+  });
+
+  it('a below-floor (dissimilar) row is a null — precision-biased, no noise hit', async () => {
+    const ws = 'ws-pk-miss';
+    await seedClosedConsult({ ws, conv: 'pk-orth', vec: vecAt(Math.PI / 2) }); // sim 0
+    const hit = await peersKnowLookup(rootSql, fakeEmbed(vecAt(0)), {
+      workspaceId: ws,
+      intent: 'a question about something entirely unrelated',
+    });
+    expect(hit).toBeNull();
+  });
+
+  it('archive-served COPIES are excluded — never surfaces a copy-of-a-copy', async () => {
+    const ws = 'ws-pk-archcopy';
+    await seedClosedConsult({
+      ws,
+      conv: 'pk-copy',
+      vec: vecAt(0),
+      outcome: { source: 'archive', answer: 'copied answer' },
+    });
+    const hit = await peersKnowLookup(rootSql, fakeEmbed(vecAt(0)), {
+      workspaceId: ws,
+      intent: 'the same question the archive copy carries',
+    });
+    expect(hit).toBeNull();
+  });
+
+  it('an outcome with no string answer is a null — a garbled hit is worse than none', async () => {
+    const ws = 'ws-pk-noanswer';
+    await seedClosedConsult({ ws, conv: 'pk-bare', vec: vecAt(0), outcome: { confidence: 'high' } });
+    const hit = await peersKnowLookup(rootSql, fakeEmbed(vecAt(0)), {
+      workspaceId: ws,
+      intent: 'a question whose settled row lost its answer text',
+    });
+    expect(hit).toBeNull();
+  });
+
+  it('degrades to null with no embedder and for a too-short intent — never throws', async () => {
+    const ws = 'ws-pk-degrade';
+    await seedClosedConsult({ ws, conv: 'pk-deg', vec: vecAt(0) });
+    expect(await peersKnowLookup(rootSql, null, { workspaceId: ws, intent: 'long enough intent text here' })).toBeNull();
+    expect(await peersKnowLookup(rootSql, fakeEmbed(vecAt(0)), { workspaceId: ws, intent: 'short' })).toBeNull();
+    // An embedder that rejects degrades too (the .catch leg).
+    const throwingEmbed = async (_text: string): Promise<number[]> => {
+      throw new Error('embed backend down');
+    };
+    expect(
+      await peersKnowLookup(rootSql, throwingEmbed, { workspaceId: ws, intent: 'long enough intent text here' }),
+    ).toBeNull();
+  });
+});
