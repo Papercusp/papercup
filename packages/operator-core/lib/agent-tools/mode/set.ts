@@ -309,16 +309,18 @@ export default defineTool({
        the stop path while every surface looked healthy. */
     const supplied = args.subject?.trim() || null;
     if (enabled && modeRequiresSubject(def.id)) {
-      let effective = supplied;
-      if (!effective) {
-        // Fail CLOSED: a read error must not admit an unattributed entry, since
-        // that is the exact silent state this guard exists to prevent.
-        try {
-          effective = await getModeSubject(workspaceId, target, def.id);
-        } catch {
-          effective = null;
-        }
+      // Read the incumbent ONCE — both this guard and the holder-policy guard
+      // below need it, and for the same reason: each must tell a genuine ATTACH
+      // apart from a re-registration of a session that is already attached.
+      // Fail CLOSED: a read error must not admit an unattributed entry, since
+      // that is the exact silent state this guard exists to prevent.
+      let incumbentSubject: string | null = null;
+      try {
+        incumbentSubject = await getModeSubject(workspaceId, target, def.id);
+      } catch {
+        incumbentSubject = null;
       }
+      const effective = supplied ?? incumbentSubject;
       if (!effective) {
         return {
           content: [
