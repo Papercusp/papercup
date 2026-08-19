@@ -36,7 +36,7 @@
  */
 import type { Sql } from 'postgres';
 import { consultParkKey } from './get-feedback-core';
-import { advanceCascade, makeDigestEntry } from './cascade-core';
+import { advanceCascade, digestFromRow, makeDigestEntry } from './cascade-core';
 
 /** Rows processed per tick — bounds one sweep's write + wake fan-out. A backlog
  * deeper than this simply drains over successive ticks. */
