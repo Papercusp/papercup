@@ -155,7 +155,7 @@ export default defineTool({
     }
     return {
       data: rows.map((r) => {
-        const activity = activityOf(r);
+        const { activity, liveness } = activityOf(r);
         // `launch_settings` is an input to the fold, not an output — the
         // resolved `holderPolicy` says what it MEANT, without handing back a
         // raw blob every caller would have to re-parse.
@@ -166,7 +166,7 @@ export default defineTool({
           status: activity.effectiveStatus,
           rawStatus: r.status,
           deactivated: activity.deactivated,
-          holderLiveness: activity.liveness ?? 'unknown',
+          holderLiveness: liveness,
           holderPolicy: activity.policy,
         };
       }),
