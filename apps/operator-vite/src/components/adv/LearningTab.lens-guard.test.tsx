@@ -78,6 +78,12 @@ const nuqsState: Record<string, unknown> = {
   slug: null,
   lsb: null,
   lst: null,
+  // Retained-ledger URL state (WI-39493/WI-39900). The real nuqs parsers carry
+  // withDefault("all"); this mock drops parsers, so the bag must model the
+  // default itself or the ledger renders with `rtab`/`rship` undefined — which
+  // crashes the filter-honesty note's label lookup.
+  rtab: "all",
+  rship: "all",
 };
 import { nuqsParsers } from "@papercusp/test-config/nuqs-mock";
 vi.mock("nuqs", () => ({
