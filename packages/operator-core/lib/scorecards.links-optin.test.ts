@@ -74,7 +74,14 @@ const sqlTag = (strings: TemplateStringsArray, ..._vals: unknown[]) => {
   return { __sqlFragment: text } as unknown as Promise<unknown[]>;
 };
 
-vi.mock('@papercusp/db-org', () => ({
+// FULL-REPLACEMENT MOCK HAZARD (WI-39843 class, and the reason this file red-pinned the
+// gate at red #28): a bare factory replaces the WHOLE module, so every export this file's
+// import graph touches but does not re-declare becomes undefined — and vitest throws on
+// ANY access to a missing mock export. Here it was `setAdminPoolStatementTimeoutProvider`
+// (libs/papercusp/libs/db/src/connection.ts), reached transitively. Spreading the original
+// is what makes this robust to the NEXT export added, rather than stranding again.
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({ sql: sqlTag }),
 }));
 

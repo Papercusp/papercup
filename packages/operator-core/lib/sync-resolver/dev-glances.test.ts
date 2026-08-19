@@ -200,7 +200,14 @@ describe('dev.* glance resolvers', () => {
     it('dev.coordPresence returns the flat presence array (passes workspace through)', async () => {
       const records = [{ ownerId: 'a', ownerLabel: 'A', stale: false, intent: 'x' }];
       const listPresence = vi.fn(async () => records);
-      vi.doMock('../agent-tools/coordination/presence', () => ({ listPresence }));
+      // Spread the original: `fleet-rate-status` imports PRESENCE_STALE_MS from this same
+      // module, so a full-replacement factory strands that export for every test that
+      // loads it afterwards (WI-39843 class) — which is why dev.coordFeed and
+      // dev.fleetGovernor failed here too, despite mocking different modules themselves.
+      vi.doMock('../agent-tools/coordination/presence', async (importOriginal) => ({
+        ...(await importOriginal<typeof import('../agent-tools/coordination/presence')>()),
+        listPresence,
+      }));
       const { resolveNamedQueryV2: r } = await import('./index');
       const rows = (await r('dev.coordPresence', { workspace: 'ws1' })) as unknown[];
       expect(rows).toEqual(records);

@@ -35,7 +35,14 @@ const sql = Object.assign(
   { unsafe: () => Promise.resolve([]) },
 );
 
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql }) }));
+// FULL-REPLACEMENT MOCK HAZARD (WI-39843 class): a bare factory replaces the WHOLE
+// module, so any export this file's import graph reaches but does not re-declare becomes
+// undefined and vitest throws on access — here `setAdminPoolStatementTimeoutProvider`.
+// Spread the original so only `getOrgPg` is overridden and a future export cannot strand it.
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/db-org')>()),
+  getOrgPg: () => ({ sql }),
+}));
 
 /** Normalise whitespace so the assertions read on intent, not formatting. */
 const flat = (s: string) => s.replace(/\s+/g, ' ');
