@@ -317,7 +317,15 @@ export function scan(root = ROOT) {
       }
     }
   }
-  return { conflicts, unsupported, checked, unprovided, declarations, workspaces: dirs.length };
+  return {
+    conflicts,
+    unsupported,
+    drift: scanLockDrift(root),
+    checked,
+    unprovided,
+    declarations,
+    workspaces: dirs.length,
+  };
 }
 
 const key = (c) => `${c.workspace}::${c.dep}`;
@@ -358,6 +366,32 @@ function main() {
     console.error('  packages/operator-core/lib/__tests__/check-peer-dep-conflicts.test.ts.');
     console.error('  Do NOT widen it to pass silently — an unjudged range must stay unjudged.');
     process.exit(EXIT_NOT_CHECKED);
+  }
+
+  if (result.drift === null) {
+    console.error('check-peer-dep-conflicts: NOT CHECKED — package-lock.json is missing or');
+    console.error(`  unreadable under ${ROOT}, so manifest/lock peer drift could not be judged.`);
+    process.exit(EXIT_NOT_CHECKED);
+  }
+
+  if (result.drift.length > 0) {
+    console.error(
+      `check-peer-dep-conflicts: ${result.drift.length} peer declaration(s) DRIFTED between\n` +
+        '  package.json and package-lock.json.\n',
+    );
+    console.error('`npm install` re-resolves from the MANIFEST; `npm ci` installs strictly from the');
+    console.error('LOCK. While these disagree the two paths install different trees — so a green');
+    console.error('`npm install` can sit next to a clean-checkout `npm ci` that still fails ERESOLVE.\n');
+    for (const d of result.drift) {
+      console.error(`  ${d.workspace} (${d.dir}) — ${d.dep}`);
+      console.error(`    package.json      : ${d.manifest ?? '(absent)'}`);
+      console.error(`    package-lock.json : ${d.lock ?? '(absent)'}\n`);
+    }
+    console.error('  Fix: regenerate the lock from the manifests —');
+    console.error('    npm run install:safe -- install --package-lock-only --ignore-scripts');
+    console.error('  (lock-only: it does NOT rewrite node_modules, so it cannot disturb other');
+    console.error('   agents\' in-flight test runs on this shared tree.)');
+    process.exit(EXIT_CONFLICTS);
   }
 
   const baseline = new Set(BASELINE);
