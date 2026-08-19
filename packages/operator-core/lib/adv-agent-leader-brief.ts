@@ -172,16 +172,89 @@ export async function getAgentLeaderBrief(owner: string): Promise<AgentLeaderBri
 
     const { fetchPresenceFleet } = await import('./agent-tools/coordination/presence-fleet');
     const membership = (await fetchPresenceFleet([owner])).get(owner) ?? null;
-    const fleetSlug = membership?.fleetSlug ?? null;
+    const presenceFleetSlug = membership?.fleetSlug ?? null;
     const presenceFleetRole = membership?.fleetRole ?? null;
+
+    const { getFleet, listFleetsLedBy } = await import('./agent-fleets-store');
+
+    // ── The registry cross-check (P-013) ──────────────────────────────────────
+    // This used to be gated behind `if (!presenceFleetSlug) return no-fleet`,
+    // which meant the sharpest drift shape never got measured: presence
+    // carrying no fleet while the registry says this owner LEADS one is the
+    // ORIGINAL EI-18731216945970087 failure, and it rendered here as the quiet,
+    // overwhelmingly-common `no-fleet` skip. The pane blanked for exactly the
+    // agent whose own orient was shouting drift at it. The registry read is one
+    // indexed lookup on (workspace_id, leader_owner_id), so it is cheap enough
+    // to take before concluding an agent leads nothing.
+    const led = await listFleetsLedBy(workspaceId, owner);
+    const ledSlugs = led.map((f) => f.fleetSlug);
+    // Prefer the fleet presence already agrees about, so a multi-fleet leader's
+    // pane does not jump to another of its fleets on an unrelated drift.
+    const ledFleet =
+      presenceFleetSlug && ledSlugs.includes(presenceFleetSlug) ? presenceFleetSlug : ledSlugs[0];
+
+    let presenceDrift: LeaderBriefPresenceDrift | undefined;
+
+    // Shape 1: the registry says this owner leads, presence does not reflect it.
+    if (ledFleet && !(presenceFleetSlug === ledFleet && presenceFleetRole === 'leader')) {
+      const where =
+        presenceFleetSlug == null
+          ? 'showed no fleet at all'
+          : presenceFleetSlug === ledFleet
+            ? `placed it in that fleet as '${presenceFleetRole ?? 'null'}'`
+            : `placed it in '${presenceFleetSlug}' instead`;
+      presenceDrift = {
+        kind: 'presence-behind',
+        fleet: ledFleet,
+        registeredLeader: owner,
+        presenceFleetRole,
+        presenceFleetSlug,
+        note:
+          `PRESENCE DRIFT: the registry (agent_fleets.leader_owner_id) says this agent LEADS ` +
+          `'${ledFleet}', but its presence row (coord_presence.fleet_slug/fleet_role) ${where}. ` +
+          `The brief below is REAL — recovered from the registry for this read. If it persists, ` +
+          `the presence projection is not settling after fleet:take-leadership; corroborate with ` +
+          `fleet:assignments { fleet } / fleet:status before acting on a bare presence read.`,
+      };
+    }
+
+    // The fleet this read is ABOUT: the registry's answer wins when it has one,
+    // exactly as orient's own drift recovery treats a caught drift as
+    // authoritative for the rest of the call.
+    const fleetSlug = ledFleet ?? presenceFleetSlug;
     if (!fleetSlug) return empty(owner, 'no-fleet');
 
-    const { getFleet } = await import('./agent-fleets-store');
     const record = await getFleet(workspaceId, fleetSlug);
     const registeredLeader = record?.leaderOwnerId ?? null;
     const isLeader = registeredLeader === owner || presenceFleetRole === 'leader';
+
+    // Shape 2: presence claims leadership the registry does not back. Measured
+    // only when the registry named SOMEBODY — a null leader_owner_id is an
+    // unled fleet, not a contradiction of this agent's claim.
+    if (!presenceDrift && presenceFleetRole === 'leader' && registeredLeader !== owner) {
+      presenceDrift = {
+        kind: 'registry-disowned',
+        fleet: fleetSlug,
+        registeredLeader,
+        presenceFleetRole,
+        presenceFleetSlug,
+        note:
+          `PRESENCE DRIFT: this agent's presence row claims it LEADS '${fleetSlug}', but the ` +
+          `registry (agent_fleets.leader_owner_id) names ` +
+          `${registeredLeader ? `'${registeredLeader}'` : 'no leader at all'}. The brief below is ` +
+          `built from the presence claim and may describe a fleet this agent no longer leads — ` +
+          `treat its member rows as unverified and corroborate with fleet:status { fleet } ` +
+          `before intervening on them.`,
+      };
+    }
+
     if (!isLeader) {
-      return empty(owner, 'not-leader', { fleetSlug, presenceFleetRole, registeredLeader });
+      return empty(owner, 'not-leader', {
+        fleetSlug,
+        presenceFleetRole,
+        registeredLeader,
+        ...(presenceDrift ? { presenceDrift } : {}),
+      });
     }
 
     const result = await buildLeaderBrief(
@@ -205,6 +278,7 @@ export async function getAgentLeaderBrief(owner: string): Promise<AgentLeaderBri
       registeredLeader,
       isLeader: true,
       skipped: null,
+      ...(presenceDrift ? { presenceDrift } : {}),
       brief: result.data,
     };
   } catch (err) {

@@ -224,6 +224,25 @@ export interface LeaderBriefData {
   fleetPausedReason?: string;
 }
 
+/** Mirrors `LeaderBriefDriftKind`. `presence-behind` = the registry says this
+ *  agent leads and presence has not caught up (the brief below is real, and was
+ *  recovered from the registry). `registry-disowned` = presence claims
+ *  leadership the registry does not back (the brief may describe a fleet this
+ *  agent no longer leads). Opposite remedies, so they are never merged. */
+export type LeaderBriefDriftKind = 'presence-behind' | 'registry-disowned';
+
+/** Mirrors `LeaderBriefPresenceDrift`. Every field optional but `kind`/`note`
+ *  for the wire-skew reason in this file's header — a sidecar predating a field
+ *  must degrade to a quieter alert, never throw inside the rail. */
+export interface LeaderBriefPresenceDrift {
+  kind: LeaderBriefDriftKind;
+  fleet?: string;
+  registeredLeader?: string | null;
+  presenceFleetRole?: string | null;
+  presenceFleetSlug?: string | null;
+  note: string;
+}
+
 export interface AgentLeaderBrief {
   ownerId: string;
   /** The fleet this agent's presence row places it in; null when it is in none. */
@@ -234,6 +253,11 @@ export interface AgentLeaderBrief {
   isLeader: boolean;
   /** Set iff `brief` is null. */
   skipped: LeaderBriefSkipReason | null;
+  /** A MEASURED disagreement between the two leadership sources, present only
+   *  when both were read and they disagreed (P-013). Absent means no drift was
+   *  measured — NOT that the sources agree: a read that threw takes
+   *  `skipped: 'read-failed'` and reports no drift at all. */
+  presenceDrift?: LeaderBriefPresenceDrift;
   brief: LeaderBriefData | null;
 }
 
