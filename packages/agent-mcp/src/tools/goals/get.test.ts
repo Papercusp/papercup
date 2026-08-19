@@ -128,11 +128,16 @@ beforeEach(() => {
  * only variable.
  */
 describe('goals:get — deactivation is DERIVED from holder liveness (P-004)', () => {
+  // `handler`'s declared result is a union without `data`, so every `res.data`
+  // in this file is a TS2339 (a pre-existing class, 12 of them at the time of
+  // writing). This narrows it locally so the P-004 cases add none.
+  const dataOf = (res: unknown) => (res as { data: Record<string, unknown> }).data;
+
   it('a HELD goal stays active — liveness is what moves the verdict', async () => {
     holderLivenessFixture = 'held';
     fixtureQueue = [[GOAL_ROW()]];
     const res = await tool.handler({ id: 'g-1', detail: 'summary' } as never, CTX() as never);
-    expect(res.data).toMatchObject({
+    expect(dataOf(res)).toMatchObject({
       status: 'active',
       rawStatus: 'active',
       deactivated: false,
@@ -146,7 +151,7 @@ describe('goals:get — deactivation is DERIVED from holder liveness (P-004)', (
     holderLivenessFixture = 'unknown';
     fixtureQueue = [[GOAL_ROW()]];
     const res = await tool.handler({ id: 'g-1', detail: 'summary' } as never, CTX() as never);
-    expect(res.data).toMatchObject({
+    expect(dataOf(res)).toMatchObject({
       status: 'active',
       deactivated: false,
       holderLiveness: 'unknown',
