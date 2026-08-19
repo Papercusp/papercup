@@ -242,6 +242,9 @@ export function exposureCensus({ files, protectedModules }) {
   const protectedSet = new Set(protectedModules.map((p) => p.module));
   const byModule = new Map();
   for (const f of files) {
+    // Cheap substring gate before the real parse: only ~1/3 of test files mock anything, and
+    // parsing the other 2/3 tripled this guard's wall time for guaranteed-zero rows.
+    if (!f.text.includes('vi.mock') && !f.text.includes('vi.doMock')) continue;
     for (const call of analyzeMockCalls(f.text, f.path)) {
       if (call.form !== 'full-replacement') continue;
       const resolved = resolveSpec(f.path, call.spec);
