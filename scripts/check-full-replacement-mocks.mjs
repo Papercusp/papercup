@@ -319,6 +319,28 @@ export const FIXTURE_PROTECTED = [
 const FIXTURE_PATH = 'packages/operator-core/lib/agent-tools/fleet/x.test.ts';
 
 /**
+ * Fixtures for the exposure census (EI-20836231573383362), here for the SAME structural
+ * reason as SELF_TESTS below — and more sharply. The census walks EVERY test file in the
+ * tree, so a bare factory inlined into the vitest guard file would be counted as a live
+ * unprotected exposure and the guard would report its own test as the thing to go fix.
+ * Import these; do not inline new ones.
+ */
+export const EXPOSURE_FIXTURES = {
+  bareOnUnprotected: {
+    path: 'packages/operator-core/lib/sync-resolver/a.test.ts',
+    text: "vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({}) }));",
+  },
+  bareOnProtected: {
+    path: 'packages/operator-core/lib/b.test.ts',
+    text: "vi.mock('@papercusp/agent-mcp', () => ({ AGENT_ROLES: [] }));",
+  },
+  safeSpreadOnUnprotected: {
+    path: 'packages/operator-core/lib/c.test.ts',
+    text: "vi.mock('@papercusp/db-org', async (o) => ({ ...(await o()), getOrgPg: () => ({}) }));",
+  },
+};
+
+/**
  * The fixtures live HERE, not in the vitest guard test, and that is load-bearing rather
  * than tidiness: a fixture is mock SOURCE TEXT, so a `.test.ts` holding one is itself a
  * test file containing a bare `vi.mock` of a protected module — the live scan flags its
