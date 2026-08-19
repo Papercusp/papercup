@@ -386,17 +386,6 @@ function runScript(
  */
 export const GREEN_CHECKPOINT_SUITE_TIMEOUT_MS = 115 * 60_000;
 
-/** The cron the gate is seeded with (seed-hive-release-routines.ts,
- *  seed-release-routines.ts, retrofit-hive-to-gate.ts all use this literal) and the
- *  fire period it implies. Exported so the phase invariant above is CHECKABLE rather
- *  than a comment — see release-timing-invariants.test.ts. */
-export const GREEN_CHECKPOINT_CRON = "0 15 * * * *";
-export const GREEN_CHECKPOINT_FIRE_PERIOD_MS = 60 * 60_000;
-
-/** Minimum gap the suite timeout must leave between a deadline-kill and the next
- *  scheduled fire, so the lock is demonstrably free when that fire lands. */
-export const GREEN_CHECKPOINT_PHASE_MARGIN_MS = 5 * 60_000;
-
 /**
  * A green-checkpoint run's result, as the CLI reports it on its result-marker line.
  * (Structural mirror of green-checkpoint.ts's `CheckpointResult` — operator-core must not import
