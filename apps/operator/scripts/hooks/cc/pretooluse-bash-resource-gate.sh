@@ -2337,7 +2337,56 @@ _FA_DENY = (
     'instrument is broken, not the subject.'
 )
 
+# ── the SYMLINK-TRAVERSAL shape of the same class (EI-20825101204716643) ────
+# Filed as "find with an ABSOLUTE path silently returns zero in the sandbox";
+# the absolute-vs-relative framing is a RED HERRING and the suspected sandbox
+# interception does not exist. MEASURED: `command find` (the real findutils
+# binary, every wrapper bypassed) reproduces it identically, and there is no
+# sandbox boundary at all — /tmp, /etc and $HOME all enumerate fine.
+#
+# The real mechanism is plain POSIX: `find` defaults to -P, NEVER following
+# symlinks. So a BARE symlink-to-a-directory operand is treated as a FILE —
+# nothing is descended, no `-name` can match, and the command prints NOTHING,
+# exits 0, and writes NOTHING to stderr. `cd <symlink> && find .` works only
+# because `cd` resolves the link, which is what made this look positional.
+#
+# This is STRICTLY WORSE than the missing-path shape above, which at least
+# errors on stderr and exits non-zero: here every channel reports success, so
+# the empty result is indistinguishable from a correct "found nothing". The
+# filer only caught it by running a positive control that ALSO came back empty.
+#
+# DETERMINISTIC, like its sibling: the verdict is an lstat of a LITERAL operand
+# plus the absence of -H/-L/-follow. In that state find CANNOT descend — that
+# is guaranteed by the grammar, not predicted. `-maxdepth 0` is exempt because
+# it says outright that no descent was wanted.
+_FA_SYMLINK_DENY = (
+    'false-absence symlink-traversal guard (EI-20825101204716643): `{cmd}` '
+    'names `{path}`, which is a SYMLINK TO A DIRECTORY (-> `{target}`). '
+    '`find` defaults to -P and never follows symlinks, so a bare symlink '
+    'operand is treated as a FILE: nothing is descended, no `-name` can match, '
+    'and the command prints NOTHING, exits 0, and says nothing on stderr. That '
+    'is strictly worse than a path that does not exist, which at least errors — '
+    'every channel here reports success, so an empty result is '
+    'INDISTINGUISHABLE from a correct "found nothing" and the natural reading '
+    'is "it does not exist". Measured on this box: `find <symlink> -maxdepth 1 '
+    '-name package.json` returned 0 lines while `ls` showed the file plainly '
+    'there; a trailing slash, `-H`, `-L` and the resolved realpath each '
+    'returned it. Fixes, best first: (1) add a TRAILING SLASH — `find {path}/ '
+    '...`, which makes find traverse it; (2) pass `-L` (or `-H`) to follow the '
+    'operand; (3) name the real target path instead. AND THE GENERAL RULE: AN '
+    'ABSENCE CLAIM NEEDS A POSITIVE CONTROL — before reporting "X does not '
+    'exist", run the same search for something you KNOW is in that haystack. '
+    'If the control also comes back empty, the instrument is broken, not the '
+    'subject.'
+)
+
 _FA_SEARCH_CMDS = frozenset(('grep', 'egrep', 'fgrep', 'rg', 'ls'))
+# `find` joins this guard for the symlink shape ONLY. It is deliberately NOT in
+# _FA_SEARCH_CMDS: its operand grammar is unrelated to grep's (paths come
+# FIRST, before the expression), so it is parsed separately below. `bfs` is
+# find's real argv0 here — the shell wraps `find` as a function that execs the
+# claude binary as `bfs` — so an agent typing either reaches the same trap.
+_FA_TRAVERSAL_CMDS = frozenset(('find', 'bfs'))
 # Flags that CONSUME the following token, so it is neither the pattern nor a
 # path. Getting this wrong is the only way the guard can misread an operand.
 _FA_ARGFLAGS_GREP = frozenset((
@@ -2412,6 +2461,84 @@ def _fa_operands(argv, argflags):
         operands.append(a)
         j += 1
     return operands, pattern_consumed
+
+
+def _fa_find_paths(argv):
+    """PATH operands of a `find` argv, and whether symlinks are followed.
+
+    find's grammar is `find [-H|-L|-P] [path...] [expression]`, so the paths
+    are exactly the operands BETWEEN the leading options and the first
+    expression token. That is why find needs no argument-consuming flag table
+    the way grep does: `-maxdepth 2` and friends live in the EXPRESSION, which
+    begins at the first `-`/`(`/`!`/`,` — everything the parser must skip has
+    already ended by then.
+    """
+    follows, j = False, 1
+    while j < len(argv):
+        a = argv[j]
+        if a in ('-H', '-L'):
+            follows = True   # the operand IS followed; the trap cannot apply
+            j += 1
+            continue
+        if a == '-P':
+            j += 1
+            continue
+        if a in ('-D', '-O'):       # `-D tree`, `-O 3` take a separate word
+            j += 2
+            continue
+        if a.startswith('-O'):      # `-O3` carries it in the cluster
+            j += 1
+            continue
+        break
+    paths = []
+    while j < len(argv):
+        a = argv[j]
+        # A redirect ends the operand list; a bare fd digit belongs to it
+        # (`find /x 2>/dev/null` tokenizes the `2` as its own word).
+        if a and all(c in '<>&' for c in a):
+            if paths and paths[-1].isdigit():
+                paths.pop()
+            break
+        if not a or a.startswith('-') or a in ('(', '!', ','):
+            break
+        paths.append(a)
+        j += 1
+    if '-follow' in argv[j:]:       # the deprecated expression spelling of -L
+        follows = True
+    return paths, follows
+
+
+def _fa_symlink_traversal(argv, cwd):
+    """Deny a `find` that cannot descend the directory it appears to search."""
+    paths, follows = _fa_find_paths(argv)
+    if follows:
+        return
+    for _k, _t in enumerate(argv):
+        # `-maxdepth 0` asks for the operand ITSELF and nothing below it, so
+        # not descending is the stated intent rather than the trap.
+        if _t == '-maxdepth' and _k + 1 < len(argv) and argv[_k + 1] == '0':
+            return
+    for p in paths:
+        # A TRAILING SLASH is the fix, not the bug: `lstat("link/")` resolves
+        # through the link, so find traverses it. Skipping it here keeps the
+        # guard from denying the very remedy it recommends.
+        if (not p or p in ('-', '.', '..') or p.endswith('/')
+                or len(p) > 400
+                or any(c in p for c in _FA_UNRESOLVABLE)
+                or (not os.path.isabs(p) and cwd is None)):
+            continue
+        full = p if os.path.isabs(p) else os.path.join(cwd, p)
+        # islink is an LSTAT (the link itself); isdir is a STAT (its target).
+        # Both together are exactly "a symlink that find will refuse to
+        # descend". A symlink to a FILE is not this trap — nothing was going
+        # to be descended — and a dangling one is the sibling guard's shape.
+        if not (os.path.islink(full) and os.path.isdir(full)):
+            continue
+        deny(_FA_SYMLINK_DENY.format(
+            cmd=' '.join(argv)[:160],
+            path=p,
+            target=os.path.realpath(full)[:200],
+        ))
 
 
 try:
