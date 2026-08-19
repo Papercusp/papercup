@@ -343,6 +343,65 @@ export default defineTool({
           ],
         };
       }
+
+      /* ── The holder-policy ATTACH boundary (goal-live-holder-guarantee
+         2026-08-18 P-003, D-008) ───────────────────────────────────────────
+         Attaching a session to a goal is the moment somebody takes
+         responsibility for holding it, so it is the second place the goal must
+         have answered "do I need a live holder". `goals:create` / `goals:start`
+         cover goals born after P-003; this covers the ones that already exist,
+         which — measured 2026-08-19 — is all 18 of them, none carrying a holder
+         key.
+
+         SCOPED TO A CHANGING SUBJECT ON PURPOSE, and this is the load-bearing
+         line. The guard above records why: `subject` is tri-state and a
+         reason-only re-registration of an already-attached session must keep
+         working. A holder check that fired on every mode:set would refuse those
+         too — i.e. it would break the live GOAL-mode agents whose goals are
+         exactly the undeclared population, turning a declaration gate into an
+         outage. So it fires only when a NEW subject is being attached, which is
+         the boundary the item names.
+
+         Fails CLOSED on an unreadable goal, like its sibling above: an attach
+         admitted because the read failed leaves precisely the state this
+         prevents. The three outcomes are distinguished so the message is never
+         a guess — `readGoalLaunchSettings` returns a null budget only when no
+         row matched, which separates "no such goal" from "goal with no policy"
+         at no extra read. */
+      const attaching = Boolean(supplied) && supplied !== incumbentSubject;
+      if (attaching && def.id === 'goal') {
+        const stored = await readGoalLaunchSettings(effective);
+        const refusal =
+          stored.error != null
+            ? `could not read goal '${effective}' launch settings: ${stored.error}`
+            : stored.budget == null
+              ? `no goal '${effective}' exists to attach to`
+              : goalHolderPolicyProblem(stored.settings);
+        if (refusal) {
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: JSON.stringify({
+                  ok: false,
+                  error: `goal '${effective}' has no declared holder policy`,
+                  detail:
+                    `${refusal} Attaching is where somebody becomes the holder, so it is where the ` +
+                    'question has to be answered: a goal that requires a live holder without anyone ' +
+                    'having chosen that is how a goal sits reading `active` for days with nothing ' +
+                    'pursuing it (the 08-16 escalation this plan closes).',
+                  fix:
+                    `Declare it, then attach: goals:update { id: '${effective}', ` +
+                    "holder: { requireLive: true } } for a goal a session owns, or " +
+                    '{ requireLive: false } for one driven by routines rather than a held session. ' +
+                    'That door merges the holder policy into the goal\'s existing launch settings, so ' +
+                    'it will not disturb a declared ceiling.',
+                }),
+              },
+            ],
+          };
+        }
+      }
     }
 
     const res = await setMode({
