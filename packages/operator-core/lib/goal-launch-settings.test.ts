@@ -53,6 +53,9 @@ import {
   writeGoalLaunchSettings,
   resolveCeiling,
   resolveGoalLaunch,
+  goalHolderPolicySchema,
+  resolveGoalHolderPolicy,
+  GOAL_HOLDER_ON_LOSS,
   type GoalLaunchSettings,
 } from './goal-launch-settings';
 
