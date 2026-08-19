@@ -107,10 +107,23 @@ describe('goals:get — summary skips the children query (Gap 11)', () => {
   it('summary (default) projects {id,title} and fires exactly ONE query', async () => {
     fixtureQueue = [[GOAL_ROW()]];
     const res = await tool.handler({ id: 'g-1', detail: 'summary' } as never, CTX() as never);
+    // P-004 / D-011 — DETERMINISTIC DEACTIVATION, and this fixture is the
+    // motivating case: the column says `active`, no holder row exists, and the
+    // goal declares no policy (⇒ requireLive defaults TRUE, D-008). So the goal
+    // is administratively active and actually dormant.
+    //
+    // `status` therefore carries the DERIVED value and `rawStatus` the
+    // administrative one. Asserting `status: 'active'` here is what this test
+    // used to do, and it is precisely the falsehood an agent then acts on —
+    // which makes this assertion the falsifier: delete the fold in get.ts and
+    // it fails.
     expect(res.data).toEqual({
       id: 'g-1',
       title: 'Ship v1',
-      status: 'active',
+      status: 'dormant',
+      rawStatus: 'active',
+      deactivated: true,
+      holderLiveness: 'unheld',
       pause: null,
       actionable: true,
       premiseInvalidated: false,
