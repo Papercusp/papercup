@@ -13,6 +13,7 @@ import { z } from 'zod';
 import { generated, schemaOf } from '@papercusp/db-org';
 import { defineTool } from '@papercusp/tooldef';
 import { readGoalReadiness } from './goal-deps';
+import { readGoalLastPause, readGoalPause } from './pause-record';
 
 const goals = generated.goalsInHarnessShared;
 const GoalSelect = schemaOf(goals).select;
@@ -47,11 +48,25 @@ export default defineTool({
     // KILLED goal blocker — this goal needs review, not silent unblocking. A
     // READ, never a dispatch signal.
     const readiness = await readGoalReadiness(ctx.tx, goal.workspaceId, goal.id);
+    // The DELIBERATE-PAUSE record (goal-live-holder-guarantee-2026-08-18 P-005,
+    // D-009), parsed out of `metadata` rather than left for the caller to find.
+    //
+    // Surfaced at BOTH detail levels, and `status` joins the summary with it.
+    // The precedent is unambiguous: `routines:set` wrote this same record for
+    // months while `routines:list` selected `active` and not `metadata`, so the
+    // responder it was written FOR still saw a bare stopped flag and filed a
+    // deliberate hold as a suspected stall — twice, then a third time
+    // (EI-19336000265007219). A durable record nobody can read is not a fix. A
+    // summary that cannot say "paused, by whom, why" reproduces it exactly.
+    const metadata = (goal.metadata ?? null) as Record<string, unknown> | null;
+    const pause = readGoalPause(metadata);
     if (args.detail === 'summary') {
       return {
         data: {
           id: goal.id,
           title: goal.title,
+          status: goal.status,
+          pause,
           actionable: readiness.actionable,
           premiseInvalidated: readiness.premiseInvalidated,
         },
@@ -65,6 +80,10 @@ export default defineTool({
       data: {
         ...goal,
         children,
+        pause,
+        // The archived record of the last pause that has since been resumed —
+        // "was this ever held, and by whom" survives the resume.
+        lastPause: readGoalLastPause(metadata),
         actionable: readiness.actionable,
         premiseInvalidated: readiness.premiseInvalidated,
         blockedBy: readiness.blockers,

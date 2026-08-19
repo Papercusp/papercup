@@ -76,6 +76,10 @@ import { openEscalation } from '../agent-tools/coordination/escalations';
 import type { AgentIdentity } from '../agent-tools/coordination/identity';
 import type { LivenessVerdict } from '../agent-tools/coordination/liveness-oracle';
 import {
+  GOAL_LIVENESS_SWEEP_STATUSES,
+  resolveGoalActivity,
+} from '../goals/activity';
+import {
   readGoalHolderRows,
   resolveGoalHoldersFromRows,
   resolveHolderLiveness,
@@ -113,13 +117,24 @@ const WATCHDOG_IDENTITY: AgentIdentity = {
   userId: null,
 };
 
-/** One `status='active'` goal, reduced to what the verdict needs. */
+/** One sweepable goal, reduced to what the verdict needs. */
 export interface GoalRowLike {
   goalId: string;
   workspaceId: string;
   title: string;
   /** ms epoch of the goal row's last update. */
   updatedAtMs: number;
+  /**
+   * The goal's administrative status (P-005, D-009).
+   *
+   * OPTIONAL, and that is deliberate rather than lazy. The sweep's own read
+   * already scopes to `GOAL_LIVENESS_SWEEP_STATUSES` in SQL, so supplying it
+   * here is a SECOND, in-memory guard against the same mistake — a caller that
+   * hands this classifier goals it selected some other way (a test, a future
+   * P-004 read-side surface) cannot silently lose the paused exemption. Absent
+   * means "the caller scoped it", which is exactly today's behaviour.
+   */
+  status?: string | null;
 }
 
 /**
@@ -173,6 +188,14 @@ export function classifyGoalLiveness(
   nowMs: number,
   graceMs: number = GOAL_LIVENESS_GRACE_MS,
 ): GoalLivenessAlert | null {
+  // P-005 / D-009: the ADMINISTRATIVE short-circuit, before liveness is
+  // consulted at all. A deliberately paused goal has no live holder BY DESIGN —
+  // the pause fan-out disarms exactly those sessions' loops — so classifying it
+  // on liveness alone would render a stop as a crash and alarm on a hold
+  // somebody chose. Same rule as `isAdministrativelyPaused` one layer down.
+  const activity = resolveGoalActivity({ status: goal.status });
+  if (activity.deliberatelyPaused || activity.terminal) return null;
+
   const resolved = resolveGoalHoldersFromRows(
     goal.goalId,
     goal.workspaceId,
@@ -315,13 +338,16 @@ async function defaultFlagEnabled(): Promise<boolean> {
 
 function makeReadGoals(sql: Sql): GoalLivenessSweepDeps['readGoals'] {
   return async () => {
+    // The status predicate is the SHARED declaration (P-005, D-009), not a bare
+    // literal: a paused goal is exempt from this sweep on purpose, and that rule
+    // now lives in one place that the in-memory classifier reads too.
     const goalRows = await sql<
-      { id: string; workspace_id: string; title: string; updated_ms: string }[]
+      { id: string; workspace_id: string; title: string; status: string; updated_ms: string }[]
     >`
-      SELECT id, workspace_id, title,
+      SELECT id, workspace_id, title, status,
              (extract(epoch FROM updated_at) * 1000)::bigint AS updated_ms
         FROM harness_shared.goals
-       WHERE status = 'active'`;
+       WHERE status = ANY(${[...GOAL_LIVENESS_SWEEP_STATUSES]}::text[])`;
     // Every goal-mode row in one read, via the canonical holder read (P-001);
     // joined in memory so a goal with NO holder row is still visible (an inner
     // join would silently drop the `unheld` case, which is one of the two
@@ -332,6 +358,7 @@ function makeReadGoals(sql: Sql): GoalLivenessSweepDeps['readGoals'] {
         goalId: r.id,
         workspaceId: r.workspace_id,
         title: r.title,
+        status: r.status,
         updatedAtMs: Number(r.updated_ms),
       })),
       holders,

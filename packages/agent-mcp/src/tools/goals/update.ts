@@ -37,6 +37,7 @@ import {
   isStopReport,
   type GoalTransitionReport,
 } from './stop-seam';
+import { clearGoalPause, stampGoalPause } from './pause-record';
 
 export default defineTool({
   name: 'goals:update',
@@ -60,7 +61,8 @@ export default defineTool({
       'TERMINAL only (killed/achieved): `modesCleared` — sessions whose GOAL-mode row was retired — and ⚠ `modesLeftArmed`, owner-directed rows the sticky guard REFUSED, so those sessions are still being told this goal is their mission. A pause keeps the rows (resume reads them). ' +
       'RESUME arm (active): `potsResumed`, `potsSkippedContributing`, and ⚠ `loopsLeftDisarmed` — sessions attributed to this goal that are still not looping, deliberately NOT re-armed (they are routinely dead by resume time; new work re-forms from PLACEMENT instead). ' +
       '`timeWakeRestored` is always false: the pause DELETES the pot\'s declared time-wake row and its cadence is not reconstructible. ' +
-      '`degraded` is true when either gap is non-zero — a caller that renders only `status` will be wrong, which is what these numbers exist to prevent.',
+      '`degraded` is true when either gap is non-zero — a caller that renders only `status` will be wrong, which is what these numbers exist to prevent. ' +
+      'REFUSAL: status:"paused" with no `reason` returns degraded and writes NOTHING — an unexplained pause is indistinguishable from a goal that lost its holder, so the reason is recorded with author + timestamp (metadata.pause, read back by goals:get) or the pause does not happen.',
   },
   requirePrincipal: false,
   agentRoles: [...SU_WRITE_ROLES],
@@ -120,10 +122,7 @@ export default defineTool({
       .max(500)
       .optional()
       .describe(
-        'REQUIRED when pausing (status:"paused") — why this goal is being held, and ideally what would end the hold. ' +
-          'Persisted durably as metadata.pause { reason, pausedBy, pausedAtMs } and surfaced by goals:get, so a later reader can tell a DELIBERATE hold from a goal that quietly lost its holder ' +
-          '(goal-live-holder-guarantee-2026-08-18 P-005/D-009; same discipline as routines:set, whose EI-18654017982759582 exists because an unexplained pause twice stayed silently paused for days). ' +
-          'Ignored (but harmless) on any other status.',
+        'REQUIRED when pausing (status:"paused") — why the goal is held, ideally what would end the hold. Persisted as metadata.pause { reason, pausedBy, pausedAtMs } and read back by goals:get, so a later reader can tell a DELIBERATE hold from a goal that quietly lost its holder. Ignored on any other status.',
       ),
     holder: goalHolderPolicySchema
       .optional()
