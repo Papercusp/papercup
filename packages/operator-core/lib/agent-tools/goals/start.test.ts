@@ -546,6 +546,43 @@ describe('goals:start — the shared kill-criterion rule applies at THIS door to
   });
 });
 
+/* ── the holder-policy write boundary applies at THIS door too
+   (goal-live-holder-guarantee-2026-08-18 P-003, D-008) ───────────────────────
+   This door reaches the shared `insertGoalRow` DIRECTLY, so a rule enforced only
+   at `goals:create` would leave it as the way to install what that door refuses
+   — the second-copy drift kill-criterion.ts's header describes, one layer up.
+   It also has the strongest claim to the question: it SPAWNS the session that
+   holds the goal. ── */
+describe('goals:start — a goal must declare its holder policy', () => {
+  it('REFUSES an undeclared goal, and writes + spawns NOTHING', async () => {
+    const res = await call({ holder: undefined });
+    expect(isError(res)).toBe(true);
+    // Assert the REASON, not just isError: a bare failure could be any unrelated
+    // rejection and this test would never exercise the rule.
+    expect(textOf(res)).toMatch(/holder policy/i);
+    // Refusing must cost no goal row and no agent — a refusal that still spawned
+    // leaves an orphan process, which is worse than the permissive behaviour.
+    expect(sql.find((s) => /INSERT INTO harness_shared\.goals/i.test(s.text))).toBeFalsy();
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
+  });
+
+  it('ACCEPTS an explicit opt-OUT — the escape hatch must be sayable at this door', async () => {
+    const res = await call({ holder: { requireLive: false } });
+    expect(isError(res)).toBe(false);
+    expect(sql.find((s) => /INSERT INTO harness_shared\.goals/i.test(s.text))).toBeTruthy();
+  });
+
+  /* CONTROL. Without it, both assertions above still pass if the door refused
+     EVERY start — strict-looking and broken. ARGS declares a policy, so this
+     also pins that declaring is genuinely sufficient. */
+  it('CONTROL: the default fixture declares a policy and starts normally', async () => {
+    const res = await call();
+    expect(isError(res)).toBe(false);
+    expect(sql.find((s) => /INSERT INTO harness_shared\.goals/i.test(s.text))).toBeTruthy();
+  });
+});
+
 // ── goal-dag-shared-substrate-2026-08-18 P-004 ────────────────────────────
 describe('goals:start — the activation gate (P-004)', () => {
   /** One pending goal blocker + one satisfied issue blocker: not actionable. */
