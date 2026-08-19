@@ -524,6 +524,36 @@ export async function writeGoalLaunchSettings(
 }
 
 /**
+ * Declare (or revise) ONE goal's holder policy, leaving the rest of its launch
+ * settings alone — the remediation P-003's refusals name.
+ *
+ * WHY THIS EXISTS RATHER THAN "JUST CALL writeGoalLaunchSettings". That writer
+ * REPLACES the whole document, which is right for `goals:update
+ * { launchSettings }` (the owner is editing the document as a document) and
+ * wrong for every caller who only wants to answer the holder question: sending
+ * `{ holder }` alone silently drops the goal's ceilings and launch profile. A
+ * refusal whose stated fix destroys a ceiling is worse than the refusal, so the
+ * fix gets its own merge-safe door.
+ *
+ * Read-modify-write, not a jsonb merge in SQL, so the merged document goes
+ * through the SAME validation as any other write — the point of the strict
+ * schema is that no path may install a typo'd key, including this one.
+ */
+export async function declareGoalHolderPolicy(
+  goalId: string,
+  holder: GoalHolderPolicy,
+  sql?: Sql,
+): Promise<{ ok: boolean; error: string | null }> {
+  if (!goalId) return { ok: false, error: 'goalId is required' };
+  const current = await readGoalLaunchSettings(goalId, sql);
+  // A stored document that does not parse is NOT overwritten: it may hold a
+  // ceiling the owner is relying on, and merging into `{}` would erase it while
+  // reporting success. The caller hears the parse error instead.
+  if (current.error) return { ok: false, error: current.error };
+  return writeGoalLaunchSettings(goalId, { ...(current.settings ?? {}), holder }, sql);
+}
+
+/**
  * Live headcounts for a goal, and optionally for one of its fleets.
  *
  * The population is `session_briefs.goal_id` — every session whose WORK BELONGS
