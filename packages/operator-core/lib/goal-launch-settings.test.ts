@@ -293,6 +293,60 @@ describe('resolveGoalHolderPolicy — read-time defaults (D-001, D-008)', () => 
   });
 });
 
+/* ── the write-boundary rule (P-003) ──────────────────────────────────────────
+   The ONE definition every door refuses on, so `goals:create`, `goals:start` and
+   GOAL-mode attach cannot drift into three different answers. Its whole job is
+   to keep the population of goals-nobody-chose-a-policy-for from GROWING, while
+   D-008's read-time default covers the ones that already exist. ── */
+describe('goalHolderPolicyProblem — the P-003 write boundary', () => {
+  it('REFUSES a goal that declares nothing (the case the item exists for)', () => {
+    const problem = goalHolderPolicyProblem(null);
+    expect(problem).not.toBeNull();
+    // The refusal must name the way OUT, not just the problem — the same
+    // contract killCriterionProblem's callers rely on.
+    expect(problem).toMatch(/requireLive/);
+  });
+
+  it('treats an EMPTY document and a document with no holder key identically', () => {
+    // Both mean "nobody answered". A door that admitted one and refused the
+    // other would make the gate depend on whether some unrelated ceiling
+    // happened to be set.
+    expect(goalHolderPolicyProblem({})).not.toBeNull();
+    expect(goalHolderPolicyProblem({ maxAgents: 6 })).not.toBeNull();
+  });
+
+  it('ADMITS an explicit opt-out — requireLive:false is a declaration, not an absence', () => {
+    expect(goalHolderPolicyProblem({ holder: { requireLive: false } })).toBeNull();
+  });
+
+  it('ADMITS an explicit opt-in', () => {
+    expect(goalHolderPolicyProblem({ holder: { requireLive: true } })).toBeNull();
+  });
+
+  it('ADMITS a goal that pinned only onLoss — engaging with the policy IS declaring it', () => {
+    // isDefault, not `requireLive == null`, is what the rule reads: pinning
+    // either field means somebody thought about the holder question and took
+    // the other default knowingly.
+    expect(goalHolderPolicyProblem({ holder: { onLoss: 'respawn' } })).toBeNull();
+    expect(goalHolderPolicyProblem({ holder: { onLoss: 'deactivate' } })).toBeNull();
+  });
+
+  it('REFUSES a null-cleared policy — clearing is unpinning, not opting out', () => {
+    // The P-005 panel clears a field by writing null. That must land back on
+    // "undeclared" (and so be refused at a write boundary), never be mistaken
+    // for the explicit `false` opt-out.
+    expect(goalHolderPolicyProblem({ holder: { requireLive: null } })).not.toBeNull();
+    expect(goalHolderPolicyProblem({ holder: { requireLive: null, onLoss: null } })).not.toBeNull();
+  });
+
+  it('CONTROL: the rule reads requireLive, so an opted-out goal is admitted even unpinned elsewhere', () => {
+    // Without this, every assertion above still passes if the predicate simply
+    // returned a message for EVERY input — strict-looking and broken, with the
+    // suite unable to tell the difference.
+    expect(goalHolderPolicyProblem({ holder: { requireLive: false, onLoss: 'deactivate' } })).toBeNull();
+  });
+});
+
 describe('foldLaunchProfile', () => {
   const settings: GoalLaunchSettings = {
     defaults: { model: 'sonnet', effort: 'medium', carry: 'warm' },
