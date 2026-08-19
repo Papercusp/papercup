@@ -151,10 +151,18 @@ describe('goals:get — the deliberate-pause record is READ BACK (P-005)', () =>
   it('summary surfaces status + the parsed pause record', async () => {
     fixtureQueue = [[PAUSED_ROW()]];
     const res = await tool.handler({ id: 'g-1', detail: 'summary' } as never, CTX() as never);
+    // ALSO the load-bearing P-004 case, and the reason P-005 had to ship first
+    // (D-008): this goal has no live holder EITHER — the pause fan-out disarmed
+    // exactly those sessions — so a fold that consulted liveness before status
+    // would render a deliberate hold as a dead goal. `deactivated` stays FALSE
+    // and `status` stays `paused`, never `dormant`.
     expect(res.data).toEqual({
       id: 'g-1',
       title: 'Ship v1',
       status: 'paused',
+      rawStatus: 'paused',
+      deactivated: false,
+      holderLiveness: 'unheld',
       pause: {
         reason: 'owner holding the spend',
         by: 'su-abc',
@@ -225,6 +233,14 @@ describe('goals:get — full mode fires the children query (Gap 11)', () => {
     expect(queriesBuilt).toBe(2); // goal row + children
     expect(res.data).toEqual({
       ...goal,
+      // P-004: these OVERRIDE the `...goal` spread — a full read must not hand
+      // back the raw `active` for a goal nothing is holding either.
+      status: 'dormant',
+      rawStatus: 'active',
+      deactivated: true,
+      holderLiveness: 'unheld',
+      holderPolicy: { requireLive: true, onLoss: 'report', isDefault: true },
+      holders: [],
       children: [
         { id: 'g-2', title: 'Child A' },
         { id: 'g-3', title: 'Child B' },
