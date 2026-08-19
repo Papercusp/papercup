@@ -436,6 +436,45 @@ export default function AgentOrders({
                         source drifted
                       </span>
                     ) : null}
+                    {/* P-011 — BESIDE "source drifted", never instead of it.
+                        The two answer different questions and a fact can carry
+                        both: `possiblyStale` says this fact's own source moved
+                        underneath it (go re-read the source), `contested` says
+                        other agents already wrote to this key or settled it
+                        UNDECIDABLE (go read the argument). Merging them into one
+                        "suspect" badge would tell the reader something is wrong
+                        while hiding which thing to go do about it.
+
+                        MARK, NEVER SUPPRESS — the house rule for this whole
+                        family. A contested fact is not a false fact: re-asserting
+                        over a settled key is sometimes exactly right, and only
+                        the reader can tell. So the fact renders in full and the
+                        badge sits next to it.
+
+                        `settledUndecidable` gets its OWN word because it is the
+                        strongest case in the family: someone already worked the
+                        question and concluded it could not be settled with what
+                        they had. An agent who reads "contested" may go argue; one
+                        who reads "settled undecidable" knows to go find the
+                        `settledBy` evidence instead. */}
+                    {f.contested ? (
+                      <span
+                        className="pc-orders__badge pc-orders__badge--warn"
+                        data-testid="orders-fact-contested"
+                        data-undecidable={f.contested.settledUndecidable ? 'true' : undefined}
+                        title={
+                          f.contested.note ||
+                          'Other agents have already written to this key. Read the version history before re-asserting.'
+                        }
+                      >
+                        {f.contested.settledUndecidable ? 'settled undecidable' : 'contested'}
+                        {(f.contested.priorAuthors?.length ?? 0) > 0
+                          ? ` · ${f.contested.priorAuthors!.length} prior author${
+                              f.contested.priorAuthors!.length === 1 ? '' : 's'
+                            }`
+                          : ''}
+                      </span>
+                    ) : null}
                   </span>
                 </div>
               ))
