@@ -277,3 +277,23 @@ describe('goal-auto-start — edge cleanup on every unwind path (P-004)', () => 
     expect(order).toContain('delete');
   });
 });
+
+describe('goal-auto-start — the D-005 both-rails requirement (pre-existing rule, pinned UNCHANGED by P-004)', () => {
+  // D-004's closing invariant: adding blocked-by edges + the activation gate
+  // must not loosen the autonomous-creation rails. Both rails refuse BEFORE any
+  // row is written — no insert, no edges, no spawn to unwind.
+  it('refuses an empty kill criterion before any side effect', async () => {
+    await expect(call({ killCriterion: '   ' })).rejects.toThrow(/kill criterion \(D-005\)/);
+    expect(sqlLog).toHaveLength(0);
+    expect(applyBlockedByMock).not.toHaveBeenCalled();
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses a negative or non-finite budgetCents ceiling before any side effect', async () => {
+    await expect(call({ budgetCents: -1 })).rejects.toThrow(/budgetCents ceiling \(D-005\)/);
+    await expect(call({ budgetCents: Number.NaN })).rejects.toThrow(/budgetCents ceiling \(D-005\)/);
+    expect(sqlLog).toHaveLength(0);
+    expect(applyBlockedByMock).not.toHaveBeenCalled();
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
+  });
+});
