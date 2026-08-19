@@ -932,6 +932,135 @@ describe('SessionChatModal', () => {
       expect(band.textContent).toContain('waiting for review');
     });
 
+    /* popup-agent-state-coverage-2026-08-18 P-009. The chip said WHAT the agent
+       is waiting on and never for how long — and the duration is the half that
+       decides whether to intervene. `sinceIso` was already on the payload with
+       no reader. */
+    it('renders how long the await has been open, from openAwait.sinceIso', async () => {
+      seedRoster([
+        {
+          ownerId: 'su-live-1',
+          modes: [],
+          claims: [],
+          currentFiles: [],
+          openAwait: {
+            eventKey: 'some:real:gate',
+            note: 'waiting for review',
+            sinceIso: new Date(Date.now() - 41 * 60_000).toISOString(),
+            expiresIso: null,
+          },
+        },
+      ]);
+      mockFetchOnce(200, { sessions: [{ source_kind: 'claude', session_id: 'claude-abc', last_ts: null }] });
+      render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+      await waitFor(() => expect(captured).not.toBeNull());
+      act(() => {
+        captured!.handlers.backfill!(JSON.stringify([{ kind: 'text', text: 'hi' }]));
+      });
+
+      const age = await waitFor(() => screen.getByTestId('session-chat-state-await-age'));
+      expect(age.textContent).toContain('41m');
+      // The age is a FACT, not a verdict: the chip must not decide for the
+      // reader that 41m is too long. That judgement belongs to the leader-brief
+      // alerts in the peers rail, which carry their evidence with them.
+      expect(age.textContent).not.toMatch(/stuck|stalled|too long/i);
+      const chip = screen.getByTestId('session-chat-state-await');
+      expect(chip.getAttribute('title')).toContain('Open for 41m.');
+      // No recorded timeout is NOT "no timeout" — the tooltip says which.
+      expect(chip.getAttribute('title')).toContain('No timeout on record');
+      expect(screen.queryByTestId('session-chat-state-await-expiry')).toBeNull();
+    });
+
+    it('renders NO age — never "0s" — when the await carries no start time', async () => {
+      // The honesty rule this pins: a duration we could not compute renders as
+      // nothing. "0s" would say the wait just started, about a wait we never
+      // dated, and it is the reading most likely to stop someone intervening.
+      seedRoster([
+        {
+          ownerId: 'su-live-1',
+          modes: [],
+          claims: [],
+          currentFiles: [],
+          openAwait: {
+            eventKey: 'some:real:gate',
+            note: 'waiting for review',
+            sinceIso: 'definitely not a date',
+            expiresIso: null,
+          },
+        },
+      ]);
+      mockFetchOnce(200, { sessions: [{ source_kind: 'claude', session_id: 'claude-abc', last_ts: null }] });
+      render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+      await waitFor(() => expect(captured).not.toBeNull());
+      act(() => {
+        captured!.handlers.backfill!(JSON.stringify([{ kind: 'text', text: 'hi' }]));
+      });
+
+      const chip = await waitFor(() => screen.getByTestId('session-chat-state-await'));
+      expect(chip.textContent).toContain('waiting for review');
+      expect(screen.queryByTestId('session-chat-state-await-age')).toBeNull();
+      expect(chip.textContent).not.toContain('0s');
+      expect(chip.getAttribute('title')).toContain('No start time on record');
+    });
+
+    it('marks an await whose timeout has already passed', async () => {
+      seedRoster([
+        {
+          ownerId: 'su-live-1',
+          modes: [],
+          claims: [],
+          currentFiles: [],
+          openAwait: {
+            eventKey: 'some:real:gate',
+            note: 'waiting for review',
+            sinceIso: new Date(Date.now() - 3 * 3_600_000).toISOString(),
+            expiresIso: new Date(Date.now() - 60_000).toISOString(),
+          },
+        },
+      ]);
+      mockFetchOnce(200, { sessions: [{ source_kind: 'claude', session_id: 'claude-abc', last_ts: null }] });
+      render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+      await waitFor(() => expect(captured).not.toBeNull());
+      act(() => {
+        captured!.handlers.backfill!(JSON.stringify([{ kind: 'text', text: 'hi' }]));
+      });
+
+      const expiry = await waitFor(() => screen.getByTestId('session-chat-state-await-expiry'));
+      expect(expiry.textContent).toContain('timed out');
+      const chip = screen.getByTestId('session-chat-state-await');
+      expect(chip.getAttribute('title')).toContain('Its timeout has already passed.');
+      expect(screen.getByTestId('session-chat-state-await-age').textContent).toContain('3h');
+    });
+
+    it('puts a live timeout in the tooltip without crowding the chip', async () => {
+      seedRoster([
+        {
+          ownerId: 'su-live-1',
+          modes: [],
+          claims: [],
+          currentFiles: [],
+          openAwait: {
+            eventKey: 'some:real:gate',
+            note: 'waiting for review',
+            sinceIso: new Date(Date.now() - 5 * 60_000).toISOString(),
+            expiresIso: new Date(Date.now() + 25 * 60_000).toISOString(),
+          },
+        },
+      ]);
+      mockFetchOnce(200, { sessions: [{ source_kind: 'claude', session_id: 'claude-abc', last_ts: null }] });
+      render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+      await waitFor(() => expect(captured).not.toBeNull());
+      act(() => {
+        captured!.handlers.backfill!(JSON.stringify([{ kind: 'text', text: 'hi' }]));
+      });
+
+      const chip = await waitFor(() => screen.getByTestId('session-chat-state-await'));
+      expect(chip.getAttribute('title')).toContain('Times out in 25m.');
+      // A still-live timeout is not an alarm, so it does not take chip space —
+      // only the elapsed age does. Only "timed out" earns a visible mark.
+      expect(screen.queryByTestId('session-chat-state-await-expiry')).toBeNull();
+    });
+
     /* [owner 2026-08-02, screenshotted] `openAwait.note` is agent-authored free
        text with no length bound — a real one was a 400-character carry-note. The
        chip is `white-space: nowrap`, so it grew to the width of the whole string
