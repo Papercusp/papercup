@@ -1438,10 +1438,19 @@ export async function fetchRedTestRows(sql: Sql, opts: CollectOptions = {}): Pro
            min(started_at) FILTER (WHERE status IN ('fail', 'error')) AS earliest_fail_at,
            -- (EI-19363804802198172) The COMMIT dimension. 'fail_shas' keeps one entry
            -- per failing RUN (not per distinct sha) so the per-sha counts are
-           -- recoverable; 'last_pass_*' is the newest green run in the window, which
-           -- is what decides whether those failures are still live evidence.
+           -- recoverable.
+           --
+           -- (WI-39890) 'pass_shas' is the WHOLE green set, and it is what decides
+           -- whether those failures are still live evidence. This used to project
+           -- only [1] -- the newest pass BY WALL-CLOCK -- and discard the rest of
+           -- the array. Run shas are not monotonic in time here, so that single
+           -- candidate is routinely an ANCESTOR of a failing sha while an
+           -- older-by-clock pass is its DESCENDANT, and the supersession check
+           -- then misses a real supersession. 'last_pass_*' is RENDERING ONLY.
            array_agg(commit_sha ORDER BY started_at DESC)
              FILTER (WHERE status IN ('fail', 'error')) AS fail_shas,
+           array_agg(commit_sha ORDER BY started_at DESC)
+             FILTER (WHERE status = 'pass') AS pass_shas,
            (array_agg(commit_sha ORDER BY started_at DESC)
              FILTER (WHERE status = 'pass'))[1] AS last_pass_sha,
            max(started_at) FILTER (WHERE status = 'pass') AS last_pass_at
