@@ -870,6 +870,9 @@ export function writeSuCodexHome(opts: {
   promptText: string;
   /** Per-session coordination identity, baked into the url's &client=. */
   sid: string;
+  /** Launch model. Extended-window models bake their canonical root keys into
+   *  config.toml so model-less resumes retain the launch window. */
+  model?: string | null;
   /** Superuser bearer token, baked as an http_headers Authorization (D-006).
    *  Omit only when no token is installed → a degraded non-superuser home. */
   token?: string | null;

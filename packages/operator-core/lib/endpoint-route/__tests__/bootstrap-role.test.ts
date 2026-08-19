@@ -7,7 +7,7 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RouteContext } from '../define-route';
 
 const LC_DIR = mkdtempSync(join(tmpdir(), 'bootstrap-role-lc-'));
@@ -138,14 +138,18 @@ vi.mock('../../pot/started', async (orig) => ({
 
 const CTX: RouteContext = { principal: null, input: undefined, params: {}, log: () => {}, signal: new AbortController().signal };
 
-async function callPost(body: unknown): Promise<Response> {
+let post: (r: Request, c: RouteContext) => Promise<Response>;
+beforeAll(async () => {
   const mod = await import('../routes/agent-mcp/bootstrap-role');
-  const post = (mod.default as Array<{ method: string; handler: (r: Request, c: RouteContext) => Promise<Response> }>)
-    .find((r) => r.method === 'POST')!;
+  post = (mod.default as Array<{ method: string; handler: typeof post }>)
+    .find((r) => r.method === 'POST')!.handler;
+});
+
+async function callPost(body: unknown): Promise<Response> {
   const req = new Request('http://localhost:3070/api/agent-mcp/console/bootstrap-role', {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
   });
-  return post.handler(req, CTX);
+  return post(req, CTX);
 }
 
 beforeEach(() => {
