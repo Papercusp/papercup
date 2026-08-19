@@ -259,6 +259,32 @@ export interface RetainFeedOpts {
    *  never spreads client args, so a caller cannot widen it into a DoS knob.
    *  Tests pass a tiny value to exercise the degrade path without waiting. */
   budgetMs?: number;
+  /**
+   * Compute the tab-badge corpus counts inline on the first page.
+   *
+   * DEFAULTS TO FALSE, and the `learning.retainFeed` resolver never opts in —
+   * counts are their own read now (`readRetainCounts` / `learning.retainCounts`,
+   * WI-39900). Inline they cost 4.79s of a 4.81s Runbooks page and held every
+   * tab's rows hostage to the memory backend's ~10.9s p50. Opting back in is
+   * for tests and for a caller that genuinely wants one round-trip and has
+   * accepted that latency; it buys NO extra deadline (see readRetainCounts).
+   */
+  withCounts?: boolean;
+}
+
+/** {@link readRetainCounts} options. The lens scoping is shared with
+ *  {@link RetainFeedOpts}; the rest are seams `readRetainFeed` uses to hand
+ *  down its own deadline and already-memoized full-corpus deps. */
+export interface RetainCountsOpts {
+  harnessScopes?: readonly string[];
+  memberSlugs?: readonly string[];
+  budgetMs?: number;
+  /** Deadline to bound every count leg by. Omit to create one from `budgetMs`. */
+  withinBudget?: WithinBudget;
+  /** Pre-memoized full-corpus deps, so a caller that ALREADY read them for its
+   *  rows does not read them a second time to count the same array. */
+  listMemories?: (() => Promise<RetainMemorySource[]>) | undefined;
+  listRubrics?: () => Promise<Array<{ slug: string; title: string; status: string; updatedAt: string }>>;
 }
 
 /** The SQL predicate mirroring {@link inRetainLegWindow}, over a subquery
@@ -614,12 +640,57 @@ export async function readRetainFeed(
   const nextCursor =
     last && merged.length >= limit ? encodeRetainCursor({ ts: last.ts, kind: last.kind, id: last.id }) : null;
 
-  let counts: RetainFeedCounts | null = null;
-  if (!cursor) {
-    const [memories, plans, wi, rubrics, runbooks, recipes] = await Promise.all([
-      listMemoriesOnce
+  const counts: RetainFeedCounts | null =
+    opts.withCounts && !cursor
+      ? await readRetainCounts(sql, workspaceId, deps, {
+          ...opts,
+          // Share the ROWS' deadline: opting counts back in must not buy a
+          // second budget (see read-deadline.ts, "why a deadline and not a
+          // per-call budget"), and must not re-read the full-corpus deps the
+          // legs already memoized above.
+          withinBudget,
+          listMemories: listMemoriesOnce,
+          listRubrics: listRubricsOnce,
+        })
+      : null;
+
+  return { rows, nextCursor, counts, degraded, generatedAt };
+}
+
+/**
+ * The tab-badge corpus sizes — filter-INDEPENDENT, and DELIBERATELY NOT part of
+ * a feed page (WI-39900, owner report 2026-08-19 "it should be near instant").
+ *
+ * These six counts were computed inline on every FIRST page, for ALL SIX kinds,
+ * regardless of which tab was selected — so opening the Runbooks tab paid for
+ * the memory, rubric, recipe and work-item corpora too. Measured on the live
+ * corpus: Runbooks first page 4.79s with the counts vs **0.024s** with them
+ * skipped; the `all` tab 1.0s vs 0.13s. The rows were never the slow part.
+ *
+ * Splitting them is not only about milliseconds. The memories count is a
+ * FULL-CORPUS read over the memory backend, whose measured p50 is ~10.9s with
+ * 69% of calls hitting a >=10s timeout (WI-39554) — so while the counts rode
+ * the page, every tab's ROWS were hostage to that store, and a hiccup spent the
+ * whole 6s read budget before rendering anything. Now the ledger renders off
+ * its keyset-paged legs and the badges arrive on their own query.
+ *
+ * Every leg still degrades to `null` independently: a badge whose count could
+ * not be read renders as unknown, NEVER as 0 (a confident zero over a nonempty
+ * corpus is the failure this nullability exists to prevent).
+ */
+export async function readRetainCounts(
+  sql: Sql,
+  workspaceId: string,
+  deps: RetainFeedDeps,
+  opts: RetainCountsOpts = {},
+): Promise<RetainFeedCounts> {
+  const withinBudget = opts.withinBudget ?? createReadDeadline(opts.budgetMs ?? RETAIN_READ_BUDGET_MS);
+  const listMemories = opts.listMemories ?? deps.listMemories;
+  const listRubrics = opts.listRubrics ?? (() => deps.listRubrics());
+  const [memories, plans, wi, rubrics, runbooks, recipes] = await Promise.all([
+      listMemories
         ? withinBudget(
-            listMemoriesOnce().then((r) => r.length),
+            listMemories().then((r) => r.length),
             'memories count',
           ).catch(() => null)
         : Promise.resolve(null),
@@ -678,10 +749,7 @@ export async function readRetainFeed(
       withinBudget(deps.countRunbooks(), 'runbooks count').catch(() => null),
       withinBudget(deps.countRecipes(), 'recipes count').catch(() => null),
     ]);
-    counts = { memories, plans, wi, rubrics, runbooks, recipes };
-  }
-
-  return { rows, nextCursor, counts, degraded, generatedAt };
+  return { memories, plans, wi, rubrics, runbooks, recipes };
 }
 
 /** The plan-born work items behind one expanded plan row, newest activity
