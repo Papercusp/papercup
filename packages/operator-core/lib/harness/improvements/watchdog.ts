@@ -279,7 +279,22 @@ export interface WatchdogSignal {
   redTest?: {
     /** Distinct failing shas in the window, newest first. */
     failShas: string[];
-    /** Newest passing sha in the window, if any. */
+    /**
+     * (WI-39890) EVERY distinct passing sha in the window, newest first — not
+     * just the newest one. Supersession is an ANCESTRY question, so the
+     * candidate set has to be ancestry-COMPLETE: run shas are not monotonic in
+     * time on this tree (concurrent runners, pinned/retreated checkouts), so the
+     * newest pass BY WALL-CLOCK is routinely an ANCESTOR of a failing sha while
+     * some older-by-clock pass is its DESCENDANT. Sampling a single candidate
+     * re-imports the very wall-clock ordering `isSupersededByPassingDescendant`
+     * exists to reject — see that function for the measured case.
+     */
+    passShas: string[];
+    /**
+     * Newest passing sha in the window, if any. RENDERING/CONTEXT ONLY — the
+     * supersession DECISION reads `passShas`; deciding off this field is the
+     * WI-39890 bug.
+     */
     lastPassSha?: string;
     /** Newest passing run's timestamp (ISO), if any. */
     lastPassAt?: string;
