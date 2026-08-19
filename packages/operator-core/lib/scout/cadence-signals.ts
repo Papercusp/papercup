@@ -17,7 +17,15 @@
 
 import { activeWorkspaceId } from '../workspace-registry';
 import { readImprovementItems } from '../harness/improvements/read-items';
-import { listPresence, PRESENCE_STALE_MS } from '../agent-tools/coordination/presence';
+import { listPresence } from '../agent-tools/coordination/presence';
+// Constant-only import from the PURE package, not the local './presence' re-export (WI-39450).
+// `defaultLiveAgentCountDeps` below reads PRESENCE_STALE_MS at MODULE SCOPE, and the local
+// module constructs a PgPresenceStore on load, so unit tests blanket-mock it — a factory that
+// omits this constant would turn that top-level read into a COLLECTION crash (vitest 4 throws
+// at access time), exactly the class that took ~16 suites down via presence-wakeability.ts:88.
+// The pure module has no side effects and is unaffected by that mock. `listPresence` above
+// legitimately needs the local module; this constant does not.
+import { PRESENCE_STALE_MS } from '@papercusp/coordination/presence';
 
 /** Default fleet capacity for the idle ratio (override: PAPERCUSP_SCOUT_FLEET_CAPACITY). */
 export function scoutFleetCapacity(): number {
