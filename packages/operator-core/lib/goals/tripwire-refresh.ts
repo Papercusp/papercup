@@ -44,14 +44,20 @@
  * tripwire that was already scored.
  */
 
-/** The stored tripwire shape — mirrors `GoalTripwire` (sync-resolver/goals.ts). */
-export interface GoalTripwireLike {
+/**
+ * The stored tripwire shape — mirrors `GoalTripwire` (sync-resolver/goals.ts).
+ *
+ * A `type` and not an `interface` deliberately: only a type alias gets TypeScript's
+ * implicit index signature, and without one this is not assignable to postgres-js's
+ * `JSONValue`, so the round-trip back into the jsonb column would not typecheck.
+ */
+export type GoalTripwireLike = {
   metric: string;
   label: string;
   threshold: number;
   current?: number | null;
   unit?: string;
-}
+};
 
 /**
  * The facts a tripwire may be advanced FROM. Deliberately tiny: every field here
