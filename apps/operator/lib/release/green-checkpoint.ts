@@ -5167,6 +5167,9 @@ async function tryLongestGreenPrefix(
    *  means it ran the whole range and every single prefix looked clean — see the
    *  vacuous-maximal-prefix guard below, which is only reachable in that state. */
   let scanStopped = false;
+  /** Which granularity actually produced the verdict — the fallback below can change it,
+   *  and a decline message naming the wrong one sends the next reader to the wrong scan. */
+  let declineGranularity: "FILE" | "workspace" = locateByFile ? "FILE" : "workspace";
   for (const sha of commits.slice(0, -1)) {
     // exclude the red tip itself
     if (locateByFile) {
@@ -5246,6 +5249,7 @@ async function tryLongestGreenPrefix(
       );
       if (failingWs.size === 0) return null;
       // Re-walk at workspace granularity, the same scan the gate-id case falls back to.
+      declineGranularity = "workspace";
       prefixTip = null;
       for (const sha of commits.slice(0, -1)) {
         const aff = await deps.affectedWorkspacesForRange(lastReady, sha);
@@ -5262,7 +5266,7 @@ async function tryLongestGreenPrefix(
     // which is exactly the ambiguity WI-38207 had to fix by reading the source.
     logPartialGreenGate(
       `partial-green-gate: no salvageable prefix — the first commit after ${lastReady.slice(0, 8)} already ` +
-        `implicates the failure at ${locateByFile ? "FILE" : "workspace"} granularity`,
+        `implicates the failure at ${declineGranularity} granularity`,
     );
     return null;
   }
