@@ -538,7 +538,10 @@ export function partitionSignalsByKnownKeys(
   signals: WatchdogSignal[],
   dups: WatchdogKeyDup[],
   priorSeenKeys: readonly string[] = [],
+  opts: { nowMs?: number; standingSuppressionMs?: number } = {},
 ): SignalPartition {
+  const nowMs = opts.nowMs ?? Date.now();
+  const standingSuppressionMs = opts.standingSuppressionMs ?? STANDING_SUPPRESSION_MS;
   const seenLastTick = new Set(priorSeenKeys);
   const byKey = new Map<string, WatchdogKeyDup[]>();
   for (const d of dups) {
@@ -566,12 +569,40 @@ export function partitionSignalsByKnownKeys(
     }
     // DELTA GATE (P-003 / D-001): this exact key already fired on the previous ran tick, so
     // the condition is STANDING — the watchdog is re-detecting what it just detected, not
-    // finding something new. Suppress. This is deliberately independent of whether an item
-    // exists: the churn happens precisely when another subsystem retired the item between
-    // ticks, which is the case the item-state checks below cannot see.
+    // finding something new. Suppress. The churn this exists to stop happens when another
+    // subsystem retired the item between ticks, which is the case the item-state checks
+    // below cannot see.
+    //
+    // ⚠ TIME-BOUNDED (EI-20847917368795366). The intent above is about a ONE-TICK window,
+    // but an unbounded gate suppresses a continuously-firing key FOREVER: it never reaches
+    // the resolution checks, so it can never re-file. Measured 2026-08-19 — 11 keys were
+    // standing with no item tracking them, 8 of them on all 48 ticks of a 12h window,
+    // including `ship-link-stuck:staging->main` (main WAS frozen) and
+    // `routine-failure:routine:git-sync`. A monitoring blackout on exactly the conditions
+    // that matter most, produced by the detector working perfectly.
+    //
+    // The rule: suppress IFF a matching item exists AND its newest update is within the
+    // cooldown. That is one rule for the two observed variants —
+    //   • retired-then-still-firing (7/11): match exists but is days old → falls through.
+    //   • NEVER FILED (4/11): the first tick deferred it (the per-tick capture cap; seenKeys
+    //     records deferred signals too, so it is seenLastTick on the very next tick) and it
+    //     was suppressed before it could ever be filed → no match at all → falls through.
+    // Anti-churn is preserved exactly: a between-ticks retirement leaves a seconds-old
+    // match, which still suppresses. A never-filed key files exactly ONCE and then matches
+    // `knownOpen` above this gate on every later tick, so it cannot churn either. The
+    // auto-close lifecycle (signal clears → item closes → signal returns) is untouched,
+    // because a signal that went quiet is not `seenLastTick` and never reaches this gate.
     if (seenLastTick.has(watchdogKeyOf(s))) {
-      out.standing.push(s);
-      continue;
+      const matchAgeMs = matches
+        .map((m) => nowMs - Date.parse(m.updatedAt))
+        .filter((age) => Number.isFinite(age));
+      // Unparseable timestamps fail OPEN (no suppression), consistent with this
+      // function's stated policy that a phantom re-file beats a suppressed real one.
+      const newestMatchAgeMs = matchAgeMs.length > 0 ? Math.min(...matchAgeMs) : null;
+      if (newestMatchAgeMs !== null && newestMatchAgeMs <= standingSuppressionMs) {
+        out.standing.push(s);
+        continue;
+      }
     }
     if (matches.length > 0 && s.latestAt) {
       const evidenceMs = Date.parse(s.latestAt);
