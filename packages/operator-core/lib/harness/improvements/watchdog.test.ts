@@ -2996,7 +2996,12 @@ describe('red-test supersession by a passing DESCENDANT (EI-19363804802198172)',
     const kept = await debounceRedTestSignals(
       [
         {
-          ...sig({ failShas: ['c8aac92703'], lastPassSha: 'd384a993f3', lastPassAt: '2026-08-02T17:51:24.000Z' }),
+          ...sig({
+            failShas: ['c8aac92703'],
+            passShas: ['d384a993f3'],
+            lastPassSha: 'd384a993f3',
+            lastPassAt: '2026-08-02T17:51:24.000Z',
+          }),
           latestAt: '2026-08-02T18:00:05.000Z', // failure is NEWER than the pass
         },
       ],
