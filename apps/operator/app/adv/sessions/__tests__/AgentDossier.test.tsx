@@ -1031,6 +1031,63 @@ describe('AgentDossier', () => {
       expect(within(container.querySelector('#pc-dossier-reference')!).getByText('/repo')).toBeTruthy();
     });
 
+    /* popup-agent-state-coverage-2026-08-18 P-012 — WHICH machine the rows
+       around it describe. The two fields are read independently because D-011's
+       test lands differently on each: an absent `machineLabel` is an
+       unmeasured attribute (silence), while a PRESENT `isLocal` is a measured
+       property and always speaks. */
+    describe('machine row (P-012)', () => {
+      it('says nothing when the payload measured neither field — D-011 silence, not a guess', () => {
+        expect(machineRowValue({ machineLabel: null, isLocal: undefined })).toBeNull();
+        expect(machineRowValue({ machineLabel: undefined, isLocal: undefined })).toBeNull();
+        // Whitespace is not a measurement either.
+        expect(machineRowValue({ machineLabel: '   ', isLocal: undefined })).toBeNull();
+      });
+
+      it('renders the label ALONE when locality was not measured — never a defaulted "this machine"', () => {
+        // The wrong locality claim is the one that matters: this row exists to
+        // tell a reader whether host/pid/window are reachable from here.
+        expect(machineRowValue({ machineLabel: 'peer-box', isLocal: undefined })).toBe('peer-box');
+      });
+
+      it('always speaks a MEASURED locality, with or without a label', () => {
+        expect(machineRowValue({ machineLabel: 'avi-dev', isLocal: true })).toBe('avi-dev · this machine');
+        expect(machineRowValue({ machineLabel: 'peer-box', isLocal: false })).toBe('peer-box · federated');
+        expect(machineRowValue({ machineLabel: null, isLocal: true })).toBe('this machine');
+        expect(machineRowValue({ machineLabel: null, isLocal: false })).toBe(
+          'federated — another machine in this hive',
+        );
+      });
+
+      it('renders the federated marker in the Reference drill-in, beside host · pid', async () => {
+        const { findByText, container } = render(
+          <AgentDossier
+            ownerId="su-1"
+            entry={entry({ machineLabel: 'peer-box', isLocal: false })}
+            onClose={() => {}}
+          />,
+        );
+        await findByText('Reference');
+        expandSection(container, 'pc-dossier-reference');
+        const section = within(container.querySelector('#pc-dossier-reference')!);
+        expect(section.getByText('peer-box · federated')).toBeTruthy();
+        // The row it qualifies is still previewed above it.
+        expect(section.getByText('avi-dev · 33417')).toBeTruthy();
+      });
+
+      it('adds NO row at all when the payload carries neither field (older operator / SSE skew)', async () => {
+        const { findByText, container } = render(
+          <AgentDossier ownerId="su-1" entry={entry()} onClose={() => {}} />,
+        );
+        await findByText('Reference');
+        expandSection(container, 'pc-dossier-reference');
+        const labels = Array.from(
+          container.querySelectorAll('#pc-dossier-reference .pc-dossier__meta-row'),
+        ).map((n) => n.textContent ?? '');
+        expect(labels.some((t) => t.startsWith('machine'))).toBe(false);
+      });
+    });
+
     it('orders the rail by operational urgency — Waiting on second, never below Coord', async () => {
       const { findByText, container } = render(
         <AgentDossier ownerId="su-1" entry={entry()} onClose={() => {}} />,
