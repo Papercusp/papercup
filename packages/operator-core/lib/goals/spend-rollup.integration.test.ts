@@ -62,6 +62,10 @@ beforeAll(async () => {
       id text PRIMARY KEY, workspace_id text NOT NULL,
       status text NOT NULL DEFAULT 'active',
       metadata jsonb, budget_cents bigint,
+      -- tripwires: a COLUMN since migration 765, and the one P-004 advances.
+      -- This fixture predated the sweep reading it and was silently a column
+      -- behind production until that read landed.
+      tripwires jsonb,
       created_at timestamptz NOT NULL DEFAULT now(),
       updated_at timestamptz NOT NULL DEFAULT now()
     )`);
