@@ -344,7 +344,7 @@ export async function runBudgetedTasks(tasks, options) {
   const runLane = async (lane, workers, take) => {
     while (pending.length > 0 && firstError == null) {
       const entry = take(pending);
-      await runOne(entry, lane, workers);
+      await runOne(entry, lane, admitWorkersFor(workers));
     }
   };
 
@@ -369,6 +369,10 @@ export async function runBudgetedTasks(tasks, options) {
       observedMaxWorkers,
       observedMaxMemoryMb,
       observedMaxTasks,
+      memoryReadings,
+      admissionClamps,
+      minAdmittedWorkers,
+      lastMemAvailableMb,
     },
   };
 }
