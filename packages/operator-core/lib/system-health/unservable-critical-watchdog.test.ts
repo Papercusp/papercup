@@ -8,7 +8,7 @@
  * critical-OR-major rule cannot separate the populations, and by a CALIBRATION
  * case proving the guard still fires on the thing it is for.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   scanUnservableCritical,
   runUnservableCriticalSweepOnce,
