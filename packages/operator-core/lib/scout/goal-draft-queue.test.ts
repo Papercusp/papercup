@@ -28,9 +28,8 @@ const rows: { current: unknown[] } = { current: [] };
 const { selectGoalDrafts, readGoalDraftQueue, DEFAULT_DRAFT_RAIL } = await import(
   './goal-draft-queue'
 );
-const { DEFAULT_GOAL_BUDGET_CENTS, classifyProposal, DEFAULT_ROUTING_RAIL } = await import(
-  './router'
-);
+const { DEFAULT_GOAL_BUDGET_CENTS, classifyProposal, DEFAULT_ROUTING_RAIL, makeGoalScaleOverride } =
+  await import('./router');
 const { ACCEPTED_ROUTE_HINTS, DELIBERATELY_UNACCEPTED_ROUTE_HINTS } = await import('./recombine');
 import type { Proposal } from './types';
 
@@ -96,6 +95,78 @@ describe('selectGoalDrafts (pure)', () => {
     const drafts = selectGoalDrafts([row([p])], { budgetCentsCap: 500 });
     expect(drafts[0]!.budgetCents).toBe(500);
     expect(p).not.toHaveProperty('budgetCents');
+  });
+});
+
+describe('the OVERRIDE path — the one that is actually live', () => {
+  // Measured 2026-08-19: across the 30 retained cycles the model asked for the goal
+  // rail ZERO times (every proposal carried an accepted hint), while the production
+  // cycle wires makeGoalScaleOverride and BLENDER_GOAL_RAIL is default-ON. A queue
+  // that only watched `droppedRouteHint` would therefore read empty forever while
+  // the live path went unmeasured — which is the failure these tests pin.
+  const goalScale = () =>
+    proposal({
+      routeHint: 'plan',
+      framing: 'A multi-week campaign to make the gate self-healing',
+      mechanism: 'spans plans; needs a measurable end-state',
+    });
+
+  it('surfaces a plan-hinted proposal the LIVE override would bump to goal', () => {
+    const drafts = selectGoalDrafts([row([goalScale()])]);
+    expect(drafts).toHaveLength(1);
+    expect(drafts[0]!.path).toBe('override');
+    expect(drafts[0]!.askedRail).toBeNull();
+    expect(drafts[0]!.matchedMarkers).toEqual(
+      expect.arrayContaining(['multi-week', 'campaign', 'spans plans']),
+    );
+  });
+
+  it('agrees with the production override exactly — no drift', () => {
+    // The queue calls makeGoalScaleOverride rather than reimplementing its rule, so
+    // this asserts the two can never disagree. If the live bump rule changes hint
+    // domain or predicate, the queue follows and this stays green; a hand-copied
+    // condition would drift silently and report on a rule the router abandoned.
+    const bump = makeGoalScaleOverride();
+    const cases = [
+      goalScale(),
+      proposal({ routeHint: 'plan' }),
+      proposal({ routeHint: 'gym', framing: 'a multi-week campaign' }),
+      proposal({ routeHint: 'improvement', framing: 'a multi-week campaign' }),
+    ];
+    for (const p of cases) {
+      const queueSaysDraft = selectGoalDrafts([row([p])]).length > 0;
+      expect(queueSaysDraft).toBe(bump(p) === 'goal');
+    }
+  });
+
+  it('only bumps plan-hinted proposals — gym/improvement are never goal-scale', () => {
+    // Mirrors the override's stated domain: a goal subsumes plans, so the escalation
+    // path is plan -> goal. Marker text alone must NOT be enough.
+    expect(selectGoalDrafts([row([proposal({ routeHint: 'gym', framing: 'multi-week campaign' })])])).toEqual([]);
+    expect(
+      selectGoalDrafts([row([proposal({ routeHint: 'improvement', framing: 'multi-week campaign' })])]),
+    ).toEqual([]);
+  });
+
+  it('records WHICH markers matched, so an incidental hit is visible', () => {
+    // 'campaign' can match ordinary prose. The reader deciding whether to trust a
+    // draft needs to see the trigger word rather than an unexplained verdict.
+    const drafts = selectGoalDrafts([
+      row([proposal({ routeHint: 'plan', framing: 'A campaign to reduce flake' })]),
+    ]);
+    expect(drafts).toHaveLength(1);
+    expect(drafts[0]!.matchedMarkers).toEqual(['campaign']);
+  });
+
+  it('honours a custom marker vocabulary (the scout-config seam)', () => {
+    expect(selectGoalDrafts([row([goalScale()])], { markers: [] })).toEqual([]);
+  });
+
+  it('prefers the ASKED path when a proposal qualifies both ways', () => {
+    const both = proposal({ droppedRouteHint: 'goal', routeHint: 'plan', framing: 'multi-week campaign' });
+    const drafts = selectGoalDrafts([row([both])]);
+    expect(drafts).toHaveLength(1);
+    expect(drafts[0]!.path).toBe('asked');
   });
 });
 
