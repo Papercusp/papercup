@@ -52,6 +52,10 @@ import { quietCutSecFromEnv } from "@papercusp/operator-core/lib/release/quiet-c
 // WI-38224: a plain constant, so a STATIC import is correct here even though this file otherwise
 // prefers dynamic ones — it must be evaluated in THIS process to describe THIS process.
 import { RUNNER_PROCESS_BOOTED_AT_MS } from "@papercusp/operator-core/lib/release/in-flight-retriage";
+import {
+  GREEN_CHECKPOINT_SIGKILL_GRACE_MS,
+  GREEN_CHECKPOINT_SUITE_TIMEOUT_MS,
+} from "@papercusp/operator-core/lib/release/green-checkpoint-schedule";
 // EI-20063423357086565 — the uncommitted-working-tree reader, reused rather than re-derived:
 // it includes untracked files and deliberately avoids porcelain's whitespace-sensitive
 // column parse. See `failingFilesUncommitted` below.
@@ -827,13 +831,15 @@ export const SELF_WATCHDOG_MS = 3 * 60 * 60_000;
 
 /** Internal transport used only by release-checkpoint-launch.ts's detached MANUAL unit.
  * Scheduled runs omit it and retain SELF_WATCHDOG_MS as their independent parent-death
- * backstop. The lower bound is the scheduled parent's complete 120m SIGTERM + 15s SIGKILL
- * window; accepting anything shorter would let a malformed env kill a healthy run early.
- * release-timing-invariants.test.ts pins this mirror to the launcher and suite-timeout writers.
+ * backstop. The lower bound is the scheduled parent's COMPLETE kill window — SIGTERM at
+ * the suite budget, SIGKILL a grace later — because accepting anything shorter would let a
+ * malformed env kill a healthy run early. Derived from the schedule leaf rather than
+ * hand-typed, so it tracks a retune of the budget on its own.
  */
 export const MANUAL_SELF_WATCHDOG_ENV =
   "PAPERCUSP_MANUAL_GREEN_CHECKPOINT_WATCHDOG_MS";
-export const MIN_MANUAL_SELF_WATCHDOG_MS = 115 * 60_000 + 15_000;
+export const MIN_MANUAL_SELF_WATCHDOG_MS =
+  GREEN_CHECKPOINT_SUITE_TIMEOUT_MS + GREEN_CHECKPOINT_SIGKILL_GRACE_MS;
 
 export type SelfWatchdogTrigger =
   | "scheduled-parent-backstop"
