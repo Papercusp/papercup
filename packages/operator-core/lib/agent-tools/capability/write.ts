@@ -38,7 +38,11 @@ export default defineTool({
     const baseDir = resolveCapabilityBaseDir(ctx);
     const abs = isAbsolute(args.file_path) ? args.file_path : resolve(baseDir, args.file_path);
 
-    const outcome = await guardFileLock(ctx, [args.file_path], { intent: 'capability:write' }, async () => {
+    // Lock the path we are ACTUALLY going to write (`abs`), never the raw argument —
+    // handing the guard a relative path makes it re-resolve against its own base, and
+    // any disagreement between the two resolutions keys the lock off a file this
+    // handler never touches (EI-20881501070735530).
+    const outcome = await guardFileLock(ctx, [abs], { intent: 'capability:write' }, async () => {
       mkdirSync(dirname(abs), { recursive: true });
       writeFileSync(abs, args.content, 'utf8');
       const bytes = Buffer.byteLength(args.content, 'utf8');
