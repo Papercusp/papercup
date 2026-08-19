@@ -182,6 +182,105 @@ describe('runBudgetedTasks', () => {
   });
 });
 
+describe('runBudgetedTasks memory-aware admission (EI-20801764054303492 route (a))', () => {
+  // Serialised so each admission is a separate, ordered event: the clamp is a per-ADMISSION
+  // decision, and interleaved lanes would make the assertion order-dependent rather than wrong.
+  const serialConfig = { ...config, maxConcurrentTasks: 1 };
+
+  /** Readings are consumed in order; the last one repeats once exhausted. */
+  function readerFrom(readings: Array<number | null>) {
+    let i = 0;
+    const calls: number[] = [];
+    const read = () => {
+      const value = readings[Math.min(i, readings.length - 1)];
+      i += 1;
+      calls.push(i);
+      return value;
+    };
+    return { read, callCount: () => calls.length };
+  }
+
+  async function widthsFor(options: Record<string, unknown>) {
+    const widths: number[] = [];
+    const result = await runBudgetedTasks(['a', 'b', 'c'], {
+      ...serialConfig,
+      ...options,
+      runTask: async (_task: string, allocation: { workers: number }) => {
+        widths.push(allocation.workers);
+      },
+    });
+    return { widths, stats: result.stats };
+  }
+
+  it('clamps admission DOWN when the reading drops mid-run, and never widens it', async () => {
+    // 4 workers x 1024MB needs >=5462MB at a 0.25 reserve; 3000MB affords 2, 2000MB affords 1.
+    const reader = readerFrom([3000, 2000]);
+    const { widths, stats } = await widthsFor({ readMemAvailableMb: reader.read });
+
+    // Admission #0 is deliberately unmeasured — the startup reading that sized the budget is
+    // still fresh there — so it keeps the full width. Every LATER admission re-measures.
+    expect(widths[0]).toBe(4);
+    expect(widths.slice(1)).toEqual([2, 1]);
+    expect(reader.callCount()).toBe(2);
+    expect(stats.memoryReadings).toBe(2);
+    expect(stats.admissionClamps).toBe(2);
+    expect(stats.minAdmittedWorkers).toBe(1);
+    expect(stats.lastMemAvailableMb).toBe(2000);
+  });
+
+  it('never lets a clamped run exceed the peak of the same run unclamped', async () => {
+    const unclamped = await widthsFor({});
+    const clamped = await widthsFor({ readMemAvailableMb: readerFrom([2000]).read });
+
+    expect(clamped.stats.observedMaxWorkers).toBeLessThanOrEqual(
+      unclamped.stats.observedMaxWorkers,
+    );
+    expect(clamped.stats.observedMaxMemoryMb).toBeLessThanOrEqual(
+      unclamped.stats.observedMaxMemoryMb,
+    );
+    // The peak can still be SET by the unmeasured first admission — that is the documented cost
+    // of skipping the re-measure there, pinned so a future change to that rule is visible.
+    expect(clamped.widths[0]).toBe(unclamped.widths[0]);
+  });
+
+  it('leaves allocations byte-identical to a no-reader run when the reading is null', async () => {
+    const baseline = await widthsFor({});
+    const withNullReader = await widthsFor({ readMemAvailableMb: () => null });
+
+    expect(withNullReader.widths).toEqual(baseline.widths);
+    expect(withNullReader.stats.observedMaxWorkers).toBe(baseline.stats.observedMaxWorkers);
+    expect(withNullReader.stats.observedMaxMemoryMb).toBe(baseline.stats.observedMaxMemoryMb);
+    expect(withNullReader.stats.admissionClamps).toBe(0);
+    // A null reading is still a READING — it just carries no number to clamp with.
+    expect(withNullReader.stats.memoryReadings).toBe(2);
+    expect(withNullReader.stats.lastMemAvailableMb).toBeNull();
+    // No reader at all reports null, which is what keeps the legacy marker string intact.
+    expect(baseline.stats.memoryReadings).toBeNull();
+  });
+
+  it('does not fail the run when the reader THROWS', async () => {
+    const baseline = await widthsFor({});
+    const { widths, stats } = await widthsFor({
+      readMemAvailableMb: () => {
+        throw new Error('meminfo unreadable');
+      },
+    });
+
+    // A broken instrument must not read as "no memory" — that would throttle a healthy box to 1.
+    expect(widths).toEqual(baseline.widths);
+    expect(stats.admissionClamps).toBe(0);
+    expect(stats.memoryReadings).toBe(0);
+  });
+
+  it('holds the floor of one worker at a zero reading', async () => {
+    const { widths, stats } = await widthsFor({ readMemAvailableMb: () => 0 });
+
+    // Refusing admission outright would deadlock a run already under memory pressure.
+    expect(widths.slice(1).every((w) => w === 1)).toBe(true);
+    expect(stats.minAdmittedWorkers).toBe(1);
+  });
+});
+
 describe('resolveGlobalWorkerBudget', () => {
   it('keeps the green-checkpoint two-fork rail binding when modern max-workers was filled higher', () => {
     expect(
