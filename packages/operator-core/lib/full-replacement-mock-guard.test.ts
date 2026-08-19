@@ -81,7 +81,10 @@ describe('full-replacement mock guard: the analyzer has teeth (WI-7187)', () => 
 });
 
 describe('full-replacement mock guard: the live tree', () => {
-  const candidates = collectCandidateFiles({
+  // Mirrors main(): ONE read of the corpus feeds BOTH the violation scan and the exposure
+  // census. Deriving them from different walks is what would let a scope note drift from
+  // the verdict it qualifies.
+  const io = {
     listFiles: () =>
       execFileSync('git', ['ls-files', '*.test.ts', '*.test.tsx', '*.spec.ts', '*.spec.tsx'], {
         cwd: ROOT,
@@ -97,14 +100,37 @@ describe('full-replacement mock guard: the live tree', () => {
         return null;
       }
     },
-    protectedModules: PROTECTED_MODULES,
-  });
+  };
+  const allFiles = readAllFiles(io);
+  const candidates = selectCandidates({ files: allFiles, protectedModules: PROTECTED_MODULES });
 
   it('has no bare vi.mock factory on any protected module', () => {
     const violations = candidates.flatMap((c: { path: string; text: string }) =>
       checkFile({ path: c.path, text: c.text, protectedModules: PROTECTED_MODULES }),
     );
     expect(violations.map((v: { path: string; line: number }) => `${v.path}:${v.line}`)).toEqual([]);
+  });
+
+  it('its own PASS verdict is scope-qualified on the real tree (EI-20836231573383362)', () => {
+    // The founding incident: this guard printed a clean verdict while a bare
+    // `@papercusp/db-org` factory had been breaking collection of a real file for ~3 weeks.
+    // The scan was correct — db-org is unprotected — but the verdict was read as tree-wide
+    // positive evidence. On a tree with ANY unprotected exposure, the pass must say so.
+    const exposure = exposureCensus({ files: allFiles, protectedModules: PROTECTED_MODULES });
+    expect(exposure.modules).toBeGreaterThan(0);
+    expect(printExposureNote(exposure)).toContain('NOT a tree-wide all-clear');
+    // Pin the incident module itself: db-org carried the factory that broke collection, and
+    // it must be visible in the guard's own scope note rather than silently out of frame.
+    expect(exposure.top.some((r: { module: string }) => r.module === '@papercusp/db-org')).toBe(true);
+  });
+
+  it('keeps collectCandidateFiles equivalent to selectCandidates(readAllFiles(...))', () => {
+    // The two-walk split is a refactor, not a behaviour change; this pins the exported API
+    // other guards import so it cannot quietly diverge from what main() actually scans.
+    const viaLegacy = collectCandidateFiles({ ...io, protectedModules: PROTECTED_MODULES });
+    expect(viaLegacy.map((c: { path: string }) => c.path)).toEqual(
+      candidates.map((c: { path: string }) => c.path),
+    );
   });
 
   it('actually scanned the files it claims to protect — a silent empty scan is not a pass', () => {
