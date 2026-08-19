@@ -8,7 +8,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, waitFor, fireEvent, within } from '@testing-library/react';
-import AgentDossier, { type AgentDetail, pushedEventDetail } from '../AgentDossier';
+import AgentDossier, { type AgentDetail, machineRowValue, pushedEventDetail } from '../AgentDossier';
 import type { RosterEntry } from '../SessionsRosterView';
 
 const syncState = vi.hoisted(() => ({
