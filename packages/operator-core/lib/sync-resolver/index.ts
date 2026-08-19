@@ -770,6 +770,85 @@ async function resolveHiveMemberSlugs(potHomeSlug: string, workspaceId?: string)
   }
 }
 
+/**
+ * The store seams behind the Retain view, wired once (WI-39900).
+ *
+ * `learning.retainFeed` (rows) and `learning.retainCounts` (tab badges) are two
+ * queries over the SAME six stores. They were one query until the counts were
+ * split off the ledger's critical path, and the reason they are wired here
+ * rather than inline in each resolver is that a drifted copy of `listMemories`
+ * is a silent correctness bug: the badge would count a different corpus than
+ * the rows it sits above.
+ */
+function retainStoreDeps(
+  sql: import('postgres').Sql,
+  workspaceId: string,
+  hive: string | undefined,
+): import('./learning-retain-read').RetainFeedDeps {
+  return {
+    // WI-39535: the hive's shared-memory pool as a ledger kind. Scope
+    // resolution mirrors learning.hive (learning-hive-read): `hive:<slug>` for
+    // a selected pot, every pot's pool under the All-Pots lens (ListOptions.scope
+    // takes the array in one call). An unavailable backend throws → the leg
+    // degrades VISIBLY (degraded: ['memory']), never silently.
+    listMemories: async () => {
+      const { getMemoryBackend } = await import('../memory/backend');
+      const backend = getMemoryBackend();
+      const avail = await backend.available();
+      if (!avail.ok) throw new Error(avail.reason);
+      if (hive) return backend.list({ scope: `hive:${hive}` });
+      const { listPots } = await import('../agent-tools/pot/_resolve');
+      const slugs = (await listPots(workspaceId)).map((p) => p.slug);
+      if (slugs.length === 0) return [];
+      return backend.list({ scope: slugs.map((s) => `hive:${s}`) });
+    },
+    listRubrics: async () => {
+      const { listRubrics } = await import('../rubrics');
+      return (await listRubrics()).map((r) => ({
+        slug: r.rubricId,
+        title: r.title,
+        status: r.status,
+        updatedAt: r.updatedAt,
+      }));
+    },
+    listRecipesPage: async ({ window, limit }) => {
+      const { listRecipesActivityPage } = await import('../code-recipes-store');
+      return listRecipesActivityPage(sql, {
+        limit,
+        before: window ? { ts: window.beforeTs, includeTies: window.includeTies, idAfter: window.tieIdAfter } : null,
+      });
+    },
+    countRecipes: async () => {
+      const { countRecipes } = await import('../code-recipes-store');
+      return countRecipes(sql, { includeTrivial: false });
+    },
+    listRunbooksPage: async ({ window, limit }) => {
+      const { readInsightDocsPage } = await import('./learning-retain-read');
+      const { DOCS_CONTENT_ROOT } = await import('../agent-tools/docs/_repo-paths');
+      return readInsightDocsPage(`${DOCS_CONTENT_ROOT}/agent-insights`, { window, limit });
+    },
+    countRunbooks: async () => {
+      const { countInsightDocs } = await import('./learning-retain-read');
+      const { DOCS_CONTENT_ROOT } = await import('../agent-tools/docs/_repo-paths');
+      return countInsightDocs(`${DOCS_CONTENT_ROOT}/agent-insights`);
+    },
+  };
+}
+
+/** The P-040 hive lens for the Retain reads: member-harness scopes for the wi
+ *  leg, bare slugs for the plans leg. Degrades to workspace-wide, never throws. */
+async function retainHiveScopes(hive: string | undefined, label: string): Promise<readonly string[] | undefined> {
+  if (!hive) return undefined;
+  try {
+    const { loadHarnessRegistry, hiveMemberHarnessScopes } = await import('../harness-registry');
+    const reg = await loadHarnessRegistry();
+    return hiveMemberHarnessScopes(reg.projects, hive);
+  } catch (err) {
+    console.warn(`[${label}] hive scope resolution failed:`, err instanceof Error ? err.message : err);
+    return undefined;
+  }
+}
+
 const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // storage.usage — live storage usage by category for Settings → Storage
   // (storage-settings-page-2026-06-15 P-003). Reuses the audit introspection
