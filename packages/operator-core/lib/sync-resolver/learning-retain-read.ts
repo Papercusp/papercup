@@ -743,7 +743,7 @@ export async function readRetainCounts(
         return null;
       }),
       withinBudget(
-        listRubricsOnce().then((r) => r.length),
+        listRubrics().then((r) => r.length),
         'rubrics count',
       ).catch(() => null),
       withinBudget(deps.countRunbooks(), 'runbooks count').catch(() => null),
