@@ -255,6 +255,8 @@ describe('recombineProposals — dropped routeHint signal', () => {
       });
       expect(accepted.proposals[0].routeHint).toBe('plan');
       expect(accepted.droppedRouteHints).toEqual([]);
+      // WI-39879: an ACCEPTED hint is not a drop, so nothing rides on the proposal.
+      expect(accepted.proposals[0].droppedRouteHint).toBeUndefined();
 
       const { route: _omitted, ...noHint } = COMPLETE_PROPOSAL;
       const absent = await recombineProposals([scored({ idea: idea({ id: 'b' }) })], {
