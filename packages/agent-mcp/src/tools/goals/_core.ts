@@ -108,6 +108,21 @@ export interface GoalRowInput {
   killCriterion?: string | null;
   tripwires?: Tripwire[] | null;
   metadata?: Record<string, unknown> | null;
+  /**
+   * The goal's declared launch settings, holder policy included
+   * (goal-live-holder-guarantee-2026-08-18 P-003).
+   *
+   * Written HERE rather than by a follow-up `writeGoalLaunchSettings` so the
+   * policy lands in the SAME statement as the row it governs. The follow-up
+   * shape has a window — a goal that exists for a moment with no declared
+   * policy is exactly the state P-003's refusal exists to prevent, and on a
+   * failure between the two writes that window never closes.
+   *
+   * Typed structurally rather than importing `GoalLaunchSettings`: this module
+   * is deliberately free of imports beyond node/zod (see the header), and the
+   * document is validated by the caller's schema before it reaches this row.
+   */
+  launchSettings?: Record<string, unknown> | null;
 }
 
 /**
@@ -125,13 +140,14 @@ export async function insertGoalRow(tx: GoalSqlTag, row: GoalRowInput): Promise<
   await tx`
     INSERT INTO harness_shared.goals
       (id, install_slug, workspace_id, title, body, parent_id, budget_cents, status,
-       kill_criterion, tripwires, metadata)
+       kill_criterion, tripwires, metadata, launch_settings)
     VALUES
       (${row.id}, ${row.installSlug}, ${row.workspaceId}, ${row.title}, ${row.body ?? null},
        ${row.parentId ?? null}, ${row.budgetCents ?? null}, ${row.status ?? 'active'},
        ${row.killCriterion ?? null},
        ${row.tripwires?.length ? JSON.stringify(row.tripwires) : null}::jsonb,
-       ${Object.keys(metadata).length ? JSON.stringify(metadata) : null}::jsonb)
+       ${Object.keys(metadata).length ? JSON.stringify(metadata) : null}::jsonb,
+       ${row.launchSettings && Object.keys(row.launchSettings).length ? JSON.stringify(row.launchSettings) : null}::jsonb)
   `;
 }
 
