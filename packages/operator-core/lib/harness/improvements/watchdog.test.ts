@@ -2175,9 +2175,9 @@ describe('runWatchdogTick — known-open aging wiring (consume-edges P-020 / EI-
   }
 
   it('passes the known-open keys AND the re-measured body to the aging seam, and surfaces escalated ids', async () => {
-    const seen: { key: string; evidence?: string | null }[][] = [];
+    const seen: AgingSeamInput[][] = [];
     const res = await knownOpenTick(async (_ws, knownOpen) => {
-      seen.push(knownOpen as { key: string; evidence?: string | null }[]);
+      seen.push([...knownOpen]);
       return [{ issueId: 'EI-42', watchdogKey: 'service-down:shop', reescalation: false }];
     });
     // EI-19920080383279759: the seam receives the CURRENT signal body, not just
@@ -2186,8 +2186,13 @@ describe('runWatchdogTick — known-open aging wiring (consume-edges P-020 / EI-
     // alone is what let the body silently fossilize.
     expect(seen).toHaveLength(1);
     expect(seen[0]).toHaveLength(1);
-    expect(seen[0][0].key).toBe('service-down:shop');
-    expect(seen[0][0].evidence).toBeTruthy();
+    const passed = seen[0][0];
+    // Narrow rather than cast: a bare string here is precisely the regression
+    // (the key-only form), so it must FAIL loudly, not be asserted away.
+    expect(typeof passed).toBe('object');
+    if (typeof passed === 'string') throw new Error(`aging seam got a bare key, not {key,evidence}: ${passed}`);
+    expect(passed.key).toBe('service-down:shop');
+    expect(passed.evidence).toBeTruthy();
     expect(res.agingEscalations).toEqual(['EI-42']);
   });
 
