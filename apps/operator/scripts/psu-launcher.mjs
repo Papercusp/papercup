@@ -4609,11 +4609,14 @@ async function pickPlan(workspace, harness) {
 
 /**
  * psu-account-chooser P-005: pick a pool account to pin this session to (gateway
- * routing), or the default credential. Returns the account id, or null for "no pin"
- * — INCLUDING when the picker is hidden: gateway off, an empty pool, or any fetch
- * error. The picker can only return default when no nondefault routes are
- * available; explicit `--account auto|<pin>` flags are validated separately and
- * fail closed. The "default" row is FIRST so hitting enter keeps today's behavior;
+ * routing), or the system/CLI login. Returns the account id, or the literal `system`
+ * for "skip the gateway" — INCLUDING when the picker is hidden: gateway off, an empty
+ * pool, or any fetch error. It returns `system` rather than null BY DESIGN: an
+ * unspecified account means "the owner's nominated default account" server-side
+ * (P-004), which is a gateway route — see accountPickerChoices. The picker can only
+ * return the system login when no nondefault routes are available; explicit
+ * `--account auto|<pin>` flags are validated separately and fail closed. The
+ * "default" row is FIRST so hitting enter keeps the machine's own credential;
  * accounts blocked by the active session-override are shown disabled.
  */
 /** The account-pin choices the gateway offers for a workspace (gatewayOn + pool + session-override).
@@ -4649,9 +4652,23 @@ export function accountPickerChoices(accounts) {
   const provider = accounts?.provider ?? 'claude';
   const showAuto = pool.length > 0 && (provider === 'claude' || provider === 'codex');
   return [
-    { name: '· default — use the system / CLI login (skip the inference gateway)', value: null },
+    // ⚠ The value MUST be the LITERAL `system` escape hatch — NEVER null/'' (default-deploy-account
+    // -2026-08-08 P-004 D-002). The server's resolveAccountPin reads an UNSPECIFIED account as
+    // "whatever the owner nominated": once a workspace has a default account configured, a null
+    // here routed this row THROUGH the inference gateway (as `auto`, default-account-first) while
+    // its label promised the exact opposite — a silent misroute onto a pool credential, observed
+    // 2026-08-19 (su-254aa2e1: picked `default`, launched with ANTHROPIC_BASE_URL=:8788 and sat
+    // minutes behind the pool's weekly-cap pacing while a plain `claude` answered in 1s).
+    // `none`/`system` is the ONE spelling P-004 keeps pinned to the machine's own login, always —
+    // and it is what this row has always SAID it does. The nominated-default route is still
+    // reachable: it is exactly the `auto` row below (resolveAccountPin routes a configured default
+    // as auto, default-first + failover).
+    { name: '· default — use the system / CLI login (skip the inference gateway)', value: 'system' },
     ...(showAuto
-      ? [{ name: '· auto — route via the inference gateway (it picks a pool account + fails over)', value: 'auto' }]
+      ? [{
+          name: '· auto — route via the inference gateway (nominated default account first, then failover)',
+          value: 'auto',
+        }]
       : []),
     ...pool.map((id) => {
       const blocked = exclude.has(id) || (forced.size > 0 && !forced.has(id));
@@ -4661,12 +4678,13 @@ export function accountPickerChoices(accounts) {
   ];
 }
 
-/** Render the account picker from already-fetched choices. Returns the chosen id, or null for
- *  "default credential — no pin" / an empty pool (gateway off). */
+/** Render the account picker from already-fetched choices. Returns the chosen id, or the literal
+ *  `system` for "the machine's own login — skip the gateway" (also the preselected row, and what an
+ *  empty pool / gateway-off offers). It is deliberately NOT null: see accountPickerChoices. */
 async function promptAccount(accounts) {
   const { select } = await import('@inquirer/prompts');
   const choices = accountPickerChoices(accounts);
-  return select({ message: 'Account routing', default: null, choices });
+  return select({ message: 'Account routing', default: 'system', choices });
 }
 
 async function pickAccount(workspace, agent = 'claude') {
