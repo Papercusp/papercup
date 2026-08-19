@@ -26,6 +26,7 @@ export const USER_MEMORY_SYNC_KEYS = [
   'userMemory.list',
   'userMemory.total',
   'learning.retainFeed',
+  'learning.retainCounts',
   'learning.retainDetail',
 ] as const;
 
