@@ -645,16 +645,24 @@ export async function readRetainFeed(
       }),
       withinBudget(
         (async () => {
+          // Same `= ANY(ARRAY(SELECT …))` shape — and for the same reason — as
+          // legWi above (79ms/20,141 buffers as a plain join → index scan here).
+          // `count(DISTINCT issue_id)` is NOT interchangeable with `count(*)`:
+          // 91 issue_ids are duplicated across harnesses inside this workspace,
+          // so a plain count over-reports the badge by exactly those rows
+          // (measured 906 vs the correct 905, 2026-08-19).
           const r = (await sql`
           SELECT count(DISTINCT ei.issue_id)::int AS n
-            FROM harness_shared.scout_routed_ideas r
-            JOIN harness_shared.engineer_issues ei
-              ON ei.workspace_id = r.workspace_id
-             AND ei.issue_id = substring(r.routed_ref from 4)
-           WHERE r.workspace_id = ${workspaceId}
-             AND r.routed_ref LIKE 'wi:%'
+            FROM harness_shared.engineer_issues ei
+           WHERE ei.workspace_id = ${workspaceId}
              AND ei.source_plan_slug IS NULL
              AND ${opts.harnessScopes ? sql`ei.scope = ANY(${opts.harnessScopes as string[]}::text[])` : sql`TRUE`}
+             AND ei.issue_id = ANY(ARRAY(
+                   SELECT DISTINCT substring(r2.routed_ref from 4)
+                     FROM harness_shared.scout_routed_ideas r2
+                    WHERE r2.workspace_id = ${workspaceId}
+                      AND r2.routed_ref LIKE 'wi:%'
+                 ))
         `) as Array<{ n: number }>;
           return Number(r[0]?.n ?? 0);
         })(),
