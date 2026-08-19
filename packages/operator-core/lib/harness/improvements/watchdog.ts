@@ -3361,7 +3361,7 @@ export interface WatchdogDeps {
    * Known-open AGING (consume-edges P-020 / EI-363): turn persistent known-open
    * firing into escalation pressure. Defaults to `processKnownOpenAging`; tests inject.
    */
-  processAging: (workspaceId: string, knownOpenKeys: string[], opts: WatchdogTickOptions) => Promise<KnownOpenAgingOutcome[]>;
+  processAging: (workspaceId: string, knownOpen: readonly KnownOpenAgingInput[], opts: WatchdogTickOptions) => Promise<KnownOpenAgingOutcome[]>;
   /**
    * AUTO-CLOSE (P-009): retire watchdog-sourced EIs whose signal stopped firing for N
    * ran-ticks. Defaults to `processAutoClose` (DEFAULT-OFF flag-gated); tests inject.
@@ -4119,7 +4119,7 @@ interface ResolvedTickDeps {
   readRecentTicks: (workspaceId: string, limit: number, filter?: { status?: 'ran' | 'skipped' }) => Promise<RecentTick[]>;
   readKeyDups: (keys: string[]) => Promise<WatchdogKeyDup[]>;
   pruneTicks: (workspaceId: string, olderThanDays: number) => Promise<void>;
-  processAging: (workspaceId: string, knownOpenKeys: string[], opts: WatchdogTickOptions) => Promise<KnownOpenAgingOutcome[]>;
+  processAging: (workspaceId: string, knownOpen: readonly KnownOpenAgingInput[], opts: WatchdogTickOptions) => Promise<KnownOpenAgingOutcome[]>;
   processAutoClose: (workspaceId: string, opts: WatchdogTickOptions) => Promise<AutoCloseOutcome[]>;
   collect?: () => Promise<WatchdogSignal[]>;
   collectors?: WatchdogCollector[];
