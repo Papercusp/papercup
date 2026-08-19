@@ -553,6 +553,7 @@ export function partitionSignalsByKnownKeys(
   signals: WatchdogSignal[],
   dups: WatchdogKeyDup[],
   priorSeenKeys: readonly string[] = [],
+  refileEligibleKeys: ReadonlySet<string> = EMPTY_REFILE_ELIGIBLE,
 ): SignalPartition {
   const seenLastTick = new Set(priorSeenKeys);
   const byKey = new Map<string, WatchdogKeyDup[]>();
