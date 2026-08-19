@@ -164,7 +164,7 @@ function PeerRow({
 
           `side="left"` because this rail is the popup's right edge: a tooltip
           opening right would render off the window. */}
-      <Tooltip label={peer.reason} side="left">
+      <Tooltip label={reason} side="left">
         <button
           type="button"
           className="pc-peer pc-peer--btn"
@@ -175,7 +175,7 @@ function PeerRow({
              handle and a state word — neither of which says that pressing it
              navigates. It repeats the reason so a screen-reader user gets what
              the tooltip shows a sighted one. */
-          aria-label={`Open ${peer.handle}'s conversation — ${peer.reason}`}
+          aria-label={`Open ${peer.handle}'s conversation — ${reason}`}
         >
           {body}
         </button>
@@ -184,12 +184,75 @@ function PeerRow({
   );
 }
 
+/**
+ * The fleet-level alert block (P-004).
+ *
+ * ALWAYS VISIBLE when it applies — [owner 2026-08-18] approved the mockups
+ * that draw it that way and D-007 records the ruling; it is deliberately NOT
+ * folded behind the right-edge `⚠ N locks ›` pattern. It renders nothing at all
+ * on a clean fleet, so its absence is the all-clear and its presence is news.
+ *
+ * Bounded by construction (D-003): a handful of one-line rows, each with its
+ * reason on hover. The reasons are the brief's own sentences — a flag rendered
+ * without the reason behind it is the bare-complaint shape the brief's own
+ * comments warn about, because the flag says IF and only the reason says WHY.
+ */
+function FleetAlertsBlock({ fleet }: { fleet: FleetAlertsModel }) {
+  return (
+    <section className="pc-peers__alerts" data-testid="fleet-alert-block" aria-label="Fleet alerts">
+      <header className="pc-peers__alerts-cap">
+        <span>Fleet alerts</span>
+        <span className="pc-peers__cap-n">{fleet.alerts.length}</span>
+      </header>
+      {fleet.alerts.map((a) => (
+        <div
+          key={a.key}
+          className="pc-peers__alert"
+          data-sev={a.severity}
+          data-alert={a.key}
+          title={a.detail ?? undefined}
+          role="status"
+        >
+          <span className="pc-peers__alert-mark" aria-hidden="true">
+            ▲
+          </span>
+          <span className="pc-peers__alert-text">{a.text}</span>
+        </div>
+      ))}
+      {fleet.capacity ? (
+        <div className="pc-peers__alert-kv" data-testid="fleet-alert-capacity">
+          <span>capacity</span>
+          <span>{fleet.capacity}</span>
+        </div>
+      ) : null}
+      {/* Only ever rendered when the block is already open for another reason.
+          A leader must be able to tell "my checks ran and found nothing" from
+          "my checks are not running" — a reason-only field cannot say it, and
+          that is the same false-clean the invariants exist to catch. */}
+      {fleet.invariantsNote ? (
+        <div className="pc-peers__alert-kv" data-testid="fleet-alert-invariants-ok">
+          <span>invariants</span>
+          <span>{fleet.invariantsNote}</span>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 export default function FleetPeersRail({
   model,
+  alerts,
   onSelectPeer,
   onClose,
 }: {
   model: FleetPeersModel;
+  /**
+   * The leader-brief overlay, or null/absent when there is none (the viewed
+   * agent leads nothing, the brief has not arrived, or the read was skipped).
+   * ABSENT IS NOT AN ALL-CLEAR: it means the rail has nothing extra to say, and
+   * the rail must not imply the fleet was checked and found healthy.
+   */
+  alerts?: LeaderBriefAlertsModel | null;
   /**
    * Switch the popup to this peer. OPTIONAL: a host that cannot re-target the
    * popup (it does not own the open-agent param) passes nothing, and the rows
