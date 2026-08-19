@@ -282,6 +282,36 @@ export default defineTool({
     // reader ends up showing the stale one.
     delete metadata.killCriterion;
 
+    // ── The deliberate-pause record (P-005, D-009) ───────────────────────────
+    //
+    // Gated on an EXPLICIT `status` argument, never on the resolved value: a
+    // title edit on an already-paused goal passes no status, and clearing its
+    // pause record because `next.status` happens to be 'paused' would delete
+    // the record on every unrelated write. Same discipline as the fan-out
+    // below, which fires on the argument rather than on a transition edge.
+    //
+    // Every OTHER metadata key survives — the helpers spread rather than
+    // replace. Goal metadata carries spentCents / drainFleet / startedBy from
+    // other write paths, and a pause that dropped them would be a data-loss bug
+    // wearing an audit-trail costume.
+    let pauseMetadata: Record<string, unknown> = metadata;
+    if (args.status === 'paused') {
+      // `pauseReason` is non-empty here: the gate above refuses otherwise.
+      pauseMetadata = stampGoalPause(metadata, {
+        reason: pauseReason as string,
+        // Best-effort attribution, and it must never BLOCK a pause: an
+        // unattributable caller degrades to a marker, exactly as
+        // `routines:set`'s `pausedByFrom` degrades to its role string.
+        pausedBy: ctx.principal?.slug ?? 'unknown',
+      });
+    } else if (args.status !== undefined) {
+      // Any other explicit status ends the hold — including the terminal ones.
+      // A `killed`/`achieved` goal still carrying a live `pause` record would
+      // report a hold that is over, which is the same false-premise state the
+      // record exists to prevent, inverted.
+      pauseMetadata = clearGoalPause(metadata);
+    }
+
     // Resolve every column in JS so "omitted" and "explicitly null" stay
     // distinguishable — a COALESCE in SQL cannot express detaching a parent,
     // and a conditional SQL fragment to work around that is worse.
@@ -306,7 +336,7 @@ export default defineTool({
           : args.tripwires === null || args.tripwires.length === 0
             ? null
             : JSON.stringify(args.tripwires),
-      metadata: Object.keys(metadata).length ? JSON.stringify(metadata) : null,
+      metadata: Object.keys(pauseMetadata).length ? JSON.stringify(pauseMetadata) : null,
     };
 
     await ctx.tx`
