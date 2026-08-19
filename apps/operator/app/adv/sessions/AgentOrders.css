@@ -408,6 +408,34 @@
   color: var(--pc-orders-mute);
 }
 
+/* popup-agent-state-coverage-2026-08-18 P-010 — the directive's PROVENANCE line.
+   Deliberately quieter than the quote it sits under: it is the falsifier, not
+   the content, and a provenance line loud enough to compete with the directive
+   would be read as part of the order. */
+.pc-orders__prov {
+  margin-top: 3px;
+  font-size: 10px;
+  line-height: 1.45;
+  color: var(--pc-orders-mute);
+  overflow-wrap: anywhere;
+}
+.pc-orders__sep {
+  color: var(--pc-orders-mute);
+}
+/* An UNANCHORED quote is toned like the walls/attention surfaces, not like an
+   error: the anchor is missing, which is a fact about the record — it is not a
+   claim that the directive is false, and colouring it as a failure would say
+   exactly that about the many rows that simply predate the stamp. */
+.pc-orders__prov[data-verified='false'] .pc-orders__prov-mark {
+  color: var(--warn);
+}
+.pc-orders__prov[data-verified='true'] .pc-orders__prov-mark {
+  color: var(--good);
+}
+.pc-orders__prov-ref {
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+
 .pc-orders__sub {
   display: flex;
   align-items: center;
