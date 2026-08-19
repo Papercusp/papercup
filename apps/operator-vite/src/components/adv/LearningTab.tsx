@@ -94,6 +94,8 @@ import type { RetainExtrasSnapshot } from "@papercusp/operator-core/lib/sync-res
 import {
   RETAIN_FEED_FILTERS,
   RETAIN_FEED_TABS,
+  RETAIN_KIND_FOR_TAB,
+  RETAIN_STATUSFUL_KINDS,
   type RetainDetail,
   type RetainFeedCounts,
   type RetainFeedFilter,
