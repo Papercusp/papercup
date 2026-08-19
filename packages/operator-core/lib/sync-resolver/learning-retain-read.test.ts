@@ -277,12 +277,22 @@ describe('readRetainFeed', () => {
       countRunbooks: async () => 512,
       countRecipes: async () => 13561,
     };
-    const page1 = await readRetainFeed(sql, 'ws-1', deps);
+    const page1 = await readRetainFeed(sql, 'ws-1', deps, { withCounts: true });
     expect(page1.counts).toEqual({ memories: 0, plans: 21, wi: 991, rubrics: 1, runbooks: 512, recipes: 13561 });
     const page2 = await readRetainFeed(sql, 'ws-1', deps, {
+      withCounts: true,
       cursor: encodeRetainCursor({ ts: '2026-08-01T00:00:00.000Z', kind: 'rubric', id: 'r1' }),
     });
     expect(page2.counts).toBeNull();
+  });
+
+  it('counts are OFF the page by DEFAULT — their own read now (learning.retainCounts, WI-39900)', async () => {
+    const sql = sqlStub((t) => {
+      if (isPlanCount(t) || isWiCount(t)) throw new Error('counts must not run un-opted-in');
+      return [];
+    });
+    const page = await readRetainFeed(sql, 'ws-1', emptyFeedDeps());
+    expect(page.counts).toBeNull();
   });
 
   it('a failing count degrades to null — never 0 (a bounded read must not read as an empty corpus)', async () => {
@@ -292,7 +302,7 @@ describe('readRetainFeed', () => {
       if (isWiCount(t)) return [{ n: 5 }];
       return [];
     });
-    const page = await readRetainFeed(sql, 'ws-1', emptyFeedDeps());
+    const page = await readRetainFeed(sql, 'ws-1', emptyFeedDeps(), { withCounts: true });
     expect(page.counts).toEqual({ memories: 0, plans: null, wi: 5, rubrics: 0, runbooks: 0, recipes: 0 });
     warn.mockRestore();
   });
@@ -357,8 +367,8 @@ describe('readRetainFeed', () => {
       { filter: 'shipped' },
     );
     expect(page.rows.map((r) => r.kind).sort()).toEqual(['plan', 'wi']);
-    expect(listRubrics).toHaveBeenCalledTimes(1); // counts only (page 1)…
-    expect(listRunbooksPage).not.toHaveBeenCalled(); // …never the row legs
+    expect(listRubrics).not.toHaveBeenCalled(); // counts are their own read now (WI-39900) — nothing touches it
+    expect(listRunbooksPage).not.toHaveBeenCalled(); // never the row legs
     expect(listRecipesPage).not.toHaveBeenCalled();
   });
 
@@ -377,7 +387,12 @@ describe('readRetainFeed', () => {
     ]);
     const sql = sqlStub(() => [{ n: 0 }]);
 
-    const page = await readRetainFeed(sql, 'ws-1', { ...emptyFeedDeps(), listMemories, listRubrics }, { tab: 'all' });
+    const page = await readRetainFeed(
+      sql,
+      'ws-1',
+      { ...emptyFeedDeps(), listMemories, listRubrics },
+      { tab: 'all', withCounts: true },
+    );
 
     expect(listMemories).toHaveBeenCalledTimes(1);
     expect(listRubrics).toHaveBeenCalledTimes(1);
@@ -398,7 +413,7 @@ describe('readRetainFeed', () => {
     });
     const sql = sqlStub(() => [{ n: 0 }]);
 
-    const page = await readRetainFeed(sql, 'ws-1', { ...emptyFeedDeps(), listMemories }, { tab: 'all' });
+    const page = await readRetainFeed(sql, 'ws-1', { ...emptyFeedDeps(), listMemories }, { tab: 'all', withCounts: true });
 
     expect(listMemories).toHaveBeenCalledTimes(1);
     expect(page.degraded).toContain('memory');
@@ -443,7 +458,7 @@ describe('readRetainFeed', () => {
         sqlStub(oneWi),
         'ws-1',
         { ...emptyFeedDeps(), listMemories: () => hang() },
-        { tab: 'all', budgetMs: 40 },
+        { tab: 'all', budgetMs: 40, withCounts: true },
       );
 
       expect(page.degraded).toContain('memory');
@@ -467,7 +482,7 @@ describe('readRetainFeed', () => {
             { id: 'm1', text: 'a memory', metadata: { created_at: '2026-08-15T00:00:00.000Z' } },
           ],
         },
-        { tab: 'all', budgetMs: 40 },
+        { tab: 'all', budgetMs: 40, withCounts: true },
       );
 
       expect(page.degraded).toEqual([]);
@@ -483,7 +498,7 @@ describe('readRetainFeed', () => {
         sqlStub(oneWi),
         'ws-1',
         { ...emptyFeedDeps(), countRecipes: () => hang(), countRunbooks: async () => 7 },
-        { tab: 'all', budgetMs: 40 },
+        { tab: 'all', budgetMs: 40, withCounts: true },
       );
 
       expect(page.counts?.recipes).toBeNull();
@@ -505,7 +520,7 @@ describe('readRetainFeed', () => {
         sqlStub(oneWi),
         'ws-1',
         { ...emptyFeedDeps(), listMemories: () => hang(), countRecipes: slowishCount },
-        { tab: 'all', budgetMs: 30 },
+        { tab: 'all', budgetMs: 30, withCounts: true },
       );
       expect(spent.degraded).toContain('memory');
       expect(spent.counts?.recipes).toBeNull();
@@ -516,7 +531,7 @@ describe('readRetainFeed', () => {
         sqlStub(oneWi),
         'ws-1',
         { ...emptyFeedDeps(), countRecipes: slowishCount },
-        { tab: 'all', budgetMs: 2000 },
+        { tab: 'all', budgetMs: 2000, withCounts: true },
       );
       expect(fresh.counts?.recipes).toBe(9);
       warn.mockRestore();
@@ -564,7 +579,7 @@ describe('readRetainFeed', () => {
           sqlStub(oneWi),
           'ws-1',
           { ...emptyFeedDeps(), listMemories: () => hang() },
-          { tab: 'all', budgetMs: 40 },
+          { tab: 'all', budgetMs: 40, withCounts: true },
         ),
         2000,
       );
@@ -659,7 +674,7 @@ describe('readRetainFeed', () => {
           }),
         ],
       };
-      const page = await readRetainFeed(sql, 'ws-1', deps);
+      const page = await readRetainFeed(sql, 'ws-1', deps, { withCounts: true });
       expect(page.rows.map((r) => `${r.kind}:${r.id}`)).toEqual(['memory:m-new', 'wi:EI-1', 'memory:m-pack']);
       expect(page.rows[0]!.meta).toEqual({ memKind: 'feedback', createdBy: 'owner' });
       expect(page.rows[0]!.status).toBeNull();
@@ -701,6 +716,7 @@ describe('readRetainFeed', () => {
         sqlStub(() => [{ n: 0 }]),
         'ws-1',
         rest as RetainFeedDeps,
+        { withCounts: true },
       );
       expect(page.degraded).toEqual(['memory']);
       expect(page.counts?.memories).toBeNull();
