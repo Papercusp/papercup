@@ -3132,6 +3132,35 @@ describe('computeRefileEligibleKeys — RE-FILE RATE LIMIT (EI-20847917368795366
     expect([...computeRefileEligibleKeys([tick(0.25, [K]), tick(1, []), tick(24, [K]), tick(30, [K])], { nowMs: T0 })]).toEqual([]);
   });
 
+  it('a DEFERRED tick continues the run — the measure is "has not FILED", not "was suppressed"', () => {
+    // planCap defaults to 3 and 6 keys were measured eligible at once, so a release the cap
+    // swallows is the COMMON case, not a corner. If deferral broke the run, such a key would
+    // pay another full window without ever filing — the exact shape that left 4 keys never
+    // filed at all (deferred on their first tick, suppressed on every tick after).
+    const deferredTick = (hoursAgo: number, keys: string[]): RecentTick => ({
+      status: 'ran',
+      collectors: [],
+      tickAt: new Date(T0 - hoursAgo * HOUR).toISOString(),
+      standingKeys: [],
+      deferredKeys: keys,
+    });
+    const ticks = [tick(0.25, [K]), deferredTick(1, [K]), tick(13, [K])];
+    expect([...computeRefileEligibleKeys(ticks, { nowMs: T0 })]).toEqual([K]);
+  });
+
+  it('but a tick where the key actually FILED still breaks the run (the bound holds)', () => {
+    // The counterpart to the case above: filing is the ONLY thing that resets the clock, and
+    // it must, or "one filing per window" degrades into one filing per tick.
+    const filedTick = (hoursAgo: number): RecentTick => ({
+      status: 'ran',
+      collectors: [],
+      tickAt: new Date(T0 - hoursAgo * HOUR).toISOString(),
+      standingKeys: [],
+      deferredKeys: [],
+    });
+    expect([...computeRefileEligibleKeys([tick(0.25, [K]), filedTick(1), tick(24, [K])], { nowMs: T0 })]).toEqual([]);
+  });
+
   it('ignores a key not standing on the NEWEST tick (its episode already ended)', () => {
     expect([...computeRefileEligibleKeys([tick(0.25, []), tick(13, [K]), tick(26, [K])], { nowMs: T0 })]).toEqual([]);
   });

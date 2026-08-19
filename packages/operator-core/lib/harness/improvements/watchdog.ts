@@ -672,11 +672,12 @@ export const WATCHDOG_REFILE_HISTORY_LIMIT = 240;
 /**
  * Pure (EI-20847917368795366): which currently-standing keys have earned ONE re-file.
  *
- * A key qualifies when it was suppressed as `standing` on the newest ran tick AND on every
- * consecutive ran tick back to one at least `refileAfterMs` old. That consecutive run is
- * the measure, and it is deliberately read from `standing_keys` — watchdog-owned state no
- * other subsystem can mutate — rather than from item rows, whose disappearance is exactly
- * what caused the churn incident the delta gate exists to stop.
+ * A key qualifies when it is suppressed as `standing` on the newest ran tick AND has NOT
+ * FILED on any consecutive ran tick back to one at least `refileAfterMs` old — where "has
+ * not filed" means it appears in that tick's `standing_keys` OR its `deferred_keys`. That
+ * consecutive run is the measure, and it is deliberately read from watchdog-owned tick
+ * state no other subsystem can mutate, rather than from item rows, whose disappearance is
+ * exactly what caused the churn incident the delta gate exists to stop.
  *
  * FAILS CLOSED everywhere (the inverse of the delta gate's fail-OPEN on empty history):
  * no ticks, no `standingKeys`, an unparseable `tickAt`, or a run that breaks all return
@@ -701,10 +702,17 @@ export function computeRefileEligibleKeys(
   if (candidates.length === 0) return eligible;
 
   const standingSets = ticksNewestFirst.map((t) => new Set(t.standingKeys ?? []));
+  // A DEFERRED tick CONTINUES the run: the measure is "has not FILED", not "was suppressed".
+  // Without this, a release the per-tick capture cap swallowed (planCap defaults to 3, and
+  // 6 keys were measured eligible at once on 2026-08-19) would break its own run and cost
+  // the key another whole window without ever filing — which is precisely how the 4
+  // never-filed keys went dark: deferred on their first tick, then suppressed forever.
+  const deferredSets = ticksNewestFirst.map((t) => new Set(t.deferredKeys ?? []));
+  const notFiledOn = (i: number, key: string): boolean => standingSets[i].has(key) || deferredSets[i].has(key);
   for (const key of new Set(candidates)) {
     let runStartMs: number | null = null;
     for (let i = 0; i < ticksNewestFirst.length; i += 1) {
-      if (!standingSets[i].has(key)) break; // run broken → this episode already ended
+      if (!notFiledOn(i, key)) break; // filed, or stopped firing → this episode ended
       const ms = Date.parse(ticksNewestFirst[i].tickAt ?? '');
       // An unusable stamp stops the walk and keeps the last good start — a SHORTER measured
       // run, i.e. conservative. If it is the newest tick, runStartMs stays null → skip.
