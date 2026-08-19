@@ -12,6 +12,9 @@ import { eq } from 'drizzle-orm';
 import { z } from 'zod';
 import { generated, schemaOf } from '@papercusp/db-org';
 import { defineTool } from '@papercusp/tooldef';
+import { resolveGoalHolders } from '@papercusp/operator-core/lib/goals/holder';
+import { resolveGoalEffectiveActivity } from '@papercusp/operator-core/lib/goals/activity';
+import { parseGoalLaunchSettings } from '@papercusp/operator-core/lib/goal-launch-settings';
 import { readGoalReadiness } from './goal-deps';
 import { readGoalLastPause, readGoalPause } from './pause-record';
 
