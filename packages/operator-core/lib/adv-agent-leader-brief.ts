@@ -77,6 +77,45 @@ export type LeaderBriefSkipReason =
   /** The read itself threw. Distinct from every case above ON PURPOSE. */
   | 'read-failed';
 
+/**
+ * The two shapes of leadership drift, kept apart because their REMEDIES are
+ * opposite (popup-agent-state-coverage-2026-08-18 P-013 / D-012).
+ *
+ * `presence-behind` — the fleet registry (`agent_fleets.leader_owner_id`) says
+ * this agent LEADS a fleet, and its presence row does not reflect that: no
+ * fleet at all, a different fleet, or member role in the fleet it leads. The
+ * brief IS real and is recovered from the registry; the presence projection is
+ * what is stale (typically not settling after `fleet:take-leadership`).
+ *
+ * `registry-disowned` — the inverse, and the dangerous one. Presence says this
+ * agent is the LEADER, but the registry names somebody else (or nobody). The
+ * brief below therefore describes a fleet this agent may no longer lead. This
+ * is the exact hazard `getAgentLeaderBrief`'s docblock names when it warns that
+ * gating on presence alone "would let a stale row conjure a brief for a fleet
+ * somebody else now leads".
+ */
+export type LeaderBriefDriftKind = 'presence-behind' | 'registry-disowned';
+
+/** A MEASURED disagreement between the two leadership sources. Present only
+ *  when both were actually read and they disagreed; a read that threw leaves
+ *  this absent and takes the `read-failed` skip instead, because an unmeasured
+ *  source is not a drift (D-011). */
+export interface LeaderBriefPresenceDrift {
+  kind: LeaderBriefDriftKind;
+  /** The fleet the disagreement is ABOUT — the led fleet for `presence-behind`,
+   *  the presence-claimed fleet for `registry-disowned`. */
+  fleet: string;
+  /** `agent_fleets.leader_owner_id` for `fleet`, as read. */
+  registeredLeader: string | null;
+  /** `coord_presence.fleet_role`, as read. Null when presence had no fleet. */
+  presenceFleetRole: string | null;
+  /** The fleet presence DID place this agent in, when that is not `fleet`. */
+  presenceFleetSlug: string | null;
+  /** Reader-facing sentence: what disagrees, which source won for this read,
+   *  and what to corroborate with. */
+  note: string;
+}
+
 export interface AgentLeaderBrief {
   ownerId: string;
   /** The fleet this agent's presence row places it in; null when it is in none. */
@@ -89,6 +128,10 @@ export interface AgentLeaderBrief {
   isLeader: boolean;
   /** Set iff `brief` is null; see LeaderBriefSkipReason. */
   skipped: LeaderBriefSkipReason | null;
+  /** Present ONLY when the two leadership sources were both read and DISAGREED.
+   *  Absent means "no disagreement measured" — never "the sources agree" on a
+   *  read that failed, which takes `skipped: 'read-failed'` instead. */
+  presenceDrift?: LeaderBriefPresenceDrift;
   brief: LeaderBriefData | null;
 }
 
