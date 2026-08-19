@@ -40,7 +40,9 @@ export default defineTool({
     const baseDir = resolveCapabilityBaseDir(ctx);
     const abs = isAbsolute(args.file_path) ? args.file_path : resolve(baseDir, args.file_path);
 
-    const outcome = await guardFileLock(ctx, [args.file_path], { intent: 'capability:edit' }, async () => {
+    // Lock the path we are ACTUALLY going to edit (`abs`), never the raw argument —
+    // see the same note in write.ts (EI-20881501070735530).
+    const outcome = await guardFileLock(ctx, [abs], { intent: 'capability:edit' }, async () => {
       let raw: string;
       try {
         raw = readFileSync(abs, 'utf8');
