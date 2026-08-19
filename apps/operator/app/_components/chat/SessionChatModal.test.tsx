@@ -397,6 +397,63 @@ describe('SessionChatModal', () => {
     expect(screen.getByPlaceholderText(/Reply|Type to wake/i)).toBeTruthy();
   });
 
+  /* popup-agent-state-coverage-2026-08-18 P-012 / D-011 — an unresolvable
+     transcript is a PROPERTY of the record, so it is said out loud rather than
+     left to present as an empty pane. */
+  it('says so, and requests the archive fallback, when the roster stamped thinkingResolvable:false', async () => {
+    H.results['advRoster.list'] = {
+      data: [{
+        active: [{
+          ownerId: 'su-live-1', agent: 'claude', sessionState: 'parked', liveness: 'live',
+          modes: [], claims: [], currentFiles: [], openAwait: null,
+          thinkingResolvable: false,
+          nativeSession: {
+            backend: 'claude', source: 'adv_sessions', ownerId: 'su-live-1',
+            sessionId: 'sess-gone-1', configDir: '/tmp/cfg',
+            exactResumeSupported: true, missingReason: null,
+          },
+        }],
+        pending: [],
+      }],
+      loading: false, fetching: false, error: null, invalidate: vi.fn(),
+    };
+    render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+
+    await waitFor(() => expect(captured).not.toBeNull());
+    // The roster's verdict reached the URL: `sessionTargetFromRoster` stamps
+    // active:true for every claude handle, so ONLY the new leg can set this.
+    expect(captured!.url).toContain('ended=1');
+
+    const note = await screen.findByTestId('session-chat-thinking-unresolvable');
+    // The load-bearing half: an empty pane must not read as a silent agent.
+    expect(note.textContent).toMatch(/NOT that this agent has gone quiet/i);
+    // MARK, never suppress — the composer and the stream still render.
+    expect(screen.getByPlaceholderText(/Reply|Type to wake/i)).toBeTruthy();
+  });
+
+  it('shows no such note when the transcript resolves — absent must not act like false', async () => {
+    H.results['advRoster.list'] = {
+      data: [{
+        active: [{
+          ownerId: 'su-live-1', agent: 'omp', sessionState: 'live', liveness: 'live',
+          modes: [], claims: [], currentFiles: [], openAwait: null, ompThreadId: '019f-thread-1',
+          nativeSession: {
+            backend: 'omp', source: 'adv_sessions', ownerId: 'su-live-1',
+            ompThreadId: '019f-thread-1', agentHome: '/tmp/omp-home',
+            exactResumeSupported: true, missingReason: null,
+          },
+        }],
+        pending: [],
+      }],
+      loading: false, fetching: false, error: null, invalidate: vi.fn(),
+    };
+    render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+
+    await waitFor(() => expect(captured).not.toBeNull());
+    expect(captured!.url).not.toContain('ended=');
+    expect(screen.queryByTestId('session-chat-thinking-unresolvable')).toBeNull();
+  });
+
   it('surfaces a sessions:list resolution failure', async () => {
     fetchMock.mockResolvedValueOnce({ ok: false, status: 500, text: async () => 'boom' });
     render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
