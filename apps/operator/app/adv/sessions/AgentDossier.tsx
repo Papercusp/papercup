@@ -288,6 +288,36 @@ export function pushedEventDetail(e: PushedContextEvent): string {
   return out.join('\n');
 }
 
+/**
+ * The Reference section's `machine` row — WHICH box the rows around it describe
+ * (popup-agent-state-coverage-2026-08-18 P-012).
+ *
+ * `host · pid`, `cwd` and `window` all name resources on a machine, and until
+ * now the rail never said which one, so a FEDERATED peer's dossier read exactly
+ * like a local session's — including the focus/kill affordances, which cannot
+ * reach another box.
+ *
+ * The two fields are read INDEPENDENTLY, per D-011's per-field test (is the
+ * absence a measurement nobody took, or a property of the record?):
+ *
+ *   - `machineLabel` absent → an unmeasured attribute. Contribute nothing; do
+ *     NOT substitute the local label, which would state a fact about a
+ *     federated peer that nothing measured.
+ *   - `isLocal` absent → same: an older payload / mid-deploy SSE push simply did
+ *     not carry it. Render the label alone rather than defaulting to "this
+ *     machine" — a wrong locality claim is worse here than a silent one, since
+ *     locality is the whole reason the row exists.
+ *   - `isLocal` PRESENT is a measured property and always speaks, label or not.
+ *
+ * Returns null when nothing was measured, which `metaRows` drops entirely.
+ */
+export function machineRowValue(entry: Pick<RosterEntry, 'machineLabel' | 'isLocal'>): string | null {
+  const label = entry.machineLabel?.trim() || null;
+  if (entry.isLocal === undefined || entry.isLocal === null) return label;
+  if (entry.isLocal === false) return label ? `${label} · federated` : 'federated — another machine in this hive';
+  return label ? `${label} · this machine` : 'this machine';
+}
+
 /** Build MetaRows from label/value pairs, DROPPING the ones that would render
  *  nothing. MetaRow itself returns null for an empty value, so handing a capped
  *  list the unfiltered set would make it promise "Show 6 more" and then reveal
@@ -1579,7 +1609,10 @@ export default function AgentDossier({
               ['plan', entry.currentPlanSlug],
               ['started', formatRelativeUpdated(entry.startedAt)],
               ['host · pid', [entry.host, entry.pid != null ? String(entry.pid) : null].filter(Boolean).join(' · ')],
-              // …and the rest, one click away.
+              // …and the rest, one click away. `machine` leads them because it
+              // QUALIFIES the previewed `host · pid` directly above it: a
+              // federated peer's pid lives on another box (P-012).
+              ['machine', machineRowValue(entry)],
               ['liveness', `${entry.liveness} · active ${formatRelativeUpdated(entry.heartbeatAt)}`],
               ['mode', entry.mode],
               ['cwd', entry.cwd],
