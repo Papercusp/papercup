@@ -1021,6 +1021,14 @@ export function gatewayPinEnv(account: any, provider?: string, ownerId?: undefin
  *                 failover).
  * Pure — exported for tests. The keywords are reserved, so a pool account literally named
  * `auto`/`default`/`none`/`system`/`gateway` can't be pin-targeted (same tradeoff the server makes).
+ *
+ * ⚠ ONE DELIBERATE DIVERGENCE from the server (default-deploy-account-2026-08-08 P-004 split what
+ * used to be one branch): server-side, '' / `default` mean "the owner's NOMINATED default account"
+ * — a GATEWAY route (as `auto`) whenever a workspace has one configured — while only `none` /
+ * `system` are guaranteed to skip the gateway. This client keeps all four in the 'default' bucket
+ * because it is the RESUME path, which builds its env locally and cannot read the nominated
+ * account. So never emit '' / null / `default` on a path whose intent is "the machine's own login":
+ * emit `system`. (That is why the picker's default row carries `system`.)
  */
 export function accountRoutingMode(value: any): "default" | "pin" | "auto";
 /** Test seam: force the probe result (and reset the memo) so unit tests stay deterministic
