@@ -432,6 +432,11 @@ export async function getAgentOrders(owner: string): Promise<AgentOrders> {
       sourceRef: f.sourceRef ?? null,
       possiblyStale:
         carryBrief?.factsStaleness?.find((s) => s.key === f.key)?.verdict === 'possibly-stale',
+      // P-011: passed THROUGH, never recomputed — buildCarryBrief already folded
+      // it in one batched query over the whole fact set. Spread conditionally so
+      // an uncontested fact carries no key at all: see the DTO note on why this
+      // must not become `contested: f.contested ?? false`.
+      ...(f.contested ? { contested: f.contested } : {}),
     })),
     carry,
     disclosures,

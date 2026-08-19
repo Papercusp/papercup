@@ -76,6 +76,27 @@ export interface AgentOrdersFact {
   body: string;
   sourceRef?: string | null;
   possiblyStale?: boolean;
+  /**
+   * P-011: other agents already wrote to this key, or a prior version was settled
+   * UNDECIDABLE (server: contested-fold.ts). ORTHOGONAL to `possiblyStale` —
+   * that one says the fact's own source moved underneath it, this one says people
+   * disagreed about the answer — so both render, and neither collapses into a
+   * single "suspect" badge that would lose which question to go settle.
+   *
+   * Absent when uncontested, never `false`: the fold reads only superseded rows,
+   * so its silence means "no dispute in the version chain", not "verified agreed",
+   * and a reassuring "uncontested" badge would claim the second.
+   *
+   * Every field OPTIONAL, per the standing wire-skew convention — the SPA rebuilds
+   * on the vite hot path while the sidecar reloads only on restart.
+   */
+  contested?: {
+    settledUndecidable?: boolean;
+    settledBy?: string | null;
+    priorAuthors?: string[];
+    priorVersions?: number;
+    note?: string;
+  };
 }
 
 /** An owner-gated blocker. `claim` is the ask; `recheck` is the probe that
