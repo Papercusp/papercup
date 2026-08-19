@@ -192,6 +192,16 @@ describe('full-replacement mock guard: the live tree', () => {
     expect(out).toContain('PROTECTED module(s)');
     expect(out).toContain('NOT a tree-wide all-clear');
     expect(out).toMatch(/unprotected module\(s\).*carry \d+ bare/s);
+
+    // CONTROL — the VERBATIM verdict this guard printed at 20:24Z on 2026-08-18, while a
+    // collection-breaking bare `@papercusp/db-org` factory sat in the tree. Kept here as a
+    // permanent known-bad sample so the assertions above cannot be vacuous: if main() is
+    // ever reverted to an unqualified all-clear, this is exactly what it would print, and
+    // the assertions must reject it.
+    const preFixVerdict =
+      '✓ full-replacement-mocks: 2 protected module(s), 327 candidate test file(s) scanned — no bare vi.mock factories.';
+    expect(preFixVerdict).not.toContain('NOT a tree-wide all-clear');
+    expect(preFixVerdict).not.toMatch(/unprotected module\(s\).*carry \d+ bare/s);
   }, 120_000);
 
   it('keeps collectCandidateFiles equivalent to selectCandidates(readAllFiles(...))', () => {
