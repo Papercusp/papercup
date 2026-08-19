@@ -114,6 +114,17 @@ export default defineTool({
           `(${GOAL_LAUNCH_DEFAULTS.maxAgents} agents / ${GOAL_LAUNCH_DEFAULTS.maxPerFleet} per fleet), which is NOT the same as unlimited. ` +
           'Pass null to clear the whole document back to those defaults; omit to leave untouched.',
       ),
+    reason: z
+      .string()
+      .min(1)
+      .max(500)
+      .optional()
+      .describe(
+        'REQUIRED when pausing (status:"paused") — why this goal is being held, and ideally what would end the hold. ' +
+          'Persisted durably as metadata.pause { reason, pausedBy, pausedAtMs } and surfaced by goals:get, so a later reader can tell a DELIBERATE hold from a goal that quietly lost its holder ' +
+          '(goal-live-holder-guarantee-2026-08-18 P-005/D-009; same discipline as routines:set, whose EI-18654017982759582 exists because an unexplained pause twice stayed silently paused for days). ' +
+          'Ignored (but harmless) on any other status.',
+      ),
     holder: goalHolderPolicySchema
       .optional()
       .describe(
@@ -148,6 +159,36 @@ export default defineTool({
       if (problem) {
         return { data: null, degraded: true, degradedReasons: [problem] };
       }
+    }
+
+    // ── The pause-reason gate (P-005, D-009) ─────────────────────────────────
+    //
+    // Also BEFORE the read, for the same reason: a refusal should cost nothing.
+    //
+    // A pause with no recorded WHY is the failure this item exists to close.
+    // `status='paused'` already had teeth (it gates placement and disarms
+    // attributed loops) but carried no record of the DECISION — no author, no
+    // timestamp of its own, no reason — so a later reader could not tell an
+    // owner's deliberate hold from a goal that quietly lost its holder, which
+    // is precisely the distinction P-004's derived deactivation has to make.
+    //
+    // REQUIRED rather than optional, following `routines:set` rather than
+    // softening it. The evidence for requiring it is three recorded incidents
+    // (EI-18654017982759582 twice, EI-19336000265007219 once), and the obvious
+    // counter-argument — that an emergency pause should not be blocked by a
+    // missing sentence — is answered by those same incidents: the emergency
+    // pause is the one most likely to be left unexplained and then forgotten.
+    const pauseReason = args.reason?.trim();
+    if (args.status === 'paused' && !pauseReason) {
+      return {
+        data: null,
+        degraded: true,
+        degradedReasons: [
+          `goal ${args.id} not paused: status:'paused' requires \`reason\` — why the goal is being held, and ideally what would end the hold. ` +
+            `A pause with no recorded reason is indistinguishable from a goal that lost its holder, which is the exact confusion this record exists to prevent. ` +
+            `Retry with { status:'paused', reason:'…' }.`,
+        ],
+      };
     }
 
     const existing = await ctx.tx<
