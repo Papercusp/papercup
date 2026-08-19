@@ -58,24 +58,49 @@ describe('goals:list — summary/full projection', () => {
       { id: 'g1', title: 'Ship v1', body: 'long body', parent_id: null, budget_cents: 9999, created_at: 1, workspace_id: 'default', status: 'active' },
     ];
     const res = await tool.handler({ detail: 'summary', limit: 50 } as never, CTX() as never);
+    // `deactivated` (P-004 / D-011): the summary carries no `status`, so it
+    // could never state the falsehood outright — but listing a goal nothing is
+    // holding indistinguishably from a live one is the same failure by
+    // omission. No holder row + no declared policy ⇒ requireLive defaults true
+    // ⇒ deactivated.
     expect(res.data).toEqual([
-      { id: 'g1', title: 'Ship v1', actionable: true, premiseInvalidated: false },
+      { id: 'g1', title: 'Ship v1', actionable: true, premiseInvalidated: false, deactivated: true },
     ]);
     expect(JSON.stringify(res.data)).not.toContain('long body');
     expect(JSON.stringify(res.data)).not.toContain('9999');
   });
 
-  it('full returns the raw rows + readiness', async () => {
+  it('full returns the raw rows + readiness, with status DERIVED (P-004)', async () => {
     const rows = [{ id: 'g1', title: 'Ship v1', body: 'b', parent_id: null, budget_cents: 5, created_at: 1, workspace_id: 'default', status: 'active' }];
     fixtureRows = rows;
     const res = await tool.handler({ detail: 'full', limit: 50 } as never, CTX() as never);
-    expect(res.data).toEqual(rows.map((r) => ({ ...r, actionable: true, premiseInvalidated: false })));
+    expect(res.data).toEqual(
+      rows.map((r) => ({
+        ...r,
+        actionable: true,
+        premiseInvalidated: false,
+        // The derived reading REPLACES the column here for the same reason as
+        // goals:get — an agent reads `status`, so `status` must be true.
+        status: 'dormant',
+        rawStatus: 'active',
+        deactivated: true,
+        holderLiveness: 'unheld',
+        holderPolicy: { requireLive: true, onLoss: 'deactivate', isDefault: true },
+      })),
+    );
+    // `launch_settings` is an INPUT to the fold, not part of the response — the
+    // resolved `holderPolicy` reports what it meant.
+    expect(res.data[0]).not.toHaveProperty('launch_settings');
   });
 
   it('requests the full column set even in summary mode (shaping is post-query)', async () => {
     await tool.handler({ detail: 'summary', limit: 50 } as never, CTX() as never);
     expect(Object.keys(selectProjection!).sort()).toEqual(
-      ['body', 'budget_cents', 'created_at', 'id', 'parent_id', 'title', 'workspace_id', 'status'].sort(),
+      // `launch_settings` joins the projection for P-004: the deactivation fold
+      // needs the goal's own holder policy, and re-reading it per row would be
+      // a second query for a column this SELECT is already in a position to ask
+      // for.
+      ['body', 'budget_cents', 'created_at', 'id', 'parent_id', 'title', 'workspace_id', 'status', 'launch_settings'].sort(),
     );
   });
 });
