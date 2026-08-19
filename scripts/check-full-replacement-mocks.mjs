@@ -552,6 +552,14 @@ function main() {
       const { full, safe } = census.get(p.module);
       console.log(`  ${p.module}\n      mockers: ${safe} safe, ${full} full-replacement\n      ${p.why}\n`);
     }
+    console.log(
+      `unprotected modules carrying the risky shape (${exposure.modules}, ` +
+        `${exposure.internalModules} internal; ${exposure.pairs} factories):\n`,
+    );
+    for (const r of exposure.top.slice(0, 25)) {
+      console.log(`  ${String(r.files).padStart(4)}  ${r.module}${r.internal ? '' : '   [external]'}`);
+    }
+    if (exposure.top.length > 25) console.log(`  … and ${exposure.top.length - 25} more`);
     process.exit(0);
   }
 
