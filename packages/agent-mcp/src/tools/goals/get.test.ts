@@ -162,7 +162,7 @@ describe('goals:get — deactivation is DERIVED from holder liveness (P-004)', (
     holderLivenessFixture = 'lost';
     fixtureQueue = [[GOAL_ROW()]];
     const res = await tool.handler({ id: 'g-1', detail: 'summary' } as never, CTX() as never);
-    expect(res.data).toMatchObject({
+    expect(dataOf(res)).toMatchObject({
       status: 'dormant',
       rawStatus: 'active',
       deactivated: true,
