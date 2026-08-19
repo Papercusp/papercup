@@ -19,8 +19,11 @@ import {
   deriveSlugStem,
   draftGoalRails,
   DEFAULT_GOAL_BUDGET_CENTS,
+  GOAL_SCALE_MARKERS,
+  goalScaleMarkerHits,
   isGoalScaleProposal,
   makeGoalScaleOverride,
+  stripCodeSpans,
   proposalTitle,
   proposalToGymView,
   routeProposals,
@@ -300,6 +303,78 @@ describe('goal rail', () => {
     expect(isGoalScaleProposal(fixtureProposal({ bet: 'a multi-plan campaign over weeks' }))).toBe(true);
     // Configurable vocabulary (the P-009 scout-config seam).
     expect(isGoalScaleProposal(fixtureProposal({ framing: 'zebra initiative' }), ['zebra'])).toBe(true);
+  });
+
+  /* ── P-009 / D-012: a marker quoted inside code is a MENTION, not a request ──
+   * D-012 measured GOAL_SCALE_MARKERS at a precision of 0/1 on the live corpus: the
+   * only override-path draft in 30 cycles matched solely because `goal mode` sat
+   * inside a quoted SQL value. These pin the repair AND its two failure directions —
+   * under-stripping (the bug returns) and over-stripping (English apostrophes eaten,
+   * which would trade a false positive for a worse false negative). */
+  describe('code-span exclusion', () => {
+    // The live shape, reduced: a marker inside a SQL string literal.
+    const quoted = fixtureProposal({
+      routeHint: 'plan',
+      mechanism: "INSERT INTO tool_policies (action='deny', reason='goal mode: delegate')",
+    });
+
+    it('does NOT treat a marker inside a quoted code literal as goal-scale', () => {
+      expect(isGoalScaleProposal(quoted)).toBe(false);
+      // FALSIFIER: the marker really is in the text — the false above is the strip
+      // working, not the fixture failing to contain the word.
+      expect(quoted.mechanism.toLowerCase()).toContain('goal mode');
+      expect(isGoalScaleProposal(quoted, GOAL_SCALE_MARKERS, { includeCodeSpans: true })).toBe(true);
+    });
+
+    it('still counts the SAME marker when it appears in prose', () => {
+      // The calibration case: without this, the test above would also pass if the
+      // predicate were simply broken and always returned false.
+      const prose = fixtureProposal({ routeHint: 'plan', mechanism: 'we should run this in goal mode' });
+      expect(isGoalScaleProposal(prose)).toBe(true);
+    });
+
+    it('strips backticked and fenced code too', () => {
+      expect(isGoalScaleProposal(fixtureProposal({ mechanism: 'set `goal mode` on the row' }))).toBe(
+        false,
+      );
+      expect(
+        isGoalScaleProposal(fixtureProposal({ mechanism: '```\nmode = goal mode\n```' })),
+      ).toBe(false);
+    });
+
+    it('does NOT eat prose containing apostrophes (the over-strip failure)', () => {
+      // `don't` / `session's` must not open a string literal: a naive quote-pair
+      // matcher blanks everything between two apostrophes, silently hiding real asks.
+      const p = fixtureProposal({
+        mechanism: "we don't want this; the session's plan is a multi-week push, don't gate it",
+      });
+      expect(isGoalScaleProposal(p)).toBe(true);
+      expect(stripCodeSpans(p.mechanism)).toBe(p.mechanism);
+    });
+
+    it('stripCodeSpans preserves length, so reported offsets stay honest', () => {
+      const t = "prefix reason='goal mode: x' suffix";
+      expect(stripCodeSpans(t)).toHaveLength(t.length);
+      expect(stripCodeSpans(t).startsWith('prefix ')).toBe(true);
+      expect(stripCodeSpans(t).endsWith(' suffix')).toBe(true);
+    });
+
+    it('goalScaleMarkerHits reports WHICH fields matched and whether it was code-only', () => {
+      // Provenance is what lets a reader dismiss a draft without reading the proposal.
+      expect(goalScaleMarkerHits(quoted)).toEqual([
+        { marker: 'goal mode', fields: ['mechanism'], onlyInCodeSpan: true },
+      ]);
+      // A marker in two fields, one of them prose ⇒ NOT code-only.
+      const mixed = fixtureProposal({
+        framing: 'a campaign',
+        mechanism: "reason='campaign'",
+      });
+      expect(goalScaleMarkerHits(mixed)).toEqual([
+        { marker: 'campaign', fields: ['framing', 'mechanism'], onlyInCodeSpan: false },
+      ]);
+      // A proposal with no vocabulary at all reports nothing, rather than throwing.
+      expect(goalScaleMarkerHits(fixtureProposal())).toEqual([]);
+    });
   });
 
   it('makeGoalScaleOverride bumps ONLY plan-hinted goal-scale proposals (plan → goal escalation path)', () => {
