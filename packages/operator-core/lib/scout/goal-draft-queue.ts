@@ -29,11 +29,26 @@
  */
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../workspace-registry';
-import { draftGoalRails, proposalTitle } from './router';
+import { GOAL_SCALE_MARKERS, draftGoalRails, makeGoalScaleOverride, proposalTitle } from './router';
 import type { Proposal } from './types';
 
 /** The rail whose starvation this queue exists to make readable. */
 export const DEFAULT_DRAFT_RAIL = 'goal';
+
+/**
+ * HOW a proposal came to be goal-scale. Both are recorded, because they answer
+ * different questions and only one of them is currently live.
+ *
+ * • 'asked'    — the MODEL explicitly asked for the goal rail and intake coerced the
+ *                hint away (`droppedRouteHint`). Measured 2026-08-19: this has NEVER
+ *                happened in the 30 retained cycles — every proposal carried an
+ *                accepted hint — so a queue keyed on this alone reads empty forever.
+ * • 'override' — the proposal was 'plan'-hinted AND matched the goal-scale vocabulary,
+ *                so {@link makeGoalScaleOverride} WOULD bump it to the goal rail. This
+ *                is the path that is actually live in production (cycle-deps.ts wires
+ *                exactly this override, and BLENDER_GOAL_RAIL is default-ON).
+ */
+export type GoalDraftPath = 'asked' | 'override';
 
 /**
  * One thing the Blender WOULD have proposed, had the rail been open to it.
