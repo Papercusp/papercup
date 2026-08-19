@@ -56,9 +56,29 @@ const h = vi.hoisted(() => ({
   // subject-requiring mode, so this binding must exist on the mock or the named
   // import breaks at module load rather than in a test.
   getModeSubject: vi.fn(async (..._args: unknown[]) => null as string | null),
+  // P-003: the attach guard reads the target goal's launch settings. Shaped like
+  // the real return so `budget: null` can mean "no such goal" — the distinction
+  // the guard uses to avoid guessing in its refusal message.
+  readGoalLaunchSettings: vi.fn(
+    async (..._args: unknown[]) =>
+      ({ settings: null, budget: {}, error: null }) as {
+        settings: Record<string, unknown> | null;
+        budget: Record<string, unknown> | null;
+        error: string | null;
+      },
+  ),
 }));
 
 vi.mock('../../modes/store', () => ({ setMode: h.setMode, getModeSubject: h.getModeSubject }));
+// PARTIAL on purpose: the guard's RULE (goalHolderPolicyProblem) is pure and must
+// stay REAL here — mocking it would leave this suite asserting against a stub of
+// the very thing it is meant to pin. Only the DB read is replaced.
+vi.mock('../../goal-launch-settings', async () => {
+  const actual = await vi.importActual<typeof import('../../goal-launch-settings')>(
+    '../../goal-launch-settings',
+  );
+  return { ...actual, readGoalLaunchSettings: h.readGoalLaunchSettings };
+});
 // Partial mock on purpose: set.ts uses only getLoopStatus from this module, and a real
 // import would drag the org-PG client into a unit test.
 vi.mock('../../harness/routines/loop', () => ({ getLoopStatus: h.getLoopStatus }));
