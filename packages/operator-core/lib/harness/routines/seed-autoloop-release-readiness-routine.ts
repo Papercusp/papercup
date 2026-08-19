@@ -23,7 +23,14 @@ import { operatorHomeHarnessSlug } from '../operator-home-harness';
 
 const SLUG = process.env.AUTOLOOP_RELEASE_READINESS_ROUTINE_SLUG ?? operatorHomeHarnessSlug();
 /** Hourly at :15 — offset from telemetry-retention (04:00 daily), hive-canary
- *  (09:00 daily), and cargo-test (:45 hourly). */
+ *  (09:00 daily), and cargo-test (:45 hourly).
+ *
+ *  ⚠ DELIBERATELY NOT `GREEN_CHECKPOINT_CRON` (release/green-checkpoint-schedule.ts),
+ *  which is the same string. This routine is `autoloop-release-readiness-monitor`, not
+ *  the gate; it landed on :15 for its OWN reasons, listed above. Wiring it to the gate's
+ *  constant would mean retuning the gate's schedule silently moved an unrelated monitor —
+ *  the collision that made WI-39841 expensive, inverted. If the gate's cron moves, this
+ *  one stays put unless the reasons above say otherwise. */
 const CRON = '0 15 * * * *';
 
 async function main(): Promise<void> {
