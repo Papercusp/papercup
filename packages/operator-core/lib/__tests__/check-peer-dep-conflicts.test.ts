@@ -32,7 +32,7 @@
  * agreeing with the mutant cases.
  */
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -233,10 +233,34 @@ describe('check-peer-dep-conflicts — calibration against the real repo', () =>
     expect(BASELINE).toEqual([]);
   });
 
-  it('is registered as a repo-wide invariant guard with an npm script that exists', async () => {
-    const rootPkg = JSON.parse(
-      await import('node:fs').then((fs) => fs.readFileSync(join(REPO_ROOT, 'package.json'), 'utf8')),
-    );
+  it('declares the npm script in the workspace the guard registry names', () => {
+    // THE SILENT NO-OP THIS PINS: affected-tests.mjs attaches a repo-wide guard with
+    //   `if (!ws?.scripts?.[guard.script]) continue;`
+    // so a registry entry whose workspace does NOT declare the script is skipped without
+    // any error — the guard reads as wired while running never. The registry entry names
+    // @papercusp/operator-core, so that package.json is the load-bearing declaration;
+    // root's exists only for hand-runs.
+    const readJson = (p: string) => JSON.parse(readFileSync(p, 'utf8'));
+    const wsPkg = readJson(join(REPO_ROOT, 'packages/operator-core/package.json'));
+    expect(wsPkg.scripts['lint:peer-dep-conflicts']).toBe('node ../../scripts/check-peer-dep-conflicts.mjs');
+
+    const rootPkg = readJson(join(REPO_ROOT, 'package.json'));
     expect(rootPkg.scripts['lint:peer-dep-conflicts']).toBe('node scripts/check-peer-dep-conflicts.mjs');
+
+    // And the registry actually names it, with the not-checked escape a gate checkout needs.
+    const registry = readFileSync(join(REPO_ROOT, 'scripts/affected-tests.mjs'), 'utf8');
+    expect(registry).toContain('script: "lint:peer-dep-conflicts"');
+  });
+
+  it('resolves the repo root from the script location, not the caller cwd', () => {
+    // operator-core invokes it as `node ../../scripts/...` from its own directory, so a
+    // cwd-derived root would silently scan the wrong tree (and report a clean 2).
+    const fromWorkspaceDir = spawnSync(process.execPath, [GUARD], {
+      cwd: join(REPO_ROOT, 'packages/operator-core'),
+      env: { ...process.env, PEER_DEP_CONFLICTS_ROOT: '' },
+      encoding: 'utf8',
+    });
+    expect(fromWorkspaceDir.status).toBe(EXIT_OK);
+    expect(fromWorkspaceDir.stdout).toContain('OK');
   });
 });
