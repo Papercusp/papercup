@@ -604,8 +604,22 @@ export function partitionSignalsByKnownKeys(
     // Any real fix must bound the RE-FILE RATE from watchdog-owned state (tick history),
     // not relax the gate — that keeps churn bounded AND stops the permanent blackout.
     if (seenLastTick.has(watchdogKeyOf(s))) {
-      out.standing.push(s);
-      continue;
+      // RE-FILE RATE LIMIT (EI-20847917368795366). Suppression stays the DEFAULT — the
+      // escape hatch opens only for a key `computeRefileEligibleKeys` has measured as
+      // standing, unbroken, for >= WATCHDOG_REFILE_AFTER_MS of watchdog-owned tick history.
+      // An eligible key falls through to the resolution checks below (NOT straight to
+      // `fresh`), so `staleResolved` still applies and this can only ever ADD one filing.
+      //
+      // Why this bounds the churn instead of restoring it: letting the key through means it
+      // is NOT in this tick's `standingKeys`, which BREAKS the consecutive run that made it
+      // eligible. The run has to rebuild from zero, so the eligibility clock IS the rate
+      // limit — max one filing per key per window, with no dependence on item rows (the
+      // 60-copy incident proves another subsystem can retire those at will). An empty set
+      // (no history, injected fakes, the 3-arg callers) is byte-identical to the old gate.
+      if (!refileEligibleKeys.has(watchdogKeyOf(s))) {
+        out.standing.push(s);
+        continue;
+      }
     }
     if (matches.length > 0 && s.latestAt) {
       const evidenceMs = Date.parse(s.latestAt);
