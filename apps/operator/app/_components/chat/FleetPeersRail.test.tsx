@@ -23,6 +23,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import FleetPeersRail from './FleetPeersRail';
 import type { FleetPeer, FleetPeersModel } from './fleet-peers';
+import type { LeaderBriefAlertsModel, MemberAlert } from './leader-brief-alerts';
 
 afterEach(cleanup);
 
@@ -172,5 +173,195 @@ describe('FleetPeersRail — what it reports', () => {
     render(<FleetPeersRail model={model()} onClose={onClose} />);
     fireEvent.click(screen.getByRole('button', { name: 'Hide fleet peers' }));
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * The leader-brief overlay (popup-agent-state-coverage-2026-08-18 P-003/P-004).
+ *
+ * Two structural properties are what these defend, and neither is cosmetic:
+ *  1. NO NEW ROWS. D-003's fixed-height constraint was paid for after one
+ *     agent's 32 locks made this rail ~2,000px tall. An overlay that adds rows
+ *     spends it again, so the row count is asserted directly.
+ *  2. The alert sentences REACH a keyboard/touch user. Each glyph carries a
+ *     native `title`, which is unreachable by both — so the same sentences must
+ *     also be in the row's Tooltip label and its aria-label, or the whole
+ *     overlay is sighted-mouse-only.
+ */
+describe('FleetPeersRail — the leader-brief overlay', () => {
+  const alertsFor = (ownerId: string, ...alerts: MemberAlert[]): LeaderBriefAlertsModel => ({
+    byMember: { [ownerId]: alerts },
+    fleet: null,
+    briefed: true,
+  });
+
+  const dormant: MemberAlert = {
+    key: 'dormant',
+    glyph: 'D',
+    severity: 'bad',
+    title: 'Dormant — no self-wake at all.',
+  };
+  const deaf: MemberAlert = {
+    key: 'coord-deaf',
+    glyph: '✉',
+    severity: 'warn',
+    title: 'Coord-deaf — a coord:send will not be seen.',
+  };
+
+  it('renders a glyph per alert ON the existing row, adding no rows', () => {
+    const { container } = render(
+      <FleetPeersRail
+        model={model({ leader: null, members: [peer({ ownerId: 'su-x', handle: 'su-x' })] })}
+        alerts={alertsFor('su-x', dormant, deaf)}
+        onClose={noop}
+      />,
+    );
+    expect(container.querySelectorAll('[data-testid="fleet-peer-row"]')).toHaveLength(1);
+    const glyphs = container.querySelectorAll('.pc-peer__alert');
+    expect([...glyphs].map((g) => g.textContent)).toEqual(['D', '✉']);
+    expect(glyphs[0].getAttribute('data-sev')).toBe('bad');
+    expect(glyphs[1].getAttribute('data-sev')).toBe('warn');
+  });
+
+  it('puts the alert sentences on the row’s aria-label, not only in a hover title', () => {
+    render(
+      <FleetPeersRail
+        model={model({ leader: null, members: [peer({ ownerId: 'su-x', handle: 'su-x' })] })}
+        alerts={alertsFor('su-x', dormant)}
+        onSelectPeer={vi.fn()}
+        onClose={noop}
+      />,
+    );
+    const row = screen.getByTestId('fleet-peer-row');
+    // The board's own reason survives — the overlay is additive. Both halves
+    // are needed: the column says how the row scored, the alert says what that
+    // score cannot see.
+    expect(row.getAttribute('aria-label')).toContain('draining the non-p2p bug backlog');
+    expect(row.getAttribute('aria-label')).toContain('no self-wake');
+  });
+
+  it('reaches a NON-clickable row too (the current agent, or no handler)', () => {
+    const { container } = render(
+      <FleetPeersRail
+        model={model({ leader: null, members: [peer({ ownerId: 'su-x', isCurrent: true })] })}
+        alerts={alertsFor('su-x', dormant)}
+        onSelectPeer={vi.fn()}
+        onClose={noop}
+      />,
+    );
+    const row = container.querySelector('[data-testid="fleet-peer-row"]')!;
+    expect(row.tagName).toBe('LI');
+    expect(row.getAttribute('title')).toContain('no self-wake');
+  });
+
+  it('applies alerts to the LEADER row as well as members', () => {
+    const { container } = render(
+      <FleetPeersRail
+        model={model({ leader: peer({ ownerId: 'su-lead', handle: 'su-lead', isLeader: true }) })}
+        alerts={alertsFor('su-lead', dormant)}
+        onClose={noop}
+      />,
+    );
+    expect(container.querySelectorAll('.pc-peer__alert')).toHaveLength(1);
+  });
+
+  it('renders nothing extra when there is no overlay at all', () => {
+    const { container } = render(<FleetPeersRail model={model()} onClose={noop} />);
+    expect(container.querySelector('.pc-peer__alert')).toBeNull();
+    expect(container.querySelector('[data-testid="fleet-alert-block"]')).toBeNull();
+  });
+
+  it('leaves an un-alerted peer unmarked while its neighbour is flagged', () => {
+    const { container } = render(
+      <FleetPeersRail
+        model={model({
+          leader: null,
+          members: [peer({ ownerId: 'su-a', handle: 'su-a' }), peer({ ownerId: 'su-b', handle: 'su-b' })],
+        })}
+        alerts={alertsFor('su-a', dormant)}
+        onClose={noop}
+      />,
+    );
+    const rows = [...container.querySelectorAll('[data-testid="fleet-peer-row"]')];
+    expect(rows[0].querySelectorAll('.pc-peer__alert')).toHaveLength(1);
+    expect(rows[1].querySelectorAll('.pc-peer__alert')).toHaveLength(0);
+  });
+});
+
+describe('FleetPeersRail — the fleet-level alert block (P-004)', () => {
+  const withFleet = (fleet: LeaderBriefAlertsModel['fleet']): LeaderBriefAlertsModel => ({
+    byMember: {},
+    fleet,
+    briefed: true,
+  });
+
+  it('renders each alert with its reason available on hover', () => {
+    render(
+      <FleetPeersRail
+        model={model()}
+        alerts={withFleet({
+          fleetSlug: 'p2p-release',
+          alerts: [
+            { key: 'spec-starved', severity: 'bad', text: 'spec starved', detail: '0 rows match, pool has 14' },
+            { key: 'paused', severity: 'warn', text: 'fleet paused', detail: null },
+          ],
+          capacity: 'degraded · q 7',
+          invariantsNote: '4 invariants · all satisfied',
+        })}
+        onClose={noop}
+      />,
+    );
+    const block = screen.getByTestId('fleet-alert-block');
+    expect(block.textContent).toContain('spec starved');
+    expect(block.querySelector('[data-alert="spec-starved"]')!.getAttribute('title')).toBe(
+      '0 rows match, pool has 14',
+    );
+    // A detail-less alert must not render an empty tooltip that reads as "no
+    // reason exists" — it simply carries none.
+    expect(block.querySelector('[data-alert="paused"]')!.getAttribute('title')).toBeNull();
+    expect(screen.getByTestId('fleet-alert-capacity').textContent).toContain('degraded · q 7');
+    expect(screen.getByTestId('fleet-alert-invariants-ok').textContent).toContain('all satisfied');
+  });
+
+  it('renders NO block on a clean fleet, so its absence is the all-clear (D-003)', () => {
+    render(
+      <FleetPeersRail model={model()} alerts={{ byMember: {}, fleet: null, briefed: true }} onClose={noop} />,
+    );
+    expect(screen.queryByTestId('fleet-alert-block')).toBeNull();
+  });
+
+  it('sits ABOVE the roster — several alerts are why the rows below look calm', () => {
+    const { container } = render(
+      <FleetPeersRail
+        model={model()}
+        alerts={withFleet({
+          fleetSlug: 'f',
+          alerts: [{ key: 'paused', severity: 'warn', text: 'fleet paused', detail: null }],
+          capacity: null,
+          invariantsNote: null,
+        })}
+        onClose={noop}
+      />,
+    );
+    const block = container.querySelector('[data-testid="fleet-alert-block"]')!;
+    const list = container.querySelector('.pc-peers__list')!;
+    expect(block.compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('omits the capacity and invariant rows rather than rendering empty ones', () => {
+    render(
+      <FleetPeersRail
+        model={model()}
+        alerts={withFleet({
+          fleetSlug: 'f',
+          alerts: [{ key: 'paused', severity: 'warn', text: 'fleet paused', detail: null }],
+          capacity: null,
+          invariantsNote: null,
+        })}
+        onClose={noop}
+      />,
+    );
+    expect(screen.queryByTestId('fleet-alert-capacity')).toBeNull();
+    expect(screen.queryByTestId('fleet-alert-invariants-ok')).toBeNull();
   });
 });
