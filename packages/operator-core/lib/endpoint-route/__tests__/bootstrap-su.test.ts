@@ -593,7 +593,12 @@ describe('bootstrap-su', () => {
   });
 
   it('codex → per-session CODEX_HOME (writeSuCodexHome) + CODEX_HOME env; workspace cwd', async () => {
-    const res = await callPost({ agent: 'codex', harness_slug: null, plan_slug: null });
+    const res = await callPost({
+      agent: 'codex',
+      model: 'gpt-5.6-terra:xhigh',
+      harness_slug: null,
+      plan_slug: null,
+    });
     const json = await res.json();
     expect(json.cwd).toBe('/workspace');
     expect(json.codexHome).toMatch(/su-codex-homes\/session-42$/);
@@ -605,6 +610,7 @@ describe('bootstrap-su', () => {
         promptText: expect.stringContaining('⟦INSTRUCTION-PRECEDENCE⟧'),
         mcpUrl: 'http://localhost:3070/api/mcp?superuser=1&workspace=default',
         sid: expect.stringMatching(/^su-/),
+        model: 'gpt-5.6-terra:xhigh',
         token: 'TESTBEARER',
         instructionRuntime: expect.objectContaining({
           source: 'bootstrap-su',
