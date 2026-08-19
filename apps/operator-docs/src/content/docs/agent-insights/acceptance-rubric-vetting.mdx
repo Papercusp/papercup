@@ -5,7 +5,7 @@
 # the next projection (it cannot tell your edit from corruption), so it blocks the
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
 title: "Acceptance-rubric vetting — the meta-rubric method"
-description: "The long-form method behind the acceptance-rubric ship gate's vetting step: how an acceptance-rubric author vets their rubric against meta-acceptance-rubric (get_feedback min:1/max:3 critique consult → improve → scorecards:emit meta-scorecard with vettingConsult), how each of the six meta-criteria is judged, revision currency (D-010), and the gate's refusal/disable/flag mechanics (D-009)."
+description: "The long-form method behind the acceptance-rubric ship gate's vetting step: how an acceptance-rubric author vets their rubric against meta-acceptance-rubric (get_feedback min:1/max:3 critique consult → improve → scorecards:emit meta-scorecard with vettingConsult), how each of the six meta-criteria is judged, revision currency (D-010), the gate's refusal/disable/flag mechanics (D-009), and the three traps that make a correct vetting read as a failure — or a wrong binding read as a pass."
 type: Convention
 discovered: 2026-08-17
 tags: ["rubrics", "acceptance", "vetting", "consult", "scorecards"]
@@ -70,3 +70,41 @@ The attestation pins the rubric plan row's `version` at emit time. ANY later `ru
 ## Grading-time checks (D-011) — what the eventual grader inherits
 
 The NON-implementer who later grades the acceptance rubric meets the structured checks the vetting pushed for. A `tests` check's files are RUN via the testing router at emit time — one run per tests-check criterion, sequential, under one shared clamped budget; never judged from stale ledger rows. A pass-vocabulary rating (`pass`/`healthy`/`green`/`good`/`yes`/`exemplary`/`exceptional`) over a failing run REFUSES the emit naming the failing tests; an unresolvable path (`check_path_unresolved`), a route error, or an over-budget run refuses with a teaching error — never a silent pass. An honest fail-rating over a failing run is STAMPED (`observation.checkRuns`) and files normally. A bespoke scale word outside the pass map degrades to stamp-only — conservative, never wrongly refused. The unchanged-evidence dedupe fires BEFORE any run, so a declined re-emit never burns a suite.
+
+## Three traps — two that make a correct vetting look broken, one that makes a bad binding look fine
+
+All three were hit in a single vetting run (plan `on-demand-local-inference-lifecycle-2026-08-17`, 2026-08-19). None is a defect; each is a place where the honest reading of what you see is the wrong one.
+
+### 1. The rating VOCABULARY is per-rubric — the meta-rubric does not use the scale your acceptance rubric uses
+
+`meta-acceptance-rubric` grades on **`pass | weak | fail | not-applicable | unknown`**. Most acceptance rubrics grade on **`healthy | degraded | broken | unknown`**. You will typically write both scorecards within an hour of each other, and the scale does NOT carry over.
+
+An off-scale value is refused at capture, by design ("an off-scale rating would be silently excluded from trends/staleness") — so the failure is loud, but it arrives only after you have composed every rating and its evidence, and the whole payload has to be resent. Read the target rubric's own `ratingScale` before you compose, not after you are refused: `rubrics:get { rubricRef }`, or `template_data->'ratingScale'`. Map deliberately — `healthy→pass`, `degraded→weak` — rather than assuming the words are interchangeable.
+
+### 2. Verifying the attestation at the ARGUMENT's name reads NULL on a perfectly good vetting
+
+`scorecards:emit` takes `vettingConsult` as a flat string ARGUMENT and stores it as an OBJECT:
+
+```
+payload->'observation'->'vetting'  =  { consultId, rubricRevision, critiquePosts?, critics?, unanswered? }
+payload->'observation'->>'vettingConsult'  =  NULL   -- always, even on a valid attestation
+```
+
+Querying the argument name is the natural thing to do and returns `NULL`, which is indistinguishable from "the vetting never landed" — and invites a pointless re-consult of a consult that is already closed and already cited. Always read `observation.vetting`.
+
+While you are there, read `vetting.rubricRevision` and compare it to the rubric's CURRENT revision: that comparison is the D-010 currency check above, and it is the one field that tells you whether your attestation is still valid or was voided by a later `rubrics:propose`.
+
+### 3. A `tests` check is validated for PATH RESOLUTION, never for SUBJECT — a resolvable-but-irrelevant file passes and lies
+
+`rubrics:propose` refuses a `check` whose path does not resolve against the live tree (D-006), and the grader's emit refuses a pass-rating over a red run (D-011). Neither mechanism can tell whether the file tests the criterion it is bound to. A green run on the wrong file therefore reads to every downstream grader as machine-confirmed evidence for a claim nobody verified — strictly worse than leaving the criterion prose-only, because prose-only at least declares itself as judgment.
+
+**Open the candidate file and read its test names before binding it.** In the run behind this section, two of the three candidate files suggested during critique were the wrong subject and were rejected on exactly this ground: `spawn-readiness.test.ts` grades AGENT spawn admission and `local-backend-client-circuit.test.ts` grades the per-client request circuit, while the criterion was about local-backend COLD-START failure being bounded and named — both candidates would have run green while the criterion was broken. Record the rejection in the criterion's own `method` text, so the wrong candidate is not re-suggested and re-added later.
+
+Two corollaries worth applying at bind time:
+
+- **Bind the file that tests the criterion's CORE claim, not its cheapest neighbour.** Where a criterion insists on database-level enforcement, the integration test IS the criterion; the unit test over the JS validator is the thing that criterion explicitly calls insufficient. Check the file actually runs cheaply before worrying (`testing:runs { filePath }` gives the last duration — a real-PG integration test at ~1s is a fine binding; a Docker-gated one that cannot start would refuse the emit).
+- **When a check covers only PART of a criterion, say so in the criterion's `method`.** A green run must not be allowed to imply the uncovered clause passed. Declare the partition explicitly — "the check covers clause 1; clause 2 has no automated coverage and must be graded on its own evidence" — so the grader inherits the boundary instead of the impression.
+
+### Budget note for a multi-check rubric
+
+The per-criterion runs are sequential under ONE shared clamped budget, so a rubric with several `tests` checks can exhaust it and refuse the emit on timeout. That refusal is load-dependent and INTERMITTENT: retrying is valid **for the timeout refusal only**, and never for `check_contradicted` or an unresolved path — those are verdicts, not noise.
