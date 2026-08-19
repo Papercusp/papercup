@@ -33,9 +33,12 @@ import {
   analyzeMockCalls,
   checkFile,
   collectCandidateFiles,
+  exposureCensus,
+  printExposureNote,
   resolveSpec,
   PROTECTED_MODULES,
   FIXTURE_PROTECTED,
+  EXPOSURE_FIXTURES,
   SELF_TESTS,
 } from '../../../scripts/check-full-replacement-mocks.mjs';
 
