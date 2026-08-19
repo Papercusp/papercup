@@ -48,7 +48,11 @@ import {
   mintDrainFleetForGoal,
   teardownDrainFleetMint,
 } from '../../goals/drain-fleet-mint';
-import { resolveGoalLaunchForGoal } from '../../goal-launch-settings';
+import {
+  goalHolderPolicyProblem,
+  goalHolderPolicySchema,
+  resolveGoalLaunchForGoal,
+} from '../../goal-launch-settings';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { setMode } from '../../modes/store';
 
@@ -287,6 +291,23 @@ export default defineTool({
       const problem = killCriterionProblem(criterionArg);
       if (problem) return err(problem);
     }
+
+    // ── The holder-policy write boundary (goal-live-holder-guarantee-2026-08-18
+    // P-003, D-008) ──────────────────────────────────────────────────────────
+    // Refused HERE and not only at `goals:create` because this tool writes its
+    // row through the same `insertGoalRow` and would otherwise be the door that
+    // installs what the other refuses — the second-copy drift `kill-criterion`'s
+    // header describes, which this door has already been on the wrong side of
+    // once (it reaches the shared insert directly).
+    //
+    // This tool has the strongest claim of the three: it SPAWNS the session that
+    // holds the goal, so "does this goal need a live holder" is a question its
+    // caller is uniquely positioned to answer. Same placement as the criterion
+    // check above — before the ownerId pre-pin and the row write, so a refusal
+    // costs no minted identity and no rollback.
+    const launchSettings = args.holder ? { holder: args.holder } : null;
+    const holderProblem = goalHolderPolicyProblem(launchSettings);
+    if (holderProblem) return err(holderProblem);
 
     let callerOwnerId: string | null = null;
     try {
