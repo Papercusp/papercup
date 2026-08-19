@@ -135,6 +135,14 @@ export function runBudgetedTasks<Task, Value>(
   tasks: Task[],
   options: TaskBudgetInput & {
     estimateMs?: (task: Task, index: number) => number | null | undefined;
+    /**
+     * OPT-IN live memory reading, consulted before every admission after the run's first.
+     * ABSENT ⇒ allocations are byte-identical to the pre-clamp scheduler (the back-compat
+     * contract). Present ⇒ admission may only ever admit FEWER workers, never more. A reader
+     * that returns null/non-finite, or throws, leaves the lane width unchanged: a broken
+     * instrument must not read as "no memory" (EI-20801764054303492).
+     */
+    readMemAvailableMb?: () => number | null | undefined;
     runTask: (task: Task, allocation: TaskAllocation, index: number) => Value | Promise<Value>;
   },
 ): Promise<BudgetedTaskRun<Task, Value>>;
