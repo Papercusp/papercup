@@ -235,8 +235,8 @@ describe('goal draft queue (real PG, migration 623)', () => {
   it('CONTROL: the same row under another tenant is not returned', async () => {
     // The falsifier for every non-empty assertion above. If the workspace
     // predicate were dropped, this returns the draft and the suite goes red.
-    const mine = await readGoalDraftQueue({ workspaceId: WS });
-    const theirs = await readGoalDraftQueue({ workspaceId: OTHER_WS });
+    const mine = await readGoalDraftQueue(LEGACY);
+    const theirs = await readGoalDraftQueue({ ...LEGACY, workspaceId: OTHER_WS });
 
     expect(mine).toHaveLength(1);
     expect(theirs).toHaveLength(1);
@@ -245,23 +245,25 @@ describe('goal draft queue (real PG, migration 623)', () => {
     expect(mine[0]!.cycleId).not.toBe(theirs[0]!.cycleId);
 
     // And a workspace with no artifacts at all reads empty rather than erroring.
-    expect(await readGoalDraftQueue({ workspaceId: 'ws-with-nothing-in-it' })).toEqual([]);
+    expect(await readGoalDraftQueue({ ...LEGACY, workspaceId: 'ws-with-nothing-in-it' })).toEqual(
+      [],
+    );
   });
 
   it('bounds CYCLES scanned, not drafts returned', async () => {
     // limit:1 reads only the NEWEST cycle (scout-null-proposals is excluded by the
     // WHERE, so the newest READ cycle is scout-newer-no-drafts) — which holds no
     // draft. The real cycle is older and therefore out of range.
-    expect(await readGoalDraftQueue({ workspaceId: WS, limit: 1 })).toEqual([]);
+    expect(await readGoalDraftQueue({ ...LEGACY, limit: 1 })).toEqual([]);
     // Widen the window and it comes back: the row was always there.
-    expect(await readGoalDraftQueue({ workspaceId: WS, limit: 30 })).toHaveLength(1);
+    expect(await readGoalDraftQueue({ ...LEGACY, limit: 30 })).toHaveLength(1);
   });
 
   it('honours a caller-supplied marker vocabulary (the P-009 config seam)', async () => {
     // Drop 'goal mode' from the vocabulary and the incidental match disappears —
-    // which is the concrete lever for the false positive this file documents.
+    // the vocabulary lever, independent of the code-span lever P-009 added.
     const without = GOAL_SCALE_MARKERS.filter((m) => m !== 'goal mode');
-    expect(await readGoalDraftQueue({ workspaceId: WS, markers: without })).toEqual([]);
+    expect(await readGoalDraftQueue({ ...LEGACY, markers: without })).toEqual([]);
   });
 
   it('WRITES NOTHING — the corpus is byte-identical after a read', async () => {
