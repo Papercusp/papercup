@@ -261,6 +261,10 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
     // the detail is `{ kind, id }`-keyed, so no plan-slug scope can match.
     'learning.retainFeed',
     'learning.retainDetail',
+    // WI-39900: the tab badges are their own query now. A plan write changes
+    // the plans/rubrics corpus SIZE, so it must bust the counts too — otherwise
+    // the badge and the ledger it labels drift apart until the next mount.
+    'learning.retainCounts',
   ],
   'harness_shared.plan_revisions': ['plans.revisions'],
   // plan_runs feeds BOTH the Agents-tab flat list (plans.runs, { slug }) and the
@@ -431,6 +435,9 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
     'learning.retainFeed',
     'learning.retainPlanChildren',
     'learning.retainDetail',
+    // WI-39900: see the harness_plans entry above — the wi badge is a corpus
+    // count, so a work-item write moves it.
+    'learning.retainCounts',
     // WI-6961: agentOrders.byOwner renders the agent's HELD work-items via
     // buildCarryBrief, so a state/claim write is exactly when the Orders panel
     // is wrong. Coarse (any work_items write invalidates it), but the query is
