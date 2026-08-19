@@ -108,6 +108,7 @@ export default defineTool({
       { resolveSessionStates },
       conversations,
       { notifyAgents },
+      { makeConsultReviver },
     ] = await Promise.all([
       import('@papercusp/db-org'),
       import('../../consult/get-feedback-core'),
@@ -116,6 +117,7 @@ export default defineTool({
       import('../coordination/liveness-oracle'),
       import('../coordination/conversations'),
       import('../coordination/notify-agents'),
+      import('../../consult/revive-responder'),
     ]);
 
     // The consult_state partition must be the SAME workspace the conversation
@@ -178,6 +180,15 @@ export default defineTool({
           });
           return { woke: r.woke };
         },
+        // WI-39852 revival leg: carry-respawn a DEAD above-floor expert's own
+        // session (headless resume; the brief is its first turn). The reviver
+        // never throws — spawned:false falls back to pre-revival selection.
+        revive: makeConsultReviver({
+          workspaceId,
+          harnessSlug:
+            args.harness?.trim() || (ctx.harnessSlug && ctx.harnessSlug !== '*' ? ctx.harnessSlug : null),
+          launchedBy: identity.ownerId,
+        }),
       },
     );
 

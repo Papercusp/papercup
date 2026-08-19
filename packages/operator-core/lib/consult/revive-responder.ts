@@ -44,8 +44,10 @@ export const REVIVE_VERIFY_TIMEOUT_MS = 15_000;
 
 export interface ConsultReviveContext {
   workspaceId: string;
-  /** Harness slug for the console envelope (project scope of the resume). */
-  harnessSlug: string;
+  /** Harness slug for the console envelope (project scope of the resume);
+   * null ⇒ the workspace home checkout (buildConsoleEnvelope's own fallback).
+   * The resume itself lands in the session's recorded cwd when known. */
+  harnessSlug: string | null;
   /** The consult requester's coord id — stamped as `--launched-by` provenance
    * on the resumed command (who revived / supervises the session). */
   launchedBy: string | null;
