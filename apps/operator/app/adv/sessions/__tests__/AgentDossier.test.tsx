@@ -1183,6 +1183,50 @@ describe('AgentDossier', () => {
       expect(container.querySelector('#pc-dossier-lane')!.textContent).not.toContain('from launch record');
     });
 
+    // ── P-013: declared-but-unclaimed ───────────────────────────────────────
+    // The durable, viewer-readable equivalent of what `coord:orient`'s
+    // `laneClaim.warning` tells the agent about itself (plan D-012). The
+    // orient field is computed from one call's `planItems` argument and never
+    // persisted, so this roster flag is the only form a viewer can read.
+    it('(P-013) says a declared plan is backed by NO claim, inside the Plan section', async () => {
+      const { findByTestId, container } = render(
+        <AgentDossier ownerId="su-1" entry={entry({ declaredUnclaimed: true })} onClose={() => {}} />,
+      );
+      const note = await findByTestId('dossier-declared-unclaimed');
+      // Placement is the point: it qualifies the plan rows directly above it.
+      expect(container.querySelector('#pc-dossier-lane')!.contains(note)).toBe(true);
+      expect(note.textContent).toMatch(/no claim on it/i);
+      // Must name the remedy-relevant fact, not just the smell: nothing will
+      // pull work for this agent either.
+      expect(note.textContent).toMatch(/no armed loop/i);
+    });
+
+    it('(P-013) stays SILENT when the flag is false or absent, and invents no "lane held" inverse', async () => {
+      // D-011 per-field: `true` is measured and speaks; `false` is measured and
+      // says nothing (the writer exempts loop-armed agents by construction, so
+      // a false here does NOT mean the agent holds its lane); an ABSENT field
+      // is an older payload — unmeasured, and equally silent.
+      for (const over of [{ declaredUnclaimed: false }, {}]) {
+        const { queryByTestId, findByText, unmount } = render(
+          <AgentDossier ownerId="su-1" entry={entry(over)} onClose={() => {}} />,
+        );
+        await findByText('Plan');
+        expect(queryByTestId('dossier-declared-unclaimed')).toBeNull();
+        unmount();
+      }
+    });
+
+    it('(P-013) fires even for an agent whose lane read is UNAVAILABLE', async () => {
+      // The flag comes off the roster row, not off `signals.lane`, so a failed
+      // lane read must not suppress it — that would hide the smell in exactly
+      // the case where the reader has least other information.
+      withSignals({ lane: null, unavailableSignals: ['lane'] });
+      const { findByTestId } = render(
+        <AgentDossier ownerId="su-1" entry={entry({ declaredUnclaimed: true })} onClose={() => {}} />,
+      );
+      expect(await findByTestId('dossier-declared-unclaimed')).toBeTruthy();
+    });
+
     it('(b) shows a declared-but-unawaited gate INSIDE Waiting on, so both halves are read together', async () => {
       withSignals({
         announcedGates: [
