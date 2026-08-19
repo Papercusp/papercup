@@ -376,6 +376,50 @@ describe('writeSuCodexHome', () => {
     );
   });
 
+  it.each([
+    ['missing context roots', ''],
+    [
+      'superseded context roots',
+      'model_context_window = 872000\nmodel_auto_compact_token_limit = 784800\n',
+    ],
+  ])('upgrades a healthy managed SU home with %s before a model-less resume', async (_case, prefix) => {
+    const { ensureSuCodexHomeConfig, writeSuCodexHome } = await loadMod();
+    const sessionKey = `context-upgrade-${prefix.length}`;
+    const old = writeSuCodexHome({
+      sessionKey,
+      mcpUrl: 'http://x/api/mcp?superuser=1',
+      promptText: 'P',
+      sid: 'su-context-upgrade',
+      model: 'gpt-5.5',
+    });
+    const oldToml = readFileSync(old.configPath, 'utf8');
+    writeFileSync(old.configPath, `${prefix}${oldToml}`);
+    expect(readFileSync(old.configPath, 'utf8')).toContain('[mcp_servers.papercusp-su]');
+
+    const upgraded = ensureSuCodexHomeConfig({
+      sessionKey,
+      mcpUrl: 'http://x/api/mcp?superuser=1',
+      sid: 'su-context-upgrade',
+      model: 'gpt-5.6-sol',
+    });
+    expect(upgraded.repaired).toBe(true);
+    const upgradedToml = readFileSync(upgraded.configPath, 'utf8');
+    expect(upgradedToml).toMatch(
+      /^model_context_window = 1000000\nmodel_auto_compact_token_limit = 900000\n/,
+    );
+    expect(upgradedToml).not.toContain('872000');
+    expect(upgradedToml).not.toContain('784800');
+
+    const idempotent = ensureSuCodexHomeConfig({
+      sessionKey,
+      mcpUrl: 'http://x/api/mcp?superuser=1',
+      sid: 'su-context-upgrade',
+      model: 'gpt-5.6-sol',
+    });
+    expect(idempotent.repaired).toBe(false);
+    expect(readFileSync(idempotent.configPath, 'utf8')).toBe(upgradedToml);
+  });
+
   it('rekeys a prepared home to the durable adv-session id without rebuilding or overwriting', async () => {
     const { rekeyCodexHome, writeSuCodexHome } = await loadMod();
     const prepared = writeSuCodexHome({

@@ -842,8 +842,11 @@ export function suCodexConfigToml(opts: SuCodexConfigInput): string {
  * or came up silently uncoordinated. `existsSync(home)` is required, not created:
  * a home that is not there has no rollouts to resume and must not be conjured.
  *
- * Idempotent: a home already carrying `[mcp_servers.papercusp-su]` is left
- * byte-identical and reported `repaired: false`.
+ * Idempotent: a home already carrying `[mcp_servers.papercusp-su]` AND the
+ * context roots required by its recorded launch model is left byte-identical
+ * and reported `repaired: false`. Older managed homes that predate the roots
+ * (or carry superseded values) are rewritten from this canonical renderer so a
+ * model-less resume cannot silently fall back to Codex's smaller native window.
  */
 export function ensureSuCodexHomeConfig(
   opts: SuCodexConfigInput & { sessionKey: string | number },
@@ -851,8 +854,13 @@ export function ensureSuCodexHomeConfig(
   const codexHome = codexHomeForSessionKey(opts.sessionKey);
   const configPath = join(codexHome, 'config.toml');
   if (!existsSync(codexHome)) return { codexHome, configPath, repaired: false, reason: 'no-home' };
+  const expectedContextConfig = codexContextConfigToml(opts.model);
   try {
-    if (readFileSync(configPath, 'utf8').includes('[mcp_servers.papercusp-su]')) {
+    const current = readFileSync(configPath, 'utf8');
+    const contextMatches = expectedContextConfig
+      ? current.startsWith(expectedContextConfig)
+      : !/^model_(?:context_window|auto_compact_token_limit)\s*=/m.test(current);
+    if (current.includes('[mcp_servers.papercusp-su]') && contextMatches) {
       return { codexHome, configPath, repaired: false };
     }
   } catch {
