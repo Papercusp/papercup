@@ -57,12 +57,14 @@ export default defineTool({
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
     // Heavy prod seams — imported per-call, never at registration.
-    const [{ getOrgPg }, { consultReplyCore }, conversations, { notifyAgents }] = await Promise.all([
-      import('@papercusp/db-org'),
-      import('../../consult/consult-verbs-core'),
-      import('../coordination/conversations'),
-      import('../coordination/notify-agents'),
-    ]);
+    const [{ getOrgPg }, { consultReplyCore }, conversations, { notifyAgents }, { makeConsultReviver }] =
+      await Promise.all([
+        import('@papercusp/db-org'),
+        import('../../consult/consult-verbs-core'),
+        import('../coordination/conversations'),
+        import('../coordination/notify-agents'),
+        import('../../consult/revive-responder'),
+      ]);
 
     // Same partition resolver as the conversation writes (WI-1571).
     const workspaceId = conversations.withConversationsIdentityScope(identity, undefined, () =>
@@ -96,6 +98,14 @@ export default defineTool({
           });
           return { woke: r.woke };
         },
+        // EI-20864690354207496 refill-exhaustion revival: same WI-39852
+        // reviver the creation site binds — cascade-core enforces the
+        // persisted one-per-consult budget before calling it.
+        revive: makeConsultReviver({
+          workspaceId,
+          harnessSlug: ctx.harnessSlug && ctx.harnessSlug !== '*' ? ctx.harnessSlug : null,
+          launchedBy: identity.ownerId,
+        }),
       },
     );
     return ok(result as unknown as Record<string, unknown>);

@@ -36,10 +36,11 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
-    const [{ getOrgPg }, { consultDeclineCore }, conversations] = await Promise.all([
+    const [{ getOrgPg }, { consultDeclineCore }, conversations, { makeConsultReviver }] = await Promise.all([
       import('@papercusp/db-org'),
       import('../../consult/consult-verbs-core'),
       import('../coordination/conversations'),
+      import('../../consult/revive-responder'),
     ]);
     const workspaceId = conversations.withConversationsIdentityScope(identity, undefined, () =>
       conversations.conversationsScopeWorkspace(),
@@ -72,6 +73,14 @@ export default defineTool({
           });
           return { woke: r.woke };
         },
+        // EI-20864690354207496 refill-exhaustion revival: same WI-39852
+        // reviver the creation site binds — cascade-core enforces the
+        // persisted one-per-consult budget before calling it.
+        revive: makeConsultReviver({
+          workspaceId,
+          harnessSlug: ctx.harnessSlug && ctx.harnessSlug !== '*' ? ctx.harnessSlug : null,
+          launchedBy: identity.ownerId,
+        }),
       },
     );
     return ok(result as unknown as Record<string, unknown>);

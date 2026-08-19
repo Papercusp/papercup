@@ -823,3 +823,156 @@ describe('consultDeclineCore — exhaustion honesty + min-ANSWERS refill (WI-398
     expect(reachCalls.at(-1)?.responder).toBe('w-b');
   });
 });
+
+// ── EI-20864690354207496: refill-exhaustion revival + honest under-filled ──
+//
+// The probe both vetting reviewers demanded (conv-mszpqo7t posts 70130/70135):
+// drive a consult to refill exhaustion with ONLY dead untried above-floor
+// candidates in the snapshot and assert the DISJUNCTION — either a dead
+// above-floor candidate is revived within the persisted per-consult budget,
+// XOR the terminal state honestly reports why the min stays unfilled
+// (selection.underFilled). Silence is the one outcome these pin out.
+describe('advanceCascade — refill-exhaustion revival (EI-20864690354207496)', () => {
+  type ParsedRouting = {
+    selection?: {
+      selected?: Array<Record<string, unknown>>;
+      refill?: { added?: string[] };
+      underFilled?: Record<string, unknown>;
+    };
+  };
+  const parseRouting = (raw: unknown): ParsedRouting =>
+    (typeof raw === 'string' ? JSON.parse(raw) : raw) as ParsedRouting;
+
+  /** min:1 snapshot whose untried pool holds ONLY a dead candidate. The dead
+   * candidate clears both floors unless lowScore drops it below them. */
+  function deadPoolRouting(opts: { revivedAlready?: boolean; lowScore?: boolean } = {}) {
+    return {
+      floor: 0.5,
+      simFloor: 0.4,
+      candidates: [
+        { ownerId: RESPONDER, score: 0.9, signals: { similarity: 0.8 }, liveness: 'live' },
+        opts.lowScore
+          ? { ownerId: 'dead-low', score: 0.2, signals: { similarity: 0.1 }, liveness: 'ended' }
+          : { ownerId: 'dead-x', score: 0.7, signals: { similarity: 0.6 }, liveness: 'ended' },
+      ],
+      selection: {
+        min: 1,
+        max: 1,
+        selected: [
+          {
+            ownerId: RESPONDER,
+            via: 'floor',
+            score: 0.9,
+            similarity: 0.8,
+            liveness: 'live',
+            ...(opts.revivedAlready ? { revived: true } : {}),
+          },
+        ],
+      },
+    };
+  }
+
+  it('driven through consult:decline — exhaustion below min with only a dead above-floor untried candidate REVIVES them: menu extended revived-first, cursor lands on them, consult stays open', async () => {
+    const id = await seedConsult({ state: 'active', routing: deadPoolRouting() });
+    const { deps, reachCalls } = makeDeps();
+    const revived: Array<{ ownerId: string; conversationId: string; brief: string }> = [];
+    deps.revive = async (o) => {
+      revived.push(o);
+      return { spawned: true, verified: true, detail: 'live host registered' };
+    };
+    const r = await consultDeclineCore(
+      { workspaceId: WS, authorId: RESPONDER, conversationId: id, reason: 'not my area' },
+      deps,
+    );
+    if ('error' in r) throw new Error(r.error);
+    expect(r.state).toBe('awaiting_responder'); // NOT terminal — revival filled the slot
+    expect(r.cascade).toMatchObject({
+      advanced_to: 'dead-x',
+      exhausted: false,
+      revival: { ownerId: 'dead-x', spawned: true },
+    });
+    expect(r.hint).toContain('refill-exhaustion revival');
+    expect(revived).toHaveLength(1);
+    expect(revived[0].conversationId).toBe(id);
+    expect(revived[0].brief).toContain('REVIVED');
+    const row = await stateRow(id);
+    expect(row.responder_id).toBe('dead-x');
+    expect(row.closed_at).toBeNull();
+    const routingRow = parseRouting(row.routing);
+    // Revived entry HEADS the extension, labeled with provenance (via floor +
+    // revived) — this persisted stamp IS the budget debit the next
+    // exhaustion reads.
+    expect(routingRow.selection?.selected?.[1]).toMatchObject({ ownerId: 'dead-x', via: 'floor', revived: true });
+    expect(routingRow.selection?.underFilled).toBeUndefined();
+    // The revived head is reach-woken too (redundant delivery; the spawn
+    // brief is primary — same shape as the creation site).
+    expect(reachCalls.at(-1)?.responder).toBe('dead-x');
+  });
+
+  it('budget already spent (persisted revived stamp) — NO second revival: honest terminal, selection.underFilled says budget-spent', async () => {
+    const id = await seedConsult({ state: 'active', routing: deadPoolRouting({ revivedAlready: true }) });
+    const { deps } = makeDeps();
+    let reviveCalls = 0;
+    deps.revive = async () => {
+      reviveCalls += 1;
+      return { spawned: true, verified: true, detail: 'x' };
+    };
+    const r = await consultDeclineCore(
+      { workspaceId: WS, authorId: RESPONDER, conversationId: id, reason: 'no' },
+      deps,
+    );
+    if ('error' in r) throw new Error(r.error);
+    expect(reviveCalls).toBe(0); // the persisted stamp, not a local flag, is the budget
+    expect(r.state).toBe('declined');
+    expect(r.cascade.exhausted).toBe(true);
+    const routingRow = parseRouting((await stateRow(id)).routing);
+    expect(routingRow.selection?.underFilled).toMatchObject({ answers: 0, min: 1, reason: 'budget-spent' });
+  });
+
+  it('no revive seam bound — the disjunction still holds: honest under-filled terminal, never a silent exhaustion', async () => {
+    const id = await seedConsult({ state: 'active', routing: deadPoolRouting() });
+    const { deps } = makeDeps(); // no revive dep
+    const r = await consultDeclineCore(
+      { workspaceId: WS, authorId: RESPONDER, conversationId: id, reason: 'no' },
+      deps,
+    );
+    if ('error' in r) throw new Error(r.error);
+    expect(r.state).toBe('declined');
+    const routingRow = parseRouting((await stateRow(id)).routing);
+    expect(routingRow.selection?.underFilled).toMatchObject({ answers: 0, min: 1, reason: 'no-revive-dep' });
+  });
+
+  it('spawn-fail with no live candidates — honest terminal labeled revival-failed (the attempt is reported, not papered over)', async () => {
+    const id = await seedConsult({ state: 'active', routing: deadPoolRouting() });
+    const { deps } = makeDeps();
+    deps.revive = async () => ({ spawned: false, verified: null, detail: 'no adv_sessions row' });
+    const r = await consultDeclineCore(
+      { workspaceId: WS, authorId: RESPONDER, conversationId: id, reason: 'no' },
+      deps,
+    );
+    if ('error' in r) throw new Error(r.error);
+    expect(r.state).toBe('declined');
+    expect(r.cascade.exhausted).toBe(true);
+    const routingRow = parseRouting((await stateRow(id)).routing);
+    expect(routingRow.selection?.underFilled).toMatchObject({ reason: 'revival-failed' });
+  });
+
+  it('a dead BELOW-floor candidate is never revived (no costumed expert) — honest terminal: no-revivable-candidate', async () => {
+    const id = await seedConsult({ state: 'active', routing: deadPoolRouting({ lowScore: true }) });
+    const { deps } = makeDeps();
+    let reviveCalls = 0;
+    deps.revive = async () => {
+      reviveCalls += 1;
+      return { spawned: true, verified: true, detail: 'x' };
+    };
+    const r = await consultDeclineCore(
+      { workspaceId: WS, authorId: RESPONDER, conversationId: id, reason: 'no' },
+      deps,
+    );
+    if ('error' in r) throw new Error(r.error);
+    expect(reviveCalls).toBe(0);
+    expect(r.state).toBe('declined');
+    const routingRow = parseRouting((await stateRow(id)).routing);
+    expect(routingRow.selection?.underFilled).toMatchObject({ reason: 'no-revivable-candidate' });
+  });
+});

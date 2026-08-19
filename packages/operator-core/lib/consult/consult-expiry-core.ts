@@ -140,6 +140,7 @@ export async function sweepExpiredConsults(deps: ExpirySweepDeps): Promise<Expir
           conversationId: row.conversation_id,
           question: row.question,
           latencyContract: row.latency_contract,
+          requesterId: row.requester_id,
           routing: row.routing,
           cascadeCursor: row.cascade_cursor,
           digest: row.cascade_digest,
@@ -155,6 +156,9 @@ export async function sweepExpiredConsults(deps: ExpirySweepDeps): Promise<Expir
         sql,
         deps.reach
           ? (opts) => deps.reach!({ ...opts, workspaceId: row.workspace_id })
+          : undefined,
+        deps.revive
+          ? (opts) => deps.revive!({ ...opts, workspaceId: row.workspace_id })
           : undefined,
       );
       if (adv.raced) continue; // a verb / concurrent tick won — nothing to do

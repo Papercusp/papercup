@@ -63,5 +63,15 @@ registerSystemAction('consult-expiry-sweep', async () => {
       });
       return { woke: r.woke };
     },
+    // EI-20864690354207496 refill-exhaustion revival: the sweep serves every
+    // workspace, so the reviver context is built per row (mirrors reach) —
+    // same WI-39852 reviver, launchedBy stamped as the sweep for provenance.
+    revive: async (opts) => {
+      const { reviveConsultResponder } = await import('../../consult/revive-responder');
+      return reviveConsultResponder(
+        { ownerId: opts.ownerId, conversationId: opts.conversationId, brief: opts.brief },
+        { workspaceId: opts.workspaceId, harnessSlug: null, launchedBy: 'system:consult-expiry-sweep' },
+      );
+    },
   });
 });
