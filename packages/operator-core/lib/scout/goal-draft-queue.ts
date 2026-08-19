@@ -63,8 +63,15 @@ export interface GoalDraft {
   cycleId: string;
   /** When that cycle's artifacts landed. */
   createdAt: Date;
-  /** The rail the model asked for and did not get (verbatim, as the model wrote it). */
-  askedRail: string;
+  /** How this became goal-scale — see {@link GoalDraftPath}. */
+  path: GoalDraftPath;
+  /** The rail the model asked for and did not get, verbatim. Null on the 'override'
+   *  path, where the model asked for 'plan' and the vocabulary did the work. */
+  askedRail: string | null;
+  /** Which goal-scale markers the text matched ('override' path). Empty on 'asked'.
+   *  Recorded because a marker like 'campaign' can match incidentally, and a reader
+   *  deciding whether to trust this draft needs to see WHICH word triggered it. */
+  matchedMarkers: string[];
   /** The proposal's human title — first non-empty line of the framing, capped. */
   title: string;
   /** The full proposal as persisted, minus nothing. */
@@ -100,19 +107,37 @@ export function selectGoalDrafts(
   opts: { rail?: string; budgetCentsCap?: number } = {},
 ): GoalDraft[] {
   const rail = opts.rail ?? DEFAULT_DRAFT_RAIL;
+  const markers = opts.markers ?? GOAL_SCALE_MARKERS;
+  // Ask the REAL production override, not a reimplementation of it. If the live
+  // bump rule changes (its hint domain, its predicate, its marker seam), this queue
+  // follows automatically — a hand-copied condition here would drift silently and
+  // report on a rule the router stopped using, which is the whole failure class
+  // this plan is trying to measure its way out of.
+  const wouldBump = makeGoalScaleOverride(markers);
   const drafts: GoalDraft[] = [];
+
   for (const row of rows) {
     if (!Array.isArray(row.proposals)) continue;
     for (const raw of row.proposals) {
       if (!isProposal(raw)) continue;
-      if (raw.droppedRouteHint !== rail) continue;
+
+      const asked = raw.droppedRouteHint === rail;
+      const overridden = !asked && wouldBump(raw) === rail;
+      if (!asked && !overridden) continue;
+
+      const hay = [raw.framing, raw.mechanism, raw.bet, raw.whyNew]
+        .map((s) => (s ?? '').toLowerCase())
+        .join(' \n ');
       const { killCriterion, budgetCents } = draftGoalRails(raw, {
         ...(opts.budgetCentsCap == null ? {} : { budgetCentsCap: opts.budgetCentsCap }),
       });
+
       drafts.push({
         cycleId: row.cycle_id,
         createdAt: row.created_at instanceof Date ? row.created_at : new Date(row.created_at),
-        askedRail: raw.droppedRouteHint,
+        path: asked ? 'asked' : 'override',
+        askedRail: asked ? (raw.droppedRouteHint ?? null) : null,
+        matchedMarkers: asked ? [] : markers.filter((m) => hay.includes(m)),
         title: proposalTitle(raw),
         proposal: raw,
         killCriterion,
