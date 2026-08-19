@@ -232,7 +232,12 @@ describe('goals:update — tripwires', () => {
 describe('goals:update — parent re-parenting', () => {
   it('leaves the parent alone when parentId is omitted', async () => {
     existingRow!.parent_id = 'parent-abc';
-    await tool.handler(tool.args.parse({ id: 'g1', status: 'paused' }) as never, CTX() as never);
+    // `reason` is REQUIRED alongside status:'paused' (P-005/D-009) — without it
+    // the handler refuses before the write and there is no UPDATE to inspect.
+    await tool.handler(
+      tool.args.parse({ id: 'g1', status: 'paused', reason: 'holding for the owner' }) as never,
+      CTX() as never,
+    );
     expect(updateCall().params).toContain('parent-abc');
   });
 
