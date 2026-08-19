@@ -22,6 +22,10 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/tooldef';
 import { killCriterionProblem } from '@papercusp/operator-core/lib/goals/kill-criterion';
+import {
+  goalHolderPolicyProblem,
+  goalHolderPolicySchema,
+} from '@papercusp/operator-core/lib/goal-launch-settings';
 import { SU_WRITE_ROLES } from '../../role-config';
 import { GOAL_STATUSES, TripwireSchema, goalId, insertGoalRow } from './_core';
 import { applyGoalBlockedBy } from './goal-deps';
@@ -94,6 +98,14 @@ export default defineTool({
         'structured form of the kill criterion — renders as live bars ("day 12 of 30", "$310 of $500") instead of prose nobody re-checks. Optional: a free-text criterion works with no tripwires.',
       ),
     status: z.enum(GOAL_STATUSES).default('active'),
+    holder: goalHolderPolicySchema
+      .optional()
+      .describe(
+        'REQUIRED unless you opt out: does this goal need a LIVE holder to count as active, and what happens when it loses one. ' +
+          "{ requireLive: true } for a goal a session owns (the usual case) — it stops reading 'active' when nobody holds it, instead of sitting dark on the board for days. " +
+          "{ requireLive: false } for a goal driven by routines rather than a held session. onLoss defaults to 'deactivate'; 'respawn' is opt-in per goal. " +
+          'Omitting this entirely is refused: the goal would inherit the live-holder requirement without anyone having chosen it.',
+      ),
     metadata: z.record(z.string(), z.unknown()).optional(),
     consulted: stringTolerantBool
       .optional()
