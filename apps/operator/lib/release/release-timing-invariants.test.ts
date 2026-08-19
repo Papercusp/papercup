@@ -26,11 +26,11 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import { DEFAULT_STALE_ROUTINE_FIRE_NO_OUTPUT_MS } from "@papercusp/operator-core/lib/dbos/dbos-executor-reaper";
-import { GREEN_CHECKPOINT_SUITE_TIMEOUT_MS } from "@papercusp/operator-core/lib/harness/routines/release-actions";
 import {
   GREEN_CHECKPOINT_CRON,
   GREEN_CHECKPOINT_FIRE_PERIOD_MS,
   GREEN_CHECKPOINT_PHASE_MARGIN_MS,
+  GREEN_CHECKPOINT_SUITE_TIMEOUT_MS,
 } from "@papercusp/operator-core/lib/release/green-checkpoint-schedule";
 import {
   CHECKPOINT_MAX_RUNTIME_SEC,
@@ -206,10 +206,15 @@ describe("green-gate timing chain (WI-6112)", () => {
    * budget; the kill landed mid-isolation and the verdict was status:'error' with NO
    * failing-test list — the next run learned nothing and re-derived the same red, forever.
    * The fix bounds the phase against a deadline derived from the ACTUAL killer, which for a
-   * scheduled run is release-actions' parent group-kill — mirrored into green-checkpoint.ts
-   * because operator-core registers routines as a module-load side effect. These two pins
-   * keep that mirror true and the reserve large enough for the one in-flight child the
-   * deadline semantics allow ("stop STARTING work", not "abort work in flight").
+   * scheduled run is the parent group-kill at the suite budget. That budget used to be
+   * hand-copied into green-checkpoint.ts, because its old home registered routine actions as
+   * a module-load side effect; it now lives in a side-effect-free leaf and is IMPORTED, so
+   * the two names below are one constant.
+   *
+   * The assertion is kept, and is not the no-op that makes it look: it fails the moment
+   * someone re-hardcodes the mirror, which is exactly how it got hand-copied the first time.
+   * What it no longer has to do is catch a retune that updated one file and not the other —
+   * that drift is now impossible rather than detected.
    */
   it("the isolation phase deadline mirror tracks the scheduled parent's kill budget (EI-20669541349219660)", () => {
     expect(SUITE_KILL_BUDGET_MIRROR_MS).toBe(GREEN_CHECKPOINT_SUITE_TIMEOUT_MS);
@@ -226,9 +231,14 @@ describe("green-gate timing chain (WI-6112)", () => {
   });
 
   it("gives detached manual runs the scheduled full kill window instead of the 3h orphan backstop", () => {
-    // The env name and value are duplicated across the launcher/CLI boundary intentionally:
-    // importing release-actions into the low-level launcher registers routines at module load.
-    // This one guard makes the duplicate a checked protocol rather than a prose convention.
+    // The env NAME is still genuinely duplicated across the launcher/CLI boundary — it is a
+    // string protocol between two processes, not a shared constant — so this guard is what
+    // makes it a checked protocol rather than a prose convention.
+    //
+    // The VALUE is no longer duplicated: both sides derive it from the schedule leaf. The
+    // `+ 15_000` here is written out on purpose rather than imported, so this line states the
+    // grace INDEPENDENTLY of the code under test. Import it and the assertion becomes true by
+    // construction and stops being able to notice a changed grace period at all.
     expect(MANUAL_CHECKPOINT_WATCHDOG_ENV).toBe(MANUAL_SELF_WATCHDOG_ENV);
     expect(MANUAL_CHECKPOINT_WATCHDOG_MS).toBe(
       GREEN_CHECKPOINT_SUITE_TIMEOUT_MS + 15_000,
