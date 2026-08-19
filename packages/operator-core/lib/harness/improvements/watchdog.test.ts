@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, afterAll, beforeEach } from 'vitest';
+import { readFileSync } from 'node:fs'; // EI-20847917368795366: source-pinned WIRING guard
 import { signalLaneOf, sourceFilesWorkItem } from './signal-lane';
 import {
   planWatchdogCaptures,
@@ -37,6 +38,9 @@ import {
   _closeWatchdogTickLockForTests,
   watchdogKeyOf,
   partitionSignalsByKnownKeys,
+  computeRefileEligibleKeys,
+  WATCHDOG_REFILE_AFTER_MS,
+  WATCHDOG_REFILE_HISTORY_LIMIT,
   smokeFailSignalsFromRows,
   expiredLeaseSignalsFromRows,
   failedSpawnSignalsFromRows,
@@ -3082,6 +3086,189 @@ describe('latestAt plumbing (audit P-005)', () => {
       { tool_name: 'docs:get', class: 'structural' as const, n: 7, total: 7, sample: 'boom', latest_at: '2026-06-09T10:30:00.000Z' },
     ]);
     expect(signals[0].latestAt).toBe('2026-06-09T10:30:00.000Z');
+  });
+});
+
+// ── EI-20847917368795366: the RE-FILE RATE LIMIT ─────────────────────────────
+//
+// The DELTA GATE below and this block encode OPPOSITE failure modes, and the whole
+// difficulty of the fix is that satisfying either one alone re-creates the other:
+//   • gate too weak  → 60 copies of one key in 7d (the incident it was built for);
+//   • gate unbounded → a key firing every tick is suppressed FOREVER once nothing open
+//     matches it (measured 2026-08-19: 11 keys standing with no item, 8 of them on all
+//     48 ticks of a 12h window, incl. `ship-link-stuck:staging->main` while main WAS
+//     frozen, and 4 that had never been filed even once).
+// So the property under test is neither "suppresses" nor "re-files" but: SUPPRESSES BY
+// DEFAULT, AND RELEASES EXACTLY ONE FILING once a measured, unbroken standing run crosses
+// the window. The CONTROLs at the end are deliberately-wrong implementations kept
+// PERMANENTLY here (CLAUDE.md tier 1 — the subject is imported, so falsifiability is
+// proven in-file, never by mutating the shared tree). Each satisfies half the property and
+// must FAIL, which is what proves these assertions can discriminate at all.
+
+describe('computeRefileEligibleKeys — RE-FILE RATE LIMIT (EI-20847917368795366)', () => {
+  const T0 = Date.parse('2026-08-19T12:00:00.000Z');
+  const HOUR = 60 * 60 * 1000;
+  /** A ran tick `hoursAgo` before T0 that suppressed `standingKeys`. */
+  const tick = (hoursAgo: number, standingKeys: string[]): RecentTick => ({
+    status: 'ran',
+    collectors: [],
+    tickAt: new Date(T0 - hoursAgo * HOUR).toISOString(),
+    standingKeys,
+  });
+  const K = 'ship-link-stuck:staging->main';
+
+  it('releases a key standing unbroken for longer than the window', () => {
+    expect([...computeRefileEligibleKeys([tick(0.25, [K]), tick(6, [K]), tick(13, [K])], { nowMs: T0 })]).toEqual([K]);
+  });
+
+  it('holds a key whose standing run is younger than the window', () => {
+    expect([...computeRefileEligibleKeys([tick(0.25, [K]), tick(6, [K])], { nowMs: T0 })]).toEqual([]);
+  });
+
+  it('RATE LIMIT: a broken run resets the clock, so one re-file cannot become a stream', () => {
+    // The property that makes the escape hatch safe. Letting a key through means it is NOT
+    // in that tick's standingKeys, so the run breaks and must rebuild from zero. Here the
+    // 24h/30h ticks are individually old enough; the gap at 1h is what disqualifies.
+    expect([...computeRefileEligibleKeys([tick(0.25, [K]), tick(1, []), tick(24, [K]), tick(30, [K])], { nowMs: T0 })]).toEqual([]);
+  });
+
+  it('ignores a key not standing on the NEWEST tick (its episode already ended)', () => {
+    expect([...computeRefileEligibleKeys([tick(0.25, []), tick(13, [K]), tick(26, [K])], { nowMs: T0 })]).toEqual([]);
+  });
+
+  it('scores each key independently within one history', () => {
+    const other = 'routine-failure:routine:git-sync';
+    expect([...computeRefileEligibleKeys([tick(0.25, [K, other]), tick(13, [K])], { nowMs: T0 })]).toEqual([K]);
+  });
+
+  it('FAILS CLOSED on absent/unusable history — the inverse of the delta gate’s fail-OPEN', () => {
+    // Absence of evidence must never be read as evidence of a long blackout, or the rate
+    // limit becomes a way to re-open the churn on exactly the rows carrying no data.
+    expect([...computeRefileEligibleKeys([], { nowMs: T0 })]).toEqual([]);
+    expect([...computeRefileEligibleKeys([{ status: 'ran', collectors: [] }], { nowMs: T0 })]).toEqual([]);
+    const noStamp: RecentTick[] = [{ status: 'ran', collectors: [], standingKeys: [K] }];
+    expect([...computeRefileEligibleKeys(noStamp, { nowMs: T0 })]).toEqual([]);
+    const badStamp: RecentTick[] = [{ status: 'ran', collectors: [], standingKeys: [K], tickAt: 'not-a-date' }];
+    expect([...computeRefileEligibleKeys(badStamp, { nowMs: T0 })]).toEqual([]);
+    expect([...computeRefileEligibleKeys([tick(0.25, [K]), tick(13, [K])], { nowMs: Number.NaN })]).toEqual([]);
+  });
+
+  it('a bad stamp mid-run truncates the measured run rather than extending it', () => {
+    const ticks: RecentTick[] = [
+      tick(0.25, [K]),
+      { status: 'ran', collectors: [], standingKeys: [K], tickAt: 'garbage' },
+      tick(30, [K]),
+    ];
+    expect([...computeRefileEligibleKeys(ticks, { nowMs: T0 })]).toEqual([]);
+  });
+
+  it('honours an explicit refileAfterMs (the window is tunable, not fixed at the call site)', () => {
+    const ticks = [tick(0.25, [K]), tick(2, [K])];
+    expect([...computeRefileEligibleKeys(ticks, { nowMs: T0, refileAfterMs: HOUR })]).toEqual([K]);
+    expect([...computeRefileEligibleKeys(ticks, { nowMs: T0, refileAfterMs: 8 * HOUR })]).toEqual([]);
+  });
+
+  it('the shipped default is 12h, and the history read can actually SPAN it', () => {
+    expect(WATCHDOG_REFILE_AFTER_MS).toBe(12 * HOUR);
+    // If the read horizon were narrower than the window, every run would look truncated and
+    // the limit would silently never fire. 240 ran ticks covers 12h down to a 3-min cadence.
+    expect(WATCHDOG_REFILE_HISTORY_LIMIT * 3 * 60 * 1000).toBeGreaterThanOrEqual(WATCHDOG_REFILE_AFTER_MS);
+  });
+
+  it('the gate consumes it: an eligible key falls through, an ineligible one stays suppressed', () => {
+    // The live-state shape from the blackout: no latestAt, and no dup row to match on.
+    const s = sig({ source: 'ship-link-stuck', key: 'staging->main' });
+    const prior = ['ship-link-stuck:staging->main'];
+    expect(partitionSignalsByKnownKeys([s], [], prior, new Set([K])).fresh).toEqual([s]);
+    expect(partitionSignalsByKnownKeys([s], [], prior, new Set([K])).standing).toEqual([]);
+    expect(partitionSignalsByKnownKeys([s], [], prior, new Set(['some-other-key'])).standing).toEqual([s]);
+  });
+
+  it('eligibility does NOT bypass knownOpen — an open item still absorbs the signal', () => {
+    // Otherwise the hatch would double-file the very conditions that ARE tracked, and
+    // known-open aging would stop receiving its keys.
+    const s = sig({ source: 'service-down', key: 'desktop' });
+    const open: WatchdogKeyDup = { watchdogKey: 'service-down:desktop', state: 'open', updatedAt: '2026-08-19T00:00:00.000Z' };
+    const out = partitionSignalsByKnownKeys([s], [open], ['service-down:desktop'], new Set(['service-down:desktop']));
+    expect(out.knownOpen).toEqual([s]);
+    expect(out.fresh).toEqual([]);
+  });
+
+  it('an eligible key still lands in staleResolved when its evidence pre-dates the fix', () => {
+    // It falls through to the RESOLUTION CHECKS, not straight to `fresh` — so the hatch can
+    // only ever add a filing the existing logic already agreed was warranted.
+    const s = sig({ source: 'red-test', key: 'lib/a.test.ts', latestAt: '2026-08-18T00:00:00.000Z' });
+    const resolved: WatchdogKeyDup = { watchdogKey: 'red-test:lib/a.test.ts', state: 'resolved', updatedAt: '2026-08-19T00:00:00.000Z' };
+    const out = partitionSignalsByKnownKeys([s], [resolved], ['red-test:lib/a.test.ts'], new Set(['red-test:lib/a.test.ts']));
+    expect(out.staleResolved).toEqual([s]);
+    expect(out.fresh).toEqual([]);
+  });
+
+  // ── CONTROLS (permanent, deliberately wrong) ───────────────────────────────
+
+  /** CONTROL A: age of the OLDEST standing tick, ignoring whether the run was broken. */
+  const controlA = (ticks: readonly RecentTick[], nowMs: number): Set<string> => {
+    const out = new Set<string>();
+    for (const key of ticks[0]?.standingKeys ?? []) {
+      const oldest = [...ticks].reverse().find((t) => (t.standingKeys ?? []).includes(key));
+      const ms = Date.parse(oldest?.tickAt ?? '');
+      if (Number.isFinite(ms) && nowMs - ms >= WATCHDOG_REFILE_AFTER_MS) out.add(key);
+    }
+    return out;
+  };
+
+  it('CONTROL A — ignoring run breaks would re-open the churn this gate exists to stop', () => {
+    // A key re-filed 1h ago (run broken) but standing for 24h+ before that: the real
+    // function holds it, CONTROL A releases it AGAIN — i.e. one filing per tick, the storm.
+    const ticks = [tick(0.25, [K]), tick(1, []), tick(24, [K]), tick(30, [K])];
+    expect([...controlA(ticks, T0)]).toEqual([K]); // the wrong answer, pinned
+    expect([...computeRefileEligibleKeys(ticks, { nowMs: T0 })]).toEqual([]);
+  });
+
+  it('CONTROL B — treating missing history as eligible would flip the fail-CLOSED rule', () => {
+    const controlB = (ticks: readonly RecentTick[], nowMs: number): Set<string> => {
+      const out = new Set<string>();
+      for (const key of ticks[0]?.standingKeys ?? []) {
+        const ms = Date.parse(ticks[ticks.length - 1]?.tickAt ?? '');
+        if (!Number.isFinite(ms) || nowMs - ms >= WATCHDOG_REFILE_AFTER_MS) out.add(key); // fails OPEN
+      }
+      return out;
+    };
+    const noStamps: RecentTick[] = [{ status: 'ran', collectors: [], standingKeys: [K] }];
+    expect([...controlB(noStamps, T0)]).toEqual([K]);
+    expect([...computeRefileEligibleKeys(noStamps, { nowMs: T0 })]).toEqual([]);
+  });
+
+  it('CALIBRATION — the controls are near-misses, not strawmen: they agree on the plain case', () => {
+    // If a control disagreed everywhere it would prove nothing about the SPECIFIC properties
+    // above. On an unbroken, well-stamped, long-enough run both must give the same answer;
+    // the disagreements pinned above are the entire delta.
+    const plain = [tick(0.25, [K]), tick(13, [K])];
+    expect([...computeRefileEligibleKeys(plain, { nowMs: T0 })]).toEqual([K]);
+    expect([...controlA(plain, T0)]).toEqual([K]);
+  });
+});
+
+describe('WIRING — the rate limit is reachable from a real tick (EI-20847917368795366)', () => {
+  // A pure function nothing calls is a fix in name only, and this wiring is exactly what a
+  // later refactor drops silently: the gate keeps its 3-arg overload, so deleting the 4th
+  // argument leaves every behaviour test above GREEN while restoring the permanent blackout.
+  // Source-pinned so that regression fails HERE rather than in production months later.
+  const src = readFileSync(new URL('./watchdog.ts', import.meta.url), 'utf8');
+
+  it('runWatchdogTickBody computes the eligible set and passes it INTO the gate', () => {
+    expect(src).toMatch(/const refileEligible = computeRefileEligibleKeys\(recentTicks, \{ nowMs: Date\.now\(\) \}\)/);
+    // BOTH call sites: the normal path and the dup-read-failure degradation path.
+    expect(src.match(/partitionSignalsByKnownKeys\(signals, [^)]*refileEligible\)/g) ?? []).toHaveLength(2);
+  });
+
+  it('the tick-history read is wide enough to span the window', () => {
+    // readRecentTicks(…, 1, …) would make the run measurement structurally impossible.
+    expect(src).toMatch(/readRecentTicks\(workspaceId, WATCHDOG_REFILE_HISTORY_LIMIT, \{ status: 'ran' \}\)/);
+  });
+
+  it('the reader SELECTs the two columns the window is measured from', () => {
+    expect(src).toMatch(/SELECT status, collectors, deferred_keys, seen_keys, tick_at, standing_keys/);
   });
 });
 
