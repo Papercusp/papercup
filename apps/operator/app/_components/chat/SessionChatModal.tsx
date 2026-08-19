@@ -75,6 +75,9 @@ import { useChatClock } from './message-timestamp';
 // Sibling of the dossier, opposite edge; see ORDERS_RAIL_SIDE_STYLE below.
 import AgentOrders from '../../adv/sessions/AgentOrders';
 import type { RosterEntry } from '../../adv/sessions/SessionsRosterView';
+// P-009: the SAME countdown formatter the dossier's Locks section uses, so an
+// expiry cannot read one way on the band and another way one pane over.
+import { formatTimeLeft } from '@papercusp/operator-core/lib/format/relative-time';
 // hud-first-nav-and-dossier-2026-07-26 P-004: the footer's liveness dot +
 // its "N locks / M unread" summary-chip counts. Imported from the standalone
 // use-agent-detail module (not AgentDossier.tsx, which SessionChatModal.test.tsx
