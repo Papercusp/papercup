@@ -104,7 +104,7 @@ const isProposal = (v: unknown): v is Proposal =>
  */
 export function selectGoalDrafts(
   rows: readonly StageArtifactRow[],
-  opts: { rail?: string; budgetCentsCap?: number } = {},
+  opts: { rail?: string; budgetCentsCap?: number; markers?: readonly string[] } = {},
 ): GoalDraft[] {
   const rail = opts.rail ?? DEFAULT_DRAFT_RAIL;
   const markers = opts.markers ?? GOAL_SCALE_MARKERS;
@@ -160,6 +160,8 @@ export async function readGoalDraftQueue(opts: {
   workspaceId?: string;
   rail?: string;
   budgetCentsCap?: number;
+  /** Goal-scale vocabulary (the P-009 scout-config seam). Defaults to the live set. */
+  markers?: readonly string[];
   /** Max CYCLES scanned (default: the artifact store's full retention). */
   limit?: number;
 } = {}): Promise<GoalDraft[]> {
@@ -175,5 +177,6 @@ export async function readGoalDraftQueue(opts: {
   return selectGoalDrafts(rows, {
     ...(opts.rail == null ? {} : { rail: opts.rail }),
     ...(opts.budgetCentsCap == null ? {} : { budgetCentsCap: opts.budgetCentsCap }),
+    ...(opts.markers == null ? {} : { markers: opts.markers }),
   });
 }
