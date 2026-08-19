@@ -6071,7 +6071,6 @@ function RetainedLedgerCard({
 
   const [cursor, setCursor] = useState<string | null>(null);
   const [rows, setRows] = useState<RetainFeedRow[]>([]);
-  const [counts, setCounts] = useState<RetainFeedCounts | null>(null);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [degraded, setDegraded] = useState<string[]>([]);
 
@@ -6093,6 +6092,18 @@ function RetainedLedgerCard({
     enabled,
     staleTime: 30_000,
   });
+  // WI-39900: the tab badges are their own read, deliberately NOT part of the
+  // page above. Inline they were the whole of the ledger's latency (Runbooks
+  // first page 4.79s with them vs 0.024s without) and they coupled every tab's
+  // rows to the memory backend's ~10.9s p50. Args carry NO tab/filter/cursor —
+  // a badge is a CORPUS size — so this stays cached across tab and filter
+  // switches instead of refetching on every click.
+  const countsQ = useSyncQuery<RetainFeedCounts | undefined>({
+    queryName: "learning.retainCounts",
+    args: { ...(hive ? { hive } : {}) },
+    enabled,
+    staleTime: 120_000,
+  });
   const page = feed.data?.[0];
   const loading = feed.loading;
   useEffect(() => {
@@ -6105,10 +6116,10 @@ function RetainedLedgerCard({
       const fresh = page.rows.filter((x) => !seen.has(`${x.kind}:${x.id}`));
       return cursor && fresh.length === 0 ? prev : [...base, ...fresh];
     });
-    if (page.counts) setCounts(page.counts);
     setNextCursor(page.nextCursor ?? null);
     setDegraded(Array.isArray(page.degraded) ? page.degraded : []);
   }, [page, loading, cursor]);
+  const counts = countsQ.data?.[0] ?? null;
 
   // Gated on the SAME readiness gate as every sibling read (the lens-guard
   // enforces one gate per view); an un-expanded ledger sends planSlug '' and
