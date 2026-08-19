@@ -617,6 +617,16 @@
   font-style: italic;
   color: var(--pc-dossier-dim);
 }
+/* popup-agent-state-coverage-2026-08-18 P-009. Upright and tabular against the
+   italic sentence it trails: the intent is prose the agent wrote, this is a
+   measurement, and reading as one run-on phrase is what let a stale intent pass
+   for a live one. */
+.pc-dossier__intent-age {
+  font-style: normal;
+  font-variant-numeric: tabular-nums;
+  color: var(--pc-dossier-mute);
+  white-space: nowrap;
+}
 .pc-dossier__note {
   font-size: 12px;
   line-height: 1.45;
