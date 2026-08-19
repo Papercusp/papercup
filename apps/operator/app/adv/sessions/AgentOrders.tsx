@@ -336,6 +336,55 @@ export default function AgentOrders({
                       {formatAgeShort(nowMs - d.createdAtMs) ?? ''}
                       {d.dispositionStatus ? ` · ${d.dispositionStatus}` : ' · open'}
                     </cite>
+                    {/* P-010 — WHERE THIS QUOTE CAME FROM. Both fields have been
+                        on the DTO since it was written and neither reached the
+                        screen, so every directive rendered with exactly the
+                        authority of every other one.
+
+                        That is the failure this line exists to make visible.
+                        `orders:record` sets `sourceTurnRef` ONLY when
+                        `resolveRelayProvenance` matched the verbatim text to an
+                        owner-verified turn in the recording agent's own
+                        transcript; otherwise it is null and the stamp stays
+                        'unverified'. `recordedBy` is the AGENT that filed it,
+                        never the author — so an unanchored quote is one an
+                        agent attributed to the owner with nothing behind it,
+                        which is precisely the shape WI-3532 traced: an agent's
+                        own note-to-self promoted, compaction by compaction,
+                        into "the owner said".
+
+                        THE ABSENT CASE IS THE FINDING, so — unlike a missing
+                        DURATION under D-010 §1 — it renders LOUDLY rather than
+                        as nothing. A duration we could not compute is a
+                        measurement nobody took; an unanchored directive is a
+                        PROPERTY of the record itself. Saying nothing here would
+                        leave it looking identical to a verified one, which is
+                        the status quo this replaces.
+
+                        And it is a provenance report, never an accusation:
+                        "unverified" says the anchor is missing, not that the
+                        quote is false. Most legitimately predate the stamp. */}
+                    <div
+                      className="pc-orders__prov"
+                      data-verified={d.sourceTurnRef ? 'true' : 'false'}
+                      data-testid="orders-directive-provenance"
+                      title={
+                        d.sourceTurnRef
+                          ? `Matched to an owner turn in the recording agent's transcript: ${d.sourceTurnRef}`
+                          : 'No owner turn was matched to this text. It may still be genuine — a directive recorded before the provenance stamp existed, or relayed from elsewhere — but nothing here proves it. Verify with sessions:search before treating it as an owner order.'
+                      }
+                    >
+                      recorded by {d.recordedBy}
+                      <span className="pc-orders__sep" aria-hidden="true"> · </span>
+                      {d.sourceTurnRef ? (
+                        <>
+                          <span className="pc-orders__prov-mark">✓ owner turn</span>{' '}
+                          <span className="pc-orders__prov-ref">{d.sourceTurnRef}</span>
+                        </>
+                      ) : (
+                        <span className="pc-orders__prov-mark">no source turn on record</span>
+                      )}
+                    </div>
                   </blockquote>
                 ))}
                 {(orders.directivesTotalOpen ?? 0) > (orders.directives ?? []).length ? (
