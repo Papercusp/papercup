@@ -54,6 +54,7 @@ import type { NativeSessionHandle, RosterEntry } from './SessionsRosterView';
 import {
   useAgentDetail,
   type AgentDetail,
+  type AgentPipeline,
   type PushedContextRef,
   type PushedContextEvent,
   type PushedContextLegDetail,
@@ -1147,6 +1148,28 @@ export default function AgentDossier({
               this as “you do NOT hold this lane”.
             </div>
           ) : null}
+          {/* ── release pipeline (P-014) ──────────────────────────────────────
+              Closes the section because it is the last question about the work
+              above it: can any of it actually ship? Repo-global rather than
+              per-agent, and here anyway because the popup is a MODAL — the /adv
+              Deploy tile that carries the same reading is covered while this is
+              open, so "it's one click away" would really mean close, look,
+              reopen. Silent whenever the pipeline is healthy OR unmeasured;
+              see `pipelineNoteValue`. */}
+          {(() => {
+            const note = pipelineNoteValue(signals?.pipeline);
+            if (!note) return null;
+            return (
+              <div
+                className="pc-dossier__note"
+                style={{ color: note.severity === 'bad' ? 'var(--err, #f87171)' : 'var(--warn, #fbbf24)' }}
+                data-testid="dossier-pipeline"
+                data-severity={note.severity}
+              >
+                {note.text}
+              </div>
+            );
+          })()}
         </section>
       ) : null}
 
