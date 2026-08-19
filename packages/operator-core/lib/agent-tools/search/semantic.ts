@@ -233,6 +233,7 @@ export default defineTool({
               note: a.note,
             })),
           },
+          ...(residue ? { scope_residue: residue } : {}),
           // Map @papercusp/search's generic `scope` hit field back to the
           // operator's domain `harness_slug` for the agent-facing output.
           results: reranked.map(({ scope: hitScope, ...rest }) =>
