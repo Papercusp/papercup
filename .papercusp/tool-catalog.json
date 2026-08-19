@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 740,
+  "count": 741,
   "tools": [
     {
       "name": "ablation:report",
@@ -1745,6 +1745,36 @@
         "when": "Use when you need to grade how a desktop agent behaved on a plan run: routing, gating, scope, execution, launch discipline, and completion evidence. score grades an existing run; launch runs and grades a fresh fixture.",
         "notWhen": "Not for raw model certification (cert:run), subjective gym scoring (gym:judge), or reading plan/work-item state (plans:get / work_items:list).",
         "chaining": "omp:sessions or dev:sessions → behaviour:run { mode:\"score\", sessionId }. Or create/pick a fixture plan → behaviour:run { mode:\"launch\", planSlug, model }."
+      }
+    },
+    {
+      "name": "blender:goal-drafts",
+      "http": {
+        "path": "/api/agent-tools/blender/goal-drafts",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Read-only: what the Blender WOULD have proposed as goal-scale work, from persisted cycle artifacts. Writes NOTHING — creates no goal and mints no agent. Returns each draft with the rails the goal rail would have set (killCriterion, budgetCents) and, ALWAYS, the marker provenance that triggered it (markerHits: which fields, and whether the match is only inside quoted code). An EMPTY result is the measured normal state, not a fault — it comes back with `empty.meaning` explaining that the rail is unused rather than blocked.",
+      "capabilities": [
+        "curation:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator"
+      ],
+      "guidance": {
+        "when": "Deciding whether the Blender should be given any authority near goals, or auditing what goal-scale work it has actually been generating. This is the evidence surface that argument is supposed to rest on.",
+        "notWhen": "Creating or amending a goal (goals:create / goals:update) — this verb only reports what a draft WOULD have been. Reading routed ideas that actually landed on a rail is the routed-idea ledger, not this.",
+        "chaining": "Read `summary` first. If total is 0, read `empty.meaning` before concluding anything is broken. For any draft you take seriously, check `markerHits` BEFORE the prose: a draft whose only marker sits in `mechanism` with onlyInCodeSpan:true is a vocabulary artifact (D-012 measured exactly one such draft in the whole corpus), and `incidentalMatchOnly` names that case at the row."
       }
     },
     {
