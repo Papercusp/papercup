@@ -469,6 +469,135 @@ describe('AgentOrders', () => {
       expect(getByTestId('rail-quiet-facts').tagName).toBe('P');
     });
 
+    /**
+     * popup-agent-state-coverage-2026-08-18 P-010 — where a verbatim owner
+     * directive CAME FROM.
+     *
+     * `recordedBy` and `sourceTurnRef` were both on the DTO from the start and
+     * neither reached the screen, so every quote rendered with exactly the
+     * authority of every other one. `orders:record` sets `sourceTurnRef` only
+     * when the verbatim text matched an owner-verified turn in the RECORDING
+     * agent's own transcript; `recordedBy` is that agent, never the author. An
+     * unanchored quote is therefore one an agent attributed to the owner with
+     * nothing behind it — the shape WI-3532 traced from a note-to-self to "the
+     * owner said" across seven compactions.
+     */
+    const directive = (over: Record<string, unknown> = {}) => ({
+      id: 1,
+      verbatimText: 'do the thing',
+      recordedBy: 'su-feb2f556',
+      createdAtMs: Date.now() - 5 * 60_000,
+      sourceTurnRef: null as string | null,
+      dispositionStatus: null as string | null,
+      ...over,
+    });
+
+    it('P-010: names the recorder and the owner turn a directive is anchored to', () => {
+      setOrders({
+        directives: [directive({ sourceTurnRef: 'claude-9115cf8d@2026-08-19T02:23:49.760Z' })],
+        directivesTotalOpen: 1,
+      });
+      const { getByTestId } = render(<AgentOrders ownerId="su-1" />);
+      const prov = getByTestId('orders-directive-provenance');
+      expect(prov.getAttribute('data-verified')).toBe('true');
+      expect(prov.textContent).toContain('recorded by su-feb2f556');
+      // The turn ref itself, not just a tick: it is what a reader takes to
+      // sessions:search to read the actual words.
+      expect(prov.textContent).toContain('claude-9115cf8d@2026-08-19T02:23:49.760Z');
+    });
+
+    it('P-010: says LOUDLY when a directive has no source turn — the absent case IS the finding', () => {
+      // The one place this surface deliberately departs from D-010 §1 ("an
+      // uncomputable value renders as nothing"). A missing duration is a
+      // measurement nobody took; a missing anchor is a PROPERTY of the record.
+      // Rendering nothing would leave an unanchored quote looking identical to a
+      // verified one — which is exactly the status quo being replaced.
+      setOrders({ directives: [directive({ sourceTurnRef: null })], directivesTotalOpen: 1 });
+      const { getByTestId } = render(<AgentOrders ownerId="su-1" />);
+      const prov = getByTestId('orders-directive-provenance');
+      expect(prov.getAttribute('data-verified')).toBe('false');
+      expect(prov.textContent).toContain('no source turn on record');
+      // A provenance report, never an accusation: many rows legitimately predate
+      // the stamp, and calling them false would be its own fabrication.
+      expect(prov.textContent).not.toMatch(/fake|false|fabricat|invalid/i);
+      expect(prov.getAttribute('title')).toContain('It may still be genuine');
+    });
+
+    /**
+     * P-011 — the CONTESTED marker, BESIDE "source drifted" rather than instead
+     * of it. The two answer different questions and a fact can carry both.
+     */
+    it('P-011: marks a contested fact without suppressing the fact itself', () => {
+      setOrders({
+        facts: [
+          {
+            key: 'k',
+            body: 'a standing fact',
+            contested: { settledUndecidable: false, settledBy: null, priorAuthors: ['su-a', 'su-b'], priorVersions: 3, note: 'two agents already wrote to this key' },
+          },
+        ],
+      });
+      const { getByTestId, getByText } = render(<AgentOrders ownerId="su-1" />);
+      // MARK, NEVER SUPPRESS — a contested fact is not a false fact, and only
+      // the reader can tell whether re-asserting over it is right.
+      expect(getByText('a standing fact')).toBeTruthy();
+      const badge = getByTestId('orders-fact-contested');
+      expect(badge.textContent).toContain('contested');
+      expect(badge.textContent).toContain('2 prior authors');
+      expect(badge.getAttribute('title')).toContain('two agents already wrote to this key');
+      expect(badge.getAttribute('data-undecidable')).toBeNull();
+    });
+
+    it('P-011: gives settled-undecidable its own word — it sends the reader somewhere else', () => {
+      // An agent reading "contested" may go argue. One reading "settled
+      // undecidable" knows someone already worked the question and concluded it
+      // could not be settled — so the move is to go find the settledBy evidence.
+      setOrders({
+        facts: [
+          {
+            key: 'k',
+            body: 'a standing fact',
+            contested: { settledUndecidable: true, settledBy: 'a gate run on the real candidate', priorAuthors: [], priorVersions: 2, note: 'settled undecidable' },
+          },
+        ],
+      });
+      const { getByTestId } = render(<AgentOrders ownerId="su-1" />);
+      const badge = getByTestId('orders-fact-contested');
+      expect(badge.textContent).toContain('settled undecidable');
+      expect(badge.getAttribute('data-undecidable')).toBe('true');
+      // No prior authors ⇒ no author count invented. It reached the badge on the
+      // undecidable leg, which needs no author threshold.
+      expect(badge.textContent).not.toContain('prior author');
+    });
+
+    it('P-011: renders BOTH badges when a fact is drifted AND contested', () => {
+      // Collapsing them into one "suspect" badge would tell the reader something
+      // is wrong while hiding which of the two things to go do about it.
+      setOrders({
+        facts: [
+          {
+            key: 'k',
+            body: 'a standing fact',
+            possiblyStale: true,
+            contested: { settledUndecidable: false, settledBy: null, priorAuthors: ['su-a', 'su-b'], priorVersions: 2, note: 'n' },
+          },
+        ],
+      });
+      const { getByText, getByTestId } = render(<AgentOrders ownerId="su-1" />);
+      expect(getByText('source drifted')).toBeTruthy();
+      expect(getByTestId('orders-fact-contested')).toBeTruthy();
+    });
+
+    it('P-011: an UNCONTESTED fact grows no badge at all — there is no "uncontested" claim to make', () => {
+      // The fold reads only superseded rows, so its silence means "no dispute in
+      // the version chain", not "verified agreed". A reassuring badge would
+      // assert the second off evidence for the first.
+      setOrders({ facts: [{ key: 'k', body: 'a standing fact' }] });
+      const { queryByTestId, getByText } = render(<AgentOrders ownerId="su-1" />);
+      expect(getByText('a standing fact')).toBeTruthy();
+      expect(queryByTestId('orders-fact-contested')).toBeNull();
+    });
+
     it('bounds an OPEN section too — the half of the fix that needs no click', () => {
       // jsdom applies no CSS, so this is a source assertion (the same reason the
       // vocabulary suite reads chat-controls.css directly). Without a ceiling,
