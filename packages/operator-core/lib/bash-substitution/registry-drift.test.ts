@@ -28,12 +28,30 @@ function rowFor(want: ExpectedRow, overrides: Partial<SubstitutionRow> = {}): Su
     bashPattern: want.bashPattern,
     bashPatternFlags: want.bashPatternFlags,
     toolName: want.toolName,
-    tier: 'observe',
+    // `want.tier` is set only for a pair that OWNS its tier (D-046); everything
+    // else enters the registry at `observe` and is promoted by an observation
+    // window. Defaulting to `observe` unconditionally — as this helper did
+    // before tier became comparable — would have made the agreeing row DISAGREE
+    // with the one pair whose tier is checked, i.e. the helper named "agrees on
+    // every compared field" would have manufactured drift for exactly the row
+    // the new comparison exists to protect.
+    tier: want.tier ?? 'observe',
     advisoryText: want.advisoryText,
     equivalenceVerdict: want.equivalenceVerdict,
     ...overrides,
   };
 }
+
+/**
+ * The intent label of the one pair that DECLARES its own tier, resolved from the
+ * pairs rather than hardcoded.
+ *
+ * Hardcoding `'policy-violation:unsafe-dependency-install'` would let these tests
+ * keep passing while silently covering nothing the day that pair is renamed or
+ * retired — the pattern this suite's own header calls out as enforcement divorced
+ * from its evidence. The assertion below makes the population itself the subject.
+ */
+const POLICY_PAIRS = BASH_GATE_PAIRS.filter((p) => p.policyTier !== undefined);
 
 describe('expectedRows', () => {
   const expected = expectedRows(loadPairFixtures(BASH_GATE_PAIRS));
@@ -56,6 +74,24 @@ describe('expectedRows', () => {
     }
   });
 
+  /**
+   * The conditional half of D-046. `tier` must be present for exactly the pairs
+   * that own one — a row with `tier: undefined` is not "unknown", it is an
+   * explicit statement that the DATABASE owns that field and drift must not be
+   * reported on it.
+   */
+  it('carries a tier expectation for exactly the pairs that declare one', () => {
+    const withTier = expected.filter((e) => e.tier !== undefined).map((e) => e.intentLabel);
+    expect(withTier.sort()).toEqual(POLICY_PAIRS.map((p) => p.intentLabel).sort());
+
+    for (const pair of POLICY_PAIRS) {
+      const row = expected.find((e) => e.intentLabel === pair.intentLabel)!;
+      // The value must be what the SEEDER would write, which is the authorized
+      // tier rather than the raw declaration — same function, both sides.
+      expect(row.tier).toBe(pair.policyTier);
+    }
+  });
+
   it('carries the pattern SOURCE and FLAGS separately, as the registry stores them', () => {
     for (const pair of BASH_GATE_PAIRS) {
       const row = expected.find((e) => e.intentLabel === pair.intentLabel)!;
@@ -72,12 +108,61 @@ describe('diffRegistry', () => {
     expect(diffRegistry(expected, expected.map((e) => rowFor(e)))).toEqual([]);
   });
 
-  it('ignores tier, so a row promoted by an observation window is not called drifted', () => {
+  it('ignores an EARNED tier, so a row promoted by an observation window is not called drifted', () => {
     // P-020 promotion is state the seeder deliberately does NOT overwrite.
     // Flagging it would report the system working correctly and train the
     // reader to ignore the report.
-    const rows = expected.map((e, i) => rowFor(e, i === 0 ? { tier: 'advise' } : {}));
+    //
+    // Promote every row whose tier the DATABASE owns — not just the first one.
+    // Picking a single index (which is what this test did before D-046) passes
+    // just as well when the comparison is broken for ordinary rows generally,
+    // and would silently stop covering anything at all if the pair ordering ever
+    // put a policy pair at that index.
+    const rows = expected.map((e) => rowFor(e, e.tier === undefined ? { tier: 'advise' } : {}));
+    expect(rows.some((r) => r.tier === 'advise')).toBe(true);
     expect(diffRegistry(expected, rows)).toEqual([]);
+  });
+
+  /**
+   * D-046 — the blind spot that let a `deny` pattern serve stale for four days.
+   *
+   * `tier` was excluded from the comparison outright, for a reason that is right
+   * for ordinary rows (promotion is earned, and the seeder does not overwrite it)
+   * and wrong for the one row class where tier is pair-owned and re-asserted on
+   * every seed. So the drift check could not see the highest-consequence drift on
+   * the table: a policy row sitting at the wrong ENFORCEMENT STRENGTH.
+   */
+  it('detects a drifted POLICY tier — the pair-owned field the check used to be blind to', () => {
+    // Calibration. Every assertion below is vacuous if no pair owns a tier, and
+    // that is a state this repo can legitimately reach (D-044's deny family was
+    // withdrawn the same hour it landed). Fail loudly rather than pass emptily.
+    expect(POLICY_PAIRS.length, 'no pair declares a policyTier — this test covers nothing').toBeGreaterThan(0);
+
+    for (const pair of POLICY_PAIRS) {
+      // The un-seeded widening, in its live shape: the pair says `deny`, the row
+      // the gate actually enforces is still sitting at `observe`.
+      const rows = expected.map((e) => rowFor(e, e.intentLabel === pair.intentLabel ? { tier: 'observe' } : {}));
+      const drifts = diffRegistry(expected, rows);
+
+      expect(drifts, `${pair.id}: a wrong-strength policy row must be reported`).toHaveLength(1);
+      expect(drifts[0]).toMatchObject({ kind: 'changed', intentLabel: pair.intentLabel });
+      expect(drifts[0].kind === 'changed' && drifts[0].fields).toEqual([
+        { field: 'tier', expected: pair.policyTier, actual: 'observe' },
+      ]);
+    }
+  });
+
+  it('names the direction of a tier drift, so the reader knows which value is LIVE', () => {
+    const pair = POLICY_PAIRS[0];
+    expect(pair, 'no policy pair to format').toBeDefined();
+    const rows = expected.map((e) => rowFor(e, e.intentLabel === pair.intentLabel ? { tier: 'observe' } : {}));
+    const report = formatDrift(diffRegistry(expected, rows));
+
+    // The bare field dump ("db observe / pairs deny") leaves the reader to work
+    // out which side is currently enforcing. Say it.
+    expect(report).toContain('ENFORCING AT THE WRONG STRENGTH');
+    expect(report).toContain(`the gate is applying 'observe'`);
+    expect(report).toContain(`the pair declares '${pair.policyTier}'`);
   });
 
   it('detects a stale ADVISORY — the shape that told agents to keep using ss/lsof after the tool existed', () => {

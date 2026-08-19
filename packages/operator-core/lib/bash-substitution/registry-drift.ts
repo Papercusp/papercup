@@ -173,7 +173,20 @@ export function expectedRows(fixtures: PairWithFixture[]): ExpectedRow[] {
   });
 }
 
-const COMPARED_FIELDS: Array<keyof ExpectedRow> = [
+/**
+ * The fields compared on EVERY row, as opposed to `tier`, which is compared only
+ * when the pair owns it (D-046).
+ *
+ * Typed as an explicit exclusion rather than `keyof ExpectedRow` so the compiler
+ * enforces the split: `tier` is optional, so admitting it here widens `want[field]`
+ * to `string | undefined` and the unconditional loop below stops typechecking.
+ * That failure is the point — it is what stops someone folding the conditional
+ * field back into the unconditional list and silently re-flagging every earned
+ * promotion as drift.
+ */
+type UnconditionalField = Exclude<keyof ExpectedRow, 'tier' | 'intentLabel'>;
+
+const COMPARED_FIELDS: UnconditionalField[] = [
   'toolName',
   'equivalenceVerdict',
   'advisoryText',
