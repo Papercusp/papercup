@@ -118,6 +118,61 @@ describe('guardFileLock', () => {
   });
 });
 
+/**
+ * EI-20881501070735530 — a RELATIVE path must key off the same base dir the capability
+ * tool writes through, or the lock guards a file nobody is touching.
+ *
+ * The guard used `ctx.projectDir ?? process.cwd()`. A superuser ctx has no projectDir,
+ * so relative paths resolved against the :3070 operator's own cwd — the release
+ * checkout's `apps/operator/` subdir — while `capability:write`/`edit` resolved the file
+ * itself through `resolveCapabilityBaseDir`. Measured on the live tree:
+ * `packages/…/git.ts` was locked as `apps/operator/packages/…/git.ts`, a key neither a
+ * peer nor the PreToolUse hook ever takes. The write still landed on the right file, so
+ * nothing looked wrong — arbitration just stopped happening.
+ *
+ * ⚠ THIS TEST IS ONLY MEANINGFUL BECAUSE THE BASE DIR IS A REPO SUBDIR. Under vitest,
+ * `process.cwd()` is already the monorepo root, so a base dir AT a repo root produces
+ * the identical key either way and the assertion passes with the bug present — the exact
+ * blind spot base-dir.ts's own header warns about. The nested base dir is what makes the
+ * two resolutions disagree, mirroring the real `apps/operator/` prefix.
+ */
+describe('EI-20881501070735530 — relative paths key off the capability base dir, not the operator cwd', () => {
+  const origEnv = process.env.PAPERCUSP_INTEGRATION_ROOT;
+  const NESTED = join(realpathSync(REPO), 'apps', 'operator');
+
+  beforeEach(() => {
+    mkdirSync(NESTED, { recursive: true });
+    process.env.PAPERCUSP_INTEGRATION_ROOT = NESTED;
+  });
+  afterEach(() => {
+    if (origEnv === undefined) delete process.env.PAPERCUSP_INTEGRATION_ROOT;
+    else process.env.PAPERCUSP_INTEGRATION_ROOT = origEnv;
+  });
+
+  /** The paths handed to the lock store on the last acquire. */
+  const acquiredPaths = (): string[] => h.tryAcquire.mock.calls[0]?.[1]?.paths as string[];
+
+  it('resolves a relative path against the capability base dir (superuser ctx: no projectDir)', async () => {
+    h.tryAcquire.mockResolvedValue({ ok: true, lock_id: 'L', expires_ts: new Date(), held: [] });
+    const suCtx = { log: () => {} } as never; // projectDir deliberately absent
+    await guardFileLock(suCtx, ['pkg/a.ts'], { intent: 'capability:write' }, async () => 'R');
+    expect(acquiredPaths()).toEqual(['apps/operator/pkg/a.ts']);
+  });
+
+  it('CONTROL: the same call keyed off the monorepo cwd would produce a different key', () => {
+    // The pre-fix resolution, computed directly. If this ever equals the assertion above,
+    // the test has gone vacuous (base dir no longer differs from cwd) and must be re-based.
+    expect(toRepoRelative('pkg/a.ts', process.cwd())).not.toEqual('apps/operator/pkg/a.ts');
+  });
+
+  it('an ABSOLUTE path is unaffected by either base dir (why this went unseen)', async () => {
+    h.tryAcquire.mockResolvedValue({ ok: true, lock_id: 'L', expires_ts: new Date(), held: [] });
+    const suCtx = { log: () => {} } as never;
+    await guardFileLock(suCtx, [join(realpathSync(REPO), 'pkg/a.ts')], { intent: 'capability:write' }, async () => 'R');
+    expect(acquiredPaths()).toEqual(['pkg/a.ts']);
+  });
+});
+
 describe('withFileLock + fileLockedResult', () => {
   it('returns the structured file_locked result on contention without running the handler', async () => {
     h.tryAcquire.mockResolvedValue({
