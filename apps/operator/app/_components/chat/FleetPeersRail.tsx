@@ -309,13 +309,23 @@ export default function FleetPeersRail({
         </div>
       ) : null}
 
+      {/* Above the roster on purpose: these are fleet-WIDE findings, and several
+          of them (a starved spec, a gated lane, a pause) are the REASON the rows
+          below look calm. Reading the rows first and this second is how a leader
+          concludes the fleet is fine. */}
+      {alerts?.fleet ? <FleetAlertsBlock fleet={alerts.fleet} /> : null}
+
       <div className="pc-peers__list">
         <ul className="pc-peers__group">
           <li className="pc-peers__cap" aria-hidden="true">
             <span>Leader</span>
           </li>
           {model.leader ? (
-            <PeerRow peer={model.leader} onSelect={onSelectPeer} />
+            <PeerRow
+              peer={model.leader}
+              alerts={alerts?.byMember[model.leader.ownerId]}
+              onSelect={onSelectPeer}
+            />
           ) : (
             /* Stated, never omitted: a fleet with members and no leader cannot be
                driven — nobody reclaims a dead member's claim or opens the gates
@@ -336,7 +346,14 @@ export default function FleetPeersRail({
           {memberCount === 0 ? (
             <li className="pc-peers__empty">No other members are live right now.</li>
           ) : (
-            model.members.map((p) => <PeerRow key={p.ownerId} peer={p} onSelect={onSelectPeer} />)
+            model.members.map((p) => (
+              <PeerRow
+                key={p.ownerId}
+                peer={p}
+                alerts={alerts?.byMember[p.ownerId]}
+                onSelect={onSelectPeer}
+              />
+            ))
           )}
         </ul>
       </div>
