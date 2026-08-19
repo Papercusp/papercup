@@ -14,9 +14,11 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  GOAL_DORMANT_STATUS,
   GOAL_LIVENESS_SWEEP_STATUSES,
   isGoalQuietUnexpectedly,
   resolveGoalActivity,
+  resolveGoalEffectiveActivity,
 } from './activity';
 import type { GoalHolderLiveness } from './holder';
 
