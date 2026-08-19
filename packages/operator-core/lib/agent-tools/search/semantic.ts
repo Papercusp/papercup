@@ -24,6 +24,7 @@ import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { runHybridSearch, type LegReport } from '@papercusp/search';
 import { SEARCH_SOURCES } from './sources';
+import { scopeResidue } from './scope-residue';
 import { buildQueryEmbedderResolved, interactiveEmbedAcquireBudgetMs } from './embedder';
 import {
   loadCoverageSnapshotCached,
