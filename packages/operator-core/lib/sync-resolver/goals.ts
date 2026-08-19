@@ -958,6 +958,40 @@ export async function resolveGoalDetail(args: {
       detailHolderRows,
       await resolveHolderLiveness(detailHolderRows.map((r) => r.ownerId)),
     );
+    /* PER-GOAL LAUNCH SETTINGS (P-005), read through the SAME schema that
+       validates the write. Parsed here rather than handed over raw so the panel
+       renders a document the launch resolver would actually honour — a raw blob
+       would let the editor show, and re-save, a shape the ceiling code rejects.
+
+       AN INVALID DOCUMENT IS REPORTED, NOT SWALLOWED. `readGoalLaunchSettings`
+       makes the same call for the same reason: a settings blob that fails to
+       parse means the owner's ceiling is NOT IN FORCE, and rendering that as
+       "no settings" would show an unlimited goal as deliberately unlimited.
+       The panel says so instead.
+
+       HOISTED above `goal` (P-004) because the activity fold below needs it and
+       `goal` carries the fold's result. */
+    const { settings: launchSettings, error: launchSettingsInvalid } = parseGoalLaunchSettings(
+      (goalRow as unknown as { launch_settings?: unknown }).launch_settings,
+      `goal ${goalId} launch settings`,
+    );
+
+    /* P-004: fold status + holder policy + liveness into the reading the popup
+       should actually show. Both inputs are already in hand — no extra query.
+
+       NOTE the interaction with `launchSettingsInvalid` above: an unreadable
+       document parses to `null`, which resolves to the DEFAULT policy
+       (requireLive: true), so a corrupt blob makes the goal MORE guarded, not
+       less. That is the opposite of the ceiling case, and deliberately so: a
+       ceiling that fails open spends money, a holder requirement that fails
+       open hides a dead goal. */
+    const { resolveGoalEffectiveActivity } = await import('../goals/activity');
+    const detailActivity = resolveGoalEffectiveActivity({
+      status: (goalRow as unknown as { status?: string | null }).status ?? null,
+      launchSettings,
+      liveness: detailHolders.liveness,
+    });
+
     const goal: GoalSummaryRow = {
       ...toSummary(goalRow),
       agents: detailHolders.holders.map((h) => ({
@@ -966,6 +1000,8 @@ export async function resolveGoalDetail(args: {
         sessionState: h.sessionState,
       })),
       holderLiveness: detailHolders.liveness,
+      effectiveStatus: detailActivity.effectiveStatus,
+      deactivated: detailActivity.deactivated,
     };
     goal.potCount = pots.filter((p) => !p.removedAt).length;
     // From the UNBOUNDED count, never `waiting.length` — that array stops at 25,
@@ -1018,38 +1054,6 @@ export async function resolveGoalDetail(args: {
            LIMIT 1
         `) as unknown as Array<{ id: string; title: string | null }>)
       : [];
-
-    /* PER-GOAL LAUNCH SETTINGS (P-005), read through the SAME schema that
-       validates the write (P-004 / D-009). Parsed here rather than handed over
-       raw so the panel renders a document the launch resolver would actually
-       honour — a raw blob would let the editor show, and re-save, a shape the
-       ceiling code rejects.
-
-       AN INVALID DOCUMENT IS REPORTED, NOT SWALLOWED. `readGoalLaunchSettings`
-       makes the same call for the same reason: a settings blob that fails to
-       parse means the owner's ceiling is NOT IN FORCE, and rendering that as
-       "no settings" would show an unlimited goal as deliberately unlimited.
-       The panel says so instead. */
-    const { settings: launchSettings, error: launchSettingsInvalid } = parseGoalLaunchSettings(
-      (goalRow as unknown as { launch_settings?: unknown }).launch_settings,
-      `goal ${goalId} launch settings`,
-    );
-
-    /* P-004: fold status + holder policy + liveness into the reading the popup
-       should actually show. Both inputs are already in hand — no extra query.
-
-       NOTE the interaction with `launchSettingsInvalid` above: an unreadable
-       document parses to `null`, which resolves to the DEFAULT policy
-       (requireLive: true), so a corrupt blob makes the goal MORE guarded, not
-       less. That is the opposite of the ceiling case one field up, and
-       deliberately so: a ceiling that fails open spends money, a holder
-       requirement that fails open hides a dead goal. */
-    const { resolveGoalEffectiveActivity } = await import('../goals/activity');
-    const detailActivity = resolveGoalEffectiveActivity({
-      status: (goalRow as unknown as { status?: string | null }).status ?? null,
-      launchSettings,
-      liveness: detailHolders.liveness,
-    });
 
     return {
       goal,
