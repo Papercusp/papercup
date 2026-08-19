@@ -75,6 +75,34 @@ function installOwnerRuntimeProof(owner: string) {
 }
 
 describe('writeRoleCodexHome', () => {
+  it('prepends the exact 1M/900k root keys for an extended-window role model', async () => {
+    const writeRoleCodexHome = await load();
+    const out = writeRoleCodexHome({
+      sessionKey: 'context-role',
+      mcpUrl: 'http://x/?role=worker&sig=1',
+      promptText: 'P',
+      model: 'sol:high',
+    });
+    const toml = readFileSync(out.configPath, 'utf8');
+    expect(toml).toMatch(
+      /^model_context_window = 1000000\nmodel_auto_compact_token_limit = 900000\n/,
+    );
+    expect(toml.indexOf('model_context_window')).toBeLessThan(toml.indexOf('[features]'));
+  });
+
+  it('keeps a sub-1M role config byte-free of context overrides', async () => {
+    const writeRoleCodexHome = await load();
+    const out = writeRoleCodexHome({
+      sessionKey: 'context-role-small',
+      mcpUrl: 'http://x/?role=worker&sig=1',
+      promptText: 'P',
+      model: 'gpt-5.5',
+    });
+    const toml = readFileSync(out.configPath, 'utf8');
+    expect(toml).not.toContain('model_context_window');
+    expect(toml).not.toContain('model_auto_compact_token_limit');
+  });
+
   it('writes AGENTS.md (role prompt) + config.toml (role-scoped url) under the SHARED codex-homes root', async () => {
     const writeRoleCodexHome = await load();
     const url = 'http://127.0.0.1:3070/api/mcp?harness=h&workspace=w&role=worker&run=r&spawn=s&exp=1&sig=abc';
@@ -305,6 +333,32 @@ describe('writeRoleCodexHome', () => {
 });
 
 describe('writeSuCodexHome', () => {
+  it('bakes the exact context roots into fresh and repaired SU homes', async () => {
+    const { ensureSuCodexHomeConfig, writeSuCodexHome } = await loadMod();
+    const fresh = writeSuCodexHome({
+      sessionKey: 'context-su',
+      mcpUrl: 'http://x/api/mcp?superuser=1',
+      promptText: 'P',
+      sid: 'su-context',
+      model: 'gpt-5.6-terra:xhigh',
+    });
+    expect(readFileSync(fresh.configPath, 'utf8')).toMatch(
+      /^model_context_window = 1000000\nmodel_auto_compact_token_limit = 900000\n/,
+    );
+
+    writeFileSync(fresh.configPath, '# archived config lost\n');
+    const repaired = ensureSuCodexHomeConfig({
+      sessionKey: 'context-su',
+      mcpUrl: 'http://x/api/mcp?superuser=1',
+      sid: 'su-context',
+      model: 'gpt-5.6-terra:xhigh',
+    });
+    expect(repaired.repaired).toBe(true);
+    expect(readFileSync(repaired.configPath, 'utf8')).toMatch(
+      /^model_context_window = 1000000\nmodel_auto_compact_token_limit = 900000\n/,
+    );
+  });
+
   it('rekeys a prepared home to the durable adv-session id without rebuilding or overwriting', async () => {
     const { rekeyCodexHome, writeSuCodexHome } = await loadMod();
     const prepared = writeSuCodexHome({
