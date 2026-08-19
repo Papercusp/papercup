@@ -29,7 +29,14 @@
  */
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../workspace-registry';
-import { GOAL_SCALE_MARKERS, draftGoalRails, makeGoalScaleOverride, proposalTitle } from './router';
+import {
+  GOAL_SCALE_MARKERS,
+  draftGoalRails,
+  goalScaleMarkerHits,
+  makeGoalScaleOverride,
+  proposalTitle,
+  type GoalScaleMarkerHit,
+} from './router';
 import type { Proposal } from './types';
 
 /** The rail whose starvation this queue exists to make readable. */
@@ -70,8 +77,15 @@ export interface GoalDraft {
   askedRail: string | null;
   /** Which goal-scale markers the text matched ('override' path). Empty on 'asked'.
    *  Recorded because a marker like 'campaign' can match incidentally, and a reader
-   *  deciding whether to trust this draft needs to see WHICH word triggered it. */
+   *  deciding whether to trust this draft needs to see WHICH word triggered it.
+   *  D-012 makes this BINDING: a reader shown a draft without its trigger word would
+   *  read an incidental match as a genuine goal-scale ask. */
   matchedMarkers: string[];
+  /** The same matches with their provenance — which FIELDS each marker appears in, and
+   *  whether every occurrence sits inside a code-ish span. `fields:['mechanism']` +
+   *  `onlyInCodeSpan:true` is D-012's measured false-positive shape, and is exactly what
+   *  a reader needs to dismiss a draft without reading the whole proposal. */
+  markerHits: GoalScaleMarkerHit[];
   /** The proposal's human title — first non-empty line of the framing, capped. */
   title: string;
   /** The full proposal as persisted, minus nothing. */
@@ -104,16 +118,25 @@ const isProposal = (v: unknown): v is Proposal =>
  */
 export function selectGoalDrafts(
   rows: readonly StageArtifactRow[],
-  opts: { rail?: string; budgetCentsCap?: number; markers?: readonly string[] } = {},
+  opts: {
+    rail?: string;
+    budgetCentsCap?: number;
+    markers?: readonly string[];
+    /** Count a marker that appears ONLY inside a code-ish span (P-009 / D-012). Default
+     *  FALSE, matching live routing. Exists so the historical false positive stays
+     *  reproducible as evidence — not as a production option. */
+    includeCodeSpanMatches?: boolean;
+  } = {},
 ): GoalDraft[] {
   const rail = opts.rail ?? DEFAULT_DRAFT_RAIL;
   const markers = opts.markers ?? GOAL_SCALE_MARKERS;
+  const includeCodeSpans = opts.includeCodeSpanMatches === true;
   // Ask the REAL production override, not a reimplementation of it. If the live
   // bump rule changes (its hint domain, its predicate, its marker seam), this queue
   // follows automatically — a hand-copied condition here would drift silently and
   // report on a rule the router stopped using, which is the whole failure class
   // this plan is trying to measure its way out of.
-  const wouldBump = makeGoalScaleOverride(markers);
+  const wouldBump = makeGoalScaleOverride(markers, { includeCodeSpans });
   const drafts: GoalDraft[] = [];
 
   for (const row of rows) {
@@ -125,9 +148,10 @@ export function selectGoalDrafts(
       const overridden = !asked && wouldBump(raw) === rail;
       if (!asked && !overridden) continue;
 
-      const hay = [raw.framing, raw.mechanism, raw.bet, raw.whyNew]
-        .map((s) => (s ?? '').toLowerCase())
-        .join(' \n ');
+      // Provenance comes from the SAME primitive the predicate above consulted, so the
+      // markers a reader is shown are exactly the ones that were considered — never a
+      // second, separately-computed list that can disagree with the routing decision.
+      const hits = asked ? [] : goalScaleMarkerHits(raw, markers);
       const { killCriterion, budgetCents } = draftGoalRails(raw, {
         ...(opts.budgetCentsCap == null ? {} : { budgetCentsCap: opts.budgetCentsCap }),
       });
@@ -137,7 +161,8 @@ export function selectGoalDrafts(
         createdAt: row.created_at instanceof Date ? row.created_at : new Date(row.created_at),
         path: asked ? 'asked' : 'override',
         askedRail: asked ? (raw.droppedRouteHint ?? null) : null,
-        matchedMarkers: asked ? [] : markers.filter((m) => hay.includes(m)),
+        matchedMarkers: hits.map((h) => h.marker),
+        markerHits: hits,
         title: proposalTitle(raw),
         proposal: raw,
         killCriterion,
