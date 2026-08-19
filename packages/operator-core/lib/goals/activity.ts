@@ -35,11 +35,14 @@
  */
 import { isGoalAdministrativelyPaused } from '@papercusp/agent-mcp';
 
+// From the SHARED module, not `goal-launch-settings.ts`: that one statically
+// imports `@papercusp/db-org`, and this fold is pure + synchronous, so it must
+// not drag the store into every consumer at load.
 import {
   resolveGoalHolderPolicy,
-  type GoalLaunchSettings,
+  type GoalHolderPolicyInput,
   type ResolvedGoalHolderPolicy,
-} from '../goal-launch-settings';
+} from '../goal-launch-settings-shared';
 import type { GoalHolderLiveness } from './holder';
 
 /**

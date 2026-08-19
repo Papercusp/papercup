@@ -206,6 +206,10 @@ export {
   type GoalHolderOnLoss,
 } from './goal-launch-settings-shared';
 
+// A re-export creates no LOCAL binding, and `goalHolderPolicyProblem` below
+// calls the resolver — so it is imported as well as re-exported.
+import { resolveGoalHolderPolicy } from './goal-launch-settings-shared';
+
 /**
  * The holder policy a goal declares (P-002 of
  * goal-live-holder-guarantee-2026-08-18).
