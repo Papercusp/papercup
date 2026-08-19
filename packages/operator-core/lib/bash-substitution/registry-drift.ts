@@ -43,18 +43,35 @@
 import { auditPair, meetsAuditFloor } from './equivalence';
 import { normalizeRegistryFlags, type SubstitutionRow } from './match';
 import type { PairWithFixture } from './seed';
-import type { EquivalenceVerdict } from './types';
+import { assertPolicyTier, type EquivalenceVerdict, type SubstitutionTier } from './types';
 
 /**
  * The registry fields the seeder DERIVES from a pair, and therefore the only
  * ones drift is meaningful for.
  *
- * Deliberately excludes `tier`, `false_positive_count` and `observed_since`:
- * those are PROMOTION state earned by an observation window (P-020), which the
- * seeder's `ON CONFLICT` clause pointedly does not overwrite. Reporting a
- * promoted row as "drifted" because its tier is no longer `observe` would flag
- * the system working correctly, and would train whoever reads the report to
- * ignore it.
+ * Deliberately excludes `false_positive_count` and `observed_since`: those are
+ * PROMOTION state earned by an observation window (P-020), which the seeder's
+ * `ON CONFLICT` clause pointedly does not overwrite. Reporting a promoted row as
+ * "drifted" because its tier is no longer `observe` would flag the system
+ * working correctly, and would train whoever reads the report to ignore it.
+ *
+ * ── WHY `tier` IS CONDITIONAL RATHER THAN EXCLUDED (D-046) ──────────────────
+ * `tier` used to be excluded outright, for the reason above. That was right for
+ * ordinary rows and wrong for the one row class where tier is the highest-
+ * consequence field on the table: a pair that declares `policyTier` OWNS its
+ * tier, and the seeder RE-ASSERTS it on every run. Read seed.ts's upsert — the
+ * two cases are already split there, and this file only mirrored half of it:
+ *
+ *   tier = CASE WHEN <pair.policyTier> IS NULL
+ *               THEN bash_tool_substitutions.tier   -- earned: never overwritten
+ *               ELSE EXCLUDED.tier END              -- pair-owned: re-asserted
+ *
+ * So an un-seeded change to a `policyTier` was invisible to the drift check,
+ * which is exactly backwards: a policy row is the only kind that can BLOCK a
+ * command, and `deny` vs `advise` is the difference between a blocked agent and
+ * an advisory nobody is required to follow. `tier` is therefore compared when —
+ * and only when — the pair declares one, leaving the earned-promotion invariant
+ * untouched. `undefined` here means "the database owns this", not "unknown".
  */
 export interface ExpectedRow {
   intentLabel: string;
@@ -63,6 +80,12 @@ export interface ExpectedRow {
   toolName: string;
   advisoryText: string;
   equivalenceVerdict: EquivalenceVerdict;
+  /**
+   * The tier the PAIR declares and the seeder re-asserts, or `undefined` for an
+   * ordinary row whose tier is earned by observation and owned by the database.
+   * Only a defined value is ever compared — see the interface docstring.
+   */
+  tier?: SubstitutionTier;
 }
 
 /** One field that disagrees between the pairs and the seeded row. */
@@ -91,6 +114,19 @@ export type RowDrift =
  * hand-recorded claim. (`seedSubstitutionRegistry` refuses to write when those
  * two disagree, so a drift run that reaches here has already agreed with itself.)
  */
+/**
+ * The tier this pair OWNS, or `undefined` when the database owns it.
+ *
+ * Routed through `assertPolicyTier` rather than reading `pair.policyTier`
+ * directly so the expectation is computed by the SAME authorization function the
+ * seeder writes through: a pair that reaches for a tier it is not entitled to
+ * throws here exactly as it would there, instead of the drift check quietly
+ * expecting a value the seeder would have refused to write.
+ */
+function ownedTierFor(pair: PairWithFixture['pair']): SubstitutionTier | undefined {
+  return pair.policyTier === undefined ? undefined : assertPolicyTier(pair);
+}
+
 export function expectedRows(fixtures: PairWithFixture[]): ExpectedRow[] {
   return fixtures.map(({ pair, fixture }) => {
     // A pair whose population is below the audit floor has no evidence to
@@ -110,6 +146,10 @@ export function expectedRows(fixtures: PairWithFixture[]): ExpectedRow[] {
         toolName: pair.toolName,
         advisoryText: pair.advisoryText,
         equivalenceVerdict: 'unaudited' as const,
+        // The below-floor branch is where every policy row lands (D-003 grants
+        // its tier from a pre-existing rule, not from a sample), so this is the
+        // arm that actually carries a tier expectation in practice.
+        tier: ownedTierFor(pair),
       };
     }
     // Pass the fixture as the POPULATION so a homogeneous-but-high-volume pair
@@ -123,6 +163,12 @@ export function expectedRows(fixtures: PairWithFixture[]): ExpectedRow[] {
       toolName: audit.toolName,
       advisoryText: pair.advisoryText,
       equivalenceVerdict: audit.verdict,
+      // Ordinary audited pairs declare no policyTier, so this is `undefined` and
+      // their earned tier stays uncompared. Computed here anyway rather than
+      // hardcoded: a future policy pair that clears the audit floor must still
+      // have its tier checked, and an arm that silently skips it would be the
+      // same half-mirror of seed.ts this change exists to remove.
+      tier: ownedTierFor(pair),
     };
   });
 }
