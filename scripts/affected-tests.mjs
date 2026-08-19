@@ -962,6 +962,48 @@ function declarationMjsInputs() {
 
 const REPO_WIDE_INVARIANT_GUARDS = [
   {
+    // EI-20822558150340173 / D-046 — the substitution registry's DB projection had no
+    // automatic caller of ANY kind. `seedSubstitutionRegistry()` is reachable only from
+    // the manual `npm run seed:substitutions`, so editing a pair changed nothing about
+    // what the PreToolUse gate enforces, indefinitely, while every local signal said the
+    // change had shipped: the unit tests pass (they test the pairs), gen:tool-routing:check
+    // is clean (CLAUDE.md is generated from the pairs), typecheck is clean, git-sync commits
+    // it. MEASURED, not hypothetical: policy-violation:unsafe-dependency-install was widened
+    // in code on 2026-08-14 (b97a2df61b) to claim named-package installs, CLAUDE.md has
+    // documented that scope ever since, and the DB row still carried the narrower pattern on
+    // 2026-08-18 — four days in which the documented block was inert for exactly the case the
+    // widening was written to catch.
+    //
+    // This is the sibling situation to gen:tool-routing exactly: ONE list, TWO projections,
+    // and until now only the one with a --check gate stayed correct. So the ungated
+    // projection gets the same treatment, routed by the paths that can actually cause the
+    // drift.
+    //
+    // WHY A GUARD AND NOT BOOT-TIME RE-SEEDING (the alternative D-046 weighed): re-seeding
+    // on operator boot would make every booting operator a WRITER to the shared workspace's
+    // enforcement rows, derived from its own checkout — and this box runs :3070 from the
+    // release checkout and :3170/bg-host off the staging tree concurrently, so the live rows
+    // would flap with whichever host restarted last. A check has no such blast radius.
+    workspace: "@papercusp/operator-core",
+    script: "seed:substitutions:check",
+    // Exit 2 = EXIT_NOT_CHECKED, which this check returns when Postgres is unreachable
+    // (nothing compared ⇒ nothing proved). Non-gating is what makes it safe to run in a
+    // DB-less leg, and is the honest half of the bargain: the run is reported as "examined
+    // NOTHING" rather than silently passing. It used to exit 0 in that case — a vacuous
+    // green in a check whose whole job is to notice that something did not happen — which
+    // D-046 fixed as the precondition for wiring it up here at all.
+    notCheckedIsNonGating: true,
+    // The pairs are the SOURCE the rows are derived from; a change to one is the only thing
+    // that can put the registry out of date. Deliberately NOT every bash-substitution file:
+    // the seeder reads pairs + their frozen fixtures, and widening this to the whole module
+    // would attach a DB round-trip to edits (match.ts, report.ts, census.ts) that cannot
+    // drift a row. The fixtures ARE included — a re-frozen sample changes the recomputed
+    // verdict, which is a seeded field.
+    appliesTo: (f) =>
+      f.startsWith("packages/operator-core/lib/bash-substitution/pairs/") ||
+      f.startsWith("packages/operator-core/lib/bash-substitution/fixtures/"),
+  },
+  {
     // WI-39420 (2026-08-16) — lint:di-seam-arity-strands wire-up. The guard scans EVERY
     // tracked .ts/.tsx source in the repo (defaultCandidateFiles in
     // scripts/check-di-seam-arity-strands.mjs), but its enforcing test lives in
