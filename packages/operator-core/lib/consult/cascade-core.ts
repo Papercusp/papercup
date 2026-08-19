@@ -417,16 +417,25 @@ export async function advanceCascade(
       // Nothing addable — HONEST terminal (EI-20864690354207496): the min
       // stays unfilled and the persisted snapshot says WHY, so "exhausted"
       // can never silently paper over a revivable-but-unrevived expert. The
-      // caller still owns the terminal state transition.
+      // caller still owns the terminal state transition. Written as a full
+      // rewrite of the parsed snapshot (same style as the extension write
+      // above, same CAS guard) — NOT jsonb_set on the column, which raises
+      // "cannot set path in scalar" when the row's routing round-tripped as
+      // a jsonb string scalar (the documented driver quirk
+      // selectionFromRouting tolerates on the read side).
       const underFilled = {
         answers,
         min,
         reason: underFilledReason ?? 'no-revivable-candidate',
       };
+      const terminalSnap = {
+        ...snap,
+        selection: { ...sel, underFilled: { at: params.nowIso, ...underFilled } },
+      };
       const wroteTerminal = (await sql`
         UPDATE harness_shared.consult_state
            SET cascade_digest = ${JSON.stringify(digest)}::jsonb,
-               routing = jsonb_set(routing, '{selection,underFilled}', ${JSON.stringify({ at: params.nowIso, ...underFilled })}::jsonb),
+               routing = ${sql.json(terminalSnap as never)},
                updated_at = ${params.nowIso}::timestamptz
          WHERE workspace_id = ${params.workspaceId} AND conversation_id = ${params.conversationId}
            AND cascade_cursor = ${params.cascadeCursor} AND closed_at IS NULL
