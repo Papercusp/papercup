@@ -1083,8 +1083,30 @@ export default function AgentDossier({
                       <span className="pc-dossier__note">urgent</span>
                     </>
                   ) : null}
+                  {/* P-009. The wait's DEADLINE, beside the wait itself. An
+                      await with a timeout will end on its own; one without
+                      ends only when the event fires — opposite answers to "is
+                      this agent stuck", and until now this list could not tell
+                      them apart. Absent ⇒ render nothing: a subscription with
+                      no recorded expiry is not an expired one. */}
+                  {formatTimeLeft(s.expiresTs) ? (
+                    <>
+                      <span className="pc-dossier__sep" aria-hidden="true"> · </span>
+                      <span className="pc-dossier__note" data-testid="dossier-event-expiry">
+                        {formatTimeLeft(s.expiresTs)}
+                      </span>
+                    </>
+                  ) : null}
                 </span>
-                <span className="pc-dossier__coord-ts">{formatRelativeUpdated(s.createdAt)}</span>
+                {/* P-009. HOW LONG this agent has been waiting — an ELAPSED
+                    duration, not `formatRelativeUpdated`, which is what this
+                    rendered before and which collapses everything inside 24h
+                    to the single word "today". A wait opened 2 minutes ago and
+                    one opened 23 hours ago read identically here, and the
+                    second is the whole diagnosis. */}
+                <span className="pc-dossier__coord-ts" data-testid="dossier-event-age">
+                  {formatElapsedSince(s.createdAt)}
+                </span>
               </div>
             ))}
           />
