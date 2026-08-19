@@ -3386,6 +3386,7 @@ for (const scheduled of initialPool.results) {
   const run = async (extraArgs = [], scriptOverride = null) => {
     const retryPool = await runBudgetedTasks([scheduled.task], {
       ...SCHEDULER_CONFIG,
+      readMemAvailableMb,
       runTask: (context, allocation) =>
         runCapturedTask(context, allocation, extraArgs, scriptOverride),
     });
