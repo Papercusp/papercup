@@ -95,6 +95,11 @@ export const ORIENT_OPTIONAL_PRIORITY = {
     { name: 'paneContext', fields: ['paneContext'], recoverVia: 'curation:state-of-pot / fleet:assignments' },
     { name: 'deepWork', fields: ['deepWork'], recoverVia: 'coord:inbox' },
     { name: 'recipes', fields: ['recipes', 'recipesTruncated'], recoverVia: 'recipes:search' },
+    {
+      name: 'peersKnow',
+      fields: ['peersKnow'],
+      recoverVia: "consult:get_feedback { question: '<your intent>' } (archive-first serves settled questions instantly)",
+    },
     { name: 'pipeline', fields: ['pipeline'], recoverVia: 'dev:pipeline_position { path }' },
     { name: 'intentDeclared', fields: ['intentDeclared'], recoverVia: 'coord:declare-intent' },
     { name: 'fleetDelta', fields: ['fleetDelta'], recoverVia: 'fleet:assignments' },
