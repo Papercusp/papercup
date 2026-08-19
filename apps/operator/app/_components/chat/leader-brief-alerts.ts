@@ -311,8 +311,48 @@ export function deriveLeaderBriefAlerts(
     };
   }
 
+  // ── Leadership drift (P-013) ───────────────────────────────────────────────
+  // A MEASURED disagreement between the two leadership sources. It qualifies
+  // every other alert in this rail — under `registry-disowned` the member rows
+  // below may belong to a fleet this agent no longer leads — so it is derived
+  // BEFORE the brief and unshifted to the top of the fleet alerts.
+  //
+  // Absent means no drift was measured, never "the sources agree": a read that
+  // threw took the `read-failed` skip above and reported no drift at all.
+  const drift = leaderBrief.presenceDrift;
+  const driftAlert: FleetAlert | null = drift
+    ? {
+        key: 'presence-drift',
+        // `registry-disowned` is the dangerous half: the brief is built from a
+        // presence row the registry does not back, so acting on its member rows
+        // may be acting on somebody else's fleet. `presence-behind` is real and
+        // already recovered — worth saying, not worth alarming over.
+        severity: drift.kind === 'registry-disowned' ? 'bad' : 'warn',
+        text:
+          drift.kind === 'registry-disowned'
+            ? 'leadership drift — presence claims a fleet the registry does not'
+            : 'leadership drift — presence behind the registry',
+        detail: drift.note,
+      }
+    : null;
+
   const brief = leaderBrief.brief;
-  if (!brief) return null;
+  if (!brief) {
+    // A drift with no brief is a race between the two reads, not a normal
+    // shape — but dropping it here would silently discard the one finding this
+    // pane exists to surface, so it renders on its own.
+    if (!driftAlert) return null;
+    return {
+      byMember: {},
+      briefed: false,
+      fleet: {
+        fleetSlug: leaderBrief.fleetSlug,
+        alerts: [driftAlert],
+        capacity: null,
+        invariantsNote: null,
+      },
+    };
+  }
 
   if (brief.ok === false) {
     return {
@@ -321,6 +361,7 @@ export function deriveLeaderBriefAlerts(
       fleet: {
         fleetSlug: leaderBrief.fleetSlug,
         alerts: [
+          ...(driftAlert ? [driftAlert] : []),
           {
             key: 'brief-error',
             severity: 'bad',
@@ -342,7 +383,8 @@ export function deriveLeaderBriefAlerts(
   }
 
   const s = brief.summary ?? {};
-  const alerts: FleetAlert[] = [];
+  // Drift leads: it qualifies how much of everything below can be trusted.
+  const alerts: FleetAlert[] = driftAlert ? [driftAlert] : [];
 
   // ── The five flat *Alert booleans. Each ships a reason sibling; the flag says
   //    IF and the reason says WHY, and a flag rendered without its reason is the
