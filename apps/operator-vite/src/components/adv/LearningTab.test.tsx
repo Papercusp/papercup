@@ -567,6 +567,15 @@ let retainDetailResult: Record<string, unknown> = {
   error: null,
   invalidate: vi.fn(),
 };
+// WI-39900: the tab badges are their own read (learning.retainCounts), split
+// off the feed page — tests model badge sizes HERE, not on the page's counts.
+let retainCountsResult: Record<string, unknown> = {
+  data: [null],
+  loading: false,
+  fetching: false,
+  error: null,
+  invalidate: vi.fn(),
+};
 // WI-6383: when set, `learning.hiveThroughput` returns THIS — lets a test model
 // the DEGRADED snapshot the resolver returns for an unreadable substrate (a
 // successful read carrying `unavailable`, never a thrown transport error).
@@ -599,6 +608,7 @@ vi.mock("@papercusp/sync", async () => ({
       return throughputResult;
     }
     if (opts.queryName === "learning.retainFeed") return retainFeedResult;
+    if (opts.queryName === "learning.retainCounts") return retainCountsResult;
     if (opts.queryName === "learning.retainDetail") return retainDetailResult;
     if (opts.queryName === "learning.retainPlanChildren") {
       return {
