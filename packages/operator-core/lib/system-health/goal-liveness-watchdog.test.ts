@@ -107,6 +107,44 @@ describe('classifyGoalLiveness', () => {
     expect(alert?.darkMs).toBeGreaterThan(GOAL_LIVENESS_GRACE_MS);
   });
 
+  /**
+   * P-005 / D-009 — the falsifier for the paused exemption.
+   *
+   * Identical inputs to the test above (dead holder, five days dark) with ONE
+   * field changed: the goal is deliberately paused. A pause disarms exactly
+   * these sessions' loops, so the dead holder is the EXPECTED consequence of
+   * the hold, not evidence of abandonment. Alarming here would report a stop as
+   * a crash — the failure `isAdministrativelyPaused` already prevents one layer
+   * down, and the reason P-005 has to land before P-004's deactivation.
+   */
+  it('stays silent on a DELIBERATELY PAUSED goal, however dead its holders', () => {
+    const alert = classifyGoalLiveness(
+      goal({ status: 'paused' }),
+      [holder()],
+      vmap(verdict('su-2c130be1', 'ended')),
+      NOW,
+    );
+    expect(alert).toBeNull();
+  });
+
+  it('stays silent on a goal that is already over (achieved / killed)', () => {
+    for (const status of ['achieved', 'killed']) {
+      expect(
+        classifyGoalLiveness(goal({ status }), [holder()], vmap(verdict('su-2c130be1', 'ended')), NOW),
+      ).toBeNull();
+    }
+  });
+
+  it('an ACTIVE status changes nothing — the exemption is not accidentally universal', () => {
+    const alert = classifyGoalLiveness(
+      goal({ status: 'active' }),
+      [holder()],
+      vmap(verdict('su-2c130be1', 'ended')),
+      NOW,
+    );
+    expect(alert?.reason).toBe('abandoned');
+  });
+
   it('reports a goal with no holder row at all as unheld, not abandoned', () => {
     const alert = classifyGoalLiveness(goal(), [], new Map(), NOW);
     expect(alert?.reason).toBe('unheld');
