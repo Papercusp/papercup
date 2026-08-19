@@ -317,6 +317,19 @@ describe('sweepExpiredConsults — honest expiry (WI-39862) + min-ANSWERS refill
          SET cascade_digest = ${JSON.stringify(digest)}::jsonb
        WHERE workspace_id = ${WS} AND conversation_id = ${id}`;
   }
+  /** cascadeRow (above) deliberately selects only the cascade columns — these
+   * WI-39862/WI-39861 assertions also need routing + outcome. */
+  async function fullRow(id: string) {
+    const rows = (await rootSql`
+      SELECT state, closed_at, responder_id, cascade_cursor, cascade_digest, expires_at, routing, outcome
+        FROM harness_shared.consult_state
+       WHERE workspace_id = ${WS} AND conversation_id = ${id}
+    `) as unknown as Array<Record<string, unknown>>;
+    expect(rows).toHaveLength(1);
+    const row = rows[0];
+    if (typeof row.cascade_digest === 'string') row.cascade_digest = JSON.parse(row.cascade_digest);
+    return row;
+  }
   function routingOf(row: Record<string, unknown>): { selection?: { selected?: Array<Record<string, unknown>>; refill?: Record<string, unknown>; min?: number } } {
     return (typeof row.routing === 'string' ? JSON.parse(row.routing) : row.routing) as ReturnType<typeof routingOf>;
   }
