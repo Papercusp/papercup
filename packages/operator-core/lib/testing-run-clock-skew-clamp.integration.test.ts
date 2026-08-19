@@ -50,7 +50,13 @@ function readMigration850(): string {
   if (!text.includes('test_runs_clamp_future_timestamps')) {
     throw new Error(`migration 850 at ${path} does not define the clamp trigger`);
   }
-  return text;
+  // postgres.js refuses explicit transaction control on a POOLED client
+  // ("UNSAFE_TRANSACTION: Only use sql.begin, sql.reserved or max: 1"), and this
+  // fixture's clients are pooled (max: 2). Strip the file's BEGIN/COMMIT: a
+  // multi-statement simple-protocol query is itself an implicit transaction, so
+  // the migration still applies atomically. Only the transaction wrapper is
+  // dropped — every DDL/DML statement below is applied exactly as written.
+  return text.replace(/^\s*(BEGIN|COMMIT)\s*;\s*$/gim, '');
 }
 
 const FRAMEWORK = 'vitest';
