@@ -2074,6 +2074,7 @@ export default function SessionChatModal({
             {fleetPeers ? (
               <FleetPeersRail
                 model={fleetPeers}
+                alerts={leaderBriefAlerts}
                 onSelectPeer={onSelectPeer}
                 onClose={() => void setFleetOpen(false)}
               />
