@@ -625,6 +625,21 @@ describe('affected-tests scheduler wiring', () => {
     }
   });
 
+  // EI-20801764054303492 route (a), the SAME inert-rail class WI-39472 records below — and it
+  // already happened once to this very feature: `admissibleWorkersForMemory` sat exported, tested
+  // and CALLED BY NOTHING for hours, which every unit test above passes cleanly through. A clamp
+  // nothing wires is not a clamp. Pinned at BOTH call sites and matched structurally (a bounded
+  // gap after the call opening) rather than as a bare substring, so the prose explaining the
+  // wiring cannot satisfy the assertion on its own.
+  it('passes the live memory reader to BOTH budgeted pools, so the admission clamp is not inert', () => {
+    expect(AFFECTED_TESTS_SRC).toMatch(
+      /const initialPool = await runBudgetedTasks\(taskContexts[\s\S]{0,500}?\n\s*readMemAvailableMb,/,
+    );
+    expect(AFFECTED_TESTS_SRC).toMatch(
+      /const retryPool = await runBudgetedTasks\(\[scheduled\.task\][\s\S]{0,500}?\n\s*readMemAvailableMb,/,
+    );
+  });
+
   // WI-39472: the memory rail was INERT for as long as this default was
   // `SCHEDULER_WORKER_BUDGET * SCHEDULER_WORKER_MEMORY_MB` — that makes memoryWorkerBudget
   // identically equal to workerBudget, so resolveTaskBudget's Math.min can never bind. Nothing
