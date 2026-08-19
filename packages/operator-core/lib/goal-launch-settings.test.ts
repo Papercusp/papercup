@@ -182,6 +182,112 @@ describe('goalLaunchSettingsSchema', () => {
     expect(launchProfileSchema.safeParse({ contextSize: 'trimmed' }).success).toBe(true);
     expect(launchProfileSchema.safeParse({ contextSize: 'medium' }).success).toBe(false);
   });
+
+  // ── P-002: the holder policy (goal-live-holder-guarantee-2026-08-18) ──────────
+  it('accepts a holder policy on the settings document', () => {
+    expect(
+      goalLaunchSettingsSchema.safeParse({ holder: { requireLive: true, onLoss: 'deactivate' } })
+        .success,
+    ).toBe(true);
+    expect(goalLaunchSettingsSchema.safeParse({ holder: { onLoss: 'respawn' } }).success).toBe(true);
+  });
+
+  it('REJECTS an unknown key inside the holder policy too — .strict() on BOTH levels', () => {
+    // Same class as the ceiling typo: `requiresLive` silently accepted would read
+    // back in the panel as a policy that is set, while the resolver applies the
+    // default and nothing enforces what the owner thinks they declared.
+    expect(goalLaunchSettingsSchema.safeParse({ holder: { requiresLive: true } }).success).toBe(
+      false,
+    );
+    expect(goalHolderPolicySchema.safeParse({ onLos: 'deactivate' }).success).toBe(false);
+  });
+
+  it('rejects an onLoss value outside the closed set, so a typo cannot read as a policy', () => {
+    expect(goalHolderPolicySchema.safeParse({ onLoss: 'deactivte' }).success).toBe(false);
+    expect(goalHolderPolicySchema.safeParse({ onLoss: 'restart' }).success).toBe(false);
+    expect(goalHolderPolicySchema.safeParse({ onLoss: '' }).success).toBe(false);
+  });
+
+  it('rejects a non-boolean requireLive — "false" the string is not false', () => {
+    expect(goalHolderPolicySchema.safeParse({ requireLive: 'false' }).success).toBe(false);
+    expect(goalHolderPolicySchema.safeParse({ requireLive: 0 }).success).toBe(false);
+  });
+
+  it('accepts null on either field and on the policy itself — the panel clears with null', () => {
+    expect(goalHolderPolicySchema.safeParse({ requireLive: null, onLoss: null }).success).toBe(true);
+    expect(goalLaunchSettingsSchema.safeParse({ holder: null }).success).toBe(true);
+  });
+
+  it('every value the closed set admits actually parses', () => {
+    // The schema and the closed set are one declaration; this fails if they ever
+    // become two (the D-011 drift, one level down at the value).
+    for (const v of GOAL_HOLDER_ON_LOSS) {
+      expect(goalHolderPolicySchema.safeParse({ onLoss: v }).success, v).toBe(true);
+    }
+  });
+});
+
+describe('resolveGoalHolderPolicy — read-time defaults (D-001, D-008)', () => {
+  it('covers a goal that has pinned NOTHING — the case the defaults exist for', () => {
+    // The measured exposure this addresses: 4 of 6 active goals had been dark for
+    // days, and of 18 goals in the workspace only 3 carry launch_settings at all.
+    // A create-time default would have reached none of them.
+    for (const stored of [null, undefined, {} as GoalLaunchSettings, { holder: null }]) {
+      const p = resolveGoalHolderPolicy(stored as GoalLaunchSettings | null);
+      expect(p.requireLive).toBe(true);
+      expect(p.onLoss).toBe('deactivate');
+      expect(p.isDefault).toBe(true);
+    }
+  });
+
+  it('defaults onLoss to deactivate — a goal earns respawn only by being NAMED (D-001)', () => {
+    expect(resolveGoalHolderPolicy({ holder: { requireLive: true } }).onLoss).toBe('deactivate');
+    expect(resolveGoalHolderPolicy({ holder: { onLoss: 'respawn' } }).onLoss).toBe('respawn');
+  });
+
+  it('an EXPLICIT false is the opt-out, and is not confused with absent', () => {
+    // The whole three-way distinction. Collapsing absent into false would opt
+    // every existing goal out of the guarantee silently; collapsing false into
+    // absent would make the opt-out unsayable.
+    const optedOut = resolveGoalHolderPolicy({ holder: { requireLive: false } });
+    expect(optedOut.requireLive).toBe(false);
+    expect(optedOut.isDefault).toBe(false);
+
+    const unpinned = resolveGoalHolderPolicy({ holder: { requireLive: null } });
+    expect(unpinned.requireLive).toBe(true);
+    expect(unpinned.isDefault).toBe(true);
+  });
+
+  it('isDefault is false as soon as EITHER field is pinned', () => {
+    expect(resolveGoalHolderPolicy({ holder: { onLoss: 'deactivate' } }).isDefault).toBe(false);
+    expect(resolveGoalHolderPolicy({ holder: { requireLive: true } }).isDefault).toBe(false);
+  });
+
+  it('resolves through a document that came back from the SCHEMA, not just a literal', () => {
+    // Guards the seam that actually runs in production: stored jsonb -> parse ->
+    // resolve. A resolver tested only against hand-written literals can drift
+    // from what the parser actually produces.
+    const parsed = goalLaunchSettingsSchema.parse({
+      maxAgents: 4,
+      holder: { requireLive: false, onLoss: 'respawn' },
+    });
+    expect(resolveGoalHolderPolicy(parsed)).toEqual({
+      requireLive: false,
+      onLoss: 'respawn',
+      isDefault: false,
+    });
+  });
+
+  it('an existing stored document with no holder key still resolves — no migration needed', () => {
+    // Measured 2026-08-19: 3 of 18 goals carry launch_settings, 0 carry `holder`.
+    // This is the exact shape of a live row (a-working-browsable-visual-... ).
+    const legacy = goalLaunchSettingsSchema.parse({ maxAgents: 6, maxPerFleet: 3 });
+    expect(resolveGoalHolderPolicy(legacy)).toEqual({
+      requireLive: true,
+      onLoss: 'deactivate',
+      isDefault: true,
+    });
+  });
 });
 
 describe('foldLaunchProfile', () => {
