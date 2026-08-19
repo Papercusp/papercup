@@ -61,6 +61,13 @@ const ALLOWLIST: Record<string, string> = {
     'with the REQUESTER on another host, and are enforced there when its goal agent calls the launch ' +
     'tool. This host holds no goal row and no session_briefs row for that remote owner, so a second ' +
     'check here could only ever resolve null; what it does enforce locally is seat accounting (Gate 4.6).',
+  'consult/revive-responder.ts':
+    'A REVIVAL, not a launch: it carry-respawns a session that already existed, under its ORIGINAL coord ' +
+    'identity, so no new agent joins the population and the revived session keeps whatever goal lineage it ' +
+    'already had. Binding a ceiling here would check a headcount the respawn does not change, and would ' +
+    'refuse to revive a dead responder because some unrelated goal is full. Its own bound is upstream and ' +
+    'tighter than a ceiling: the caller owns WHETHER to revive (MAX_REVIVALS_PER_CONSULT = 1 in ' +
+    'consult/get-feedback-core.ts, covered by get-feedback-core.integration.test.ts); this module owns only HOW.',
 };
 
 const COMPOSERS = /\b(buildAgentLaunchCommand|memberLaunchCommand)\s*\(/;
