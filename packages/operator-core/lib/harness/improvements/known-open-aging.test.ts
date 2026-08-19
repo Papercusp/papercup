@@ -12,10 +12,13 @@ import {
   planKnownOpenAging,
   processKnownOpenAging,
   agingConditionKey,
+  currentEvidenceBlock,
+  splitAgingInputs,
   type KnownOpenTickSample,
   type AgingItemInput,
   type KnownOpenAgingDeps,
 } from './known-open-aging';
+import { readFile } from 'node:fs/promises';
 import type { EngineerIssue } from '../../issues-engineer';
 
 const NOW = Date.parse('2026-06-12T12:00:00.000Z');
@@ -369,5 +372,109 @@ describe('processKnownOpenAging — the brief\'s synthetic end-to-end (escalates
     expect(sig1).toBe(sig2);
     // The stable key is duration/issueId-free — it depends ONLY on the watchdogKey.
     expect(agingConditionKey(key)).toBe('known-open-aging:stalled-claim:stalled-work-item-claims');
+  });
+});
+
+// ── EI-19920080383279759: an escalation must carry RE-MEASURED evidence ───────
+//
+// The defect this pins: a re-firing signal declines its capture
+// (`dedupScope:'open'`), so the filed item's body is frozen at first-fire while
+// aging keeps escalating it. Measured live — EI-19920080383279759 was bumped to
+// CRITICAL naming pool `brief/user`, a surface dead for 10 days, while the pools
+// actually breaching the gate were `mid-turn/hive` and `injection/harness` with
+// the OPPOSITE remedy. The evidence must reach the reader, or the assignee works
+// a fossil.
+describe('known-open aging carries the CURRENT evidence, not just the age', () => {
+  const key = 'memory-recall-pool:recall-pool-starved';
+  const FRESH = 'mid-turn/hive [rrf]: returned nothing on 200906/234134 recalls (86%).';
+
+  function deps(items: AgingItemInput[], history: KnownOpenTickSample[]) {
+    const escalations: { body: string }[] = [];
+    const comments: string[] = [];
+    return {
+      escalations,
+      comments,
+      d: {
+        readHistory: async () => history,
+        readItems: async () => items as EngineerIssue[],
+        stampPayload: async () => {},
+        bumpSeverity: async () => {},
+        comment: async (_id: string, body: string) => { comments.push(body); },
+        escalate: async (input: { body: string }) => { escalations.push(input); },
+      } as Partial<KnownOpenAgingDeps>,
+    };
+  }
+
+  const history = steadyHistory(key, 30);
+  const synthetic = () => item({ id: 'EI-199', severity: 'major' }, key);
+
+  it('renders the re-measured body into BOTH the comment and the coord escalation', async () => {
+    const r = deps([synthetic()], history);
+    const out = await processKnownOpenAging('ws', [{ key, evidence: FRESH }], { nowMs: NOW }, r.d);
+
+    expect(out).toHaveLength(1);
+    for (const text of [r.comments[0], r.escalations[0].body]) {
+      expect(text).toContain('CURRENT EVIDENCE');
+      expect(text).toContain('mid-turn/hive');
+      // The reader must be told WHY the filed body may disagree — that sentence
+      // is the whole remedy for the fossil-body class, not decoration.
+      expect(text).toContain('never rewritten');
+    }
+  });
+
+  it('a bare string[] caller still works and emits NO evidence header', async () => {
+    const r = deps([synthetic()], history);
+    const out = await processKnownOpenAging('ws', [key], { nowMs: NOW }, r.d);
+
+    expect(out).toHaveLength(1);
+    // An empty header would read as "re-measured and found nothing" — the exact
+    // opposite of "this caller passed no evidence".
+    expect(r.comments[0]).not.toContain('CURRENT EVIDENCE');
+    expect(r.escalations[0].body).not.toContain('CURRENT EVIDENCE');
+  });
+
+  it('blank/whitespace evidence is treated as ABSENT, not as an empty measurement', () => {
+    expect(currentEvidenceBlock('   \n  ')).toBe('');
+    expect(currentEvidenceBlock(undefined)).toBe('');
+    expect(splitAgingInputs([{ key, evidence: '  ' }]).evidenceByKey.has(key)).toBe(false);
+    expect(splitAgingInputs([{ key, evidence: FRESH }]).evidenceByKey.get(key)).toBe(FRESH);
+  });
+
+  it('clips a huge body instead of flooding the escalation', () => {
+    const block = currentEvidenceBlock('x'.repeat(50_000));
+    expect(block).toContain('evidence clipped');
+    expect(block.length).toBeLessThan(2_500);
+  });
+
+  it('splitAgingInputs keeps key order and drops blank keys', () => {
+    const { keys } = splitAgingInputs(['a', { key: 'b', evidence: 'e' }, '', { key: '  ' }, 'c']);
+    expect(keys).toEqual(['a', 'b', 'c']);
+  });
+
+  // CONTROL (permanent, per the tier-1 falsifiability discipline): a
+  // deliberately-wrong renderer that drops the evidence. It must FAIL the
+  // property the real one passes — otherwise the assertions above are vacuous
+  // and would keep passing if `currentEvidenceBlock` regressed to a stub.
+  it('CONTROL: an evidence-dropping renderer fails the property the real one passes', () => {
+    const brokenRenderer = (_evidence: string | undefined): string => '';
+    // Calibration — the control is a PLAUSIBLE near-miss: it has the real
+    // signature and is correct on the absent-evidence case, so it is only
+    // distinguishable by the behaviour under test.
+    expect(brokenRenderer(undefined)).toBe(currentEvidenceBlock(undefined));
+    // The discriminating case: real renders the body, control silently does not.
+    expect(currentEvidenceBlock(FRESH)).toContain('mid-turn/hive');
+    expect(brokenRenderer(FRESH)).not.toContain('mid-turn/hive');
+  });
+
+  // WIRING guard: `currentEvidenceBlock` can be perfect and exported while the
+  // watchdog still discards the body at the call site — the inert-rail class
+  // (a feature unit-tested, green, and CALLED BY NOTHING). Pin the call site to
+  // source so dropping `evidence` there fails HERE rather than silently.
+  it('WIRING: watchdog.ts passes the signal body, not just the key', async () => {
+    const src = await readFile(new URL('./watchdog.ts', import.meta.url), 'utf8');
+    expect(src).toMatch(/processAging\(\s*workspaceId,\s*partition\.knownOpen\.map\(\(s\) => \(\{ key: watchdogKeyOf\(s\), evidence: s\.body \}\)\)/);
+    // Negative control: the OLD key-only shape must be gone, or a revert would
+    // leave both forms present and this guard would pass while the fix is dead.
+    expect(src).not.toContain('partition.knownOpen.map(watchdogKeyOf)');
   });
 });
