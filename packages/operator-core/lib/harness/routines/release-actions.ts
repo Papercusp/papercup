@@ -349,7 +349,7 @@ function runScript(
  * row null forever). 120m covers the measured worst case with ~30m headroom.
  *
  * INVARIANT: keep this the SMALLEST link in the gate's timing chain —
- *   THIS (120m)  <  SELF_WATCHDOG_MS (180m, green-checkpoint.ts)
+ *   THIS (115m)  <  SELF_WATCHDOG_MS (180m, green-checkpoint.ts)
  *     <  DEFAULT_STALE_ROUTINE_FIRE_NO_OUTPUT_MS (185m, dbos/dbos-executor-reaper.ts)
  *     <  CHECKPOINT_LOCK_STALE_MS (190m, green-checkpoint.ts)
  * — a run must be killed by THIS timeout (and release its lock) before that lock is
@@ -382,7 +382,11 @@ function runScript(
  * of slack. The 5 minutes given up are cheap — a run that needs >115m is a run that
  * was going to be killed mid-suite anyway and record a verdict-less red (the 17:15 run
  * produced NOTHING at its 120m mark) — while the slot recovered is a whole extra hour
- * of gate availability. `phase margin` in release-timing-invariants.test.ts pins it.
+ * of gate availability. `phase margin` in release-timing-invariants.test.ts pins it,
+ * against the schedule facts in `../../release/green-checkpoint-schedule.ts` (the cron,
+ * its fire period, and the required margin — that file is also the ONE place the seed
+ * sites get the cron from, so this budget and the schedule it is phased against cannot
+ * drift apart silently).
  */
 export const GREEN_CHECKPOINT_SUITE_TIMEOUT_MS = 115 * 60_000;
 
