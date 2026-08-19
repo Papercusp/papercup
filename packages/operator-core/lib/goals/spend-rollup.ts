@@ -47,6 +47,11 @@ import { goalSpend, GOAL_SPEND_TICK_SOURCE, type GoalSpend } from '@papercusp/db
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { GOAL_MODE } from '../modes/goal-session';
+import {
+  breachedTripwires,
+  refreshTripwireCurrents,
+  type GoalTripwireLike,
+} from './tripwire-refresh';
 
 export const GOAL_SPEND_ROLLUP_INTERVAL_MS = 5 * 60_000;
 
@@ -210,12 +215,62 @@ export async function writeGoalSpendSnapshot(
   return res.count;
 }
 
+/**
+ * Advance this goal's generically-measurable tripwires from the rollup just
+ * computed (plan blender-goal-amendment-rail-2026-08-19 P-004, D-014).
+ *
+ * ⚠ THE `measured` GATE IS THE POINT, not a detail. `rollup.totalCents` is a
+ * FLOOR whenever any sample is unpriced, and a spend tripwire governs a ceiling
+ * — so publishing a floor as `current` would read as "safely under" when the
+ * true figure is unknown. Only a fully-priced rollup advances a spend tripwire;
+ * everything else is passed as null and leaves the value exactly as it was.
+ *
+ * Like {@link writeGoalSpendSnapshot} this deliberately does NOT bump
+ * `updated_at`: scoring a tripwire reports a measurement, it does not edit the
+ * goal's intent (which is precisely why P-004 needs no amendment authority).
+ */
+export async function refreshGoalTripwires(
+  sql: Sql,
+  opts: { workspaceId: string; goalId: string },
+  goal: { tripwires: GoalTripwireLike[] | null; createdAtMs: number },
+  rollup: GoalSpendRollup,
+  nowMs: number = Date.now(),
+): Promise<{ advanced: number; written: boolean; breached: ReturnType<typeof breachedTripwires> }> {
+  const res = refreshTripwireCurrents(goal.tripwires, {
+    measuredSpentCents: rollup.measured ? rollup.totalCents : null,
+    goalAgeMs: nowMs - goal.createdAtMs,
+  });
+  if (!res.changed) return { advanced: 0, written: false, breached: [] };
+
+  // sql.json for the same double-encoding reason documented on the snapshot write.
+  const upd = await sql`
+    UPDATE harness_shared.goals
+       SET tripwires = ${sql.json(res.next)}
+     WHERE id = ${opts.goalId}
+       AND workspace_id = ${opts.workspaceId}
+  `;
+  if (upd.count !== 1) throw new Error(`tripwire UPDATE matched ${upd.count} rows`);
+
+  // Report breaches; never act on them. Firing a kill criterion is a deliberate
+  // decision with an owner in it, not a side effect of a reporting sweep.
+  const breached = breachedTripwires(res.next);
+  for (const b of breached) {
+    console.warn(
+      `[goal-spend-rollup] goal ${opts.goalId}: tripwire ${b.metric} BREACHED — ` +
+        `${b.current}${b.unit ? ` ${b.unit}` : ''} of ${b.threshold}`,
+    );
+  }
+  return { advanced: res.advanced, written: true, breached };
+}
+
 export interface GoalSpendRollupSweepResult {
   ok: boolean;
   /** false when the flag gate stood the sweep down before any read. */
   ran: boolean;
   checked: number;
   written: number;
+  /** Tripwires advanced to a freshly measured value this sweep (P-004). */
+  tripwiresAdvanced: number;
   errors: Array<{ goalId: string; error: string }>;
 }
 
