@@ -123,6 +123,81 @@ describe('goals:get — summary skips the children query (Gap 11)', () => {
   });
 });
 
+/**
+ * P-005 / D-009 — the READ side of the deliberate-pause record.
+ *
+ * These exist because the routines layer shipped this exact record and then
+ * failed anyway, three times, for the opposite reason: `routines:set` WROTE
+ * { reason, pausedBy, pausedAtMs } while `routines:list` selected `active` and
+ * not `metadata`, so the responder still saw a bare stopped flag and filed a
+ * deliberate hold as a suspected stall (EI-19336000265007219). A durable record
+ * nobody can read is not a fix. Both detail levels are asserted for that reason
+ * — a summary that cannot say "paused, by whom, why" reproduces it exactly.
+ */
+describe('goals:get — the deliberate-pause record is READ BACK (P-005)', () => {
+  it('summary surfaces status + the parsed pause record', async () => {
+    fixtureQueue = [[PAUSED_ROW()]];
+    const res = await tool.handler({ id: 'g-1', detail: 'summary' } as never, CTX() as never);
+    expect(res.data).toEqual({
+      id: 'g-1',
+      title: 'Ship v1',
+      status: 'paused',
+      pause: {
+        reason: 'owner holding the spend',
+        by: 'su-abc',
+        at: new Date(1_755_000_000_000).toISOString(),
+      },
+      actionable: true,
+      premiseInvalidated: false,
+    });
+  });
+
+  it('an ACTIVE goal reports pause:null — not a missing key a caller has to interpret', async () => {
+    fixtureQueue = [[GOAL_ROW()]];
+    const res = await tool.handler({ id: 'g-1', detail: 'summary' } as never, CTX() as never);
+    expect(res.data).toHaveProperty('pause', null);
+  });
+
+  it('full mode carries pause AND the archived lastPause', async () => {
+    fixtureQueue = [
+      [
+        GOAL_ROW({
+          status: 'active',
+          metadata: {
+            lastPause: {
+              reason: 'held over the weekend',
+              pausedBy: 'su-xyz',
+              pausedAtMs: 1_754_000_000_000,
+              resumedAtMs: 1_754_500_000_000,
+            },
+          },
+        }),
+      ],
+      [],
+    ];
+    const res = await tool.handler({ id: 'g-1', detail: 'full' } as never, CTX() as never);
+    const data = res.data as Record<string, unknown>;
+    expect(data.pause).toBeNull();
+    expect(data.lastPause).toEqual({
+      reason: 'held over the weekend',
+      by: 'su-xyz',
+      at: new Date(1_754_000_000_000).toISOString(),
+    });
+  });
+
+  it('a MALFORMED record degrades to null legs rather than throwing', async () => {
+    // A reader that crashes on bad jsonb is worse than one that reports what it
+    // found — the same tolerance `routines/list.ts`'s `pauseOf` carries.
+    fixtureQueue = [[GOAL_ROW({ status: 'paused', metadata: { pause: { reason: 42 } } })]];
+    const res = await tool.handler({ id: 'g-1', detail: 'summary' } as never, CTX() as never);
+    expect((res.data as Record<string, unknown>).pause).toEqual({
+      reason: null,
+      by: null,
+      at: null,
+    });
+  });
+});
+
 describe('goals:get — full mode fires the children query (Gap 11)', () => {
   it('full spreads the goal and attaches children from a SECOND query', async () => {
     const goal = GOAL_ROW();
@@ -141,6 +216,8 @@ describe('goals:get — full mode fires the children query (Gap 11)', () => {
         { id: 'g-2', title: 'Child A' },
         { id: 'g-3', title: 'Child B' },
       ],
+      pause: null,
+      lastPause: null,
       actionable: true,
       premiseInvalidated: false,
       blockedBy: [],
