@@ -2160,7 +2160,8 @@ describe('runWatchdogTick — key pre-filter frees the capture budget (audit P-0
 });
 
 describe('runWatchdogTick — known-open aging wiring (consume-edges P-020 / EI-363)', () => {
-  function knownOpenTick(processAging: (ws: string, keys: string[], o: unknown) => Promise<{ issueId: string; watchdogKey: string; reescalation: boolean }[]>) {
+  type AgingSeamInput = string | { key: string; evidence?: string | null };
+  function knownOpenTick(processAging: (ws: string, knownOpen: readonly AgingSeamInput[], o: unknown) => Promise<{ issueId: string; watchdogKey: string; reescalation: boolean }[]>) {
     const known = [sig({ key: 'shop', source: 'service-down', title: 'Service shop is down' })];
     return runTick('ws', {}, {
       collect: async () => known,
