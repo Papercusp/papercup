@@ -221,6 +221,62 @@ export function checkFile({ path, text, protectedModules }) {
   return violations;
 }
 
+/**
+ * The guard's OWN BLIND SPOT, measured — the population carrying the risky shape on modules
+ * the registry does NOT cover.
+ *
+ * EI-20836231573383362: this guard passed `✓ ... 327 candidate test file(s) scanned — no bare
+ * vi.mock factories` at 20:24Z while a bare `@papercusp/db-org` factory had been sitting in
+ * sync-resolver/learning-knowledge-scout.test.ts for ~3 weeks, breaking COLLECTION of that
+ * whole file. The scan was CORRECT — db-org is not a protected module — but the verdict read
+ * as a tree-wide all-clear, and was used as one ("lint:full-replacement-mocks passed, so bare
+ * factories are not the problem"). A bounded measurement rendered as an unbounded verdict is
+ * indistinguishable from a real zero, which is the specific way this guard was worse than no
+ * guard: it supplied positive evidence for a conclusion it never tested.
+ *
+ * So the pass path reports BOTH halves of one measurement — what was checked and what is
+ * structurally out of scope. Deriving them from the SAME parse of the SAME corpus is the
+ * point: a scope note computed separately could drift from the check it qualifies.
+ */
+export function exposureCensus({ files, protectedModules }) {
+  const protectedSet = new Set(protectedModules.map((p) => p.module));
+  const byModule = new Map();
+  for (const f of files) {
+    for (const call of analyzeMockCalls(f.text, f.path)) {
+      if (call.form !== 'full-replacement') continue;
+      const resolved = resolveSpec(f.path, call.spec);
+      if (!resolved || protectedSet.has(resolved)) continue;
+      if (!byModule.has(resolved)) byModule.set(resolved, new Set());
+      byModule.get(resolved).add(f.path);
+    }
+  }
+  const top = [...byModule.entries()]
+    .map(([module, set]) => ({ module, files: set.size, internal: isInternalModule(module) }))
+    .sort((a, b) => b.files - a.files || a.module.localeCompare(b.module));
+  return {
+    modules: top.length,
+    pairs: top.reduce((n, r) => n + r.files, 0),
+    internalModules: top.filter((r) => r.internal).length,
+    top,
+  };
+}
+
+/**
+ * Internal modules are the ACTIONABLE half of the exposure: our own export surfaces change
+ * on any ordinary commit, whereas a third-party surface (`nuqs`, `sonner`) moves only on a
+ * deliberate upgrade. Both can strand a factory, so both are counted — but a reader deciding
+ * what to promote next needs them separated, or the total reads as undifferentiated noise.
+ */
+function isInternalModule(module) {
+  return (
+    module.startsWith('@papercusp/') ||
+    module.startsWith('@/') ||
+    module.startsWith('packages/') ||
+    module.startsWith('apps/') ||
+    module.startsWith('libs/')
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Self-test — the guard must fire on the real shape and stay silent for each
 // safe form. A run reporting "0 violations" on a clean tree would pass
